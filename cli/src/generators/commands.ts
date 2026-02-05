@@ -45,7 +45,13 @@ export function generateCommands(projectInfo: ProjectInfo): GeneratedCommands {
     'mtd-report-weekly': generateReportWeeklyCommand(),
 
     // Scan commands
-    'mtd-scan-project': generateScanProjectCommand()
+    'mtd-scan-project': generateScanProjectCommand(),
+
+    // Task commands (L0 Universal Delegation)
+    'mtd-task-analyze': generateTaskAnalyzeCommand(),
+    'mtd-task-review': generateTaskReviewCommand(),
+    'mtd-task-refactor': generateTaskRefactorCommand(),
+    'mtd-task-docs': generateTaskDocsCommand()
   };
 
   return commands;
@@ -628,5 +634,253 @@ Scans the project structure and updates detection.
 - After major structural changes
 - When adding new technology
 - To refresh project detection
+`;
+}
+
+// ============== Task Commands (L0 Universal Delegation) ==============
+
+function generateTaskAnalyzeCommand(): string {
+  return `# /mtd-task-analyze - Code Analysis
+
+> Analyzes code in a **separate Task context** (L0 Universal Delegation).
+
+## Trigger
+
+\`/mtd-task-analyze <scope>\`
+
+## Description
+
+Analyzes code in a separate Task(Explore) context.
+Use for any code exploration that doesn't fit feature/bugfix pipelines.
+
+## L0 Enforcement
+
+**CRITICAL**: This command enforces L0 Universal Delegation:
+- Parent context does NOT read code
+- Parent context ONLY coordinates and presents results
+- ALL analysis happens in Task(Explore) context
+
+## Flow
+
+1. **DELEGATE** 🔍
+   - Create Task(Explore) with analysis scope
+   - Never analyze directly in parent context
+
+2. **REPORT**
+   - Present findings to user
+
+## Implementation
+
+\`\`\`javascript
+Task({
+  subagent_type: "Explore",
+  model: "haiku",
+  description: \`🔍 Analyze: \${scope}\`,
+  prompt: \`
+    # 🔍 CODE ANALYSIS TASK
+    ## Scope: \${scope}
+    ## Instructions
+    1. Use grepai_search for semantic search
+    2. Read relevant files
+    3. Document patterns found
+    4. Report findings clearly
+  \`
+})
+\`\`\`
+
+## Examples
+
+\`\`\`bash
+/mtd-task-analyze authentication flow
+/mtd-task-analyze "database schema"
+/mtd-task-analyze error handling patterns
+\`\`\`
+`;
+}
+
+function generateTaskReviewCommand(): string {
+  return `# /mtd-task-review - Code Review
+
+> Performs code review in a **separate Task context** (L0 Universal Delegation).
+
+## Trigger
+
+\`/mtd-task-review <scope>\`
+
+## Description
+
+Reviews code quality in a separate Task(general-purpose) context.
+Use for QA, SOLID validation, security checks.
+
+## L0 Enforcement
+
+**CRITICAL**: This command enforces L0 Universal Delegation:
+- Parent context does NOT read code
+- Parent context ONLY coordinates and presents results
+- ALL review happens in Task(general-purpose) context
+
+## Flow
+
+1. **DELEGATE** 🔎
+   - Create Task(general-purpose) with review prompt
+   - Never review directly in parent context
+
+2. **REPORT**
+   - Present findings with severity levels
+
+## Implementation
+
+\`\`\`javascript
+Task({
+  subagent_type: "general-purpose",
+  model: "opus",
+  description: \`🔎 Review: \${scope}\`,
+  prompt: \`
+    # 🔎 CODE REVIEW TASK
+    ## Scope: \${scope}
+    ## Checklist
+    - [ ] SOLID principles
+    - [ ] Error handling
+    - [ ] Security concerns
+    - [ ] Performance issues
+    ## Output: [Severity] File:Line - Issue - Suggestion
+  \`
+})
+\`\`\`
+
+## Examples
+
+\`\`\`bash
+/mtd-task-review src/services/payment
+/mtd-task-review "Contract entity"
+/mtd-task-review "security in auth module"
+\`\`\`
+`;
+}
+
+function generateTaskRefactorCommand(): string {
+  return `# /mtd-task-refactor - Code Refactoring
+
+> Refactors code in **separate Task contexts** (L0 Universal Delegation).
+
+## Trigger
+
+\`/mtd-task-refactor <scope>\`
+
+## Description
+
+Refactors code using Plan → Approve → Implement flow.
+Uses separate Task contexts for planning and execution.
+
+## L0 Enforcement
+
+**CRITICAL**: This command enforces L0 Universal Delegation:
+- Parent context does NOT read code
+- Parent context does NOT plan or implement
+- ALL work happens in Task(Plan) and Task(general-purpose) contexts
+
+## Flow
+
+1. **PLAN** 📋
+   - Create Task(Plan) to analyze scope
+   - Propose refactoring strategy
+
+2. **APPROVE**
+   - Present plan to user
+   - Wait for approval
+
+3. **IMPLEMENT** ⚙️
+   - Create Task(general-purpose) to execute
+   - Apply changes incrementally
+
+4. **VALIDATE**
+   - Run build/tests
+
+## Implementation
+
+\`\`\`javascript
+// Phase 1: Plan
+Task({
+  subagent_type: "Plan",
+  model: "sonnet",
+  description: \`📋 Plan refactor: \${scope}\`,
+  prompt: \`# Plan refactoring for \${scope}...\`
+})
+
+// Phase 2: Execute (after approval)
+Task({
+  subagent_type: "general-purpose",
+  model: "opus",
+  description: \`⚙️ Execute refactor: \${scope}\`,
+  prompt: \`# Execute approved plan...\`
+})
+\`\`\`
+
+## Examples
+
+\`\`\`bash
+/mtd-task-refactor "extract PaymentService"
+/mtd-task-refactor "rename User to Account"
+/mtd-task-refactor "split large component"
+\`\`\`
+`;
+}
+
+function generateTaskDocsCommand(): string {
+  return `# /mtd-task-docs - Documentation Generation
+
+> Generates documentation in a **separate Task context** (L0 Universal Delegation).
+
+## Trigger
+
+\`/mtd-task-docs <scope>\`
+
+## Description
+
+Generates documentation in a separate Task(general-purpose) context.
+Use for API docs, README updates, or technical documentation.
+
+## L0 Enforcement
+
+**CRITICAL**: This command enforces L0 Universal Delegation:
+- Parent context does NOT read code
+- Parent context does NOT generate documentation
+- ALL work happens in Task(general-purpose) context
+
+## Flow
+
+1. **DELEGATE** 📊
+   - Create Task(general-purpose) with docs prompt
+   - Never generate docs in parent context
+
+2. **PRESENT**
+   - Show generated documentation
+   - Ask for approval before saving
+
+## Implementation
+
+\`\`\`javascript
+Task({
+  subagent_type: "general-purpose",
+  model: "sonnet",
+  description: \`📊 Docs: \${scope}\`,
+  prompt: \`
+    # 📊 DOCUMENTATION TASK
+    ## Scope: \${scope}
+    ## Instructions
+    1. Use grepai to find relevant code
+    2. Generate appropriate documentation
+    3. Indicate where to save
+  \`
+})
+\`\`\`
+
+## Examples
+
+\`\`\`bash
+/mtd-task-docs "API endpoints"
+/mtd-task-docs "Contract entity"
+/mtd-task-docs "update README"
+\`\`\`
 `;
 }

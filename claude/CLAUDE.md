@@ -1,114 +1,114 @@
-# Mustard - Instruções para Claude
+# Mustard - Instructions for Claude
 
-> Framework de agentes e pipeline para Claude Code.
-> **Versão 2.4** - Auto-generated context, Memory MCP search in agents, improved CLI.
+> Agent framework and pipeline for Claude Code.
+> **Version 2.4** - Auto-generated context, Memory MCP search in agents, improved CLI.
 
 ---
 
-## 0. PIPELINE - VERIFICAR SEMPRE
+## 0. PIPELINE - ALWAYS CHECK
 
-> 🔍 **ANTES DE QUALQUER RESPOSTA:** Verificar se há pipeline ativo.
+> **BEFORE ANY RESPONSE:** Check if there is an active pipeline.
 
-### Ao Iniciar Interação
+### When Starting an Interaction
 
 ```javascript
-// SEMPRE executar no início
+// ALWAYS execute at the start
 mcp__memory__search_nodes({ query: "pipeline phase" })
 ```
 
-| Resultado | Ação |
-|-----------|------|
-| Nenhum pipeline | Análise livre, mas edições de código requerem /mtd-pipeline-feature ou /mtd-pipeline-bugfix |
-| Pipeline em "explore" | Continuar exploração ou apresentar spec para aprovação |
-| Pipeline em "implement" | Edições liberadas, seguir spec |
+| Result | Action |
+|--------|--------|
+| No pipeline | Free analysis, but code edits require /mtd-pipeline-feature or /mtd-pipeline-bugfix |
+| Pipeline in "explore" | Continue exploration or present spec for approval |
+| Pipeline in "implement" | Edits allowed, follow spec |
 
-### Detecção Automática de Intenção
+### Automatic Intent Detection
 
-| Tipo de Solicitação | Pipeline Necessário? |
-|---------------------|---------------------|
-| "Como funciona X?" | NÃO - análise livre |
-| "Onde está Y?" | NÃO - análise livre |
-| "Explique Z" | NÃO - análise livre |
-| "Adicione campo X" | SIM - /mtd-pipeline-feature |
-| "Corrija erro Y" | SIM - /mtd-pipeline-bugfix |
-| "Refatore Z" | SIM - /mtd-pipeline-feature |
+| Request Type | Pipeline Required? |
+|--------------|-------------------|
+| "How does X work?" | NO - free analysis |
+| "Where is Y?" | NO - free analysis |
+| "Explain Z" | NO - free analysis |
+| "Add field X" | YES - /mtd-pipeline-feature |
+| "Fix error Y" | YES - /mtd-pipeline-bugfix |
+| "Refactor Z" | YES - /mtd-pipeline-feature |
 
 ---
 
-## 1. ENFORCEMENT L0 - LEIA PRIMEIRO
+## 1. ENFORCEMENT L0 - READ FIRST
 
-> ⛔ **REGRA ABSOLUTA:** Claude principal NÃO implementa código. SEMPRE delega.
+> **ABSOLUTE RULE:** Main Claude does NOT implement code. ALWAYS delegates.
 
-### Quando Receber Solicitação:
+### When Receiving a Request:
 
-1. **IDENTIFICAR** tipo de tarefa
-2. **SELECIONAR** agente/prompt apropriado
-3. **DELEGAR** via Task tool com `subagent_type` nativo
-4. **NUNCA** começar a escrever código diretamente
+1. **IDENTIFY** task type
+2. **SELECT** appropriate agent/prompt
+3. **DELEGATE** via Task tool with native `subagent_type`
+4. **NEVER** start writing code directly
 
-### Mapa de Delegação
+### Delegation Map
 
-| Solicitação | subagent_type | modelo | Prompt |
-|-------------|---------------|--------|--------|
+| Request | subagent_type | model | Prompt |
+|---------|---------------|-------|--------|
 | Bug fix | `general-purpose` | opus | `prompts/mtd-pipeline-bugfix.md` |
-| Nova feature | `general-purpose` | opus | `prompts/orchestrator.md` |
+| New feature | `general-purpose` | opus | `prompts/orchestrator.md` |
 | Backend | `general-purpose` | opus | `prompts/backend.md` |
 | Frontend | `general-purpose` | opus | `prompts/frontend.md` |
 | Database | `general-purpose` | opus | `prompts/database.md` |
-| QA/Revisão | `general-purpose` | opus | `prompts/review.md` |
-| Explorar | `Explore` | haiku | (nativo) |
-| Relatórios | `general-purpose` | sonnet | `prompts/report.md` |
+| QA/Review | `general-purpose` | opus | `prompts/review.md` |
+| Explore | `Explore` | haiku | (native) |
+| Reports | `general-purpose` | sonnet | `prompts/report.md` |
 
-### Auto-Verificação
+### Self-Check
 
-**Antes de usar Write, Edit, ou Bash (para criar código):**
+**Before using Write, Edit, or Bash (to create code):**
 
-> Estou dentro de um agente (Task)?
-> Se NÃO → PARE e delegue.
+> Am I inside an agent (Task)?
+> If NO → STOP and delegate.
 
 ---
 
-## 2. Tipos Nativos do Claude Code
+## 2. Claude Code Native Types
 
-O Claude Code aceita **apenas 4 tipos** de subagent_type:
+Claude Code accepts **only 4 types** of subagent_type:
 
-| Tipo Nativo | Descrição | Uso no Mustard |
-|-------------|-----------|----------------|
-| `Explore` | Exploração rápida do codebase | Fase de análise |
-| `Plan` | Planejamento de implementações | Specs complexas |
-| `general-purpose` | Implementação, bug fixes, reviews | **PRINCIPAL** |
-| `Bash` | Comandos de terminal | Git, builds |
+| Native Type | Description | Mustard Usage |
+|-------------|-------------|---------------|
+| `Explore` | Quick codebase exploration | Analysis phase |
+| `Plan` | Implementation planning | Complex specs |
+| `general-purpose` | Implementation, bug fixes, reviews | **MAIN** |
+| `Bash` | Terminal commands | Git, builds |
 
-### Como Funciona
+### How It Works
 
-Os "agentes" do Mustard são **prompts** que carregam instruções especializadas dentro de um `Task(general-purpose)`:
+Mustard "agents" are **prompts** that load specialized instructions inside a `Task(general-purpose)`:
 
 ```javascript
-// ANTES (não funciona)
-Task({ subagent_type: "orchestrator", ... })  // ❌
+// BEFORE (doesn't work)
+Task({ subagent_type: "orchestrator", ... })  // X
 
-// DEPOIS (funciona)
+// AFTER (works)
 Task({
   subagent_type: "general-purpose",
   model: "opus",
   prompt: `
-    # Você é o ORCHESTRATOR
-    [conteúdo de prompts/orchestrator.md]
+    # You are the ORCHESTRATOR
+    [content from prompts/orchestrator.md]
 
-    # TAREFA
-    ${descricao}
+    # TASK
+    ${description}
   `
-})  // ✅
+})  // OK
 ```
 
 ---
 
-## 3. Agentes como Prompts
+## 3. Agents as Prompts
 
-| Papel | subagent_type | Modelo | Arquivo de Prompt |
-|-------|---------------|--------|-------------------|
+| Role | subagent_type | Model | Prompt File |
+|------|---------------|-------|-------------|
 | Orchestrator | `general-purpose` | opus | `prompts/orchestrator.md` |
-| Explorer | `Explore` | haiku | (nativo - sem prompt) |
+| Explorer | `Explore` | haiku | (native - no prompt) |
 | Backend | `general-purpose` | opus | `prompts/backend.md` |
 | Frontend | `general-purpose` | opus | `prompts/frontend.md` |
 | Database | `general-purpose` | opus | `prompts/database.md` |
@@ -118,176 +118,187 @@ Task({
 
 ---
 
-## 4. Comandos Disponíveis
+## 4. Available Commands
 
 ### Pipeline
 
-| Comando | Descrição |
-|---------|-----------|
-| `/mtd-pipeline-feature <nome>` | Ponto único para features |
-| `/mtd-pipeline-bugfix <erro>` | Ponto único para bugs |
+| Command | Description |
+|---------|-------------|
+| `/mtd-pipeline-feature <name>` | Single entry point for features |
+| `/mtd-pipeline-bugfix <error>` | Single entry point for bugs |
 
-### Pipeline (Novos)
+### Pipeline (New)
 
-| Comando | Descrição |
-|---------|-----------|
-| `/mtd-pipeline-approve` | Aprovar spec e liberar implementação |
-| `/mtd-pipeline-complete` | Finalizar pipeline (após validação) |
-| `/mtd-pipeline-resume` | Retomar pipeline ativo |
+| Command | Description |
+|---------|-------------|
+| `/mtd-pipeline-approve` | Approve spec and enable implementation |
+| `/mtd-pipeline-complete` | Finalize pipeline (after validation) |
+| `/mtd-pipeline-resume` | Resume active pipeline |
 
 ### Git
 
-| Comando | Descrição |
-|---------|-----------|
-| `/mtd-git-commit` | Commit simples |
-| `/mtd-git-push` | Commit e push |
-| `/mtd-git-merge` | Merge para main |
+| Command | Description |
+|---------|-------------|
+| `/mtd-git-commit` | Simple commit |
+| `/mtd-git-push` | Commit and push |
+| `/mtd-git-merge` | Merge to main |
 
-### Validação
+### Validation
 
-| Comando | Descrição |
-|---------|-----------|
+| Command | Description |
+|---------|-------------|
 | `/mtd-validate-build` | Build + type-check |
-| `/mtd-validate-status` | Status consolidado |
-| `/mtd-scan-project` | Reconhecimento do projeto |
+| `/mtd-validate-status` | Consolidated status |
+| `/mtd-scan-project` | Project reconnaissance |
 
 ### Sync
 
-| Comando | Descrição |
-|---------|-----------|
-| `/mtd-sync-registry` | Atualizar Entity Registry |
-| `/sync-types` | Regenerar tipos TypeScript |
-| `/mtd-sync-dependencies` | Instalar dependências |
-| `/mtd-sync-context` | Carregar contexto do projeto |
+| Command | Description |
+|---------|-------------|
+| `/mtd-sync-registry` | Update Entity Registry |
+| `/sync-types` | Regenerate TypeScript types |
+| `/mtd-sync-dependencies` | Install dependencies |
+| `/mtd-sync-context` | Load project context |
 
-### Relatórios
+### Reports
 
-| Comando | Descrição |
-|---------|-----------|
-| `/mtd-report-daily` | Relatório diário de commits |
-| `/mtd-report-weekly` | Relatório semanal consolidado |
+| Command | Description |
+|---------|-------------|
+| `/mtd-report-daily` | Daily commit report |
+| `/mtd-report-weekly` | Weekly consolidated report |
+
+### Task Commands (L0 Universal Delegation)
+
+| Command | Emoji | Description |
+|---------|-------|-------------|
+| `/mtd-task-analyze <scope>` | 🔍 | Code analysis via Task(Explore) |
+| `/mtd-task-review <scope>` | 🔎 | Code review via Task(general-purpose) |
+| `/mtd-task-refactor <scope>` | 📋⚙️ | Refactoring via Task(Plan) → Task(general-purpose) |
+| `/mtd-task-docs <scope>` | 📊 | Documentation via Task(general-purpose) |
+
+> **IMPORTANT:** These commands ensure that ALL code activity is delegated to a separate context (Task), keeping the main (parent) context clean.
 
 ---
 
-## 5. Pipeline Único Obrigatório
+## 5. Required Single Pipeline
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│                    /mtd-pipeline-feature ou /mtd-pipeline-bugfix                   │
+│                    /mtd-pipeline-feature or /mtd-pipeline-bugfix                   │
 └───────────────────────────┬─────────────────────────────┘
                             ▼
 ┌─────────────────────────────────────────────────────────┐
-│  FASE 0: CARREGAR CONTEXTO (auto, se > 24h)            │
+│  PHASE 0: LOAD CONTEXT (auto, if > 24h)                 │
 │  Glob context/*.md, grepai patterns → memory MCP        │
 └───────────────────────────┬─────────────────────────────┘
                             ▼
 ┌─────────────────────────────────────────────────────────┐
-│  FASE 1: EXPLORAR                                       │
-│  Task(Explore) → Analisa requisitos, mapeia arquivos    │
+│  PHASE 1: EXPLORE                                       │
+│  Task(Explore) → Analyzes requirements, maps files      │
 └───────────────────────────┬─────────────────────────────┘
                             ▼
 ┌─────────────────────────────────────────────────────────┐
-│  FASE 2: SPEC                                           │
-│  Salva plano em spec/active/{nome}/spec.md              │
-│  Apresenta ao usuário para aprovação                    │
+│  PHASE 2: SPEC                                          │
+│  Saves plan to spec/active/{name}/spec.md               │
+│  Presents to user for approval                          │
 └───────────────────────────┬─────────────────────────────┘
                             │
               ┌─────────────┴─────────────┐
               ▼                           ▼
-        [APROVADO]                   [ITERAR]
+        [APPROVED]                   [ITERATE]
               │                           │
-              ▼                    (volta FASE 1)
+              ▼                    (back to PHASE 1)
 ┌─────────────────────────────────────────────────────────┐
-│  FASE 3: IMPLEMENTAR (paralelo quando possível)         │
-│  Task(general-purpose) com prompts especializados       │
+│  PHASE 3: IMPLEMENT (parallel when possible)            │
+│  Task(general-purpose) with specialized prompts         │
 │  database → backend → frontend                          │
 └─────────────────────────────────────────────────────────┘
                             ▼
 ┌─────────────────────────────────────────────────────────┐
-│  FASE 4: REVIEW                                         │
+│  PHASE 4: REVIEW                                        │
 │  Task(general-purpose) + prompts/review.md              │
 └───────────────────────────┬─────────────────────────────┘
                             │
               ┌─────────────┴─────────────┐
               ▼                           ▼
-        [APROVADO]                   [VOLTAR]
+        [APPROVED]                   [RETURN]
               │                           │
-              ▼                    (volta FASE 3)
+              ▼                    (back to PHASE 3)
 ┌─────────────────────────────────────────────────────────┐
-│  FASE 5: CONCLUIR                                       │
-│  Atualiza registry, move spec para completed/           │
+│  PHASE 5: COMPLETE                                      │
+│  Updates registry, moves spec to completed/             │
 └─────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 6. Árvore de Decisão
+## 6. Decision Tree
 
 ```
-Solicitação
+Request
     ↓
-É bug? ──SIM──→ /mtd-pipeline-bugfix
+Is it a bug? ──YES──→ /mtd-pipeline-bugfix
     │
-   NÃO
+   NO
     ↓
-É nova feature? ──SIM──→ /mtd-pipeline-feature
+Is it a new feature? ──YES──→ /mtd-pipeline-feature
     │
-   NÃO
+   NO
     ↓
-Task(general-purpose) com prompt específico
+Task(general-purpose) with specific prompt
 ```
 
 ---
 
-## 7. Enforcement Completo (L0-L9)
+## 7. Complete Enforcement (L0-L9)
 
-| Nível | Regra | Descrição |
-|-------|-------|-----------|
-| L0 | Delegação | Claude principal NÃO implementa código |
-| L1 | grepai | Preferir grepai para busca semântica |
-| L2 | Pipeline | Pipeline obrigatório para features/bugs |
-| L3 | Padrões | Nomenclatura, soft delete, multi-tenancy |
-| L4 | Type-check | Frontend deve passar type-check |
-| L5 | Build | Backend deve compilar |
-| L6 | Registry | Sync registry após criar entidades |
-| L7 | DbContext | Service NÃO acessa DbContext direto |
-| L8 | Repository | Service só injeta PRÓPRIO Repository |
-| L9 | ISP | Preferir interfaces segregadas (SOLID) |
+| Level | Rule | Description |
+|-------|------|-------------|
+| L0 | Universal Delegation | ALL code activity MUST be delegated via Task (separate context) |
+| L1 | grepai | Prefer grepai for semantic search |
+| L2 | Pipeline | Pipeline required for features/bugs |
+| L3 | Patterns | Naming, soft delete, multi-tenancy |
+| L4 | Type-check | Frontend must pass type-check |
+| L5 | Build | Backend must compile |
+| L6 | Registry | Sync registry after creating entities |
+| L7 | DbContext | Service does NOT access DbContext directly |
+| L8 | Repository | Service only injects OWN Repository |
+| L9 | ISP | Prefer segregated interfaces (SOLID) |
 
-Ver detalhes em [core/enforcement.md](./core/enforcement.md).
+See details in [core/enforcement.md](./core/enforcement.md).
 
 ---
 
-## 8. Regras de Busca
+## 8. Search Rules
 
-**SEMPRE use grepai** para busca semântica:
+**ALWAYS use grepai** for semantic search:
 ```javascript
 grepai_search({ query: "..." })
 grepai_trace_callers({ symbol: "..." })
 grepai_trace_callees({ symbol: "..." })
 ```
 
-**SEMPRE use memory MCP** para contexto de pipeline:
+**ALWAYS use memory MCP** for pipeline context:
 ```javascript
 mcp__memory__search_nodes({ query: "pipeline phase" })
-mcp__memory__open_nodes({ names: ["Pipeline:nome"] })
+mcp__memory__open_nodes({ names: ["Pipeline:name"] })
 ```
 
-**⛔ PROIBIDO** usar Grep/Glob - hook `enforce-grepai.js` bloqueia automaticamente.
+**FORBIDDEN** to use Grep/Glob - hook `enforce-grepai.js` blocks automatically.
 
-### Por que grepai?
+### Why grepai?
 
-| Ferramenta | Problema |
-|------------|----------|
-| Grep | Busca textual simples, muitos falsos positivos |
-| Glob | Só encontra por nome de arquivo |
-| grepai | Busca semântica, entende contexto e intenção |
+| Tool | Problem |
+|------|---------|
+| Grep | Simple text search, many false positives |
+| Glob | Only finds by file name |
+| grepai | Semantic search, understands context and intent |
 
 ---
 
-## 9. Exemplo de Uso Correto
+## 9. Correct Usage Example
 
-### Chamar Orchestrator para Feature
+### Calling Orchestrator for a Feature
 
 ```javascript
 Task({
@@ -295,36 +306,36 @@ Task({
   model: "opus",
   description: "Orchestrate Invoice feature",
   prompt: `
-# Você é o ORCHESTRATOR
+# You are the ORCHESTRATOR
 
-## Identidade
-Você coordena o pipeline de desenvolvimento. NÃO implementa código - delega.
+## Identity
+You coordinate the development pipeline. You do NOT implement code - you delegate.
 
-## Pipeline Obrigatório
-1. EXPLORAR: Use Task(subagent_type="Explore") para analisar
-2. SPEC: Crie spec em spec/active/{nome}/spec.md
-3. IMPLEMENTAR: Use Task(general-purpose) para cada camada
-4. REVIEW: Use Task(general-purpose) com prompt de review
-5. CONCLUIR: Atualize registry
+## Required Pipeline
+1. EXPLORE: Use Task(subagent_type="Explore") to analyze
+2. SPEC: Create spec in spec/active/{name}/spec.md
+3. IMPLEMENT: Use Task(general-purpose) for each layer
+4. REVIEW: Use Task(general-purpose) with review prompt
+5. COMPLETE: Update registry
 
-## TAREFA
-Implementar feature: Invoice
+## TASK
+Implement feature: Invoice
   `
 })
 ```
 
-### Chamar Explorer (nativo)
+### Calling Explorer (native)
 
 ```javascript
 Task({
   subagent_type: "Explore",
   model: "haiku",
   description: "Explore Invoice requirements",
-  prompt: "Analisar requisitos para implementar entidade Invoice. Mapear arquivos existentes similares."
+  prompt: "Analyze requirements to implement Invoice entity. Map existing similar files."
 })
 ```
 
-### Chamar Backend Specialist
+### Calling Backend Specialist
 
 ```javascript
 Task({
@@ -332,19 +343,19 @@ Task({
   model: "opus",
   description: "Backend Invoice implementation",
   prompt: `
-# Você é o BACKEND SPECIALIST
+# You are the BACKEND SPECIALIST
 
-## Responsabilidades
-- Implementar endpoints/APIs
-- Criar serviços e lógica de negócio
-- Seguir padrões do projeto
+## Responsibilities
+- Implement endpoints/APIs
+- Create services and business logic
+- Follow project patterns
 
-## Regras
-- L7: Service NÃO acessa DbContext direto
-- L8: Service só injeta PRÓPRIO Repository
+## Rules
+- L7: Service does NOT access DbContext directly
+- L8: Service only injects OWN Repository
 
-## TAREFA
-Implementar módulo backend para Invoice conforme spec.
+## TASK
+Implement backend module for Invoice according to spec.
   `
 })
 ```
@@ -353,110 +364,110 @@ Implementar módulo backend para Invoice conforme spec.
 
 ## 10. Project Context (v2.4)
 
-### Contexto Auto-Gerado pelo CLI
+### Auto-Generated Context by CLI
 
-O CLI gera automaticamente arquivos de contexto em `.claude/context/`:
-
-```
-.claude/context/
-├── README.md             # Documentação da pasta
-├── architecture.md       # AUTO: Tipo, stacks, layers
-├── patterns.md           # AUTO: Padrões detectados
-└── naming.md             # AUTO: Convenções de nomenclatura
-```
-
-### Arquivos do Usuário (Opcionais)
-
-Você pode adicionar arquivos customizados (flat, sem subpastas):
+The CLI automatically generates context files in `.claude/context/`:
 
 ```
 .claude/context/
-├── project-spec.md       # Especificação do projeto
-├── business-rules.md     # Regras de negócio
-├── tips.md               # Dicas para o Claude
-├── service-example.md    # Exemplo de service
-├── component-example.md  # Exemplo de component
-└── hook-example.md       # Exemplo de hook
+├── README.md             # Folder documentation
+├── architecture.md       # AUTO: Type, stacks, layers
+├── patterns.md           # AUTO: Detected patterns
+└── naming.md             # AUTO: Naming conventions
 ```
 
-### Regras
+### User Files (Optional)
 
-| Regra | Descrição |
-|-------|-----------|
-| Markdown only | Apenas arquivos `.md` são carregados |
-| Max 500 linhas | Arquivos maiores são truncados |
-| Max 20 arquivos | Limite total de arquivos |
-| Refresh 24h | Auto-refresh se contexto > 24h |
+You can add custom files (flat, no subfolders):
 
-### Entity Types no Memory MCP
+```
+.claude/context/
+├── project-spec.md       # Project specification
+├── business-rules.md     # Business rules
+├── tips.md               # Tips for Claude
+├── service-example.md    # Service example
+├── component-example.md  # Component example
+└── hook-example.md       # Hook example
+```
 
-| Entity | Descrição |
-|--------|-----------|
-| `ProjectContext:current` | Metadados do projeto |
-| `UserContext:{filename}` | Arquivos de context/ |
-| `EntityRegistry:current` | Cache do entity-registry.json |
-| `EnforcementRules:current` | Regras L0-L9 |
-| `CodePattern:{type}` | Padrões descobertos via grepai |
+### Rules
 
-### Usando Contexto (Agentes)
+| Rule | Description |
+|------|-------------|
+| Markdown only | Only `.md` files are loaded |
+| Max 500 lines | Larger files are truncated |
+| Max 20 files | Total file limit |
+| Refresh 24h | Auto-refresh if context > 24h |
 
-Todos os prompts de agentes agora buscam contexto automaticamente:
+### Entity Types in Memory MCP
+
+| Entity | Description |
+|--------|-------------|
+| `ProjectContext:current` | Project metadata |
+| `UserContext:{filename}` | Files from context/ |
+| `EntityRegistry:current` | Cache of entity-registry.json |
+| `EnforcementRules:current` | Rules L0-L9 |
+| `CodePattern:{type}` | Patterns discovered via grepai |
+
+### Using Context (Agents)
+
+All agent prompts now automatically search for context:
 
 ```javascript
-// Buscar contexto antes de implementar
+// Search context before implementing
 const context = await mcp__memory__search_nodes({
   query: "UserContext architecture CodePattern service"
 });
 
-// Abrir entidades específicas
+// Open specific entities
 if (context.entities?.length) {
   const details = await mcp__memory__open_nodes({
     names: context.entities.map(e => e.name)
   });
-  // Usar exemplos e padrões encontrados
+  // Use found examples and patterns
 }
 ```
 
-### Benefícios
+### Benefits
 
-| Métrica | Impacto |
-|---------|---------|
-| Tokens por feature | 📉 ~60% menos (menos exploração) |
-| Retrabalho | 📉 Reduz (segue padrões) |
-| Qualidade | 📈 Melhora (exemplos reais) |
-| Consistência | 📈 Código uniforme |
+| Metric | Impact |
+|--------|--------|
+| Tokens per feature | ~60% less (less exploration) |
+| Rework | Reduces (follows patterns) |
+| Quality | Improves (real examples) |
+| Consistency | Uniform code |
 
 ---
 
-## 11. Memory MCP - Persistência de Pipeline
+## 11. Memory MCP - Pipeline Persistence
 
-O estado do pipeline é persistido via **memory MCP**, não via arquivos.
+Pipeline state is persisted via **memory MCP**, not via files.
 
-### Estrutura no Knowledge Graph
+### Structure in Knowledge Graph
 
 ```
-Pipeline:{nome}
+Pipeline:{name}
 ├── type: "pipeline"
 ├── observations:
 │   ├── "phase: explore|implement|completed"
 │   ├── "started: {ISO_DATE}"
-│   ├── "objetivo: {descrição}"
-│   └── "arquivos: {lista}"
+│   ├── "objective: {description}"
+│   └── "files: {list}"
 └── relations:
-    └── has_spec → Spec:{nome}
+    └── has_spec → Spec:{name}
 
-Spec:{nome}
+Spec:{name}
 ├── type: "spec"
 └── observations:
-    ├── "## Objetivo\n..."
-    ├── "## Arquivos\n..."
-    └── "## Checklist\n□ Backend □ Frontend"
+    ├── "## Objective\n..."
+    ├── "## Files\n..."
+    └── "## Checklist\n☐ Backend ☐ Frontend"
 ```
 
-### Operações Comuns
+### Common Operations
 
 ```javascript
-// Criar pipeline (/mtd-pipeline-feature)
+// Create pipeline (/mtd-pipeline-feature)
 mcp__memory__create_entities({
   entities: [{
     name: "Pipeline:add-email",
@@ -464,12 +475,12 @@ mcp__memory__create_entities({
     observations: [
       "phase: explore",
       "started: 2026-02-05",
-      "objetivo: Adicionar email em Customer"
+      "objective: Add email to Customer"
     ]
   }]
 })
 
-// Aprovar (/mtd-pipeline-approve)
+// Approve (/mtd-pipeline-approve)
 mcp__memory__add_observations({
   observations: [{
     entityName: "Pipeline:add-email",
@@ -477,10 +488,10 @@ mcp__memory__add_observations({
   }]
 })
 
-// Buscar ativo
+// Search for active
 mcp__memory__search_nodes({ query: "pipeline phase explore implement" })
 
-// Finalizar (/mtd-pipeline-complete)
+// Finalize (/mtd-pipeline-complete)
 mcp__memory__delete_entities({
   entityNames: ["Pipeline:add-email", "Spec:add-email"]
 })
@@ -488,19 +499,19 @@ mcp__memory__delete_entities({
 
 ---
 
-## 12. Hooks de Enforcement
+## 12. Enforcement Hooks
 
 ### enforce-pipeline.js (L0+L2)
 
-- **Trigger:** Edit/Write em arquivos de código
-- **Ação:** Pede confirmação, Claude verifica memory MCP
-- **Exceções:** .md, .json, .yaml, .claude/, mustard/, spec/
+- **Trigger:** Edit/Write on code files
+- **Action:** Asks for confirmation, Claude checks memory MCP
+- **Exceptions:** .md, .json, .yaml, .claude/, mustard/, spec/
 
 ### enforce-grepai.js (L1)
 
 - **Trigger:** Grep/Glob
-- **Ação:** BLOQUEIA com mensagem para usar grepai
-- **Sem exceções**
+- **Action:** BLOCKS with message to use grepai
+- **No exceptions**
 
 ---
 
@@ -515,12 +526,12 @@ mcp__memory__delete_entities({
 
 ### Prompts
 
-- [Índice de Prompts](./prompts/_index.md)
+- [Prompts Index](./prompts/_index.md)
 - [Backend](./prompts/backend.md)
 - [Frontend](./prompts/frontend.md)
 - [Database](./prompts/database.md)
 
-### Comandos - Pipeline
+### Commands - Pipeline
 
 - [feature](./commands/mtd-pipeline-feature.md)
 - [bugfix](./commands/mtd-pipeline-bugfix.md)
@@ -528,7 +539,7 @@ mcp__memory__delete_entities({
 - [complete](./commands/mtd-pipeline-complete.md)
 - [resume](./commands/mtd-pipeline-resume.md)
 
-### Comandos - Outros
+### Commands - Other
 
 - [sync-registry](./commands/mtd-sync-registry.md)
 - [install-deps](./commands/mtd-sync-dependencies.md)

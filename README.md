@@ -150,6 +150,15 @@ Mustard "agents" are prompts loaded into `Task(general-purpose)`:
 | `/mtd-pipeline-complete` | Finalize |
 | `/mtd-pipeline-resume` | Resume active pipeline |
 
+### Task Commands (L0 Universal Delegation)
+
+| Command | Description |
+|---------|-------------|
+| `/mtd-task-analyze` | 🔍 Code analysis via Task(Explore) |
+| `/mtd-task-review` | 🔎 Code review via Task(general-purpose) |
+| `/mtd-task-refactor` | 📋⚙️ Refactoring via Task(Plan) → Task(general-purpose) |
+| `/mtd-task-docs` | 📊 Documentation via Task(general-purpose) |
+
 ### Other Commands
 
 | Command | Description |
@@ -165,7 +174,12 @@ Mustard "agents" are prompts loaded into `Task(general-purpose)`:
 | Hook | Trigger | Action |
 |------|---------|--------|
 | `enforce-grepai.js` | Grep, Glob | Blocks (suggests grepai) |
-| `enforce-pipeline.js` | Edit, Write | Asks confirmation |
+| `enforce-pipeline.js` | Edit, Write | **Hybrid mode**: Blocks source code, allows configs |
+
+### L0 Universal Delegation
+
+All code activities MUST be delegated via Task tool (separate context window).
+The parent context only coordinates and presents results.
 
 ## Supported Stacks
 

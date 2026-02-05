@@ -93,6 +93,17 @@ Hooks:        use + camelCase         → useContracts.ts
 | `/sync-registry` | Update Entity Registry |
 | `/install-deps` | Install dependencies |
 
+### Task Commands (L0 Universal Delegation)
+
+| Command | Emoji | Description |
+|---------|-------|-------------|
+| `/mtd-task-analyze <scope>` | 🔍 | Code analysis via Task(Explore) |
+| `/mtd-task-review <scope>` | 🔎 | Code review via Task(general-purpose) |
+| `/mtd-task-refactor <scope>` | 📋⚙️ | Refactoring via Task(Plan) → Task(general-purpose) |
+| `/mtd-task-docs <scope>` | 📊 | Documentation via Task(general-purpose) |
+
+> **CRITICAL:** These commands ensure ALL code activities are delegated to a separate context (Task), keeping the parent context clean.
+
 ---
 
 ## 5. Single Pipeline
@@ -174,7 +185,7 @@ grepai_trace_callees({ symbol: "ValidatePayment" })
 
 | Level | Rule | Description |
 |-------|------|-------------|
-| L0 | Delegation | Main Claude does NOT implement code |
+| L0 | Universal Delegation | ALL code activities MUST be delegated via Task (separate context) |
 | L1 | grepai | Prefer grepai for semantic search |
 | L2 | Pipeline | Pipeline required for features/bugs |
 | L3 | Patterns | Follow naming conventions |

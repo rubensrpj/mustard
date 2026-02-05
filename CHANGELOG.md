@@ -1,5 +1,27 @@
 # Changelog
 
+## [3.2.1] - 2026-02-05
+
+### Added
+
+- **Task Commands** for L0 Universal Delegation:
+  - `/mtd-task-analyze <scope>` - Code analysis via Task(Explore)
+  - `/mtd-task-review <scope>` - Code review via Task(general-purpose)
+  - `/mtd-task-refactor <scope>` - Refactoring via Task(Plan) → Task(general-purpose)
+  - `/mtd-task-docs <scope>` - Documentation via Task(general-purpose)
+- New command files in `claude/commands/mustard/`
+- Command generator in `cli/src/generators/commands.ts`
+
+### Changed
+
+- Translated `claude/CLAUDE.md` template to English for consistency
+- Updated `.claude/CLAUDE.md` with Task Commands section
+- Updated `.claude/core/enforcement.md` with L0 delegation rules
+- Updated `.claude/hooks/enforce-pipeline.js` for new commands
+- Updated `.claude/prompts/orchestrator.md` with delegation instructions
+- Updated `CLAUDE.md` (root) with L0 rule and delegation map
+- Updated `README.md` with new commands documentation
+
 ## [3.2.0] - 2026-02-05
 
 ### Added

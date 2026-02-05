@@ -10,6 +10,27 @@ Mustard is a CLI that generates `.claude/` folders for Claude Code projects. It 
 - "Agents" are prompts loaded into `Task(general-purpose)` - custom subagent types don't work
 - Only 4 native `subagent_type` values: `Explore`, `Plan`, `general-purpose`, `Bash`
 - Enforcement via JavaScript hooks
+- **Universal Delegation**: TODA atividade deve ser delegada via Task (contexto separado)
+
+## Regra L0 - Delegação Universal
+
+**CRÍTICO:** O contexto principal (mãe) serve APENAS para:
+- Receber requisições do usuário
+- Coordenar delegações via Task tool
+- Apresentar resultados finais
+
+**TODA** atividade que envolva código DEVE ser delegada:
+
+| Atividade | Task Type | Emoji |
+|-----------|-----------|-------|
+| Exploração de código | `Task(Explore)` | 🔍 |
+| Planejamento | `Task(Plan)` | 📋 |
+| Backend/APIs | `Task(general-purpose)` | ⚙️ |
+| Frontend/UI | `Task(general-purpose)` | 🎨 |
+| Database | `Task(general-purpose)` | 🗄️ |
+| Bugfix | `Task(general-purpose)` | 🐛 |
+| Code Review | `Task(general-purpose)` | 🔎 |
+| Documentação | `Task(general-purpose)` | 📊 |
 
 ## Build & Run
 
