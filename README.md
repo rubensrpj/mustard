@@ -78,6 +78,29 @@ Options:
 | `core/*.md` | `context/*` |
 | `scripts/*.js` | `docs/*` |
 
+### `mustard sync`
+
+Syncs prompts and context with current codebase state. Uses markers to preserve user customizations.
+
+```bash
+mustard sync [options]
+
+Options:
+  --prompts      Only sync prompts
+  --context      Only sync context files
+  --registry     Only sync entity registry
+  --no-ollama    Skip LLM analysis
+  --no-grepai    Skip semantic analysis
+  -f, --force    Skip confirmation
+  -v, --verbose  Detailed output
+```
+
+| Synced | Preserved |
+|--------|-----------|
+| `prompts/*.md` (auto section) | User content in prompts |
+| `context/*.md` | `CLAUDE.md` |
+| `entity-registry.json` | `commands/*` |
+
 ## Structure
 
 ```
@@ -85,7 +108,7 @@ mustard/
 ├── cli/
 │   ├── bin/mustard.js
 │   └── src/
-│       ├── commands/       # init, update
+│       ├── commands/       # init, update, sync
 │       ├── scanners/       # stack, structure, dependencies
 │       ├── analyzers/      # semantic, llm
 │       ├── generators/     # claude-md, prompts, commands, hooks

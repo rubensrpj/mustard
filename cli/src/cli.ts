@@ -1,6 +1,7 @@
 import { Command } from 'commander';
 import { initCommand } from './commands/init.js';
 import { updateCommand } from './commands/update.js';
+import { syncCommand } from './commands/sync.js';
 
 export function run(): void {
   const program = new Command();
@@ -29,6 +30,18 @@ export function run(): void {
     .option('-v, --verbose', 'Show detailed output')
     .option('--include-claude-md', 'Also update CLAUDE.md (normally preserved)')
     .action(updateCommand);
+
+  program
+    .command('sync')
+    .description('Sync prompts and context with current codebase state')
+    .option('--prompts', 'Only sync prompts')
+    .option('--context', 'Only sync context files')
+    .option('--registry', 'Only sync entity registry')
+    .option('--no-ollama', 'Skip Ollama analysis')
+    .option('--no-grepai', 'Skip grepai semantic search')
+    .option('-v, --verbose', 'Show detailed output')
+    .option('-f, --force', 'Skip confirmation')
+    .action(syncCommand);
 
   program.parse();
 }

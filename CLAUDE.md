@@ -23,6 +23,9 @@ node cli/bin/mustard.js init
 
 # Update existing project
 node cli/bin/mustard.js update
+
+# Sync prompts/context with current code
+node cli/bin/mustard.js sync
 ```
 
 ## Structure
@@ -32,7 +35,7 @@ mustard/
 ├── cli/
 │   ├── bin/mustard.js
 │   └── src/
-│       ├── commands/     # init.ts, update.ts
+│       ├── commands/     # init.ts, update.ts, sync.ts
 │       ├── scanners/     # stack.ts, structure.ts, dependencies.ts
 │       ├── analyzers/    # semantic.ts, llm.ts
 │       ├── generators/   # claude-md, prompts, commands, hooks, registry
@@ -60,6 +63,12 @@ mustard update
     → backup existing .claude/
     → regenerate core files only
     → preserve: CLAUDE.md, prompts/, context/, docs/
+
+mustard sync
+    → scanProject() - re-detect stacks
+    → semanticAnalyzer() - discover entities
+    → merge prompts (auto section only)
+    → regenerate context/, entity-registry.json
 ```
 
 ## Prompts (Agents)

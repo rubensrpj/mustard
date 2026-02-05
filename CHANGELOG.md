@@ -1,5 +1,18 @@
 # Changelog
 
+## [3.2.0] - 2026-02-05
+
+### Added
+
+- `mustard sync` command - syncs prompts and context with current codebase state
+- Auto-section markers (`<!-- MUSTARD:AUTO-START -->`) for preserving user customizations in prompts
+- Prompt merge functionality - updates project context without losing user edits
+
+### Changed
+
+- Prompts now include auto-generated project context section
+- Entity registry updated during sync with newly discovered entities
+
 ## [3.1.0] - 2026-02-05
 
 ### Added

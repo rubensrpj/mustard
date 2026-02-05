@@ -1,5 +1,5 @@
 import * as llm from '../analyzers/llm.js';
-import type { ProjectInfo, Analysis, GeneratedPrompts, PromptGeneratorOptions } from '../types.js';
+import type { ProjectInfo, Analysis, GeneratedPrompts, PromptGeneratorOptions, DiscoveredPatterns } from '../types.js';
 
 /**
  * Generate prompt files
@@ -538,4 +538,67 @@ function generateNamingTemplate(projectInfo: ProjectInfo): string {
 - [frontend.md](./frontend.md) - Frontend patterns
 - [database.md](./database.md) - Database patterns
 `;
+}
+
+// ============== Sync/Merge Functions ==============
+
+const AUTO_START = '<!-- MUSTARD:AUTO-START -->';
+const AUTO_END = '<!-- MUSTARD:AUTO-END -->';
+
+/**
+ * Generate auto-populated context section for a prompt
+ */
+export function generateAutoSection(
+  promptType: string,
+  projectInfo: ProjectInfo,
+  analysis: Analysis,
+  patterns: DiscoveredPatterns
+): string {
+  const stacks = projectInfo.stacks.map(s => `${s.name} ${s.version || ''}`).join(', ');
+  const entities = patterns.entities?.map(e => e.name).slice(0, 10).join(', ') || 'None detected';
+  const architecture = analysis.architecture?.type || projectInfo.structure?.architecture?.type || 'unknown';
+  const detectedPatterns = analysis.patterns?.length > 0 ? analysis.patterns.join(', ') : 'Standard';
+
+  return `${AUTO_START}
+## Project Context (Auto-Generated)
+
+- **Stacks:** ${stacks}
+- **Architecture:** ${architecture}
+- **Entities:** ${entities}${patterns.entities && patterns.entities.length > 10 ? ` (+${patterns.entities.length - 10} more)` : ''}
+- **Patterns:** ${detectedPatterns}
+
+> This section is auto-updated by \`mustard sync\`. Edit content below the marker.
+${AUTO_END}`;
+}
+
+/**
+ * Merge auto-generated content with existing prompt, preserving user content
+ */
+export function mergePromptContext(existingContent: string, newAutoSection: string): string {
+  const hasAutoSection = existingContent.includes(AUTO_START) && existingContent.includes(AUTO_END);
+
+  if (hasAutoSection) {
+    // Replace existing auto section
+    const regex = new RegExp(
+      `${escapeRegex(AUTO_START)}[\\s\\S]*?${escapeRegex(AUTO_END)}`,
+      'g'
+    );
+    return existingContent.replace(regex, newAutoSection);
+  } else {
+    // Insert auto section after the title (first # line)
+    const lines = existingContent.split('\n');
+    const titleIndex = lines.findIndex(l => l.startsWith('# '));
+
+    if (titleIndex >= 0) {
+      lines.splice(titleIndex + 1, 0, '', newAutoSection, '');
+      return lines.join('\n');
+    } else {
+      // No title found, prepend
+      return newAutoSection + '\n\n' + existingContent;
+    }
+  }
+}
+
+function escapeRegex(str: string): string {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }

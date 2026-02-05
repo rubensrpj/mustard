@@ -205,6 +205,16 @@ export interface InitOptions {
   verbose?: boolean;
 }
 
+export interface SyncOptions {
+  prompts?: boolean;
+  context?: boolean;
+  registry?: boolean;
+  ollama?: boolean;
+  grepai?: boolean;
+  verbose?: boolean;
+  force?: boolean;
+}
+
 export interface ScanOptions {
   verbose?: boolean;
 }

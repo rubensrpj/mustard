@@ -147,6 +147,23 @@ Applied automatically:
 2. **Review the spec** - Read before `/mtd-pipeline-approve`
 3. **Use resume** - `/mtd-pipeline-resume` continues where you left off
 4. **Use update** - `mustard update` gets new features without losing customizations
+5. **Use sync** - `mustard sync` updates prompts with current project context
+
+## Syncing with Codebase
+
+When your project evolves (new entities, changed architecture):
+
+```bash
+mustard sync
+```
+
+This updates:
+
+- Prompts (auto-generated context section only)
+- Context files (`context/*.md`)
+- Entity registry
+
+Your customizations in prompts are preserved - only the `<!-- MUSTARD:AUTO -->` section is updated.
 
 ## Troubleshooting
 
@@ -156,3 +173,4 @@ Applied automatically:
 | "Grep/Glob blocked" | Normal - Claude uses grepai |
 | Build error | Claude shows errors, fix and continue |
 | Lost customizations | Check `.claude.backup.{timestamp}` |
+| Outdated prompts | Run `mustard sync` to refresh context |
