@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm run build:*)",
+      "Bash(node bin/mustard.js:*)",
+      "Bash(npm test:*)"
+    ]
+  }
+}

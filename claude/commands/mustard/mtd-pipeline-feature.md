@@ -1,0 +1,277 @@
+# /mtd-pipeline-feature - Feature Pipeline
+
+> Single entry point for implementing new features.
+> **v2.3** - Persistence via memory MCP, auto context-loading.
+
+## Usage
+
+```
+/mtd-pipeline-feature <name>
+/mtd-pipeline-feature Invoice
+/mtd-pipeline-feature "Stripe Integration"
+```
+
+## What It Does
+
+1. **Loads context** (if missing or > 24h old) via memory MCP
+2. **Creates pipeline** in memory MCP
+3. **Explores** requirements via grepai + Task(Explore)
+4. **Creates spec** in memory MCP
+5. **Awaits approval** (/mtd-pipeline-approve)
+6. **Implements** via Task(general-purpose)
+7. **Validates** via /mtd-validate-build
+8. **Completes** via /mtd-pipeline-complete
+
+## Pipeline (Native Types)
+
+```
+/mtd-pipeline-feature <name>
+     │
+     ▼
+┌────────────────────────────────┐
+│  Task(general-purpose)         │
+│  + orchestrator.md prompt      │
+│  model: opus                   │
+└──────────────┬─────────────────┘
+               │
+     ┌─────────┼─────────┐
+     ▼         ▼         ▼
+Task(Explore) → SPEC → APPROVE
+               │
+     ┌─────────┼─────────┐
+     ▼         ▼         ▼
+ database   backend   frontend
+ (general)  (general) (general)
+     │         │         │
+     └─────────┴─────────┘
+               │
+               ▼
+         review (general)
+               │
+               ▼
+          COMPLETED
+```
+
+## Implementation
+
+### Phase 0: Load Context (Auto)
+
+```javascript
+// BEFORE creating pipeline, check context
+const context = await mcp__memory__search_nodes({
+  query: "ProjectContext loaded"
+});
+
+// Check if context exists and is fresh (< 24h)
+const isStale = !context.entities?.length || context.entities[0]?.observations?.some(obs => {
+  if (obs.startsWith('loaded:')) {
+    const loadedDate = new Date(obs.replace('loaded:', '').trim());
+    const now = new Date();
+    const hoursDiff = (now - loadedDate) / (1000 * 60 * 60);
+    return hoursDiff > 24;
+  }
+  return false;
+});
+
+if (isStale) {
+  // Auto-load context (see /mtd-sync-context for details)
+  // 1. Glob .claude/context/*.md
+  // 2. Read each file, create UserContext:* entities
+  // 3. Read CLAUDE.md, create ProjectContext entity
+  // 4. Read entity-registry.json, create EntityRegistry entity
+  // 5. Use grepai to discover code patterns
+  console.log("📚 Loading project context...");
+}
+```
+
+### Phase 1: Create Pipeline in Memory MCP
+
+```javascript
+// 1. Create pipeline entity
+mcp__memory__create_entities({
+  entities: [{
+    name: `Pipeline:${name}`,
+    entityType: "pipeline",
+    observations: [
+      "phase: explore",
+      `started: ${new Date().toISOString()}`,
+      `objective: ${userDescription}`
+    ]
+  }]
+})
+
+// 2. Explore with grepai (now with context loaded!)
+grepai_search({ query: `${name} entity implementation` })
+grepai_trace_callers({ symbol: `${relatedEntity}` })
+
+// 3. Search for related context
+const userContext = await mcp__memory__search_nodes({
+  query: `UserContext ${name}`
+});
+// Context instantly available for analysis
+```
+
+### Phase 2: Create Spec
+
+```javascript
+// 3. Create spec as entity
+mcp__memory__create_entities({
+  entities: [{
+    name: `Spec:${name}`,
+    entityType: "spec",
+    observations: [
+      "## Objective\n" + objective,
+      "## Files\n" + files.join('\n'),
+      "## Approach\n" + steps.join('\n'),
+      "## Checklist\n□ Database\n□ Backend\n□ Frontend"
+    ]
+  }]
+})
+
+// 4. Create relation
+mcp__memory__create_relations({
+  relations: [{
+    from: `Pipeline:${name}`,
+    to: `Spec:${name}`,
+    relationType: "has_spec"
+  }]
+})
+```
+
+### Phase 3: Orchestrate Implementation
+
+```javascript
+// After /mtd-pipeline-approve, execute via Task
+Task({
+  subagent_type: "general-purpose",
+  model: "opus",
+  description: `Feature: ${name}`,
+  prompt: `
+# You are the ORCHESTRATOR
+
+## Active Pipeline
+Name: ${name}
+Phase: implement (approved)
+Objective: ${objective}
+
+## Delegation Rules
+- Database: Task(general-purpose, model: opus) + database.md prompt
+- Backend: Task(general-purpose, model: opus) + backend.md prompt
+- Frontend: Task(general-purpose, model: opus) + frontend.md prompt
+
+## ENFORCEMENT
+- L0: You do NOT implement code directly - delegate
+- L2: Follow approved spec
+- L3: Ensure patterns (naming, soft delete, tenant_id)
+
+## TASK
+Implement according to approved spec.
+  `
+})
+```
+
+## Arguments
+
+| Argument | Description | Example |
+|----------|-------------|---------|
+| `<name>` | Feature name | `Invoice`, `"User Auth"` |
+
+## Examples
+
+```bash
+# New entity
+/mtd-pipeline-feature Invoice
+
+# Feature with description
+/mtd-pipeline-feature "Add email field to Person"
+
+# Integration
+/mtd-pipeline-feature "Payment gateway integration"
+```
+
+## Output
+
+### During Execution
+
+```
+Orchestrator: Starting pipeline for Invoice
+Task(Explore): Analyzing requirements...
+Spec created: spec/active/2026-02-04-invoice/spec.md
+
+Awaiting approval...
+```
+
+### After Approval
+
+```
+Task(general-purpose): Database - Creating schema...
+Task(general-purpose): Backend - Implementing module...
+Task(general-purpose): Frontend - Creating CRUD...
+Task(general-purpose): Review - Reviewing...
+
+✅ Feature Invoice implemented successfully!
+
+Files created:
+- src/schema/invoice.ts
+- Modules/Invoice/...
+- src/mtd-pipeline-features/invoice/...
+```
+
+## Generated Spec
+
+```markdown
+# Spec: Invoice
+
+## Date: 2026-02-04
+## Status: active
+
+## Summary
+Create Invoice entity with items...
+
+## Files
+
+### Database
+- [ ] src/schema/invoice.ts
+
+### Backend
+- [ ] Modules/Invoice/...
+
+### Frontend
+- [ ] src/mtd-pipeline-features/invoice/...
+
+## Tasks
+1. [ ] Create schema
+2. [ ] Generate migration
+3. [ ] Create endpoints
+...
+```
+
+## Related Commands
+
+| Phase | Command | Description |
+|-------|---------|-------------|
+| Start | `/mtd-pipeline-feature` | Creates pipeline, explores, creates spec |
+| Approval | `/mtd-pipeline-approve` | Enables implement phase |
+| Validation | `/mtd-validate-build` | Build + type-check |
+| End | `/mtd-pipeline-complete` | Finalizes and cleans pipeline |
+| Resume | `/mtd-pipeline-resume` | Resumes existing pipeline |
+
+## Notes
+
+- **Auto-load context** at start (if missing or > 24h old)
+- **Always** creates spec before implementing
+- **Always** awaits approval (/mtd-pipeline-approve)
+- Pipeline persisted via **memory MCP** (not files)
+- Only **one active pipeline** at a time
+- **Uses only native types**: Explore, general-purpose
+- **Uses grepai** for search (Grep/Glob blocked)
+- Loaded context available via `mcp__memory__search_nodes`
+
+## See Also
+
+- [/mtd-pipeline-approve](./mtd-pipeline-approve.md) - Approve spec
+- [/mtd-pipeline-complete](./mtd-pipeline-complete.md) - Finalize pipeline
+- [/mtd-pipeline-resume](./mtd-pipeline-resume.md) - Resume pipeline
+- [/mtd-pipeline-bugfix](./mtd-pipeline-bugfix.md) - Pipeline for bugs
+- [/mtd-sync-context](./mtd-sync-context.md) - Manually load context
+- [context/README.md](../context/README.md) - How to create context files

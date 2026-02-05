@@ -1,0 +1,30 @@
+# Dependencies
+node_modules/
+
+# Build output
+cli/dist/
+
+# OS files
+.DS_Store
+Thumbs.db
+nul
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Environment
+.env
+.env.*
+
+# Logs
+*.log
+npm-debug.log*
+
+# Coverage
+coverage/
+
+# pnpm
+.pnpm-store/

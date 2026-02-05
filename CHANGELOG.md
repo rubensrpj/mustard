@@ -1,0 +1,72 @@
+# Changelog
+
+## [3.1.0] - 2026-02-05
+
+### Added
+
+- `mustard update` command - updates core files while preserving customizations
+- Context auto-generation (`context/architecture.md`, `context/patterns.md`, `context/examples/`)
+- Memory MCP search in agent prompts
+
+### Changed
+
+- All prompts now search context before implementing
+- CLI passes code samples to generators
+
+## [3.0.0] - 2026-02-05
+
+### Added
+
+- **Mustard CLI** - framework-agnostic project setup
+- Stack detection (.NET, React, Next.js, Python, Java, Go, Rust, ORMs)
+- Monorepo support
+- Semantic analysis via grepai
+- LLM generation via Ollama
+- Status line script (`scripts/statusline.js`)
+
+### Options
+
+- `--force` - overwrite existing .claude/
+- `--yes` - skip confirmations
+- `--no-ollama` - use templates
+- `--no-grepai` - skip semantic analysis
+
+## [2.2.0] - 2026-02-05
+
+### Added
+
+- Pipeline via Memory MCP (entities: `Pipeline:{name}`, `Spec:{name}`)
+- Enforcement hooks (`enforce-pipeline.js`, `enforce-grepai.js`)
+- Commands: `/mtd-pipeline-approve`, `/mtd-pipeline-complete`, `/mtd-pipeline-resume`
+- Auto-detection of change intent
+
+## [2.1.0] - 2026-02-05
+
+### Added
+
+- SOLID patterns documentation (`core/solid-patterns.md`)
+- Rule L9 (Interface Segregation)
+- Entity Registry v2.1 compact format
+- Commands: `/mtd-sync-registry`, `/mtd-sync-dependencies`, `/mtd-report-daily`, `/mtd-report-weekly`
+
+## [2.0.0] - 2026-01-15
+
+### Changed
+
+- Use only native `subagent_type` values (Explore, Plan, general-purpose, Bash)
+- Agents are now prompts loaded into `Task(general-purpose)`
+- Renamed `agents/` to `prompts/`
+
+### Added
+
+- Rules L6-L8 (DbContext, Repository, Registry)
+- Mandatory pipeline phases
+
+## [1.0.0] - 2025-12-01
+
+### Added
+
+- Initial framework
+- Pipeline for features/bugfixes
+- Rules L0-L5
+- Basic commands

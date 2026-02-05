@@ -1,0 +1,27 @@
+{
+  "name": "mustard",
+  "version": "1.0.0",
+  "description": "Framework de agentes e pipeline para Claude Code - portátil para qualquer projeto",
+  "author": "Rubens Pinheiro",
+  "license": "MIT",
+  "keywords": [
+    "claude",
+    "claude-code",
+    "agents",
+    "pipeline",
+    "ai",
+    "automation"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/rubensrpj/mustard"
+  },
+  "files": [
+    "claude/",
+    "templates/",
+    "README.md"
+  ],
+  "scripts": {
+    "postinstall": "echo 'Mustard installed. Copy claude/ to your project .claude/ folder.'"
+  }
+}
