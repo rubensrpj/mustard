@@ -12,7 +12,7 @@ node path/to/mustard/cli/bin/mustard.js init
 Or copy manually:
 
 ```bash
-cp -r mustard/claude/ .claude/
+cp -r mustard/cli/templates/ .claude/
 ```
 
 ## Pipeline Flow

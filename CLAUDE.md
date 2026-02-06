@@ -12,84 +12,83 @@ Mustard is a CLI that generates `.claude/` folders for Claude Code projects. It 
 - Enforcement via JavaScript hooks
 - **Universal Delegation**: TODA atividade deve ser delegada via Task (contexto separado)
 
-## Regra L0 - Delegação Universal
+## Regra L0 - Delegacao Universal
 
-**CRÍTICO:** O contexto principal (mãe) serve APENAS para:
-- Receber requisições do usuário
-- Coordenar delegações via Task tool
+**CRITICO:** O contexto principal (mae) serve APENAS para:
+- Receber requisicoes do usuario
+- Coordenar delegacoes via Task tool
 - Apresentar resultados finais
 
-**TODA** atividade que envolva código DEVE ser delegada:
+**TODA** atividade que envolva codigo DEVE ser delegada:
 
 | Atividade | Task Type | Emoji |
 |-----------|-----------|-------|
-| Exploração de código | `Task(Explore)` | 🔍 |
+| Exploracao de codigo | `Task(Explore)` | 🔍 |
 | Planejamento | `Task(Plan)` | 📋 |
 | Backend/APIs | `Task(general-purpose)` | ⚙️ |
 | Frontend/UI | `Task(general-purpose)` | 🎨 |
 | Database | `Task(general-purpose)` | 🗄️ |
 | Bugfix | `Task(general-purpose)` | 🐛 |
 | Code Review | `Task(general-purpose)` | 🔎 |
-| Documentação | `Task(general-purpose)` | 📊 |
+| Documentacao | `Task(general-purpose)` | 📊 |
 
 ## Build & Run
 
 ```bash
-cd cli && npm install
-cd cli && npm run build
-cd cli && npm test
+npm install
+npm run build
+npm test
 
 # Initialize a project
-node cli/bin/mustard.js init
+node bin/mustard.js init
 
 # Update existing project
-node cli/bin/mustard.js update
+node bin/mustard.js update
 
 # Sync prompts/context with current code
-node cli/bin/mustard.js sync
+node bin/mustard.js sync
 ```
 
 ## Structure
 
 ```
 mustard/
-├── cli/
-│   ├── bin/mustard.js
-│   └── src/
-│       ├── commands/     # init.ts, update.ts, sync.ts
-│       ├── scanners/     # stack.ts, structure.ts, dependencies.ts
-│       ├── analyzers/    # semantic.ts, llm.ts
-│       ├── generators/   # claude-md, prompts, commands, hooks, registry
-│       └── services/     # ollama.ts, grepai.ts
-│
-└── claude/               # Templates (copied to target .claude/)
+├── bin/mustard.js           # CLI entry point
+├── src/                     # TypeScript source
+│   ├── commands/            # init.ts, update.ts, sync.ts
+│   ├── scanners/            # stack.ts, structure.ts, dependencies.ts
+│   ├── analyzers/           # semantic.ts, llm.ts
+│   ├── generators/          # claude-md, prompts, commands, hooks, registry
+│   └── services/            # ollama.ts, grepai.ts
+├── dist/                    # Compiled JavaScript
+└── templates/               # Templates (copied to target .claude/)
     ├── CLAUDE.md
-    ├── prompts/          # 8 agent prompts
-    ├── commands/mustard/ # Pipeline commands
-    ├── core/             # Enforcement rules
-    ├── hooks/            # enforce-grepai.js, enforce-pipeline.js
-    └── scripts/          # statusline.js
+    ├── prompts/             # 8 agent prompts
+    ├── commands/mustard/    # Pipeline commands
+    ├── core/                # Enforcement rules
+    ├── hooks/               # enforce-grepai.js, enforce-pipeline.js
+    └── scripts/             # statusline.js
 ```
 
 ## CLI Flow
 
 ```
 mustard init
-    → scanProject() - detect stacks
-    → semanticAnalyzer() - grepai patterns (optional)
-    → llmAnalyzer() - Ollama analysis (optional)
-    → generateAll() - create .claude/ files
+    -> scanProject() - detect stacks
+    -> semanticAnalyzer() - grepai patterns (optional)
+    -> llmAnalyzer() - Ollama analysis (optional)
+    -> generateAll() - create .claude/ files
 
 mustard update
-    → backup existing .claude/
-    → regenerate core files only
-    → preserve: CLAUDE.md, prompts/, context/, docs/
+    -> backup existing .claude/
+    -> regenerate core files only
+    -> preserve: CLAUDE.md, prompts/, context/, docs/
 
 mustard sync
-    → scanProject() - re-detect stacks
-    → semanticAnalyzer() - discover entities
-    → merge prompts (auto section only)
-    → regenerate context/, entity-registry.json
+    -> scanProject() - re-detect stacks
+    -> semanticAnalyzer() - discover entities
+    -> merge prompts (auto section only)
+    -> regenerate context/, entity-registry.json
 ```
 
 ## Prompts (Agents)

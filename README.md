@@ -125,24 +125,23 @@ Options:
 
 ## Structure
 
-```
+```text
 mustard/
-├── cli/
-│   ├── bin/mustard.js
-│   └── src/
-│       ├── commands/       # init, update, sync
-│       ├── scanners/       # stack, structure, dependencies
-│       ├── analyzers/      # semantic, llm
-│       ├── generators/     # claude-md, prompts, commands, hooks
-│       └── services/       # ollama, grepai
-│
-└── claude/                 # Templates (copied to .claude/)
+├── bin/mustard.js           # CLI entry point
+├── src/                     # TypeScript source
+│   ├── commands/            # init, update, sync
+│   ├── scanners/            # stack, structure, dependencies
+│   ├── analyzers/           # semantic, llm
+│   ├── generators/          # claude-md, prompts, commands, hooks
+│   └── services/            # ollama, grepai
+├── dist/                    # Compiled JavaScript
+└── templates/               # Templates (copied to .claude/)
     ├── CLAUDE.md
-    ├── prompts/            # 8 agent prompts
-    ├── commands/mustard/   # Pipeline commands
-    ├── core/               # Enforcement, pipeline rules
-    ├── hooks/              # enforce-grepai.js, enforce-pipeline.js
-    └── scripts/            # statusline.js
+    ├── prompts/             # 8 agent prompts
+    ├── commands/mustard/    # Pipeline commands
+    ├── core/                # Enforcement, pipeline rules
+    ├── hooks/               # enforce-grepai.js, enforce-pipeline.js
+    └── scripts/             # statusline.js
 ```
 
 ## Prompts
@@ -178,7 +177,7 @@ Mustard "agents" are prompts loaded into `Task(general-purpose)`:
 |---------|-------------|
 | `/task-analyze` | Code analysis via Task(Explore) |
 | `/task-review` | Code review via Task(general-purpose) |
-| `/task-refactor` | Refactoring via Task(Plan) → Task(general-purpose) |
+| `/task-refactor` | Refactoring via Task(Plan) -> Task(general-purpose) |
 | `/task-docs` | Documentation via Task(general-purpose) |
 
 ### Other Commands
@@ -228,7 +227,6 @@ Without these, the CLI uses default templates.
 ## Development
 
 ```bash
-cd cli
 npm install
 npm run build
 npm test
@@ -240,7 +238,6 @@ node bin/mustard.js init
 ## Publishing
 
 ```bash
-cd cli
 npm version patch   # or minor/major
 npm publish
 ```

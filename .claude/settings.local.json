@@ -6,7 +6,8 @@
       "Bash(npm test:*)",
       "Bash(npx tsc:*)",
       "WebFetch(domain:www.npmjs.com)",
-      "Bash(npm install:*)"
+      "Bash(npm install:*)",
+      "Bash(xcopy:*)"
     ]
   }
 }
