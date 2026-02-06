@@ -12,12 +12,32 @@ Framework-agnostic CLI for setting up and updating Claude Code projects.
 
 ## Installation
 
+### Global Installation
+
+Install globally to use the `mustard` command anywhere:
+
 ```bash
-# Install globally
+# Using npm
 npm install -g mustard-claude
 
-# Or run directly with npx
+# Using pnpm
+pnpm add -g mustard-claude
+```
+
+### Run Without Installing
+
+Use `npx` or `pnpx` to run without a global installation:
+
+```bash
+# Using npx (npm)
 npx mustard-claude init
+npx mustard-claude update
+npx mustard-claude sync
+
+# Using pnpx (pnpm)
+pnpx mustard-claude init
+pnpx mustard-claude update
+pnpx mustard-claude sync
 ```
 
 ## Commands
