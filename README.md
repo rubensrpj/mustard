@@ -32,11 +32,33 @@ Mustard generates a `.claude/` folder with prompts, commands, and rules for Clau
 - **Enforcement hooks** (grepai, pipeline confirmation)
 - **Stack detection** and auto-generated CLAUDE.md
 
+## Installation
+
+### Global Installation
+
+```bash
+# Using npm
+npm install -g mustard-claude
+
+# Using pnpm
+pnpm add -g mustard-claude
+```
+
+### Run Without Installing
+
+```bash
+# Using npx
+npx mustard-claude init
+
+# Using pnpx
+pnpx mustard-claude init
+```
+
 ## Quick Start
 
 ```bash
 cd my-project
-node path/to/mustard/cli/bin/mustard.js init
+mustard init
 ```
 
 The CLI will:
@@ -210,6 +232,17 @@ cd cli
 npm install
 npm run build
 npm test
+
+# Run locally without installing
+node bin/mustard.js init
+```
+
+## Publishing
+
+```bash
+cd cli
+npm version patch   # or minor/major
+npm publish
 ```
 
 ## License
