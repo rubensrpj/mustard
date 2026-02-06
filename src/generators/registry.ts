@@ -1,94 +1,45 @@
-import type { ProjectInfo, Analysis, EntityRegistry, RegistryPatterns, Entity } from '../types.js';
+import type { Analysis, EntityRegistry, RegistryEntity } from '../types.js';
 
 /**
- * Generate entity-registry.json
+ * Generate entity-registry.json (v3.1 - catalog format)
+ *
+ * The registry is a catalog of entities, their relationships, and reference patterns.
+ * All fields are populated by /sync-registry command which discovers them from actual code.
  */
-export function generateRegistry(projectInfo: ProjectInfo, analysis: Analysis): EntityRegistry {
+export function generateRegistry(_projectInfo: unknown, analysis: Analysis): EntityRegistry {
   const registry: EntityRegistry = {
     _meta: {
-      version: '2.1',
+      version: '3.1',
       generated: new Date().toISOString().split('T')[0]!,
       tool: 'mustard-cli'
     },
-    _p: generatePatterns(projectInfo),
-    e: generateEntities(projectInfo, analysis)
+    _patterns: {},  // Reference entities - populated by /sync-registry
+    _enums: {},     // Enum values - populated by /sync-registry
+    e: generateEntities(analysis)
   };
 
   return registry;
 }
 
 /**
- * Generate path patterns based on detected stacks
+ * Generate entities map from analysis (v3.1 format with sub-entities and refs)
  */
-function generatePatterns(projectInfo: ProjectInfo): RegistryPatterns {
-  const patterns: RegistryPatterns = {};
-
-  // Find database stack
-  const dbStack = projectInfo.stacks.find(s =>
-    ['drizzle', 'prisma', 'typeorm', 'sequelize'].includes(s.name)
-  );
-  if (dbStack) {
-    const basePath = dbStack.path === '.' ? '' : `${dbStack.path}/`;
-    if (dbStack.name === 'drizzle') {
-      patterns.db = `${basePath}src/schema/{e}.ts`;
-    } else if (dbStack.name === 'prisma') {
-      patterns.db = `${basePath}prisma/schema.prisma`;
-    } else {
-      patterns.db = `${basePath}src/entities/{e}.ts`;
-    }
-  }
-
-  // Find backend stack
-  const beStack = projectInfo.stacks.find(s =>
-    ['dotnet', 'node', 'python', 'java', 'go', 'rust'].includes(s.name)
-  );
-  if (beStack) {
-    const basePath = beStack.path === '.' ? '' : `${beStack.path}/`;
-    if (beStack.name === 'dotnet') {
-      patterns.be = `${basePath}Modules/{E}/`;
-    } else if (beStack.name === 'python') {
-      patterns.be = `${basePath}app/modules/{e}/`;
-    } else {
-      patterns.be = `${basePath}src/modules/{e}/`;
-    }
-  }
-
-  // Find frontend stack
-  const feStack = projectInfo.stacks.find(s =>
-    ['react', 'nextjs', 'vue', 'angular', 'svelte'].includes(s.name)
-  );
-  if (feStack) {
-    const basePath = feStack.path === '.' ? '' : `${feStack.path}/`;
-    if (feStack.name === 'nextjs') {
-      patterns.fe = `${basePath}src/features/{e}/`;
-    } else {
-      patterns.fe = `${basePath}src/features/{e}/`;
-    }
-  }
-
-  return patterns;
-}
-
-/**
- * Generate entities map from analysis
- */
-function generateEntities(projectInfo: ProjectInfo, analysis: Analysis): Record<string, number> {
-  const entities: Record<string, number> = {};
+function generateEntities(analysis: Analysis): Record<string, RegistryEntity> {
+  const entities: Record<string, RegistryEntity> = {};
 
   // Add entities discovered by semantic analyzer
   if (analysis.entities && Array.isArray(analysis.entities)) {
     for (const entity of analysis.entities) {
-      // Normalize entity name to PascalCase
       const name = toPascalCase(typeof entity === 'string' ? entity : entity.name);
       if (name && !entities[name]) {
-        entities[name] = 1;
+        entities[name] = {};  // Empty - sub/refs populated by /sync-registry
       }
     }
   }
 
   // If no entities found, add placeholder
   if (Object.keys(entities).length === 0) {
-    entities['_placeholder'] = 0;
+    entities['_placeholder'] = {};
   }
 
   return entities;

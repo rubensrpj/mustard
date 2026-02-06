@@ -1,7 +1,7 @@
 # /bugfix - Bugfix Pipeline
 
 > Single entry point for diagnosing and fixing bugs.
-> **v2.3** - Auto context-loading before diagnosis.
+> **v2.6** - Prerequisites enforced via hooks + Context Reset support.
 
 ## Usage
 
@@ -11,15 +11,26 @@
 /bugfix "TypeError: Cannot read property 'id' of undefined"
 ```
 
+## Prerequisites (Enforced by Hooks)
+
+Before this command runs, hooks validate:
+
+1. **Entity Registry** - `.claude/entity-registry.json` must exist and be valid (v3.x)
+2. **Compiled Contexts** - All agent contexts must be compiled and up-to-date
+
+If prerequisites fail, you'll be prompted to run:
+
+- `/sync-registry` - Update entity registry
+- `/compile-context` - Compile agent contexts
+
 ## What It Does
 
-1. **Loads context** (if missing or > 24h old) via memory MCP
-2. **Diagnoses** root cause via Task(general-purpose) + bugfix prompt
-3. **Proposes** minimal fix
-4. **Awaits** approval
-5. **Implements** fix
-6. **Validates** that bug is fixed
-7. **Suggests** commit
+1. **Diagnoses** root cause via Task(general-purpose) + bugfix prompt
+2. **Proposes** minimal fix
+3. **Awaits** approval
+4. **Implements** fix
+5. **Validates** that bug is fixed
+6. **Suggests** commit
 
 ## Pipeline (Native Types)
 
@@ -53,49 +64,6 @@
 ```
 
 ## Implementation
-
-### Phase 0: Compile Contexts (MANDATORY FIRST STEP)
-
-**BEFORE doing anything else, you MUST compile all agent contexts:**
-
-#### Step 0.1: Get current commit hash
-
-```bash
-git rev-parse --short HEAD
-```
-
-Save the result as `currentHash`.
-
-#### Step 0.2: For each agent, check and compile
-
-For each agent in: `backend`, `frontend`, `database`, `bugfix`, `review`, `orchestrator`:
-
-1. Use Glob to check if `.claude/prompts/{agent}.context.md` exists
-2. If exists, Read the file and check if `compiled-from-commit: {hash}` matches `currentHash`
-3. If missing OR hash differs:
-   - Use Glob to find all `.md` files in `.claude/context/shared/` (exclude README)
-   - Use Glob to find all `.md` files in `.claude/context/{agent}/` (exclude README)
-   - Read each file's content
-   - Synthesize into a single compiled context (remove duplicates, consolidate, optimize)
-   - Write to `.claude/prompts/{agent}.context.md` with format:
-
-```markdown
-<!-- compiled-from-commit: {currentHash} -->
-<!-- sources: {list of source files} -->
-<!-- compiled-at: {ISO timestamp} -->
-
-# {Agent} Context
-
-{synthesized content}
-```
-
-#### Step 0.3: Report compilation status
-
-```text
-✅ Context compiled for all agents (commit: {hash})
-```
-
-> ⚠️ **DO NOT SKIP THIS STEP.** All agents depend on compiled contexts.
 
 ### Command Execution
 
@@ -242,13 +210,13 @@ Add TenantId validation before saving.
 
 ## Notes
 
-- **Auto-load context** at start (if missing or > 24h old)
+- **Prerequisites enforced** via hooks (registry + contexts)
 - **Minimal and focused** fix
 - Does **not** refactor beyond necessary
 - **Always** validates regression
 - **Always** suggests commit message
 - **Uses only native types**: general-purpose, Explore (if needed)
-- Loaded context helps understand project patterns and rules
+- Compiled context available in `prompts/{agent}.context.md`
 
 ## See Also
 

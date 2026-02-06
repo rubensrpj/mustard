@@ -1,4 +1,4 @@
-import type { ProjectInfo, Analysis, RegistryPatterns } from '../types.js';
+import type { ProjectInfo, Analysis } from '../types.js';
 import { getRunCommand } from '../services/package-manager.js';
 
 /**
@@ -174,29 +174,8 @@ COMPLETED
 \`\`\``;
 }
 
-function generateEntityRegistry(projectInfo: ProjectInfo): string {
-  // Build patterns based on detected structure
-  const patterns: RegistryPatterns = {};
-
-  const hasDrizzle = projectInfo.stacks.some(s => s.name === 'drizzle');
-  const hasDotnet = projectInfo.stacks.some(s => s.name === 'dotnet');
-  const hasReact = projectInfo.stacks.some(s => ['react', 'nextjs'].includes(s.name));
-
-  if (hasDrizzle) {
-    const dbPath = projectInfo.stacks.find(s => s.name === 'drizzle')?.path ?? 'database';
-    patterns.db = `${dbPath}/schema/{e}.ts`;
-  }
-
-  if (hasDotnet) {
-    const bePath = projectInfo.stacks.find(s => s.name === 'dotnet')?.path ?? 'backend';
-    patterns.be = `${bePath}/Modules/{E}/`;
-  }
-
-  if (hasReact) {
-    const fePath = projectInfo.stacks.find(s => ['react', 'nextjs'].includes(s.name))?.path ?? 'frontend';
-    patterns.fe = `${fePath}/src/features/{e}/`;
-  }
-
+function generateEntityRegistry(_projectInfo: ProjectInfo): string {
+  // v3.1: Catalog format with patterns, enums, and relationships
   return `## 6. Entity Registry (REQUIRED)
 
 **CRITICAL RULE**: Before searching for ANY entity files,
@@ -206,16 +185,21 @@ ALWAYS read \`.claude/entity-registry.json\` first.
 
 \`\`\`json
 {
-  "_meta": { "version": "2.1" },
-  "_p": ${JSON.stringify(patterns, null, 4)},
+  "_meta": { "version": "3.1" },
+  "_patterns": { "simple": "Bank", "withSubItems": "SalesPlan" },
+  "_enums": { "ContractStatus": ["DRAFT", "ACTIVE", "..."] },
   "e": {
-    "Entity1": 1,
-    "Entity2": 1
+    "Contract": { "sub": ["ContractItem"], "refs": ["Partner"] },
+    "Bank": {}
   }
 }
 \`\`\`
 
-Paths are derived from \`_p\` (patterns) + entity name.`;
+### Sections
+
+- \`_patterns\`: Reference entities for each pattern type (use as templates)
+- \`_enums\`: Enum values catalog (check before hardcoding)
+- \`e\`: Entities with \`sub\` (children) and \`refs\` (FK relationships)`;
 }
 
 function generateGrepai(): string {

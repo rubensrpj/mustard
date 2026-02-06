@@ -1,10 +1,10 @@
-# /sync-registry - Sync Registry
+# /sync-registry - Update Entity Registry
 
-> Syncs the Entity Registry after creating/modifying entities.
+> Scans the project and updates entity-registry.json with entities, relationships, patterns, and enums.
 
 ## Usage
 
-```
+```bash
 /sync-registry
 ```
 
@@ -12,37 +12,101 @@
 
 - New entity created
 - Entity renamed
-- Sub-entity added
-- Enum added
-- Changes to existing layers
+- Sub-entity or relationship added
+- Enum values changed
 
-## What It Does
+## Action
 
-1. Scans Database schemas
-2. Scans Backend entities
-3. Scans Frontend features
-4. Updates `.claude/entity-registry.json`
-5. Increments counter and timestamp
+### Step 1: Discover Entities
 
-## Registry Format
+Use Task(Explore) to find all entities:
+
+- Database tables/models (source of truth)
+- Backend modules with entity logic
+
+### Step 2: Map Relationships
+
+For each entity, identify:
+
+- **sub**: Child/sub-entities (e.g., ContractItem, ContractLog)
+- **refs**: FK references to other entities (e.g., Partner, PaymentMethod)
+
+### Step 3: Identify Reference Patterns
+
+Find one good example entity for each pattern type:
+
+| Pattern | Description | Example Use |
+|---------|-------------|-------------|
+| `simple` | Basic CRUD entity | When creating simple lookup tables |
+| `withTabs` | Entity with tab navigation | When UI needs multiple sections |
+| `withSubItems` | Entity with child items | When entity has line items |
+| `withSeed` | Entity with seed data | When entity needs initial data |
+| `withApproval` | Entity with workflow | When entity has status transitions |
+
+### Step 4: Catalog Enums
+
+List all enum types with their values for quick reference.
+
+### Step 5: Update Registry
+
+Update `.claude/entity-registry.json`:
 
 ```json
 {
-  "_m": { "v": "2.1", "n": 35, "at": "..." },
-  "_k": { /* legend */ },
-  "_p": { /* path patterns */ },
-  "_i": { /* integration points */ },
-  "e": { /* entities */ }
+  "_meta": { "version": "3.1", "generated": "<date>", "tool": "mustard-cli" },
+  "_patterns": {
+    "simple": "Bank",
+    "withTabs": "Partner",
+    "withSubItems": "SalesPlan",
+    "withSeed": "PartnerType",
+    "withApproval": "Contract"
+  },
+  "_enums": {
+    "ContractStatus": ["DRAFT", "PENDING", "ACTIVE", "CANCELLED"],
+    "PricingMode": ["CALCULATED", "FIXED"]
+  },
+  "e": {
+    "Contract": {
+      "sub": ["ContractItem", "ContractLog"],
+      "refs": ["Partner", "PaymentMethod", "SalesPlan", "User"]
+    },
+    "Partner": {
+      "sub": ["PartnerAddress", "PartnerContact"]
+    },
+    "Bank": {}
+  }
 }
 ```
 
-## L6 Rule
+## Usage Tips
 
-This command implements L6 enforcement rule:
+### Finding Reference Entity
 
-> After creating/modifying entities, sync `.claude/entity-registry.json`.
+When implementing a new feature, check `_patterns` first:
+
+```
+"I need to create an entity with approval workflow"
+→ Use Contract as reference (_patterns.withApproval)
+```
+
+### Checking Enum Values
+
+Before hardcoding status values, check `_enums`:
+
+```
+"What are the valid ContractStatus values?"
+→ Check _enums.ContractStatus
+```
+
+### Understanding Relationships
+
+Before modifying an entity, check its refs:
+
+```
+"Contract refs Partner, PaymentMethod, SalesPlan, User"
+→ Changes may impact these related entities
+```
 
 ## See Also
 
-- [entity-registry-spec.md](../core/entity-registry-spec.md)
-- [enforcement.md](../core/enforcement.md) - L6 Rule
+- [entity-registry-spec.md](../../core/entity-registry-spec.md)

@@ -137,22 +137,30 @@ export interface DiscoveredPatterns {
 
 // ============== Generator Types ==============
 
-export interface RegistryPatterns {
-  db?: string;
-  be?: string;
-  fe?: string;
-}
-
 export interface RegistryMeta {
   version: string;
   generated: string;
   tool: string;
 }
 
+export interface RegistryEntity {
+  sub?: string[];   // Sub-entities (e.g., ContractItem, ContractStatus)
+  refs?: string[];  // FK references to other entities
+}
+
+export interface RegistryReferencePatterns {
+  simple?: string;       // Basic CRUD entity (e.g., "Bank")
+  withTabs?: string;     // Entity with tab navigation (e.g., "Partner")
+  withSubItems?: string; // Entity with child items (e.g., "SalesPlan")
+  withSeed?: string;     // Entity with seed data (e.g., "PartnerType")
+  withApproval?: string; // Entity with workflow/approval (e.g., "Contract")
+}
+
 export interface EntityRegistry {
   _meta: RegistryMeta;
-  _p: RegistryPatterns;
-  e: Record<string, number>;
+  _patterns?: RegistryReferencePatterns;  // Reference entities for each pattern type
+  _enums?: Record<string, string[]>;      // Enum values catalog
+  e: Record<string, RegistryEntity>;
 }
 
 export interface GeneratedPrompts {
@@ -199,6 +207,8 @@ export interface GeneratedCommands {
 export interface GeneratedHooks {
   'enforce-pipeline.js': string;
   'enforce-grepai.js'?: string;
+  'enforce-registry.js': string;
+  'enforce-context.js': string;
 }
 
 // ============== Options Types ==============

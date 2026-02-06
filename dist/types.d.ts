@@ -111,20 +111,27 @@ export interface DiscoveredPatterns {
     entities: Entity[];
     callGraph: TraceResult | null;
 }
-export interface RegistryPatterns {
-    db?: string;
-    be?: string;
-    fe?: string;
-}
 export interface RegistryMeta {
     version: string;
     generated: string;
     tool: string;
 }
+export interface RegistryEntity {
+    sub?: string[];
+    refs?: string[];
+}
+export interface RegistryReferencePatterns {
+    simple?: string;
+    withTabs?: string;
+    withSubItems?: string;
+    withSeed?: string;
+    withApproval?: string;
+}
 export interface EntityRegistry {
     _meta: RegistryMeta;
-    _p: RegistryPatterns;
-    e: Record<string, number>;
+    _patterns?: RegistryReferencePatterns;
+    _enums?: Record<string, string[]>;
+    e: Record<string, RegistryEntity>;
 }
 export interface GeneratedPrompts {
     orchestrator: string;
@@ -161,6 +168,8 @@ export interface GeneratedCommands {
 export interface GeneratedHooks {
     'enforce-pipeline.js': string;
     'enforce-grepai.js'?: string;
+    'enforce-registry.js': string;
+    'enforce-context.js': string;
 }
 export interface InitOptions {
     force?: boolean;

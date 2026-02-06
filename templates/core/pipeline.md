@@ -1,7 +1,7 @@
 # Mustard Pipeline
 
 > Single mandatory pipeline for features and bugfixes.
-> **v2.3** - Auto context-loading, new entity types in memory MCP.
+> **v2.6** - Context Reset + Memory Persistence for optimal context management.
 
 ## Overview
 
@@ -211,9 +211,11 @@ ENTRY → EXPLORE → SPEC → IMPLEMENT → REVIEW → COMPLETE
 ### Pipeline Entities
 
 | Entity Type | Name | Description |
-|-------------|------|-------------|
+| ----------- | ---- | ----------- |
 | `pipeline` | `Pipeline:{name}` | Active pipeline state |
 | `spec` | `Spec:{name}` | Approved specification |
+| `checkpoint` | `Checkpoint:{pipeline}:{phase}:{timestamp}` | Phase checkpoint (temporary) |
+| `learning` | `Learning:{name}:{timestamp}` | Permanent learnings (persists after completion) |
 
 ### ProjectContext Structure
 
@@ -292,9 +294,47 @@ ENTRY → EXPLORE → SPEC → IMPLEMENT → REVIEW → COMPLETE
 }
 ```
 
+### Checkpoint Structure (NEW v2.6)
+
+```javascript
+{
+  name: "Checkpoint:Pipeline:add-login:explore:1707235200",
+  entityType: "checkpoint",
+  observations: [
+    "pipeline: Pipeline:add-login",
+    "phase: explore",
+    "created: 2026-02-06T10:00:00Z",
+    "type: auto-approve",
+    "summary: Discovered auth flow using NextAuth...",
+    "key_files: auth.ts, login.tsx, middleware.ts",
+    "decisions: Use existing NextAuth setup; Add email provider",
+    "next_steps: Create spec; Define schema changes"
+  ]
+}
+```
+
+### Learning Structure (NEW v2.6)
+
+```javascript
+{
+  name: "Learning:add-login:1707238800",
+  entityType: "learning",
+  observations: [
+    "pipeline: Pipeline:add-login",
+    "completed: 2026-02-06T12:00:00Z",
+    "duration: 2h",
+    "objective: Add email/password login feature",
+    "patterns: NextAuth provider pattern; form validation",
+    "decisions: JWT over sessions; email uniqueness constraint",
+    "gotchas: Race condition on refresh token; migration needed",
+    "files: auth.ts, login.tsx, schema.ts"
+  ]
+}
+```
+
 ### Relations
 
-```
+```text
 ProjectContext:current
 ├── has_registry → EntityRegistry:current
 ├── has_rules → EnforcementRules:current
@@ -303,17 +343,19 @@ ProjectContext:current
 ├── has_context → UserContext:tips
 ├── has_pattern → CodePattern:service
 ├── has_pattern → CodePattern:repository
-└── has_pattern → CodePattern:component
+├── has_pattern → CodePattern:component
+└── has_learning → Learning:* (permanent, grows over time)
 
 Pipeline:{name}
-└── has_spec → Spec:{name}
+├── has_spec → Spec:{name}
+└── has_checkpoint → Checkpoint:* (temporary, cleaned on /complete)
 ```
 
 ---
 
 ## Context Loading Flow
 
-```
+```text
 /feature or /bugfix
          │
          ▼
@@ -331,6 +373,86 @@ Pipeline:{name}
                             ▼
               [Normal pipeline continues...]
 ```
+
+---
+
+## Context Reset Flow (NEW v2.6)
+
+The Context Reset pattern optimizes context window usage by saving insights to memory and clearing the conversation at phase boundaries.
+
+```text
+/feature name
+         │
+         ▼
+    EXPLORE (accumulates context)
+         │
+         ▼
+    SPEC created
+         │
+         ▼
+    /approve
+         │
+         ├── AUTO: Save exploration checkpoint
+         ├── SUGGEST: "Reply 'reset' or 'continue'"
+         │
+         ▼
+    User: "reset"
+         │
+         ├── Save final exploration summary
+         ├── Clear conversation context
+         │
+         ▼
+    [New conversation turn]
+         │
+         ▼
+    /resume
+         │
+         ├── Load checkpoint from memory
+         ├── Load spec + checklist
+         ├── Show compact summary
+         │
+         ▼
+    IMPLEMENT (clean context window)
+         │
+         ├── /checkpoint (optional, after each layer)
+         │
+         ▼
+    /complete
+         │
+         ├── Extract learnings from all checkpoints
+         ├── Save Learning entity (permanent)
+         ├── Clean pipeline + checkpoints
+         │
+         ▼
+    DONE (learnings preserved for future reference)
+```
+
+### Why Context Reset?
+
+| Problem | Solution |
+| ------- | -------- |
+| Exploration fills context window | Reset after /approve clears exploration history |
+| Implementation needs focus | Clean context = only spec + patterns visible |
+| Insights lost between sessions | Checkpoints persist in memory MCP |
+| Past mistakes repeated | Learnings accumulate and can be queried |
+
+### When to Reset
+
+| Moment | Recommended | Why |
+| ------ | ----------- | --- |
+| After /approve | Yes | Clear exploration before implementation |
+| After each layer | Optional | If context getting large |
+| After long break | Optional | Fresh start with checkpoint summary |
+| After review feedback | Optional | Clear review context before fixes |
+
+### Commands
+
+| Command | Purpose |
+| ------- | ------- |
+| `/checkpoint` | Save current phase insights |
+| `/checkpoint --reset` | Save + clear context |
+| `/resume` | Continue from last checkpoint |
+| `/status` | View all checkpoints |
 
 ---
 

@@ -74,11 +74,11 @@ mustard/
     │   └── ...
     ├── commands/mustard/    # Pipeline commands
     ├── core/                # Enforcement rules
-    ├── hooks/               # enforce-grepai.js, enforce-pipeline.js
+    ├── hooks/               # Enforcement hooks (see below)
     └── scripts/             # statusline.js
 ```
 
-## Context per Agent (v2.5)
+## Context per Agent (v2.6)
 
 Prompts are **agnostic** - project-specific patterns live in context files:
 
@@ -136,9 +136,10 @@ mustard update
 
 - `/feature` - Start feature pipeline
 - `/bugfix` - Start bugfix pipeline
-- `/approve` - Approve spec
-- `/complete` - Finalize pipeline
-- `/resume` - Resume active pipeline
+- `/approve` - Approve spec (auto-checkpoint + suggest reset)
+- `/complete` - Finalize pipeline (save learnings)
+- `/resume` - Resume pipeline (loads checkpoint + learnings)
+- `/checkpoint` - Save phase insights to memory (optional `--reset`)
 
 ### Pipeline (Agent Teams Mode - Experimental)
 
@@ -151,6 +152,78 @@ mustard update
 - `/task-review` - Code review via Task(general-purpose)
 - `/task-refactor` - Refactoring via Task(Plan) -> Task(general-purpose)
 - `/task-docs` - Documentation via Task(general-purpose)
+
+## Enforcement Hooks
+
+Hooks are registered in `templates/settings.json` and enforce rules at different stages:
+
+| Hook | Matcher | Purpose |
+| ---- | ------- | ------- |
+| `enforce-registry.js` | Skill | Validates entity-registry.json before /feature or /bugfix |
+| `enforce-context.js` | Skill | Validates compiled contexts before /feature or /bugfix |
+| `enforce-grepai.js` | Grep, Glob | Suggests grepai for semantic search |
+| `enforce-pipeline.js` | Edit, Write | Blocks code edits outside pipeline |
+
+### Pre-Pipeline Validation Flow
+
+```text
+User: /feature add-login
+         │
+         ▼
+    ┌─────────────────────────┐
+    │ enforce-registry.js     │
+    │ - Registry exists?      │
+    │ - Version >= 3.x?       │
+    │ - Has entities?         │
+    └─────────────────────────┘
+         │
+         ▼
+    ┌─────────────────────────┐
+    │ enforce-context.js      │
+    │ - Contexts compiled?    │
+    │ - Match git commit?     │
+    └─────────────────────────┘
+         │
+         ▼
+    Pipeline starts...
+```
+
+### Auto Registry Update
+
+`/complete` automatically detects entity file changes and updates registry:
+
+- Patterns: `models/`, `entities/`, `schemas/`, `*.entity.ts`, `drizzle/*schema*`, etc.
+- If detected: runs `/sync-registry` before finalizing
+
+## Context Reset (v2.6)
+
+Optimizes context window by saving insights to memory and clearing conversation at phase boundaries:
+
+```text
+/feature → EXPLORE → SPEC → /approve
+                              │
+                    ┌─────────┴─────────┐
+                    │ AUTO: checkpoint  │
+                    │ SUGGEST: reset    │
+                    └─────────┬─────────┘
+                              │
+                    User: "reset"
+                              │
+                    [Context limpo]
+                              │
+                    /resume (carrega checkpoint)
+                              │
+                    IMPLEMENT (contexto limpo)
+                              │
+                    /complete (salva learnings permanentes)
+```
+
+**Memory MCP Entities:**
+
+| Entity | Purpose | Persistence |
+| ------ | ------- | ----------- |
+| `Checkpoint:{pipeline}:{phase}:{ts}` | Phase insights | Temporary |
+| `Learning:{name}:{ts}` | Patterns, decisions, gotchas | Permanent |
 
 ## Stacks Detected
 

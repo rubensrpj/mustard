@@ -1,7 +1,7 @@
 # /feature - Feature Pipeline
 
 > Single entry point for implementing new features.
-> **v2.3** - Persistence via memory MCP, auto context-loading.
+> **v2.6** - Prerequisites enforced via hooks + Context Reset support.
 
 ## Usage
 
@@ -11,16 +11,27 @@
 /feature "Stripe Integration"
 ```
 
+## Prerequisites (Enforced by Hooks)
+
+Before this command runs, hooks validate:
+
+1. **Entity Registry** - `.claude/entity-registry.json` must exist and be valid (v3.x)
+2. **Compiled Contexts** - All agent contexts must be compiled and up-to-date
+
+If prerequisites fail, you'll be prompted to run:
+
+- `/sync-registry` - Update entity registry
+- `/compile-context` - Compile agent contexts
+
 ## What It Does
 
-1. **Loads context** (if missing or > 24h old) via memory MCP
-2. **Creates pipeline** in memory MCP
-3. **Explores** requirements via grepai + Task(Explore)
-4. **Creates spec** in memory MCP
-5. **Awaits approval** (/approve)
-6. **Implements** via Task(general-purpose)
-7. **Validates** via /validate
-8. **Completes** via /complete
+1. **Creates pipeline** in memory MCP
+2. **Explores** requirements via grepai + Task(Explore)
+3. **Creates spec** in memory MCP
+4. **Awaits approval** (/approve)
+5. **Implements** via Task(general-purpose)
+6. **Validates** via /validate
+7. **Completes** via /complete
 
 ## Pipeline (Native Types)
 
@@ -53,49 +64,6 @@ Task(Explore) → SPEC → APPROVE
 ```
 
 ## Implementation
-
-### Phase 0: Compile Contexts (MANDATORY FIRST STEP)
-
-**BEFORE doing anything else, you MUST compile all agent contexts:**
-
-#### Step 0.1: Get current commit hash
-
-```bash
-git rev-parse --short HEAD
-```
-
-Save the result as `currentHash`.
-
-#### Step 0.2: For each agent, check and compile
-
-For each agent in: `backend`, `frontend`, `database`, `bugfix`, `review`, `orchestrator`:
-
-1. Use Glob to check if `.claude/prompts/{agent}.context.md` exists
-2. If exists, Read the file and check if `compiled-from-commit: {hash}` matches `currentHash`
-3. If missing OR hash differs:
-   - Use Glob to find all `.md` files in `.claude/context/shared/` (exclude README)
-   - Use Glob to find all `.md` files in `.claude/context/{agent}/` (exclude README)
-   - Read each file's content
-   - Synthesize into a single compiled context (remove duplicates, consolidate, optimize)
-   - Write to `.claude/prompts/{agent}.context.md` with format:
-
-```markdown
-<!-- compiled-from-commit: {currentHash} -->
-<!-- sources: {list of source files} -->
-<!-- compiled-at: {ISO timestamp} -->
-
-# {Agent} Context
-
-{synthesized content}
-```
-
-#### Step 0.3: Report compilation status
-
-```text
-✅ Context compiled for all agents (commit: {hash})
-```
-
-> ⚠️ **DO NOT SKIP THIS STEP.** All agents depend on compiled contexts.
 
 ### Phase 1: Create Pipeline in Memory MCP
 
@@ -271,14 +239,14 @@ Create Invoice entity with items...
 
 ## Notes
 
-- **Auto-load context** at start (if missing or > 24h old)
+- **Prerequisites enforced** via hooks (registry + contexts)
 - **Always** creates spec before implementing
 - **Always** awaits approval (/approve)
 - Pipeline persisted via **memory MCP** (not files)
 - Only **one active pipeline** at a time
 - **Uses only native types**: Explore, general-purpose
 - **Uses grepai** for search (Grep/Glob blocked)
-- Loaded context available via `mcp__memory__search_nodes`
+- Compiled context available in `prompts/{agent}.context.md`
 
 ## See Also
 

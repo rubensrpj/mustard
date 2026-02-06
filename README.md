@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-2.5.0-yellow?style=for-the-badge" alt="Version">
+  <img src="https://img.shields.io/badge/version-2.6.0-yellow?style=for-the-badge" alt="Version">
   <img src="https://img.shields.io/badge/node-%3E%3D18-green?style=for-the-badge&logo=node.js" alt="Node">
   <img src="https://img.shields.io/badge/license-MIT-blue?style=for-the-badge" alt="License">
 </p>
@@ -34,11 +34,19 @@ Mustard generates a `.claude/` folder with prompts, commands, and rules for Clau
 - **Enforcement hooks** (grepai, pipeline confirmation)
 - **Stack detection** and auto-generated CLAUDE.md
 
-## What's New in v2.5
+## What's New in v2.6
+
+- **Context Reset + Memory Persistence**: Optimize context window usage
+  - `/checkpoint` saves phase insights to memory MCP
+  - `/approve` auto-saves exploration checkpoint, suggests reset
+  - `/resume` loads from checkpoint with compact summary
+  - `/complete` extracts and saves permanent learnings
+- **Learnings accumulate**: Past gotchas available for future features
+- **Clean implementation context**: Reset after approval for focused implementation
+
+### Previous (v2.5)
 
 - **Agent Teams support** (experimental): True parallel execution for complex features
-  - `/feature-team` and `/bugfix-team` commands
-  - Team Lead coordinates Database, Backend, Frontend, and Review teammates
 - **Mandatory Pipeline Invocation**: Skills compile contexts before starting
 - **Simplified agent prompts**: Context loading moved to skill commands
 
@@ -92,7 +100,7 @@ Prompts are **agnostic** - they don't contain project-specific code. Instead, ea
 └── orchestrator/ # Only Orchestrator loads
 ```
 
-**How it works (v2.5):**
+**How it works (v2.6):**
 
 1. User invokes `/feature` or `/bugfix` skill
 2. Skill compiles contexts for all agents (git-based caching)
@@ -195,9 +203,10 @@ Mustard "agents" are prompts loaded into `Task(general-purpose)`:
 |---------|-------------|
 | `/feature` | Start feature pipeline |
 | `/bugfix` | Start bugfix pipeline |
-| `/approve` | Approve spec |
-| `/complete` | Finalize |
-| `/resume` | Resume active pipeline |
+| `/approve` | Approve spec (auto-checkpoint + suggest reset) |
+| `/complete` | Finalize (save learnings) |
+| `/resume` | Resume pipeline (loads checkpoint + learnings) |
+| `/checkpoint` | Save phase insights to memory |
 
 ### Agent Teams Mode (Experimental)
 
@@ -230,9 +239,78 @@ Agent Teams require `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` in `.claude/setting
 ## Enforcement Hooks
 
 | Hook | Trigger | Action |
-|------|---------|--------|
-| `enforce-grepai.js` | Grep, Glob | Blocks (suggests grepai) |
+| ---- | ------- | ------ |
+| `enforce-registry.js` | Skill (feature/bugfix) | Blocks if entity-registry.json missing or outdated |
+| `enforce-context.js` | Skill (feature/bugfix) | Blocks if compiled contexts are missing or outdated |
+| `enforce-grepai.js` | Grep, Glob | Suggests grepai for semantic search |
 | `enforce-pipeline.js` | Edit, Write | **Hybrid mode**: Blocks source code, allows configs |
+
+### Pre-Pipeline Validation
+
+When `/feature` or `/bugfix` is invoked, two hooks run automatically:
+
+1. **Entity Registry Validation** (`enforce-registry.js`)
+   - Checks `.claude/entity-registry.json` exists
+   - Validates version >= 3.x
+   - Ensures entities and patterns are defined
+   - If invalid: blocks with "Run /sync-registry first"
+
+2. **Context Compilation Validation** (`enforce-context.js`)
+   - Checks all required agent contexts are compiled
+   - Validates contexts match current git commit
+   - If outdated: blocks with "Run /sync-context first"
+
+### Auto Registry Update
+
+The `/complete` command automatically detects if entity files were modified during the pipeline and updates the registry:
+
+```text
+/complete
+    ├── Validates build
+    ├── Detects entity file changes (models/, schemas/, etc.)
+    │   └── If changed: runs /sync-registry automatically
+    ├── Extracts learnings from checkpoints
+    ├── Saves Learning entity (permanent)
+    ├── Records completion
+    └── Cleans pipeline + checkpoints
+```
+
+## Context Reset (v2.6)
+
+Optimizes context window by saving insights to memory and clearing conversation at phase boundaries:
+
+```text
+/feature → EXPLORE → SPEC → /approve
+                              │
+                    ┌─────────┴─────────┐
+                    │ AUTO: checkpoint  │
+                    │ SUGGEST: reset    │
+                    └─────────┬─────────┘
+                              │
+                    User: "reset"
+                              │
+                    [Context cleared]
+                              │
+                    /resume (loads checkpoint)
+                              │
+                    IMPLEMENT (clean context)
+                              │
+                    /complete (saves learnings)
+```
+
+### Memory MCP Entities
+
+| Entity | Purpose | Persistence |
+| ------ | ------- | ----------- |
+| `Checkpoint:{pipeline}:{phase}:{ts}` | Phase insights (files, patterns, decisions) | Temporary |
+| `Learning:{name}:{ts}` | Patterns, decisions, gotchas | Permanent |
+
+### Benefits
+
+- **Clean context**: Reset after approval removes exploration noise
+- **Insights preserved**: Checkpoints save discoveries to memory
+- **Learnings accumulate**: Past gotchas available for future features
+- **Easy resume**: `/resume` loads compact summary from checkpoint
 
 ### L0 Universal Delegation
 
