@@ -9,7 +9,9 @@
       "Bash(node bin/mustard.js init:*)",
       "Bash(dir:*)",
       "Bash(npm test:*)",
-      "Bash(ls:*)"
+      "Bash(ls:*)",
+      "Bash(cmd /c \"dir /s C:\\\\Atiz\\\\Competi\\\\projetos\\\\crm\\\\.claude\")",
+      "Bash(node:*)"
     ]
   }
 }
