@@ -1,0 +1,10 @@
+src/
+*.ts
+!*.d.ts
+*.tsbuildinfo
+tsconfig.json
+.gitignore
+npm-debug.log*
+coverage/
+__tests__/
+test/

@@ -1,11 +1,11 @@
-# /mtd-sync-registry - Sync Registry
+# /sync-registry - Sync Registry
 
 > Syncs the Entity Registry after creating/modifying entities.
 
 ## Usage
 
 ```
-/mtd-sync-registry
+/sync-registry
 ```
 
 ## When to Use

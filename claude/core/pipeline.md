@@ -16,7 +16,7 @@ ENTRY → EXPLORE → SPEC → IMPLEMENT → REVIEW → COMPLETE
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
 │                        ENTRY                                        │
-│                /mtd-pipeline-feature or /mtd-pipeline-bugfix        │
+│                       /feature or /bugfix                           │
 └───────────────────────────┬─────────────────────────────────────────┘
                             │
                             ▼
@@ -75,7 +75,7 @@ ENTRY → EXPLORE → SPEC → IMPLEMENT → REVIEW → COMPLETE
 │  │  - Checks structure                                         │    │
 │  │  - Checks integration                                       │    │
 │  │  - Checks SOLID (L7/L8)                                     │    │
-│  │  - Runs /mtd-validate-build (L4/L5)                         │    │
+│  │  - Runs /validate (L4/L5)                                   │    │
 │  │  - APPROVES or REJECTS                                      │    │
 │  └─────────────────────────────────────────────────────────────┘    │
 └───────────────────────────────┬─────────────────────────────────────┘
@@ -89,9 +89,9 @@ ENTRY → EXPLORE → SPEC → IMPLEMENT → REVIEW → COMPLETE
 ┌─────────────────────────────────────────────────────────────────────┐
 │  PHASE 5: COMPLETE                                                  │
 │  - Updates entity-registry.json (if new entity) - L6               │
-│  - Moves spec to spec/mtd-pipeline-completed/                       │
+│  - Moves spec to spec/completed/                                    │
 │  - Reports success                                                  │
-│  - Suggests /mtd-git-push                                           │
+│  - Suggests /commit-push                                            │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -271,7 +271,7 @@ ENTRY → EXPLORE → SPEC → IMPLEMENT → REVIEW → COMPLETE
     "version: 2.1",
     "patterns.db: Database/src/schema/{kebab}.ts",
     "patterns.be: Backend/Modules/{PascalPlural}/",
-    "patterns.fe: Frontend/src/mtd-pipeline-features/{kebab-plural}/",
+    "patterns.fe: Frontend/src/features/{kebab-plural}/",
     "entities: Contract,Partner,Invoice,User,Company"
   ]
 }
@@ -314,7 +314,7 @@ Pipeline:{name}
 ## Context Loading Flow
 
 ```
-/mtd-pipeline-feature or /mtd-pipeline-bugfix
+/feature or /bugfix
          │
          ▼
 ┌─────────────────────────────────────────────────────────┐
@@ -354,7 +354,7 @@ const details = await mcp__memory__open_nodes({
 
 ## See Also
 
-- [/mtd-sync-context](../commands/mtd-sync-context.md) - Manually load context
-- [/mtd-pipeline-feature](../commands/mtd-pipeline-feature.md) - Feature pipeline
-- [/mtd-pipeline-bugfix](../commands/mtd-pipeline-bugfix.md) - Bugfix pipeline
+- [/sync-context](../commands/sync-context.md) - Manually load context
+- [/feature](../commands/feature.md) - Feature pipeline
+- [/bugfix](../commands/bugfix.md) - Bugfix pipeline
 - [context/README.md](../context/README.md) - How to create context files

@@ -167,27 +167,32 @@ export interface GeneratedPrompts {
 
 export interface GeneratedCommands {
   // Pipeline
-  'mtd-pipeline-feature': string;
-  'mtd-pipeline-bugfix': string;
-  'mtd-pipeline-approve': string;
-  'mtd-pipeline-complete': string;
-  'mtd-pipeline-resume': string;
+  'feature': string;
+  'bugfix': string;
+  'approve': string;
+  'complete': string;
+  'resume': string;
   // Git
-  'mtd-git-commit': string;
-  'mtd-git-push': string;
-  'mtd-git-merge': string;
+  'commit': string;
+  'commit-push': string;
+  'merge-main': string;
   // Validate
-  'mtd-validate-build': string;
-  'mtd-validate-status': string;
+  'validate': string;
+  'status': string;
   // Sync
-  'mtd-sync-registry': string;
-  'mtd-sync-dependencies': string;
-  'mtd-sync-context': string;
+  'sync-registry': string;
+  'install-deps': string;
+  'sync-context': string;
   // Report
-  'mtd-report-daily': string;
-  'mtd-report-weekly': string;
+  'report-daily': string;
+  'report-weekly': string;
   // Scan
-  'mtd-scan-project': string;
+  'scan': string;
+  // Task (L0 Universal Delegation)
+  'task-analyze': string;
+  'task-review': string;
+  'task-refactor': string;
+  'task-docs': string;
 }
 
 export interface GeneratedHooks {

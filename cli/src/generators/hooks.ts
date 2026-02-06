@@ -61,7 +61,7 @@ export default {
     return {
       allowed: true,
       message: \`📋 REMINDER: Ensure you're following the pipeline for code changes.
-Use /mtd-pipeline-feature or /mtd-pipeline-bugfix to start a proper pipeline.\`
+Use /feature or /bugfix to start a proper pipeline.\`
     };
   }
 };

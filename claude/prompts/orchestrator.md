@@ -59,11 +59,30 @@ PHASE 2: SPEC
 +-- Wait for approval
 
 PHASE 3: IMPLEMENT
-+-- Identify which layers are needed
-+-- Task(general-purpose) + database.md (if schema)
-+-- Task(general-purpose) + backend.md (if API)
-+-- Task(general-purpose) + frontend.md (if UI)
-+-- Execute in parallel when possible
++-- Identify which layers are needed (Backend, Frontend, Database)
++-- CRITICAL: Call ALL required Tasks in a SINGLE message
++-- Use multiple <invoke> blocks in ONE response
++-- DO NOT wait for one Task to finish before starting others
+
+Example of CORRECT parallel execution:
+┌─────────────────────────────────────────────────────┐
+│ ONE message with MULTIPLE Task calls:               │
+│                                                     │
+│ Task({ description: "⚙️ Backend", ... })            │
+│ Task({ description: "🎨 Frontend", ... })           │
+│ Task({ description: "🗄️ Database", ... })           │
+│                                                     │
+│ All three execute IN PARALLEL                       │
+└─────────────────────────────────────────────────────┘
+
+Example of WRONG sequential execution:
+┌─────────────────────────────────────────────────────┐
+│ Message 1: Task({ description: "⚙️ Backend" })      │
+│ Wait for result...                                  │
+│ Message 2: Task({ description: "🎨 Frontend" })     │
+│ Wait for result...                                  │
+│ ❌ This is WRONG - wastes time                      │
+└─────────────────────────────────────────────────────┘
 
 PHASE 4: REVIEW
 +-- Task(general-purpose) + review.md
@@ -84,7 +103,7 @@ PHASE 5: COMPLETE
 Task({
   subagent_type: "Explore",  // NATIVE type
   model: "haiku",
-  description: "Explore {feature}",
+  description: "🔍 Explore {feature}",
   prompt: "Analyze requirements for: {description}. Map similar files."
 })
 ```
@@ -95,7 +114,7 @@ Task({
 Task({
   subagent_type: "general-purpose",  // NATIVE type
   model: "opus",
-  description: "Backend {feature}",
+  description: "⚙️ Backend {feature}",
   prompt: `
 # You are the BACKEND SPECIALIST
 
@@ -120,7 +139,7 @@ Implement: {spec}
 Task({
   subagent_type: "general-purpose",
   model: "opus",
-  description: "Frontend {feature}",
+  description: "🎨 Frontend {feature}",
   prompt: `
 # You are the FRONTEND SPECIALIST
 
@@ -141,7 +160,7 @@ Implement: {spec}
 Task({
   subagent_type: "general-purpose",
   model: "opus",
-  description: "Database {feature}",
+  description: "🗄️ Database {feature}",
   prompt: `
 # You are the DATABASE SPECIALIST
 
@@ -162,7 +181,7 @@ Create schema for: {spec}
 Task({
   subagent_type: "general-purpose",
   model: "opus",
-  description: "Review {feature}",
+  description: "🔎 Review {feature}",
   prompt: `
 # You are the REVIEW SPECIALIST
 
@@ -223,6 +242,52 @@ Review implementation of: {feature}
 - Always start with Task(Explore)
 - Create spec before implementing
 - Wait for user approval
-- Parallelize when possible
+- **PARALLELIZE by calling multiple Tasks in ONE message**
 - Ensure review approves
 - Use only native types: Explore, Plan, general-purpose, Bash
+
+## Parallelization Rules
+
+### ALWAYS Parallel (no dependencies)
+
+| Scenario                     | Tasks                          |
+| ---------------------------- | ------------------------------ |
+| Backend + Frontend           | Both can run simultaneously    |
+| Multiple independent files   | Each file = separate Task      |
+| Review multiple areas        | Parallel review Tasks          |
+
+### SEQUENTIAL (has dependencies)
+
+| Scenario                     | Order                          |
+| ---------------------------- | ------------------------------ |
+| DB schema → Backend uses it  | Database FIRST, then Backend   |
+| Backend DTO → Frontend uses  | Backend FIRST, then Frontend   |
+| New entity → All layers      | Database → Backend → Frontend  |
+
+### How to Decide
+
+```text
+If Backend creates NEW types that Frontend needs:
+  → Sequential: Backend first, then Frontend
+
+If Backend MODIFIES existing types:
+  → Parallel: Frontend can use existing types while Backend updates
+
+If spec shows "Adicionar X ao DTO" + "Frontend usa X":
+  → Sequential: DTO must exist before Frontend uses it
+```
+
+### Example: contract-plan-selection spec
+
+```text
+Backend: Adicionar CompanyId ao ContractUpSertDto  ← Creates new field
+Frontend: Usa companyId no form                    ← Needs the field
+
+Correct order:
+1. Task(Backend) - creates CompanyId in DTO
+2. WAIT for completion
+3. Task(Frontend) - uses CompanyId
+
+BUT if Frontend only uses EXISTING fields:
+→ Parallel is OK
+```

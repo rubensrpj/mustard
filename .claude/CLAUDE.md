@@ -97,10 +97,10 @@ Hooks:        use + camelCase         → useContracts.ts
 
 | Command | Emoji | Description |
 |---------|-------|-------------|
-| `/mtd-task-analyze <scope>` | 🔍 | Code analysis via Task(Explore) |
-| `/mtd-task-review <scope>` | 🔎 | Code review via Task(general-purpose) |
-| `/mtd-task-refactor <scope>` | 📋⚙️ | Refactoring via Task(Plan) → Task(general-purpose) |
-| `/mtd-task-docs <scope>` | 📊 | Documentation via Task(general-purpose) |
+| `/task-analyze <scope>` | 🔍 | Code analysis via Task(Explore) |
+| `/task-review <scope>` | 🔎 | Code review via Task(general-purpose) |
+| `/task-refactor <scope>` | 📋⚙️ | Refactoring via Task(Plan) → Task(general-purpose) |
+| `/task-docs <scope>` | 📊 | Documentation via Task(general-purpose) |
 
 > **CRITICAL:** These commands ensure ALL code activities are delegated to a separate context (Task), keeping the parent context clean.
 

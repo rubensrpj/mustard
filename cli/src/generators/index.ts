@@ -185,7 +185,7 @@ Place markdown files here to provide context to Claude during implementations.
 
 ## Purpose
 
-Files in this folder are loaded into memory MCP at the start of \`/mtd-pipeline-feature\` or \`/mtd-pipeline-bugfix\` pipelines.
+Files in this folder are loaded into memory MCP at the start of \`/feature\` or \`/bugfix\` pipelines.
 This gives Claude instant access to project specifications, architecture decisions, and patterns.
 
 ## Supported Files
@@ -211,7 +211,7 @@ Any \`.md\` file placed in this folder will be automatically loaded.
 
 ## How It Works
 
-Files are automatically loaded at the start of \`/mtd-pipeline-feature\` or \`/mtd-pipeline-bugfix\` pipelines.
+Files are automatically loaded at the start of \`/feature\` or \`/bugfix\` pipelines.
 Each file is stored as a \`UserContext:{filename}\` entity in memory MCP.
 
 ## Example: architecture.md
@@ -235,13 +235,13 @@ Each file is stored as a \`UserContext:{filename}\` entity in memory MCP.
 To force a context refresh, use:
 
 \`\`\`
-/mtd-sync-context --refresh
+/sync-context --refresh
 \`\`\`
 
 ## See Also
 
-- [/mtd-sync-context](../commands/mustard/mtd-sync-context.md) - Manual context loading
-- [/mtd-pipeline-feature](../commands/mustard/mtd-pipeline-feature.md) - Feature pipeline
+- [/sync-context](../commands/mustard/sync-context.md) - Manual context loading
+- [/feature](../commands/mustard/feature.md) - Feature pipeline
 - [pipeline.md](../core/pipeline.md) - Pipeline documentation
 `;
 
@@ -291,7 +291,7 @@ Follow naming conventions defined in [prompts/naming.md](../prompts/naming.md).
 Validation and build commands depend on the project stack. See [prompts/review.md](../prompts/review.md).
 
 ### L6 - Registry
-After creating/modifying entities, run \`/mtd-sync-registry\`.
+After creating/modifying entities, run \`/sync-registry\`.
 `;
 
   await writeFile(join(claudePath, 'core', 'enforcement.md'), enforcement);
@@ -302,7 +302,7 @@ After creating/modifying entities, run \`/mtd-sync-registry\`.
 ## Flow
 
 \`\`\`
-/mtd-pipeline-feature or /mtd-pipeline-bugfix
+/feature or /bugfix
          │
          ▼
     EXPLORE (analysis)
@@ -325,11 +325,11 @@ After creating/modifying entities, run \`/mtd-sync-registry\`.
 
 | Command | Description |
 |---------|-------------|
-| /mtd-pipeline-feature <name> | Starts feature pipeline |
-| /mtd-pipeline-bugfix <error> | Starts bugfix pipeline |
-| /mtd-pipeline-approve | Approves spec for implementation |
-| /mtd-pipeline-complete | Finalizes pipeline |
-| /mtd-pipeline-resume | Resumes active pipeline |
+| /feature <name> | Starts feature pipeline |
+| /bugfix <error> | Starts bugfix pipeline |
+| /approve | Approves spec for implementation |
+| /complete | Finalizes pipeline |
+| /resume | Resumes active pipeline |
 `;
 
   await writeFile(join(claudePath, 'core', 'pipeline.md'), pipeline);
@@ -535,7 +535,7 @@ Place markdown files here to provide context to Claude during implementations.
 
 ## Purpose
 
-Files in this folder are loaded into memory MCP at the start of \`/mtd-pipeline-feature\` or \`/mtd-pipeline-bugfix\` pipelines.
+Files in this folder are loaded into memory MCP at the start of \`/feature\` or \`/bugfix\` pipelines.
 This gives Claude instant access to project specifications, architecture decisions, and patterns.
 
 ## Supported Files
@@ -561,7 +561,7 @@ Any \`.md\` file placed in this folder will be automatically loaded.
 
 ## How It Works
 
-Files are automatically loaded at the start of \`/mtd-pipeline-feature\` or \`/mtd-pipeline-bugfix\` pipelines.
+Files are automatically loaded at the start of \`/feature\` or \`/bugfix\` pipelines.
 Each file is stored as a \`UserContext:{filename}\` entity in memory MCP.
 
 ## Example: architecture.md
@@ -585,13 +585,13 @@ Each file is stored as a \`UserContext:{filename}\` entity in memory MCP.
 To force a context refresh, use:
 
 \`\`\`
-/mtd-sync-context --refresh
+/sync-context --refresh
 \`\`\`
 
 ## See Also
 
-- [/mtd-sync-context](../commands/mustard/mtd-sync-context.md) - Manual context loading
-- [/mtd-pipeline-feature](../commands/mustard/mtd-pipeline-feature.md) - Feature pipeline
+- [/sync-context](../commands/mustard/sync-context.md) - Manual context loading
+- [/feature](../commands/mustard/feature.md) - Feature pipeline
 - [pipeline.md](../core/pipeline.md) - Pipeline documentation
 `;
 

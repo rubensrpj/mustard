@@ -1,12 +1,12 @@
-# /mtd-git-push - Commit and Push
+# /commit-push - Commit and Push
 
 > Creates commit and sends to remote repository.
 
 ## Usage
 
 ```
-/mtd-git-push
-/mtd-git-push "message"
+/commit-push
+/commit-push "message"
 ```
 
 ## What It Does
@@ -19,10 +19,10 @@
 ## Flow
 
 ```
-/mtd-git-push
+/commit-push
      │
      ▼
-  /mtd-git-commit
+  /commit
      │
      ▼
   git push
@@ -38,17 +38,17 @@
 
 ```bash
 # Commit and push with auto-generated message
-/mtd-git-push
+/commit-push
 
 # With specific message
-/mtd-git-push "feat: add email field"
+/commit-push "feat: add email field"
 ```
 
 ## Output
 
 ```
 📋 Changes detected:
-- M src/mtd-pipeline-features/contract/hooks/useContract.ts
+- M src/features/contract/hooks/useContract.ts
 
 📝 Generated message:
 fix: update contract validation
@@ -59,6 +59,6 @@ fix: update contract validation
 
 ## Notes
 
-- Executes `/mtd-git-commit` first
+- Executes `/commit` first
 - Pushes to current branch
 - Uses `-u` if branch has no upstream

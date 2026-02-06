@@ -1,12 +1,12 @@
-# /mtd-sync-dependencies - Instalar Dependências
+# /install-deps - Instalar Dependencias
 
 > Installs dependencies across all detected projects.
 
 ## Usage
 
 ```
-/mtd-sync-dependencies
-/mtd-sync-dependencies --project=<name>
+/install-deps
+/install-deps --project=<name>
 ```
 
 ## What It Does
@@ -59,7 +59,7 @@ The command detects and handles monorepo structures:
 ### Monorepo Flow
 
 ```
-/mtd-sync-dependencies
+/install-deps
       │
       ├── Check for monorepo markers at root
       │   ├── pnpm-workspace.yaml?
@@ -78,7 +78,7 @@ The command detects and handles monorepo structures:
 ## Flow (Single Projects)
 
 ```
-/mtd-sync-dependencies
+/install-deps
       │
       ├── Glob for manifest files
       │   ├── **/package.json
@@ -104,9 +104,9 @@ The command detects and handles monorepo structures:
 ## Options
 
 ```
-/mtd-sync-dependencies                     # All detected projects
-/mtd-sync-dependencies --project=api       # Specific project folder
-/mtd-sync-dependencies --project=web       # Specific project folder
+/install-deps                     # All detected projects
+/install-deps --project=api       # Specific project folder
+/install-deps --project=web       # Specific project folder
 ```
 
 ## Output

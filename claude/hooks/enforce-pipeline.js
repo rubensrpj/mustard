@@ -37,10 +37,10 @@ Check via memory MCP:
 2. Is it in "implement" phase?
 
 If NO active pipeline:
-→ Use /mtd-pipeline-feature or /mtd-pipeline-bugfix to start
+→ Use /feature or /bugfix to start
 
 If pipeline exists but not in "implement":
-→ Approve the spec first with /mtd-pipeline-approve`
+→ Approve the spec first with /approve`
       }
     };
     console.log(JSON.stringify(response));

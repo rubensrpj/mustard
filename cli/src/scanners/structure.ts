@@ -204,40 +204,94 @@ function detectFolderStyle(directories: string[]): string {
 }
 
 /**
+ * Parse workspaces field from package.json
+ * Supports npm, yarn (both array and object formats), and bun workspaces
+ */
+async function parsePackageJsonWorkspaces(projectPath: string): Promise<string[]> {
+  try {
+    const pkgPath = join(projectPath, 'package.json');
+    const pkg = JSON.parse(await readFile(pkgPath, 'utf-8')) as {
+      workspaces?: string[] | { packages?: string[] };
+    };
+
+    if (!pkg.workspaces) {
+      return [];
+    }
+
+    // Handle array format (npm, bun, yarn classic)
+    if (Array.isArray(pkg.workspaces)) {
+      return pkg.workspaces;
+    }
+
+    // Handle object format with packages key (yarn berry)
+    if (typeof pkg.workspaces === 'object' && pkg.workspaces.packages) {
+      return pkg.workspaces.packages;
+    }
+
+    return [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Resolve workspace patterns to actual subprojects
+ */
+async function resolveWorkspacePatterns(projectPath: string, patterns: string[]): Promise<Subproject[]> {
+  const subprojects: Subproject[] = [];
+
+  for (const pattern of patterns) {
+    const matches = await glob(pattern, { cwd: projectPath });
+    for (const match of matches) {
+      const pkgJsonPath = join(projectPath, match, 'package.json');
+      try {
+        const pkgJson = JSON.parse(await readFile(pkgJsonPath, 'utf-8')) as { name?: string };
+        subprojects.push({
+          name: pkgJson.name ?? match,
+          path: match
+        });
+      } catch {
+        subprojects.push({ name: match, path: match });
+      }
+    }
+  }
+
+  return subprojects;
+}
+
+/**
  * Get subprojects in monorepo
  */
 async function getSubprojects(projectPath: string): Promise<Subproject[]> {
   const subprojects: Subproject[] = [];
 
-  // Check for pnpm workspace
+  // Check for pnpm workspace first
+  let pnpmWorkspaceFound = false;
   try {
     const workspaceFile = join(projectPath, 'pnpm-workspace.yaml');
     const content = await readFile(workspaceFile, 'utf-8');
     // Simple yaml parsing for packages field
     const packagesMatch = content.match(/packages:\s*\n((?:\s+-\s*.+\n?)+)/);
     if (packagesMatch) {
+      pnpmWorkspaceFound = true;
       const packages = packagesMatch[1]!
         .split('\n')
         .map(line => line.replace(/^\s*-\s*['"]?/, '').replace(/['"]?\s*$/, ''))
         .filter(Boolean);
 
-      for (const pkg of packages) {
-        const matches = await glob(pkg, { cwd: projectPath });
-        for (const match of matches) {
-          const pkgJsonPath = join(projectPath, match, 'package.json');
-          try {
-            const pkgJson = JSON.parse(await readFile(pkgJsonPath, 'utf-8')) as { name?: string };
-            subprojects.push({
-              name: pkgJson.name ?? match,
-              path: match
-            });
-          } catch {
-            subprojects.push({ name: match, path: match });
-          }
-        }
-      }
+      const resolved = await resolveWorkspacePatterns(projectPath, packages);
+      subprojects.push(...resolved);
     }
   } catch { /* ignored */ }
+
+  // If no pnpm workspace, try package.json workspaces (npm, yarn, bun)
+  if (!pnpmWorkspaceFound) {
+    const workspacePatterns = await parsePackageJsonWorkspaces(projectPath);
+    if (workspacePatterns.length > 0) {
+      const resolved = await resolveWorkspacePatterns(projectPath, workspacePatterns);
+      subprojects.push(...resolved);
+    }
+  }
 
   // Check for .NET projects
   const csprojFiles = await glob('**/*.csproj', {

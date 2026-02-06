@@ -265,7 +265,7 @@ getPath('Product', 'be', 'svc')
 After creating/modifying entities, update the registry:
 
 ```bash
-/mtd-sync-registry
+/sync-registry
 ```
 
 ### When to Sync

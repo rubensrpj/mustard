@@ -1,4 +1,4 @@
-# /mtd-pipeline-feature - Feature Pipeline
+# /feature - Feature Pipeline
 
 > Single entry point for implementing new features.
 > **v2.3** - Persistence via memory MCP, auto context-loading.
@@ -6,9 +6,9 @@
 ## Usage
 
 ```
-/mtd-pipeline-feature <name>
-/mtd-pipeline-feature Invoice
-/mtd-pipeline-feature "Stripe Integration"
+/feature <name>
+/feature Invoice
+/feature "Stripe Integration"
 ```
 
 ## What It Does
@@ -17,15 +17,15 @@
 2. **Creates pipeline** in memory MCP
 3. **Explores** requirements via grepai + Task(Explore)
 4. **Creates spec** in memory MCP
-5. **Awaits approval** (/mtd-pipeline-approve)
+5. **Awaits approval** (/approve)
 6. **Implements** via Task(general-purpose)
-7. **Validates** via /mtd-validate-build
-8. **Completes** via /mtd-pipeline-complete
+7. **Validates** via /validate
+8. **Completes** via /complete
 
 ## Pipeline (Native Types)
 
 ```
-/mtd-pipeline-feature <name>
+/feature <name>
      │
      ▼
 ┌────────────────────────────────┐
@@ -74,7 +74,7 @@ const isStale = !context.entities?.length || context.entities[0]?.observations?.
 });
 
 if (isStale) {
-  // Auto-load context (see /mtd-sync-context for details)
+  // Auto-load context (see /sync-context for details)
   // 1. Glob .claude/context/*.md
   // 2. Read each file, create UserContext:* entities
   // 3. Read CLAUDE.md, create ProjectContext entity
@@ -141,7 +141,7 @@ mcp__memory__create_relations({
 ### Phase 3: Orchestrate Implementation
 
 ```javascript
-// After /mtd-pipeline-approve, execute via Task
+// After /approve, execute via Task
 Task({
   subagent_type: "general-purpose",
   model: "opus",
@@ -180,13 +180,13 @@ Implement according to approved spec.
 
 ```bash
 # New entity
-/mtd-pipeline-feature Invoice
+/feature Invoice
 
 # Feature with description
-/mtd-pipeline-feature "Add email field to Person"
+/feature "Add email field to Person"
 
 # Integration
-/mtd-pipeline-feature "Payment gateway integration"
+/feature "Payment gateway integration"
 ```
 
 ## Output
@@ -214,7 +214,7 @@ Task(general-purpose): Review - Reviewing...
 Files created:
 - src/schema/invoice.ts
 - Modules/Invoice/...
-- src/mtd-pipeline-features/invoice/...
+- src/features/invoice/...
 ```
 
 ## Generated Spec
@@ -237,7 +237,7 @@ Create Invoice entity with items...
 - [ ] Modules/Invoice/...
 
 ### Frontend
-- [ ] src/mtd-pipeline-features/invoice/...
+- [ ] src/features/invoice/...
 
 ## Tasks
 1. [ ] Create schema
@@ -250,17 +250,17 @@ Create Invoice entity with items...
 
 | Phase | Command | Description |
 |-------|---------|-------------|
-| Start | `/mtd-pipeline-feature` | Creates pipeline, explores, creates spec |
-| Approval | `/mtd-pipeline-approve` | Enables implement phase |
-| Validation | `/mtd-validate-build` | Build + type-check |
-| End | `/mtd-pipeline-complete` | Finalizes and cleans pipeline |
-| Resume | `/mtd-pipeline-resume` | Resumes existing pipeline |
+| Start | `/feature` | Creates pipeline, explores, creates spec |
+| Approval | `/approve` | Enables implement phase |
+| Validation | `/validate` | Build + type-check |
+| End | `/complete` | Finalizes and cleans pipeline |
+| Resume | `/resume` | Resumes existing pipeline |
 
 ## Notes
 
 - **Auto-load context** at start (if missing or > 24h old)
 - **Always** creates spec before implementing
-- **Always** awaits approval (/mtd-pipeline-approve)
+- **Always** awaits approval (/approve)
 - Pipeline persisted via **memory MCP** (not files)
 - Only **one active pipeline** at a time
 - **Uses only native types**: Explore, general-purpose
@@ -269,9 +269,9 @@ Create Invoice entity with items...
 
 ## See Also
 
-- [/mtd-pipeline-approve](./mtd-pipeline-approve.md) - Approve spec
-- [/mtd-pipeline-complete](./mtd-pipeline-complete.md) - Finalize pipeline
-- [/mtd-pipeline-resume](./mtd-pipeline-resume.md) - Resume pipeline
-- [/mtd-pipeline-bugfix](./mtd-pipeline-bugfix.md) - Pipeline for bugs
-- [/mtd-sync-context](./mtd-sync-context.md) - Manually load context
+- [/approve](./approve.md) - Approve spec
+- [/complete](./complete.md) - Finalize pipeline
+- [/resume](./resume.md) - Resume pipeline
+- [/bugfix](./bugfix.md) - Pipeline for bugs
+- [/sync-context](./sync-context.md) - Manually load context
 - [context/README.md](../context/README.md) - How to create context files

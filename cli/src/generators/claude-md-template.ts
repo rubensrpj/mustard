@@ -1,4 +1,5 @@
 import type { ProjectInfo, Analysis, RegistryPatterns } from '../types.js';
+import { getRunCommand } from '../services/package-manager.js';
 
 /**
  * Generate CLAUDE.md using templates (fallback when Ollama is unavailable)
@@ -94,68 +95,63 @@ function generateCommands(projectInfo: ProjectInfo): string {
   const hasDotnet = projectInfo.stacks.some(s => s.name === 'dotnet');
   const hasPython = projectInfo.stacks.some(s => s.name === 'python');
 
-  let runCmd = 'npm run dev';
-  if (hasNode) runCmd = `${projectInfo.packageManager ?? 'npm'} run dev`;
+  let runCmd = getRunCommand(projectInfo.packageManager ?? 'npm', 'dev');
+  if (hasNode) runCmd = getRunCommand(projectInfo.packageManager ?? 'npm', 'dev');
   if (hasDotnet) runCmd = 'dotnet run';
   if (hasPython) runCmd = 'python main.py';
 
   return `## 4. Available Commands
 
-> **Note:** Mustard commands use the \`mtd-{category}-{action}\` pattern.
-> They are in \`commands/mustard/\`. Create your own in \`commands/\` - preserved on updates.
-
 ### Pipeline
 
 | Command | Description |
 |---------|-------------|
-| \`/mtd-pipeline-feature <name>\` | **Single entry point for features** - Starts full pipeline |
-| \`/mtd-pipeline-bugfix <error>\` | **Single entry point for bugs** - Diagnosis + fix |
-| \`/mtd-pipeline-approve\` | Approve spec and start implementation |
-| \`/mtd-pipeline-complete\` | Finalize pipeline |
-| \`/mtd-pipeline-resume\` | Resume active pipeline |
+| \`/feature <name>\` | **Single entry point for features** - Starts full pipeline |
+| \`/bugfix <error>\` | **Single entry point for bugs** - Diagnosis + fix |
+| \`/approve\` | Approve spec and start implementation |
+| \`/complete\` | Finalize pipeline |
+| \`/resume\` | Resume active pipeline |
 
 ### Git
 
 | Command | Description |
 |---------|-------------|
-| \`/mtd-git-commit\` | Simple commit |
-| \`/mtd-git-push\` | Commit and push |
-| \`/mtd-git-merge\` | Merge to main |
+| \`/commit\` | Simple commit |
+| \`/commit-push\` | Commit and push |
+| \`/merge-main\` | Merge to main |
 
-### Validate
+### Validation
 
 | Command | Description |
 |---------|-------------|
-| \`/mtd-validate-build\` | Build + type-check |
-| \`/mtd-validate-status\` | Consolidated status |
+| \`/validate\` | Build + type-check |
+| \`/status\` | Consolidated status |
 
 ### Sync
 
 | Command | Description |
 |---------|-------------|
-| \`/mtd-sync-registry\` | Update Entity Registry |
-| \`/mtd-sync-dependencies\` | Install dependencies |
-| \`/mtd-sync-context\` | Load project context |
+| \`/sync-registry\` | Update Entity Registry |
+| \`/install-deps\` | Install dependencies |
+| \`/sync-context\` | Load project context |
 
-### Report
+### Task Commands (L0 Universal Delegation)
 
-| Command | Description |
-|---------|-------------|
-| \`/mtd-report-daily\` | Daily progress report |
-| \`/mtd-report-weekly\` | Weekly progress report |
+| Command | Emoji | Description |
+|---------|-------|-------------|
+| \`/task-analyze <scope>\` | 🔍 | Code analysis via Task(Explore) |
+| \`/task-review <scope>\` | 🔎 | Code review via Task(general-purpose) |
+| \`/task-refactor <scope>\` | 📋⚙️ | Refactoring via Task(Plan) → Task(general-purpose) |
+| \`/task-docs <scope>\` | 📊 | Documentation via Task(general-purpose) |
 
-### Scan
-
-| Command | Description |
-|---------|-------------|
-| \`/mtd-scan-project\` | Scan project structure |`;
+> **CRITICAL:** These commands ensure ALL code activities are delegated to a separate context (Task), keeping the parent context clean.`;
 }
 
 function generatePipeline(): string {
   return `## 5. Single Pipeline
 
 \`\`\`
-/mtd-pipeline-feature or /mtd-pipeline-bugfix
+/feature or /bugfix
          │
          ▼
     EXPLORE (Task Explore)
@@ -262,7 +258,7 @@ function generateRules(projectInfo: ProjectInfo, analysis: Analysis): string {
 
 | Level | Rule | Description |
 |-------|------|-------------|
-| L0 | Delegation | Main Claude does NOT implement code |
+| L0 | Universal Delegation | ALL code activities MUST be delegated via Task (separate context) |
 | L1 | grepai | Prefer grepai for semantic search |
 | L2 | Pipeline | Pipeline required for features/bugs |
 | L3 | Patterns | Follow naming conventions |

@@ -18,7 +18,7 @@ mcp__memory__search_nodes({ query: "pipeline phase" })
 
 | Result | Action |
 |--------|--------|
-| No pipeline | Free analysis, but code edits require /mtd-pipeline-feature or /mtd-pipeline-bugfix |
+| No pipeline | Free analysis, but code edits require /feature or /bugfix |
 | Pipeline in "explore" | Continue exploration or present spec for approval |
 | Pipeline in "implement" | Edits allowed, follow spec |
 
@@ -29,9 +29,9 @@ mcp__memory__search_nodes({ query: "pipeline phase" })
 | "How does X work?" | NO - free analysis |
 | "Where is Y?" | NO - free analysis |
 | "Explain Z" | NO - free analysis |
-| "Add field X" | YES - /mtd-pipeline-feature |
-| "Fix error Y" | YES - /mtd-pipeline-bugfix |
-| "Refactor Z" | YES - /mtd-pipeline-feature |
+| "Add field X" | YES - /feature |
+| "Fix error Y" | YES - /bugfix |
+| "Refactor Z" | YES - /feature |
 
 ---
 
@@ -50,7 +50,7 @@ mcp__memory__search_nodes({ query: "pipeline phase" })
 
 | Request | subagent_type | model | Prompt |
 |---------|---------------|-------|--------|
-| Bug fix | `general-purpose` | opus | `prompts/mtd-pipeline-bugfix.md` |
+| Bug fix | `general-purpose` | opus | `prompts/bugfix.md` |
 | New feature | `general-purpose` | opus | `prompts/orchestrator.md` |
 | Backend | `general-purpose` | opus | `prompts/backend.md` |
 | Frontend | `general-purpose` | opus | `prompts/frontend.md` |
@@ -112,7 +112,7 @@ Task({
 | Backend | `general-purpose` | opus | `prompts/backend.md` |
 | Frontend | `general-purpose` | opus | `prompts/frontend.md` |
 | Database | `general-purpose` | opus | `prompts/database.md` |
-| Bugfix | `general-purpose` | opus | `prompts/mtd-pipeline-bugfix.md` |
+| Bugfix | `general-purpose` | opus | `prompts/bugfix.md` |
 | Review | `general-purpose` | opus | `prompts/review.md` |
 | Report | `general-purpose` | sonnet | `prompts/report.md` |
 
@@ -124,57 +124,52 @@ Task({
 
 | Command | Description |
 |---------|-------------|
-| `/mtd-pipeline-feature <name>` | Single entry point for features |
-| `/mtd-pipeline-bugfix <error>` | Single entry point for bugs |
-
-### Pipeline (New)
-
-| Command | Description |
-|---------|-------------|
-| `/mtd-pipeline-approve` | Approve spec and enable implementation |
-| `/mtd-pipeline-complete` | Finalize pipeline (after validation) |
-| `/mtd-pipeline-resume` | Resume active pipeline |
+| `/feature <name>` | Single entry point for features |
+| `/bugfix <error>` | Single entry point for bugs |
+| `/approve` | Approve spec and enable implementation |
+| `/complete` | Finalize pipeline (after validation) |
+| `/resume` | Resume active pipeline |
 
 ### Git
 
 | Command | Description |
 |---------|-------------|
-| `/mtd-git-commit` | Simple commit |
-| `/mtd-git-push` | Commit and push |
-| `/mtd-git-merge` | Merge to main |
+| `/commit` | Simple commit |
+| `/commit-push` | Commit and push |
+| `/merge-main` | Merge to main |
 
 ### Validation
 
 | Command | Description |
 |---------|-------------|
-| `/mtd-validate-build` | Build + type-check |
-| `/mtd-validate-status` | Consolidated status |
-| `/mtd-scan-project` | Project reconnaissance |
+| `/validate` | Build + type-check |
+| `/status` | Consolidated status |
+| `/scan` | Project reconnaissance |
 
 ### Sync
 
 | Command | Description |
 |---------|-------------|
-| `/mtd-sync-registry` | Update Entity Registry |
+| `/sync-registry` | Update Entity Registry |
 | `/sync-types` | Regenerate TypeScript types |
-| `/mtd-sync-dependencies` | Install dependencies |
-| `/mtd-sync-context` | Load project context |
+| `/install-deps` | Install dependencies |
+| `/sync-context` | Load project context |
 
 ### Reports
 
 | Command | Description |
 |---------|-------------|
-| `/mtd-report-daily` | Daily commit report |
-| `/mtd-report-weekly` | Weekly consolidated report |
+| `/report-daily` | Daily commit report |
+| `/report-weekly` | Weekly consolidated report |
 
 ### Task Commands (L0 Universal Delegation)
 
 | Command | Emoji | Description |
 |---------|-------|-------------|
-| `/mtd-task-analyze <scope>` | 🔍 | Code analysis via Task(Explore) |
-| `/mtd-task-review <scope>` | 🔎 | Code review via Task(general-purpose) |
-| `/mtd-task-refactor <scope>` | 📋⚙️ | Refactoring via Task(Plan) → Task(general-purpose) |
-| `/mtd-task-docs <scope>` | 📊 | Documentation via Task(general-purpose) |
+| `/task-analyze <scope>` | 🔍 | Code analysis via Task(Explore) |
+| `/task-review <scope>` | 🔎 | Code review via Task(general-purpose) |
+| `/task-refactor <scope>` | 📋⚙️ | Refactoring via Task(Plan) → Task(general-purpose) |
+| `/task-docs <scope>` | 📊 | Documentation via Task(general-purpose) |
 
 > **IMPORTANT:** These commands ensure that ALL code activity is delegated to a separate context (Task), keeping the main (parent) context clean.
 
@@ -184,7 +179,7 @@ Task({
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│                    /mtd-pipeline-feature or /mtd-pipeline-bugfix                   │
+│                    /feature or /bugfix                                             │
 └───────────────────────────┬─────────────────────────────┘
                             ▼
 ┌─────────────────────────────────────────────────────────┐
@@ -237,11 +232,11 @@ Task({
 ```
 Request
     ↓
-Is it a bug? ──YES──→ /mtd-pipeline-bugfix
+Is it a bug? ──YES──→ /bugfix
     │
    NO
     ↓
-Is it a new feature? ──YES──→ /mtd-pipeline-feature
+Is it a new feature? ──YES──→ /feature
     │
    NO
     ↓
@@ -467,7 +462,7 @@ Spec:{name}
 ### Common Operations
 
 ```javascript
-// Create pipeline (/mtd-pipeline-feature)
+// Create pipeline (/feature)
 mcp__memory__create_entities({
   entities: [{
     name: "Pipeline:add-email",
@@ -480,7 +475,7 @@ mcp__memory__create_entities({
   }]
 })
 
-// Approve (/mtd-pipeline-approve)
+// Approve (/approve)
 mcp__memory__add_observations({
   observations: [{
     entityName: "Pipeline:add-email",
@@ -491,7 +486,7 @@ mcp__memory__add_observations({
 // Search for active
 mcp__memory__search_nodes({ query: "pipeline phase explore implement" })
 
-// Finalize (/mtd-pipeline-complete)
+// Finalize (/complete)
 mcp__memory__delete_entities({
   entityNames: ["Pipeline:add-email", "Spec:add-email"]
 })
@@ -533,19 +528,19 @@ mcp__memory__delete_entities({
 
 ### Commands - Pipeline
 
-- [feature](./commands/mtd-pipeline-feature.md)
-- [bugfix](./commands/mtd-pipeline-bugfix.md)
-- [approve](./commands/mtd-pipeline-approve.md)
-- [complete](./commands/mtd-pipeline-complete.md)
-- [resume](./commands/mtd-pipeline-resume.md)
+- [feature](./commands/mustard/feature.md)
+- [bugfix](./commands/mustard/bugfix.md)
+- [approve](./commands/mustard/approve.md)
+- [complete](./commands/mustard/complete.md)
+- [resume](./commands/mustard/resume.md)
 
 ### Commands - Other
 
-- [sync-registry](./commands/mtd-sync-registry.md)
-- [install-deps](./commands/mtd-sync-dependencies.md)
-- [load-context](./commands/mtd-sync-context.md)
-- [daily-report](./commands/mtd-report-daily.md)
-- [weekly-report](./commands/mtd-report-weekly.md)
+- [sync-registry](./commands/mustard/sync-registry.md)
+- [install-deps](./commands/mustard/install-deps.md)
+- [sync-context](./commands/mustard/sync-context.md)
+- [report-daily](./commands/mustard/report-daily.md)
+- [report-weekly](./commands/mustard/report-weekly.md)
 
 ### Context
 

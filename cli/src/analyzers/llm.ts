@@ -90,7 +90,7 @@ ${(analysis.rules ?? []).map(r => `- ${r}`).join('\n')}
 6. Entity Registry usage instructions
 
 Use markdown formatting. Be specific to this project.
-Include a section about the pipeline (/mtd-pipeline-feature, /mtd-pipeline-bugfix commands).
+Include a section about the pipeline (/feature, /bugfix commands).
 Include grepai as the preferred search tool.
 
 Return ONLY the markdown content, no code blocks wrapping it.`;

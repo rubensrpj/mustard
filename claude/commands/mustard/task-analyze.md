@@ -1,4 +1,4 @@
-# /mtd-task-analyze - Code Analysis
+# /task-analyze - Code Analysis
 
 > Analyzes code in a **separate Task context** (L0 Universal Delegation).
 > Use for any code exploration that doesn't fit feature/bugfix pipelines.
@@ -6,9 +6,9 @@
 ## Usage
 
 ```
-/mtd-task-analyze <scope>
-/mtd-task-analyze authentication flow
-/mtd-task-analyze "database schema"
+/task-analyze <scope>
+/task-analyze authentication flow
+/task-analyze "database schema"
 ```
 
 ## What It Does
@@ -20,7 +20,7 @@
 ## Pipeline
 
 ```
-/mtd-task-analyze <scope>
+/task-analyze <scope>
      │
      ▼
 ┌────────────────────────────────┐
@@ -74,16 +74,16 @@ ${scope}
 
 ```bash
 # Analyze a flow
-/mtd-task-analyze authentication flow
+/task-analyze authentication flow
 
 # Analyze a module
-/mtd-task-analyze "payment processing"
+/task-analyze "payment processing"
 
 # Analyze patterns
-/mtd-task-analyze error handling patterns
+/task-analyze error handling patterns
 
 # Analyze dependencies
-/mtd-task-analyze Contract entity dependencies
+/task-analyze Contract entity dependencies
 ```
 
 ## Output
@@ -127,10 +127,10 @@ AuthService → JwtService → RedisCache
 
 | Command | Description |
 |---------|-------------|
-| `/mtd-task-review` | Code review with quality checks |
-| `/mtd-task-refactor` | Refactoring with plan |
-| `/mtd-task-docs` | Documentation generation |
-| `/mtd-pipeline-feature` | Full feature implementation |
+| `/task-review` | Code review with quality checks |
+| `/task-refactor` | Refactoring with plan |
+| `/task-docs` | Documentation generation |
+| `/feature` | Full feature implementation |
 
 ## See Also
 

@@ -1,11 +1,11 @@
-# /mtd-scan-project - Escanear Projeto
+# /scan - Escanear Projeto
 
 > Scans the project and detects stacks, patterns, and entities.
 
 ## Usage
 
 ```
-/mtd-scan-project
+/scan
 ```
 
 ## What It Does
@@ -19,7 +19,7 @@
 ## Flow
 
 ```
-/mtd-scan-project
+/scan
      │
      ▼
 Detect manifest files

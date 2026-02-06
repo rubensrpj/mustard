@@ -1,4 +1,4 @@
-# /mtd-task-review - Code Review
+# /task-review - Code Review
 
 > Performs code review in a **separate Task context** (L0 Universal Delegation).
 > Use for QA, SOLID validation, security checks, or general code quality reviews.
@@ -6,9 +6,9 @@
 ## Usage
 
 ```
-/mtd-task-review <scope>
-/mtd-task-review src/services/auth
-/mtd-task-review "last commit"
+/task-review <scope>
+/task-review src/services/auth
+/task-review "last commit"
 ```
 
 ## What It Does
@@ -20,7 +20,7 @@
 ## Pipeline
 
 ```
-/mtd-task-review <scope>
+/task-review <scope>
      │
      ▼
 ┌────────────────────────────────┐
@@ -92,16 +92,16 @@ Severity levels:
 
 ```bash
 # Review a directory
-/mtd-task-review src/services/payment
+/task-review src/services/payment
 
 # Review an entity
-/mtd-task-review "Contract entity implementation"
+/task-review "Contract entity implementation"
 
 # Review recent changes
-/mtd-task-review "changes in last commit"
+/task-review "changes in last commit"
 
 # Security focused
-/mtd-task-review "security in auth module"
+/task-review "security in auth module"
 ```
 
 ## Output
@@ -153,9 +153,9 @@ Code Review Complete:
 
 | Command | Description |
 |---------|-------------|
-| `/mtd-task-analyze` | Exploratory code analysis |
-| `/mtd-task-refactor` | Refactoring with plan |
-| `/mtd-pipeline-bugfix` | Fix bugs found in review |
+| `/task-analyze` | Exploratory code analysis |
+| `/task-refactor` | Refactoring with plan |
+| `/bugfix` | Fix bugs found in review |
 
 ## See Also
 

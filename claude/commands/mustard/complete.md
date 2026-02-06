@@ -1,17 +1,17 @@
-# /mtd-pipeline-complete - Finalizar Pipeline
+# /complete - Finalizar Pipeline
 
 > Finalizes the active pipeline after successful validation.
 
 ## Usage
 
 ```
-/mtd-pipeline-complete
-/mtd-pipeline-complete [final notes]
+/complete
+/complete [final notes]
 ```
 
 ## What It Does
 
-1. **Executes** /mtd-validate-build (build + type-check)
+1. **Executes** /validate (build + type-check)
 2. **Verifies** validation passed
 3. **Records** completion in memory MCP
 4. **Cleans** pipeline entities
@@ -69,22 +69,22 @@ Validation: ✅ Passed
 Total time: ${calculateDuration(pipeline)}
 
 Next steps:
-- Use /mtd-git-commit to commit changes
-- Use /mtd-sync-registry if you created new entities`;
+- Use /commit to commit changes
+- Use /sync-registry if you created new entities`;
 ```
 
 ## Flow
 
 ```
-/mtd-pipeline-feature name
+/feature name
     ↓
-EXPLORE → SPEC → /mtd-pipeline-approve
+EXPLORE → SPEC → /approve
     ↓
 IMPLEMENT
     ↓
-/mtd-validate-build
+/validate
     ↓
-/mtd-pipeline-complete  ← YOU ARE HERE
+/complete  ← YOU ARE HERE
     ↓
 COMPLETED (pipeline removed)
 ```
@@ -116,8 +116,8 @@ Modified files:
 - tests/customer.test.ts
 
 Next steps:
-- /mtd-git-commit to commit changes
-- /mtd-sync-registry if entities created
+- /commit to commit changes
+- /sync-registry if entities created
 ```
 
 ### Error - Validation Failed
@@ -140,32 +140,32 @@ Pipeline remains active.
 ```
 ⚠️ No active pipeline found.
 
-Use /mtd-pipeline-resume to check status.
-Use /mtd-pipeline-feature to start new pipeline.
+Use /resume to check status.
+Use /feature to start new pipeline.
 ```
 
 ## Validation Executed
 
-The command runs /mtd-validate-build internally, which auto-detects projects:
+The command runs /validate internally, which auto-detects projects:
 
 ```
-/mtd-validate-build
+/validate
     ├── Detects all projects by manifest files
     ├── Runs appropriate build command per stack
     └── Reports errors if any
 ```
 
-See [/mtd-validate-build](./mtd-validate-build.md) for stack detection details.
+See [/validate](./validate.md) for stack detection details.
 
 ## Notes
 
 - **Always** runs validation before finalizing
 - If validation fails, pipeline remains active
 - History can be kept by removing `delete_entities` call
-- After completion, start new pipeline with /mtd-pipeline-feature or /mtd-pipeline-bugfix
+- After completion, start new pipeline with /feature or /bugfix
 
 ## See Also
 
-- [/mtd-validate-build](./mtd-validate-build.md) - Validate without completing
-- [/mtd-pipeline-approve](./mtd-pipeline-approve.md) - Approve spec
-- [/mtd-pipeline-feature](./mtd-pipeline-feature.md) - Start new pipeline
+- [/validate](./validate.md) - Validate without completing
+- [/approve](./approve.md) - Approve spec
+- [/feature](./feature.md) - Start new pipeline

@@ -1,4 +1,4 @@
-# /mtd-pipeline-resume - Resume Pipeline
+# /resume - Resume Pipeline
 
 > Resumes an active pipeline, loading complete context.
 > **v2.3** - Context refresh if stale.
@@ -6,8 +6,8 @@
 ## Usage
 
 ```
-/mtd-pipeline-resume
-/mtd-pipeline-resume [pipeline-name]
+/resume
+/resume [pipeline-name]
 ```
 
 ## What It Does
@@ -38,7 +38,7 @@ const isStale = !context.entities?.length || context.entities[0]?.observations?.
 
 if (isStale) {
   console.log("📚 Context outdated, reloading...");
-  // Auto-refresh context (see /mtd-sync-context)
+  // Auto-refresh context (see /sync-context)
 }
 
 // 1. Search for active pipeline
@@ -49,8 +49,8 @@ const result = await mcp__memory__search_nodes({
 if (!result.entities.length) {
   return `ℹ️ No active pipeline.
 
-Use /mtd-pipeline-feature <name> to start a new pipeline.
-Use /mtd-pipeline-bugfix <error> to fix a bug.`;
+Use /feature <name> to start a new pipeline.
+Use /bugfix <error> to fix a bug.`;
 }
 
 // 2. Load details
@@ -88,7 +88,7 @@ Continue from where you left off?`;
 ```
 [New session/conversation]
         ↓
-/mtd-pipeline-resume
+/resume
         ↓
 memory MCP: search_nodes
         ↓
@@ -142,7 +142,7 @@ Continue analysis?
 **Next steps:**
 1. Implement backend
 2. Implement frontend
-3. Run /mtd-validate-build
+3. Run /validate
 
 Continue implementation?
 ```
@@ -156,8 +156,8 @@ Recently completed pipelines:
 - 2026-02-04: solid-user (completed)
 - 2026-02-03: add-validation (completed)
 
-Use /mtd-pipeline-feature <name> to start a new pipeline.
-Use /mtd-pipeline-bugfix <error> to fix a bug.
+Use /feature <name> to start a new pipeline.
+Use /bugfix <error> to fix a bug.
 ```
 
 ## Arguments
@@ -173,7 +173,7 @@ If name not specified, searches for any active pipeline.
 ### 1. Resume after break
 
 ```
-User: /mtd-pipeline-resume
+User: /resume
 Claude: [Loads Pipeline:add-email from memory]
         "Resuming add-email pipeline.
          Phase: implement. Backend pending.
@@ -185,7 +185,7 @@ Claude: [Loads Pipeline:add-email from memory]
 ```
 [New conversation]
 User: "Continue what you were doing"
-Claude: [automatic /mtd-pipeline-resume]
+Claude: [automatic /resume]
         "Active pipeline found: solid-refactor
          Phase: explore. Spec in progress."
 ```
@@ -193,14 +193,14 @@ Claude: [automatic /mtd-pipeline-resume]
 ### 3. Check for active pipeline
 
 ```
-User: /mtd-pipeline-resume
+User: /resume
 Claude: "No active pipeline.
-         Use /mtd-pipeline-feature to start."
+         Use /feature to start."
 ```
 
 ## Auto Loading
 
-Claude can automatically call `/mtd-pipeline-resume` when detecting:
+Claude can automatically call `/resume` when detecting:
 - Messages like "continue", "resume", "where were we"
 - New session start when there's an active pipeline
 
@@ -214,7 +214,7 @@ Claude can automatically call `/mtd-pipeline-resume` when detecting:
 
 ## See Also
 
-- [/mtd-pipeline-feature](./mtd-pipeline-feature.md) - Start feature pipeline
-- [/mtd-pipeline-approve](./mtd-pipeline-approve.md) - Approve spec
-- [/mtd-pipeline-complete](./mtd-pipeline-complete.md) - Finalize pipeline
-- [/mtd-sync-context](./mtd-sync-context.md) - Manually load context
+- [/feature](./feature.md) - Start feature pipeline
+- [/approve](./approve.md) - Approve spec
+- [/complete](./complete.md) - Finalize pipeline
+- [/sync-context](./sync-context.md) - Manually load context

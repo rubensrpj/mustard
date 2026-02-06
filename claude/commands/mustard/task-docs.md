@@ -1,4 +1,4 @@
-# /mtd-task-docs - Documentation Generation
+# /task-docs - Documentation Generation
 
 > Generates documentation in a **separate Task context** (L0 Universal Delegation).
 > Use for API docs, README updates, code comments, or technical documentation.
@@ -6,9 +6,9 @@
 ## Usage
 
 ```
-/mtd-task-docs <scope>
-/mtd-task-docs "API endpoints"
-/mtd-task-docs "Contract entity"
+/task-docs <scope>
+/task-docs "API endpoints"
+/task-docs "Contract entity"
 ```
 
 ## What It Does
@@ -21,7 +21,7 @@
 ## Pipeline
 
 ```
-/mtd-task-docs <scope>
+/task-docs <scope>
      │
      ▼
 ┌────────────────────────────────┐
@@ -103,16 +103,16 @@ Indicate where it should be saved (file path).
 
 ```bash
 # Document API endpoints
-/mtd-task-docs "all API endpoints"
+/task-docs "all API endpoints"
 
 # Document an entity
-/mtd-task-docs "Contract entity"
+/task-docs "Contract entity"
 
 # Update README
-/mtd-task-docs "update README with new features"
+/task-docs "update README with new features"
 
 # Document a module
-/mtd-task-docs "payment module architecture"
+/task-docs "payment module architecture"
 ```
 
 ## Output
@@ -184,9 +184,9 @@ Save to docs/api/contracts.md? [Y/n]
 
 | Command | Description |
 |---------|-------------|
-| `/mtd-task-analyze` | Analyze code before documenting |
-| `/mtd-task-review` | Review documentation quality |
-| `/mtd-sync-context` | Update context files |
+| `/task-analyze` | Analyze code before documenting |
+| `/task-review` | Review documentation quality |
+| `/sync-context` | Update context files |
 
 ## See Also
 

@@ -30,7 +30,7 @@ EXPLORE: Claude analyzes with grepai
 SPEC: "Will modify X, Y, Z. Approve?"
          │
          ▼
-You: /mtd-pipeline-approve
+You: /approve
          │
          ▼
 IMPLEMENT: Database → Backend → Frontend
@@ -39,20 +39,20 @@ IMPLEMENT: Database → Backend → Frontend
 VALIDATE: Build + type-check
          │
          ▼
-You: /mtd-pipeline-complete
+You: /complete
 ```
 
 ## Commands
 
 | Command | Description |
 |---------|-------------|
-| `/mtd-pipeline-feature <name>` | Start feature |
-| `/mtd-pipeline-bugfix <error>` | Start bugfix |
-| `/mtd-pipeline-approve` | Approve spec |
-| `/mtd-pipeline-complete` | Finalize |
-| `/mtd-pipeline-resume` | Resume in new session |
-| `/mtd-validate-build` | Build + type-check |
-| `/mtd-validate-status` | Project status |
+| `/feature <name>` | Start feature |
+| `/bugfix <error>` | Start bugfix |
+| `/approve` | Approve spec |
+| `/complete` | Finalize |
+| `/resume` | Resume in new session |
+| `/validate` | Build + type-check |
+| `/status` | Project status |
 
 ## Example: Adding a Field
 
@@ -74,14 +74,14 @@ Claude: [Explores with grepai]
 
         Approve?"
 
-You: /mtd-pipeline-approve
+You: /approve
 
 Claude: [Implements all layers]
         [Runs build]
 
         "Done. Finalize?"
 
-You: /mtd-pipeline-complete
+You: /complete
 ```
 
 ## Example: Bug Fix
@@ -100,12 +100,12 @@ Claude: [Finds cause in ContractService.cs:145]
 
         Approve?"
 
-You: /mtd-pipeline-approve
+You: /approve
 
 Claude: [Fixes, validates]
         "Done. Finalize?"
 
-You: /mtd-pipeline-complete
+You: /complete
 ```
 
 ## Analysis vs Implementation
@@ -120,7 +120,7 @@ Claude auto-detects intent:
 If you close Claude:
 
 ```
-You: /mtd-pipeline-resume
+You: /resume
 
 Claude: "Active: add-email-person
         Phase: implement
@@ -143,9 +143,9 @@ Applied automatically:
 
 ## Tips
 
-1. **Just describe** - No need to type `/mtd-pipeline-feature`, Claude detects intent
-2. **Review the spec** - Read before `/mtd-pipeline-approve`
-3. **Use resume** - `/mtd-pipeline-resume` continues where you left off
+1. **Just describe** - No need to type `/feature`, Claude detects intent
+2. **Review the spec** - Read before `/approve`
+3. **Use resume** - `/resume` continues where you left off
 4. **Use update** - `mustard update` gets new features without losing customizations
 5. **Use sync** - `mustard sync` updates prompts with current project context
 
@@ -169,7 +169,7 @@ Your customizations in prompts are preserved - only the `<!-- MUSTARD:AUTO -->` 
 
 | Issue | Solution |
 |-------|----------|
-| "No active pipeline" | Use `/mtd-pipeline-feature <name>` |
+| "No active pipeline" | Use `/feature <name>` |
 | "Grep/Glob blocked" | Normal - Claude uses grepai |
 | Build error | Claude shows errors, fix and continue |
 | Lost customizations | Check `.claude.backup.{timestamp}` |

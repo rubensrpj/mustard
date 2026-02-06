@@ -1,12 +1,12 @@
-# /mtd-git-commit - Simple Commit
+# /commit - Simple Commit
 
 > Creates a commit with current changes.
 
 ## Usage
 
 ```
-/mtd-git-commit
-/mtd-git-commit "message"
+/commit
+/commit "message"
 ```
 
 ## What It Does
@@ -18,7 +18,7 @@
 ## Flow
 
 ```
-/mtd-git-commit
+/commit
    │
    ▼
 git status
@@ -49,10 +49,10 @@ git commit
 
 ```bash
 # Commit with auto-generated message
-/mtd-git-commit
+/commit
 
 # Commit with specific message
-/mtd-git-commit "feat: add email field to Person"
+/commit "feat: add email field to Person"
 ```
 
 ## Message Format
@@ -80,8 +80,8 @@ Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>
 
 ```
 📋 Changes detected:
-- M src/mtd-pipeline-features/contract/hooks/useContract.ts
-- A src/mtd-pipeline-features/contract/components/ContractForm.tsx
+- M src/features/contract/hooks/useContract.ts
+- A src/features/contract/components/ContractForm.tsx
 
 📝 Generated message:
 feat: add ContractForm component
@@ -96,7 +96,7 @@ Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>
 
 ## Notes
 
-- Does **not** push (use `/mtd-git-push` for that)
+- Does **not** push (use `/commit-push` for that)
 - Does **not** commit sensitive files (.env, credentials)
 - Adds specific files, does not use `git add -A`
 - Always includes co-author

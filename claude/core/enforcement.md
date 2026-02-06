@@ -13,7 +13,7 @@
 | L3 | Naming | Follow naming conventions | `prompts/naming.md` |
 | L4 | Validation | Code must pass static validation | `prompts/review.md` |
 | L5 | Build | Project must compile/run | `prompts/review.md` |
-| L6 | Registry | Sync registry after creating entities | `commands/mtd-sync-registry.md` |
+| L6 | Registry | Sync registry after creating entities | `commands/sync-registry.md` |
 
 ---
 
@@ -38,7 +38,7 @@ If NO → STOP and DELEGATE
 
 | Request | subagent_type | model | Prompt |
 |---------|---------------|-------|--------|
-| Bug fix | `general-purpose` | opus | `prompts/mtd-pipeline-bugfix.md` |
+| Bug fix | `general-purpose` | opus | `prompts/bugfix.md` |
 | New feature | `general-purpose` | opus | `prompts/orchestrator.md` |
 | Backend | `general-purpose` | opus | `prompts/backend.md` |
 | Frontend | `general-purpose` | opus | `prompts/frontend.md` |
@@ -165,11 +165,11 @@ if (result.entities[0].observations.includes("phase: implement")) {
 
 | Command | Phase | Action |
 |---------|-------|--------|
-| `/mtd-pipeline-feature` | → explore | Creates pipeline in memory |
-| `/mtd-pipeline-approve` | explore → implement | Enables edits |
-| `/mtd-validate-build` | implement | Checks build/type-check |
-| `/mtd-pipeline-complete` | implement → done | Cleans pipeline |
-| `/mtd-pipeline-resume` | (any) | Loads context |
+| `/feature` | → explore | Creates pipeline in memory |
+| `/approve` | explore → implement | Enables edits |
+| `/validate` | implement | Checks build/type-check |
+| `/complete` | implement → done | Cleans pipeline |
+| `/resume` | (any) | Loads context |
 
 ### Forbidden in L2
 
@@ -244,7 +244,7 @@ Build command depends on stack:
 > After creating/modifying entities, update the registry.
 
 ```bash
-/mtd-sync-registry
+/sync-registry
 ```
 
 **Details in:** [entity-registry-spec.md](./entity-registry-spec.md)

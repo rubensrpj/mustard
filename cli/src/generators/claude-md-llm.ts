@@ -59,7 +59,7 @@ Generate a comprehensive CLAUDE.md IN ENGLISH that includes ALL of the following
 2. **Quick Reference** - Table with naming conventions for entities, tables, endpoints, components, hooks
 3. **Project State** - Table with projects, technologies, ports, and status
 4. **Delegation via Task Tool** - Explain that Claude should delegate to specialized agents
-5. **Available Commands** - List commands like /mtd-pipeline-feature, /mtd-pipeline-bugfix, /mtd-git-commit, /mtd-validate-build, /mtd-validate-status
+5. **Available Commands** - List commands like /feature, /bugfix, /commit, /validate, /status
 6. **Pipeline** - Explain the development pipeline (Explore → Spec → Implement → Review → Complete)
 7. **Entity Registry** - Explain to always check .claude/entity-registry.json before searching for files
 8. **grepai** - Explain that grepai should be used for semantic code search

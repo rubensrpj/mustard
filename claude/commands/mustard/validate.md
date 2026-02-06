@@ -1,12 +1,12 @@
-# /mtd-validate-build - Validação de Build
+# /validate - Validacao de Build
 
 > Executes build and type-check across all detected projects.
 
 ## Usage
 
 ```
-/mtd-validate-build
-/mtd-validate-build --project=<name>
+/validate
+/validate --project=<name>
 ```
 
 ## What It Does
@@ -60,7 +60,7 @@ The command detects and handles monorepo structures:
 ### Monorepo Flow
 
 ```
-/mtd-validate-build
+/validate
      │
      ├── Check for monorepo markers
      │   ├── pnpm-workspace.yaml / turbo.json / nx.json?
@@ -77,7 +77,7 @@ The command detects and handles monorepo structures:
 ## Flow (Single Projects)
 
 ```
-/mtd-validate-build
+/validate
      │
      ├── Detect projects via Glob
      │   ├── **/package.json
@@ -104,11 +104,11 @@ The command detects and handles monorepo structures:
 
 ```bash
 # Validate all projects
-/mtd-validate-build
+/validate
 
 # Validate specific project
-/mtd-validate-build --project=api
-/mtd-validate-build --project=web
+/validate --project=api
+/validate --project=web
 ```
 
 ## Output

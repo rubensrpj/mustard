@@ -144,30 +144,30 @@ Mustard "agents" are prompts loaded into `Task(general-purpose)`:
 
 | Command | Description |
 |---------|-------------|
-| `/mtd-pipeline-feature` | Start feature pipeline |
-| `/mtd-pipeline-bugfix` | Start bugfix pipeline |
-| `/mtd-pipeline-approve` | Approve spec |
-| `/mtd-pipeline-complete` | Finalize |
-| `/mtd-pipeline-resume` | Resume active pipeline |
+| `/feature` | Start feature pipeline |
+| `/bugfix` | Start bugfix pipeline |
+| `/approve` | Approve spec |
+| `/complete` | Finalize |
+| `/resume` | Resume active pipeline |
 
 ### Task Commands (L0 Universal Delegation)
 
 | Command | Description |
 |---------|-------------|
-| `/mtd-task-analyze` | 🔍 Code analysis via Task(Explore) |
-| `/mtd-task-review` | 🔎 Code review via Task(general-purpose) |
-| `/mtd-task-refactor` | 📋⚙️ Refactoring via Task(Plan) → Task(general-purpose) |
-| `/mtd-task-docs` | 📊 Documentation via Task(general-purpose) |
+| `/task-analyze` | Code analysis via Task(Explore) |
+| `/task-review` | Code review via Task(general-purpose) |
+| `/task-refactor` | Refactoring via Task(Plan) → Task(general-purpose) |
+| `/task-docs` | Documentation via Task(general-purpose) |
 
 ### Other Commands
 
 | Command | Description |
 |---------|-------------|
-| `/mtd-validate-build` | Build + type-check |
-| `/mtd-validate-status` | Project status |
-| `/mtd-git-commit` | Simple commit |
-| `/mtd-git-push` | Commit and push |
-| `/mtd-sync-registry` | Update entity registry |
+| `/validate` | Build + type-check |
+| `/status` | Project status |
+| `/commit` | Simple commit |
+| `/commit-push` | Commit and push |
+| `/sync-registry` | Update entity registry |
 
 ## Enforcement Hooks
 

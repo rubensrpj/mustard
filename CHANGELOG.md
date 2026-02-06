@@ -5,10 +5,10 @@
 ### Added
 
 - **Task Commands** for L0 Universal Delegation:
-  - `/mtd-task-analyze <scope>` - Code analysis via Task(Explore)
-  - `/mtd-task-review <scope>` - Code review via Task(general-purpose)
-  - `/mtd-task-refactor <scope>` - Refactoring via Task(Plan) → Task(general-purpose)
-  - `/mtd-task-docs <scope>` - Documentation via Task(general-purpose)
+  - `/task-analyze <scope>` - Code analysis via Task(Explore)
+  - `/task-review <scope>` - Code review via Task(general-purpose)
+  - `/task-refactor <scope>` - Refactoring via Task(Plan) → Task(general-purpose)
+  - `/task-docs <scope>` - Documentation via Task(general-purpose)
 - New command files in `claude/commands/mustard/`
 - Command generator in `cli/src/generators/commands.ts`
 
@@ -72,7 +72,7 @@
 
 - Pipeline via Memory MCP (entities: `Pipeline:{name}`, `Spec:{name}`)
 - Enforcement hooks (`enforce-pipeline.js`, `enforce-grepai.js`)
-- Commands: `/mtd-pipeline-approve`, `/mtd-pipeline-complete`, `/mtd-pipeline-resume`
+- Commands: `/approve`, `/complete`, `/resume`
 - Auto-detection of change intent
 
 ## [2.1.0] - 2026-02-05
@@ -82,7 +82,7 @@
 - SOLID patterns documentation (`core/solid-patterns.md`)
 - Rule L9 (Interface Segregation)
 - Entity Registry v2.1 compact format
-- Commands: `/mtd-sync-registry`, `/mtd-sync-dependencies`, `/mtd-report-daily`, `/mtd-report-weekly`
+- Commands: `/sync-registry`, `/install-deps`, `/report-daily`, `/report-weekly`
 
 ## [2.0.0] - 2026-01-15
 

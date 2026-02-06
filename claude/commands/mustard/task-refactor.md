@@ -1,4 +1,4 @@
-# /mtd-task-refactor - Code Refactoring
+# /task-refactor - Code Refactoring
 
 > Refactors code in **separate Task contexts** (L0 Universal Delegation).
 > Uses Plan → Approve → Implement flow to ensure safe refactoring.
@@ -6,9 +6,9 @@
 ## Usage
 
 ```
-/mtd-task-refactor <scope>
-/mtd-task-refactor "extract auth service"
-/mtd-task-refactor "rename User to Account"
+/task-refactor <scope>
+/task-refactor "extract auth service"
+/task-refactor "rename User to Account"
 ```
 
 ## What It Does
@@ -21,7 +21,7 @@
 ## Pipeline
 
 ```
-/mtd-task-refactor <scope>
+/task-refactor <scope>
      │
      ▼
 ┌────────────────────────────────┐
@@ -41,7 +41,7 @@
 └──────────────┬─────────────────┘
                │
                ▼
-         /mtd-validate-build
+         /validate
 ```
 
 ## Implementation
@@ -135,16 +135,16 @@ ${approvedPlan}
 
 ```bash
 # Extract a service
-/mtd-task-refactor "extract PaymentService from OrderController"
+/task-refactor "extract PaymentService from OrderController"
 
 # Rename across codebase
-/mtd-task-refactor "rename User entity to Account"
+/task-refactor "rename User entity to Account"
 
 # Split a large file
-/mtd-task-refactor "split utils.ts into focused modules"
+/task-refactor "split utils.ts into focused modules"
 
 # Move to new pattern
-/mtd-task-refactor "move validation logic to domain layer"
+/task-refactor "move validation logic to domain layer"
 ```
 
 ## Output
@@ -222,10 +222,10 @@ Running validation...
 
 | Command | Description |
 |---------|-------------|
-| `/mtd-task-analyze` | Analyze before refactoring |
-| `/mtd-task-review` | Review after refactoring |
-| `/mtd-validate-build` | Validate changes |
-| `/mtd-pipeline-feature` | For larger changes, use full pipeline |
+| `/task-analyze` | Analyze before refactoring |
+| `/task-review` | Review after refactoring |
+| `/validate` | Validate changes |
+| `/feature` | For larger changes, use full pipeline |
 
 ## See Also
 

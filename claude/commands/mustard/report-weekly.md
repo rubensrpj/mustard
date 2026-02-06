@@ -1,12 +1,12 @@
-# /mtd-report-weekly - Weekly Report
+# /report-weekly - Weekly Report
 
 > Generates consolidated weekly activity report.
 
 ## Usage
 
 ```
-/mtd-report-weekly
-/mtd-report-weekly --week=2026-W05
+/report-weekly
+/report-weekly --week=2026-W05
 ```
 
 ## What It Does
@@ -36,13 +36,13 @@
 - **Status:** ✅ Completed
 - **Commits:** 8
 - **Files:** 32
-- **Spec:** spec/mtd-pipeline-completed/solid-isp/
+- **Spec:** spec/completed/solid-isp/
 
 ### 2. Entity Registry v2.1
 - **Status:** ✅ Completed
 - **Commits:** 5
 - **Files:** 12
-- **Spec:** spec/mtd-pipeline-completed/entity-registry/
+- **Spec:** spec/completed/entity-registry/
 
 ## Fixed Bugs
 
@@ -84,12 +84,12 @@
 ## Options
 
 ```
-/mtd-report-weekly --week=YYYY-Www     # Specific week
-/mtd-report-weekly --json              # JSON output
-/mtd-report-weekly --save              # Save to spec/reports/
-/mtd-report-weekly --compare           # Compare with previous week
+/report-weekly --week=YYYY-Www     # Specific week
+/report-weekly --json              # JSON output
+/report-weekly --save              # Save to spec/reports/
+/report-weekly --compare           # Compare with previous week
 ```
 
 ## See Also
 
-- [daily-report.md](./mtd-report-daily.md) - Daily report
+- [report-daily.md](./report-daily.md) - Daily report

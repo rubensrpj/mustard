@@ -1,12 +1,12 @@
-# /mtd-report-daily - Daily Report
+# /report-daily - Daily Report
 
 > Generates daily report of commits and changes.
 
 ## Usage
 
 ```
-/mtd-report-daily
-/mtd-report-daily --date=2026-02-04
+/report-daily
+/report-daily --date=2026-02-04
 ```
 
 ## What It Does
@@ -60,11 +60,11 @@
 ## Options
 
 ```
-/mtd-report-daily --date=YYYY-MM-DD    # Specific date
-/mtd-report-daily --json               # JSON output
-/mtd-report-daily --save               # Save to spec/reports/
+/report-daily --date=YYYY-MM-DD    # Specific date
+/report-daily --json               # JSON output
+/report-daily --save               # Save to spec/reports/
 ```
 
 ## See Also
 
-- [weekly-report.md](./mtd-report-weekly.md) - Weekly report
+- [report-weekly.md](./report-weekly.md) - Weekly report

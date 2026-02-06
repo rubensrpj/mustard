@@ -14,10 +14,10 @@ Framework-agnostic CLI for setting up and updating Claude Code projects.
 
 ```bash
 # Install globally
-npm install -g mustard-cli
+npm install -g mustard-claude
 
 # Or run directly with npx
-npx mustard-cli init
+npx mustard-claude init
 ```
 
 ## Commands
@@ -164,13 +164,13 @@ mustard update --verbose        # Show detailed output
 
 | Command | Description |
 |---------|-------------|
-| `/mtd-pipeline-feature <name>` | Start a new feature pipeline |
-| `/mtd-pipeline-bugfix <error>` | Start a bugfix pipeline |
-| `/mtd-pipeline-approve` | Approve spec for implementation |
-| `/mtd-pipeline-complete` | Complete current pipeline |
-| `/mtd-git-commit` | Create a commit |
-| `/mtd-validate-build` | Run build/type-check |
-| `/mtd-validate-status` | Show project status |
+| `/feature <name>` | Start a new feature pipeline |
+| `/bugfix <error>` | Start a bugfix pipeline |
+| `/approve` | Approve spec for implementation |
+| `/complete` | Complete current pipeline |
+| `/commit` | Create a commit |
+| `/validate` | Run build/type-check |
+| `/status` | Show project status |
 
 ## Development
 

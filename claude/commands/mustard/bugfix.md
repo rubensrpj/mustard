@@ -1,4 +1,4 @@
-# /mtd-pipeline-bugfix - Bugfix Pipeline
+# /bugfix - Bugfix Pipeline
 
 > Single entry point for diagnosing and fixing bugs.
 > **v2.3** - Auto context-loading before diagnosis.
@@ -6,9 +6,9 @@
 ## Usage
 
 ```
-/mtd-pipeline-bugfix <error>
-/mtd-pipeline-bugfix "TenantId is null when saving contract"
-/mtd-pipeline-bugfix "TypeError: Cannot read property 'id' of undefined"
+/bugfix <error>
+/bugfix "TenantId is null when saving contract"
+/bugfix "TypeError: Cannot read property 'id' of undefined"
 ```
 
 ## What It Does
@@ -24,7 +24,7 @@
 ## Pipeline (Native Types)
 
 ```
-/mtd-pipeline-bugfix <error>
+/bugfix <error>
      │
      ▼
 ┌────────────────────────────────┐
@@ -74,7 +74,7 @@ const isStale = !context.entities?.length || context.entities[0]?.observations?.
 });
 
 if (isStale) {
-  // Auto-load context (see /mtd-sync-context for details)
+  // Auto-load context (see /sync-context for details)
   console.log("📚 Loading project context...");
   // Loads UserContext, ProjectContext, CodePattern, etc.
 }
@@ -83,7 +83,7 @@ if (isStale) {
 ### Command Execution
 
 ```javascript
-// The /mtd-pipeline-bugfix command executes:
+// The /bugfix command executes:
 Task({
   subagent_type: "general-purpose",
   model: "opus",
@@ -144,13 +144,13 @@ ${error}
 
 ```bash
 # Simple error
-/mtd-pipeline-bugfix "Error saving contract"
+/bugfix "Error saving contract"
 
 # With stack trace
-/mtd-pipeline-bugfix "TypeError at ContractService.cs:142"
+/bugfix "TypeError at ContractService.cs:142"
 
 # Unexpected behavior
-/mtd-pipeline-bugfix "Contract list not filtering by tenant"
+/bugfix "Contract list not filtering by tenant"
 ```
 
 ## Output
@@ -235,6 +235,6 @@ Add TenantId validation before saving.
 
 ## See Also
 
-- [/mtd-pipeline-feature](./mtd-pipeline-feature.md) - Feature pipeline
-- [/mtd-sync-context](./mtd-sync-context.md) - Manually load context
+- [/feature](./feature.md) - Feature pipeline
+- [/sync-context](./sync-context.md) - Manually load context
 - [context/README.md](../context/README.md) - How to create context files

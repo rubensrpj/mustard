@@ -4,7 +4,7 @@ Place markdown files here to provide context to Claude during implementations.
 
 ## Purpose
 
-Files in this folder are loaded into memory MCP at the start of `/mtd-pipeline-feature` or `/mtd-pipeline-bugfix` pipelines.
+Files in this folder are loaded into memory MCP at the start of `/feature` or `/bugfix` pipelines.
 This gives Claude instant access to project specifications, architecture decisions, and patterns.
 
 ## Supported Files
@@ -31,7 +31,7 @@ Any `.md` file placed in this folder will be automatically loaded.
 
 ## How It Works
 
-Files are automatically loaded at the start of `/mtd-pipeline-feature` or `/mtd-pipeline-bugfix` pipelines.
+Files are automatically loaded at the start of `/feature` or `/bugfix` pipelines.
 Each file is stored as a `UserContext:{filename}` entity in memory MCP.
 
 ## Memory MCP Structure
@@ -107,11 +107,11 @@ Each file is stored as a `UserContext:{filename}` entity:
 To force a context refresh, use:
 
 ```bash
-/mtd-sync-context --refresh
+/sync-context --refresh
 ```
 
 ## See Also
 
-- [/mtd-sync-context](../commands/mtd-sync-context.md) - Manual context loading
-- [/mtd-pipeline-feature](../commands/mtd-pipeline-feature.md) - Feature pipeline
+- [/sync-context](../commands/mustard/sync-context.md) - Manual context loading
+- [/feature](../commands/mustard/feature.md) - Feature pipeline
 - [pipeline.md](../core/pipeline.md) - Pipeline documentation

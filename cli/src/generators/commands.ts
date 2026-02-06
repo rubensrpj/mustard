@@ -1,4 +1,5 @@
 import type { ProjectInfo, GeneratedCommands } from '../types.js';
+import { getRunCommand, getInstallCommand } from '../services/package-manager.js';
 
 /**
  * Mustard commands subfolder
@@ -8,50 +9,44 @@ import type { ProjectInfo, GeneratedCommands } from '../types.js';
 export const MUSTARD_COMMANDS_FOLDER = 'mustard';
 
 /**
- * Command prefix for Mustard commands
- */
-export const MUSTARD_COMMAND_PREFIX = 'mtd';
-
-/**
  * Generate command files
  * All generated commands go in the mustard/ subfolder
- * Pattern: mtd-{category}-{action}
  */
 export function generateCommands(projectInfo: ProjectInfo): GeneratedCommands {
   const commands: GeneratedCommands = {
     // Pipeline commands
-    'mtd-pipeline-feature': generatePipelineFeatureCommand(projectInfo),
-    'mtd-pipeline-bugfix': generatePipelineBugfixCommand(projectInfo),
-    'mtd-pipeline-approve': generatePipelineApproveCommand(),
-    'mtd-pipeline-complete': generatePipelineCompleteCommand(),
-    'mtd-pipeline-resume': generatePipelineResumeCommand(),
+    'feature': generatePipelineFeatureCommand(projectInfo),
+    'bugfix': generatePipelineBugfixCommand(projectInfo),
+    'approve': generatePipelineApproveCommand(),
+    'complete': generatePipelineCompleteCommand(),
+    'resume': generatePipelineResumeCommand(),
 
     // Git commands
-    'mtd-git-commit': generateGitCommitCommand(),
-    'mtd-git-push': generateGitPushCommand(),
-    'mtd-git-merge': generateGitMergeCommand(),
+    'commit': generateGitCommitCommand(),
+    'commit-push': generateGitPushCommand(),
+    'merge-main': generateGitMergeCommand(),
 
     // Validate commands
-    'mtd-validate-build': generateValidateBuildCommand(projectInfo),
-    'mtd-validate-status': generateValidateStatusCommand(projectInfo),
+    'validate': generateValidateBuildCommand(projectInfo),
+    'status': generateValidateStatusCommand(projectInfo),
 
     // Sync commands
-    'mtd-sync-registry': generateSyncRegistryCommand(),
-    'mtd-sync-dependencies': generateSyncDependenciesCommand(projectInfo),
-    'mtd-sync-context': generateSyncContextCommand(),
+    'sync-registry': generateSyncRegistryCommand(),
+    'install-deps': generateSyncDependenciesCommand(projectInfo),
+    'sync-context': generateSyncContextCommand(),
 
     // Report commands
-    'mtd-report-daily': generateReportDailyCommand(),
-    'mtd-report-weekly': generateReportWeeklyCommand(),
+    'report-daily': generateReportDailyCommand(),
+    'report-weekly': generateReportWeeklyCommand(),
 
     // Scan commands
-    'mtd-scan-project': generateScanProjectCommand(),
+    'scan': generateScanProjectCommand(),
 
     // Task commands (L0 Universal Delegation)
-    'mtd-task-analyze': generateTaskAnalyzeCommand(),
-    'mtd-task-review': generateTaskReviewCommand(),
-    'mtd-task-refactor': generateTaskRefactorCommand(),
-    'mtd-task-docs': generateTaskDocsCommand()
+    'task-analyze': generateTaskAnalyzeCommand(),
+    'task-review': generateTaskReviewCommand(),
+    'task-refactor': generateTaskRefactorCommand(),
+    'task-docs': generateTaskDocsCommand()
   };
 
   return commands;
@@ -60,11 +55,11 @@ export function generateCommands(projectInfo: ProjectInfo): GeneratedCommands {
 // ============== Pipeline Commands ==============
 
 function generatePipelineFeatureCommand(projectInfo: ProjectInfo): string {
-  return `# /mtd-pipeline-feature - Feature Pipeline
+  return `# /feature - Feature Pipeline
 
 ## Trigger
 
-\`/mtd-pipeline-feature <feature-name>\`
+\`/feature <feature-name>\`
 
 ## Description
 
@@ -84,7 +79,7 @@ Starts the full pipeline to implement a new feature.
 
 3. **APPROVE**
    - Present spec to user
-   - Wait for /mtd-pipeline-approve or feedback
+   - Wait for /approve or feedback
 
 4. **IMPLEMENT**
    - Delegate to specialized agents
@@ -101,24 +96,24 @@ Starts the full pipeline to implement a new feature.
 ## Example
 
 \`\`\`
-User: /mtd-pipeline-feature add-partner-email-field
+User: /feature add-partner-email-field
 
 Claude:
 1. Explores codebase to understand Partner
 2. Creates spec with implementation plan
 3. Presents spec for approval
-4. (after /mtd-pipeline-approve) Implements Database → Backend → Frontend
+4. (after /approve) Implements Database → Backend → Frontend
 5. Validates and completes
 \`\`\`
 `;
 }
 
 function generatePipelineBugfixCommand(projectInfo: ProjectInfo): string {
-  return `# /mtd-pipeline-bugfix - Bug Fix Pipeline
+  return `# /bugfix - Bug Fix Pipeline
 
 ## Trigger
 
-\`/mtd-pipeline-bugfix <error-description>\`
+\`/bugfix <error-description>\`
 
 ## Description
 
@@ -138,7 +133,7 @@ Starts the pipeline to diagnose and fix a bug.
 
 3. **APPROVE**
    - Present diagnosis to user
-   - Wait for /mtd-pipeline-approve
+   - Wait for /approve
 
 4. **FIX**
    - Apply minimal fix
@@ -155,24 +150,24 @@ Starts the pipeline to diagnose and fix a bug.
 ## Example
 
 \`\`\`
-User: /mtd-pipeline-bugfix error saving contract
+User: /bugfix error saving contract
 
 Claude:
 1. Uses grepai to find save code
 2. Identifies root cause
 3. Presents diagnosis
-4. (after /mtd-pipeline-approve) Fixes
+4. (after /approve) Fixes
 5. Validates and completes
 \`\`\`
 `;
 }
 
 function generatePipelineApproveCommand(): string {
-  return `# /mtd-pipeline-approve - Approve Spec
+  return `# /approve - Approve Spec
 
 ## Trigger
 
-\`/mtd-pipeline-approve\`
+\`/approve\`
 
 ## Description
 
@@ -180,7 +175,7 @@ Approves the current spec and enables the implementation phase.
 
 ## Prerequisites
 
-- Active pipeline (created via /mtd-pipeline-feature or /mtd-pipeline-bugfix)
+- Active pipeline (created via /feature or /bugfix)
 - Spec presented awaiting approval
 
 ## Action
@@ -193,10 +188,10 @@ Approves the current spec and enables the implementation phase.
 
 If the spec is not satisfactory, the user can:
 - Give text feedback for adjustments
-- Use /mtd-pipeline-complete to cancel
+- Use /complete to cancel
 
 \`\`\`
-User: /mtd-pipeline-approve
+User: /approve
 
 Claude: ✅ Spec approved! Starting implementation...
 \`\`\`
@@ -204,11 +199,11 @@ Claude: ✅ Spec approved! Starting implementation...
 }
 
 function generatePipelineCompleteCommand(): string {
-  return `# /mtd-pipeline-complete - Finalize Pipeline
+  return `# /complete - Finalize Pipeline
 
 ## Trigger
 
-\`/mtd-pipeline-complete\`
+\`/complete\`
 
 ## Description
 
@@ -227,7 +222,7 @@ Finalizes the current pipeline, either completing or canceling.
 - To force close if something went wrong
 
 \`\`\`
-User: /mtd-pipeline-complete
+User: /complete
 
 Claude: ✅ Pipeline finalized!
         Spec moved to spec/completed/{name}/
@@ -237,11 +232,11 @@ Claude: ✅ Pipeline finalized!
 }
 
 function generatePipelineResumeCommand(): string {
-  return `# /mtd-pipeline-resume - Resume Pipeline
+  return `# /resume - Resume Pipeline
 
 ## Trigger
 
-\`/mtd-pipeline-resume\`
+\`/resume\`
 
 ## Description
 
@@ -260,7 +255,7 @@ Resumes a pipeline that was interrupted.
 - To continue work from another session
 
 \`\`\`
-User: /mtd-pipeline-resume
+User: /resume
 
 Claude: 🔄 Resuming pipeline "add-email-partner"
         Last phase: IMPLEMENT
@@ -272,11 +267,11 @@ Claude: 🔄 Resuming pipeline "add-email-partner"
 // ============== Git Commands ==============
 
 function generateGitCommitCommand(): string {
-  return `# /mtd-git-commit - Simple Commit
+  return `# /commit - Simple Commit
 
 ## Trigger
 
-\`/mtd-git-commit\`
+\`/commit\`
 
 ## Description
 
@@ -304,11 +299,11 @@ Types: feat, fix, refactor, docs, chore, test
 }
 
 function generateGitPushCommand(): string {
-  return `# /mtd-git-push - Commit and Push
+  return `# /commit-push - Commit and Push
 
 ## Trigger
 
-\`/mtd-git-push\`
+\`/commit-push\`
 
 ## Description
 
@@ -316,7 +311,7 @@ Creates commit and pushes to remote.
 
 ## Action
 
-1. Same process as /mtd-git-commit
+1. Same process as /commit
 2. Adds \`git push\` at the end
 
 ## Cautions
@@ -327,11 +322,11 @@ Creates commit and pushes to remote.
 }
 
 function generateGitMergeCommand(): string {
-  return `# /mtd-git-merge - Merge to Main
+  return `# /merge-main - Merge to Main
 
 ## Trigger
 
-\`/mtd-git-merge\`
+\`/merge-main\`
 
 ## Description
 
@@ -366,15 +361,15 @@ function generateValidateBuildCommand(projectInfo: ProjectInfo): string {
   }
 
   if (hasNode) {
-    steps.push(`- \`${pm} run typecheck\` - Verifies TypeScript types`);
-    steps.push(`- \`${pm} run lint\` - Verifies linting (if available)`);
+    steps.push(`- \`${getRunCommand(pm, 'typecheck')}\` - Verifies TypeScript types`);
+    steps.push(`- \`${getRunCommand(pm, 'lint')}\` - Verifies linting (if available)`);
   }
 
-  return `# /mtd-validate-build - Build Validation
+  return `# /validate - Build Validation
 
 ## Trigger
 
-\`/mtd-validate-build\`
+\`/validate\`
 
 ## Description
 
@@ -392,11 +387,11 @@ ${steps.join('\n') || '- Verify project compilation'}
 }
 
 function generateValidateStatusCommand(projectInfo: ProjectInfo): string {
-  return `# /mtd-validate-status - Consolidated Status
+  return `# /status - Consolidated Status
 
 ## Trigger
 
-\`/mtd-validate-status\`
+\`/status\`
 
 ## Description
 
@@ -425,11 +420,11 @@ Shows consolidated project status.
 // ============== Sync Commands ==============
 
 function generateSyncRegistryCommand(): string {
-  return `# /mtd-sync-registry - Update Entity Registry
+  return `# /sync-registry - Update Entity Registry
 
 ## Trigger
 
-\`/mtd-sync-registry\`
+\`/sync-registry\`
 
 ## Description
 
@@ -453,11 +448,11 @@ function generateSyncDependenciesCommand(projectInfo: ProjectInfo): string {
   const pm = projectInfo.packageManager ?? 'npm';
   const hasDotnet = projectInfo.stacks.some(s => s.name === 'dotnet');
 
-  return `# /mtd-sync-dependencies - Install Dependencies
+  return `# /install-deps - Install Dependencies
 
 ## Trigger
 
-\`/mtd-sync-dependencies\`
+\`/install-deps\`
 
 ## Description
 
@@ -465,7 +460,7 @@ Installs dependencies for all projects.
 
 ## Actions
 
-${hasDotnet ? '- `dotnet restore` - Restores NuGet packages\n' : ''}- \`${pm} install\` - Installs Node dependencies
+${hasDotnet ? '- `dotnet restore` - Restores NuGet packages\n' : ''}- \`${getInstallCommand(pm)}\` - Installs Node dependencies
 
 ## Subprojects
 
@@ -474,12 +469,12 @@ If monorepo, runs in all configured subprojects.
 }
 
 function generateSyncContextCommand(): string {
-  return `# /mtd-sync-context - Load Project Context
+  return `# /sync-context - Load Project Context
 
 ## Trigger
 
-\`/mtd-sync-context\`
-\`/mtd-sync-context --refresh\`
+\`/sync-context\`
+\`/sync-context --refresh\`
 
 ## Description
 
@@ -495,9 +490,9 @@ Discovers and caches project context for faster implementations.
 
 ## When It Runs
 
-- **Automatically** at the start of /mtd-pipeline-feature or /mtd-pipeline-bugfix (if context is missing or stale)
-- **Manually** when you run /mtd-sync-context
-- **Force refresh** with /mtd-sync-context --refresh
+- **Automatically** at the start of /feature or /bugfix (if context is missing or stale)
+- **Manually** when you run /sync-context
+- **Force refresh** with /sync-context --refresh
 
 ## Context Sources
 
@@ -532,26 +527,26 @@ Code Patterns:
 
 | Trigger | Action |
 |---------|--------|
-| Context > 24h old | Auto-refresh on /mtd-pipeline-feature or /mtd-pipeline-bugfix |
-| \`/mtd-sync-context --refresh\` | Force full refresh |
-| \`/mtd-sync-registry\` | Refresh only EntityRegistry |
+| Context > 24h old | Auto-refresh on /feature or /bugfix |
+| \`/sync-context --refresh\` | Force full refresh |
+| \`/sync-registry\` | Refresh only EntityRegistry |
 
 ## See Also
 
 - [context/README.md](../context/README.md) - How to create context files
-- [/mtd-pipeline-feature](./mtd-pipeline-feature.md) - Feature pipeline (auto-loads context)
-- [/mtd-pipeline-bugfix](./mtd-pipeline-bugfix.md) - Bugfix pipeline (auto-loads context)
+- [/feature](./feature.md) - Feature pipeline (auto-loads context)
+- [/bugfix](./bugfix.md) - Bugfix pipeline (auto-loads context)
 `;
 }
 
 // ============== Report Commands ==============
 
 function generateReportDailyCommand(): string {
-  return `# /mtd-report-daily - Daily Report
+  return `# /report-daily - Daily Report
 
 ## Trigger
 
-\`/mtd-report-daily\`
+\`/report-daily\`
 
 ## Description
 
@@ -578,11 +573,11 @@ Markdown report suitable for sharing or documentation.
 }
 
 function generateReportWeeklyCommand(): string {
-  return `# /mtd-report-weekly - Weekly Report
+  return `# /report-weekly - Weekly Report
 
 ## Trigger
 
-\`/mtd-report-weekly\`
+\`/report-weekly\`
 
 ## Description
 
@@ -612,11 +607,11 @@ Markdown report suitable for team updates.
 // ============== Scan Commands ==============
 
 function generateScanProjectCommand(): string {
-  return `# /mtd-scan-project - Scan Project
+  return `# /scan - Scan Project
 
 ## Trigger
 
-\`/mtd-scan-project\`
+\`/scan\`
 
 ## Description
 
@@ -640,13 +635,13 @@ Scans the project structure and updates detection.
 // ============== Task Commands (L0 Universal Delegation) ==============
 
 function generateTaskAnalyzeCommand(): string {
-  return `# /mtd-task-analyze - Code Analysis
+  return `# /task-analyze - Code Analysis
 
 > Analyzes code in a **separate Task context** (L0 Universal Delegation).
 
 ## Trigger
 
-\`/mtd-task-analyze <scope>\`
+\`/task-analyze <scope>\`
 
 ## Description
 
@@ -691,21 +686,21 @@ Task({
 ## Examples
 
 \`\`\`bash
-/mtd-task-analyze authentication flow
-/mtd-task-analyze "database schema"
-/mtd-task-analyze error handling patterns
+/task-analyze authentication flow
+/task-analyze "database schema"
+/task-analyze error handling patterns
 \`\`\`
 `;
 }
 
 function generateTaskReviewCommand(): string {
-  return `# /mtd-task-review - Code Review
+  return `# /task-review - Code Review
 
 > Performs code review in a **separate Task context** (L0 Universal Delegation).
 
 ## Trigger
 
-\`/mtd-task-review <scope>\`
+\`/task-review <scope>\`
 
 ## Description
 
@@ -751,21 +746,21 @@ Task({
 ## Examples
 
 \`\`\`bash
-/mtd-task-review src/services/payment
-/mtd-task-review "Contract entity"
-/mtd-task-review "security in auth module"
+/task-review src/services/payment
+/task-review "Contract entity"
+/task-review "security in auth module"
 \`\`\`
 `;
 }
 
 function generateTaskRefactorCommand(): string {
-  return `# /mtd-task-refactor - Code Refactoring
+  return `# /task-refactor - Code Refactoring
 
 > Refactors code in **separate Task contexts** (L0 Universal Delegation).
 
 ## Trigger
 
-\`/mtd-task-refactor <scope>\`
+\`/task-refactor <scope>\`
 
 ## Description
 
@@ -819,21 +814,21 @@ Task({
 ## Examples
 
 \`\`\`bash
-/mtd-task-refactor "extract PaymentService"
-/mtd-task-refactor "rename User to Account"
-/mtd-task-refactor "split large component"
+/task-refactor "extract PaymentService"
+/task-refactor "rename User to Account"
+/task-refactor "split large component"
 \`\`\`
 `;
 }
 
 function generateTaskDocsCommand(): string {
-  return `# /mtd-task-docs - Documentation Generation
+  return `# /task-docs - Documentation Generation
 
 > Generates documentation in a **separate Task context** (L0 Universal Delegation).
 
 ## Trigger
 
-\`/mtd-task-docs <scope>\`
+\`/task-docs <scope>\`
 
 ## Description
 
@@ -878,9 +873,9 @@ Task({
 ## Examples
 
 \`\`\`bash
-/mtd-task-docs "API endpoints"
-/mtd-task-docs "Contract entity"
-/mtd-task-docs "update README"
+/task-docs "API endpoints"
+/task-docs "Contract entity"
+/task-docs "update README"
 \`\`\`
 `;
 }

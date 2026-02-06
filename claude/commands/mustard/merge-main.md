@@ -1,11 +1,11 @@
-# /mtd-git-merge - Merge to Main
+# /merge-main - Merge to Main
 
 > Merges current branch to main/master.
 
 ## Usage
 
 ```
-/mtd-git-merge
+/merge-main
 ```
 
 ## What It Does
@@ -18,7 +18,7 @@
 ## Flow
 
 ```
-/mtd-git-merge
+/merge-main
      │
      ▼
 git status (check clean)
@@ -75,7 +75,7 @@ git checkout <previous-branch>
 
 🔀 Merge feature/invoice → main...
 ❌ CONFLICTS detected:
-- src/mtd-pipeline-features/contract/hooks/useContract.ts
+- src/features/contract/hooks/useContract.ts
 
 Resolve conflicts and execute:
 git add .

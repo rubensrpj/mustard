@@ -1,11 +1,11 @@
-# /mtd-validate-status - Status Consolidado
+# /status - Status Consolidado
 
 > Shows complete project and workspace status.
 
 ## Usage
 
 ```
-/mtd-validate-status
+/status
 ```
 
 ## What It Does

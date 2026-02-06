@@ -2,6 +2,23 @@ import * as llm from '../analyzers/llm.js';
 import type { ProjectInfo, Analysis, GeneratedPrompts, PromptGeneratorOptions, DiscoveredPatterns } from '../types.js';
 
 /**
+ * Get the run command for a package manager
+ */
+function getRunCommand(packageManager: string, script: string): string {
+  switch (packageManager) {
+    case 'pnpm':
+      return `pnpm ${script}`;
+    case 'yarn':
+      return `yarn ${script}`;
+    case 'bun':
+      return `bun run ${script}`;
+    case 'npm':
+    default:
+      return `npm run ${script}`;
+  }
+}
+
+/**
  * Generate prompt files
  */
 export async function generatePrompts(projectInfo: ProjectInfo, analysis: Analysis, options: PromptGeneratorOptions = {}): Promise<GeneratedPrompts> {
@@ -88,13 +105,16 @@ You are the **Orchestrator**. You coordinate the development pipeline but **DO N
 
 ## Delegation
 
-| Task | subagent_type | model |
-|------|---------------|-------|
-| Explore | Explore | haiku |
-| Backend | general-purpose | opus |
-| Frontend | general-purpose | opus |
-| Database | general-purpose | opus |
-| Review | general-purpose | opus |
+| Task | subagent_type | model | Emoji |
+|------|---------------|-------|-------|
+| Explore | Explore | haiku | 🔍 |
+| Backend | general-purpose | opus | ⚙️ |
+| Frontend | general-purpose | opus | 🎨 |
+| Database | general-purpose | opus | 🗄️ |
+| Review | general-purpose | opus | 🔎 |
+| Bugfix | general-purpose | opus | 🐛 |
+| Plan | Plan | sonnet | 📋 |
+| Docs | general-purpose | sonnet | 📊 |
 
 ## Usage Example
 
@@ -103,7 +123,7 @@ You are the **Orchestrator**. You coordinate the development pipeline but **DO N
 Task({
   subagent_type: "Explore",
   model: "haiku",
-  description: "Explore feature X",
+  description: "🔍 Explore feature X",
   prompt: "Analyze requirements for feature X..."
 })
 
@@ -111,13 +131,69 @@ Task({
 Task({
   subagent_type: "general-purpose",
   model: "opus",
-  description: "Implement backend X",
+  description: "⚙️ Backend feature X",
   prompt: \`
     # You are the BACKEND SPECIALIST
     [backend prompt]
 
     # TASK
     Implement feature X according to spec...
+  \`
+})
+
+// 3. Implement Frontend
+Task({
+  subagent_type: "general-purpose",
+  model: "opus",
+  description: "🎨 Frontend feature X",
+  prompt: \`
+    # You are the FRONTEND SPECIALIST
+    [frontend prompt]
+
+    # TASK
+    Implement feature X according to spec...
+  \`
+})
+
+// 4. Database
+Task({
+  subagent_type: "general-purpose",
+  model: "opus",
+  description: "🗄️ Database feature X",
+  prompt: \`
+    # You are the DATABASE SPECIALIST
+    [database prompt]
+
+    # TASK
+    Implement schema for feature X...
+  \`
+})
+
+// 5. Review
+Task({
+  subagent_type: "general-purpose",
+  model: "opus",
+  description: "🔎 Review feature X",
+  prompt: \`
+    # You are the REVIEW SPECIALIST
+    [review prompt]
+
+    # TASK
+    Review implementation of feature X...
+  \`
+})
+
+// 6. Bugfix
+Task({
+  subagent_type: "general-purpose",
+  model: "opus",
+  description: "🐛 Bugfix issue Y",
+  prompt: \`
+    # You are the BUGFIX SPECIALIST
+    [bugfix prompt]
+
+    # TASK
+    Fix the bug...
   \`
 })
 \`\`\`
@@ -420,9 +496,9 @@ export const contracts = pgTable('contracts', {
 
 ## Commands
 
-- Generate migration: \`pnpm db:generate\`
-- Run migration: \`pnpm db:migrate\`
-- Push (dev): \`pnpm db:push\`
+- Generate migration: \`${getRunCommand(projectInfo.packageManager, 'db:generate')}\`
+- Run migration: \`${getRunCommand(projectInfo.packageManager, 'db:migrate')}\`
+- Push (dev): \`${getRunCommand(projectInfo.packageManager, 'db:push')}\`
 `;
 }
 

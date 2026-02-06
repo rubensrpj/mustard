@@ -1,12 +1,12 @@
-# /mtd-sync-context - Carregar Contexto
+# /sync-context - Carregar Contexto
 
 > Discovers and caches project context for faster implementations.
 
 ## Usage
 
 ```
-/mtd-sync-context
-/mtd-sync-context --refresh
+/sync-context
+/sync-context --refresh
 ```
 
 ## What It Does
@@ -19,9 +19,9 @@
 
 ## When It Runs
 
-- **Automatically** at the start of `/mtd-pipeline-feature` or `/mtd-pipeline-bugfix` (if context is missing or stale)
-- **Manually** when you run `/mtd-sync-context`
-- **Force refresh** with `/mtd-sync-context --refresh`
+- **Automatically** at the start of `/feature` or `/bugfix` (if context is missing or stale)
+- **Manually** when you run `/sync-context`
+- **Force refresh** with `/sync-context --refresh`
 
 ## Context Sources
 
@@ -246,7 +246,7 @@ User Context (5 files):
 Code Patterns:
 - service (Backend/Modules/Contract/Services/ContractService.cs)
 - repository (Backend/Modules/Contract/Repositories/ContractRepository.cs)
-- component (Frontend/src/mtd-pipeline-features/contract/components/ContractForm.tsx)
+- component (Frontend/src/features/contract/components/ContractForm.tsx)
 
 Entity Registry:
 - 15 entities registered
@@ -261,7 +261,7 @@ Enforcement Rules:
 ```
 ℹ️ Context already loaded (2h ago)
 
-Use /mtd-sync-context --refresh to force reload.
+Use /sync-context --refresh to force reload.
 ```
 
 ## Using Context During Implementation
@@ -297,9 +297,9 @@ const details = await mcp__memory__open_nodes({
 
 | Trigger | Action |
 |---------|--------|
-| Context > 24h old | Auto-refresh on /mtd-pipeline-feature or /mtd-pipeline-bugfix |
-| `/mtd-sync-context --refresh` | Force full refresh |
-| `/mtd-sync-registry` | Refresh only EntityRegistry |
+| Context > 24h old | Auto-refresh on /feature or /bugfix |
+| `/sync-context --refresh` | Force full refresh |
+| `/sync-registry` | Refresh only EntityRegistry |
 
 ## Notes
 
@@ -311,7 +311,7 @@ const details = await mcp__memory__open_nodes({
 
 ## See Also
 
-- [/mtd-pipeline-feature](./mtd-pipeline-feature.md) - Feature pipeline (auto-loads context)
-- [/mtd-pipeline-bugfix](./mtd-pipeline-bugfix.md) - Bugfix pipeline (auto-loads context)
+- [/feature](./feature.md) - Feature pipeline (auto-loads context)
+- [/bugfix](./bugfix.md) - Bugfix pipeline (auto-loads context)
 - [context/README.md](../context/README.md) - How to create context files
 - [pipeline.md](../core/pipeline.md) - Pipeline documentation
