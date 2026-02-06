@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 /**
- * ENFORCEMENT: Entity Registry validation
+ * ENFORCEMENT: Entity Registry validation (UserPromptSubmit)
  *
  * Blocks /feature, /bugfix, /feature-team, /bugfix-team if entity-registry.json:
  * - Does not exist
  * - Is empty (no entities)
  * - Has no _patterns defined
  *
- * @version 1.1.0
+ * @version 2.0.0
  * @see mustard/cli/templates/core/entity-registry-spec.md
  */
 
@@ -20,23 +20,11 @@ process.stdin.on('data', chunk => input += chunk);
 process.stdin.on('end', () => {
   try {
     const data = JSON.parse(input);
-    const toolName = data.tool_name || '';
+    const userMessage = data.user_message || '';
 
-    // Only check on Skill invocations for feature/bugfix
-    if (toolName !== 'Skill') {
-      process.exit(0);
-    }
-
-    const skillName = data.tool_input?.skill || '';
-
-    // Only enforce for feature and bugfix skills (Task and Agent Teams modes)
-    const enforcedSkills = [
-      'mustard:feature', 'mustard:bugfix',
-      'mustard:feature-team', 'mustard:bugfix-team',
-      'feature', 'bugfix',
-      'feature-team', 'bugfix-team'
-    ];
-    if (!enforcedSkills.includes(skillName)) {
+    // Check if user is invoking a pipeline skill
+    const pipelinePattern = /^\s*\/(feature|bugfix|feature-team|bugfix-team)(\s|$)/i;
+    if (!pipelinePattern.test(userMessage)) {
       process.exit(0);
     }
 
@@ -118,9 +106,9 @@ function validateRegistry(registry) {
 function blockWithMessage(reason) {
   const response = {
     hookSpecificOutput: {
-      hookEventName: "PreToolUse",
-      permissionDecision: "block",
-      permissionDecisionReason: `Entity Registry Required
+      hookEventName: "UserPromptSubmit",
+      decision: "block",
+      reason: `Entity Registry Required
 
 ${reason}
 

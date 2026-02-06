@@ -73,16 +73,46 @@ Main Claude:
 
 ### Rule L1
 
-> ⛔ **Grep and Glob are BLOCKED** by `enforce-grepai.js` hook.
+> ⛔ **Grep and Glob are BLOCKED by the `enforce-grepai.js` hook.**
+> Use ONLY grepai for ALL code searches.
 
-Use grepai for ALL code searches:
+### Hook L1
 
-```javascript
-grepai_search({ query: "..." })
-grepai_trace_callers({ symbol: "..." })
+```text
+mustard/cli/templates/hooks/enforce-grepai.js
 ```
 
-→ Full examples: [pipeline.md#phase-1-explore](./pipeline.md#phase-1-explore)
+- **Trigger:** Attempt to use Grep or Glob
+- **Action:** BLOCKS with permissionDecision: "deny"
+- **No exceptions**
+
+### Correct L1 Usage
+
+```javascript
+// Semantic search
+grepai_search({ query: "authentication flow" })
+
+// Call tracing
+grepai_trace_callers({ symbol: "SaveContract" })
+grepai_trace_callees({ symbol: "ValidateUser" })
+grepai_trace_graph({ symbol: "ProcessPayment", depth: 2 })
+```
+
+### BLOCKED L1 Usage
+
+```bash
+# ⛔ AUTOMATICALLY BLOCKED by hook
+grep -r "authentication" .  # ⛔ BLOCKED
+Glob("**/*.tsx")            # ⛔ BLOCKED
+```
+
+### Why grepai?
+
+| Tool | Problem |
+|------|---------|
+| Grep | Simple text search, many false positives |
+| Glob | Only finds by filename |
+| grepai | Semantic search, understands context and intent |
 
 ---
 

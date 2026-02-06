@@ -1,64 +1,89 @@
+#!/usr/bin/env node
 /**
- * Hook: enforce-pipeline
+ * ENFORCEMENT L0+L2: Asks confirmation for code edits
  *
- * Enforces that code changes go through the proper pipeline.
- * Triggers on Edit/Write to code files.
+ * Configuration files are automatically allowed.
+ * Code files ask for confirmation (Claude checks memory MCP).
  *
- * Exceptions:
- * - .md files (documentation)
- * - .json files (config)
- * - .yaml/.yml files (config)
- * - Files in .claude/, mustard/, spec/ directories
+ * @version 1.1.0
+ * @see mustard/cli/templates/core/enforcement.md
  */
 
-export default {
-  name: 'enforce-pipeline',
+let input = '';
+process.stdin.setEncoding('utf8');
+process.stdin.on('data', chunk => input += chunk);
+process.stdin.on('end', () => {
+  try {
+    const data = JSON.parse(input);
+    const filePath = data.tool_input?.file_path || '';
 
-  // Hook configuration
-  hooks: {
-    preToolCall: {
-      tools: ['Edit', 'Write'],
-      handler: 'checkPipeline'
-    }
-  },
-
-  /**
-   * Check if there's an active pipeline before allowing code edits
-   */
-  checkPipeline(context) {
-    const { toolName, parameters } = context;
-    const filePath = parameters.file_path || '';
-
-    // Skip non-code files
-    if (isExemptFile(filePath)) {
-      return { allowed: true };
+    // Configuration files - ALLOW automatically
+    if (isConfigFile(filePath)) {
+      process.exit(0);
     }
 
-    // Check for active pipeline
-    // Note: This is a reminder hook - actual enforcement is done by Claude
-    // following the CLAUDE.md instructions
+    // Code file - ASK with helpful message
+    const response = {
+      hookSpecificOutput: {
+        hookEventName: "PreToolUse",
+        permissionDecision: "ask",
+        permissionDecisionReason: `⚠️ Pipeline Required for: ${filePath}
 
-    return {
-      allowed: true,
-      message: `📋 REMINDER: Ensure you're following the pipeline for code changes.
-Use /feature or /bugfix to start a proper pipeline.`
+Check pipeline: mcp__memory__search_nodes({ query: "pipeline phase" })
+
+If NO pipeline exists, invoke the appropriate skill FIRST:
+
+  Task Mode (lower token cost):
+  • New feature/refactor → /feature <name>
+  • Bug fix → /bugfix <error>
+
+  Agent Teams Mode (parallel, higher cost):
+  • Complex feature → /feature-team <name>
+  • Complex bug → /bugfix-team <error>
+
+The skill compiles contexts and creates the pipeline.`
+      }
     };
+    console.log(JSON.stringify(response));
+    process.exit(0);
+  } catch (err) {
+    console.error('Hook error:', err.message);
+    process.exit(0);
   }
-};
+});
 
-function isExemptFile(filePath) {
-  const exemptExtensions = ['.md', '.json', '.yaml', '.yml', '.txt', '.env.example'];
-  const exemptDirs = ['.claude', 'mustard', 'spec', 'node_modules', 'bin', 'obj'];
+/**
+ * Checks if the file is a configuration file (allowed without pipeline)
+ * @param {string} filePath - File path
+ * @returns {boolean}
+ */
+function isConfigFile(filePath) {
+  const patterns = [
+    // Documentation and configuration
+    /\.md$/i,
+    /\.json$/i,
+    /\.yaml$/i,
+    /\.yml$/i,
+    /\.env/i,
+    /\.gitignore$/i,
+    /\.config\./i,
+    /\.editorconfig$/i,
 
-  // Check extension
-  if (exemptExtensions.some(ext => filePath.endsWith(ext))) {
-    return true;
-  }
+    // Special folders (always allowed)
+    /\.claude[\/\\]/i,
+    /spec[\/\\]/i,
+    /mustard[\/\\]/i,
 
-  // Check directory
-  if (exemptDirs.some(dir => filePath.includes(`/${dir}/`) || filePath.includes(`\\${dir}\\`))) {
-    return true;
-  }
+    // CI/CD files
+    /\.github[\/\\]/i,
+    /Dockerfile/i,
+    /docker-compose/i,
 
-  return false;
+    // Lock files (generated)
+    /package-lock\.json$/i,
+    /pnpm-lock\.yaml$/i,
+    /\.lock$/i
+  ];
+
+  return patterns.some(p => p.test(filePath));
 }

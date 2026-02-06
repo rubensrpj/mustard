@@ -2,9 +2,8 @@
   "$schema": "https://json.schemastore.org/claude-code-settings.json",
 
   "hooks": {
-    "PreToolUse": [
+    "UserPromptSubmit": [
       {
-        "matcher": "Skill",
         "hooks": [
           {
             "type": "command",
@@ -17,7 +16,9 @@
             "timeout": 5
           }
         ]
-      },
+      }
+    ],
+    "PreToolUse": [
       {
         "matcher": "Edit|Write",
         "hooks": [

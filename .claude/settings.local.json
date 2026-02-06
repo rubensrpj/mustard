@@ -11,7 +11,9 @@
       "Bash(npm test:*)",
       "Bash(ls:*)",
       "Bash(cmd /c \"dir /s C:\\\\Atiz\\\\Competi\\\\projetos\\\\crm\\\\.claude\")",
-      "Bash(node:*)"
+      "Bash(node:*)",
+      "Bash(cmd /c \"dir c:\\\\Atiz\\\\AI\\\\mustard\\\\templates\\\\skill\")",
+      "Bash(cmd /c \"dir /s /b c:\\\\Atiz\\\\AI\\\\mustard\\\\*enforce*.js\")"
     ]
   }
 }

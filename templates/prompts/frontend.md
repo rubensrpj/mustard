@@ -103,6 +103,7 @@ Passed / Failed: {error}
 - Use hooks for data
 - Consult context files for patterns
 - Test type-check after implementing
+- **Follow design principles** - Use `/design-principles` skill for UI guidelines
 
 ---
 
@@ -147,3 +148,4 @@ Waiting for Backend teammate to complete Task 2."
 - [backend.md](./backend.md) - Backend patterns
 - [review.md](./review.md) - Review checklist
 - [team-lead.md](./team-lead.md) - Team Lead prompt
+- [/design-principles](../skills/design-principles/SKILL.md) - UI design guidelines (Linear/Notion/Stripe style)

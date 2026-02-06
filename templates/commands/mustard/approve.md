@@ -20,123 +20,28 @@
 5. **Suggests** context reset for clean implementation
 6. **Enables** code edits
 
-## Implementation (Memory MCP)
+## Implementation
 
-```javascript
-// 1. Search for active pipeline
-const result = await mcp__memory__search_nodes({
-  query: "pipeline phase explore"
-});
+1. **Search** for active pipeline in memory MCP
+2. **Validate** pipeline is in "explore" phase
+3. **Save** exploration checkpoint (auto)
+4. **Update** phase to "implement"
+5. **Suggest** context reset
 
-if (!result.entities.length) {
-  return "⚠️ No active pipeline found. Use /feature or /bugfix first.";
-}
+→ Memory MCP operations: [pipeline.md#memory-mcp---entity-types](../../core/pipeline.md#memory-mcp---entity-types)
 
-const pipeline = result.entities[0];
+### After Approval
 
-// 2. Check phase
-if (!pipeline.observations.includes("phase: explore")) {
-  return "⚠️ Pipeline is not in explore phase. Use /resume to check status.";
-}
+⚠️ **CRITICAL: Delegation Required**
 
-// 3. AUTO: Save exploration checkpoint
-const checkpointEntity = `Checkpoint:${pipeline.name}:explore:${Date.now()}`;
+You MUST delegate implementation via Task tool:
 
-await mcp__memory__create_entities({
-  entities: [{
-    name: checkpointEntity,
-    entityType: "Checkpoint",
-    observations: [
-      `pipeline: ${pipeline.name}`,
-      `phase: explore`,
-      `created: ${new Date().toISOString()}`,
-      `type: auto-approve`,
-      // Extract key insights from exploration:
-      `discovered_files: ${explorationFindings.files.join(', ')}`,
-      `patterns: ${explorationFindings.patterns.join('; ')}`,
-      `dependencies: ${explorationFindings.dependencies.join('; ')}`
-    ]
-  }]
-});
+| Dependency | Action |
+|------------|--------|
+| Layers independent | Call multiple Tasks in ONE message (parallel) |
+| Frontend needs Backend types | Backend first, then Frontend (sequential) |
 
-await mcp__memory__create_relations({
-  relations: [{
-    from: pipeline.name,
-    to: checkpointEntity,
-    relationType: "has_checkpoint"
-  }]
-});
-
-// 4. Update to implement
-await mcp__memory__add_observations({
-  observations: [{
-    entityName: pipeline.name,
-    contents: [
-      `phase: implement`,
-      `approved: ${new Date().toISOString()}`,
-      `approved_by: user`,
-      `exploration_checkpoint: ${checkpointEntity}`
-    ]
-  }]
-});
-```
-
-### Return Message
-
-```javascript
-return `✅ Spec approved!
-
-Pipeline: ${pipeline.name}
-Phase: implement (edits enabled)
-
-## 💾 Exploration Checkpoint Saved
-
-Your exploration findings have been saved to memory:
-- Discovered files: ${explorationFindings.files.length}
-- Patterns identified: ${explorationFindings.patterns.length}
-- Dependencies mapped: ${explorationFindings.dependencies.length}
-
-Checkpoint: ${checkpointEntity}
-
----
-
-## 🧹 CONTEXT RESET RECOMMENDED
-
-The exploration phase accumulated context in this conversation.
-For optimal implementation performance, consider resetting:
-
-**Option 1: Reset now (recommended)**
-Reply with: "reset" or use \`/checkpoint --reset\`
-
-**Option 2: Continue in current context**
-Reply with: "continue"
-
----
-
-## ⚠️ CRITICAL: Delegation Required
-
-You MUST delegate implementation via Task tool. DO NOT implement in this context.
-
-### Analyze Spec Dependencies
-
-1. Read the spec file to identify layers: Backend, Frontend, Database
-2. Check if Frontend depends on NEW Backend types (sequential) or existing (parallel)
-
-### Execute Implementation
-
-**If NO dependencies between layers (parallel):**
-Call MULTIPLE Tasks in ONE message:
-- Task({ description: "⚙️ Backend {name}" })
-- Task({ description: "🎨 Frontend {name}" })
-
-**If Frontend needs NEW Backend types (sequential):**
-1. Task({ description: "⚙️ Backend {name}" }) → WAIT for completion
-2. Task({ description: "🎨 Frontend {name}" }) → After backend done
-
-### After All Tasks Complete
-1. Use /validate to verify
-2. Use /complete to finalize`;
-```
+After all Tasks complete: `/validate` then `/complete`
 
 ## Flow
 

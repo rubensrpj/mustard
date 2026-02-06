@@ -65,23 +65,91 @@ Task(Explore) → SPEC → APPROVE
 
 ## Implementation
 
-### Phase 1: Create Pipeline
+### Phase 1: Create Pipeline in Memory MCP
 
-1. Create `Pipeline:{name}` entity in memory MCP
-2. Explore with grepai
-3. Search UserContext for related patterns
+```javascript
+// 1. Create pipeline entity
+mcp__memory__create_entities({
+  entities: [{
+    name: `Pipeline:${name}`,
+    entityType: "pipeline",
+    observations: [
+      "phase: explore",
+      `started: ${new Date().toISOString()}`,
+      `objective: ${userDescription}`
+    ]
+  }]
+})
+
+// 2. Explore with grepai (now with context loaded!)
+grepai_search({ query: `${name} entity implementation` })
+grepai_trace_callers({ symbol: `${relatedEntity}` })
+
+// 3. Search for related context
+const userContext = await mcp__memory__search_nodes({
+  query: `UserContext ${name}`
+});
+// Context instantly available for analysis
+```
 
 ### Phase 2: Create Spec
 
-1. Create `Spec:{name}` entity with objective, files, checklist
-2. Create `has_spec` relation to pipeline
-3. Present to user for approval
+```javascript
+// 3. Create spec as entity
+mcp__memory__create_entities({
+  entities: [{
+    name: `Spec:${name}`,
+    entityType: "spec",
+    observations: [
+      "## Objective\n" + objective,
+      "## Files\n" + files.join('\n'),
+      "## Approach\n" + steps.join('\n'),
+      "## Checklist\n□ Database\n□ Backend\n□ Frontend"
+    ]
+  }]
+})
+
+// 4. Create relation
+mcp__memory__create_relations({
+  relations: [{
+    from: `Pipeline:${name}`,
+    to: `Spec:${name}`,
+    relationType: "has_spec"
+  }]
+})
+```
 
 ### Phase 3: Orchestrate Implementation
 
-After `/approve`, delegate via Task(general-purpose) with orchestrator.md prompt.
+```javascript
+// After /approve, execute via Task
+Task({
+  subagent_type: "general-purpose",
+  model: "opus",
+  description: `Feature: ${name}`,
+  prompt: `
+# You are the ORCHESTRATOR
 
-→ Memory MCP structures: [pipeline.md#memory-mcp---entity-types](../../core/pipeline.md#memory-mcp---entity-types)
+## Active Pipeline
+Name: ${name}
+Phase: implement (approved)
+Objective: ${objective}
+
+## Delegation Rules
+- Database: Task(general-purpose, model: opus) + database.md prompt
+- Backend: Task(general-purpose, model: opus) + backend.md prompt
+- Frontend: Task(general-purpose, model: opus) + frontend.md prompt
+
+## ENFORCEMENT
+- L0: You do NOT implement code directly - delegate
+- L2: Follow approved spec
+- L3: Ensure patterns (naming, soft delete, tenant_id)
+
+## TASK
+Implement according to approved spec.
+  `
+})
+```
 
 ## Arguments
 

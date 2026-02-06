@@ -1,5 +1,21 @@
 # Changelog
 
+## [2.6.1] - 2026-02-06
+
+### Added
+
+- **Subproject Commands Collection**: For monorepos, automatically collects commands from subprojects
+  - Scans `{subproject}/.claude/commands/` folders
+  - Maps subproject type by name (Backend → backend, FrontEnd → frontend, etc.)
+  - Compiles commands into `context/{type}/{subproject}-commands.md`
+  - Runs automatically during `mustard init`, `mustard update`, and `/compile-context`
+
+### Changed
+
+- Updated `/compile-context` to v2.4 with Step 1.5 for subproject command collection
+- Added `detectSubprojectType()` function for mapping subproject names to context types
+- Added `collectSubprojectCommands()` function in generators
+
 ## [2.5.0] - 2026-02-06
 
 ### Added

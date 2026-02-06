@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 /**
- * ENFORCEMENT: Context Compilation validation
+ * ENFORCEMENT: Context Compilation validation (UserPromptSubmit)
  *
  * Blocks /feature, /bugfix, /feature-team, /bugfix-team if compiled contexts:
  * - Do not exist for required agents
  * - Are outdated (hash != current git commit)
  *
- * @version 1.1.0
+ * @version 2.0.0
  * @see mustard/cli/templates/commands/mustard/compile-context.md
  */
 
@@ -40,25 +40,17 @@ process.stdin.on('data', chunk => input += chunk);
 process.stdin.on('end', () => {
   try {
     const data = JSON.parse(input);
-    const toolName = data.tool_name || '';
+    const userMessage = data.user_message || '';
 
-    // Only check on Skill invocations for feature/bugfix
-    if (toolName !== 'Skill') {
+    // Check if user is invoking a pipeline skill
+    const pipelinePattern = /^\s*\/(feature|bugfix|feature-team|bugfix-team)(\s|$)/i;
+    const match = userMessage.match(pipelinePattern);
+    if (!match) {
       process.exit(0);
     }
 
-    const skillName = data.tool_input?.skill || '';
-
-    // Only enforce for feature and bugfix skills (Task and Agent Teams modes)
-    const enforcedSkills = [
-      'mustard:feature', 'mustard:bugfix',
-      'mustard:feature-team', 'mustard:bugfix-team',
-      'feature', 'bugfix',
-      'feature-team', 'bugfix-team'
-    ];
-    if (!enforcedSkills.includes(skillName)) {
-      process.exit(0);
-    }
+    // Determine if Agent Teams mode
+    const isTeamMode = match[1].toLowerCase().includes('team');
 
     // Get current git commit hash
     const currentHash = getCurrentCommitHash();
@@ -66,9 +58,6 @@ process.stdin.on('end', () => {
       // Not a git repo or git not available - skip validation
       process.exit(0);
     }
-
-    // Determine if Agent Teams mode
-    const isTeamMode = skillName.includes('team');
 
     // Check all required contexts
     const validation = validateContexts(currentHash, isTeamMode);
@@ -191,9 +180,9 @@ function buildErrorMessage(missing, outdated, currentHash) {
 function blockWithMessage(reason, missing, outdated) {
   const response = {
     hookSpecificOutput: {
-      hookEventName: "PreToolUse",
-      permissionDecision: "block",
-      permissionDecisionReason: `Context Compilation Required
+      hookEventName: "UserPromptSubmit",
+      decision: "block",
+      reason: `Context Compilation Required
 
 ${reason}
 

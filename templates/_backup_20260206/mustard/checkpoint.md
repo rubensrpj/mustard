@@ -29,13 +29,93 @@
 
 ## Implementation
 
-1. **Find** active pipeline in memory MCP
-2. **Extract** phase insights (files, patterns, decisions)
-3. **Create** `Checkpoint:{pipeline}:{phase}:{timestamp}` entity
-4. **Link** checkpoint to pipeline via `has_checkpoint` relation
-5. **Clear** context if `--reset` flag provided
+### Step 1: Extract Current Phase Insights
 
-→ Memory MCP structures: [pipeline.md#checkpoint-structure-new-v26](../../core/pipeline.md#checkpoint-structure-new-v26)
+```javascript
+// 1. Find active pipeline
+const pipeline = await mcp__memory__search_nodes({
+  query: "pipeline phase"
+});
+
+if (!pipeline.entities.length) {
+  return "No active pipeline. Use /feature or /bugfix first.";
+}
+
+const pipelineName = pipeline.entities[0].name;
+const phase = extractObservation(pipeline.entities[0], 'phase');
+```
+
+### Step 2: Generate Phase Summary
+
+```javascript
+// 2. Create summary based on current phase
+const summary = await generatePhaseSummary(phase, conversation);
+
+// Summary structure by phase:
+// - explore: discovered files, patterns, dependencies
+// - implement: completed tasks, modified files, decisions made
+// - review: issues found, fixes applied
+
+const checkpointEntity = `Checkpoint:${pipelineName}:${phase}:${Date.now()}`;
+
+await mcp__memory__create_entities({
+  entities: [{
+    name: checkpointEntity,
+    entityType: "Checkpoint",
+    observations: [
+      `pipeline: ${pipelineName}`,
+      `phase: ${phase}`,
+      `created: ${new Date().toISOString()}`,
+      `summary: ${summary.brief}`,
+      `key_files: ${summary.files.join(', ')}`,
+      `decisions: ${summary.decisions.join('; ')}`,
+      `next_steps: ${summary.nextSteps.join('; ')}`
+    ]
+  }]
+});
+
+// 3. Link checkpoint to pipeline
+await mcp__memory__create_relations({
+  relations: [{
+    from: pipelineName,
+    to: checkpointEntity,
+    relationType: "has_checkpoint"
+  }]
+});
+```
+
+### Step 3: Context Reset (if requested)
+
+```javascript
+if (args.includes('--reset')) {
+  return `## Checkpoint Saved
+
+**Pipeline:** ${pipelineName}
+**Phase:** ${phase}
+**Checkpoint:** ${checkpointEntity}
+
+### Summary Saved
+${summary.brief}
+
+### Key Files
+${summary.files.map(f => `- ${f}`).join('\n')}
+
+### Decisions Made
+${summary.decisions.map(d => `- ${d}`).join('\n')}
+
+### Next Steps
+${summary.nextSteps.map(s => `- ${s}`).join('\n')}
+
+---
+
+## CONTEXT RESET REQUESTED
+
+The conversation context will now be cleared.
+Use \`/resume\` in a new message to continue from this checkpoint.
+
+All progress has been saved to memory MCP.`;
+}
+```
 
 ## Checkpoint Structure
 

@@ -1,7 +1,7 @@
 # /compile-context - Compile Agent Contexts
 
 > Compiles context files for all agents into optimized `.context.md` files.
-> **v2.4** - Auto-invoked by /feature and /bugfix. Now collects subproject commands.
+> **v2.3** - Auto-invoked by /feature and /bugfix.
 
 ## Usage
 
@@ -13,15 +13,11 @@
 ## What It Does
 
 1. Gets current git commit hash
-2. **Collects subproject commands** (if monorepo):
-   - Scans subprojects for `.claude/commands/` folders
-   - Maps subproject type (Backend → backend, FrontEnd → frontend, etc.)
-   - Compiles commands into `context/{type}/{subproject}-commands.md`
-3. For each agent (backend, frontend, database, bugfix, review, orchestrator):
+2. For each agent (backend, frontend, database, bugfix, review, orchestrator):
    - Checks if `prompts/{agent}.context.md` exists
    - Checks if the hash in the file matches current commit
-   - If missing or outdated: compiles context from source files (including subproject commands)
-4. Saves compiled contexts to `prompts/{agent}.context.md`
+   - If missing or outdated: compiles context from source files
+3. Saves compiled contexts to `prompts/{agent}.context.md`
 
 ## When It Runs
 
@@ -38,75 +34,6 @@ git rev-parse --short HEAD
 ```
 
 Save as `currentHash`.
-
-### Step 1.5: Collect Subproject Commands (Monorepo Only)
-
-For monorepos with subprojects that have their own `.claude/commands/` folders:
-
-```javascript
-// Subproject type mapping
-const SUBPROJECT_TYPE_MAPPING = {
-  backend:  ['backend', 'api', 'server', 'service'],
-  frontend: ['frontend', 'web', 'app', 'client', 'ui'],
-  database: ['database', 'db', 'data', 'migrations', 'prisma', 'drizzle'],
-  shared:   ['shared', 'common', 'lib', 'utils']
-};
-
-function detectSubprojectType(subprojectName) {
-  const nameLower = subprojectName.toLowerCase();
-  for (const [type, keywords] of Object.entries(SUBPROJECT_TYPE_MAPPING)) {
-    if (keywords.some(k => nameLower.includes(k))) {
-      return type;
-    }
-  }
-  return 'shared'; // Fallback
-}
-
-// For each subproject (e.g., Competi.Backend, Competi.FrontEnd)
-for (const subproject of detectedSubprojects) {
-  const commandsPath = `${subproject.path}/.claude/commands`;
-
-  // Check if subproject has commands
-  const commandFiles = Glob(`${commandsPath}/*.md`)
-    .filter(f => !f.includes("README"));
-
-  if (commandFiles.length === 0) continue;
-
-  // Detect type from name
-  const type = detectSubprojectType(subproject.name);
-  // "Competi.Backend" → "backend"
-  // "Competi.FrontEnd" → "frontend"
-
-  // Compile all commands into single file
-  let compiled = `# ${subproject.name} Commands\n\n`;
-  compiled += `> Auto-collected from \`${subproject.path}/.claude/commands/\`\n`;
-  compiled += `> Do NOT edit - regenerated on each compile\n\n`;
-
-  for (const file of commandFiles) {
-    const content = Read(file);
-    const commandName = file.split('/').pop().replace('.md', '');
-    compiled += `## /${commandName}\n\n`;
-    compiled += content + '\n\n---\n\n';
-  }
-
-  // Write to appropriate context folder
-  const targetPath = `.claude/context/${type}/${subproject.name.toLowerCase()}-commands.md`;
-  Write(targetPath, compiled);
-}
-```
-
-**Result:** Subproject commands are now available in the agent's context folder:
-
-```
-.claude/context/
-├── backend/
-│   ├── patterns.md
-│   └── competi.backend-commands.md    ← Auto-collected
-├── frontend/
-│   └── competi.frontend-commands.md   ← Auto-collected
-└── database/
-    └── competi.database-commands.md   ← Auto-collected
-```
 
 ### Step 2: For Each Agent, Check and Compile
 
@@ -225,7 +152,6 @@ Each compiled file has this structure:
 - Compiled files are cached until git commit changes
 - Source files in `context/` are preserved, compiled files in `prompts/`
 - Force recompile with `--force` if manual edits to context files
-- **Subproject commands** are collected fresh on each compile (no need to run `mustard update`)
 
 ## See Also
 

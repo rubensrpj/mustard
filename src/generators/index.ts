@@ -18,7 +18,7 @@ import { generatePrompts } from './prompts.js';
 import { generateCommands, MUSTARD_COMMANDS_FOLDER } from './commands.js';
 import { generateHooks } from './hooks.js';
 import { generateRegistry } from './registry.js';
-import type { ProjectInfo, Analysis, GeneratorOptions } from '../types.js';
+import type { ProjectInfo, Analysis, GeneratorOptions, Subproject } from '../types.js';
 
 /**
  * Deep merge two objects, with source taking priority
@@ -129,6 +129,17 @@ export async function generateAll(projectPath: string, projectInfo: ProjectInfo,
   const contextFiles = await generateContextFolder(claudePath);
   generatedFiles.push(...contextFiles);
 
+  // Collect subproject commands (for monorepos)
+  if (projectInfo.structure.subprojects.length > 0) {
+    log('Collecting subproject commands...');
+    const subprojectCommandFiles = await collectSubprojectCommands(
+      projectPath,
+      claudePath,
+      projectInfo.structure.subprojects
+    );
+    generatedFiles.push(...subprojectCommandFiles);
+  }
+
   // Copy settings.json from template
   log('Copying settings.json...');
   await copySettingsJson(claudePath);
@@ -138,6 +149,11 @@ export async function generateAll(projectPath: string, projectInfo: ProjectInfo,
   log('Copying scripts...');
   await copyScripts(claudePath);
   generatedFiles.push('scripts/statusline.js');
+
+  // Copy skills folder
+  log('Copying skills...');
+  const skillFiles = await copySkills(claudePath);
+  generatedFiles.push(...skillFiles);
 
   return generatedFiles;
 }
@@ -186,6 +202,89 @@ const CONTEXT_FOLDERS: Record<string, string> = {
   review: 'Checklists, regras de qualidade - carregado pelo Review Specialist',
   orchestrator: 'Visão geral, fluxos de pipeline - carregado pelo Orchestrator'
 };
+
+/**
+ * Subproject type mapping based on name keywords
+ */
+const SUBPROJECT_TYPE_MAPPING: Record<string, string[]> = {
+  backend: ['backend', 'api', 'server', 'service'],
+  frontend: ['frontend', 'web', 'app', 'client', 'ui'],
+  database: ['database', 'db', 'data', 'migrations', 'prisma', 'drizzle'],
+  shared: ['shared', 'common', 'lib', 'utils']
+};
+
+/**
+ * Detect subproject type from its name
+ * Example: "Competi.Backend" → "backend", "Competi.FrontEnd" → "frontend"
+ */
+function detectSubprojectType(subprojectName: string): string {
+  const nameLower = subprojectName.toLowerCase();
+
+  for (const [type, keywords] of Object.entries(SUBPROJECT_TYPE_MAPPING)) {
+    if (keywords.some(k => nameLower.includes(k))) {
+      return type;
+    }
+  }
+
+  return 'shared'; // Fallback: goes to shared/
+}
+
+/**
+ * Collect commands from subproject .claude/commands/ folders
+ * and compile them into the root context folders
+ *
+ * This is called during init/update to set up the initial structure.
+ * The actual collection happens during /compile-context (template command).
+ */
+async function collectSubprojectCommands(
+  projectPath: string,
+  claudePath: string,
+  subprojects: Subproject[]
+): Promise<string[]> {
+  const collectedFiles: string[] = [];
+
+  for (const subproject of subprojects) {
+    const subprojectCommandsPath = join(projectPath, subproject.path, '.claude', 'commands');
+
+    if (!existsSync(subprojectCommandsPath)) continue;
+
+    // Detect type from name
+    const type = detectSubprojectType(subproject.name);
+
+    // Read all .md files (exclude README)
+    const commandFiles = readdirSync(subprojectCommandsPath)
+      .filter(f => f.endsWith('.md') && !f.toLowerCase().includes('readme'));
+
+    if (commandFiles.length === 0) continue;
+
+    // Compile into single file
+    let content = `# ${subproject.name} Commands\n\n`;
+    content += `> Auto-collected from \`${subproject.path}/.claude/commands/\`\n`;
+    content += `> Do NOT edit - regenerated on each /compile-context\n\n`;
+
+    for (const file of commandFiles) {
+      const filePath = join(subprojectCommandsPath, file);
+      const fileContent = await readFile(filePath, 'utf-8');
+      const commandName = file.replace('.md', '');
+
+      content += `## /${commandName}\n\n`;
+      content += fileContent + '\n\n';
+      content += '---\n\n';
+    }
+
+    // Write to context/{type}/
+    const targetDir = join(claudePath, 'context', type);
+    await mkdir(targetDir, { recursive: true });
+
+    // Use lowercase and sanitize the name for the filename
+    const safeSubprojectName = subproject.name.toLowerCase().replace(/[^a-z0-9]/g, '-');
+    const targetFile = `${safeSubprojectName}-commands.md`;
+    await writeFile(join(targetDir, targetFile), content);
+    collectedFiles.push(`context/${type}/${targetFile}`);
+  }
+
+  return collectedFiles;
+}
 
 /**
  * Generate context folder with subfolders for each agent
@@ -397,6 +496,44 @@ async function copyScripts(claudePath: string): Promise<void> {
 }
 
 /**
+ * Copy skills folder from template to target .claude directory
+ * Skills are copied to .claude/skills/<skill-name>/SKILL.md
+ */
+async function copySkills(claudePath: string): Promise<string[]> {
+  const templatesDir = getTemplatesDir();
+  const templateSkillsDir = join(templatesDir, 'skills');
+  const targetSkillsDir = join(claudePath, 'skills');
+  const copiedFiles: string[] = [];
+
+  if (!existsSync(templateSkillsDir)) {
+    return copiedFiles;
+  }
+
+  // Read all .md files from templates/skills/
+  const skillFiles = readdirSync(templateSkillsDir).filter(f => f.endsWith('.md'));
+
+  for (const file of skillFiles) {
+    // Extract skill name from filename (e.g., "design-principles.md" -> "design-principles")
+    const skillName = file.replace('.md', '');
+    const skillDir = join(targetSkillsDir, skillName);
+
+    // Create skill directory
+    await mkdir(skillDir, { recursive: true });
+
+    // Copy as SKILL.md (the entrypoint)
+    const targetPath = join(skillDir, 'SKILL.md');
+
+    // Only copy if target doesn't exist (preserve user customizations)
+    if (!existsSync(targetPath)) {
+      await copyFile(join(templateSkillsDir, file), targetPath);
+      copiedFiles.push(`skills/${skillName}/SKILL.md`);
+    }
+  }
+
+  return copiedFiles;
+}
+
+/**
  * Merge settings.json - preserves client customizations while updating core structure
  */
 async function mergeSettingsJson(claudePath: string): Promise<void> {
@@ -428,8 +565,8 @@ async function mergeSettingsJson(claudePath: string): Promise<void> {
 
 /**
  * Generate only core files (for update command)
- * Preserves: CLAUDE.md, context/*.md (except README), docs/*
- * Updates: commands/, prompts/, hooks/, core/, scripts/, settings.json, entity-registry.json
+ * DELETES and RECREATES: prompts/, commands/mustard/, hooks/, core/, skills/, scripts/, settings.json
+ * Preserves: CLAUDE.md, commands/*.md (user), context/*.md (user), docs/*
  */
 export async function generateCoreOnly(
   projectPath: string,
@@ -444,10 +581,12 @@ export async function generateCoreOnly(
   const generatedFiles: string[] = [];
 
   // Ensure directory structure exists
+  await mkdir(join(claudePath, 'prompts'), { recursive: true });
   await mkdir(join(claudePath, 'commands', MUSTARD_COMMANDS_FOLDER), { recursive: true });
   await mkdir(join(claudePath, 'hooks'), { recursive: true });
   await mkdir(join(claudePath, 'core'), { recursive: true });
   await mkdir(join(claudePath, 'scripts'), { recursive: true });
+  await mkdir(join(claudePath, 'skills'), { recursive: true });
 
   // Generate CLAUDE.md only if explicitly requested
   if (overwriteClaudeMd) {
@@ -464,8 +603,18 @@ export async function generateCoreOnly(
     generatedFiles.push('CLAUDE.md');
   }
 
-  // NOTE: Prompts are NOT regenerated during update - only during init
-  // This preserves user customizations to prompt files
+  // Generate prompts from templates (recreated on every update)
+  log('Generating prompts...');
+  const prompts = await generatePrompts(projectInfo, analysis);
+  for (const [name, content] of Object.entries(prompts)) {
+    await writeFile(join(claudePath, 'prompts', `${name}.md`), content);
+    generatedFiles.push(`prompts/${name}.md`);
+  }
+
+  // Generate prompts index
+  const promptsIndex = generatePromptsIndex(Object.keys(prompts));
+  await writeFile(join(claudePath, 'prompts', '_index.md'), promptsIndex);
+  generatedFiles.push('prompts/_index.md');
 
   // Generate commands (in mustard/ subfolder - user commands in commands/ are preserved)
   log('Generating commands...');
@@ -500,9 +649,20 @@ export async function generateCoreOnly(
   const contextFiles = await generateContextReadme(claudePath);
   generatedFiles.push(...contextFiles);
 
-  // Merge settings.json (preserve client hooks)
-  log('Merging settings.json...');
-  await mergeSettingsJson(claudePath);
+  // Collect subproject commands (for monorepos)
+  if (projectInfo.structure.subprojects.length > 0) {
+    log('Collecting subproject commands...');
+    const subprojectCommandFiles = await collectSubprojectCommands(
+      projectPath,
+      claudePath,
+      projectInfo.structure.subprojects
+    );
+    generatedFiles.push(...subprojectCommandFiles);
+  }
+
+  // Copy settings.json (overwrite, no merge)
+  log('Copying settings.json...');
+  await copySettingsJson(claudePath);
   generatedFiles.push('settings.json');
 
   // Copy scripts
@@ -510,7 +670,45 @@ export async function generateCoreOnly(
   await copyScripts(claudePath);
   generatedFiles.push('scripts/statusline.js');
 
+  // Copy skills (recreated on every update)
+  log('Copying skills...');
+  const skillFiles = await copySkillsForUpdate(claudePath);
+  generatedFiles.push(...skillFiles);
+
   return generatedFiles;
+}
+
+/**
+ * Copy skills folder for update command (always overwrites)
+ */
+async function copySkillsForUpdate(claudePath: string): Promise<string[]> {
+  const templatesDir = getTemplatesDir();
+  const templateSkillsDir = join(templatesDir, 'skills');
+  const targetSkillsDir = join(claudePath, 'skills');
+  const copiedFiles: string[] = [];
+
+  if (!existsSync(templateSkillsDir)) {
+    return copiedFiles;
+  }
+
+  // Read all .md files from templates/skills/
+  const skillFiles = readdirSync(templateSkillsDir).filter(f => f.endsWith('.md'));
+
+  for (const file of skillFiles) {
+    // Extract skill name from filename (e.g., "design-principles.md" -> "design-principles")
+    const skillName = file.replace('.md', '');
+    const skillDir = join(targetSkillsDir, skillName);
+
+    // Create skill directory
+    await mkdir(skillDir, { recursive: true });
+
+    // Copy as SKILL.md (always overwrite for update)
+    const targetPath = join(skillDir, 'SKILL.md');
+    await copyFile(join(templateSkillsDir, file), targetPath);
+    copiedFiles.push(`skills/${skillName}/SKILL.md`);
+  }
+
+  return copiedFiles;
 }
 
 /**

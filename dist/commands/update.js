@@ -25,18 +25,18 @@ export async function updateCommand(options) {
     }
     // Show what will be updated vs preserved
     console.log(chalk.white('📋 Update plan:\n'));
-    console.log(chalk.green('  ✓ Will update (core files):'));
-    console.log(chalk.gray('    • commands/mustard/*.md (Mustard commands)'));
-    console.log(chalk.gray('    • hooks/*.js'));
-    console.log(chalk.gray('    • core/*.md'));
-    console.log(chalk.gray('    • scripts/*.js'));
-    console.log(chalk.gray('    • context/README.md'));
-    console.log(chalk.gray('    • entity-registry.json'));
-    console.log(chalk.gray('    • settings.json (merged)'));
+    console.log(chalk.green('  ✓ Will DELETE and RECREATE (core files):'));
+    console.log(chalk.gray('    • prompts/ (all files)'));
+    console.log(chalk.gray('    • commands/mustard/ (Mustard commands)'));
+    console.log(chalk.gray('    • hooks/ (all files)'));
+    console.log(chalk.gray('    • core/ (all files)'));
+    console.log(chalk.gray('    • skills/ (all files)'));
+    console.log(chalk.gray('    • scripts/ (all files)'));
+    console.log(chalk.gray('    • settings.json (overwritten)'));
+    console.log(chalk.gray('    • entity-registry.json (regenerated)'));
     console.log(chalk.yellow('\n  ⚡ Will preserve (client files):'));
     console.log(chalk.gray('    • CLAUDE.md'));
-    console.log(chalk.gray('    • commands/*.md (user commands)'));
-    console.log(chalk.gray('    • prompts/*.md'));
+    console.log(chalk.gray('    • commands/*.md (user commands, not in mustard/)'));
     console.log(chalk.gray('    • context/*.md (user files)'));
     console.log(chalk.gray('    • docs/*'));
     if (options.includeClaudeMd) {
@@ -109,12 +109,24 @@ export async function updateCommand(options) {
         rules: [],
         entities: patterns.entities
     };
-    // Clean mustard commands folder before regenerating
-    // This ensures old Mustard commands are removed while preserving user commands in commands/
-    const mustardCommandsPath = join(claudePath, 'commands', MUSTARD_COMMANDS_FOLDER);
-    if (existsSync(mustardCommandsPath)) {
-        await rm(mustardCommandsPath, { recursive: true, force: true });
+    // Clean core folders before regenerating
+    // This ensures old files are removed and replaced with fresh templates
+    const foldersToDelete = [
+        'prompts',
+        join('commands', MUSTARD_COMMANDS_FOLDER),
+        'core',
+        'hooks',
+        'skills',
+        'scripts'
+    ];
+    const cleanSpinner = ora('Cleaning old files...').start();
+    for (const folder of foldersToDelete) {
+        const folderPath = join(claudePath, folder);
+        if (existsSync(folderPath)) {
+            await rm(folderPath, { recursive: true, force: true });
+        }
     }
+    cleanSpinner.succeed('Old files cleaned');
     // Generate core files only
     const genSpinner = ora('Updating core files...').start();
     try {
@@ -154,8 +166,8 @@ export async function updateCommand(options) {
     }
     // Done!
     console.log(chalk.green.bold('\n✅ Update complete!\n'));
-    console.log(chalk.gray('  Your customizations in CLAUDE.md, context/, and commands/ were preserved.'));
-    console.log(chalk.gray('  Mustard commands are in commands/mustard/ (safe to overwrite on updates).'));
+    console.log(chalk.gray('  Recreated: prompts/, commands/mustard/, hooks/, core/, skills/, scripts/, settings.json'));
+    console.log(chalk.gray('  Preserved: CLAUDE.md, commands/*.md (user), context/*.md (user), docs/'));
     console.log(chalk.gray('  A backup was created in case you need to restore.\n'));
 }
 /**

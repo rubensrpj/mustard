@@ -78,7 +78,7 @@ mustard/
     └── scripts/             # statusline.js
 ```
 
-## Context per Agent (v2.6)
+## Context per Agent (v2.6.1)
 
 Prompts are **agnostic** - project-specific patterns live in context files:
 
@@ -97,9 +97,23 @@ context/
 **Flow:**
 
 1. User invokes `/feature` or `/bugfix` skill
-2. Skill compiles contexts for all agents (git-based caching)
-3. Agent is called with compiled context ready
-4. Compiled context saved to `prompts/{agent}.context.md`
+2. **Subproject commands are collected** (if monorepo)
+3. Skill compiles contexts for all agents (git-based caching)
+4. Agent is called with compiled context ready
+5. Compiled context saved to `prompts/{agent}.context.md`
+
+### Subproject Commands (Monorepo)
+
+For monorepos, commands from `{subproject}/.claude/commands/` are automatically collected:
+
+```text
+MyProject/
+├── MyProject.Backend/.claude/commands/   → context/backend/myproject-backend-commands.md
+├── MyProject.FrontEnd/.claude/commands/  → context/frontend/myproject-frontend-commands.md
+└── MyProject.Database/.claude/commands/  → context/database/myproject-database-commands.md
+```
+
+Type mapping by keywords: `backend`/`api`/`server` → backend, `frontend`/`web`/`app` → frontend, etc.
 
 ## CLI Flow
 

@@ -1,43 +1,30 @@
+#!/usr/bin/env node
 /**
- * Hook: enforce-grepai
+ * ENFORCEMENT L1: Blocks Grep/Glob, forces use of grepai MCP
  *
- * Encourages use of grepai for semantic code search.
- * Triggers on Grep/Glob tools.
+ * grepai offers superior semantic search and should be used
+ * instead of simple text search tools.
  *
- * Note: This is an advisory hook, not a blocker.
+ * @version 1.0.0
+ * @see mustard/cli/templates/core/enforcement.md
  */
 
-export default {
-  name: 'enforce-grepai',
-
-  // Hook configuration
-  hooks: {
-    preToolCall: {
-      tools: ['Grep', 'Glob'],
-      handler: 'suggestGrepai'
-    }
-  },
-
-  /**
-   * Suggest using grepai for better semantic search
-   */
-  suggestGrepai(context) {
-    const { toolName, parameters } = context;
-
-    // Allow but remind
-    return {
-      allowed: true,
-      message: `💡 SUGGESTION: Consider using grepai for semantic search.
-
-grepai provides:
-- Semantic understanding of code intent
-- Better results for complex queries
-- Call graph tracing
-
-Example:
-  grepai_search({ query: "your search" })
-  grepai_trace_callers({ symbol: "FunctionName" })
-`
+let input = '';
+process.stdin.setEncoding('utf8');
+process.stdin.on('data', chunk => input += chunk);
+process.stdin.on('end', () => {
+  try {
+    const response = {
+      hookSpecificOutput: {
+        hookEventName: "PreToolUse",
+        permissionDecision: "deny",
+        permissionDecisionReason: `⛔ L1: Use grepai_search/trace_callers/trace_callees instead`
+      }
     };
+    console.log(JSON.stringify(response));
+    process.exit(0);
+  } catch (err) {
+    console.error('Hook error:', err.message);
+    process.exit(0);
   }
-};
+});
