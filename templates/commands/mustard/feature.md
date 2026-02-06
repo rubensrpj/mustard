@@ -54,35 +54,48 @@ Task(Explore) → SPEC → APPROVE
 
 ## Implementation
 
-### Phase 0: Load Context (Auto)
+### Phase 0: Compile Contexts (MANDATORY FIRST STEP)
 
-```javascript
-// BEFORE creating pipeline, check context
-const context = await mcp__memory__search_nodes({
-  query: "ProjectContext loaded"
-});
+**BEFORE doing anything else, you MUST compile all agent contexts:**
 
-// Check if context exists and is fresh (< 24h)
-const isStale = !context.entities?.length || context.entities[0]?.observations?.some(obs => {
-  if (obs.startsWith('loaded:')) {
-    const loadedDate = new Date(obs.replace('loaded:', '').trim());
-    const now = new Date();
-    const hoursDiff = (now - loadedDate) / (1000 * 60 * 60);
-    return hoursDiff > 24;
-  }
-  return false;
-});
+#### Step 0.1: Get current commit hash
 
-if (isStale) {
-  // Auto-load context (see /sync-context for details)
-  // 1. Glob .claude/context/*.md
-  // 2. Read each file, create UserContext:* entities
-  // 3. Read CLAUDE.md, create ProjectContext entity
-  // 4. Read entity-registry.json, create EntityRegistry entity
-  // 5. Use grepai to discover code patterns
-  console.log("📚 Loading project context...");
-}
+```bash
+git rev-parse --short HEAD
 ```
+
+Save the result as `currentHash`.
+
+#### Step 0.2: For each agent, check and compile
+
+For each agent in: `backend`, `frontend`, `database`, `bugfix`, `review`, `orchestrator`:
+
+1. Use Glob to check if `.claude/prompts/{agent}.context.md` exists
+2. If exists, Read the file and check if `compiled-from-commit: {hash}` matches `currentHash`
+3. If missing OR hash differs:
+   - Use Glob to find all `.md` files in `.claude/context/shared/` (exclude README)
+   - Use Glob to find all `.md` files in `.claude/context/{agent}/` (exclude README)
+   - Read each file's content
+   - Synthesize into a single compiled context (remove duplicates, consolidate, optimize)
+   - Write to `.claude/prompts/{agent}.context.md` with format:
+
+```markdown
+<!-- compiled-from-commit: {currentHash} -->
+<!-- sources: {list of source files} -->
+<!-- compiled-at: {ISO timestamp} -->
+
+# {Agent} Context
+
+{synthesized content}
+```
+
+#### Step 0.3: Report compilation status
+
+```text
+✅ Context compiled for all agents (commit: {hash})
+```
+
+> ⚠️ **DO NOT SKIP THIS STEP.** All agents depend on compiled contexts.
 
 ### Phase 1: Create Pipeline in Memory MCP
 

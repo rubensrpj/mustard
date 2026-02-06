@@ -9,7 +9,7 @@ This gives Claude instant access to project specifications, architecture decisio
 
 ## Structure
 
-```
+```text
 .claude/context/
 +-- shared/           # Loaded by ALL agents
 |   +-- conventions.md
@@ -22,6 +22,9 @@ This gives Claude instant access to project specifications, architecture decisio
 +-- orchestrator/     # Loaded by Orchestrator (optional)
 +-- review/           # Loaded by Review Specialist (optional)
 +-- bugfix/           # Loaded by Bugfix Specialist (optional)
++-- team-lead/        # Loaded by Team Lead (Agent Teams mode)
+|   +-- coordination.md
+|   +-- task-list.md
 ```
 
 ## How Agents Load Context

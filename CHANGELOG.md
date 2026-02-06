@@ -1,5 +1,43 @@
 # Changelog
 
+## [2.5.0] - 2026-02-06
+
+### Added
+
+- **Agent Teams support** (experimental): Alternative to Task subagents for complex features
+  - `/feature-team <name>` - Feature pipeline with Agent Teams
+  - `/bugfix-team <error>` - Bugfix pipeline with competing hypotheses
+  - New `team-lead.md` prompt for coordinating teammates
+  - New `context/team-lead/` folder with coordination patterns
+- **Mandatory Pipeline Invocation (L-1)**: Skills must be invoked BEFORE any analysis
+- Context compilation moved to skill invocation (ensures contexts are ready)
+
+### Changed
+
+- Version bump from 2.4 to 2.5
+- Section numbering in CLAUDE.md (0-15 sections)
+- Removed "Context Loading" section from agent prompts (now in skill commands)
+- Added "Agent Teams Mode" section to specialist prompts (backend, frontend, database, review)
+- Updated `enforce-pipeline.js` hook v1.1.0 with Agent Teams options
+- Updated `context/README.md` with team-lead folder structure
+
+### Updated
+
+- `feature.md` and `bugfix.md` commands now compile contexts as Phase 0
+- All specialist prompts link to `team-lead.md`
+
+## [2.4.0] - 2026-02-06
+
+### Added
+
+- Memory MCP search in agents
+- Improved CLI output
+
+### Changed
+
+- Agent prompts now include "Context Loading" section with git-based verification
+- Updated all agent prompts (backend, frontend, database, bugfix, review, orchestrator)
+
 ## [2.2.0] - 2026-02-06
 
 ### Added

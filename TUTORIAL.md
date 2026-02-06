@@ -132,16 +132,49 @@ Claude: "Active: add-email-person
         Continue?"
 ```
 
-## Context Loading (v2.2)
+## Context Compilation (v2.5)
 
-Agents automatically check for context changes:
+Context is compiled when you invoke a pipeline skill:
 
-1. Agent starts (e.g., Backend Specialist)
-2. Checks git: `git diff --name-only HEAD -- .claude/context/shared/ .claude/context/backend/`
-3. If changed → recompiles context to `prompts/backend.context.md`
-4. Loads compiled context
+1. You invoke `/feature` or `/bugfix`
+2. Skill compiles contexts for all agents (git-based caching)
+3. Agents are called with compiled context ready
+4. Compiled context saved to `prompts/{agent}.context.md`
 
-**No manual commands needed** - context is always up-to-date.
+**No manual commands needed** - context is compiled at skill invocation.
+
+## Agent Teams Mode (Experimental)
+
+For complex multi-layer features, you can use Agent Teams:
+
+```text
+You: /feature-team invoice-module
+
+Claude (as Team Lead):
+  - Spawns Database teammate
+  - Spawns Backend teammate
+  - Spawns Frontend teammate
+  - Coordinates via shared task list
+  - Spawns Review teammate
+  - Validates and completes
+```
+
+Enable in `.claude/settings.json`:
+
+```json
+{
+  "env": {
+    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"
+  }
+}
+```
+
+| Use Agent Teams | Use Task Mode |
+|-----------------|---------------|
+| Multi-layer features | Single-layer changes |
+| Complex coordination | Simple delegation |
+| True parallelism | Sequential is OK |
+| Higher token budget | Token cost matters |
 
 ## Customizing Context
 

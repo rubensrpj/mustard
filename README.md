@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-2.2.0-yellow?style=for-the-badge" alt="Version">
+  <img src="https://img.shields.io/badge/version-2.5.0-yellow?style=for-the-badge" alt="Version">
   <img src="https://img.shields.io/badge/node-%3E%3D18-green?style=for-the-badge&logo=node.js" alt="Node">
   <img src="https://img.shields.io/badge/license-MIT-blue?style=for-the-badge" alt="License">
 </p>
@@ -34,12 +34,13 @@ Mustard generates a `.claude/` folder with prompts, commands, and rules for Clau
 - **Enforcement hooks** (grepai, pipeline confirmation)
 - **Stack detection** and auto-generated CLAUDE.md
 
-## What's New in v2.2
+## What's New in v2.5
 
-- **Auto-compiled context**: Agents check git for changes and compile context automatically
-- **Simplified workflow**: No manual sync commands needed
-- **Removed commands**: `/context-init` and `/context-normalize` (now automatic)
-- **Compiled context files**: `prompts/{agent}.context.md` generated on-demand
+- **Agent Teams support** (experimental): True parallel execution for complex features
+  - `/feature-team` and `/bugfix-team` commands
+  - Team Lead coordinates Database, Backend, Frontend, and Review teammates
+- **Mandatory Pipeline Invocation**: Skills compile contexts before starting
+- **Simplified agent prompts**: Context loading moved to skill commands
 
 ## Installation
 
@@ -91,12 +92,12 @@ Prompts are **agnostic** - they don't contain project-specific code. Instead, ea
 └── orchestrator/ # Only Orchestrator loads
 ```
 
-**How it works (v2.2):**
+**How it works (v2.5):**
 
-1. Agent is called (e.g., backend.md)
-2. Checks git: `git diff --name-only HEAD -- .claude/context/shared/ .claude/context/backend/`
-3. If changed OR no compiled file exists → reads source files, synthesizes, saves to `prompts/backend.context.md`
-4. Loads compiled context
+1. User invokes `/feature` or `/bugfix` skill
+2. Skill compiles contexts for all agents (git-based caching)
+3. Agent is called with compiled context ready
+4. Compiled context saved to `prompts/{agent}.context.md`
 
 **Benefits:**
 
@@ -178,6 +179,7 @@ Mustard "agents" are prompts loaded into `Task(general-purpose)`:
 
 | Prompt | Model | Context Folders |
 |--------|-------|-----------------|
+| team-lead | opus | shared + team-lead (Agent Teams) |
 | orchestrator | opus | shared + orchestrator |
 | backend | opus | shared + backend |
 | frontend | opus | shared + frontend |
@@ -187,7 +189,7 @@ Mustard "agents" are prompts loaded into `Task(general-purpose)`:
 | report | sonnet | (uses git log) |
 | naming | - | Naming conventions reference |
 
-## Pipeline Commands
+## Pipeline Commands (Task Mode)
 
 | Command | Description |
 |---------|-------------|
@@ -196,6 +198,15 @@ Mustard "agents" are prompts loaded into `Task(general-purpose)`:
 | `/approve` | Approve spec |
 | `/complete` | Finalize |
 | `/resume` | Resume active pipeline |
+
+### Agent Teams Mode (Experimental)
+
+| Command | Description |
+|---------|-------------|
+| `/feature-team` | Feature pipeline with parallel teammates |
+| `/bugfix-team` | Bugfix pipeline with competing hypotheses |
+
+Agent Teams require `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` in `.claude/settings.json`.
 
 ### Task Commands (L0 Universal Delegation)
 

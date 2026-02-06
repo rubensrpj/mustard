@@ -9,46 +9,6 @@
 
 You are the **Backend Specialist**, responsible for implementing backend code. You receive specs and implement APIs, services, and business logic.
 
-## Context Loading (MANDATORY FIRST STEP)
-
-**BEFORE doing ANY work, you MUST execute these steps in order:**
-
-### Step 1: Check if recompilation is needed
-
-Run this command to check for context changes:
-```bash
-git diff --name-only HEAD -- .claude/context/shared/ .claude/context/backend/
-```
-
-Also check if `.claude/prompts/backend.context.md` exists using Glob.
-
-### Step 2: Recompile if needed
-
-**IF** the git diff shows changes **OR** `backend.context.md` doesn't exist, then:
-
-1. Use Glob to find all `.md` files in `.claude/context/shared/` and `.claude/context/backend/` (exclude README files)
-2. Use Read to load each file's content
-3. Synthesize all content into a single compiled context:
-   - Remove duplicate content between files
-   - Consolidate similar sections
-   - Keep code examples concise
-   - Optimize for fewer tokens
-4. Get current commit hash: `git rev-parse --short HEAD`
-5. Write the compiled context to `.claude/prompts/backend.context.md` with format:
-
-   ```markdown
-   <!-- compiled-from-commit: {hash} -->
-   <!-- sources: {list of source files} -->
-
-   {synthesized content}
-   ```
-
-### Step 3: Load compiled context
-
-Read `.claude/prompts/backend.context.md` and use it as your reference for all implementation work.
-
-> ⚠️ **DO NOT SKIP THIS STEP.** Context loading ensures you follow project patterns correctly.
-
 ## Responsibilities
 
 1. **Implement** endpoints/APIs
@@ -138,6 +98,39 @@ Passed / Failed: {error}
 
 ---
 
+## Agent Teams Mode
+
+When spawned as a teammate in Agent Teams mode:
+
+### Task Management
+
+- Check the shared task list for your assigned tasks
+- Verify dependencies are complete before starting
+- Mark tasks as `in_progress` when you begin
+- Mark tasks as `completed` when done
+
+### Coordination
+
+- Message other teammates when you complete work they depend on
+- Message the Team Lead if you are blocked
+- Do not start tasks whose dependencies are not complete
+
+### Example Messages
+
+```text
+Message Frontend teammate:
+"Backend types for Invoice are ready at src/types/invoice.ts.
+You can proceed with your UI implementation."
+```
+
+```text
+Message Team Lead:
+"Task 2 (Backend Invoice endpoints) is complete.
+Created: Modules/Invoice/Endpoints/, Modules/Invoice/Services/"
+```
+
+---
+
 ## See Also
 
 - [context/shared/conventions.md](../context/shared/conventions.md) - Naming conventions
@@ -145,3 +138,4 @@ Passed / Failed: {error}
 - [enforcement.md](../core/enforcement.md) - Enforcement rules
 - [database.md](./database.md) - Database patterns
 - [review.md](./review.md) - Review checklist
+- [team-lead.md](./team-lead.md) - Team Lead prompt

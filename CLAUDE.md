@@ -13,7 +13,8 @@ Mustard is a CLI that generates `.claude/` folders for Claude Code projects. It 
 - Enforcement via JavaScript hooks
 - **Universal Delegation**: All code activities must be delegated via Task (separate context)
 - **Context per Agent**: Each agent loads context from `context/shared/` + `context/{agent}/`
-- **Auto-compiled context**: Agents check git and compile `prompts/{agent}.context.md` on-demand
+- **Compiled context at skill invocation**: `/feature` and `/bugfix` commands compile contexts before starting
+- **Agent Teams** (experimental): Alternative to Task subagents for complex multi-layer features
 
 ## L0 Rule - Universal Delegation
 
@@ -77,7 +78,7 @@ mustard/
     └── scripts/             # statusline.js
 ```
 
-## Context per Agent (v2.2)
+## Context per Agent (v2.5)
 
 Prompts are **agnostic** - project-specific patterns live in context files:
 
@@ -89,15 +90,16 @@ context/
 ├── database/     # Only Database Specialist loads
 ├── bugfix/       # Only Bugfix Specialist loads
 ├── review/       # Only Review Specialist loads
-└── orchestrator/ # Only Orchestrator loads
+├── orchestrator/ # Only Orchestrator loads
+└── team-lead/    # Only Team Lead loads (Agent Teams mode)
 ```
 
 **Flow:**
 
-1. Agent is called (e.g., backend.md)
-2. Checks git: `git diff --name-only HEAD -- .claude/context/shared/ .claude/context/backend/`
-3. If changed OR no compiled file → reads sources, synthesizes, saves to `prompts/backend.context.md`
-4. Loads compiled context
+1. User invokes `/feature` or `/bugfix` skill
+2. Skill compiles contexts for all agents (git-based caching)
+3. Agent is called with compiled context ready
+4. Compiled context saved to `prompts/{agent}.context.md`
 
 ## CLI Flow
 
@@ -118,6 +120,7 @@ mustard update
 
 | Prompt | Model | Context Folders |
 |--------|-------|-----------------|
+| team-lead | opus | shared + team-lead (Agent Teams) |
 | orchestrator | opus | shared + orchestrator |
 | backend | opus | shared + backend |
 | frontend | opus | shared + frontend |
@@ -129,13 +132,18 @@ mustard update
 
 ## Commands
 
-### Pipeline
+### Pipeline (Task Mode)
 
 - `/feature` - Start feature pipeline
 - `/bugfix` - Start bugfix pipeline
 - `/approve` - Approve spec
 - `/complete` - Finalize pipeline
 - `/resume` - Resume active pipeline
+
+### Pipeline (Agent Teams Mode - Experimental)
+
+- `/feature-team` - Feature pipeline with Agent Teams (parallel)
+- `/bugfix-team` - Bugfix pipeline with competing hypotheses
 
 ### Task (L0 Delegation)
 

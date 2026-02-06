@@ -5,7 +5,7 @@
  * Configuration files are automatically allowed.
  * Code files ask for confirmation (Claude checks memory MCP).
  *
- * @version 1.0.0
+ * @version 1.1.0
  * @see mustard/cli/templates/core/enforcement.md
  */
 
@@ -22,15 +22,26 @@ process.stdin.on('end', () => {
       process.exit(0);
     }
 
-    // Code file - ASK
-    // Claude checks memory MCP to decide
+    // Code file - ASK with helpful message
     const response = {
       hookSpecificOutput: {
         hookEventName: "PreToolUse",
         permissionDecision: "ask",
-        permissionDecisionReason: `⚠️ L0+L2: ${filePath}
-Check: mcp__memory__search_nodes({ query: "pipeline phase" })
-No pipeline? Use /feature or /bugfix`
+        permissionDecisionReason: `⚠️ Pipeline Required for: ${filePath}
+
+Check pipeline: mcp__memory__search_nodes({ query: "pipeline phase" })
+
+If NO pipeline exists, invoke the appropriate skill FIRST:
+
+  Task Mode (lower token cost):
+  • New feature/refactor → /feature <name>
+  • Bug fix → /bugfix <error>
+
+  Agent Teams Mode (parallel, higher cost):
+  • Complex feature → /feature-team <name>
+  • Complex bug → /bugfix-team <error>
+
+The skill compiles contexts and creates the pipeline.`
       }
     };
     console.log(JSON.stringify(response));

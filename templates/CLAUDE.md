@@ -1,41 +1,71 @@
 # Mustard - Instructions for Claude
 
 > Agent framework and pipeline for Claude Code.
-> **Version 2.4** - Auto-generated context, Memory MCP search in agents, improved CLI.
+> **Version 2.5** - Agent Teams support, mandatory pipeline invocation.
 
 ---
 
-## 0. PIPELINE - ALWAYS CHECK
+## 0. MANDATORY PIPELINE INVOCATION (L-1)
 
-> **BEFORE ANY RESPONSE:** Check if there is an active pipeline.
+> **CRITICAL:** When user requests code changes, you MUST invoke the appropriate skill FIRST.
+
+### Before Responding to Code Change Requests
+
+**Step 1:** Detect if request involves code changes:
+
+| Intent | Examples |
+|--------|----------|
+| New feature | "Add X", "Create Y", "Implement Z" |
+| Bug fix | "Fix X", "Error Y", "Not working" |
+| Refactor | "Refactor X", "Rename Y", "Move Z" |
+
+**Step 2:** If code change detected, invoke the skill IMMEDIATELY:
+
+```text
+For features/refactors: Use Skill tool with skill: "mustard:feature"
+For bug fixes: Use Skill tool with skill: "mustard:bugfix"
+```
+
+**Step 3:** Do NOT analyze, explore, or plan before invoking the skill.
+
+### Why This Matters
+
+- The skill compiles contexts (git-based caching)
+- The skill creates the pipeline in memory MCP
+- The skill ensures proper delegation
+- Without the skill, contexts are not loaded
+
+### Exceptions (No Pipeline Needed)
+
+| Request Type | Action |
+|--------------|--------|
+| "How does X work?" | Free analysis |
+| "Where is Y?" | Free exploration |
+| "Explain Z" | Free explanation |
+| Questions about code | Free analysis |
+
+---
+
+## 1. PIPELINE STATE CHECK
+
+> **AFTER invoking a skill**, check pipeline state.
 
 ### When Starting an Interaction
 
 ```javascript
-// ALWAYS execute at the start
+// Check pipeline state
 mcp__memory__search_nodes({ query: "pipeline phase" })
 ```
 
 | Result | Action |
 |--------|--------|
-| No pipeline | Free analysis, but code edits require /feature or /bugfix |
-| Pipeline in "explore" | Continue exploration or present spec for approval |
+| No pipeline | Invoke /feature or /bugfix skill first |
+| Pipeline in "explore" | Continue exploration or present spec |
 | Pipeline in "implement" | Edits allowed, follow spec |
-
-### Automatic Intent Detection
-
-| Request Type | Pipeline Required? |
-|--------------|-------------------|
-| "How does X work?" | NO - free analysis |
-| "Where is Y?" | NO - free analysis |
-| "Explain Z" | NO - free analysis |
-| "Add field X" | YES - /feature |
-| "Fix error Y" | YES - /bugfix |
-| "Refactor Z" | YES - /feature |
 
 ---
 
-## 1. ENFORCEMENT L0 - READ FIRST
+## 2. ENFORCEMENT L0 - DELEGATION
 
 > **ABSOLUTE RULE:** Main Claude does NOT implement code. ALWAYS delegates.
 
@@ -68,7 +98,7 @@ mcp__memory__search_nodes({ query: "pipeline phase" })
 
 ---
 
-## 2. Claude Code Native Types
+## 3. Claude Code Native Types
 
 Claude Code accepts **only 4 types** of subagent_type:
 
@@ -103,7 +133,7 @@ Task({
 
 ---
 
-## 3. Agents as Prompts
+## 4. Agents as Prompts
 
 | Role | subagent_type | Model | Prompt File |
 |------|---------------|-------|-------------|
@@ -118,7 +148,7 @@ Task({
 
 ---
 
-## 4. Available Commands
+## 5. Available Commands
 
 ### Pipeline
 
@@ -175,7 +205,7 @@ Task({
 
 ---
 
-## 5. Required Single Pipeline
+## 6. Required Single Pipeline
 
 ```
 /feature or /bugfix → EXPLORE → SPEC → [APPROVE] → IMPLEMENT → REVIEW → COMPLETE
@@ -185,7 +215,7 @@ See full details in [core/pipeline.md](./core/pipeline.md).
 
 ---
 
-## 6. Decision Tree
+## 7. Decision Tree
 
 ```
 Request
@@ -203,7 +233,7 @@ Task(general-purpose) with specific prompt
 
 ---
 
-## 7. Complete Enforcement (L0-L9)
+## 8. Complete Enforcement (L0-L9)
 
 | Level | Rule | Description |
 |-------|------|-------------|
@@ -222,7 +252,7 @@ See details in [core/enforcement.md](./core/enforcement.md).
 
 ---
 
-## 8. Search Rules
+## 9. Search Rules
 
 **ALWAYS use grepai** for semantic search:
 ```javascript
@@ -249,7 +279,7 @@ mcp__memory__open_nodes({ names: ["Pipeline:name"] })
 
 ---
 
-## 9. Correct Usage Example
+## 10. Correct Usage Example
 
 ### Calling Orchestrator for a Feature
 
@@ -315,7 +345,7 @@ Implement backend module for Invoice according to spec.
 
 ---
 
-## 10. Project Context (v2.4)
+## 11. Project Context
 
 ### Auto-Generated Context by CLI
 
@@ -392,7 +422,7 @@ if (context.entities?.length) {
 
 ---
 
-## 11. Memory MCP - Pipeline Persistence
+## 12. Memory MCP - Pipeline Persistence
 
 Pipeline state is persisted via **memory MCP**, not via files.
 
@@ -452,7 +482,94 @@ mcp__memory__delete_entities({
 
 ---
 
-## 12. Enforcement Hooks
+## 13. Agent Teams (Experimental)
+
+> Alternative to Task subagents for complex, multi-layer features.
+> Uses Claude Code's experimental Agent Teams feature.
+
+### Enable Agent Teams
+
+Add to `.claude/settings.json`:
+
+```json
+{
+  "env": {
+    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"
+  }
+}
+```
+
+### Team Commands
+
+| Command | Description |
+|---------|-------------|
+| `/feature-team <name>` | Feature pipeline with Agent Teams |
+| `/bugfix-team <error>` | Bugfix pipeline with competing hypotheses |
+
+### When to Use Teams vs Tasks
+
+| Use Agent Teams | Use Task Subagents |
+|-----------------|-------------------|
+| Multi-layer features | Single-layer changes |
+| Complex coordination needed | Simple delegation |
+| Competing hypotheses (bugfix) | Known root cause |
+| True parallelism needed | Sequential is OK |
+| Higher token budget OK | Token cost matters |
+
+### Team Roles
+
+| Role | Prompt | Description |
+|------|--------|-------------|
+| Team Lead | `prompts/team-lead.md` | Spawns and coordinates teammates |
+| Database | `prompts/database.md` | Schema and migrations (as teammate) |
+| Backend | `prompts/backend.md` | APIs and services (as teammate) |
+| Frontend | `prompts/frontend.md` | Components and hooks (as teammate) |
+| Review | `prompts/review.md` | Quality validation (as teammate) |
+
+### Team Pipeline
+
+```text
+/feature-team <name>
+     │
+     ▼
+ TEAM LEAD (you, in delegate mode)
+     │
+     ├── Spawn Database Teammate
+     ├── Spawn Backend Teammate
+     ├── Spawn Frontend Teammate
+     │
+     ▼
+ SHARED TASK LIST (with dependencies)
+     │
+     ▼
+ Spawn Review Teammate
+     │
+     ▼
+ TEAM CLEANUP
+```
+
+### Key Differences from Task Mode
+
+| Aspect | Task Mode | Agent Teams |
+|--------|-----------|-------------|
+| Context | Shared session | Independent per teammate |
+| Communication | Report to parent | Peer-to-peer messaging |
+| Parallelism | Sequential Tasks | True parallel execution |
+| Token Cost | Lower | Higher |
+
+### Limitations
+
+- No session resumption with in-process teammates
+- Task status can lag
+- Shutdown can be slow
+- One team per session
+- Higher token cost
+
+See [feature-team.md](./commands/mustard/feature-team.md) for full details.
+
+---
+
+## 14. Enforcement Hooks
 
 ### enforce-pipeline.js (L0+L2)
 
@@ -468,7 +585,7 @@ mcp__memory__delete_entities({
 
 ---
 
-## 13. Links
+## 15. Links
 
 ### Core
 
@@ -480,6 +597,7 @@ mcp__memory__delete_entities({
 ### Prompts
 
 - [Prompts Index](./prompts/_index.md)
+- [Team Lead](./prompts/team-lead.md)
 - [Backend](./prompts/backend.md)
 - [Frontend](./prompts/frontend.md)
 - [Database](./prompts/database.md)
@@ -491,6 +609,11 @@ mcp__memory__delete_entities({
 - [approve](./commands/mustard/approve.md)
 - [complete](./commands/mustard/complete.md)
 - [resume](./commands/mustard/resume.md)
+
+### Commands - Agent Teams
+
+- [feature-team](./commands/mustard/feature-team.md)
+- [bugfix-team](./commands/mustard/bugfix-team.md)
 
 ### Commands - Other
 
