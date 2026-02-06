@@ -134,6 +134,7 @@ export interface GeneratedPrompts {
     backend?: string;
     frontend?: string;
     database?: string;
+    report?: string;
 }
 export interface GeneratedCommands {
     'feature': string;
@@ -202,10 +203,6 @@ export interface GeneratorOptions {
     verbose?: boolean;
     overwriteClaudeMd?: boolean;
     codeSamples?: CodeSamples;
-}
-export interface PromptGeneratorOptions {
-    useOllama?: boolean;
-    model?: string;
 }
 export interface DiscoverOptions {
     verbose?: boolean;

@@ -1,7 +1,15 @@
-import { existsSync } from 'fs';
+import { existsSync, readdirSync } from 'fs';
 import { mkdir, writeFile, copyFile, readFile } from 'fs/promises';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
+/**
+ * Get templates directory path
+ */
+function getTemplatesDir() {
+    const __filename = fileURLToPath(import.meta.url);
+    const __dirname = dirname(__filename);
+    return join(__dirname, '..', '..', 'templates');
+}
 import { generateClaudeMd as generateClaudeMdLLM } from './claude-md-llm.js';
 import { generateClaudeMd as generateClaudeMdTemplate } from './claude-md-template.js';
 import { generatePrompts } from './prompts.js';
@@ -61,9 +69,9 @@ export async function generateAll(projectPath, projectInfo, analysis, options = 
         await writeFile(claudeMdPath, claudeMdContent);
         generatedFiles.push('CLAUDE.md');
     }
-    // Generate prompts
-    log('Generating prompts (may use Ollama)...');
-    const prompts = await generatePrompts(projectInfo, analysis, { useOllama, model });
+    // Generate prompts from templates
+    log('Generating prompts from templates...');
+    const prompts = await generatePrompts(projectInfo, analysis);
     for (const [name, content] of Object.entries(prompts)) {
         await writeFile(join(claudePath, 'prompts', `${name}.md`), content);
         generatedFiles.push(`prompts/${name}.md`);
@@ -153,13 +161,30 @@ const CONTEXT_FOLDERS = {
 };
 /**
  * Generate context folder with subfolders for each agent
+ * Copies template files from templates/context/ to target .claude/context/
  */
 async function generateContextFolder(claudePath) {
     const createdFiles = [];
-    // Create each subfolder with README
+    const templatesDir = getTemplatesDir();
+    const contextTemplatesDir = join(templatesDir, 'context');
+    // Create each subfolder and copy template files
     for (const [folder, description] of Object.entries(CONTEXT_FOLDERS)) {
         const folderPath = join(claudePath, 'context', folder);
         await mkdir(folderPath, { recursive: true });
+        // Copy template files for this folder (if they exist)
+        const templateFolderPath = join(contextTemplatesDir, folder);
+        if (existsSync(templateFolderPath)) {
+            const templateFiles = readdirSync(templateFolderPath).filter(f => f.endsWith('.md'));
+            for (const file of templateFiles) {
+                const targetPath = join(folderPath, file);
+                // Only copy if target doesn't exist (preserve user customizations)
+                if (!existsSync(targetPath)) {
+                    await copyFile(join(templateFolderPath, file), targetPath);
+                    createdFiles.push(`context/${folder}/${file}`);
+                }
+            }
+        }
+        // Always create/update README
         const readme = `# ${folder.charAt(0).toUpperCase() + folder.slice(1)} Context
 
 ${description}

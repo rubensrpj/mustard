@@ -163,6 +163,7 @@ export interface GeneratedPrompts {
   backend?: string;
   frontend?: string;
   database?: string;
+  report?: string;
 }
 
 export interface GeneratedCommands {
@@ -251,10 +252,7 @@ export interface GeneratorOptions {
   codeSamples?: CodeSamples;
 }
 
-export interface PromptGeneratorOptions {
-  useOllama?: boolean;
-  model?: string;
-}
+// PromptGeneratorOptions removed - prompts are now loaded from template files
 
 export interface DiscoverOptions {
   verbose?: boolean;

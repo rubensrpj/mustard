@@ -158,7 +158,7 @@ export async function initCommand(options) {
     const genSpinner = ora('Generating .claude/ structure...').start();
     try {
         const files = await generateAll(projectPath, projectInfo, analysis, {
-            useOllama: deps.ollama && options.ollama === true,
+            useOllama: deps.ollama && options.ollama === true, // Only for CLAUDE.md
             model: deps.ollamaModel ?? undefined,
             hasGrepai: deps.grepai,
             verbose: options.verbose,

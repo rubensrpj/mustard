@@ -1,29 +1,33 @@
-import * as llm from '../analyzers/llm.js';
-import type { ProjectInfo, Analysis, GeneratedPrompts, PromptGeneratorOptions, DiscoveredPatterns } from '../types.js';
+import { existsSync } from 'fs';
+import { readFile } from 'fs/promises';
+import { join, dirname } from 'path';
+import { fileURLToPath } from 'url';
+import type { ProjectInfo, Analysis, GeneratedPrompts, DiscoveredPatterns } from '../types.js';
 
 /**
- * Get the run command for a package manager
+ * Get the templates directory path
  */
-function getRunCommand(packageManager: string, script: string): string {
-  switch (packageManager) {
-    case 'pnpm':
-      return `pnpm ${script}`;
-    case 'yarn':
-      return `yarn ${script}`;
-    case 'bun':
-      return `bun run ${script}`;
-    case 'npm':
-    default:
-      return `npm run ${script}`;
-  }
+function getTemplatesDir(): string {
+  const __filename = fileURLToPath(import.meta.url);
+  const __dirname = dirname(__filename);
+  return join(__dirname, '..', '..', 'templates', 'prompts');
 }
 
 /**
- * Generate prompt files
+ * Load a template file and return its content
  */
-export async function generatePrompts(projectInfo: ProjectInfo, analysis: Analysis, options: PromptGeneratorOptions = {}): Promise<GeneratedPrompts> {
-  const { useOllama = true, model } = options;
+async function loadTemplate(name: string): Promise<string | null> {
+  const templatePath = join(getTemplatesDir(), `${name}.md`);
+  if (existsSync(templatePath)) {
+    return await readFile(templatePath, 'utf-8');
+  }
+  return null;
+}
 
+/**
+ * Generate prompt files from templates
+ */
+export async function generatePrompts(projectInfo: ProjectInfo, _analysis: Analysis): Promise<GeneratedPrompts> {
   // Determine which prompts to generate
   const hasBackend = projectInfo.stacks.some(s =>
     ['dotnet', 'node', 'python', 'java', 'go', 'rust'].includes(s.name)
@@ -35,50 +39,49 @@ export async function generatePrompts(projectInfo: ProjectInfo, analysis: Analys
     ['drizzle', 'prisma', 'typeorm', 'sequelize'].includes(s.name)
   );
 
-  // Generate bugfix and review (always template-based)
-  const bugfix = generateBugfixTemplate(projectInfo);
-  const review = generateReviewTemplate(projectInfo);
-
-  // Generate naming conventions (central reference for L3)
-  const naming = generateNamingTemplate(projectInfo);
+  // Load templates from files
+  const orchestratorTemplate = await loadTemplate('orchestrator');
+  const bugfixTemplate = await loadTemplate('bugfix');
+  const reviewTemplate = await loadTemplate('review');
+  const namingTemplate = await loadTemplate('naming');
 
   const prompts: GeneratedPrompts = {
-    orchestrator: generateOrchestratorTemplate(projectInfo),
-    bugfix,
-    review,
-    naming
+    orchestrator: orchestratorTemplate ?? generateOrchestratorFallback(),
+    bugfix: bugfixTemplate ?? generateBugfixFallback(),
+    review: reviewTemplate ?? generateReviewFallback(),
+    naming: namingTemplate ?? generateNamingFallback(projectInfo)
   };
 
-  // If using Ollama, call llm.generatePrompts() ONCE and reuse results
-  if (useOllama) {
-    try {
-      const llmResult = await llm.generatePrompts(projectInfo, analysis, { model });
-      if (llmResult.orchestrator) prompts.orchestrator = llmResult.orchestrator;
-      if (hasBackend && llmResult.backend) prompts.backend = llmResult.backend;
-      if (hasFrontend && llmResult.frontend) prompts.frontend = llmResult.frontend;
-      if (hasDatabase && llmResult.database) prompts.database = llmResult.database;
-    } catch {
-      // Ollama failed - fall through to templates below
-    }
+  // Load backend if detected
+  if (hasBackend) {
+    const backendTemplate = await loadTemplate('backend');
+    prompts.backend = backendTemplate ?? generateBackendFallback(projectInfo);
   }
 
-  // Fill missing prompts with templates
-  if (hasBackend && !prompts.backend) {
-    prompts.backend = generateBackendTemplate(projectInfo);
+  // Load frontend if detected
+  if (hasFrontend) {
+    const frontendTemplate = await loadTemplate('frontend');
+    prompts.frontend = frontendTemplate ?? generateFrontendFallback(projectInfo);
   }
-  if (hasFrontend && !prompts.frontend) {
-    prompts.frontend = generateFrontendTemplate(projectInfo);
+
+  // Load database if detected
+  if (hasDatabase) {
+    const databaseTemplate = await loadTemplate('database');
+    prompts.database = databaseTemplate ?? generateDatabaseFallback(projectInfo);
   }
-  if (hasDatabase && !prompts.database) {
-    prompts.database = generateDatabaseTemplate(projectInfo);
+
+  // Load report (always)
+  const reportTemplate = await loadTemplate('report');
+  if (reportTemplate) {
+    prompts.report = reportTemplate;
   }
 
   return prompts;
 }
 
-// ============== Template Generation ==============
+// ============== Fallback Templates (used only if file not found) ==============
 
-function generateOrchestratorTemplate(projectInfo: ProjectInfo): string {
+function generateOrchestratorFallback(): string {
   return `# Orchestrator
 
 ## Identity
@@ -102,105 +105,10 @@ You are the **Orchestrator**. You coordinate the development pipeline but **DO N
 - **ALWAYS** delegate via Task tool
 - **FOLLOW** the pipeline strictly
 - **PRESENT** spec before implementing
-
-## Delegation
-
-| Task | subagent_type | model | Emoji |
-|------|---------------|-------|-------|
-| Explore | Explore | haiku | 🔍 |
-| Backend | general-purpose | opus | ⚙️ |
-| Frontend | general-purpose | opus | 🎨 |
-| Database | general-purpose | opus | 🗄️ |
-| Review | general-purpose | opus | 🔎 |
-| Bugfix | general-purpose | opus | 🐛 |
-| Plan | Plan | sonnet | 📋 |
-| Docs | general-purpose | sonnet | 📊 |
-
-## Usage Example
-
-\`\`\`javascript
-// 1. Explore
-Task({
-  subagent_type: "Explore",
-  model: "haiku",
-  description: "🔍 Explore feature X",
-  prompt: "Analyze requirements for feature X..."
-})
-
-// 2. Implement Backend
-Task({
-  subagent_type: "general-purpose",
-  model: "opus",
-  description: "⚙️ Backend feature X",
-  prompt: \`
-    # You are the BACKEND SPECIALIST
-    [backend prompt]
-
-    # TASK
-    Implement feature X according to spec...
-  \`
-})
-
-// 3. Implement Frontend
-Task({
-  subagent_type: "general-purpose",
-  model: "opus",
-  description: "🎨 Frontend feature X",
-  prompt: \`
-    # You are the FRONTEND SPECIALIST
-    [frontend prompt]
-
-    # TASK
-    Implement feature X according to spec...
-  \`
-})
-
-// 4. Database
-Task({
-  subagent_type: "general-purpose",
-  model: "opus",
-  description: "🗄️ Database feature X",
-  prompt: \`
-    # You are the DATABASE SPECIALIST
-    [database prompt]
-
-    # TASK
-    Implement schema for feature X...
-  \`
-})
-
-// 5. Review
-Task({
-  subagent_type: "general-purpose",
-  model: "opus",
-  description: "🔎 Review feature X",
-  prompt: \`
-    # You are the REVIEW SPECIALIST
-    [review prompt]
-
-    # TASK
-    Review implementation of feature X...
-  \`
-})
-
-// 6. Bugfix
-Task({
-  subagent_type: "general-purpose",
-  model: "opus",
-  description: "🐛 Bugfix issue Y",
-  prompt: \`
-    # You are the BUGFIX SPECIALIST
-    [bugfix prompt]
-
-    # TASK
-    Fix the bug...
-  \`
-})
-\`\`\`
 `;
 }
 
-function generateBugfixTemplate(projectInfo: ProjectInfo): string {
+function generateBugfixFallback(): string {
   return `# Bugfix Specialist
 
 ## Identity
@@ -210,41 +118,19 @@ You are the **Bugfix Specialist**. You diagnose and fix bugs in the code.
 ## Process
 
 1. **REPRODUCE** - Understand how the bug manifests
-2. **DIAGNOSE** - Find the root cause using grepai
+2. **DIAGNOSE** - Find the root cause
 3. **FIX** - Apply the minimal necessary fix
 4. **VALIDATE** - Verify the fix works
 
 ## Rules
 
 - **NEVER** make changes unrelated to the bug
-- **ALWAYS** use grepai to search related code
 - **DOCUMENT** the root cause before fixing
 - **TEST** the fix before finalizing
-
-## Using grepai
-
-\`\`\`javascript
-// Search for code related to the error
-grepai_search({ query: "error message or symptom" })
-
-// Trace who calls the buggy function
-grepai_trace_callers({ symbol: "FunctionWithBug" })
-
-// Trace what the function calls
-grepai_trace_callees({ symbol: "FunctionWithBug" })
-\`\`\`
-
-## Checklist
-
-- [ ] Reproduced the bug
-- [ ] Identified root cause
-- [ ] Applied minimal fix
-- [ ] Verified nothing broke
-- [ ] Tested the fix
 `;
 }
 
-function generateReviewTemplate(projectInfo: ProjectInfo): string {
+function generateReviewFallback(): string {
   return `# Review Specialist
 
 ## Identity
@@ -253,31 +139,11 @@ You are the **Review Specialist**. You validate implementations and ensure quali
 
 ## Review Checklist
 
-### Code
-
 - [ ] Follows project naming conventions
 - [ ] Uses dependency injection correctly
 - [ ] Has no duplicate code
 - [ ] Handles errors appropriately
 - [ ] Is testable
-
-### Architecture
-
-- [ ] Follows established patterns
-- [ ] Does not violate layers (e.g., Service accessing DbContext)
-- [ ] Maintains separation of concerns
-
-### Security
-
-- [ ] Does not expose sensitive data
-- [ ] Validates inputs appropriately
-- [ ] Uses authentication/authorization when needed
-
-### Completeness
-
-- [ ] Implements all spec requirements
-- [ ] Updates entity registry if needed
-- [ ] Has no TODOs or commented code
 
 ## Result
 
@@ -287,7 +153,34 @@ After review, respond with:
 `;
 }
 
-function generateBackendTemplate(projectInfo: ProjectInfo): string {
+function generateNamingFallback(projectInfo: ProjectInfo): string {
+  const classPattern = projectInfo.patterns?.classes ?? 'PascalCase';
+  const filePattern = projectInfo.patterns?.files ?? 'kebab-case';
+  const folderPattern = projectInfo.patterns?.folders ?? 'plural';
+
+  return `# Naming Conventions
+
+## Detected Conventions
+
+| Type | Pattern |
+|------|---------|
+| Classes | ${classPattern} |
+| Files | ${typeof filePattern === 'object' ? JSON.stringify(filePattern) : filePattern} |
+| Folders | ${folderPattern} |
+
+## Quick Reference
+
+| Type | Pattern | Example |
+|------|---------|---------|
+| Entity/Class | PascalCase singular | \`Contract\`, \`Person\` |
+| DB Table | snake_case plural | \`contracts\`, \`people\` |
+| Endpoint/Route | kebab-case | \`/api/contracts\` |
+| Component | PascalCase | \`ContractForm\` |
+| Hook | use + camelCase | \`useContracts\` |
+`;
+}
+
+function generateBackendFallback(projectInfo: ProjectInfo): string {
   const backendStack = projectInfo.stacks.find(s =>
     ['dotnet', 'node', 'python', 'java', 'go', 'rust'].includes(s.name)
   );
@@ -312,55 +205,10 @@ You are the **Backend Specialist**. You implement server-side code.
 - Configure repositories/data access
 - Manage authentication/authorization
 - Handle errors and validations
-
-## Rules
-
-${stackName === 'dotnet' ? `
-### .NET Specific
-
-- Service does NOT access DbContext directly (use Repository)
-- Service only injects its own Repository + external Services
-- Prefer segregated interfaces (ISP)
-- Validate inputs at the boundary (endpoints)
-- Use DTOs for data transfer
-` : `
-### General
-
-- Separate business logic into services
-- Use repository pattern for data access
-- Validate inputs at the boundary
-- Return consistent errors
-`}
-
-## File Structure
-
-\`\`\`
-${stackName === 'dotnet' ? `
-Modules/
-└── {Entity}/
-    ├── Endpoints/
-    │   ├── Get{Entity}.cs
-    │   ├── Create{Entity}.cs
-    │   └── ...
-    ├── Services/
-    │   └── {Entity}Service.cs
-    ├── Mappers/
-    │   └── {Entity}Mapper.cs
-    └── Interfaces/
-        └── I{Entity}Service.cs
-` : `
-src/
-└── modules/
-    └── {entity}/
-        ├── {entity}.controller.ts
-        ├── {entity}.service.ts
-        └── {entity}.repository.ts
-`}
-\`\`\`
 `;
 }
 
-function generateFrontendTemplate(projectInfo: ProjectInfo): string {
+function generateFrontendFallback(projectInfo: ProjectInfo): string {
   const frontendStack = projectInfo.stacks.find(s =>
     ['react', 'nextjs', 'vue', 'angular', 'svelte'].includes(s.name)
   );
@@ -384,57 +232,10 @@ You are the **Frontend Specialist**. You implement client-side code.
 - Manage state
 - Integrate with APIs
 - Ensure accessibility
-
-## Rules
-
-${stackName === 'react' || stackName === 'nextjs' ? `
-### React Specific
-
-- Functional components with hooks
-- Custom hooks for reusable logic
-- TypeScript for type safety
-- TanStack Query for data fetching
-- Handle loading/error states
-` : `
-### General
-
-- Reusable components
-- Separation of concerns
-- Type safety
-- Async state handling
-`}
-
-## File Structure
-
-\`\`\`
-${stackName === 'nextjs' ? `
-src/
-├── app/
-│   └── {route}/
-│       └── page.tsx
-└── features/
-    └── {entity}/
-        ├── components/
-        ├── hooks/
-        └── types.ts
-` : `
-src/
-└── features/
-    └── {entity}/
-        ├── components/
-        │   ├── {Entity}Form.tsx
-        │   ├── {Entity}List.tsx
-        │   └── {Entity}Card.tsx
-        ├── hooks/
-        │   └── use{Entity}.ts
-        └── pages/
-            └── {Entity}Page.tsx
-`}
-\`\`\`
 `;
 }
 
-function generateDatabaseTemplate(projectInfo: ProjectInfo): string {
+function generateDatabaseFallback(projectInfo: ProjectInfo): string {
   const dbStack = projectInfo.stacks.find(s =>
     ['drizzle', 'prisma', 'typeorm', 'sequelize'].includes(s.name)
   );
@@ -456,163 +257,6 @@ You are the **Database Specialist**. You manage schemas and migrations.
 - Manage migrations
 - Define relationships
 - Configure indexes
-
-## Rules
-
-${ormName === 'drizzle' ? `
-### Drizzle Specific
-
-- Schemas in \`schema/{entity}.ts\`
-- Use \`pgTable\` for PostgreSQL
-- Convention: tables in snake_case plural
-- Explicit foreign keys
-- Soft delete with \`deletedAt\`
-` : `
-### General
-
-- Table names in snake_case plural
-- Primary keys as UUID or bigint
-- Timestamps (createdAt, updatedAt)
-- Soft delete when appropriate
-`}
-
-## Schema Example
-
-\`\`\`typescript
-${ormName === 'drizzle' ? `
-import { pgTable, uuid, varchar, timestamp } from 'drizzle-orm/pg-core';
-
-export const contracts = pgTable('contracts', {
-  id: uuid('id').primaryKey().defaultRandom(),
-  name: varchar('name', { length: 255 }).notNull(),
-  createdAt: timestamp('created_at').defaultNow().notNull(),
-  updatedAt: timestamp('updated_at').defaultNow().notNull(),
-  deletedAt: timestamp('deleted_at'),
-});
-` : `
-// Schema example for ${ormName}
-`}
-\`\`\`
-
-## Commands
-
-- Generate migration: \`${getRunCommand(projectInfo.packageManager, 'db:generate')}\`
-- Run migration: \`${getRunCommand(projectInfo.packageManager, 'db:migrate')}\`
-- Push (dev): \`${getRunCommand(projectInfo.packageManager, 'db:push')}\`
-`;
-}
-
-function generateNamingTemplate(projectInfo: ProjectInfo): string {
-  const classPattern = projectInfo.patterns?.classes ?? 'PascalCase';
-  const filePattern = projectInfo.patterns?.files ?? 'kebab-case';
-  const folderPattern = projectInfo.patterns?.folders ?? 'plural';
-
-  return `# Naming Conventions Prompt
-
-> Central reference for naming conventions (L3).
-> Other prompts (backend, frontend, database) should reference this file.
-
-## Rule L3
-
-> **L3 - Naming:** All implementations MUST follow the project naming conventions.
-
-## Detected Conventions
-
-| Type | Pattern |
-|------|---------|
-| Classes | ${classPattern} |
-| Files | ${typeof filePattern === 'object' ? JSON.stringify(filePattern) : filePattern} |
-| Folders | ${folderPattern} |
-
-## Quick Reference
-
-| Type | Pattern | Example |
-|------|---------|---------|
-| Entity/Class | PascalCase singular | \`Contract\`, \`Person\` |
-| DB Table | snake_case plural | \`contracts\`, \`people\` |
-| DB Column | snake_case | \`created_at\`, \`tenant_id\` |
-| Foreign Key | {table}_id | \`contract_id\` |
-| Index | idx_{table}_{cols} | \`idx_contracts_tenant\` |
-| Endpoint/Route | kebab-case | \`/api/contracts\` |
-| Component | PascalCase | \`ContractForm\` |
-| Hook | use + camelCase | \`useContracts\` |
-| Service | PascalCase + Service | \`ContractService\` |
-
-## Entities / Classes
-
-\`\`\`
-✅ Contract
-✅ Person
-✅ InvoiceItem
-
-❌ Contracts (not plural)
-❌ contract (not lowercase)
-❌ invoice_item (not snake_case)
-\`\`\`
-
-## Database Tables
-
-\`\`\`
-✅ contracts
-✅ people
-✅ invoice_items
-
-❌ Contract (not singular)
-❌ InvoiceItems (not PascalCase)
-\`\`\`
-
-## Endpoints / Routes
-
-\`\`\`
-✅ /api/contracts
-✅ /api/contracts/{id}
-✅ /api/invoice-items
-
-❌ /api/Contracts
-❌ /api/contract
-❌ /api/invoiceItems
-\`\`\`
-
-## Hooks (Frontend)
-
-\`\`\`
-✅ useContract
-✅ useContracts
-✅ useContractMutations
-
-❌ UseContract
-❌ use-contract
-❌ contractHook
-\`\`\`
-
-## Abbreviations
-
-**Avoid** abbreviations in names:
-
-- ✅ Configuration, ❌ Config
-- ✅ Application, ❌ App
-- ✅ Repository, ❌ Repo
-
-**Accepted exceptions:** \`Id\`, \`Dto\`, \`Api\`
-
-## Validation Checklist (L3)
-
-\`\`\`
-□ Class names in PascalCase singular
-□ Table names in snake_case plural
-□ Column names in snake_case
-□ Foreign keys with _id suffix
-□ Endpoints in kebab-case
-□ Hooks with use prefix
-□ No abbreviations (except Id, Dto, Api)
-\`\`\`
-
-## See Also
-
-- [enforcement.md](../core/enforcement.md) - Rule L3
-- [backend.md](./backend.md) - Backend patterns
-- [frontend.md](./frontend.md) - Frontend patterns
-- [database.md](./database.md) - Database patterns
 `;
 }
 
@@ -625,7 +269,7 @@ const AUTO_END = '<!-- MUSTARD:AUTO-END -->';
  * Generate auto-populated context section for a prompt
  */
 export function generateAutoSection(
-  promptType: string,
+  _promptType: string,
   projectInfo: ProjectInfo,
   analysis: Analysis,
   patterns: DiscoveredPatterns
