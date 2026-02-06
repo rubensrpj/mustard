@@ -4,7 +4,7 @@ import { execSync } from 'child_process';
  */
 export async function checkGrepaiAvailable() {
     try {
-        execSync('grepai --version', { stdio: 'pipe' });
+        execSync('grepai --help', { stdio: 'pipe' });
         return true;
     }
     catch {
@@ -16,7 +16,7 @@ export async function checkGrepaiAvailable() {
  */
 export async function indexStatus() {
     try {
-        const result = execSync('grepai index-status --format json', {
+        const result = execSync('grepai status --json', {
             encoding: 'utf-8',
             maxBuffer: 10 * 1024 * 1024
         });
@@ -30,10 +30,10 @@ export async function indexStatus() {
  * Search using grepai semantic search
  */
 export async function search(query, options = {}) {
-    const { limit = 10, format = 'json', compact = false } = options;
+    const { limit = 10, compact = false } = options;
     try {
         const compactFlag = compact ? '--compact' : '';
-        const result = execSync(`grepai search "${query}" --limit ${limit} --format ${format} ${compactFlag}`, {
+        const result = execSync(`grepai search "${query}" --limit ${limit} --json ${compactFlag}`, {
             encoding: 'utf-8',
             maxBuffer: 10 * 1024 * 1024
         });
@@ -49,10 +49,10 @@ export async function search(query, options = {}) {
  * Find all functions that call the specified symbol
  */
 export async function traceCallers(symbol, options = {}) {
-    const { format = 'json', compact = false } = options;
+    const { compact = false } = options;
     try {
         const compactFlag = compact ? '--compact' : '';
-        const result = execSync(`grepai trace-callers "${symbol}" --format ${format} ${compactFlag}`, { encoding: 'utf-8' });
+        const result = execSync(`grepai trace callers "${symbol}" --json ${compactFlag}`, { encoding: 'utf-8' });
         return JSON.parse(result);
     }
     catch {
@@ -63,10 +63,10 @@ export async function traceCallers(symbol, options = {}) {
  * Find all functions called by the specified symbol
  */
 export async function traceCallees(symbol, options = {}) {
-    const { format = 'json', compact = false } = options;
+    const { compact = false } = options;
     try {
         const compactFlag = compact ? '--compact' : '';
-        const result = execSync(`grepai trace-callees "${symbol}" --format ${format} ${compactFlag}`, { encoding: 'utf-8' });
+        const result = execSync(`grepai trace callees "${symbol}" --json ${compactFlag}`, { encoding: 'utf-8' });
         return JSON.parse(result);
     }
     catch {
@@ -77,9 +77,9 @@ export async function traceCallees(symbol, options = {}) {
  * Build a complete call graph around a symbol
  */
 export async function traceGraph(symbol, options = {}) {
-    const { format = 'json', depth = 2 } = options;
+    const { depth = 2 } = options;
     try {
-        const result = execSync(`grepai trace-graph "${symbol}" --depth ${depth} --format ${format}`, { encoding: 'utf-8' });
+        const result = execSync(`grepai trace graph "${symbol}" --depth ${depth} --json`, { encoding: 'utf-8' });
         return JSON.parse(result);
     }
     catch {

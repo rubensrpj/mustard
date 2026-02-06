@@ -7,7 +7,10 @@
       "Bash(npx tsc:*)",
       "WebFetch(domain:www.npmjs.com)",
       "Bash(npm install:*)",
-      "Bash(xcopy:*)"
+      "Bash(xcopy:*)",
+      "Bash(grepai search:*)",
+      "Bash(grepai trace:*)",
+      "Bash(dir:*)"
     ]
   }
 }

@@ -6,7 +6,7 @@ import type { SearchOptions, TraceOptions, SearchResponse, TraceResult } from '.
  */
 export async function checkGrepaiAvailable(): Promise<boolean> {
   try {
-    execSync('grepai --version', { stdio: 'pipe' });
+    execSync('grepai --help', { stdio: 'pipe' });
     return true;
   } catch {
     return false;
@@ -18,7 +18,7 @@ export async function checkGrepaiAvailable(): Promise<boolean> {
  */
 export async function indexStatus(): Promise<Record<string, unknown> | null> {
   try {
-    const result = execSync('grepai index-status --format json', {
+    const result = execSync('grepai status --json', {
       encoding: 'utf-8',
       maxBuffer: 10 * 1024 * 1024
     });
@@ -32,12 +32,12 @@ export async function indexStatus(): Promise<Record<string, unknown> | null> {
  * Search using grepai semantic search
  */
 export async function search(query: string, options: SearchOptions = {}): Promise<SearchResponse> {
-  const { limit = 10, format = 'json', compact = false } = options;
+  const { limit = 10, compact = false } = options;
 
   try {
     const compactFlag = compact ? '--compact' : '';
     const result = execSync(
-      `grepai search "${query}" --limit ${limit} --format ${format} ${compactFlag}`,
+      `grepai search "${query}" --limit ${limit} --json ${compactFlag}`,
       {
         encoding: 'utf-8',
         maxBuffer: 10 * 1024 * 1024
@@ -55,12 +55,12 @@ export async function search(query: string, options: SearchOptions = {}): Promis
  * Find all functions that call the specified symbol
  */
 export async function traceCallers(symbol: string, options: TraceOptions = {}): Promise<TraceResult> {
-  const { format = 'json', compact = false } = options;
+  const { compact = false } = options;
 
   try {
     const compactFlag = compact ? '--compact' : '';
     const result = execSync(
-      `grepai trace-callers "${symbol}" --format ${format} ${compactFlag}`,
+      `grepai trace callers "${symbol}" --json ${compactFlag}`,
       { encoding: 'utf-8' }
     );
     return JSON.parse(result) as TraceResult;
@@ -73,12 +73,12 @@ export async function traceCallers(symbol: string, options: TraceOptions = {}): 
  * Find all functions called by the specified symbol
  */
 export async function traceCallees(symbol: string, options: TraceOptions = {}): Promise<TraceResult> {
-  const { format = 'json', compact = false } = options;
+  const { compact = false } = options;
 
   try {
     const compactFlag = compact ? '--compact' : '';
     const result = execSync(
-      `grepai trace-callees "${symbol}" --format ${format} ${compactFlag}`,
+      `grepai trace callees "${symbol}" --json ${compactFlag}`,
       { encoding: 'utf-8' }
     );
     return JSON.parse(result) as TraceResult;
@@ -91,11 +91,11 @@ export async function traceCallees(symbol: string, options: TraceOptions = {}): 
  * Build a complete call graph around a symbol
  */
 export async function traceGraph(symbol: string, options: TraceOptions = {}): Promise<TraceResult> {
-  const { format = 'json', depth = 2 } = options;
+  const { depth = 2 } = options;
 
   try {
     const result = execSync(
-      `grepai trace-graph "${symbol}" --depth ${depth} --format ${format}`,
+      `grepai trace graph "${symbol}" --depth ${depth} --json`,
       { encoding: 'utf-8' }
     );
     return JSON.parse(result) as TraceResult;

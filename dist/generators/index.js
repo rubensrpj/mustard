@@ -307,7 +307,7 @@ After creating/modifying entities, run \`/sync-registry\`.
 async function copySettingsJson(claudePath) {
     const __filename = fileURLToPath(import.meta.url);
     const __dirname = dirname(__filename);
-    const templatePath = join(__dirname, '..', 'templates', 'settings.json');
+    const templatePath = join(__dirname, '..', '..', 'templates', 'settings.json');
     const targetPath = join(claudePath, 'settings.json');
     await copyFile(templatePath, targetPath);
 }
@@ -317,7 +317,7 @@ async function copySettingsJson(claudePath) {
 async function copyScripts(claudePath) {
     const __filename = fileURLToPath(import.meta.url);
     const __dirname = dirname(__filename);
-    const templateDir = join(__dirname, '..', 'templates', 'scripts');
+    const templateDir = join(__dirname, '..', '..', 'templates', 'scripts');
     const targetDir = join(claudePath, 'scripts');
     await mkdir(targetDir, { recursive: true });
     // Copy statusline.js
@@ -332,7 +332,7 @@ async function copyScripts(claudePath) {
 async function mergeSettingsJson(claudePath) {
     const __filename = fileURLToPath(import.meta.url);
     const __dirname = dirname(__filename);
-    const templatePath = join(__dirname, '..', 'templates', 'settings.json');
+    const templatePath = join(__dirname, '..', '..', 'templates', 'settings.json');
     const targetPath = join(claudePath, 'settings.json');
     // Get template settings
     const content = await readFile(templatePath, 'utf-8');

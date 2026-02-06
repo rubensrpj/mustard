@@ -7,7 +7,6 @@ This directory contains specialized prompts for agents.
 - [orchestrator.md](./orchestrator.md)
 - [bugfix.md](./bugfix.md)
 - [review.md](./review.md)
-- [naming.md](./naming.md)
 - [backend.md](./backend.md)
 
 ## How to Use
