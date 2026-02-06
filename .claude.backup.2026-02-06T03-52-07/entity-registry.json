@@ -1,0 +1,13 @@
+{
+  "_meta": {
+    "version": "2.1",
+    "generated": "2026-02-06",
+    "tool": "mustard-cli"
+  },
+  "_p": {
+    "be": "src/modules/{e}/"
+  },
+  "e": {
+    "_placeholder": 0
+  }
+}

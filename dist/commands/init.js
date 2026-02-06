@@ -131,7 +131,7 @@ export async function initCommand(options) {
             sampleSpinner.warn('Code sample scan failed');
         }
     }
-    if (deps.ollama && options.ollama !== false) {
+    if (deps.ollama && options.ollama === true) {
         const llmSpinner = ora('Analyzing code patterns (Ollama)...').start();
         try {
             const samplesList = Object.values(codeSamples).filter((s) => Boolean(s));
@@ -158,7 +158,7 @@ export async function initCommand(options) {
     const genSpinner = ora('Generating .claude/ structure...').start();
     try {
         const files = await generateAll(projectPath, projectInfo, analysis, {
-            useOllama: deps.ollama && options.ollama !== false,
+            useOllama: deps.ollama && options.ollama === true,
             model: deps.ollamaModel ?? undefined,
             hasGrepai: deps.grepai,
             verbose: options.verbose,
@@ -209,8 +209,8 @@ async function checkDependencies(options) {
         ollamaModel: null,
         grepai: false
     };
-    // Check Ollama
-    if (options.ollama !== false) {
+    // Check Ollama (only if --ollama flag is passed)
+    if (options.ollama === true) {
         const ollamaSpinner = ora('Checking Ollama...').start();
         const ollamaAvailable = await ollamaService.checkOllamaAvailable();
         if (ollamaAvailable) {

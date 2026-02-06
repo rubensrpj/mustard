@@ -121,7 +121,7 @@ export async function syncCommand(options) {
         const contextSpinner = ora('Syncing context files...').start();
         try {
             await generateContext(claudePath, projectInfo, analysis, {}, {
-                useOllama: deps.ollama && options.ollama !== false,
+                useOllama: deps.ollama && options.ollama === true,
                 model: deps.ollamaModel ?? undefined,
                 verbose: options.verbose
             });
@@ -172,7 +172,7 @@ async function checkDependencies(options) {
         ollamaModel: null,
         grepai: false
     };
-    if (options.ollama !== false) {
+    if (options.ollama === true) {
         const ollamaSpinner = ora('Checking Ollama...').start();
         const ollamaAvailable = await ollamaService.checkOllamaAvailable();
         if (ollamaAvailable) {

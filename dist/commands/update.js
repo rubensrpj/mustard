@@ -119,7 +119,7 @@ export async function updateCommand(options) {
     const genSpinner = ora('Updating core files...').start();
     try {
         const files = await generateCoreOnly(projectPath, projectInfo, analysis, {
-            useOllama: deps.ollama && options.ollama !== false,
+            useOllama: deps.ollama && options.ollama === true,
             model: deps.ollamaModel ?? undefined,
             hasGrepai: deps.grepai,
             verbose: options.verbose,
@@ -167,7 +167,7 @@ async function checkDependencies(options) {
         ollamaModel: null,
         grepai: false
     };
-    if (options.ollama !== false) {
+    if (options.ollama === true) {
         const ollamaSpinner = ora('Checking Ollama...').start();
         const ollamaAvailable = await ollamaService.checkOllamaAvailable();
         if (ollamaAvailable) {

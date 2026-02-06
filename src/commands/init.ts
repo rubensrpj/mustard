@@ -142,7 +142,7 @@ export async function initCommand(options: InitOptions): Promise<void> {
     }
   }
 
-  if (deps.ollama && options.ollama !== false) {
+  if (deps.ollama && options.ollama === true) {
     const llmSpinner = ora('Analyzing code patterns (Ollama)...').start();
     try {
       const samplesList = Object.values(codeSamples).filter((s): s is NonNullable<typeof s> => Boolean(s));
@@ -169,7 +169,7 @@ export async function initCommand(options: InitOptions): Promise<void> {
   const genSpinner = ora('Generating .claude/ structure...').start();
   try {
     const files = await generateAll(projectPath, projectInfo, analysis, {
-      useOllama: deps.ollama && options.ollama !== false,
+      useOllama: deps.ollama && options.ollama === true,
       model: deps.ollamaModel ?? undefined,
       hasGrepai: deps.grepai,
       verbose: options.verbose,
@@ -223,8 +223,8 @@ async function checkDependencies(options: InitOptions): Promise<DependenciesChec
     grepai: false
   };
 
-  // Check Ollama
-  if (options.ollama !== false) {
+  // Check Ollama (only if --ollama flag is passed)
+  if (options.ollama === true) {
     const ollamaSpinner = ora('Checking Ollama...').start();
     const ollamaAvailable = await ollamaService.checkOllamaAvailable();
 

@@ -19,7 +19,8 @@
     "clean": "rimraf dist",
     "typecheck": "tsc --noEmit",
     "test": "node --test",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "npm run build",
+    "release": "npm run build && npm publish"
   },
   "keywords": [
     "claude",
