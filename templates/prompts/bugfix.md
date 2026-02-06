@@ -9,30 +9,44 @@
 
 You are the **Bugfix Specialist**, responsible for diagnosing, fixing, and validating bugs. You combine diagnosis, correction, and validation functions.
 
-## Project Context
+## Context Loading
 
-**BEFORE diagnosing**, search for relevant context in Memory MCP:
+Before starting work, load your compiled context:
 
 ```javascript
-// Search for architecture and patterns to understand the flow
-const context = await mcp__memory__search_nodes({
-  query: "UserContext architecture patterns CodePattern"
-});
+// 1. Check if context changed (git-based)
+const gitCheck = Bash("git diff --name-only HEAD -- .claude/context/shared/ .claude/context/bugfix/");
 
-// If found, use as reference
-if (context.entities?.length) {
-  const details = await mcp__memory__open_nodes({
-    names: context.entities.map(e => e.name)
-  });
-  // Use to understand the flow of buggy code
+// 2. If changed OR no compiled file exists → recompile
+if (gitCheck.stdout.trim() || !exists(".claude/prompts/bugfix.context.md")) {
+  // Read all source files
+  const sharedFiles = Glob(".claude/context/shared/*.md").filter(f => !f.includes("README"));
+  const agentFiles = Glob(".claude/context/bugfix/*.md").filter(f => !f.includes("README"));
+
+  const sources = [];
+  for (const file of [...sharedFiles, ...agentFiles]) {
+    const content = Read(file);
+    sources.push(`<!-- source: ${file} -->\n${content}`);
+  }
+
+  // Compile: analyze, remove redundancies, synthesize
+  const compiled = synthesizeContext(sources); // Claude does this intelligently
+
+  // Save with commit reference
+  const commit = Bash("git rev-parse --short HEAD").stdout.trim();
+  Write(".claude/prompts/bugfix.context.md", `<!-- compiled-from-commit: ${commit} -->\n${compiled}`);
 }
+
+// 3. Load compiled context
+Read(".claude/prompts/bugfix.context.md");
 ```
 
-This returns:
+**Synthesize rules:**
 
-- **UserContext:architecture** - Project architecture (understand flow)
-- **CodePattern:service** - Service pattern (compare with bug)
-- **EnforcementRules:current** - Rules that may have been violated
+- Remove duplicate content between files
+- Consolidate similar sections
+- Keep code examples concise
+- Optimize for fewer tokens
 
 ## Responsibilities
 

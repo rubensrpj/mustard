@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-3.1.0-yellow?style=for-the-badge" alt="Version">
+  <img src="https://img.shields.io/badge/version-2.2.0-yellow?style=for-the-badge" alt="Version">
   <img src="https://img.shields.io/badge/node-%3E%3D18-green?style=for-the-badge&logo=node.js" alt="Node">
   <img src="https://img.shields.io/badge/license-MIT-blue?style=for-the-badge" alt="License">
 </p>
@@ -27,10 +27,19 @@
 
 Mustard generates a `.claude/` folder with prompts, commands, and rules for Claude Code:
 
-- **8 specialized prompts** for `Task(general-purpose)` delegation
+- **8 agnostic prompts** for `Task(general-purpose)` delegation
+- **Context per agent** - each agent loads its specific context folder
+- **Auto-compiled context** - agents verify git and compile context on-demand
 - **Pipeline commands** for features and bugfixes
 - **Enforcement hooks** (grepai, pipeline confirmation)
 - **Stack detection** and auto-generated CLAUDE.md
+
+## What's New in v2.2
+
+- **Auto-compiled context**: Agents check git for changes and compile context automatically
+- **Simplified workflow**: No manual sync commands needed
+- **Removed commands**: `/context-init` and `/context-normalize` (now automatic)
+- **Compiled context files**: `prompts/{agent}.context.md` generated on-demand
 
 ## Installation
 
@@ -62,9 +71,39 @@ mustard init
 ```
 
 The CLI will:
+
 1. Detect stacks (React, .NET, Python, etc.)
 2. Analyze code with Ollama (optional)
-3. Generate `.claude/` structure
+3. Generate `.claude/` structure with context folders
+
+## Context per Agent
+
+Prompts are **agnostic** - they don't contain project-specific code. Instead, each agent loads context from dedicated folders:
+
+```text
+.claude/context/
+├── shared/       # All agents load this
+├── backend/      # Only Backend Specialist loads
+├── frontend/     # Only Frontend Specialist loads
+├── database/     # Only Database Specialist loads
+├── bugfix/       # Only Bugfix Specialist loads
+├── review/       # Only Review Specialist loads
+└── orchestrator/ # Only Orchestrator loads
+```
+
+**How it works (v2.2):**
+
+1. Agent is called (e.g., backend.md)
+2. Checks git: `git diff --name-only HEAD -- .claude/context/shared/ .claude/context/backend/`
+3. If changed OR no compiled file exists → reads source files, synthesizes, saves to `prompts/backend.context.md`
+4. Loads compiled context
+
+**Benefits:**
+
+- Prompts work for any stack
+- Easy to customize per project
+- Clear separation: agent logic vs. project patterns
+- Automatic recompilation when context changes
 
 ## Commands
 
@@ -97,51 +136,38 @@ Options:
 |---------|-----------|
 | `commands/mustard/*.md` | `CLAUDE.md` |
 | `hooks/*.js` | `prompts/*.md` |
-| `core/*.md` | `context/*` |
+| `core/*.md` | `context/**/*.md` (user files) |
 | `scripts/*.js` | `docs/*` |
-
-### `mustard sync`
-
-Syncs prompts and context with current codebase state. Uses markers to preserve user customizations.
-
-```bash
-mustard sync [options]
-
-Options:
-  --prompts      Only sync prompts
-  --context      Only sync context files
-  --registry     Only sync entity registry
-  --no-ollama    Skip LLM analysis
-  --no-grepai    Skip semantic analysis
-  -f, --force    Skip confirmation
-  -v, --verbose  Detailed output
-```
-
-| Synced | Preserved |
-|--------|-----------|
-| `prompts/*.md` (auto section) | User content in prompts |
-| `context/*.md` | `CLAUDE.md` |
-| `entity-registry.json` | `commands/*` |
 
 ## Structure
 
 ```text
-mustard/
-├── bin/mustard.js           # CLI entry point
-├── src/                     # TypeScript source
-│   ├── commands/            # init, update, sync
-│   ├── scanners/            # stack, structure, dependencies
-│   ├── analyzers/           # semantic, llm
-│   ├── generators/          # claude-md, prompts, commands, hooks
-│   └── services/            # ollama, grepai
-├── dist/                    # Compiled JavaScript
-└── templates/               # Templates (copied to .claude/)
-    ├── CLAUDE.md
-    ├── prompts/             # 8 agent prompts
-    ├── commands/mustard/    # Pipeline commands
-    ├── core/                # Enforcement, pipeline rules
-    ├── hooks/               # enforce-grepai.js, enforce-pipeline.js
-    └── scripts/             # statusline.js
+.claude/
+├── CLAUDE.md               # Project instructions
+├── prompts/                # 8 agnostic agent prompts
+│   ├── orchestrator.md
+│   ├── orchestrator.context.md  # Auto-compiled context
+│   ├── backend.md
+│   ├── backend.context.md       # Auto-compiled context
+│   ├── frontend.md
+│   ├── database.md
+│   ├── bugfix.md
+│   ├── review.md
+│   ├── report.md
+│   └── naming.md
+├── context/                # Context source files (editable)
+│   ├── shared/             # Common (all agents)
+│   │   └── conventions.md
+│   ├── backend/            # Backend-specific
+│   │   └── patterns.md
+│   ├── frontend/           # Frontend-specific
+│   │   └── patterns.md
+│   └── database/           # Database-specific
+│       └── patterns.md
+├── commands/mustard/       # Pipeline commands
+├── core/                   # Enforcement, pipeline rules
+├── hooks/                  # JavaScript hooks
+└── entity-registry.json    # Entity mappings
 ```
 
 ## Prompts
@@ -150,15 +176,15 @@ Claude Code only accepts 4 `subagent_type` values: `Explore`, `Plan`, `general-p
 
 Mustard "agents" are prompts loaded into `Task(general-purpose)`:
 
-| Prompt | Model | Purpose |
-|--------|-------|---------|
-| orchestrator | opus | Coordinates pipelines |
-| backend | opus | APIs, services |
-| frontend | opus | Components, hooks |
-| database | opus | Schema, migrations |
-| bugfix | opus | Bug analysis and fix |
-| review | opus | QA, SOLID validation |
-| report | sonnet | Commit reports |
+| Prompt | Model | Context Folders |
+|--------|-------|-----------------|
+| orchestrator | opus | shared + orchestrator |
+| backend | opus | shared + backend |
+| frontend | opus | shared + frontend |
+| database | opus | shared + database |
+| bugfix | opus | shared + bugfix |
+| review | opus | shared + review |
+| report | sonnet | (uses git log) |
 | naming | - | Naming conventions reference |
 
 ## Pipeline Commands

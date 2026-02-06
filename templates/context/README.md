@@ -7,19 +7,57 @@ Place markdown files here to provide context to Claude during implementations.
 Files in this folder are loaded into memory MCP at the start of `/feature` or `/bugfix` pipelines.
 This gives Claude instant access to project specifications, architecture decisions, and patterns.
 
-## Supported Files
+## Structure
 
-Any `.md` file placed in this folder will be automatically loaded.
+```
+.claude/context/
++-- shared/           # Loaded by ALL agents
+|   +-- conventions.md
++-- backend/          # Loaded by Backend Specialist
+|   +-- patterns.md
++-- frontend/         # Loaded by Frontend Specialist
+|   +-- patterns.md
++-- database/         # Loaded by Database Specialist
+|   +-- patterns.md
++-- orchestrator/     # Loaded by Orchestrator (optional)
++-- review/           # Loaded by Review Specialist (optional)
++-- bugfix/           # Loaded by Bugfix Specialist (optional)
+```
 
-**Suggested files:**
+## How Agents Load Context
 
-- `project-spec.md` - Project overview and specifications
-- `architecture.md` - Architecture decisions and patterns
-- `business-rules.md` - Domain-specific rules and logic
-- `api-guidelines.md` - API design guidelines
-- `tips.md` - Project-specific tips for Claude
-- `service-example.md` - Code example for services
-- `component-example.md` - Code example for components
+Each agent loads:
+1. All files from `context/shared/`
+2. All files from `context/{agent}/`
+
+```javascript
+const sharedFiles = Glob(".claude/context/shared/*.md");
+const agentFiles = Glob(".claude/context/{agent}/*.md");
+```
+
+## Included Files (Templates)
+
+### shared/conventions.md
+Common naming conventions across all layers (entities, tables, components, hooks).
+
+### backend/patterns.md
+Stack-specific backend patterns (.NET, Node.js, Python, etc.).
+
+### frontend/patterns.md
+Stack-specific frontend patterns (React, Vue, Angular, etc.).
+
+### database/patterns.md
+ORM-specific patterns (Drizzle, Prisma, TypeORM, Entity Framework, etc.).
+
+## Custom Files
+
+You can add custom files to any folder:
+
+- `shared/architecture.md` - Architecture decisions
+- `shared/business-rules.md` - Domain-specific rules
+- `backend/service-example.md` - Service code example
+- `frontend/component-example.md` - Component code example
+- `database/schema-example.md` - Schema code example
 
 ## Rules
 
@@ -27,79 +65,18 @@ Any `.md` file placed in this folder will be automatically loaded.
 2. **Keep files focused** - One topic per file
 3. **Use headers** - Claude uses headers to understand structure
 4. **Max 500 lines** - Longer files are truncated
-5. **Max 20 files** - Total limit for loaded files
-
-## How It Works
-
-Files are automatically loaded at the start of `/feature` or `/bugfix` pipelines.
-Each file is stored as a `UserContext:{filename}` entity in memory MCP.
+5. **Max 20 files** - Total limit for loaded files per agent
 
 ## Memory MCP Structure
 
-Each file is stored as a `UserContext:{filename}` entity:
+Each file is stored as an `AgentContext:{agent}:{filename}` entity:
 
 ```javascript
 {
-  name: "UserContext:architecture",
-  entityType: "user-context",
-  observations: [
-    "file: .claude/context/architecture.md",
-    "title: Architecture",
-    "content: ## Layers\n- Database (Drizzle)\n..."
-  ]
+  name: "AgentContext:backend:patterns",
+  entityType: "agent-context",
+  observations: [content]
 }
-```
-
-## Example Files
-
-### architecture.md
-
-```markdown
-# Architecture
-
-## Layers
-- Database: Drizzle ORM with PostgreSQL
-- Backend: .NET 9 with FastEndpoints
-- Frontend: React 19 with TanStack Query
-
-## Patterns
-- Repository pattern for data access
-- Services for business logic
-- DTOs for API contracts
-
-## Rules
-- Services do NOT access DbContext directly
-- Use UnitOfWork for transactions
-```
-
-### business-rules.md
-
-```markdown
-# Business Rules
-
-## Orders
-- Order must have at least one item
-- Order total = sum of item values
-- Status transitions: Draft -> Active -> Completed
-
-## Customers
-- Customer code must be unique
-- Customer cannot be deleted if has orders
-```
-
-### tips.md
-
-```markdown
-# Project Tips
-
-## Common Patterns
-- Use `useOptimistic` for form submissions
-- Always validate TenantId in services
-- Use `[FromRoute]` for ID parameters
-
-## Gotchas
-- Don't forget to add new entities to Registry
-- Run migrations after schema changes
 ```
 
 ## Manual Refresh

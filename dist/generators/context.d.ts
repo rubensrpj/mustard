@@ -6,6 +6,11 @@ export interface ContextGeneratorOptions {
 }
 /**
  * Generate context files for the .claude/context/ folder
- * These files provide instant context to agents during implementations
+ *
+ * Note: Auto-generation of architecture.md, patterns.md, naming.md was removed
+ * because the generated content was too generic and duplicated CLAUDE.md.
+ * Users should create these files manually with project-specific content.
+ *
+ * @deprecated This function is kept for compatibility but does nothing.
  */
-export declare function generateContext(claudePath: string, projectInfo: ProjectInfo, analysis: Analysis, codeSamples: CodeSamples, options?: ContextGeneratorOptions): Promise<string[]>;
+export declare function generateContext(_claudePath: string, _projectInfo: ProjectInfo, _analysis: Analysis, _codeSamples: CodeSamples, _options?: ContextGeneratorOptions): Promise<string[]>;

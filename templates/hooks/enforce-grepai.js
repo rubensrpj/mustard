@@ -18,21 +18,7 @@ process.stdin.on('end', () => {
       hookSpecificOutput: {
         hookEventName: "PreToolUse",
         permissionDecision: "deny",
-        permissionDecisionReason: `⛔ L1: Grep/Glob FORBIDDEN
-
-Use grepai MCP instead:
-
-  grepai_search({ query: "..." })
-  grepai_trace_callers({ symbol: "..." })
-  grepai_trace_callees({ symbol: "..." })
-
-These tools provide superior semantic search:
-- Understands context and intent
-- Finds semantically related code
-- Maps dependencies automatically
-
-To search files by name pattern, use:
-  grepai_search({ query: "*.ts files in modules folder" })`
+        permissionDecisionReason: `⛔ L1: Use grepai_search/trace_callers/trace_callees instead`
       }
     };
     console.log(JSON.stringify(response));

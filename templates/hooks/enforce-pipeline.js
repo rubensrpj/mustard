@@ -28,19 +28,9 @@ process.stdin.on('end', () => {
       hookSpecificOutput: {
         hookEventName: "PreToolUse",
         permissionDecision: "ask",
-        permissionDecisionReason: `⚠️ L0+L2: Code edit detected
-
-File: ${filePath}
-
-Check via memory MCP:
-1. Is there an active pipeline? (search_nodes "pipeline phase")
-2. Is it in "implement" phase?
-
-If NO active pipeline:
-→ Use /feature or /bugfix to start
-
-If pipeline exists but not in "implement":
-→ Approve the spec first with /approve`
+        permissionDecisionReason: `⚠️ L0+L2: ${filePath}
+Check: mcp__memory__search_nodes({ query: "pipeline phase" })
+No pipeline? Use /feature or /bugfix`
       }
     };
     console.log(JSON.stringify(response));

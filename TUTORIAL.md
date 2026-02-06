@@ -6,18 +6,19 @@ Practical guide for using Mustard with Claude Code.
 
 ```bash
 cd my-project
-node path/to/mustard/cli/bin/mustard.js init
+npx mustard-claude init
 ```
 
-Or copy manually:
+Or install globally:
 
 ```bash
-cp -r mustard/cli/templates/ .claude/
+npm install -g mustard-claude
+mustard init
 ```
 
 ## Pipeline Flow
 
-```
+```text
 You: "Add email field to Person"
          │
          ▼
@@ -56,7 +57,7 @@ You: /complete
 
 ## Example: Adding a Field
 
-```
+```text
 You: "Add email field to Person"
 
 Claude: "Detected code change. Start pipeline?"
@@ -86,7 +87,7 @@ You: /complete
 
 ## Example: Bug Fix
 
-```
+```text
 You: "Error: NullReferenceException saving contract"
 
 Claude: "Detected bug. Start pipeline?"
@@ -119,7 +120,7 @@ Claude auto-detects intent:
 
 If you close Claude:
 
-```
+```text
 You: /resume
 
 Claude: "Active: add-email-person
@@ -131,12 +132,42 @@ Claude: "Active: add-email-person
         Continue?"
 ```
 
+## Context Loading (v2.2)
+
+Agents automatically check for context changes:
+
+1. Agent starts (e.g., Backend Specialist)
+2. Checks git: `git diff --name-only HEAD -- .claude/context/shared/ .claude/context/backend/`
+3. If changed → recompiles context to `prompts/backend.context.md`
+4. Loads compiled context
+
+**No manual commands needed** - context is always up-to-date.
+
+## Customizing Context
+
+Add project-specific patterns to context folders:
+
+```text
+.claude/context/
+├── shared/           # All agents see this
+│   └── conventions.md
+├── backend/          # Backend Specialist sees this + shared
+│   └── api-patterns.md
+├── frontend/         # Frontend Specialist sees this + shared
+│   └── component-patterns.md
+└── database/         # Database Specialist sees this + shared
+    └── schema-patterns.md
+```
+
+When you edit these files, agents will automatically recompile on next run.
+
 ## Enforcement Rules
 
 Applied automatically:
 
 | Rule | Effect |
 |------|--------|
+| L0 | Universal delegation via Task tool |
 | L1 | Uses grepai instead of Grep/Glob |
 | L2 | Requires pipeline for edits |
 | L7-L9 | Repository patterns, SOLID |
@@ -147,23 +178,7 @@ Applied automatically:
 2. **Review the spec** - Read before `/approve`
 3. **Use resume** - `/resume` continues where you left off
 4. **Use update** - `mustard update` gets new features without losing customizations
-5. **Use sync** - `mustard sync` updates prompts with current project context
-
-## Syncing with Codebase
-
-When your project evolves (new entities, changed architecture):
-
-```bash
-mustard sync
-```
-
-This updates:
-
-- Prompts (auto-generated context section only)
-- Context files (`context/*.md`)
-- Entity registry
-
-Your customizations in prompts are preserved - only the `<!-- MUSTARD:AUTO -->` section is updated.
+5. **Edit context files** - Add patterns to `context/{agent}/` folders
 
 ## Troubleshooting
 
@@ -173,4 +188,4 @@ Your customizations in prompts are preserved - only the `<!-- MUSTARD:AUTO -->` 
 | "Grep/Glob blocked" | Normal - Claude uses grepai |
 | Build error | Claude shows errors, fix and continue |
 | Lost customizations | Check `.claude.backup.{timestamp}` |
-| Outdated prompts | Run `mustard sync` to refresh context |
+| Context not loading | Check `.claude/context/` folder exists |

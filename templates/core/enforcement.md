@@ -251,6 +251,51 @@ Build command depends on stack:
 
 ---
 
+## L7-L9 - SOLID Architecture (.NET)
+
+> These rules apply to .NET projects with Entity Framework.
+> Adapt according to your project's stack.
+
+### L7 - Service Does NOT Access DbContext
+
+> Service does NOT inject DbContext directly. Uses Repository + UnitOfWork.
+
+```csharp
+// CORRECT
+public class ContractService(IContractRepository repository, IUnitOfWork unitOfWork) { }
+
+// WRONG - L7 VIOLATION
+public class ContractService(AppDbContext dbContext) { }
+```
+
+**Exception:** GraphQL Resolvers can access DbContext directly (HotChocolate pattern).
+
+### L8 - Service Only Injects Its OWN Repository
+
+> Service should only inject its own Repository. Use Services for cross-entity access.
+
+```csharp
+// CORRECT
+public class ContractService(IContractRepository repository, IPartnerService partnerService) { }
+
+// WRONG - L8 VIOLATION
+public class ContractService(IContractRepository repository, IPartnerRepository partnerRepo) { }
+```
+
+### L9 - Prefer Segregated Interfaces (ISP)
+
+> Use specific interfaces when possible for better decoupling.
+
+```csharp
+// RECOMMENDED - Specific interface
+public static Task<IResult> GetContract(Guid id, IContractQueryService service) { }
+
+// Interface composition
+public interface IContractService : IContractQueryService, IContractApprovalService { }
+```
+
+---
+
 ## Visual Summary
 
 ```text

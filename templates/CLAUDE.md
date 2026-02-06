@@ -178,52 +178,10 @@ Task({
 ## 5. Required Single Pipeline
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                    /feature or /bugfix                                             │
-└───────────────────────────┬─────────────────────────────┘
-                            ▼
-┌─────────────────────────────────────────────────────────┐
-│  PHASE 0: LOAD CONTEXT (auto, if > 24h)                 │
-│  Glob context/*.md, grepai patterns → memory MCP        │
-└───────────────────────────┬─────────────────────────────┘
-                            ▼
-┌─────────────────────────────────────────────────────────┐
-│  PHASE 1: EXPLORE                                       │
-│  Task(Explore) → Analyzes requirements, maps files      │
-└───────────────────────────┬─────────────────────────────┘
-                            ▼
-┌─────────────────────────────────────────────────────────┐
-│  PHASE 2: SPEC                                          │
-│  Saves plan to spec/active/{name}/spec.md               │
-│  Presents to user for approval                          │
-└───────────────────────────┬─────────────────────────────┘
-                            │
-              ┌─────────────┴─────────────┐
-              ▼                           ▼
-        [APPROVED]                   [ITERATE]
-              │                           │
-              ▼                    (back to PHASE 1)
-┌─────────────────────────────────────────────────────────┐
-│  PHASE 3: IMPLEMENT (parallel when possible)            │
-│  Task(general-purpose) with specialized prompts         │
-│  database → backend → frontend                          │
-└─────────────────────────────────────────────────────────┘
-                            ▼
-┌─────────────────────────────────────────────────────────┐
-│  PHASE 4: REVIEW                                        │
-│  Task(general-purpose) + prompts/review.md              │
-└───────────────────────────┬─────────────────────────────┘
-                            │
-              ┌─────────────┴─────────────┐
-              ▼                           ▼
-        [APPROVED]                   [RETURN]
-              │                           │
-              ▼                    (back to PHASE 3)
-┌─────────────────────────────────────────────────────────┐
-│  PHASE 5: COMPLETE                                      │
-│  Updates registry, moves spec to completed/             │
-└─────────────────────────────────────────────────────────┘
+/feature or /bugfix → EXPLORE → SPEC → [APPROVE] → IMPLEMENT → REVIEW → COMPLETE
 ```
+
+See full details in [core/pipeline.md](./core/pipeline.md).
 
 ---
 

@@ -1,13 +1,33 @@
 # Changelog
 
-## [3.2.1] - 2026-02-05
+## [2.2.0] - 2026-02-06
+
+### Added
+
+- **Auto-compiled context**: Agents check git for changes and compile context automatically
+- **Compiled context files**: `prompts/{agent}.context.md` generated on-demand by Claude
+- Context synthesis: Claude removes redundancies and optimizes tokens when compiling
+
+### Removed
+
+- `mustard sync` command - context compilation is now automatic
+- `/context-init` command - structure created by `mustard init`
+- `/context-normalize` command - Claude normalizes during compilation
+
+### Changed
+
+- Agent prompts now include "Context Loading" section with git-based verification
+- Updated all agent prompts (backend, frontend, database, bugfix, review, orchestrator)
+- Simplified CLI to just `init` and `update` commands
+
+## [2.1.0] - 2026-02-05
 
 ### Added
 
 - **Task Commands** for L0 Universal Delegation:
   - `/task-analyze <scope>` - Code analysis via Task(Explore)
   - `/task-review <scope>` - Code review via Task(general-purpose)
-  - `/task-refactor <scope>` - Refactoring via Task(Plan) → Task(general-purpose)
+  - `/task-refactor <scope>` - Refactoring via Task(Plan) -> Task(general-purpose)
   - `/task-docs <scope>` - Documentation via Task(general-purpose)
 - New command files in `claude/commands/mustard/`
 - Command generator in `cli/src/generators/commands.ts`
@@ -22,7 +42,7 @@
 - Updated `CLAUDE.md` (root) with L0 rule and delegation map
 - Updated `README.md` with new commands documentation
 
-## [3.2.0] - 2026-02-05
+## [2.0.0] - 2026-02-05
 
 ### Added
 
@@ -35,7 +55,7 @@
 - Prompts now include auto-generated project context section
 - Entity registry updated during sync with newly discovered entities
 
-## [3.1.0] - 2026-02-05
+## [1.9.0] - 2026-02-05
 
 ### Added
 
@@ -48,7 +68,7 @@
 - All prompts now search context before implementing
 - CLI passes code samples to generators
 
-## [3.0.0] - 2026-02-05
+## [1.8.0] - 2026-02-05
 
 ### Added
 
@@ -66,7 +86,7 @@
 - `--no-ollama` - use templates
 - `--no-grepai` - skip semantic analysis
 
-## [2.2.0] - 2026-02-05
+## [1.7.0] - 2026-02-05
 
 ### Added
 
@@ -75,7 +95,7 @@
 - Commands: `/approve`, `/complete`, `/resume`
 - Auto-detection of change intent
 
-## [2.1.0] - 2026-02-05
+## [1.6.0] - 2026-02-05
 
 ### Added
 
@@ -84,7 +104,7 @@
 - Entity Registry v2.1 compact format
 - Commands: `/sync-registry`, `/install-deps`, `/report-daily`, `/report-weekly`
 
-## [2.0.0] - 2026-01-15
+## [1.5.0] - 2026-01-15
 
 ### Changed
 

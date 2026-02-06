@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(wc:*)",
+      "Bash(find:*)",
+      "Read(//c/Atiz/AI/mustard/**)",
+      "Bash(npm run build:*)",
+      "Bash(powershell -Command:*)",
+      "Bash(node bin/mustard.js init:*)",
+      "Bash(dir:*)",
+      "Bash(npm test:*)",
+      "Bash(ls:*)"
+    ]
+  }
+}

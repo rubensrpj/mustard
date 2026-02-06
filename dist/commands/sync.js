@@ -1,5 +1,5 @@
 import { existsSync } from 'fs';
-import { readFile, writeFile, readdir, mkdir } from 'fs/promises';
+import { readFile, writeFile, readdir, mkdir, rename } from 'fs/promises';
 import { join, resolve } from 'path';
 import chalk from 'chalk';
 import ora from 'ora';
@@ -8,9 +8,12 @@ import { scanProject } from '../scanners/index.js';
 import * as ollamaService from '../services/ollama.js';
 import * as grepaiService from '../services/grepai.js';
 import * as semanticAnalyzer from '../analyzers/semantic.js';
-import { generateContext } from '../generators/context.js';
 import { generateRegistry } from '../generators/registry.js';
 import { generateAutoSection, mergePromptContext } from '../generators/prompts.js';
+/**
+ * Context folder names for agent-specific context
+ */
+const CONTEXT_FOLDERS = ['shared', 'backend', 'frontend', 'database', 'bugfix', 'review', 'orchestrator'];
 /**
  * Sync command - syncs prompts and context with current codebase state
  */
@@ -116,21 +119,14 @@ export async function syncCommand(options) {
             console.error(chalk.red(message));
         }
     }
-    // 7. Sync context
+    // 7. Check for flat context structure and migrate if needed
     if (syncContext) {
-        const contextSpinner = ora('Syncing context files...').start();
-        try {
-            await generateContext(claudePath, projectInfo, analysis, {}, {
-                useOllama: deps.ollama && options.ollama === true,
-                model: deps.ollamaModel ?? undefined,
-                verbose: options.verbose
-            });
-            contextSpinner.succeed('Context files updated');
+        const contextMigrated = await migrateContextStructure(claudePath, options);
+        if (contextMigrated) {
+            console.log(chalk.green('  ✓ Context structure migrated to hierarchical'));
         }
-        catch (error) {
-            contextSpinner.fail('Context sync failed');
-            const message = error instanceof Error ? error.message : 'Unknown error';
-            console.error(chalk.red(message));
+        else {
+            console.log(chalk.gray('  ℹ Context files are user-managed (no auto-generation)'));
         }
     }
     // 8. Sync registry
@@ -231,5 +227,128 @@ async function syncPromptsWithContext(claudePath, projectInfo, analysis, pattern
         }
     }
     return updated;
+}
+/**
+ * Migrate flat context structure to hierarchical (by agent)
+ */
+async function migrateContextStructure(claudePath, options) {
+    const contextPath = join(claudePath, 'context');
+    // Check if context folder exists
+    if (!existsSync(contextPath)) {
+        return false;
+    }
+    // Check if already hierarchical (has subfolders)
+    const entries = await readdir(contextPath);
+    const hasSubfolders = entries.some(e => CONTEXT_FOLDERS.includes(e));
+    if (hasSubfolders) {
+        // Already migrated, ensure all folders exist
+        await ensureContextFolders(contextPath);
+        return false;
+    }
+    // Find flat .md files (excluding README.md)
+    const flatFiles = entries.filter(f => f.endsWith('.md') && f !== 'README.md');
+    if (flatFiles.length === 0) {
+        // No files to migrate, just create structure
+        await ensureContextFolders(contextPath);
+        return false;
+    }
+    // Ask user about migration
+    console.log(chalk.yellow('\n📁 Detected flat context structure'));
+    console.log(chalk.gray(`   Found ${flatFiles.length} file(s) in context/\n`));
+    if (!options.force) {
+        const { migrate } = await inquirer.prompt([{
+                type: 'confirm',
+                name: 'migrate',
+                message: 'Migrate to hierarchical structure (by agent)?',
+                default: true
+            }]);
+        if (!migrate) {
+            return false;
+        }
+    }
+    // Create subfolders
+    await ensureContextFolders(contextPath);
+    // Analyze and suggest destinations for each file
+    const migrations = [];
+    for (const file of flatFiles) {
+        const filePath = join(contextPath, file);
+        const content = await readFile(filePath, 'utf-8');
+        const suggestion = suggestDestination(file, content);
+        migrations.push({ file, ...suggestion });
+    }
+    // Show suggestions
+    console.log(chalk.white('\n📋 Suggested migrations:\n'));
+    for (const m of migrations) {
+        console.log(chalk.gray(`  ${m.file} → ${m.destination}/ (${m.reason})`));
+    }
+    // Confirm migrations
+    if (!options.force) {
+        const { confirm } = await inquirer.prompt([{
+                type: 'confirm',
+                name: 'confirm',
+                message: 'Apply migrations?',
+                default: true
+            }]);
+        if (!confirm) {
+            return false;
+        }
+    }
+    // Execute migrations
+    for (const m of migrations) {
+        const sourcePath = join(contextPath, m.file);
+        const destPath = join(contextPath, m.destination, m.file);
+        await rename(sourcePath, destPath);
+        console.log(chalk.green(`  ✓ ${m.file} → ${m.destination}/`));
+    }
+    return true;
+}
+/**
+ * Ensure all context subfolders exist
+ */
+async function ensureContextFolders(contextPath) {
+    for (const folder of CONTEXT_FOLDERS) {
+        const folderPath = join(contextPath, folder);
+        if (!existsSync(folderPath)) {
+            await mkdir(folderPath, { recursive: true });
+        }
+    }
+}
+/**
+ * Suggest destination folder based on file name and content
+ */
+function suggestDestination(filename, content) {
+    const lowerName = filename.toLowerCase();
+    const lowerContent = content.toLowerCase();
+    // Check filename patterns
+    if (lowerName.includes('api') || lowerName.includes('service') || lowerName.includes('endpoint') || lowerName.includes('repository')) {
+        return { destination: 'backend', reason: 'API/service patterns' };
+    }
+    if (lowerName.includes('component') || lowerName.includes('hook') || lowerName.includes('react') || lowerName.includes('ui')) {
+        return { destination: 'frontend', reason: 'UI/component patterns' };
+    }
+    if (lowerName.includes('schema') || lowerName.includes('migration') || lowerName.includes('database') || lowerName.includes('db')) {
+        return { destination: 'database', reason: 'database patterns' };
+    }
+    if (lowerName.includes('bug') || lowerName.includes('debug') || lowerName.includes('issue')) {
+        return { destination: 'bugfix', reason: 'debugging content' };
+    }
+    if (lowerName.includes('review') || lowerName.includes('checklist') || lowerName.includes('quality')) {
+        return { destination: 'review', reason: 'review/quality content' };
+    }
+    if (lowerName.includes('pipeline') || lowerName.includes('orchestr') || lowerName.includes('workflow')) {
+        return { destination: 'orchestrator', reason: 'workflow content' };
+    }
+    // Check content patterns
+    if (lowerContent.includes('endpoint') || lowerContent.includes('iservice') || lowerContent.includes('repository pattern')) {
+        return { destination: 'backend', reason: 'backend keywords in content' };
+    }
+    if (lowerContent.includes('usestate') || lowerContent.includes('component') || lowerContent.includes('react')) {
+        return { destination: 'frontend', reason: 'frontend keywords in content' };
+    }
+    if (lowerContent.includes('drizzle') || lowerContent.includes('prisma') || lowerContent.includes('schema') || lowerContent.includes('migration')) {
+        return { destination: 'database', reason: 'database keywords in content' };
+    }
+    // Default to shared if no clear match
+    return { destination: 'shared', reason: 'general/common content' };
 }
 //# sourceMappingURL=sync.js.map

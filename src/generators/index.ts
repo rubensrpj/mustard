@@ -9,8 +9,7 @@ import { generatePrompts } from './prompts.js';
 import { generateCommands, MUSTARD_COMMANDS_FOLDER } from './commands.js';
 import { generateHooks } from './hooks.js';
 import { generateRegistry } from './registry.js';
-import { generateContext } from './context.js';
-import type { ProjectInfo, Analysis, GeneratorOptions, CodeSamples } from '../types.js';
+import type { ProjectInfo, Analysis, GeneratorOptions } from '../types.js';
 
 /**
  * Deep merge two objects, with source taking priority
@@ -46,7 +45,7 @@ function deepMerge<T extends Record<string, unknown>>(target: T, source: Partial
  * Main generator orchestrator
  */
 export async function generateAll(projectPath: string, projectInfo: ProjectInfo, analysis: Analysis, options: GeneratorOptions = {}): Promise<string[]> {
-  const { useOllama = true, model, verbose = false, overwriteClaudeMd = true, codeSamples = {} } = options;
+  const { useOllama = true, model, verbose = false, overwriteClaudeMd = true } = options;
   const log = (msg: string) => { if (verbose) console.log(`  ${msg}`); };
 
   const claudePath = join(projectPath, '.claude');
@@ -117,9 +116,9 @@ export async function generateAll(projectPath: string, projectInfo: ProjectInfo,
   await generateCoreFiles(claudePath, projectInfo);
   generatedFiles.push('core/enforcement.md', 'core/pipeline.md');
 
-  // Generate context folder with README
-  await generateContextFolder(claudePath);
-  generatedFiles.push('context/README.md');
+  // Generate context folder with subfolders for each agent
+  const contextFiles = await generateContextFolder(claudePath);
+  generatedFiles.push(...contextFiles);
 
   // Copy settings.json from template
   log('Copying settings.json...');
@@ -130,15 +129,6 @@ export async function generateAll(projectPath: string, projectInfo: ProjectInfo,
   log('Copying scripts...');
   await copyScripts(claudePath);
   generatedFiles.push('scripts/statusline.js');
-
-  // Generate auto-populated context files (architecture.md, patterns.md, naming.md)
-  log('Generating context files (may use Ollama)...');
-  const contextFiles = await generateContext(claudePath, projectInfo, analysis, codeSamples, {
-    useOllama,
-    model,
-    verbose
-  });
-  generatedFiles.push(...contextFiles);
 
   return generatedFiles;
 }
@@ -176,79 +166,93 @@ Task({
 }
 
 /**
- * Generate context folder with README
+ * Context folders organized by agent
  */
-async function generateContextFolder(claudePath: string): Promise<void> {
-  const contextReadme = `# Project Context
+const CONTEXT_FOLDERS: Record<string, string> = {
+  shared: 'Contexto comum carregado por TODOS os agentes',
+  backend: 'Padrões de API, serviços, repositórios - carregado pelo Backend Specialist',
+  frontend: 'Componentes, hooks, estilos - carregado pelo Frontend Specialist',
+  database: 'Schemas, migrações, queries - carregado pelo Database Specialist',
+  bugfix: 'Issues comuns, dicas de debug - carregado pelo Bugfix Specialist',
+  review: 'Checklists, regras de qualidade - carregado pelo Review Specialist',
+  orchestrator: 'Visão geral, fluxos de pipeline - carregado pelo Orchestrator'
+};
 
-Place markdown files here to provide context to Claude during implementations.
+/**
+ * Generate context folder with subfolders for each agent
+ */
+async function generateContextFolder(claudePath: string): Promise<string[]> {
+  const createdFiles: string[] = [];
 
-## Purpose
+  // Create each subfolder with README
+  for (const [folder, description] of Object.entries(CONTEXT_FOLDERS)) {
+    const folderPath = join(claudePath, 'context', folder);
+    await mkdir(folderPath, { recursive: true });
 
-Files in this folder are loaded into memory MCP at the start of \`/feature\` or \`/bugfix\` pipelines.
-This gives Claude instant access to project specifications, architecture decisions, and patterns.
+    const readme = `# ${folder.charAt(0).toUpperCase() + folder.slice(1)} Context
 
-## Supported Files
+${description}
 
-Any \`.md\` file placed in this folder will be automatically loaded.
+## Como usar
 
-**Suggested files:**
-- \`project-spec.md\` - Project overview and specifications
-- \`architecture.md\` - Architecture decisions and patterns
-- \`business-rules.md\` - Domain-specific rules and logic
-- \`api-guidelines.md\` - API design guidelines
-- \`tips.md\` - Project-specific tips for Claude
-- \`service-example.md\` - Code example for services
-- \`component-example.md\` - Code example for components
+Crie arquivos \`.md\` aqui com informações específicas para o agente **${folder}**.
 
-## Rules
+## Carregamento
 
-1. **Markdown only** - Only \`.md\` files are loaded
-2. **Keep files focused** - One topic per file
-3. **Use headers** - Claude uses headers to understand structure
-4. **Max 500 lines** - Longer files are truncated
-5. **Max 20 files** - Total limit for loaded files
+Quando o agente ${folder} é chamado:
+1. Arquivos de \`shared/\` são carregados primeiro
+2. Arquivos desta pasta são carregados depois
+3. Entidades criadas: \`AgentContext:${folder}:{filename}\`
 
-## How It Works
+## Regras
 
-Files are automatically loaded at the start of \`/feature\` or \`/bugfix\` pipelines.
-Each file is stored as a \`UserContext:{filename}\` entity in memory MCP.
-
-## Example: architecture.md
-
-\`\`\`markdown
-# Architecture
-
-## Layers
-- Database: Drizzle ORM with PostgreSQL
-- Backend: .NET 9 with FastEndpoints
-- Frontend: React 19 with TanStack Query
-
-## Patterns
-- Repository pattern for data access
-- Services for business logic
-- DTOs for API contracts
-\`\`\`
-
-## Manual Refresh
-
-To force a context refresh, use:
-
-\`\`\`
-/sync-context --refresh
-\`\`\`
-
-## See Also
-
-- [/sync-context](../commands/mustard/sync-context.md) - Manual context loading
-- [/feature](../commands/mustard/feature.md) - Feature pipeline
-- [pipeline.md](../core/pipeline.md) - Pipeline documentation
+- Apenas arquivos \`.md\`
+- Máximo 500 linhas por arquivo
+- Evite duplicar conteúdo que já está em \`shared/\`
 `;
 
-  await writeFile(join(claudePath, 'context', 'README.md'), contextReadme);
+    await writeFile(join(folderPath, 'README.md'), readme);
+    createdFiles.push(`context/${folder}/README.md`);
+  }
 
-  // Create .gitkeep for empty folder preservation
-  await writeFile(join(claudePath, 'context', '.gitkeep'), '');
+  // Create main README in context/
+  const mainReadme = `# Context Files
+
+Esta pasta contém **arquivos de contexto** organizados por agente.
+
+## Estrutura
+
+\`\`\`
+context/
+├── shared/       # Contexto comum (TODOS os agentes)
+├── backend/      # Só o Backend Specialist vê
+├── frontend/     # Só o Frontend Specialist vê
+├── database/     # Só o Database Specialist vê
+├── bugfix/       # Só o Bugfix Specialist vê
+├── review/       # Só o Review Specialist vê
+└── orchestrator/ # Só o Orchestrator vê
+\`\`\`
+
+## Como Funciona
+
+1. Quando um agente é chamado (ex: backend.md)
+2. Ele carrega \`shared/*.md\` + \`backend/*.md\`
+3. Cria entidades no Memory MCP: \`AgentContext:backend:{filename}\`
+4. Depois faz \`mcp__memory__search_nodes\` normalmente
+
+## Regras
+
+- Apenas arquivos \`.md\`
+- Máximo 500 linhas por arquivo
+- Máximo 20 arquivos por pasta
+- Use \`shared/\` para contexto comum
+- Use pastas específicas para contexto do agente
+`;
+
+  await writeFile(join(claudePath, 'context', 'README.md'), mainReadme);
+  createdFiles.push('context/README.md');
+
+  return createdFiles;
 }
 
 /**
@@ -463,11 +467,11 @@ export async function generateCoreOnly(
   await generateCoreFiles(claudePath, projectInfo);
   generatedFiles.push('core/enforcement.md', 'core/pipeline.md');
 
-  // Update context/README.md only (preserve other context files)
-  log('Updating context/README.md...');
+  // Update context subfolders and READMEs (preserve other context files)
+  log('Updating context folders...');
   await mkdir(join(claudePath, 'context'), { recursive: true });
-  await generateContextReadme(claudePath);
-  generatedFiles.push('context/README.md');
+  const contextFiles = await generateContextReadme(claudePath);
+  generatedFiles.push(...contextFiles);
 
   // Merge settings.json (preserve client hooks)
   log('Merging settings.json...');
@@ -483,74 +487,79 @@ export async function generateCoreOnly(
 }
 
 /**
- * Generate only context/README.md (for update command)
+ * Generate context subfolders and READMEs (for update command)
+ * Creates subfolders if they don't exist, always updates READMEs
  */
-async function generateContextReadme(claudePath: string): Promise<void> {
-  const contextReadme = `# Project Context
+async function generateContextReadme(claudePath: string): Promise<string[]> {
+  const createdFiles: string[] = [];
 
-Place markdown files here to provide context to Claude during implementations.
+  // Create each subfolder with README (preserves existing content files)
+  for (const [folder, description] of Object.entries(CONTEXT_FOLDERS)) {
+    const folderPath = join(claudePath, 'context', folder);
+    await mkdir(folderPath, { recursive: true });
 
-## Purpose
+    const readme = `# ${folder.charAt(0).toUpperCase() + folder.slice(1)} Context
 
-Files in this folder are loaded into memory MCP at the start of \`/feature\` or \`/bugfix\` pipelines.
-This gives Claude instant access to project specifications, architecture decisions, and patterns.
+${description}
 
-## Supported Files
+## Como usar
 
-Any \`.md\` file placed in this folder will be automatically loaded.
+Crie arquivos \`.md\` aqui com informações específicas para o agente **${folder}**.
 
-**Suggested files:**
-- \`project-spec.md\` - Project overview and specifications
-- \`architecture.md\` - Architecture decisions and patterns
-- \`business-rules.md\` - Domain-specific rules and logic
-- \`api-guidelines.md\` - API design guidelines
-- \`tips.md\` - Project-specific tips for Claude
-- \`service-example.md\` - Code example for services
-- \`component-example.md\` - Code example for components
+## Carregamento
 
-## Rules
+Quando o agente ${folder} é chamado:
+1. Arquivos de \`shared/\` são carregados primeiro
+2. Arquivos desta pasta são carregados depois
+3. Entidades criadas: \`AgentContext:${folder}:{filename}\`
 
-1. **Markdown only** - Only \`.md\` files are loaded
-2. **Keep files focused** - One topic per file
-3. **Use headers** - Claude uses headers to understand structure
-4. **Max 500 lines** - Longer files are truncated
-5. **Max 20 files** - Total limit for loaded files
+## Regras
 
-## How It Works
-
-Files are automatically loaded at the start of \`/feature\` or \`/bugfix\` pipelines.
-Each file is stored as a \`UserContext:{filename}\` entity in memory MCP.
-
-## Example: architecture.md
-
-\`\`\`markdown
-# Architecture
-
-## Layers
-- Database: Drizzle ORM with PostgreSQL
-- Backend: .NET 9 with FastEndpoints
-- Frontend: React 19 with TanStack Query
-
-## Patterns
-- Repository pattern for data access
-- Services for business logic
-- DTOs for API contracts
-\`\`\`
-
-## Manual Refresh
-
-To force a context refresh, use:
-
-\`\`\`
-/sync-context --refresh
-\`\`\`
-
-## See Also
-
-- [/sync-context](../commands/mustard/sync-context.md) - Manual context loading
-- [/feature](../commands/mustard/feature.md) - Feature pipeline
-- [pipeline.md](../core/pipeline.md) - Pipeline documentation
+- Apenas arquivos \`.md\`
+- Máximo 500 linhas por arquivo
+- Evite duplicar conteúdo que já está em \`shared/\`
 `;
 
-  await writeFile(join(claudePath, 'context', 'README.md'), contextReadme);
+    await writeFile(join(folderPath, 'README.md'), readme);
+    createdFiles.push(`context/${folder}/README.md`);
+  }
+
+  // Create main README in context/
+  const mainReadme = `# Context Files
+
+Esta pasta contém **arquivos de contexto** organizados por agente.
+
+## Estrutura
+
+\`\`\`
+context/
+├── shared/       # Contexto comum (TODOS os agentes)
+├── backend/      # Só o Backend Specialist vê
+├── frontend/     # Só o Frontend Specialist vê
+├── database/     # Só o Database Specialist vê
+├── bugfix/       # Só o Bugfix Specialist vê
+├── review/       # Só o Review Specialist vê
+└── orchestrator/ # Só o Orchestrator vê
+\`\`\`
+
+## Como Funciona
+
+1. Quando um agente é chamado (ex: backend.md)
+2. Ele carrega \`shared/*.md\` + \`backend/*.md\`
+3. Cria entidades no Memory MCP: \`AgentContext:backend:{filename}\`
+4. Depois faz \`mcp__memory__search_nodes\` normalmente
+
+## Regras
+
+- Apenas arquivos \`.md\`
+- Máximo 500 linhas por arquivo
+- Máximo 20 arquivos por pasta
+- Use \`shared/\` para contexto comum
+- Use pastas específicas para contexto do agente
+`;
+
+  await writeFile(join(claudePath, 'context', 'README.md'), mainReadme);
+  createdFiles.push('context/README.md');
+
+  return createdFiles;
 }
