@@ -1,21 +1,23 @@
 #!/usr/bin/env node
 /**
- * ENFORCEMENT: Context Compilation validation (UserPromptSubmit)
+ * ENFORCEMENT: Memory MCP Context validation (Advisory)
  *
- * Blocks /feature, /bugfix, /feature-team, /bugfix-team if compiled contexts:
- * - Do not exist for required agents
- * - Are outdated (hash != current git commit)
+ * Checks if AgentContext entities exist in Memory MCP.
+ * Advisory only — allows execution with a reminder to
+ * run /sync-context if Memory MCP is empty.
+ *
+ * Cannot check MCP directly from a hook, so validates
+ * that context source files exist in .claude/context/
+ * and reminds to load them via /sync-context.
  *
  * @version 2.0.0
- * @see mustard/cli/templates/commands/mustard/compile-context.md
  */
 
 const fs = require('fs');
 const path = require('path');
-const { execSync } = require('child_process');
 
-// Agents that require compiled context (Task mode)
-const REQUIRED_AGENTS_TASK = [
+// Agents that require context in Memory MCP
+const REQUIRED_AGENTS = [
   'orchestrator',
   'backend',
   'frontend',
@@ -24,15 +26,16 @@ const REQUIRED_AGENTS_TASK = [
   'review'
 ];
 
-// Agents that require compiled context (Agent Teams mode)
-const REQUIRED_AGENTS_TEAM = [
-  'team-lead',
-  'backend',
-  'frontend',
-  'database',
-  'bugfix',
-  'review'
-];
+// Expected Memory MCP entities per agent
+const AGENT_CONTEXT_ENTITIES = {
+  shared: ['AgentContext:shared:conventions'],
+  orchestrator: ['AgentContext:orchestrator:orchestrator.core'],
+  backend: ['AgentContext:backend:backend.core', 'AgentContext:backend:patterns'],
+  frontend: ['AgentContext:frontend:frontend.core', 'AgentContext:frontend:patterns'],
+  database: ['AgentContext:database:database.core', 'AgentContext:database:patterns'],
+  bugfix: ['AgentContext:bugfix:bugfix.core'],
+  review: ['AgentContext:review:review.core']
+};
 
 let input = '';
 process.stdin.setEncoding('utf8');
@@ -40,35 +43,30 @@ process.stdin.on('data', chunk => input += chunk);
 process.stdin.on('end', () => {
   try {
     const data = JSON.parse(input);
-    const userMessage = data.user_message || '';
+    const toolName = data.tool_name || '';
 
-    // Check if user is invoking a pipeline skill
-    const pipelinePattern = /^\s*\/(feature|bugfix|feature-team|bugfix-team)(\s|$)/i;
-    const match = userMessage.match(pipelinePattern);
-    if (!match) {
+    // Only check on Skill invocations for feature/bugfix
+    if (toolName !== 'Skill') {
       process.exit(0);
     }
 
-    // Determine if Agent Teams mode
-    const isTeamMode = match[1].toLowerCase().includes('team');
+    const skillName = data.tool_input?.skill || '';
 
-    // Get current git commit hash
-    const currentHash = getCurrentCommitHash();
-    if (!currentHash) {
-      // Not a git repo or git not available - skip validation
+    // Only enforce for feature and bugfix skills
+    if (!['mustard:feature', 'mustard:bugfix', 'feature', 'bugfix'].includes(skillName)) {
       process.exit(0);
     }
 
-    // Check all required contexts
-    const validation = validateContexts(currentHash, isTeamMode);
+    // Validate context source files exist
+    const validation = validateContextSources();
 
     if (!validation.valid) {
-      blockWithMessage(validation.message, validation.missing, validation.outdated);
+      advisoryAllow(validation.message);
       return;
     }
 
-    // All contexts valid - allow
-    process.exit(0);
+    // Source files exist - remind about Memory MCP
+    advisoryRemind();
 
   } catch (err) {
     console.error('Hook error:', err.message);
@@ -76,125 +74,70 @@ process.stdin.on('end', () => {
   }
 });
 
-/**
- * Get current git commit hash (short)
- */
-function getCurrentCommitHash() {
-  try {
-    return execSync('git rev-parse --short HEAD', { encoding: 'utf8' }).trim();
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Find .claude folder
- */
 function findClaudeFolder() {
   const cwd = process.cwd();
   const claudePath = path.join(cwd, '.claude');
-
   if (fs.existsSync(claudePath)) {
     return claudePath;
   }
-
   return null;
 }
 
-/**
- * Validate all required contexts exist and are up-to-date
- */
-function validateContexts(currentHash, isTeamMode) {
+function validateContextSources() {
   const claudeFolder = findClaudeFolder();
-  const requiredAgents = isTeamMode ? REQUIRED_AGENTS_TEAM : REQUIRED_AGENTS_TASK;
 
   if (!claudeFolder) {
     return {
       valid: false,
-      message: '.claude folder not found.',
-      missing: requiredAgents,
-      outdated: []
+      message: '.claude folder not found.'
     };
   }
 
-  const missing = [];
-  const outdated = [];
-
-  for (const agent of requiredAgents) {
-    const contextPath = path.join(claudeFolder, 'prompts', `${agent}.context.md`);
-
-    if (!fs.existsSync(contextPath)) {
-      missing.push(agent);
-      continue;
-    }
-
-    // Check hash in file
-    const content = fs.readFileSync(contextPath, 'utf8');
-    const hashMatch = content.match(/compiled-from-commit:\s*(\w+)/);
-    const fileHash = hashMatch ? hashMatch[1] : null;
-
-    if (!fileHash || fileHash !== currentHash) {
-      outdated.push({
-        agent,
-        fileHash: fileHash || 'none',
-        currentHash
-      });
-    }
-  }
-
-  if (missing.length > 0 || outdated.length > 0) {
+  const contextDir = path.join(claudeFolder, 'context');
+  if (!fs.existsSync(contextDir)) {
     return {
       valid: false,
-      message: buildErrorMessage(missing, outdated, currentHash),
-      missing,
-      outdated
+      message: 'Context directory .claude/context/ not found.\nRun /sync-context to populate Memory MCP.'
+    };
+  }
+
+  // Check shared context exists
+  const sharedDir = path.join(contextDir, 'shared');
+  const sharedFiles = getContextFiles(sharedDir);
+  if (sharedFiles.length === 0) {
+    return {
+      valid: false,
+      message: 'No shared context files in .claude/context/shared/.\nRun /sync-context to populate Memory MCP.'
     };
   }
 
   return { valid: true };
 }
 
-/**
- * Build detailed error message
- */
-function buildErrorMessage(missing, outdated, currentHash) {
-  const parts = [];
-
-  if (missing.length > 0) {
-    parts.push(`Missing contexts: ${missing.join(', ')}`);
-  }
-
-  if (outdated.length > 0) {
-    const outdatedList = outdated.map(o =>
-      `${o.agent} (has: ${o.fileHash}, need: ${currentHash})`
-    ).join(', ');
-    parts.push(`Outdated contexts: ${outdatedList}`);
-  }
-
-  return parts.join('\n');
+function getContextFiles(dir) {
+  if (!fs.existsSync(dir)) return [];
+  return fs.readdirSync(dir).filter(f => f.endsWith('.md') && f !== 'README.md');
 }
 
-/**
- * Block with helpful message
- */
-function blockWithMessage(reason, missing, outdated) {
+function advisoryAllow(reason) {
   const response = {
     hookSpecificOutput: {
-      hookEventName: "UserPromptSubmit",
-      decision: "block",
-      reason: `Context Compilation Required
+      hookEventName: "PreToolUse",
+      permissionDecision: "allow",
+      permissionDecisionReason: 'Memory MCP Context Advisory\n\n' + reason
+    }
+  };
+  console.log(JSON.stringify(response));
+  process.exit(0);
+}
 
-${reason}
-
-Compiled contexts help agents by:
-- Providing project-specific patterns and conventions
-- Including shared context (from context/shared/)
-- Including agent-specific context (from context/{agent}/)
-- Reducing token usage during implementation
-
-Run /compile-context to update all contexts, then retry your command.
-
-Current commit: ${getCurrentCommitHash() || 'unknown'}`
+function advisoryRemind() {
+  const entities = Object.values(AGENT_CONTEXT_ENTITIES).flat();
+  const response = {
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      permissionDecision: "allow",
+      permissionDecisionReason: 'Memory MCP Context: Ensure AgentContext entities are loaded.\n\nExpected entities: ' + entities.join(', ') + '\n\nUse mcp__memory__search_nodes("AgentContext") to verify.\nIf empty, run /sync-context to populate.'
     }
   };
   console.log(JSON.stringify(response));

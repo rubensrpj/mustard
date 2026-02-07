@@ -195,9 +195,9 @@ export async function initCommand(options) {
     // Done!
     console.log(chalk.green.bold('\n✅ Done!\n'));
     console.log(chalk.white('Use these commands to get started:'));
-    console.log(chalk.cyan('  /feature <name>') + chalk.gray(' - Start a new feature'));
-    console.log(chalk.cyan('  /bugfix <error>') + chalk.gray(' - Fix a bug'));
-    console.log(chalk.cyan('  /status') + chalk.gray('         - Check project status'));
+    console.log(chalk.cyan('  /mustard:feature <name>') + chalk.gray(' - Start a new feature'));
+    console.log(chalk.cyan('  /mustard:bugfix <error>') + chalk.gray(' - Fix a bug'));
+    console.log(chalk.cyan('  /mustard:status') + chalk.gray('         - Check project status'));
     console.log();
 }
 /**

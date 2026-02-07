@@ -106,43 +106,43 @@ function generateCommands(projectInfo: ProjectInfo): string {
 
 | Command | Description |
 |---------|-------------|
-| \`/feature <name>\` | **Single entry point for features** - Starts full pipeline |
-| \`/bugfix <error>\` | **Single entry point for bugs** - Diagnosis + fix |
-| \`/approve\` | Approve spec and start implementation |
-| \`/complete\` | Finalize pipeline |
-| \`/resume\` | Resume active pipeline |
+| \`/mustard:feature <name>\` | **Single entry point for features** - Starts full pipeline |
+| \`/mustard:bugfix <error>\` | **Single entry point for bugs** - Diagnosis + fix |
+| \`/mustard:approve\` | Approve spec and start implementation |
+| \`/mustard:complete\` | Finalize pipeline |
+| \`/mustard:resume\` | Resume active pipeline |
 
 ### Git
 
 | Command | Description |
 |---------|-------------|
-| \`/commit\` | Simple commit |
-| \`/commit-push\` | Commit and push |
-| \`/merge-main\` | Merge to main |
+| \`/mustard:commit\` | Simple commit |
+| \`/mustard:commit-push\` | Commit and push |
+| \`/mustard:merge-main\` | Merge to main |
 
 ### Validation
 
 | Command | Description |
 |---------|-------------|
-| \`/validate\` | Build + type-check |
-| \`/status\` | Consolidated status |
+| \`/mustard:validate\` | Build + type-check |
+| \`/mustard:status\` | Consolidated status |
 
 ### Sync
 
 | Command | Description |
 |---------|-------------|
-| \`/sync-registry\` | Update Entity Registry |
-| \`/install-deps\` | Install dependencies |
-| \`/sync-context\` | Load project context |
+| \`/mustard:sync-registry\` | Update Entity Registry |
+| \`/mustard:install-deps\` | Install dependencies |
+| \`/mustard:sync-context\` | Load project context |
 
 ### Task Commands (L0 Universal Delegation)
 
 | Command | Emoji | Description |
 |---------|-------|-------------|
-| \`/task-analyze <scope>\` | 🔍 | Code analysis via Task(Explore) |
-| \`/task-review <scope>\` | 🔎 | Code review via Task(general-purpose) |
-| \`/task-refactor <scope>\` | 📋⚙️ | Refactoring via Task(Plan) → Task(general-purpose) |
-| \`/task-docs <scope>\` | 📊 | Documentation via Task(general-purpose) |
+| \`/mustard:task-analyze <scope>\` | 🔍 | Code analysis via Task(Explore) |
+| \`/mustard:task-review <scope>\` | 🔎 | Code review via Task(general-purpose) |
+| \`/mustard:task-refactor <scope>\` | 📋⚙️ | Refactoring via Task(Plan) → Task(general-purpose) |
+| \`/mustard:task-docs <scope>\` | 📊 | Documentation via Task(general-purpose) |
 
 > **CRITICAL:** These commands ensure ALL code activities are delegated to a separate context (Task), keeping the parent context clean.`;
 }
@@ -151,7 +151,7 @@ function generatePipeline(): string {
   return `## 5. Single Pipeline
 
 \`\`\`
-/feature or /bugfix
+/mustard:feature or /mustard:bugfix
          │
          ▼
     EXPLORE (Task Explore)

@@ -1,138 +1,55 @@
 # /task-analyze - Code Analysis
 
 > Analyzes code in a **separate Task context** (L0 Universal Delegation).
-> Use for any code exploration that doesn't fit feature/bugfix pipelines.
 
-## Usage
+## Trigger
 
-```
-/task-analyze <scope>
-/task-analyze authentication flow
-/task-analyze "database schema"
-```
+`/task-analyze <scope>`
 
-## What It Does
+## Description
 
-1. **Delegates** to Task(Explore) - NEVER analyzes in parent context
-2. **Explores** the codebase with grepai and file reads
-3. **Reports** findings to user
-
-## Pipeline
-
-```
-/task-analyze <scope>
-     │
-     ▼
-┌────────────────────────────────┐
-│  Task(Explore)                 │
-│  model: haiku                  │
-│  description: 🔍 Analyze...    │
-└──────────────┬─────────────────┘
-               │
-               ▼
-         Report findings
-```
-
-## Implementation
-
-```javascript
-// CRITICAL: Always delegate - never analyze in parent context
-Task({
-  subagent_type: "Explore",
-  model: "haiku",
-  description: `🔍 Analyze: ${scope}`,
-  prompt: `
-# 🔍 CODE ANALYSIS TASK
-
-## Scope
-${scope}
-
-## Instructions
-1. Use grepai_search for semantic search
-2. Use grepai_trace_callers/callees for dependencies
-3. Read relevant files
-4. Document patterns found
-5. Identify key components
-
-## Output Format
-- **Overview**: Brief summary
-- **Key Files**: List with descriptions
-- **Patterns Found**: Code patterns identified
-- **Dependencies**: How components connect
-- **Suggestions**: Next steps if applicable
-  `
-})
-```
-
-## Arguments
-
-| Argument | Description | Example |
-|----------|-------------|---------|
-| `<scope>` | What to analyze | `auth flow`, `"payment module"` |
-
-## Examples
-
-```bash
-# Analyze a flow
-/task-analyze authentication flow
-
-# Analyze a module
-/task-analyze "payment processing"
-
-# Analyze patterns
-/task-analyze error handling patterns
-
-# Analyze dependencies
-/task-analyze Contract entity dependencies
-```
-
-## Output
-
-```
-🔍 Analyzing: authentication flow
-
-Task(Explore): Searching codebase...
-  - Found: src/services/auth.ts
-  - Found: src/middleware/jwt.ts
-  - Tracing callers of AuthService...
-
-Analysis Complete:
-
-## Overview
-The authentication system uses JWT tokens with refresh token rotation...
-
-## Key Files
-- src/services/auth.ts - Main auth service
-- src/middleware/jwt.ts - JWT validation middleware
-- src/routes/auth.ts - Auth endpoints
-
-## Patterns
-- Token refresh rotation
-- Role-based access control
-- Session management via Redis
-
-## Dependencies
-AuthService → JwtService → RedisCache
-```
+Analyzes code in a separate Task(Explore) context.
+Use for any code exploration that doesn't fit feature/bugfix pipelines.
 
 ## L0 Enforcement
 
 **CRITICAL**: This command enforces L0 Universal Delegation:
 - Parent context does NOT read code
-- Parent context does NOT analyze patterns
 - Parent context ONLY coordinates and presents results
-- ALL analysis happens in the Task(Explore) context
+- ALL analysis happens in Task(Explore) context
 
-## Related Commands
+## Flow
 
-| Command | Description |
-|---------|-------------|
-| `/task-review` | Code review with quality checks |
-| `/task-refactor` | Refactoring with plan |
-| `/task-docs` | Documentation generation |
-| `/feature` | Full feature implementation |
+1. **DELEGATE** 🔍
+   - Create Task(Explore) with analysis scope
+   - Never analyze directly in parent context
 
-## See Also
+2. **REPORT**
+   - Present findings to user
 
-- [enforcement.md](../../core/enforcement.md) - L0 Universal Delegation rule
-- [orchestrator.md](../../prompts/orchestrator.md) - Orchestrator delegation rules
+## Implementation
+
+```javascript
+Task({
+  subagent_type: "Explore",
+  model: "haiku",
+  description: `🔍 Analyze: ${scope}`,
+  prompt: `
+    # 🔍 CODE ANALYSIS TASK
+    ## Scope: ${scope}
+    ## Instructions
+    1. Use grepai_search for semantic search
+    2. Read relevant files
+    3. Document patterns found
+    4. Report findings clearly
+  `
+})
+```
+
+## Examples
+
+```bash
+/task-analyze authentication flow
+/task-analyze "database schema"
+/task-analyze error handling patterns
+```

@@ -10,11 +10,11 @@ Mustard is a CLI that generates `.claude/` folders for Claude Code projects. It 
 
 - "Agents" are prompts loaded into `Task(general-purpose)` - custom subagent types don't work
 - Only 4 native `subagent_type` values: `Explore`, `Plan`, `general-purpose`, `Bash`
-- Enforcement via JavaScript hooks
+- Enforcement via JavaScript hooks (`PreToolUse` with `Skill` matcher)
 - **Universal Delegation**: All code activities must be delegated via Task (separate context)
-- **Context per Agent**: Each agent loads context from `context/shared/` + `context/{agent}/`
-- **Compiled context at skill invocation**: `/feature` and `/bugfix` commands compile contexts before starting
-- **Agent Teams** (experimental): Alternative to Task subagents for complex multi-layer features
+- **Modular Context**: Each agent has `README.md` + `{agent}.core.md` with explicit identity
+- **Auto-sync Scripts**: `sync-detect.js`, `sync-compile.js`, `sync-registry.js`
+- **Namespaced Commands**: All commands use `mustard:` prefix (e.g., `/mustard:feature`)
 
 ## L0 Rule - Universal Delegation
 
@@ -26,16 +26,16 @@ Mustard is a CLI that generates `.claude/` folders for Claude Code projects. It 
 
 **ALL** activities involving code MUST be delegated:
 
-| Activity | Task Type | Emoji |
-|----------|-----------|-------|
-| Code exploration | `Task(Explore)` | 🔍 |
-| Planning | `Task(Plan)` | 📋 |
-| Backend/APIs | `Task(general-purpose)` | ⚙️ |
-| Frontend/UI | `Task(general-purpose)` | 🎨 |
-| Database | `Task(general-purpose)` | 🗄️ |
-| Bugfix | `Task(general-purpose)` | 🐛 |
-| Code Review | `Task(general-purpose)` | 🔎 |
-| Documentation | `Task(general-purpose)` | 📊 |
+| Activity | Task Type |
+|----------|-----------|
+| Code exploration | `Task(Explore)` |
+| Planning | `Task(Plan)` |
+| Backend/APIs | `Task(general-purpose)` |
+| Frontend/UI | `Task(general-purpose)` |
+| Database | `Task(general-purpose)` |
+| Bugfix | `Task(general-purpose)` |
+| Code Review | `Task(general-purpose)` |
+| Documentation | `Task(general-purpose)` |
 
 ## Build & Run
 
@@ -64,56 +64,51 @@ mustard/
 │   └── services/            # ollama.ts, grepai.ts
 ├── dist/                    # Compiled JavaScript
 └── templates/               # Templates (copied to target .claude/)
-    ├── CLAUDE.md
-    ├── prompts/             # 8 agent prompts (agnostic)
-    ├── context/             # Context files per agent
+    ├── CLAUDE.md            # Minimal orchestrator rules
+    ├── prompts/             # Stub prompts (reference .core.md)
+    ├── context/             # Modular context per agent
     │   ├── shared/          # Common context (all agents)
-    │   ├── backend/         # Backend-specific patterns
-    │   ├── frontend/        # Frontend-specific patterns
-    │   ├── database/        # Database-specific patterns
-    │   └── ...
-    ├── commands/mustard/    # Pipeline commands
+    │   ├── backend/         # README.md + backend.core.md
+    │   ├── frontend/        # README.md + frontend.core.md
+    │   ├── database/        # README.md + database.core.md
+    │   ├── bugfix/          # README.md + bugfix.core.md
+    │   ├── review/          # README.md + review.core.md
+    │   └── orchestrator/    # README.md + orchestrator.core.md
+    ├── commands/mustard/    # Pipeline commands (namespaced)
+    ├── scripts/             # Sync scripts
     ├── core/                # Enforcement rules
-    ├── hooks/               # Enforcement hooks (see below)
-    └── scripts/             # statusline.js
+    └── hooks/               # JavaScript hooks
 ```
 
-## Context per Agent (v2.6.1)
+## Context Architecture (v3.0)
 
-Prompts are **agnostic** - project-specific patterns live in context files:
+Each agent has **modular context** with explicit identity:
 
 ```text
-context/
-├── shared/       # All agents load this
-├── backend/      # Only Backend Specialist loads
-├── frontend/     # Only Frontend Specialist loads
-├── database/     # Only Database Specialist loads
-├── bugfix/       # Only Bugfix Specialist loads
-├── review/       # Only Review Specialist loads
-├── orchestrator/ # Only Orchestrator loads
-└── team-lead/    # Only Team Lead loads (Agent Teams mode)
+context/{agent}/
+├── README.md        # Extensibility guide (how to add custom context)
+└── {agent}.core.md  # Identity + Responsibilities + Workflow + Return Format
 ```
 
-**Flow:**
+### .core.md Structure
 
-1. User invokes `/feature` or `/bugfix` skill
-2. **Subproject commands are collected** (if monorepo)
-3. Skill compiles contexts for all agents (git-based caching)
-4. Agent is called with compiled context ready
-5. Compiled context saved to `prompts/{agent}.context.md`
+| Section | Purpose |
+|---------|---------|
+| **Identity** | "You are the Backend Specialist" |
+| **Responsibilities** | What the agent implements/doesn't implement |
+| **Prerequisites** | Validations before accepting work |
+| **Checklist** | Step-by-step workflow |
+| **Return Format** | Standardized response format |
+| **Naming Conventions** | PascalCase, snake_case, kebab-case rules |
+| **Rules** | Explicit DO/DO NOT |
 
-### Subproject Commands (Monorepo)
+### Sync Flow
 
-For monorepos, commands from `{subproject}/.claude/commands/` are automatically collected:
-
-```text
-MyProject/
-├── MyProject.Backend/.claude/commands/   → context/backend/myproject-backend-commands.md
-├── MyProject.FrontEnd/.claude/commands/  → context/frontend/myproject-frontend-commands.md
-└── MyProject.Database/.claude/commands/  → context/database/myproject-database-commands.md
-```
-
-Type mapping by keywords: `backend`/`api`/`server` → backend, `frontend`/`web`/`app` → frontend, etc.
+1. User invokes `/mustard:feature` or `/mustard:bugfix`
+2. `sync-detect.js` discovers subprojects (monorepo)
+3. `sync-compile.js` compiles contexts with SHA256 caching
+4. Agent receives compiled `{agent}.context.md`
+5. Skip recompilation if content hash unchanged
 
 ## CLI Flow
 
@@ -132,112 +127,99 @@ mustard update
 
 ## Prompts (Agents)
 
-| Prompt | Model | Context Folders |
-|--------|-------|-----------------|
-| team-lead | opus | shared + team-lead (Agent Teams) |
-| orchestrator | opus | shared + orchestrator |
-| backend | opus | shared + backend |
-| frontend | opus | shared + frontend |
-| database | opus | shared + database |
-| bugfix | opus | shared + bugfix |
-| review | opus | shared + review |
-| report | sonnet | (uses git log) |
-| naming | - | Reference only |
+| Prompt | Model | Context |
+|--------|-------|---------|
+| orchestrator | opus | orchestrator.core.md |
+| backend | opus | backend.core.md |
+| frontend | opus | frontend.core.md |
+| database | opus | database.core.md |
+| bugfix | opus | bugfix.core.md |
+| review | opus | review.core.md |
 
 ## Commands
 
-### Pipeline (Task Mode)
+### Pipeline
 
-- `/feature` - Start feature pipeline
-- `/bugfix` - Start bugfix pipeline
-- `/approve` - Approve spec (auto-checkpoint + suggest reset)
-- `/complete` - Finalize pipeline (save learnings)
-- `/resume` - Resume pipeline (loads checkpoint + learnings)
-- `/checkpoint` - Save phase insights to memory (optional `--reset`)
-
-### Pipeline (Agent Teams Mode - Experimental)
-
-- `/feature-team` - Feature pipeline with Agent Teams (parallel)
-- `/bugfix-team` - Bugfix pipeline with competing hypotheses
+- `/mustard:feature` - Start feature pipeline
+- `/mustard:bugfix` - Start bugfix pipeline
+- `/mustard:approve` - Approve spec
+- `/mustard:complete` - Finalize pipeline
+- `/mustard:resume` - Resume active pipeline
 
 ### Task (L0 Delegation)
 
-- `/task-analyze` - Code analysis via Task(Explore)
-- `/task-review` - Code review via Task(general-purpose)
-- `/task-refactor` - Refactoring via Task(Plan) -> Task(general-purpose)
-- `/task-docs` - Documentation via Task(general-purpose)
+- `/mustard:task-analyze` - Code analysis via Task(Explore)
+- `/mustard:task-review` - Code review via Task(general-purpose)
+- `/mustard:task-refactor` - Refactoring via Task(Plan) -> Task(general-purpose)
+- `/mustard:task-docs` - Documentation via Task(general-purpose)
+
+### Git
+
+- `/mustard:commit` - Simple commit
+- `/mustard:commit-push` - Commit and push
+- `/mustard:merge-main` - Merge to main
+
+### Sync
+
+- `/mustard:sync-registry` - Update entity registry
+- `/mustard:sync-context` - Compile agent contexts
+- `/mustard:validate` - Build + type-check
+- `/mustard:status` - Project status
 
 ## Enforcement Hooks
 
-Hooks are registered in `templates/settings.json` and enforce rules at different stages:
+Hooks are registered in `templates/settings.json`:
 
-| Hook | Matcher | Purpose |
-| ---- | ------- | ------- |
-| `enforce-registry.js` | Skill | Validates entity-registry.json before /feature or /bugfix |
-| `enforce-context.js` | Skill | Validates compiled contexts before /feature or /bugfix |
-| `enforce-grepai.js` | Grep, Glob | Suggests grepai for semantic search |
-| `enforce-pipeline.js` | Edit, Write | Blocks code edits outside pipeline |
+| Hook | Matcher | Behavior |
+|------|---------|----------|
+| `enforce-registry.js` | `Skill` | **BLOCKS** if registry missing |
+| `enforce-context.js` | `Skill` | **WARNS** (advisory) |
+| `enforce-grepai.js` | `Grep/Glob` | **BLOCKS** search without path |
+| `enforce-pipeline.js` | `Edit/Write` | **REMINDS** about pipeline |
 
 ### Pre-Pipeline Validation Flow
 
 ```text
-User: /feature add-login
+User: /mustard:feature add-login
          │
          ▼
-    ┌─────────────────────────┐
-    │ enforce-registry.js     │
-    │ - Registry exists?      │
-    │ - Version >= 3.x?       │
-    │ - Has entities?         │
-    └─────────────────────────┘
+    enforce-registry.js
+    - Registry exists? (BLOCK if not)
+    - Version >= 3.x? (BLOCK if not)
          │
          ▼
-    ┌─────────────────────────┐
-    │ enforce-context.js      │
-    │ - Contexts compiled?    │
-    │ - Match git commit?     │
-    └─────────────────────────┘
+    enforce-context.js
+    - Contexts compiled? (WARN if not)
          │
          ▼
     Pipeline starts...
 ```
 
-### Auto Registry Update
+## Sync Scripts
 
-`/complete` automatically detects entity file changes and updates registry:
+### sync-detect.js
 
-- Patterns: `models/`, `entities/`, `schemas/`, `*.entity.ts`, `drizzle/*schema*`, etc.
-- If detected: runs `/sync-registry` before finalizing
+Auto-discovers subprojects in monorepos:
 
-## Context Reset (v2.6)
+- Detection patterns: `.NET`, `React`, `Drizzle`, etc.
+- Output: JSON with subprojects, agents, paths
 
-Optimizes context window by saving insights to memory and clearing conversation at phase boundaries:
+### sync-compile.js
 
-```text
-/feature → EXPLORE → SPEC → /approve
-                              │
-                    ┌─────────┴─────────┐
-                    │ AUTO: checkpoint  │
-                    │ SUGGEST: reset    │
-                    └─────────┬─────────┘
-                              │
-                    User: "reset"
-                              │
-                    [Context limpo]
-                              │
-                    /resume (carrega checkpoint)
-                              │
-                    IMPLEMENT (contexto limpo)
-                              │
-                    /complete (salva learnings permanentes)
-```
+Compiles contexts with git-aware caching:
 
-**Memory MCP Entities:**
+1. Copies subproject commands to `context/{agent}/cmd-{file}`
+2. Concatenates `.md` files → `{agent}.context.md`
+3. Computes SHA256 hash
+4. Skips if hash unchanged
 
-| Entity | Purpose | Persistence |
-| ------ | ------- | ----------- |
-| `Checkpoint:{pipeline}:{phase}:{ts}` | Phase insights | Temporary |
-| `Learning:{name}:{ts}` | Patterns, decisions, gotchas | Permanent |
+### sync-registry.js
+
+Generates `entity-registry.json` v3.1:
+
+- Scans Drizzle schemas (`pgTable`, `pgEnum`)
+- Scans .NET entities (`DbSet`, `class T`)
+- Outputs `_patterns`, `_enums`, entity refs/subs
 
 ## Stacks Detected
 

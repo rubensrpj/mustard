@@ -1,4 +1,4 @@
-# Tutorial: Mustard
+# Tutorial: Mustard v3.0
 
 Practical guide for using Mustard with Claude Code.
 
@@ -31,7 +31,7 @@ EXPLORE: Claude analyzes with grepai
 SPEC: "Will modify X, Y, Z. Approve?"
          │
          ▼
-You: /approve
+You: /mustard:approve
          │
          ▼
 IMPLEMENT: Database → Backend → Frontend
@@ -40,20 +40,22 @@ IMPLEMENT: Database → Backend → Frontend
 VALIDATE: Build + type-check
          │
          ▼
-You: /complete
+You: /mustard:complete
 ```
 
 ## Commands
 
+All commands now use the `mustard:` prefix:
+
 | Command | Description |
 |---------|-------------|
-| `/feature <name>` | Start feature |
-| `/bugfix <error>` | Start bugfix |
-| `/approve` | Approve spec |
-| `/complete` | Finalize |
-| `/resume` | Resume in new session |
-| `/validate` | Build + type-check |
-| `/status` | Project status |
+| `/mustard:feature <name>` | Start feature |
+| `/mustard:bugfix <error>` | Start bugfix |
+| `/mustard:approve` | Approve spec |
+| `/mustard:complete` | Finalize |
+| `/mustard:resume` | Resume in new session |
+| `/mustard:validate` | Build + type-check |
+| `/mustard:status` | Project status |
 
 ## Example: Adding a Field
 
@@ -75,14 +77,14 @@ Claude: [Explores with grepai]
 
         Approve?"
 
-You: /approve
+You: /mustard:approve
 
 Claude: [Implements all layers]
         [Runs build]
 
         "Done. Finalize?"
 
-You: /complete
+You: /mustard:complete
 ```
 
 ## Example: Bug Fix
@@ -101,12 +103,12 @@ Claude: [Finds cause in ContractService.cs:145]
 
         Approve?"
 
-You: /approve
+You: /mustard:approve
 
 Claude: [Fixes, validates]
         "Done. Finalize?"
 
-You: /complete
+You: /mustard:complete
 ```
 
 ## Analysis vs Implementation
@@ -121,7 +123,7 @@ Claude auto-detects intent:
 If you close Claude:
 
 ```text
-You: /resume
+You: /mustard:resume
 
 Claude: "Active: add-email-person
         Phase: implement
@@ -132,49 +134,32 @@ Claude: "Active: add-email-person
         Continue?"
 ```
 
-## Context Compilation (v2.5)
+## Context Architecture (v3.0)
 
-Context is compiled when you invoke a pipeline skill:
-
-1. You invoke `/feature` or `/bugfix`
-2. Skill compiles contexts for all agents (git-based caching)
-3. Agents are called with compiled context ready
-4. Compiled context saved to `prompts/{agent}.context.md`
-
-**No manual commands needed** - context is compiled at skill invocation.
-
-## Agent Teams Mode (Experimental)
-
-For complex multi-layer features, you can use Agent Teams:
+Each agent has modular context with explicit identity:
 
 ```text
-You: /feature-team invoice-module
-
-Claude (as Team Lead):
-  - Spawns Database teammate
-  - Spawns Backend teammate
-  - Spawns Frontend teammate
-  - Coordinates via shared task list
-  - Spawns Review teammate
-  - Validates and completes
+.claude/context/
+├── shared/              # All agents load this
+├── backend/
+│   ├── README.md        # How to extend
+│   └── backend.core.md  # Identity + Workflow
+├── frontend/
+│   ├── README.md
+│   └── frontend.core.md
+└── ...
 ```
 
-Enable in `.claude/settings.json`:
+### .core.md Files
 
-```json
-{
-  "env": {
-    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"
-  }
-}
-```
+Each specialist has explicit sections:
 
-| Use Agent Teams | Use Task Mode |
-|-----------------|---------------|
-| Multi-layer features | Single-layer changes |
-| Complex coordination | Simple delegation |
-| True parallelism | Sequential is OK |
-| Higher token budget | Token cost matters |
+- **Identity**: "You are the Backend Specialist"
+- **Responsibilities**: What to implement/not implement
+- **Checklist**: Step-by-step workflow
+- **Return Format**: Standardized response
+- **Naming Conventions**: PascalCase, snake_case, kebab-case
+- **Rules**: DO/DO NOT
 
 ## Customizing Context
 
@@ -183,9 +168,10 @@ Add project-specific patterns to context folders:
 ```text
 .claude/context/
 ├── shared/           # All agents see this
-│   └── conventions.md
+│   └── my-patterns.md
 ├── backend/          # Backend Specialist sees this + shared
-│   └── api-patterns.md
+│   ├── backend.core.md  # Don't edit (managed by Mustard)
+│   └── api-patterns.md  # Add your patterns here
 ├── frontend/         # Frontend Specialist sees this + shared
 │   └── component-patterns.md
 └── database/         # Database Specialist sees this + shared
@@ -194,31 +180,66 @@ Add project-specific patterns to context folders:
 
 When you edit these files, agents will automatically recompile on next run.
 
-## Enforcement Rules
+## Sync Scripts
+
+Mustard v3.0 includes auto-sync scripts:
+
+| Script | Purpose |
+|--------|---------|
+| `sync-detect.js` | Discovers subprojects in monorepos |
+| `sync-compile.js` | Compiles contexts with SHA256 caching |
+| `sync-registry.js` | Generates entity-registry.json |
+
+These run automatically when you invoke pipeline commands.
+
+## Enforcement Hooks
 
 Applied automatically:
 
-| Rule | Effect |
+| Hook | Effect |
 |------|--------|
-| L0 | Universal delegation via Task tool |
-| L1 | Uses grepai instead of Grep/Glob |
-| L2 | Requires pipeline for edits |
-| L7-L9 | Repository patterns, SOLID |
+| `enforce-registry.js` | Blocks if entity registry missing |
+| `enforce-context.js` | Warns if contexts not compiled |
+| `enforce-grepai.js` | Blocks Grep/Glob without path |
+| `enforce-pipeline.js` | Reminds about pipeline for edits |
+
+## Migration from v2.x
+
+1. **Update command invocations**:
+
+   ```bash
+   # Before
+   /feature add-login
+
+   # After
+   /mustard:feature add-login
+   ```
+
+2. **Regenerate registry**:
+
+   ```bash
+   /mustard:sync-registry --force
+   ```
+
+3. **Note removed features**:
+   - Agent Teams (`/feature-team`, `/bugfix-team`) - removed
+   - Checkpoint (`/checkpoint`) - use Context Reset instead
 
 ## Tips
 
-1. **Just describe** - No need to type `/feature`, Claude detects intent
-2. **Review the spec** - Read before `/approve`
-3. **Use resume** - `/resume` continues where you left off
+1. **Just describe** - No need to type `/mustard:feature`, Claude detects intent
+2. **Review the spec** - Read before `/mustard:approve`
+3. **Use resume** - `/mustard:resume` continues where you left off
 4. **Use update** - `mustard update` gets new features without losing customizations
-5. **Edit context files** - Add patterns to `context/{agent}/` folders
+5. **Edit context files** - Add patterns to `context/{agent}/` folders (not `.core.md`)
 
 ## Troubleshooting
 
 | Issue | Solution |
 |-------|----------|
-| "No active pipeline" | Use `/feature <name>` |
+| "No active pipeline" | Use `/mustard:feature <name>` |
+| "Registry missing" | Run `/mustard:sync-registry` |
 | "Grep/Glob blocked" | Normal - Claude uses grepai |
 | Build error | Claude shows errors, fix and continue |
 | Lost customizations | Check `.claude.backup.{timestamp}` |
-| Context not loading | Check `.claude/context/` folder exists |
+| Context not loading | Run `/mustard:sync-context` |

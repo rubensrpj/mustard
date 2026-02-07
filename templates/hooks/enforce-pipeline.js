@@ -1,13 +1,20 @@
 #!/usr/bin/env node
 /**
- * ENFORCEMENT L0+L2: Asks confirmation for code edits
+ * ENFORCEMENT: Pipeline validation
  *
- * Configuration files are automatically allowed.
- * Code files ask for confirmation (Claude checks memory MCP).
+ * Reminds about pipeline when Edit/Write is used on code files.
  *
- * @version 1.1.0
- * @see mustard/cli/templates/core/enforcement.md
+ * Exceptions:
+ * - .md, .json, .yaml/.yml, .txt, .env.example files
+ * - Files in .claude/, mustard/, spec/, node_modules/, bin/, obj/ directories
+ *
+ * @version 1.0.0
  */
+
+const path = require('path');
+
+const EXEMPT_EXTENSIONS = ['.md', '.json', '.yaml', '.yml', '.txt', '.env.example'];
+const EXEMPT_DIRS = ['.claude', 'mustard', 'spec', 'node_modules', 'bin', 'obj'];
 
 let input = '';
 process.stdin.setEncoding('utf8');
@@ -17,73 +24,38 @@ process.stdin.on('end', () => {
     const data = JSON.parse(input);
     const filePath = data.tool_input?.file_path || '';
 
-    // Configuration files - ALLOW automatically
-    if (isConfigFile(filePath)) {
+    // Skip exempt files
+    if (isExemptFile(filePath)) {
       process.exit(0);
     }
 
-    // Code file - ASK with helpful message
+    // Allow but remind about pipeline
     const response = {
       hookSpecificOutput: {
         hookEventName: "PreToolUse",
-        permissionDecision: "ask",
-        permissionDecisionReason: `⚠️ Pipeline Required for: ${filePath}
-
-Check pipeline: mcp__memory__search_nodes({ query: "pipeline phase" })
-
-If NO pipeline exists, invoke the appropriate skill FIRST:
-
-  Task Mode (lower token cost):
-  • New feature/refactor → /feature <name>
-  • Bug fix → /bugfix <error>
-
-  Agent Teams Mode (parallel, higher cost):
-  • Complex feature → /feature-team <name>
-  • Complex bug → /bugfix-team <error>
-
-The skill compiles contexts and creates the pipeline.`
+        permissionDecision: "allow",
+        permissionDecisionReason: "REMINDER: Ensure you're following the pipeline (Explore → Spec → Implement → Review) for code changes."
       }
     };
     console.log(JSON.stringify(response));
     process.exit(0);
+
   } catch (err) {
     console.error('Hook error:', err.message);
     process.exit(0);
   }
 });
 
-/**
- * Checks if the file is a configuration file (allowed without pipeline)
- * @param {string} filePath - File path
- * @returns {boolean}
- */
-function isConfigFile(filePath) {
-  const patterns = [
-    // Documentation and configuration
-    /\.md$/i,
-    /\.json$/i,
-    /\.yaml$/i,
-    /\.yml$/i,
-    /\.env/i,
-    /\.gitignore$/i,
-    /\.config\./i,
-    /\.editorconfig$/i,
+function isExemptFile(filePath) {
+  const ext = path.extname(filePath).toLowerCase();
+  if (EXEMPT_EXTENSIONS.includes(ext)) {
+    return true;
+  }
 
-    // Special folders (always allowed)
-    /\.claude[\/\\]/i,
-    /spec[\/\\]/i,
-    /mustard[\/\\]/i,
+  const normalized = filePath.replace(/\\/g, '/');
+  if (EXEMPT_DIRS.some(dir => normalized.includes('/' + dir + '/') || normalized.startsWith(dir + '/'))) {
+    return true;
+  }
 
-    // CI/CD files
-    /\.github[\/\\]/i,
-    /Dockerfile/i,
-    /docker-compose/i,
-
-    // Lock files (generated)
-    /package-lock\.json$/i,
-    /pnpm-lock\.yaml$/i,
-    /\.lock$/i
-  ];
-
-  return patterns.some(p => p.test(filePath));
+  return false;
 }

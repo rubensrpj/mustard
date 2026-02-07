@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-2.6.0-yellow?style=for-the-badge" alt="Version">
+  <img src="https://img.shields.io/badge/version-3.0.0-yellow?style=for-the-badge" alt="Version">
   <img src="https://img.shields.io/badge/node-%3E%3D18-green?style=for-the-badge&logo=node.js" alt="Node">
   <img src="https://img.shields.io/badge/license-MIT-blue?style=for-the-badge" alt="License">
 </p>
@@ -27,57 +27,279 @@
 
 Mustard generates a `.claude/` folder with prompts, commands, and rules for Claude Code:
 
-- **8 agnostic prompts** for `Task(general-purpose)` delegation
-- **Context per agent** - each agent loads its specific context folder
-- **Auto-compiled context** - agents verify git and compile context on-demand
-- **Pipeline commands** for features and bugfixes
-- **Enforcement hooks** (grepai, pipeline confirmation)
-- **Stack detection** and auto-generated CLAUDE.md
+- **6 specialist prompts** with explicit identity and workflow (`.core.md` files)
+- **Modular context** - `README.md` + `{agent}.core.md` per agent
+- **Auto-sync scripts** - git-aware context compilation with SHA256 caching
+- **Pipeline commands** for features and bugfixes (namespaced: `/mustard:*`)
+- **Enforcement hooks** (grepai, pipeline, registry validation)
+- **Monorepo support** - auto-detection of subprojects
 
-## What's New in v2.6.1
+## What's New in v3.0
 
-- **Subproject Commands Collection** (monorepo support):
-  - Automatically collects commands from `{subproject}/.claude/commands/`
-  - Maps subproject type by name (Backend → backend, FrontEnd → frontend)
-  - Compiles into `context/{type}/{subproject}-commands.md`
-  - Works with `mustard init`, `mustard update`, and `/compile-context`
+### Breaking Changes
 
-### Previous (v2.6)
+- **Namespaced commands**: All commands now use `mustard:` prefix
+  - `/feature` → `/mustard:feature`
+  - `/bugfix` → `/mustard:bugfix`
+  - `/commit` → `/mustard:commit`
+  - etc.
 
-- **Context Reset + Memory Persistence**: Optimize context window usage
-  - `/checkpoint` saves phase insights to memory MCP
-  - `/approve` auto-saves exploration checkpoint, suggests reset
-  - `/resume` loads from checkpoint with compact summary
-  - `/complete` extracts and saves permanent learnings
-- **Learnings accumulate**: Past gotchas available for future features
+### Removed Features
 
-### Previous (v2.5)
+- **Agent Teams** (`/feature-team`, `/bugfix-team`) - experimental feature discontinued
+- **Checkpoint** (`/checkpoint`) - replaced by Context Reset
+- **Compile Context** (`/compile-context`) - now automatic via hooks
 
-- **Agent Teams support** (experimental): True parallel execution for complex features
-- **Mandatory Pipeline Invocation**: Skills compile contexts before starting
-- **Simplified agent prompts**: Context loading moved to skill commands
+### New Architecture
+
+- **Modular context**: `patterns.md` → `README.md` + `{agent}.core.md`
+- **Explicit agent identity**: Each specialist has defined responsibilities and return format
+- **Auto-sync scripts**: `sync-detect.js`, `sync-compile.js`, `sync-registry.js`
+- **Simplified templates**: 90% reduction in template size (externalized to compiled context)
+- **Hook modernization**: `UserPromptSubmit` → `PreToolUse` with `Skill` matcher
+
+### New Features
+
+- **Backend operational commands**: `backend-run`, `backend-stop`, `backend-restart`, `backend-logs`
+- **Design Principles skill**: Jony Ive-level UI guidelines
+- **Entity Registry v3.1**: Includes `_patterns` and `_enums`
 
 ## Installation
 
-### Global Installation
+### Prerequisites
+
+- **Node.js** >= 18.0.0
+- **Package Manager**: npm, pnpm, yarn, or bun
+
+### Install Mustard
+
+#### Option 1: Global Installation
 
 ```bash
-# Using npm
+# npm
 npm install -g mustard-claude
 
-# Using pnpm
+# pnpm
 pnpm add -g mustard-claude
+
+# yarn
+yarn global add mustard-claude
+
+# bun
+bun add -g mustard-claude
 ```
 
-### Run Without Installing
+#### Option 2: Run Without Installing
 
 ```bash
-# Using npx
+# npx (npm)
 npx mustard-claude init
 
-# Using pnpx
+# pnpx (pnpm)
 pnpx mustard-claude init
+
+# yarn dlx
+yarn dlx mustard-claude init
+
+# bunx
+bunx mustard-claude init
 ```
+
+---
+
+## Optional Dependencies
+
+Mustard works without these tools, but they enhance functionality:
+
+| Tool | Purpose | Required |
+|------|---------|----------|
+| [Ollama](https://ollama.com) | LLM analysis + grepai embeddings | No |
+| [grepai](https://github.com/yoanbernabeu/grepai) | Semantic code search | No |
+| [Memory MCP](https://github.com/doobidoo/mcp-memory-service) | Pipeline persistence | No |
+
+### 1. Ollama Installation
+
+Ollama provides local LLM capabilities. Required if you want:
+
+- Personalized CLAUDE.md generation (`mustard init --ollama`)
+- grepai semantic embeddings
+
+#### macOS
+
+Download and install from: [ollama.com/download/Ollama.dmg](https://ollama.com/download/Ollama.dmg)
+
+#### Windows
+
+Download and install from: [ollama.com/download/OllamaSetup.exe](https://ollama.com/download/OllamaSetup.exe)
+
+#### Linux
+
+```bash
+curl -fsSL https://ollama.com/install.sh | sh
+```
+
+#### Docker
+
+**CPU-only:**
+
+```bash
+docker run -d -v ollama:/root/.ollama -p 11434:11434 --name ollama ollama/ollama
+```
+
+**With NVIDIA GPU:**
+
+```bash
+# Install NVIDIA Container Toolkit first
+sudo apt-get install -y nvidia-container-toolkit
+sudo nvidia-ctk runtime configure --runtime=docker
+sudo systemctl restart docker
+
+# Run with GPU support
+docker run -d --gpus=all -v ollama:/root/.ollama -p 11434:11434 --name ollama ollama/ollama
+```
+
+**With AMD GPU:**
+
+```bash
+docker run -d --device /dev/kfd --device /dev/dri -v ollama:/root/.ollama -p 11434:11434 --name ollama ollama/ollama:rocm
+```
+
+#### Pull Required Models
+
+```bash
+# For Mustard LLM analysis
+ollama pull llama3.2
+
+# For grepai embeddings (required if using grepai)
+ollama pull nomic-embed-text
+```
+
+#### Verify Ollama Installation
+
+```bash
+ollama list
+# Should show downloaded models
+```
+
+---
+
+### 2. grepai Installation
+
+grepai provides semantic code search. **Requires Ollama** for embeddings.
+
+#### macOS (Homebrew)
+
+```bash
+brew install yoanbernabeu/tap/grepai
+```
+
+#### Linux/macOS (Script)
+
+```bash
+curl -sSL https://raw.githubusercontent.com/yoanbernabeu/grepai/main/install.sh | sh
+```
+
+#### Windows (PowerShell)
+
+```powershell
+irm https://raw.githubusercontent.com/yoanbernabeu/grepai/main/install.ps1 | iex
+```
+
+#### Setup grepai in Your Project
+
+```bash
+cd your-project
+
+# Initialize (creates .grepai folder)
+grepai init
+
+# Start the indexing daemon (keeps index up-to-date)
+grepai watch
+
+# Test semantic search
+grepai search "authentication flow"
+
+# Trace function calls
+grepai trace callers "Login"
+```
+
+---
+
+### 3. Memory MCP Installation
+
+Memory MCP provides persistent memory for Claude across sessions.
+
+#### Install via pip
+
+```bash
+pip install mcp-memory-service
+```
+
+#### Quick Setup (Claude Desktop)
+
+```bash
+python -m mcp_memory_service.scripts.installation.install --quick
+```
+
+#### Manual Configuration
+
+Add to Claude Desktop config:
+
+- **macOS:** `~/Library/Application Support/Claude/claude_desktop_config.json`
+- **Windows:** `%APPDATA%\Claude\claude_desktop_config.json`
+- **Linux:** `~/.config/Claude/claude_desktop_config.json`
+
+```json
+{
+  "mcpServers": {
+    "memory": {
+      "command": "memory",
+      "args": ["server"]
+    }
+  }
+}
+```
+
+Restart Claude Desktop after configuration.
+
+---
+
+## Verify Installation
+
+After installing dependencies, verify your setup:
+
+```bash
+# Check Node.js version
+node --version
+
+# Check Ollama (optional)
+ollama list
+
+# Check grepai (optional)
+grepai --version
+
+# Initialize Mustard
+cd your-project
+mustard init --ollama  # Use --ollama flag to enable LLM analysis
+```
+
+## System Requirements
+
+| Component | Minimum | Recommended |
+|-----------|---------|-------------|
+| RAM | 8 GB | 16 GB |
+| Storage | 10 GB | 20 GB |
+| Node.js | 18.0.0 | 20+ |
+
+### RAM for Ollama Models
+
+| Model Size | RAM Required |
+|------------|--------------|
+| 7B params | 8 GB |
+| 13B params | 16 GB |
+| 33B params | 32 GB |
+
+---
 
 ## Quick Start
 
@@ -90,70 +312,60 @@ The CLI will:
 
 1. Detect stacks (React, .NET, Python, etc.)
 2. Analyze code with Ollama (optional)
-3. Generate `.claude/` structure with context folders
+3. Generate `.claude/` structure with modular context
 
-## Context per Agent
+## Context Architecture
 
-Prompts are **agnostic** - they don't contain project-specific code. Instead, each agent loads context from dedicated folders:
+Each agent has **modular context** with explicit identity:
 
 ```text
 .claude/context/
-├── shared/       # All agents load this
-├── backend/      # Only Backend Specialist loads
-├── frontend/     # Only Frontend Specialist loads
-├── database/     # Only Database Specialist loads
-├── bugfix/       # Only Bugfix Specialist loads
-├── review/       # Only Review Specialist loads
-└── orchestrator/ # Only Orchestrator loads
+├── shared/              # All agents load this
+├── backend/
+│   ├── README.md        # Extensibility guide
+│   └── backend.core.md  # Identity + Responsibilities + Workflow
+├── frontend/
+│   ├── README.md
+│   └── frontend.core.md
+├── database/
+│   ├── README.md
+│   └── database.core.md
+├── bugfix/
+│   ├── README.md
+│   └── bugfix.core.md
+├── review/
+│   ├── README.md
+│   └── review.core.md
+└── orchestrator/
+    ├── README.md
+    └── orchestrator.core.md
 ```
 
-**How it works (v2.6.1):**
+### `.core.md` Structure
 
-1. User invokes `/feature` or `/bugfix` skill
-2. **Subproject commands are collected** (if monorepo)
-3. Skill compiles contexts for all agents (git-based caching)
-4. Agent is called with compiled context ready
-5. Compiled context saved to `prompts/{agent}.context.md`
+Each specialist has explicit sections:
 
-### Subproject Commands (Monorepo)
+| Section | Purpose |
+|---------|---------|
+| **Identity** | "You are the Backend Specialist" |
+| **Responsibilities** | What the agent implements/doesn't implement |
+| **Prerequisites** | Validations before accepting work |
+| **Checklist** | Step-by-step workflow |
+| **Return Format** | Standardized response format |
+| **Naming Conventions** | PascalCase, snake_case, kebab-case rules |
+| **Rules** | Explicit DO/DO NOT |
 
-For monorepos with subprojects that have their own `.claude/commands/`:
+### How Context Works
 
-```text
-MyProject/
-├── .claude/                          # Root (generated by mustard)
-│   └── context/
-│       ├── backend/
-│       │   └── myproject-api-commands.md   ← Auto-collected
-│       └── frontend/
-│           └── myproject-web-commands.md   ← Auto-collected
-│
-├── MyProject.API/
-│   └── .claude/commands/             # Subproject commands
-│       └── deploy.md
-│
-└── MyProject.Web/
-    └── .claude/commands/
-        └── preview.md
-```
-
-Subproject type is detected by name keywords:
-
-- **backend**: `backend`, `api`, `server`, `service`
-- **frontend**: `frontend`, `web`, `app`, `client`, `ui`
-- **database**: `database`, `db`, `data`, `migrations`, `prisma`, `drizzle`
-- **shared**: `shared`, `common`, `lib`, `utils` (fallback)
-
-**Benefits:**
-
-- Prompts work for any stack
-- Easy to customize per project
-- Clear separation: agent logic vs. project patterns
-- Automatic recompilation when context changes
+1. User invokes `/mustard:feature` or `/mustard:bugfix`
+2. `sync-detect.js` discovers subprojects (monorepo)
+3. `sync-compile.js` compiles contexts with SHA256 caching
+4. Agent receives compiled `{agent}.context.md`
+5. Skip recompilation if content hash unchanged
 
 ## Commands
 
-### `mustard init`
+### CLI Commands
 
 ```bash
 mustard init [options]
@@ -166,10 +378,6 @@ Options:
   -v, --verbose    Detailed output
 ```
 
-### `mustard update`
-
-Updates core files while preserving customizations.
-
 ```bash
 mustard update [options]
 
@@ -178,188 +386,178 @@ Options:
   --include-claude-md  Also update CLAUDE.md
 ```
 
-| Updated | Preserved |
-|---------|-----------|
-| `commands/mustard/*.md` | `CLAUDE.md` |
-| `hooks/*.js` | `prompts/*.md` |
-| `core/*.md` | `context/**/*.md` (user files) |
-| `scripts/*.js` | `docs/*` |
+### Pipeline Commands
+
+| Command | Description |
+|---------|-------------|
+| `/mustard:feature <name>` | Start feature pipeline |
+| `/mustard:bugfix <error>` | Start bugfix pipeline |
+| `/mustard:approve` | Approve spec |
+| `/mustard:complete` | Finalize pipeline |
+| `/mustard:resume` | Resume active pipeline |
+
+### Task Commands (L0 Delegation)
+
+| Command | Description |
+|---------|-------------|
+| `/mustard:task-analyze` | Code analysis via Task(Explore) |
+| `/mustard:task-review` | Code review via Task(general-purpose) |
+| `/mustard:task-refactor` | Refactoring via Task(Plan) → Task(general-purpose) |
+| `/mustard:task-docs` | Documentation via Task(general-purpose) |
+
+### Git Commands
+
+| Command | Description |
+|---------|-------------|
+| `/mustard:commit` | Simple commit |
+| `/mustard:commit-push` | Commit and push |
+| `/mustard:merge-main` | Merge to main |
+
+### Sync Commands
+
+| Command | Description |
+|---------|-------------|
+| `/mustard:sync-registry` | Update entity registry |
+| `/mustard:sync-context` | Compile agent contexts |
+| `/mustard:validate` | Build + type-check |
+| `/mustard:status` | Project status |
 
 ## Structure
 
 ```text
 .claude/
-├── CLAUDE.md               # Project instructions
-├── prompts/                # 8 agnostic agent prompts
+├── CLAUDE.md               # Minimal orchestrator rules
+├── prompts/                # Stub prompts (reference .core.md)
 │   ├── orchestrator.md
-│   ├── orchestrator.context.md  # Auto-compiled context
 │   ├── backend.md
-│   ├── backend.context.md       # Auto-compiled context
 │   ├── frontend.md
 │   ├── database.md
 │   ├── bugfix.md
-│   ├── review.md
-│   ├── report.md
-│   └── naming.md
-├── context/                # Context source files (editable)
-│   ├── shared/             # Common (all agents)
-│   │   └── conventions.md
-│   ├── backend/            # Backend-specific
-│   │   └── patterns.md
-│   ├── frontend/           # Frontend-specific
-│   │   └── patterns.md
-│   └── database/           # Database-specific
-│       └── patterns.md
+│   └── review.md
+├── context/                # Modular context (editable)
+│   ├── shared/
+│   ├── backend/
+│   │   ├── README.md
+│   │   └── backend.core.md
+│   ├── frontend/
+│   ├── database/
+│   ├── bugfix/
+│   ├── review/
+│   └── orchestrator/
 ├── commands/mustard/       # Pipeline commands
-├── core/                   # Enforcement, pipeline rules
+├── scripts/                # Sync scripts
+│   ├── sync-detect.js
+│   ├── sync-compile.js
+│   └── sync-registry.js
+├── core/                   # Enforcement rules
 ├── hooks/                  # JavaScript hooks
-└── entity-registry.json    # Entity mappings
+└── entity-registry.json    # Entity mappings v3.1
 ```
 
-## Prompts
+## Prompts (Agents)
 
 Claude Code only accepts 4 `subagent_type` values: `Explore`, `Plan`, `general-purpose`, `Bash`.
 
 Mustard "agents" are prompts loaded into `Task(general-purpose)`:
 
-| Prompt | Model | Context Folders |
-|--------|-------|-----------------|
-| team-lead | opus | shared + team-lead (Agent Teams) |
-| orchestrator | opus | shared + orchestrator |
-| backend | opus | shared + backend |
-| frontend | opus | shared + frontend |
-| database | opus | shared + database |
-| bugfix | opus | shared + bugfix |
-| review | opus | shared + review |
-| report | sonnet | (uses git log) |
-| naming | - | Naming conventions reference |
+| Prompt | Model | Context |
+|--------|-------|---------|
+| orchestrator | opus | orchestrator.core.md |
+| backend | opus | backend.core.md |
+| frontend | opus | frontend.core.md |
+| database | opus | database.core.md |
+| bugfix | opus | bugfix.core.md |
+| review | opus | review.core.md |
 
-## Pipeline Commands (Task Mode)
+## Sync Scripts
 
-| Command | Description |
-|---------|-------------|
-| `/feature` | Start feature pipeline |
-| `/bugfix` | Start bugfix pipeline |
-| `/approve` | Approve spec (auto-checkpoint + suggest reset) |
-| `/complete` | Finalize (save learnings) |
-| `/resume` | Resume pipeline (loads checkpoint + learnings) |
-| `/checkpoint` | Save phase insights to memory |
+### sync-detect.js
 
-### Agent Teams Mode (Experimental)
+Auto-discovers subprojects in monorepos:
 
-| Command | Description |
-|---------|-------------|
-| `/feature-team` | Feature pipeline with parallel teammates |
-| `/bugfix-team` | Bugfix pipeline with competing hypotheses |
+```javascript
+// Detection patterns
+"backend": [/.NET/, /dotnet/, /FastEndpoints/]
+"frontend": [/React/, /Next\.js/, /Vue/]
+"database": [/Drizzle/, /Prisma/, /PostgreSQL/]
+```
 
-Agent Teams require `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` in `.claude/settings.json`.
+### sync-compile.js
 
-### Task Commands (L0 Universal Delegation)
+Compiles contexts with git-aware caching:
 
-| Command | Description |
-|---------|-------------|
-| `/task-analyze` | Code analysis via Task(Explore) |
-| `/task-review` | Code review via Task(general-purpose) |
-| `/task-refactor` | Refactoring via Task(Plan) -> Task(general-purpose) |
-| `/task-docs` | Documentation via Task(general-purpose) |
+1. Copies subproject commands to `context/{agent}/cmd-{file}`
+2. Concatenates `.md` files → `{agent}.context.md`
+3. Computes SHA256 hash
+4. Skips if hash unchanged
 
-### Other Commands
+### sync-registry.js
 
-| Command | Description |
-|---------|-------------|
-| `/validate` | Build + type-check |
-| `/status` | Project status |
-| `/commit` | Simple commit |
-| `/commit-push` | Commit and push |
-| `/sync-registry` | Update entity registry |
+Generates `entity-registry.json` v3.1:
+
+- Scans Drizzle schemas (`pgTable`, `pgEnum`)
+- Scans .NET entities (`DbSet`, `class T`)
+- Detects relationships and patterns
+- Outputs `_patterns`, `_enums`, entity refs/subs
 
 ## Enforcement Hooks
 
-| Hook | Trigger | Action |
-| ---- | ------- | ------ |
-| `enforce-registry.js` | Skill (feature/bugfix) | Blocks if entity-registry.json missing or outdated |
-| `enforce-context.js` | Skill (feature/bugfix) | Blocks if compiled contexts are missing or outdated |
-| `enforce-grepai.js` | Grep, Glob | Suggests grepai for semantic search |
-| `enforce-pipeline.js` | Edit, Write | **Hybrid mode**: Blocks source code, allows configs |
+| Hook | Matcher | Behavior |
+|------|---------|----------|
+| `enforce-registry.js` | `Skill` | **BLOCKS** if registry missing |
+| `enforce-context.js` | `Skill` | **WARNS** (advisory) |
+| `enforce-grepai.js` | `Grep/Glob` | **BLOCKS** search without path |
+| `enforce-pipeline.js` | `Edit/Write` | **REMINDS** about pipeline |
 
 ### Pre-Pipeline Validation
 
-When `/feature` or `/bugfix` is invoked, two hooks run automatically:
-
-1. **Entity Registry Validation** (`enforce-registry.js`)
-   - Checks `.claude/entity-registry.json` exists
-   - Validates version >= 3.x
-   - Ensures entities and patterns are defined
-   - If invalid: blocks with "Run /sync-registry first"
-
-2. **Context Compilation Validation** (`enforce-context.js`)
-   - Checks all required agent contexts are compiled
-   - Validates contexts match current git commit
-   - If outdated: blocks with "Run /sync-context first"
-
-### Auto Registry Update
-
-The `/complete` command automatically detects if entity files were modified during the pipeline and updates the registry:
-
 ```text
-/complete
-    ├── Validates build
-    ├── Detects entity file changes (models/, schemas/, etc.)
-    │   └── If changed: runs /sync-registry automatically
-    ├── Extracts learnings from checkpoints
-    ├── Saves Learning entity (permanent)
-    ├── Records completion
-    └── Cleans pipeline + checkpoints
+User: /mustard:feature add-login
+         │
+         ▼
+    enforce-registry.js
+    - Registry exists? (BLOCK if not)
+    - Version >= 3.x? (BLOCK if not)
+         │
+         ▼
+    enforce-context.js
+    - Contexts compiled? (WARN if not)
+         │
+         ▼
+    Pipeline starts...
 ```
 
-## Context Reset (v2.6)
+## Migration from v2.x
 
-Optimizes context window by saving insights to memory and clearing conversation at phase boundaries:
+1. **Update command invocations**:
+   ```bash
+   # Before
+   /feature add-login
 
-```text
-/feature → EXPLORE → SPEC → /approve
-                              │
-                    ┌─────────┴─────────┐
-                    │ AUTO: checkpoint  │
-                    │ SUGGEST: reset    │
-                    └─────────┬─────────┘
-                              │
-                    User: "reset"
-                              │
-                    [Context cleared]
-                              │
-                    /resume (loads checkpoint)
-                              │
-                    IMPLEMENT (clean context)
-                              │
-                    /complete (saves learnings)
-```
+   # After
+   /mustard:feature add-login
+   ```
 
-### Memory MCP Entities
+2. **Regenerate registry**:
+   ```bash
+   /mustard:sync-registry --force
+   ```
 
-| Entity | Purpose | Persistence |
-| ------ | ------- | ----------- |
-| `Checkpoint:{pipeline}:{phase}:{ts}` | Phase insights (files, patterns, decisions) | Temporary |
-| `Learning:{name}:{ts}` | Patterns, decisions, gotchas | Permanent |
+3. **Recompile contexts**:
+   ```bash
+   /mustard:sync-context
+   ```
 
-### Benefits
-
-- **Clean context**: Reset after approval removes exploration noise
-- **Insights preserved**: Checkpoints save discoveries to memory
-- **Learnings accumulate**: Past gotchas available for future features
-- **Easy resume**: `/resume` loads compact summary from checkpoint
-
-### L0 Universal Delegation
-
-All code activities MUST be delegated via Task tool (separate context window).
-The parent context only coordinates and presents results.
+4. **Note removed features**:
+   - Agent Teams (`/feature-team`, `/bugfix-team`) - removed
+   - Checkpoint (`/checkpoint`) - use Context Reset instead
 
 ## Supported Stacks
 
 | Language | Frameworks |
 |----------|------------|
 | TypeScript/JS | React, Next.js, Node, Express |
-| C# | .NET, ASP.NET Core |
+| C# | .NET, ASP.NET Core, FastEndpoints |
 | Python | FastAPI, Django, Flask |
 | Java | Spring Boot |
 | Go | Gin, Echo |
@@ -372,7 +570,7 @@ The parent context only coordinates and presents results.
 |------|---------|
 | **Ollama** | LLM-generated CLAUDE.md |
 | **grepai** | Semantic code search |
-| **memory MCP** | Pipeline persistence |
+| **Memory MCP** | Pipeline persistence |
 
 Without these, the CLI uses default templates.
 

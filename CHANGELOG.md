@@ -1,5 +1,58 @@
 # Changelog
 
+## [3.0.0] - 2026-02-07
+
+### Breaking Changes
+
+- **Namespaced commands**: All commands now use `mustard:` prefix
+  - `/feature` → `/mustard:feature`
+  - `/bugfix` → `/mustard:bugfix`
+  - `/commit` → `/mustard:commit`
+  - `/validate` → `/mustard:validate`
+  - `/task-*` → `/mustard:task-*`
+  - Backward compatibility: hooks accept both variants
+
+### Removed
+
+- **Agent Teams** (`/feature-team`, `/bugfix-team`) - experimental feature discontinued
+- **Checkpoint** (`/checkpoint`) - replaced by Context Reset workflow
+- **Compile Context** (`/compile-context`) - now automatic via hooks
+- **Team Lead prompt** (`team-lead.md`) and context folder
+- **Naming prompt** (`naming.md`) - conventions moved to `.core.md` files
+- **Report prompt** (`report.md`) - use daily/weekly report commands instead
+
+### Changed
+
+- **Context architecture**: `patterns.md` → `README.md` + `{agent}.core.md`
+  - Each agent now has explicit identity, responsibilities, and return format
+  - README.md provides extensibility guide
+  - `.core.md` files contain role-based instructions
+- **Hook triggers**: `UserPromptSubmit` → `PreToolUse` with `Skill` matcher
+- **Template size**: 90% reduction (externalized to compiled context)
+- **Entity Registry**: Updated to v3.1 format with `_patterns` and `_enums`
+
+### Added
+
+- **Sync scripts**:
+  - `sync-detect.js` - auto-discovers subprojects in monorepos
+  - `sync-compile.js` - compiles contexts with SHA256 caching
+  - `sync-registry.js` - generates entity-registry.json from Drizzle/.NET
+- **Backend operational commands**:
+  - `backend-run.md` - start backend in background
+  - `backend-stop.md` - stop backend
+  - `backend-restart.md` - restart backend
+  - `backend-logs.md` - filtered log output
+- **Design Principles skill**: UI guidelines with 4px grid, typography, depth strategy
+- **New context structure**:
+  - `backend.core.md` - Backend Specialist identity
+  - `frontend.core.md` - Frontend Specialist identity
+  - `database.core.md` - Database Specialist identity
+  - `bugfix.core.md` - Bugfix Specialist identity
+  - `review.core.md` - Review Specialist identity
+  - `orchestrator.core.md` - Orchestrator with detailed pipeline phases
+
+---
+
 ## [2.6.1] - 2026-02-06
 
 ### Added

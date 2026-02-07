@@ -1,70 +1,55 @@
 # /report-daily - Daily Report
 
-> Generates daily report of commits and changes.
+## Trigger
 
-## Usage
+`/report-daily`
 
+## Description
+
+Generates a daily progress report.
+
+## Data Collection
+
+```bash
+git log --oneline --since="00:00" --until="23:59"
+git diff --stat HEAD~10
 ```
-/report-daily
-/report-daily --date=2026-02-04
-```
 
-## What It Does
-
-1. Collects commits from last 24h (or specified date)
-2. Groups by author and subproject
-3. Lists modified files
-4. Calculates statistics
-
-## Expected Output
+## Output Template
 
 ```markdown
-# Daily Report - 2026-02-05
+# Daily Report: {YYYY-MM-DD}
 
-## Commits (12)
+## Summary
+{Paragraph summarizing the day}
 
-### Backend (5 commits)
-- bf48162 - refactor: implement SOLID Interface Segregation
-- 5ccedc8 - refactor: enforce L8 rule in services
-- ...
+## Commits ({total})
 
-### Frontend (4 commits)
-- ...
+### Feature
+- {hash} {message}
 
-### Database (3 commits)
-- ...
+### Bugfix
+- {hash} {message}
 
-## Statistics
+### Chore
+- {hash} {message}
 
-| Metric | Value |
-|--------|-------|
-| Total commits | 12 |
-| Modified files | 47 |
-| Lines added | +892 |
-| Lines removed | -234 |
+## Modified Files
+| Project | Files | Lines +/- |
+| ------- | ----- | --------- |
+| Backend | {n} | +{a}/-{r} |
+| Frontend | {n} | +{a}/-{r} |
+| Database | {n} | +{a}/-{r} |
 
-## By Author
+## Highlights
+- {Highlight 1}
 
-| Author | Commits |
-|--------|---------|
-| user@example.com | 8 |
-| claude | 4 |
-
-## Most Modified Files
-
-1. ContractService.cs (5 commits)
-2. enforcement.md (3 commits)
-3. ...
+## Pending
+- {If any}
 ```
 
-## Options
+## Rules
 
-```
-/report-daily --date=YYYY-MM-DD    # Specific date
-/report-daily --json               # JSON output
-/report-daily --save               # Save to spec/reports/
-```
-
-## See Also
-
-- [report-weekly.md](./report-weekly.md) - Weekly report
+- Use real git data only — do not invent commits
+- Categorize commits by type (feat, fix, chore)
+- Save to `reports/daily/{date}.md`

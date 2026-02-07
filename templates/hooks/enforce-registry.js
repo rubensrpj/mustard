@@ -1,14 +1,13 @@
 #!/usr/bin/env node
 /**
- * ENFORCEMENT: Entity Registry validation (UserPromptSubmit)
+ * ENFORCEMENT: Entity Registry validation
  *
- * Blocks /feature, /bugfix, /feature-team, /bugfix-team if entity-registry.json:
+ * Blocks /feature and /bugfix if entity-registry.json:
  * - Does not exist
  * - Is empty (no entities)
  * - Has no _patterns defined
  *
- * @version 2.0.0
- * @see mustard/cli/templates/core/entity-registry-spec.md
+ * @version 1.0.0
  */
 
 const fs = require('fs');
@@ -20,11 +19,17 @@ process.stdin.on('data', chunk => input += chunk);
 process.stdin.on('end', () => {
   try {
     const data = JSON.parse(input);
-    const userMessage = data.user_message || '';
+    const toolName = data.tool_name || '';
 
-    // Check if user is invoking a pipeline skill
-    const pipelinePattern = /^\s*\/(feature|bugfix|feature-team|bugfix-team)(\s|$)/i;
-    if (!pipelinePattern.test(userMessage)) {
+    // Only check on Skill invocations for feature/bugfix
+    if (toolName !== 'Skill') {
+      process.exit(0);
+    }
+
+    const skillName = data.tool_input?.skill || '';
+
+    // Only enforce for feature and bugfix skills
+    if (!['mustard:feature', 'mustard:bugfix', 'feature', 'bugfix'].includes(skillName)) {
       process.exit(0);
     }
 
@@ -54,29 +59,21 @@ process.stdin.on('end', () => {
   }
 });
 
-/**
- * Find entity-registry.json in .claude folder
- */
 function findRegistry() {
   const cwd = process.cwd();
   const registryPath = path.join(cwd, '.claude', 'entity-registry.json');
-
   if (fs.existsSync(registryPath)) {
     return registryPath;
   }
-
   return null;
 }
 
-/**
- * Validate registry has required content
- */
 function validateRegistry(registry) {
   // Check version
   if (!registry._meta?.version?.startsWith('3.')) {
     return {
       valid: false,
-      message: `Registry version ${registry._meta?.version || 'unknown'} is outdated. Run /sync-registry to update to v3.1.`
+      message: 'Registry version ' + (registry._meta?.version || 'unknown') + ' is outdated. Run /sync-registry to update to v3.1.'
     };
   }
 
@@ -89,35 +86,23 @@ function validateRegistry(registry) {
     };
   }
 
-  // Check _patterns is defined (helps with finding reference entities)
+  // Check _patterns is defined
   if (!registry._patterns || Object.keys(registry._patterns).length === 0) {
     return {
       valid: false,
-      message: `Registry has ${entities.length} entities but no _patterns defined. Run /sync-registry to add reference patterns.`
+      message: 'Registry has ' + entities.length + ' entities but no _patterns defined. Run /sync-registry to add reference patterns.'
     };
   }
 
   return { valid: true };
 }
 
-/**
- * Block with helpful message
- */
 function blockWithMessage(reason) {
   const response = {
     hookSpecificOutput: {
-      hookEventName: "UserPromptSubmit",
-      decision: "block",
-      reason: `Entity Registry Required
-
-${reason}
-
-The entity registry helps save tokens by:
-- Listing all entities and their relationships
-- Providing reference entities for each pattern type
-- Cataloging enum values
-
-Run /sync-registry to update the registry, then retry your command.`
+      hookEventName: "PreToolUse",
+      permissionDecision: "block",
+      permissionDecisionReason: 'Entity Registry Required\n\n' + reason + '\n\nRun /sync-registry to update the registry, then retry your command.'
     }
   };
   console.log(JSON.stringify(response));
