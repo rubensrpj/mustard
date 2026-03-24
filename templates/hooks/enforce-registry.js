@@ -54,8 +54,8 @@ process.stdin.on('end', () => {
     process.exit(0);
 
   } catch (err) {
-    console.error('Hook error:', err.message);
-    process.exit(0); // Don't block on hook errors
+    process.stderr.write(`[enforce-registry] Parse error: ${err.message}\n`);
+    process.exit(0);
   }
 });
 

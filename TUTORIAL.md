@@ -1,4 +1,4 @@
-# Tutorial: Mustard v3.0
+# Tutorial: Mustard
 
 Practical guide for using Mustard with Claude Code.
 
@@ -16,75 +16,75 @@ npm install -g mustard-claude
 mustard init
 ```
 
+Then open Claude Code and run `/scan` to analyze your codebase.
+
 ## Pipeline Flow
 
 ```text
 You: "Add email field to Person"
          │
          ▼
-Claude: "Detected change. Start pipeline?" → yes
+Claude: Detects change → starts pipeline
          │
          ▼
-EXPLORE: Claude analyzes with grepai
+ANALYZE: Reads registry, determines layers
          │
          ▼
-SPEC: "Will modify X, Y, Z. Approve?"
+PLAN: Creates spec with tasks per agent
          │
          ▼
-You: /mustard:approve
+You: /approve
          │
          ▼
-IMPLEMENT: Database → Backend → Frontend
+EXECUTE: Dispatches agents (DB → Backend → Frontend)
          │
          ▼
-VALIDATE: Build + type-check
+REVIEW: Mandatory quality review
          │
          ▼
-You: /mustard:complete
+CLOSE: Sync registry, archive spec
 ```
 
 ## Commands
 
-All commands now use the `mustard:` prefix:
-
 | Command | Description |
 |---------|-------------|
-| `/mustard:feature <name>` | Start feature |
-| `/mustard:bugfix <error>` | Start bugfix |
-| `/mustard:approve` | Approve spec |
-| `/mustard:complete` | Finalize |
-| `/mustard:resume` | Resume in new session |
-| `/mustard:validate` | Build + type-check |
-| `/mustard:status` | Project status |
+| `/scan` | Analyze codebase (run first!) |
+| `/feature <name>` | Start feature pipeline |
+| `/bugfix <error>` | Start bugfix pipeline |
+| `/approve` | Approve spec for implementation |
+| `/resume` | Resume in new session |
+| `/complete` | Finalize pipeline |
+| `/git <action>` | commit, push, merge, deploy |
+| `/maint <action>` | deps, validate, sync |
+| `/task <action> <scope>` | Delegated analysis/review |
+| `/knowledge <action>` | Notes, audit, reports |
+| `/skill <action>` | Manage skills |
+| `/status` | Project status |
 
 ## Example: Adding a Field
 
 ```text
 You: "Add email field to Person"
 
-Claude: "Detected code change. Start pipeline?"
+Claude: [Reads entity-registry, determines layers]
+
+        "## Spec: add-email-person
+        Scope: light (2 files)
+
+        ### Backend Agent
+        - [ ] Add Email to PersonDto
+        - [ ] Build check
+
+        Approve and implement now?"
 
 You: "yes"
 
-Claude: [Explores with grepai]
+Claude: [Dispatches agent, implements, validates]
 
-        "## Spec: add-email-person
+        "Done. Build passed."
 
-        Files:
-        - schema/person.ts
-        - backend/Person/...
-        - frontend/person/...
-
-        Approve?"
-
-You: /mustard:approve
-
-Claude: [Implements all layers]
-        [Runs build]
-
-        "Done. Finalize?"
-
-You: /mustard:complete
+You: /complete
 ```
 
 ## Example: Bug Fix
@@ -92,154 +92,99 @@ You: /mustard:complete
 ```text
 You: "Error: NullReferenceException saving contract"
 
-Claude: "Detected bug. Start pipeline?"
+Claude: [Dispatches Explore agent to diagnose]
 
-You: "yes"
+        "Root cause: Partner validation in ContractService.cs:145
+         doesn't check null. Fast path — fixing directly."
 
-Claude: [Finds cause in ContractService.cs:145]
+        [Fixes, validates build]
 
-        "Cause: Partner validation doesn't check null
-        Fix: Add null check
+        "Fixed. Build passed."
 
-        Approve?"
-
-You: /mustard:approve
-
-Claude: [Fixes, validates]
-        "Done. Finalize?"
-
-You: /mustard:complete
+You: /complete
 ```
 
-## Analysis vs Implementation
+## Light vs Full Scope
 
-Claude auto-detects intent:
-
-- **Questions** → No pipeline: "How does ContractService work?"
-- **Changes** → Pipeline: "Add CPF validation"
+| Signal | Scope | Flow |
+|--------|-------|------|
+| 1-2 layers, ≤5 files | **Light** | ANALYZE → EXECUTE → CLOSE (one session) |
+| 3+ layers, new entity | **Full** | ANALYZE → PLAN → /approve → new session → /resume → CLOSE |
 
 ## Resuming
 
-If you close Claude:
+If you close Claude mid-pipeline:
 
 ```text
-You: /mustard:resume
+You: /resume
 
-Claude: "Active: add-email-person
-        Phase: implement
-        ✅ Database
-        ⬜ Backend (pending)
-        ⬜ Frontend
+Claude: "Pipeline: add-email-person
+        Scope:    light
+        Progress: 1/3 tasks
+        Next:     Backend agent
 
         Continue?"
 ```
 
-## Context Architecture (v3.0)
+## `/scan` — The Most Important Command
 
-Each agent has modular context with explicit identity:
+Run `/scan` after `mustard init`. It:
 
-```text
-.claude/context/
-├── shared/              # All agents load this
-├── backend/
-│   ├── README.md        # How to extend
-│   └── backend.core.md  # Identity + Workflow
-├── frontend/
-│   ├── README.md
-│   └── frontend.core.md
-└── ...
-```
+1. Detects subprojects and roles (api, ui, mobile, library)
+2. Analyzes patterns, generates guards and recipes
+3. Creates per-subproject agents and skills
+4. Updates `pipeline-config.md` with detected agents
 
-### .core.md Files
+After `/scan`, all pipeline commands have full context.
 
-Each specialist has explicit sections:
+## Customizing
 
-- **Identity**: "You are the Backend Specialist"
-- **Responsibilities**: What to implement/not implement
-- **Checklist**: Step-by-step workflow
-- **Return Format**: Standardized response
-- **Naming Conventions**: PascalCase, snake_case, kebab-case
-- **Rules**: DO/DO NOT
-
-## Customizing Context
-
-Add project-specific patterns to context folders:
+### Notes (persistent, not overwritten by /scan)
 
 ```text
-.claude/context/
-├── shared/           # All agents see this
-│   └── my-patterns.md
-├── backend/          # Backend Specialist sees this + shared
-│   ├── backend.core.md  # Don't edit (managed by Mustard)
-│   └── api-patterns.md  # Add your patterns here
-├── frontend/         # Frontend Specialist sees this + shared
-│   └── component-patterns.md
-└── database/         # Database Specialist sees this + shared
-    └── schema-patterns.md
+/knowledge notes my-api
 ```
 
-When you edit these files, agents will automatically recompile on next run.
+Add project observations that agents receive during pipelines.
 
-## Sync Scripts
+### Skills (generated by /scan, editable)
 
-Mustard v3.0 includes auto-sync scripts:
+```text
+/skill list              — see what's installed
+/skill create my-pattern — create a new skill
+```
 
-| Script | Purpose |
-|--------|---------|
-| `sync-detect.js` | Discovers subprojects in monorepos |
-| `sync-compile.js` | Compiles contexts with SHA256 caching |
-| `sync-registry.js` | Generates entity-registry.json |
+### Guards (in {subproject}/CLAUDE.md)
 
-These run automatically when you invoke pipeline commands.
+The `/scan` generates guards. Edit `{subproject}/CLAUDE.md` to add custom rules.
 
 ## Enforcement Hooks
 
-Applied automatically:
+Applied automatically via `settings.json`:
 
-| Hook | Effect |
-|------|--------|
-| `enforce-registry.js` | Blocks if entity registry missing |
-| `enforce-context.js` | Warns if contexts not compiled |
-| `enforce-grepai.js` | Blocks Grep/Glob without path |
-| `enforce-pipeline.js` | Reminds about pipeline for edits |
-
-## Migration from v2.x
-
-1. **Update command invocations**:
-
-   ```bash
-   # Before
-   /feature add-login
-
-   # After
-   /mustard:feature add-login
-   ```
-
-2. **Regenerate registry**:
-
-   ```bash
-   /mustard:sync-registry --force
-   ```
-
-3. **Note removed features**:
-   - Agent Teams (`/feature-team`, `/bugfix-team`) - removed
-   - Checkpoint (`/checkpoint`) - use Context Reset instead
+| Hook | Trigger | Effect |
+|------|---------|--------|
+| `bash-safety.js` | Bash commands | Blocks dangerous commands (rm -rf, force push) |
+| `file-guard.js` | Read/Write/Edit | Blocks sensitive files (.pem, .git/config) |
+| `enforce-registry.js` | Pipeline skills | Blocks if entity-registry.json missing |
+| `guard-verify.js` | Write/Edit | Validates architectural rules |
+| `auto-format.js` | Write/Edit | Auto-formats after changes |
+| `subagent-tracker.js` | Task/Subagent | Tracks agent lifecycle |
 
 ## Tips
 
-1. **Just describe** - No need to type `/mustard:feature`, Claude detects intent
-2. **Review the spec** - Read before `/mustard:approve`
-3. **Use resume** - `/mustard:resume` continues where you left off
-4. **Use update** - `mustard update` gets new features without losing customizations
-5. **Edit context files** - Add patterns to `context/{agent}/` folders (not `.core.md`)
+1. **Run /scan first** — pipeline commands need the context it generates
+2. **Just describe** — Claude detects intent, no need to type `/feature` explicitly
+3. **Review the spec** — read before `/approve`
+4. **Use /resume** — continues where you left off in a new session
+5. **Use `mustard update`** — gets new templates without losing customizations
 
 ## Troubleshooting
 
 | Issue | Solution |
 |-------|----------|
-| "No active pipeline" | Use `/mustard:feature <name>` |
-| "Registry missing" | Run `/mustard:sync-registry` |
-| "Grep/Glob blocked" | Normal - Claude uses grepai |
-| Build error | Claude shows errors, fix and continue |
+| "No active pipeline" | Start one with `/feature <name>` or `/bugfix <error>` |
+| "Registry missing" | Run `/scan` or `/maint sync` |
+| Build error | Claude shows errors — fix and `/resume` |
 | Lost customizations | Check `.claude.backup.{timestamp}` |
-| Context not loading | Run `/mustard:sync-context` |
+| Stale agents/skills | Run `/scan` to regenerate |

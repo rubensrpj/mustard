@@ -16,580 +16,255 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/Claude_Code-Ready-blueviolet?style=flat-square&logo=anthropic" alt="Claude Code">
-  <img src="https://img.shields.io/badge/.NET-supported-512BD4?style=flat-square&logo=dotnet" alt=".NET">
-  <img src="https://img.shields.io/badge/React-supported-61DAFB?style=flat-square&logo=react" alt="React">
-  <img src="https://img.shields.io/badge/Python-supported-3776AB?style=flat-square&logo=python" alt="Python">
+  <img src="https://img.shields.io/badge/Monorepo-supported-green?style=flat-square" alt="Monorepo">
+  <img src="https://img.shields.io/badge/Single_Repo-supported-green?style=flat-square" alt="Single Repo">
 </p>
 
 ---
 
 ## What is Mustard?
 
-Mustard generates a `.claude/` folder with prompts, commands, and rules for Claude Code:
+Mustard sets up a `.claude/` folder that turns Claude Code into a structured development pipeline:
 
-- **6 specialist prompts** with explicit identity and workflow (`.core.md` files)
-- **Modular context** - `README.md` + `{agent}.core.md` per agent
-- **Auto-sync scripts** - git-aware context compilation with SHA256 caching
-- **Pipeline commands** for features and bugfixes (namespaced: `/mustard:*`)
-- **Enforcement hooks** (grepai, pipeline, registry validation)
-- **Monorepo support** - auto-detection of subprojects
+- **14 pipeline skills** — feature, bugfix, scan, resume, approve, complete, git, maint, task, knowledge, skill, status, scan-format, agent-prompt template
+- **8 enforcement hooks** — bash safety, file guard, registry validation, guard verification, auto-format, pre-compact, session cleanup, subagent tracking
+- **6 bundled skills** — design-craft, react-best-practices, senior-architect, skill-creator, commit-workflow, pipeline-execution
+- **3 sync scripts** — subproject detection, entity registry sync, statusline
+- **Monorepo + single repo** — works with any project structure
 
-## What's New in v3.0
+## How It Works
 
-### Breaking Changes
+1. `mustard init` copies the `.claude/` structure into your project
+2. Inside Claude Code, run `/scan` to analyze your codebase
+3. `/scan` generates guards, recipes, patterns, agents, and skills specific to your project
+4. Use `/feature`, `/bugfix`, `/task` to work through structured pipelines
 
-- **Namespaced commands**: All commands now use `mustard:` prefix
-  - `/feature` → `/mustard:feature`
-  - `/bugfix` → `/mustard:bugfix`
-  - `/commit` → `/mustard:commit`
-  - etc.
-
-### Removed Features
-
-- **Agent Teams** (`/feature-team`, `/bugfix-team`) - experimental feature discontinued
-- **Checkpoint** (`/checkpoint`) - replaced by Context Reset
-- **Compile Context** (`/compile-context`) - now automatic via hooks
-
-### New Architecture
-
-- **Modular context**: `patterns.md` → `README.md` + `{agent}.core.md`
-- **Explicit agent identity**: Each specialist has defined responsibilities and return format
-- **Auto-sync scripts**: `sync-detect.js`, `sync-compile.js`, `sync-registry.js`
-- **Simplified templates**: 90% reduction in template size (externalized to compiled context)
-- **Hook modernization**: `UserPromptSubmit` → `PreToolUse` with `Skill` matcher
-
-### New Features
-
-- **Backend operational commands**: `backend-run`, `backend-stop`, `backend-restart`, `backend-logs`
-- **Design Principles skill**: Jony Ive-level UI guidelines
-- **Entity Registry v3.1**: Includes `_patterns` and `_enums`
+The CLI is a **one-time setup tool**. All intelligence lives in the skills and hooks inside `.claude/`.
 
 ## Installation
 
 ### Prerequisites
 
 - **Node.js** >= 18.0.0
-- **Package Manager**: npm, pnpm, yarn, or bun
 
-### Install Mustard
-
-#### Option 1: Global Installation
+### Install
 
 ```bash
-# npm
+# Global
 npm install -g mustard-claude
 
-# pnpm
-pnpm add -g mustard-claude
-
-# yarn
-yarn global add mustard-claude
-
-# bun
-bun add -g mustard-claude
-```
-
-#### Option 2: Run Without Installing
-
-```bash
-# npx (npm)
+# Or run without installing
 npx mustard-claude init
-
-# pnpx (pnpm)
-pnpx mustard-claude init
-
-# yarn dlx
-yarn dlx mustard-claude init
-
-# bunx
-bunx mustard-claude init
 ```
 
----
-
-## Optional Dependencies
-
-Mustard works without these tools, but they enhance functionality:
-
-| Tool | Purpose | Required |
-|------|---------|----------|
-| [Ollama](https://ollama.com) | LLM analysis + grepai embeddings | No |
-| [grepai](https://github.com/yoanbernabeu/grepai) | Semantic code search | No |
-| [Memory MCP](https://github.com/doobidoo/mcp-memory-service) | Pipeline persistence | No |
-
-### 1. Ollama Installation
-
-Ollama provides local LLM capabilities. Required if you want:
-
-- Personalized CLAUDE.md generation (`mustard init --ollama`)
-- grepai semantic embeddings
-
-#### macOS
-
-Download and install from: [ollama.com/download/Ollama.dmg](https://ollama.com/download/Ollama.dmg)
-
-#### Windows
-
-Download and install from: [ollama.com/download/OllamaSetup.exe](https://ollama.com/download/OllamaSetup.exe)
-
-#### Linux
-
-```bash
-curl -fsSL https://ollama.com/install.sh | sh
-```
-
-#### Docker
-
-**CPU-only:**
-
-```bash
-docker run -d -v ollama:/root/.ollama -p 11434:11434 --name ollama ollama/ollama
-```
-
-**With NVIDIA GPU:**
-
-```bash
-# Install NVIDIA Container Toolkit first
-sudo apt-get install -y nvidia-container-toolkit
-sudo nvidia-ctk runtime configure --runtime=docker
-sudo systemctl restart docker
-
-# Run with GPU support
-docker run -d --gpus=all -v ollama:/root/.ollama -p 11434:11434 --name ollama ollama/ollama
-```
-
-**With AMD GPU:**
-
-```bash
-docker run -d --device /dev/kfd --device /dev/dri -v ollama:/root/.ollama -p 11434:11434 --name ollama ollama/ollama:rocm
-```
-
-#### Pull Required Models
-
-```bash
-# For Mustard LLM analysis
-ollama pull llama3.2
-
-# For grepai embeddings (required if using grepai)
-ollama pull nomic-embed-text
-```
-
-#### Verify Ollama Installation
-
-```bash
-ollama list
-# Should show downloaded models
-```
-
----
-
-### 2. grepai Installation
-
-grepai provides semantic code search. **Requires Ollama** for embeddings.
-
-#### macOS (Homebrew)
-
-```bash
-brew install yoanbernabeu/tap/grepai
-```
-
-#### Linux/macOS (Script)
-
-```bash
-curl -sSL https://raw.githubusercontent.com/yoanbernabeu/grepai/main/install.sh | sh
-```
-
-#### Windows (PowerShell)
-
-```powershell
-irm https://raw.githubusercontent.com/yoanbernabeu/grepai/main/install.ps1 | iex
-```
-
-#### Setup grepai in Your Project
-
-```bash
-cd your-project
-
-# Initialize (creates .grepai folder)
-grepai init
-
-# Start the indexing daemon (keeps index up-to-date)
-grepai watch
-
-# Test semantic search
-grepai search "authentication flow"
-
-# Trace function calls
-grepai trace callers "Login"
-```
-
----
-
-### 3. Memory MCP Installation
-
-Memory MCP provides persistent memory for Claude across sessions.
-
-#### Install via pip
-
-```bash
-pip install mcp-memory-service
-```
-
-#### Quick Setup (Claude Desktop)
-
-```bash
-python -m mcp_memory_service.scripts.installation.install --quick
-```
-
-#### Manual Configuration
-
-Add to Claude Desktop config:
-
-- **macOS:** `~/Library/Application Support/Claude/claude_desktop_config.json`
-- **Windows:** `%APPDATA%\Claude\claude_desktop_config.json`
-- **Linux:** `~/.config/Claude/claude_desktop_config.json`
-
-```json
-{
-  "mcpServers": {
-    "memory": {
-      "command": "memory",
-      "args": ["server"]
-    }
-  }
-}
-```
-
-Restart Claude Desktop after configuration.
-
----
-
-## Verify Installation
-
-After installing dependencies, verify your setup:
-
-```bash
-# Check Node.js version
-node --version
-
-# Check Ollama (optional)
-ollama list
-
-# Check grepai (optional)
-grepai --version
-
-# Initialize Mustard
-cd your-project
-mustard init --ollama  # Use --ollama flag to enable LLM analysis
-```
-
-## System Requirements
-
-| Component | Minimum | Recommended |
-|-----------|---------|-------------|
-| RAM | 8 GB | 16 GB |
-| Storage | 10 GB | 20 GB |
-| Node.js | 18.0.0 | 20+ |
-
-### RAM for Ollama Models
-
-| Model Size | RAM Required |
-|------------|--------------|
-| 7B params | 8 GB |
-| 13B params | 16 GB |
-| 33B params | 32 GB |
-
----
-
-## Quick Start
+### Initialize a Project
 
 ```bash
 cd my-project
 mustard init
 ```
 
-The CLI will:
+That's it. Open Claude Code and run `/scan`.
 
-1. Detect stacks (React, .NET, Python, etc.)
-2. Analyze code with Ollama (optional)
-3. Generate `.claude/` structure with modular context
+## CLI Commands
 
-## Context Architecture
-
-Each agent has **modular context** with explicit identity:
-
-```text
-.claude/context/
-├── shared/              # All agents load this
-├── backend/
-│   ├── README.md        # Extensibility guide
-│   └── backend.core.md  # Identity + Responsibilities + Workflow
-├── frontend/
-│   ├── README.md
-│   └── frontend.core.md
-├── database/
-│   ├── README.md
-│   └── database.core.md
-├── bugfix/
-│   ├── README.md
-│   └── bugfix.core.md
-├── review/
-│   ├── README.md
-│   └── review.core.md
-└── orchestrator/
-    ├── README.md
-    └── orchestrator.core.md
+```
+mustard init [options]     Copy .claude/ structure into current project
+mustard update [options]   Update Mustard core files (preserves user customizations)
+mustard auto-update        Check npm for newer version and install
 ```
 
-### `.core.md` Structure
+### `mustard init`
 
-Each specialist has explicit sections:
+| Option | Description |
+|--------|-------------|
+| `-f, --force` | Overwrite existing `.claude/` without backup |
+| `-y, --yes` | Skip confirmation prompts (merge mode: skip existing files) |
 
-| Section | Purpose |
-|---------|---------|
-| **Identity** | "You are the Backend Specialist" |
-| **Responsibilities** | What the agent implements/doesn't implement |
-| **Prerequisites** | Validations before accepting work |
-| **Checklist** | Step-by-step workflow |
-| **Return Format** | Standardized response format |
-| **Naming Conventions** | PascalCase, snake_case, kebab-case rules |
-| **Rules** | Explicit DO/DO NOT |
+**Behavior:**
+- If `.claude/` doesn't exist → copies all templates
+- If `.claude/` exists → asks: backup & overwrite, merge (skip existing), or cancel
+- Merge mode preserves all existing files and only adds new ones
 
-### How Context Works
+### `mustard update`
 
-1. User invokes `/mustard:feature` or `/mustard:bugfix`
-2. `sync-detect.js` discovers subprojects (monorepo)
-3. `sync-compile.js` compiles contexts with SHA256 caching
-4. Agent receives compiled `{agent}.context.md`
-5. Skip recompilation if content hash unchanged
+| Option | Description |
+|--------|-------------|
+| `-f, --force` | Skip backup and confirmation |
 
-## Commands
+**Recreates** (from latest templates):
+- `commands/mustard/` — pipeline skills
+- `hooks/` — enforcement hooks
+- `skills/` — bundled skills
+- `scripts/` — sync scripts
+- `settings.json` — hook configuration
 
-### CLI Commands
+**Preserves** (user customizations):
+- `CLAUDE.md` — orchestrator rules (populated by `/scan`)
+- `pipeline-config.md` — agent dispatch config (populated by `/scan`)
+- `entity-registry.json` — entity map (populated by sync-registry)
+- `commands/*.md` — user commands outside `mustard/`
+- `docs/`, `agent-memory/`, `spec/`, `plans/`
 
-```bash
-mustard init [options]
+## What Gets Installed
 
-Options:
-  -f, --force      Overwrite existing .claude/
-  -y, --yes        Skip confirmations
-  --no-ollama      Skip LLM analysis
-  --no-grepai      Skip semantic analysis
-  -v, --verbose    Detailed output
 ```
-
-```bash
-mustard update [options]
-
-Options:
-  -f, --force          Skip backup
-  --include-claude-md  Also update CLAUDE.md
-```
-
-### Pipeline Commands
-
-| Command | Description |
-|---------|-------------|
-| `/mustard:feature <name>` | Start feature pipeline |
-| `/mustard:bugfix <error>` | Start bugfix pipeline |
-| `/mustard:approve` | Approve spec |
-| `/mustard:complete` | Finalize pipeline |
-| `/mustard:resume` | Resume active pipeline |
-
-### Task Commands (L0 Delegation)
-
-| Command | Description |
-|---------|-------------|
-| `/mustard:task-analyze` | Code analysis via Task(Explore) |
-| `/mustard:task-review` | Code review via Task(general-purpose) |
-| `/mustard:task-refactor` | Refactoring via Task(Plan) → Task(general-purpose) |
-| `/mustard:task-docs` | Documentation via Task(general-purpose) |
-
-### Git Commands
-
-| Command | Description |
-|---------|-------------|
-| `/mustard:commit` | Simple commit |
-| `/mustard:commit-push` | Commit and push |
-| `/mustard:merge-main` | Merge to main |
-
-### Sync Commands
-
-| Command | Description |
-|---------|-------------|
-| `/mustard:sync-registry` | Update entity registry |
-| `/mustard:sync-context` | Compile agent contexts |
-| `/mustard:validate` | Build + type-check |
-| `/mustard:status` | Project status |
-
-## Structure
-
-```text
 .claude/
-├── CLAUDE.md               # Minimal orchestrator rules
-├── prompts/                # Stub prompts (reference .core.md)
-│   ├── orchestrator.md
-│   ├── backend.md
-│   ├── frontend.md
-│   ├── database.md
-│   ├── bugfix.md
-│   └── review.md
-├── context/                # Modular context (editable)
-│   ├── shared/
-│   ├── backend/
-│   │   ├── README.md
-│   │   └── backend.core.md
-│   ├── frontend/
-│   ├── database/
-│   ├── bugfix/
-│   ├── review/
-│   └── orchestrator/
-├── commands/mustard/       # Pipeline commands
-├── scripts/                # Sync scripts
-│   ├── sync-detect.js
-│   ├── sync-compile.js
-│   └── sync-registry.js
-├── core/                   # Enforcement rules
-├── hooks/                  # JavaScript hooks
-└── entity-registry.json    # Entity mappings v3.1
+├── CLAUDE.md                          # Orchestrator rules (template)
+├── pipeline-config.md                 # Agent dispatch config (template)
+├── settings.json                      # Hooks + permissions + statusline
+├── entity-registry.json               # Empty skeleton (populated by /scan)
+├── commands/mustard/                  # Pipeline skills
+│   ├── feature/SKILL.md               #   /feature — feature pipeline
+│   ├── bugfix/SKILL.md                #   /bugfix — bug fix pipeline
+│   ├── approve/SKILL.md               #   /approve — approve spec
+│   ├── complete/SKILL.md              #   /complete — finalize pipeline
+│   ├── resume/SKILL.md                #   /resume — resume pipeline
+│   ├── scan/SKILL.md                  #   /scan — analyze codebase
+│   ├── scan-format/SKILL.md           #   /scan agent format rules
+│   ├── git/SKILL.md                   #   /git — commit, push, merge, deploy
+│   ├── maint/SKILL.md                 #   /maint — deps, validate, sync
+│   ├── task/SKILL.md                  #   /task — delegated analysis/review
+│   ├── knowledge/SKILL.md             #   /knowledge — notes, audit, reports
+│   ├── skill/SKILL.md                 #   /skill — manage skills
+│   ├── status/SKILL.md                #   /status — project status
+│   └── templates/agent-prompt/SKILL.md #  Agent prompt template
+├── hooks/                             # Enforcement hooks
+│   ├── bash-safety.js                 #   Blocks dangerous commands
+│   ├── file-guard.js                  #   Blocks sensitive file access
+│   ├── enforce-registry.js            #   Blocks pipeline if no registry
+│   ├── guard-verify.js                #   Validates architectural rules
+│   ├── auto-format.js                 #   Auto-formats on write
+│   ├── pre-compact.js                 #   Saves state before compaction
+│   ├── session-cleanup.js             #   Cleans up on session end
+│   ├── subagent-tracker.js            #   Tracks agent lifecycle
+│   └── __tests__/hooks.test.js        #   Hook tests
+├── scripts/
+│   ├── sync-detect.js                 #   Detects subprojects + roles
+│   ├── sync-registry.js               #   Generates entity-registry.json
+│   └── statusline.js                  #   Claude Code statusline
+└── skills/                            # Bundled skills
+    ├── design-craft/                  #   UI design methodology
+    ├── react-best-practices/          #   React/Next.js optimization (40+ rules)
+    ├── senior-architect/              #   System architecture patterns
+    ├── skill-creator/                 #   Create and optimize skills
+    ├── commit-workflow/               #   Git commit strategy
+    └── pipeline-execution/            #   Pipeline orchestration
 ```
 
-## Prompts (Agents)
+## Pipeline Commands (inside Claude Code)
 
-Claude Code only accepts 4 `subagent_type` values: `Explore`, `Plan`, `general-purpose`, `Bash`.
+### Core Pipeline
 
-Mustard "agents" are prompts loaded into `Task(general-purpose)`:
+| Command | Description |
+|---------|-------------|
+| `/scan` | Analyze codebase — generates guards, recipes, agents, skills |
+| `/feature <name>` | Start feature pipeline (ANALYZE → PLAN → EXECUTE → CLOSE) |
+| `/bugfix <error>` | Autonomous bug fix (diagnose → fix → validate) |
+| `/approve` | Approve spec for implementation |
+| `/resume` | Resume interrupted pipeline |
+| `/complete` | Finalize or cancel pipeline |
 
-| Prompt | Model | Context |
-|--------|-------|---------|
-| orchestrator | opus | orchestrator.core.md |
-| backend | opus | backend.core.md |
-| frontend | opus | frontend.core.md |
-| database | opus | database.core.md |
-| bugfix | opus | bugfix.core.md |
-| review | opus | review.core.md |
+### Operations
 
-## Sync Scripts
+| Command | Description |
+|---------|-------------|
+| `/git <action>` | commit, push, merge, deploy (handles monorepo) |
+| `/maint <action>` | deps, validate, sync |
+| `/status` | Git + pipeline + build + registry status |
 
-### sync-detect.js
+### Analysis & Delegation
 
-Auto-discovers subprojects in monorepos:
+| Command | Description |
+|---------|-------------|
+| `/task analyze <scope>` | Code exploration (Explore agent) |
+| `/task audit <domain> <scope>` | Quality audit (copy, design, a11y, i18n, api-contract) |
+| `/task compare <criteria>` | Cross-subproject comparison |
+| `/task review <scope>` | Code review (SOLID, security, perf) |
+| `/task refactor <scope>` | Plan + approve + implement refactoring |
+| `/task docs <scope>` | Documentation generation |
 
-```javascript
-// Detection patterns
-"backend": [/.NET/, /dotnet/, /FastEndpoints/]
-"frontend": [/React/, /Next\.js/, /Vue/]
-"database": [/Drizzle/, /Prisma/, /PostgreSQL/]
+### Knowledge
+
+| Command | Description |
+|---------|-------------|
+| `/knowledge notes [target]` | Manage project observations |
+| `/knowledge audit` | Audit memory for duplicates |
+| `/knowledge report daily/weekly` | Progress reports from git data |
+
+### Skills
+
+| Command | Description |
+|---------|-------------|
+| `/skill list` | List installed skills |
+| `/skill install <source>` | Install from local path or GitHub |
+| `/skill create <name>` | Create new skill via skill-creator |
+| `/skill optimize <name>` | Optimize skill triggering |
+
+## How `/scan` Works
+
+`/scan` is the most important command. It runs inside Claude Code and:
+
+1. **Detects subprojects** — reads git submodules or scans for `CLAUDE.md` files
+2. **Incremental detection** — compares source hashes to skip unchanged subprojects
+3. **Launches analysis agents** — one per subproject, in parallel
+4. **Generates per-subproject**:
+   - `{subproject}/CLAUDE.md` — stack, commands, guards
+   - `{subproject}/.claude/commands/` — guards, recipes, patterns, modules
+   - `{subproject}/.claude/skills/` — granular pattern skills
+   - `.claude/agents/{subproject}-impl.md` — implementation agent
+   - `.claude/agents/{subproject}-explorer.md` — read-only explorer
+5. **Updates root files** — `CLAUDE.md`, `pipeline-config.md`, `entity-registry.json`
+
+After `/scan`, the pipeline commands (`/feature`, `/bugfix`) have full context to dispatch specialized agents.
+
+## Pipeline Flow
+
+```
+/feature <name>
+     │
+     ▼
+  ANALYZE — read registry + pipeline-config, determine layers
+     │
+     ▼
+  PLAN — create spec with tasks per agent (Light: inline, Full: /approve)
+     │
+     ▼
+  EXECUTE — dispatch agents per wave (DB+Backend ∥, Frontend after)
+     │
+     ▼
+  REVIEW — mandatory review per subproject (SOLID, patterns, i18n, ...)
+     │
+     ▼
+  CLOSE — sync registry, move spec, cleanup state
 ```
 
-### sync-compile.js
+**Light scope** (≤5 files, known pattern): ANALYZE → EXECUTE → CLOSE in one session.
+**Full scope** (3+ layers, new entity): ANALYZE → PLAN → `/approve` → new session → `/resume` → CLOSE.
 
-Compiles contexts with git-aware caching:
+## Supported Projects
 
-1. Copies subproject commands to `context/{agent}/cmd-{file}`
-2. Concatenates `.md` files → `{agent}.context.md`
-3. Computes SHA256 hash
-4. Skips if hash unchanged
+Mustard is **framework-agnostic**. The CLI just copies templates. `/scan` handles detection:
 
-### sync-registry.js
-
-Generates `entity-registry.json` v3.1:
-
-- Scans Drizzle schemas (`pgTable`, `pgEnum`)
-- Scans .NET entities (`DbSet`, `class T`)
-- Detects relationships and patterns
-- Outputs `_patterns`, `_enums`, entity refs/subs
-
-## Enforcement Hooks
-
-| Hook | Matcher | Behavior |
-|------|---------|----------|
-| `enforce-registry.js` | `Skill` | **BLOCKS** if registry missing |
-| `enforce-context.js` | `Skill` | **WARNS** (advisory) |
-| `enforce-grepai.js` | `Grep/Glob` | **BLOCKS** search without path |
-| `enforce-pipeline.js` | `Edit/Write` | **REMINDS** about pipeline |
-
-### Pre-Pipeline Validation
-
-```text
-User: /mustard:feature add-login
-         │
-         ▼
-    enforce-registry.js
-    - Registry exists? (BLOCK if not)
-    - Version >= 3.x? (BLOCK if not)
-         │
-         ▼
-    enforce-context.js
-    - Contexts compiled? (WARN if not)
-         │
-         ▼
-    Pipeline starts...
-```
-
-## Migration from v2.x
-
-1. **Update command invocations**:
-   ```bash
-   # Before
-   /feature add-login
-
-   # After
-   /mustard:feature add-login
-   ```
-
-2. **Regenerate registry**:
-   ```bash
-   /mustard:sync-registry --force
-   ```
-
-3. **Recompile contexts**:
-   ```bash
-   /mustard:sync-context
-   ```
-
-4. **Note removed features**:
-   - Agent Teams (`/feature-team`, `/bugfix-team`) - removed
-   - Checkpoint (`/checkpoint`) - use Context Reset instead
-
-## Supported Stacks
-
-| Language | Frameworks |
-|----------|------------|
-| TypeScript/JS | React, Next.js, Node, Express |
-| C# | .NET, ASP.NET Core, FastEndpoints |
-| Python | FastAPI, Django, Flask |
-| Java | Spring Boot |
-| Go | Gin, Echo |
-| Rust | Actix, Axum |
-| ORMs | Drizzle, Prisma, TypeORM |
-
-## Optional Dependencies
-
-| Tool | Purpose |
+| Type | Examples |
 |------|---------|
-| **Ollama** | LLM-generated CLAUDE.md |
-| **grepai** | Semantic code search |
-| **Memory MCP** | Pipeline persistence |
-
-Without these, the CLI uses default templates.
+| **Backend** | .NET, Node.js (Express/Fastify), Python (FastAPI/Django), Go, Rust, Java |
+| **Frontend** | React, Next.js, Vue, Nuxt, Svelte, Angular |
+| **Mobile** | Flutter/Dart |
+| **Database** | Drizzle, Prisma, EF Core, TypeORM |
+| **Monorepo** | Any combination of the above |
+| **Single repo** | Any single project |
 
 ## Development
 
 ```bash
+git clone https://github.com/Competi/mustard.git
+cd mustard
 npm install
 npm run build
-npm test
 
-# Run locally without installing
+# Test locally
 node bin/mustard.js init
-```
-
-## Publishing
-
-```bash
-npm version patch   # or minor/major
-npm publish
 ```
 
 ## License

@@ -11,7 +11,6 @@
  *   node .claude/scripts/sync-registry.js --force   # Regenerate even if populated
  *
  * Supports:
- *   - Drizzle ORM (pgTable, pgEnum)
  *   - .NET (DbSet<T>, class T : ...)
  */
 
@@ -178,157 +177,6 @@ function collectFiles(dir, extension, ignore = []) {
 }
 
 // ---------------------------------------------------------------------------
-// Drizzle scanning (database agent)
-// ---------------------------------------------------------------------------
-
-/**
- * Scan Drizzle schema files for pgTable definitions.
- * Returns a map: tableName (snake_case) -> { entityName, file, refs: Set, columns: string[] }
- */
-function scanDrizzleTables(subprojectPath) {
-  const schemaDir = path.join(subprojectPath, "src", "db", "schema");
-  if (!fs.existsSync(schemaDir)) {
-    // Fallback: try src/schema
-    const altDir = path.join(subprojectPath, "src", "schema");
-    if (!fs.existsSync(altDir)) return new Map();
-    return _scanDrizzleDir(altDir);
-  }
-  return _scanDrizzleDir(schemaDir);
-}
-
-function _scanDrizzleDir(schemaDir) {
-  const tables = new Map();
-  const tsFiles = collectFiles(schemaDir, ".ts");
-
-  for (const filePath of tsFiles) {
-    const fileName = path.basename(filePath);
-    // Skip index.ts, views.ts, enums.ts
-    if (fileName === "index.ts" || fileName === "views.ts" || fileName === "enums.ts") {
-      continue;
-    }
-
-    let content;
-    try {
-      content = fs.readFileSync(filePath, "utf-8");
-    } catch {
-      continue;
-    }
-
-    // Find all pgTable('table_name', ...) definitions
-    const tableRegex = /pgTable\(\s*['"](\w+)['"]/g;
-    let match;
-    while ((match = tableRegex.exec(content)) !== null) {
-      const tableName = match[1]; // e.g., "contracts", "partner_types"
-      const entityName = snakeToPascalSingular(tableName);
-
-      // Extract the table definition block (from pgTable( to the matching export)
-      // We'll use the full content since one file may have multiple tables
-      const tableStartIdx = match.index;
-
-      // Find the columns defined in this table by looking for references
-      const refs = new Set();
-      let selfRef = false;
-
-      // Count "own" columns (non-FK, non-audit columns)
-      // We approximate by looking at the block after this pgTable until the next pgTable or end
-      const nextTableMatch = content.indexOf("pgTable(", tableStartIdx + 10);
-      const tableBlock =
-        nextTableMatch > 0
-          ? content.substring(tableStartIdx, nextTableMatch)
-          : content.substring(tableStartIdx);
-
-      // Find .references(() => otherTable.id) patterns
-      const refRegex = /\.references\(\s*\(\s*\)\s*(?::\s*\w+)?\s*=>\s*(\w+)\.(\w+)/g;
-      let refMatch;
-      while ((refMatch = refRegex.exec(tableBlock)) !== null) {
-        const refVarName = refMatch[1]; // e.g., "partners", "tenants", "financialAccounts"
-        refs.add(refVarName);
-      }
-
-      // Check for self-reference: parentId references this same table
-      // Pattern: parentId ... references(() => thisTableVar.id)
-      const exportMatch = content.match(
-        new RegExp(`export\\s+const\\s+(\\w+)\\s*=\\s*pgTable\\(\\s*['"]${tableName}['"]`)
-      );
-      const exportVarName = exportMatch ? exportMatch[1] : null;
-
-      if (exportVarName && refs.has(exportVarName)) {
-        selfRef = true;
-        refs.delete(exportVarName); // Don't count self-ref as external ref
-      }
-
-      // Count columns (rough: count lines with key: something(...) pattern)
-      const columnCount = (tableBlock.match(/^\s+\w+:\s+\w+\(/gm) || []).length;
-
-      // Count FK columns specifically
-      const fkCount = (tableBlock.match(/\.references\(/g) || []).length;
-
-      tables.set(tableName, {
-        entityName,
-        file: filePath,
-        refVars: refs, // Variable names like "partners", "contracts"
-        selfRef,
-        columnCount,
-        fkCount,
-        exportVarName,
-      });
-    }
-  }
-
-  return tables;
-}
-
-/**
- * Scan Drizzle schema files for pgEnum definitions.
- * Returns a map: enumName (PascalCase) -> string[]
- */
-function scanDrizzleEnums(subprojectPath) {
-  const enums = new Map();
-
-  // Check standard enum file location
-  const enumFile = path.join(subprojectPath, "src", "db", "schema", "enums.ts");
-  if (!fs.existsSync(enumFile)) {
-    // Fallback
-    const altFile = path.join(subprojectPath, "src", "schema", "enums.ts");
-    if (!fs.existsSync(altFile)) return enums;
-    return _scanDrizzleEnumFile(altFile);
-  }
-  return _scanDrizzleEnumFile(enumFile);
-}
-
-function _scanDrizzleEnumFile(filePath) {
-  const enums = new Map();
-  let content;
-  try {
-    content = fs.readFileSync(filePath, "utf-8");
-  } catch {
-    return enums;
-  }
-
-  // Match pgEnum('enum_name', ['val1', 'val2', ...])
-  // The values array can span multiple lines
-  const enumRegex = /pgEnum\(\s*['"](\w+)['"]\s*,\s*\[([^\]]*)\]/gs;
-  let match;
-  while ((match = enumRegex.exec(content)) !== null) {
-    const enumSnakeName = match[1]; // e.g., "contract_status"
-    const valuesBlock = match[2];
-
-    // Extract quoted values
-    const values = [];
-    const valRegex = /['"]([^'"]+)['"]/g;
-    let valMatch;
-    while ((valMatch = valRegex.exec(valuesBlock)) !== null) {
-      values.push(valMatch[1]);
-    }
-
-    const enumPascalName = snakeToPascal(enumSnakeName);
-    enums.set(enumPascalName, values);
-  }
-
-  return enums;
-}
-
-// ---------------------------------------------------------------------------
 // .NET scanning (backend agent)
 // ---------------------------------------------------------------------------
 
@@ -417,154 +265,22 @@ function scanDotNetEnums(subprojectPath) {
 }
 
 // ---------------------------------------------------------------------------
-// Relationship inference
+// Relationship inference (from .NET entities)
 // ---------------------------------------------------------------------------
 
 /**
- * Build a variable-name -> entity-name lookup from Drizzle tables.
- * e.g., "partners" -> "Partner", "financialAccounts" -> "FinancialAccount"
+ * Placeholder: relationship inference was previously Drizzle-based.
+ * TODO: implement .NET navigation-property based inference if needed.
  */
-function buildVarToEntityMap(tables) {
-  const map = new Map();
-  for (const [, tableInfo] of tables) {
-    if (tableInfo.exportVarName) {
-      map.set(tableInfo.exportVarName, tableInfo.entityName);
-    }
-  }
-  return map;
+function inferRelationships(_tables) {
+  return { entities: new Map(), subItems: new Set() };
 }
 
 /**
- * Given the scanned tables, infer parent-child (sub) and reference (refs) relationships.
- * Also detect which entities are sub-items of others.
- *
- * Returns:
- *   entities: Map<entityName, { sub: string[], refs: string[] }>
- *   subItems: Set<entityName> (entities that are children of another)
+ * Placeholder: pattern inference was previously Drizzle-based.
  */
-function inferRelationships(tables) {
-  const varToEntity = buildVarToEntityMap(tables);
-  const entities = new Map();
-  const subItems = new Set();
-
-  // Common multi-tenant / audit columns to ignore when counting "own" fields
-  const IGNORE_REFS = new Set(["tenants", "companies"]);
-
-  // First pass: create all entities and resolve refs
-  for (const [tableName, tableInfo] of tables) {
-    const entityName = tableInfo.entityName;
-    const refs = [];
-
-    for (const refVar of tableInfo.refVars) {
-      if (IGNORE_REFS.has(refVar)) continue;
-      const refEntity = varToEntity.get(refVar);
-      if (refEntity) {
-        refs.push(refEntity);
-      }
-    }
-
-    entities.set(entityName, {
-      sub: [],
-      refs: [...new Set(refs)], // deduplicate
-      selfRef: tableInfo.selfRef,
-      columnCount: tableInfo.columnCount,
-      fkCount: tableInfo.fkCount,
-      tableName,
-    });
-  }
-
-  // Second pass: detect parent-child relationships
-  // Heuristic: if entity B references entity A, and B's name starts with A's name
-  // (e.g., ContractItem -> Contract, PartnerContact -> Partner)
-  // then B is a sub-item of A.
-  for (const [entityName, entityInfo] of entities) {
-    for (const refEntityName of entityInfo.refs) {
-      // Check if this entity name starts with the referenced entity name
-      if (
-        entityName !== refEntityName &&
-        entityName.startsWith(refEntityName) &&
-        entityName.length > refEntityName.length
-      ) {
-        // This entity is likely a sub-item of the referenced entity
-        const parent = entities.get(refEntityName);
-        if (parent) {
-          if (!parent.sub.includes(entityName)) {
-            parent.sub.push(entityName);
-          }
-          subItems.add(entityName);
-        }
-      }
-    }
-  }
-
-  // Special case: UserSalesChannelOverride -> User (starts with "User")
-  // Already handled by the general heuristic above
-
-  // Special case: GatewayLog -> linked to both Contract and Receivable
-  // Check if the current entity-registry has it as sub of Receivable
-  // We'll check if entity is explicitly a child by looking at the naming convention
-
-  return { entities, subItems };
-}
-
-// ---------------------------------------------------------------------------
-// Pattern inference
-// ---------------------------------------------------------------------------
-
-/**
- * Infer pattern examples from entities.
- */
-function inferPatterns(entities, subItems) {
-  const patterns = {};
-
-  for (const [entityName, entityInfo] of entities) {
-    // selfReferencing: entity that references itself (skip sub-items)
-    if (!subItems.has(entityName) && entityInfo.selfRef && !patterns.selfReferencing) {
-      patterns.selfReferencing = entityName;
-    }
-
-    // manyToMany: junction table with 2+ FKs and few own columns
-    // Heuristic: refs.length >= 2 AND total columns are small (junction tables)
-    // manyToMany can be a sub-item, so don't skip sub-items here
-    const nonTenantRefs = entityInfo.refs;
-    if (
-      nonTenantRefs.length >= 2 &&
-      entityInfo.columnCount <= 12 &&
-      !patterns.manyToMany
-    ) {
-      patterns.manyToMany = entityName;
-    }
-
-    if (subItems.has(entityName)) continue; // Skip sub-items for remaining patterns
-
-    // withSubItems: entity that has sub-items
-    if (entityInfo.sub.length > 0 && !patterns.withSubItems) {
-      patterns.withSubItems = entityName;
-    }
-
-    // simple: entity without sub, without refs (or minimal refs), not self-referencing
-    if (
-      entityInfo.sub.length === 0 &&
-      entityInfo.refs.length === 0 &&
-      !entityInfo.selfRef &&
-      !patterns.simple
-    ) {
-      patterns.simple = entityName;
-    }
-  }
-
-  // If no "simple" found, pick one with empty sub and minimal refs
-  if (!patterns.simple) {
-    for (const [entityName, entityInfo] of entities) {
-      if (subItems.has(entityName)) continue;
-      if (entityInfo.sub.length === 0 && !entityInfo.selfRef) {
-        patterns.simple = entityName;
-        break;
-      }
-    }
-  }
-
-  return patterns;
+function inferPatterns(_entities, _subItems) {
+  return {};
 }
 
 // ---------------------------------------------------------------------------
@@ -625,24 +341,7 @@ function main() {
   for (const sub of subprojects) {
     const subPath = path.join(ROOT, sub.path);
 
-    if (sub.agent === "database") {
-      console.log(`Scanning ${sub.name} (Drizzle)...`);
-      const tables = scanDrizzleTables(subPath);
-      const enums = scanDrizzleEnums(subPath);
-
-      // Merge tables
-      for (const [k, v] of tables) {
-        allTables.set(k, v);
-      }
-      // Merge enums
-      for (const [k, v] of enums) {
-        allEnums.set(k, v);
-      }
-
-      console.log(
-        `  Found ${tables.size} table(s), ${enums.size} enum(s)`
-      );
-    } else if (sub.agent === "backend") {
+    if (sub.agent === "backend") {
       console.log(`Scanning ${sub.name} (.NET)...`);
       const entities = scanDotNetEntities(subPath);
       const enums = scanDotNetEnums(subPath);
@@ -651,7 +350,11 @@ function main() {
         dotNetEntities.add(e);
       }
       for (const [k, v] of enums) {
-        if (!allEnums.has(k)) {
+        // Case-insensitive dedup: skip if an enum with the same name (different casing) already exists
+        const existingKey = [...allEnums.keys()].find(
+          (existing) => existing.toLowerCase() === k.toLowerCase()
+        );
+        if (!existingKey) {
           allEnums.set(k, v);
         }
       }
@@ -666,7 +369,7 @@ function main() {
     }
   }
 
-  // 5. Build entity relationships from Drizzle tables
+  // 5. Build entity relationships (placeholder — previously Drizzle-based)
   const { entities, subItems } = inferRelationships(allTables);
 
   console.log(
@@ -709,11 +412,19 @@ function main() {
     entityEntries[entityName] = entry;
   }
 
-  // 8. Build enums output (sorted)
+  // 8. Build enums output (sorted, compressed if >8 values)
   const enumEntries = {};
   const sortedEnumNames = [...allEnums.keys()].sort();
   for (const enumName of sortedEnumNames) {
-    enumEntries[enumName] = allEnums.get(enumName);
+    const values = allEnums.get(enumName);
+    if (values.length > 8) {
+      enumEntries[enumName] = [
+        ...values.slice(0, 5),
+        `...(${values.length} total)`,
+      ];
+    } else {
+      enumEntries[enumName] = values;
+    }
   }
 
   // 9. Assemble final registry

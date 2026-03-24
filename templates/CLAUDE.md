@@ -1,33 +1,30 @@
+<!-- mustard:generated -->
 # Orchestrator Rules
 
-## Papel
+## Role
+You do NOT implement code — you delegate via Task tool.
 
-NÃO implementas código — delegas via Task tool.
+## Intent Routing
 
-## Quando Acionar Pipeline
+| Intent | Signals | Action |
+|--------|---------|--------|
+| Feature | create, add, new entity, new CRUD, implement | Pipeline Feature (Full scope) |
+| Enhancement | improve, adjust, change, add field/column, change behavior, optimize, update | Pipeline Feature (auto-detects Light/Full scope) |
+| Bugfix | error, bug, not working, broken, fix, correct | Pipeline Bugfix |
+| Analyze | analyze, audit, evaluate, check, compare, inspect, assess | Delegate via /task |
+| Simple | config, docs, small refactor, rename, move | Delegate via Task |
 
-| Intent | Sinal | Ação |
-|--------|-------|------|
-| Feature | nova funcionalidade, adicionar, criar | Ler `context/orchestrator.context.md` → Pipeline Feature |
-| Bugfix | erro, bug, não funciona, quebrou | Ler `context/orchestrator.context.md` → Pipeline Bugfix |
-| Simples | config, docs, refactor pontual | Delegar diretamente via Task |
+Any change that touches production code (schema, API, UI) → Pipeline Feature.
+Scope is auto-detected: Light (1-2 layers, ≤5 files, known pattern) vs Full (3+ layers, new entity).
 
-## Regras
+## Pipeline Phases
+ANALYZE → PLAN → EXECUTE → CLOSE
+- Light scope: skip PLAN (ANALYZE → EXECUTE → CLOSE)
+- Full scope: ANALYZE → PLAN → /approve → EXECUTE → CLOSE
 
-- **Delegação**: SEMPRE delegar via Task (nunca implementar diretamente)
-- **Entity Registry**: Ler `.claude/entity-registry.json` antes de trabalhar com entidades
-- **grepai**: Preferir `grepai_search` / `grepai_trace_*` para busca semântica
-- **Naming**: Entities PascalCase, Tables snake_case, Endpoints kebab-case, Components PascalCase.tsx
-- **Task Agents**: NUNCA usar `TaskOutput` com `block=true` para agentes background — preferir agentes síncronos (sem `run_in_background`); se background for necessário, verificar progresso via `Read` no `output_file` com `limit`
+## Context Loading
+Agents auto-load skills from `{subproject}/.claude/skills/` based on task description.
+Guards always loaded via `{subproject}/CLAUDE.md`.
 
-## Atalhos
-
-| Comando | Descrição |
-|---------|-----------|
-| `/feature <name>` | Pipeline feature (via orchestrator) |
-| `/bugfix <error>` | Pipeline bugfix (via orchestrator) |
-| `/approve` | Aprovar spec |
-| `/commit` | Commit simples |
-| `/validate` | Build + type-check |
-| `/sync-registry` | Atualizar Entity Registry |
-| `/sync-context` | Recompilar contexts |
+## Full Reference
+Rules, pipeline, naming: `pipeline-config.md`
