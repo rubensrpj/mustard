@@ -118,11 +118,12 @@ mustard init
     -> semanticAnalyzer() - grepai patterns (optional)
     -> llmAnalyzer() - Ollama analysis (optional)
     -> generateAll() - create .claude/ files + context structure
+    -> generateMustardJson() - git flow config (interactive)
 
 mustard update
     -> backup existing .claude/
     -> regenerate core files only
-    -> preserve: CLAUDE.md, prompts/, context/*.md (user files)
+    -> preserve: CLAUDE.md, prompts/, context/*.md, mustard.json (user files)
 ```
 
 ## Prompts (Agents)
@@ -153,11 +154,13 @@ mustard update
 - `/mustard:task-refactor` - Refactoring via Task(Plan) -> Task(general-purpose)
 - `/mustard:task-docs` - Documentation via Task(general-purpose)
 
-### Git
+### Git (reads `mustard.json` for branch flow)
 
-- `/mustard:commit` - Simple commit
-- `/mustard:commit-push` - Commit and push
-- `/mustard:merge-main` - Merge to main
+- `/mustard:git sync` - Pull parent branch into current
+- `/mustard:git commit` - Simple commit
+- `/mustard:git push` - Sync + commit + push
+- `/mustard:git merge` - Promote to parent (PR or direct, per config)
+- `/mustard:git deploy` - Push + merge + cascade info
 
 ### Sync
 

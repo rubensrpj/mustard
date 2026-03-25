@@ -1,7 +1,8 @@
 import { existsSync, readdirSync, statSync } from 'fs';
-import { mkdir, copyFile, rename, cp } from 'fs/promises';
+import { mkdir, copyFile, rename, cp, writeFile } from 'fs/promises';
 import { join, resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
+import { execSync } from 'child_process';
 import chalk from 'chalk';
 import ora from 'ora';
 import inquirer from 'inquirer';
@@ -115,7 +116,163 @@ export async function initCommand(options: InitOptions): Promise<void> {
   }
 
   spinner.succeed(`Copied ${count} files to .claude/`);
+
+  // Generate mustard.json (git flow config)
+  await generateMustardJson(projectPath, options);
+
   printNextSteps();
+}
+
+function detectDefaultBranch(): string {
+  try {
+    const ref = execSync('git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null', { encoding: 'utf-8' }).trim();
+    return ref.replace('refs/remotes/origin/', '');
+  } catch {
+    try {
+      // Fallback: check if main or master exists
+      const branches = execSync('git branch -r', { encoding: 'utf-8' });
+      if (branches.includes('origin/main')) return 'main';
+      if (branches.includes('origin/master')) return 'master';
+    } catch { /* not a git repo */ }
+    return 'main';
+  }
+}
+
+function detectHasSubmodules(): boolean {
+  try {
+    return existsSync(join(process.cwd(), '.gitmodules'));
+  } catch {
+    return false;
+  }
+}
+
+function detectCurrentBranch(): string | null {
+  try {
+    return execSync('git rev-parse --abbrev-ref HEAD', { encoding: 'utf-8' }).trim();
+  } catch {
+    return null;
+  }
+}
+
+function detectRemoteBranches(): string[] {
+  try {
+    const output = execSync('git branch -r --format="%(refname:short)"', { encoding: 'utf-8' });
+    return output.split('\n').filter(Boolean).map(b => b.replace('origin/', ''));
+  } catch {
+    return [];
+  }
+}
+
+interface MustardConfig {
+  git: {
+    flow: Record<string, string>;
+    pr: { enabled: boolean; provider: string };
+    submodules: boolean;
+  };
+}
+
+async function generateMustardJson(projectPath: string, options: InitOptions): Promise<void> {
+  const configPath = join(projectPath, 'mustard.json');
+
+  if (existsSync(configPath)) {
+    console.log(chalk.gray('\n  mustard.json already exists — preserved'));
+    return;
+  }
+
+  const defaultBranch = detectDefaultBranch();
+  const hasSubmodules = detectHasSubmodules();
+  const currentBranch = detectCurrentBranch();
+  const remoteBranches = detectRemoteBranches();
+  const hasDevBranch = remoteBranches.includes('dev') || remoteBranches.includes('develop');
+
+  console.log(chalk.bold('\n📋 Git Flow Configuration\n'));
+
+  if (currentBranch) {
+    console.log(chalk.gray(`  Detected: branch=${currentBranch}, default=${defaultBranch}, submodules=${hasSubmodules}`));
+    if (hasDevBranch) console.log(chalk.gray(`  Found dev branch: ${remoteBranches.includes('dev') ? 'dev' : 'develop'}`));
+    console.log();
+  }
+
+  let config: MustardConfig;
+
+  if (options.yes) {
+    // Auto-config with sensible defaults
+    const flow: Record<string, string> = {};
+    if (hasDevBranch) {
+      flow['dev_*'] = remoteBranches.includes('dev') ? 'dev' : 'develop';
+      flow[remoteBranches.includes('dev') ? 'dev' : 'develop'] = defaultBranch;
+    }
+    config = {
+      git: {
+        flow,
+        pr: { enabled: true, provider: 'github' },
+        submodules: hasSubmodules
+      }
+    };
+  } else {
+    // Interactive setup
+    const answers = await inquirer.prompt<{
+      production: string;
+      devBranch: string;
+      devPattern: string;
+      prEnabled: boolean;
+      provider: string;
+    }>([
+      {
+        type: 'input',
+        name: 'production',
+        message: 'Production branch:',
+        default: defaultBranch
+      },
+      {
+        type: 'input',
+        name: 'devBranch',
+        message: 'Development branch (shared, leave empty to skip):',
+        default: hasDevBranch ? (remoteBranches.includes('dev') ? 'dev' : 'develop') : ''
+      },
+      {
+        type: 'input',
+        name: 'devPattern',
+        message: 'Personal branch pattern (glob → dev branch):',
+        default: 'dev_*',
+        when: (a) => !!a.devBranch
+      },
+      {
+        type: 'confirm',
+        name: 'prEnabled',
+        message: 'Use Pull Requests for merging?',
+        default: true
+      },
+      {
+        type: 'list',
+        name: 'provider',
+        message: 'Git provider:',
+        choices: ['github', 'gitlab', 'bitbucket'],
+        default: 'github',
+        when: (a) => a.prEnabled
+      }
+    ]);
+
+    const flow: Record<string, string> = {};
+    if (answers.devBranch) {
+      if (answers.devPattern) {
+        flow[answers.devPattern] = answers.devBranch;
+      }
+      flow[answers.devBranch] = answers.production;
+    }
+
+    config = {
+      git: {
+        flow,
+        pr: { enabled: answers.prEnabled, provider: answers.provider || 'github' },
+        submodules: hasSubmodules
+      }
+    };
+  }
+
+  const spinner = ora('Writing mustard.json...').start();
+  await writeFile(configPath, JSON.stringify(config, null, 2) + '\n');
+  spinner.succeed('Created mustard.json');
 }
 
 function printNextSteps(): void {
