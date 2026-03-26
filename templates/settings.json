@@ -9,7 +9,11 @@
     "allow": [
       "Read",
       "Edit",
+      "Edit(.claude/**)",
+      "Edit(**/.claude/**)",
       "Write",
+      "Write(.claude/**)",
+      "Write(**/.claude/**)",
       "Glob",
       "Grep",
       "Skill",
