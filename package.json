@@ -1,5 +1,5 @@
 {
-  "name": "mustard-claude",
+  "name": "@atiz/mustard",
   "version": "3.0.5",
   "description": "Framework-agnostic CLI for Claude Code project setup",
   "type": "module",

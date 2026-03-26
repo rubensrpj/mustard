@@ -1,7 +1,11 @@
 import { Command } from 'commander';
+import { createRequire } from 'node:module';
 import { initCommand } from './commands/init.js';
 import { updateCommand } from './commands/update.js';
 import { autoUpdateCommand } from './commands/auto-update.js';
+
+const require = createRequire(import.meta.url);
+const { version } = require('../package.json');
 
 export function run(): void {
   const program = new Command();
@@ -9,7 +13,7 @@ export function run(): void {
   program
     .name('mustard')
     .description('Framework-agnostic CLI for Claude Code project setup')
-    .version('3.0.0');
+    .version(version);
 
   program
     .command('init')
