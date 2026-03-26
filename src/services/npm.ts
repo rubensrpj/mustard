@@ -6,7 +6,7 @@ import { fileURLToPath } from 'url';
 
 const execAsync = promisify(exec);
 
-const PACKAGE_NAME = '@atiz/mustard';
+const PACKAGE_NAME = 'mustard-claude';
 
 /**
  * Get the latest version of mustard-claude from npm registry
