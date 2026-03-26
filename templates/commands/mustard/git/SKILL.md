@@ -13,7 +13,7 @@
 | `sync` | Pull parent branch into current branch |
 | `commit` | Create commit (no push) |
 | `push` | Sync + commit + push to remote |
-| `merge` | Promote current → parent (PR if enabled, direct merge if not) |
+| `merge` | Promote current → parent (creates PR) |
 | `deploy` | Push + merge + inform about cascade |
 
 ## Configuration
@@ -27,10 +27,7 @@ Reads `mustard.json` from the **project root**. If not found, falls back to defa
       "dev_*": "dev",
       "dev": "main"
     },
-    "pr": {
-      "enabled": true,
-      "provider": "github"
-    },
+    "provider": "github",
     "submodules": true
   }
 }
@@ -76,6 +73,8 @@ git rev-parse --abbrev-ref HEAD
 
 Match the current branch against `git.flow` patterns. Store as `$PARENT`.
 If no match and no `mustard.json`: `$PARENT` = default branch (detect via `git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null || echo main`).
+
+Read `git.provider` from `mustard.json`. Fallback: read `git.pr.provider` (old format). Default: `github`.
 
 ---
 
@@ -165,13 +164,13 @@ git add -A && git commit -m "<message>" && git push origin <branch>
 
 ## merge
 
-Promote current branch into its parent. Behavior depends on `pr.enabled`.
+Promote current branch into its parent via Pull Request.
 
 ### Step 1 — Ensure pushed
 
 Check if local is ahead of remote. If yes, execute `push` first.
 
-### Step 2a — PR mode (`pr.enabled: true`)
+### Step 2 — Create PR
 
 Create a Pull Request from current → parent branch.
 
@@ -200,21 +199,9 @@ git log $PARENT..HEAD --oneline
 
 PRs are created at the **parent repo level only**. Submodules are committed and pushed, but PRs are not created per submodule (submodules follow parent via ref update).
 
-### Step 2b — Direct mode (`pr.enabled: false`)
+After PR is created, output:
 
-Merge locally and push.
-
-#### Monorepo — submodules FIRST (PARALLEL, one Bash call each)
-
-```bash
-cd <SUBMODULE_ABSOLUTE_PATH> && git checkout $PARENT && git pull && git merge <branch> && git push && git checkout <branch>
-```
-
-#### Parent / Root
-
-```bash
-git checkout $PARENT && git pull && git merge <branch> && git push && git checkout <branch>
-```
+> PR created: {url}. Run /review to review it.
 
 ---
 
@@ -234,7 +221,7 @@ Execute `merge` action (current → parent).
 
 If `$PARENT` also has a parent in the flow (e.g., `dev` → `main`), inform the user:
 
-> Merged/PR created: `dev_rubens → dev`. To promote `dev → main`, switch to `dev` and run `/git deploy` again.
+> PR created: `dev_rubens → dev`. To promote `dev → main`, switch to `dev` and run `/git deploy` again.
 
 Do NOT auto-cascade — each promotion is a deliberate decision.
 

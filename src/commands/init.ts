@@ -1,8 +1,9 @@
-import { existsSync, readdirSync, statSync } from 'fs';
+import { existsSync, readdirSync, statSync, readFileSync } from 'fs';
 import { mkdir, copyFile, rename, cp, writeFile } from 'fs/promises';
-import { join, resolve, dirname } from 'path';
+import { join, resolve, dirname, sep } from 'path';
 import { fileURLToPath } from 'url';
 import { execSync } from 'child_process';
+import { homedir } from 'os';
 import chalk from 'chalk';
 import ora from 'ora';
 import inquirer from 'inquirer';
@@ -61,6 +62,7 @@ export async function initCommand(options: InitOptions): Promise<void> {
       const spinner = ora('Copying templates...').start();
       const count = await copyDir(templatesDir, claudePath, false);
       spinner.succeed(`Copied ${count} new files (existing files preserved)`);
+      await ensureGlobalPermissions();
       printNextSteps();
       return;
     } else {
@@ -97,6 +99,7 @@ export async function initCommand(options: InitOptions): Promise<void> {
         const spinner = ora('Merging templates...').start();
         const count = await copyDir(templatesDir, claudePath, false);
         spinner.succeed(`Copied ${count} new files (existing files preserved)`);
+        await ensureGlobalPermissions();
         printNextSteps();
         return;
       }
@@ -116,6 +119,9 @@ export async function initCommand(options: InitOptions): Promise<void> {
   }
 
   spinner.succeed(`Copied ${count} files to .claude/`);
+
+  // Ensure global permissions for Claude Code (Read, Write, Edit)
+  await ensureGlobalPermissions();
 
   // Generate mustard.json (git flow config)
   await generateMustardJson(projectPath, options);
@@ -166,7 +172,7 @@ function detectRemoteBranches(): string[] {
 interface MustardConfig {
   git: {
     flow: Record<string, string>;
-    pr: { enabled: boolean; provider: string };
+    provider: string;
     submodules: boolean;
   };
 }
@@ -205,7 +211,7 @@ async function generateMustardJson(projectPath: string, options: InitOptions): P
     config = {
       git: {
         flow,
-        pr: { enabled: true, provider: 'github' },
+        provider: 'github',
         submodules: hasSubmodules
       }
     };
@@ -215,7 +221,6 @@ async function generateMustardJson(projectPath: string, options: InitOptions): P
       production: string;
       devBranch: string;
       devPattern: string;
-      prEnabled: boolean;
       provider: string;
     }>([
       {
@@ -238,18 +243,11 @@ async function generateMustardJson(projectPath: string, options: InitOptions): P
         when: (a) => !!a.devBranch
       },
       {
-        type: 'confirm',
-        name: 'prEnabled',
-        message: 'Use Pull Requests for merging?',
-        default: true
-      },
-      {
         type: 'list',
         name: 'provider',
         message: 'Git provider:',
         choices: ['github', 'gitlab', 'bitbucket'],
-        default: 'github',
-        when: (a) => a.prEnabled
+        default: 'github'
       }
     ]);
 
@@ -264,7 +262,7 @@ async function generateMustardJson(projectPath: string, options: InitOptions): P
     config = {
       git: {
         flow,
-        pr: { enabled: answers.prEnabled, provider: answers.provider || 'github' },
+        provider: answers.provider || 'github',
         submodules: hasSubmodules
       }
     };
@@ -273,6 +271,53 @@ async function generateMustardJson(projectPath: string, options: InitOptions): P
   const spinner = ora('Writing mustard.json...').start();
   await writeFile(configPath, JSON.stringify(config, null, 2) + '\n');
   spinner.succeed('Created mustard.json');
+}
+
+/**
+ * Ensure ~/.claude/settings.json has Read, Write, Edit in allow list.
+ * Non-destructive: only adds missing permissions, preserves everything else.
+ */
+async function ensureGlobalPermissions(): Promise<void> {
+  const claudeDir = join(homedir(), '.claude');
+  const settingsPath = join(claudeDir, 'settings.json');
+  const requiredPerms = ['Read', 'Write', 'Edit'];
+
+  let settings: Record<string, any> = {};
+
+  if (existsSync(settingsPath)) {
+    try {
+      settings = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+    } catch {
+      // Malformed JSON — start fresh but warn
+      console.log(chalk.yellow('  ⚠️  ~/.claude/settings.json is malformed — recreating permissions section'));
+    }
+  }
+
+  if (!settings.permissions) settings.permissions = {};
+  if (!Array.isArray(settings.permissions.allow)) settings.permissions.allow = [];
+
+  const allow: string[] = settings.permissions.allow;
+  const added: string[] = [];
+
+  for (const perm of requiredPerms) {
+    // Check if already has a generic allow (e.g. "Write") or path-specific (e.g. "Write(//c/**)")
+    const hasGeneric = allow.includes(perm);
+    if (!hasGeneric) {
+      // Remove path-specific versions since we're adding the generic one
+      const filtered = allow.filter(p => !p.startsWith(`${perm}(`));
+      settings.permissions.allow = filtered;
+      settings.permissions.allow.push(perm);
+      added.push(perm);
+    }
+  }
+
+  if (added.length > 0) {
+    await mkdir(claudeDir, { recursive: true });
+    await writeFile(settingsPath, JSON.stringify(settings, null, 2) + '\n');
+    console.log(chalk.green(`  ✓ Global permissions: added ${added.join(', ')} to ~/.claude/settings.json`));
+  } else {
+    console.log(chalk.gray('  Global permissions: Read, Write, Edit already configured'));
+  }
 }
 
 function printNextSteps(): void {

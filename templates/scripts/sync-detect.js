@@ -857,11 +857,20 @@ function findDashboardDir(absPath) {
 function main() {
   const skipCache = process.argv.includes("--no-cache");
 
-  // 1. Discover subproject paths
-  let subprojectPaths = getSubmodulePaths();
-  if (!subprojectPaths) {
-    subprojectPaths = scanForSubprojects();
+  // 1. Discover subproject paths (merge submodules + CLAUDE.md scan)
+  const submodulePaths = getSubmodulePaths() || [];
+  const submoduleSet = new Set(submodulePaths);
+  const scannedPaths = scanForSubprojects();
+  const notInGit = [];
+  const seen = new Set(submodulePaths);
+  for (const p of scannedPaths) {
+    if (!seen.has(p)) {
+      seen.add(p);
+      submodulePaths.push(p);
+      notInGit.push(p);
+    }
   }
+  const subprojectPaths = submodulePaths;
 
   // 2. Filter to only those with a CLAUDE.md, then build subproject entries
   const subprojects = [];
@@ -912,7 +921,15 @@ function main() {
   // 3. Discover agents (from prompts/*.md files)
   const agents = getAgents();
 
-  // 4. Output
+  // 4. Build warnings for subprojects not registered as git submodules
+  const warnings = [];
+  for (const p of notInGit) {
+    warnings.push(
+      `"${p}" has CLAUDE.md but is NOT a git submodule. Consider: git submodule add <url> ${p}`
+    );
+  }
+
+  // 5. Output
   const result = {
     subprojects,
     agents,
@@ -921,11 +938,12 @@ function main() {
     promptsCompiledDir: ".claude/prompts_compiled",
     sourceHashes,
     moduleHashes,
+    ...(warnings.length > 0 ? { warnings } : {}),
   };
 
   process.stdout.write(JSON.stringify(result, null, 2) + "\n");
 
-  // 5. Write detect cache for guard-verify.js and scan incremental
+  // 6. Write detect cache for guard-verify.js and scan incremental
   //    Skip when called with --no-cache (scan uses this to avoid premature cache update)
   if (!skipCache) {
     const cachePath = path.join(ROOT, ".claude", ".detect-cache.json");
