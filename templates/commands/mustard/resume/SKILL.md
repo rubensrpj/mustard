@@ -72,6 +72,12 @@ Resumes an interrupted pipeline. The main context BECOMES the Pipeline Runner �
 
 17. **Dispatch:** TaskUpdate(in_progress) + pipeline state. ALL agents in same wave → SINGLE message (multiple Task invocations). **Pass `model` from pipeline state** (e.g. `model: "opus"`) in each Task tool call — this overrides the agent YAML default. On return: pipeline state update, spec `[ ]` → `[x]` (use `replace_all` per section header, or line-by-line — NEVER copy entire spec blocks as old_string), TaskUpdate(completed), advance wave.
 
+17b. **Agent Memory:** After each wave completes and spec checkboxes are updated, write agent memories for downstream waves:
+    ```bash
+    echo '{"agent_type":"{agent_type}","wave":{N},"pipeline":"{spec-name}","summary":"{1-line summary of what agent did}","details":{"files_modified":[...],"decisions":[...]}}' | node .claude/scripts/memory-write.js
+    ```
+    One call per agent in the completed wave. Summary ≤300 chars (key facts: files created, patterns used, endpoints added). Skip if no downstream waves remain.
+
 ### Step 4: Validate, Review & Complete
 
 18. **VALIDATE** — Parse agent results: Backend→`dotnet build`, Frontend→`pnpm build`, Mobile→`fvm flutter analyze`. All passed → next. Failed → **granular retry** (see below).

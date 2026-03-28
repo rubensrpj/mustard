@@ -111,13 +111,7 @@ Steps: update spec → summarize failure → Explore → rewrite tasks → re-ap
 
 ## Role Rules
 
-| Role | Color | Boundary | Validate | Return sections |
-|------|-------|----------|----------|-----------------|
-| api | 🔵 | Server-side modules. NEVER schemas or UI | `dotnet build` | Files, Endpoints, Build, Guards Verified |
-| ui | 🟢 | Interfaces with type safety. NEVER API or schemas | `pnpm type-check` | Files, Components, Routes, Type-check, Guards Verified |
-| database | 🟡 | Schemas, types, constraints. NEVER logic or UI | Generate + apply migration | Schema, Columns, Migration, Guards Verified |
-| library | 🟣 | Same as `api` | Same as `api` | Same as `api` |
-| mobile | 🟠 | Flutter/Dart app. NEVER native or backend | `flutter analyze` | Files, Screens, Analysis, Guards Verified |
+> See `pipeline-config.md § Role Rules` for role boundaries and validation rules.
 
 ## Pipeline Bugfix
 

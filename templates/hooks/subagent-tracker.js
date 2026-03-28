@@ -11,7 +11,10 @@
  * State dir: .claude/.agent-state/{agent_id}.json
  * Queue:     .claude/.agent-state/_queue.json
  *
- * @version 2.0.0
+ * Also injects agent memory (from .claude/.agent-memory/) into new agents
+ * via additionalContext — enabling zero-parent-token cross-wave communication.
+ *
+ * @version 2.1.0
  */
 
 const fs = require('fs');
@@ -19,6 +22,11 @@ const path = require('path');
 
 const QUEUE_FILE = '_queue.json';
 const QUEUE_STALE_MS = 60_000; // 60 seconds
+const MAX_QUEUE_SIZE = 10;
+
+const MEMORY_DIR = '.agent-memory';
+const MEMORY_INDEX = '_index.json';
+const MEMORY_MAX_CHARS = 1500;
 
 let input = '';
 process.stdin.setEncoding('utf8');
@@ -61,12 +69,17 @@ function handlePreToolUse(data, stateDir) {
 
   ensureDir(stateDir);
 
+  pruneQueue(stateDir);
+
   const queue = readQueue(stateDir);
   queue.push({
     description,
     type: subagentType,
     queued_at: new Date().toISOString(),
   });
+  if (queue.length > MAX_QUEUE_SIZE) {
+    queue.splice(0, queue.length - MAX_QUEUE_SIZE);
+  }
   writeQueue(stateDir, queue);
 }
 
@@ -104,11 +117,22 @@ function handleStart(data, stateDir) {
     }),
   );
 
-  // Inject useful context into the subagent
+  // Build additionalContext with optional memory injection
+  const projectDir = path.resolve(stateDir, '..', '..');
+  let context = `[Tracker] Agent "${agentType}" registered. Follow all CLAUDE.md rules.`;
+
+  try {
+    const memories = loadRelevantMemories(projectDir, agentType);
+    if (memories.length > 0) {
+      context += '\n\n[Agent Memory] Findings from prior agents:\n' +
+        memories.map(m => `- [${m.agent_type}] ${m.summary}`).join('\n');
+    }
+  } catch {} // fail-open: memory injection is advisory
+
   const response = {
     hookSpecificOutput: {
       hookEventName: 'SubagentStart',
-      additionalContext: `[Tracker] Agent "${agentType}" registered. Follow all CLAUDE.md rules.`,
+      additionalContext: context,
     },
   };
   console.log(JSON.stringify(response));
@@ -172,6 +196,39 @@ function handleSessionStart(data, stateDir) {
       if (remaining.length === 0) fs.rmdirSync(stateDir);
     } catch {}
   } catch {}
+}
+
+/**
+ * Load relevant memories from previous agents in the same pipeline.
+ * Returns array of { agent_type, summary } objects, budget-capped at MEMORY_MAX_CHARS.
+ */
+function loadRelevantMemories(projectDir, agentType) {
+  const memDir = path.join(projectDir, '.claude', MEMORY_DIR);
+  const indexPath = path.join(memDir, MEMORY_INDEX);
+  if (!fs.existsSync(indexPath)) return [];
+
+  const index = JSON.parse(fs.readFileSync(indexPath, 'utf8'));
+  if (!Array.isArray(index) || index.length === 0) return [];
+
+  // Filter: exclude same agent type, sort by wave then timestamp (newest first)
+  const filtered = index
+    .filter(m => m.agent_type !== agentType)
+    .sort((a, b) => {
+      if ((a.wave || 0) !== (b.wave || 0)) return (a.wave || 0) - (b.wave || 0);
+      return new Date(b.timestamp) - new Date(a.timestamp);
+    });
+
+  // Budget-cap: accumulate summaries until MEMORY_MAX_CHARS
+  const result = [];
+  let chars = 0;
+  for (const m of filtered) {
+    const summary = m.summary || '';
+    if (chars + summary.length > MEMORY_MAX_CHARS) break;
+    result.push(m);
+    chars += summary.length;
+  }
+
+  return result;
 }
 
 // ── Queue helpers ──

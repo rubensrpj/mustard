@@ -5,8 +5,9 @@
  * Cleans:
  * - .claude/.agent-state/ (stale subagent tracking)
  * - .claude/.compact-state/ files older than 24h
+ * - .claude/.agent-memory/ (agent memory entries — session-scoped)
  *
- * @version 1.0.0
+ * @version 1.1.0
  */
 
 const fs = require('fs');
@@ -35,6 +36,9 @@ process.stdin.on('end', () => {
 
     // Clean compact-state (only files older than 24h)
     cleanDirectory(path.join(claudeDir, '.compact-state'), { maxAgeMs: ONE_DAY_MS });
+
+    // Clean agent-memory (session-scoped — remove all on session end)
+    cleanDirectory(path.join(claudeDir, '.agent-memory'), { removeAll: true });
 
     process.exit(0);
   } catch (err) {

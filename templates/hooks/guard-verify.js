@@ -108,10 +108,12 @@ function checkCriticalRules(content, relPath) {
     if (rule.crossModule) {
       const currentModule = relPath.match(/Modules[/\\]v\d+[/\\](\w+)/)?.[1];
       if (!currentModule) continue;
-      const repoMatches = [...content.matchAll(/\b(\w+)Repository\b/g)];
       const moduleBase = currentModule.toLowerCase().replace(/s$/, "");
       let hasCrossModule = false;
-      for (const [, repoName] of repoMatches) {
+      const repoRegex = /\b(\w+)Repository\b/g;
+      let repoMatch;
+      while ((repoMatch = repoRegex.exec(content)) !== null) {
+        const repoName = repoMatch[1];
         const repoBase = repoName.toLowerCase().replace(/^i/, "");
         if (repoBase.startsWith(moduleBase) || moduleBase.startsWith(repoBase.replace(/repository$/, ""))) continue;
         hasCrossModule = true;
@@ -133,9 +135,10 @@ function analyzeImports(relPath, content) {
   const violations = [];
   const isService = /Services?[/\\]/.test(relPath);
   const isRepository = /Repositor(y|ies)[/\\]/.test(relPath);
-  const usings = [...content.matchAll(/using\s+[\w.]+\.Modules\.v\d+\.(\w+)\.([\w.]*)/g)];
-
-  for (const [, importModule, importPath] of usings) {
+  const usingRegex = /using\s+[\w.]+\.Modules\.v\d+\.(\w+)\.([\w.]*)/g;
+  let usingMatch;
+  while ((usingMatch = usingRegex.exec(content)) !== null) {
+    const [, importModule, importPath] = usingMatch;
     if (isService && importModule !== currentModule && /Repositor/i.test(importPath)) {
       violations.push(`L8: importing ${importModule}.${importPath} from ${currentModule} Service — use Service instead`);
     }

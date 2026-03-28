@@ -25,6 +25,37 @@ const { execSync } = require("child_process");
 const ROOT = path.resolve(__dirname, "..", "..");
 
 // ---------------------------------------------------------------------------
+// Stream-based file hashing
+// ---------------------------------------------------------------------------
+
+/**
+ * Hash a file in 64KB chunks, updating `hash` in-place.
+ * Avoids loading entire files into memory for large source trees.
+ */
+function hashFileStream(filePath, hash) {
+  const buffer = Buffer.alloc(65536);
+  const fd = fs.openSync(filePath, "r");
+  try {
+    let bytesRead;
+    while ((bytesRead = fs.readSync(fd, buffer, 0, buffer.length, null)) > 0) {
+      hash.update(buffer.subarray(0, bytesRead));
+    }
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Memoized collectSourceFiles cache
+// ---------------------------------------------------------------------------
+
+const _collectCache = new Map();
+
+function clearCollectCache() {
+  _collectCache.clear();
+}
+
+// ---------------------------------------------------------------------------
 // Role detection: file-based scoring
 // ---------------------------------------------------------------------------
 
@@ -601,6 +632,10 @@ const SOURCE_EXTENSIONS = new Set([".cs", ".ts", ".tsx", ".js", ".jsx", ".dart"]
  * Respects ignore patterns and extension filters.
  */
 function collectSourceFiles(dir, maxDepth = 10, currentDepth = 0) {
+  if (currentDepth === 0) {
+    const cached = _collectCache.get(dir);
+    if (cached) return cached.slice();
+  }
   const results = [];
   if (currentDepth > maxDepth) return results;
   try {
@@ -633,6 +668,9 @@ function collectSourceFiles(dir, maxDepth = 10, currentDepth = 0) {
   } catch {
     // ignore unreadable dirs
   }
+  if (currentDepth === 0) {
+    _collectCache.set(dir, results.slice());
+  }
   return results;
 }
 
@@ -648,9 +686,8 @@ function computeSourceHash(subprojectPath) {
   const hash = crypto.createHash("sha256");
   for (const file of files) {
     try {
-      const content = fs.readFileSync(path.join(ROOT, file), "utf-8");
       hash.update(file); // include path for sensitivity to renames
-      hash.update(content);
+      hashFileStream(path.join(ROOT, file), hash);
     } catch {
       // skip unreadable
     }
@@ -718,7 +755,7 @@ function computeModuleHashes(subprojectPath, role) {
       for (const f of files) {
         try {
           hash.update(f);
-          hash.update(fs.readFileSync(path.join(ROOT, f), "utf-8"));
+          hashFileStream(path.join(ROOT, f), hash);
         } catch {}
       }
       modules[modName] = {
@@ -742,7 +779,7 @@ function computeModuleHashes(subprojectPath, role) {
           for (const f of files) {
             try {
               hash.update(f);
-              hash.update(fs.readFileSync(path.join(ROOT, f), "utf-8"));
+              hashFileStream(path.join(ROOT, f), hash);
             } catch {}
           }
           modules[entry.name] = {
@@ -768,7 +805,7 @@ function computeModuleHashes(subprojectPath, role) {
           for (const f of files) {
             try {
               hash.update(f);
-              hash.update(fs.readFileSync(path.join(ROOT, f), "utf-8"));
+              hashFileStream(path.join(ROOT, f), hash);
             } catch {}
           }
           modules[entry.name] = {
@@ -942,6 +979,9 @@ function main() {
   };
 
   process.stdout.write(JSON.stringify(result, null, 2) + "\n");
+
+  // Release memoized collectSourceFiles cache
+  clearCollectCache();
 
   // 6. Write detect cache for guard-verify.js and scan incremental
   //    Skip when called with --no-cache (scan uses this to avoid premature cache update)

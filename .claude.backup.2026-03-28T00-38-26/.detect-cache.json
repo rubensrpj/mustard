@@ -1,0 +1,23 @@
+{
+  "lastScan": "2026-03-25T20:02:53.709Z",
+  "subprojects": [
+    {
+      "name": "templates",
+      "path": "templates",
+      "role": "general",
+      "agent": "general",
+      "commands": [
+        "guards.md",
+        "notes.md",
+        "patterns.md",
+        "recipes.md",
+        "stack.md"
+      ],
+      "stackSummary": ""
+    }
+  ],
+  "sourceHashes": {
+    "templates": "5fbb15d0649ccd5f5dd584811e18e81560b1b9221fc805a5b97429da535b8ac6"
+  },
+  "moduleHashes": {}
+}

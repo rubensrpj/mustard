@@ -106,6 +106,7 @@ When user chooses "Approve and implement now":
 6. Dispatch agents (wave rules: DB+Backend parallel, Frontend after Backend). Agent prompt includes `{recommended_skills}` as skill hints — agents read SKILL.md of relevant skills before implementing
 7. Wave transitions between waves (from `pipeline-config.md`)
 8. On return: validate (build/type-check), update spec `[ ]` → `[x]` (line-by-line edits, NEVER copy entire spec blocks as old_string)
+8b. **Agent Memory:** After agents return and spec is updated, write agent memory: `echo '{"agent_type":"{type}","wave":{N},"pipeline":"{spec-name}","summary":"{what agent did}","details":{...}}' | node .claude/scripts/memory-write.js` — one per agent. Skip if single-wave pipeline (no downstream agents to benefit).
 9. **REVIEW** — dispatch review agent for each affected subproject (reads guards + relevant skills, runs 7-category checklist: SOLID, Design System, Patterns, i18n, Integration, Build, Elegance). REJECTED → fix + re-review (max 2 loops)
 10. All passed + APPROVED → CLOSE flow inline (sync registry, move spec, cleanup state)
 11. Failed → max 2 retries, then STOP + report

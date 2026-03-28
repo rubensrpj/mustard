@@ -12,9 +12,9 @@
 |--------|-------------|
 | `sync` | Pull parent branch into current branch |
 | `commit` | Create commit (no push) |
-| `push` | Sync + commit + push to remote |
-| `merge` | Promote current → parent (creates PR) |
-| `deploy` | Push + merge + inform about cascade |
+| `push` | Commit + push to remote |
+| `merge` | Push + cascade PRs to parent (dev_rubens → dev) |
+| `merge main` | Cascade PRs from dev → main (explicit, when ready) |
 
 ## Configuration
 
@@ -164,66 +164,101 @@ git add -A && git commit -m "<message>" && git push origin <branch>
 
 ## merge
 
-Promote current branch into its parent via Pull Request.
+Promote current branch into its parent via Pull Request — **recursively through the entire flow chain**, including all submodules.
 
 ### Step 1 — Ensure pushed
 
 Check if local is ahead of remote. If yes, execute `push` first.
 
-### Step 2 — Create PR
+### Step 2 — Cascade merge (recursive)
 
-Create a Pull Request from current → parent branch.
+Resolve the **full flow chain** from the current branch to the terminal branch (the one with no parent in the flow). Example: `dev_rubens` → `dev` → `main` = 2 hops.
 
-#### GitHub (`gh`)
+**For each hop** (e.g., first `dev_rubens → dev`, then `dev → main`):
 
-```bash
-gh pr create --base $PARENT --title "<title>" --body "<body>"
-```
+#### 2a. Submodules FIRST (PARALLEL — monorepo only)
 
-#### GitLab (`glab`)
+For each submodule that has commits ahead of `$TARGET`:
 
 ```bash
-glab mr create --target-branch $PARENT --title "<title>" --description "<body>"
+cd <SUBMODULE_ABSOLUTE_PATH> && git fetch origin && git log origin/$TARGET..origin/$SOURCE --oneline
 ```
 
-#### PR Title & Body
+If commits exist, create PR and merge immediately:
+
+```bash
+# GitHub
+cd <SUBMODULE_ABSOLUTE_PATH> && gh pr create --head $SOURCE --base $TARGET --title "<title>" --body "<body>"
+cd <SUBMODULE_ABSOLUTE_PATH> && gh pr merge --merge
+```
+
+```bash
+# GitLab
+cd <SUBMODULE_ABSOLUTE_PATH> && glab mr create --source-branch $SOURCE --target-branch $TARGET --title "<title>" --description "<body>" --remove-source-branch=false
+cd <SUBMODULE_ABSOLUTE_PATH> && glab mr merge
+```
+
+Skip submodules with no commits ahead (nothing to merge).
+
+#### 2b. Parent repo
+
+Same as submodules — create PR + merge for this hop:
+
+```bash
+# GitHub
+gh pr create --head $SOURCE --base $TARGET --title "<title>" --body "<body>"
+gh pr merge --merge
+```
+
+#### 2c. Next hop
+
+After all PRs are merged for this hop, advance to the next hop in the chain. Repeat 2a–2b.
+
+**Auto-merge stops at the first parent** (e.g., `dev_rubens → dev`). The final promotion to the terminal branch (e.g., `dev → main`) is **never automatic** — it requires a separate explicit `/git merge main` call.
+
+### PR Title & Body
 
 - Title: conventional commit style — `<type>: <short description>`
-- Body: auto-generated from commit log since divergence from parent:
+- Body: auto-generated from commit log since divergence:
 
 ```bash
-git log $PARENT..HEAD --oneline
+git log $TARGET..$SOURCE --oneline
 ```
 
-#### Monorepo Note
+### Example: `/git merge` from `dev_rubens`
 
-PRs are created at the **parent repo level only**. Submodules are committed and pushed, but PRs are not created per submodule (submodules follow parent via ref update).
+```
+dev_rubens → dev (auto)
+  ├── Competi.Backend:  PR #N created + merged
+  ├── Competi.Frontend: PR #N created + merged
+  ├── Competi.Libs:     PR #N created + merged
+  ├── Competi.Admin:    (skipped — no commits ahead)
+  └── Competi.CRM:      PR #N created + merged
+```
 
-After PR is created, output:
+### Example: `/git merge main` (explicit — when ready for production)
 
-> PR created: {url}. Run /review to review it.
+```
+dev → main
+  ├── Competi.Backend:  PR #N created + merged
+  ├── Competi.Frontend: PR #N created + merged
+  ├── Competi.Libs:     PR #N created + merged
+  └── Competi.CRM:      PR #N created + merged
+```
 
----
+### Output
 
-## deploy
+Print a summary table at the end:
 
-Sequential phases. Each phase must complete before the next.
-
-### Phase 1 — Push
-
-Execute `push` action (includes sync).
-
-### Phase 2 — Merge to parent
-
-Execute `merge` action (current → parent).
-
-### Phase 3 — Cascade (if parent ≠ production)
-
-If `$PARENT` also has a parent in the flow (e.g., `dev` → `main`), inform the user:
-
-> PR created: `dev_rubens → dev`. To promote `dev → main`, switch to `dev` and run `/git deploy` again.
-
-Do NOT auto-cascade — each promotion is a deliberate decision.
+```
+| Repo            | Status          |
+|-----------------|-----------------|
+| Backend         | PR #1 merged    |
+| Frontend        | PR #1 merged    |
+| Libs            | PR #1 merged    |
+| Admin           | skipped         |
+| CRM (parent)    | PR #3 merged    |
+```
 
 ---
 
