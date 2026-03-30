@@ -26,10 +26,10 @@
 
 Mustard sets up a `.claude/` folder that turns Claude Code into a structured development pipeline:
 
-- **14 pipeline skills** — feature, bugfix, scan, resume, approve, complete, git, maint, task, knowledge, skill, status, scan-format, agent-prompt template
-- **9 enforcement hooks** — bash safety, file guard, registry validation, guard verification, auto-format, pre-compact, session cleanup, subagent tracking, RTK rewrite
+- **15 pipeline skills** — feature, bugfix, scan, resume, approve, complete, git, maint, task, knowledge, skill, status, scan-format, agent-prompt template, stats
+- **12 enforcement hooks** — bash safety, file guard, registry validation, guard verification, auto-format, pre-compact, session cleanup, subagent tracking, RTK rewrite, session memory, review gate, metrics tracker
 - **6 bundled skills** — design-craft, react-best-practices, senior-architect, skill-creator, commit-workflow, pipeline-execution
-- **3 sync scripts** — subproject detection, entity registry sync, statusline
+- **8 utility scripts** — subproject detection, entity registry sync, statusline, memory persistence, diff context, knowledge base, metrics collection
 - **Token economy** — auto-installs [RTK](https://github.com/rtk-ai/rtk) to reduce token consumption by 60-90% on CLI outputs
 - **Monorepo + single repo** — works with any project structure
 
@@ -101,6 +101,8 @@ The CLI is a **one-time setup tool**. All intelligence lives in the skills and h
 | `mustard init` | Copy `.claude/` structure into current project |
 | `mustard update` | Update core files (preserves user customizations) |
 | `mustard auto-update` | Check npm for newer version and install |
+| `mustard add <template>` | Install a community template |
+| `mustard review --pr <N>` | Review a pull request (local or CI mode) |
 | `mustard --version` | Show installed version |
 | `mustard --help` | Show help |
 
@@ -144,6 +146,40 @@ The CLI is a **one-time setup tool**. All intelligence lives in the skills and h
 | `--check-only` | Only check for updates, do not install |
 | `-y, --yes` | Skip confirmation prompts |
 
+### `mustard add`
+
+| Option | Description |
+|--------|-------------|
+| `-f, --force` | Overwrite existing files |
+
+**Sources:**
+- GitHub: `github.com/mustard-templates/{name}`
+- npm: `mustard-template-{name}`
+
+**Usage:**
+```bash
+mustard add template:dotnet-clean-arch
+mustard add template:nextjs-app-router
+```
+
+### `mustard review`
+
+| Option | Description |
+|--------|-------------|
+| `--pr <number>` | PR number to review (required) |
+| `--ci` | CI mode: post as PR comment, exit 1 on critical issues |
+
+**Requirements:** `gh` (GitHub CLI) and `claude` CLI must be installed.
+
+**Usage:**
+```bash
+# Interactive review
+mustard review --pr 42
+
+# CI mode (for GitHub Actions)
+mustard review --ci --pr 42
+```
+
 ## What Gets Installed
 
 ```
@@ -166,6 +202,7 @@ The CLI is a **one-time setup tool**. All intelligence lives in the skills and h
 │   ├── knowledge/SKILL.md             #   /knowledge — notes, audit, reports
 │   ├── skill/SKILL.md                 #   /skill — manage skills
 │   ├── status/SKILL.md                #   /status — project status
+│   ├── stats/SKILL.md                 #   /stats — pipeline metrics
 │   └── templates/agent-prompt/SKILL.md #  Agent prompt template
 ├── hooks/                             # Enforcement hooks
 │   ├── rtk-rewrite.js                 #   Rewrites Bash commands through RTK
@@ -177,11 +214,24 @@ The CLI is a **one-time setup tool**. All intelligence lives in the skills and h
 │   ├── pre-compact.js                 #   Saves state before compaction
 │   ├── session-cleanup.js             #   Cleans up on session end
 │   ├── subagent-tracker.js            #   Tracks agent lifecycle
+│   ├── session-memory.js              #   Injects persistent memory on session start
+│   ├── review-gate.js                 #   Pre-commit validation (fail-open)
+│   ├── metrics-tracker.js             #   Tracks pipeline API calls and retries
 │   └── __tests__/hooks.test.js        #   Hook tests
 ├── scripts/
 │   ├── sync-detect.js                 #   Detects subprojects + roles
 │   ├── sync-registry.js               #   Generates entity-registry.json
-│   └── statusline.js                  #   Claude Code statusline
+│   ├── statusline.js                  #   Claude Code statusline
+│   ├── memory-persist.js              #   Persists decisions/lessons across sessions
+│   ├── memory-write.js                #   Writes agent memory entries
+│   ├── diff-context.js                #   Generates git diff summary for agents
+│   ├── knowledge-update.js            #   Updates project knowledge base
+│   └── metrics-collect.js             #   Collects and displays pipeline metrics
+├── memory/                            # Persistent memory (auto-created)
+│   ├── decisions.json                 #   Decisions across pipelines
+│   └── lessons.json                   #   Lessons learned
+├── knowledge.json                     # Evolutionary knowledge base
+├── metrics/                           # Pipeline metrics archive
 └── skills/                            # Bundled skills
     ├── design-craft/                  #   UI design methodology
     ├── react-best-practices/          #   React/Next.js optimization (40+ rules)
@@ -203,6 +253,7 @@ The CLI is a **one-time setup tool**. All intelligence lives in the skills and h
 | `/approve` | Approve spec for implementation |
 | `/resume` | Resume interrupted pipeline |
 | `/complete` | Finalize or cancel pipeline |
+| `/stats` | Show pipeline metrics and token savings |
 
 ### Operations
 
@@ -269,7 +320,7 @@ After `/scan`, the pipeline commands (`/feature`, `/bugfix`) have full context t
   PLAN — create spec with tasks per agent (Light: inline, Full: /approve)
      │
      ▼
-  EXECUTE — dispatch agents per wave (DB+Backend ∥, Frontend after)
+  EXECUTE — dispatch agents per wave (DB+Backend ∥, Frontend after or parallel if safe)
      │
      ▼
   REVIEW — mandatory review per subproject (SOLID, patterns, i18n, ...)
@@ -300,6 +351,38 @@ Mustard integrates [RTK (Rust Token Killer)](https://github.com/rtk-ai/rtk) as c
 | `ls` / `tree` / `grep` | 80% |
 
 RTK only applies to Bash tool calls. Claude Code's built-in tools (Read, Grep, Glob) are already optimized and bypass the hook.
+
+## Persistent Memory
+
+Mustard maintains lightweight persistent memory across sessions:
+
+- **Decisions** — architectural and implementation decisions are saved to `.claude/memory/decisions.json`
+- **Lessons** — what went wrong and the correction applied, saved to `.claude/memory/lessons.json`
+- **Knowledge base** — patterns, conventions, and entities discovered across pipelines, saved to `.claude/knowledge.json`
+
+Memory is automatically:
+- **Injected** into each new session and every dispatched agent
+- **Capped** at 50 entries (memory) / 200 entries (knowledge) — oldest pruned
+- **Never cleaned** by session cleanup — persists until manually removed
+
+This gives 80% of the benefit of a database-backed system with zero infrastructure.
+
+## CI Integration
+
+Review PRs automatically in your CI pipeline:
+
+```bash
+# In GitHub Actions
+mustard review --ci --pr ${{ github.event.pull_request.number }}
+```
+
+CI mode:
+- Fetches PR diff via `gh pr diff`
+- Runs Claude review with project guards and rules
+- Posts review as PR comment
+- Exits with code 1 if CRITICAL issues found (fails the build)
+
+Requires `gh` and `claude` CLI in the CI environment.
 
 ## Supported Projects
 

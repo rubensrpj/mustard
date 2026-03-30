@@ -15,6 +15,10 @@ Starts the pipeline to implement a feature or enhancement. Self-contained: ANALY
 ### ANALYZE Phase
 
 **Auto-sync (silent):** `node .claude/scripts/sync-registry.js`
+
+### Diff Context (automatic)
+Run `node .claude/scripts/diff-context.js` to capture the current git state. Include the output in the agent prompt as `{diff_context}` so agents know what has already changed.
+
 1. Read `pipeline-config.md` — agents, wave transitions, model selection
 2. Read `entity-registry.json` via Grep for the specific entity name (e.g. `"Contract":`) — NEVER read the full JSON. Entity found? infer layers. Not found? all layers.
 3. Determine layers from signals:
@@ -65,6 +69,9 @@ Record scope for PLAN phase branching.
    - Summary, Entity Info, Files, Tasks, Dependencies
    - Tasks organized by `### {Agent} Agent (Wave {N})`
    - 3-8 checkboxed steps per agent, decomposed by operation type (NOT by file)
+   - If a frontend task has NO dependency on new backend endpoints or types, mark it as `(parallel-safe)` in the spec header:
+     `### Frontend Agent (Wave 1, parallel-safe)`
+     This allows the orchestrator to dispatch it alongside backend in Wave 1.
 2. Add checkpoint fields: `Status: draft`, `Phase: PLAN`, `Scope: full`, `Checkpoint: {now}`
 3. Create `.claude/.pipeline-states/{spec-name}.json`: `specName`, `status: "active"`, `phase: 2`, `phaseName: "PLAN"`, `scope: "full"`
 4. Elegance Check: 3+ files or complex logic → "Is there a more elegant approach?"
@@ -103,7 +110,7 @@ When user chooses "Approve and implement now":
 3. Read `pipeline-config.md` for agent config. For `entity-registry.json`: Grep for specific entity block only
 4. Match recipes by title via Grep on `{subproject}/.claude/commands/recipes.md` — do NOT read full file. Extract recipe number + pattern refs
 5. Identify relevant skills for `{recommended_skills}`: list skill names most relevant to the task (e.g., `api-endpoint-wiring, api-dto-validation`). Agents use these as hints — Claude natively decides which to load based on descriptions
-6. Dispatch agents (wave rules: DB+Backend parallel, Frontend after Backend). Agent prompt includes `{recommended_skills}` as skill hints — agents read SKILL.md of relevant skills before implementing
+6. Dispatch agents (wave rules: DB+Backend parallel, Frontend after Backend UNLESS spec marks task as `(parallel-safe)` — see `pipeline-config.md` Parallel Rules). Agent prompt includes `{recommended_skills}` as skill hints — agents read SKILL.md of relevant skills before implementing
 7. Wave transitions between waves (from `pipeline-config.md`)
 8. On return: validate (build/type-check), update spec `[ ]` → `[x]` (line-by-line edits, NEVER copy entire spec blocks as old_string)
 8b. **Agent Memory:** After agents return and spec is updated, write agent memory: `echo '{"agent_type":"{type}","wave":{N},"pipeline":"{spec-name}","summary":"{what agent did}","details":{...}}' | node .claude/scripts/memory-write.js` — one per agent. Skip if single-wave pipeline (no downstream agents to benefit).

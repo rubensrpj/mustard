@@ -61,6 +61,16 @@
         "hooks": [
           {
             "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/review-gate.js",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
             "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/bash-safety.js",
             "timeout": 5
           }
@@ -113,6 +123,16 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "matcher": "Bash|Write|Edit|Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/metrics-tracker.js",
+            "timeout": 3
+          }
+        ]
       }
     ],
 
@@ -124,6 +144,17 @@
             "type": "command",
             "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/subagent-tracker.js",
             "statusMessage": "Cleaning up previous session state...",
+            "timeout": 3
+          }
+        ]
+      },
+      {
+        "matcher": "startup",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/session-memory.js",
+            "statusMessage": "Loading persistent memory...",
             "timeout": 3
           }
         ]

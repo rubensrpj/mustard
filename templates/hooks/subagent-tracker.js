@@ -129,6 +129,35 @@ function handleStart(data, stateDir) {
     }
   } catch {} // fail-open: memory injection is advisory
 
+  try {
+    const memDir = path.join(projectDir, '.claude', 'memory');
+    const decisions = loadPersistentEntries(path.join(memDir, 'decisions.json'), 5);
+    const lessons = loadPersistentEntries(path.join(memDir, 'lessons.json'), 5);
+    if (decisions.length > 0 || lessons.length > 0) {
+      context += '\n\n[Persistent Memory]';
+      if (decisions.length > 0) {
+        context += '\nDecisions: ' + decisions.map(d => d.content).join('; ');
+      }
+      if (lessons.length > 0) {
+        context += '\nLessons: ' + lessons.map(l => l.content).join('; ');
+      }
+    }
+  } catch {} // fail-open
+
+  try {
+    const kbPath = path.join(projectDir, '.claude', 'knowledge.json');
+    if (fs.existsSync(kbPath)) {
+      const kb = JSON.parse(fs.readFileSync(kbPath, 'utf8'));
+      const entries = (kb.entries || []).slice(-10);
+      if (entries.length > 0) {
+        context += '\n\n[Project Knowledge]';
+        for (const e of entries) {
+          context += `\n- [${e.type}] ${e.name}: ${e.description}`;
+        }
+      }
+    }
+  } catch {} // fail-open
+
   const response = {
     hookSpecificOutput: {
       hookEventName: 'SubagentStart',
@@ -229,6 +258,16 @@ function loadRelevantMemories(projectDir, agentType) {
   }
 
   return result;
+}
+
+// ── Persistent memory helper ──
+
+function loadPersistentEntries(filePath, max) {
+  try {
+    if (!fs.existsSync(filePath)) return [];
+    const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    return (data.entries || []).slice(-max);
+  } catch { return []; }
 }
 
 // ── Queue helpers ──

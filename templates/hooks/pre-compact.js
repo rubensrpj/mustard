@@ -83,6 +83,16 @@ process.stdin.on('end', () => {
       }
     } catch {}
 
+    // Persistent memory summary
+    try {
+      const memDir = path.join(cwd, '.claude', 'memory');
+      const decCount = countEntries(path.join(memDir, 'decisions.json'));
+      const lesCount = countEntries(path.join(memDir, 'lessons.json'));
+      if (decCount > 0 || lesCount > 0) {
+        parts.push(`Persistent memory: ${decCount} decisions, ${lesCount} lessons`);
+      }
+    } catch {}
+
     // Compact reason
     const reason = data.compact_reason || data.trigger || 'auto';
     parts.push(`Compact trigger: ${reason}`);
@@ -117,3 +127,10 @@ process.stdin.on('end', () => {
     process.exit(0);
   }
 });
+
+function countEntries(filePath) {
+  try {
+    const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    return (data.entries || []).length;
+  } catch { return 0; }
+}

@@ -37,7 +37,8 @@ process.stdin.on('end', () => {
     // Clean compact-state (only files older than 24h)
     cleanDirectory(path.join(claudeDir, '.compact-state'), { maxAgeMs: ONE_DAY_MS });
 
-    // Clean agent-memory (session-scoped — remove all on session end)
+    // NOTE: .claude/memory/ is PERSISTENT across sessions — do NOT clean it here.
+    // Only .agent-memory/ (session-scoped) gets cleaned.
     cleanDirectory(path.join(claudeDir, '.agent-memory'), { removeAll: true });
 
     process.exit(0);

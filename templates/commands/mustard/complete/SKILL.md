@@ -33,10 +33,35 @@ If ANY gate fails: do NOT mark complete → report what failed + suggest fix. If
 6. **Pipeline State — cleanup:**
    - Extract `spec-name` from the spec directory (e.g. `2026-02-26-linked-services-card`)
    - **Delete** `.claude/.pipeline-states/{spec-name}.json` (removes from statusline)
-6b. **Token Economy — RTK report (if available):**
+6b. **Knowledge Capture:**
+   - Review patterns discovered during this pipeline
+   - For each significant pattern/convention/entity discovered:
+     ```bash
+     echo '{"type":"pattern","name":"...","description":"...","source":"{spec-name}"}' | node .claude/scripts/knowledge-update.js
+     ```
+   - Focus on: naming conventions used, architectural decisions, integration patterns
+   - Skip trivial or already-known patterns
+
+6c. **Token Economy — RTK report (if available):**
    - Run `rtk gain --all --format json` via Bash
    - If RTK available: extract `saved_tokens` and `savings_pct`
    - Include in output block below
+6d. **Metrics Archive:**
+   - Read metrics from `.claude/.pipeline-states/{spec-name}.json`
+   - If metrics exist, ensure `.claude/metrics/` directory exists
+   - Save to `.claude/metrics/{spec-name}.json`:
+     ```json
+     {
+       "name": "{spec-name}",
+       "completedAt": "{ISO timestamp}",
+       "durationMs": "{calculated from startedAt to now}",
+       "apiCalls": "{from metrics}",
+       "retries": "{from metrics}",
+       "toolBreakdown": "{from metrics}",
+       "rtkSavings": { "saved": N, "pct": N }
+     }
+     ```
+   - If no metrics in state file, skip silently
 7. **Output — visual feedback:**
 
    ```

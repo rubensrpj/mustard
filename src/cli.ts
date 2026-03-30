@@ -3,6 +3,8 @@ import { createRequire } from 'node:module';
 import { initCommand } from './commands/init.js';
 import { updateCommand } from './commands/update.js';
 import { autoUpdateCommand } from './commands/auto-update.js';
+import { addCommand } from './commands/add.js';
+import { reviewCommand } from './commands/review.js';
 
 const require = createRequire(import.meta.url);
 const { version } = require('../package.json');
@@ -34,6 +36,19 @@ export function run(): void {
     .option('--check-only', 'Only check for updates, do not install')
     .option('-y, --yes', 'Skip confirmation prompts')
     .action(autoUpdateCommand);
+
+  program
+    .command('add <template>')
+    .description('Install a community template (e.g., mustard add template:dotnet-clean-arch)')
+    .option('-f, --force', 'Overwrite existing files')
+    .action(addCommand);
+
+  program
+    .command('review')
+    .description('Review a pull request (local or CI mode)')
+    .option('--ci', 'CI mode: post review as PR comment, exit 1 on critical issues')
+    .option('--pr <number>', 'PR number to review')
+    .action(reviewCommand);
 
   program.parse();
 }

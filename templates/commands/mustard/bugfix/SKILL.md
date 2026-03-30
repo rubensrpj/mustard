@@ -15,6 +15,10 @@ Autonomous pipeline to diagnose and fix bugs. Zero context-switch — never ask 
 ### ANALYZE (diagnose + assess)
 
 1. **AUTO-SYNC:** `node .claude/scripts/sync-registry.js`
+
+### Diff Context (automatic)
+Run `node .claude/scripts/diff-context.js` to capture the current git state. Include the output in the agent prompt as `{diff_context}` so agents know what has already changed.
+
 2. **DIAGNOSE:** Dispatch Explore agent:
    - Scoped Grep searches with specific path + pattern for the error/symptom
    - Trace callers/callees via Grep in relevant directories
