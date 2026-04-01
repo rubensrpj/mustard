@@ -180,12 +180,49 @@ interface MustardConfig {
   };
 }
 
-async function generateMustardJson(projectPath: string, options: InitOptions): Promise<void> {
+export async function generateMustardJson(projectPath: string, options: { yes?: boolean }): Promise<void> {
   const configPath = join(projectPath, 'mustard.json');
 
+  let existingConfig: MustardConfig | null = null;
+
   if (existsSync(configPath)) {
-    console.log(chalk.gray('\n  mustard.json already exists — preserved'));
-    return;
+    try {
+      existingConfig = JSON.parse(readFileSync(configPath, 'utf-8')) as MustardConfig;
+    } catch {
+      // malformed — fall through to recreate
+    }
+
+    if (existingConfig && options.yes) {
+      console.log(chalk.gray('\n  mustard.json already exists — preserved'));
+      return;
+    }
+
+    if (existingConfig) {
+      // Display current config
+      const flow = existingConfig.git?.flow ?? {};
+      const flowLines = Object.entries(flow).map(([k, v]) => `    ${k} → ${v}`);
+      console.log(chalk.bold('\n  Current git flow:'));
+      if (flowLines.length) {
+        flowLines.forEach(l => console.log(chalk.gray(l)));
+      } else {
+        console.log(chalk.gray('    (no flow configured)'));
+      }
+      console.log(chalk.gray(`    provider: ${existingConfig.git?.provider ?? 'github'}`));
+      console.log(chalk.gray(`    submodules: ${existingConfig.git?.submodules ?? false}`));
+      console.log();
+
+      const { reconfigure } = await inquirer.prompt<{ reconfigure: boolean }>([{
+        type: 'confirm',
+        name: 'reconfigure',
+        message: 'Reconfigure git flow?',
+        default: false
+      }]);
+
+      if (!reconfigure) {
+        console.log(chalk.gray('  mustard.json preserved'));
+        return;
+      }
+    }
   }
 
   const defaultBranch = detectDefaultBranch();
@@ -193,6 +230,12 @@ async function generateMustardJson(projectPath: string, options: InitOptions): P
   const currentBranch = detectCurrentBranch();
   const remoteBranches = detectRemoteBranches();
   const hasDevBranch = remoteBranches.includes('dev') || remoteBranches.includes('develop');
+
+  // Pre-fill defaults from existing config if reconfiguring
+  const existingFlow = existingConfig?.git?.flow ?? {};
+  const existingDevBranch = existingFlow['*'] as string | undefined;
+  const existingProdBranch = existingDevBranch ? existingFlow[existingDevBranch] as string | undefined : undefined;
+  const existingProvider = existingConfig?.git?.provider ?? 'github';
 
   console.log(chalk.bold('\n📋 Git Flow Configuration\n'));
 
@@ -208,8 +251,9 @@ async function generateMustardJson(projectPath: string, options: InitOptions): P
     // Auto-config with sensible defaults
     const flow: Record<string, string> = {};
     if (hasDevBranch) {
-      flow['dev_*'] = remoteBranches.includes('dev') ? 'dev' : 'develop';
-      flow[remoteBranches.includes('dev') ? 'dev' : 'develop'] = defaultBranch;
+      const devBranchName = remoteBranches.includes('dev') ? 'dev' : 'develop';
+      flow['*'] = devBranchName;
+      flow[devBranchName] = defaultBranch;
     }
     config = {
       git: {
@@ -219,46 +263,36 @@ async function generateMustardJson(projectPath: string, options: InitOptions): P
       }
     };
   } else {
-    // Interactive setup
+    // Interactive setup — pre-fill from existing config when reconfiguring
     const answers = await inquirer.prompt<{
       production: string;
       devBranch: string;
-      devPattern: string;
       provider: string;
     }>([
       {
         type: 'input',
         name: 'production',
         message: 'Production branch:',
-        default: defaultBranch
+        default: existingProdBranch ?? defaultBranch
       },
       {
         type: 'input',
         name: 'devBranch',
         message: 'Development branch (shared, leave empty to skip):',
-        default: hasDevBranch ? (remoteBranches.includes('dev') ? 'dev' : 'develop') : ''
-      },
-      {
-        type: 'input',
-        name: 'devPattern',
-        message: 'Personal branch pattern (glob → dev branch):',
-        default: 'dev_*',
-        when: (a) => !!a.devBranch
+        default: existingDevBranch ?? (hasDevBranch ? (remoteBranches.includes('dev') ? 'dev' : 'develop') : '')
       },
       {
         type: 'list',
         name: 'provider',
         message: 'Git provider:',
         choices: ['github', 'gitlab', 'bitbucket'],
-        default: 'github'
+        default: existingProvider
       }
     ]);
 
     const flow: Record<string, string> = {};
     if (answers.devBranch) {
-      if (answers.devPattern) {
-        flow[answers.devPattern] = answers.devBranch;
-      }
+      flow['*'] = answers.devBranch;
       flow[answers.devBranch] = answers.production;
     }
 

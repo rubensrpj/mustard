@@ -2,6 +2,7 @@ import { Command } from 'commander';
 import { createRequire } from 'node:module';
 import { initCommand } from './commands/init.js';
 import { updateCommand } from './commands/update.js';
+import { configCommand } from './commands/config.js';
 import { autoUpdateCommand } from './commands/auto-update.js';
 import { addCommand } from './commands/add.js';
 import { reviewCommand } from './commands/review.js';
@@ -29,6 +30,12 @@ export function run(): void {
     .description('Update Mustard core files (preserves user customizations)')
     .option('-f, --force', 'Skip backup and confirmation')
     .action(updateCommand);
+
+  program
+    .command('config')
+    .description('Configure or reconfigure mustard.json (git flow)')
+    .option('-y, --yes', 'Accept defaults without prompting')
+    .action(configCommand);
 
   program
     .command('auto-update')

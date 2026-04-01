@@ -1,6 +1,6 @@
 # /git - Git Operations
 
-> Commit, push, sync, PR, and deploy. Reads `mustard.json` for branch flow. Handles monorepo (submodules) and single repo automatically.
+> Commit, push, sync, and merge. Reads `mustard.json` for branch flow. Handles monorepo (submodules) and single repo automatically.
 
 ## Trigger
 
@@ -13,8 +13,8 @@
 | `sync` | Pull parent branch into current branch |
 | `commit` | Create commit (no push) |
 | `push` | Commit + push to remote |
-| `merge` | Push + cascade PRs to parent (dev_rubens → dev) |
-| `merge main` | Cascade PRs from dev → main (explicit, when ready) |
+| `merge` | Sync + fast-forward merge to parent (single hop, always to dev) |
+| `merge main` | Fast-forward merge dev → main (explicit promotion, must be on dev) |
 
 ## Configuration
 
@@ -24,10 +24,9 @@ Reads `mustard.json` from the **project root**. If not found, falls back to defa
 {
   "git": {
     "flow": {
-      "dev_*": "dev",
+      "*": "dev",
       "dev": "main"
     },
-    "provider": "github",
     "submodules": true
   }
 }
@@ -35,23 +34,16 @@ Reads `mustard.json` from the **project root**. If not found, falls back to defa
 
 ### Flow Resolution
 
-Match current branch against `flow` keys (glob patterns). First match wins.
+Match current branch against `flow` keys. Exact match first, then glob. `*` is the default fallback for any branch not explicitly listed.
 
 | Current branch | Pattern matched | Parent resolved |
 |---------------|----------------|-----------------|
-| `dev_rubens` | `dev_*` | `dev` |
-| `dev` | `dev` | `main` |
-| `feature/xyz` | no match | **error**: no parent configured |
+| `feature/login` | `*` | `dev` |
+| `fix/bug-123` | `*` | `dev` |
+| `dev` | `dev` | `main` (only via `/git merge main`) |
+| `main` | no match | **error**: terminal branch, no operations allowed |
 
-**Fallback** (no `mustard.json`): parent = default branch (`main` or `master`).
-
-### Provider CLI
-
-| Provider | CLI | PR command |
-|----------|-----|------------|
-| `github` | `gh` | `gh pr create` |
-| `gitlab` | `glab` | `glab mr create` |
-| `bitbucket` | `bb` | `bb pr create` (manual) |
+**Rule**: Exact keys (`dev`, `main`) are matched first. `*` catches everything else. `main` and `dev` are never matched by `*`.
 
 ## Behavior
 
@@ -61,6 +53,7 @@ Match current branch against `flow` keys (glob patterns). First match wins.
 - **No investigation** — if a submodule is dirty, commit it.
 - Submodules BEFORE parent (always).
 - **Single repo**: skip all submodule steps — just operate on the root.
+- **Local fast-forward merge** — no PRs, no merge commits, 100% linear history.
 
 ---
 
@@ -74,7 +67,17 @@ git rev-parse --abbrev-ref HEAD
 Match the current branch against `git.flow` patterns. Store as `$PARENT`.
 If no match and no `mustard.json`: `$PARENT` = default branch (detect via `git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null || echo main`).
 
-Read `git.provider` from `mustard.json`. Fallback: read `git.pr.provider` (old format). Default: `github`.
+---
+
+## Step 0b — Branch Protection Check
+
+Before any operation (commit, push, merge, sync) check the current branch:
+
+- If current branch is `main` → **REFUSE** with error: `Cannot operate directly on protected branch 'main'. Create a feature branch first.`
+- If current branch is `dev` AND action is `commit`, `push`, or `sync` → **REFUSE** with error: `Cannot operate directly on protected branch 'dev'. Create a feature branch first.`
+- If current branch is `dev` AND action is `merge main` → **ALLOW** (this is the only permitted operation on dev).
+
+**Exception**: `/git merge main` is the sole operation allowed on the dev branch — it is the explicit promotion path.
 
 ---
 
@@ -101,6 +104,8 @@ If rebase has conflicts → abort rebase, report to user, STOP.
 ---
 
 ## commit
+
+**Branch check**: If on `main` or `dev` → refuse with error (see Step 0b).
 
 ### 1. Analyze all changes (single parallel batch)
 
@@ -140,6 +145,8 @@ Types: feat, fix, refactor, docs, chore, test
 
 ## push
 
+**Branch check**: If on `main` or `dev` → refuse with error (see Step 0b).
+
 Sequential: **sync first**, then commit + push.
 
 ### Phase 1 — Sync
@@ -164,86 +171,94 @@ git add -A && git commit -m "<message>" && git push origin <branch>
 
 ## merge
 
-Promote current branch into its parent via Pull Request — **recursively through the entire flow chain**, including all submodules.
+Promote current branch into its parent via **local fast-forward merge** — no PRs, no merge commits, 100% linear history. Single hop only — always merges into `dev` (via `*` wildcard). Never cascades.
 
-### Step 1 — Ensure pushed
+**Branch check**: If on `main` → refuse (terminal branch). If on `dev` → refuse (use `/git merge main` instead).
+
+### Step 1 — Sync (mandatory)
+
+Execute `sync` action to rebase from `dev`. If conflicts → STOP. Do not proceed to merge.
+
+### Step 2 — Ensure pushed
 
 Check if local is ahead of remote. If yes, execute `push` first.
 
-### Step 2 — Cascade merge (recursive)
+### Step 3 — Merge into parent
 
-Resolve the **full flow chain** from the current branch to the terminal branch (the one with no parent in the flow). Example: `dev_rubens` → `dev` → `main` = 2 hops.
+`$SOURCE` = current branch, `$TARGET` = `$PARENT` (resolved in Step 0, always `dev` for feature/fix branches).
 
-**For each hop** (e.g., first `dev_rubens → dev`, then `dev → main`):
+#### 3a. Submodules FIRST (PARALLEL — monorepo only)
 
-#### 2a. Submodules FIRST (PARALLEL — monorepo only)
-
-For each submodule that has commits ahead of `$TARGET`:
+For each submodule, pull both branches then fast-forward merge + push in ONE chained Bash call:
 
 ```bash
-cd <SUBMODULE_ABSOLUTE_PATH> && git fetch origin && git log origin/$TARGET..origin/$SOURCE --oneline
-```
-
-If commits exist, create PR and merge immediately:
-
-```bash
-# GitHub
-cd <SUBMODULE_ABSOLUTE_PATH> && gh pr create --head $SOURCE --base $TARGET --title "<title>" --body "<body>"
-cd <SUBMODULE_ABSOLUTE_PATH> && gh pr merge --merge
-```
-
-```bash
-# GitLab
-cd <SUBMODULE_ABSOLUTE_PATH> && glab mr create --source-branch $SOURCE --target-branch $TARGET --title "<title>" --description "<body>" --remove-source-branch=false
-cd <SUBMODULE_ABSOLUTE_PATH> && glab mr merge
+cd <SUBMODULE_ABSOLUTE_PATH> && git fetch origin && git checkout $SOURCE && git pull origin $SOURCE && git checkout $TARGET && git pull origin $TARGET && git merge $SOURCE --ff-only && git push origin $TARGET && git checkout $SOURCE
 ```
 
 Skip submodules with no commits ahead (nothing to merge).
 
-#### 2b. Parent repo
+#### 3b. Parent repo
 
-Same as submodules — create PR + merge for this hop:
-
-```bash
-# GitHub
-gh pr create --head $SOURCE --base $TARGET --title "<title>" --body "<body>"
-gh pr merge --merge
-```
-
-#### 2c. Next hop
-
-After all PRs are merged for this hop, advance to the next hop in the chain. Repeat 2a–2b.
-
-**Auto-merge stops at the first parent** (e.g., `dev_rubens → dev`). The final promotion to the terminal branch (e.g., `dev → main`) is **never automatic** — it requires a separate explicit `/git merge main` call.
-
-### PR Title & Body
-
-- Title: conventional commit style — `<type>: <short description>`
-- Body: auto-generated from commit log since divergence:
+Same as submodules — pull both branches, then fast-forward merge + push:
 
 ```bash
-git log $TARGET..$SOURCE --oneline
+git fetch origin && git checkout $SOURCE && git pull origin $SOURCE && git checkout $TARGET && git pull origin $TARGET && git merge $SOURCE --ff-only && git push origin $TARGET && git checkout $SOURCE
 ```
 
-### Example: `/git merge` from `dev_rubens`
+### Fast-forward failure
+
+If `--ff-only` fails (branches diverged), STOP and report to user. This means someone pushed directly to the target branch — resolve manually.
+
+### Example: `/git merge` from `feature/login`
 
 ```
-dev_rubens → dev (auto)
-  ├── Competi.Backend:  PR #N created + merged
-  ├── Competi.Frontend: PR #N created + merged
-  ├── Competi.Libs:     PR #N created + merged
-  ├── Competi.Admin:    (skipped — no commits ahead)
-  └── Competi.CRM:      PR #N created + merged
+feature/login → dev
+  ├── SubprojectA:  ff-merged + pushed
+  ├── SubprojectB:  ff-merged + pushed
+  └── Parent:       ff-merged + pushed
 ```
 
-### Example: `/git merge main` (explicit — when ready for production)
+---
+
+## merge main
+
+Explicit promotion of `dev` → `main`. **Must be on `dev` branch to use this.** This is the ONLY operation allowed on the dev branch.
+
+**Branch check**: If NOT on `dev` → refuse with error: `'/git merge main' must be run from the dev branch. Currently on '<branch>'.`
+
+### Step 1 — Ensure pushed
+
+Check if local `dev` is ahead of remote. If yes, push first.
+
+### Step 2 — Merge dev into main
+
+`$SOURCE` = `dev`, `$TARGET` = `main`.
+
+#### Submodules FIRST (PARALLEL — monorepo only)
+
+```bash
+cd <SUBMODULE_ABSOLUTE_PATH> && git fetch origin && git checkout dev && git pull origin dev && git checkout main && git pull origin main && git merge dev --ff-only && git push origin main && git checkout dev
+```
+
+Skip submodules with no commits ahead.
+
+#### Parent repo
+
+```bash
+git fetch origin && git checkout dev && git pull origin dev && git checkout main && git pull origin main && git merge dev --ff-only && git push origin main && git checkout dev
+```
+
+### Fast-forward failure
+
+If `--ff-only` fails, STOP and report. Resolve manually.
+
+### Example: `/git merge main`
 
 ```
 dev → main
-  ├── Competi.Backend:  PR #N created + merged
-  ├── Competi.Frontend: PR #N created + merged
-  ├── Competi.Libs:     PR #N created + merged
-  └── Competi.CRM:      PR #N created + merged
+  ├── SubprojectA:  ff-merged + pushed
+  ├── SubprojectB:  ff-merged + pushed
+  └── Parent:       ff-merged + pushed
 ```
 
 ### Output
@@ -251,13 +266,12 @@ dev → main
 Print a summary table at the end:
 
 ```
-| Repo            | Status          |
-|-----------------|-----------------|
-| Backend         | PR #1 merged    |
-| Frontend        | PR #1 merged    |
-| Libs            | PR #1 merged    |
-| Admin           | skipped         |
-| CRM (parent)    | PR #3 merged    |
+| Repo            | Status             |
+|-----------------|--------------------|
+| SubprojectA     | ff-merged + pushed |
+| SubprojectB     | ff-merged + pushed |
+| SubprojectC     | skipped            |
+| Parent          | ff-merged + pushed |
 ```
 
 ---
@@ -265,13 +279,16 @@ Print a summary table at the end:
 ## Cautions
 
 - Aborts if ANY repo has merge conflicts (sync or push)
-- Submodules BEFORE parent (in sync, push, and commit)
+- Aborts if `--ff-only` fails (branches diverged)
+- Submodules BEFORE parent (in sync, push, commit, and merge)
 - NEVER use `git add .` — use `git add -A` from the correct directory
 - If any operation fails, stop and report
-- PR creation requires the provider CLI to be installed and authenticated
+- After merge, return to the original branch (`$SOURCE`)
+- NEVER commit, push, or sync directly on `main` or `dev`
+- `/git merge main` is the ONLY operation permitted on dev
 
 ## Performance Budget
 
 - **Max Task agents**: 1 per dirty submodule
 - **Max Bash calls per agent**: 1 (all commands chained)
-- **Max API calls total**: ≤ 12
+- **Max Bash calls for merge**: 1 per submodule + 1 for parent

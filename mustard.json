@@ -1,9 +1,6 @@
 {
   "git": {
-    "flow": {
-      "dev_rubens": "dev",
-      "dev": "main"
-    },
+    "flow": {},
     "provider": "github",
     "submodules": false
   }

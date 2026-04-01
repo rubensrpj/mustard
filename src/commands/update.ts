@@ -7,6 +7,7 @@ import { homedir } from 'os';
 import chalk from 'chalk';
 import ora from 'ora';
 import inquirer from 'inquirer';
+import { generateMustardJson } from './init.js';
 
 export interface UpdateOptions {
   force?: boolean;
@@ -105,6 +106,8 @@ export async function updateCommand(options: UpdateOptions): Promise<void> {
   copySpinner.succeed(`Updated ${total} files`);
 
   await ensureRtk();
+
+  await generateMustardJson(projectPath, { yes: options.force });
 
   console.log(chalk.green.bold('\n✅ Update complete!\n'));
 }

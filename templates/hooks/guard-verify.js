@@ -110,12 +110,13 @@ function checkCriticalRules(content, relPath) {
       if (!currentModule) continue;
       const moduleBase = currentModule.toLowerCase().replace(/s$/, "");
       let hasCrossModule = false;
-      const repoRegex = /\b(\w+)Repository\b/g;
+      // Only match PascalCase type references (I?[A-Z]...Repository), skip camelCase variable names
+      const repoRegex = /\bI?([A-Z]\w+)Repository\b/g;
       let repoMatch;
       while ((repoMatch = repoRegex.exec(content)) !== null) {
-        const repoName = repoMatch[1];
-        const repoBase = repoName.toLowerCase().replace(/^i/, "");
-        if (repoBase.startsWith(moduleBase) || moduleBase.startsWith(repoBase.replace(/repository$/, ""))) continue;
+        const repoName = repoMatch[1].toLowerCase();
+        // Same-module if repo name contains the module base (e.g. NotificationDefinition contains "notification")
+        if (repoName.includes(moduleBase) || moduleBase.includes(repoName)) continue;
         hasCrossModule = true;
         break;
       }

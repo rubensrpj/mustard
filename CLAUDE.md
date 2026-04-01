@@ -159,8 +159,8 @@ mustard update
 - `/mustard:git sync` - Pull parent branch into current
 - `/mustard:git commit` - Simple commit
 - `/mustard:git push` - Sync + commit + push
-- `/mustard:git merge` - Promote to parent (creates PR)
-- `/mustard:git deploy` - Push + merge + cascade info
+- `/mustard:git merge` - Promote to parent (local ff-only, no PRs)
+- `/mustard:git merge main` - Promote dev → main (explicit)
 - `/mustard:review [number|url]` - Review PR via Claude code-review
 
 ### Sync

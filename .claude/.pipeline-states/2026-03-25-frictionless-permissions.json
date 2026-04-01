@@ -3,5 +3,15 @@
   "status": "active",
   "phase": 2,
   "phaseName": "PLAN",
-  "scope": "light"
+  "scope": "light",
+  "metrics": {
+    "apiCalls": 8,
+    "toolBreakdown": {
+      "Bash": 7,
+      "Write": 1
+    },
+    "retries": 0,
+    "startedAt": "2026-04-01T11:43:01.361Z",
+    "updatedAt": "2026-04-01T13:02:06.293Z"
+  }
 }
