@@ -5,13 +5,13 @@
   "phaseName": "PLAN",
   "scope": "light",
   "metrics": {
-    "apiCalls": 8,
+    "apiCalls": 11,
     "toolBreakdown": {
-      "Bash": 7,
+      "Bash": 10,
       "Write": 1
     },
     "retries": 0,
     "startedAt": "2026-04-01T11:43:01.361Z",
-    "updatedAt": "2026-04-01T13:02:06.293Z"
+    "updatedAt": "2026-04-01T13:02:25.078Z"
   }
 }
