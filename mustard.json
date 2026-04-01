@@ -1,6 +1,9 @@
 {
   "git": {
-    "flow": {},
+    "flow": {
+      "*": "dev",
+      "dev": "main"
+    },
     "provider": "github",
     "submodules": false
   }
