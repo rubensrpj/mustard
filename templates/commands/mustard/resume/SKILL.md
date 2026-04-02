@@ -111,12 +111,13 @@ Run `node .claude/scripts/diff-context.js` to capture the current git state. Inc
 
 After each agent returns, check the return value for an escalation status before advancing to the next wave:
 
+- **Internal error** (no parseable output, empty return, API error) — re-dispatch the failed agent(s) **sequentially** (not parallel) with the same prompt. Max 1 Internal retry per agent. If still failing: STOP + report
 - `CONCERN` — record verbatim under `## Concerns` in the spec; continue to next wave
 - `BLOCKED` — stop immediately; use `AskUserQuestion` to report the exact blocker; do NOT advance
 - `PARTIAL` — apply Granular Retry Protocol from the last completed step; do NOT restart from step 1
 - `DEFERRED` — note in spec with agent justification; ask user if the deferred item is load-bearing before closing
 
-If two or more agents in the same wave return `CONCERN`, surface all concerns together before dispatching the next wave. See `pipeline-config.md` Escalation Statuses for the full status table.
+If two or more agents in the same wave return `CONCERN`, surface all concerns together before dispatching the next wave. See `pipeline-config.md` Escalation Statuses and Diagnostic Failure Routing for the full status table.
 
 ### Step 4: Validate, Review & Complete
 

@@ -56,6 +56,7 @@ Record scope for PLAN phase branching.
 
 **Path B — Explore agent ("medium")** (ONLY for genuinely new entities/patterns):
 - Entity NOT in registry AND new CRUD/entity → use Explore agent
+- **Explorer cap: ≤20 tool uses, ≤3 full file reads** — prefer Grep over Read
 - After Explore returns → go straight to PLAN, ZERO additional reads
 - NEVER duplicate reads the Explore agent already performed
 
@@ -140,12 +141,13 @@ When user chooses "Approve and implement now":
 
 After each agent returns, check the return value for an escalation status before advancing:
 
+- **Internal error** (no parseable output, empty return, API error) — re-dispatch **sequentially** (not parallel) with same prompt. Max 1 Internal retry per agent
 - `CONCERN` — record verbatim under `## Concerns` in the spec; continue to next step
 - `BLOCKED` — stop immediately; use `AskUserQuestion` to report the exact blocker; do NOT retry or advance
 - `PARTIAL` — apply Granular Retry Protocol from the last completed step; do NOT restart from step 1
 - `DEFERRED` — note in spec with agent justification; ask user if the deferred item is load-bearing before closing
 
-If two or more agents in the same wave return `CONCERN`, surface all concerns together before starting the next wave. See `pipeline-config.md` Escalation Statuses for the full status table.
+If two or more agents in the same wave return `CONCERN`, surface all concerns together before starting the next wave. See `pipeline-config.md` Escalation Statuses and Diagnostic Failure Routing for the full status table.
 
 9. **REVIEW** — dispatch review agent for each affected subproject (reads guards + relevant skills, runs 7-category checklist: SOLID, Design System, Patterns, i18n, Integration, Build, Elegance). REJECTED → fix + re-review (max 2 loops)
 10. All passed + APPROVED → CLOSE flow inline (sync registry, move spec, cleanup state)

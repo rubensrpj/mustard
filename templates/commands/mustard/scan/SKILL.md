@@ -272,6 +272,8 @@ Body (below frontmatter):
 - **Read-only** — NEVER write, edit, or execute commands
 - Scope: `{subproject.path}/` directory only
 - Ignore: `bin/`, `obj/`, `node_modules/`, `.next/`, `Migrations/`
+- **Budget: ≤20 tool uses total, ≤3 full file reads** — prefer Grep over Read
+- Return findings as soon as pattern/root-cause is clear — do NOT exhaustively scan
 
 ## Return Format
 ### Findings

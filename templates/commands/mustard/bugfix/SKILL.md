@@ -19,9 +19,10 @@ Autonomous pipeline to diagnose and fix bugs. Zero context-switch — never ask 
 ### Diff Context (automatic)
 Run `node .claude/scripts/diff-context.js` to capture the current git state. Include the output in the agent prompt as `{diff_context}` so agents know what has already changed.
 
-2. **DIAGNOSE:** Dispatch Explore agent:
+2. **DIAGNOSE:** Dispatch Explore agent (**≤20 tool uses, ≤3 full file reads**):
    - Scoped Grep searches with specific path + pattern for the error/symptom
-   - Trace callers/callees via Grep in relevant directories
+   - Trace callers/callees via Grep in relevant directories (prefer Grep over Read)
+   - Return as soon as root cause is clear — don't exhaustively scan
    - Return: root cause file(s), line(s), explanation
 3. **ASSESS — Decision point:**
    - Explore returns clear root cause in 1-2 files → **Fast Path** (skip PLAN)
