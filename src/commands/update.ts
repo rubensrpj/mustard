@@ -7,7 +7,7 @@ import { homedir } from 'os';
 import chalk from 'chalk';
 import ora from 'ora';
 import inquirer from 'inquirer';
-import { generateMustardJson } from './init.js';
+import { generateMustardJson, ensureGlobalPermissions } from './init.js';
 
 export interface UpdateOptions {
   force?: boolean;
@@ -106,6 +106,7 @@ export async function updateCommand(options: UpdateOptions): Promise<void> {
   copySpinner.succeed(`Updated ${total} files`);
 
   await ensureRtk();
+  await ensureGlobalPermissions();
 
   await generateMustardJson(projectPath, { yes: options.force });
 
@@ -126,6 +127,8 @@ async function ensureRtk(): Promise<void> {
     // Verify it's the correct RTK (not Rust Type Kit)
     const version = execSync('rtk --version', { stdio: 'pipe', encoding: 'utf-8' }).trim();
     console.log(chalk.green(`  ✓ RTK ${version} (token economy active)`));
+    // Activate RTK native integration (hook, RTK.md, etc.)
+    try { execSync('rtk init -g --no-patch', { stdio: 'pipe', timeout: 10000 }); } catch { /* fail-open */ }
     return;
   } catch {
     // Not installed — proceed to install
@@ -149,6 +152,8 @@ async function ensureRtk(): Promise<void> {
     } catch {
       spinner.succeed('RTK installed (token economy active)');
     }
+    // Activate RTK native integration (hook, RTK.md, etc.)
+    try { execSync('rtk init -g --no-patch', { stdio: 'pipe', timeout: 10000 }); } catch { /* fail-open */ }
   } catch {
     spinner.warn('RTK not installed — token economy will activate when RTK is available');
   }

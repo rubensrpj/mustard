@@ -330,6 +330,8 @@ async function ensureRtk(): Promise<void> {
     // Verify it's the correct RTK (not Rust Type Kit)
     const version = execSync('rtk --version', { stdio: 'pipe', encoding: 'utf-8' }).trim();
     console.log(chalk.green(`  ✓ RTK ${version} (token economy active)`));
+    // Activate RTK native integration (hook, RTK.md, etc.)
+    try { execSync('rtk init -g --no-patch', { stdio: 'pipe', timeout: 10000 }); } catch { /* fail-open */ }
     return;
   } catch {
     // Not installed — proceed to install
@@ -353,6 +355,8 @@ async function ensureRtk(): Promise<void> {
     } catch {
       spinner.succeed('RTK installed (token economy active)');
     }
+    // Activate RTK native integration (hook, RTK.md, etc.)
+    try { execSync('rtk init -g --no-patch', { stdio: 'pipe', timeout: 10000 }); } catch { /* fail-open */ }
   } catch {
     spinner.warn('RTK not installed — token economy will activate when RTK is available');
   }
@@ -422,7 +426,7 @@ function addToPathWindows(binDir: string): void {
  * Ensure ~/.claude/settings.json has Read, Write, Edit in allow list.
  * Non-destructive: only adds missing permissions, preserves everything else.
  */
-async function ensureGlobalPermissions(): Promise<void> {
+export async function ensureGlobalPermissions(): Promise<void> {
   const claudeDir = join(homedir(), '.claude');
   const settingsPath = join(claudeDir, 'settings.json');
   const requiredPerms = ['Read', 'Write', 'Edit'];
@@ -456,12 +460,29 @@ async function ensureGlobalPermissions(): Promise<void> {
     }
   }
 
-  if (added.length > 0) {
+  // Ensure global env vars are set
+  const requiredEnv: Record<string, string> = { CLAUDE_CODE_NO_FLICKER: '1' };
+  if (!settings.env) settings.env = {};
+  const addedEnv: string[] = [];
+  for (const [key, val] of Object.entries(requiredEnv)) {
+    if (settings.env[key] !== val) {
+      settings.env[key] = val;
+      addedEnv.push(key);
+    }
+  }
+
+  const dirty = added.length > 0 || addedEnv.length > 0;
+  if (dirty) {
     await mkdir(claudeDir, { recursive: true });
     await writeFile(settingsPath, JSON.stringify(settings, null, 2) + '\n');
-    console.log(chalk.green(`  ✓ Global permissions: added ${added.join(', ')} to ~/.claude/settings.json`));
+    if (added.length > 0) {
+      console.log(chalk.green(`  ✓ Global permissions: added ${added.join(', ')} to ~/.claude/settings.json`));
+    }
+    if (addedEnv.length > 0) {
+      console.log(chalk.green(`  ✓ Global env: set ${addedEnv.join(', ')} in ~/.claude/settings.json`));
+    }
   } else {
-    console.log(chalk.gray('  Global permissions: Read, Write, Edit already configured'));
+    console.log(chalk.gray('  Global settings: permissions and env already configured'));
   }
 }
 
