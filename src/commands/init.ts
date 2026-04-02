@@ -11,6 +11,7 @@ import inquirer from 'inquirer';
 export interface InitOptions {
   force?: boolean;
   yes?: boolean;
+  cursor?: boolean;
 }
 
 function getTemplatesDir(): string {
@@ -64,6 +65,7 @@ export async function initCommand(options: InitOptions): Promise<void> {
       spinner.succeed(`Copied ${count} new files (existing files preserved)`);
       await ensureGlobalPermissions();
       await ensureRtk();
+      if (options.cursor) await installCursorAdapter(projectPath, claudePath);
       printNextSteps();
       return;
     } else {
@@ -102,6 +104,7 @@ export async function initCommand(options: InitOptions): Promise<void> {
         spinner.succeed(`Copied ${count} new files (existing files preserved)`);
         await ensureGlobalPermissions();
         await ensureRtk();
+        if (options.cursor) await installCursorAdapter(projectPath, claudePath);
         printNextSteps();
         return;
       }
@@ -125,6 +128,9 @@ export async function initCommand(options: InitOptions): Promise<void> {
   // Ensure global permissions for Claude Code (Read, Write, Edit)
   await ensureGlobalPermissions();
   await ensureRtk();
+
+  // Install Cursor adapter if requested
+  if (options.cursor) await installCursorAdapter(projectPath, claudePath);
 
   // Generate mustard.json (git flow config)
   await generateMustardJson(projectPath, options);
@@ -456,6 +462,35 @@ async function ensureGlobalPermissions(): Promise<void> {
     console.log(chalk.green(`  ✓ Global permissions: added ${added.join(', ')} to ~/.claude/settings.json`));
   } else {
     console.log(chalk.gray('  Global permissions: Read, Write, Edit already configured'));
+  }
+}
+
+/**
+ * Install the Cursor IDE adapter.
+ * Copies templates/adapters/cursor/ → {project}/.claude/adapters/cursor/
+ * and creates {project}/.cursor/hooks/adapter.js.
+ * Only runs when --cursor flag is passed.
+ */
+async function installCursorAdapter(projectPath: string, claudePath: string): Promise<void> {
+  const templatesDir = getTemplatesDir();
+  const adapterSrc = join(templatesDir, 'adapters', 'cursor');
+  const adapterDest = join(claudePath, 'adapters', 'cursor');
+  const cursorHooksDir = join(projectPath, '.cursor', 'hooks');
+  const cursorAdapterDest = join(cursorHooksDir, 'adapter.js');
+
+  const spinner = ora('Installing Cursor adapter...').start();
+  try {
+    // Copy adapters/cursor/ into .claude/adapters/cursor/
+    await copyDir(adapterSrc, adapterDest, true);
+
+    // Create .cursor/hooks/ and copy adapter.js there
+    await mkdir(cursorHooksDir, { recursive: true });
+    await copyFile(join(adapterSrc, 'adapter.js'), cursorAdapterDest);
+
+    spinner.succeed('Cursor adapter installed at .cursor/hooks/adapter.js');
+  } catch (err) {
+    spinner.warn('Cursor adapter install failed — see .claude/adapters/cursor/ for manual setup');
+    process.stderr.write('[mustard] cursor adapter: ' + (err as Error).message + '\n');
   }
 }
 

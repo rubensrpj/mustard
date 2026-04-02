@@ -15,6 +15,7 @@
 const { execSync } = require('child_process');
 const path = require('path');
 const fs = require('fs');
+const { shouldRun } = require('./_lib/hook-env.js');
 
 const PRETTIER_EXTS = new Set(['.ts', '.tsx', '.js', '.jsx', '.json', '.css', '.md', '.html', '.scss']);
 const DOTNET_EXTS = new Set(['.cs']);
@@ -24,6 +25,7 @@ process.stdin.setEncoding('utf8');
 process.stdin.on('data', chunk => input += chunk);
 process.stdin.on('end', () => {
   try {
+    if (!shouldRun('auto-format')) { process.exit(0); }
     const data = JSON.parse(input);
     const tool = data.tool_name || '';
 

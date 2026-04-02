@@ -30,6 +30,22 @@ Run `node .claude/scripts/diff-context.js` to capture the current git state. Inc
 **Fast Path:** Go directly to EXECUTE.
 **Full Path:** Write brief spec in `.claude/spec/active/{date}-{name}/spec.md` → present to user → `/approve` → EXECUTE.
 
+#### Spec Boundaries
+
+When writing a Full Path spec (or noting files for Fast Path), record which files are in scope under a `## Boundaries` section:
+
+```
+## Boundaries
+- `path/to/directory/` — directory scope (all files within)
+- `path/to/file.ext` — exact file
+- `**/*.controller.ts` — glob pattern
+```
+
+Rules:
+- List only files the fix **intentionally** touches (root cause + direct dependants)
+- For Fast Path: boundaries are implicit from the ANALYZE output — no spec section required
+- Out-of-boundary edits during EXECUTE will surface a `[BOUNDARY WARNING]` from guard-verify — re-evaluate scope before proceeding
+
 ### EXECUTE (fix + validate)
 
 Dispatch bugfix agent with:
@@ -43,6 +59,32 @@ Dispatch bugfix agent with:
 - Verify fix resolves the reported issue
 - No regression in adjacent code
 - If build fails: diagnose + fix (max 3 iterations)
+
+#### Escalation Status Handling
+
+After the bugfix agent returns, check for an escalation status before closing:
+
+- `CONCERN` — record verbatim in the bugfix report under `## Concerns`; continue to CLOSE
+- `BLOCKED` — stop immediately; use `AskUserQuestion` to report the exact blocker; do NOT close
+- `PARTIAL` — agent fixed some but not all reported issues; resume from the last incomplete fix step (max 2 retries)
+- `DEFERRED` — agent intentionally left a related issue unfixed with justification; confirm with user before closing
+
+See `pipeline-config.md` Escalation Statuses for the full status table.
+
+#### Retry Compact Advisory
+If an agent fails and requires >2 retry attempts during EXECUTE:
+- Suggest to user: _"Multiple retries detected — stale context may be contributing. Consider `/compact` to clear context, then `/resume` to continue the pipeline."_
+- This is advisory only — continue fixing if user declines.
+
+#### Failure Routing (Bugfix)
+
+Before retrying a failed fix attempt, classify the failure:
+
+1. **Transient?** — Would re-running succeed without any change? (flaky test, cache, env) → Retry once immediately.
+2. **Resolvable?** — Is the fix clear and patchable in ≤3 lines without new reads? → Apply patch, retry (counts as retry 1).
+3. **Structural?** — Did the original ANALYZE misidentify the root cause? → Re-analyze: dispatch a focused Explore on the actual failure point, update root cause, re-dispatch bugfix agent. Does NOT count against the 2-retry cap.
+
+Max 2 retries for Transient + Resolvable. Structural failures trigger a targeted re-ANALYZE, not a blind retry.
 
 ### CLOSE
 

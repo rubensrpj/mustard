@@ -22,7 +22,7 @@
  *   7. Write back
  *   8. Exit 0 always (fail-open)
  *
- * @version 1.0.0
+ * @version 1.1.0
  */
 
 const fs = require('fs');
@@ -79,11 +79,18 @@ async function main() {
     const timestamp = new Date().toISOString();
 
     if (existingIdx >= 0) {
-      // Update existing
-      kb.entries[existingIdx].description = description;
-      kb.entries[existingIdx].source = source;
-      kb.entries[existingIdx].tags = tags;
-      kb.entries[existingIdx].updatedAt = timestamp;
+      // Update existing — boost confidence and occurrence count
+      const existing = kb.entries[existingIdx];
+      existing.description = description;
+      existing.source = source;
+      existing.tags = tags;
+      existing.updatedAt = timestamp;
+
+      // Backwards compatibility: add fields on first update if missing
+      const prevOccurrences = existing.occurrences != null ? existing.occurrences : 1;
+      existing.occurrences = prevOccurrences + 1;
+      existing.confidence = Math.min(1.0, 0.3 + (existing.occurrences * 0.1));
+      existing.lastSeen = timestamp;
     } else {
       // Add new
       kb.entries.push({
@@ -93,8 +100,11 @@ async function main() {
         description,
         source,
         tags,
+        confidence: 0.3,
+        occurrences: 1,
         createdAt: timestamp,
         updatedAt: timestamp,
+        lastSeen: timestamp,
       });
     }
 

@@ -9,6 +9,8 @@
  */
 
 const path = require("path");
+const fs = require("fs");
+const { shouldRun } = require('./_lib/hook-env.js');
 
 const ROOT = process.env.CLAUDE_PROJECT_DIR || process.cwd();
 
@@ -53,6 +55,7 @@ process.stdin.setEncoding("utf8");
 process.stdin.on("data", (chunk) => (input += chunk));
 process.stdin.on("end", () => {
   try {
+    if (!shouldRun('guard-verify')) { process.exit(0); }
     const data = JSON.parse(input);
     const tool = data.tool_name || "";
 
@@ -90,9 +93,21 @@ process.stdin.on("end", () => {
           reason: `Guard Enforcement BLOCKED:\n${msgs}\n\nFix these violations before proceeding.`,
         })
       );
-    } else {
-      process.stdout.write(JSON.stringify({ decision: "approve" }));
+      return;
     }
+
+    const boundaryWarning = checkBoundaries(filePath, ROOT);
+    if (boundaryWarning) {
+      process.stdout.write(
+        JSON.stringify({
+          decision: "approve",
+          reason: `[BOUNDARY WARNING] ${boundaryWarning}`,
+        })
+      );
+      return;
+    }
+
+    process.stdout.write(JSON.stringify({ decision: "approve" }));
   } catch {
     process.stdout.write(JSON.stringify({ decision: "approve" }));
   }
@@ -126,6 +141,79 @@ function checkCriticalRules(content, relPath) {
     violations.push(`${rule.msg} (in ${relPath})`);
   }
   return violations;
+}
+
+/**
+ * Scans active specs for a ## Boundaries section and checks whether the
+ * edited file falls outside the declared scope. Advisory only — never blocks.
+ *
+ * @param {string} filePath  Absolute path of the file being edited
+ * @param {string} cwd       Project root (CLAUDE_PROJECT_DIR or cwd)
+ * @returns {string|null}    Warning message, or null if no boundary mismatch
+ */
+function checkBoundaries(filePath, cwd) {
+  try {
+    const specRoot = path.join(cwd, ".claude", "spec", "active");
+    if (!fs.existsSync(specRoot)) return null;
+
+    const normalizedEdit = filePath.replace(/\\/g, "/");
+
+    const specDirs = fs.readdirSync(specRoot, { withFileTypes: true })
+      .filter((d) => d.isDirectory())
+      .map((d) => d.name);
+
+    for (const dir of specDirs) {
+      const specFile = path.join(specRoot, dir, "spec.md");
+      if (!fs.existsSync(specFile)) continue;
+
+      const content = fs.readFileSync(specFile, "utf8");
+      const boundaryMatch = content.match(/##\s+Boundaries\s*\n([\s\S]*?)(?:\n##\s|\n---\s*\n|$)/);
+      if (!boundaryMatch) continue;
+
+      const boundaryBlock = boundaryMatch[1];
+      const lines = boundaryBlock.split("\n")
+        .map((l) => l.replace(/^[-*]\s+`?/, "").replace(/`.*/, "").trim())
+        .filter(Boolean);
+
+      if (lines.length === 0) continue;
+
+      // Check if the edited file matches any declared boundary
+      for (const rawPattern of lines) {
+        const pattern = rawPattern.replace(/\\/g, "/");
+        if (!pattern) continue;
+
+        // Directory scope: ends with /
+        if (pattern.endsWith("/")) {
+          const dir = pattern.endsWith("/") ? pattern : pattern + "/";
+          if (normalizedEdit.includes(dir) || normalizedEdit.startsWith(dir)) return null;
+          continue;
+        }
+
+        // Glob pattern: contains * or ?
+        if (pattern.includes("*") || pattern.includes("?")) {
+          const regexStr = pattern
+            .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+            .replace(/\*\*/g, "(.+)")
+            .replace(/\*/g, "([^/]+)")
+            .replace(/\?/g, "([^/])");
+          if (new RegExp(regexStr).test(normalizedEdit)) return null;
+          continue;
+        }
+
+        // Exact file match (may be relative or absolute)
+        const normalizedPattern = pattern.replace(/\\/g, "/");
+        if (normalizedEdit.endsWith(normalizedPattern) || normalizedEdit === normalizedPattern) return null;
+      }
+
+      // File was not matched by any boundary in this spec
+      const relEdited = path.relative(cwd, filePath).replace(/\\/g, "/");
+      return `"${relEdited}" is outside the boundaries declared in spec "${dir}". Declared: ${lines.join(", ")}. Verify this edit is intentional.`;
+    }
+
+    return null;
+  } catch {
+    return null;
+  }
 }
 
 function analyzeImports(relPath, content) {

@@ -23,6 +23,7 @@ export function run(): void {
     .description('Copy .claude/ structure into the current project')
     .option('-f, --force', 'Overwrite existing .claude/ directory without backup')
     .option('-y, --yes', 'Skip confirmation prompts')
+    .option('--cursor', 'Install Cursor IDE adapter at .cursor/hooks/adapter.js (experimental)')
     .action(initCommand);
 
   program

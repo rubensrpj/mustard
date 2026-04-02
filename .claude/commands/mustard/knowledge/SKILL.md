@@ -21,6 +21,9 @@ description: Manage the project knowledge base — list entries, search by term,
 | `notes [target]` | Manage project observations |
 | `audit` | Audit memory for duplicates |
 | `report <period>` | Generate progress report (daily/weekly) |
+| `evolve` | Analyze clusters and generate recommendations |
+| `export` | Export knowledge base to a dated JSON file |
+| `import <file>` | Import entries from a shared export file |
 
 ---
 
@@ -38,13 +41,17 @@ Reads `.claude/knowledge.json` and displays all entries grouped by type.
 
    PATTERNS ({n})
    - {name}: {description}  [source: {source}]
+     Confidence: {confidence} | Seen: {occurrences}x | Last: {lastSeen}
 
    CONVENTIONS ({n})
    - {name}: {description}  [source: {source}]
+     Confidence: {confidence} | Seen: {occurrences}x | Last: {lastSeen}
 
    ENTITIES ({n})
    - {name}: {description}  [source: {source}]
+     Confidence: {confidence} | Seen: {occurrences}x | Last: {lastSeen}
    ```
+   For entries missing `confidence`/`occurrences`/`lastSeen`, display defaults: 0.3 / 1x / (use `updatedAt` or `createdAt`).
 4. Show last updated timestamp from newest `updatedAt`
 
 ---
@@ -177,6 +184,71 @@ Output: Executive summary, metrics table, implemented features, bugs fixed, chan
 
 - Use real git data only — do not invent commits
 - Categorize commits by type and project
+
+## evolve
+
+Analyzes knowledge entries to find clusters and generate recommendations.
+
+### Procedure
+
+1. Read `.claude/knowledge.json`
+2. Group entries by type, then by overlapping tags
+3. Identify **high-confidence patterns** (confidence >= 0.7)
+4. Identify **emerging patterns** (occurrences >= 3, confidence < 0.7)
+5. Find **clusters**: groups of 3+ entries sharing 2+ tags
+6. For each cluster, synthesize a recommendation
+
+### Output Format
+
+```
+=== KNOWLEDGE EVOLUTION ===
+
+HIGH CONFIDENCE (confidence >= 0.7):
+  - {name}: {description} (seen {occurrences}x, confidence {confidence})
+
+EMERGING (3+ occurrences, confidence < 0.7):
+  - {name}: {description} (seen {occurrences}x)
+
+CLUSTERS:
+  [{tag1}, {tag2}] — {count} entries
+    Recommendation: {synthesized guidance based on entry descriptions}
+
+STATS:
+  Total: {n} entries | Patterns: {n} | Conventions: {n} | Entities: {n}
+  Avg confidence: {n} | Highest: {name} ({confidence})
+===
+```
+
+7. If no entries exist, output: "No knowledge entries found. Run pipelines to accumulate patterns."
+
+---
+
+## export
+
+Export knowledge base for sharing with team members.
+
+### Procedure
+
+1. Read `.claude/knowledge.json`
+2. Generate export file: `.claude/knowledge-export-{YYYY-MM-DD}.json`
+3. Write the full knowledge base to the export file
+4. Output: "Exported {n} entries to {filepath}"
+
+---
+
+## import <file>
+
+Import knowledge entries from a shared export file.
+
+### Procedure
+
+1. Read the specified import file (JSON format)
+2. For each entry in the import:
+   - Pipe to `node .claude/scripts/knowledge-update.js` with the entry data
+   - Deduplication is handled automatically by the script
+3. Report: "Imported: {n} new, {m} updated (duplicates merged with confidence boost)"
+
+---
 
 ## Rules
 

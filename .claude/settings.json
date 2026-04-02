@@ -158,6 +158,17 @@
             "timeout": 3
           }
         ]
+      },
+      {
+        "matcher": "startup",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/mcp-budget.js",
+            "statusMessage": "Checking MCP tool budget...",
+            "timeout": 3
+          }
+        ]
       }
     ],
 
@@ -175,6 +186,17 @@
     ],
 
     "SessionEnd": [
+      {
+        "matcher": "prompt_input_exit|clear|other",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/session-knowledge.js",
+            "statusMessage": "Extracting session patterns...",
+            "timeout": 10
+          }
+        ]
+      },
       {
         "matcher": "prompt_input_exit|clear|other",
         "hooks": [

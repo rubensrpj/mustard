@@ -19,6 +19,7 @@
 const { execSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+const { shouldRun, isStrictMode } = require('./_lib/hook-env.js');
 
 /**
  * Detect git commit commands (not git add, push, etc.)
@@ -33,6 +34,7 @@ process.stdin.setEncoding('utf8');
 process.stdin.on('data', chunk => (input += chunk));
 process.stdin.on('end', () => {
   try {
+    if (!shouldRun('review-gate')) { process.exit(0); }
     const data = JSON.parse(input);
     const cmd = data.tool_input?.command || '';
 
@@ -115,7 +117,7 @@ process.stdin.on('end', () => {
       process.stdout.write(JSON.stringify({
         hookSpecificOutput: {
           hookEventName: 'PreToolUse',
-          permissionDecision: 'allow',
+          permissionDecision: isStrictMode() ? 'deny' : 'allow',
           permissionDecisionReason: `[Review Gate] ${warnings.join(' | ')}`,
         },
       }) + '\n');

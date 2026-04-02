@@ -10,7 +10,7 @@ description: "Show pipeline metrics, token savings, and performance stats — us
 
 ## Description
 
-Displays pipeline metrics including duration, API calls, retries, tool breakdown, and RTK token savings.
+Displays pipeline metrics including duration, API calls, retries, Pass@1 success rate, tool breakdown, and RTK token savings.
 
 ## Action
 
@@ -18,11 +18,27 @@ Displays pipeline metrics including duration, API calls, retries, tool breakdown
 2. Present the output to the user
 3. If no metrics found, inform user to run a pipeline first
 
+## Pass@1 Metrics
+
+`metrics-collect.js` emits a `## Pass@1 Metrics` section at the end of completed-pipeline output:
+
+- **Pass@1**: percentage of pipelines completed without any retries (retries === 0)
+- **Avg retries**: mean retry count across all completed pipelines
+
+Example output:
+```
+## Pass@1 Metrics
+- Pass@1: 80% (4/5 completed without retries)
+- Avg retries per pipeline: 0.4
+```
+
+This section is omitted automatically when no completed pipelines exist yet.
+
 ## When to Use
 
 - To check pipeline performance
 - To compare token usage across pipelines
-- To see RTK savings
+- To see RTK savings and Pass@1 success rate
 - After completing a pipeline
 
 ## Rules

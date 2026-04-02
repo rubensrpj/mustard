@@ -78,6 +78,7 @@ mustard/
     ├── scripts/             # Sync scripts
     ├── core/                # Enforcement rules
     └── hooks/               # JavaScript hooks
+        └── _lib/hook-env.js # Shared runtime controls (profiles, env-based disabling)
 ```
 
 ## Context Architecture (v3.0)
@@ -180,6 +181,8 @@ Hooks are registered in `templates/settings.json`:
 | `enforce-context.js` | `Skill` | **WARNS** (advisory) |
 | `enforce-grepai.js` | `Grep/Glob` | **BLOCKS** search without path |
 | `enforce-pipeline.js` | `Edit/Write` | **REMINDS** about pipeline |
+| `mcp-budget.js` | `startup` | **WARNS** (advisory, MCP tool budget) |
+| `session-knowledge.js` | `prompt_input_exit\|clear\|other` | **EXTRACTS** patterns from session |
 
 ### Pre-Pipeline Validation Flow
 
@@ -224,6 +227,22 @@ Generates `entity-registry.json` v3.1:
 - Scans Drizzle schemas (`pgTable`, `pgEnum`)
 - Scans .NET entities (`DbSet`, `class T`)
 - Outputs `_patterns`, `_enums`, entity refs/subs
+
+### security-scan.js
+
+Scans for secrets, env exposure, and security misconfigurations:
+
+- Detects leaked credentials, API keys, tokens
+- Checks `.env` exposure and insecure patterns
+- Reports findings with severity levels
+
+### verify-pipeline.js
+
+Runs build/test verification for the active pipeline:
+
+- Executes build and test commands
+- Reports pass/fail status per subproject
+- Used during pipeline EXECUTE/CLOSE phases
 
 ## Project Structure
 

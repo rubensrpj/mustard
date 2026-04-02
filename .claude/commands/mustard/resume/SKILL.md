@@ -23,18 +23,43 @@ Resumes an interrupted pipeline. The main context BECOMES the Pipeline Runner �
    - Phase mismatch between spec header and JSON → trust spec header (it's the source of truth)
    - Tasks in JSON marked `completed` but spec has `[ ]` → trust spec, reset task to `pending`
    - If rebuilt → warn user: "Pipeline state was recovered from spec"
-5. **Present summary and ASK before continuing:**
+5. **Present Handoff Summary:**
+
+   Compile from pipeline state + spec + agent memory + git context:
 
    ```
+   === PIPELINE HANDOFF ===
+
    Pipeline: {spec-name}
    Scope:    {light|full}
-   Status:   {status} | Phase: {phase}
-   Progress: {completed}/{total} tasks
-   Next:     {next agent/wave}
-   Decisions: {decisions[] if present}
+   Phase:    {ANALYZE|PLAN|EXECUTE|CLOSE}
+   Started:  {timestamp} | Elapsed: {duration}
 
-   Continue?
+   ## Completed
+   {For each [x] checkbox in spec:}
+   - [x] {task description}
+
+   ## Pending
+   {For each [ ] checkbox in spec:}
+   - [ ] {task description}
+
+   ## Concerns
+   {Scan spec for <!-- CONCERN: ... --> comments. Omit section if none.}
+   - {concern text}
+
+   ## Context
+   - Branch: {from git}
+   - Files changed: {run `node .claude/scripts/diff-context.js`}
+   - Last agent: {from `.claude/.agent-memory/_index.json` last entry}
+   - Last action: {summary from last agent memory entry}
+   - Decisions: {decisions[] from pipeline state, if any}
+
+   ## Next Action
+   → {ONE specific next step}
+   ===
    ```
+
+6. Ask: **"Continue from next action, or review spec first?"**
 
 ### Step 2: Bootstrap (after confirmation)
 
@@ -82,6 +107,17 @@ Run `node .claude/scripts/diff-context.js` to capture the current git state. Inc
     ```
     One call per agent in the completed wave. Summary ≤300 chars (key facts: files created, patterns used, endpoints added). Skip if no downstream waves remain.
 
+#### Escalation Status Handling
+
+After each agent returns, check the return value for an escalation status before advancing to the next wave:
+
+- `CONCERN` — record verbatim under `## Concerns` in the spec; continue to next wave
+- `BLOCKED` — stop immediately; use `AskUserQuestion` to report the exact blocker; do NOT advance
+- `PARTIAL` — apply Granular Retry Protocol from the last completed step; do NOT restart from step 1
+- `DEFERRED` — note in spec with agent justification; ask user if the deferred item is load-bearing before closing
+
+If two or more agents in the same wave return `CONCERN`, surface all concerns together before dispatching the next wave. See `pipeline-config.md` Escalation Statuses for the full status table.
+
 ### Step 4: Validate, Review & Complete
 
 18. **VALIDATE** — Parse agent results: Backend→`dotnet build`, Frontend→`pnpm build`, Mobile→`fvm flutter analyze`. All passed → next. Failed → **granular retry** (see below).
@@ -119,6 +155,29 @@ When an agent fails:
    And set `{task_steps}` to only the remaining steps ({N+1} onwards).
 4. **Spec checkboxes:** steps 1-{N} already `[x]`, remaining continue `[ ]`
 5. **Max 2 retries per agent** — exhausted → STOP + report
+
+### Pause Handoff
+
+When a pipeline is paused (user leaves session or requests pause):
+
+1. Update pipeline state JSON (`.claude/.pipeline-states/{spec-name}.json`):
+   - Set `pausedAt` to current ISO timestamp
+   - Set `pauseReason` to user-provided reason (or "session ended")
+   - Set `nextAction` to the specific next step (ONE sentence)
+2. Write agent memory for carry-over:
+   ```bash
+   echo '{"agent_type":"orchestrator","wave":0,"pipeline":"{spec-name}","summary":"Paused at {phase}. Next: {nextAction}"}' | node .claude/scripts/memory-write.js
+   ```
+3. Confirm to user: "Pipeline paused. Next action saved: {nextAction}"
+
+### Next Action Rule
+
+The handoff MUST end with exactly ONE next action:
+
+**Wrong:** "You could dispatch the backend agent, review the spec, or run tests"
+**Right:** "→ Dispatch backend agent for task 3 (add /api/users endpoint)"
+
+This eliminates decision fatigue on resume. The user can always override, but the default path is a single clear step.
 
 ## INVIOLABLE RULES
 

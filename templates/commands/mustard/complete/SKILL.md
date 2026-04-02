@@ -16,7 +16,32 @@ Finalizes the current pipeline, either completing or canceling.
 4. **Zero CRITICAL issues**: review report shows zero CRITICAL violations (SOLID, design system, patterns, i18n, integration)
 5. **No regressions**: existing features still work
 
+#### Verification Gate (automated)
+
+Before finalizing, run build/test verification:
+
+```bash
+node .claude/scripts/verify-pipeline.js "$PROJECT_DIR"
+```
+
+- **Exit 0** (all passed): proceed to completion
+- **Exit 1** (failures): report failed builds/tests to user, do NOT proceed
+  - Show: which subproject failed, which command, error excerpt
+  - Ask user: fix and retry, or force-complete anyway
+- **Script missing/errors**: warn but continue (fail-open)
+
 If ANY gate fails: do NOT mark complete → report what failed + suggest fix. If review wasn't run → run it now before completing.
+
+#### Surface Accumulated Concerns
+
+Before finalizing, scan the active spec for any `## Concerns` section written during EXECUTE:
+
+- If concerns exist: list them in the completion output under `## Concerns Surfaced`
+- If any concern was classified `BLOCKED` or was never resolved: do NOT complete — report to user first
+- If all concerns are `CONCERN` or `DEFERRED` (non-blocking): note them and proceed
+- This step is a read-only scan — do NOT alter or dismiss concerns during CLOSE
+
+See `pipeline-config.md` Escalation Statuses for concern classification rules.
 
 ## Action
 
@@ -57,10 +82,14 @@ If ANY gate fails: do NOT mark complete → report what failed + suggest fix. If
        "durationMs": "{calculated from startedAt to now}",
        "apiCalls": "{from metrics}",
        "retries": "{from metrics}",
+       "pass1": "{true if metrics.retries === 0, otherwise false}",
        "toolBreakdown": "{from metrics}",
+       "agentAttempts": "{from metrics, if present}",
        "rtkSavings": { "saved": N, "pct": N }
      }
      ```
+   - Set `"pass1": true` if `metrics.retries === 0`, otherwise `"pass1": false`
+   - Omit `agentAttempts` if not present in state metrics
    - If no metrics in state file, skip silently
 7. **Output — visual feedback:**
 

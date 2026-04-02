@@ -18,6 +18,7 @@ const { execFileSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const { shouldRun } = require('./_lib/hook-env.js');
 
 const CACHE_FILE = path.join(os.tmpdir(), 'rtk-available.json');
 const CACHE_TTL_MS = 60_000;
@@ -130,6 +131,7 @@ process.stdin.setEncoding('utf8');
 process.stdin.on('data', chunk => (input += chunk));
 process.stdin.on('end', () => {
   try {
+    if (!shouldRun('rtk-rewrite')) { process.exit(0); }
     const data = JSON.parse(input);
     const cmd = data.tool_input?.command || '';
 

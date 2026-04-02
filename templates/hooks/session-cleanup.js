@@ -12,6 +12,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { shouldRun } = require('./_lib/hook-env.js');
 
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -20,6 +21,7 @@ process.stdin.setEncoding('utf8');
 process.stdin.on('data', chunk => input += chunk);
 process.stdin.on('end', () => {
   try {
+    if (!shouldRun('session-cleanup')) { process.exit(0); }
     const data = JSON.parse(input);
     const cwd = data.cwd || process.cwd();
     const claudeDir = path.join(cwd, '.claude');

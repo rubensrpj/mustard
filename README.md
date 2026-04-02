@@ -27,10 +27,12 @@
 Mustard sets up a `.claude/` folder that turns Claude Code into a structured development pipeline:
 
 - **15 pipeline skills** — feature, bugfix, scan, resume, approve, complete, git, maint, task, knowledge, skill, status, scan-format, agent-prompt template, stats
-- **12 enforcement hooks** — bash safety, file guard, registry validation, guard verification, auto-format, pre-compact, session cleanup, subagent tracking, RTK rewrite, session memory, review gate, metrics tracker
+- **14 enforcement hooks** — bash safety, file guard, registry validation, guard verification, auto-format, pre-compact, session cleanup, subagent tracking, RTK rewrite, session memory, review gate, metrics tracker, MCP budget, session knowledge
 - **6 bundled skills** — design-craft, react-best-practices, senior-architect, skill-creator, commit-workflow, pipeline-execution
-- **8 utility scripts** — subproject detection, entity registry sync, statusline, memory persistence, diff context, knowledge base, metrics collection
+- **10 utility scripts** — subproject detection, entity registry sync, statusline, memory persistence, diff context, knowledge base, metrics collection, security scan, pipeline verification
 - **Token economy** — auto-installs [RTK](https://github.com/rtk-ai/rtk) to reduce token consumption by 60-90% on CLI outputs
+- **Hook profiles** — minimal/standard/strict profiles via `_lib/hook-env.js`, env-based hook disabling
+- **Cursor IDE adapter** (experimental) — `mustard init --cursor` installs a Cursor-compatible hook adapter
 - **Monorepo + single repo** — works with any project structure
 
 ## Quick Start
@@ -112,6 +114,7 @@ The CLI is a **one-time setup tool**. All intelligence lives in the skills and h
 |--------|-------------|
 | `-f, --force` | Overwrite existing `.claude/` without backup |
 | `-y, --yes` | Skip confirmation prompts (merge mode: skip existing files) |
+| `--cursor` | Install Cursor IDE adapter at `.cursor/hooks/adapter.js` |
 
 **Behavior:**
 - If `.claude/` doesn't exist → copies all templates
@@ -205,6 +208,7 @@ mustard review --ci --pr 42
 │   ├── stats/SKILL.md                 #   /stats — pipeline metrics
 │   └── templates/agent-prompt/SKILL.md #  Agent prompt template
 ├── hooks/                             # Enforcement hooks
+│   ├── _lib/hook-env.js               #   Shared runtime controls (profiles, env overrides)
 │   ├── rtk-rewrite.js                 #   Rewrites Bash commands through RTK
 │   ├── bash-safety.js                 #   Blocks dangerous commands
 │   ├── file-guard.js                  #   Blocks sensitive file access
@@ -217,6 +221,8 @@ mustard review --ci --pr 42
 │   ├── session-memory.js              #   Injects persistent memory on session start
 │   ├── review-gate.js                 #   Pre-commit validation (fail-open)
 │   ├── metrics-tracker.js             #   Tracks pipeline API calls and retries
+│   ├── mcp-budget.js                  #   Warns about excessive MCP tool counts
+│   ├── session-knowledge.js           #   Extracts patterns from session before cleanup
 │   └── __tests__/hooks.test.js        #   Hook tests
 ├── scripts/
 │   ├── sync-detect.js                 #   Detects subprojects + roles
@@ -226,12 +232,17 @@ mustard review --ci --pr 42
 │   ├── memory-write.js                #   Writes agent memory entries
 │   ├── diff-context.js                #   Generates git diff summary for agents
 │   ├── knowledge-update.js            #   Updates project knowledge base
-│   └── metrics-collect.js             #   Collects and displays pipeline metrics
+│   ├── metrics-collect.js             #   Collects and displays pipeline metrics
+│   ├── security-scan.js               #   Scans for secrets and security misconfigs
+│   └── verify-pipeline.js             #   Runs build/test verification for pipeline
 ├── memory/                            # Persistent memory (auto-created)
 │   ├── decisions.json                 #   Decisions across pipelines
 │   └── lessons.json                   #   Lessons learned
 ├── knowledge.json                     # Evolutionary knowledge base
 ├── metrics/                           # Pipeline metrics archive
+├── adapters/cursor/                   # Cursor IDE adapter (experimental)
+│   ├── README.md                      #   Setup and usage guide
+│   └── adapter.js                     #   Translates Cursor ↔ Claude Code hook protocol
 └── skills/                            # Bundled skills
     ├── design-craft/                  #   UI design methodology
     ├── react-best-practices/          #   React/Next.js optimization (40+ rules)
@@ -259,7 +270,7 @@ mustard review --ci --pr 42
 
 | Command | Description |
 |---------|-------------|
-| `/git <action>` | commit, push, merge, deploy (handles monorepo) |
+| `/git <action>` | commit, push, merge, deploy (handles monorepo; `/git merge main` cascades from any branch) |
 | `/maint <action>` | deps, validate, sync |
 | `/status` | Git + pipeline + build + registry status |
 

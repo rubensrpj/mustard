@@ -94,6 +94,27 @@ function main() {
         parts.push(`- Avg retries: ${Math.round(totalRetries / count)}`);
         parts.push('');
       }
+
+      // Pass@1 metrics — computed across ALL completed pipeline files (not just last 10)
+      var pass1Count = 0;
+      var totalPipelines = 0;
+      var totalRetrySum = 0;
+      for (var i = 0; i < files.length; i++) {
+        try {
+          var m = JSON.parse(fs.readFileSync(path.join(metricsDir, files[i]), 'utf8'));
+          totalPipelines++;
+          totalRetrySum += (m.retries || 0);
+          if ((m.retries || 0) === 0) pass1Count++;
+        } catch {}
+      }
+      if (totalPipelines > 0) {
+        var pass1Pct = Math.round((pass1Count / totalPipelines) * 100);
+        var avgRetries = (totalRetrySum / totalPipelines).toFixed(1);
+        parts.push('## Pass@1 Metrics');
+        parts.push('- Pass@1: ' + pass1Pct + '% (' + pass1Count + '/' + totalPipelines + ' completed without retries)');
+        parts.push('- Avg retries per pipeline: ' + avgRetries);
+        parts.push('');
+      }
     }
   }
 

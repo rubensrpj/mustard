@@ -19,6 +19,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { shouldRun, isSelfDelegation } = require('./_lib/hook-env.js');
 
 const QUEUE_FILE = '_queue.json';
 const QUEUE_STALE_MS = 60_000; // 60 seconds
@@ -33,6 +34,7 @@ process.stdin.setEncoding('utf8');
 process.stdin.on('data', (chunk) => (input += chunk));
 process.stdin.on('end', () => {
   try {
+    if (!shouldRun('subagent-tracker')) { process.exit(0); }
     const data = JSON.parse(input);
     const event = data.hook_event_name;
     const projectDir = data.cwd || process.cwd();
@@ -61,6 +63,7 @@ process.stdin.on('end', () => {
  * and match it later via FIFO queue with type-matching preference.
  */
 function handlePreToolUse(data, stateDir) {
+  if (isSelfDelegation(data)) { return; }
   const toolInput = data.tool_input || {};
   const description = toolInput.description || '';
   const subagentType = toolInput.subagent_type || 'unknown';

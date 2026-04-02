@@ -22,6 +22,80 @@
 1. Restart backend (if applicable)
 2. Regenerate types (if applicable)
 
+## Compact Guidance
+
+Strategic `/compact` suggestions to optimize context window usage during pipeline execution.
+
+**When to suggest `/compact`:**
+- After ANALYZE phase completes (especially if >8 file reads or >3 Grep searches were needed)
+- After a debugging/retry loop with >2 retries in EXECUTE phase
+- After an agent wave completes and before starting the next wave
+- After a failed approach is abandoned, before trying an alternative
+
+**When NOT to suggest `/compact`:**
+- Mid-implementation (variable names, file paths, and partial state would be lost)
+- During active agent execution
+- When context usage is below 50%
+
+**Format:** Present as an advisory suggestion, never block or auto-compact:
+> "Heavy analysis complete. Consider running `/compact` before EXECUTE to optimize context window. Then use `/resume` to continue."
+
+## Session Handoff
+
+When a pipeline pauses or a session ends mid-pipeline:
+
+| Field | Source | Purpose |
+|-------|--------|---------|
+| `pausedAt` | Pipeline state JSON | When work stopped |
+| `pauseReason` | User input | Why work stopped |
+| `nextAction` | Orchestrator | ONE specific next step |
+| `filesChanged` | `diff-context.js` | Git context for resume |
+| `lastAgent` | `_index.json` | Last agent that ran |
+
+On `/resume`: compile handoff from state + spec + memory + git diff.
+Goal: user resumes in <30 seconds without re-reading the spec.
+
+## Diagnostic Failure Routing
+
+When an agent fails during EXECUTE, classify the failure before deciding how to respond.
+
+### Failure Classes
+
+| Class | Description | Examples |
+|-------|-------------|---------|
+| **Transient** | Recoverable without new information — retry resolves it | Build cache stale, flaky test, race condition, timeout |
+| **Resolvable** | Fixable with a targeted patch — root cause is clear | Type mismatch, missing import, wrong argument, null guard |
+| **Structural** | Requires re-analysis — current approach is wrong | Wrong layer targeted, entity relation mismatch, spec assumption false |
+
+### Routing Flow
+
+```
+Agent fails
+    │
+    ▼
+Q1: Is this a transient / environment issue? (cache, test flake, timeout)
+    YES → Retry once immediately (no analysis needed)
+    NO  ↓
+Q2: Is the root cause clear and patchable in ≤3 lines?
+    YES → Apply targeted fix, retry (counts as retry 1)
+    NO  ↓
+Q3: Did the spec make a false assumption about structure or layer?
+    YES → Structural failure → re-analyze (read 1-2 key files), update spec, re-dispatch
+    NO  → Retry with expanded context (counts as retry 2) → if still failing: STOP + report
+```
+
+### Classification Heuristic (3 Questions)
+
+1. **Transient?** — Would re-running the exact same command likely succeed?
+2. **Resolvable?** — Can you identify the fix without reading additional files?
+3. **Structural?** — Does the failure reveal the spec assumed something that isn't true?
+
+Answer all three before acting. Misclassifying Structural as Resolvable wastes a retry and deepens context.
+
+### Token Savings Rationale
+
+Classifying before retrying avoids loading the full agent context again when a one-line patch suffices (Resolvable), and avoids burning retries on wrong-layer fixes when re-analysis is the correct move (Structural). A targeted re-read of 1-2 files is cheaper than a full Explore re-dispatch.
+
 ## Parallel Rules
 
 By default: DB+Backend in Wave 1, Frontend ALWAYS after Backend (Wave 2).
@@ -85,3 +159,18 @@ When dispatching impl agents, recommend skills based on role:
 Complex/architecture tasks (any role): add `senior-architect`.
 
 Agents auto-load relevant skills based on task description. Orchestrator may hint specific skills in `{recommended_skills}`.
+
+## Escalation Statuses
+
+Agent return values may carry an escalation status when the outcome is ambiguous or risky. The pipeline runner MUST check for these before advancing.
+
+| Status | Meaning | Pipeline Action |
+|--------|---------|-----------------|
+| `CONCERN` | Agent completed work but flagged a design or quality risk | Record in spec under `## Concerns`; continue pipeline; surface at CLOSE |
+| `BLOCKED` | Agent could not proceed — missing dependency, unclear requirement, or unsafe change | Stop the current wave; report to user with exact reason; do NOT advance |
+| `PARTIAL` | Agent completed some steps but not all — partial progress saved | Resume from last completed step using Granular Retry Protocol |
+| `DEFERRED` | Agent intentionally skipped a step with justification (e.g., out of scope) | Note in spec; do NOT retry; confirm with user if deferred item is load-bearing |
+
+**Accumulation rule:** If two or more agents in the same wave return `CONCERN`, surface all concerns together before proceeding to the next wave — do not silently accumulate them until CLOSE.
+
+**BLOCKED is not a retry trigger** — it requires user input before the pipeline can continue. Use `AskUserQuestion` to resolve blockers.

@@ -5,6 +5,7 @@
  */
 const fs = require('fs');
 const path = require('path');
+const { shouldRun } = require('./_lib/hook-env.js');
 
 const MAX_CHARS = 2000;
 
@@ -13,6 +14,7 @@ process.stdin.setEncoding('utf8');
 process.stdin.on('data', chunk => input += chunk);
 process.stdin.on('end', () => {
   try {
+    if (!shouldRun('session-memory')) { process.exit(0); }
     const data = JSON.parse(input);
     const cwd = data.cwd || process.cwd();
     const memDir = path.join(cwd, '.claude', 'memory');

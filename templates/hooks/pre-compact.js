@@ -16,12 +16,14 @@
 const { execSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+const { shouldRun } = require('./_lib/hook-env.js');
 
 let input = '';
 process.stdin.setEncoding('utf8');
 process.stdin.on('data', chunk => input += chunk);
 process.stdin.on('end', () => {
   try {
+    if (!shouldRun('pre-compact')) { process.exit(0); }
     const data = JSON.parse(input);
     const cwd = data.cwd || process.cwd();
     const parts = [];

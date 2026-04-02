@@ -325,6 +325,28 @@ node .claude/scripts/sync-detect.js
 ```
 This runs detect WITH cache writing (no `--no-cache` flag), persisting current hashes.
 
+### Phase: Security Scan
+
+Run after code analysis (step 3) or independently via `/scan --security`:
+
+```bash
+node .claude/scripts/security-scan.js "$PROJECT_DIR"
+# JSON output for programmatic use:
+node .claude/scripts/security-scan.js "$PROJECT_DIR" --json
+```
+
+Include findings in scan output under a `## Security` section:
+
+| Severity | Finding Type | Action |
+|----------|-------------|--------|
+| **CRITICAL** | Secrets detected | Flag in verification checklist; do not commit |
+| **WARNING** | Env file not in .gitignore | Add to .gitignore before any push |
+| **ADVISORY** | Dangerous permission rule in settings.json | Review and tighten |
+
+- Exit code 0 = clean; exit code 1 = findings present
+- Secret previews are truncated to 8 chars — never log full values
+- Skip if `$PROJECT_DIR` is not set; use `process.cwd()` as fallback
+
 ## Verification
 
 1. All skills in `{subproject}/.claude/skills/` have valid SKILL.md
@@ -337,6 +359,7 @@ This runs detect WITH cache writing (no `--no-cache` flag), persisting current h
 8. `.claude/entity-registry.json` exists
 9. Each generated skill has valid YAML frontmatter (name + description)
 10. Each skill's description is "pushy" — includes casual trigger phrases
+11. If security scan ran: findings summarized in `## Security` section of output
 
 ## Return Format
 

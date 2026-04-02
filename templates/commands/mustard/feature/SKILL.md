@@ -61,6 +61,11 @@ Record scope for PLAN phase branching.
 
 **HARD RULE:** If you already understand the change (which files, which pattern), STOP reading and write the spec. More reads ≠ better spec.
 
+#### Compact Advisory
+After ANALYZE completes, if the analysis required heavy exploration (>8 file reads, >3 Grep rounds, or multiple Explore agents):
+- Suggest to user: _"Analysis complete. Context is heavy — consider `/compact` before we proceed to implementation, then `/resume`."_
+- This is advisory only — proceed immediately if user declines or ignores.
+
 ### PLAN Phase
 
 #### Full Scope
@@ -102,6 +107,22 @@ Record scope for PLAN phase branching.
    - **"Approve for later"** → stop, user runs `/approve` + `/resume`
    - **"Adjust"** → user gives feedback
 
+#### Spec Boundaries
+
+Before writing spec tasks, identify and record which files/directories are in scope. Add a `## Boundaries` section to the spec:
+
+```
+## Boundaries
+- `path/to/directory/` — directory scope (all files within)
+- `path/to/file.ext` — exact file
+- `**/*.controller.ts` — glob pattern
+```
+
+Rules:
+- Only list paths the feature **intentionally** touches
+- Be specific: prefer exact files over broad directories when the change is known
+- Out-of-boundary edits during EXECUTE will surface a `[BOUNDARY WARNING]` from guard-verify — treat as a signal to re-evaluate, not an error to suppress
+
 ### EXECUTE Phase (Light scope — same session)
 
 When user chooses "Approve and implement now":
@@ -114,9 +135,31 @@ When user chooses "Approve and implement now":
 7. Wave transitions between waves (from `pipeline-config.md`)
 8. On return: validate (build/type-check), update spec `[ ]` → `[x]` (line-by-line edits, NEVER copy entire spec blocks as old_string)
 8b. **Agent Memory:** After agents return and spec is updated, write agent memory: `echo '{"agent_type":"{type}","wave":{N},"pipeline":"{spec-name}","summary":"{what agent did}","details":{...}}' | node .claude/scripts/memory-write.js` — one per agent. Skip if single-wave pipeline (no downstream agents to benefit).
+
+#### Escalation Status Handling
+
+After each agent returns, check the return value for an escalation status before advancing:
+
+- `CONCERN` — record verbatim under `## Concerns` in the spec; continue to next step
+- `BLOCKED` — stop immediately; use `AskUserQuestion` to report the exact blocker; do NOT retry or advance
+- `PARTIAL` — apply Granular Retry Protocol from the last completed step; do NOT restart from step 1
+- `DEFERRED` — note in spec with agent justification; ask user if the deferred item is load-bearing before closing
+
+If two or more agents in the same wave return `CONCERN`, surface all concerns together before starting the next wave. See `pipeline-config.md` Escalation Statuses for the full status table.
+
 9. **REVIEW** — dispatch review agent for each affected subproject (reads guards + relevant skills, runs 7-category checklist: SOLID, Design System, Patterns, i18n, Integration, Build, Elegance). REJECTED → fix + re-review (max 2 loops)
 10. All passed + APPROVED → CLOSE flow inline (sync registry, move spec, cleanup state)
 11. Failed → max 2 retries, then STOP + report
+
+#### Failure Routing
+
+Before retrying, classify the failure with 3 questions:
+
+1. **Transient?** — Would re-running succeed without any change? → Retry once immediately.
+2. **Resolvable?** — Is the fix clear and patchable in ≤3 lines without new reads? → Apply patch, retry (counts as retry 1).
+3. **Structural?** — Did the spec assume something false about structure or layer? → Re-analyze (read 1-2 key files), update spec, re-dispatch. Does NOT count against the 2-retry cap.
+
+Retry cap applies to Transient + Resolvable only. Structural failures reset the attempt after spec correction.
 
 ## Visual Output
 

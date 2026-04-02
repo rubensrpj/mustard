@@ -11,6 +11,8 @@
  * @version 1.0.0
  */
 
+const { shouldRun } = require('./_lib/hook-env.js');
+
 const DANGEROUS = [
   { re: /\brm\s+(-\w*r\w*f|--no-preserve-root|-rf|-fr)\b/i, msg: 'Recursive force delete blocked' },
   { re: /\bgit\s+push\s+(-\w*f|--force)\b/i, msg: 'Force push blocked' },
@@ -32,6 +34,7 @@ process.stdin.setEncoding('utf8');
 process.stdin.on('data', chunk => input += chunk);
 process.stdin.on('end', () => {
   try {
+    if (!shouldRun('bash-safety')) { process.exit(0); }
     const data = JSON.parse(input);
     if (data.tool_name !== 'Bash') {
       process.exit(0);

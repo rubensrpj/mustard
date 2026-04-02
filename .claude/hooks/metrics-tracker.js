@@ -12,12 +12,14 @@
 
 const fs = require('fs');
 const path = require('path');
+const { shouldRun } = require('./_lib/hook-env.js');
 
 let input = '';
 process.stdin.setEncoding('utf8');
 process.stdin.on('data', chunk => (input += chunk));
 process.stdin.on('end', () => {
   try {
+    if (!shouldRun('metrics-tracker')) { process.exit(0); }
     const data = JSON.parse(input);
     const cwd = data.cwd || process.cwd();
     const toolName = data.tool_name || '';
@@ -66,6 +68,12 @@ process.stdin.on('end', () => {
     const content = JSON.stringify(toolInput).toLowerCase();
     if (/\b(retry|fix|error|failed|again)\b/.test(content)) {
       state.metrics.retries++;
+      // Per-phase attempt tracking
+      if (!state.metrics.agentAttempts) {
+        state.metrics.agentAttempts = {};
+      }
+      var phase = state.phaseName || state.phase || 'unknown';
+      state.metrics.agentAttempts[phase] = (state.metrics.agentAttempts[phase] || 0) + 1;
     }
 
     state.metrics.updatedAt = new Date().toISOString();
