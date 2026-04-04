@@ -223,8 +223,6 @@ Body (below frontmatter):
 
 ## Boundary
 {boundary from Role Rules table}
-- **Budget: ≤80 tool uses total** — use Grep to find patterns, Read only for key files
-- Once all patterns are identified, stop reading and generate — do NOT exhaustively scan
 
 ## Validation
 {validate command from subproject CLAUDE.md → Commands section}

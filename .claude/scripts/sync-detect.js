@@ -597,8 +597,9 @@ function getGitDirtyFiles(subprojectPath) {
       if (!trimmed) continue;
       // Format: "XY filename" or "XY filename -> newname"
       const filePath = trimmed.substring(3).split(" -> ").pop().trim();
+      const fileName = path.basename(filePath);
       const ext = path.extname(filePath).toLowerCase();
-      if (!sourceExts.has(ext)) continue;
+      if (!sourceExts.has(ext) && !MANIFEST_FILES.has(fileName)) continue;
       // Skip ignored directories
       const parts = filePath.split("/");
       if (parts.some((p) => ignoreNames.has(p) || p === "migrations")) continue;
@@ -626,6 +627,26 @@ const SOURCE_IGNORE_PATTERNS = [
 ];
 
 const SOURCE_EXTENSIONS = new Set([".cs", ".ts", ".tsx", ".js", ".jsx", ".dart"]);
+
+/**
+ * Manifest files that affect project behavior without changing source code.
+ * Changes to these files (dependency upgrades, SDK bumps) should invalidate
+ * the source hash even when no source file changed.
+ */
+const MANIFEST_FILES = new Set([
+  // Flutter/Dart
+  "pubspec.yaml", "pubspec.lock",
+  // Node.js
+  "package.json", "pnpm-lock.yaml", "package-lock.json", "yarn.lock",
+  // .NET
+  "Directory.Packages.props", "Directory.Build.props", "nuget.config",
+  // Go
+  "go.mod", "go.sum",
+  // Rust
+  "Cargo.toml", "Cargo.lock",
+  // Python
+  "pyproject.toml", "requirements.txt", "poetry.lock",
+]);
 
 /**
  * Recursively collect source files from a directory.
@@ -660,7 +681,7 @@ function collectSourceFiles(dir, maxDepth = 10, currentDepth = 0) {
         results.push(...collectSourceFiles(fullPath, maxDepth, currentDepth + 1));
       } else if (entry.isFile()) {
         const ext = path.extname(entry.name).toLowerCase();
-        if (SOURCE_EXTENSIONS.has(ext)) {
+        if (SOURCE_EXTENSIONS.has(ext) || MANIFEST_FILES.has(entry.name)) {
           results.push(relFromRoot);
         }
       }
@@ -909,6 +930,17 @@ function main() {
   }
   const subprojectPaths = submodulePaths;
 
+  // Load previous cache for hash comparison (anti-stale detection)
+  let previousCache = null;
+  try {
+    const cachePath = path.join(ROOT, ".claude", ".detect-cache.json");
+    if (fs.existsSync(cachePath)) {
+      previousCache = JSON.parse(fs.readFileSync(cachePath, "utf-8"));
+    }
+  } catch {
+    // no previous cache — treat all as changed
+  }
+
   // 2. Filter to only those with a CLAUDE.md, then build subproject entries
   const subprojects = [];
   const detectedAgentsSet = new Set();
@@ -944,6 +976,10 @@ function main() {
     // Detect git dirty state (uncommitted source file changes)
     const gitDirty = getGitDirtyFiles(normalizedPath);
 
+    // Compare current hash against previous cache to detect stale state
+    const prevHash = previousCache?.sourceHashes?.[name];
+    const hashChanged = !prevHash || prevHash !== sourceHashes[name];
+
     subprojects.push({
       name,
       path: normalizedPath,
@@ -951,6 +987,7 @@ function main() {
       agent,
       commands,
       stackSummary,
+      hashChanged,
       ...(gitDirty.dirty ? { gitDirty: true, gitDirtyCount: gitDirty.files.length } : {}),
     });
   }

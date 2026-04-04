@@ -149,9 +149,9 @@ Agents load context via skills (auto-triggered by Claude based on task descripti
 ## Token Budget per Agent
 | Agent Type | Max Context | Max Tool Uses | Includes |
 |------------|-------------|---------------|----------|
-| {subproject}-impl | ≤5K tokens | **≤80** | CLAUDE.md + auto-loaded skills + entity info + task steps |
+| {subproject}-impl | ≤5K tokens | — | CLAUDE.md + auto-loaded skills + entity info + task steps |
 | explorer | ≤2.5K tokens | **≤20** | CLAUDE.md + search scope |
-| review | ≤3K tokens | **≤40** | CLAUDE.md + guards + file list |
+| review | ≤3K tokens | — | CLAUDE.md + guards + file list |
 
 **Explorer efficiency rules:**
 - Max 20 tool uses per explorer (Grep + Read + Glob combined)

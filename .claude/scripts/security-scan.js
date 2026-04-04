@@ -28,6 +28,18 @@ const SECRET_PATTERNS = [
   { name: 'Generic Secret Assignment', re: /(?:secret|password|passwd|api_key|apikey|token|auth_token)\s*[:=]\s*["'][^"']{8,}["']/gi },
 ];
 
+// File name patterns that commonly trigger false positives on generic patterns
+// (seeds with hashed passwords, error code constants, test fixtures, etc.)
+const FP_FILE_PATTERNS = [
+  /[Ss]eeder/,          // DatabaseSeeder.cs, UserSeeder.cs
+  /[Ss]eed[s]?\./,      // Seeds.cs, seed.ts
+  /ErrorCode/i,         // ApiExceptionErrorCodes.cs, ErrorCodes.ts
+  /Exception.*Code/i,   // ExceptionCodes, ExceptionErrorCodes
+  /\.d\.ts$/,           // Type declaration files
+  /\.test\./,           // Test files
+  /\.spec\./,           // Spec files
+];
+
 // ── Ignore lists ────────────────────────────────────────────────────
 const IGNORE_DIRS = new Set([
   'node_modules', '.git', 'dist', 'bin', 'obj', '.next', 'vendor',
@@ -73,11 +85,17 @@ function scanFile(filePath, results) {
   let content;
   try { content = fs.readFileSync(filePath, 'utf8'); } catch { return; }
 
+  // Check if file matches false-positive suppression patterns
+  const baseName = path.basename(filePath);
+  const isFpFile = FP_FILE_PATTERNS.some(re => re.test(baseName));
+
   // Secret pattern matching
   for (const { name, re } of SECRET_PATTERNS) {
     re.lastIndex = 0;
     const match = re.exec(content);
     if (match) {
+      // Skip generic patterns on known false-positive files
+      if (isFpFile && name === 'Generic Secret Assignment') continue;
       // Find line number
       const beforeMatch = content.substring(0, match.index);
       const line = (beforeMatch.match(/\n/g) || []).length + 1;
