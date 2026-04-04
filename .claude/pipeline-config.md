@@ -66,6 +66,7 @@ When an agent fails during EXECUTE, classify the failure before deciding how to 
 | **Transient** | Recoverable without new information — retry resolves it | Build cache stale, flaky test, race condition, timeout |
 | **Resolvable** | Fixable with a targeted patch — root cause is clear | Type mismatch, missing import, wrong argument, null guard |
 | **Structural** | Requires re-analysis — current approach is wrong | Wrong layer targeted, entity relation mismatch, spec assumption false |
+| **Internal** | Agent crashed or returned no parseable output | Context overflow, parallel dispatch race, internal API error, empty return |
 
 ### Routing Flow
 
@@ -73,6 +74,9 @@ When an agent fails during EXECUTE, classify the failure before deciding how to 
 Agent fails
     │
     ▼
+Q0: Did the agent return parseable output?
+    NO  → Internal failure → re-dispatch SEQUENTIALLY (not parallel), same prompt (counts as retry 1)
+    YES ↓
 Q1: Is this a transient / environment issue? (cache, test flake, timeout)
     YES → Retry once immediately (no analysis needed)
     NO  ↓
@@ -84,13 +88,16 @@ Q3: Did the spec make a false assumption about structure or layer?
     NO  → Retry with expanded context (counts as retry 2) → if still failing: STOP + report
 ```
 
-### Classification Heuristic (3 Questions)
+### Classification Heuristic (4 Questions)
 
+0. **Internal?** — Did the agent crash with no parseable output (empty return, API error, context overflow)?
 1. **Transient?** — Would re-running the exact same command likely succeed?
 2. **Resolvable?** — Can you identify the fix without reading additional files?
 3. **Structural?** — Does the failure reveal the spec assumed something that isn't true?
 
-Answer all three before acting. Misclassifying Structural as Resolvable wastes a retry and deepens context.
+Answer Q0 first. If Internal: re-dispatch the failed agent(s) **sequentially** (one at a time, not parallel) with the same prompt. If multiple agents in a wave failed with Internal errors, this avoids the parallel dispatch race that likely caused the crash. Max 1 Internal retry per agent — if it fails again: STOP + report.
+
+Answer Q1-Q3 before acting on non-Internal failures. Misclassifying Structural as Resolvable wastes a retry and deepens context.
 
 ### Token Savings Rationale
 
@@ -140,11 +147,17 @@ Agents load context via skills (auto-triggered by Claude based on task descripti
 | Entity registry | `.claude/entity-registry.json` | Grep by entity name |
 
 ## Token Budget per Agent
-| Agent Type | Max Context | Includes |
-|------------|-------------|----------|
-| {subproject}-impl | ≤5K tokens | CLAUDE.md + auto-loaded skills + entity info + task steps |
-| explorer | ≤2.5K tokens | CLAUDE.md + search scope |
-| review | ≤3K tokens | CLAUDE.md + guards + file list |
+| Agent Type | Max Context | Max Tool Uses | Includes |
+|------------|-------------|---------------|----------|
+| {subproject}-impl | ≤5K tokens | **≤80** | CLAUDE.md + auto-loaded skills + entity info + task steps |
+| explorer | ≤2.5K tokens | **≤20** | CLAUDE.md + search scope |
+| review | ≤3K tokens | **≤40** | CLAUDE.md + guards + file list |
+
+**Explorer efficiency rules:**
+- Max 20 tool uses per explorer (Grep + Read + Glob combined)
+- Prefer Grep over Read — search for specific patterns, don't read entire files
+- Max 3 full file reads per explorer — use Grep for the rest
+- Return findings as soon as root cause/pattern is clear — don't exhaustively scan
 
 ## Skill Recommendations
 

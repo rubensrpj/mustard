@@ -111,7 +111,7 @@ process.stdin.on('end', () => {
       hookSpecificOutput: {
         hookEventName: 'PreToolUse',
         permissionDecision: 'allow',
-        updatedInput: { command: rewritten }
+        updatedInput: { command: `${rewritten} 2>/dev/null` }
       }
     }));
     process.exit(0);

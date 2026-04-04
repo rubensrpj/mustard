@@ -223,6 +223,8 @@ Body (below frontmatter):
 
 ## Boundary
 {boundary from Role Rules table}
+- **Budget: ≤80 tool uses total** — use Grep to find patterns, Read only for key files
+- Once all patterns are identified, stop reading and generate — do NOT exhaustively scan
 
 ## Validation
 {validate command from subproject CLAUDE.md → Commands section}
@@ -272,6 +274,8 @@ Body (below frontmatter):
 - **Read-only** — NEVER write, edit, or execute commands
 - Scope: `{subproject.path}/` directory only
 - Ignore: `bin/`, `obj/`, `node_modules/`, `.next/`, `Migrations/`
+- **Budget: ≤20 tool uses total, ≤3 full file reads** — prefer Grep over Read
+- Return findings as soon as pattern/root-cause is clear — do NOT exhaustively scan
 
 ## Return Format
 ### Findings

@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(mkdir -p \"C:/Atiz/Mustard/templates/.claude/skills/templates-hook-protocol/references\")",
+      "Bash(mkdir -p \"C:/Atiz/Mustard/templates/.claude/skills/templates-settings-wiring/references\")",
+      "Bash(mkdir -p \"C:/Atiz/Mustard/templates/.claude/skills/templates-sync-detect/references\")",
+      "Bash(mkdir -p \"C:/Atiz/Mustard/templates/.claude/skills/templates-command-authoring/references\")",
+      "Bash(mkdir -p \"C:/Atiz/Mustard/templates/.claude/skills/templates-skill-authoring/references\")",
+      "Read(//c/Atiz/Mustard/$APPDATA/Claude/**)",
+      "Read(//c/Atiz/Mustard/$HOME/.claude/**)"
+    ]
+  }
+}
