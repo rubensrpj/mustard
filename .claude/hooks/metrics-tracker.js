@@ -31,7 +31,7 @@ process.stdin.on('end', () => {
     const statesDir = path.join(cwd, '.claude', '.pipeline-states');
     if (!fs.existsSync(statesDir)) { process.exit(0); }
 
-    const files = fs.readdirSync(statesDir).filter(f => f.endsWith('.json'));
+    const files = fs.readdirSync(statesDir).filter(f => f.endsWith('.json') && !f.endsWith('.metrics.json'));
     if (files.length === 0) { process.exit(0); }
 
     // Update the most recently modified pipeline state
@@ -50,34 +50,64 @@ process.stdin.on('end', () => {
 
     if (!newest) { process.exit(0); }
 
-    const state = JSON.parse(fs.readFileSync(newest, 'utf8'));
+    // Read pipeline-state.json READ-ONLY (to derive currentPhase, status, startedAt).
+    // Never write to it — metrics live in a sidecar to avoid "file modified since
+    // read" races with Edit/Write on the pipeline-state file.
+    let pipelineState = {};
+    try {
+      pipelineState = JSON.parse(fs.readFileSync(newest, 'utf8'));
+    } catch {}
 
-    // Initialize metrics if not present
-    if (!state.metrics) {
-      state.metrics = {
+    const sidecarPath = newest.replace(/\.json$/, '.metrics.json');
+    let sidecar;
+    if (fs.existsSync(sidecarPath)) {
+      try {
+        sidecar = JSON.parse(fs.readFileSync(sidecarPath, 'utf8'));
+      } catch {
+        sidecar = null;
+      }
+    }
+    if (!sidecar || typeof sidecar !== 'object') {
+      sidecar = {
+        v: 1,
+        metrics: {
+          apiCalls: 0,
+          toolBreakdown: {},
+          retries: 0,
+          startedAt: pipelineState.startedAt || new Date().toISOString(),
+        },
+        previousPhase: '',
+      };
+    }
+    if (!sidecar.metrics) {
+      sidecar.metrics = {
         apiCalls: 0,
         toolBreakdown: {},
         retries: 0,
-        startedAt: state.startedAt || new Date().toISOString(),
+        startedAt: pipelineState.startedAt || new Date().toISOString(),
       };
     }
+    if (!sidecar.metrics.toolBreakdown) sidecar.metrics.toolBreakdown = {};
+
+    // Alias for minimal churn below — all mutations go to the sidecar.
+    const state = sidecar;
 
     // ── wave_reentry: track EXECUTE → PLAN transitions ──────────────────────
     // previousPhase is updated on every write so we can detect phase changes.
-    const currentPhase = state.phaseName || state.phase || '';
-    const previousPhase = state.previousPhase || '';
+    const currentPhase = pipelineState.phaseName || pipelineState.phase || '';
+    const previousPhase = sidecar.previousPhase || '';
     if (currentPhase === 'PLAN' && previousPhase === 'EXECUTE') {
       state.metrics.wave_reentry = (state.metrics.wave_reentry || 0) + 1;
     }
     // Always update previousPhase to the current phase so the NEXT write can
     // detect a transition.
-    state.previousPhase = currentPhase;
+    sidecar.previousPhase = currentPhase;
 
     // ── gate_saves: spec edits in PLAN phase after first /approve ────────────
-    // Proxy for "first approve recorded": state.status === 'approved' (set by
-    // /approve command).  A spec file is any .md in .claude/spec/ or matching
-    // *spec*.md anywhere in the pipeline-states dir.
-    if ((toolName === 'Edit' || toolName === 'Write') && currentPhase === 'PLAN' && state.status === 'approved') {
+    // Proxy for "first approve recorded": pipelineState.status === 'approved'
+    // (set by /approve command).  A spec file is any .md in .claude/spec/ or
+    // matching *spec*.md anywhere in the pipeline-states dir.
+    if ((toolName === 'Edit' || toolName === 'Write') && currentPhase === 'PLAN' && pipelineState.status === 'approved') {
       const toolFilePath = (data.tool_input || {}).file_path || (data.tool_input || {}).path || '';
       const isSpecFile =
         /[/\\]\.claude[/\\]spec[/\\]/.test(toolFilePath) ||
@@ -151,7 +181,8 @@ process.stdin.on('end', () => {
 
     state.metrics.updatedAt = new Date().toISOString();
 
-    fs.writeFileSync(newest, JSON.stringify(state, null, 2), 'utf8');
+    // Write ONLY the sidecar — never touch pipeline-state.json from this hook.
+    fs.writeFileSync(sidecarPath, JSON.stringify(sidecar, null, 2), 'utf8');
 
     process.exit(0);
   } catch (err) {

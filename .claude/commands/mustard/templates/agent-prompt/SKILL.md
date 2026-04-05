@@ -2,16 +2,21 @@
 
 Orchestrator fills `{placeholders}` before dispatch. Agent receives the rendered version.
 
+Single unified template for all dispatches:
+- When `.claude/agents/{subproject}-impl.md` **exists**: orchestrator leaves `{role_block}` empty (role/boundary/validate/return already defined in the custom agent).
+- When it **does NOT exist**: orchestrator fills `{role_block}` with `ROLE: {role} — {boundary}` / `Validate: {validate_command}` / `Return: {return_sections}`.
+
+`{context_extras}` is optional (e.g. extra line to read `notes.md`); leave empty when unused.
+
 ---
 
-## Compact Template (custom agent — role already defined in agent)
-
-Use when `.claude/agents/{subproject}-impl.md` exists. Role, boundary, return format, and validation are already in the agent definition — prompt only needs references + entity + task.
+## Dispatch Template
 
 ```
 ## CONTEXT
-1. Read `{subproject}/CLAUDE.md` — guards, stack, key paths
+1. Read `{subproject}/CLAUDE.md` — guards, stack, paths
 2. Read `{subproject}/.claude/commands/guards.md` — mandatory rules
+{context_extras}
 
 ## REFERENCE
 {reference_files}
@@ -20,67 +25,26 @@ Use when `.claude/agents/{subproject}-impl.md` exists. Role, boundary, return fo
 {entity_info}
 
 ## SKILLS
-Your available skills are listed in the system. Before implementing, check if any skill matches your task — read its SKILL.md for patterns and examples.
-Key skills for this task: {recommended_skills}
-If a skill has `references/` files, read them only when you need concrete code examples.
+Available skills listed in system. Read SKILL.md only if task matches. Key: {recommended_skills}
+Load references/ only for concrete examples.
 
 ## WEB VALIDATION
-When in doubt about API usage, library version, or implementation pattern: search the web for the latest documentation before implementing. Only proceed when 100% confident.
+In doubt about API/version/pattern → search web for latest docs before implementing.
+
+## ROLE
+{role_block}
 
 ## EFFICIENCY
-- Absolute paths — NEVER cd
-- Chain kill+build in single Bash
-- Max 3 build attempts → STOP + report
+- Absolute paths, no cd
+- Read each file once
+- Max 3 build attempts, then STOP + report
 
 {retry_context}
 
 ## TASK
 {task_steps}
-```
 
----
-
-## Full Template (fallback — general-purpose agent, no custom agent)
-
-Use when `.claude/agents/{subproject}-impl.md` does NOT exist.
-
-```
-## STEP 0: READ CONTEXT
-1. `{subproject}/CLAUDE.md` — guards, stack, key paths
-2. `{subproject}/.claude/commands/guards.md` — mandatory rules
-3. `{subproject}/.claude/commands/notes.md` — project-specific notes
-
-## REFERENCE MODULE
-{reference_files}
-
-## GUARDS (verify in return)
-{guards_summary}
-
-## ENTITY REGISTRY
-{entity_info}
-
-## SKILLS
-Your available skills are listed in the system. Before implementing, check if any skill matches your task — read its SKILL.md for patterns and examples.
-Key skills for this task: {recommended_skills}
-If a skill has `references/` files, read them only when you need concrete code examples.
-
-## WEB VALIDATION
-When in doubt about API usage, library version, or implementation pattern: search the web for the latest documentation before implementing. Only proceed when 100% confident.
-
-## ROLE: {role} — {boundary}
-Validate: {validate_command}
-Return: {return_sections}
-
-## EFFICIENCY RULES
-- Shell state does NOT persist between Bash calls — ALWAYS use absolute paths, NEVER cd
-- Build: {build_command}
-- Read each file ONCE — trust your edit
-- Max 3 build attempts/step. After 3rd: STOP and report error.
-
-{retry_context}
-
-## TASK — Execute in order
-{task_steps}
+Guards carregados via CLAUDE.md acima — respeite sem exceção.
 ```
 
 ---

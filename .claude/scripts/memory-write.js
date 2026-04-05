@@ -3,10 +3,14 @@
 /**
  * memory-write.js
  *
- * Receives a JSON memory entry from stdin and persists it to
+ * Receives a JSON memory entry and persists it to
  * {projectDir}/.claude/.agent-memory/.
  *
- * Input schema (stdin):
+ * Input (two modes):
+ *   1. --json '<JSON>' CLI arg (Windows-friendly, avoids shell echo pipe issues)
+ *   2. stdin piped JSON (POSIX)
+ *
+ * Input schema:
  *   {
  *     "agent_type": "templates-impl",
  *     "wave": 1,
@@ -110,17 +114,24 @@ function resolveSessionPrefix(projectDir) {
 // ---------------------------------------------------------------------------
 
 async function main() {
-  // Collect stdin.
   let raw = "";
-  for await (const chunk of process.stdin) {
-    raw += chunk;
+
+  // --json arg mode (Windows-friendly: avoids shell echo pipe issues)
+  const jsonArgIdx = process.argv.indexOf("--json");
+  if (jsonArgIdx !== -1 && process.argv[jsonArgIdx + 1]) {
+    raw = process.argv[jsonArgIdx + 1];
+  } else {
+    // stdin fallback (POSIX)
+    for await (const chunk of process.stdin) {
+      raw += chunk;
+    }
   }
 
   let input;
   try {
     input = JSON.parse(raw);
   } catch (err) {
-    process.stderr.write(`[memory-write] Failed to parse stdin JSON: ${err.message}\n`);
+    process.stderr.write(`[memory-write] Failed to parse input JSON: ${err.message}\n`);
     process.exit(0);
   }
 

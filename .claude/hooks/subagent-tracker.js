@@ -2,11 +2,12 @@
 /**
  * SUBAGENT TRACKER: Tracks active subagents for statusline display
  *
- * Handles 4 events:
- * - PreToolUse(Task): queues description + type before agent starts
- * - SubagentStart:    writes agent state file (consumes from queue)
- * - SubagentStop:     removes agent state file + prunes stale queue
- * - SessionStart:     cleans up stale state from previous sessions
+ * Handles 5 events:
+ * - PreToolUse(Task):  queues description + type before agent starts
+ * - PostToolUse(Task): detects API overload / dispatch failures and flags pipeline state
+ * - SubagentStart:     writes agent state file (consumes from queue)
+ * - SubagentStop:      removes agent state file + prunes stale queue
+ * - SessionStart:      cleans up stale state from previous sessions
  *
  * State dir: .claude/.agent-state/{agent_id}.json
  * Queue:     .claude/.agent-state/_queue.json
@@ -42,6 +43,8 @@ process.stdin.on('end', () => {
 
     if (event === 'PreToolUse' && data.tool_name === 'Task') {
       handlePreToolUse(data, stateDir);
+    } else if (event === 'PostToolUse' && data.tool_name === 'Task') {
+      handlePostToolUse(data, stateDir);
     } else if (event === 'SubagentStart') {
       handleStart(data, stateDir);
     } else if (event === 'SubagentStop') {
@@ -175,6 +178,65 @@ function parseRecommendedSkills(prompt) {
     }
   }
   return skills;
+}
+
+/**
+ * PostToolUse(Task): Detect API overload / dispatch failures in tool_response
+ * and flag the active pipeline state with `lastDispatchFailure` so /resume can
+ * auto-recover.
+ *
+ * We write to pipeline-state ONLY when a failure is detected — happy-path
+ * dispatches never touch the state file from here.
+ */
+function handlePostToolUse(data, stateDir) {
+  try {
+    if (isSelfDelegation(data)) { return; }
+
+    const toolResponse = data.tool_response || {};
+    const responseText = JSON.stringify(toolResponse).toLowerCase();
+    // Detect overload conservatively: require is_error=true (Claude Code sets
+    // this on Task tool failures) AND at least one overload keyword. This
+    // avoids false positives on agents that merely *document* rate limiting
+    // or error handling in their returned content.
+    const isOverload =
+      toolResponse.is_error === true &&
+      /overload|rate.?limit|\b429\b|\b529\b|throttl|too many requests/.test(responseText);
+
+    if (!isOverload) return;
+
+    const projectDir = path.resolve(stateDir, '..', '..');
+    const statesDir = path.join(projectDir, '.claude', '.pipeline-states');
+    if (!fs.existsSync(statesDir)) return;
+
+    const files = fs.readdirSync(statesDir)
+      .filter(f => f.endsWith('.json') && !f.endsWith('.metrics.json'));
+    if (files.length === 0) return;
+
+    let newest = null;
+    let newestMtime = 0;
+    for (const f of files) {
+      try {
+        const fp = path.join(statesDir, f);
+        const stat = fs.statSync(fp);
+        if (stat.mtimeMs > newestMtime) {
+          newestMtime = stat.mtimeMs;
+          newest = fp;
+        }
+      } catch {}
+    }
+    if (!newest) return;
+
+    const toolInput = data.tool_input || {};
+    const state = JSON.parse(fs.readFileSync(newest, 'utf8'));
+    state.lastDispatchFailure = {
+      at: new Date().toISOString(),
+      reason: 'api_overload',
+      agentType: toolInput.subagent_type || 'unknown',
+      description: toolInput.description || '',
+      prompt: (toolInput.prompt || '').slice(0, 2000),
+    };
+    fs.writeFileSync(newest, JSON.stringify(state, null, 2), 'utf8');
+  } catch {} // fail-open: failure detection is advisory
 }
 
 function handleStart(data, stateDir) {
