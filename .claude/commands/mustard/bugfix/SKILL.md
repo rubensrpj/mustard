@@ -14,10 +14,25 @@ Autonomous pipeline to diagnose and fix bugs. Zero context-switch — never ask 
 
 ### ANALYZE (diagnose + assess)
 
-1. **AUTO-SYNC:** `node .claude/scripts/sync-registry.js`
+1. **AUTO-SYNC:** Run `node .claude/scripts/sync-detect.js`. If output shows any subproject with `hashChanged: true`, then run `node .claude/scripts/sync-registry.js`. Otherwise skip sync-registry entirely.
 
 ### Diff Context (automatic)
-Run `node .claude/scripts/diff-context.js` to capture the current git state. Include the output in the agent prompt as `{diff_context}` so agents know what has already changed.
+
+**Diff snapshot (run once per phase):**
+Run `node .claude/scripts/diff-context.js` at the start of ANALYZE and EXECUTE. Save the output to `.claude/.pipeline-states/{specName}.diff.md` (overwrite each phase).
+
+**Inject into every Task dispatch in this pipeline:**
+Prepend the following to EVERY subagent prompt dispatched during the pipeline:
+
+```
+## Current Git State
+{contents of .claude/.pipeline-states/{specName}.diff.md}
+
+## Your Task
+...original prompt...
+```
+
+If the diff file is empty or missing, skip the Git State header entirely. Never dispatch an agent without attempting interpolation.
 
 2. **DIAGNOSE:** Dispatch Explore agent (**≤20 tool uses, ≤3 full file reads**):
    - Scoped Grep searches with specific path + pattern for the error/symptom
@@ -30,6 +45,9 @@ Run `node .claude/scripts/diff-context.js` to capture the current git state. Inc
 
 **Fast Path:** Go directly to EXECUTE.
 **Full Path:** Write brief spec in `.claude/spec/active/{date}-{name}/spec.md` → present to user → `/approve` → EXECUTE.
+
+- Fast Path CAN use Task(Explore) ONCE with ≤10 tool uses. Prefer Grep/Glob direct when the root cause location is known.
+- If >5 files surface during DIAGNOSE, RECLASSIFY to Full Path and write a spec before proceeding.
 
 #### Spec Boundaries
 
@@ -48,6 +66,9 @@ Rules:
 - Out-of-boundary edits during EXECUTE will surface a `[BOUNDARY WARNING]` from guard-verify — re-evaluate scope before proceeding
 
 ### EXECUTE (fix + validate)
+
+Every agent prompt dispatched in Fast Path MUST include:
+`Return format cap: ≤50 lines. Apply compact Return Format from pipeline-config.md strictly.`
 
 Dispatch bugfix agent with:
 - Root cause from ANALYZE

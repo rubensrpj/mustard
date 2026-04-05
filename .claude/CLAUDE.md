@@ -20,6 +20,9 @@ Scope is auto-detected: Light (1-2 layers, ≤5 files, known pattern) vs Full (3
 ## Pipeline Phases
 ANALYZE → PLAN → EXECUTE → CLOSE
 - Light scope: skip PLAN (ANALYZE → EXECUTE → CLOSE)
+  - ANALYZE: Grep/Glob direct preferred; ≤1 Task(Explore) with ≤10 tool uses allowed
+  - Reclassify to Full if >5 files surface
+  - All dispatched agents cap returns at ≤50 lines
 - Full scope: ANALYZE → PLAN → /approve → EXECUTE → CLOSE
 
 ## Context Loading

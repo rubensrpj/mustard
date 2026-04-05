@@ -11,6 +11,7 @@ const fs = require('fs');
 const path = require('path');
 const { execFileSync } = require('child_process');
 const { shouldRun } = require('./_lib/hook-env.js');
+const { extractPatternsFromStates } = require('./_lib/knowledge-extract.js');
 
 var input = '';
 process.stdin.setEncoding('utf8');
@@ -33,35 +34,17 @@ process.stdin.on('end', function () {
     var statesDir = path.join(claudeDir, '.pipeline-states');
     if (fs.existsSync(statesDir)) {
       var stateFiles = fs.readdirSync(statesDir).filter(function (f) { return f.endsWith('.json'); });
+      var stateObjects = [];
       for (var i = 0; i < stateFiles.length; i++) {
         try {
           var state = JSON.parse(fs.readFileSync(path.join(statesDir, stateFiles[i]), 'utf8'));
-          var metrics = state.metrics || {};
-
-          // High retry count → lesson
-          if (metrics.retries && metrics.retries > 2) {
-            patterns.push({
-              type: 'convention',
-              name: 'high-retry-' + (state.specName || stateFiles[i].replace('.json', '')),
-              description: 'Pipeline required ' + metrics.retries + ' retries. Tool breakdown: ' + JSON.stringify(metrics.toolBreakdown || {}),
-              source: 'session-knowledge',
-              tags: ['retry', 'pipeline', 'lesson'],
-            });
-          }
-
-          // Heavy tool usage → pattern
-          var totalCalls = metrics.apiCalls || 0;
-          if (totalCalls > 50) {
-            patterns.push({
-              type: 'pattern',
-              name: 'heavy-pipeline-' + (state.specName || stateFiles[i].replace('.json', '')),
-              description: 'Pipeline used ' + totalCalls + ' API calls. Consider splitting into smaller scope.',
-              source: 'session-knowledge',
-              tags: ['optimization', 'pipeline'],
-            });
-          }
+          // Attach filename as fallback label for the extractor
+          state._file = stateFiles[i].replace('.json', '');
+          stateObjects.push(state);
         } catch (e) { /* skip malformed state */ }
       }
+      var statePatterns = extractPatternsFromStates(stateObjects);
+      for (var si = 0; si < statePatterns.length; si++) { patterns.push(statePatterns[si]); }
     }
 
     // ── Source 2: Agent memories (findings) ───────────────────────

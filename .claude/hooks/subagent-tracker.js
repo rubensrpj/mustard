@@ -61,6 +61,10 @@ process.stdin.on('end', () => {
  * PreToolUse(Task): Queue description + type before agent spawns.
  * The SubagentStart event doesn't carry description, so we capture it here
  * and match it later via FIFO queue with type-matching preference.
+ *
+ * Also parses recommended_skills from the Task prompt, persists them in
+ * .subagent-registry.json, and increments skillHits.loaded in the active
+ * pipeline state.
  */
 function handlePreToolUse(data, stateDir) {
   if (isSelfDelegation(data)) { return; }
@@ -84,6 +88,93 @@ function handlePreToolUse(data, stateDir) {
     queue.splice(0, queue.length - MAX_QUEUE_SIZE);
   }
   writeQueue(stateDir, queue);
+
+  // ── skill_hit_rate: parse recommended_skills from Task prompt ─────────────
+  // We look for a "Recommended Skills" section header followed by list items,
+  // or a `recommended_skills:` YAML-style block.  Conservative regex — false
+  // negatives are acceptable; false positives would corrupt the metric.
+  try {
+    const prompt = toolInput.prompt || '';
+    const recommendedSkills = parseRecommendedSkills(prompt);
+    if (recommendedSkills.length === 0) return;
+
+    const projectDir = path.resolve(stateDir, '..', '..');
+
+    // Persist entry to .subagent-registry.json for later Read attribution
+    const registryPath = path.join(projectDir, '.claude', '.subagent-registry.json');
+    let registry = {};
+    try {
+      if (fs.existsSync(registryPath)) {
+        registry = JSON.parse(fs.readFileSync(registryPath, 'utf8'));
+      }
+    } catch {}
+    // Use timestamp + agentType as pseudo-taskId (best effort — no real taskId available at PreToolUse)
+    const taskId = `${Date.now()}-${subagentType}`;
+    registry[taskId] = {
+      agentType: subagentType,
+      recommendedSkills,
+      startedAt: new Date().toISOString(),
+      // endedAt is written when SubagentStop fires (not implemented here — left undefined)
+    };
+    // Prune entries older than 2 hours to prevent unbounded growth
+    const cutoff = Date.now() - 2 * 60 * 60 * 1000;
+    for (const [key, entry] of Object.entries(registry)) {
+      if (new Date(entry.startedAt || 0).getTime() < cutoff) {
+        delete registry[key];
+      }
+    }
+    fs.writeFileSync(registryPath, JSON.stringify(registry, null, 2), 'utf8');
+
+    // Increment skillHits.loaded in the active pipeline state
+    const statesDir = path.join(projectDir, '.claude', '.pipeline-states');
+    if (!fs.existsSync(statesDir)) return;
+    const stateFiles = fs.readdirSync(statesDir).filter(f => f.endsWith('.json'));
+    if (stateFiles.length === 0) return;
+
+    let newestState = null;
+    let newestMtime = 0;
+    for (const f of stateFiles) {
+      try {
+        const fp = path.join(statesDir, f);
+        const stat = fs.statSync(fp);
+        if (stat.mtimeMs > newestMtime) {
+          newestMtime = stat.mtimeMs;
+          newestState = fp;
+        }
+      } catch {}
+    }
+    if (!newestState) return;
+
+    const state = JSON.parse(fs.readFileSync(newestState, 'utf8'));
+    if (!state.metrics) state.metrics = { apiCalls: 0, toolBreakdown: {}, retries: 0 };
+    if (!state.metrics.skillHits) state.metrics.skillHits = {};
+    if (!state.metrics.skillHits[subagentType]) {
+      state.metrics.skillHits[subagentType] = { loaded: 0, read: 0 };
+    }
+    state.metrics.skillHits[subagentType].loaded += recommendedSkills.length;
+    fs.writeFileSync(newestState, JSON.stringify(state, null, 2), 'utf8');
+  } catch {} // fail-open: skill tracking is advisory
+}
+
+/**
+ * Parse recommended skills from a Task prompt string.
+ * Matches list items under a "Recommended Skills" or "recommended_skills:" header.
+ * Returns an array of skill name strings (e.g. ["templates-hook-protocol"]).
+ */
+function parseRecommendedSkills(prompt) {
+  const skills = [];
+  // Match a section header then collect "- skill-name" lines until blank or next header
+  const sectionMatch = prompt.match(
+    /(?:recommended.skills|recommended_skills)\s*[:\-]?\s*\n((?:\s*-\s*[\w\-]+.*\n?)+)/i
+  );
+  if (sectionMatch) {
+    const lines = sectionMatch[1].split('\n');
+    for (const line of lines) {
+      const m = line.match(/^\s*-\s*([\w][\w\-]*[\w])/);
+      if (m) skills.push(m[1]);
+    }
+  }
+  return skills;
 }
 
 function handleStart(data, stateDir) {

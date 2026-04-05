@@ -103,6 +103,11 @@
             "type": "command",
             "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/subagent-tracker.js",
             "timeout": 3
+          },
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/context-budget.js",
+            "timeout": 3
           }
         ]
       }
@@ -125,12 +130,22 @@
         ]
       },
       {
-        "matcher": "Bash|Write|Edit|Task",
+        "matcher": "Bash|Write|Edit|Task|Read",
         "hooks": [
           {
             "type": "command",
             "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/metrics-tracker.js",
             "timeout": 3
+          }
+        ]
+      },
+      {
+        "matcher": "Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/session-knowledge-inc.js",
+            "timeout": 5
           }
         ]
       }

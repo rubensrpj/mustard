@@ -14,10 +14,25 @@ Starts the pipeline to implement a feature or enhancement. Self-contained: ANALY
 
 ### ANALYZE Phase
 
-**Auto-sync (silent):** `node .claude/scripts/sync-registry.js`
+**Auto-sync (silent):** Run `node .claude/scripts/sync-detect.js`. If output shows any subproject with `hashChanged: true`, then run `node .claude/scripts/sync-registry.js`. Otherwise skip sync-registry entirely.
 
 ### Diff Context (automatic)
-Run `node .claude/scripts/diff-context.js` to capture the current git state. Include the output in the agent prompt as `{diff_context}` so agents know what has already changed.
+
+**Diff snapshot (run once per phase):**
+Run `node .claude/scripts/diff-context.js` at the start of ANALYZE, PLAN, and EXECUTE. Save the output to `.claude/.pipeline-states/{specName}.diff.md` (overwrite each phase).
+
+**Inject into every Task dispatch in this pipeline:**
+Prepend the following to EVERY subagent prompt dispatched during the pipeline:
+
+```
+## Current Git State
+{contents of .claude/.pipeline-states/{specName}.diff.md}
+
+## Your Task
+...original prompt...
+```
+
+If the diff file is empty or missing, skip the Git State header entirely. Never dispatch an agent without attempting interpolation.
 
 1. Read `pipeline-config.md` — agents, wave transitions, model selection
 2. Read `entity-registry.json` via Grep for the specific entity name (e.g. `"Contract":`) — NEVER read the full JSON. Entity found? infer layers. Not found? all layers.
@@ -44,6 +59,9 @@ Classify based on ANALYZE output:
 
 Any **Full** signal → Full. All **Light** → Light.
 Record scope for PLAN phase branching.
+
+- Light scope CAN use Task(Explore) ONCE with ≤10 tool uses. Prefer Grep/Glob direct when targets are known.
+- If >5 files surface during ANALYZE, RECLASSIFY to Full and restart ANALYZE with PLAN gate.
 
 #### Explore (conditional, budget-capped)
 
@@ -128,6 +146,8 @@ Rules:
 
 When user chooses "Approve and implement now":
 1. Update spec: `Status: implementing`, `Phase: EXECUTE`
+   Every agent prompt dispatched in Light scope MUST include:
+   `Return format cap: ≤50 lines. Apply compact Return Format from pipeline-config.md strictly.`
 2. Update pipeline state: `status: "implementing"`, `phase: 3`
 3. Read `pipeline-config.md` for agent config. For `entity-registry.json`: Grep for specific entity block only
 4. Match recipes by title via Grep on `{subproject}/.claude/commands/recipes.md` — do NOT read full file. Extract recipe number + pattern refs

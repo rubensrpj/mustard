@@ -45,6 +45,15 @@ function main() {
               parts.push(`  - ${tool}: ${count}`);
             }
           }
+          if (m.gate_saves !== undefined) parts.push(`- Gate saves: ${m.gate_saves}`);
+          if (m.wave_reentry !== undefined) parts.push(`- Wave reentries: ${m.wave_reentry}`);
+          if (m.skillHits && Object.keys(m.skillHits).length > 0) {
+            parts.push('- Skill hits:');
+            for (const [agent, hits] of Object.entries(m.skillHits).sort()) {
+              const pct = hits.loaded > 0 ? Math.round((hits.read / hits.loaded) * 100) + '%' : '\u2014';
+              parts.push(`  - ${agent}: ${hits.read}/${hits.loaded} (${pct})`);
+            }
+          }
           parts.push('');
         }
       } catch {}
@@ -92,6 +101,51 @@ function main() {
         parts.push(`- Avg duration: ${formatMs(Math.round(totalDurationMs / count))}`);
         parts.push(`- Avg API calls: ${Math.round(totalCalls / count)}`);
         parts.push(`- Avg retries: ${Math.round(totalRetries / count)}`);
+        parts.push('');
+      }
+
+      // Gate & Quality metrics — aggregated across all completed pipelines
+      {
+        let totalGateSaves = 0;
+        let totalWaveReentry = 0;
+        const skillHitAgg = {}; // { agentType: { loaded: N, read: M } }
+        let hasGateData = false;
+
+        for (const f of files) {
+          try {
+            const m = JSON.parse(fs.readFileSync(path.join(metricsDir, f), 'utf8'));
+            if (m.gate_saves !== undefined || m.wave_reentry !== undefined || m.skillHits) {
+              hasGateData = true;
+            }
+            totalGateSaves += m.gate_saves || 0;
+            totalWaveReentry += m.wave_reentry || 0;
+            if (m.skillHits && typeof m.skillHits === 'object') {
+              for (const [agent, hits] of Object.entries(m.skillHits)) {
+                if (!skillHitAgg[agent]) skillHitAgg[agent] = { loaded: 0, read: 0 };
+                skillHitAgg[agent].loaded += hits.loaded || 0;
+                skillHitAgg[agent].read += hits.read || 0;
+              }
+            }
+          } catch {}
+        }
+
+        parts.push('## Gate & Quality Metrics');
+        parts.push('- Gate saves: ' + (hasGateData ? totalGateSaves : '\u2014') + (hasGateData ? ' (spec revisions after /approve)' : ''));
+        parts.push('- Wave reentries: ' + (hasGateData ? totalWaveReentry : '\u2014') + (hasGateData ? ' (EXECUTE \u2192 PLAN)' : ''));
+        parts.push('- Skill hit rate:');
+        const agentKeys = Object.keys(skillHitAgg);
+        if (agentKeys.length > 0) {
+          parts.push('');
+          parts.push('| Agent | Loaded | Read | Hit rate |');
+          parts.push('|-------|--------|------|----------|');
+          for (const agent of agentKeys.sort()) {
+            const { loaded, read } = skillHitAgg[agent];
+            const hitPct = loaded > 0 ? Math.round((read / loaded) * 100) + '%' : '\u2014';
+            parts.push(`| ${agent} | ${loaded} | ${read} | ${hitPct} |`);
+          }
+        } else {
+          parts.push('  (no skill tracking data yet)');
+        }
         parts.push('');
       }
 

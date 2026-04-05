@@ -24,6 +24,22 @@ const { execSync } = require("child_process");
 // Root of the monorepo (parent of .claude/scripts/)
 const ROOT = path.resolve(__dirname, "..", "..");
 
+// Cache TTL for early-exit gate (5 minutes)
+const CACHE_TTL_MS = 5 * 60 * 1000;
+
+// Manifest file globs passed to `git status --porcelain` for dirty check.
+// If none of these changed since the last cache write, the cache is safe to reuse.
+const MANIFEST_GLOBS = [
+  "package.json",
+  "**/*.csproj",
+  "**/pubspec.yaml",
+  "**/schema.prisma",
+  "**/drizzle.config.*",
+  "**/go.mod",
+  "**/Cargo.toml",
+  "**/pyproject.toml",
+];
+
 // ---------------------------------------------------------------------------
 // Stream-based file hashing
 // ---------------------------------------------------------------------------
@@ -913,7 +929,55 @@ function findDashboardDir(absPath) {
 // ---------------------------------------------------------------------------
 
 function main() {
-  const skipCache = process.argv.includes("--no-cache");
+  const skipCache = process.argv.includes("--no-cache") || process.argv.includes("--force");
+
+  // ---------------------------------------------------------------------------
+  // Early-exit cache gate
+  //
+  // Skip the full discovery/hash loop when all three conditions hold:
+  //   1. --no-cache / --force was NOT passed
+  //   2. .detect-cache.json exists and its mtime is within CACHE_TTL_MS (5 min)
+  //   3. No manifest files (package.json, *.csproj, go.mod, …) are dirty
+  //      according to `git status --porcelain`
+  //
+  // On ANY error the gate falls through silently — fail-open, never crashes.
+  // ---------------------------------------------------------------------------
+  if (!skipCache) {
+    try {
+      const cachePath = path.join(ROOT, ".claude", ".detect-cache.json");
+      if (fs.existsSync(cachePath)) {
+        const cacheAge = Date.now() - fs.statSync(cachePath).mtimeMs;
+        if (cacheAge < CACHE_TTL_MS) {
+          // Check whether any manifest file changed since the cache was written
+          const gitOut = execSync(
+            `git status --porcelain -- ${MANIFEST_GLOBS.join(" ")}`,
+            { cwd: ROOT, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }
+          );
+          const manifestDirty = gitOut.trim().length > 0;
+          if (!manifestDirty) {
+            // Cache is fresh and manifests are clean — reuse previous output
+            const cached = JSON.parse(fs.readFileSync(cachePath, "utf-8"));
+            // Reconstruct the same shape that main() emits on stdout
+            const result = {
+              subprojects: cached.subprojects || [],
+              agents: getAgents(),
+              detectedAgents: Array.from(
+                new Set((cached.subprojects || []).map((s) => s.agent).filter((a) => a && a !== "general"))
+              ).sort(),
+              promptsDir: ".claude/prompts",
+              promptsCompiledDir: ".claude/prompts_compiled",
+              sourceHashes: cached.sourceHashes || {},
+              moduleHashes: cached.moduleHashes || {},
+            };
+            process.stdout.write(JSON.stringify(result, null, 2) + "\n");
+            return;
+          }
+        }
+      }
+    } catch {
+      // Fall through to full discovery on any error
+    }
+  }
 
   // 1. Discover subproject paths (merge submodules + CLAUDE.md scan)
   const submodulePaths = getSubmodulePaths() || [];

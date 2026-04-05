@@ -55,6 +55,27 @@ When a pipeline pauses or a session ends mid-pipeline:
 On `/resume`: compile handoff from state + spec + memory + git diff.
 Goal: user resumes in <30 seconds without re-reading the spec.
 
+## Diff Context Interpolation
+
+All Task dispatches inside an active pipeline MUST be prefixed with current git state.
+
+**Source:** `node .claude/scripts/diff-context.js` — cached to `.claude/.pipeline-states/{specName}.diff.md` once per phase.
+
+**Prompt format:**
+```
+## Current Git State
+{diff_context}
+
+## Your Task
+{actual_task_prompt}
+```
+
+**Rules:**
+- Run the script once per phase (ANALYZE, PLAN, EXECUTE) — reuse the cached file for all dispatches in that phase.
+- If the file is empty or missing, omit the Git State header (do not inject a blank one).
+- The script already caps output at 3000 chars; no further trimming needed.
+- Agents receiving a diff context should treat it as authoritative current-branch state.
+
 ## Diagnostic Failure Routing
 
 When an agent fails during EXECUTE, classify the failure before deciding how to respond.
@@ -172,6 +193,24 @@ When dispatching impl agents, recommend skills based on role:
 Complex/architecture tasks (any role): add `senior-architect`.
 
 Agents auto-load relevant skills based on task description. Orchestrator may hint specific skills in `{recommended_skills}`.
+
+## Agent Return Format (Compact)
+
+All Task-dispatched agents MUST return in this compact form:
+
+- **Arquivos alterados:** `path:line` (one per line). Omit section if no files touched.
+- **Decisões não-óbvias:** 1-3 bullets, or the single word `nenhuma`.
+- **Bloqueios:** only include if there are any; otherwise omit.
+
+DO NOT include in the return:
+- Identity restatement ("I am the X agent...")
+- Full checklist re-listing
+- List of files read
+- Narrative of steps taken
+- Confirmation of task understanding
+- Summary of what was delegated
+
+The parent orchestrator already has context — return only what is actionable.
 
 ## Escalation Statuses
 
