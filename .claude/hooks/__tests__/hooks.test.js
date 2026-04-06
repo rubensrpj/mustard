@@ -456,6 +456,7 @@ describe("metrics-tracker.js", () => {
     const sidecarPath = path.join(statesDir, "test-pipeline.metrics.json");
     try {
       const mtimeBefore = fs.statSync(pipelinePath).mtimeMs;
+      // Wait a beat so any write would produce a different mtime
       await new Promise((r) => setTimeout(r, 50));
 
       const result = await runHook(hook, {
@@ -482,6 +483,7 @@ describe("metrics-tracker.js", () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "metrics-recursion-"));
     const { statesDir } = setupPipelineState(tmpDir);
     try {
+      // Fire 5 PostToolUse events in sequence
       for (let i = 0; i < 5; i++) {
         const r = await runHook(hook, {
           tool_name: "Write",

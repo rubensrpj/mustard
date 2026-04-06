@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+'use strict';
 /**
  * SESSION-MEMORY: Injects persistent memory into session context
  * @version 1.0.0

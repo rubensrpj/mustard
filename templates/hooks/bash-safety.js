@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+'use strict';
 /**
  * SAFETY: PreToolUse guard for dangerous Bash commands
  *

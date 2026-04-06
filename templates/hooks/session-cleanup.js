@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+'use strict';
 /**
  * SESSION-CLEANUP: Clean stale state files on session end
  *

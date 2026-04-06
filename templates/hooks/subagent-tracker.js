@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+'use strict';
 /**
  * SUBAGENT TRACKER: Tracks active subagents for statusline display
  *

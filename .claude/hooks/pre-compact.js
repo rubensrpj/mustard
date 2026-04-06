@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+'use strict';
 /**
  * PRE-COMPACT: Preserve context before conversation compaction
  *

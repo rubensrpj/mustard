@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+'use strict';
 /**
  * METRICS-TRACKER: PostToolUse hook that tracks pipeline metrics
  *

@@ -178,9 +178,6 @@ Hooks are registered in `templates/settings.json`:
 | Hook | Matcher | Behavior |
 |------|---------|----------|
 | `enforce-registry.js` | `Skill` | **BLOCKS** if registry missing |
-| `enforce-context.js` | `Skill` | **WARNS** (advisory) |
-| `enforce-grepai.js` | `Grep/Glob` | **BLOCKS** search without path |
-| `enforce-pipeline.js` | `Edit/Write` | **REMINDS** about pipeline |
 | `mcp-budget.js` | `startup` | **WARNS** (advisory, MCP tool budget) |
 | `session-knowledge.js` | `prompt_input_exit\|clear\|other` | **EXTRACTS** patterns from session |
 
@@ -193,10 +190,6 @@ User: /mustard:feature add-login
     enforce-registry.js
     - Registry exists? (BLOCK if not)
     - Version >= 3.x? (BLOCK if not)
-         │
-         ▼
-    enforce-context.js
-    - Contexts compiled? (WARN if not)
          │
          ▼
     Pipeline starts...

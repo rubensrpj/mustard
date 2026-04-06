@@ -1,0 +1,25 @@
+{
+  "lastScan": "2026-04-01T11:43:01.241Z",
+  "subprojects": [
+    {
+      "name": "templates",
+      "path": "templates",
+      "role": "general",
+      "agent": "general",
+      "commands": [
+        "guards.md",
+        "notes.md",
+        "patterns.md",
+        "recipes.md",
+        "stack.md"
+      ],
+      "stackSummary": "",
+      "gitDirty": true,
+      "gitDirtyCount": 1
+    }
+  ],
+  "sourceHashes": {
+    "templates": "b5cac7abdf199eaebc189d9a4621ef76f81db467f33f140ca09806b8949223d0"
+  },
+  "moduleHashes": {}
+}
