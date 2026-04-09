@@ -93,18 +93,22 @@ process.stdin.on('end', () => {
           ? (description.toLowerCase().includes('review') ? 'general-purpose(review)' : 'general-purpose')
           : subagentType;
 
+        // ALWAYS log (unconditional, fail-silent) — all modes including strict
+        try {
+          fs.mkdirSync(METRICS_DIR, { recursive: true });
+          fs.appendFileSync(METRICS_FILE, JSON.stringify({
+            ts: new Date().toISOString(),
+            event: 'budget-check',
+            role: roleLabel,
+            actual_chars: actual,
+            limit,
+            would_block: actual > limit,
+            mode: MODE
+          }) + '\n');
+        } catch (_) {}
+
+        // Apply mode decision (separate concern):
         if (MODE === 'observe') {
-          try {
-            fs.mkdirSync(METRICS_DIR, { recursive: true });
-            const entry = JSON.stringify({
-              ts: new Date().toISOString(),
-              role: roleLabel,
-              actual_chars: actual,
-              limit,
-              would_block: actual > limit
-            });
-            fs.appendFileSync(METRICS_FILE, entry + '\n');
-          } catch (_e) { /* fail-silent */ }
           process.stdout.write(JSON.stringify({ permissionDecision: 'allow' }) + '\n');
           process.exit(0);
         }
