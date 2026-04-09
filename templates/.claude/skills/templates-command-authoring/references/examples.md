@@ -33,7 +33,7 @@ Key sections from the feature command:
 `/feature <feature-name>`
 
 ### ANALYZE Phase
-1. Read `pipeline-config.md`
+1. Read `.claude/pipeline-config.md`
 2. Read `entity-registry.json` via Grep
 3. Determine layers from signals
 

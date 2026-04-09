@@ -22,7 +22,7 @@ Installs dependencies. Monorepo: runs in all subprojects. Single repo: runs in r
 
 ### Flow
 
-1. Read `pipeline-config.md` → extract `Agents` table for subproject paths and install commands
+1. Read `.claude/pipeline-config.md` → extract `Agents` table for subproject paths and install commands
 2. For each subproject (or root if single repo), run the restore/install command from `## Commands` in `{subproject}/CLAUDE.md`
 3. Run all in parallel
 
@@ -36,7 +36,7 @@ Runs build and type-check validations.
 
 ### Flow
 
-1. Read `pipeline-config.md` → extract `Agents` table for validate/build commands
+1. Read `.claude/pipeline-config.md` → extract `Agents` table for validate/build commands
 2. For each subproject (or root if single repo), run the build/type-check command from `{subproject}/CLAUDE.md` → `## Commands`
 3. Run all in parallel
 

@@ -87,7 +87,7 @@ Before the normal detect-and-confirm flow, scan the newest pipeline state for a 
 ### Diff Context (automatic)
 Run `node .claude/scripts/diff-context.js` to capture the current git state. Include the output in the agent prompt as `{diff_context}` so agents know what has already changed.
 
-7. **Read** `pipeline-config.md`. For `entity-registry.json`: use Grep to extract ONLY the relevant entity block (e.g. `"Contract":`), NEVER read the full JSON
+7. **Read** `.claude/pipeline-config.md`. For `entity-registry.json`: use Grep to extract ONLY the relevant entity block (e.g. `"Contract":`), NEVER read the full JSON
 9. **Update spec header:** `Status: implementing`, `Phase: EXECUTE`, `Checkpoint: {ISO now}`
 10. **Update/create pipeline state:** `status: "implementing"`, `phaseName: "EXECUTE"`, `specName`
 11. **TaskCreate** — 1 per pending agent (skip completed)
@@ -97,9 +97,9 @@ Run `node .claude/scripts/diff-context.js` to capture the current git state. Inc
 **CRITICAL: Main context IS the Pipeline Runner. NEVER delegate to intermediate Task agent.**
 
 12. **Match recipe by name only:** Grep `{subproject}/.claude/commands/recipes.md` for recipe title matching the task type — do NOT read the full recipes file. Extract only: recipe number, pattern refs, reference modules
-13. **Plan waves:** `Depends on: none` → Wave 1; dependencies → later. DB+Backend parallel. Frontend after Backend UNLESS all parallel override conditions met (see `pipeline-config.md` Parallel Rules). Review agents: ALWAYS dispatch in single parallel message. Skip completed tasks.
+13. **Plan waves:** `Depends on: none` → Wave 1; dependencies → later. DB+Backend parallel. Frontend after Backend UNLESS all parallel override conditions met (see `.claude/pipeline-config.md` Parallel Rules). Review agents: ALWAYS dispatch in single parallel message. Skip completed tasks.
 14. **Build agent prompts using template** (`.claude/commands/mustard/templates/agent-prompt/SKILL.md`):
-    - Read template once, then fill placeholders per agent using `pipeline-config.md` data:
+    - Read template once, then fill placeholders per agent using `.claude/pipeline-config.md` data:
       - `{subproject}` → from Agents table (Subproject column)
       - `{reference_files}` → 2-3 files from matched recipe
       - `{guards_summary}` → key guards from `{subproject}/CLAUDE.md`
@@ -108,12 +108,12 @@ Run `node .claude/scripts/diff-context.js` to capture the current git state. Inc
       - `{validate_command}`, `{build_command}` → from Agents table in config
       - `{retry_context}` → empty on first dispatch (see Step 4 for retries)
       - `{task_steps}` → checkboxed steps from spec
-      - `{recommended_skills}` → from Skill Recommendations in `pipeline-config.md`:
+      - `{recommended_skills}` → from Skill Recommendations in `.claude/pipeline-config.md`:
         1. Glob `{subproject}/.claude/skills/` for generated pattern skills
         2. Add foundation skills matching the role (ui→design-craft+react-best-practices, mobile→design-craft)
         3. Format as bullet list: `- {skill-name}`
 
-16. **Wave transitions** — between waves, execute transitions from `pipeline-config.md`:
+16. **Wave transitions** — between waves, execute transitions from `.claude/pipeline-config.md`:
     - After Wave 1 (api/database/library) completes, before Wave 2 (ui):
       - Execute each command listed in the matching `Wave Transitions` section
     - Wait for transitions to complete before dispatching next wave
@@ -136,7 +136,7 @@ After each agent returns, check the return value for an escalation status before
 - `PARTIAL` — apply Granular Retry Protocol from the last completed step; do NOT restart from step 1
 - `DEFERRED` — note in spec with agent justification; ask user if the deferred item is load-bearing before closing
 
-If two or more agents in the same wave return `CONCERN`, surface all concerns together before dispatching the next wave. See `pipeline-config.md` Escalation Statuses and Diagnostic Failure Routing for the full status table.
+If two or more agents in the same wave return `CONCERN`, surface all concerns together before dispatching the next wave. See `.claude/pipeline-config.md` Escalation Statuses and Diagnostic Failure Routing for the full status table.
 
 ### Step 4: Validate, Review & Complete
 
@@ -206,6 +206,6 @@ This eliminates decision fatigue on resume. The user can always override, but th
 - Wave dispatch: ALL agents in same wave in a SINGLE message
 - Each sub-agent reads its own `{subproject}/CLAUDE.md` + auto-loads relevant skills (orchestrator does NOT read them)
 - Update pipeline state + spec checkboxes at each transition
-- ALWAYS read `pipeline-config.md` for agent/wave/model config — NEVER hardcode project-specific values
+- ALWAYS read `.claude/pipeline-config.md` for agent/wave/model config — NEVER hardcode project-specific values
 - ALWAYS use agent-prompt template — NEVER build prompts from scratch
 - ALWAYS execute wave transitions between waves

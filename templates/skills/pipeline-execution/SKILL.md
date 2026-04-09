@@ -111,7 +111,7 @@ Steps: update spec → summarize failure → Explore → rewrite tasks → re-ap
 
 ## Role Rules
 
-> See `pipeline-config.md § Role Rules` for role boundaries and validation rules.
+> See `.claude/pipeline-config.md § Role Rules` for role boundaries and validation rules.
 
 ## Pipeline Bugfix
 

@@ -18,7 +18,7 @@ Approves the active spec and prepares the implementation phase. Does NOT execute
 1. **Step 0: AUTO-SYNC (MANDATORY)** — Run via Bash tool BEFORE any other action:
    - `node .claude/scripts/sync-registry.js`
    - Do NOT proceed to step 2 without running this command
-2. **Read** `pipeline-config.md` — agents, model selection
+2. **Read** `.claude/pipeline-config.md` — agents, model selection
 3. Locate active spec in `.claude/spec/active/`
 4. **Spec Checkpoint — update spec header:**
    - `### Status: approved`
@@ -29,7 +29,7 @@ Approves the active spec and prepares the implementation phase. Does NOT execute
    - Parse Tasks from spec to extract tasks per agent (DB, Backend, Frontend, etc.)
    - Create `.claude/.pipeline-states/` directory if it doesn't exist
    - Write state file with `specName`, `status: "approved"`, `phaseName: "PLAN"`, `tasks` with names and agents, `model`, `updatedAt`
-6. **Model selection** — read `Model Selection` from `pipeline-config.md` and record `"model"` field in state:
+6. **Model selection** — read `Model Selection` from `.claude/pipeline-config.md` and record `"model"` field in state:
    - Count total estimated files in spec
    - Apply rule: ≤5 files/known patterns → `"model": "sonnet"`, 5+ files/new patterns → `"model": "opus"`
 7. **Task Tracking — create TaskCreate for each agent:**

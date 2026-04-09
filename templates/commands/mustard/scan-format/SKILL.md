@@ -98,7 +98,7 @@ After generating command files, update the subproject's `CLAUDE.md`:
 - If `## Guards` section exists, update with key guards from analysis
 - If `## Stack` is empty, fill from detected stack
 - **`## Commands` section MUST include ALL detected tooling commands** — not just build/run. Include migration commands, code generation, seeding, testing, linting. Every command an agent might need to execute. If tooling detection (step 3) found commands, they MUST appear here.
-- **`## Recommended Skills`** — list generated pattern skills (`{subproject}-patterns-*`) + matching foundation skills from `pipeline-config.md` Skill Recommendations table. This section informs agents which skills to consult before implementation.
+- **`## Recommended Skills`** — list generated pattern skills (`{subproject}-patterns-*`) + matching foundation skills from `.claude/pipeline-config.md` Skill Recommendations table. This section informs agents which skills to consult before implementation.
 
 ## 8. Implementation Recipes
 

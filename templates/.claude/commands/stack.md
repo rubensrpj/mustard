@@ -31,7 +31,7 @@ None. All template files are dependency-free — they use only Node.js built-in 
 | Commands | `commands/mustard/*/SKILL.md` | 14 | Slash command definitions |
 | Skills | `skills/*/SKILL.md` | 6 | Foundation skills (design-craft, react-best-practices, etc.) |
 | Config | `settings.json` | 1 | Hook wiring, permissions, statusline |
-| Config | `pipeline-config.md` | 1 | Agent dispatch rules, wave system, model selection |
+| Config | `.claude/pipeline-config.md` | 1 | Agent dispatch rules, wave system, model selection |
 | Template | `CLAUDE.md` | 1 | Orchestrator rules template |
 
 ## Commands

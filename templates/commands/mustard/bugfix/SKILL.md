@@ -87,7 +87,7 @@ Rules:
 ### EXECUTE (fix + validate)
 
 Every agent prompt dispatched in Fast Path MUST include:
-`Return format cap: ≤50 lines. Apply compact Return Format from pipeline-config.md strictly.`
+`Return format cap: ≤50 lines. Apply compact Return Format from .claude/pipeline-config.md strictly.`
 
 Dispatch bugfix agent with:
 - Root cause from ANALYZE
@@ -110,7 +110,7 @@ After the bugfix agent returns, check for an escalation status before closing:
 - `PARTIAL` — agent fixed some but not all reported issues; resume from the last incomplete fix step (max 2 retries)
 - `DEFERRED` — agent intentionally left a related issue unfixed with justification; confirm with user before closing
 
-See `pipeline-config.md` Escalation Statuses for the full status table.
+See `.claude/pipeline-config.md` Escalation Statuses for the full status table.
 
 #### Retry Compact Advisory
 If an agent fails and requires >2 retry attempts during EXECUTE:

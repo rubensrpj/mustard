@@ -53,7 +53,7 @@ Prepend the following to EVERY subagent prompt dispatched during the pipeline:
 
 If the diff file is empty or missing, skip the Git State header entirely. Never dispatch an agent without attempting interpolation.
 
-1. Read `pipeline-config.md` — agents, wave transitions, model selection
+1. Read `.claude/pipeline-config.md` — agents, wave transitions, model selection
 2. Read `entity-registry.json` via Grep for the specific entity name (e.g. `"Contract":`) — NEVER read the full JSON. Entity found? infer layers. Not found? all layers.
 3. Determine layers from signals:
 
@@ -166,13 +166,13 @@ Rules:
 When user chooses "Approve and implement now":
 1. Update spec: `Status: implementing`, `Phase: EXECUTE`
    Every agent prompt dispatched in Light scope MUST include:
-   `Return format cap: ≤50 lines. Apply compact Return Format from pipeline-config.md strictly.`
+   `Return format cap: ≤50 lines. Apply compact Return Format from .claude/pipeline-config.md strictly.`
 2. Update pipeline state: `status: "implementing"`, `phase: 3`
-3. Read `pipeline-config.md` for agent config. For `entity-registry.json`: Grep for specific entity block only
+3. Read `.claude/pipeline-config.md` for agent config. For `entity-registry.json`: Grep for specific entity block only
 4. Match recipes by title via Grep on `{subproject}/.claude/commands/recipes.md` — do NOT read full file. Extract recipe number + pattern refs
 5. Identify relevant skills for `{recommended_skills}`: list skill names most relevant to the task (e.g., `api-endpoint-wiring, api-dto-validation`). Agents use these as hints — Claude natively decides which to load based on descriptions
-6. Dispatch agents (wave rules: DB+Backend parallel, Frontend after Backend UNLESS spec marks task as `(parallel-safe)` — see `pipeline-config.md` Parallel Rules). Agent prompt includes `{recommended_skills}` as skill hints — agents read SKILL.md of relevant skills before implementing
-7. Wave transitions between waves (from `pipeline-config.md`)
+6. Dispatch agents (wave rules: DB+Backend parallel, Frontend after Backend UNLESS spec marks task as `(parallel-safe)` — see `.claude/pipeline-config.md` Parallel Rules). Agent prompt includes `{recommended_skills}` as skill hints — agents read SKILL.md of relevant skills before implementing
+7. Wave transitions between waves (from `.claude/pipeline-config.md`)
 8. On return: validate (build/type-check), update spec `[ ]` → `[x]` (line-by-line edits, NEVER copy entire spec blocks as old_string)
 8b. **Agent Memory:** After agents return and spec is updated, write agent memory: `node .claude/scripts/memory-write.js --json '{"agent_type":"{type}","wave":{N},"pipeline":"{spec-name}","summary":"{what agent did}","details":{...}}'` — one per agent. Skip if single-wave pipeline (no downstream agents to benefit).
 
@@ -186,7 +186,7 @@ After each agent returns, check the return value for an escalation status before
 - `PARTIAL` — apply Granular Retry Protocol from the last completed step; do NOT restart from step 1
 - `DEFERRED` — note in spec with agent justification; ask user if the deferred item is load-bearing before closing
 
-If two or more agents in the same wave return `CONCERN`, surface all concerns together before starting the next wave. See `pipeline-config.md` Escalation Statuses and Diagnostic Failure Routing for the full status table.
+If two or more agents in the same wave return `CONCERN`, surface all concerns together before starting the next wave. See `.claude/pipeline-config.md` Escalation Statuses and Diagnostic Failure Routing for the full status table.
 
 9. **REVIEW** — dispatch review agent for each affected subproject (reads guards + relevant skills, runs 7-category checklist: SOLID, Design System, Patterns, i18n, Integration, Build, Elegance). REJECTED → fix + re-review (max 2 loops)
 10. All passed + APPROVED → CLOSE flow inline (sync registry, move spec, cleanup state)
@@ -208,13 +208,13 @@ Progress: `[v] ANALYZE  [>] PLAN  [ ] EXECUTE  [ ] CLOSE`
 Scope tag: `[LIGHT]` or `[FULL]` after progress line.
 
 ## Rules
-- This command is self-contained — reads `pipeline-config.md` directly
+- This command is self-contained — reads `.claude/pipeline-config.md` directly
 - NEVER implement code in Full scope — only PLAN. EXECUTE via `/approve` + `/resume`
 - NEVER launch Explore agent when entity already exists in registry — read 2-3 files directly
 - NEVER read additional files after Explore agent returns — its output is final
 - NEVER exceed 5 file reads in ANALYZE phase (registry + pipeline-config are free)
 - Light scope + user chose "implement now" → proceed to EXECUTE inline
-- ALWAYS read `pipeline-config.md` for agent/wave/model info
+- ALWAYS read `.claude/pipeline-config.md` for agent/wave/model info
 - ALWAYS create pipeline state at PLAN phase
 - ALWAYS record `scope` in spec header AND pipeline state
 - ALWAYS go straight to PLAN once you understand the change — more reads ≠ better spec

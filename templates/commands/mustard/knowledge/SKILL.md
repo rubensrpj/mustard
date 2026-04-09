@@ -103,7 +103,7 @@ Manages persistent project observations injected into agent context during pipel
 | (no argument) | — | Lists all notes files |
 | `{subproject}` | `{subproject}/.claude/commands/notes.md` | Subproject agent context |
 
-**Monorepo**: discover targets from `pipeline-config.md` Agents table or Glob `*/.claude/commands/notes.md`.
+**Monorepo**: discover targets from `.claude/pipeline-config.md` Agents table or Glob `*/.claude/commands/notes.md`.
 **Single repo**: target is root → `.claude/commands/notes.md`.
 
 ### Flow — List (`/knowledge notes`)

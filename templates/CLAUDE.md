@@ -87,4 +87,4 @@ RTK (Rust Token Killer) is integrated as core infrastructure. A PreToolUse hook 
 - If RTK is not installed, the hook silently passes through (zero impact)
 
 ## Full Reference
-Rules, pipeline, naming: `pipeline-config.md`
+Rules, pipeline, naming: `.claude/pipeline-config.md`

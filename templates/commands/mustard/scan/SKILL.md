@@ -112,10 +112,10 @@ You do NOT implement code — you delegate via Task tool.
 | Simple | config, docs, small refactor, rename, move | Delegate via Task |
 
 Any change that touches production code (schema, API, UI) → Pipeline Feature.
-Read `pipeline-config.md` for agent dispatch rules.
+Read `.claude/pipeline-config.md` for agent dispatch rules.
 
 ## Full Reference
-Rules, pipeline, naming: `pipeline-config.md`
+Rules, pipeline, naming: `.claude/pipeline-config.md`
 ```
 
 **Root `CLAUDE.md`** — project map from detected subprojects:

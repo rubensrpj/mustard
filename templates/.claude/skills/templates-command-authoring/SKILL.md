@@ -71,7 +71,7 @@ Step-by-step process. Use:
 `/my-command <name>`
 
 ## Procedure
-1. Read `pipeline-config.md` for agent config
+1. Read `.claude/pipeline-config.md` for agent config
 2. Dispatch Task agent with context
 3. Collect results and report
 

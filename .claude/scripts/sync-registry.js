@@ -1,452 +1,174 @@
 #!/usr/bin/env node
+'use strict';
 
 /**
  * sync-registry.js
  *
- * Generates .claude/entity-registry.json automatically by scanning
- * subprojects for entity definitions based on their detected technology.
+ * Generates .claude/entity-registry.json v4.0 by orchestrating per-stack scanners.
+ * This script is intentionally thin — all scanning logic lives in registry/.
  *
  * Usage:
- *   node .claude/scripts/sync-registry.js          # Only if registry is empty/placeholder
- *   node .claude/scripts/sync-registry.js --force   # Regenerate even if populated
+ *   node .claude/scripts/sync-registry.js          # Skip if registry is populated
+ *   node .claude/scripts/sync-registry.js --force  # Regenerate unconditionally
  *
- * Supports:
- *   - .NET (DbSet<T>, class T : ...)
+ * Architecture (SOLID):
+ *   - scanner-loader.js  — Dependency Inversion, Open/Closed (add scanner = new file)
+ *   - scanner-contract.js — Interface Segregation, Liskov Substitution
+ *   - schema-builder.js  — Single Responsibility (JSON output)
+ *   - file-utils.js      — Single Responsibility (filesystem helpers)
+ *   - pluralize.js       — Single Responsibility (English pluralization)
  */
 
-const fs = require("fs");
-const path = require("path");
-const { execSync } = require("child_process");
+const fs = require('fs');
+const path = require('path');
+const { execSync } = require('child_process');
+
+const { loadScanner, listAvailableScanners } = require('./registry/scanner-loader');
+const { buildRegistry } = require('./registry/schema-builder');
+
+// ---------------------------------------------------------------------------
+// Paths
+// ---------------------------------------------------------------------------
 
 // Root of the monorepo (parent of .claude/scripts/)
-const ROOT = path.resolve(__dirname, "..", "..");
-const REGISTRY_PATH = path.join(ROOT, ".claude", "entity-registry.json");
-const DETECT_SCRIPT = path.join(ROOT, ".claude", "scripts", "sync-detect.js");
+const ROOT = path.resolve(__dirname, '..', '..');
+const REGISTRY_PATH = path.join(ROOT, '.claude', 'entity-registry.json');
+const DETECT_SCRIPT = path.join(ROOT, '.claude', 'scripts', 'sync-detect.js');
 
 // ---------------------------------------------------------------------------
-// Pluralization helpers
-// ---------------------------------------------------------------------------
-
-/**
- * Lookup for common irregular plurals (snake_case table name -> PascalCase singular).
- */
-const IRREGULAR_PLURALS = {
-  people: "Person",
-  children: "Child",
-  men: "Man",
-  women: "Woman",
-  mice: "Mouse",
-  geese: "Goose",
-  teeth: "Tooth",
-  feet: "Foot",
-  data: "Datum",
-  indices: "Index",
-  matrices: "Matrix",
-  vertices: "Vertex",
-  analyses: "Analysis",
-  bases: "Base",
-  crises: "Crisis",
-  diagnoses: "Diagnosis",
-  hypotheses: "Hypothesis",
-  parentheses: "Parenthesis",
-  theses: "Thesis",
-  criteria: "Criterion",
-  phenomena: "Phenomenon",
-  media: "Medium",
-  statuses: "Status",
-  addresses: "Address",
-};
-
-/**
- * Convert a snake_case plural table name to PascalCase singular entity name.
- * Examples:
- *   contracts       -> Contract
- *   partner_types   -> PartnerType
- *   people          -> Person
- *   companies       -> Company
- *   product_categories -> ProductCategory
- *   email_queue     -> EmailQueue (already singular)
- */
-function snakeToPascalSingular(snakePlural) {
-  // Check irregular lookup for the full compound name
-  if (IRREGULAR_PLURALS[snakePlural]) {
-    return IRREGULAR_PLURALS[snakePlural];
-  }
-
-  // Split by underscore, singularize each last segment, PascalCase each part
-  const parts = snakePlural.split("_");
-
-  // Only singularize the LAST part (the noun)
-  const result = parts.map((part, idx) => {
-    const word = idx === parts.length - 1 ? singularize(part) : part;
-    return word.charAt(0).toUpperCase() + word.slice(1);
-  });
-
-  return result.join("");
-}
-
-/**
- * Singularize a single English word (simple heuristics).
- */
-function singularize(word) {
-  // Check irregular
-  if (IRREGULAR_PLURALS[word]) {
-    return IRREGULAR_PLURALS[word].toLowerCase();
-  }
-
-  // Already singular indicators
-  if (
-    word.endsWith("ss") ||
-    word.endsWith("us") ||
-    word.endsWith("is") ||
-    word === "queue"
-  ) {
-    return word;
-  }
-
-  // -ies -> -y (companies -> company, categories -> category)
-  if (word.endsWith("ies")) {
-    return word.slice(0, -3) + "y";
-  }
-
-  // -ses -> -s (bases -> base) but NOT all -ses (addresses -> address)
-  if (word.endsWith("sses")) {
-    return word.slice(0, -2); // addresses -> address
-  }
-
-  // -es after sh, ch, x, z, o -> remove -es
-  if (word.endsWith("shes") || word.endsWith("ches") || word.endsWith("xes") || word.endsWith("zes")) {
-    return word.slice(0, -2);
-  }
-
-  // Generic -s removal
-  if (word.endsWith("s") && !word.endsWith("ss")) {
-    return word.slice(0, -1);
-  }
-
-  return word;
-}
-
-/**
- * Convert a snake_case enum name to PascalCase.
- * Example: contract_status -> ContractStatus
- */
-function snakeToPascal(snakeName) {
-  return snakeName
-    .split("_")
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join("");
-}
-
-// ---------------------------------------------------------------------------
-// File scanning helpers
+// mergeResults — merge scan() output from two subprojects sharing a stack
 // ---------------------------------------------------------------------------
 
 /**
- * Recursively collect files matching a pattern from a directory.
+ * Merge source scan result into target (mutates target).
+ * Maps are merged key-by-key; patterns are shallow-merged.
+ *
+ * @param {Object} target
+ * @param {Object} source
  */
-function collectFiles(dir, extension, ignore = []) {
-  const results = [];
-  try {
-    const entries = fs.readdirSync(dir, { withFileTypes: true });
-    for (const entry of entries) {
-      const fullPath = path.join(dir, entry.name);
-
-      // Skip ignored directories
-      if (entry.isDirectory()) {
-        if (
-          ignore.includes(entry.name) ||
-          entry.name.startsWith(".") ||
-          entry.name === "node_modules" ||
-          entry.name === "bin" ||
-          entry.name === "obj" ||
-          entry.name === "dist" ||
-          entry.name === ".next"
-        ) {
-          continue;
-        }
-        results.push(...collectFiles(fullPath, extension, ignore));
-      } else if (entry.name.endsWith(extension)) {
-        results.push(fullPath);
-      }
-    }
-  } catch {
-    // ignore permission errors, etc.
-  }
-  return results;
-}
-
-// ---------------------------------------------------------------------------
-// .NET scanning (backend agent)
-// ---------------------------------------------------------------------------
-
-/**
- * Scan .NET files for DbSet<EntityName> and entity class definitions.
- * Returns a set of entity names.
- */
-function scanDotNetEntities(subprojectPath) {
-  const entities = new Set();
-  const csFiles = collectFiles(subprojectPath, ".cs", ["migrations", "Migrations"]);
-
-  for (const filePath of csFiles) {
-    let content;
-    try {
-      content = fs.readFileSync(filePath, "utf-8");
-    } catch {
-      continue;
-    }
-
-    // DbSet<EntityName>
-    const dbSetRegex = /DbSet<(\w+)>/g;
-    let match;
-    while ((match = dbSetRegex.exec(content)) !== null) {
-      entities.add(match[1]);
-    }
-
-    // class EntityName : BaseEntity (in Entities folder)
-    if (filePath.includes("Entities") || filePath.includes("entities")) {
-      const classRegex = /class\s+(\w+)\s*(?::|extends)/g;
-      while ((match = classRegex.exec(content)) !== null) {
-        entities.add(match[1]);
+function mergeResults(target, source) {
+  const mapKeys = ['entities', 'enums', 'interfaces', 'routes', 'dtos', 'services', 'repositories'];
+  for (const key of mapKeys) {
+    if (source[key] && source[key].size > 0) {
+      if (!target[key]) target[key] = new Map();
+      for (const [k, v] of source[key]) {
+        target[key].set(k, v);
       }
     }
   }
-
-  return entities;
-}
-
-/**
- * Scan .NET files for enum definitions.
- * Returns a map: enumName -> string[]
- */
-function scanDotNetEnums(subprojectPath) {
-  const enums = new Map();
-  const csFiles = collectFiles(subprojectPath, ".cs");
-
-  for (const filePath of csFiles) {
-    let content;
-    try {
-      content = fs.readFileSync(filePath, "utf-8");
-    } catch {
-      continue;
-    }
-
-    // Strip XML doc comments (/// ...) before parsing
-    const cleaned = content.replace(/\/\/\/.*$/gm, "");
-
-    // public enum EnumName { Val1, Val2, ... }
-    const enumRegex = /public\s+enum\s+(\w+)\s*\{([^}]*)\}/gs;
-    let match;
-    while ((match = enumRegex.exec(cleaned)) !== null) {
-      const enumName = match[1];
-      const body = match[2];
-
-      // Strip single-line comments and multi-line comments from body
-      const cleanBody = body
-        .replace(/\/\/.*$/gm, "")
-        .replace(/\/\*[\s\S]*?\*\//g, "");
-
-      const values = [];
-      // Match enum member names (identifier at start of meaningful content)
-      const valRegex = /^\s*([A-Z]\w*)\s*(?:=\s*\d+)?\s*,?\s*$/gm;
-      let valMatch;
-      while ((valMatch = valRegex.exec(cleanBody)) !== null) {
-        const val = valMatch[1].trim();
-        if (val) values.push(val);
-      }
-
-      if (values.length > 0) {
-        enums.set(enumName, values);
-      }
-    }
+  if (source.patterns && Object.keys(source.patterns).length > 0) {
+    target.patterns = Object.assign({}, target.patterns, source.patterns);
   }
-
-  return enums;
 }
 
 // ---------------------------------------------------------------------------
-// Relationship inference (from .NET entities)
-// ---------------------------------------------------------------------------
-
-/**
- * Placeholder: relationship inference was previously Drizzle-based.
- * TODO: implement .NET navigation-property based inference if needed.
- */
-function inferRelationships(_tables) {
-  return { entities: new Map(), subItems: new Set() };
-}
-
-/**
- * Placeholder: pattern inference was previously Drizzle-based.
- */
-function inferPatterns(_entities, _subItems) {
-  return {};
-}
-
-// ---------------------------------------------------------------------------
-// Main
+// main
 // ---------------------------------------------------------------------------
 
 function main() {
-  const forceFlag = process.argv.includes("--force");
+  let forceFlag = process.argv.includes('--force');
 
   // 1. Read current registry
   let currentRegistry = null;
   if (fs.existsSync(REGISTRY_PATH)) {
     try {
-      currentRegistry = JSON.parse(fs.readFileSync(REGISTRY_PATH, "utf-8"));
-    } catch {
-      // Invalid JSON, will regenerate
-    }
+      currentRegistry = JSON.parse(fs.readFileSync(REGISTRY_PATH, 'utf-8'));
+    } catch { /* invalid JSON, will regenerate */ }
   }
 
-  // 2. Check if already populated (has real entities, not just _placeholder)
+  // Auto-force upgrade if registry version < 4.0
+  if (currentRegistry?._meta?.version && currentRegistry._meta.version < '4.0') {
+    console.log(`Registry at v${currentRegistry._meta.version} — upgrading to v4.0.`);
+    forceFlag = true;
+  }
+
+  // 2. Check if already populated
   if (currentRegistry && !forceFlag) {
-    const entities = currentRegistry.e || {};
-    const entityNames = Object.keys(entities).filter(
-      (k) => !k.startsWith("_")
-    );
-    if (entityNames.length > 0) {
-      console.log(
-        `Registry already populated (${entityNames.length} entities). Use --force to regenerate.`
-      );
+    const entityCount = Object.keys(currentRegistry.e || {}).filter(k => !k.startsWith('_')).length;
+    if (entityCount > 0) {
+      console.log(`Registry v${currentRegistry._meta?.version || '?'} populated (${entityCount} entities). Use --force to regenerate.`);
       process.exit(0);
     }
   }
 
-  // 3. Run sync-detect.js to get subprojects
+  // 3. Detect subprojects via sync-detect.js
   let detectResult;
   try {
     const output = execSync(`node "${DETECT_SCRIPT}"`, {
       cwd: ROOT,
-      encoding: "utf-8",
-      stdio: ["pipe", "pipe", "pipe"],
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: 30000,
+      windowsHide: true,
     });
     detectResult = JSON.parse(output);
   } catch (err) {
-    console.error("Failed to run sync-detect.js:", err.message);
+    console.error('Failed to run sync-detect.js:', err.message);
     process.exit(1);
   }
 
   const subprojects = detectResult.subprojects || [];
-  console.log(
-    `Detected ${subprojects.length} subproject(s): ${subprojects.map((s) => s.name).join(", ")}`
-  );
+  console.log(`Detected ${subprojects.length} subproject(s): ${subprojects.map(s => s.name).join(', ')}`);
+
+  const available = listAvailableScanners();
+  if (available.length === 0) {
+    console.log('No scanner implementations found in registry/scanners/. Registry will be empty.');
+  } else {
+    console.log(`Available scanners: [${available.join(', ')}]`);
+  }
 
   // 4. Scan each subproject
-  let allTables = new Map();
-  let allEnums = new Map();
-  const dotNetEntities = new Set();
+  /** @type {Map<string, Object>} */
+  const scanResults = new Map();
 
   for (const sub of subprojects) {
     const subPath = path.join(ROOT, sub.path);
+    const scanner = loadScanner(subPath, sub);
 
-    if (sub.agent === "backend") {
-      console.log(`Scanning ${sub.name} (.NET)...`);
-      const entities = scanDotNetEntities(subPath);
-      const enums = scanDotNetEnums(subPath);
+    if (!scanner) {
+      console.log(`  ${sub.name}: no scanner available (agent: ${sub.agent})`);
+      continue;
+    }
 
-      for (const e of entities) {
-        dotNetEntities.add(e);
+    console.log(`  Scanning ${sub.name} (${scanner.constructor.name})...`);
+    try {
+      const result = scanner.scan();
+
+      // Determine the stack key for this result
+      const stackId = sub.stack || scanner.constructor.stackId || 'unknown';
+
+      // Merge if same stack appears in multiple subprojects
+      if (scanResults.has(stackId)) {
+        mergeResults(scanResults.get(stackId), result);
+      } else {
+        scanResults.set(stackId, result);
       }
-      for (const [k, v] of enums) {
-        // Case-insensitive dedup: skip if an enum with the same name (different casing) already exists
-        const existingKey = [...allEnums.keys()].find(
-          (existing) => existing.toLowerCase() === k.toLowerCase()
-        );
-        if (!existingKey) {
-          allEnums.set(k, v);
-        }
-      }
 
-      console.log(
-        `  Found ${entities.size} entity class(es), ${enums.size} enum(s)`
-      );
-    } else if (sub.agent === "frontend") {
-      console.log(`Skipping ${sub.name} (frontend - does not define entities)`);
-    } else {
-      console.log(`Skipping ${sub.name} (agent: ${sub.agent})`);
+      const eCount = result.entities?.size || 0;
+      const enumCount = result.enums?.size || 0;
+      const routeCount = result.routes?.size || 0;
+      const svcCount = result.services?.size || 0;
+      console.log(`    ${eCount} entities, ${enumCount} enums, ${routeCount} route groups, ${svcCount} services`);
+    } catch (err) {
+      console.error(`    Scanner error for ${sub.name}: ${err.message}`);
     }
   }
 
-  // 5. Build entity relationships (placeholder — previously Drizzle-based)
-  const { entities, subItems } = inferRelationships(allTables);
+  // 5. Build registry JSON
+  const registry = buildRegistry({ scanResults });
 
-  console.log(
-    `\nInferred ${entities.size} entities, ${subItems.size} sub-items`
-  );
+  // 6. Write output
+  fs.mkdirSync(path.dirname(REGISTRY_PATH), { recursive: true });
+  const output = JSON.stringify(registry, null, 2) + '\n';
+  fs.writeFileSync(REGISTRY_PATH, output, 'utf-8');
 
-  // 6. Infer patterns
-  const patterns = inferPatterns(entities, subItems);
-  console.log(`Patterns: ${JSON.stringify(patterns)}`);
+  const eCount = Object.keys(registry.e).length;
+  const enumCount = Object.keys(registry._enums).length;
+  const patternStacks = Object.keys(registry._patterns);
 
-  // 7. Build the registry output
-  const entityEntries = {};
-
-  // Sort entity names alphabetically
-  const sortedNames = [...entities.keys()].sort();
-
-  for (const entityName of sortedNames) {
-    const info = entities.get(entityName);
-
-    // Sub-items still get their own entry (as the current registry does)
-    // but they also appear in parent's "sub" array
-    const entry = {};
-
-    if (info.sub.length > 0) {
-      entry.sub = info.sub.sort();
-    }
-    if (info.refs.length > 0) {
-      // Filter out self from refs (self-ref is tracked separately in patterns)
-      const filteredRefs = info.refs.filter((r) => r !== entityName);
-      if (filteredRefs.length > 0) {
-        entry.refs = filteredRefs;
-      }
-    }
-    if (info.selfRef) {
-      // Add self to refs for self-referencing entities
-      if (!entry.refs) entry.refs = [];
-      entry.refs.unshift(entityName);
-    }
-
-    entityEntries[entityName] = entry;
-  }
-
-  // 8. Build enums output (sorted, compressed if >8 values)
-  const enumEntries = {};
-  const sortedEnumNames = [...allEnums.keys()].sort();
-  for (const enumName of sortedEnumNames) {
-    const values = allEnums.get(enumName);
-    if (values.length > 8) {
-      enumEntries[enumName] = [
-        ...values.slice(0, 5),
-        `...(${values.length} total)`,
-      ];
-    } else {
-      enumEntries[enumName] = values;
-    }
-  }
-
-  // 9. Assemble final registry
-  const registry = {
-    _meta: {
-      version: "3.1",
-      generated: new Date().toISOString().split("T")[0],
-      generator: "sync-registry.js",
-    },
-    _patterns: patterns,
-    _enums: enumEntries,
-    e: entityEntries,
-  };
-
-  // 10. Write output
-  const output = JSON.stringify(registry, null, 2) + "\n";
-  fs.writeFileSync(REGISTRY_PATH, output, "utf-8");
-
-  console.log(`\nGenerated ${REGISTRY_PATH}`);
-  console.log(
-    `  ${Object.keys(entityEntries).length} entities, ${Object.keys(enumEntries).length} enums`
-  );
+  console.log(`\nGenerated entity-registry.json v4.0`);
+  console.log(`  ${eCount} entities, ${enumCount} enums, patterns: [${patternStacks.join(', ')}]`);
+  console.log(`  Written to: ${REGISTRY_PATH}`);
 }
 
 main();
