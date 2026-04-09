@@ -195,15 +195,18 @@ function handlePostToolUse(data, stateDir) {
 
     const toolResponse = data.tool_response || {};
     const responseText = JSON.stringify(toolResponse).toLowerCase();
-    // Detect overload conservatively: require is_error=true (Claude Code sets
-    // this on Task tool failures) AND at least one overload keyword. This
-    // avoids false positives on agents that merely *document* rate limiting
-    // or error handling in their returned content.
-    const isOverload =
+    // Detect dispatch failures conservatively: require is_error=true (Claude
+    // Code sets this on Task tool failures) AND at least one failure keyword.
+    // Covers:
+    //   - API overload / rate limiting (429, 529, throttle, too many requests)
+    //   - Infrastructure errors (tool result missing, HTTP 5xx, service unavailable)
+    // The regex avoids false positives on agents that merely *document* error
+    // handling in their returned content (see "unrelated error" test below).
+    const isDispatchFailure =
       toolResponse.is_error === true &&
-      /overload|rate.?limit|\b429\b|\b529\b|throttl|too many requests/.test(responseText);
+      /overload|rate.?limit|\b429\b|\b529\b|throttl|too many requests|tool result missing|\b50[0-4]\b|service unavailable/.test(responseText);
 
-    if (!isOverload) return;
+    if (!isDispatchFailure) return;
 
     const projectDir = path.resolve(stateDir, '..', '..');
     const statesDir = path.join(projectDir, '.claude', '.pipeline-states');
@@ -231,7 +234,7 @@ function handlePostToolUse(data, stateDir) {
     const state = JSON.parse(fs.readFileSync(newest, 'utf8'));
     state.lastDispatchFailure = {
       at: new Date().toISOString(),
-      reason: 'api_overload',
+      reason: 'dispatch_failure',
       agentType: toolInput.subagent_type || 'unknown',
       description: toolInput.description || '',
       prompt: (toolInput.prompt || '').slice(0, 2000),

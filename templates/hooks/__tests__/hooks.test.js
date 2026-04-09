@@ -554,9 +554,43 @@ describe("subagent-tracker.js overload detection", () => {
       assert.equal(r.code, 0);
       const state = JSON.parse(fs.readFileSync(pipelinePath, "utf8"));
       assert.ok(state.lastDispatchFailure, "flag must be set");
-      assert.equal(state.lastDispatchFailure.reason, "api_overload");
+      assert.equal(state.lastDispatchFailure.reason, "dispatch_failure");
       assert.equal(state.lastDispatchFailure.agentType, "general-purpose");
       assert.equal(state.lastDispatchFailure.description, "test dispatch");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("should flag lastDispatchFailure on tool result missing infrastructure error", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "infra-missing-"));
+    const pipelinePath = setupPipelineState(tmpDir);
+    try {
+      const r = await dispatchTaskResult(tmpDir, {
+        is_error: true,
+        content: "Tool result missing due to internal error",
+      });
+      assert.equal(r.code, 0);
+      const state = JSON.parse(fs.readFileSync(pipelinePath, "utf8"));
+      assert.ok(state.lastDispatchFailure, "flag must be set on infra failure");
+      assert.equal(state.lastDispatchFailure.reason, "dispatch_failure");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("should flag lastDispatchFailure on HTTP 503 service unavailable", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "infra-503-"));
+    const pipelinePath = setupPipelineState(tmpDir);
+    try {
+      const r = await dispatchTaskResult(tmpDir, {
+        is_error: true,
+        content: "Error 503: service unavailable",
+      });
+      assert.equal(r.code, 0);
+      const state = JSON.parse(fs.readFileSync(pipelinePath, "utf8"));
+      assert.ok(state.lastDispatchFailure, "flag must be set on 5xx");
+      assert.equal(state.lastDispatchFailure.reason, "dispatch_failure");
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }

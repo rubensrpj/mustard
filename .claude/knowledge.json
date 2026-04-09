@@ -12,11 +12,11 @@
         "pipeline",
         "lesson"
       ],
-      "confidence": 0.8,
-      "occurrences": 5,
+      "confidence": 0.9000000000000001,
+      "occurrences": 6,
       "createdAt": "2026-04-09T09:00:09.572Z",
-      "updatedAt": "2026-04-09T16:26:43.208Z",
-      "lastSeen": "2026-04-09T16:26:43.208Z"
+      "updatedAt": "2026-04-09T16:28:20.286Z",
+      "lastSeen": "2026-04-09T16:28:20.286Z"
     },
     {
       "id": "convention-1775740608559",
@@ -29,11 +29,11 @@
         "pipeline",
         "lesson"
       ],
-      "confidence": 0.7,
-      "occurrences": 4,
+      "confidence": 0.8,
+      "occurrences": 5,
       "createdAt": "2026-04-09T13:16:48.558Z",
-      "updatedAt": "2026-04-09T16:26:43.161Z",
-      "lastSeen": "2026-04-09T16:26:43.161Z"
+      "updatedAt": "2026-04-09T16:28:20.241Z",
+      "lastSeen": "2026-04-09T16:28:20.241Z"
     },
     {
       "id": "convention-1775724563724",
@@ -46,11 +46,11 @@
         "pipeline",
         "lesson"
       ],
-      "confidence": 0.8,
-      "occurrences": 5,
+      "confidence": 0.9000000000000001,
+      "occurrences": 6,
       "createdAt": "2026-04-09T08:49:23.724Z",
-      "updatedAt": "2026-04-09T16:26:43.133Z",
-      "lastSeen": "2026-04-09T16:26:43.133Z"
+      "updatedAt": "2026-04-09T16:28:20.201Z",
+      "lastSeen": "2026-04-09T16:28:20.201Z"
     },
     {
       "id": "pattern-1775737719162",
@@ -62,11 +62,11 @@
         "optimization",
         "pipeline"
       ],
-      "confidence": 0.8,
-      "occurrences": 5,
+      "confidence": 0.9000000000000001,
+      "occurrences": 6,
       "createdAt": "2026-04-09T12:28:39.162Z",
-      "updatedAt": "2026-04-09T16:26:43.096Z",
-      "lastSeen": "2026-04-09T16:26:43.096Z"
+      "updatedAt": "2026-04-09T16:28:20.159Z",
+      "lastSeen": "2026-04-09T16:28:20.159Z"
     },
     {
       "id": "convention-1775737658433",
@@ -79,11 +79,11 @@
         "pipeline",
         "lesson"
       ],
-      "confidence": 0.8,
-      "occurrences": 5,
+      "confidence": 0.9000000000000001,
+      "occurrences": 6,
       "createdAt": "2026-04-09T12:27:38.433Z",
-      "updatedAt": "2026-04-09T16:26:43.056Z",
-      "lastSeen": "2026-04-09T16:26:43.056Z"
+      "updatedAt": "2026-04-09T16:28:20.115Z",
+      "lastSeen": "2026-04-09T16:28:20.115Z"
     },
     {
       "id": "convention-1775734997481",

@@ -55,7 +55,7 @@ node scripts/sync-registry.js --force
 - PreToolUse hooks use `permissionDecision` response format
 - PostToolUse hooks use `decision` response format
 - Every new hook must be registered in `settings.json` with a timeout
-- Task dispatch failures (API overload) are logged to `pipeline-state.lastDispatchFailure`; `/resume` auto-recovers within 10 min
+- Task dispatch failures (API overload, HTTP 5xx, tool result missing) are logged to `pipeline-state.lastDispatchFailure`; `/resume` auto-recovers within 10 min
 - Generated files must start with `<!-- mustard:generated -->` header
 - Skills must have YAML frontmatter BEFORE the `<!-- mustard:generated -->` line
 
