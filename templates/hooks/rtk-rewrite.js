@@ -72,9 +72,10 @@ function isRtkAvailable() {
  */
 function rtkRewrite(cmd) {
   try {
-    // rtk rewrite expects the raw command as args
-    // On Windows, shell: true is needed for proper quoting
-    const result = execSync(`rtk rewrite ${cmd}`, {
+    // rtk rewrite expects the raw command as a single argv element.
+    // Using execFileSync avoids shell re-parsing, which would strip quotes
+    // and corrupt regex patterns containing brackets (e.g. grep '[x]').
+    const result = execFileSync('rtk', ['rewrite', cmd], {
       encoding: 'utf8',
       stdio: ['pipe', 'pipe', 'ignore'], // ignore stderr
       timeout: 3000,

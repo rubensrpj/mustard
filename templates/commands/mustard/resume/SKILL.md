@@ -69,8 +69,8 @@ Before the normal detect-and-confirm flow, scan the newest pipeline state for a 
    ## Context
    - Branch: {from git}
    - Files changed: {run `node .claude/scripts/diff-context.js`}
-   - Last agent: {from `.claude/.agent-memory/_index.json` last entry}
-   - Last action: {summary from last agent memory entry}
+   - Last agent: {Read `.claude/.agent-memory/_index.json` and pick the last entry's `agent_type`. If the file or `.agent-memory/` directory is missing, print literal `(none)` — do NOT probe with `ls`/`grep`, it surfaces noisy exit codes}
+   - Last action: {from the same last entry's `summary` field. If missing, print literal `(no prior memory)`}
    - Decisions: {decisions[] from pipeline state, if any}
 
    ## Next Action

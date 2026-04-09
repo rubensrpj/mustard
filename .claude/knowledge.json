@@ -12,11 +12,11 @@
         "pipeline",
         "lesson"
       ],
-      "confidence": 0.5,
-      "occurrences": 2,
+      "confidence": 0.7,
+      "occurrences": 4,
       "createdAt": "2026-04-09T09:00:09.572Z",
-      "updatedAt": "2026-04-09T13:16:48.598Z",
-      "lastSeen": "2026-04-09T13:16:48.598Z"
+      "updatedAt": "2026-04-09T13:30:05.927Z",
+      "lastSeen": "2026-04-09T13:30:05.927Z"
     },
     {
       "id": "convention-1775740608559",
@@ -29,11 +29,11 @@
         "pipeline",
         "lesson"
       ],
-      "confidence": 0.3,
-      "occurrences": 1,
+      "confidence": 0.6000000000000001,
+      "occurrences": 3,
       "createdAt": "2026-04-09T13:16:48.558Z",
-      "updatedAt": "2026-04-09T13:16:48.558Z",
-      "lastSeen": "2026-04-09T13:16:48.558Z"
+      "updatedAt": "2026-04-09T13:30:05.890Z",
+      "lastSeen": "2026-04-09T13:30:05.890Z"
     },
     {
       "id": "convention-1775724563724",
@@ -46,11 +46,11 @@
         "pipeline",
         "lesson"
       ],
-      "confidence": 0.5,
-      "occurrences": 2,
+      "confidence": 0.7,
+      "occurrences": 4,
       "createdAt": "2026-04-09T08:49:23.724Z",
-      "updatedAt": "2026-04-09T13:16:48.519Z",
-      "lastSeen": "2026-04-09T13:16:48.519Z"
+      "updatedAt": "2026-04-09T13:30:05.833Z",
+      "lastSeen": "2026-04-09T13:30:05.833Z"
     },
     {
       "id": "pattern-1775737719162",
@@ -62,11 +62,11 @@
         "optimization",
         "pipeline"
       ],
-      "confidence": 0.5,
-      "occurrences": 2,
+      "confidence": 0.7,
+      "occurrences": 4,
       "createdAt": "2026-04-09T12:28:39.162Z",
-      "updatedAt": "2026-04-09T13:16:48.479Z",
-      "lastSeen": "2026-04-09T13:16:48.479Z"
+      "updatedAt": "2026-04-09T13:30:05.795Z",
+      "lastSeen": "2026-04-09T13:30:05.795Z"
     },
     {
       "id": "convention-1775737658433",
@@ -79,11 +79,11 @@
         "pipeline",
         "lesson"
       ],
-      "confidence": 0.5,
-      "occurrences": 2,
+      "confidence": 0.7,
+      "occurrences": 4,
       "createdAt": "2026-04-09T12:27:38.433Z",
-      "updatedAt": "2026-04-09T13:16:48.439Z",
-      "lastSeen": "2026-04-09T13:16:48.439Z"
+      "updatedAt": "2026-04-09T13:30:05.753Z",
+      "lastSeen": "2026-04-09T13:30:05.753Z"
     },
     {
       "id": "convention-1775734997481",

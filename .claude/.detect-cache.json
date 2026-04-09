@@ -1,24 +1,18 @@
 {
-  "lastScan": "2026-04-09T08:33:19.708Z",
+  "lastScan": "2026-04-09T14:52:29.405Z",
   "subprojects": [
     {
       "name": "templates",
       "path": "templates",
       "role": "general",
       "agent": "general",
-      "commands": [
-        "guards.md",
-        "notes.md",
-        "patterns.md",
-        "recipes.md",
-        "stack.md"
-      ],
+      "commands": [],
       "stackSummary": "",
       "hashChanged": true
     }
   ],
   "sourceHashes": {
-    "templates": "44105ee4d2905d153315ee54700dd071205fedca0720bf128f4f47e8b7a82c90"
+    "templates": "099c79c9f73ed22c5e9ca334b3c81e05f4b82b2ba031c245b805ec195cfa95b2"
   },
   "moduleHashes": {}
 }
