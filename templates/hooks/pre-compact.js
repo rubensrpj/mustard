@@ -27,6 +27,40 @@ process.stdin.on('end', () => {
     if (!shouldRun('pre-compact')) { process.exit(0); }
     const data = JSON.parse(input);
     const cwd = data.cwd || process.cwd();
+
+    // ── Pipeline state validation ───────────────────────────────────────
+    try {
+      const statesDir = path.join(cwd, '.claude', '.pipeline-states');
+      if (fs.existsSync(statesDir)) {
+        const stateFiles = fs.readdirSync(statesDir).filter(f => f.endsWith('.json'));
+        const activeStates = stateFiles.reduce((acc, f) => {
+          try {
+            const parsed = JSON.parse(fs.readFileSync(path.join(statesDir, f), 'utf8'));
+            if (parsed.status === 'active' || parsed.status === 'implementing') {
+              acc.push({ file: f, state: parsed });
+            }
+          } catch (e) { /* skip unreadable */ }
+          return acc;
+        }, []);
+
+        if (activeStates.length === 0) {
+          // No active pipeline — skip compact (noop)
+          process.exit(0);
+        }
+
+        if (activeStates.length >= 2) {
+          process.stderr.write(`[pre-compact] WARNING: ${activeStates.length} active pipeline states found. Picking most recent.\n`);
+          // Pick the one with most recent checkpoint or createdAt
+          activeStates.sort((a, b) => {
+            const tsA = new Date(a.state.checkpoint || a.state.createdAt || 0).getTime();
+            const tsB = new Date(b.state.checkpoint || b.state.createdAt || 0).getTime();
+            return tsB - tsA;
+          });
+        }
+        // If exactly 1 or after sort: proceed normally (fall through)
+      }
+    } catch (e) { /* fail-open: validation error is non-fatal */ }
+
     const parts = [];
 
     // Git branch

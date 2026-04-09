@@ -23,6 +23,10 @@ const fs = require('fs');
 const path = require('path');
 const { shouldRun } = require('./_lib/hook-env.js');
 
+const MODE = process.env.CONTEXT_BUDGET_MODE || 'strict';
+const METRICS_DIR = path.join(process.cwd(), '.claude', '.metrics');
+const METRICS_FILE = path.join(METRICS_DIR, 'budget-observations.jsonl');
+
 // Conservative regex: only match .claude/skills/**/*.md, .claude/context/**/*.md, SKILL.md references
 const MD_REF_PATTERN = /\.claude\/(?:skills|context)\/[^\s"'`]+\.md|SKILL\.md/g;
 
@@ -73,25 +77,52 @@ process.stdin.on('end', () => {
       const description  = toolInput.description   || '';
       const budget = getBudget(subagentType, description);
 
-      if (budget !== null && prompt.length > budget) {
+      if (budget !== null) {
+        const actual = prompt.length;
+        const limit = budget;
         const roleLabel = subagentType === 'general-purpose'
           ? (description.toLowerCase().includes('review') ? 'general-purpose(review)' : 'general-purpose')
           : subagentType;
-        const limitTokens = Math.round(budget / 4);
-        const actualTokens = Math.round(prompt.length / 4);
-        process.stdout.write(JSON.stringify({
-          permissionDecision: 'deny',
-          permissionDecisionReason:
-            `[Context Budget] Task prompt exceeds role budget. ` +
-            `Role: ${roleLabel} | Limit: ${limitTokens} tokens (~${budget} chars) | ` +
-            `Actual: ${actualTokens} tokens (~${prompt.length} chars). ` +
-            `Trim the prompt or split the task.`
-        }) + '\n');
-        process.exit(0);
-      }
 
-      // Under budget → allow (fall through to advisory check below)
-      if (budget !== null) {
+        if (MODE === 'observe') {
+          try {
+            fs.mkdirSync(METRICS_DIR, { recursive: true });
+            const entry = JSON.stringify({
+              ts: new Date().toISOString(),
+              role: roleLabel,
+              actual_chars: actual,
+              limit,
+              would_block: actual > limit
+            });
+            fs.appendFileSync(METRICS_FILE, entry + '\n');
+          } catch (_e) { /* fail-silent */ }
+          process.stdout.write(JSON.stringify({ permissionDecision: 'allow' }) + '\n');
+          process.exit(0);
+        }
+
+        if (MODE === 'warn') {
+          const suffix = actual > limit ? ' WOULD_BLOCK' : '';
+          process.stderr.write(`[budget-gate WARN] role=${roleLabel} actual=${actual} limit=${limit}${suffix}\n`);
+          process.stdout.write(JSON.stringify({ permissionDecision: 'allow' }) + '\n');
+          process.exit(0);
+        }
+
+        // MODE === 'strict' (default): hard-block if over budget
+        if (actual > limit) {
+          const limitTokens = Math.round(limit / 4);
+          const actualTokens = Math.round(actual / 4);
+          process.stdout.write(JSON.stringify({
+            permissionDecision: 'deny',
+            permissionDecisionReason:
+              `[Context Budget] Task prompt exceeds role budget. ` +
+              `Role: ${roleLabel} | Limit: ${limitTokens} tokens (~${limit} chars) | ` +
+              `Actual: ${actualTokens} tokens (~${actual} chars). ` +
+              `Trim the prompt or split the task.`
+          }) + '\n');
+          process.exit(0);
+        }
+
+        // Under budget → allow (fall through to advisory check below)
         process.stdout.write(JSON.stringify({ permissionDecision: 'allow' }) + '\n');
         process.exit(0);
       }
@@ -104,13 +135,29 @@ process.stdin.on('end', () => {
     const uniquePaths = [...new Set(matches)];
 
     let totalBytes = 0;
-    for (const relPath of uniquePaths) {
-      try {
-        const absPath = path.join(projectDir, relPath);
-        if (fs.existsSync(absPath)) {
-          totalBytes += fs.statSync(absPath).size;
+    const CHUNK_SIZE = 25;
+    if (uniquePaths.length > 50) {
+      // Process in chunks of 25 to avoid blocking on large path sets
+      for (let i = 0; i < uniquePaths.length; i += CHUNK_SIZE) {
+        const chunk = uniquePaths.slice(i, i + CHUNK_SIZE);
+        for (const relPath of chunk) {
+          try {
+            const absPath = path.join(projectDir, relPath);
+            if (fs.existsSync(absPath)) {
+              totalBytes += fs.statSync(absPath).size;
+            }
+          } catch (e) { /* skip unreadable paths */ }
         }
-      } catch (e) { /* skip unreadable paths */ }
+      }
+    } else {
+      for (const relPath of uniquePaths) {
+        try {
+          const absPath = path.join(projectDir, relPath);
+          if (fs.existsSync(absPath)) {
+            totalBytes += fs.statSync(absPath).size;
+          }
+        } catch (e) { /* skip unreadable paths */ }
+      }
     }
 
     if (totalBytes === 0) { process.exit(0); }

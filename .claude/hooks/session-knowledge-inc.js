@@ -130,6 +130,12 @@ function readSeenFile(seenPath) {
 
 function writeSeenFile(seenPath, seen) {
   try {
+    // Rotate if file exceeds 100KB (1 level only: .1)
+    try {
+      if (fs.existsSync(seenPath) && fs.statSync(seenPath).size > 100 * 1024) {
+        fs.renameSync(seenPath, seenPath + '.1');
+      }
+    } catch (e) { /* fail-open: rotation error is non-fatal */ }
     fs.writeFileSync(seenPath, JSON.stringify(seen, null, 2), 'utf8');
   } catch (e) { /* fail-open */ }
 }

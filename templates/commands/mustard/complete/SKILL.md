@@ -32,7 +32,7 @@ node .claude/scripts/verify-pipeline.js "$PROJECT_DIR"
 
 If ANY gate fails: do NOT mark complete → report what failed + suggest fix. If review wasn't run → run it now before completing.
 
-**Re-review model selection:** Before re-review dispatch: consult `review/SKILL.md § Model Selection` decision table. Set `model: "haiku"` if the first row matches.
+Re-reviews always dispatch with `model: "sonnet"` (see `review/SKILL.md § Model Selection`).
 
 #### Surface Accumulated Concerns
 
@@ -56,6 +56,7 @@ See `.claude/pipeline-config.md` Escalation Statuses for concern classification 
    - Mark all remaining `[ ]` as `[x]`
 4. **Entity Registry — update if needed:**
    - `node .claude/scripts/sync-registry.js`
+   - **Schema-aware refresh (conditional):** If the spec's `## Files` section touched any file matching `*.schema.ts`, `*.entity.ts`, `*.prisma`, `*DbContext*.cs`, or `schema.rs`, run `rtk node .claude/scripts/sync-registry.js` to refresh `entity-registry.json`. If sync-registry fails (non-zero exit or script missing), log a warning and continue with close — this step is non-blocking.
 5. **Move spec** from `.claude/spec/active/` to `.claude/spec/completed/`
 6. **Pipeline State — cleanup:**
    - Extract `spec-name` from the spec directory (e.g. `2026-02-26-linked-services-card`)

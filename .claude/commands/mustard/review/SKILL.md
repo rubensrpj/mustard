@@ -82,20 +82,14 @@ Present the review results as returned by the skill/agent.
 
 ## Model Selection
 
-**Initial reviews**: always use default model (per `pipeline-config.md § Models`).
+**Initial reviews**: use default model per `pipeline-config.md § Models` (sonnet for most; opus for Full + new patterns; etc.).
 
-**Re-reviews**: apply this decision BEFORE dispatching the re-review Task:
+**Re-reviews**: always dispatch with `model: "sonnet"`, regardless of the initial review's model.
 
-1. Count lines in the previous review's return content matching `^\[(CRITICAL|WARNING)\]`. This is `issue_count`.
-2. Count files in the pending fix step. This is `files_changed`.
-3. Decision table:
-
-   | issue_count | files_changed | model           |
-   |-------------|---------------|-----------------|
-   | ≤3          | <5            | `haiku`         |
-   | else        | else          | default         |
-
-4. Set `model: "..."` on the re-review Task dispatch per the matching row.
+**Rationale**:
+- Re-reviews verify a targeted fix to already-reviewed code. Sonnet is capable enough even in complex codebases (see `pipeline-config.md` where Sonnet is default for audit, bugfix, and ≤5-file features).
+- For Full + new-pattern features (initial review in Opus), this saves ~$5/re-review without introducing Haiku quality risk.
+- Simpler than heuristic decision table: one rule, zero edge cases.
 
 ## Rules
 

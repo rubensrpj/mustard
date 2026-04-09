@@ -34,3 +34,6 @@ coverage/
 
 # Pipeline states (ephemeral, modified by hooks)
 .claude/.pipeline-states/
+
+# Enforcement metrics (append-only, local telemetry)
+.claude/.metrics/

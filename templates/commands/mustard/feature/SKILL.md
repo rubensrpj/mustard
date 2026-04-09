@@ -173,6 +173,17 @@ Rules:
 
 Before dispatching implementation agents, run 1 Haiku explorer to verify the work is still needed.
 
+**Pre-check (free, zero LLM tokens)**: Before dispatching Haiku, run:
+
+```bash
+rtk git diff --stat HEAD -- <files listed in `## Files` of spec>
+```
+
+Skip rules based on pre-check output:
+- **Empty output** (no changes) → skip gate entirely, proceed to EXECUTE normally (nothing to verify)
+- **<10 total insertions/deletions** → skip gate entirely, proceed to EXECUTE normally (trivial changes, verification not worth the overhead)
+- **≥10 insertions/deletions** → proceed with Haiku dispatch below
+
 **Dispatch:**
 
 ```javascript
@@ -237,7 +248,7 @@ If two or more agents in the same wave return `CONCERN`, surface all concerns to
 
 9. **REVIEW** — dispatch review agent for each affected subproject (reads guards + relevant skills, runs 7-category checklist: SOLID, Design System, Patterns, i18n, Integration, Build, Elegance). REJECTED → fix + re-review (max 2 loops).
 
-   **Before re-review dispatch:** consult `review/SKILL.md § Model Selection` decision table. Set `model: "haiku"` if the first row matches.
+   Re-reviews always dispatch with `model: "sonnet"` (see `review/SKILL.md § Model Selection`).
 10. All passed + APPROVED → CLOSE flow inline (sync registry, move spec, cleanup state)
 11. Failed → max 2 retries, then STOP + report
 
