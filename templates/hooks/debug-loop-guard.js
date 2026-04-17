@@ -26,6 +26,10 @@ const STREAK_RESET_MS = 60 * 1000; // 60s gap resets streak
 
 const BUILD_TEST_PATTERN = /\b(test|build|dotnet|npm run|tsc)\b/i;
 
+// Pipeline files where many consecutive edits are EXPECTED (line-by-line checkbox
+// updates during EXECUTE/CLOSE are the prescribed protocol, not a debug loop).
+const PIPELINE_EXEMPT_RE = /[\\/]\.claude[\\/]spec[\\/](active|completed)[\\/][^\\/]+[\\/]spec\.md$/;
+
 let input = '';
 process.stdin.setEncoding('utf8');
 process.stdin.on('data', (chunk) => (input += chunk));
@@ -62,8 +66,9 @@ process.stdin.on('end', () => {
         hookSpecificOutput: {
           hookEventName: 'PostToolUse',
           additionalContext:
-            `[Debug Loop Guard] Anti-pattern detected: ${warning}\n` +
-            `Recommendation: pause and delegate root-cause analysis via Task(Plan) before continuing edits.`,
+            `[Debug Loop Guard] ADVISORY (non-blocking) — possible anti-pattern: ${warning}\n` +
+            `This is a heuristic. If the edits are intentional (e.g. line-by-line checkbox updates, batch refactor), ignore and continue. ` +
+            `If you are actually debugging the same error repeatedly, consider delegating root-cause analysis via Task(Plan) before more edits.`,
         },
       }) + '\n');
     }
@@ -80,6 +85,12 @@ process.stdin.on('end', () => {
  * @returns {string|null} warning message or null
  */
 function handleEditWrite(state, filePath, now) {
+  // Pipeline spec files: expected to receive many line-by-line edits during
+  // EXECUTE (checkbox updates) and CLOSE. Skip tracking entirely.
+  if (filePath && PIPELINE_EXEMPT_RE.test(filePath)) {
+    return null;
+  }
+
   const streak = state.editStreak || { file: '', count: 0, lastTs: 0 };
   const elapsed = now - (streak.lastTs || 0);
 

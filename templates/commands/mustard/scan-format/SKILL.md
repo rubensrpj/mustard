@@ -9,6 +9,28 @@
 
 **ALL generated `.md` files MUST be written in English.** Only exception: `notes.md` files that already exist with user-written content — those are never overwritten.
 
+## Execution Rules
+
+**NEVER ask the user for confirmation** during scan generation. The user already invoked `/scan` — that IS the approval. Proceed autonomously for every action:
+
+- File writes, overwrites, and deletions: execute without prompting
+- Backups to `_backup/`: execute without prompting
+- `CLAUDE.md` updates (root and per-subproject): execute without prompting
+- Stale file/skill cleanup: execute without prompting (safety checks are enough)
+- Skill directory creation under `.claude/skills/`: execute without prompting
+
+If an action fails, surface the error in the return format — do NOT stop to ask what to do. The orchestrator decides recovery at the end.
+
+## Read-Before-Write Rule
+
+Claude Code's `Write`/`Edit` tools reject calls on existing files that have not been `Read` in the current context (`File has not been read yet. Read it first before writing to it.`).
+
+Before every `Write` (full overwrite) or `Edit` (patch) on an existing path:
+1. Call `Read` on that path (any offset is enough to satisfy the contract).
+2. Then issue the `Write`/`Edit`.
+
+This applies to every step below that touches existing files — backups, notes.md updates, generated command files that were not fully removed by backup, and the subproject `CLAUDE.md` updates in §7. When in doubt, `Read` first.
+
 ## 1. Read Existing Knowledge
 
 Before analyzing code, read existing files as a starting point:
@@ -93,7 +115,7 @@ Target: ~40% token reduction. Tables over prose | inline refs `Ref: path/file.ex
 
 ## 7. Update CLAUDE.md Files
 
-After generating command files, update the subproject's `CLAUDE.md`:
+After generating command files, update the subproject's `CLAUDE.md`. **Always `Read` the file first** before any `Edit` — the Write/Edit tools will otherwise fail with `File has not been read yet`. Then:
 - Add or update `## Scan References` section listing generated files with brief description
 - If `## Guards` section exists, update with key guards from analysis
 - If `## Stack` is empty, fill from detected stack

@@ -14,6 +14,16 @@
 - **NO confirmation prompts**: never ask the user for approval. Just do it.
 - **NO `run_in_background: true`** for Task agents that write files.
 
+**CRITICAL — Read-Before-Write Protocol:**
+Claude Code's `Write` and `Edit` tools fail with `File has not been read yet. Read it first before writing to it.` when targeting an existing file without a prior `Read` call in the same context.
+
+Whenever the orchestrator (or a Task agent) modifies an existing file during `/scan`, it MUST:
+1. Call `Read` on the target path first (even if just the first few lines).
+2. Only then issue `Write` (full overwrite) or `Edit` (patch).
+3. If the path genuinely does not exist, `Write` is safe without `Read` — but verify via `Glob` rather than guessing.
+
+This applies especially to: `.claude/CLAUDE.md` regeneration, root `CLAUDE.md` updates, `.claude/docs/*.md` frontmatter injection, and subproject `CLAUDE.md` section edits.
+
 ## Process
 
 ### 1. Discover Subprojects & Incremental Detection
@@ -80,11 +90,11 @@ If `.claude/docs/` exists and contains `.md` files:
 
 1. For each `.md` file, read content and analyze:
    - Extract or infer: name (from H1), description (from first paragraph/blockquote), topics (from H2 headings as keywords)
-2. Generate/update YAML frontmatter with `name`, `description`, `topics`, `scanned-at`
+2. **Read the file first** (required by Claude Code's Write/Edit contract), then generate/update YAML frontmatter with `name`, `description`, `topics`, `scanned-at`
    - If file has existing frontmatter WITH `scanned-at` → overwrite (auto-generated)
    - If file has existing frontmatter WITHOUT `scanned-at` → preserve user frontmatter, skip
    - If file has no frontmatter → prepend generated frontmatter
-3. This step does NOT require a Task agent — orchestrator can do it inline (small, deterministic work)
+3. This step does NOT require a Task agent — orchestrator can do it inline (small, deterministic work). Always `Read` before `Edit`/`Write`.
 
 ### 2.6. Bootstrap (if needed)
 
@@ -93,7 +103,7 @@ Bootstrap only runs on first scan or when foundational files are missing.
 
 Otherwise create foundational files:
 
-**`.claude/CLAUDE.md`** — orchestrator entry point (always regenerate):
+**`.claude/CLAUDE.md`** — orchestrator entry point (always regenerate). If the file already exists, `Read` it first before calling `Write` — otherwise Claude Code's Write tool will reject the call:
 ```markdown
 <!-- mustard:generated -->
 # Orchestrator Rules
@@ -184,6 +194,8 @@ For each subproject to scan, launch one Task agent with `subagent_type: "general
 
 ```
 Read .claude/commands/mustard/scan-format.md for analysis and format rules.
+
+**EXECUTION RULE — NO CONFIRMATION PROMPTS**: NEVER ask the user to confirm file writes, overwrites, deletes, or directory creations. The user already invoked /scan — that IS the approval. Proceed autonomously. If an action fails, surface the error in the return format and move on; do NOT stop to ask what to do.
 
 Subproject: {name}
 Path: {path}
@@ -342,8 +354,9 @@ These skills are derived from **detected patterns** (not hardcoded). They comple
 ### 4. Update CLAUDE.md files
 
 After agents complete:
-- **Regenerate `.claude/CLAUDE.md`** from the template in step 2 (always overwrite — it's `mustard:generated`)
+- **Regenerate `.claude/CLAUDE.md`** from the template in step 2 (always overwrite — it's `mustard:generated`). `Read` it first if it exists, then `Write`.
 - Update root `CLAUDE.md`:
+  - `Read` the current file before any `Edit` call (avoids `File has not been read yet` errors)
   - `## Project Structure` table if subprojects changed
   - Project-specific commands detected
   - `## Ignore Paths` with detected paths
