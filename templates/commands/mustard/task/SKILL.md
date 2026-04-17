@@ -50,9 +50,11 @@
 
 1. **ASSESS** — 3+ files or cross-layer → Plan mode first
 2. **PLAN** — Task(Plan) to analyze and propose strategy
-3. **APPROVE** — Present plan, wait for user approval
+3. **APPROVE** — Print the ENTIRE plan returned by Task(Plan) verbatim inside a fenced markdown block (```` ```markdown ... ``` ````). Do NOT summarize or truncate — the user asked to read the complete plan before approving. Then `AskUserQuestion`: **"Approve and implement?"** / **"Adjust"** / **"Cancel"**.
 4. **IMPLEMENT** — Task(general-purpose) to execute approved plan
 5. **VALIDATE** — Run build/tests
+
+> **Note on other `/task` actions:** only `refactor` has a plan-then-approve gate. `implement`, `analyze`, `audit`, `compare`, `review`, `docs` are single-dispatch by design (no plan to review). If you want a review gate before code changes, prefer `/feature` (Full scope) instead of `/task implement`.
 
 ### implement
 

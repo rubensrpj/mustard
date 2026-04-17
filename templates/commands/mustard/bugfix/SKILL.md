@@ -62,8 +62,10 @@ If the diff file is empty or missing, skip the Git State header entirely. Never 
    - Explore returns clear root cause in 1-2 files → **Fast Path** (skip PLAN)
    - 3+ files, unclear impact, cross-layer → **Full Path** (brief spec via PLAN)
 
-**Fast Path:** Go directly to EXECUTE.
-**Full Path:** Write brief spec in `.claude/spec/active/{date}-{name}/spec.md` → present to user → `/approve` → EXECUTE.
+**Fast Path:** Go directly to EXECUTE. No spec, no approval gate (Zero Context-Switch Protocol). If you want to review the fix plan before EXECUTE, force Full Path by listing >5 files in the ANALYZE return.
+**Full Path:** Write brief spec in `.claude/spec/active/{date}-{name}/spec.md`, then **present the full spec to the user before stopping**:
+   - Read the spec file just written and print its ENTIRE contents verbatim inside a fenced markdown block (```` ```markdown ... ``` ````). Do NOT summarize — the user asked to read the complete plan before approving.
+   - After the fenced block, instruct: _"Run `/approve` (or `/approve --resume` to chain inline) to proceed to EXECUTE."_
 
 - Fast Path CAN use Task(Explore) ONCE with ≤10 tool uses. Prefer Grep/Glob direct when the root cause location is known.
 - If >5 files surface during DIAGNOSE, RECLASSIFY to Full Path and write a spec before proceeding.

@@ -24,16 +24,16 @@
 
 ## What is Mustard?
 
-Mustard sets up a `.claude/` folder that turns Claude Code into a structured development pipeline:
+Mustard sets up a `.claude/` folder that turns Claude Code into a structured development pipeline with explicit phases (ANALYZE → PLAN → EXECUTE → REVIEW → CLOSE), wave-based agent dispatch, enforcement hooks, and token economy.
 
-- **15 pipeline skills** — feature, bugfix, scan, resume, approve, complete, git, maint, task, knowledge, skill, status, scan-format, agent-prompt template, stats
-- **14 enforcement hooks** — bash safety, file guard, registry validation, guard verification, auto-format, pre-compact, session cleanup, subagent tracking, RTK rewrite, session memory, review gate, metrics tracker, MCP budget, session knowledge
+- **16 pipeline commands** — feature, bugfix, approve, complete, resume, scan, scan-format, git, maint, task, knowledge, skill, status, stats, metrics, review, plus the agent-prompt template
+- **23 enforcement hooks** — bash safety, bash native redirect, file guard, registry enforcement, guard verify, auto-format, pre-compact, session cleanup, subagent tracker, RTK rewrite, session memory, review gate, metrics tracker, MCP budget, session knowledge, context budget, spec hygiene, output budget, tool-use counter, model routing gate, debug-loop guard, user-prompt hint, session-knowledge incremental
 - **6 bundled skills** — design-craft, react-best-practices, senior-architect, skill-creator, commit-workflow, pipeline-execution
-- **10 utility scripts** — subproject detection, entity registry sync, statusline, memory persistence, diff context, knowledge base, metrics collection, security scan, pipeline verification
-- **Token economy** — auto-installs [RTK](https://github.com/rtk-ai/rtk) to reduce token consumption by 60-90% on CLI outputs
-- **Hook profiles** — minimal/standard/strict profiles via `_lib/hook-env.js`, env-based hook disabling
+- **15 utility scripts** — subproject detection, entity registry sync, statusline, memory persist/write, diff context, knowledge update, metrics collect/report, security scan, pipeline verification, analyze validation, recipe matcher, skill generator
+- **Token economy** — auto-installs [RTK (Rust Token Killer)](https://github.com/rtk-ai/rtk) to reduce CLI-output tokens by 60–90%
+- **Hook profiles & env overrides** — minimal/standard/strict profiles via `_lib/hook-env.js`; disable individual hooks with `MUSTARD_DISABLED_HOOKS`
 - **Cursor IDE adapter** (experimental) — `mustard init --cursor` installs a Cursor-compatible hook adapter
-- **Monorepo + single repo** — works with any project structure
+- **Monorepo + single repo** — `sync-detect.js` auto-discovers subprojects and roles
 
 ## Quick Start
 
@@ -48,7 +48,7 @@ mustard init
 # Open Claude Code and run /scan
 ```
 
-That's it. After `/scan`, use `/feature`, `/bugfix`, `/task` to work through structured pipelines.
+After `/scan`, use `/feature`, `/bugfix`, or `/task` to work through structured pipelines.
 
 ## Installation
 
@@ -89,10 +89,10 @@ mustard --version
 ## How It Works
 
 1. `mustard init` copies the `.claude/` structure into your project
-2. RTK is auto-installed for token economy (60-90% savings on CLI outputs)
+2. RTK is auto-installed for token economy (60–90% savings on CLI outputs)
 3. Inside Claude Code, run `/scan` to analyze your codebase
 4. `/scan` generates guards, recipes, patterns, agents, and skills specific to your project
-5. Use `/feature`, `/bugfix`, `/task` to work through structured pipelines
+5. Use `/feature`, `/bugfix`, or `/task` to work through structured pipelines
 
 The CLI is a **one-time setup tool**. All intelligence lives in the skills and hooks inside `.claude/`.
 
@@ -129,7 +129,7 @@ The CLI is a **one-time setup tool**. All intelligence lives in the skills and h
 | `-f, --force` | Skip backup and confirmation |
 
 **Recreates** (from latest templates):
-- `commands/mustard/` — pipeline skills
+- `commands/mustard/` — pipeline commands
 - `hooks/` — enforcement hooks
 - `skills/` — bundled skills
 - `scripts/` — sync scripts
@@ -140,7 +140,7 @@ The CLI is a **one-time setup tool**. All intelligence lives in the skills and h
 - `pipeline-config.md` — agent dispatch config (populated by `/scan`)
 - `entity-registry.json` — entity map (populated by sync-registry)
 - `commands/*.md` — user commands outside `mustard/`
-- `docs/`, `agent-memory/`, `spec/`, `plans/`
+- `docs/`, `.agent-memory/`, `spec/`, `plans/`
 
 ### `mustard auto-update`
 
@@ -159,7 +159,6 @@ The CLI is a **one-time setup tool**. All intelligence lives in the skills and h
 - GitHub: `github.com/mustard-templates/{name}`
 - npm: `mustard-template-{name}`
 
-**Usage:**
 ```bash
 mustard add template:dotnet-clean-arch
 mustard add template:nextjs-app-router
@@ -172,84 +171,14 @@ mustard add template:nextjs-app-router
 | `--pr <number>` | PR number to review (required) |
 | `--ci` | CI mode: post as PR comment, exit 1 on critical issues |
 
-**Requirements:** `gh` (GitHub CLI) and `claude` CLI must be installed.
+**Requirements:** `gh` (GitHub CLI) and `claude` CLI.
 
-**Usage:**
 ```bash
 # Interactive review
 mustard review --pr 42
 
 # CI mode (for GitHub Actions)
 mustard review --ci --pr 42
-```
-
-## What Gets Installed
-
-```
-.claude/
-├── CLAUDE.md                          # Orchestrator rules (template)
-├── pipeline-config.md                 # Agent dispatch config (template)
-├── settings.json                      # Hooks + permissions + statusline
-├── entity-registry.json               # Empty skeleton (populated by /scan)
-├── commands/mustard/                  # Pipeline skills
-│   ├── feature/SKILL.md               #   /feature — feature pipeline
-│   ├── bugfix/SKILL.md                #   /bugfix — bug fix pipeline
-│   ├── approve/SKILL.md               #   /approve — approve spec
-│   ├── complete/SKILL.md              #   /complete — finalize pipeline
-│   ├── resume/SKILL.md                #   /resume — resume pipeline
-│   ├── scan/SKILL.md                  #   /scan — analyze codebase
-│   ├── scan-format/SKILL.md           #   /scan agent format rules
-│   ├── git/SKILL.md                   #   /git — commit, push, merge, deploy
-│   ├── maint/SKILL.md                 #   /maint — deps, validate, sync
-│   ├── task/SKILL.md                  #   /task — delegated analysis/review
-│   ├── knowledge/SKILL.md             #   /knowledge — notes, audit, reports
-│   ├── skill/SKILL.md                 #   /skill — manage skills
-│   ├── status/SKILL.md                #   /status — project status
-│   ├── stats/SKILL.md                 #   /stats — pipeline metrics
-│   └── templates/agent-prompt/SKILL.md #  Agent prompt template
-├── hooks/                             # Enforcement hooks
-│   ├── _lib/hook-env.js               #   Shared runtime controls (profiles, env overrides)
-│   ├── rtk-rewrite.js                 #   Rewrites Bash commands through RTK
-│   ├── bash-safety.js                 #   Blocks dangerous commands
-│   ├── file-guard.js                  #   Blocks sensitive file access
-│   ├── enforce-registry.js            #   Blocks pipeline if no registry
-│   ├── guard-verify.js                #   Validates architectural rules
-│   ├── auto-format.js                 #   Auto-formats on write
-│   ├── pre-compact.js                 #   Saves state before compaction
-│   ├── session-cleanup.js             #   Cleans up on session end
-│   ├── subagent-tracker.js            #   Tracks agent lifecycle
-│   ├── session-memory.js              #   Injects persistent memory on session start
-│   ├── review-gate.js                 #   Pre-commit validation (fail-open)
-│   ├── metrics-tracker.js             #   Tracks pipeline API calls and retries
-│   ├── mcp-budget.js                  #   Warns about excessive MCP tool counts
-│   ├── session-knowledge.js           #   Extracts patterns from session before cleanup
-│   └── __tests__/hooks.test.js        #   Hook tests
-├── scripts/
-│   ├── sync-detect.js                 #   Detects subprojects + roles
-│   ├── sync-registry.js               #   Generates entity-registry.json
-│   ├── statusline.js                  #   Claude Code statusline
-│   ├── memory-persist.js              #   Persists decisions/lessons across sessions
-│   ├── memory-write.js                #   Writes agent memory entries
-│   ├── diff-context.js                #   Generates git diff summary for agents
-│   ├── knowledge-update.js            #   Updates project knowledge base
-│   ├── metrics-collect.js             #   Collects and displays pipeline metrics
-│   ├── security-scan.js               #   Scans for secrets and security misconfigs
-│   └── verify-pipeline.js             #   Runs build/test verification for pipeline
-├── memory/                            # Persistent memory (auto-created)
-│   ├── decisions.json                 #   Decisions across pipelines
-│   └── lessons.json                   #   Lessons learned
-├── knowledge.json                     # Evolutionary knowledge base
-├── metrics/                           # Pipeline metrics archive
-├── adapters/cursor/                   # Cursor IDE adapter (experimental)
-│   ├── README.md                      #   Setup and usage guide
-│   └── adapter.js                     #   Translates Cursor ↔ Claude Code hook protocol
-└── skills/                            # Bundled skills
-    ├── design-craft/                  #   UI design methodology
-    ├── react-best-practices/          #   React/Next.js optimization (40+ rules)
-    ├── senior-architect/              #   System architecture patterns
-    ├── skill-creator/                 #   Create and optimize skills
-    ├── commit-workflow/               #   Git commit strategy
-    └── pipeline-execution/            #   Pipeline orchestration
 ```
 
 ## Pipeline Commands (inside Claude Code)
@@ -259,48 +188,140 @@ mustard review --ci --pr 42
 | Command | Description |
 |---------|-------------|
 | `/scan` | Analyze codebase — generates guards, recipes, agents, skills |
-| `/feature <name>` | Start feature pipeline (ANALYZE → PLAN → EXECUTE → CLOSE) |
-| `/bugfix <error>` | Autonomous bug fix (diagnose → fix → validate) |
-| `/approve` | Approve spec for implementation |
-| `/resume` | Resume interrupted pipeline |
-| `/complete` | Finalize or cancel pipeline |
-| `/stats` | Show pipeline metrics and token savings |
+| `/feature <name>` | Start feature pipeline (ANALYZE → PLAN → EXECUTE → REVIEW → CLOSE). Auto-detects Light / Extended-Light / Full scope. Prints full spec before asking for approval |
+| `/bugfix <error>` | Autonomous bug fix (diagnose → fix → validate). Fast Path skips spec; Full Path writes and presents the spec before `/approve` |
+| `/approve [--resume]` | Approve the active spec. With `--resume`, immediately chains into the `/resume` flow in the same session |
+| `/resume` | Resume an interrupted pipeline from the last checkpoint |
+| `/complete` | Finalize or cancel a pipeline |
 
 ### Operations
 
 | Command | Description |
 |---------|-------------|
-| `/git <action>` | commit, push, merge, deploy (handles monorepo; `/git merge main` cascades from any branch) |
-| `/maint <action>` | deps, validate, sync |
-| `/status` | Git + pipeline + build + registry status |
+| `/git <action>` | commit, push, sync, merge, deploy — handles monorepo git flow (`/git merge main` cascades from any branch) |
+| `/maint <action>` | deps, validate, sync — maintenance utilities |
+| `/status` | Consolidated git + pipeline + build + registry status |
+| `/review [number\|url]` | Review a PR locally using the bundled review skill |
 
 ### Analysis & Delegation
 
 | Command | Description |
 |---------|-------------|
-| `/task analyze <scope>` | Code exploration (Explore agent) |
-| `/task audit <domain> <scope>` | Quality audit (copy, design, a11y, i18n, api-contract) |
-| `/task compare <criteria>` | Cross-subproject comparison |
-| `/task review <scope>` | Code review (SOLID, security, perf) |
-| `/task refactor <scope>` | Plan + approve + implement refactoring |
+| `/task analyze <scope>` | Code exploration via Explore agent |
+| `/task audit <domain> <scope>` | Quality audit (copy, design, a11y, i18n, consistency, api-contract) |
+| `/task compare <criteria>` | Cross-subproject comparison (parallel explorers + consolidation) |
+| `/task review <scope>` | Code review (SOLID, security, performance) |
+| `/task refactor <scope>` | Plan + approve + implement refactoring (prints full plan before approval) |
 | `/task docs <scope>` | Documentation generation |
+| `/task implement <scope>` | Single-dispatch standardized implementation (low-cost, no audit gate) |
 
-### Knowledge
+### Metrics & Knowledge
 
 | Command | Description |
 |---------|-------------|
+| `/stats` | Pipeline metrics, token savings, performance |
+| `/metrics` | Enforcement metrics report — hook hit rates, budget distributions, gate activity |
 | `/knowledge notes [target]` | Manage project observations |
 | `/knowledge audit` | Audit memory for duplicates |
-| `/knowledge report daily/weekly` | Progress reports from git data |
+| `/knowledge report daily\|weekly` | Progress reports from git data |
 
 ### Skills
 
 | Command | Description |
 |---------|-------------|
 | `/skill list` | List installed skills |
-| `/skill install <source>` | Install from local path or GitHub |
+| `/skill install <source>` | Install skill from local path or GitHub |
 | `/skill create <name>` | Create new skill via skill-creator |
-| `/skill optimize <name>` | Optimize skill triggering |
+| `/skill optimize <name>` | Optimize skill triggering descriptions |
+
+## What Gets Installed
+
+```
+.claude/
+├── CLAUDE.md                          # Orchestrator rules (template)
+├── pipeline-config.md                 # Agent dispatch config (template)
+├── settings.json                      # Hooks + permissions + statusline
+├── entity-registry.json               # Empty skeleton (populated by /scan)
+├── commands/mustard/                  # Pipeline commands
+│   ├── feature/SKILL.md               #   /feature — feature pipeline
+│   ├── bugfix/SKILL.md                #   /bugfix — bug fix pipeline
+│   ├── approve/SKILL.md               #   /approve [--resume] — approve spec
+│   ├── complete/SKILL.md              #   /complete — finalize pipeline
+│   ├── resume/SKILL.md                #   /resume — resume pipeline
+│   ├── scan/SKILL.md                  #   /scan — analyze codebase
+│   ├── scan-format/SKILL.md           #   /scan agent format rules
+│   ├── git/SKILL.md                   #   /git — commit, push, merge, deploy
+│   ├── maint/SKILL.md                 #   /maint — deps, validate, sync
+│   ├── task/SKILL.md                  #   /task — delegated analysis/review/refactor
+│   ├── knowledge/SKILL.md             #   /knowledge — notes, audit, reports
+│   ├── skill/SKILL.md                 #   /skill — manage skills
+│   ├── status/SKILL.md                #   /status — consolidated status
+│   ├── stats/SKILL.md                 #   /stats — pipeline metrics
+│   ├── metrics/SKILL.md               #   /metrics — enforcement metrics report
+│   ├── review/SKILL.md                #   /review — PR review
+│   └── templates/agent-prompt/        #   Agent prompt template
+├── hooks/                             # Enforcement hooks (23)
+│   ├── _lib/hook-env.js               #   Shared runtime controls (profiles, env overrides)
+│   ├── rtk-rewrite.js                 #   Rewrites Bash commands through RTK
+│   ├── bash-safety.js                 #   Blocks dangerous commands
+│   ├── bash-native-redirect.js        #   Redirects grep/ls/cat/find → native tools
+│   ├── file-guard.js                  #   Blocks sensitive file access
+│   ├── enforce-registry.js            #   Blocks pipeline if no registry
+│   ├── guard-verify.js                #   Validates architectural rules
+│   ├── auto-format.js                 #   Auto-formats on write
+│   ├── pre-compact.js                 #   Saves state before compaction
+│   ├── session-cleanup.js             #   Cleans transient state on session end
+│   ├── subagent-tracker.js            #   Tracks agent lifecycle, logs dispatch failures
+│   ├── session-memory.js              #   Injects persistent memory on session start
+│   ├── review-gate.js                 #   Pre-commit validation (fail-open)
+│   ├── metrics-tracker.js             #   Tracks pipeline API calls, retries, gate saves
+│   ├── mcp-budget.js                  #   Warns on excessive MCP tool counts
+│   ├── session-knowledge.js           #   Extracts patterns from session before cleanup
+│   ├── session-knowledge-inc.js       #   Incremental knowledge capture
+│   ├── context-budget.js              #   Enforces context budget per agent
+│   ├── spec-hygiene.js                #   Guards spec format + checkbox integrity
+│   ├── output-budget.js               #   Caps agent return-size
+│   ├── tool-use-counter.js            #   Caps Explore agents at 20 tool uses
+│   ├── model-routing-gate.js          #   Blocks model upgrades vs routing table
+│   ├── debug-loop-guard.js            #   Detects iteration anti-patterns
+│   └── user-prompt-hint.js            #   Surfaces contextual hints on prompt input
+├── scripts/                           # Utility scripts (15)
+│   ├── sync-detect.js                 #   Detects subprojects + roles (SHA-256 incremental)
+│   ├── sync-registry.js               #   Generates entity-registry.json
+│   ├── statusline.js                  #   Claude Code statusline
+│   ├── memory-persist.js              #   Persists decisions/lessons across sessions
+│   ├── memory-write.js                #   Writes agent memory entries between waves
+│   ├── diff-context.js                #   Generates git diff summary for agents
+│   ├── knowledge-update.js            #   Updates project knowledge base
+│   ├── metrics-collect.js             #   Collects pipeline metrics
+│   ├── metrics-report.js              #   Renders enforcement metrics report
+│   ├── security-scan.js               #   Scans for secrets / security misconfigs
+│   ├── verify-pipeline.js             #   Runs build/test verification
+│   ├── analyze-validation.js          #   Validates ANALYZE phase output
+│   ├── recipe-match.js                #   Structured recipe matcher (entity + operation)
+│   ├── skill-generator.js             #   Generates subproject pattern skills
+│   └── _metrics-write.js              #   Internal metrics writer (used by hooks)
+├── memory/                            # Persistent memory (auto-created)
+│   ├── decisions.json                 #   Decisions across pipelines
+│   └── lessons.json                   #   Lessons learned
+├── .agent-memory/                     # Wave-to-wave agent handoff memory
+├── .pipeline-states/                  # Active pipeline state + diff snapshots
+├── spec/
+│   ├── active/                        #   In-progress specs
+│   └── completed/                     #   Archived specs
+├── knowledge.json                     # Evolutionary knowledge base
+├── metrics/                           # Pipeline metrics archive
+├── adapters/cursor/                   # Cursor IDE adapter (experimental)
+│   ├── README.md                      #   Setup and usage guide
+│   └── adapter.js                     #   Cursor ↔ Claude Code hook protocol adapter
+└── skills/                            # Bundled skills (6)
+    ├── design-craft/                  #   UI design methodology
+    ├── react-best-practices/          #   React/Next.js optimization (40+ rules)
+    ├── senior-architect/              #   System architecture patterns
+    ├── skill-creator/                 #   Create and optimize skills
+    ├── commit-workflow/               #   Git commit strategy
+    └── pipeline-execution/            #   Pipeline phases, waves, retries
+```
 
 ## How `/scan` Works
 
@@ -317,7 +338,7 @@ mustard review --ci --pr 42
    - `.claude/agents/{subproject}-explorer.md` — read-only explorer
 5. **Updates root files** — `CLAUDE.md`, `pipeline-config.md`, `entity-registry.json`
 
-After `/scan`, the pipeline commands (`/feature`, `/bugfix`) have full context to dispatch specialized agents.
+After `/scan`, pipeline commands have full context to dispatch specialized agents.
 
 ## Pipeline Flow
 
@@ -325,40 +346,109 @@ After `/scan`, the pipeline commands (`/feature`, `/bugfix`) have full context t
 /feature <name>
      │
      ▼
-  ANALYZE — read registry + pipeline-config, determine layers
+  ANALYZE — read registry + pipeline-config, determine layers, classify scope
      │
      ▼
-  PLAN — create spec with tasks per agent (Light: inline, Full: /approve)
+  PLAN — create spec with tasks per agent, print spec inline for user review
+     │
+     ▼ (user approves — inline on Light, /approve on Full, /approve --resume to chain)
+     │
+  EXECUTE — dispatch agents per wave (DB+Backend ∥, Frontend after or parallel-safe)
      │
      ▼
-  EXECUTE — dispatch agents per wave (DB+Backend ∥, Frontend after or parallel if safe)
+  REVIEW — mandatory per-subproject review (SOLID, patterns, i18n, design, …)
      │
      ▼
-  REVIEW — mandatory review per subproject (SOLID, patterns, i18n, ...)
-     │
-     ▼
-  CLOSE — sync registry, move spec, cleanup state
+  CLOSE — sync registry, move spec to completed/, cleanup state
 ```
 
-**Light scope** (≤5 files, known pattern): ANALYZE → EXECUTE → CLOSE in one session.
-**Full scope** (3+ layers, new entity): ANALYZE → PLAN → `/approve` → new session → `/resume` → CLOSE.
+### Scope detection
+
+| Scope | Signals | Flow |
+|-------|---------|------|
+| **Light** | 1–2 layers, ≤5 files, known pattern, no new entity | ANALYZE → EXECUTE → CLOSE (one session) |
+| **Extended Light** | Entity in registry + modification + ≤8 files, no new table/enum | Same as Light |
+| **Full** | 3+ layers, 5+ files, new entity/CRUD, or new pattern | ANALYZE → PLAN → `/approve` → EXECUTE → CLOSE |
+
+### Approval & resume shortcut
+
+- `/approve` — prepares state and STOPS. User opens a new session and runs `/resume` (clean context).
+- `/approve --resume` — prepares state and immediately continues to EXECUTE in the same session (skips the session hop; trades context freshness for convenience).
+
+## Enforcement Hooks
+
+Hooks are fail-open (any hook error exits 0 — pipeline is never blocked by a hook bug). They follow the PreToolUse / PostToolUse / Subagent / Session lifecycle.
+
+### Cost-optimization hooks
+
+| Hook | Matcher | Mode | Effect |
+|------|---------|------|--------|
+| `bash-native-redirect.js` | Bash | strict/warn/off | Blocks grep/ls/cat/head/tail/find — suggests Grep/Glob/Read |
+| `model-routing-gate.js` | Task | strict/warn/off | Blocks model upgrades vs routing table |
+| `tool-use-counter.js` | `.*` + Subagent | hard | Caps Explore agents at 20 tool uses (warn at 12) |
+| `context-budget.js` | Task | warn | Enforces context budget per agent dispatch |
+| `output-budget.js` | Subagent | warn | Caps agent return size |
+| `mcp-budget.js` | startup | warn | Flags excessive MCP tool counts |
+| `rtk-rewrite.js` | Bash | transparent | Routes CLI output through RTK for 60–90% token reduction |
+
+### Safety & validation hooks
+
+| Hook | Purpose |
+|------|---------|
+| `bash-safety.js` | Blocks dangerous commands (`rm -rf /`, force-push to main, etc.) |
+| `file-guard.js` | Blocks access to `.env`, secrets, credentials |
+| `enforce-registry.js` | Blocks pipeline commands if `entity-registry.json` is missing |
+| `guard-verify.js` | Validates architectural rules during EXECUTE |
+| `review-gate.js` | Pre-commit validation (fail-open) |
+| `spec-hygiene.js` | Guards spec format + checkbox integrity |
+| `debug-loop-guard.js` | Detects retry/iteration anti-patterns |
+
+### Memory & telemetry hooks
+
+| Hook | Purpose |
+|------|---------|
+| `session-memory.js` | Injects persistent memory on session start |
+| `session-cleanup.js` | Cleans transient state on session end |
+| `session-knowledge.js` | Extracts patterns from session before cleanup |
+| `session-knowledge-inc.js` | Incremental knowledge capture |
+| `pre-compact.js` | Saves state before Claude's auto-compaction |
+| `subagent-tracker.js` | Tracks agent lifecycle, logs dispatch failures |
+| `metrics-tracker.js` | Pipeline telemetry (API calls, retries, gate saves) |
+| `auto-format.js` | Auto-formats on Write/Edit |
+| `user-prompt-hint.js` | Surfaces contextual hints on prompt input |
+
+### Environment overrides
+
+```bash
+# Change mode (default: strict for cost-optimization hooks)
+MUSTARD_BASH_REDIRECT_MODE=warn
+MUSTARD_MODEL_GATE_MODE=off
+
+# Disable individual hooks
+MUSTARD_DISABLED_HOOKS=bash-native-redirect,model-routing-gate
+
+# Switch profile
+MUSTARD_PROFILE=minimal   # minimal | standard (default) | strict
+```
+
+See `.claude/hooks/_lib/hook-env.js` for the full list.
 
 ## Token Economy
 
-Mustard integrates [RTK (Rust Token Killer)](https://github.com/rtk-ai/rtk) as core infrastructure to reduce token consumption:
+Mustard integrates [RTK (Rust Token Killer)](https://github.com/rtk-ai/rtk) as core infrastructure:
 
 - **Auto-install** — `mustard init` and `mustard update` install RTK silently if not present
-- **Transparent hook** — a `PreToolUse` hook rewrites every Bash command through `rtk`, compressing output before it reaches Claude's context
+- **Transparent hook** — `rtk-rewrite.js` (PreToolUse:Bash) wraps every Bash command through `rtk`, compressing output before it enters Claude's context
 - **Fail-open** — if RTK is not available, the hook passes through with zero impact
 - **Statusline** — real-time token savings displayed in the Claude Code status bar
-- **Pipeline report** — `/complete` shows total tokens saved at the end of each pipeline
+- **Pipeline report** — `/complete` and `/stats` show total tokens saved
 
-| Command Type | Token Savings |
-|-------------|--------------|
-| `git status/diff/log` | 75-80% |
-| `npm test` / `cargo test` | 90-99% |
+| Command type | Typical savings |
+|--------------|-----------------|
+| `git status/diff/log` | 75–80% |
+| `npm test` / `cargo test` | 90–99% |
 | `git add/commit/push` | 92% |
-| Build output | 80-90% |
+| Build output (`next build`, `tsc`, `cargo build`) | 80–90% |
 | `ls` / `tree` / `grep` | 80% |
 
 RTK only applies to Bash tool calls. Claude Code's built-in tools (Read, Grep, Glob) are already optimized and bypass the hook.
@@ -367,24 +457,25 @@ RTK only applies to Bash tool calls. Claude Code's built-in tools (Read, Grep, G
 
 Mustard maintains lightweight persistent memory across sessions:
 
-- **Decisions** — architectural and implementation decisions are saved to `.claude/memory/decisions.json`
-- **Lessons** — what went wrong and the correction applied, saved to `.claude/memory/lessons.json`
-- **Knowledge base** — patterns, conventions, and entities discovered across pipelines, saved to `.claude/knowledge.json`
+- **Decisions** (`.claude/memory/decisions.json`) — architectural and implementation decisions
+- **Lessons** (`.claude/memory/lessons.json`) — what went wrong and the correction applied
+- **Knowledge base** (`.claude/knowledge.json`) — patterns, conventions, entities discovered across pipelines
+- **Agent memory** (`.claude/.agent-memory/`) — wave-to-wave handoff summaries within a pipeline
+- **Pipeline state** (`.claude/.pipeline-states/`) — active pipeline state + per-phase diff snapshots
 
 Memory is automatically:
-- **Injected** into each new session and every dispatched agent
-- **Capped** at 50 entries (memory) / 200 entries (knowledge) — oldest pruned
+- **Injected** into each new session and into every dispatched agent
+- **Capped** (50 entries memory / 200 entries knowledge — oldest pruned)
 - **Never cleaned** by session cleanup — persists until manually removed
-
-This gives 80% of the benefit of a database-backed system with zero infrastructure.
 
 ## CI Integration
 
 Review PRs automatically in your CI pipeline:
 
-```bash
-# In GitHub Actions
-mustard review --ci --pr ${{ github.event.pull_request.number }}
+```yaml
+# GitHub Actions
+- name: Mustard PR Review
+  run: mustard review --ci --pr ${{ github.event.pull_request.number }}
 ```
 
 CI mode:
@@ -400,10 +491,10 @@ Requires `gh` and `claude` CLI in the CI environment.
 Mustard is **framework-agnostic**. The CLI just copies templates. `/scan` handles detection:
 
 | Type | Examples |
-|------|---------|
-| **Backend** | .NET, Node.js (Express/Fastify), Python (FastAPI/Django), Go, Rust, Java |
+|------|----------|
+| **Backend** | .NET, Node.js (Express/Fastify/NestJS), Python (FastAPI/Django), Go, Rust, Java (Spring Boot) |
 | **Frontend** | React, Next.js, Vue, Nuxt, Svelte, Angular |
-| **Mobile** | Flutter/Dart |
+| **Mobile** | Flutter/Dart, React Native |
 | **Database** | Drizzle, Prisma, EF Core, TypeORM |
 | **Monorepo** | Any combination of the above |
 | **Single repo** | Any single project |
@@ -441,6 +532,9 @@ git clone https://github.com/rubensrpj/mustard.git
 cd mustard
 npm install
 npm run build
+
+# Run hook tests
+node --test templates/hooks/__tests__/hooks.test.js
 
 # Test locally
 node bin/mustard.js init

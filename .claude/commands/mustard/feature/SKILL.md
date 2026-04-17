@@ -133,7 +133,10 @@ Continue to PLAN regardless.
 2. Add checkpoint fields: `Status: draft`, `Phase: PLAN`, `Scope: full`, `Checkpoint: {now}`
 3. Create `.claude/.pipeline-states/{spec-name}.json`: `specName`, `status: "active"`, `phase: 2`, `phaseName: "PLAN"`, `scope: "full"`
 4. Elegance Check: 3+ files or complex logic → "Is there a more elegant approach?"
-5. Present to user with change summary (WHAT + WHY) → "Approve and implement?" or "Save for later?"
+5. **Present full spec to user before asking for approval:**
+   - Read `.claude/spec/active/{date}-{name}/spec.md` (the spec just written) and print its ENTIRE contents verbatim inside a fenced markdown block (```` ```markdown ... ``` ````). Do NOT summarize, truncate, or paraphrase — the user asked to read the complete plan before approving.
+   - After the fenced block, add a 1-line change summary (WHAT + WHY) to orient the reader.
+   - Then `AskUserQuestion`: **"Approve and implement?"** / **"Adjust (give feedback)"** / **"Save for later (stop)"**.
 
 #### Light Scope
 
@@ -155,10 +158,12 @@ Continue to PLAN regardless.
    - `path/to/file.ext` (create|modify)
    ```
 2. Create `.claude/.pipeline-states/{spec-name}.json`: `specName`, `status: "active"`, `phase: 2`, `scope: "light"`
-3. Present to user → `AskUserQuestion`:
-   - **"Approve and implement now"** → Phase 3 inline (same session)
-   - **"Approve for later"** → stop, user runs `/approve` + `/resume`
-   - **"Adjust"** → user gives feedback
+3. **Present full spec to user before asking for approval:**
+   - Read the spec file just written and print its ENTIRE contents verbatim inside a fenced markdown block. Do NOT summarize — Light scope specs are already compact, so the full print is cheap and the user asked to read the complete plan before approving.
+   - Then `AskUserQuestion`:
+     - **"Approve and implement now"** → Phase 3 inline (same session)
+     - **"Approve for later"** → stop, user runs `/approve` + `/resume` (or `/approve --resume` to chain inline)
+     - **"Adjust"** → user gives feedback
 
 #### Spec Boundaries
 
@@ -284,7 +289,7 @@ Scope tag: `[LIGHT]` or `[FULL]` after progress line.
 
 ## Rules
 - This command is self-contained — reads `.claude/pipeline-config.md` directly
-- NEVER implement code in Full scope — only PLAN. EXECUTE via `/approve` + `/resume`
+- NEVER implement code in Full scope — only PLAN. EXECUTE via `/approve` + `/resume` (or `/approve --resume` to skip the session hop)
 - NEVER launch Explore agent when entity already exists in registry — read 2-3 files directly
 - NEVER read additional files after Explore agent returns — its output is final
 - NEVER exceed 5 file reads in ANALYZE phase (registry + pipeline-config are free)

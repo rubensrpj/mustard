@@ -2,11 +2,14 @@
 
 ## Trigger
 
-`/approve`
+`/approve [--resume]`
 
 ## Description
 
-Approves the active spec and prepares the implementation phase. Does NOT execute implementation — only prepares state and instructs user to run `/resume` in a new session.
+Approves the active spec and prepares the implementation phase.
+
+- **Default** (`/approve`): prepares pipeline state and STOPS, instructing the user to run `/resume` in a new session with clean context. Recommended for Full-scope specs with 5+ files.
+- **With `--resume` flag** (`/approve --resume`): after preparation, immediately hands off to the `/resume` flow in the same session (skips `/resume` Step 0 and Step 1 — no dispatch-failure check, no handoff summary, no re-confirmation). Use when the spec was just approved and you want to skip the session-restart hop. Tradeoff: the EXECUTE phase inherits the ANALYZE+PLAN context instead of starting clean — fine for small/medium specs, less efficient for large ones.
 
 ## Prerequisites
 
@@ -45,16 +48,25 @@ Approves the active spec and prepares the implementation phase. Does NOT execute
    - activeForm: `"Running {Layer} agent"`
 8. **Output — visual feedback:**
    - Output progress line: `[v] ANALYZE  [v] PLAN  [>] EXECUTE  [ ] CLOSE`
-9. **STOP and instruct user to start a new session:**
+9. **Branch on `--resume` flag:**
+
+   **Without `--resume` (default) — STOP and instruct user to start a new session:**
    - Do NOT execute implementation in this session (context already consumed by /feature + /approve)
    - Final output:
 
-   ```
-   Spec approved and pipeline prepared.
-   Open a new session and run /resume to start implementation with clean context.
-   ```
+     ```
+     Spec approved and pipeline prepared.
+     Open a new session and run /resume to start implementation with clean context.
+     ```
 
    - **CRITICAL**: Do NOT dispatch Task agent, do NOT implement code — just STOP
+
+   **With `--resume` — hand off to `/resume` flow in the same session:**
+   - Inform user: `Spec approved. Resuming inline (--resume). Dispatching EXECUTE directly.`
+   - Jump to `/resume` **Step 2: Bootstrap** (`.claude/commands/mustard/resume/SKILL.md`)
+   - **SKIP** `/resume` Step 0 (Dispatch Failure Pre-Check — not applicable, state was just created above) and Step 1 (Detect & Confirm — the spec is already known, user just approved it)
+   - From Step 2 onwards, follow the full `/resume` flow: AUTO-SYNC → Diff Context → Wave System → VALIDATE → REVIEW → CLOSE
+   - Apply all INVIOLABLE RULES from `/resume` (main context IS the Pipeline Runner, wave dispatch in single message, etc.)
 
 ## Alternative Flow
 

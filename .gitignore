@@ -37,3 +37,9 @@ coverage/
 
 # Enforcement metrics (append-only, local telemetry)
 .claude/.metrics/
+
+# Agent runtime state (session-scoped)
+.claude/.agent-state/
+
+# Timestamped backups created by mustard init/update
+.claude.backup.*/

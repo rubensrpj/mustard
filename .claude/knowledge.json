@@ -13,10 +13,10 @@
         "lesson"
       ],
       "confidence": 1,
-      "occurrences": 18,
+      "occurrences": 20,
       "createdAt": "2026-04-09T09:00:09.572Z",
-      "updatedAt": "2026-04-16T07:35:15.013Z",
-      "lastSeen": "2026-04-16T07:35:15.013Z"
+      "updatedAt": "2026-04-16T17:48:40.987Z",
+      "lastSeen": "2026-04-16T17:48:40.987Z"
     },
     {
       "id": "convention-1775740608559",
@@ -30,10 +30,10 @@
         "lesson"
       ],
       "confidence": 1,
-      "occurrences": 17,
+      "occurrences": 19,
       "createdAt": "2026-04-09T13:16:48.558Z",
-      "updatedAt": "2026-04-16T07:35:14.958Z",
-      "lastSeen": "2026-04-16T07:35:14.958Z"
+      "updatedAt": "2026-04-16T17:48:40.945Z",
+      "lastSeen": "2026-04-16T17:48:40.945Z"
     },
     {
       "id": "convention-1775724563724",
@@ -47,10 +47,10 @@
         "lesson"
       ],
       "confidence": 1,
-      "occurrences": 18,
+      "occurrences": 20,
       "createdAt": "2026-04-09T08:49:23.724Z",
-      "updatedAt": "2026-04-16T07:35:14.924Z",
-      "lastSeen": "2026-04-16T07:35:14.924Z"
+      "updatedAt": "2026-04-16T17:48:40.900Z",
+      "lastSeen": "2026-04-16T17:48:40.900Z"
     },
     {
       "id": "pattern-1775737719162",
@@ -63,10 +63,10 @@
         "pipeline"
       ],
       "confidence": 1,
-      "occurrences": 18,
+      "occurrences": 20,
       "createdAt": "2026-04-09T12:28:39.162Z",
-      "updatedAt": "2026-04-16T07:35:14.878Z",
-      "lastSeen": "2026-04-16T07:35:14.878Z"
+      "updatedAt": "2026-04-16T17:48:40.858Z",
+      "lastSeen": "2026-04-16T17:48:40.858Z"
     },
     {
       "id": "convention-1775737658433",
@@ -80,10 +80,10 @@
         "lesson"
       ],
       "confidence": 1,
-      "occurrences": 18,
+      "occurrences": 20,
       "createdAt": "2026-04-09T12:27:38.433Z",
-      "updatedAt": "2026-04-16T07:35:14.831Z",
-      "lastSeen": "2026-04-16T07:35:14.831Z"
+      "updatedAt": "2026-04-16T17:48:40.813Z",
+      "lastSeen": "2026-04-16T17:48:40.813Z"
     },
     {
       "id": "convention-1775842911884",
