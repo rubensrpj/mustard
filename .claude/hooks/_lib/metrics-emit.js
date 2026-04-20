@@ -40,8 +40,17 @@ function emitMetric(event, opts = {}) {
       note: typeof opts.note === 'string' ? opts.note : '',
       ...(opts.extras && typeof opts.extras === 'object' ? opts.extras : {}),
     };
+    // Defense in depth: stringify inside a nested try so a malformed extras
+    // object (e.g. circular ref) can't escape the outer try either.
+    let serialized;
+    try {
+      serialized = JSON.stringify(line);
+    } catch (_) {
+      return; // bail silently — better to drop a metric than crash a hook
+    }
+    if (typeof serialized !== 'string' || !serialized) return;
     fs.mkdirSync(dir, { recursive: true });
-    fs.appendFileSync(file, JSON.stringify(line) + '\n');
+    fs.appendFileSync(file, serialized + '\n');
   } catch (_) {
     // fail-silent — never throw out of a hook
   }

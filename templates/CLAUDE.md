@@ -46,6 +46,10 @@ node scripts/sync-detect.js --no-cache
 # Entity registry generation
 node scripts/sync-registry.js
 node scripts/sync-registry.js --force
+
+# Skill validation (runs automatically at end of skill-generator.js; also callable standalone)
+node scripts/skill-validate.js
+node scripts/skill-validate.js --json
 ```
 
 ## Guards

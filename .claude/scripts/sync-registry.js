@@ -25,6 +25,7 @@ const { execSync } = require('child_process');
 
 const { loadScanner, listAvailableScanners } = require('./registry/scanner-loader');
 const { buildRegistry } = require('./registry/schema-builder');
+const { discoverClusters, computeFolderFrequency } = require('./registry/cluster-discovery');
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -136,6 +137,23 @@ function main() {
 
       // Determine the stack key for this result
       const stackId = sub.stack || scanner.constructor.stackId || 'unknown';
+
+      // Run generic cluster discovery (agnostic — discovers by structure, not by tech name)
+      const discovered = discoverClusters(subPath, stackId);
+      if (discovered.length > 0) {
+        if (!result.patterns) result.patterns = {};
+        result.patterns._discovered = discovered;
+        console.log(`    ${discovered.length} structural cluster(s) discovered`);
+      }
+
+      // Compute folder-segment frequency across the entire subproject.
+      // Downstream (skill-generator) uses this as an agnostic stopword source:
+      // segments appearing in >60% of folders are treated as structural noise.
+      const folderFrequency = computeFolderFrequency(subPath, stackId);
+      if (folderFrequency.totalFolders > 0) {
+        if (!result.patterns) result.patterns = {};
+        result.patterns._folderFrequency = folderFrequency;
+      }
 
       // Merge if same stack appears in multiple subprojects
       if (scanResults.has(stackId)) {

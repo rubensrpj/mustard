@@ -5,9 +5,11 @@
  * skill-generator.js
  *
  * Reads entity-registry.json v4.0 and generates skills in
- * {subproject}/.claude/skills/ based on detected _patterns.
+ * ROOT .claude/skills/ based on detected _patterns.
  *
- * Closes the OODA loop: scan → registry → skills → agent implements correctly.
+ * Agnostic — no hardcoded code synthesis per stack.
+ * Convention sections read fields dynamically from the registry pattern JSON.
+ * Real-code examples are extracted from actual source files listed in the registry.
  *
  * Usage:
  *   node .claude/scripts/skill-generator.js                     # Generate from registry
@@ -20,7 +22,7 @@ const fs = require('fs');
 const path = require('path');
 
 // ---------------------------------------------------------------------------
-// Skill meta: stack/role mappers loaded from JSON (no hardcoded maps)
+// Skill meta: role mappers loaded from JSON (no hardcoded stack list)
 // ---------------------------------------------------------------------------
 
 const SKILL_META = JSON.parse(fs.readFileSync(path.join(__dirname, '_skill-meta.json'), 'utf-8'));
@@ -33,6 +35,24 @@ const ROOT = path.resolve(__dirname, '..', '..');
 const REGISTRY_PATH = path.join(ROOT, '.claude', 'entity-registry.json');
 const DETECT_CACHE_PATH = path.join(ROOT, '.claude', '.detect-cache.json');
 const TPL_DIR = path.join(__dirname, '..', 'skill-templates');
+
+// ---------------------------------------------------------------------------
+// File-extension → fenced-code-block language tag
+// Loaded from _fence-languages.json — add new extensions there, not here.
+// Unknown extension → empty string (no language tag, still valid markdown).
+// ---------------------------------------------------------------------------
+
+const EXT_LANG = JSON.parse(fs.readFileSync(path.join(__dirname, '_fence-languages.json'), 'utf-8'));
+
+/**
+ * Map a file extension to a fenced-code-block language tag.
+ * Unknown extension returns empty string (no language hint).
+ * @param {string} filePath
+ * @returns {string}
+ */
+function extToLang(filePath) {
+  return EXT_LANG[path.extname(filePath).toLowerCase()] || '';
+}
 
 // ---------------------------------------------------------------------------
 // CLI flags
@@ -65,15 +85,13 @@ function readJsonSafe(filePath) {
 }
 
 /**
- * Read a file's first line to check for mustard:generated header.
+ * Read a file's content to check for mustard:generated header.
  * @param {string} filePath
  * @returns {boolean}
  */
 function isMustardGenerated(filePath) {
   try {
     const content = fs.readFileSync(filePath, 'utf-8');
-    // Skills have frontmatter first, then the mustard:generated comment
-    // For other files the header is on line 1
     return content.includes('<!-- mustard:generated');
   } catch {
     return false;
@@ -82,6 +100,7 @@ function isMustardGenerated(filePath) {
 
 // ---------------------------------------------------------------------------
 // Template engine (zero deps, {{var}} + {{#if key}}...{{/if}})
+// Retained for the cluster-pattern template which is pure prose.
 // ---------------------------------------------------------------------------
 
 /**
@@ -91,12 +110,10 @@ function isMustardGenerated(filePath) {
  * @returns {string}
  */
 function render(tmpl, vars) {
-  // Block: {{#if key}}...{{/if}} (non-greedy, non-nested)
   let out = tmpl.replace(/\{\{#if\s+(\w+)\}\}([\s\S]*?)\{\{\/if\}\}/g, (_, key, body) => {
     const val = vars[key];
     return (val && (!Array.isArray(val) || val.length)) ? body : '';
   });
-  // Variable: {{key}} or {{a.b.c}}
   out = out.replace(/\{\{([\w.]+)\}\}/g, (_, dotPath) => {
     const val = dotPath.split('.').reduce((o, k) => (o == null ? null : o[k]), vars);
     return val == null ? '' : String(val);
@@ -129,7 +146,8 @@ function loadTpl(name) {
  */
 function validateSkill(content) {
   const errors = [];
-  const fm = content.match(/^---\n([\s\S]*?)\n---/);
+  const normalized = content.replace(/\r\n/g, '\n');
+  const fm = normalized.match(/^---\n([\s\S]*?)\n---/);
   if (!fm) { errors.push('missing YAML frontmatter'); return { ok: false, errors }; }
 
   const body = fm[1];
@@ -161,6 +179,49 @@ function validateSkill(content) {
 
 // Dedup tracker: names already written in this run
 const _writtenNames = new Set();
+// Track skill folders already purged in this FORCE run so we only rm -rf once
+// per skill dir even when multiple files (SKILL.md + references/examples.md)
+// belong to the same folder.
+const _purgedFolders = new Set();
+// Agent prefixes this run owns (e.g. "frontend", "backend", "api", "app",
+// "general"). Used as territorial guard for cleanup — never touch folders
+// whose prefix is not in this set.
+const _processedAgentPrefixes = new Set();
+
+/**
+ * If the target file lives inside a `.../skills/<folder>/...` path AND we are
+ * in FORCE mode, rm -rf that entire `<folder>` on first touch of this run.
+ *
+ * Safety: only purge folders whose SKILL.md already carries the
+ * `mustard:generated` marker. User-authored folders (no marker) are preserved.
+ *
+ * @param {string} filePath - absolute file path about to be written
+ * @param {string[]} log
+ */
+function purgeStaleSkillFolderOnForce(filePath, log) {
+  if (!FORCE || DRY_RUN) return;
+  const norm = filePath.replace(/\\/g, '/');
+  const m = norm.match(/^(.*\/\.claude\/skills\/[^/]+)\//);
+  if (!m) return;
+  const skillFolder = m[1].replace(/\//g, path.sep);
+  if (_purgedFolders.has(skillFolder)) return;
+  _purgedFolders.add(skillFolder);
+
+  if (!fs.existsSync(skillFolder)) return;
+
+  const existingSkillMd = path.join(skillFolder, 'SKILL.md');
+  if (fs.existsSync(existingSkillMd) && !isMustardGenerated(existingSkillMd)) {
+    log.push(`  [force-keep] manually edited skill folder preserved: ${path.relative(ROOT, skillFolder).replace(/\\/g, '/')}`);
+    return;
+  }
+
+  try {
+    fs.rmSync(skillFolder, { recursive: true, force: true });
+    log.push(`  [force-purge] ${path.relative(ROOT, skillFolder).replace(/\\/g, '/')}`);
+  } catch (err) {
+    log.push(`  [force-purge-fail] ${path.relative(ROOT, skillFolder).replace(/\\/g, '/')}: ${err.message}`);
+  }
+}
 
 /**
  * Write a file, creating parent directories as needed.
@@ -174,14 +235,12 @@ const _writtenNames = new Set();
 function writeFile(filePath, content, log) {
   const relPath = path.relative(ROOT, filePath).replace(/\\/g, '/');
 
-  // Validate SKILL.md files (unless --force bypasses)
   if (filePath.endsWith('SKILL.md') && !FORCE) {
     const validation = validateSkill(content);
     if (!validation.ok) {
       log.push(`  [invalid] ${relPath}: ${validation.errors.join(', ')}`);
       return;
     }
-    // Dedup by frontmatter name
     const nameMatch = content.match(/^name:\s*(.+)$/m);
     if (nameMatch) {
       const skillName = nameMatch[1].trim();
@@ -198,11 +257,12 @@ function writeFile(filePath, content, log) {
     return;
   }
 
-  // Safety: never overwrite a manually edited file (one without the generated header)
   if (!FORCE && fs.existsSync(filePath) && !isMustardGenerated(filePath)) {
     log.push(`  [skip] manually edited: ${relPath}`);
     return;
   }
+
+  purgeStaleSkillFolderOnForce(filePath, log);
 
   try {
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
@@ -252,22 +312,75 @@ function roleToAgent(role) {
   return SKILL_META.roles[role] || 'general';
 }
 
-/**
- * Map a stack ID to a human-readable language label used in code fences.
- * @param {string} stackId
- * @returns {string}
- */
-function stackLang(stackId) {
-  return SKILL_META.stacks[stackId]?.lang || stackId;
-}
+// ---------------------------------------------------------------------------
+// Manifest file → human-readable stack label
+// Ordered: more-specific manifests first. Any new ecosystem: just add a row.
+// ---------------------------------------------------------------------------
+
+const MANIFEST_LABEL_MAP = [
+  // .NET
+  { match: f => f.endsWith('.csproj') || f.endsWith('.sln'), label: (f) => 'C# / .NET' },
+  // Rust
+  { match: f => f === 'Cargo.toml', label: () => 'Rust/Cargo' },
+  // Elixir
+  { match: f => f === 'mix.exs', label: () => 'Elixir/Mix' },
+  // Dart / Flutter
+  { match: f => f === 'pubspec.yaml', label: () => 'Dart/Flutter' },
+  // Go
+  { match: f => f === 'go.mod', label: () => 'Go' },
+  // Python (pyproject preferred over requirements.txt)
+  { match: f => f === 'pyproject.toml', label: () => 'Python' },
+  { match: f => f === 'setup.py' || f === 'requirements.txt', label: () => 'Python' },
+  // Ruby
+  { match: f => f === 'Gemfile' || f.endsWith('.gemspec'), label: () => 'Ruby' },
+  // Haskell
+  { match: f => f.endsWith('.cabal'), label: () => 'Haskell/Cabal' },
+  // Erlang
+  { match: f => f === 'rebar.config', label: () => 'Erlang/Rebar' },
+  // Crystal
+  { match: f => f === 'shard.yml', label: () => 'Crystal/Shards' },
+  // Java / JVM
+  { match: f => f === 'pom.xml', label: () => 'Java/Maven' },
+  { match: f => f === 'build.gradle' || f === 'build.gradle.kts', label: (f) => f.endsWith('.kts') ? 'Kotlin/Gradle' : 'Java/Gradle' },
+  // PHP
+  { match: f => f === 'composer.json', label: () => 'PHP/Composer' },
+  // Deno / Bun
+  { match: f => f === 'deno.json' || f === 'deno.jsonc', label: () => 'Deno' },
+  { match: f => f === 'bun.lockb', label: () => 'Bun' },
+  // Swift
+  { match: f => f === 'Package.swift', label: () => 'Swift/SPM' },
+  // Nim
+  { match: f => f.endsWith('.nimble'), label: () => 'Nim' },
+  // Zig
+  { match: f => f === 'build.zig' || f === 'build.zig.zon', label: () => 'Zig' },
+  // Gleam
+  { match: f => f === 'gleam.toml', label: () => 'Gleam' },
+  // Node.js/TypeScript (last — tsconfig is JS-ecosystem, less specific than others above)
+  { match: f => f === 'tsconfig.json', label: () => 'TypeScript/Node.js' },
+  { match: f => f === 'package.json', label: () => 'Node.js' },
+];
 
 /**
- * Map a stack ID to a human-readable framework name.
- * @param {string} stackId
+ * Derive a human-readable stack label from any directory by scanning its
+ * manifest files. Falls back to dominant source extension, then the stackId.
+ *
+ * @param {string} stackId - e.g. "zig", "cs", "elm"
+ * @param {string} [absPath] - absolute path to subproject (optional)
  * @returns {string}
  */
-function stackLabel(stackId) {
-  return SKILL_META.stacks[stackId]?.label || cap(stackId);
+function stackLabel(stackId, absPath) {
+  // If we have a path, scan manifest files for a label
+  if (absPath) {
+    try {
+      const entries = fs.readdirSync(absPath);
+      for (const row of MANIFEST_LABEL_MAP) {
+        const hit = entries.find(e => row.match(e));
+        if (hit) return row.label(hit);
+      }
+    } catch { /* fail-open */ }
+  }
+  // Fall back: capitalise stackId as best-effort label
+  return cap(stackId);
 }
 
 // ---------------------------------------------------------------------------
@@ -275,19 +388,21 @@ function stackLabel(stackId) {
 // ---------------------------------------------------------------------------
 
 /**
- * Build a map of stackId → [{subprojectName, path, role, agent}] from the detect cache.
+ * Build a map of stackId → [{subprojectName, path, role, agent, absPath}] from the detect cache.
  * Falls back to empty maps if cache is missing.
  *
- * @returns {Map<string, Array<{name: string, path: string, role: string, agent: string}>>}
+ * @returns {Map<string, Array<{name: string, path: string, role: string, agent: string, absPath: string}>>}
  */
 function buildStackSubprojectMap() {
   const cache = readJsonSafe(DETECT_CACHE_PATH);
   const subprojects = cache?.subprojects || [];
-  const map = new Map(); // stackId → [{name, path, role, agent}]
+  const map = new Map();
 
   for (const sub of subprojects) {
     const subAbsPath = path.join(ROOT, sub.path);
-    const stackId = detectStackFromPath(subAbsPath);
+    // Prefer stack from detect cache (sync-registry.js sets sub.stack).
+    // Fall back to dynamic detection from manifest files + dominant extension.
+    const stackId = sub.stack || detectStackFromPath(subAbsPath);
     if (!stackId) continue;
 
     if (!map.has(stackId)) map.set(stackId, []);
@@ -296,28 +411,131 @@ function buildStackSubprojectMap() {
       path: sub.path,
       role: sub.role || 'general',
       agent: sub.agent || roleToAgent(sub.role || 'general'),
+      absPath: subAbsPath,
     });
   }
 
   return map;
 }
 
+// ---------------------------------------------------------------------------
+// Dynamic manifest → stack-ID table (ordered most-specific first).
+// Stack ID = a stable lowercase identifier for the ecosystem.
+// Any ecosystem — add a row here, zero other changes needed.
+// ---------------------------------------------------------------------------
+
+const MANIFEST_STACK_MAP = [
+  // .NET (check before generic JSON-based ones)
+  { match: f => f.endsWith('.csproj') || f.endsWith('.sln'), id: 'dotnet' },
+  // Rust
+  { match: f => f === 'Cargo.toml', id: 'rust' },
+  // Elixir
+  { match: f => f === 'mix.exs', id: 'elixir' },
+  // Dart / Flutter
+  { match: f => f === 'pubspec.yaml', id: 'dart' },
+  // Go
+  { match: f => f === 'go.mod', id: 'go' },
+  // Zig
+  { match: f => f === 'build.zig' || f === 'build.zig.zon', id: 'zig' },
+  // Gleam
+  { match: f => f === 'gleam.toml', id: 'gleam' },
+  // Crystal
+  { match: f => f === 'shard.yml', id: 'crystal' },
+  // Erlang
+  { match: f => f === 'rebar.config', id: 'erlang' },
+  // Haskell
+  { match: f => f.endsWith('.cabal'), id: 'haskell' },
+  // Ruby
+  { match: f => f === 'Gemfile' || f.endsWith('.gemspec'), id: 'ruby' },
+  // Python
+  { match: f => f === 'pyproject.toml' || f === 'setup.py' || f === 'requirements.txt' || f === 'manage.py', id: 'python' },
+  // Java / Maven
+  { match: f => f === 'pom.xml', id: 'java' },
+  // Kotlin / Gradle
+  { match: f => f === 'build.gradle.kts', id: 'kotlin' },
+  // Java / Gradle
+  { match: f => f === 'build.gradle', id: 'java' },
+  // PHP / Composer
+  { match: f => f === 'composer.json', id: 'php' },
+  // Deno
+  { match: f => f === 'deno.json' || f === 'deno.jsonc', id: 'deno' },
+  // Swift
+  { match: f => f === 'Package.swift', id: 'swift' },
+  // Nim
+  { match: f => f.endsWith('.nimble'), id: 'nim' },
+  // TypeScript (tsconfig is more specific than package.json)
+  { match: f => f === 'tsconfig.json', id: 'typescript' },
+  // Node.js fallback
+  { match: f => f === 'package.json', id: 'typescript' },
+];
+
 /**
- * Detect stack ID from a subproject path using file-presence heuristics.
- * Uses SKILL_META.stacks signals — add new stacks to _skill-meta.json, not here.
+ * Detect stack ID from a subproject path — fully dynamic, no hardcoded list.
+ *
+ * Strategy:
+ *   1. Scan root directory for known manifest files (MANIFEST_STACK_MAP).
+ *   2. If no manifest hit, count source file extensions and return the dominant one.
+ *   3. Returns null only if the directory is empty or unreadable.
+ *
+ * Adding support for a new ecosystem requires ONLY a new row in MANIFEST_STACK_MAP.
+ *
  * @param {string} absPath
  * @returns {string|null}
  */
 function detectStackFromPath(absPath) {
+  let entries;
   try {
-    const entries = fs.readdirSync(absPath);
-    for (const [id, cfg] of Object.entries(SKILL_META.stacks)) {
-      const { exts = [], files = [] } = cfg.signals || {};
-      if (exts.some(ext => entries.some(e => e.endsWith(ext)))) return id;
-      if (files.some(f => entries.includes(f))) return id;
+    entries = fs.readdirSync(absPath);
+  } catch {
+    return null; // unreadable directory
+  }
+
+  // 1. Manifest-file match (ordered most-specific first)
+  for (const row of MANIFEST_STACK_MAP) {
+    if (entries.some(e => row.match(e))) return row.id;
+  }
+
+  // 2. Dominant source extension fallback — walk the subtree up to depth 3
+  const extCount = new Map();
+  countExtensions(absPath, extCount, 0, 3);
+  if (extCount.size === 0) return null;
+
+  // Pick extension with highest count; exclude config/markup-only files
+  const SKIP_EXTS = new Set(['.json', '.yaml', '.yml', '.toml', '.xml', '.md', '.txt', '.lock', '.cfg', '.ini', '.env']);
+  let bestExt = null;
+  let bestCount = 0;
+  for (const [ext, count] of extCount) {
+    if (SKIP_EXTS.has(ext)) continue;
+    if (count > bestCount) { bestCount = count; bestExt = ext; }
+  }
+
+  if (!bestExt) return null;
+  // Derive stack ID from extension (strip leading dot)
+  return bestExt.slice(1).toLowerCase();
+}
+
+/**
+ * Recursively count file extensions up to maxDepth.
+ * @param {string} dir
+ * @param {Map<string, number>} acc
+ * @param {number} depth
+ * @param {number} maxDepth
+ */
+function countExtensions(dir, acc, depth, maxDepth) {
+  if (depth > maxDepth) return;
+  const SKIP_DIRS = new Set(['node_modules', '.git', 'bin', 'obj', 'dist', '.next', 'vendor', 'target', '_build']);
+  let entries;
+  try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+  for (const e of entries) {
+    if (e.name.startsWith('.')) continue;
+    if (e.isDirectory()) {
+      if (SKIP_DIRS.has(e.name)) continue;
+      countExtensions(path.join(dir, e.name), acc, depth + 1, maxDepth);
+    } else if (e.isFile()) {
+      const ext = path.extname(e.name).toLowerCase();
+      if (ext) acc.set(ext, (acc.get(ext) || 0) + 1);
     }
-  } catch { /* fail-open */ }
-  return null;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -334,7 +552,6 @@ function pickRepresentativeEntity(entities, preferredKeys = []) {
   const entries = Object.entries(entities || {});
   if (!entries.length) return null;
 
-  // Score each entity by richness
   const scored = entries.map(([name, info]) => {
     let score = 0;
     if (info.refs?.length) score += info.refs.length * 2;
@@ -344,7 +561,6 @@ function pickRepresentativeEntity(entities, preferredKeys = []) {
     if (info.repositories?.length) score += 1;
     if (info.dtos?.length) score += 1;
     if (info.endpoints?.length) score += info.endpoints.length;
-    // Prefer explicitly requested keys
     if (preferredKeys.includes(name)) score += 100;
     return { name, info, score };
   });
@@ -354,1285 +570,232 @@ function pickRepresentativeEntity(entities, preferredKeys = []) {
 }
 
 // ---------------------------------------------------------------------------
-// Skill content generators
+// Real-file excerpt extractor (replaces all build*Example functions)
 // ---------------------------------------------------------------------------
 
 /**
- * Generate the entity-creation skill content.
- * @param {string} sub - subproject short name
- * @param {string} stackId
- * @param {Object} entityPattern - _patterns.{stack}.entity
- * @param {Object} enumPattern - _patterns.{stack}.enum (may be null)
- * @param {string} role
+ * Read a real source file and return an excerpt suitable for a code fence.
+ * Strategy:
+ *   - If file is ≤80 lines: include full content.
+ *   - Otherwise: find the first class/interface/def/func/struct/type declaration
+ *     and return 20 lines of surrounding context.
+ * Fails silently: returns null when file is missing or unreadable.
+ *
+ * @param {string} filePath - absolute or project-relative path
+ * @returns {string|null}
+ */
+function readFileExcerpt(filePath) {
+  const abs = path.isAbsolute(filePath) ? filePath : path.join(ROOT, filePath);
+  try {
+    const raw = fs.readFileSync(abs, 'utf-8');
+    const lines = raw.split('\n');
+    if (lines.length <= 80) return raw.trimEnd();
+
+    // Find first significant declaration line
+    const declPattern = /^\s*(public\s+|private\s+|protected\s+|export\s+|async\s+)?(class|interface|struct|enum|def |func |fn |type )\s/;
+    let declIdx = lines.findIndex(l => declPattern.test(l));
+    if (declIdx === -1) declIdx = 0;
+
+    const start = Math.max(0, declIdx - 2);
+    const end = Math.min(lines.length, declIdx + 22);
+    return lines.slice(start, end).join('\n').trimEnd();
+  } catch {
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Agnostic SKILL.md content builder
+// ---------------------------------------------------------------------------
+
+/**
+ * Enumerate pattern fields dynamically — produces bullet lines for any
+ * fields present in the pattern JSON object, skipping internal/known-noise keys.
+ *
+ * @param {Object} pattern - the pattern object from registry._patterns
+ * @param {string[]} [skip] - field names to omit
+ * @returns {string} markdown bullet list (empty string if nothing to show)
+ */
+const PATTERN_SKIP_KEYS = new Set([
+  // Structural fields rendered separately
+  'folder', 'namingConvention', 'baseClass', 'baseInterface', 'interfaces',
+  'namespacePattern',
+  // Meta/internal
+  'discovered', 'folderFrequency', 'separateFiles',
+]);
+
+function enumeratePatternFields(pattern, skip = []) {
+  if (!pattern || typeof pattern !== 'object') return '';
+  const skipSet = new Set([...PATTERN_SKIP_KEYS, ...skip]);
+  const lines = [];
+  for (const [key, val] of Object.entries(pattern)) {
+    if (skipSet.has(key)) continue;
+    if (val === null || val === undefined || val === '') continue;
+    if (Array.isArray(val)) {
+      if (val.length === 0) continue;
+      lines.push(`- ${key}: ${val.map(v => `\`${v}\``).join(', ')}`);
+    } else if (typeof val === 'object') {
+      // Nested object: show as key: {field: val, ...} abbreviated
+      lines.push(`- ${key}: ${JSON.stringify(val)}`);
+    } else {
+      lines.push(`- ${key}: \`${val}\``);
+    }
+  }
+  return lines.join('\n');
+}
+
+/**
+ * Generate a SKILL.md and references/examples.md for a registry-detected pattern.
+ * 100% agnostic — reads fields dynamically from the pattern JSON.
+ *
+ * @param {string} sub - skill name prefix (agent/role name, e.g. "frontend")
+ * @param {string} patternSlug - pattern type slug (e.g. "entity-creation")
+ * @param {string} patternTitle - human-readable title
+ * @param {string} description - YAML frontmatter description (must include trigger words)
+ * @param {Object} pattern - pattern object from registry._patterns[stackId]
  * @param {Object} registryEntities - registry.e
- * @returns {{ skillMd: string, examplesMd: string }}
- */
-function genEntityCreationSkill(sub, stackId, entityPattern, enumPattern, role, registryEntities) {
-  const iso = isoNow();
-  const lang = stackLang(stackId);
-  const label = stackLabel(stackId);
-
-  const folder = entityPattern.folder || '(inferred from project)';
-  const baseClass = entityPattern.baseClass || null;
-  const ifaces = (entityPattern.interfaces || []).filter(Boolean);
-  const nsPattern = entityPattern.namespacePattern || null;
-  const naming = entityPattern.namingConvention || 'PascalCase';
-
-  const rep = pickRepresentativeEntity(registryEntities);
-  const repName = rep?.name || 'Order';
-  const repInfo = rep?.info || {};
-
-  // ---- prepare vars ----
-  const ifaceLine = ifaces.length ? `- Interfaces: \`${ifaces.join(', ')}\`` : '';
-  const nsLine = nsPattern ? `- Namespace: \`${nsPattern}.{Entity}\`` : '';
-  const baseClassLine = baseClass ? `- Base class: \`${baseClass}\`` : '';
-  const enumSeparate = enumPattern?.separateFiles
-    ? `- NEVER place enums inside entity files — enums go in \`${enumPattern.folder || 'separate files'}\``
-    : '';
-
-  const exampleClass = buildEntityExample(stackId, repName, repInfo, entityPattern);
-  const repRef = repInfo.file || `${folder}/${repName}${lang === 'csharp' ? '.cs' : lang === 'dart' ? '.dart' : '.ts'}`;
-
-  const allKeys = Object.keys(registryEntities || {});
-  const secondKey = allKeys.find(k => k !== repName) || repName;
-  const secondInfo = registryEntities?.[secondKey] || repInfo;
-
-  // ---- render templates ----
-  const skillTpl = loadTpl('entity-creation.skill.md.tmpl');
-  const skillMd = skillTpl ? render(skillTpl, {
-    sub, label, iso, role, folder, naming, lang,
-    baseClassLine, ifaceLine, nsLine, enumSeparate,
-    exampleClass, repRef,
-  }) : '';
-
-  const examplesTpl = loadTpl('entity-creation.examples.md.tmpl');
-  const examplesMd = examplesTpl ? render(examplesTpl, {
-    sub, iso, role, lang,
-    example1: buildEntityExample(stackId, repName, repInfo, entityPattern),
-    ref1: repInfo.file || `${folder}/${repName}`,
-    example2: buildEntityExample(stackId, secondKey, secondInfo, entityPattern, true),
-    ref2: secondInfo.file || `${folder}/${secondKey}`,
-  }) : '';
-
-  return { skillMd, examplesMd };
-}
-
-/**
- * Build a minimal entity code example from detected patterns and an entity entry.
- * @param {string} stackId
- * @param {string} entityName
- * @param {Object} info - registry.e entry
- * @param {Object} pattern - _patterns.{stack}.entity
- * @param {boolean} [withRels=false]
- * @returns {string}
- */
-function buildEntityExample(stackId, entityName, info, pattern, withRels = false) {
-  const baseClass = info.baseClass || pattern.baseClass || null;
-  const ifaces = info.interfaces || pattern.interfaces || [];
-  const refs = withRels ? (info.refs || []).slice(0, 2) : [];
-  const enums = withRels ? (info.enums || []).slice(0, 1) : [];
-
-  switch (stackId) {
-    case 'dotnet': {
-      const ns = info.namespace || pattern.namespacePattern || 'MyApp.Domain.Entities';
-      const parents = [baseClass, ...ifaces].filter(Boolean).join(', ');
-      const parentStr = parents ? ` : ${parents}` : '';
-      const refProps = refs.map(r => `    public ${r}? ${r} { get; set; }`).join('\n');
-      const enumProps = enums.map(e => `    public ${e} ${e}Type { get; set; }`).join('\n');
-      return `namespace ${ns};
-
-public class ${entityName}${parentStr}
-{
-    public Guid Id { get; set; }
-    public string Name { get; set; } = string.Empty;
-    public DateTime CreatedAt { get; set; }
-${refProps ? refProps + '\n' : ''}\
-${enumProps ? enumProps + '\n' : ''}\
-}`;
-    }
-
-    case 'dart': {
-      const freezed = pattern.serialization === 'freezed' || (ifaces.length === 0 && baseClass === null);
-      if (freezed) {
-        const refFields = refs.map(r => `  final ${r}? ${r.charAt(0).toLowerCase() + r.slice(1)};`).join('\n');
-        const enumFields = enums.map(e => `  final ${e}? ${e.charAt(0).toLowerCase() + e.slice(1)};`).join('\n');
-        return `@freezed
-class ${entityName} with _\$${entityName} {
-  const factory ${entityName}({
-    required String id,
-    required String name,
-${refFields ? refFields + '\n' : ''}\
-${enumFields ? enumFields + '\n' : ''}\
-  }) = _${entityName};
-
-  factory ${entityName}.fromJson(Map<String, dynamic> json) =>
-      _\$${entityName}FromJson(json);
-}`;
-      }
-      const refFields = refs.map(r => `  final ${r}? ${r.charAt(0).toLowerCase() + r.slice(1)};`).join('\n');
-      return `class ${entityName} {
-  final String id;
-  final String name;
-${refFields ? refFields + '\n' : ''}\
-
-  const ${entityName}({required this.id, required this.name${refs.map(r => `, this.${r.charAt(0).toLowerCase() + r.slice(1)}`).join('')}});
-}`;
-    }
-
-    case 'typescript': {
-      const refFields = refs.map(r => `  ${r.charAt(0).toLowerCase() + r.slice(1)}?: ${r};`).join('\n');
-      const enumFields = enums.map(e => `  ${e.charAt(0).toLowerCase() + e.slice(1)}: ${e};`).join('\n');
-      const extendsStr = baseClass ? ` extends ${baseClass}` : '';
-      const implStr = ifaces.length ? ` implements ${ifaces.join(', ')}` : '';
-      return `export class ${entityName}${extendsStr}${implStr} {
-  id: string;
-  name: string;
-  createdAt: Date;
-${refFields ? refFields + '\n' : ''}\
-${enumFields ? enumFields + '\n' : ''}\
-}`;
-    }
-
-    case 'php': {
-      const parentStr = baseClass ? ` extends ${baseClass}` : '';
-      const ifaceStr = ifaces.length ? ` implements ${ifaces.join(', ')}` : '';
-      const refProps = refs.map(r => `    public ?${r} $${r.charAt(0).toLowerCase() + r.slice(1)} = null;`).join('\n');
-      return `class ${entityName}${parentStr}${ifaceStr}
-{
-    protected $fillable = ['name'];
-${refProps ? '\n' + refProps + '\n' : ''}\
-}`;
-    }
-
-    case 'java': {
-      const parentStr = baseClass ? ` extends ${baseClass}` : '';
-      const ifaceStr = ifaces.length ? ` implements ${ifaces.join(', ')}` : '';
-      const refProps = refs.map(r => `    private ${r} ${r.charAt(0).toLowerCase() + r.slice(1)};`).join('\n');
-      return `@Entity
-@Table(name = "${entityName.replace(/([A-Z])/g, '_$1').toLowerCase().slice(1)}s")
-public class ${entityName}${parentStr}${ifaceStr} {
-    @Id
-    @GeneratedValue(strategy = GenerationType.UUID)
-    private UUID id;
-    private String name;
-${refProps ? refProps + '\n' : ''}\
-}`;
-    }
-
-    case 'python': {
-      const parentStr = baseClass ? `(${baseClass})` : '';
-      const refProps = refs.map(r => `    ${r.charAt(0).toLowerCase() + r.slice(1)}_id: Optional[UUID] = None`).join('\n');
-      return `class ${entityName}${parentStr}:
-    id: UUID
-    name: str
-${refProps ? refProps + '\n' : ''}\
-
-    class Config:
-        from_attributes = True`;
-    }
-
-    case 'go': {
-      const refProps = refs.map(r => `\t${r}   *${r}`).join('\n');
-      return `type ${entityName} struct {
-\tID        uuid.UUID \`json:"id" db:"id"\`
-\tName      string    \`json:"name" db:"name"\`
-\tCreatedAt time.Time \`json:"created_at" db:"created_at"\`
-${refProps ? refProps + '\n' : ''}\
-}`;
-    }
-
-    case 'rust': {
-      const refProps = refs.map(r => `    pub ${r.replace(/([A-Z])/g, '_$1').toLowerCase().slice(1)}: Option<${r}>,`).join('\n');
-      return `#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ${entityName} {
-    pub id: Uuid,
-    pub name: String,
-${refProps ? refProps + '\n' : ''}\
-}`;
-    }
-
-    default:
-      return `// ${entityName} entity — see project conventions`;
-  }
-}
-
-// ---------------------------------------------------------------------------
-
-/**
- * Generate the enum-placement skill.
- * @param {string} sub
- * @param {string} stackId
- * @param {Object} enumPattern
- * @param {string} role
  * @param {Object} registryEnums - registry._enums
- * @returns {{ skillMd: string, examplesMd: string }}
- */
-function genEnumPlacementSkill(sub, stackId, enumPattern, role, registryEnums) {
-  const iso = isoNow();
-  const lang = stackLang(stackId);
-
-  const folder = enumPattern.folder || '(project folder)';
-  const valueConvention = enumPattern.valueConvention || 'PascalCase';
-  const decorators = (enumPattern.decorators || []).filter(Boolean);
-  const nsPattern = enumPattern.namespacePattern || null;
-
-  // Pick a real enum from registry
-  const enumKeys = Object.keys(registryEnums || {});
-  const exampleEnum = enumKeys[0] || 'Status';
-  const exampleEnumInfo = registryEnums?.[exampleEnum] || { values: ['Active', 'Inactive'] };
-  const exampleValues = Array.isArray(exampleEnumInfo)
-    ? exampleEnumInfo.filter(v => !v.startsWith('...'))
-    : (exampleEnumInfo.values || ['Active', 'Inactive']).filter(v => !v.startsWith('...'));
-
-  const exampleCode = buildEnumExample(stackId, exampleEnum, exampleValues, valueConvention, decorators, nsPattern || undefined);
-
-  const nsLine = nsPattern ? `- Namespace: \`${nsPattern}.{EnumName}\`` : '';
-  const decoratorsLine = decorators.length ? `- Value decorators: ${decorators.map(d => `\`${d}\``).join(', ')}` : '';
-
-  const secondEnumKey = enumKeys[1] || enumKeys[0] || 'Category';
-  const secondEnumInfo = registryEnums?.[secondEnumKey] || { values: ['Alpha', 'Beta'] };
-  const secondValues = Array.isArray(secondEnumInfo)
-    ? secondEnumInfo.filter(v => !v.startsWith('...'))
-    : (secondEnumInfo.values || []).filter(v => !v.startsWith('...'));
-
-  const skillTpl = loadTpl('enum-placement.skill.md.tmpl');
-  const skillMd = skillTpl ? render(skillTpl, {
-    sub, iso, role, lang, folder, valueConvention,
-    nsLine, decoratorsLine, exampleCode,
-  }) : '';
-
-  const examplesTpl = loadTpl('enum-placement.examples.md.tmpl');
-  const examplesMd = examplesTpl ? render(examplesTpl, {
-    sub, iso, role, lang,
-    example1: exampleCode,
-    example2: buildEnumExample(stackId, secondEnumKey, secondValues, valueConvention, decorators, nsPattern || undefined),
-  }) : '';
-
-  return { skillMd, examplesMd };
-}
-
-/**
- * Build enum code example.
- * @param {string} stackId
- * @param {string} enumName
- * @param {string[]} values
- * @param {string} valueConvention
- * @param {string[]} decorators
- * @param {string} [namespace]
- * @returns {string}
- */
-function buildEnumExample(stackId, enumName, values, valueConvention, decorators, namespace) {
-  const displayValues = values.slice(0, 5);
-  const decoratorLine = decorators.length ? `    [${decorators[0]}("...")] ` : '    ';
-
-  switch (stackId) {
-    case 'dotnet': {
-      const ns = namespace || 'MyApp.Domain.Enums';
-      const valueLines = displayValues
-        .map((v, i) => `    ${decoratorLine.trim() ? '[' + decorators[0] + '("...")]' + ' ' : ''}${v}${i < displayValues.length - 1 ? ',' : ''}`)
-        .join('\n');
-      return `namespace ${ns};
-
-public enum ${enumName}
-{
-${valueLines}
-}`;
-    }
-
-    case 'dart':
-      return `enum ${enumName} {
-  ${displayValues.join(',\n  ')};
-}`;
-
-    case 'typescript':
-      return `export enum ${enumName} {
-  ${displayValues.map(v => `${v} = '${v}'`).join(',\n  ')},
-}`;
-
-    case 'php':
-      return `enum ${enumName}: string
-{
-    ${displayValues.map(v => `case ${v} = '${v.toLowerCase()}';`).join('\n    ')}
-}`;
-
-    case 'java':
-      return `public enum ${enumName} {
-    ${displayValues.join(', ')};
-}`;
-
-    case 'python':
-      return `class ${enumName}(str, Enum):
-    ${displayValues.map(v => `${v.toUpperCase()} = "${v.toLowerCase()}"`).join('\n    ')}`;
-
-    case 'go':
-      return `type ${enumName} string
-
-const (
-\t${displayValues.map((v, i) => `${enumName}${cap(v.toLowerCase())}${i === 0 ? ' ' + enumName + ' = "' + v.toLowerCase() + '"' : ' = "' + v.toLowerCase() + '"'}`).join('\n\t')}
-)`;
-
-    case 'rust':
-      return `#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum ${enumName} {
-    ${displayValues.join(',\n    ')},
-}`;
-
-    default:
-      return `// ${enumName} enum values: ${displayValues.join(', ')}`;
-  }
-}
-
-// ---------------------------------------------------------------------------
-
-/**
- * Generate the route-conventions skill.
- * @param {string} sub
- * @param {string} stackId
- * @param {Object} routesPattern
- * @param {string} role
- * @param {Object} registryEntities
- * @returns {{ skillMd: string, examplesMd: string }}
- */
-function genRouteConventionsSkill(sub, stackId, routesPattern, role, registryEntities) {
-  const iso = isoNow();
-  const lang = stackLang(stackId);
-
-  const groupPrefix = routesPattern.groupPrefix || '/api/{entity}';
-  const namingPattern = routesPattern.namingPattern || null;
-  const authPattern = routesPattern.authPattern || null;
-  const versioningStrategy = routesPattern.versioningStrategy || 'none';
-
-  const rep = pickRepresentativeEntity(registryEntities);
-  const repName = rep?.name || 'Contract';
-  const repInfo = rep?.info || {};
-  const repPrefix = repInfo.routePrefix || `/${repName.toLowerCase()}s`;
-
-  const exampleCode = buildRouteExample(stackId, repName, repPrefix, routesPattern);
-
-  const namingPatternLine = namingPattern ? `- Endpoint naming: \`${namingPattern}\`` : '';
-  const authPatternLine = authPattern ? `- Auth: \`${authPattern}\`` : '';
-  const repRef = repInfo.file || '(route file)';
-
-  const skillTpl = loadTpl('route-conventions.skill.md.tmpl');
-  const skillMd = skillTpl ? render(skillTpl, {
-    sub, iso, role, lang, groupPrefix, versioningStrategy,
-    namingPatternLine, authPatternLine, exampleCode, repRef,
-  }) : '';
-
-  const examplesTpl = loadTpl('route-conventions.examples.md.tmpl');
-  const examplesMd = examplesTpl ? render(examplesTpl, {
-    sub, iso, role, lang, repName,
-    example1: exampleCode,
-    example2: buildRouteExample(stackId, repName, repPrefix, routesPattern, true),
-  }) : '';
-
-  return { skillMd, examplesMd };
-}
-
-/**
- * Build a route code example.
- * @param {string} stackId
- * @param {string} entityName
- * @param {string} prefix
- * @param {Object} pattern
- * @param {boolean} [withAuth=false]
- * @returns {string}
- */
-function buildRouteExample(stackId, entityName, prefix, pattern, withAuth = false) {
-  const authLine = withAuth && pattern.authPattern ? pattern.authPattern : null;
-  const lower = entityName.charAt(0).toLowerCase() + entityName.slice(1);
-
-  switch (stackId) {
-    case 'dotnet': {
-      const authAttr = authLine ? `\n        .RequireAuthorization("${authLine.replace('{entity}', lower).replace('{action}', 'read')}")` : '';
-      return `var group = app.MapGroup("${prefix}");
-
-group.MapGet("/", ${entityName}EndPoints.GetAllAsync)
-     .WithName("${lower}_list")${authAttr};
-
-group.MapGet("/{id}", ${entityName}EndPoints.GetByIdAsync)
-     .WithName("${lower}_get")${authAttr};
-
-group.MapPost("/", ${entityName}EndPoints.CreateAsync)
-     .WithName("${lower}_create");
-
-group.MapPut("/{id}", ${entityName}EndPoints.UpdateAsync)
-     .WithName("${lower}_update");
-
-group.MapDelete("/{id}", ${entityName}EndPoints.DeleteAsync)
-     .WithName("${lower}_delete");`;
-    }
-
-    case 'typescript': {
-      const authMiddleware = authLine ? `\nrouter.use(authenticate);` : '';
-      return `const router = express.Router();
-${authMiddleware}
-router.get('${prefix}', ${lower}Controller.getAll);
-router.get('${prefix}/:id', ${lower}Controller.getById);
-router.post('${prefix}', ${lower}Controller.create);
-router.put('${prefix}/:id', ${lower}Controller.update);
-router.delete('${prefix}/:id', ${lower}Controller.delete);`;
-    }
-
-    case 'php': {
-      return `Route::prefix('${prefix}')->group(function () {
-    Route::get('/', [${entityName}Controller::class, 'index']);
-    Route::post('/', [${entityName}Controller::class, 'store']);
-    Route::get('/{id}', [${entityName}Controller::class, 'show']);
-    Route::put('/{id}', [${entityName}Controller::class, 'update']);
-    Route::delete('/{id}', [${entityName}Controller::class, 'destroy']);
-});`;
-    }
-
-    case 'java': {
-      return `@RestController
-@RequestMapping("${prefix}")
-public class ${entityName}Controller {
-    @GetMapping public ResponseEntity<List<${entityName}Response>> getAll() { ... }
-    @GetMapping("/{id}") public ResponseEntity<${entityName}Response> getById(@PathVariable UUID id) { ... }
-    @PostMapping public ResponseEntity<${entityName}Response> create(@RequestBody @Valid ${entityName}Request req) { ... }
-    @PutMapping("/{id}") public ResponseEntity<${entityName}Response> update(@PathVariable UUID id, @RequestBody @Valid ${entityName}Request req) { ... }
-    @DeleteMapping("/{id}") public ResponseEntity<Void> delete(@PathVariable UUID id) { ... }
-}`;
-    }
-
-    case 'python': {
-      return `router = APIRouter(prefix="${prefix}", tags=["${lower}"])
-
-@router.get("/", response_model=list[${entityName}Response])
-async def get_all(db: AsyncSession = Depends(get_db)): ...
-
-@router.get("/{id}", response_model=${entityName}Response)
-async def get_by_id(id: UUID, db: AsyncSession = Depends(get_db)): ...
-
-@router.post("/", response_model=${entityName}Response, status_code=201)
-async def create(data: ${entityName}Create, db: AsyncSession = Depends(get_db)): ...`;
-    }
-
-    case 'go': {
-      return `func (h *${entityName}Handler) RegisterRoutes(r chi.Router) {
-\tr.Get("${prefix}", h.GetAll)
-\tr.Get("${prefix}/{id}", h.GetByID)
-\tr.Post("${prefix}", h.Create)
-\tr.Put("${prefix}/{id}", h.Update)
-\tr.Delete("${prefix}/{id}", h.Delete)
-}`;
-    }
-
-    case 'rust': {
-      return `pub fn ${lower}_routes() -> Router {
-    Router::new()
-        .route("${prefix}", get(get_all_${lower}s).post(create_${lower}))
-        .route("${prefix}/:id", get(get_${lower}).put(update_${lower}).delete(delete_${lower}))
-}`;
-    }
-
-    default:
-      return `// ${entityName} routes at ${prefix}`;
-  }
-}
-
-// ---------------------------------------------------------------------------
-
-/**
- * Generate the service-pattern skill.
- * @param {string} sub
- * @param {string} stackId
- * @param {Object} servicePattern
- * @param {string} role
- * @param {Object} registryEntities
- * @returns {{ skillMd: string, examplesMd: string }}
- */
-function genServicePatternSkill(sub, stackId, servicePattern, role, registryEntities) {
-  const iso = isoNow();
-  const lang = stackLang(stackId);
-  const label = stackLabel(stackId);
-
-  const interfaceFirst = servicePattern.interfaceFirst === true;
-  const baseInterface = servicePattern.baseInterface || null;
-
-  const rep = pickRepresentativeEntity(registryEntities);
-  const repName = rep?.name || 'Contract';
-  const exampleCode = buildServiceExample(stackId, repName, servicePattern);
-
-  const interfaceFirstLabel = interfaceFirst
-    ? 'YES — always define I{Entity}Service interface first'
-    : 'NO — concrete class only';
-  const interfaceFirstRule1 = interfaceFirst
-    ? 'ALWAYS create the interface before the implementation'
-    : 'Create the service class directly';
-  const interfaceFirstRule2 = interfaceFirst
-    ? 'Register both interface and implementation in DI container'
-    : 'Register service in DI container';
-  const baseInterfaceLine = baseInterface ? `- Base interface: \`${baseInterface}\`` : '';
-
-  const skillTpl = loadTpl('service-pattern.skill.md.tmpl');
-  const skillMd = skillTpl ? render(skillTpl, {
-    sub, iso, role, lang, label,
-    interfaceFirstLabel, interfaceFirstRule1, interfaceFirstRule2,
-    baseInterfaceLine, exampleCode,
-  }) : '';
-
-  const examplesTpl = loadTpl('service-pattern.examples.md.tmpl');
-  const examplesMd = examplesTpl ? render(examplesTpl, {
-    sub, iso, role, lang,
-    example1: exampleCode,
-    example2: buildServiceExample(stackId, repName, servicePattern, true),
-  }) : '';
-
-  return { skillMd, examplesMd };
-}
-
-/**
- * Build a service code example.
- * @param {string} stackId
- * @param {string} entityName
- * @param {Object} pattern
- * @param {boolean} [withDeps=false]
- * @returns {string}
- */
-function buildServiceExample(stackId, entityName, pattern, withDeps = false) {
-  const ifaceFirst = pattern.interfaceFirst === true;
-  const base = pattern.baseInterface;
-
-  switch (stackId) {
-    case 'dotnet': {
-      const extendsStr = base ? ` : ${base.replace(/</g, '<' + entityName + ', ').replace(/>/, '>')}` : '';
-      const iface = `public interface I${entityName}Service${extendsStr}
-{
-    Task<IEnumerable<${entityName}ResponseDto>> GetAllAsync();
-    Task<${entityName}ResponseDto> GetByIdAsync(Guid id);
-    Task<${entityName}ResponseDto> CreateAsync(${entityName}UpSertDto dto);
-}`;
-      const impl = `public class ${entityName}Service : I${entityName}Service
-{
-    private readonly I${entityName}Repository _repo;
-    ${withDeps ? 'private readonly IMapper _mapper;' : ''}
-
-    public ${entityName}Service(I${entityName}Repository repo${withDeps ? ', IMapper mapper' : ''})
-    {
-        _repo = repo;
-        ${withDeps ? '_mapper = mapper;' : ''}
-    }
-
-    public async Task<IEnumerable<${entityName}ResponseDto>> GetAllAsync()
-        => (await _repo.GetAllAsync()).Adapt<IEnumerable<${entityName}ResponseDto>>();
-}`;
-      return ifaceFirst ? iface + '\n\n' + impl : impl;
-    }
-
-    case 'typescript': {
-      const ifaceCode = `export interface I${entityName}Service {
-  getAll(): Promise<${entityName}[]>;
-  getById(id: string): Promise<${entityName} | null>;
-  create(data: Create${entityName}Dto): Promise<${entityName}>;
-}`;
-      const implCode = `@Injectable()
-export class ${entityName}Service implements I${entityName}Service {
-  constructor(
-    private readonly ${entityName.charAt(0).toLowerCase() + entityName.slice(1)}Repo: I${entityName}Repository,
-  ) {}
-
-  async getAll(): Promise<${entityName}[]> {
-    return this.${entityName.charAt(0).toLowerCase() + entityName.slice(1)}Repo.findAll();
-  }
-}`;
-      return ifaceFirst ? ifaceCode + '\n\n' + implCode : implCode;
-    }
-
-    case 'php': {
-      return `class ${entityName}Service
-{
-    public function __construct(
-        private readonly ${entityName}Repository $repository
-    ) {}
-
-    public function getAll(): Collection
-    {
-        return $this->repository->all();
-    }
-
-    public function create(array $data): ${entityName}
-    {
-        return $this->repository->create($data);
-    }
-}`;
-    }
-
-    case 'java': {
-      const iface = `public interface ${entityName}Service {
-    List<${entityName}Response> findAll();
-    ${entityName}Response findById(UUID id);
-    ${entityName}Response create(${entityName}Request request);
-}`;
-      const impl = `@Service
-@RequiredArgsConstructor
-public class ${entityName}ServiceImpl implements ${entityName}Service {
-    private final ${entityName}Repository repository;
-
-    @Override
-    public List<${entityName}Response> findAll() {
-        return repository.findAll().stream()
-            .map(${entityName}Response::from)
-            .toList();
-    }
-}`;
-      return ifaceFirst ? iface + '\n\n' + impl : impl;
-    }
-
-    case 'python': {
-      return `class ${entityName}Service:
-    def __init__(self, repo: ${entityName}Repository):
-        self._repo = repo
-
-    async def get_all(self) -> list[${entityName}]:
-        return await self._repo.find_all()
-
-    async def create(self, data: ${entityName}Create) -> ${entityName}:
-        return await self._repo.create(data)`;
-    }
-
-    case 'go': {
-      return `type ${entityName}Service interface {
-\tGetAll(ctx context.Context) ([]${entityName}, error)
-\tGetByID(ctx context.Context, id uuid.UUID) (*${entityName}, error)
-\tCreate(ctx context.Context, input Create${entityName}Input) (*${entityName}, error)
-}
-
-type ${entityName.charAt(0).toLowerCase() + entityName.slice(1)}Service struct {
-\trepo ${entityName}Repository
-}
-
-func New${entityName}Service(repo ${entityName}Repository) ${entityName}Service {
-\treturn &${entityName.charAt(0).toLowerCase() + entityName.slice(1)}Service{repo: repo}
-}`;
-    }
-
-    case 'rust': {
-      return `pub struct ${entityName}Service {
-    repo: Arc<dyn ${entityName}Repository>,
-}
-
-impl ${entityName}Service {
-    pub fn new(repo: Arc<dyn ${entityName}Repository>) -> Self {
-        Self { repo }
-    }
-
-    pub async fn get_all(&self) -> Result<Vec<${entityName}>, AppError> {
-        self.repo.find_all().await
-    }
-}`;
-    }
-
-    default:
-      return `// ${entityName}Service — see project conventions`;
-  }
-}
-
-// ---------------------------------------------------------------------------
-
-/**
- * Generate the repository-pattern skill.
- * @param {string} sub
- * @param {string} stackId
- * @param {Object} repoPattern
- * @param {string} role
- * @param {Object} registryEntities
- * @returns {{ skillMd: string, examplesMd: string }}
- */
-function genRepositoryPatternSkill(sub, stackId, repoPattern, role, registryEntities) {
-  const iso = isoNow();
-  const lang = stackLang(stackId);
-  const label = stackLabel(stackId);
-
-  const interfaceFirst = repoPattern.interfaceFirst === true;
-  const baseInterface = repoPattern.baseInterface || null;
-  const baseClass = repoPattern.baseClass || null;
-
-  const rep = pickRepresentativeEntity(registryEntities);
-  const repName = rep?.name || 'Contract';
-  const exampleCode = buildRepoExample(stackId, repName, repoPattern);
-
-  const interfaceFirstLabel = interfaceFirst ? 'YES' : 'NO';
-  const interfaceFirstRule = interfaceFirst
-    ? 'ALWAYS define the interface before the implementation'
-    : 'Create the repository class directly';
-  const baseInterfaceLine = baseInterface ? `- Base interface: \`${baseInterface}\`` : '';
-  const baseClassLine = baseClass ? `- Base class: \`${baseClass}\`` : '';
-  const baseClassRule = baseClass
-    ? `Extend ${baseClass} for the base CRUD methods`
-    : 'Implement all CRUD methods explicitly';
-
-  const skillTpl = loadTpl('repository-pattern.skill.md.tmpl');
-  const skillMd = skillTpl ? render(skillTpl, {
-    sub, iso, role, lang, label,
-    interfaceFirstLabel, interfaceFirstRule,
-    baseInterfaceLine, baseClassLine, baseClassRule, exampleCode,
-  }) : '';
-
-  const examplesTpl = loadTpl('repository-pattern.examples.md.tmpl');
-  const examplesMd = examplesTpl ? render(examplesTpl, {
-    sub, iso, role, lang,
-    example1: exampleCode,
-  }) : '';
-
-  return { skillMd, examplesMd };
-}
-
-/**
- * Build a repository code example.
- * @param {string} stackId
- * @param {string} entityName
- * @param {Object} pattern
- * @returns {string}
- */
-function buildRepoExample(stackId, entityName, pattern) {
-  const ifaceFirst = pattern.interfaceFirst === true;
-  const base = pattern.baseInterface;
-  const baseClass = pattern.baseClass;
-
-  switch (stackId) {
-    case 'dotnet': {
-      const baseExt = base ? ` : ${base.replace(/<.*>/, '')}<${entityName}>` : '';
-      const iface = `public interface I${entityName}Repository${baseExt}
-{
-    Task<IEnumerable<${entityName}>> GetAllAsync();
-    Task<${entityName}?> GetByIdAsync(Guid id);
-    Task<${entityName}> CreateAsync(${entityName} entity);
-    Task UpdateAsync(${entityName} entity);
-    Task DeleteAsync(Guid id);
-}`;
-      const implBase = baseClass ? ` : ${baseClass}<${entityName}>` : ` : I${entityName}Repository`;
-      const impl = `public class ${entityName}Repository${implBase}
-{
-    private readonly AppDbContext _context;
-
-    public ${entityName}Repository(AppDbContext context)
-    {
-        _context = context;
-    }
-
-    public async Task<IEnumerable<${entityName}>> GetAllAsync()
-        => await _context.${entityName}s.ToListAsync();
-}`;
-      return ifaceFirst ? iface + '\n\n' + impl : impl;
-    }
-
-    case 'typescript': {
-      return `export interface I${entityName}Repository {
-  findAll(): Promise<${entityName}[]>;
-  findById(id: string): Promise<${entityName} | null>;
-  create(data: Partial<${entityName}>): Promise<${entityName}>;
-  update(id: string, data: Partial<${entityName}>): Promise<${entityName}>;
-  delete(id: string): Promise<void>;
-}
-
-export class ${entityName}Repository implements I${entityName}Repository {
-  constructor(private readonly db: DatabaseClient) {}
-
-  async findAll(): Promise<${entityName}[]> {
-    return this.db.${entityName.toLowerCase()}.findMany();
-  }
-}`;
-    }
-
-    case 'php': {
-      return `class ${entityName}Repository
-{
-    public function all(): Collection
-    {
-        return ${entityName}::all();
-    }
-
-    public function findById(string $id): ?${entityName}
-    {
-        return ${entityName}::find($id);
-    }
-
-    public function create(array $data): ${entityName}
-    {
-        return ${entityName}::create($data);
-    }
-}`;
-    }
-
-    case 'java': {
-      return `public interface ${entityName}Repository extends JpaRepository<${entityName}, UUID> {
-    List<${entityName}> findByStatus(${entityName}Status status);
-}`;
-    }
-
-    case 'python': {
-      return `class ${entityName}Repository:
-    def __init__(self, db: AsyncSession):
-        self._db = db
-
-    async def find_all(self) -> list[${entityName}]:
-        result = await self._db.execute(select(${entityName}))
-        return result.scalars().all()
-
-    async def create(self, data: ${entityName}Create) -> ${entityName}:
-        entity = ${entityName}(**data.model_dump())
-        self._db.add(entity)
-        await self._db.commit()
-        return entity`;
-    }
-
-    case 'go': {
-      return `type ${entityName}Repository interface {
-\tFindAll(ctx context.Context) ([]${entityName}, error)
-\tFindByID(ctx context.Context, id uuid.UUID) (*${entityName}, error)
-\tCreate(ctx context.Context, entity *${entityName}) error
-\tUpdate(ctx context.Context, entity *${entityName}) error
-\tDelete(ctx context.Context, id uuid.UUID) error
-}`;
-    }
-
-    case 'rust': {
-      return `#[async_trait]
-pub trait ${entityName}Repository: Send + Sync {
-    async fn find_all(&self) -> Result<Vec<${entityName}>, AppError>;
-    async fn find_by_id(&self, id: Uuid) -> Result<Option<${entityName}>, AppError>;
-    async fn create(&self, input: Create${entityName}Input) -> Result<${entityName}, AppError>;
-}`;
-    }
-
-    default:
-      return `// ${entityName}Repository — see project conventions`;
-  }
-}
-
-// ---------------------------------------------------------------------------
-
-/**
- * Generate the DTO-conventions skill.
- * @param {string} sub
- * @param {string} stackId
- * @param {Object} dtoPattern
- * @param {string} role
- * @param {Object} registryEntities
- * @returns {{ skillMd: string, examplesMd: string }}
- */
-function genDtoConventionsSkill(sub, stackId, dtoPattern, role, registryEntities) {
-  const iso = isoNow();
-  const lang = stackLang(stackId);
-  const label = stackLabel(stackId);
-
-  const folder = dtoPattern.folder || '(project DTOs folder)';
-  const namingPatterns = (dtoPattern.namingPatterns || []).filter(Boolean);
-  const validationPattern = dtoPattern.validationPattern || null;
-
-  const rep = pickRepresentativeEntity(registryEntities);
-  const repName = rep?.name || 'Contract';
-
-  const exampleCode = buildDtoExample(stackId, repName, dtoPattern);
-
-  const namingSuffixesLine = namingPatterns.length
-    ? `- Naming suffixes: ${namingPatterns.map(p => '`' + p + '`').join(', ')}`
-    : '';
-  const validationLine = validationPattern ? `- Validation: \`${validationPattern}\`` : '';
-  const validationRule = validationPattern
-    ? `Use ${validationPattern} for all input validation`
-    : 'Validate all input fields';
-
-  const skillTpl = loadTpl('dto-conventions.skill.md.tmpl');
-  const skillMd = skillTpl ? render(skillTpl, {
-    sub, iso, role, lang, label, folder,
-    namingSuffixesLine, validationLine, validationRule, exampleCode,
-  }) : '';
-
-  const examplesTpl = loadTpl('dto-conventions.examples.md.tmpl');
-  const examplesMd = examplesTpl ? render(examplesTpl, {
-    sub, iso, role, lang,
-    example1: exampleCode,
-    example2: buildDtoExample(stackId, repName, dtoPattern, 'response'),
-  }) : '';
-
-  return { skillMd, examplesMd };
-}
-
-/**
- * Build a DTO code example.
- * @param {string} stackId
- * @param {string} entityName
- * @param {Object} pattern
- * @param {string} [variant='upsert']
- * @returns {string}
- */
-function buildDtoExample(stackId, entityName, pattern, variant = 'upsert') {
-  const validationPat = pattern.validationPattern;
-  const isResponse = variant === 'response';
-  const suffix = isResponse ? 'ResponseDto' : 'UpSertDto';
-  const dtoName = entityName + suffix;
-
-  switch (stackId) {
-    case 'dotnet': {
-      if (isResponse) {
-        return `public record ${dtoName}(
-    Guid Id,
-    string Name,
-    DateTime CreatedAt
-);`;
-      }
-      if (validationPat === 'FluentValidation') {
-        return `public record ${dtoName}(
-    string Name,
-    string? Description
-);
-
-public class ${entityName}UpSertDtoValidator : AbstractValidator<${dtoName}>
-{
-    public ${entityName}UpSertDtoValidator()
-    {
-        RuleFor(x => x.Name).NotEmpty().MaximumLength(200);
-    }
-}`;
-      }
-      return `public record ${dtoName}(
-    [Required] string Name,
-    string? Description
-);`;
-    }
-
-    case 'typescript': {
-      if (isResponse) {
-        return `export interface ${entityName}Response {
-  id: string;
-  name: string;
-  createdAt: string;
-}`;
-      }
-      if (validationPat === 'Zod') {
-        return `export const ${entityName.charAt(0).toLowerCase() + entityName.slice(1)}Schema = z.object({
-  name: z.string().min(1).max(200),
-  description: z.string().optional(),
-});
-
-export type Create${entityName}Dto = z.infer<typeof ${entityName.charAt(0).toLowerCase() + entityName.slice(1)}Schema>;`;
-      }
-      return `export interface Create${entityName}Dto {
-  name: string;
-  description?: string;
-}`;
-    }
-
-    case 'php': {
-      return isResponse
-        ? `class ${entityName}Resource extends JsonResource
-{
-    public function toArray(Request $request): array
-    {
-        return [
-            'id'   => $this->id,
-            'name' => $this->name,
-        ];
-    }
-}`
-        : `class ${dtoName} extends FormRequest
-{
-    public function rules(): array
-    {
-        return [
-            'name'        => 'required|string|max:200',
-            'description' => 'nullable|string',
-        ];
-    }
-}`;
-    }
-
-    case 'java': {
-      return isResponse
-        ? `public record ${entityName}Response(UUID id, String name, LocalDateTime createdAt) {
-    public static ${entityName}Response from(${entityName} entity) {
-        return new ${entityName}Response(entity.getId(), entity.getName(), entity.getCreatedAt());
-    }
-}`
-        : `public record ${entityName}Request(
-    @NotBlank @Size(max = 200) String name,
-    String description
-) {}`;
-    }
-
-    case 'python': {
-      return isResponse
-        ? `class ${entityName}Response(BaseModel):
-    id: UUID
-    name: str
-    created_at: datetime
-
-    model_config = ConfigDict(from_attributes=True)`
-        : `class ${entityName}Create(BaseModel):
-    name: str = Field(..., min_length=1, max_length=200)
-    description: Optional[str] = None`;
-    }
-
-    case 'go': {
-      return isResponse
-        ? `type ${entityName}Response struct {
-\tID        uuid.UUID \`json:"id"\`
-\tName      string    \`json:"name"\`
-\tCreatedAt time.Time \`json:"created_at"\`
-}`
-        : `type Create${entityName}Request struct {
-\tName        string  \`json:"name" validate:"required,max=200"\`
-\tDescription *string \`json:"description,omitempty"\`
-}`;
-    }
-
-    case 'rust': {
-      return isResponse
-        ? `#[derive(Serialize)]
-pub struct ${entityName}Response {
-    pub id: Uuid,
-    pub name: String,
-    pub created_at: DateTime<Utc>,
-}`
-        : `#[derive(Deserialize, Validate)]
-pub struct Create${entityName}Request {
-    #[validate(length(min = 1, max = 200))]
-    pub name: String,
-    pub description: Option<String>,
-}`;
-    }
-
-    default:
-      return `// ${dtoName} — see project conventions`;
-  }
-}
-
-// ---------------------------------------------------------------------------
-
-/**
- * Generate the module-registration skill (dotnet-specific).
- * @param {string} sub
- * @param {string} stackId
- * @param {Object} modulePattern
  * @param {string} role
  * @returns {{ skillMd: string, examplesMd: string }}
  */
-function genModuleRegistrationSkill(sub, stackId, modulePattern, role) {
+function genPatternSkill(sub, patternSlug, patternTitle, description, pattern, registryEntities, registryEnums, role) {
   const iso = isoNow();
-  const lang = stackLang(stackId);
+  const folder = pattern.folder || null;
+  const baseClass = pattern.baseClass || null;
+  const baseInterface = pattern.baseInterface || null;
+  const ifaces = Array.isArray(pattern.interfaces) ? pattern.interfaces.filter(Boolean) : [];
+  const nsPattern = pattern.namespacePattern || null;
+  const naming = pattern.namingConvention || null;
 
-  const pattern = modulePattern.pattern || '{Entity}Module : IModule';
-  const regMethod = modulePattern.registrationMethod || 'RegisterModule';
-  const diPattern = modulePattern.diPattern || 'AddScoped';
+  // Primary convention bullets
+  const convLines = [];
+  if (folder) convLines.push(`- Folder: \`${folder}\``);
+  if (baseClass) convLines.push(`- Base class: \`${baseClass}\``);
+  if (baseInterface) convLines.push(`- Base interface: \`${baseInterface}\``);
+  if (ifaces.length) convLines.push(`- Interfaces: \`${ifaces.join(', ')}\``);
+  if (nsPattern) convLines.push(`- Namespace: \`${nsPattern}.{Entity}\``);
+  if (naming) convLines.push(`- Naming: \`${naming}\``);
 
-  const skillTpl = loadTpl('module-registration.skill.md.tmpl');
-  const skillMd = skillTpl ? render(skillTpl, {
-    sub, iso, role, lang,
-    modulePattern: pattern, regMethod, diPattern,
-    exampleCode: buildModuleExample(stackId, 'Contract', modulePattern),
-  }) : '';
+  // Extra fields from pattern (dynamic — no assumptions about which fields exist)
+  const extraFields = enumeratePatternFields(pattern);
+  if (extraFields) convLines.push(extraFields);
 
-  const examplesTpl = loadTpl('module-registration.examples.md.tmpl');
-  const examplesMd = examplesTpl ? render(examplesTpl, {
-    sub, iso, role, lang,
-    example1: buildModuleExample(stackId, 'Contract', modulePattern),
-    example2: buildModuleExample(stackId, 'Invoice', modulePattern),
-  }) : '';
+  const convSection = convLines.join('\n');
+
+  // Pick up to 3 real entity entries for examples
+  const allEntityKeys = Object.keys(registryEntities || {});
+  const repEntries = allEntityKeys.slice(0, 3).map(k => ({ key: k, info: registryEntities[k] }));
+
+  // Real-examples bullet list
+  const repBullets = repEntries
+    .filter(e => e.info?.file)
+    .map(e => `- \`${e.key}\` — \`${e.info.file}\``)
+    .join('\n');
+
+  const skillMd = `---
+name: ${sub}-${patternSlug}
+description: "${description}"
+source: scan
+---
+<!-- mustard:generated at:${iso} role:${role} -->
+
+# ${patternTitle}
+
+> Pattern detected in this project.
+
+## Convention
+${convSection}
+
+## Real examples in this codebase
+${repBullets || '- (no entities with file references in registry)'}
+
+## References
+See \`references/examples.md\` for extracted code.
+`;
+
+  // Build examples.md from real source files
+  const examplesMd = buildExamplesMd(patternTitle, repEntries);
+
   return { skillMd, examplesMd };
 }
 
 /**
- * Build a module registration example.
- * @param {string} stackId
- * @param {string} entityName
- * @param {Object} pattern
+ * Build references/examples.md by reading actual source files from registry entries.
+ * Skips entries with no file path or where the file doesn't exist (stale registry).
+ *
+ * @param {string} patternTitle
+ * @param {Array<{key: string, info: Object}>} entries
  * @returns {string}
  */
-function buildModuleExample(stackId, entityName, pattern) {
-  const regMethod = pattern.registrationMethod || 'RegisterModule';
-  const diPat = pattern.diPattern || 'AddScoped';
-
-  if (stackId !== 'dotnet') return `// Module registration for ${entityName} — see project conventions`;
-
-  return `public class ${entityName}Module : IModule
-{
-    public IServiceCollection ${regMethod}(IServiceCollection services)
-    {
-        services.${diPat}<I${entityName}Service, ${entityName}Service>();
-        services.${diPat}<I${entityName}Repository, ${entityName}Repository>();
-        return services;
-    }
-
-    public IEndpointRouteBuilder MapEndpoints(IEndpointRouteBuilder endpoints)
-    {
-        endpoints.MapGroup("/v1/${entityName.toLowerCase()}s")
-            .MapGet("/", ${entityName}EndPoints.GetAllAsync)
-            .MapPost("/", ${entityName}EndPoints.CreateAsync);
-        return endpoints;
-    }
-}`;
-}
-
-// ---------------------------------------------------------------------------
-// Stack-specific: Dart extras
-// ---------------------------------------------------------------------------
-
-/**
- * Generate the state-management skill (Dart/Flutter).
- * @param {string} sub
- * @param {Object} dartPatterns - full _patterns.dart
- * @param {string} role
- * @param {Object} registryEntities
- * @returns {{ skillMd: string, examplesMd: string }}
- */
-function genStateManagementSkill(sub, dartPatterns, role, registryEntities) {
+function buildExamplesMd(patternTitle, entries) {
   const iso = isoNow();
-  const sm = dartPatterns.stateManagement || {};
-  const framework = sm.framework || 'Riverpod';
-  const pattern = sm.pattern || 'AsyncNotifier';
-  const fileConvention = sm.fileConvention || '{feature}_provider.dart';
+  let md = `<!-- mustard:generated at:${iso} -->\n\n# ${patternTitle} — real examples from this codebase\n\n`;
 
-  const rep = pickRepresentativeEntity(registryEntities);
-  const repName = rep?.name || 'Contract';
-  const lower = repName.charAt(0).toLowerCase() + repName.slice(1);
+  let hasAny = false;
+  for (const { key, info } of entries) {
+    const filePath = info?.file;
+    if (!filePath) continue;
 
-  const exampleCode = buildStateExample(framework, repName, lower);
+    const excerpt = readFileExcerpt(filePath);
+    if (excerpt === null) continue; // stale registry entry — skip silently
 
-  const skillTpl = loadTpl('state-management.skill.md.tmpl');
-  const skillMd = skillTpl ? render(skillTpl, {
-    sub, iso, role, framework, repName,
-    smPattern: pattern, fileConvention, exampleCode,
-  }) : '';
-
-  const examplesTpl = loadTpl('state-management.examples.md.tmpl');
-  const examplesMd = examplesTpl ? render(examplesTpl, {
-    sub, iso, role, framework, repName,
-    example1: exampleCode,
-  }) : '';
-  return { skillMd, examplesMd };
-}
-
-/**
- * Build a state management example for Dart.
- * @param {string} framework
- * @param {string} entityName
- * @param {string} lower
- * @returns {string}
- */
-function buildStateExample(framework, entityName, lower) {
-  switch (framework) {
-    case 'Riverpod':
-      return `@riverpod
-class ${entityName}Notifier extends _\$${entityName}Notifier {
-  @override
-  Future<List<${entityName}>> build() async {
-    return ref.watch(${lower}RepositoryProvider).getAll();
+    hasAny = true;
+    const lang = extToLang(filePath);
+    md += `## ${key}\nSource: \`${filePath}\`\n\`\`\`${lang}\n${excerpt}\n\`\`\`\n\n`;
   }
 
-  Future<void> create(Create${entityName}Input input) async {
-    state = const AsyncLoading();
-    state = await AsyncValue.guard(() async {
-      await ref.read(${lower}RepositoryProvider).create(input);
-      return ref.read(${lower}RepositoryProvider).getAll();
-    });
-  }
-}`;
-
-    case 'BLoC':
-      return `class ${entityName}Bloc extends Bloc<${entityName}Event, ${entityName}State> {
-  final ${entityName}Repository _repo;
-
-  ${entityName}Bloc(this._repo) : super(${entityName}Initial()) {
-    on<Load${entityName}s>(_onLoad);
-    on<Create${entityName}>(_onCreate);
+  if (!hasAny) {
+    md += '_No source files found — registry may be stale. Run `sync-registry.js --force` to refresh._\n';
   }
 
-  Future<void> _onLoad(Load${entityName}s event, Emitter<${entityName}State> emit) async {
-    emit(${entityName}Loading());
-    try {
-      final items = await _repo.getAll();
-      emit(${entityName}Loaded(items));
-    } catch (e) {
-      emit(${entityName}Error(e.toString()));
-    }
-  }
-}`;
-
-    default:
-      return `// State management for ${entityName} — uses ${framework}`;
-  }
+  return md;
 }
 
 // ---------------------------------------------------------------------------
+// Per-pattern descriptors — fully derived, no switch/case per slug.
+// ---------------------------------------------------------------------------
 
 /**
- * Generate the navigation-pattern skill (Dart/Flutter).
- * @param {string} sub
- * @param {Object} dartPatterns
- * @param {string} role
- * @returns {{ skillMd: string, examplesMd: string }}
+ * Derive a human title and description for any pattern slug, in any stack.
+ * No hardcoded titles. No stack-specific prose. Works for unknown slugs too.
+ *
+ * Description is guaranteed to contain at least one validator trigger word
+ * ("Use when", "add", "create", "new", "even if") and be ≥50 chars.
+ *
+ * @param {string} slug   - e.g. "entity-creation", "saga-orchestration"
+ * @param {string} label  - human stack label (e.g. "Zig", "C# / .NET")
+ * @param {Object|null} [patternData] - the pattern JSON from registry (optional)
+ * @returns {{ title: string, description: string }}
  */
-function genNavigationPatternSkill(sub, dartPatterns, role) {
-  const iso = isoNow();
-  const nav = dartPatterns.navigation || {};
-  const framework = nav.framework || 'GoRouter';
-  const routeFileConvention = nav.fileConvention || 'router.dart';
+function deriveDescriptor(slug, label, patternData) {
+  // Title: "entity-creation" → "Entity Creation"
+  const title = slug.split('-').map(cap).join(' ');
 
-  const exampleCode = buildNavigationExample(framework);
+  // Human-readable slug phrase: "entity creation"
+  const humanSlug = slug.replace(/-/g, ' ');
 
-  const skillTpl = loadTpl('navigation-pattern.skill.md.tmpl');
-  const skillMd = skillTpl ? render(skillTpl, {
-    sub, iso, role, framework, routeFileConvention, exampleCode,
-  }) : '';
+  // Optional folder hint from registry data
+  const folder = patternData?.folder ? ` (detected in \`${patternData.folder}\`)` : '';
 
-  const examplesTpl = loadTpl('navigation-pattern.examples.md.tmpl');
-  const examplesMd = examplesTpl ? render(examplesTpl, {
-    sub, iso, role, framework,
-    example1: exampleCode,
-  }) : '';
-  return { skillMd, examplesMd };
-}
+  // Compose a description that is unambiguous about trigger conditions.
+  // The template guarantees "Use when" + "add" trigger words for validateSkill().
+  const description = [
+    `Pattern for ${humanSlug}${folder} in this ${label} project.`,
+    `Use when adding new ${humanSlug} artifacts to the codebase,`,
+    `or when the user says 'add ${humanSlug}', 'create ${humanSlug}', 'new ${humanSlug}', 'implement ${humanSlug}'.`,
+    `Even if the user just says '${humanSlug}'.`,
+  ].join(' ');
 
-/**
- * Build a navigation example for Dart.
- * @param {string} framework
- * @returns {string}
- */
-function buildNavigationExample(framework) {
-  switch (framework) {
-    case 'GoRouter':
-      return `final router = GoRouter(
-  routes: [
-    GoRoute(
-      path: '/contracts',
-      builder: (context, state) => const ContractListPage(),
-    ),
-    GoRoute(
-      path: '/contracts/:id',
-      builder: (context, state) {
-        final id = state.pathParameters['id']!;
-        return ContractDetailPage(id: id);
-      },
-    ),
-  ],
-);`;
-
-    case 'AutoRoute':
-      return `@AutoRouterConfig()
-class AppRouter extends \$AppRouter {
-  @override
-  List<AutoRoute> get routes => [
-    AutoRoute(page: ContractListRoute.page, path: '/contracts'),
-    AutoRoute(page: ContractDetailRoute.page, path: '/contracts/:id'),
-  ];
-}`;
-
-    default:
-      return `// Navigation for ${framework} — see router.dart`;
-  }
+  return { title, description };
 }
 
 // ---------------------------------------------------------------------------
-// Cluster skill generator (generic/agnostic discovery)
+// Cluster skill generator (generic/agnostic discovery) — unchanged
 // ---------------------------------------------------------------------------
 
 /**
  * Derive structural stopwords from a project-wide folder frequency index.
  * A segment is "structural" for THIS project if it appears in ≥60% of all folders.
- * Purely data-driven — zero hardcoded vocabulary.
  *
  * @param {{totalFolders: number, segments: Object<string, number>}|null} folderFrequency
  * @returns {Set<string>} lowercase stopwords
@@ -1640,7 +803,7 @@ class AppRouter extends \$AppRouter {
 function deriveStopwords(folderFrequency) {
   const stopwords = new Set();
   if (!folderFrequency || !folderFrequency.totalFolders || folderFrequency.totalFolders < 5) {
-    return stopwords; // too few folders to derive signal; return empty
+    return stopwords;
   }
   const total = folderFrequency.totalFolders;
   const segments = folderFrequency.segments || {};
@@ -1652,9 +815,6 @@ function deriveStopwords(folderFrequency) {
 
 /**
  * Extract distinctive folder-name keywords from a cluster's folders.
- * Stopwords are derived dynamically from the project's folder frequency index —
- * no hardcoded vocabulary. Assembly/namespace-style tokens (dot-separated) are
- * always filtered as they don't help semantic matching.
  *
  * @param {string[]} folders
  * @param {{totalFolders: number, segments: Object<string, number>}|null} [folderFrequency]
@@ -1671,14 +831,10 @@ function extractFolderKeywords(folders, folderFrequency = null) {
       const lower = part.toLowerCase();
       if (STOPWORDS.has(lower)) continue;
       if (part.length < 3) continue;
-      // Skip assembly/namespace-style tokens (e.g. "Sialia.Backend") — not useful for matching
       if (part.includes('.')) continue;
-      // Heuristic: prefer parts that appear across multiple folders (shared context)
       freq.set(part, (freq.get(part) || 0) + 1);
     }
   }
-  // Prefer keywords that appear in multiple folders — these are the shared "concept",
-  // not per-module names. If only one folder exists, just rank by position/length.
   return Array.from(freq.entries())
     .filter(([, count]) => folders.length === 1 || count >= 2)
     .sort((a, b) => b[1] - a[1] || b[0].length - a[0].length)
@@ -1689,10 +845,8 @@ function extractFolderKeywords(folders, folderFrequency = null) {
 
 /**
  * Generate a SKILL.md for a discovered structural cluster.
- * The cluster was detected purely from filesystem structure — no technology name
- * is hardcoded here; the suffix/label is derived from what was found on disk.
  *
- * @param {string} sub - subproject agent name (used as skill name prefix)
+ * @param {string} sub - subproject agent name
  * @param {string} stackId
  * @param {Object} cluster - cluster descriptor from discoverClusters()
  * @param {string} role
@@ -1706,10 +860,8 @@ function genClusterSkill(sub, stackId, cluster, role, folderFrequency = null) {
   const iso = isoNow();
   const label = stackLabel(stackId);
 
-  // Derive human-readable suffix from cluster (priority: suffix → commonBaseClass → fallback)
   const suffix = cluster.suffix || cluster.commonBaseClass || 'Pattern';
 
-  // slug: kebab-case of suffix, lowercase, alphanumeric+hyphen only
   const slug = suffix
     .toLowerCase()
     .replace(/[^a-z0-9]/g, '-')
@@ -1722,10 +874,6 @@ function genClusterSkill(sub, stackId, cluster, role, folderFrequency = null) {
   const samples = cluster.samples || [];
   const samplesList = samples.map(s => `- \`${s}\``).join('\n');
 
-  // Mitigation A: extract folder-name keywords to strengthen semantic matching.
-  // If folders contain words like "GraphQL" or "Handlers", those surface in the
-  // description and in orchestrator keyword matching — without Mustard hardcoding them.
-  // Stopwords are derived from the project-wide folder frequency when available.
   const folderKeywords = extractFolderKeywords(
     cluster.folders || (cluster.folder ? [cluster.folder] : []),
     folderFrequency
@@ -1765,19 +913,50 @@ function genClusterSkill(sub, stackId, cluster, role, folderFrequency = null) {
 // ---------------------------------------------------------------------------
 
 /**
- * Determine if a pattern has enough data to generate a useful skill.
+ * Meta keys inside a stack's _patterns[stackId] object that are NOT themselves
+ * patterns (they carry discovery metadata, not skill-worthy conventions).
+ */
+const PATTERN_META_KEYS = new Set(['discovered', 'folderFrequency']);
+
+/**
+ * Determine if a pattern object has at least one useful (non-empty) value
+ * after filtering out structural/meta fields that are rendered separately
+ * or carry no skill-generation signal.
+ *
  * @param {Object|null|undefined} pattern
- * @param {string[]} requiredFields - at least one must be non-null
  * @returns {boolean}
  */
-function patternHasData(pattern, requiredFields) {
+function hasUsefulFields(pattern) {
   if (!pattern || typeof pattern !== 'object') return false;
-  return requiredFields.some(f => {
-    const v = pattern[f];
-    if (v === null || v === undefined || v === '') return false;
-    if (Array.isArray(v)) return v.length > 0;
+  for (const [key, val] of Object.entries(pattern)) {
+    if (key.startsWith('_')) continue;
+    if (val === null || val === undefined || val === '') continue;
+    if (Array.isArray(val)) {
+      if (val.length > 0) return true;
+      continue;
+    }
+    if (typeof val === 'object') {
+      if (Object.keys(val).length > 0) return true;
+      continue;
+    }
+    // Any non-empty primitive counts.
     return true;
-  });
+  }
+  return false;
+}
+
+/**
+ * Convert a camelCase/PascalCase key into a kebab-case slug.
+ * @param {string} key
+ * @returns {string}
+ */
+function keyToSlug(key) {
+  return String(key)
+    .replace(/([a-z0-9])([A-Z])/g, '$1-$2')
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1-$2')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
 }
 
 /**
@@ -1795,106 +974,48 @@ function generateSkillsForStack(stackId, stackPatterns, subprojects, registry) {
   const files = [];
   const registryEntities = registry.e || {};
   const registryEnums = registry._enums || {};
+  // Derive label from any subproject's abs path (all share the same stack)
+  const firstAbsPath = subprojects[0]?.absPath || null;
+  const label = stackLabel(stackId, firstAbsPath);
 
-  // Use the first matching subproject as the primary target for skill output
-  // (skills are generated into each subproject's .claude/skills/)
+  // Role-based registry skills live in ROOT .claude/skills/ (single copy per role).
+  const rootSkillsDir = path.join(ROOT, '.claude', 'skills');
+  const emittedFolders = new Set();
+
   for (const sub of subprojects) {
-    const subPath = path.join(ROOT, sub.path);
-    const skillsDir = path.join(subPath, '.claude', 'skills');
+    const skillsDir = rootSkillsDir;
     const role = sub.role || 'general';
-    // Use agent role as skill prefix (e.g., "api-", "app-") instead of full subproject name
     const subName = sub.agent || role;
 
-    // 1. entity-creation
-    if (patternHasData(stackPatterns.entity, ['folder', 'baseClass', 'interfaces', 'namespacePattern'])) {
-      const { skillMd, examplesMd } = genEntityCreationSkill(
-        subName, stackId, stackPatterns.entity,
-        stackPatterns.enum || null, role, registryEntities
+    const emitSkill = (slug, skillMd, examplesMd) => {
+      const folder = `${subName}-${slug}`;
+      if (emittedFolders.has(folder)) return;
+      emittedFolders.add(folder);
+      files.push({ filePath: path.join(skillsDir, folder, 'SKILL.md'), content: skillMd });
+      if (examplesMd) {
+        files.push({ filePath: path.join(skillsDir, folder, 'references', 'examples.md'), content: examplesMd });
+      }
+    };
+
+    // Dynamic pattern generation — iterate over every non-meta key in the
+    // stack's pattern object. No hardcoded slug list: any key the registry
+    // produces becomes a candidate skill, provided it carries useful data.
+    for (const [key, pattern] of Object.entries(stackPatterns)) {
+      if (key.startsWith('_')) continue;
+      if (PATTERN_META_KEYS.has(key)) continue;
+      if (!pattern || typeof pattern !== 'object') continue;
+      if (!hasUsefulFields(pattern)) continue;
+
+      const slug = keyToSlug(key) || 'pattern';
+      const { title, description } = deriveDescriptor(slug, label, pattern);
+      const { skillMd, examplesMd } = genPatternSkill(
+        subName, slug, title, description,
+        pattern, registryEntities, registryEnums, role
       );
-      files.push({ filePath: path.join(skillsDir, `${subName}-entity-creation`, 'SKILL.md'), content: skillMd });
-      files.push({ filePath: path.join(skillsDir, `${subName}-entity-creation`, 'references', 'examples.md'), content: examplesMd });
+      emitSkill(slug, skillMd, examplesMd);
     }
 
-    // 2. enum-placement (only if enum pattern with specific folder or separateFiles)
-    if (patternHasData(stackPatterns.enum, ['folder', 'valueConvention']) &&
-        (stackPatterns.enum.separateFiles || stackPatterns.enum.folder)) {
-      const { skillMd, examplesMd } = genEnumPlacementSkill(
-        subName, stackId, stackPatterns.enum, role, registryEnums
-      );
-      files.push({ filePath: path.join(skillsDir, `${subName}-enum-placement`, 'SKILL.md'), content: skillMd });
-      files.push({ filePath: path.join(skillsDir, `${subName}-enum-placement`, 'references', 'examples.md'), content: examplesMd });
-    }
-
-    // 3. route-conventions
-    if (patternHasData(stackPatterns.routes, ['groupPrefix', 'namingPattern', 'authPattern', 'versioningStrategy'])) {
-      const { skillMd, examplesMd } = genRouteConventionsSkill(
-        subName, stackId, stackPatterns.routes, role, registryEntities
-      );
-      files.push({ filePath: path.join(skillsDir, `${subName}-route-conventions`, 'SKILL.md'), content: skillMd });
-      files.push({ filePath: path.join(skillsDir, `${subName}-route-conventions`, 'references', 'examples.md'), content: examplesMd });
-    }
-
-    // 4. service-pattern (only if interfaceFirst is detected)
-    if (patternHasData(stackPatterns.service, ['interfaceFirst', 'baseInterface']) &&
-        stackPatterns.service.interfaceFirst === true) {
-      const { skillMd, examplesMd } = genServicePatternSkill(
-        subName, stackId, stackPatterns.service, role, registryEntities
-      );
-      files.push({ filePath: path.join(skillsDir, `${subName}-service-pattern`, 'SKILL.md'), content: skillMd });
-      files.push({ filePath: path.join(skillsDir, `${subName}-service-pattern`, 'references', 'examples.md'), content: examplesMd });
-    }
-
-    // 5. repository-pattern
-    if (patternHasData(stackPatterns.repository, ['interfaceFirst', 'baseInterface', 'baseClass'])) {
-      const { skillMd, examplesMd } = genRepositoryPatternSkill(
-        subName, stackId, stackPatterns.repository, role, registryEntities
-      );
-      files.push({ filePath: path.join(skillsDir, `${subName}-repository-pattern`, 'SKILL.md'), content: skillMd });
-      files.push({ filePath: path.join(skillsDir, `${subName}-repository-pattern`, 'references', 'examples.md'), content: examplesMd });
-    }
-
-    // 6. dto-conventions (only if validationPattern is present)
-    if (patternHasData(stackPatterns.dto, ['folder', 'validationPattern', 'namingPatterns'])) {
-      const { skillMd, examplesMd } = genDtoConventionsSkill(
-        subName, stackId, stackPatterns.dto, role, registryEntities
-      );
-      files.push({ filePath: path.join(skillsDir, `${subName}-dto-conventions`, 'SKILL.md'), content: skillMd });
-      files.push({ filePath: path.join(skillsDir, `${subName}-dto-conventions`, 'references', 'examples.md'), content: examplesMd });
-    }
-
-    // 7. module-registration (only if module pattern exists)
-    if (patternHasData(stackPatterns.module, ['pattern', 'registrationMethod'])) {
-      const { skillMd, examplesMd } = genModuleRegistrationSkill(
-        subName, stackId, stackPatterns.module, role
-      );
-      files.push({ filePath: path.join(skillsDir, `${subName}-module-registration`, 'SKILL.md'), content: skillMd });
-      files.push({ filePath: path.join(skillsDir, `${subName}-module-registration`, 'references', 'examples.md'), content: examplesMd });
-    }
-
-    // ---- Stack-specific extras ----
-
-    // Dart: state management
-    if (stackId === 'dart' && patternHasData(stackPatterns.stateManagement, ['framework'])) {
-      const { skillMd, examplesMd } = genStateManagementSkill(
-        subName, stackPatterns, role, registryEntities
-      );
-      files.push({ filePath: path.join(skillsDir, `${subName}-state-management`, 'SKILL.md'), content: skillMd });
-      files.push({ filePath: path.join(skillsDir, `${subName}-state-management`, 'references', 'examples.md'), content: examplesMd });
-    }
-
-    // Dart: navigation pattern
-    if (stackId === 'dart' && patternHasData(stackPatterns.navigation, ['framework'])) {
-      const { skillMd, examplesMd } = genNavigationPatternSkill(
-        subName, stackPatterns, role
-      );
-      files.push({ filePath: path.join(skillsDir, `${subName}-navigation-pattern`, 'SKILL.md'), content: skillMd });
-      files.push({ filePath: path.join(skillsDir, `${subName}-navigation-pattern`, 'references', 'examples.md'), content: examplesMd });
-    }
-
-    // ---- Generic/agnostic cluster skills (discovered by structure, not by tech name) ----
-    // Agnostic dedup: if the specific-template loop above already produced a skill
-    // with the same folder name (`${sub}-${slug}-pattern`), skip the cluster.
-    // No hardcoded suffix list — collisions resolve purely by the names already emitted.
+    // Generic/agnostic cluster skills (discovered by structure, not by tech name)
     const alreadyGeneratedSlugs = new Set(
       files
         .map(f => {
@@ -1914,8 +1035,8 @@ function generateSkillsForStack(stackId, stackPatterns, subprojects, registry) {
     const folderFrequency = stackPatterns.folderFrequency || null;
     const topClusters = discoveredClusters
       .filter(c => {
-        const slug = clusterSlug(c.suffix || c.commonBaseClass || '');
-        return slug && !alreadyGeneratedSlugs.has(slug);
+        const s = clusterSlug(c.suffix || c.commonBaseClass || '');
+        return s && !alreadyGeneratedSlugs.has(s);
       })
       .slice()
       .sort((a, b) => (b.fileCount || 0) - (a.fileCount || 0))
@@ -1925,7 +1046,10 @@ function generateSkillsForStack(stackId, stackPatterns, subprojects, registry) {
       const result = genClusterSkill(subName, stackId, cluster, role, folderFrequency);
       if (!result) continue;
       const { skillMd, slug } = result;
-      const skillPath = path.join(skillsDir, `${subName}-${slug}-pattern`, 'SKILL.md');
+      const folder = `${subName}-${slug}-pattern`;
+      if (emittedFolders.has(folder)) continue;
+      emittedFolders.add(folder);
+      const skillPath = path.join(skillsDir, folder, 'SKILL.md');
       files.push({ filePath: skillPath, content: skillMd });
     }
   }
@@ -1938,7 +1062,6 @@ function generateSkillsForStack(stackId, stackPatterns, subprojects, registry) {
 // ---------------------------------------------------------------------------
 
 function main() {
-  // 1. Read registry
   const registry = readJsonSafe(REGISTRY_PATH);
   if (!registry) {
     console.error('Error: entity-registry.json not found at', REGISTRY_PATH);
@@ -1962,44 +1085,25 @@ function main() {
   console.log(`Registry v${version} — patterns: [${patternStacks.join(', ')}]`);
   console.log(`Entities: ${Object.keys(registry.e || {}).length}, Enums: ${Object.keys(registry._enums || {}).length}`);
 
-  // 2. Build stack → subprojects map from detect cache
   const stackSubMap = buildStackSubprojectMap();
 
-  // 3. For each stack with patterns, generate skills
   const log = [];
   let totalSkills = 0;
-  // Track for cleanup: folder names this run expects + sub names actually processed
   const expectedSkillFolders = new Set();
   const subNamesProcessed = new Set();
+  _processedAgentPrefixes.clear();
 
   for (const stackId of patternStacks) {
     const stackPatterns = patterns[stackId];
     if (!stackPatterns || Object.keys(stackPatterns).length === 0) continue;
 
-    // Get subprojects for this stack
     let subs = stackSubMap.get(stackId) || [];
 
-    // If no cache match, try to infer from directory names
     if (subs.length === 0) {
-      // Try common naming heuristics
-      const guessNames = { dotnet: ['api', 'backend', 'server'], typescript: ['frontend', 'ui', 'web', 'app'], dart: ['mobile', 'app'] };
-      const guesses = guessNames[stackId] || [];
-      for (const guess of guesses) {
-        const guessPath = path.join(ROOT, guess);
-        if (fs.existsSync(guessPath)) {
-          subs.push({ name: guess, path: guess, role: 'general', agent: 'general' });
-          break;
-        }
-      }
-
-      // Last resort: use stackId itself as subproject name (single-subproject monorepo)
-      if (subs.length === 0) {
-        console.log(`  No subproject found for stack "${stackId}" — skipping`);
-        continue;
-      }
+      console.log(`  No subproject found for stack "${stackId}" — skipping`);
+      continue;
     }
 
-    // Apply --subproject filter
     if (SUB_FILTER) {
       subs = subs.filter(s => s.name === SUB_FILTER);
       if (subs.length === 0) continue;
@@ -2007,15 +1111,15 @@ function main() {
 
     console.log(`\nStack: ${stackId} → subproject(s): ${subs.map(s => s.name).join(', ')}`);
 
-    // Record sub names that this stack will actually emit
-    for (const s of subs) subNamesProcessed.add(s.name);
+    for (const s of subs) {
+      subNamesProcessed.add(s.name);
+      const prefix = s.agent || s.role || 'general';
+      if (prefix) _processedAgentPrefixes.add(prefix);
+    }
 
     const files = generateSkillsForStack(stackId, stackPatterns, subs, registry);
 
     for (const { filePath, content } of files) {
-      // Track the parent folder (skill dir name) for cleanup comparison.
-      // Paths look like `.../skills/{folderName}/SKILL.md` or
-      // `.../skills/{folderName}/references/examples.md`.
       const rel = path.relative(path.join(ROOT, '.claude', 'skills'), filePath);
       const folderName = rel.split(/[\\/]/)[0];
       if (folderName && !folderName.startsWith('..')) expectedSkillFolders.add(folderName);
@@ -2025,50 +1129,63 @@ function main() {
     }
   }
 
-  // 4. Cleanup orphan skills — ensures skills/ reflects only the current scan
+  // Cleanup orphan skills
   if (!NO_CLEANUP && subNamesProcessed.size > 0) {
     const skillsRoot = path.join(ROOT, '.claude', 'skills');
-    const removed = cleanupOrphanSkills(
-      skillsRoot,
-      expectedSkillFolders,
-      Array.from(subNamesProcessed),
-      log
-    );
+    const agentPrefixes = Array.from(_processedAgentPrefixes);
+    const removed = cleanupOrphanSkills(skillsRoot, expectedSkillFolders, agentPrefixes, log);
     if (removed > 0) {
       console.log(`\nCleanup: ${removed} orphan skill folder(s) ${DRY_RUN ? 'would be ' : ''}removed.`);
     }
   }
 
-  // 5. Report
   console.log('\n' + log.join('\n'));
   console.log(`\nDone: ${totalSkills} file(s) processed.`);
 
   if (DRY_RUN) {
     console.log('\n(dry-run — no files written)');
   }
+
+  // Final validation sweep — non-blocking
+  try {
+    const { spawnSync } = require('child_process');
+    const validateScript = path.join(__dirname, 'skill-validate.js');
+    if (fs.existsSync(validateScript)) {
+      const res = spawnSync(process.execPath, [validateScript, '--quiet'], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        encoding: 'utf-8',
+      });
+      const output = (res.stdout || '') + (res.stderr || '');
+      if (output.trim()) {
+        console.log('\n---- skill-validate ----');
+        process.stdout.write(output);
+      }
+      if (res.status === 2) {
+        process.exitCode = 2;
+      }
+    }
+  } catch (err) {
+    process.stderr.write(`[skill-generator] Validation pass skipped: ${err.message}\n`);
+  }
 }
 
 /**
  * Remove orphan skills: folders under `.claude/skills/` that were generated by
- * a previous run (have `source: scan` in frontmatter, match a processed-sub prefix)
- * but are NOT in the current run's expected set. Ensures the skills directory
- * reflects ONLY what the current scan produces — no stale patterns from deleted
- * code.
+ * a previous run (have `source: scan` in frontmatter, match a processed-agent prefix)
+ * but are NOT in the current run's expected set.
  *
- * Safety rules (territorial enforcement, aligned with PR 3):
+ * Safety rules (territorial enforcement):
  *   - Only touch folders whose SKILL.md has `source: scan` frontmatter.
- *   - Only touch folders whose name starts with one of the processed sub names.
+ *   - Only touch folders whose name starts with one of the processed agent prefixes.
  *   - Never touch `source: manual` skills or folders without the frontmatter marker.
- *   - Never touch folders for sub names NOT processed in this run (e.g. when
- *     `--subproject backend` is used, only `backend-*` is considered).
  *
  * @param {string} skillsRoot - absolute path to `.claude/skills/`
  * @param {Set<string>} expectedFolders - set of folder names the current run will write
- * @param {string[]} subNamesProcessed - sub names included in this run
+ * @param {string[]} agentPrefixes - agent prefixes included in this run
  * @param {string[]} log - mutable log array
  * @returns {number} count of folders removed
  */
-function cleanupOrphanSkills(skillsRoot, expectedFolders, subNamesProcessed, log) {
+function cleanupOrphanSkills(skillsRoot, expectedFolders, agentPrefixes, log) {
   if (!fs.existsSync(skillsRoot)) return 0;
   let entries;
   try { entries = fs.readdirSync(skillsRoot); } catch { return 0; }
@@ -2078,24 +1195,19 @@ function cleanupOrphanSkills(skillsRoot, expectedFolders, subNamesProcessed, log
     const folderPath = path.join(skillsRoot, entry);
     const skillPath = path.join(folderPath, 'SKILL.md');
 
-    // Territorial: only consider folders prefixed by a processed sub name
-    const belongsToProcessedSub = subNamesProcessed.some(sub => entry.startsWith(sub + '-'));
-    if (!belongsToProcessedSub) continue;
+    const belongsToProcessedAgent = agentPrefixes.some(pref => entry.startsWith(pref + '-'));
+    if (!belongsToProcessedAgent) continue;
 
-    // Skip if not a skill folder
     if (!fs.existsSync(skillPath)) continue;
 
-    // Read frontmatter; only touch source:scan
     let content;
     try { content = fs.readFileSync(skillPath, 'utf-8'); } catch { continue; }
     const fm = content.match(/^---\n([\s\S]*?)\n---/);
     if (!fm) continue;
     if (!/^source:\s*scan\s*$/m.test(fm[1])) continue;
 
-    // Skip if expected in current run
     if (expectedFolders.has(entry)) continue;
 
-    // Orphan — remove
     if (DRY_RUN) {
       log.push(`  [cleanup-dry] would remove orphan: ${entry}`);
       removed++;
@@ -2123,4 +1235,4 @@ if (require.main === module) {
 }
 
 // Export for testing
-module.exports = { validateSkill, genClusterSkill, stackLabel, cleanupOrphanSkills };
+module.exports = { validateSkill, genClusterSkill, stackLabel, cleanupOrphanSkills, genPatternSkill };

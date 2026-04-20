@@ -1,22 +1,213 @@
 #!/usr/bin/env node
 // metrics-report — aggregate enforcement metrics from .claude/.metrics/*.jsonl
-// Usage: node metrics-report.js [--since <ISO>] [--event <type>]
+// Usage:
+//   node metrics-report.js [--since <ISO>] [--event <type>]
+//   node metrics-report.js --compare <from> <to> [--since <ISO>] [--event <type>]
+//
+// <from>/<to> accept a git tag (regex ^v?\d+\.\d+\.\d+$) resolved via
+//   `git show -s --format=%cI <tag>` or any ISO date parsable by Date().
+// Future: `.claude/metrics/*.json` (pipeline-grained, written by metrics-collect.js)
+// could feed a parallel compare mode — kept out of this script on purpose.
 'use strict';
 const fs = require('fs');
 const path = require('path');
+const { execFileSync } = require('child_process');
 
-const METRICS_DIR = path.join(process.cwd(), '.claude', '.metrics');
+const METRICS_DIR = process.env.MUSTARD_METRICS_DIR
+  ? path.resolve(process.env.MUSTARD_METRICS_DIR)
+  : path.join(process.cwd(), '.claude', '.metrics');
 
-// Parse CLI args
+// ── Arg parsing ────────────────────────────────────────────────────────
 const args = process.argv.slice(2);
 let sinceFilter = null;
 let eventFilter = null;
+let compareFrom = null;
+let compareTo = null;
+
 for (let i = 0; i < args.length; i++) {
-  if (args[i] === '--since' && args[i + 1]) sinceFilter = new Date(args[++i]);
-  if (args[i] === '--event' && args[i + 1]) eventFilter = args[++i];
+  const a = args[i];
+  if (a === '--since' && args[i + 1]) { sinceFilter = new Date(args[++i]); continue; }
+  if (a === '--event' && args[i + 1]) { eventFilter = args[++i]; continue; }
+  if (a === '--compare') {
+    if (!args[i + 1] || !args[i + 2]) {
+      process.stderr.write('Error: --compare requires two arguments: --compare <from> <to>\n');
+      process.exit(1);
+    }
+    compareFrom = args[++i];
+    compareTo = args[++i];
+    continue;
+  }
 }
 
-// Collect all .jsonl files
+if (sinceFilter && isNaN(sinceFilter.getTime())) {
+  process.stderr.write('Error: --since value is not a valid date\n');
+  process.exit(1);
+}
+
+// ── Shared helpers ─────────────────────────────────────────────────────
+function readAllEvents() {
+  if (!fs.existsSync(METRICS_DIR)) return [];
+  const files = fs.readdirSync(METRICS_DIR).filter(f => f.endsWith('.jsonl'));
+  const events = [];
+  for (const file of files) {
+    let content;
+    try { content = fs.readFileSync(path.join(METRICS_DIR, file), 'utf8'); }
+    catch (_) { continue; }
+    for (const raw of content.split('\n')) {
+      const line = raw.trim();
+      if (!line) continue;
+      let entry;
+      try { entry = JSON.parse(line); } catch (_) { continue; }
+      if (!entry.event) continue;
+      events.push(entry);
+    }
+  }
+  return events;
+}
+
+function passesFilters(entry) {
+  if (sinceFilter && entry.ts && new Date(entry.ts) < sinceFilter) return false;
+  if (eventFilter && entry.event !== eventFilter) return false;
+  return true;
+}
+
+function aggregate(entries) {
+  const agg = {};
+  for (const entry of entries) {
+    const key = entry.event;
+    if (!agg[key]) agg[key] = { count: 0, tokensAffected: 0, tokensSaved: 0, notes: new Set() };
+    agg[key].count++;
+    if (typeof entry.tokens_affected === 'number') agg[key].tokensAffected += entry.tokens_affected;
+    // PR1: rtk-rewrite tokens_saved era heurística; números reais vêm de rtk-gain.
+    if (typeof entry.tokens_saved === 'number' && entry.event !== 'rtk-rewrite') {
+      agg[key].tokensSaved += entry.tokens_saved;
+    }
+    if (entry.note) agg[key].notes.add(entry.note);
+  }
+  return agg;
+}
+
+// ── Compare mode ───────────────────────────────────────────────────────
+const TAG_RE = /^v?\d+\.\d+\.\d+$/;
+
+function resolveEndpoint(value) {
+  // Returns { date: Date, source: 'tag'|'iso', raw: value }
+  if (TAG_RE.test(value)) {
+    let iso;
+    try {
+      iso = execFileSync('git', ['show', '-s', '--format=%cI', value], {
+        encoding: 'utf8',
+        timeout: 3000,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      }).trim();
+    } catch (err) {
+      process.stderr.write(`Error: could not resolve git tag "${value}" (is git available and the tag present?)\n`);
+      process.exit(1);
+    }
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) {
+      process.stderr.write(`Error: git returned unparseable date for "${value}": ${iso}\n`);
+      process.exit(1);
+    }
+    return { date: d, source: 'tag', raw: value };
+  }
+  const d = new Date(value);
+  if (isNaN(d.getTime())) {
+    process.stderr.write(`Error: "${value}" is not a valid git tag (expected vX.Y.Z) or ISO date\n`);
+    process.exit(1);
+  }
+  return { date: d, source: 'iso', raw: value };
+}
+
+function pct(ref, cur) {
+  if (ref === 0) {
+    if (cur === 0) return '0%';
+    return 'n/a';
+  }
+  const delta = ((cur - ref) / ref) * 100;
+  const sign = delta > 0 ? '+' : '';
+  return `${sign}${delta.toFixed(1)}%`;
+}
+
+function cell(ref, cur) {
+  return `${ref}→${cur} (${pct(ref, cur)})`;
+}
+
+function runCompare() {
+  const fromEp = resolveEndpoint(compareFrom);
+  const toEp = resolveEndpoint(compareTo);
+
+  if (fromEp.date >= toEp.date) {
+    process.stderr.write(`Error: --compare <from> must be earlier than <to> (got ${fromEp.date.toISOString()} >= ${toEp.date.toISOString()})\n`);
+    process.exit(1);
+  }
+
+  const newWindow = { start: fromEp.date, end: toEp.date };
+  const duration = newWindow.end.getTime() - newWindow.start.getTime();
+  const refWindow = {
+    start: new Date(newWindow.start.getTime() - duration),
+    end: new Date(newWindow.start.getTime()),
+  };
+
+  const all = readAllEvents().filter(passesFilters);
+  const inNew = all.filter(e => {
+    if (!e.ts) return false;
+    const t = new Date(e.ts);
+    return t >= newWindow.start && t < newWindow.end;
+  });
+  const inRef = all.filter(e => {
+    if (!e.ts) return false;
+    const t = new Date(e.ts);
+    return t >= refWindow.start && t < refWindow.end;
+  });
+
+  if (inNew.length === 0 && inRef.length === 0) {
+    console.log('No metrics data in the given windows');
+    process.exit(0);
+  }
+
+  const refSparse = inRef.length < 5;
+  if (refSparse) {
+    process.stderr.write(
+      `Warning: reference window [${refWindow.start.toISOString()}, ${refWindow.end.toISOString()}) has only ${inRef.length} event(s) (<5). Delta columns may be noisy; showing new-window report anyway.\n`
+    );
+  }
+
+  const aggNew = aggregate(inNew);
+  const aggRef = aggregate(inRef);
+  const keys = Array.from(new Set([...Object.keys(aggNew), ...Object.keys(aggRef)])).sort();
+
+  console.log('## Compare');
+  console.log('');
+  console.log(`- Reference window: ${refWindow.start.toISOString()} → ${refWindow.end.toISOString()} (${inRef.length} events)`);
+  console.log(`- New window:       ${newWindow.start.toISOString()} → ${newWindow.end.toISOString()} (${inNew.length} events)`);
+  console.log(`- From: ${fromEp.raw} (${fromEp.source})   To: ${toEp.raw} (${toEp.source})`);
+  if (refSparse) console.log(`- Note: reference history sparse (<5 events) — deltas advisory only`);
+  console.log('');
+
+  console.log('| Event | Count (ref→new, Δ%) | TokensAffected (ref→new, Δ%) | TokensSaved (ref→new, Δ%) |');
+  console.log('|-------|---------------------|------------------------------|---------------------------|');
+  let tRefC = 0, tNewC = 0, tRefA = 0, tNewA = 0, tRefS = 0, tNewS = 0;
+  for (const evt of keys) {
+    const r = aggRef[evt] || { count: 0, tokensAffected: 0, tokensSaved: 0 };
+    const n = aggNew[evt] || { count: 0, tokensAffected: 0, tokensSaved: 0 };
+    tRefC += r.count;      tNewC += n.count;
+    tRefA += r.tokensAffected; tNewA += n.tokensAffected;
+    tRefS += r.tokensSaved;    tNewS += n.tokensSaved;
+    console.log(`| ${evt} | ${cell(r.count, n.count)} | ${cell(r.tokensAffected, n.tokensAffected)} | ${cell(r.tokensSaved, n.tokensSaved)} |`);
+  }
+  console.log('|-------|---------------------|------------------------------|---------------------------|');
+  console.log(`| **TOTAL** | ${cell(tRefC, tNewC)} | ${cell(tRefA, tNewA)} | ${cell(tRefS, tNewS)} |`);
+
+  process.exit(0);
+}
+
+if (compareFrom && compareTo) {
+  runCompare();
+  // runCompare exits — control never reaches default path
+}
+
+// ── Default mode (backward-compatible) ─────────────────────────────────
 if (!fs.existsSync(METRICS_DIR)) {
   console.log('No metrics data yet');
   process.exit(0);
@@ -47,7 +238,10 @@ for (const file of files) {
     if (!agg[key]) agg[key] = { count: 0, tokensAffected: 0, tokensSaved: 0, notes: new Set() };
     agg[key].count++;
     if (typeof entry.tokens_affected === 'number') agg[key].tokensAffected += entry.tokens_affected;
-    if (typeof entry.tokens_saved === 'number') agg[key].tokensSaved += entry.tokens_saved;
+    // PR1: rtk-rewrite tokens_saved era heurística; números reais vêm de rtk-gain.
+    if (typeof entry.tokens_saved === 'number' && entry.event !== 'rtk-rewrite') {
+      agg[key].tokensSaved += entry.tokens_saved;
+    }
     if (entry.note) agg[key].notes.add(entry.note);
   }
 }
@@ -84,7 +278,6 @@ console.log(`| **TOTAL** | ${totalCount} | ${totalAffected || '-'} | ${totalSave
 // ── RTK Integration ────────────────────────────────────────────────────
 // Query RTK for actual savings data (if RTK is installed)
 try {
-  const { execFileSync } = require('child_process');
   let rtkAvailable = false;
   try {
     if (process.platform === 'win32') {

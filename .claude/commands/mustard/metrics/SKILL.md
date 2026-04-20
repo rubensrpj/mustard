@@ -20,11 +20,14 @@ Metrics are recorded **automatically** by enforcement hooks on every Task dispat
 ## Optional flags
 - `--since <ISO date>` — filter events after this date
 - `--event <type>` — filter to one event type (e.g. `budget-check`)
+- `--compare <from> <to>` — delta between two windows (git tag or ISO date)
 
 ## Examples
 - `/mustard:metrics` — full report since beginning
 - `/mustard:metrics --since 2026-04-09` — only recent events
 - `/mustard:metrics --event budget-check` — only budget-check events
+- `/mustard:metrics --compare v3.1.21 v3.1.22` — delta between two releases
+- `/mustard:metrics --compare 2026-04-09 2026-04-20` — delta between two dates
 
 ## Notes
 - Metrics live in `.claude/.metrics/*.jsonl` (gitignored, runtime state)

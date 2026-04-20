@@ -16,7 +16,7 @@
  *
  * Fail-open: exits 0 on any error so Claude is never blocked by this hook.
  *
- * @version 2.0.0
+ * @version 2.1.0
  */
 
 const { execFileSync, execSync } = require('child_process');
@@ -110,55 +110,15 @@ process.stdin.on('end', () => {
       process.exit(0);
     }
 
-    /**
-     * Estimate token savings percentage for known command types.
-     * These percentages come from RTK's documented savings rates.
-     * Conservative estimates — actual savings are often higher.
-     */
-    const SAVINGS_RATES = {
-      git:      0.70,  // git status/log/diff: 59-80%
-      grep:     0.75,  // search output: 75%
-      rg:       0.75,
-      ls:       0.65,  // directory listing: 65%
-      find:     0.70,  // find output: 70%
-      cat:      0.60,  // file content: 60%
-      head:     0.60,
-      tail:     0.60,
-      cargo:    0.85,  // build/test output: 80-90%
-      dotnet:   0.85,
-      npm:      0.80,
-      pnpm:     0.80,
-      npx:      0.80,
-      vitest:   0.95,  // test output: 90-99%
-      jest:     0.90,
-      playwright: 0.94,
-      docker:   0.85,
-      kubectl:  0.85,
-      tsc:      0.83,
-      gh:       0.80,  // GitHub CLI: 26-87% avg ~80%
-      curl:     0.70,
-      node:     0.70,
-      prisma:   0.88,
-    };
-
-    function estimateSavings(cmd) {
-      // Extract first token from the command (before RTK rewriting)
-      const firstToken = cmd.trim().split(/\s+/)[0].replace(/^[A-Z_]+=\S+\s*/, '');
-      const base = firstToken.split('/').pop(); // handle full paths like /usr/bin/git
-      return SAVINGS_RATES[base] || 0.50; // default 50% for unknown commands
-    }
-
-    const rate = estimateSavings(cmd);
-    const estimatedOutputTokens = Math.round(cmd.length / 4) * 10; // rough: output is ~10x command length
-    const estimatedSaved = Math.round(estimatedOutputTokens * rate);
-
+    // Real tokens_saved numbers are imported from `rtk gain --format json` via
+    // scripts/rtk-gain-import.js (event: rtk-gain). We only record the fact of
+    // a rewrite here; no heuristics.
     emitMetric('rtk-rewrite', {
       tokensAffected: Math.round(cmd.length / 4),
-      tokensSaved: estimatedSaved,
       note: 'rewritten via rtk',
       extras: {
         command_head: cmd.slice(0, 60),
-        savings_rate: rate,
+        rewritten_head: rewritten.slice(0, 60),
       },
     });
 

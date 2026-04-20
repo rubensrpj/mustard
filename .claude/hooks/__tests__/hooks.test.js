@@ -2002,3 +2002,124 @@ describe("user-prompt-hint.js", () => {
     assert.equal(result.stdout, "", "No output when hook is disabled");
   });
 });
+
+// ─── rtk-rewrite.js (PR1 — honest metrics) ──────────────────────────────────
+//
+// Source-level assertions. We can't reliably run the hook end-to-end in CI
+// because it requires `rtk` to be installed AND to produce a rewrite. The
+// important invariant for PR1 is that the source no longer contains the
+// fake heuristic that used to compute tokens_saved from cmd.length.
+
+describe("rtk-rewrite.js (source-level)", () => {
+  const src = fs.readFileSync(path.join(HOOKS_DIR, "rtk-rewrite.js"), "utf8");
+
+  it("must not contain SAVINGS_RATES heuristic table", () => {
+    assert.ok(
+      !/SAVINGS_RATES/.test(src),
+      "SAVINGS_RATES heuristic removed — real numbers come from rtk-gain"
+    );
+  });
+
+  it("must not pass tokensSaved to emitMetric", () => {
+    // Find the emitMetric call block and ensure tokensSaved is absent.
+    const match = src.match(/emitMetric\(['"]rtk-rewrite['"][\s\S]*?\)\);/);
+    assert.ok(match, "rtk-rewrite emitMetric call must be present");
+    assert.ok(
+      !/tokensSaved/.test(match[0]),
+      "tokensSaved must not be emitted by rtk-rewrite (PR1)"
+    );
+  });
+
+  it("must still emit tokensAffected", () => {
+    const match = src.match(/emitMetric\(['"]rtk-rewrite['"][\s\S]*?\)\);/);
+    assert.ok(match, "rtk-rewrite emitMetric call must be present");
+    assert.ok(
+      /tokensAffected/.test(match[0]),
+      "tokensAffected is the only telemetry rtk-rewrite should emit"
+    );
+  });
+});
+
+// ─── recommended-skills-audit.js ────────────────────────────────────────────
+
+describe("recommended-skills-audit.js", () => {
+  const hook = "recommended-skills-audit.js";
+
+  it("should emit recommended-skills metric with skill_count=3 when dispatch lists array", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "rec-skills-"));
+    try {
+      const result = await runHook(hook, {
+        hook_event_name: "PreToolUse",
+        tool_name: "Task",
+        tool_input: {
+          subagent_type: "general-purpose",
+          description: "implement foo",
+          prompt: "Do X. recommended_skills: [alpha, beta, gamma]",
+        },
+      }, { cwd: tmpDir, projectDir: tmpDir });
+
+      assert.equal(result.code, 0);
+      assert.equal(result.parsed?.permissionDecision, "allow");
+
+      const metricsFile = path.join(tmpDir, ".claude", ".metrics", "recommended-skills.jsonl");
+      assert.ok(fs.existsSync(metricsFile), "recommended-skills.jsonl must exist");
+      const entry = JSON.parse(fs.readFileSync(metricsFile, "utf8").trim().split("\n").pop());
+      assert.equal(entry.event, "recommended-skills");
+      assert.equal(entry.skill_count, 3);
+      assert.equal(entry.subagent_type, "general-purpose");
+      assert.ok(entry.skills.includes("alpha"));
+      assert.ok(entry.skills.includes("beta"));
+      assert.ok(entry.skills.includes("gamma"));
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("should emit skill_count=0 when prompt lists no skills", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "rec-skills-empty-"));
+    try {
+      const result = await runHook(hook, {
+        hook_event_name: "PreToolUse",
+        tool_name: "Task",
+        tool_input: {
+          subagent_type: "Explore",
+          description: "search",
+          prompt: "Just do a simple task, no skills listed here.",
+        },
+      }, { cwd: tmpDir, projectDir: tmpDir });
+
+      assert.equal(result.code, 0);
+      assert.equal(result.parsed?.permissionDecision, "allow");
+
+      const metricsFile = path.join(tmpDir, ".claude", ".metrics", "recommended-skills.jsonl");
+      assert.ok(fs.existsSync(metricsFile));
+      const entry = JSON.parse(fs.readFileSync(metricsFile, "utf8").trim().split("\n").pop());
+      assert.equal(entry.skill_count, 0);
+      assert.equal(entry.tokens_affected, 0);
+      assert.equal(entry.subagent_type, "Explore");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("should print stderr WARN when skill_count > 10", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "rec-skills-warn-"));
+    try {
+      const many = Array.from({ length: 12 }, (_, i) => `skill${i}`).join(", ");
+      const result = await runHook(hook, {
+        hook_event_name: "PreToolUse",
+        tool_name: "Task",
+        tool_input: {
+          subagent_type: "general-purpose",
+          description: "big dispatch",
+          prompt: `Do X. recommended_skills: [${many}]`,
+        },
+      }, { cwd: tmpDir, projectDir: tmpDir });
+
+      assert.equal(result.code, 0);
+      assert.ok(/recommended-skills.*WARN/.test(result.stderr), `stderr should warn, got: ${result.stderr}`);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+});

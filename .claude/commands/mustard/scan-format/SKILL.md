@@ -222,28 +222,47 @@ name: {skill-name}
 description: "{What it does}. {When to use it — be specific and 'pushy'}.
   Use when {trigger phrase 1}, {trigger phrase 2}, or {trigger phrase 3}.
   Even if the user just says '{casual phrase}'."
+source: scan
 ---
 <!-- mustard:generated at:{ISO} role:{role} -->
 
 # {Skill Title}
 
-{1-2 sentence summary of the pattern.}
+> Pattern detected in this project.
 
-## Pattern
+## Convention
 
-{Concise pattern description with file path conventions.}
-{Key rules and constraints — explain WHY, not just WHAT.}
+- Folder: `{detected folder}`
+- {other fields present in the pattern — enumerate dynamically, do not assume}
+- Naming: `{detected naming convention}`
 
-## Example
+## Real examples in this codebase
 
-{One compact code example (5-10 lines max) showing the happy path.}
-Ref: `{path/to/real/file.ext}`
+- `{EntityName}` — `{path/to/real/file.ext}`
+- `{OtherEntity}` — `{path/to/other/file.ext}`
 
 ## References
 
-For full code examples with variants:
-→ Read `references/examples.md`
+See `references/examples.md` for extracted code.
 ```
+
+**Important:** Do NOT include synthesized code blocks (no fake `class Order { ... }` or language-specific stubs). The `## Convention` section lists detected fields from the registry pattern directly. The `## Real examples` section lists actual file paths from `registry.e`. Real code is extracted into `references/examples.md` from actual source files.
+
+### references/examples.md Format
+
+```markdown
+<!-- mustard:generated at:{ISO} -->
+
+# {Pattern} — real examples from this codebase
+
+## {EntityName}
+Source: `{path/to/real/file.ext}`
+\`\`\`{lang-from-extension}
+{actual file content or excerpt — ≤80 lines full, or first class declaration ±20 lines}
+\`\`\`
+```
+
+File extension maps to fence language: `.ts` → `typescript`, `.cs` → `csharp`, `.py` → `python`, `.dart` → `dart`, etc. Unknown extension: no language tag. If the file does not exist (stale registry), skip that entry silently.
 
 ### Description Writing Guidelines (from skill-creator)
 
@@ -277,5 +296,8 @@ For each generated skill, ALSO create in `{subproject}/.claude/skills/{skill-nam
 
 ### Skills Location
 
-Skills are generated ONLY in `{subproject}/.claude/skills/{skill-name}/` (NOT in root `.claude/skills/`).
-This keeps subproject-specific knowledge self-contained and avoids duplication.
+Agent-generated skills (this step) live ONLY in `{subproject}/.claude/skills/{skill-name}/`, named with the subproject-short prefix (e.g. `admin-auth-guard`, `api-endpoint-wiring`). This keeps subproject-specific knowledge scoped to its sub.
+
+Registry-generated role skills (§4.7 of `scan.md`, emitted by `skill-generator.js`) live in ROOT `{project}/.claude/skills/`, named with the agent/role prefix (e.g. `frontend-dto-conventions`, `backend-entity-creation`). One copy per role — shared across every subproject that has the same agent. Claude Code loads from the project root automatically, so three frontend apps read the same skill without any duplication.
+
+Do NOT emit role-prefixed skills (`frontend-*`, `backend-*`, `general-*`) from this agent step — those belong to the registry generator, which runs after you finish.

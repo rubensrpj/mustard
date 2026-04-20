@@ -43,7 +43,21 @@ function buildRegistry({ scanResults, sourceHash }) {
   for (const [stackId, result] of scanResults) {
     // Patterns per stack
     if (result.patterns && Object.keys(result.patterns).length > 0) {
-      registry._patterns[stackId] = result.patterns;
+      // Preserve existing stack patterns; inject discovered clusters into _discovered key
+      const { _discovered, _folderFrequency, ...otherPatterns } = result.patterns;
+      if (Object.keys(otherPatterns).length > 0) {
+        registry._patterns[stackId] = otherPatterns;
+      }
+      // _discovered is stored under _patterns[stackId].discovered (always regenerated)
+      if (_discovered && _discovered.length > 0) {
+        if (!registry._patterns[stackId]) registry._patterns[stackId] = {};
+        registry._patterns[stackId].discovered = _discovered;
+      }
+      // Folder-segment frequency map: agnostic stopword source for skill-generator.
+      if (_folderFrequency && _folderFrequency.totalFolders > 0) {
+        if (!registry._patterns[stackId]) registry._patterns[stackId] = {};
+        registry._patterns[stackId].folderFrequency = _folderFrequency;
+      }
     }
 
     // Enums — merge across stacks, richer info where available
