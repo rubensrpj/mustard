@@ -19,6 +19,9 @@
 const fs = require('fs');
 const path = require('path');
 
+// Module-level accumulator for empty-body skips (reported at end of main).
+const emptySkipped = [];
+
 // ---------------------------------------------------------------------------
 // Paths (mirror sync-registry.js convention)
 // ---------------------------------------------------------------------------
@@ -92,6 +95,25 @@ function writeFile(filePath, content, log) {
   if (!FORCE && fs.existsSync(filePath) && !isMustardGenerated(filePath)) {
     log.push(`  [skip] manually edited: ${relPath}`);
     return;
+  }
+
+  // Empty-body validation for SKILL.md files: strip frontmatter + generated
+  // comment, then require >200 chars of actual content. Prevents writing
+  // stub skills when pattern data is missing.
+  if (relPath.endsWith('SKILL.md')) {
+    let body = content;
+    // Strip leading YAML frontmatter (--- ... ---)
+    if (body.startsWith('---\n')) {
+      const end = body.indexOf('\n---\n', 4);
+      if (end !== -1) body = body.slice(end + 5);
+    }
+    // Strip mustard:generated comment (may be at start of remaining body)
+    body = body.replace(/^\s*<!--\s*mustard:generated[^>]*-->\s*/i, '');
+    if (body.trim().length <= 200) {
+      log.push(`  [skip-empty] ${relPath} — pattern data missing`);
+      emptySkipped.push(relPath);
+      return;
+    }
   }
 
   try {
@@ -168,6 +190,41 @@ function stackLabel(stackId) {
 // ---------------------------------------------------------------------------
 
 /**
+ * Remove all mustard:generated skills under {subAbsPath}/.claude/skills/.
+ * User-authored skills (without the generated marker) are preserved.
+ * Fail-safe per directory: errors on one skill do not block the others.
+ * @param {string} subAbsPath
+ * @param {string[]} log - collector for purge lines (printed by caller)
+ */
+function purgeGeneratedSkills(subAbsPath, log) {
+  const skillsDir = path.join(subAbsPath, '.claude', 'skills');
+  if (!fs.existsSync(skillsDir)) return;
+
+  let entries;
+  try {
+    entries = fs.readdirSync(skillsDir, { withFileTypes: true });
+  } catch (err) {
+    process.stderr.write(`[skill-generator] purge: cannot read ${skillsDir}: ${err.message}\n`);
+    return;
+  }
+
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const dir = path.join(skillsDir, entry.name);
+    const skillPath = path.join(dir, 'SKILL.md');
+    const relPath = path.relative(ROOT, dir).replace(/\\/g, '/');
+    try {
+      if (fs.existsSync(skillPath) && isMustardGenerated(skillPath)) {
+        fs.rmSync(dir, { recursive: true, force: true });
+        log.push(`  [purge] ${relPath}`);
+      }
+    } catch (err) {
+      process.stderr.write(`[skill-generator] purge failed for ${relPath}: ${err.message}\n`);
+    }
+  }
+}
+
+/**
  * Build a map of stackId → [{subprojectName, path, role, agent}] from the detect cache.
  * Falls back to empty maps if cache is missing.
  *
@@ -177,9 +234,13 @@ function buildStackSubprojectMap() {
   const cache = readJsonSafe(DETECT_CACHE_PATH);
   const subprojects = cache?.subprojects || [];
   const map = new Map(); // stackId → [{name, path, role, agent}]
+  const purgeLog = [];
 
   for (const sub of subprojects) {
     const subAbsPath = path.join(ROOT, sub.path);
+    if (FORCE && !DRY_RUN) {
+      purgeGeneratedSkills(subAbsPath, purgeLog);
+    }
     const stackId = detectStackFromPath(subAbsPath);
     if (!stackId) continue;
 
@@ -190,6 +251,10 @@ function buildStackSubprojectMap() {
       role: sub.role || 'general',
       agent: sub.agent || roleToAgent(sub.role || 'general'),
     });
+  }
+
+  if (purgeLog.length > 0) {
+    console.log(purgeLog.join('\n'));
   }
 
   return map;
@@ -2008,7 +2073,11 @@ function main() {
 
   const version = registry._meta?.version || '?';
   if (version < '4.0') {
-    console.warn(`Warning: registry at v${version} — some patterns may be missing. Run sync-registry.js --force to upgrade.`);
+    if (FORCE) {
+      console.error('Error: registry at v' + version + ' but --force requires v4.0+. Run sync-registry.js --force first.');
+      process.exit(1);
+    }
+    console.warn('Warning: registry at v' + version + ' — some patterns may be missing. Run sync-registry.js --force to upgrade.');
   }
 
   const patterns = registry._patterns || {};
@@ -2078,6 +2147,11 @@ function main() {
 
   if (DRY_RUN) {
     console.log('\n(dry-run — no files written)');
+  }
+
+  if (emptySkipped.length > 0 && !DRY_RUN) {
+    process.stderr.write('\nEmpty skill bodies (pattern data missing):\n');
+    for (const entry of emptySkipped) process.stderr.write('  ' + entry + '\n');
   }
 }
 
