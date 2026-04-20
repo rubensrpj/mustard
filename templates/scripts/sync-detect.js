@@ -518,26 +518,44 @@ function getSubmodulePaths() {
 }
 
 /**
- * Fallback: scan root directory for folders that contain a CLAUDE.md file.
+ * Fallback: scan recursively (BFS, max depth 3) for folders that contain a
+ * CLAUDE.md file. Stops descending into a branch as soon as a CLAUDE.md is
+ * found, so nested workspaces (e.g. subproject/.claude/CLAUDE.md) don't get
+ * double-registered.
+ *
+ * Depth 3 covers common monorepo shapes: apps/X/, services/api/v1/.
+ * Fully agnostic — no hardcoded directory names.
  */
 function scanForSubprojects() {
-  const paths = [];
-  try {
-    const entries = fs.readdirSync(ROOT, { withFileTypes: true });
+  const IGNORE = new Set([
+    "node_modules", "bin", "obj", "dist", ".next",
+    "_backup", "migrations", ".claude", ".git",
+  ]);
+  const MAX_DEPTH = 3;
+  const results = [];
+
+  function walk(absDir, relDir, depth) {
+    if (depth > MAX_DEPTH) return;
+    if (depth > 0 && fs.existsSync(path.join(absDir, "CLAUDE.md"))) {
+      results.push(relDir.split(path.sep).join("/"));
+      return;
+    }
+    let entries;
+    try {
+      entries = fs.readdirSync(absDir, { withFileTypes: true });
+    } catch {
+      return;
+    }
     for (const entry of entries) {
       if (!entry.isDirectory()) continue;
       if (entry.name.startsWith(".")) continue;
-      if (entry.name === "node_modules") continue;
-
-      const claudePath = path.join(ROOT, entry.name, "CLAUDE.md");
-      if (fs.existsSync(claudePath)) {
-        paths.push(entry.name);
-      }
+      if (IGNORE.has(entry.name)) continue;
+      walk(path.join(absDir, entry.name), path.join(relDir, entry.name), depth + 1);
     }
-  } catch {
-    // ignore
   }
-  return paths;
+
+  walk(ROOT, "", 0);
+  return results;
 }
 
 // ---------------------------------------------------------------------------
