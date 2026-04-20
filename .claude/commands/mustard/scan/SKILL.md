@@ -11,9 +11,8 @@
 - `--force` — descarta tudo o que é `<!-- mustard:generated -->` e regera do zero. Semântica:
   - Ignora o incremental skip do Step 1/C: **todos** os subprojetos são reprocessados, independente de hash match ou `gitDirty`.
   - Bypassa o fast-path de §2.6 (Bootstrap): sempre regenera `.claude/CLAUDE.md` e afins.
-  - Repassa "FORCE MODE" aos Task agents do Step 3 (eles apagam `{subproject}/.claude/skills/*/` com header `mustard:generated` antes de regerar).
-  - `skill-generator.js --force` faz `rm -rf` do **diretório inteiro** de cada skill role-based antes da primeira escrita (limpa `references/` stale, arquivos extras de rodadas antigas). Apenas pastas cujo `SKILL.md` tem `<!-- mustard:generated -->` são purgadas — user-authored folders são preservadas.
-  - Roda sempre os dois comandos de §4.7 (`sync-registry.js --force` + `skill-generator.js --force`), mesmo com registry já v4.0.
+  - Repassa "FORCE MODE" aos Task agents do Step 3 (eles apagam `{subproject}/.claude/skills/*/` com header `mustard:generated` antes de regerar, incluindo `references/` stale).
+  - Roda `sync-registry.js --force` (§4.7) sempre — mesmo com registry já v4.0. Skill generation é 100% responsabilidade dos agentes do Step 3.
   - Skills sem o header `mustard:generated` (user-authored) são **preservadas**.
 
 ## Execution Model
@@ -327,7 +326,7 @@ See `scan-format.md` §10 for decomposition rules, SKILL.md format, and descript
 
 **Key rules:**
 - One conceptual pattern = one skill (not one file = one skill)
-- Skill name: `{subproject-short}-{pattern-name}` (e.g., `api-endpoint-wiring`, `app-mvvm-feature`)
+- Skill name: `{subproject-short}-{pattern-name}` — pattern-name is a kebab-case concept the codebase itself uses (derived from its folders / file suffixes / domain vocabulary), never a library brand or imported taxonomy
 - Description must be "pushy" — include casual trigger phrases (see scan-format.md §10)
 - Extract real code examples into `references/examples.md`
 - Max 500 lines per SKILL.md body (ideally <200)
@@ -343,44 +342,20 @@ See `scan-format.md` §10 for decomposition rules, SKILL.md format, and descript
 Skills are generated ONLY in `{subproject}/.claude/skills/{skill-name}/` (NOT in root `.claude/skills/`).
 Mark all with `<!-- mustard:generated -->`. Overwrite on next scan.
 
-### 4.7. Generate Pattern Skills from Registry (OODA: Observe → Act)
+### 4.7. Refresh Registry & Validate Skills
 
-After agent-generated skills (4.6), run the registry-based skill generator to create structural pattern skills from `_patterns`:
-
-> With `--force`, **always** run both commands — even if `entity-registry.json` already exists at v4.0.
+After agent-generated skills (§4.6), refresh the registry so `_patterns.discovered[]` reflects the latest cluster data for **future** scans, then validate all emitted skills.
 
 ```bash
 node .claude/scripts/sync-registry.js --force
-node .claude/scripts/skill-generator.js --force
+node .claude/scripts/skill-validate.js --quiet
 ```
 
-**Output location — ROOT `.claude/skills/`:**
-Role-based pattern skills live in the **project root** `.claude/skills/` directory (single copy per role+pattern), NOT duplicated inside each `{subproject}/.claude/skills/`. Claude Code loads from the project root automatically, so every subproject that shares the same agent (e.g. three `frontend` apps) reads the same `frontend-dto-conventions` skill. This eliminates the prior triplicate-file problem.
+**Skill generation is 100% owned by the Step 3 agents** (see `scan-format.md` §10). There is no separate mechanical generator — the agent reads `_patterns[*].discovered[]` from the registry and emits cluster skills directly into `{subproject}/.claude/skills/`. One source of truth, no template, no duplication.
 
-This generates skills that the agents in Step 3 may have missed — particularly:
-- `{role}-entity-creation` — entity folder, base class, interfaces, namespace
-- `{role}-enum-placement` — enum folder, decorators, NEVER inline in entities
-- `{role}-route-conventions` — route naming, auth pattern, CRUD standard
-- `{role}-service-pattern` — interface-first, base interface, DI
-- `{role}-repository-pattern` — base class, interface, DI
-- `{role}-dto-conventions` — folder, naming, validation pattern
-- `{role}-module-registration` — DI registration, route wiring
+**All skills live in `{subproject}/.claude/skills/`** — the previous root-level duplication has been removed. Shared agents (e.g. three `frontend` apps) will each have their own subproject copy, which is acceptable because the agent tailors content to the actual subproject.
 
-These skills are derived from **detected patterns** (not hardcoded). They complement agent-generated skills (§4.6) which stay scoped to `{subproject}/.claude/skills/` with the subproject-short prefix (e.g. `admin-auth-guard`, `api-endpoint-wiring`).
-
-**SKILL.md content (agnostic — no synthesized code):**
-- `## Convention` section enumerates fields dynamically from the registry pattern JSON — no assumptions about which fields exist, no language-specific code synthesis.
-- `## Real examples in this codebase` lists actual entity files from `registry.e` with their real paths.
-- `references/examples.md` is generated by reading actual source files (`fs.readFileSync`) from paths listed in the registry: full content if ≤80 lines, or a 20-line excerpt around the first class/interface/def declaration if longer. Stale entries (file not found) are skipped silently.
-- No `buildEntityExample()`, `buildEnumExample()`, `buildServiceExample()`, or similar per-language code synthesizers exist — they have been removed.
-- Fenced code language is inferred from file extension (`.ts` → `typescript`, `.cs` → `csharp`, etc.) via a simple dict — NOT a language switch.
-
-**Skip conditions:**
-- `entity-registry.json` version < 4.0 → skip (registry not populated)
-- `skill-generator.js` not present → skip
-- Pattern skill already exists and was NOT generated by mustard → skip (user-edited, unless `--force` — but `skill-generator.js` already preserves user-authored skills by checking the `mustard:generated` header)
-
-**Post-generation validation:** `skill-generator.js` automatically invokes `skill-validate.js --quiet` at the end of its run. This walks ROOT `.claude/skills/` plus every subproject's `.claude/skills/` (from `.detect-cache.json`) and validates SKILL.md frontmatter (`name`, `description`, `source`). `skill-validate.js` also has a Python fallback: if `.claude/skills/skill-creator/scripts/quick_validate.py` exists, it is invoked via subprocess. A non-zero exit code (2) surfaces failures without blocking the scan.
+**Post-generation validation:** `skill-validate.js --quiet` walks every subproject's `.claude/skills/` (from `.detect-cache.json`) and validates SKILL.md frontmatter (`name`, `description`, `source: scan|manual`). A non-zero exit (2) surfaces failures without blocking the scan.
 
 ### 4. Update CLAUDE.md files
 

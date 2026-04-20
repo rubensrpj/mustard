@@ -183,27 +183,42 @@ Follow the [skill-creator](https://github.com/anthropics/skills) methodology for
 
 ### Decomposition Rules
 
-Each detected pattern becomes its own skill. Group by conceptual unit, not by file:
+Each detected pattern becomes its own skill. Group by **conceptual unit**, not by file. The agent derives both the skill name and its scope from what the codebase actually shows — no fixed list of technologies, no predetermined taxonomy.
 
-| Pattern type | Skill name format | Example |
-|-------------|------------------|---------|
-| Module/endpoint registration | `{sub}-module-registration` | `api-module-registration` |
-| Endpoint wiring | `{sub}-endpoint-wiring` | `api-endpoint-wiring` |
-| Repository pattern | `{sub}-repository-pattern` | `api-repository-pattern` |
-| Service layer | `{sub}-service-base` | `api-service-base` |
-| DTO + validation | `{sub}-dto-validation` | `api-dto-validation` |
-| Mapper config | `{sub}-mapster-config` | `api-mapster-config` |
-| GraphQL resolver | `{sub}-graphql-resolver` | `api-graphql-resolver` |
-| Entity + config | `{sub}-entity-config` | `api-entity-config` |
-| Background job | `{sub}-hangfire-job` | `api-hangfire-job` |
-| MVVM feature | `{sub}-mvvm-feature` | `app-mvvm-feature` |
-| State management | `{sub}-riverpod-state` | `app-riverpod-state` |
-| Network/repository | `{sub}-dio-repository` | `app-dio-repository` |
-| Routing | `{sub}-go-router` | `app-go-router` |
-| Section component | `{sub}-section-component` | `landing-section-component` |
-| i18n pattern | `{sub}-i18n-pattern` | `landing-i18n-pattern` |
+**Naming**: `{subproject-short}-{kebab-case-concept}` — the concept is whatever the codebase itself calls the thing. If the project has a folder called `Resolvers/`, the skill is `{sub}-resolver-pattern`. If it has `composables/`, it's `{sub}-composable-pattern`. If it has `Handlers/`, it's `{sub}-handler-pattern`. Never import vocabulary the codebase does not use.
 
-Adapt to what the codebase actually has — this table is guidance, not rigid.
+**Scope**: one skill per reusable convention the agent would hand to a future agent implementing "add one more like these". If the pattern is a one-off file, it is not a convention — skip it.
+
+**Anti-patterns to avoid**:
+- Emitting a skill for every file type (`.ts`, `.css`, `.json` → three skills = noise)
+- Emitting a skill for generic cross-cutting concerns (logging, error handling) unless the codebase has a distinctive, repeated shape for them
+- Naming a skill after a library the codebase uses but whose convention is entirely the library's default (e.g. "using React hooks as documented" is not a codebase convention)
+
+### Cluster Skills from the Registry (mandatory)
+
+After generating the conceptual skills above, **also** read `.claude/entity-registry.json` and iterate `_patterns[{stackId}].discovered[]` for each detected stack. Each cluster entry looks like:
+
+```json
+{
+  "suffix": "Service",
+  "fileCount": 7,
+  "folders": ["src/Services", "src/Modules/Auth/Services"],
+  "samples": ["src/Services/UserService.cs", "..."],
+  "commonBaseClass": "BaseService",
+  "commonInterfaces": ["IService"]
+}
+```
+
+For each cluster that represents a **reusable convention** (skip one-offs, test-only files, or trivial groupings), emit a skill named `{sub}-{suffix-slug}-pattern` (e.g. `backend-service-pattern`, `frontend-component-pattern`). SKILL.md body:
+
+- `## Pattern` — enumerate `suffix`, `fileCount`, `folderPattern`, `commonBaseClass`, `commonInterfaces` as bullets (fields that exist in the cluster — do not invent).
+- `## Rules` — DO/DON'T derived from the cluster (naming, folder placement, base class usage).
+- `## Samples in this project` — bullet list of the `samples` file paths.
+- `## References` — pointer to `references/examples.md`.
+
+**Agent judgment filter**: do NOT blindly emit one skill per cluster. If a cluster has fewer than ~3 files OR the suffix is generic noise (e.g. `Test`, `Mock`, `Spec`), skip it. The goal is reusable conventions, not coverage theater.
+
+`_patterns.folderFrequency` provides a stopword source for distinctive-keyword extraction: segments appearing in ≥60% of all folders are structural noise and should be ignored when describing the cluster.
 
 ### Skill Structure
 
@@ -215,6 +230,8 @@ Adapt to what the codebase actually has — this table is guidance, not rigid.
 ```
 
 ### SKILL.md Format (skill-creator standard)
+
+**CRITICAL — NO CODE IN SKILL.md.** The SKILL.md body describes the pattern in prose + bullet lists + file references. **Never** embed code blocks, language-specific stubs, or synthesized examples (no fake `class Order { ... }`, no TypeScript snippet, no SQL, nothing). All concrete code lives in `references/examples.md`, extracted from real source files.
 
 ```yaml
 ---
@@ -296,8 +313,6 @@ For each generated skill, ALSO create in `{subproject}/.claude/skills/{skill-nam
 
 ### Skills Location
 
-Agent-generated skills (this step) live ONLY in `{subproject}/.claude/skills/{skill-name}/`, named with the subproject-short prefix (e.g. `admin-auth-guard`, `api-endpoint-wiring`). This keeps subproject-specific knowledge scoped to its sub.
+All skills (conceptual + cluster) live in `{subproject}/.claude/skills/{skill-name}/`, named with the subproject-short prefix (e.g. `admin-auth-guard`, `api-endpoint-wiring`, `backend-service-pattern`). This keeps subproject-specific knowledge scoped and self-contained.
 
-Registry-generated role skills (§4.7 of `scan.md`, emitted by `skill-generator.js`) live in ROOT `{project}/.claude/skills/`, named with the agent/role prefix (e.g. `frontend-dto-conventions`, `backend-entity-creation`). One copy per role — shared across every subproject that has the same agent. Claude Code loads from the project root automatically, so three frontend apps read the same skill without any duplication.
-
-Do NOT emit role-prefixed skills (`frontend-*`, `backend-*`, `general-*`) from this agent step — those belong to the registry generator, which runs after you finish.
+There is no separate root-level pool and no mechanical generator — the agent is the single source of truth for all scan-emitted skills. After this step, `/scan` §4.7 only refreshes the registry and validates SKILL.md frontmatter.

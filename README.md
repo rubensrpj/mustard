@@ -29,7 +29,7 @@ Mustard sets up a `.claude/` folder that turns Claude Code into a structured dev
 - **16 pipeline commands** — feature, bugfix, approve, complete, resume, scan, scan-format, git, maint, task, knowledge, skill, status, stats, metrics, review, plus the agent-prompt template
 - **23 enforcement hooks** — bash safety, bash native redirect, file guard, registry enforcement, guard verify, auto-format, pre-compact, session cleanup, subagent tracker, RTK rewrite, session memory, review gate, metrics tracker, MCP budget, session knowledge, context budget, spec hygiene, output budget, tool-use counter, model routing gate, debug-loop guard, user-prompt hint, session-knowledge incremental
 - **6 bundled skills** — design-craft, react-best-practices, senior-architect, skill-creator, commit-workflow, pipeline-execution
-- **15 utility scripts** — subproject detection, entity registry sync, statusline, memory persist/write, diff context, knowledge update, metrics collect/report, security scan, pipeline verification, analyze validation, recipe matcher, skill generator
+- **15 utility scripts** — subproject detection, entity registry sync, skill validation, statusline, memory persist/write, diff context, knowledge update, metrics collect/report, security scan, pipeline verification, analyze validation, recipe matcher, RTK gain import
 - **Token economy** — auto-installs [RTK (Rust Token Killer)](https://github.com/rtk-ai/rtk) to reduce CLI-output tokens by 60–90%
 - **Hook profiles & env overrides** — minimal/standard/strict profiles via `_lib/hook-env.js`; disable individual hooks with `MUSTARD_DISABLED_HOOKS`
 - **Cursor IDE adapter** (experimental) — `mustard init --cursor` installs a Cursor-compatible hook adapter
@@ -287,7 +287,8 @@ mustard review --ci --pr 42
 │   └── user-prompt-hint.js            #   Surfaces contextual hints on prompt input
 ├── scripts/                           # Utility scripts (15)
 │   ├── sync-detect.js                 #   Detects subprojects + roles (SHA-256 incremental)
-│   ├── sync-registry.js               #   Generates entity-registry.json
+│   ├── sync-registry.js               #   Generates entity-registry.json (_patterns.discovered[])
+│   ├── skill-validate.js              #   Validates SKILL.md frontmatter across subprojects
 │   ├── statusline.js                  #   Claude Code statusline
 │   ├── memory-persist.js              #   Persists decisions/lessons across sessions
 │   ├── memory-write.js                #   Writes agent memory entries between waves
@@ -295,11 +296,11 @@ mustard review --ci --pr 42
 │   ├── knowledge-update.js            #   Updates project knowledge base
 │   ├── metrics-collect.js             #   Collects pipeline metrics
 │   ├── metrics-report.js              #   Renders enforcement metrics report
+│   ├── rtk-gain-import.js             #   Imports RTK token-savings data for metrics
 │   ├── security-scan.js               #   Scans for secrets / security misconfigs
 │   ├── verify-pipeline.js             #   Runs build/test verification
 │   ├── analyze-validation.js          #   Validates ANALYZE phase output
 │   ├── recipe-match.js                #   Structured recipe matcher (entity + operation)
-│   ├── skill-generator.js             #   Generates subproject pattern skills
 │   └── _metrics-write.js              #   Internal metrics writer (used by hooks)
 ├── memory/                            # Persistent memory (auto-created)
 │   ├── decisions.json                 #   Decisions across pipelines

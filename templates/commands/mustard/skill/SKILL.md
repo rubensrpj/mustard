@@ -148,6 +148,6 @@ Update the skill-creator from the anthropics/skills repo.
 - ALWAYS use skill-creator for `/skill create` — don't write skills from scratch
 - `/skill optimize` and `/skill eval` require Python 3 and `claude` CLI
 - `source:` field semantics (TERRITORIAL):
-  - `skill-generator.js` writes `source: scan` ONLY — never touches `source: manual`.
+  - `/scan` agents (§4.6, §10) write `source: scan` ONLY — never touch `source: manual`.
   - `/skill install`, `/skill create`, skill-creator write `source: manual` ONLY — never touch `source: scan`.
   - Missing `source:` → treat as `manual` (conservative, protects user edits).

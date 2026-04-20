@@ -72,9 +72,9 @@ Based on task analysis, list the most relevant skill names:
 - Architecture decisions → `senior-architect`
 - Complex patterns → relevant advanced pattern skills
 
-Examples (replace `{sub}` with actual subproject short name):
-- Backend endpoint → `{sub}-endpoint-wiring, {sub}-module-registration`
-- Mobile screen → `{sub}-mvvm-feature, {sub}-riverpod-state, design-craft`
-- Frontend section → `{sub}-section-component, design-craft, react-best-practices`
+Examples (replace `{sub}` with actual subproject short name; skill names below are placeholders — pick whatever skills the subproject's `.claude/skills/` actually defines):
+- Backend endpoint → `{sub}-{endpoint-skill}, {sub}-{module-skill}`
+- Mobile screen → `{sub}-{screen-skill}, {sub}-{state-skill}, design-craft`
+- Frontend section → `{sub}-{section-skill}, design-craft, react-best-practices`
 
 ULTRATHINK

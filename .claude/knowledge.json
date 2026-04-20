@@ -14,10 +14,10 @@
         "prescriptive"
       ],
       "confidence": 1,
-      "occurrences": 30,
+      "occurrences": 31,
       "createdAt": "2026-04-09T09:00:09.572Z",
-      "updatedAt": "2026-04-20T18:01:16.716Z",
-      "lastSeen": "2026-04-20T18:01:16.716Z"
+      "updatedAt": "2026-04-20T22:01:30.200Z",
+      "lastSeen": "2026-04-20T22:01:30.200Z"
     },
     {
       "id": "convention-1775740608559",
@@ -32,10 +32,10 @@
         "prescriptive"
       ],
       "confidence": 1,
-      "occurrences": 29,
+      "occurrences": 30,
       "createdAt": "2026-04-09T13:16:48.558Z",
-      "updatedAt": "2026-04-20T18:01:16.673Z",
-      "lastSeen": "2026-04-20T18:01:16.673Z"
+      "updatedAt": "2026-04-20T22:01:30.158Z",
+      "lastSeen": "2026-04-20T22:01:30.158Z"
     },
     {
       "id": "convention-1775724563724",
@@ -50,10 +50,10 @@
         "prescriptive"
       ],
       "confidence": 1,
-      "occurrences": 30,
+      "occurrences": 31,
       "createdAt": "2026-04-09T08:49:23.724Z",
-      "updatedAt": "2026-04-20T18:01:16.631Z",
-      "lastSeen": "2026-04-20T18:01:16.631Z"
+      "updatedAt": "2026-04-20T22:01:30.118Z",
+      "lastSeen": "2026-04-20T22:01:30.118Z"
     },
     {
       "id": "pattern-1775737719162",
@@ -67,10 +67,10 @@
         "prescriptive"
       ],
       "confidence": 1,
-      "occurrences": 30,
+      "occurrences": 31,
       "createdAt": "2026-04-09T12:28:39.162Z",
-      "updatedAt": "2026-04-20T18:01:16.587Z",
-      "lastSeen": "2026-04-20T18:01:16.587Z"
+      "updatedAt": "2026-04-20T22:01:30.075Z",
+      "lastSeen": "2026-04-20T22:01:30.075Z"
     },
     {
       "id": "convention-1775737658433",
@@ -85,10 +85,10 @@
         "prescriptive"
       ],
       "confidence": 1,
-      "occurrences": 30,
+      "occurrences": 31,
       "createdAt": "2026-04-09T12:27:38.433Z",
-      "updatedAt": "2026-04-20T18:01:16.536Z",
-      "lastSeen": "2026-04-20T18:01:16.536Z"
+      "updatedAt": "2026-04-20T22:01:30.031Z",
+      "lastSeen": "2026-04-20T22:01:30.031Z"
     },
     {
       "id": "convention-1775842911884",
