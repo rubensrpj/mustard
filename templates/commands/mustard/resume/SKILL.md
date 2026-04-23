@@ -29,7 +29,28 @@ Before the normal detect-and-confirm flow, scan the newest pipeline state for a 
      3. After the re-dispatch returns, clear the flag: remove `lastDispatchFailure` from the state object and rewrite the pipeline-state JSON.
      4. Fall through to Step 1 (normal resume flow continues from the updated state).
    - **If ageMs > 10 * 60 * 1000** (stale): silently remove `lastDispatchFailure` from the state and rewrite the file, then continue to Step 1.
-4. If `lastDispatchFailure` is absent, skip Step 0 entirely and proceed to Step 1.
+4. If `lastDispatchFailure` is absent, skip Step 0 entirely and proceed to Step 0.5.
+
+### Step 0.5: Resume Mode (continuar vs reanalisar)
+
+Before loading heavy context (sync-registry, diff-context, Explore Gate), ask the user which mode to use. This gates roughly 2-5k tokens per resume.
+
+1. **Skip conditions** — enter `reanalyze` mode automatically without prompting:
+   - Step 0 just re-dispatched a failed agent (recovery path → always reanalyze next step)
+   - `pipeline-state.lastDispatchFailure` was present and <10min old (already handled in Step 0)
+   - Wave plan with `failedWaves.length > 0` (handled in wave failure section below — forces `reanalyze`)
+
+2. **Otherwise, AskUserQuestion:**
+   - **"Continuar de onde parou (modo leve)"** → `mode = "continued"`: skip sync-registry (Step 2 #6), skip diff-context (unless wave transition forces), skip Pre-EXECUTE Existence Gate (Step 12b). Trust pipeline-state as source of truth.
+   - **"Reanalisar contexto (modo completo)"** → `mode = "reanalyzed"`: run Step 2 fully (default behavior, relê tudo).
+
+3. **Record mode in pipeline state:** write `resumeMode: "continued" | "reanalyzed"` and `resumeModeAt: {ISO now}` so downstream steps know which path they are in.
+
+4. **Stale-context fallback (safety net):** if a dispatched agent in `continued` mode returns an error indicating stale context (e.g., references a missing file, fails boundary check, or returns `BLOCKED` with reason citing out-of-date registry), escalate automatically:
+   - Update pipeline state: `resumeMode: "escalated-to-reanalyze"`, append to `resumeEscalations` array with `{at, reason}`
+   - Re-run Step 2 in full (sync-registry + diff-context)
+   - Re-dispatch the failed agent with fresh context
+   - Fail-open: escalation never blocks, just upgrades to the heavier path
 
 ### Step 1: Detect & Confirm
 
@@ -83,9 +104,13 @@ Before the normal detect-and-confirm flow, scan the newest pipeline state for a 
 ### Step 2: Bootstrap (after confirmation)
 
 6. **AUTO-SYNC:** `node .claude/scripts/sync-registry.js`
+   - **Skip if `resumeMode === "continued"`** (Step 0.5): registry is reused from prior session.
+   - Always run if `resumeMode === "reanalyzed"` or `"escalated-to-reanalyze"`.
 
 ### Diff Context (automatic)
 Run `node .claude/scripts/diff-context.js --subproject {subproject_path}` per subproject to capture the current git state scoped to each subproject. Include the subproject-specific output in the agent prompt as `{diff_context}` so agents see only changes relevant to their scope.
+
+**Skip if `resumeMode === "continued"`** unless a wave just completed (wave transitions always refresh diff). The prior diff snapshot is reused from `.claude/.pipeline-states/{specName}.diff-{subproject}.md`.
 
 7. **Read** `.claude/pipeline-config.md`. For `entity-registry.json`: use Grep to extract ONLY the relevant entity block (e.g. `"Contract":`), NEVER read the full JSON
 9. **Update spec header:** `Status: implementing`, `Phase: EXECUTE`, `Checkpoint: {ISO now}`
@@ -99,9 +124,26 @@ Run `node .claude/scripts/diff-context.js --subproject {subproject_path}` per su
 12. **Match recipe by name only:** Grep `{subproject}/.claude/commands/recipes.md` for recipe title matching the task type — do NOT read the full recipes file. Extract only: recipe number, pattern refs, reference modules
 12b. **Pre-EXECUTE Existence Gate**: Same gate as `feature/SKILL.md § Pre-EXECUTE Existence Gate`. Invoke identically (Full scope only, `## Files` ≤ 8). On retry/resume, the gate naturally handles idempotence: tasks already `[x]` from a prior run are treated as Mixed — the Haiku confirms they stay done and the orchestrator only re-dispatches what remains `[ ]`.
 
+   **Skip entirely if `resumeMode === "continued"`** (Step 0.5). The `continued` mode trusts pipeline-state checkboxes as-is. If the stale-context fallback escalates to `reanalyze`, the gate runs on the re-dispatch.
+
     **Pre-check (same as `feature/SKILL.md § Pre-EXECUTE Existence Gate`):** Before dispatching Haiku, run `rtk git diff --stat HEAD -- <files listed in spec's ## Files>`. Skip gate entirely if output is empty (no changes) or total insertions/deletions <10. Only proceed with Haiku dispatch if ≥10 lines changed.
 
+12c. **Wave Plan Scope (conditional — only if `pipeline-state.isWavePlan === true`):**
+
+When the pipeline state indicates a wave plan, the orchestrator dispatches only the **current wave**, not the full spec:
+
+1. Read `pipeline-state.currentWave` and `pipeline-state.totalWaves`.
+2. The spec to work from for this invocation is `.claude/spec/active/{specName}/wave-{currentWave}-*/spec.md`. Replace any prior reference to `spec.md` at the root of the spec dir with the current wave's spec.
+3. **Between waves** (see Step 17 post-dispatch):
+   - On wave completion: run `/mustard:git commit` style commit with message `feat(wave-{N}/{role}): {summary}`. If `/mustard:git commit` is not appropriate for the project, fall back to `git add {files} && git commit -m "..."`.
+   - Update state: `completedWaves.push(currentWave)`, `currentWave += 1`, `updatedAt`.
+   - Force `resumeMode = "reanalyzed"` for the next wave transition so diff-context refreshes with the just-committed changes.
+   - If `currentWave > totalWaves` → skip remaining wave dispatch, go to Step 19 REVIEW + Step 20 CLOSE on the overall wave plan.
+4. **If a wave fails (REJECTED after 2 fix-loops, or BLOCKED)** — see § Wave Failure Handling below.
+
 13. **Plan waves:** `Depends on: none` → Wave 1; dependencies → later. DB+Backend parallel. Frontend after Backend UNLESS all parallel override conditions met (see `.claude/pipeline-config.md` Parallel Rules). Review agents: ALWAYS dispatch in single parallel message. Skip completed tasks.
+
+**Note on wave plans:** when `isWavePlan === true`, this step plans the agent wave structure **within** the current wave's spec only — agents internal to the current wave-spec may still split across DB/Backend/Frontend sub-waves. The outer wave (1..N) is the cross-spec sequence managed by Step 12c.
 14. **Build agent prompts using template** (`.claude/commands/mustard/templates/agent-prompt/SKILL.md`):
     - Read template once, then fill placeholders per agent using `.claude/pipeline-config.md` data:
       - `{subproject}` → from Agents table (Subproject column)
@@ -183,11 +225,46 @@ When REVIEW returns REJECTED (any CRITICAL):
 8. If review still REJECTED after 2 fix-loops: STOP + report exhausted retries.
 
 20. **CLOSE:**
+    - **Wave plan gate:** if `pipeline-state.isWavePlan === true`, only CLOSE when `completedWaves.length === totalWaves`. If waves remain (`currentWave <= totalWaves` and wave N-1 just finished), **do not** run CLOSE — instead update state (`currentWave++`, `completedWaves.push`), output `═══ WAVE {N-1} COMPLETE — {role} ═══`, and stop. Next `/mustard:resume` picks up wave N.
     - `node .claude/scripts/sync-registry.js`
-    - Spec: `Status: completed`, `Phase: CLOSE`, all `[ ]` → `[x]`
-    - Move spec to `.claude/spec/completed/`
+    - Spec: `Status: completed`, `Phase: CLOSE`, all `[ ]` → `[x]`. For wave plans: mark `wave-plan.md` status `completed`, and mark each `wave-N-{role}/spec.md` completed too.
+    - Move spec to `.claude/spec/completed/` (the entire `{specName}/` directory, including wave subdirs if any)
     - **Delete** `.claude/.pipeline-states/{spec-name}.json`
-    - Output with agent colors: `═══ PIPELINE COMPLETE — {name} | Agents: {n} ok | Files: {c} created, {m} modified ═══`
+    - Output with agent colors: `═══ PIPELINE COMPLETE — {name} | Agents: {n} ok | Files: {c} created, {m} modified ═══` (for wave plans: append `| Waves: {totalWaves}`).
+
+### Wave Failure Handling
+
+Applies only when `pipeline-state.isWavePlan === true`.
+
+A wave is considered **failed** when:
+- REVIEW returns REJECTED after 2 fix-loops exhausted (see Step 19b), OR
+- An implementation agent returns `BLOCKED` and the user cannot resolve inline, OR
+- Build/type-check fails repeatedly (max 2 retries) after Granular Retry Protocol is exhausted.
+
+**On wave failure:**
+
+1. Update pipeline state:
+   - `failedWaves.push(currentWave)`
+   - `status = "failed"`
+   - `updatedAt = {ISO now}`
+2. Write failure log to `.claude/spec/active/{specName}/wave-{currentWave}-{role}/failure.md`:
+   ```markdown
+   # Wave {N} Failure — {role}
+   ## When: {ISO}
+   ## Phase: {EXECUTE | REVIEW | CLOSE}
+   ## Reason: {short cause — e.g., "REVIEW REJECTED after 2 fix-loops"}
+   ## Findings (verbatim)
+   {last review findings OR BLOCKED rationale OR build error}
+   ## Files touched
+   {list from agent memory}
+   ```
+3. **Do NOT** attempt further automatic recovery. Wave N-1 commits remain in place — they are real progress.
+4. **Prompt the user via AskUserQuestion:**
+   - **"Corrigir wave {N} manualmente e retomar"** → user fixes by hand; next `/mustard:resume` clears `failedWaves` entry and restarts wave N from EXECUTE.
+   - **"Reescrever wave {N} (re-PLAN dessa onda)"** → delete `wave-{N}-{role}/spec.md`, re-enter PLAN for wave N only (run PLAN sub-flow scoped to wave N's files). User then re-approves via `/mustard:approve` for wave N.
+   - **"Abortar pipeline"** → set `status: "aborted"`, move spec to `.claude/spec/aborted/{specName}/` (create dir if needed), keep waves 1..N-1 commits. Inform user: `Pipeline aborted. Waves 1..{N-1} commits preserved. Waves {N}..{totalWaves} discarded.`
+
+**Risco residual documentado:** wave N-1 commits podem estar incompletos semanticamente sem wave N (ex.: schema criado mas API não). O usuário foi avisado disso no `/approve` da wave plan. O log `failure.md` explicita qual superfície ficou exposta.
 
 ### Granular Retry Protocol
 

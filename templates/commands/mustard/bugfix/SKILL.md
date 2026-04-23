@@ -58,6 +58,32 @@ If the diff file is empty or missing, skip the Git State header entirely. Never 
    - Trace callers/callees via Grep in relevant directories (prefer Grep over Read)
    - Return as soon as root cause is clear — don't exhaustively scan
    - Return: root cause file(s), line(s), explanation
+
+2b. **Cache root-cause for retry reuse:**
+
+After DIAGNOSE returns, compute a cache signature so fix-loop retries can skip re-DIAGNOSE when the affected surface hasn't changed:
+
+```javascript
+// in-memory during bugfix session (also persisted to pipeline-state for Full Path)
+const affectedFiles = [...root-cause file(s) from Explore return, sorted];
+const bugDescription = {user's error description, canonical — trimmed and lowercased};
+const rootCauseHash = sha256(bugDescription + '|' + affectedFiles.join(','));
+const rootCauseSummary = {1-line root cause from Explore, ≤500 chars};
+const affectedFilesHash = sha256(concatenated contents of affectedFiles right now);
+```
+
+Write to pipeline-state if Full Path (`.claude/.pipeline-states/{specName}.json`):
+```json
+{
+  "rootCauseHash": "sha256...",
+  "rootCauseSummary": "...",
+  "affectedFilesHash": "sha256...",
+  "affectedFiles": ["path/a.ts", "path/b.ts"],
+  "cachedAt": "{ISO}"
+}
+```
+
+For Fast Path (no spec yet), keep the cache in-memory only — it lives for the duration of the bugfix session, which is sufficient for the retry loop.
 3. **ASSESS — Decision point:**
    - Explore returns clear root cause in 1-2 files → **Fast Path** (skip PLAN)
    - 3+ files, unclear impact, cross-layer → **Full Path** (brief spec via PLAN)
@@ -125,9 +151,19 @@ Before retrying a failed fix attempt, classify the failure:
 
 1. **Transient?** — Would re-running succeed without any change? (flaky test, cache, env) → Retry once immediately.
 2. **Resolvable?** — Is the fix clear and patchable in ≤3 lines without new reads? → Apply patch, retry (counts as retry 1).
-3. **Structural?** — Did the original ANALYZE misidentify the root cause? → Re-analyze: dispatch a focused Explore on the actual failure point, update root cause, re-dispatch bugfix agent. Does NOT count against the 2-retry cap.
+3. **Structural?** — Did the original ANALYZE misidentify the root cause? → **Before re-Exploring, consult the root-cause cache from Step 2b:**
+   - Recompute `affectedFilesHash` for the cached `affectedFiles`.
+   - **Cache hit (hash matches) AND failure signal does NOT suggest a different cause** (no keyword in the failure pointing to files outside `affectedFiles`, no REVIEW rationale explicitly naming a different root) → skip re-Explore, inject `rootCauseSummary` verbatim into the retry prompt. Log: `root-cause cached (retry {N}/2), skipping diagnose`.
+   - **Cache miss (files changed) OR failure rationale points elsewhere** → invalidate cache, run targeted Explore on the actual failure point, update root cause (including new cache entry via Step 2b), re-dispatch bugfix agent.
+   - Re-ANALYZE (with or without cache) does NOT count against the 2-retry cap.
 
-Max 2 retries for Transient + Resolvable. Structural failures trigger a targeted re-ANALYZE, not a blind retry.
+Max 2 retries for Transient + Resolvable. Structural failures trigger a targeted re-ANALYZE (cache-gated), not a blind retry.
+
+**Cache invalidation signals:**
+- Affected files changed on disk → hash mismatch invalidates
+- Review/build failure rationale mentions files outside `affectedFiles` → invalidate
+- User explicitly overrides (rare) → invalidate
+- After 2 retries exhausted, the cache is naturally flushed when the pipeline aborts or advances
 
 ### CLOSE
 

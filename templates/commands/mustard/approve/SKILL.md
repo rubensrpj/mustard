@@ -23,15 +23,31 @@ Approves the active spec and prepares the implementation phase.
    - Do NOT proceed to step 2 without running this command
 2. **Read** `.claude/pipeline-config.md` — agents, model selection
 3. Locate active spec in `.claude/spec/active/`
+
+### Step 3b: Wave Plan Detection
+
+Check if the located spec is a wave plan: look for `.claude/spec/active/{specName}/wave-plan.md`.
+
+**If `wave-plan.md` exists:**
+
+1. Read `.claude/.pipeline-states/{specName}.json` — expect `isWavePlan: true`, `totalWaves: N`, `currentWave: 1`, `completedWaves: []`.
+2. Read `wave-plan.md` and print its ENTIRE contents verbatim inside a fenced markdown block (```` ```markdown ... ``` ````). List each wave spec file path below the block (one line each).
+3. `AskUserQuestion`:
+   - **"Approve wave plan — start with wave 1"** → proceed to step 4 (update header + state for wave 1 dispatch)
+   - **"Reject decomposition — use single spec"** → merge all wave specs back into a single spec at `.claude/spec/active/{specName}/spec.md` (concatenate `## Files`, `## Tasks`, `## Boundaries` from each wave), delete `wave-plan.md` and `wave-N-*/` subdirectories, set `scopeOverride: "user-rejected-waves"` and `isWavePlan: false` in pipeline state, proceed to step 4 on the single spec
+   - **"Stop — re-plan with guidance"** → stop. Instruct user: `Delete .claude/spec/active/{specName}/ and re-run /feature {name} with explicit guidance (e.g., "keep wave 2 and wave 3 together").`
+4. If user approved wave plan, for step 4 and onward, operate on the **wave 1 spec** (`.claude/spec/active/{specName}/wave-1-{role}/spec.md`) — update its header, not the wave-plan.md header.
+
+**If `wave-plan.md` does NOT exist:** proceed as a single spec (original behavior below).
+
 4. **Spec Checkpoint — update spec header:**
    - `### Status: approved`
    - `### Phase: PLAN`
    - `### Checkpoint: {ISO timestamp now}`
-5. **Pipeline State — create `.claude/.pipeline-states/{spec-name}.json`:**
+5. **Pipeline State — create or update `.claude/.pipeline-states/{spec-name}.json`:**
    - Extract `spec-name` from the spec directory (e.g. basename of path → `2026-02-26-linked-services-card`)
-   - Parse Tasks from spec to extract tasks per agent (DB, Backend, Frontend, etc.)
-   - Create `.claude/.pipeline-states/` directory if it doesn't exist
-   - Write state file with `specName`, `status: "approved"`, `phaseName: "PLAN"`, `tasks` with names and agents, `model`, `updatedAt`
+   - **If wave plan (from Step 3b):** state already exists. Update fields: `status: "approved"`, `currentWave: 1`, `updatedAt`. Parse tasks from **wave-1** spec only (not all waves). Preserve `isWavePlan`, `totalWaves`, `completedWaves`, `failedWaves`.
+   - **If single spec:** Parse Tasks from spec to extract tasks per agent (DB, Backend, Frontend, etc.). Create `.claude/.pipeline-states/` directory if it doesn't exist. Write state file with `specName`, `status: "approved"`, `phaseName: "PLAN"`, `tasks` with names and agents, `model`, `updatedAt`.
 5b. **Memory Persist — record architectural decisions:**
    - For each significant decision in the spec (technology choices, design patterns, trade-offs):
      ```bash
