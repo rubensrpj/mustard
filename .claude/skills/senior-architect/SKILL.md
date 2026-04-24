@@ -114,34 +114,9 @@ Technical reference guide in `references/tech_decision_guide.md`:
 
 ## Development Workflow
 
-### 1. Setup and Configuration
+Setup, quality checks, and best-practice references — see `references/workflow-commands.md`.
 
-```bash
-# Install dependencies
-npm install
-# or
-pip install -r requirements.txt
-
-# Configure environment
-cp .env.example .env
-```
-
-### 2. Run Quality Checks
-
-```bash
-# Use the analyzer script
-python scripts/project_architect.py .
-
-# Review recommendations
-# Apply fixes
-```
-
-### 3. Implement Best Practices
-
-Follow the patterns and practices documented in:
-- `references/architecture_patterns.md`
-- `references/system_design_workflows.md`
-- `references/tech_decision_guide.md`
+→ See `references/workflow-commands.md`
 
 ## Best Practices Summary
 
@@ -171,22 +146,9 @@ Follow the patterns and practices documented in:
 
 ## Common Commands
 
-```bash
-# Development
-npm run dev
-npm run build
-npm run test
-npm run lint
+Development, analysis, and deployment commands (npm, python scripts, docker, kubectl).
 
-# Analysis
-python scripts/project_architect.py .
-python scripts/dependency_analyzer.py --analyze
-
-# Deployment
-docker build -t app:latest .
-docker-compose up -d
-kubectl apply -f k8s/
-```
+→ See `references/workflow-commands.md`
 
 ## Troubleshooting
 

@@ -8,404 +8,41 @@
 
 ## Flags
 
-- `--force` — descarta tudo o que é `<!-- mustard:generated -->` e regera do zero. Semântica:
-  - Ignora o incremental skip do Step 1/C: **todos** os subprojetos são reprocessados, independente de hash match ou `gitDirty`.
-  - Bypassa o fast-path de §2.6 (Bootstrap): sempre regenera `.claude/CLAUDE.md` e afins.
-  - Repassa "FORCE MODE" aos Task agents do Step 3 (eles apagam `{subproject}/.claude/skills/*/` com header `mustard:generated` antes de regerar).
-  - Roda `sync-registry.js --force` (§4.7) sempre — mesmo com registry já v4.0.
-  - Skills sem o header `mustard:generated` (user-authored) são **preservadas**.
+- `--force` — discards all `<!-- mustard:generated -->` content and regenerates from scratch. Bypasses incremental skip, always regenerates CLAUDE.md and registry. → See `../../../refs/scan/scan-protocol.md` for full semantics.
 
 ## Execution Model
 
-**CRITICAL — Context Protection:**
-- The orchestrator MUST NOT perform analysis directly. ALL analysis MUST be delegated to Task agents.
-- Orchestrator's role: discover → incremental check → launch agents → collect results → compile.
-- **NO confirmation prompts**: never ask the user for approval. Just do it.
-- **NO `run_in_background: true`** for Task agents that write files.
+**CRITICAL — Context Protection:** Orchestrator MUST NOT analyze directly. ALL analysis delegated to Task agents.
 
-**CRITICAL — Read-Before-Write Protocol:**
-Claude Code's `Write` and `Edit` tools fail with `File has not been read yet. Read it first before writing to it.` when targeting an existing file without a prior `Read` call in the same context.
+**CRITICAL — Read-Before-Write:** Every `Write`/`Edit` on an existing file MUST be preceded by a `Read` call in the same context. Applies to `.claude/CLAUDE.md`, root `CLAUDE.md`, `.claude/docs/*.md`, and subproject `CLAUDE.md` edits.
 
-Whenever the orchestrator (or a Task agent) modifies an existing file during `/scan`, it MUST:
-1. Call `Read` on the target path first (even if just the first few lines).
-2. Only then issue `Write` (full overwrite) or `Edit` (patch).
-3. If the path genuinely does not exist, `Write` is safe without `Read` — but verify via `Glob` rather than guessing.
-
-This applies especially to: `.claude/CLAUDE.md` regeneration, root `CLAUDE.md` updates, `.claude/docs/*.md` frontmatter injection, and subproject `CLAUDE.md` section edits.
+→ See `../../../refs/scan/scan-protocol.md` for full execution model details.
 
 ## Process
 
-### 1. Discover Subprojects & Incremental Detection
+**1. Discover & Incremental Detection** — Read old cache → `sync-detect.js --no-cache` → compare hashes + gitDirty → build agent list (skip unchanged; process mismatch/dirty). → See `../../../refs/scan/scan-protocol.md §Step 1`.
 
-**Step A — Read OLD cache FIRST** (before running detect):
-```bash
-# Read the existing cache to get previous hashes
-cat .claude/.detect-cache.json
-```
-Save the old `sourceHashes` and `moduleHashes` values.
+**2.5. Cleanup Stale Subprojects** — Remove directories, cache entries, agent files, skills, and registry entries for subprojects no longer detected. → See `../../../refs/scan/scan-protocol.md §Step 2.5`.
 
-**Step B — Run detect with `--no-cache`** (does NOT overwrite cache):
-```bash
-node .claude/scripts/sync-detect.js --no-cache
-```
-Parse JSON output → list of `{ name, path, role, agent, stackSummary, gitDirty?, gitDirtyCount? }` + new `sourceHashes` + `moduleHashes`.
-- If `/scan <subproject>` was called, filter to that subproject only.
+**2.6. Bootstrap (if needed)** — Fast-path: skip if root `CLAUDE.md` + `entity-registry.json` exist and `--force` not active. Otherwise create `.claude/CLAUDE.md`, root `CLAUDE.md`, `entity-registry.json`, and per-subproject `CLAUDE.md`. → See `../../../refs/scan/scan-protocol.md §Step 2.6`.
 
-**Step C — Compare old vs new hashes + git dirty state:**
-1. For each subproject, compare NEW `sourceHashes[name]` with OLD cached value
-2. **Also check `gitDirty` flag** from detect output — if `gitDirty: true`, the subproject has uncommitted source file changes
-3. **Hash match AND NOT gitDirty** → skip agent for this subproject (reuse existing `.claude/commands/` output)
-4. **Hash mismatch OR gitDirty** → include in agent launch list (dirty files indicate changes the previous scan may not have captured)
-5. If ALL subprojects can be skipped → skip to step 4 (Update CLAUDE.md) + step 5 (Compile) directly
-6. **No old cache** → scan ALL subprojects (first run)
-7. **`--force` ativo** → ignore tudo acima: marque **todos** os subprojetos como `needs-rescan`, não compare hashes, não pule nada.
+**2.7. Scan Product Docs** — If `.claude/docs/` has `.md` files, inject YAML frontmatter (name, description, topics, scanned-at). Orchestrator does this inline (no Task agent needed). → See `../../../refs/scan/scan-protocol.md §Step 2.7`.
 
-**Module-level incremental** (when subproject hash changed):
-- Compare `moduleHashes[subproject][module]` with cached values
-- Pass changed module names to the agent:
-```
-INCREMENTAL MODE:
-Changed modules: [Contracts, PaymentGateway]
-Unchanged modules: [Partners, Banks, Users, ...]
-For UNCHANGED modules: reuse cached patterns (DO NOT re-analyze).
-For CHANGED modules: full analysis (read code, detect patterns, update guards).
-Merge results: combine cached + new into final output files.
-```
+**3. Launch Agents** — Launch ALL agents in a SINGLE message (parallel tool calls). Each agent receives the EVIDENCE RULE prompt. **Never `run_in_background: true`.** → See `../../../refs/scan/evidence-rules.md` for full agent prompt template and EVIDENCE RULE 1-5.
 
-**Impact estimates:**
-| Scenario | Before | After |
-|----------|--------|-------|
-| Zero changes | ~225s | ~2-5s |
-| 1 module changed | ~225s | ~40-60s |
-| 1 subproject changed | ~225s | ~90s |
-| Full scan (no cache) | ~225s | ~225s |
+**4. Update CLAUDE.md files** — Regenerate `.claude/CLAUDE.md` (always overwrite); update root `CLAUDE.md` (Project Structure table, commands, Ignore Paths). → See `../../../refs/scan/scan-protocol.md §Step 4`.
 
-### 2.5. Cleanup Stale Subprojects
+**4.5. Generate Agents** — Generate `{subproject.name}-impl.md` and `{subproject.name}-explorer.md` per subproject. → See `../../../refs/scan/scan-protocol.md §Step 4.5`.
 
-Compare OLD cached `subprojects[].name` list with NEW detected list.
-For each name present in OLD but **absent** in NEW:
+**4.6. Generate Granular Skills** — One skill per cluster (skill-creator methodology). → See `../../../refs/scan/scan-protocol.md §Step 4.6` and `scan-format.md §10`.
 
-1. Delete `{name}/` directory if it exists and contains NO non-generated user files (check for `.claude/commands/notes.md` — if it has user content, warn and skip)
-2. Remove stale entries from `.claude/.detect-cache.json` (`subprojects`, `sourceHashes`, `moduleHashes`)
-3. Remove stale agent files: `.claude/agents/{name}-impl.md` if no remaining subproject uses that name
-4. Remove stale skill directories in `.claude/skills/` that reference the removed subproject
-5. Remove stale entity-registry entries under `e` that reference the removed subproject
-6. Log: `CLEANUP: removed {name} (no longer detected)`
+**4.7. Refresh Registry** — `node .claude/scripts/sync-registry.js --force`. → See `../../../refs/scan/scan-protocol.md §Step 4.7`.
 
-**Safety**: only delete directories that are NOT git submodules (`git submodule status` does not list them) and are NOT tracked by git (`git ls-files {name}` returns empty).
+**5. Update Cache** — `node .claude/scripts/sync-detect.js` (with cache write). → See `../../../refs/scan/scan-protocol.md §Step 5`.
 
-### 2.7. Scan Product Docs
+**6. Validate Skills** — `node .claude/scripts/skill-validate.js --factual`. Control: `MUSTARD_SKILL_VALIDATE_MODE=strict|warn|off`. → See `../../../refs/scan/evidence-rules.md §Validate Skills Step`.
 
-If `.claude/docs/` exists and contains `.md` files:
-
-1. For each `.md` file, read content and analyze:
-   - Extract or infer: name (from H1), description (from first paragraph/blockquote), topics (from H2 headings as keywords)
-2. **Read the file first** (required by Claude Code's Write/Edit contract), then generate/update YAML frontmatter with `name`, `description`, `topics`, `scanned-at`
-   - If file has existing frontmatter WITH `scanned-at` → overwrite (auto-generated)
-   - If file has existing frontmatter WITHOUT `scanned-at` → preserve user frontmatter, skip
-   - If file has no frontmatter → prepend generated frontmatter
-3. This step does NOT require a Task agent — orchestrator can do it inline (small, deterministic work). Always `Read` before `Edit`/`Write`.
-
-### 2.6. Bootstrap (if needed)
-
-**Fast-path**: If root `CLAUDE.md` exists AND `.claude/entity-registry.json` exists AND `--force` is **not** active → skip to step 3 (Launch Agents).
-Bootstrap only runs on first scan or when foundational files are missing.
-
-Otherwise create foundational files:
-
-**`.claude/CLAUDE.md`** — orchestrator entry point (always regenerate). If the file already exists, `Read` it first before calling `Write` — otherwise Claude Code's Write tool will reject the call:
-```markdown
-<!-- mustard:generated -->
-# Orchestrator Rules
-
-## Role
-You do NOT implement code — you delegate via Task tool.
-
-## Intent Routing
-
-| Intent | Signals | Action |
-|--------|---------|--------|
-| Feature | create, add, new entity, new CRUD, implement | Pipeline Feature |
-| Enhancement | improve, adjust, change, add field/column, optimize, update | Pipeline Feature |
-| Bugfix | error, bug, not working, broken, fix, correct | Pipeline Bugfix |
-| Analyze | analyze, audit, evaluate, check, compare, inspect, assess | Delegate via /task |
-| Simple | config, docs, small refactor, rename, move | Delegate via Task |
-
-Any change that touches production code (schema, API, UI) → Pipeline Feature.
-Read `.claude/pipeline-config.md` for agent dispatch rules.
-
-## Full Reference
-Rules, pipeline, naming: `.claude/pipeline-config.md`
-```
-
-**Root `CLAUDE.md`** — project map from detected subprojects:
-```markdown
-# {ProjectName} - Project Context
-
-> Framework rules: See [.claude/CLAUDE.md](./.claude/CLAUDE.md)
-
-## Project Structure
-
-| Subproject | Technology | Port | CLAUDE.md |
-|------------|------------|------|-----------|
-| {name} | {detected stack} | {port or -} | [{name}](./{name}/CLAUDE.md) |
-
-## Entity Registry
-
-**CRITICAL:** Before searching for ANY entity, read `.claude/entity-registry.json` first.
-
-## Ignore Paths
-
-Never search in:
-- `node_modules/`, `.next/`, `bin/`, `obj/`, `dist/`, `migrations/`
-```
-
-**`.claude/entity-registry.json`** — generate via registry scanner:
-```bash
-node .claude/scripts/sync-registry.js --force
-```
-If `sync-registry.js` fails or is not available, create empty skeleton:
-```json
-{ "_meta": { "version": "4.0" }, "_patterns": {}, "_enums": {}, "e": {} }
-```
-
-**`{subproject}/CLAUDE.md`** — per subproject (skip if exists):
-```markdown
-# {SubprojectName}
-
-> Parent: [../CLAUDE.md](../CLAUDE.md) | Orchestrator: [../.claude/CLAUDE.md](../.claude/CLAUDE.md)
-> Skills: `{name}/.claude/skills/` | Guards: `{name}/CLAUDE.md`
-
-## Stack
-
-{stackSummary from sync-detect.js}
-
-## Commands
-
-{detected build/run/test commands}
-
-## Key Paths
-
-{detected from folder structure}
-
-## Guards
-
-{leave empty — populated after analysis}
-```
-
-Ensure each detected subproject has a `CLAUDE.md` file.
-
-### 3. Launch Agents
-
-**CRITICAL: Launch ALL agents in a SINGLE message with parallel tool calls.**
-**CRITICAL: NEVER use `run_in_background: true` — agents MUST write files (Write/Edit/Bash are denied in background mode). Always use foreground (default).**
-
-For each subproject to scan, launch one Task agent with `subagent_type: "general-purpose"`:
-
-```
-Read .claude/commands/mustard/scan-format.md for analysis and format rules.
-
-**EXECUTION RULE — NO CONFIRMATION PROMPTS**: NEVER ask the user to confirm file writes, overwrites, deletes, or directory creations. The user already invoked /scan — that IS the approval. Proceed autonomously. If an action fails, surface the error in the return format and move on; do NOT stop to ask what to do.
-
-Subproject: {name}
-Path: {path}
-Role: {role}
-Stack: {stackSummary}
-
-FORCE MODE (only when /scan was invoked with --force):
-- Before generating skills, scan {path}/.claude/skills/ and delete every subdirectory
-  whose SKILL.md contains "<!-- mustard:generated" (preserve user-authored skills that
-  lack that marker).
-- Also delete any pre-existing _backup/ under {path}/.claude/commands/ to avoid stacking stale backups.
-
-Tasks:
-1. Read existing knowledge from {path}/.claude/commands/ and {path}/CLAUDE.md
-2. Backup generated files to {path}/.claude/commands/_backup/
-3. Ensure notes.md exists
-4. Analyze source code following scan-format.md rules
-5. Write generated files to {path}/.claude/commands/
-6. Generate granular skills following scan-format.md §10 (skill-creator methodology)
-7. Update {path}/CLAUDE.md with scan references
-```
-
-### 4.5. Generate Agents
-
-For each detected subproject, generate `.claude/agents/{subproject.name}-impl.md`:
-
-```yaml
----
-name: {subproject.name}-impl
-description: {role} implementation for {subproject.name}. Reads {subproject.name}/CLAUDE.md for guards.
-model: sonnet
-tools: [Read, Write, Edit, Bash, Grep, Glob]
-memory: project
----
-```
-
-Body (below frontmatter):
-```markdown
-<!-- mustard:generated -->
-
-# {Role} Implementation Agent
-
-## Mandatory Reads
-1. `{subproject.path}/CLAUDE.md` — guards, stack, key paths
-2. `{subproject.path}/.claude/commands/guards.md` — DO/DON'T rules
-3. `{subproject.path}/.claude/commands/notes.md` — project-specific notes
-
-## Boundary
-{boundary from Role Rules table}
-
-## Validation
-{validate command from subproject CLAUDE.md → Commands section}
-
-## Return Format
-### Files Modified/Created
-| File | Action |
-|------|--------|
-
-### {role-specific sections from Role Rules}
-
-### Build / Type-check
-{output}
-
-### Guards Verified
-Total: {n}/{total} | Violations: {v}
-```
-
-Also generate `.claude/agents/{subproject.name}-explorer.md` for each subproject:
-```yaml
----
-name: {subproject.name}-explorer
-description: Read-only exploration agent for {subproject.name} codebase analysis and investigation.
-model: haiku
-tools: [Read, Grep, Glob]
-memory: project
----
-```
-
-Body (below frontmatter):
-```markdown
-<!-- mustard:generated at:{ISO} role:{role} -->
-
-# {Subproject} Explorer Agent
-
-> Read-only analysis of {subproject.name} codebase. Patterns, dependencies, architecture, quality evaluation.
-
-## Mandatory Reads
-1. `{subproject.path}/CLAUDE.md` — project rules, guards, stack
-2. `{subproject.path}/.claude/commands/guards.md` — DO/DON'T rules
-
-## Skill References (load when relevant to task)
-- Design/UX analysis: `design-craft` skill
-- Architecture analysis: `senior-architect` skill
-
-## Boundary
-- **Read-only** — NEVER write, edit, or execute commands
-- Scope: `{subproject.path}/` directory only
-- Ignore: `bin/`, `obj/`, `node_modules/`, `.next/`, `Migrations/`
-- **Budget: ≤20 tool uses total, ≤3 full file reads** — prefer Grep over Read
-- Return findings as soon as pattern/root-cause is clear — do NOT exhaustively scan
-
-## Return Format
-### Findings
-| Severity | File:Line | Detail |
-|----------|-----------|--------|
-| CRITICAL / WARNING / NOTE | path:line | description |
-
-### Suggested Actions
-- Concrete `/task` or pipeline commands to address findings
-```
-
-Mark all with `<!-- mustard:generated -->`. Overwrite on next scan.
-
-### 4.6. Generate Granular Skills (skill-creator methodology)
-
-For each detected pattern, generate a **granular skill** following skill-creator methodology.
-See `scan-format.md` §10 for decomposition rules, SKILL.md format, and description guidelines.
-
-**Key rules:**
-- One conceptual pattern = one skill (not one file = one skill)
-- Skill name: `{subproject-short}-{pattern-name}` — pattern-name is a kebab-case concept the codebase itself uses (derived from its folders / file suffixes / domain vocabulary), never a library brand or imported taxonomy
-- Description must be "pushy" — include casual trigger phrases (see scan-format.md §10)
-- Extract real code examples into `references/examples.md`
-- Max 500 lines per SKILL.md body (ideally <200)
-
-**Output structure per skill:**
-```
-.claude/skills/{skill-name}/
-├── SKILL.md              → Pattern instruction
-└── references/
-    └── examples.md        → Real code from codebase
-```
-
-Skills are generated ONLY in `{subproject}/.claude/skills/{skill-name}/` (NOT in root `.claude/skills/`).
-Mark all with `<!-- mustard:generated -->`. Overwrite on next scan.
-
-### 4.7. Refresh Registry
-
-Run the registry scanner so the agent-generated skills of step 3 have the latest `_patterns.discovered[]` clusters available for future scans:
-
-```bash
-node .claude/scripts/sync-registry.js --force
-```
-
-Skill generation itself is **entirely the responsibility of the Step 3 agents** (see `scan-format.md` §10). There is no separate mechanical generator — the agent reads `_patterns[*].discovered[]` and emits cluster skills directly.
-
-### 4. Update CLAUDE.md files
-
-After agents complete:
-- **Regenerate `.claude/CLAUDE.md`** from the template in step 2 (always overwrite — it's `mustard:generated`). `Read` it first if it exists, then `Write`.
-- Update root `CLAUDE.md`:
-  - `Read` the current file before any `Edit` call (avoids `File has not been read yet` errors)
-  - `## Project Structure` table if subprojects changed
-  - Project-specific commands detected
-  - `## Ignore Paths` with detected paths
-
-### 5. Update Cache
-
-Update the detect cache so the NEXT scan can use it for incremental detection:
-```bash
-node .claude/scripts/sync-detect.js
-```
-This runs detect WITH cache writing (no `--no-cache` flag), persisting current hashes.
-
-### Phase: Security Scan
-
-Run after code analysis (step 3) or independently via `/scan --security`:
-
-```bash
-node .claude/scripts/security-scan.js "$PROJECT_DIR"
-# JSON output for programmatic use:
-node .claude/scripts/security-scan.js "$PROJECT_DIR" --json
-```
-
-Include findings in scan output under a `## Security` section:
-
-| Severity | Finding Type | Action |
-|----------|-------------|--------|
-| **CRITICAL** | Secrets detected | Flag in verification checklist; do not commit |
-| **WARNING** | Env file not in .gitignore | Add to .gitignore before any push |
-| **ADVISORY** | Dangerous permission rule in settings.json | Review and tighten |
-
-- Exit code 0 = clean; exit code 1 = findings present
-- Secret previews are truncated to 8 chars — never log full values
-- Skip if `$PROJECT_DIR` is not set; use `process.cwd()` as fallback
-
-## Verification
-
-1. All skills in `{subproject}/.claude/skills/` have valid SKILL.md
-2. Every generated file has `<!-- mustard:generated -->` header
-3. Every generated file has a blockquote description after the H1 title
-4. Every pattern references a real file
-5. Old files backed up in `_backup/`
-6. Each subproject's CLAUDE.md has `## Scan References`
-7. Root CLAUDE.md has `## Project Structure` with all subprojects
-8. `.claude/entity-registry.json` exists and is v4.0
-9. Pattern skills generated from registry (entity-creation, enum-placement, route-conventions, etc.)
-10. Each generated skill has valid YAML frontmatter (name + description)
-10. Each skill's description is "pushy" — includes casual trigger phrases
-11. If security scan ran: findings summarized in `## Security` section of output
+**Security Scan** — Run after step 3 or via `/scan --security`. `node .claude/scripts/security-scan.js "$PROJECT_DIR"`. → See `../../../refs/scan/scan-protocol.md §Security Scan Phase`.
 
 ## Return Format
 
@@ -413,7 +50,7 @@ Include findings in scan output under a `## Security` section:
 {
   "scanned": ["{subproject-1}", "{subproject-2}"],
   "generated": { "{subproject-1}": ["stack.md", "modules.md", "guards.md"] },
-  "skills_generated": { "{subproject-1}": ["api-endpoint-wiring", "api-service-base", "api-entity-config"] },
+  "skills_generated": { "{subproject-1}": ["api-endpoint-wiring", "api-service-base"] },
   "errors": []
 }
 ```

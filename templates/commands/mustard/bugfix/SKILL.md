@@ -196,5 +196,4 @@ After EXECUTE (fix + validate) completes:
 - NEVER ask "how to fix?" — propose + implement
 - CI test fails: read → fix → re-run — without reporting and waiting
 - MANDATORY: Follow Visual Output, Pipeline State, Task Tracking rules at each phase
-
 ULTRATHINK

@@ -79,7 +79,7 @@ export async function updateCommand(options: UpdateOptions): Promise<void> {
   }
 
   // Delete core folders
-  const foldersToDelete = ['commands/mustard', 'hooks', 'skills', 'scripts'];
+  const foldersToDelete = ['commands/mustard', 'hooks', 'skills', 'scripts', 'refs'];
   const cleanSpinner = ora('Cleaning...').start();
   for (const folder of foldersToDelete) {
     const p = join(claudePath, folder);
@@ -99,6 +99,10 @@ export async function updateCommand(options: UpdateOptions): Promise<void> {
   total += await copyDir(join(templatesDir, 'skills'), join(claudePath, 'skills'));
   // scripts/
   total += await copyDir(join(templatesDir, 'scripts'), join(claudePath, 'scripts'));
+  // refs/ (command progressive-disclosure sidecars — outside commands/ to avoid auto-registration as sub-commands)
+  if (existsSync(join(templatesDir, 'refs'))) {
+    total += await copyDir(join(templatesDir, 'refs'), join(claudePath, 'refs'));
+  }
   // settings.json
   await copyFile(join(templatesDir, 'settings.json'), join(claudePath, 'settings.json'));
   total++;

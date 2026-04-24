@@ -58,12 +58,46 @@ If the diff file is empty or missing, skip the Git State header entirely. Never 
    - Trace callers/callees via Grep in relevant directories (prefer Grep over Read)
    - Return as soon as root cause is clear — don't exhaustively scan
    - Return: root cause file(s), line(s), explanation
+
+2b. **Cache root-cause for retry reuse:**
+
+After DIAGNOSE returns, compute a cache signature so fix-loop retries can skip re-DIAGNOSE when the affected surface hasn't changed:
+
+```javascript
+// in-memory during bugfix session (also persisted to pipeline-state for Full Path)
+const affectedFiles = [...root-cause file(s) from Explore return, sorted];
+const bugDescription = {user's error description, canonical — trimmed and lowercased};
+const rootCauseHash = sha256(bugDescription + '|' + affectedFiles.join(','));
+const rootCauseSummary = {1-line root cause from Explore, ≤500 chars};
+const affectedFilesHash = sha256(concatenated contents of affectedFiles right now);
+```
+
+Write to pipeline-state if Full Path (`.claude/.pipeline-states/{specName}.json`):
+```json
+{
+  "rootCauseHash": "sha256...",
+  "rootCauseSummary": "...",
+  "affectedFilesHash": "sha256...",
+  "affectedFiles": ["path/a.ts", "path/b.ts"],
+  "cachedAt": "{ISO}"
+}
+```
+
+For Fast Path (no spec yet), keep the cache in-memory only — it lives for the duration of the bugfix session, which is sufficient for the retry loop.
 3. **ASSESS — Decision point:**
    - Explore returns clear root cause in 1-2 files → **Fast Path** (skip PLAN)
    - 3+ files, unclear impact, cross-layer → **Full Path** (brief spec via PLAN)
 
 **Fast Path:** Go directly to EXECUTE. No spec, no approval gate (Zero Context-Switch Protocol). If you want to review the fix plan before EXECUTE, force Full Path by listing >5 files in the ANALYZE return.
-**Full Path:** Write brief spec in `.claude/spec/active/{date}-{name}/spec.md`, then **present the full spec to the user before stopping**:
+**Full Path:** Write brief spec in `.claude/spec/active/{date}-{name}/spec.md`. The spec MUST include (Wave 10):
+   ```markdown
+   ## Acceptance Criteria
+
+   - [ ] AC-1: Bug is no longer reproducible — Command: `{command that previously triggered the bug}`
+   - [ ] AC-2: {additional verification if applicable} — Command: `{cmd}`
+   ```
+   Minimum 1 AC: the reproduction command for the bug (exits non-zero before fix, exits 0 after fix).
+   Then **present the full spec to the user before stopping**:
    - Read the spec file just written and print its ENTIRE contents verbatim inside a fenced markdown block (```` ```markdown ... ``` ````). Do NOT summarize — the user asked to read the complete plan before approving.
    - After the fenced block, instruct: _"Run `/approve` (or `/approve --resume` to chain inline) to proceed to EXECUTE."_
 
@@ -125,14 +159,35 @@ Before retrying a failed fix attempt, classify the failure:
 
 1. **Transient?** — Would re-running succeed without any change? (flaky test, cache, env) → Retry once immediately.
 2. **Resolvable?** — Is the fix clear and patchable in ≤3 lines without new reads? → Apply patch, retry (counts as retry 1).
-3. **Structural?** — Did the original ANALYZE misidentify the root cause? → Re-analyze: dispatch a focused Explore on the actual failure point, update root cause, re-dispatch bugfix agent. Does NOT count against the 2-retry cap.
+3. **Structural?** — Did the original ANALYZE misidentify the root cause? → **Before re-Exploring, consult the root-cause cache from Step 2b:**
+   - Recompute `affectedFilesHash` for the cached `affectedFiles`.
+   - **Cache hit (hash matches) AND failure signal does NOT suggest a different cause** (no keyword in the failure pointing to files outside `affectedFiles`, no REVIEW rationale explicitly naming a different root) → skip re-Explore, inject `rootCauseSummary` verbatim into the retry prompt. Log: `root-cause cached (retry {N}/2), skipping diagnose`.
+   - **Cache miss (files changed) OR failure rationale points elsewhere** → invalidate cache, run targeted Explore on the actual failure point, update root cause (including new cache entry via Step 2b), re-dispatch bugfix agent.
+   - Re-ANALYZE (with or without cache) does NOT count against the 2-retry cap.
 
-Max 2 retries for Transient + Resolvable. Structural failures trigger a targeted re-ANALYZE, not a blind retry.
+Max 2 retries for Transient + Resolvable. Structural failures trigger a targeted re-ANALYZE (cache-gated), not a blind retry.
+
+**Cache invalidation signals:**
+- Affected files changed on disk → hash mismatch invalidates
+- Review/build failure rationale mentions files outside `affectedFiles` → invalidate
+- User explicitly overrides (rare) → invalidate
+- After 2 retries exhausted, the cache is naturally flushed when the pipeline aborts or advances
+
+### QA Phase (Wave 10)
+
+After EXECUTE (fix + validate) completes:
+
+1. Update pipeline state: `phaseName: "QA"`
+2. Run: `node .claude/scripts/qa-run.js --spec {specName}` (Full Path only)
+   - For Fast Path: manually verify the bug reproduction command exits 0, emit result to harness
+3. If `overall=pass`: proceed to CLOSE
+4. If `overall=fail`: the bug reproduction AC still fails — return to EXECUTE for targeted fix, max 3 QA iterations
+5. Maximum 3 QA iterations — after that, escalate to user
 
 ### CLOSE
 
 - `node .claude/scripts/sync-registry.js` (if entities changed)
-- Output bugfix report (diagnosis, fix, validation)
+- Output bugfix report (diagnosis, fix, validation, QA result)
 
 ## Zero Context-Switch Protocol
 
@@ -141,5 +196,4 @@ Max 2 retries for Transient + Resolvable. Structural failures trigger a targeted
 - NEVER ask "how to fix?" — propose + implement
 - CI test fails: read → fix → re-run — without reporting and waiting
 - MANDATORY: Follow Visual Output, Pipeline State, Task Tracking rules at each phase
-
 ULTRATHINK

@@ -5,6 +5,15 @@
   "cleanupPeriodDays": 30,
   "attribution": { "commit": "assistant", "pr": "assistant" },
 
+  "env": {
+    "MUSTARD_DUPLICATION_MODE": "off",
+    "MUSTARD_CONVENTION_MODE": "off",
+    "MUSTARD_REGRESSION_MODE": "off",
+    "MUSTARD_SPEC_SIZE_MODE": "warn",
+    "MUSTARD_SKILL_SIZE_MODE": "warn",
+    "MUSTARD_SKILL_VALIDATE_LINES_MODE": "warn"
+  },
+
   "permissions": {
     "allow": [
       "Read",
@@ -95,6 +104,26 @@
             "type": "command",
             "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/close-gate.js",
             "timeout": 310
+          }
+        ]
+      },
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/spec-size-gate.js",
+            "timeout": 5000
+          }
+        ]
+      },
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/skill-size-gate.js",
+            "timeout": 5000
           }
         ]
       },

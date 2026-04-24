@@ -155,98 +155,31 @@ Compares auto-memory against CLAUDE.md and skills to detect duplicated informati
 
 ## report
 
-Generates progress reports from git data.
+Generates daily or weekly progress reports from real git data (log, diff --stat, shortlog). Never invent commits. Categorizes by type and project.
 
-### Usage
-
-`/knowledge report daily` or `/knowledge report weekly`
-
-### Daily Report
-
-```bash
-git log --oneline --since="00:00" --until="23:59"
-git diff --stat HEAD~10
-```
-
-Output: Summary, commits by type (feat/fix/chore), modified files by project, highlights, pending items.
-
-### Weekly Report
-
-```bash
-git log --oneline --since="1 week ago"
-git diff --stat @{1.week.ago}
-git shortlog -sn --since="1 week ago"
-```
-
-Output: Executive summary, metrics table, implemented features, bugs fixed, changes by project, next week planning.
-
-### Rules
-
-- Use real git data only — do not invent commits
-- Categorize commits by type and project
+→ See `../../../refs/knowledge/evolve-report.md`
 
 ## evolve
 
-Analyzes knowledge entries to find clusters and generate recommendations.
+Clusters entries by overlapping tags, identifies high-confidence (≥0.7) and emerging (≥3 occurrences) patterns, synthesizes recommendations per cluster.
 
-### Procedure
-
-1. Read `.claude/knowledge.json`
-2. Group entries by type, then by overlapping tags
-3. Identify **high-confidence patterns** (confidence >= 0.7)
-4. Identify **emerging patterns** (occurrences >= 3, confidence < 0.7)
-5. Find **clusters**: groups of 3+ entries sharing 2+ tags
-6. For each cluster, synthesize a recommendation
-
-### Output Format
-
-```
-=== KNOWLEDGE EVOLUTION ===
-
-HIGH CONFIDENCE (confidence >= 0.7):
-  - {name}: {description} (seen {occurrences}x, confidence {confidence})
-
-EMERGING (3+ occurrences, confidence < 0.7):
-  - {name}: {description} (seen {occurrences}x)
-
-CLUSTERS:
-  [{tag1}, {tag2}] — {count} entries
-    Recommendation: {synthesized guidance based on entry descriptions}
-
-STATS:
-  Total: {n} entries | Patterns: {n} | Conventions: {n} | Entities: {n}
-  Avg confidence: {n} | Highest: {name} ({confidence})
-===
-```
-
-7. If no entries exist, output: "No knowledge entries found. Run pipelines to accumulate patterns."
+→ See `../../../refs/knowledge/evolve-report.md`
 
 ---
 
 ## export
 
-Export knowledge base for sharing with team members.
+Writes `.claude/knowledge-export-{YYYY-MM-DD}.json` from the full knowledge base.
 
-### Procedure
-
-1. Read `.claude/knowledge.json`
-2. Generate export file: `.claude/knowledge-export-{YYYY-MM-DD}.json`
-3. Write the full knowledge base to the export file
-4. Output: "Exported {n} entries to {filepath}"
+→ See `../../../refs/knowledge/evolve-report.md`
 
 ---
 
 ## import <file>
 
-Import knowledge entries from a shared export file.
+Reads export JSON, pipes each entry to `knowledge-update.js` (deduplication auto-handled). Reports new/updated counts.
 
-### Procedure
-
-1. Read the specified import file (JSON format)
-2. For each entry in the import:
-   - Pipe to `node .claude/scripts/knowledge-update.js` with the entry data
-   - Deduplication is handled automatically by the script
-3. Report: "Imported: {n} new, {m} updated (duplicates merged with confidence boost)"
+→ See `../../../refs/knowledge/evolve-report.md`
 
 ---
 

@@ -57,52 +57,10 @@ Before loading heavy context (sync-registry, diff-context, Explore Gate), ask th
 1. Glob `.claude/spec/active/*/spec.md` — if 0 specs → inform user and stop
 2. If multiple → ask which one; if 1 → use automatically
 3. **Read entire spec** (single Read) — extract header (Status/Phase/Checkpoint) + count `[x]` vs `[ ]` + identify agents/waves from headers `### {Agent} Agent (Wave {N})`
-4. If `.claude/.pipeline-states/{spec-name}.json` exists → read for current wave + scope + `explorationSummary` + `decisions`
-4b. **Harness view (Wave 3 bonus — fail-open):** Optionally enrich pipeline state with the event-log view:
-    ```bash
-    node .claude/scripts/harness-views.js --view pipeline-state --spec {spec-name}
-    ```
-    If the command succeeds, merge its `phase`, `decisions`, and `lessons` into the Handoff Summary below. If it fails or is absent, proceed with `.pipeline-states/{spec-name}.json` alone — never block on this.
-5. **Validate pipeline state integrity:**
-   - Missing or unparseable JSON → rebuild from spec (phase from header, tasks from `[x]`/`[ ]` checkboxes, status inferred)
-   - Phase mismatch between spec header and JSON → trust spec header (it's the source of truth)
-   - Tasks in JSON marked `completed` but spec has `[ ]` → trust spec, reset task to `pending`
-   - If rebuilt → warn user: "Pipeline state was recovered from spec"
-5. **Present Handoff Summary:**
+4. If `.claude/.pipeline-states/{spec-name}.json` exists → read for current wave + scope + `explorationSummary` + `decisions`. Optionally enrich with harness view (fail-open). Validate integrity (trust spec header on mismatch).
+5. **Present Handoff Summary** — compiled from pipeline state + spec + agent memory + git context.
 
-   Compile from pipeline state + spec + agent memory + git context:
-
-   ```
-   === PIPELINE HANDOFF ===
-
-   Pipeline: {spec-name}
-   Scope:    {light|full}
-   Phase:    {ANALYZE|PLAN|EXECUTE|CLOSE}
-   Started:  {timestamp} | Elapsed: {duration}
-
-   ## Completed
-   {For each [x] checkbox in spec:}
-   - [x] {task description}
-
-   ## Pending
-   {For each [ ] checkbox in spec:}
-   - [ ] {task description}
-
-   ## Concerns
-   {Scan spec for <!-- CONCERN: ... --> comments. Omit section if none.}
-   - {concern text}
-
-   ## Context
-   - Branch: {from git}
-   - Files changed: {run `node .claude/scripts/diff-context.js`}
-   - Last agent: {Read `.claude/.agent-memory/_index.json` and pick the last entry's `agent_type`. If the file or `.agent-memory/` directory is missing, print literal `(none)` — do NOT probe with `ls`/`grep`, it surfaces noisy exit codes}
-   - Last action: {from the same last entry's `summary` field. If missing, print literal `(no prior memory)`}
-   - Decisions: {decisions[] from pipeline state, if any}
-
-   ## Next Action
-   → {ONE specific next step}
-   ===
-   ```
+→ See `../../../refs/resume/handoff-summary.md` for exact format and integrity validation rules.
 
 6. Ask: **"Continue from next action, or review spec first?"**
 
@@ -171,11 +129,7 @@ When the pipeline state indicates a wave plan, the orchestrator dispatches only 
 
 17. **Dispatch:** TaskUpdate(in_progress) + pipeline state. ALL agents in same wave → SINGLE message (multiple Task invocations). **Pass `model` from pipeline state** (e.g. `model: "opus"`) in each Task tool call — this overrides the agent YAML default. On return: pipeline state update, spec `[ ]` → `[x]` (use `replace_all` per section header, or line-by-line — NEVER copy entire spec blocks as old_string), TaskUpdate(completed), advance wave.
 
-17b. **Agent Memory:** After each wave completes and spec checkboxes are updated, write agent memories for downstream waves:
-    ```bash
-    node .claude/scripts/memory-write.js --json '{"agent_type":"{agent_type}","wave":{N},"pipeline":"{spec-name}","summary":"{1-line summary of what agent did}","details":{"files_modified":[...],"decisions":[...]}}'
-    ```
-    One call per agent in the completed wave. Summary ≤300 chars (key facts: files created, patterns used, endpoints added). Skip if no downstream waves remain.
+17b. **Agent Memory:** After each wave completes, run `memory-write.js` once per agent (summary ≤300 chars, include `files_modified` + `decisions`). Skip if no downstream waves remain.
 
 #### Escalation Status Handling
 
@@ -195,7 +149,6 @@ If two or more agents in the same wave return `CONCERN`, surface all concerns to
 19. **REVIEW (MANDATORY — NEVER SKIP):**
     - Dispatch review agent for EACH affected subproject in a SINGLE message (multiple Task invocations) using `subagent_type: "general-purpose"` with review prompt
     - Review agent MUST read `{subproject}/CLAUDE.md` + `{subproject}/.claude/commands/guards.md`
-    - Review checklist categories (inline): **SOLID, Design System, Patterns, i18n, Integration, Build, Elegance**
     - Checklist categories: **SOLID, Design System, Patterns, i18n, Integration, Build, Elegance**
     - Each issue classified: CRITICAL (blocks), WARNING (recommended), NOTE (suggestion)
     - APPROVED (zero CRITICAL) → CLOSE
@@ -204,30 +157,9 @@ If two or more agents in the same wave return `CONCERN`, surface all concerns to
 
 ### Step 19b: Fix Loop Dispatch Protocol
 
-When REVIEW returns REJECTED (any CRITICAL):
+Extract CRITICAL findings verbatim from review return (or harness view). Build retry context using Mode=fix-loop (K=1 or 2). Dispatch same subagent_type + model. Re-dispatch review after. Max 2 fix-loops → STOP.
 
-1. **Try harness view first (Wave 3):** `node .claude/scripts/harness-views.js --view pipeline-state --spec {spec-name}` — if it returns `decisions` or `lessons`, prefer those. Otherwise fall back to reading `.claude/.agent-memory/_index.json`, finding the last entry where `agent_type == {review_target_agent_type}` and `pipeline == {spec-name}`. If absent (shouldn't happen but be defensive): fall back to first-dispatch template.
-2. Extract:
-   - `prior_summary` ← `entry.summary`
-   - `files_modified` ← `entry.details.files_modified` (list)
-3. Extract review findings VERBATIM:
-   - All CRITICAL findings (required)
-   - All WARNING findings (optional — include if fix is cheap)
-   - Copy the exact text returned by the review agent; do NOT paraphrase
-4. Compose `{retry_context}` using Mode=fix-loop format (see `agent-prompt/SKILL.md § Retry Modes`). Set K = current loop number (1 or 2; max 2 fix-loops):
-   ```
-   ## RETRY CONTEXT
-   **Mode:** fix-loop ({K}/2)
-   **Prior dispatch:** {prior_summary}
-   **Files modified previously:**
-   {files_modified}
-   **Review findings (verbatim):**
-   {findings_verbatim}
-   ```
-5. Render the **Minimal Retry Template** from `agent-prompt/SKILL.md § Retry Modes` (skips CONTEXT/REFERENCE/ENTITY/SKILLS/WEB VALIDATION/ROLE/RECIPE).
-6. Dispatch the same `subagent_type` + `model` as the original impl agent (do NOT change the role or model).
-7. On return, re-dispatch REVIEW agent (normal dispatch, not retry — review is read-only).
-8. If review still REJECTED after 2 fix-loops: STOP + report exhausted retries.
+→ See `../../../refs/resume/fix-loop-wave.md`
 
 20. **CLOSE:**
     - **Wave plan gate:** if `pipeline-state.isWavePlan === true`, only CLOSE when `completedWaves.length === totalWaves`. If waves remain (`currentWave <= totalWaves` and wave N-1 just finished), **do not** run CLOSE — instead update state (`currentWave++`, `completedWaves.push`), output `═══ WAVE {N-1} COMPLETE — {role} ═══`, and stop. Next `/mustard:resume` picks up wave N.
@@ -239,87 +171,21 @@ When REVIEW returns REJECTED (any CRITICAL):
 
 ### Wave Failure Handling
 
-Applies only when `pipeline-state.isWavePlan === true`.
+Only when `isWavePlan === true`. Triggers: REJECTED after 2 fix-loops, BLOCKED by user, or repeated build failures. Updates `failedWaves`, writes `failure.md` log, then asks user: fix manually / re-PLAN wave / abort. Preserves prior wave commits.
 
-A wave is considered **failed** when:
-- REVIEW returns REJECTED after 2 fix-loops exhausted (see Step 19b), OR
-- An implementation agent returns `BLOCKED` and the user cannot resolve inline, OR
-- Build/type-check fails repeatedly (max 2 retries) after Granular Retry Protocol is exhausted.
-
-**On wave failure:**
-
-1. Update pipeline state:
-   - `failedWaves.push(currentWave)`
-   - `status = "failed"`
-   - `updatedAt = {ISO now}`
-2. Write failure log to `.claude/spec/active/{specName}/wave-{currentWave}-{role}/failure.md`:
-   ```markdown
-   # Wave {N} Failure — {role}
-   ## When: {ISO}
-   ## Phase: {EXECUTE | REVIEW | CLOSE}
-   ## Reason: {short cause — e.g., "REVIEW REJECTED after 2 fix-loops"}
-   ## Findings (verbatim)
-   {last review findings OR BLOCKED rationale OR build error}
-   ## Files touched
-   {list from agent memory}
-   ```
-3. **Do NOT** attempt further automatic recovery. Wave N-1 commits remain in place — they are real progress.
-4. **Prompt the user via AskUserQuestion:**
-   - **"Corrigir wave {N} manualmente e retomar"** → user fixes by hand; next `/mustard:resume` clears `failedWaves` entry and restarts wave N from EXECUTE.
-   - **"Reescrever wave {N} (re-PLAN dessa onda)"** → delete `wave-{N}-{role}/spec.md`, re-enter PLAN for wave N only (run PLAN sub-flow scoped to wave N's files). User then re-approves via `/mustard:approve` for wave N.
-   - **"Abortar pipeline"** → set `status: "aborted"`, move spec to `.claude/spec/aborted/{specName}/` (create dir if needed), keep waves 1..N-1 commits. Inform user: `Pipeline aborted. Waves 1..{N-1} commits preserved. Waves {N}..{totalWaves} discarded.`
-
-**Risco residual documentado:** wave N-1 commits podem estar incompletos semanticamente sem wave N (ex.: schema criado mas API não). O usuário foi avisado disso no `/approve` da wave plan. O log `failure.md` explicita qual superfície ficou exposta.
+→ See `../../../refs/resume/fix-loop-wave.md`
 
 ### Granular Retry Protocol
 
-When an agent fails:
+Parse last completed step → retry only from that step forward. Build Mode=granular retry context (harness view or agent memory fallback). Use Minimal Retry Template. Max 2 retries per agent.
 
-1. **Parse return** to identify last completed step (look for `[x]` markers or explicit "Step N completed" in output)
-2. **Determine retry scope:**
-   - Build error → retry from build step (don't redo edits)
-   - Edit error → retry from that edit step
-   - Unknown → retry all remaining unchecked steps
-3. **Re-dispatch with retry context** — fill `{retry_context}` using Mode=granular format:
-   - **Try harness view first:** `node .claude/scripts/harness-views.js --view pipeline-state --spec {spec-name}` — use decisions/lessons if available. Fallback: Read `.claude/.agent-memory/_index.json`, find last entry where `agent_type == {failed_agent_type}` and `pipeline == {spec-name}`
-   - Extract `entry.summary` → `prior_summary`; `entry.details.files_modified` → `files_modified` (list)
-   - Fill:
-     ```
-     ## RETRY CONTEXT
-     **Mode:** granular
-     **Prior dispatch:** {prior_summary}
-     **Files modified previously:**
-     {files_modified}
-     **Previous error:** {error_message}
-     **Resume from step:** {N+1}
-     ```
-   - Set `{task_steps}` to only the remaining steps ({N+1} onwards)
-   - Use the **Minimal Retry Template** from `agent-prompt/SKILL.md § Retry Modes` (skips CONTEXT/REFERENCE/ENTITY/SKILLS/WEB VALIDATION/ROLE/RECIPE blocks)
-4. **Spec checkboxes:** steps 1-{N} already `[x]`, remaining continue `[ ]`
-5. **Max 2 retries per agent** — exhausted → STOP + report
+→ See `../../../refs/resume/fix-loop-wave.md`
 
-### Pause Handoff
+### Pause Handoff & Next Action Rule
 
-When a pipeline is paused (user leaves session or requests pause):
+On pause: write `pausedAt`/`pauseReason`/`nextAction` to pipeline state, then `memory-write.js`. Handoff MUST end with exactly ONE next action (no lists of options).
 
-1. Update pipeline state JSON (`.claude/.pipeline-states/{spec-name}.json`):
-   - Set `pausedAt` to current ISO timestamp
-   - Set `pauseReason` to user-provided reason (or "session ended")
-   - Set `nextAction` to the specific next step (ONE sentence)
-2. Write agent memory for carry-over:
-   ```bash
-   node .claude/scripts/memory-write.js --json '{"agent_type":"orchestrator","wave":0,"pipeline":"{spec-name}","summary":"Paused at {phase}. Next: {nextAction}"}'
-   ```
-3. Confirm to user: "Pipeline paused. Next action saved: {nextAction}"
-
-### Next Action Rule
-
-The handoff MUST end with exactly ONE next action:
-
-**Wrong:** "You could dispatch the backend agent, review the spec, or run tests"
-**Right:** "→ Dispatch backend agent for task 3 (add /api/users endpoint)"
-
-This eliminates decision fatigue on resume. The user can always override, but the default path is a single clear step.
+→ See `../../../refs/resume/fix-loop-wave.md`
 
 ## INVIOLABLE RULES
 
