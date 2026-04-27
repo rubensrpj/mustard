@@ -3,14 +3,22 @@
 /**
  * SESSION-MEMORY: Injects persistent memory into session context
  *
- * Loads three sources with priority: decisions > lessons > knowledge.
+ * Loads sources with priority: knowledge > cross-session-timeline > decisions > lessons.
  * Knowledge entries are ranked by confidence × recency (not just "last N").
  *
- * @version 2.0.0
+ * Wave 3: adds cross-session timeline from .harness/sessions/*.jsonl (fail-open).
+ *
+ * @version 3.0.0
  */
 const fs = require('fs');
 const path = require('path');
 const { shouldRun } = require('./_lib/hook-env.js');
+
+// ── Harness views (Wave 3) ────────────────────────────────────────────────────
+let harnessViews = null;
+try {
+  harnessViews = require('../scripts/harness-views.js');
+} catch (_) {} // fail-open
 
 const MAX_CHARS = 2000;
 const KB_MIN_CONFIDENCE = 0.5;
@@ -29,25 +37,44 @@ process.stdin.on('end', () => {
 
     const parts = [];
 
-    // Priority 1: Decisions (most actionable)
+    // Priority 1: Knowledge base (confidence × recency ranked)
+    const kbEntries = loadKnowledge(path.join(claudeDir, 'knowledge.json'));
+    if (kbEntries.length > 0) {
+      parts.push('## Project Knowledge');
+      kbEntries.forEach(e => parts.push(`- [${e.type}] ${e.name}: ${e.description}`));
+    }
+
+    // Priority 2: Cross-session timeline (Wave 3 — from harness event log)
+    // Synchronous variant: stream archived session files from .harness/sessions/
+    try {
+      if (harnessViews) {
+        const sessionsDir = path.join(claudeDir, '.harness', 'sessions');
+        const timeline = buildCrossSessionTimelineSync(sessionsDir, { limit: 3 });
+        if (timeline.length > 0) {
+          parts.push('## Recent Sessions');
+          for (const s of timeline) {
+            const shortId = (s.sessionId || 'unknown').slice(-6);
+            const date = s.endedAt ? s.endedAt.slice(0, 10) : '?';
+            const spec = (s.specs || []).join(',') || 'none';
+            const decisionsCount = (s.decisions || []).length;
+            parts.push(`- Session ${shortId} (${date}): spec=${spec}, decisions=${decisionsCount}`);
+          }
+        }
+      }
+    } catch (_) {} // fail-open: timeline is advisory
+
+    // Priority 3: Decisions (most actionable)
     const decisions = loadEntries(path.join(memDir, 'decisions.json'), 5);
     if (decisions.length > 0) {
       parts.push('## Recent Decisions');
       decisions.forEach(d => parts.push(`- [${d.source}] ${d.content}`));
     }
 
-    // Priority 2: Lessons learned
+    // Priority 4: Lessons learned
     const lessons = loadEntries(path.join(memDir, 'lessons.json'), 5);
     if (lessons.length > 0) {
       parts.push('## Lessons Learned');
       lessons.forEach(l => parts.push(`- [${l.source}] ${l.content}`));
-    }
-
-    // Priority 3: Knowledge base (confidence × recency ranked)
-    const kbEntries = loadKnowledge(path.join(claudeDir, 'knowledge.json'));
-    if (kbEntries.length > 0) {
-      parts.push('## Project Knowledge');
-      kbEntries.forEach(e => parts.push(`- [${e.type}] ${e.name}: ${e.description}`));
     }
 
     if (parts.length > 0) {
@@ -68,6 +95,43 @@ process.stdin.on('end', () => {
     process.exit(0);
   }
 });
+
+/**
+ * Synchronous wrapper for cross-session timeline.
+ * Reads .harness/sessions/*.jsonl files and returns summaries (most recent first).
+ * Uses readEventsSync from harness-views so this stays synchronous (hook-friendly).
+ */
+function buildCrossSessionTimelineSync(sessionsDir, opts) {
+  if (!sessionsDir || !fs.existsSync(sessionsDir)) return [];
+  const limit = (opts && opts.limit) || 3;
+  try {
+    const files = fs.readdirSync(sessionsDir)
+      .filter(f => f.endsWith('.jsonl'))
+      .map(f => {
+        const full = path.join(sessionsDir, f);
+        let mtime = 0;
+        try { mtime = fs.statSync(full).mtimeMs; } catch (_) {}
+        return { file: full, mtime };
+      })
+      .sort((a, b) => b.mtime - a.mtime)
+      .slice(0, limit);
+
+    const results = [];
+    for (const entry of files) {
+      try {
+        const events = harnessViews.readEventsSync(entry.file);
+        if (events.length === 0) continue;
+        const summary = harnessViews.buildSessionSummary(events);
+        summary.file = entry.file;
+        summary.mtime = entry.mtime;
+        results.push(summary);
+      } catch (_) {}
+    }
+    return results;
+  } catch (_) {
+    return [];
+  }
+}
 
 function loadEntries(filePath, max) {
   try {

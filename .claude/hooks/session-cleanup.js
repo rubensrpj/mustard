@@ -4,11 +4,15 @@
  * SESSION-CLEANUP: Clean stale state files on session end
  *
  * Cleans:
- * - .claude/.agent-state/ (stale subagent tracking)
+ * - .claude/.pipeline-states/ terminal states (completed, cancelled, etc.)
  * - .claude/.compact-state/ files older than 24h
- * - .claude/.agent-memory/ (agent memory entries — pruned after 7 days)
+ * - .claude/.pipeline-state.json legacy single file (terminal states only)
  *
- * @version 1.2.0
+ * Wave 4: .agent-state/ and .agent-memory/ are no longer written by any hook,
+ * so cleanup of those directories is removed. The harness log rotation
+ * (.harness/sessions/*.jsonl > 30d) is handled by harness-init.js on SessionStart.
+ *
+ * @version 2.0.0
  */
 
 const fs = require('fs');
@@ -27,9 +31,6 @@ process.stdin.on('end', () => {
     const cwd = data.cwd || process.cwd();
     const claudeDir = path.join(cwd, '.claude');
 
-    // Clean agent-state (only files belonging to THIS session)
-    cleanAgentState(path.join(claudeDir, '.agent-state'), data.session_id);
-
     // Clean pipeline states (directory-based + legacy single file)
     cleanPipelineStates(claudeDir);
 
@@ -41,9 +42,6 @@ process.stdin.on('end', () => {
     cleanDirectory(path.join(claudeDir, '.compact-state'), { maxAgeMs: ONE_DAY_MS });
 
     // NOTE: .claude/memory/ is PERSISTENT — do NOT clean.
-    // .agent-memory/ is PERSISTENT — prune entries older than 7 days.
-    const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
-    cleanDirectory(path.join(claudeDir, '.agent-memory'), { maxAgeMs: SEVEN_DAYS_MS });
 
     process.exit(0);
   } catch (err) {
@@ -51,32 +49,6 @@ process.stdin.on('end', () => {
     process.exit(0);
   }
 });
-
-function cleanAgentState(dirPath, sessionId) {
-  try {
-    if (!fs.existsSync(dirPath)) return;
-    const files = fs.readdirSync(dirPath).filter(f => f.endsWith('.json') && f !== '_queue.json');
-
-    for (const file of files) {
-      const filePath = path.join(dirPath, file);
-      try {
-        const content = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-        // Remove if: matches this session OR has no session_id (legacy)
-        if (!content.session_id || content.session_id === sessionId) {
-          fs.unlinkSync(filePath);
-        }
-      } catch {
-        // Corrupt file — remove it
-        try { fs.unlinkSync(filePath); } catch {}
-      }
-    }
-
-    // Remove directory if empty
-    try {
-      if (fs.readdirSync(dirPath).length === 0) fs.rmdirSync(dirPath);
-    } catch {}
-  } catch {}
-}
 
 function cleanFile(filePath) {
   try {

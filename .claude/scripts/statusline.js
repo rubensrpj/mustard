@@ -411,7 +411,76 @@ function getGitCached(cwd) {
 
 const AGENT_STALE_MS = 15 * 60 * 1000; // 15 minutes — ghost guard
 
+// ── Wave 3: harness-views (fail-open) ────────────────────────────────────────
+let harnessViews = null;
+try {
+  harnessViews = require('./harness-views.js');
+} catch (_) {} // fail-open: harness-views optional
+
+/**
+ * Derive active agents from the harness event log.
+ * An agent is "active" when it has an agent.start without a matching agent.stop
+ * in the same wave, and its start timestamp is within AGENT_STALE_MS.
+ *
+ * Returns the same shape as the legacy getActiveAgents: array of
+ * { type, description, started_at }.
+ *
+ * Returns null if the log is missing or has no useful data (caller falls back
+ * to legacy .agent-state/ approach).
+ */
+function getActiveAgentsFromLog(projectDir) {
+  try {
+    if (!harnessViews) return null;
+    const eventsPath = path.join(projectDir, '.claude', '.harness', 'events.jsonl');
+    const events = harnessViews.readEventsSync(eventsPath);
+    if (!events || events.length === 0) return null;
+
+    // Use buildAgentVisibility with auto-detected max wave
+    const visibility = harnessViews.buildAgentVisibility(events, { maxChars: 200 });
+
+    // Build a set of agent IDs that have already stopped in ANY wave
+    const stoppedIds = new Set(
+      events
+        .filter(e => e.event === 'agent.stop')
+        .map(e => e.actor && e.actor.id)
+        .filter(Boolean)
+    );
+
+    const now = Date.now();
+    const active = [];
+    for (const ev of visibility.events) {
+      if (ev.event !== 'agent.start') continue;
+      const id = ev.actor && ev.actor.id;
+      if (id && stoppedIds.has(id)) continue; // already stopped
+
+      // Ghost guard: ignore starts older than AGENT_STALE_MS
+      const startedAt = ev.ts;
+      if (startedAt && (now - new Date(startedAt).getTime()) > AGENT_STALE_MS) continue;
+
+      active.push({
+        type: (ev.actor && ev.actor.type) || 'unknown',
+        description: (ev.payload && ev.payload.description) || '',
+        started_at: ev.ts || null,
+      });
+    }
+
+    // Return null if empty so caller falls back to legacy
+    return active.length > 0 ? active : null;
+  } catch (_) {
+    return null;
+  }
+}
+
 function getActiveAgents(stateDir) {
+  // ── Wave 3: try harness log first ────────────────────────────────────────
+  try {
+    // Derive projectDir from stateDir (.claude/.agent-state → projectDir)
+    const projectDir = path.resolve(stateDir, '..', '..');
+    const fromLog = getActiveAgentsFromLog(projectDir);
+    if (fromLog !== null) return fromLog;
+  } catch (_) {} // fail-open
+
+  // ── Legacy fallback: read .agent-state/*.json files ───────────────────────
   try {
     if (!fs.existsSync(stateDir)) return [];
     const files = fs.readdirSync(stateDir).filter(f => f.endsWith('.json') && f !== '_queue.json');

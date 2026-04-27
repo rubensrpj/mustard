@@ -13,6 +13,29 @@ const { execFileSync } = require('child_process');
 const { shouldRun } = require('./_lib/hook-env.js');
 const { extractPatternsFromStates } = require('./_lib/knowledge-extract.js');
 
+// ── Harness event bus (Wave 2 dual emission) ─────────────────────────────────
+var harnessEmit = null;
+var harnessGetSessionId = null;
+var harnessGetWave = null;
+try {
+  var he = require('./_lib/harness-event.js');
+  harnessEmit = he.emit;
+  harnessGetSessionId = he.getCurrentSessionId;
+  harnessGetWave = he.getCurrentWave;
+} catch (_) {} // fail-open: harness optional
+
+function emitFinding(pattern, ctx) {
+  try {
+    if (!harnessEmit) return;
+    harnessEmit('finding', {
+      kind: pattern.type || 'pattern',
+      content: pattern.description || pattern.name || '',
+      confidence: typeof pattern.confidence === 'number' ? pattern.confidence : null,
+      refs: Array.isArray(pattern.tags) ? pattern.tags : [],
+    }, ctx);
+  } catch (_) {} // fail-open
+}
+
 var input = '';
 process.stdin.setEncoding('utf8');
 process.stdin.on('data', function (chunk) { input += chunk; });
@@ -47,33 +70,21 @@ process.stdin.on('end', function () {
       for (var si = 0; si < statePatterns.length; si++) { patterns.push(statePatterns[si]); }
     }
 
-    // ── Source 2: Agent memories (findings) ───────────────────────
-    var memDir = path.join(claudeDir, '.agent-memory');
-    var indexPath = path.join(memDir, '_index.json');
-    if (fs.existsSync(indexPath)) {
-      try {
-        var index = JSON.parse(fs.readFileSync(indexPath, 'utf8'));
-        var entries = Array.isArray(index) ? index : (index.entries || []);
-        // Take last 10 entries from this session
-        var recent = entries.slice(-10);
-        for (var j = 0; j < recent.length; j++) {
-          var mem = recent[j];
-          if (mem.summary && mem.summary.length > 30) {
-            patterns.push({
-              type: 'pattern',
-              name: 'agent-finding-' + (mem.agent_type || 'unknown'),
-              description: mem.summary.substring(0, 200),
-              source: 'session-knowledge/' + (mem.agent_type || 'unknown'),
-              tags: ['agent', mem.agent_type || 'unknown'],
-            });
-          }
-        }
-      } catch (e) { /* skip malformed index */ }
-    }
-
     // ── Save patterns (max 5 per session) ────────────────────────
+    var sessionId = harnessGetSessionId ? harnessGetSessionId(data) : null;
+    var wave = harnessGetWave ? harnessGetWave(data) : 0;
+    var emitCtx = {
+      cwd: cwd,
+      sessionId: sessionId,
+      wave: wave,
+      actor: { kind: 'hook', id: 'session-knowledge' },
+    };
+
     var toSave = patterns.slice(0, 5);
     for (var k = 0; k < toSave.length; k++) {
+      // ── Wave 2: emit finding event before persisting ──────────
+      emitFinding(toSave[k], emitCtx);
+
       try {
         execFileSync(process.execPath, [knowledgeScript], {
           input: JSON.stringify(Object.assign({ cwd: cwd }, toSave[k])),

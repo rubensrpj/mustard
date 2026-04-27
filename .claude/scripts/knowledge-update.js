@@ -65,6 +65,10 @@ async function main() {
     const description = String(input.description || '').trim();
     const source = String(input.source || 'unknown');
     const tags = Array.isArray(input.tags) ? input.tags : [];
+    const initialConfidence = (typeof input.confidence === 'number'
+      && input.confidence >= 0 && input.confidence <= 1)
+      ? input.confidence
+      : 0.3;
 
     if (!name || !description) {
       process.stderr.write('[knowledge-update] Missing name or description\n');
@@ -100,7 +104,7 @@ async function main() {
         description,
         source,
         tags,
-        confidence: 0.3,
+        confidence: initialConfidence,
         occurrences: 1,
         createdAt: timestamp,
         updatedAt: timestamp,

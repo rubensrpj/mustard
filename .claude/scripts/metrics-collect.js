@@ -4,8 +4,8 @@
  * METRICS-COLLECT: Unified pipeline + hook + RTK metrics view.
  *
  * Sources:
- * - .claude/.pipeline-states/{spec}.metrics.json  (sidecar written by metrics-tracker hook)
- * - .claude/.pipeline-states/{spec}.json          (main state; optional, for orphan detection)
+ * - .claude/.harness/events.jsonl                 (harness log; metrics aggregated via buildPipelineState)
+ * - .claude/.pipeline-states/{spec}.json          (main state; phase + orphan detection)
  * - .claude/metrics/{spec}.json                   (archived pipelines, written by /complete)
  * - .claude/.metrics/*.jsonl                      (hook enforcement events)
  * - `rtk gain --all --format json`                (token economy, via _rtk-gain helper)
@@ -121,21 +121,39 @@ function collectSpecs(claudeDir) {
   const out = { active: [], orphaned: [] };
   if (!fs.existsSync(statesDir)) return out;
 
-  // Union of spec names from sidecars AND main state files. Sidecars are the
-  // primary metrics source (see metrics-tracker.js); main state may be absent
-  // after archival but sidecars can linger — we still want to surface them.
+  // Wave 4: metrics come from harness log via buildPipelineState (no .metrics.json sidecar).
+  // Fall back to main state .metrics field if harness-views is unavailable.
+  let harnessViews = null;
+  try { harnessViews = require('./harness-views.js'); } catch (_) {}
+
+  let harnessEvents = [];
+  if (harnessViews) {
+    try {
+      const eventsPath = path.join(claudeDir, '.harness', 'events.jsonl');
+      harnessEvents = harnessViews.readEventsSync(eventsPath);
+    } catch (_) {}
+  }
+
   const seen = new Set();
   for (const f of fs.readdirSync(statesDir)) {
-    if (f.endsWith('.metrics.json')) seen.add(f.slice(0, -'.metrics.json'.length));
-    else if (f.endsWith('.json')) seen.add(f.slice(0, -'.json'.length));
+    if (f.endsWith('.json') && !f.endsWith('.metrics.json')) {
+      seen.add(f.slice(0, -'.json'.length));
+    }
   }
 
   for (const name of seen) {
     const mainPath = path.join(statesDir, `${name}.json`);
-    const sidecarPath = path.join(statesDir, `${name}.metrics.json`);
-    const sidecar = readJson(sidecarPath);
     const main = readJson(mainPath);
-    const m = (sidecar && sidecar.metrics) || (main && main.metrics) || null;
+
+    // Derive metrics from harness log, falling back to inline metrics field
+    let m = null;
+    if (harnessViews && harnessEvents.length > 0) {
+      try {
+        const ps = harnessViews.buildPipelineState(harnessEvents, { spec: name });
+        if (ps && ps.metrics && ps.metrics.apiCalls > 0) m = ps.metrics;
+      } catch (_) {}
+    }
+    if (!m) m = (main && main.metrics) || null;
     if (!m) continue;
 
     const specPath = path.join(activeSpecDir, name);
@@ -224,7 +242,7 @@ function buildSummary({ specs, archives, hookEvents, rtk }) {
   const totalSpecs = activeN + orphanN;
 
   if (totalSpecs > 0) {
-    lines.push(`→ ${totalSpecs} pipeline${totalSpecs === 1 ? '' : 's'} tracked (sidecar) · ${archives.length} archived`);
+    lines.push(`→ ${totalSpecs} pipeline${totalSpecs === 1 ? '' : 's'} tracked (log) · ${archives.length} archived`);
   } else if (archives.length > 0) {
     lines.push(`→ ${archives.length} archived pipeline${archives.length === 1 ? '' : 's'}`);
   }

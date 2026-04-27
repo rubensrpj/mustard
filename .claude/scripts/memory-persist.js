@@ -39,6 +39,29 @@ const path = require("path");
 
 const MAX_ENTRIES = 50;
 
+// ── Harness event bus (Wave 2 dual emission) ─────────────────────────────────
+let harnessEmit = null;
+try {
+  const he = require("../hooks/_lib/harness-event.js");
+  harnessEmit = he.emit;
+} catch (_) {} // fail-open: harness optional
+
+function emitMemoryEvent(eventName, payload, projectDir) {
+  try {
+    if (!harnessEmit) return;
+    // sessionId from env (mirrors how hooks resolve it)
+    const sessionId =
+      process.env.MUSTARD_SESSION_ID ||
+      process.env.CLAUDE_SESSION_ID ||
+      null;
+    harnessEmit(eventName, payload, {
+      cwd: projectDir,
+      sessionId,
+      actor: { kind: 'hook', id: 'memory-persist' },
+    });
+  } catch (_) {} // fail-open
+}
+
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
@@ -104,6 +127,19 @@ process.stdin.on("end", () => {
     // 6. Prune oldest if over limit.
     if (data.entries.length > MAX_ENTRIES) {
       data.entries.splice(0, data.entries.length - MAX_ENTRIES);
+    }
+
+    // ── Wave 2: emit decision/lesson event before writing ────────────────
+    if (entryType === 'decision') {
+      emitMemoryEvent('decision', {
+        title: entry.content.slice(0, 200),
+        rationale: entry.context || null,
+      }, projectDir);
+    } else if (entryType === 'lesson') {
+      emitMemoryEvent('lesson', {
+        trigger: entry.source || null,
+        takeaway: entry.content.slice(0, 200),
+      }, projectDir);
     }
 
     // 7. Write back.

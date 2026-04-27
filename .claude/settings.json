@@ -5,6 +5,15 @@
   "cleanupPeriodDays": 30,
   "attribution": { "commit": "assistant", "pr": "assistant" },
 
+  "env": {
+    "MUSTARD_DUPLICATION_MODE": "off",
+    "MUSTARD_CONVENTION_MODE": "off",
+    "MUSTARD_REGRESSION_MODE": "off",
+    "MUSTARD_SPEC_SIZE_MODE": "warn",
+    "MUSTARD_SKILL_SIZE_MODE": "warn",
+    "MUSTARD_SKILL_VALIDATE_LINES_MODE": "warn"
+  },
+
   "permissions": {
     "allow": [
       "Read",
@@ -24,7 +33,9 @@
       "Task",
       "WebFetch",
       "WebSearch",
-      "Bash"
+      "Bash",
+      "Bash(node .claude/scripts/harness-views.js:*)",
+      "Bash(node .claude/scripts/qa-run.js:*)"
     ],
     "deny": [
       "Bash(rm -rf:*)",
@@ -82,7 +93,37 @@
           {
             "type": "command",
             "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/review-gate.js",
-            "timeout": 10
+            "timeout": 312
+          }
+        ]
+      },
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/close-gate.js",
+            "timeout": 310
+          }
+        ]
+      },
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/spec-size-gate.js",
+            "timeout": 5000
+          }
+        ]
+      },
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/skill-size-gate.js",
+            "timeout": 5000
           }
         ]
       },
@@ -198,10 +239,71 @@
             "timeout": 5000
           }
         ]
+      },
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/pipeline-phase.js",
+            "timeout": 3
+          }
+        ]
+      },
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/epic-detect.js",
+            "timeout": 3
+          }
+        ]
+      },
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/duplication-check.js",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/convention-check.js",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/regression-guard.js",
+            "timeout": 120
+          }
+        ]
       }
     ],
 
     "SessionStart": [
+      {
+        "matcher": "startup",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/harness-init.js",
+            "statusMessage": "Initializing harness event bus...",
+            "timeout": 5
+          }
+        ]
+      },
       {
         "matcher": "startup",
         "hooks": [

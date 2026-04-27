@@ -369,23 +369,28 @@ describe("memory-write.js", () => {
 describe("subagent-tracker.js memory injection", () => {
   const hook = "subagent-tracker.js";
 
-  it("should inject memories into additionalContext when present", async () => {
+  it("should inject memories into additionalContext when harness log has findings (Wave 4)", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "mem-test-"));
-    const memDir = path.join(tmpDir, ".claude", ".agent-memory");
-    const stateDir = path.join(tmpDir, ".claude", ".agent-state");
-    fs.mkdirSync(memDir, { recursive: true });
-    fs.mkdirSync(stateDir, { recursive: true });
+    const harnessDir = path.join(tmpDir, ".claude", ".harness");
+    fs.mkdirSync(harnessDir, { recursive: true });
 
-    // Write a memory index
-    fs.writeFileSync(path.join(memDir, "_index.json"), JSON.stringify([{
-      id: "test-backend-123",
-      file: "test-backend-123.json",
-      agent_type: "backend-impl",
+    // Write a finding event to the harness log (Wave 4 source of truth)
+    const findingEvent = JSON.stringify({
+      v: 1,
+      ts: new Date().toISOString(),
+      sessionId: "test-session",
       wave: 1,
-      pipeline: "test",
-      summary: "Created PaymentController with POST /api/payments endpoint.",
-      timestamp: new Date().toISOString(),
-    }]));
+      spec: null,
+      actor: { kind: "agent", id: "ag-backend", type: "backend-impl" },
+      event: "finding",
+      payload: {
+        kind: "pattern",
+        content: "Created PaymentController with POST /api/payments endpoint.",
+        confidence: 0.9,
+        refs: [],
+      },
+    });
+    fs.writeFileSync(path.join(harnessDir, "events.jsonl"), findingEvent + "\n", "utf8");
 
     try {
       const result = await runHook(hook, {
@@ -400,7 +405,7 @@ describe("subagent-tracker.js memory injection", () => {
       assert.ok(result.parsed, "Should output JSON");
       const ctx = result.parsed?.hookSpecificOutput?.additionalContext || "";
       assert.ok(ctx.includes("[Agent Memory]"), "Should contain Agent Memory header");
-      assert.ok(ctx.includes("PaymentController"), "Should contain memory summary");
+      assert.ok(ctx.includes("PaymentController"), "Should contain memory summary from log");
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
@@ -408,7 +413,6 @@ describe("subagent-tracker.js memory injection", () => {
 
   it("should work normally without memory files", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "mem-test-"));
-    fs.mkdirSync(path.join(tmpDir, ".claude", ".agent-state"), { recursive: true });
 
     try {
       const result = await runHook(hook, {
@@ -450,13 +454,14 @@ describe("metrics-tracker.js", () => {
     return { statesDir, pipelinePath };
   }
 
-  it("should write metrics to sidecar and leave pipeline-state untouched", async () => {
+  it("should emit tool.use to harness log and leave pipeline-state untouched (Wave 4: no sidecar)", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "metrics-test-"));
     const { statesDir, pipelinePath } = setupPipelineState(tmpDir);
+    // Ensure harness dir exists so emit can write
+    fs.mkdirSync(path.join(tmpDir, ".claude", ".harness"), { recursive: true });
     const sidecarPath = path.join(statesDir, "test-pipeline.metrics.json");
     try {
       const mtimeBefore = fs.statSync(pipelinePath).mtimeMs;
-      // Wait a beat so any write would produce a different mtime
       await new Promise((r) => setTimeout(r, 50));
 
       const result = await runHook(hook, {
@@ -468,22 +473,25 @@ describe("metrics-tracker.js", () => {
       assert.equal(result.code, 0);
       const mtimeAfter = fs.statSync(pipelinePath).mtimeMs;
       assert.equal(mtimeAfter, mtimeBefore, "pipeline-state.json must NOT be modified");
-      assert.ok(fs.existsSync(sidecarPath), "sidecar must be created");
-      const sidecar = JSON.parse(fs.readFileSync(sidecarPath, "utf8"));
-      assert.equal(sidecar.metrics.apiCalls, 1);
-      assert.equal(sidecar.metrics.toolBreakdown.Edit, 1);
-      assert.equal(sidecar.previousPhase, "EXECUTE");
-      assert.equal(sidecar.metrics.startedAt, "2026-04-05T10:00:00.000Z", "startedAt inherited from pipeline-state");
+      // Wave 4: sidecar is no longer written — verify it does NOT exist
+      assert.ok(!fs.existsSync(sidecarPath), "sidecar must NOT be created (Wave 4: log-only)");
+      // Verify tool.use event was emitted to harness log
+      const evFile = path.join(tmpDir, ".claude", ".harness", "events.jsonl");
+      assert.ok(fs.existsSync(evFile), "events.jsonl must be created by emit");
+      const events = fs.readFileSync(evFile, "utf8").split("\n").filter(Boolean).map(l => JSON.parse(l));
+      const toolUse = events.find(e => e.event === "tool.use");
+      assert.ok(toolUse, "tool.use event must be emitted");
+      assert.equal(toolUse.payload.tool, "Edit");
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   });
 
-  it("should not create recursive .metrics.metrics.json sidecars across multiple calls", async () => {
+  it("should not write any sidecar across multiple calls (Wave 4)", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "metrics-recursion-"));
     const { statesDir } = setupPipelineState(tmpDir);
+    fs.mkdirSync(path.join(tmpDir, ".claude", ".harness"), { recursive: true });
     try {
-      // Fire 5 PostToolUse events in sequence
       for (let i = 0; i < 5; i++) {
         const r = await runHook(hook, {
           tool_name: "Write",
@@ -493,18 +501,10 @@ describe("metrics-tracker.js", () => {
         assert.equal(r.code, 0);
       }
 
+      // Only the main state file; no .metrics.json sidecar
       const files = fs.readdirSync(statesDir).sort();
-      assert.deepEqual(
-        files,
-        ["test-pipeline.json", "test-pipeline.metrics.json"],
-        `Only 2 files expected, got: ${files.join(", ")}`
-      );
-
-      const sidecar = JSON.parse(
-        fs.readFileSync(path.join(statesDir, "test-pipeline.metrics.json"), "utf8")
-      );
-      assert.equal(sidecar.metrics.apiCalls, 5, "All 5 calls must aggregate into the same sidecar");
-      assert.equal(sidecar.metrics.toolBreakdown.Write, 5);
+      assert.ok(!files.some(f => f.endsWith(".metrics.json")), `No sidecar expected, got: ${files.join(", ")}`);
+      assert.ok(files.includes("test-pipeline.json"), "main state file must still exist");
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }

@@ -133,6 +133,18 @@ On completion, the output must include:
 - Summary of changes (what and why)
 - Files created/modified
 
+### Wave 8 — Epic Auto-Fold
+
+After marking a spec CLOSE, check if the parent epic is now complete:
+```bash
+node .claude/scripts/epic-fold.js --detect
+```
+If output lists epics ready to fold:
+```bash
+node .claude/scripts/epic-fold.js --epic <name>
+```
+This consolidates learning into knowledge.json and marks granular events compactable.
+
 ## When to Use
 
 - After successful implementation and review

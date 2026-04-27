@@ -78,6 +78,9 @@ node scripts/sync-registry.js --force
 
 ## Recommended Skills
 
+**Directive:** Before first `Edit`/`Write` in code-alteration tasks (implement/refactor/fix/bugfix/review), agent MUST invoke `Skill(karpathy-guidelines)` once. Content stays cached for the rest of the agent's context.
+
+- `karpathy-guidelines` — 4 princípios anti-slop (carrega em toda alteração de código)
 - `templates-hook-protocol` — Hook stdin/stdout JSON protocol
 - `templates-settings-wiring` — settings.json hook registration
 - `templates-sync-detect` — Subproject discovery and role detection

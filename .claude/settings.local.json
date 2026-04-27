@@ -11,7 +11,23 @@
       "Bash(git push origin main:*)",
       "Bash(git push origin dev:*)",
       "Bash(git merge dev --ff-only:*)",
-      "Bash(git merge dev_rubens --ff-only:*)"
+      "Bash(git merge dev_rubens --ff-only:*)",
+      "Bash(RTK_DISABLE=1 mkdir -p \"C:/Atiz/Mustard/.claude/skills/karpathy-guidelines\")",
+      "Bash(RTK_DISABLE=1 cp \"C:/Atiz/Mustard/templates/skills/karpathy-guidelines/SKILL.md\" \"C:/Atiz/Mustard/.claude/skills/karpathy-guidelines/SKILL.md\")",
+      "Bash(node .claude/scripts/diff-context.js --subproject templates)",
+      "Bash(rtk wc *)",
+      "Bash(mkdir -p /c/Atiz/Mustard/.claude/commands/mustard/git/references)",
+      "Bash(mkdir -p /c/Atiz/Mustard/.claude/commands/mustard/scan/references)",
+      "Bash(cp /c/Atiz/Mustard/templates/commands/mustard/git/SKILL.md /c/Atiz/Mustard/.claude/commands/mustard/git/SKILL.md)",
+      "Bash(cp /c/Atiz/Mustard/templates/commands/mustard/git/references/git-flow.md /c/Atiz/Mustard/.claude/commands/mustard/git/references/git-flow.md)",
+      "Bash(cp /c/Atiz/Mustard/templates/commands/mustard/git/references/submodule-rules.md /c/Atiz/Mustard/.claude/commands/mustard/git/references/submodule-rules.md)",
+      "Bash(cp /c/Atiz/Mustard/templates/commands/mustard/git/references/merge-protocol.md /c/Atiz/Mustard/.claude/commands/mustard/git/references/merge-protocol.md)",
+      "Bash(cp /c/Atiz/Mustard/templates/commands/mustard/scan/SKILL.md /c/Atiz/Mustard/.claude/commands/mustard/scan/SKILL.md)",
+      "Bash(mkdir -p .claude/commands/mustard/feature/references)",
+      "Bash(cp templates/commands/mustard/feature/SKILL.md .claude/commands/mustard/feature/SKILL.md)",
+      "Bash(cp templates/commands/mustard/feature/references/spec-hygiene.md .claude/commands/mustard/feature/references/spec-hygiene.md)",
+      "Bash(cp templates/commands/mustard/feature/references/wave-decomposition.md .claude/commands/mustard/feature/references/wave-decomposition.md)",
+      "Bash(cp templates/commands/mustard/feature/references/existence-gate.md .claude/commands/mustard/feature/references/existence-gate.md)"
     ]
   }
 }

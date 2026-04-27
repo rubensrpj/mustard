@@ -10,9 +10,11 @@ Before writing the single spec in Full scope, check whether the work should be d
 
 1. **Compute signals from ANALYZE output:**
    - `fileCount` — files that will go into `## Files`
-   - `layerCount` — distinct layers (use role detection derived from paths: schema/api/ui/lib)
+   - `layerCount` — distinct layers (use role detection derived from paths: schema/api/ui/lib). **`layerCount >= 2` is sufficient to trigger decomposition** regardless of fileCount.
    - `newEntityCount` — new entities created by this spec
    - `estimatedTouchPoints` — count of imports/refs from Grep on affected directories (optional)
+
+   Decomposition reasons emitted: `history-match:{id}`, `multi-layer`, `wide-and-new-entities`. Single-layer specs return `decompose: false` with reason `single-layer`.
 
 2. **Read knowledge matches:** Read `.claude/knowledge.json` (if it exists). Extract entries whose `id` starts with `heavy-pipeline` or `high-hook-retry`. Each entry's scope signals represent a historical pipeline that cost a lot.
 

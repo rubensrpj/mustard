@@ -4,36 +4,41 @@
  * SUBAGENT TRACKER: Tracks active subagents for statusline display
  *
  * Handles 5 events:
- * - PreToolUse(Task):  queues description + type before agent starts
+ * - PreToolUse(Task):  emits agent.start to harness log + handles explorer dedup
  * - PostToolUse(Task): detects API overload / dispatch failures and flags pipeline state
- * - SubagentStart:     writes agent state file (consumes from queue)
- * - SubagentStop:      removes agent state file + persists agent findings to .agent-memory + prunes stale queue
- * - SessionStart:      cleans up stale state from previous sessions
+ * - SubagentStart:     injects agent-visibility context from harness log
+ * - SubagentStop:      emits agent.stop to harness log
+ * - SessionStart:      cleans up stale counter files from previous sessions
  *
- * State dir: .claude/.agent-state/{agent_id}.json
- * Queue:     .claude/.agent-state/_queue.json
+ * Truth source: .claude/.harness/events.jsonl (Wave 4 — all legacy stores removed)
  *
- * Also injects agent memory (from .claude/.agent-memory/) into new agents
- * via additionalContext — enabling zero-parent-token cross-wave communication.
- *
- * @version 3.0.0
+ * @version 4.0.0
  */
 
 const fs = require('fs');
 const path = require('path');
 const { shouldRun, isSelfDelegation } = require('./_lib/hook-env.js');
 
-const QUEUE_FILE = '_queue.json';
-const QUEUE_STALE_MS = 60_000; // 60 seconds
-const MAX_QUEUE_SIZE = 10;
+// ── Harness event bus (Wave 2 dual emission) ─────────────────────────────────
+let harnessEmit = null;
+let harnessGetSessionId = null;
+let harnessGetWave = null;
+try {
+  const he = require('./_lib/harness-event.js');
+  harnessEmit = he.emit;
+  harnessGetSessionId = he.getCurrentSessionId;
+  harnessGetWave = he.getCurrentWave;
+} catch (_) {} // fail-open: harness optional
+
+function emitEvent(eventName, payload, ctx) {
+  try {
+    if (harnessEmit) harnessEmit(eventName, payload, ctx);
+  } catch (_) {} // fail-open: never break hook on emit error
+}
 
 const DEDUP_FILE = 'explorer-dedup.json';
 const DEDUP_DENY_MS  = 60_000;  // deny window: same type within 60s → block
 const DEDUP_CLEAN_MS = 120_000; // prune entries older than 120s when reading
-
-const MEMORY_DIR = '.agent-memory';
-const MEMORY_INDEX = '_index.json';
-const MEMORY_MAX_CHARS = 800;
 
 let input = '';
 process.stdin.setEncoding('utf8');
@@ -82,8 +87,6 @@ function handlePreToolUse(data, stateDir) {
 
   if (!description && !subagentType) return;
 
-  ensureDir(stateDir);
-
   // ── Explorer dedup: deny if same subagent_type was dispatched within 60s ──
   if (isExplorerAgent(subagentType)) {
     try {
@@ -110,18 +113,50 @@ function handlePreToolUse(data, stateDir) {
     } catch {} // fail-open: dedup is advisory — allow on any error
   }
 
-  pruneQueue(stateDir);
+  // ── Emit agent.start event to harness log ───────────────────────────────
+  try {
+    const projectDir = path.resolve(stateDir, '..', '..');
+    const sessionId = harnessGetSessionId ? harnessGetSessionId(data) : null;
+    const wave = harnessGetWave ? harnessGetWave(data) : 0;
 
-  const queue = readQueue(stateDir);
-  queue.push({
-    description,
-    type: subagentType,
-    queued_at: new Date().toISOString(),
-  });
-  if (queue.length > MAX_QUEUE_SIZE) {
-    queue.splice(0, queue.length - MAX_QUEUE_SIZE);
-  }
-  writeQueue(stateDir, queue);
+    // Attempt to read spec from active pipeline state
+    let currentSpec = null;
+    try {
+      const statesDir = path.join(projectDir, '.claude', '.pipeline-states');
+      if (fs.existsSync(statesDir)) {
+        const stateFiles = fs.readdirSync(statesDir).filter(f => f.endsWith('.json') && !f.endsWith('.metrics.json'));
+        if (stateFiles.length > 0) {
+          let newestMtime = 0; let newestState = null;
+          for (const f of stateFiles) {
+            try {
+              const fp = path.join(statesDir, f);
+              const stat = fs.statSync(fp);
+              if (stat.mtimeMs > newestMtime) { newestMtime = stat.mtimeMs; newestState = fp; }
+            } catch {}
+          }
+          if (newestState) {
+            const st = JSON.parse(fs.readFileSync(newestState, 'utf8'));
+            currentSpec = st.spec || st.name || null;
+          }
+        }
+      }
+    } catch {}
+
+    // Extract model from tool input prompt (best-effort — may be absent)
+    const model = (toolInput.model || null);
+
+    emitEvent('agent.start', {
+      description,
+      model,
+      parentAgentId: data.parentAgentId ?? null,
+    }, {
+      cwd: projectDir,
+      sessionId,
+      wave,
+      spec: currentSpec,
+      actor: { kind: 'agent', id: subagentType, type: subagentType },
+    });
+  } catch (_) {} // fail-open
 
   // ── skill_hit_rate: parse recommended_skills from Task prompt ─────────────
   // We look for a "Recommended Skills" section header followed by list items,
@@ -273,51 +308,90 @@ function handlePostToolUse(data, stateDir) {
   } catch {} // fail-open: failure detection is advisory
 }
 
+// ── Harness views (Wave 3 — reads derive from event log) ─────────────────────
+let harnessViews = null;
+try {
+  harnessViews = require('../scripts/harness-views.js');
+} catch (_) {} // fail-open: views optional
+
+// Wave 5: adaptive context budget per agent type (Melhoria 1)
+const AGENT_CTX_BUDGET = {
+  Explore: 400,
+  Plan: 600,
+  'general-purpose': 800,
+  // default: 600
+};
+
 function handleStart(data, stateDir) {
-  const agentId = data.agent_id || `unknown-${Date.now()}`;
   const agentType = data.agent_type || 'unknown';
+  const budget = AGENT_CTX_BUDGET[agentType] ?? 600;
 
-  ensureDir(stateDir);
-
-  // Try to consume a matching entry from the queue
-  let description = '';
-  const queue = readQueue(stateDir);
-
-  if (queue.length > 0) {
-    // Prefer type-match first
-    const typeIdx = queue.findIndex((q) => q.type === agentType);
-    if (typeIdx >= 0) {
-      description = queue[typeIdx].description;
-      queue.splice(typeIdx, 1);
-    } else {
-      // FIFO fallback
-      description = queue[0].description;
-      queue.shift();
-    }
-    writeQueue(stateDir, queue);
-  }
-
-  fs.writeFileSync(
-    path.join(stateDir, `${agentId}.json`),
-    JSON.stringify({
-      type: agentType,
-      description,
-      started_at: new Date().toISOString(),
-      session_id: data.session_id,
-    }),
-  );
-
-  // Build additionalContext with optional memory injection
+  // Build additionalContext from harness event log (Wave 4 — log is sole source)
   const projectDir = path.resolve(stateDir, '..', '..');
   let context = `[Tracker] Agent "${agentType}" registered. Follow all CLAUDE.md rules.`;
 
   try {
-    const memories = loadRelevantMemories(projectDir, agentType);
-    if (memories.length > 0) {
-      context += '\n\n[Agent Memory] Findings from prior agents:\n' +
-        memories.map(m => `- [${m.agent_type}] ${m.summary}`).join('\n');
+    if (harnessViews) {
+      const harnessEventsPath = path.join(projectDir, '.claude', '.harness', 'events.jsonl');
+      // Wave 5 (Melhoria 3): skip tool.use events — they are heartbeats not relevant to agent view
+      const events = harnessViews.readEventsSync(harnessEventsPath, { skipEvents: ['tool.use'] });
+      if (events.length > 0) {
+        const rawWave = harnessGetWave ? harnessGetWave(data) : 0;
+        const waveOpts = rawWave > 0 ? { wave: rawWave } : {};
+        const visibility = harnessViews.buildAgentVisibility(events, {
+          ...waveOpts,
+          maxChars: budget,
+        });
+
+        const parts = [];
+
+        // Show active agents in this wave (agent.start without matching agent.stop)
+        const stoppedIds = new Set(
+          events
+            .filter(e => e.event === 'agent.stop')
+            .map(e => e.actor && e.actor.id)
+            .filter(Boolean)
+        );
+        const activeStarts = visibility.events.filter(e => {
+          if (e.event !== 'agent.start') return false;
+          const id = e.actor && e.actor.id;
+          return id && !stoppedIds.has(id);
+        });
+
+        if (activeStarts.length > 0) {
+          parts.push('[Parallel Agents in Wave ' + visibility.wave + ']');
+          for (const ev of activeStarts) {
+            const aType = (ev.actor && ev.actor.type) || 'unknown';
+            const desc = (ev.payload && ev.payload.description) || '';
+            parts.push(`- ${aType}: ${desc.slice(0, 120)}`);
+          }
+        }
+
+        // High-confidence findings from any wave (already deduped + sorted by buildAgentVisibility)
+        if (visibility.findings.length > 0) {
+          parts.push('[Prior Findings]');
+          for (const fev of visibility.findings.slice(0, 5)) {
+            const content = (fev.payload && fev.payload.content) || '';
+            const conf = (fev.payload && fev.payload.confidence) || 0;
+            parts.push(`- [conf=${conf.toFixed(2)}] ${content.slice(0, 200)}`);
+          }
+        }
+
+        if (parts.length > 0) {
+          let visText = parts.join('\n');
+          if (visText.length > budget) visText = visText.slice(0, budget - 3) + '...';
+
+          // Wave 6: append escape-hatch hint only when budget allows it
+          const hintLine = '\n[Memory] Query more: node .claude/scripts/harness-views.js --view <name> [--query text]';
+          if (visText.length + hintLine.length <= budget) {
+            visText += hintLine;
+          }
+
+          context += '\n\n[Agent Memory] Findings from prior agents:\n' + visText;
+        }
+      }
     }
-  } catch {} // fail-open: memory injection is advisory
+  } catch (_) {} // fail-open: harness view is advisory
 
   const response = {
     hookSpecificOutput: {
@@ -331,97 +405,77 @@ function handleStart(data, stateDir) {
 function handleStop(data, stateDir) {
   const agentId = data.agent_id || '';
   const agentType = data.agent_type || 'unknown';
-  const stateFile = path.join(stateDir, `${agentId}.json`);
+  const projectDir = path.resolve(stateDir, '..', '..');
 
-  // Read agent state before deleting (for pipeline info)
-  let agentState = {};
-  try {
-    if (fs.existsSync(stateFile)) {
-      agentState = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
-    }
-  } catch {}
-
-  try {
-    if (fs.existsSync(stateFile)) {
-      fs.unlinkSync(stateFile);
-    }
-  } catch {}
-
-  // Persist agent findings to .agent-memory via memory-write.js
+  // ── Emit agent.stop event to harness log ─────────────────────────────────
   try {
     const toolResponse = data.tool_response || {};
     const responseText = typeof toolResponse === 'string' ? toolResponse : JSON.stringify(toolResponse);
-    // Extract summary: first 300 chars, sentence-bounded
-    let summary = (responseText || '').slice(0, 500);
-    // Try to find first meaningful sentence
-    const sentenceEnd = summary.search(/[.!?]\s/);
-    if (sentenceEnd > 30) {
-      summary = summary.slice(0, sentenceEnd + 1);
-    } else if (summary.length > 300) {
-      summary = summary.slice(0, 297) + '...';
-    }
+    const fullSummary = (responseText || '').slice(0, 800);
 
-    if (summary.length > 20) {
-      const projectDir = path.resolve(stateDir, '..', '..');
-      const memScript = path.join(projectDir, '.claude', 'scripts', 'memory-write.js');
-      if (fs.existsSync(memScript)) {
-        const { execFileSync } = require('child_process');
-        execFileSync(process.execPath, [memScript], {
-          input: JSON.stringify({
-            agent_type: agentType,
-            wave: agentState.wave || null,
-            pipeline: agentState.pipeline || '',
-            summary: summary,
-            cwd: projectDir,
-          }),
-          timeout: 3000,
-          stdio: ['pipe', 'pipe', 'pipe'],
-        });
+    const sessionId = harnessGetSessionId ? harnessGetSessionId(data) : null;
+    const wave = harnessGetWave ? harnessGetWave(data) : 0;
+
+    // Attempt to read spec from active pipeline state
+    let currentSpec = null;
+    try {
+      const statesDir = path.join(projectDir, '.claude', '.pipeline-states');
+      if (fs.existsSync(statesDir)) {
+        const stateFiles = fs.readdirSync(statesDir).filter(f => f.endsWith('.json') && !f.endsWith('.metrics.json'));
+        if (stateFiles.length > 0) {
+          let newestMtime = 0; let newestState = null;
+          for (const f of stateFiles) {
+            try {
+              const fp = path.join(statesDir, f);
+              const stat = fs.statSync(fp);
+              if (stat.mtimeMs > newestMtime) { newestMtime = stat.mtimeMs; newestState = fp; }
+            } catch {}
+          }
+          if (newestState) {
+            const st = JSON.parse(fs.readFileSync(newestState, 'utf8'));
+            currentSpec = st.spec || st.name || null;
+          }
+        }
       }
-    }
-  } catch {} // fail-open: memory persistence is advisory
+    } catch {}
 
-  // Prune stale queue entries (>60s old)
-  pruneQueue(stateDir);
-
-  // Clean empty directory
-  try {
-    if (fs.existsSync(stateDir)) {
-      const remaining = fs.readdirSync(stateDir).filter((f) => f.endsWith('.json'));
-      if (remaining.length === 0) {
-        fs.rmdirSync(stateDir);
-      }
-    }
-  } catch {}
+    emitEvent('agent.stop', {
+      summary: fullSummary,
+      confidence: null,
+      durationMs: null,
+      toolCount: null,
+    }, {
+      cwd: projectDir,
+      sessionId,
+      wave,
+      spec: currentSpec,
+      actor: { kind: 'agent', id: agentId || agentType, type: agentType },
+    });
+  } catch (_) {} // fail-open
 }
 
 function handleSessionStart(data, stateDir) {
-  // Clean up stale state files from previous/crashed sessions.
-  // Threshold is 10 minutes: agent tasks rarely exceed this, and anything
-  // older on a new SessionStart is certainly from a dead session (ghost).
+  // Clean up stale counter files left by tool-use-counter.js from previous sessions.
+  // These live in .agent-state/ and use a different naming convention (*.counter.json).
+  // Agent state files ({id}.json) and _queue.json are no longer written (Wave 4).
   const STALE_MS = 10 * 60 * 1000; // 10 minutes
   try {
     if (!fs.existsSync(stateDir)) return;
-    const files = fs.readdirSync(stateDir).filter(f => f.endsWith('.json') && f !== QUEUE_FILE);
+    const files = fs.readdirSync(stateDir).filter(f => f.endsWith('.json'));
     const now = Date.now();
 
     for (const f of files) {
       const filePath = path.join(stateDir, f);
       try {
-        const content = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-        const fileAge = now - new Date(content.started_at || 0).getTime();
-        // Remove if: stale (>10min) OR no session_id (legacy) OR different session
-        if (fileAge > STALE_MS || !content.session_id || content.session_id !== data.session_id) {
+        const stat = fs.statSync(filePath);
+        // Remove files older than 10 minutes (stale from crashed sessions)
+        if (now - stat.mtimeMs > STALE_MS) {
           fs.unlinkSync(filePath);
         }
       } catch {
-        // Corrupt file — remove it
         try { fs.unlinkSync(filePath); } catch {}
       }
     }
-
-    // Prune stale queue entries
-    pruneQueue(stateDir);
 
     // Clean empty directory
     try {
@@ -429,39 +483,6 @@ function handleSessionStart(data, stateDir) {
       if (remaining.length === 0) fs.rmdirSync(stateDir);
     } catch {}
   } catch {}
-}
-
-/**
- * Load relevant memories from previous agents in the same pipeline.
- * Returns array of { agent_type, summary } objects, budget-capped at MEMORY_MAX_CHARS.
- */
-function loadRelevantMemories(projectDir, agentType) {
-  const memDir = path.join(projectDir, '.claude', MEMORY_DIR);
-  const indexPath = path.join(memDir, MEMORY_INDEX);
-  if (!fs.existsSync(indexPath)) return [];
-
-  const index = JSON.parse(fs.readFileSync(indexPath, 'utf8'));
-  if (!Array.isArray(index) || index.length === 0) return [];
-
-  // Filter: exclude same agent type, sort by wave then timestamp (newest first)
-  const filtered = index
-    .filter(m => m.agent_type !== agentType)
-    .sort((a, b) => {
-      if ((a.wave || 0) !== (b.wave || 0)) return (a.wave || 0) - (b.wave || 0);
-      return new Date(b.timestamp) - new Date(a.timestamp);
-    });
-
-  // Budget-cap: accumulate summaries until MEMORY_MAX_CHARS
-  const result = [];
-  let chars = 0;
-  for (const m of filtered) {
-    const summary = m.summary || '';
-    if (chars + summary.length > MEMORY_MAX_CHARS) break;
-    result.push(m);
-    chars += summary.length;
-  }
-
-  return result;
 }
 
 // ── Explorer dedup helpers ──
@@ -509,48 +530,4 @@ function writeDedupCache(stateDir, cache) {
   try {
     fs.writeFileSync(path.join(stateDir, DEDUP_FILE), JSON.stringify(cache), 'utf8');
   } catch {}
-}
-
-// ── Queue helpers ──
-
-function readQueue(stateDir) {
-  const queueFile = path.join(stateDir, QUEUE_FILE);
-  try {
-    if (fs.existsSync(queueFile)) {
-      return JSON.parse(fs.readFileSync(queueFile, 'utf8'));
-    }
-  } catch {}
-  return [];
-}
-
-function writeQueue(stateDir, queue) {
-  const queueFile = path.join(stateDir, QUEUE_FILE);
-  try {
-    if (queue.length === 0) {
-      if (fs.existsSync(queueFile)) fs.unlinkSync(queueFile);
-    } else {
-      fs.writeFileSync(queueFile, JSON.stringify(queue));
-    }
-  } catch {}
-}
-
-function pruneQueue(stateDir) {
-  const queue = readQueue(stateDir);
-  if (queue.length === 0) return;
-
-  const now = Date.now();
-  const fresh = queue.filter((q) => {
-    const age = now - new Date(q.queued_at).getTime();
-    return age < QUEUE_STALE_MS;
-  });
-
-  if (fresh.length !== queue.length) {
-    writeQueue(stateDir, fresh);
-  }
-}
-
-function ensureDir(dir) {
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
 }

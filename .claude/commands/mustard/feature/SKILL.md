@@ -124,6 +124,7 @@ Dispatch 1 Haiku Task(Explore) to verify work is still needed. Pre-check via `rt
 ### EXECUTE Phase (Light scope — same session)
 
 When user chooses "Approve and implement now":
+0. **Pre-EXECUTE Rewave Check:** Run `node .claude/scripts/exec-rewave-check.js --spec .claude/spec/active/{spec-name}/spec.md`. Parse JSON output. If `action: "decomposed"`, the spec was just split into N waves — proceed using wave-1's spec (`wave-1-{role}/spec.md`) instead of the original. If `action: "keep-single"` or `"skip"`, continue with the original spec normally. Silent operation — no AskUserQuestion.
 1. Update spec: `Status: implementing`, `Phase: EXECUTE`. Every agent prompt MUST include: `Return format cap: ≤50 lines. Apply compact Return Format from .claude/pipeline-config.md strictly.`
 2. Update pipeline state: `status: "implementing"`, `phase: 3`
 3. Read `.claude/pipeline-config.md` for agent config. Grep `entity-registry.json` for specific entity block only

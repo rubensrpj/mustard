@@ -2,8 +2,8 @@
 name: commit-workflow
 description: Git commit strategy, submodule-aware, budget ≤15 API calls.
 disable-model-invocation: true
+source: manual
 ---
-<!-- mustard:generated -->
 
 # Commit Workflow
 

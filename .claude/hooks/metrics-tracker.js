@@ -18,6 +18,23 @@ const fs = require('fs');
 const path = require('path');
 const { shouldRun } = require('./_lib/hook-env.js');
 
+// ── Harness event bus (Wave 2 dual emission) ─────────────────────────────────
+let harnessEmit = null;
+let harnessGetSessionId = null;
+let harnessGetWave = null;
+try {
+  const he = require('./_lib/harness-event.js');
+  harnessEmit = he.emit;
+  harnessGetSessionId = he.getCurrentSessionId;
+  harnessGetWave = he.getCurrentWave;
+} catch (_) {} // fail-open: harness optional
+
+function emitEvent(eventName, payload, ctx) {
+  try {
+    if (harnessEmit) harnessEmit(eventName, payload, ctx);
+  } catch (_) {} // fail-open
+}
+
 let input = '';
 process.stdin.setEncoding('utf8');
 process.stdin.on('data', chunk => (input += chunk));
@@ -51,139 +68,36 @@ process.stdin.on('end', () => {
 
     if (!newest) { process.exit(0); }
 
-    // Read pipeline-state.json READ-ONLY (to derive currentPhase, status, startedAt).
-    // Never write to it — metrics live in a sidecar to avoid "file modified since
-    // read" races with Edit/Write on the pipeline-state file.
+    // Read pipeline-state.json to derive currentPhase, status, startedAt.
     let pipelineState = {};
     try {
       pipelineState = JSON.parse(fs.readFileSync(newest, 'utf8'));
     } catch {}
 
-    const sidecarPath = newest.replace(/\.json$/, '.metrics.json');
-    let sidecar;
-    if (fs.existsSync(sidecarPath)) {
-      try {
-        sidecar = JSON.parse(fs.readFileSync(sidecarPath, 'utf8'));
-      } catch {
-        sidecar = null;
-      }
-    }
-    if (!sidecar || typeof sidecar !== 'object') {
-      sidecar = {
-        v: 1,
-        metrics: {
-          apiCalls: 0,
-          toolBreakdown: {},
-          retries: 0,
-          startedAt: pipelineState.startedAt || new Date().toISOString(),
-        },
-        previousPhase: '',
-      };
-    }
-    if (!sidecar.metrics) {
-      sidecar.metrics = {
-        apiCalls: 0,
-        toolBreakdown: {},
-        retries: 0,
-        startedAt: pipelineState.startedAt || new Date().toISOString(),
-      };
-    }
-    if (!sidecar.metrics.toolBreakdown) sidecar.metrics.toolBreakdown = {};
-
-    // Alias for minimal churn below — all mutations go to the sidecar.
-    const state = sidecar;
-
-    // ── wave_reentry: track EXECUTE → PLAN transitions ──────────────────────
-    // previousPhase is updated on every write so we can detect phase changes.
     const currentPhase = pipelineState.phaseName || pipelineState.phase || '';
-    const previousPhase = sidecar.previousPhase || '';
-    if (currentPhase === 'PLAN' && previousPhase === 'EXECUTE') {
-      state.metrics.wave_reentry = (state.metrics.wave_reentry || 0) + 1;
-    }
-    // Always update previousPhase to the current phase so the NEXT write can
-    // detect a transition.
-    sidecar.previousPhase = currentPhase;
 
-    // ── gate_saves: spec edits in PLAN phase after first /approve ────────────
-    // Proxy for "first approve recorded": pipelineState.status === 'approved'
-    // (set by /approve command).  A spec file is any .md in .claude/spec/ or
-    // matching *spec*.md anywhere in the pipeline-states dir.
-    if ((toolName === 'Edit' || toolName === 'Write') && currentPhase === 'PLAN' && pipelineState.status === 'approved') {
-      const toolFilePath = (data.tool_input || {}).file_path || (data.tool_input || {}).path || '';
-      const isSpecFile =
-        /[/\\]\.claude[/\\]spec[/\\]/.test(toolFilePath) ||
-        /spec.*\.md$/i.test(toolFilePath) ||
-        (/\.pipeline-states[/\\]/.test(toolFilePath) && toolFilePath.endsWith('.md'));
-      if (isSpecFile) {
-        state.metrics.gate_saves = (state.metrics.gate_saves || 0) + 1;
-      }
-    }
-
-    // ── skill_hit_rate: Read on a skill file → attribute to active subagent ──
-    // This is heuristic: we look up the most recent subagent entry in the
-    // registry that has no endedAt (i.e. currently active).  We cannot
-    // perfectly attribute reads to a specific subagent context when multiple
-    // agents run in parallel — we accept this imprecision.
-    if (toolName === 'Read') {
-      const readPath = (data.tool_input || {}).file_path || (data.tool_input || {}).path || '';
-      const isSkillFile =
-        /[/\\]skills[/\\][^/\\]+[/\\]SKILL\.md$/i.test(readPath) ||
-        /[/\\]\.claude[/\\]skills[/\\][^/\\]+\.md$/i.test(readPath);
-      if (isSkillFile) {
-        const registryPath = path.join(cwd, '.claude', '.subagent-registry.json');
-        try {
-          if (fs.existsSync(registryPath)) {
-            const registry = JSON.parse(fs.readFileSync(registryPath, 'utf8'));
-            // Find the most recently started entry without an endedAt
-            let activeEntry = null;
-            let latestStart = 0;
-            for (const [, entry] of Object.entries(registry)) {
-              if (entry.endedAt) continue;
-              const t = new Date(entry.startedAt || 0).getTime();
-              if (t > latestStart) {
-                latestStart = t;
-                activeEntry = entry;
-              }
-            }
-            if (activeEntry && activeEntry.agentType && Array.isArray(activeEntry.recommendedSkills)) {
-              // Extract skill name from the file path (last directory component before SKILL.md)
-              const skillName = path.basename(path.dirname(readPath));
-              if (activeEntry.recommendedSkills.includes(skillName)) {
-                if (!state.metrics.skillHits) state.metrics.skillHits = {};
-                if (!state.metrics.skillHits[activeEntry.agentType]) {
-                  state.metrics.skillHits[activeEntry.agentType] = { loaded: 0, read: 0 };
-                }
-                state.metrics.skillHits[activeEntry.agentType].read++;
-              }
-            }
-          }
-        } catch {} // fail-open: skill attribution is advisory
-      }
-    }
-
-    // Increment counters (skip Read — it's too noisy for general tracking)
-    if (toolName !== 'Read') {
-      state.metrics.apiCalls++;
-      state.metrics.toolBreakdown[toolName] = (state.metrics.toolBreakdown[toolName] || 0) + 1;
-    }
-
-    // Detect retry patterns
+    // Detect retry patterns (included as payload in tool.use event)
     const toolInput = data.tool_input || {};
     const content = JSON.stringify(toolInput).toLowerCase();
-    if (/\b(retry|fix|error|failed|again)\b/.test(content)) {
-      state.metrics.retries++;
-      // Per-phase attempt tracking
-      if (!state.metrics.agentAttempts) {
-        state.metrics.agentAttempts = {};
-      }
-      var phase = currentPhase || 'unknown';
-      state.metrics.agentAttempts[phase] = (state.metrics.agentAttempts[phase] || 0) + 1;
-    }
+    const isRetry = /\b(retry|fix|error|failed|again)\b/.test(content);
 
-    state.metrics.updatedAt = new Date().toISOString();
-
-    // Write ONLY the sidecar — never touch pipeline-state.json from this hook.
-    fs.writeFileSync(sidecarPath, JSON.stringify(sidecar, null, 2), 'utf8');
+    // ── Wave 4: emit tool.use heartbeat to harness log (no sidecar written) ─
+    // All metrics are now derived from the log by buildPipelineState().
+    // tool.use events carry enough signal: tool name, phase, retry flag,
+    // spec (from pipelineState), so consumers can aggregate from the log.
+    emitEvent('tool.use', {
+      tool: toolName,
+      phase: currentPhase || null,
+      retry: isRetry || undefined,
+      bytesIn: null,
+      bytesOut: null,
+    }, {
+      cwd,
+      sessionId: harnessGetSessionId ? harnessGetSessionId(data) : null,
+      wave: harnessGetWave ? harnessGetWave(data) : 0,
+      spec: pipelineState.spec || pipelineState.name || null,
+      actor: { kind: 'hook', id: 'metrics-tracker' },
+    });
 
     process.exit(0);
   } catch (err) {
