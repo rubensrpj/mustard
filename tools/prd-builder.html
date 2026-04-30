@@ -1,0 +1,574 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>PRD Builder · Mustard</title>
+<style>
+  :root {
+    --bg: #0f1419;
+    --panel: #1a2129;
+    --panel-2: #232b35;
+    --border: #2d3641;
+    --text: #e4e7eb;
+    --muted: #8a95a3;
+    --accent: #d97706;
+    --accent-hover: #f59e0b;
+    --success: #10b981;
+    --danger: #ef4444;
+    --code-bg: #0b0f14;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.5;
+    min-height: 100vh;
+  }
+  header {
+    background: linear-gradient(135deg, #1a2129 0%, #232b35 100%);
+    border-bottom: 1px solid var(--border);
+    padding: 24px 32px;
+  }
+  header h1 {
+    margin: 0 0 4px 0;
+    font-size: 22px;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  header h1::before {
+    content: "🌭";
+    font-size: 24px;
+  }
+  header p { margin: 0; color: var(--muted); font-size: 14px; }
+  .container {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 24px;
+    padding: 24px 32px;
+    max-width: 1600px;
+    margin: 0 auto;
+  }
+  @media (max-width: 1024px) {
+    .container { grid-template-columns: 1fr; }
+  }
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 20px;
+  }
+  .panel h2 {
+    margin: 0 0 16px 0;
+    font-size: 14px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--muted);
+  }
+  .field { margin-bottom: 16px; }
+  .field label {
+    display: block;
+    font-size: 13px;
+    font-weight: 500;
+    margin-bottom: 6px;
+    color: var(--text);
+  }
+  .field label .hint {
+    color: var(--muted);
+    font-weight: 400;
+    font-size: 12px;
+    margin-left: 6px;
+  }
+  .row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .row-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }
+  input[type="text"], textarea, select {
+    width: 100%;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 8px 10px;
+    color: var(--text);
+    font-family: inherit;
+    font-size: 14px;
+    transition: border-color 0.15s;
+  }
+  input[type="text"]:focus, textarea:focus, select:focus {
+    outline: none;
+    border-color: var(--accent);
+  }
+  textarea {
+    resize: vertical;
+    min-height: 80px;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 13px;
+  }
+  .checkbox-group {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .checkbox-group label {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 6px 10px;
+    cursor: pointer;
+    font-size: 13px;
+    margin: 0;
+    transition: all 0.15s;
+    user-select: none;
+  }
+  .checkbox-group label:has(input:checked) {
+    background: rgba(217, 119, 6, 0.15);
+    border-color: var(--accent);
+    color: var(--accent-hover);
+  }
+  .checkbox-group input { margin: 0; accent-color: var(--accent); }
+  .actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 16px;
+    flex-wrap: wrap;
+  }
+  button {
+    background: var(--accent);
+    border: none;
+    color: white;
+    padding: 9px 16px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 500;
+    transition: background 0.15s;
+    font-family: inherit;
+  }
+  button:hover { background: var(--accent-hover); }
+  button.secondary {
+    background: var(--panel-2);
+    color: var(--text);
+    border: 1px solid var(--border);
+  }
+  button.secondary:hover { background: var(--border); }
+  button.success { background: var(--success); }
+  .output-wrapper {
+    position: relative;
+  }
+  .output {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 16px;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 13px;
+    white-space: pre-wrap;
+    word-break: break-word;
+    color: #cbd5e1;
+    min-height: 400px;
+    max-height: 70vh;
+    overflow-y: auto;
+  }
+  .badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 500;
+    background: rgba(217, 119, 6, 0.15);
+    color: var(--accent-hover);
+    margin-left: 8px;
+  }
+  .toast {
+    position: fixed;
+    bottom: 24px;
+    right: 24px;
+    background: var(--success);
+    color: white;
+    padding: 10px 16px;
+    border-radius: 6px;
+    font-size: 13px;
+    opacity: 0;
+    transform: translateY(10px);
+    transition: all 0.2s;
+    pointer-events: none;
+  }
+  .toast.show { opacity: 1; transform: translateY(0); }
+  .footer-hint {
+    margin-top: 12px;
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .footer-hint code {
+    background: var(--code-bg);
+    padding: 2px 6px;
+    border-radius: 3px;
+    color: var(--accent-hover);
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>PRD Builder<span class="badge">mustard</span></h1>
+  <p>Gerador de PRDs estruturados para alimentar pipelines <code style="color:var(--accent-hover)">/mustard:feature</code> e <code style="color:var(--accent-hover)">/mustard:bugfix</code>.</p>
+</header>
+
+<div class="container">
+  <!-- FORM -->
+  <div class="panel">
+    <h2>Entrada</h2>
+
+    <div class="field">
+      <label>Título da Solicitação <span class="hint">(slug curto, ex: add-user-login)</span></label>
+      <input type="text" id="title" placeholder="ex: criar-cadastro-de-cliente" />
+    </div>
+
+    <div class="row">
+      <div class="field">
+        <label>Projeto</label>
+        <input type="text" id="project" value="sialia-app" />
+      </div>
+      <div class="field">
+        <label>Tipo de Demanda</label>
+        <select id="type">
+          <option value="feature">Feature (nova funcionalidade)</option>
+          <option value="enhancement">Enhancement (melhoria)</option>
+          <option value="bugfix">Bugfix (correção)</option>
+          <option value="analysis">Analysis (investigação)</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="field">
+        <label>Escopo Sugerido <span class="hint">(auto = mustard decide)</span></label>
+        <select id="scope">
+          <option value="auto">Auto (recomendado)</option>
+          <option value="light">Light (≤5 arquivos, padrão conhecido)</option>
+          <option value="full">Full (3+ camadas, nova entidade)</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Prioridade</label>
+        <select id="priority">
+          <option value="medium">Média</option>
+          <option value="high">Alta</option>
+          <option value="low">Baixa</option>
+          <option value="urgent">Urgente</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="field">
+      <label>Rota / Endpoint <span class="hint">(opcional)</span></label>
+      <input type="text" id="route" placeholder="ex: POST /api/clientes" />
+    </div>
+
+    <div class="field">
+      <label>Entidade <span class="hint">(opcional, ex: Cliente, Pedido)</span></label>
+      <input type="text" id="entity" placeholder="ex: Cliente" />
+    </div>
+
+    <div class="field">
+      <label>Operações CRUD</label>
+      <div class="checkbox-group">
+        <label><input type="checkbox" name="op" value="Create" /> Create</label>
+        <label><input type="checkbox" name="op" value="Read" /> Read</label>
+        <label><input type="checkbox" name="op" value="Update" /> Update</label>
+        <label><input type="checkbox" name="op" value="Delete" /> Delete</label>
+        <label><input type="checkbox" name="op" value="List" /> List</label>
+      </div>
+    </div>
+
+    <div class="field">
+      <label>Camadas Afetadas</label>
+      <div class="checkbox-group">
+        <label><input type="checkbox" name="layer" value="backend" /> Backend</label>
+        <label><input type="checkbox" name="layer" value="frontend" /> Frontend</label>
+        <label><input type="checkbox" name="layer" value="database" /> Database</label>
+        <label><input type="checkbox" name="layer" value="design" /> Design</label>
+        <label><input type="checkbox" name="layer" value="docs" /> Docs</label>
+        <label><input type="checkbox" name="layer" value="tests" /> Testes</label>
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="field">
+        <label>Tem Design? <span class="hint">(figma, mockup)</span></label>
+        <select id="design">
+          <option value="no">Não</option>
+          <option value="yes">Sim</option>
+          <option value="partial">Parcial</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>É Bug?</label>
+        <select id="bug">
+          <option value="no">Não</option>
+          <option value="yes">Sim</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="field" id="bugDetails" style="display:none">
+      <label>Comportamento Esperado vs Atual <span class="hint">(reprodução do bug)</span></label>
+      <textarea id="bugRepro" placeholder="Esperado: ...&#10;Atual: ...&#10;Passos: 1) ..."></textarea>
+    </div>
+
+    <div class="field">
+      <label>Solicitação / Descrição <span class="hint">(o que precisa ser feito e por quê)</span></label>
+      <textarea id="request" rows="5" placeholder="Descreva a necessidade, motivação e contexto..."></textarea>
+    </div>
+
+    <div class="field">
+      <label>Critérios de Aceitação <span class="hint">(uma por linha, 3-8 itens, comando executável quando possível)</span></label>
+      <textarea id="ac" rows="5" placeholder="ex:&#10;npm test passa em src/clientes&#10;curl POST /api/clientes retorna 201&#10;Tela /clientes/novo renderiza sem erros"></textarea>
+    </div>
+
+    <div class="field">
+      <label>Restrições / Dependências <span class="hint">(opcional)</span></label>
+      <textarea id="constraints" rows="3" placeholder="ex: usar Drizzle, manter compat com auth atual, sem breaking changes"></textarea>
+    </div>
+
+    <div class="field">
+      <label>Fora de Escopo <span class="hint">(opcional)</span></label>
+      <textarea id="oos" rows="2" placeholder="ex: integração com gateway de pagamento (próxima sprint)"></textarea>
+    </div>
+
+    <div class="actions">
+      <button onclick="generate()">Gerar PRD</button>
+      <button class="secondary" onclick="resetForm()">Limpar</button>
+      <button class="secondary" onclick="loadExample()">Exemplo</button>
+    </div>
+  </div>
+
+  <!-- OUTPUT -->
+  <div class="panel">
+    <h2>PRD Gerado <span style="float:right;font-weight:400;text-transform:none;letter-spacing:0;font-size:12px"><span id="charCount">0</span> chars</span></h2>
+    <div class="output-wrapper">
+      <div class="output" id="output">Preencha o formulário ao lado e clique em "Gerar PRD".</div>
+    </div>
+    <div class="actions">
+      <button onclick="copyOutput()" id="copyBtn">📋 Copiar PRD</button>
+      <button class="secondary" onclick="copyAsCommand()">Copiar como /mustard</button>
+      <button class="secondary" onclick="downloadOutput()">Download .md</button>
+    </div>
+    <p class="footer-hint">
+      Cole o PRD direto no Claude e dispare o pipeline com <code>/mustard:feature</code> (features/enhancements) ou <code>/mustard:bugfix</code> (bugs).
+    </p>
+  </div>
+</div>
+
+<div class="toast" id="toast">Copiado!</div>
+
+<script>
+  const $ = (id) => document.getElementById(id);
+
+  document.getElementById('bug').addEventListener('change', (e) => {
+    $('bugDetails').style.display = e.target.value === 'yes' ? 'block' : 'none';
+    if (e.target.value === 'yes' && $('type').value !== 'bugfix') {
+      $('type').value = 'bugfix';
+    }
+  });
+
+  document.getElementById('type').addEventListener('change', (e) => {
+    if (e.target.value === 'bugfix') {
+      $('bug').value = 'yes';
+      $('bugDetails').style.display = 'block';
+    }
+  });
+
+  function getChecked(name) {
+    return Array.from(document.querySelectorAll(`input[name="${name}"]:checked`)).map(c => c.value);
+  }
+
+  function today() {
+    return new Date().toISOString().slice(0, 10);
+  }
+
+  function suggestSkills(layers, type) {
+    const skills = new Set();
+    if (layers.includes('backend')) skills.add('templates-hook-protocol');
+    if (layers.includes('database')) skills.add('templates-sync-detect');
+    if (type === 'feature' || type === 'enhancement') skills.add('karpathy-guidelines');
+    if (type === 'bugfix') skills.add('karpathy-guidelines');
+    return Array.from(skills);
+  }
+
+  function suggestAgents(layers, type) {
+    const agents = new Set();
+    if (type === 'bugfix') agents.add('bugfix');
+    if (layers.includes('backend')) agents.add('backend');
+    if (layers.includes('frontend')) agents.add('frontend');
+    if (layers.includes('database')) agents.add('database');
+    agents.add('review');
+    return Array.from(agents);
+  }
+
+  function generate() {
+    const title = $('title').value.trim() || '(sem título)';
+    const project = $('project').value.trim() || 'sialia-app';
+    const type = $('type').value;
+    const scope = $('scope').value;
+    const priority = $('priority').value;
+    const route = $('route').value.trim();
+    const entity = $('entity').value.trim();
+    const ops = getChecked('op');
+    const layers = getChecked('layer');
+    const design = $('design').value;
+    const bug = $('bug').value;
+    const bugRepro = $('bugRepro').value.trim();
+    const request = $('request').value.trim();
+    const acRaw = $('ac').value.trim();
+    const constraints = $('constraints').value.trim();
+    const oos = $('oos').value.trim();
+
+    const acList = acRaw.split('\n').map(s => s.trim()).filter(Boolean);
+    const layerCheckbox = (key, label) => `- [${layers.includes(key) ? 'x' : ' '}] ${label}`;
+    const skills = suggestSkills(layers, type);
+    const agents = suggestAgents(layers, type);
+
+    const typeLabel = {
+      feature: 'Feature',
+      enhancement: 'Enhancement',
+      bugfix: 'Bugfix',
+      analysis: 'Analysis'
+    }[type];
+
+    const pipelineCmd = (type === 'bugfix') ? '/mustard:bugfix' : '/mustard:feature';
+
+    let md = `# PRD: ${title}\n\n`;
+    md += `**Projeto:** ${project}\n`;
+    md += `**Tipo:** ${typeLabel}\n`;
+    md += `**Escopo:** ${scope === 'auto' ? 'Auto-detect' : scope.charAt(0).toUpperCase() + scope.slice(1)}\n`;
+    md += `**Prioridade:** ${priority}\n`;
+    md += `**Data:** ${today()}\n`;
+    md += `**Pipeline:** \`${pipelineCmd} ${title.replace(/\s+/g, '-').toLowerCase()}\`\n\n`;
+
+    md += `## Solicitação\n\n${request || '_(sem descrição)_'}\n\n`;
+
+    if (bug === 'yes' && bugRepro) {
+      md += `## Reprodução do Bug\n\n${bugRepro}\n\n`;
+    }
+
+    md += `## Escopo Técnico\n\n`;
+    if (route) md += `- **Rota/Endpoint:** \`${route}\`\n`;
+    if (entity) md += `- **Entidade:** \`${entity}\`\n`;
+    if (ops.length) md += `- **Operações:** ${ops.join(', ')}\n`;
+    md += `- **Tem Design:** ${design === 'yes' ? 'Sim' : design === 'partial' ? 'Parcial' : 'Não'}\n`;
+    md += `- **É Bug:** ${bug === 'yes' ? 'Sim' : 'Não'}\n`;
+    if (!route && !entity && !ops.length) md += `_(sem detalhes técnicos preenchidos)_\n`;
+    md += `\n`;
+
+    md += `## Camadas Afetadas\n\n`;
+    md += layerCheckbox('backend', 'Backend') + '\n';
+    md += layerCheckbox('frontend', 'Frontend') + '\n';
+    md += layerCheckbox('database', 'Database') + '\n';
+    md += layerCheckbox('design', 'Design') + '\n';
+    md += layerCheckbox('docs', 'Docs') + '\n';
+    md += layerCheckbox('tests', 'Testes') + '\n\n';
+
+    md += `## Acceptance Criteria\n\n`;
+    if (acList.length) {
+      acList.forEach((ac, i) => { md += `${i + 1}. ${ac}\n`; });
+    } else {
+      md += `_(adicionar 3-8 critérios executáveis — exigência da fase QA do mustard)_\n`;
+    }
+    md += `\n`;
+
+    if (constraints) {
+      md += `## Restrições / Dependências\n\n${constraints}\n\n`;
+    }
+
+    if (oos) {
+      md += `## Fora de Escopo\n\n${oos}\n\n`;
+    }
+
+    md += `## Sugestão de Roteamento (mustard)\n\n`;
+    md += `- **Agentes recomendados:** ${agents.join(', ')}\n`;
+    if (skills.length) md += `- **Skills sugeridas:** ${skills.map(s => `\`${s}\``).join(', ')}\n`;
+    md += `- **Fases:** ${scope === 'light' ? 'ANALYZE → EXECUTE → QA → CLOSE' : 'ANALYZE → PLAN → /approve → EXECUTE → QA → CLOSE'}\n\n`;
+
+    md += `---\n`;
+    md += `_Gerado por PRD Builder · cole no Claude e rode \`${pipelineCmd}\` para iniciar a pipeline._\n`;
+
+    $('output').textContent = md;
+    $('charCount').textContent = md.length;
+  }
+
+  function copyOutput() {
+    const text = $('output').textContent;
+    if (!text || text.startsWith('Preencha')) return;
+    navigator.clipboard.writeText(text).then(() => toast('PRD copiado!'));
+  }
+
+  function copyAsCommand() {
+    const text = $('output').textContent;
+    if (!text || text.startsWith('Preencha')) return;
+    const type = $('type').value;
+    const cmd = type === 'bugfix' ? '/mustard:bugfix' : '/mustard:feature';
+    const wrapped = `${cmd}\n\n${text}`;
+    navigator.clipboard.writeText(wrapped).then(() => toast('Copiado com comando!'));
+  }
+
+  function downloadOutput() {
+    const text = $('output').textContent;
+    if (!text || text.startsWith('Preencha')) return;
+    const title = ($('title').value.trim() || 'prd').replace(/\s+/g, '-').toLowerCase();
+    const blob = new Blob([text], { type: 'text/markdown' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `prd-${title}-${today()}.md`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function resetForm() {
+    document.querySelectorAll('input[type="text"], textarea').forEach(el => el.value = '');
+    document.querySelectorAll('input[type="checkbox"]').forEach(el => el.checked = false);
+    $('project').value = 'sialia-app';
+    $('type').value = 'feature';
+    $('scope').value = 'auto';
+    $('priority').value = 'medium';
+    $('design').value = 'no';
+    $('bug').value = 'no';
+    $('bugDetails').style.display = 'none';
+    $('output').textContent = 'Preencha o formulário ao lado e clique em "Gerar PRD".';
+    $('charCount').textContent = '0';
+  }
+
+  function loadExample() {
+    $('title').value = 'cadastro-de-cliente';
+    $('project').value = 'sialia-app';
+    $('type').value = 'feature';
+    $('scope').value = 'auto';
+    $('priority').value = 'medium';
+    $('route').value = 'POST /api/clientes';
+    $('entity').value = 'Cliente';
+    document.querySelectorAll('input[name="op"]').forEach(c => c.checked = ['Create','Read','List'].includes(c.value));
+    document.querySelectorAll('input[name="layer"]').forEach(c => c.checked = ['backend','frontend','database'].includes(c.value));
+    $('design').value = 'yes';
+    $('bug').value = 'no';
+    $('request').value = 'Permitir cadastro de novos clientes via formulário web. Necessário para suportar onboarding self-service e reduzir tickets de suporte para cadastro manual.';
+    $('ac').value = `npm test passa em src/clientes\nPOST /api/clientes com payload válido retorna 201 e cliente persistido\nPOST /api/clientes com email duplicado retorna 409\nTela /clientes/novo renderiza e submete sem erros\nMigração drizzle aplica e reverte sem perda de dados`;
+    $('constraints').value = 'Reusar middleware de auth existente. Email único. Validar CPF/CNPJ.';
+    $('oos').value = 'Edição e exclusão de cliente (próxima iteração).';
+    generate();
+  }
+
+  function toast(msg) {
+    const t = $('toast');
+    t.textContent = msg;
+    t.classList.add('show');
+    setTimeout(() => t.classList.remove('show'), 1800);
+  }
+</script>
+</body>
+</html>
