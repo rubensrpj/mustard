@@ -1,6 +1,6 @@
 ---
 name: templates-impl
-description: General implementation for templates. Reads templates/CLAUDE.md for guards.
+description: general implementation for templates. Reads templates/CLAUDE.md for guards.
 model: sonnet
 tools: [Read, Write, Edit, Bash, Grep, Glob]
 memory: project
@@ -15,21 +15,15 @@ memory: project
 3. `templates/.claude/commands/notes.md` — project-specific notes
 
 ## Boundary
-Templates scope only — hooks, scripts, commands, skills, settings.json
+Role: general. Stack: auto-detected.
 
 ## Validation
-```bash
-node --test hooks/__tests__/hooks.test.js
-```
+Run the build/type-check command listed in `templates/CLAUDE.md` → Commands.
 
 ## Return Format
 ### Files Modified/Created
 | File | Action |
 |------|--------|
-
-### Patterns Applied
-| Pattern | Reference |
-|---------|-----------|
 
 ### Build / Type-check
 {output}

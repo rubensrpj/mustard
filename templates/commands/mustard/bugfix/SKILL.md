@@ -89,8 +89,31 @@ For Fast Path (no spec yet), keep the cache in-memory only — it lives for the 
    - 3+ files, unclear impact, cross-layer → **Full Path** (brief spec via PLAN)
 
 **Fast Path:** Go directly to EXECUTE. No spec, no approval gate (Zero Context-Switch Protocol). If you want to review the fix plan before EXECUTE, force Full Path by listing >5 files in the ANALYZE return.
-**Full Path:** Write brief spec in `.claude/spec/active/{date}-{name}/spec.md`. The spec MUST include (Wave 10):
+**Full Path:** Write brief spec in `.claude/spec/active/{date}-{name}/spec.md`.
+
+**Resolve spec language first** (cascade, stop at first hit):
+1. existing `### Lang: pt|en` in any spec.md being reused → use it;
+2. `.claude/mustard.json#specLang` → use it;
+3. otherwise `AskUserQuestion` ÚNICA: `"Spec language: pt | en?"` → persist to `mustard.json#specLang`.
+
+**HARD RULE — Headers consistency:** when `Lang: pt`, **ALL** `## ` body headings MUST be in PT — translate every default: `## Boundaries → ## Limites`, `## Root cause → ## Causa raiz`, `## Plan → ## Plano`, `## Concerns → ## Preocupações`, `## Acceptance Criteria → ## Critérios de Aceitação`. Do NOT mix. When `Lang: en`, keep all EN. Exceptions (always EN): status/phase/scope values, commands, filenames, AC `Command:` field.
+
+→ See `../../../refs/feature/spec-language.md` for full Header Translation Table.
+
+The spec header MUST include `### Lang: {pt|en}`. The spec MUST include (Wave 10):
    ```markdown
+   ## Contexto    ← exact heading if Lang=pt
+   (or)
+   ## Context     ← exact heading if Lang=en
+
+   {Narrative prose, 4-8 lines. Tell the story:
+    - How the system should work (explain domain terms on first use)
+    - What broke or what's the expected behavior
+    - Observable impact for user or business (NOT for the DB)
+    NO tables. NO line numbers. NO method names. NO bullets here.
+    NO "how to fix" — that goes in the Plan section.
+    MUST follow ../../../refs/feature/spec-language.md § Contexto Narrative Rules.}
+
    ## Acceptance Criteria
 
    - [ ] AC-1: Bug is no longer reproducible — Command: `{command that previously triggered the bug}`
@@ -128,6 +151,7 @@ Every agent prompt dispatched in Fast Path MUST include:
 Dispatch bugfix agent with:
 - Root cause from ANALYZE
 - `{subproject}/CLAUDE.md` + `{subproject}/.claude/commands/guards.md` for context
+- `{recommended_skills}` starting with `karpathy-guidelines` (bugfix edits code) — see `templates/commands/mustard/templates/agent-prompt/SKILL.md § How to fill {recommended_skills}`
 - Specific files to modify
 - Expected behavior after fix
 

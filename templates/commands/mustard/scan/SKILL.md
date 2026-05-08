@@ -1,6 +1,6 @@
 # /scan - Agnostic Code Analyzer
 
-> ALWAYS before making any change. Search on the web for the newest documentation and only implement if you are 100% sure it will work.
+> Discovers subprojects, dispatches one Task agent per subproject to analyze the codebase, then refreshes the registry, validates skills, and runs the security scan.
 
 ## Trigger
 
@@ -8,49 +8,49 @@
 
 ## Flags
 
-- `--force` — discards all `<!-- mustard:generated -->` content and regenerates from scratch. Bypasses incremental skip, always regenerates CLAUDE.md and registry. → See `../../../refs/scan/scan-protocol.md` for full semantics.
-
-## Execution Model
-
-**CRITICAL — Context Protection:** Orchestrator MUST NOT analyze directly. ALL analysis delegated to Task agents.
-
-**CRITICAL — Read-Before-Write:** Every `Write`/`Edit` on an existing file MUST be preceded by a `Read` call in the same context. Applies to `.claude/CLAUDE.md`, root `CLAUDE.md`, `.claude/docs/*.md`, and subproject `CLAUDE.md` edits.
-
-→ See `../../../refs/scan/scan-protocol.md` for full execution model details.
+- `--force` — bypasses incremental skip; rescans every subproject and regenerates `<!-- mustard:generated -->` artifacts. Without it, subprojects with unchanged source hash and no git dirty are skipped.
 
 ## Process
 
-**1. Discover & Incremental Detection** — Read old cache → `sync-detect.js --no-cache` → compare hashes + gitDirty → build agent list (skip unchanged; process mismatch/dirty). → See `../../../refs/scan/scan-protocol.md §Step 1`.
+**1. Pre-dispatch.** Run `node .claude/scripts/scan/orchestrate.js [<subproject>] [--force]`. Parse the JSON it prints. The script handles: subproject discovery, incremental hash comparison, stale cleanup, bootstrap of foundational files (`.claude/CLAUDE.md`, root `CLAUDE.md`, `entity-registry.json`, per-subproject `CLAUDE.md`), Project Structure table refresh, agent file generation (`.claude/agents/{name}-impl.md` and `-explorer.md`), product-doc frontmatter, and rendering the per-subproject agent prompt.
 
-**2.5. Cleanup Stale Subprojects** — Remove directories, cache entries, agent files, skills, and registry entries for subprojects no longer detected. → See `../../../refs/scan/scan-protocol.md §Step 2.5`.
+**2. Dispatch agents.** For each item in `dispatch[]`, fire one `Task(general-purpose)` in a single message (parallel calls). Pass `agentPrompt` as the literal prompt — it already contains the EVIDENCE RULE, the per-subproject context, and all step instructions inline. Never `run_in_background: true`. If `dispatch[]` is empty, skip to step 3.
 
-**2.6. Bootstrap (if needed)** — Fast-path: skip if root `CLAUDE.md` + `entity-registry.json` exist and `--force` not active. Otherwise create `.claude/CLAUDE.md`, root `CLAUDE.md`, `entity-registry.json`, and per-subproject `CLAUDE.md`. → See `../../../refs/scan/scan-protocol.md §Step 2.6`.
-
-**2.7. Scan Product Docs** — If `.claude/docs/` has `.md` files, inject YAML frontmatter (name, description, topics, scanned-at). Orchestrator does this inline (no Task agent needed). → See `../../../refs/scan/scan-protocol.md §Step 2.7`.
-
-**3. Launch Agents** — Launch ALL agents in a SINGLE message (parallel tool calls). Each agent receives the EVIDENCE RULE prompt. **Never `run_in_background: true`.** → See `../../../refs/scan/evidence-rules.md` for full agent prompt template and EVIDENCE RULE 1-5.
-
-**4. Update CLAUDE.md files** — Regenerate `.claude/CLAUDE.md` (always overwrite); update root `CLAUDE.md` (Project Structure table, commands, Ignore Paths). → See `../../../refs/scan/scan-protocol.md §Step 4`.
-
-**4.5. Generate Agents** — Generate `{subproject.name}-impl.md` and `{subproject.name}-explorer.md` per subproject. → See `../../../refs/scan/scan-protocol.md §Step 4.5`.
-
-**4.6. Generate Granular Skills** — One skill per cluster (skill-creator methodology). → See `../../../refs/scan/scan-protocol.md §Step 4.6` and `scan-format.md §10`.
-
-**4.7. Refresh Registry** — `node .claude/scripts/sync-registry.js --force`. → See `../../../refs/scan/scan-protocol.md §Step 4.7`.
-
-**5. Update Cache** — `node .claude/scripts/sync-detect.js` (with cache write). → See `../../../refs/scan/scan-protocol.md §Step 5`.
-
-**6. Validate Skills** — `node .claude/scripts/skill-validate.js --factual`. Control: `MUSTARD_SKILL_VALIDATE_MODE=strict|warn|off`. → See `../../../refs/scan/evidence-rules.md §Validate Skills Step`.
-
-**Security Scan** — Run after step 3 or via `/scan --security`. `node .claude/scripts/security-scan.js "$PROJECT_DIR"`. → See `../../../refs/scan/scan-protocol.md §Security Scan Phase`.
+**3. Post-dispatch.** Run `node .claude/scripts/scan/finalize.js`. This refreshes the entity registry (`sync-registry.js --force`), updates the detect cache (`sync-detect.js`), validates generated skills (`skill-validate.js --factual`), and runs the security scan. Surface any `errors[]` or `warnings[]` from the JSON output.
 
 ## Return Format
 
 ```json
 {
   "scanned": ["{subproject-1}", "{subproject-2}"],
-  "generated": { "{subproject-1}": ["stack.md", "modules.md", "guards.md"] },
-  "skills_generated": { "{subproject-1}": ["api-endpoint-wiring", "api-service-base"] },
+  "skipped": ["{subproject-3}"],
+  "generated": ["CLAUDE.md", ".claude/agents/api-impl.md"],
+  "skills_generated": { "{subproject-1}": ["api-endpoint-pattern"] },
+  "security": { "findings": 0 },
   "errors": []
 }
 ```
+
+## Fallback Mode
+
+If `node .claude/scripts/scan/orchestrate.js` fails to run (script missing, Node error, JSON parse failure):
+
+1. Run `node .claude/scripts/sync-detect.js --no-cache` directly. Parse its `subprojects[]`.
+2. For each subproject, dispatch one `Task(general-purpose)` with this minimal prompt:
+   ```
+   Scan subproject {name} at {path}. Read {path}/CLAUDE.md.
+   Analyze the source code, document patterns in {path}/.claude/commands/*.md
+   (with the <!-- mustard:generated --> header), and emit one skill per
+   reusable pattern in {path}/.claude/skills/{skill-name}/. Each skill must
+   reference real files via Glob/Read; skip any skill you cannot back with
+   ≥3 real files. No fenced code in SKILL.md body.
+   ```
+3. Run `node .claude/scripts/sync-registry.js --force` manually.
+4. Report which step failed in your final message so the user knows.
+
+This keeps `/scan` operational even if the orchestrator scripts are broken.
+
+## Execution Rules
+
+- **No confirmation prompts** — `/scan` is the approval. Proceed autonomously.
+- **Read before Write/Edit** — only relevant in fallback mode (the orchestrator scripts handle reads themselves).

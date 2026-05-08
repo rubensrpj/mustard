@@ -13,10 +13,15 @@
  * Role budgets (1 token ≈ 4 chars — conservative conversion):
  *   Explore              → 2,500 tokens × 4 = 10,000 chars  (HARD BLOCK)
  *   general-purpose+review → 3,000 tokens × 4 = 12,000 chars (HARD BLOCK)
- *   general-purpose      → 5,000 tokens × 4 = 20,000 chars  (HARD BLOCK)
+ *   general-purpose      → 7,500 tokens × 4 = 30,000 chars  (HARD BLOCK)
  *   Plan                 → advisory only, no hard block
  *
- * @version 2.0.0
+ * The general-purpose budget was raised to 30k chars (from 20k) when the /scan
+ * orchestrator started inlining cluster slices + sample code in the prompt —
+ * agents need that pre-extracted context to skip Reads, but the prompt itself
+ * grew accordingly.
+ *
+ * @version 2.1.0
  */
 
 const fs = require('fs');
@@ -43,7 +48,7 @@ const TOKEN_THRESHOLD = 50000; // advisory threshold (tokens)
 // Role budgets in chars (1 token ≈ 4 chars)
 const BUDGET_EXPLORE          = 10000; // 2,500 tokens × 4
 const BUDGET_REVIEW           = 12000; // 3,000 tokens × 4  (general-purpose with "review" in description)
-const BUDGET_GENERAL          = 20000; // 5,000 tokens × 4  (general-purpose, other)
+const BUDGET_GENERAL          = 30000; // 7,500 tokens × 4  (general-purpose, other) — raised from 20k to fit /scan's inlined cluster + sample blocks
 // Plan: no hard budget — advisory only
 
 /**
@@ -92,20 +97,25 @@ process.stdin.on('end', () => {
           ? (description.toLowerCase().includes('review') ? 'general-purpose(review)' : 'general-purpose')
           : subagentType;
 
-        // ALWAYS log (unconditional, fail-silent) — all modes including strict
+        // Emit only when actionable: a block, or a near-miss above 90% of limit.
+        // Under-budget passes are no-ops for token economy and used to inflate
+        // tokens_affected without contributing to tokens_saved.
         const wouldBlock = actual > limit;
-        emitMetric('budget-check', {
-          tokensAffected: Math.round(actual / 4),
-          tokensSaved: wouldBlock ? Math.max(0, Math.round((actual - limit) / 4)) : 0,
-          note: wouldBlock ? 'blocked' : 'passed',
-          extras: {
-            role: roleLabel,
-            actual_chars: actual,
-            limit,
-            would_block: wouldBlock,
-            mode: MODE,
-          },
-        });
+        const nearMiss = actual > limit * 0.9;
+        if (wouldBlock || nearMiss) {
+          emitMetric('budget-check', {
+            tokensAffected: Math.round(actual / 4),
+            tokensSaved: wouldBlock ? Math.max(0, Math.round((actual - limit) / 4)) : 0,
+            note: wouldBlock ? 'blocked' : 'near-miss',
+            extras: {
+              role: roleLabel,
+              actual_chars: actual,
+              limit,
+              would_block: wouldBlock,
+              mode: MODE,
+            },
+          });
+        }
 
         // Apply mode decision (separate concern):
         if (MODE === 'observe') {

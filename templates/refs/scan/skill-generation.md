@@ -130,14 +130,8 @@ Extract concrete code examples from the codebase into `references/examples.md`:
 - Keep each example ≤15 lines of code
 - Agent reads these ONLY when needing concrete implementation reference
 
-### Subproject-Level Skills
-
-For each generated skill, ALSO create in `{subproject}/.claude/skills/{skill-name}/`:
-- Same content as root-level skill
-- Purpose: enables standalone use outside the monorepo
-- Mark with `<!-- mustard:generated -->` same as root versions
-
 ### Skills Location
 
 Skills are generated ONLY in `{subproject}/.claude/skills/{skill-name}/` (NOT in root `.claude/skills/`).
+The orchestrator runs from a different working directory, so always use the absolute path provided by the orchestrator's `{{absSubprojectPath}}` placeholder when writing — never rely on relative `.claude/skills/`.
 This keeps subproject-specific knowledge self-contained and avoids duplication.

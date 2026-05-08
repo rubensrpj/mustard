@@ -8,6 +8,8 @@ Single unified template for all dispatches:
 
 `{context_extras}` is optional (e.g. extra line to read `notes.md`); leave empty when unused.
 
+`{spec_lang}` is filled from the active spec's `### Lang:` header (`pt` or `en`). Orchestrator reads it from `.claude/spec/active/{specName}/spec.md`. Defaults to `en` if missing.
+
 ---
 
 ## Dispatch Template
@@ -18,6 +20,7 @@ Single unified template for all dispatches:
 ## CONTEXT
 1. Read `{subproject}/CLAUDE.md` — guards, stack, paths
 2. Read `{subproject}/.claude/commands/guards.md` — mandatory rules
+3. Spec language is `{spec_lang}`. Use `{spec_lang}` for prose, labels, and any Concerns you add. Code/commands stay EN.
 {context_extras}
 
 ## REFERENCE
@@ -125,15 +128,20 @@ Claude natively decides which additional skills to load based on descriptions.
 
 ### How to fill `{recommended_skills}`
 
-Based on task analysis, list the most relevant skill names:
+**Rule 1 — Always prepend `karpathy-guidelines` for code-editing agents.** This includes `impl`, `backend`, `frontend`, `database`, `bugfix` and any agent whose role involves Edit/Write of source code. **Skip** for read-only Explore agents and Review agents (they don't edit, so anti-slop guidelines don't apply).
+
+**Rule 2 — Then list task-relevant skills:**
 - Entity/CRUD work → pattern skills for that subproject
 - UI/design work → `design-craft` + subproject pattern skills
 - Architecture decisions → `senior-architect`
 - Complex patterns → relevant advanced pattern skills
 
 Examples (replace `{sub}` with actual subproject short name; skill names below are placeholders — pick whatever skills the subproject's `.claude/skills/` actually defines):
-- Backend endpoint → `{sub}-{endpoint-skill}, {sub}-{module-skill}`
-- Mobile screen → `{sub}-{screen-skill}, {sub}-{state-skill}, design-craft`
-- Frontend section → `{sub}-{section-skill}, design-craft, react-best-practices`
+- Backend endpoint → `karpathy-guidelines, {sub}-{endpoint-skill}, {sub}-{module-skill}`
+- Mobile screen → `karpathy-guidelines, {sub}-{screen-skill}, {sub}-{state-skill}, design-craft`
+- Frontend section → `karpathy-guidelines, {sub}-{section-skill}, design-craft, react-best-practices`
+- Bugfix → `karpathy-guidelines, {sub}-{relevant-skill}`
+- Explore (read-only) → `{sub}-{discovery-skill}` only (no karpathy)
+- Review → review-specific skills only (no karpathy)
 
 ULTRATHINK

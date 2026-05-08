@@ -3,7 +3,9 @@
 > ALWAYS before making any change. Search on the web for the newest documentation and only implement if you are 100% sure it will work.
 
 > Instructions for Task agents performing `/scan` analysis on a single subproject.
-> The orchestrator passes: subproject name, path, role, and stack summary.
+> The orchestrator passes: subproject name, path, role, stack summary, and (when available) pre-extracted clusters + sample code.
+
+> **Default**: the agent prompt rendered by `orchestrate.js` covers the full protocol inline, including enriched clusters and sample code. Refs in `../../../refs/scan/` are detail-level fallbacks — read them ONLY if a specific instruction is ambiguous, not as a routine first step.
 
 ## Language Rule
 
@@ -126,16 +128,16 @@ After generating command files, update the subproject's `CLAUDE.md`. **Always `R
 
 Generate `recipes.md` from import chains and module structure. One recipe per recurring type (new entity, modify, new endpoint). Format: steps with `§N` refs, reference module, task splits with deps, file hierarchy table. Ends with build check.
 
-→ See `../../../refs/scan/agent-recipes.md`
+> Reference (optional, only if the recipe pattern is ambiguous): `../../../refs/scan/agent-recipes.md`
 
 ## 9. Agent Generation
 
 Generate `{subproject.name}-impl.md` + `{subproject.name}-explorer.md` in root `.claude/agents/` (NOT subproject). YAML frontmatter BEFORE `<!-- mustard:generated -->`. Explorer uses haiku + read-only tools. Clean up stale leftover files from prior projects.
 
-→ See `../../../refs/scan/agent-recipes.md`
+> Reference (optional, only if the agent template is unclear): `../../../refs/scan/agent-recipes.md`
 
 ## 10. Granular Skill Generation (skill-creator methodology)
 
-One skill per reusable codebase convention (not per file type). Name from what codebase calls the thing. Cluster skills from `entity-registry.json` `_patterns[].discovered[]` — skip <3 files or noise suffixes. NO code in SKILL.md body — all code in `references/examples.md`.
+One skill per reusable codebase convention (not per file type). Name from what codebase calls the thing. Cluster skills come from the orchestrator's injected `## Clusters detected for this subproject` block — fall back to `entity-registry.json` `_patterns[].discovered[]` only if that block is empty. Skip clusters with <3 files or noise suffixes. NO code in SKILL.md body — all code in `references/examples.md` (use the `## Sample code per cluster` block injected by the orchestrator instead of re-Reading source files).
 
-→ See `../../../refs/scan/skill-generation.md`
+> Reference (optional, only for skill-description writing tips and edge cases): `../../../refs/scan/skill-generation.md`

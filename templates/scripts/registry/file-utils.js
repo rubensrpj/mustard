@@ -6,6 +6,12 @@
  * Single Responsibility: file collection and path helpers shared across scanners.
  * No scanning logic, no schema building — only filesystem utilities.
  *
+ * Skip-list sources merged inside collectFiles:
+ *   - DEFAULT_IGNORE (universal: node_modules, .git, dist, ...)
+ *   - explicit `ignore` argument
+ *   - env `MUSTARD_SCAN_IGNORE` (comma-separated names)
+ *   - directory entries parsed from the subproject's .gitignore (parseGitignoreDirs)
+ *
  * Usage:
  *   const { collectFiles, relativePath, readFileSafe } = require('./registry/file-utils');
  */
@@ -24,6 +30,42 @@ const DEFAULT_IGNORE = [
 ];
 
 // ---------------------------------------------------------------------------
+// parseGitignoreDirs
+// ---------------------------------------------------------------------------
+
+/**
+ * Extract directory-name patterns from a .gitignore string.
+ *
+ * Conservative parsing — keeps only entries that look like a plain folder name:
+ *   - non-empty
+ *   - no whitespace
+ *   - no glob chars (*, ?, [, ])
+ *   - no slashes (path-anchored entries are skipped)
+ *   - not a negation (! prefix)
+ *   - not a comment (# prefix)
+ *
+ * Trailing slashes are stripped. Leading slashes cause the entry to be skipped
+ * (path-anchored — out of scope for the simple folder-name skip-list).
+ *
+ * @param {string} content - raw .gitignore file content
+ * @returns {string[]} - list of folder names
+ */
+function parseGitignoreDirs(content) {
+  if (typeof content !== 'string' || !content) return [];
+  const out = [];
+  for (const rawLine of content.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith('#') || line.startsWith('!')) continue;
+    if (line.startsWith('/')) continue; // path-anchored
+    if (/[\s*?\[\]]/.test(line)) continue; // glob or whitespace
+    const name = line.replace(/\/$/, ''); // strip trailing slash before path check
+    if (name.includes('/')) continue; // nested path, not a bare name
+    out.push(name);
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
 // collectFiles
 // ---------------------------------------------------------------------------
 
@@ -37,7 +79,20 @@ const DEFAULT_IGNORE = [
  * @returns {string[]} - absolute file paths
  */
 function collectFiles(dir, extension, ignore = []) {
-  const allIgnore = new Set([...DEFAULT_IGNORE, ...ignore]);
+  const envIgnore = String(process.env.MUSTARD_SCAN_IGNORE || '')
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean);
+
+  let gitignoreDirs = [];
+  try {
+    const gi = path.join(dir, '.gitignore');
+    if (fs.existsSync(gi)) {
+      gitignoreDirs = parseGitignoreDirs(fs.readFileSync(gi, 'utf-8'));
+    }
+  } catch { /* fail-open */ }
+
+  const allIgnore = new Set([...DEFAULT_IGNORE, ...ignore, ...envIgnore, ...gitignoreDirs]);
   const results = [];
 
   function walk(currentDir) {
@@ -123,4 +178,4 @@ function inferCommonFolder(filePaths) {
   return maxDir ? maxDir + '/' : null;
 }
 
-module.exports = { collectFiles, relativePath, readFileSafe, inferCommonFolder, DEFAULT_IGNORE };
+module.exports = { collectFiles, relativePath, readFileSafe, inferCommonFolder, parseGitignoreDirs, DEFAULT_IGNORE };

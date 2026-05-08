@@ -734,7 +734,7 @@ describe("context-budget.js metrics emission", () => {
     }
   });
 
-  it("should emit note='passed' and tokens_saved=0 when under budget", async () => {
+  it("should NOT emit when prompt is comfortably under budget", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ctx-budget-metrics-pass-"));
     try {
       const result = await runHook(hook, {
@@ -749,9 +749,32 @@ describe("context-budget.js metrics emission", () => {
 
       assert.equal(result.code, 0);
       const metricsFile = path.join(tmpDir, ".claude", ".metrics", "budget-check.jsonl");
+      // Under-budget passes are no-ops for token economy and must not emit.
+      assert.ok(!fs.existsSync(metricsFile), "budget-check.jsonl must not exist for under-budget pass");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("should emit note='near-miss' when prompt exceeds 90% of budget without blocking", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ctx-budget-metrics-near-"));
+    try {
+      // Explore budget = 10,000 chars; 9,500 chars triggers near-miss (>90%) without blocking.
+      const result = await runHook(hook, {
+        hook_event_name: "PreToolUse",
+        tool_name: "Task",
+        tool_input: {
+          subagent_type: "Explore",
+          description: "near-miss",
+          prompt: "x".repeat(9500),
+        },
+      }, { cwd: tmpDir, projectDir: tmpDir });
+
+      assert.equal(result.code, 0);
+      const metricsFile = path.join(tmpDir, ".claude", ".metrics", "budget-check.jsonl");
       assert.ok(fs.existsSync(metricsFile));
       const entry = JSON.parse(fs.readFileSync(metricsFile, "utf8").trim().split("\n").pop());
-      assert.equal(entry.note, "passed");
+      assert.equal(entry.note, "near-miss");
       assert.equal(entry.tokens_saved, 0);
       assert.ok(entry.tokens_affected > 0);
       assert.equal(entry.would_block, false);

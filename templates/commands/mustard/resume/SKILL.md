@@ -120,9 +120,10 @@ When the pipeline state indicates a wave plan, the orchestrator dispatches only 
       - `{retry_context}` → empty on first dispatch. On retry, fill per `agent-prompt/SKILL.md § Retry Modes`. Granular retries use Step 4 § Granular Retry Protocol. Fix-loops (after REJECTED review) use Step 19b § Fix Loop Dispatch Protocol.
       - `{task_steps}` → checkboxed steps from spec
       - `{recommended_skills}` → from Skill Recommendations in `.claude/pipeline-config.md`:
-        1. Glob `{subproject}/.claude/skills/` for generated pattern skills
-        2. Add foundation skills matching the role (ui→design-craft+react-best-practices, mobile→design-craft)
-        3. Format as bullet list: `- {skill-name}`
+        1. **Prepend `karpathy-guidelines`** for code-editing agents (impl/backend/frontend/database/bugfix). **Skip** for read-only Explore and Review agents.
+        2. Glob `{subproject}/.claude/skills/` for generated pattern skills
+        3. Add foundation skills matching the role (ui→design-craft+react-best-practices, mobile→design-craft)
+        4. Format as bullet list: `- {skill-name}`
 
 16. **Wave transitions** — between waves, execute transitions from `.claude/pipeline-config.md`:
     - After Wave 1 (api/database/library) completes, before Wave 2 (ui):

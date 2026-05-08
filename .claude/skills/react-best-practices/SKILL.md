@@ -1,6 +1,7 @@
 ---
 name: react-best-practices
 description: Comprehensive React and Next.js performance optimization guide with 40+ rules for eliminating waterfalls, optimizing bundles, and improving rendering. Use when optimizing React apps, reviewing performance, or refactoring components.
+source: manual
 ---
 
 # React Best Practices - Performance Optimization

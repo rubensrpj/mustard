@@ -1,0 +1,1079 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Mustard · Curso completo</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght,ital@9..144,300..900,0;9..144,300..900,1&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --mustard:#E8B923;
+  --mustard-deep:#B8901A;
+  --ketchup:#B8201A;
+  --cream:#FBF7EE;
+  --paper:#F5EFE0;
+  --ink:#1F1A14;
+  --ink-soft:#5A4F40;
+  --line:#E0D6BE;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{
+  margin:0;background:var(--cream);color:var(--ink);
+  font-family:"Fraunces",Georgia,serif;
+  font-size:17px;line-height:1.6;
+  font-feature-settings:"ss01","ss02";
+}
+h1,h2,h3,h4{font-family:"Fraunces",Georgia,serif;font-weight:700;letter-spacing:-0.02em;line-height:1.1;color:var(--ink);margin:0}
+.mono,code,pre,kbd,.kicker,.tag,th,small{font-family:"JetBrains Mono",ui-monospace,monospace}
+.ui{font-family:"Inter",-apple-system,sans-serif}
+a{color:var(--ketchup);text-decoration-thickness:1px;text-underline-offset:3px}
+a:hover{text-decoration-thickness:2px}
+
+/* ─── TOPBAR ─── */
+.topbar{
+  position:sticky;top:0;z-index:50;
+  background:var(--cream);
+  border-bottom:1px solid var(--line);
+  padding:12px 24px;
+  display:flex;justify-content:space-between;align-items:center;
+  font-size:12px;color:var(--ink-soft);
+}
+.topbar .brand{font-family:"Fraunces";font-weight:700;color:var(--ink);letter-spacing:-0.01em;font-size:15px}
+.topbar .brand i{font-style:italic;color:var(--mustard-deep)}
+.topbar nav{display:flex;gap:22px}
+.topbar nav a{color:var(--ink-soft);text-decoration:none;font-family:"JetBrains Mono";font-size:11px;letter-spacing:.05em}
+.topbar nav a:hover{color:var(--ketchup)}
+@media(max-width:780px){.topbar nav{display:none}}
+
+/* ─── HERO ─── */
+.hero{
+  padding:80px 6vw 100px;max-width:1280px;margin:0 auto;
+  display:grid;grid-template-columns:1.2fr 1fr;gap:60px;align-items:center;
+}
+.kicker{
+  font-size:11px;letter-spacing:.25em;text-transform:uppercase;
+  color:var(--ketchup);display:inline-block;margin-bottom:24px;
+}
+.kicker::before{content:"— ";color:var(--mustard-deep)}
+.hero h1{
+  font-size:clamp(56px,8vw,108px);
+  font-weight:300;
+  line-height:.95;
+  margin:0;
+}
+.hero h1 em{font-style:italic;color:var(--mustard-deep);font-weight:400}
+.hero h1 b{font-weight:700;display:block}
+.hero-sub{
+  font-size:21px;color:var(--ink-soft);
+  margin:30px 0 36px;max-width:520px;
+  line-height:1.5;
+}
+.hero-stats{display:flex;gap:40px;flex-wrap:wrap;border-top:1px solid var(--line);padding-top:24px;max-width:520px}
+.stat b{display:block;font-family:"Fraunces";font-weight:700;font-size:32px;color:var(--ink);line-height:1}
+.stat small{font-size:10px;letter-spacing:.18em;text-transform:uppercase;color:var(--ink-soft)}
+
+.hero-illustration{display:grid;place-items:center;position:relative}
+.bottle{width:100%;max-width:380px;height:auto}
+
+/* gentle drip animation on bottle squirt */
+@keyframes drip{
+  0%{transform:translateY(-4px)}
+  100%{transform:translateY(0)}
+}
+
+/* ─── DIVIDER ─── */
+.rule{
+  max-width:1280px;margin:0 auto;height:1px;background:var(--line);
+}
+
+/* ─── SECTIONS ─── */
+section{padding:90px 6vw}
+.wrap{max-width:920px;margin:0 auto}
+.wrap-wide{max-width:1180px;margin:0 auto}
+.section-head{margin-bottom:48px;border-bottom:1px solid var(--line);padding-bottom:18px;display:flex;align-items:baseline;justify-content:space-between;gap:24px;flex-wrap:wrap}
+.section-num{
+  font-family:"JetBrains Mono";font-size:12px;letter-spacing:.2em;color:var(--ketchup);
+}
+.section-head h2{
+  font-size:clamp(36px,5vw,52px);
+  font-weight:300;flex:1;
+  line-height:1.05;
+}
+.section-head h2 em{font-style:italic;color:var(--mustard-deep);font-weight:400}
+.section-head .tag{font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:var(--ink-soft)}
+
+.lede{
+  font-size:22px;line-height:1.5;color:var(--ink);
+  font-weight:300;
+  max-width:680px;margin-bottom:28px;
+}
+.lede em{color:var(--mustard-deep);font-style:italic}
+
+p{margin:14px 0}
+ul,ol{padding-left:22px}
+li{margin:6px 0}
+
+section.alt{background:var(--paper)}
+section.dark{background:var(--ink);color:var(--cream)}
+section.dark h2,section.dark h3,section.dark h4{color:var(--cream)}
+section.dark .lede{color:rgba(251,247,238,.85)}
+section.dark .section-head{border-color:rgba(232,185,35,.25)}
+section.dark .section-num{color:var(--mustard)}
+section.dark .section-head .tag{color:rgba(251,247,238,.5)}
+section.dark a{color:var(--mustard)}
+
+/* ─── CARDS ─── */
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:1px;background:var(--line);border:1px solid var(--line);margin:30px 0}
+.card{
+  background:var(--cream);padding:28px 26px;
+  transition:background .25s;
+}
+section.alt .card{background:var(--paper)}
+.card:hover{background:#fff}
+.card .num{font-family:"JetBrains Mono";font-size:11px;letter-spacing:.2em;color:var(--mustard-deep);display:block;margin-bottom:10px}
+.card h4{font-size:22px;font-weight:600;margin:0 0 8px;line-height:1.2}
+.card p{margin:0;color:var(--ink-soft);font-size:15.5px;line-height:1.5}
+
+/* ─── CALLOUTS ─── */
+.note{
+  border-left:2px solid var(--mustard-deep);
+  padding:14px 0 14px 22px;margin:22px 0;
+  background:transparent;
+}
+.note .label{
+  font-family:"JetBrains Mono";font-size:10px;letter-spacing:.2em;
+  text-transform:uppercase;color:var(--mustard-deep);
+  display:block;margin-bottom:6px;
+}
+.note p{margin:0;color:var(--ink-soft);font-size:15.5px}
+.note.warn{border-color:var(--ketchup)}
+.note.warn .label{color:var(--ketchup)}
+
+/* ─── ANALOGY (pull quote) ─── */
+.analogy{
+  margin:36px 0;padding:32px 0;
+  border-top:1px solid var(--line);border-bottom:1px solid var(--line);
+  font-style:italic;font-size:24px;line-height:1.4;
+  color:var(--ink);font-weight:300;
+  max-width:760px;
+}
+.analogy::before{
+  content:"Analogia";display:block;
+  font-family:"JetBrains Mono";font-size:10px;letter-spacing:.25em;
+  text-transform:uppercase;color:var(--mustard-deep);
+  font-style:normal;margin-bottom:14px;
+}
+
+/* ─── CODE ─── */
+pre{
+  background:var(--ink);color:var(--cream);
+  padding:22px 26px;border-radius:6px;
+  font-size:13.5px;overflow-x:auto;line-height:1.6;
+  margin:18px 0;
+}
+pre code{color:var(--cream)}
+:not(pre)>code{
+  background:var(--paper);color:var(--ketchup);
+  padding:1px 7px;border-radius:3px;font-size:.88em;
+  border:1px solid var(--line);
+}
+section.dark :not(pre)>code{
+  background:rgba(232,185,35,.1);color:var(--mustard);border-color:rgba(232,185,35,.2);
+}
+section.dark pre{background:#0F0C09;border:1px solid rgba(232,185,35,.15)}
+
+/* ─── PIPELINE ─── */
+.pipeline{
+  display:grid;grid-template-columns:repeat(5,1fr);gap:0;margin:36px 0;
+  border:1px solid var(--line);background:var(--cream);
+}
+section.alt .pipeline{background:var(--paper)}
+section.dark .pipeline{border-color:rgba(232,185,35,.2);background:transparent}
+.station{
+  padding:24px 18px;text-align:center;border-right:1px solid var(--line);
+  position:relative;
+}
+section.dark .station{border-color:rgba(232,185,35,.15)}
+.station:last-child{border-right:none}
+.station .step{font-family:"JetBrains Mono";font-size:10px;color:var(--mustard-deep);letter-spacing:.2em;display:block;margin-bottom:8px}
+.station h5{font-size:18px;font-weight:600;margin:0 0 4px}
+.station p{font-size:13px;color:var(--ink-soft);margin:0}
+section.dark .station p{color:rgba(251,247,238,.6)}
+@media(max-width:780px){.pipeline{grid-template-columns:1fr 1fr}.station{border-bottom:1px solid var(--line)}}
+
+/* ─── CHART ─── */
+.chart{margin:28px 0;display:flex;flex-direction:column;gap:14px}
+.bar-row{display:grid;grid-template-columns:120px 1fr 60px;align-items:center;gap:18px}
+.bar-label{font-size:13px;color:var(--cream);font-weight:500;font-family:"Inter",sans-serif}
+.bar-track{
+  background:rgba(251,247,238,.08);height:14px;border-radius:7px;overflow:hidden;
+}
+.bar-fill{
+  height:100%;background:var(--mustard);border-radius:7px;
+  width:0;transition:width 1.4s cubic-bezier(.2,.8,.3,1);
+}
+.bar-pct{font-family:"JetBrains Mono";font-size:13px;color:var(--mustard);text-align:right}
+
+/* ─── TABLES ─── */
+table{width:100%;border-collapse:collapse;margin:22px 0;font-size:15px}
+th,td{border-bottom:1px solid var(--line);padding:14px 16px;text-align:left;vertical-align:top}
+th{
+  font-family:"JetBrains Mono";font-size:10px;letter-spacing:.18em;text-transform:uppercase;
+  color:var(--ink-soft);font-weight:600;background:transparent;
+  border-bottom:1px solid var(--ink);
+}
+td{color:var(--ink)}
+section.dark th{color:rgba(232,185,35,.7);border-color:var(--mustard)}
+section.dark td{color:rgba(251,247,238,.9);border-color:rgba(232,185,35,.12)}
+
+/* ─── STEPS ─── */
+ol.steps{counter-reset:s;list-style:none;padding:0;margin:24px 0}
+ol.steps li{
+  counter-increment:s;position:relative;
+  padding:18px 0 18px 56px;
+  border-bottom:1px solid var(--line);
+  font-size:16.5px;
+}
+ol.steps li:last-child{border-bottom:none}
+ol.steps li::before{
+  content:counter(s,decimal-leading-zero);
+  position:absolute;left:0;top:18px;
+  font-family:"JetBrains Mono";font-size:13px;
+  color:var(--mustard-deep);letter-spacing:.05em;
+}
+ol.steps li strong{font-weight:600;color:var(--ink)}
+section.dark ol.steps li{border-color:rgba(232,185,35,.15)}
+section.dark ol.steps li strong{color:var(--cream)}
+
+/* ─── PILLS ─── */
+.pill{display:inline-block;padding:2px 10px;border-radius:3px;font-family:"JetBrains Mono";font-size:11px;background:var(--paper);color:var(--ink-soft);border:1px solid var(--line)}
+.pill.good{background:rgba(107,142,61,.12);color:#4F6B2D;border-color:rgba(107,142,61,.3)}
+.pill.warn{background:rgba(232,185,35,.15);color:var(--mustard-deep);border-color:rgba(184,144,26,.3)}
+.pill.hot{background:rgba(184,32,26,.1);color:var(--ketchup);border-color:rgba(184,32,26,.3)}
+
+/* ─── TASK MENU ─── */
+.task-row{
+  display:grid;grid-template-columns:120px 100px 1fr;gap:24px;
+  padding:20px 0;border-bottom:1px solid var(--line);align-items:baseline;
+}
+.task-row code{font-size:14px;color:var(--ketchup);background:transparent;border:none;padding:0}
+.task-row .level{font-family:"JetBrains Mono";font-size:11px;color:var(--mustard-deep);letter-spacing:.1em}
+.task-row p{margin:0;color:var(--ink-soft);font-size:15px}
+@media(max-width:680px){.task-row{grid-template-columns:1fr;gap:6px}}
+
+/* ─── BIG NUMBERS ─── */
+.numbers{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:0;margin:30px 0;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
+.numbers div{padding:32px 20px;text-align:left;border-right:1px solid var(--line)}
+.numbers div:last-child{border-right:none}
+.numbers b{display:block;font-family:"Fraunces";font-weight:300;font-size:64px;color:var(--ink);line-height:.95;letter-spacing:-0.04em}
+.numbers small{font-family:"JetBrains Mono";font-size:10px;letter-spacing:.2em;text-transform:uppercase;color:var(--ink-soft);margin-top:6px;display:block}
+
+/* ─── TRAPS ─── */
+.traps{counter-reset:t;list-style:none;padding:0;margin:24px 0}
+.traps li{
+  counter-increment:t;
+  padding:20px 0 20px 70px;
+  border-bottom:1px solid var(--line);
+  position:relative;
+  font-size:16px;color:var(--ink-soft);
+}
+.traps li:last-child{border-bottom:none}
+.traps li::before{
+  content:counter(t,decimal-leading-zero);
+  position:absolute;left:0;top:20px;
+  font-family:"Fraunces";font-weight:300;font-size:30px;color:var(--mustard-deep);
+  line-height:1;letter-spacing:-0.04em;
+}
+.traps li strong{display:block;color:var(--ink);font-weight:600;font-size:17px;margin-bottom:4px}
+section.alt .traps li{border-color:rgba(95,79,64,.18)}
+
+/* ─── FOOTER ─── */
+footer{
+  padding:60px 6vw;background:var(--ink);color:var(--cream);text-align:center;
+}
+footer .mark{font-family:"Fraunces";font-style:italic;font-size:22px;color:var(--mustard);margin-bottom:8px}
+footer small{font-size:11px;letter-spacing:.2em;color:rgba(251,247,238,.5);text-transform:uppercase}
+
+@media(max-width:780px){
+  .hero{grid-template-columns:1fr;padding:50px 6vw 60px;gap:40px}
+  section{padding:60px 6vw}
+  .numbers div{border-right:none;border-bottom:1px solid var(--line)}
+  .numbers div:last-child{border-bottom:none}
+}
+
+/* reveal */
+.reveal{opacity:0;transform:translateY(20px);transition:opacity .8s ease,transform .8s ease}
+.reveal.in{opacity:1;transform:none}
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="brand">Mustard <i>· curso</i></div>
+  <nav>
+    <a href="#intro">Início</a>
+    <a href="#feature">Pipelines</a>
+    <a href="#task">/task</a>
+    <a href="#rtk">RTK</a>
+    <a href="#workshop">Workshop</a>
+    <a href="#cheat">Cheat sheet</a>
+  </nav>
+</div>
+
+<!-- HERO -->
+<header class="hero">
+  <div>
+    <span class="kicker">Curso prático · Edição 2026</span>
+    <h1>Mustard,<br><em>o molho</em><br><b>perfeito.</b></h1>
+    <p class="hero-sub">Pipelines com fases, QA automático, knowledge base e 60–90% de economia em tokens — servidos em dezesseis módulos didáticos para o seu Claude Code.</p>
+    <div class="hero-stats">
+      <div class="stat"><b>17</b><small>Comandos</small></div>
+      <div class="stat"><b>23</b><small>Hooks</small></div>
+      <div class="stat"><b>16</b><small>Módulos</small></div>
+      <div class="stat"><b>~60min</b><small>Para dominar</small></div>
+    </div>
+  </div>
+
+  <div class="hero-illustration">
+    <!-- HEINZ-STYLE MUSTARD BOTTLE -->
+    <svg class="bottle" viewBox="0 0 320 480" xmlns="http://www.w3.org/2000/svg">
+      <!-- shadow -->
+      <ellipse cx="160" cy="455" rx="100" ry="8" fill="#1F1A14" opacity=".12"/>
+
+      <!-- BODY (yellow squeeze bottle) -->
+      <path d="M 90 170
+               Q 90 158 96 150
+               L 110 132
+               Q 116 124 116 112
+               L 116 100
+               Q 116 92 124 92
+               L 196 92
+               Q 204 92 204 100
+               L 204 112
+               Q 204 124 210 132
+               L 224 150
+               Q 230 158 230 170
+               L 230 425
+               Q 230 445 210 445
+               L 110 445
+               Q 90 445 90 425 Z"
+            fill="#E8B923" stroke="#1F1A14" stroke-width="2"/>
+
+      <!-- subtle plastic highlight -->
+      <path d="M 102 200 Q 100 320 105 425 Q 106 432 112 432 L 116 432 Q 110 320 112 205 Q 110 200 106 200 Z"
+            fill="#FFFFFF" opacity=".35"/>
+
+      <!-- cap base (red) -->
+      <rect x="116" y="108" width="88" height="28" rx="2" fill="#B8201A" stroke="#1F1A14" stroke-width="2"/>
+      <!-- subtle ridges -->
+      <line x1="128" y1="114" x2="128" y2="130" stroke="#7A0F0A" stroke-width="1" opacity=".5"/>
+      <line x1="140" y1="114" x2="140" y2="130" stroke="#7A0F0A" stroke-width="1" opacity=".5"/>
+      <line x1="152" y1="114" x2="152" y2="130" stroke="#7A0F0A" stroke-width="1" opacity=".5"/>
+      <line x1="164" y1="114" x2="164" y2="130" stroke="#7A0F0A" stroke-width="1" opacity=".5"/>
+      <line x1="176" y1="114" x2="176" y2="130" stroke="#7A0F0A" stroke-width="1" opacity=".5"/>
+      <line x1="188" y1="114" x2="188" y2="130" stroke="#7A0F0A" stroke-width="1" opacity=".5"/>
+
+      <!-- nozzle cone -->
+      <path d="M 134 108 L 154 76 L 166 76 L 186 108 Z" fill="#B8201A" stroke="#1F1A14" stroke-width="2"/>
+      <ellipse cx="160" cy="76" rx="6" ry="2" fill="#1F1A14"/>
+
+      <!-- KEYSTONE LABEL (Heinz iconic shape) -->
+      <!-- the shape: vertical hexagonal/keystone that flares at the top -->
+      <path d="M 100 240
+               L 105 220
+               Q 110 210 122 210
+               L 198 210
+               Q 210 210 215 220
+               L 220 240
+               L 220 380
+               Q 220 388 212 388
+               L 108 388
+               Q 100 388 100 380 Z"
+            fill="#FBF7EE" stroke="#1F1A14" stroke-width="2"/>
+
+      <!-- label inner border -->
+      <path d="M 107 244
+               L 110 228
+               Q 114 220 122 220
+               L 198 220
+               Q 206 220 210 228
+               L 213 244
+               L 213 376
+               Q 213 380 209 380
+               L 111 380
+               Q 107 380 107 376 Z"
+            fill="none" stroke="#B8201A" stroke-width="1"/>
+
+      <!-- top label badge -->
+      <rect x="128" y="232" width="64" height="14" fill="#B8201A"/>
+      <text x="160" y="242" text-anchor="middle" fill="#FBF7EE"
+            font-family="Inter,sans-serif" font-size="8" letter-spacing="2" font-weight="600">EST. 2026</text>
+
+      <!-- main wordmark -->
+      <text x="160" y="288" text-anchor="middle" fill="#1F1A14"
+            font-family="Fraunces,serif" font-size="28" font-weight="700" letter-spacing="-0.02em">Mustard</text>
+
+      <!-- italic tagline -->
+      <text x="160" y="308" text-anchor="middle" fill="#B8201A"
+            font-family="Fraunces,serif" font-style="italic" font-size="11" font-weight="400">the perfect sauce</text>
+      <text x="160" y="322" text-anchor="middle" fill="#B8201A"
+            font-family="Fraunces,serif" font-style="italic" font-size="11" font-weight="400">for your Claude Code</text>
+
+      <!-- divider line -->
+      <line x1="135" y1="338" x2="185" y2="338" stroke="#1F1A14" stroke-width="0.8"/>
+
+      <!-- small specs -->
+      <text x="160" y="354" text-anchor="middle" fill="#1F1A14"
+            font-family="JetBrains Mono,monospace" font-size="7" letter-spacing="2">PREMIUM · CLAUDE-GRADE</text>
+      <text x="160" y="368" text-anchor="middle" fill="#5A4F40"
+            font-family="JetBrains Mono,monospace" font-size="6.5" letter-spacing="1.5">NET 500 ML · 17 OZ</text>
+    </svg>
+  </div>
+</header>
+
+<div class="rule"></div>
+
+<!-- 1 INTRO -->
+<section id="intro">
+  <div class="wrap">
+    <div class="section-head">
+      <div>
+        <div class="section-num">01 · Conceito</div>
+        <h2>O que é <em>Mustard</em>?</h2>
+      </div>
+      <span class="tag">Capítulo um</span>
+    </div>
+
+    <p class="lede reveal">Imagine que o Claude Code é um cozinheiro talentoso — mas que adora pular o <em>mise en place</em>: começa a fritar antes de cortar, esquece o tempero, manda pro pass sem provar. Mustard é a brigada inteira em forma de comandos.</p>
+
+    <div class="cards reveal">
+      <div class="card">
+        <span class="num">01</span>
+        <h4>Pipelines com fases</h4>
+        <p>ANALYZE → PLAN → EXECUTE → QA → CLOSE. Cada etapa tem entrada e saída claras.</p>
+      </div>
+      <div class="card">
+        <span class="num">02</span>
+        <h4>Hooks de enforcement</h4>
+        <p>Vinte e três guarda-corpos invisíveis que bloqueiam erros comuns sem atrapalhar.</p>
+      </div>
+      <div class="card">
+        <span class="num">03</span>
+        <h4>Knowledge base</h4>
+        <p>Patterns aprendidos viram memória do projeto — a próxima feature começa adiantada.</p>
+      </div>
+      <div class="card">
+        <span class="num">04</span>
+        <h4>Token economy</h4>
+        <p>RTK reduz outputs verbosos do CLI em 60–90%. Você paga menos, o agente vê mais.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 2 SETUP -->
+<section class="alt" id="setup">
+  <div class="wrap">
+    <div class="section-head">
+      <div>
+        <div class="section-num">02 · Instalação</div>
+        <h2>Setup em <em>trinta segundos</em></h2>
+      </div>
+      <span class="tag">Capítulo dois</span>
+    </div>
+
+    <p class="lede reveal">Node 18+, Claude Code, terminal aberto. Nada mais. Você roda o setup uma vez e nunca mais — toda inteligência vive na pasta <code>.claude/</code>.</p>
+
+    <pre class="reveal"><code>npm install -g mustard-claude
+cd meu-projeto
+mustard init</code></pre>
+
+    <table class="reveal">
+      <tr><th style="width:30%">Comando</th><th>Para que serve</th></tr>
+      <tr><td><code>mustard init</code></td><td>Cria <code>.claude/</code>, instala RTK, gera <code>mustard.json</code></td></tr>
+      <tr><td><code>mustard update</code></td><td>Atualiza arquivos do core sem mexer nos seus customizados</td></tr>
+      <tr><td><code>mustard auto-update</code></td><td>Mesmo que update, sem perguntas</td></tr>
+    </table>
+
+    <div class="note warn">
+      <span class="label">Atenção</span>
+      <p>Rode dentro de um repositório Git já inicializado. Sem Git, a auto-detecção de subprojetos não funciona.</p>
+    </div>
+  </div>
+</section>
+
+<!-- 3 SCAN -->
+<section id="scan">
+  <div class="wrap">
+    <div class="section-head">
+      <div>
+        <div class="section-num">03 · Reconhecimento</div>
+        <h2><code>/scan</code> — o <em>olhar inicial</em></h2>
+      </div>
+      <span class="tag">Capítulo três</span>
+    </div>
+
+    <p class="lede reveal">Antes de pedir qualquer coisa séria, o Claude precisa conhecer seu código. O <code>/scan</code> é a apresentação formal: ele lê o projeto, mapeia entidades, identifica padrões e gera fichas técnicas.</p>
+
+    <div class="analogy reveal">É como o primeiro dia de um novo dev na empresa. Ele lê o README, abre o banco, percorre as pastas, anota convenções. Você não pede uma feature nova logo — você deixa ele se ambientar.</div>
+
+    <pre class="reveal"><code>/scan                # tudo (incremental por hash)
+/scan api            # só subprojeto "api"
+/scan --force        # ignora cache, regenera tudo</code></pre>
+
+    <h3 style="margin-top:36px;font-size:22px">O que ele entrega</h3>
+    <ul>
+      <li><code>entity-registry.json</code> — dicionário das suas entidades</li>
+      <li><code>commands/{stack,patterns,guards,recipes}.md</code> — fichas que o Claude consulta</li>
+      <li>Skills e agents auto-gerados pro seu stack</li>
+    </ul>
+
+    <div class="note warn">
+      <span class="label">Erro de iniciante</span>
+      <p>Pular o <code>/scan</code> e ir direto pro <code>/feature</code>. O hook <em>enforce-registry</em> bloqueia. Sem o scan, o Claude está cego.</p>
+    </div>
+
+    <div class="note">
+      <span class="label">Dica</span>
+      <p>Rode <code>--force</code> depois de mudanças grandes (refatorar pasta, novo módulo). No dia a dia, o incremental basta.</p>
+    </div>
+  </div>
+</section>
+
+<!-- 4 FEATURE -->
+<section class="dark" id="feature">
+  <div class="wrap-wide">
+    <div class="section-head">
+      <div>
+        <div class="section-num">04 · Pipeline principal</div>
+        <h2><code>/feature</code> — o <em>coração</em></h2>
+      </div>
+      <span class="tag">Capítulo quatro</span>
+    </div>
+
+    <p class="lede reveal">Toda mudança que toca código de produção (schema, API, UI) passa por aqui. Você fala o quê; o pipeline cuida do como. O escopo é detectado automaticamente.</p>
+
+    <div class="pipeline reveal">
+      <div class="station"><span class="step">Fase 1</span><h5>Analyze</h5><p>Lê código relevante, mapeia camadas</p></div>
+      <div class="station"><span class="step">Fase 2</span><h5>Plan</h5><p>Spec + Acceptance Criteria</p></div>
+      <div class="station"><span class="step">Fase 3</span><h5>Execute</h5><p>Implementa por waves</p></div>
+      <div class="station"><span class="step">Fase 4</span><h5>QA</h5><p>Roda os AC um a um</p></div>
+      <div class="station"><span class="step">Fase 5</span><h5>Close</h5><p>Arquiva &amp; aprende</p></div>
+    </div>
+
+    <h3 style="margin-top:48px;font-size:24px;color:var(--cream)">Detecção automática de escopo</h3>
+    <table class="reveal">
+      <tr><th>Tamanho</th><th>Quando</th><th>Fluxo</th></tr>
+      <tr><td><span class="pill good">Light</span></td><td>1–2 camadas, ≤5 arquivos, padrão conhecido</td><td>Analyze → Execute → QA → Close</td></tr>
+      <tr><td><span class="pill warn">Extended</span></td><td>Entidade já existe, ≤8 arquivos</td><td>Analyze → Execute → QA → Close</td></tr>
+      <tr><td><span class="pill hot">Full</span></td><td>3+ camadas, nova entidade ou padrão</td><td>Analyze → Plan → /approve → Execute → QA → Close</td></tr>
+    </table>
+
+    <div class="analogy reveal" style="border-color:rgba(232,185,35,.25);color:var(--cream)">
+      Light é trocar uma lâmpada — você vê, troca, acabou. Full é reformar a cozinha — precisa de planta (Plan), aprovação do dono (<code>/approve</code>), execução supervisionada e vistoria final (QA).
+    </div>
+
+    <h3 style="margin-top:36px;font-size:22px;color:var(--cream)">Acceptance Criteria — a vistoria</h3>
+    <pre><code>## Acceptance Criteria
+- [ ] AC-1: build passa — Command: `npm run build`
+- [ ] AC-2: campo phone salva — Command: `node scripts/test-phone.js`
+- [ ] AC-3: type-check limpo — Command: `npm run typecheck`</code></pre>
+
+    <div class="note warn" style="border-color:var(--mustard)"><span class="label" style="color:var(--mustard)">Windows</span>
+      <p style="color:rgba(251,247,238,.85)">AC rodam no <code>cmd.exe</code>. Evite <code>$()</code>, <code>[ ]</code>, <code>for</code>, <code>test</code>. Use <code>node -e "…"</code> ou <code>bash -c "…"</code>.</p>
+    </div>
+  </div>
+</section>
+
+<!-- 5 BUGFIX -->
+<section id="bugfix">
+  <div class="wrap">
+    <div class="section-head">
+      <div>
+        <div class="section-num">05 · Diagnóstico</div>
+        <h2><code>/bugfix</code> — <em>detetive com prazo</em></h2>
+      </div>
+      <span class="tag">Capítulo cinco</span>
+    </div>
+
+    <p class="lede reveal">Bug é diferente de feature: você sabe o sintoma, não a causa. O <code>/bugfix</code> investiga sozinho — Grep, Glob, leituras dirigidas — com orçamento limitado de movimentos.</p>
+
+    <pre class="reveal"><code>/bugfix Login button não responde no mobile
+/bugfix NullReferenceException em OrderService.Calculate
+/bugfix Migration 042 quebra em staging</code></pre>
+
+    <div class="analogy reveal">É um detetive com prazo — vinte movimentos para encontrar o culpado. Se acabar o tempo, ele pede ajuda. Se descobrir, corrige e testa.</div>
+
+    <h3 style="margin-top:36px;font-size:22px">Como descrever bem</h3>
+    <table class="reveal">
+      <tr><th>Bom</th><th>Ruim</th></tr>
+      <tr>
+        <td>"Carrinho zera ao trocar de aba. Erro: <code>Cannot read property 'items' of undefined</code>."</td>
+        <td>"Adicione localStorage no carrinho." <em>(isso é proposta, não sintoma)</em></td>
+      </tr>
+    </table>
+
+    <div class="note">
+      <span class="label">Dica</span>
+      <p>Sempre que tiver, cole a mensagem de erro literal. Mustard cacheia a "raiz" e usa para retry inteligente em tentativas seguintes.</p>
+    </div>
+  </div>
+</section>
+
+<!-- 6 APPROVE -->
+<section class="alt" id="approve">
+  <div class="wrap">
+    <div class="section-head">
+      <div>
+        <div class="section-num">06 · Controle</div>
+        <h2>Aprovar &amp; <em>retomar</em></h2>
+      </div>
+      <span class="tag">Capítulo seis</span>
+    </div>
+
+    <p class="lede reveal">Em features Full, você é o chef. Depois do Plan, você prova e aprova. Se a sessão cair, você retoma de onde parou.</p>
+
+    <h3 style="margin-top:24px;font-size:22px"><code>/approve</code></h3>
+    <pre><code>/approve              # vai abrir nova sessão para EXECUTE
+/approve --resume     # executa na MESMA sessão (use em Light)</code></pre>
+
+    <div class="note">
+      <span class="label">Por quê duas sessões</span>
+      <p>Em features grandes, EXECUTE consome muito contexto. Sessão limpa = qualidade alta. Em Light, é desperdício — use <code>--resume</code>.</p>
+    </div>
+
+    <h3 style="margin-top:36px;font-size:22px"><code>/resume</code></h3>
+    <p>Sessão caiu? Aprovou e abriu janela nova? <code>/resume</code> detecta o pipeline ativo e pergunta:</p>
+    <ul>
+      <li><strong>Continuar (leve)</strong> — reaproveita o estado, segue de onde parou</li>
+      <li><strong>Reanalisar (completo)</strong> — refaz scan e contexto antes de seguir</li>
+    </ul>
+    <p style="color:var(--ink-soft)">Se uma chamada de agente falhou nos últimos dez minutos, ele tenta sozinho de novo.</p>
+  </div>
+</section>
+
+<!-- 7 QA -->
+<section id="qa">
+  <div class="wrap">
+    <div class="section-head">
+      <div>
+        <div class="section-num">07 · Fechamento</div>
+        <h2>QA &amp; <code>/complete</code> — a <em>vistoria</em></h2>
+      </div>
+      <span class="tag">Capítulo sete</span>
+    </div>
+
+    <p class="lede reveal">Antes do prato sair pro pass, o chef prova. Antes do pipeline fechar, os Acceptance Criteria são executados. Falhou? Não fecha.</p>
+
+    <pre class="reveal"><code>/qa                              # spec ativa mais recente
+/qa --spec linked-services       # spec específica
+/complete                        # fecha tudo</code></pre>
+
+    <h3 style="margin-top:36px;font-size:22px">Checklist obrigatório</h3>
+    <ol class="steps reveal">
+      <li><strong>Review aprovado</strong> — alguém (ou skill code-review) deu o ok</li>
+      <li><strong>Build verde</strong> — compilou e passou type-check</li>
+      <li><strong>Mudanças batem com a spec</strong> — sem escopo expandido sem aviso</li>
+      <li><strong>Zero issues críticas</strong> — bloqueadores resolvidos</li>
+      <li><strong>Sem regressões</strong> — testes existentes ainda passam</li>
+    </ol>
+
+    <div class="note warn">
+      <span class="label">Bloqueio comum</span>
+      <p>Tentar <code>/complete</code> sem QA passar. O hook <em>close-gate</em> trava — rode <code>/qa</code> antes.</p>
+    </div>
+  </div>
+</section>
+
+<!-- 8 TASK -->
+<section class="alt" id="task">
+  <div class="wrap">
+    <div class="section-head">
+      <div>
+        <div class="section-num">08 · Atalhos</div>
+        <h2><code>/task</code> — o <em>cardápio rápido</em></h2>
+      </div>
+      <span class="tag">Capítulo oito</span>
+    </div>
+
+    <p class="lede reveal">Nem tudo merece pipeline completo. Para análise, refactor cirúrgico, docs ou auditoria, use <code>/task</code> — pratos do dia delegados.</p>
+
+    <div class="reveal" style="margin-top:30px">
+      <div class="task-row">
+        <code>analyze</code>
+        <span class="level">★ leve</span>
+        <p>Exploração rápida com Explore agent. Use para mapear área desconhecida.</p>
+      </div>
+      <div class="task-row">
+        <code>audit</code>
+        <span class="level">★★ médio</span>
+        <p>Checklist de qualidade — a11y, copy, design, i18n.</p>
+      </div>
+      <div class="task-row">
+        <code>review</code>
+        <span class="level">★★★ premium</span>
+        <p>Code quality completo — SOLID, security, performance.</p>
+      </div>
+      <div class="task-row">
+        <code>refactor</code>
+        <span class="level">★★★ premium</span>
+        <p>Plan → você aprova → implementação cirúrgica.</p>
+      </div>
+      <div class="task-row">
+        <code>docs</code>
+        <span class="level">★★ médio</span>
+        <p>Geração de documentação a partir de código.</p>
+      </div>
+      <div class="task-row">
+        <code>implement</code>
+        <span class="level">★★ médio</span>
+        <p>Mudança cirúrgica em arquivo específico, com build inline.</p>
+      </div>
+      <div class="task-row">
+        <code>compare</code>
+        <span class="level">★ leve</span>
+        <p>Cruza implementações entre subprojetos do monorepo.</p>
+      </div>
+    </div>
+
+    <div class="note warn">
+      <span class="label">Não confunda</span>
+      <p>Mudou schema + API + UI? É <code>/feature</code>. Renomear um campo num arquivo? <code>/task implement</code>.</p>
+    </div>
+  </div>
+</section>
+
+<!-- 9 GIT -->
+<section id="git">
+  <div class="wrap">
+    <div class="section-head">
+      <div>
+        <div class="section-num">09 · Versionamento</div>
+        <h2><code>/git</code> — o <em>cinto de segurança</em></h2>
+      </div>
+      <span class="tag">Capítulo nove</span>
+    </div>
+
+    <p class="lede reveal">Opera com base no <code>mustard.json</code>. Recusa operações perigosas, mantém histórico linear, ignora arquivos efêmeros.</p>
+
+    <table class="reveal">
+      <tr><th>Comando</th><th>Efeito</th></tr>
+      <tr><td><code>/git sync</code></td><td>Pull rebase do branch pai na atual</td></tr>
+      <tr><td><code>/git commit</code></td><td>Commit (sem push)</td></tr>
+      <tr><td><code>/git push</code></td><td>sync + commit + push</td></tr>
+      <tr><td><code>/git merge</code></td><td>Promove branch atual ao pai (ff-only)</td></tr>
+      <tr><td><code>/git merge main</code></td><td>Cascade completo: branch → dev → main → branch</td></tr>
+    </table>
+
+    <div class="analogy reveal">Você não vê o cinto trabalhando — mas se freia forte, ele segura. <code>/git</code> recusa commit em <code>main</code>, ignora <code>.agent-state/</code>, bloqueia force-push. Os erros que ele impede são o valor.</div>
+
+    <div class="note">
+      <span class="label">Fluxo recomendado</span>
+      <p>Trabalhe em <code>dev_&lt;seu-nome&gt;</code>. Quando pronto, <code>/git merge main</code> propaga tudo de uma vez.</p>
+    </div>
+  </div>
+</section>
+
+<!-- 10 KNOWLEDGE -->
+<section class="alt" id="knowledge">
+  <div class="wrap">
+    <div class="section-head">
+      <div>
+        <div class="section-num">10 · Memória</div>
+        <h2>Knowledge &amp; <em>Skills</em></h2>
+      </div>
+      <span class="tag">Capítulo dez</span>
+    </div>
+
+    <p class="lede reveal">Cada pipeline aprende algo: uma convenção de nome, um padrão recorrente, uma entidade nova. Esse aprendizado vira receituário do projeto.</p>
+
+    <h3 style="margin-top:24px;font-size:22px"><code>/knowledge</code> — o caderno</h3>
+    <pre class="reveal"><code>/knowledge list                    # tudo agrupado por tipo
+/knowledge search billing          # buscar por termo
+/knowledge audit                   # achar duplicatas
+/knowledge report weekly           # progresso da semana
+/knowledge evolve                  # sugestões baseadas em clusters
+/knowledge export                  # JSON datado
+/knowledge import &lt;file&gt;           # importa de export</code></pre>
+
+    <h3 style="margin-top:30px;font-size:22px"><code>/skill</code> — habilidades plugáveis</h3>
+    <pre class="reveal"><code>/skill list
+/skill install github:anthropics/skills/skills/pdf
+/skill create our-graphql-pattern
+/skill optimize our-graphql-pattern
+/skill eval our-graphql-pattern</code></pre>
+
+    <div class="note">
+      <span class="label">Skills bundled de fábrica</span>
+      <p>design-craft · react-best-practices · senior-architect · skill-creator · commit-workflow · pipeline-execution</p>
+    </div>
+  </div>
+</section>
+
+<!-- 11 STATS -->
+<section id="stats">
+  <div class="wrap">
+    <div class="section-head">
+      <div>
+        <div class="section-num">11 · Observabilidade</div>
+        <h2>Métricas — <em>tá dando certo?</em></h2>
+      </div>
+      <span class="tag">Capítulo onze</span>
+    </div>
+
+    <p class="lede reveal">Dashboard com Pass@1, retries, top tools, economia do RTK. Você vê em trinta segundos se está melhorando ou piorando.</p>
+
+    <div class="numbers reveal" id="numbers">
+      <div><b data-count="17">0</b><small>Slash-commands</small></div>
+      <div><b data-count="23">0</b><small>Hooks ativos</small></div>
+      <div><b data-count="6">0</b><small>Skills bundled</small></div>
+      <div><b data-count="15">0</b><small>Scripts utilitários</small></div>
+    </div>
+
+    <pre class="reveal"><code>/stats                                    # dashboard completo
+/metrics                                  # foco em hooks
+/metrics --since 2026-04-09               # recente
+/metrics --event budget-check             # filtra evento
+/metrics --compare v3.1.21 v3.1.22        # delta entre releases</code></pre>
+
+    <div class="note">
+      <span class="label">Cadência</span>
+      <p><code>/stats</code> uma vez por semana. <code>/metrics --compare</code> antes de cada release. Logs em <code>.claude/.metrics/</code> rotacionam a 10 MB.</p>
+    </div>
+  </div>
+</section>
+
+<!-- 12 HOOKS -->
+<section class="alt" id="hooks">
+  <div class="wrap">
+    <div class="section-head">
+      <div>
+        <div class="section-num">12 · Enforcement</div>
+        <h2>Hooks — <em>guarda-corpos invisíveis</em></h2>
+      </div>
+      <span class="tag">Capítulo doze</span>
+    </div>
+
+    <p class="lede reveal">Vinte e três hooks atuam silenciosamente. A maioria avisa, alguns bloqueiam. Airbag e ABS — você não os vê, mas estão ali.</p>
+
+    <table class="reveal">
+      <tr><th>Hook</th><th>O que faz</th><th>Como contornar</th></tr>
+      <tr><td><code>bash-native-redirect</code></td><td>Bloqueia grep/cat/ls/find no Bash</td><td>Use Grep/Glob/Read nativos</td></tr>
+      <tr><td><code>tool-use-counter</code></td><td>Limita Explore agent a 15–20 buscas</td><td>Reformule o prompt do agente</td></tr>
+      <tr><td><code>enforce-registry</code></td><td>Exige <code>/scan</code> antes</td><td>Rode <code>/scan</code></td></tr>
+      <tr><td><code>close-gate</code></td><td>Bloqueia <code>/complete</code> sem QA</td><td>Rode <code>/qa</code> antes</td></tr>
+      <tr><td><code>spec-size-gate</code></td><td>Avisa quando spec fica enorme</td><td>Quebre em pipelines menores</td></tr>
+      <tr><td><code>model-routing-gate</code></td><td>Modelo errado para a tarefa</td><td>Haiku=Explore · Sonnet=bug · Opus=feature</td></tr>
+    </table>
+
+    <h3 style="margin-top:36px;font-size:22px">Modos: <em>off · warn · strict</em></h3>
+    <p>Hooks heurísticos (que adivinham) ficam em <code>warn</code>. Só sensores reais (build, QA) bloqueiam. Filosofia do projeto: fricção sem ganho é perda.</p>
+  </div>
+</section>
+
+<!-- 13 RTK -->
+<section class="dark" id="rtk">
+  <div class="wrap">
+    <div class="section-head">
+      <div>
+        <div class="section-num">13 · Custo</div>
+        <h2>RTK — <em>token economy</em></h2>
+      </div>
+      <span class="tag">Capítulo treze</span>
+    </div>
+
+    <p class="lede reveal">Filtro de saída pra comandos shell. Reduz outputs verbosos em até 99% mantendo o que importa. Prefixe TODO comando com <code>rtk</code>.</p>
+
+    <pre class="reveal"><code>rtk git add . && rtk git commit -m "msg" && rtk git push
+rtk npm run build
+rtk vitest run
+rtk gh pr view 123</code></pre>
+
+    <h3 style="margin-top:40px;font-size:22px;color:var(--cream)">Economia média por categoria</h3>
+
+    <div class="chart reveal" id="rtk-chart">
+      <div class="bar-row">
+        <div class="bar-label">Tests</div>
+        <div class="bar-track"><div class="bar-fill" data-w="95"></div></div>
+        <div class="bar-pct">95%</div>
+      </div>
+      <div class="bar-row">
+        <div class="bar-label">Build</div>
+        <div class="bar-track"><div class="bar-fill" data-w="85"></div></div>
+        <div class="bar-pct">85%</div>
+      </div>
+      <div class="bar-row">
+        <div class="bar-label">Pacotes</div>
+        <div class="bar-track"><div class="bar-fill" data-w="80"></div></div>
+        <div class="bar-pct">80%</div>
+      </div>
+      <div class="bar-row">
+        <div class="bar-label">Git</div>
+        <div class="bar-track"><div class="bar-fill" data-w="70"></div></div>
+        <div class="bar-pct">70%</div>
+      </div>
+      <div class="bar-row">
+        <div class="bar-label">GitHub CLI</div>
+        <div class="bar-track"><div class="bar-fill" data-w="65"></div></div>
+        <div class="bar-pct">65%</div>
+      </div>
+    </div>
+
+    <div class="note" style="border-color:var(--mustard);margin-top:30px">
+      <span class="label" style="color:var(--mustard)">Sem risco</span>
+      <p style="color:rgba(251,247,238,.85)">Comandos sem filtro dedicado passam normalmente. <code>rtk</code> é sempre seguro. Veja suas estatísticas: <code>rtk gain</code>.</p>
+    </div>
+  </div>
+</section>
+
+<!-- 14 WORKSHOP -->
+<section id="workshop">
+  <div class="wrap">
+    <div class="section-head">
+      <div>
+        <div class="section-num">14 · Receita completa</div>
+        <h2>Workshop — <em>do zero ao merge</em></h2>
+      </div>
+      <span class="tag">Capítulo catorze</span>
+    </div>
+
+    <p class="lede reveal">Cenário: adicionar campo <code>phone</code> à entidade <code>User</code> num projeto Next.js. Pipeline Light, cerca de dez minutos.</p>
+
+    <ol class="steps reveal">
+      <li><strong>/scan</strong> — bootstrap inicial (só na primeira vez)</li>
+      <li><strong>/status</strong> — confirma branch, build, registry</li>
+      <li><strong>/feature add-phone-to-user</strong> — Mustard detecta Light scope automaticamente</li>
+      <li><strong>Aguarde EXECUTE</strong> — sem PLAN porque é Light</li>
+      <li><strong>/qa</strong> — roda build, type-check e testes (3 AC)</li>
+      <li><strong>/complete</strong> — fecha o pipeline, arquiva spec em <code>completed/</code></li>
+      <li><strong>/git push</strong> — sincroniza, commita e empurra</li>
+      <li><strong>/review</strong> — revisão automática do PR</li>
+      <li><strong>/git merge main</strong> — cascade até produção</li>
+      <li><strong>/stats</strong> — veja Pass@1 e quanto economizou em tokens</li>
+    </ol>
+  </div>
+</section>
+
+<!-- 15 ARMADILHAS -->
+<section class="alt" id="armadilhas">
+  <div class="wrap">
+    <div class="section-head">
+      <div>
+        <div class="section-num">15 · O que evitar</div>
+        <h2>Top 10 <em>armadilhas</em></h2>
+      </div>
+      <span class="tag">Capítulo quinze</span>
+    </div>
+
+    <p class="lede reveal">Erros que aparecem nos primeiros dias. Memorize esta lista — é a curva de aprendizado de quem usa Mustard há semanas, condensada.</p>
+
+    <ol class="traps reveal">
+      <li><strong>Pular o /scan inicial</strong>Registry vazio bloqueia tudo — bootstrap é obrigatório.</li>
+      <li><strong>Trabalhar direto em main</strong>O <code>/git</code> recusa. Crie <code>dev_&lt;seu-nome&gt;</code> sempre.</li>
+      <li><strong>Tentar /complete sem QA</strong>O hook <em>close-gate</em> bloqueia. Rode <code>/qa</code> antes.</li>
+      <li><strong>Forçar modelo barato em feature</strong>Qualidade despenca, retries explodem. Não economize aqui.</li>
+      <li><strong>Editar pipeline-states manualmente</strong>Corrompe estado. Use <code>/resume</code> sempre.</li>
+      <li><strong>Commit em arquivos efêmeros</strong>.metrics/, .agent-state/ são runtime — nunca vão pro repo.</li>
+      <li><strong>Specs gigantes</strong>O <em>spec-size-gate</em> avisa. Quebre em features menores.</li>
+      <li><strong>POSIX em AC no Windows</strong>Use <code>node -e</code> ou <code>bash -c</code>. Evite <code>[ ]</code>, <code>$()</code>, <code>for</code>.</li>
+      <li><strong>Confundir knowledge com auto-memory</strong>Um é projeto, outro é por usuário — camadas distintas.</li>
+      <li><strong>/feature para refactor puro</strong>Desperdício de pipeline. Use <code>/task refactor</code>.</li>
+    </ol>
+  </div>
+</section>
+
+<!-- 16 CHEAT -->
+<section id="cheat">
+  <div class="wrap">
+    <div class="section-head">
+      <div>
+        <div class="section-num">16 · Imprima e cole</div>
+        <h2>Cheat <em>sheet</em></h2>
+      </div>
+      <span class="tag">Capítulo dezesseis</span>
+    </div>
+
+    <pre class="reveal"><code>SETUP
+  mustard init / update / auto-update
+  /scan [sub] [--force]
+
+PIPELINES
+  /feature &lt;nome&gt;
+  /bugfix &lt;descrição&gt;
+  /approve [--resume]
+  /resume
+  /qa [--spec &lt;nome&gt;]
+  /complete
+
+TAREFAS DELEGADAS
+  /task {analyze|audit|review|refactor|docs|implement|compare} &lt;escopo&gt;
+
+GIT
+  /git {sync|commit|push|merge|merge main}
+
+KNOWLEDGE &amp; SKILLS
+  /knowledge {list|search|add|audit|report|evolve|export|import}
+  /skill   {install|create|list|remove|optimize|eval|update}
+
+OBSERVABILIDADE
+  /status
+  /stats
+  /metrics [--since|--event|--compare]
+
+MANUTENÇÃO
+  /maint {deps|validate|sync}
+  /review [pr|url]
+
+TOKEN ECONOMY
+  rtk &lt;qualquer comando shell&gt;
+  rtk gain</code></pre>
+  </div>
+</section>
+
+<footer>
+  <div class="mark">Mustard · the perfect sauce for your Claude Code</div>
+  <small>Curso completo · Edição 2026</small>
+</footer>
+
+<script>
+const io=new IntersectionObserver((es)=>{
+  es.forEach(e=>{if(e.isIntersecting){e.target.classList.add('in');io.unobserve(e.target)}})
+},{threshold:.12});
+document.querySelectorAll('.reveal').forEach(el=>io.observe(el));
+
+const chart=document.getElementById('rtk-chart');
+if(chart){
+  const ob=new IntersectionObserver((es)=>{
+    es.forEach(e=>{
+      if(e.isIntersecting){
+        chart.querySelectorAll('.bar-fill').forEach((b,i)=>{
+          setTimeout(()=>b.style.width=b.dataset.w+'%',150+i*100);
+        });
+        ob.disconnect();
+      }
+    });
+  },{threshold:.3});
+  ob.observe(chart);
+}
+
+const nums=document.getElementById('numbers');
+if(nums){
+  const ob2=new IntersectionObserver((es)=>{
+    es.forEach(e=>{
+      if(e.isIntersecting){
+        nums.querySelectorAll('b').forEach(b=>{
+          const target=+b.dataset.count;let cur=0;const step=Math.max(1,Math.ceil(target/30));
+          const t=setInterval(()=>{cur+=step;if(cur>=target){cur=target;clearInterval(t)}b.textContent=cur},35);
+        });
+        ob2.disconnect();
+      }
+    });
+  },{threshold:.4});
+  ob2.observe(nums);
+}
+</script>
+</body>
+</html>

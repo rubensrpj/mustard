@@ -44,7 +44,7 @@ function buildRegistry({ scanResults, sourceHash }) {
     // Patterns per stack
     if (result.patterns && Object.keys(result.patterns).length > 0) {
       // Preserve existing stack patterns; inject discovered clusters into _discovered key
-      const { _discovered, _folderFrequency, ...otherPatterns } = result.patterns;
+      const { _discovered, _folderFrequency, _conventions, ...otherPatterns } = result.patterns;
       if (Object.keys(otherPatterns).length > 0) {
         registry._patterns[stackId] = otherPatterns;
       }
@@ -57,6 +57,12 @@ function buildRegistry({ scanResults, sourceHash }) {
       if (_folderFrequency && _folderFrequency.totalFolders > 0) {
         if (!registry._patterns[stackId]) registry._patterns[stackId] = {};
         registry._patterns[stackId].folderFrequency = _folderFrequency;
+      }
+      // Project conventions (naming, future: indent/lineLength). Injected per-stack
+      // so a multi-stack monorepo can carry distinct conventions per language.
+      if (_conventions && _conventions.naming && _conventions.naming.total > 0) {
+        if (!registry._patterns[stackId]) registry._patterns[stackId] = {};
+        registry._patterns[stackId].conventions = _conventions;
       }
     }
 

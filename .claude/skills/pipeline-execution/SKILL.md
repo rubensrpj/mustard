@@ -1,9 +1,9 @@
 ---
 name: pipeline-execution
-description: Pipeline phases, dispatch rules, wave system, validate, retry. Load for /feature /resume /approve.
+description: Pipeline phases, dispatch rules, wave system, validate, retry. Use when running /feature, /resume, /approve or any pipeline phase requiring dispatch/wave context.
 disable-model-invocation: true
+source: manual
 ---
-<!-- mustard:generated -->
 
 # Pipeline Execution Detail
 
@@ -17,24 +17,25 @@ disable-model-invocation: true
 2. Read `entity-registry.json` → entity found? → infer layers. Not found? → all layers.
 3. Extract `_patterns`, `e.{Entity}`, `_enums`.
 
-| Signal | Layers |
-|--------|--------|
-| New field/column/relation | DB (+ Backend/FE if visible) |
-| New endpoint, business logic | Backend (+ FE if visible) |
-| New screen/component | Frontend (+ Backend if new endpoint) |
-| New CRUD / sub-entity | DB + Backend + Frontend |
-| Refactoring, bug fix | Root cause layer(s) |
+| Signal                       | Layers                               |
+| ---------------------------- | ------------------------------------ |
+| New field/column/relation    | DB (+ Backend/FE if visible)         |
+| New endpoint, business logic | Backend (+ FE if visible)            |
+| New screen/component         | Frontend (+ Backend if new endpoint) |
+| New CRUD / sub-entity        | DB + Backend + Frontend              |
+| Refactoring, bug fix         | Root cause layer(s)                  |
 
 When in doubt → `AskUserQuestion`: "Which layers?"
 
 **Scope Detection:**
 
-| Signal | → Scope |
-|--------|---------|
+| Signal                                             | → Scope   |
+| -------------------------------------------------- | --------- |
 | 1-2 layers, ≤5 files, known pattern, no new entity | **Light** |
-| 3+ layers, 5+ files, new entity/CRUD, new pattern | **Full** |
+| 3+ layers, 5+ files, new entity/CRUD, new pattern  | **Full**  |
 
 **Explore (conditional):**
+
 - Entity in registry → SKIP Explore, read 2-3 reference files directly
 - Entity NOT in registry → Explore agent ("medium"), then straight to PLAN
 - **MAX 5 file reads in ANALYZE** (registry/pipeline-config are free)
@@ -42,6 +43,7 @@ When in doubt → `AskUserQuestion`: "Which layers?"
 ### PLAN Phase (collapses old SPEC)
 
 Create `.claude/spec/active/{date}-{name}/spec.md`:
+
 - **Full scope:** Summary, Entity Info, Files, Tasks (by wave), Dependencies. Header: `Scope: full`.
 - **Light scope:** Summary (1-2 lines), Checklist (tasks by agent, no waves). Header: `Scope: light`.
 
@@ -60,6 +62,7 @@ Agents auto-load relevant skills from `{subproject}/.claude/skills/` based on ta
 Orchestrator may hint specific skills via `{recommended_skills}` in the agent prompt.
 
 **3. Plan Waves:**
+
 - **Wave 1:** 🟡 Database + 🔵 Backend + 🟣 Libs — independent, dispatched together
 - **Wave 2:** 🟢 Frontend + 🟠 Mobile — starts ONLY after ALL Wave 1 complete
 - ALL agents in same wave → SINGLE message (multiple `<invoke>` blocks)
@@ -68,17 +71,19 @@ Orchestrator may hint specific skills via `{recommended_skills}` in the agent pr
 **4. Dispatch Agent:**
 
 IF `.claude/agents/{subproject}-impl.md` exists:
-  Use `subagent_type: "{subproject}-impl"`. Compact prompt (~30-40 lines):
-  - REFERENCE: pattern file §sections + reference module
-  - ENTITY: registry info
-  - SKILLS: recommended skills for this task
-  - EFFICIENCY: absolute paths, max 3 builds, chain commands
-  - TASK: checkboxed steps
+Use `subagent_type: "{subproject}-impl"`. Compact prompt (~30-40 lines):
+
+- REFERENCE: pattern file §sections + reference module
+- ENTITY: registry info
+- SKILLS: recommended skills for this task
+- EFFICIENCY: absolute paths, max 3 builds, chain commands
+- TASK: checkboxed steps
 
 ELSE (fallback):
-  Use `subagent_type: "general-purpose"` with full template (~80 lines).
+Use `subagent_type: "general-purpose"` with full template (~80 lines).
 
 **5. Validate:**
+
 - Build passes (backend: `dotnet build`, frontend: `pnpm build`, mobile: `fvm flutter analyze`)
 - Zero critical guard violations
 - All spec `[ ]` → `[x]`
@@ -86,6 +91,7 @@ ELSE (fallback):
 
 **6. Review (MANDATORY — NEVER skip):**
 Dispatch review agent for EACH affected subproject. The review agent reads `{subproject}/CLAUDE.md` + `{subproject}/.claude/commands/guards.md` and runs the full 7-category checklist:
+
 1. **SOLID** — SRP, OCP, LSP, ISP, DIP
 2. **Design System** — tokens, typography, spacing, components, icons, theme
 3. **Patterns** — project conventions from guards.md
@@ -116,10 +122,13 @@ Steps: update spec → summarize failure → Explore → rewrite tasks → re-ap
 ## Pipeline Bugfix
 
 ### Fast Path (1-2 files, clear cause)
+
 ANALYZE → FIX → VALIDATE → CLOSE. No spec needed.
 
 ### Full Path (3+ files, unclear impact)
+
 ANALYZE → PLAN → APPROVE → FIX → VALIDATE → CLOSE.
 
 ### Decision
+
 Explore returns clear root cause in 1-2 files → Fast Path. Otherwise → Full Path.

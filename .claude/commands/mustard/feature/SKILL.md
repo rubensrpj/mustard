@@ -86,6 +86,22 @@ If output `ok: false`, append each `issues[]` entry to the spec under `## Concer
 
 ### PLAN Phase
 
+#### Spec Language Resolution
+
+Before writing spec.md, resolve language in cascade (stop at first hit):
+
+1. **Spec header**: existing `### Lang: pt` or `### Lang: en` in spec.md → use it.
+2. **Project preference**: field `specLang: "pt" | "en"` in `.claude/mustard.json` → use it.
+3. **Otherwise**: `AskUserQuestion` ÚNICA — `"Spec language: pt | en?"`. Persist the answer to `.claude/mustard.json#specLang` so future runs skip this step.
+
+Write the resolved value as `### Lang: pt|en` in the spec header (line after `### Checkpoint`).
+
+**HARD RULE — Headers consistency:** when `Lang: pt`, **ALL** `## ` body headings MUST be in PT — translate every default. Examples: `## Boundaries → ## Limites`, `## Root cause → ## Causa raiz`, `## Plan → ## Plano`, `## Concerns → ## Preocupações`, `## Acceptance Criteria → ## Critérios de Aceitação`, `## Non-Goals → ## Não-Objetivos`. Do **NOT** mix EN headers with PT body. When `Lang: en`, keep all headers EN.
+
+**Exceptions (always EN):** status values (`draft | implementing | completed`), phase values (`PLAN | EXECUTE | QA | CLOSE`), scope values (`light | extended-light | full`), shell commands, filenames, AC `Command:` field, the `### Lang:` line itself.
+
+→ See `../../../refs/feature/spec-language.md` for full Header Translation Table.
+
 #### Wave Decomposition Pre-Check (Full scope only)
 
 Check whether the work should be decomposed into waves before writing a single spec. Signals: fileCount, layerCount, newEntityCount, knowledgeMatches. Runs `scope-decompose.js` + `wave-dependency.js`. Produces wave-plan.md + per-wave spec.md if decompose=true.
@@ -95,6 +111,7 @@ Check whether the work should be decomposed into waves before writing a single s
 #### Full Scope
 
 1. Create `.claude/spec/active/{date}-{name}/spec.md` with:
+   - Context section: heading is **exactly** `## Contexto` (Lang=pt) or `## Context` (Lang=en) — never substitute with synonyms (Sintoma, Symptom, Description, Background). Body is **narrative prose, 4-8 lines**: how the system should work + what changed + how the gap violates expectation + observable impact on user/business. NO tables, NO line numbers, NO method names, NO bullets. **MUST follow** `../../../refs/feature/spec-language.md § Contexto Narrative Rules` (good/bad examples there).
    - Summary, Entity Info, Files, Tasks, Dependencies
    - Tasks organized by `### {Agent} Agent (Wave {N})`
    - 3-8 checkboxed steps per agent, decomposed by operation type (NOT by file)
@@ -107,7 +124,7 @@ Check whether the work should be decomposed into waves before writing a single s
 
 #### Light Scope
 
-1. Create `.claude/spec/active/{date}-{name}/spec.md` with compact format — headers: `# Enhancement: {name}`, `### Status: draft | Phase: PLAN | Scope: light`, `### Checkpoint: {ISO}`, `## Summary` (1-2 lines), `## Checklist` → `### {Agent} Agent` (steps + build/type-check), `## Files (~{N})` (paths), `## Acceptance Criteria` (1-3 items, `- [ ] AC-1: {description} — Command: \`{exact command}\``). At least AC-1 must verify the feature works.
+1. Create `.claude/spec/active/{date}-{name}/spec.md` with compact format — headers: `# Enhancement: {name}`, `### Status: draft | Phase: PLAN | Scope: light`, `### Checkpoint: {ISO}`, `### Lang: {pt|en}`, then `## Contexto` (Lang=pt) or `## Context` (Lang=en) — heading EXACT, body **narrative prose 3-6 lines** (how the system should work + what's the gap + user/business impact; NO line numbers/method names/tables — see `../../../refs/feature/spec-language.md § Contexto Narrative Rules`), then `## Summary` (1-2 lines, technical synthesis), `## Checklist` → `### {Agent} Agent` (steps + build/type-check), `## Files (~{N})` (paths), `## Acceptance Criteria` (1-3 items, `- [ ] AC-1: {description} — Command: \`{exact command}\``). At least AC-1 must verify the feature works.
 2. Create `.claude/.pipeline-states/{spec-name}.json`: `specName`, `status: "active"`, `phase: 2`, `scope: "light"`
 3. **Present full spec to user:** Print ENTIRE contents verbatim in fenced markdown block. Then `AskUserQuestion`: **"Approve and implement now"** / **"Approve for later"** / **"Adjust"**.
 
@@ -130,7 +147,7 @@ When user chooses "Approve and implement now":
 3. Read `.claude/pipeline-config.md` for agent config. Grep `entity-registry.json` for specific entity block only
 4. Match recipes by title via Grep on `{subproject}/.claude/commands/recipes.md` — do NOT read full file
 4b. **Structured Recipe (if available):** Run `node .claude/scripts/recipe-match.js --entity {entity} --operation {operation} --subproject {subproject_path}`. If non-empty JSON, inject into agent prompt as `{recipe_context}`. Gives agent a 90%-complete skeleton.
-5. Identify relevant skills for `{recommended_skills}`: list skill names most relevant to the task
+5. Identify relevant skills for `{recommended_skills}`: **prepend `karpathy-guidelines`** for code-editing agents (impl/backend/frontend/database/bugfix); skip karpathy for Explore and Review. Then list task-relevant skill names. See `templates/commands/mustard/templates/agent-prompt/SKILL.md § How to fill {recommended_skills}`.
 6. Dispatch agents (wave rules: DB+Backend parallel, Frontend after Backend UNLESS `(parallel-safe)`)
 7. Wave transitions between waves (from `.claude/pipeline-config.md`)
 8. On return: validate (build/type-check), update spec `[ ]` → `[x]` (line-by-line edits, NEVER copy entire spec blocks)

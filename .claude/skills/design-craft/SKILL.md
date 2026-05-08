@@ -1,6 +1,7 @@
 ---
 name: design-craft
 description: "Unified design skill for ALL UI work: interfaces, dashboards, landing pages, marketing, components, posters. Domain exploration + intent-first methodology + craft principles + design system generation. Covers web, mobile, and desktop. Use when asked to build, design, or style any visual interface."
+source: manual
 ---
 
 # Design Craft

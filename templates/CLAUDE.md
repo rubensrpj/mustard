@@ -82,7 +82,7 @@ node scripts/skill-validate.js --json
 
 ## Recommended Skills
 
-**Directive:** Before first `Edit`/`Write` in code-alteration tasks (implement/refactor/fix/bugfix/review), agent MUST invoke `Skill(karpathy-guidelines)` once. Content stays cached for the rest of the agent's context.
+**Directive:** Before first `Edit`/`Write` in code-altering tasks (implement/refactor/bugfix), agent SHOULD invoke `Skill(karpathy-guidelines)` once. Skip for read-only/review/Explore work. Content stays cached for the rest of the agent's context.
 
 - `karpathy-guidelines` — 4 princípios anti-slop (carrega em toda alteração de código)
 - `templates-hook-protocol` — Hook stdin/stdout JSON protocol
@@ -94,6 +94,27 @@ node scripts/skill-validate.js --json
 ## Token Economy
 
 RTK (Rust Token Killer) integrates as core infrastructure via `hooks/rtk-rewrite.js` — transparently rewrites Bash commands through `rtk`, achieving 60-90% token reduction on CLI outputs. Run `rtk gain` for analytics. If RTK is not installed, the hook silently passes through. For cost optimization hooks (`MUSTARD_BASH_REDIRECT_MODE`, model routing gate, tool-use counter) and enforcement hooks (`duplication-check`, `convention-check`, shared memory architecture), see `pipeline-config.md`.
+
+### Cluster discovery tuning
+
+`scripts/registry/cluster-discovery.js` aceita env vars para ajustar limites de detecção (todos com floor numérico):
+
+- `MUSTARD_CLUSTER_MIN_FILES` (default 5, floor 2) — mínimo de arquivos por sufixo
+- `MUSTARD_CLUSTER_MIN_SUFFIX_LEN` (default 6, floor 2) — comprimento mínimo do sufixo
+- `MUSTARD_CLUSTER_MIN_BASE_INHERITORS` (default 3, floor 2) — herdeiros para base-class-cluster
+- `MUSTARD_CLUSTER_MAX` (default 30, floor 1) — clusters por subprojeto; excedentes logados em stderr
+- `MUSTARD_DECORATOR_MIN` (default 3, floor 2) — arquivos para decorator-cluster
+- `MUSTARD_FN_PREFIX_MIN` (default 5, floor 2) — funções para function-prefix-cluster
+- `MUSTARD_FN_PREFIX_MIN_LEN` (default 2, floor 2) — comprimento mínimo do prefixo
+- `MUSTARD_NAMING_DOMINANCE` (default 0.6, clamp [0.5, 0.95]) — share mínimo para "dominant" naming
+- `MUSTARD_CLUSTER_CACHE` (`off` desabilita) — cache em `<sub>/.claude/.cluster-cache.json`
+
+### Scan ignore list
+
+`collectFiles` (em `file-utils.js`) ignora pastas em ordem aditiva:
+- `DEFAULT_IGNORE` (node_modules, .git, dist, etc.)
+- env `MUSTARD_SCAN_IGNORE` — lista CSV (ex: `MUSTARD_SCAN_IGNORE=Pods,vendor,assets`)
+- entradas de pasta do `.gitignore` do subprojeto (extraídas via `parseGitignoreDirs` — conservativo: só nomes sem `/`, sem glob, sem `!`)
 
 ## Full Reference
 Rules, pipeline, naming: `pipeline-config.md`

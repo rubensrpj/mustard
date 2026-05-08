@@ -26,6 +26,7 @@ const { execSync } = require('child_process');
 const { loadScanner, listAvailableScanners } = require('./registry/scanner-loader');
 const { buildRegistry } = require('./registry/schema-builder');
 const { discoverClusters, computeFolderFrequency } = require('./registry/cluster-discovery');
+const { computeProjectConventions } = require('./registry/project-conventions');
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -58,7 +59,19 @@ function mergeResults(target, source) {
     }
   }
   if (source.patterns && Object.keys(source.patterns).length > 0) {
-    target.patterns = Object.assign({}, target.patterns, source.patterns);
+    if (!target.patterns) target.patterns = {};
+    // _discovered is per-subproject (each cluster is tagged with subprojectName);
+    // concatenate so the orchestrator can slice clusters per agent later.
+    if (Array.isArray(source.patterns._discovered)) {
+      target.patterns._discovered = [
+        ...(Array.isArray(target.patterns._discovered) ? target.patterns._discovered : []),
+        ...source.patterns._discovered,
+      ];
+    }
+    // Other pattern keys (folderFrequency, conventions, etc.): shallow-merge
+    // (last writer wins — they describe the stack, not the subproject).
+    const { _discovered: _, ...otherSourcePatterns } = source.patterns;
+    target.patterns = Object.assign({}, target.patterns, otherSourcePatterns);
   }
 }
 
@@ -139,7 +152,9 @@ function main() {
       const stackId = sub.stack || scanner.constructor.stackId || 'unknown';
 
       // Run generic cluster discovery (agnostic — discovers by structure, not by tech name)
-      const discovered = discoverClusters(subPath, stackId);
+      // Pass sub.name so each cluster carries its origin subproject (used by /scan
+      // orchestrator to slice clusters per agent prompt).
+      const discovered = discoverClusters(subPath, stackId, sub.name);
       if (discovered.length > 0) {
         if (!result.patterns) result.patterns = {};
         result.patterns._discovered = discovered;
@@ -153,6 +168,13 @@ function main() {
       if (folderFrequency.totalFolders > 0) {
         if (!result.patterns) result.patterns = {};
         result.patterns._folderFrequency = folderFrequency;
+      }
+
+      // Compute declarative project conventions (naming, etc.) from filesystem.
+      const conventions = computeProjectConventions(subPath, stackId);
+      if (conventions && conventions.naming && conventions.naming.total > 0) {
+        if (!result.patterns) result.patterns = {};
+        result.patterns._conventions = conventions;
       }
 
       // Merge if same stack appears in multiple subprojects
