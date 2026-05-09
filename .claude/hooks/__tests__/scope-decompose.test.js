@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Tests for scripts/scope-decompose.js.
- * Run with: node --test .claude/hooks/__tests__/scope-decompose.test.js
+ * Run with: node --test templates/hooks/__tests__/scope-decompose.test.js
  */
 
 const { describe, it } = require('node:test');

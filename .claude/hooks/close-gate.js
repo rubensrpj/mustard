@@ -13,8 +13,9 @@
  * Env:
  *   MUSTARD_CLOSE_GATE_MODE=strict (default) | warn | off
  *   MUSTARD_QA_GATE_MODE=strict (default) | warn | off
+ *   MUSTARD_CHECKLIST_GATE_MODE=strict (default) | warn | off
  *
- * @version 2.0.0
+ * @version 2.1.0
  */
 
 'use strict';
@@ -34,6 +35,46 @@ function getMode() {
 
 function getQAMode() {
   return (process.env.MUSTARD_QA_GATE_MODE || 'strict').toLowerCase();
+}
+
+function getChecklistMode() {
+  return (process.env.MUSTARD_CHECKLIST_GATE_MODE || 'strict').toLowerCase();
+}
+
+/**
+ * Read the active spec for {spec} and return unmarked checklist items.
+ * Returns { found: bool, unmarked: string[] }.
+ *   found=false  — spec or Checklist section not found (treat as skip)
+ *   found=true   — Checklist section located; unmarked is the list of trimmed item texts (may be empty)
+ */
+function findUnmarkedChecklistItems(cwd, spec) {
+  if (!spec) return { found: false, unmarked: [] };
+  const specPath = path.join(cwd, '.claude', 'spec', 'active', spec, 'spec.md');
+  if (!fs.existsSync(specPath)) return { found: false, unmarked: [] };
+
+  let raw;
+  try { raw = fs.readFileSync(specPath, 'utf8'); }
+  catch (_) { return { found: false, unmarked: [] }; }
+
+  const lines = raw.split('\n');
+  let startIdx = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (/^##\s+Checklist\b/.test(lines[i])) { startIdx = i + 1; break; }
+  }
+  if (startIdx === -1) return { found: false, unmarked: [] };
+
+  let endIdx = lines.length;
+  for (let i = startIdx; i < lines.length; i++) {
+    if (/^##\s/.test(lines[i])) { endIdx = i; break; }
+  }
+
+  const unmarked = [];
+  const re = /^\s*-\s+\[ \]\s+(.*)$/;
+  for (let i = startIdx; i < endIdx; i++) {
+    const m = lines[i].match(re);
+    if (m) unmarked.push(m[1].trim());
+  }
+  return { found: true, unmarked };
 }
 
 /** True if the file path looks like a pipeline-state file */
@@ -217,11 +258,39 @@ process.stdin.on('end', () => {
     }
 
     const cwd = data.cwd || process.cwd();
+    const specName = extractSpecFromContent(content);
+
+    // ── Checklist consistency gate ────────────────────────────────────────────
+    const checklistMode = getChecklistMode();
+    if (checklistMode !== 'off') {
+      const cl = findUnmarkedChecklistItems(cwd, specName);
+      if (cl.found && cl.unmarked.length > 0) {
+        const preview = cl.unmarked.slice(0, 5).map(t => `  - ${t}`).join('\n');
+        const more = cl.unmarked.length > 5 ? `\n  …and ${cl.unmarked.length - 5} more` : '';
+        const reason = `[Close Gate] Checklist has ${cl.unmarked.length} unmarked item(s) for spec "${specName}". Mark each via \`node .claude/scripts/mark-checklist-item.js --spec ${specName} --item "<text>"\` as it completes.\n${preview}${more}`;
+
+        if (checklistMode === 'warn') {
+          process.stderr.write(`[close-gate] WARN: ${reason}\n`);
+          // fall through
+        } else {
+          try {
+            emit('close-gate.check', { result: 'deny-checklist-unmarked', mode, checklistMode, spec: specName, unmarkedCount: cl.unmarked.length }, { cwd, hookInput: data });
+          } catch (_) {}
+          process.stdout.write(JSON.stringify({
+            hookSpecificOutput: {
+              hookEventName: 'PreToolUse',
+              permissionDecision: 'deny',
+              permissionDecisionReason: reason,
+            },
+          }) + '\n');
+          process.exit(0);
+        }
+      }
+    }
 
     // ── Wave 10: QA gate check ────────────────────────────────────────────────
     const qaMode = getQAMode();
     if (qaMode !== 'off') {
-      const specName = extractSpecFromContent(content);
       const qaResult = findLastQAResult(cwd, specName);
 
       if (!qaResult.found) {

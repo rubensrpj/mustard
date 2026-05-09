@@ -1702,124 +1702,6 @@ describe("subagent-tracker.js explorer dedup", () => {
   });
 });
 
-// ─── debug-loop-guard.js ─────────────────────────────────────────────────────
-
-describe("debug-loop-guard.js", () => {
-  const hook = "debug-loop-guard.js";
-
-  function makeStateDir(tmpDir) {
-    const stateDir = path.join(tmpDir, ".claude", ".agent-state");
-    fs.mkdirSync(stateDir, { recursive: true });
-    return stateDir;
-  }
-
-  function editEvent(tmpDir, filePath) {
-    return runHook(hook, {
-      hook_event_name: "PostToolUse",
-      tool_name: "Edit",
-      tool_input: { file_path: filePath },
-      tool_response: {},
-      cwd: tmpDir,
-    }, { cwd: tmpDir, projectDir: tmpDir });
-  }
-
-  function bashEvent(tmpDir, command, exitCode) {
-    return runHook(hook, {
-      hook_event_name: "PostToolUse",
-      tool_name: "Bash",
-      tool_input: { command },
-      tool_response: { exit_code: exitCode },
-      cwd: tmpDir,
-    }, { cwd: tmpDir, projectDir: tmpDir });
-  }
-
-  it("should warn after 5 consecutive edits to the same file", async () => {
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "dlg-edit-warn-"));
-    makeStateDir(tmpDir);
-    const file = path.join(tmpDir, "src", "foo.ts");
-    try {
-      let result;
-      for (let i = 0; i < 5; i++) {
-        result = await editEvent(tmpDir, file);
-      }
-      assert.equal(result.code, 0);
-      const ctx = result.parsed?.hookSpecificOutput?.additionalContext || "";
-      assert.ok(ctx.includes("[Debug Loop Guard]"), "Should include Debug Loop Guard header");
-      assert.ok(ctx.includes("foo.ts"), "Warning should name the file");
-      assert.ok(ctx.includes("Task(Plan)"), "Should recommend Task(Plan)");
-    } finally {
-      fs.rmSync(tmpDir, { recursive: true, force: true });
-    }
-  });
-
-  it("should NOT warn when edits alternate between two different files", async () => {
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "dlg-edit-alt-"));
-    makeStateDir(tmpDir);
-    const fileA = path.join(tmpDir, "src", "a.ts");
-    const fileB = path.join(tmpDir, "src", "b.ts");
-    try {
-      let result;
-      for (let i = 0; i < 6; i++) {
-        result = await editEvent(tmpDir, i % 2 === 0 ? fileA : fileB);
-      }
-      assert.equal(result.code, 0);
-      const ctx = result.parsed?.hookSpecificOutput?.additionalContext || "";
-      assert.ok(!ctx.includes("[Debug Loop Guard]"), "Should NOT warn when files alternate");
-    } finally {
-      fs.rmSync(tmpDir, { recursive: true, force: true });
-    }
-  });
-
-  it("should warn after 3 consecutive Bash failures on npm test", async () => {
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "dlg-bash-fail-"));
-    makeStateDir(tmpDir);
-    try {
-      let result;
-      for (let i = 0; i < 3; i++) {
-        result = await bashEvent(tmpDir, "npm test", 1);
-      }
-      assert.equal(result.code, 0);
-      const ctx = result.parsed?.hookSpecificOutput?.additionalContext || "";
-      assert.ok(ctx.includes("[Debug Loop Guard]"), "Should include Debug Loop Guard header");
-      assert.ok(ctx.includes("Task(Plan)"), "Should recommend Task(Plan)");
-    } finally {
-      fs.rmSync(tmpDir, { recursive: true, force: true });
-    }
-  });
-
-  it("should NOT warn on Bash success (exit_code 0)", async () => {
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "dlg-bash-ok-"));
-    makeStateDir(tmpDir);
-    try {
-      let result;
-      for (let i = 0; i < 5; i++) {
-        result = await bashEvent(tmpDir, "npm test", 0);
-      }
-      assert.equal(result.code, 0);
-      const ctx = result.parsed?.hookSpecificOutput?.additionalContext || "";
-      assert.ok(!ctx.includes("[Debug Loop Guard]"), "Should NOT warn on success");
-    } finally {
-      fs.rmSync(tmpDir, { recursive: true, force: true });
-    }
-  });
-
-  it("should fail-open on malformed state JSON", async () => {
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "dlg-corrupt-"));
-    const stateDir = makeStateDir(tmpDir);
-    fs.writeFileSync(
-      path.join(stateDir, "debug-loop-state.json"),
-      "NOT VALID JSON",
-      "utf8"
-    );
-    try {
-      const result = await editEvent(tmpDir, path.join(tmpDir, "src", "x.ts"));
-      assert.equal(result.code, 0, "Should exit 0 even with corrupt state (fail-open)");
-    } finally {
-      fs.rmSync(tmpDir, { recursive: true, force: true });
-    }
-  });
-});
-
 // ─── knowledge-extract prescriptions ────────────────────────────────────────
 
 describe("knowledge-extract prescriptions", () => {
@@ -1968,8 +1850,10 @@ describe("user-prompt-hint.js", () => {
     });
   }
 
+  const ENABLED = { MUSTARD_PROMPT_HINT_MODE: "warn" };
+
   it("prompt with bugfix keyword 'erro' should suggest /mustard:bugfix", async () => {
-    const result = await runHookWithEnv(hook, { prompt: "erro de null pointer no serviço" });
+    const result = await runHookWithEnv(hook, { prompt: "erro de null pointer no serviço" }, ENABLED);
     assert.equal(result.code, 0);
     assert.ok(result.parsed, "Should output JSON");
     const ctx = result.parsed.hookSpecificOutput.additionalContext;
@@ -1977,13 +1861,13 @@ describe("user-prompt-hint.js", () => {
   });
 
   it("prompt starting with slash command should produce no output", async () => {
-    const result = await runHookWithEnv(hook, { prompt: "/mustard:feature add login" });
+    const result = await runHookWithEnv(hook, { prompt: "/mustard:feature add login" }, ENABLED);
     assert.equal(result.code, 0);
     assert.equal(result.stdout, "", "No output for slash-prefixed prompts");
   });
 
   it("prompt with analysis keyword 'analise' should suggest /mustard:task", async () => {
-    const result = await runHookWithEnv(hook, { prompt: "analise esse código e me diga o que está errado" });
+    const result = await runHookWithEnv(hook, { prompt: "analise esse código e me diga o que está errado" }, ENABLED);
     assert.equal(result.code, 0);
     assert.ok(result.parsed, "Should output JSON");
     const ctx = result.parsed.hookSpecificOutput.additionalContext;
@@ -1991,7 +1875,7 @@ describe("user-prompt-hint.js", () => {
   });
 
   it("prompt with feature keyword 'criar' should suggest /mustard:feature", async () => {
-    const result = await runHookWithEnv(hook, { prompt: "criar um novo endpoint de login" });
+    const result = await runHookWithEnv(hook, { prompt: "criar um novo endpoint de login" }, ENABLED);
     assert.equal(result.code, 0);
     assert.ok(result.parsed, "Should output JSON");
     const ctx = result.parsed.hookSpecificOutput.additionalContext;
@@ -1999,7 +1883,7 @@ describe("user-prompt-hint.js", () => {
   });
 
   it("prompt with enhancement keyword 'melhorar' should suggest /mustard:feature", async () => {
-    const result = await runHookWithEnv(hook, { prompt: "melhorar a performance da tela de usuários" });
+    const result = await runHookWithEnv(hook, { prompt: "melhorar a performance da tela de usuários" }, ENABLED);
     assert.equal(result.code, 0);
     assert.ok(result.parsed, "Should output JSON");
     const ctx = result.parsed.hookSpecificOutput.additionalContext;
@@ -2007,16 +1891,22 @@ describe("user-prompt-hint.js", () => {
   });
 
   it("random prompt with no keywords should produce no output", async () => {
-    const result = await runHookWithEnv(hook, { prompt: "oi tudo bem como vai você" });
+    const result = await runHookWithEnv(hook, { prompt: "oi tudo bem como vai você" }, ENABLED);
     assert.equal(result.code, 0);
     assert.equal(result.stdout, "", "No output for unrelated prompts");
+  });
+
+  it("MUSTARD_PROMPT_HINT_MODE=off (default) should produce no output", async () => {
+    const result = await runHookWithEnv(hook, { prompt: "erro de null pointer" });
+    assert.equal(result.code, 0);
+    assert.equal(result.stdout, "", "No output when mode is off (default)");
   });
 
   it("MUSTARD_DISABLED_HOOKS=user-prompt-hint should produce no output", async () => {
     const result = await runHookWithEnv(
       hook,
       { prompt: "erro de null pointer" },
-      { MUSTARD_DISABLED_HOOKS: "user-prompt-hint" }
+      { ...ENABLED, MUSTARD_DISABLED_HOOKS: "user-prompt-hint" }
     );
     assert.equal(result.code, 0);
     assert.equal(result.stdout, "", "No output when hook is disabled");

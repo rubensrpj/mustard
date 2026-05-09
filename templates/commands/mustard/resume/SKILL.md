@@ -130,7 +130,7 @@ When the pipeline state indicates a wave plan, the orchestrator dispatches only 
       - Execute each command listed in the matching `Wave Transitions` section
     - Wait for transitions to complete before dispatching next wave
 
-17. **Dispatch:** TaskUpdate(in_progress) + pipeline state. ALL agents in same wave → SINGLE message (multiple Task invocations). **Pass `model` from pipeline state** (e.g. `model: "opus"`) in each Task tool call — this overrides the agent YAML default. On return: pipeline state update, spec `[ ]` → `[x]` (use `replace_all` per section header, or line-by-line — NEVER copy entire spec blocks as old_string), TaskUpdate(completed), advance wave.
+17. **Dispatch:** TaskUpdate(in_progress) + pipeline state. ALL agents in same wave → SINGLE message (multiple Task invocations). **Pass `model` from pipeline state** (e.g. `model: "opus"`) in each Task tool call — this overrides the agent YAML default. On return: pipeline state update, TaskUpdate(completed), advance wave. The `checklist-auto-mark.js` hook marks Checklist items silently as files are edited. close-gate denies CLOSE if any `[ ]` remains.
 
 17b. **Agent Memory:** After each wave completes, run `memory-write.js` once per agent (summary ≤300 chars, include `files_modified` + `decisions`). Skip if no downstream waves remain.
 

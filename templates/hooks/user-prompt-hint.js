@@ -43,6 +43,7 @@ process.stdin.on('data', chunk => (input += chunk));
 process.stdin.on('end', () => {
   try {
     if (!shouldRun('user-prompt-hint')) { process.exit(0); }
+    if ((process.env.MUSTARD_PROMPT_HINT_MODE || 'off').toLowerCase() === 'off') { process.exit(0); }
 
     const data = JSON.parse(input);
     const prompt = (data.prompt || '').trim();

@@ -12,7 +12,6 @@
  * 6. foldEpic transitions root pipeline-state to CLOSE
  * 7. buildEpicSummary constructs correct data (children, findings, metrics)
  * 8. buildEpicSummary compact mode returns one-liner
- * 9. epic-detect hook emits epic.ready without auto-folding
  * 10. Compaction ON (MUSTARD_EPIC_COMPACT=1) removes tool.use for folded specs, keeps findings
  * 11. Compaction OFF keeps all events
  *
@@ -30,7 +29,6 @@ const SCRIPTS_DIR = path.resolve(__dirname, '..', '..', 'scripts');
 const HOOKS_DIR = path.resolve(__dirname, '..');
 const EPIC_FOLD = path.join(SCRIPTS_DIR, 'epic-fold.js');
 const HARNESS_VIEWS = path.join(SCRIPTS_DIR, 'harness-views.js');
-const EPIC_DETECT = path.join(HOOKS_DIR, 'epic-detect.js');
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -392,91 +390,6 @@ describe('Wave 8 — buildEpicSummary: compact mode returns one-liner', () => {
     assert.equal(result.code, 0);
     assert.ok(result.parsed);
     assert.equal(result.parsed.status, 'folded', `expected status=folded, got ${result.parsed.status}`);
-  });
-});
-
-// ── Test 9: epic-detect hook emits epic.ready without auto-fold ───────────────
-
-describe('Wave 8 — epic-detect hook: emits epic.ready, does NOT fold', () => {
-  let tmp;
-  beforeEach(() => { tmp = makeProjectDir(); });
-  afterEach(() => { try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (_) {} });
-
-  it('epic-detect exits 0 and emits epic.ready when epics are ready', async () => {
-    setupEpicWithChildren(tmp, 'CLOSE', 'CLOSE');
-
-    const hookInput = JSON.stringify({
-      tool: 'Write',
-      tool_input: { file_path: path.join(tmp, '.claude', '.pipeline-states', 'c2.json') },
-      cwd: tmp,
-    });
-
-    const result = await runScript(EPIC_DETECT, [], {
-      projectDir: tmp,
-      stdin: hookInput,
-    });
-
-    assert.equal(result.code, 0, `exit 0 expected, stderr: ${result.stderr}`);
-    // Hook outputs { decision: 'continue' }
-    assert.ok(result.parsed, `expected JSON: ${result.stdout}`);
-    assert.equal(result.parsed.decision, 'continue');
-
-    // Should emit epic.ready but NOT epic.complete or epic.fold
-    const events = readEvents(tmp);
-    const readyEvents = events.filter(e => e.event === 'epic.ready');
-    assert.ok(readyEvents.length >= 1, `expected at least 1 epic.ready event, got ${readyEvents.length}`);
-    assert.ok(readyEvents[0].payload.epics.includes('epic-x'));
-
-    const foldEvents = events.filter(e => e.event === 'epic.fold');
-    assert.equal(foldEvents.length, 0, 'hook must NOT auto-fold — only emit epic.ready');
-
-    const completeEvents = events.filter(e => e.event === 'epic.complete');
-    assert.equal(completeEvents.length, 0, 'hook must NOT emit epic.complete — only advisory');
-  });
-
-  it('epic-detect is silent when no epics are ready', async () => {
-    setupEpicWithChildren(tmp, 'CLOSE', 'EXECUTE'); // c2 still running
-
-    const hookInput = JSON.stringify({
-      tool: 'Write',
-      tool_input: { file_path: path.join(tmp, '.claude', '.pipeline-states', 'c1.json') },
-      cwd: tmp,
-    });
-
-    const result = await runScript(EPIC_DETECT, [], {
-      projectDir: tmp,
-      stdin: hookInput,
-    });
-
-    assert.equal(result.code, 0);
-    assert.equal(result.parsed.decision, 'continue');
-
-    const events = readEvents(tmp);
-    const readyEvents = events.filter(e => e.event === 'epic.ready');
-    assert.equal(readyEvents.length, 0, 'no epic.ready when not all children are CLOSE');
-  });
-
-  it('epic-detect passes through for non-pipeline-state files', async () => {
-    setupEpicWithChildren(tmp, 'CLOSE', 'CLOSE');
-
-    // File not in .pipeline-states/
-    const hookInput = JSON.stringify({
-      tool: 'Write',
-      tool_input: { file_path: path.join(tmp, '.claude', 'knowledge.json') },
-      cwd: tmp,
-    });
-
-    const result = await runScript(EPIC_DETECT, [], {
-      projectDir: tmp,
-      stdin: hookInput,
-    });
-
-    assert.equal(result.code, 0);
-    assert.equal(result.parsed.decision, 'continue');
-    // No epic.ready should be emitted for non-pipeline-state writes
-    const events = readEvents(tmp);
-    const readyEvents = events.filter(e => e.event === 'epic.ready');
-    assert.equal(readyEvents.length, 0, 'epic.ready must not fire for non-pipeline-state writes');
   });
 });
 

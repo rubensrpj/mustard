@@ -86,7 +86,7 @@ Use `subagent_type: "general-purpose"` with full template (~80 lines).
 
 - Build passes (backend: `dotnet build`, frontend: `pnpm build`, mobile: `fvm flutter analyze`)
 - Zero critical guard violations
-- All spec `[ ]` → `[x]`
+- Checklist marking is automatic: `checklist-auto-mark.js` hook runs after every Edit/Write and marks the Checklist item that matches the file (incremental, silent). To make a Checklist item auto-markable, give it a file pista — either include the file basename in the item text (e.g. `- [ ] Validate UserService.cs`) or append a target arrow (e.g. `- [ ] Validate input → src/Services/UserService.cs`). Items without any pista won't auto-mark; close-gate will surface them at CLOSE.
 - Any failure → retry (max 2/agent), then STOP + replan
 
 **6. Review (MANDATORY — NEVER skip):**
@@ -105,7 +105,7 @@ APPROVED (zero CRITICAL) → CLOSE. REJECTED (any CRITICAL) → fix agent dispat
 ### CLOSE Phase (collapses old COMPLETE)
 
 1. `node .claude/scripts/sync-registry.js`
-2. Update spec: `Status: completed`, `Phase: CLOSE`, all `[ ]` → `[x]`
+2. Update spec: `Status: completed`, `Phase: CLOSE`. Checklist must already be fully `[x]` from EXECUTE — `close-gate.js` blocks CLOSE if any `[ ]` remains in the Checklist section.
 3. Move spec to `.claude/spec/completed/`
 4. **Delete** `.claude/.pipeline-states/{spec-name}.json`
 5. Output with agent colors: `═══ PIPELINE COMPLETE — {name} | Agents: {n} ok | Files: {c} created, {m} modified ═══`

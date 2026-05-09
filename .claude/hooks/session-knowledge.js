@@ -51,6 +51,12 @@ process.stdin.on('end', function () {
     // Bail if knowledge-update.js doesn't exist
     if (!fs.existsSync(knowledgeScript)) { process.exit(0); }
 
+    // Skip if session-knowledge-inc ran recently (<5 min) — avoid redundant write
+    try {
+      var seenStat = fs.statSync(path.join(claudeDir, '.knowledge-seen.json'));
+      if (Date.now() - seenStat.mtimeMs < 5 * 60 * 1000) { process.exit(0); }
+    } catch (_) { /* file missing or unreadable — proceed */ }
+
     var patterns = [];
 
     // ── Source 1: Pipeline states (retries, tool usage) ───────────

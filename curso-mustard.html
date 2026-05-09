@@ -338,98 +338,88 @@ footer small{font-size:11px;letter-spacing:.2em;color:rgba(251,247,238,.5);text-
   </div>
 
   <div class="hero-illustration">
-    <!-- HEINZ-STYLE MUSTARD BOTTLE -->
+    <!-- MUSTARD SQUEEZE BOTTLE -->
     <svg class="bottle" viewBox="0 0 320 480" xmlns="http://www.w3.org/2000/svg">
       <!-- shadow -->
-      <ellipse cx="160" cy="455" rx="100" ry="8" fill="#1F1A14" opacity=".12"/>
+      <ellipse cx="160" cy="458" rx="115" ry="7" fill="#1F1A14" opacity=".12"/>
 
-      <!-- BODY (yellow squeeze bottle) -->
-      <path d="M 90 170
-               Q 90 158 96 150
-               L 110 132
-               Q 116 124 116 112
-               L 116 100
-               Q 116 92 124 92
-               L 196 92
-               Q 204 92 204 100
-               L 204 112
-               Q 204 124 210 132
-               L 224 150
-               Q 230 158 230 170
-               L 230 425
-               Q 230 445 210 445
-               L 110 445
-               Q 90 445 90 425 Z"
-            fill="#E8B923" stroke="#1F1A14" stroke-width="2"/>
+      <!-- BOTTLE BODY: angular shoulders, wide cylindrical body -->
+      <path d="M 130 148
+               L 190 148
+               L 190 168
+               L 235 202
+               Q 240 207, 240 218
+               L 240 422
+               Q 240 442, 220 442
+               L 100 442
+               Q 80 442, 80 422
+               L 80 218
+               Q 80 207, 85 202
+               L 130 168
+               Z"
+            fill="#E8B923" stroke="#1F1A14" stroke-width="3" stroke-linejoin="round"/>
 
-      <!-- subtle plastic highlight -->
-      <path d="M 102 200 Q 100 320 105 425 Q 106 432 112 432 L 116 432 Q 110 320 112 205 Q 110 200 106 200 Z"
-            fill="#FFFFFF" opacity=".35"/>
+      <!-- left highlight -->
+      <path d="M 92 240 Q 90 330, 95 415 L 100 415 Q 96 330, 98 242 Z"
+            fill="#FFFFFF" opacity=".3"/>
 
-      <!-- cap base (red) -->
-      <rect x="116" y="108" width="88" height="28" rx="2" fill="#B8201A" stroke="#1F1A14" stroke-width="2"/>
-      <!-- subtle ridges -->
-      <line x1="128" y1="114" x2="128" y2="130" stroke="#7A0F0A" stroke-width="1" opacity=".5"/>
-      <line x1="140" y1="114" x2="140" y2="130" stroke="#7A0F0A" stroke-width="1" opacity=".5"/>
-      <line x1="152" y1="114" x2="152" y2="130" stroke="#7A0F0A" stroke-width="1" opacity=".5"/>
-      <line x1="164" y1="114" x2="164" y2="130" stroke="#7A0F0A" stroke-width="1" opacity=".5"/>
-      <line x1="176" y1="114" x2="176" y2="130" stroke="#7A0F0A" stroke-width="1" opacity=".5"/>
-      <line x1="188" y1="114" x2="188" y2="130" stroke="#7A0F0A" stroke-width="1" opacity=".5"/>
+      <!-- CAP: simple rounded lid, no protrusion -->
+      <rect x="124" y="98" width="72" height="52" rx="6"
+            fill="#B8201A" stroke="#1F1A14" stroke-width="3"/>
 
-      <!-- nozzle cone -->
-      <path d="M 134 108 L 154 76 L 166 76 L 186 108 Z" fill="#B8201A" stroke="#1F1A14" stroke-width="2"/>
-      <ellipse cx="160" cy="76" rx="6" ry="2" fill="#1F1A14"/>
+      <!-- horizontal line for cap segment -->
+      <line x1="128" y1="120" x2="192" y2="120" stroke="#7A0F0A" stroke-width="1.5" opacity=".6"/>
 
-      <!-- KEYSTONE LABEL (Heinz iconic shape) -->
-      <!-- the shape: vertical hexagonal/keystone that flares at the top -->
-      <path d="M 100 240
-               L 105 220
-               Q 110 210 122 210
-               L 198 210
-               Q 210 210 215 220
-               L 220 240
-               L 220 380
-               Q 220 388 212 388
-               L 108 388
-               Q 100 388 100 380 Z"
-            fill="#FBF7EE" stroke="#1F1A14" stroke-width="2"/>
+      <!-- subtle dispense slit on top -->
+      <line x1="152" y1="104" x2="168" y2="104" stroke="#1F1A14" stroke-width="2" stroke-linecap="round" opacity=".7"/>
 
-      <!-- label inner border -->
-      <path d="M 107 244
-               L 110 228
-               Q 114 220 122 220
-               L 198 220
-               Q 206 220 210 228
-               L 213 244
-               L 213 376
-               Q 213 380 209 380
-               L 111 380
-               Q 107 380 107 376 Z"
+      <!-- cap highlight -->
+      <line x1="130" y1="108" x2="130" y2="142" stroke="#FF6B62" stroke-width="3" opacity=".55" stroke-linecap="round"/>
+
+      <!-- LABEL: rectangular keystone, generous size -->
+      <path d="M 88 240
+               L 92 222
+               Q 96 215, 105 215
+               L 215 215
+               Q 224 215, 228 222
+               L 232 240
+               L 232 405
+               Q 232 414, 222 414
+               L 98 414
+               Q 88 414, 88 405
+               Z"
+            fill="#FBF7EE" stroke="#1F1A14" stroke-width="2.5"/>
+
+      <!-- inner red border -->
+      <path d="M 96 244
+               L 100 226
+               Q 102 222, 107 222
+               L 213 222
+               Q 218 222, 220 226
+               L 224 244
+               L 224 404
+               Q 224 408, 220 408
+               L 100 408
+               Q 96 408, 96 404
+               Z"
             fill="none" stroke="#B8201A" stroke-width="1"/>
 
-      <!-- top label badge -->
-      <rect x="128" y="232" width="64" height="14" fill="#B8201A"/>
-      <text x="160" y="242" text-anchor="middle" fill="#FBF7EE"
-            font-family="Inter,sans-serif" font-size="8" letter-spacing="2" font-weight="600">EST. 2026</text>
-
       <!-- main wordmark -->
-      <text x="160" y="288" text-anchor="middle" fill="#1F1A14"
-            font-family="Fraunces,serif" font-size="28" font-weight="700" letter-spacing="-0.02em">Mustard</text>
+      <text x="160" y="298" text-anchor="middle" fill="#1F1A14"
+            font-family="Fraunces,serif" font-size="28" font-weight="700" letter-spacing="-0.03em">Mustard</text>
+
+      <!-- decorative line -->
+      <line x1="138" y1="312" x2="182" y2="312" stroke="#B8201A" stroke-width="1"/>
 
       <!-- italic tagline -->
-      <text x="160" y="308" text-anchor="middle" fill="#B8201A"
-            font-family="Fraunces,serif" font-style="italic" font-size="11" font-weight="400">the perfect sauce</text>
-      <text x="160" y="322" text-anchor="middle" fill="#B8201A"
-            font-family="Fraunces,serif" font-style="italic" font-size="11" font-weight="400">for your Claude Code</text>
+      <text x="160" y="333" text-anchor="middle" fill="#B8201A"
+            font-family="Fraunces,serif" font-style="italic" font-size="12" font-weight="400">the perfect sauce</text>
+      <text x="160" y="349" text-anchor="middle" fill="#B8201A"
+            font-family="Fraunces,serif" font-style="italic" font-size="12" font-weight="400">for Claude Code</text>
 
-      <!-- divider line -->
-      <line x1="135" y1="338" x2="185" y2="338" stroke="#1F1A14" stroke-width="0.8"/>
-
-      <!-- small specs -->
-      <text x="160" y="354" text-anchor="middle" fill="#1F1A14"
-            font-family="JetBrains Mono,monospace" font-size="7" letter-spacing="2">PREMIUM · CLAUDE-GRADE</text>
-      <text x="160" y="368" text-anchor="middle" fill="#5A4F40"
-            font-family="JetBrains Mono,monospace" font-size="6.5" letter-spacing="1.5">NET 500 ML · 17 OZ</text>
+      <!-- est. -->
+      <text x="160" y="382" text-anchor="middle" fill="#1F1A14"
+            font-family="Fraunces,serif" font-size="10" font-weight="600" letter-spacing="3">EST. 2026</text>
     </svg>
   </div>
 </header>

@@ -10,13 +10,9 @@
  * 4.  convention-check: knowledge with "Repository always in /Repositories" → wrong path → warn
  * 5.  convention-check: correct path → no warn
  * 6.  convention-check: knowledge entry not extractable → no warn, no error
- * 7.  regression-guard: mode=off (default) → always skip
- * 8.  regression-guard: non-shared file → skip silently
- * 9.  regression-guard on + test fail heuristic (simulated) → warn
- * 10. buildSlopeReport: counts warns correctly across events
- * 11. duplication-check fail-open: corrupted entity-registry → exit 0
- * 12. convention-check fail-open: invalid knowledge.json → exit 0
- * 13. regression-guard fail-open: broken hook env → exit 0
+ * 7.  buildSlopeReport: counts warns correctly across events
+ * 8.  duplication-check fail-open: corrupted entity-registry → exit 0
+ * 9.  convention-check fail-open: invalid knowledge.json → exit 0
  *
  * Run with: node --test templates/hooks/__tests__/harness-wave11.test.js
  */
@@ -32,7 +28,6 @@ const HOOKS_DIR = path.resolve(__dirname, '..');
 const SCRIPTS_DIR = path.resolve(__dirname, '..', '..', 'scripts');
 const DUP_CHECK = path.join(HOOKS_DIR, 'duplication-check.js');
 const CONV_CHECK = path.join(HOOKS_DIR, 'convention-check.js');
-const REG_GUARD = path.join(HOOKS_DIR, 'regression-guard.js');
 const HARNESS_VIEWS = path.join(SCRIPTS_DIR, 'harness-views.js');
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -321,164 +316,16 @@ describe('Wave 11 — convention-check: non-extractable knowledge entry → no w
   });
 });
 
-// ── Test 7: regression-guard mode=off (default) → always skip ────────────────
-
-describe('Wave 11 — regression-guard: mode=off (default) → always skip', () => {
-  let tmp;
-  beforeEach(() => { tmp = makeProjectDir(); });
-  afterEach(() => { cleanDir(tmp); });
-
-  it('skips all checks when MUSTARD_REGRESSION_MODE=off', async () => {
-    const filePath = path.join(tmp, 'src', 'SomeSharedFile.ts');
-    const content = 'export const x = 1;\n';
-    const input = makeWriteInput(tmp, filePath, content);
-
-    const result = await runHook(REG_GUARD, input, {
-      projectDir: tmp,
-      env: { MUSTARD_REGRESSION_MODE: 'off' },
-    });
-
-    assert.equal(result.code, 0, 'hook must exit 0');
-    assert.equal(result.stdout, '', `expected empty stdout (skip), got: ${result.stdout}`);
-    assert.equal(result.stderr, '', `expected empty stderr (skip), got: ${result.stderr}`);
-  });
-
-  it('skips all checks when MUSTARD_REGRESSION_MODE is not set (default off)', async () => {
-    const filePath = path.join(tmp, 'src', 'SomeFile.ts');
-    const content = 'export const x = 1;\n';
-    const input = makeWriteInput(tmp, filePath, content);
-
-    // No env override — default is off
-    const env = Object.assign({}, process.env);
-    delete env.MUSTARD_REGRESSION_MODE;
-
-    const result = await runHook(REG_GUARD, input, {
-      projectDir: tmp,
-      env,
-    });
-
-    assert.equal(result.code, 0, 'hook must exit 0');
-    assert.equal(result.stdout, '', 'expected empty stdout (default off)');
-  });
-});
-
-// ── Test 8: regression-guard non-shared file → skip silently ─────────────────
-
-describe('Wave 11 — regression-guard: non-shared file → skip silently', () => {
-  let tmp;
-  beforeEach(() => { tmp = makeProjectDir(); });
-  afterEach(() => { cleanDir(tmp); });
-
-  it('skips without warn when file is not in shared paths', async () => {
-    // No closed pipeline states → file cannot be shared
-    const filePath = path.join(tmp, 'src', 'NewFeature.ts');
-    const content = 'export class NewFeature {}\n';
-    const input = makeWriteInput(tmp, filePath, content);
-
-    const result = await runHook(REG_GUARD, input, {
-      projectDir: tmp,
-      env: { MUSTARD_REGRESSION_MODE: 'warn' },
-    });
-
-    assert.equal(result.code, 0, 'hook must exit 0');
-    // Should not emit regression.warn
-    assert.ok(
-      !result.stderr.includes('regression'),
-      `expected no regression warn for non-shared file, stderr: ${result.stderr}`
-    );
-    if (result.parsed) {
-      assert.notEqual(result.parsed.decision, 'block',
-        `should not block for non-shared file`);
-    }
-  });
-});
-
-// ── Test 9: regression-guard on + shared file + test fail → warn ──────────────
-
-describe('Wave 11 — regression-guard: shared file + test file exists + test fails → warn', () => {
-  let tmp;
-  beforeEach(() => { tmp = makeProjectDir(); });
-  afterEach(() => { cleanDir(tmp); });
-
-  it('emits regression warn when shared file has a failing test', async () => {
-    // Create two closed pipeline states that reference the same file in events
-    const srcFile = path.join(tmp, 'src', 'shared.js');
-    const normalizedSrcFile = srcFile.replace(/\\/g, '/');
-
-    // Create the source file
-    fs.mkdirSync(path.dirname(srcFile), { recursive: true });
-    fs.writeFileSync(srcFile, 'module.exports = { x: 1 };\n', 'utf8');
-
-    // Create a failing test file
-    const testFile = path.join(tmp, 'src', 'shared.test.js');
-    const IS_WIN = process.platform === 'win32';
-    // Write a test that always fails
-    fs.writeFileSync(testFile, `
-const assert = require('assert');
-// This test always fails
-assert.fail('regression test failure');
-`, 'utf8');
-
-    // Create two CLOSE pipeline state files
-    fs.mkdirSync(path.join(tmp, '.claude', '.pipeline-states'), { recursive: true });
-    fs.writeFileSync(
-      path.join(tmp, '.claude', '.pipeline-states', 'spec-a.json'),
-      JSON.stringify({ spec: 'spec-a', phase: 'CLOSE' }),
-      'utf8'
-    );
-    fs.writeFileSync(
-      path.join(tmp, '.claude', '.pipeline-states', 'spec-b.json'),
-      JSON.stringify({ spec: 'spec-b', phase: 'CLOSE' }),
-      'utf8'
-    );
-
-    // Write events showing both closed specs touched the shared file
-    writeHarnessEvents(tmp, [
-      makeHarnessEvent('tool.use', {
-        tool: 'write',
-        file_path: normalizedSrcFile,
-      }, { spec: 'spec-a' }),
-      makeHarnessEvent('tool.use', {
-        tool: 'write',
-        file_path: normalizedSrcFile,
-      }, { spec: 'spec-b' }),
-    ]);
-
-    const input = makeWriteInput(tmp, srcFile, 'module.exports = { x: 2 };\n');
-
-    const result = await runHook(REG_GUARD, input, {
-      projectDir: tmp,
-      env: { MUSTARD_REGRESSION_MODE: 'warn' },
-    });
-
-    assert.equal(result.code, 0, 'hook must exit 0 (fail-open)');
-
-    // Either: test was found and failed → regression.warn in stderr
-    // Or: test file not found / env error → skip silently (acceptable for heuristic)
-    // We accept both because the test runner heuristic may not find the test
-    // depending on the runner available. The important thing is: exit 0, no crash.
-    const hasRegression = result.stderr.includes('regression') || result.stderr.includes('Regression');
-    const hasEnvError = result.stderr.includes('fail-open') || result.stderr.includes('Env error');
-    const hasSilentSkip = result.stderr === '';
-
-    assert.ok(
-      hasRegression || hasEnvError || hasSilentSkip,
-      `expected regression warn, env error, or silent skip; stderr: ${result.stderr}`
-    );
-  });
-});
-
-// ── Test 10: buildSlopeReport counts warns correctly ─────────────────────────
+// ── Test 7: buildSlopeReport counts warns correctly ──────────────────────────
 
 describe('Wave 11 — buildSlopeReport: counts anti-slope warns correctly', () => {
-  it('counts duplication.warn, convention.warn, regression.warn from events', () => {
+  it('counts duplication.warn and convention.warn from events', () => {
     const views = require('../../scripts/harness-views.js');
 
     const events = [
       makeHarnessEvent('duplication.warn', { file: 'src/a.ts', symbols: ['AuthServices'] }),
       makeHarnessEvent('duplication.warn', { file: 'src/b.ts', symbols: ['UserServices'] }),
       makeHarnessEvent('convention.warn', { file: 'src/c.ts', violations: [] }),
-      makeHarnessEvent('regression.warn', { file: 'src/a.ts', testFile: 'src/a.test.ts' }),
       makeHarnessEvent('agent.start', { description: 'not a slope event' }),
     ];
 
@@ -486,12 +333,7 @@ describe('Wave 11 — buildSlopeReport: counts anti-slope warns correctly', () =
 
     assert.equal(report.duplication, 2, `expected 2 duplication warns, got: ${report.duplication}`);
     assert.equal(report.convention, 1, `expected 1 convention warn, got: ${report.convention}`);
-    assert.equal(report.regression, 1, `expected 1 regression warn, got: ${report.regression}`);
     assert.ok(Array.isArray(report.top_paths), 'top_paths must be array');
-    // src/a.ts appears in duplication + regression → count 2
-    const topA = report.top_paths.find(p => p.file.includes('a.ts'));
-    assert.ok(topA, 'src/a.ts should appear in top_paths');
-    assert.equal(topA.count, 2, `expected count=2 for a.ts, got: ${topA.count}`);
   });
 
   it('returns zeros when no slope events present', () => {
@@ -506,7 +348,6 @@ describe('Wave 11 — buildSlopeReport: counts anti-slope warns correctly', () =
 
     assert.equal(report.duplication, 0);
     assert.equal(report.convention, 0);
-    assert.equal(report.regression, 0);
     assert.deepEqual(report.top_paths, []);
   });
 });
@@ -577,45 +418,3 @@ describe('Wave 11 — convention-check: fail-open on invalid knowledge.json', ()
   });
 });
 
-// ── Test 13: regression-guard fail-open on broken env ────────────────────────
-
-describe('Wave 11 — regression-guard: fail-open on broken/missing harness files', () => {
-  let tmp;
-  beforeEach(() => { tmp = makeProjectDir(); });
-  afterEach(() => { cleanDir(tmp); });
-
-  it('exits 0 when harness events.jsonl is corrupted', async () => {
-    // Write corrupted events.jsonl
-    fs.writeFileSync(
-      path.join(tmp, '.claude', '.harness', 'events.jsonl'),
-      'CORRUPTED\nNOT JSON\n',
-      'utf8'
-    );
-
-    // Write a CLOSE pipeline state for two specs
-    fs.writeFileSync(
-      path.join(tmp, '.claude', '.pipeline-states', 'spec-a.json'),
-      JSON.stringify({ phase: 'CLOSE' }), 'utf8'
-    );
-    fs.writeFileSync(
-      path.join(tmp, '.claude', '.pipeline-states', 'spec-b.json'),
-      JSON.stringify({ phase: 'CLOSE' }), 'utf8'
-    );
-
-    const filePath = path.join(tmp, 'src', 'SomeFile.ts');
-    const content = 'export const x = 1;\n';
-    const input = makeWriteInput(tmp, filePath, content);
-
-    const result = await runHook(REG_GUARD, input, {
-      projectDir: tmp,
-      env: { MUSTARD_REGRESSION_MODE: 'warn' },
-    });
-
-    // Must exit 0 (fail-open)
-    assert.equal(result.code, 0, `hook must exit 0 on corrupted events, code: ${result.code}`);
-    if (result.parsed) {
-      assert.notEqual(result.parsed.decision, 'block',
-        'must not block on corrupted events');
-    }
-  });
-});

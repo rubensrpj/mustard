@@ -38,7 +38,7 @@ Guards always loaded via `{subproject}/CLAUDE.md`.
 
 ## Stack
 
-Node.js (>=18), CommonJS, no external dependencies. 23 lifecycle hooks, 12 scripts, 17 slash commands, 6 foundation skills.
+Node.js (>=18), CommonJS, no external dependencies. 20 lifecycle hooks, 13 scripts, 17 slash commands, 6 foundation skills.
 
 ## Commands
 

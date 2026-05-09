@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Tests for skill-validate-gate.js.
- * Run with: node --test .claude/hooks/__tests__/skill-validate-gate.test.js
+ * Run with: node --test templates/hooks/__tests__/skill-validate-gate.test.js
  */
 
 const { describe, it } = require('node:test');
@@ -122,6 +122,7 @@ describe('skill-validate-gate.js', () => {
   });
 
   it('Edit tool simulating bad change → strict denies', async () => {
+    // Simulated edit that turns valid skill into one missing `source`.
     const editInput = {
       tool_name: 'Edit',
       tool_input: {
@@ -130,6 +131,7 @@ describe('skill-validate-gate.js', () => {
         new_string: 'placeholder',
       },
     };
+    // file does not exist on disk → simulateEdit reads '' and applies edit → empty content → fails validation
     const result = await runHook(editInput, strictEnv);
     assert.equal(result.code, 0);
     assert.equal(result.parsed?.hookSpecificOutput?.permissionDecision, 'deny');

@@ -59,9 +59,8 @@ mustard/
 ├── src/                     # TypeScript source
 │   ├── commands/            # init.ts, update.ts
 │   ├── scanners/            # stack.ts, structure.ts, dependencies.ts
-│   ├── analyzers/           # semantic.ts, llm.ts
 │   ├── generators/          # claude-md, prompts, commands, hooks, registry
-│   └── services/            # ollama.ts, grepai.ts
+│   └── services/            # npm.ts
 ├── dist/                    # Compiled JavaScript
 └── templates/               # Templates (copied to target .claude/)
     ├── CLAUDE.md            # Minimal orchestrator rules
@@ -116,8 +115,6 @@ context/{agent}/
 ```text
 mustard init
     -> scanProject() - detect stacks
-    -> semanticAnalyzer() - grepai patterns (optional)
-    -> llmAnalyzer() - Ollama analysis (optional)
     -> generateAll() - create .claude/ files + context structure
     -> generateMustardJson() - git flow config (interactive)
 
