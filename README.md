@@ -24,16 +24,35 @@
 
 ## What is Mustard?
 
-Mustard sets up a `.claude/` folder that turns Claude Code into a structured development pipeline with explicit phases (ANALYZE → PLAN → EXECUTE → REVIEW → CLOSE), wave-based agent dispatch, enforcement hooks, and token economy.
+Mustard sets up a `.claude/` folder that turns Claude Code into a structured development pipeline with explicit phases (ANALYZE → PLAN → EXECUTE → QA → CLOSE), wave-based agent dispatch, enforcement hooks, and token economy.
 
-- **16 pipeline commands** — feature, bugfix, approve, complete, resume, scan, scan-format, git, maint, task, knowledge, skill, status, stats, metrics, review, plus the agent-prompt template
-- **23 enforcement hooks** — bash safety, bash native redirect, file guard, registry enforcement, guard verify, auto-format, pre-compact, session cleanup, subagent tracker, RTK rewrite, session memory, review gate, metrics tracker, MCP budget, session knowledge, context budget, spec hygiene, output budget, tool-use counter, model routing gate, debug-loop guard, user-prompt hint, session-knowledge incremental
-- **6 bundled skills** — design-craft, react-best-practices, senior-architect, skill-creator, commit-workflow, pipeline-execution
-- **15 utility scripts** — subproject detection, entity registry sync, skill validation, statusline, memory persist/write, diff context, knowledge update, metrics collect/report, security scan, pipeline verification, analyze validation, recipe matcher, RTK gain import
-- **Token economy** — auto-installs [RTK (Rust Token Killer)](https://github.com/rtk-ai/rtk) to reduce CLI-output tokens by 60–90%
+- **18 pipeline commands** — feature, bugfix, approve, complete, resume, scan, scan-format, git, maint, qa, task, knowledge, skill, status, stats, metrics, review, plus the agent-prompt template
+- **31 enforcement hooks** — bash safety, model routing gate, context budget (with Dumb Zone 40% advisory), output budget, close-gate (Wave 9+10), spec hygiene, spec/skill size gates, RTK rewrite, file guard, registry enforcement, memory auto-extract, PR detection (DORA), session knowledge, and more
+- **7 bundled skills** — design-craft, react-best-practices, senior-architect, skill-creator, commit-workflow, pipeline-execution, karpathy-guidelines
+- **25 utility scripts** — subproject detection, entity registry sync (with doc-comment glossary enrichment), recipe matcher, harness views (incl. DORA `pr-metrics`), QA runner, wave decomposition, skill validation, and more
+- **5 stack-agnostic recipes** — add-field, add-endpoint, add-component, add-validation, null-guard (90% skeletons matched by entity + operation)
+- **Token economy** — auto-installs [RTK (Rust Token Killer)](https://github.com/rtk-ai/rtk) to reduce CLI-output tokens by 60–90%; per-role context budget (Explore 10K / review 12K / general 30K chars hard-block); Dumb Zone advisory ≥40% of model window (Liu et al. 2023, Dex Horthy)
 - **Hook profiles & env overrides** — minimal/standard/strict profiles via `_lib/hook-env.js`; disable individual hooks with `MUSTARD_DISABLED_HOOKS`
 - **Cursor IDE adapter** (experimental) — `mustard init --cursor` installs a Cursor-compatible hook adapter
 - **Monorepo + single repo** — `sync-detect.js` auto-discovers subprojects and roles
+- **GitHub PR template** — `templates/.github/pull_request_template.md` auto-installed when GitHub remote detected
+- **Methodology mapping** — ANALYZE↔Research, PLAN↔Spec+Plan, EXECUTE↔Implement (cf. [GitHub Spec Kit](https://github.com/github/spec-kit) RPI loop)
+
+## Em português simples (guia rápido sem jargão)
+
+Mustard é uma "configuração pronta" para usar Claude Code de forma profissional. Ele faz 4 coisas que importam:
+
+1. **Quebra qualquer pedido em etapas claras.** Quando você pede "adicione um campo email na tabela de usuários", o Mustard NÃO sai codando direto — ele primeiro pesquisa o código (ANALYZE), monta um plano com checklist e critérios de aceitação (PLAN), executa o plano em ondas paralelas (EXECUTE), valida automaticamente o resultado (QA), e só então fecha (CLOSE). Isso reduz drasticamente o "código gerado errado" porque há freios em cada etapa.
+
+2. **Evita o "burrinho do meio" (Dumb Zone).** Há um problema conhecido em IA: quando você joga muita coisa no chat (>40% da janela), a qualidade despenca — a IA "esquece" o que está no meio do contexto. O Mustard avisa quando você passa de 40% e sugere `/compact`. Isso vem de pesquisa real (Liu et al. 2023, conceito popularizado por Dex Horthy).
+
+3. **Aprende com o que aconteceu.** Cada decisão arquitetural escrita num spec ("escolhemos Redis em vez de Memcached porque...") é automaticamente persistida em `memory/decisions.json` no fim da sessão. Da próxima vez que você abrir o Claude Code, ele já sabe o histórico — sem você ter que lembrar e copiar.
+
+4. **Garante que frontend não pareça "código gerado".** Se você pede um componente de UI, o Mustard automaticamente carrega um checklist anti-AI-look (estados loading/empty/error, microinterações, acessibilidade, sem Lorem Ipsum, etc.) e — pra bugs visuais — um playbook de debug com Playwright + Chrome DevTools.
+
+**O que é "vaporware" e por que isso importa?** Vaporware é o nome que se dá pra funcionalidade prometida na documentação mas que nunca foi de fato implementada (ou foi e quebrou silenciosamente). Versões anteriores do Mustard tinham 3 vaporwares estruturais: Recipe Engine sem recipes, sistema de memória sem ninguém escrevendo nele, e contagens de hooks erradas no CLAUDE.md. Esta versão eliminou os 3.
+
+**Como o Mustard se compara ao GitHub Spec Kit?** Spec Kit é a alternativa oficial do GitHub para o mesmo problema (Spec-Driven Development). É bom, mas focado em multi-tool. Mustard é Claude-Code-first com 31 hooks de garantia, decomposição automática em ondas, gate executável de QA, suporte multilíngue PT/EN, e marcação automática de checklist. Os dois funcionam — Mustard ganha em automação para times Claude-only.
 
 ## Quick Start
 
@@ -202,6 +221,7 @@ mustard review --ci --pr 42
 | `/maint <action>` | deps, validate, sync — maintenance utilities |
 | `/status` | Consolidated git + pipeline + build + registry status |
 | `/review [number\|url]` | Review a PR locally using the bundled review skill |
+| `/dashboard [start\|stop\|status]` | Local web dashboard (`http://localhost:7878`) with live spec progress, telemetry, PRD builder, settings editor, glossary and command catalog — see [Dashboard](#dashboard) |
 
 ### Analysis & Delegation
 
@@ -234,6 +254,65 @@ mustard review --ci --pr 42
 | `/skill create <name>` | Create new skill via skill-creator |
 | `/skill optimize <name>` | Optimize skill triggering descriptions |
 
+## Dashboard
+
+The Mustard dashboard is a local web UI served by `node .claude/scripts/dashboard.js` on `http://localhost:7878`. Zero npm dependencies (Node built-ins only), no auth, localhost-bound. Started/stopped via the `/dashboard` slash command.
+
+### Starting the dashboard
+
+```bash
+# Inside Claude Code
+/dashboard            # starts (or shows the URL if already running)
+/dashboard status     # check if running
+/dashboard stop       # kill the server
+```
+
+The PID is stored in `.claude/.dashboard.pid` (gitignored).
+
+### Tabs
+
+| Tab | What it shows |
+|-----|---------------|
+| **Overview** | Live KPIs (active specs, completed, tokens saved, today's events), the spec currently in production with progress bar, and recent harness activity. Polls every 12s. |
+| **Specs** | Active specs grouped (epics show their child waves nested with mini progress bars). Completed specs filtered by period (7d/15d/30d/60d/90d/all), grouped by month. Click any spec → side panel with markdown viewer; click any wave → live monitor with stream. |
+| **Telemetry** | Six sections: tokens (RTK + hooks), pipeline aggregates with **Pass@1**, phase distribution bar, active specs aging (<7d / 7–30d / >30d), hooks table with per-hook plain-language explanation, tools breakdown, 7-day events line chart, storage + knowledge sizes. |
+| **Compose PRD** | Form-based PRD generator following the `tools/prd-builder.html` standard. Fields: title, project (auto-detected from monorepo), type, scope, priority, route, entity, CRUD ops, layers, design, bug repro, AC, constraints, OOS. Live preview, copy / copy-with-`/mustard:feature` / download. |
+| **Comandos** | Catalog of every `/mustard:*` command with both a plain-language explanation (for non-developers) and a technical one (for developers). Filterable by category and full-text search. |
+| **Settings** | Mustard env vars (`MUSTARD_*` keys) grouped by purpose (Pipeline Gates, Hygiene, Tool Use, UX & Profile). Each option (strict/warn/off) is a clickable card explaining what it does. Persists to `.claude/settings.json` `env` block. |
+| **Glossário** | All acronyms and concepts used across the dashboard (CI, QA, AC, RTK, PRD, hooks, gates, agents, etc) with definitions. The same terms get hover tooltips throughout the UI via `<abbr>` tags. |
+
+### Live indicator
+
+A green pulsing pill ("ao vivo") appears on any spec/wave whose `lastActivity` is < 5 min ago (read from `.claude/.pipeline-states/<spec>.metrics.json`). A sticky banner at the top of every tab shows "Processando: <epic> · wave <X>" while a pipeline is running, with an "Acompanhar" button that opens the live monitor side panel (polling 3s).
+
+### HTTP routes
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `GET` | `/` | The single-page UI (HTML + CSS + JS, ~110 KB) |
+| `GET` | `/api/specs` | All specs (active + completed) with checklist progress, lastActivity, apiCalls, retries |
+| `GET` | `/api/spec?path=<rel>` | Single spec markdown + metrics |
+| `GET` | `/api/spec/live?spec=<name>` | Live view: events filtered by spec, phase, agentAttempts, toolBreakdown, isLive flag, plus checklist + summary fallback when no metrics file exists |
+| `GET` | `/api/metrics` | Hook events table + RTK savings + last 7 days (parsed from `metrics-collect.js`) |
+| `GET` | `/api/telemetry-extra` | Pipeline aggregates (runs, Pass@1, totals), phase distribution, active aging, storage breakdown, detect cache info, activeNow |
+| `GET` | `/api/events?n=200` | Tail of `.claude/.harness/events.jsonl` |
+| `GET` | `/api/projects` | Subprojects detected by `sync-detect.js` (read from `.detect-cache.json`) |
+| `GET` | `/api/commands` | Catalog of `/mustard:*` slash commands with leigo + tecnico explanations |
+| `GET` | `/api/settings` | Current Mustard env values + catalog (with `valueDocs` per option) |
+| `POST` | `/api/settings` | Update Mustard env block in `.claude/settings.json` (validates against catalog) |
+| `POST` | `/api/prd` | Generate a spec.md from the Compose PRD form (creates `.claude/spec/active/<date>-<slug>/spec.md`) |
+
+### Files
+
+```
+.claude/scripts/
+├── dashboard.js                    # HTTP server (~600 lines, http/fs built-ins only)
+├── dashboard-ui.js                 # CSS + ICONS + CLIENT_JS + renderHtml
+├── dashboard-prd-template.js       # generatePrdMarkdown() following Mustard spec format
+├── dashboard-env-catalog.js        # MUSTARD_* env catalog with valueDocs
+└── dashboard-commands-catalog.js   # /mustard:* command catalog with leigo+tecnico
+```
+
 ## What Gets Installed
 
 ```
@@ -260,7 +339,17 @@ mustard review --ci --pr 42
 │   ├── metrics/SKILL.md               #   /metrics — enforcement metrics report
 │   ├── review/SKILL.md                #   /review — PR review
 │   └── templates/agent-prompt/        #   Agent prompt template
-├── hooks/                             # Enforcement hooks (23)
+├── recipes/                           # Stack-agnostic recipes (5)
+│   ├── add-field.json                 #   Schema + DTO + optional FE form
+│   ├── add-endpoint.json              #   Handler + DTO + service + route
+│   ├── add-component.json             #   UI component with anti-AI-look defaults
+│   ├── add-validation.json            #   Form validation + error UX
+│   └── null-guard.json                #   Bugfix recipe for null/undefined
+├── refs/                              # Progressive-disclosure references
+│   ├── feature/fe-craft-check.md      #   Anti-AI-look checklist for UI work
+│   ├── bugfix/browser-debug.md        #   Playwright + Chrome DevTools MCP playbook
+│   └── feature/spec-language.md       #   Spec format + Component Contract
+├── hooks/                             # Enforcement hooks (31)
 │   ├── _lib/hook-env.js               #   Shared runtime controls (profiles, env overrides)
 │   ├── rtk-rewrite.js                 #   Rewrites Bash commands through RTK
 │   ├── bash-safety.js                 #   Blocks dangerous commands
@@ -275,17 +364,28 @@ mustard review --ci --pr 42
 │   ├── session-memory.js              #   Injects persistent memory on session start
 │   ├── review-gate.js                 #   Pre-commit validation (fail-open)
 │   ├── metrics-tracker.js             #   Tracks pipeline API calls, retries, gate saves
-│   ├── mcp-budget.js                  #   Warns on excessive MCP tool counts
+│   ├── memory-auto-extract.js         #   SessionEnd: extracts decisions/lessons from active specs
+│   ├── pr-detect.js                   #   PostToolUse(Bash): emits pr.opened/pr.merged DORA events
 │   ├── session-knowledge.js           #   Extracts patterns from session before cleanup
 │   ├── session-knowledge-inc.js       #   Incremental knowledge capture
-│   ├── context-budget.js              #   Enforces context budget per agent
+│   ├── context-budget.js              #   Per-role hard block + Dumb Zone advisory (≥40% window)
 │   ├── spec-hygiene.js                #   Guards spec format + checkbox integrity
-│   ├── output-budget.js               #   Caps agent return-size
-│   ├── tool-use-counter.js            #   Caps Explore agents at 20 tool uses
+│   ├── spec-size-gate.js              #   Warns/blocks specs >500 lines
+│   ├── skill-size-gate.js             #   Warns/blocks SKILL.md >500 lines
+│   ├── skill-validate-gate.js         #   Validates skill YAML frontmatter
+│   ├── close-gate.js                  #   Wave 9+10 strict gate: build/test/lint/QA + checklist
+│   ├── checklist-auto-mark.js         #   PostToolUse: auto-marks checklist items by file pista
+│   ├── output-budget.js               #   Caps agent return-size (advisory)
+│   ├── tool-use-counter.js            #   Caps Explore agents at 15-20 tool uses
 │   ├── model-routing-gate.js          #   Blocks model upgrades vs routing table
-│   ├── debug-loop-guard.js            #   Detects iteration anti-patterns
+│   ├── duplication-check.js           #   Levenshtein vs entity registry (default off)
+│   ├── convention-check.js            #   Conventions from knowledge.json (default off)
+│   ├── recommended-skills-audit.js    #   Warn if >10 skills in agent prompt
+│   ├── pipeline-phase.js              #   Records phase events to harness
+│   ├── harness-init.js                #   SessionStart: rotates events.jsonl + index
+│   ├── _lib/size-gate.js              #   Shared lib for size-based gates
 │   └── user-prompt-hint.js            #   Surfaces contextual hints on prompt input
-├── scripts/                           # Utility scripts (15)
+├── scripts/                           # Utility scripts (25)
 │   ├── sync-detect.js                 #   Detects subprojects + roles (SHA-256 incremental)
 │   ├── sync-registry.js               #   Generates entity-registry.json (_patterns.discovered[])
 │   ├── skill-validate.js              #   Validates SKILL.md frontmatter across subprojects
@@ -315,7 +415,8 @@ mustard review --ci --pr 42
 ├── adapters/cursor/                   # Cursor IDE adapter (experimental)
 │   ├── README.md                      #   Setup and usage guide
 │   └── adapter.js                     #   Cursor ↔ Claude Code hook protocol adapter
-└── skills/                            # Bundled skills (6)
+└── skills/                            # Bundled skills (7)
+    ├── karpathy-guidelines/           #   Anti-slop principles (mandatory pre-Edit/Write)
     ├── design-craft/                  #   UI design methodology
     ├── react-best-practices/          #   React/Next.js optimization (40+ rules)
     ├── senior-architect/              #   System architecture patterns
@@ -386,10 +487,9 @@ Hooks are fail-open (any hook error exits 0 — pipeline is never blocked by a h
 |------|---------|------|--------|
 | `bash-native-redirect.js` | Bash | strict/warn/off | Blocks grep/ls/cat/head/tail/find — suggests Grep/Glob/Read |
 | `model-routing-gate.js` | Task | strict/warn/off | Blocks model upgrades vs routing table |
-| `tool-use-counter.js` | `.*` + Subagent | hard | Caps Explore agents at 20 tool uses (warn at 12) |
-| `context-budget.js` | Task | warn | Enforces context budget per agent dispatch |
-| `output-budget.js` | Subagent | warn | Caps agent return size |
-| `mcp-budget.js` | startup | warn | Flags excessive MCP tool counts |
+| `tool-use-counter.js` | `.*` + Subagent | hard | Caps Explore agents at 15-20 tool uses (warn at 12) |
+| `context-budget.js` | Task | strict/warn/observe | Per-role hard block (Explore 10K / review 12K / general 30K chars) + Dumb Zone advisory ≥40% of model window |
+| `output-budget.js` | Subagent | warn | Caps agent return size (advisory) |
 | `rtk-rewrite.js` | Bash | transparent | Routes CLI output through RTK for 60–90% token reduction |
 
 ### Safety & validation hooks
@@ -402,7 +502,10 @@ Hooks are fail-open (any hook error exits 0 — pipeline is never blocked by a h
 | `guard-verify.js` | Validates architectural rules during EXECUTE |
 | `review-gate.js` | Pre-commit validation (fail-open) |
 | `spec-hygiene.js` | Guards spec format + checkbox integrity |
-| `debug-loop-guard.js` | Detects retry/iteration anti-patterns |
+| `spec-size-gate.js` / `skill-size-gate.js` | Warns/blocks files >500 lines (shared lib `_lib/size-gate.js`) |
+| `close-gate.js` | Wave 9+10 strict gate: blocks CLOSE if build/lint/test/QA fail or checklist incomplete |
+| `memory-auto-extract.js` | SessionEnd: extracts `## Decisões` / `## Lessons` from active specs into `memory/decisions.json` and `lessons.json` |
+| `pr-detect.js` | PostToolUse(Bash): detects `gh pr create\|merge` and emits DORA events (`pr.opened`, `pr.merged`) |
 
 ### Memory & telemetry hooks
 

@@ -98,6 +98,8 @@ Write the resolved value as `### Lang: pt|en` in the spec header (line after `##
 
 **HARD RULE — Headers consistency:** when `Lang: pt`, **ALL** `## ` body headings MUST be in PT — translate every default. Examples: `## Boundaries → ## Limites`, `## Root cause → ## Causa raiz`, `## Plan → ## Plano`, `## Concerns → ## Preocupações`, `## Acceptance Criteria → ## Critérios de Aceitação`, `## Non-Goals → ## Não-Objetivos`. Do **NOT** mix EN headers with PT body. When `Lang: en`, keep all headers EN.
 
+**HARD RULE — Source code language:** every file the agent writes or edits stays in English regardless of `Lang`. This covers identifiers, comments in every form (`//`, `#`, `/* */`, `///`, `'''`, `"""`, doc-comments, JSDoc, `<!-- -->`), log/error messages, AC `Command:` content. `Lang` applies to spec narrative only — never to code. Pre-existing comments are NOT translated (surgical changes — karpathy §3).
+
 **Exceptions (always EN):** status values (`draft | implementing | completed`), phase values (`PLAN | EXECUTE | QA | CLOSE`), scope values (`light | extended-light | full`), shell commands, filenames, AC `Command:` field, the `### Lang:` line itself.
 
 → See `../../../refs/feature/spec-language.md` for full Header Translation Table.
@@ -117,6 +119,7 @@ Check whether the work should be decomposed into waves before writing a single s
    - 3-8 checkboxed steps per agent, decomposed by operation type (NOT by file)
    - Mark `(parallel-safe)` on frontend tasks with no dependency on new backend endpoints
    - **MANDATORY: `## Acceptance Criteria` section** (Wave 10) — 3-8 binary, executable items: `- [ ] AC-1: {description} — Command: \`{exact command}\``. Each: exit 0 = pass; runnable from project root; focus on observable behavior (build, endpoint, test). Include `Testable, binary (pass/fail) criteria. Each MUST be executable and independent.` header line.
+   - **CONDITIONAL: `## Component Contract` section (UI specs only)** — append between `## Files` and `## Tasks` when ANALYZE detects component creation/refactoring (new `*.tsx|*.vue|*.svelte|*.dart|*.swift` widget/View, or props/variants change). Template + rationale at `../../../refs/feature/spec-language.md § Component Contract`. **Skip for non-UI work** — adding this section to backend/database specs is bloat.
 2. Add checkpoint fields: `Status: draft`, `Phase: PLAN`, `Scope: full`, `Checkpoint: {now}`
 3. Create `.claude/.pipeline-states/{spec-name}.json`: `specName`, `status: "active"`, `phase: 2`, `phaseName: "PLAN"`, `scope: "full"`
 4. Elegance Check: 3+ files or complex logic → "Is there a more elegant approach?"

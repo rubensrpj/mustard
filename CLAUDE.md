@@ -2,6 +2,8 @@
 
 Instructions for Claude Code when working with this repository.
 
+> **Em português simples (1 parágrafo):** Mustard é uma "configuração pronta" para Claude Code. Quando você roda `mustard init` num projeto, ele cria a pasta `.claude/` com tudo que a IA precisa para trabalhar como um sênior: pipeline em fases (pesquisa → plano → execução → QA → fechamento), regras automáticas que evitam erros comuns (não rodar `rm -rf`, não passar de 40% da janela de contexto, não esquecer de testar, etc.), e um sistema que aprende com cada sessão. Esta página é a "primeira leitura" que a IA faz ao abrir o projeto — por isso é técnica de propósito.
+
 ## Project
 
 Mustard is a CLI that generates `.claude/` folders for Claude Code projects. It creates prompts, commands, hooks, and rules.
@@ -10,11 +12,12 @@ Mustard is a CLI that generates `.claude/` folders for Claude Code projects. It 
 
 - "Agents" are prompts loaded into `Task(general-purpose)` - custom subagent types don't work
 - Only 4 native `subagent_type` values: `Explore`, `Plan`, `general-purpose`, `Bash`
-- Enforcement via JavaScript hooks (`PreToolUse` with `Skill` matcher)
+- Enforcement via JavaScript hooks (`PreToolUse`/`PostToolUse`/`SessionStart`/`PreCompact`/`SessionEnd`/`SubagentStart`/`SubagentStop`/`UserPromptSubmit`)
 - **Universal Delegation**: All code activities must be delegated via Task (separate context)
-- **Modular Context**: Each agent has `README.md` + `{agent}.core.md` with explicit identity
+- **Skill+Recipe-driven context**: agents auto-load skills by description; recipes inject 90% skeletons by entity+operation
 - **Auto-sync Scripts**: `sync-detect.js`, `sync-compile.js`, `sync-registry.js`
 - **Namespaced Commands**: All commands use `mustard:` prefix (e.g., `/mustard:feature`)
+- **Canonical methodology mapping**: ANALYZE↔Research, PLAN↔Spec+Plan, EXECUTE↔Implement (cf. [GitHub Spec Kit](https://github.com/github/spec-kit) RPI loop)
 
 ## L0 Rule - Universal Delegation
 
@@ -63,52 +66,54 @@ mustard/
 │   └── services/            # npm.ts
 ├── dist/                    # Compiled JavaScript
 └── templates/               # Templates (copied to target .claude/)
-    ├── CLAUDE.md            # Minimal orchestrator rules
-    ├── prompts/             # Stub prompts (reference .core.md)
-    ├── context/             # Modular context per agent
-    │   ├── shared/          # Common context (all agents)
-    │   ├── backend/         # README.md + backend.core.md
-    │   ├── frontend/        # README.md + frontend.core.md
-    │   ├── database/        # README.md + database.core.md
-    │   ├── bugfix/          # README.md + bugfix.core.md
-    │   ├── review/          # README.md + review.core.md
-    │   └── orchestrator/    # README.md + orchestrator.core.md
-    ├── commands/mustard/    # Pipeline commands (namespaced)
-    ├── scripts/             # Sync scripts
-    ├── core/                # Enforcement rules
-    └── hooks/               # JavaScript hooks
-        └── _lib/hook-env.js # Shared runtime controls (profiles, env-based disabling)
+    ├── CLAUDE.md            # Orchestrator rules (auto-loaded by Claude Code)
+    ├── settings.json        # Hook wiring + permissions + env modes
+    ├── pipeline-config.md   # Phase rules, role rules, model selection, budgets
+    ├── commands/mustard/    # 18 namespaced slash commands
+    ├── skills/              # 7 foundation skills (karpathy, design-craft, etc.)
+    ├── refs/                # Progressive-disclosure refs (loaded on demand)
+    ├── recipes/             # Structured recipes (90% skeletons by entity+operation)
+    ├── context/qa/          # QA agent core context (only static .core.md kept)
+    ├── scripts/             # 25 utility scripts (sync-*, harness-views, qa-run, etc.)
+    └── hooks/               # 31 JavaScript hooks (fail-open, no npm deps)
+        └── _lib/            # Shared runtime: hook-env.js, harness-event.js, metrics-emit.js
 ```
 
-## Context Architecture (v3.0)
+## Context Architecture
 
-Each agent has **modular context** with explicit identity:
+Mustard uses **skill+recipe-driven context loading** — agents receive context lazily, not from monolithic files.
 
-```text
-context/{agent}/
-├── README.md        # Extensibility guide (how to add custom context)
-└── {agent}.core.md  # Identity + Responsibilities + Workflow + Return Format
-```
+### Loading sources (in order of preference)
 
-### .core.md Structure
+| Source | Where | Loaded |
+|---|---|---|
+| **Project root rules** | `{root}/CLAUDE.md` | Auto, every session |
+| **Subproject guards** | `{subproject}/CLAUDE.md` | Auto when working in subproject |
+| **Foundation skills** | `templates/skills/{name}/SKILL.md` | Auto via skill description match |
+| **Subproject patterns** | `{subproject}/.claude/skills/` | Auto via skill description match |
+| **Recipes (structured)** | `.claude/recipes/{operation}.json` | Matched by `recipe-match.js --entity --operation` |
+| **Refs (progressive)** | `templates/refs/{cmd}/*.md` | Read on-demand by commands |
+| **Stack/Modules** | `{subproject}/.claude/commands/{stack,patterns,guards,recipes,notes}.md` | Read on-demand |
+| **Entity registry** | `.claude/entity-registry.json` | Grep by entity name |
+| **QA core** | `templates/context/qa/qa.core.md` | Loaded by `/mustard:qa` |
 
-| Section | Purpose |
-|---------|---------|
-| **Identity** | "You are the Backend Specialist" |
-| **Responsibilities** | What the agent implements/doesn't implement |
-| **Prerequisites** | Validations before accepting work |
-| **Checklist** | Step-by-step workflow |
-| **Return Format** | Standardized response format |
-| **Naming Conventions** | PascalCase, snake_case, kebab-case rules |
-| **Rules** | Explicit DO/DO NOT |
+### Methodology mapping (PRD ↔ Mustard)
 
-### Sync Flow
+| PRD term | Mustard phase | Reference |
+|---|---|---|
+| Research | ANALYZE | [GitHub Spec Kit](https://github.com/github/spec-kit) |
+| Spec + Plan | PLAN | [Martin Fowler — SDD-3-tools](https://martinfowler.com/articles/exploring-gen-ai/sdd-3-tools.html) |
+| Implement | EXECUTE | — |
+| Acceptance | QA (Wave 10) | runnable AC commands |
+| Close | CLOSE | sync registry + move spec |
+
+### Sync flow (auto-discovery, monorepo-aware)
 
 1. User invokes `/mustard:feature` or `/mustard:bugfix`
-2. `sync-detect.js` discovers subprojects (monorepo)
-3. `sync-compile.js` compiles contexts with SHA256 caching
-4. Agent receives compiled `{agent}.context.md`
-5. Skip recompilation if content hash unchanged
+2. `sync-detect.js` discovers subprojects + roles
+3. `sync-registry.js` scans entities (Drizzle/EF/Prisma/TypeORM/etc.)
+4. Pipeline reads `entity-registry.json` for known entities
+5. SHA256 hash skips recompilation when content unchanged
 
 ## CLI Flow
 
@@ -124,16 +129,17 @@ mustard update
     -> preserve: CLAUDE.md, prompts/, context/*.md, mustard.json (user files)
 ```
 
-## Prompts (Agents)
+## Model routing (`model-routing-gate.js`)
 
-| Prompt | Model | Context |
-|--------|-------|---------|
-| orchestrator | opus | orchestrator.core.md |
-| backend | opus | backend.core.md |
-| frontend | opus | frontend.core.md |
-| database | opus | database.core.md |
-| bugfix | opus | bugfix.core.md |
-| review | opus | review.core.md |
+Models are auto-selected by intent. Upgrades blocked, downgrades allowed (opt-in via env).
+
+| Intent | Model | Why |
+|---|---|---|
+| Explore (mechanical search) | haiku | cheap, fast, no reasoning needed |
+| Plan | opus | bad plan = bad implementation |
+| Feature pipeline (any) | opus | quality-first |
+| Bugfix pipeline | opus | diagnosis needs deep reasoning |
+| Default | sonnet | safe baseline |
 
 ## Commands
 
@@ -168,18 +174,28 @@ mustard update
 - `/mustard:validate` - Build + type-check
 - `/mustard:status` - Project status
 
-## Enforcement Hooks
+## Enforcement Hooks (highlights)
 
-Hooks are registered in `templates/settings.json`:
+31 hooks wired in `templates/settings.json`. Highlights below — full list at `templates/settings.json` and behavioral docs at `templates/pipeline-config.md`.
 
 | Hook | Matcher | Behavior |
 |------|---------|----------|
 | `bash-native-redirect.js` | `Bash` | **BLOCKS** grep/ls/cat/head/tail/find → native tools |
-| `model-routing-gate.js` | `Task` | **WARNS** model vs routing table (strict: blocks) |
-| `tool-use-counter.js` | `.*` + Subagent | **BLOCKS** Explore agents at 20 tool uses |
-| `enforce-registry.js` | `Skill` | **BLOCKS** if registry missing |
-| `mcp-budget.js` | `startup` | **WARNS** (advisory, MCP tool budget) |
-| `session-knowledge.js` | `prompt_input_exit\|clear\|other` | **EXTRACTS** patterns from session |
+| `bash-safety.js` | `Bash` | **BLOCKS** rm -rf, mkfs, dd, credentials access |
+| `model-routing-gate.js` | `Task` | **BLOCKS** upgrades vs routing table (downgrades allowed) |
+| `tool-use-counter.js` | `.*` + Subagent | **BLOCKS** Explore agents at 15-20 tool uses (warn at 12) |
+| `context-budget.js` | `Task` | **BLOCKS** Task prompts >per-role budget (Explore 10K chars, review 12K, general 30K); advisory >40% model window (Dumb Zone) |
+| `output-budget.js` | `Task` | **WARNS** when agent return >per-role line cap (advisory) |
+| `close-gate.js` | `Write\|Edit` to pipeline-states | **BLOCKS** CLOSE if build/lint/test/QA fail or checklist incomplete |
+| `enforce-registry.js` | `Skill` | **BLOCKS** /feature, /bugfix if registry missing |
+| `spec-size-gate.js` | `Write\|Edit` | **WARNS** specs >500 lines (strict block opt-in) |
+| `skill-validate-gate.js` | `Write\|Edit` | **VALIDATES** skill YAML frontmatter |
+| `review-gate.js` | `Bash git commit` | **WARNS** secrets staged or build broken |
+| `auto-format.js` | `Write\|Edit` (PostToolUse) | Auto-formats by extension (Prettier/Black/etc.) |
+| `checklist-auto-mark.js` | `Write\|Edit` (PostToolUse) | Auto-marks Checklist items when matching file edited |
+| `memory-auto-extract.js` | `SessionEnd` | **EXTRACTS** Decisões não-óbvias from active specs → `memory/decisions.json` |
+| `session-knowledge.js`/`-inc` | `SessionEnd` / `PostToolUse(Task)` | **EXTRACTS** patterns from pipeline-states; throttled 3/h, idempotency 24h |
+| `session-memory.js` | `SessionStart` | **INJECTS** knowledge.json + cross-session timeline |
 
 ### Pre-Pipeline Validation Flow
 

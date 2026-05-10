@@ -1,0 +1,45 @@
+{
+  "name": "add-endpoint",
+  "description": "Add a new API endpoint (handler + route + DTO + optional frontend client). Stack-agnostic.",
+  "operations": ["add-endpoint", "add-route", "add-handler", "new-endpoint", "add-api"],
+  "requires_entity": true,
+  "files": [
+    {
+      "pattern": "{Entity}",
+      "action": "create",
+      "hint": "Handler/controller method (Express route / .NET Controller action / FastAPI route / Spring @RequestMapping — match project convention)"
+    },
+    {
+      "pattern": "{Entity}",
+      "action": "create",
+      "hint": "Request DTO + Response DTO (validate via Zod/FluentValidation/Pydantic/Bean Validation — match project convention)"
+    },
+    {
+      "pattern": "{Entity}",
+      "action": "modify",
+      "hint": "Service/use-case: add business logic method called by handler"
+    },
+    {
+      "pattern": "{Entity}",
+      "action": "modify",
+      "hint": "Route registration: wire handler into router/app (only if framework requires explicit registration)"
+    },
+    {
+      "pattern": "{Entity}",
+      "action": "create",
+      "hint": "Frontend (only if consumed): typed API client function + hook/store integration"
+    }
+  ],
+  "checklist": [
+    "Decide HTTP method (GET/POST/PUT/PATCH/DELETE) + path + auth requirement",
+    "Define request shape (params, query, body) and response shape",
+    "Add validation (return 400 for invalid input)",
+    "Implement handler delegating to service layer",
+    "Implement service method with business logic + persistence",
+    "Add error handling (404 for not found, 409 for conflict, 500 last resort)",
+    "Write integration test or contract test",
+    "Build & type-check backend",
+    "If frontend consumes: add typed client + update hook/store + add tests",
+    "Document endpoint (OpenAPI/Swagger if used)"
+  ]
+}

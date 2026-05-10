@@ -22,18 +22,26 @@ function getTemplatesDir(): string {
 
 /**
  * Recursively copy a directory. If overwrite=false, skip existing files.
+ * Skip directories listed in `skipTopLevel` at the top level only (e.g. `.github`
+ * which lives at project root, not under `.claude/`).
  */
-async function copyDir(src: string, dest: string, overwrite = true): Promise<number> {
+async function copyDir(
+  src: string,
+  dest: string,
+  overwrite = true,
+  skipTopLevel: string[] = [],
+): Promise<number> {
   let count = 0;
   await mkdir(dest, { recursive: true });
 
   const entries = readdirSync(src, { withFileTypes: true });
   for (const entry of entries) {
+    if (skipTopLevel.includes(entry.name)) continue;
     const srcPath = join(src, entry.name);
     const destPath = join(dest, entry.name);
 
     if (entry.isDirectory()) {
-      count += await copyDir(srcPath, destPath, overwrite);
+      count += await copyDir(srcPath, destPath, overwrite); // nested calls don't skip
     } else {
       if (overwrite || !existsSync(destPath)) {
         await copyFile(srcPath, destPath);
@@ -42,6 +50,30 @@ async function copyDir(src: string, dest: string, overwrite = true): Promise<num
     }
   }
   return count;
+}
+
+/**
+ * Detect whether the project has a GitHub remote (origin.url contains "github.com").
+ */
+function hasGithubRemote(): boolean {
+  try {
+    const url = execSync('git config --get remote.origin.url', { encoding: 'utf-8' }).trim();
+    return /github\.com[:/]/i.test(url);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Copy templates/.github/ → {projectPath}/.github/ when a GitHub remote is detected.
+ * Skips files that already exist (PR template etc. may already be customised).
+ */
+async function installGithubTemplates(templatesDir: string, projectPath: string): Promise<number> {
+  const src = join(templatesDir, '.github');
+  if (!existsSync(src)) return 0;
+  if (!hasGithubRemote()) return 0;
+  const dest = join(projectPath, '.github');
+  return copyDir(src, dest, false); // never overwrite user customisations
 }
 
 /**
@@ -61,8 +93,10 @@ export async function initCommand(options: InitOptions): Promise<void> {
     } else if (options.yes) {
       console.log(chalk.gray('  .claude/ exists — updating without overwriting user files'));
       const spinner = ora('Copying templates...').start();
-      const count = await copyDir(templatesDir, claudePath, false);
-      spinner.succeed(`Copied ${count} new files (existing files preserved)`);
+      const count = await copyDir(templatesDir, claudePath, false, ['.github']);
+      const ghCount = await installGithubTemplates(templatesDir, projectPath);
+      const ghMsg = ghCount > 0 ? ` + ${ghCount} GitHub template(s)` : '';
+      spinner.succeed(`Copied ${count} new files (existing files preserved)${ghMsg}`);
       await ensureGlobalPermissions();
       await ensureRtk();
       if (options.cursor) await installCursorAdapter(projectPath, claudePath);
@@ -100,8 +134,10 @@ export async function initCommand(options: InitOptions): Promise<void> {
 
       if (action === 'merge') {
         const spinner = ora('Merging templates...').start();
-        const count = await copyDir(templatesDir, claudePath, false);
-        spinner.succeed(`Copied ${count} new files (existing files preserved)`);
+        const count = await copyDir(templatesDir, claudePath, false, ['.github']);
+        const ghCount = await installGithubTemplates(templatesDir, projectPath);
+        const ghMsg = ghCount > 0 ? ` + ${ghCount} GitHub template(s)` : '';
+        spinner.succeed(`Copied ${count} new files (existing files preserved)${ghMsg}`);
         await ensureGlobalPermissions();
         await ensureRtk();
         if (options.cursor) await installCursorAdapter(projectPath, claudePath);
@@ -113,7 +149,8 @@ export async function initCommand(options: InitOptions): Promise<void> {
 
   // Fresh copy
   const spinner = ora('Copying .claude/ structure...').start();
-  const count = await copyDir(templatesDir, claudePath, true);
+  const count = await copyDir(templatesDir, claudePath, true, ['.github']);
+  const ghCount = await installGithubTemplates(templatesDir, projectPath);
 
   // Create empty entity-registry.json
   const registryPath = join(claudePath, 'entity-registry.json');
@@ -123,7 +160,8 @@ export async function initCommand(options: InitOptions): Promise<void> {
     count; // already counted
   }
 
-  spinner.succeed(`Copied ${count} files to .claude/`);
+  const ghMsg = ghCount > 0 ? ` (+ ${ghCount} GitHub template(s) at .github/)` : '';
+  spinner.succeed(`Copied ${count} files to .claude/${ghMsg}`);
 
   // Ensure global permissions for Claude Code (Read, Write, Edit)
   await ensureGlobalPermissions();

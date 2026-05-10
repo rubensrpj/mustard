@@ -43,7 +43,39 @@ const MODE = getMode();
 // Conservative regex: only match .claude/skills/**/*.md, .claude/context/**/*.md, SKILL.md references
 const MD_REF_PATTERN = /\.claude\/(?:skills|context)\/[^\s"'`]+\.md|SKILL\.md/g;
 
-const TOKEN_THRESHOLD = 50000; // advisory threshold (tokens)
+// ─── Dumb Zone (canonical) ────────────────────────────────────────────────────
+// Source: Dex Horthy (HumanLayer) + Liu et al. 2023 (arXiv:2307.03172, "Lost in
+// the Middle"). Consensus: ≥40% of model window degrades reasoning ("Dumb Zone").
+// We use 40% as WARN threshold and 65% as compact-suggestion threshold.
+const WINDOW_BY_MODEL = {
+  haiku:  200_000,
+  sonnet: 200_000,
+  opus:   200_000,
+};
+const OPUS_1M_WINDOW   = 1_000_000;
+const DEFAULT_WINDOW   = 200_000;
+const DUMB_ZONE_PCT    = 0.40; // warn at this % of window
+const COMPACT_PCT      = 0.65; // advise /compact at this %
+
+/**
+ * Resolve the model window in tokens from a model id string.
+ * Recognises haiku/sonnet/opus + the "1m" suffix (e.g. "claude-opus-4-7-1m").
+ * Falls back to DEFAULT_WINDOW (200K) when unknown.
+ * @param {string} modelId
+ * @returns {number}
+ */
+function resolveWindow(modelId) {
+  const s = (modelId || '').toLowerCase();
+  if (!s) return DEFAULT_WINDOW;
+  if (/[\[\(\-_]1m[\]\)\-_]?$|1m\b/.test(s)) return OPUS_1M_WINDOW;
+  if (s.includes('haiku'))  return WINDOW_BY_MODEL.haiku;
+  if (s.includes('sonnet')) return WINDOW_BY_MODEL.sonnet;
+  if (s.includes('opus'))   return WINDOW_BY_MODEL.opus;
+  return DEFAULT_WINDOW;
+}
+
+// Legacy absolute fallback: kept ONLY when no model context is available.
+const LEGACY_TOKEN_THRESHOLD = 50000;
 
 // Role budgets in chars (1 token ≈ 4 chars)
 const BUDGET_EXPLORE          = 10000; // 2,500 tokens × 4
@@ -151,19 +183,28 @@ process.stdin.on('end', () => {
       }
     }
 
-    // ── ADVISORY: warn about total referenced .md file size ─────────────────
-    if (!prompt) { process.exit(0); }
-
-    const matches = prompt.match(MD_REF_PATTERN) || [];
-    const uniquePaths = [...new Set(matches)];
-
+    // ── ADVISORY: Dumb Zone (% window) + legacy .md size ─────────────────────
+    // Compute referenced .md tokens (if any) + prompt tokens.
     let totalBytes = 0;
-    const CHUNK_SIZE = 25;
-    if (uniquePaths.length > 50) {
-      // Process in chunks of 25 to avoid blocking on large path sets
-      for (let i = 0; i < uniquePaths.length; i += CHUNK_SIZE) {
-        const chunk = uniquePaths.slice(i, i + CHUNK_SIZE);
-        for (const relPath of chunk) {
+    if (prompt) {
+      const matches = prompt.match(MD_REF_PATTERN) || [];
+      const uniquePaths = [...new Set(matches)];
+
+      const CHUNK_SIZE = 25;
+      if (uniquePaths.length > 50) {
+        for (let i = 0; i < uniquePaths.length; i += CHUNK_SIZE) {
+          const chunk = uniquePaths.slice(i, i + CHUNK_SIZE);
+          for (const relPath of chunk) {
+            try {
+              const absPath = path.join(projectDir, relPath);
+              if (fs.existsSync(absPath)) {
+                totalBytes += fs.statSync(absPath).size;
+              }
+            } catch (e) { /* skip unreadable paths */ }
+          }
+        }
+      } else {
+        for (const relPath of uniquePaths) {
           try {
             const absPath = path.join(projectDir, relPath);
             if (fs.existsSync(absPath)) {
@@ -172,28 +213,50 @@ process.stdin.on('end', () => {
           } catch (e) { /* skip unreadable paths */ }
         }
       }
-    } else {
-      for (const relPath of uniquePaths) {
-        try {
-          const absPath = path.join(projectDir, relPath);
-          if (fs.existsSync(absPath)) {
-            totalBytes += fs.statSync(absPath).size;
-          }
-        } catch (e) { /* skip unreadable paths */ }
-      }
     }
 
-    if (totalBytes === 0) { process.exit(0); }
+    const refTokens   = Math.round(totalBytes / 4);
+    const promptTokens = Math.round((prompt || '').length / 4);
+    const totalTokens = refTokens + promptTokens;
 
-    const estimatedTokens = Math.round(totalBytes / 4);
+    if (totalTokens === 0) { process.exit(0); }
 
-    if (estimatedTokens > TOKEN_THRESHOLD) {
-      const kTokens = Math.round(estimatedTokens / 1000);
+    // Resolve model window from payload.model (Claude Code passes it on Task)
+    // or fallback to env var, then DEFAULT_WINDOW.
+    const modelHint = data.model || toolInput.model || process.env.MUSTARD_MODEL_HINT || '';
+    const windowTokens = resolveWindow(modelHint);
+    const pct = totalTokens / windowTokens;
+
+    let advisory = null;
+
+    if (pct >= COMPACT_PCT) {
+      // Above 65% — strongly suggest /compact
+      const kTokens = Math.round(totalTokens / 1000);
+      const pctRounded = Math.round(pct * 100);
+      advisory =
+        `[Dumb Zone — Compact Now] Estimated context ~${kTokens}K tokens = ${pctRounded}% of ${Math.round(windowTokens / 1000)}K window. ` +
+        `Above ${Math.round(COMPACT_PCT * 100)}% reasoning quality drops sharply (Liu et al. 2023). ` +
+        `Run /compact then /resume, or split the task.`;
+    } else if (pct >= DUMB_ZONE_PCT) {
+      // Above 40% — Dumb Zone warning
+      const kTokens = Math.round(totalTokens / 1000);
+      const pctRounded = Math.round(pct * 100);
+      advisory =
+        `[Dumb Zone Advisory] Estimated context ~${kTokens}K tokens = ${pctRounded}% of ${Math.round(windowTokens / 1000)}K window. ` +
+        `≥${Math.round(DUMB_ZONE_PCT * 100)}% degrades reasoning ("Dumb Zone", Dex Horthy / Liu et al. 2023). ` +
+        `Consider trimming recommended_skills, narrowing scope, or running /compact.`;
+    } else if (refTokens > LEGACY_TOKEN_THRESHOLD && !modelHint) {
+      // Legacy fallback: when no model hint, retain old 50K absolute warn for .md refs
+      const kTokens = Math.round(refTokens / 1000);
+      advisory =
+        `[Context Budget Advisory] ~${kTokens}K tokens of .md refs loaded (>50K). Trim recommended_skills or split task.`;
+    }
+
+    if (advisory) {
       console.log(JSON.stringify({
         hookSpecificOutput: {
           hookEventName: 'PreToolUse',
-          additionalContext:
-            '[Context Budget Advisory] Context budget warning: ~' + kTokens + 'K tokens will be loaded into this subagent (>50K threshold). Consider trimming recommended_skills or splitting the task.'
+          additionalContext: advisory,
         }
       }));
     }

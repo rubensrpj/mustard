@@ -18,12 +18,15 @@ For the superset view that also includes per-pipeline metrics, orphans, Pass@1 a
 
 ## Action
 1. Run `rtk node .claude/scripts/metrics-report.js $ARGS` (pass through any flags)
-2. Display output verbatim
+2. **PR/Review section (DORA):** if `--pr` flag passed (or `--view pr-metrics`), instead run `node .claude/scripts/harness-views.js --view pr-metrics --days {N}` and pretty-print the JSON. Default window: 30 days.
+3. Display output verbatim
 
 ## Flags
 - `--since <ISO date>` — filter events after this date
 - `--event <type>` — filter to one event type (e.g. `budget-check`)
 - `--compare <from> <to>` — delta between two windows (git tag `vX.Y.Z` or ISO date)
+- `--pr` (alias `--view pr-metrics`) — show DORA-style PR metrics (lead time, review time, PR size, opened/merged per day) over the last N days
+- `--days <n>` — window for `--pr` (default 30)
 
 ## Examples
 - `/mustard:metrics` — hook event aggregation since beginning
@@ -31,6 +34,19 @@ For the superset view that also includes per-pipeline metrics, orphans, Pass@1 a
 - `/mustard:metrics --event budget-check` — only budget-check events
 - `/mustard:metrics --compare v3.1.21 v3.1.22` — delta between two releases
 - `/mustard:metrics --compare 2026-04-09 2026-04-20` — delta between two dates
+- `/mustard:metrics --pr` — DORA-style PR metrics last 30 days
+- `/mustard:metrics --pr --days 7` — last 7 days
+
+## DORA event sources (auto-emitted)
+
+| Event | Trigger | Where |
+|---|---|---|
+| `pr.opened` | `gh pr create ...` | `pr-detect.js` PostToolUse(Bash) hook |
+| `pr.merged` | `gh pr merge ...` | `pr-detect.js` PostToolUse(Bash) hook |
+| `review.start` | `/mustard:review` invoked | inline node call in command |
+| `review.complete` | `/mustard:review` returns | inline node call in command |
+
+Pairing strategy: events match by `payload.spec` (preferred) or `payload.branch` within the window. Unmatched events count in totals only.
 
 ## Notes
 - Metrics live in `.claude/.metrics/*.jsonl` (gitignored, runtime state)

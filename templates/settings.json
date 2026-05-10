@@ -207,6 +207,16 @@
         ]
       },
       {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/pr-detect.js",
+            "timeout": 3
+          }
+        ]
+      },
+      {
         "matcher": "Task",
         "hooks": [
           {
@@ -293,6 +303,12 @@
             "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/session-knowledge.js",
             "statusMessage": "Extracting session patterns...",
             "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/memory-auto-extract.js",
+            "statusMessage": "Persisting decisions and lessons...",
+            "timeout": 8
           },
           {
             "type": "command",

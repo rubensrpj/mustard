@@ -662,6 +662,157 @@ function buildSlopeReport(events, opts) {
   };
 }
 
+/**
+ * buildPRMetrics — DORA-style metrics derived from pr.opened, pr.merged,
+ * review.start, and review.complete events.
+ *
+ * Returns:
+ *   {
+ *     window: { from, to, days },
+ *     totals: { opened, merged, reviewsStarted, reviewsCompleted },
+ *     leadTimeMs: { count, p50, p90, max }   // pr.opened → pr.merged per spec/branch
+ *     reviewTimeMs: { count, p50, p90, max } // review.start → review.complete per spec
+ *     prSize: { count, p50, p90, max }       // lines from payload.linesChanged when present
+ *     openByDay: [{ date, count }]
+ *     mergedByDay: [{ date, count }]
+ *   }
+ *
+ * Pairing strategy:
+ *   - Lead time: match latest pr.opened to first subsequent pr.merged with same
+ *     `payload.spec` (preferred) or `payload.branch` (fallback). Unmatched events
+ *     are counted in totals only.
+ *   - Review time: match review.start to review.complete by `payload.spec` or
+ *     `payload.target` within the window.
+ */
+function buildPRMetrics(events, opts) {
+  const o = (opts && typeof opts === 'object') ? opts : {};
+  const days = Number.isFinite(o.days) ? o.days : 30;
+  const now = o.now ? new Date(o.now) : new Date();
+  const from = new Date(now.getTime() - days * 24 * 60 * 60 * 1000);
+
+  function inWindow(ts) {
+    if (!ts) return false;
+    const t = new Date(ts).getTime();
+    return Number.isFinite(t) && t >= from.getTime() && t <= now.getTime();
+  }
+
+  const opened = [];
+  const merged = [];
+  const reviewStart = [];
+  const reviewComplete = [];
+
+  for (const e of (Array.isArray(events) ? events : [])) {
+    if (!e || typeof e !== 'object') continue;
+    if (!inWindow(e.ts)) continue;
+    switch (e.event) {
+      case 'pr.opened':         opened.push(e);         break;
+      case 'pr.merged':         merged.push(e);         break;
+      case 'review.start':      reviewStart.push(e);    break;
+      case 'review.complete':   reviewComplete.push(e); break;
+      default: break;
+    }
+  }
+
+  function pairKey(e) {
+    const p = e.payload || {};
+    return p.spec || p.branch || null;
+  }
+
+  // Pair opened → merged
+  const leadTimes = [];
+  const usedMergeIdx = new Set();
+  // Sort opened by ts asc to give earliest opener first chance
+  opened.sort((a, b) => new Date(a.ts) - new Date(b.ts));
+  const sortedMerged = [...merged].sort((a, b) => new Date(a.ts) - new Date(b.ts));
+  for (const op of opened) {
+    const k = pairKey(op);
+    if (!k) continue;
+    for (let i = 0; i < sortedMerged.length; i++) {
+      if (usedMergeIdx.has(i)) continue;
+      const m = sortedMerged[i];
+      if (new Date(m.ts) < new Date(op.ts)) continue;
+      if (pairKey(m) !== k) continue;
+      const dt = new Date(m.ts) - new Date(op.ts);
+      if (dt >= 0) leadTimes.push(dt);
+      usedMergeIdx.add(i);
+      break;
+    }
+  }
+
+  // Pair review.start → review.complete
+  const reviewTimes = [];
+  const usedComplete = new Set();
+  reviewStart.sort((a, b) => new Date(a.ts) - new Date(b.ts));
+  const sortedComplete = [...reviewComplete].sort((a, b) => new Date(a.ts) - new Date(b.ts));
+  for (const rs of reviewStart) {
+    const k = pairKey(rs);
+    if (!k) continue;
+    for (let i = 0; i < sortedComplete.length; i++) {
+      if (usedComplete.has(i)) continue;
+      const rc = sortedComplete[i];
+      if (new Date(rc.ts) < new Date(rs.ts)) continue;
+      if (pairKey(rc) !== k) continue;
+      const dt = new Date(rc.ts) - new Date(rs.ts);
+      if (dt >= 0) reviewTimes.push(dt);
+      usedComplete.add(i);
+      break;
+    }
+  }
+
+  // PR sizes (linesChanged from pr.opened payload when present)
+  const sizes = opened
+    .map(e => Number((e.payload || {}).linesChanged))
+    .filter(n => Number.isFinite(n) && n > 0);
+
+  function pct(arr, p) {
+    if (!arr.length) return null;
+    const sorted = [...arr].sort((a, b) => a - b);
+    const idx = Math.min(sorted.length - 1, Math.floor((p / 100) * sorted.length));
+    return sorted[idx];
+  }
+  function maxOf(arr) { return arr.length ? Math.max.apply(null, arr) : null; }
+
+  function bucketByDay(arr) {
+    const map = new Map();
+    for (const e of arr) {
+      const d = (e.ts || '').slice(0, 10);
+      if (!d) continue;
+      map.set(d, (map.get(d) || 0) + 1);
+    }
+    return [...map.entries()].sort().map(([date, count]) => ({ date, count }));
+  }
+
+  return {
+    window: { from: from.toISOString(), to: now.toISOString(), days },
+    totals: {
+      opened: opened.length,
+      merged: merged.length,
+      reviewsStarted: reviewStart.length,
+      reviewsCompleted: reviewComplete.length,
+    },
+    leadTimeMs: {
+      count: leadTimes.length,
+      p50: pct(leadTimes, 50),
+      p90: pct(leadTimes, 90),
+      max: maxOf(leadTimes),
+    },
+    reviewTimeMs: {
+      count: reviewTimes.length,
+      p50: pct(reviewTimes, 50),
+      p90: pct(reviewTimes, 90),
+      max: maxOf(reviewTimes),
+    },
+    prSize: {
+      count: sizes.length,
+      p50: pct(sizes, 50),
+      p90: pct(sizes, 90),
+      max: maxOf(sizes),
+    },
+    openedByDay: bucketByDay(opened),
+    mergedByDay: bucketByDay(merged),
+  };
+}
+
 module.exports = {
   buildAgentVisibility,
   buildPipelineState,
@@ -670,6 +821,7 @@ module.exports = {
   buildSpecTree,
   buildEpicSummary,
   buildSlopeReport,
+  buildPRMetrics,
   readEventsSync,
   streamJsonl,
   DEFAULT_AGENT_SUMMARY_CHARS,
@@ -712,8 +864,8 @@ if (require.main === module) {
 
       if (!view) {
         process.stderr.write('Usage: node harness-views.js --view <name> [options]\n');
-        process.stderr.write('Views: agent-visibility, pipeline-state, session-summary, cross-session-timeline, spec-tree, epic-summary, slope-report\n');
-        process.stderr.write('Flags: --compact  --query <text>  --cwd <path>  --spec <name>\n');
+        process.stderr.write('Views: agent-visibility, pipeline-state, session-summary, cross-session-timeline, spec-tree, epic-summary, slope-report, pr-metrics\n');
+        process.stderr.write('Flags: --compact  --query <text>  --cwd <path>  --spec <name>  --days <n>\n');
         process.exit(0);
       }
 
@@ -798,6 +950,12 @@ if (require.main === module) {
         const lookback_sessions = lookbackArg !== null ? parseInt(lookbackArg, 10) : 5;
         const events = readEventsSync(harnessEventsPath);
         result = buildSlopeReport(events, { lookback_sessions, sessionsDir });
+
+      } else if (view === 'pr-metrics') {
+        const daysArg = getArg('days');
+        const days = daysArg !== null ? parseInt(daysArg, 10) : 30;
+        const events = readEventsSync(harnessEventsPath);
+        result = buildPRMetrics(events, { days });
 
       } else {
         result = { error: 'Unknown view: ' + view };

@@ -98,6 +98,8 @@ For Fast Path (no spec yet), keep the cache in-memory only — it lives for the 
 
 **HARD RULE — Headers consistency:** when `Lang: pt`, **ALL** `## ` body headings MUST be in PT — translate every default: `## Boundaries → ## Limites`, `## Root cause → ## Causa raiz`, `## Plan → ## Plano`, `## Concerns → ## Preocupações`, `## Acceptance Criteria → ## Critérios de Aceitação`. Do NOT mix. When `Lang: en`, keep all EN. Exceptions (always EN): status/phase/scope values, commands, filenames, AC `Command:` field.
 
+**HARD RULE — Source code language:** every file the agent writes or edits stays in English regardless of `Lang`. This covers identifiers, comments in every form (`//`, `#`, `/* */`, `///`, `'''`, `"""`, doc-comments, JSDoc, `<!-- -->`), log/error messages, AC `Command:` content. `Lang` applies to spec narrative only — never to code. Pre-existing comments are NOT translated (surgical changes — karpathy §3).
+
 → See `../../../refs/feature/spec-language.md` for full Header Translation Table.
 
 The spec header MUST include `### Lang: {pt|en}`. The spec MUST include (Wave 10):
@@ -154,6 +156,7 @@ Dispatch bugfix agent with:
 - `{recommended_skills}` starting with `karpathy-guidelines` (bugfix edits code) — see `templates/commands/mustard/templates/agent-prompt/SKILL.md § How to fill {recommended_skills}`
 - Specific files to modify
 - Expected behavior after fix
+- **If role=ui** (frontend, mobile-web): append `Read templates/refs/bugfix/browser-debug.md before instrumenting — Playwright MCP + Chrome DevTools MCP playbook (reproduce → isolate → instrument → fix → prevent).` to `{context_extras}`. Stack-agnostic; loaded on demand only for UI bugs.
 
 **Validate:**
 - Build check: `dotnet build` / `pnpm typecheck` (as applicable)

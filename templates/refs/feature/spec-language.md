@@ -46,27 +46,40 @@ Once resolved, write the chosen value as a header line in `spec.md`:
 | `## Entity Info` | `## Informações da Entidade` |
 | `## Symptom` | `## Sintoma` |
 
-## Always EN (no translation)
+## Always EN — covers ALL code
 
-These are identifiers parsed by scripts or shell — keep in English regardless of `Lang`:
+These stay in English regardless of `Lang`:
 
+**Spec metadata (parsed by scripts):**
 - Status values: `draft | implementing | completed | cancelled`
 - Phase values: `PLAN | EXECUTE | QA | CLOSE | COORDINATE`
 - Scope values: `light | extended-light | full`
-- AC `Command:` field content (commands run in shell)
-- File paths, identifiers (variable/function/class names)
 - The `### Lang:` line itself (literal)
 - Hook output prefixes (`[SPEC-SIZE]`, `[HYGIENE]`, `[BOUNDARY WARNING]`)
+
+**Source code (every file the agent writes/edits):**
+- Identifiers (variable, function, class, type, interface, enum names)
+- File paths
+- Shell commands and AC `Command:` field content
+- **Comments** — every form: `//`, `#`, `/* */`, `///`, `//!`, `'''`, `"""`, JSDoc, JavaDoc, XML doc-comments, `<!-- -->`
+- Log/error/exception messages
+- API string constants the agent introduces (unless replacing an existing localized string)
+
+**Hard rule:** `Lang` controls only spec narrative (prose, headings, Concerns). Source code never carries `{spec_lang}`. Agents must not switch their own writing style based on `Lang`.
+
+**Surgical:** never translate pre-existing comments while editing a file (aligns with karpathy §3 — Surgical Changes). Only NEW comments the agent writes are in English.
+
+**Why:** `entity-registry.json#description` is populated by `scripts/registry/description-enricher.js` from doc-comments and feeds `/mustard:knowledge glossary`. EN-only comments = consistent glossary; mixed comments break it.
 
 ## Dispatch Propagation
 
 Agent dispatch template (`templates/commands/mustard/templates/agent-prompt/SKILL.md`) receives `{spec_lang}` placeholder. Orchestrator reads the spec's `### Lang:` line and fills it. The CONTEXT block instructs:
 
 ```
-Spec language is `{spec_lang}`. Use `{spec_lang}` for prose, labels, and Concerns you add. Code/commands stay EN.
+Spec language is `{spec_lang}`. Use it for spec prose, labels, and any Concerns you append. Source code (identifiers, comments in every form, paths, commands, log messages) stays English regardless. Don't translate pre-existing comments.
 ```
 
-Agents adding `## Concerns` or marking `[x]` boxes inherit the language automatically.
+Agents adding `## Concerns` or marking `[x]` boxes inherit `{spec_lang}` automatically. Code they write does not.
 
 ## Contexto Narrative Rules
 
@@ -129,6 +142,49 @@ Why good: explains *tenant* on first use, says impact in user/business terms (re
 The technical detail belongs in `## Root cause`, `## Files`, `## Tasks` — those sections already exist below. The Contexto's job is **briefing**, not duplicating those.
 
 A reader scanning the spec for the first time should be able to answer "what's broken and why does it matter?" from Contexto alone, without scrolling further.
+
+## Component Contract (UI specs only)
+
+When the spec creates or refactors a UI component, append a `## Component Contract` section between `## Files` and `## Tasks`. **Do NOT add this section for non-UI work** — it bloats specs unnecessarily.
+
+### When to add
+
+Triggered by ANALYZE detecting:
+- New component file (`*.tsx`, `*.vue`, `*.svelte`, `*.dart` widget, `*.swift` View)
+- Component refactoring (props changing, variant added)
+- Form/input creation
+
+### Template (PT — `Lang: pt`)
+
+```markdown
+## Contrato do Componente
+
+- **Props:** `{prop}: {tipo}` — required vs optional explícito
+- **Estados:** loading | empty | error | success | disabled (todos visíveis e testáveis)
+- **Variantes:** size (sm/md/lg) | color (primary/secondary/...) | density (compact/regular)
+- **Breakpoints:** xs | sm | md | lg | xl — comportamento em cada
+- **A11y:** roles ARIA | tab order | aria-* | focus-visible | contrast token
+- **DS tokens consumidos:** color.* | spacing.* | typography.* (NÃO valores literais)
+- **Microinterações:** hover/focus/active distintos; respeita `prefers-reduced-motion`
+```
+
+### Template (EN — `Lang: en`)
+
+```markdown
+## Component Contract
+
+- **Props:** `{prop}: {type}` — required vs optional explicit
+- **States:** loading | empty | error | success | disabled (all visible and testable)
+- **Variants:** size (sm/md/lg) | color (primary/secondary/...) | density (compact/regular)
+- **Breakpoints:** xs | sm | md | lg | xl — behavior at each
+- **A11y:** ARIA roles | tab order | aria-* | focus-visible | contrast token
+- **DS tokens consumed:** color.* | spacing.* | typography.* (NOT literal values)
+- **Microinteractions:** distinct hover/focus/active; respects `prefers-reduced-motion`
+```
+
+### Why this section matters (anti-AI-look)
+
+Without an explicit contract, FE agents improvise variants/states/a11y, leading to "AI-look" output (literal colors, missing empty states, no microinteractions). The contract forces explicit decisions before code touches files. See `fe-craft-check.md` for the full checklist applied at review.
 
 ## Examples
 

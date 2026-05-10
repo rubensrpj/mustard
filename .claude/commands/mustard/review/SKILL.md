@@ -40,7 +40,17 @@ If no PR found for current branch → error:
 
 ---
 
-## Step 2 — Invoke Code Review
+## Step 2 — Emit DORA event (review.start)
+
+Before invoking the review, emit `review.start` to the harness event bus so `/mustard:metrics --view pr-metrics` can compute review-time DORA metrics:
+
+```bash
+node -e "require('./.claude/hooks/_lib/harness-event.js').emit('review.start', { spec: process.env.MUSTARD_SPEC || null, target: '$PR_TARGET' }, { actor: { kind: 'command', id: 'review' } })"
+```
+
+`$PR_TARGET` is the PR number or URL resolved in Step 1. Set `MUSTARD_SPEC` from the most recent active spec if available (best-effort).
+
+## Step 3 — Invoke Code Review
 
 Use the Skill tool to invoke Claude's native code-review:
 
@@ -64,9 +74,15 @@ Task({
 
 ---
 
-## Step 3 — Report
+## Step 4 — Emit DORA event (review.complete) + Report
 
-Present the review results as returned by the skill/agent.
+After the review returns, emit `review.complete`:
+
+```bash
+node -e "require('./.claude/hooks/_lib/harness-event.js').emit('review.complete', { spec: process.env.MUSTARD_SPEC || null, target: '$PR_TARGET' }, { actor: { kind: 'command', id: 'review' } })"
+```
+
+Then present the review results as returned by the skill/agent.
 
 ---
 

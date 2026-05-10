@@ -126,14 +126,14 @@ describe('Suite 2: context-budget edge cases', () => {
     assert.notEqual(r.parsed?.permissionDecision, 'deny');
   });
 
-  it('general-purpose at 20000 chars → allow', async () => {
-    const r = await runHook('context-budget.js', taskPayload('general-purpose', 20000, 'implement feature'));
+  it('general-purpose at 30000 chars → allow', async () => {
+    const r = await runHook('context-budget.js', taskPayload('general-purpose', 30000, 'implement feature'));
     assert.equal(r.code, 0);
     assert.equal(r.parsed?.permissionDecision, 'allow');
   });
 
-  it('general-purpose at 20001 chars → deny', async () => {
-    const r = await runHook('context-budget.js', taskPayload('general-purpose', 20001, 'implement feature'));
+  it('general-purpose at 30001 chars → deny', async () => {
+    const r = await runHook('context-budget.js', taskPayload('general-purpose', 30001, 'implement feature'));
     assert.equal(r.code, 0);
     assert.equal(r.parsed?.permissionDecision, 'deny');
   });
@@ -154,6 +154,67 @@ describe('Suite 2: context-budget edge cases', () => {
     const r = await runHook('context-budget.js', taskPayload('Plan', 50000, 'plan architecture'));
     assert.equal(r.code, 0);
     assert.notEqual(r.parsed?.permissionDecision, 'deny');
+  });
+});
+
+// ─── Suite 2.1: Dumb Zone advisory (% of model window) ──────────────────────
+// Reference: Liu et al. 2023 (arXiv:2307.03172) + Dex Horthy "Dumb Zone" 40%
+
+describe('Suite 2.1: Dumb Zone advisory', () => {
+  function planPayload(promptLen, model) {
+    // Use Plan type so per-role hard block is skipped (advisory-only path)
+    const payload = {
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Task',
+      tool_input: {
+        subagent_type: 'Plan',
+        description: 'plan architecture',
+        prompt: 'A'.repeat(promptLen),
+      },
+    };
+    if (model) payload.model = model;
+    return payload;
+  }
+
+  it('Plan with 40K-token prompt + sonnet (200K window) = 20% → no advisory', async () => {
+    // 40K tokens × 4 chars = 160K chars; 160K/200K = 20% < 40%
+    const r = await runHook('context-budget.js', planPayload(160000, 'claude-sonnet-4-5'));
+    assert.equal(r.code, 0);
+    const txt = JSON.stringify(r.parsed || {});
+    assert.ok(!/Dumb Zone/.test(txt), 'Should not warn at 20% window');
+  });
+
+  it('Plan with 90K-token prompt + sonnet (200K window) = 45% → Dumb Zone advisory', async () => {
+    // 90K tokens × 4 = 360K chars; 360K/200K = ~45% ≥ 40%
+    const r = await runHook('context-budget.js', planPayload(360000, 'claude-sonnet-4-5'));
+    assert.equal(r.code, 0);
+    const txt = JSON.stringify(r.parsed || {});
+    assert.ok(/Dumb Zone/.test(txt), `Expected Dumb Zone advisory at ~45%; got: ${txt.slice(0, 200)}`);
+    assert.ok(!/Compact Now/.test(txt), 'Should NOT trigger Compact at 45% (only ≥65%)');
+  });
+
+  it('Plan with 140K-token prompt + sonnet (200K window) = 70% → Compact Now advisory', async () => {
+    // 140K tokens × 4 = 560K chars; 560K/200K = 70% ≥ 65%
+    const r = await runHook('context-budget.js', planPayload(560000, 'claude-sonnet-4-5'));
+    assert.equal(r.code, 0);
+    const txt = JSON.stringify(r.parsed || {});
+    assert.ok(/Compact Now/.test(txt), `Expected Compact Now advisory at 70%; got: ${txt.slice(0, 200)}`);
+  });
+
+  it('Plan with 90K-token prompt + opus-1m (1M window) = 9% → no advisory', async () => {
+    // 90K tokens / 1M = 9% — well below 40% even though absolute is large
+    const r = await runHook('context-budget.js', planPayload(360000, 'claude-opus-4-7-1m'));
+    assert.equal(r.code, 0);
+    const txt = JSON.stringify(r.parsed || {});
+    assert.ok(!/Dumb Zone/.test(txt), 'Should not warn at 9% of 1M window');
+    assert.ok(!/Compact Now/.test(txt), 'Should not advise compact at 9%');
+  });
+
+  it('Plan with no model hint and small prompt → no advisory', async () => {
+    const r = await runHook('context-budget.js', planPayload(8000)); // 2K tokens, no model
+    assert.equal(r.code, 0);
+    const txt = JSON.stringify(r.parsed || {});
+    assert.ok(!/Dumb Zone/.test(txt), 'Should not warn for tiny prompt');
   });
 });
 

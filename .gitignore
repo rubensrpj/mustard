@@ -43,3 +43,10 @@ coverage/
 
 # Timestamped backups created by mustard init/update
 .claude.backup.*/
+
+# Dashboard runtime
+.claude/.dashboard.pid
+dashboard-html.txt
+
+# Playwright MCP snapshots
+.playwright-mcp/

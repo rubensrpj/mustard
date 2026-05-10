@@ -283,9 +283,8 @@ Bug in the hook itself (I/O error, timeout outside child process) still fails op
 
 | Hook | Mode env | Heuristic |
 |---|---|---|
-| `duplication-check.js` | `MUSTARD_DUPLICATION_MODE` (default warn) | Levenshtein ≥0.85 vs entity-registry |
-| `convention-check.js` | `MUSTARD_CONVENTION_MODE` (default warn) | Rules derived from knowledge.json conf≥0.8 |
-| `regression-guard.js` | `MUSTARD_REGRESSION_MODE` (default **off**) | File-to-test heuristic + re-run |
+| `duplication-check.js` | `MUSTARD_DUPLICATION_MODE` (default off) | Levenshtein ≥0.85 vs entity-registry |
+| `convention-check.js` | `MUSTARD_CONVENTION_MODE` (default off) | Rules derived from knowledge.json conf≥0.8 |
 
 All anti-slope hooks fail-open on bug. Only real signal triggers warn/block.
 

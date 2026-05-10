@@ -20,7 +20,7 @@ Single unified template for all dispatches:
 ## CONTEXT
 1. Read `{subproject}/CLAUDE.md` — guards, stack, paths
 2. Read `{subproject}/.claude/commands/guards.md` — mandatory rules
-3. Spec language is `{spec_lang}`. Use `{spec_lang}` for prose, labels, and any Concerns you add. Code/commands stay EN.
+3. Spec language is `{spec_lang}` — applies to spec narrative ONLY (prose, labels, Concerns you append). Source code stays English regardless: identifiers, comments in every form (`//`, `#`, `/* */`, `///`, `'''`, `"""`, doc-comments, `<!-- -->`), file paths, shell commands, AC `Command:` content, log messages. Surgical: never translate pre-existing comments — only write new ones in English.
 {context_extras}
 
 ## REFERENCE
@@ -136,12 +136,18 @@ Claude natively decides which additional skills to load based on descriptions.
 - Architecture decisions → `senior-architect`
 - Complex patterns → relevant advanced pattern skills
 
+**Rule 3 — Append role-based refs to `{context_extras}`:**
+- `role=ui` (frontend, mobile) on **feature/enhancement** → append `Read templates/refs/feature/fe-craft-check.md before first Edit/Write — anti-AI-look checklist (DS tokens, states, microinteractions, a11y, content quality)`.
+- `role=ui` on **bugfix** → append `Read templates/refs/bugfix/browser-debug.md — Playwright + Chrome DevTools MCP playbook (reproduce → isolate → instrument → fix → prevent)`.
+- These refs are stack-agnostic and progressive-disclosure (loaded on demand, not auto-injected). Agents read them once per task.
+
 Examples (replace `{sub}` with actual subproject short name; skill names below are placeholders — pick whatever skills the subproject's `.claude/skills/` actually defines):
 - Backend endpoint → `karpathy-guidelines, {sub}-{endpoint-skill}, {sub}-{module-skill}`
-- Mobile screen → `karpathy-guidelines, {sub}-{screen-skill}, {sub}-{state-skill}, design-craft`
-- Frontend section → `karpathy-guidelines, {sub}-{section-skill}, design-craft, react-best-practices`
-- Bugfix → `karpathy-guidelines, {sub}-{relevant-skill}`
-- Explore (read-only) → `{sub}-{discovery-skill}` only (no karpathy)
+- Mobile screen → `karpathy-guidelines, {sub}-{screen-skill}, {sub}-{state-skill}, design-craft` + ref `fe-craft-check.md`
+- Frontend section → `karpathy-guidelines, {sub}-{section-skill}, design-craft, react-best-practices` + ref `fe-craft-check.md`
+- Frontend bugfix → `karpathy-guidelines, {sub}-{relevant-skill}` + ref `browser-debug.md`
+- Backend bugfix → `karpathy-guidelines, {sub}-{relevant-skill}` (no FE refs)
+- Explore (read-only) → `{sub}-{discovery-skill}` only (no karpathy, no refs)
 - Review → review-specific skills only (no karpathy)
 
 ULTRATHINK

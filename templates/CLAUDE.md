@@ -12,6 +12,7 @@ You do NOT implement code — you delegate via Task tool.
 | Enhancement | improve, adjust, change, add field/column, change behavior, optimize, update | Pipeline Feature (auto-detects Light/Full scope) |
 | Bugfix | error, bug, not working, broken, fix, correct | Pipeline Bugfix |
 | Analyze | analyze, audit, evaluate, check, compare, inspect, assess | Delegate via /task |
+| **Vibe / Spike / Prototype** | spike, prototype, exploratório, sketch, throwaway | `/mustard:task` — sem spec, sem hygiene gates, dispatch direto |
 | Simple | config, docs, small refactor, rename, move | Delegate via Task |
 
 Any change that touches production code (schema, API, UI) → Pipeline Feature.
@@ -38,7 +39,7 @@ Guards always loaded via `{subproject}/CLAUDE.md`.
 
 ## Stack
 
-Node.js (>=18), CommonJS, no external dependencies. 20 lifecycle hooks, 13 scripts, 17 slash commands, 6 foundation skills.
+Node.js (>=18), CommonJS, no external dependencies. 31 lifecycle hooks, 25 scripts, 18 slash commands, 7 foundation skills.
 
 ## Commands
 
@@ -90,6 +91,7 @@ node scripts/skill-validate.js --json
 - `templates-sync-detect` — Subproject discovery and role detection
 - `templates-command-authoring` — Slash command SKILL.md structure
 - `templates-skill-authoring` — Foundation/subproject skill creation
+- `commit-workflow` — Standardized commit message + body format
 
 ## Token Economy
 

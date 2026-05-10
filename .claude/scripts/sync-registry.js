@@ -27,6 +27,7 @@ const { loadScanner, listAvailableScanners } = require('./registry/scanner-loade
 const { buildRegistry } = require('./registry/schema-builder');
 const { discoverClusters, computeFolderFrequency } = require('./registry/cluster-discovery');
 const { computeProjectConventions } = require('./registry/project-conventions');
+const { enrichDescriptions } = require('./registry/description-enricher');
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -197,6 +198,16 @@ function main() {
   // 5. Build registry JSON
   const registry = buildRegistry({ scanResults });
 
+  // 5b. Enrich entities with doc-comment descriptions (glossary).
+  // Stack-agnostic: scans the canonical ref file for doc-comment immediately
+  // above the entity declaration. Fail-open per entity.
+  let enrichSummary = { enriched: 0, scanned: 0 };
+  try {
+    enrichSummary = enrichDescriptions(registry, ROOT);
+  } catch (err) {
+    console.error('Description enrichment failed (continuing):', err.message);
+  }
+
   // 6. Write output
   fs.mkdirSync(path.dirname(REGISTRY_PATH), { recursive: true });
   const output = JSON.stringify(registry, null, 2) + '\n';
@@ -208,6 +219,9 @@ function main() {
 
   console.log(`\nGenerated entity-registry.json v4.0`);
   console.log(`  ${eCount} entities, ${enumCount} enums, patterns: [${patternStacks.join(', ')}]`);
+  if (enrichSummary.scanned > 0) {
+    console.log(`  Glossary: ${enrichSummary.enriched}/${enrichSummary.scanned} entities enriched with doc-comment descriptions`);
+  }
   console.log(`  Written to: ${REGISTRY_PATH}`);
 }
 
