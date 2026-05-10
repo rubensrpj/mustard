@@ -314,6 +314,7 @@ function handleMetrics(res) {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
       maxBuffer: 4 * 1024 * 1024,
+      windowsHide: true,
     });
   } catch (e) {
     return sendJson(res, 200, { error: `metrics-collect failed: ${e.message}` });

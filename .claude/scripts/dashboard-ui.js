@@ -1622,6 +1622,7 @@ const CLIENT_JS = `
         + '<div class="card-h"><h3>Entrada</h3><span class="crumb">campos do PRD</span></div>'
         + '<form id="prd-form" autocomplete="off">'
           + '<div class="field"><label>Título da Solicitação <span class="hint">slug curto, ex: add-user-login</span></label><input type="text" name="title" placeholder="ex: criar-cadastro-de-cliente" required></div>'
+          + '<div class="field"><label>Solicitação / Descrição</label><textarea name="request" rows="5" placeholder="Descreva a necessidade, motivação e contexto..." required></textarea></div>'
           + '<div class="row">'
             + '<div class="field"><label>Projeto</label><select name="project">' + projOpts + '</select></div>'
             + '<div class="field"><label>Tipo de Demanda</label><select name="type">'
@@ -1631,21 +1632,9 @@ const CLIENT_JS = `
               + '<option value="analysis">Analysis (investigação)</option>'
             + '</select></div>'
           + '</div>'
-          + '<div class="row">'
-            + '<div class="field"><label>Escopo Sugerido <span class="hint">auto = mustard decide</span></label><select name="scope">'
-              + '<option value="auto">Auto (recomendado)</option>'
-              + '<option value="light">Light (≤5 arquivos)</option>'
-              + '<option value="full">Full (3+ camadas)</option>'
-            + '</select></div>'
-            + '<div class="field"><label>Prioridade</label><select name="priority">'
-              + '<option value="medium">Média</option>'
-              + '<option value="high">Alta</option>'
-              + '<option value="low">Baixa</option>'
-              + '<option value="urgent">Urgente</option>'
-            + '</select></div>'
-          + '</div>'
-          + '<div class="field"><label>Rota / Endpoint <span class="hint">opcional</span></label><input type="text" name="route" placeholder="ex: POST /api/clientes"></div>'
-          + '<div class="field"><label>Entidade <span class="hint">opcional</span></label><input type="text" name="entity" placeholder="ex: Cliente"></div>'
+          + '<div class="field" id="bug-details" style="display:none"><label>Comportamento Esperado vs Atual</label><textarea name="bugRepro" rows="3" placeholder="Esperado: ...&#10;Atual: ...&#10;Passos: 1) ..."></textarea></div>'
+          + '<div class="field"><label>Rotas / Endpoints <span class="hint">opcional · uma por linha</span></label><textarea name="routes" rows="2" placeholder="POST /api/clientes&#10;GET /api/clientes/:id"></textarea></div>'
+          + '<div class="field"><label>Entidades <span class="hint">opcional · uma por linha</span></label><textarea name="entities" rows="2" placeholder="Cliente&#10;Endereco"></textarea></div>'
           + '<div class="field"><label>Operações CRUD</label><div class="checkbox-group">'
             + crudCb('Create') + crudCb('Read') + crudCb('Update') + crudCb('Delete') + crudCb('List')
           + '</div></div>'
@@ -1653,12 +1642,6 @@ const CLIENT_JS = `
             + layerCb('backend','Backend') + layerCb('frontend','Frontend') + layerCb('database','Database')
             + layerCb('design','Design') + layerCb('docs','Docs') + layerCb('tests','Testes')
           + '</div></div>'
-          + '<div class="row">'
-            + '<div class="field"><label>Tem Design? <span class="hint">figma, mockup</span></label><select name="design"><option value="no">Não</option><option value="yes">Sim</option><option value="partial">Parcial</option></select></div>'
-            + '<div class="field"><label>É Bug?</label><select name="bug"><option value="no">Não</option><option value="yes">Sim</option></select></div>'
-          + '</div>'
-          + '<div class="field" id="bug-details" style="display:none"><label>Comportamento Esperado vs Atual</label><textarea name="bugRepro" rows="3" placeholder="Esperado: ...&#10;Atual: ...&#10;Passos: 1) ..."></textarea></div>'
-          + '<div class="field"><label>Solicitação / Descrição</label><textarea name="request" rows="5" placeholder="Descreva a necessidade, motivação e contexto..." required></textarea></div>'
           + '<div class="field"><label>Critérios de Aceitação <span class="hint">um por linha</span></label><textarea name="ac" rows="5" placeholder="ex: npm test passa em src/clientes"></textarea></div>'
           + '<div class="field"><label>Restrições / Dependências</label><textarea name="constraints" rows="3"></textarea></div>'
           + '<div class="field"><label>Fora de Escopo</label><textarea name="oos" rows="2"></textarea></div>'
@@ -1683,12 +1666,8 @@ const CLIENT_JS = `
 
     $('#panel-compose .mount').innerHTML = html;
     var f = $('#prd-form');
-    f.querySelector('select[name="bug"]').addEventListener('change', function(e){
-      $('#bug-details').style.display = e.target.value === 'yes' ? 'block' : 'none';
-      if (e.target.value === 'yes' && f.type.value !== 'bugfix') f.type.value = 'bugfix';
-    });
     f.querySelector('select[name="type"]').addEventListener('change', function(e){
-      if (e.target.value === 'bugfix') { f.bug.value = 'yes'; $('#bug-details').style.display = 'block'; }
+      $('#bug-details').style.display = e.target.value === 'bugfix' ? 'block' : 'none';
     });
     $('#prd-gen').addEventListener('click', generatePrd);
     $('#prd-example').addEventListener('click', loadExample);
@@ -1720,11 +1699,10 @@ const CLIENT_JS = `
     var f = $('#prd-form');
     var title = (f.title.value || '').trim() || '(sem título)';
     var project = (f.project.value || '').trim();
-    var type = f.type.value, scope = f.scope.value, priority = f.priority.value;
-    var route = (f.route.value || '').trim();
-    var entity = (f.entity.value || '').trim();
+    var type = f.type.value;
+    var routes = (f.routes.value || '').split('\\n').map(function(s){ return s.trim(); }).filter(Boolean);
+    var entities = (f.entities.value || '').split('\\n').map(function(s){ return s.trim(); }).filter(Boolean);
     var ops = getChecked('op'), layers = getChecked('layer');
-    var design = f.design.value, bug = f.bug.value;
     var bugRepro = (f.bugRepro.value || '').trim();
     var request = (f.request.value || '').trim();
     var ac = (f.ac.value || '').split('\\n').map(function(s){ return s.trim(); }).filter(Boolean);
@@ -1739,19 +1717,21 @@ const CLIENT_JS = `
     md += '# PRD: ' + title + '\\n\\n';
     md += '**Projeto:** ' + (project && project !== '.' ? project : '(root)') + '\\n';
     md += '**Tipo:** ' + typeLabel + '\\n';
-    md += '**Escopo:** ' + (scope === 'auto' ? 'Auto-detect' : scope.charAt(0).toUpperCase() + scope.slice(1)) + '\\n';
-    md += '**Prioridade:** ' + priority + '\\n';
     md += '**Data:** ' + today() + '\\n';
     md += '**Pipeline:** \`' + pipelineCmd + ' ' + slug + '\`\\n\\n';
     md += '## Solicitação\\n\\n' + (request || '_(sem descrição)_') + '\\n\\n';
-    if (bug === 'yes' && bugRepro) md += '## Reprodução do Bug\\n\\n' + bugRepro + '\\n\\n';
+    if (type === 'bugfix' && bugRepro) md += '## Reprodução do Bug\\n\\n' + bugRepro + '\\n\\n';
     md += '## Escopo Técnico\\n\\n';
-    if (route) md += '- **Rota/Endpoint:** \`' + route + '\`\\n';
-    if (entity) md += '- **Entidade:** \`' + entity + '\`\\n';
+    if (routes.length) {
+      md += '- **Rotas/Endpoints:**\\n';
+      routes.forEach(function(r){ md += '  - \`' + r + '\`\\n'; });
+    }
+    if (entities.length) {
+      md += '- **Entidades:**\\n';
+      entities.forEach(function(e){ md += '  - \`' + e + '\`\\n'; });
+    }
     if (ops.length) md += '- **Operações:** ' + ops.join(', ') + '\\n';
-    md += '- **Tem Design:** ' + (design === 'yes' ? 'Sim' : design === 'partial' ? 'Parcial' : 'Não') + '\\n';
-    md += '- **É Bug:** ' + (bug === 'yes' ? 'Sim' : 'Não') + '\\n';
-    if (!route && !entity && !ops.length) md += '_(sem detalhes técnicos preenchidos)_\\n';
+    if (!routes.length && !entities.length && !ops.length) md += '_(sem detalhes técnicos preenchidos)_\\n';
     md += '\\n';
     md += '## Camadas Afetadas\\n\\n';
     [['backend','Backend'],['frontend','Frontend'],['database','Database'],['design','Design'],['docs','Docs'],['tests','Testes']].forEach(function(p){ md += '- [' + (layers.indexOf(p[0]) >= 0 ? 'x' : ' ') + '] ' + p[1] + '\\n'; });
@@ -1766,7 +1746,7 @@ const CLIENT_JS = `
     md += '## Sugestão de Roteamento (mustard)\\n\\n';
     md += '- **Agentes recomendados:** ' + agents.join(', ') + '\\n';
     if (skills.length) md += '- **Skills sugeridas:** ' + skills.map(function(s){ return '\`' + s + '\`'; }).join(', ') + '\\n';
-    md += '- **Fases:** ' + (scope === 'light' ? 'ANALYZE → EXECUTE → QA → CLOSE' : 'ANALYZE → PLAN → /approve → EXECUTE → QA → CLOSE') + '\\n\\n';
+    md += '- **Fases:** ANALYZE → PLAN → /approve → EXECUTE → QA → CLOSE _(scope auto-detectado pelo Mustard)_\\n\\n';
     md += '---\\n_Gerado por PRD Builder · cole no Claude e rode \`' + pipelineCmd + '\` para iniciar a pipeline._\\n';
     $('#prd-output').textContent = md; $('#prd-chars').textContent = md.length;
   }
@@ -1786,8 +1766,7 @@ const CLIENT_JS = `
     var f = $('#prd-form');
     $$('input[type="text"], textarea', f).forEach(function(i){ i.value = ''; });
     $$('input[type="checkbox"]', f).forEach(function(i){ i.checked = false; });
-    f.type.value = 'feature'; f.scope.value = 'auto'; f.priority.value = 'medium';
-    f.design.value = 'no'; f.bug.value = 'no';
+    f.type.value = 'feature';
     $('#bug-details').style.display = 'none';
     $('#prd-output').textContent = 'Preencha o formulário e clique em Gerar PRD.';
     $('#prd-chars').textContent = '0';
@@ -1795,11 +1774,11 @@ const CLIENT_JS = `
   function loadExample(){
     var f = $('#prd-form');
     f.title.value = 'cadastro-de-cliente';
-    f.type.value = 'feature'; f.scope.value = 'auto'; f.priority.value = 'medium';
-    f.route.value = 'POST /api/clientes'; f.entity.value = 'Cliente';
+    f.type.value = 'feature';
+    f.routes.value = 'POST /api/clientes\\nGET /api/clientes/:id\\nGET /api/clientes';
+    f.entities.value = 'Cliente';
     $$('input[name="op"]', f).forEach(function(c){ c.checked = ['Create','Read','List'].indexOf(c.value) >= 0; });
-    $$('input[name="layer"]', f).forEach(function(c){ c.checked = ['backend','frontend','database'].indexOf(c.value) >= 0; });
-    f.design.value = 'yes'; f.bug.value = 'no';
+    $$('input[name="layer"]', f).forEach(function(c){ c.checked = ['backend','frontend','database','design'].indexOf(c.value) >= 0; });
     f.request.value = 'Permitir cadastro de novos clientes via formulário web. Necessário para suportar onboarding self-service e reduzir tickets de suporte para cadastro manual.';
     f.ac.value = 'npm test passa em src/clientes\\nPOST /api/clientes com payload válido retorna 201 e cliente persistido\\nPOST /api/clientes com email duplicado retorna 409\\nTela /clientes/novo renderiza e submete sem erros\\nMigração drizzle aplica e reverte sem perda de dados';
     f.constraints.value = 'Reusar middleware de auth existente. Email único. Validar CPF/CNPJ.';
