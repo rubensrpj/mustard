@@ -1,0 +1,72 @@
+name: CI
+
+on:
+  push:
+    branches: [main, dev_rubens]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: Test (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: TypeScript build
+        run: npm run build
+
+      - name: Lint (zero warnings)
+        run: npx eslint src/ --max-warnings=0
+
+      - name: Type-check strict
+        run: npx tsc --noEmit --strict -p tsconfig.json
+
+      - name: Unit tests (bun)
+        run: bun test tests/unit/
+
+      - name: Integration tests (node)
+        run: node --test tests/integration/
+
+      - name: Benchmarks (advisory)
+        continue-on-error: true
+        run: |
+          npm run bench
+          node tests/bench/regression-check.cjs
+
+  windows:
+    name: Test (Windows — advisory)
+    runs-on: windows-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: TypeScript build
+        run: npm run build
+
+      - name: EventStore tests (bun:sqlite on Windows)
+        run: bun test tests/unit/event-store/

@@ -15,7 +15,7 @@ export async function getLatestVersion(): Promise<string> {
   try {
     const { stdout } = await execAsync(`npm view ${PACKAGE_NAME} version`);
     return stdout.trim();
-  } catch (error) {
+  } catch {
     throw new Error('Failed to check npm registry. Are you online?');
   }
 }
@@ -31,7 +31,7 @@ export async function getCurrentVersion(): Promise<string> {
     const content = await readFile(packagePath, 'utf-8');
     const pkg = JSON.parse(content);
     return pkg.version;
-  } catch (error) {
+  } catch {
     throw new Error('Failed to read current version');
   }
 }
@@ -72,7 +72,7 @@ export async function checkForUpdate(): Promise<{ hasUpdate: boolean; current: s
 export async function updateGlobal(): Promise<void> {
   try {
     await execAsync(`npm install -g ${PACKAGE_NAME}@latest`);
-  } catch (error) {
+  } catch {
     throw new Error('Failed to update. Try running with sudo or as administrator.');
   }
 }

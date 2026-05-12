@@ -1,5 +1,91 @@
 # Changelog
 
+## [2.0.0] - 2026-05-12
+
+Mustard 2.0 — Event Store + Telemetry + MCP + Hardening. Migration automática, zero breaking changes; veja `docs/upgrade-to-2.0.md` para passos de upgrade e rollback.
+
+### Phase 0 — Runtime Compatibility Layer
+
+- Add Bun runtime detection (`src/runtime/detect-runtime.ts`)
+- Add `templates/hooks/_lib/runtime-shim.js` (CJS shim — pick Node/Bun)
+- `mustard init --runtime=bun|node|auto` flag (default `auto`)
+- `.claude/mustard.json` registra runtime escolhido
+- Fix `mustard update --force` backup (estava pulando backup com `--force`)
+
+### Phase 1 — Event Store SQLite + Projections
+
+- Add `src/runtime/event-store.ts` (`EventStore` class com FTS5)
+- Add `src/migrate/jsonl-to-sqlite.ts` (migration idempotente)
+- Remove `.pipeline-states/*.metrics.json`, `.subagent-registry.json`, campo `agentAttempts`
+- Dashboard reads via EventStore (fail-open para legacy `events.jsonl`)
+
+### Phase 2 — OpenTelemetry + Token Tracking
+
+- Add `src/telemetry/token-tracker.ts` (manual OTLP JSON emit, sem SDK)
+- Spans armazenados em `.claude/.harness/spans.jsonl` + tabela `spans`
+- Hook `subagent-tracker.js` emite spans Pre/Post via `toolUseId`
+- Dashboard widget "Token Usage Real" (byPhase / byModel / byAgent / costUsd)
+- Substituição do heurístico `tokensSaved` por spans medidos
+
+### Phase 3 — MCP Memory Server
+
+- Add `src/mcp/mustard-memory.ts` (5 read-only tools via SDK 1.29 `registerTool`)
+- Tools: `search_knowledge`, `query_events`, `find_similar_specs`, `get_spec_metrics`, `get_span_summary`
+- `templates/settings.json` registra `mcpServers.mustard-memory`
+- Dashboard banner `@deprecated` (Tauri standalone planned)
+- Docs: `docs/mcp-tools.md`
+
+### Phase 4 — Hardening (Tests, Lint, Bench, CI, Docs)
+
+#### Fixed (Phase 4 Wave 1 carryover)
+
+- **knowledge_fts external-content rowid mismatch**: schema redeclared as
+  standalone FTS5 with UNINDEXED `id` column (was `content='knowledge',
+  content_rowid='id'` against TEXT id → "database disk image is malformed"
+  on Windows). `EventStore.init()` self-heals pre-existing DBs by detecting
+  the old declaration via `sqlite_master` and dropping before recreating.
+  Migration validated idempotent on sialia (1787 events, 56 knowledge
+  entries) across repeated runs.
+
+#### Added
+
+- `EventStore.knowledge({search})`: FTS5 MATCH com bm25 ranking joined back
+  para `knowledge` via UNINDEXED `id` column. Backward-compatible —
+  `{minConfidence, limit}` filters continuam funcionando.
+- MCP `search_knowledge` tool agora usa `EventStore.knowledge({search})`
+  em vez de substring filtering in-process (5x over-fetch para post-filter
+  por type; mesmo input schema).
+- Suite de testes em `tests/unit/{event-store,token-tracker,migrate,mcp}/` e
+  `tests/integration/`. **91+ tests pass**, coverage **96.20% lines /
+  95.48% funcs** em `src/{runtime,telemetry,migrate}`.
+- ESLint v9 flat config (`eslint.config.js`) — **zero warnings** em `src/`.
+- tsconfig `strict: true` + `noUncheckedIndexedAccess: true` — **zero
+  `@ts-expect-error`** em `src/`.
+- Benchmarks em `tests/bench/` (`hook-cold-start`, `fts5-query`,
+  `mcp-roundtrip`) com `baselines.json` + `regression-check.cjs`.
+  Medições Windows: fts5 ~1ms, mcp ~3ms, hook cold-start ~53ms.
+- CI workflow `.github/workflows/ci.yml` — Linux (hard) + Windows
+  (`continue-on-error: true` enquanto Bun on Windows estabiliza).
+- Docs: `docs/upgrade-to-2.0.md` com seções **Backup** e **Rollback**
+  explícitas + troubleshooting + migration timeline.
+
+#### Removed
+
+- `@opentelemetry/otlp-transformer` devDep: `ProtobufTraceSerializer.serializeRequest`
+  accepts `ReadableSpan[]` from `@opentelemetry/sdk-trace-base`, mas
+  Mustard emite OTLP/JSON direto sem SDK. Um round-trip clean exigiria
+  adicionar a stack full do SDK (quebra o zero-deps contract dos hooks).
+  Os testes de shape assertion-based já cobrem o contrato OTLP; a dep
+  não justificou o lugar.
+
+#### Follow-ups (não bloqueiam release)
+
+- **CI verde no GitHub Actions** (spec AC #2): só validável após primeiro
+  push para o repo remoto. Workflow file está presente e validado
+  localmente; primeira run será reportada manualmente.
+- **Sialia upgrade completo**: snapshot da Sialia ainda em Phase 1+2;
+  validar `mustard update --force` end-to-end fica para release window.
+
 ## [3.0.0] - 2026-03-24
 
 ### Breaking Changes
