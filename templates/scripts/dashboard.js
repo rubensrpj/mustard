@@ -1,6 +1,13 @@
 #!/usr/bin/env node
 'use strict';
 
+/**
+ * @deprecated Mustard 2.x — Dashboard local em JS sera removido na 3.0.
+ * Substituido pelo produto standalone "mustard-dashboard" (Tauri desktop app).
+ * Veja: spec `mustard-dashboard-1-0-standalone-tauri` ou docs/mcp-tools.md.
+ * DEPRECATED-NOTICE-MUSTARD: keyword grep-able pra AC #6.
+ */
+
 process.title = 'mustard-dashboard';
 
 const http = require('http');
@@ -14,6 +21,10 @@ const { generatePrdMarkdown, slugify } = require('./dashboard-prd-template.js');
 const { renderHtml } = require('./dashboard-ui.js');
 const { ENV_CATALOG, isKnownKey, isValidValue, defaultsMap } = require('./dashboard-env-catalog.js');
 const { COMMANDS, CATEGORIES } = require('./dashboard-commands-catalog.js');
+// Mustard 2.0: EventStore is the primary read path. Returns null on Node (no
+// bun:sqlite) or when Mustard repo isn't reachable from cwd — callers fall
+// back to legacy filesystem reads (events.jsonl, .pipeline-states/*.metrics.json).
+const { getStore: _getEventStore } = require('./_lib/event-store.js');
 
 const PORT_BASE = 7878;
 const PORT_RANGE = 100;
@@ -93,6 +104,59 @@ function readGitBranch() {
 }
 
 function safe(fn) { try { return fn(); } catch (_) { return null; } }
+
+// Memoised EventStore accessor scoped to CLAUDE_DIR. Returns null when the
+// SQLite-backed store is unavailable (Node without bun:sqlite, Mustard repo
+// not findable, or DB init failure). Every caller MUST handle null by falling
+// back to legacy filesystem reads.
+let _storeChecked = false;
+let _storeRef = null;
+function getStore() {
+  if (_storeChecked) return _storeRef;
+  _storeChecked = true;
+  try { _storeRef = _getEventStore(CLAUDE_DIR); } catch (_) { _storeRef = null; }
+  return _storeRef;
+}
+
+// `--check` smoke test: verify EventStore initialises and returns coherent
+// pipelineHealth data, exit without starting the server. Used by AC #8 of the
+// Mustard 2.0 Phase 1 spec. Exit codes: 0 ok (store OK or legacy fallback ok),
+// 1 nothing readable. Never blocks on UI — runs in <500ms.
+if (process.argv.includes('--check')) {
+  const out = { ok: false, mode: 'check', store: null, specs: 0, events: null, fallback: false };
+  try {
+    const store = getStore();
+    if (store) {
+      out.store = 'event-store';
+      try { out.specs = store.specs().length; } catch (_) {}
+      try { out.events = store.eventCount(); } catch (_) {}
+      // OK if the store initialised cleanly — empty DB is a valid post-init state
+      // (migration not yet run). Caller can inspect counts to distinguish.
+      out.ok = true;
+    } else {
+      // Fallback: legacy events.jsonl + spec/active scan. Considered OK if
+      // either source has any signal.
+      out.fallback = true;
+      out.store = 'legacy';
+      const activeDir = path.join(SPEC_DIR, 'active');
+      if (fs.existsSync(activeDir)) {
+        try { out.specs = fs.readdirSync(activeDir, { withFileTypes: true }).filter(d => d.isDirectory()).length; } catch (_) {}
+      }
+      if (fs.existsSync(EVENTS_FILE)) {
+        out.events = 0;
+        try {
+          const content = fs.readFileSync(EVENTS_FILE, 'utf8');
+          out.events = content.split(/\r?\n/).filter(Boolean).length;
+        } catch (_) {}
+      }
+      out.ok = out.specs > 0 || (out.events != null && out.events > 0);
+    }
+  } catch (e) {
+    out.error = e.message;
+  }
+  try { console.log(JSON.stringify(out)); } catch (_) {}
+  process.exit(out.ok ? 0 : 1);
+}
 
 // Parse checklist items from markdown text.
 // Order of precedence: ## Checklist > ## Tasks (with Wave/Review sub-headings).
@@ -543,7 +607,88 @@ function handleMetrics(res) {
   }
 
   const parsed = parseMetricsMarkdown(raw);
+  // Mustard 2.0 Phase 2: attach real OpenTelemetry-derived token usage from
+  // subagent spans. Fail-open: returns null when EventStore isn't reachable
+  // or no spans are recorded yet — UI renders a neutral placeholder.
+  parsed.tokenUsage = buildTokenUsage(getStore());
   sendJson(res, 200, parsed);
+}
+
+/**
+ * Aggregate real token usage from subagent spans recorded by
+ * `templates/hooks/subagent-tracker.js`. Buckets:
+ *   - byPhase: keyed by `phase` column (ANALYZE/PLAN/EXECUTE/QA/CLOSE/...).
+ *   - byModel: keyed by `model` column (claude-opus-4-7, ...).
+ *   - byAgent: keyed by `attributes['mustard.agent_type']` (general-purpose,
+ *     Explore, Plan, Bash).
+ *
+ * Each bucket exposes { input, output, cost, count }. `costUsd` uses the
+ * snapshot pricing table from `dist/telemetry/pricing.js` (fail-open via
+ * `_lib/pricing.js` wrapper).
+ *
+ * Contract:
+ *   - store == null               → returns null (legacy/no telemetry)
+ *   - store but zero spans        → returns empty buckets, totals = 0
+ *   - store with spans            → fully populated payload
+ *
+ * Hard cap: 5000 spans per query (chronological ASC). Older spans are
+ * ignored — telemetry surfaces recent activity, history lives in spans.jsonl.
+ */
+function buildTokenUsage(store) {
+  if (!store) return null;
+  let spans = [];
+  try { spans = store.spans({ limit: 5000 }) || []; }
+  catch (_) { return null; }
+
+  const empty = {
+    byPhase: {}, byModel: {}, byAgent: {},
+    totalInput: 0, totalOutput: 0, costUsd: 0, spanCount: 0,
+  };
+  if (!spans.length) return empty;
+
+  const { costUsd } = require('./_lib/pricing.js');
+  const byPhase = {};
+  const byModel = {};
+  const byAgent = {};
+  let totalInput = 0, totalOutput = 0, totalCost = 0;
+
+  function bucketAdd(bucket, key, input, output, cost) {
+    if (!bucket[key]) bucket[key] = { input: 0, output: 0, cost: 0, count: 0 };
+    bucket[key].input += input;
+    bucket[key].output += output;
+    bucket[key].cost += cost;
+    bucket[key].count += 1;
+  }
+
+  for (const s of spans) {
+    const input = s.inputTokens || 0;
+    const output = s.outputTokens || 0;
+    const model = s.model || 'unknown';
+    const cost = costUsd(model, input, output);
+    totalInput += input;
+    totalOutput += output;
+    totalCost += cost;
+
+    bucketAdd(byPhase, s.phase || 'UNKNOWN', input, output, cost);
+    bucketAdd(byModel, model, input, output, cost);
+
+    // `attributes` is already an object (event-store.js parses JSON in rowToSpan),
+    // but accept stringified shape too for defensive parity with raw rows.
+    let attrs = s.attributes;
+    if (typeof attrs === 'string') {
+      try { attrs = JSON.parse(attrs); } catch (_) { attrs = {}; }
+    }
+    if (!attrs || typeof attrs !== 'object') attrs = {};
+    const agent = attrs['mustard.agent_type'] || 'unknown';
+    bucketAdd(byAgent, agent, input, output, cost);
+  }
+
+  return {
+    byPhase, byModel, byAgent,
+    totalInput, totalOutput,
+    costUsd: totalCost,
+    spanCount: spans.length,
+  };
 }
 
 function parseMetricsMarkdown(md) {
@@ -579,7 +724,10 @@ function parseMetricsMarkdown(md) {
         if (!Number.isNaN(events)) out.last7Days.push({ day: cells[0], events });
       }
     } else if (section === 'hooks-new' && ln.startsWith('|') && !/^\|\s*-+/.test(ln)) {
-      // Format: | Event | Count | Category | Tokens Saved |
+      // Format: | Event | Count | Category | Tokens Cut |
+      // The markdown column header (produced by metrics-collect.js) keeps the
+      // legacy label; here we relabel only the JSON field name so downstream
+      // payloads expose `tokensCut` exclusively (Phase 2 telemetry contract).
       const cells = ln.split('|').map(s => s.trim());
       if (cells.length >= 5 && cells[1] && cells[1] !== 'Event' && !cells[1].startsWith('**TOTAL')) {
         const count = parseInt(cells[2], 10);
@@ -589,12 +737,12 @@ function parseMetricsMarkdown(md) {
             count,
             category: cells[3] || 'other',
             tokensAffected: 0,
-            tokensSaved: cells[4] === '-' ? 0 : parseInt(cells[4], 10) || 0,
+            tokensCut: cells[4] === '-' ? 0 : parseInt(cells[4], 10) || 0,
           });
         }
       }
     } else if (section === 'hooks' && ln.startsWith('|') && !/^\|\s*-+/.test(ln)) {
-      // Legacy format: | Event | Count | Tokens Affected | Tokens Saved |
+      // Legacy format: | Event | Count | Tokens Affected | Tokens Cut |
       const cells = ln.split('|').map(s => s.trim());
       if (cells.length >= 5 && cells[1] && cells[1] !== 'Event' && !cells[1].startsWith('**TOTAL')) {
         const count = parseInt(cells[2], 10);
@@ -604,7 +752,7 @@ function parseMetricsMarkdown(md) {
             count,
             category: 'other',
             tokensAffected: cells[3] === '-' ? 0 : parseInt(cells[3], 10) || 0,
-            tokensSaved: cells[4] === '-' ? 0 : parseInt(cells[4], 10) || 0,
+            tokensCut: cells[4] === '-' ? 0 : parseInt(cells[4], 10) || 0,
           });
         }
       }
@@ -729,26 +877,49 @@ function handleSpecLive(res, query) {
     }
   }
 
-  // Aggregate metrics across candidates. Try new location (metrics/*.json,
-  // post-Wave 4) before falling back to legacy sidecar.
+  // Aggregate metrics across candidates. Order of preference:
+  //   1. EventStore.metrics(spec)               (Mustard 2.0, single source of truth)
+  //   2. .claude/metrics/*.json                 (post-Wave 4 archive)
+  //   3. .claude/.pipeline-states/*.metrics.json (legacy sidecar)
   const metricsDir = path.join(CLAUDE_DIR, 'metrics');
   let phase = null, lastActivity = null, apiCalls = 0, retries = 0, hasMetrics = false;
-  let agentAttempts = {}, toolBreakdown = {};
+  let dispatchFailuresByPhase = {}, toolBreakdown = {};
+  const _store = getStore();
   for (const c of candidates) {
-    const pNew = path.join(metricsDir, c + '.json');
-    const pLeg = path.join(STATES_DIR, c + '.metrics.json');
-    let raw = null, isNew = false;
-    if (fs.existsSync(pNew)) { raw = safe(() => JSON.parse(fs.readFileSync(pNew, 'utf8'))); isNew = true; }
-    else if (fs.existsSync(pLeg)) { raw = safe(() => JSON.parse(fs.readFileSync(pLeg, 'utf8'))); }
-    if (!raw) continue;
-    const m = isNew ? raw : raw.metrics;
+    let m = null;
+    let prevPhase = null;
+    if (_store) {
+      try {
+        const pm = _store.metrics(c);
+        if (pm) {
+          m = {
+            apiCalls: pm.apiCalls,
+            retries: pm.retries,
+            toolBreakdown: pm.toolBreakdown || {},
+            dispatchFailuresByPhase: pm.dispatchFailuresByPhase || {},
+            updatedAt: pm.updatedAt || null,
+          };
+        }
+      } catch (_) {}
+    }
+    if (!m) {
+      const pNew = path.join(metricsDir, c + '.json');
+      const pLeg = path.join(STATES_DIR, c + '.metrics.json');
+      let raw = null, isNew = false;
+      if (fs.existsSync(pNew)) { raw = safe(() => JSON.parse(fs.readFileSync(pNew, 'utf8'))); isNew = true; }
+      else if (fs.existsSync(pLeg)) { raw = safe(() => JSON.parse(fs.readFileSync(pLeg, 'utf8'))); }
+      if (raw) {
+        m = isNew ? raw : raw.metrics;
+        if (!isNew && raw.previousPhase) prevPhase = raw.previousPhase;
+      }
+    }
     if (!m) continue;
     hasMetrics = true;
-    if (!isNew && raw.previousPhase && !phase) phase = raw.previousPhase;
+    if (prevPhase && !phase) phase = prevPhase;
     if (m.updatedAt && (!lastActivity || m.updatedAt > lastActivity)) lastActivity = m.updatedAt;
     if (m.apiCalls != null) apiCalls += m.apiCalls;
     if (m.retries != null) retries += m.retries;
-    if (m.agentAttempts) for (const k of Object.keys(m.agentAttempts)) agentAttempts[k] = (agentAttempts[k] || 0) + m.agentAttempts[k];
+    if (m.dispatchFailuresByPhase) for (const k of Object.keys(m.dispatchFailuresByPhase)) dispatchFailuresByPhase[k] = (dispatchFailuresByPhase[k] || 0) + m.dispatchFailuresByPhase[k];
     if (m.toolBreakdown) for (const k of Object.keys(m.toolBreakdown)) toolBreakdown[k] = (toolBreakdown[k] || 0) + m.toolBreakdown[k];
   }
 
@@ -758,8 +929,25 @@ function handleSpecLive(res, query) {
   if (specName.indexOf('/') >= 0) matchSet.add(specName.split('/')[0]); // epic name too
 
   const events = [];
+  // EventStore primary path: query per candidate spec name (matches root cwd only,
+  // not subprojects — for monorepo subproject harness files we still fall back
+  // to filesystem reads below).
+  let storeUsedForEvents = false;
+  if (_store) {
+    try {
+      for (const cand of matchSet) {
+        const rows = _store.query({ spec: cand });
+        if (Array.isArray(rows) && rows.length) {
+          for (const ev of rows) events.push(ev);
+        }
+      }
+      storeUsedForEvents = true;
+    } catch (_) { storeUsedForEvents = false; }
+  }
+  // Filesystem fallback: read events.jsonl when EventStore unavailable, AND
+  // always scan subproject harness files (EventStore is per-root only).
   const eventFiles = [];
-  if (fs.existsSync(EVENTS_FILE)) eventFiles.push(EVENTS_FILE);
+  if (!storeUsedForEvents && fs.existsSync(EVENTS_FILE)) eventFiles.push(EVENTS_FILE);
   for (const f of discoverHarnessFiles()) if (f !== EVENTS_FILE) eventFiles.push(f);
   for (const file of eventFiles) {
     const content = safe(() => fs.readFileSync(file, 'utf8')) || '';
@@ -960,7 +1148,7 @@ function handleSpecLive(res, query) {
     lastActivity: outLastActivity,
     apiCalls: outApiCalls,
     retries: outRetries,
-    agentAttempts: hasMetrics ? agentAttempts : null,
+    dispatchFailuresByPhase: hasMetrics ? dispatchFailuresByPhase : null,
     toolBreakdown: hasMetrics ? toolBreakdown : null,
     candidates,
     isLive,
@@ -975,7 +1163,7 @@ function handleSpecLive(res, query) {
 
 function handleTelemetryExtra(res) {
   const out = {
-    pipelineAggregates: { totalApiCalls: 0, totalRetries: 0, agentAttempts: {}, toolBreakdown: {}, runs: 0, pass1: 0 },
+    pipelineAggregates: { totalApiCalls: 0, totalRetries: 0, dispatchFailuresByPhase: {}, toolBreakdown: {}, runs: 0, pass1: 0 },
     phaseDistribution: {},
     knowledgeEntries: 0,
     activeAging: { lt7d: 0, d7_30: 0, gt30d: 0 },
@@ -984,15 +1172,33 @@ function handleTelemetryExtra(res) {
     activeNow: [],
   };
 
-  // Pipeline metrics aggregation
-  //   Primary: .claude/metrics/*.json (written by complete-spec.js post-Wave 4)
-  //   Legacy:  .claude/.pipeline-states/*.metrics.json (pre-Wave 4 sidecar)
-  // Schema differs: primary stores fields at top-level; legacy nests under `metrics`.
+  // Pipeline metrics aggregation. Order of preference:
+  //   1. EventStore.specs() → metrics()       (Mustard 2.0)
+  //   2. .claude/metrics/*.json                (post-Wave 4 archive)
+  //   3. .claude/.pipeline-states/*.metrics.json (legacy sidecar)
+  const seen = new Set();
+  const _storeAgg = getStore();
+  if (_storeAgg) {
+    try {
+      for (const spec of _storeAgg.specs()) {
+        const m = _storeAgg.metrics(spec.name);
+        if (!m) continue;
+        seen.add(spec.name);
+        out.pipelineAggregates.runs++;
+        out.pipelineAggregates.totalApiCalls += m.apiCalls || 0;
+        out.pipelineAggregates.totalRetries += m.retries || 0;
+        if ((m.retries || 0) === 0) out.pipelineAggregates.pass1++;
+        if (m.dispatchFailuresByPhase) for (const k of Object.keys(m.dispatchFailuresByPhase)) out.pipelineAggregates.dispatchFailuresByPhase[k] = (out.pipelineAggregates.dispatchFailuresByPhase[k] || 0) + m.dispatchFailuresByPhase[k];
+        if (m.toolBreakdown) for (const k of Object.keys(m.toolBreakdown)) out.pipelineAggregates.toolBreakdown[k] = (out.pipelineAggregates.toolBreakdown[k] || 0) + m.toolBreakdown[k];
+      }
+    } catch (_) {}
+  }
+  // Filesystem fallback (and supplement for specs not yet projected into DB).
+  // Schema differs: archive stores fields at top-level; legacy nests under `metrics`.
   const sources = [
     { dir: path.join(CLAUDE_DIR, 'metrics'), unwrap: (m) => m },
     { dir: STATES_DIR, unwrap: (m) => m && m.metrics, suffix: '.metrics.json' },
   ];
-  const seen = new Set();
   for (const src of sources) {
     if (!fs.existsSync(src.dir)) continue;
     const files = safe(() => fs.readdirSync(src.dir)) || [];
@@ -1010,7 +1216,8 @@ function handleTelemetryExtra(res) {
       out.pipelineAggregates.totalApiCalls += m.apiCalls || 0;
       out.pipelineAggregates.totalRetries += m.retries || 0;
       if ((m.retries || 0) === 0) out.pipelineAggregates.pass1++;
-      if (m.agentAttempts) for (const k of Object.keys(m.agentAttempts)) out.pipelineAggregates.agentAttempts[k] = (out.pipelineAggregates.agentAttempts[k] || 0) + m.agentAttempts[k];
+      const phaseSrc = m.dispatchFailuresByPhase || null;
+      if (phaseSrc) for (const k of Object.keys(phaseSrc)) out.pipelineAggregates.dispatchFailuresByPhase[k] = (out.pipelineAggregates.dispatchFailuresByPhase[k] || 0) + phaseSrc[k];
       if (m.toolBreakdown) for (const k of Object.keys(m.toolBreakdown)) out.pipelineAggregates.toolBreakdown[k] = (out.pipelineAggregates.toolBreakdown[k] || 0) + m.toolBreakdown[k];
     }
   }

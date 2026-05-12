@@ -1,5 +1,12 @@
 'use strict';
 
+/**
+ * @deprecated Mustard 2.x — Dashboard local em JS sera removido na 3.0.
+ * Substituido pelo produto standalone "mustard-dashboard" (Tauri desktop app).
+ * Veja: spec `mustard-dashboard-1-0-standalone-tauri` ou docs/mcp-tools.md.
+ * DEPRECATED-NOTICE-MUSTARD: keyword grep-able pra AC #6.
+ */
+
 // Mustard Dashboard UI — Linear/Supabase-inspired SaaS dashboard
 // Type: Geist Sans (body) + Geist Mono (data/code). Brand: mustard.
 
@@ -718,6 +725,13 @@ body.resizing-panel.panel-pinned .app { transition: none !important; }
 .econ-widget .econ-total-lbl { font-size: 11px; color: var(--ink-dim); }
 .econ-widget .econ-mech-head { font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-dim); margin: 4px 0 4px; }
 .econ-widget .econ-foot { font-size: 11px; color: var(--ink-mute); margin-top: 8px; padding-top: 6px; border-top: 1px dashed var(--border); }
+/* Token Usage widget (Phase 2 real telemetry) */
+.tu-widget .tu-totals { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 14px; margin: 2px 0 8px; padding: 8px 10px; background: var(--surface-2); border-radius: var(--radius-sm); }
+.tu-widget .tu-totals-row { display: flex; justify-content: space-between; align-items: baseline; font-size: 12px; }
+.tu-widget .tu-totals-row .tu-lbl { color: var(--ink-dim); }
+.tu-widget .tu-totals-row .tu-val { font-family: 'Geist Mono', monospace; color: var(--ink); font-weight: 600; }
+.tu-widget .tu-totals-row.tu-cost .tu-val { color: var(--brand); }
+.tu-widget .tu-empty { font-size: 11px; color: var(--ink-dim); padding: 2px 0; }
 /* Top hooks */
 .hook-row { display: grid; grid-template-columns: 1fr 60px 40px 50px; gap: 8px; align-items: center; padding: 4px 0; font-size: 11.5px; }
 .hook-row .hook-name { color: var(--ink-mute); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-family: 'Geist Mono', monospace; }
@@ -1114,7 +1128,7 @@ const CLIENT_JS = `
     var completed = specs.filter(function(s){ return s.state === 'completed'; });
     var rtkTokens = (m.rtkSavings && m.rtkSavings.tokens) || 0;
     var hookEvents = (m.hookEvents || []).reduce(function(a,h){ return a + (h.count||0); }, 0);
-    var savedSum = (m.hookEvents || []).reduce(function(a,h){ return a + (h.tokensSaved||0); }, 0) + rtkTokens;
+    var savedSum = (m.hookEvents || []).reduce(function(a,h){ return a + (h.tokensCut||0); }, 0) + rtkTokens;
     var todayStr = today();
     var todayCount = (m.last7Days || []).filter(function(d){ return d.day === todayStr; }).reduce(function(a,d){ return a + d.events; }, 0);
     var liveItems = (ex.activeNow || []).slice().sort(function(a,b){
@@ -1131,12 +1145,13 @@ const CLIENT_JS = `
 
     var html = kpis;
 
-    // ── Widgets: Fases · Eventos 7d · Pipeline Health · Knowledge · Economia ─
+    // ── Widgets: Fases · Eventos 7d · Pipeline Health · Knowledge · Token Usage · Economia ─
     html += '<div class="ov-widgets">'
       + widgetPhases(ex.phaseDistribution || {})
       + widgetEvents7d(m.last7Days || [])
       + widgetPipelineHealth(m.pipelineHealth || null)
       + widgetKnowledgeGrowth(m.knowledgeGrowth || null, (m.hookEvents || []).find(function(h){ return h.event === 'delegation'; }) || null)
+      + widgetTokenUsage(m.tokenUsage || null)
       + widgetMustardEconomy(m.hookEvents || [], rtkTokens)
       + '</div>';
 
@@ -1390,14 +1405,72 @@ const CLIENT_JS = `
   function categoryOf(h){
     return h && h.category ? h.category : 'other';
   }
+  // Mustard 2.0 Phase 2: real OpenTelemetry token usage from subagent spans.
+  // Inputs:
+  //   tu = { byPhase, byModel, byAgent, totalInput, totalOutput, costUsd, spanCount }
+  //   tu = null when EventStore unavailable (UI shows neutral placeholder).
+  // Renders 4 sub-panels: totals + cost, top phases, top models, top agents.
+  function widgetTokenUsage(tu){
+    if (!tu) {
+      return '<div class="ov-widget"><div class="ov-widget-head">Token Usage (real)</div>'
+        + '<div class="empty" style="padding:18px 0">telemetria indisponível — rode no projeto Mustard</div></div>';
+    }
+    if (!tu.spanCount) {
+      return '<div class="ov-widget"><div class="ov-widget-head">Token Usage (real)</div>'
+        + '<div class="empty" style="padding:18px 0">sem spans ainda — execute um pipeline</div></div>';
+    }
+
+    var totalTok = (tu.totalInput || 0) + (tu.totalOutput || 0);
+    var cost = (tu.costUsd || 0).toFixed(4);
+    var totals = '<div class="tu-totals">'
+      + '<div class="tu-totals-row"><span class="tu-lbl">Input</span><span class="tu-val">' + fmtTokens(tu.totalInput || 0) + '</span></div>'
+      + '<div class="tu-totals-row"><span class="tu-lbl">Output</span><span class="tu-val">' + fmtTokens(tu.totalOutput || 0) + '</span></div>'
+      + '<div class="tu-totals-row tu-cost"><span class="tu-lbl">Custo (USD)</span><span class="tu-val">$' + cost + '</span></div>'
+      + '<div class="tu-totals-row"><span class="tu-lbl">Spans</span><span class="tu-val">' + fmtNum(tu.spanCount) + '</span></div>'
+      + '</div>';
+
+    function topRows(bucket, max){
+      var entries = Object.keys(bucket || {}).map(function(k){
+        var v = bucket[k] || {};
+        return { key: k, total: (v.input||0) + (v.output||0), cost: v.cost||0, count: v.count||0 };
+      }).sort(function(a,b){ return b.total - a.total; }).slice(0, max);
+      if (!entries.length) return '<div class="tu-empty">—</div>';
+      var topMax = entries.reduce(function(m,e){ return Math.max(m, e.total); }, 1);
+      return entries.map(function(e){
+        var pct = topMax > 0 ? Math.round((e.total / topMax) * 100) : 0;
+        return '<div class="hook-row" title="' + esc(e.key) + ' · ' + fmtNum(e.count) + ' span(s)">'
+          + '<span class="hook-name">' + esc(e.key) + '</span>'
+          + '<div class="hook-track"><div class="hook-fill" style="width:' + pct + '%"></div></div>'
+          + '<span class="hook-count">' + fmtTokens(e.total) + '</span>'
+          + '<span class="hook-saved">$' + e.cost.toFixed(3) + '</span>'
+          + '</div>';
+      }).join('');
+    }
+
+    var sections = ''
+      + '<div class="econ-mech-head" style="margin-top:6px">Por fase</div>'
+      + topRows(tu.byPhase, 3)
+      + '<div class="econ-mech-head" style="margin-top:8px">Por modelo</div>'
+      + topRows(tu.byModel, 3)
+      + '<div class="econ-mech-head" style="margin-top:8px">Por agente</div>'
+      + topRows(tu.byAgent, 3);
+
+    return '<div class="ov-widget tu-widget">'
+      + '<div class="ov-widget-head">Token Usage (real) &middot; OpenTelemetry</div>'
+      + totals
+      + sections
+      + '<div class="econ-foot">Custos estimados via snapshot de pricing (Anthropic). Spans capturados pelo subagent-tracker.</div>'
+      + '</div>';
+  }
+
   function widgetMustardEconomy(hookEvents, rtkTokens){
     var all = (hookEvents || []).slice()
       .filter(function(h){ return (h.count||0) > 0 && h.event !== 'rtk-rewrite'; });
 
     // Tokens medidos: só categorias com bytes/lines reais.
     var measured = all.filter(function(h){
-      return (h.tokensSaved||0) > 0 && MEASURED_CATEGORIES[categoryOf(h)];
-    }).sort(function(a,b){ return (b.tokensSaved||0) - (a.tokensSaved||0); });
+      return (h.tokensCut||0) > 0 && MEASURED_CATEGORIES[categoryOf(h)];
+    }).sort(function(a,b){ return (b.tokensCut||0) - (a.tokensCut||0); });
     var prevention = all.filter(function(h){ return categoryOf(h) === 'prevention'; })
       .sort(function(a,b){ return (b.count||0) - (a.count||0); });
     var workflow   = all.filter(function(h){ return categoryOf(h) === 'workflow'; })
@@ -1410,14 +1483,14 @@ const CLIENT_JS = `
       return '<div class="ov-widget"><div class="ov-widget-head">Economia Mustard</div><div class="empty">sem mecanismos disparados ainda</div></div>';
     }
 
-    var mustardMeasured = measured.reduce(function(s,h){ return s + (h.tokensSaved||0); }, 0);
-    var maxSaved = measured.reduce(function(m,h){ return Math.max(m, h.tokensSaved||0); }, 1);
+    var mustardMeasured = measured.reduce(function(s,h){ return s + (h.tokensCut||0); }, 0);
+    var maxSaved = measured.reduce(function(m,h){ return Math.max(m, h.tokensCut||0); }, 1);
     var maxPrevent  = prevention.reduce(function(m,h){ return Math.max(m, h.count||0); }, 1);
     var maxWorkflow = workflow.reduce(function(m,h){ return Math.max(m, h.count||0); }, 1);
 
     function rowSaved(h){
       var meta = HOOK_LABELS[h.event] || { label: h.event };
-      var saved = h.tokensSaved || 0;
+      var saved = h.tokensCut || 0;
       var pct = maxSaved > 0 ? Math.round((saved / maxSaved) * 100) : 0;
       return '<div class="hook-row" title="' + esc(meta.why || '') + '">'
         + '<span class="hook-name">' + esc(meta.label) + '</span>'
@@ -2191,9 +2264,9 @@ const CLIENT_JS = `
         + '</div>';
     }
 
-    if (data.agentAttempts && Object.keys(data.agentAttempts).length) {
-      html += '<div class="h-section" style="margin-top:14px;">Tentativas por fase</div>';
-      html += '<div class="lm-stats">' + Object.keys(data.agentAttempts).map(function(k){ return statBox(k, fmtNum(data.agentAttempts[k])); }).join('') + '</div>';
+    if (data.dispatchFailuresByPhase && Object.keys(data.dispatchFailuresByPhase).length) {
+      html += '<div class="h-section" style="margin-top:14px;">Falhas de dispatch por fase</div>';
+      html += '<div class="lm-stats">' + Object.keys(data.dispatchFailuresByPhase).map(function(k){ return statBox(k, fmtNum(data.dispatchFailuresByPhase[k])); }).join('') + '</div>';
     }
     if (data.toolBreakdown && Object.keys(data.toolBreakdown).length) {
       html += '<div class="h-section" style="margin-top:14px;">Uso de tools</div>';
@@ -2356,11 +2429,11 @@ const CLIENT_JS = `
   }
 
   // Fallback quando não há eventos no harness: usa pipeline-state metrics
-  // (agentAttempts, toolBreakdown, fase, lastActivity) para descrever o
+  // (dispatchFailuresByPhase, toolBreakdown, fase, lastActivity) para descrever o
   // que está/esteve sendo executado, mesmo sem eventos finos.
   function renderNowFromMetrics(data){
     var phase = data.phase || '—';
-    var attempts = data.agentAttempts || {};
+    var attempts = data.dispatchFailuresByPhase || {};
     var tools = data.toolBreakdown || {};
     var attemptsKeys = Object.keys(attempts);
     var toolsKeys = Object.keys(tools);
@@ -2372,7 +2445,7 @@ const CLIENT_JS = `
       + (data.status ? '<span class="now-who">' + esc(data.status) + '</span>' : '')
       + '</div>';
     if (attemptsKeys.length) {
-      body += '<div class="now-metric-line"><span class="now-metric-key">tentativas</span>'
+      body += '<div class="now-metric-line"><span class="now-metric-key">falhas de dispatch</span>'
         + attemptsKeys.map(function(k){ return '<span class="now-metric-pill">' + esc(k) + ' · ' + esc(attempts[k]) + '</span>'; }).join('')
         + '</div>';
     }
@@ -2569,7 +2642,7 @@ const CLIENT_JS = `
     var storage = ex.storageBreakdown || {};
 
     var totalCount = hooks.reduce(function(a,h){ return a + (h.count||0); }, 0);
-    var totalSaved = hooks.reduce(function(a,h){ return a + (h.tokensSaved||0); }, 0);
+    var totalSaved = hooks.reduce(function(a,h){ return a + (h.tokensCut||0); }, 0);
     var totalAffected = hooks.reduce(function(a,h){ return a + (h.tokensAffected||0); }, 0);
 
     var html = '';
@@ -2673,7 +2746,7 @@ const CLIENT_JS = `
     var allRows = [];
     allEvents.forEach(function(e){
       if (seenEvents[e]) return; seenEvents[e] = true;
-      var data = byEvent[e] || { event: e, count: 0, tokensAffected: 0, tokensSaved: 0 };
+      var data = byEvent[e] || { event: e, count: 0, tokensAffected: 0, tokensCut: 0 };
       data.fired = !!byEvent[e];
       allRows.push(data);
     });
@@ -2694,7 +2767,7 @@ const CLIENT_JS = `
       if (!rows || !rows.length) return;
       var fired = rows.filter(function(h){ return h.fired; });
       var idle = rows.filter(function(h){ return !h.fired; });
-      var catSaved = rows.reduce(function(a,h){ return a + (h.tokensSaved || 0); }, 0);
+      var catSaved = rows.reduce(function(a,h){ return a + (h.tokensCut || 0); }, 0);
       var catCount = rows.reduce(function(a,h){ return a + (h.count || 0); }, 0);
       out += '<div class="hk-cat">'
         + '<div class="hk-cat-head">'
@@ -2724,7 +2797,7 @@ const CLIENT_JS = `
             + (l.off ? '<div class="hk-row"><span class="hk-tag warn">se desligar</span><span>' + esc(l.off) + '</span></div>' : '')
           + '</td>'
           + '<td class="num muted">' + (h.tokensAffected ? fmtNum(h.tokensAffected) : '—') + '</td>'
-          + '<td class="num' + (h.tokensSaved ? ' hk-saved' : '') + '">' + (h.tokensSaved ? fmtNum(h.tokensSaved) : '—') + '</td>'
+          + '<td class="num' + (h.tokensCut ? ' hk-saved' : '') + '">' + (h.tokensCut ? fmtNum(h.tokensCut) : '—') + '</td>'
           + '</tr>';
       });
       out += '</tbody></table></div></div>';

@@ -470,8 +470,10 @@ function buildSummary({ specs, archives, hookEvents, rtk }) {
 function findTopAlert(allSpecs) {
   let worst = null;
   for (const s of allSpecs) {
-    const attempts = s.metrics.agentAttempts || {};
-    for (const [phase, n] of Object.entries(attempts)) {
+    // dispatchFailuresByPhase: emitted by buildPipelineState from real
+    // dispatch.failure events (no longer derived from tool_input heuristics).
+    const phaseSrc = (s.metrics && s.metrics.dispatchFailuresByPhase) || {};
+    for (const [phase, n] of Object.entries(phaseSrc)) {
       if (n >= 3 && (!worst || n > worst.n)) worst = { name: s.name, phase, n };
     }
   }
@@ -501,12 +503,12 @@ function renderSpecs(parts, list, label) {
       parts.push(`- Top tools: ${top}`);
     }
 
-    if (m.agentAttempts && Object.keys(m.agentAttempts).length > 0) {
-      const entries = Object.entries(m.agentAttempts).map(([phase, n]) => {
+    if (m.dispatchFailuresByPhase && Object.keys(m.dispatchFailuresByPhase).length > 0) {
+      const entries = Object.entries(m.dispatchFailuresByPhase).map(([phase, n]) => {
         const mark = n >= 3 ? ' ⚠' : '';
         return `${phase}:${n}${mark}`;
       });
-      parts.push(`- Retries by phase: ${entries.join(', ')}`);
+      parts.push(`- Dispatch failures by phase: ${entries.join(', ')}`);
     }
 
     if (m.gate_saves !== undefined) parts.push(`- Gate saves: ${m.gate_saves}`);
@@ -520,36 +522,14 @@ function renderSpecs(parts, list, label) {
       }
     }
 
-    // Pass@1 per agent (heuristic): cross subagent-registry with agentAttempts.
-    const pass1 = agentPass1(s);
-    if (pass1 && pass1.length > 0) {
-      parts.push('- Pass@1 by agent (heuristic):');
-      for (const row of pass1) parts.push(`  - ${row}`);
-    }
+    // Pass@1 by agent heuristic removed in Mustard 2.0: depended on the deleted
+    // .subagent-registry.json + dispatch-retry signals now in events.jsonl.
 
     if (s.isOrphaned) {
       parts.push('- Spec: not in spec/active/ (likely completed without /mustard:complete)');
     }
     parts.push('');
   }
-}
-
-function agentPass1(spec) {
-  const registryPath = path.join(process.cwd(), '.claude', '.subagent-registry.json');
-  const registry = readJson(registryPath);
-  if (!registry) return null;
-  const attempts = spec.metrics.agentAttempts || {};
-  const anyRetry = Object.values(attempts).some(n => n > 0);
-  const agents = new Set();
-  for (const entry of Object.values(registry)) {
-    if (entry && entry.agentType) agents.add(entry.agentType);
-  }
-  if (agents.size === 0) return null;
-  const rows = [];
-  for (const agent of [...agents].sort()) {
-    rows.push(`${agent}: ${anyRetry ? 'advisory (retries present)' : '100%'}`);
-  }
-  return rows.slice(0, 5);
 }
 
 function renderArchives(parts, archives) {
@@ -629,9 +609,8 @@ function buildPipelineHealth({ specs, archives }) {
     const tb = m.toolBreakdown || {};
     l0Direct += (tb.Bash || 0) + (tb.Edit || 0) + (tb.Write || 0);
     l0Delegated += (tb.Agent || 0) + (tb.Task || 0);
-    // Prefer dispatchFailuresByPhase (post-Wave 4) over legacy agentAttempts
-    // (no longer written by any hook; only present in April 2026 fossils).
-    const phaseSrc = m.dispatchFailuresByPhase || m.agentAttempts || {};
+    // Single source: dispatchFailuresByPhase (derived from dispatch.failure events).
+    const phaseSrc = m.dispatchFailuresByPhase || {};
     for (const [phase, n] of Object.entries(phaseSrc)) {
       if (typeof n !== 'number' || n <= 0) continue;
       phaseRetries[phase] = (phaseRetries[phase] || 0) + n;

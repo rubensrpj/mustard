@@ -1,12 +1,25 @@
 # Mustard 2.0 — Phase 2: OpenTelemetry + Token Measurement Real
 
 - **Lang**: ptbr
-- **Phase**: PLAN
+- **Status**: completed
+- **Phase**: CLOSE
+- **Checkpoint**: 2026-05-12T20:25:00Z
 - **Scope**: Full
 - **Type**: feature
 - **Model**: opus
 - **Depends on**: Phase 1 (EventStore)
 - **Unlocks**: Phase 3 (MCP)
+
+## Design decision (revised at approve)
+
+**Manual OTLP JSON emit, NO `@opentelemetry/sdk-node`.** Razões:
+- Hook spawn-per-call mata `AsyncLocalStorage` cross-process. SDK não propaga contexto entre PreToolUse e PostToolUse spawns (são processos separados). `tool_use_id` do hookInput linka manualmente.
+- Cold-start: SDK lite carrega ~20-50ms × 1000+ tool uses por sessão = 20-50s acumulado. Manual = sub-ms.
+- Hooks devem ter ZERO npm deps. SDK exigiria bundling/wrapper (mesmo problema da EventStore em Sialia hoje).
+
+**Único dep adicionado: `@opentelemetry/otlp-transformer` como devDependency** (apenas em tests) pra validar shape OTLP JSON do nosso emitter manual. Zero peso runtime.
+
+Quando Claude Code expor `CLAUDE_LAST_USAGE` ou auto-instrumentation hooks, refactor de ~30 linhas troca o emitter manual pelo SDK. Não é problema de Phase 2.
 
 ## Summary
 
@@ -42,11 +55,11 @@ Dashboard troca "tokens economizados" por:
 
 ## Acceptance Criteria
 
-1. **OTel SDK instalado e compilando**
+1. **TokenTracker compila (manual emit, no SDK)**
    ```bash
    bunx tsc --noEmit -p src/telemetry/tsconfig.json
    ```
-   Sem erros. Imports `@opentelemetry/api`, `@opentelemetry/sdk-node`, `@opentelemetry/semantic-conventions`.
+   Sem erros. Manual OTLP JSON emitter. `otlp-transformer` apenas em devDependencies (usado só nos tests).
 
 2. **TokenTracker emite spans em events.jsonl + spans.jsonl**
    ```bash
@@ -80,15 +93,25 @@ Dashboard troca "tokens economizados" por:
 
 7. **Substituição completa do `tokensSaved` heurístico**
    ```bash
-   grep -rL "tokensSaved" templates/scripts/dashboard.js templates/scripts/dashboard-ui.js
+   node -e "const fs=require('fs');for(const f of ['templates/scripts/dashboard.js','templates/scripts/dashboard-ui.js']){if(fs.readFileSync(f,'utf8').includes('tokensSaved')){console.log('FAIL',f);process.exit(1)}}process.exit(0)"
    ```
    Zero references a `tokensSaved`. UI mostra `tokensReal.input/output`.
 
 8. **Spans queryable via EventStore**
    ```bash
-   node -e "const{EventStore}=require('./dist/runtime/event-store.js');const e=new EventStore('.claude/.harness/mustard.db');e.init();const r=e.spans({phase:'PLAN'});process.exit(r.length>=0?0:1)"
+   bun -e "const{EventStore}=require('./dist/runtime/event-store.js');const e=new EventStore('.claude/.harness/mustard.db');e.init();const r=e.spans({phase:'PLAN'});process.exit(r.length>=0?0:1)"
    ```
-   `EventStore.spans(filter)` consulta tabela `spans` (nova projeção).
+   `EventStore.spans(filter)` consulta tabela `spans` (nova projeção). Bun obrigatório por causa do driver SQLite nativo (Node lança "SQLite driver unavailable").
+
+### Parseable AC (cross-shell, QA-runner)
+
+Comandos abaixo são `cmd.exe`/PowerShell/bash-friendly. QA runner os executa via `execSync` no Windows.
+
+- [ ] AC-1: TokenTracker tsc clean — Command: `bunx tsc --noEmit -p src/telemetry/tsconfig.json`
+- [ ] AC-2: token-tracker integration test passes — Command: `node --test tests/integration/token-tracker.test.js`
+- [ ] AC-6: span duration correlates with input tokens — Command: `node --test tests/integration/span-duration-correlates.js`
+- [ ] AC-7: zero tokensSaved in dashboard files — Command: `node -e "const fs=require('fs');for(const f of ['templates/scripts/dashboard.js','templates/scripts/dashboard-ui.js']){if(fs.readFileSync(f,'utf8').includes('tokensSaved')){console.log('FAIL',f);process.exit(1)}}process.exit(0)"`
+- [ ] AC-8: EventStore.spans() queryable under Bun — Command: `bun -e "const path=require('path');const os=require('os');const{EventStore}=require('./dist/runtime/event-store.js');const e=new EventStore(path.join(os.tmpdir(),'mst-qa-spans.db'));e.init();const r=e.spans({phase:'PLAN'});process.exit(Array.isArray(r)?0:1)"`
 
 ## Implementation
 
@@ -142,10 +165,11 @@ CREATE INDEX idx_spans_started ON spans(started_at);
 
 ### New files
 
-- `src/telemetry/token-tracker.ts` — class TokenTracker com startSpan/endSpan
-- `src/telemetry/otel-conventions.ts` — constantes `gen_ai.*` (importadas de @opentelemetry/semantic-conventions)
+- `src/telemetry/token-tracker.ts` — class TokenTracker com startSpan/endSpan (manual OTLP JSON emit)
+- `src/telemetry/otel-conventions.ts` — constantes `gen_ai.*` hard-coded (sem dep — names em OTel spec são estáveis)
 - `src/telemetry/pricing.ts` — pricing por modelo (opus/sonnet/haiku) pra `cost_usd` derivado
-- `templates/hooks/_lib/span-emitter.js` — helper que cada hook pode chamar
+- `templates/hooks/_lib/span-emitter.js` — helper CJS zero-dep que cada hook pode chamar (escreve OTLP JSON em spans.jsonl)
+- `tests/integration/span-shape.test.js` — usa `@opentelemetry/otlp-transformer` pra validar shape do nosso emitter
 
 ### Changed files
 
@@ -187,11 +211,11 @@ Quando Claude Code expor SDK headers via env var (`CLAUDE_LAST_USAGE` ou similar
 
 ## Checklist
 
-- [ ] OTel SDK + GenAI conventions instaladas
-- [ ] `TokenTracker` implementada
-- [ ] Spans em spans.jsonl + tabela `spans` no SQLite
-- [ ] subagent-tracker emite spans
-- [ ] Dashboard `/api/metrics` retorna tokenUsage
-- [ ] UI substituída
-- [ ] Pricing constants validados contra anthropic.com
-- [ ] Tests: span shape, conventions, EventStore.spans()
+- [x] OTel GenAI conventions hard-coded (sem SDK runtime — manual OTLP JSON emit)
+- [x] `TokenTracker` implementada (`src/telemetry/token-tracker.ts`)
+- [x] Spans em spans.jsonl + tabela `spans` no SQLite + projection na migration
+- [x] subagent-tracker emite spans (Pre/Post linkados via toolUseId, sidecar bridging + janitor)
+- [x] Dashboard `/api/metrics` retorna tokenUsage (byPhase/byModel/byAgent/totalInput/totalOutput/costUsd)
+- [x] UI substituída (widgetTokenUsage)
+- [x] Pricing constants (claude-opus-4-7/sonnet-4-6/haiku-4-5 — anthropic.com/pricing 2026-05)
+- [x] Tests: token-tracker (3/3), subagent-tracker-spans (2/2), span-duration-correlates (1/1, Pearson r > 0.5)

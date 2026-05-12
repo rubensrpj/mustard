@@ -20,6 +20,10 @@ const path = require('path');
 const { shouldRun, isSelfDelegation } = require('./_lib/hook-env.js');
 const { emitMetric } = require('./_lib/metrics-emit.js');
 
+// ── Span emitter (Phase 2 — OTLP JSON tokens) ─────────────────────────────────
+let _spanEmitter = null;
+try { _spanEmitter = require('./_lib/span-emitter.js'); } catch (_) {} // fail-open: optional
+
 // ── Harness event bus (Wave 2 dual emission) ─────────────────────────────────
 let harnessEmit = null;
 let harnessGetSessionId = null;
@@ -40,6 +44,48 @@ function emitEvent(eventName, payload, ctx) {
 const DEDUP_FILE = 'explorer-dedup.json';
 const DEDUP_DENY_MS  = 60_000;  // deny window: same type within 60s → block
 const DEDUP_CLEAN_MS = 120_000; // prune entries older than 120s when reading
+
+/**
+ * Read newest active pipeline-state once and return {spec, phase, wave}.
+ * Fail-open: returns nulls on any error. Caller can pass a freshness window
+ * (ms) — if the newest state is older than that, it's treated as stale and
+ * spec/phase are null (used by PostToolUse to avoid tagging events with a
+ * dead pipeline).
+ */
+function readPipelineState(projectDir, freshnessMs) {
+  const out = { spec: null, phase: null, wave: null };
+  try {
+    const statesDir = path.join(projectDir, '.claude', '.pipeline-states');
+    if (!fs.existsSync(statesDir)) return out;
+    const files = fs.readdirSync(statesDir)
+      .filter(f => f.endsWith('.json') && !f.endsWith('.metrics.json'));
+    if (files.length === 0) return out;
+
+    let newest = null;
+    let newestMtime = 0;
+    for (const f of files) {
+      try {
+        const fp = path.join(statesDir, f);
+        const stat = fs.statSync(fp);
+        if (stat.mtimeMs > newestMtime) {
+          newestMtime = stat.mtimeMs;
+          newest = fp;
+        }
+      } catch {}
+    }
+    if (!newest) return out;
+    if (typeof freshnessMs === 'number' && (Date.now() - newestMtime) >= freshnessMs) {
+      return out;
+    }
+    const st = JSON.parse(fs.readFileSync(newest, 'utf8'));
+    out.spec = st.specName || st.spec || st.name || null;
+    out.phase = st.phaseName || st.phase || null;
+    if (typeof st.wave === 'number') out.wave = st.wave;
+    return out;
+  } catch {
+    return out;
+  }
+}
 
 let input = '';
 process.stdin.setEncoding('utf8');
@@ -76,9 +122,10 @@ process.stdin.on('end', () => {
  * The SubagentStart event doesn't carry description, so we capture it here
  * and match it later via FIFO queue with type-matching preference.
  *
- * Also parses recommended_skills from the Task prompt, persists them in
- * .subagent-registry.json, and increments skillHits.loaded in the active
- * pipeline state.
+ * Also parses recommended_skills from the Task prompt and increments
+ * skillHits.loaded in the active pipeline state. Mustard 2.0 Phase 1:
+ * `.subagent-registry.json` writes were removed — agent.start events in the
+ * EventStore (or events.jsonl replay log) are the truth source.
  */
 function handlePreToolUse(data, stateDir) {
   if (isSelfDelegation(data)) { return; }
@@ -120,28 +167,10 @@ function handlePreToolUse(data, stateDir) {
     const sessionId = harnessGetSessionId ? harnessGetSessionId(data) : null;
     const wave = harnessGetWave ? harnessGetWave(data) : 0;
 
-    // Attempt to read spec from active pipeline state
-    let currentSpec = null;
-    try {
-      const statesDir = path.join(projectDir, '.claude', '.pipeline-states');
-      if (fs.existsSync(statesDir)) {
-        const stateFiles = fs.readdirSync(statesDir).filter(f => f.endsWith('.json') && !f.endsWith('.metrics.json'));
-        if (stateFiles.length > 0) {
-          let newestMtime = 0; let newestState = null;
-          for (const f of stateFiles) {
-            try {
-              const fp = path.join(statesDir, f);
-              const stat = fs.statSync(fp);
-              if (stat.mtimeMs > newestMtime) { newestMtime = stat.mtimeMs; newestState = fp; }
-            } catch {}
-          }
-          if (newestState) {
-            const st = JSON.parse(fs.readFileSync(newestState, 'utf8'));
-            currentSpec = st.spec || st.name || null;
-          }
-        }
-      }
-    } catch {}
+    // Single read of newest pipeline-state for spec + phase (formerly read twice).
+    const ps = readPipelineState(projectDir);
+    const currentSpec = ps.spec;
+    const currentPhase = ps.phase;
 
     // Extract model from tool input prompt (best-effort — may be absent)
     const model = (toolInput.model || null);
@@ -157,6 +186,28 @@ function handlePreToolUse(data, stateDir) {
       spec: currentSpec,
       actor: { kind: 'agent', id: subagentType, type: subagentType },
     });
+
+    // ── Phase 2 span emit: persist sidecar so PostToolUse can complete it ─
+    try {
+      const toolUseId = data.tool_use_id || (data.tool_input && data.tool_input.tool_use_id);
+      if (toolUseId && _spanEmitter) {
+        const claudeDir = path.join(projectDir, '.claude');
+        const tracker = _spanEmitter.getTracker(claudeDir);
+        if (tracker) {
+          const promptBytes = Buffer.byteLength(toolInput.prompt || '', 'utf8');
+          tracker.startSpan({
+            name: 'task.dispatch',
+            toolUseId: String(toolUseId),
+            model: model || 'unknown',
+            agentType: subagentType || 'general-purpose',
+            spec: currentSpec || undefined,
+            phase: currentPhase || undefined,
+            wave: typeof wave === 'number' ? wave : undefined,
+            promptBytes,
+          });
+        }
+      }
+    } catch (_) { /* fail-open: span emit is advisory */ }
 
     // Descriptive metric: bytes of work isolated into a sub-context via Task.
     // This is NOT savings — it reports how much prompt was delegated rather
@@ -191,30 +242,10 @@ function handlePreToolUse(data, stateDir) {
 
     const projectDir = path.resolve(stateDir, '..', '..');
 
-    // Persist entry to .subagent-registry.json for later Read attribution
-    const registryPath = path.join(projectDir, '.claude', '.subagent-registry.json');
-    let registry = {};
-    try {
-      if (fs.existsSync(registryPath)) {
-        registry = JSON.parse(fs.readFileSync(registryPath, 'utf8'));
-      }
-    } catch {}
-    // Use timestamp + agentType as pseudo-taskId (best effort — no real taskId available at PreToolUse)
-    const taskId = `${Date.now()}-${subagentType}`;
-    registry[taskId] = {
-      agentType: subagentType,
-      recommendedSkills,
-      startedAt: new Date().toISOString(),
-      // endedAt is written when SubagentStop fires (not implemented here — left undefined)
-    };
-    // Prune entries older than 2 hours to prevent unbounded growth
-    const cutoff = Date.now() - 2 * 60 * 60 * 1000;
-    for (const [key, entry] of Object.entries(registry)) {
-      if (new Date(entry.startedAt || 0).getTime() < cutoff) {
-        delete registry[key];
-      }
-    }
-    fs.writeFileSync(registryPath, JSON.stringify(registry, null, 2), 'utf8');
+    // Mustard 2.0 Phase 1: `.subagent-registry.json` write removed. The
+    // (agentType, recommendedSkills, startedAt) tuple is already carried by the
+    // `agent.start` event emitted above in handlePreToolUse — consumers read
+    // it via EventStore.query({event:'agent.start'}) or events.jsonl replay.
 
     // Increment skillHits.loaded in the active pipeline state
     const statesDir = path.join(projectDir, '.claude', '.pipeline-states');
@@ -284,27 +315,11 @@ function handlePostToolUse(data, stateDir) {
     const subagentType = toolInput.subagent_type || 'unknown';
     const projectDir = path.resolve(stateDir, '..', '..');
 
-    // Resolve spec/phase from newest pipeline-state for event tagging
-    let currentSpec = null, currentPhase = null;
-    try {
-      const statesDir = path.join(projectDir, '.claude', '.pipeline-states');
-      if (fs.existsSync(statesDir)) {
-        const stateFiles = fs.readdirSync(statesDir).filter(f => f.endsWith('.json') && !f.endsWith('.metrics.json'));
-        let newestMtime = 0, newestState = null;
-        for (const f of stateFiles) {
-          try {
-            const fp = path.join(statesDir, f);
-            const stat = fs.statSync(fp);
-            if (stat.mtimeMs > newestMtime) { newestMtime = stat.mtimeMs; newestState = fp; }
-          } catch {}
-        }
-        if (newestState && (Date.now() - newestMtime) < 10 * 60 * 1000) {
-          const st = JSON.parse(fs.readFileSync(newestState, 'utf8'));
-          currentSpec = st.specName || st.spec || st.name || null;
-          currentPhase = st.phaseName || st.phase || null;
-        }
-      }
-    } catch {}
+    // Resolve spec/phase from newest pipeline-state for event tagging (single read,
+    // 10-min freshness window — stale states are ignored to avoid mis-tagging).
+    const ps = readPipelineState(projectDir, 10 * 60 * 1000);
+    const currentSpec = ps.spec;
+    const currentPhase = ps.phase;
 
     // (1) Emit agent.stop with real summary. tool_response shape varies — most
     // commonly an array of content blocks; serialize defensively and cap size.
@@ -329,6 +344,29 @@ function handlePostToolUse(data, stateDir) {
         actor: { kind: 'agent', id: subagentType, type: subagentType },
       });
     } catch (_) {}
+
+    // ── Phase 2 span emit: close span sidecar started by PreToolUse ──────
+    try {
+      const toolUseId = data.tool_use_id || (data.tool_input && data.tool_input.tool_use_id);
+      if (toolUseId && _spanEmitter) {
+        const claudeDir = path.join(projectDir, '.claude');
+        const tracker = _spanEmitter.getTracker(claudeDir);
+        if (tracker) {
+          const responseText = typeof toolResponse === 'string'
+            ? toolResponse
+            : JSON.stringify(toolResponse || {});
+          const responseBytes = Buffer.byteLength(responseText, 'utf8');
+          const endInput = {
+            toolUseId: String(toolUseId),
+            responseBytes,
+            isError: toolResponse && toolResponse.is_error === true,
+          };
+          const errorType = toolResponse && toolResponse.error_type;
+          if (typeof errorType === 'string' && errorType) endInput.errorType = errorType;
+          tracker.endSpan(endInput);
+        }
+      }
+    } catch (_) { /* fail-open: span emit is advisory */ }
 
     // (2)(3) Dispatch failure detection — require is_error=true AND a failure
     // keyword so we don't false-positive on agents merely documenting errors.
@@ -515,6 +553,25 @@ function handleSessionStart(data, stateDir) {
       if (remaining.length === 0) fs.rmdirSync(stateDir);
     } catch {}
   } catch {}
+
+  // ── Phase 2: sweep orphan span sidecars (> 10 min mtime). Sidecars live at
+  // .claude/.harness/.active-spans/{toolUseId}.json and are normally deleted
+  // by TokenTracker.endSpan. Orphans arise from killed Bun processes, crashes,
+  // or PostToolUse hooks that never fired.
+  try {
+    const projectDir = path.resolve(stateDir, '..', '..');
+    const sidecarDir = path.join(projectDir, '.claude', '.harness', '.active-spans');
+    if (fs.existsSync(sidecarDir)) {
+      const now = Date.now();
+      for (const f of fs.readdirSync(sidecarDir)) {
+        const fp = path.join(sidecarDir, f);
+        try {
+          const stat = fs.statSync(fp);
+          if (now - stat.mtimeMs > STALE_MS) fs.unlinkSync(fp);
+        } catch {} // fail-open
+      }
+    }
+  } catch {} // fail-open
 }
 
 // ── Explorer dedup helpers ──
