@@ -1,4 +1,9 @@
 {
+  "_meta": {
+    "version": "4.0",
+    "generated": "2026-05-12",
+    "generator": "sync-registry.js"
+  },
   "_patterns": {},
   "_enums": {},
   "e": {}

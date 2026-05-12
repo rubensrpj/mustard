@@ -28,3 +28,10 @@ src-tauri/target/
 *.njsproj
 *.sln
 *.sw?
+
+# TypeScript build cache
+*.tsbuildinfo
+
+# vite.config compile outputs (from `tsc -b`)
+vite.config.js
+vite.config.d.ts
