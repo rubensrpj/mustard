@@ -1,17 +1,95 @@
-import { existsSync, readdirSync, statSync, readFileSync } from 'fs';
-import { mkdir, copyFile, rename, cp, writeFile } from 'fs/promises';
-import { join, resolve, dirname, sep } from 'path';
+import { existsSync, readdirSync, readFileSync } from 'fs';
+import { mkdir, copyFile, cp, writeFile } from 'fs/promises';
+import { join, resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { execSync } from 'child_process';
 import { homedir } from 'os';
 import chalk from 'chalk';
 import ora from 'ora';
 import inquirer from 'inquirer';
+import { detect, type RuntimeInfo, type RuntimeKind } from '../runtime/detect-runtime.js';
 
 export interface InitOptions {
   force?: boolean;
   yes?: boolean;
   cursor?: boolean;
+  /** Force runtime kind. 'auto' (default) honors detect(); 'bun'/'node' force. */
+  runtime?: 'bun' | 'node' | 'auto';
+  /** When true, print intended actions but do not write to disk. */
+  dryRun?: boolean;
+}
+
+interface RuntimeChoice {
+  kind: RuntimeKind;
+  version: string;
+  chosenAt: string;
+}
+
+/**
+ * Resolve the runtime to use based on --runtime flag and detect() output.
+ *
+ * - 'auto' (default): honor detect() result; fallback to Node when Bun unavailable.
+ * - 'bun': require detect() to report Bun; otherwise fail with exit 1.
+ *          (In dry-run, missing Bun is allowed — reports intent with version='unknown'.)
+ * - 'node': force Node regardless of detection.
+ */
+function resolveRuntime(
+  flag: 'bun' | 'node' | 'auto' | undefined,
+  dryRun = false,
+): RuntimeChoice {
+  const mode = flag ?? 'auto';
+  const info: RuntimeInfo = detect();
+
+  if (mode === 'bun') {
+    if (info.kind !== 'bun') {
+      if (dryRun) {
+        // Dry-run: report intent without enforcing availability.
+        process.stderr.write(
+          '[mustard] warn: --runtime=bun forced, but Bun not detected (dry-run only)\n'
+        );
+        return { kind: 'bun', version: 'unknown', chosenAt: new Date().toISOString() };
+      }
+      process.stderr.write(
+        '[mustard] error: --runtime=bun requested, but Bun is not available in this environment.\n'
+      );
+      process.exit(1);
+    }
+    return { kind: 'bun', version: info.version, chosenAt: new Date().toISOString() };
+  }
+
+  if (mode === 'node') {
+    const version = info.kind === 'node' ? info.version : process.versions.node;
+    return { kind: 'node', version, chosenAt: new Date().toISOString() };
+  }
+
+  // auto: honor detection; Node fallback is implicit (detect() returns 'node' when no Bun)
+  if (mode === 'auto' && info.kind === 'node' && process.env.MUSTARD_RUNTIME_VERBOSE === '1') {
+    process.stderr.write('[mustard] runtime: Bun not detected, falling back to Node\n');
+  }
+  return { kind: info.kind, version: info.version, chosenAt: new Date().toISOString() };
+}
+
+/**
+ * Merge runtime info into .claude/mustard.json (surgical).
+ * Preserves all other fields; only updates/inserts `runtime`.
+ */
+async function writeRuntimeToClaudeMustardJson(
+  claudePath: string,
+  runtime: RuntimeChoice,
+): Promise<void> {
+  const cfgPath = join(claudePath, 'mustard.json');
+  let existing: Record<string, unknown> = {};
+  if (existsSync(cfgPath)) {
+    try {
+      existing = JSON.parse(readFileSync(cfgPath, 'utf-8')) as Record<string, unknown>;
+    } catch {
+      // malformed — overwrite with fresh runtime-only object
+      existing = {};
+    }
+  }
+  existing.runtime = runtime;
+  await mkdir(claudePath, { recursive: true });
+  await writeFile(cfgPath, JSON.stringify(existing, null, 2) + '\n');
 }
 
 function getTemplatesDir(): string {
@@ -86,6 +164,18 @@ export async function initCommand(options: InitOptions): Promise<void> {
 
   console.log(chalk.bold('\n🌿 Mustard\n'));
 
+  // Resolve runtime first — used by both dry-run and real flows.
+  // Print one line containing "runtime" and the chosen kind for AC #5/#6.
+  const runtime = resolveRuntime(options.runtime, options.dryRun ?? false);
+  console.log(`[mustard] runtime: ${runtime.kind} ${runtime.version}`);
+
+  // Dry-run: report intended actions and exit without touching disk.
+  if (options.dryRun) {
+    console.log(chalk.gray(`  (dry-run) would copy templates → ${claudePath}`));
+    console.log(chalk.gray(`  (dry-run) would write runtime to ${join(claudePath, 'mustard.json')}`));
+    return;
+  }
+
   // Handle existing .claude/
   if (existsSync(claudePath)) {
     if (options.force) {
@@ -99,6 +189,7 @@ export async function initCommand(options: InitOptions): Promise<void> {
       spinner.succeed(`Copied ${count} new files (existing files preserved)${ghMsg}`);
       await ensureGlobalPermissions();
       await ensureRtk();
+      await writeRuntimeToClaudeMustardJson(claudePath, runtime);
       if (options.cursor) await installCursorAdapter(projectPath, claudePath);
       printNextSteps();
       return;
@@ -140,6 +231,7 @@ export async function initCommand(options: InitOptions): Promise<void> {
         spinner.succeed(`Copied ${count} new files (existing files preserved)${ghMsg}`);
         await ensureGlobalPermissions();
         await ensureRtk();
+        await writeRuntimeToClaudeMustardJson(claudePath, runtime);
         if (options.cursor) await installCursorAdapter(projectPath, claudePath);
         printNextSteps();
         return;
@@ -157,7 +249,7 @@ export async function initCommand(options: InitOptions): Promise<void> {
   if (!existsSync(registryPath)) {
     const { writeFile } = await import('fs/promises');
     await writeFile(registryPath, JSON.stringify({ _patterns: {}, _enums: {}, e: {} }, null, 2));
-    count; // already counted
+    // already counted in `count`
   }
 
   const ghMsg = ghCount > 0 ? ` (+ ${ghCount} GitHub template(s) at .github/)` : '';
@@ -169,6 +261,9 @@ export async function initCommand(options: InitOptions): Promise<void> {
 
   // Install Cursor adapter if requested
   if (options.cursor) await installCursorAdapter(projectPath, claudePath);
+
+  // Persist runtime choice to .claude/mustard.json (Wave 2 AC #5/#7)
+  await writeRuntimeToClaudeMustardJson(claudePath, runtime);
 
   // Generate mustard.json (git flow config)
   await generateMustardJson(projectPath, options);
@@ -487,6 +582,10 @@ export async function ensureGlobalPermissions(): Promise<void> {
   const settingsPath = join(claudeDir, 'settings.json');
   const requiredPerms = ['Read', 'Write', 'Edit'];
 
+  // settings.json is free-form JSON; downstream code mutates nested fields
+  // (permissions.allow, env[key]). Strict typing here would require a full
+  // settings schema — out of scope for Wave 2 lint hardening.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let settings: Record<string, any> = {};
 
   if (existsSync(settingsPath)) {

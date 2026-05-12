@@ -57,9 +57,10 @@ export async function updateCommand(options: UpdateOptions): Promise<void> {
   console.log(chalk.green('  Will recreate:'));
   console.log(chalk.gray('    • commands/mustard/  • hooks/  • skills/  • scripts/  • settings.json'));
   console.log(chalk.yellow('  Will preserve:'));
-  console.log(chalk.gray('    • CLAUDE.md  • pipeline-config.md  • entity-registry.json  • docs/  • spec/  • agent-memory/'));
+  console.log(chalk.gray('    • CLAUDE.md  • pipeline-config.md  • entity-registry.json  • mustard.json  • docs/  • spec/  • agent-memory/'));
+  // Note: .claude/mustard.json (runtime config) is intentionally NOT in foldersToDelete; runtime field survives update.
 
-  // Confirm + backup
+  // Confirm (interactive only — --force skips prompt but never the backup)
   if (!options.force) {
     const { proceed } = await inquirer.prompt<{ proceed: boolean }>([{
       type: 'confirm',
@@ -71,12 +72,13 @@ export async function updateCommand(options: UpdateOptions): Promise<void> {
       console.log(chalk.yellow('\n⚠️  Cancelled.\n'));
       return;
     }
-
-    const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-    const backupSpinner = ora('Creating backup...').start();
-    await cp(claudePath, `${claudePath}.backup.${ts}`, { recursive: true });
-    backupSpinner.succeed('Backup created');
   }
+
+  // Backup runs unconditionally — --force only skips the prompt, never the safety net
+  const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  const backupSpinner = ora('Creating backup...').start();
+  await cp(claudePath, `${claudePath}.backup.${ts}`, { recursive: true });
+  backupSpinner.succeed('Backup created');
 
   // Delete core folders
   const foldersToDelete = ['commands/mustard', 'hooks', 'skills', 'scripts', 'refs'];

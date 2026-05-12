@@ -74,4 +74,9 @@ function guardedRun(hookName, data, maxDepth) {
   return true;
 }
 
-module.exports = { shouldRun, isStrictMode, acquireGuard, checkDepth, isSelfDelegation, isInHookPhase, guardedRun };
+// ── Runtime shim re-export (Phase 0: detection only) ────────────────
+var _runtimeShim;
+try { _runtimeShim = require('./runtime-shim.js'); } catch (_e) { _runtimeShim = null; }
+var pickRuntime = _runtimeShim ? _runtimeShim.pickRuntime : function () { return { kind: 'node', version: 'unknown', bunSqliteAvailable: false }; };
+
+module.exports = { shouldRun, isStrictMode, acquireGuard, checkDepth, isSelfDelegation, isInHookPhase, guardedRun, pickRuntime };

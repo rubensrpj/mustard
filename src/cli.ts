@@ -24,6 +24,8 @@ export function run(): void {
     .option('-f, --force', 'Overwrite existing .claude/ directory without backup')
     .option('-y, --yes', 'Skip confirmation prompts')
     .option('--cursor', 'Install Cursor IDE adapter at .cursor/hooks/adapter.js (experimental)')
+    .option('--runtime <kind>', 'Force runtime: bun | node | auto (default: auto)', 'auto')
+    .option('--dry-run', 'Show what would happen without writing to disk')
     .action(initCommand);
 
   program
