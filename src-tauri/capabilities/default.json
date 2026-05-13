@@ -9,6 +9,7 @@
     "store:default",
     "log:default",
     "window-state:default",
-    "updater:default"
+    "updater:default",
+    "dialog:default"
   ]
 }

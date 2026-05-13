@@ -1,0 +1,273 @@
+import { useEffect } from "react";
+import { Link, useParams, useSearchParams } from "react-router";
+import { Layers, ChefHat, BookOpen, Activity, type LucideIcon } from "lucide-react";
+import { useProject } from "@/hooks/useProject";
+import { useStore } from "@/lib/store";
+import { queryClient } from "@/lib/query-client";
+import type { Project } from "@/api/discovery";
+import { StatusDot, type StatusDotVariant } from "@/components/StatusDot";
+import { relativeTime } from "@/lib/time";
+import { Separator } from "@/components/ui/separator";
+import { Badge } from "@/components/ui/badge";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { SpecsList } from "@/components/SpecsList";
+
+function truncate(s: string, n: number): string {
+  return s.length > n ? s.slice(0, n - 1) + "…" : s;
+}
+
+function eventVariant(eventType: string): StatusDotVariant {
+  switch (eventType) {
+    case "tool.use":
+    case "commit-gate.check":
+      return "idle";
+    case "pipeline.phase":
+      return "planning";
+    case "qa.result":
+      return "done";
+    case "agent.start":
+    case "session.start":
+      return "active";
+    default:
+      return "idle";
+  }
+}
+
+function SectionHeading({
+  title,
+  count,
+  loading,
+  icon: Icon,
+}: {
+  title: string;
+  count: number;
+  loading: boolean;
+  icon?: LucideIcon;
+}) {
+  return (
+    <div className="flex items-baseline gap-2 mb-2">
+      {Icon && <Icon className="h-4 w-4 text-foreground self-center" />}
+      <h2
+        className={`text-[11px] uppercase tracking-wider font-medium ${Icon ? "text-foreground" : "text-muted-foreground"}`}
+      >
+        {title}
+      </h2>
+      <span className="text-[11px] text-muted-foreground/50 font-mono">
+        {loading ? "…" : count}
+      </span>
+    </div>
+  );
+}
+
+function EmptyBlock({ icon: Icon, text }: { icon: LucideIcon; text: string }) {
+  return (
+    <div className="flex flex-col items-center gap-2 py-3 opacity-40">
+      <Icon className="h-5 w-5" />
+      <span className="text-xs">{text}</span>
+    </div>
+  );
+}
+
+export function ProjectDetail() {
+  const { id } = useParams<{ id: string }>();
+  const projectsRoot = useStore((s) => s.projectsRoot);
+  const setSelectedProjectId = useStore((s) => s.setSelectedProjectId);
+  const projects = queryClient.getQueryData<Project[]>(['discover', projectsRoot]);
+  const project = projects?.find((p) => p.id === id) ?? null;
+
+  const [searchParams, setSearchParams] = useSearchParams();
+  const tab = searchParams.get("tab") === "about" ? "about" : "specs";
+
+  useEffect(() => {
+    if (id) setSelectedProjectId(id);
+  }, [id, setSelectedProjectId]);
+
+  const { subprojects, recipes, skills, recentEvents, loading, error } = useProject(project);
+
+  if (!project) {
+    return (
+      <div className="text-sm text-muted-foreground">
+        Projeto não encontrado. Volte ao{" "}
+        <Link to="/" className="underline">Home</Link> ou configure root em{" "}
+        <Link to="/settings" className="underline">Settings</Link>.
+      </div>
+    );
+  }
+
+  if (error) {
+    return <p className="text-destructive text-sm">{error}</p>;
+  }
+
+  return (
+    <div className="flex flex-col gap-1">
+      <div className="flex flex-col gap-1 mb-4">
+        <nav className="text-xs text-muted-foreground">
+          Mustard / Projetos / <span className="text-foreground">{project.name}</span>
+        </nav>
+        <h1 className="text-base font-medium">{project.name}</h1>
+      </div>
+
+      <Tabs
+        value={tab}
+        onValueChange={(v) => {
+          const next = new URLSearchParams(searchParams);
+          next.set("tab", v);
+          setSearchParams(next, { replace: true });
+        }}
+      >
+        <TabsList variant="line" className="gap-4 h-8 text-xs mb-4">
+          <TabsTrigger value="specs" className="text-xs px-1">
+            Specs
+          </TabsTrigger>
+          <TabsTrigger value="about" className="text-xs px-1">
+            About
+          </TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="specs">
+          <SpecsList project={project} />
+        </TabsContent>
+
+        <TabsContent value="about">
+          <section>
+            <SectionHeading
+              title="Subprojects"
+              count={subprojects?.length ?? 0}
+              loading={loading}
+              icon={Layers}
+            />
+            {loading ? (
+              <p className="text-muted-foreground text-sm">Carregando…</p>
+            ) : subprojects && subprojects.length === 0 ? (
+              <EmptyBlock icon={Layers} text="Nenhum subprojeto detectado." />
+            ) : (
+              <ul className="flex flex-col gap-0.5 text-sm">
+                {subprojects?.map((s) => (
+                  <li
+                    key={s.name}
+                    className="flex items-center gap-2 px-2 py-1 rounded hover:bg-muted/40"
+                  >
+                    <StatusDot variant="idle" />
+                    <span>{s.name}</span>
+                    {s.role && (
+                      <Badge variant="outline" className="text-[10px] py-0">
+                        {s.role}
+                      </Badge>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+
+          <Separator className="my-4" />
+
+          <section>
+            <SectionHeading
+              title="Recipes"
+              count={recipes?.length ?? 0}
+              loading={loading}
+              icon={ChefHat}
+            />
+            {loading ? (
+              <p className="text-muted-foreground text-sm">Carregando…</p>
+            ) : (
+              <ul className="flex flex-col gap-0.5 text-sm">
+                {recipes?.map((r) => (
+                  <li
+                    key={r.name}
+                    className="flex items-baseline gap-2 px-2 py-1 rounded hover:bg-muted/40"
+                  >
+                    <span className="font-medium">{r.name}</span>
+                    <span className="text-muted-foreground text-xs">
+                      — {truncate(r.description, 120)}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+
+          <Separator className="my-4" />
+
+          <section>
+            <SectionHeading
+              title="Skills"
+              count={skills?.length ?? 0}
+              loading={loading}
+              icon={BookOpen}
+            />
+            {loading ? (
+              <p className="text-muted-foreground text-sm">Carregando…</p>
+            ) : (
+              <ul className="flex flex-col gap-0.5 text-sm">
+                {skills?.map((s) => (
+                  <li
+                    key={s.name}
+                    className="flex items-baseline gap-2 px-2 py-1 rounded hover:bg-muted/40"
+                  >
+                    <span className="font-medium">{s.name}</span>
+                    <Badge variant="outline" className="text-[10px] py-0">
+                      {s.source}
+                    </Badge>
+                    <span className="text-muted-foreground text-xs">
+                      — {truncate(s.description, 120)}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+
+          <Separator className="my-4" />
+
+          <section>
+            <SectionHeading
+              title="Eventos recentes"
+              count={recentEvents?.length ?? 0}
+              loading={loading}
+              icon={Activity}
+            />
+            {loading ? (
+              <p className="text-muted-foreground text-sm">Carregando…</p>
+            ) : (
+              <ScrollArea className="max-h-[400px] pr-2">
+                <ul className="flex flex-col gap-0.5 text-sm">
+                  {recentEvents?.map((e, i) => {
+                    const variant = eventVariant(e.event_type);
+                    return (
+                      <li
+                        key={i}
+                        className="flex items-baseline gap-2 px-2 py-1 rounded hover:bg-muted/40"
+                      >
+                        <StatusDot
+                          variant={variant}
+                          pulse={variant === "active"}
+                          className="self-center"
+                        />
+                        <Badge variant="secondary" className="text-[10px] py-0 font-mono">
+                          {e.event_type}
+                        </Badge>
+                        {e.ts && (
+                          <span className="text-muted-foreground text-xs">
+                            {relativeTime(e.ts)}
+                          </span>
+                        )}
+                        {e.summary && (
+                          <span className="text-muted-foreground text-xs">
+                            — {e.summary}
+                          </span>
+                        )}
+                      </li>
+                    );
+                  })}
+                </ul>
+              </ScrollArea>
+            )}
+          </section>
+        </TabsContent>
+      </Tabs>
+    </div>
+  );
+}

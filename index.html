@@ -1,13 +1,36 @@
 <!doctype html>
-<html lang="en">
+<html lang="pt-BR" class="dark">
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Tauri + React + Typescript</title>
+    <title>Mustard Dashboard</title>
   </head>
 
   <body>
+    <script>
+      (function () {
+        try {
+          var stored = localStorage.getItem('mustard-theme');
+          var dark;
+          if (stored === 'light') {
+            dark = false;
+          } else if (stored === 'dark') {
+            dark = true;
+          } else {
+            // Dark is the default by design; user can toggle via Settings or Cmd+K.
+            dark = true;
+          }
+          if (dark === false) {
+            document.documentElement.classList.remove('dark');
+          } else {
+            document.documentElement.classList.add('dark');
+          }
+        } catch (e) {
+          document.documentElement.classList.add('dark');
+        }
+      })();
+    </script>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
