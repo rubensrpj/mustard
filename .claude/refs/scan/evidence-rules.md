@@ -82,7 +82,7 @@ If you cannot meet rules 1-4 for a candidate skill, SKIP it. An empty skill list
 After all agents complete (Step 6 in scan-protocol.md):
 
 ```bash
-node .claude/scripts/skill-validate.js --factual
+bun .claude/scripts/skill-validate.js --factual
 ```
 
 ### What it checks per skill

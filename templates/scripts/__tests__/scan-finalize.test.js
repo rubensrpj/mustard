@@ -3,7 +3,7 @@
 // Verifies that each post-dispatch step runs, fails open, and reports its
 // outcome in the JSON output.
 
-const { test } = require('node:test');
+const { test } = require('bun:test');
 const assert = require('node:assert/strict');
 const { spawnSync } = require('node:child_process');
 const fs = require('node:fs');
@@ -144,4 +144,78 @@ test('fail-open: missing sync-registry reports error but exits 0', () => {
   assert.equal(res.status, 0, 'fail-open');
   const out = JSON.parse(res.stdout);
   assert.ok(out.errors.some(e => /sync-registry/.test(e)));
+});
+
+// ---------------------------------------------------------------------------
+// dispatchVerify — names of skills on disk (source of truth for skills_generated)
+// ---------------------------------------------------------------------------
+
+test('dispatchVerify: skills[] lists actual subdir names with SKILL.md (not just count)', () => {
+  const root = mkProject({});
+
+  // Stage a subproject with two real skills + one user-authored noise dir without SKILL.md.
+  const sub = path.join(root, 'apps', 'mySub');
+  const skillsDir = path.join(sub, '.claude', 'skills');
+  fs.mkdirSync(path.join(skillsDir, 'auth-primitive-pattern'), { recursive: true });
+  fs.mkdirSync(path.join(skillsDir, 'route-handler-pattern'), { recursive: true });
+  fs.mkdirSync(path.join(skillsDir, 'no-skill-md-dir'), { recursive: true });
+  fs.writeFileSync(path.join(skillsDir, 'auth-primitive-pattern', 'SKILL.md'), '---\nname: auth-primitive-pattern\n---\n');
+  fs.writeFileSync(path.join(skillsDir, 'route-handler-pattern', 'SKILL.md'), '---\nname: route-handler-pattern\n---\n');
+
+  // Write the dispatch-state file that finalize.js reads
+  fs.writeFileSync(path.join(root, '.claude', '.scan-dispatch.json'), JSON.stringify({
+    ts: new Date().toISOString(),
+    dispatch: [{ name: 'mySub', path: 'apps/mySub', absSubprojectPath: sub.split(path.sep).join('/') }],
+  }));
+
+  const out = parseStdout(runFinalize(root));
+
+  assert.equal(out.steps.dispatchVerify.ran, true);
+  assert.equal(out.steps.dispatchVerify.ok, true);
+  assert.equal(out.steps.dispatchVerify.subprojects.length, 1);
+
+  const verdict = out.steps.dispatchVerify.subprojects[0];
+  assert.equal(verdict.name, 'mySub');
+  assert.equal(verdict.status, 'skills');
+  assert.equal(verdict.skillsWritten, 2, 'count matches array length');
+  assert.deepEqual(verdict.skills, ['auth-primitive-pattern', 'route-handler-pattern'],
+    'skills[] holds the actual subdir names from disk, sorted');
+});
+
+test('dispatchVerify: empty skills/ surfaces status=empty with skills=[]', () => {
+  const root = mkProject({});
+  const sub = path.join(root, 'apps', 'emptySub');
+  fs.mkdirSync(path.join(sub, '.claude', 'skills'), { recursive: true });
+
+  fs.writeFileSync(path.join(root, '.claude', '.scan-dispatch.json'), JSON.stringify({
+    ts: new Date().toISOString(),
+    dispatch: [{ name: 'emptySub', path: 'apps/emptySub', absSubprojectPath: sub.split(path.sep).join('/') }],
+  }));
+
+  const out = parseStdout(runFinalize(root));
+  const verdict = out.steps.dispatchVerify.subprojects[0];
+  assert.equal(verdict.status, 'empty');
+  assert.equal(verdict.skillsWritten, 0);
+  assert.deepEqual(verdict.skills, []);
+  assert.equal(out.steps.dispatchVerify.ok, false, 'empty dispatch violates HARD CONTRACT');
+});
+
+test('dispatchVerify: _no-patterns.md marker satisfies contract with skills=[]', () => {
+  const root = mkProject({});
+  const sub = path.join(root, 'apps', 'markerSub');
+  const skillsDir = path.join(sub, '.claude', 'skills');
+  fs.mkdirSync(skillsDir, { recursive: true });
+  fs.writeFileSync(path.join(skillsDir, '_no-patterns.md'), '<!-- mustard:generated -->\n# No patterns\n');
+
+  fs.writeFileSync(path.join(root, '.claude', '.scan-dispatch.json'), JSON.stringify({
+    ts: new Date().toISOString(),
+    dispatch: [{ name: 'markerSub', path: 'apps/markerSub', absSubprojectPath: sub.split(path.sep).join('/') }],
+  }));
+
+  const out = parseStdout(runFinalize(root));
+  const verdict = out.steps.dispatchVerify.subprojects[0];
+  assert.equal(verdict.status, 'no-patterns-marker');
+  assert.equal(verdict.hasNoPatternsMarker, true);
+  assert.deepEqual(verdict.skills, []);
+  assert.equal(out.steps.dispatchVerify.ok, true, 'marker satisfies contract');
 });

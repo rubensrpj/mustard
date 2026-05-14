@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 'use strict';
 
 /**
@@ -13,10 +13,10 @@
  *   exit:   always 0 (fail-open). Per-step errors are reported in the JSON.
  *
  * Usage:
- *   node .claude/scripts/scan/orchestrate.js                   # incremental
- *   node .claude/scripts/scan/orchestrate.js --force           # full re-scan
- *   node .claude/scripts/scan/orchestrate.js <subproject>      # single subproject
- *   node .claude/scripts/scan/orchestrate.js <name> --force
+ *   bun .claude/scripts/scan/orchestrate.js                   # incremental
+ *   bun .claude/scripts/scan/orchestrate.js --force           # full re-scan
+ *   bun .claude/scripts/scan/orchestrate.js <subproject>      # single subproject
+ *   bun .claude/scripts/scan/orchestrate.js <name> --force
  *
  * Design notes:
  *   - Each step wrapped in tryStep() — failure adds to errors[] but does not abort.
@@ -29,8 +29,18 @@
 const fs = require('fs');
 const path = require('path');
 const { execFileSync, spawnSync } = require('child_process');
+const {
+  backupGeneratedMds,
+  purgeGeneratedSkills,
+  ensureNotesMd,
+  buildToolingBlock,
+  buildStructureBlock,
+} = require('./_precompute.js');
 
-const ROOT = path.resolve(__dirname, '..', '..', '..');
+// ROOT is the project root where orchestrate.js is invoked from.
+// Using process.cwd() so the script works correctly whether invoked from
+// the canonical .claude/scripts/scan/ install path or from templates/ during tests/ACs.
+const ROOT = process.cwd();
 const CLAUDE_DIR = path.join(ROOT, '.claude');
 const SCRIPTS_DIR = path.join(CLAUDE_DIR, 'scripts');
 const SYNC_DETECT = path.join(SCRIPTS_DIR, 'sync-detect.js');
@@ -39,6 +49,7 @@ const ROOT_CLAUDE_MD = path.join(ROOT, 'CLAUDE.md');
 const ORCH_CLAUDE_MD = path.join(CLAUDE_DIR, 'CLAUDE.md');
 const DETECT_CACHE = path.join(CLAUDE_DIR, '.detect-cache.json');
 const PROMPT_TEMPLATE = path.join(__dirname, 'agent-prompt.template.md');
+const DISPATCH_STATE = path.join(CLAUDE_DIR, '.scan-dispatch.json');
 
 // ---------------------------------------------------------------------------
 // CLI argument parsing
@@ -122,9 +133,43 @@ function applyEol(content, eol) {
 // Step 1 — Discover subprojects + incremental detection
 // ---------------------------------------------------------------------------
 
+/**
+ * Parse the root CLAUDE.md Project Structure table as a fallback subproject list.
+ * Returns minimal subproject objects when sync-detect is unavailable.
+ */
+function fallbackDetectFromClaudeMd() {
+  const content = readFileSafe(ROOT_CLAUDE_MD);
+  if (!content) return { subprojects: [], sourceHashes: {}, warnings: ['fallback-detect: root CLAUDE.md not found'] };
+
+  const subprojects = [];
+  let inTable = false;
+
+  for (const line of content.split(/\r?\n/)) {
+    if (/## Project Structure/i.test(line)) { inTable = true; continue; }
+    if (inTable && /^##/.test(line) && !/## Project Structure/i.test(line)) break;
+    if (!inTable) continue;
+    // Skip header rows and separator rows
+    if (/^\|\s*Subproject/i.test(line)) continue;
+    if (/^\|\s*[-|]+/.test(line)) continue;
+    // Extract first cell of any table row
+    const m = line.match(/^\|\s*([^|]+?)\s*\|/);
+    if (!m) continue;
+    const name = m[1].trim();
+    if (!name || name === '-' || name.startsWith('(') || name.startsWith('[')) continue;
+    const absDir = path.join(ROOT, name);
+    if (existsSafe(path.join(absDir, 'CLAUDE.md'))) {
+      subprojects.push({ name, path: name, role: 'general', stackSummary: '' });
+    }
+  }
+
+  return { subprojects, sourceHashes: {}, warnings: subprojects.length === 0 ? ['fallback-detect: no subprojects found in CLAUDE.md table'] : [] };
+}
+
 function runDetect() {
   if (!existsSafe(SYNC_DETECT)) {
-    throw new Error(`sync-detect.js not found at ${SYNC_DETECT}`);
+    // Graceful fallback: parse CLAUDE.md project structure table
+    result.warnings.push('sync-detect.js not found — using CLAUDE.md fallback detection');
+    return fallbackDetectFromClaudeMd();
   }
   const out = execFileSync(process.execPath, [SYNC_DETECT, '--no-cache'], {
     encoding: 'utf-8',
@@ -202,7 +247,7 @@ const ORCH_CLAUDE_TEMPLATE = `<!-- mustard:generated -->
 # Orchestrator Rules
 
 ## Role
-You do NOT implement code — you delegate via Task tool.
+You are the orchestrator. Coordinate pipelines and route intent. Delegate non-trivial code work via Task — do trivial work directly to avoid pointless overhead.
 
 ## Intent Routing
 
@@ -211,11 +256,28 @@ You do NOT implement code — you delegate via Task tool.
 | Feature | create, add, new entity, new CRUD, implement | Pipeline Feature |
 | Enhancement | improve, adjust, change, add field/column, optimize, update | Pipeline Feature |
 | Bugfix | error, bug, not working, broken, fix, correct | Pipeline Bugfix |
-| Analyze | analyze, audit, evaluate, check, compare, inspect, assess | Delegate via /task |
-| Simple | config, docs, small refactor, rename, move | Delegate via Task |
+| Analyze | analyze, audit, evaluate, check, compare, inspect, assess | Direct Grep/Glob OR Task(Explore) if >3 places to search |
+| Simple | config tweak, single-line edit, rename one file, version bump | Direct (no Task) |
 
 Any change that touches production code (schema, API, UI) → Pipeline Feature.
-Read \`.claude/pipeline-config.md\` for agent dispatch rules.
+
+## When to delegate via Task (L0)
+
+**MUST delegate (always Task):**
+- Pipeline phases EXECUTE (any scope) and PLAN (Full scope)
+- Exploration touching >3 files or >2 directories
+- New code generation across multiple files
+- Refactor crossing ≥3 files
+- Any agent-typed work (general-purpose, Plan, Explore)
+
+**MAY work directly in parent (no Task overhead):**
+- Read a single file to answer a question
+- Edit ≤2 specific files already identified
+- Bash status/version/list commands (git status, ls, npm ls)
+- Single Grep/Glob to locate a symbol
+- Vibe/Spike/Prototype mode
+
+**Why:** Parent context grows with every direct tool call. When it bloats, hooks force retries and pipelines degrade. Tasks isolate work in fresh sub-contexts. Health metric: aim for ≥50% of code actions delegated when pipelines are active.
 
 ## Full Reference
 Rules, pipeline, naming: \`.claude/pipeline-config.md\`
@@ -489,6 +551,50 @@ function generateAgentFiles(detect) {
 }
 
 // ---------------------------------------------------------------------------
+// Step 4.55 — Pre-compute deterministic work per subproject before dispatch
+// ---------------------------------------------------------------------------
+
+/**
+ * Pre-computes backup/cleanup/notes and tooling+structure for each dispatched
+ * subproject. Attaches { toolingBlock, structureBlock } to sub.precomputed.
+ * Fail-open: wrapped in tryStep at call site.
+ *
+ * @param {Object} detect - output from sync-detect
+ * @param {string[]} dispatchedNames - names of subprojects being dispatched
+ */
+function precomputePerSubproject(detect, dispatchedNames) {
+  const dispatchSet = new Set(dispatchedNames);
+  for (const sub of detect.subprojects || []) {
+    if (!dispatchSet.has(sub.name)) continue;
+
+    const absSubDir = path.resolve(ROOT, sub.path);
+    const absCommandsDir = path.join(absSubDir, '.claude', 'commands');
+    const absSkillsDir = path.join(absSubDir, '.claude', 'skills');
+
+    // Force-only cleanup
+    if (FORCE) {
+      const purgeResult = purgeGeneratedSkills(absSkillsDir);
+      result.cleanup.push(...purgeResult.removed.map(n => `${sub.path}/.claude/skills/${n}`));
+
+      const backupResult = backupGeneratedMds(absCommandsDir);
+      result.cleanup.push(...backupResult.moved.map(n => `${sub.path}/.claude/commands/${n} → _backup/${n}`));
+    }
+
+    // Always: ensure notes.md skeleton
+    const created = ensureNotesMd(absCommandsDir, sub.name, sub.role || 'general');
+    if (created) {
+      result.generated.push(`${sub.path}/.claude/commands/notes.md`);
+    }
+
+    // Always: compute tooling + structure blocks
+    sub.precomputed = {
+      toolingBlock: buildToolingBlock(absSubDir, sub.stackSummary || ''),
+      structureBlock: buildStructureBlock(absSubDir),
+    };
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Step 2.7 — Inject frontmatter into .claude/docs/*.md
 // ---------------------------------------------------------------------------
 
@@ -740,13 +846,15 @@ function loadPromptTemplate() {
 // orchestrator was able to inject clusters/samples for this subproject.
 
 const BUDGET_FULL = `## Budget guidance (soft)
-- Target: ~50 tool uses, ~30k tokens of context. The orchestrator already injected enriched clusters + sample code above — most Read work is already done for you.
+- Target: ~20 tool uses. Backups, notes.md skeleton, tooling/structure already pre-computed by orchestrator — agent only writes new artifacts.
+- The orchestrator already injected enriched clusters + sample code above — most Read work is already done for you.
 - Heuristic: if your last 3 Reads revealed no new pattern (same structure as previous samples), STOP exploring and emit skills with what you have.
 - Skills with fewer fields > skills with invented fields. Always cite \`tool_uses_used: N\` in the return JSON.
 - A typical skill needs only: 1 Glob (verify paths if uncertain) + 1 Write (SKILL.md) + 1 Write (references/examples.md from injected sample). Estimate 2-3 ops per skill.`;
 
 const BUDGET_MINIMAL = `## Budget guidance (soft)
-- Target: ~60 tool uses, ~80k tokens. Stop after last 3 Reads reveal no new pattern.
+- Target: ~20 tool uses. Backups, notes.md skeleton, tooling/structure already pre-computed by orchestrator — agent only writes new artifacts.
+- Stop after last 3 Reads reveal no new pattern.
 - Skills with fewer fields > skills with invented fields. Cite \`tool_uses_used: N\` in return JSON.`;
 
 const EVIDENCE_FULL = `## EVIDENCE RULE — applies to every skill you emit
@@ -775,11 +883,7 @@ const EVIDENCE_MINIMAL = `## EVIDENCE RULE — applies to every skill you emit
 
 function renderPrompt(template, sub, registry) {
   const forceBlock = FORCE
-    ? `FORCE MODE ACTIVE:
-- Before generating skills, scan ${sub.path}/.claude/skills/ and delete every subdirectory
-  whose SKILL.md contains "<!-- mustard:generated" (preserve user-authored skills).
-- Also delete any pre-existing _backup/ under ${sub.path}/.claude/commands/ to avoid stacking stale backups.
-`
+    ? 'FORCE MODE: orchestrate.js already purged mustard:generated skills/commands and refreshed backups. Skip cleanup — proceed straight to source analysis.'
     : '';
 
   const absSubprojectPath = path.resolve(ROOT, sub.path).split(path.sep).join('/');
@@ -793,6 +897,9 @@ function renderPrompt(template, sub, registry) {
   const budgetBlock   = hasInjectedContext ? BUDGET_FULL   : BUDGET_MINIMAL;
   const evidenceBlock = hasInjectedContext ? EVIDENCE_FULL : EVIDENCE_MINIMAL;
 
+  const toolingBlock = (sub.precomputed && sub.precomputed.toolingBlock) || '';
+  const structureBlock = (sub.precomputed && sub.precomputed.structureBlock) || '';
+
   return template
     .replace(/\{\{name\}\}/g, sub.name)
     .replace(/\{\{path\}\}/g, sub.path)
@@ -803,7 +910,9 @@ function renderPrompt(template, sub, registry) {
     .replace(/\{\{clustersBlock\}\}/g, clustersBlock)
     .replace(/\{\{samplesBlock\}\}/g, samplesBlock)
     .replace(/\{\{budgetBlock\}\}/g, budgetBlock)
-    .replace(/\{\{evidenceBlock\}\}/g, evidenceBlock);
+    .replace(/\{\{evidenceBlock\}\}/g, evidenceBlock)
+    .replace(/\{\{toolingBlock\}\}/g, toolingBlock)
+    .replace(/\{\{structureBlock\}\}/g, structureBlock);
 }
 
 // ---------------------------------------------------------------------------
@@ -838,6 +947,37 @@ function main() {
   // Step 4.5 — generate per-subproject agent files
   result.generated.push(...(tryStep('generateAgentFiles', () => generateAgentFiles(detect)) || []));
 
+  // Step 4.6 — when --force, refresh the registry BEFORE rendering prompts so
+  // agents receive cluster data reflecting the current filesystem. Without this,
+  // refactors that shrink clusters (e.g. file unifications) produce skills
+  // referencing phantom paths that only skill-validate catches post-dispatch.
+  // Cluster caches under <sub>/.claude/.cluster-cache.json are wiped to bypass
+  // any stale file-set hash entries.
+  if (FORCE) {
+    tryStep('forceClearClusterCaches', () => {
+      for (const sub of detect.subprojects) {
+        const cache = path.resolve(ROOT, sub.path, '.claude', '.cluster-cache.json');
+        try { fs.unlinkSync(cache); result.cleanup.push(relPathPosix(cache)); }
+        catch (e) { if (e.code !== 'ENOENT') throw e; }
+      }
+    });
+    tryStep('forceRefreshRegistry', () => {
+      const SYNC_REGISTRY = path.join(SCRIPTS_DIR, 'sync-registry.js');
+      const r = spawnSync(process.execPath, [SYNC_REGISTRY, '--force'], {
+        cwd: ROOT,
+        encoding: 'utf-8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: process.env,
+        timeout: 120000,
+      });
+      if (r.status !== 0) {
+        result.warnings.push(`forceRefreshRegistry: sync-registry exit ${r.status} — brief may be stale (stderr: ${(r.stderr || '').slice(0, 300)})`);
+      } else {
+        result.generated.push('.claude/entity-registry.json');
+      }
+    });
+  }
+
   // Load entity-registry once — used to slice clusters/samples per subproject
   // when rendering the agent prompt. Registry may be empty/missing on first run;
   // in that case the prompt skips the clusters/samples blocks (agent falls back
@@ -848,6 +988,10 @@ function main() {
   const classified = tryStep('classify', () => classifyForDispatch(detect, oldCache));
   if (classified) {
     result.skipped = classified.skipped;
+
+    // Step 4.55 — pre-compute deterministic work (backup, notes.md, tooling, structure)
+    // before rendering prompts so agents receive pre-filled {{toolingBlock}} / {{structureBlock}}.
+    tryStep('precompute', () => precomputePerSubproject(detect, classified.dispatch.map(s => s.name)));
 
     // Render agent prompt for each dispatch target
     const template = tryStep('loadPromptTemplate', loadPromptTemplate);
@@ -864,6 +1008,18 @@ function main() {
     } else {
       result.errors.push('agent prompt template unavailable; dispatch list empty');
     }
+
+    // Persist dispatch state so finalize.js can verify each subproject wrote
+    // SKILL.md (or the _no-patterns.md marker) per the HARD CONTRACT in the
+    // agent prompt. Stripped of agentPrompt to keep the file small.
+    tryStep('writeDispatchState', () => {
+      const lite = classified.dispatch.map((s) => ({
+        name: s.name,
+        path: s.path,
+        absSubprojectPath: path.resolve(ROOT, s.path).split(path.sep).join('/'),
+      }));
+      writeFileSafe(DISPATCH_STATE, JSON.stringify({ ts: new Date().toISOString(), dispatch: lite }, null, 2) + '\n');
+    });
   }
 
   // Carry forward warnings from sync-detect

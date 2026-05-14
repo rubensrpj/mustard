@@ -3,7 +3,7 @@
 // Verifies that each post-dispatch step runs, fails open, and reports its
 // outcome in the JSON output.
 
-const { test } = require('node:test');
+const { test } = require('bun:test');
 const assert = require('node:assert/strict');
 const { spawnSync } = require('node:child_process');
 const fs = require('node:fs');

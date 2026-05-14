@@ -3,7 +3,7 @@
 // Uses node:test + node:assert; spawns the orchestrator against a temp ROOT
 // containing a minimal fake project layout.
 
-const { test } = require('node:test');
+const { test } = require('bun:test');
 const assert = require('node:assert/strict');
 const { spawnSync } = require('node:child_process');
 const fs = require('node:fs');
@@ -34,7 +34,7 @@ function mkProject(opts = {}) {
   const scanDir = path.join(scriptsDir, 'scan');
   fs.mkdirSync(scanDir, { recursive: true });
 
-  // Copy the real orchestrator + template
+  // Copy the real orchestrator + template + precompute helper
   fs.copyFileSync(
     path.join(SCRIPTS_SRC, 'scan', 'orchestrate.js'),
     path.join(scanDir, 'orchestrate.js')
@@ -42,6 +42,10 @@ function mkProject(opts = {}) {
   fs.copyFileSync(
     path.join(SCRIPTS_SRC, 'scan', 'agent-prompt.template.md'),
     path.join(scanDir, 'agent-prompt.template.md')
+  );
+  fs.copyFileSync(
+    path.join(SCRIPTS_SRC, 'scan', '_precompute.js'),
+    path.join(scanDir, '_precompute.js')
   );
 
   // Stub sync-detect.js — writes a JSON fixture to stdout
@@ -207,7 +211,7 @@ test('--force dispatches even when hash matches', () => {
   const out = parseStdout(res);
 
   assert.equal(out.dispatch.length, 1);
-  assert.match(out.dispatch[0].agentPrompt, /FORCE MODE ACTIVE/);
+  assert.match(out.dispatch[0].agentPrompt, /FORCE MODE/);
 });
 
 // ---------------------------------------------------------------------------

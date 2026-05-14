@@ -30,7 +30,7 @@ Save the old `sourceHashes` and `moduleHashes` values.
 
 **Step B — Run detect with `--no-cache`** (does NOT overwrite cache):
 ```bash
-node .claude/scripts/sync-detect.js --no-cache
+bun .claude/scripts/sync-detect.js --no-cache
 ```
 Parse JSON output → list of `{ name, path, role, agent, stackSummary, gitDirty?, gitDirtyCount? }` + new `sourceHashes` + `moduleHashes`.
 - If `/scan <subproject>` was called, filter to that subproject only.
@@ -142,7 +142,7 @@ Never search in:
 
 **`.claude/entity-registry.json`** — generate via registry scanner:
 ```bash
-node .claude/scripts/sync-registry.js --force
+bun .claude/scripts/sync-registry.js --force
 ```
 If `sync-registry.js` fails or is not available, create empty skeleton:
 ```json
@@ -321,7 +321,7 @@ Mark all with `<!-- mustard:generated -->`. Overwrite on next scan.
 ## Step 4.7 — Refresh Registry
 
 ```bash
-node .claude/scripts/sync-registry.js --force
+bun .claude/scripts/sync-registry.js --force
 ```
 
 Skill generation itself is **entirely the responsibility of the Step 3 agents** (see `scan-format.md` §10).
@@ -329,13 +329,13 @@ Skill generation itself is **entirely the responsibility of the Step 3 agents** 
 ## Step 5 — Update Cache
 
 ```bash
-node .claude/scripts/sync-detect.js
+bun .claude/scripts/sync-detect.js
 ```
 
 ## Step 6 — Validate Skills (--factual mode)
 
 ```bash
-node .claude/scripts/skill-validate.js --factual
+bun .claude/scripts/skill-validate.js --factual
 ```
 
 Checks per skill: header, cluster backing (fileCount ≥ 3), sample existence, no fenced code in body, reference paths exist.
@@ -349,8 +349,8 @@ In strict mode, validator exit code 1 aborts the scan return (skills are kept on
 Run after code analysis (step 3) or independently via `/scan --security`:
 
 ```bash
-node .claude/scripts/security-scan.js "$PROJECT_DIR"
-node .claude/scripts/security-scan.js "$PROJECT_DIR" --json
+bun .claude/scripts/security-scan.js "$PROJECT_DIR"
+bun .claude/scripts/security-scan.js "$PROJECT_DIR" --json
 ```
 
 Include findings in scan output under a `## Security` section:
