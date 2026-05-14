@@ -33,12 +33,12 @@ This step is silent when there's nothing to audit — no output if `active/` is 
 
 ### ANALYZE (diagnose + assess)
 
-1. **AUTO-SYNC:** Run `node .claude/scripts/sync-detect.js`. If output shows any subproject with `hashChanged: true`, then run `node .claude/scripts/sync-registry.js`. Otherwise skip sync-registry entirely.
+1. **AUTO-SYNC:** Run `bun .claude/scripts/sync-detect.js`. If output shows any subproject with `hashChanged: true`, then run `bun .claude/scripts/sync-registry.js`. Otherwise skip sync-registry entirely.
 
 ### Diff Context (automatic)
 
 **Diff snapshot (run once per phase):**
-Run `node .claude/scripts/diff-context.js` at the start of ANALYZE and EXECUTE. Save the output to `.claude/.pipeline-states/{specName}.diff.md` (overwrite each phase).
+Run `bun .claude/scripts/diff-context.js` at the start of ANALYZE and EXECUTE. Save the output to `.claude/.pipeline-states/{specName}.diff.md` (overwrite each phase).
 
 **Inject into every Task dispatch in this pipeline:**
 Prepend the following to EVERY subagent prompt dispatched during the pipeline:
@@ -205,7 +205,7 @@ Max 2 retries for Transient + Resolvable. Structural failures trigger a targeted
 After EXECUTE (fix + validate) completes:
 
 1. Update pipeline state: `phaseName: "QA"`
-2. Run: `node .claude/scripts/qa-run.js --spec {specName}` (Full Path only)
+2. Run: `bun .claude/scripts/qa-run.js --spec {specName}` (Full Path only)
    - For Fast Path: manually verify the bug reproduction command exits 0, emit result to harness
 3. If `overall=pass`: proceed to CLOSE
 4. If `overall=fail`: the bug reproduction AC still fails — return to EXECUTE for targeted fix, max 3 QA iterations
@@ -213,7 +213,7 @@ After EXECUTE (fix + validate) completes:
 
 ### CLOSE
 
-- `node .claude/scripts/sync-registry.js` (if entities changed)
+- `bun .claude/scripts/sync-registry.js` (if entities changed)
 - Output bugfix report (diagnosis, fix, validation, QA result)
 
 ## Zero Context-Switch Protocol

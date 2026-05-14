@@ -56,4 +56,23 @@ function emitMetric(event, opts = {}) {
   }
 }
 
-module.exports = { emitMetric };
+/**
+ * EVENTS — canonical event names for prompt-economy instrumentation.
+ *
+ *   PROMPT_PREFIX_HIT     dispatch reused the cached <PREFIX-STABLE> block
+ *   PROMPT_PREFIX_MISS    dispatch invalidated the cache (bytes changed)
+ *   WAVE_SLICE            wave N+1 received spec slice + wave-N diff (not full spec)
+ *   REVIEW_DIFF_FIRST     review agent received git diff inline (skipped reads)
+ *   ANALYZE_DIFF_SKIP     ANALYZE phase skipped diff-context.js (no diff yet)
+ *
+ * All values are kebab-case and match the .jsonl filename under `.claude/.metrics/`.
+ */
+const EVENTS = Object.freeze({
+  PROMPT_PREFIX_HIT: 'prompt-prefix-hit',
+  PROMPT_PREFIX_MISS: 'prompt-prefix-miss',
+  WAVE_SLICE: 'wave-slice',
+  REVIEW_DIFF_FIRST: 'review-diff-first',
+  ANALYZE_DIFF_SKIP: 'analyze-diff-skip',
+});
+
+module.exports = { emitMetric, EVENTS };

@@ -52,6 +52,10 @@ node -e "require('./.claude/hooks/_lib/harness-event.js').emit('review.start', {
 
 ## Step 3 — Invoke Code Review
 
+### Diff-First Dispatch
+
+Antes de invocar Skill ou Task, gere o diff via `bun .claude/scripts/diff-context.js --phase execute --subproject {sub}` e cole o resultado como bloco `## DIFF` no prompt do agente de review. O diff vira a fonte de verdade — o agente lê arquivos só se o diff for ambíguo. Após o retorno, emite métrica `REVIEW_DIFF_FIRST` via `metrics-emit.js` com `tokensSaved = (reads_avoided ?? 0) * 500` (500 = média conservadora de tokens por Read evitado). Fail-open: se o diff vier vazio, segue com o fluxo normal (Skill code-review com o PR target).
+
 Use the Skill tool to invoke Claude's native code-review:
 
 ```
@@ -61,14 +65,14 @@ Skill({
 })
 ```
 
-If the native `code-review` skill is not available, fall back to local review:
+If the native `code-review` skill is not available, fall back to local review with the DIFF as the primary block:
 
 ```
 Task({
   subagent_type: "general-purpose",
   model: "opus",
   description: "Review: PR <number>",
-  prompt: "Review the changes in the current branch against $PARENT. Checklist: SOLID, Security, Performance, Patterns, Integration."
+  prompt: "## DIFF\n<output of diff-context.js --phase execute --subproject {sub}>\n\n## TASK\nReview the changes in the current branch against $PARENT. Use the DIFF as the source of truth. Only Read source files if the diff is ambiguous or you need surrounding context — record each Read in your return note. Checklist: SOLID, Security, Performance, Patterns, Integration."
 })
 ```
 

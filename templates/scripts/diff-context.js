@@ -1,14 +1,21 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 /**
  * DIFF-CONTEXT: Generate compact git diff summary for agent context
  *
  * Outputs a formatted diff summary that can be injected into agent prompts.
  * Includes: staged changes, unstaged changes, and commits since branch divergence.
  *
- * Usage: node .claude/scripts/diff-context.js [--parent branch-name] [--subproject path]
+ * Usage: bun .claude/scripts/diff-context.js [--parent branch-name] [--subproject path] [--phase analyze|plan|execute]
  * Output: Formatted markdown summary to stdout (max 3000 chars)
  *
- * @version 1.1.0
+ * Flags:
+ *   --parent     branch to compare against (auto-detects main/master)
+ *   --subproject scope diff to a path
+ *   --phase      pipeline phase. When `analyze`, exits silently (no-op) — diff
+ *                is always empty before work starts; ANALYZE callers emit the
+ *                `analyze-diff-skip` metric instead. Other values behave normally.
+ *
+ * @version 1.2.0
  */
 
 const { execSync } = require('child_process');
@@ -35,6 +42,15 @@ function main() {
     let parentBranch = parentIdx >= 0 && args[parentIdx + 1] ? args[parentIdx + 1] : null;
     const subIdx = args.indexOf('--subproject');
     const subPath = subIdx >= 0 && args[subIdx + 1] ? args[subIdx + 1] : null;
+    const phaseIdx = args.indexOf('--phase');
+    const phase = phaseIdx >= 0 && args[phaseIdx + 1] ? String(args[phaseIdx + 1]).toLowerCase() : null;
+
+    // Silent no-op on ANALYZE: diff is always empty pre-work, so we skip the
+    // git invocations entirely. Callers emit the `analyze-diff-skip` metric.
+    if (phase === 'analyze') {
+      console.log('');
+      process.exit(0);
+    }
 
     function scopeCmd(cmd) {
       return subPath ? `${cmd} -- ${subPath}` : cmd;

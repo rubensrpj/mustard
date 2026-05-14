@@ -18,11 +18,15 @@ Audit specs in `active/` before starting — steps 1-5: scan, verify completed/c
 
 → See `../../../refs/feature/spec-hygiene.md`
 
+### Diff Context (automatic, cross-phase)
+
+At the start of **PLAN** and **EXECUTE** only, run `bun .claude/scripts/diff-context.js --subproject {subproject_path} --phase {plan|execute}`. Save to `.claude/.pipeline-states/{specName}.diff-{subproject}.md`. Prepend the subproject diff to every subagent prompt in those phases (`## Current Git State\n{diff}\n\n## Your Task\n...`). Skip header if diff empty/missing. Never dispatch without attempting interpolation. ANALYZE phase intentionally skips this step (diff always empty pre-work) and emits the `analyze-diff-skip` telemetry metric instead.
+
 ### ANALYZE Phase
 
-**Auto-sync (silent):** Run `bun .claude/scripts/sync-detect.js`. If output shows any subproject with `hashChanged: true`, then run `bun .claude/scripts/sync-registry.js`. Otherwise skip sync-registry entirely.
+Run `bun -e "const {emitMetric,EVENTS}=require('./templates/hooks/_lib/metrics-emit.js'); emitMetric(EVENTS.ANALYZE_DIFF_SKIP,{note:'pipeline-start'})"` (silent, telemetry only).
 
-**Diff Context (automatic):** At the start of ANALYZE, PLAN, and EXECUTE, run `bun .claude/scripts/diff-context.js --subproject {subproject_path}`. Save to `.claude/.pipeline-states/{specName}.diff-{subproject}.md`. Prepend the subproject diff to every subagent prompt (`## Current Git State\n{diff}\n\n## Your Task\n...`). Skip header if diff empty/missing. Never dispatch without attempting interpolation.
+**Auto-sync (silent):** Run `bun .claude/scripts/sync-detect.js`. If output shows any subproject with `hashChanged: true`, then run `bun .claude/scripts/sync-registry.js`. Otherwise skip sync-registry entirely.
 
 1. Read `.claude/pipeline-config.md` — agents, wave transitions, model selection
 2. Grep `entity-registry.json` for the specific entity name — NEVER read the full JSON

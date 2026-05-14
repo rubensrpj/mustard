@@ -20,9 +20,9 @@ Audit specs in `active/` before starting — steps 1-5: scan, verify completed/c
 
 ### ANALYZE Phase
 
-**Auto-sync (silent):** Run `node .claude/scripts/sync-detect.js`. If output shows any subproject with `hashChanged: true`, then run `node .claude/scripts/sync-registry.js`. Otherwise skip sync-registry entirely.
+**Auto-sync (silent):** Run `bun .claude/scripts/sync-detect.js`. If output shows any subproject with `hashChanged: true`, then run `bun .claude/scripts/sync-registry.js`. Otherwise skip sync-registry entirely.
 
-**Diff Context (automatic):** At the start of ANALYZE, PLAN, and EXECUTE, run `node .claude/scripts/diff-context.js --subproject {subproject_path}`. Save to `.claude/.pipeline-states/{specName}.diff-{subproject}.md`. Prepend the subproject diff to every subagent prompt (`## Current Git State\n{diff}\n\n## Your Task\n...`). Skip header if diff empty/missing. Never dispatch without attempting interpolation.
+**Diff Context (automatic):** At the start of ANALYZE, PLAN, and EXECUTE, run `bun .claude/scripts/diff-context.js --subproject {subproject_path}`. Save to `.claude/.pipeline-states/{specName}.diff-{subproject}.md`. Prepend the subproject diff to every subagent prompt (`## Current Git State\n{diff}\n\n## Your Task\n...`). Skip header if diff empty/missing. Never dispatch without attempting interpolation.
 
 1. Read `.claude/pipeline-config.md` — agents, wave transitions, model selection
 2. Grep `entity-registry.json` for the specific entity name — NEVER read the full JSON
@@ -75,7 +75,7 @@ When ANALYZE surfaces >5 files, >3 architectural layers, or multiple independent
 
 ### End of ANALYZE — Validation
 
-Run: `rtk node .claude/scripts/analyze-validation.js --spec .claude/spec/active/{specName}/spec.md`
+Run: `rtk bun .claude/scripts/analyze-validation.js --spec .claude/spec/active/{specName}/spec.md`
 If output `ok: false`, append each `issues[]` entry to the spec under `## Concerns` (non-blocking). Continue to PLAN regardless.
 
 ### PLAN Phase
@@ -128,17 +128,17 @@ Dispatch 1 Haiku Task(Explore) to verify work is still needed. Pre-check via `rt
 ### EXECUTE Phase (Light scope — same session)
 
 When user chooses "Approve and implement now":
-0. **Pre-EXECUTE Rewave Check:** Run `node .claude/scripts/exec-rewave-check.js --spec .claude/spec/active/{spec-name}/spec.md`. Parse JSON output. If `action: "decomposed"`, the spec was just split into N waves — proceed using wave-1's spec (`wave-1-{role}/spec.md`) instead of the original. If `action: "keep-single"` or `"skip"`, continue with the original spec normally. Silent operation — no AskUserQuestion.
+0. **Pre-EXECUTE Rewave Check:** Run `bun .claude/scripts/exec-rewave-check.js --spec .claude/spec/active/{spec-name}/spec.md`. Parse JSON output. If `action: "decomposed"`, the spec was just split into N waves — proceed using wave-1's spec (`wave-1-{role}/spec.md`) instead of the original. If `action: "keep-single"` or `"skip"`, continue with the original spec normally. Silent operation — no AskUserQuestion.
 1. Update spec: `Status: implementing`, `Phase: EXECUTE`. Every agent prompt MUST include: `Return format cap: ≤50 lines. Apply compact Return Format from .claude/pipeline-config.md strictly.`
 2. Update pipeline state: `status: "implementing"`, `phase: 3`
 3. Read `.claude/pipeline-config.md` for agent config. Grep `entity-registry.json` for specific entity block only
 4. Match recipes by title via Grep on `{subproject}/.claude/commands/recipes.md` — do NOT read full file
-4b. **Structured Recipe (if available):** Run `node .claude/scripts/recipe-match.js --entity {entity} --operation {operation} --subproject {subproject_path}`. If non-empty JSON, inject into agent prompt as `{recipe_context}`. Gives agent a 90%-complete skeleton.
+4b. **Structured Recipe (if available):** Run `bun .claude/scripts/recipe-match.js --entity {entity} --operation {operation} --subproject {subproject_path}`. If non-empty JSON, inject into agent prompt as `{recipe_context}`. Gives agent a 90%-complete skeleton.
 5. Identify relevant skills for `{recommended_skills}`: **prepend `karpathy-guidelines`** for code-editing agents (impl/backend/frontend/database/bugfix); skip karpathy for Explore and Review. Then list task-relevant skill names. See `templates/commands/mustard/templates/agent-prompt/SKILL.md § How to fill {recommended_skills}`.
 6. Dispatch agents (wave rules: DB+Backend parallel, Frontend after Backend UNLESS `(parallel-safe)`)
 7. Wave transitions between waves (from `.claude/pipeline-config.md`)
 8. On return: validate (build/type-check). The `checklist-auto-mark.js` hook already marked Checklist items as the agent edited matching files (silent, no tool call). If any item didn't auto-mark (no file pista in the item text), close-gate at CLOSE will surface it.
-8b. **Agent Memory:** `node .claude/scripts/memory-write.js --json '{"agent_type":"{type}","wave":{N},"pipeline":"{spec-name}","summary":"{what}","details":{...}}'` — one per agent. Skip if single-wave pipeline.
+8b. **Agent Memory:** `bun .claude/scripts/memory-write.js --json '{"agent_type":"{type}","wave":{N},"pipeline":"{spec-name}","summary":"{what}","details":{...}}'` — one per agent. Skip if single-wave pipeline.
 
 #### Escalation Status Handling
 
@@ -162,7 +162,7 @@ Classify before retrying: (1) **Transient?** → retry once immediately. (2) **R
 
 ### QA Phase (Wave 10)
 
-After all EXECUTE tasks complete: (1) set `phaseName: "QA"` in pipeline state. (2) Run `node .claude/scripts/qa-run.js --spec {specName}`. (3) `overall=pass` → CLOSE; `overall=fail` → return failing AC list to implementation agent, re-run; `overall=skip` (no AC) → warn + allow CLOSE. Max 3 QA iterations — then `AskUserQuestion`: "QA has failed 3 times. Choose: (a) Fix manually and retry, (b) Relax the AC, (c) Abort pipeline."
+After all EXECUTE tasks complete: (1) set `phaseName: "QA"` in pipeline state. (2) Run `bun .claude/scripts/qa-run.js --spec {specName}`. (3) `overall=pass` → CLOSE; `overall=fail` → return failing AC list to implementation agent, re-run; `overall=skip` (no AC) → warn + allow CLOSE. Max 3 QA iterations — then `AskUserQuestion`: "QA has failed 3 times. Choose: (a) Fix manually and retry, (b) Relax the AC, (c) Abort pipeline."
 
 Update `## Acceptance Criteria` checkboxes: `[x]` passed, `[ ]` failed. Visual: `[v] ANALYZE  [v] PLAN  [v] EXECUTE  [>] QA  [ ] CLOSE`
 

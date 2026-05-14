@@ -54,17 +54,47 @@ Before loading heavy context (sync-registry, diff-context, Explore Gate), ask th
 
 ### Step 1: Detect & Confirm
 
-1. Glob `.claude/spec/active/*/spec.md` — if 0 specs → inform user and stop
-2. If multiple → ask which one; if 1 → use automatically
-3. **Read entire spec** (single Read) — extract header (Status/Phase/Checkpoint) + count `[x]` vs `[ ]` + identify agents/waves from headers `### {Agent} Agent (Wave {N})`
-4. If `.claude/.pipeline-states/{spec-name}.json` exists → read for current wave + scope + `explorationSummary` + `decisions`. Optionally enrich with harness view (fail-open). Validate integrity (trust spec header on mismatch).
-5. **Present Handoff Summary** — compiled from pipeline state + spec + agent memory + git context.
+1. **Detect active specs** — Glob BOTH root markers (a wave plan has no `spec.md` at its root, only `wave-plan.md`):
+   - `.claude/spec/active/*/spec.md` (single specs)
+   - `.claude/spec/active/*/wave-plan.md` (wave plans)
+
+   Each match identifies one active spec by its parent dir `{specName}`. Union the results. If 0 matches → inform user and stop. Do NOT replace with `active/**/spec.md` — that would also pick up per-wave specs and double-count wave plans.
+2. If multiple → ask which one; if 1 → use automatically.
+3. **Resolve operational spec file** (the file the rest of resume operates on):
+   - If matched root file is `spec.md` → operational spec = that file (single-spec mode).
+   - If matched root file is `wave-plan.md` → wave-plan mode:
+     a. Read `.claude/.pipeline-states/{specName}.json`. If present with `isWavePlan: true` + `currentWave: N`, use that state — skip to (c).
+     b. **State missing → reconstruct inline** (no `/mustard:approve` roundtrip; the user just wants to continue):
+        1. Run `bun .claude/scripts/wave-tree.js --spec-dir .claude/spec/active/{specName} --format json` and parse `waves[]` (each has `{label, folder, status}`).
+        2. **Truly fresh plan** — every wave has `status === "queued"` (never executed) → stop and instruct: `Wave plan isn't approved yet. Run /mustard:approve {specName} first.`
+        3. **Plan already in progress** — at least one wave has `status !== "queued"` (proves it was approved & started, the state file was just lost):
+           - Build pipeline-state:
+             - `specName`, `isWavePlan: true`, `status: "implementing"`, `phaseName: "EXECUTE"`
+             - `totalWaves: waves.length`
+             - `completedWaves: <wave numbers where status === "completed">` (1-indexed, parsed from `folder` like `wave-3-backend`)
+             - `currentWave: <smallest wave number where status !== "completed">`
+             - `reconstructedFromWavePlan: true`, `reconstructedAt: <ISO now>`
+           - Write to `.claude/.pipeline-states/{specName}.json`.
+           - Inform user inline: `Reconstruí pipeline-state do wave-plan.md (W{completed} done, W{currentWave} next).`
+     c. With state (loaded or reconstructed), operational spec = result of Glob `.claude/spec/active/{specName}/wave-{currentWave}-*/spec.md` (one match expected).
+   - **3d. Stub Expansion (wave-plan mode only).** By design `/feature` expands wave-1 fully and leaves waves N≥2 as skeletons (Status: queued, Title + 1-line summary). When resume picks up wave N≥2, the stub must be expanded inline — no `/mustard:approve` roundtrip:
+     1. Read first 30 lines of the operational spec. Treat as **stub** if `### Status: queued` AND neither `## Files` nor `## Tasks` heading is present.
+     2. If not a stub → continue to step 4.
+     3. If stub → expand inline via `Task(Plan)` (single dispatch, `model: "opus"`):
+        - Prompt inputs: this wave's row in `wave-plan.md` (role, file list, deps, Rationale), the most recent completed wave's spec (entity/pattern continuity), `entity-registry.json` Grepped for entities mentioned in the file list.
+        - Required return: full expanded spec content for this wave matching the Full-scope template (Status: draft, Summary, Entity Info, Files, Tasks per agent, Dependencies, Boundaries, Acceptance Criteria, Checklist). Nothing else.
+        - On return: **Write** the content to the operational spec file (replace the skeleton), then update its header to `Status: implementing`, `Phase: EXECUTE`, `Checkpoint: {ISO now}`.
+        - Inform user inline: `Expandi wave-{N} stub via Plan agent. Avançando para EXECUTE.`
+     4. Proceed to step 4 with the now-expanded spec.
+4. **Read entire operational spec** (single Read) — extract header (Status/Phase/Checkpoint) + count `[x]` vs `[ ]` + identify agents/waves from headers `### {Agent} Agent (Wave {N})`
+5. If `.claude/.pipeline-states/{specName}.json` exists (single-spec mode; wave-plan mode already loaded it in step 3) → read for current wave + scope + `explorationSummary` + `decisions`. Optionally enrich with harness view (fail-open). Validate integrity (trust spec header on mismatch).
+6. **Present Handoff Summary** — compiled from pipeline state + spec + agent memory + git context.
 
 → See `../../../refs/resume/handoff-summary.md` for exact format and integrity validation rules.
 
    6a. **Wave Tree:** Run `bun .claude/scripts/wave-tree.js --spec-dir .claude/spec/active/{specName}` and print inline. Fail-open.
 
-6. Ask: **"Continue from next action, or review spec first?"**
+7. Ask: **"Continue from next action, or review spec first?"**
 
 ### Step 2: Bootstrap (after confirmation)
 
@@ -106,8 +136,13 @@ When the pipeline state indicates a wave plan, the orchestrator dispatches only 
    - Update state: `completedWaves.push(currentWave)`, `currentWave += 1`, `updatedAt`.
    - After updating state, run `bun .claude/scripts/wave-tree.js --spec-dir .claude/spec/active/{specName}` to show progress.
    - Force `resumeMode = "reanalyzed"` for the next wave transition so diff-context refreshes with the just-committed changes.
+   - **Wave Slice Injection (see § Wave Slice Injection below):** before dispatching wave N (N≥2), run `bun .claude/scripts/spec-extract.js --spec {spec_path} --wave {N}` to get the wave slice; save as `{spec_slice}`. Prepend the cached previous wave diff from `.claude/.pipeline-states/{spec-name}.wave-{N-1}.diff.md`. Inject `{spec_slice}` (NOT the full spec) into the agent prompt. Emit metric `WAVE_SLICE` via `metrics-emit.js` with `tokensSaved = Math.max(0, Math.floor((fullSpecChars - sliceChars) / 4))`.
    - If `currentWave > totalWaves` → skip remaining wave dispatch, go to Step 19 REVIEW + Step 20 CLOSE on the overall wave plan.
 4. **If a wave fails (REJECTED after 2 fix-loops, or BLOCKED)** — see § Wave Failure Handling below.
+
+#### Wave Slice Injection
+
+Entre waves, o orquestrador NÃO reinjeta a spec inteira nos prompts dos agentes — isso desperdiça tokens em conteúdo que a wave atual não precisa. Em vez disso, `bun .claude/scripts/spec-extract.js --spec {spec_path} --wave {N}` recorta apenas a seção `### {Agent} Agent (Wave {N})` da spec e devolve esse slice (cap 4000 chars). O orquestrador concatena com o diff cacheado da wave anterior (em `.claude/.pipeline-states/{spec-name}.wave-{N-1}.diff.md`) e injeta os dois blocos como `{spec_slice}` no template de dispatch — o agente vê só o que mudou e só o que ele tem que fazer. Após o dispatch, emite métrica `WAVE_SLICE` com `tokensSaved = Math.max(0, Math.floor((fullSpecChars - sliceChars) / 4))` para o dashboard de Prompt Economy. Fail-open: se `spec-extract.js` falhar, cai pra spec full e segue.
 
 13. **Plan waves:** `Depends on: none` → Wave 1; dependencies → later. DB+Backend parallel. Frontend after Backend UNLESS all parallel override conditions met (see `.claude/pipeline-config.md` Parallel Rules). Review agents: ALWAYS dispatch in single parallel message. Skip completed tasks.
 

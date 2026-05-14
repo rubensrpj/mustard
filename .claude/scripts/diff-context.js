@@ -1,11 +1,11 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 /**
  * DIFF-CONTEXT: Generate compact git diff summary for agent context
  *
  * Outputs a formatted diff summary that can be injected into agent prompts.
  * Includes: staged changes, unstaged changes, and commits since branch divergence.
  *
- * Usage: node .claude/scripts/diff-context.js [--parent branch-name] [--subproject path]
+ * Usage: bun .claude/scripts/diff-context.js [--parent branch-name] [--subproject path]
  * Output: Formatted markdown summary to stdout (max 3000 chars)
  *
  * @version 1.1.0

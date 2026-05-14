@@ -1,76 +1,44 @@
 ---
 name: karpathy-guidelines
-description: Behavioral guidelines to reduce common LLM coding mistakes (think before coding, simplicity first, surgical changes, goal-driven execution). Use when implementing, writing, editing, modifying, changing, refactoring, fixing, bugfixing, or reviewing code. Apply to any code alteration in features, bugfixes, refactors, or reviews.
+description: Behavioral guidelines to reduce common LLM coding mistakes (think before coding, simplicity first, surgical changes, goal-driven execution). Use when implementing, writing, editing, modifying, changing, refactoring, fixing, bugfixing, or reviewing code. Apply to any code alteration in features, bugfixes, refactors, or reviews. Loads the core principles only; use karpathy-guidelines-detail for examples on complex refactors.
 license: MIT
 source: manual
 ---
 
-# Karpathy Guidelines
+# Karpathy Guidelines (core)
 
-Behavioral guidelines to reduce common LLM coding mistakes, derived from [Andrej Karpathy's observations](https://x.com/karpathy/status/2015883857489522876) on LLM coding pitfalls.
-
-**Tradeoff:** These guidelines bias toward caution over speed. For trivial tasks, use judgment.
+Anti-slop principles. Bias toward caution over speed; use judgment for trivial tasks.
 
 ## 1. Think Before Coding
 
-**Don't assume. Don't hide confusion. Surface tradeoffs.**
-
-Before implementing:
-- State your assumptions explicitly. If uncertain, ask.
-- If multiple interpretations exist, present them - don't pick silently.
-- If a simpler approach exists, say so. Push back when warranted.
-- If something is unclear, stop. Name what's confusing. Ask.
+- State assumptions explicitly; if uncertain, ask.
+- Present multiple interpretations instead of picking silently.
+- Flag simpler approaches; push back when warranted.
+- Stop and name what's confusing before guessing.
 
 ## 2. Simplicity First
 
-**Minimum code that solves the problem. Nothing speculative.**
-
+- Minimum code that solves the problem; nothing speculative.
 - No features beyond what was asked.
 - No abstractions for single-use code.
-- No "flexibility" or "configurability" that wasn't requested.
+- No flexibility/configurability that wasn't requested.
 - No error handling for impossible scenarios.
-- If you write 200 lines and it could be 50, rewrite it.
-
-Ask yourself: "Would a senior engineer say this is overcomplicated?" If yes, simplify.
 
 ## 3. Surgical Changes
 
-**Touch only what you must. Clean up only your own mess.**
-
-When editing existing code:
-- Don't "improve" adjacent code, comments, or formatting.
-- Don't refactor things that aren't broken.
-- Match existing style, even if you'd do it differently.
-- If you notice unrelated dead code, mention it - don't delete it.
-
-When your changes create orphans:
-- Remove imports/variables/functions that YOUR changes made unused.
-- Don't remove pre-existing dead code unless asked.
-
-The test: Every changed line should trace directly to the user's request.
+- Touch only what the request requires.
+- Match existing style even if you'd do it differently.
+- Don't refactor or "improve" adjacent code, comments, formatting.
+- Remove orphans your own changes created; mention (don't delete) pre-existing dead code.
+- Every changed line must trace directly to the user's request.
 
 ## 4. Goal-Driven Execution
 
-**Define success criteria. Loop until verified.**
-
-Transform tasks into verifiable goals:
-- "Add validation" → "Write tests for invalid inputs, then make them pass"
-- "Fix the bug" → "Write a test that reproduces it, then make it pass"
-- "Refactor X" → "Ensure tests pass before and after"
-
-For multi-step tasks, state a brief plan:
-```
-1. [Step] → verify: [check]
-2. [Step] → verify: [check]
-3. [Step] → verify: [check]
-```
-
-Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
+- Convert tasks into verifiable goals before coding.
+- For multi-step work, state a brief plan with a verify step per item.
+- Loop independently against strong success criteria; weak criteria force re-clarification.
+- Tests first when the goal is correctness ("Add validation" → write failing tests, then pass).
 
 ---
 
-**These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.
-
----
-
-> Derivado de [forrestchang/andrej-karpathy-skills](https://github.com/forrestchang/andrej-karpathy-skills) (MIT).
+> Working when: fewer unnecessary changes, fewer rewrites for overcomplication, clarifying questions come before mistakes. Examples and elaboration: `karpathy-guidelines-detail`.

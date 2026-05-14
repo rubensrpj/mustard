@@ -17,6 +17,7 @@ Single unified template for all dispatches:
 > **First-dispatch only.** When `{retry_context}` is non-empty (granular or fix-loop retry), use the **Minimal Retry Template** from `§ Retry Modes` instead — omit CONTEXT, REFERENCE, ENTITY, SKILLS, WEB VALIDATION, ROLE, and RECIPE blocks.
 
 ```
+<!-- PREFIX-STABLE -->
 ## CONTEXT
 1. Read `{subproject}/CLAUDE.md` — guards, stack, paths
 2. Read `{subproject}/.claude/commands/guards.md` — mandatory rules
@@ -50,6 +51,7 @@ In doubt about API/version/pattern → search web for latest docs before impleme
 
 {retry_context}
 
+<!-- VARIABLE -->
 ## TASK
 {task_steps}
 
@@ -99,6 +101,7 @@ Guards carregados via CLAUDE.md acima — respeite sem exceção.
 When `{retry_context}` is non-empty, the orchestrator renders this template instead of the full Dispatch Template. Omits CONTEXT/REFERENCE/ENTITY/SKILLS/WEB VALIDATION/ROLE/RECIPE — prior context is still cached; DON'T re-Read CLAUDE.md/guards/registry unless a modified file changed on disk since last dispatch.
 
 ```
+<!-- VARIABLE -->
 {retry_context}
 
 ## EFFICIENCY
@@ -112,6 +115,14 @@ When `{retry_context}` is non-empty, the orchestrator renders this template inst
 
 Guards carregados via CLAUDE.md acima — respeite sem exceção.
 ```
+
+---
+
+## Prompt Cache Hit (Anthropic API)
+
+Os marcadores `<!-- PREFIX-STABLE -->` e `<!-- VARIABLE -->` delimitam o que é estável e cacheável entre dispatches. A Anthropic API faz cache automático do prefixo quando dois prompts compartilham os mesmos primeiros ≥1024 tokens byte-identical, cobrando apenas 10% do custo normal nos hits subsequentes. Para o cache realmente ativar, qualquer `{placeholder}` interpolado dentro do bloco PREFIX-STABLE precisa resolver para um valor estável entre dispatches da mesma wave — IDs de skill (não os corpos), nome do role, chave do recipe, paths de subprojeto. Conteúdo dinâmico (spec slice, diff, retry context, task steps) só pode aparecer abaixo do marcador VARIABLE; misturar invalidates o cache inteiro. A Minimal Retry Template não tem prefixo estável (todo conteúdo é dinâmico) — por isso ela é marcada inteira como VARIABLE.
+
+Detalhes da ordem canônica e exemplos: `templates/refs/agent-prompt/prefix-order.md`.
 
 ---
 
