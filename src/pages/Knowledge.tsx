@@ -18,6 +18,7 @@ import {
   SectionHeader,
   EmptyState,
   DataCard,
+  CollapsibleGroup,
 } from "@/components/page";
 import { relativeTime } from "@/lib/time";
 
@@ -57,6 +58,35 @@ function typeRank(t: string): number {
 
 function truncate(s: string, n: number): string {
   return s.length > n ? s.slice(0, n - 1) + "…" : s;
+}
+
+/**
+ * Defensive friction classifier. A legacy `session-knowledge` extractor wrote
+ * telemetry rows into `knowledge.json` with a knowledge `type` (`convention` /
+ * `pattern`). We classify by the row's real nature — its `name` — not by the
+ * stored type, so those rows never pollute "Padrões e decisões".
+ */
+const FRICTION_NAME_PATTERNS = [/^heavy-pipeline-/, /^high-hook-retry-/, /\.metrics$/];
+function isFrictionEntry(row: KnowledgeBrowseRow): boolean {
+  return FRICTION_NAME_PATTERNS.some((re) => re.test(row.name));
+}
+
+/**
+ * Normalize a legacy friction row from `knowledge.json` into the `FrictionEntry`
+ * shape used by `friction.json`. Measured counts (`retry_count` / `api_calls`)
+ * are not present on `KnowledgeRow`, so they are left null — never invented.
+ */
+function toFrictionEntry(row: KnowledgeBrowseRow): FrictionEntry {
+  return {
+    name: row.name,
+    description: row.description,
+    source: row.source,
+    tags: [],
+    retry_count: null,
+    api_calls: null,
+    prescription: null,
+    updated_at: null,
+  };
 }
 
 export function Knowledge() {
@@ -106,27 +136,38 @@ export function Knowledge() {
     staleTime: 60_000,
   });
 
+  // Split browse rows by real nature: legacy friction telemetry written into
+  // knowledge.json (wrong type) is segregated from genuine reusable knowledge.
+  const realRows = useMemo<KnowledgeBrowseRow[]>(
+    () => (browseRows ?? []).filter((r) => !isFrictionEntry(r)),
+    [browseRows],
+  );
+  const legacyFriction = useMemo<FrictionEntry[]>(
+    () => (browseRows ?? []).filter(isFrictionEntry).map(toFrictionEntry),
+    [browseRows],
+  );
+
   // Instant in-memory refinement of the browse list when a query is typed.
   const refinedBrowse = useMemo<KnowledgeBrowseRow[]>(() => {
-    if (!browseRows || !hasQuery) return browseRows ?? [];
+    if (!hasQuery) return realRows;
     const q = trimmed.toLowerCase();
-    return browseRows.filter(
+    return realRows.filter(
       (r) =>
         r.name.toLowerCase().includes(q) ||
         r.description?.toLowerCase().includes(q) ||
         r.type.toLowerCase().includes(q),
     );
-  }, [browseRows, hasQuery, trimmed]);
+  }, [realRows, hasQuery, trimmed]);
 
   // Group browse results by type, real-knowledge types first.
   const grouped = useMemo<[string, KnowledgeBrowseRow[]][]>(() => {
-    const source = hasQuery ? refinedBrowse : (browseRows ?? []);
+    const source = hasQuery ? refinedBrowse : realRows;
     const map = source.reduce<Record<string, KnowledgeBrowseRow[]>>((acc, row) => {
       (acc[row.type] ??= []).push(row);
       return acc;
     }, {});
     return Object.entries(map).sort(([a], [b]) => typeRank(a) - typeRank(b));
-  }, [browseRows, refinedBrowse, hasQuery]);
+  }, [realRows, refinedBrowse, hasQuery]);
 
   const searchResults: KnowledgeRow[] = hasQuery
     ? (searchRows ?? refinedBrowse)
@@ -231,8 +272,8 @@ export function Knowledge() {
           <section className="flex flex-col gap-3">
             <SectionHeader
               title="Padrões e decisões"
-              description="Conhecimento reutilizável extraído das pipelines: convenções de código, decisões de arquitetura, padrões de nomenclatura e lições. O rótulo CONVENÇÃO aparece só para convenções de código de verdade."
-              right={browseRows ? `${browseRows.length}` : undefined}
+              description="Conhecimento reutilizável extraído das pipelines: convenções de código, decisões de arquitetura, padrões de nomenclatura e lições. O rótulo CONVENÇÃO aparece só para convenções de código de verdade. Telemetria de fricção é filtrada daqui e aparece na seção Atrito."
+              right={browseRows ? `${realRows.length}` : undefined}
             />
             {browseLoading ? (
               <ul className="flex flex-col gap-1">
@@ -240,7 +281,7 @@ export function Knowledge() {
                   <li key={i} className="h-8 bg-muted/40 rounded animate-pulse" />
                 ))}
               </ul>
-            ) : !browseRows || browseRows.length === 0 ? (
+            ) : realRows.length === 0 ? (
               <EmptyState
                 title="Nenhum padrão capturado ainda"
                 description={
@@ -249,7 +290,9 @@ export function Knowledge() {
                     pipeline. Rode um <code className="font-mono">/mustard:feature</code>{" "}
                     ou <code className="font-mono">/mustard:bugfix</code>, ou
                     invoque <code className="font-mono">/mustard:knowledge</code>{" "}
-                    para forçar uma extração.
+                    para forçar uma extração. Se este workspace tem instalação
+                    antiga do Mustard, é normal ver poucas entradas aqui — o
+                    resto era telemetria de fricção e foi movido para Atrito.
                   </>
                 }
               />
@@ -277,80 +320,112 @@ export function Knowledge() {
           </section>
 
           {/* Atrito */}
-          <FrictionSection friction={friction} />
+          <FrictionSection friction={friction} legacyFriction={legacyFriction} />
         </div>
       )}
     </div>
   );
 }
 
+/** One friction row — measured signal or legacy telemetry. */
+function FrictionRow({ f }: { f: FrictionEntry }) {
+  return (
+    <li className="flex flex-col gap-1 border-b border-border/40 last:border-b-0 pb-2 last:pb-0">
+      <div className="flex items-baseline gap-2 flex-wrap">
+        <AlertTriangle
+          className="h-3.5 w-3.5 text-amber-400 self-center shrink-0"
+          aria-hidden
+        />
+        <span className="font-mono font-medium text-[13px]">{f.name}</span>
+        {f.retry_count != null && (
+          <Badge
+            variant="outline"
+            className="text-[10px] border-amber-500/40 text-amber-300"
+            title="Retries de hook medidos nesta pipeline (sandbox/stash/re-prompt — não redespacho de agente)."
+          >
+            {f.retry_count} retries
+          </Badge>
+        )}
+        {f.api_calls != null && (
+          <Badge
+            variant="outline"
+            className="text-[10px] border-amber-500/40 text-amber-300"
+            title="Total de chamadas de API medidas nesta pipeline."
+          >
+            {f.api_calls} chamadas
+          </Badge>
+        )}
+        {f.updated_at && (
+          <span className="text-[11px] text-muted-foreground/60 ml-auto">
+            {relativeTime(f.updated_at)}
+          </span>
+        )}
+      </div>
+      {f.description && (
+        <p className="text-[12.5px] text-muted-foreground leading-relaxed pl-6">
+          {f.description}
+        </p>
+      )}
+      {f.prescription && (
+        <p className="text-[12px] text-emerald-400/90 leading-relaxed pl-6">
+          Sugestão: {f.prescription}
+        </p>
+      )}
+    </li>
+  );
+}
+
 /**
  * Friction section — measured atrito, kept strictly separate from real
- * knowledge. Each entry shows its honest measured count (retries OR API calls)
- * and, when available, a prescriptive hint. Never labelled CONVENÇÃO.
+ * knowledge. Two sources feed it: `friction.json` (measured, prescriptive,
+ * rare) and legacy telemetry rows that an old `session-knowledge` extractor
+ * mis-wrote into `knowledge.json`. The legacy rows are collapsed by default
+ * since they carry no measured counts — they are noise, not diagnosis.
  */
-function FrictionSection({ friction }: { friction: FrictionEntry[] | undefined }) {
+function FrictionSection({
+  friction,
+  legacyFriction,
+}: {
+  friction: FrictionEntry[] | undefined;
+  legacyFriction: FrictionEntry[];
+}) {
+  const measured = friction ?? [];
+  const total = measured.length + legacyFriction.length;
   return (
     <section className="flex flex-col gap-3">
       <SectionHeader
         title="Atrito"
-        description="Sinais de fricção medidos durante as pipelines — não é conhecimento, é diagnóstico. Cada linha mostra o número real observado (retries de hook ou chamadas de API). É normal estar vazio: atrito alto é raro."
-        right={friction ? `${friction.length}` : undefined}
+        description="Sinais de fricção medidos durante as pipelines — não é conhecimento, é diagnóstico. Inclui também telemetria legada que um Mustard antigo gravou no lugar errado e foi filtrada de Padrões. É normal estar quase vazio: atrito medido é raro."
+        right={`${total}`}
       />
-      {!friction || friction.length === 0 ? (
+      {total === 0 ? (
         <EmptyState
           title="Nenhum atrito registrado"
           description="As pipelines deste workspace rodaram sem fricção acima do limite (mais de 2 retries de hook ou mais de 50 chamadas de API por pipeline). Isso é bom — é o estado esperado."
         />
       ) : (
         <DataCard padded>
-          <ul className="flex flex-col gap-2">
-            {friction.map((f) => (
-              <li
-                key={f.name}
-                className="flex flex-col gap-1 border-b border-border/40 last:border-b-0 pb-2 last:pb-0"
-              >
-                <div className="flex items-baseline gap-2 flex-wrap">
-                  <AlertTriangle
-                    className="h-3.5 w-3.5 text-amber-400 self-center shrink-0"
-                    aria-hidden
-                  />
-                  <span className="font-mono font-medium text-[13px]">{f.name}</span>
-                  {f.retry_count != null && (
-                    <Badge
-                      variant="outline"
-                      className="text-[10px] border-amber-500/40 text-amber-300"
-                      title="Retries de hook medidos nesta pipeline (sandbox/stash/re-prompt — não redespacho de agente)."
-                    >
-                      {f.retry_count} retries
-                    </Badge>
-                  )}
-                  {f.api_calls != null && (
-                    <Badge
-                      variant="outline"
-                      className="text-[10px] border-amber-500/40 text-amber-300"
-                      title="Total de chamadas de API medidas nesta pipeline."
-                    >
-                      {f.api_calls} chamadas
-                    </Badge>
-                  )}
-                  {f.updated_at && (
-                    <span className="text-[11px] text-muted-foreground/60 ml-auto">
-                      {relativeTime(f.updated_at)}
-                    </span>
-                  )}
-                </div>
-                <p className="text-[12.5px] text-muted-foreground leading-relaxed pl-6">
-                  {f.description}
-                </p>
-                {f.prescription && (
-                  <p className="text-[12px] text-emerald-400/90 leading-relaxed pl-6">
-                    Sugestão: {f.prescription}
-                  </p>
-                )}
-              </li>
-            ))}
-          </ul>
+          {measured.length > 0 && (
+            <ul className="flex flex-col gap-2">
+              {measured.map((f) => (
+                <FrictionRow key={f.name} f={f} />
+              ))}
+            </ul>
+          )}
+          {legacyFriction.length > 0 && (
+            <CollapsibleGroup
+              label="Telemetria legada"
+              count={legacyFriction.length}
+              hint="Entradas de fricção (heavy-pipeline, high-hook-retry, .metrics) gravadas em knowledge.json por um extractor antigo, sem contadores medidos. Mantidas só para inspeção."
+              className={measured.length > 0 ? "border-t border-border/40 pt-1" : ""}
+            >
+              <ul className="flex flex-col gap-2 mt-2">
+                {legacyFriction.map((f) => (
+                  <FrictionRow key={f.name} f={f} />
+                ))}
+              </ul>
+            </CollapsibleGroup>
+          )}
         </DataCard>
       )}
     </section>

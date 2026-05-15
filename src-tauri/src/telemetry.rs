@@ -1234,6 +1234,18 @@ pub struct SubtractionsBlock {
     pub review_diff_first_count: u64,
     pub analyze_diff_skip_bytes: u64,
     pub analyze_diff_skip_count: u64,
+    /// Lifetime totals above are an append-only accumulator and never reset.
+    /// These `session_*` fields count only `mustard.subtraction.applied` events
+    /// whose `ts` falls inside the current session window — same treatment as
+    /// `HookFireCount.session_fires` / `RoutingBlock.session_blocks`, so the UI
+    /// can honestly show "1.7 MB total · +N nesta sessão". When the session
+    /// window cannot be derived they stay 0 and the UI labels the card as a
+    /// lifetime accumulator with no noisy "+0".
+    pub session_bytes: u64,
+    pub session_count: u64,
+    /// True when a session window was available to compute the deltas above.
+    /// `false` means "show total only, labelled lifetime".
+    pub session_known: bool,
 }
 
 #[derive(Serialize, Default)]
@@ -1322,7 +1334,13 @@ fn cost_block(conn: &Connection) -> CostBlock {
 /// Subtractions block — one GROUP BY query against `events` where
 /// `event='mustard.subtraction.applied'`. Routes the three known types into
 /// the dedicated fields. Unknown types are silently ignored (no surprise UI).
-fn subtractions_block(conn: &Connection) -> SubtractionsBlock {
+///
+/// The lifetime totals are an append-only accumulator. `session_since` (the
+/// ISO `ts` the current session started at) lets us additionally count the
+/// subset of events inside the session window — the `events` table carries a
+/// per-row `ts`, so the delta is honest, not estimated. When `session_since`
+/// is `None` the `session_*` fields stay 0 and `session_known` is `false`.
+fn subtractions_block(conn: &Connection, session_since: Option<&str>) -> SubtractionsBlock {
     let mut out = SubtractionsBlock::default();
 
     let sql = "SELECT json_extract(payload, '$.type') AS t, \
@@ -1365,6 +1383,27 @@ fn subtractions_block(conn: &Connection) -> SubtractionsBlock {
             _ => {}
         }
     }
+
+    // Session delta — only when a session window is known. ISO-8601 UTC
+    // strings sort chronologically, so `ts >= ?` is a correct cut-off.
+    if let Some(since) = session_since {
+        let session_sql = "SELECT \
+                COALESCE(SUM(CAST(json_extract(payload, '$.bytes_omitted') AS INTEGER)), 0), \
+                COUNT(*) \
+             FROM events \
+             WHERE event = 'mustard.subtraction.applied' AND ts >= ?1";
+        if let Ok((bytes, count)) = conn.query_row(session_sql, [since], |row| {
+            Ok((
+                row.get::<_, Option<i64>>(0)?.unwrap_or(0).max(0) as u64,
+                row.get::<_, Option<i64>>(1)?.unwrap_or(0).max(0) as u64,
+            ))
+        }) {
+            out.session_bytes = bytes;
+            out.session_count = count;
+            out.session_known = true;
+        }
+    }
+
     out
 }
 
@@ -1569,9 +1608,10 @@ pub fn dashboard_prompt_economy(
 ) -> Result<DashboardPromptEconomy, String> {
     let base = std::path::PathBuf::from(&repo_path);
     let conn = open_repo_db(&base)?;
+    let session_since = session_start_ts(&base);
     Ok(DashboardPromptEconomy {
         cost: cost_block(&conn),
-        subtractions: subtractions_block(&conn),
+        subtractions: subtractions_block(&conn, session_since.as_deref()),
         claude_events: claude_events_block(&conn),
         freshness: freshness_block(&conn, &base),
     })

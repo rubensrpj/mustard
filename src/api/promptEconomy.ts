@@ -26,6 +26,12 @@ export type PromptEconomy = {
     review_diff_first_count: number;
     analyze_diff_skip_bytes: number;
     analyze_diff_skip_count: number;
+    // Lifetime totals above are an append-only accumulator. These count only
+    // subtraction events inside the current session window; `session_known`
+    // is false when no session window could be derived.
+    session_bytes: number;
+    session_count: number;
+    session_known: boolean;
   };
   claude_events: {
     session_count: number;

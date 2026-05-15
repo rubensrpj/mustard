@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link, useSearchParams } from "react-router";
 import { useStore } from "@/lib/store";
@@ -158,15 +158,19 @@ export function Telemetry() {
     PANEL_DEFAULT_WIDTH,
   );
   const [draggingResize, setDraggingResize] = useState(false);
+  const panelRef = useRef<HTMLElement | null>(null);
 
   const hasSelection = !!selectedPipeline || !!selectedPhase;
   const showPinned = pinned && hasSelection;
 
-  // Resize handle: track mousemove globally while dragging.
+  // Resize handle: track mousemove globally while dragging. The panel sits in
+  // normal flow inside the centered content column, so its right edge is not
+  // the viewport edge — measure against the panel's own right edge.
   useEffect(() => {
     if (!draggingResize) return;
     function onMove(e: MouseEvent) {
-      const w = window.innerWidth - e.clientX;
+      const right = panelRef.current?.getBoundingClientRect().right ?? window.innerWidth;
+      const w = right - e.clientX;
       setPanelWidth(Math.min(Math.max(w, PANEL_MIN_WIDTH), PANEL_MAX_WIDTH));
     }
     function onUp() {
@@ -324,28 +328,27 @@ export function Telemetry() {
   ) : null;
 
   // ── Split layout (pinned) ──
-  // Estratégia: aside é `position: fixed` ancorado à direita da viewport
-  // (abaixo do topbar do AppShell). O conteúdo principal mantém o fluxo
-  // normal e usa a scrollbar do `<main>` do AppShell — uma única scrollbar
-  // padrão do sistema, sem barra no meio.
+  // Estratégia: conteúdo + painel são duas colunas de um flex dentro da
+  // coluna centralizada do AppShell. O painel é `sticky` (não `fixed`),
+  // então acompanha a coluna `max-w-screen-2xl` em vez de se ancorar à
+  // viewport — sem faixa vazia à esquerda e sem desalinhamento em telas
+  // largas. A scrollbar única continua sendo a do `<main>` do AppShell.
   if (showPinned) {
     return (
-      <>
-        <div
-          className="flex flex-col gap-7"
-          style={{ paddingRight: panelWidth + 20 }}
-        >
+      <div className="flex items-start gap-5">
+        <div className="flex flex-col gap-7 min-w-0 flex-1">
           {mainContent}
         </div>
         <aside
+          ref={panelRef}
           style={{ width: panelWidth }}
-          className="fixed top-12 right-0 bottom-0 bg-background border-l border-border flex flex-col z-10"
+          className="sticky top-0 flex-none bg-background border-l border-border flex flex-col z-10 h-[calc(100vh-3rem-3rem)] max-h-[calc(100vh-3rem-3rem)]"
         >
           {/* drag-handle invisível por padrão, só fica visível no hover/drag */}
           <div
             onMouseDown={() => setDraggingResize(true)}
             className={cn(
-              "absolute left-0 top-0 bottom-0 w-1 -translate-x-0.5 cursor-col-resize hover:bg-primary/40 transition-colors",
+              "absolute left-0 top-0 bottom-0 w-1 -translate-x-3 cursor-col-resize hover:bg-primary/40 transition-colors",
               draggingResize && "bg-primary/60",
             )}
             role="separator"
@@ -353,7 +356,7 @@ export function Telemetry() {
           />
           {panelRender}
         </aside>
-      </>
+      </div>
     );
   }
 
@@ -1149,12 +1152,29 @@ function SubtractionsBlock({
           detail="Contexto que o orquestrador escolheu NÃO enviar (diff em vez de arquivo inteiro, fatia de wave em vez do roadmap todo). Economia contrafactual — não é dinheiro, é prompt que nunca existiu."
           accent="indigo"
         />
-        <div className="flex items-baseline gap-2 mt-1">
+        <div className="flex flex-col gap-0.5 mt-1">
           <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
             Total
           </span>
           <span className="text-2xl font-mono tabular-nums text-violet-400 leading-none">
             {formatBytes(totalBytes)}
+          </span>
+          {/* Lifetime accumulator — same honest labelling as os cards de
+              hooks/routing. Mostra "+N nesta sessão" só quando a janela de
+              sessão é conhecida E produziu eventos; senão rotula apenas o
+              acumulado vitalício, sem "+0" ruidoso. */}
+          <span className="text-[11px] text-muted-foreground">
+            acumulado · vitalício
+            {subtractions.session_known && subtractions.session_bytes > 0 && (
+              <span
+                className="text-emerald-500 dark:text-emerald-400"
+                title="Quanto deste acumulado veio da sessão atual (desde que o Claude Code abriu este projeto)."
+              >
+                {" "}· +{formatBytes(subtractions.session_bytes)} em{" "}
+                {subtractions.session_count}{" "}
+                {subtractions.session_count === 1 ? "evento" : "eventos"} nesta sessão
+              </span>
+            )}
           </span>
         </div>
         {totalCount === 0 ? (

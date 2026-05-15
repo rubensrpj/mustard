@@ -1106,6 +1106,33 @@ fn dashboard_spec_markdown(repo_path: String, spec_name: String) -> Result<Strin
             }
         }
     }
+    // 3. Wave-plan parent: roadmap specs (e.g. "...-contract-plan-roadmap-w2-w12")
+    //    carry only a `wave-plan.md` at their root plus `wave-N-*/spec.md`
+    //    subdirs — no top-level `spec.md`. Fall back to the wave-plan file so
+    //    the side panel renders the plan instead of an error.
+    for sub in ["active", "completed", "cancelled"] {
+        let path = base.join(sub).join(&spec_name).join("wave-plan.md");
+        if path.exists() {
+            return std::fs::read_to_string(&path).map_err(|e| e.to_string());
+        }
+    }
+    // Symmetry with case 2: a wave-plan parent nested under another bucket dir.
+    for sub in ["active", "completed", "cancelled"] {
+        let bucket = base.join(sub);
+        let Ok(rd) = std::fs::read_dir(&bucket) else {
+            continue;
+        };
+        for entry in rd.flatten() {
+            let parent_dir = entry.path();
+            if !parent_dir.is_dir() {
+                continue;
+            }
+            let child = parent_dir.join(&spec_name).join("wave-plan.md");
+            if child.exists() {
+                return std::fs::read_to_string(&child).map_err(|e| e.to_string());
+            }
+        }
+    }
     Err(format!("spec markdown not found: {}", spec_name))
 }
 

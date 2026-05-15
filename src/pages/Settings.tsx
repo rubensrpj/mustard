@@ -143,7 +143,7 @@ export function Settings() {
   }
 
   return (
-    <div className="flex flex-col gap-4 w-full max-w-3xl">
+    <div className="flex flex-col gap-4 w-full">
       <div className="flex flex-col gap-1">
         <nav className="text-[12px] text-muted-foreground">
           Mustard <span className="opacity-50">/</span>{" "}
