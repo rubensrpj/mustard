@@ -279,27 +279,27 @@ AUSENTE}.
       remover as duas lógicas de badge divergentes
 - [x] Validar: Telemetria e (futura) seção Economy mostram o MESMO badge ao mesmo tempo
 
-### Wave 6 — Dashboard: IA + design (Status: BACKLOG)
+### Wave 6 — Dashboard: IA + design (Status: DONE)
 
-- [ ] `AppShell.tsx` — page shell único: largura máxima consistente, padding e grid
+- [x] `AppShell.tsx` — page shell único: largura máxima consistente, padding e grid
       responsivo; todas as páginas herdam (fim das colunas estreitas órfãs)
-- [ ] `Telemetry.tsx` — absorver Prompt Economy como seção/aba da mesma página, fonte de
+- [x] `Telemetry.tsx` — absorver Prompt Economy como seção/aba da mesma página, fonte de
       dados única (sem divergência 901KB vs 1.7MB); cards de fase = vocabulário canônico
       (inclui REVIEW)
-- [ ] Deletar `PromptEconomy.tsx` e remover o item do Sidebar
-- [ ] `telemetry.rs` — expor delta de sessão para cada acumulador vitalício; UI mostra
+- [x] Deletar `PromptEconomy.tsx` e remover o item do Sidebar
+- [x] `telemetry.rs` — expor delta de sessão para cada acumulador vitalício; UI mostra
       "323.4K total · +N nesta sessão"
-- [ ] `Home.tsx` — placar de ROI: custo/ tokens com Mustard vs. estimativa sem (base: RTK
+- [x] `Home.tsx` — placar de ROI: custo/ tokens com Mustard vs. estimativa sem (base: RTK
       tokens salvos + bytes omitidos por subtraction + USD OTEL). Resposta direta a
       "compensa usar o Mustard?"
-- [ ] `Knowledge.tsx` — separar "Padrões & decisões" (knowledge real) de "Atrito" (retry/
+- [x] `Knowledge.tsx` — separar "Padrões & decisões" (knowledge real) de "Atrito" (retry/
       heavy-pipeline); rótulo "CONVENÇÃO" só para convenção real; empty-state honesto;
       cabeçalho explica para que serve a página e como interpretá-la (R9)
-- [ ] `Quality.tsx` — tooltip/legenda em WAVES/AC/RETRIES; cada coluna vazia explica por que
+- [x] `Quality.tsx` — tooltip/legenda em WAVES/AC/RETRIES; cada coluna vazia explica por que
       está vazia e como preencher
-- [ ] `Settings.tsx` + `env-catalog.ts` — título descritivo para humano; nome da env var só
+- [x] `Settings.tsx` + `env-catalog.ts` — título descritivo para humano; nome da env var só
       como subtítulo monoespaçado; knobs OTEL de baixo nível num grupo "Avançado" colapsável
-- [ ] Passe final com skill `frontend-design`: textos didáticos/explicativos em todas as
+- [x] Passe final com skill `frontend-design`: textos didáticos/explicativos em todas as
       telas; abreviações sempre com legenda; consistência visual (dark-first, Linear+Notion
       conforme `feedback_design_aesthetic`)
 
