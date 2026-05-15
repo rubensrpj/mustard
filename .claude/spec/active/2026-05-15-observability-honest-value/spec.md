@@ -268,16 +268,16 @@ AUSENTE}.
 - [x] Remover/ignorar o campo `occurrences` para entradas de atrito (número sem sentido)
 - [x] `knowledge.json` consumido pelo dashboard fica só com padrão/convenção/decisão reais
 
-### Wave 5 — Dashboard: bugs (Status: BACKLOG)
+### Wave 5 — Dashboard: bugs (Status: DONE)
 
-- [ ] `SpecSidePanel.tsx` + `LivePipelineCard.tsx` — corrigir o click: garantir que `specName`
+- [x] `SpecSidePanel.tsx` + `LivePipelineCard.tsx` — corrigir o click: garantir que `specName`
       passado bate o diretório real em `.claude/spec/active/`; tratar fetch vazio com
       mensagem em vez de painel mudo
-- [ ] `telemetry.rs` — função única `collector_health()` retornando um enum
+- [x] `telemetry.rs` — função única `collector_health()` retornando um enum
       (`live` / `stale` / `off`) com a mesma regra para todas as páginas
-- [ ] `dashboard.ts` + `promptEconomy.ts` — todas as telas consomem `collector_health()`;
+- [x] `dashboard.ts` + `promptEconomy.ts` — todas as telas consomem `collector_health()`;
       remover as duas lógicas de badge divergentes
-- [ ] Validar: Telemetria e (futura) seção Economy mostram o MESMO badge ao mesmo tempo
+- [x] Validar: Telemetria e (futura) seção Economy mostram o MESMO badge ao mesmo tempo
 
 ### Wave 6 — Dashboard: IA + design (Status: BACKLOG)
 
