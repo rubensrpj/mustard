@@ -1,0 +1,41 @@
+{
+  "spec": "2026-05-12-mustard-2-0-phase-2-opentelemetry-tokens",
+  "overall": "pass",
+  "criteria": [
+    {
+      "id": "AC-1",
+      "status": "pass",
+      "exit": 0,
+      "duration_ms": 801,
+      "stderr_excerpt": ""
+    },
+    {
+      "id": "AC-2",
+      "status": "pass",
+      "exit": 0,
+      "duration_ms": 238,
+      "stderr_excerpt": ""
+    },
+    {
+      "id": "AC-6",
+      "status": "pass",
+      "exit": 0,
+      "duration_ms": 472,
+      "stderr_excerpt": ""
+    },
+    {
+      "id": "AC-7",
+      "status": "pass",
+      "exit": 0,
+      "duration_ms": 96,
+      "stderr_excerpt": ""
+    },
+    {
+      "id": "AC-8",
+      "status": "pass",
+      "exit": 0,
+      "duration_ms": 245,
+      "stderr_excerpt": ""
+    }
+  ]
+}

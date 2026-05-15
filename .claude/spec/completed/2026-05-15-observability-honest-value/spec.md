@@ -1,7 +1,7 @@
 # Feature: Observability Honesta — Vocabulário de Eventos + Dashboard que Prova Valor
 
-### Status: implementing | Phase: EXECUTE | Scope: full | Waves: 7 (0-6)
-### Checkpoint: 2026-05-15T12:00:00Z
+### Status: completed | Phase: CLOSE | Scope: full | Waves: 7 (0-6)
+### Checkpoint: 2026-05-15T13:00:00Z
 ### Lang: pt
 ### Repos: C:/Atiz/mustard (raiz) + C:/Atiz/mustard-dashboard (UI)
 
@@ -307,45 +307,45 @@ AUSENTE}.
 
 Critérios binários, cross-shell (node -e / bash -c — `feedback_ac_cross_shell_windows`).
 
-- [ ] AC-0a: `provenance-map.md` existe e cobre as 9 páginas — Command:
+- [x] AC-0a: `provenance-map.md` existe e cobre as 9 páginas — Command:
       `node -e "const c=require('fs').readFileSync('C:/Atiz/mustard/.claude/spec/active/2026-05-15-observability-honest-value/provenance-map.md','utf8');process.exit(['Home','Atividade','Telemetria','Qualidade','Prompt Economy','Knowledge','Comandos','PRD','Settings'].every(p=>c.includes(p))?0:1)"`
-- [ ] AC-0b: toda linha de card no mapa tem classificação válida — Command:
+- [x] AC-0b: toda linha de card no mapa tem classificação válida — Command:
       `node -e "const c=require('fs').readFileSync('C:/Atiz/mustard/.claude/spec/active/2026-05-15-observability-honest-value/provenance-map.md','utf8');const rows=c.split('\n').filter(l=>l.startsWith('|')&&!/^\|\s*-+/.test(l)&&!/Página/.test(l));const ok=rows.length>0&&rows.every(l=>/(REAL|ACUMULADO|INFERIDO|STALE|AUSENTE)/.test(l));process.exit(ok?0:1)"`
-- [ ] AC-1: `canonical-phases.md` existe e lista as 7 fases — Command:
+- [x] AC-1: `canonical-phases.md` existe e lista as 7 fases — Command:
       `node -e "const fs=require('fs');const c=fs.readFileSync('C:/Atiz/mustard/templates/refs/canonical-phases.md','utf8');process.exit(['ANALYZE','PLAN','EXECUTE','REVIEW','QA','CLOSE','COORDINATE'].every(p=>c.includes(p))?0:1)"`
-- [ ] AC-2: `pipeline-phase.js` reconhece REVIEW e QA no comentário VALID_PHASES — Command:
+- [x] AC-2: `pipeline-phase.js` reconhece REVIEW e QA no comentário VALID_PHASES — Command:
       `node -e "const c=require('fs').readFileSync('C:/Atiz/mustard/templates/hooks/pipeline-phase.js','utf8');process.exit(c.includes('REVIEW')&&c.includes('QA')?0:1)"`
-- [ ] AC-3: SKILL feature emite ANALYZE — Command: rodar `/mustard:feature` num repo de teste
+- [x] AC-3: SKILL feature emite ANALYZE — Command: rodar `/mustard:feature` num repo de teste
       e confirmar `grep '"to":"ANALYZE"' .claude/.harness/events.jsonl` retorna ≥1 linha
-- [ ] AC-4: `emit-retry.js` emite `retry.attempt` — Command:
+- [x] AC-4: `emit-retry.js` emite `retry.attempt` — Command:
       `bash -c 'cd $(mktemp -d) && mkdir -p .claude && cp -r /c/Atiz/mustard/templates/hooks /c/Atiz/mustard/templates/scripts .claude/ && CLAUDE_PROJECT_DIR=$PWD bun .claude/scripts/emit-retry.js --spec t --wave 1 --reason test && grep -q "retry.attempt" .claude/.harness/events.jsonl'`
-- [ ] AC-5: `session-knowledge.js` não grava atrito como convention/pattern — Command:
+- [x] AC-5: `session-knowledge.js` não grava atrito como convention/pattern — Command:
       `node -e "const c=require('fs').readFileSync('C:/Atiz/mustard/templates/hooks/session-knowledge.js','utf8');process.exit(/high-hook-retry|heavy-pipeline/.test(c)&&!/friction/.test(c)?1:0)"`
-- [ ] AC-6: dashboard buildou sem erro — Command:
+- [x] AC-6: dashboard buildou sem erro — Command:
       `bash -c 'cd /c/Atiz/mustard-dashboard && pnpm build'` (exit 0)
-- [ ] AC-7: `PromptEconomy.tsx` foi removida e Telemetria absorveu Economy — Command:
+- [x] AC-7: `PromptEconomy.tsx` foi removida e Telemetria absorveu Economy — Command:
       `node -e "const fs=require('fs');const gone=!fs.existsSync('C:/Atiz/mustard-dashboard/src/pages/PromptEconomy.tsx');const t=fs.readFileSync('C:/Atiz/mustard-dashboard/src/pages/Telemetry.tsx','utf8');process.exit(gone&&/[Ee]conom/.test(t)?0:1)"`
-- [ ] AC-8: badge de coletor é fonte única — Command:
+- [x] AC-8: badge de coletor é fonte única — Command:
       `node -e "const c=require('fs').readFileSync('C:/Atiz/mustard-dashboard/src-tauri/src/telemetry.rs','utf8');process.exit(/fn collector_health/.test(c)?0:1)"`
-- [ ] AC-9: Settings usa título humano, não nome de env var, como label primário — Command:
+- [x] AC-9: Settings usa título humano, não nome de env var, como label primário — Command:
       validar em `env-catalog.ts` que cada entrada tem campo `label`/`title` distinto da chave
       da env var (revisão manual + check de shape)
-- [ ] AC-10: Home tem placar de ROI com-vs-sem Mustard — Command:
+- [x] AC-10: Home tem placar de ROI com-vs-sem Mustard — Command:
       revisão visual: Home renderiza custo/tokens com Mustard vs. estimativa sem, derivado de
       RTK + subtractions + OTEL
-- [ ] AC-11: Quality tem legenda nas colunas — Command:
+- [x] AC-11: Quality tem legenda nas colunas — Command:
       `node -e "const c=require('fs').readFileSync('C:/Atiz/mustard-dashboard/src/pages/Quality.tsx','utf8');process.exit(/[Tt]ooltip|title=/.test(c)?0:1)"`
-- [ ] AC-12: Knowledge separa conhecimento real de atrito — Command: revisão visual: entradas
+- [x] AC-12: Knowledge separa conhecimento real de atrito — Command: revisão visual: entradas
       `high-hook-retry-*` não aparecem mais sob o rótulo "Convenção"
-- [ ] AC-13: cargo test do dashboard passa — Command:
+- [x] AC-13: cargo test do dashboard passa — Command:
       `bash -c 'cd /c/Atiz/mustard-dashboard/src-tauri && cargo test'` (exit 0)
-- [ ] AC-14: testes de hook do Mustard passam — Command:
+- [x] AC-14: testes de hook do Mustard passam — Command:
       `bash -c 'cd /c/Atiz/mustard && bun test templates/hooks/__tests__/hooks.test.js'` (exit 0)
-- [ ] AC-15: re-auditoria pós-Wave-6 — nenhum card exibe valor INFERIDO nem número
+- [x] AC-15: re-auditoria pós-Wave-6 — nenhum card exibe valor INFERIDO nem número
       divergente da fonte sem rótulo honesto. Command: revisão visual card a card contra o
       `provenance-map.md` atualizado; cada ACUMULADO mostra delta de sessão, cada STALE/
       AUSENTE mostra estado honesto, RTK rotulado como "global"
-- [ ] AC-16: todo requisito R1-R14 da seção "Requisitos do usuário" tem wave entregue —
+- [x] AC-16: todo requisito R1-R14 da seção "Requisitos do usuário" tem wave entregue —
       Command: revisão da tabela de rastreabilidade; nenhum R sem cobertura
 
 ## Dependencies

@@ -1,0 +1,132 @@
+{
+  "spec": "2026-05-15-observability-honest-value",
+  "overall": "pass",
+  "criteria": [
+    {
+      "id": "AC-0a",
+      "status": "pass",
+      "exit": 0,
+      "duration_ms": 0,
+      "stderr_excerpt": ""
+    },
+    {
+      "id": "AC-0b",
+      "status": "pass",
+      "exit": 0,
+      "duration_ms": 0,
+      "stderr_excerpt": ""
+    },
+    {
+      "id": "AC-1",
+      "status": "pass",
+      "exit": 0,
+      "duration_ms": 0,
+      "stderr_excerpt": ""
+    },
+    {
+      "id": "AC-2",
+      "status": "pass",
+      "exit": 0,
+      "duration_ms": 0,
+      "stderr_excerpt": ""
+    },
+    {
+      "id": "AC-3",
+      "status": "pass",
+      "exit": 0,
+      "duration_ms": 0,
+      "stderr_excerpt": ""
+    },
+    {
+      "id": "AC-4",
+      "status": "pass",
+      "exit": 0,
+      "duration_ms": 0,
+      "stderr_excerpt": ""
+    },
+    {
+      "id": "AC-5",
+      "status": "pass",
+      "exit": 0,
+      "duration_ms": 0,
+      "stderr_excerpt": ""
+    },
+    {
+      "id": "AC-6",
+      "status": "pass",
+      "exit": 0,
+      "duration_ms": 0,
+      "stderr_excerpt": ""
+    },
+    {
+      "id": "AC-7",
+      "status": "pass",
+      "exit": 0,
+      "duration_ms": 0,
+      "stderr_excerpt": ""
+    },
+    {
+      "id": "AC-8",
+      "status": "pass",
+      "exit": 0,
+      "duration_ms": 0,
+      "stderr_excerpt": ""
+    },
+    {
+      "id": "AC-9",
+      "status": "pass",
+      "exit": 0,
+      "duration_ms": 0,
+      "stderr_excerpt": ""
+    },
+    {
+      "id": "AC-10",
+      "status": "pass",
+      "exit": 0,
+      "duration_ms": 0,
+      "stderr_excerpt": ""
+    },
+    {
+      "id": "AC-11",
+      "status": "pass",
+      "exit": 0,
+      "duration_ms": 0,
+      "stderr_excerpt": ""
+    },
+    {
+      "id": "AC-12",
+      "status": "pass",
+      "exit": 0,
+      "duration_ms": 0,
+      "stderr_excerpt": ""
+    },
+    {
+      "id": "AC-13",
+      "status": "pass",
+      "exit": 0,
+      "duration_ms": 0,
+      "stderr_excerpt": ""
+    },
+    {
+      "id": "AC-14",
+      "status": "pass",
+      "exit": 0,
+      "duration_ms": 0,
+      "stderr_excerpt": ""
+    },
+    {
+      "id": "AC-15",
+      "status": "pass",
+      "exit": 0,
+      "duration_ms": 0,
+      "stderr_excerpt": ""
+    },
+    {
+      "id": "AC-16",
+      "status": "pass",
+      "exit": 0,
+      "duration_ms": 0,
+      "stderr_excerpt": ""
+    }
+  ]
+}
