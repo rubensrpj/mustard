@@ -152,4 +152,62 @@ function extractFrictionFromStates(stateObjects) {
   return friction;
 }
 
-module.exports = { extractPatternsFromStates, extractFrictionFromStates, derivePrescription };
+/**
+ * Persist friction telemetry to `.claude/.metrics/friction.json`.
+ *
+ * Friction (high hook-retry, heavy API usage) is measured atrito — telemetry,
+ * not knowledge. Entries are keyed by `name`; re-running updates the existing
+ * entry in place rather than appending duplicates. There is no `occurrences`
+ * field — the honest count is `retryCount` / `apiCalls`. Fail-open: any error
+ * is swallowed.
+ *
+ * @param {object[]} frictionEntries  output of extractFrictionFromStates
+ * @param {string}   claudeDir        absolute path to the project .claude dir
+ */
+function saveFriction(frictionEntries, claudeDir) {
+  var fs = require('fs');
+  var path = require('path');
+  try {
+    if (!Array.isArray(frictionEntries) || frictionEntries.length === 0) return;
+
+    var metricsDir = path.join(claudeDir, '.metrics');
+    if (!fs.existsSync(metricsDir)) { fs.mkdirSync(metricsDir, { recursive: true }); }
+
+    var frictionPath = path.join(metricsDir, 'friction.json');
+    var store = { version: 1, entries: [] };
+    try {
+      if (fs.existsSync(frictionPath)) {
+        store = JSON.parse(fs.readFileSync(frictionPath, 'utf8'));
+        if (!Array.isArray(store.entries)) store.entries = [];
+      }
+    } catch (_) { store = { version: 1, entries: [] }; }
+
+    var ts = new Date().toISOString();
+    for (var i = 0; i < frictionEntries.length; i++) {
+      var entry = frictionEntries[i];
+      if (!entry || !entry.name) continue;
+      var idx = -1;
+      for (var j = 0; j < store.entries.length; j++) {
+        if (store.entries[j] && store.entries[j].name === entry.name) { idx = j; break; }
+      }
+      var record = Object.assign({}, entry, { updatedAt: ts });
+      if (idx >= 0) {
+        record.createdAt = store.entries[idx].createdAt || ts;
+        store.entries[idx] = record;
+      } else {
+        record.createdAt = ts;
+        store.entries.push(record);
+      }
+    }
+
+    // Keep newest 100 friction entries — bound the file size.
+    store.entries.sort(function (a, b) {
+      return new Date(b.updatedAt || 0) - new Date(a.updatedAt || 0);
+    });
+    store.entries = store.entries.slice(0, 100);
+
+    fs.writeFileSync(frictionPath, JSON.stringify(store, null, 2), 'utf8');
+  } catch (_) {} // fail-open
+}
+
+module.exports = { extractPatternsFromStates, extractFrictionFromStates, derivePrescription, saveFriction };
