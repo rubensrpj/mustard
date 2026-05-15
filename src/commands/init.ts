@@ -41,9 +41,8 @@ function resolveRuntime(): RuntimeChoice {
  * Preserves all other fields; only updates/inserts the keys provided.
  *
  * `mustardHome` is the absolute path of the Mustard install used at init/update
- * time. Hooks read it to locate `dist/runtime/event-store.js` and
- * `dist/telemetry/token-tracker.js` regardless of the consumer project layout
- * (sibling, nested, or installed elsewhere).
+ * time. Hooks read it to locate `dist/runtime/event-store.js` regardless of the
+ * consumer project layout (sibling, nested, or installed elsewhere).
  */
 export async function writeMustardMetaToClaudeMustardJson(
   claudePath: string,

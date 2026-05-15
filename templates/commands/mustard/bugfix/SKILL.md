@@ -33,7 +33,7 @@ This step is silent when there's nothing to audit — no output if `active/` is 
 
 ### ANALYZE (diagnose + assess)
 
-Run `bun -e "const {emitMetric,EVENTS}=require('./templates/hooks/_lib/metrics-emit.js'); emitMetric(EVENTS.ANALYZE_DIFF_SKIP,{note:'pipeline-start'})"` (silent, telemetry only).
+Run telemetry tag (silent, optional): `bun .claude/scripts/emit-subtraction.js --type analyze-diff-skip --note pipeline-start --spec {spec-name}`. Records the disciplinary subtraction (ANALYZE skips diff-context.js). Fail-open.
 
 1. **AUTO-SYNC:** Run `bun .claude/scripts/sync-detect.js`. If output shows any subproject with `hashChanged: true`, then run `bun .claude/scripts/sync-registry.js`. Otherwise skip sync-registry entirely.
 

@@ -11,7 +11,7 @@
 3. Choose response format: PreToolUse (`permissionDecision`) or PostToolUse (`decision`) → `patterns.md` P2, P3
 4. Register in `settings.json` under correct lifecycle event with matcher and timeout
 5. Add test cases in `hooks/__tests__/hooks.test.js`
-6. Run tests: `node --test hooks/__tests__/hooks.test.js`
+6. Run tests: `bun test hooks/__tests__/hooks.test.js`
 
 ### Reference module: bash-safety.js (PreToolUse) | guard-verify.js (PostToolUse)
 ### Reference files: `hooks/bash-safety.js`, `hooks/guard-verify.js`, `settings.json`, `hooks/__tests__/hooks.test.js`

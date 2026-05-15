@@ -35,12 +35,16 @@ Before the normal detect-and-confirm flow, scan the newest pipeline state for a 
 
 Before loading heavy context (sync-registry, diff-context, Explore Gate), ask the user which mode to use. This gates roughly 2-5k tokens per resume.
 
-1. **Skip conditions** — enter `reanalyze` mode automatically without prompting:
+1. **Skip conditions — auto `reanalyze` (no prompt):**
    - Step 0 just re-dispatched a failed agent (recovery path → always reanalyze next step)
    - `pipeline-state.lastDispatchFailure` was present and <10min old (already handled in Step 0)
    - Wave plan with `failedWaves.length > 0` (handled in wave failure section below — forces `reanalyze`)
 
-2. **Otherwise, AskUserQuestion:**
+1b. **Auto-continue conditions — auto `continued` (no prompt):**
+    - `pipeline-state.updatedAt` within last 10 min AND `status === 'in_progress'` AND no `lastDispatchFailure`. The user just paused or re-opened the session; trust state as source of truth.
+    - Override env: `MUSTARD_RESUME_MODE=continued|reanalyzed|ask` lets a user force a mode for the whole session. `ask` restores the legacy prompt.
+
+2. **Otherwise (state >10min old OR forced via env=ask):** AskUserQuestion:
    - **"Continuar de onde parou (modo leve)"** → `mode = "continued"`: skip sync-registry (Step 2 #6), skip diff-context (unless wave transition forces), skip Pre-EXECUTE Existence Gate (Step 12b). Trust pipeline-state as source of truth.
    - **"Reanalisar contexto (modo completo)"** → `mode = "reanalyzed"`: run Step 2 fully (default behavior, relê tudo).
 
@@ -94,7 +98,7 @@ Before loading heavy context (sync-registry, diff-context, Explore Gate), ask th
 
    6a. **Wave Tree:** Run `bun .claude/scripts/wave-tree.js --spec-dir .claude/spec/active/{specName}` and print inline. Fail-open.
 
-7. Ask: **"Continue from next action, or review spec first?"**
+7. **Auto-continue default.** Inform user inline: `"Continuando da próxima ação. Se quiser revisar a spec antes, interrompa e diga 'review'."` Then proceed directly to Step 2 (Bootstrap). Only ask when ALL apply: scope=full AND currentWave==1 AND no completedWaves yet (fresh start, expensive to redo). Override env: `MUSTARD_RESUME_CONFIRM=always|never|fresh-only(default)`.
 
 ### Step 2: Bootstrap (after confirmation)
 
@@ -136,13 +140,24 @@ When the pipeline state indicates a wave plan, the orchestrator dispatches only 
    - Update state: `completedWaves.push(currentWave)`, `currentWave += 1`, `updatedAt`.
    - After updating state, run `bun .claude/scripts/wave-tree.js --spec-dir .claude/spec/active/{specName}` to show progress.
    - Force `resumeMode = "reanalyzed"` for the next wave transition so diff-context refreshes with the just-committed changes.
-   - **Wave Slice Injection (see § Wave Slice Injection below):** before dispatching wave N (N≥2), run `bun .claude/scripts/spec-extract.js --spec {spec_path} --wave {N}` to get the wave slice; save as `{spec_slice}`. Prepend the cached previous wave diff from `.claude/.pipeline-states/{spec-name}.wave-{N-1}.diff.md`. Inject `{spec_slice}` (NOT the full spec) into the agent prompt. Emit metric `WAVE_SLICE` via `metrics-emit.js` with `tokensSaved = Math.max(0, Math.floor((fullSpecChars - sliceChars) / 4))`.
+   - **Cache this wave's diff:** right after the wave-{N-1} commit, run `git diff HEAD~1 HEAD > .claude/.pipeline-states/{spec-name}.wave-{N-1}.diff.md` so the next wave can be sliced against it.
+   - **Wave Slice Injection (see § Wave Slice Injection below):** before dispatching wave N (N≥2):
+     1. Run `bun .claude/scripts/spec-extract.js --spec {spec_path} --wave {N}` to get the wave slice; save as `{spec_slice}`.
+     2. Prepend the cached previous wave diff from `.claude/.pipeline-states/{spec-name}.wave-{N-1}.diff.md`. Inject `{spec_slice}` + the diff (NOT the full spec, NOT the full touched files) into the agent prompt.
+     3. Record BOTH subtractions (measured, never estimated):
+        - `bun .claude/scripts/emit-subtraction.js --type wave-slice --measure-spec {spec_path} --wave {N} --spec {spec-name}` — spec markdown not re-sent (small, marginal).
+        - `bun .claude/scripts/emit-subtraction.js --type diff-vs-full --measure-diff .claude/.pipeline-states/{spec-name}.wave-{N-1}.diff.md --wave {N} --spec {spec-name}` — **the dominant economy:** full size of every file the diff touches minus the diff size. Code files dwarf spec markdown.
    - If `currentWave > totalWaves` → skip remaining wave dispatch, go to Step 19 REVIEW + Step 20 CLOSE on the overall wave plan.
 4. **If a wave fails (REJECTED after 2 fix-loops, or BLOCKED)** — see § Wave Failure Handling below.
 
 #### Wave Slice Injection
 
-Entre waves, o orquestrador NÃO reinjeta a spec inteira nos prompts dos agentes — isso desperdiça tokens em conteúdo que a wave atual não precisa. Em vez disso, `bun .claude/scripts/spec-extract.js --spec {spec_path} --wave {N}` recorta apenas a seção `### {Agent} Agent (Wave {N})` da spec e devolve esse slice (cap 4000 chars). O orquestrador concatena com o diff cacheado da wave anterior (em `.claude/.pipeline-states/{spec-name}.wave-{N-1}.diff.md`) e injeta os dois blocos como `{spec_slice}` no template de dispatch — o agente vê só o que mudou e só o que ele tem que fazer. Após o dispatch, emite métrica `WAVE_SLICE` com `tokensSaved = Math.max(0, Math.floor((fullSpecChars - sliceChars) / 4))` para o dashboard de Prompt Economy. Fail-open: se `spec-extract.js` falhar, cai pra spec full e segue.
+Entre waves, o orquestrador NÃO reinjeta a spec inteira nem os arquivos de código completos nos prompts dos agentes — isso desperdiça tokens em conteúdo que a wave atual não precisa. Duas subtractions acontecem aqui:
+
+1. **wave-slice** — `spec-extract.js` recorta só a seção da wave (ou, em wave-plan, a sub-spec inteira da wave). Economia pequena: specs markdown são minúsculas. Medido por `emit-subtraction --type wave-slice --measure-spec`.
+2. **diff-vs-full** — em vez de reenviar o conteúdo completo de cada arquivo que as waves anteriores tocaram, o orquestrador injeta só o `git diff` cacheado. **Esta é a economia dominante** — arquivos de código somam uma ordem de grandeza mais que o spec. Medido por `emit-subtraction --type diff-vs-full --measure-diff`, que soma o tamanho full de cada arquivo do diff e subtrai o tamanho do diff.
+
+`emit-subtraction.js` mede sozinho (`--measure-spec` / `--measure-diff`) — o orquestrador NÃO calcula bytes na mão. Fail-open: se `spec-extract.js` ou o arquivo de diff faltar, cai pra spec/arquivos full e segue (a subtraction simplesmente não é registrada — honesto: se a omissão não aconteceu, não há evento).
 
 13. **Plan waves:** `Depends on: none` → Wave 1; dependencies → later. DB+Backend parallel. Frontend after Backend UNLESS all parallel override conditions met (see `.claude/pipeline-config.md` Parallel Rules). Review agents: ALWAYS dispatch in single parallel message. Skip completed tasks.
 

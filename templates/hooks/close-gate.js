@@ -78,6 +78,82 @@ function findUnmarkedChecklistItems(cwd, spec) {
   return { found: true, unmarked };
 }
 
+/**
+ * Scan an active spec for debt markers that should NOT exist when closing.
+ *
+ * Returns { found: bool, markers: Array<{line: number, snippet: string, pattern: string}> }
+ *
+ * Detects:
+ *   - "future hook" / "future X" (Wave-1 admission anti-pattern)
+ *   - "not part of Wave" / "not part of this wave"
+ *   - "TODO:" / "FIXME:" / "XXX:" with content (not "TODO: done", e.g.)
+ *   - "not yet implemented" / "not implemented"
+ *
+ * Skips comments inside fenced code blocks (```...```) — those are examples.
+ */
+function findDebtMarkers(cwd, spec) {
+  if (!spec) return { found: false, markers: [] };
+  const specPath = path.join(cwd, '.claude', 'spec', 'active', spec, 'spec.md');
+  if (!fs.existsSync(specPath)) return { found: false, markers: [] };
+
+  let raw;
+  try { raw = fs.readFileSync(specPath, 'utf8'); } catch (_) { return { found: false, markers: [] }; }
+
+  const lines = raw.split('\n');
+  const markers = [];
+  let inFence = false;
+
+  // Scope: only flag markers inside ACTIONABLE sections (Tasks, Checklist,
+  // Acceptance Criteria). Pendências is by convention where authors document
+  // legitimate open follow-ups — exempt to avoid false-positive close blocks.
+  // Concerns/Summary/Non-Goals/Contexto are likewise historical/external debt.
+  const ACTIONABLE_SECTIONS = /^##\s+(Tasks|Checklist|Acceptance\s+Criteria)\b/i;
+  const ANY_H2 = /^##\s+\S/;
+  let inActionable = false;
+
+  // Patterns are case-insensitive. Each entry: [regex, label]
+  const PATTERNS = [
+    [/\bfuture\s+hook\b/i,                'future-hook'],
+    [/\bnot\s+part\s+of\s+(?:this\s+)?wave\s*\d*\b/i, 'not-part-of-wave'],
+    [/\bnot\s+yet\s+implemented\b/i,      'not-yet-implemented'],
+    [/\bTODO:[^\s]*\s+\S/,                'TODO'],
+    [/\bFIXME:[^\s]*\s+\S/,               'FIXME'],
+    [/\bXXX:[^\s]*\s+\S/,                 'XXX'],
+  ];
+
+  // Inline-backtick stripper — markers inside `code` are descriptive examples.
+  const stripInlineCode = (s) => s.replace(/`[^`]*`/g, '');
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (/^```/.test(line.trim())) { inFence = !inFence; continue; }
+    if (inFence) continue;
+    if (ANY_H2.test(line)) {
+      inActionable = ACTIONABLE_SECTIONS.test(line);
+      continue;
+    }
+    if (!inActionable) continue;
+
+    const cleaned = stripInlineCode(line);
+    for (const [re, label] of PATTERNS) {
+      if (re.test(cleaned)) {
+        markers.push({
+          line: i + 1,
+          snippet: line.trim().slice(0, 140),
+          pattern: label,
+        });
+        break;
+      }
+    }
+  }
+
+  return { found: markers.length > 0, markers };
+}
+
+function getDebtMode() {
+  return (process.env.MUSTARD_DEBT_GATE_MODE || 'strict').toLowerCase();
+}
+
 /** True if the file path looks like a pipeline-state file */
 function isPipelineStateFile(filePath) {
   if (!filePath) return false;
@@ -285,6 +361,40 @@ process.stdin.on('end', () => {
 
     const cwd = data.cwd || process.cwd();
     const specName = extractSpecFromContent(content);
+
+    // ── Debt-marker gate (prevents "Wave 1 closed with TODOs" anti-pattern) ──
+    const debtMode = getDebtMode();
+    if (debtMode !== 'off') {
+      const debt = findDebtMarkers(cwd, specName);
+      if (debt.found) {
+        const top = debt.markers.slice(0, 5).map(m => `  - line ${m.line} (${m.pattern}): ${m.snippet}`).join('\n');
+        const more = debt.markers.length > 5 ? `\n  …and ${debt.markers.length - 5} more` : '';
+        const reason = `[Close Gate] Spec "${specName}" still contains ${debt.markers.length} debt marker(s) — close blocked. Resolve or move to a follow-up spec:\n${top}${more}`;
+
+        if (debtMode === 'warn') {
+          process.stderr.write(`[close-gate] WARN: ${reason}\n`);
+          // fall through
+        } else {
+          try {
+            emit('close-gate.check', { result: 'deny-debt-markers', mode, debtMode, spec: specName, markerCount: debt.markers.length, patterns: debt.markers.map(m => m.pattern) }, { cwd, hookInput: data });
+          } catch (_) {}
+          emitMetric('close-gate', {
+            tokensAffected: 0,
+            tokensSaved: 0,
+            note: 'blocked-debt-markers',
+            extras: { reason: 'debt-markers', specName, markerCount: debt.markers.length, category: 'prevention' },
+          });
+          process.stdout.write(JSON.stringify({
+            hookSpecificOutput: {
+              hookEventName: 'PreToolUse',
+              permissionDecision: 'deny',
+              permissionDecisionReason: reason,
+            },
+          }) + '\n');
+          process.exit(0);
+        }
+      }
+    }
 
     // ── Checklist consistency gate ────────────────────────────────────────────
     const checklistMode = getChecklistMode();

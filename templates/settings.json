@@ -12,7 +12,16 @@
     "MUSTARD_SKILL_SIZE_MODE": "warn",
     "MUSTARD_SKILL_VALIDATE_LINES_MODE": "warn",
     "MUSTARD_PROMPT_HINT_MODE": "off",
-    "MUSTARD_CHECKLIST_GATE_MODE": "strict"
+    "MUSTARD_CHECKLIST_GATE_MODE": "strict",
+    "MUSTARD_BOUNDARY_MODE": "warn",
+    "MUSTARD_MAIN_BUDGET_MODE": "warn",
+    "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
+    "OTEL_METRICS_EXPORTER": "otlp",
+    "OTEL_LOGS_EXPORTER": "otlp",
+    "OTEL_EXPORTER_OTLP_PROTOCOL": "http/json",
+    "OTEL_EXPORTER_OTLP_ENDPOINT": "http://127.0.0.1:4318",
+    "OTEL_METRICS_INCLUDE_SESSION_ID": "true",
+    "MUSTARD_HARNESS_DUAL_EMIT": "1"
   },
 
   "mcpServers": {
@@ -73,6 +82,11 @@
             "type": "command",
             "command": "bun \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/tool-use-counter.js",
             "timeout": 3
+          },
+          {
+            "type": "command",
+            "command": "bun \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/main-context-counter.js",
+            "timeout": 3
           }
         ]
       },
@@ -104,6 +118,11 @@
       {
         "matcher": "Write|Edit",
         "hooks": [
+          {
+            "type": "command",
+            "command": "bun \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/boundary-gate.js",
+            "timeout": 5
+          },
           {
             "type": "command",
             "command": "bun \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/close-gate.js",
@@ -215,6 +234,16 @@
         ]
       },
       {
+        "matcher": "Skill",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bun \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/skill-usage-tracker.js",
+            "timeout": 3
+          }
+        ]
+      },
+      {
         "matcher": "Bash",
         "hooks": [
           {
@@ -284,6 +313,12 @@
             "command": "bun \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/tool-use-counter.js",
             "statusMessage": "Clearing tool budgets...",
             "timeout": 3
+          },
+          {
+            "type": "command",
+            "command": "bun \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/main-context-counter.js",
+            "statusMessage": "Resetting delegation counter...",
+            "timeout": 3
           }
         ]
       }
@@ -332,6 +367,11 @@
         "hooks": [
           {
             "type": "command",
+            "command": "bun \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/main-context-counter.js",
+            "timeout": 3
+          },
+          {
+            "type": "command",
             "command": "bun \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/subagent-tracker.js",
             "statusMessage": "Registering agent...",
             "timeout": 3
@@ -349,6 +389,11 @@
     "SubagentStop": [
       {
         "hooks": [
+          {
+            "type": "command",
+            "command": "bun \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/main-context-counter.js",
+            "timeout": 3
+          },
           {
             "type": "command",
             "command": "bun \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/subagent-tracker.js",

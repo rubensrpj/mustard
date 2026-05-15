@@ -57,12 +57,53 @@ process.stdin.on('end', () => {
 
     // NOTE: .claude/memory/ is PERSISTENT — do NOT clean.
 
+    // Stop OTEL collector spawned by harness-init.js (best-effort)
+    stopOtelCollector(claudeDir);
+
     process.exit(0);
   } catch (err) {
     process.stderr.write(`[session-cleanup] Error: ${err.message}\n`);
     process.exit(0);
   }
 });
+
+/**
+ * Stop the OTEL collector started by harness-init.js. Graceful SIGTERM with a
+ * 2s wait, then SIGKILL as escalation. Always removes the PID file on exit.
+ * Fail-open: any I/O or signal error is swallowed.
+ */
+function stopOtelCollector(claudeDir) {
+  const pidFile = path.join(claudeDir, '.harness', '.otel-collector.pid');
+  try {
+    if (!fs.existsSync(pidFile)) return;
+    let pid;
+    try {
+      pid = parseInt(fs.readFileSync(pidFile, 'utf8').trim(), 10);
+    } catch (_) { pid = NaN; }
+
+    if (!Number.isFinite(pid) || pid <= 0) {
+      try { fs.unlinkSync(pidFile); } catch (_) {}
+      return;
+    }
+
+    try { process.kill(pid, 'SIGTERM'); } catch (_) { /* already dead */ }
+
+    // Poll up to 2s for the process to exit.
+    const deadline = Date.now() + 2000;
+    let alive = true;
+    while (Date.now() < deadline) {
+      try { process.kill(pid, 0); } catch (_) { alive = false; break; }
+      // Busy-wait with a small spawnSync sleep — Bun/Node lack sync sleep.
+      try { spawnSync(process.execPath, ['-e', 'setTimeout(()=>{},200)'], { timeout: 300 }); } catch (_) { break; }
+    }
+
+    if (alive) {
+      try { process.kill(pid, 'SIGKILL'); } catch (_) {}
+    }
+
+    try { fs.unlinkSync(pidFile); } catch (_) {}
+  } catch (_) { /* fail-open */ }
+}
 
 function cleanFile(filePath) {
   try {

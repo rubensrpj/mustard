@@ -2,6 +2,95 @@
   "version": 1,
   "entries": [
     {
+      "id": "convention-1776768337650",
+      "type": "convention",
+      "name": "high-hook-retry-2026-04-09-hygiene-continuous.metrics",
+      "description": "Pipeline triggered 3 hook-level retries (sandbox/stash-pop/re-prompts — not agent redispatches). Tool breakdown: {\"Write\":3,\"Edit\":6,\"Bash\":20,\"Agent\":1}",
+      "source": "session-knowledge",
+      "tags": [
+        "hook-retry",
+        "pipeline",
+        "lesson",
+        "prescriptive"
+      ],
+      "confidence": 1,
+      "occurrences": 74,
+      "createdAt": "2026-04-21T10:45:37.650Z",
+      "updatedAt": "2026-05-15T02:24:15.281Z",
+      "lastSeen": "2026-05-15T02:24:15.281Z"
+    },
+    {
+      "id": "convention-1776768337604",
+      "type": "convention",
+      "name": "high-hook-retry-2026-04-09-haiku-heuristic-table.metrics",
+      "description": "Pipeline triggered 16 hook-level retries (sandbox/stash-pop/re-prompts — not agent redispatches). Tool breakdown: {\"Write\":1,\"Edit\":17,\"Bash\":9,\"Agent\":3}",
+      "source": "session-knowledge",
+      "tags": [
+        "hook-retry",
+        "pipeline",
+        "lesson",
+        "prescriptive"
+      ],
+      "confidence": 1,
+      "occurrences": 74,
+      "createdAt": "2026-04-21T10:45:37.604Z",
+      "updatedAt": "2026-05-15T02:24:15.172Z",
+      "lastSeen": "2026-05-15T02:24:15.172Z"
+    },
+    {
+      "id": "convention-1776768337561",
+      "type": "convention",
+      "name": "high-hook-retry-2026-04-09-haiku-auto-rereview.metrics",
+      "description": "Pipeline triggered 3 hook-level retries (sandbox/stash-pop/re-prompts — not agent redispatches). Tool breakdown: {\"Write\":1,\"Bash\":4,\"Edit\":6,\"Agent\":1}",
+      "source": "session-knowledge",
+      "tags": [
+        "hook-retry",
+        "pipeline",
+        "lesson",
+        "prescriptive"
+      ],
+      "confidence": 1,
+      "occurrences": 74,
+      "createdAt": "2026-04-21T10:45:37.561Z",
+      "updatedAt": "2026-05-15T02:24:15.066Z",
+      "lastSeen": "2026-05-15T02:24:15.066Z"
+    },
+    {
+      "id": "pattern-1775737719162",
+      "type": "pattern",
+      "name": "heavy-pipeline-2026-04-09-enforcement-integration-tests.metrics",
+      "description": "Pipeline used 81 API calls. Consider splitting into smaller scope.",
+      "source": "session-knowledge",
+      "tags": [
+        "optimization",
+        "pipeline",
+        "prescriptive"
+      ],
+      "confidence": 1,
+      "occurrences": 107,
+      "createdAt": "2026-04-09T12:28:39.162Z",
+      "updatedAt": "2026-05-15T02:24:14.940Z",
+      "lastSeen": "2026-05-15T02:24:14.940Z"
+    },
+    {
+      "id": "convention-1776768337467",
+      "type": "convention",
+      "name": "high-hook-retry-2026-04-09-enforcement-integration-tests.metrics",
+      "description": "Pipeline triggered 8 hook-level retries (sandbox/stash-pop/re-prompts — not agent redispatches). Tool breakdown: {\"Write\":4,\"Bash\":40,\"Edit\":31,\"Agent\":6}",
+      "source": "session-knowledge",
+      "tags": [
+        "hook-retry",
+        "pipeline",
+        "lesson",
+        "prescriptive"
+      ],
+      "confidence": 1,
+      "occurrences": 74,
+      "createdAt": "2026-04-21T10:45:37.467Z",
+      "updatedAt": "2026-05-15T02:24:14.709Z",
+      "lastSeen": "2026-05-15T02:24:14.709Z"
+    },
+    {
       "id": "convention-1776771818988",
       "type": "convention",
       "name": "high-hook-retry-2026-04-21-retry-context-fix-loop-aware.metrics",
@@ -18,95 +107,6 @@
       "createdAt": "2026-04-21T11:43:38.988Z",
       "updatedAt": "2026-05-14T16:05:14.767Z",
       "lastSeen": "2026-05-14T16:05:14.767Z"
-    },
-    {
-      "id": "convention-1776768337650",
-      "type": "convention",
-      "name": "high-hook-retry-2026-04-09-hygiene-continuous.metrics",
-      "description": "Pipeline triggered 3 hook-level retries (sandbox/stash-pop/re-prompts — not agent redispatches). Tool breakdown: {\"Write\":3,\"Edit\":6,\"Bash\":20,\"Agent\":1}",
-      "source": "session-knowledge",
-      "tags": [
-        "hook-retry",
-        "pipeline",
-        "lesson",
-        "prescriptive"
-      ],
-      "confidence": 1,
-      "occurrences": 69,
-      "createdAt": "2026-04-21T10:45:37.650Z",
-      "updatedAt": "2026-05-14T15:24:33.988Z",
-      "lastSeen": "2026-05-14T15:24:33.988Z"
-    },
-    {
-      "id": "convention-1776768337604",
-      "type": "convention",
-      "name": "high-hook-retry-2026-04-09-haiku-heuristic-table.metrics",
-      "description": "Pipeline triggered 16 hook-level retries (sandbox/stash-pop/re-prompts — not agent redispatches). Tool breakdown: {\"Write\":1,\"Edit\":17,\"Bash\":9,\"Agent\":3}",
-      "source": "session-knowledge",
-      "tags": [
-        "hook-retry",
-        "pipeline",
-        "lesson",
-        "prescriptive"
-      ],
-      "confidence": 1,
-      "occurrences": 69,
-      "createdAt": "2026-04-21T10:45:37.604Z",
-      "updatedAt": "2026-05-14T15:24:33.907Z",
-      "lastSeen": "2026-05-14T15:24:33.907Z"
-    },
-    {
-      "id": "convention-1776768337561",
-      "type": "convention",
-      "name": "high-hook-retry-2026-04-09-haiku-auto-rereview.metrics",
-      "description": "Pipeline triggered 3 hook-level retries (sandbox/stash-pop/re-prompts — not agent redispatches). Tool breakdown: {\"Write\":1,\"Bash\":4,\"Edit\":6,\"Agent\":1}",
-      "source": "session-knowledge",
-      "tags": [
-        "hook-retry",
-        "pipeline",
-        "lesson",
-        "prescriptive"
-      ],
-      "confidence": 1,
-      "occurrences": 69,
-      "createdAt": "2026-04-21T10:45:37.561Z",
-      "updatedAt": "2026-05-14T15:24:33.825Z",
-      "lastSeen": "2026-05-14T15:24:33.825Z"
-    },
-    {
-      "id": "pattern-1775737719162",
-      "type": "pattern",
-      "name": "heavy-pipeline-2026-04-09-enforcement-integration-tests.metrics",
-      "description": "Pipeline used 81 API calls. Consider splitting into smaller scope.",
-      "source": "session-knowledge",
-      "tags": [
-        "optimization",
-        "pipeline",
-        "prescriptive"
-      ],
-      "confidence": 1,
-      "occurrences": 102,
-      "createdAt": "2026-04-09T12:28:39.162Z",
-      "updatedAt": "2026-05-14T15:24:33.737Z",
-      "lastSeen": "2026-05-14T15:24:33.737Z"
-    },
-    {
-      "id": "convention-1776768337467",
-      "type": "convention",
-      "name": "high-hook-retry-2026-04-09-enforcement-integration-tests.metrics",
-      "description": "Pipeline triggered 8 hook-level retries (sandbox/stash-pop/re-prompts — not agent redispatches). Tool breakdown: {\"Write\":4,\"Bash\":40,\"Edit\":31,\"Agent\":6}",
-      "source": "session-knowledge",
-      "tags": [
-        "hook-retry",
-        "pipeline",
-        "lesson",
-        "prescriptive"
-      ],
-      "confidence": 1,
-      "occurrences": 69,
-      "createdAt": "2026-04-21T10:45:37.467Z",
-      "updatedAt": "2026-05-14T15:24:33.626Z",
-      "lastSeen": "2026-05-14T15:24:33.626Z"
     }
   ]
 }

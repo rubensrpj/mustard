@@ -17,12 +17,9 @@
 
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const { shouldRun, isSelfDelegation } = require('./_lib/hook-env.js');
 const { emitMetric } = require('./_lib/metrics-emit.js');
-
-// ── Span emitter (Phase 2 — OTLP JSON tokens) ─────────────────────────────────
-let _spanEmitter = null;
-try { _spanEmitter = require('./_lib/span-emitter.js'); } catch (_) {} // fail-open: optional
 
 // ── Harness event bus (Wave 2 dual emission) ─────────────────────────────────
 let harnessEmit = null;
@@ -175,10 +172,20 @@ function handlePreToolUse(data, stateDir) {
     // Extract model from tool input prompt (best-effort — may be absent)
     const model = (toolInput.model || null);
 
+    // Prefix metrics: hash + bytes of the dispatched prompt. Used by
+    // prompt-prefix-stats to group cache-eligible delegations and quantify
+    // prompt caching savings. SHA-256 truncated to 16 hex chars (~64 bits) is
+    // ample for cache grouping cardinality.
+    const promptStr = toolInput.prompt || '';
+    const prefix_bytes = Buffer.byteLength(promptStr, 'utf8');
+    const prefix_hash = crypto.createHash('sha256').update(promptStr).digest('hex').slice(0, 16);
+
     emitEvent('agent.start', {
       description,
       model,
       parentAgentId: data.parentAgentId ?? null,
+      prefix_hash,
+      prefix_bytes,
     }, {
       cwd: projectDir,
       sessionId,
@@ -187,43 +194,22 @@ function handlePreToolUse(data, stateDir) {
       actor: { kind: 'agent', id: subagentType, type: subagentType },
     });
 
-    // ── Phase 2 span emit: persist sidecar so PostToolUse can complete it ─
-    try {
-      const toolUseId = data.tool_use_id || (data.tool_input && data.tool_input.tool_use_id);
-      if (toolUseId && _spanEmitter) {
-        const claudeDir = path.join(projectDir, '.claude');
-        const tracker = _spanEmitter.getTracker(claudeDir);
-        if (tracker) {
-          const promptBytes = Buffer.byteLength(toolInput.prompt || '', 'utf8');
-          tracker.startSpan({
-            name: 'task.dispatch',
-            toolUseId: String(toolUseId),
-            model: model || 'unknown',
-            agentType: subagentType || 'general-purpose',
-            spec: currentSpec || undefined,
-            phase: currentPhase || undefined,
-            wave: typeof wave === 'number' ? wave : undefined,
-            promptBytes,
-          });
-        }
-      }
-    } catch (_) { /* fail-open: span emit is advisory */ }
-
     // Descriptive metric: bytes of work isolated into a sub-context via Task.
     // This is NOT savings — it reports how much prompt was delegated rather
     // than running in the parent context. Aggregated as "isolation" so the
     // dashboard can show throughput without inflating the token-saved total.
     try {
-      const promptBytes = Buffer.byteLength(toolInput.prompt || '', 'utf8');
-      if (promptBytes > 0) {
+      if (prefix_bytes > 0) {
         emitMetric('delegation', {
-          tokensAffected: Math.round(promptBytes / 4),
+          tokensAffected: Math.round(prefix_bytes / 4),
           tokensSaved: 0,
           note: 'task-dispatched',
           extras: {
             subagent_type: subagentType,
             model: model || 'inherited',
             category: 'isolation',
+            prefix_hash,
+            prefix_bytes,
           },
           cwd: projectDir,
         });
@@ -344,29 +330,6 @@ function handlePostToolUse(data, stateDir) {
         actor: { kind: 'agent', id: subagentType, type: subagentType },
       });
     } catch (_) {}
-
-    // ── Phase 2 span emit: close span sidecar started by PreToolUse ──────
-    try {
-      const toolUseId = data.tool_use_id || (data.tool_input && data.tool_input.tool_use_id);
-      if (toolUseId && _spanEmitter) {
-        const claudeDir = path.join(projectDir, '.claude');
-        const tracker = _spanEmitter.getTracker(claudeDir);
-        if (tracker) {
-          const responseText = typeof toolResponse === 'string'
-            ? toolResponse
-            : JSON.stringify(toolResponse || {});
-          const responseBytes = Buffer.byteLength(responseText, 'utf8');
-          const endInput = {
-            toolUseId: String(toolUseId),
-            responseBytes,
-            isError: toolResponse && toolResponse.is_error === true,
-          };
-          const errorType = toolResponse && toolResponse.error_type;
-          if (typeof errorType === 'string' && errorType) endInput.errorType = errorType;
-          tracker.endSpan(endInput);
-        }
-      }
-    } catch (_) { /* fail-open: span emit is advisory */ }
 
     // (2)(3) Dispatch failure detection — require is_error=true AND a failure
     // keyword so we don't false-positive on agents merely documenting errors.

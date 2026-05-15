@@ -194,6 +194,22 @@ CREATE TABLE IF NOT EXISTS spans (
 CREATE INDEX IF NOT EXISTS idx_spans_spec ON spans(spec);
 CREATE INDEX IF NOT EXISTS idx_spans_phase ON spans(phase);
 CREATE INDEX IF NOT EXISTS idx_spans_started ON spans(started_at);
+
+CREATE TABLE IF NOT EXISTS claude_code_otel (
+  ts_bucket INTEGER NOT NULL,
+  signal TEXT NOT NULL,
+  metric TEXT NOT NULL,
+  session_id TEXT,
+  model TEXT,
+  token_type TEXT,
+  sum REAL DEFAULT 0,
+  count INTEGER DEFAULT 0,
+  attrs TEXT,
+  PRIMARY KEY (ts_bucket, metric, session_id, model, token_type)
+);
+CREATE INDEX IF NOT EXISTS idx_cco_metric ON claude_code_otel(metric);
+CREATE INDEX IF NOT EXISTS idx_cco_session ON claude_code_otel(session_id);
+CREATE INDEX IF NOT EXISTS idx_cco_bucket ON claude_code_otel(ts_bucket);
 `;
 
 // ---------------------------------------------------------------------------
@@ -784,9 +800,9 @@ export class EventStore {
   }
 
   /**
-   * Query the spans projection. Spans are inserted by the Phase 2 span
-   * emitter (templates/hooks/_lib/span-emitter.js), not by `rebuild()` —
-   * they have no source-of-truth in events.jsonl. Default limit 1000.
+   * Query the spans projection. Legacy from Phase 2 (homegrown OTLP emitter
+   * removed in favor of native Claude Code OTEL). Kept for historical rows.
+   * See claude_code_otel table for live data. Default limit 1000.
    */
   spans(filter: SpanFilter = {}): SpanRecord[] {
     const db = this.requireDb();

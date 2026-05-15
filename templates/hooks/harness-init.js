@@ -19,10 +19,12 @@
 
 const fs = require('fs');
 const path = require('path');
+const { spawn } = require('child_process');
 const { shouldRun } = require('./_lib/hook-env.js');
 const harness = require('./_lib/harness-event.js');
 
 const RETENTION_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+const OTEL_PID_FILE = '.otel-collector.pid';
 
 let input = '';
 process.stdin.setEncoding('utf8');
@@ -59,6 +61,9 @@ process.stdin.on('end', () => {
       actor: { kind: 'hook', id: 'harness-init' },
       hookInput: data,
     });
+
+    // (5) Spawn OTEL collector if not already running. Fail-open.
+    spawnOtelCollector(cwd, harnessDir);
 
     process.exit(0);
   } catch (err) {
@@ -220,6 +225,56 @@ function readFirstSessionId(filePath) {
     }
   } catch (_) {
     return null;
+  }
+}
+
+/**
+ * Spawn the OTEL collector as a detached background process if it's not
+ * already running. Idempotent: checks the PID file first. Fail-open: any error
+ * is logged to stderr but never blocks SessionStart.
+ *
+ * Opt-out: MUSTARD_DISABLE_OTEL_COLLECTOR=1 skips spawn entirely.
+ *
+ * The collector script lives at `.claude/scripts/otel-collector.js` in the
+ * consumer project. If missing (consumer hasn't run `mustard update` yet),
+ * skip silently — the SessionStart hook must remain compatible across versions.
+ */
+function spawnOtelCollector(cwd, harnessDir) {
+  try {
+    if (process.env.MUSTARD_DISABLE_OTEL_COLLECTOR === '1') return;
+
+    const pidFile = path.join(harnessDir, OTEL_PID_FILE);
+
+    // Idempotency: if a live PID is recorded, skip.
+    if (fs.existsSync(pidFile)) {
+      try {
+        const pid = parseInt(fs.readFileSync(pidFile, 'utf8').trim(), 10);
+        if (Number.isFinite(pid) && pid > 0) {
+          try {
+            process.kill(pid, 0); // throws if dead
+            return; // alive — nothing to do
+          } catch (_) { /* dead — fall through and respawn */ }
+        }
+      } catch (_) { /* unreadable pid — fall through */ }
+    }
+
+    const scriptPath = path.join(cwd, '.claude', 'scripts', 'otel-collector.js');
+    if (!fs.existsSync(scriptPath)) return; // consumer hasn't synced yet
+
+    const child = spawn('bun', [scriptPath], {
+      cwd,
+      detached: true,
+      stdio: 'ignore',
+      env: process.env,
+      windowsHide: true,
+    });
+
+    if (child && child.pid) {
+      try { fs.writeFileSync(pidFile, String(child.pid), 'utf8'); } catch (_) {}
+      try { child.unref(); } catch (_) {}
+    }
+  } catch (err) {
+    try { process.stderr.write('[harness-init] otel-collector spawn failed: ' + err.message + '\n'); } catch (_) {}
   }
 }
 

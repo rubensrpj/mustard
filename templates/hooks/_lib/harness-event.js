@@ -220,6 +220,23 @@ function emit(eventName, payload, context) {
 
     const file = getEventsFile(ctx.cwd || hookInput);
     fs.appendFileSync(file, JSON.stringify(line) + '\n', 'utf8');
+
+    // Dual-emit to SQLite EventStore (opt-in via MUSTARD_HARNESS_DUAL_EMIT=1).
+    // JSONL remains source of truth; SQLite is a projection for live queries.
+    // Fail-silent: any storage error is swallowed — the JSONL write already
+    // succeeded above, so the event is durable.
+    if (process.env.MUSTARD_HARNESS_DUAL_EMIT === '1') {
+      try {
+        const projectDir = resolveProjectDir(ctx.cwd || hookInput);
+        const claudeDir = path.join(projectDir, '.claude');
+        const { getStore } = require('./event-store.js');
+        const store = getStore(claudeDir);
+        if (store && typeof store.append === 'function') {
+          store.append(line);
+        }
+      } catch (_) { /* fail-silent — JSONL is the source of truth */ }
+    }
+
     return true;
   } catch (_) {
     return false;

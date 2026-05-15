@@ -24,7 +24,7 @@ At the start of **PLAN** and **EXECUTE** only, run `bun .claude/scripts/diff-con
 
 ### ANALYZE Phase
 
-Run `bun -e "const {emitMetric,EVENTS}=require('./templates/hooks/_lib/metrics-emit.js'); emitMetric(EVENTS.ANALYZE_DIFF_SKIP,{note:'pipeline-start'})"` (silent, telemetry only).
+Run telemetry tag (silent, optional): `bun .claude/scripts/emit-subtraction.js --type analyze-diff-skip --note pipeline-start --spec {spec-name}`. This records the disciplinary subtraction (ANALYZE never runs diff-context.js — diff is always empty pre-work). Fail-open: hook absent = no-op.
 
 **Auto-sync (silent):** Run `bun .claude/scripts/sync-detect.js`. If output shows any subproject with `hashChanged: true`, then run `bun .claude/scripts/sync-registry.js`. Otherwise skip sync-registry entirely.
 

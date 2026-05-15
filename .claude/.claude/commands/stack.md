@@ -38,7 +38,7 @@ None. All template files are dependency-free — they use only Node.js built-in 
 
 ```bash
 # Run hook tests
-node --test hooks/__tests__/hooks.test.js
+bun test hooks/__tests__/hooks.test.js
 
 # Run sync-detect (outputs JSON)
 node scripts/sync-detect.js

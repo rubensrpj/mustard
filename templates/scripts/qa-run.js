@@ -27,6 +27,40 @@ const { emit } = require('../hooks/_lib/harness-event.js');
 
 const AC_TIMEOUT_MS = 120_000; // 2 min per AC
 
+// Resolve a shell for execSync. Default cmd.exe on Windows mangles bash
+// heredocs and UTF-8 paths (mojibake stderr like "j� n�o é reconhecido")
+// — AC commands almost universally assume POSIX, so try Git Bash first.
+// Set MUSTARD_QA_SHELL=cmd|bash|<absolute-path> to override.
+let _shellCache = null;
+function resolveShell() {
+  if (_shellCache !== null) return _shellCache;
+  const override = process.env.MUSTARD_QA_SHELL;
+  if (override) {
+    _shellCache = override === 'cmd' ? true : override;
+    return _shellCache;
+  }
+  if (process.platform !== 'win32') {
+    _shellCache = true;
+    return _shellCache;
+  }
+  const candidates = [
+    'C:\\Program Files\\Git\\bin\\bash.exe',
+    'C:\\Program Files (x86)\\Git\\bin\\bash.exe',
+    process.env.ProgramFiles ? path.join(process.env.ProgramFiles, 'Git', 'bin', 'bash.exe') : null,
+  ].filter(Boolean);
+  for (const c of candidates) {
+    try { if (fs.existsSync(c)) { _shellCache = c; return _shellCache; } } catch (_) {}
+  }
+  try {
+    execSync('bash --version', { stdio: 'ignore', timeout: 2000, windowsHide: true });
+    _shellCache = 'bash';
+    return _shellCache;
+  } catch (_) {}
+  _shellCache = true;
+  process.stderr.write('[qa-run] WARN: bash not found, falling back to cmd.exe. POSIX-style AC commands will likely fail. Install Git Bash or set MUSTARD_QA_SHELL.\n');
+  return _shellCache;
+}
+
 // ── AC Parsing ─────────────────────────────────────────────────────────────────
 
 /**
@@ -111,7 +145,7 @@ function runACCommand(command, cwd) {
       timeout: AC_TIMEOUT_MS,
       stdio: 'pipe',
       encoding: 'utf8',
-      shell: true,
+      shell: resolveShell(),
       windowsHide: true,
     });
     const duration_ms = Date.now() - t0;

@@ -109,12 +109,29 @@ process.stdin.on('end', () => {
     // Capture salient fields from tool_input so the Mustard Dashboard (standalone) can show *what*
     // is being done, not just *which tool*. Sizes capped to keep events lean.
     const target = {};
-    if (toolInput.file_path) target.file = String(toolInput.file_path).slice(-80);
+    const rawFile = toolInput.file_path || toolInput.notebook_path;
+    if (rawFile) {
+      // Store the FULL path relative to cwd. The old `slice(-80)` truncated the
+      // head, which broke retroactive byte-measurement and path matching when
+      // the absolute path exceeded 80 chars (common in nested module trees).
+      let rel = String(rawFile);
+      try {
+        const abs = path.isAbsolute(rel) ? rel : path.resolve(cwd, rel);
+        const r = path.relative(cwd, abs);
+        if (r && !r.startsWith('..')) rel = r.replace(/\\/g, '/');
+      } catch (_) {}
+      target.file = rel;
+      // Byte size lets the dashboard measure main-context I/O straight from the
+      // event log — no re-stat pass needed. Fail-soft if the file is gone.
+      try {
+        const abs = path.isAbsolute(String(rawFile)) ? String(rawFile) : path.resolve(cwd, String(rawFile));
+        if (fs.existsSync(abs)) target.bytes = fs.statSync(abs).size;
+      } catch (_) {}
+    }
     if (toolInput.command) target.command = String(toolInput.command).slice(0, 120);
     if (toolInput.pattern) target.pattern = String(toolInput.pattern).slice(0, 80);
     if (toolInput.description) target.description = String(toolInput.description).slice(0, 100);
     if (toolInput.subagent_type) target.subagent = String(toolInput.subagent_type);
-    if (toolInput.notebook_path) target.file = String(toolInput.notebook_path).slice(-80);
     if (toolInput.url) target.url = String(toolInput.url).slice(0, 120);
 
     emitEvent('tool.use', {
