@@ -32,6 +32,11 @@ Check if the located spec is a wave plan: look for `.claude/spec/active/{specNam
 
 1. Read `.claude/.pipeline-states/{specName}.json` — expect `isWavePlan: true`, `totalWaves: N`, `currentWave: 1`, `completedWaves: []`.
 2. Read `wave-plan.md` and print its ENTIRE contents verbatim inside a fenced markdown block (```` ```markdown ... ``` ````). List each wave spec file path below the block (one line each).
+2b. **Wave size audit (advisory):** run `bun .claude/scripts/wave-size-check.js --spec-dir .claude/spec/active/{specName}`.
+   - If the result is `action: "audited"` and `oversizedCount > 0`, print an advisory block listing each oversized wave:
+     `⚠ Wave {N} ({folder}) — {fileCount} arquivos, {layerCount} camada(s) — considere dividir ({reason})`
+   - State explicitly that this is **advisory** — it does NOT block approval. It informs the **"Stop — re-plan with guidance"** option of the next `AskUserQuestion`: a wave that is too large can be split before EXECUTE.
+   - If `oversizedCount === 0` or the result is `action: "skip"`, print nothing (silent).
 3. `AskUserQuestion`:
    - **"Approve wave plan — start with wave 1"** → proceed to step 4 (update header + state for wave 1 dispatch)
    - **"Reject decomposition — use single spec"** → merge all wave specs back into a single spec at `.claude/spec/active/{specName}/spec.md` (concatenate `## Files`, `## Tasks`, `## Boundaries` from each wave), delete `wave-plan.md` and `wave-N-*/` subdirectories, set `scopeOverride: "user-rejected-waves"` and `isWavePlan: false` in pipeline state, proceed to step 4 on the single spec
