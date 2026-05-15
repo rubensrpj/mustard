@@ -125,8 +125,10 @@ function isPipelineStateFile(filePath) {
 }
 
 /**
- * Valid pipeline phases including Wave 7 COORDINATE (used by specs with children).
- * Kept here as documentation — the hook does not validate phases, only records them.
- * Valid values: ANALYZE, PLAN, EXECUTE, CLOSE, COORDINATE
+ * Canonical pipeline phases. Single source: templates/refs/canonical-phases.md.
+ * Kept here as documentation — the hook records phases descriptively and does
+ * not reject unknown values. REVIEW and QA are recognized phases; COORDINATE
+ * applies to roadmap/multi-spec parents.
+ * Valid values: ANALYZE, PLAN, EXECUTE, REVIEW, QA, CLOSE, COORDINATE
  */
-// const VALID_PHASES = ['ANALYZE', 'PLAN', 'EXECUTE', 'CLOSE', 'COORDINATE'];
+// const VALID_PHASES = ['ANALYZE', 'PLAN', 'EXECUTE', 'REVIEW', 'QA', 'CLOSE', 'COORDINATE'];

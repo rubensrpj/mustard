@@ -37,12 +37,13 @@ Scope is auto-detected: Light (1-2 layers, ≤5 files, known pattern) vs Full (3
 **Why:** Parent context grows with every direct tool call. When it bloats, hooks force retries and pipelines degrade. Tasks isolate work in fresh sub-contexts. Health metric: aim for ≥50% of code actions delegated when pipelines are active.
 
 ## Pipeline Phases
-ANALYZE → PLAN → EXECUTE → QA → CLOSE (Wave 10)
-- Light scope: skip PLAN (ANALYZE → EXECUTE → QA → CLOSE)
+Canonical vocabulary: `ANALYZE → PLAN → EXECUTE → REVIEW → QA → CLOSE` (+ `COORDINATE` for roadmaps).
+Single source: `refs/canonical-phases.md`.
+- Light scope: skip PLAN (ANALYZE → EXECUTE → REVIEW → QA → CLOSE)
   - ANALYZE: Grep/Glob direct preferred; ≤1 Task(Explore) with ≤10 tool uses allowed
   - Reclassify to Full if >5 files surface
   - All dispatched agents cap returns at ≤50 lines
-- Full scope: ANALYZE → PLAN → /approve → EXECUTE → QA → CLOSE
+- Full scope: ANALYZE → PLAN → /approve → EXECUTE → REVIEW → QA → CLOSE
 
 ### QA Phase (Wave 10)
 After EXECUTE completes, run QA before CLOSE:
