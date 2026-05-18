@@ -6,7 +6,7 @@
  * Covers:
  * 1. subagent-tracker injects findings from parallel agents in the SAME wave
  * 2. session-memory includes cross-session-timeline when sessions exist
- * 3. harness-views CLI: --view pipeline-state --spec returns JSON with phase
+ * 3. event-projections CLI: --view pipeline-state --spec returns JSON with phase
  * 4. Fallback: subagent-tracker doesn't crash when events.jsonl is missing
  *
  * Run with: bun test templates/hooks/__tests__/harness-wave3.test.js
@@ -88,8 +88,8 @@ function makeProjectDir(base) {
   fs.mkdirSync(path.join(dir, '.claude', '.harness', 'sessions'), { recursive: true });
   fs.mkdirSync(path.join(dir, '.claude', '.agent-state'), { recursive: true });
   fs.mkdirSync(path.join(dir, '.claude', 'scripts'), { recursive: true });
-  // Stub memory-write.js
-  fs.writeFileSync(path.join(dir, '.claude', 'scripts', 'memory-write.js'), "'use strict'; process.exit(0);\n");
+  // Stub memory.js
+  fs.writeFileSync(path.join(dir, '.claude', 'scripts', 'memory.js'), "'use strict'; process.exit(0);\n");
   return dir;
 }
 
@@ -325,9 +325,9 @@ describe('Wave 3 — session-memory: cross-session timeline', () => {
   });
 });
 
-// ── Test 3: harness-views CLI ─────────────────────────────────────────────────
+// ── Test 3: event-projections CLI ─────────────────────────────────────────────────
 
-describe('Wave 3 — harness-views CLI: --view pipeline-state', () => {
+describe('Wave 3 — event-projections CLI: --view pipeline-state', () => {
   let tmp;
   beforeEach(() => { tmp = makeProjectDir(os.tmpdir()); });
   afterEach(() => { try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (_) {} });
@@ -342,7 +342,7 @@ describe('Wave 3 — harness-views CLI: --view pipeline-state', () => {
       makeEvent({ event: 'pipeline.phase', spec: 'add-login', payload: { from: 'PLAN', to: 'EXECUTE' } }),
     ].forEach(e => fs.appendFileSync(eventsFile, JSON.stringify(e) + '\n'));
 
-    const result = await runScript('harness-views.js',
+    const result = await runScript('event-projections.js',
       ['--view', 'pipeline-state', '--spec', 'add-login', '--cwd', tmp],
       { projectDir: tmp }
     );
@@ -355,7 +355,7 @@ describe('Wave 3 — harness-views CLI: --view pipeline-state', () => {
 
   it('returns JSON with null phase when no events for spec', async () => {
     // events.jsonl doesn't even exist
-    const result = await runScript('harness-views.js',
+    const result = await runScript('event-projections.js',
       ['--view', 'pipeline-state', '--spec', 'nonexistent', '--cwd', tmp],
       { projectDir: tmp }
     );
@@ -370,7 +370,7 @@ describe('Wave 3 — harness-views CLI: --view pipeline-state', () => {
     fs.appendFileSync(eventsFile, JSON.stringify(makeEvent({ wave: 2, event: 'agent.start', actor: { kind: 'agent', id: 'ag-1', type: 'Explore' } })) + '\n');
     fs.appendFileSync(eventsFile, JSON.stringify(makeEvent({ wave: 2, event: 'tool.use', payload: { tool: 'Grep' } })) + '\n');
 
-    const result = await runScript('harness-views.js',
+    const result = await runScript('event-projections.js',
       ['--view', 'agent-visibility', '--wave', '2', '--cwd', tmp],
       { projectDir: tmp }
     );
@@ -383,7 +383,7 @@ describe('Wave 3 — harness-views CLI: --view pipeline-state', () => {
   });
 
   it('prints usage and exits 0 when --view is not provided', async () => {
-    const result = await runScript('harness-views.js', ['--cwd', tmp], { projectDir: tmp });
+    const result = await runScript('event-projections.js', ['--cwd', tmp], { projectDir: tmp });
     assert.equal(result.code, 0);
     // stderr has usage message
     assert.ok(result.stderr.includes('Usage') || result.code === 0);

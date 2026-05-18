@@ -61,7 +61,8 @@ function runScript(scriptFile, inputObj, opts = {}) {
     };
     if (projectDir) env.CLAUDE_PROJECT_DIR = projectDir;
 
-    const child = spawn(process.execPath, [path.join(SCRIPTS_DIR, scriptFile)], {
+    const extraArgs = opts.args || [];
+    const child = spawn(process.execPath, [path.join(SCRIPTS_DIR, scriptFile), ...extraArgs], {
       cwd: projectDir || process.cwd(),
       env,
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -99,8 +100,8 @@ function makeProjectDir(base) {
   fs.mkdirSync(path.join(dir, '.claude', '.harness'), { recursive: true });
   fs.mkdirSync(path.join(dir, '.claude', '.agent-state'), { recursive: true });
   fs.mkdirSync(path.join(dir, '.claude', 'scripts'), { recursive: true });
-  // Copy memory-write stub so subagent-tracker doesn't error
-  const memWriteDst = path.join(dir, '.claude', 'scripts', 'memory-write.js');
+  // Copy memory stub so subagent-tracker doesn't error
+  const memWriteDst = path.join(dir, '.claude', 'scripts', 'memory.js');
   fs.writeFileSync(memWriteDst, "'use strict'; process.exit(0);\n");
   return dir;
 }
@@ -277,8 +278,8 @@ describe('session-knowledge — finding emission', () => {
   let tmp;
   beforeEach(() => {
     tmp = makeProjectDir(os.tmpdir());
-    // Create a minimal knowledge-update stub so execFileSync doesn't fail
-    const knowledgeScript = path.join(tmp, '.claude', 'scripts', 'knowledge-update.js');
+    // Create a minimal memory stub so execFileSync doesn't fail
+    const knowledgeScript = path.join(tmp, '.claude', 'scripts', 'memory.js');
     fs.writeFileSync(knowledgeScript, "'use strict'; process.exit(0);\n");
     // Create pipeline states dir (session-knowledge reads from it)
     fs.mkdirSync(path.join(tmp, '.claude', '.pipeline-states'), { recursive: true });
@@ -331,13 +332,13 @@ describe('memory-persist — decision/lesson emission', () => {
   afterEach(() => { try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (_) {} });
 
   it('emits decision event before persisting to decisions.json', async () => {
-    const result = await runScript('memory-persist.js', {
+    const result = await runScript('memory.js', {
       type: 'decision',
       content: 'Use Drizzle ORM for all database operations',
       source: 'feature-add-login',
       context: 'Evaluated Prisma vs Drizzle; chose Drizzle for type safety',
       cwd: tmp,
-    }, { projectDir: tmp });
+    }, { projectDir: tmp, args: ['decision'] });
 
     assert.equal(result.code, 0, `script exited non-zero: ${result.stderr}`);
 
@@ -356,12 +357,12 @@ describe('memory-persist — decision/lesson emission', () => {
   });
 
   it('emits lesson event before persisting to lessons.json', async () => {
-    const result = await runScript('memory-persist.js', {
+    const result = await runScript('memory.js', {
       type: 'lesson',
       content: 'Always validate env vars at startup to catch misconfigs early',
       source: 'bugfix-env-crash',
       cwd: tmp,
-    }, { projectDir: tmp });
+    }, { projectDir: tmp, args: ['decision'] });
 
     assert.equal(result.code, 0, `script exited non-zero: ${result.stderr}`);
 
@@ -372,12 +373,12 @@ describe('memory-persist — decision/lesson emission', () => {
   });
 
   it('fail-open: exits 0 even with harness disabled', async () => {
-    const result = await runScript('memory-persist.js', {
+    const result = await runScript('memory.js', {
       type: 'decision',
       content: 'Some decision',
       source: 'test',
       cwd: tmp,
-    }, { projectDir: tmp });
+    }, { projectDir: tmp, args: ['decision'] });
 
     // memory-persist doesn't read MUSTARD_DISABLED_HOOKS in the runner — but
     // we verify it never crashes regardless of the harness state.

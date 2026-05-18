@@ -74,7 +74,7 @@ See `.claude/pipeline-config.md` Escalation Statuses for concern classification 
    - Review patterns discovered during this pipeline
    - For each significant pattern/convention/entity discovered:
      ```bash
-     echo '{"type":"pattern","name":"...","description":"...","source":"{spec-name}"}' | bun .claude/scripts/knowledge-update.js
+     echo '{"type":"pattern","name":"...","description":"...","source":"{spec-name}"}' | bun .claude/scripts/memory.js knowledge
      ```
    - Focus on: naming conventions used, architectural decisions, integration patterns
    - Skip trivial or already-known patterns
@@ -83,7 +83,7 @@ See `.claude/pipeline-config.md` Escalation Statuses for concern classification 
    - Review what went well or poorly during this pipeline
    - For each lesson worth remembering across sessions:
      ```bash
-     echo '{"type":"lesson","content":"<lesson description>","source":"<spec-name>","context":"learned during EXECUTE/CLOSE"}' | bun .claude/scripts/memory-persist.js
+     echo '{"type":"lesson","content":"<lesson description>","source":"<spec-name>","context":"learned during EXECUTE/CLOSE"}' | bun .claude/scripts/memory.js decision
      ```
    - Focus on: integration gotchas, naming issues discovered, performance pitfalls
    - Skip trivial or already-captured lessons (max 3 entries)

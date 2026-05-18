@@ -218,7 +218,7 @@ describe('Wave 4 — metrics-tracker: no sidecar writes', () => {
 // ── Test 4: buildPipelineState derives metrics from log ───────────────────────
 
 describe('Wave 4 — buildPipelineState: metrics from log', () => {
-  const harnessViews = require(path.join(SCRIPTS_DIR, 'harness-views.js'));
+  const harnessViews = require(path.join(SCRIPTS_DIR, 'event-projections.js'));
 
   it('aggregates tool.use counts and agent count from events', () => {
     const now = new Date().toISOString();

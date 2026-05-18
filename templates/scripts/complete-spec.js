@@ -181,13 +181,13 @@ function markFollowup(cwd, specName) {
 }
 
 // Wave 4 moved metrics from `state.metrics` sidecar to events.jsonl. We derive
-// via harness-views.buildPipelineState first, then fall back to legacy
+// via event-projections.buildPipelineState first, then fall back to legacy
 // state.metrics for pipelines that ran before Wave 4 and still have the field.
 function deriveMetricsFromEvents(cwd, specName) {
   try {
     const eventsPath = path.join(cwd, '.claude', '.harness', 'events.jsonl');
     if (!fs.existsSync(eventsPath)) return null;
-    const views = require('./harness-views.js');
+    const views = require('./event-projections.js');
     const events = views.readEventsSync
       ? views.readEventsSync(eventsPath)
       : fs.readFileSync(eventsPath, 'utf8').trim().split('\n').filter(Boolean).map(l => { try { return JSON.parse(l); } catch (_) { return null; } }).filter(Boolean);

@@ -52,7 +52,7 @@
       "WebFetch",
       "WebSearch",
       "Bash",
-      "Bash(bun .claude/scripts/harness-views.js:*)",
+      "Bash(bun .claude/scripts/event-projections.js:*)",
       "Bash(bun .claude/scripts/qa-run.js:*)"
     ],
     "deny": [

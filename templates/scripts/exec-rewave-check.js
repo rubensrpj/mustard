@@ -20,38 +20,14 @@ const fs = require("fs");
 const path = require("path");
 const { spawnSync } = require("child_process");
 
-// ── role detection (mirrors wave-dependency.js:101-108) ──────────────────────
-function detectRole(filePath) {
-  const lower = filePath.toLowerCase();
-  if (/(schema|migration|entity|model|drizzle|prisma)/.test(lower)) return "schema";
-  if (/(api|controller|route|endpoint|handler|service)/.test(lower)) return "api";
-  if (/(ui|component|view|page|screen|widget)/.test(lower)) return "ui";
-  if (/(test|spec|__tests__)/.test(lower)) return "test";
-  return "lib";
-}
+const { detectRole, parseFilesSection } = require("./_lib/wave-lib");
 
 function emit(obj) {
   process.stdout.write(JSON.stringify(obj) + "\n");
 }
 
 // ── parse ## Files section from spec text ────────────────────────────────────
-function parseFiles(specText) {
-  const lines = specText.split("\n");
-  const start = lines.findIndex((l) => /^##\s+Files/.test(l));
-  if (start === -1) return null;
-
-  const paths = [];
-  for (let i = start + 1; i < lines.length; i++) {
-    const line = lines[i].trim();
-    if (/^##\s/.test(line)) break; // next section
-    // match "- path" or "- `path`" bullets
-    const m = line.match(/^-\s+`?([^\s`]+)`?/);
-    if (m && m[1] && !m[1].startsWith("#")) {
-      paths.push(m[1]);
-    }
-  }
-  return paths;
-}
+const parseFiles = parseFilesSection;
 
 // ── extract optional newEntityCount from spec ─────────────────────────────────
 function parseNewEntityCount(specText) {

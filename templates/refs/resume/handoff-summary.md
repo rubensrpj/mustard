@@ -48,7 +48,7 @@ Started:  {timestamp} | Elapsed: {duration}
 ## Harness View Enrichment (Wave 3 — fail-open)
 
 ```bash
-bun .claude/scripts/harness-views.js --view pipeline-state --spec {spec-name}
+bun .claude/scripts/event-projections.js --view pipeline-state --spec {spec-name}
 ```
 
 If the command succeeds, merge its `phase`, `decisions`, and `lessons` into the Handoff Summary. If it fails or is absent, proceed with `.pipeline-states/{spec-name}.json` alone — never block on this.

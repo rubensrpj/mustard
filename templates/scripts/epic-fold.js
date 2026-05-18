@@ -348,10 +348,10 @@ function writeKnowledgeEntry(entry, cwd) {
   // After delegating to knowledge-update.js, patch extra epic-specific fields
   // directly since knowledge-update.js only handles the standard schema.
   try {
-    const scriptPath = path.join(__dirname, 'knowledge-update.js');
+    const scriptPath = path.join(__dirname, 'memory.js');
     if (fs.existsSync(scriptPath)) {
       const input = JSON.stringify(entry);
-      execFileSync(process.execPath, [scriptPath], {
+      execFileSync(process.execPath, [scriptPath, 'knowledge'], {
         input,
         stdio: ['pipe', 'pipe', 'pipe'],
         timeout: 5000,

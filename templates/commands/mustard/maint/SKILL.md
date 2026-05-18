@@ -13,6 +13,7 @@
 | `deps` | Install dependencies for all projects |
 | `validate` | Run build and type-check validations |
 | `sync` | Update entity-registry.json from code |
+| `audit` | Run diagnostics: orphan-skill audit + OTEL pipeline health |
 
 ---
 
@@ -66,3 +67,20 @@ Scans the project and updates `.claude/entity-registry.json`.
 - After creating new entity
 - After importing existing code
 - To sync after manual changes
+
+---
+
+## audit
+
+Runs read-only diagnostics. Never blocks — reports only.
+
+### Flow
+
+1. `bun .claude/scripts/skills.js orphans` — lists skills not invoked in N days (env `MUSTARD_SKILL_ORPHAN_DAYS`, default 30)
+2. `bun .claude/scripts/diagnose-otel.js` — end-to-end health check of the OTEL telemetry pipeline (collector process, `/healthz`, data flow)
+3. Report both results to the user
+
+### When to Use
+
+- Periodic project hygiene
+- After telemetry or metrics output looks wrong

@@ -335,7 +335,7 @@ bun .claude/scripts/sync-detect.js
 ## Step 6 — Validate Skills (--factual mode)
 
 ```bash
-bun .claude/scripts/skill-validate.js --factual
+bun .claude/scripts/skills.js validate --factual
 ```
 
 Checks per skill: header, cluster backing (fileCount ≥ 3), sample existence, no fenced code in body, reference paths exist.

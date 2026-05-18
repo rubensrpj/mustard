@@ -98,7 +98,7 @@ function extractFromSpec(specPath) {
 }
 
 function persist(entry, projectDir) {
-  const persistScript = path.join(projectDir, '.claude', 'scripts', 'memory-persist.js');
+  const persistScript = path.join(projectDir, '.claude', 'scripts', 'memory.js');
   if (!fs.existsSync(persistScript)) return false;
   try {
     const input = JSON.stringify({
@@ -108,7 +108,7 @@ function persist(entry, projectDir) {
       context: entry.context,
       cwd: projectDir,
     });
-    const r = spawnSync(process.execPath, [persistScript], {
+    const r = spawnSync(process.execPath, [persistScript, 'decision'], {
       input,
       encoding: 'utf8',
       timeout: 5000,

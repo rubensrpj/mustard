@@ -839,12 +839,12 @@ module.exports = {
 
 // ── CLI helper (Wave 3 / Wave 6) ─────────────────────────────────────────────
 // Usage:
-//   node harness-views.js --view agent-visibility [--wave N] [--compact] [--query text]
-//   node harness-views.js --view pipeline-state --spec <spec> [--compact] [--query text]
-//   node harness-views.js --view session-summary [--compact] [--query text]
-//   node harness-views.js --view cross-session-timeline [--limit N] [--compact] [--query text]
-//   node harness-views.js --view epic-summary --spec <epic> [--compact]
-//   node harness-views.js --view slope-report [--lookback 5]
+//   node event-projections.js --view agent-visibility [--wave N] [--compact] [--query text]
+//   node event-projections.js --view pipeline-state --spec <spec> [--compact] [--query text]
+//   node event-projections.js --view session-summary [--compact] [--query text]
+//   node event-projections.js --view cross-session-timeline [--limit N] [--compact] [--query text]
+//   node event-projections.js --view epic-summary --spec <epic> [--compact]
+//   node event-projections.js --view slope-report [--lookback 5]
 //
 // Reads events.jsonl from .claude/.harness/events.jsonl in cwd (or --cwd).
 // Prints JSON to stdout. Exit 0 always (fail-open).
@@ -872,7 +872,7 @@ if (require.main === module) {
       const sessionsDir = path.join(cwdArg, '.claude', '.harness', 'sessions');
 
       if (!view) {
-        process.stderr.write('Usage: node harness-views.js --view <name> [options]\n');
+        process.stderr.write('Usage: node event-projections.js --view <name> [options]\n');
         process.stderr.write('Views: agent-visibility, pipeline-state, session-summary, cross-session-timeline, spec-tree, epic-summary, slope-report, pr-metrics\n');
         process.stderr.write('Flags: --compact  --query <text>  --cwd <path>  --spec <name>  --days <n>\n');
         process.exit(0);

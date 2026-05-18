@@ -74,7 +74,7 @@ mustard/
     ├── refs/                # Progressive-disclosure refs (loaded on demand)
     ├── recipes/             # Structured recipes (90% skeletons by entity+operation)
     ├── context/qa/          # QA agent core context (only static .core.md kept)
-    ├── scripts/             # 25 utility scripts (sync-*, harness-views, qa-run, etc.)
+    ├── scripts/             # 28 utility scripts (sync-*, event-projections, qa-run, etc.)
     └── hooks/               # 31 JavaScript hooks (fail-open, no npm deps)
         └── _lib/            # Shared runtime: hook-env.js, harness-event.js, metrics-emit.js
 ```

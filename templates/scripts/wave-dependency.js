@@ -33,6 +33,7 @@
 
 const fs = require("fs");
 const path = require("path");
+const { detectRole } = require("./_lib/wave-lib");
 
 const RESOLVABLE_EXTENSIONS = [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".vue", ".svelte", ".py", ".go", ".cs"];
 const INDEX_BASENAMES = ["index.ts", "index.tsx", "index.js", "index.jsx", "index.mjs", "__init__.py"];
@@ -96,15 +97,6 @@ function resolveImport(importPath, currentFileAbs, projectRoot, candidateSet) {
   }
 
   return null;
-}
-
-function detectRole(filePath) {
-  const lower = filePath.toLowerCase();
-  if (/(schema|migration|entity|model|drizzle|prisma)/.test(lower)) return "schema";
-  if (/(api|controller|route|endpoint|handler|service)/.test(lower)) return "api";
-  if (/(ui|component|view|page|screen|widget)/.test(lower)) return "ui";
-  if (/(test|spec|__tests__)/.test(lower)) return "test";
-  return "lib";
 }
 
 function buildGraph(files, projectRoot) {

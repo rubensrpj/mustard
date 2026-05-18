@@ -6,7 +6,7 @@
 
 `qa-run.js` executes each AC command via `execSync` with `shell: true`. On Windows, that shell is `cmd.exe`, which does NOT understand bash syntax (`for`, `test $? -eq 0`, `[ $n -gt 200 ]`, single-quoted heredocs). To keep specs portable, write AC commands in one of these forms:
 
-- **Single command, exit code is the verdict:** `bun templates/scripts/skill-validate.js --json` — execSync throws on non-zero, passes on 0. No wrapper needed.
+- **Single command, exit code is the verdict:** `bun templates/scripts/skills.js validate --json` — execSync throws on non-zero, passes on 0. No wrapper needed.
 - **Multi-step assertion:** wrap the whole logic in `node -e "..."`:
   ```
   node -e "const fs=require('fs');for(const f of ['a.md','b.md']){if(fs.readFileSync(f,'utf8').split('\n').length>200)process.exit(1)}"

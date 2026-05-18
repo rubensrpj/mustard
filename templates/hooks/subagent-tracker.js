@@ -438,7 +438,7 @@ function handlePostToolUse(data, stateDir) {
 // ── Harness views (Wave 3 — reads derive from event log) ─────────────────────
 let harnessViews = null;
 try {
-  harnessViews = require('../scripts/harness-views.js');
+  harnessViews = require('../scripts/event-projections.js');
 } catch (_) {} // fail-open: views optional
 
 // Wave 5: adaptive context budget per agent type (Melhoria 1)
@@ -509,7 +509,7 @@ function handleStart(data, stateDir) {
           if (visText.length > budget) visText = visText.slice(0, budget - 3) + '...';
 
           // Wave 6: append escape-hatch hint only when budget allows it
-          const hintLine = '\n[Memory] Query more: bun .claude/scripts/harness-views.js --view <name> [--query text]';
+          const hintLine = '\n[Memory] Query more: bun .claude/scripts/event-projections.js --view <name> [--query text]';
           if (visText.length + hintLine.length <= budget) {
             visText += hintLine;
           }

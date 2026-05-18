@@ -33,7 +33,7 @@ process.exit(${code});
 `;
   fs.writeFileSync(path.join(scriptsDir, 'sync-registry.js'), stubExit(opts.registryExit ?? 0), 'utf-8');
   fs.writeFileSync(path.join(scriptsDir, 'sync-detect.js'), stubExit(opts.detectExit ?? 0), 'utf-8');
-  fs.writeFileSync(path.join(scriptsDir, 'skill-validate.js'), stubExit(opts.validateExit ?? 0), 'utf-8');
+  fs.writeFileSync(path.join(scriptsDir, 'skills.js'), stubExit(opts.validateExit ?? 0), 'utf-8');
 
   // Security-scan stub: prints structured JSON
   const secStub = `#!/usr/bin/env node

@@ -23,7 +23,7 @@ const { spawn } = require('node:child_process');
 const HOOKS_DIR = path.resolve(__dirname, '..');
 const SCRIPTS_DIR = path.resolve(__dirname, '..', '..', 'scripts');
 
-const views = require('../../scripts/harness-views.js');
+const views = require('../../scripts/event-projections.js');
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 

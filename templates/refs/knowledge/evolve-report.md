@@ -95,6 +95,6 @@ Import knowledge entries from a shared export file.
 
 1. Read the specified import file (JSON format)
 2. For each entry in the import:
-   - Pipe to `bun .claude/scripts/knowledge-update.js` with the entry data
+   - Pipe to `bun .claude/scripts/memory.js knowledge` with the entry data
    - Deduplication is handled automatically by the script
 3. Report: "Imported: {n} new, {m} updated (duplicates merged with confidence boost)"

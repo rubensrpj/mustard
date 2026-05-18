@@ -27,7 +27,7 @@ const CLAUDE_DIR = path.join(ROOT, '.claude');
 const SCRIPTS_DIR = path.join(CLAUDE_DIR, 'scripts');
 const SYNC_REGISTRY = path.join(SCRIPTS_DIR, 'sync-registry.js');
 const SYNC_DETECT = path.join(SCRIPTS_DIR, 'sync-detect.js');
-const SKILL_VALIDATE = path.join(SCRIPTS_DIR, 'skill-validate.js');
+const SKILL_VALIDATE = path.join(SCRIPTS_DIR, 'skills.js');
 const SECURITY_SCAN = path.join(SCRIPTS_DIR, 'security-scan.js');
 const DISPATCH_STATE = path.join(CLAUDE_DIR, '.scan-dispatch.json');
 
@@ -139,7 +139,7 @@ async function validateSkills() {
   }
 
   result.steps.skills.ran = true;
-  const r = await runScript(SKILL_VALIDATE, ['--factual']);
+  const r = await runScript(SKILL_VALIDATE, ['validate', '--factual']);
   result.steps.skills.durationMs = r.durationMs;
 
   if (mode === 'warn') {

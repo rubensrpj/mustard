@@ -16,7 +16,7 @@
 
 **2. Dispatch agents.** For each item in `dispatch[]`, fire one `Task(general-purpose)` in a single message (parallel calls). Pass `agentPrompt` as the literal prompt — it already contains the EVIDENCE RULE, the per-subproject context, and all step instructions inline. Never `run_in_background: true`. If `dispatch[]` is empty, skip to step 3.
 
-**3. Post-dispatch.** Run `bun .claude/scripts/scan/finalize.js`. This refreshes the entity registry (`sync-registry.js --force`), updates the detect cache (`sync-detect.js`), validates generated skills (`skill-validate.js --factual`), runs the security scan, **and verifies each dispatched subproject honored the HARD CONTRACT** (wrote either `SKILL.md` files or `_no-patterns.md` marker). Surface any `errors[]` or `warnings[]` from the JSON output.
+**3. Post-dispatch.** Run `bun .claude/scripts/scan/finalize.js`. This refreshes the entity registry (`sync-registry.js --force`), updates the detect cache (`sync-detect.js`), validates generated skills (`skills.js validate --factual`), runs the security scan, **and verifies each dispatched subproject honored the HARD CONTRACT** (wrote either `SKILL.md` files or `_no-patterns.md` marker). Surface any `errors[]` or `warnings[]` from the JSON output.
 
 **3.1. Re-dispatch on contract violation.** If `steps.dispatchVerify.ok === false`, one or more subprojects returned with `skills/` empty. For each entry in `steps.dispatchVerify.subprojects` whose `status === "empty"` or `"missing-dir"`, dispatch ONE follow-up `Task(general-purpose)` with this prompt (single message, parallel if multiple):
 

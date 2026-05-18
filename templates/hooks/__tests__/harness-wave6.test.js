@@ -8,7 +8,7 @@
  * 2. CLI --query filters correctly (only matching items returned)
  * 3. CLI --view <invalid> returns { error: ... } and exits 0
  * 4. subagent-tracker includes hint when budget has room; omits when tight
- * 5. settings.json contains harness-views.js Bash permission
+ * 5. settings.json contains event-projections.js Bash permission
  *
  * Run with: bun test templates/hooks/__tests__/harness-wave6.test.js
  */
@@ -123,7 +123,7 @@ describe('Wave 6 — --compact: all views return valid JSON', () => {
       payload: { kind: 'pattern', content: 'JWT is used for session tokens', confidence: 0.9, refs: [] },
     }));
 
-    const result = await runScript('harness-views.js',
+    const result = await runScript('event-projections.js',
       ['--view', 'agent-visibility', '--compact', '--cwd', tmp],
       { projectDir: tmp }
     );
@@ -144,7 +144,7 @@ describe('Wave 6 — --compact: all views return valid JSON', () => {
       payload: { from: null, to: 'ANALYZE' },
     }));
 
-    const result = await runScript('harness-views.js',
+    const result = await runScript('event-projections.js',
       ['--view', 'pipeline-state', '--spec', 'auth-login', '--compact', '--cwd', tmp],
       { projectDir: tmp }
     );
@@ -167,7 +167,7 @@ describe('Wave 6 — --compact: all views return valid JSON', () => {
       payload: { title: 'Use JWT for tokens', rationale: 'simpler than OAuth' },
     }));
 
-    const result = await runScript('harness-views.js',
+    const result = await runScript('event-projections.js',
       ['--view', 'session-summary', '--compact', '--cwd', tmp],
       { projectDir: tmp }
     );
@@ -193,7 +193,7 @@ describe('Wave 6 — --compact: all views return valid JSON', () => {
     fs.writeFileSync(path.join(sessionsDir, 's-old.jsonl'),
       sessionEvents.map(e => JSON.stringify(e)).join('\n') + '\n');
 
-    const result = await runScript('harness-views.js',
+    const result = await runScript('event-projections.js',
       ['--view', 'cross-session-timeline', '--compact', '--limit', '5', '--cwd', tmp],
       { projectDir: tmp }
     );
@@ -230,7 +230,7 @@ describe('Wave 6 — --query: filters by text content', () => {
       payload: { kind: 'pattern', content: 'Auth module validates JWT expiration', confidence: 0.8, refs: [] },
     }));
 
-    const result = await runScript('harness-views.js',
+    const result = await runScript('event-projections.js',
       ['--view', 'session-summary', '--query', 'JWT', '--compact', '--cwd', tmp],
       { projectDir: tmp }
     );
@@ -256,7 +256,7 @@ describe('Wave 6 — --query: filters by text content', () => {
       payload: { kind: 'pattern', content: 'Something about Redis', confidence: 0.9, refs: [] },
     }));
 
-    const result = await runScript('harness-views.js',
+    const result = await runScript('event-projections.js',
       ['--view', 'session-summary', '--query', 'JWT', '--compact', '--cwd', tmp],
       { projectDir: tmp }
     );
@@ -272,7 +272,7 @@ describe('Wave 6 — --query: filters by text content', () => {
       payload: { kind: 'pattern', content: 'AUTH MODULE USES JWT TOKENS', confidence: 0.9, refs: [] },
     }));
 
-    const result = await runScript('harness-views.js',
+    const result = await runScript('event-projections.js',
       ['--view', 'session-summary', '--query', 'jwt', '--compact', '--cwd', tmp],
       { projectDir: tmp }
     );
@@ -291,7 +291,7 @@ describe('Wave 6 — invalid --view returns {error} and exit 0', () => {
   afterEach(() => { try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (_) {} });
 
   it('--view unknown-view returns { error: ... } and exits 0', async () => {
-    const result = await runScript('harness-views.js',
+    const result = await runScript('event-projections.js',
       ['--view', 'nonexistent-view', '--cwd', tmp],
       { projectDir: tmp }
     );
@@ -304,7 +304,7 @@ describe('Wave 6 — invalid --view returns {error} and exit 0', () => {
   });
 
   it('exits 0 and outputs usage to stderr when --view is missing', async () => {
-    const result = await runScript('harness-views.js',
+    const result = await runScript('event-projections.js',
       ['--cwd', tmp],
       { projectDir: tmp }
     );
@@ -343,7 +343,7 @@ describe('Wave 6 — subagent-tracker: escape-hatch hint', () => {
     // When there's a finding, the hint should appear
     if (ctx.includes('[Prior Findings]')) {
       assert.ok(
-        ctx.includes('harness-views.js'),
+        ctx.includes('event-projections.js'),
         `hint must appear when findings present and budget allows. Got: ${ctx}`
       );
     }
@@ -391,15 +391,15 @@ describe('Wave 6 — subagent-tracker: escape-hatch hint', () => {
     const ctx = result.parsed && result.parsed.hookSpecificOutput && result.parsed.hookSpecificOutput.additionalContext;
     assert.ok(typeof ctx === 'string', 'additionalContext must be string');
     // No findings → no hint
-    assert.ok(!ctx.includes('harness-views.js'),
+    assert.ok(!ctx.includes('event-projections.js'),
       'hint must not appear when there are no findings');
   });
 });
 
-// ── Test 5: settings.json contains harness-views.js Bash permission ───────────
+// ── Test 5: settings.json contains event-projections.js Bash permission ───────────
 
-describe('Wave 6 — settings.json: harness-views.js Bash permission present', () => {
-  it('settings.json allow list contains Bash(bun .claude/scripts/harness-views.js:*)', () => {
+describe('Wave 6 — settings.json: event-projections.js Bash permission present', () => {
+  it('settings.json allow list contains Bash(bun .claude/scripts/event-projections.js:*)', () => {
     const settingsPath = path.join(TEMPLATES_DIR, 'settings.json');
     assert.ok(fs.existsSync(settingsPath), `settings.json must exist at ${settingsPath}`);
 
@@ -415,9 +415,9 @@ describe('Wave 6 — settings.json: harness-views.js Bash permission present', (
     assert.ok(Array.isArray(allow), 'permissions.allow must be an array');
 
     const hasPermission = allow.some(entry =>
-      typeof entry === 'string' && entry.includes('harness-views.js')
+      typeof entry === 'string' && entry.includes('event-projections.js')
     );
     assert.ok(hasPermission,
-      `permissions.allow must contain a harness-views.js entry. Got: ${JSON.stringify(allow)}`);
+      `permissions.allow must contain a event-projections.js entry. Got: ${JSON.stringify(allow)}`);
   });
 });

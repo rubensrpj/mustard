@@ -411,11 +411,11 @@ function getGitCached(cwd) {
 
 const AGENT_STALE_MS = 15 * 60 * 1000; // 15 minutes — ghost guard
 
-// ── Wave 3: harness-views (fail-open) ────────────────────────────────────────
+// ── Wave 3: event-projections (fail-open) ────────────────────────────────────────
 let harnessViews = null;
 try {
-  harnessViews = require('./harness-views.js');
-} catch (_) {} // fail-open: harness-views optional
+  harnessViews = require('./event-projections.js');
+} catch (_) {} // fail-open: event-projections optional
 
 /**
  * Derive active agents from the harness event log.

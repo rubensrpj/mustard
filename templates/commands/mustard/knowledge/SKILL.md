@@ -129,7 +129,7 @@ Filters knowledge entries matching the search term across `name`, `description`,
 
 ## add
 
-Interactively adds a knowledge entry by prompting the user, then calls `knowledge-update.js`.
+Interactively adds a knowledge entry by prompting the user, then calls `memory.js knowledge`.
 
 ### Flow
 
@@ -140,7 +140,7 @@ Interactively adds a knowledge entry by prompting the user, then calls `knowledg
 5. Build JSON payload and pipe to script:
    ```bash
    echo '{"type":"...","name":"...","description":"...","source":"manual","tags":[...]}' \
-     | bun .claude/scripts/knowledge-update.js
+     | bun .claude/scripts/memory.js knowledge
    ```
 6. Confirm: "Knowledge entry '{name}' saved."
 
@@ -231,7 +231,7 @@ Writes `.claude/knowledge-export-{YYYY-MM-DD}.json` from the full knowledge base
 
 ## import <file>
 
-Reads export JSON, pipes each entry to `knowledge-update.js` (deduplication auto-handled). Reports new/updated counts.
+Reads export JSON, pipes each entry to `memory.js knowledge` (deduplication auto-handled). Reports new/updated counts.
 
 → See `../../../refs/knowledge/evolve-report.md`
 
@@ -240,7 +240,7 @@ Reads export JSON, pipes each entry to `knowledge-update.js` (deduplication auto
 ## Rules
 
 - knowledge.json is persistent — never deleted by session-cleanup
-- `add` and pipeline capture both call the same `knowledge-update.js` script
+- `add` and pipeline capture both call the same `memory.js knowledge` subcommand
 - `search` is case-insensitive
 - Always show entry count in list/search output
 

@@ -25,7 +25,7 @@ const { spawn } = require('node:child_process');
 
 const SCRIPTS_DIR = path.resolve(__dirname, '..', '..', 'scripts');
 const SPEC_LINK = path.join(SCRIPTS_DIR, 'spec-link.js');
-const HARNESS_VIEWS = path.join(SCRIPTS_DIR, 'harness-views.js');
+const HARNESS_VIEWS = path.join(SCRIPTS_DIR, 'event-projections.js');
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 

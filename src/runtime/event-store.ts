@@ -535,7 +535,7 @@ export class EventStore {
 
       // Specs: any event carrying a `spec` field anchors the spec. Status/phase
       // derive from completion + pipeline.phase events. This mirrors
-      // buildPipelineState (templates/scripts/harness-views.js) which is the
+      // buildPipelineState (templates/scripts/event-projections.js) which is the
       // ground truth: the dashboard expects metrics for every spec the harness
       // mentions, not only those with explicit spec.start/spec.complete.
       interface SpecAcc {

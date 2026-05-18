@@ -60,7 +60,7 @@ async function loadEventStore() {
 }
 
 function loadHarnessViews() {
-  return require(path.join(REPO_ROOT, 'templates', 'scripts', 'harness-views.js'));
+  return require(path.join(REPO_ROOT, 'templates', 'scripts', 'event-projections.js'));
 }
 
 function readEventsJsonl() {

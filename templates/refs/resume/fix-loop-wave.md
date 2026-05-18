@@ -6,7 +6,7 @@
 
 When REVIEW returns REJECTED (any CRITICAL):
 
-1. **Try harness view first (Wave 3):** `bun .claude/scripts/harness-views.js --view pipeline-state --spec {spec-name}` — if it returns `decisions` or `lessons`, prefer those. Otherwise fall back to reading `.claude/.agent-memory/_index.json`, finding the last entry where `agent_type == {review_target_agent_type}` and `pipeline == {spec-name}`. If absent (shouldn't happen but be defensive): fall back to first-dispatch template.
+1. **Try harness view first (Wave 3):** `bun .claude/scripts/event-projections.js --view pipeline-state --spec {spec-name}` — if it returns `decisions` or `lessons`, prefer those. Otherwise fall back to reading `.claude/.agent-memory/_index.json`, finding the last entry where `agent_type == {review_target_agent_type}` and `pipeline == {spec-name}`. If absent (shouldn't happen but be defensive): fall back to first-dispatch template.
 2. Extract:
    - `prior_summary` ← `entry.summary`
    - `files_modified` ← `entry.details.files_modified` (list)
@@ -73,7 +73,7 @@ When an agent fails:
    - Edit error → retry from that edit step
    - Unknown → retry all remaining unchecked steps
 3. **Re-dispatch with retry context** — fill `{retry_context}` using Mode=granular format:
-   - **Try harness view first:** `bun .claude/scripts/harness-views.js --view pipeline-state --spec {spec-name}` — use decisions/lessons if available. Fallback: Read `.claude/.agent-memory/_index.json`, find last entry where `agent_type == {failed_agent_type}` and `pipeline == {spec-name}`
+   - **Try harness view first:** `bun .claude/scripts/event-projections.js --view pipeline-state --spec {spec-name}` — use decisions/lessons if available. Fallback: Read `.claude/.agent-memory/_index.json`, find last entry where `agent_type == {failed_agent_type}` and `pipeline == {spec-name}`
    - Extract `entry.summary` → `prior_summary`; `entry.details.files_modified` → `files_modified` (list)
    - Fill:
      ```
@@ -100,7 +100,7 @@ When a pipeline is paused (user leaves session or requests pause):
    - Set `nextAction` to the specific next step (ONE sentence)
 2. Write agent memory for carry-over:
    ```bash
-   bun .claude/scripts/memory-write.js --json '{"agent_type":"orchestrator","wave":0,"pipeline":"{spec-name}","summary":"Paused at {phase}. Next: {nextAction}"}'
+   bun .claude/scripts/memory.js agent --json '{"agent_type":"orchestrator","wave":0,"pipeline":"{spec-name}","summary":"Paused at {phase}. Next: {nextAction}"}'
    ```
 3. Confirm to user: "Pipeline paused. Next action saved: {nextAction}"
 

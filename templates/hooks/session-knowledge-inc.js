@@ -36,9 +36,9 @@ process.stdin.on('end', function () {
     var data = JSON.parse(input);
     var cwd = data.cwd || process.cwd();
     var claudeDir = path.join(cwd, '.claude');
-    var knowledgeScript = path.join(claudeDir, 'scripts', 'knowledge-update.js');
+    var knowledgeScript = path.join(claudeDir, 'scripts', 'memory.js');
 
-    // Bail if knowledge-update.js doesn't exist
+    // Bail if memory.js doesn't exist
     if (!fs.existsSync(knowledgeScript)) { process.exit(0); }
 
     var seenPath = path.join(claudeDir, '.knowledge-seen.json');
@@ -100,7 +100,7 @@ process.stdin.on('end', function () {
     // ── Persist exactly one pattern ────────────────────────────────
     var toSave = eligible[0];
     try {
-      execFileSync(process.execPath, [knowledgeScript], {
+      execFileSync(process.execPath, [knowledgeScript, 'knowledge'], {
         input: JSON.stringify(Object.assign({ cwd: cwd }, toSave)),
         timeout: 3000,
         stdio: ['pipe', 'pipe', 'pipe'],

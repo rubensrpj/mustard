@@ -14,7 +14,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 
-const SCRIPT = path.resolve(__dirname, '..', 'metrics-report.js');
+const SCRIPT = path.resolve(__dirname, '..', 'metrics.js');
 const FIXTURE = path.resolve(__dirname, 'fixtures', 'metrics-sample.jsonl');
 
 function mkTmpMetricsDir(opts = {}) {
@@ -29,7 +29,7 @@ function mkTmpMetricsDir(opts = {}) {
 }
 
 function run(args, metricsDir) {
-  return spawnSync(process.execPath, [SCRIPT, ...args], {
+  return spawnSync(process.execPath, [SCRIPT, 'report', ...args], {
     encoding: 'utf8',
     env: { ...process.env, MUSTARD_METRICS_DIR: metricsDir },
   });

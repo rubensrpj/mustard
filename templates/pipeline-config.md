@@ -310,13 +310,13 @@ All anti-slope hooks fail-open on bug. Only real signal triggers warn/block.
 ### Persistent projections
 | File | Writer | Purpose |
 |------|--------|---------|
-| `knowledge.json` | `session-knowledge.js` + `knowledge-update.js` | Confidence-ranked patterns across sessions |
-| `memory/decisions.json` | `memory-persist.js` | Architectural decisions |
-| `memory/lessons.json` | `memory-persist.js` | Operational lessons |
+| `knowledge.json` | `session-knowledge.js` + `memory.js knowledge` | Confidence-ranked patterns across sessions |
+| `memory/decisions.json` | `memory.js decision` | Architectural decisions |
+| `memory/lessons.json` | `memory.js decision` | Operational lessons |
 | `.pipeline-states/{spec}.json` | Pipeline commands | Current phase (ANALYZE/PLAN/EXECUTE/REVIEW/QA/CLOSE/COORDINATE) |
 
 ### How agents read context
-Via **views** in `scripts/harness-views.js`:
+Via **views** in `scripts/event-projections.js`:
 - `buildAgentVisibility(events, opts)` — parallel agents in current wave + prior findings
 - `buildPipelineState(events, { spec })` — phase + metrics (tool counts, retries, agents) for a spec
 - `buildCrossSessionTimeline(sessionsDir, opts)` — episodic memory across sessions
@@ -337,16 +337,16 @@ The automatic injection in SessionStart/SubagentStart is capped (400-800 chars).
 
 ```bash
 # Find specific topic in session summary
-bun .claude/scripts/harness-views.js --view session-summary --query "JWT" --compact
+bun .claude/scripts/event-projections.js --view session-summary --query "JWT" --compact
 
 # Get full state of a spec
-bun .claude/scripts/harness-views.js --view pipeline-state --spec auth-login --compact
+bun .claude/scripts/event-projections.js --view pipeline-state --spec auth-login --compact
 
 # See last N sessions timeline
-bun .claude/scripts/harness-views.js --view cross-session-timeline --limit 5 --compact
+bun .claude/scripts/event-projections.js --view cross-session-timeline --limit 5 --compact
 
 # Active parallel agents in current wave
-bun .claude/scripts/harness-views.js --view agent-visibility --compact
+bun .claude/scripts/event-projections.js --view agent-visibility --compact
 ```
 
 **When to use:**

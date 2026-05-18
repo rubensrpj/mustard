@@ -28,7 +28,7 @@ const HOOKS_DIR = path.resolve(__dirname, '..');
 const SCRIPTS_DIR = path.resolve(__dirname, '..', '..', 'scripts');
 const DUP_CHECK = path.join(HOOKS_DIR, 'duplication-check.js');
 const CONV_CHECK = path.join(HOOKS_DIR, 'convention-check.js');
-const HARNESS_VIEWS = path.join(SCRIPTS_DIR, 'harness-views.js');
+const HARNESS_VIEWS = path.join(SCRIPTS_DIR, 'event-projections.js');
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -320,7 +320,7 @@ describe('Wave 11 — convention-check: non-extractable knowledge entry → no w
 
 describe('Wave 11 — buildSlopeReport: counts anti-slope warns correctly', () => {
   it('counts duplication.warn and convention.warn from events', () => {
-    const views = require('../../scripts/harness-views.js');
+    const views = require('../../scripts/event-projections.js');
 
     const events = [
       makeHarnessEvent('duplication.warn', { file: 'src/a.ts', symbols: ['AuthServices'] }),
@@ -337,7 +337,7 @@ describe('Wave 11 — buildSlopeReport: counts anti-slope warns correctly', () =
   });
 
   it('returns zeros when no slope events present', () => {
-    const views = require('../../scripts/harness-views.js');
+    const views = require('../../scripts/event-projections.js');
 
     const events = [
       makeHarnessEvent('agent.start', {}),

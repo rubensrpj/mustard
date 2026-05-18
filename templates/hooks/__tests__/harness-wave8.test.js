@@ -28,7 +28,7 @@ const { spawn } = require('node:child_process');
 const SCRIPTS_DIR = path.resolve(__dirname, '..', '..', 'scripts');
 const HOOKS_DIR = path.resolve(__dirname, '..');
 const EPIC_FOLD = path.join(SCRIPTS_DIR, 'epic-fold.js');
-const HARNESS_VIEWS = path.join(SCRIPTS_DIR, 'harness-views.js');
+const HARNESS_VIEWS = path.join(SCRIPTS_DIR, 'event-projections.js');
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 

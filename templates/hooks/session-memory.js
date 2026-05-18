@@ -18,7 +18,7 @@ const { emitMetric } = require('./_lib/metrics-emit.js');
 // ── Harness views (Wave 3) ────────────────────────────────────────────────────
 let harnessViews = null;
 try {
-  harnessViews = require('../scripts/harness-views.js');
+  harnessViews = require('../scripts/event-projections.js');
 } catch (_) {} // fail-open
 
 const MAX_CHARS = 2000;
@@ -120,7 +120,7 @@ process.stdin.on('end', () => {
 /**
  * Synchronous wrapper for cross-session timeline.
  * Reads .harness/sessions/*.jsonl files and returns summaries (most recent first).
- * Uses readEventsSync from harness-views so this stays synchronous (hook-friendly).
+ * Uses readEventsSync from event-projections so this stays synchronous (hook-friendly).
  */
 function buildCrossSessionTimelineSync(sessionsDir, opts) {
   if (!sessionsDir || !fs.existsSync(sessionsDir)) return [];

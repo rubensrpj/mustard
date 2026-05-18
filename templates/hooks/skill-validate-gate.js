@@ -6,7 +6,7 @@
  * source: scan|manual).
  *
  * Triggers on Write|Edit when file_path ends with /SKILL.md (any depth).
- * Reuses validateSkill() from scripts/skill-validate.js so the gate stays in
+ * Reuses validateSkill() from scripts/skills.js so the gate stays in
  * sync with the standalone validator.
  *
  * Env:
@@ -54,8 +54,8 @@ function simulateEdit(toolInput) {
 
 function loadValidator() {
   const candidates = [
-    path.join(process.env.CLAUDE_PROJECT_DIR || process.cwd(), '.claude', 'scripts', 'skill-validate.js'),
-    path.resolve(__dirname, '..', 'scripts', 'skill-validate.js'),
+    path.join(process.env.CLAUDE_PROJECT_DIR || process.cwd(), '.claude', 'scripts', 'skills.js'),
+    path.resolve(__dirname, '..', 'scripts', 'skills.js'),
   ];
   for (const candidate of candidates) {
     try {
@@ -122,7 +122,7 @@ process.stdin.on('end', () => {
     const errorList = (result.errors || []).map(e => `  - ${e}`).join('\n');
     const reason =
       `[skill-validate-gate] SKILL.md fails structural validation:\n${errorList}\n` +
-      `Run \`bun .claude/scripts/skill-validate.js\` for details.`;
+      `Run \`bun .claude/scripts/skills.js validate\` for details.`;
 
     if (mode === 'strict') {
       deny(reason);

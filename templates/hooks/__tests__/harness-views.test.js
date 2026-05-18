@@ -1,8 +1,8 @@
 #!/usr/bin/env bun
 'use strict';
 /**
- * Tests for templates/scripts/harness-views.js
- * Run with: bun test templates/hooks/__tests__/harness-views.test.js
+ * Tests for templates/scripts/event-projections.js
+ * Run with: bun test templates/hooks/__tests__/event-projections.test.js
  */
 
 const { describe, it, beforeEach, afterEach } = require('bun:test');
@@ -11,7 +11,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const views = require('../../scripts/harness-views.js');
+const views = require('../../scripts/event-projections.js');
 
 let tmpDir;
 

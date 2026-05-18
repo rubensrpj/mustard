@@ -329,23 +329,18 @@ Visualization moved to the Mustard Dashboard — a standalone Tauri desktop prod
 │   ├── harness-init.js                #   SessionStart: rotates events.jsonl + index
 │   ├── _lib/size-gate.js              #   Shared lib for size-based gates
 │   └── user-prompt-hint.js            #   Surfaces contextual hints on prompt input
-├── scripts/                           # Utility scripts (25)
+├── scripts/                           # Utility scripts (28)
 │   ├── sync-detect.js                 #   Detects subprojects + roles (SHA-256 incremental)
 │   ├── sync-registry.js               #   Generates entity-registry.json (_patterns.discovered[])
-│   ├── skill-validate.js              #   Validates SKILL.md frontmatter across subprojects
+│   ├── skills.js                      #   Skill tooling: validate / graph / orphans
 │   ├── statusline.js                  #   Claude Code statusline
-│   ├── memory-persist.js              #   Persists decisions/lessons across sessions
-│   ├── memory-write.js                #   Writes agent memory entries between waves
+│   ├── memory.js                      #   Persists agent memory / decisions / knowledge
+│   ├── metrics.js                     #   Pipeline + enforcement + RTK metrics: collect / report
 │   ├── diff-context.js                #   Generates git diff summary for agents
-│   ├── knowledge-update.js            #   Updates project knowledge base
-│   ├── metrics-collect.js             #   Collects pipeline metrics
-│   ├── metrics-report.js              #   Renders enforcement metrics report
-│   ├── rtk-gain-import.js             #   Imports RTK token-savings data for metrics
 │   ├── security-scan.js               #   Scans for secrets / security misconfigs
 │   ├── verify-pipeline.js             #   Runs build/test verification
 │   ├── analyze-validation.js          #   Validates ANALYZE phase output
-│   ├── recipe-match.js                #   Structured recipe matcher (entity + operation)
-│   └── _metrics-write.js              #   Internal metrics writer (used by hooks)
+│   └── recipe-match.js                #   Structured recipe matcher (entity + operation)
 ├── memory/                            # Persistent memory (auto-created)
 │   ├── decisions.json                 #   Decisions across pipelines
 │   └── lessons.json                   #   Lessons learned

@@ -240,7 +240,7 @@ describe("enforce-registry.js", () => {
   });
 });
 
-// ─── memory-write.js ────────────────────────────────────────────────────────
+// ─── memory.js agent ────────────────────────────────────────────────────────
 
 describe("memory-write.js", () => {
   const SCRIPTS_DIR = path.resolve(__dirname, "..", "..", "scripts");
@@ -248,7 +248,7 @@ describe("memory-write.js", () => {
   function runScript(inputObj, opts = {}) {
     return new Promise((resolve, reject) => {
       const cwd = opts.cwd || PROJECT_DIR;
-      const child = spawn(process.execPath, [path.join(SCRIPTS_DIR, "memory-write.js")], {
+      const child = spawn(process.execPath, [path.join(SCRIPTS_DIR, "memory.js"), "agent"], {
         cwd,
         stdio: ["pipe", "pipe", "pipe"],
       });
@@ -270,7 +270,7 @@ describe("memory-write.js", () => {
       const cwd = opts.cwd || PROJECT_DIR;
       const child = spawn(
         process.execPath,
-        [path.join(SCRIPTS_DIR, "memory-write.js"), "--json", JSON.stringify(inputObj)],
+        [path.join(SCRIPTS_DIR, "memory.js"), "agent", "--json", JSON.stringify(inputObj)],
         { cwd, stdio: ["ignore", "pipe", "pipe"] }
       );
       let stdout = "";
