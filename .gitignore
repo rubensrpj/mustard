@@ -3,6 +3,11 @@ node_modules/
 
 # Build output
 dist/
+dist-ssr/
+
+# Rust / Tauri build artifacts
+target/
+apps/dashboard/src-tauri/target/
 
 # OS files
 .DS_Store
@@ -14,20 +19,29 @@ nul
 .idea/
 *.swp
 *.swo
+*.sw?
 
 # Environment
 .env
 .env.*
+*.local
 
 # Logs
 *.log
 npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
 
 # Coverage
 coverage/
 
 # pnpm
 .pnpm-store/
+
+# TypeScript build cache
+*.tsbuildinfo
 
 # Agent memory (session-scoped, auto-cleaned)
 .claude/.agent-memory/
@@ -41,6 +55,9 @@ coverage/
 # Agent runtime state (session-scoped)
 .claude/.agent-state/
 
+# Harness runtime state
+.claude/.harness/
+
 # Timestamped backups created by mustard init/update
 .claude.backup.*/
 
@@ -52,8 +69,6 @@ dashboard-html.txt
 # Playwright MCP snapshots
 .playwright-mcp/
 
-.claude/.harness/
-
-templates/.claude/.harness/
-
-templates/.claude/.metrics/
+# CLI template fixtures (regenerable runtime state)
+packages/cli/templates/.claude/.harness/
+packages/cli/templates/.claude/.metrics/
