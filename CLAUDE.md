@@ -6,7 +6,7 @@ Instructions for Claude Code when working with this repository.
 
 ## Project
 
-Mustard is a CLI that generates `.claude/` folders for Claude Code projects. It creates prompts, commands, hooks, and rules.
+Mustard is a CLI that generates `.claude/` folders for Claude Code projects. It creates prompts, commands, hooks, and rules. The repo is a **pnpm + Cargo monorepo**: the CLI lives in `packages/cli/` (npm package `mustard-claude`), and a companion Tauri 2 + React 19 desktop dashboard lives in `apps/dashboard/`. The root `.claude/` is the monorepo orchestrator.
 
 **Key concepts:**
 
@@ -15,7 +15,7 @@ Mustard is a CLI that generates `.claude/` folders for Claude Code projects. It 
 - Enforcement via JavaScript hooks (`PreToolUse`/`PostToolUse`/`SessionStart`/`PreCompact`/`SessionEnd`/`SubagentStart`/`SubagentStop`/`UserPromptSubmit`)
 - **Universal Delegation**: All code activities must be delegated via Task (separate context)
 - **Skill+Recipe-driven context**: agents auto-load skills by description; recipes inject 90% skeletons by entity+operation
-- **Auto-sync Scripts**: `sync-detect.js`, `sync-compile.js`, `sync-registry.js`
+- **Auto-sync Scripts**: `sync-detect.js`, `sync-registry.js`
 - **Namespaced Commands**: All commands use `mustard:` prefix (e.g., `/mustard:feature`)
 - **Canonical methodology mapping**: ANALYZE↔Research, PLAN↔Spec+Plan, EXECUTE↔Implement (cf. [GitHub Spec Kit](https://github.com/github/spec-kit) RPI loop)
 
@@ -42,41 +42,57 @@ Mustard is a CLI that generates `.claude/` folders for Claude Code projects. It 
 
 ## Build & Run
 
-```bash
-npm install
-npm run build
-npm test
+This repo is a **pnpm + Cargo monorepo**. The CLI lives in `packages/cli/`; the Tauri dashboard in `apps/dashboard/`.
 
-# Initialize a project
-bun bin/mustard.js init
+```bash
+# Install all workspace deps (run at repo root)
+pnpm install
+
+# Build / test the CLI
+pnpm --filter mustard-claude build
+pnpm --filter mustard-claude test
+
+# Build the dashboard
+pnpm --filter mustard-dashboard build
+
+# Initialize a project (run from packages/cli/)
+bun packages/cli/bin/mustard.js init
 
 # Update existing project
-bun bin/mustard.js update
+bun packages/cli/bin/mustard.js update
 ```
 
 ## Structure
 
 ```text
-mustard/
-├── bin/mustard.js           # CLI entry point
-├── src/                     # TypeScript source
-│   ├── commands/            # init.ts, update.ts
-│   ├── scanners/            # stack.ts, structure.ts, dependencies.ts
-│   ├── generators/          # claude-md, prompts, commands, hooks, registry
-│   └── services/            # npm.ts
-├── dist/                    # Compiled JavaScript
-└── templates/               # Templates (copied to target .claude/)
-    ├── CLAUDE.md            # Orchestrator rules (auto-loaded by Claude Code)
-    ├── settings.json        # Hook wiring + permissions + env modes
-    ├── pipeline-config.md   # Phase rules, role rules, model selection, budgets
-    ├── commands/mustard/    # 18 namespaced slash commands
-    ├── skills/              # 7 foundation skills (karpathy, design-craft, etc.)
-    ├── refs/                # Progressive-disclosure refs (loaded on demand)
-    ├── recipes/             # Structured recipes (90% skeletons by entity+operation)
-    ├── context/qa/          # QA agent core context (only static .core.md kept)
-    ├── scripts/             # 28 utility scripts (sync-*, event-projections, qa-run, etc.)
-    └── hooks/               # 31 JavaScript hooks (fail-open, no npm deps)
-        └── _lib/            # Shared runtime: hook-env.js, harness-event.js, metrics-emit.js
+mustard/                         # monorepo root — pnpm-workspace.yaml + Cargo.toml
+├── .claude/                     # root orchestrator (pipelines, hooks, registry)
+├── packages/
+│   └── cli/                     # the Mustard CLI (npm pkg: mustard-claude)
+│       ├── bin/mustard.js       # CLI entry point
+│       ├── src/                 # TypeScript source
+│       │   ├── commands/        # init.ts, update.ts, config.ts, review.ts, add.ts
+│       │   ├── scanners/        # stack.ts, structure.ts, dependencies.ts
+│       │   ├── generators/      # claude-md, prompts, commands, hooks, registry
+│       │   └── services/        # npm.ts
+│       ├── dist/                # Compiled JavaScript
+│       ├── tests/               # unit / integration / bench
+│       └── templates/           # Templates (copied to target .claude/)
+│           ├── CLAUDE.md        # Orchestrator rules (auto-loaded by Claude Code)
+│           ├── settings.json    # Hook wiring + permissions + env modes
+│           ├── pipeline-config.md
+│           ├── commands/mustard/ # 18 namespaced slash commands
+│           ├── skills/          # 7 foundation skills (karpathy, design-craft, etc.)
+│           ├── refs/            # Progressive-disclosure refs (loaded on demand)
+│           ├── recipes/         # Structured recipes (90% skeletons)
+│           ├── context/qa/      # QA agent core context (only static .core.md kept)
+│           ├── scripts/         # 28 utility scripts (sync-*, event-projections, qa-run, etc.)
+│           └── hooks/           # 31 JavaScript hooks (fail-open, no npm deps)
+│               └── _lib/        # Shared runtime: hook-env.js, harness-event.js, metrics-emit.js
+└── apps/
+    └── dashboard/               # Tauri 2 + React 19 desktop dashboard (mustard-dashboard)
+        ├── src/                 # React/TypeScript UI
+        └── src-tauri/           # Rust backend
 ```
 
 ## Context Architecture
@@ -220,15 +236,6 @@ Auto-discovers subprojects in monorepos:
 - Detection patterns: `.NET`, `React`, `Drizzle`, etc.
 - Output: JSON with subprojects, agents, paths
 
-### sync-compile.js
-
-Compiles contexts with git-aware caching:
-
-1. Copies subproject commands to `context/{agent}/cmd-{file}`
-2. Concatenates `.md` files → `{agent}.context.md`
-3. Computes SHA256 hash
-4. Skips if hash unchanged
-
 ### sync-registry.js
 
 Generates `entity-registry.json` v3.1:
@@ -255,9 +262,12 @@ Runs build/test verification for the active pipeline:
 
 ## Project Structure
 
-| Subproject | Technology | Port | CLAUDE.md |
-|------------|------------|------|-----------|
-| templates | Node.js (CommonJS), hooks, scripts, commands | - | [templates](./templates/CLAUDE.md) |
+Monorepo (`pnpm-workspace.yaml`: `packages/*`, `apps/*` + `Cargo.toml` workspace).
+
+| Subproject | Path | Technology | CLAUDE.md |
+|------------|------|------------|-----------|
+| CLI | `packages/cli/` | TypeScript / Bun — `mustard-claude` npm package; hooks, scripts, commands under `templates/` | [templates](./packages/cli/templates/CLAUDE.md) |
+| Dashboard | `apps/dashboard/` | Tauri 2 + React 19 + Tailwind 4 desktop app — `mustard-dashboard` | [dashboard](./apps/dashboard/CLAUDE.md) |
 
 ## Entity Registry
 

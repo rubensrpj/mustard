@@ -10,8 +10,14 @@ jobs:
   test:
     name: Test (Linux)
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/cli
     steps:
       - uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
@@ -19,16 +25,17 @@ jobs:
           bun-version: latest
 
       - name: Install dependencies
-        run: bun install
+        working-directory: .
+        run: pnpm install --frozen-lockfile
 
       - name: TypeScript build
-        run: bun run build
+        run: pnpm build
 
       - name: Lint (zero warnings)
-        run: bunx eslint src/ --max-warnings=0
+        run: pnpm exec eslint src/ --max-warnings=0
 
       - name: Type-check strict
-        run: bunx tsc --noEmit --strict -p tsconfig.json
+        run: pnpm exec tsc --noEmit --strict -p tsconfig.json
 
       - name: Unit tests
         run: bun test tests/unit/
@@ -39,24 +46,31 @@ jobs:
       - name: Benchmarks (advisory)
         continue-on-error: true
         run: |
-          bun run bench
+          pnpm run bench
           bun tests/bench/regression-check.cjs
 
   windows:
     name: Test (Windows — advisory)
     runs-on: windows-latest
     continue-on-error: true
+    defaults:
+      run:
+        working-directory: packages/cli
     steps:
       - uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
 
       - name: Install dependencies
-        run: bun install
+        working-directory: .
+        run: pnpm install --frozen-lockfile
 
       - name: TypeScript build
-        run: bun run build
+        run: pnpm build
 
       - name: EventStore tests (bun:sqlite on Windows)
         run: bun test tests/unit/event-store/
