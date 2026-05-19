@@ -129,7 +129,7 @@ Filters knowledge entries matching the search term across `name`, `description`,
 
 ## add
 
-Interactively adds a knowledge entry by prompting the user, then calls `memory.js knowledge`.
+Interactively adds a knowledge entry by prompting the user, then calls `mustard-rt run memory knowledge`.
 
 ### Flow
 
@@ -231,7 +231,7 @@ Writes `.claude/knowledge-export-{YYYY-MM-DD}.json` from the full knowledge base
 
 ## import <file>
 
-Reads export JSON, pipes each entry to `memory.js knowledge` (deduplication auto-handled). Reports new/updated counts.
+Reads export JSON, pipes each entry to `mustard-rt run memory knowledge` (deduplication auto-handled). Reports new/updated counts.
 
 → See `../../../refs/knowledge/evolve-report.md`
 
@@ -240,7 +240,7 @@ Reads export JSON, pipes each entry to `memory.js knowledge` (deduplication auto
 ## Rules
 
 - knowledge.json is persistent — never deleted by session-cleanup
-- `add` and pipeline capture both call the same `memory.js knowledge` subcommand
+- `add` and pipeline capture both call the same `mustard-rt run memory knowledge` subcommand
 - `search` is case-insensitive
 - Always show entry count in list/search output
 

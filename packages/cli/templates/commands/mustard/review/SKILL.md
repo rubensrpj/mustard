@@ -45,7 +45,7 @@ If no PR found for current branch → error:
 Before invoking the review, emit `review.start` to the harness event bus so `/mustard:stats --pr` can compute review-time DORA metrics:
 
 ```bash
-node -e "require('./.claude/hooks/_lib/harness-event.js').emit('review.start', { spec: process.env.MUSTARD_SPEC || null, target: '$PR_TARGET' }, { actor: { kind: 'command', id: 'review' } })"
+node -e "const fs=require('fs'),p=require('path'),d=p.join(process.env.CLAUDE_PROJECT_DIR||process.cwd(),'.claude','.harness');try{fs.mkdirSync(d,{recursive:true});fs.appendFileSync(p.join(d,'events.jsonl'),JSON.stringify({v:1,ts:new Date().toISOString(),sessionId:process.env.MUSTARD_SESSION_ID||process.env.CLAUDE_SESSION_ID||('s-'+Date.now()),wave:0,actor:{kind:'command',id:'review'},event:'review.start',payload:{spec:process.env.MUSTARD_SPEC||null,target:'$PR_TARGET'}})+'\n')}catch(_){}"
 ```
 
 `$PR_TARGET` is the PR number or URL resolved in Step 1. Set `MUSTARD_SPEC` from the most recent active spec if available (best-effort).
@@ -72,7 +72,7 @@ Task({
   subagent_type: "general-purpose",
   model: "opus",
   description: "Review: PR <number>",
-  prompt: "## DIFF\n<output of diff-context.js --phase execute --subproject {sub}>\n\n## TASK\nReview the changes in the current branch against $PARENT. Use the DIFF as the source of truth. Only Read source files if the diff is ambiguous or you need surrounding context — record each Read in your return note. Checklist: SOLID, Security, Performance, Patterns, Integration."
+  prompt: "## DIFF\n<output of mustard-rt run diff-context --phase execute --subproject {sub}>\n\n## TASK\nReview the changes in the current branch against $PARENT. Use the DIFF as the source of truth. Only Read source files if the diff is ambiguous or you need surrounding context — record each Read in your return note. Checklist: SOLID, Security, Performance, Patterns, Integration."
 })
 ```
 
@@ -83,7 +83,7 @@ Task({
 After the review returns, emit `review.complete`:
 
 ```bash
-node -e "require('./.claude/hooks/_lib/harness-event.js').emit('review.complete', { spec: process.env.MUSTARD_SPEC || null, target: '$PR_TARGET' }, { actor: { kind: 'command', id: 'review' } })"
+node -e "const fs=require('fs'),p=require('path'),d=p.join(process.env.CLAUDE_PROJECT_DIR||process.cwd(),'.claude','.harness');try{fs.mkdirSync(d,{recursive:true});fs.appendFileSync(p.join(d,'events.jsonl'),JSON.stringify({v:1,ts:new Date().toISOString(),sessionId:process.env.MUSTARD_SESSION_ID||process.env.CLAUDE_SESSION_ID||('s-'+Date.now()),wave:0,actor:{kind:'command',id:'review'},event:'review.complete',payload:{spec:process.env.MUSTARD_SPEC||null,target:'$PR_TARGET'}})+'\n')}catch(_){}"
 ```
 
 Then present the review results as returned by the skill/agent.

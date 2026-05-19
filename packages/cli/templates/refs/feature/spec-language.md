@@ -60,7 +60,7 @@ Once resolved, write the chosen value as a header line in `spec.md`:
 > standalone `## Plan` section, so the two never coexist. The new headings
 > (`PRD`, `Plano`, `Usuários/Stakeholders`, `Métrica de sucesso`) are narrative
 > dividers/sections only — no parser consumes them, so they need no entry in
-> `scripts/_lib/spec-sections.js`.
+> the `spec-sections` heading map (`packages/rt/src/run/spec_sections.rs`).
 >
 > **Per-layer narrative rules:** the PRD layer is prose for humans (briefing,
 > who/why, observable success) — no file paths, no method names, no code. The
@@ -71,11 +71,11 @@ Once resolved, write the chosen value as a header line in `spec.md`:
 > and who requested the change, in plain language.
 
 > **Single source in code:** this table is the human-readable reference, but the
-> *authoritative* mapping consumed by parsers and hooks lives in
-> `scripts/_lib/spec-sections.js` (`SECTIONS`, `headingRegex`, `findSection`,
-> `sectionHeading`). When adding or renaming a **parsed** heading, update
-> **both** — and treat the module as the truth: every spec parser resolves
-> headings through it so EN and PT specs are recognized identically.
+> *authoritative* heading-matching logic consumed by parsers and hooks lives in
+> `packages/rt/src/run/spec_sections.rs` (`is_heading` + its section map). When
+> adding or renaming a **parsed** heading, update **both** — and treat the module
+> as the truth: every spec parser resolves headings through it so EN and PT specs
+> are recognized identically.
 > **Exception:** the `## PRD` and `## Plan`/`## Plano` rows are narrative
 > divider headings only — they are intentionally absent from `SECTIONS` so no
 > parser resolves them. Do not add a `prd` or `plan` key.
@@ -103,7 +103,7 @@ These stay in English regardless of `Lang`:
 
 **Surgical:** never translate pre-existing comments while editing a file (aligns with karpathy §3 — Surgical Changes). Only NEW comments the agent writes are in English.
 
-**Why:** `entity-registry.json#description` is populated by `scripts/registry/description-enricher.js` from doc-comments and feeds `/mustard:knowledge glossary`. EN-only comments = consistent glossary; mixed comments break it.
+**Why:** `entity-registry.json#description` is populated by the `mustard-rt run sync-registry` description enricher from doc-comments and feeds `/mustard:knowledge glossary`. EN-only comments = consistent glossary; mixed comments break it.
 
 ## Dispatch Propagation
 

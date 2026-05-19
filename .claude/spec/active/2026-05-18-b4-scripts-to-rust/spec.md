@@ -102,10 +102,10 @@ Decisão baseada na regra de Thariq Shihipar (Anthropic, *"The Unreasonable Effe
 
 ### Impl Agent (Wave 7) — limpeza + orfanização
 
-- [ ] Varredura final: nenhum `bun/node .claude/scripts` nem `bun templates/scripts` resta em `commands/` ou `refs/` (AC-2).
-- [ ] Deletar os 5 `_lib/*.js` órfãos (`harness-event`, `hook-env`, `runtime-shim`, `event-store`, `metrics-emit`), o `runtime-shim.d.ts` e o re-export `scripts/_lib/event-store.js` — confirmando que nenhum hook Rust nem script remanescente os consome.
-- [ ] Confirmar que `rtk` reescreve/passa `mustard-rt script *` (ver Preocupações — RTK).
-- [ ] Remover todos os `.js` portados restantes de `templates/scripts/`.
+- [x] Varredura final: nenhum `bun/node .claude/scripts` nem `bun templates/scripts` resta em `commands/` ou `refs/` (AC-2).
+- [x] Deletar os 5 `_lib/*.js` órfãos (`harness-event`, `hook-env`, `runtime-shim`, `event-store`, `metrics-emit`), o `runtime-shim.d.ts` e o `scripts/_lib/` inteiro — confirmado que nada (Rust, script ou teste) os consome.
+- [x] Confirmado: `rtk`/`bash_guard` passa `mustard-rt run *` sem reescrita destrutiva.
+- [x] Remover todos os `.js` portados restantes de `templates/scripts/` + diretórios `__tests__/` JS obsoletos.
 
 ## Dependências
 
@@ -135,6 +135,10 @@ Decisão baseada na regra de Thariq Shihipar (Anthropic, *"The Unreasonable Effe
 - **W5 — sub-features de `metrics`/`event-projections` não portadas:** o core dos 6 scripts está portado, mas `metrics --compare` (resolução de git-tag) e as views `cross-session-timeline`/`spec-tree`/`pr-metrics` de `event-projections` ficaram como JS-only. Os `.js` permanecem (consumidores presentes), então a funcionalidade não regrediu. **Wave 6** deve completar essas sub-features antes da varredura da Wave 7 — caso contrário a deleção dos `.js` perde funcionalidade.
 
 - **W6 — `otel-collector`/`diagnose-otel`** — **RESOLVIDO:** o usuário confirmou o porte. OTEL portado para Rust com `tiny_http` (servidor HTTP bloqueante, sem async) + `rusqlite` feature `bundled` (SQLite compilado no binário). `rusqlite` fixado em `0.31` para casar com `apps/dashboard/src-tauri` (restrição `links = "sqlite3"` do workspace). `mustard-rt` segue um binário único, zero runtime externo. As sub-features deferidas da W5 (`metrics --compare`, views de `event-projections`) foram concluídas na W6.
+
+- **W7-a — teste flaky não reproduzível:** numa de ~12 execuções de `cargo test -p mustard-rt`, 1 teste falhou (452/453); todas as demais execuções deram 453/453. Não reproduzível em 10+ tentativas (sequenciais e paralelas). Os testes OTEL usam porta efêmera (`127.0.0.1:0`) e `tempdir` — isolados. Transitório; se recorrer, suspeitar de estado de filesystem compartilhado entre testes. Baixa severidade.
+- **W7-b — `review/SKILL.md` tem 2 emits inline `node -e`:** era o único consumidor não-teste de `harness-event.js`. Reescrito para `node -e` self-contained (append direto a `events.jsonl`, só builtins do Node) — não é arquivo `.js` nem invocação de script. Um cleanup futuro pode adicionar um `mustard-rt run emit-event` genérico.
+- **W7-c — `dart-scanner.js` removido sem equivalente Rust:** a Wave 1 portou 7 scanners (ts/py/go/rust/java/php/dotnet); Dart não estava na lista. O `registry/scanners/dart-scanner.js` existia mas era código morto (o loader Rust só carrega scanners Rust). Deletado — **scanning de entidades Dart não foi portado**. Regressão de cobertura de linguagem; decidir follow-up se suporte a Dart for desejado.
 
 ## Critérios de Aceitação
 

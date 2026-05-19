@@ -50,7 +50,7 @@
       "WebSearch",
       "Bash",
       "Bash(mustard-rt run event-projections:*)",
-      "Bash(bun .claude/scripts/qa-run.js:*)"
+      "Bash(mustard-rt run qa-run:*)"
     ],
     "deny": [
       "Bash(rm -rf:*)",

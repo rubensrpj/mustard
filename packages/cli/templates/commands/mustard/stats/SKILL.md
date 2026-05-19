@@ -73,7 +73,7 @@ Pairing strategy: events match by `payload.spec` (preferred) or `payload.branch`
 ## Rules
 
 - Default `/stats` always runs `mustard-rt run metrics collect` — do not attempt to read state files manually
-- `--hooks` routes to `mustard-rt run metrics report`; `--pr` routes to `event-projections.js --view pr-metrics`
+- `--hooks` routes to `mustard-rt run metrics report`; `--pr` routes to `mustard-rt run event-projections --view pr-metrics`
 - Present the output JSON as-is from the command
 - If the script fails, inform the user gracefully and suggest running a pipeline first
 

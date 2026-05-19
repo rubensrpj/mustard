@@ -10,12 +10,12 @@ This directory contains the core identity and checklist for the **QA Specialist*
 
 ## How to add custom QA context
 
-The sync pipeline (`sync-compile.js`) concatenates all `.md` files in this directory into `qa.context.md` before dispatching the QA agent.
+The sync pipeline concatenates all `.md` files in this directory into `qa.context.md` before dispatching the QA agent.
 
 To extend the QA agent's context for your project:
 
 1. Add a file to this directory (e.g., `qa.custom.md`)
-2. The file will be automatically included on the next `node .claude/scripts/sync-compile.js` run
+2. The file will be automatically included on the next context-compile run
 3. Common extensions:
    - Custom AC command patterns for your stack
    - Environment setup steps required before running ACs

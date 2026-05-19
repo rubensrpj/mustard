@@ -124,7 +124,7 @@ RTK (Rust Token Killer) integrates as core infrastructure via the `mustard-rt` `
 
 ### Cluster discovery tuning
 
-`scripts/registry/cluster-discovery.js` aceita env vars para ajustar limites de detecção (todos com floor numérico):
+A descoberta de clusters (`mustard-rt run sync-registry`, módulo `scan/cluster_discovery.rs`) aceita env vars para ajustar limites de detecção (todos com floor numérico):
 
 - `MUSTARD_CLUSTER_MIN_FILES` (default 5, floor 2) — mínimo de arquivos por sufixo
 - `MUSTARD_CLUSTER_MIN_SUFFIX_LEN` (default 6, floor 2) — comprimento mínimo do sufixo
@@ -138,7 +138,7 @@ RTK (Rust Token Killer) integrates as core infrastructure via the `mustard-rt` `
 
 ### Scan ignore list
 
-`collectFiles` (em `file-utils.js`) ignora pastas em ordem aditiva:
+A coleta de arquivos do scanner (`scan/file_utils.rs`) ignora pastas em ordem aditiva:
 - `DEFAULT_IGNORE` (node_modules, .git, dist, etc.)
 - env `MUSTARD_SCAN_IGNORE` — lista CSV (ex: `MUSTARD_SCAN_IGNORE=Pods,vendor,assets`)
 - entradas de pasta do `.gitignore` do subprojeto (extraídas via `parseGitignoreDirs` — conservativo: só nomes sem `/`, sem glob, sem `!`)

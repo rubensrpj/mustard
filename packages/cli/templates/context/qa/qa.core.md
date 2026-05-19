@@ -29,10 +29,10 @@ Before running QA, verify:
 
 ### Step 1 — Locate and read spec
 ```bash
-node .claude/scripts/qa-run.js --spec {spec} --json
+mustard-rt run qa-run --spec {spec} --format json
 ```
 
-### Step 2 — If running manually (without qa-run.js)
+### Step 2 — If running manually (without `mustard-rt run qa-run`)
 1. Read spec file
 2. Extract `## Acceptance Criteria` section
 3. For each `- [ ] AC-N: desc — Command: \`cmd\``:
@@ -46,10 +46,10 @@ Return the structured QA report (see Return Format below).
 
 ### Step 4 — Emit result
 ```bash
-node .claude/scripts/qa-run.js --spec {spec}
+mustard-rt run qa-run --spec {spec}
 ```
 
-The script emits `qa.result` to the harness event log and writes `.claude/.qa-reports/{spec}.json`.
+The command emits `qa.result` to the harness event log and writes `.claude/.qa-reports/{spec}.json`.
 
 ## Return Format
 
@@ -75,8 +75,8 @@ Return the full QA Report markdown block, then:
 - Report the FIRST failure in full (complete stderr), remaining failures as summary
 - A SKIP on an individual AC (command not found) does NOT count as pass — the overall result is FAIL if any real AC fails
 - Maximum 3 QA iterations per pipeline (tracked by orchestrator) — after 3, block and ask user
-- Use `node .claude/scripts/qa-run.js` for execution — do not re-implement the AC runner manually
-- If qa-run.js is not found, run each AC command via Bash tool directly and construct the report manually
+- Use `mustard-rt run qa-run` for execution — do not re-implement the AC runner manually
+- If `mustard-rt` is not found, run each AC command via Bash tool directly and construct the report manually
 
 ## Naming Conventions
 
