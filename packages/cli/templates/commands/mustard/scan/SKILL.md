@@ -76,7 +76,7 @@ If `bun .claude/scripts/scan/orchestrate.js` fails to run (script missing, Node 
    reference real files via Glob/Read; skip any skill you cannot back with
    ≥3 real files. No fenced code in SKILL.md body.
    ```
-3. Run `bun .claude/scripts/sync-registry.js --force` manually.
+3. Run `mustard-rt run sync-registry --force` manually.
 4. Report which step failed in your final message so the user knows.
 
 This keeps `/scan` operational even if the orchestrator scripts are broken.

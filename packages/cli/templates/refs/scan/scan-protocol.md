@@ -69,7 +69,7 @@ Merge results: combine cached + new into final output files.
 - Ignores the incremental skip of Step 1/C: **all** subprojects are reprocessed, regardless of hash match or `gitDirty`.
 - Bypasses the fast-path of §2.6 (Bootstrap): always regenerates `.claude/CLAUDE.md` and related files.
 - Passes "FORCE MODE" to Task agents of Step 3 (they delete `{subproject}/.claude/skills/*/` with header `mustard:generated` before regenerating).
-- Runs `sync-registry.js --force` (§4.7) always — even with registry already v4.0.
+- Runs `mustard-rt run sync-registry --force` (§4.7) always — even with registry already v4.0.
 - Skills without the header `mustard:generated` (user-authored) are **preserved**.
 
 ## Step 2.5 — Cleanup Stale Subprojects
@@ -142,9 +142,9 @@ Never search in:
 
 **`.claude/entity-registry.json`** — generate via registry scanner:
 ```bash
-bun .claude/scripts/sync-registry.js --force
+mustard-rt run sync-registry --force
 ```
-If `sync-registry.js` fails or is not available, create empty skeleton:
+If `mustard-rt run sync-registry` fails or is not available, create empty skeleton:
 ```json
 { "_meta": { "version": "4.0" }, "_patterns": {}, "_enums": {}, "e": {} }
 ```
@@ -321,7 +321,7 @@ Mark all with `<!-- mustard:generated -->`. Overwrite on next scan.
 ## Step 4.7 — Refresh Registry
 
 ```bash
-bun .claude/scripts/sync-registry.js --force
+mustard-rt run sync-registry --force
 ```
 
 Skill generation itself is **entirely the responsibility of the Step 3 agents** (see `scan-format.md` §10).

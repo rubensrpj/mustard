@@ -37,7 +37,7 @@ The slice is stable for the whole pipeline (the spec does not change mid-run), s
 
 **Phase marker (first action, before any Grep):** Run `bun .claude/scripts/emit-phase.js --spec {spec-name} --to ANALYZE`. ANALYZE runs in the parent before any pipeline-state file exists, so `pipeline-phase.js` cannot see it — this is the only point that knows ANALYZE started. Idempotent (script skips if already emitted for this spec) and fail-open.
 
-**Auto-sync (silent):** Run `mustard-rt run sync-detect`. If output shows any subproject with `hashChanged: true`, then run `bun .claude/scripts/sync-registry.js`. Otherwise skip sync-registry entirely.
+**Auto-sync (silent):** Run `mustard-rt run sync-detect`. If output shows any subproject with `hashChanged: true`, then run `mustard-rt run sync-registry`. Otherwise skip sync-registry entirely.
 
 1. Read `.claude/pipeline-config.md` — agents, wave transitions, model selection
 2. Grep `entity-registry.json` for the specific entity name — NEVER read the full JSON

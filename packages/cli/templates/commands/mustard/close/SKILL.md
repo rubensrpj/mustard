@@ -72,8 +72,8 @@ See `.claude/pipeline-config.md` Escalation Statuses for concern classification 
    - `### Checkpoint: {ISO timestamp now}`
    - **Verify Checklist consistency** — count `- [ ]` lines in `## Checklist`. If any remain, ABORT and report the unmarked items to the user (each item should already have been marked by the executor agent during EXECUTE via `mark-checklist-item.js`). Do NOT batch-mark on behalf of the agents. `close-gate.js` enforces this same rule with `MUSTARD_CHECKLIST_GATE_MODE=strict`.
 4. **Entity Registry — update if needed:**
-   - `bun .claude/scripts/sync-registry.js`
-   - **Schema-aware refresh (conditional):** If the spec's `## Files` section touched any file matching `*.schema.ts`, `*.entity.ts`, `*.prisma`, `*DbContext*.cs`, or `schema.rs`, run `rtk bun .claude/scripts/sync-registry.js` to refresh `entity-registry.json`. If sync-registry fails (non-zero exit or script missing), log a warning and continue with close — this step is non-blocking.
+   - `mustard-rt run sync-registry`
+   - **Schema-aware refresh (conditional):** If the spec's `## Files` section touched any file matching `*.schema.ts`, `*.entity.ts`, `*.prisma`, `*DbContext*.cs`, or `schema.rs`, run `rtk mustard-rt run sync-registry` to refresh `entity-registry.json`. If sync-registry fails (non-zero exit or script missing), log a warning and continue with close — this step is non-blocking.
 5. **Mark spec as `closed-followup`** (stage 1 of two-stage close):
    ```bash
    bun .claude/scripts/complete-spec.js <spec-name>

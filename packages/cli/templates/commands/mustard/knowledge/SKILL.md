@@ -59,7 +59,7 @@ Reads `.claude/knowledge.json` and displays all entries grouped by type.
 
 ## glossary
 
-Lists entities from `.claude/entity-registry.json` along with their `description` field (extracted from doc-comments by `sync-registry.js` post-build via `description-enricher.js`).
+Lists entities from `.claude/entity-registry.json` along with their `description` field (extracted from doc-comments by `mustard-rt run sync-registry` post-build via its description-enricher step).
 
 ### Usage
 
@@ -80,7 +80,7 @@ Lists entities from `.claude/entity-registry.json` along with their `description
 
 ### How descriptions are populated
 
-- `description-enricher.js` runs after `buildRegistry` in `sync-registry.js`
+- The description-enricher step runs after registry assembly in `mustard-rt run sync-registry`
 - Reads each entity's first ref file
 - Extracts the immediately-preceding doc-comment block (JSDoc `/** */`, triple-slash `///`, line `//`, hash `#`)
 - Strips markers, drops `@tag` lines, collapses whitespace, truncates to 200 chars

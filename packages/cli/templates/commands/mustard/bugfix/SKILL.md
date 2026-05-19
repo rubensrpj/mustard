@@ -35,7 +35,7 @@ This step is silent when there's nothing to audit — no output if `active/` is 
 
 **Phase marker (first action, before any Grep):** Run `bun .claude/scripts/emit-phase.js --spec {spec-name} --to ANALYZE`. ANALYZE runs in the parent before any pipeline-state file exists, so `pipeline-phase.js` cannot see it — this is the only point that knows ANALYZE started. Idempotent (script skips if already emitted for this spec) and fail-open.
 
-1. **AUTO-SYNC:** Run `mustard-rt run sync-detect`. If output shows any subproject with `hashChanged: true`, then run `bun .claude/scripts/sync-registry.js`. Otherwise skip sync-registry entirely.
+1. **AUTO-SYNC:** Run `mustard-rt run sync-detect`. If output shows any subproject with `hashChanged: true`, then run `mustard-rt run sync-registry`. Otherwise skip sync-registry entirely.
 
 ### Diff Context (automatic)
 
@@ -217,7 +217,7 @@ After EXECUTE (fix + validate) completes:
 
 ### CLOSE
 
-- `bun .claude/scripts/sync-registry.js` (if entities changed)
+- `mustard-rt run sync-registry` (if entities changed)
 - Output bugfix report (diagnosis, fix, validation, QA result)
 
 ## Zero Context-Switch Protocol

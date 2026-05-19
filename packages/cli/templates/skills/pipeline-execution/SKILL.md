@@ -13,7 +13,7 @@ source: manual
 
 ### ANALYZE Phase (collapses old SYNC+UNDERSTAND+SCOPE+EXPLORE)
 
-1. **AUTO-SYNC:** `bun .claude/scripts/sync-registry.js`
+1. **AUTO-SYNC:** `mustard-rt run sync-registry`
 2. Read `entity-registry.json` → entity found? → infer layers. Not found? → all layers.
 3. Extract `_patterns`, `e.{Entity}`, `_enums`.
 
@@ -104,7 +104,7 @@ APPROVED (zero CRITICAL) → CLOSE. REJECTED (any CRITICAL) → fix agent dispat
 
 ### CLOSE Phase (collapses old COMPLETE)
 
-1. `bun .claude/scripts/sync-registry.js`
+1. `mustard-rt run sync-registry`
 2. Update spec: `Status: completed`, `Phase: CLOSE`. Checklist must already be fully `[x]` from EXECUTE — `close-gate.js` blocks CLOSE if any `[ ]` remains in the Checklist section.
 3. Move spec to `.claude/spec/completed/`
 4. **Delete** `.claude/.pipeline-states/{spec-name}.json`

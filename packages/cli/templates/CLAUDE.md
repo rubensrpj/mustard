@@ -70,8 +70,8 @@ bun test hooks/__tests__/hooks.test.js
 mustard-rt run sync-detect
 
 # Entity registry generation
-bun scripts/sync-registry.js
-bun scripts/sync-registry.js --force
+mustard-rt run sync-registry
+mustard-rt run sync-registry --force
 
 # Skill CLI (invoked by /scan §4.7; also callable standalone)
 bun scripts/skills.js validate

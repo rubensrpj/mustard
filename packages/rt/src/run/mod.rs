@@ -13,6 +13,7 @@
 
 pub mod scan;
 mod sync_detect;
+mod sync_registry;
 
 use clap::Subcommand;
 use std::path::PathBuf;
@@ -26,6 +27,15 @@ pub enum RunCmd {
         #[arg(long, default_value = ".")]
         root: PathBuf,
     },
+    /// Scan entities, clusters and conventions; write `entity-registry.json` v4.0.
+    SyncRegistry {
+        /// The monorepo root to scan. Defaults to the current directory.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        /// Regenerate even when the registry is already populated.
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 /// Dispatch a `run` subcommand.
@@ -36,5 +46,6 @@ pub enum RunCmd {
 pub fn dispatch(cmd: RunCmd) {
     match cmd {
         RunCmd::SyncDetect { root } => sync_detect::run(&root),
+        RunCmd::SyncRegistry { root, force } => sync_registry::run(&root, force),
     }
 }

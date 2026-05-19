@@ -68,9 +68,9 @@ Decisão baseada na regra de Thariq Shihipar (Anthropic, *"The Unreasonable Effe
 
 ### Impl Agent (Wave 2) — montagem do registry
 
-- [ ] Portar `sync-registry.js` e os enriquecedores: `registry/cluster-discovery.js`, `registry/description-enricher.js`, `registry/project-conventions.js`, `registry/schema-builder.js`.
-- [ ] Portar a orquestração `scan/`: `orchestrate.js`, `_precompute.js`, `finalize.js`.
-- [ ] Atualizar as invocações de `sync-registry` (6 sites: `approve`, `bugfix`, `close`, `feature`, `refs/scan/scan-protocol.md`).
+- [x] Portar `sync-registry.js` e os enriquecedores: `registry/cluster-discovery.js`, `registry/description-enricher.js`, `registry/project-conventions.js`, `registry/schema-builder.js`.
+- [x] Escopo da orquestração `scan/`: `orchestrate.js`/`_precompute.js`/`finalize.js` são drivers do comando `/scan` (não da camada de dados do registry) — porte movido para a Wave 6.
+- [x] Atualizar as invocações de `sync-registry` (9 sites em `commands/`, `refs/` e `skills/`).
 
 ### Impl Agent (Wave 3) — estado de pipeline + memória
 
@@ -96,6 +96,7 @@ Decisão baseada na regra de Thariq Shihipar (Anthropic, *"The Unreasonable Effe
 ### Impl Agent (Wave 6) — telemetria + validação
 
 - [ ] Portar `statusline.js`, `skills.js`, `security-scan.js`, `otel-collector.js`, `diagnose-otel.js`, `verify-emit.js`, `_rtk-gain.js`.
+- [ ] Portar a orquestração do `/scan` (deferido da Wave 2): `scan/orchestrate.js`, `scan/_precompute.js`, `scan/finalize.js`.
 - [ ] Atualizar as invocações em `refs/scan/scan-protocol.md`, `refs/scan/evidence-rules.md`, `refs/feature/ac-cross-shell.md`.
 
 ### Impl Agent (Wave 7) — limpeza + orfanização

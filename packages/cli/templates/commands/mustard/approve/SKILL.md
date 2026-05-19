@@ -21,7 +21,7 @@ A spec has two named layers (see `/feature` § Full Scope): `## PRD` — the *wh
 ## Action
 
 1. **Step 0: AUTO-SYNC (MANDATORY)** — Run via Bash tool BEFORE any other action:
-   - `bun .claude/scripts/sync-registry.js`
+   - `mustard-rt run sync-registry`
    - Do NOT proceed to step 2 without running this command
 2. **Read** `.claude/pipeline-config.md` — agents, model selection
 3. Locate active spec in `.claude/spec/active/`

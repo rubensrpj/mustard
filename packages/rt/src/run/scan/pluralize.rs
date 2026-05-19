@@ -5,6 +5,12 @@
 //! a table name. The JS module was extracted from `sync-registry.js` so scanners
 //! could reuse it without depending on the top-level CLI script; the same
 //! reuse goal holds here.
+//!
+//! This is a reusable library surface — no scanner derives entity names from
+//! table names yet (the ones that do land in a later wave), so the public API
+//! has no in-crate caller. `dead_code` is allowed module-wide rather than on
+//! each item, matching the deliberate "ported library, future caller" intent.
+#![allow(dead_code)]
 
 /// Lookup for common irregular plurals.
 ///

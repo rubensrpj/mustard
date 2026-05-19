@@ -12,13 +12,13 @@
 //! typedefs in `scanner-contract.js` field-for-field, so the registry assembled
 //! in a later wave consumes the same shapes the JS scanners produced.
 //!
-//! The scanner subsystem is a library: Wave 1 builds and unit-tests it, but the
-//! `run sync-registry` subcommand that drives it is a later wave. Until then
-//! the public surface has no in-crate caller, so `dead_code` is allowed here.
-#![allow(dead_code)]
+//! Wave 2 wires the subsystem into `run sync-registry`, which consumes the
+//! scanners, the route/dto/service maps, and per-stack pattern inference.
 
+pub mod cluster_discovery;
 pub mod file_utils;
 pub mod pluralize;
+pub mod project_conventions;
 
 mod dotnet_scanner;
 mod go_scanner;
@@ -69,17 +69,81 @@ pub struct EnumInfo {
     pub value_convention: Option<String>,
 }
 
+/// A scanned route group — mirrors the `RouteInfo` typedef.
+///
+/// The contract types mirror the JS typedefs field-for-field; `infer_patterns`
+/// reads only the fields a given stack's pattern inference needs, so the rest
+/// are a deliberate, future-proof surface — hence the `dead_code` allow.
+#[derive(Debug, Clone, Default)]
+#[allow(dead_code)]
+pub struct RouteInfo {
+    /// Relative path from the subproject root.
+    pub file: String,
+    /// Route group prefix (e.g. `/contracts`).
+    pub prefix: String,
+    /// Endpoint descriptors (`method`, `path`, optional `name`).
+    pub endpoints: Vec<EndpointInfo>,
+}
+
+/// One endpoint within a [`RouteInfo`].
+#[derive(Debug, Clone, Default)]
+#[allow(dead_code)]
+pub struct EndpointInfo {
+    /// HTTP method (`GET`, `POST`, …).
+    pub method: String,
+    /// Full route path.
+    pub path: String,
+    /// Handler name, when one could be extracted.
+    pub name: Option<String>,
+}
+
+/// A scanned DTO / schema / view-model — mirrors the `DtoInfo` typedef.
+#[derive(Debug, Clone, Default)]
+#[allow(dead_code)]
+pub struct DtoInfo {
+    /// Relative path from the subproject root.
+    pub file: String,
+    /// Linked entity name, when inferable from the DTO name.
+    pub entity: Option<String>,
+    /// Validation pattern (`zod`, `class-validator`, `none`).
+    pub validation_pattern: String,
+}
+
+/// A scanned service class — mirrors the `ServiceInfo` typedef.
+#[derive(Debug, Clone, Default)]
+#[allow(dead_code)]
+pub struct ServiceInfo {
+    /// Relative path from the subproject root.
+    pub file: String,
+    /// Linked entity name, when inferable from the service name.
+    pub entity: Option<String>,
+    /// Injected dependency type names.
+    pub dependencies: Vec<String>,
+}
+
 /// The combined output of a full scan — mirrors the object `ScannerContract.scan()`
-/// returns. Later waves add the route / dto / service / repository maps; Wave 1
-/// ports the two maps the registry's entity layer needs.
+/// returns. `patterns` carries the inferred `_patterns.{stack}` object as
+/// JSON; the registry assembles it straight into the registry file.
+///
+/// `services` mirrors the JS `scan()` shape; like the JS `inferPatterns` it is
+/// carried but not yet read by any consumer — hence the field-level allow.
 #[derive(Debug, Clone, Default)]
 pub struct ScanResult {
     /// Entities keyed by entity name.
     pub entities: BTreeMap<String, EntityInfo>,
     /// Enums keyed by enum name.
     pub enums: BTreeMap<String, EnumInfo>,
+    /// Route groups keyed by route key.
+    pub routes: BTreeMap<String, RouteInfo>,
+    /// DTOs keyed by DTO name.
+    pub dtos: BTreeMap<String, DtoInfo>,
+    /// Services keyed by service class name.
+    #[allow(dead_code)]
+    pub services: BTreeMap<String, ServiceInfo>,
     /// The detected architecture pattern (`solid`, `layered`, `minimal`, …).
     pub architecture: String,
+    /// Inferred `_patterns.{stack}` object — a `serde_json::Value::Object`.
+    pub patterns: serde_json::Value,
 }
 
 /// Base contract for stack scanners — a port of the `ScannerContract` class.
@@ -106,13 +170,50 @@ pub trait Scanner {
         BTreeMap::new()
     }
 
+    /// Scan routes / endpoints. Empty by default.
+    fn scan_routes(&self, _root: &Path) -> BTreeMap<String, RouteInfo> {
+        BTreeMap::new()
+    }
+
+    /// Scan DTOs / schemas / view-models. Empty by default.
+    fn scan_dtos(&self, _root: &Path) -> BTreeMap<String, DtoInfo> {
+        BTreeMap::new()
+    }
+
+    /// Scan service classes. Empty by default.
+    fn scan_services(&self, _root: &Path) -> BTreeMap<String, ServiceInfo> {
+        BTreeMap::new()
+    }
+
+    /// Infer the `_patterns.{stack}` object from the scanned data — a port of
+    /// `inferPatterns()`. The default is an empty object (the scanner declined
+    /// to infer patterns). Implementors return a `serde_json::Value::Object`.
+    fn infer_patterns(&self, _root: &Path, _result: &ScanResult) -> serde_json::Value {
+        serde_json::Value::Object(serde_json::Map::new())
+    }
+
     /// Run the full scan pipeline — a port of `ScannerContract.scan()`.
     fn scan(&self, root: &Path) -> ScanResult {
-        ScanResult {
+        let mut result = ScanResult {
             entities: self.scan_entities(root),
             enums: self.scan_enums(root),
+            routes: self.scan_routes(root),
+            dtos: self.scan_dtos(root),
+            services: self.scan_services(root),
             architecture: self.detect_architecture(root),
+            patterns: serde_json::Value::Object(serde_json::Map::new()),
+        };
+        // `inferPatterns` runs after every scan_* method, then `scan()` records
+        // `architecture` onto the patterns object (matching the JS contract).
+        let mut patterns = self.infer_patterns(root, &result);
+        if let serde_json::Value::Object(ref mut map) = patterns {
+            map.insert(
+                "architecture".to_string(),
+                serde_json::Value::String(result.architecture.clone()),
+            );
         }
+        result.patterns = patterns;
+        result
     }
 }
 
@@ -191,7 +292,12 @@ pub fn load_scanner(root: &Path, stack_hint: Option<&str>) -> Option<Box<dyn Sca
 
 /// List the stack ids that have a scanner available — a port of
 /// `listAvailableScanners()`.
+///
+/// `sync-registry` resolves scanners per-subproject via [`load_scanner`], so it
+/// never needs the flat list; kept as the faithful public-API counterpart of
+/// the JS export.
 #[must_use]
+#[allow(dead_code)]
 pub fn list_available_scanners() -> Vec<&'static str> {
     vec![
         "dotnet",

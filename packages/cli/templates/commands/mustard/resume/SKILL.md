@@ -105,7 +105,7 @@ Before loading heavy context (sync-registry, diff-context, Explore Gate), ask th
 
 ### Step 2: Bootstrap (after confirmation)
 
-6. **AUTO-SYNC:** `bun .claude/scripts/sync-registry.js`
+6. **AUTO-SYNC:** `mustard-rt run sync-registry`
    - **Skip if `resumeMode === "continued"`** (Step 0.5): registry is reused from prior session.
    - Always run if `resumeMode === "reanalyzed"` or `"escalated-to-reanalyze"`.
 
@@ -242,7 +242,7 @@ After REVIEW returns APPROVED, run QA before CLOSE. NEVER go REVIEW→CLOSE dire
 
 20. **CLOSE:**
     - **Wave plan gate:** if `pipeline-state.isWavePlan === true`, only CLOSE when `completedWaves.length === totalWaves`. If waves remain (`currentWave <= totalWaves` and wave N-1 just finished), **do not** run CLOSE — instead update state (`currentWave++`, `completedWaves.push`), output `═══ WAVE {N-1} COMPLETE — {role} ═══`, and stop. Next `/mustard:resume` picks up wave N.
-    - `bun .claude/scripts/sync-registry.js`
+    - `mustard-rt run sync-registry`
     - Spec: `Status: completed`, `Phase: CLOSE`, all `[ ]` → `[x]`. For wave plans: mark `wave-plan.md` status `completed`, and mark each `wave-N-{role}/spec.md` completed too.
     - Move spec to `.claude/spec/completed/` (the entire `{specName}/` directory, including wave subdirs if any)
     - **Delete** `.claude/.pipeline-states/{spec-name}.json`
