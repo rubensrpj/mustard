@@ -1,6 +1,6 @@
 # Feature: b1-monorepo-merge
 
-### Status: approved | Phase: PLAN | Scope: full
+### Status: completed | Phase: CLOSE | Scope: full
 ### Checkpoint: 2026-05-19T00:15:15Z
 ### Lang: pt
 
@@ -43,18 +43,18 @@ N/A.
 
 ### Templates Agent (Wave 1) — estrutura, workspace e import
 
-- [ ] Criar o layout: `packages/cli/`, `apps/dashboard/`. Criar `pnpm-workspace.yaml` (`packages: ['packages/*', 'apps/*']`) e `Cargo.toml` de workspace na raiz.
-- [ ] `git mv` do código da CLI (`bin/`, `src/`, `dist/`, `templates/` + `package.json`, `tsconfig`, configs) para `packages/cli/`. O `.claude/` raiz NÃO move.
-- [ ] `git subtree add --prefix=apps/dashboard <repo do mustard-dashboard> main` — importa o dashboard com histórico (branch trunk `main`).
-- [ ] Migrar a CLI de npm → pnpm: remover `package-lock.json`; gerar `pnpm-lock.yaml` no workspace. Remover o `bun.lock` órfão do dashboard (ele usa pnpm).
-- [ ] Consolidar `.gitignore` na raiz.
+- [x] Criar o layout: `packages/cli/`, `apps/dashboard/`. Criar `pnpm-workspace.yaml` (`packages: ['packages/*', 'apps/*']`) e `Cargo.toml` de workspace na raiz.
+- [x] `git mv` do código da CLI (`bin/`, `src/`, `dist/`, `templates/` + `package.json`, `tsconfig`, configs) para `packages/cli/`. O `.claude/` raiz NÃO move.
+- [x] `git subtree add --prefix=apps/dashboard <repo do mustard-dashboard> main` — importa o dashboard com histórico (branch trunk `main`).
+- [x] Migrar a CLI de npm → pnpm: remover `package-lock.json`; gerar `pnpm-lock.yaml` no workspace. Remover o `bun.lock` órfão do dashboard (ele usa pnpm).
+- [x] Consolidar `.gitignore` na raiz.
 
 ### Templates Agent (Wave 2) — validação e re-scan
 
-- [ ] Rodar `/mustard:scan` para o orquestrador raiz redescobrir os 2 subprojetos (`packages/cli`, `apps/dashboard`) e gerar o contexto de cada um.
-- [ ] Validar build isolado: `packages/cli` (build atual da CLI) e `apps/dashboard` (`pnpm build`).
-- [ ] Ajustar caminhos quebrados pela movimentação (referências relativas em scripts, paths em configs/CI).
-- [ ] Atualizar `CLAUDE.md` raiz + a tabela Project Structure com o layout monorepo.
+- [x] Rodar `/mustard:scan` para o orquestrador raiz redescobrir os 2 subprojetos (`packages/cli`, `apps/dashboard`) e gerar o contexto de cada um.
+- [x] Validar build isolado: `packages/cli` (build atual da CLI) e `apps/dashboard` (`pnpm build`).
+- [x] Ajustar caminhos quebrados pela movimentação (referências relativas em scripts, paths em configs/CI).
+- [x] Atualizar `CLAUDE.md` raiz + a tabela Project Structure com o layout monorepo.
 
 ## Dependências
 
@@ -69,10 +69,19 @@ N/A.
 
 ## Critérios de Aceitação
 
-- [ ] AC-1: O layout monorepo existe — Command: `node -e "const fs=require('fs');['packages/cli','apps/dashboard','pnpm-workspace.yaml'].forEach(p=>{if(!fs.existsSync(p))process.exit(1)})"`
-- [ ] AC-2: A CLI builda no novo local — Command: `bash -c 'cd packages/cli && pnpm build'`
-- [ ] AC-3: O dashboard builda no novo local — Command: `bash -c 'cd apps/dashboard && pnpm build'`
-- [ ] AC-4: O histórico do dashboard foi preservado — Command: `bash -c 'test -n "$(git log --oneline -- apps/dashboard | head -1)"'`
+- [x] AC-1: O layout monorepo existe — Command: `node -e "const fs=require('fs');['packages/cli','apps/dashboard','pnpm-workspace.yaml'].forEach(p=>{if(!fs.existsSync(p))process.exit(1)})"`
+- [x] AC-2: A CLI builda no novo local — Command: `bash -c 'cd packages/cli && pnpm build'`
+- [x] AC-3: O dashboard builda no novo local — Command: `bash -c 'cd apps/dashboard && pnpm build'`
+- [x] AC-4: O histórico do dashboard foi preservado — Command: `bash -c 'test -n "$(git log --oneline -- apps/dashboard | head -1)"'`
+
+## Notas de Execução
+
+- **Import do dashboard (desvio consciente):** o tip do `main` do `mustard-dashboard` (`606d569`) estava mid-refactor — ~14 componentes e deps não-commitados. O `subtree add` inicial importou só o commitado e o build (AC-3) falhou. Com decisão do usuário, as mudanças em andamento foram commitadas no repo de origem (`0eb9c74`) e trazidas via `subtree pull` (`a62a633`); AC-3 passou. O repo antigo `C:/Atiz/mustard-dashboard` fica obsoleto — trabalho futuro do dashboard segue no monorepo.
+- **`/mustard:scan`:** a redescoberta usou `sync-detect.js` + `sync-registry.js` (2 subprojetos confirmados: `apps/dashboard` role `ui`, `packages/cli` detectado via `templates/CLAUDE.md`). O `sync-compile.js` foi removido em commit anterior (`6b12620`) e não foi recriado. Geração profunda de skills/recipes por subprojeto via `/mustard:scan` completo fica como follow-up recomendado.
+- **`dist/`:** não era versionado — confirmado; nada a mover, regenera no build.
+- **Docs raiz** (`README`/`CHANGELOG`/`TUTORIAL`/`curso-mustard.html`, `docs/`, `assets/`): mantidos na raiz como visão do monorepo, conforme default.
+- **Limpeza:** arquivos de estado efêmero rastreados que entraram na importação (`.compact-state/`, `.harness/`, `.claude.backup.*`, `.metrics/` aninhados) foram removidos do índice e cobertos no `.gitignore`.
+- **Sequência de commits:** `6880b1d` (move CLI + workspace) → `5dcda97` (subtree add) → `7e3ca7d` (pnpm + gitignore) → `54f99a2` (CI + CLAUDE.md + registry) → `a62a633`/`fad1f17` (import WIP dashboard + lockfile) → limpeza de estado efêmero.
 
 ## Não-Objetivos
 

@@ -25,7 +25,7 @@
         "namingPattern": "unknown"
       },
       "dto": {
-        "folder": null,
+        "folder": "src/lib/",
         "validationTool": "none"
       },
       "architecture": "atomic",
@@ -35,7 +35,7 @@
           "prefix": "use",
           "suffix": "use",
           "ext": ".ts",
-          "fileCount": 7,
+          "fileCount": 8,
           "folders": [
             "src/hooks",
             "src/lib"
@@ -70,10 +70,12 @@
         }
       ],
       "folderFrequency": {
-        "totalFolders": 6,
+        "totalFolders": 7,
         "segments": {
-          "src": 5,
+          "src": 6,
           "api": 1,
+          "components": 1,
+          "page": 1,
           "data": 1,
           "hooks": 1,
           "lib": 1,
@@ -84,12 +86,12 @@
         "naming": {
           "dominant": null,
           "distribution": {
-            "lowercase": 5,
-            "camelCase": 7,
-            "kebab-case": 2,
+            "lowercase": 12,
+            "camelCase": 9,
+            "kebab-case": 4,
             "mixed": 3
           },
-          "total": 17
+          "total": 28
         }
       }
     }
