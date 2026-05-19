@@ -24,6 +24,7 @@ mod exec_rewave_check;
 mod mark_checklist_item;
 mod memory;
 mod metrics;
+mod otel;
 mod pipeline_summary;
 mod qa_run;
 mod recipe_match;
@@ -342,6 +343,21 @@ pub enum RunCmd {
         #[arg(long = "skip-security")]
         skip_security: bool,
     },
+    /// Run the local OTLP/JSON receiver for Claude Code native telemetry.
+    ///
+    /// Binds a loopback HTTP server on `MUSTARD_OTEL_PORT` (default 4318) and
+    /// projects incoming metrics/logs into the `claude_code_otel` table. Runs
+    /// until a shutdown signal — the harness spawns it as a long-lived child.
+    OtelCollector,
+    /// End-to-end health check of the Mustard ↔ Claude Code OTEL pipeline.
+    DiagnoseOtel {
+        /// Emit the machine-readable JSON report.
+        #[arg(long)]
+        json: bool,
+        /// Wait `Xs`/`Xms`, then assert the row count grew (exit 1 on fail).
+        #[arg(long = "expect-rows-after")]
+        expect_rows_after: Option<String>,
+    },
 }
 
 /// Dispatch a `run` subcommand.
@@ -447,5 +463,10 @@ pub fn dispatch(cmd: RunCmd) {
             scan_orchestrate::run(force, target.as_deref())
         }
         RunCmd::ScanFinalize { skip_security } => scan_finalize::run(skip_security),
+        RunCmd::OtelCollector => otel::collector::run(),
+        RunCmd::DiagnoseOtel {
+            json,
+            expect_rows_after,
+        } => otel::diagnose::run(json, expect_rows_after.as_deref()),
     }
 }

@@ -95,7 +95,7 @@ Decisão baseada na regra de Thariq Shihipar (Anthropic, *"The Unreasonable Effe
 
 ### Impl Agent (Wave 6) — telemetria + validação
 
-- [x] Portar `statusline`, `skills`, `security-scan`, `verify-emit`, `_rtk-gain` (5/7). `otel-collector`/`diagnose-otel` — bloqueio arquitetural, decisão pendente (ver Concerns W6).
+- [x] Portar os 7 scripts de telemetria/validação: `statusline`, `skills`, `security-scan`, `verify-emit`, `_rtk-gain`, `otel-collector`, `diagnose-otel` (OTEL portado com `tiny_http` + `rusqlite`).
 - [x] Portar a orquestração do `/scan` (deferido da Wave 2): `scan/orchestrate.js`, `scan/_precompute.js`, `scan/finalize.js`.
 - [x] Concluir as sub-features deferidas da W5: `metrics --compare` + views `cross-session-timeline`/`spec-tree`/`pr-metrics` de `event-projections`.
 - [x] Atualizar as invocações em `refs/scan/scan-protocol.md`, `refs/scan/evidence-rules.md`, `refs/feature/ac-cross-shell.md`.
@@ -134,7 +134,7 @@ Decisão baseada na regra de Thariq Shihipar (Anthropic, *"The Unreasonable Effe
 
 - **W5 — sub-features de `metrics`/`event-projections` não portadas:** o core dos 6 scripts está portado, mas `metrics --compare` (resolução de git-tag) e as views `cross-session-timeline`/`spec-tree`/`pr-metrics` de `event-projections` ficaram como JS-only. Os `.js` permanecem (consumidores presentes), então a funcionalidade não regrediu. **Wave 6** deve completar essas sub-features antes da varredura da Wave 7 — caso contrário a deleção dos `.js` perde funcionalidade.
 
-- **W6 — `otel-collector`/`diagnose-otel` não portados (bloqueio arquitetural):** ambos sobem um servidor HTTP (`Bun.serve`) e gravam numa tabela SQLite via `_lib/event-store.js`. Um porte fiel exige adicionar a `mustard-rt` um crate de servidor HTTP + um de SQLite — contra o princípio de binário enxuto e sem dependências. O subsistema OTEL é periférico (referenciado só em `/maint`). **Decisão do usuário pendente** antes da Wave 7. As sub-features deferidas da W5 (`metrics --compare`, views de `event-projections`) foram **concluídas** na W6.
+- **W6 — `otel-collector`/`diagnose-otel`** — **RESOLVIDO:** o usuário confirmou o porte. OTEL portado para Rust com `tiny_http` (servidor HTTP bloqueante, sem async) + `rusqlite` feature `bundled` (SQLite compilado no binário). `rusqlite` fixado em `0.31` para casar com `apps/dashboard/src-tauri` (restrição `links = "sqlite3"` do workspace). `mustard-rt` segue um binário único, zero runtime externo. As sub-features deferidas da W5 (`metrics --compare`, views de `event-projections`) foram concluídas na W6.
 
 ## Critérios de Aceitação
 

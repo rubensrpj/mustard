@@ -98,7 +98,7 @@ CREATE INDEX IF NOT EXISTS idx_spans_phase ON spans(phase);
 CREATE INDEX IF NOT EXISTS idx_spans_started ON spans(started_at);
 
 -- Claude Code native OTEL projection. Populated by the local OTLP collector
--- (templates/scripts/otel-collector.js) that receives metrics/logs from the
+-- (`mustard-rt run otel-collector`) that receives metrics/logs from the
 -- Claude Code CLI when CLAUDE_CODE_ENABLE_TELEMETRY=1 is set. Rows are
 -- aggregated per minute by (metric, session_id, model, token_type) — same
 -- composite is the natural PK to keep cardinality bounded.
