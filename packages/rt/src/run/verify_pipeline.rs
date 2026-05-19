@@ -171,18 +171,34 @@ fn discover_defaults(cwd: &Path) -> Vec<VerifyTarget> {
     Vec::new()
 }
 
+/// Build the platform shell invocation for a verification `command` string.
+///
+/// Verification commands come from `sync-detect`, the `pipeline-config.md`
+/// table, or the defaults probe — arbitrary strings that may carry quotes or
+/// shell operators. On Windows, `cmd.exe` does not parse its command line via
+/// the `CommandLineToArgvW` rules that `std`'s `Command::arg` quoting assumes,
+/// so the command is appended verbatim with `CommandExt::raw_arg` (a SAFE API)
+/// and run as `cmd /S /C "<command>"`, mirroring `qa_run::build_shell_command`.
+#[cfg(windows)]
+fn build_shell_command(command: &str) -> Command {
+    use std::os::windows::process::CommandExt;
+    let mut c = Command::new("cmd");
+    c.raw_arg(format!("/S /C \"{command}\""));
+    c
+}
+
+/// See the `#[cfg(windows)]` variant for the rationale.
+#[cfg(not(windows))]
+fn build_shell_command(command: &str) -> Command {
+    let mut c = Command::new("sh");
+    c.arg("-c").arg(command);
+    c
+}
+
 /// Run one shell command in `cwd` with a timeout. Returns `Ok` on exit 0,
 /// `Err(excerpt)` otherwise.
 fn run_command(command: &str, cwd: &Path) -> std::result::Result<(), String> {
-    let mut cmd = if cfg!(windows) {
-        let mut c = Command::new("cmd");
-        c.arg("/C").arg(command);
-        c
-    } else {
-        let mut c = Command::new("sh");
-        c.arg("-c").arg(command);
-        c
-    };
+    let mut cmd = build_shell_command(command);
     cmd.current_dir(cwd)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())

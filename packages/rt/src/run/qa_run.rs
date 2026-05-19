@@ -126,21 +126,44 @@ fn parse_ac_line(line: &str) -> Option<AcItem> {
     Some(AcItem { id: id.to_uppercase(), command })
 }
 
+/// Build the platform shell invocation for an AC `command` string.
+///
+/// On non-Windows: `sh -c <command>` — `std`'s normal arg passing is correct
+/// for `sh`, which parses argv entries directly.
+///
+/// On Windows: `cmd.exe` does **not** parse its command line via the
+/// `CommandLineToArgvW` rules that `std`'s `Command::arg` quoting assumes, so
+/// passing a complex `command` (quotes, `()`, `|`, `&&`) through `arg` corrupts
+/// it. Instead, append the command verbatim with `CommandExt::raw_arg` (a SAFE
+/// API — no `unsafe` needed) and invoke `cmd /S /C "<command>"`: with `/S` and a
+/// command line whose first and last chars are quotes, `cmd` strips exactly
+/// that outer quote pair and runs the remainder literally.
+#[cfg(windows)]
+fn build_shell_command(command: &str) -> Command {
+    use std::os::windows::process::CommandExt;
+    let mut c = Command::new("cmd");
+    // Single verbatim argument: `/S /C "<command>"`. One `raw_arg` call so the
+    // whole `cmd` command line is exactly this — no `std` quoting, no extra
+    // separators between the `/S /C` flags and the quoted payload.
+    c.raw_arg(format!("/S /C \"{command}\""));
+    c
+}
+
+/// See the `#[cfg(windows)]` variant for the rationale.
+#[cfg(not(windows))]
+fn build_shell_command(command: &str) -> Command {
+    let mut c = Command::new("sh");
+    c.arg("-c").arg(command);
+    c
+}
+
 /// Run one AC command. Mirrors the JS classification: `pass` (exit 0), `fail`
 /// (non-zero exit), `skip` (timeout or spawn failure).
 fn run_ac_command(command: &str, cwd: &Path) -> AcResult {
     let t0 = Instant::now();
     // POSIX-style AC commands assume a shell; use the platform shell. Windows
     // AC are documented to be cross-shell-safe (`node -e`, `bash -c`).
-    let mut cmd = if cfg!(windows) {
-        let mut c = Command::new("cmd");
-        c.arg("/C").arg(command);
-        c
-    } else {
-        let mut c = Command::new("sh");
-        c.arg("-c").arg(command);
-        c
-    };
+    let mut cmd = build_shell_command(command);
     cmd.current_dir(cwd);
 
     // No native wait-with-timeout in std; spawn + poll.
@@ -448,6 +471,39 @@ mod tests {
         let dir = tempdir().unwrap();
         let r = run_qa(dir.path(), "ghost");
         assert_eq!(r.overall, "skip");
+    }
+
+    /// An AC-style command with quotes AND parentheses must survive intact to
+    /// the shell. Under the old `cmd.arg("/C").arg(command)` path, `std`'s
+    /// `CommandLineToArgvW`-style quoting corrupts the line (`node` sees a
+    /// split string → "Unterminated string constant"); the `raw_arg`-based
+    /// `build_shell_command` passes it verbatim, so this exits 0.
+    #[cfg(windows)]
+    #[test]
+    fn ac_command_with_quotes_and_parens_runs_verbatim() {
+        let dir = tempdir().unwrap();
+        // node one-liner: a regex test inside parentheses, double-quoted -e arg.
+        let cmd = r#"node -e "process.exit(/^(foo|bar)$/.test('bar') ? 0 : 1)""#;
+        let res = run_ac_command(cmd, dir.path());
+        assert_eq!(
+            res.status, "pass",
+            "quoted+parenthesized AC command must run verbatim (exit {:?}, stderr: {})",
+            res.exit, res.stderr_excerpt
+        );
+        assert_eq!(res.exit, Some(0));
+    }
+
+    /// A `cmd.exe`-native command echoing a parenthesized, quoted string — the
+    /// simplest case proving the outer quote pair is stripped and the inner
+    /// `()` reach the program unmangled.
+    #[cfg(windows)]
+    #[test]
+    fn ac_command_echoes_parenthesized_string() {
+        let dir = tempdir().unwrap();
+        let cmd = r#"node -e "console.log('(ok)')""#;
+        let res = run_ac_command(cmd, dir.path());
+        assert_eq!(res.status, "pass", "stderr: {}", res.stderr_excerpt);
+        assert_eq!(res.exit, Some(0));
     }
 
     #[test]
