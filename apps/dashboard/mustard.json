@@ -1,0 +1,14 @@
+{
+  "git": {
+    "flow": {
+      "*": "dev",
+      "dev": "main"
+    },
+    "provider": "github",
+    "submodules": false
+  },
+  "testCommand": "pnpm test",
+  "buildCommand": "pnpm build",
+  "lintCommand": "pnpm lint",
+  "typeCheckCommand": "pnpm tsc --noEmit"
+}

@@ -1,0 +1,20 @@
+{"ts":"2026-04-01T10:00:00.000Z","event":"rtk-rewrite","tokens_affected":10,"tokens_saved":40,"note":"rewritten via rtk"}
+{"ts":"2026-04-02T11:00:00.000Z","event":"rtk-rewrite","tokens_affected":12,"tokens_saved":50,"note":"rewritten via rtk"}
+{"ts":"2026-04-03T12:00:00.000Z","event":"rtk-rewrite","tokens_affected":8,"tokens_saved":30,"note":"rewritten via rtk"}
+{"ts":"2026-04-03T13:00:00.000Z","event":"budget-check","tokens_affected":1000,"tokens_saved":200,"note":"warn"}
+{"ts":"2026-04-04T14:00:00.000Z","event":"budget-check","tokens_affected":1500,"tokens_saved":300,"note":"warn"}
+{"ts":"2026-04-05T09:00:00.000Z","event":"bash-native-redirect","tokens_affected":5,"tokens_saved":5,"note":"redirected"}
+{"ts":"2026-04-06T09:30:00.000Z","event":"bash-native-redirect","tokens_affected":6,"tokens_saved":6,"note":"redirected"}
+{"ts":"2026-04-07T09:45:00.000Z","event":"bash-native-redirect","tokens_affected":4,"tokens_saved":4,"note":"redirected"}
+{"ts":"2026-04-08T10:00:00.000Z","event":"rtk-rewrite","tokens_affected":9,"tokens_saved":35,"note":"rewritten via rtk"}
+{"ts":"2026-04-08T23:00:00.000Z","event":"budget-check","tokens_affected":800,"tokens_saved":100,"note":"warn"}
+{"ts":"2026-04-10T08:00:00.000Z","event":"rtk-rewrite","tokens_affected":20,"tokens_saved":100,"note":"rewritten via rtk"}
+{"ts":"2026-04-11T09:00:00.000Z","event":"rtk-rewrite","tokens_affected":22,"tokens_saved":110,"note":"rewritten via rtk"}
+{"ts":"2026-04-12T10:00:00.000Z","event":"rtk-rewrite","tokens_affected":18,"tokens_saved":90,"note":"rewritten via rtk"}
+{"ts":"2026-04-13T11:00:00.000Z","event":"budget-check","tokens_affected":2000,"tokens_saved":500,"note":"blocked"}
+{"ts":"2026-04-14T12:00:00.000Z","event":"budget-check","tokens_affected":2500,"tokens_saved":600,"note":"blocked"}
+{"ts":"2026-04-15T13:00:00.000Z","event":"bash-native-redirect","tokens_affected":7,"tokens_saved":7,"note":"redirected"}
+{"ts":"2026-04-16T14:00:00.000Z","event":"bash-native-redirect","tokens_affected":8,"tokens_saved":8,"note":"redirected"}
+{"ts":"2026-04-17T15:00:00.000Z","event":"bash-native-redirect","tokens_affected":9,"tokens_saved":9,"note":"redirected"}
+{"ts":"2026-04-18T16:00:00.000Z","event":"bash-native-redirect","tokens_affected":10,"tokens_saved":10,"note":"redirected"}
+{"ts":"2026-04-19T17:00:00.000Z","event":"rtk-rewrite","tokens_affected":25,"tokens_saved":120,"note":"rewritten via rtk"}
