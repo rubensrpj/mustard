@@ -8,6 +8,8 @@
 
 Approves the active spec and prepares the implementation phase.
 
+A spec has two named layers (see `/feature` § Full Scope): `## PRD` — the *what & why* (intent) — and `## Plano` — the *how* (execution). Approving a spec approves **both layers at once**: there is no separate "approve PRD" gate. The two-layer split is a reading aid, not a second checkpoint — keep it that way.
+
 - **Default** (`/approve`): prepares pipeline state and STOPS, instructing the user to run `/resume` in a new session with clean context. Recommended for Full-scope specs with 5+ files.
 - **With `--resume` flag** (`/approve --resume`): after preparation, immediately hands off to the `/resume` flow in the same session (skips `/resume` Step 0 and Step 1 — no dispatch-failure check, no handoff summary, no re-confirmation). Use when the spec was just approved and you want to skip the session-restart hop. Tradeoff: the EXECUTE phase inherits the ANALYZE+PLAN context instead of starting clean — fine for small/medium specs, less efficient for large ones.
 
@@ -19,7 +21,7 @@ Approves the active spec and prepares the implementation phase.
 ## Action
 
 1. **Step 0: AUTO-SYNC (MANDATORY)** — Run via Bash tool BEFORE any other action:
-   - `bun .claude/scripts/sync-registry.js`
+   - `mustard-rt run sync-registry`
    - Do NOT proceed to step 2 without running this command
 2. **Read** `.claude/pipeline-config.md` — agents, model selection
 3. Locate active spec in `.claude/spec/active/`
@@ -32,7 +34,7 @@ Check if the located spec is a wave plan: look for `.claude/spec/active/{specNam
 
 1. Read `.claude/.pipeline-states/{specName}.json` — expect `isWavePlan: true`, `totalWaves: N`, `currentWave: 1`, `completedWaves: []`.
 2. Read `wave-plan.md` and print its ENTIRE contents verbatim inside a fenced markdown block (```` ```markdown ... ``` ````). List each wave spec file path below the block (one line each).
-2b. **Wave size audit (advisory):** run `bun .claude/scripts/wave-size-check.js --spec-dir .claude/spec/active/{specName}`.
+2b. **Wave size audit (advisory):** run `mustard-rt run wave-size-check --spec-dir .claude/spec/active/{specName}`.
    - If the result is `action: "audited"` and `oversizedCount > 0`, print an advisory block listing each oversized wave:
      `⚠ Wave {N} ({folder}) — {fileCount} arquivos, {layerCount} camada(s) — considere dividir ({reason})`
    - State explicitly that this is **advisory** — it does NOT block approval. It informs the **"Stop — re-plan with guidance"** option of the next `AskUserQuestion`: a wave that is too large can be split before EXECUTE.
@@ -56,7 +58,7 @@ Check if the located spec is a wave plan: look for `.claude/spec/active/{specNam
 5b. **Memory Persist — record architectural decisions:**
    - For each significant decision in the spec (technology choices, design patterns, trade-offs):
      ```bash
-     echo '{"type":"decision","content":"<decision description>","source":"<spec-name>","context":"approved at PLAN phase"}' | bun .claude/scripts/memory-persist.js
+     echo '{"type":"decision","content":"<decision description>","source":"<spec-name>","context":"approved at PLAN phase"}' | mustard-rt run memory decision
      ```
    - Focus on: why a pattern was chosen over alternatives, constraints that shaped the design
    - Skip trivial or obvious decisions (max 3 entries)
@@ -69,6 +71,8 @@ Check if the located spec is a wave plan: look for `.claude/spec/active/{specNam
    - activeForm: `"Running {Layer} agent"`
 8. **Output — visual feedback:**
    - Output progress line: `[v] ANALYZE  [v] PLAN  [>] EXECUTE  [ ] CLOSE`
+   - Print one layer-signal line so the user knows what was just approved:
+     `Aprovado: camada PRD (o quê & porquê) + camada Plano (o como).` (Lang=en: `Approved: PRD layer (what & why) + Plano layer (how).`)
 9. **Branch on `--resume` flag:**
 
    **Without `--resume` (default) — STOP and instruct user to start a new session:**
@@ -93,4 +97,4 @@ Check if the located spec is a wave plan: look for `.claude/spec/active/{specNam
 
 If the spec is not satisfactory:
 - Provide textual feedback for adjustments
-- Use /complete to cancel
+- Use /close to cancel

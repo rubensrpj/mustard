@@ -1646,6 +1646,35 @@ fn dashboard_write_env(repo_path: String, env: HashMap<String, String>) -> Resul
     Ok(())
 }
 
+/// Install Mustard's `.claude/` scaffold into `path` (B5 Wave 3).
+///
+/// Calls `mustard_cli::init` natively — no sidecar process. The CLI runs in
+/// its non-interactive mode automatically: with no terminal attached it falls
+/// back to a safe merge when `.claude/` already exists, and `yes: true` keeps
+/// the git-flow wizard from blocking on a prompt that can never be answered.
+///
+/// `anyhow::Error` is not `Serialize`, so the error is flattened to a string
+/// for the frontend (the Tauri-2 idiom for `Result`-returning commands).
+#[tauri::command]
+fn mustard_install(path: String) -> Result<(), String> {
+    let options = mustard_cli::InitOptions {
+        yes: true,
+        ..Default::default()
+    };
+    mustard_cli::init(std::path::Path::new(&path), &options).map_err(|e| format!("{e:#}"))
+}
+
+/// Refresh an existing Mustard install at `path` (B5 Wave 3).
+///
+/// Calls `mustard_cli::update` natively. `force: true` skips the confirmation
+/// prompt (there is no terminal in the GUI); the timestamped backup the CLI
+/// takes is never skipped.
+#[tauri::command]
+fn mustard_update(path: String) -> Result<(), String> {
+    let options = mustard_cli::UpdateOptions { force: true };
+    mustard_cli::update(std::path::Path::new(&path), &options).map_err(|e| format!("{e:#}"))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -1673,7 +1702,8 @@ pub fn run() {
             dashboard_activity_aggregated, dashboard_quality_metrics, dashboard_knowledge_browse,
             dashboard_watch_repos, dashboard_active_pipelines,
             dashboard_read_env, dashboard_write_env,
-            discover_projects
+            discover_projects,
+            mustard_install, mustard_update
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

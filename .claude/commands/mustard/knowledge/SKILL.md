@@ -59,7 +59,7 @@ Reads `.claude/knowledge.json` and displays all entries grouped by type.
 
 ## glossary
 
-Lists entities from `.claude/entity-registry.json` along with their `description` field (extracted from doc-comments by `sync-registry.js` post-build via `description-enricher.js`).
+Lists entities from `.claude/entity-registry.json` along with their `description` field (extracted from doc-comments by `mustard-rt run sync-registry` post-build via its description-enricher step).
 
 ### Usage
 
@@ -80,7 +80,7 @@ Lists entities from `.claude/entity-registry.json` along with their `description
 
 ### How descriptions are populated
 
-- `description-enricher.js` runs after `buildRegistry` in `sync-registry.js`
+- The description-enricher step runs after registry assembly in `mustard-rt run sync-registry`
 - Reads each entity's first ref file
 - Extracts the immediately-preceding doc-comment block (JSDoc `/** */`, triple-slash `///`, line `//`, hash `#`)
 - Strips markers, drops `@tag` lines, collapses whitespace, truncates to 200 chars
@@ -129,7 +129,7 @@ Filters knowledge entries matching the search term across `name`, `description`,
 
 ## add
 
-Interactively adds a knowledge entry by prompting the user, then calls `knowledge-update.js`.
+Interactively adds a knowledge entry by prompting the user, then calls `mustard-rt run memory knowledge`.
 
 ### Flow
 
@@ -140,7 +140,7 @@ Interactively adds a knowledge entry by prompting the user, then calls `knowledg
 5. Build JSON payload and pipe to script:
    ```bash
    echo '{"type":"...","name":"...","description":"...","source":"manual","tags":[...]}' \
-     | bun .claude/scripts/knowledge-update.js
+     | mustard-rt run memory knowledge
    ```
 6. Confirm: "Knowledge entry '{name}' saved."
 
@@ -231,7 +231,7 @@ Writes `.claude/knowledge-export-{YYYY-MM-DD}.json` from the full knowledge base
 
 ## import <file>
 
-Reads export JSON, pipes each entry to `knowledge-update.js` (deduplication auto-handled). Reports new/updated counts.
+Reads export JSON, pipes each entry to `mustard-rt run memory knowledge` (deduplication auto-handled). Reports new/updated counts.
 
 → See `../../../refs/knowledge/evolve-report.md`
 
@@ -240,7 +240,7 @@ Reads export JSON, pipes each entry to `knowledge-update.js` (deduplication auto
 ## Rules
 
 - knowledge.json is persistent — never deleted by session-cleanup
-- `add` and pipeline capture both call the same `knowledge-update.js` script
+- `add` and pipeline capture both call the same `mustard-rt run memory knowledge` subcommand
 - `search` is case-insensitive
 - Always show entry count in list/search output
 

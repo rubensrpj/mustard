@@ -1,0 +1,43 @@
+[package]
+name = "mustard-cli"
+version = "3.1.36"
+edition = "2024"
+rust-version = "1.85"
+description = "Mustard CLI — scaffolds and updates the .claude/ folder for Claude Code projects. Rust port of the TypeScript CLI (epic B5)."
+license = "MIT"
+publish = false
+
+# The binary the user runs (`mustard init`, `mustard update`, …).
+[[bin]]
+name = "mustard"
+path = "src/main.rs"
+
+# The library surface — consumed by the Tauri dashboard backend (B5 Wave 3),
+# which calls `mustard_cli::init` / `mustard_cli::update` natively instead of
+# spawning a sidecar. Only `src/` is compiled; `templates/` stays a data
+# payload copied at runtime, never a module.
+[lib]
+name = "mustard_cli"
+path = "src/lib.rs"
+
+# Versions come from the workspace `[workspace.dependencies]` table — single
+# source of truth (root Cargo.toml).
+[dependencies]
+mustard-core = { path = "../../packages/core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true }
+dialoguer = { workspace = true }
+ureq = { workspace = true }
+tar = { workspace = true }
+flate2 = { workspace = true }
+zip = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+# Inherit the workspace lint table (pedantic = warn, unwrap_used = deny,
+# unsafe_code = forbid). See the root Cargo.toml `[workspace.lints]`.
+[lints]
+workspace = true

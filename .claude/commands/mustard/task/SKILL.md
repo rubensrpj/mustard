@@ -35,9 +35,10 @@
 
 ### audit
 
-1. **DELEGATE** — Task(general-purpose, sonnet) with compiled layers + domain checklist
-2. **REPORT** — Present findings with severity classification (CRITICAL / WARNING / NOTE)
-3. **SUGGEST** — Propose actionable next steps (`/task refactor`, pipeline Enhancement, etc.)
+1. **ASSESS** — Load `improve-codebase-architecture` skill before dispatch; architectural perspective improves severity classification and surfaces deepening opportunities in findings.
+2. **DELEGATE** — Task(general-purpose, sonnet) with compiled layers + domain checklist
+3. **REPORT** — Present findings with severity classification (CRITICAL / WARNING / NOTE)
+4. **SUGGEST** — Propose actionable next steps (`/task refactor`, pipeline Enhancement, etc.)
 
 ### compare
 
@@ -48,7 +49,7 @@
 
 ### refactor (updated)
 
-1. **ASSESS** — 3+ files or cross-layer → Plan mode first
+1. **ASSESS** — 3+ files or cross-layer → Plan mode first. Load `improve-codebase-architecture` skill: it surfaces deepening opportunities informed by `CONTEXT.md` and `docs/adr/` before the Plan agent commits to a strategy.
 2. **PLAN** — Task(Plan) to analyze and propose strategy
 3. **APPROVE** — Print the ENTIRE plan returned by Task(Plan) verbatim inside a fenced markdown block (```` ```markdown ... ``` ````). Do NOT summarize or truncate — the user asked to read the complete plan before approving. Then `AskUserQuestion`: **"Approve and implement?"** / **"Adjust"** / **"Cancel"**.
 4. **IMPLEMENT** — Task(general-purpose) to execute approved plan

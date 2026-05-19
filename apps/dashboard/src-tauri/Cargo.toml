@@ -4,7 +4,9 @@ version = "0.1.0"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
-rust-version = "1.77"
+# Effective MSRV is 1.85: this crate depends on `mustard-cli` (edition 2024).
+# The crate's own edition stays 2021 — only the toolchain floor moved.
+rust-version = "1.85"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -32,6 +34,12 @@ rusqlite = { version = "0.31", features = ["bundled"] }
 notify = "6"
 notify-debouncer-mini = "0.4"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+# Mustard CLI as a native library (B5 Wave 3): the dashboard installs/updates
+# Mustard into a selected folder by calling `mustard_cli::init`/`update`
+# directly — no sidecar process. This raises the dashboard's effective MSRV to
+# 1.85 (mustard-cli is edition 2024); the dashboard's own `edition`/`rust-version`
+# are intentionally unchanged.
+mustard-cli = { path = "../../cli" }
 
 [[test]]
 name = "db_test"
@@ -40,4 +48,12 @@ path = "tests/db_test.rs"
 [[test]]
 name = "telemetry_test"
 path = "tests/telemetry_test.rs"
+
+[[test]]
+name = "mustard_cli_test"
+path = "tests/mustard_cli_test.rs"
+
+# Test-only: temp dirs for the B5 Wave 3 mustard-cli integration smoke test.
+[dev-dependencies]
+tempfile = "3"
 

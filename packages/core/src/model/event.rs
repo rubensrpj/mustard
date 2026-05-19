@@ -1,13 +1,12 @@
-//! Harness event schema — the shape of one line in `.claude/.harness/events.jsonl`.
+//! Harness event schema — the shape of one row in the harness event store
+//! (`.claude/.harness/mustard.db`).
 //!
-//! The harness is an append-only NDJSON event bus shared by every hook. Each
-//! line is a JSON object with a fixed *envelope* (schema version, timestamp,
-//! session, wave, actor, event name) plus a free-form `payload` whose shape
-//! depends on the event name.
+//! The harness is an append-only event bus shared by every hook. Each event
+//! is a record with a fixed *envelope* (schema version, timestamp, session,
+//! wave, actor, event name) plus a free-form `payload` whose shape depends on
+//! the event name.
 //!
-//! Derived from the live emitter `templates/hooks/_lib/harness-event.js` and
-//! real `events.jsonl` / `sessions/*.jsonl` samples. The emitter writes the
-//! `event` field as an arbitrary string and `payload` as an arbitrary object,
+//! The `event` field is an arbitrary string and `payload` an arbitrary object,
 //! so [`HarnessEvent`] keeps `event` a `String` and `payload` a
 //! [`serde_json::Value`]: new event kinds from the harness must never break
 //! deserialization.
@@ -60,7 +59,7 @@ pub struct Actor {
     pub actor_type: Option<String>,
 }
 
-/// One line of `events.jsonl` — a single harness event.
+/// One row of the harness event store — a single harness event.
 ///
 /// The envelope fields (`v`, `ts`, `session_id`, `wave`, `actor`, `event`)
 /// are stable; `payload` is event-specific and intentionally untyped so the
@@ -105,8 +104,8 @@ pub type HookEvent = HarnessEvent;
 mod tests {
     use super::*;
 
-    /// A real `tool.use` line copied from `.claude/.harness/events.jsonl`
-    /// must round-trip through [`HarnessEvent`] without loss.
+    /// A real `tool.use` event in the harness wire format must round-trip
+    /// through [`HarnessEvent`] without loss.
     #[test]
     fn deserializes_real_tool_use_event() {
         let raw = r#"{"v":1,"ts":"2026-05-19T00:14:26.591Z","sessionId":"eb4a7c56-54fa-4a3a-80d0-0c5818c46be7","wave":0,"actor":{"kind":"hook","id":"metrics-tracker"},"event":"tool.use","payload":{"tool":"Read","phase":"PLAN","target":{"file":"C:\\Atiz\\mustard\\package.json"}},"spec":"2026-05-18-b1-monorepo-merge"}"#;

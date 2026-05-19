@@ -111,6 +111,13 @@
       "content": "qa-run.js so reconhece o heading ## Acceptance Criteria em ingles; specs PT com ## Criterios de Aceitacao sao puladas como skip. Workaround: rodar os AC manualmente e emitir qa.result via .claude/hooks/_lib/harness-event.js emit(). Fix definitivo pertence a spec spec-section-parsing (parsing idioma-agnostico).",
       "source": "2026-05-18-context-glossary",
       "context": "QA phase"
+    },
+    {
+      "id": "lesson-1779157908833",
+      "timestamp": "2026-05-19T02:31:48.833Z",
+      "content": "Migracao incremental de enforcement (hooks JS->Rust): NUNCA remover a entrada de um hook do settings.json antes de a logica estar realmente portada. No B3 Wave 1, review-gate.js e pr-detect.js foram de-wired mas o modulo Rust bash_guard so tinha stub pass-through — o gate de segredo no git commit ficou morto silenciosamente. Regra: de-wire so depois de portar; ou mantenha node e mustard-rt coexistindo entrada-a-entrada.",
+      "source": "2026-05-18-b3-hooks-to-rust",
+      "context": "caught by REVIEW, fixed in fix-loop 1"
     }
   ]
 }

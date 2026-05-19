@@ -42,15 +42,19 @@ If no PR found for current branch → error:
 
 ## Step 2 — Emit DORA event (review.start)
 
-Before invoking the review, emit `review.start` to the harness event bus so `/mustard:metrics --view pr-metrics` can compute review-time DORA metrics:
+Before invoking the review, emit `review.start` to the harness event bus so `/mustard:stats --pr` can compute review-time DORA metrics:
 
 ```bash
-node -e "require('./.claude/hooks/_lib/harness-event.js').emit('review.start', { spec: process.env.MUSTARD_SPEC || null, target: '$PR_TARGET' }, { actor: { kind: 'command', id: 'review' } })"
+mustard-rt run emit-event --event review.start --spec "$MUSTARD_SPEC" --payload "spec=$MUSTARD_SPEC" --payload "target=$PR_TARGET"
 ```
 
-`$PR_TARGET` is the PR number or URL resolved in Step 1. Set `MUSTARD_SPEC` from the most recent active spec if available (best-effort).
+`$PR_TARGET` is the PR number or URL resolved in Step 1. Set `MUSTARD_SPEC` from the most recent active spec if available (best-effort); omit the `--spec`/`spec=` arguments when no active spec is known. The `spec` payload key is what `event-projections`' `pr-metrics` view uses to pair `review.start` with `review.complete`.
 
 ## Step 3 — Invoke Code Review
+
+### Diff-First Dispatch
+
+Antes de invocar Skill ou Task, gere o diff via `mustard-rt run diff-context --phase execute --subproject {sub}` e cole o resultado como bloco `## DIFF` no prompt do agente de review. O diff vira a fonte de verdade — o agente lê arquivos só se o diff for ambíguo. Fail-open: se o diff vier vazio, segue com o fluxo normal (Skill code-review com o PR target).
 
 Use the Skill tool to invoke Claude's native code-review:
 
@@ -61,14 +65,14 @@ Skill({
 })
 ```
 
-If the native `code-review` skill is not available, fall back to local review:
+If the native `code-review` skill is not available, fall back to local review with the DIFF as the primary block:
 
 ```
 Task({
   subagent_type: "general-purpose",
   model: "opus",
   description: "Review: PR <number>",
-  prompt: "Review the changes in the current branch against $PARENT. Checklist: SOLID, Security, Performance, Patterns, Integration."
+  prompt: "## DIFF\n<output of mustard-rt run diff-context --phase execute --subproject {sub}>\n\n## TASK\nReview the changes in the current branch against $PARENT. Use the DIFF as the source of truth. Only Read source files if the diff is ambiguous or you need surrounding context — record each Read in your return note. Checklist: SOLID, Security, Performance, Patterns, Integration."
 })
 ```
 
@@ -79,7 +83,7 @@ Task({
 After the review returns, emit `review.complete`:
 
 ```bash
-node -e "require('./.claude/hooks/_lib/harness-event.js').emit('review.complete', { spec: process.env.MUSTARD_SPEC || null, target: '$PR_TARGET' }, { actor: { kind: 'command', id: 'review' } })"
+mustard-rt run emit-event --event review.complete --spec "$MUSTARD_SPEC" --payload "spec=$MUSTARD_SPEC" --payload "target=$PR_TARGET"
 ```
 
 Then present the review results as returned by the skill/agent.

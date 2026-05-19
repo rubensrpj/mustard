@@ -3,7 +3,16 @@
   "private": true,
   "version": "0.0.0",
   "scripts": {
-    "build": "pnpm --filter mustard-claude build",
-    "test": "pnpm --filter mustard-claude test"
+    "build": "cargo build --workspace && pnpm --filter mustard-dashboard build",
+    "build:rust": "cargo build --workspace",
+    "build:dashboard": "pnpm --filter mustard-dashboard build",
+    "build:release": "cargo build --workspace --release",
+    "test": "cargo test --workspace && pnpm --filter mustard-dashboard test",
+    "test:rust": "cargo test --workspace",
+    "test:dashboard": "pnpm --filter mustard-dashboard test",
+    "lint": "cargo clippy --workspace && pnpm --filter mustard-dashboard lint",
+    "lint:rust": "cargo clippy --workspace",
+    "dashboard:dev": "pnpm --filter mustard-dashboard tauri:dev",
+    "dashboard:build": "pnpm --filter mustard-dashboard tauri:build"
   }
 }

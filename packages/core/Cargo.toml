@@ -13,6 +13,9 @@ publish = false
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+# Backs `io::sqlite_store::SqliteEventStore`. `bundled` (declared in the
+# workspace table) ships SQLite itself — no system dependency.
+rusqlite = { workspace = true }
 
 [dev-dependencies]
 insta = { workspace = true }

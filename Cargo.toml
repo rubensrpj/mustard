@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["apps/dashboard/src-tauri", "packages/core", "packages/rt"]
+members = ["apps/cli", "apps/dashboard/src-tauri", "apps/rt", "packages/core"]
 
 # Single source of dependency-version truth for every Mustard crate. A crate
 # opts in with `dep = { workspace = true }`; the dashboard crate keeps its own
@@ -8,13 +8,48 @@ members = ["apps/dashboard/src-tauri", "packages/core", "packages/rt"]
 # Versions verified against crates.io, May 2026 (see spec b2 § Stack Rust).
 [workspace.dependencies]
 serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1"
+serde_json = "1.0.149"
 thiserror = "2.0.18"
 anyhow = "1.0.102"
-clap = { version = "4.6", features = ["derive"] }
-jiff = "0.2"
-insta = "1.47"
-tempfile = "3"
+clap = { version = "4.6.1", features = ["derive"] }
+jiff = "0.2.24"
+insta = "1.47.2"
+tempfile = "3.27.0"
+# Interactive terminal prompts for the CLI port (`mustard init` git-flow wizard).
+# Replaces the JS `inquirer` dependency. Pure-Rust, no async runtime.
+dialoguer = "0.12"
+# HTTP client for the CLI port — `add` (npm tarball download), `review` (Claude
+# API), `auto-update` (npm registry). Blocking, no async runtime, matching the
+# synchronous shape of the rest of the crate. Versions verified against
+# crates.io, May 2026.
+ureq = { version = "3.3", features = ["json"] }
+# Tarball extraction for `mustard add` (npm package payloads ship as .tgz).
+tar = "0.4.46"
+flate2 = "1.1.9"
+# Zip extraction for the Windows RTK auto-installer (`init`/`update`): RTK
+# GitHub releases ship the Windows binary as a `.zip`. Latest stable on
+# crates.io, May 2026.
+zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
+# SQLite-backed harness store (`SqliteEventStore`, mustard-core). The `bundled`
+# feature compiles SQLite from source so no system library is required on any
+# platform. Pinned to 0.31 to match the dashboard crate's inline `rusqlite`
+# dep: a Cargo workspace links exactly one `libsqlite3-sys` (it carries
+# `links = "sqlite3"`), so the two crates must agree on the major line. The
+# eliminate-bun Wave 4 global dep bump is where both crates move to latest
+# stable (0.39 at time of writing) together.
+rusqlite = { version = "0.31", features = ["bundled"] }
+# Official Rust SDK for the Model Context Protocol — backs the `mcp` face of
+# `mustard-rt` (the re-port of the `mustard-memory` TypeScript MCP server).
+# The `server` feature already pulls `macros` (in `default`) and `schemars`;
+# `transport-io` adds the stdio (JSON-RPC over stdin/stdout) transport. Pinned
+# to the latest stable verified on crates.io (1.7.0, May 2026); the 1.x line
+# has a substantially different API from the 0.x series.
+rmcp = { version = "1.7", features = ["server", "transport-io"] }
+# Async runtime — required only by `rmcp` (async-only). Scoped to the `mcp`
+# face: the handler builds a `current_thread` runtime locally so the `on` /
+# `run` / `check` faces stay fully synchronous. Latest stable verified on
+# crates.io (1.52, May 2026).
+tokio = { version = "1.52.3", features = ["rt", "io-std", "macros"] }
 
 # Workspace-wide lints. A crate opts in with `[lints] workspace = true`.
 # Only `mustard-core` opts in today; the dashboard crate is intentionally

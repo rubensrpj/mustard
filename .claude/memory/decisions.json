@@ -1,111 +1,6 @@
 {
   "entries": [
     {
-      "id": "decision-1778610197844",
-      "timestamp": "2026-05-12T18:23:17.844Z",
-      "content": "update.ts nao precisou de mudancas de codigo. .claude/mustard.json nao esta em foldersToDelete nem e recopiado de templates, entao runtime sobrevive intocado. Adicionado apenas comentario explicativo",
-      "source": "2026-05-12-mustard-2-0-phase-0-compat-runtime",
-      "context": "Wave 2 EXECUTE — update preservation"
-    },
-    {
-      "id": "decision-1778610197923",
-      "timestamp": "2026-05-12T18:23:17.923Z",
-      "content": "--dry-run --runtime=bun em ambiente sem Bun retorna sucesso (reporta intent com version=unknown + stderr warn) — necessario para AC #5 grep. Mas --runtime=bun (sem dry-run) em ambiente sem Bun ainda falha exit 1",
-      "source": "2026-05-12-mustard-2-0-phase-0-compat-runtime",
-      "context": "Wave 2 EXECUTE — dry-run semantics"
-    },
-    {
-      "id": "decision-1778611116166",
-      "timestamp": "2026-05-12T18:38:36.166Z",
-      "content": "EventStore SQLite (bun:sqlite com fallback better-sqlite3) torna-se single source of truth. events.jsonl mantido como replay log. Elimina 11+ stores duplicados que causaram 6 bugs nesta sessao",
-      "source": "2026-05-12-mustard-2-0-phase-1-event-store-sqlite",
-      "context": "approved at PLAN phase"
-    },
-    {
-      "id": "decision-1778611116270",
-      "timestamp": "2026-05-12T18:38:36.270Z",
-      "content": "FTS5 virtual table para search full-text indexado (knowledge + events). Target <1ms vs 5-15ms do JSON parse atual. Triggers mantem FTS sincronizado com events table",
-      "source": "2026-05-12-mustard-2-0-phase-1-event-store-sqlite",
-      "context": "approved at PLAN phase"
-    },
-    {
-      "id": "decision-1778611116358",
-      "timestamp": "2026-05-12T18:38:36.358Z",
-      "content": "Dual-write durante 1 release: hooks emitem em events.jsonl E chamam EventStore.append(). Reads sempre do DB. Permite rollback. Proximo release: jsonl vira so backup, DB e truth",
-      "source": "2026-05-12-mustard-2-0-phase-1-event-store-sqlite",
-      "context": "approved at PLAN phase"
-    },
-    {
-      "id": "decision-1778612973013",
-      "timestamp": "2026-05-12T19:09:33.013Z",
-      "content": "EventStore.rebuild() alinhado com buildPipelineState semantics (ground truth): apiCalls=tool.use(!Read), retries=dispatch.failure, agentCount=count(agent.start). Specs populadas de qualquer event com spec field (nao so spec./phase.enter). Mesmo modelo do legacy para nao mudar numeros no dashboard",
-      "source": "2026-05-12-mustard-2-0-phase-1-event-store-sqlite",
-      "context": "Wave 5 alignment"
-    },
-    {
-      "id": "decision-1778615215395",
-      "timestamp": "2026-05-12T19:46:55.395Z",
-      "content": "EventStore wrapper findUp(bin/mustard.js) discovery so funciona quando Mustard esta em node_modules ou e ancestor do projeto. Para projetos externos hoje (Sialia), fallback legacy (events.jsonl direto) e aceitavel — Mustard sera npm package no futuro e a discovery resolve nativamente. NAO adicionar MUSTARD_HOME env workaround",
-      "source": "phase-1-sialia-validation",
-      "context": "decision after Phase 1 update on Sialia"
-    },
-    {
-      "id": "decision-1778616401272",
-      "timestamp": "2026-05-12T20:06:41.272Z",
-      "content": "Phase 2 adota manual OTLP JSON emit (sem @opentelemetry/sdk-node). SDK nao se justifica em hook spawn-per-call (AsyncLocalStorage nao propaga cross-process). otlp-transformer entra apenas como devDep para validar shape nos tests. Refactor de ~30 linhas substitui o emit manual pelo SDK quando Claude Code expor CLAUDE_LAST_USAGE",
-      "source": "2026-05-12-mustard-2-0-phase-2-opentelemetry-tokens",
-      "context": "approved at PLAN phase"
-    },
-    {
-      "id": "decision-1778619308884",
-      "timestamp": "2026-05-12T20:55:08.884Z",
-      "content": "Phase 3 adota @modelcontextprotocol/sdk em src/mcp/ runtime. Hooks continuam zero-dep — MCP roda como server stdio separado spawnado por Claude Code via settings.json mcpServers. Read-only nesta fase (writes so via hooks)",
-      "source": "2026-05-12-mustard-2-0-phase-3-mcp-memory-server",
-      "context": "approved at PLAN phase"
-    },
-    {
-      "id": "decision-1778622344508",
-      "timestamp": "2026-05-12T21:45:44.508Z",
-      "content": "Rust backend = `rusqlite` nativo, sem Node deps",
-      "source": "spec:2026-05-12-mustard-dashboard-1-0-standalone-tauri",
-      "context": ""
-    },
-    {
-      "id": "decision-1778622344623",
-      "timestamp": "2026-05-12T21:45:44.623Z",
-      "content": "Modelo de segurança rígido (relevante pra vender)",
-      "source": "spec:2026-05-12-mustard-dashboard-1-0-standalone-tauri",
-      "context": ""
-    },
-    {
-      "id": "decision-1778622344710",
-      "timestamp": "2026-05-12T21:45:44.710Z",
-      "content": "CDN cost 10x menor em escala",
-      "source": "spec:2026-05-12-mustard-dashboard-1-0-standalone-tauri",
-      "context": ""
-    },
-    {
-      "id": "decision-1778622344797",
-      "timestamp": "2026-05-12T21:45:44.796Z",
-      "content": "`@tauri-apps/api` cobre fs/dialog/notification/clipboard sem escrever Rust",
-      "source": "spec:2026-05-12-mustard-dashboard-1-0-standalone-tauri",
-      "context": ""
-    },
-    {
-      "id": "decision-1778622344897",
-      "timestamp": "2026-05-12T21:45:44.897Z",
-      "content": "Não exige Claude Code ativo no projeto",
-      "source": "spec:2026-05-12-mustard-dashboard-1-0-standalone-tauri",
-      "context": ""
-    },
-    {
-      "id": "decision-1778624024841",
-      "timestamp": "2026-05-12T22:13:44.841Z",
-      "content": "Funciona offline / em projetos arquivados",
-      "source": "spec:2026-05-12-mustard-dashboard-1-0-standalone-tauri",
-      "context": ""
-    },
-    {
       "id": "decision-1778624024890",
       "timestamp": "2026-05-12T22:13:44.889Z",
       "content": "Dependência única: schema da Phase 1 do Mustard 2.0",
@@ -348,6 +243,111 @@
       "timestamp": "2026-05-19T00:15:46.263Z",
       "content": ".claude/ raiz do mustard permanece como orquestrador do monorepo; .claude/ do dashboard vira apps/dashboard/.claude/ (contexto de subprojeto)",
       "source": "2026-05-18-b1-monorepo-merge",
+      "context": "approved at PLAN phase"
+    },
+    {
+      "id": "decision-1779153452261",
+      "timestamp": "2026-05-19T01:17:32.261Z",
+      "content": "O contrato de hook (HookInput/Verdict/Outcome, traits Check/Observer) vive no crate mustard-core (B2), nao em B3, porque e o seam compartilhado por hooks, scripts e CLI; B3/B4/B5 consomem o mesmo contrato.",
+      "source": "2026-05-18-b2-mustard-core-crate",
+      "context": "approved at PLAN phase"
+    },
+    {
+      "id": "decision-1779153452428",
+      "timestamp": "2026-05-19T01:17:32.428Z",
+      "content": "mustard-core separa dado de comportamento: model/ e serde puro sem efeito colateral; io/ expoe apenas traits (EventSink, PipelineRepo), nunca structs concretos, para consumidores e testes injetarem fakes (Dependency Inversion).",
+      "source": "2026-05-18-b2-mustard-core-crate",
+      "context": "approved at PLAN phase"
+    },
+    {
+      "id": "decision-1779153452587",
+      "timestamp": "2026-05-19T01:17:32.587Z",
+      "content": "Timestamps de evento usam jiff 0.2 (RFC-3339) em vez de chrono; o dashboard pode seguir em chrono pois os tipos so cruzam como JSON na borda.",
+      "source": "2026-05-18-b2-mustard-core-crate",
+      "context": "approved at PLAN phase"
+    },
+    {
+      "id": "decision-1779156296716",
+      "timestamp": "2026-05-19T02:04:56.716Z",
+      "content": "B3: portar os 37 hooks JS nao como porte 1:1 (um modulo por hook) mas consolidados em ~15 modulos de enforcement atras de um dispatcher unico (mustard-rt). Porte 1:1 preservaria a fragmentacao; consolidar custa o mesmo esforco e entrega um sistema raciocinavel.",
+      "source": "2026-05-18-b3-hooks-to-rust",
+      "context": "approved at PLAN phase"
+    },
+    {
+      "id": "decision-1779156296891",
+      "timestamp": "2026-05-19T02:04:56.891Z",
+      "content": "B3: os 3 hooks off-by-default (duplication-check, convention-check, user-prompt-hint) sao deletados, nao portados — codigo off nao migra.",
+      "source": "2026-05-18-b3-hooks-to-rust",
+      "context": "approved at PLAN phase"
+    },
+    {
+      "id": "decision-1779156297048",
+      "timestamp": "2026-05-19T02:04:57.048Z",
+      "content": "B3: migracao incremental do settings.json — o dispatcher aceita tanto mustard-rt check <id> (um check) quanto mustard-rt on <evento> (evento inteiro), permitindo node e mustard-rt coexistirem entrada-a-entrada ate o colapso final de ~47 para ~8 entradas.",
+      "source": "2026-05-18-b3-hooks-to-rust",
+      "context": "approved at PLAN phase"
+    },
+    {
+      "id": "decision-1779188975583",
+      "timestamp": "2026-05-19T11:09:35.583Z",
+      "content": "B4: scripts JS portados para Rust como subcomando aninhado mustard-rt run <nome>. run (verbo, coerente com hooks on/check) escolhido sobre script (conotacao de linguagem) e sobre forma plana (~48 variantes poluindo o enum de topo).",
+      "source": "2026-05-18-b4-scripts-to-rust",
+      "context": "approved at PLAN phase"
+    },
+    {
+      "id": "decision-1779188975686",
+      "timestamp": "2026-05-19T11:09:35.686Z",
+      "content": "B4: relatorios para humano (qa-run, metrics, event-projections, verify-pipeline) ganham --format html opt-in; JSON continua default. Regra de Thariq Shihipar: HTML para leitor humano, JSON/markdown para pipeline/agente.",
+      "source": "2026-05-18-b4-scripts-to-rust",
+      "context": "approved at PLAN phase"
+    },
+    {
+      "id": "decision-1779188975796",
+      "timestamp": "2026-05-19T11:09:35.796Z",
+      "content": "B4: epico decomposto em 7 waves por familia de script. Os 5 _lib/*.js (harness-event, hook-env, runtime-shim, event-store, metrics-emit) so podem ser deletados na Wave 7, apos portar os 6 consumidores (epic-fold, memory, spec-link, qa-run, review-result + proxy event-store).",
+      "source": "2026-05-18-b4-scripts-to-rust",
+      "context": "approved at PLAN phase"
+    },
+    {
+      "id": "decision-1779201525432",
+      "timestamp": "2026-05-19T14:38:45.432Z",
+      "content": "mustard-cli ocupa packages/cli como crate Rust (bin mustard + lib), edition 2024; templates/ permanece payload de dados intocado no mesmo diretorio",
+      "source": "2026-05-18-b5-cli-to-rust",
+      "context": "approved at PLAN phase"
+    },
+    {
+      "id": "decision-1779201525533",
+      "timestamp": "2026-05-19T14:38:45.533Z",
+      "content": "runtime/event-store.ts (842 LOC) NAO e re-portado em b5; pertence a mustard-core (io/event_store.rs, B2) e a CLI apenas consome o crate",
+      "source": "2026-05-18-b5-cli-to-rust",
+      "context": "approved at PLAN phase"
+    },
+    {
+      "id": "decision-1779201525659",
+      "timestamp": "2026-05-19T14:38:45.659Z",
+      "content": "Carimbo de versao do Mustard gravado como campo version em mustard.json (via env CARGO_PKG_VERSION), nao como arquivo .mustard-version separado; dashboard B6 le mustard.json",
+      "source": "2026-05-18-b5-cli-to-rust",
+      "context": "approved at PLAN phase"
+    },
+    {
+      "id": "decision-1779209761471",
+      "timestamp": "2026-05-19T16:56:01.471Z",
+      "content": "Consolidar o storage do harness em SQLite unico (mustard.db, modo WAL) como store de escrita+leitura, eliminando o events.jsonl NDJSON. Antes havia dois stores (JSONL para o harness, SQLite para MCP/OTEL) + um sync.",
+      "source": "2026-05-19-eliminate-bun",
+      "context": "approved at PLAN phase"
+    },
+    {
+      "id": "decision-1779209761567",
+      "timestamp": "2026-05-19T16:56:01.567Z",
+      "content": "Re-portar o servidor MCP mustard-memory de TypeScript/bun para Rust como face mcp do binario mustard-rt, eliminando o ultimo runtime nao-Rust da ferramenta.",
+      "source": "2026-05-19-eliminate-bun",
+      "context": "approved at PLAN phase"
+    },
+    {
+      "id": "decision-1779209761655",
+      "timestamp": "2026-05-19T16:56:01.655Z",
+      "content": "Escopar tokio (async) apenas a face mcp do mustard-rt com runtime current_thread; as faces on/run/check seguem sincronas. rmcp 1.x exige async mas o resto do binario nao deve pagar esse custo.",
+      "source": "2026-05-19-eliminate-bun",
       "context": "approved at PLAN phase"
     }
   ]

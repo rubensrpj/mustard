@@ -6,16 +6,16 @@ Instructions for Claude Code when working with this repository.
 
 ## Project
 
-Mustard is a CLI that generates `.claude/` folders for Claude Code projects. It creates prompts, commands, hooks, and rules. The repo is a **pnpm + Cargo monorepo**: the CLI lives in `packages/cli/` (npm package `mustard-claude`), and a companion Tauri 2 + React 19 desktop dashboard lives in `apps/dashboard/`. The root `.claude/` is the monorepo orchestrator.
+Mustard is a CLI that generates `.claude/` folders for Claude Code projects. It creates prompts, commands, hooks, and rules. The repo is a **pnpm + Cargo monorepo**: the CLI lives in `apps/cli/` (crate `mustard-cli`), and a companion Tauri 2 + React 19 desktop dashboard lives in `apps/dashboard/`. The root `.claude/` is the monorepo orchestrator.
 
 **Key concepts:**
 
 - "Agents" are prompts loaded into `Task(general-purpose)` - custom subagent types don't work
 - Only 4 native `subagent_type` values: `Explore`, `Plan`, `general-purpose`, `Bash`
-- Enforcement via JavaScript hooks (`PreToolUse`/`PostToolUse`/`SessionStart`/`PreCompact`/`SessionEnd`/`SubagentStart`/`SubagentStop`/`UserPromptSubmit`)
+- Enforcement via the Rust `mustard-rt` binary, dispatched per lifecycle event (`PreToolUse`/`PostToolUse`/`SessionStart`/`PreCompact`/`SessionEnd`/`SubagentStart`/`SubagentStop`/`UserPromptSubmit`)
 - **Universal Delegation**: All code activities must be delegated via Task (separate context)
 - **Skill+Recipe-driven context**: agents auto-load skills by description; recipes inject 90% skeletons by entity+operation
-- **Auto-sync Scripts**: `sync-detect.js`, `sync-registry.js`
+- **Auto-sync**: `mustard-rt run sync-detect`, `mustard-rt run sync-registry`
 - **Namespaced Commands**: All commands use `mustard:` prefix (e.g., `/mustard:feature`)
 - **Canonical methodology mapping**: ANALYZE↔Research, PLAN↔Spec+Plan, EXECUTE↔Implement (cf. [GitHub Spec Kit](https://github.com/github/spec-kit) RPI loop)
 
@@ -42,24 +42,24 @@ Mustard is a CLI that generates `.claude/` folders for Claude Code projects. It 
 
 ## Build & Run
 
-This repo is a **pnpm + Cargo monorepo**. The CLI lives in `packages/cli/`; the Tauri dashboard in `apps/dashboard/`.
+This repo is a **pnpm + Cargo monorepo**. The CLI lives in `apps/cli/`; the Tauri dashboard in `apps/dashboard/`.
 
 ```bash
 # Install all workspace deps (run at repo root)
 pnpm install
 
-# Build / test the CLI
-pnpm --filter mustard-claude build
-pnpm --filter mustard-claude test
+# Build / test the CLI (Rust crate mustard-cli)
+cargo build -p mustard-cli
+cargo test -p mustard-cli
 
 # Build the dashboard
 pnpm --filter mustard-dashboard build
 
-# Initialize a project (run from packages/cli/)
-bun packages/cli/bin/mustard.js init
+# Initialize a project
+cargo run -p mustard-cli -- init
 
 # Update existing project
-bun packages/cli/bin/mustard.js update
+cargo run -p mustard-cli -- update
 ```
 
 ## Structure
@@ -68,31 +68,28 @@ bun packages/cli/bin/mustard.js update
 mustard/                         # monorepo root — pnpm-workspace.yaml + Cargo.toml
 ├── .claude/                     # root orchestrator (pipelines, hooks, registry)
 ├── packages/
-│   └── cli/                     # the Mustard CLI (npm pkg: mustard-claude)
-│       ├── bin/mustard.js       # CLI entry point
-│       ├── src/                 # TypeScript source
-│       │   ├── commands/        # init.ts, update.ts, config.ts, review.ts, add.ts
-│       │   ├── scanners/        # stack.ts, structure.ts, dependencies.ts
-│       │   ├── generators/      # claude-md, prompts, commands, hooks, registry
-│       │   └── services/        # npm.ts
-│       ├── dist/                # Compiled JavaScript
-│       ├── tests/               # unit / integration / bench
-│       └── templates/           # Templates (copied to target .claude/)
-│           ├── CLAUDE.md        # Orchestrator rules (auto-loaded by Claude Code)
-│           ├── settings.json    # Hook wiring + permissions + env modes
-│           ├── pipeline-config.md
-│           ├── commands/mustard/ # 18 namespaced slash commands
-│           ├── skills/          # 7 foundation skills (karpathy, design-craft, etc.)
-│           ├── refs/            # Progressive-disclosure refs (loaded on demand)
-│           ├── recipes/         # Structured recipes (90% skeletons)
-│           ├── context/qa/      # QA agent core context (only static .core.md kept)
-│           ├── scripts/         # 28 utility scripts (sync-*, event-projections, qa-run, etc.)
-│           └── hooks/           # 31 JavaScript hooks (fail-open, no npm deps)
-│               └── _lib/        # Shared runtime: hook-env.js, harness-event.js, metrics-emit.js
-└── apps/
-    └── dashboard/               # Tauri 2 + React 19 desktop dashboard (mustard-dashboard)
-        ├── src/                 # React/TypeScript UI
-        └── src-tauri/           # Rust backend
+│   └── core/                    # shared Rust library crate (mustard-core)
+├── apps/
+│   ├── cli/                     # the Mustard CLI (crate mustard-cli)
+│   │   ├── src/                 # Rust source
+│   │   │   ├── commands/        # init.rs, update.rs, config.rs, review.rs, add.rs
+│   │   │   └── main.rs
+│   │   └── templates/           # Templates (copied to target .claude/)
+│   │       ├── CLAUDE.md        # Orchestrator rules (auto-loaded by Claude Code)
+│   │       ├── settings.json    # Hook wiring + permissions + env modes
+│   │       ├── pipeline-config.md
+│   │       ├── commands/mustard/ # 18 namespaced slash commands
+│   │       ├── skills/          # 7 foundation skills (karpathy, design-craft, etc.)
+│   │       ├── refs/            # Progressive-disclosure refs (loaded on demand)
+│   │       ├── recipes/         # Structured recipes (90% skeletons)
+│   │       └── context/qa/      # QA agent core context (only static .core.md kept)
+│   │   # hooks + scripts are no longer a JS payload — enforcement and the
+│   │   # sync/run subcommands all ship inside the mustard-rt binary.
+│   ├── rt/                      # enforcement runtime (crate mustard-rt)
+│   │   └── src/                 # Rust source — hooks/, run/, dispatch.rs, main.rs
+│   └── dashboard/               # Tauri 2 + React 19 desktop dashboard (mustard-dashboard)
+│       ├── src/                 # React/TypeScript UI
+│       └── src-tauri/           # Rust backend
 ```
 
 ## Context Architecture
@@ -107,7 +104,7 @@ Mustard uses **skill+recipe-driven context loading** — agents receive context 
 | **Subproject guards** | `{subproject}/CLAUDE.md` | Auto when working in subproject |
 | **Foundation skills** | `templates/skills/{name}/SKILL.md` | Auto via skill description match |
 | **Subproject patterns** | `{subproject}/.claude/skills/` | Auto via skill description match |
-| **Recipes (structured)** | `.claude/recipes/{operation}.json` | Matched by `recipe-match.js --entity --operation` |
+| **Recipes (structured)** | `.claude/recipes/{operation}.json` | Matched by `mustard-rt run recipe-match --entity --operation` |
 | **Refs (progressive)** | `templates/refs/{cmd}/*.md` | Read on-demand by commands |
 | **Stack/Modules** | `{subproject}/.claude/commands/{stack,patterns,guards,recipes,notes}.md` | Read on-demand |
 | **Entity registry** | `.claude/entity-registry.json` | Grep by entity name |
@@ -126,8 +123,8 @@ Mustard uses **skill+recipe-driven context loading** — agents receive context 
 ### Sync flow (auto-discovery, monorepo-aware)
 
 1. User invokes `/mustard:feature` or `/mustard:bugfix`
-2. `sync-detect.js` discovers subprojects + roles
-3. `sync-registry.js` scans entities (Drizzle/EF/Prisma/TypeORM/etc.)
+2. `mustard-rt run sync-detect` discovers subprojects + roles
+3. `mustard-rt run sync-registry` scans entities (Drizzle/EF/Prisma/TypeORM/etc.)
 4. Pipeline reads `entity-registry.json` for known entities
 5. SHA256 hash skips recompilation when content unchanged
 
@@ -145,7 +142,7 @@ mustard update
     -> preserve: CLAUDE.md, prompts/, context/*.md, mustard.json (user files)
 ```
 
-## Model routing (`model-routing-gate.js`)
+## Model routing (`mustard-rt` `model_routing` module)
 
 Models are auto-selected by intent. Upgrades blocked, downgrades allowed (opt-in via env).
 
@@ -192,7 +189,7 @@ Models are auto-selected by intent. Upgrades blocked, downgrades allowed (opt-in
 
 ## Enforcement Hooks (highlights)
 
-Enforcement runs as the single Rust binary `mustard-rt` (the `packages/rt` crate): `settings.json` wires one `mustard-rt on <event>` entry per lifecycle event, and the dispatcher runs every registered module for that event. Highlights below — behavioral docs at `templates/pipeline-config.md`, module source at `packages/rt/src/hooks/`.
+Enforcement runs as the single Rust binary `mustard-rt` (the `apps/rt` crate): `settings.json` wires one `mustard-rt on <event>` entry per lifecycle event, and the dispatcher runs every registered module for that event. Highlights below — behavioral docs at `templates/pipeline-config.md`, module source at `apps/rt/src/hooks/`.
 
 | `mustard-rt` module | Matcher | Behavior |
 |------|---------|----------|
@@ -217,7 +214,7 @@ Enforcement runs as the single Rust binary `mustard-rt` (the `packages/rt` crate
 User: /mustard:feature add-login
          │
          ▼
-    enforce-registry.js
+    enforce_registry module (mustard-rt)
     - Registry exists? (BLOCK if not)
     - Version >= 3.x? (BLOCK if not)
          │
@@ -225,16 +222,19 @@ User: /mustard:feature add-login
     Pipeline starts...
 ```
 
-## Sync Scripts
+## Sync & Run Subcommands
 
-### sync-detect.js
+All of the following ship inside the `mustard-rt` binary — there is no JS
+payload. They are invoked as `mustard-rt run <name>`.
+
+### sync-detect
 
 Auto-discovers subprojects in monorepos:
 
 - Detection patterns: `.NET`, `React`, `Drizzle`, etc.
 - Output: JSON with subprojects, agents, paths
 
-### sync-registry.js
+### sync-registry
 
 Generates `entity-registry.json` v3.1:
 
@@ -242,7 +242,7 @@ Generates `entity-registry.json` v3.1:
 - Scans .NET entities (`DbSet`, `class T`)
 - Outputs `_patterns`, `_enums`, entity refs/subs
 
-### security-scan.js
+### security-scan
 
 Scans for secrets, env exposure, and security misconfigurations:
 
@@ -250,7 +250,7 @@ Scans for secrets, env exposure, and security misconfigurations:
 - Checks `.env` exposure and insecure patterns
 - Reports findings with severity levels
 
-### verify-pipeline.js
+### verify-pipeline
 
 Runs build/test verification for the active pipeline:
 
@@ -264,7 +264,7 @@ Monorepo (`pnpm-workspace.yaml`: `packages/*`, `apps/*` + `Cargo.toml` workspace
 
 | Subproject | Path | Technology | CLAUDE.md |
 |------------|------|------------|-----------|
-| CLI | `packages/cli/` | TypeScript / Bun — `mustard-claude` npm package; hooks, scripts, commands under `templates/` | [templates](./packages/cli/templates/CLAUDE.md) |
+| CLI | `apps/cli/` | Rust — crate `mustard-cli`; hooks, scripts, commands under `templates/` | [templates](./apps/cli/templates/CLAUDE.md) |
 | Dashboard | `apps/dashboard/` | Tauri 2 + React 19 + Tailwind 4 desktop app — `mustard-dashboard` | [dashboard](./apps/dashboard/CLAUDE.md) |
 
 ## Entity Registry

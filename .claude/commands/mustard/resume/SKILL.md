@@ -35,12 +35,16 @@ Before the normal detect-and-confirm flow, scan the newest pipeline state for a 
 
 Before loading heavy context (sync-registry, diff-context, Explore Gate), ask the user which mode to use. This gates roughly 2-5k tokens per resume.
 
-1. **Skip conditions** — enter `reanalyze` mode automatically without prompting:
+1. **Skip conditions — auto `reanalyze` (no prompt):**
    - Step 0 just re-dispatched a failed agent (recovery path → always reanalyze next step)
    - `pipeline-state.lastDispatchFailure` was present and <10min old (already handled in Step 0)
    - Wave plan with `failedWaves.length > 0` (handled in wave failure section below — forces `reanalyze`)
 
-2. **Otherwise, AskUserQuestion:**
+1b. **Auto-continue conditions — auto `continued` (no prompt):**
+    - `pipeline-state.updatedAt` within last 10 min AND `status === 'in_progress'` AND no `lastDispatchFailure`. The user just paused or re-opened the session; trust state as source of truth.
+    - Override env: `MUSTARD_RESUME_MODE=continued|reanalyzed|ask` lets a user force a mode for the whole session. `ask` restores the legacy prompt.
+
+2. **Otherwise (state >10min old OR forced via env=ask):** AskUserQuestion:
    - **"Continuar de onde parou (modo leve)"** → `mode = "continued"`: skip sync-registry (Step 2 #6), skip diff-context (unless wave transition forces), skip Pre-EXECUTE Existence Gate (Step 12b). Trust pipeline-state as source of truth.
    - **"Reanalisar contexto (modo completo)"** → `mode = "reanalyzed"`: run Step 2 fully (default behavior, relê tudo).
 
@@ -65,7 +69,7 @@ Before loading heavy context (sync-registry, diff-context, Explore Gate), ask th
    - If matched root file is `wave-plan.md` → wave-plan mode:
      a. Read `.claude/.pipeline-states/{specName}.json`. If present with `isWavePlan: true` + `currentWave: N`, use that state — skip to (c).
      b. **State missing → reconstruct inline** (no `/mustard:approve` roundtrip; the user just wants to continue):
-        1. Run `bun .claude/scripts/wave-tree.js --spec-dir .claude/spec/active/{specName} --format json` and parse `waves[]` (each has `{label, folder, status}`).
+        1. Run `mustard-rt run wave-tree --spec-dir .claude/spec/active/{specName} --format json` and parse `waves[]` (each has `{label, folder, status}`).
         2. **Truly fresh plan** — every wave has `status === "queued"` (never executed) → stop and instruct: `Wave plan isn't approved yet. Run /mustard:approve {specName} first.`
         3. **Plan already in progress** — at least one wave has `status !== "queued"` (proves it was approved & started, the state file was just lost):
            - Build pipeline-state:
@@ -85,26 +89,41 @@ Before loading heavy context (sync-registry, diff-context, Explore Gate), ask th
         - Required return: full expanded spec content for this wave matching the Full-scope template (Status: draft, Summary, Entity Info, Files, Tasks per agent, Dependencies, Boundaries, Acceptance Criteria, Checklist). Nothing else.
         - On return: **Write** the content to the operational spec file (replace the skeleton), then update its header to `Status: implementing`, `Phase: EXECUTE`, `Checkpoint: {ISO now}`.
         - Inform user inline: `Expandi wave-{N} stub via Plan agent. Avançando para EXECUTE.`
-     3b. **Wave size audit (advisory).** Right after the expanded spec is written, run `bun .claude/scripts/wave-size-check.js --spec-dir .claude/spec/active/{specName}`. If the result is `action: "audited"` and the entry for the current wave (`wave === currentWave`) has `oversized: true`, print the advisory line `⚠ Wave {N} ({folder}) — {fileCount} arquivos, {layerCount} camada(s) — considere dividir ({reason})`, noting the freshly-expanded wave came out large. This is **advisory** — do NOT block, do NOT re-plan automatically; continue into EXECUTE normally. Rationale: waves N≥2 only become a full spec here at resume, so `/approve`'s size audit never sees their real size — this is the checkpoint that catches large late waves.
+     3b. **Wave size audit (advisory).** Right after the expanded spec is written, run `mustard-rt run wave-size-check --spec-dir .claude/spec/active/{specName}`. If the result is `action: "audited"` and the entry for the current wave (`wave === currentWave`) has `oversized: true`, print the advisory line `⚠ Wave {N} ({folder}) — {fileCount} arquivos, {layerCount} camada(s) — considere dividir ({reason})`, noting the freshly-expanded wave came out large. This is **advisory** — do NOT block, do NOT re-plan automatically; continue into EXECUTE normally. Rationale: waves N≥2 only become a full spec here at resume, so `/approve`'s size audit never sees their real size — this is the checkpoint that catches large late waves.
      4. Proceed to step 4 with the now-expanded spec.
 4. **Read entire operational spec** (single Read) — extract header (Status/Phase/Checkpoint) + count `[x]` vs `[ ]` + identify agents/waves from headers `### {Agent} Agent (Wave {N})`
+
+   4a. **Phase marker on ANALYZE resume:** if the extracted `Phase` is `ANALYZE`, run `mustard-rt run emit-phase --spec {specName} --to ANALYZE`. A pipeline interrupted mid-ANALYZE has no pipeline-state file yet, so `pipeline-phase.js` never recorded it — emit the marker here. Idempotent (no duplicate if already emitted) and fail-open. Skip for any other phase (those already have a pipeline-state file the hook tracks).
 5. If `.claude/.pipeline-states/{specName}.json` exists (single-spec mode; wave-plan mode already loaded it in step 3) → read for current wave + scope + `explorationSummary` + `decisions`. Optionally enrich with harness view (fail-open). Validate integrity (trust spec header on mismatch).
 6. **Present Handoff Summary** — compiled from pipeline state + spec + agent memory + git context.
 
 → See `../../../refs/resume/handoff-summary.md` for exact format and integrity validation rules.
 
-7. Ask: **"Continue from next action, or review spec first?"**
+   6a. **Wave Tree:** Run `mustard-rt run wave-tree --spec-dir .claude/spec/active/{specName}` and print inline. Fail-open.
+
+7. **Auto-continue default.** Inform user inline: `"Continuando da próxima ação. Se quiser revisar a spec antes, interrompa e diga 'review'."` Then proceed directly to Step 2 (Bootstrap). Only ask when ALL apply: scope=full AND currentWave==1 AND no completedWaves yet (fresh start, expensive to redo). Override env: `MUSTARD_RESUME_CONFIRM=always|never|fresh-only(default)`.
 
 ### Step 2: Bootstrap (after confirmation)
 
-6. **AUTO-SYNC:** `bun .claude/scripts/sync-registry.js`
+6. **AUTO-SYNC:** `mustard-rt run sync-registry`
    - **Skip if `resumeMode === "continued"`** (Step 0.5): registry is reused from prior session.
    - Always run if `resumeMode === "reanalyzed"` or `"escalated-to-reanalyze"`.
 
 ### Diff Context (automatic)
-Run `bun .claude/scripts/diff-context.js --subproject {subproject_path}` per subproject to capture the current git state scoped to each subproject. Include the subproject-specific output in the agent prompt as `{diff_context}` so agents see only changes relevant to their scope.
+Run `mustard-rt run diff-context --subproject {subproject_path}` per subproject to capture the current git state scoped to each subproject. Include the subproject-specific output in the agent prompt as `{diff_context}` so agents see only changes relevant to their scope.
 
 **Skip if `resumeMode === "continued"`** unless a wave just completed (wave transitions always refresh diff). The prior diff snapshot is reused from `.claude/.pipeline-states/{specName}.diff-{subproject}.md`.
+
+### Context Slice (automatic, per-wave snapshot)
+
+Alongside the diff-context refresh, produce the relevance-filtered glossary slice that fills the `{context_md}` placeholder of the agent-prompt template.
+
+1. Locate the project's `CONTEXT.md` (built by the `grill-with-docs` skill); also pass sibling `CONTEXT.md` files and a `CONTEXT-MAP.md` if present — `context-slice` accepts repeated `--context` flags and expands a map.
+2. Run `mustard-rt run context-slice --context {CONTEXT.md} --spec {operational_spec} > .claude/.pipeline-states/{specName}.context-md.md`.
+3. Fill `{context_md}` in every subagent prompt with the contents of that snapshot file.
+4. **Graceful degrade:** no `CONTEXT.md` → empty slice → leave `{context_md}` empty. Never block the dispatch.
+
+The slice is stable for the whole pipeline, so it sits in the PREFIX-STABLE block and caches across dispatches. **Re-run the snapshot only on a wave transition** (same cadence as the diff refresh). **Skip if `resumeMode === "continued"`** unless a wave just completed — the prior snapshot is reused from `.claude/.pipeline-states/{specName}.context-md.md`.
 
 7. **Read** `.claude/pipeline-config.md`. For `entity-registry.json`: use Grep to extract ONLY the relevant entity block (e.g. `"Contract":`), NEVER read the full JSON
 9. **Update spec header:** `Status: implementing`, `Phase: EXECUTE`, `Checkpoint: {ISO now}`
@@ -115,7 +134,7 @@ Run `bun .claude/scripts/diff-context.js --subproject {subproject_path}` per sub
 
 **CRITICAL: Main context IS the Pipeline Runner. NEVER delegate to intermediate Task agent.**
 
-11b. **Pre-EXECUTE Rewave Check** (skip if `pipeline-state.isWavePlan === true`): Run `bun .claude/scripts/exec-rewave-check.js --spec .claude/spec/active/{specName}/spec.md`. Parse JSON output. If `action: "decomposed"`, the spec was split into N waves — update `pipeline-state.isWavePlan: true, currentWave: 1` and proceed using wave-1's spec (`wave-1-{role}/spec.md`). If `action: "keep-single"` or `"skip"`, continue with the original spec. Silent — no AskUserQuestion.
+11b. **Pre-EXECUTE Rewave Check** (skip if `pipeline-state.isWavePlan === true`): Run `mustard-rt run exec-rewave-check --spec .claude/spec/active/{specName}/spec.md`. Parse JSON output. If `action: "decomposed"`, the spec was split into N waves — update `pipeline-state.isWavePlan: true, currentWave: 1` and proceed using wave-1's spec (`wave-1-{role}/spec.md`). If `action: "keep-single"` or `"skip"`, continue with the original spec. Silent — no AskUserQuestion.
 
 12. **Match recipe by name only:** Grep `{subproject}/.claude/commands/recipes.md` for recipe title matching the task type — do NOT read the full recipes file. Extract only: recipe number, pattern refs, reference modules
 12b. **Pre-EXECUTE Existence Gate**: Same gate as `feature/SKILL.md § Pre-EXECUTE Existence Gate`. Invoke identically (Full scope only, `## Files` ≤ 8). On retry/resume, the gate naturally handles idempotence: tasks already `[x]` from a prior run are treated as Mixed — the Haiku confirms they stay done and the orchestrator only re-dispatches what remains `[ ]`.
@@ -133,14 +152,25 @@ When the pipeline state indicates a wave plan, the orchestrator dispatches only 
 3. **Between waves** (see Step 17 post-dispatch):
    - On wave completion: run `/mustard:git commit` style commit with message `feat(wave-{N}/{role}): {summary}`. If `/mustard:git commit` is not appropriate for the project, fall back to `git add {files} && git commit -m "..."`.
    - Update state: `completedWaves.push(currentWave)`, `currentWave += 1`, `updatedAt`.
+   - After updating state, run `mustard-rt run wave-tree --spec-dir .claude/spec/active/{specName}` to show progress.
    - Force `resumeMode = "reanalyzed"` for the next wave transition so diff-context refreshes with the just-committed changes.
+   - **Cache this wave's diff:** right after the wave-{N-1} commit, run `git diff HEAD~1 HEAD > .claude/.pipeline-states/{spec-name}.wave-{N-1}.diff.md` so the next wave can be sliced against it.
+   - **Wave Slice Injection (see § Wave Slice Injection below):** before dispatching wave N (N≥2):
+     1. Run `mustard-rt run spec-extract --spec {spec_path} --wave {N}` to get the wave slice; it populates `{task_steps}`.
+     2. Prepend the cached previous wave diff from `.claude/.pipeline-states/{spec-name}.wave-{N-1}.diff.md`. Inject `{task_steps}` + the diff (NOT the full spec, NOT the full touched files) into the agent prompt.
    - If `currentWave > totalWaves` → skip remaining wave dispatch, go to Step 19 REVIEW + Step 20 CLOSE on the overall wave plan.
 4. **If a wave fails (REJECTED after 2 fix-loops, or BLOCKED)** — see § Wave Failure Handling below.
+
+#### Wave Slice Injection
+
+Entre waves, o orquestrador NÃO reinjeta a spec inteira nem os arquivos de código completos nos prompts dos agentes — `mustard-rt run spec-extract` recorta só a seção da wave (ou, em wave-plan, a sub-spec inteira) e o `git diff` cacheado substitui os arquivos full.
+
+A subtraction `wave-slice` é emitida automaticamente pelo hook `subagent-tracker.js` em todo despacho de Task na fase EXECUTE — o orquestrador não faz nada. Fail-open: se a omissão não aconteceu (seção da wave não medível), nenhum evento é registrado.
 
 13. **Plan waves:** `Depends on: none` → Wave 1; dependencies → later. DB+Backend parallel. Frontend after Backend UNLESS all parallel override conditions met (see `.claude/pipeline-config.md` Parallel Rules). Review agents: ALWAYS dispatch in single parallel message. Skip completed tasks.
 
 **Note on wave plans:** when `isWavePlan === true`, this step plans the agent wave structure **within** the current wave's spec only — agents internal to the current wave-spec may still split across DB/Backend/Frontend sub-waves. The outer wave (1..N) is the cross-spec sequence managed by Step 12c.
-14. **Build agent prompts using template** (`.claude/commands/mustard/templates/agent-prompt/SKILL.md`):
+14. **Build agent prompts using template** (`.claude/refs/agent-prompt/agent-prompt.md`):
     - Read template once, then fill placeholders per agent using `.claude/pipeline-config.md` data:
       - `{subproject}` → from Agents table (Subproject column)
       - `{reference_files}` → 2-3 files from matched recipe
@@ -148,8 +178,9 @@ When the pipeline state indicates a wave plan, the orchestrator dispatches only 
       - `{entity_info}` → `_patterns` type, refs, subs from registry
       - `{role}`, `{boundary}`, `{return_sections}` → from Role Rules table in config
       - `{validate_command}`, `{build_command}` → from Agents table in config
-      - `{retry_context}` → empty on first dispatch. On retry, fill per `agent-prompt/SKILL.md § Retry Modes`. Granular retries use Step 4 § Granular Retry Protocol. Fix-loops (after REJECTED review) use Step 19b § Fix Loop Dispatch Protocol.
+      - `{retry_context}` → empty on first dispatch. On retry, fill per `.claude/refs/agent-prompt/agent-prompt.md § Retry Modes`. Granular retries use Step 4 § Granular Retry Protocol. Fix-loops (after REJECTED review) use Step 19b § Fix Loop Dispatch Protocol.
       - `{task_steps}` → checkboxed steps from spec
+      - `{context_md}` → relevance-filtered glossary slice from `.claude/.pipeline-states/{specName}.context-md.md` (see § Context Slice). Empty when no `CONTEXT.md` exists.
       - `{recommended_skills}` → from Skill Recommendations in `.claude/pipeline-config.md`:
         1. **Prepend `karpathy-guidelines`** for code-editing agents (impl/backend/frontend/database/bugfix). **Skip** for read-only Explore and Review agents.
         2. Glob `{subproject}/.claude/skills/` for generated pattern skills
@@ -163,7 +194,7 @@ When the pipeline state indicates a wave plan, the orchestrator dispatches only 
 
 17. **Dispatch:** TaskUpdate(in_progress) + pipeline state. ALL agents in same wave → SINGLE message (multiple Task invocations). **Pass `model` from pipeline state** (e.g. `model: "opus"`) in each Task tool call — this overrides the agent YAML default. On return: pipeline state update, TaskUpdate(completed), advance wave. The `checklist-auto-mark.js` hook marks Checklist items silently as files are edited. close-gate denies CLOSE if any `[ ]` remains.
 
-17b. **Agent Memory:** After each wave completes, run `memory-write.js` once per agent (summary ≤300 chars, include `files_modified` + `decisions`). Skip if no downstream waves remain.
+17b. **Agent Memory:** After each wave completes, run `memory.js agent` once per agent (summary ≤300 chars, include `files_modified` + `decisions`). Skip if no downstream waves remain.
 
 #### Escalation Status Handling
 
@@ -177,7 +208,7 @@ After each agent returns, check the return value for an escalation status before
 
 If two or more agents in the same wave return `CONCERN`, surface all concerns together before dispatching the next wave. See `.claude/pipeline-config.md` Escalation Statuses and Diagnostic Failure Routing for the full status table.
 
-### Step 4: Validate, Review & Complete
+### Step 4: Validate, Review, QA & Complete
 
 18. **VALIDATE** — Parse agent results: Backend→`dotnet build`, Frontend→`pnpm build`, Mobile→`fvm flutter analyze`. All passed → next. Failed → **granular retry** (see below).
 19. **REVIEW (MANDATORY — NEVER SKIP):**
@@ -188,6 +219,7 @@ If two or more agents in the same wave return `CONCERN`, surface all concerns to
     - APPROVED (zero CRITICAL) → CLOSE
     - REJECTED (any CRITICAL) → see Step 19b § Fix Loop Dispatch Protocol (max 2 loops)
     - **NEVER skip review** — not even for Light scope. Light scope gets same checklist, just fewer files to review
+    - **Record the verdict (after it is consolidated):** for each reviewed subproject run `mustard-rt run review-result --spec {specName} --verdict {approved|rejected} --critical {N} --subproject {subproject}`. This emits the `review` metric that surfaces in `/stats` under Verification. Fail-open — never blocks CLOSE.
 
 ### Step 19b: Fix Loop Dispatch Protocol
 
@@ -195,12 +227,27 @@ Extract CRITICAL findings verbatim from review return (or harness view). Build r
 
 → See `../../../refs/resume/fix-loop-wave.md`
 
+### Step 19c: QA Phase (Wave 10) — MANDATORY
+
+After REVIEW returns APPROVED, run QA before CLOSE. NEVER go REVIEW→CLOSE directly — `close-gate.js` denies CLOSE without a passing `qa.result` event.
+
+1. Update pipeline state via Write/Edit: `phaseName: "QA"`.
+2. Run `mustard-rt run qa-run --spec {specName}`. For wave plans, `{specName}` is the wave-plan directory name.
+3. Branch on `overall`:
+   - **pass** — update `## Acceptance Criteria` checkboxes in the spec (`[x]` for each passed AC), then update pipeline state via Write/Edit with `phaseName: "CLOSE"` (this Write triggers `close-gate.js`, which verifies the `qa.result` event before allowing CLOSE) → proceed to Step 20.
+   - **fail** — extract the failing AC list and re-dispatch via the Step 19b Fix Loop Dispatch Protocol, then re-run this step. Maximum 3 QA iterations.
+   - **skip** (no Acceptance Criteria section) — inform inline `QA pulado — spec sem Acceptance Criteria`, then proceed to Step 20.
+4. After 3 failed QA iterations → `AskUserQuestion`: "(a) corrigir manualmente e repetir, (b) relaxar o AC na spec, (c) abortar pipeline."
+5. Visual: `[v] EXECUTE  [v] REVIEW  [>] QA  [ ] CLOSE`.
+
 20. **CLOSE:**
     - **Wave plan gate:** if `pipeline-state.isWavePlan === true`, only CLOSE when `completedWaves.length === totalWaves`. If waves remain (`currentWave <= totalWaves` and wave N-1 just finished), **do not** run CLOSE — instead update state (`currentWave++`, `completedWaves.push`), output `═══ WAVE {N-1} COMPLETE — {role} ═══`, and stop. Next `/mustard:resume` picks up wave N.
-    - `bun .claude/scripts/sync-registry.js`
+    - `mustard-rt run sync-registry`
     - Spec: `Status: completed`, `Phase: CLOSE`, all `[ ]` → `[x]`. For wave plans: mark `wave-plan.md` status `completed`, and mark each `wave-N-{role}/spec.md` completed too.
     - Move spec to `.claude/spec/completed/` (the entire `{specName}/` directory, including wave subdirs if any)
     - **Delete** `.claude/.pipeline-states/{spec-name}.json`
+    - **Pipeline Summary (BEFORE banner):** run `mustard-rt run pipeline-summary --spec-dir .claude/spec/active/{specName}` and print the markdown inline. For wave plans, the same spec-dir applies (the command reads the root `spec.md`; for wave-plan-final closes, use the wave-plan dir). Fail-open: on non-zero exit, log a warning and continue with the banner — do NOT abort CLOSE. Apply to both single-spec and wave-plan-final paths.
+    - **Wave Tree (before banner):** `mustard-rt run wave-tree --spec-dir .claude/spec/active/{specName}` (or `completed/` if already moved). Fail-open.
     - Output with agent colors: `═══ PIPELINE COMPLETE — {name} | Agents: {n} ok | Files: {c} created, {m} modified ═══` (for wave plans: append `| Waves: {totalWaves}`).
 
 ### Wave Failure Handling
@@ -217,7 +264,7 @@ Parse last completed step → retry only from that step forward. Build Mode=gran
 
 ### Pause Handoff & Next Action Rule
 
-On pause: write `pausedAt`/`pauseReason`/`nextAction` to pipeline state, then `memory-write.js`. Handoff MUST end with exactly ONE next action (no lists of options).
+On pause: write `pausedAt`/`pauseReason`/`nextAction` to pipeline state, then `memory.js agent`. Handoff MUST end with exactly ONE next action (no lists of options).
 
 → See `../../../refs/resume/fix-loop-wave.md`
 
@@ -231,3 +278,4 @@ On pause: write `pausedAt`/`pauseReason`/`nextAction` to pipeline state, then `m
 - ALWAYS read `.claude/pipeline-config.md` for agent/wave/model config — NEVER hardcode project-specific values
 - ALWAYS use agent-prompt template — NEVER build prompts from scratch
 - ALWAYS execute wave transitions between waves
+- ALWAYS run QA (Step 19c) after REVIEW and before CLOSE — NEVER go REVIEW→CLOSE directly

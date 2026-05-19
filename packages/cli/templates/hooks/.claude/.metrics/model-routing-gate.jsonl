@@ -1,1 +1,0 @@
-{"ts":"2026-05-15T13:58:57.661Z","event":"model-routing-gate","tokens_affected":0,"tokens_saved":0,"note":"violation","expected":"sonnet","actual":"opus","pipeline_type":"none","scope":"none","reason":"Default model (analysis/review/planning)","mode":"strict","subagent_type":"general-purpose","category":"prevention"}

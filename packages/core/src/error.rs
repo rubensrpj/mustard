@@ -66,6 +66,14 @@ pub enum Error {
     /// to its own logic.
     #[error("check failed: {0}")]
     CheckFailed(String),
+
+    /// A SQLite operation failed (open, schema apply, statement, row decode).
+    /// Backs [`SqliteEventStore`](crate::io::sqlite_store::SqliteEventStore);
+    /// the string is the underlying `rusqlite` message. Callers fail open —
+    /// telemetry is never load-bearing — so a failed open or query degrades
+    /// to an empty result rather than crashing a hook.
+    #[error("sqlite error: {0}")]
+    Sqlite(String),
 }
 
 impl Error {
@@ -118,6 +126,12 @@ pub fn fail_open_with<T>(result: Result<T>, fallback: impl FnOnce() -> T) -> T {
 impl From<serde_json::Error> for Error {
     fn from(err: serde_json::Error) -> Self {
         Self::Parse(err.to_string())
+    }
+}
+
+impl From<rusqlite::Error> for Error {
+    fn from(err: rusqlite::Error) -> Self {
+        Self::Sqlite(err.to_string())
     }
 }
 

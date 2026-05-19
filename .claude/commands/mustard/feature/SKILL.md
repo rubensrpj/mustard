@@ -18,11 +18,26 @@ Audit specs in `active/` before starting — steps 1-5: scan, verify completed/c
 
 → See `../../../refs/feature/spec-hygiene.md`
 
+### Diff Context (automatic, cross-phase)
+
+At the start of **PLAN** and **EXECUTE** only, run `mustard-rt run diff-context --subproject {subproject_path} --phase {plan|execute}`. Save to `.claude/.pipeline-states/{specName}.diff-{subproject}.md`. Prepend the subproject diff to every subagent prompt in those phases (`## Current Git State\n{diff}\n\n## Your Task\n...`). Skip header if diff empty/missing. Never dispatch without attempting interpolation. ANALYZE phase intentionally skips this step (diff always empty pre-work) and emits the `analyze-diff-skip` telemetry metric instead.
+
+### Context Slice (automatic, per-wave snapshot)
+
+In the **EXECUTE** phase, as part of the per-wave snapshot (re-run only on a wave transition, alongside the diff-context refresh): produce the relevance-filtered glossary slice that fills the `{context_md}` placeholder of the agent-prompt template.
+
+1. Locate the project's `CONTEXT.md` (built by the `grill-with-docs` skill). Also pass any sibling `CONTEXT.md` files and a `CONTEXT-MAP.md` if present — `context-slice` accepts repeated `--context` flags and expands a map.
+2. Run `mustard-rt run context-slice --context {CONTEXT.md} --spec {operational_spec} > .claude/.pipeline-states/{specName}.context-md.md`.
+3. Fill `{context_md}` in every subagent prompt of the wave with the contents of that snapshot file.
+4. **Graceful degrade:** if no `CONTEXT.md` exists, the script emits an empty slice — leave `{context_md}` empty. Never block the dispatch.
+
+The slice is stable for the whole pipeline (the spec does not change mid-run), so it lives in the PREFIX-STABLE block and caches across every dispatch of the wave. Re-run the snapshot only when the wave changes.
+
 ### ANALYZE Phase
 
-**Auto-sync (silent):** Run `bun .claude/scripts/sync-detect.js`. If output shows any subproject with `hashChanged: true`, then run `bun .claude/scripts/sync-registry.js`. Otherwise skip sync-registry entirely.
+**Phase marker (first action, before any Grep):** Run `mustard-rt run emit-phase --spec {spec-name} --to ANALYZE`. ANALYZE runs in the parent before any pipeline-state file exists, so `pipeline-phase.js` cannot see it — this is the only point that knows ANALYZE started. Idempotent (script skips if already emitted for this spec) and fail-open.
 
-**Diff Context (automatic):** At the start of ANALYZE, PLAN, and EXECUTE, run `bun .claude/scripts/diff-context.js --subproject {subproject_path}`. Save to `.claude/.pipeline-states/{specName}.diff-{subproject}.md`. Prepend the subproject diff to every subagent prompt (`## Current Git State\n{diff}\n\n## Your Task\n...`). Skip header if diff empty/missing. Never dispatch without attempting interpolation.
+**Auto-sync (silent):** Run `mustard-rt run sync-detect`. If output shows any subproject with `hashChanged: true`, then run `mustard-rt run sync-registry`. Otherwise skip sync-registry entirely.
 
 1. Read `.claude/pipeline-config.md` — agents, wave transitions, model selection
 2. Grep `entity-registry.json` for the specific entity name — NEVER read the full JSON
@@ -69,16 +84,30 @@ Suggest: _"Analysis complete. Context is heavy — consider `/compact` before pr
 
 ### Decomposition Rule (Wave 7)
 
-When ANALYZE surfaces >5 files, >3 architectural layers, or multiple independent sub-behaviors: STOP, decompose into child specs (2-5 children, each ≤5 files, ≤2 layers). Link via `spec-link.js`. Parent enters `COORDINATE` phase until all children reach CLOSE.
+When ANALYZE surfaces >5 files, >3 architectural layers, or multiple independent sub-behaviors: STOP, decompose into child specs (2-5 children, each ≤5 files, ≤2 layers). Link via `mustard-rt run spec-link`. Parent enters `COORDINATE` phase until all children reach CLOSE.
 
 → See `../../../refs/feature/wave-decomposition.md`
 
 ### End of ANALYZE — Validation
 
-Run: `rtk bun .claude/scripts/analyze-validation.js --spec .claude/spec/active/{specName}/spec.md`
+Run: `rtk mustard-rt run analyze-validation --spec .claude/spec/active/{specName}/spec.md`
 If output `ok: false`, append each `issues[]` entry to the spec under `## Concerns` (non-blocking). Continue to PLAN regardless.
 
 ### PLAN Phase
+
+#### Grill Opt-In (Full scope only — first PLAN action)
+
+**Only when scope is Full.** Before any other PLAN step, run `AskUserQuestion`:
+
+> "Escrever a spec direto, ou grelhar o plano antes (`grill-with-docs`)?"
+> Options: **"Escrever direto"** / **"Grelhar o plano"**.
+
+- **"Grelhar o plano"** → invoke `Skill(grill-with-docs)` BEFORE drafting the spec. The skill runs its own relentless interview against the project's domain model and maintains `CONTEXT.md` on its own — `/feature` does not write, slice, or read `CONTEXT.md` here. Only after the grilling session concludes, continue to "Spec Language Resolution" and draft the spec.
+- **"Escrever direto"** → proceed straight to "Spec Language Resolution" with no grilling.
+
+**Light / Extended Light scope:** NEVER grill — do NOT show this question. Skip directly to the Light Scope flow.
+
+**The skill is NOT adapted.** `/feature` only triggers `Skill(grill-with-docs)`; Matt's verbatim skill content (`templates/skills/grill-with-docs/`) stays untouched — no Mustard-specific edits, no wrapper. The skill manages `CONTEXT.md`/ADRs entirely on its own per its own instructions.
 
 #### Spec Language Resolution
 
@@ -90,28 +119,77 @@ Cascade (stop at first hit): (1) spec header `### Lang: pt|en`, (2) `.claude/mus
 
 #### Wave Decomposition Pre-Check (Full scope only)
 
-Check whether the work should be decomposed into waves before writing a single spec. Signals: fileCount, layerCount, newEntityCount, knowledgeMatches. Runs `scope-decompose.js` + `wave-dependency.js`. Produces wave-plan.md + per-wave spec.md if decompose=true.
+Check whether the work should be decomposed into waves before writing a single spec. Signals: fileCount, layerCount, newEntityCount, knowledgeMatches. Runs `mustard-rt run scope-decompose` + `mustard-rt run wave-dependency`. Produces wave-plan.md + per-wave spec.md if decompose=true.
 
 → See `../../../refs/feature/wave-decomposition.md`
 
+#### Roadmap Auto-Scaffold (automatic)
+
+When `scope-decompose` returns `reason: "roadmap-signal"` and `roadmapMatches` contains a path to `.claude/plans/*.md`:
+
+1. Read that plans file.
+2. Extract the waves table (rows matching `^\|\s*(W?\d+|Wave\s*\d+)\s*\|`).
+3. **Auto-create** under the spec dir:
+   - `wave-plan.md` (table copied/adapted from the plans file, status column initialized to `queued` for all)
+   - `wave-1-{role}/spec.md` — full detail (Status: draft, narrative copied)
+   - `wave-N-{role}/spec.md` for N=2..total — skeleton only (Status: queued, Title + 1-line summary)
+4. **Create `.claude/.pipeline-states/{spec-name}.json`** — a wave plan has no root `spec.md`, so this scaffold is the only place its pipeline state is born. Fields: `specName`, `status: "draft"`, `phase: 2`, `phaseName: "PLAN"`, `scope: "full"`, `isWavePlan: true`, `currentWave: 1`, `totalWaves: <wave count>`, `completedWaves: []`, `failedWaves: []`. `/mustard:approve` § Step 3b expects this file to already exist.
+5. **No AskUserQuestion** — proceed silently per the agnostic auto-detection contract.
+
 #### Full Scope
 
-1. Create `.claude/spec/active/{date}-{name}/spec.md` with:
-   - Context section: heading is **exactly** `## Contexto` (Lang=pt) or `## Context` (Lang=en) — never substitute with synonyms (Sintoma, Symptom, Description, Background). Body is **narrative prose, 4-8 lines**: how the system should work + what changed + how the gap violates expectation + observable impact on user/business. NO tables, NO line numbers, NO method names, NO bullets. **MUST follow** `../../../refs/feature/spec-language.md § Contexto Narrative Rules` (good/bad examples there).
-   - Summary, Entity Info, Files, Tasks, Dependencies
-   - Tasks organized by `### {Agent} Agent (Wave {N})`
-   - 3-8 checkboxed steps per agent, decomposed by operation type (NOT by file)
-   - Mark `(parallel-safe)` on frontend tasks with no dependency on new backend endpoints
-   - **MANDATORY: `## Acceptance Criteria` section** (Wave 10) — 3-8 binary, executable items: `- [ ] AC-1: {description} — Command: \`{exact command}\``. Each: exit 0 = pass; runnable from project root; focus on observable behavior (build, endpoint, test). Include `Testable, binary (pass/fail) criteria. Each MUST be executable and independent.` header line.
-   - **CONDITIONAL: `## Component Contract` section (UI specs only)** — append between `## Files` and `## Tasks` when ANALYZE detects component creation/refactoring (new `*.tsx|*.vue|*.svelte|*.dart|*.swift` widget/View, or props/variants change). Template + rationale at `../../../refs/feature/spec-language.md § Component Contract`. **Skip for non-UI work** — adding this section to backend/database specs is bloat.
+The spec is a **SINGLE file** organized in two named layers — `## PRD` (the *what & why*) at the top, `## Plano` (the *how*) at the bottom. Both are `##`-level **divider headings**; the subsections under them stay at `##` level (parsers anchor on `## Contexto`, `## Arquivos`, `## Tarefas`, `## Critérios de Aceitação`, `## Limites` — never demote them to `###`). The Acceptance Criteria sit at the boundary between the layers: they are the verifiable *what*, so they close the PRD layer.
+
+1. Create `.claude/spec/active/{date}-{name}/spec.md` with this layout (Lang=pt headings shown; Lang=en uses the EN column of `../../../refs/feature/spec-language.md § Header Translation Table`):
+
+   ```text
+   # {Title}
+   ### Status / Phase / Scope / Checkpoint / Lang headers
+
+   ## PRD                       ← divider — the "what & why"
+   ## Contexto                  ← narrative briefing
+   ## Usuários/Stakeholders     ← who is affected / who asked
+   ## Métrica de sucesso        ← how success is measured
+   ## Não-Objetivos             ← explicit out-of-scope
+   ## Critérios de Aceitação    ← boundary: verifiable "what"
+
+   ## Plano                     ← divider — the "how"
+   ## Informações da Entidade
+   ## Arquivos
+   ## Component Contract        ← UI specs only (see CONDITIONAL below)
+   ## Tarefas
+   ## Dependências
+   ## Limites
+   ```
+
+   - **PRD layer** (`## PRD` divider, then):
+     - `## Contexto` — heading **exactly** `## Contexto` (Lang=pt) or `## Context` (Lang=en) — never substitute with synonyms (Sintoma, Symptom, Description, Background). Body is **narrative prose, 4-8 lines**: how the system should work + what changed + how the gap violates expectation + observable impact on user/business. NO tables, NO line numbers, NO method names, NO bullets. **MUST follow** `../../../refs/feature/spec-language.md § Contexto Narrative Rules` (good/bad examples there).
+     - `## Usuários/Stakeholders` — 1-3 lines: who is affected by this change and who requested it. Plain language, no jargon.
+     - `## Métrica de sucesso` — 1-3 lines: how you will know the feature succeeded (observable outcome, not implementation detail).
+     - `## Não-Objetivos` — bullet list of what this spec deliberately does NOT do.
+     - **MANDATORY: `## Acceptance Criteria` section** (Wave 10) — 3-8 binary, executable items: `- [ ] AC-1: {description} — Command: \`{exact command}\``. Each: exit 0 = pass; runnable from project root; focus on observable behavior (build, endpoint, test). Include `Testable, binary (pass/fail) criteria. Each MUST be executable and independent.` header line. Sits last in the PRD layer — it is the verifiable *what*.
+   - **Plano layer** (`## Plano` divider, then):
+     - `## Informações da Entidade`, `## Arquivos`, `## Tarefas`, `## Dependências`, `## Limites`.
+     - Tasks organized by `### {Agent} Agent (Wave {N})`
+     - 3-8 checkboxed steps per agent, decomposed by operation type (NOT by file)
+     - Mark `(parallel-safe)` on frontend tasks with no dependency on new backend endpoints
+   - **CONDITIONAL: `## Component Contract` section (UI specs only)** — append between `## Arquivos` and `## Tarefas` (inside the Plano layer) when ANALYZE detects component creation/refactoring (new `*.tsx|*.vue|*.svelte|*.dart|*.swift` widget/View, or props/variants change). Template + rationale at `../../../refs/feature/spec-language.md § Component Contract`. **Skip for non-UI work** — adding this section to backend/database specs is bloat.
 2. Add checkpoint fields: `Status: draft`, `Phase: PLAN`, `Scope: full`, `Checkpoint: {now}`
 3. Create `.claude/.pipeline-states/{spec-name}.json`: `specName`, `status: "active"`, `phase: 2`, `phaseName: "PLAN"`, `scope: "full"`
 4. Elegance Check: 3+ files or complex logic → "Is there a more elegant approach?"
 5. **Present full spec to user:** Read spec file and print ENTIRE contents verbatim in a fenced markdown block. Add 1-line change summary (WHAT + WHY). Then `AskUserQuestion`: **"Approve and implement?"** / **"Adjust (give feedback)"** / **"Save for later (stop)"**.
 
+#### Wave Tree (end of PLAN)
+
+Run `mustard-rt run wave-tree --spec-dir .claude/spec/active/{spec-name}` and print the output inline immediately before the AskUserQuestion. Fail-open (warn, do not block PLAN).
+
 #### Light Scope
 
-1. Create `.claude/spec/active/{date}-{name}/spec.md` with compact format — headers: `# Enhancement: {name}`, `### Status: draft | Phase: PLAN | Scope: light`, `### Checkpoint: {ISO}`, `### Lang: {pt|en}`, then `## Contexto` (Lang=pt) or `## Context` (Lang=en) — heading EXACT, body **narrative prose 3-6 lines** (how the system should work + what's the gap + user/business impact; NO line numbers/method names/tables — see `../../../refs/feature/spec-language.md § Contexto Narrative Rules`), then `## Summary` (1-2 lines, technical synthesis), `## Checklist` → `### {Agent} Agent` (steps + build/type-check), `## Files (~{N})` (paths), `## Acceptance Criteria` (1-3 items, `- [ ] AC-1: {description} — Command: \`{exact command}\``). At least AC-1 must verify the feature works.
+Light keeps the same two-layer shape but **lean** — a thin PRD layer and a thin Plano layer. Do NOT add bureaucracy: no Usuários/Stakeholders, no Não-Objetivos, no Entity Info, no Dependencies sections. The two dividers cost one line each and keep Light specs consistent with Full.
+
+1. Create `.claude/spec/active/{date}-{name}/spec.md` with compact format — headers: `# Enhancement: {name}`, `### Status: draft | Phase: PLAN | Scope: light`, `### Checkpoint: {ISO}`, `### Lang: {pt|en}`, then:
+   - **PRD layer** — `## PRD` divider, then `## Contexto` (Lang=pt) or `## Context` (Lang=en) — heading EXACT, body **narrative prose 3-6 lines** (how the system should work + what's the gap + user/business impact; NO line numbers/method names/tables — see `../../../refs/feature/spec-language.md § Contexto Narrative Rules`), then `## Métrica de sucesso` (1 line — the single observable outcome that proves it worked), then `## Acceptance Criteria` (1-3 items, `- [ ] AC-1: {description} — Command: \`{exact command}\``; at least AC-1 must verify the feature works).
+   - **Plano layer** — `## Plano` divider, then `## Summary` (1-2 lines, technical synthesis), `## Checklist` → `### {Agent} Agent` (steps + build/type-check), `## Files (~{N})` (paths).
 2. Create `.claude/.pipeline-states/{spec-name}.json`: `specName`, `status: "active"`, `phase: 2`, `scope: "light"`
 3. **Present full spec to user:** Print ENTIRE contents verbatim in fenced markdown block. Then `AskUserQuestion`: **"Approve and implement now"** / **"Approve for later"** / **"Adjust"**.
 
@@ -128,17 +206,17 @@ Dispatch 1 Haiku Task(Explore) to verify work is still needed. Pre-check via `rt
 ### EXECUTE Phase (Light scope — same session)
 
 When user chooses "Approve and implement now":
-0. **Pre-EXECUTE Rewave Check:** Run `bun .claude/scripts/exec-rewave-check.js --spec .claude/spec/active/{spec-name}/spec.md`. Parse JSON output. If `action: "decomposed"`, the spec was just split into N waves — proceed using wave-1's spec (`wave-1-{role}/spec.md`) instead of the original. If `action: "keep-single"` or `"skip"`, continue with the original spec normally. Silent operation — no AskUserQuestion.
+0. **Pre-EXECUTE Rewave Check:** Run `mustard-rt run exec-rewave-check --spec .claude/spec/active/{spec-name}/spec.md`. Parse JSON output. If `action: "decomposed"`, the spec was just split into N waves — proceed using wave-1's spec (`wave-1-{role}/spec.md`) instead of the original. If `action: "keep-single"` or `"skip"`, continue with the original spec normally. Silent operation — no AskUserQuestion.
 1. Update spec: `Status: implementing`, `Phase: EXECUTE`. Every agent prompt MUST include: `Return format cap: ≤50 lines. Apply compact Return Format from .claude/pipeline-config.md strictly.`
 2. Update pipeline state: `status: "implementing"`, `phase: 3`
 3. Read `.claude/pipeline-config.md` for agent config. Grep `entity-registry.json` for specific entity block only
 4. Match recipes by title via Grep on `{subproject}/.claude/commands/recipes.md` — do NOT read full file
-4b. **Structured Recipe (if available):** Run `bun .claude/scripts/recipe-match.js --entity {entity} --operation {operation} --subproject {subproject_path}`. If non-empty JSON, inject into agent prompt as `{recipe_context}`. Gives agent a 90%-complete skeleton.
-5. Identify relevant skills for `{recommended_skills}`: **prepend `karpathy-guidelines`** for code-editing agents (impl/backend/frontend/database/bugfix); skip karpathy for Explore and Review. Then list task-relevant skill names. See `templates/commands/mustard/templates/agent-prompt/SKILL.md § How to fill {recommended_skills}`.
+4b. **Structured Recipe (if available):** Run `mustard-rt run recipe-match --entity {entity} --operation {operation} --subproject {subproject_path}`. If non-empty JSON, inject into agent prompt as `{recipe_context}`. Gives agent a 90%-complete skeleton.
+5. Identify relevant skills for `{recommended_skills}`: **prepend `karpathy-guidelines`** for code-editing agents (impl/backend/frontend/database/bugfix); skip karpathy for Explore and Review. Then list task-relevant skill names. See `.claude/refs/agent-prompt/agent-prompt.md § How to fill {recommended_skills}`.
 6. Dispatch agents (wave rules: DB+Backend parallel, Frontend after Backend UNLESS `(parallel-safe)`)
 7. Wave transitions between waves (from `.claude/pipeline-config.md`)
 8. On return: validate (build/type-check). The `checklist-auto-mark.js` hook already marked Checklist items as the agent edited matching files (silent, no tool call). If any item didn't auto-mark (no file pista in the item text), close-gate at CLOSE will surface it.
-8b. **Agent Memory:** `bun .claude/scripts/memory-write.js --json '{"agent_type":"{type}","wave":{N},"pipeline":"{spec-name}","summary":"{what}","details":{...}}'` — one per agent. Skip if single-wave pipeline.
+8b. **Agent Memory:** `mustard-rt run memory agent --json '{"agent_type":"{type}","wave":{N},"pipeline":"{spec-name}","summary":"{what}","details":{...}}'` — one per agent. Skip if single-wave pipeline.
 
 #### Escalation Status Handling
 
@@ -152,8 +230,8 @@ After each agent returns, check for escalation before advancing:
 
 If two or more agents in same wave return `CONCERN`, surface all concerns together before starting next wave. See `.claude/pipeline-config.md` Escalation Statuses and Diagnostic Failure Routing.
 
-9. **REVIEW** — dispatch review agent per affected subproject (guards + relevant skills, 7-category checklist). REJECTED → see `resume/SKILL.md § Fix Loop Dispatch Protocol` (max 2 loops). Re-reviews always use `model: "sonnet"`.
-10. All passed + APPROVED → CLOSE flow inline (sync registry, move spec, cleanup state)
+9. **REVIEW** — dispatch review agent per affected subproject (guards + relevant skills, 7-category checklist). REJECTED → see `resume/SKILL.md § Fix Loop Dispatch Protocol` (max 2 loops). Re-reviews always use `model: "sonnet"`. After the verdict is consolidated, for each reviewed subproject run `mustard-rt run review-result --spec {specName} --verdict {approved|rejected} --critical {N} --subproject {subproject}` — emits the `review` metric surfaced in `/stats` Verification. Fail-open.
+10. All passed + APPROVED → run QA Phase (Wave 10, see below) → on QA `pass`/`skip` → CLOSE flow inline (sync registry, move spec, cleanup state)
 11. Failed → max 2 retries, then STOP + report
 
 #### Failure Routing
@@ -162,7 +240,7 @@ Classify before retrying: (1) **Transient?** → retry once immediately. (2) **R
 
 ### QA Phase (Wave 10)
 
-After all EXECUTE tasks complete: (1) set `phaseName: "QA"` in pipeline state. (2) Run `bun .claude/scripts/qa-run.js --spec {specName}`. (3) `overall=pass` → CLOSE; `overall=fail` → return failing AC list to implementation agent, re-run; `overall=skip` (no AC) → warn + allow CLOSE. Max 3 QA iterations — then `AskUserQuestion`: "QA has failed 3 times. Choose: (a) Fix manually and retry, (b) Relax the AC, (c) Abort pipeline."
+After all EXECUTE tasks complete: (1) set `phaseName: "QA"` in pipeline state. (2) Run `mustard-rt run qa-run --spec {specName}`. (3) `overall=pass` → update `## Acceptance Criteria` checkboxes, then write `phaseName: "CLOSE"` to pipeline state via Write/Edit (triggers `close-gate.js`) → CLOSE; `overall=fail` → return failing AC list to implementation agent, re-run; `overall=skip` (no AC) → warn + allow CLOSE. Max 3 QA iterations — then `AskUserQuestion`: "QA has failed 3 times. Choose: (a) Fix manually and retry, (b) Relax the AC, (c) Abort pipeline."
 
 Update `## Acceptance Criteria` checkboxes: `[x]` passed, `[ ]` failed. Visual: `[v] ANALYZE  [v] PLAN  [v] EXECUTE  [>] QA  [ ] CLOSE`
 

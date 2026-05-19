@@ -6,7 +6,7 @@
 //!
 //! Submodules:
 //!
-//! - [`event`] — the `events.jsonl` harness event schema.
+//! - [`event`] — the harness event schema (stored in `mustard.db`).
 //! - [`contract`] — the hook contract: [`contract::HookInput`],
 //!   [`contract::Verdict`], [`contract::Outcome`], [`contract::Trigger`], and
 //!   the [`contract::Check`] / [`contract::Observer`] traits. **Frozen at the

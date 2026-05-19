@@ -1,0 +1,27 @@
+{
+  "criteria": [
+    {
+      "duration_ms": 317,
+      "exit": 0,
+      "id": "AC-1",
+      "status": "pass",
+      "stderr_excerpt": ""
+    },
+    {
+      "duration_ms": 409,
+      "exit": 0,
+      "id": "AC-2",
+      "status": "pass",
+      "stderr_excerpt": ""
+    },
+    {
+      "duration_ms": 358,
+      "exit": 0,
+      "id": "AC-3",
+      "status": "pass",
+      "stderr_excerpt": ""
+    }
+  ],
+  "overall": "pass",
+  "spec": "2026-05-18-b5-cli-to-rust"
+}

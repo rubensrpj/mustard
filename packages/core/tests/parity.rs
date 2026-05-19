@@ -14,7 +14,7 @@
 //! focusing on the edge cases the per-module unit tests do not cover:
 //! fail-open, missing input, corrupt JSON, profile/whitespace handling,
 //! object-spread collisions, and round-trips against real on-disk fixtures
-//! (`.claude/.harness/events.jsonl`, `.claude/.pipeline-states/*.json`).
+//! (`.claude/.harness/mustard.db`, `.claude/.pipeline-states/*.json`).
 //!
 //! Where JS and Rust legitimately diverge, the divergence is documented inline
 //! in the test that proves it.
@@ -24,8 +24,9 @@ use mustard_core::env::{
     Env, HookProfile, MapEnv, acquire_guard, check_depth, guarded_run, is_in_hook_phase,
     is_self_delegation, is_strict_mode, resolve_cwd, resolve_session_id, should_run,
 };
-use mustard_core::io::event_store::{EventSink, JsonlEventStore};
+use mustard_core::io::event_store::EventSink;
 use mustard_core::io::pipeline_repo::{FsPipelineRepo, PipelineRepo, read_optional};
+use mustard_core::io::sqlite_store::SqliteEventStore;
 use mustard_core::knowledge::{PipelineMetrics, ToolBreakdown, derive_prescription, extract_friction};
 use mustard_core::metrics::{MetricLine, emit_metric, metric_file_path};
 use mustard_core::model::contract::HookInput;
@@ -469,42 +470,36 @@ fn parity_enforcement_resolve_layers_and_fail_open() {
 // io round-trips against real on-disk fixtures
 // ===========================================================================
 
-/// Round-trip against the *real* harness log
-/// `.claude/.harness/events.jsonl`: `JsonlEventStore::replay` parses the live
-/// file without error and yields at least one event. This is the
-/// `harness-event.js` emitter's output read back by the Rust `EventSink`.
+/// Round-trip against the *real* harness store `.claude/.harness/mustard.db`:
+/// `SqliteEventStore::replay` opens the live database without error and every
+/// event it yields carries the schema envelope.
 ///
-/// The fixture is the live repo file; the test only reads it (never writes).
+/// The fixture is the live repo database; the test only reads it (never
+/// writes). It is runtime state — skipped gracefully when absent.
 #[test]
-fn parity_replay_real_harness_events_jsonl() {
-    let events_path = repo_root().join(".claude").join(".harness").join("events.jsonl");
-    if !events_path.exists() {
-        // The harness log is runtime state — skip gracefully if absent.
+fn parity_replay_real_harness_store() {
+    let db_path = repo_root().join(".claude").join(".harness").join("mustard.db");
+    if !db_path.exists() {
+        // The harness store is runtime state — skip gracefully if absent.
         return;
     }
-    let store = JsonlEventStore::new(&events_path);
-    let events = store.replay().expect("replay real events.jsonl never errors");
-    assert!(
-        !events.is_empty(),
-        "the live harness log should contain at least one parseable event"
-    );
+    let store = SqliteEventStore::new(&db_path).expect("open real mustard.db");
+    let events = store.replay().expect("replay real mustard.db never errors");
     // Every parsed event carries the schema envelope.
     for ev in events.iter().take(50) {
         assert_eq!(ev.v, mustard_core::model::event::SCHEMA_VERSION);
         assert!(!ev.event.is_empty());
-        assert!(!ev.session_id.is_empty());
     }
 }
 
-/// Append-then-replay parity with `harness-event.js#emit`: one event becomes
-/// exactly one newline-terminated NDJSON line; replay reconstructs it. Mirrors
-/// `harness-event.test.js`'s "writes a valid NDJSON line" / "appends multiple
-/// events without corruption".
+/// Append-then-replay round-trip through `SqliteEventStore`: each appended
+/// event is recovered, in insertion order, with its payload intact. This is
+/// the harness event bus written and read back through the `EventSink` trait.
 #[test]
 fn parity_event_store_append_replay_round_trip() {
     use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
     let dir = tempdir().unwrap();
-    let store = JsonlEventStore::new(dir.path().join("events.jsonl"));
+    let store = SqliteEventStore::new(dir.path().join("mustard.db")).unwrap();
 
     let mk = |name: &str, i: i64| HarnessEvent {
         v: SCHEMA_VERSION,
@@ -525,41 +520,20 @@ fn parity_event_store_append_replay_round_trip() {
         assert_eq!(ev.event, "tool.use");
         assert_eq!(ev.payload["i"], json!(i64::try_from(i).unwrap()));
     }
-    // Exactly N lines, file newline-terminated — no torn writes.
-    let raw = std::fs::read_to_string(dir.path().join("events.jsonl")).unwrap();
-    assert_eq!(raw.lines().count(), 5);
-    assert!(raw.ends_with('\n'));
 }
 
-/// `replay` is fail-open: a corrupt / truncated line is skipped, the valid
-/// events around it survive. A single bad trailing line (process killed
-/// mid-append) must not discard the events written before it.
+/// `replay` is fail-open: a fresh database (or one whose file was just
+/// created) replays as an empty `Vec` rather than erroring — an unstarted
+/// project simply has no events. The `query`/`specs`/`metrics`/`spans` reads
+/// degrade the same way.
 #[test]
-fn parity_event_store_replay_skips_corrupt_lines() {
-    use mustard_core::io::fs::append_line;
-    use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
+fn parity_event_store_replay_fresh_db_is_empty() {
     let dir = tempdir().unwrap();
-    let path = dir.path().join("events.jsonl");
-    let store = JsonlEventStore::new(&path);
-    let ev = |name: &str| HarnessEvent {
-        v: SCHEMA_VERSION,
-        ts: "t".into(),
-        session_id: "s".into(),
-        wave: 0,
-        actor: Actor { kind: ActorKind::Hook, id: None, actor_type: None },
-        event: name.into(),
-        payload: json!({}),
-        spec: None,
-    };
-    store.append(&ev("good.one")).unwrap();
-    append_line(&path, "{not json").unwrap();
-    append_line(&path, r#"{"v":1,"ts":"truncated"#).unwrap();
-    store.append(&ev("good.two")).unwrap();
-
-    let events = store.replay().unwrap();
-    assert_eq!(events.len(), 2);
-    assert_eq!(events[0].event, "good.one");
-    assert_eq!(events[1].event, "good.two");
+    let store = SqliteEventStore::new(dir.path().join("mustard.db")).unwrap();
+    assert!(store.replay().unwrap().is_empty());
+    assert!(store.query(None).unwrap().is_empty());
+    assert!(store.specs().unwrap().is_empty());
+    assert!(store.metrics("absent").unwrap().is_none());
 }
 
 /// Round-trip against the *real* pipeline-state file

@@ -33,12 +33,14 @@ This step is silent when there's nothing to audit — no output if `active/` is 
 
 ### ANALYZE (diagnose + assess)
 
-1. **AUTO-SYNC:** Run `bun .claude/scripts/sync-detect.js`. If output shows any subproject with `hashChanged: true`, then run `bun .claude/scripts/sync-registry.js`. Otherwise skip sync-registry entirely.
+**Phase marker (first action, before any Grep):** Run `mustard-rt run emit-phase --spec {spec-name} --to ANALYZE`. ANALYZE runs in the parent before any pipeline-state file exists, so `pipeline-phase.js` cannot see it — this is the only point that knows ANALYZE started. Idempotent (script skips if already emitted for this spec) and fail-open.
+
+1. **AUTO-SYNC:** Run `mustard-rt run sync-detect`. If output shows any subproject with `hashChanged: true`, then run `mustard-rt run sync-registry`. Otherwise skip sync-registry entirely.
 
 ### Diff Context (automatic)
 
 **Diff snapshot (run once per phase):**
-Run `bun .claude/scripts/diff-context.js` at the start of ANALYZE and EXECUTE. Save the output to `.claude/.pipeline-states/{specName}.diff.md` (overwrite each phase).
+Run `mustard-rt run diff-context` at the start of EXECUTE only. ANALYZE skipped (diff always empty pre-work) — emits `analyze-diff-skip` metric. Save the output to `.claude/.pipeline-states/{specName}.diff.md` (overwrite each phase).
 
 **Inject into every Task dispatch in this pipeline:**
 Prepend the following to EVERY subagent prompt dispatched during the pipeline:
@@ -53,7 +55,7 @@ Prepend the following to EVERY subagent prompt dispatched during the pipeline:
 
 If the diff file is empty or missing, skip the Git State header entirely. Never dispatch an agent without attempting interpolation.
 
-2. **DIAGNOSE:** Dispatch Explore agent (**≤20 tool uses, ≤3 full file reads**):
+2. **DIAGNOSE:** Dispatch Explore agent (**≤20 tool uses, ≤3 full file reads**) with `diagnose` skill (explicit exception: diagnostic loop is the method of a bug-Explore agent):
    - Scoped Grep searches with specific path + pattern for the error/symptom
    - Trace callers/callees via Grep in relevant directories (prefer Grep over Read)
    - Return as soon as root cause is clear — don't exhaustively scan
@@ -102,9 +104,11 @@ For Fast Path (no spec yet), keep the cache in-memory only — it lives for the 
 
 → See `../../../refs/feature/spec-language.md` for full Header Translation Table.
 
+**Two-layer structure (lean):** a bugfix spec follows the same two-layer model as a feature spec (`## PRD` = the *what & why*, `## Plano` = the *how* — see `/feature` § Full Scope and `pipeline-config.md` § Spec Artifact). But a bugfix spec is small, so the layers stay **implicit, not bureaucratic**: `## Contexto` + `## Acceptance Criteria` are the PRD layer; `## Causa raiz` + `## Plano` + `## Boundaries` are the Plano layer. Do NOT add `## PRD`/`## Plano` divider headings or PRD subsections (`## Usuários/Stakeholders`, `## Não-Objetivos`) to a bugfix spec — that is the bureaucracy the layering is meant to avoid.
+
 The spec header MUST include `### Lang: {pt|en}`. The spec MUST include (Wave 10):
    ```markdown
-   ## Contexto    ← exact heading if Lang=pt
+   ## Contexto    ← exact heading if Lang=pt — PRD layer (the "what & why")
    (or)
    ## Context     ← exact heading if Lang=en
 
@@ -153,7 +157,7 @@ Every agent prompt dispatched in Fast Path MUST include:
 Dispatch bugfix agent with:
 - Root cause from ANALYZE
 - `{subproject}/CLAUDE.md` + `{subproject}/.claude/commands/guards.md` for context
-- `{recommended_skills}` starting with `karpathy-guidelines` (bugfix edits code) — see `templates/commands/mustard/templates/agent-prompt/SKILL.md § How to fill {recommended_skills}`
+- `{recommended_skills}` starting with `karpathy-guidelines, diagnose` (bugfix edits code; `diagnose` provides the disciplined diagnosis loop for fix agents) — see `.claude/refs/agent-prompt/agent-prompt.md § How to fill {recommended_skills}`
 - Specific files to modify
 - Expected behavior after fix
 - **If role=ui** (frontend, mobile-web): append `Read templates/refs/bugfix/browser-debug.md before instrumenting — Playwright MCP + Chrome DevTools MCP playbook (reproduce → isolate → instrument → fix → prevent).` to `{context_extras}`. Stack-agnostic; loaded on demand only for UI bugs.
@@ -205,7 +209,7 @@ Max 2 retries for Transient + Resolvable. Structural failures trigger a targeted
 After EXECUTE (fix + validate) completes:
 
 1. Update pipeline state: `phaseName: "QA"`
-2. Run: `bun .claude/scripts/qa-run.js --spec {specName}` (Full Path only)
+2. Run: `mustard-rt run qa-run --spec {specName}` (Full Path only)
    - For Fast Path: manually verify the bug reproduction command exits 0, emit result to harness
 3. If `overall=pass`: proceed to CLOSE
 4. If `overall=fail`: the bug reproduction AC still fails — return to EXECUTE for targeted fix, max 3 QA iterations
@@ -213,7 +217,7 @@ After EXECUTE (fix + validate) completes:
 
 ### CLOSE
 
-- `bun .claude/scripts/sync-registry.js` (if entities changed)
+- `mustard-rt run sync-registry` (if entities changed)
 - Output bugfix report (diagnosis, fix, validation, QA result)
 
 ## Zero Context-Switch Protocol

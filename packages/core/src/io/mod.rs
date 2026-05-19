@@ -5,14 +5,19 @@
 //! consumers and tests inject a fake instead of the concrete implementation
 //! (Dependency Inversion):
 //!
-//! - [`event_store`] — the [`EventSink`](event_store::EventSink) trait and
-//!   [`JsonlEventStore`](event_store::JsonlEventStore), the append-only /
-//!   replay implementation over `.claude/.harness/events.jsonl`.
+//! - [`event_store`] — the [`EventSink`](event_store::EventSink) trait, the
+//!   API every consumer and the dispatcher program against.
+//! - [`sqlite_store`] — [`SqliteEventStore`](sqlite_store::SqliteEventStore),
+//!   the SQLite-backed (WAL-mode) implementation of the
+//!   [`EventSink`](event_store::EventSink) trait over
+//!   `.claude/.harness/mustard.db`, plus read APIs over the harness
+//!   projections (specs, metrics, spans, FTS5 knowledge search). It is the
+//!   single store the harness reads from and writes to.
 //! - [`pipeline_repo`] — the [`PipelineRepo`](pipeline_repo::PipelineRepo)
 //!   trait and [`FsPipelineRepo`](pipeline_repo::FsPipelineRepo), read/write
 //!   of `.claude/.pipeline-states/{specName}.json`.
 //! - [`fs`] — the fail-open primitives (atomic write, append, read) that the
-//!   two stores above are built on.
+//!   filesystem-backed stores above are built on.
 //!
 //! Every operation in this layer is fail-open: it returns
 //! [`Result`](crate::error::Result) and never panics, so the hooks that
@@ -21,3 +26,4 @@
 pub mod event_store;
 pub mod fs;
 pub mod pipeline_repo;
+pub mod sqlite_store;

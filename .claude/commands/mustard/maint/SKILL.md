@@ -13,6 +13,7 @@
 | `deps` | Install dependencies for all projects |
 | `validate` | Run build and type-check validations |
 | `sync` | Update entity-registry.json from code |
+| `audit` | Run diagnostics: orphan-skill audit + OTEL pipeline health |
 
 ---
 
@@ -55,7 +56,7 @@ Scans the project and updates `.claude/entity-registry.json`.
 
 ### Flow
 
-1. `bun .claude/scripts/sync-registry.js`
+1. `mustard-rt run sync-registry`
 2. If script not found, scan manually:
    - Search database schemas (EF Core `DbSet<T>`, Drizzle `pgTable()`, Prisma `model`, etc.)
    - Build entity map with relationships
@@ -66,3 +67,20 @@ Scans the project and updates `.claude/entity-registry.json`.
 - After creating new entity
 - After importing existing code
 - To sync after manual changes
+
+---
+
+## audit
+
+Runs read-only diagnostics. Never blocks — reports only.
+
+### Flow
+
+1. `mustard-rt run skills orphans` — lists skills not invoked in N days (env `MUSTARD_SKILL_ORPHAN_DAYS`, default 30)
+2. `mustard-rt run diagnose-otel` — end-to-end health check of the OTEL telemetry pipeline (collector process, `/healthz`, data flow)
+3. Report both results to the user
+
+### When to Use
+
+- Periodic project hygiene
+- After telemetry or metrics output looks wrong
