@@ -1,0 +1,5 @@
+{"ts":"2026-05-18T18:03:47.024Z","event":"skill-validate-gate","tokens_affected":0,"tokens_saved":0,"note":"warned","errors":1,"file":"SKILL.md"}
+{"ts":"2026-05-18T18:03:47.092Z","event":"skill-validate-gate","tokens_affected":0,"tokens_saved":0,"note":"blocked","errors":1,"file":"SKILL.md"}
+{"ts":"2026-05-18T18:03:47.340Z","event":"skill-validate-gate","tokens_affected":0,"tokens_saved":0,"note":"blocked","errors":1,"file":"SKILL.md"}
+{"ts":"2026-05-18T18:13:02.324Z","event":"skill-validate-gate","tokens_affected":0,"tokens_saved":0,"note":"warned","errors":1,"file":"SKILL.md"}
+{"ts":"2026-05-18T18:13:04.708Z","event":"skill-validate-gate","tokens_affected":0,"tokens_saved":0,"note":"warned","errors":1,"file":"SKILL.md"}

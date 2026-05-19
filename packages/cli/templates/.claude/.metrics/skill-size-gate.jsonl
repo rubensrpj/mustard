@@ -1,0 +1,3 @@
+{"ts":"2026-05-18T18:03:46.327Z","event":"skill-size-gate","tokens_affected":0,"tokens_saved":0,"note":"over-size","lines":550,"limit":500,"file":"/project/.claude/skills/my-skill/SKILL.md","category":"workflow"}
+{"ts":"2026-05-18T18:03:46.392Z","event":"skill-size-gate","tokens_affected":0,"tokens_saved":0,"note":"blocked","lines":550,"limit":500,"file":"/project/.claude/skills/my-skill/SKILL.md","category":"prevention"}
+{"ts":"2026-05-18T18:03:46.706Z","event":"skill-size-gate","tokens_affected":0,"tokens_saved":0,"note":"blocked","lines":550,"limit":500,"file":"/project/.claude/skills/my-skill/SKILL.md","category":"prevention"}

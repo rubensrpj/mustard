@@ -1,0 +1,6 @@
+{"ts":"2026-05-18T18:03:45.577Z","event":"spec-size-gate","tokens_affected":0,"tokens_saved":0,"note":"over-size","lines":250,"limit":500,"file":"/project/.claude/spec/active/my-epic/spec.md","category":"workflow"}
+{"ts":"2026-05-18T18:03:45.641Z","event":"spec-size-gate","tokens_affected":0,"tokens_saved":0,"note":"over-size","lines":450,"limit":500,"file":"/project/.claude/spec/active/my-epic/spec.md","category":"workflow"}
+{"ts":"2026-05-18T18:03:45.704Z","event":"spec-size-gate","tokens_affected":0,"tokens_saved":0,"note":"over-size","lines":550,"limit":500,"file":"/project/.claude/spec/active/my-epic/spec.md","category":"workflow"}
+{"ts":"2026-05-18T18:03:45.766Z","event":"spec-size-gate","tokens_affected":0,"tokens_saved":0,"note":"blocked","lines":550,"limit":500,"file":"/project/.claude/spec/active/my-epic/spec.md","category":"prevention"}
+{"ts":"2026-05-18T18:03:45.829Z","event":"spec-size-gate","tokens_affected":0,"tokens_saved":0,"note":"over-size","lines":499,"limit":500,"file":"/project/.claude/spec/active/my-epic/spec.md","category":"workflow"}
+{"ts":"2026-05-18T18:03:46.073Z","event":"spec-size-gate","tokens_affected":0,"tokens_saved":0,"note":"over-size","lines":250,"limit":500,"file":"/project/.claude/spec/active/my-epic/spec.md","category":"workflow"}
