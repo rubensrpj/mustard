@@ -412,195 +412,16 @@ describe('Wave 10 — qa-run: AC section exists but no parseable items → skip'
   });
 });
 
-// ── Test 6: close-gate blocks CLOSE without qa.result ────────────────────────
+// Tests 6-10 (the close-gate QA gate) were ported to the Rust `close_gate`
+// module (b3 Wave 4); their parity tests now live in
+// `packages/rt/src/hooks/close_gate.rs`.
 
-describe('Wave 10 — close-gate: blocks CLOSE when no qa.result exists (strict)', () => {
+// ── Regression: qa-run recognizes the Portuguese AC heading ──────────────────
+
+describe('Wave 10 — qa-run regression: PT Acceptance-Criteria heading', () => {
   let tmp;
   beforeEach(() => { tmp = makeProjectDir(); });
   afterEach(() => { cleanDir(tmp); });
-
-  it('denies CLOSE when no qa.result event in events.jsonl', async () => {
-    writeMustardJson(tmp, { testCommand: EXIT_PASS }); // tests pass to isolate QA check
-    const input = makePipelineStateInput(tmp, 'my-spec', 'CLOSE');
-
-    const result = await runHook(CLOSE_GATE, input, {
-      projectDir: tmp,
-      env: {
-        MUSTARD_CLOSE_GATE_MODE: 'strict',
-        MUSTARD_QA_GATE_MODE: 'strict',
-      },
-    });
-
-    assert.equal(result.code, 0, 'hook must exit 0');
-    assert.ok(result.response, `expected hookSpecificOutput, stdout: ${result.stdout}`);
-    assert.equal(result.response.permissionDecision, 'deny',
-      `expected deny when no QA result, got: ${result.response.permissionDecision}`);
-    assert.ok(
-      result.response.permissionDecisionReason &&
-      result.response.permissionDecisionReason.includes('[Close Gate]'),
-      `reason should include [Close Gate]: ${result.response.permissionDecisionReason}`
-    );
-    assert.ok(
-      result.response.permissionDecisionReason.toLowerCase().includes('qa') ||
-      result.response.permissionDecisionReason.toLowerCase().includes('qa'),
-      `reason should mention QA: ${result.response.permissionDecisionReason}`
-    );
-  });
-});
-
-// ── Test 7: close-gate blocks when qa.result overall=fail ────────────────────
-
-describe('Wave 10 — close-gate: blocks CLOSE when qa.result overall=fail (strict)', () => {
-  let tmp;
-  beforeEach(() => { tmp = makeProjectDir(); });
-  afterEach(() => { cleanDir(tmp); });
-
-  it('denies CLOSE when qa.result exists but overall=fail', async () => {
-    writeMustardJson(tmp, { testCommand: EXIT_PASS });
-    // Write a FAIL qa.result event
-    writeQAResultEvent(tmp, 'fail-qa-spec', 'fail', [
-      { id: 'AC-1', status: 'fail', exit: 1, duration_ms: 500, stderr_excerpt: 'assertion failed' },
-    ]);
-    const input = makePipelineStateInput(tmp, 'fail-qa-spec', 'CLOSE');
-
-    const result = await runHook(CLOSE_GATE, input, {
-      projectDir: tmp,
-      env: {
-        MUSTARD_CLOSE_GATE_MODE: 'strict',
-        MUSTARD_QA_GATE_MODE: 'strict',
-      },
-    });
-
-    assert.equal(result.code, 0, 'hook must exit 0');
-    assert.ok(result.response, `expected hookSpecificOutput, stdout: ${result.stdout}`);
-    assert.equal(result.response.permissionDecision, 'deny',
-      `expected deny for qa=fail, got: ${result.response.permissionDecision}`);
-    assert.ok(
-      result.response.permissionDecisionReason &&
-      (result.response.permissionDecisionReason.toLowerCase().includes('qa') ||
-       result.response.permissionDecisionReason.includes('QA')),
-      `reason should mention QA: ${result.response.permissionDecisionReason}`
-    );
-  });
-});
-
-// ── Test 8: close-gate allows when qa.result overall=pass ────────────────────
-
-describe('Wave 10 — close-gate: allows CLOSE when qa.result overall=pass', () => {
-  let tmp;
-  beforeEach(() => { tmp = makeProjectDir(); });
-  afterEach(() => { cleanDir(tmp); });
-
-  it('does NOT deny when qa.result=pass and build passes', async () => {
-    writeMustardJson(tmp, { testCommand: EXIT_PASS });
-    writeQAResultEvent(tmp, 'pass-qa-spec', 'pass', [
-      { id: 'AC-1', status: 'pass', exit: 0, duration_ms: 200, stderr_excerpt: '' },
-    ]);
-    const input = makePipelineStateInput(tmp, 'pass-qa-spec', 'CLOSE');
-
-    const result = await runHook(CLOSE_GATE, input, {
-      projectDir: tmp,
-      env: {
-        MUSTARD_CLOSE_GATE_MODE: 'strict',
-        MUSTARD_QA_GATE_MODE: 'strict',
-      },
-    });
-
-    assert.equal(result.code, 0, 'hook must exit 0');
-    const decision = result.response ? result.response.permissionDecision : null;
-    assert.notEqual(decision, 'deny',
-      `should NOT deny when QA passed, got: ${decision}, reason: ${result.response && result.response.permissionDecisionReason}`
-    );
-  });
-});
-
-// ── Test 9: MUSTARD_QA_GATE_MODE=warn + no QA → allow + stderr ───────────────
-
-describe('Wave 10 — close-gate: QA_GATE_MODE=warn + no qa.result → allow with stderr', () => {
-  let tmp;
-  beforeEach(() => { tmp = makeProjectDir(); });
-  afterEach(() => { cleanDir(tmp); });
-
-  it('allows (no deny) and prints warning to stderr when mode=warn and no QA', async () => {
-    writeMustardJson(tmp, { testCommand: EXIT_PASS });
-    // No qa.result event
-    const input = makePipelineStateInput(tmp, 'warn-spec', 'CLOSE');
-
-    const result = await runHook(CLOSE_GATE, input, {
-      projectDir: tmp,
-      env: {
-        MUSTARD_CLOSE_GATE_MODE: 'strict',
-        MUSTARD_QA_GATE_MODE: 'warn',
-      },
-    });
-
-    assert.equal(result.code, 0);
-    const decision = result.response ? result.response.permissionDecision : null;
-    assert.notEqual(decision, 'deny', 'mode=warn must not deny');
-    assert.ok(result.stderr.includes('[close-gate]'),
-      `expected [close-gate] warning in stderr, got: ${result.stderr}`);
-  });
-});
-
-// ── Test 10: MUSTARD_QA_GATE_MODE=off → skip QA check entirely ───────────────
-
-describe('Wave 10 — close-gate: QA_GATE_MODE=off → skip QA check entirely', () => {
-  let tmp;
-  beforeEach(() => { tmp = makeProjectDir(); });
-  afterEach(() => { cleanDir(tmp); });
-
-  it('does not deny for missing QA when MUSTARD_QA_GATE_MODE=off', async () => {
-    writeMustardJson(tmp, { testCommand: EXIT_PASS });
-    // No qa.result event — should be ignored in off mode
-    const input = makePipelineStateInput(tmp, 'off-spec', 'CLOSE');
-
-    const result = await runHook(CLOSE_GATE, input, {
-      projectDir: tmp,
-      env: {
-        MUSTARD_CLOSE_GATE_MODE: 'strict',
-        MUSTARD_QA_GATE_MODE: 'off',
-      },
-    });
-
-    assert.equal(result.code, 0);
-    const decision = result.response ? result.response.permissionDecision : null;
-    assert.notEqual(decision, 'deny',
-      `MUSTARD_QA_GATE_MODE=off must skip QA check, got: ${decision}`);
-  });
-});
-
-// ── Regression: extractPhase reads real pipeline-state shape ─────────────────
-
-describe('Wave 10 — close-gate regression: real pipeline-state shape triggers gate', () => {
-  let tmp;
-  beforeEach(() => { tmp = makeProjectDir(); });
-  afterEach(() => { cleanDir(tmp); });
-
-  it('denies CLOSE with real pipeline-state shape (phaseName string + numeric phase)', async () => {
-    writeMustardJson(tmp, { testCommand: EXIT_PASS });
-    // Build input directly — explicit field shape proves gate reads phaseName, not numeric phase.
-    const content = JSON.stringify({ spec: 'real-shape-spec', specName: 'real-shape-spec', phase: 3, phaseName: 'CLOSE' });
-    const filePath = path.join(tmp, '.claude', '.pipeline-states', 'real-shape-spec.json');
-    const input = {
-      tool: 'Write',
-      tool_input: { file_path: filePath, content },
-      cwd: tmp,
-    };
-    // No qa.result event written — gate should deny.
-
-    const result = await runHook(CLOSE_GATE, input, {
-      projectDir: tmp,
-      env: {
-        MUSTARD_CLOSE_GATE_MODE: 'strict',
-        MUSTARD_QA_GATE_MODE: 'strict',
-      },
-    });
-
-    assert.equal(result.code, 0, 'hook must exit 0');
-    assert.ok(result.response, `expected hookSpecificOutput, stdout: ${result.stdout}`);
-    assert.equal(result.response.permissionDecision, 'deny',
-      `expected deny — trigger was dead without phaseName fix, got: ${result.response.permissionDecision}`);
-  });
 
   it('Portuguese heading "## Critérios de Aceitação" is recognized → overall=pass', async () => {
     // Regression: pt-language specs use "Critérios de Aceitação" per spec-language HARD RULE.
@@ -630,25 +451,5 @@ Spec em português para testar heading pt.
       `expected ≥1 criterion, got: ${JSON.stringify(result.parsed.payload.criteria)}`);
     assert.equal(result.parsed.payload.criteria[0].id, 'AC-1');
     assert.equal(result.parsed.payload.criteria[0].status, 'pass');
-  });
-
-  it('allows CLOSE when qa.result overall=skip (no AC)', async () => {
-    writeMustardJson(tmp, { testCommand: EXIT_PASS });
-    // Emit a skip qa.result event
-    writeQAResultEvent(tmp, 'skip-qa-spec', 'skip', []);
-    const input = makePipelineStateInput(tmp, 'skip-qa-spec', 'CLOSE');
-
-    const result = await runHook(CLOSE_GATE, input, {
-      projectDir: tmp,
-      env: {
-        MUSTARD_CLOSE_GATE_MODE: 'strict',
-        MUSTARD_QA_GATE_MODE: 'strict',
-      },
-    });
-
-    assert.equal(result.code, 0, 'hook must exit 0');
-    const decision = result.response ? result.response.permissionDecision : null;
-    assert.notEqual(decision, 'deny',
-      `expected allow for qa.result=skip, got: ${decision}`);
   });
 });

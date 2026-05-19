@@ -1,0 +1,841 @@
+//! `path_guard` — the consolidated Write/Edit path-boundary module.
+//!
+//! ## Scope (b3 Wave 4, Write/Edit family)
+//!
+//! This module ports two JavaScript hooks, both `PreToolUse` gates on a file
+//! path:
+//!
+//! - `file-guard.js` — a `PreToolUse(Read|Write|Edit)` **safety** gate: denies
+//!   access to a sensitive file (`credentials*`, `*.pem`, `*.key`,
+//!   `.git/config`, SSH keys, `*.pfx`/`*.p12`). It has no mode — always
+//!   strict, like `bash-safety`.
+//! - `boundary-gate.js` — a `PreToolUse(Write|Edit)` gate that flags an edit
+//!   outside the active spec's `## Files` / `## Boundaries` declaration. Mode
+//!   `MUSTARD_BOUNDARY_MODE` (default `warn`): warn → advisory, strict → deny.
+//!
+//! Consolidation **regroups, it does not re-decide** — every verdict is a 1:1
+//! port of the JS decision logic. The parity tests at the bottom mirror
+//! `__tests__/hooks.test.js` ("file-guard.js").
+//!
+//! ## CONCERN — boundary-gate event telemetry
+//!
+//! `boundary-gate.js` emits a `boundary.expansion` harness event tagged with
+//! `session_id` / `wave` resolved from the pipeline-state. The `mustard-core`
+//! `Ctx` carries neither, so this port emits the event with `session_id`
+//! falling back to `input.session_id` (often absent → `"unknown"`) and `wave`
+//! as `0` — exactly the JS fallback. Recorded in the spec `## Concerns`.
+
+use mustard_core::error::Error;
+use mustard_core::io::event_store::{EventSink, JsonlEventStore};
+use mustard_core::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
+use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
+use serde_json::json;
+use std::path::Path;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+/// The consolidated Write/Edit path-boundary module.
+pub struct PathGuard;
+
+// ---------------------------------------------------------------------------
+// file-guard — deny access to sensitive files
+// ---------------------------------------------------------------------------
+
+/// `true` if `path` (forward-slash normalised, original case) matches a
+/// sensitive-file pattern. Mirrors `BLOCKED_PATTERNS` in `file-guard.js`:
+/// `credentials`, `*.pem`, `*.key`, `.git/config`, `id_rsa`, `id_ed25519`,
+/// `*.pfx`, `*.p12` — all case-insensitive.
+fn sensitive_pattern_match(path: &str) -> Option<&'static str> {
+    let lower = path.replace('\\', "/").to_ascii_lowercase();
+    // /credentials/i — substring.
+    if lower.contains("credentials") {
+        return Some("credentials");
+    }
+    // /\.pem$/i, /\.key$/i, /\.pfx$/i, /\.p12$/i — extension.
+    if lower.ends_with(".pem") {
+        return Some("\\.pem$");
+    }
+    if lower.ends_with(".key") {
+        return Some("\\.key$");
+    }
+    if lower.ends_with(".pfx") {
+        return Some("\\.pfx$");
+    }
+    if lower.ends_with(".p12") {
+        return Some("\\.p12$");
+    }
+    // /\.git[/\\]config$/i — `.git/config` at the end of the path.
+    if lower.ends_with(".git/config") {
+        return Some("\\.git[/\\\\]config$");
+    }
+    // /id_rsa/i, /id_ed25519/i — substring.
+    if lower.contains("id_rsa") {
+        return Some("id_rsa");
+    }
+    if lower.contains("id_ed25519") {
+        return Some("id_ed25519");
+    }
+    None
+}
+
+/// The `file-guard` gate: deny a Read/Write/Edit on a sensitive file.
+///
+/// 1:1 with `file-guard.js`: only `Read`/`Write`/`Edit` tools are inspected;
+/// the file path *and* its basename are tested against every pattern. A match
+/// → `Deny`; otherwise `None` (fall through to `boundary-gate`).
+fn file_guard(input: &HookInput) -> Option<Verdict> {
+    let tool = input.tool_name.as_deref().unwrap_or_default();
+    if !matches!(tool, "Read" | "Write" | "Edit") {
+        return None;
+    }
+    let file_path = file_path_of(input)?;
+    let normalized = file_path.replace('\\', "/");
+    let basename = normalized.rsplit('/').next().unwrap_or(&normalized);
+
+    // The JS tests `pattern.test(normalized) || pattern.test(basename)`.
+    // `sensitive_pattern_match` already covers both: substring patterns hit
+    // the full path, extension patterns hit either — so testing the full path
+    // and the basename separately reproduces the JS exactly.
+    let pattern = sensitive_pattern_match(&normalized).or_else(|| sensitive_pattern_match(basename))?;
+    Some(Verdict::Deny {
+        reason: format!(
+            "[file-guard] Access to sensitive file blocked: {basename}\n\
+             Matched pattern: {pattern}"
+        ),
+    })
+}
+
+// ---------------------------------------------------------------------------
+// boundary-gate — flag edits outside the active spec's declared boundary
+// ---------------------------------------------------------------------------
+
+/// Path prefixes always allowed — infrastructure edits a spec rarely lists.
+/// Mirrors `META_PREFIXES` in `boundary-gate.js`.
+const META_PREFIXES: &[&str] = &[".claude/", "dist/", "node_modules/", ".git/"];
+
+/// `true` if `rel` (forward-slash) is a meta/infrastructure path. An empty
+/// `rel` is also treated as meta (`isMetaPath('')` → true in the JS).
+fn is_meta_path(rel: &str) -> bool {
+    if rel.is_empty() {
+        return true;
+    }
+    META_PREFIXES.iter().any(|p| rel.starts_with(p))
+}
+
+/// The `MUSTARD_BOUNDARY_MODE` mode (default `warn`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BoundaryMode {
+    Off,
+    Warn,
+    Strict,
+}
+
+fn boundary_mode() -> BoundaryMode {
+    match std::env::var("MUSTARD_BOUNDARY_MODE")
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "off" => BoundaryMode::Off,
+        "strict" => BoundaryMode::Strict,
+        _ => BoundaryMode::Warn,
+    }
+}
+
+/// Freshness window for the newest pipeline-state — 10 minutes (the JS
+/// `10 * 60 * 1000` ms).
+const STATE_FRESHNESS_MS: u128 = 10 * 60 * 1000;
+
+/// The newest *fresh* pipeline-state JSON value. Mirrors
+/// `readNewestFreshState`: the most recently modified
+/// `.claude/.pipeline-states/*.json` (excluding `*.metrics.json`), but only
+/// when its mtime is within the freshness window.
+fn read_newest_fresh_state(cwd: &str) -> Option<serde_json::Value> {
+    let dir = Path::new(cwd).join(".claude").join(".pipeline-states");
+    let entries = std::fs::read_dir(&dir).ok()?;
+    let mut best: Option<(SystemTime, std::path::PathBuf)> = None;
+    for entry in entries.filter_map(std::result::Result::ok) {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !name.ends_with(".json") || name.ends_with(".metrics.json") {
+            continue;
+        }
+        let Ok(mtime) = entry.metadata().and_then(|m| m.modified()) else {
+            continue;
+        };
+        if best.as_ref().is_none_or(|(t, _)| mtime > *t) {
+            best = Some((mtime, entry.path()));
+        }
+    }
+    let (mtime, path) = best?;
+    // Freshness: skip a stale state file.
+    let age = SystemTime::now()
+        .duration_since(mtime)
+        .unwrap_or(Duration::ZERO)
+        .as_millis();
+    if age > STATE_FRESHNESS_MS {
+        return None;
+    }
+    let text = std::fs::read_to_string(&path).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
+/// Resolve the spec.md file for a pipeline-state. Mirrors `resolveSpecFile`:
+/// `.claude/spec/active/{specName}/spec.md`, with a wave-plan branch that
+/// looks for a `wave-{N}-*/spec.md` child directory first.
+fn resolve_spec_file(cwd: &str, state: &serde_json::Value) -> Option<std::path::PathBuf> {
+    let spec_name = state.get("specName").and_then(|v| v.as_str())?;
+    let base = Path::new(cwd)
+        .join(".claude")
+        .join("spec")
+        .join("active")
+        .join(spec_name);
+    if !base.exists() {
+        return None;
+    }
+    let is_wave_plan = state
+        .get("isWavePlan")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    if is_wave_plan {
+        if let Some(wave) = state.get("currentWave").and_then(serde_json::Value::as_i64) {
+            let prefix = format!("wave-{wave}-");
+            if let Ok(entries) = std::fs::read_dir(&base) {
+                for entry in entries.filter_map(std::result::Result::ok) {
+                    let name = entry.file_name().to_string_lossy().into_owned();
+                    if name.starts_with(&prefix) {
+                        let cand = entry.path().join("spec.md");
+                        if cand.exists() {
+                            return Some(cand);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let root = base.join("spec.md");
+    if root.exists() { Some(root) } else { None }
+}
+
+/// Extract the backtick-wrapped path patterns from a spec's `## Files` and
+/// `## Boundaries` (and their PT equivalents). Port of `extractAllowedPatterns`.
+fn extract_allowed_patterns(spec_text: &str) -> Vec<String> {
+    let mut patterns: Vec<String> = Vec::new();
+    let mut in_section = false;
+    for line in spec_text.split('\n') {
+        if is_files_or_boundaries_heading(line) {
+            in_section = true;
+            continue;
+        }
+        if is_other_h2(line) {
+            in_section = false;
+            continue;
+        }
+        if !in_section {
+            continue;
+        }
+        for candidate in backtick_spans(line) {
+            let candidate = candidate.trim();
+            if candidate.is_empty() || candidate.len() > 200 {
+                continue;
+            }
+            // Reject obvious non-paths (mirrors the JS rejections).
+            if looks_like_command_with_flag(candidate) {
+                continue;
+            }
+            if looks_like_env_assignment(candidate) {
+                continue;
+            }
+            // Must contain a slash or a dot, else it is likely a label.
+            if !candidate.contains('/') && !candidate.contains('.') {
+                continue;
+            }
+            if !patterns.iter().any(|p| p == candidate) {
+                patterns.push(candidate.to_string());
+            }
+        }
+    }
+    patterns
+}
+
+/// `true` if `line` is a `## Files`/`## Boundaries` (or PT) H2 heading.
+fn is_files_or_boundaries_heading(line: &str) -> bool {
+    let lower = line.trim().to_ascii_lowercase();
+    matches!(
+        lower.as_str(),
+        s if s.starts_with("## files") && h2_word_boundary(&lower, "files")
+    ) || h2_named(&lower, "files")
+        || h2_named(&lower, "arquivos")
+        || h2_named(&lower, "boundaries")
+        || h2_named(&lower, "limites")
+}
+
+/// `true` if a lowercased line is an H2 heading whose name (after `## `) is
+/// exactly `name`, possibly with a `\b`-bounded suffix.
+fn h2_named(lower: &str, name: &str) -> bool {
+    let Some(rest) = lower.strip_prefix("## ") else {
+        return false;
+    };
+    let rest = rest.trim_start();
+    if !rest.starts_with(name) {
+        return false;
+    }
+    rest.as_bytes()
+        .get(name.len())
+        .is_none_or(|&b| !b.is_ascii_alphanumeric() && b != b'_')
+}
+
+/// Helper retained for readability of [`is_files_or_boundaries_heading`].
+fn h2_word_boundary(lower: &str, name: &str) -> bool {
+    h2_named(lower, name)
+}
+
+/// `true` if `line` is any `## ` H2 heading (used to close a section).
+fn is_other_h2(line: &str) -> bool {
+    let t = line;
+    t.starts_with("## ") && t.len() > 3 && !t.as_bytes()[3].is_ascii_whitespace()
+}
+
+/// Every backtick-delimited span on a line — JS `/`([^`\n]+?)`/g`.
+fn backtick_spans(line: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let bytes = line.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'`' {
+            if let Some(rel) = line[i + 1..].find('`') {
+                let span = &line[i + 1..i + 1 + rel];
+                if !span.is_empty() {
+                    out.push(span);
+                }
+                i = i + 1 + rel + 1;
+                continue;
+            } else {
+                break;
+            }
+        }
+        i += 1;
+    }
+    out
+}
+
+/// `true` for a `^[a-z]+\s+--?\w` shape — a command followed by a flag.
+fn looks_like_command_with_flag(s: &str) -> bool {
+    let mut chars = s.char_indices();
+    let mut end = 0;
+    let mut any = false;
+    for (i, c) in chars.by_ref() {
+        if c.is_ascii_lowercase() {
+            any = true;
+            end = i + 1;
+        } else {
+            break;
+        }
+    }
+    if !any {
+        return false;
+    }
+    let rest = &s[end..];
+    let trimmed = rest.trim_start();
+    if trimmed.len() == rest.len() {
+        return false; // no whitespace gap
+    }
+    let mut tc = trimmed.chars();
+    if tc.next() != Some('-') {
+        return false;
+    }
+    let mut next = tc.next();
+    if next == Some('-') {
+        next = tc.next();
+    }
+    next.is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// `true` for a `^[A-Z][A-Z0-9_]*=` shape — an env-var assignment.
+fn looks_like_env_assignment(s: &str) -> bool {
+    let mut chars = s.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !first.is_ascii_uppercase() {
+        return false;
+    }
+    for c in chars {
+        if c == '=' {
+            return true;
+        }
+        if !(c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_') {
+            return false;
+        }
+    }
+    false
+}
+
+/// `true` if `rel` matches `pattern`. Port of `patternMatches`: exact match,
+/// directory-prefix (`pattern` ends with `/`), or a one/two-star glob.
+fn pattern_matches(rel: &str, pattern: &str) -> bool {
+    let r = rel.replace('\\', "/");
+    let p = pattern.replace('\\', "/");
+    if r == p {
+        return true;
+    }
+    if p.ends_with('/') && r.starts_with(&p) {
+        return true;
+    }
+    if p.contains('*') {
+        return glob_match(&r, &p);
+    }
+    false
+}
+
+/// Match `r` against a glob `p` (`*` = one path segment, `**` = anything).
+fn glob_match(r: &str, p: &str) -> bool {
+    // Build a regex-free matcher: split the glob into literal/`*`/`**` tokens
+    // and walk. For the patterns specs use this is simplest as a recursive
+    // segment matcher.
+    glob_match_at(r.as_bytes(), p.as_bytes())
+}
+
+/// Recursive byte-wise glob matcher. `**` matches any run (incl. `/`); `*`
+/// matches any run *not* containing `/`.
+fn glob_match_at(text: &[u8], pat: &[u8]) -> bool {
+    if pat.is_empty() {
+        return text.is_empty();
+    }
+    if pat.starts_with(b"**") {
+        let rest = &pat[2..];
+        // `**` consumes zero-or-more of anything.
+        let mut i = 0;
+        loop {
+            if glob_match_at(&text[i..], rest) {
+                return true;
+            }
+            if i >= text.len() {
+                return false;
+            }
+            i += 1;
+        }
+    }
+    if pat[0] == b'*' {
+        let rest = &pat[1..];
+        // `*` consumes zero-or-more non-`/`.
+        let mut i = 0;
+        loop {
+            if glob_match_at(&text[i..], rest) {
+                return true;
+            }
+            if i >= text.len() || text[i] == b'/' {
+                return false;
+            }
+            i += 1;
+        }
+    }
+    if !text.is_empty() && text[0] == pat[0] {
+        return glob_match_at(&text[1..], &pat[1..]);
+    }
+    false
+}
+
+/// Resolve the `file_path` of a Write/Edit (or Read) invocation, accepting the
+/// legacy `path` key. Mirrors `tool_input.file_path || tool_input.path`.
+fn file_path_of(input: &HookInput) -> Option<String> {
+    let ti = &input.tool_input;
+    ti.get("file_path")
+        .or_else(|| ti.get("path"))
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+}
+
+/// The cwd for an invocation — the harness `cwd`, else `.`.
+fn project_dir(input: &HookInput, ctx: &Ctx) -> String {
+    if !ctx.project_dir.is_empty() {
+        return ctx.project_dir.clone();
+    }
+    match input.cwd.as_deref() {
+        Some(c) if !c.is_empty() => c.to_string(),
+        _ => ".".to_string(),
+    }
+}
+
+/// Compute the path of `file_path` relative to `cwd`, forward-slash
+/// normalised. Returns `None` when `file_path` escapes `cwd` (`../`) — the
+/// caller treats that the same as a meta path (skip). Mirrors the JS
+/// `path.relative(cwd, abs)` + `rel.startsWith('../')` check.
+fn relative_to_cwd(cwd: &str, file_path: &str) -> Option<String> {
+    let cwd_norm = cwd.replace('\\', "/");
+    let fp_norm = file_path.replace('\\', "/");
+    // Resolve `fp` to an absolute-ish path: if not absolute, join under cwd.
+    let abs = if is_absolute(&fp_norm) {
+        fp_norm
+    } else {
+        format!("{}/{}", cwd_norm.trim_end_matches('/'), fp_norm)
+    };
+    let cwd_prefix = format!("{}/", cwd_norm.trim_end_matches('/'));
+    if let Some(rel) = abs.strip_prefix(&cwd_prefix) {
+        Some(rel.to_string())
+    } else if abs == cwd_norm.trim_end_matches('/') {
+        Some(String::new())
+    } else {
+        // Outside cwd — treat as `../` (skip).
+        None
+    }
+}
+
+/// `true` if a forward-slash path looks absolute (POSIX `/...` or Windows
+/// `C:/...`).
+fn is_absolute(p: &str) -> bool {
+    p.starts_with('/')
+        || (p.len() >= 3
+            && p.as_bytes()[0].is_ascii_alphabetic()
+            && p.as_bytes()[1] == b':'
+            && p.as_bytes()[2] == b'/')
+}
+
+/// Emit the `boundary.expansion` harness event. Best-effort telemetry.
+fn emit_boundary_event(
+    project_dir: &str,
+    session_id: Option<&str>,
+    rel: &str,
+    spec: &str,
+    mode: BoundaryMode,
+    sample_patterns: &[String],
+) {
+    let mode_str = match mode {
+        BoundaryMode::Off => "off",
+        BoundaryMode::Warn => "warn",
+        BoundaryMode::Strict => "strict",
+    };
+    let event = HarnessEvent {
+        v: SCHEMA_VERSION,
+        ts: now_iso8601(),
+        // CONCERN: `Ctx` carries no wave; emit 0 (the JS `getCurrentWave`
+        // fallback). `session_id` falls back to "unknown".
+        session_id: session_id.unwrap_or("unknown").to_string(),
+        wave: 0,
+        actor: Actor {
+            kind: ActorKind::Hook,
+            id: Some("boundary-gate".to_string()),
+            actor_type: None,
+        },
+        event: "boundary.expansion".to_string(),
+        payload: json!({
+            "file": rel,
+            "spec": spec,
+            "wave": serde_json::Value::Null,
+            "mode": mode_str,
+            "sample_patterns": sample_patterns.iter().take(6).collect::<Vec<_>>(),
+        }),
+        spec: None,
+    };
+    let _ = JsonlEventStore::for_project(project_dir).append(&event);
+}
+
+/// The `boundary-gate` gate: flag a Write/Edit outside the active spec's
+/// declared `## Files` / `## Boundaries`.
+///
+/// 1:1 with `boundary-gate.js` — every early `process.exit(0)` maps to
+/// `None` (pass through). A real mismatch → `Deny` in strict mode, `Warn` in
+/// warn mode.
+fn boundary_gate(input: &HookInput, cwd: &str) -> Option<Verdict> {
+    let mode = boundary_mode();
+    if mode == BoundaryMode::Off {
+        return None;
+    }
+    let file_path = file_path_of(input)?;
+    // Compute rel; an escaping (`../`) path → None → skip.
+    let rel = relative_to_cwd(cwd, &file_path)?;
+    if is_meta_path(&rel) {
+        return None;
+    }
+    let state = read_newest_fresh_state(cwd)?;
+    let spec_name = state.get("specName").and_then(|v| v.as_str())?;
+    // Skip when the pipeline is closing / completed.
+    let phase = state.get("phaseName").and_then(|v| v.as_str()).unwrap_or("");
+    let status = state.get("status").and_then(|v| v.as_str()).unwrap_or("");
+    if phase == "CLOSE" || status == "completed" {
+        return None;
+    }
+    let spec_file = resolve_spec_file(cwd, &state)?;
+    let spec_text = std::fs::read_to_string(&spec_file).ok()?;
+    let patterns = extract_allowed_patterns(&spec_text);
+    if patterns.is_empty() {
+        return None;
+    }
+    if patterns.iter().any(|p| pattern_matches(&rel, p)) {
+        return None;
+    }
+    // Mismatch — emit the telemetry event, then decide the verdict.
+    emit_boundary_event(cwd, input.session_id.as_deref(), &rel, spec_name, mode, &patterns);
+    match mode {
+        BoundaryMode::Strict => Some(Verdict::Deny {
+            reason: format!(
+                "[boundary-gate] {rel} not in spec '{spec_name}' ## Files / \
+                 ## Boundaries. Update the spec's Files table to include this \
+                 path, or set MUSTARD_BOUNDARY_MODE=warn."
+            ),
+        }),
+        BoundaryMode::Warn => Some(Verdict::Warn {
+            message: format!(
+                "[boundary-gate] WARN: editing {rel} outside spec '{spec_name}' \
+                 boundary. If intentional cascade, add it to the spec ## Files. \
+                 Set MUSTARD_BOUNDARY_MODE=strict to block."
+            ),
+        }),
+        BoundaryMode::Off => None,
+    }
+}
+
+/// An RFC-3339 / ISO-8601 UTC timestamp string (`YYYY-MM-DDThh:mm:ss.sssZ`).
+fn now_iso8601() -> String {
+    let dur = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or(Duration::ZERO);
+    let secs = dur.as_secs();
+    let millis = dur.subsec_millis();
+    let days = (secs / 86_400) as i64;
+    let rem = secs % 86_400;
+    let (hh, mm, ss) = (rem / 3600, (rem % 3600) / 60, rem % 60);
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = if m <= 2 { y + 1 } else { y };
+    format!("{year:04}-{m:02}-{d:02}T{hh:02}:{mm:02}:{ss:02}.{millis:03}Z")
+}
+
+// ---------------------------------------------------------------------------
+// Contract impl
+// ---------------------------------------------------------------------------
+
+impl Check for PathGuard {
+    /// Run `file-guard` then `boundary-gate` on a `PreToolUse` invocation.
+    ///
+    /// `file-guard` is the non-negotiable safety gate (no mode — always
+    /// strict); it runs first and a sensitive-file `Deny` short-circuits.
+    /// `boundary-gate` runs only for `Write`/`Edit` and computes its verdict
+    /// with its own `MUSTARD_BOUNDARY_MODE`.
+    fn evaluate(&self, input: &HookInput, ctx: &Ctx) -> Result<Verdict, Error> {
+        if ctx.trigger != Some(Trigger::PreToolUse) {
+            return Ok(Verdict::Allow);
+        }
+        // `file-guard` — Read/Write/Edit, always strict.
+        if let Some(verdict) = file_guard(input) {
+            return Ok(verdict);
+        }
+        // `boundary-gate` — Write/Edit only.
+        let tool = input.tool_name.as_deref().unwrap_or_default();
+        if tool == "Write" || tool == "Edit" {
+            let cwd = project_dir(input, ctx);
+            if let Some(verdict) = boundary_gate(input, &cwd) {
+                return Ok(verdict);
+            }
+        }
+        Ok(Verdict::Allow)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use tempfile::tempdir;
+
+    fn pre(tool: &str, file_path: &str) -> (HookInput, Ctx) {
+        let input = HookInput {
+            tool_name: Some(tool.to_string()),
+            tool_input: json!({ "file_path": file_path }),
+            hook_event_name: Some("PreToolUse".to_string()),
+            ..HookInput::default()
+        };
+        let ctx = Ctx {
+            project_dir: String::new(),
+            trigger: Some(Trigger::PreToolUse),
+        };
+        (input, ctx)
+    }
+
+    fn verdict_for(tool: &str, file_path: &str) -> Verdict {
+        let (input, ctx) = pre(tool, file_path);
+        PathGuard.evaluate(&input, &ctx).expect("check never errors")
+    }
+
+    // --- file-guard parity (hooks.test.js "file-guard.js") -----------------
+
+    #[test]
+    fn file_guard_blocks_pem_key() {
+        assert!(verdict_for("Read", "/project/secrets/server.pem").is_blocking());
+        assert!(verdict_for("Write", "config/private.key").is_blocking());
+    }
+
+    #[test]
+    fn file_guard_blocks_credentials() {
+        assert!(verdict_for("Read", "/project/.aws/credentials").is_blocking());
+    }
+
+    #[test]
+    fn file_guard_blocks_git_config_and_ssh_keys() {
+        assert!(verdict_for("Edit", "/project/.git/config").is_blocking());
+        assert!(verdict_for("Read", "/home/user/.ssh/id_rsa").is_blocking());
+        assert!(verdict_for("Read", "/home/user/.ssh/id_ed25519").is_blocking());
+    }
+
+    #[test]
+    fn file_guard_allows_env_files() {
+        // file-guard does NOT block .env (user decision).
+        assert_eq!(verdict_for("Read", "/project/.env"), Verdict::Allow);
+        assert_eq!(verdict_for("Write", "/project/.env.local"), Verdict::Allow);
+    }
+
+    #[test]
+    fn file_guard_allows_normal_source() {
+        assert_eq!(verdict_for("Edit", "/project/src/main.ts"), Verdict::Allow);
+    }
+
+    #[test]
+    fn file_guard_ignores_non_file_tools() {
+        // Only Read/Write/Edit are inspected.
+        let input = HookInput {
+            tool_name: Some("Bash".to_string()),
+            tool_input: json!({ "command": "cat server.pem" }),
+            hook_event_name: Some("PreToolUse".to_string()),
+            ..HookInput::default()
+        };
+        assert!(file_guard(&input).is_none());
+    }
+
+    #[test]
+    fn file_guard_blocks_pfx_p12() {
+        assert!(verdict_for("Read", "/p/cert.pfx").is_blocking());
+        assert!(verdict_for("Read", "/p/cert.p12").is_blocking());
+    }
+
+    // --- boundary-gate parity ----------------------------------------------
+
+    #[test]
+    fn boundary_gate_passes_meta_paths() {
+        // A `.claude/` edit is always allowed (meta path).
+        assert_eq!(
+            verdict_for("Write", "/project/.claude/settings.json"),
+            Verdict::Allow
+        );
+    }
+
+    #[test]
+    fn boundary_gate_passes_when_no_active_spec() {
+        // No `.pipeline-states` dir → no state → pass through.
+        let dir = tempdir().unwrap();
+        let input = HookInput {
+            tool_name: Some("Write".to_string()),
+            tool_input: json!({ "file_path": "src/main.ts" }),
+            hook_event_name: Some("PreToolUse".to_string()),
+            cwd: Some(dir.path().to_string_lossy().into_owned()),
+            ..HookInput::default()
+        };
+        let ctx = Ctx {
+            project_dir: dir.path().to_string_lossy().into_owned(),
+            trigger: Some(Trigger::PreToolUse),
+        };
+        assert_eq!(
+            PathGuard.evaluate(&input, &ctx).expect("no error"),
+            Verdict::Allow
+        );
+    }
+
+    #[test]
+    fn extract_allowed_patterns_reads_files_section() {
+        let spec = "# Spec\n\n## Files\n\n- `src/main.ts` — entry\n- `src/lib/`\n\n\
+            ## Boundaries\n\n- `tests/**`\n\n## Summary\n\n- `not-a-path-label`\n";
+        let patterns = extract_allowed_patterns(spec);
+        assert!(patterns.contains(&"src/main.ts".to_string()));
+        assert!(patterns.contains(&"src/lib/".to_string()));
+        assert!(patterns.contains(&"tests/**".to_string()));
+        // The Summary span is outside the Files/Boundaries sections.
+        assert!(!patterns.contains(&"not-a-path-label".to_string()));
+    }
+
+    #[test]
+    fn pattern_matches_exact_dir_and_glob() {
+        assert!(pattern_matches("src/main.ts", "src/main.ts"));
+        assert!(pattern_matches("src/lib/x.ts", "src/lib/"));
+        assert!(pattern_matches("tests/unit/a.test.ts", "tests/**"));
+        assert!(pattern_matches("src/a.ts", "src/*.ts"));
+        assert!(!pattern_matches("src/lib/a.ts", "src/*.ts"));
+        assert!(!pattern_matches("docs/x.md", "src/**"));
+    }
+
+    #[test]
+    fn boundary_gate_denies_unlisted_file_in_strict_mode() {
+        // SAFETY: tests mutate a process-global env var; this test is the only
+        // one that sets MUSTARD_BOUNDARY_MODE, and it restores it.
+        let dir = tempdir().unwrap();
+        let cwd = dir.path();
+        // pipeline-state pointing at spec "demo".
+        let states = cwd.join(".claude").join(".pipeline-states");
+        std::fs::create_dir_all(&states).unwrap();
+        std::fs::write(
+            states.join("demo.json"),
+            json!({ "specName": "demo", "phaseName": "EXECUTE" }).to_string(),
+        )
+        .unwrap();
+        // spec.md with a Files section.
+        let spec_dir = cwd.join(".claude").join("spec").join("active").join("demo");
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        std::fs::write(
+            spec_dir.join("spec.md"),
+            "# Spec\n\n## Files\n\n- `src/allowed.ts`\n",
+        )
+        .unwrap();
+
+        let cwd_str = cwd.to_string_lossy().into_owned();
+        // An edit to `src/forbidden.ts` is outside the declared boundary.
+        let input = HookInput {
+            tool_name: Some("Edit".to_string()),
+            tool_input: json!({ "file_path": "src/forbidden.ts" }),
+            hook_event_name: Some("PreToolUse".to_string()),
+            cwd: Some(cwd_str.clone()),
+            ..HookInput::default()
+        };
+
+        // Default mode is `warn` → Warn, not Deny.
+        let warn = boundary_gate(&input, &cwd_str);
+        assert!(matches!(warn, Some(Verdict::Warn { .. })), "got {warn:?}");
+
+        // An allowed file passes through.
+        let allowed = HookInput {
+            tool_input: json!({ "file_path": "src/allowed.ts" }),
+            ..input.clone()
+        };
+        assert!(boundary_gate(&allowed, &cwd_str).is_none());
+    }
+
+    // --- gate routing -------------------------------------------------------
+
+    #[test]
+    fn non_pre_tool_use_trigger_allows() {
+        let input = HookInput {
+            tool_name: Some("Read".to_string()),
+            tool_input: json!({ "file_path": "server.pem" }),
+            hook_event_name: Some("PostToolUse".to_string()),
+            ..HookInput::default()
+        };
+        let ctx = Ctx {
+            project_dir: String::new(),
+            trigger: Some(Trigger::PostToolUse),
+        };
+        assert_eq!(
+            PathGuard.evaluate(&input, &ctx).expect("no error"),
+            Verdict::Allow
+        );
+    }
+
+    #[test]
+    fn non_path_token_rejection() {
+        assert!(looks_like_command_with_flag("npm --version"));
+        assert!(looks_like_env_assignment("NODE_ENV=test"));
+        assert!(!looks_like_command_with_flag("src/main.ts"));
+        assert!(!looks_like_env_assignment("src/main.ts"));
+    }
+}

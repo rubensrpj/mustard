@@ -102,28 +102,13 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bun \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/boundary-gate.js",
+            "command": "mustard-rt check size_gate",
             "timeout": 5
           },
           {
             "type": "command",
-            "command": "bun \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/close-gate.js",
+            "command": "mustard-rt check close_gate",
             "timeout": 310
-          },
-          {
-            "type": "command",
-            "command": "bun \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/spec-size-gate.js",
-            "timeout": 5000
-          },
-          {
-            "type": "command",
-            "command": "bun \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/skill-size-gate.js",
-            "timeout": 5000
-          },
-          {
-            "type": "command",
-            "command": "bun \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/skill-validate-gate.js",
-            "timeout": 5000
           }
         ]
       },
@@ -132,7 +117,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bun \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/file-guard.js",
+            "command": "mustard-rt check path_guard",
             "timeout": 5
           }
         ]
@@ -142,7 +127,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bun \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/enforce-registry.js",
+            "command": "mustard-rt check enforce_registry",
             "timeout": 5
           }
         ]
@@ -175,23 +160,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bun \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/auto-format.js",
-            "timeout": 15
-          },
-          {
-            "type": "command",
-            "command": "bun \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/checklist-auto-mark.js",
-            "timeout": 3
-          },
-          {
-            "type": "command",
-            "command": "bun \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/guard-verify.js",
-            "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "bun \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/pipeline-phase.js",
-            "timeout": 3
+            "command": "mustard-rt check post_edit",
+            "timeout": 20
           }
         ]
       },

@@ -8,7 +8,12 @@
 
 use crate::hooks::bash_guard::BashGuard;
 use crate::hooks::budget::BudgetGuard;
+use crate::hooks::close_gate::CloseGate;
+use crate::hooks::enforce_registry::EnforceRegistry;
 use crate::hooks::model_routing::ModelRoutingGate;
+use crate::hooks::path_guard::PathGuard;
+use crate::hooks::post_edit::PostEdit;
+use crate::hooks::size_gate::SizeGate;
 use crate::hooks::skills_audit::SkillsAudit;
 use crate::hooks::tracker::{
     MainContextCounter, MetricsTracker, SkillUsageTracker, SubagentTracker, ToolUseCounter,
@@ -198,6 +203,60 @@ impl Registry {
                 check: Some(Box::new(SkillsAudit)),
                 observer: None,
             },
+            // ── Wave 4: Write/Edit family ────────────────────────────────────
+            Module {
+                id: "size_gate",
+                // `spec-size-gate` + `skill-size-gate` + `skill-validate-gate` —
+                // PreToolUse(Write|Edit) structural gates.
+                applies_to: &[
+                    (Trigger::PreToolUse, ToolMatch::Named("Write")),
+                    (Trigger::PreToolUse, ToolMatch::Named("Edit")),
+                ],
+                check: Some(Box::new(SizeGate)),
+                observer: None,
+            },
+            Module {
+                id: "path_guard",
+                // `file-guard` (PreToolUse(Read|Write|Edit) sensitive-file
+                // gate) + `boundary-gate` (PreToolUse(Write|Edit) spec-boundary
+                // gate). Registered on Read too so `file-guard` covers reads.
+                applies_to: &[
+                    (Trigger::PreToolUse, ToolMatch::Named("Read")),
+                    (Trigger::PreToolUse, ToolMatch::Named("Write")),
+                    (Trigger::PreToolUse, ToolMatch::Named("Edit")),
+                ],
+                check: Some(Box::new(PathGuard)),
+                observer: None,
+            },
+            Module {
+                id: "close_gate",
+                // `close-gate` — PreToolUse(Write|Edit) pipeline-CLOSE sensor.
+                applies_to: &[
+                    (Trigger::PreToolUse, ToolMatch::Named("Write")),
+                    (Trigger::PreToolUse, ToolMatch::Named("Edit")),
+                ],
+                check: Some(Box::new(CloseGate)),
+                observer: None,
+            },
+            Module {
+                id: "enforce_registry",
+                // `enforce-registry` — PreToolUse(Skill) pre-pipeline gate.
+                applies_to: &[(Trigger::PreToolUse, ToolMatch::Named("Skill"))],
+                check: Some(Box::new(EnforceRegistry)),
+                observer: None,
+            },
+            Module {
+                id: "post_edit",
+                // `auto-format` + `checklist-auto-mark` + `guard-verify` +
+                // `pipeline-phase` — PostToolUse(Write|Edit). Both a `Check`
+                // (guard-verify) and an `Observer` (the other three).
+                applies_to: &[
+                    (Trigger::PostToolUse, ToolMatch::Named("Write")),
+                    (Trigger::PostToolUse, ToolMatch::Named("Edit")),
+                ],
+                check: Some(Box::new(PostEdit)),
+                observer: Some(Box::new(PostEdit)),
+            },
         ];
         Self { modules }
     }
@@ -317,9 +376,41 @@ mod tests {
             "metrics_tracker",
             "skill_usage_tracker",
             "skills_audit",
+            "size_gate",
+            "path_guard",
+            "close_gate",
+            "enforce_registry",
+            "post_edit",
         ] {
             assert!(registry.by_id(id).is_some(), "by_id missing {id}");
         }
         assert!(registry.by_id("nonexistent").is_none());
+    }
+
+    #[test]
+    fn write_edit_family_applies_on_pre_tool_use() {
+        let registry = Registry::new();
+        // Wave-4 Write/Edit gates fire on PreToolUse(Write) and (Edit).
+        for tool in ["Write", "Edit"] {
+            let ids = applicable_ids(&registry, Trigger::PreToolUse, Some(tool));
+            for want in ["size_gate", "path_guard", "close_gate"] {
+                assert!(ids.contains(&want), "missing {want} for {tool}");
+            }
+        }
+        // `path_guard` (file-guard) also covers Read.
+        assert!(
+            applicable_ids(&registry, Trigger::PreToolUse, Some("Read")).contains(&"path_guard")
+        );
+        // `post_edit` runs on PostToolUse(Write|Edit).
+        for tool in ["Write", "Edit"] {
+            assert!(
+                applicable_ids(&registry, Trigger::PostToolUse, Some(tool)).contains(&"post_edit")
+            );
+        }
+        // `enforce_registry` runs on PreToolUse(Skill).
+        assert!(
+            applicable_ids(&registry, Trigger::PreToolUse, Some("Skill"))
+                .contains(&"enforce_registry")
+        );
     }
 }

@@ -1,7 +1,7 @@
 # Feature: b3-hooks-to-rust
 
 ### Status: implementing | Phase: EXECUTE | Scope: full
-### Checkpoint: 2026-05-19T03:05:00Z
+### Checkpoint: 2026-05-19T07:59:39Z
 ### Lang: pt
 
 > Spec de backlog (Parte B, item B3). **ÉPICO** — decompõe no ANALYZE em waves por família de hook (provavelmente specs-filhas). Depende de B2. Revisada 2026-05-18: **não é porte 1:1** — os 37 hooks viram ~15 módulos atrás de um dispatcher.
@@ -95,7 +95,7 @@ As ~15 famílias (a confirmar no ANALYZE):
 
 ### Impl Agent (Wave 4) — famílias de Write/Edit
 
-- [ ] Módulos `size_gate`, `path_guard`, `post_edit`, `close_gate`, `enforce_registry`.
+- [x] Módulos `size_gate`, `path_guard`, `post_edit`, `close_gate`, `enforce_registry`. 11 hooks JS portados; `settings.json` migrado; 11 `.js` deletados; testes de paridade Rust (196 ✓) + suíte JS verde (232 ✓, fix-loop limpou blocos órfãos em `hooks.test.js`/`harness-dual-emission`/`harness-wave10` e deletou `size-gates.test.js`/`skill-validate-gate.test.js`/`harness-wave9.test.js`).
 
 ### Impl Agent (Wave 5) — famílias de sessão + colapso final
 
@@ -129,7 +129,23 @@ As ~15 famílias (a confirmar no ANALYZE):
 - **(Wave 3 → Wave 4)** `metrics-tracker`/`subagent-tracker` tagueiam eventos com `phase`/`spec` lidos do pipeline-state — sem acesso no `Ctx` atual; emitidos como `null` (igual ao fallback JS). Resolver quando B4 expuser o pipeline-state ao runtime.
 - **(Wave 3, WARNING → Wave 1-2 cleanup)** `bash-native-redirect.js` e `rtk-rewrite.js` continuam em `templates/hooks/` mas já não são referenciados pelo `settings.json` (portados em `bash_guard` nas Waves 1-2): arquivos mortos. Deletar.
 - **(Wave 3, WARNING → Wave 5)** `budget::observe` (`output-budget` advisory) escreve `hookSpecificOutput` direto no stdout via `println!`, contornando o `emit_outcome` do `main.rs` (dono único do protocolo stdout). Paridade de veredito preservada (advisory-only), mas sob o binário consolidado dois objetos JSON podem sair numa invocação. Rotear o aviso pelo `Outcome` no colapso da Wave 5.
-- **(Wave 3, NOTE)** `now_iso8601` está duplicada verbatim em 5 módulos de `mustard-rt` (`bash_guard`, `budget`, `model_routing`, `tracker`, `skills_audit`). Candidato a helper em `mustard-core` — não load-bearing.
+- **(Wave 3, NOTE)** `now_iso8601` está duplicada verbatim em 5 módulos de `mustard-rt` (`bash_guard`, `budget`, `model_routing`, `tracker`, `skills_audit`). Candidato a helper em `mustard-core` — não load-bearing. **Wave 4 piorou:** mais 3 cópias (`path_guard`, `post_edit`, `close_gate`) — total 8. Idem `format_gate_message` (6 cópias) e `is_word_byte`. O helper em `mustard-core` ficou mais urgente, mas segue não load-bearing.
+
+- **(Wave 4 → Wave 5/B4)** `boundary-gate` e `pipeline-phase` emitiam eventos (`boundary.expansion`, `pipeline.phase`) tagueados com `session_id`/`wave` resolvidos do pipeline-state via `_lib/harness-event.js`. O `Ctx` do `mustard-core` não carrega nenhum dos dois: o porte emite `session_id` = `input.session_id` (quando ausente → `"unknown"`) e `wave` = `0`/`null` — exatamente o fallback JS. Telemetria, não load-bearing; fix quando o `Ctx` ganhar `session_id`/`wave` (mesma dependência das Concerns de Wave 2/3).
+
+- **(Wave 4, NOTE)** `boundary-gate.js` chamava `shouldRun('boundary-gate')` de `_lib/hook-env.js` (profile gate) — perdido na consolidação para `path_guard`, igual ao caso `review-gate`/`pr-detect` da Wave 2. Sob o profile `minimal` o gate agora roda onde antes se auto-pulava; veredito não muda. Mesma resolução: a Wave 5 dá ao dispatcher consciência de profile ou documenta a remoção. `file-guard.js` também usava `shouldRun`, idem.
+
+- **(Wave 4, NOTE)** Encoding de wire normalizado: `enforce-registry.js` emitia `permissionDecision: "block"` e `guard-verify.js` emitia o protocolo PostToolUse `decision: "block"/"approve"`. O contrato `mustard-core` tem um único `Verdict::Deny` que o `emit_outcome` codifica como `"deny"`. O **veredito** (bloquear) é preservado 1:1 — só a string do wire normaliza; o harness trata `block`/`deny` de forma idêntica.
+
+- **(Wave 4, WARNING → Wave 5)** `post_edit::observe` (auto-format) faz spawn de `npx prettier` / `dotnet format` de forma síncrona como side-effect do `Observer`. O `settings.json` dá 20s de timeout à entrada `post_edit` (auto-format antigo tinha 15s). Sob o binário consolidado, auto-format + checklist-auto-mark + pipeline-phase + guard-verify rodam numa só invocação — se o formatter pendurar, todo o `post_edit` espera. Fail-open preservado (cada side-effect engole erros). Revisitar timeouts no colapso da Wave 5.
+
+- **(Wave 4, NOTE)** `close-gate.js` distinguia `envError` (spawn falho / timeout → fail-open, nunca bloqueia) de falha real (exit ≠ 0 → deny). O `bash_guard::run_build` tem shape diferente (e a Concern de vazamento de timeout da Wave 2); `close_gate` porta seu próprio `run_command` em vez de reusar — a distinção env-error/falha-real fica exata. `run_command` do `close_gate` tem o mesmo padrão de timeout que `run_build`, mas como o timeout do harness em `settings.json` (310s) é menor que o `COMMAND_TIMEOUT` de 5min, o caminho de timeout interno raramente é alcançado.
+
+- **(Wave 4 review, NOTE → Wave 5)** **`boundary-gate` deixou de rodar em Write/Edit durante a janela de transição.** A entrada `PreToolUse(Write|Edit)` do `boundary-gate.js` foi deletada do `settings.json`, mas como `mustard-rt check <id>` roda só **um** módulo, e os blocos `PreToolUse(Write|Edit)` migrados apontam para `size_gate`/`close_gate`, o `path_guard` (que carrega o concern do boundary-gate) só é alcançado em `PreToolUse(Read)` (via `file-guard`). O `registry.rs` já registra `path_guard` em Write/Edit — mas só o colapso da Wave 5 (`mustard-rt on <evento>`) o ativará lá. Veredito preservado no modo default (`warn`); sob `MUSTARD_BOUNDARY_MODE=strict` um `deny` real fica perdido até a Wave 5. **A Wave 5 deve garantir que o colapso restaure o boundary-gate em Write/Edit.**
+
+- **(Wave 4 review, WARNING)** `close_gate::find_last_qa_result` aceita um evento `qa.result` sem campo `spec` como satisfazendo o gate de QA para *qualquer* spec — um `qa.result` de outra execução pode dar falso-positivo. Paridade preservada: o `findLastQAResult` do JS tinha exatamente o mesmo comportamento frouxo. Apertar quando o `Ctx` ganhar identidade de spec.
+
+- **(Wave 4 review, NOTE)** `path_guard::is_other_h2` não fecha a seção Files/Boundaries num heading `## ` seguido de espaço extra (`##  Título`) — o regex JS `/^##\s/` fecharia. Caso de borda (H2 com espaço duplo), afeta só seção advisory, sem impacto no caminho de `deny`.
 
 ## Critérios de Aceitação
 
