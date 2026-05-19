@@ -1,0 +1,62 @@
+{
+  "spec": "2026-05-12-dashboard-tauri-scaffold",
+  "overall": "pass",
+  "criteria": [
+    {
+      "id": "AC-1",
+      "status": "pass",
+      "exit": 0,
+      "duration_ms": 1172,
+      "stderr_excerpt": ""
+    },
+    {
+      "id": "AC-2",
+      "status": "pass",
+      "exit": 0,
+      "duration_ms": 1052,
+      "stderr_excerpt": ""
+    },
+    {
+      "id": "AC-3",
+      "status": "pass",
+      "exit": 0,
+      "duration_ms": 2868,
+      "stderr_excerpt": ""
+    },
+    {
+      "id": "AC-4",
+      "status": "pass",
+      "exit": 0,
+      "duration_ms": 609,
+      "stderr_excerpt": ""
+    },
+    {
+      "id": "AC-5",
+      "status": "pass",
+      "exit": 0,
+      "duration_ms": 37560,
+      "stderr_excerpt": ""
+    },
+    {
+      "id": "AC-6",
+      "status": "pass",
+      "exit": 0,
+      "duration_ms": 73,
+      "stderr_excerpt": ""
+    },
+    {
+      "id": "AC-7",
+      "status": "pass",
+      "exit": 0,
+      "duration_ms": 78,
+      "stderr_excerpt": ""
+    },
+    {
+      "id": "AC-8",
+      "status": "pass",
+      "exit": 0,
+      "duration_ms": 74,
+      "stderr_excerpt": ""
+    }
+  ]
+}

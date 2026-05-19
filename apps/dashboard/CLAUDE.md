@@ -78,3 +78,49 @@ When the first subproject lands (e.g., `apps/api/`, `apps/web/`):
 3. After that, `npm test`/`npm run build`/`npm run lint`/`tsc --noEmit` (from `mustard.json`) become meaningful — the pipeline runs them through `close-gate.js`.
 
 Until a subproject exists, `/scan` will report no dispatches and most pipeline commands have nothing to act on.
+
+## Stack
+
+Tauri 2 desktop app with React 19 + TypeScript 5.8 frontend (Vite 7), Tailwind 4.3, TanStack Query v5, zustand v5, react-router v7 (HashRouter), shadcn primitives over radix-ui, react-markdown v10. Backend is Rust under `src-tauri/`. Tooling: `pnpm@10.18.1`.
+
+## Commands
+
+```bash
+pnpm dev               # Vite dev server (web preview, no Tauri shell)
+pnpm tauri:dev         # Tauri desktop dev (Rust cwd = src-tauri/)
+pnpm build             # tsc -b && vite build (type-check + bundle)
+pnpm tauri:build       # Packaged desktop installer
+pnpm lint              # eslint .
+pnpm test              # placeholder — no test runner wired yet
+```
+
+## Guards
+
+- Use `useQueries` (TanStack Query v5) for per-project fan-out. Key by `project.path`. Never call `invoke()` from a component.
+- All Tauri `invoke()` wrappers live in `src/lib/dashboard.ts` (dashboard surface) or `src/api/*.ts` (discovery/env). Export a typed `interface` next to each fetcher.
+- Null-guard React Query `data` (`data?.field`). Reset internal state in `useEffect` when the query key changes (memory: `useeffect_render_race`).
+- Always `HashRouter`, never `BrowserRouter`. Adding a route requires updating `App.tsx`, `Sidebar.tsx`, AND `Topbar.tsx` LABELS map (memory: `routing_implicit_boundary`).
+- Select zustand fields via slices: `useStore((s) => s.field)`. Don't destructure the whole store.
+- `pnpm tauri:dev` runs Rust with cwd = `src-tauri/`, not repo root. Pass absolute `project.path` into Rust commands; Rust uses `find_mustard_root()` for relative resolution (memory: `tauri_current_dir_gotcha`).
+- react-markdown v10 removed the `inline` prop on `code` — override `pre` separately and detect blocks via className/newline (memory: `react_markdown_v10`).
+- Add new shadcn primitives via `pnpm dlx shadcn add <name>` WITHOUT `--style`/`--base-color` (memory: `tauri_scaffold_gotchas`).
+- Node-built-ins-only / fail-open rules apply to the Mustard scaffold side (`.claude/hooks/*.js`), NOT the dashboard app.
+
+## Scan References
+
+| File | Purpose |
+|------|---------|
+| `.claude/commands/stack.md` | Stack, dependencies, tooling, source layout |
+| `.claude/commands/features.md` | Routes, pages, global UI mounts, data flow |
+| `.claude/commands/patterns.md` | React Query fan-out, invoke wrappers, zustand, router boundary, watcher, react-markdown |
+| `.claude/commands/guards.md` | DO/DON'T rules |
+| `.claude/commands/recipes.md` | Playbooks: add hook, add Tauri command, add route, add shadcn primitive |
+
+## Recommended Skills
+
+| Skill | When |
+|-------|------|
+| `mustard-dashboard-use-queries-hook-pattern` | Adding any new `src/hooks/use*.ts` that aggregates data across detected projects |
+| `karpathy-guidelines` | Any code edit |
+| `react-best-practices` | React performance / refactor tasks |
+| `frontend-design` / `design-craft` | New components, pages, visual changes |

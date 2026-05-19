@@ -1,0 +1,4 @@
+{"ts":"2026-05-13T05:03:59.913Z","event":"tool-use-counter","tokens_affected":0,"tokens_saved":0,"note":"warn-threshold","agent_type":"Explore","count":12,"limit":15,"category":"routing-advisory"}
+{"ts":"2026-05-13T05:04:03.253Z","event":"tool-use-counter","tokens_affected":0,"tokens_saved":0,"note":"hard-limit","agent_type":"Explore","count":15,"limit":15,"category":"prevention"}
+{"ts":"2026-05-13T05:04:03.753Z","event":"tool-use-counter","tokens_affected":0,"tokens_saved":0,"note":"hard-limit","agent_type":"Explore","count":16,"limit":15,"category":"prevention"}
+{"ts":"2026-05-13T05:04:04.215Z","event":"tool-use-counter","tokens_affected":0,"tokens_saved":0,"note":"hard-limit","agent_type":"Explore","count":17,"limit":15,"category":"prevention"}

@@ -109,15 +109,15 @@ function AggregateSparkline({
   return (
     <div className="flex flex-col gap-1">
       <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-20">
-        <path d={path("saved")} fill="none" stroke="rgb(16 185 129 / 0.7)" strokeWidth="1.5" />
-        <path d={path("consumed")} fill="none" stroke="rgb(99 102 241 / 0.9)" strokeWidth="1.5" />
+        <path d={path("saved")} fill="none" stroke="var(--success)" strokeOpacity="0.8" strokeWidth="1.5" />
+        <path d={path("consumed")} fill="none" stroke="var(--primary)" strokeWidth="1.5" />
       </svg>
       <div className="flex gap-3 text-[11px] text-muted-foreground">
         <span className="flex items-center gap-1.5">
-          <span className="inline-block w-3 h-0.5 bg-indigo-500" /> consumido
+          <span className="inline-block w-3 h-0.5 bg-primary" /> consumido
         </span>
         <span className="flex items-center gap-1.5">
-          <span className="inline-block w-3 h-0.5 bg-emerald-500" /> RTK saved
+          <span className="inline-block w-3 h-0.5 bg-success" /> RTK saved
         </span>
       </div>
     </div>
@@ -223,11 +223,11 @@ function RoiScoreboard({
             </span>
             <span className="text-[11px] text-muted-foreground">consumido + poupado pelo RTK</span>
           </div>
-          <div className="flex flex-col gap-1 px-3 py-2.5 rounded border border-indigo-500/30 bg-indigo-500/5">
-            <span className="text-[10px] uppercase tracking-wider text-indigo-400">
+          <div className="flex flex-col gap-1 px-3 py-2.5 rounded border border-primary/30 bg-primary/5">
+            <span className="text-[10px] uppercase tracking-wider text-primary">
               Diferença poupada
             </span>
-            <span className="text-xl font-mono font-medium text-indigo-300 tabular-nums">
+            <span className="text-xl font-mono font-medium text-primary tabular-nums">
               {formatTokens(saved)}
               {effPct != null && (
                 <span className="text-sm text-muted-foreground"> · {formatPct(effPct)}</span>
@@ -326,7 +326,7 @@ export function AggregateOverview({ projects }: { projects: Project[] }) {
                 <li key={m.model} className="flex items-baseline gap-2 text-[13px]">
                   <span className="font-mono w-36 truncate">{m.model}</span>
                   <div className="flex-1 h-1.5 bg-muted rounded overflow-hidden">
-                    <div className="h-full bg-indigo-500/40" style={{ width: `${m.pct_tokens * 100}%` }} />
+                    <div className="h-full bg-primary/40" style={{ width: `${m.pct_tokens * 100}%` }} />
                   </div>
                   <span className="text-muted-foreground text-xs w-16 text-right font-mono">
                     {formatTokens(m.total_tokens)}

@@ -1,0 +1,1 @@
+{"ts":"2026-05-13T02:26:50.873Z","event":"rtk-rewrite","tokens_affected":66,"tokens_saved":0,"note":"rewritten via rtk","command_head":"ls \"$USERPROFILE/.cargo/bin/cargo.exe\" 2>&1 || ls \"$HOME/.ca","rewritten_head":"rtk ls \"$USERPROFILE/.cargo/bin/cargo.exe\" 2>&1 || rtk ls \"$"}

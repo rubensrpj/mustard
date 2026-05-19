@@ -28,7 +28,9 @@ export function useActivityFeed(
     queries: projects.map((p) => ({
       queryKey: ["activity-feed", p.path, limitPerProject],
       queryFn: () => fetchRecentEvents(p.path, limitPerProject),
-      staleTime: 15_000,
+      staleTime: 5_000,
+      refetchInterval: 5_000,
+      refetchOnWindowFocus: true,
     })),
   });
 

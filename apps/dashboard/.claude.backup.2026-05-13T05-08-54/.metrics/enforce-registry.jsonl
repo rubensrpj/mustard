@@ -1,0 +1,4 @@
+{"ts":"2026-05-13T01:42:13.170Z","event":"enforce-registry","tokens_affected":0,"tokens_saved":0,"note":"blocked-stale-version","reason":"stale-version","version":"4.0","category":"prevention"}
+{"ts":"2026-05-13T02:37:40.941Z","event":"enforce-registry","tokens_affected":0,"tokens_saved":0,"note":"blocked-stale-version","reason":"stale-version","version":"4.0","category":"prevention"}
+{"ts":"2026-05-13T03:01:51.093Z","event":"enforce-registry","tokens_affected":0,"tokens_saved":0,"note":"blocked-stale-version","reason":"stale-version","version":"4.0","category":"prevention"}
+{"ts":"2026-05-13T03:31:27.183Z","event":"enforce-registry","tokens_affected":0,"tokens_saved":0,"note":"blocked-stale-version","reason":"stale-version","version":"4.0","category":"prevention"}

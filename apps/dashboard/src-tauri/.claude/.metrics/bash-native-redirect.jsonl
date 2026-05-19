@@ -1,0 +1,1 @@
+{"ts":"2026-05-13T02:27:12.049Z","event":"bash-native-redirect","tokens_affected":0,"tokens_saved":0,"note":"piped-warn","from":"grep","to":"Grep","command_head":"grep -E \"(execSync|spawn|shell)\" .claude/scripts/qa-run.js | head -10","category":"redirection"}

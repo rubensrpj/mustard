@@ -1,0 +1,65 @@
+- generic [ref=e2]:
+  - region "Notifications alt+T"
+  - generic [ref=e3]:
+    - complementary [ref=e4]:
+      - generic [ref=e5]:
+        - generic [ref=e6]: Mustard
+        - generic [ref=e7]: v0.1.0
+      - generic [ref=e8]:
+        - generic [ref=e9]: Navigation
+        - link "Home" [ref=e10] [cursor=pointer]:
+          - /url: "#/"
+          - img [ref=e11]
+          - text: Home
+        - link "Knowledge" [ref=e14] [cursor=pointer]:
+          - /url: "#/knowledge"
+          - img [ref=e15]
+          - text: Knowledge
+        - link "Comandos" [ref=e17] [cursor=pointer]:
+          - /url: "#/commands"
+          - img [ref=e18]
+          - text: Comandos
+        - link "PRD" [ref=e20] [cursor=pointer]:
+          - /url: "#/prd"
+          - img [ref=e21]
+          - text: PRD
+        - link "Activity" [ref=e24] [cursor=pointer]:
+          - /url: "#/activity"
+          - img [ref=e25]
+          - text: Activity
+        - link "Telemetry" [ref=e27] [cursor=pointer]:
+          - /url: "#/telemetry"
+          - img [ref=e28]
+          - text: Telemetry
+        - link "Quality" [ref=e31] [cursor=pointer]:
+          - /url: "#/quality"
+          - img [ref=e32]
+          - text: Quality
+        - generic [ref=e35]:
+          - generic [ref=e36]: Workspace
+          - generic [ref=e37]: "0"
+        - generic [ref=e38]: Nenhum projeto encontrado.
+        - link "Settings" [ref=e39] [cursor=pointer]:
+          - /url: "#/settings"
+          - img [ref=e40]
+          - text: Settings
+    - banner [ref=e43]:
+      - navigation "Breadcrumb" [ref=e45]:
+        - generic [ref=e46]: Mustard
+        - generic [ref=e47]: /
+        - generic [ref=e48]: Knowledge
+      - generic [ref=e50]: Choose a workspace from the sidebar
+      - generic [ref=e51]:
+        - button "Reload projects" [ref=e52]:
+          - img [ref=e53]
+        - button "Switch to light theme" [ref=e58]:
+          - img [ref=e59]
+    - main [ref=e65]:
+      - generic [ref=e78]:
+        - generic [ref=e79]:
+          - navigation [ref=e80]: Mustard / Knowledge
+          - heading "Knowledge" [level=1] [ref=e81]
+        - generic [ref=e82]:
+          - img [ref=e83]
+          - textbox "Buscar patterns, conventions, lições…" [active] [ref=e86]
+        - paragraph [ref=e87]: Choose a workspace from the sidebar.

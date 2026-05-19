@@ -1,0 +1,55 @@
+{
+  "spec": "2026-05-13-dashboard-commands-catalog",
+  "overall": "pass",
+  "criteria": [
+    {
+      "id": "AC-1",
+      "status": "pass",
+      "exit": 0,
+      "duration_ms": 2941,
+      "stderr_excerpt": ""
+    },
+    {
+      "id": "AC-2",
+      "status": "pass",
+      "exit": 0,
+      "duration_ms": 83,
+      "stderr_excerpt": ""
+    },
+    {
+      "id": "AC-3",
+      "status": "pass",
+      "exit": 0,
+      "duration_ms": 141,
+      "stderr_excerpt": ""
+    },
+    {
+      "id": "AC-4",
+      "status": "pass",
+      "exit": 0,
+      "duration_ms": 118,
+      "stderr_excerpt": ""
+    },
+    {
+      "id": "AC-5",
+      "status": "pass",
+      "exit": 0,
+      "duration_ms": 100,
+      "stderr_excerpt": ""
+    },
+    {
+      "id": "AC-6",
+      "status": "pass",
+      "exit": 0,
+      "duration_ms": 125,
+      "stderr_excerpt": ""
+    },
+    {
+      "id": "AC-7",
+      "status": "pass",
+      "exit": 0,
+      "duration_ms": 9575,
+      "stderr_excerpt": ""
+    }
+  ]
+}

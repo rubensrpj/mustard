@@ -17,8 +17,10 @@ import { Toaster } from "sonner";
 import { useStore } from "@/lib/store";
 import { discoverProjects } from "@/api/discovery";
 import { startWatcher, subscribeFsChange } from "@/lib/watcher";
+import { useTheme } from "@/hooks/useTheme";
 
 function App() {
+  const { theme } = useTheme();
   const projectsRoot = useStore((s) => s.projectsRoot);
   const { data: projects } = useQuery({
     queryKey: ['discover', projectsRoot],
@@ -44,7 +46,7 @@ function App() {
 
   return (
     <HashRouter>
-      <Toaster position="bottom-right" richColors theme="dark" />
+      <Toaster position="bottom-right" richColors theme={theme} />
       <CommandPalette />
       <AppShell>
         <Routes>

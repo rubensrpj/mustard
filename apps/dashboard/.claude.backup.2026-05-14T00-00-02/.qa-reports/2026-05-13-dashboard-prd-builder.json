@@ -1,0 +1,62 @@
+{
+  "spec": "2026-05-13-dashboard-prd-builder",
+  "overall": "pass",
+  "criteria": [
+    {
+      "id": "AC-1",
+      "status": "pass",
+      "exit": 0,
+      "duration_ms": 2514,
+      "stderr_excerpt": ""
+    },
+    {
+      "id": "AC-2",
+      "status": "pass",
+      "exit": 0,
+      "duration_ms": 193,
+      "stderr_excerpt": ""
+    },
+    {
+      "id": "AC-3",
+      "status": "pass",
+      "exit": 0,
+      "duration_ms": 174,
+      "stderr_excerpt": ""
+    },
+    {
+      "id": "AC-4",
+      "status": "pass",
+      "exit": 0,
+      "duration_ms": 118,
+      "stderr_excerpt": ""
+    },
+    {
+      "id": "AC-5",
+      "status": "pass",
+      "exit": 0,
+      "duration_ms": 104,
+      "stderr_excerpt": ""
+    },
+    {
+      "id": "AC-6",
+      "status": "pass",
+      "exit": 0,
+      "duration_ms": 77,
+      "stderr_excerpt": ""
+    },
+    {
+      "id": "AC-7",
+      "status": "pass",
+      "exit": 0,
+      "duration_ms": 133,
+      "stderr_excerpt": ""
+    },
+    {
+      "id": "AC-8",
+      "status": "pass",
+      "exit": 0,
+      "duration_ms": 7966,
+      "stderr_excerpt": ""
+    }
+  ]
+}

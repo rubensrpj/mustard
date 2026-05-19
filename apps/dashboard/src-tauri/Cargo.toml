@@ -29,8 +29,15 @@ tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rusqlite = { version = "0.31", features = ["bundled"] }
+notify = "6"
+notify-debouncer-mini = "0.4"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 
 [[test]]
 name = "db_test"
 path = "tests/db_test.rs"
+
+[[test]]
+name = "telemetry_test"
+path = "tests/telemetry_test.rs"
 

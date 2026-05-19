@@ -16,6 +16,7 @@ import {
 } from "@/lib/dashboard";
 import { useActivityFeed } from "@/hooks/useActivityFeed";
 import { SpecSidePanel } from "@/components/SpecSidePanel";
+import { SplitDetail } from "@/components/layout/SplitDetail";
 import { parseQaOverall } from "@/lib/qa";
 import { phaseTheme, PHASE_ORDER, shortSpecName } from "@/lib/phaseTheme";
 import {
@@ -204,7 +205,21 @@ export function Quality() {
   );
 
   return (
-    <div className="flex flex-col gap-6 w-full">
+    <SplitDetail
+      open={!!selectedSpec}
+      panel={
+        selectedSpec ? (
+          <SpecSidePanel
+            projectId={activeWorkspaceId}
+            projectPath={activeProject?.path ?? null}
+            spec={selectedSpec}
+            allSpecs={specsData ?? []}
+            onClose={() => setSelectedSpec(null)}
+          />
+        ) : null
+      }
+    >
+      <div className="flex flex-col gap-6 w-full">
       <PageHeader
         breadcrumb={[
           "Mustard",
@@ -402,7 +417,7 @@ export function Quality() {
                                 )}
                                 <button
                                   type="button"
-                                  className="font-mono text-[12.5px] truncate cursor-pointer hover:text-indigo-400 transition-colors text-left min-w-0"
+                                  className="font-mono text-[12.5px] truncate cursor-pointer hover:text-primary transition-colors text-left min-w-0"
                                   title={spec.name}
                                   onClick={() => setSelectedSpec(spec)}
                                 >
@@ -416,7 +431,7 @@ export function Quality() {
                             <td className="px-2 py-2.5 text-center">
                               {waveCount > 0 ? (
                                 <span
-                                  className="inline-flex items-center justify-center min-w-[28px] rounded-md px-1.5 py-0.5 text-[11px] font-medium bg-indigo-500/15 text-indigo-300 border border-indigo-500/30 tabular-nums"
+                                  className="inline-flex items-center justify-center min-w-[28px] rounded-md px-1.5 py-0.5 text-[11px] font-medium bg-primary/15 text-primary border border-primary/30 tabular-nums"
                                   title={
                                     fsChildren.length > 0
                                       ? `${fsChildren.length} wave(s) definida(s) no wave-plan.md`
@@ -617,17 +632,6 @@ export function Quality() {
         </section>
       )}
 
-      <SpecSidePanel
-        open={!!selectedSpec}
-        onOpenChange={(o) => {
-          if (!o) setSelectedSpec(null);
-        }}
-        projectId={activeWorkspaceId}
-        projectPath={activeProject?.path ?? null}
-        specName={selectedSpec?.name ?? null}
-        specRow={selectedSpec}
-      />
-
       {/* Historical breakdowns */}
       {data && !isEmpty && !isLoading && (
         <div className="flex flex-col gap-6 w-full">
@@ -714,7 +718,7 @@ export function Quality() {
                         <span className={cn("font-mono w-20 text-xs", t.text)}>{p.phase}</span>
                         <div className="flex-1 flex h-1.5 rounded-full overflow-hidden bg-muted/20">
                           <div
-                            className="bg-indigo-500/60"
+                            className="bg-primary/60"
                             style={{ width: `${(p.input_avg / maxPhaseTokens) * 100}%` }}
                             title={`input avg: ${Math.round(p.input_avg).toLocaleString()}`}
                           />
@@ -740,6 +744,7 @@ export function Quality() {
           )}
         </div>
       )}
-    </div>
+      </div>
+    </SplitDetail>
   );
 }

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link, useSearchParams } from "react-router";
 import { useStore } from "@/lib/store";
@@ -10,6 +10,7 @@ import {
   fetchLiveActivity,
   fetchRecentEvents,
   fetchSpecMarkdown,
+  fetchSpecs,
 } from "@/lib/dashboard";
 import { usePromptEconomy, useCollectorHealth } from "@/hooks/usePromptEconomy";
 import type { CollectorHealth } from "@/api/promptEconomy";
@@ -33,11 +34,13 @@ import { Markdown } from "@/components/Markdown";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Sheet, SheetContent } from "@/components/ui/sheet";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { SplitDetail } from "@/components/layout/SplitDetail";
+import { WaveNav } from "@/components/WaveNav";
+import { resolveWaveFamily } from "@/lib/waves";
 import { relativeTime } from "@/lib/time";
 import { cn } from "@/lib/utils";
-import { Pin, PinOff, RefreshCw, X } from "lucide-react";
+import { RefreshCw, X } from "lucide-react";
 
 // Canonical pipeline vocabulary — must match refs/canonical-phases.md.
 // REVIEW sits between EXECUTE and QA: it already emits real events but was
@@ -55,49 +58,6 @@ function useTicker(intervalMs = 1_000): number {
   return now;
 }
 
-/** Persisted boolean in localStorage. SSR-safe (returns def in non-browser). */
-function usePersistedBool(key: string, def: boolean): [boolean, (v: boolean) => void] {
-  const [v, setV] = useState<boolean>(() => {
-    try {
-      const s = typeof localStorage !== "undefined" ? localStorage.getItem(key) : null;
-      return s == null ? def : s === "1";
-    } catch {
-      return def;
-    }
-  });
-  useEffect(() => {
-    try {
-      localStorage.setItem(key, v ? "1" : "0");
-    } catch {
-      /* ignore quota / private mode */
-    }
-  }, [key, v]);
-  return [v, setV];
-}
-
-function usePersistedNumber(key: string, def: number): [number, (v: number) => void] {
-  const [v, setV] = useState<number>(() => {
-    try {
-      const s = typeof localStorage !== "undefined" ? localStorage.getItem(key) : null;
-      const n = s == null ? NaN : Number.parseFloat(s);
-      return Number.isFinite(n) ? n : def;
-    } catch {
-      return def;
-    }
-  });
-  useEffect(() => {
-    try {
-      localStorage.setItem(key, String(v));
-    } catch {
-      /* ignore */
-    }
-  }, [key, v]);
-  return [v, setV];
-}
-
-const PANEL_MIN_WIDTH = 360;
-const PANEL_MAX_WIDTH = 900;
-const PANEL_DEFAULT_WIDTH = 480;
 
 export function Telemetry() {
   const projectsRoot = useStore((s) => s.projectsRoot);
@@ -152,39 +112,8 @@ export function Telemetry() {
 
   const [selectedPipeline, setSelectedPipeline] = useState<ActivePipeline | null>(null);
   const [selectedPhase, setSelectedPhase] = useState<PhaseActivity | null>(null);
-  const [pinned, setPinned] = usePersistedBool("telemetry.panel.pinned", false);
-  const [panelWidth, setPanelWidth] = usePersistedNumber(
-    "telemetry.panel.width",
-    PANEL_DEFAULT_WIDTH,
-  );
-  const [draggingResize, setDraggingResize] = useState(false);
-  const panelRef = useRef<HTMLElement | null>(null);
 
   const hasSelection = !!selectedPipeline || !!selectedPhase;
-  const showPinned = pinned && hasSelection;
-
-  // Resize handle: track mousemove globally while dragging. The panel sits in
-  // normal flow inside the centered content column, so its right edge is not
-  // the viewport edge — measure against the panel's own right edge.
-  useEffect(() => {
-    if (!draggingResize) return;
-    function onMove(e: MouseEvent) {
-      const right = panelRef.current?.getBoundingClientRect().right ?? window.innerWidth;
-      const w = right - e.clientX;
-      setPanelWidth(Math.min(Math.max(w, PANEL_MIN_WIDTH), PANEL_MAX_WIDTH));
-    }
-    function onUp() {
-      setDraggingResize(false);
-    }
-    document.addEventListener("mousemove", onMove);
-    document.addEventListener("mouseup", onUp);
-    return () => {
-      document.removeEventListener("mousemove", onMove);
-      document.removeEventListener("mouseup", onUp);
-    };
-    // setPanelWidth is stable enough; intentionally only depend on draggingResize
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [draggingResize]);
 
   function selectPipeline(p: ActivePipeline) {
     setSelectedPhase(null);
@@ -321,55 +250,14 @@ export function Telemetry() {
       phase={selectedPhase}
       repoPath={path}
       projectId={activeWorkspaceId}
-      pinned={pinned}
-      onTogglePin={() => setPinned(!pinned)}
       onClose={closeAll}
     />
   ) : null;
 
-  // ── Split layout (pinned) ──
-  // Estratégia: conteúdo + painel são duas colunas de um flex dentro da
-  // coluna centralizada do AppShell. O painel é `sticky` (não `fixed`),
-  // então acompanha a coluna `max-w-screen-2xl` em vez de se ancorar à
-  // viewport — sem faixa vazia à esquerda e sem desalinhamento em telas
-  // largas. A scrollbar única continua sendo a do `<main>` do AppShell.
-  if (showPinned) {
-    return (
-      <div className="flex items-start gap-5">
-        <div className="flex flex-col gap-7 min-w-0 flex-1">
-          {mainContent}
-        </div>
-        <aside
-          ref={panelRef}
-          style={{ width: panelWidth }}
-          className="sticky top-0 flex-none bg-background border-l border-border flex flex-col z-10 h-[calc(100vh-3rem-3rem)] max-h-[calc(100vh-3rem-3rem)]"
-        >
-          {/* drag-handle invisível por padrão, só fica visível no hover/drag */}
-          <div
-            onMouseDown={() => setDraggingResize(true)}
-            className={cn(
-              "absolute left-0 top-0 bottom-0 w-1 -translate-x-3 cursor-col-resize hover:bg-primary/40 transition-colors",
-              draggingResize && "bg-primary/60",
-            )}
-            role="separator"
-            aria-label="Redimensionar painel"
-          />
-          {panelRender}
-        </aside>
-      </div>
-    );
-  }
-
-  // ── Modal layout (not pinned) ──
   return (
-    <div className="flex flex-col gap-7">
-      {mainContent}
-      <Sheet open={hasSelection} onOpenChange={(o) => { if (!o) closeAll(); }}>
-        <SheetContent className="w-[min(560px,100vw)] sm:max-w-none p-0 flex flex-col">
-          {panelRender}
-        </SheetContent>
-      </Sheet>
-    </div>
+    <SplitDetail open={hasSelection} panel={panelRender}>
+      <div className="flex flex-col gap-7">{mainContent}</div>
+    </SplitDetail>
   );
 }
 
@@ -548,23 +436,19 @@ function ExecutingSection({
   );
 }
 
-// ── Unified detail panel (used by both pinned aside and modal sheet) ─────────
+// ── Unified detail panel ─────────────────────────────────────────────────────
 
 function DetailPanel({
   pipeline,
   phase,
   repoPath,
   projectId,
-  pinned,
-  onTogglePin,
   onClose,
 }: {
   pipeline: ActivePipeline | null;
   phase: PhaseActivity | null;
   repoPath: string | null;
   projectId: string | null;
-  pinned: boolean;
-  onTogglePin: () => void;
   onClose: () => void;
 }) {
   return (
@@ -573,8 +457,6 @@ function DetailPanel({
         pipeline={pipeline}
         phase={phase}
         projectId={projectId}
-        pinned={pinned}
-        onTogglePin={onTogglePin}
         onClose={onClose}
       />
       <div className="flex-1 overflow-y-auto">
@@ -592,15 +474,11 @@ function PanelHeader({
   pipeline,
   phase,
   projectId,
-  pinned,
-  onTogglePin,
   onClose,
 }: {
   pipeline: ActivePipeline | null;
   phase: PhaseActivity | null;
   projectId: string | null;
-  pinned: boolean;
-  onTogglePin: () => void;
   onClose: () => void;
 }) {
   if (pipeline) {
@@ -610,11 +488,7 @@ function PanelHeader({
           <span className="font-mono text-sm font-medium truncate flex-1" title={pipeline.spec_name}>
             {pipeline.spec_name}
           </span>
-          <PinCloseButtons
-            pinned={pinned}
-            onTogglePin={onTogglePin}
-            onClose={onClose}
-          />
+          <CloseButton onClose={onClose} />
         </div>
         <div className="flex items-center gap-2 flex-wrap">
           {pipeline.phase && (
@@ -666,11 +540,7 @@ function PanelHeader({
             {phase.last_event_ts ? `última ${relativeTime(phase.last_event_ts)}` : "—"}
           </span>
           <div className="ml-auto">
-            <PinCloseButtons
-              pinned={pinned}
-              onTogglePin={onTogglePin}
-              onClose={onClose}
-            />
+            <CloseButton onClose={onClose} />
           </div>
         </div>
         {meta?.description && (
@@ -684,36 +554,17 @@ function PanelHeader({
   return null;
 }
 
-function PinCloseButtons({
-  pinned,
-  onTogglePin,
-  onClose,
-}: {
-  pinned: boolean;
-  onTogglePin: () => void;
-  onClose: () => void;
-}) {
+function CloseButton({ onClose }: { onClose: () => void }) {
   return (
-    <div className="flex items-center gap-1">
-      <Button
-        variant="ghost"
-        size="sm"
-        onClick={onTogglePin}
-        className="h-7 w-7 p-0"
-        title={pinned ? "Soltar painel (volta como modal)" : "Pinar painel (split lateral)"}
-      >
-        {pinned ? <PinOff className="size-3.5" /> : <Pin className="size-3.5" />}
-      </Button>
-      <Button
-        variant="ghost"
-        size="sm"
-        onClick={onClose}
-        className="h-7 w-7 p-0"
-        title="Fechar"
-      >
-        <X className="size-3.5" />
-      </Button>
-    </div>
+    <Button
+      variant="ghost"
+      size="sm"
+      onClick={onClose}
+      className="h-7 w-7 p-0"
+      title="Fechar"
+    >
+      <X className="size-3.5" />
+    </Button>
   );
 }
 
@@ -724,17 +575,39 @@ function SpecPanelBody({
   specName: string;
   projectPath: string | null;
 }) {
+  // Qual membro da família (plano-mãe ou uma wave) está em exibição. Reseta
+  // quando a pipeline selecionada muda.
+  const [viewing, setViewing] = useState(specName);
+  useEffect(() => setViewing(specName), [specName]);
+
+  const specs = useQuery({
+    queryKey: ["specs", projectPath],
+    queryFn: () => fetchSpecs(projectPath!),
+    enabled: !!projectPath,
+    staleTime: 15_000,
+  });
+  const family = resolveWaveFamily(specs.data ?? [], specName);
+
   const { data: markdown, isLoading, error } = useQuery({
-    queryKey: ["spec-markdown", projectPath, specName],
-    queryFn: () => fetchSpecMarkdown(projectPath!, specName),
-    enabled: !!projectPath && !!specName,
+    queryKey: ["spec-markdown", projectPath, viewing],
+    queryFn: () => fetchSpecMarkdown(projectPath!, viewing),
+    enabled: !!projectPath && !!viewing,
     staleTime: 60_000,
   });
   // Empty/whitespace markdown is not content — show a message, not a blank body.
   const hasContent = typeof markdown === "string" && markdown.trim().length > 0;
   return (
-    <div className="px-5 py-4">
-      {isLoading && (
+    <>
+      {family.isWavePlan && (
+        <WaveNav
+          parentName={family.parentName}
+          waves={family.waves}
+          current={viewing}
+          onSelect={setViewing}
+        />
+      )}
+      <div className="px-5 py-4">
+        {isLoading && (
         <div className="flex flex-col gap-2">
           {[0, 1, 2, 3, 4].map((i) => (
             <div key={i} className="h-4 bg-muted/40 rounded animate-pulse" />
@@ -755,7 +628,8 @@ function SpecPanelBody({
           Esta spec não tem um <code className="font-mono">spec.md</code> com conteúdo.
         </p>
       )}
-    </div>
+      </div>
+    </>
   );
 }
 
@@ -800,9 +674,9 @@ const PHASE_META: Record<
   },
   REVIEW: {
     label: "Revisar",
-    color: "text-indigo-500 dark:text-indigo-400",
-    bg: "bg-indigo-500",
-    border: "border-indigo-500/30",
+    color: "text-primary",
+    bg: "bg-primary",
+    border: "border-primary/30",
     isExecution: false,
     description: "Inspeção do código produzido antes do QA — busca erros e regressões.",
   },
@@ -1099,7 +973,7 @@ function CostBlock({ cost }: { cost: import("@/api/promptEconomy").PromptEconomy
           <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
             USD total
           </span>
-          <span className="text-2xl font-mono tabular-nums text-indigo-400 leading-none">
+          <span className="text-2xl font-mono tabular-nums text-primary leading-none">
             {formatUsd(cost.usd_total)}
           </span>
         </div>
@@ -1130,73 +1004,79 @@ function CostBlock({ cost }: { cost: import("@/api/promptEconomy").PromptEconomy
   );
 }
 
-/** Bytes Mustard chose NOT to send — counterfactual savings, not money. */
+/** Context Mustard sent to sub-agents vs. the spec it avoided sending. */
 function SubtractionsBlock({
   subtractions,
 }: {
   subtractions: import("@/api/promptEconomy").PromptEconomy["subtractions"];
 }) {
-  const rows: { label: string; bytes: number; count: number }[] = [
-    { label: "diff-vs-full", bytes: subtractions.diff_vs_full_bytes, count: subtractions.diff_vs_full_count },
-    { label: "wave-slice", bytes: subtractions.wave_slice_bytes, count: subtractions.wave_slice_count },
-    { label: "review-diff-first", bytes: subtractions.review_diff_first_bytes, count: subtractions.review_diff_first_count },
-    { label: "analyze-diff-skip", bytes: subtractions.analyze_diff_skip_bytes, count: subtractions.analyze_diff_skip_count },
-  ];
-  const totalBytes = rows.reduce((a, r) => a + r.bytes, 0);
-  const totalCount = rows.reduce((a, r) => a + r.count, 0);
+  const waves = subtractions.by_wave;
   return (
     <Card size="sm" className="ring-foreground/5">
       <CardContent className="flex flex-col gap-2">
         <SubHeader
-          label="Bytes omitidos pelo Mustard"
-          detail="Contexto que o orquestrador escolheu NÃO enviar (diff em vez de arquivo inteiro, fatia de wave em vez do roadmap todo). Economia contrafactual — não é dinheiro, é prompt que nunca existiu."
+          label="Contexto enviado vs. evitado"
+          detail="Cada sub-agente recebe só a fatia do spec da sua wave. 'Enviado' é o que de fato foi no prompt despachado; 'evitado' é o resto do spec que ele não precisou ver."
           accent="indigo"
         />
-        <div className="flex flex-col gap-0.5 mt-1">
-          <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
-            Total
-          </span>
-          <span className="text-2xl font-mono tabular-nums text-violet-400 leading-none">
-            {formatBytes(totalBytes)}
-          </span>
-          {/* Lifetime accumulator — same honest labelling as os cards de
-              hooks/routing. Mostra "+N nesta sessão" só quando a janela de
-              sessão é conhecida E produziu eventos; senão rotula apenas o
-              acumulado vitalício, sem "+0" ruidoso. */}
-          <span className="text-[11px] text-muted-foreground">
-            acumulado · vitalício
-            {subtractions.session_known && subtractions.session_bytes > 0 && (
+        <div className="grid grid-cols-2 gap-4 mt-1">
+          <div className="flex flex-col gap-0.5">
+            <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
+              Contexto enviado
+            </span>
+            <span className="text-2xl font-mono tabular-nums text-foreground leading-none">
+              {formatBytes(subtractions.context_sent_bytes)}
+            </span>
+            {subtractions.session_known && subtractions.session_sent_bytes > 0 && (
               <span
-                className="text-emerald-500 dark:text-emerald-400"
+                className="text-[11px] text-emerald-500 dark:text-emerald-400"
                 title="Quanto deste acumulado veio da sessão atual (desde que o Claude Code abriu este projeto)."
               >
-                {" "}· +{formatBytes(subtractions.session_bytes)} em{" "}
-                {subtractions.session_count}{" "}
-                {subtractions.session_count === 1 ? "evento" : "eventos"} nesta sessão
+                +{formatBytes(subtractions.session_sent_bytes)} nesta sessão
               </span>
             )}
-          </span>
+          </div>
+          <div className="flex flex-col gap-0.5">
+            <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
+              Contexto evitado
+            </span>
+            <span className="text-2xl font-mono tabular-nums text-violet-400 leading-none">
+              {formatBytes(subtractions.context_avoided_bytes)}
+            </span>
+            {subtractions.session_known && subtractions.session_avoided_bytes > 0 && (
+              <span
+                className="text-[11px] text-emerald-500 dark:text-emerald-400"
+                title="Quanto deste acumulado veio da sessão atual (desde que o Claude Code abriu este projeto)."
+              >
+                +{formatBytes(subtractions.session_avoided_bytes)} nesta sessão
+              </span>
+            )}
+          </div>
         </div>
-        {totalCount === 0 ? (
+        {waves.length === 0 ? (
           <p className="text-[11.5px] text-muted-foreground leading-snug border-t border-border/40 pt-2">
-            Nenhum evento de subtração ainda. Esses eventos são raros por design —
-            só disparam em <code className="font-mono">/resume</code>,{" "}
-            <code className="font-mono">/review</code> e no início de pipelines.
+            Sem dados ainda. Aparece quando uma pipeline roda a fase EXECUTE com waves.
           </p>
         ) : (
           <ul className="flex flex-col gap-1 mt-1 border-t border-border/40 pt-2">
-            {rows.map((r) => (
+            <li className="text-[10px] uppercase tracking-wider text-muted-foreground/70">
+              por wave
+            </li>
+            {waves.map((w) => (
               <li
-                key={r.label}
+                key={w.wave}
                 className="flex items-baseline justify-between gap-3 text-[12.5px]"
               >
-                <span className="font-mono text-muted-foreground">{r.label}</span>
+                <span className="font-mono text-muted-foreground">Wave {w.wave}</span>
                 <span className="flex items-baseline gap-2 shrink-0">
                   <span className="font-mono tabular-nums text-foreground">
-                    {formatBytes(r.bytes)}
+                    enviado {formatBytes(w.sent_bytes)}
+                  </span>
+                  <span className="font-mono tabular-nums text-violet-400">
+                    · evitado {formatBytes(w.avoided_bytes)}
                   </span>
                   <span className="text-[11px] text-muted-foreground tabular-nums">
-                    ({r.count} {r.count === 1 ? "evento" : "eventos"})
+                    ({w.count} {w.count === 1 ? "evento" : "eventos"})
                   </span>
                 </span>
               </li>
@@ -1280,10 +1160,8 @@ function PromptEconomySection({
   const allZero =
     !!data &&
     data.cost.usd_total === 0 &&
-    data.subtractions.wave_slice_bytes === 0 &&
-    data.subtractions.diff_vs_full_bytes === 0 &&
-    data.subtractions.review_diff_first_bytes === 0 &&
-    data.subtractions.analyze_diff_skip_bytes === 0 &&
+    data.subtractions.context_sent_bytes === 0 &&
+    data.subtractions.context_avoided_bytes === 0 &&
     data.claude_events.session_count === 0 &&
     data.claude_events.active_time_seconds === 0;
 
@@ -1604,7 +1482,7 @@ function SubHeader({
               : accent === "amber"
                 ? "bg-amber-500"
                 : accent === "indigo"
-                  ? "bg-indigo-500"
+                  ? "bg-primary"
                   : "bg-foreground",
           )}
         />
@@ -1630,7 +1508,7 @@ function BigStat({
       : accent === "amber"
         ? "text-amber-500 dark:text-amber-400"
         : accent === "indigo"
-          ? "text-indigo-500 dark:text-indigo-400"
+          ? "text-primary"
           : "";
   return (
     <div className="flex flex-col gap-0.5">
@@ -1930,7 +1808,7 @@ function AgentActivitySection({ block }: { block: AgentActivityBlock | undefined
                   </span>
                   <div className="flex-1 h-1.5 bg-muted rounded overflow-hidden flex">
                     <div
-                      className="h-full bg-indigo-500/60"
+                      className="h-full bg-primary/60"
                       style={{ width: `${((a.starts - a.errors) / maxStarts) * 100}%` }}
                     />
                     {a.errors > 0 && (
@@ -2106,7 +1984,7 @@ function PhasePanelBody({
                 <span className="font-mono w-24 truncate">{t.tool_name}</span>
                 <div className="flex-1 h-1 bg-muted rounded overflow-hidden">
                   <div
-                    className={cn("h-full", meta?.bg ?? "bg-indigo-500/60")}
+                    className={cn("h-full", meta?.bg ?? "bg-primary/60")}
                     style={{
                       width: `${
                         phase.top_tools[0]?.count

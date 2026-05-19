@@ -1,0 +1,20 @@
+{
+  "lastScan": "2026-05-14T00:25:01.725Z",
+  "subprojects": [
+    {
+      "name": "mustard-dashboard",
+      "path": ".",
+      "role": "ui",
+      "agent": "frontend",
+      "commands": [],
+      "stackSummary": "React 19.1, Tailwind 4.3, Typescript 5.8",
+      "hashChanged": true,
+      "gitDirty": true,
+      "gitDirtyCount": 133
+    }
+  ],
+  "sourceHashes": {
+    "mustard-dashboard": "aec2bad75f2ec704eba444980f3f023757cd674194a9f9f7ce60fa8ba709257a"
+  },
+  "moduleHashes": {}
+}

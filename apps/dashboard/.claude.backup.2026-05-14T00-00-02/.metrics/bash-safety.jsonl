@@ -1,0 +1,2 @@
+{"ts":"2026-05-12T23:01:40.778Z","event":"bash-safety","tokens_affected":0,"tokens_saved":0,"note":"blocked-rm-rf","command_head":"rm -rf /c/Atiz/mustard-dashboard-scaffold-tmp && mkdir -p /c/Atiz/mustard-dashbo","pattern":"rm-rf","category":"prevention"}
+{"ts":"2026-05-12T23:19:29.889Z","event":"bash-safety","tokens_affected":0,"tokens_saved":0,"note":"blocked-rm-rf","command_head":"rm -rf src/src/ && rm -f src/App.css && rm -rf src-tauri/src/src/ && echo \"DELET","pattern":"rm-rf","category":"prevention"}

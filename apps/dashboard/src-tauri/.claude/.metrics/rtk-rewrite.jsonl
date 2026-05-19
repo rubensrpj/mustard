@@ -1,0 +1,2 @@
+{"ts":"2026-05-13T02:26:28.092Z","event":"rtk-rewrite","tokens_affected":14,"tokens_saved":0,"note":"rewritten via rtk","command_head":"cd src-tauri && cargo test --test db_test 2>&1 | tail -10","rewritten_head":"cd src-tauri && rtk cargo test --test db_test 2>&1 | tail -1"}
+{"ts":"2026-05-13T02:27:12.162Z","event":"rtk-rewrite","tokens_affected":17,"tokens_saved":0,"note":"rewritten via rtk","command_head":"grep -E \"(execSync|spawn|shell)\" .claude/scripts/qa-run.js |","rewritten_head":"rtk grep -E \"(execSync|spawn|shell)\" .claude/scripts/qa-run."}

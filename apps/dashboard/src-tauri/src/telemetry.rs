@@ -1223,17 +1223,30 @@ pub struct CostBlock {
     pub by_session: Vec<SessionCost>,
 }
 
+/// Per-wave breakdown of context sent vs. avoided. One row per `wave` value
+/// found in `mustard.subtraction.applied` payloads.
+#[derive(Serialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub struct WaveSubtraction {
+    pub wave: u64,
+    /// Σ `prompt_bytes` — context actually dispatched to sub-agents this wave.
+    pub sent_bytes: u64,
+    /// Σ `bytes_omitted` — rest of the spec the sub-agents never had to see.
+    pub avoided_bytes: u64,
+    pub count: u64,
+}
+
 #[derive(Serialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub struct SubtractionsBlock {
-    pub wave_slice_bytes: u64,
-    pub wave_slice_count: u64,
-    pub diff_vs_full_bytes: u64,
-    pub diff_vs_full_count: u64,
-    pub review_diff_first_bytes: u64,
-    pub review_diff_first_count: u64,
-    pub analyze_diff_skip_bytes: u64,
-    pub analyze_diff_skip_count: u64,
+    /// Σ `prompt_bytes` across all wave slices — context Mustard actually sent.
+    pub context_sent_bytes: u64,
+    /// Σ `bytes_omitted` across all wave slices — context Mustard avoided.
+    pub context_avoided_bytes: u64,
+    /// Total `mustard.subtraction.applied` events counted.
+    pub event_count: u64,
+    /// Breakdown grouped by wave, ascending.
+    pub by_wave: Vec<WaveSubtraction>,
     /// Lifetime totals above are an append-only accumulator and never reset.
     /// These `session_*` fields count only `mustard.subtraction.applied` events
     /// whose `ts` falls inside the current session window — same treatment as
@@ -1241,7 +1254,8 @@ pub struct SubtractionsBlock {
     /// can honestly show "1.7 MB total · +N nesta sessão". When the session
     /// window cannot be derived they stay 0 and the UI labels the card as a
     /// lifetime accumulator with no noisy "+0".
-    pub session_bytes: u64,
+    pub session_sent_bytes: u64,
+    pub session_avoided_bytes: u64,
     pub session_count: u64,
     /// True when a session window was available to compute the deltas above.
     /// `false` means "show total only, labelled lifetime".
@@ -1332,8 +1346,9 @@ fn cost_block(conn: &Connection) -> CostBlock {
 }
 
 /// Subtractions block — one GROUP BY query against `events` where
-/// `event='mustard.subtraction.applied'`. Routes the three known types into
-/// the dedicated fields. Unknown types are silently ignored (no surprise UI).
+/// `event='mustard.subtraction.applied'`. Every such event is a `wave-slice`
+/// now, so we group by `wave` and sum `prompt_bytes` (context sent) and
+/// `bytes_omitted` (context avoided) per wave plus an overall total.
 ///
 /// The lifetime totals are an append-only accumulator. `session_since` (the
 /// ISO `ts` the current session started at) lets us additionally count the
@@ -1343,62 +1358,52 @@ fn cost_block(conn: &Connection) -> CostBlock {
 fn subtractions_block(conn: &Connection, session_since: Option<&str>) -> SubtractionsBlock {
     let mut out = SubtractionsBlock::default();
 
-    let sql = "SELECT json_extract(payload, '$.type') AS t, \
-                      COALESCE(SUM(CAST(json_extract(payload, '$.bytes_omitted') AS INTEGER)), 0) AS bytes, \
+    let sql = "SELECT CAST(json_extract(payload, '$.wave') AS INTEGER) AS w, \
+                      COALESCE(SUM(CAST(json_extract(payload, '$.prompt_bytes') AS INTEGER)), 0) AS sent, \
+                      COALESCE(SUM(CAST(json_extract(payload, '$.bytes_omitted') AS INTEGER)), 0) AS avoided, \
                       COUNT(*) AS cnt \
-               FROM events WHERE event = 'mustard.subtraction.applied' GROUP BY t";
+               FROM events WHERE event = 'mustard.subtraction.applied' \
+               GROUP BY w ORDER BY w";
     let mut stmt = match conn.prepare(sql) {
         Ok(s) => s,
         Err(_) => return out,
     };
     let rows = match stmt.query_map([], |row| {
-        Ok((
-            row.get::<_, Option<String>>(0)?.unwrap_or_default(),
-            row.get::<_, Option<i64>>(1)?.unwrap_or(0).max(0) as u64,
-            row.get::<_, Option<i64>>(2)?.unwrap_or(0).max(0) as u64,
-        ))
+        Ok(WaveSubtraction {
+            wave: row.get::<_, Option<i64>>(0)?.unwrap_or(0).max(0) as u64,
+            sent_bytes: row.get::<_, Option<i64>>(1)?.unwrap_or(0).max(0) as u64,
+            avoided_bytes: row.get::<_, Option<i64>>(2)?.unwrap_or(0).max(0) as u64,
+            count: row.get::<_, Option<i64>>(3)?.unwrap_or(0).max(0) as u64,
+        })
     }) {
         Ok(r) => r,
         Err(_) => return out,
     };
-    for r in rows.flatten() {
-        let (t, bytes, count) = r;
-        match t.as_str() {
-            "wave-slice" => {
-                out.wave_slice_bytes = bytes;
-                out.wave_slice_count = count;
-            }
-            "diff-vs-full" => {
-                out.diff_vs_full_bytes = bytes;
-                out.diff_vs_full_count = count;
-            }
-            "review-diff-first" => {
-                out.review_diff_first_bytes = bytes;
-                out.review_diff_first_count = count;
-            }
-            "analyze-diff-skip" => {
-                out.analyze_diff_skip_bytes = bytes;
-                out.analyze_diff_skip_count = count;
-            }
-            _ => {}
-        }
+    for w in rows.flatten() {
+        out.context_sent_bytes += w.sent_bytes;
+        out.context_avoided_bytes += w.avoided_bytes;
+        out.event_count += w.count;
+        out.by_wave.push(w);
     }
 
     // Session delta — only when a session window is known. ISO-8601 UTC
     // strings sort chronologically, so `ts >= ?` is a correct cut-off.
     if let Some(since) = session_since {
         let session_sql = "SELECT \
+                COALESCE(SUM(CAST(json_extract(payload, '$.prompt_bytes') AS INTEGER)), 0), \
                 COALESCE(SUM(CAST(json_extract(payload, '$.bytes_omitted') AS INTEGER)), 0), \
                 COUNT(*) \
              FROM events \
              WHERE event = 'mustard.subtraction.applied' AND ts >= ?1";
-        if let Ok((bytes, count)) = conn.query_row(session_sql, [since], |row| {
+        if let Ok((sent, avoided, count)) = conn.query_row(session_sql, [since], |row| {
             Ok((
                 row.get::<_, Option<i64>>(0)?.unwrap_or(0).max(0) as u64,
                 row.get::<_, Option<i64>>(1)?.unwrap_or(0).max(0) as u64,
+                row.get::<_, Option<i64>>(2)?.unwrap_or(0).max(0) as u64,
             ))
         }) {
-            out.session_bytes = bytes;
+            out.session_sent_bytes = sent;
+            out.session_avoided_bytes = avoided;
             out.session_count = count;
             out.session_known = true;
         }

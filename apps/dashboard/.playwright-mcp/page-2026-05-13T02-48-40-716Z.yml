@@ -1,0 +1,132 @@
+- generic [ref=e3]:
+  - complementary [ref=e4]:
+    - generic [ref=e5]:
+      - generic [ref=e6]: Mustard
+      - generic [ref=e7]: v0.1.0
+    - generic [ref=e8]:
+      - generic [ref=e9]: Navigation
+      - link "Home" [ref=e10] [cursor=pointer]:
+        - /url: "#/"
+        - img [ref=e11]
+        - text: Home
+      - generic [ref=e14]:
+        - img [ref=e15]
+        - text: Knowledge
+        - generic [ref=e17]: soon
+      - generic [ref=e18]:
+        - img [ref=e19]
+        - text: Activity
+        - generic [ref=e21]: soon
+      - generic [ref=e22]:
+        - generic [ref=e23]: Workspace
+        - generic [ref=e24]: "4"
+      - link "mustard-dashboard" [ref=e82] [cursor=pointer]:
+        - /url: "#/project/p1"
+        - generic [ref=e84]: mustard-dashboard
+      - link "frame-builder" [ref=e85] [cursor=pointer]:
+        - /url: "#/project/p2"
+        - generic [ref=e87]: frame-builder
+      - link "studio-api" [ref=e88] [cursor=pointer]:
+        - /url: "#/project/p3"
+        - generic [ref=e90]: studio-api
+      - link "photo-pipeline" [ref=e91] [cursor=pointer]:
+        - /url: "#/project/p4"
+        - generic [ref=e93]: photo-pipeline
+      - link "Settings" [ref=e26] [cursor=pointer]:
+        - /url: "#/settings"
+        - img [ref=e27]
+        - text: Settings
+  - banner [ref=e30]:
+    - navigation "Breadcrumb" [ref=e31]:
+      - generic [ref=e32]: Mustard
+      - generic [ref=e33]: /
+      - generic [ref=e34]: Projeto
+    - generic [ref=e35]:
+      - generic [ref=e36]:
+        - generic [ref=e37]: Ctrl
+        - generic [ref=e38]: K
+      - button "Reload projects" [ref=e39]:
+        - img [ref=e40]
+      - button "Switch to light theme" [ref=e45]:
+        - img [ref=e46]
+  - main [ref=e52]:
+    - generic [ref=e131]:
+      - generic [ref=e132]:
+        - navigation [ref=e133]: Mustard / Projetos / mustard-dashboard
+        - heading "mustard-dashboard" [level=1] [ref=e134]
+      - generic [ref=e135]:
+        - generic [ref=e136]:
+          - img [ref=e137]
+          - heading "Subprojects" [level=2] [ref=e141]
+          - generic [ref=e142]: "3"
+        - list [ref=e143]:
+          - listitem [ref=e144]:
+            - generic [ref=e146]: apps/api
+            - generic [ref=e147]: backend
+          - listitem [ref=e148]:
+            - generic [ref=e150]: apps/web
+            - generic [ref=e151]: frontend
+          - listitem [ref=e152]:
+            - generic [ref=e154]: apps/worker
+            - generic [ref=e155]: backend
+      - generic [ref=e156]:
+        - generic [ref=e157]:
+          - img [ref=e158]
+          - heading "Recipes" [level=2] [ref=e160]
+          - generic [ref=e161]: "5"
+        - list [ref=e162]:
+          - listitem [ref=e163]:
+            - generic [ref=e164]: add-field
+            - generic [ref=e165]: — Add a field to an existing entity
+          - listitem [ref=e166]:
+            - generic [ref=e167]: add-endpoint
+            - generic [ref=e168]: — Add a new REST endpoint
+          - listitem [ref=e169]:
+            - generic [ref=e170]: add-component
+            - generic [ref=e171]: — Add a new React component
+          - listitem [ref=e172]:
+            - generic [ref=e173]: add-validation
+            - generic [ref=e174]: — Add validation to a form/endpoint
+          - listitem [ref=e175]:
+            - generic [ref=e176]: null-guard
+            - generic [ref=e177]: — Guard against null/undefined access
+      - generic [ref=e178]:
+        - generic [ref=e179]:
+          - img [ref=e180]
+          - heading "Skills" [level=2] [ref=e182]
+          - generic [ref=e183]: "3"
+        - list [ref=e184]:
+          - listitem [ref=e185]:
+            - generic [ref=e186]: karpathy-guidelines
+            - generic [ref=e187]: foundation
+            - generic [ref=e188]: — Anti-slop principles for code changes
+          - listitem [ref=e189]:
+            - generic [ref=e190]: commit-workflow
+            - generic [ref=e191]: foundation
+            - generic [ref=e192]: — Standardized commit message format
+          - listitem [ref=e193]:
+            - generic [ref=e194]: react-best-practices
+            - generic [ref=e195]: foundation
+            - generic [ref=e196]: — React/Next.js performance optimization
+      - generic [ref=e197]:
+        - generic [ref=e198]:
+          - img [ref=e199]
+          - heading "Eventos recentes" [level=2] [ref=e201]
+          - generic [ref=e202]: "4"
+        - list [ref=e206]:
+          - listitem [ref=e207]:
+            - generic [ref=e209]: agent.dispatch
+            - generic [ref=e210]: há 2 minutos
+            - generic [ref=e211]: — frontend-impl dispatched for visual-craft-pass
+          - listitem [ref=e212]:
+            - generic [ref=e214]: qa.run
+            - generic [ref=e215]: há 6 minutos
+            - generic [ref=e216]: — AC-1..AC-7 all passed
+          - listitem [ref=e217]:
+            - generic [ref=e219]: pipeline.advance
+            - generic [ref=e220]: há 11 minutos
+            - generic [ref=e221]: — phase EXECUTE -> QA
+          - listitem [ref=e222]:
+            - generic [ref=e224]: hook.duplication-check
+            - generic [ref=e225]: há 16 minutos
+            - generic [ref=e226]: — no duplication detected

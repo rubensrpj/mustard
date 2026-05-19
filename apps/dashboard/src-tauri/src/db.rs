@@ -2,7 +2,11 @@ use rusqlite::{Connection, OpenFlags};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::{KnowledgeRow, KnowledgeSummary, MetricsSummary, RecentEvent, SpecRow};
+use crate::{
+    ActivityGroup, AgentUsage, ConsumptionSummary, DailyPoint, KnowledgeRow, KnowledgeSummary,
+    MetricsSummary, ModelUsage, PhaseTokens, QualityMetrics, RecentEvent, RoleQuality,
+    SlowestWave, SpecRow, SpecUsage,
+};
 
 /// Open a SQLite connection in read-only mode. Returns an error if the file
 /// does not exist on disk (rusqlite would otherwise create it with default flags).
@@ -173,9 +177,38 @@ pub fn knowledge_from_db(conn: &Connection) -> Result<KnowledgeSummary, String> 
     })
 }
 
-fn summary_from_payload(payload: &Option<String>) -> Option<String> {
+fn summary_from_payload(payload: &Option<String>, event_type: &str) -> Option<String> {
     let raw = payload.as_deref()?;
     let v: serde_json::Value = serde_json::from_str(raw).ok()?;
+
+    // Event-specific summaries. qa-run.js emits `{ spec, overall, criteria }`
+    // with `overall: "pass"|"fail"|"skip"` — none of the generic summary keys
+    // match, so without this branch the dashboard sees `summary: null` and
+    // parseQaOverall (frontend) can't distinguish pass/fail/skip.
+    if event_type == "qa.result" {
+        let overall = v.get("overall").and_then(|x| x.as_str());
+        if let Some(o) = overall {
+            // Include failed AC count when available so the summary stays
+            // informative even after the frontend's parseQaOverall extracts
+            // the verdict.
+            let criteria = v.get("criteria").and_then(|c| c.as_array());
+            let fail_count = criteria
+                .map(|arr| {
+                    arr.iter()
+                        .filter(|c| {
+                            c.get("result").and_then(|r| r.as_str()) == Some("fail")
+                        })
+                        .count()
+                })
+                .unwrap_or(0);
+            return Some(if fail_count > 0 {
+                format!("overall={} ({} failed)", o, fail_count)
+            } else {
+                format!("overall={}", o)
+            });
+        }
+    }
+
     for key in &["summary", "description", "msg", "text"] {
         if let Some(s) = v.get(*key).and_then(|x| x.as_str()) {
             let trimmed = s.chars().take(80).collect::<String>();
@@ -185,27 +218,114 @@ fn summary_from_payload(payload: &Option<String>) -> Option<String> {
     None
 }
 
+fn extract_event_details(payload: &Option<String>, event_type: &str) -> (Option<String>, Option<String>) {
+    let raw = match payload.as_deref() { Some(s) => s, None => return (None, None) };
+    let v: serde_json::Value = match serde_json::from_str(raw) { Ok(v) => v, Err(_) => return (None, None) };
+    // Mustard hooks emit payload as `{ tool, phase, target: {file|command|pattern|url|...} }`.
+    // Some legacy hooks used `tool_name` / `tool_input.*` — keep both for compatibility.
+    let tool_name = v.get("tool")
+        .and_then(|x| x.as_str())
+        .or_else(|| v.get("tool_name").and_then(|x| x.as_str()))
+        .map(|s| s.to_string());
+    let target = if event_type == "agent.start" {
+        v.get("agent_type").and_then(|x| x.as_str())
+            .or_else(|| v.get("agentType").and_then(|x| x.as_str()))
+            .map(|s| s.to_string())
+    } else if event_type == "pipeline.phase" {
+        v.get("phase").and_then(|x| x.as_str()).map(|s| s.to_string())
+    } else {
+        // Try modern shape first: payload.target.{file|command|pattern|url}
+        let modern = v.get("target").and_then(|t| {
+            t.get("file").and_then(|x| x.as_str())
+                .or_else(|| t.get("command").and_then(|x| x.as_str()))
+                .or_else(|| t.get("pattern").and_then(|x| x.as_str()))
+                .or_else(|| t.get("url").and_then(|x| x.as_str()))
+                .or_else(|| t.get("path").and_then(|x| x.as_str()))
+        });
+        // payload.target may also be a plain string in some events
+        let target_str = if modern.is_none() {
+            v.get("target").and_then(|x| x.as_str())
+        } else { modern };
+        // Legacy shape: payload.tool_input.{file_path|command|pattern|url}
+        let legacy = v.get("tool_input").and_then(|ti| {
+            ti.get("file_path").and_then(|x| x.as_str())
+                .or_else(|| ti.get("command").and_then(|x| x.as_str()))
+                .or_else(|| ti.get("pattern").and_then(|x| x.as_str()))
+                .or_else(|| ti.get("url").and_then(|x| x.as_str()))
+        });
+        target_str.or(legacy).map(|s| s.to_string())
+    };
+    (tool_name, target)
+}
+
+fn row_to_event(
+    event_type: String,
+    spec: Option<String>,
+    wave: Option<i64>,
+    actor_kind: Option<String>,
+    actor_id: Option<String>,
+    ts: Option<String>,
+    payload: Option<String>,
+) -> RecentEvent {
+    let summary = summary_from_payload(&payload, &event_type);
+    let (tool_name, target) = extract_event_details(&payload, &event_type);
+    let phase = payload
+        .as_deref()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+        .and_then(|v| v.get("phase").and_then(|x| x.as_str()).map(|s| s.to_ascii_uppercase()));
+    RecentEvent {
+        event_type,
+        ts,
+        summary,
+        spec,
+        wave,
+        actor_kind,
+        actor_id,
+        tool_name,
+        target,
+        phase,
+    }
+}
+
 pub fn recent_events_from_db(conn: &Connection, limit: usize) -> Result<Vec<RecentEvent>, String> {
-    let mut stmt = conn
-        .prepare("SELECT event, spec, ts, payload FROM events ORDER BY id DESC LIMIT ?1")
-        .map_err(|e| e.to_string())?;
-    let rows = stmt
-        .query_map([limit as i64], |row| {
-            let event_type: String = row.get(0)?;
-            let _spec: Option<String> = row.get(1)?;
-            let ts: Option<String> = row.get(2)?;
-            let payload: Option<String> = row.get(3)?;
-            Ok(RecentEvent {
-                event_type,
-                ts,
-                summary: summary_from_payload(&payload),
-            })
-        })
-        .map_err(|e| e.to_string())?;
+    // Try rich SELECT first; fall back if columns are missing in older schemas.
+    let rich_sql = "SELECT event, spec, wave, actor_kind, actor_id, ts, payload FROM events ORDER BY id DESC LIMIT ?1";
+    let narrow_sql = "SELECT event, spec, ts, payload FROM events ORDER BY id DESC LIMIT ?1";
+
+    let use_rich = conn.prepare(rich_sql).is_ok();
 
     let mut out = Vec::new();
-    for r in rows {
-        out.push(r.map_err(|e| e.to_string())?);
+    if use_rich {
+        let mut stmt = conn.prepare(rich_sql).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([limit as i64], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, Option<i64>>(2)?,
+                row.get::<_, Option<String>>(3)?,
+                row.get::<_, Option<String>>(4)?,
+                row.get::<_, Option<String>>(5)?,
+                row.get::<_, Option<String>>(6)?,
+            ))
+        }).map_err(|e| e.to_string())?;
+        for r in rows {
+            let (et, spec, wave, ak, ai, ts, payload) = r.map_err(|e| e.to_string())?;
+            out.push(row_to_event(et, spec, wave, ak, ai, ts, payload));
+        }
+    } else {
+        let mut stmt = conn.prepare(narrow_sql).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([limit as i64], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, Option<String>>(3)?,
+            ))
+        }).map_err(|e| e.to_string())?;
+        for r in rows {
+            let (et, spec, ts, payload) = r.map_err(|e| e.to_string())?;
+            out.push(row_to_event(et, spec, None, None, None, ts, payload));
+        }
     }
     Ok(out)
 }
@@ -236,6 +356,8 @@ pub fn specs_from_db(conn: &Connection) -> Result<Vec<SpecRow>, String> {
                 started_at,
                 completed_at,
                 affected_files,
+                bucket: None,
+                parent: None,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -256,32 +378,102 @@ pub fn search_events_from_db(
         Some(q) => q,
         None => return Ok(vec![]),
     };
+
+    let rich_sql = "SELECT e.event, e.spec, e.wave, e.actor_kind, e.actor_id, e.ts, e.payload \
+                    FROM events_fts f JOIN events e ON f.rowid = e.id \
+                    WHERE events_fts MATCH ?1 ORDER BY rank LIMIT ?2";
+    let narrow_sql = "SELECT e.event, e.spec, e.ts, e.payload FROM events_fts f \
+                      JOIN events e ON f.rowid = e.id \
+                      WHERE events_fts MATCH ?1 ORDER BY rank LIMIT ?2";
+
+    let use_rich = conn.prepare(rich_sql).is_ok();
+
+    let mut out = Vec::new();
+    if use_rich {
+        let mut stmt = conn.prepare(rich_sql).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map(rusqlite::params![escaped, limit as i64], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, Option<i64>>(2)?,
+                row.get::<_, Option<String>>(3)?,
+                row.get::<_, Option<String>>(4)?,
+                row.get::<_, Option<String>>(5)?,
+                row.get::<_, Option<String>>(6)?,
+            ))
+        }).map_err(|e| e.to_string())?;
+        for r in rows {
+            let (et, spec, wave, ak, ai, ts, payload) = r.map_err(|e| e.to_string())?;
+            out.push(row_to_event(et, spec, wave, ak, ai, ts, payload));
+        }
+    } else {
+        let mut stmt = conn.prepare(narrow_sql).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map(rusqlite::params![escaped, limit as i64], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, Option<String>>(3)?,
+            ))
+        }).map_err(|e| e.to_string())?;
+        for r in rows {
+            let (et, spec, ts, payload) = r.map_err(|e| e.to_string())?;
+            out.push(row_to_event(et, spec, None, None, None, ts, payload));
+        }
+    }
+    Ok(out)
+}
+
+pub fn workflow_by_phase_from_db(conn: &Connection) -> Result<crate::telemetry::WorkflowBlock, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT e.event, e.spec, e.ts, e.payload FROM events_fts f \
-             JOIN events e ON f.rowid = e.id \
-             WHERE events_fts MATCH ?1 ORDER BY rank LIMIT ?2",
+            "SELECT json_extract(payload, '$.phase') AS phase, COUNT(*) \
+             FROM events WHERE event = 'pipeline.phase' \
+             GROUP BY phase ORDER BY 2 DESC",
         )
         .map_err(|e| e.to_string())?;
     let rows = stmt
-        .query_map(rusqlite::params![escaped, limit as i64], |row| {
-            let event_type: String = row.get(0)?;
-            let _spec: Option<String> = row.get(1)?;
-            let ts: Option<String> = row.get(2)?;
-            let payload: Option<String> = row.get(3)?;
-            Ok(RecentEvent {
-                event_type,
-                ts,
-                summary: summary_from_payload(&payload),
-            })
+        .query_map([], |row| {
+            let phase: Option<String> = row.get(0)?;
+            let count: i64 = row.get(1)?;
+            Ok((phase, count))
         })
         .map_err(|e| e.to_string())?;
 
-    let mut out = Vec::new();
+    let mut by_phase = Vec::new();
     for r in rows {
-        out.push(r.map_err(|e| e.to_string())?);
+        let (phase, count) = r.map_err(|e| e.to_string())?;
+        if let Some(phase) = phase {
+            by_phase.push(crate::telemetry::PhaseCount { phase, count: count as u64 });
+        }
     }
-    Ok(out)
+    Ok(crate::telemetry::WorkflowBlock { by_phase })
+}
+
+pub fn tool_breakdown_from_db(conn: &Connection, limit: usize) -> Result<Vec<crate::telemetry::ToolCount>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT COALESCE(json_extract(payload, '$.tool'), json_extract(payload, '$.tool_name')) AS tool, \
+             COUNT(*) FROM events WHERE event = 'tool.use' \
+             GROUP BY tool ORDER BY 2 DESC LIMIT ?1",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([limit as i64], |row| {
+            let tool: Option<String> = row.get(0)?;
+            let count: i64 = row.get(1)?;
+            Ok((tool, count))
+        })
+        .map_err(|e| e.to_string())?;
+
+    let mut list = Vec::new();
+    for r in rows {
+        let (tool, count) = r.map_err(|e| e.to_string())?;
+        if let Some(tool_name) = tool {
+            list.push(crate::telemetry::ToolCount { tool_name, count: count as u64 });
+        }
+    }
+    Ok(list)
 }
 
 pub fn search_knowledge_from_db(
@@ -316,6 +508,423 @@ pub fn search_knowledge_from_db(
     let mut out = Vec::new();
     for r in rows {
         out.push(r.map_err(|e| e.to_string())?);
+    }
+    Ok(out)
+}
+
+/// Aggregate activity events into 5-minute buckets grouped by spec/wave/tool.
+/// Joins spans on spec to sum tokens. Fail-soft: returns empty vec on any
+/// schema mismatch (missing columns/tables on partial Phase 1 DBs).
+pub fn aggregate_activity_from_db(
+    conn: &Connection,
+    limit: usize,
+) -> Result<Vec<ActivityGroup>, String> {
+    // 5-minute bucket = 300 seconds. ts is ISO-8601 string, so use strftime('%s', ts)/300.
+    let sql = "SELECT e.spec, e.wave, \
+                      json_extract(e.payload, '$.tool') AS action_kind, \
+                      COUNT(*) AS cnt, \
+                      MIN(e.ts) AS min_ts, \
+                      MAX(e.ts) AS max_ts, \
+                      COALESCE(SUM(COALESCE(s.input_tokens,0) + COALESCE(s.output_tokens,0)), 0) AS tokens_total, \
+                      COUNT(DISTINCT json_extract(e.payload, '$.target.file')) AS files_touched \
+               FROM events e \
+               LEFT JOIN spans s ON s.spec = e.spec \
+               GROUP BY e.spec, e.wave, action_kind, CAST(strftime('%s', e.ts) AS INTEGER) / 300 \
+               ORDER BY max_ts DESC \
+               LIMIT ?1";
+
+    let mut stmt = match conn.prepare(sql) {
+        Ok(s) => s,
+        Err(_) => return Ok(vec![]),
+    };
+    let rows = match stmt.query_map([limit as i64], |row| {
+        Ok(ActivityGroup {
+            spec: row.get::<_, Option<String>>(0)?,
+            wave: row.get::<_, Option<i64>>(1)?,
+            action_kind: row.get::<_, Option<String>>(2)?,
+            count: row.get::<_, Option<i64>>(3)?.unwrap_or(0),
+            min_ts: row.get::<_, Option<String>>(4)?,
+            max_ts: row.get::<_, Option<String>>(5)?,
+            tokens_total: row.get::<_, Option<i64>>(6)?.unwrap_or(0),
+            files_touched: row.get::<_, Option<i64>>(7)?.unwrap_or(0),
+        })
+    }) {
+        Ok(r) => r,
+        Err(_) => return Ok(vec![]),
+    };
+
+    let mut out = Vec::new();
+    for r in rows {
+        if let Ok(group) = r {
+            out.push(group);
+        }
+    }
+    Ok(out)
+}
+
+/// Compute pipeline quality metrics. Every sub-query is independent and
+/// fail-soft so partial schemas (e.g. spans without duration_ms) still return
+/// a partially-populated `QualityMetrics`. Returns `QualityMetrics::default()`
+/// if the connection doesn't satisfy `has_phase1_schema`.
+pub fn quality_metrics_from_db(conn: &Connection) -> Result<QualityMetrics, String> {
+    if !has_phase1_schema(conn) {
+        return Ok(QualityMetrics::default());
+    }
+    let mut metrics = QualityMetrics::default();
+
+    // pass_at_1: ratio of specs with status='completed'.
+    metrics.pass_at_1 = conn
+        .query_row(
+            "SELECT COALESCE(1.0 * SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0), 0.0) FROM specs",
+            [],
+            |row| row.get::<_, Option<f64>>(0),
+        )
+        .ok()
+        .flatten()
+        .unwrap_or(0.0);
+
+    // fix_loop_rate: distinct specs with escalation events / total distinct specs.
+    metrics.fix_loop_rate = conn
+        .query_row(
+            "SELECT COALESCE(1.0 * (SELECT COUNT(DISTINCT spec) FROM events WHERE event='escalation') \
+             / NULLIF((SELECT COUNT(DISTINCT spec) FROM events), 0), 0.0)",
+            [],
+            |row| row.get::<_, Option<f64>>(0),
+        )
+        .ok()
+        .flatten()
+        .unwrap_or(0.0);
+
+    // avg_phase_duration_ms: AVG(duration_ms) from spans.
+    metrics.avg_phase_duration_ms = conn
+        .query_row(
+            "SELECT COALESCE(AVG(duration_ms), 0.0) FROM spans",
+            [],
+            |row| row.get::<_, Option<f64>>(0),
+        )
+        .ok()
+        .flatten()
+        .unwrap_or(0.0);
+
+    // by_role: top actor_ids by sample count from spans.
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT COALESCE(actor_id, 'unknown') AS role, COUNT(*) AS samples \
+         FROM spans GROUP BY role ORDER BY samples DESC LIMIT 10",
+    ) {
+        if let Ok(rows) = stmt.query_map([], |row| {
+            Ok(RoleQuality {
+                role: row.get::<_, Option<String>>(0)?.unwrap_or_default(),
+                pass_at_1: 0.0,
+                fix_loops: 0,
+                samples: row.get::<_, Option<i64>>(1)?.unwrap_or(0),
+            })
+        }) {
+            for r in rows.flatten() {
+                metrics.by_role.push(r);
+            }
+        }
+    }
+
+    // slowest_waves: top 5 by duration_ms.
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT spec, wave, COALESCE(duration_ms, 0) FROM spans \
+         ORDER BY duration_ms DESC LIMIT 5",
+    ) {
+        if let Ok(rows) = stmt.query_map([], |row| {
+            Ok(SlowestWave {
+                spec: row.get::<_, Option<String>>(0)?,
+                wave: row.get::<_, Option<i64>>(1)?,
+                duration_ms: row.get::<_, Option<i64>>(2)?.unwrap_or(0),
+            })
+        }) {
+            for r in rows.flatten() {
+                metrics.slowest_waves.push(r);
+            }
+        }
+    }
+
+    // tokens_by_phase: average input/output per phase.
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT COALESCE(phase, 'unknown') AS phase, \
+                COALESCE(AVG(input_tokens), 0.0), \
+                COALESCE(AVG(output_tokens), 0.0) \
+         FROM spans GROUP BY phase ORDER BY phase",
+    ) {
+        if let Ok(rows) = stmt.query_map([], |row| {
+            Ok(PhaseTokens {
+                phase: row.get::<_, Option<String>>(0)?.unwrap_or_default(),
+                input_avg: row.get::<_, Option<f64>>(1)?.unwrap_or(0.0),
+                output_avg: row.get::<_, Option<f64>>(2)?.unwrap_or(0.0),
+            })
+        }) {
+            for r in rows.flatten() {
+                metrics.tokens_by_phase.push(r);
+            }
+        }
+    }
+
+    Ok(metrics)
+}
+
+// ── Consumption / cost queries (spans table) ────────────────────────────────
+//
+// All queries fail-soft: missing tables/columns or malformed `attributes` JSON
+// degrade to empty/zero rather than propagating. Phase 1 dashboards may show
+// a partially-populated summary when spans have not been emitted yet.
+//
+// Cost is materialised at span emit time by `pricing.ts` and persisted under
+// `attributes -> 'mustard.cost_usd'`. We sum it back via json_extract.
+
+const COST_EXTRACT: &str =
+    "CAST(json_extract(attributes, '$.\"mustard.cost_usd\"') AS REAL)";
+const AGENT_EXTRACT: &str =
+    "json_extract(attributes, '$.\"mustard.agent_type\"')";
+
+fn fourteen_days_ago_ms() -> i64 {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    now - 14 * 86_400 * 1000
+}
+
+pub fn consumption_by_model(conn: &Connection) -> Result<Vec<ModelUsage>, String> {
+    let sql = format!(
+        "SELECT COALESCE(model, 'unknown') AS model, \
+                COUNT(*) AS calls, \
+                COALESCE(SUM(input_tokens), 0) AS input_tokens, \
+                COALESCE(SUM(output_tokens), 0) AS output_tokens, \
+                COALESCE(SUM(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)), 0) AS total_tokens, \
+                COALESCE(SUM({cost}), 0.0) AS cost_usd \
+         FROM spans GROUP BY model ORDER BY total_tokens DESC",
+        cost = COST_EXTRACT
+    );
+    let mut stmt = match conn.prepare(&sql) {
+        Ok(s) => s,
+        Err(_) => return Ok(vec![]),
+    };
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(ModelUsage {
+                model: row.get::<_, Option<String>>(0)?.unwrap_or_default(),
+                calls: row.get::<_, Option<i64>>(1)?.unwrap_or(0) as u64,
+                input_tokens: row.get::<_, Option<i64>>(2)?.unwrap_or(0) as u64,
+                output_tokens: row.get::<_, Option<i64>>(3)?.unwrap_or(0) as u64,
+                total_tokens: row.get::<_, Option<i64>>(4)?.unwrap_or(0) as u64,
+                cost_usd: row.get::<_, Option<f64>>(5)?.unwrap_or(0.0),
+                pct_tokens: 0.0,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+
+    let mut out: Vec<ModelUsage> = rows.flatten().collect();
+    let grand_total: u64 = out.iter().map(|r| r.total_tokens).sum();
+    if grand_total > 0 {
+        for r in &mut out {
+            r.pct_tokens = r.total_tokens as f64 / grand_total as f64;
+        }
+    }
+    Ok(out)
+}
+
+pub fn consumption_by_agent_type(conn: &Connection) -> Result<Vec<AgentUsage>, String> {
+    let sql = format!(
+        "SELECT COALESCE({agent}, 'unknown') AS agent_type, \
+                COUNT(*) AS calls, \
+                COALESCE(SUM(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)), 0) AS total_tokens, \
+                COALESCE(SUM({cost}), 0.0) AS cost_usd \
+         FROM spans GROUP BY agent_type ORDER BY total_tokens DESC",
+        agent = AGENT_EXTRACT,
+        cost = COST_EXTRACT
+    );
+    let mut stmt = match conn.prepare(&sql) {
+        Ok(s) => s,
+        Err(_) => return Ok(vec![]),
+    };
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(AgentUsage {
+                agent_type: row.get::<_, Option<String>>(0)?.unwrap_or_default(),
+                calls: row.get::<_, Option<i64>>(1)?.unwrap_or(0) as u64,
+                total_tokens: row.get::<_, Option<i64>>(2)?.unwrap_or(0) as u64,
+                cost_usd: row.get::<_, Option<f64>>(3)?.unwrap_or(0.0),
+                pct_tokens: 0.0,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+
+    let mut out: Vec<AgentUsage> = rows.flatten().collect();
+    let grand_total: u64 = out.iter().map(|r| r.total_tokens).sum();
+    if grand_total > 0 {
+        for r in &mut out {
+            r.pct_tokens = r.total_tokens as f64 / grand_total as f64;
+        }
+    }
+    Ok(out)
+}
+
+pub fn consumption_top_specs(conn: &Connection, limit: usize) -> Result<Vec<SpecUsage>, String> {
+    let sql = format!(
+        "SELECT spec, COUNT(*) AS calls, \
+                COALESCE(SUM(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)), 0) AS total_tokens, \
+                COALESCE(SUM({cost}), 0.0) AS cost_usd \
+         FROM spans WHERE spec IS NOT NULL \
+         GROUP BY spec ORDER BY total_tokens DESC LIMIT ?1",
+        cost = COST_EXTRACT
+    );
+    let mut stmt = match conn.prepare(&sql) {
+        Ok(s) => s,
+        Err(_) => return Ok(vec![]),
+    };
+    let rows = stmt
+        .query_map([limit as i64], |row| {
+            Ok(SpecUsage {
+                spec: row.get::<_, Option<String>>(0)?.unwrap_or_default(),
+                calls: row.get::<_, Option<i64>>(1)?.unwrap_or(0) as u64,
+                total_tokens: row.get::<_, Option<i64>>(2)?.unwrap_or(0) as u64,
+                cost_usd: row.get::<_, Option<f64>>(3)?.unwrap_or(0.0),
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    Ok(rows.flatten().collect())
+}
+
+pub fn consumption_daily_series(conn: &Connection, days: u32) -> Result<Vec<DailyPoint>, String> {
+    let since_ms = fourteen_days_ago_ms().max(0);
+    // Allow caller to override window size while keeping the default at 14d.
+    let window_ms = (days as i64) * 86_400 * 1000;
+    let since = (SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+        - window_ms)
+        .max(since_ms);
+
+    let sql = format!(
+        "SELECT date(started_at/1000, 'unixepoch') AS d, \
+                COUNT(*) AS calls, \
+                COALESCE(SUM(input_tokens), 0) AS input_tokens, \
+                COALESCE(SUM(output_tokens), 0) AS output_tokens, \
+                COALESCE(SUM(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)), 0) AS total_tokens, \
+                COALESCE(SUM({cost}), 0.0) AS cost_usd \
+         FROM spans WHERE started_at >= ?1 \
+         GROUP BY d ORDER BY d ASC",
+        cost = COST_EXTRACT
+    );
+    let mut stmt = match conn.prepare(&sql) {
+        Ok(s) => s,
+        Err(_) => return Ok(vec![]),
+    };
+    let rows = stmt
+        .query_map([since], |row| {
+            Ok(DailyPoint {
+                date: row.get::<_, Option<String>>(0)?.unwrap_or_default(),
+                calls: row.get::<_, Option<i64>>(1)?.unwrap_or(0) as u64,
+                input_tokens: row.get::<_, Option<i64>>(2)?.unwrap_or(0) as u64,
+                output_tokens: row.get::<_, Option<i64>>(3)?.unwrap_or(0) as u64,
+                total_tokens: row.get::<_, Option<i64>>(4)?.unwrap_or(0) as u64,
+                cost_usd: row.get::<_, Option<f64>>(5)?.unwrap_or(0.0),
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    Ok(rows.flatten().collect())
+}
+
+/// Token + cost totals (lifetime and today). Single-row query; conditional
+/// aggregation avoids the cost of two scans.
+pub fn cost_summary(conn: &Connection) -> Result<(u64, u64, f64, f64), String> {
+    let midnight_ms = {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        let day = now / 86_400;
+        day * 86_400 * 1000
+    };
+    let sql = format!(
+        "SELECT \
+            COALESCE(SUM(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)), 0) AS tokens_total, \
+            COALESCE(SUM({cost}), 0.0) AS cost_total, \
+            COALESCE(SUM(CASE WHEN started_at >= ?1 \
+                              THEN COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0) \
+                              ELSE 0 END), 0) AS tokens_today, \
+            COALESCE(SUM(CASE WHEN started_at >= ?1 \
+                              THEN {cost} \
+                              ELSE 0 END), 0.0) AS cost_today \
+         FROM spans",
+        cost = COST_EXTRACT
+    );
+    let row = conn
+        .query_row(&sql, [midnight_ms], |row| {
+            Ok((
+                row.get::<_, Option<i64>>(0)?.unwrap_or(0) as u64,
+                row.get::<_, Option<f64>>(1)?.unwrap_or(0.0),
+                row.get::<_, Option<i64>>(2)?.unwrap_or(0) as u64,
+                row.get::<_, Option<f64>>(3)?.unwrap_or(0.0),
+            ))
+        })
+        .map_err(|e| e.to_string())?;
+    Ok((row.0, row.2, row.1, row.3))
+}
+
+/// One-shot consumption summary used by the `dashboard_consumption` Tauri
+/// command. Composes the breakdowns above into a single payload.
+pub fn consumption_summary_from_db(conn: &Connection) -> Result<ConsumptionSummary, String> {
+    let (tokens_total, tokens_today, cost_total_usd, cost_today_usd) = cost_summary(conn)?;
+    Ok(ConsumptionSummary {
+        tokens_total,
+        tokens_today,
+        cost_total_usd,
+        cost_today_usd,
+        by_model: consumption_by_model(conn).unwrap_or_default(),
+        by_agent_type: consumption_by_agent_type(conn).unwrap_or_default(),
+        top_specs: consumption_top_specs(conn, 10).unwrap_or_default(),
+        daily_series: consumption_daily_series(conn, 14).unwrap_or_default(),
+    })
+}
+
+/// Browse the knowledge base without a query — sorted by type then recency.
+/// Tries the rich SELECT (with `last_seen`) first and falls back to ordering
+/// by id when the column is absent on older schemas.
+pub fn knowledge_browse_from_db(
+    conn: &Connection,
+    limit: usize,
+) -> Result<Vec<KnowledgeRow>, String> {
+    let rich_sql = "SELECT id, type, name, description, COALESCE(confidence, 0.0), source \
+                    FROM knowledge \
+                    ORDER BY type ASC, COALESCE(last_seen, 0) DESC \
+                    LIMIT ?1";
+    let fallback_sql = "SELECT id, type, name, description, COALESCE(confidence, 0.0), source \
+                        FROM knowledge \
+                        ORDER BY type ASC, id DESC \
+                        LIMIT ?1";
+
+    let use_rich = conn.prepare(rich_sql).is_ok();
+    let sql = if use_rich { rich_sql } else { fallback_sql };
+
+    let mut stmt = match conn.prepare(sql) {
+        Ok(s) => s,
+        Err(_) => return Ok(vec![]),
+    };
+    let rows = match stmt.query_map([limit as i64], |row| {
+        Ok(KnowledgeRow {
+            id: row.get(0)?,
+            type_: row.get::<_, Option<String>>(1)?.unwrap_or_default(),
+            name: row.get::<_, Option<String>>(2)?.unwrap_or_default(),
+            description: row.get::<_, Option<String>>(3)?.unwrap_or_default(),
+            confidence: row.get::<_, Option<f64>>(4)?.unwrap_or(0.0),
+            source: row.get(5)?,
+        })
+    }) {
+        Ok(r) => r,
+        Err(_) => return Ok(vec![]),
+    };
+
+    let mut out = Vec::new();
+    for r in rows {
+        if let Ok(row) = r {
+            out.push(row);
+        }
     }
     Ok(out)
 }

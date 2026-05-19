@@ -6,10 +6,21 @@
 
 @variant dark (&:where(.dark, .dark *));
 
+/* ─────────────────────────────────────────────────────────────────────────
+   Notion design system — token foundation.
+
+   Light (`:root`) carries the Notion homepage palette verbatim: purple
+   primary, warm-charcoal text, off-white surfaces, pastel feature tints.
+   Dark (`.dark`) is a coherent derivation using Notion's own dark surfaces
+   (#191919 family) and stays the app default per the dashboard spec.
+   ───────────────────────────────────────────────────────────────────────── */
+
 @theme inline {
   --font-heading: var(--font-sans);
-  --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
-  --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+  --font-sans: 'Inter Variable', ui-sans-serif, system-ui, 'Segoe UI', Helvetica, sans-serif;
+  --font-mono: 'JetBrains Mono Variable', ui-monospace, 'SFMono-Regular', monospace;
+
+  /* shadcn semantic surface map */
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -41,82 +52,247 @@
   --color-card: var(--card);
   --color-foreground: var(--foreground);
   --color-background: var(--background);
-  --radius-sm: calc(var(--radius) * 0.6);
-  --radius-md: calc(var(--radius) * 0.8);
-  --radius-lg: var(--radius);
-  --radius-xl: calc(var(--radius) * 1.4);
-  --radius-2xl: calc(var(--radius) * 1.8);
-  --radius-3xl: calc(var(--radius) * 2.2);
-  --radius-4xl: calc(var(--radius) * 2.6);
+
+  /* Notion brand & extended tokens */
+  --color-primary-pressed: var(--primary-pressed);
+  --color-primary-deep: var(--primary-deep);
+  --color-brand-navy: var(--brand-navy);
+  --color-brand-navy-deep: var(--brand-navy-deep);
+  --color-brand-navy-mid: var(--brand-navy-mid);
+  --color-link: var(--link-blue);
+  --color-link-pressed: var(--link-blue-pressed);
+
+  --color-brand-pink: var(--brand-pink);
+  --color-brand-orange: var(--brand-orange);
+  --color-brand-purple: var(--brand-purple);
+  --color-brand-teal: var(--brand-teal);
+  --color-brand-green: var(--brand-green);
+  --color-brand-yellow: var(--brand-yellow);
+  --color-brand-brown: var(--brand-brown);
+
+  --color-tint-peach: var(--tint-peach);
+  --color-tint-rose: var(--tint-rose);
+  --color-tint-mint: var(--tint-mint);
+  --color-tint-lavender: var(--tint-lavender);
+  --color-tint-sky: var(--tint-sky);
+  --color-tint-yellow: var(--tint-yellow);
+  --color-tint-yellow-bold: var(--tint-yellow-bold);
+  --color-tint-cream: var(--tint-cream);
+  --color-tint-gray: var(--tint-gray);
+
+  --color-ink-deep: var(--ink-deep);
+  --color-charcoal: var(--charcoal);
+  --color-slate: var(--slate);
+  --color-steel: var(--steel);
+  --color-stone: var(--stone);
+
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+
+  /* Radius — Notion editorial scale: 8px buttons, 12px cards */
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+  --radius-2xl: 20px;
+  --radius-3xl: 24px;
+  --radius-4xl: 9999px;
+
+  /* Elevation — Notion diffuse drop shadows */
+  --shadow-elev-1: var(--elev-1);
+  --shadow-elev-2: var(--elev-2);
+  --shadow-elev-3: var(--elev-3);
+  --shadow-elev-4: var(--elev-4);
 }
 
 :root {
-  --background: hsl(0 0% 100%);
-  --foreground: hsl(222 47% 11%);
-  --card: hsl(210 20% 99%);
-  --card-foreground: hsl(222 47% 11%);
-  --popover: hsl(210 20% 99%);
-  --popover-foreground: hsl(222 47% 11%);
-  --primary: #6366F1;
-  --primary-foreground: hsl(210 20% 98%);
-  --secondary: hsl(210 20% 96%);
-  --secondary-foreground: hsl(222 47% 11%);
-  --muted: hsl(210 20% 96%);
-  --muted-foreground: hsl(215 16% 47%);
-  --accent: hsl(210 20% 96%);
-  --accent-foreground: hsl(222 47% 11%);
-  --destructive: oklch(0.577 0.245 27.325);
-  --border: rgba(0, 0, 0, 0.10);
-  --input: rgba(0, 0, 0, 0.10);
-  --ring: #6366F1;
-  --chart-1: oklch(0.87 0 0);
-  --chart-2: oklch(0.556 0 0);
-  --chart-3: oklch(0.439 0 0);
-  --chart-4: oklch(0.371 0 0);
-  --chart-5: oklch(0.269 0 0);
-  --radius: 0.5rem;
-  --sidebar: hsl(210 20% 98%);
-  --sidebar-foreground: hsl(222 47% 11%);
-  --sidebar-primary: #6366F1;
-  --sidebar-primary-foreground: hsl(210 20% 98%);
-  --sidebar-accent: hsl(210 20% 96%);
-  --sidebar-accent-foreground: hsl(222 47% 11%);
-  --sidebar-border: rgba(0, 0, 0, 0.10);
-  --sidebar-ring: #6366F1;
+  --text-h1: 24px;
+  --text-h2: 20px;
+  --text-h3: 17px;
+  --text-body: 15px;
+  --text-code: 14px;
+  --leading-body: 1.55;
+  --radius: 8px;
+
+  /* Surface */
+  --background: #ffffff;
+  --foreground: #37352f;
+  --card: #ffffff;
+  --card-foreground: #37352f;
+  --popover: #ffffff;
+  --popover-foreground: #37352f;
+
+  /* Primary — Notion purple CTA */
+  --primary: #5b4ded;
+  --primary-foreground: #ffffff;
+  --primary-pressed: #4a3dd0;
+  --primary-deep: #3d32b5;
+
+  --secondary: #f7f6f3;
+  --secondary-foreground: #37352f;
+  --muted: #f1f0ee;
+  --muted-foreground: #787774;
+  --accent: #f1f0ee;
+  --accent-foreground: #37352f;
+  --destructive: #e03e3e;
+
+  --border: #e9e9e7;
+  --input: #d9d8d4;
+  --ring: #5b4ded;
+
+  /* Charts — Notion brand spectrum */
+  --chart-1: #5b4ded;
+  --chart-2: #2d7ff9;
+  --chart-3: #4dab9a;
+  --chart-4: #d9730d;
+  --chart-5: #dd5fa8;
+
+  --radius: 8px;
+  --sidebar: #f7f6f3;
+  --sidebar-foreground: #37352f;
+  --sidebar-primary: #5b4ded;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #efeeeb;
+  --sidebar-accent-foreground: #37352f;
+  --sidebar-border: #e9e9e7;
+  --sidebar-ring: #5b4ded;
+
+  /* Brand navy (hero bands) */
+  --brand-navy: #15162e;
+  --brand-navy-deep: #0e0f22;
+  --brand-navy-mid: #252648;
+
+  /* Link blue — distinct from primary purple */
+  --link-blue: #2d7ff9;
+  --link-blue-pressed: #1f5fc9;
+
+  /* Brand color spectrum */
+  --brand-pink: #dd5fa8;
+  --brand-orange: #d9730d;
+  --brand-purple: #9065b0;
+  --brand-teal: #4dab9a;
+  --brand-green: #2f9e6e;
+  --brand-yellow: #dfab01;
+  --brand-brown: #9f6b53;
+
+  /* Pastel feature card tints */
+  --tint-peach: #faebdd;
+  --tint-rose: #fbe4e4;
+  --tint-mint: #ddedea;
+  --tint-lavender: #eae4f2;
+  --tint-sky: #ddebf1;
+  --tint-yellow: #fbf3db;
+  --tint-yellow-bold: #ffdc5e;
+  --tint-cream: #f6f3ee;
+  --tint-gray: #ebeced;
+
+  /* Text shades — Notion warm-charcoal ladder */
+  --ink-deep: #0f0f0f;
+  --charcoal: #37352f;
+  --slate: #5f5e57;
+  --steel: #787774;
+  --stone: #9b9a97;
+
+  /* Semantic */
+  --success: #448361;
+  --warning: #d9730d;
+
+  /* Elevation */
+  --elev-1: 0 1px 2px 0 rgb(15 15 15 / 0.04);
+  --elev-2: 0 4px 12px 0 rgb(15 15 15 / 0.08);
+  --elev-3: 0 24px 48px -8px rgb(15 15 15 / 0.20);
+  --elev-4: 0 16px 48px -8px rgb(15 15 15 / 0.16);
 }
 
 .dark {
-  --background: #0F0F10;
-  --foreground: hsl(210 20% 98%);
-  --card: #161618;
-  --card-foreground: hsl(210 20% 98%);
-  --popover: #18181B;
-  --popover-foreground: hsl(210 20% 98%);
-  --primary: #6366F1;
-  --primary-foreground: hsl(210 20% 98%);
-  --secondary: #1B1B1D;
-  --secondary-foreground: hsl(210 20% 98%);
-  --muted: #1B1B1D;
-  --muted-foreground: hsl(215 16% 65%);
-  --accent: #1B1B1D;
-  --accent-foreground: hsl(210 20% 98%);
-  --destructive: oklch(0.704 0.191 22.216);
-  --border: rgba(255, 255, 255, 0.08);
-  --input: rgba(255, 255, 255, 0.10);
-  --ring: #818CF8;
-  --chart-1: oklch(0.87 0 0);
-  --chart-2: oklch(0.556 0 0);
-  --chart-3: oklch(0.439 0 0);
-  --chart-4: oklch(0.371 0 0);
-  --chart-5: oklch(0.269 0 0);
-  --sidebar: #0B0B0C;
-  --sidebar-foreground: hsl(210 20% 98%);
-  --sidebar-primary: #6366F1;
-  --sidebar-primary-foreground: hsl(210 20% 98%);
-  --sidebar-accent: #1B1B1D;
-  --sidebar-accent-foreground: hsl(210 20% 98%);
-  --sidebar-border: rgba(255, 255, 255, 0.08);
-  --sidebar-ring: #818CF8;
+  --text-h1: 24px;
+  --text-h2: 20px;
+  --text-h3: 17px;
+  --text-body: 15px;
+  --text-code: 14px;
+  --leading-body: 1.55;
+
+  /* Surface — Notion dark family */
+  --background: #191919;
+  --foreground: #d4d4d4;
+  --card: #202020;
+  --card-foreground: #d4d4d4;
+  --popover: #252525;
+  --popover-foreground: #e6e6e6;
+
+  /* Primary — purple lifted for dark contrast */
+  --primary: #7c70f7;
+  --primary-foreground: #ffffff;
+  --primary-pressed: #6358e0;
+  --primary-deep: #5247c4;
+
+  --secondary: #252525;
+  --secondary-foreground: #d4d4d4;
+  --muted: #262626;
+  --muted-foreground: #8b8b89;
+  --accent: #2c2c2c;
+  --accent-foreground: #e6e6e6;
+  --destructive: #ff6b6b;
+
+  --border: #2f2f2f;
+  --input: #383838;
+  --ring: #7c70f7;
+
+  --chart-1: #7c70f7;
+  --chart-2: #5a9bfb;
+  --chart-3: #6cc5b4;
+  --chart-4: #e8954a;
+  --chart-5: #e784bd;
+
+  --sidebar: #202020;
+  --sidebar-foreground: #d4d4d4;
+  --sidebar-primary: #7c70f7;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #2c2c2c;
+  --sidebar-accent-foreground: #e6e6e6;
+  --sidebar-border: #2f2f2f;
+  --sidebar-ring: #7c70f7;
+
+  --brand-navy: #15162e;
+  --brand-navy-deep: #0e0f22;
+  --brand-navy-mid: #303158;
+
+  --link-blue: #5a9bfb;
+  --link-blue-pressed: #7cb0fc;
+
+  --brand-pink: #e784bd;
+  --brand-orange: #e8954a;
+  --brand-purple: #b08fcc;
+  --brand-teal: #6cc5b4;
+  --brand-green: #5cb98a;
+  --brand-yellow: #e6c84a;
+  --brand-brown: #bb8d76;
+
+  /* Pastel tints — muted dark equivalents */
+  --tint-peach: #3a2e25;
+  --tint-rose: #3d2a2a;
+  --tint-mint: #23362f;
+  --tint-lavender: #322a3f;
+  --tint-sky: #1f3a47;
+  --tint-yellow: #3a3520;
+  --tint-yellow-bold: #d8b842;
+  --tint-cream: #2a2824;
+  --tint-gray: #2c2c2c;
+
+  --ink-deep: #ffffff;
+  --charcoal: #d4d4d4;
+  --slate: #a8a8a5;
+  --steel: #8b8b89;
+  --stone: #6f6f6c;
+
+  --success: #5cb98a;
+  --warning: #e8954a;
+
+  --elev-1: 0 1px 2px 0 rgb(0 0 0 / 0.30);
+  --elev-2: 0 4px 12px 0 rgb(0 0 0 / 0.40);
+  --elev-3: 0 24px 48px -8px rgb(0 0 0 / 0.60);
+  --elev-4: 0 16px 48px -8px rgb(0 0 0 / 0.55);
 }
 
 @layer base {
@@ -128,6 +304,46 @@
   }
   html {
     @apply font-sans;
-    font-size: 13px;
+    font-size: 15px;
+  }
+  h1 { font-size: var(--text-h1); font-weight: 600; letter-spacing: -0.018em; }
+  h2 { font-size: var(--text-h2); font-weight: 600; letter-spacing: -0.012em; }
+  h3 { font-size: var(--text-h3); font-weight: 600; letter-spacing: -0.006em; }
+  body { line-height: var(--leading-body); }
+  code, pre { font-family: var(--font-mono); font-size: var(--text-code); }
+
+  /* ── Scrollbar pattern (project-wide) ──────────────────────────────────
+     Sutil e integrado ao tema. Track invisível, thumb usa --border
+     (mais discreto) e escurece no hover. Bordas arredondadas + padding
+     interno (transparent border + background-clip) dão margem ao thumb.
+     Aplica em todos os scrollers exceto opt-outs explícitos (`.no-scrollbar`,
+     command palette, radix ScrollArea com chrome próprio).
+     Firefox usa scrollbar-width/color; Chromium/WebView2 usa ::-webkit-*. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) transparent;
+  }
+  *::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+    background: transparent;
+  }
+  *::-webkit-scrollbar-track,
+  *::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+  *::-webkit-scrollbar-thumb {
+    background: var(--border);
+    border-radius: 999px;
+    border: 2px solid transparent;
+    background-clip: padding-box;
+  }
+  *::-webkit-scrollbar-thumb:hover {
+    background: var(--muted-foreground);
+    background-clip: padding-box;
+  }
+  *::-webkit-scrollbar-thumb:active {
+    background: var(--primary);
+    background-clip: padding-box;
   }
 }

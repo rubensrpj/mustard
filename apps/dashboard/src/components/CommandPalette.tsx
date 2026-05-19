@@ -7,6 +7,11 @@ import { useStore } from "@/lib/store";
 import { queryClient } from "@/lib/query-client";
 import type { Project } from "@/api/discovery";
 import type { SpecRow } from "@/lib/dashboard";
+import { COMMANDS } from "@/data/commands-catalog";
+
+function slug(cmd: string): string {
+  return cmd.replace("/mustard:", "").replace(":", "-");
+}
 
 export function CommandPalette() {
   const [open, setOpen] = useState(false);
@@ -14,7 +19,7 @@ export function CommandPalette() {
   const { theme, setTheme } = useTheme();
   const projectsRoot = useStore((s) => s.projectsRoot);
   const selectedProjectId = useStore((s) => s.selectedProjectId);
-  const setSelectedProjectId = useStore((s) => s.setSelectedProjectId);
+  const setActiveWorkspaceId = useStore((s) => s.setActiveWorkspaceId);
   const projects = queryClient.getQueryData<Project[]>(['discover', projectsRoot]) ?? [];
   const selectedProject = selectedProjectId
     ? projects.find((p) => p.id === selectedProjectId) ?? null
@@ -58,7 +63,7 @@ export function CommandPalette() {
             </Command.Empty>
             <Command.Group
               heading="Navegar"
-              className="text-[10px] uppercase tracking-wider text-muted-foreground px-2 py-1 [&_[cmdk-group-heading]]:px-2 [&_[cmdk-group-heading]]:py-1.5 [&_[cmdk-group-heading]]:text-[10px] [&_[cmdk-group-heading]]:uppercase [&_[cmdk-group-heading]]:tracking-wider [&_[cmdk-group-heading]]:text-muted-foreground"
+              className="text-[11px] uppercase tracking-wider text-muted-foreground px-2 py-1 [&_[cmdk-group-heading]]:px-2 [&_[cmdk-group-heading]]:py-1.5 [&_[cmdk-group-heading]]:text-[11px] [&_[cmdk-group-heading]]:uppercase [&_[cmdk-group-heading]]:tracking-wider [&_[cmdk-group-heading]]:text-muted-foreground"
             >
               <Command.Item
                 onSelect={() => run(() => navigate("/"))}
@@ -87,17 +92,18 @@ export function CommandPalette() {
             </Command.Group>
             {projects.length > 0 && (
               <Command.Group
-                heading="Projetos"
-                className="text-[10px] uppercase tracking-wider text-muted-foreground px-2 py-1 [&_[cmdk-group-heading]]:px-2 [&_[cmdk-group-heading]]:py-1.5 [&_[cmdk-group-heading]]:text-[10px] [&_[cmdk-group-heading]]:uppercase [&_[cmdk-group-heading]]:tracking-wider [&_[cmdk-group-heading]]:text-muted-foreground"
+                heading="Switch workspace"
+                className="text-[11px] uppercase tracking-wider text-muted-foreground px-2 py-1 [&_[cmdk-group-heading]]:px-2 [&_[cmdk-group-heading]]:py-1.5 [&_[cmdk-group-heading]]:text-[11px] [&_[cmdk-group-heading]]:uppercase [&_[cmdk-group-heading]]:tracking-wider [&_[cmdk-group-heading]]:text-muted-foreground"
               >
                 {projects.map((p) => (
                   <Command.Item
                     key={p.id}
-                    value={`switch-${p.id}-${p.name}`}
-                    onSelect={() => run(() => { setSelectedProjectId(p.id); navigate(`/project/${p.id}`); })}
-                    className="px-3 py-2 rounded-md text-sm cursor-pointer text-foreground data-[selected=true]:bg-primary/10 data-[selected=true]:text-primary"
+                    value={`workspace-${p.id}-${p.name}`}
+                    onSelect={() => run(() => setActiveWorkspaceId(p.id))}
+                    className="px-3 py-2 rounded-md text-sm cursor-pointer text-foreground data-[selected=true]:bg-primary/10 data-[selected=true]:text-primary flex flex-col items-start"
                   >
-                    Switch to {p.name}
+                    <span>{p.name}</span>
+                    <span className="text-[11px] text-muted-foreground truncate max-w-[440px]">{p.path}</span>
                   </Command.Item>
                 ))}
               </Command.Group>
@@ -105,7 +111,7 @@ export function CommandPalette() {
             {selectedProject && specsForSelected.length > 0 && (
               <Command.Group
                 heading="Specs"
-                className="text-[10px] uppercase tracking-wider text-muted-foreground px-2 py-1 [&_[cmdk-group-heading]]:px-2 [&_[cmdk-group-heading]]:py-1.5 [&_[cmdk-group-heading]]:text-[10px] [&_[cmdk-group-heading]]:uppercase [&_[cmdk-group-heading]]:tracking-wider [&_[cmdk-group-heading]]:text-muted-foreground"
+                className="text-[11px] uppercase tracking-wider text-muted-foreground px-2 py-1 [&_[cmdk-group-heading]]:px-2 [&_[cmdk-group-heading]]:py-1.5 [&_[cmdk-group-heading]]:text-[11px] [&_[cmdk-group-heading]]:uppercase [&_[cmdk-group-heading]]:tracking-wider [&_[cmdk-group-heading]]:text-muted-foreground"
               >
                 {specsForSelected.map((s) => (
                   <Command.Item
@@ -126,8 +132,23 @@ export function CommandPalette() {
               </Command.Group>
             )}
             <Command.Group
+              heading="Comandos"
+              className="text-[11px] uppercase tracking-wider text-muted-foreground px-2 py-1 [&_[cmdk-group-heading]]:px-2 [&_[cmdk-group-heading]]:py-1.5 [&_[cmdk-group-heading]]:text-[11px] [&_[cmdk-group-heading]]:uppercase [&_[cmdk-group-heading]]:tracking-wider [&_[cmdk-group-heading]]:text-muted-foreground"
+            >
+              {COMMANDS.map((c) => (
+                <Command.Item
+                  key={c.cmd}
+                  value={`cmd-${c.cmd}`}
+                  onSelect={() => run(() => navigate(`/commands#cmd-${slug(c.cmd)}`))}
+                  className="px-3 py-2 rounded-md text-sm cursor-pointer text-foreground data-[selected=true]:bg-primary/10 data-[selected=true]:text-primary"
+                >
+                  Ver: {c.cmd}
+                </Command.Item>
+              ))}
+            </Command.Group>
+            <Command.Group
               heading="Tema"
-              className="text-[10px] uppercase tracking-wider text-muted-foreground px-2 py-1 [&_[cmdk-group-heading]]:px-2 [&_[cmdk-group-heading]]:py-1.5 [&_[cmdk-group-heading]]:text-[10px] [&_[cmdk-group-heading]]:uppercase [&_[cmdk-group-heading]]:tracking-wider [&_[cmdk-group-heading]]:text-muted-foreground"
+              className="text-[11px] uppercase tracking-wider text-muted-foreground px-2 py-1 [&_[cmdk-group-heading]]:px-2 [&_[cmdk-group-heading]]:py-1.5 [&_[cmdk-group-heading]]:text-[11px] [&_[cmdk-group-heading]]:uppercase [&_[cmdk-group-heading]]:tracking-wider [&_[cmdk-group-heading]]:text-muted-foreground"
             >
               {theme === "dark" ? (
                 <Command.Item

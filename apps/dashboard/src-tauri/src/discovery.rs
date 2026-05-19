@@ -9,7 +9,7 @@ pub struct Project {
     pub id: String,
     pub name: String,
     pub path: String,
-    pub db_path: String,
+    pub db_path: Option<String>,
     pub last_activity_ms: Option<u64>,
 }
 
@@ -35,7 +35,10 @@ pub fn discover(root: &Path) -> Result<Vec<Project>, String> {
 
     while let Some((dir, depth)) = queue.pop_front() {
         let db_path = dir.join(".claude").join(".harness").join("mustard.db");
-        if db_path.is_file() {
+        let json_path = dir.join(".claude").join("mustard.json");
+        let has_db = db_path.is_file();
+        let has_json = json_path.is_file();
+        if has_db || has_json {
             let canonical = std::fs::canonicalize(&dir).unwrap_or_else(|_| dir.clone());
             let canonical_str = canonical.to_string_lossy().to_string();
             let id = fnv1a_hex(canonical_str.as_bytes());
@@ -44,17 +47,31 @@ pub fn discover(root: &Path) -> Result<Vec<Project>, String> {
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_else(|| canonical_str.clone());
             let events_path = dir.join(".claude").join(".harness").join("events.jsonl");
-            let last_activity_ms = match (mtime_ms(&events_path), mtime_ms(&db_path)) {
-                (Some(a), Some(b)) => Some(a.max(b)),
-                (Some(a), None) => Some(a),
-                (None, Some(b)) => Some(b),
-                (None, None) => None,
+            let last_activity_ms = if has_db {
+                match (mtime_ms(&events_path), mtime_ms(&db_path)) {
+                    (Some(a), Some(b)) => Some(a.max(b)),
+                    (Some(a), None) => Some(a),
+                    (None, Some(b)) => Some(b),
+                    (None, None) => None,
+                }
+            } else {
+                match (mtime_ms(&events_path), mtime_ms(&json_path)) {
+                    (Some(a), Some(b)) => Some(a.max(b)),
+                    (Some(a), None) => Some(a),
+                    (None, Some(b)) => Some(b),
+                    (None, None) => None,
+                }
+            };
+            let db_path_value = if has_db {
+                Some(db_path.to_string_lossy().to_string())
+            } else {
+                None
             };
             results.push(Project {
                 id,
                 name,
                 path: dir.to_string_lossy().to_string(),
-                db_path: db_path.to_string_lossy().to_string(),
+                db_path: db_path_value,
                 last_activity_ms,
             });
             continue;

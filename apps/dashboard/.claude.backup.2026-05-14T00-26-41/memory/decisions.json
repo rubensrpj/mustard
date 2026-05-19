@@ -1,0 +1,11 @@
+{
+  "entries": [
+    {
+      "id": "decision-1778647131001",
+      "timestamp": "2026-05-13T04:38:51.001Z",
+      "content": "Catalog declarativo TS local em src/data/commands-catalog.ts (nao filesystem walk de skills) — versionado junto com app, type-safe, independente de instalacao do Mustard core",
+      "source": "2026-05-13-dashboard-commands-catalog",
+      "context": "approved at PLAN phase"
+    }
+  ]
+}

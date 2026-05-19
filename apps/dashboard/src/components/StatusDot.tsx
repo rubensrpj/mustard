@@ -1,6 +1,6 @@
 import { cn } from "@/lib/utils";
 
-export type StatusDotVariant = "idle" | "active" | "planning" | "blocked" | "done";
+export type StatusDotVariant = "idle" | "active" | "planning" | "blocked" | "done" | "success" | "error";
 
 interface StatusDotProps {
   variant: StatusDotVariant;
@@ -15,6 +15,8 @@ const COLOR: Record<StatusDotVariant, string> = {
   planning: "bg-amber-500",
   blocked: "bg-rose-500",
   done: "bg-zinc-400",
+  success: "bg-emerald-500",
+  error: "bg-rose-500",
 };
 
 const SIZE: Record<NonNullable<StatusDotProps["size"]>, string> = {

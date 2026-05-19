@@ -1,0 +1,55 @@
+{
+  "spec": "2026-05-13-dashboard-content-richness",
+  "overall": "pass",
+  "criteria": [
+    {
+      "id": "AC-1",
+      "status": "pass",
+      "exit": 0,
+      "duration_ms": 7308,
+      "stderr_excerpt": ""
+    },
+    {
+      "id": "AC-2",
+      "status": "pass",
+      "exit": 0,
+      "duration_ms": 580,
+      "stderr_excerpt": ""
+    },
+    {
+      "id": "AC-3",
+      "status": "pass",
+      "exit": 0,
+      "duration_ms": 67,
+      "stderr_excerpt": ""
+    },
+    {
+      "id": "AC-4",
+      "status": "pass",
+      "exit": 0,
+      "duration_ms": 64,
+      "stderr_excerpt": ""
+    },
+    {
+      "id": "AC-5",
+      "status": "pass",
+      "exit": 0,
+      "duration_ms": 63,
+      "stderr_excerpt": ""
+    },
+    {
+      "id": "AC-6",
+      "status": "pass",
+      "exit": 0,
+      "duration_ms": 65,
+      "stderr_excerpt": ""
+    },
+    {
+      "id": "AC-7",
+      "status": "pass",
+      "exit": 0,
+      "duration_ms": 65,
+      "stderr_excerpt": ""
+    }
+  ]
+}

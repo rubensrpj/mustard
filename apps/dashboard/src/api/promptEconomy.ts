@@ -18,18 +18,23 @@ export type PromptEconomy = {
     by_session: { session_id: string; usd: number }[];
   };
   subtractions: {
-    wave_slice_bytes: number;
-    wave_slice_count: number;
-    diff_vs_full_bytes: number;
-    diff_vs_full_count: number;
-    review_diff_first_bytes: number;
-    review_diff_first_count: number;
-    analyze_diff_skip_bytes: number;
-    analyze_diff_skip_count: number;
+    // Σ prompt_bytes — context Mustard actually sent to sub-agents.
+    context_sent_bytes: number;
+    // Σ bytes_omitted — rest of the spec the sub-agents never had to see.
+    context_avoided_bytes: number;
+    event_count: number;
+    // Per-wave breakdown, ascending by wave.
+    by_wave: {
+      wave: number;
+      sent_bytes: number;
+      avoided_bytes: number;
+      count: number;
+    }[];
     // Lifetime totals above are an append-only accumulator. These count only
     // subtraction events inside the current session window; `session_known`
     // is false when no session window could be derived.
-    session_bytes: number;
+    session_sent_bytes: number;
+    session_avoided_bytes: number;
     session_count: number;
     session_known: boolean;
   };

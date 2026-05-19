@@ -1,0 +1,29 @@
+{
+  "name": "null-guard",
+  "description": "Bugfix recipe for null/undefined dereference errors. Adds defensive guard + test for the absent value path.",
+  "operations": ["null-guard", "fix-null", "fix-undefined", "add-null-check", "guard-null"],
+  "requires_entity": false,
+  "files": [
+    {
+      "pattern": "{subproject}",
+      "action": "modify",
+      "hint": "File at the deref site: add early return / optional chaining / explicit fallback (DO NOT swallow with ?? '' silently if it changes business meaning)"
+    },
+    {
+      "pattern": "{subproject}",
+      "action": "modify",
+      "hint": "Test file: add a test exercising the absent-value path (input is null/undefined/missing key)"
+    }
+  ],
+  "checklist": [
+    "Identify the exact deref site from stack trace (file:line)",
+    "Decide guard strategy: (a) early return + log/metric, (b) optional chaining ?.+ fallback ?? value, (c) throw with descriptive error if absence is a contract violation",
+    "Avoid silent ?? '' or ?? 0 if the absence indicates a real upstream bug — surface it with a metric or error",
+    "Add the guard — keep it 1-3 lines, do NOT refactor surrounding code",
+    "Add a test that reproduces the original failure (arrange null/undefined input)",
+    "Add a test that asserts the guard behavior (returns/throws/falls back correctly)",
+    "Run failing test first (verify it fails on old code), then run full test suite",
+    "Check upstream: should the value have been guaranteed earlier in the call chain? If yes, also fix upstream",
+    "Build & type-check"
+  ]
+}

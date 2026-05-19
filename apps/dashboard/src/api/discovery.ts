@@ -4,7 +4,7 @@ export type Project = {
   id: string;
   name: string;
   path: string;
-  db_path: string;
+  db_path: string | null;
   last_activity_ms: number | null;
 };
 

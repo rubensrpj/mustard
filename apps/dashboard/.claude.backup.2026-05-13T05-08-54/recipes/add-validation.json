@@ -1,0 +1,29 @@
+{
+  "name": "add-validation",
+  "description": "Add input/form validation with proper error UX. Covers schema validation + display + a11y.",
+  "operations": ["add-validation", "validate-input", "add-form-validation", "validate-form"],
+  "requires_entity": false,
+  "files": [
+    {
+      "pattern": "{frontend}",
+      "action": "modify",
+      "hint": "Form/input file: attach validation schema (Zod / Yup / Joi / class-validator / Vest — match existing convention)"
+    },
+    {
+      "pattern": "{frontend}",
+      "action": "modify",
+      "hint": "Render error messages near each field (not a single global summary unless ALSO showing inline)"
+    }
+  ],
+  "checklist": [
+    "Identify required fields, formats (email, regex, length), and cross-field rules",
+    "Define schema using project's existing validation library (do NOT introduce new lib)",
+    "Validate on submit AND on blur (not on every keystroke — too noisy)",
+    "Show error inline next to field, with role=\"alert\" and aria-describedby tying input to error",
+    "Use DS error color token (not literal red); use DS error icon if available",
+    "Disable submit button only when form is touched and invalid (not on initial load)",
+    "Match server-side validation rules (parity prevents 422 surprises)",
+    "Add at least 1 unit test per validation rule (happy path + 1 failure)",
+    "Test keyboard flow: Tab through fields, verify error focus management"
+  ]
+}
