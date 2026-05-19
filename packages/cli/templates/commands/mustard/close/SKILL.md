@@ -70,7 +70,7 @@ See `.claude/pipeline-config.md` Escalation Statuses for concern classification 
    - `### Status: completed`
    - `### Phase: CLOSE`
    - `### Checkpoint: {ISO timestamp now}`
-   - **Verify Checklist consistency** — count `- [ ]` lines in `## Checklist`. If any remain, ABORT and report the unmarked items to the user (each item should already have been marked by the executor agent during EXECUTE via `mark-checklist-item.js`). Do NOT batch-mark on behalf of the agents. `close-gate.js` enforces this same rule with `MUSTARD_CHECKLIST_GATE_MODE=strict`.
+   - **Verify Checklist consistency** — count `- [ ]` lines in `## Checklist`. If any remain, ABORT and report the unmarked items to the user (each item should already have been marked by the executor agent during EXECUTE via `mustard-rt run mark-checklist-item`). Do NOT batch-mark on behalf of the agents. `close-gate.js` enforces this same rule with `MUSTARD_CHECKLIST_GATE_MODE=strict`.
 4. **Entity Registry — update if needed:**
    - `mustard-rt run sync-registry`
    - **Schema-aware refresh (conditional):** If the spec's `## Files` section touched any file matching `*.schema.ts`, `*.entity.ts`, `*.prisma`, `*DbContext*.cs`, or `schema.rs`, run `rtk mustard-rt run sync-registry` to refresh `entity-registry.json`. If sync-registry fails (non-zero exit or script missing), log a warning and continue with close — this step is non-blocking.
@@ -145,7 +145,7 @@ See `.claude/pipeline-config.md` Escalation Statuses for concern classification 
    **Fail-open:** if the script exits non-zero or `pipeline-summary.js` is missing, log a warning and continue with the banner — do NOT abort CLOSE.
 
 7b. **Wave Tree:**
-   - Run `bun .claude/scripts/wave-tree.js --spec-dir .claude/spec/active/{spec-name}` (or `.claude/spec/completed/{spec-name}` if `complete-spec` already moved it)
+   - Run `mustard-rt run wave-tree --spec-dir .claude/spec/active/{spec-name}` (or `.claude/spec/completed/{spec-name}` if `complete-spec` already moved it)
    - Print output inline before the banner
    - Fail-open (warn, do not abort CLOSE)
 

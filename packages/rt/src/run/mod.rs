@@ -12,15 +12,27 @@
 //! it shares with the still-JS `sync-registry.js`.
 
 pub mod scan;
+mod analyze_validation;
 mod complete_spec;
 mod context_slice;
 mod diff_context;
 mod emit_phase;
 mod env;
 mod epic_fold;
+mod exec_rewave_check;
+mod mark_checklist_item;
 mod memory;
+mod recipe_match;
+mod scope_decompose;
+mod spec_extract;
+mod spec_link;
+mod spec_sections;
 mod sync_detect;
 mod sync_registry;
+mod wave_dependency;
+mod wave_lib;
+mod wave_size_check;
+mod wave_tree;
 
 use clap::Subcommand;
 use std::path::PathBuf;
@@ -110,6 +122,91 @@ pub enum RunCmd {
         #[arg(long)]
         epic: Option<String>,
     },
+    /// Cut a single wave slice (or AC block) from a `spec.md`.
+    SpecExtract {
+        /// Path to the spec file.
+        #[arg(long)]
+        spec: String,
+        /// Wave number to extract.
+        #[arg(long)]
+        wave: Option<u32>,
+        /// Extract the `## Acceptance Criteria` section instead.
+        #[arg(long)]
+        ac: bool,
+        /// Emit a JSON omission-measurement instead of the slice text.
+        #[arg(long)]
+        measure: bool,
+    },
+    /// Link a child spec to a parent (epic) spec.
+    SpecLink {
+        /// Parent (epic) spec name.
+        #[arg(long)]
+        parent: Option<String>,
+        /// Child spec name.
+        #[arg(long)]
+        child: Option<String>,
+        /// Why the split happened (recorded in the `spec.link` event).
+        #[arg(long)]
+        reason: Option<String>,
+    },
+    /// Validate a spec's structure (WARN-level — never blocks).
+    AnalyzeValidation {
+        /// Path to the spec file.
+        #[arg(long)]
+        spec: Option<String>,
+    },
+    /// Mark a `## Checklist` item done in a spec.
+    MarkChecklistItem {
+        /// Spec name or absolute `spec.md` path.
+        #[arg(long)]
+        spec: Option<String>,
+        /// Substring of the checklist item text to match.
+        #[arg(long)]
+        item: Option<String>,
+        /// 1-based line number of the checkbox (alternative to `--item`).
+        #[arg(long)]
+        line: Option<usize>,
+        /// Project root override.
+        #[arg(long)]
+        cwd: Option<String>,
+    },
+    /// Render a spec's wave structure as an ASCII or JSON tree.
+    WaveTree {
+        /// Path to the spec directory.
+        #[arg(long = "spec-dir")]
+        spec_dir: String,
+        /// Output format: `ascii` (default) or `json`.
+        #[arg(long, default_value = "ascii")]
+        format: String,
+    },
+    /// Analyze file dependencies across waves (reads JSON from stdin).
+    WaveDependency,
+    /// Suggest wave decomposition by file/entity count (reads JSON from stdin).
+    ScopeDecompose,
+    /// Check whether a spec should be decomposed at EXECUTE entry.
+    ExecRewaveCheck {
+        /// Path to the spec file.
+        #[arg(long)]
+        spec: Option<String>,
+    },
+    /// Audit per-wave file/layer counts inside a wave-plan.
+    WaveSizeCheck {
+        /// Path to the spec directory.
+        #[arg(long = "spec-dir")]
+        spec_dir: Option<String>,
+    },
+    /// Match an entity + operation to a code recipe skeleton.
+    RecipeMatch {
+        /// Entity name.
+        #[arg(long)]
+        entity: Option<String>,
+        /// Operation type.
+        #[arg(long)]
+        operation: Option<String>,
+        /// Subproject path used for placeholder resolution.
+        #[arg(long)]
+        subproject: Option<String>,
+    },
 }
 
 /// Dispatch a `run` subcommand.
@@ -142,5 +239,33 @@ pub fn dispatch(cmd: RunCmd) {
         } => context_slice::run(&context, spec.as_deref(), max_lines),
         RunCmd::Memory { subcommand, json } => memory::run(&subcommand, json.as_deref()),
         RunCmd::EpicFold { detect, epic } => epic_fold::run(detect, epic.as_deref()),
+        RunCmd::SpecExtract {
+            spec,
+            wave,
+            ac,
+            measure,
+        } => spec_extract::run(&spec, wave, ac, measure),
+        RunCmd::SpecLink {
+            parent,
+            child,
+            reason,
+        } => spec_link::run(parent.as_deref(), child.as_deref(), reason.as_deref()),
+        RunCmd::AnalyzeValidation { spec } => analyze_validation::run(spec.as_deref()),
+        RunCmd::MarkChecklistItem {
+            spec,
+            item,
+            line,
+            cwd,
+        } => mark_checklist_item::run(spec.as_deref(), item.as_deref(), line, cwd.as_deref()),
+        RunCmd::WaveTree { spec_dir, format } => wave_tree::run(&spec_dir, &format),
+        RunCmd::WaveDependency => wave_dependency::run(),
+        RunCmd::ScopeDecompose => scope_decompose::run(),
+        RunCmd::ExecRewaveCheck { spec } => exec_rewave_check::run(spec.as_deref()),
+        RunCmd::WaveSizeCheck { spec_dir } => wave_size_check::run(spec_dir.as_deref()),
+        RunCmd::RecipeMatch {
+            entity,
+            operation,
+            subproject,
+        } => recipe_match::run(entity.as_deref(), operation.as_deref(), subproject.as_deref()),
     }
 }

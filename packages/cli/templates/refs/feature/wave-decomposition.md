@@ -20,7 +20,7 @@ Before writing the single spec in Full scope, check whether the work should be d
 
 3. **Run decomposition decision:**
    ```bash
-   echo '{"fileCount":{N},"layerCount":{L},"newEntityCount":{E},"knowledgeMatches":[...]}' | bun .claude/scripts/scope-decompose.js
+   echo '{"fileCount":{N},"layerCount":{L},"newEntityCount":{E},"knowledgeMatches":[...]}' | mustard-rt run scope-decompose
    ```
    Output JSON: `{decompose: bool, reason: string, signals: {...}}`
 
@@ -28,7 +28,7 @@ Before writing the single spec in Full scope, check whether the work should be d
 
 5. **If `decompose: true`** → build wave plan:
    ```bash
-   echo '{"files":[...all paths from ANALYZE...],"projectRoot":"."}' | bun .claude/scripts/wave-dependency.js
+   echo '{"files":[...all paths from ANALYZE...],"projectRoot":"."}' | mustard-rt run wave-dependency
    ```
    Output cases:
    - `{error: "cyclic-dependency", cycle: [...]}` → warn user about cyclic imports (pre-existing architecture issue), fall back to single spec with note in `## Concerns`. Proceed to `#### Full Scope`.

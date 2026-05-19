@@ -84,13 +84,13 @@ Suggest: _"Analysis complete. Context is heavy — consider `/compact` before pr
 
 ### Decomposition Rule (Wave 7)
 
-When ANALYZE surfaces >5 files, >3 architectural layers, or multiple independent sub-behaviors: STOP, decompose into child specs (2-5 children, each ≤5 files, ≤2 layers). Link via `spec-link.js`. Parent enters `COORDINATE` phase until all children reach CLOSE.
+When ANALYZE surfaces >5 files, >3 architectural layers, or multiple independent sub-behaviors: STOP, decompose into child specs (2-5 children, each ≤5 files, ≤2 layers). Link via `mustard-rt run spec-link`. Parent enters `COORDINATE` phase until all children reach CLOSE.
 
 → See `../../../refs/feature/wave-decomposition.md`
 
 ### End of ANALYZE — Validation
 
-Run: `rtk bun .claude/scripts/analyze-validation.js --spec .claude/spec/active/{specName}/spec.md`
+Run: `rtk mustard-rt run analyze-validation --spec .claude/spec/active/{specName}/spec.md`
 If output `ok: false`, append each `issues[]` entry to the spec under `## Concerns` (non-blocking). Continue to PLAN regardless.
 
 ### PLAN Phase
@@ -119,7 +119,7 @@ Cascade (stop at first hit): (1) spec header `### Lang: pt|en`, (2) `.claude/mus
 
 #### Wave Decomposition Pre-Check (Full scope only)
 
-Check whether the work should be decomposed into waves before writing a single spec. Signals: fileCount, layerCount, newEntityCount, knowledgeMatches. Runs `scope-decompose.js` + `wave-dependency.js`. Produces wave-plan.md + per-wave spec.md if decompose=true.
+Check whether the work should be decomposed into waves before writing a single spec. Signals: fileCount, layerCount, newEntityCount, knowledgeMatches. Runs `mustard-rt run scope-decompose` + `mustard-rt run wave-dependency`. Produces wave-plan.md + per-wave spec.md if decompose=true.
 
 → See `../../../refs/feature/wave-decomposition.md`
 
@@ -181,7 +181,7 @@ The spec is a **SINGLE file** organized in two named layers — `## PRD` (the *w
 
 #### Wave Tree (end of PLAN)
 
-Run `bun .claude/scripts/wave-tree.js --spec-dir .claude/spec/active/{spec-name}` and print the output inline immediately before the AskUserQuestion. Fail-open (warn, do not block PLAN).
+Run `mustard-rt run wave-tree --spec-dir .claude/spec/active/{spec-name}` and print the output inline immediately before the AskUserQuestion. Fail-open (warn, do not block PLAN).
 
 #### Light Scope
 
@@ -206,12 +206,12 @@ Dispatch 1 Haiku Task(Explore) to verify work is still needed. Pre-check via `rt
 ### EXECUTE Phase (Light scope — same session)
 
 When user chooses "Approve and implement now":
-0. **Pre-EXECUTE Rewave Check:** Run `bun .claude/scripts/exec-rewave-check.js --spec .claude/spec/active/{spec-name}/spec.md`. Parse JSON output. If `action: "decomposed"`, the spec was just split into N waves — proceed using wave-1's spec (`wave-1-{role}/spec.md`) instead of the original. If `action: "keep-single"` or `"skip"`, continue with the original spec normally. Silent operation — no AskUserQuestion.
+0. **Pre-EXECUTE Rewave Check:** Run `mustard-rt run exec-rewave-check --spec .claude/spec/active/{spec-name}/spec.md`. Parse JSON output. If `action: "decomposed"`, the spec was just split into N waves — proceed using wave-1's spec (`wave-1-{role}/spec.md`) instead of the original. If `action: "keep-single"` or `"skip"`, continue with the original spec normally. Silent operation — no AskUserQuestion.
 1. Update spec: `Status: implementing`, `Phase: EXECUTE`. Every agent prompt MUST include: `Return format cap: ≤50 lines. Apply compact Return Format from .claude/pipeline-config.md strictly.`
 2. Update pipeline state: `status: "implementing"`, `phase: 3`
 3. Read `.claude/pipeline-config.md` for agent config. Grep `entity-registry.json` for specific entity block only
 4. Match recipes by title via Grep on `{subproject}/.claude/commands/recipes.md` — do NOT read full file
-4b. **Structured Recipe (if available):** Run `bun .claude/scripts/recipe-match.js --entity {entity} --operation {operation} --subproject {subproject_path}`. If non-empty JSON, inject into agent prompt as `{recipe_context}`. Gives agent a 90%-complete skeleton.
+4b. **Structured Recipe (if available):** Run `mustard-rt run recipe-match --entity {entity} --operation {operation} --subproject {subproject_path}`. If non-empty JSON, inject into agent prompt as `{recipe_context}`. Gives agent a 90%-complete skeleton.
 5. Identify relevant skills for `{recommended_skills}`: **prepend `karpathy-guidelines`** for code-editing agents (impl/backend/frontend/database/bugfix); skip karpathy for Explore and Review. Then list task-relevant skill names. See `.claude/refs/agent-prompt/agent-prompt.md § How to fill {recommended_skills}`.
 6. Dispatch agents (wave rules: DB+Backend parallel, Frontend after Backend UNLESS `(parallel-safe)`)
 7. Wave transitions between waves (from `.claude/pipeline-config.md`)

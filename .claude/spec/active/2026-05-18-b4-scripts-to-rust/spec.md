@@ -80,10 +80,10 @@ Decisão baseada na regra de Thariq Shihipar (Anthropic, *"The Unreasonable Effe
 
 ### Impl Agent (Wave 4) — parsing de spec + análise de waves
 
-- [ ] Portar `spec-extract.js`, `spec-link.js`, `analyze-validation.js`, `mark-checklist-item.js`.
-- [ ] Portar `wave-tree.js`, `wave-dependency.js`, `scope-decompose.js`, `exec-rewave-check.js`, `wave-size-check.js`.
-- [ ] Portar `recipe-match.js`.
-- [ ] Atualizar as invocações em `feature`, `approve`, `close`, `refs/feature/wave-decomposition.md`.
+- [x] Portar `spec-extract.js`, `spec-link.js`, `analyze-validation.js`, `mark-checklist-item.js`.
+- [x] Portar `wave-tree.js`, `wave-dependency.js`, `scope-decompose.js`, `exec-rewave-check.js`, `wave-size-check.js`.
+- [x] Portar `recipe-match.js`.
+- [x] Atualizar as invocações em `feature`, `approve`, `close`, `refs/feature/wave-decomposition.md`.
 
 ### Impl Agent (Wave 5) — relatórios + HTML
 
@@ -128,6 +128,8 @@ Decisão baseada na regra de Thariq Shihipar (Anthropic, *"The Unreasonable Effe
 - **W2 — orquestração `scan/` deferida:** `scan/orchestrate.js`/`_precompute.js`/`finalize.js` são drivers do comando `/scan` (renderizam prompts de agente, fazem `spawnSync` de `sync-registry`), qualitativamente distintos da camada de dados do registry. Porte realocado para a **Wave 6**; os `.js` permanecem até lá.
 
 - **W3 — `memory.js` e `epic-fold.js` mantidos:** os ports Rust estão prontos e as invocações migradas, mas os `.js` permanecem porque testes de hook do B3 (`hooks/__tests__/harness-dual-emission.test.js`, `harness-wave8.test.js`) ainda fazem `spawnSync` dos scripts reais. **Wave 7** deve portar/remover esses testes antes de deletar `memory.js`/`epic-fold.js` — e só então os `_lib/*.js` órfãos.
+
+- **W4 — 7 scripts portados mas mantidos + `scripts/_lib/` a varrer:** `spec-link`, `mark-checklist-item`, `wave-tree`, `wave-dependency`, `scope-decompose`, `exec-rewave-check`, `wave-size-check` estão portados, mas os `.js` ficam porque testes de hook do B3 ainda os `spawn`am. Além disso, a Wave 4 portou `scripts/_lib/spec-sections.js` e `scripts/_lib/wave-lib.js` para Rust — esse diretório `scripts/_lib/` (incluindo o proxy `event-store.js`) também precisa ser varrido na **Wave 7**, junto com `hooks/_lib/`.
 
 ## Critérios de Aceitação
 
