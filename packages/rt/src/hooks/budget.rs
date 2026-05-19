@@ -23,15 +23,23 @@
 //! see that module's header for the rationale. There is deliberately no
 //! counting logic here.
 //!
-//! ## `BudgetGuard` is both a `Check` and an `Observer`
+//! ## `BudgetGuard` is a `Check` for both budgets
 //!
 //! `context-budget` is a gate (`Check`) on `PreToolUse(Task)`. `output-budget`
-//! is pure telemetry plus an advisory on `PostToolUse(Task)` — it never blocks
-//! and never rewrites, so it is modelled as an [`Observer`] that, on an
-//! over-budget return, emits both a metric line and (parity with the JS) a
-//! `hookSpecificOutput.additionalContext` advisory. Because an `Observer`
-//! cannot return a `Verdict`, the advisory is surfaced as a side-effect write
-//! to stdout — see [`BudgetGuard::observe`].
+//! is an advisory on `PostToolUse(Task)` — it never blocks and never rewrites.
+//!
+//! Through Wave 3 `output-budget` was an [`Observer`] that, on an over-budget
+//! return, wrote the `hookSpecificOutput.additionalContext` advisory **direct
+//! to stdout** with a raw `println!`, bypassing the dispatcher's single
+//! `emit_outcome` (b3 Wave-3 Concern "`budget::observe` stdout bypass" — under
+//! the consolidated binary two JSON objects could leave one invocation).
+//!
+//! Wave 5 resolves it: `output-budget` is now part of the `Check` path. On
+//! `PostToolUse(Task)` [`BudgetGuard::evaluate`] emits the return-size metric
+//! and, when over budget, returns a [`Verdict::Inject`] carrying the advisory.
+//! The dispatcher folds that `Inject` into the single `Outcome`, so exactly
+//! one JSON object is emitted per invocation. `BudgetGuard` no longer
+//! implements [`Observer`].
 //!
 //! ## Mode
 //!
@@ -43,8 +51,10 @@
 
 use mustard_core::error::Error;
 use mustard_core::metrics::{MetricLine, emit_metric};
-use mustard_core::model::contract::{Check, Ctx, HookInput, Observer, Trigger, Verdict};
+use mustard_core::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
 use serde_json::json;
+
+use crate::util::{format_gate_message, now_iso8601};
 
 // ---------------------------------------------------------------------------
 // Shared role classification
@@ -142,36 +152,6 @@ fn context_budget_mode() -> ContextBudgetMode {
     }
 }
 
-/// Assemble a gate message in the `formatGateMessage` shape:
-/// `[gate] what. why. Saída: exit.`
-///
-/// Shared shape with `bash_guard::format_gate_message` and the JS
-/// `_lib/gate-message.js`. Duplicated here rather than shared so each module
-/// stays self-contained — the function is six lines and pure.
-fn format_gate_message(gate: &str, what: &str, why: &str, exit: &str) -> String {
-    let mut body = String::new();
-    if !what.is_empty() {
-        body.push_str(what);
-    }
-    if !why.is_empty() {
-        if !body.is_empty() {
-            body.push_str(". ");
-        }
-        body.push_str(why);
-    }
-    if !body.is_empty() && !body.ends_with(['.', '!', '?', '…']) {
-        body.push('.');
-    }
-    let mut msg = format!("[{gate}] {body}").trim().to_string();
-    if !exit.is_empty() {
-        let mut tail = exit.to_string();
-        if !tail.ends_with(['.', '!', '?', '…']) {
-            tail.push('.');
-        }
-        msg.push_str(&format!(" Saída: {tail}"));
-    }
-    msg
-}
 
 /// The model context window resolution, ported from `resolveWindow`.
 ///
@@ -502,32 +482,6 @@ fn metric_cwd(input: &HookInput) -> &str {
     }
 }
 
-/// An RFC-3339 / ISO-8601 UTC timestamp string (`YYYY-MM-DDThh:mm:ss.sssZ`),
-/// matching JS `new Date().toISOString()`. Same civil-date algorithm as
-/// `bash_guard::now_iso8601` — duplicated to keep the module self-contained.
-fn now_iso8601() -> String {
-    use std::time::{Duration, SystemTime, UNIX_EPOCH};
-    let dur = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or(Duration::ZERO);
-    let secs = dur.as_secs();
-    let millis = dur.subsec_millis();
-    let days = (secs / 86_400) as i64;
-    let rem = secs % 86_400;
-    let (hh, mm, ss) = (rem / 3600, (rem % 3600) / 60, rem % 60);
-    let z = days + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let year = if m <= 2 { y + 1 } else { y };
-    format!("{year:04}-{m:02}-{d:02}T{hh:02}:{mm:02}:{ss:02}.{millis:03}Z")
-}
-
 // ---------------------------------------------------------------------------
 // Contract impls
 // ---------------------------------------------------------------------------
@@ -536,52 +490,39 @@ fn now_iso8601() -> String {
 pub struct BudgetGuard;
 
 impl Check for BudgetGuard {
-    /// `context-budget`: gate a `PreToolUse(Task)` dispatch on prompt size.
+    /// Both budgets, dispatched by trigger:
     ///
-    /// Only `PreToolUse` + a `Task`/`Agent` tool runs the gate; any other
-    /// invocation self-allows. The verdict is computed by [`context_budget`],
-    /// which carries its own `CONTEXT_BUDGET_MODE` — independent of the module
-    /// enforcement mode the dispatcher applies.
+    /// - `PreToolUse(Task)` → `context-budget`: gate the dispatch on prompt
+    ///   size. The verdict is computed by [`context_budget`], which carries
+    ///   its own `CONTEXT_BUDGET_MODE` — independent of the module enforcement
+    ///   mode the dispatcher applies.
+    /// - `PostToolUse(Task)` → `output-budget`: emit the per-role return-size
+    ///   metric and, when the return is over budget, return a
+    ///   [`Verdict::Inject`] carrying the advisory. The dispatcher folds that
+    ///   into the single `Outcome` so exactly one JSON object is emitted
+    ///   (Wave-5 resolution of the Wave-3 stdout-bypass Concern).
+    ///
+    /// Any other invocation self-allows.
     fn evaluate(&self, input: &HookInput, ctx: &Ctx) -> Result<Verdict, Error> {
-        if ctx.trigger != Some(Trigger::PreToolUse) {
-            return Ok(Verdict::Allow);
-        }
         if !is_task_tool(input) {
             return Ok(Verdict::Allow);
         }
-        Ok(context_budget(input))
-    }
-}
-
-impl Observer for BudgetGuard {
-    /// `output-budget`: on a `PostToolUse(Task)` completion, emit the
-    /// per-role return-size metric and — when over budget — print the
-    /// `additionalContext` advisory to stdout (parity with the JS hook, which
-    /// is advisory-only and never blocks).
-    ///
-    /// Pure side-effect: never affects a verdict. Fail-open throughout.
-    fn observe(&self, input: &HookInput, ctx: &Ctx) {
-        if ctx.trigger != Some(Trigger::PostToolUse) {
-            return;
-        }
-        if !is_task_tool(input) {
-            return;
-        }
-        let Some(result) = evaluate_output_budget(input) else {
-            return;
-        };
-        // Emit the metric (fail-silent).
-        let _ = emit_metric(std::path::Path::new(metric_cwd(input)), &result.metric);
-        // Surface the advisory exactly as `output-budget.js` does: a
-        // `hookSpecificOutput.additionalContext` line on stdout.
-        if let Some(advisory) = result.advisory {
-            let body = json!({
-                "hookSpecificOutput": {
-                    "hookEventName": "PostToolUse",
-                    "additionalContext": advisory,
-                }
-            });
-            println!("{body}");
+        match ctx.trigger {
+            Some(Trigger::PreToolUse) => Ok(context_budget(input)),
+            Some(Trigger::PostToolUse) => {
+                let Some(result) = evaluate_output_budget(input) else {
+                    return Ok(Verdict::Allow);
+                };
+                // Emit the return-size metric (fail-silent).
+                let _ = emit_metric(std::path::Path::new(metric_cwd(input)), &result.metric);
+                // Over budget → surface the advisory through the Outcome,
+                // never via a raw stdout write.
+                Ok(match result.advisory {
+                    Some(advisory) => Verdict::Inject { context: advisory },
+                    None => Verdict::Allow,
+                })
+            }
+            _ => Ok(Verdict::Allow),
         }
     }
 }
@@ -841,19 +782,47 @@ mod tests {
     }
 
     #[test]
-    fn observe_is_infallible() {
-        // `observe` must never panic, regardless of trigger / payload shape.
+    fn output_budget_over_cap_injects_advisory_via_check() {
+        // The over-budget advisory now flows through the Check as an Inject —
+        // no raw stdout write (Wave-5 resolution of the stdout-bypass Concern).
+        let response = "line\n".repeat(50);
+        let input = HookInput {
+            tool_name: Some("Task".to_string()),
+            tool_input: json!({ "subagent_type": "Explore", "description": "" }),
+            hook_event_name: Some("PostToolUse".to_string()),
+            raw: json!({ "tool_response": response }),
+            ..HookInput::default()
+        };
         let ctx = Ctx {
             project_dir: String::new(),
             trigger: Some(Trigger::PostToolUse),
         };
+        match BudgetGuard.evaluate(&input, &ctx).expect("no error") {
+            Verdict::Inject { context } => {
+                assert!(context.contains("Output Budget"));
+                assert!(context.contains("Explore"));
+            }
+            other => panic!("expected Inject, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn output_budget_within_cap_allows_via_check() {
+        let response = "line\n".repeat(10);
         let input = HookInput {
             tool_name: Some("Task".to_string()),
-            tool_input: json!({ "subagent_type": "Explore" }),
+            tool_input: json!({ "subagent_type": "Explore", "description": "" }),
             hook_event_name: Some("PostToolUse".to_string()),
-            raw: json!({ "tool_response": "ok" }),
+            raw: json!({ "tool_response": response }),
             ..HookInput::default()
         };
-        BudgetGuard.observe(&input, &ctx);
+        let ctx = Ctx {
+            project_dir: String::new(),
+            trigger: Some(Trigger::PostToolUse),
+        };
+        assert_eq!(
+            BudgetGuard.evaluate(&input, &ctx).expect("no error"),
+            Verdict::Allow
+        );
     }
 }

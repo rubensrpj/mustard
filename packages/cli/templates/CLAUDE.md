@@ -58,7 +58,7 @@ Guards always loaded via `{subproject}/CLAUDE.md`.
 
 ## Stack
 
-Bun (>=1.2.0), CommonJS, no external dependencies. 31 lifecycle hooks, 28 scripts, 18 slash commands, 7 foundation skills.
+Bun (>=1.2.0), CommonJS, no external dependencies. Enforcement runs as the single Rust binary `mustard-rt` (the `packages/rt` crate — one `mustard-rt on <event>` entry per lifecycle event in `settings.json`); 28 scripts, 18 slash commands, 7 foundation skills.
 
 ## Commands
 
@@ -121,7 +121,7 @@ bun scripts/skills.js validate --json
 
 ## Token Economy
 
-RTK (Rust Token Killer) integrates as core infrastructure via `hooks/rtk-rewrite.js` — transparently rewrites Bash commands through `rtk`, achieving 60-90% token reduction on CLI outputs. Run `rtk gain` for analytics. If RTK is not installed, the hook silently passes through. For cost optimization hooks (`MUSTARD_BASH_REDIRECT_MODE`, model routing gate, tool-use counter) and enforcement hooks (`duplication-check`, `convention-check`, shared memory architecture), see `pipeline-config.md`.
+RTK (Rust Token Killer) integrates as core infrastructure via the `mustard-rt` `bash_guard` module — transparently rewrites Bash commands through `rtk`, achieving 60-90% token reduction on CLI outputs. Run `rtk gain` for analytics. If RTK is not installed, the rewrite silently passes through. For cost-optimization gates (`MUSTARD_BASH_REDIRECT_MODE`, model-routing gate, tool-use counter) and the shared-memory architecture, see `pipeline-config.md`.
 
 ### Cluster discovery tuning
 

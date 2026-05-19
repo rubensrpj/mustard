@@ -77,78 +77,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "mustard-rt check tool_use_counter",
-            "timeout": 3
-          },
-          {
-            "type": "command",
-            "command": "mustard-rt check main_context_counter",
-            "timeout": 3
-          }
-        ]
-      },
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "mustard-rt check bash_guard",
-            "timeout": 5
-          }
-        ]
-      },
-      {
-        "matcher": "Write|Edit",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "mustard-rt check size_gate",
-            "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "mustard-rt check close_gate",
+            "command": "mustard-rt on PreToolUse",
             "timeout": 310
-          }
-        ]
-      },
-      {
-        "matcher": "Read|Write|Edit",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "mustard-rt check path_guard",
-            "timeout": 5
-          }
-        ]
-      },
-      {
-        "matcher": "Skill",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "mustard-rt check enforce_registry",
-            "timeout": 5
-          }
-        ]
-      },
-      {
-        "matcher": "Task|Agent",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "mustard-rt check subagent_tracker",
-            "timeout": 3
-          },
-          {
-            "type": "command",
-            "command": "mustard-rt check budget",
-            "timeout": 3
-          },
-          {
-            "type": "command",
-            "command": "mustard-rt check model_routing",
-            "timeout": 5
           }
         ]
       }
@@ -156,67 +86,12 @@
 
     "PostToolUse": [
       {
-        "matcher": "Write|Edit",
+        "matcher": ".*",
         "hooks": [
           {
             "type": "command",
-            "command": "mustard-rt check post_edit",
-            "timeout": 20
-          }
-        ]
-      },
-      {
-        "matcher": "Bash|Write|Edit|Task|Agent|Read",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "mustard-rt check metrics_tracker",
-            "timeout": 3
-          }
-        ]
-      },
-      {
-        "matcher": "Skill",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "mustard-rt check skill_usage_tracker",
-            "timeout": 3
-          }
-        ]
-      },
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "mustard-rt check bash_guard",
-            "timeout": 5
-          }
-        ]
-      },
-      {
-        "matcher": "Task|Agent",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "mustard-rt check budget",
-            "timeout": 3
-          },
-          {
-            "type": "command",
-            "command": "bun \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/session-knowledge-inc.js",
-            "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "mustard-rt check subagent_tracker",
-            "timeout": 3
-          },
-          {
-            "type": "command",
-            "command": "mustard-rt check skills_audit",
-            "timeout": 3000
+            "command": "mustard-rt on PostToolUse",
+            "timeout": 30
           }
         ]
       }
@@ -228,39 +103,9 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bun \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/harness-init.js",
-            "statusMessage": "Initializing harness event bus...",
-            "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "mustard-rt check subagent_tracker",
-            "statusMessage": "Cleaning up previous session state...",
-            "timeout": 3
-          },
-          {
-            "type": "command",
-            "command": "bun \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/session-memory.js",
-            "statusMessage": "Loading persistent memory...",
-            "timeout": 3
-          },
-          {
-            "type": "command",
-            "command": "bun \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/spec-hygiene.js",
-            "statusMessage": "Auditing stale specs...",
-            "timeout": 5000
-          },
-          {
-            "type": "command",
-            "command": "mustard-rt check tool_use_counter",
-            "statusMessage": "Clearing tool budgets...",
-            "timeout": 3
-          },
-          {
-            "type": "command",
-            "command": "mustard-rt check main_context_counter",
-            "statusMessage": "Resetting delegation counter...",
-            "timeout": 3
+            "command": "mustard-rt on SessionStart",
+            "statusMessage": "Initializing harness, memory, and budgets...",
+            "timeout": 15
           }
         ]
       }
@@ -272,7 +117,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bun \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/pre-compact.js",
+            "command": "mustard-rt on PreCompact",
             "timeout": 10
           }
         ]
@@ -285,20 +130,9 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bun \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/session-knowledge.js",
-            "statusMessage": "Extracting session patterns...",
-            "timeout": 10
-          },
-          {
-            "type": "command",
-            "command": "bun \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/memory-auto-extract.js",
-            "statusMessage": "Persisting decisions and lessons...",
-            "timeout": 8
-          },
-          {
-            "type": "command",
-            "command": "bun \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/session-cleanup.js",
-            "timeout": 5
+            "command": "mustard-rt on SessionEnd",
+            "statusMessage": "Extracting knowledge and cleaning state...",
+            "timeout": 15
           }
         ]
       }
@@ -309,20 +143,9 @@
         "hooks": [
           {
             "type": "command",
-            "command": "mustard-rt check main_context_counter",
-            "timeout": 3
-          },
-          {
-            "type": "command",
-            "command": "mustard-rt check subagent_tracker",
+            "command": "mustard-rt on SubagentStart",
             "statusMessage": "Registering agent...",
-            "timeout": 3
-          },
-          {
-            "type": "command",
-            "command": "mustard-rt check tool_use_counter",
-            "statusMessage": "Initializing tool budget...",
-            "timeout": 3
+            "timeout": 5
           }
         ]
       }
@@ -333,19 +156,9 @@
         "hooks": [
           {
             "type": "command",
-            "command": "mustard-rt check main_context_counter",
-            "timeout": 3
-          },
-          {
-            "type": "command",
-            "command": "mustard-rt check subagent_tracker",
+            "command": "mustard-rt on SubagentStop",
             "statusMessage": "Agent completed",
-            "timeout": 3
-          },
-          {
-            "type": "command",
-            "command": "mustard-rt check tool_use_counter",
-            "timeout": 3
+            "timeout": 5
           }
         ]
       }
@@ -357,8 +170,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bun \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/followup-cancel-gate.js",
-            "timeout": 5000
+            "command": "mustard-rt on UserPromptSubmit",
+            "timeout": 10
           }
         ]
       }

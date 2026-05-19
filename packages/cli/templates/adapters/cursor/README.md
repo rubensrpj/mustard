@@ -42,16 +42,21 @@ In your Cursor hook configuration, reference the adapter with the hook name:
 
 ## Available Hooks
 
-All Mustard hooks are available through the adapter:
+> **NOTE (b3):** Mustard's enforcement hooks were ported from per-hook `.js`
+> files to the single Rust binary `mustard-rt` (`mustard-rt on <event>`). The
+> hook names below are the *concerns* `mustard-rt` enforces — they no longer
+> map to standalone `.claude/hooks/*.js` files. This adapter still references
+> the old `.js` paths and needs an update to invoke `mustard-rt`; tracked as a
+> b3 Concern (the `adapters/` tree is outside the b3 scope).
 
-| Hook | Type | Description |
-|------|------|-------------|
-| bash-safety | PreToolUse | Blocks dangerous shell commands |
-| file-guard | PreToolUse | Protects sensitive files |
-| review-gate | PreToolUse | Validates git commits |
-| enforce-registry | PreToolUse | Entity registry enforcement |
-| auto-format | PostToolUse | Auto-formats edited files |
-| guard-verify | PostToolUse | Architecture enforcement |
+| Concern | Type | mustard-rt module | Description |
+|------|------|-------------------|-------------|
+| bash-safety | PreToolUse | `bash_guard` | Blocks dangerous shell commands |
+| file-guard | PreToolUse | `path_guard` | Protects sensitive files |
+| review-gate | PreToolUse | `bash_guard` | Validates git commits |
+| enforce-registry | PreToolUse | `enforce_registry` | Entity registry enforcement |
+| auto-format | PostToolUse | `post_edit` | Auto-formats edited files |
+| guard-verify | PostToolUse | `post_edit` | Architecture enforcement |
 
 ## Event Mapping
 

@@ -30,39 +30,14 @@ use mustard_core::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
 use serde_json::Value;
 use std::path::Path;
 
+use crate::util::format_gate_message;
+
 /// The pipeline skills the registry gate applies to. Mirrors the JS array
 /// `['mustard:feature', 'mustard:bugfix', 'feature', 'bugfix']`.
 const PIPELINE_SKILLS: &[&str] = &["mustard:feature", "mustard:bugfix", "feature", "bugfix"];
 
 /// The entity-registry gate module.
 pub struct EnforceRegistry;
-
-/// Assemble a gate message in the `formatGateMessage` shape:
-/// `[gate] what. why. Saída: exit.`
-fn format_gate_message(gate: &str, what: &str, why: &str, exit: &str) -> String {
-    let mut body = String::new();
-    if !what.is_empty() {
-        body.push_str(what);
-    }
-    if !why.is_empty() {
-        if !body.is_empty() {
-            body.push_str(". ");
-        }
-        body.push_str(why);
-    }
-    if !body.is_empty() && !body.ends_with(['.', '!', '?', '…']) {
-        body.push('.');
-    }
-    let mut msg = format!("[{gate}] {body}").trim().to_string();
-    if !exit.is_empty() {
-        let mut tail = exit.to_string();
-        if !tail.ends_with(['.', '!', '?', '…']) {
-            tail.push('.');
-        }
-        msg.push_str(&format!(" Saída: {tail}"));
-    }
-    msg
-}
 
 /// Validate a parsed `entity-registry.json` value. Returns the deny reason on
 /// failure, or `None` when the registry is valid. Port of `validateRegistry`.

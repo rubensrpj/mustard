@@ -10,9 +10,14 @@ use crate::hooks::bash_guard::BashGuard;
 use crate::hooks::budget::BudgetGuard;
 use crate::hooks::close_gate::CloseGate;
 use crate::hooks::enforce_registry::EnforceRegistry;
+use crate::hooks::knowledge::Knowledge;
 use crate::hooks::model_routing::ModelRoutingGate;
 use crate::hooks::path_guard::PathGuard;
 use crate::hooks::post_edit::PostEdit;
+use crate::hooks::pre_compact::PreCompact;
+use crate::hooks::prompt_gate::PromptGate;
+use crate::hooks::session_cleanup::SessionCleanup;
+use crate::hooks::session_start::SessionStart;
 use crate::hooks::size_gate::SizeGate;
 use crate::hooks::skills_audit::SkillsAudit;
 use crate::hooks::tracker::{
@@ -113,8 +118,11 @@ impl Registry {
             // ── Wave 3: Task / Subagent family ───────────────────────────────
             Module {
                 id: "budget",
-                // `context-budget` (PreToolUse(Task) prompt-size `Check`) +
-                // `output-budget` (PostToolUse(Task) return-size `Observer`).
+                // `context-budget` (PreToolUse(Task) prompt-size gate) +
+                // `output-budget` (PostToolUse(Task) return-size advisory).
+                // Both flow through the `Check` — the over-budget advisory is
+                // an `Inject` verdict, not a raw stdout write (Wave-5 fix of
+                // the Wave-3 `budget::observe` stdout-bypass Concern).
                 applies_to: &[
                     (Trigger::PreToolUse, ToolMatch::Named("Task")),
                     (Trigger::PreToolUse, ToolMatch::Named("Agent")),
@@ -122,7 +130,7 @@ impl Registry {
                     (Trigger::PostToolUse, ToolMatch::Named("Agent")),
                 ],
                 check: Some(Box::new(BudgetGuard)),
-                observer: Some(Box::new(BudgetGuard)),
+                observer: None,
             },
             Module {
                 id: "model_routing",
@@ -257,6 +265,53 @@ impl Registry {
                 check: Some(Box::new(PostEdit)),
                 observer: Some(Box::new(PostEdit)),
             },
+            // ── Wave 5: session-lifecycle families ───────────────────────────
+            Module {
+                id: "session_start",
+                // `harness-init` + `session-memory` + `spec-hygiene` — the
+                // SessionStart bootstrap. A `Check` (the memory-injection
+                // payload is its `Inject` verdict).
+                applies_to: &[(Trigger::SessionStart, ToolMatch::Any)],
+                check: Some(Box::new(SessionStart)),
+                observer: None,
+            },
+            Module {
+                id: "knowledge",
+                // `session-knowledge` + `memory-auto-extract` on SessionEnd,
+                // `session-knowledge-inc` on PostToolUse(Task). Pure telemetry
+                // — an `Observer`.
+                applies_to: &[
+                    (Trigger::SessionEnd, ToolMatch::Any),
+                    (Trigger::PostToolUse, ToolMatch::Named("Task")),
+                    (Trigger::PostToolUse, ToolMatch::Named("Agent")),
+                ],
+                check: None,
+                observer: Some(Box::new(Knowledge)),
+            },
+            Module {
+                id: "session_cleanup",
+                // `session-cleanup` — SessionEnd stale-state cleanup. An
+                // `Observer` (pure side effect, no verdict).
+                applies_to: &[(Trigger::SessionEnd, ToolMatch::Any)],
+                check: None,
+                observer: Some(Box::new(SessionCleanup)),
+            },
+            Module {
+                id: "pre_compact",
+                // `pre-compact` — the PreCompact snapshot. A `Check` (the
+                // snapshot is its `Inject` verdict).
+                applies_to: &[(Trigger::PreCompact, ToolMatch::Any)],
+                check: Some(Box::new(PreCompact)),
+                observer: None,
+            },
+            Module {
+                id: "prompt_gate",
+                // `followup-cancel-gate` — UserPromptSubmit follow-up archival.
+                // A `Check` (always allows; the archival is its side effect).
+                applies_to: &[(Trigger::UserPromptSubmit, ToolMatch::Any)],
+                check: Some(Box::new(PromptGate)),
+                observer: None,
+            },
         ];
         Self { modules }
     }
@@ -381,10 +436,36 @@ mod tests {
             "close_gate",
             "enforce_registry",
             "post_edit",
+            "session_start",
+            "knowledge",
+            "session_cleanup",
+            "pre_compact",
+            "prompt_gate",
         ] {
             assert!(registry.by_id(id).is_some(), "by_id missing {id}");
         }
         assert!(registry.by_id("nonexistent").is_none());
+    }
+
+    #[test]
+    fn wave5_session_families_apply_to_their_events() {
+        let registry = Registry::new();
+        // `session_start` on SessionStart.
+        assert!(applicable_ids(&registry, Trigger::SessionStart, None)
+            .contains(&"session_start"));
+        // `session_cleanup` + `knowledge` on SessionEnd.
+        let end = applicable_ids(&registry, Trigger::SessionEnd, None);
+        assert!(end.contains(&"session_cleanup"));
+        assert!(end.contains(&"knowledge"));
+        // `pre_compact` on PreCompact.
+        assert!(applicable_ids(&registry, Trigger::PreCompact, None)
+            .contains(&"pre_compact"));
+        // `prompt_gate` on UserPromptSubmit.
+        assert!(applicable_ids(&registry, Trigger::UserPromptSubmit, None)
+            .contains(&"prompt_gate"));
+        // `knowledge` also covers PostToolUse(Task).
+        assert!(applicable_ids(&registry, Trigger::PostToolUse, Some("Task"))
+            .contains(&"knowledge"));
     }
 
     #[test]

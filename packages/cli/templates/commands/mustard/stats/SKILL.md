@@ -42,8 +42,8 @@ Single command for all metrics: pipeline state, enforcement hooks, RTK token eco
 
 | Event | Trigger | Where |
 |---|---|---|
-| `pr.opened` | `gh pr create ...` | `pr-detect.js` PostToolUse(Bash) hook |
-| `pr.merged` | `gh pr merge ...` | `pr-detect.js` PostToolUse(Bash) hook |
+| `pr.opened` | `gh pr create ...` | `mustard-rt` `bash_guard` PostToolUse(Bash) observer |
+| `pr.merged` | `gh pr merge ...` | `mustard-rt` `bash_guard` PostToolUse(Bash) observer |
 | `review.start` | `/mustard:review` invoked | inline node call in command |
 | `review.complete` | `/mustard:review` returns | inline node call in command |
 

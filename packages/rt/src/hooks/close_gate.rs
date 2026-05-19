@@ -41,7 +41,9 @@ use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION}
 use serde_json::{Value, json};
 use std::path::Path;
 use std::process::{Command, Stdio};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
+
+use crate::util::{format_gate_message, now_iso8601};
 
 /// Per-command timeout for the build/test stages — 5 minutes
 /// (`COMMAND_TIMEOUT_MS` in `close-gate.js`).
@@ -643,32 +645,6 @@ fn run_command(cmd: &str, cwd: &str) -> CommandResult {
 // Shared helpers
 // ---------------------------------------------------------------------------
 
-/// Assemble a gate message in the `formatGateMessage` shape.
-fn format_gate_message(gate: &str, what: &str, why: &str, exit: &str) -> String {
-    let mut body = String::new();
-    if !what.is_empty() {
-        body.push_str(what);
-    }
-    if !why.is_empty() {
-        if !body.is_empty() {
-            body.push_str(". ");
-        }
-        body.push_str(why);
-    }
-    if !body.is_empty() && !body.ends_with(['.', '!', '?', '…']) {
-        body.push('.');
-    }
-    let mut msg = format!("[{gate}] {body}").trim().to_string();
-    if !exit.is_empty() {
-        let mut tail = exit.to_string();
-        if !tail.ends_with(['.', '!', '?', '…']) {
-            tail.push('.');
-        }
-        msg.push_str(&format!(" Saída: {tail}"));
-    }
-    msg
-}
-
 /// Emit a `close-gate.check` harness event. Best-effort telemetry.
 fn emit_close_gate_event(cwd: &str, payload: Value) {
     let event = HarnessEvent {
@@ -686,29 +662,6 @@ fn emit_close_gate_event(cwd: &str, payload: Value) {
         spec: None,
     };
     let _ = JsonlEventStore::for_project(cwd).append(&event);
-}
-
-/// An RFC-3339 / ISO-8601 UTC timestamp string.
-fn now_iso8601() -> String {
-    let dur = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or(Duration::ZERO);
-    let secs = dur.as_secs();
-    let millis = dur.subsec_millis();
-    let days = (secs / 86_400) as i64;
-    let rem = secs % 86_400;
-    let (hh, mm, ss) = (rem / 3600, (rem % 3600) / 60, rem % 60);
-    let z = days + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let year = if m <= 2 { y + 1 } else { y };
-    format!("{year:04}-{m:02}-{d:02}T{hh:02}:{mm:02}:{ss:02}.{millis:03}Z")
 }
 
 /// Truncate a string to `max` bytes (char-boundary safe).

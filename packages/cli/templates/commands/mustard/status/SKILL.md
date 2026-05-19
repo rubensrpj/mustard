@@ -45,18 +45,19 @@ Used to resolve the **Mode** column. Read the current value from `settings.json`
 
 | Hook | Mode env var | Default |
 |------|-------------|---------|
-| `close-gate.js` | `MUSTARD_CLOSE_GATE_MODE` | strict |
-| `close-gate.js` (Wave 10 QA) | `MUSTARD_QA_GATE_MODE` | strict |
-| `checklist-auto-mark.js` / checklist gate | `MUSTARD_CHECKLIST_GATE_MODE` | strict |
-| debt gate | `MUSTARD_DEBT_GATE_MODE` | (see hook) |
-| `context-budget.js` | `CONTEXT_BUDGET_MODE` | strict |
-| `spec-size-gate.js` | `MUSTARD_SPEC_SIZE_MODE` | warn |
-| `review-gate.js` (commit gate) | `MUSTARD_COMMIT_GATE_MODE` | warn |
-| `bash-native-redirect.js` | `MUSTARD_BASH_REDIRECT_MODE` | strict |
-| `model-routing-gate.js` | `MUSTARD_MODEL_GATE_MODE` | strict |
-| `duplication-check.js` | `MUSTARD_DUPLICATION_MODE` | off |
-| `convention-check.js` | `MUSTARD_CONVENTION_MODE` | off |
+| `close_gate` | `MUSTARD_CLOSE_GATE_MODE` | strict |
+| `close_gate` (Wave 10 QA) | `MUSTARD_QA_GATE_MODE` | strict |
+| `post_edit` checklist gate | `MUSTARD_CHECKLIST_GATE_MODE` | strict |
+| debt gate | `MUSTARD_DEBT_GATE_MODE` | (see module) |
+| `budget` (context budget) | `CONTEXT_BUDGET_MODE` | strict |
+| `size_gate` (spec size) | `MUSTARD_SPEC_SIZE_MODE` | warn |
+| `bash_guard` (commit gate) | `MUSTARD_COMMIT_GATE_MODE` | warn |
+| `bash_guard` (native redirect) | `MUSTARD_BASH_REDIRECT_MODE` | strict |
+| `model_routing` | `MUSTARD_MODEL_GATE_MODE` | strict |
 | (global kill-switch) | `MUSTARD_DISABLED_HOOKS` | (empty) |
+
+All enforcement runs as the single Rust binary `mustard-rt`; `settings.json`
+wires one `mustard-rt on <event>` entry per lifecycle event.
 
 Hooks not in this table have no mode env — report their **Mode** as `n/a`. Do not invent env var names; if a hook's mode is unclear, consult `pipeline-config.md`.
 
@@ -65,10 +66,10 @@ Hooks not in this table have no mode env — report their **Mode** as `n/a`. Do 
 ```
 Harness — enforcement layer (read-only view of settings.json)
 
-PreToolUse
-  Hook                      Matcher      Enforces                              Mode
-  close-gate.js             Write|Edit   blocks CLOSE if build/QA fail          strict (env: MUSTARD_CLOSE_GATE_MODE)
-  bash-native-redirect.js   Bash         redirects grep/ls/cat to native tools  strict (env: MUSTARD_BASH_REDIRECT_MODE)
+PreToolUse  (mustard-rt on PreToolUse)
+  Module        Matcher      Enforces                              Mode
+  close_gate    Write|Edit   blocks CLOSE if build/QA fail          strict (env: MUSTARD_CLOSE_GATE_MODE)
+  bash_guard    Bash         redirects grep/ls/cat to native tools  strict (env: MUSTARD_BASH_REDIRECT_MODE)
   ...
 
 PostToolUse

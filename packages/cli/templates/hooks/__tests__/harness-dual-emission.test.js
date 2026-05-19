@@ -110,57 +110,9 @@ function makeProjectDir(base) {
 // `mustard-rt` modules (`tracker`) in b3 Wave 3. Their agent.start/agent.stop
 // and tool.use dual-emission parity now lives in packages/rt/src/hooks/tracker.rs.
 
-// ─── session-knowledge: finding ─────────────────────────────────────────────
-
-describe('session-knowledge — finding emission', () => {
-  let tmp;
-  beforeEach(() => {
-    tmp = makeProjectDir(os.tmpdir());
-    // Create a minimal memory stub so execFileSync doesn't fail
-    const knowledgeScript = path.join(tmp, '.claude', 'scripts', 'memory.js');
-    fs.writeFileSync(knowledgeScript, "'use strict'; process.exit(0);\n");
-    // Create pipeline states dir (session-knowledge reads from it)
-    fs.mkdirSync(path.join(tmp, '.claude', '.pipeline-states'), { recursive: true });
-  });
-  afterEach(() => { try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (_) {} });
-
-  it('emits finding events for extracted patterns', async () => {
-    // Write a pipeline state with retries to trigger pattern extraction
-    fs.writeFileSync(
-      path.join(tmp, '.claude', '.pipeline-states', 'my-feature.json'),
-      JSON.stringify({
-        spec: 'my-feature',
-        phaseName: 'CLOSE',
-        _file: 'my-feature',
-        metrics: { retries: 3 },
-      })
-    );
-
-    const result = await runHook('session-knowledge.js', {
-      hook_event_name: 'SessionEnd',
-      cwd: tmp,
-      session_id: 's-w2-knowledge',
-    }, { projectDir: tmp });
-
-    assert.equal(result.code, 0, `hook exited non-zero: ${result.stderr}`);
-
-    // findings are emitted if extractPatternsFromStates returns any patterns.
-    // Since the underlying extractor may or may not produce patterns (its logic
-    // depends on internal heuristics), we only assert no crash — not the count.
-    // The events file may or may not exist.
-    assert.ok(true, 'session-knowledge did not crash');
-  });
-
-  it('fail-open: session-knowledge exits 0 with harness disabled', async () => {
-    const result = await runHook('session-knowledge.js', {
-      hook_event_name: 'SessionEnd',
-      cwd: tmp,
-      session_id: 's-failopen-sk',
-    }, { projectDir: tmp, disabledHooks: 'harness-event' });
-
-    assert.equal(result.code, 0, 'hook must not crash');
-  });
-});
+// NOTE: session-knowledge.js was ported to the Rust `mustard-rt` `knowledge`
+// module in b3 Wave 5. Its friction-telemetry write and `retry.attempt`
+// emission parity now lives in packages/rt/src/hooks/knowledge.rs.
 
 // ─── memory-persist: decision / lesson ──────────────────────────────────────
 

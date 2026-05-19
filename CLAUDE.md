@@ -192,26 +192,24 @@ Models are auto-selected by intent. Upgrades blocked, downgrades allowed (opt-in
 
 ## Enforcement Hooks (highlights)
 
-31 hooks wired in `templates/settings.json`. Highlights below — full list at `templates/settings.json` and behavioral docs at `templates/pipeline-config.md`.
+Enforcement runs as the single Rust binary `mustard-rt` (the `packages/rt` crate): `settings.json` wires one `mustard-rt on <event>` entry per lifecycle event, and the dispatcher runs every registered module for that event. Highlights below — behavioral docs at `templates/pipeline-config.md`, module source at `packages/rt/src/hooks/`.
 
-| Hook | Matcher | Behavior |
+| `mustard-rt` module | Matcher | Behavior |
 |------|---------|----------|
-| `bash-native-redirect.js` | `Bash` | **BLOCKS** grep/ls/cat/head/tail/find → native tools |
-| `bash-safety.js` | `Bash` | **BLOCKS** rm -rf, mkfs, dd, credentials access |
-| `model-routing-gate.js` | `Task` | **BLOCKS** upgrades vs routing table (downgrades allowed) |
-| `tool-use-counter.js` | `.*` + Subagent | **BLOCKS** Explore agents at 15-20 tool uses (warn at 12) |
-| `context-budget.js` | `Task` | **BLOCKS** Task prompts >per-role budget (Explore 10K chars, review 12K, general 30K); advisory >40% model window (Dumb Zone) |
-| `output-budget.js` | `Task` | **WARNS** when agent return >per-role line cap (advisory) |
-| `close-gate.js` | `Write\|Edit` to pipeline-states | **BLOCKS** CLOSE if build/lint/test/QA fail or checklist incomplete |
-| `enforce-registry.js` | `Skill` | **BLOCKS** /feature, /bugfix if registry missing |
-| `spec-size-gate.js` | `Write\|Edit` | **WARNS** specs >500 lines (strict block opt-in) |
-| `skill-validate-gate.js` | `Write\|Edit` | **VALIDATES** skill YAML frontmatter |
-| `review-gate.js` | `Bash git commit` | **WARNS** secrets staged or build broken |
-| `auto-format.js` | `Write\|Edit` (PostToolUse) | Auto-formats by extension (Prettier/Black/etc.) |
-| `checklist-auto-mark.js` | `Write\|Edit` (PostToolUse) | Auto-marks Checklist items when matching file edited |
-| `memory-auto-extract.js` | `SessionEnd` | **EXTRACTS** Decisões não-óbvias from active specs → `memory/decisions.json` |
-| `session-knowledge.js`/`-inc` | `SessionEnd` / `PostToolUse(Task)` | **EXTRACTS** patterns from pipeline-states; throttled 3/h, idempotency 24h |
-| `session-memory.js` | `SessionStart` | **INJECTS** knowledge.json + cross-session timeline |
+| `bash_guard` | `Bash` | **BLOCKS** rm -rf/mkfs/dd/credentials; redirects grep/ls/cat/head/tail/find → native tools; rewrites via `rtk`; commit gate (secrets/build) |
+| `model_routing` | `Task` | **BLOCKS** upgrades vs routing table (downgrades allowed) |
+| `tracker` | `.*` + Subagent | **BLOCKS** Explore agents at 15-20 tool uses (warn at 12); emits agent/tool/skill telemetry |
+| `budget` | `Task` | **BLOCKS** Task prompts >per-role budget (Explore 10K chars, review 12K, general 30K); advisory >40% model window; warns on over-budget returns |
+| `close_gate` | `Write\|Edit` to pipeline-states | **BLOCKS** CLOSE if build/lint/test/QA fail or checklist incomplete |
+| `enforce_registry` | `Skill` | **BLOCKS** /feature, /bugfix if registry missing |
+| `size_gate` | `Write\|Edit` | **WARNS** specs >500 lines (strict block opt-in); validates skill YAML frontmatter |
+| `path_guard` | `Read\|Write\|Edit` | **BLOCKS** sensitive-file access; flags edits outside spec boundaries |
+| `post_edit` | `Write\|Edit` (PostToolUse) | Auto-formats by extension; auto-marks Checklist items; guard-verify; pipeline-phase events |
+| `knowledge` | `SessionEnd` / `PostToolUse(Task)` | **EXTRACTS** Decisões não-óbvias → `memory/decisions.json`; friction telemetry; `retry.attempt` events |
+| `session_start` | `SessionStart` | Bootstraps the harness event bus; runs spec-hygiene; **INJECTS** knowledge.json + memory |
+| `session_cleanup` | `SessionEnd` | Removes terminal pipeline-states + stale state files |
+| `pre_compact` | `PreCompact` | **INJECTS** a working-state snapshot before compaction |
+| `prompt_gate` | `UserPromptSubmit` | Archives pending `closed-followup` specs on a new pipeline command |
 
 ### Pre-Pipeline Validation Flow
 

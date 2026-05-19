@@ -15,14 +15,24 @@
 //!   [`post_edit`] (auto-format / checklist-auto-mark / guard-verify /
 //!   pipeline-phase), [`close_gate`] (the pipeline-CLOSE sensor), and
 //!   [`enforce_registry`] (the entity-registry pre-pipeline gate).
+//! - Wave 5: the session-lifecycle families — [`session_start`] (harness-init
+//!   / session-memory / spec-hygiene), [`knowledge`] (session-knowledge /
+//!   -inc / memory-auto-extract), [`session_cleanup`] (SessionEnd cleanup),
+//!   [`pre_compact`] (the PreCompact snapshot), and [`prompt_gate`] (the
+//!   UserPromptSubmit follow-up archival gate).
 
 pub mod bash_guard;
 pub mod budget;
 pub mod close_gate;
 pub mod enforce_registry;
+pub mod knowledge;
 pub mod model_routing;
 pub mod path_guard;
 pub mod post_edit;
+pub mod pre_compact;
+pub mod prompt_gate;
+pub mod session_cleanup;
+pub mod session_start;
 pub mod size_gate;
 pub mod skills_audit;
 pub mod tracker;

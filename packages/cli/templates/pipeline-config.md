@@ -291,27 +291,30 @@ Agent return values may carry an escalation status when the outcome is ambiguous
 
 Three enforcement hooks reduce token waste across all projects:
 
-| Hook | Matcher | Mode | Effect |
+Enforcement runs as the single Rust binary `mustard-rt` (the `bash_guard`,
+`model_routing`, `tracker`, `skills_audit` modules). `settings.json` wires one
+`mustard-rt on <event>` entry per lifecycle event.
+
+| Module | Matcher | Mode | Effect |
 |------|---------|------|--------|
-| `bash-native-redirect.js` | Bash | strict/warn/off | Blocks grep/ls/cat/head/tail/find → suggests Grep/Glob/Read tools. Warns on piped commands too. |
-| `model-routing-gate.js` | Task | strict/warn/off | Blocks model upgrades vs routing table. Advises when no model specified. |
-| `tool-use-counter.js` | .* + SubagentStart/Stop | hard | Caps Explore agents at 15 tool uses (warn at 12) |
-| `recommended-skills-audit.js` | Task | advisory | Conta skills listados no prompt; warn se >10; não bloqueia |
+| `bash_guard` (native-redirect) | Bash | strict/warn/off | Blocks grep/ls/cat/head/tail/find → suggests Grep/Glob/Read tools. Warns on piped commands too. |
+| `model_routing` | Task | strict/warn/off | Blocks model upgrades vs routing table. Advises when no model specified. |
+| `tracker` (tool-use counter) | .* + SubagentStart/Stop | hard | Caps Explore agents at 15 tool uses (warn at 12) |
+| `skills_audit` | Task | advisory | Conta skills listados no prompt; warn se >10; não bloqueia |
 
 **Environment overrides:**
 - `MUSTARD_BASH_REDIRECT_MODE=warn|strict|off` (default: strict)
 - `MUSTARD_MODEL_GATE_MODE=warn|strict|off` (default: strict)
-- All hooks can be disabled via `MUSTARD_DISABLED_HOOKS=bash-native-redirect,model-routing-gate,tool-use-counter`
 
 ## Enforcement Hooks
 
 **Strict gates** (Wave 9-10): block on real failure
 
-| Hook | Matcher | Mode env | Blocks on |
+| Module (`mustard-rt`) | Matcher | Mode env | Blocks on |
 |------|---------|----------|-----------|
-| `close-gate.js` | Write/Edit `.pipeline-states/*.json` with phase=CLOSE | `MUSTARD_CLOSE_GATE_MODE` (default strict) | build/type/lint/test fail |
-| `close-gate.js` (Wave 10 QA) | same trigger | `MUSTARD_QA_GATE_MODE` (default strict) | no qa.result or qa.result=fail |
-| `review-gate.js` | Bash `git commit` | `MUSTARD_COMMIT_GATE_MODE` (default warn) | secrets staged or build broken |
+| `close_gate` | Write/Edit `.pipeline-states/*.json` with phase=CLOSE | `MUSTARD_CLOSE_GATE_MODE` (default strict) | build/type/lint/test fail |
+| `close_gate` (Wave 10 QA) | same trigger | `MUSTARD_QA_GATE_MODE` (default strict) | no qa.result or qa.result=fail |
+| `bash_guard` (commit gate) | Bash `git commit` | `MUSTARD_COMMIT_GATE_MODE` (default warn) | secrets staged or build broken |
 
 Bug in the hook itself (I/O error, timeout outside child process) still fails open — only real sensor failures block.
 
@@ -340,7 +343,7 @@ All anti-slope hooks fail-open on bug. Only real signal triggers warn/block.
 ### Persistent projections
 | File | Writer | Purpose |
 |------|--------|---------|
-| `knowledge.json` | `session-knowledge.js` + `memory.js knowledge` | Confidence-ranked patterns across sessions |
+| `knowledge.json` | `mustard-rt` `knowledge` module + `memory.js knowledge` | Confidence-ranked patterns across sessions |
 | `memory/decisions.json` | `memory.js decision` | Architectural decisions |
 | `memory/lessons.json` | `memory.js decision` | Operational lessons |
 | `.pipeline-states/{spec}.json` | Pipeline commands | Current phase (ANALYZE/PLAN/EXECUTE/REVIEW/QA/CLOSE/COORDINATE) |
@@ -359,7 +362,7 @@ Via **views** in `scripts/event-projections.js`:
 - `.pipeline-states/*.metrics.json` (was: cumulative counters → now: `tool.use` events folded by `buildPipelineState`)
 
 ### Log rotation
-`harness-init.js` (SessionStart) rotates `.harness/events.jsonl` → `.harness/sessions/{sessionId}.jsonl` and prunes sessions >30 days.
+The `mustard-rt` `session_start` module (SessionStart) rotates `.harness/events.jsonl` → `.harness/sessions/{sessionId}.jsonl` and prunes sessions >30 days.
 
 ### On-Demand Memory Queries (Escape Hatch)
 

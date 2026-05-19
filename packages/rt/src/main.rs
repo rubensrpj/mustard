@@ -31,6 +31,7 @@
 mod dispatch;
 mod registry;
 mod hooks;
+mod util;
 
 use clap::{Parser, Subcommand};
 use mustard_core::model::contract::{HookInput, Outcome, Trigger, Verdict};

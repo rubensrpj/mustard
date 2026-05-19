@@ -34,6 +34,8 @@
 use mustard_core::error::Error;
 use mustard_core::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
 
+use crate::util::format_gate_message;
+
 // ---------------------------------------------------------------------------
 // Shared: mode resolution + content extraction
 // ---------------------------------------------------------------------------
@@ -135,34 +137,6 @@ fn file_path_of(input: &HookInput) -> Option<String> {
         .or_else(|| ti.get("path"))
         .and_then(|v| v.as_str())
         .map(str::to_string)
-}
-
-/// Assemble a gate message in the `formatGateMessage` shape:
-/// `[gate] what. why. Saída: exit.` Shared with `bash_guard`/`budget`;
-/// duplicated to keep the module self-contained.
-fn format_gate_message(gate: &str, what: &str, why: &str, exit: &str) -> String {
-    let mut body = String::new();
-    if !what.is_empty() {
-        body.push_str(what);
-    }
-    if !why.is_empty() {
-        if !body.is_empty() {
-            body.push_str(". ");
-        }
-        body.push_str(why);
-    }
-    if !body.is_empty() && !body.ends_with(['.', '!', '?', '…']) {
-        body.push('.');
-    }
-    let mut msg = format!("[{gate}] {body}").trim().to_string();
-    if !exit.is_empty() {
-        let mut tail = exit.to_string();
-        if !tail.ends_with(['.', '!', '?', '…']) {
-            tail.push('.');
-        }
-        msg.push_str(&format!(" Saída: {tail}"));
-    }
-    msg
 }
 
 // ---------------------------------------------------------------------------

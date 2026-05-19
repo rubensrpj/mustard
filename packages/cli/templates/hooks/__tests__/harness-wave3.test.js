@@ -125,73 +125,9 @@ function readEvents(projectDir) {
 // module in b3 Wave 3. Its parallel-agent visibility and events.jsonl-fallback
 // parity now lives in packages/rt/src/hooks/tracker.rs.
 
-// ── Test 2: session-memory includes cross-session timeline ───────────────────
-
-describe('Wave 3 — session-memory: cross-session timeline', () => {
-  let tmp;
-  beforeEach(() => { tmp = makeProjectDir(os.tmpdir()); });
-  afterEach(() => { try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (_) {} });
-
-  it('includes recent sessions in additionalContext when .harness/sessions/ exists', async () => {
-    const sessionsDir = path.join(tmp, '.claude', '.harness', 'sessions');
-
-    // Write 2 archived sessions
-    const sessionA = [
-      makeEvent({ sessionId: 's-old-abc', wave: 1, event: 'agent.start', spec: 'add-login', actor: { kind: 'agent', id: 'ag-1', type: 'general-purpose' } }),
-      makeEvent({ sessionId: 's-old-abc', wave: 1, event: 'decision', spec: 'add-login', payload: { title: 'Use JWT', rationale: 'simpler' } }),
-    ];
-    const sessionB = [
-      makeEvent({ sessionId: 's-new-xyz', wave: 1, event: 'agent.start', spec: 'fix-auth', actor: { kind: 'agent', id: 'ag-2', type: 'general-purpose' } }),
-      makeEvent({ sessionId: 's-new-xyz', wave: 1, event: 'pipeline.phase', spec: 'fix-auth', payload: { from: 'ANALYZE', to: 'CLOSE' } }),
-    ];
-
-    const fileA = path.join(sessionsDir, 's-old-abc.jsonl');
-    const fileB = path.join(sessionsDir, 's-new-xyz.jsonl');
-    fs.writeFileSync(fileA, sessionA.map(e => JSON.stringify(e)).join('\n') + '\n');
-    fs.writeFileSync(fileB, sessionB.map(e => JSON.stringify(e)).join('\n') + '\n');
-
-    // Make fileB newer
-    const now = Date.now();
-    fs.utimesSync(fileA, (now - 5000) / 1000, (now - 5000) / 1000);
-    fs.utimesSync(fileB, now / 1000, now / 1000);
-
-    const result = await runHook('session-memory.js', {
-      hook_event_name: 'SessionStart',
-      cwd: tmp,
-      session_id: 's-current',
-    }, { projectDir: tmp });
-
-    assert.equal(result.code, 0, `hook exited non-zero: ${result.stderr}`);
-
-    // If no knowledge/decisions/lessons exist, session-memory may output nothing.
-    // But with sessions present, it should output the timeline.
-    // The hook only outputs if parts.length > 0. Sessions alone count.
-    if (result.stdout) {
-      const parsed = result.parsed;
-      const ctx = parsed && parsed.hookSpecificOutput && parsed.hookSpecificOutput.additionalContext;
-      if (ctx) {
-        // Timeline should mention the spec names or session IDs
-        const hasTimeline = ctx.includes('fix-auth') || ctx.includes('add-login') ||
-          ctx.includes('Recent Sessions') || ctx.includes('xyz') || ctx.includes('abc');
-        assert.ok(hasTimeline, `context should include cross-session info. Got: ${ctx}`);
-      }
-    }
-
-    // Minimum: hook must not crash
-    assert.equal(result.code, 0);
-  });
-
-  it('fail-open: no crash when sessions dir is missing', async () => {
-    // sessions dir exists but is empty (no jsonl files)
-    const result = await runHook('session-memory.js', {
-      hook_event_name: 'SessionStart',
-      cwd: tmp,
-      session_id: 's-empty',
-    }, { projectDir: tmp });
-
-    assert.equal(result.code, 0, 'hook must exit 0 with empty sessions dir');
-  });
-});
+// NOTE: session-memory.js was ported to the Rust `mustard-rt` `session_start`
+// module in b3 Wave 5. Its persistent-memory injection parity now lives in
+// packages/rt/src/hooks/session_start.rs.
 
 // ── Test 3: event-projections CLI ─────────────────────────────────────────────────
 
@@ -259,21 +195,7 @@ describe('Wave 3 — event-projections CLI: --view pipeline-state', () => {
 });
 
 // ── Test 4: Fallback robustness ───────────────────────────────────────────────
-
-describe('Wave 3 — fallback: harness unavailable scenarios', () => {
-  let tmp;
-  beforeEach(() => { tmp = makeProjectDir(os.tmpdir()); });
-  afterEach(() => { try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (_) {} });
-
-  it('session-memory exits 0 when .harness/ dir is entirely missing', async () => {
-    try { fs.rmSync(path.join(tmp, '.claude', '.harness'), { recursive: true, force: true }); } catch (_) {}
-
-    const result = await runHook('session-memory.js', {
-      hook_event_name: 'SessionStart',
-      cwd: tmp,
-      session_id: 's-noharnessdir-sm',
-    }, { projectDir: tmp });
-
-    assert.equal(result.code, 0, 'hook must exit 0 when .harness/ is missing');
-  });
-});
+//
+// The session-memory `.harness/`-missing fallback is now covered by the Rust
+// parity test `memory_injection_allows_when_no_sources` in
+// packages/rt/src/hooks/session_start.rs (b3 Wave 5).
