@@ -16,6 +16,7 @@ mod analyze_validation;
 mod complete_spec;
 mod context_slice;
 mod diff_context;
+mod emit_event;
 mod emit_phase;
 mod env;
 mod epic_fold;
@@ -81,6 +82,22 @@ pub enum RunCmd {
         /// Pipeline phase — `analyze` is a silent no-op.
         #[arg(long)]
         phase: Option<String>,
+    },
+    /// Emit an arbitrary named harness event with a key/value payload.
+    EmitEvent {
+        /// Event name, e.g. `review.start`.
+        #[arg(long)]
+        event: Option<String>,
+        /// Payload entry as `key=value` (repeatable). A value that parses as
+        /// JSON is stored typed; otherwise it is kept as a string.
+        #[arg(long = "payload")]
+        payload: Vec<String>,
+        /// Spec identifier (sets the event's top-level `spec` field).
+        #[arg(long)]
+        spec: Option<String>,
+        /// Wave number (defaults to 0).
+        #[arg(long, default_value_t = 0)]
+        wave: u32,
     },
     /// Record a `pipeline.phase` transition event from a SKILL.
     EmitPhase {
@@ -374,6 +391,12 @@ pub fn dispatch(cmd: RunCmd) {
             subproject,
             phase,
         } => diff_context::run(parent.as_deref(), subproject.as_deref(), phase.as_deref()),
+        RunCmd::EmitEvent {
+            event,
+            payload,
+            spec,
+            wave,
+        } => emit_event::run(event.as_deref(), &payload, spec.as_deref(), wave),
         RunCmd::EmitPhase { spec, to, from } => {
             emit_phase::run(&spec, &to, from.as_deref())
         }

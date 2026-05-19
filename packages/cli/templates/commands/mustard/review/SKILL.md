@@ -45,10 +45,10 @@ If no PR found for current branch → error:
 Before invoking the review, emit `review.start` to the harness event bus so `/mustard:stats --pr` can compute review-time DORA metrics:
 
 ```bash
-node -e "const fs=require('fs'),p=require('path'),d=p.join(process.env.CLAUDE_PROJECT_DIR||process.cwd(),'.claude','.harness');try{fs.mkdirSync(d,{recursive:true});fs.appendFileSync(p.join(d,'events.jsonl'),JSON.stringify({v:1,ts:new Date().toISOString(),sessionId:process.env.MUSTARD_SESSION_ID||process.env.CLAUDE_SESSION_ID||('s-'+Date.now()),wave:0,actor:{kind:'command',id:'review'},event:'review.start',payload:{spec:process.env.MUSTARD_SPEC||null,target:'$PR_TARGET'}})+'\n')}catch(_){}"
+mustard-rt run emit-event --event review.start --spec "$MUSTARD_SPEC" --payload "spec=$MUSTARD_SPEC" --payload "target=$PR_TARGET"
 ```
 
-`$PR_TARGET` is the PR number or URL resolved in Step 1. Set `MUSTARD_SPEC` from the most recent active spec if available (best-effort).
+`$PR_TARGET` is the PR number or URL resolved in Step 1. Set `MUSTARD_SPEC` from the most recent active spec if available (best-effort); omit the `--spec`/`spec=` arguments when no active spec is known. The `spec` payload key is what `event-projections`' `pr-metrics` view uses to pair `review.start` with `review.complete`.
 
 ## Step 3 — Invoke Code Review
 
@@ -83,7 +83,7 @@ Task({
 After the review returns, emit `review.complete`:
 
 ```bash
-node -e "const fs=require('fs'),p=require('path'),d=p.join(process.env.CLAUDE_PROJECT_DIR||process.cwd(),'.claude','.harness');try{fs.mkdirSync(d,{recursive:true});fs.appendFileSync(p.join(d,'events.jsonl'),JSON.stringify({v:1,ts:new Date().toISOString(),sessionId:process.env.MUSTARD_SESSION_ID||process.env.CLAUDE_SESSION_ID||('s-'+Date.now()),wave:0,actor:{kind:'command',id:'review'},event:'review.complete',payload:{spec:process.env.MUSTARD_SPEC||null,target:'$PR_TARGET'}})+'\n')}catch(_){}"
+mustard-rt run emit-event --event review.complete --spec "$MUSTARD_SPEC" --payload "spec=$MUSTARD_SPEC" --payload "target=$PR_TARGET"
 ```
 
 Then present the review results as returned by the skill/agent.

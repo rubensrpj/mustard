@@ -20,6 +20,7 @@ pub mod file_utils;
 pub mod pluralize;
 pub mod project_conventions;
 
+mod dart_scanner;
 mod dotnet_scanner;
 mod go_scanner;
 mod java_scanner;
@@ -280,7 +281,7 @@ pub fn load_scanner(root: &Path, stack_hint: Option<&str>) -> Option<Box<dyn Sca
         "go" => Box::new(go_scanner::GoScanner),
         "rust" => Box::new(rust_scanner::RustScanner),
         "php" => Box::new(php_scanner::PhpScanner),
-        // `dart` has no scanner yet (the JS `scanners/` dir omits it too).
+        "dart" => Box::new(dart_scanner::DartScanner),
         _ => return None,
     };
     if scanner.detect(root) {
@@ -307,6 +308,7 @@ pub fn list_available_scanners() -> Vec<&'static str> {
         "go",
         "rust",
         "php",
+        "dart",
     ]
 }
 
