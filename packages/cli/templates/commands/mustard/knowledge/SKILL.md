@@ -140,7 +140,7 @@ Interactively adds a knowledge entry by prompting the user, then calls `memory.j
 5. Build JSON payload and pipe to script:
    ```bash
    echo '{"type":"...","name":"...","description":"...","source":"manual","tags":[...]}' \
-     | bun .claude/scripts/memory.js knowledge
+     | mustard-rt run memory knowledge
    ```
 6. Confirm: "Knowledge entry '{name}' saved."
 

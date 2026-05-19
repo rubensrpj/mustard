@@ -74,7 +74,7 @@ Goal: user resumes in <30 seconds without re-reading the spec.
 
 All Task dispatches inside an active pipeline MUST be prefixed with current git state.
 
-**Source:** `bun .claude/scripts/diff-context.js` — cached to `.claude/.pipeline-states/{specName}.diff.md` once per phase.
+**Source:** `mustard-rt run diff-context` — cached to `.claude/.pipeline-states/{specName}.diff.md` once per phase.
 
 **Prompt format:**
 ```

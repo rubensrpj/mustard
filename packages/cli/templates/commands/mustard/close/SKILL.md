@@ -76,7 +76,7 @@ See `.claude/pipeline-config.md` Escalation Statuses for concern classification 
    - **Schema-aware refresh (conditional):** If the spec's `## Files` section touched any file matching `*.schema.ts`, `*.entity.ts`, `*.prisma`, `*DbContext*.cs`, or `schema.rs`, run `rtk mustard-rt run sync-registry` to refresh `entity-registry.json`. If sync-registry fails (non-zero exit or script missing), log a warning and continue with close — this step is non-blocking.
 5. **Mark spec as `closed-followup`** (stage 1 of two-stage close):
    ```bash
-   bun .claude/scripts/complete-spec.js <spec-name>
+   mustard-rt run complete-spec <spec-name>
    ```
    - The spec stays under `spec/active/` for a follow-up window so post-feature fixes still link to it.
    - The script snapshots `affectedFiles` from harness events + `git diff --name-only <parent>...HEAD`.
@@ -84,14 +84,14 @@ See `.claude/pipeline-config.md` Escalation Statuses for concern classification 
    - `metrics-tracker.js` only attributes new tool calls to this spec when `tool_input.file_path ∈ affectedFiles`.
    - Spec is auto-archived (moved to `completed/` + state removed) when:
      - `session-cleanup` runs and the spec has been `closed-followup` for more than 24h, OR
-     - A new `/mustard:feature|bugfix|task` invocation runs `bun .claude/scripts/complete-spec.js <spec-name> --archive` on any pending followups first.
+     - A new `/mustard:feature|bugfix|task` invocation runs `mustard-rt run complete-spec <spec-name> --archive` on any pending followups first.
 6. **Pipeline State — note:**
    - The `closed-followup` state intentionally stays around so follow-up edits get linked. Do NOT delete `.claude/.pipeline-states/{spec-name}.json` here — the `--archive` stage handles that.
 6b. **Knowledge Capture:**
    - Review patterns discovered during this pipeline
    - For each significant pattern/convention/entity discovered:
      ```bash
-     echo '{"type":"pattern","name":"...","description":"...","source":"{spec-name}"}' | bun .claude/scripts/memory.js knowledge
+     echo '{"type":"pattern","name":"...","description":"...","source":"{spec-name}"}' | mustard-rt run memory knowledge
      ```
    - Focus on: naming conventions used, architectural decisions, integration patterns
    - Skip trivial or already-known patterns
@@ -100,7 +100,7 @@ See `.claude/pipeline-config.md` Escalation Statuses for concern classification 
    - Review what went well or poorly during this pipeline
    - For each lesson worth remembering across sessions:
      ```bash
-     echo '{"type":"lesson","content":"<lesson description>","source":"<spec-name>","context":"learned during EXECUTE/CLOSE"}' | bun .claude/scripts/memory.js decision
+     echo '{"type":"lesson","content":"<lesson description>","source":"<spec-name>","context":"learned during EXECUTE/CLOSE"}' | mustard-rt run memory decision
      ```
    - Focus on: integration gotchas, naming issues discovered, performance pitfalls
    - Skip trivial or already-captured lessons (max 3 entries)
@@ -145,7 +145,7 @@ See `.claude/pipeline-config.md` Escalation Statuses for concern classification 
    **Fail-open:** if the script exits non-zero or `pipeline-summary.js` is missing, log a warning and continue with the banner — do NOT abort CLOSE.
 
 7b. **Wave Tree:**
-   - Run `bun .claude/scripts/wave-tree.js --spec-dir .claude/spec/active/{spec-name}` (or `.claude/spec/completed/{spec-name}` if `complete-spec.js` already moved it)
+   - Run `bun .claude/scripts/wave-tree.js --spec-dir .claude/spec/active/{spec-name}` (or `.claude/spec/completed/{spec-name}` if `complete-spec` already moved it)
    - Print output inline before the banner
    - Fail-open (warn, do not abort CLOSE)
 
@@ -178,11 +178,11 @@ On completion, the output must include:
 
 After marking a spec CLOSE, check if the parent epic is now complete:
 ```bash
-bun .claude/scripts/epic-fold.js --detect
+mustard-rt run epic-fold --detect
 ```
 If output lists epics ready to fold:
 ```bash
-bun .claude/scripts/epic-fold.js --epic <name>
+mustard-rt run epic-fold --epic <name>
 ```
 This consolidates learning into knowledge.json and marks granular events compactable.
 

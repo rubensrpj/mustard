@@ -54,7 +54,7 @@ node -e "require('./.claude/hooks/_lib/harness-event.js').emit('review.start', {
 
 ### Diff-First Dispatch
 
-Antes de invocar Skill ou Task, gere o diff via `bun .claude/scripts/diff-context.js --phase execute --subproject {sub}` e cole o resultado como bloco `## DIFF` no prompt do agente de review. O diff vira a fonte de verdade — o agente lê arquivos só se o diff for ambíguo. Fail-open: se o diff vier vazio, segue com o fluxo normal (Skill code-review com o PR target).
+Antes de invocar Skill ou Task, gere o diff via `mustard-rt run diff-context --phase execute --subproject {sub}` e cole o resultado como bloco `## DIFF` no prompt do agente de review. O diff vira a fonte de verdade — o agente lê arquivos só se o diff for ambíguo. Fail-open: se o diff vier vazio, segue com o fluxo normal (Skill code-review com o PR target).
 
 Use the Skill tool to invoke Claude's native code-review:
 

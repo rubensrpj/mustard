@@ -58,7 +58,7 @@ Check if the located spec is a wave plan: look for `.claude/spec/active/{specNam
 5b. **Memory Persist — record architectural decisions:**
    - For each significant decision in the spec (technology choices, design patterns, trade-offs):
      ```bash
-     echo '{"type":"decision","content":"<decision description>","source":"<spec-name>","context":"approved at PLAN phase"}' | bun .claude/scripts/memory.js decision
+     echo '{"type":"decision","content":"<decision description>","source":"<spec-name>","context":"approved at PLAN phase"}' | mustard-rt run memory decision
      ```
    - Focus on: why a pattern was chosen over alternatives, constraints that shaped the design
    - Skip trivial or obvious decisions (max 3 entries)

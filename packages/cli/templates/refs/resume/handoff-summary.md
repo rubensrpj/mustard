@@ -28,7 +28,7 @@ Started:  {timestamp} | Elapsed: {duration}
 
 ## Context
 - Branch: {from git}
-- Files changed: {run `bun .claude/scripts/diff-context.js`}
+- Files changed: {run `mustard-rt run diff-context`}
 - Last agent: {Read `.claude/.agent-memory/_index.json` and pick the last entry's `agent_type`. If the file or `.agent-memory/` directory is missing, print literal `(none)` — do NOT probe with `ls`/`grep`, it surfaces noisy exit codes}
 - Last action: {from the same last entry's `summary` field. If missing, print literal `(no prior memory)`}
 - Decisions: {decisions[] from pipeline state, if any}

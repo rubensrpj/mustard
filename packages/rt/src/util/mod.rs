@@ -42,6 +42,18 @@ pub fn now_iso8601() -> String {
     format!("{year:04}-{m:02}-{d:02}T{hh:02}:{mm:02}:{ss:02}.{millis:03}Z")
 }
 
+/// Current time as milliseconds since the Unix epoch.
+///
+/// The `run`-face ports (`complete-spec`) compare it against persisted ISO
+/// timestamps for TTL gating; matching `Date.now()` from the JS scripts.
+#[must_use]
+pub fn now_millis() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or(Duration::ZERO)
+        .as_millis()
+}
+
 /// Assemble a gate message in the `formatGateMessage` shape:
 /// `[gate] what. why. Saída: exit.`
 ///

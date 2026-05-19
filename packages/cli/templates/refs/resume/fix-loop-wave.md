@@ -100,7 +100,7 @@ When a pipeline is paused (user leaves session or requests pause):
    - Set `nextAction` to the specific next step (ONE sentence)
 2. Write agent memory for carry-over:
    ```bash
-   bun .claude/scripts/memory.js agent --json '{"agent_type":"orchestrator","wave":0,"pipeline":"{spec-name}","summary":"Paused at {phase}. Next: {nextAction}"}'
+   mustard-rt run memory agent --json '{"agent_type":"orchestrator","wave":0,"pipeline":"{spec-name}","summary":"Paused at {phase}. Next: {nextAction}"}'
    ```
 3. Confirm to user: "Pipeline paused. Next action saved: {nextAction}"
 

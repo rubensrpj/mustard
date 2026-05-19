@@ -74,9 +74,9 @@ Decisão baseada na regra de Thariq Shihipar (Anthropic, *"The Unreasonable Effe
 
 ### Impl Agent (Wave 3) — estado de pipeline + memória
 
-- [ ] Portar `diff-context.js`, `emit-phase.js`, `complete-spec.js`, `context-slice.js`.
-- [ ] Portar `memory.js` e `epic-fold.js` (consomem `_lib/harness-event.js` — porte fiel da emissão de eventos via `mustard-core`).
-- [ ] Atualizar as invocações desses scripts em `feature`, `close`, `bugfix`, `refs/knowledge/evolve-report.md`, `refs/resume/fix-loop-wave.md`.
+- [x] Portar `diff-context.js`, `emit-phase.js`, `complete-spec.js`, `context-slice.js`.
+- [x] Portar `memory.js` e `epic-fold.js` (consomem `_lib/harness-event.js` — emissão de eventos portada via `mustard-core`).
+- [x] Atualizar as invocações desses scripts em `feature`, `close`, `bugfix`, `refs/knowledge/evolve-report.md`, `refs/resume/fix-loop-wave.md`.
 
 ### Impl Agent (Wave 4) — parsing de spec + análise de waves
 
@@ -124,7 +124,10 @@ Decisão baseada na regra de Thariq Shihipar (Anthropic, *"The Unreasonable Effe
 
 > Registradas durante o EXECUTE. Surfaceadas no CLOSE.
 
-- **W1 — gate de cache de `sync-detect` não portado:** o early-exit de cache (5 min) e a comparação de hash contra o cache anterior foram omitidos no porte. `hashChanged` emite sempre `true` e `moduleHashes` sempre `{}`. O shape do JSON e a corretude são preservados (sempre re-sincroniza), mas perde-se a otimização de skip incremental por SHA256 citada no CLAUDE.md. **Wave 2** (porte de `sync-registry`) decide: restaurar a comparação de hash ou aceitar a perda de performance. Não bloqueia.
+- **W1 — gate de cache de `sync-detect` não portado** — **RESOLVIDO na W2:** `sync-registry.js` não tem gate SHA256 próprio; o cache real de skip incremental é o `.cluster-cache.json` por subprojeto (`cluster-discovery`), que **foi portado** na Wave 2. `sync-detect` só fornece a lista barata de subprojetos, que deve ficar sempre fresca. Always-resync é o comportamento correto — sem perda funcional.
+- **W2 — orquestração `scan/` deferida:** `scan/orchestrate.js`/`_precompute.js`/`finalize.js` são drivers do comando `/scan` (renderizam prompts de agente, fazem `spawnSync` de `sync-registry`), qualitativamente distintos da camada de dados do registry. Porte realocado para a **Wave 6**; os `.js` permanecem até lá.
+
+- **W3 — `memory.js` e `epic-fold.js` mantidos:** os ports Rust estão prontos e as invocações migradas, mas os `.js` permanecem porque testes de hook do B3 (`hooks/__tests__/harness-dual-emission.test.js`, `harness-wave8.test.js`) ainda fazem `spawnSync` dos scripts reais. **Wave 7** deve portar/remover esses testes antes de deletar `memory.js`/`epic-fold.js` — e só então os `_lib/*.js` órfãos.
 
 ## Critérios de Aceitação
 

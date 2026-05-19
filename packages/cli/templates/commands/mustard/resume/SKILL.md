@@ -93,7 +93,7 @@ Before loading heavy context (sync-registry, diff-context, Explore Gate), ask th
      4. Proceed to step 4 with the now-expanded spec.
 4. **Read entire operational spec** (single Read) — extract header (Status/Phase/Checkpoint) + count `[x]` vs `[ ]` + identify agents/waves from headers `### {Agent} Agent (Wave {N})`
 
-   4a. **Phase marker on ANALYZE resume:** if the extracted `Phase` is `ANALYZE`, run `bun .claude/scripts/emit-phase.js --spec {specName} --to ANALYZE`. A pipeline interrupted mid-ANALYZE has no pipeline-state file yet, so `pipeline-phase.js` never recorded it — emit the marker here. Idempotent (no duplicate if already emitted) and fail-open. Skip for any other phase (those already have a pipeline-state file the hook tracks).
+   4a. **Phase marker on ANALYZE resume:** if the extracted `Phase` is `ANALYZE`, run `mustard-rt run emit-phase --spec {specName} --to ANALYZE`. A pipeline interrupted mid-ANALYZE has no pipeline-state file yet, so `pipeline-phase.js` never recorded it — emit the marker here. Idempotent (no duplicate if already emitted) and fail-open. Skip for any other phase (those already have a pipeline-state file the hook tracks).
 5. If `.claude/.pipeline-states/{specName}.json` exists (single-spec mode; wave-plan mode already loaded it in step 3) → read for current wave + scope + `explorationSummary` + `decisions`. Optionally enrich with harness view (fail-open). Validate integrity (trust spec header on mismatch).
 6. **Present Handoff Summary** — compiled from pipeline state + spec + agent memory + git context.
 
@@ -110,7 +110,7 @@ Before loading heavy context (sync-registry, diff-context, Explore Gate), ask th
    - Always run if `resumeMode === "reanalyzed"` or `"escalated-to-reanalyze"`.
 
 ### Diff Context (automatic)
-Run `bun .claude/scripts/diff-context.js --subproject {subproject_path}` per subproject to capture the current git state scoped to each subproject. Include the subproject-specific output in the agent prompt as `{diff_context}` so agents see only changes relevant to their scope.
+Run `mustard-rt run diff-context --subproject {subproject_path}` per subproject to capture the current git state scoped to each subproject. Include the subproject-specific output in the agent prompt as `{diff_context}` so agents see only changes relevant to their scope.
 
 **Skip if `resumeMode === "continued"`** unless a wave just completed (wave transitions always refresh diff). The prior diff snapshot is reused from `.claude/.pipeline-states/{specName}.diff-{subproject}.md`.
 
@@ -118,8 +118,8 @@ Run `bun .claude/scripts/diff-context.js --subproject {subproject_path}` per sub
 
 Alongside the diff-context refresh, produce the relevance-filtered glossary slice that fills the `{context_md}` placeholder of the agent-prompt template.
 
-1. Locate the project's `CONTEXT.md` (built by the `grill-with-docs` skill); also pass sibling `CONTEXT.md` files and a `CONTEXT-MAP.md` if present — `context-slice.js` accepts repeated `--context` flags and expands a map.
-2. Run `bun .claude/scripts/context-slice.js --context {CONTEXT.md} --spec {operational_spec} > .claude/.pipeline-states/{specName}.context-md.md`.
+1. Locate the project's `CONTEXT.md` (built by the `grill-with-docs` skill); also pass sibling `CONTEXT.md` files and a `CONTEXT-MAP.md` if present — `context-slice` accepts repeated `--context` flags and expands a map.
+2. Run `mustard-rt run context-slice --context {CONTEXT.md} --spec {operational_spec} > .claude/.pipeline-states/{specName}.context-md.md`.
 3. Fill `{context_md}` in every subagent prompt with the contents of that snapshot file.
 4. **Graceful degrade:** no `CONTEXT.md` → empty slice → leave `{context_md}` empty. Never block the dispatch.
 

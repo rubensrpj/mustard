@@ -20,14 +20,14 @@ Audit specs in `active/` before starting — steps 1-5: scan, verify completed/c
 
 ### Diff Context (automatic, cross-phase)
 
-At the start of **PLAN** and **EXECUTE** only, run `bun .claude/scripts/diff-context.js --subproject {subproject_path} --phase {plan|execute}`. Save to `.claude/.pipeline-states/{specName}.diff-{subproject}.md`. Prepend the subproject diff to every subagent prompt in those phases (`## Current Git State\n{diff}\n\n## Your Task\n...`). Skip header if diff empty/missing. Never dispatch without attempting interpolation. ANALYZE phase intentionally skips this step (diff always empty pre-work) and emits the `analyze-diff-skip` telemetry metric instead.
+At the start of **PLAN** and **EXECUTE** only, run `mustard-rt run diff-context --subproject {subproject_path} --phase {plan|execute}`. Save to `.claude/.pipeline-states/{specName}.diff-{subproject}.md`. Prepend the subproject diff to every subagent prompt in those phases (`## Current Git State\n{diff}\n\n## Your Task\n...`). Skip header if diff empty/missing. Never dispatch without attempting interpolation. ANALYZE phase intentionally skips this step (diff always empty pre-work) and emits the `analyze-diff-skip` telemetry metric instead.
 
 ### Context Slice (automatic, per-wave snapshot)
 
 In the **EXECUTE** phase, as part of the per-wave snapshot (re-run only on a wave transition, alongside the diff-context refresh): produce the relevance-filtered glossary slice that fills the `{context_md}` placeholder of the agent-prompt template.
 
-1. Locate the project's `CONTEXT.md` (built by the `grill-with-docs` skill). Also pass any sibling `CONTEXT.md` files and a `CONTEXT-MAP.md` if present — `context-slice.js` accepts repeated `--context` flags and expands a map.
-2. Run `bun .claude/scripts/context-slice.js --context {CONTEXT.md} --spec {operational_spec} > .claude/.pipeline-states/{specName}.context-md.md`.
+1. Locate the project's `CONTEXT.md` (built by the `grill-with-docs` skill). Also pass any sibling `CONTEXT.md` files and a `CONTEXT-MAP.md` if present — `context-slice` accepts repeated `--context` flags and expands a map.
+2. Run `mustard-rt run context-slice --context {CONTEXT.md} --spec {operational_spec} > .claude/.pipeline-states/{specName}.context-md.md`.
 3. Fill `{context_md}` in every subagent prompt of the wave with the contents of that snapshot file.
 4. **Graceful degrade:** if no `CONTEXT.md` exists, the script emits an empty slice — leave `{context_md}` empty. Never block the dispatch.
 
@@ -35,7 +35,7 @@ The slice is stable for the whole pipeline (the spec does not change mid-run), s
 
 ### ANALYZE Phase
 
-**Phase marker (first action, before any Grep):** Run `bun .claude/scripts/emit-phase.js --spec {spec-name} --to ANALYZE`. ANALYZE runs in the parent before any pipeline-state file exists, so `pipeline-phase.js` cannot see it — this is the only point that knows ANALYZE started. Idempotent (script skips if already emitted for this spec) and fail-open.
+**Phase marker (first action, before any Grep):** Run `mustard-rt run emit-phase --spec {spec-name} --to ANALYZE`. ANALYZE runs in the parent before any pipeline-state file exists, so `pipeline-phase.js` cannot see it — this is the only point that knows ANALYZE started. Idempotent (script skips if already emitted for this spec) and fail-open.
 
 **Auto-sync (silent):** Run `mustard-rt run sync-detect`. If output shows any subproject with `hashChanged: true`, then run `mustard-rt run sync-registry`. Otherwise skip sync-registry entirely.
 
@@ -216,7 +216,7 @@ When user chooses "Approve and implement now":
 6. Dispatch agents (wave rules: DB+Backend parallel, Frontend after Backend UNLESS `(parallel-safe)`)
 7. Wave transitions between waves (from `.claude/pipeline-config.md`)
 8. On return: validate (build/type-check). The `checklist-auto-mark.js` hook already marked Checklist items as the agent edited matching files (silent, no tool call). If any item didn't auto-mark (no file pista in the item text), close-gate at CLOSE will surface it.
-8b. **Agent Memory:** `bun .claude/scripts/memory.js agent --json '{"agent_type":"{type}","wave":{N},"pipeline":"{spec-name}","summary":"{what}","details":{...}}'` — one per agent. Skip if single-wave pipeline.
+8b. **Agent Memory:** `mustard-rt run memory agent --json '{"agent_type":"{type}","wave":{N},"pipeline":"{spec-name}","summary":"{what}","details":{...}}'` — one per agent. Skip if single-wave pipeline.
 
 #### Escalation Status Handling
 

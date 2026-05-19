@@ -33,14 +33,14 @@ This step is silent when there's nothing to audit — no output if `active/` is 
 
 ### ANALYZE (diagnose + assess)
 
-**Phase marker (first action, before any Grep):** Run `bun .claude/scripts/emit-phase.js --spec {spec-name} --to ANALYZE`. ANALYZE runs in the parent before any pipeline-state file exists, so `pipeline-phase.js` cannot see it — this is the only point that knows ANALYZE started. Idempotent (script skips if already emitted for this spec) and fail-open.
+**Phase marker (first action, before any Grep):** Run `mustard-rt run emit-phase --spec {spec-name} --to ANALYZE`. ANALYZE runs in the parent before any pipeline-state file exists, so `pipeline-phase.js` cannot see it — this is the only point that knows ANALYZE started. Idempotent (script skips if already emitted for this spec) and fail-open.
 
 1. **AUTO-SYNC:** Run `mustard-rt run sync-detect`. If output shows any subproject with `hashChanged: true`, then run `mustard-rt run sync-registry`. Otherwise skip sync-registry entirely.
 
 ### Diff Context (automatic)
 
 **Diff snapshot (run once per phase):**
-Run `bun .claude/scripts/diff-context.js` at the start of EXECUTE only. ANALYZE skipped (diff always empty pre-work) — emits `analyze-diff-skip` metric. Save the output to `.claude/.pipeline-states/{specName}.diff.md` (overwrite each phase).
+Run `mustard-rt run diff-context` at the start of EXECUTE only. ANALYZE skipped (diff always empty pre-work) — emits `analyze-diff-skip` metric. Save the output to `.claude/.pipeline-states/{specName}.diff.md` (overwrite each phase).
 
 **Inject into every Task dispatch in this pipeline:**
 Prepend the following to EVERY subagent prompt dispatched during the pipeline:
