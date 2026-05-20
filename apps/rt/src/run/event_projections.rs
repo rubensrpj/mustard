@@ -18,10 +18,10 @@
 use crate::report::Report;
 use mustard_core::io::sqlite_store::SqliteEventStore;
 use mustard_core::model::event::{
-    HarnessEvent, EVENT_PIPELINE_DISPATCH_FAILURE, EVENT_PIPELINE_PAUSE,
+    HarnessEvent, EVENT_PIPELINE_COMPLETE, EVENT_PIPELINE_DISPATCH_FAILURE, EVENT_PIPELINE_PAUSE,
     EVENT_PIPELINE_RESUME_MODE, EVENT_PIPELINE_SCOPE, EVENT_PIPELINE_STATUS,
     EVENT_PIPELINE_TASK_COMPLETE, EVENT_PIPELINE_TASK_DISPATCH, EVENT_PIPELINE_WAVE_COMPLETE,
-    PipelineDispatchFailurePayload,
+    PipelineCompletePayload, PipelineDispatchFailurePayload,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -770,9 +770,17 @@ pub struct PipelineStateView {
     /// Human-readable pause reason.
     #[serde(default, rename = "pauseReason", skip_serializing_if = "Option::is_none")]
     pub pause_reason: Option<String>,
-    /// Resume mode selected (e.g. `"continue"`, `"rewave"`, `"abort"`).
+    /// Resume mode selected (e.g. `"continue"`, `"rewrite"`, `"abort"`).
     #[serde(default, rename = "resumeMode", skip_serializing_if = "Option::is_none")]
     pub resume_mode: Option<String>,
+    /// ISO-8601 timestamp at which the pipeline was closed (from `pipeline.complete`).
+    /// Falls back to the last `pipeline.status` event's `ts` when the complete event
+    /// is absent but status is `"closed-followup"`.
+    #[serde(default, rename = "closedAt", skip_serializing_if = "Option::is_none")]
+    pub closed_at: Option<String>,
+    /// Files touched during the pipeline run (from `pipeline.complete`).
+    #[serde(default, rename = "affectedFiles")]
+    pub affected_files: Vec<String>,
 }
 
 /// Ten minutes in milliseconds — the stale-failure cutoff matching the `/resume` Step 0 contract.
@@ -807,6 +815,9 @@ pub fn pipeline_state_for_spec(
 
     // Raw dispatch-failure payload + its timestamp (cleared after fold if stale).
     let mut raw_failure: Option<(PipelineDispatchFailurePayload, Option<String>)> = None;
+    // Timestamp of the most recent pipeline.status event — used as closed_at
+    // fallback when status=="closed-followup" but no pipeline.complete exists.
+    let mut last_status_ts: Option<String> = None;
 
     for ev in &events {
         match ev.event.as_str() {
@@ -831,9 +842,25 @@ pub fn pipeline_state_for_spec(
                 match serde_json::from_value::<mustard_core::model::event::PipelineStatusPayload>(
                     ev.payload.clone(),
                 ) {
-                    Ok(p) => view.status = Some(p.to),
+                    Ok(p) => {
+                        view.status = Some(p.to);
+                        if !ev.ts.is_empty() {
+                            last_status_ts = Some(ev.ts.clone());
+                        }
+                    }
                     Err(e) => {
                         eprintln!("[pipeline_state_for_spec] bad {EVENT_PIPELINE_STATUS} payload for {spec}: {e}");
+                    }
+                }
+            }
+            EVENT_PIPELINE_COMPLETE => {
+                match serde_json::from_value::<PipelineCompletePayload>(ev.payload.clone()) {
+                    Ok(p) => {
+                        view.closed_at = p.closed_at;
+                        view.affected_files = p.affected_files;
+                    }
+                    Err(e) => {
+                        eprintln!("[pipeline_state_for_spec] bad {EVENT_PIPELINE_COMPLETE} payload for {spec}: {e}");
                     }
                 }
             }
@@ -957,6 +984,15 @@ pub fn pipeline_state_for_spec(
                 view.is_wave_plan = Some(true);
             }
         }
+    }
+
+    // closed_at fallback: if status is "closed-followup" but no pipeline.complete
+    // event was recorded (e.g. legacy or partially-migrated spec), use the
+    // timestamp of the last pipeline.status event instead.
+    if view.closed_at.is_none()
+        && view.status.as_deref() == Some("closed-followup")
+    {
+        view.closed_at = last_status_ts;
     }
 
     // Stale dispatch-failure check: clear if older than 10 minutes.
@@ -1255,6 +1291,60 @@ mod tests {
             view.last_dispatch_failure.as_ref().unwrap().reason.as_deref(),
             Some("budget exceeded"),
         );
+    }
+
+    /// Test — pipeline.complete sets closed_at and affected_files in the view.
+    #[test]
+    fn ps_pipeline_complete_sets_closed_at_and_files() {
+        use mustard_core::model::event::EVENT_PIPELINE_COMPLETE;
+        let dir = tempfile::tempdir().unwrap();
+        let store = store_in_dir(dir.path());
+        store.append(&pipeline_ev(
+            EVENT_PIPELINE_STATUS, "spec-complete",
+            json!({ "to": "closed-followup" }),
+        )).unwrap();
+        store.append(&pipeline_ev(
+            EVENT_PIPELINE_COMPLETE, "spec-complete",
+            json!({
+                "closedAt": "2026-05-20T12:00:00.000Z",
+                "affectedFiles": ["src/foo.rs", "src/bar.rs"]
+            }),
+        )).unwrap();
+
+        let view = pipeline_state_for_spec(&store, "spec-complete", None).unwrap();
+        assert_eq!(view.status.as_deref(), Some("closed-followup"));
+        assert_eq!(view.closed_at.as_deref(), Some("2026-05-20T12:00:00.000Z"));
+        assert_eq!(view.affected_files, vec!["src/foo.rs", "src/bar.rs"]);
+    }
+
+    /// Test — closed_at fallback: status==closed-followup but no pipeline.complete event.
+    #[test]
+    fn ps_closed_at_falls_back_to_last_status_ts() {
+        use mustard_core::model::event::EVENT_PIPELINE_COMPLETE;
+        let dir = tempfile::tempdir().unwrap();
+        let store = store_in_dir(dir.path());
+        // Emit a pipeline.status event with a known timestamp.
+        let mut status_ev = pipeline_ev(
+            EVENT_PIPELINE_STATUS, "spec-fallback",
+            json!({ "to": "closed-followup" }),
+        );
+        status_ev.ts = "2026-05-20T09:30:00.000Z".to_string();
+        store.append(&status_ev).unwrap();
+        // No pipeline.complete event.
+
+        let view = pipeline_state_for_spec(&store, "spec-fallback", None).unwrap();
+        assert_eq!(view.status.as_deref(), Some("closed-followup"));
+        // closed_at should fall back to the pipeline.status event's ts.
+        assert_eq!(view.closed_at.as_deref(), Some("2026-05-20T09:30:00.000Z"));
+        assert!(view.affected_files.is_empty(), "no affectedFiles when no complete event");
+
+        // Sanity: if pipeline.complete IS present, it wins over the fallback.
+        store.append(&pipeline_ev(
+            EVENT_PIPELINE_COMPLETE, "spec-fallback",
+            json!({ "closedAt": "2026-05-20T10:00:00.000Z", "affectedFiles": [] }),
+        )).unwrap();
+        let view2 = pipeline_state_for_spec(&store, "spec-fallback", None).unwrap();
+        assert_eq!(view2.closed_at.as_deref(), Some("2026-05-20T10:00:00.000Z"));
     }
 
     /// Test 8 — is_wave_plan via FS when no pipeline.scope event present.

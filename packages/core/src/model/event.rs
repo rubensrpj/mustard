@@ -120,6 +120,9 @@ pub const EVENT_PIPELINE_DISPATCH_FAILURE: &str = "pipeline.dispatch_failure";
 pub const EVENT_PIPELINE_PAUSE: &str = "pipeline.pause";
 /// Records how a paused pipeline is being resumed.
 pub const EVENT_PIPELINE_RESUME_MODE: &str = "pipeline.resume_mode";
+/// Records that a pipeline run was fully closed: captures `closedAt` and the
+/// set of files that were affected during the run.
+pub const EVENT_PIPELINE_COMPLETE: &str = "pipeline.complete";
 
 // ---------------------------------------------------------------------------
 // Typed payload structs — typed views over `HarnessEvent::payload: Value`.
@@ -255,6 +258,20 @@ pub struct PipelineResumeModePayload {
     /// Escalation context passed to the next wave, if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub escalation: Option<String>,
+}
+
+/// Payload for [`EVENT_PIPELINE_COMPLETE`].
+///
+/// All fields are optional and default to empty/None so that events written
+/// by an older emitter (or with a partial payload) still deserialize cleanly.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PipelineCompletePayload {
+    /// ISO-8601 timestamp at which the pipeline was closed.
+    #[serde(default, rename = "closedAt", skip_serializing_if = "Option::is_none")]
+    pub closed_at: Option<String>,
+    /// Files touched during the pipeline run (union of harness events + git diff).
+    #[serde(default, rename = "affectedFiles")]
+    pub affected_files: Vec<String>,
 }
 
 #[cfg(test)]

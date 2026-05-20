@@ -21,13 +21,13 @@ use mustard_core::io::event_store::EventSink;
 use mustard_core::io::sqlite_store::SqliteEventStore;
 use mustard_core::model::event::{
     Actor, ActorKind, HarnessEvent, SCHEMA_VERSION,
-    EVENT_PIPELINE_DISPATCH_FAILURE, EVENT_PIPELINE_PAUSE, EVENT_PIPELINE_RESUME_MODE,
-    EVENT_PIPELINE_SCOPE, EVENT_PIPELINE_STATUS, EVENT_PIPELINE_TASK_COMPLETE,
-    EVENT_PIPELINE_TASK_DISPATCH, EVENT_PIPELINE_WAVE_COMPLETE,
+    EVENT_PIPELINE_COMPLETE, EVENT_PIPELINE_DISPATCH_FAILURE, EVENT_PIPELINE_PAUSE,
+    EVENT_PIPELINE_RESUME_MODE, EVENT_PIPELINE_SCOPE, EVENT_PIPELINE_STATUS,
+    EVENT_PIPELINE_TASK_COMPLETE, EVENT_PIPELINE_TASK_DISPATCH, EVENT_PIPELINE_WAVE_COMPLETE,
 };
 use serde_json::Value;
 
-/// The 8 valid pipeline event kind strings.
+/// The 9 valid pipeline event kind strings.
 const KNOWN_KINDS: &[&str] = &[
     EVENT_PIPELINE_SCOPE,
     EVENT_PIPELINE_STATUS,
@@ -37,6 +37,7 @@ const KNOWN_KINDS: &[&str] = &[
     EVENT_PIPELINE_DISPATCH_FAILURE,
     EVENT_PIPELINE_PAUSE,
     EVENT_PIPELINE_RESUME_MODE,
+    EVENT_PIPELINE_COMPLETE,
 ];
 
 /// Options for `mustard-rt run emit-pipeline`.
@@ -135,8 +136,8 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn known_kinds_list_covers_all_eight_constants() {
-        assert_eq!(KNOWN_KINDS.len(), 8);
+    fn known_kinds_list_covers_all_nine_constants() {
+        assert_eq!(KNOWN_KINDS.len(), 9);
         assert!(KNOWN_KINDS.contains(&EVENT_PIPELINE_SCOPE));
         assert!(KNOWN_KINDS.contains(&EVENT_PIPELINE_STATUS));
         assert!(KNOWN_KINDS.contains(&EVENT_PIPELINE_TASK_DISPATCH));
@@ -145,6 +146,7 @@ mod tests {
         assert!(KNOWN_KINDS.contains(&EVENT_PIPELINE_DISPATCH_FAILURE));
         assert!(KNOWN_KINDS.contains(&EVENT_PIPELINE_PAUSE));
         assert!(KNOWN_KINDS.contains(&EVENT_PIPELINE_RESUME_MODE));
+        assert!(KNOWN_KINDS.contains(&EVENT_PIPELINE_COMPLETE));
     }
 
     #[test]
@@ -200,7 +202,7 @@ mod tests {
         }
 
         let events = store.replay().unwrap();
-        assert_eq!(events.len(), 8, "expected 8 events, one per kind");
+        assert_eq!(events.len(), 9, "expected 9 events, one per kind");
 
         for (i, &kind) in KNOWN_KINDS.iter().enumerate() {
             assert_eq!(events[i].event, kind, "event name mismatch at index {i}");

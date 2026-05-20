@@ -3,25 +3,33 @@
 //! Finalizes a pipeline spec in two stages:
 //!
 //! - **followup** (default): snapshot `affectedFiles` from harness events and
-//!   `git diff`, then mark the pipeline-state `closed-followup` while leaving
-//!   the spec under `spec/active/` so follow-up edits can still be linked.
-//! - **archive** (`--archive`): move `spec/active/<name>` → `spec/completed/`,
-//!   write archived metrics to `.claude/metrics/<name>.json`, and delete the
-//!   pipeline-state file.
+//!   `git diff`, emit `pipeline.status → closed-followup` + `pipeline.complete`
+//!   events to the SQLite store. The legacy `.pipeline-states/{spec}.json` file
+//!   is NOT written for new pipelines.
+//! - **archive** (`--archive`): move `spec/active/<name>` → `spec/completed/`
+//!   and delete the legacy state JSON if it still exists (back-compat for specs
+//!   that ran before the event migration).
 //!
 //! `--archive-stale` / `--archive-followups` sweep every `closed-followup`
-//! state (the former only those older than 24 h).
+//! spec (the former only those older than 24 h). Both now query the event
+//! store via `pipeline_state_for_spec` rather than reading the filesystem.
 //!
 //! All I/O is fail-soft. The stdout JSON line stays shape-compatible with the
 //! JS version (the `/close` command parses it).
 //!
-//! Port note: the JS script derived metrics via `event-projections.js`
-//! (`buildPipelineState`). That projection is not yet ported (a later b4 wave),
-//! so this port archives metrics from the legacy `state.metrics` sidecar only
-//! — pipelines that ran before the events migration. Post-migration pipelines
-//! simply get no metrics sidecar, which is harmless (CLOSE never depends on it).
+//! Port note (archive_metrics_from_state): the legacy `state.metrics` sidecar
+//! was written by pre-migration pipelines. Post-migration specs never have a
+//! `.pipeline-states` JSON at all, so `archive_metrics_from_state` is only
+//! reached for in-flight legacy specs. It is preserved here for that case only.
 
+use crate::run::env::session_id;
+use mustard_core::io::event_store::EventSink;
 use mustard_core::io::sqlite_store::SqliteEventStore;
+use mustard_core::model::event::{
+    Actor, ActorKind, HarnessEvent, SCHEMA_VERSION,
+    EVENT_PIPELINE_COMPLETE, EVENT_PIPELINE_STATUS,
+    PipelineCompletePayload, PipelineStatusPayload,
+};
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -177,26 +185,94 @@ fn move_dir(src: &Path, dst: &Path) -> bool {
     false
 }
 
-/// Stage 1 — mark the spec `closed-followup` with its affected-file snapshot.
-fn mark_followup(cwd: &Path, spec: &str) -> Value {
-    let state_path = pipeline_state_path(cwd, spec);
-    let mut state = read_json(&state_path).unwrap_or_else(|| json!({ "specName": spec }));
-    let affected = collect_affected_files(cwd, spec, &state);
-    let now = crate::util::now_iso8601();
-    if let Some(obj) = state.as_object_mut() {
-        obj.insert("status".to_string(), json!("closed-followup"));
-        obj.insert("closedAt".to_string(), json!(now));
-        obj.insert("affectedFiles".to_string(), json!(affected));
-        obj.entry("specName").or_insert(json!(spec));
+/// Build a pipeline event with the standard envelope fields.
+fn pipeline_event(kind: &str, spec: &str, payload: Value) -> HarnessEvent {
+    HarnessEvent {
+        v: SCHEMA_VERSION,
+        ts: crate::util::now_iso8601(),
+        session_id: session_id(),
+        wave: 0,
+        actor: Actor {
+            kind: ActorKind::Cli,
+            id: Some("complete-spec".to_string()),
+            actor_type: None,
+        },
+        event: kind.to_string(),
+        payload,
+        spec: Some(spec.to_string()),
     }
-    let ok = write_json(&state_path, &state);
-    json!({
-        "ok": ok,
-        "mode": "followup",
-        "spec": spec,
-        "affectedFiles": affected.len(),
-        "statePath": state_path.to_string_lossy(),
-    })
+}
+
+/// Stage 1 — mark the spec `closed-followup` by emitting two pipeline events:
+///   1. `pipeline.status` with `{ from: <current>, to: "closed-followup" }`
+///   2. `pipeline.complete` with `{ closedAt, affectedFiles: [...] }`
+///
+/// Fail-open: if the event store cannot be opened, falls back to writing the
+/// legacy `.pipeline-states/{spec}.json` so that the CLOSE flow on a broken DB
+/// still moves forward.
+fn mark_followup(cwd: &Path, spec: &str) -> Value {
+    // Collect affected files (harness events + git diff). We pass an empty
+    // Value here because the state JSON is no longer the source for toolBreakdown.
+    let affected = collect_affected_files(cwd, spec, &Value::Null);
+    let now = crate::util::now_iso8601();
+
+    // --- Try to emit events to the SQLite store ---
+    let store_result = SqliteEventStore::for_project(cwd);
+    match store_result {
+        Ok(store) => {
+            // Read current projection status so we can record `from`.
+            let current_status = crate::run::event_projections::pipeline_state_for_spec(
+                &store,
+                spec,
+                None,
+            )
+            .and_then(|v| v.status);
+
+            let status_payload = serde_json::to_value(PipelineStatusPayload {
+                from: current_status,
+                to: "closed-followup".to_string(),
+            })
+            .unwrap_or(Value::Null);
+
+            let complete_payload = serde_json::to_value(PipelineCompletePayload {
+                closed_at: Some(now.clone()),
+                affected_files: affected.clone(),
+            })
+            .unwrap_or(Value::Null);
+
+            let _ = store.append(&pipeline_event(EVENT_PIPELINE_STATUS, spec, status_payload));
+            let _ = store.append(&pipeline_event(EVENT_PIPELINE_COMPLETE, spec, complete_payload));
+
+            json!({
+                "ok": true,
+                "mode": "followup",
+                "spec": spec,
+                "affectedFiles": affected.len(),
+            })
+        }
+        Err(e) => {
+            // Fail-open: store unavailable — write legacy JSON so CLOSE flow survives.
+            eprintln!(
+                "[complete-spec] WARN: event store unavailable ({e}); \
+                 falling back to legacy pipeline-state JSON"
+            );
+            let state_path = pipeline_state_path(cwd, spec);
+            let state = json!({
+                "specName": spec,
+                "status": "closed-followup",
+                "closedAt": now,
+                "affectedFiles": affected,
+            });
+            let ok = write_json(&state_path, &state);
+            json!({
+                "ok": ok,
+                "mode": "followup",
+                "spec": spec,
+                "affectedFiles": affected.len(),
+                "fallback": "legacy-json",
+            })
+        }
+    }
 }
 
 /// Archive the legacy `state.metrics` sidecar to `.claude/metrics/<spec>.json`.
@@ -267,12 +343,17 @@ pub(crate) fn parse_iso_millis(ts: &str) -> Option<i64> {
     Some(((days * 86_400 + hh * 3600 + mm * 60 + ss) * 1000) + millis)
 }
 
-/// Stage 2 — archive a spec: move the spec dir, archive metrics, drop state.
+/// Stage 2 — archive a spec: move the spec dir and drop the legacy state JSON
+/// if it still exists (back-compat for specs written before the event migration).
+///
+/// Metrics archival via `archive_metrics_from_state` is only attempted when a
+/// legacy `.pipeline-states/{spec}.json` with a `metrics` field is found —
+/// post-migration specs have no such file, so they get no `.claude/metrics/`
+/// sidecar (which is acceptable; nothing in CLOSE depends on it).
 fn archive(cwd: &Path, spec: &str) -> (bool, bool) {
     let active = active_spec_dir(cwd, spec);
     let completed = completed_spec_dir(cwd, spec);
     let state_path = pipeline_state_path(cwd, spec);
-    let state = read_json(&state_path);
 
     let moved_spec = if active.exists() && !completed.exists() {
         move_dir(&active, &completed)
@@ -281,15 +362,87 @@ fn archive(cwd: &Path, spec: &str) -> (bool, bool) {
         !active.exists() && completed.exists()
     };
 
-    archive_metrics_from_state(cwd, spec, state.as_ref().unwrap_or(&Value::Null));
-    if state_path.exists() {
+    // Legacy metrics archival — only for pre-migration specs that still had
+    // a state JSON with a `metrics` field. Skip entirely for new specs.
+    let state = read_json(&state_path);
+    if let Some(ref s) = state {
+        if s.get("metrics").is_some() {
+            archive_metrics_from_state(cwd, spec, s);
+        }
+    }
+
+    let had_legacy_state = state_path.exists();
+    if had_legacy_state {
         let _ = std::fs::remove_file(&state_path);
     }
-    (moved_spec, state.is_some())
+    (moved_spec, had_legacy_state)
 }
 
-/// Sweep every `closed-followup` state, archiving it (TTL-gated when asked).
+/// Sweep every `closed-followup` spec, archiving it (TTL-gated when asked).
+///
+/// Queries the event store via `pipeline_state_for_spec` for all distinct
+/// spec names; does not scan the `.pipeline-states/` filesystem directory.
+/// Falls back to the legacy FS scan if the event store cannot be opened.
 fn archive_followups(cwd: &Path, require_ttl: bool) -> (usize, usize) {
+    // --- Try the event store first ---
+    let store = match SqliteEventStore::for_project(cwd) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!(
+                "[complete-spec] WARN: event store unavailable ({e}); \
+                 falling back to legacy FS scan for archive-followups"
+            );
+            return archive_followups_legacy_fs(cwd, require_ttl);
+        }
+    };
+
+    let specs = match store.distinct_specs() {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!(
+                "[complete-spec] WARN: distinct_specs query failed ({e}); \
+                 falling back to legacy FS scan"
+            );
+            return archive_followups_legacy_fs(cwd, require_ttl);
+        }
+    };
+
+    let (mut scanned, mut archived) = (0usize, 0usize);
+    for spec_name in &specs {
+        let Some(view) = crate::run::event_projections::pipeline_state_for_spec(
+            &store,
+            spec_name,
+            None,
+        ) else {
+            continue;
+        };
+        if view.status.as_deref() != Some("closed-followup") {
+            continue;
+        }
+        scanned += 1;
+        if require_ttl {
+            let closed_ms = view.closed_at.as_deref().and_then(parse_iso_millis);
+            match closed_ms {
+                Some(c) => {
+                    let now = i64::try_from(crate::util::now_millis()).unwrap_or(i64::MAX);
+                    if now - c < FOLLOWUP_TTL_MS {
+                        continue;
+                    }
+                }
+                None => continue,
+            }
+        }
+        let (moved, had_state) = archive(cwd, spec_name);
+        if moved || had_state {
+            archived += 1;
+        }
+    }
+    (scanned, archived)
+}
+
+/// Legacy fallback: scan `.pipeline-states/` JSON files for `closed-followup`.
+/// Used when the event store is unavailable.
+fn archive_followups_legacy_fs(cwd: &Path, require_ttl: bool) -> (usize, usize) {
     let states_dir = cwd.join(".claude").join(".pipeline-states");
     let Ok(entries) = std::fs::read_dir(&states_dir) else {
         return (0, 0);
@@ -378,7 +531,28 @@ pub fn run(spec: Option<&str>, archive_flag: bool, archive_stale: bool, archive_
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mustard_core::io::event_store::EventSink;
+    use mustard_core::io::sqlite_store::SqliteEventStore;
+    use mustard_core::model::event::{Actor, ActorKind, SCHEMA_VERSION};
     use tempfile::tempdir;
+
+    fn temp_store(cwd: &Path) -> SqliteEventStore {
+        // Uses the MUSTARD_DB_PATH convention (for_project resolves standard path).
+        SqliteEventStore::for_project(cwd).unwrap()
+    }
+
+    fn ev(event: &str, spec: &str, payload: Value) -> HarnessEvent {
+        HarnessEvent {
+            v: SCHEMA_VERSION,
+            ts: "2026-05-20T10:00:00.000Z".to_string(),
+            session_id: "test-session".to_string(),
+            wave: 0,
+            actor: Actor { kind: ActorKind::Cli, id: None, actor_type: None },
+            event: event.to_string(),
+            payload,
+            spec: Some(spec.to_string()),
+        }
+    }
 
     #[test]
     fn parse_iso_millis_round_trips() {
@@ -393,16 +567,33 @@ mod tests {
         assert!(parse_iso_millis("garbage").is_none());
     }
 
+    /// mark_followup emits pipeline.complete + pipeline.status events and does NOT
+    /// write a .pipeline-states JSON file.
     #[test]
-    fn mark_followup_writes_closed_followup_state() {
+    fn mark_followup_emits_complete_event_no_json_write() {
         let dir = tempdir().unwrap();
         let cwd = dir.path();
+        // Pre-create the harness dir so for_project works.
+        std::fs::create_dir_all(cwd.join(".claude").join(".harness")).unwrap();
+
         let result = mark_followup(cwd, "demo-spec");
         assert_eq!(result["ok"], json!(true));
         assert_eq!(result["mode"], json!("followup"));
-        let state = read_json(&pipeline_state_path(cwd, "demo-spec")).unwrap();
-        assert_eq!(state["status"], json!("closed-followup"));
-        assert_eq!(state["specName"], json!("demo-spec"));
+        // No legacy state JSON should exist.
+        assert!(!pipeline_state_path(cwd, "demo-spec").exists(), "no JSON sidecar expected");
+
+        // Event store should have both events.
+        let store = temp_store(cwd);
+        let events = store.query(Some("demo-spec")).unwrap();
+        let kinds: Vec<&str> = events.iter().map(|e| e.event.as_str()).collect();
+        assert!(kinds.contains(&EVENT_PIPELINE_STATUS), "pipeline.status missing");
+        assert!(kinds.contains(&EVENT_PIPELINE_COMPLETE), "pipeline.complete missing");
+
+        // The pipeline.complete event should carry closedAt and affectedFiles.
+        let complete_ev = events.iter().find(|e| e.event == EVENT_PIPELINE_COMPLETE).unwrap();
+        let payload: PipelineCompletePayload =
+            serde_json::from_value(complete_ev.payload.clone()).unwrap();
+        assert!(payload.closed_at.is_some(), "closedAt should be set");
     }
 
     #[test]
@@ -418,15 +609,53 @@ mod tests {
         assert!(!active.exists());
     }
 
+    /// archive_followups reads the event store (not the FS) to find closed-followup specs.
     #[test]
-    fn archive_followups_only_sweeps_closed_followup() {
+    fn archive_followups_uses_event_projection() {
+        let dir = tempdir().unwrap();
+        let cwd = dir.path();
+        std::fs::create_dir_all(cwd.join(".claude").join(".harness")).unwrap();
+        let store = temp_store(cwd);
+
+        // Spec "a" has status closed-followup.
+        store.append(&ev(
+            EVENT_PIPELINE_STATUS, "a",
+            json!({ "to": "closed-followup" }),
+        )).unwrap();
+        store.append(&ev(
+            EVENT_PIPELINE_COMPLETE, "a",
+            json!({ "closedAt": "2026-05-20T10:00:00.000Z", "affectedFiles": [] }),
+        )).unwrap();
+
+        // Spec "b" has status active — should be skipped.
+        store.append(&ev(
+            EVENT_PIPELINE_STATUS, "b",
+            json!({ "to": "active" }),
+        )).unwrap();
+
+        // Create active spec dirs so archive() has something to move.
+        let active_a = active_spec_dir(cwd, "a");
+        std::fs::create_dir_all(&active_a).unwrap();
+        std::fs::write(active_a.join("spec.md"), "# a").unwrap();
+
+        let (scanned, archived) = archive_followups(cwd, false);
+        assert_eq!(scanned, 1, "only 1 spec should be in closed-followup state");
+        assert_eq!(archived, 1, "spec a should be archived");
+        assert!(completed_spec_dir(cwd, "a").exists(), "spec a moved to completed");
+    }
+
+    /// Legacy FS fallback: when the event store is empty, fall back to .pipeline-states/*.json.
+    #[test]
+    fn archive_followups_legacy_fs_fallback_sweeps_closed_followup() {
         let dir = tempdir().unwrap();
         let cwd = dir.path();
         let states = cwd.join(".claude").join(".pipeline-states");
         std::fs::create_dir_all(&states).unwrap();
+        // Write legacy state files.
         write_json(&states.join("a.json"), &json!({ "specName": "a", "status": "closed-followup" }));
         write_json(&states.join("b.json"), &json!({ "specName": "b", "status": "active" }));
-        let (scanned, archived) = archive_followups(cwd, false);
+        // Call the legacy helper directly.
+        let (scanned, archived) = archive_followups_legacy_fs(cwd, false);
         assert_eq!(scanned, 2);
         assert_eq!(archived, 1);
     }

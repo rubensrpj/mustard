@@ -347,6 +347,23 @@ impl SqliteEventStore {
         Ok(rows.filter_map(std::result::Result::ok).collect())
     }
 
+    /// All distinct non-null spec names present in the `events` table, sorted
+    /// alphabetically.
+    ///
+    /// Used by `archive_followups` to enumerate every spec the event store
+    /// knows about without scanning the filesystem.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Sqlite`] for a query failure.
+    pub fn distinct_specs(&self) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT DISTINCT spec FROM events WHERE spec IS NOT NULL ORDER BY spec",
+        )?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        Ok(rows.filter_map(std::result::Result::ok).collect())
+    }
+
     /// Run an event-selecting query and decode each row into a [`HarnessEvent`].
     ///
     /// Shared by [`replay`](Self::replay) and [`query`](Self::query). The
