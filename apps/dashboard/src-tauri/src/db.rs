@@ -3,9 +3,9 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::{
-    ActivityGroup, AgentUsage, ConsumptionSummary, DailyPoint, KnowledgeRow, KnowledgeSummary,
-    MetricsSummary, ModelUsage, PhaseTokens, QualityMetrics, RecentEvent, RoleQuality,
-    SlowestWave, SpecRow, SpecUsage,
+    ActivePipeline, ActivityGroup, AgentUsage, ConsumptionSummary, DailyPoint, KnowledgeRow,
+    KnowledgeSummary, MetricsSummary, ModelUsage, PhaseTokens, PipelineSummary, QualityMetrics,
+    RecentEvent, RoleQuality, SlowestWave, SpecRow, SpecUsage,
 };
 
 /// Open a SQLite connection in read-only mode. Returns an error if the file
@@ -1277,6 +1277,321 @@ pub fn live_activity_from_db(conn: &Connection) -> Result<crate::telemetry::Live
         is_fresh,
         by_phase,
     })
+}
+
+// ---------------------------------------------------------------------------
+// Pipeline aggregations — Wave 3b of 2026-05-19-pipeline-state-from-sqlite
+// ---------------------------------------------------------------------------
+//
+// Both functions fold the pipeline.* event stream in Rust (insertion-order
+// ASC) rather than in SQL, mirroring the logic of
+// `mustard_rt::run::pipeline_state_for_spec`. mustard-rt is a binary-only
+// crate and cannot be imported as a library, so the fold is re-implemented
+// inline here.
+//
+// Precedence comment (mirrors the spec's DB-wins/FS-wins rule):
+//   DB wins : status, scope, lang, model, is_wave_plan, total_waves,
+//             current_wave, completed_waves, tasks_count, has_dispatch_failure,
+//             failure_age_ms, updated_at (last event ts).
+//   FS wins : spec title, frontmatter (### Lang: / ### Scope:), narrative.
+
+/// Fold `pipeline.*` events for one spec into a `PipelineSummary`.
+///
+/// Returns `None` when the spec has no pipeline events at all.
+fn fold_pipeline_summary(spec_name: &str, events: &[PipelineEventRow]) -> Option<PipelineSummary> {
+    if events.is_empty() {
+        return None;
+    }
+    let mut status: Option<String> = None;
+    let mut scope = String::new();
+    let mut phase = String::new();
+    let mut updated_at: Option<String> = None;
+
+    for ev in events {
+        if !ev.ts.is_empty() {
+            updated_at = Some(ev.ts.clone());
+        }
+        match ev.event.as_str() {
+            "pipeline.scope" => {
+                if let Some(v) = ev.payload.as_ref()
+                    .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+                {
+                    if let Some(s) = v.get("scope").and_then(|x| x.as_str()) {
+                        scope = s.to_string();
+                    }
+                }
+            }
+            "pipeline.status" => {
+                if let Some(v) = ev.payload.as_ref()
+                    .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+                {
+                    if let Some(to) = v.get("to").and_then(|x| x.as_str()) {
+                        status = Some(to.to_string());
+                    }
+                }
+            }
+            "pipeline.phase" => {
+                if let Some(v) = ev.payload.as_ref()
+                    .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+                {
+                    if let Some(to) = v.get("to").and_then(|x| x.as_str()) {
+                        phase = to.to_string();
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Some(PipelineSummary {
+        spec_name: spec_name.to_string(),
+        phase,
+        scope,
+        status: status.unwrap_or_default(),
+        updated_at,
+    })
+}
+
+/// Fold `pipeline.*` events for one spec into an `ActivePipeline`.
+///
+/// Returns `None` when the spec has no pipeline events.
+fn fold_active_pipeline(
+    spec_name: &str,
+    events: &[PipelineEventRow],
+    now_secs: u64,
+) -> Option<ActivePipeline> {
+    if events.is_empty() {
+        return None;
+    }
+
+    let mut status = String::from("unknown");
+    let mut phase = String::from("UNKNOWN");
+    let mut total_waves: Option<u32> = None;
+    let mut model: Option<String> = None;
+    let mut completed_waves: Vec<u32> = Vec::new();
+    let mut tasks_pending: usize = 0;
+    let mut tasks_in_progress: usize = 0;
+    let mut tasks_completed: usize = 0;
+    let mut task_statuses: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut updated_at: Option<String> = None;
+
+    // Dispatch failure tracking.
+    let mut failure_reason: Option<String> = None;
+    let mut failure_at_secs: Option<u64> = None;
+
+    for ev in events {
+        if !ev.ts.is_empty() {
+            updated_at = Some(ev.ts.clone());
+        }
+        match ev.event.as_str() {
+            "pipeline.scope" => {
+                if let Some(v) = ev.payload.as_ref()
+                    .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+                {
+                    if let Some(tw) = v.get("totalWaves")
+                        .or_else(|| v.get("total_waves"))
+                        .and_then(|x| x.as_u64())
+                    {
+                        total_waves = Some(tw as u32);
+                    }
+                    if let Some(m) = v.get("model").and_then(|x| x.as_str()) {
+                        model = Some(m.to_string());
+                    }
+                }
+            }
+            "pipeline.status" => {
+                if let Some(v) = ev.payload.as_ref()
+                    .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+                {
+                    if let Some(to) = v.get("to").and_then(|x| x.as_str()) {
+                        status = to.to_string();
+                    }
+                }
+            }
+            "pipeline.phase" => {
+                if let Some(v) = ev.payload.as_ref()
+                    .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+                {
+                    if let Some(to) = v.get("to").and_then(|x| x.as_str()) {
+                        phase = to.to_string();
+                    }
+                }
+            }
+            "pipeline.task.dispatch" => {
+                if let Some(v) = ev.payload.as_ref()
+                    .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+                {
+                    if let Some(name) = v.get("name").and_then(|x| x.as_str()) {
+                        task_statuses.insert(name.to_string(), "pending".to_string());
+                    }
+                }
+            }
+            "pipeline.task.complete" => {
+                if let Some(v) = ev.payload.as_ref()
+                    .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+                {
+                    if let Some(name) = v.get("name").and_then(|x| x.as_str()) {
+                        task_statuses.insert(name.to_string(), "completed".to_string());
+                    }
+                }
+            }
+            "pipeline.wave.complete" => {
+                if let Some(v) = ev.payload.as_ref()
+                    .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+                {
+                    if let Some(w) = v.get("wave").and_then(|x| x.as_u64()) {
+                        let wn = w as u32;
+                        if !completed_waves.contains(&wn) {
+                            completed_waves.push(wn);
+                        }
+                    }
+                }
+            }
+            "pipeline.dispatch_failure" => {
+                if let Some(v) = ev.payload.as_ref()
+                    .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+                {
+                    failure_reason = v.get("reason").and_then(|x| x.as_str()).map(str::to_string);
+                    // `at` field from payload, fall back to event ts.
+                    let at_str = v.get("at")
+                        .and_then(|x| x.as_str())
+                        .map(str::to_string)
+                        .or_else(|| if ev.ts.is_empty() { None } else { Some(ev.ts.clone()) });
+                    failure_at_secs = at_str.as_deref().and_then(crate::parse_iso_to_unix_secs);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Compute current_wave from completed_waves.
+    completed_waves.sort_unstable();
+    completed_waves.dedup();
+    let current_wave = completed_waves.iter().max().map(|w| w + 1).unwrap_or(1);
+
+    // Task count breakdown.
+    for s in task_statuses.values() {
+        match s.as_str() {
+            "pending" => tasks_pending += 1,
+            "in_progress" => tasks_in_progress += 1,
+            "completed" => tasks_completed += 1,
+            _ => {}
+        }
+    }
+
+    // Dispatch failure: stale if > 10 min old.
+    const FAILURE_TTL_SECS: u64 = 10 * 60;
+    let (has_dispatch_failure, failure_age_ms) = match (failure_reason, failure_at_secs) {
+        (Some(_), Some(at)) => {
+            let age = now_secs.saturating_sub(at);
+            if age > FAILURE_TTL_SECS {
+                (false, None)
+            } else {
+                (true, Some(age * 1000))
+            }
+        }
+        (Some(_), None) => (true, None), // no timestamp → keep (fail-open)
+        _ => (false, None),
+    };
+
+    Some(ActivePipeline {
+        spec_name: spec_name.to_string(),
+        status,
+        phase,
+        current_wave: Some(current_wave),
+        total_waves,
+        model,
+        has_dispatch_failure,
+        failure_age_ms,
+        tasks_pending,
+        tasks_in_progress,
+        tasks_completed,
+        updated_at,
+    })
+}
+
+/// A raw row read from the events table for pipeline aggregation.
+struct PipelineEventRow {
+    spec: String,
+    event: String,
+    ts: String,
+    payload: Option<String>,
+}
+
+/// Fetch and group all pipeline.* events per spec, then fold each group.
+///
+/// Single SQL query ordered by `id ASC` so the fold always processes events
+/// in insertion order (matches `pipeline_state_for_spec` in mustard-rt).
+fn fetch_pipeline_events_by_spec(conn: &Connection) -> Result<std::collections::BTreeMap<String, Vec<PipelineEventRow>>, String> {
+    let sql = "SELECT spec, event, COALESCE(ts,''), payload \
+               FROM events \
+               WHERE event IN ('pipeline.scope','pipeline.status','pipeline.phase',\
+                               'pipeline.task.dispatch','pipeline.task.complete',\
+                               'pipeline.wave.complete','pipeline.dispatch_failure',\
+                               'pipeline.pause','pipeline.resume_mode') \
+               AND spec IS NOT NULL \
+               ORDER BY id ASC";
+
+    let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
+    let rows = stmt.query_map([], |row| {
+        Ok(PipelineEventRow {
+            spec:    row.get::<_, String>(0)?,
+            event:   row.get::<_, String>(1)?,
+            ts:      row.get::<_, String>(2)?,
+            payload: row.get::<_, Option<String>>(3)?,
+        })
+    }).map_err(|e| e.to_string())?;
+
+    let mut by_spec: std::collections::BTreeMap<String, Vec<PipelineEventRow>> =
+        std::collections::BTreeMap::new();
+    for r in rows {
+        let row = r.map_err(|e| e.to_string())?;
+        by_spec.entry(row.spec.clone()).or_default().push(row);
+    }
+    Ok(by_spec)
+}
+
+/// Aggregate pipeline events from the events table into `PipelineSummary` records.
+///
+/// Replaces the legacy `.claude/.pipeline-states/*.json` walk in
+/// `dashboard_pipelines`. Fail-open: returns empty vec on schema mismatch.
+pub fn pipelines_from_db(conn: &Connection) -> Vec<PipelineSummary> {
+    let by_spec = match fetch_pipeline_events_by_spec(conn) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("[pipelines_from_db] query failed: {e}");
+            return vec![];
+        }
+    };
+    let mut out = Vec::with_capacity(by_spec.len());
+    for (spec_name, events) in &by_spec {
+        if let Some(summary) = fold_pipeline_summary(spec_name, events) {
+            out.push(summary);
+        }
+    }
+    out
+}
+
+/// Aggregate pipeline events into `ActivePipeline` records.
+///
+/// Replaces the legacy `.claude/.pipeline-states/*.json` walk in
+/// `dashboard_active_pipelines`. The caller filters by status when needed.
+/// Fail-open: returns empty vec on schema mismatch.
+pub fn active_pipelines_from_db(conn: &Connection, now_secs: u64) -> Vec<ActivePipeline> {
+    let by_spec = match fetch_pipeline_events_by_spec(conn) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("[active_pipelines_from_db] query failed: {e}");
+            return vec![];
+        }
+    };
+    let mut out = Vec::with_capacity(by_spec.len());
+    for (spec_name, events) in &by_spec {
+        if let Some(ap) = fold_active_pipeline(spec_name, events, now_secs) {
+            out.push(ap);
+        }
+    }
+    out
 }
 
 /// Browse the knowledge base without a query — sorted by type then recency.

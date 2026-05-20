@@ -13,11 +13,11 @@ use std::path::PathBuf;
 #[derive(Serialize)]
 #[serde(rename_all = "snake_case")]
 pub struct PipelineSummary {
-    spec_name: String,
-    phase: String,
-    scope: String,
-    status: String,
-    updated_at: Option<String>,
+    pub spec_name: String,
+    pub phase: String,
+    pub scope: String,
+    pub status: String,
+    pub updated_at: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -153,103 +153,14 @@ pub struct GlobalConsumption {
 
 #[tauri::command]
 fn dashboard_pipelines(repo_path: String) -> Result<Vec<PipelineSummary>, String> {
+    // DB wins: status, scope, phase, updated_at — all derived from the pipeline.*
+    // event stream via `db::pipelines_from_db`. FS pipeline-states JSON walk is
+    // removed; the event log is canonical (spec 2026-05-19-pipeline-state-from-sqlite).
     let base = PathBuf::from(&repo_path);
-    let dir = base.join(".claude").join(".pipeline-states");
-    if !dir.exists() {
-        return Ok(vec![]);
+    if let Some(conn) = db::with_db(&base, |conn| Ok(db::pipelines_from_db(conn))) {
+        return conn;
     }
-    let mut results = Vec::new();
-    for entry in std::fs::read_dir(&dir).map_err(|e| e.to_string())? {
-        let entry = match entry {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
-        let path = entry.path();
-        if path.extension().and_then(|s| s.to_str()) != Some("json") {
-            continue;
-        }
-        let content = match std::fs::read_to_string(&path) {
-            Ok(c) => c,
-            Err(_) => continue,
-        };
-        let v: serde_json::Value = match serde_json::from_str(&content) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-        // Phase: pipeline-state JSON no longer carries the legacy in-JSON
-        // phase field — the SQLite `pipeline.phase` event is canonical (spec
-        // 2026-05-19-dashboard-phase-from-sqlite). Mirrors `dashboard_specs`.
-        // Fail-open: empty string if DB unreadable or no event recorded.
-        results.push(PipelineSummary {
-            spec_name: v["specName"].as_str().unwrap_or("").to_string(),
-            phase: String::new(),
-            scope: v["scope"].as_str().unwrap_or("").to_string(),
-            status: v["status"].as_str().unwrap_or("").to_string(),
-            updated_at: v["checkpointedAt"].as_str().map(|s| s.to_string()),
-        });
-    }
-    // Derive phase from the latest `pipeline.phase` event for each spec.
-    // Single query (one SQLite roundtrip): SELECT one phase per spec via the
-    // same correlated-subquery pattern that `db::specs_from_db` uses. Falls
-    // back to empty string (current behavior) when no event exists or when
-    // the DB is missing/unreadable.
-    if !results.is_empty() {
-        let spec_names: Vec<String> = results
-            .iter()
-            .map(|p| p.spec_name.clone())
-            .filter(|s| !s.is_empty())
-            .collect();
-        if !spec_names.is_empty() {
-            let phases: HashMap<String, String> = db::with_db(&base, |conn| {
-                // Build a "?,?,?,..." placeholder list matching spec_names.len().
-                let placeholders = std::iter::repeat("?")
-                    .take(spec_names.len())
-                    .collect::<Vec<_>>()
-                    .join(",");
-                let sql = format!(
-                    "SELECT s.name, \
-                            (SELECT json_extract(e.payload, '$.to') FROM events e \
-                             WHERE e.event = 'pipeline.phase' AND e.spec = s.name \
-                             ORDER BY e.id DESC LIMIT 1) AS phase \
-                     FROM (SELECT value AS name FROM json_each(?1)) s \
-                     WHERE s.name IN ({})",
-                    placeholders
-                );
-                // Parameter 1 is the JSON array of names (for json_each), and
-                // each subsequent parameter fills one IN-list placeholder so
-                // SQLite can short-circuit non-matching rows quickly.
-                let json_names = serde_json::to_string(&spec_names)
-                    .map_err(|e| e.to_string())?;
-                let mut params: Vec<rusqlite::types::Value> =
-                    Vec::with_capacity(spec_names.len() + 1);
-                params.push(rusqlite::types::Value::Text(json_names));
-                for n in &spec_names {
-                    params.push(rusqlite::types::Value::Text(n.clone()));
-                }
-                let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
-                let rows = stmt
-                    .query_map(rusqlite::params_from_iter(params.iter()), |row| {
-                        let name: String = row.get(0)?;
-                        let phase: Option<String> = row.get(1)?;
-                        Ok((name, phase.unwrap_or_default()))
-                    })
-                    .map_err(|e| e.to_string())?;
-                let mut map = HashMap::new();
-                for r in rows.flatten() {
-                    map.insert(r.0, r.1);
-                }
-                Ok(map)
-            })
-            .and_then(|r| r.ok())
-            .unwrap_or_default();
-            for p in results.iter_mut() {
-                if let Some(ph) = phases.get(&p.spec_name) {
-                    p.phase = ph.clone();
-                }
-            }
-        }
-    }
-    Ok(results)
+    Ok(vec![])
 }
 
 #[tauri::command]
@@ -650,43 +561,17 @@ fn detect_bucket(spec_root: &PathBuf, spec_name: &str) -> Option<String> {
     None
 }
 
-// Filesystem fallback for repos without the phase-1 DB schema.
-// Walks .claude/.pipeline-states/*.json for phase/status, then iterates
-// .claude/spec/{active,completed}/*/spec.md, parsing inline status/phase.
+// Walk .claude/spec/{active,completed,cancelled}/*/spec.md (and wave-plan.md)
+// for spec existence and frontmatter metadata (title, lang, scope).
+//
+// DB wins for: status, phase, tasks, wave counts — merged by `dashboard_specs`.
+// FS wins for: spec existence, title, narrative (### Lang: / ### Scope:).
+//
+// The .pipeline-states/*.json walk was removed in Wave 3b of spec
+// 2026-05-19-pipeline-state-from-sqlite: the event log is canonical for all
+// pipeline fields; FS JSON files are stale artifacts.
 fn specs_from_fs(base: &PathBuf) -> Vec<SpecRow> {
     let claude = base.join(".claude");
-    let mut state_map: HashMap<String, (Option<String>, Option<String>)> = HashMap::new();
-    let states_dir = claude.join(".pipeline-states");
-    if states_dir.exists() {
-        if let Ok(rd) = std::fs::read_dir(&states_dir) {
-            for entry in rd.flatten() {
-                let path = entry.path();
-                if path.extension().and_then(|s| s.to_str()) != Some("json") {
-                    continue;
-                }
-                let content = match std::fs::read_to_string(&path) {
-                    Ok(c) => c,
-                    Err(_) => continue,
-                };
-                let v: serde_json::Value = match serde_json::from_str(&content) {
-                    Ok(v) => v,
-                    Err(_) => continue,
-                };
-                let name = match v["specName"].as_str() {
-                    Some(s) if !s.is_empty() => s.to_string(),
-                    _ => continue,
-                };
-                // The legacy in-JSON phase field no longer ships in
-                // pipeline-state — fase canonical é o último `pipeline.phase`
-                // no SQLite, mergeado por `dashboard_specs`
-                // (spec 2026-05-19-dashboard-phase-from-sqlite). Legacy JSONs
-                // may still carry the field; ignored here.
-                let status = v["status"].as_str().map(|s| s.to_string());
-                state_map.insert(name, (None, status));
-            }
-        }
-    }
-
     let spec_root = claude.join("spec");
     let mut completed: Vec<(SpecRow, Option<std::time::SystemTime>)> = Vec::new();
     let mut active: Vec<(SpecRow, Option<std::time::SystemTime>)> = Vec::new();
@@ -709,17 +594,11 @@ fn specs_from_fs(base: &PathBuf) -> Vec<SpecRow> {
                 Some(s) => s.to_string(),
                 None => continue,
             };
-            // Status: prefer pipeline-state JSON when present (mirrors live
-            // pipeline state more accurately than the spec frontmatter), else
-            // fall back to spec.md / wave-plan.md frontmatter.
-            //
-            // Phase: pipeline-state JSON no longer carries the legacy
-            // in-JSON phase field (the SQLite `pipeline.phase` event is
-            // canonical, merged in by `dashboard_specs`). So we always parse
-            // the spec frontmatter for a phase value here — it's the FS-side
-            // fallback used only when the DB has no `pipeline.phase` event for
-            // this spec yet.
-            let state_status = state_map.get(&name).and_then(|(_, s)| s.clone());
+            // Phase and status: parse spec.md / wave-plan.md frontmatter.
+            // Status and phase from the DB (pipeline.* events) take precedence
+            // in `dashboard_specs::merge` — these FS values are fallbacks only.
+            // The .pipeline-states/*.json walk was removed (Wave 3b): DB is
+            // canonical for all pipeline fields.
             let from_spec = {
                 let parsed = parse_spec_md(&path.join("spec.md"));
                 if parsed.0.is_some() || parsed.1.is_some() {
@@ -730,7 +609,7 @@ fn specs_from_fs(base: &PathBuf) -> Vec<SpecRow> {
                 }
             };
             let phase = from_spec.0;
-            let status = state_status.or(from_spec.1);
+            let status = from_spec.1;
             let mtime = entry.metadata().ok().and_then(|m| m.modified().ok());
             let parent_row = SpecRow {
                 name: name.clone(),
@@ -1268,18 +1147,18 @@ fn discover_projects(root: String) -> Result<Vec<discovery::Project>, String> {
 #[derive(Serialize)]
 #[serde(rename_all = "snake_case")]
 pub struct ActivePipeline {
-    spec_name: String,
-    status: String,
-    phase: String,
-    current_wave: Option<u32>,
-    total_waves: Option<u32>,
-    model: Option<String>,
-    has_dispatch_failure: bool,
-    failure_age_ms: Option<u64>,
-    tasks_pending: usize,
-    tasks_in_progress: usize,
-    tasks_completed: usize,
-    updated_at: Option<String>,
+    pub spec_name: String,
+    pub status: String,
+    pub phase: String,
+    pub current_wave: Option<u32>,
+    pub total_waves: Option<u32>,
+    pub model: Option<String>,
+    pub has_dispatch_failure: bool,
+    pub failure_age_ms: Option<u64>,
+    pub tasks_pending: usize,
+    pub tasks_in_progress: usize,
+    pub tasks_completed: usize,
+    pub updated_at: Option<String>,
 }
 
 /// Parse ISO 8601 / RFC 3339 timestamp string into seconds since UNIX_EPOCH.
@@ -1329,6 +1208,7 @@ fn is_leap(y: u64) -> bool {
     (y % 4 == 0 && y % 100 != 0) || y % 400 == 0
 }
 
+#[allow(dead_code)]
 fn epoch_to_iso(secs: u64) -> String {
     // Minimal ISO formatter: seconds since epoch → YYYY-MM-DDTHH:MM:SSZ
     let s = secs % 60;
@@ -1353,6 +1233,7 @@ fn epoch_to_iso(secs: u64) -> String {
     format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z", year, month, day, h, m, s)
 }
 
+#[allow(dead_code)]
 fn mtime_to_iso(path: &std::path::Path) -> Option<String> {
     let meta = std::fs::metadata(path).ok()?;
     let mtime = meta.modified().ok()?;
@@ -1376,120 +1257,28 @@ fn dashboard_watch_repos(
 
 #[tauri::command]
 fn dashboard_active_pipelines(repo_path: String) -> Result<Vec<ActivePipeline>, String> {
+    // DB wins: all pipeline fields — status, phase, wave counts, tasks, dispatch
+    // failure — derived from the pipeline.* event stream. FS walk removed (Wave 3b
+    // of spec 2026-05-19-pipeline-state-from-sqlite).
     let base = std::path::PathBuf::from(&repo_path);
-    let dir = base.join(".claude").join(".pipeline-states");
-    if !dir.exists() {
-        return Ok(vec![]);
-    }
     let now_secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let mut results = Vec::new();
-    let entries = match std::fs::read_dir(&dir) {
-        Ok(e) => e,
-        Err(e) => return Err(e.to_string()),
+    let mut results = match db::with_db(&base, |conn| {
+        Ok(db::active_pipelines_from_db(conn, now_secs))
+    }) {
+        Some(Ok(r)) => r,
+        _ => return Ok(vec![]),
     };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        // Skip non-json and .metrics.json files
-        let fname = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
-        if fname.ends_with(".metrics.json") { continue; }
-        if path.extension().and_then(|s| s.to_str()) != Some("json") { continue; }
-
-        let content = match std::fs::read_to_string(&path) {
-            Ok(c) => c,
-            Err(_) => continue,
-        };
-        let v: serde_json::Value = match serde_json::from_str(&content) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-
-        let status = v["status"].as_str().unwrap_or("unknown").to_string();
-        // Filter completed/closed
-        if status == "completed" || status == "closed" { continue; }
-
-        let file_stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("").to_string();
-        let spec_name = v["specName"].as_str()
-            .or_else(|| v["name"].as_str())
-            .filter(|s| !s.is_empty())
-            .map(|s| s.to_string())
-            .unwrap_or(file_stem);
-
-        // The legacy in-JSON phase field was removed from pipeline-state —
-        // the SQLite `pipeline.phase` event is canonical (spec
-        // 2026-05-19-dashboard-phase-from-sqlite). We keep the in-JSON
-        // `phase` fallback for the brief window before the first event lands;
-        // anything older surfaces as UNKNOWN here and is overwritten when the
-        // event store catches up via `dashboard_specs`.
-        let phase = v["phase"].as_str()
-            .unwrap_or("UNKNOWN")
-            .to_string();
-
-        let current_wave = v["currentWave"].as_u64().map(|n| n as u32);
-        let total_waves = v["totalWaves"].as_u64().map(|n| n as u32);
-        let model = v["model"].as_str().map(|s| s.to_string());
-
-        // Dispatch failure
-        let (has_dispatch_failure, failure_age_ms) = match v.get("lastDispatchFailure") {
-            Some(serde_json::Value::Object(obj)) if !obj.is_empty() => {
-                let age = obj.get("at")
-                    .and_then(|a| a.as_str())
-                    .and_then(|s| parse_iso_to_unix_secs(s))
-                    .map(|at_secs| {
-                        let elapsed = now_secs.saturating_sub(at_secs);
-                        elapsed * 1000
-                    });
-                (true, age)
-            }
-            _ => (false, None),
-        };
-
-        // Tasks
-        let mut tasks_pending = 0usize;
-        let mut tasks_in_progress = 0usize;
-        let mut tasks_completed = 0usize;
-        if let Some(arr) = v["tasks"].as_array() {
-            for task in arr {
-                match task["status"].as_str() {
-                    Some("pending") => tasks_pending += 1,
-                    Some("in_progress") => tasks_in_progress += 1,
-                    Some("completed") => tasks_completed += 1,
-                    _ => {}
-                }
-            }
-        }
-
-        // updated_at: checkpointedAt → updatedAt → file mtime
-        let updated_at = v["checkpointedAt"].as_str()
-            .or_else(|| v["updatedAt"].as_str())
-            .map(|s| s.to_string())
-            .or_else(|| mtime_to_iso(&path));
-
-        results.push(ActivePipeline {
-            spec_name,
-            status,
-            phase,
-            current_wave,
-            total_waves,
-            model,
-            has_dispatch_failure,
-            failure_age_ms,
-            tasks_pending,
-            tasks_in_progress,
-            tasks_completed,
-            updated_at,
-        });
-    }
-
-    // Sort descending by updated_at
+    // Filter out completed/closed (same semantics as the old FS-based reader).
+    results.retain(|p| p.status != "completed" && p.status != "closed");
+    // Sort descending by updated_at.
     results.sort_by(|a, b| {
         let ta = a.updated_at.as_deref().unwrap_or("");
         let tb = b.updated_at.as_deref().unwrap_or("");
         tb.cmp(ta)
     });
-
     Ok(results)
 }
 

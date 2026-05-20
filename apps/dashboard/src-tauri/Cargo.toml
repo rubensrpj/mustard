@@ -57,6 +57,10 @@ path = "tests/mustard_cli_test.rs"
 name = "specs_phase_from_events_test"
 path = "tests/specs_phase_from_events_test.rs"
 
+[[test]]
+name = "pipelines_from_db_test"
+path = "tests/pipelines_from_db_test.rs"
+
 # Test-only: temp dirs for the B5 Wave 3 mustard-cli integration smoke test.
 [dev-dependencies]
 tempfile = "3"
