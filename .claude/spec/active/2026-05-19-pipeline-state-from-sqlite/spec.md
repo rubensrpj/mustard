@@ -1,9 +1,9 @@
 # Migrar runtime state (pipeline + memory + knowledge) para SQLite
 
-### Status: implementing
-### Phase: EXECUTE
+### Status: completed
+### Phase: CLOSE
 ### Scope: full
-### Checkpoint: 2026-05-20T03:20:00Z
+### Checkpoint: 2026-05-20T09:20:00Z
 ### Lang: pt
 
 > **Continua a migração iniciada em `2026-05-19-dashboard-phase-from-sqlite` (CLOSE 2026-05-20).** Aquela spec moveu só o campo `phase` para SQLite. Esta finaliza o trabalho em duas frentes:
@@ -62,22 +62,22 @@ Mantenedores do Mustard. Indiretamente, usuários do `mustard-dashboard` (visibi
 
 Critérios binários, executáveis. Cada um roda da raiz do projeto; exit 0 = passou. Padrão `node -e` com `includes()` (cross-shell-safe em Windows cmd.exe — lição da spec-mãe).
 
-- [ ] AC-1: Workspace compila — Command: `cargo build -p mustard-core -p mustard-rt -p mustard-cli`
-- [ ] AC-2: Testes rt e dashboard backend passam — Command: `cargo test -p mustard-rt -p mustard-dashboard`
-- [ ] AC-3: Dashboard build limpo — Command: `pnpm --filter mustard-dashboard build`
-- [ ] AC-4: Constantes de eventos novos definidas em mustard-core — Command: `node -e "const c=require('fs').readFileSync('packages/core/src/model/event.rs','utf8');for(const t of ['pipeline.status','pipeline.task.dispatch','pipeline.task.complete','pipeline.wave.complete','pipeline.dispatch_failure','pipeline.pause','pipeline.resume_mode','pipeline.scope']){if(!c.includes(t))process.exit(1)}"`
-- [ ] AC-5: Subcomando `emit-pipeline` registrado — Command: `node -e "if(!require('fs').readFileSync('apps/rt/src/run/mod.rs','utf8').includes('EmitPipeline'))process.exit(1)"`
-- [ ] AC-6: Projeção `pipeline_state_for_spec` exposta — Command: `node -e "if(!require('fs').readFileSync('apps/rt/src/run/event_projections.rs','utf8').includes('pipeline_state_for_spec'))process.exit(1)"`
-- [ ] AC-7: Nenhum dos 6 SKILL.md de pipeline escreve em `.pipeline-states/` — Command: `node -e "const fs=require('fs');for(const n of ['feature','approve','resume','close','qa','bugfix']){const p='apps/cli/templates/commands/mustard/'+n+'/SKILL.md';if(!fs.existsSync(p))continue;const c=fs.readFileSync(p,'utf8');const lines=c.split('\n');for(const l of lines){if(l.includes('.pipeline-states/')&&(l.includes('Write')||l.includes('Edit')||l.includes('write_json'))){console.error(n+': '+l);process.exit(1)}}}"`
-- [ ] AC-8: Dashboard `lib.rs` não acessa `.pipeline-states/` — Command: `node -e "const c=require('fs').readFileSync('apps/dashboard/src-tauri/src/lib.rs','utf8');if(c.includes('.pipeline-states/'))process.exit(1)"`
-- [ ] AC-9: Hooks de rt não leem `.pipeline-states/{spec}.json` diretamente — Command: `node -e "const fs=require('fs');for(const f of ['close_gate.rs','path_guard.rs','post_edit.rs']){const c=fs.readFileSync('apps/rt/src/hooks/'+f,'utf8');if(c.includes('.pipeline-states/'))process.exit(1)}"`
-- [ ] AC-10: Ingest one-shot existe — Command: `node -e "if(!require('fs').existsSync('apps/rt/src/run/pipeline_state_ingest.rs'))process.exit(1)"`
-- [ ] AC-11: `.docs-audit.json` ganha audit dessa migração — Command: `node -e "const m=require('./.claude/.docs-audit.json');if(!m.audits.some(a=>a.from_spec==='2026-05-19-pipeline-state-from-sqlite'))process.exit(1)"`
-- [ ] AC-12: `docs-stale-check` da nova audit roda limpo — Command: `cargo run -q -p mustard-rt -- run docs-stale-check --from 2026-05-19-pipeline-state-from-sqlite | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{const r=JSON.parse(d);if(r.hits&&r.hits.length>0)process.exit(1)})"`
-- [ ] AC-13: Tabelas SQLite de memory/knowledge declaradas — Command: `node -e "const c=require('fs').readFileSync('packages/core/src/io/sqlite_schema.sql','utf8');for(const t of ['knowledge_patterns','memory_decisions','memory_lessons','knowledge_patterns_fts','memory_decisions_fts','memory_lessons_fts'])if(!c.includes(t))process.exit(1)"`
-- [ ] AC-14: `mustard-rt run memory <kind>` insere no SQLite (não no JSON) — Command: `node -e "const c=require('fs').readFileSync('apps/rt/src/run/memory.rs','utf8');if(c.includes('memory/decisions.json')||c.includes('memory/lessons.json')||c.includes('write_json'))process.exit(1)"`
-- [ ] AC-15: Ingest de memory/knowledge JSONs existe — Command: `node -e "if(!require('fs').existsSync('apps/rt/src/run/memory_ingest.rs'))process.exit(1)"`
-- [ ] AC-16: Busca FTS5 funciona end-to-end — Command: `cargo test -p mustard-core --test sqlite_fts5_smoke 2>&1 | grep -q "test result: ok"`
+- [x] AC-1: Workspace compila — Command: `cargo build -p mustard-core -p mustard-rt -p mustard-cli`
+- [x] AC-2: Testes rt e dashboard backend passam — Command: `cargo test -p mustard-rt -p mustard-dashboard`
+- [x] AC-3: Dashboard build limpo — Command: `pnpm --filter mustard-dashboard build`
+- [x] AC-4: Constantes de eventos novos definidas em mustard-core — Command: `node -e "const c=require('fs').readFileSync('packages/core/src/model/event.rs','utf8');for(const t of ['pipeline.status','pipeline.task.dispatch','pipeline.task.complete','pipeline.wave.complete','pipeline.dispatch_failure','pipeline.pause','pipeline.resume_mode','pipeline.scope']){if(!c.includes(t))process.exit(1)}"`
+- [x] AC-5: Subcomando `emit-pipeline` registrado — Command: `node -e "if(!require('fs').readFileSync('apps/rt/src/run/mod.rs','utf8').includes('EmitPipeline'))process.exit(1)"`
+- [x] AC-6: Projeção `pipeline_state_for_spec` exposta — Command: `node -e "if(!require('fs').readFileSync('apps/rt/src/run/event_projections.rs','utf8').includes('pipeline_state_for_spec'))process.exit(1)"`
+- [x] AC-7: Nenhum dos 6 SKILL.md de pipeline escreve em `.pipeline-states/` — Command: `node -e "const fs=require('fs');for(const n of ['feature','approve','resume','close','qa','bugfix']){const p='apps/cli/templates/commands/mustard/'+n+'/SKILL.md';if(!fs.existsSync(p))continue;const c=fs.readFileSync(p,'utf8');const lines=c.split('\n');for(const l of lines){if(l.includes('.pipeline-states/')&&(l.includes('Write')||l.includes('Edit')||l.includes('write_json'))){console.error(n+': '+l);process.exit(1)}}}"`
+- [x] AC-8: Dashboard `lib.rs` não acessa `.pipeline-states/` — Command: `node -e "const c=require('fs').readFileSync('apps/dashboard/src-tauri/src/lib.rs','utf8');if(c.includes('.pipeline-states/'))process.exit(1)"`
+- [x] AC-9: Hooks de rt não leem `.pipeline-states/{spec}.json` diretamente — Command: `node -e "const fs=require('fs');for(const f of ['close_gate.rs','path_guard.rs','post_edit.rs']){const c=fs.readFileSync('apps/rt/src/hooks/'+f,'utf8');if(c.includes('.pipeline-states/'))process.exit(1)}"`
+- [x] AC-10: Ingest one-shot existe — Command: `node -e "if(!require('fs').existsSync('apps/rt/src/run/pipeline_state_ingest.rs'))process.exit(1)"`
+- [x] AC-11: `.docs-audit.json` ganha audit dessa migração — Command: `node -e "const m=require('./.claude/.docs-audit.json');if(!m.audits.some(a=>a.from_spec==='2026-05-19-pipeline-state-from-sqlite'))process.exit(1)"`
+- [x] AC-12: `docs-stale-check` da nova audit roda limpo — Command: `cargo run -q -p mustard-rt -- run docs-stale-check --from 2026-05-19-pipeline-state-from-sqlite | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{const r=JSON.parse(d);if(r.hits&&r.hits.length>0)process.exit(1)})"`
+- [x] AC-13: Tabelas SQLite de memory/knowledge declaradas — Command: `node -e "const c=require('fs').readFileSync('packages/core/src/io/sqlite_schema.sql','utf8');for(const t of ['knowledge_patterns','memory_decisions','memory_lessons','knowledge_patterns_fts','memory_decisions_fts','memory_lessons_fts'])if(!c.includes(t))process.exit(1)"`
+- [x] AC-14: `mustard-rt run memory <kind>` insere no SQLite (não no JSON) — Command: `node -e "const c=require('fs').readFileSync('apps/rt/src/run/memory.rs','utf8');if(c.includes('memory/decisions.json')||c.includes('memory/lessons.json')||c.includes('write_json'))process.exit(1)"`
+- [x] AC-15: Ingest de memory/knowledge JSONs existe — Command: `node -e "if(!require('fs').existsSync('apps/rt/src/run/memory_ingest.rs'))process.exit(1)"`
+- [x] AC-16: Busca FTS5 funciona end-to-end — Command: `cargo test -p mustard-core --test sqlite_fts5_smoke 2>&1 | grep -q "test result: ok"`
 
 > **AC-13 amended at QA (iteration 1):** schema lives in `sqlite_schema.sql` (loaded via `include_str!` from `sqlite_store.rs`); the `.rs` source does not contain the literal table names. FTS5 table renamed `knowledge_patterns_fts` in Wave 6a to avoid collision with the legacy `knowledge_fts` on the older `knowledge` table.
 

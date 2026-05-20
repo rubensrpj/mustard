@@ -11,10 +11,10 @@
         "naming": {
           "distribution": {
             "lowercase": 14,
-            "snake_case": 3
+            "snake_case": 4
           },
           "dominant": "lowercase",
-          "total": 17
+          "total": 18
         }
       },
       "discovered": [
