@@ -1,3 +1,9 @@
+---
+name: mustard-maint
+description: "Maintenance utilities: install dependencies, run build/type-check validations, sync entity registry, and run the doctor installation health check. Use when the user asks about deps, validate, sync, or doctor."
+source: scan
+---
+<!-- mustard:generated -->
 # /maint - Maintenance Utilities
 
 > Dependencies, build validation, and registry sync.
@@ -13,7 +19,7 @@
 | `deps` | Install dependencies for all projects |
 | `validate` | Run build and type-check validations |
 | `sync` | Update entity-registry.json from code |
-| `audit` | Run diagnostics: orphan-skill audit + OTEL pipeline health |
+| `doctor` | Full installation health check: wiring, drift, state + skill/OTEL diagnostics |
 
 ---
 
@@ -70,17 +76,29 @@ Scans the project and updates `.claude/entity-registry.json`.
 
 ---
 
-## audit
+## doctor
 
-Runs read-only diagnostics. Never blocks — reports only.
+Consolidated installation health check. Never blocks — reports only.
 
 ### Flow
 
-1. `mustard-rt run skills orphans` — lists skills not invoked in N days (env `MUSTARD_SKILL_ORPHAN_DAYS`, default 30)
-2. `mustard-rt run diagnose-otel` — end-to-end health check of the OTEL telemetry pipeline (collector process, `/healthz`, data flow)
-3. Report both results to the user
+1. `mustard-rt run doctor` — checks hook wiring, install drift, and pipeline state health; pass `--residue` to also scan for dead file/script references
+2. `mustard-rt run skills orphans` — lists skills not invoked in N days (env `MUSTARD_SKILL_ORPHAN_DAYS`, default 30)
+3. `mustard-rt run diagnose-otel` — end-to-end health check of the OTEL telemetry pipeline (collector process, `/healthz`, data flow)
+4. Present all three results as one consolidated report to the user
+
+### Report categories
+
+| Category | OK | WARN | FAIL |
+|----------|----|------|------|
+| wiring | all hooks/run-cmds resolve | — | broken `mustard-rt on` or `run` reference |
+| drift | installed matches templates/ | folders differ | — |
+| state-health | registry present, no orphan states | orphan/expired states or missing registry | — |
+| residue (`--residue`) | no dead refs | dead `.js` / empty `scripts/` | — |
 
 ### When to Use
 
 - Periodic project hygiene
+- After `mustard update` to confirm the install is clean
 - After telemetry or metrics output looks wrong
+- When hooks appear to be silently skipping

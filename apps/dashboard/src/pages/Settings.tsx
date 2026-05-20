@@ -1,7 +1,7 @@
 import { useState, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
-import { open } from '@tauri-apps/plugin-dialog';
+import { useTranslation } from 'react-i18next';
 import { useStore } from '@/lib/store';
 import { discoverProjects } from '@/api/discovery';
 import { readEnv, writeEnv } from '@/api/env';
@@ -9,7 +9,6 @@ import { ENV_CATALOG, type EnvKey } from '@/data/env-catalog';
 import { Card, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { CollapsibleGroup } from '@/components/page';
-import { relativeTime } from '@/lib/time';
 
 function omitKey(obj: Record<string, string>, key: string): Record<string, string> {
   const next = { ...obj };
@@ -81,13 +80,11 @@ function EnvField({
 }
 
 export function Settings() {
+  const { t } = useTranslation();
   const projectsRoot = useStore((s) => s.projectsRoot);
-  const setProjectsRoot = useStore((s) => s.setProjectsRoot);
   const selectedProjectId = useStore((s) => s.selectedProjectId);
-  const language = useStore((s) => s.language);
-  const setLanguage = useStore((s) => s.setLanguage);
 
-  const { data: projects, isFetching } = useQuery({
+  const { data: projects } = useQuery({
     queryKey: ['discover', projectsRoot],
     queryFn: () => discoverProjects(projectsRoot!),
     enabled: !!projectsRoot,
@@ -147,98 +144,26 @@ export function Settings() {
       <div className="flex flex-col gap-1">
         <nav className="text-[12px] text-muted-foreground">
           Mustard <span className="opacity-50">/</span>{" "}
-          <span className="text-foreground">Settings</span>
+          <span className="text-foreground">{t('settings.title')}</span>
         </nav>
-        <h1 className="text-xl font-medium tracking-tight">Settings</h1>
+        <h1 className="text-xl font-medium tracking-tight">{t('settings.title')}</h1>
         <p className="text-[13px] text-muted-foreground leading-relaxed">
-          Configuração do dashboard e das variáveis de ambiente do Mustard. As
-          variáveis são gravadas em <code className="font-mono">.claude/settings.json</code>{" "}
-          do projeto selecionado. Cada entrada mostra o título legível em cima e
-          o nome técnico da variável logo abaixo.
+          {t('settings.envDescriptionBefore')}
+          <code className="font-mono">.claude/settings.json#env</code>
+          {t('settings.envDescriptionAfter')}
         </p>
       </div>
-      <Card size="sm">
-        <CardHeader>
-          <CardTitle className="text-sm font-medium">Diretório de projetos</CardTitle>
-          <CardDescription className="text-[13px] text-muted-foreground">
-            <code className="font-mono text-foreground">{projectsRoot ?? 'Não configurado'}</code>
-          </CardDescription>
-        </CardHeader>
-        <div className="px-4 pb-4 flex items-center gap-2">
-          <button
-            className="bg-primary text-primary-foreground px-3 py-1.5 rounded text-sm"
-            onClick={async () => {
-              const sel = await open({ directory: true, multiple: false });
-              if (typeof sel === 'string') setProjectsRoot(sel);
-            }}
-          >
-            Selecionar pasta
-          </button>
-          {projectsRoot && (
-            <button
-              className="text-muted-foreground hover:text-foreground px-3 py-1.5 rounded text-sm border border-border"
-              onClick={() => setProjectsRoot(null)}
-            >
-              Limpar
-            </button>
-          )}
-        </div>
-      </Card>
-      <Card size="sm">
-        <CardHeader>
-          <CardTitle className="text-sm font-medium">Idioma</CardTitle>
-          <CardDescription className="text-[13px] text-muted-foreground">
-            Idioma da interface (persistido localmente).
-          </CardDescription>
-        </CardHeader>
-        <div className="px-4 pb-4 flex items-center gap-2">
-          {(['pt', 'en'] as const).map((lng) => (
-            <button
-              key={lng}
-              onClick={() => setLanguage(lng)}
-              className={language === lng
-                ? "bg-primary text-primary-foreground px-3 py-1.5 rounded text-sm"
-                : "text-muted-foreground hover:text-foreground px-3 py-1.5 rounded text-sm border border-border"}
-            >
-              {lng.toUpperCase()}
-            </button>
-          ))}
-        </div>
-      </Card>
-      {projectsRoot && (
-        <Card size="sm">
-          <CardHeader>
-            <CardTitle className="text-sm font-medium">Projetos descobertos</CardTitle>
-            <CardDescription className="text-[13px] text-muted-foreground">
-              {isFetching ? 'Descobrindo…' : `${projects?.length ?? 0} encontrados`}
-            </CardDescription>
-          </CardHeader>
-          {!isFetching && projects && projects.length > 0 && (
-            <ul className="flex flex-col gap-0.5 text-sm px-2 pb-3">
-              {projects.map((p) => (
-                <li key={p.id} className="flex items-center gap-2 px-2 py-1 rounded hover:bg-muted/40">
-                  <span>{p.name}</span>
-                  <span className="text-muted-foreground text-[13px] ml-auto">
-                    {p.last_activity_ms ? relativeTime(new Date(p.last_activity_ms).toISOString()) : '—'}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          )}
-        </Card>
-      )}
-
       {/* Environment section */}
       {!selectedProject ? (
         <p className="text-[13px] text-muted-foreground">
-          Selecione um projeto na sidebar para editar variáveis MUSTARD_*.
+          {t('settings.envSelectProject')}
         </p>
       ) : (
         <>
           <div>
-            <h2 className="text-sm font-medium">Environment — {selectedProject.name}</h2>
+            <h2 className="text-sm font-medium">{t('settings.envTitle')} — {selectedProject.name}</h2>
             <p className="text-[13px] text-muted-foreground">
-              Variáveis <code className="font-mono">MUSTARD_*</code> / <code className="font-mono">OTEL_*</code> / <code className="font-mono">CLAUDE_CODE_*</code> persistidas em <code className="font-mono">.claude/settings.json#env</code>.
+              {t('settings.envHelpTextBefore')}<code className="font-mono">MUSTARD_*</code>{t('settings.envHelpTextSep')}<code className="font-mono">OTEL_*</code>{t('settings.envHelpTextSep')}<code className="font-mono">CLAUDE_CODE_*</code>{t('settings.envHelpTextAfter')}<code className="font-mono">.claude/settings.json#env</code>{t('settings.envHelpTextEnd')}
             </p>
           </div>
           {ENV_CATALOG.map((group) => {
@@ -291,17 +216,17 @@ export function Settings() {
               onClick={onSave}
               className="bg-primary text-primary-foreground px-3 py-1.5 rounded text-sm disabled:opacity-40"
             >
-              Salvar mudanças
+              {t('settings.saveChanges')}
             </button>
             <button
               disabled={!hasPending}
               onClick={onDiscard}
               className="text-muted-foreground hover:text-foreground px-3 py-1.5 rounded text-sm border border-border disabled:opacity-40"
             >
-              Descartar
+              {t('settings.discardChanges')}
             </button>
             <span className="text-[13px] text-muted-foreground ml-auto">
-              {Object.keys(pendingEnv).length} pendentes
+              {Object.keys(pendingEnv).length} {t('settings.envPending')}
             </span>
           </div>
         </>

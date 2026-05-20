@@ -1,4 +1,4 @@
-use rusqlite::{Connection, OpenFlags};
+use rusqlite::{Connection, OpenFlags, params};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -331,10 +331,22 @@ pub fn recent_events_from_db(conn: &Connection, limit: usize) -> Result<Vec<Rece
 }
 
 pub fn specs_from_db(conn: &Connection) -> Result<Vec<SpecRow>, String> {
+    // `phase` is derived from the most-recent `pipeline.phase` event for the
+    // spec (`payload.to`), NOT from the `specs.phase` projection column. The
+    // event log is the canonical write path — `emit_phase.rs` and `post_edit`
+    // both append `pipeline.phase` rows — so the latest event always reflects
+    // the spec's true current phase. The correlated subquery mirrors
+    // `mustard_core::emit_phase::last_phase_for_spec` (reverse-iterate, take
+    // the freshest), using the `idx_events_spec`/`idx_events_event` indexes.
     let mut stmt = conn
         .prepare(
-            "SELECT name, status, phase, started_at, completed_at, affected_files FROM specs \
-             ORDER BY COALESCE(completed_at, started_at) DESC",
+            "SELECT s.name, s.status, \
+                    (SELECT json_extract(e.payload, '$.to') FROM events e \
+                     WHERE e.event = 'pipeline.phase' AND e.spec = s.name \
+                     ORDER BY e.id DESC LIMIT 1) AS phase, \
+                    s.started_at, s.completed_at, s.affected_files \
+             FROM specs s \
+             ORDER BY COALESCE(s.completed_at, s.started_at) DESC",
         )
         .map_err(|e| e.to_string())?;
     let rows = stmt
@@ -880,6 +892,390 @@ pub fn consumption_summary_from_db(conn: &Connection) -> Result<ConsumptionSumma
         by_agent_type: consumption_by_agent_type(conn).unwrap_or_default(),
         top_specs: consumption_top_specs(conn, 10).unwrap_or_default(),
         daily_series: consumption_daily_series(conn, 14).unwrap_or_default(),
+    })
+}
+
+/// Agent activity — aggregates agent.start / agent.stop pairs from the events
+/// table, grouped by actor_id (agent_type). Mirrors the logic of the former
+/// NDJSON-based agent activity reader, running against SQLite.
+///
+/// Duration is computed per matched start→stop pair by collecting starts into an
+/// in-memory map keyed by (session_id, actor_id) and matching each stop against
+/// it. Tokens are deliberately omitted (they live in spans, not in the events
+/// table). Returns an empty block on any schema mismatch.
+pub fn agent_activity_from_db(conn: &Connection) -> Result<crate::telemetry::AgentActivityBlock, String> {
+    // Collect starts per (session_id, actor_id) → ts.
+    let start_sql = "SELECT COALESCE(actor_id, 'unknown') AS aid, \
+                            COALESCE(session_id, '') AS sid, ts \
+                     FROM events WHERE event = 'agent.start'";
+    let stop_sql  = "SELECT COALESCE(actor_id, 'unknown') AS aid, \
+                            COALESCE(session_id, '') AS sid, ts, \
+                            COALESCE(json_extract(payload, '$.isError'), 0) AS is_err \
+                     FROM events WHERE event = 'agent.stop'";
+
+    // Accumulator per agent_type (actor_id).
+    struct Acc {
+        starts: u64,
+        stops: u64,
+        errors: u64,
+        durations_ms: Vec<u64>,
+        last_ts: Option<String>,
+    }
+    let mut acc: std::collections::HashMap<String, Acc> = std::collections::HashMap::new();
+    // pending start timestamps: key = "sid|aid" → ts string
+    let mut pending: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+
+    if let Ok(mut stmt) = conn.prepare(start_sql) {
+        if let Ok(rows) = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            ))
+        }) {
+            for r in rows.flatten() {
+                let (aid, sid, ts) = r;
+                let entry = acc.entry(aid.clone()).or_insert_with(|| Acc { starts: 0, stops: 0, errors: 0, durations_ms: vec![], last_ts: None });
+                entry.starts += 1;
+                if let Some(ref t) = ts {
+                    if entry.last_ts.as_ref().map_or(true, |cur| t > cur) {
+                        entry.last_ts = Some(t.clone());
+                    }
+                    pending.insert(format!("{}|{}", sid, aid), t.clone());
+                }
+            }
+        }
+    }
+
+    if let Ok(mut stmt) = conn.prepare(stop_sql) {
+        if let Ok(rows) = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                // json_extract returns 0/1/null for boolean fields in SQLite
+                row.get::<_, Option<i64>>(3)?,
+            ))
+        }) {
+            for r in rows.flatten() {
+                let (aid, sid, ts, is_err_raw) = r;
+                let is_error = is_err_raw.unwrap_or(0) != 0;
+                let entry = acc.entry(aid.clone()).or_insert_with(|| Acc { starts: 0, stops: 0, errors: 0, durations_ms: vec![], last_ts: None });
+                entry.stops += 1;
+                if is_error { entry.errors += 1; }
+                if let Some(ref t) = ts {
+                    if entry.last_ts.as_ref().map_or(true, |cur| t > cur) {
+                        entry.last_ts = Some(t.clone());
+                    }
+                    let key = format!("{}|{}", sid, aid);
+                    if let Some(start_ts) = pending.remove(&key) {
+                        if let (Some(t0), Some(t1)) = (
+                            crate::telemetry::parse_iso_ms_pub(&start_ts),
+                            crate::telemetry::parse_iso_ms_pub(t),
+                        ) {
+                            if t1 >= t0 { entry.durations_ms.push(t1 - t0); }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let mut total_dispatches: u64 = 0;
+    let mut total_errors: u64 = 0;
+    let mut agents: Vec<crate::telemetry::AgentActivity> = acc
+        .into_iter()
+        .map(|(agent_type, a)| {
+            total_dispatches += a.starts;
+            total_errors += a.errors;
+            let avg_duration_ms = if a.durations_ms.is_empty() { 0 } else {
+                let sum: u64 = a.durations_ms.iter().sum();
+                sum / a.durations_ms.len() as u64
+            };
+            crate::telemetry::AgentActivity { agent_type, starts: a.starts, stops: a.stops, errors: a.errors, avg_duration_ms, last_ts: a.last_ts }
+        })
+        .collect();
+    agents.sort_by(|a, b| b.starts.cmp(&a.starts).then_with(|| b.last_ts.cmp(&a.last_ts)));
+    agents.truncate(10);
+
+    Ok(crate::telemetry::AgentActivityBlock { total_dispatches, total_errors, agents })
+}
+
+/// Derive the current session start timestamp from the events table.
+///
+/// Algorithm: find the `session_id` of the most recent event that carries one,
+/// then return the earliest `ts` that shares that session_id. This mirrors the
+/// former `session_start_ts` which read the NDJSON log (now removed).
+pub fn session_start_ts_from_db(conn: &Connection) -> Option<String> {
+    // Most recent session_id.
+    let last_session: Option<String> = conn
+        .query_row(
+            "SELECT session_id FROM events WHERE session_id IS NOT NULL AND session_id != '' \
+             ORDER BY id DESC LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .ok()
+        .flatten();
+    let session = last_session?;
+
+    // Earliest ts carrying that session_id (ISO-8601 strings sort correctly).
+    conn.query_row(
+        "SELECT MIN(ts) FROM events WHERE session_id = ?1 AND ts IS NOT NULL",
+        [&session],
+        |row| row.get::<_, Option<String>>(0),
+    )
+    .ok()
+    .flatten()
+}
+
+/// Live activity tail — most recent events (up to `limit`) from the events
+/// table, plus aggregates matching the `LiveActivity` / `PhaseActivity` shapes.
+/// This backs `telemetry::live_activity` (NDJSON-based reader removed).
+pub fn live_activity_from_db(conn: &Connection) -> Result<crate::telemetry::LiveActivity, String> {
+    use crate::telemetry::{LiveActivity, PhaseActivity, ToolCount, CANONICAL_PHASES};
+
+    // ------------------------------------------------------------------
+    // 1. Global aggregates for today, last hour, last 5 minutes.
+    //    The events table stores ts as ISO-8601 UTC strings.
+    // ------------------------------------------------------------------
+    let events_today: u64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM events WHERE ts >= date('now')",
+            [],
+            |row| row.get::<_, Option<i64>>(0),
+        )
+        .ok()
+        .flatten()
+        .unwrap_or(0)
+        .max(0) as u64;
+
+    let events_last_hour: u64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM events WHERE ts >= datetime('now', '-1 hour')",
+            [],
+            |row| row.get::<_, Option<i64>>(0),
+        )
+        .ok()
+        .flatten()
+        .unwrap_or(0)
+        .max(0) as u64;
+
+    let events_last_5min: u64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM events WHERE ts >= datetime('now', '-5 minutes')",
+            [],
+            |row| row.get::<_, Option<i64>>(0),
+        )
+        .ok()
+        .flatten()
+        .unwrap_or(0)
+        .max(0) as u64;
+
+    // ------------------------------------------------------------------
+    // 2. Most-recent event metadata.
+    // ------------------------------------------------------------------
+    let last_event_ts: Option<String> = conn
+        .query_row("SELECT MAX(ts) FROM events", [], |row| row.get(0))
+        .ok()
+        .flatten();
+
+    let (current_phase, current_spec, current_wave): (Option<String>, Option<String>, Option<u32>) = conn
+        .query_row(
+            "SELECT json_extract(payload, '$.phase'), spec, wave \
+             FROM events ORDER BY id DESC LIMIT 1",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, Option<String>>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<i64>>(2)?,
+                ))
+            },
+        )
+        .ok()
+        .map(|(p, s, w)| {
+            let phase = p.map(|ph| ph.to_ascii_uppercase());
+            let wave = w.and_then(|n| u32::try_from(n).ok());
+            (phase, s, wave)
+        })
+        .unwrap_or((None, None, None));
+
+    // ------------------------------------------------------------------
+    // 3. is_fresh: last event within 2 minutes.
+    // ------------------------------------------------------------------
+    let is_fresh: bool = conn
+        .query_row(
+            "SELECT COUNT(*) FROM events WHERE ts >= datetime('now', '-2 minutes')",
+            [],
+            |row| row.get::<_, Option<i64>>(0),
+        )
+        .ok()
+        .flatten()
+        .unwrap_or(0)
+        > 0;
+
+    // ------------------------------------------------------------------
+    // 4. Top tools today (all phases).
+    // ------------------------------------------------------------------
+    let tools_today: Vec<ToolCount> = {
+        let sql = "SELECT COALESCE(json_extract(payload, '$.tool'), json_extract(payload, '$.tool_name')) AS t, \
+                          COUNT(*) AS cnt \
+                   FROM events WHERE event = 'tool.use' AND ts >= date('now') AND t IS NOT NULL \
+                   GROUP BY t ORDER BY cnt DESC LIMIT 10";
+        let mut stmt = conn.prepare(sql).unwrap_or_else(|_| conn.prepare("SELECT NULL, 0 WHERE 0").unwrap());
+        stmt.query_map([], |row| {
+            Ok(ToolCount {
+                tool_name: row.get::<_, Option<String>>(0)?.unwrap_or_default(),
+                count: row.get::<_, Option<i64>>(1)?.unwrap_or(0).max(0) as u64,
+            })
+        })
+        .map(|rows| rows.flatten().collect())
+        .unwrap_or_default()
+    };
+
+    // ------------------------------------------------------------------
+    // 5. 60-minute sparkline (one bucket per minute, oldest first).
+    // ------------------------------------------------------------------
+    let minute_buckets: Vec<u64> = {
+        let sql = "SELECT CAST((strftime('%s', 'now') - strftime('%s', ts)) / 60 AS INTEGER) AS mins_ago, \
+                          COUNT(*) FROM events \
+                   WHERE ts >= datetime('now', '-1 hour') \
+                   GROUP BY mins_ago";
+        let mut buckets = vec![0u64; 60];
+        if let Ok(mut stmt) = conn.prepare(sql) {
+            if let Ok(rows) = stmt.query_map([], |row| {
+                Ok((row.get::<_, Option<i64>>(0)?.unwrap_or(-1), row.get::<_, Option<i64>>(1)?.unwrap_or(0).max(0) as u64))
+            }) {
+                for r in rows.flatten() {
+                    let (mins_ago, cnt) = r;
+                    if (0..60).contains(&mins_ago) {
+                        let idx = 59 - mins_ago as usize;
+                        if let Some(b) = buckets.get_mut(idx) { *b += cnt; }
+                    }
+                }
+            }
+        }
+        buckets
+    };
+
+    // ------------------------------------------------------------------
+    // 6. Per-phase aggregates.
+    // ------------------------------------------------------------------
+    let by_phase: Vec<PhaseActivity> = CANONICAL_PHASES
+        .iter()
+        .map(|p| {
+            let phase = (*p).to_string();
+
+            let events_today_p: u64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM events \
+                     WHERE json_extract(payload, '$.phase') = ?1 AND ts >= date('now')",
+                    params![phase],
+                    |row| row.get::<_, Option<i64>>(0),
+                )
+                .ok().flatten().unwrap_or(0).max(0) as u64;
+
+            let events_last_hour_p: u64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM events \
+                     WHERE json_extract(payload, '$.phase') = ?1 AND ts >= datetime('now', '-1 hour')",
+                    params![phase],
+                    |row| row.get::<_, Option<i64>>(0),
+                )
+                .ok().flatten().unwrap_or(0).max(0) as u64;
+
+            let events_last_5min_p: u64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM events \
+                     WHERE json_extract(payload, '$.phase') = ?1 AND ts >= datetime('now', '-5 minutes')",
+                    params![phase],
+                    |row| row.get::<_, Option<i64>>(0),
+                )
+                .ok().flatten().unwrap_or(0).max(0) as u64;
+
+            let last_event_ts_p: Option<String> = conn
+                .query_row(
+                    "SELECT MAX(ts) FROM events WHERE json_extract(payload, '$.phase') = ?1",
+                    params![phase],
+                    |row| row.get(0),
+                )
+                .ok().flatten();
+
+            let last_spec_p: Option<String> = conn
+                .query_row(
+                    "SELECT spec FROM events WHERE json_extract(payload, '$.phase') = ?1 \
+                     AND spec IS NOT NULL ORDER BY id DESC LIMIT 1",
+                    params![phase],
+                    |row| row.get(0),
+                )
+                .ok().flatten();
+
+            let top_tools_p: Vec<ToolCount> = {
+                let sql = "SELECT COALESCE(json_extract(payload, '$.tool'), json_extract(payload, '$.tool_name')) AS t, \
+                                  COUNT(*) AS cnt \
+                           FROM events WHERE event = 'tool.use' AND json_extract(payload, '$.phase') = ?1 \
+                           AND ts >= date('now') AND t IS NOT NULL \
+                           GROUP BY t ORDER BY cnt DESC LIMIT 3";
+                if let Ok(mut stmt) = conn.prepare(sql) {
+                    stmt.query_map(params![phase], |row| {
+                        Ok(ToolCount {
+                            tool_name: row.get::<_, Option<String>>(0)?.unwrap_or_default(),
+                            count: row.get::<_, Option<i64>>(1)?.unwrap_or(0).max(0) as u64,
+                        })
+                    })
+                    .map(|rows| rows.flatten().collect())
+                    .unwrap_or_default()
+                } else { vec![] }
+            };
+
+            let minute_buckets_p: Vec<u64> = {
+                let sql = "SELECT CAST((strftime('%s', 'now') - strftime('%s', ts)) / 60 AS INTEGER) AS mins_ago, \
+                                  COUNT(*) FROM events \
+                           WHERE json_extract(payload, '$.phase') = ?1 AND ts >= datetime('now', '-1 hour') \
+                           GROUP BY mins_ago";
+                let mut buckets = vec![0u64; 60];
+                if let Ok(mut stmt) = conn.prepare(sql) {
+                    if let Ok(rows) = stmt.query_map(params![phase], |row| {
+                        Ok((row.get::<_, Option<i64>>(0)?.unwrap_or(-1), row.get::<_, Option<i64>>(1)?.unwrap_or(0).max(0) as u64))
+                    }) {
+                        for r in rows.flatten() {
+                            let (mins_ago, cnt) = r;
+                            if (0..60).contains(&mins_ago) {
+                                let idx = 59 - mins_ago as usize;
+                                if let Some(b) = buckets.get_mut(idx) { *b += cnt; }
+                            }
+                        }
+                    }
+                }
+                buckets
+            };
+
+            PhaseActivity {
+                phase,
+                events_today: events_today_p,
+                events_last_hour: events_last_hour_p,
+                events_last_5min: events_last_5min_p,
+                minute_buckets: minute_buckets_p,
+                last_event_ts: last_event_ts_p,
+                top_tools: top_tools_p,
+                last_spec: last_spec_p,
+            }
+        })
+        .collect();
+
+    Ok(LiveActivity {
+        last_event_ts,
+        events_today,
+        events_last_hour,
+        events_last_5min,
+        tools_today,
+        minute_buckets,
+        current_spec,
+        current_phase,
+        current_wave,
+        is_fresh,
+        by_phase,
     })
 }
 

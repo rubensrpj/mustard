@@ -169,6 +169,9 @@ fn rtk_segment() -> Option<String> {
 }
 
 /// Whether any non-terminal pipeline-state file exists under `dir`.
+///
+/// Phase is derived from `pipeline.phase` events in the SQLite log (Wave-2
+/// migration); the pipeline-state JSON only provides identity / status.
 fn pipeline_segment(dir: &Path) -> Option<String> {
     let states_dir = dir.join(".claude").join(".pipeline-states");
     let mut pipelines: Vec<Value> = Vec::new();
@@ -198,16 +201,10 @@ fn pipeline_segment(dir: &Path) -> Option<String> {
         .or_else(|| most_recent.get("feature"))
         .and_then(Value::as_str)
         .unwrap_or("?");
-    let phase = most_recent
-        .get("phase")
-        .map(|p| p.to_string())
+    let phase_name = crate::run::emit_phase::last_phase_for_spec(dir, spec)
         .unwrap_or_else(|| "?".to_string());
-    let phase_name = most_recent
-        .get("phaseName")
-        .and_then(Value::as_str)
-        .unwrap_or("");
     Some(format!(
-        "{}{spec}{} {}P{phase} {phase_name}{}",
+        "{}{spec}{} {}{phase_name}{}",
         c::CYAN, c::RESET, c::YELLOW, c::RESET
     ))
 }

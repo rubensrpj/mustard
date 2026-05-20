@@ -19,16 +19,14 @@
 //!
 //! - [`cli`] — `clap` argument parsing and the subcommand dispatch table.
 //! - [`commands`] — one module per subcommand (`init`, `update`, `config`,
-//!   `auto_update`, `add`, `review` — all ported as of Wave 2).
+//!   `add`, `review` — all ported as of Wave 2).
 //! - [`fs_ops`] — recursive directory copy and surgical JSON merge, shared by
 //!   `init` and `update`.
-//! - [`npm`] — npm-registry version queries and semver comparison.
 //! - [`runtime`] — host runtime metadata recorded into `mustard.json`.
 
 pub mod cli;
 pub mod commands;
 pub mod fs_ops;
-pub mod npm;
 pub mod runtime;
 
 pub use commands::init::{InitOptions, init};

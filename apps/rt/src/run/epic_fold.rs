@@ -41,12 +41,20 @@ fn write_json(path: &Path, value: &Value) -> bool {
     }
 }
 
-/// The uppercased phase of a pipeline-state object (`phaseName` / `phase`).
-fn state_phase(state: &Value) -> String {
+/// The uppercased phase of a pipeline-state object — derived from the SQLite
+/// `pipeline.phase` event log (Wave-2 migration) keyed by the state's `spec`
+/// name. The pipeline-state JSON no longer carries phase. Falls back to the
+/// legacy in-JSON `phase` field for backwards compatibility with state files
+/// written before the migration; new code paths should not depend on it.
+fn state_phase(state: &Value, cwd: &Path) -> String {
+    if let Some(spec) = state.get("spec").and_then(Value::as_str) {
+        if let Some(phase) = crate::run::emit_phase::last_phase_for_spec(cwd, spec) {
+            return phase.to_uppercase();
+        }
+    }
     state
-        .get("phaseName")
+        .get("phase")
         .and_then(Value::as_str)
-        .or_else(|| state.get("phase").and_then(Value::as_str))
         .unwrap_or("")
         .to_uppercase()
 }
@@ -100,13 +108,13 @@ fn detect_completed_epics(cwd: &Path) -> Vec<String> {
         if children.is_empty() {
             continue;
         }
-        if state_phase(&state) == "CLOSE" {
+        if state_phase(&state, cwd) == "CLOSE" {
             continue;
         }
         let all_closed = children.iter().all(|child| {
             let child_file = states_dir.join(format!("{child}.json"));
             read_json(&child_file)
-                .map(|cs| state_phase(&cs) == "CLOSE")
+                .map(|cs| state_phase(&cs, cwd) == "CLOSE")
                 .unwrap_or(false)
         });
         if all_closed {
@@ -205,7 +213,7 @@ fn fold_epic(cwd: &Path, epic: &str) -> bool {
         .unwrap_or_default();
 
     // Idempotency 1: root already CLOSE.
-    if state_phase(&epic_state) == "CLOSE" {
+    if state_phase(&epic_state, cwd) == "CLOSE" {
         return true;
     }
 
@@ -223,10 +231,19 @@ fn fold_epic(cwd: &Path, epic: &str) -> bool {
     if already_complete {
         let mut state = read_json(&epic_file).unwrap_or(epic_state);
         if let Some(obj) = state.as_object_mut() {
+            // Keep the legacy in-JSON `phase` (human-readable shape). The
+            // canonical CLOSE marker is the `pipeline.phase` event emitted
+            // alongside `epic.complete`; `phaseName` writes were dropped in
+            // the dashboard-phase-from-sqlite migration.
             obj.insert("phase".to_string(), json!("CLOSE"));
-            obj.insert("phaseName".to_string(), json!("CLOSE"));
         }
         write_json(&epic_file, &state);
+        emit_event(
+            &store,
+            "pipeline.phase",
+            json!({ "from": null, "to": "CLOSE" }),
+            epic,
+        );
         return true;
     }
 
@@ -343,14 +360,22 @@ fn fold_epic(cwd: &Path, epic: &str) -> bool {
         &ended_at,
     );
 
-    // Transition the root to CLOSE.
+    // Transition the root to CLOSE. The canonical marker is the
+    // `pipeline.phase` event emitted below; the in-JSON `phase` is kept as a
+    // human-readable shape field. `phaseName` writes were dropped in the
+    // dashboard-phase-from-sqlite migration.
     let mut updated = epic_state;
     if let Some(obj) = updated.as_object_mut() {
         obj.insert("phase".to_string(), json!("CLOSE"));
-        obj.insert("phaseName".to_string(), json!("CLOSE"));
         obj.insert("folded_at".to_string(), json!(now_iso8601()));
     }
     write_json(&epic_file, &updated);
+    emit_event(
+        &store,
+        "pipeline.phase",
+        json!({ "from": null, "to": "CLOSE" }),
+        epic,
+    );
 
     // Emit the `epic.fold` tombstone.
     let mut compactable = vec![epic.to_string()];
@@ -437,7 +462,9 @@ mod tests {
         );
         assert!(fold_epic(dir.path(), "epic"));
         let state = read_json(&states.join("epic.json")).unwrap();
-        assert_eq!(state_phase(&state), "CLOSE");
+        // After fold the canonical phase is the `pipeline.phase` event;
+        // the in-JSON `phase` is the human-readable shape.
+        assert_eq!(state_phase(&state, dir.path()), "CLOSE");
         // Second fold is a no-op success.
         assert!(fold_epic(dir.path(), "epic"));
     }

@@ -24,13 +24,13 @@ Generate once per action entry (`SENTINEL="mustard-git-autostash-<action>-$(date
 ### Protected stash push
 
 ```bash
-git stash push -u -m "$SENTINEL"
+rtk git stash push -u -m "$SENTINEL"
 # untracked included (-u) because runtime-regenerated files may be untracked
 ```
 
 ### Retry loop on checkout race
 
-Race scenario: between `git stash push` and `git checkout <target>`, Claude/RTK rewrite `.claude/.agent-state/*` etc. → checkout aborts with `"would be overwritten by checkout"` or `"local changes would be overwritten"`.
+Race scenario: between `rtk git stash push` and `rtk git checkout <target>`, Claude/RTK rewrite `.claude/.agent-state/*` etc. → checkout aborts with `"would be overwritten by checkout"` or `"local changes would be overwritten"`.
 
 Protocol (max 3 attempts, then abort with descriptive error):
 
@@ -38,8 +38,8 @@ Protocol (max 3 attempts, then abort with descriptive error):
 ATTEMPT=1
 MAX=3
 while [ $ATTEMPT -le $MAX ]; do
-  git stash push -u -m "$SENTINEL" 2>/dev/null
-  CO_OUT=$(git checkout "$TARGET" 2>&1)
+  rtk git stash push -u -m "$SENTINEL" 2>/dev/null
+  CO_OUT=$(rtk git checkout "$TARGET" 2>&1)
   CO_RC=$?
   if [ $CO_RC -eq 0 ]; then
     break
@@ -57,12 +57,12 @@ done
 
 ### Safe stash pop (preserving pre-existing user stashes)
 
-**NEVER** run `git stash pop` without first locating the exact sentinel. Pre-existing user stashes at `stash@{0}` must not be disturbed.
+**NEVER** run `rtk git stash pop` without first locating the exact sentinel. Pre-existing user stashes at `stash@{0}` must not be disturbed.
 
 ```bash
-IDX=$(git stash list | grep -F "$SENTINEL" | head -n1 | sed -E 's/^stash@\{([0-9]+)\}.*$/\1/')
+IDX=$(rtk git stash list | grep -F "$SENTINEL" | head -n1 | sed -E 's/^stash@\{([0-9]+)\}.*$/\1/')
 if [ -n "$IDX" ]; then
-  git stash pop "stash@{$IDX}"
+  rtk git stash pop "stash@{$IDX}"
 fi
 ```
 
@@ -74,13 +74,13 @@ These operations are **irreversible** at filesystem or history level and are **B
 
 | Forbidden | Reversible alternative |
 |-----------|------------------------|
-| `rm -f <path>`, `rm -rf <path>` | `git rm --cached <path>` (preserves file on disk) |
-| `git clean -fd`, `git clean -fdx` | Append to `$(git rev-parse --git-path info/exclude)` instead |
+| `rm -f <path>`, `rm -rf <path>` | `rtk git rm --cached <path>` (preserves file on disk) |
+| `git clean -fd`, `git clean -fdx` | Append to `$(rtk git rev-parse --git-path info/exclude)` instead |
 | `git checkout -f`, `git checkout --force` | Auto-stash Protocol with retry (above) |
-| `git reset --hard` | `git stash push` to snapshot state, then `git checkout <ref>` |
+| `git reset --hard` | `rtk git stash push` to snapshot state, then `rtk git checkout <ref>` |
 | Forced unlink of lock files | Investigate process holding lock; never delete blindly |
 
-**Rationale**: all skill state transitions must be recoverable via `git reflog` / `git stash list`. Filesystem-destructive shortcuts silently lose user work.
+**Rationale**: all skill state transitions must be recoverable via `rtk git reflog` / `rtk git stash list`. Filesystem-destructive shortcuts silently lose user work.
 
 ## merge — Fast-Forward Protocol
 
@@ -105,21 +105,21 @@ Per-repo procedure (submodules parallel first, then parent):
 3. Auto-stash Protocol push (`-u`).
 4. Checkout chain with retry (Auto-stash Protocol) to `$SOURCE`, pull, then to `$TARGET`, pull:
    ```bash
-   git fetch origin && \
-     git checkout "$SOURCE" && git pull origin "$SOURCE" && \
-     git checkout "$TARGET" && git pull origin "$TARGET"
+   rtk git fetch origin && \
+     rtk git checkout "$SOURCE" && rtk git pull origin "$SOURCE" && \
+     rtk git checkout "$TARGET" && rtk git pull origin "$TARGET"
    ```
 5. Fast-forward merge with compact output:
    ```bash
-   git merge --ff-only -q "$SOURCE" && git --no-pager diff --stat HEAD@{1} HEAD | tail -3
+   rtk git merge --ff-only -q "$SOURCE" && rtk git --no-pager diff --stat HEAD@{1} HEAD | tail -3
    ```
 6. Push:
    ```bash
-   git push origin "$TARGET"
+   rtk git push origin "$TARGET"
    ```
 7. Return to `$SOURCE`:
    ```bash
-   git checkout "$SOURCE"
+   rtk git checkout "$SOURCE"
    ```
 8. **Safe stash pop** by sentinel index.
 
@@ -127,7 +127,7 @@ Skip submodules with no commits ahead (nothing to merge).
 
 ### Fast-forward failure
 
-If `--ff-only` fails (branches diverged), STOP and report to user. **NEVER** fall back to `git reset --hard` or `git checkout -f`.
+If `--ff-only` fails (branches diverged), STOP and report to user. **NEVER** fall back to `rtk git reset --hard` or `rtk git checkout -f`.
 
 ### Example: `/git merge` from `feature/login`
 
@@ -165,19 +165,19 @@ Per-repo procedure (submodules parallel first, then parent):
 3. Auto-stash Protocol push (`-u`).
 4. Checkout chain with retry via Auto-stash Protocol:
    ```bash
-   git fetch origin && \
-     git checkout dev && git pull origin dev && \
-     git checkout main && git pull origin main
+   rtk git fetch origin && \
+     rtk git checkout dev && rtk git pull origin dev && \
+     rtk git checkout main && rtk git pull origin main
    ```
 5. Compact ff-merge + push:
    ```bash
-   git merge --ff-only -q dev && git --no-pager diff --stat HEAD@{1} HEAD | tail -3 && \
-     git push origin main
+   rtk git merge --ff-only -q dev && rtk git --no-pager diff --stat HEAD@{1} HEAD | tail -3 && \
+     rtk git push origin main
    ```
 6. Return to `$ORIGIN` (parent uses `$ORIGIN`; submodules return to `dev`):
    ```bash
-   git checkout "$ORIGIN"   # parent
-   git checkout dev         # submodule
+   rtk git checkout "$ORIGIN"   # parent
+   rtk git checkout dev         # submodule
    ```
 7. **Safe stash pop** by sentinel index.
 
@@ -210,7 +210,7 @@ Pull the parent branch changes into the current branch.
 2. **Auto-stash Protocol**: `SENTINEL="mustard-git-autostash-sync-$(date +%s%N)"`.
 3. Fetch + rebase in one chain:
    ```bash
-   git fetch origin "$PARENT" && git rebase "origin/$PARENT"
+   rtk git fetch origin "$PARENT" && rtk git rebase "origin/$PARENT"
    ```
 4. **Safe stash pop** (by sentinel index).
 5. If rebase has conflicts → abort rebase, report to user, STOP.
@@ -232,24 +232,24 @@ Run `commit` flow (including Ensure-Excluded, Ephemeral Tracked Sub-flow, scope 
 #### Submodules (PARALLEL — monorepo only, one Bash call each)
 
 ```bash
-cd <SUBMODULE_ABSOLUTE_PATH> && git add $SCOPE_EXPR && git commit -m "<message>" && git push origin <branch>
+cd <SUBMODULE_ABSOLUTE_PATH> && rtk git add $SCOPE_EXPR && rtk git commit -m "<message>" && rtk git push origin <branch>
 ```
 
 #### Parent / Root (ONE Bash call)
 
 ```bash
-git add $SCOPE_EXPR && git commit -m "<message>" && git push origin <branch>
+rtk git add $SCOPE_EXPR && rtk git commit -m "<message>" && rtk git push origin <branch>
 ```
 
 ## Final Status Report
 
-**MANDATORY** at the end of every write action (`commit`, `push`, `merge`, `merge main`). Categorizes `git status --short` per repo.
+**MANDATORY** at the end of every write action (`commit`, `push`, `merge`, `merge main`). Categorizes `rtk git status --short` per repo.
 
 ### Per-repo categorizer
 
 ```bash
-echo "=== $(basename "$PWD") (branch: $(git rev-parse --abbrev-ref HEAD)) ==="
-git status --short | while IFS= read -r line; do
+echo "=== $(basename "$PWD") (branch: $(rtk git rev-parse --abbrev-ref HEAD)) ==="
+rtk git status --short | while IFS= read -r line; do
   path=$(echo "$line" | awk '{print $NF}')
   case "$path" in
     .claude/.agent-state/*|.claude/.metrics/*|.claude/.pipeline-states/*|.claude/.detect-cache.json|.claude/.knowledge-seen.json)

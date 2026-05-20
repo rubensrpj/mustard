@@ -551,8 +551,11 @@ fn boundary_gate(input: &HookInput, cwd: &str) -> Option<Verdict> {
     }
     let state = read_newest_fresh_state(cwd)?;
     let spec_name = state.get("specName").and_then(|v| v.as_str())?;
-    // Skip when the pipeline is closing / completed.
-    let phase = state.get("phaseName").and_then(|v| v.as_str()).unwrap_or("");
+    // Skip when the pipeline is closing / completed. Phase is derived from
+    // the SQLite `pipeline.phase` event log (post-Wave 2 the JSON no longer
+    // carries `phaseName`); status remains a state-file field.
+    let phase = crate::run::emit_phase::last_phase_for_spec(cwd, spec_name)
+        .unwrap_or_default();
     let status = state.get("status").and_then(|v| v.as_str()).unwrap_or("");
     if phase == "CLOSE" || status == "completed" {
         return None;
@@ -758,7 +761,9 @@ mod tests {
         std::fs::create_dir_all(&states).unwrap();
         std::fs::write(
             states.join("demo.json"),
-            json!({ "specName": "demo", "phaseName": "EXECUTE" }).to_string(),
+            // Phase derives from SQLite `pipeline.phase` events, not JSON;
+            // no event seeded here → phase is empty → not CLOSE → gate runs.
+            json!({ "specName": "demo" }).to_string(),
         )
         .unwrap();
         // spec.md with a Files section.

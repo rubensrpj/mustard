@@ -21,6 +21,7 @@
 ## Behavior
 
 - **ZERO confirmations by default** — analyze, execute, done. Only exception: `commit` without `--scope` asks once per session and memoizes the choice.
+- **Always prefix `git` with `rtk`** — every invocation (`rtk git status`, `rtk git fetch`, …) including inside `&&`/`;` chains and `$(...)` substitutions. RTK passes through when no filter applies, so prefixing is always safe.
 - **Minimize Bash calls** — chain everything with `&&` / `;`. One Bash call per repo max whenever possible.
 - **No investigation** — if a submodule is dirty, commit it (scoped per Commit Scope Policy).
 - Submodules BEFORE parent (always).
@@ -55,7 +56,7 @@ Claude/RTK runtime paths that must never be tracked:
 .claude/.detect-cache.json   .claude/.knowledge-seen.json
 ```
 
-At every write-touching action, silently ensure these are in `$(git rev-parse --git-path info/exclude)` (idempotent). → See `../../../refs/git/submodule-rules.md` for full protocol.
+At every write-touching action, silently ensure these are in `$(rtk git rev-parse --git-path info/exclude)` (idempotent). → See `../../../refs/git/submodule-rules.md` for full protocol.
 
 ## Cautions
 

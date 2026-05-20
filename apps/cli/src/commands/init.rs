@@ -456,7 +456,7 @@ pub(crate) fn ensure_rtk() {
     }
 
     println!("  RTK not found - attempting auto-install for 60-90% token savings...");
-    if install_rtk() && rtk_on_path() {
+    if install_rtk(rtk_pinned_rev().as_deref()) && rtk_on_path() {
         println!("  RTK installed (token economy active)");
         let _ = Command::new("rtk").args(["init", "-g", "--no-patch"]).output();
     } else {
@@ -479,14 +479,44 @@ fn rtk_on_path() -> bool {
         .unwrap_or(false)
 }
 
+/// Read the RTK revision pinned in the managed-artifact manifest
+/// (`<templates_dir>/.artifacts.json`, record `tool:rtk`).
+///
+/// Fail-open: a missing / unreadable / unparseable manifest, an absent
+/// `tool:rtk` record, or a null version all yield `None`, leaving the caller
+/// on the current unpinned-install behavior. Never errors or panics — the
+/// manifest is a maintainer-side artifact and `init` must not depend on it.
+///
+/// A branch name (e.g. `develop`) is treated as "unpinned": only a concrete
+/// rev is usable as `cargo install --rev`, so callers receive `None` for it.
+fn rtk_pinned_rev() -> Option<String> {
+    let manifest_path = resolve_templates_dir().ok()?.join(".artifacts.json");
+    let raw = std::fs::read_to_string(&manifest_path).ok()?;
+    let manifest: mustard_core::model::provenance::ArtifactManifest =
+        serde_json::from_str(&raw).ok()?;
+    let version = manifest
+        .artifacts
+        .into_iter()
+        .find(|record| record.id == "tool:rtk")?
+        .version?;
+    // A 40-char hex string is a commit SHA; anything else is a branch/tag and
+    // is not safe to pass to `cargo install --rev`.
+    let is_sha = version.len() == 40 && version.bytes().all(|b| b.is_ascii_hexdigit());
+    is_sha.then_some(version)
+}
+
 /// Best-effort RTK auto-install. Returns `true` only when an installer command
 /// exited successfully. Every spawn failure is swallowed — a host without
 /// `curl`/`cargo`/`scoop` simply falls through to the manual instructions.
 ///
+/// `pinned_rev` is the RTK commit SHA from the manifest (`rtk_pinned_rev`);
+/// when present it pins the `cargo install --git` to that rev, when `None` the
+/// install runs unpinned.
+///
 /// - Unix: pipe the official `install.sh` through `sh` (`curl … | sh`).
 /// - Windows: try `scoop install rtk` first (fast, if Scoop is present), then
 ///   fall back to `cargo install --git`.
-fn install_rtk() -> bool {
+fn install_rtk(pinned_rev: Option<&str>) -> bool {
     let run_ok = |cmd: &mut Command| -> bool {
         cmd.output().map(|o| o.status.success()).unwrap_or(false)
     };
@@ -495,11 +525,12 @@ fn install_rtk() -> bool {
         if run_ok(Command::new("scoop").args(["install", "rtk"])) {
             return true;
         }
-        run_ok(Command::new("cargo").args([
-            "install",
-            "--git",
-            "https://github.com/rtk-ai/rtk",
-        ]))
+        let mut cargo = Command::new("cargo");
+        cargo.args(["install", "--git", "https://github.com/rtk-ai/rtk"]);
+        if let Some(rev) = pinned_rev {
+            cargo.args(["--rev", rev]);
+        }
+        run_ok(&mut cargo)
     } else {
         run_ok(Command::new("sh").arg("-c").arg(
             "curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/master/install.sh | sh",

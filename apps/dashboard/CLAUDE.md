@@ -41,9 +41,9 @@ node .claude/scripts/sync-registry.js --force
 node .claude/scripts/skill-validate.js
 node .claude/scripts/skill-validate.js --json
 
-# Query the shared-memory views (harness event log)
-node .claude/scripts/harness-views.js --view pipeline-state --spec <name> --compact
-node .claude/scripts/harness-views.js --view session-summary --compact
+# Query the shared-memory views (SQLite event log)
+cargo run -p mustard-rt -- run event-projections --view pipeline-state --spec <name>
+cargo run -p mustard-rt -- run event-projections --view session-summary
 ```
 
 The user's global `~/.claude/CLAUDE.md` instructs prefixing CLI commands with `rtk` for token compaction (`rtk git status`, `rtk node --test ...`). The `hooks/rtk-rewrite.js` PreToolUse hook already rewrites Bash commands transparently, so plain commands also get filtered — explicit `rtk` is only needed if RTK is not installed and you want to verify it's not being used.
@@ -56,7 +56,7 @@ Mustard is a **pure Node.js scaffold (CommonJS, zero npm deps)** that turns Clau
 2. **Scripts (`.claude/scripts/*.js`, 26 files)** — invokable utilities (discovery, registry sync, diff context, QA runner, metrics, harness views). Tests live in `.claude/scripts/__tests__/`.
 3. **Slash commands (`.claude/commands/mustard/*/SKILL.md`, 18 commands)** — `/feature`, `/bugfix`, `/scan`, `/qa`, `/approve`, `/complete`, `/resume`, `/review`, `/task`, `/git`, `/status`, `/stats`, `/metrics`, `/knowledge`, `/maint`, `/skill`, `/scan-format`, `/templates:agent-prompt`.
 4. **Skills (`.claude/skills/*/SKILL.md`, 8 foundation skills)** — auto-triggered context (karpathy-guidelines, commit-workflow, design-craft, react-best-practices, senior-architect, skill-creator, pipeline-execution, frontend-design).
-5. **Shared memory (Wave 4)** — single truth source `.claude/.harness/events.jsonl` (append-only NDJSON). Projections: `knowledge.json`, `memory/decisions.json`, `memory/lessons.json`, `.pipeline-states/{spec}.json`. Read via `harness-views.js`, never by directly tailing the log.
+5. **Shared memory** — single truth source `.claude/.harness/mustard.db` (SQLite, consolidado pela spec `eliminate-bun` 2026-05-19). `events.jsonl` no mesmo diretório é log legacy e não é mais autoritativo. Projections (`knowledge.json`, `memory/decisions.json`, `memory/lessons.json`, `.pipeline-states/{spec}.json`) seguem em uso; a fase corrente das specs foi movida para o SQLite via eventos `pipeline.phase` (spec `2026-05-19-dashboard-phase-from-sqlite`) — readers consomem pelos comandos Tauri `dashboard_specs`/`specs_from_db` que derivam a fase do último `pipeline.phase`. Os leitores JS antigos foram removidos junto com a migração — consumir via `SqliteEventStore` em `mustard-core` ou via `mustard-rt run` subcommands.
 6. **Pipeline** — ANALYZE → PLAN → EXECUTE → QA → CLOSE. Light scope skips PLAN. `close-gate.js` blocks CLOSE on build/type/lint/test failure or missing `qa.result`. Mode toggles via env (`MUSTARD_QA_GATE_MODE`, `MUSTARD_CLOSE_GATE_MODE`, etc., listed in `pipeline-config.md`).
 
 ## Hook authoring constraints
@@ -110,17 +110,20 @@ pnpm test              # placeholder — no test runner wired yet
 
 | File | Purpose |
 |------|---------|
-| `.claude/commands/stack.md` | Stack, dependencies, tooling, source layout |
-| `.claude/commands/features.md` | Routes, pages, global UI mounts, data flow |
-| `.claude/commands/patterns.md` | React Query fan-out, invoke wrappers, zustand, router boundary, watcher, react-markdown |
+| `.claude/commands/stack.md` | Stack, dependencies, Tauri plugins, tooling, source layout |
+| `.claude/commands/features.md` | Routes, pages, global UI mounts, data flow, page primitives |
+| `.claude/commands/patterns.md` | React Query fan-out, invoke wrappers, zustand, router boundary, phase theme, watcher, react-markdown, shadcn |
 | `.claude/commands/guards.md` | DO/DON'T rules |
-| `.claude/commands/recipes.md` | Playbooks: add hook, add Tauri command, add route, add shadcn primitive |
+| `.claude/commands/recipes.md` | Playbooks: add hook, add Tauri command, add route, add KPI ribbon, add shadcn primitive, add zustand slice |
+
+_Last scanned: 2026-05-19_
 
 ## Recommended Skills
 
 | Skill | When |
 |-------|------|
-| `mustard-dashboard-use-queries-hook-pattern` | Adding any new `src/hooks/use*.ts` that aggregates data across detected projects |
+| `dashboard-use-queries-fanout` | Adding any new `src/hooks/use*.ts` that aggregates data across detected projects |
+| `dashboard-page-primitives` | Adding a new page, KPI card, phase chip, empty state, or data table |
 | `karpathy-guidelines` | Any code edit |
 | `react-best-practices` | React performance / refactor tasks |
 | `frontend-design` / `design-craft` | New components, pages, visual changes |

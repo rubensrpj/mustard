@@ -28,9 +28,9 @@ cat .claude/.detect-cache.json
 ```
 Save the old `sourceHashes` and `moduleHashes` values.
 
-**Step B — Run detect with `--no-cache`** (does NOT overwrite cache):
+**Step B — Run detect** (`mustard-rt run sync-detect` always does a fresh scan; the JS `--no-cache` flag has no equivalent):
 ```bash
-bun .claude/scripts/sync-detect.js --no-cache
+mustard-rt run sync-detect
 ```
 Parse JSON output → list of `{ name, path, role, agent, stackSummary, gitDirty?, gitDirtyCount? }` + new `sourceHashes` + `moduleHashes`.
 - If `/scan <subproject>` was called, filter to that subproject only.
@@ -69,7 +69,7 @@ Merge results: combine cached + new into final output files.
 - Ignores the incremental skip of Step 1/C: **all** subprojects are reprocessed, regardless of hash match or `gitDirty`.
 - Bypasses the fast-path of §2.6 (Bootstrap): always regenerates `.claude/CLAUDE.md` and related files.
 - Passes "FORCE MODE" to Task agents of Step 3 (they delete `{subproject}/.claude/skills/*/` with header `mustard:generated` before regenerating).
-- Runs `sync-registry.js --force` (§4.7) always — even with registry already v4.0.
+- Runs `mustard-rt run sync-registry --force` (§4.7) always — even with registry already v4.0.
 - Skills without the header `mustard:generated` (user-authored) are **preserved**.
 
 ## Step 2.5 — Cleanup Stale Subprojects
@@ -142,9 +142,9 @@ Never search in:
 
 **`.claude/entity-registry.json`** — generate via registry scanner:
 ```bash
-bun .claude/scripts/sync-registry.js --force
+mustard-rt run sync-registry --force
 ```
-If `sync-registry.js` fails or is not available, create empty skeleton:
+If `mustard-rt run sync-registry` fails or is not available, create empty skeleton:
 ```json
 { "_meta": { "version": "4.0" }, "_patterns": {}, "_enums": {}, "e": {} }
 ```
@@ -321,21 +321,22 @@ Mark all with `<!-- mustard:generated -->`. Overwrite on next scan.
 ## Step 4.7 — Refresh Registry
 
 ```bash
-bun .claude/scripts/sync-registry.js --force
+mustard-rt run sync-registry --force
 ```
 
 Skill generation itself is **entirely the responsibility of the Step 3 agents** (see `scan-format.md` §10).
 
-## Step 5 — Update Cache
+## Step 5 — Refresh Detect
 
 ```bash
-bun .claude/scripts/sync-detect.js
+mustard-rt run sync-detect
 ```
+(`mustard-rt run sync-detect` recomputes discovery + source hashes on every run; there is no separate cache file to update.)
 
 ## Step 6 — Validate Skills (--factual mode)
 
 ```bash
-bun .claude/scripts/skill-validate.js --factual
+mustard-rt run skills validate --factual
 ```
 
 Checks per skill: header, cluster backing (fileCount ≥ 3), sample existence, no fenced code in body, reference paths exist.
@@ -349,8 +350,8 @@ In strict mode, validator exit code 1 aborts the scan return (skills are kept on
 Run after code analysis (step 3) or independently via `/scan --security`:
 
 ```bash
-bun .claude/scripts/security-scan.js "$PROJECT_DIR"
-bun .claude/scripts/security-scan.js "$PROJECT_DIR" --json
+mustard-rt run security-scan "$PROJECT_DIR"
+mustard-rt run security-scan "$PROJECT_DIR" --json
 ```
 
 Include findings in scan output under a `## Security` section:

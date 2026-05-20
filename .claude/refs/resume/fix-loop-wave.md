@@ -6,7 +6,7 @@
 
 When REVIEW returns REJECTED (any CRITICAL):
 
-1. **Try harness view first (Wave 3):** `bun .claude/scripts/harness-views.js --view pipeline-state --spec {spec-name}` — if it returns `decisions` or `lessons`, prefer those. Otherwise fall back to reading `.claude/.agent-memory/_index.json`, finding the last entry where `agent_type == {review_target_agent_type}` and `pipeline == {spec-name}`. If absent (shouldn't happen but be defensive): fall back to first-dispatch template.
+1. **Try harness view first (Wave 3):** `mustard-rt run event-projections --view pipeline-state --spec {spec-name}` — if it returns `decisions` or `lessons`, prefer those. Otherwise fall back to reading `.claude/.agent-memory/_index.json`, finding the last entry where `agent_type == {review_target_agent_type}` and `pipeline == {spec-name}`. If absent (shouldn't happen but be defensive): fall back to first-dispatch template.
 2. Extract:
    - `prior_summary` ← `entry.summary`
    - `files_modified` ← `entry.details.files_modified` (list)
@@ -14,7 +14,7 @@ When REVIEW returns REJECTED (any CRITICAL):
    - All CRITICAL findings (required)
    - All WARNING findings (optional — include if fix is cheap)
    - Copy the exact text returned by the review agent; do NOT paraphrase
-4. Compose `{retry_context}` using Mode=fix-loop format (see `agent-prompt/SKILL.md § Retry Modes`). Set K = current loop number (1 or 2; max 2 fix-loops):
+4. Compose `{retry_context}` using Mode=fix-loop format (see `.claude/refs/agent-prompt/agent-prompt.md § Retry Modes`). Set K = current loop number (1 or 2; max 2 fix-loops):
    ```
    ## RETRY CONTEXT
    **Mode:** fix-loop ({K}/2)
@@ -24,7 +24,7 @@ When REVIEW returns REJECTED (any CRITICAL):
    **Review findings (verbatim):**
    {findings_verbatim}
    ```
-5. Render the **Minimal Retry Template** from `agent-prompt/SKILL.md § Retry Modes` (skips CONTEXT/REFERENCE/ENTITY/SKILLS/WEB VALIDATION/ROLE/RECIPE).
+5. Render the **Minimal Retry Template** from `.claude/refs/agent-prompt/agent-prompt.md § Retry Modes` (skips CONTEXT/REFERENCE/ENTITY/SKILLS/WEB VALIDATION/ROLE/RECIPE).
 6. Dispatch the same `subagent_type` + `model` as the original impl agent (do NOT change the role or model).
 7. On return, re-dispatch REVIEW agent (normal dispatch, not retry — review is read-only).
 8. If review still REJECTED after 2 fix-loops: STOP + report exhausted retries.
@@ -73,7 +73,7 @@ When an agent fails:
    - Edit error → retry from that edit step
    - Unknown → retry all remaining unchecked steps
 3. **Re-dispatch with retry context** — fill `{retry_context}` using Mode=granular format:
-   - **Try harness view first:** `bun .claude/scripts/harness-views.js --view pipeline-state --spec {spec-name}` — use decisions/lessons if available. Fallback: Read `.claude/.agent-memory/_index.json`, find last entry where `agent_type == {failed_agent_type}` and `pipeline == {spec-name}`
+   - **Try harness view first:** `mustard-rt run event-projections --view pipeline-state --spec {spec-name}` — use decisions/lessons if available. Fallback: Read `.claude/.agent-memory/_index.json`, find last entry where `agent_type == {failed_agent_type}` and `pipeline == {spec-name}`
    - Extract `entry.summary` → `prior_summary`; `entry.details.files_modified` → `files_modified` (list)
    - Fill:
      ```
@@ -86,7 +86,7 @@ When an agent fails:
      **Resume from step:** {N+1}
      ```
    - Set `{task_steps}` to only the remaining steps ({N+1} onwards)
-   - Use the **Minimal Retry Template** from `agent-prompt/SKILL.md § Retry Modes` (skips CONTEXT/REFERENCE/ENTITY/SKILLS/WEB VALIDATION/ROLE/RECIPE blocks)
+   - Use the **Minimal Retry Template** from `.claude/refs/agent-prompt/agent-prompt.md § Retry Modes` (skips CONTEXT/REFERENCE/ENTITY/SKILLS/WEB VALIDATION/ROLE/RECIPE blocks)
 4. **Spec checkboxes:** steps 1-{N} already `[x]`, remaining continue `[ ]`
 5. **Max 2 retries per agent** — exhausted → STOP + report
 
@@ -100,7 +100,7 @@ When a pipeline is paused (user leaves session or requests pause):
    - Set `nextAction` to the specific next step (ONE sentence)
 2. Write agent memory for carry-over:
    ```bash
-   bun .claude/scripts/memory-write.js --json '{"agent_type":"orchestrator","wave":0,"pipeline":"{spec-name}","summary":"Paused at {phase}. Next: {nextAction}"}'
+   mustard-rt run memory agent --json '{"agent_type":"orchestrator","wave":0,"pipeline":"{spec-name}","summary":"Paused at {phase}. Next: {nextAction}"}'
    ```
 3. Confirm to user: "Pipeline paused. Next action saved: {nextAction}"
 

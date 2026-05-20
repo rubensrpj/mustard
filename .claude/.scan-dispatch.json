@@ -1,4 +1,10 @@
 {
-  "dispatch": [],
-  "ts": "2026-05-19T18:10:16.758Z"
+  "dispatch": [
+    {
+      "absSubprojectPath": "C:/Atiz/mustard/apps/dashboard",
+      "name": "dashboard",
+      "path": "apps/dashboard"
+    }
+  ],
+  "ts": "2026-05-19T19:22:05.296Z"
 }

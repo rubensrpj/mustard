@@ -1,6 +1,6 @@
 ---
 name: design-craft
-description: "Unified design skill for ALL UI work: interfaces, dashboards, landing pages, marketing, components, posters. Domain exploration + intent-first methodology + craft principles + design system generation. Covers web, mobile, and desktop. Use when asked to build, design, or style any visual interface."
+description: "Broad design-system generation skill: domain exploration, intent-first methodology, craft principles, and design-token/system output for app UI — interfaces, dashboards, admin panels, components, posters, across web, mobile, and desktop. Use when building or styling product UI inside an existing or new design system, generating a design system, or doing component-level craft work. NOT for greenfield anti-AI-slop landing pages or design audits — that is `hallmark`."
 source: manual
 ---
 
@@ -90,7 +90,7 @@ Focus on these to avoid generic AI output:
 - **Spatial Composition**: Unexpected layouts. Asymmetry. Overlap. Diagonal flow. Grid-breaking elements. Generous negative space OR controlled density.
 - **Backgrounds & Visual Details**: Create atmosphere — gradient meshes, noise textures, geometric patterns, layered transparencies, dramatic shadows, decorative borders, grain overlays.
 
-**NEVER:** Overused font families (Inter, Roboto, Arial, system fonts), cliched color schemes (purple gradients on white), predictable layouts, cookie-cutter design. No two designs should look the same.
+**NEVER:** Overused font families (Inter, Roboto, Arial, system fonts), cliched color schemes (purple gradients on white), predictable layouts, cookie-cutter design. No two designs should look the same. Trendy fonts also become clichés — do not converge on Space Grotesk (or any single "moment" font) across generations. Vary between light and dark themes.
 
 ---
 

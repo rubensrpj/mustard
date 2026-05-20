@@ -44,12 +44,11 @@ Match current branch against `flow` keys. Exact match first, then glob. `*` is t
 ## Step 0 — Resolve Parent (all actions except commit)
 
 ```bash
-cat mustard.json 2>/dev/null
-git rev-parse --abbrev-ref HEAD
+rtk git rev-parse --abbrev-ref HEAD
 ```
 
-Match the current branch against `git.flow` patterns. Store as `$PARENT`.
-If no match and no `mustard.json`: `$PARENT` = default branch (detect via `git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null || echo main`).
+Read `mustard.json` via the `Read` tool (do not `cat` it). Match the current branch against `git.flow` patterns. Store as `$PARENT`.
+If no match and no `mustard.json`: `$PARENT` = default branch (detect via `rtk git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null || echo main`).
 
 ## Step 0b — Branch Protection Check
 
@@ -66,8 +65,8 @@ Before any operation (commit, push, merge, sync) check the current branch:
 Before any merge or sync that traverses submodules, emit a readable state line per submodule:
 
 ```bash
-for sm in $(git config --file .gitmodules --get-regexp path | awk '{print $2}'); do
-  ( cd "$sm" && echo "$sm: $(git rev-parse --abbrev-ref HEAD) ($(git rev-parse --short HEAD))" )
+for sm in $(rtk git config --file .gitmodules --get-regexp path | awk '{print $2}'); do
+  ( cd "$sm" && echo "$sm: $(rtk git rev-parse --abbrev-ref HEAD) ($(rtk git rev-parse --short HEAD))" )
 done
 ```
 
@@ -79,13 +78,13 @@ The `commit` action accepts `--scope`:
 
 | `--scope` value | Behavior |
 |-----------------|----------|
-| `all` (default when unambiguous) | `git add -A` in every dirty repo |
-| `staged` | Commit only what is already staged (`git commit` with no add) |
-| `<path-pattern>` | `git add <pattern>` then commit (glob or directory) |
+| `all` (default when unambiguous) | `rtk git add -A` in every dirty repo |
+| `staged` | Commit only what is already staged (`rtk git commit` with no add) |
+| `<path-pattern>` | `rtk git add <pattern>` then commit (glob or directory) |
 
 ### Decision flow when `--scope` is NOT passed
 
-1. Run `git status --short` in parent + every dirty submodule.
+1. Run `rtk git status --short` in parent + every dirty submodule.
 2. Categorize output inline (see **Final Status Report** categorizer in merge-protocol.md).
 3. If output has a **single obvious category** (e.g., only ephemerals → skip; only code changes in one dir → infer that dir): propose the inferred scope in a 5-line preview.
 4. Use `AskUserQuestion` **EXACTLY ONCE** per session: _"Scope for this commit? [all / staged / <inferred path>]"_.

@@ -1,9 +1,14 @@
 //! `mustard-rt run sync-detect` — a port of `scripts/sync-detect.js`.
 //!
-//! Discovers subprojects in a monorepo (git submodules + a `CLAUDE.md` scan),
-//! detects each subproject's role via file-based scoring, maps role → agent,
-//! lists each subproject's commands, and computes a SHA-256 source hash so the
-//! pipeline can skip recompilation when nothing changed.
+//! Discovers subprojects in a monorepo by scanning for **build manifests**
+//! (`Cargo.toml` with `[package]`, `package.json`, `*.csproj`, `go.mod`,
+//! `pyproject.toml`, `pubspec.yaml`) — the language-agnostic signal that a
+//! directory is an independent buildable unit. `.claude/mustard.json` may
+//! override the result via `subprojects.exclude` / `.include` (paths relative
+//! to the repo root). It then detects each subproject's role via file-based
+//! scoring, maps role → agent, lists commands, and computes a SHA-256 source
+//! hash (keyed by `path`) so the pipeline can skip recompilation when nothing
+//! changed.
 //!
 //! The stdout JSON must stay byte-compatible with the JS version — the pipeline
 //! parses it. Field order, the two-space `serde_json` pretty layout, and the
@@ -26,7 +31,7 @@ const WEIGHT_MEDIUM: i32 = 5;
 const WEIGHT_LOW: i32 = 3;
 
 /// Source-file extensions whose content feeds the SHA-256 hash.
-const SOURCE_EXTENSIONS: &[&str] = &[".cs", ".ts", ".tsx", ".js", ".jsx", ".dart"];
+const SOURCE_EXTENSIONS: &[&str] = &[".cs", ".ts", ".tsx", ".js", ".jsx", ".dart", ".rs"];
 
 /// Manifest file names that invalidate the source hash on change.
 const MANIFEST_FILES: &[&str] = &[
@@ -427,8 +432,58 @@ fn get_agents(root: &Path) -> Vec<String> {
     agents
 }
 
-/// Discover subprojects by scanning for directories carrying a `CLAUDE.md`
-/// (BFS, max depth 3) — a port of `scanForSubprojects()`.
+/// `true` if `dir` directly contains a recognised build manifest — the
+/// language-agnostic signal that the directory is an independent subproject.
+/// A `Cargo.toml` counts only when it declares a `[package]`: a virtual
+/// workspace root (`[workspace]` only) is not itself a subproject.
+fn has_build_manifest(dir: &Path) -> bool {
+    if dir.join("package.json").is_file()
+        || dir.join("go.mod").is_file()
+        || dir.join("pyproject.toml").is_file()
+        || dir.join("pubspec.yaml").is_file()
+        || file_exists(dir, "*.csproj")
+    {
+        return true;
+    }
+    let cargo = dir.join("Cargo.toml");
+    cargo.is_file() && read_safe(&cargo).contains("[package]")
+}
+
+/// Read `subprojects.exclude` / `.include` from `.claude/mustard.json`.
+/// Entries are repo-root-relative paths; returned normalised (forward slash,
+/// no surrounding slashes).
+fn read_overrides(root: &Path) -> (Vec<String>, Vec<String>) {
+    let mut exclude = Vec::new();
+    let mut include = Vec::new();
+    let content = read_safe(&root.join(".claude").join("mustard.json"));
+    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
+        if let Some(sp) = json.get("subprojects") {
+            for (field, out) in [("exclude", &mut exclude), ("include", &mut include)] {
+                if let Some(arr) = sp.get(field).and_then(serde_json::Value::as_array) {
+                    for v in arr.iter().filter_map(serde_json::Value::as_str) {
+                        out.push(v.replace('\\', "/").trim_matches('/').to_string());
+                    }
+                }
+            }
+        }
+    }
+    (exclude, include)
+}
+
+/// Apply the `mustard.json` override to a detected path list: drop excluded
+/// entries, append included ones not already present.
+fn apply_overrides(root: &Path, paths: &mut Vec<String>) {
+    let (exclude, include) = read_overrides(root);
+    paths.retain(|p| !exclude.contains(p));
+    for inc in include {
+        if !inc.is_empty() && !paths.contains(&inc) {
+            paths.push(inc);
+        }
+    }
+}
+
+/// Discover subprojects by scanning for directories carrying a build manifest
+/// (BFS, max depth 3) — the agnostic successor to `scanForSubprojects()`.
 fn scan_for_subprojects(root: &Path) -> Vec<String> {
     const IGNORE: &[&str] = &[
         "node_modules",
@@ -452,7 +507,7 @@ fn scan_for_subprojects(root: &Path) -> Vec<String> {
         if depth > 3 {
             return;
         }
-        if depth > 0 && abs_dir.join("CLAUDE.md").exists() {
+        if depth > 0 && has_build_manifest(abs_dir) {
             out.push(rel_dir.replace('\\', "/"));
             return;
         }
@@ -545,10 +600,14 @@ fn compute_source_hash(root: &Path, subproject_rel: &str) -> String {
 ///
 /// Fail-open: discovery errors degrade to empty results rather than aborting.
 pub fn run(root: &Path) {
-    // 1. Discover subprojects via the CLAUDE.md scan; root fallback for
-    //    single-root projects (no `apps/*`) — a port of the main() discovery.
+    // 1. Discover subprojects via the build-manifest scan, apply the
+    //    `mustard.json` override, then fall back to the repo root for a
+    //    single-root project (no nested subprojects).
     let mut subproject_paths = scan_for_subprojects(root);
-    if subproject_paths.is_empty() && root.join("CLAUDE.md").exists() {
+    apply_overrides(root, &mut subproject_paths);
+    if subproject_paths.is_empty()
+        && (root.join("CLAUDE.md").exists() || has_build_manifest(root))
+    {
         subproject_paths.push(".".to_string());
     }
 
@@ -563,7 +622,10 @@ pub fn run(root: &Path) {
         } else {
             root.join(rel_path)
         };
-        if !abs.join("CLAUDE.md").exists() {
+        // Detection keys off the build manifest, not a `CLAUDE.md` — a
+        // subproject need not carry one. Only guard against a bogus path
+        // (e.g. a stale `mustard.json` `include` entry).
+        if !abs.is_dir() {
             continue;
         }
         let name = if rel_path == "." {
@@ -581,7 +643,9 @@ pub fn run(root: &Path) {
         }
         let normalized = rel_path.replace('\\', "/");
         let hash = compute_source_hash(root, &normalized);
-        source_hashes.insert(name.clone(), hash);
+        // Keyed by `path`, not `name`: two subprojects can share a folder
+        // name (`apps/a/core` vs `packages/core`) but never a path.
+        source_hashes.insert(normalized.clone(), hash);
 
         subprojects.push(Subproject {
             name,
@@ -665,12 +729,50 @@ mod tests {
     }
 
     #[test]
-    fn scan_for_subprojects_finds_claude_md_dirs() {
+    fn scan_for_subprojects_finds_manifest_dirs() {
         let dir = tempdir().unwrap();
         let app = dir.path().join("apps").join("web");
         std::fs::create_dir_all(&app).unwrap();
-        std::fs::write(app.join("CLAUDE.md"), "# web").unwrap();
+        std::fs::write(app.join("package.json"), "{}").unwrap();
         let found = scan_for_subprojects(dir.path());
         assert_eq!(found, vec!["apps/web".to_string()]);
+    }
+
+    #[test]
+    fn scan_ignores_manifestless_dir_even_with_claude_md() {
+        // A payload dir (e.g. `templates/`) carries a `CLAUDE.md` but no build
+        // manifest — it must not be mistaken for a subproject.
+        let dir = tempdir().unwrap();
+        let payload = dir.path().join("apps").join("cli").join("templates");
+        std::fs::create_dir_all(&payload).unwrap();
+        std::fs::write(payload.join("CLAUDE.md"), "# template").unwrap();
+        let crate_dir = dir.path().join("apps").join("cli");
+        std::fs::write(crate_dir.join("Cargo.toml"), "[package]\nname = \"cli\"").unwrap();
+        let found = scan_for_subprojects(dir.path());
+        assert_eq!(found, vec!["apps/cli".to_string()]);
+    }
+
+    #[test]
+    fn has_build_manifest_rejects_virtual_workspace_root() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("Cargo.toml"), "[workspace]\nmembers = []").unwrap();
+        assert!(!has_build_manifest(dir.path()));
+        std::fs::write(dir.path().join("Cargo.toml"), "[package]\nname = \"x\"").unwrap();
+        assert!(has_build_manifest(dir.path()));
+    }
+
+    #[test]
+    fn apply_overrides_excludes_and_includes_by_path() {
+        let dir = tempdir().unwrap();
+        let claude = dir.path().join(".claude");
+        std::fs::create_dir_all(&claude).unwrap();
+        std::fs::write(
+            claude.join("mustard.json"),
+            r#"{"subprojects":{"exclude":["apps/drop"],"include":["infra/edge"]}}"#,
+        )
+        .unwrap();
+        let mut paths = vec!["apps/keep".to_string(), "apps/drop".to_string()];
+        apply_overrides(dir.path(), &mut paths);
+        assert_eq!(paths, vec!["apps/keep".to_string(), "infra/edge".to_string()]);
     }
 }

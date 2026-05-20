@@ -79,7 +79,7 @@ mustard/                         # monorepo root — pnpm-workspace.yaml + Cargo
 │   │       ├── settings.json    # Hook wiring + permissions + env modes
 │   │       ├── pipeline-config.md
 │   │       ├── commands/mustard/ # 18 namespaced slash commands
-│   │       ├── skills/          # 7 foundation skills (karpathy, design-craft, etc.)
+│   │       ├── skills/          # 13 foundation skills (karpathy, design-craft, hallmark, etc.)
 │   │       ├── refs/            # Progressive-disclosure refs (loaded on demand)
 │   │       ├── recipes/         # Structured recipes (90% skeletons)
 │   │       └── context/qa/      # QA agent core context (only static .core.md kept)
@@ -264,7 +264,9 @@ Monorepo (`pnpm-workspace.yaml`: `packages/*`, `apps/*` + `Cargo.toml` workspace
 
 | Subproject | Path | Technology | CLAUDE.md |
 |------------|------|------------|-----------|
-| CLI | `apps/cli/` | Rust — crate `mustard-cli`; hooks, scripts, commands under `templates/` | [templates](./apps/cli/templates/CLAUDE.md) |
+| CLI | `apps/cli/` | Rust — crate `mustard-cli`; the installer. `templates/` is the payload copied into target `.claude/` | [cli](./apps/cli/CLAUDE.md) |
+| Runtime | `apps/rt/` | Rust — crate `mustard-rt`; enforcement hooks + `run` subcommands + MCP | [rt](./apps/rt/CLAUDE.md) |
+| Core | `packages/core/` | Rust — crate `mustard-core`; shared library (config, io/SQLite, models) | [core](./packages/core/CLAUDE.md) |
 | Dashboard | `apps/dashboard/` | Tauri 2 + React 19 + Tailwind 4 desktop app — `mustard-dashboard` | [dashboard](./apps/dashboard/CLAUDE.md) |
 
 ## Entity Registry

@@ -2,8 +2,9 @@
 //!
 //! ## Scope (b3 Wave 3, Task family)
 //!
-//! Ports `model-routing-gate.js` 1:1: a `PreToolUse(Task)` gate that compares
-//! the model a Task dispatch selected against the pipeline routing table.
+//! A `PreToolUse(Task)` gate that compares the model a Task dispatch selected
+//! against the pipeline routing table. Routing is fully structural — the
+//! dispatch description is never parsed.
 //! Upgrades (a more expensive model than required) are blocked; downgrades are
 //! allowed (saving money is fine). When no model is specified the gate either
 //! denies (an explorer, or a sonnet-expected dispatch in strict mode) or
@@ -91,12 +92,30 @@ fn gate_mode() -> GateMode {
 
 /// The fields of the newest pipeline-state file the gate cares about.
 struct PipelineState {
-    /// The pipeline `type` field, lowercased (`feature`, `bugfix`, …).
+    /// The pipeline `type` field, lowercased (`feature`, `bugfix`, …). The
+    /// pipeline-state writers do not emit `type`, so this is usually `None` —
+    /// it survives only to enrich the routing reason and metrics when present.
     type_lower: Option<String>,
     /// The raw `type` for metrics (`unknown` when absent).
     type_raw: String,
     /// The `scope` for metrics (`unknown` when absent).
     scope: String,
+    /// The `status` field, lowercased (`draft`, `active`, `implementing`,
+    /// `completed`, …). `None` when absent.
+    status: Option<String>,
+}
+
+impl PipelineState {
+    /// `true` when the pipeline-state is non-terminal — a pipeline is genuinely
+    /// in progress. CLOSE deletes the state file and `session_cleanup` prunes
+    /// terminal ones, so a present file is almost always active; an explicit
+    /// terminal `status` is still treated as inactive as defence-in-depth.
+    fn is_active(&self) -> bool {
+        !matches!(
+            self.status.as_deref(),
+            Some("completed" | "cancelled" | "canceled" | "closed" | "done")
+        )
+    }
 }
 
 /// Load the newest `.json` pipeline-state under `<project>/.claude/.pipeline-states`
@@ -137,10 +156,15 @@ fn load_newest_pipeline_state(project_dir: &str) -> Option<PipelineState> {
         .and_then(|v| v.as_str())
         .unwrap_or("unknown")
         .to_string();
+    let status = value
+        .get("status")
+        .and_then(|v| v.as_str())
+        .map(str::to_ascii_lowercase);
     Some(PipelineState {
         type_lower,
         type_raw,
         scope,
+        status,
     })
 }
 
@@ -154,14 +178,11 @@ struct Expected {
     reason: &'static str,
 }
 
-/// Determine the expected model. Port of `determineExpected`.
+/// Determine the expected model from the agent type and the active pipeline.
 ///
+/// Routing is fully structural — it never parses the dispatch description.
 /// `state` is `None` when there is no pipeline-state file.
-fn determine_expected(
-    subagent_type: &str,
-    description: &str,
-    state: Option<&PipelineState>,
-) -> Expected {
+fn determine_expected(subagent_type: &str, state: Option<&PipelineState>) -> Expected {
     let agent_type = subagent_type.to_ascii_lowercase();
 
     // Rule 1: Explore is mechanical search → haiku.
@@ -178,33 +199,26 @@ fn determine_expected(
             reason: "Plan agents use opus (architectural reasoning)",
         };
     }
-    // Rule 2.5: description-verb override — an analysis verb at the start of
-    // the description routes to sonnet, unless a high-stakes keyword appears.
-    let desc_lower = description.trim().to_ascii_lowercase();
-    let is_analysis_verb = starts_with_analysis_verb(&desc_lower);
-    let is_high_stakes = contains_high_stakes(description);
-    if is_analysis_verb && !is_high_stakes {
-        return Expected {
-            model: "sonnet",
-            reason: "Analysis/review task — sonnet sufficient",
-        };
-    }
-    // Rule 3: active pipeline drives the model.
+    // Rule 3: an active pipeline drives the model. Feature and bugfix
+    // pipelines both route to opus (quality-first), so the routing decision
+    // does not need the pipeline `type` — the presence of a non-terminal
+    // pipeline-state file is sufficient. This matters because the
+    // pipeline-state writers do not emit a `type` field; matching on it (as
+    // the original JS port did) always missed and silently downgraded
+    // in-pipeline dispatches to sonnet.
     if let Some(state) = state {
-        match state.type_lower.as_deref() {
-            Some("feature") => {
-                return Expected {
-                    model: "opus",
-                    reason: "Feature pipelines use opus (quality-first)",
-                };
-            }
-            Some("bugfix") => {
-                return Expected {
-                    model: "opus",
-                    reason: "Bugfix pipelines use opus (diagnosis needs deep reasoning)",
-                };
-            }
-            _ => {}
+        if state.is_active() {
+            let reason = match state.type_lower.as_deref() {
+                Some("bugfix") => {
+                    "Bugfix pipeline active — opus (diagnosis needs deep reasoning)"
+                }
+                Some("feature") => "Feature pipeline active — opus (quality-first)",
+                _ => "Active pipeline — opus (quality-first)",
+            };
+            return Expected {
+                model: "opus",
+                reason,
+            };
         }
     }
     // Default: sonnet.
@@ -212,57 +226,6 @@ fn determine_expected(
         model: "sonnet",
         reason: "Default model (analysis/review/planning)",
     }
-}
-
-/// `^(review|audit|validate|verify|check|inspect)\b` on the lowercased,
-/// trimmed description. Port of `isAnalysisVerb`.
-fn starts_with_analysis_verb(desc_lower: &str) -> bool {
-    const VERBS: &[&str] = &[
-        "review", "audit", "validate", "verify", "check", "inspect",
-    ];
-    for verb in VERBS {
-        if let Some(rest) = desc_lower.strip_prefix(verb) {
-            // `\b` after the verb: end-of-string or a non-word char.
-            if rest
-                .chars()
-                .next()
-                .is_none_or(|c| !c.is_alphanumeric() && c != '_')
-            {
-                return true;
-            }
-        }
-    }
-    false
-}
-
-/// `\b(security|critical|production)\b` anywhere in the (original-case)
-/// description, case-insensitively. Port of `isHighStakes`.
-fn contains_high_stakes(description: &str) -> bool {
-    let lower = description.to_ascii_lowercase();
-    const WORDS: &[&str] = &["security", "critical", "production"];
-    WORDS.iter().any(|w| has_word(&lower, w))
-}
-
-/// `true` if `needle` appears in `haystack` with word boundaries on both
-/// sides. Both arguments must already be lowercased.
-fn has_word(haystack: &str, needle: &str) -> bool {
-    let mut from = 0;
-    while let Some(rel) = haystack[from..].find(needle) {
-        let start = from + rel;
-        let end = start + needle.len();
-        let left_ok = start == 0
-            || !haystack.as_bytes()[start - 1].is_ascii_alphanumeric()
-                && haystack.as_bytes()[start - 1] != b'_';
-        let right_ok = haystack
-            .as_bytes()
-            .get(end)
-            .is_none_or(|c| !c.is_ascii_alphanumeric() && *c != b'_');
-        if left_ok && right_ok {
-            return true;
-        }
-        from = end;
-    }
-    false
 }
 
 // ---------------------------------------------------------------------------
@@ -285,15 +248,11 @@ fn model_routing_gate(input: &HookInput, project_dir: &str, mode: GateMode) -> V
         .get("subagent_type")
         .and_then(|v| v.as_str())
         .unwrap_or_default();
-    let description = tool_input
-        .get("description")
-        .and_then(|v| v.as_str())
-        .unwrap_or_default();
 
     // ── No model specified ─────────────────────────────────────────────────
     if raw_model.is_empty() {
         let state = load_newest_pipeline_state(project_dir);
-        let expected = determine_expected(subagent_type, description, state.as_ref());
+        let expected = determine_expected(subagent_type, state.as_ref());
         let agent_type_lower = subagent_type.to_ascii_lowercase();
         let is_explorer =
             agent_type_lower == "explore" || agent_type_lower.contains("explorer");
@@ -376,7 +335,7 @@ fn model_routing_gate(input: &HookInput, project_dir: &str, mode: GateMode) -> V
     }
 
     let state = load_newest_pipeline_state(project_dir);
-    let expected = determine_expected(subagent_type, description, state.as_ref());
+    let expected = determine_expected(subagent_type, state.as_ref());
     let is_violation = cost_rank(model) > cost_rank(expected.model);
 
     // Emit the gate-check metric on every check.
@@ -548,44 +507,43 @@ mod tests {
 
     #[test]
     fn explore_expects_haiku() {
-        let e = determine_expected("Explore", "search files", None);
+        let e = determine_expected("Explore", None);
         assert_eq!(e.model, "haiku");
     }
 
     #[test]
     fn plan_expects_opus() {
-        let e = determine_expected("Plan", "design schema", None);
+        let e = determine_expected("Plan", None);
         assert_eq!(e.model, "opus");
     }
 
     #[test]
-    fn analysis_verb_routes_to_sonnet() {
-        let e = determine_expected("general-purpose", "Review the auth module", None);
-        assert_eq!(e.model, "sonnet");
+    fn typeless_active_pipeline_expects_opus() {
+        // Real pipeline-state files carry no `type` field — only specName,
+        // status, scope (phase lives in SQLite `pipeline.phase` events, not
+        // the JSON). An active pipeline must still route to opus, otherwise
+        // an EXECUTE-wave impl dispatch is downgraded.
+        let state = PipelineState {
+            type_lower: None,
+            type_raw: "unknown".to_string(),
+            scope: "full".to_string(),
+            status: Some("implementing".to_string()),
+        };
+        let e = determine_expected("general-purpose", Some(&state));
+        assert_eq!(e.model, "opus");
     }
 
     #[test]
-    fn high_stakes_keyword_suppresses_analysis_verb_override() {
-        // `isAnalysisVerb && !isHighStakes` — a high-stakes keyword suppresses
-        // the rule-2.5 sonnet override, so resolution falls through to rule 3
-        // (the pipeline type). With a feature pipeline that means opus, not the
-        // sonnet the bare analysis verb would have produced.
+    fn terminal_pipeline_state_does_not_route_to_opus() {
+        // A terminal status is inactive — routing falls through to the default.
         let state = PipelineState {
-            type_lower: Some("feature".to_string()),
-            type_raw: "feature".to_string(),
+            type_lower: None,
+            type_raw: "unknown".to_string(),
             scope: "full".to_string(),
+            status: Some("completed".to_string()),
         };
-        let with_stakes = determine_expected(
-            "general-purpose",
-            "Review the security of the login flow",
-            Some(&state),
-        );
-        assert_eq!(with_stakes.model, "opus");
-        // Without the high-stakes keyword the same verb routes to sonnet even
-        // inside the feature pipeline (rule 2.5 fires first).
-        let no_stakes =
-            determine_expected("general-purpose", "Review the login flow", Some(&state));
-        assert_eq!(no_stakes.model, "sonnet");
+        let e = determine_expected("general-purpose", Some(&state));
+        assert_eq!(e.model, "sonnet");
     }
 
     // --- gate routing ------------------------------------------------------
@@ -647,12 +605,34 @@ mod tests {
     }
 
     #[test]
+    fn typeless_pipeline_state_allows_opus_dispatch() {
+        // Regression: a feature pipeline writes a pipeline-state file with no
+        // `type` field. An EXECUTE-wave impl dispatch with model: "opus" must
+        // be allowed, not blocked down to sonnet.
+        let dir = tempdir().unwrap();
+        write_state(
+            dir.path(),
+            json!({
+                "specName": "2026-05-19-mustard-doctor",
+                "status": "implementing",
+                "scope": "full"
+            }),
+        );
+        let input = task_input(
+            "general-purpose",
+            Some("opus"),
+            "Implement mustard-doctor Wave 1",
+        );
+        assert_eq!(run(&input, dir.path().to_str().unwrap()), Verdict::Allow);
+    }
+
+    #[test]
     fn no_model_in_feature_pipeline_allows_silently() {
         // Feature pipeline → expected opus; inherited model presumed to match.
         let dir = tempdir().unwrap();
         write_state(
             dir.path(),
-            json!({ "type": "feature", "scope": "full", "phaseName": "EXECUTE" }),
+            json!({ "type": "feature", "scope": "full" }),
         );
         let input = task_input("general-purpose", None, "do work");
         assert_eq!(run(&input, dir.path().to_str().unwrap()), Verdict::Allow);

@@ -343,6 +343,8 @@ fn run_knowledge(input: &Value) {
             "createdAt": timestamp,
             "updatedAt": timestamp,
             "lastSeen": timestamp,
+            "verifiedAt": null,
+            "sourceFiles": [],
         }));
     }
 

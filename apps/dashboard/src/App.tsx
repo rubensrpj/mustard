@@ -9,12 +9,14 @@ import { Commands } from "@/pages/Commands";
 import { Knowledge } from "@/pages/Knowledge";
 import { Activity } from "@/pages/Activity";
 import { Settings } from "@/pages/Settings";
+import { Preferences } from "@/pages/Preferences";
 import { Telemetry } from "@/pages/Telemetry";
 import { Prd } from "@/pages/Prd";
 import { Quality } from "@/pages/Quality";
 import { CommandPalette } from "@/components/CommandPalette";
 import { Toaster } from "sonner";
 import { useStore } from "@/lib/store";
+import { useProjectsStore } from "@/lib/projects-store";
 import { discoverProjects } from "@/api/discovery";
 import { startWatcher, subscribeFsChange } from "@/lib/watcher";
 import { useTheme } from "@/hooks/useTheme";
@@ -44,6 +46,11 @@ function App() {
     };
   }, []);
 
+  // Hydrate the projects registry once on mount (Tauri plugin-store -> in-memory).
+  useEffect(() => {
+    useProjectsStore.getState().loadFromStore();
+  }, []);
+
   return (
     <HashRouter>
       <Toaster position="bottom-right" richColors theme={theme} />
@@ -63,6 +70,7 @@ function App() {
               keep the old path working for bookmarks. */}
           <Route path="/prompt-economy" element={<Navigate to="/telemetry?tab=economia" replace />} />
           <Route path="/settings" element={<Settings />} />
+          <Route path="/preferences" element={<Preferences />} />
         </Routes>
       </AppShell>
     </HashRouter>

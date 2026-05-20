@@ -1,4 +1,4 @@
-<!-- mustard:generated at:2026-05-13 role:ui -->
+<!-- mustard:generated at:2026-05-19 role:ui -->
 # Features — mustard-dashboard
 
 Routes mounted in `src/App.tsx` inside `HashRouter` + `AppShell`.
@@ -9,14 +9,15 @@ Routes mounted in `src/App.tsx` inside `HashRouter` + `AppShell`.
 |------|------|---------|------------|
 | `/` | `Home` | Portfolio overview + active project live pipelines | medium |
 | `/project/:id` | `ProjectDetail` | Single project — subprojects, recipes, skills, events | medium |
-| `/project/:id/spec/:specName` | `SpecDetail` | Spec viewer w/ side panel | medium |
+| `/project/:id/spec/:specName` | `SpecDetail` | Spec viewer with side panel | medium |
 | `/knowledge` | `Knowledge` | Cross-project knowledge search | medium |
 | `/commands` | `Commands` | Static catalog of Mustard commands | simple |
 | `/prd` | `Prd` | PRD editor (markdown template) | medium |
 | `/activity` | `Activity` | Activity feed across projects | medium |
-| `/telemetry` | `Telemetry` | Token usage / events stats | medium |
+| `/telemetry` | `Telemetry` | Token usage / events stats + prompt economy tab | medium |
 | `/quality` | `Quality` | QA + close-gate results | medium |
-| `/settings` | `Settings` | `projectsRoot` picker + preferences | simple |
+| `/settings` | `Settings` | `projectsRoot` picker + preferences + language | simple |
+| `/prompt-economy` | redirect | Legacy — redirects to `/telemetry?tab=economia` | simple |
 
 ## Global UI elements
 
@@ -25,27 +26,49 @@ Routes mounted in `src/App.tsx` inside `HashRouter` + `AppShell`.
 | `Toaster` | `App.tsx` (top-level) | sonner notifications, `position="bottom-right"` |
 | `CommandPalette` | `App.tsx` (top-level) | cmdk Cmd-K palette |
 | `AppShell` | wraps `<Routes>` | layout chrome (sidebar + topbar) |
-| `Sidebar` / `Topbar` | inside `AppShell` | nav — **boundary for new routes** |
+| `Sidebar` / `Topbar` | inside `AppShell` | nav — **routing boundary** |
 | `WorkspaceSwitcher` | inside `Topbar` | active project picker |
 
 ## Data flow
 
-1. `App.tsx` reads `projectsRoot` from zustand store and runs `discoverProjects(projectsRoot)` (Tauri `invoke`) via React Query.
+1. `App.tsx` reads `projectsRoot` from zustand and runs `discoverProjects(projectsRoot)` via React Query.
 2. Detected `Project[]` drives `startWatcher(paths)` + `subscribeFsChange()` (Tauri events).
-3. Pages call `use*` hooks (e.g. `useAggregate`, `useActivityFeed`, `useKnowledgeSearch`) which fan out via `useQueries` — one query per project.
+3. Pages call `use*` hooks that fan out via `useQueries` — one query per project.
 4. Each query calls `fetchX(project.path)` in `src/lib/dashboard.ts`, which `invoke()`s a Rust command.
 
-Ref: `src/App.tsx`, `src/hooks/useAggregate.ts`, `src/lib/dashboard.ts`.
+Ref: `src/App.tsx`, `src/lib/dashboard.ts`.
 
 ## Multi-project aggregation hooks
 
-These all live in `src/hooks/use*.ts` and follow the same shape (`useQueries` keyed by `project.path` → fan-in into a flat list sorted by timestamp).
+All live in `src/hooks/use*.ts` following `useQueries` keyed by `project.path`.
 
-| Hook | Sources | Returns |
-|------|---------|---------|
-| `useAggregate(projects)` | specs + recent events | counters, active pipelines, timeline |
-| `useActivityFeed(projects, limit)` | recent events | events[], types[] |
-| `useKnowledgeSearch(projects, query)` | search-knowledge | hits sorted by confidence |
-| `useProject(project)` | subprojects/recipes/skills/events | per-project bundle (uses `useState`+`useEffect`, NOT React Query) |
+| Hook | Fetcher(s) | Returns | Interval |
+|------|-----------|---------|---------|
+| `useAggregate(projects)` | `fetchSpecs`, `fetchRecentEvents` | counters, activePipelines, timeline | staleTime 30s / 15s |
+| `useActivityFeed(projects, limit)` | `fetchRecentEvents` | events[], types[] | refetchInterval 5s |
+| `useKnowledgeSearch(projects, query)` | `fetchSearchKnowledge` | hits sorted by confidence | staleTime 60s |
+| `usePromptEconomy(repoPath)` | `fetchPromptEconomy` | single-project economy data | refetchInterval 60s |
+| `useCollectorHealth(repoPath)` | `fetchCollectorHealth` | OTEL badge state | refetchInterval 10s |
 
-Note: `useProject` is the one outlier — it uses raw `useState`/`useEffect`/`Promise.all` instead of `useQueries`. Treat new aggregation hooks as React Query (see `mustard-dashboard-use-queries-hook-pattern` skill).
+Note: `useProject` is the outlier — uses raw `useState`/`useEffect`/`Promise.all` instead of `useQueries`. All new aggregation hooks should follow the `useQueries` pattern.
+
+## Shared page primitives (`src/components/page/`)
+
+Barrel-exported from `src/components/page/index.ts`. Every page imports from here for visual consistency.
+
+| Primitive | Purpose |
+|-----------|---------|
+| `PageHeader` | Page title + subtitle + optional action slot |
+| `SectionHeader` | Section dividers within a page |
+| `KPICard` | Stat card with colored accent stripe (`KPIAccent` enum) |
+| `DataCard` | Table/list wrapper — consistent border + bg |
+| `EmptyState` | Info/warning/error empty state with action slot |
+| `PhaseChip` | Color-coded pipeline phase tag (uses `phaseTheme`) |
+| `EventChip` | Color-coded event-type tag (uses `eventTheme`) |
+| `AcBreakdown` | Acceptance Criteria pass/fail breakdown |
+| `WaveRowLabel` | Wave number + spec name label |
+| `CollapsibleGroup` | Expandable section with item count |
+
+## Theme system (`src/lib/phaseTheme.ts`)
+
+`phaseTheme(phase)` returns `{ text, bg, border, stripe, label, detail }` for 6 phases: `BACKLOG`, `ANALYZE`, `PLAN`, `EXECUTE`, `QA`, `CLOSE`. `eventTheme(eventType)` returns the same shape for ~12 event types. Both use Tailwind utility classes and support dark mode.

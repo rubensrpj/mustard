@@ -10,8 +10,9 @@
 //! Port note: the JS shelled to `sync-detect.js` / `sync-registry.js`. Those
 //! are now `mustard-rt run` subcommands; this port spawns `current_exe()`
 //! (the same binary) rather than a separate `bun` process — no Node/Bun in the
-//! loop. The agent-prompt rendering loads `scan/agent-prompt.template.md`,
-//! identical to the JS.
+//! loop. The agent-prompt template is embedded in the binary via
+//! `include_str!`; an on-disk `.claude/scripts/scan/agent-prompt.template.md`
+//! (present in projects built by `mustard init`) acts as an optional override.
 
 use crate::run::scan_precompute::{
     backup_generated_mds, build_structure_block, build_tooling_block, ensure_notes_md,
@@ -21,6 +22,12 @@ use crate::util::now_iso8601;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+/// Agent-prompt template embedded at build time. The orchestrator no longer
+/// depends on an on-disk copy: a `.claude/scripts/scan/agent-prompt.template.md`
+/// file, when present, overrides this; otherwise this baked-in copy is used.
+const EMBEDDED_PROMPT_TEMPLATE: &str =
+    include_str!("../../../cli/templates/scripts/scan/agent-prompt.template.md");
 
 /// The orchestration result accumulator — JSON-shaped exactly as the JS.
 #[derive(Default)]
@@ -215,13 +222,16 @@ fn classify(detect: &Value, old_cache: Option<&Value>, force: bool, target: Opti
     let mut skipped = Vec::new();
     for sub in detect.get("subprojects").and_then(Value::as_array).cloned().unwrap_or_default() {
         let name = sub.get("name").and_then(Value::as_str).unwrap_or("");
+        let path = sub.get("path").and_then(Value::as_str).unwrap_or(name);
+        // `target` is a user-facing label — accept either the name or the path.
         if let Some(t) = target {
-            if name != t {
+            if name != t && path != t {
                 continue;
             }
         }
-        let old_hash = old_hashes.get(name).and_then(Value::as_str);
-        let new_hash = new_hashes.get(name).and_then(Value::as_str);
+        // Hashes are keyed by `path` (collision-safe); `name` only labels.
+        let old_hash = old_hashes.get(path).and_then(Value::as_str);
+        let new_hash = new_hashes.get(path).and_then(Value::as_str);
         let hash_changed = old_hash.is_none() || old_hash != new_hash;
         let dirty = sub.get("gitDirty").and_then(Value::as_bool).unwrap_or(false);
         if force || hash_changed || dirty {
@@ -326,10 +336,11 @@ fn precompute(
     let mut blocks = std::collections::BTreeMap::new();
     for sub in detect.get("subprojects").and_then(Value::as_array).cloned().unwrap_or_default() {
         let name = sub.get("name").and_then(Value::as_str).unwrap_or("").to_string();
-        if !dispatched.contains(&name) {
+        let path = sub.get("path").and_then(Value::as_str).unwrap_or(&name).to_string();
+        // `dispatched` is path-keyed (collision-safe) — see `classify`.
+        if !dispatched.contains(&path) {
             continue;
         }
-        let path = sub.get("path").and_then(Value::as_str).unwrap_or(&name).to_string();
         let abs_sub = root.join(&path);
         let commands_dir = abs_sub.join(".claude").join("commands");
         let skills_dir = abs_sub.join(".claude").join("skills");
@@ -347,7 +358,7 @@ fn precompute(
         }
         let stack = sub.get("stackSummary").and_then(Value::as_str).unwrap_or("");
         blocks.insert(
-            name,
+            path,
             (build_tooling_block(&abs_sub, stack), build_structure_block(&abs_sub)),
         );
     }
@@ -359,12 +370,12 @@ fn generate_agent_files(root: &Path, detect: &Value, force: bool, target: Option
     let agents_dir = root.join(".claude").join("agents");
     for sub in detect.get("subprojects").and_then(Value::as_array).cloned().unwrap_or_default() {
         let name = sub.get("name").and_then(Value::as_str).unwrap_or("");
+        let path = sub.get("path").and_then(Value::as_str).unwrap_or(name);
         if let Some(t) = target {
-            if name != t {
+            if name != t && path != t {
                 continue;
             }
         }
-        let path = sub.get("path").and_then(Value::as_str).unwrap_or(name);
         let role = sub.get("role").and_then(Value::as_str).unwrap_or("general");
         let stack = sub.get("stackSummary").and_then(Value::as_str).unwrap_or("auto-detected");
         let title = title_case(name);
@@ -456,7 +467,7 @@ fn render_prompt(
     } else {
         ""
     };
-    let (tooling, structure) = blocks.get(name).cloned().unwrap_or_default();
+    let (tooling, structure) = blocks.get(path).cloned().unwrap_or_default();
     template
         .replace("{{name}}", name)
         .replace("{{path}}", path)
@@ -500,30 +511,30 @@ fn orchestrate(root: &Path, force: bool, target: Option<&str>) -> ScanResult {
 
     let (dispatch, skipped) = classify(&detect, old_cache.as_ref(), force, target);
     result.skipped = skipped;
-    let dispatched_names: Vec<String> = dispatch
+    let dispatched_paths: Vec<String> = dispatch
         .iter()
-        .filter_map(|s| s.get("name").and_then(Value::as_str).map(str::to_string))
+        .filter_map(|s| {
+            s.get("path")
+                .or_else(|| s.get("name"))
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
         .collect();
-    let blocks = precompute(root, &detect, &dispatched_names, force, &mut result);
+    let blocks = precompute(root, &detect, &dispatched_paths, force, &mut result);
 
-    // Render the agent prompt for each dispatch target.
+    // Render the agent prompt for each dispatch target. The template is baked
+    // into the binary; an on-disk copy overrides it when present.
     let template_path = claude_dir.join("scripts").join("scan").join("agent-prompt.template.md");
-    match read_safe(&template_path) {
-        Some(template) => {
-            for sub in &dispatch {
-                let name = sub.get("name").and_then(Value::as_str).unwrap_or("");
-                let path = sub.get("path").and_then(Value::as_str).unwrap_or(name);
-                let role = sub.get("role").and_then(Value::as_str).unwrap_or("general");
-                let stack = sub.get("stackSummary").and_then(Value::as_str).unwrap_or("");
-                result.dispatch.push(json!({
-                    "name": name, "path": path, "role": role, "stackSummary": stack,
-                    "agentPrompt": render_prompt(&template, root, sub, &blocks, force),
-                }));
-            }
-        }
-        None => {
-            result.errors.push("agent prompt template unavailable; dispatch list empty".to_string());
-        }
+    let template = read_safe(&template_path).unwrap_or_else(|| EMBEDDED_PROMPT_TEMPLATE.to_string());
+    for sub in &dispatch {
+        let name = sub.get("name").and_then(Value::as_str).unwrap_or("");
+        let path = sub.get("path").and_then(Value::as_str).unwrap_or(name);
+        let role = sub.get("role").and_then(Value::as_str).unwrap_or("general");
+        let stack = sub.get("stackSummary").and_then(Value::as_str).unwrap_or("");
+        result.dispatch.push(json!({
+            "name": name, "path": path, "role": role, "stackSummary": stack,
+            "agentPrompt": render_prompt(&template, root, sub, &blocks, force),
+        }));
     }
 
     // Persist dispatch state so finalize can verify each subproject.
@@ -546,6 +557,20 @@ fn orchestrate(root: &Path, force: bool, target: Option<&str>) -> ScanResult {
         &dispatch_state,
         &(serde_json::to_string_pretty(&state).unwrap_or_default() + "\n"),
     );
+
+    // Refresh the detect cache: the next non-force scan compares its
+    // path-keyed `sourceHashes` against this snapshot to skip unchanged
+    // subprojects. Nothing else writes this file, so without this the
+    // hash-skip would run against frozen data.
+    if let Value::Object(mut cache) = detect.clone() {
+        cache.insert("lastScan".to_string(), json!(now_iso8601()));
+        let _ = write_safe(
+            &mut result,
+            root,
+            &detect_cache,
+            &(serde_json::to_string_pretty(&Value::Object(cache)).unwrap_or_default() + "\n"),
+        );
+    }
 
     if let Some(warnings) = detect.get("warnings").and_then(Value::as_array) {
         for w in warnings {
@@ -609,6 +634,19 @@ mod tests {
         let cache = json!({ "sourceHashes": { "api": "abc" } });
         let (dispatch, _) = classify(&detect, Some(&cache), true, None);
         assert_eq!(dispatch.len(), 1);
+    }
+
+    #[test]
+    fn embedded_template_renders_without_on_disk_file() {
+        // The baked-in template must carry placeholders and resolve them all,
+        // so a scan never falls back to an empty dispatch list.
+        assert!(EMBEDDED_PROMPT_TEMPLATE.contains("{{name}}"));
+        let dir = tempdir().unwrap();
+        let sub = json!({ "name": "api", "path": "api", "role": "backend", "stackSummary": "TS" });
+        let blocks = std::collections::BTreeMap::new();
+        let rendered = render_prompt(EMBEDDED_PROMPT_TEMPLATE, dir.path(), &sub, &blocks, false);
+        assert!(!rendered.contains("{{"), "unresolved placeholder remains");
+        assert!(rendered.contains("api"));
     }
 
     #[test]

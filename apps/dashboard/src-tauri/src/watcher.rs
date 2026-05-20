@@ -30,9 +30,8 @@ struct FsChangePayload {
 
 pub fn classify_kind(path: &Path) -> Option<&'static str> {
     let s = path.to_string_lossy();
-    if s.contains(".harness") && s.contains("events.jsonl") {
-        Some("events")
-    } else if s.contains(".harness") && s.contains("mustard.db") {
+    // mustard.db and its WAL/SHM companions all trigger a data-change refresh.
+    if s.contains(".harness") && (s.contains("mustard.db")) {
         Some("events")
     } else if s.contains(".pipeline-states") {
         Some("pipeline-state")

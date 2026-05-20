@@ -20,9 +20,17 @@ use mustard_core::io::event_store::EventSink;
 use mustard_core::io::sqlite_store::SqliteEventStore;
 use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use serde_json::json;
+use std::path::Path;
 
-/// Return the `to` phase of the most recent `pipeline.phase` event for `spec`.
-fn last_phase_for_spec(store: &SqliteEventStore, spec: &str) -> Option<String> {
+/// Return the `to` phase of the most recent `pipeline.phase` event for `spec`,
+/// reading from an already-open [`SqliteEventStore`]. Fail-open — any replay
+/// error yields `None` (the caller treats that as "phase unknown").
+///
+/// This is the single source of truth for spec phase across the runtime; every
+/// consumer that previously read `phaseName` from a pipeline-state JSON now
+/// derives the phase through this helper instead.
+#[must_use]
+pub fn last_phase_in_store(store: &SqliteEventStore, spec: &str) -> Option<String> {
     let events = store.replay().unwrap_or_default();
     events
         .iter()
@@ -36,19 +44,41 @@ fn last_phase_for_spec(store: &SqliteEventStore, spec: &str) -> Option<String> {
         })
 }
 
+/// Convenience: open the project's SQLite store and look up the latest phase
+/// for `spec`. Fail-open — a store-open error yields `None`.
+#[must_use]
+pub fn last_phase_for_spec(cwd: impl AsRef<Path>, spec: &str) -> Option<String> {
+    let store = SqliteEventStore::for_project(cwd.as_ref()).ok()?;
+    last_phase_in_store(&store, spec)
+}
+
 /// Run `mustard-rt run emit-phase --spec <name> --to <PHASE> [--from <PHASE>]`.
 ///
-/// Fail-open: any internal failure degrades to a no-op (telemetry must never
-/// break a pipeline).
+/// Fail-open for telemetry: any internal failure (db open, append) degrades to
+/// a silent no-op. The **exception** is `--to CLOSE`, which runs the
+/// close-gate sub-gates (debt/checklist/qa/build) inline before appending the
+/// event. A strict gate failure prints the gate reason on stderr, leaves the
+/// event un-appended, and exits the process with status `1` — same
+/// user-visible behavior as the legacy `close_gate` hook that fired on a
+/// pipeline-state Write/Edit (the trigger that no longer exists post-Wave 2).
 pub fn run(spec: &str, to: &str, from: Option<&str>) {
     let Ok(store) = SqliteEventStore::for_project(project_dir()) else {
         return;
     };
 
     // Idempotency: skip when the spec's latest phase already lands on `to`.
-    let last = last_phase_for_spec(&store, spec);
+    let last = last_phase_in_store(&store, spec);
     if last.as_deref() == Some(to) {
         return;
+    }
+
+    // CLOSE transition: run the close-gate sub-gates inline. A strict failure
+    // blocks the transition (exit 1); fail-open on any infrastructure error.
+    if to.eq_ignore_ascii_case("CLOSE") {
+        if let Err(reason) = crate::hooks::close_gate::gate_close_for_spec(&project_dir(), spec) {
+            eprintln!("{reason}");
+            std::process::exit(1);
+        }
     }
 
     // `from` defaults to the spec's last known phase (null when none).
@@ -96,14 +126,14 @@ mod tests {
         };
         store.append(&mk("ANALYZE")).unwrap();
         store.append(&mk("PLAN")).unwrap();
-        assert_eq!(last_phase_for_spec(&store, "demo").as_deref(), Some("PLAN"));
-        assert_eq!(last_phase_for_spec(&store, "other"), None);
+        assert_eq!(last_phase_in_store(&store, "demo").as_deref(), Some("PLAN"));
+        assert_eq!(last_phase_in_store(&store, "other"), None);
     }
 
     #[test]
     fn last_phase_empty_log_is_none() {
         let dir = tempdir().unwrap();
         let store = SqliteEventStore::new(dir.path().join("mustard.db")).unwrap();
-        assert_eq!(last_phase_for_spec(&store, "demo"), None);
+        assert_eq!(last_phase_in_store(&store, "demo"), None);
     }
 }

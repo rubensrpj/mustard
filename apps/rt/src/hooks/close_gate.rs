@@ -733,11 +733,31 @@ fn close_gate_with_modes(input: &HookInput, cwd: &str, modes: CloseGateModes) ->
         return Verdict::Allow;
     };
     // Only trigger on a transition to phase CLOSE.
+    //
+    // Post-`pipeline.phase` migration the canonical phase lives in the SQLite
+    // event store, not the pipeline-state JSON — SKILL.md no longer writes
+    // `phaseName`. This branch is kept defensively for any legacy state file
+    // that still carries `phaseName: "CLOSE"`; in steady state the real CLOSE
+    // gate runs inline in `mustard-rt run emit-phase --to CLOSE`.
     if extract_phase(&content).as_deref() != Some("CLOSE") {
         return Verdict::Allow;
     }
     let spec_name = extract_spec(&content);
     let spec_ref = spec_name.as_deref();
+    run_close_gates(cwd, spec_ref, modes)
+}
+
+/// Run every close-gate sub-gate against an already-resolved `(cwd, spec)`
+/// pair — the spec-aware entry point used by `mustard-rt run emit-phase --to
+/// CLOSE`. No JSON dependency, no HookInput coupling.
+///
+/// Returns:
+/// - [`Verdict::Allow`] when every gate passes (or every gate is in `off`).
+/// - [`Verdict::Deny`] when any strict gate fires.
+/// - [`Verdict::Warn`] only for the build/test gate in `warn` mode; the
+///   debt/checklist/qa gates degrade to `Allow` in `warn`.
+fn run_close_gates(cwd: &str, spec_ref: Option<&str>, modes: CloseGateModes) -> Verdict {
+    let mode = modes.close;
 
     // ── Debt-marker gate ──────────────────────────────────────────────────
     let debt_mode = modes.debt;
@@ -993,6 +1013,27 @@ fn mode_str(mode: GateMode) -> &'static str {
         GateMode::Off => "off",
         GateMode::Warn => "warn",
         GateMode::Strict => "strict",
+    }
+}
+
+/// Public entry point: run every close-gate sub-gate for `(cwd, spec)` with
+/// modes resolved from the environment.
+///
+/// Returns `Ok(())` when CLOSE is allowed (every strict gate passes) or when
+/// only a build/test warning fires (still safe to proceed). Returns
+/// `Err(reason)` with the formatted gate message when any strict gate denies.
+///
+/// Fail-open: a [`Verdict::Warn`] from the build/test gate does **not** block
+/// CLOSE (matches the prior behavior — warn mode was advisory).
+///
+/// This is the entry point used by `mustard-rt run emit-phase --to CLOSE` to
+/// run the same checks the legacy Write/Edit hook used to perform.
+pub fn gate_close_for_spec(cwd: &str, spec: &str) -> Result<(), String> {
+    let modes = CloseGateModes::from_env();
+    match run_close_gates(cwd, Some(spec), modes) {
+        Verdict::Deny { reason } => Err(reason),
+        // Warn → advisory only (CLOSE proceeds). Allow / others → ok.
+        _ => Ok(()),
     }
 }
 
@@ -1389,5 +1430,55 @@ mod tests {
             Some("CLOSE")
         );
         assert_eq!(extract_phase("not json"), None);
+    }
+
+    // --- new spec-aware entry point used by `emit-phase --to CLOSE` --------
+
+    #[test]
+    fn run_close_gates_denies_on_failing_build_command() {
+        // The spec-aware entry point exercised by the post-Wave-2 emit-phase
+        // gate path. A failing build/test command in strict mode → Deny.
+        let dir = make_project();
+        write_mustard_json(dir.path(), json!({ "testCommand": exit_fail() }));
+        let verdict = run_close_gates(
+            dir.path().to_str().unwrap(),
+            Some("spec-fail"),
+            no_qa(),
+        );
+        assert!(verdict.is_blocking(), "failing build must deny");
+    }
+
+    #[test]
+    fn run_close_gates_allows_when_everything_passes() {
+        let dir = make_project();
+        write_mustard_json(dir.path(), json!({ "testCommand": exit_pass() }));
+        write_qa_event(
+            dir.path(),
+            "spec-ok",
+            "pass",
+            json!([{ "id": "AC-1", "status": "pass" }]),
+        );
+        let verdict = run_close_gates(
+            dir.path().to_str().unwrap(),
+            Some("spec-ok"),
+            all_strict(),
+        );
+        assert!(!verdict.is_blocking(), "all-pass must allow");
+    }
+
+    #[test]
+    fn run_close_gates_denies_missing_qa_when_strict() {
+        // QA strict + no qa.result event → Deny on QA grounds.
+        let dir = make_project();
+        write_mustard_json(dir.path(), json!({ "testCommand": exit_pass() }));
+        let verdict = run_close_gates(
+            dir.path().to_str().unwrap(),
+            Some("needs-qa"),
+            all_strict(),
+        );
+        match verdict {
+            Verdict::Deny { reason } => assert!(reason.to_lowercase().contains("qa")),
+            other => panic!("expected Deny for missing QA, got {other:?}"),
+        }
     }
 }

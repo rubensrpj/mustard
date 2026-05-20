@@ -103,7 +103,7 @@ pub struct ToolCount {
 }
 
 /// Per-agent-type aggregation of agent.start / agent.stop pairs from
-/// events.jsonl. Tokens come from spans table (not yet wired); duration
+/// the events table. Tokens come from spans table (not yet wired); duration
 /// is derived from start→stop timestamps when both halves exist.
 #[derive(Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -149,51 +149,17 @@ pub struct TelemetrySummary {
 //
 // Hook `.metrics/*.jsonl` files and `model-routing-gate.jsonl` are append-only
 // for the lifetime of the install — they never reset. To honestly show "+N
-// this session" we need a cut-off timestamp. We derive it from events.jsonl:
-// the `ts` of the FIRST event sharing the LAST event's `sessionId`. That is
+// this session" we need a cut-off timestamp. We derive it from mustard.db:
+// the `ts` of the FIRST event sharing the LAST event's `session_id`. That is
 // the moment the current Claude Code session began emitting.
 
 /// Returns the ISO timestamp at which the current session started, or `None`
-/// when events.jsonl is missing/empty or carries no `sessionId`.
+/// when mustard.db is missing/empty or carries no `session_id`.
 pub fn session_start_ts(repo_path: &Path) -> Option<String> {
-    let path = repo_path.join(".claude").join(".harness").join("events.jsonl");
-    let content = std::fs::read_to_string(&path).ok()?;
-
-    // First pass: find the sessionId of the most recent line that has one.
-    let mut last_session: Option<String> = None;
-    for line in content.lines().rev() {
-        let v: serde_json::Value = match serde_json::from_str(line) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-        if let Some(sid) = v.get("sessionId").and_then(|x| x.as_str()) {
-            if !sid.is_empty() {
-                last_session = Some(sid.to_string());
-                break;
-            }
-        }
-    }
-    let session = last_session?;
-
-    // Second pass: earliest ts carrying that sessionId.
-    let mut earliest: Option<String> = None;
-    for line in content.lines() {
-        let v: serde_json::Value = match serde_json::from_str(line) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-        let sid = v.get("sessionId").and_then(|x| x.as_str()).unwrap_or("");
-        if sid != session {
-            continue;
-        }
-        if let Some(ts) = v.get("ts").and_then(|x| x.as_str()) {
-            match &earliest {
-                Some(cur) if cur.as_str() <= ts => {}
-                _ => earliest = Some(ts.to_string()),
-            }
-        }
-    }
-    earliest
+    crate::db::with_db(repo_path, |conn| {
+        crate::db::session_start_ts_from_db(conn).ok_or_else(|| "no session".to_string())
+    })
+    .and_then(|r| r.ok())
 }
 
 /// True when `ts` is lexically >= the session cut-off. ISO-8601 UTC strings
@@ -516,266 +482,55 @@ fn extract_routing_key(v: &serde_json::Value) -> String {
 // ── Workflow by phase ────────────────────────────────────────────────────────
 
 pub fn workflow_by_phase(repo_path: &Path) -> WorkflowBlock {
-    // Since Wave 4 the canonical source is events.jsonl — hooks emit there
-    // (metrics-tracker etc.). The SQLite mirror is a migration artefact and
-    // stops receiving new writes. We try JSONL first and fall back to SQLite
-    // only when JSONL is missing/empty.
-    let jsonl = workflow_by_phase_from_jsonl(repo_path);
-    let jsonl_total: u64 = jsonl.by_phase.iter().map(|p| p.count).sum();
-    if jsonl_total > 0 {
-        return jsonl;
-    }
     if let Some(r) = crate::db::with_db(repo_path, crate::db::workflow_by_phase_from_db) {
         match r {
             Ok(block) => return block,
-            Err(e) => eprintln!("workflow_by_phase: db fallback error: {}", e),
+            Err(e) => eprintln!("workflow_by_phase: db error: {}", e),
         }
     }
-    jsonl // empty when JSONL also missing
-}
-
-fn workflow_by_phase_from_jsonl(repo_path: &Path) -> WorkflowBlock {
-    let path = repo_path.join(".claude").join(".harness").join("events.jsonl");
-    if !path.exists() {
-        return WorkflowBlock { by_phase: vec![] };
-    }
-    let content = match std::fs::read_to_string(&path) {
-        Ok(c) => c,
-        Err(_) => return WorkflowBlock { by_phase: vec![] },
-    };
-    let mut counts: HashMap<String, u64> = HashMap::new();
-    for line in content.lines() {
-        let v: serde_json::Value = match serde_json::from_str(line) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-        let event_type = v["event"].as_str().or_else(|| v["type"].as_str());
-        // Count both explicit pipeline.phase transitions and tool.use events
-        // (which carry payload.phase). tool.use is the actual signal of where
-        // the project spends time.
-        let is_phase_event = event_type == Some("pipeline.phase") || event_type == Some("tool.use");
-        if !is_phase_event {
-            continue;
-        }
-        let phase = v
-            .get("payload")
-            .and_then(|p| {
-                if let Some(obj) = p.as_object() {
-                    obj.get("phase").and_then(|x| x.as_str()).map(|s| s.to_string())
-                } else if let Some(s) = p.as_str() {
-                    serde_json::from_str::<serde_json::Value>(s)
-                        .ok()
-                        .and_then(|pv| pv.get("phase").and_then(|x| x.as_str()).map(|s| s.to_string()))
-                } else {
-                    None
-                }
-            });
-        if let Some(phase) = phase {
-            *counts.entry(phase.to_ascii_uppercase()).or_insert(0) += 1;
-        }
-    }
-    let mut by_phase: Vec<PhaseCount> = counts
-        .into_iter()
-        .map(|(phase, count)| PhaseCount { phase, count })
-        .collect();
-    by_phase.sort_by(|a, b| b.count.cmp(&a.count));
-    WorkflowBlock { by_phase }
+    WorkflowBlock { by_phase: vec![] }
 }
 
 // ── Tool breakdown ────────────────────────────────────────────────────────────
 
 pub fn tool_breakdown(repo_path: &Path) -> Vec<ToolCount> {
-    // Same rationale as workflow_by_phase: JSONL is canonical in Wave 4+,
-    // SQLite mirror is stale. Prefer JSONL, fall back to SQLite only when empty.
-    let jsonl = tool_breakdown_from_jsonl(repo_path, 15);
-    if !jsonl.is_empty() {
-        return jsonl;
-    }
     if let Some(r) = crate::db::with_db(repo_path, |c| crate::db::tool_breakdown_from_db(c, 15)) {
         match r {
             Ok(list) => return list,
-            Err(e) => eprintln!("tool_breakdown: db fallback error: {}", e),
+            Err(e) => eprintln!("tool_breakdown: db error: {}", e),
         }
     }
     vec![]
 }
 
-fn tool_breakdown_from_jsonl(repo_path: &Path, limit: usize) -> Vec<ToolCount> {
-    let path = repo_path.join(".claude").join(".harness").join("events.jsonl");
-    if !path.exists() {
-        return vec![];
-    }
-    let content = match std::fs::read_to_string(&path) {
-        Ok(c) => c,
-        Err(_) => return vec![],
-    };
-    let mut counts: HashMap<String, u64> = HashMap::new();
-    for line in content.lines() {
-        let v: serde_json::Value = match serde_json::from_str(line) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-        if v["event"].as_str().or_else(|| v["type"].as_str()) != Some("tool.use") {
-            continue;
-        }
-        let tool = v.get("payload").and_then(|p| {
-            if let Some(obj) = p.as_object() {
-                obj.get("tool")
-                    .and_then(|x| x.as_str())
-                    .or_else(|| obj.get("tool_name").and_then(|x| x.as_str()))
-                    .map(|s| s.to_string())
-            } else if let Some(s) = p.as_str() {
-                serde_json::from_str::<serde_json::Value>(s).ok().and_then(|pv| {
-                    pv.get("tool")
-                        .and_then(|x| x.as_str())
-                        .or_else(|| pv.get("tool_name").and_then(|x| x.as_str()))
-                        .map(|s| s.to_string())
-                })
-            } else {
-                None
-            }
-        });
-        if let Some(tool) = tool {
-            *counts.entry(tool).or_insert(0) += 1;
-        }
-    }
-    let mut list: Vec<ToolCount> = counts
-        .into_iter()
-        .map(|(tool_name, count)| ToolCount { tool_name, count })
-        .collect();
-    list.sort_by(|a, b| b.count.cmp(&a.count));
-    list.truncate(limit);
-    list
-}
-
-// ── Agent activity (T2-1: span-lite consumer) ────────────────────────────────
+// ── Agent activity (span-lite consumer) ──────────────────────────────────────
 //
-// Reads agent.start / agent.stop pairs from events.jsonl and aggregates per
-// agent_type. Tokens are deliberately omitted here — they live in the spans
-// SQLite table (Phase 2) which the hooks don't currently write to. Duration
-// is best-effort: derived from start.ts → stop.ts pairing on actor.id +
-// sessionId. When the pair is missing (agent still running, or stop dropped),
-// the start counts but duration stays at 0.
+// Aggregates agent.start / agent.stop pairs from the events table, grouped by
+// actor_id (agent_type). Tokens are deliberately omitted — they live in the
+// spans table, not in events. Duration is best-effort: start→stop pairing on
+// session_id + actor_id. When a pair is missing (agent still running, or stop
+// dropped), the start counts but duration stays at 0.
 
-pub fn agent_activity_from_jsonl(repo_path: &Path) -> AgentActivityBlock {
-    let path = repo_path
-        .join(".claude")
-        .join(".harness")
-        .join("events.jsonl");
-    if !path.exists() {
-        return AgentActivityBlock { total_dispatches: 0, total_errors: 0, agents: vec![] };
-    }
-    let content = match std::fs::read_to_string(&path) {
-        Ok(c) => c,
-        Err(_) => return AgentActivityBlock { total_dispatches: 0, total_errors: 0, agents: vec![] },
-    };
-
-    #[derive(Default)]
-    struct Acc {
-        starts: u64,
-        stops: u64,
-        errors: u64,
-        durations_ms: Vec<u64>,
-        last_ts: Option<String>,
-    }
-
-    let mut acc: HashMap<String, Acc> = HashMap::new();
-    // pair-up table: key = "{sessionId}|{actor.id}" → start ts
-    let mut pending_starts: HashMap<String, String> = HashMap::new();
-
-    for line in content.lines() {
-        let v: serde_json::Value = match serde_json::from_str(line) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-        let event_type = v["event"].as_str().unwrap_or("");
-        if event_type != "agent.start" && event_type != "agent.stop" {
-            continue;
+pub fn agent_activity(repo_path: &Path) -> AgentActivityBlock {
+    match crate::db::with_db(repo_path, crate::db::agent_activity_from_db) {
+        Some(Ok(block)) => block,
+        Some(Err(e)) => {
+            eprintln!("agent_activity: db error: {}", e);
+            AgentActivityBlock { total_dispatches: 0, total_errors: 0, agents: vec![] }
         }
-        let actor_id = v
-            .get("actor")
-            .and_then(|a| a.get("id"))
-            .and_then(|x| x.as_str())
-            .unwrap_or("unknown");
-        let session_id = v.get("sessionId").and_then(|x| x.as_str()).unwrap_or("");
-        let ts = v.get("ts").and_then(|x| x.as_str()).map(|s| s.to_string());
-        let pair_key = format!("{}|{}", session_id, actor_id);
-
-        let entry = acc.entry(actor_id.to_string()).or_default();
-        // Always track last_ts (max wins lexicographically — ISO-8601 sorts correctly).
-        if let Some(ref t) = ts {
-            if entry.last_ts.as_ref().map_or(true, |cur| t > cur) {
-                entry.last_ts = Some(t.clone());
-            }
-        }
-
-        if event_type == "agent.start" {
-            entry.starts += 1;
-            if let Some(t) = ts {
-                pending_starts.insert(pair_key, t);
-            }
-        } else {
-            entry.stops += 1;
-            let is_error = v
-                .get("payload")
-                .and_then(|p| p.get("isError"))
-                .and_then(|x| x.as_bool())
-                .unwrap_or(false);
-            if is_error {
-                entry.errors += 1;
-            }
-            // Compute duration when we have a matching start.
-            if let (Some(start_ts), Some(stop_ts)) = (pending_starts.remove(&pair_key), ts) {
-                if let (Some(t0), Some(t1)) = (parse_iso_ms(&start_ts), parse_iso_ms(&stop_ts)) {
-                    if t1 >= t0 {
-                        entry.durations_ms.push(t1 - t0);
-                    }
-                }
-            }
-        }
-    }
-
-    let mut total_dispatches: u64 = 0;
-    let mut total_errors: u64 = 0;
-    let mut agents: Vec<AgentActivity> = acc
-        .into_iter()
-        .map(|(agent_type, a)| {
-            total_dispatches += a.starts;
-            total_errors += a.errors;
-            let avg_duration_ms = if a.durations_ms.is_empty() {
-                0
-            } else {
-                let sum: u64 = a.durations_ms.iter().sum();
-                sum / a.durations_ms.len() as u64
-            };
-            AgentActivity {
-                agent_type,
-                starts: a.starts,
-                stops: a.stops,
-                errors: a.errors,
-                avg_duration_ms,
-                last_ts: a.last_ts,
-            }
-        })
-        .collect();
-    // Most active first; ties broken by most-recently-seen.
-    agents.sort_by(|a, b| {
-        b.starts
-            .cmp(&a.starts)
-            .then_with(|| b.last_ts.cmp(&a.last_ts))
-    });
-    agents.truncate(10);
-
-    AgentActivityBlock {
-        total_dispatches,
-        total_errors,
-        agents,
+        None => AgentActivityBlock { total_dispatches: 0, total_errors: 0, agents: vec![] },
     }
 }
 
 /// Parse ISO-8601 timestamp to milliseconds since epoch. Best-effort — returns
 /// None when the timestamp is malformed. Accepts both with and without
 /// fractional seconds and the trailing 'Z'.
+///
+/// Public so `db::agent_activity_from_db` can use it for duration computation.
+pub fn parse_iso_ms_pub(s: &str) -> Option<u64> {
+    parse_iso_ms(s)
+}
+
 fn parse_iso_ms(s: &str) -> Option<u64> {
     // chrono dependency would be ideal but the crate already vendors it elsewhere;
     // here we do a minimal manual parse: YYYY-MM-DDTHH:MM:SS[.fff]Z
@@ -820,10 +575,10 @@ pub fn measured(repo_path: &Path) -> MeasuredBlock {
 
 // ── Live activity ────────────────────────────────────────────────────────────
 //
-// Reads `<repo>/.claude/.harness/events.jsonl` directly — the canonical "tail"
-// of what is happening right now. Unlike the SQLite mirror (which a batch
-// migration populates), this file is updated by metrics-tracker on every
-// PreToolUse, so it always reflects the current session.
+// Derives live activity from mustard.db (the canonical harness store since the
+// eliminate-bun spec). Events are written by mustard-rt on every hook dispatch,
+// so the DB is always current. The SQLite `datetime('now', ...)` predicates
+// replacing the former NDJSON-based readers.
 
 #[derive(Serialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -870,250 +625,17 @@ pub struct LiveActivity {
     pub by_phase: Vec<PhaseActivity>,
 }
 
-const CANONICAL_PHASES: &[&str] = &["ANALYZE", "PLAN", "EXECUTE", "QA", "CLOSE"];
-
-/// Lower bound on event file size we'll try to parse fully. Anything larger
-/// gets a tail read. events.jsonl is append-only and rarely exceeds a few MB
-/// in practice, but we cap to keep the dashboard snappy on large projects.
-const EVENTS_TAIL_BYTES: u64 = 4 * 1024 * 1024;
+pub const CANONICAL_PHASES: &[&str] = &["ANALYZE", "PLAN", "EXECUTE", "QA", "CLOSE"];
 
 pub fn live_activity(repo_path: &Path) -> LiveActivity {
-    let path = repo_path.join(".claude").join(".harness").join("events.jsonl");
-    if !path.exists() {
-        return LiveActivity::default();
+    match crate::db::with_db(repo_path, crate::db::live_activity_from_db) {
+        Some(Ok(activity)) => activity,
+        Some(Err(e)) => {
+            eprintln!("live_activity: db error: {}", e);
+            LiveActivity::default()
+        }
+        None => LiveActivity::default(),
     }
-
-    // Read tail (or whole file if small). Tail boundary may slice the first
-    // line — we discard partial first lines after seek.
-    let content = match read_tail(&path, EVENTS_TAIL_BYTES) {
-        Ok(s) => s,
-        Err(_) => return LiveActivity::default(),
-    };
-
-    let now = chrono::Utc::now();
-    let today_start = now.date_naive().and_hms_opt(0, 0, 0).unwrap();
-    let hour_ago = now - chrono::Duration::hours(1);
-    let five_min_ago = now - chrono::Duration::minutes(5);
-
-    let mut events_today: u64 = 0;
-    let mut events_last_hour: u64 = 0;
-    let mut events_last_5min: u64 = 0;
-    let mut tools_today_map: HashMap<String, u64> = HashMap::new();
-    let mut minute_buckets: Vec<u64> = vec![0; 60];
-    let mut last_event_ts: Option<String> = None;
-    let mut last_event_dt: Option<chrono::DateTime<chrono::Utc>> = None;
-    let mut current_spec: Option<String> = None;
-    let mut current_phase: Option<String> = None;
-    let mut current_wave: Option<u32> = None;
-
-    /// Agregado interno por fase canônica. Convertido em PhaseActivity no final.
-    #[derive(Default)]
-    struct PhaseAgg {
-        events_today: u64,
-        events_last_hour: u64,
-        events_last_5min: u64,
-        minute_buckets: Vec<u64>,
-        last_event_ts: Option<String>,
-        last_event_dt: Option<chrono::DateTime<chrono::Utc>>,
-        tools: HashMap<String, u64>,
-        last_spec: Option<String>,
-    }
-    let mut phase_aggs: HashMap<String, PhaseAgg> = HashMap::new();
-    for p in CANONICAL_PHASES {
-        let mut agg = PhaseAgg::default();
-        agg.minute_buckets = vec![0; 60];
-        phase_aggs.insert((*p).to_string(), agg);
-    }
-
-    let mut first_line = true;
-    for line in content.lines() {
-        // Discard a possibly-truncated first line when we tailed.
-        if first_line {
-            first_line = false;
-            if content.len() == EVENTS_TAIL_BYTES as usize {
-                continue;
-            }
-        }
-        let v: serde_json::Value = match serde_json::from_str(line) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-
-        let ts_str = match v["ts"].as_str().or_else(|| v["timestamp"].as_str()) {
-            Some(s) => s,
-            None => continue,
-        };
-        let dt = match chrono::DateTime::parse_from_rfc3339(ts_str) {
-            Ok(d) => d.with_timezone(&chrono::Utc),
-            Err(_) => continue,
-        };
-
-        // Always remember the latest event seen (events.jsonl is append-only;
-        // last line = latest, but we don't rely on order). spec/phase/wave are
-        // sticky: an event without the field doesn't clear the last-known value.
-        if last_event_dt.map_or(true, |prev| dt > prev) {
-            last_event_dt = Some(dt);
-            last_event_ts = Some(ts_str.to_string());
-        }
-        if let Some(s) = v["spec"].as_str() {
-            current_spec = Some(s.to_string());
-        }
-        if let Some(n) = v["wave"].as_u64() {
-            if let Ok(w) = u32::try_from(n) {
-                current_wave = Some(w);
-            }
-        }
-        if let Some(s) = v
-            .get("payload")
-            .and_then(|p| p.get("phase"))
-            .and_then(|x| x.as_str())
-        {
-            current_phase = Some(s.to_string());
-        }
-
-        let dt_naive = dt.naive_utc();
-        if dt_naive < today_start {
-            continue;
-        }
-        events_today += 1;
-
-        if dt >= hour_ago {
-            events_last_hour += 1;
-            // Minute bucket: distance from now in minutes (0 = 59 minutes ago).
-            let minutes_ago = (now - dt).num_minutes();
-            if (0..60).contains(&minutes_ago) {
-                let idx = 59 - minutes_ago as usize;
-                if let Some(b) = minute_buckets.get_mut(idx) {
-                    *b += 1;
-                }
-            }
-        }
-        if dt >= five_min_ago {
-            events_last_5min += 1;
-        }
-
-        let is_tool_use = v["event"].as_str().or_else(|| v["type"].as_str()) == Some("tool.use");
-        let event_tool = if is_tool_use {
-            v.get("payload")
-                .and_then(|p| p.get("tool"))
-                .or_else(|| v.get("payload").and_then(|p| p.get("tool_name")))
-                .and_then(|x| x.as_str())
-                .map(|s| s.to_string())
-        } else {
-            None
-        };
-        if let Some(ref t) = event_tool {
-            *tools_today_map.entry(t.clone()).or_insert(0) += 1;
-        }
-
-        // Per-phase aggregation: only events with a canonical phase land here.
-        let event_phase = v
-            .get("payload")
-            .and_then(|p| p.get("phase"))
-            .and_then(|x| x.as_str())
-            .map(|s| s.to_ascii_uppercase());
-        if let Some(p) = event_phase {
-            if CANONICAL_PHASES.contains(&p.as_str()) {
-                if let Some(agg) = phase_aggs.get_mut(&p) {
-                    agg.events_today += 1;
-                    if dt >= hour_ago {
-                        agg.events_last_hour += 1;
-                        let minutes_ago = (now - dt).num_minutes();
-                        if (0..60).contains(&minutes_ago) {
-                            let idx = 59 - minutes_ago as usize;
-                            if let Some(b) = agg.minute_buckets.get_mut(idx) {
-                                *b += 1;
-                            }
-                        }
-                    }
-                    if dt >= five_min_ago {
-                        agg.events_last_5min += 1;
-                    }
-                    if agg.last_event_dt.map_or(true, |prev| dt > prev) {
-                        agg.last_event_dt = Some(dt);
-                        agg.last_event_ts = Some(ts_str.to_string());
-                    }
-                    if let Some(ref t) = event_tool {
-                        *agg.tools.entry(t.clone()).or_insert(0) += 1;
-                    }
-                    if let Some(s) = v["spec"].as_str() {
-                        agg.last_spec = Some(s.to_string());
-                    }
-                }
-            }
-        }
-    }
-
-    let mut tools_today: Vec<ToolCount> = tools_today_map
-        .into_iter()
-        .map(|(tool_name, count)| ToolCount { tool_name, count })
-        .collect();
-    tools_today.sort_by(|a, b| b.count.cmp(&a.count));
-    tools_today.truncate(10);
-
-    let is_fresh = last_event_dt
-        .map(|d| (now - d).num_seconds() < 120)
-        .unwrap_or(false);
-
-    // Build by_phase in canonical order. Each phase always present (events=0 is
-    // information — "EXECUTE is idle" is exactly what we want to show).
-    let by_phase: Vec<PhaseActivity> = CANONICAL_PHASES
-        .iter()
-        .map(|p| {
-            let key = (*p).to_string();
-            let agg = phase_aggs.remove(&key).unwrap_or_else(|| {
-                let mut a = PhaseAgg::default();
-                a.minute_buckets = vec![0; 60];
-                a
-            });
-            let mut top_tools: Vec<ToolCount> = agg
-                .tools
-                .into_iter()
-                .map(|(tool_name, count)| ToolCount { tool_name, count })
-                .collect();
-            top_tools.sort_by(|a, b| b.count.cmp(&a.count));
-            top_tools.truncate(3);
-            PhaseActivity {
-                phase: key,
-                events_today: agg.events_today,
-                events_last_hour: agg.events_last_hour,
-                events_last_5min: agg.events_last_5min,
-                minute_buckets: agg.minute_buckets,
-                last_event_ts: agg.last_event_ts,
-                top_tools,
-                last_spec: agg.last_spec,
-            }
-        })
-        .collect();
-
-    LiveActivity {
-        last_event_ts,
-        events_today,
-        events_last_hour,
-        events_last_5min,
-        tools_today,
-        minute_buckets,
-        current_spec,
-        current_phase,
-        current_wave,
-        is_fresh,
-        by_phase,
-    }
-}
-
-/// Read the last `max_bytes` of a file as UTF-8 (lossy). Returns the whole file
-/// when smaller.
-fn read_tail(path: &Path, max_bytes: u64) -> std::io::Result<String> {
-    use std::io::{Read, Seek, SeekFrom};
-    let mut f = std::fs::File::open(path)?;
-    let len = f.metadata()?.len();
-    let start = len.saturating_sub(max_bytes);
-    if start > 0 {
-        f.seek(SeekFrom::Start(start))?;
-    }
-    let mut buf = Vec::with_capacity((len - start) as usize);
-    f.read_to_end(&mut buf)?;
-    Ok(String::from_utf8_lossy(&buf).into_owned())
 }
 
 // ── Friction telemetry (Wave 4) ─────────────────────────────────────────────

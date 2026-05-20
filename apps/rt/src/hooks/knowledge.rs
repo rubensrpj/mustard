@@ -278,6 +278,10 @@ fn save_friction(entries: &[FrictionEntry], claude_dir: &Path) {
         }
         record.insert("updatedAt".into(), json!(ts));
 
+        // New fields: verification metadata (AC-3).
+        record.insert("verifiedAt".to_string(), Value::Null);
+        record.insert("sourceFiles".to_string(), Value::Array(Vec::new()));
+
         let existing_idx = store_entries
             .iter()
             .position(|e| e.get("name").and_then(|n| n.as_str()) == Some(entry.name.as_str()));
@@ -984,5 +988,39 @@ mod tests {
         };
         // PostToolUse(Bash) → session-knowledge-inc must not run.
         Knowledge.observe(&input, &ctx(Trigger::PostToolUse, dir.path().to_str().unwrap()));
+    }
+
+    #[test]
+    fn knowledge_entry_carries_verification_metadata() {
+        let dir = tempdir().unwrap();
+        write_memory_stub(dir.path());
+        // Write a pipeline-state that produces a friction entry (retries > 2).
+        write_state(
+            dir.path(),
+            "verify-meta",
+            &json!({
+                "specName": "verify-meta",
+                "metrics": { "retries": 4, "toolBreakdown": {} }
+            }),
+        );
+        let input = HookInput {
+            hook_event_name: Some("SessionEnd".to_string()),
+            ..HookInput::default()
+        };
+        Knowledge.observe(&input, &ctx(Trigger::SessionEnd, dir.path().to_str().unwrap()));
+
+        let friction_path = dir.path().join(".claude/.metrics/friction.json");
+        assert!(friction_path.exists(), "friction.json must be written");
+        let parsed: Value =
+            serde_json::from_str(&std::fs::read_to_string(&friction_path).unwrap()).unwrap();
+        let entries = parsed["entries"].as_array().expect("entries array");
+        assert!(!entries.is_empty(), "at least one entry expected");
+        let first = &entries[0];
+        assert_eq!(first["verifiedAt"], Value::Null, "verifiedAt must default to null");
+        assert_eq!(
+            first["sourceFiles"],
+            Value::Array(Vec::new()),
+            "sourceFiles must default to empty array"
+        );
     }
 }

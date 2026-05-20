@@ -226,6 +226,23 @@ fn build_session_summary(events: &[HarnessEvent]) -> Value {
     })
 }
 
+/// Derive the latest phase for `spec` from a replayed event list. The single
+/// source of truth post-`pipeline.phase` migration — phase no longer lives in
+/// pipeline-state JSON. Returns the `to` field of the most recent
+/// `pipeline.phase` event for the spec, or `None` if none exists.
+fn phase_from_events(events: &[HarnessEvent], spec: &str) -> Option<String> {
+    events
+        .iter()
+        .rev()
+        .find(|e| e.event == "pipeline.phase" && e.spec.as_deref() == Some(spec))
+        .and_then(|e| {
+            e.payload
+                .get("to")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+}
+
 /// `buildEpicSummary` — derive a summary view for an epic and its children.
 fn build_epic_summary(events: &[HarnessEvent], cwd: &Path, epic: &str) -> Value {
     let states_dir = cwd.join(".claude").join(".pipeline-states");
@@ -245,21 +262,15 @@ fn build_epic_summary(events: &[HarnessEvent], cwd: &Path, epic: &str) -> Value 
     let children_info: Vec<Value> = children
         .iter()
         .map(|c| {
-            let phase = read_state(c)
-                .and_then(|s| {
-                    s.get("phaseName")
-                        .or_else(|| s.get("phase"))
-                        .and_then(Value::as_str)
-                        .map(str::to_string)
-                });
+            // Phase derives from `pipeline.phase` events, not pipeline-state
+            // JSON (Wave-2 migration).
+            let phase = phase_from_events(events, c);
             json!({ "spec": c, "phase": phase })
         })
         .collect();
 
-    let root_phase = root_state
-        .as_ref()
-        .and_then(|s| s.get("phaseName").or_else(|| s.get("phase")).and_then(Value::as_str))
-        .unwrap_or("")
+    let root_phase = phase_from_events(events, epic)
+        .unwrap_or_default()
         .to_uppercase();
 
     let mut spec_set: std::collections::BTreeSet<&str> = children.iter().map(String::as_str).collect();
@@ -377,16 +388,14 @@ fn build_cross_session_timeline(cwd: &Path, limit: usize) -> Value {
                 if children.is_empty() {
                     continue;
                 }
+                // Phase per child derives from `pipeline.phase` events in
+                // the session log (Wave-2 migration). A child that never
+                // transitioned within this session is presumed not CLOSE.
                 let closed = children
                     .iter()
                     .filter(|c| {
-                        read_state(&states_dir, c)
-                            .and_then(|cs| {
-                                cs.get("phaseName")
-                                    .or_else(|| cs.get("phase"))
-                                    .and_then(Value::as_str)
-                                    .map(|p| p.to_uppercase())
-                            })
+                        phase_from_events(&events, c)
+                            .map(|p| p.to_uppercase())
                             .as_deref()
                             == Some("CLOSE")
                     })
@@ -412,7 +421,8 @@ fn read_state(states_dir: &Path, name: &str) -> Option<Value> {
 }
 
 /// `buildSpecTree` — the recursive parent/child spec hierarchy (max depth 3),
-/// combining `spec.link` events with on-disk `.pipeline-states` files.
+/// combining `spec.link` events with on-disk `.pipeline-states` files. Phase
+/// per node derives from `pipeline.phase` events, not the JSON.
 fn build_spec_tree(events: &[HarnessEvent], cwd: &Path, root_spec: &str) -> Value {
     let states_dir = cwd.join(".claude").join(".pipeline-states");
     // parent → children, child → parent — from spec.link events.
@@ -438,11 +448,14 @@ fn build_spec_tree(events: &[HarnessEvent], cwd: &Path, root_spec: &str) -> Valu
     {
         return json!({ "error": "spec not found" });
     }
-    build_spec_node(&states_dir, &link_children, &link_parent, root_spec, 1, &BTreeSet::new())
+    build_spec_node(events, &states_dir, &link_children, &link_parent, root_spec, 1, &BTreeSet::new())
 }
 
-/// Build one `spec-tree` node, recursing into children. Detects cycles.
+/// Build one `spec-tree` node, recursing into children. Detects cycles. Phase
+/// per node derives from `pipeline.phase` events (Wave-2 migration); the JSON
+/// state file is still consulted for `children_specs` / `parent_spec` shape.
 fn build_spec_node(
+    events: &[HarnessEvent],
     states_dir: &Path,
     link_children: &std::collections::BTreeMap<String, BTreeSet<String>>,
     link_parent: &std::collections::BTreeMap<String, String>,
@@ -457,10 +470,7 @@ fn build_spec_node(
         return json!({ "error": "cycle-detected", "cycle_member": spec });
     }
     let state = read_state(states_dir, spec);
-    let phase = state
-        .as_ref()
-        .and_then(|s| s.get("phaseName").or_else(|| s.get("phase")).and_then(Value::as_str))
-        .map(str::to_string);
+    let phase = phase_from_events(events, spec);
     let parent_spec = state
         .as_ref()
         .and_then(|s| s.get("parent_spec").and_then(Value::as_str))
@@ -479,7 +489,7 @@ fn build_spec_node(
     new_ancestors.insert(spec.to_string());
     let mut children: Vec<Value> = Vec::new();
     for child in &children_set {
-        let node = build_spec_node(states_dir, link_children, link_parent, child, depth + 1, &new_ancestors);
+        let node = build_spec_node(events, states_dir, link_children, link_parent, child, depth + 1, &new_ancestors);
         if node.get("error").and_then(Value::as_str).map(|e| e.contains("cycle")).unwrap_or(false) {
             return json!({ "error": "cycle-detected", "parent": spec, "child": child });
         }

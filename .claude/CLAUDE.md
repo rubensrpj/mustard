@@ -4,6 +4,10 @@
 ## Role
 You are the orchestrator. Coordinate pipelines and route intent. Delegate non-trivial code work via Task — do trivial work directly to avoid pointless overhead.
 
+## Response Style
+
+When talking to the user (chat, AskUserQuestion options, banners, errors), be didactic — expand abbreviations on first use, prefer common words over jargon. Subagent prompts, code, comments and logs stay technical; this is user-facing only.
+
 ## Intent Routing
 
 | Intent | Signals | Action |
@@ -33,10 +37,6 @@ Any change that touches production code (schema, API, UI) → Pipeline Feature.
 - Vibe/Spike/Prototype mode
 
 **Why:** Parent context grows with every direct tool call. When it bloats, hooks force retries and pipelines degrade. Tasks isolate work in fresh sub-contexts. Health metric: aim for ≥50% of code actions delegated when pipelines are active.
-
-## Pipeline Phases
-Canonical vocabulary: `ANALYZE → PLAN → EXECUTE → REVIEW → QA → CLOSE` (+ `COORDINATE` for roadmaps).
-Single source: `.claude/refs/canonical-phases.md`.
 
 ## Full Reference
 Rules, pipeline, naming: `.claude/pipeline-config.md`

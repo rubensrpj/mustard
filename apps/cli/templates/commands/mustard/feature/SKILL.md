@@ -133,7 +133,7 @@ When `scope-decompose` returns `reason: "roadmap-signal"` and `roadmapMatches` c
    - `wave-plan.md` (table copied/adapted from the plans file, status column initialized to `queued` for all)
    - `wave-1-{role}/spec.md` — full detail (Status: draft, narrative copied)
    - `wave-N-{role}/spec.md` for N=2..total — skeleton only (Status: queued, Title + 1-line summary)
-4. **Create `.claude/.pipeline-states/{spec-name}.json`** — a wave plan has no root `spec.md`, so this scaffold is the only place its pipeline state is born. Fields: `specName`, `status: "draft"`, `phase: 2`, `phaseName: "PLAN"`, `scope: "full"`, `isWavePlan: true`, `currentWave: 1`, `totalWaves: <wave count>`, `completedWaves: []`, `failedWaves: []`. `/mustard:approve` § Step 3b expects this file to already exist.
+4. **Create `.claude/.pipeline-states/{spec-name}.json`** — a wave plan has no root `spec.md`, so this scaffold is the only place its pipeline state is born. Fields: `specName`, `status: "draft"`, `phase: 2`, `scope: "full"`, `isWavePlan: true`, `currentWave: 1`, `totalWaves: <wave count>`, `completedWaves: []`, `failedWaves: []`. `/mustard:approve` § Step 3b expects this file to already exist. Phase is derived from `pipeline.phase` events in SQLite (spec `2026-05-19-dashboard-phase-from-sqlite`); do not persist a phase name field in the JSON.
 5. **No AskUserQuestion** — proceed silently per the agnostic auto-detection contract.
 
 #### Full Scope
@@ -175,7 +175,7 @@ The spec is a **SINGLE file** organized in two named layers — `## PRD` (the *w
      - Mark `(parallel-safe)` on frontend tasks with no dependency on new backend endpoints
    - **CONDITIONAL: `## Component Contract` section (UI specs only)** — append between `## Arquivos` and `## Tarefas` (inside the Plano layer) when ANALYZE detects component creation/refactoring (new `*.tsx|*.vue|*.svelte|*.dart|*.swift` widget/View, or props/variants change). Template + rationale at `../../../refs/feature/spec-language.md § Component Contract`. **Skip for non-UI work** — adding this section to backend/database specs is bloat.
 2. Add checkpoint fields: `Status: draft`, `Phase: PLAN`, `Scope: full`, `Checkpoint: {now}`
-3. Create `.claude/.pipeline-states/{spec-name}.json`: `specName`, `status: "active"`, `phase: 2`, `phaseName: "PLAN"`, `scope: "full"`
+3. Create `.claude/.pipeline-states/{spec-name}.json`: `specName`, `status: "active"`, `phase: 2`, `scope: "full"` (phase is sourced from `pipeline.phase` events in SQLite; do not persist a phase name field in the JSON)
 4. Elegance Check: 3+ files or complex logic → "Is there a more elegant approach?"
 5. **Present full spec to user:** Read spec file and print ENTIRE contents verbatim in a fenced markdown block. Add 1-line change summary (WHAT + WHY). Then `AskUserQuestion`: **"Approve and implement?"** / **"Adjust (give feedback)"** / **"Save for later (stop)"**.
 
@@ -240,7 +240,7 @@ Classify before retrying: (1) **Transient?** → retry once immediately. (2) **R
 
 ### QA Phase (Wave 10)
 
-After all EXECUTE tasks complete: (1) set `phaseName: "QA"` in pipeline state. (2) Run `mustard-rt run qa-run --spec {specName}`. (3) `overall=pass` → update `## Acceptance Criteria` checkboxes, then write `phaseName: "CLOSE"` to pipeline state via Write/Edit (triggers `close-gate.js`) → CLOSE; `overall=fail` → return failing AC list to implementation agent, re-run; `overall=skip` (no AC) → warn + allow CLOSE. Max 3 QA iterations — then `AskUserQuestion`: "QA has failed 3 times. Choose: (a) Fix manually and retry, (b) Relax the AC, (c) Abort pipeline."
+After all EXECUTE tasks complete: (1) emit phase transition via `mustard-rt run emit-phase --spec {specName} --to QA`. (2) Run `mustard-rt run qa-run --spec {specName}`. (3) `overall=pass` → update `## Acceptance Criteria` checkboxes, then emit `mustard-rt run emit-phase --spec {specName} --to CLOSE` (triggers `close-gate`) → CLOSE; `overall=fail` → return failing AC list to implementation agent, re-run; `overall=skip` (no AC) → warn + allow CLOSE. Max 3 QA iterations — then `AskUserQuestion`: "QA has failed 3 times. Choose: (a) Fix manually and retry, (b) Relax the AC, (c) Abort pipeline."
 
 Update `## Acceptance Criteria` checkboxes: `[x]` passed, `[ ]` failed. Visual: `[v] ANALYZE  [v] PLAN  [v] EXECUTE  [>] QA  [ ] CLOSE`
 

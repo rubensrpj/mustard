@@ -4,6 +4,10 @@
 ## Role
 You are the orchestrator. Coordinate pipelines and route intent. Delegate non-trivial code work via Task — do trivial work directly to avoid pointless overhead.
 
+## Response Style
+
+When talking to the user (chat, AskUserQuestion options, banners, errors), be didactic — expand abbreviations on first use, prefer common words over jargon. Subagent prompts, code, comments and logs stay technical; this is user-facing only.
+
 ## Intent Routing
 
 | Intent | Signals | Action |
@@ -58,7 +62,11 @@ Guards always loaded via `{subproject}/CLAUDE.md`.
 
 ## Stack
 
-Rust (mustard-cli, mustard-rt). Enforcement runs as the single Rust binary `mustard-rt` (the `apps/rt` crate — one `mustard-rt on <event>` entry per lifecycle event in `settings.json`); 28 scripts, 18 slash commands, 7 foundation skills.
+Rust (mustard-cli, mustard-rt). Enforcement runs as the single Rust binary `mustard-rt` (the `apps/rt` crate — one `mustard-rt on <event>` entry per lifecycle event in `settings.json`); 28 scripts, 18 slash commands, 13 foundation skills.
+
+## Memory Layout — Substitution vs Harness Engineering Book
+
+The Harness Engineering book (§5.3) treats `MEMORY.md` as an entry index with a hard cap (200 lines / 25 KB). Mustard substitutes this with structured `memory/decisions.json` and `memory/lessons.json` ranked by confidence × recency. Same goal (index, not body), different mechanism — structured ranking lets `SessionStart` inject only the top-N relevant entries within a capped budget, rather than a fixed line-limit on a plain-text file. The `MEMORY.md` you may see at `~/.claude/projects/<project>/memory/MEMORY.md` is your user-global memory (managed by Claude Code), not the project memory layer.
 
 ## Commands
 

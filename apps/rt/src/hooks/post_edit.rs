@@ -2,8 +2,8 @@
 //!
 //! ## Scope (b3 Wave 4, Write/Edit family)
 //!
-//! This module consolidates four JavaScript hooks, all `PostToolUse(Write|Edit)`.
-//! Two are pure side effects (`Observer`), two reach a verdict (`Check`):
+//! This module consolidates three JavaScript hooks, all `PostToolUse(Write|Edit)`.
+//! Two are pure side effects (`Observer`), one reaches a verdict (`Check`):
 //!
 //! - `auto-format.js` — an **`Observer`**: runs Prettier / `dotnet format` on
 //!   the just-written file. Fire-and-forget — no verdict.
@@ -12,17 +12,24 @@
 //! - `guard-verify.js` — a **`Check`**: verifies a production file edit against
 //!   critical architectural rules; a critical violation `block`s, a boundary
 //!   mismatch is an advisory.
-//! - `pipeline-phase.js` — an **`Observer`**: emits a `pipeline.phase` event
-//!   when a pipeline-state file's phase changes. No verdict.
 //!
 //! `PostEdit` therefore implements **both** [`Check`] (guard-verify) and
-//! [`Observer`] (auto-format + checklist-auto-mark + pipeline-phase) — the same
-//! dual shape `budget` and `bash_guard` use.
+//! [`Observer`] (auto-format + checklist-auto-mark) — the same dual shape
+//! `budget` and `bash_guard` use.
 //!
 //! Consolidation **regroups, it does not re-decide** — every verdict is a 1:1
 //! port of the JS decision logic. Parity tests mirror `__tests__/hooks.test.js`
-//! ("guard-verify.js"), `__tests__/checklist-mark.test.js`, and the
-//! `pipeline-phase` block of `__tests__/harness-dual-emission.test.js`.
+//! ("guard-verify.js") and `__tests__/checklist-mark.test.js`.
+//!
+//! ## Migration note (dashboard-phase-from-sqlite)
+//!
+//! `pipeline-phase.js` used to live here as a fourth side effect: it parsed
+//! `phaseName` out of a pipeline-state Write and emitted a `pipeline.phase`
+//! event. Wave 2 of `2026-05-19-dashboard-phase-from-sqlite` removed the
+//! `phaseName` writer from SKILL.md, so that trigger no longer fires. The
+//! `pipeline.phase` producer now lives entirely in `mustard-rt run emit-phase`
+//! (`apps/rt/src/run/emit_phase.rs`), driven explicitly by the pipeline
+//! orchestrator commands.
 //!
 //! ## Verdict note (guard-verify)
 //!
@@ -34,16 +41,11 @@
 //! an [`Verdict::Inject`].
 
 use mustard_core::error::Error;
-use mustard_core::io::event_store::EventSink;
-use mustard_core::io::sqlite_store::SqliteEventStore;
 use mustard_core::model::contract::{Check, Ctx, HookInput, Observer, Trigger, Verdict};
-use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::SystemTime;
-
-use crate::util::now_iso8601;
 
 /// The consolidated PostToolUse(Write|Edit) module.
 pub struct PostEdit;
@@ -988,103 +990,12 @@ fn same_path(a: &str, b: &str) -> bool {
 }
 
 // ===========================================================================
-// pipeline-phase — Observer on PostToolUse(Write|Edit)
+// pipeline-phase removed — `mustard-rt run emit-phase` is the sole producer of
+// `pipeline.phase` events. SKILL.md no longer writes `phaseName` to the
+// pipeline-state JSON, so the old PostToolUse(Write|Edit) emitter never had a
+// real trigger after the Wave-2 SQLite migration. Kept as a comment so the
+// migration intent is searchable.
 // ===========================================================================
-
-/// `true` if `file_path` is a pipeline-state file
-/// (`.claude/.pipeline-states/{name}.json`, excluding `*.metrics.json`).
-fn is_pipeline_state_file(file_path: &str) -> bool {
-    let p = file_path.replace('\\', "/");
-    if !p.ends_with(".json") || p.ends_with(".metrics.json") {
-        return false;
-    }
-    let Some(idx) = p.find("/.claude/.pipeline-states/") else {
-        return false;
-    };
-    let rest = &p[idx + "/.claude/.pipeline-states/".len()..];
-    // Exactly one path segment: `[^/]+\.json`.
-    !rest.contains('/') && rest.len() > ".json".len()
-}
-
-/// `pipeline-phase`: emit a `pipeline.phase` event when a pipeline-state
-/// file's phase changes.
-///
-/// Pure side effect — fail-open throughout, no verdict. Port of
-/// `pipeline-phase.js`. The phase-cache lives at
-/// `.claude/.harness/.phase-cache.json`.
-fn run_pipeline_phase(input: &HookInput, cwd: &str) {
-    if !is_write_or_edit(input) {
-        return;
-    }
-    let Some(file_path) = file_path_of(input) else {
-        return;
-    };
-    if !is_pipeline_state_file(&file_path) {
-        return;
-    }
-    // Read the just-written pipeline-state.
-    let Ok(text) = std::fs::read_to_string(&file_path) else {
-        return;
-    };
-    let Ok(state) = serde_json::from_str::<Value>(&text) else {
-        return;
-    };
-    let current_phase = state
-        .get("phaseName")
-        .or_else(|| state.get("phase"))
-        .and_then(|v| v.as_str());
-    let Some(current_phase) = current_phase else {
-        return;
-    };
-    // Spec name from the filename.
-    let spec = basename(&file_path)
-        .strip_suffix(".json")
-        .unwrap_or(basename(&file_path))
-        .to_string();
-
-    // Read the phase cache.
-    let harness_dir = Path::new(cwd).join(".claude").join(".harness");
-    let cache_file = harness_dir.join(".phase-cache.json");
-    let mut cache: serde_json::Map<String, Value> = std::fs::read_to_string(&cache_file)
-        .ok()
-        .and_then(|t| serde_json::from_str(&t).ok())
-        .unwrap_or_default();
-    let previous_phase = cache.get(&spec).and_then(|v| v.as_str()).map(str::to_string);
-
-    // Only emit when the phase actually changed.
-    if previous_phase.as_deref() == Some(current_phase) {
-        return;
-    }
-    // Update the cache.
-    cache.insert(spec.clone(), Value::String(current_phase.to_string()));
-    let _ = std::fs::create_dir_all(&harness_dir);
-    let _ = std::fs::write(
-        &cache_file,
-        serde_json::to_string_pretty(&Value::Object(cache)).unwrap_or_default(),
-    );
-
-    // Emit the `pipeline.phase` event.
-    let event = HarnessEvent {
-        v: SCHEMA_VERSION,
-        ts: now_iso8601(),
-        // CONCERN: `Ctx` carries no session id / wave — emit "unknown" / 0
-        // (the JS `getCurrentSessionId` / `getCurrentWave` fallbacks).
-        session_id: input.session_id.clone().unwrap_or_else(|| "unknown".to_string()),
-        wave: 0,
-        actor: Actor {
-            kind: ActorKind::Hook,
-            id: Some("pipeline-phase".to_string()),
-            actor_type: None,
-        },
-        event: "pipeline.phase".to_string(),
-        payload: json!({
-            "from": previous_phase,
-            "to": current_phase,
-        }),
-        spec: Some(spec),
-    };
-    let _ = SqliteEventStore::for_project(cwd).and_then(|store| store.append(&event));
-}
 
 // ===========================================================================
 // Contract impls
@@ -1107,8 +1018,10 @@ impl Check for PostEdit {
 }
 
 impl Observer for PostEdit {
-    /// Run the three fire-and-forget side effects of a `PostToolUse(Write|Edit)`:
-    /// `auto-format`, `checklist-auto-mark`, `pipeline-phase`.
+    /// Run the two fire-and-forget side effects of a `PostToolUse(Write|Edit)`:
+    /// `auto-format`, `checklist-auto-mark`. The legacy `pipeline-phase`
+    /// emitter was removed once SKILL.md migrated to `mustard-rt run
+    /// emit-phase` (the sole producer of `pipeline.phase` events).
     ///
     /// Pure side effects — never affect a verdict. Fail-open throughout.
     fn observe(&self, input: &HookInput, ctx: &Ctx) {
@@ -1121,7 +1034,6 @@ impl Observer for PostEdit {
         let cwd = project_dir(input, ctx);
         run_auto_format(input, &cwd);
         run_checklist_auto_mark(input, &cwd);
-        run_pipeline_phase(input, &cwd);
     }
 }
 
@@ -1344,88 +1256,10 @@ mod tests {
         PostEdit.observe(&input, &ctx(dir.path().to_str().unwrap()));
     }
 
-    // --- pipeline-phase parity (harness-dual-emission.test.js) -------------
-
-    #[test]
-    fn pipeline_phase_emits_on_phase_change() {
-        let dir = tempdir().unwrap();
-        let states = dir.path().join(".claude").join(".pipeline-states");
-        std::fs::create_dir_all(&states).unwrap();
-        let state_file = states.join("add-login.json");
-        std::fs::write(
-            &state_file,
-            json!({ "spec": "add-login", "phaseName": "ANALYZE" }).to_string(),
-        )
-        .unwrap();
-        let input = HookInput {
-            tool_name: Some("Write".to_string()),
-            tool_input: json!({ "file_path": state_file.to_string_lossy() }),
-            hook_event_name: Some("PostToolUse".to_string()),
-            session_id: Some("s-test".to_string()),
-            ..HookInput::default()
-        };
-        PostEdit.observe(&input, &ctx(dir.path().to_str().unwrap()));
-        let events = SqliteEventStore::for_project(dir.path().to_str().unwrap())
-            .and_then(|s| s.replay())
-            .unwrap();
-        let phase = events.iter().find(|e| e.event == "pipeline.phase");
-        assert!(phase.is_some(), "pipeline.phase event must be emitted");
-        let phase = phase.unwrap();
-        assert_eq!(phase.payload["to"], json!("ANALYZE"));
-        assert_eq!(phase.payload["from"], Value::Null);
-    }
-
-    #[test]
-    fn pipeline_phase_does_not_emit_when_phase_unchanged() {
-        let dir = tempdir().unwrap();
-        let states = dir.path().join(".claude").join(".pipeline-states");
-        std::fs::create_dir_all(&states).unwrap();
-        let state_file = states.join("stable.json");
-        std::fs::write(
-            &state_file,
-            json!({ "spec": "stable", "phaseName": "EXECUTE" }).to_string(),
-        )
-        .unwrap();
-        let input = HookInput {
-            tool_name: Some("Edit".to_string()),
-            tool_input: json!({ "file_path": state_file.to_string_lossy() }),
-            hook_event_name: Some("PostToolUse".to_string()),
-            ..HookInput::default()
-        };
-        let project = dir.path().to_str().unwrap();
-        PostEdit.observe(&input, &ctx(project));
-        PostEdit.observe(&input, &ctx(project));
-        let events = SqliteEventStore::for_project(project)
-            .and_then(|s| s.replay())
-            .unwrap();
-        let phase_count = events.iter().filter(|e| e.event == "pipeline.phase").count();
-        assert_eq!(phase_count, 1, "unchanged phase must not re-emit");
-    }
-
-    #[test]
-    fn pipeline_phase_ignores_non_state_files() {
-        let dir = tempdir().unwrap();
-        let input = edit_input(
-            &dir.path().join("src").join("app.js").to_string_lossy(),
-            "x",
-        );
-        PostEdit.observe(&input, &ctx(dir.path().to_str().unwrap()));
-        let events = SqliteEventStore::for_project(dir.path().to_str().unwrap())
-            .and_then(|s| s.replay())
-            .unwrap();
-        assert!(events.iter().all(|e| e.event != "pipeline.phase"));
-    }
-
-    #[test]
-    fn pipeline_state_file_recognition() {
-        assert!(is_pipeline_state_file(
-            "/p/.claude/.pipeline-states/add-login.json"
-        ));
-        assert!(!is_pipeline_state_file(
-            "/p/.claude/.pipeline-states/add-login.metrics.json"
-        ));
-        assert!(!is_pipeline_state_file("/p/src/app.json"));
-    }
+    // pipeline-phase tests removed — the emitter was deleted (see § A.II of
+    // the dashboard-phase-from-sqlite migration). `mustard-rt run emit-phase`
+    // is the sole producer of `pipeline.phase` events; its tests live in
+    // `apps/rt/src/run/emit_phase.rs`.
 
     // --- auto-format -------------------------------------------------------
 

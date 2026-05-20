@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "audits": [
+    {
+      "from_spec": "eliminate-bun",
+      "closed_at": "2026-05-19",
+      "obsolete_terms": [
+        "events\\.jsonl.*truth source",
+        "harness-views\\.js",
+        "session-knowledge\\.js",
+        "memory-persist\\.js",
+        "harness-init\\.js"
+      ],
+      "replacement_hint": "SQLite single source of truth via mustard_core::io::sqlite_store::SqliteEventStore; readers via mustard-rt run subcommands"
+    },
+    {
+      "from_spec": "2026-05-19-dashboard-phase-from-sqlite",
+      "closed_at": "2026-05-19",
+      "obsolete_terms": [
+        "phaseName.*pipeline-state"
+      ],
+      "replacement_hint": "phase derives from pipeline.phase events in SQLite; readers use last_phase_for_spec helper in apps/rt/src/run/emit_phase.rs"
+    }
+  ]
+}

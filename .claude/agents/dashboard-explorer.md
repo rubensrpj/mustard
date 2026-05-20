@@ -5,7 +5,7 @@ model: haiku
 tools: [Read, Grep, Glob]
 memory: project
 ---
-<!-- mustard:generated at:2026-05-19T18:10:16.756Z role:ui -->
+<!-- mustard:generated at:2026-05-19T19:03:11.579Z role:ui -->
 
 # Dashboard Explorer Agent
 

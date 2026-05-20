@@ -270,6 +270,8 @@ DO NOT include in the return:
 - Confirmation of task understanding
 - Summary of what was delegated
 
+**DO include**: resume from where the prior turn stopped — no apologies, no preamble, no restatement of context. Continuation is preferred over recap.
+
 The parent orchestrator already has context — return only what is actionable.
 
 ## Escalation Statuses
@@ -334,6 +336,26 @@ All anti-slope hooks fail-open on bug. Only real signal triggers warn/block.
 - `MUSTARD_QA_GATE_MODE=off` — skips QA check entirely
 - `MUSTARD_COMMIT_GATE_MODE=strict` — upgrades commit gate to blocking
 - `MUSTARD_COMMIT_GATE_MODE=off` — skips commit gate entirely
+
+### bash_guard Safety Rules (BG01–BG13)
+
+Each rule has a stable ID that appears in the deny reason (`[bash-safety BGnn]`).
+
+| ID | Blocks | Trigger pattern |
+|----|--------|----------------|
+| BG01 | Recursive force delete | `rm -rf`, `rm -fr`, `rm --no-preserve-root`, or any `rm` flag cluster containing both `r` and `f` |
+| BG02 | Force push | `git push --force` or `git push -f` (exception: `--force-with-lease` is allowed) |
+| BG03 | Hard reset | `git reset --hard` |
+| BG04 | Force clean | `git clean -f` (or any flag token containing `f`) |
+| BG05 | Discard all working-tree changes | `git checkout -- .` (must be the final tokens) |
+| BG06 | Restore all working-tree changes | `git restore .` (must be the final tokens) |
+| BG07 | Delete main/master branch | `git branch -D main` or `git branch -D master` |
+| BG08 | World-writable permissions | `chmod 777 <path>` |
+| BG09 | Disk format (Linux/macOS) | Any command containing `mkfs` as a word |
+| BG10 | Raw disk write | `dd if=<anything>` |
+| BG11 | Drive format (Windows) | `format <letter>:` |
+| BG12 | System shutdown | Any command containing `shutdown` as a word |
+| BG13 | System reboot | Any command containing `reboot` as a word |
 
 ## Shared Memory Architecture (Wave 4)
 

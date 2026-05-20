@@ -6,8 +6,8 @@
 //! 2. confirm interactively (unless `--force`);
 //! 3. take a timestamped backup — **unconditionally**, `--force` only skips
 //!    the prompt, never the safety net;
-//! 4. delete the core, Mustard-owned folders (`commands/mustard`, `hooks`,
-//!    `skills`, `scripts`, `refs`);
+//! 4. delete the core, Mustard-owned folders (`commands/mustard`, `skills`,
+//!    `scripts`, `refs`);
 //! 5. re-copy those folders plus `settings.json` from `templates/`;
 //! 6. re-run the RTK and global-permissions guarantees;
 //! 7. re-stamp the `version` field in `.claude/mustard.json`;
@@ -50,7 +50,7 @@ pub struct UpdateOptions {
 /// The Mustard-owned folders `update` deletes and re-copies. Everything else
 /// under `.claude/` is left in place — that is how user customisations and
 /// pipeline state survive an update.
-const CORE_FOLDERS: &[&str] = &["commands/mustard", "hooks", "skills", "scripts", "refs"];
+const CORE_FOLDERS: &[&str] = &["commands/mustard", "skills", "scripts", "refs"];
 
 /// Run `mustard update` against `project_path`.
 ///
@@ -82,7 +82,7 @@ pub fn update_with_templates(
         bail!("no .claude/ directory found - run `mustard init` first");
     }
 
-    println!("  Will recreate: commands/mustard/  hooks/  skills/  scripts/  refs/  settings.json");
+    println!("  Will recreate: commands/mustard/  skills/  scripts/  refs/  settings.json");
     println!(
         "  Will preserve: CLAUDE.md  pipeline-config.md  entity-registry.json  mustard.json  docs/  spec/  memory/"
     );
@@ -118,7 +118,6 @@ pub fn update_with_templates(
     // Re-copy the core folders + settings.json from templates/.
     let mut total = 0usize;
     total += copy_core_folder(templates_dir, &claude_path, "commands/mustard")?;
-    total += copy_core_folder(templates_dir, &claude_path, "hooks")?;
     total += copy_core_folder(templates_dir, &claude_path, "skills")?;
     total += copy_core_folder(templates_dir, &claude_path, "scripts")?;
     total += copy_core_folder(templates_dir, &claude_path, "refs")?;
@@ -199,12 +198,11 @@ mod tests {
     fn fake_templates(root: &Path) -> std::path::PathBuf {
         let templates = root.join("templates");
         fs::create_dir_all(templates.join("commands/mustard")).unwrap();
-        fs::create_dir_all(templates.join("hooks")).unwrap();
         fs::create_dir_all(templates.join("skills")).unwrap();
         fs::create_dir_all(templates.join("scripts")).unwrap();
         fs::create_dir_all(templates.join("refs")).unwrap();
         fs::write(templates.join("commands/mustard/feature.md"), "v2").unwrap();
-        fs::write(templates.join("hooks/guard.js"), "v2").unwrap();
+        fs::write(templates.join("skills/guard.js"), "v2").unwrap();
         fs::write(templates.join("settings.json"), r#"{"v":2}"#).unwrap();
         templates
     }
@@ -213,12 +211,12 @@ mod tests {
     fn existing_claude(project: &Path) {
         let claude = project.join(".claude");
         fs::create_dir_all(claude.join("commands/mustard")).unwrap();
-        fs::create_dir_all(claude.join("hooks")).unwrap();
+        fs::create_dir_all(claude.join("skills")).unwrap();
         fs::create_dir_all(claude.join("docs")).unwrap();
         fs::create_dir_all(claude.join("spec/active")).unwrap();
         // Stale Mustard-owned files (should be replaced).
         fs::write(claude.join("commands/mustard/feature.md"), "v1-stale").unwrap();
-        fs::write(claude.join("hooks/guard.js"), "v1-stale").unwrap();
+        fs::write(claude.join("skills/guard.js"), "v1-stale").unwrap();
         // User files (must survive untouched).
         fs::write(claude.join("CLAUDE.md"), "USER RULES").unwrap();
         fs::write(claude.join("docs/notes.md"), "USER NOTES").unwrap();
@@ -266,7 +264,7 @@ mod tests {
             fs::read_to_string(claude.join("commands/mustard/feature.md")).unwrap(),
             "v2"
         );
-        assert_eq!(fs::read_to_string(claude.join("hooks/guard.js")).unwrap(), "v2");
+        assert_eq!(fs::read_to_string(claude.join("skills/guard.js")).unwrap(), "v2");
     }
 
     #[test]

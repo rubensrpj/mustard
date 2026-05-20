@@ -1,4 +1,4 @@
-<!-- mustard:generated at:2026-05-13 role:ui -->
+<!-- mustard:generated at:2026-05-19 role:ui -->
 # Stack — mustard-dashboard
 
 Tauri 2 desktop dashboard. React 19 + TypeScript 5.8 frontend, Rust backend (`src-tauri/`). Multi-project Mustard scaffold inspector.
@@ -10,10 +10,10 @@ Tauri 2 desktop dashboard. React 19 + TypeScript 5.8 frontend, Rust backend (`sr
 | UI runtime | react / react-dom | ^19.1.0 | App rendering |
 | Router | react-router | ^7 | HashRouter (Tauri-safe) |
 | Server cache | @tanstack/react-query | ^5 | Fetch + cache + refetchInterval |
-| Global store | zustand | ^5 | `projectsRoot`, `activeWorkspaceId` |
+| Global store | zustand | ^5 | `projectsRoot`, `activeWorkspaceId`, `language` |
 | Styling | tailwindcss / @tailwindcss/vite | ^4.3.0 | Utility CSS |
 | Component primitives | radix-ui | ^1.4.3 | Headless primitives |
-| Component meta | shadcn | ^4.7.0 | Component scaffolder (CLI) |
+| Component scaffolder | shadcn | ^4.7.0 | CLI — `pnpm dlx shadcn add <name>` |
 | Variants | class-variance-authority / clsx / tailwind-merge | latest | `cn()` + `cva()` |
 | Icons | lucide-react | ^1.14.0 | Icon set |
 | Markdown | react-markdown + remark-gfm | ^10 / ^4 | PRD + knowledge rendering |
@@ -22,7 +22,7 @@ Tauri 2 desktop dashboard. React 19 + TypeScript 5.8 frontend, Rust backend (`sr
 | i18n | i18next / react-i18next | ^26 / ^17 | EN/PT translation |
 | Date | dayjs | ^1.11.20 | Relative time formatting |
 
-## Tauri integration
+## Tauri plugins
 
 | Plugin | Purpose |
 |--------|---------|
@@ -43,23 +43,23 @@ Tauri 2 desktop dashboard. React 19 + TypeScript 5.8 frontend, Rust backend (`sr
 | Build | `pnpm build` | `tsc -b && vite build` — type-check then bundle |
 | Build (desktop) | `pnpm tauri:build` | Packaged installer |
 | Lint | `pnpm lint` | `eslint .` |
-| Test | `pnpm test` | Placeholder (`echo "no tests yet" && exit 0`) — no test runner yet |
-| Type-check only | `pnpm tsc --noEmit` | Implicit via `tsc -b` in build |
+| Test | `pnpm test` | Placeholder (`echo "no tests yet"`) — no test runner yet |
 
 ## Path aliases
 
-`@/*` → `src/*` (configured in `tsconfig` + `vite.config.ts`).
+`@/*` → `src/*` (configured in `tsconfig.json` + `vite.config.ts`).
 
 ## Source layout
 
 | Path | Contents |
 |------|----------|
-| `src/api/` | Tauri `invoke()` wrappers (`discovery.ts`, `env.ts`) returning typed promises |
-| `src/lib/` | Pure modules — `dashboard.ts` (invoke wrappers), `store.ts` (zustand), `watcher.ts` (fs event subscription), `time.ts`, `format.ts`, `utils.ts` (`cn()`), `query-client.ts`, `prd-template.ts` |
-| `src/hooks/` | `use*` React hooks — most wrap `useQueries` over `Project[]` |
-| `src/components/` | Feature components (e.g. `LivePipelineCard`, `AggregateOverview`, `CommandPalette`, `KnowledgeCard`, `SpecsList`, `SpecSidePanel`, `Markdown`, `StatusDot`) |
-| `src/components/ui/` | shadcn-style primitives (`button.tsx`, `card.tsx`, `dialog.tsx`, etc.) |
-| `src/components/layout/` | `AppShell`, `Sidebar`, `Topbar`, `WorkspaceSwitcher` |
+| `src/api/` | Tauri `invoke()` wrappers — `discovery.ts`, `env.ts`, `promptEconomy.ts` |
+| `src/lib/` | Pure modules — `dashboard.ts` (all invoke wrappers + types), `store.ts` (zustand), `watcher.ts`, `time.ts`, `format.ts`, `utils.ts` (`cn()`), `query-client.ts`, `prd-template.ts`, `phaseTheme.ts`, `waves.ts`, `qa.ts` |
+| `src/hooks/` | `use*` hooks — `useAggregate`, `useActivityFeed`, `useKnowledgeSearch`, `usePromptEconomy`, `useCollectorHealth`, `useProject`, `useSpecActions`, `useTheme` |
+| `src/components/` | Feature components — `LivePipelineCard`, `AggregateOverview`, `CommandPalette`, `KnowledgeCard`, `SpecsList`, `SpecSidePanel`, `Markdown`, `StatusDot`, `WaveNav`, `WorkspaceDigest` |
+| `src/components/page/` | Shared page primitives (barrel-exported via `index.ts`) — `KPICard`, `PageHeader`, `SectionHeader`, `DataCard`, `EmptyState`, `PhaseChip`, `EventChip`, `AcBreakdown`, `WaveRowLabel`, `CollapsibleGroup` |
+| `src/components/ui/` | shadcn primitives — `button`, `card`, `dialog`, `sheet`, `input`, `badge`, `avatar`, `tabs`, `tooltip`, `scroll-area`, etc. |
+| `src/components/layout/` | `AppShell`, `Sidebar`, `Topbar`, `SplitDetail`, `WorkspaceSwitcher` |
 | `src/pages/` | Route components — `Home`, `ProjectDetail`, `SpecDetail`, `Commands`, `Knowledge`, `Activity`, `Settings`, `Telemetry`, `Prd`, `Quality` |
-| `src/data/` | Static catalogs (`commands-catalog.ts`, `env-catalog.ts`) |
+| `src/data/` | Static catalogs — `commands-catalog.ts`, `env-catalog.ts` |
 | `src-tauri/` | Rust backend (commands, watcher, etc.) |

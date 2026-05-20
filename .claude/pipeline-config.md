@@ -296,25 +296,25 @@ All anti-slope hooks fail-open on bug. Only real signal triggers warn/block.
 - `MUSTARD_COMMIT_GATE_MODE=strict` — upgrades commit gate to blocking
 - `MUSTARD_COMMIT_GATE_MODE=off` — skips commit gate entirely
 
-## Shared Memory Architecture (Wave 4)
+## Shared Memory Architecture
 
 ### Truth source
-`.claude/.harness/events.jsonl` — append-only NDJSON log. All hooks emit events here.
+`.claude/.harness/mustard.db` (SQLite) — consolidado pela spec `eliminate-bun` 2026-05-19. Todos os módulos Rust de hook/run emitem via `mustard_core::io::sqlite_store::SqliteEventStore::append()`. `events.jsonl` no mesmo diretório é log legacy e não é mais autoritativo.
 
 ### Persistent projections
 | File | Writer | Purpose |
 |------|--------|---------|
-| `knowledge.json` | `session-knowledge.js` + `knowledge-update.js` | Confidence-ranked patterns across sessions |
-| `memory/decisions.json` | `memory-persist.js` | Architectural decisions |
-| `memory/lessons.json` | `memory-persist.js` | Operational lessons |
-| `.pipeline-states/{spec}.json` | Pipeline commands | Current phase (ANALYZE/PLAN/EXECUTE/CLOSE) |
+| `knowledge.json` | `knowledge` hook module + `mustard-rt run memory knowledge` | Confidence-ranked patterns across sessions |
+| `memory/decisions.json` | `mustard-rt run memory decision` | Architectural decisions |
+| `memory/lessons.json` | `mustard-rt run memory <agent\|lesson>` | Operational lessons |
+| `.pipeline-states/{spec}.json` | Pipeline commands | Status, scope, tasks, wave bookkeeping (phase no longer persisted here — derived from `pipeline.phase` events in SQLite via `mustard-rt run emit-phase` / `event_projections`) |
 
 ### How agents read context
-Via **views** in `scripts/harness-views.js`:
-- `buildAgentVisibility(events, opts)` — parallel agents in current wave + prior findings
-- `buildPipelineState(events, { spec })` — phase + metrics (tool counts, retries, agents) for a spec
-- `buildCrossSessionTimeline(sessionsDir, opts)` — episodic memory across sessions
-- `buildSessionSummary(events)` — roll-up for SessionEnd fold
+Via **run subcommands** that fold events from `SqliteEventStore`:
+- `mustard-rt run event-projections` (`apps/rt/src/run/event_projections.rs`) — pipeline state / agent visibility / session summary projections, replacing the old `buildPipelineState` / `buildAgentVisibility` / `buildSessionSummary` views
+- `mustard-rt run emit-phase` (`apps/rt/src/run/emit_phase.rs`) — emits and queries the latest `pipeline.phase` event per spec
+- `mustard-rt run pipeline-summary` (`apps/rt/src/run/pipeline_summary.rs`) — phase + metrics roll-up for a spec
+- `mustard-rt run metrics` (`apps/rt/src/run/metrics.rs`) — tool/agent counters folded from events
 
 ### Removed (Wave 4 — no longer written)
 - `.agent-memory/` (was: per-agent summaries → now: `agent.stop` events in log)
@@ -323,25 +323,25 @@ Via **views** in `scripts/harness-views.js`:
 - `.pipeline-states/*.metrics.json` (was: cumulative counters → now: `tool.use` events folded by `buildPipelineState`)
 
 ### Log rotation
-`harness-init.js` (SessionStart) rotates `.harness/events.jsonl` → `.harness/sessions/{sessionId}.jsonl` and prunes sessions >30 days.
+Event history lives in `.claude/.harness/mustard.db` (SQLite). The `session_start` hook module (SessionStart) bootstraps the harness event bus; pruning of stale per-session artifacts is handled by `session_cleanup` (SessionEnd). The legacy `events.jsonl` is no longer rotated — it is non-authoritative log output.
 
 ### On-Demand Memory Queries (Escape Hatch)
 
-The automatic injection in SessionStart/SubagentStart is capped (400-800 chars). If you need more historical context, query the harness directly:
+The automatic injection in SessionStart/SubagentStart is capped (400-800 chars). If you need more historical context, query the harness directly via `mustard-rt run` subcommands that fold the SQLite event store:
 
 ```bash
-# Find specific topic in session summary
-node .claude/scripts/harness-views.js --view session-summary --query "JWT" --compact
+# Pipeline state / agent visibility / session summary projections
+mustard-rt run event-projections --view session-summary --query "JWT"
+mustard-rt run event-projections --view agent-visibility
 
-# Get full state of a spec
-node .claude/scripts/harness-views.js --view pipeline-state --spec auth-login --compact
+# Phase + metrics roll-up for a spec
+mustard-rt run pipeline-summary --spec auth-login
 
-# See last N sessions timeline
-node .claude/scripts/harness-views.js --view cross-session-timeline --limit 5 --compact
-
-# Active parallel agents in current wave
-node .claude/scripts/harness-views.js --view agent-visibility --compact
+# Latest pipeline.phase event per spec
+mustard-rt run emit-phase --spec auth-login --query
 ```
+
+(Exact flag surface lives in `apps/rt/src/run/{event_projections,pipeline_summary,emit_phase}.rs` — consult `--help` for the current contract.)
 
 **When to use:**
 - Exploring a feature area you have partial context on

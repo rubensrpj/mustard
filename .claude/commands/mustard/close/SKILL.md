@@ -51,6 +51,25 @@ If ANY gate fails: do NOT mark complete → report what failed + suggest fix. If
 
 Re-reviews always dispatch with `model: "sonnet"` (see `review/SKILL.md § Model Selection`).
 
+#### Docs Audit (narrative drift)
+
+Then check the documentation surface for terms that an earlier architectural
+spec marked obsolete:
+
+```bash
+mustard-rt run docs-stale-check
+```
+
+Parse the JSON output and branch on `hits[]`:
+
+- **`hits.length === 0`**: continue.
+- **`hits.length > 0`**: print each hit as `{file}:{line} — {pattern} ({from_spec}) — {hint}` and:
+  - **Default (warn):** surface the list to the user and continue.
+  - **`MUSTARD_DOCS_AUDIT_MODE=strict`:** do NOT finalize — block CLOSE until the docs are updated. Re-run the gate after edits.
+- **Script missing/errors:** warn but continue (fail-open).
+
+The audit registry lives at `.claude/.docs-audit.json` — each closed architectural spec appends an entry there.
+
 #### Surface Accumulated Concerns
 
 Before finalizing, scan the active spec for any `## Concerns` section written during EXECUTE:

@@ -1,7 +1,7 @@
 //! Argument parsing and subcommand dispatch.
 //!
-//! Mirrors the JavaScript `cli.ts`, which used Commander: the same six
-//! subcommands (`init`, `update`, `config`, `auto-update`, `add`, `review`)
+//! Mirrors the JavaScript `cli.ts`, which used Commander: the same five
+//! subcommands (`init`, `update`, `config`, `add`, `review`)
 //! with the same flags. `clap`'s derive API builds the parser from the types
 //! below.
 //!
@@ -12,7 +12,6 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 
 use crate::commands::add::{self, AddOptions};
-use crate::commands::auto_update::{self, AutoUpdateOptions};
 use crate::commands::config::{self, ConfigOptions};
 use crate::commands::init::{self, InitOptions};
 use crate::commands::review::{self, ReviewOptions};
@@ -53,16 +52,6 @@ enum Commands {
     /// Configure or reconfigure `mustard.json` (git flow).
     Config {
         /// Accept defaults without prompting.
-        #[arg(short = 'y', long)]
-        yes: bool,
-    },
-    /// Check for a newer CLI on npm and install it.
-    #[command(name = "auto-update")]
-    AutoUpdate {
-        /// Only check for updates, do not install.
-        #[arg(long = "check-only")]
-        check_only: bool,
-        /// Skip confirmation prompts.
         #[arg(short = 'y', long)]
         yes: bool,
     },
@@ -115,9 +104,6 @@ fn dispatch(cli: Cli) -> Result<()> {
         ),
         Commands::Update { force } => update::update(&cwd, &UpdateOptions { force }),
         Commands::Config { yes } => config::config(&cwd, &ConfigOptions { yes }),
-        Commands::AutoUpdate { check_only, yes } => {
-            auto_update::auto_update(&AutoUpdateOptions { check_only, yes })
-        }
         Commands::Add { template, force } => {
             add::add(&cwd, &template, &AddOptions { force })
         }
@@ -156,16 +142,6 @@ mod tests {
         match cli.command {
             Commands::Update { force } => assert!(force),
             other => panic!("expected Update, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn parses_auto_update_check_only() {
-        let cli =
-            Cli::try_parse_from(["mustard", "auto-update", "--check-only"]).unwrap();
-        match cli.command {
-            Commands::AutoUpdate { check_only, .. } => assert!(check_only),
-            other => panic!("expected AutoUpdate, got {other:?}"),
         }
     }
 

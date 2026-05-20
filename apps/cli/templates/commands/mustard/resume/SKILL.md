@@ -72,8 +72,8 @@ Before loading heavy context (sync-registry, diff-context, Explore Gate), ask th
         1. Run `mustard-rt run wave-tree --spec-dir .claude/spec/active/{specName} --format json` and parse `waves[]` (each has `{label, folder, status}`).
         2. **Truly fresh plan** — every wave has `status === "queued"` (never executed) → stop and instruct: `Wave plan isn't approved yet. Run /mustard:approve {specName} first.`
         3. **Plan already in progress** — at least one wave has `status !== "queued"` (proves it was approved & started, the state file was just lost):
-           - Build pipeline-state:
-             - `specName`, `isWavePlan: true`, `status: "implementing"`, `phaseName: "EXECUTE"`
+           - Build pipeline-state (phase is derived from `pipeline.phase` events in SQLite; omit any phase-name field. Emit the transition via `mustard-rt run emit-phase --spec {specName} --to EXECUTE` after the write):
+             - `specName`, `isWavePlan: true`, `status: "implementing"`
              - `totalWaves: waves.length`
              - `completedWaves: <wave numbers where status === "completed">` (1-indexed, parsed from `folder` like `wave-3-backend`)
              - `currentWave: <smallest wave number where status !== "completed">`
@@ -127,7 +127,7 @@ The slice is stable for the whole pipeline, so it sits in the PREFIX-STABLE bloc
 
 7. **Read** `.claude/pipeline-config.md`. For `entity-registry.json`: use Grep to extract ONLY the relevant entity block (e.g. `"Contract":`), NEVER read the full JSON
 9. **Update spec header:** `Status: implementing`, `Phase: EXECUTE`, `Checkpoint: {ISO now}`
-10. **Update/create pipeline state:** `status: "implementing"`, `phaseName: "EXECUTE"`, `specName`
+10. **Update/create pipeline state:** `status: "implementing"`, `specName`. Then emit `mustard-rt run emit-phase --spec {specName} --to EXECUTE` (phase no longer persisted in the JSON; reader derives it from `pipeline.phase` events in SQLite).
 11. **TaskCreate** — 1 per pending agent (skip completed)
 
 ### Step 3: Execute — Wave System
@@ -231,10 +231,10 @@ Extract CRITICAL findings verbatim from review return (or harness view). Build r
 
 After REVIEW returns APPROVED, run QA before CLOSE. NEVER go REVIEW→CLOSE directly — `close-gate.js` denies CLOSE without a passing `qa.result` event.
 
-1. Update pipeline state via Write/Edit: `phaseName: "QA"`.
+1. Emit phase transition: `mustard-rt run emit-phase --spec {specName} --to QA`.
 2. Run `mustard-rt run qa-run --spec {specName}`. For wave plans, `{specName}` is the wave-plan directory name.
 3. Branch on `overall`:
-   - **pass** — update `## Acceptance Criteria` checkboxes in the spec (`[x]` for each passed AC), then update pipeline state via Write/Edit with `phaseName: "CLOSE"` (this Write triggers `close-gate.js`, which verifies the `qa.result` event before allowing CLOSE) → proceed to Step 20.
+   - **pass** — update `## Acceptance Criteria` checkboxes in the spec (`[x]` for each passed AC), then emit `mustard-rt run emit-phase --spec {specName} --to CLOSE` (`close-gate` verifies the `qa.result` event before allowing CLOSE) → proceed to Step 20.
    - **fail** — extract the failing AC list and re-dispatch via the Step 19b Fix Loop Dispatch Protocol, then re-run this step. Maximum 3 QA iterations.
    - **skip** (no Acceptance Criteria section) — inform inline `QA pulado — spec sem Acceptance Criteria`, then proceed to Step 20.
 4. After 3 failed QA iterations → `AskUserQuestion`: "(a) corrigir manualmente e repetir, (b) relaxar o AC na spec, (c) abortar pipeline."

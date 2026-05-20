@@ -13,7 +13,10 @@
 //!   end of Wave 1** — B3/B4 depend on it.
 //! - [`pipeline`] — `pipeline-state` types ([`pipeline::PipelineState`],
 //!   [`pipeline::Phase`], [`pipeline::Scope`]).
+//! - [`provenance`] — the managed-artifact manifest
+//!   ([`provenance::ArtifactManifest`], [`provenance::ArtifactRecord`]).
 
 pub mod contract;
 pub mod event;
 pub mod pipeline;
+pub mod provenance;

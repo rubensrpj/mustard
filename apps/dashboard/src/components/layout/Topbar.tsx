@@ -9,6 +9,7 @@ import { fetchActivePipelines } from "@/lib/dashboard";
 function pathLabel(pathname: string): string {
   if (pathname === "/") return "Home";
   if (pathname === "/settings") return "Settings";
+  if (pathname === "/preferences") return "Preferences";
   if (pathname === "/activity") return "Atividade";
   if (pathname === "/telemetry") return "Telemetria";
   if (pathname === "/quality") return "Qualidade";

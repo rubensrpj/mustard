@@ -47,24 +47,27 @@ fn validate_registry(registry: &Value) -> Option<String> {
         .get("_meta")
         .and_then(|m| m.get("version"))
         .and_then(|v| v.as_str());
-    if !version.is_some_and(|v| v.starts_with("3.")) {
+    if !version.is_some_and(|v| v.starts_with("3.") || v.starts_with("4.")) {
         return Some(format_gate_message(
             "Registry Gate",
             &format!(
                 "Registry version {} is outdated",
                 version.unwrap_or("unknown")
             ),
-            "/feature and /bugfix expect schema v3.1",
+            "/feature and /bugfix expect schema v3.x or v4.x",
             "run /sync-registry to update the registry",
         ));
     }
 
+    let is_v4_plus = version.is_some_and(|v| v.starts_with("4."));
+
     // Entities exist (`registry.e`, excluding the `_placeholder` key).
+    // v4 uses `_patterns` as the primary index — entities are optional.
     let entity_count = registry
         .get("e")
         .and_then(Value::as_object)
         .map_or(0, |obj| obj.keys().filter(|k| *k != "_placeholder").count());
-    if entity_count == 0 {
+    if entity_count == 0 && !is_v4_plus {
         return Some(format_gate_message(
             "Registry Gate",
             "Registry has no entities",

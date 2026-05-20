@@ -1,22 +1,74 @@
 {
   "_meta": {
     "version": "4.0",
-    "generated": "2026-05-19",
+    "generated": "2026-05-20",
     "generator": "mustard-rt run sync-registry"
   },
   "_patterns": {
+    "rust": {
+      "architecture": "modular",
+      "conventions": {
+        "naming": {
+          "distribution": {
+            "lowercase": 14,
+            "snake_case": 3
+          },
+          "dominant": "lowercase",
+          "total": 17
+        }
+      },
+      "discovered": [
+        {
+          "declarationKeywords": null,
+          "declarationSuffix": null,
+          "ext": ".rs",
+          "fileCount": 7,
+          "folderPattern": "**/src/mod.rs",
+          "folders": [
+            "src/hooks",
+            "src/mcp",
+            "src/report",
+            "src/run",
+            "src/run/otel",
+            "src/run/scan",
+            "src/util"
+          ],
+          "kind": "filename-cluster",
+          "label": "mod",
+          "memberSuffixes": null,
+          "namingPattern": null,
+          "samples": [
+            "src/hooks/mod.rs",
+            "src/mcp/mod.rs",
+            "src/report/mod.rs"
+          ],
+          "subprojectName": "rt",
+          "suffix": "mod",
+          "topOfFileLines": null
+        }
+      ],
+      "folderFrequency": {
+        "segments": {
+          "io": 1,
+          "model": 1,
+          "src": 3,
+          "tests": 1
+        },
+        "totalFolders": 4
+      }
+    },
     "typescript": {
       "architecture": "atomic",
       "conventions": {
         "naming": {
           "distribution": {
-            "camelCase": 9,
-            "kebab-case": 4,
-            "lowercase": 12,
+            "camelCase": 11,
+            "kebab-case": 5,
+            "lowercase": 13,
             "mixed": 3
           },
           "dominant": null,
-          "total": 28
+          "total": 32
         }
       },
       "discovered": [
@@ -24,7 +76,7 @@
           "declarationKeywords": null,
           "declarationSuffix": null,
           "ext": ".ts",
-          "fileCount": 8,
+          "fileCount": 10,
           "folderPattern": "**/src/",
           "folders": [
             "src/hooks",
@@ -38,15 +90,35 @@
           "samples": [
             "useActivityFeed.ts",
             "useAggregate.ts",
-            "useKnowledgeSearch.ts"
+            "useArtifactDrift.ts"
           ],
           "subprojectName": "dashboard",
           "suffix": "use",
+          "topOfFileLines": null
+        },
+        {
+          "declarationKeywords": null,
+          "declarationSuffix": null,
+          "decorator": "tauri",
+          "ext": ".ts",
+          "fileCount": 3,
+          "folderPattern": "**/src/",
+          "folders": [
+            "src/api",
+            "src/lib"
+          ],
+          "kind": "decorator-cluster",
+          "label": "tauri",
+          "memberSuffixes": null,
+          "namingPattern": null,
+          "samples": [
+            "env.ts",
+            "dashboard.ts",
+            "projects.ts"
+          ],
+          "subprojectName": "dashboard",
+          "suffix": "tauri",
           "topOfFileLines": [
-            "import type { Project } from \"@/api/discovery\";",
-            "import { useQueries } from \"@tanstack/react-query\";",
-            "projectId: string;",
-            "projectName: string;",
             "}"
           ]
         }
@@ -88,6 +160,226 @@
       }
     }
   },
-  "_enums": {},
+  "_enums": {
+    "ActorKind": {
+      "decorators": [
+        "Debug",
+        "Clone",
+        "Copy",
+        "PartialEq",
+        "Eq",
+        "Serialize",
+        "Deserialize"
+      ],
+      "file": "src/model/event.rs",
+      "valueConvention": "PascalCase",
+      "values": [
+        "Hook",
+        "Agent",
+        "Orchestrator",
+        "Cli"
+      ]
+    },
+    "ArtifactCategory": {
+      "decorators": [
+        "Debug",
+        "Clone",
+        "Copy",
+        "PartialEq",
+        "Eq",
+        "Serialize",
+        "Deserialize"
+      ],
+      "file": "src/model/provenance.rs",
+      "valueConvention": "PascalCase",
+      "values": [
+        "Skill",
+        "Recipe",
+        "Ref",
+        "Command",
+        "Hook",
+        "Tool"
+      ]
+    },
+    "ArtifactSource": {
+      "decorators": [
+        "Debug",
+        "Clone",
+        "PartialEq",
+        "Eq",
+        "Serialize",
+        "Deserialize"
+      ],
+      "file": "src/model/provenance.rs",
+      "valueConvention": "PascalCase",
+      "values": [
+        "FirstParty",
+        "Manual"
+      ]
+    },
+    "Error": {
+      "decorators": [
+        "Debug",
+        "thiserror::Error"
+      ],
+      "file": "src/error.rs",
+      "valueConvention": "PascalCase",
+      "values": [
+        "Io",
+        "NotFound",
+        "Parse",
+        "Config",
+        "Env",
+        "InvalidInput",
+        "CheckFailed",
+        "Sqlite"
+      ]
+    },
+    "HookProfile": {
+      "decorators": [
+        "Debug",
+        "Clone",
+        "Copy",
+        "PartialEq",
+        "Eq"
+      ],
+      "file": "src/env.rs",
+      "valueConvention": "PascalCase",
+      "values": [
+        "Minimal",
+        "Standard",
+        "Strict"
+      ]
+    },
+    "Mode": {
+      "decorators": [
+        "Debug",
+        "Clone",
+        "Copy",
+        "PartialEq",
+        "Eq",
+        "Hash"
+      ],
+      "file": "src/config.rs",
+      "valueConvention": "PascalCase",
+      "values": [
+        "Off",
+        "Warn",
+        "Strict"
+      ]
+    },
+    "Phase": {
+      "decorators": [
+        "Debug",
+        "Clone",
+        "Copy",
+        "PartialEq",
+        "Eq",
+        "Hash",
+        "Serialize",
+        "Deserialize"
+      ],
+      "file": "src/model/pipeline.rs",
+      "valueConvention": "PascalCase",
+      "values": [
+        "Analyze",
+        "Plan",
+        "Execute",
+        "Review",
+        "Qa",
+        "Close",
+        "Coordinate"
+      ]
+    },
+    "RunCmd": {
+      "decorators": [
+        "Debug",
+        "Subcommand"
+      ],
+      "file": "src/run/mod.rs",
+      "valueConvention": "PascalCase",
+      "values": [
+        "WaveDependency",
+        "ScopeDecompose",
+        "Statusline",
+        "RtkGain",
+        "OtelCollector"
+      ]
+    },
+    "Scope": {
+      "decorators": [
+        "Debug",
+        "Clone",
+        "Copy",
+        "PartialEq",
+        "Eq",
+        "Hash",
+        "Serialize",
+        "Deserialize"
+      ],
+      "file": "src/model/pipeline.rs",
+      "valueConvention": "PascalCase",
+      "values": [
+        "Light",
+        "Medium",
+        "Full"
+      ]
+    },
+    "ToolMatch": {
+      "decorators": [
+        "Debug",
+        "Clone",
+        "Copy",
+        "PartialEq",
+        "Eq"
+      ],
+      "file": "src/registry.rs",
+      "valueConvention": "PascalCase",
+      "values": [
+        "None",
+        "Any",
+        "Named"
+      ]
+    },
+    "Trigger": {
+      "decorators": [
+        "Debug",
+        "Clone",
+        "Copy",
+        "PartialEq",
+        "Eq",
+        "Hash",
+        "Serialize",
+        "Deserialize"
+      ],
+      "file": "src/model/contract.rs",
+      "valueConvention": "PascalCase",
+      "values": [
+        "PreToolUse",
+        "PostToolUse",
+        "SessionStart",
+        "SessionEnd",
+        "PreCompact",
+        "SubagentStart",
+        "SubagentStop",
+        "UserPromptSubmit"
+      ]
+    },
+    "Verdict": {
+      "decorators": [
+        "Debug",
+        "Clone",
+        "PartialEq",
+        "Eq",
+        "Serialize",
+        "Deserialize"
+      ],
+      "file": "src/model/contract.rs",
+      "valueConvention": "PascalCase",
+      "values": [
+        "Allow"
+      ]
+    }
+  },
   "e": {}
 }

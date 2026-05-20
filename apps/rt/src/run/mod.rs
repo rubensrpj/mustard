@@ -13,11 +13,14 @@
 
 pub mod scan;
 mod analyze_validation;
+mod artifact_update;
+mod doctor;
 mod complete_spec;
 mod context_slice;
 mod diff_context;
+mod docs_stale_check;
 mod emit_event;
-mod emit_phase;
+pub mod emit_phase;
 mod env;
 mod epic_fold;
 mod event_projections;
@@ -375,6 +378,51 @@ pub enum RunCmd {
         #[arg(long = "expect-rows-after")]
         expect_rows_after: Option<String>,
     },
+    /// Read-only installation health diagnostic: wiring, drift, state health,
+    /// and (optionally) residue. Prints a compact OK/WARN/FAIL report and
+    /// exits 1 if any category is FAIL, 0 otherwise.
+    Doctor {
+        /// Also scan for dead file/script references (slower).
+        #[arg(long)]
+        residue: bool,
+    },
+    /// Scan markdown docs for obsolete terms declared in `.claude/.docs-audit.json`.
+    ///
+    /// Emits a JSON report of stale-doc hits. With `--strict` (or env
+    /// `MUSTARD_DOCS_AUDIT_MODE=strict` set by the caller), exits `1` when any
+    /// hit is found — the close gate uses this to block CLOSE on narrative
+    /// drift after an architectural spec lands.
+    DocsStaleCheck {
+        /// Limit the audit to a single spec (`from_spec` field). Defaults to
+        /// running every audit declared in the registry.
+        #[arg(long)]
+        from: Option<String>,
+        /// Exit `1` when any hit is found. Default is warn-only (exit `0`).
+        #[arg(long)]
+        strict: bool,
+        /// Also recurse into nested `apps/*/.claude/**` installed-payload copies.
+        /// Default `false` — the audit scans only source-of-truth docs (the
+        /// repo-root `.claude/` tree and each subproject's root `CLAUDE.md`).
+        /// Equivalent to `MUSTARD_DOCS_AUDIT_INCLUDE_NESTED=1`.
+        #[arg(long)]
+        include_nested: bool,
+    },
+    /// Check (or apply) freshness of managed artifacts against their upstreams.
+    ///
+    /// Maintainer-side: reads `apps/cli/templates/.artifacts.json` and probes
+    /// each external upstream. Fail-open — network errors degrade an artifact
+    /// to `unknown` and never fail the command.
+    ArtifactUpdate {
+        /// Probe upstreams and emit the JSON freshness report (the default).
+        #[arg(long)]
+        check: bool,
+        /// Pull updates into vendored trees / bump pinned versions.
+        #[arg(long)]
+        apply: bool,
+        /// Manifest path (default `apps/cli/templates/.artifacts.json`).
+        #[arg(long)]
+        manifest: Option<String>,
+    },
 }
 
 /// Dispatch a `run` subcommand.
@@ -491,5 +539,14 @@ pub fn dispatch(cmd: RunCmd) {
             json,
             expect_rows_after,
         } => otel::diagnose::run(json, expect_rows_after.as_deref()),
+        RunCmd::Doctor { residue } => doctor::run(residue),
+        RunCmd::DocsStaleCheck { from, strict, include_nested } => {
+            docs_stale_check::run(from.as_deref(), strict, include_nested)
+        }
+        RunCmd::ArtifactUpdate {
+            check,
+            apply,
+            manifest,
+        } => artifact_update::run(check, apply, manifest.as_deref()),
     }
 }

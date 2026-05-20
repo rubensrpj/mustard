@@ -241,15 +241,19 @@ impl Outcome {
     /// Fold a [`Verdict`] into this outcome.
     ///
     /// A [`Verdict::Deny`] is sticky — once denied, the outcome stays denied.
-    /// [`Verdict::Warn`] appends to [`Outcome::warnings`]. Other verdicts
-    /// replace [`Outcome::verdict`] only when the outcome is not already
-    /// blocking.
+    /// [`Verdict::Warn`] appends to [`Outcome::warnings`]. [`Verdict::Allow`]
+    /// is a no-opinion verdict and never overrides a prior decisive verdict
+    /// (Rewrite / Inject); it only stays as the resting state when no module
+    /// produced a decisive verdict. Other verdicts (Rewrite, Inject) replace
+    /// [`Outcome::verdict`] when the outcome is not already blocking — within
+    /// the same priority tier, last writer wins.
     pub fn fold(&mut self, verdict: Verdict) {
         if self.verdict.is_blocking() {
             return;
         }
         match verdict {
             Verdict::Warn { message } => self.warnings.push(message),
+            Verdict::Allow => {} // No opinion — preserve any prior decisive verdict.
             other => self.verdict = other,
         }
     }
@@ -348,6 +352,29 @@ mod tests {
         outcome.fold(Verdict::Inject { context: "ignored".into() });
         assert!(outcome.is_blocking());
         assert_eq!(outcome.warnings, vec!["be careful".to_string()]);
+    }
+
+    #[test]
+    fn allow_does_not_clobber_prior_decisive_verdict() {
+        // Regression guard for spec 2026-05-20-restore-rtk-rewrite: when one
+        // module returns Rewrite and a later module (tool_use_counter /
+        // main_context_counter) returns Allow, the Rewrite must survive —
+        // otherwise rtk-rewrite is silently swallowed by the dispatcher.
+        let mut outcome = Outcome::allow();
+        let rewrite = Verdict::Rewrite {
+            tool_input: serde_json::json!({ "command": "rtk git status" }),
+        };
+        outcome.fold(rewrite.clone());
+        outcome.fold(Verdict::Allow);
+        assert_eq!(outcome.verdict, rewrite);
+        // Same protection for Inject — no-opinion Allow must not erase it.
+        let mut outcome = Outcome::allow();
+        outcome.fold(Verdict::Inject { context: "hint".into() });
+        outcome.fold(Verdict::Allow);
+        assert_eq!(
+            outcome.verdict,
+            Verdict::Inject { context: "hint".into() }
+        );
     }
 
     #[test]

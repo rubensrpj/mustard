@@ -13,10 +13,11 @@
 //! `BashGuard` therefore implements [`Check`] for PreToolUse(Bash) **and**
 //! [`Observer`] for PostToolUse(Bash).
 //!
-//! `rtk-rewrite` shells out to `rtk rewrite`; that subprocess call is a side
-//! effect with no verdict of its own to *change*. When `rtk` is unavailable
-//! the JS hook already fails open to "no rewrite"; this port reproduces that
-//! pass-through verdict deterministically.
+//! `rtk-rewrite` shells out to `rtk rewrite <cmd>` with a 2-second timeout.
+//! On exit-0 with a non-empty, distinct stdout the gate returns
+//! `Verdict::Rewrite` carrying the rewritten command. Every other path —
+//! already `rtk`-prefixed, `rtk` missing, non-zero exit, timeout, empty or
+//! identical output — returns `None` (silent allow, fail-open).
 //!
 //! `review-gate` (`git commit` gate) computes its verdict with its **own**
 //! mode variable `MUSTARD_COMMIT_GATE_MODE` (default `warn`), independent of
@@ -50,6 +51,8 @@ pub struct BashGuard;
 /// same matches without a regex dependency. Each predicate is documented with
 /// the JS pattern it mirrors.
 struct DangerRule {
+    /// Stable identifier for this rule (`BG01`–`BG13`).
+    id: &'static str,
     /// `true` when `cmd` (already lowercased) matches this rule.
     test: fn(&str) -> bool,
     /// The user-facing reason fragment (the JS `msg`).
@@ -102,66 +105,79 @@ fn has_word(cmd: &str, needle: &str) -> bool {
 const DANGER_RULES: &[DangerRule] = &[
     // /\brm\s+(-\w*r\w*f|--no-preserve-root|-rf|-fr)\b/i
     DangerRule {
+        id: "BG01",
         test: is_rm_recursive_force,
         msg: "Recursive force delete blocked",
     },
     // /\bgit\s+push\s+(-\w*f\b|--force(?!-with-lease))\b/i
     DangerRule {
+        id: "BG02",
         test: is_force_push,
         msg: "Force push blocked (use --force-with-lease for safer overwrite)",
     },
     // /\bgit\s+reset\s+--hard\b/i
     DangerRule {
+        id: "BG03",
         test: |c| has_word_pair(c, "git", "reset") && c.contains("--hard"),
         msg: "git reset --hard blocked",
     },
     // /\bgit\s+clean\s+-f/i
     DangerRule {
+        id: "BG04",
         test: is_git_clean_force,
         msg: "git clean -f blocked",
     },
     // /\bgit\s+checkout\s+--\s*\.\s*$/i
     DangerRule {
+        id: "BG05",
         test: |c| ends_with_token_seq(c, &["git", "checkout", "--", "."]),
         msg: "git checkout -- . blocked",
     },
     // /\bgit\s+restore\s+\.\s*$/i
     DangerRule {
+        id: "BG06",
         test: |c| ends_with_token_seq(c, &["git", "restore", "."]),
         msg: "git restore . blocked",
     },
     // /\bgit\s+branch\s+-D\s+(main|master)\b/i
     DangerRule {
+        id: "BG07",
         test: is_branch_delete_main,
         msg: "Deleting main/master branch blocked",
     },
     // /\bchmod\s+777\b/i
     DangerRule {
+        id: "BG08",
         test: |c| has_word_pair(c, "chmod", "777"),
         msg: "chmod 777 blocked",
     },
     // /\bmkfs\b/i
     DangerRule {
+        id: "BG09",
         test: |c| has_word(c, "mkfs"),
         msg: "mkfs blocked",
     },
     // /\bdd\s+if=/i
     DangerRule {
+        id: "BG10",
         test: |c| has_word_pair(c, "dd", "if="),
         msg: "dd if= blocked",
     },
     // /\bformat\s+[A-Z]:/i
     DangerRule {
+        id: "BG11",
         test: is_format_drive,
         msg: "format drive blocked",
     },
     // /\bshutdown\b/i
     DangerRule {
+        id: "BG12",
         test: |c| has_word(c, "shutdown"),
         msg: "shutdown blocked",
     },
     // /\breboot\b/i
     DangerRule {
+        id: "BG13",
         test: |c| has_word(c, "reboot"),
         msg: "reboot blocked",
     },
@@ -275,7 +291,8 @@ fn bash_safety(cmd: &str) -> Option<Verdict> {
         if (rule.test)(&lower) {
             return Some(Verdict::Deny {
                 reason: format!(
-                    "[bash-safety] {}.\nCommand: {}",
+                    "[bash-safety {}] {}.\nCommand: {}",
+                    rule.id,
                     rule.msg,
                     truncate(cmd, 120)
                 ),
@@ -446,23 +463,146 @@ fn bash_native_redirect(raw_cmd: &str) -> Option<Verdict> {
 // rtk-rewrite — rewrite a command through RTK
 // ---------------------------------------------------------------------------
 
-/// The `rtk-rewrite` gate.
+/// Subprocess timeout for `rtk rewrite` calls. The RTK binary is a local
+/// process with no network I/O; 2 s is generous.
+const RTK_REWRITE_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Spawn `rtk rewrite <cmd>` in a worker thread and return its stdout on
+/// success.
 ///
-/// `rtk-rewrite.js` shells out to `rtk rewrite <cmd>` and, on a non-empty
-/// distinct result, emits an `updatedInput` rewrite; on every other path
-/// (`rtk`-prefixed command, RTK not installed, no equivalent, identical
-/// result) it `process.exit(0)` with no output — pass through.
+/// Fail-open on four paths — returns `None` when:
+/// 1. The binary cannot be spawned (ENOENT — `rtk` not installed).
+/// 2. The process exits with a non-zero status (no RTK equivalent for `cmd`).
+/// 3. The subprocess does not finish within [`RTK_REWRITE_TIMEOUT`].
+/// 4. Stdout is empty or pure whitespace (RTK signalled "no rewrite").
 ///
-/// Wave 1 does not spawn the `rtk` subprocess (a side effect with no verdict
-/// of its own to change). It reproduces only the deterministic pass-through
-/// verdict: an `rtk`-prefixed command, and the no-rewrite-available case, both
-/// yield `None`. This preserves every verdict the parity oracle exercises
-/// (`rtk-rewrite.js` has only source-level tests, no behavioural ones).
+/// The binary name defaults to `"rtk"` but can be overridden via the
+/// `MUSTARD_RTK_BIN` environment variable — required for the fail-open unit
+/// test (AC-7) so tests never depend on a real `rtk` in `PATH`.
+#[must_use]
+fn run_rtk_rewrite_subprocess(cmd: &str) -> Option<String> {
+    let binary = std::env::var("MUSTARD_RTK_BIN").unwrap_or_else(|_| "rtk".into());
+    run_rtk_rewrite_subprocess_with_bin(cmd, &binary)
+}
+
+/// Inner implementation of [`run_rtk_rewrite_subprocess`], accepting an
+/// explicit binary name. Extracted so tests can inject a fake binary name
+/// without mutating process environment (which is `unsafe` in edition 2024).
+#[cfg_attr(not(test), allow(dead_code))]
+fn run_rtk_rewrite_subprocess_with_bin(cmd: &str, binary: &str) -> Option<String> {
+    let mut command = Command::new(binary);
+    command
+        .args(["rewrite", cmd])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        // Path 1: binary not found / ENOENT — fail open.
+        Err(_) => return None,
+    };
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    let stdout_handle = child.stdout.take();
+
+    std::thread::spawn(move || {
+        let status = child.wait();
+        let _ = tx.send((status, child));
+    });
+
+    match rx.recv_timeout(RTK_REWRITE_TIMEOUT) {
+        Ok((Ok(status), _child)) => {
+            // Path 2: non-zero exit → no RTK equivalent — fail open.
+            if !status.success() {
+                return None;
+            }
+            let mut output = String::new();
+            if let Some(mut out) = stdout_handle {
+                use std::io::Read;
+                let _ = out.read_to_string(&mut output);
+            }
+            let trimmed = output.trim();
+            // Path 4: empty / whitespace stdout — fail open.
+            if trimmed.is_empty() {
+                return None;
+            }
+            Some(trimmed.to_string())
+        }
+        // Wait itself errored — fail open.
+        Ok((Err(_), _child)) => None,
+        // Path 3: timeout — kill the child and fail open.
+        Err(_) => {
+            if let Ok((_, mut child)) = rx.recv_timeout(Duration::from_millis(0)) {
+                let _ = child.kill();
+            }
+            None
+        }
+    }
+}
+
+/// Shells out to `rtk rewrite <cmd>` with a 2s timeout. On exit-0 with a
+/// non-empty, distinct stdout, returns `Verdict::Rewrite` carrying the
+/// rewritten command in `updatedInput`. Every other path — already
+/// `rtk`-prefixed, `rtk` missing, non-zero exit, timeout, empty/identical
+/// output — returns `None` (silent allow). Mirrors the JS `rtk-rewrite.js`
+/// contract.
+///
+/// Split into two layers so unit tests can inject a closure instead of the
+/// real subprocess:
+/// - [`rtk_rewrite_with`] — pure logic, closure-injectable.
+/// - [`rtk_rewrite`]      — production wrapper passing the real subprocess.
 fn rtk_rewrite(cmd: &str) -> Option<Verdict> {
-    let _ = cmd;
-    // No `rtk` subprocess in Wave 1 → behave as "RTK unavailable / no
-    // equivalent": pass through, exactly like the JS fail-open branch.
-    None
+    #[cfg(test)]
+    {
+        if RTK_REWRITE_TEST_OVERRIDE.with(|c| c.get()) {
+            return rtk_rewrite_with(cmd, |_| None);
+        }
+    }
+    rtk_rewrite_with(cmd, run_rtk_rewrite_subprocess)
+}
+
+/// Pure, testable core of `rtk-rewrite`. Accepts any `rewriter` closure so
+/// tests can inject a fake subprocess without touching `PATH`.
+///
+/// Short-circuits (returns `None`) when the command is already `rtk`-prefixed.
+/// Delegates to `rewriter` for the actual rewrite attempt; returns `None` if
+/// the rewriter yields nothing, an empty string, or a string identical to the
+/// original input. Otherwise returns `Verdict::Rewrite`.
+fn rtk_rewrite_with<F: FnOnce(&str) -> Option<String>>(
+    cmd: &str,
+    rewriter: F,
+) -> Option<Verdict> {
+    // Short-circuit: already wrapped — never double-prefix.
+    if cmd.split_whitespace().next().is_some_and(|t| t == "rtk") {
+        return None;
+    }
+
+    let rewritten = rewriter(cmd)?;
+    let rewritten = rewritten.trim();
+
+    // Identical or empty after trim — nothing to rewrite.
+    if rewritten.is_empty() || rewritten == cmd.trim() {
+        return None;
+    }
+
+    Some(Verdict::Rewrite {
+        tool_input: json!({ "command": rewritten }),
+    })
+}
+
+#[cfg(test)]
+thread_local! {
+    /// In test builds, when set, this short-circuits `rtk_rewrite` to return `None`,
+    /// isolating gate tests from the real `rtk` binary on PATH.
+    ///
+    /// **Side-effect warning for future authors:** any test that calls
+    /// `verdict_for(...)` will have rtk-rewrite forced off — it will NEVER see a
+    /// `Verdict::Rewrite` verdict from the production `rtk_rewrite()` path. Tests
+    /// that need to exercise the rewrite logic must call `rtk_rewrite_with` directly
+    /// (see `rtk_rewrite_tests` below) or drive the binary as a subprocess (see
+    /// `tests/rtk_rewrite_emission.rs`).
+    pub(super) static RTK_REWRITE_TEST_OVERRIDE: std::cell::Cell<bool> = std::cell::Cell::new(false);
 }
 
 // ---------------------------------------------------------------------------
@@ -1023,6 +1163,37 @@ impl Check for BashGuard {
             return Ok(verdict);
         }
         if let Some(verdict) = rtk_rewrite(&cmd) {
+            // Emit `rtk-rewrite` telemetry before returning. Best-effort —
+            // a store failure must never block the tool call.
+            if let Verdict::Rewrite { ref tool_input } = verdict {
+                let rewritten = tool_input
+                    .get("command")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let event = HarnessEvent {
+                    v: SCHEMA_VERSION,
+                    ts: now_iso8601(),
+                    session_id: input.session_id.as_deref().unwrap_or("unknown").to_string(),
+                    wave: 0,
+                    actor: Actor {
+                        kind: ActorKind::Hook,
+                        id: Some("rtk-rewrite".to_string()),
+                        actor_type: None,
+                    },
+                    event: "rtk-rewrite".to_string(),
+                    payload: json!({
+                        "event": "rtk-rewrite",
+                        "tokens_affected": i64::try_from(cmd.len()).unwrap_or(i64::MAX),
+                        "tokens_saved": 0,
+                        "note": "rewritten via rtk",
+                        "command_head": &cmd[..cmd.len().min(60)],
+                        "rewritten_head": &rewritten[..rewritten.len().min(60)],
+                    }),
+                    spec: None,
+                };
+                let _ = SqliteEventStore::for_project(&ctx.project_dir)
+                    .and_then(|store| store.append(&event));
+            }
             return Ok(verdict);
         }
         if let Some(verdict) = review_gate(&cmd, ctx, commit_gate_mode()) {
@@ -1081,6 +1252,7 @@ mod tests {
 
     /// Run the `Check` for a PreToolUse(Bash) command.
     fn verdict_for(command: &str) -> Verdict {
+        RTK_REWRITE_TEST_OVERRIDE.with(|c| c.set(true));
         let (input, ctx) = pre_bash(command);
         BashGuard.evaluate(&input, &ctx).expect("check never errors")
     }
@@ -1416,5 +1588,194 @@ mod tests {
         assert!(ts.ends_with('Z'));
         assert_eq!(&ts[4..5], "-");
         assert_eq!(&ts[10..11], "T");
+    }
+
+    // --- bash-safety regression: one test per BG rule ----------------------
+    //
+    // Each entry: (id, blocking_command, Option<safe_command>).
+    // Asserts: (1) the blocking command is denied; (2) the deny reason contains
+    // the rule id; (3) when a safe variant is supplied, it is allowed.
+
+    #[test]
+    fn safety_regression_all_bg_rules() {
+        let cases: &[(&str, &str, Option<&str>)] = &[
+            // BG01 — recursive force delete
+            ("BG01", "rm -rf /tmp/work", None),
+            // BG02 — force push (safe variant: --force-with-lease)
+            ("BG02", "git push --force origin main", Some("git push --force-with-lease origin main")),
+            // BG03 — git reset --hard
+            ("BG03", "git reset --hard HEAD~1", None),
+            // BG04 — git clean -f
+            ("BG04", "git clean -fd", None),
+            // BG05 — git checkout -- .
+            ("BG05", "git checkout -- .", None),
+            // BG06 — git restore .
+            ("BG06", "git restore .", None),
+            // BG07 — delete main/master branch
+            ("BG07", "git branch -D main", None),
+            // BG08 — chmod 777
+            ("BG08", "chmod 777 /etc/passwd", None),
+            // BG09 — mkfs
+            ("BG09", "mkfs.ext4 /dev/sda1", None),
+            // BG10 — dd if=
+            ("BG10", "dd if=/dev/zero of=/dev/sda", None),
+            // BG11 — format drive
+            ("BG11", "format c:", None),
+            // BG12 — shutdown
+            ("BG12", "shutdown -h now", None),
+            // BG13 — reboot
+            ("BG13", "reboot", None),
+        ];
+
+        for (id, blocking, safe_opt) in cases {
+            let verdict = verdict_for(blocking);
+            match &verdict {
+                Verdict::Deny { reason } => {
+                    assert!(
+                        reason.contains(id),
+                        "rule {id}: deny reason does not contain id — reason: {reason}"
+                    );
+                }
+                other => panic!("rule {id}: expected Deny for {blocking:?}, got {other:?}"),
+            }
+
+            if let Some(safe_cmd) = safe_opt {
+                // The safe variant must not be blocked by bash-safety.
+                // (It may still be blocked by a different gate — check only
+                // that bash_safety itself passes it through.)
+                let safe_verdict = bash_safety(safe_cmd);
+                assert!(
+                    safe_verdict.is_none(),
+                    "rule {id}: bash_safety should allow safe variant {safe_cmd:?}, got {safe_verdict:?}"
+                );
+            }
+        }
+    }
+}
+
+// Behavioral tests for `rtk_rewrite` decision logic.
+//
+// Strategy: [`rtk_rewrite_with`] accepts a closure that stands in for the real
+// `rtk rewrite` subprocess. Each test injects a purpose-built closure so the
+// eight AC scenarios can be verified without requiring `rtk` on PATH and without
+// touching process environment. The subprocess fail-open test (AC-7) calls
+// `run_rtk_rewrite_subprocess_with_bin` directly with a fake binary name,
+// avoiding `std::env::set_var` which is `unsafe` in edition 2024.
+
+#[cfg(test)]
+mod rtk_rewrite_tests {
+    use super::*;
+
+    // -----------------------------------------------------------------------
+    // AC-1: Already rtk-prefixed → short-circuit, rewriter never called.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn rtk_rewrite_passes_through_when_rtk_prefixed() {
+        // The panic closure must never be invoked when the command already
+        // starts with `rtk` — the short-circuit returns `None` immediately.
+        let result = rtk_rewrite_with("rtk grep x", |_| panic!("should not be called"));
+        assert!(result.is_none(), "expected None for already-prefixed command");
+    }
+
+    // -----------------------------------------------------------------------
+    // AC-2: Rewriter returns a changed string → Verdict::Rewrite with the
+    //       rewritten command in tool_input["command"].
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn rtk_rewrite_emits_updated_input_when_rewriter_returns_change() {
+        let result = rtk_rewrite_with("grep -n x src/", |c| Some(format!("rtk {c}")));
+        match result {
+            Some(Verdict::Rewrite { tool_input }) => {
+                assert_eq!(
+                    tool_input["command"],
+                    "rtk grep -n x src/",
+                    "tool_input[\"command\"] mismatch: {tool_input}"
+                );
+            }
+            other => panic!("expected Verdict::Rewrite, got {other:?}"),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // AC-3: Rewriter returns None → fail-open (None).
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn rtk_rewrite_fail_open_when_rewriter_returns_none() {
+        let result = rtk_rewrite_with("grep -n x src/", |_| None);
+        assert!(result.is_none(), "expected None when rewriter returns None");
+    }
+
+    // -----------------------------------------------------------------------
+    // AC-4: Rewriter returns the same string → fail-open (None).
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn rtk_rewrite_fail_open_when_rewriter_returns_identical() {
+        let result = rtk_rewrite_with("grep -n x", |_| Some("grep -n x".to_string()));
+        assert!(result.is_none(), "expected None when rewriter returns identical string");
+    }
+
+    // -----------------------------------------------------------------------
+    // AC-5: Rewriter returns empty string → fail-open (None).
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn rtk_rewrite_fail_open_when_rewriter_returns_empty() {
+        let result = rtk_rewrite_with("grep -n x src/", |_| Some(String::new()));
+        assert!(result.is_none(), "expected None when rewriter returns empty string");
+    }
+
+    // -----------------------------------------------------------------------
+    // AC-6: Rewriter returns whitespace-only → fail-open (None).
+    //       Covers the defensive case where rtk emits only whitespace.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn rtk_rewrite_fail_open_when_rewriter_returns_whitespace_only() {
+        let result = rtk_rewrite_with("grep -n x src/", |_| Some("   \n  ".to_string()));
+        assert!(result.is_none(), "expected None when rewriter returns whitespace-only");
+    }
+
+    // -----------------------------------------------------------------------
+    // AC-7 (closure path): Trailing newline is stripped from the rewritten
+    //       command before it is placed in tool_input["command"].
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn rtk_rewrite_strips_trailing_whitespace() {
+        let result = rtk_rewrite_with("grep x", |_| Some("rtk grep x\n".to_string()));
+        match result {
+            Some(Verdict::Rewrite { tool_input }) => {
+                assert_eq!(
+                    tool_input["command"],
+                    "rtk grep x",
+                    "trailing newline must be stripped; got: {tool_input}"
+                );
+            }
+            other => panic!("expected Verdict::Rewrite, got {other:?}"),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // AC-7 (subprocess path): When the binary name is a nonexistent executable,
+    //       run_rtk_rewrite_subprocess_with_bin must return None (fail-open).
+    //
+    // Uses the with_bin helper directly so no process environment mutation is
+    // needed — `std::env::set_var` is `unsafe` in edition 2024, and
+    // `#![forbid(unsafe_code)]` prevents using an `unsafe` block.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn rtk_rewrite_fail_open() {
+        // Invoke the subprocess layer with a binary name that cannot exist on
+        // any PATH — the spawn must fail and the function must return None.
+        let result = run_rtk_rewrite_subprocess_with_bin("grep x", "__not_a_real_binary_xyzzy__");
+        assert!(
+            result.is_none(),
+            "expected None when subprocess binary does not exist; got {result:?}"
+        );
     }
 }

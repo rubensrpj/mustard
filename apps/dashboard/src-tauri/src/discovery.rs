@@ -46,21 +46,12 @@ pub fn discover(root: &Path) -> Result<Vec<Project>, String> {
                 .file_name()
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_else(|| canonical_str.clone());
-            let events_path = dir.join(".claude").join(".harness").join("events.jsonl");
+            // last_activity_ms: prefer mustard.db mtime (canonical store);
+            // fall back to mustard.json mtime when only the JSON config exists.
             let last_activity_ms = if has_db {
-                match (mtime_ms(&events_path), mtime_ms(&db_path)) {
-                    (Some(a), Some(b)) => Some(a.max(b)),
-                    (Some(a), None) => Some(a),
-                    (None, Some(b)) => Some(b),
-                    (None, None) => None,
-                }
+                mtime_ms(&db_path)
             } else {
-                match (mtime_ms(&events_path), mtime_ms(&json_path)) {
-                    (Some(a), Some(b)) => Some(a.max(b)),
-                    (Some(a), None) => Some(a),
-                    (None, Some(b)) => Some(b),
-                    (None, None) => None,
-                }
+                mtime_ms(&json_path)
             };
             let db_path_value = if has_db {
                 Some(db_path.to_string_lossy().to_string())

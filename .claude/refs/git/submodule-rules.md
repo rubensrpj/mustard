@@ -21,7 +21,7 @@ Canonical list (`$EPHEMERAL_PATHS`):
 `.git` is a **file** in submodules (pointer `gitdir: ../../.git/modules/<name>`), so `.git/info/exclude` paths fail there. ALWAYS resolve the real exclude path first:
 
 ```bash
-EXCLUDE=$(git rev-parse --git-path info/exclude)
+EXCLUDE=$(rtk git rev-parse --git-path info/exclude)
 ```
 
 This works in parent repo, submodules, and worktrees uniformly.
@@ -31,7 +31,7 @@ This works in parent repo, submodules, and worktrees uniformly.
 At the **start of every write-touching action** (`commit`, `push`, `merge`, `merge main`) and in **each repo operated** (parent + every submodule), run:
 
 ```bash
-EXCLUDE=$(git rev-parse --git-path info/exclude)
+EXCLUDE=$(rtk git rev-parse --git-path info/exclude)
 for p in ".claude/.agent-state/" ".claude/.metrics/" ".claude/.pipeline-states/" ".claude/.detect-cache.json" ".claude/.knowledge-seen.json"; do
   grep -qxF "$p" "$EXCLUDE" 2>/dev/null || echo "$p" >> "$EXCLUDE"
 done
@@ -44,7 +44,7 @@ This is **idempotent** (grep guard before append). No commit, no worktree change
 After ensure-excluded, check if any ephemeral is already tracked:
 
 ```bash
-TRACKED_EPH=$(git ls-files -- .claude/.agent-state/ .claude/.metrics/ .claude/.pipeline-states/ .claude/.detect-cache.json .claude/.knowledge-seen.json 2>/dev/null)
+TRACKED_EPH=$(rtk git ls-files -- .claude/.agent-state/ .claude/.metrics/ .claude/.pipeline-states/ .claude/.detect-cache.json .claude/.knowledge-seen.json 2>/dev/null)
 ```
 
 If `$TRACKED_EPH` is non-empty → trigger **Ephemeral Tracked Sub-flow** (see merge-protocol.md) BEFORE the action's main commit.
@@ -57,18 +57,18 @@ Order (per repo that has tracked ephemerals):
 
 1. Ensure-excluded (already ran — confirm):
    ```bash
-   EXCLUDE=$(git rev-parse --git-path info/exclude)
+   EXCLUDE=$(rtk git rev-parse --git-path info/exclude)
    # append missing paths (idempotent guard from Ensure-Excluded step)
    ```
 2. Unlink from index without deleting files:
    ```bash
-   git rm --cached -r --ignore-unmatch \
+   rtk git rm --cached -r --ignore-unmatch \
      .claude/.agent-state/ .claude/.metrics/ .claude/.pipeline-states/ \
      .claude/.detect-cache.json .claude/.knowledge-seen.json
    ```
 3. Dedicated commit:
    ```bash
-   git commit -m "chore: ignore ephemeral runtime state
+   rtk git commit -m "chore: ignore ephemeral runtime state
 
 Untracks Claude/RTK runtime paths that should not be versioned.
 
@@ -83,24 +83,25 @@ This prevents ephemerals from being dragged into the user-intended commit diff.
 ### Analyze all changes (single parallel batch)
 
 Run in **one parallel batch**:
-- `git status --short`
-- `git submodule status` (skip if no `.gitmodules`)
-- `git diff --stat`
-- `git log --oneline -5`
+- `rtk git status --short`
+- `rtk git submodule status` (skip if no `.gitmodules`)
+- `rtk git diff --stat`
+- `rtk git log --oneline -5`
 
 ### Commit dirty submodules (monorepo only)
 
 Launch **ONE parallel Task agent per dirty submodule** (`model: "haiku"`). Each agent runs ONE chained Bash command:
 
 ```bash
-cd <SUBMODULE_ABSOLUTE_PATH> && git add $SCOPE_EXPR && git diff --cached --stat && git commit -m "<message>"
+cd <SUBMODULE_ABSOLUTE_PATH> && rtk git add $SCOPE_EXPR && rtk git diff --cached --stat && rtk git commit -m "<message>"
 ```
 
-For `staged` scope: skip the `git add` step.
+For `staged` scope: skip the `rtk git add` step.
 
 ## Rules Summary
 
 - Submodules BEFORE parent (in sync, push, commit, and merge)
-- NEVER use `git add .` — use `git add -A` / `git add <pattern>` from the correct directory
+- NEVER use `rtk git add .` — use `rtk git add -A` / `rtk git add <pattern>` from the correct directory
+- Always prefix every git invocation with `rtk` (even inside `&&`/`;` chains and `$(...)` substitutions) — RTK passes through when no filter applies, so it is always safe
 - **Single repo**: skip all submodule steps — just operate on the root
-- NEVER touch `.git/info/exclude` directly — always resolve via `git rev-parse --git-path info/exclude` (submodule-safe)
+- NEVER touch `.git/info/exclude` directly — always resolve via `rtk git rev-parse --git-path info/exclude` (submodule-safe)

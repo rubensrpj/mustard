@@ -1,67 +1,107 @@
-<!-- mustard:generated at:2026-05-13 role:ui -->
+<!-- mustard:generated at:2026-05-19 role:ui -->
 # Patterns — mustard-dashboard
 
 ## 1. Multi-project React Query fan-out
 
-The dashboard is portfolio-mode: most data needs to aggregate across N detected Mustard projects. The canonical pattern is `useQueries` keyed by `project.path`, then a fan-in pass that flattens + sorts client-side.
+The dashboard is portfolio-mode: most data aggregates across N detected projects. Canonical pattern: `useQueries` keyed by `project.path`, fan-in client-side.
 
 | Step | Detail |
 |------|--------|
-| Input | `projects: Project[]` from `discoverProjects()` |
-| Per-query key | `["<resource>", project.path, ...extra]` — path is the cache identity |
+| Input | `projects: Project[]` from `useProjects()` or parent |
+| Per-query key | `["<resource>", project.path, ...extra]` — path is cache identity |
 | Fetcher | `fetchX(project.path, ...)` from `src/lib/dashboard.ts` |
-| Cache | `staleTime` typical: 5-60s. Live data uses `refetchInterval` (5-12s) |
+| Cache | `staleTime` 5s–60s; live data uses `refetchInterval` |
 | Fan-in | `projects.forEach((p, i) => queries[i]?.data ?? [])` |
 | Loading | `queries.some((q) => q.isLoading)` |
-| Sort | by timestamp desc (`tsMs(...) ?? 0`) |
+| Sort | by timestamp desc — `tsMs(str) ?? 0` helper |
 
 Ref: `src/hooks/useAggregate.ts`, `src/hooks/useActivityFeed.ts`, `src/hooks/useKnowledgeSearch.ts`.
 
 ## 2. Tauri `invoke()` wrappers
 
-Every Rust command is wrapped in `src/lib/dashboard.ts` (or `src/api/*.ts`) with a typed `Promise<T>`. UI never calls `invoke()` directly inside components.
+Every Rust command is wrapped in `src/lib/dashboard.ts` or `src/api/*.ts`. UI never calls `invoke()` directly in components.
 
 | Concern | Convention |
 |---------|------------|
-| Location | `src/lib/dashboard.ts` (dashboard surface) or `src/api/<area>.ts` (discovery, env) |
-| Naming | `fetch<Resource>` (e.g. `fetchSpecs`, `fetchRecentEvents`) |
-| Types | Co-located `interface` exports (`SpecRow`, `RecentEvent`, `KnowledgeRow`) |
-| Errors | Propagate — let React Query / try/catch handle |
+| Location | `src/lib/dashboard.ts` (main surface) or `src/api/<area>.ts` |
+| Naming | `fetch<Resource>` (e.g. `fetchSpecs`, `fetchTelemetry`) |
+| Types | Co-located `interface` exports (`SpecRow`, `TelemetrySummary`, etc.) |
+| Mutations | Named as actions — `completeSpec`, `cancelSpec`, `reactivateSpec` |
+| Errors | Propagate — let React Query or try/catch handle |
 
 ## 3. Zustand store
 
-Single store at `src/lib/store.ts` selecting fields via slices: `useStore((s) => s.projectsRoot)`. Avoid pulling the whole store object — that breaks render isolation.
+Single store at `src/lib/store.ts`. Fields: `projectsRoot`, `selectedProjectId`, `activeWorkspaceId`, `knowledgeQuery`, `language`.
 
-Keys typically read: `projectsRoot`, `activeWorkspaceId`, `setSelectedProjectId`.
+Select fields via slices:
 
-## 4. Routing + boundary
+```ts
+const projectsRoot = useStore((s) => s.projectsRoot);
+```
 
-`HashRouter` is mandatory (Tauri serves `index.html`; no server-side routing). Adding a route requires updating **three** places (see memory: `routing_implicit_boundary`):
+Store is persisted via `zustand/middleware persist` under key `mustard-dashboard-store`.
 
-1. `<Route path=... element=... />` in `src/App.tsx`.
-2. `Sidebar` nav links in `src/components/layout/Sidebar.tsx`.
-3. `Topbar` breadcrumb / LABELS map in `src/components/layout/Topbar.tsx`.
+## 4. Routing + three-file boundary
 
-## 5. FS watcher lifecycle
+`HashRouter` is mandatory (Tauri serves `index.html`). Adding a route requires THREE file changes:
 
-`startWatcher(paths)` is called when projects load; subscription is established once on mount via `subscribeFsChange()`. `pathsKey = projects.map((p) => p.path).sort().join('|')` is the effect dep — avoids re-subscribing on array identity churn.
+1. `<Route path=... element=... />` in `src/App.tsx`
+2. Sidebar nav link in `src/components/layout/Sidebar.tsx`
+3. LABELS map entry in `src/components/layout/Topbar.tsx`
 
-Ref: `src/App.tsx` lines 30-43.
+Memory anchor: `routing_implicit_boundary`.
 
-## 6. Tauri current_dir gotcha (memory: `tauri_current_dir_gotcha`)
+## 5. Shared page primitives barrel
 
-`pnpm tauri:dev` runs Rust with cwd = `src-tauri/`, NOT the repo root. Any path-relative Rust command must walk up until `.claude/` is found. Do not bake relative paths in TS — always pass `project.path` (absolute) into the Rust command.
+All cross-page visual components live in `src/components/page/` and are barrel-exported via `index.ts`. Pages import from `@/components/page`:
 
-## 7. react-markdown v10 (memory: `react_markdown_v10`)
+```ts
+import { KPICard, PageHeader, EmptyState, PhaseChip } from "@/components/page";
+```
 
-v10 removed the `inline` prop on the `code` override. The dashboard's `Markdown.tsx` overrides `pre` separately and uses `className`/newline heuristics to detect blocks. Do not re-introduce `inline` checks.
+Adding a new visual primitive: create the file in `src/components/page/`, then add the export to `src/components/page/index.ts`.
 
-## 8. useEffect/render race (memory: `useeffect_render_race`)
+## 6. Phase/event theme tokens
 
-React Query's `data` is `undefined` on first render. Always guard with `data?.field` or `data == null` before accessing. Reset internal state in `useEffect` when re-fetching with a new key.
+`phaseTheme(phase)` and `eventTheme(eventType)` in `src/lib/phaseTheme.ts` return `{ text, bg, border, stripe }` Tailwind classes. Pass the spread directly to `cn()`:
 
-## 9. UI primitives via shadcn
+```ts
+const t = phaseTheme(phase);
+className={cn("px-2 py-0.5", t.text, t.bg, t.border)}
+```
 
-`src/components/ui/*.tsx` follows shadcn idiom: `cva()` variants + `cn(...classes)` merger. New primitives should be added via `npx shadcn add <name>` so the schema matches.
+Do not hard-code phase colors in components — always go through `phaseTheme`.
 
-Note (memory: `tauri_scaffold_gotchas`): `shadcn` dropped `--style`/`--base-color` flags — invoke without them.
+## 7. FS watcher lifecycle
+
+`startWatcher(paths)` called on project change; subscription established once via `subscribeFsChange()`. Effect dep = stable `pathsKey` (`paths.sort().join('|')`) to avoid re-subscribing on array identity churn.
+
+Ref: `src/App.tsx` lines ~32–45.
+
+## 8. Tauri cwd gotcha
+
+`pnpm tauri:dev` runs Rust with cwd = `src-tauri/`, not repo root. Always pass absolute `project.path` into Rust commands. Rust uses `find_mustard_root()` for relative resolution. Memory anchor: `tauri_current_dir_gotcha`.
+
+## 9. react-markdown v10
+
+v10 removed the `inline` prop on `code`. `src/components/Markdown.tsx` overrides `pre` separately and uses `className`/newline heuristics. Do not re-introduce `inline` checks.
+
+## 10. shadcn primitives
+
+`src/components/ui/*.tsx` follow shadcn idiom: `cva()` variants + `cn()` merger. Add new primitives via:
+
+```bash
+pnpm dlx shadcn add <name>
+```
+
+Do NOT pass `--style` or `--base-color` (removed in current shadcn). Output lands in `src/components/ui/<name>.tsx`.
+
+## 11. React Query null-guard
+
+`data` is `undefined` on first render. Always guard:
+
+```ts
+const value = data?.field ?? fallback;
+```
+
+Reset internal state in `useEffect` when the query key changes to prevent stale renders.

@@ -7,7 +7,7 @@
 The full prompt sent to each Task agent launched in Step 3:
 
 ```
-Read .claude/commands/mustard/scan-format.md for analysis and format rules.
+Read .claude/refs/scan/scan-format.md for analysis and format rules.
 
 EVIDENCE RULE — before emitting any skill:
 1. Skill must correspond to a cluster in _patterns[stack].discovered[] with fileCount >= 3.
@@ -82,7 +82,7 @@ If you cannot meet rules 1-4 for a candidate skill, SKIP it. An empty skill list
 After all agents complete (Step 6 in scan-protocol.md):
 
 ```bash
-bun .claude/scripts/skill-validate.js --factual
+mustard-rt run skills validate --factual
 ```
 
 ### What it checks per skill

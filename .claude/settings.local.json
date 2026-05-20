@@ -28,6 +28,9 @@
       "Bash(cp templates/commands/mustard/feature/references/spec-hygiene.md .claude/commands/mustard/feature/references/spec-hygiene.md)",
       "Bash(cp templates/commands/mustard/feature/references/wave-decomposition.md .claude/commands/mustard/feature/references/wave-decomposition.md)",
       "Bash(cp templates/commands/mustard/feature/references/existence-gate.md .claude/commands/mustard/feature/references/existence-gate.md)"
+    ],
+    "ask": [
+      "!git checkout HEAD -- apps/dashboard/src/"
     ]
   }
 }

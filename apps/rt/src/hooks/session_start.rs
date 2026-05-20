@@ -359,7 +359,19 @@ fn load_knowledge(kb_path: &Path) -> Vec<String> {
             .get("description")
             .and_then(|v| v.as_str())
             .unwrap_or_default();
-        scored.push((score, format!("- [{ty}] {name}: {desc}")));
+        // Prefix entries whose verifiedAt is missing or null so the agent
+        // knows to verify before recommending (AC-4).
+        let is_verified = e
+            .get("verifiedAt")
+            .and_then(Value::as_str)
+            .map(|s| !s.is_empty())
+            .unwrap_or(false);
+        let prefix = if !is_verified {
+            "(unverified — verify before recommending) "
+        } else {
+            ""
+        };
+        scored.push((score, format!("- [{ty}] {name}: {prefix}{desc}")));
     }
     scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
     scored.into_iter().take(KB_MAX_ENTRIES).map(|(_, s)| s).collect()
@@ -678,6 +690,57 @@ mod tests {
                 .evaluate(&session_input("s"), &ctx(dir.path().to_str().unwrap()))
                 .unwrap(),
             Verdict::Allow
+        );
+    }
+
+    #[test]
+    fn session_start_injection_marks_unverified_knowledge() {
+        let dir = tempdir().unwrap();
+        let claude = dir.path().join(".claude");
+        std::fs::create_dir_all(&claude).unwrap();
+        // Entry A: verifiedAt = null → should be prefixed.
+        // Entry B: verifiedAt = ISO string → should NOT be prefixed.
+        std::fs::write(
+            claude.join("knowledge.json"),
+            json!({
+                "entries": [
+                    {
+                        "type": "pattern",
+                        "name": "unverified-entry",
+                        "description": "alpha",
+                        "confidence": 0.9,
+                        "verifiedAt": null,
+                        "updatedAt": now_iso8601()
+                    },
+                    {
+                        "type": "pattern",
+                        "name": "verified-entry",
+                        "description": "beta",
+                        "confidence": 0.9,
+                        "verifiedAt": "2026-05-19T00:00:00Z",
+                        "updatedAt": now_iso8601()
+                    }
+                ]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let verdict = SessionStart
+            .evaluate(&session_input("s"), &ctx(dir.path().to_str().unwrap()))
+            .unwrap();
+        let context = match verdict {
+            Verdict::Inject { context } => context,
+            other => panic!("expected Inject, got {other:?}"),
+        };
+        assert!(
+            context.contains("(unverified — verify before recommending) alpha"),
+            "unverified entry must carry the prefix; got: {context}"
+        );
+        // "beta" must appear but NOT preceded by the unverified prefix.
+        assert!(context.contains("beta"), "verified entry must appear in context");
+        assert!(
+            !context.contains("(unverified — verify before recommending) beta"),
+            "verified entry must NOT carry the prefix; got: {context}"
         );
     }
 }
