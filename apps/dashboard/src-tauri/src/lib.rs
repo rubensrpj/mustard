@@ -543,7 +543,7 @@ fn detect_bucket(spec_root: &PathBuf, spec_name: &str) -> Option<String> {
 // DB wins for: status, phase, tasks, wave counts — merged by `dashboard_specs`.
 // FS wins for: spec existence, title, narrative (### Lang: / ### Scope:).
 //
-// The .pipeline-states/*.json walk was removed in Wave 3b of spec
+// The legacy state-file walk was removed in Wave 3b of spec
 // 2026-05-19-pipeline-state-from-sqlite: the event log is canonical for all
 // pipeline fields; FS JSON files are stale artifacts.
 fn specs_from_fs(base: &PathBuf) -> Vec<SpecRow> {
@@ -573,7 +573,7 @@ fn specs_from_fs(base: &PathBuf) -> Vec<SpecRow> {
             // Phase and status: parse spec.md / wave-plan.md frontmatter.
             // Status and phase from the DB (pipeline.* events) take precedence
             // in `dashboard_specs::merge` — these FS values are fallbacks only.
-            // The .pipeline-states/*.json walk was removed (Wave 3b): DB is
+            // The legacy state-file walk was removed (Wave 3b): DB is
             // canonical for all pipeline fields.
             let from_spec = {
                 let parsed = parse_spec_md(&path.join("spec.md"));

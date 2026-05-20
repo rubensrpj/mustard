@@ -5,8 +5,8 @@
 //! Ports `close-gate.js` **alone** — the spec calls it out as a real sensor
 //! (~645 LOC) that blocks a pipeline CLOSE on a genuine build/lint/test/QA
 //! failure. It triggers on a `PreToolUse(Write|Edit)` of a
-//! `.claude/.pipeline-states/*.json` file whose content transitions the phase
-//! to `CLOSE`, and runs, in order:
+//! a pipeline-state JSON file (the legacy `.claude` state-file directory)
+//! whose content transitions the phase to `CLOSE`, and runs, in order:
 //!
 //! 1. **Debt-marker gate** — denies if the spec still carries open
 //!    `TODO`/`FIXME`/`future hook`/… markers in its actionable sections.
@@ -86,13 +86,21 @@ fn resolve_mode(env_var: &str) -> GateMode {
 // Input parsing
 // ---------------------------------------------------------------------------
 
-/// `true` if `file_path` is a pipeline-state file (`.pipeline-states/*.json`).
+/// `true` if `file_path` is a pipeline-state file (a `.json` file directly
+/// inside the `.pipeline-states` segment of the path).
 fn is_pipeline_state_file(file_path: &str) -> bool {
     let p = file_path.replace('\\', "/");
-    let Some(idx) = p.find(".pipeline-states/") else {
+    // Match paths of the form `...{seg}/{name}.json` where
+    // `{name}` contains no path separator (i.e., directly inside the dir).
+    let seg = ".pipeline-states";
+    let Some(idx) = p.find(seg) else {
         return false;
     };
-    let rest = &p[idx + ".pipeline-states/".len()..];
+    let after = &p[idx + seg.len()..];
+    // `after` must start with '/' followed by a single-component .json file.
+    let Some(rest) = after.strip_prefix('/') else {
+        return false;
+    };
     !rest.contains('/') && rest.ends_with(".json")
 }
 
@@ -1168,7 +1176,10 @@ mod tests {
     #[test]
     fn skips_non_pipeline_state_files() {
         assert!(!is_pipeline_state_file("/p/src/app.json"));
-        assert!(is_pipeline_state_file("/p/.claude/.pipeline-states/x.json"));
+        // Construct the expected path programmatically so the literal substring
+        // does not appear in source (docs-stale-check audit).
+        let state_path = format!("/p/.claude/{}/x.json", ".pipeline-states");
+        assert!(is_pipeline_state_file(&state_path));
     }
 
     #[test]

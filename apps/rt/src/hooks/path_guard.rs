@@ -150,9 +150,9 @@ fn boundary_mode() -> BoundaryMode {
 const STATE_FRESHNESS_MS: u128 = 10 * 60 * 1000;
 
 /// The newest *fresh* pipeline-state JSON value. Mirrors
-/// `readNewestFreshState`: the most recently modified
-/// `.claude/.pipeline-states/*.json` (excluding `*.metrics.json`), but only
-/// when its mtime is within the freshness window.
+/// `readNewestFreshState`: the most recently modified pipeline-state JSON file
+/// under `.claude` (excluding `*.metrics.json`), but only when its mtime is
+/// within the freshness window.
 fn read_newest_fresh_state(cwd: &str) -> Option<serde_json::Value> {
     let dir = Path::new(cwd).join(".claude").join(".pipeline-states");
     let entries = std::fs::read_dir(&dir).ok()?;

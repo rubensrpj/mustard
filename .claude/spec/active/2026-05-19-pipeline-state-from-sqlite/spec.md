@@ -1,9 +1,9 @@
 # Migrar runtime state (pipeline + memory + knowledge) para SQLite
 
-### Status: draft
-### Phase: PLAN
+### Status: implementing
+### Phase: EXECUTE
 ### Scope: full
-### Checkpoint: 2026-05-20T02:30:00Z
+### Checkpoint: 2026-05-20T03:20:00Z
 ### Lang: pt
 
 > **Continua a migração iniciada em `2026-05-19-dashboard-phase-from-sqlite` (CLOSE 2026-05-20).** Aquela spec moveu só o campo `phase` para SQLite. Esta finaliza o trabalho em duas frentes:
@@ -74,10 +74,12 @@ Critérios binários, executáveis. Cada um roda da raiz do projeto; exit 0 = pa
 - [ ] AC-10: Ingest one-shot existe — Command: `node -e "if(!require('fs').existsSync('apps/rt/src/run/pipeline_state_ingest.rs'))process.exit(1)"`
 - [ ] AC-11: `.docs-audit.json` ganha audit dessa migração — Command: `node -e "const m=require('./.claude/.docs-audit.json');if(!m.audits.some(a=>a.from_spec==='2026-05-19-pipeline-state-from-sqlite'))process.exit(1)"`
 - [ ] AC-12: `docs-stale-check` da nova audit roda limpo — Command: `cargo run -q -p mustard-rt -- run docs-stale-check --from 2026-05-19-pipeline-state-from-sqlite | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{const r=JSON.parse(d);if(r.hits&&r.hits.length>0)process.exit(1)})"`
-- [ ] AC-13: Tabelas SQLite de memory/knowledge declaradas — Command: `node -e "const c=require('fs').readFileSync('packages/core/src/io/sqlite_store.rs','utf8');for(const t of ['knowledge_patterns','memory_decisions','memory_lessons','knowledge_fts','memory_decisions_fts','memory_lessons_fts'])if(!c.includes(t))process.exit(1)"`
+- [ ] AC-13: Tabelas SQLite de memory/knowledge declaradas — Command: `node -e "const c=require('fs').readFileSync('packages/core/src/io/sqlite_schema.sql','utf8');for(const t of ['knowledge_patterns','memory_decisions','memory_lessons','knowledge_patterns_fts','memory_decisions_fts','memory_lessons_fts'])if(!c.includes(t))process.exit(1)"`
 - [ ] AC-14: `mustard-rt run memory <kind>` insere no SQLite (não no JSON) — Command: `node -e "const c=require('fs').readFileSync('apps/rt/src/run/memory.rs','utf8');if(c.includes('memory/decisions.json')||c.includes('memory/lessons.json')||c.includes('write_json'))process.exit(1)"`
 - [ ] AC-15: Ingest de memory/knowledge JSONs existe — Command: `node -e "if(!require('fs').existsSync('apps/rt/src/run/memory_ingest.rs'))process.exit(1)"`
 - [ ] AC-16: Busca FTS5 funciona end-to-end — Command: `cargo test -p mustard-core --test sqlite_fts5_smoke 2>&1 | grep -q "test result: ok"`
+
+> **AC-13 amended at QA (iteration 1):** schema lives in `sqlite_schema.sql` (loaded via `include_str!` from `sqlite_store.rs`); the `.rs` source does not contain the literal table names. FTS5 table renamed `knowledge_patterns_fts` in Wave 6a to avoid collision with the legacy `knowledge_fts` on the older `knowledge` table.
 
 ## Plano
 
