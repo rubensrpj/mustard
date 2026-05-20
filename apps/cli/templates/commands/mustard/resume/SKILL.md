@@ -16,8 +16,8 @@ Resumes an interrupted pipeline. The main context BECOMES the Pipeline Runner �
 
 Before the normal detect-and-confirm flow, scan the newest pipeline state for a recent dispatch failure flagged by `subagent-tracker` (PostToolUse on Task).
 
-1. Glob `.claude/.pipeline-states/*.json` (exclude `*.metrics.json`) and pick the file with the newest mtime.
-2. Read it and inspect the `lastDispatchFailure` field.
+1. Run `mustard-rt run event-projections --view pipeline-state --spec {specName}` to load the current derived state. Pick the spec with the most recent event timestamp if multiple are active.
+2. Inspect the projected `lastDispatchFailure` field from the event log.
 3. If present:
    - Compute `ageMs = Date.now() - new Date(lastDispatchFailure.at).getTime()`.
    - **If ageMs <= 10 * 60 * 1000** (≤10 min, fresh):
@@ -26,9 +26,12 @@ Before the normal detect-and-confirm flow, scan the newest pipeline state for a 
         - `subagent_type`: `lastDispatchFailure.agentType` (fallback: `general-purpose`)
         - `description`: `lastDispatchFailure.description`
         - `prompt`: `lastDispatchFailure.prompt`
-     3. After the re-dispatch returns, clear the flag: remove `lastDispatchFailure` from the state object and rewrite the pipeline-state JSON.
+     3. After the re-dispatch returns, emit the dispatch_failure event cleared signal:
+        ```bash
+        mustard-rt run emit-pipeline --kind dispatch_failure --spec {specName} --payload "{\"cleared\":true,\"at\":\"{ISO now}\"}"
+        ```
      4. Fall through to Step 1 (normal resume flow continues from the updated state).
-   - **If ageMs > 10 * 60 * 1000** (stale): silently remove `lastDispatchFailure` from the state and rewrite the file, then continue to Step 1.
+   - **If ageMs > 10 * 60 * 1000** (stale): emit the cleared signal silently, then continue to Step 1.
 4. If `lastDispatchFailure` is absent, skip Step 0 entirely and proceed to Step 0.5.
 
 ### Step 0.5: Resume Mode (continuar vs reanalisar)
@@ -48,7 +51,11 @@ Before loading heavy context (sync-registry, diff-context, Explore Gate), ask th
    - **"Continuar de onde parou (modo leve)"** → `mode = "continued"`: skip sync-registry (Step 2 #6), skip diff-context (unless wave transition forces), skip Pre-EXECUTE Existence Gate (Step 12b). Trust pipeline-state as source of truth.
    - **"Reanalisar contexto (modo completo)"** → `mode = "reanalyzed"`: run Step 2 fully (default behavior, relê tudo).
 
-3. **Record mode in pipeline state:** write `resumeMode: "continued" | "reanalyzed"` and `resumeModeAt: {ISO now}` so downstream steps know which path they are in.
+3. **Record mode via event:** emit resume_mode so downstream steps know which path they are in:
+   ```bash
+   mustard-rt run emit-pipeline --kind resume_mode --spec {specName} --payload "{\"mode\":\"continued\"}"
+   ```
+   (substitute `"reanalyzed"` when that mode is chosen)
 
 4. **Stale-context fallback (safety net):** if a dispatched agent in `continued` mode returns an error indicating stale context (e.g., references a missing file, fails boundary check, or returns `BLOCKED` with reason citing out-of-date registry), escalate automatically:
    - Update pipeline state: `resumeMode: "escalated-to-reanalyze"`, append to `resumeEscalations` array with `{at, reason}`
@@ -72,13 +79,13 @@ Before loading heavy context (sync-registry, diff-context, Explore Gate), ask th
         1. Run `mustard-rt run wave-tree --spec-dir .claude/spec/active/{specName} --format json` and parse `waves[]` (each has `{label, folder, status}`).
         2. **Truly fresh plan** — every wave has `status === "queued"` (never executed) → stop and instruct: `Wave plan isn't approved yet. Run /mustard:approve {specName} first.`
         3. **Plan already in progress** — at least one wave has `status !== "queued"` (proves it was approved & started, the state file was just lost):
-           - Build pipeline-state (phase is derived from `pipeline.phase` events in SQLite; omit any phase-name field. Emit the transition via `mustard-rt run emit-phase --spec {specName} --to EXECUTE` after the write):
-             - `specName`, `isWavePlan: true`, `status: "implementing"`
-             - `totalWaves: waves.length`
-             - `completedWaves: <wave numbers where status === "completed">` (1-indexed, parsed from `folder` like `wave-3-backend`)
-             - `currentWave: <smallest wave number where status !== "completed">`
-             - `reconstructedFromWavePlan: true`, `reconstructedAt: <ISO now>`
-           - Write to `.claude/.pipeline-states/{specName}.json`.
+           - Reconstruct state by emitting events into SQLite (phase is derived from `pipeline.phase` events; omit any phase-name field):
+             ```bash
+             mustard-rt run emit-pipeline --kind scope --spec {specName} --payload "{\"scope\":\"full\",\"is_wave_plan\":true,\"total_waves\":{waves.length}}"
+             mustard-rt run emit-pipeline --kind status --spec {specName} --payload "{\"from\":null,\"to\":\"implementing\"}"
+             mustard-rt run emit-phase --spec {specName} --to EXECUTE
+             ```
+           - The projection `pipeline_state_for_spec` will derive `completedWaves`, `currentWave`, and `totalWaves` from the wave.complete events already in the log — no JSON file is written.
            - Inform user inline: `Reconstruí pipeline-state do wave-plan.md (W{completed} done, W{currentWave} next).`
      c. With state (loaded or reconstructed), operational spec = result of Glob `.claude/spec/active/{specName}/wave-{currentWave}-*/spec.md` (one match expected).
    - **3d. Stub Expansion (wave-plan mode only).** By design `/feature` expands wave-1 fully and leaves waves N≥2 as skeletons (Status: queued, Title + 1-line summary). When resume picks up wave N≥2, the stub must be expanded inline — no `/mustard:approve` roundtrip:
@@ -127,7 +134,12 @@ The slice is stable for the whole pipeline, so it sits in the PREFIX-STABLE bloc
 
 7. **Read** `.claude/pipeline-config.md`. For `entity-registry.json`: use Grep to extract ONLY the relevant entity block (e.g. `"Contract":`), NEVER read the full JSON
 9. **Update spec header:** `Status: implementing`, `Phase: EXECUTE`, `Checkpoint: {ISO now}`
-10. **Update/create pipeline state:** `status: "implementing"`, `specName`. Then emit `mustard-rt run emit-phase --spec {specName} --to EXECUTE` (phase no longer persisted in the JSON; reader derives it from `pipeline.phase` events in SQLite).
+10. **Emit status transition to implementing:**
+    ```bash
+    mustard-rt run emit-pipeline --kind status --spec {specName} --payload "{\"from\":\"approved\",\"to\":\"implementing\"}"
+    mustard-rt run emit-phase --spec {specName} --to EXECUTE
+    ```
+    Phase is derived from `pipeline.phase` events in SQLite — no JSON file is written.
 11. **TaskCreate** — 1 per pending agent (skip completed)
 
 ### Step 3: Execute — Wave System
@@ -151,8 +163,12 @@ When the pipeline state indicates a wave plan, the orchestrator dispatches only 
 2. The spec to work from for this invocation is `.claude/spec/active/{specName}/wave-{currentWave}-*/spec.md`. Replace any prior reference to `spec.md` at the root of the spec dir with the current wave's spec.
 3. **Between waves** (see Step 17 post-dispatch):
    - On wave completion: run `/mustard:git commit` style commit with message `feat(wave-{N}/{role}): {summary}`. If `/mustard:git commit` is not appropriate for the project, fall back to `git add {files} && git commit -m "..."`.
-   - Update state: `completedWaves.push(currentWave)`, `currentWave += 1`, `updatedAt`.
-   - After updating state, run `mustard-rt run wave-tree --spec-dir .claude/spec/active/{specName}` to show progress.
+   - Emit wave completion and advance current wave via events:
+     ```bash
+     mustard-rt run emit-pipeline --kind wave.complete --spec {specName} --payload "{\"wave\":{N},\"duration_ms\":{elapsed}}"
+     ```
+   - The projection derives `completedWaves` and `currentWave` from these events — no JSON state update needed.
+   - After emitting, run `mustard-rt run wave-tree --spec-dir .claude/spec/active/{specName}` to show progress.
    - Force `resumeMode = "reanalyzed"` for the next wave transition so diff-context refreshes with the just-committed changes.
    - **Cache this wave's diff:** right after the wave-{N-1} commit, run `git diff HEAD~1 HEAD > .claude/.pipeline-states/{spec-name}.wave-{N-1}.diff.md` so the next wave can be sliced against it.
    - **Wave Slice Injection (see § Wave Slice Injection below):** before dispatching wave N (N≥2):
@@ -192,7 +208,17 @@ A subtraction `wave-slice` é emitida automaticamente pelo hook `subagent-tracke
       - Execute each command listed in the matching `Wave Transitions` section
     - Wait for transitions to complete before dispatching next wave
 
-17. **Dispatch:** TaskUpdate(in_progress) + pipeline state. ALL agents in same wave → SINGLE message (multiple Task invocations). **Pass `model` from pipeline state** (e.g. `model: "opus"`) in each Task tool call — this overrides the agent YAML default. On return: pipeline state update, TaskUpdate(completed), advance wave. The `checklist-auto-mark.js` hook marks Checklist items silently as files are edited. close-gate denies CLOSE if any `[ ]` remains.
+17. **Dispatch:** TaskUpdate(in_progress). Emit task lifecycle events around each Task invocation:
+    ```bash
+    # Before dispatching each agent Task:
+    mustard-rt run emit-pipeline --kind task.dispatch --spec {specName} --payload "{\"wave\":{N},\"name\":\"{task-name}\",\"agent\":\"{agent-type}\"}"
+    ```
+    ALL agents in same wave → SINGLE message (multiple Task invocations). **Pass `model` from pipeline state** (e.g. `model: "opus"`) in each Task tool call — this overrides the agent YAML default.
+    ```bash
+    # After each agent Task returns:
+    mustard-rt run emit-pipeline --kind task.complete --spec {specName} --payload "{\"wave\":{N},\"name\":\"{task-name}\",\"agent\":\"{agent-type}\",\"duration_ms\":{elapsed}}"
+    ```
+    On return: TaskUpdate(completed), advance wave. The `checklist-auto-mark.js` hook marks Checklist items silently as files are edited. close-gate denies CLOSE if any `[ ]` remains.
 
 17b. **Agent Memory:** After each wave completes, run `memory.js agent` once per agent (summary ≤300 chars, include `files_modified` + `decisions`). Skip if no downstream waves remain.
 
@@ -264,7 +290,10 @@ Parse last completed step → retry only from that step forward. Build Mode=gran
 
 ### Pause Handoff & Next Action Rule
 
-On pause: write `pausedAt`/`pauseReason`/`nextAction` to pipeline state, then `memory.js agent`. Handoff MUST end with exactly ONE next action (no lists of options).
+On pause: emit pause event, then `memory.js agent`. Handoff MUST end with exactly ONE next action (no lists of options).
+```bash
+mustard-rt run emit-pipeline --kind pause --spec {specName} --payload "{\"reason\":\"{pauseReason}\",\"next_action\":\"{nextAction}\"}"
+```
 
 → See `../../../refs/resume/fix-loop-wave.md`
 

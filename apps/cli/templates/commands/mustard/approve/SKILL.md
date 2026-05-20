@@ -51,10 +51,12 @@ Check if the located spec is a wave plan: look for `.claude/spec/active/{specNam
    - `### Status: approved`
    - `### Phase: PLAN`
    - `### Checkpoint: {ISO timestamp now}`
-5. **Pipeline State — create or update `.claude/.pipeline-states/{spec-name}.json`:**
+5. **Pipeline State — emit status transition to approved:**
    - Extract `spec-name` from the spec directory (e.g. basename of path → `2026-02-26-linked-services-card`)
-   - **If wave plan (from Step 3b):** state already exists. Update fields: `status: "approved"`, `currentWave: 1`, `updatedAt`. Parse tasks from **wave-1** spec only (not all waves). Preserve `isWavePlan`, `totalWaves`, `completedWaves`, `failedWaves`.
-   - **If single spec:** Parse Tasks from spec to extract tasks per agent (DB, Backend, Frontend, etc.). Create `.claude/.pipeline-states/` directory if it doesn't exist. Write state file with `specName`, `status: "approved"`, `tasks` with names and agents, `model`, `updatedAt`. Phase is derived from `pipeline.phase` events in SQLite; do not persist a phase name field in the JSON. The `mustard-rt run emit-phase` calls elsewhere in the pipeline remain the canonical phase signal.
+   ```bash
+   mustard-rt run emit-pipeline --kind status --spec {spec-name} --payload "{\"from\":\"draft\",\"to\":\"approved\"}"
+   ```
+   - Phase is derived from `pipeline.phase` events in SQLite; the `mustard-rt run emit-phase` calls elsewhere in the pipeline remain the canonical phase signal. No JSON file is written here.
 5b. **Memory Persist — record architectural decisions:**
    - For each significant decision in the spec (technology choices, design patterns, trade-offs):
      ```bash

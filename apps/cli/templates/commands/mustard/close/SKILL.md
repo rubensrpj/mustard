@@ -104,8 +104,12 @@ See `.claude/pipeline-config.md` Escalation Statuses for concern classification 
    - Spec is auto-archived (moved to `completed/` + state removed) when:
      - `session-cleanup` runs and the spec has been `closed-followup` for more than 24h, OR
      - A new `/mustard:feature|bugfix|task` invocation runs `mustard-rt run complete-spec <spec-name> --archive` on any pending followups first.
-6. **Pipeline State — note:**
-   - The `closed-followup` state intentionally stays around so follow-up edits get linked. Do NOT delete `.claude/.pipeline-states/{spec-name}.json` here — the `--archive` stage handles that.
+6. **Pipeline State — emit completion:**
+   - Emit the status transition so the SQLite projection reflects the closed state:
+     ```bash
+     mustard-rt run emit-pipeline --kind status --spec {spec-name} --payload "{\"from\":\"implementing\",\"to\":\"completed\"}"
+     ```
+   - The `closed-followup` state intentionally stays around so follow-up edits get linked. No JSON file is deleted here — the `--archive` stage in `mustard-rt run complete-spec` handles archival.
 6b. **Knowledge Capture:**
    - Review patterns discovered during this pipeline
    - For each significant pattern/convention/entity discovered:
@@ -184,7 +188,10 @@ See `.claude/pipeline-config.md` Escalation Statuses for concern classification 
 If the user wants to cancel (not complete):
 - Update spec: `### Status: cancelled`
 - Move to `completed/` anyway (for history)
-- Delete `.claude/.pipeline-states/{spec-name}.json`
+- Emit cancellation status event:
+  ```bash
+  mustard-rt run emit-pipeline --kind status --spec {spec-name} --payload "{\"from\":null,\"to\":\"cancelled\"}"
+  ```
 - Output: "Pipeline cancelled. Spec archived in completed/."
 
 ## Results Documentation

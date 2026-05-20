@@ -365,10 +365,11 @@ Each rule has a stable ID that appears in the deny reason (`[bash-safety BGnn]`)
 ### Persistent projections
 | File | Writer | Purpose |
 |------|--------|---------|
-| `knowledge.json` | `mustard-rt` `knowledge` module + `memory.js knowledge` | Confidence-ranked patterns across sessions |
-| `memory/decisions.json` | `memory.js decision` | Architectural decisions |
-| `memory/lessons.json` | `memory.js decision` | Operational lessons |
-| `.pipeline-states/{spec}.json` | Pipeline commands | Current phase (ANALYZE/PLAN/EXECUTE/REVIEW/QA/CLOSE/COORDINATE) |
+| `knowledge.json` | `mustard-rt` `knowledge` module — INSERT direto em SQLite (tabela `knowledge_patterns` com FTS5) | Confidence-ranked patterns across sessions |
+| `memory/decisions.json` | `mustard-rt run memory decision` — INSERT direto em SQLite (tabela `memory_decisions`) | Architectural decisions |
+| `memory/lessons.json` | `mustard-rt run memory decision` — INSERT direto em SQLite (tabela `memory_lessons`) | Operational lessons |
+
+Pipeline state é derivado integralmente de eventos via `pipeline_state_for_spec` — não existe mais `.pipeline-states/{spec}.json` como fonte de escrita de status. Comandos emitem `mustard-rt run emit-pipeline --kind <kind> --spec <name>` para cada transição; leitores consomem a projeção SQLite.
 
 ### How agents read context
 Via **views** in `mustard-rt run event-projections --view <name>`:

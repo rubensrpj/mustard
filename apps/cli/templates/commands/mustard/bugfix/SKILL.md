@@ -74,18 +74,7 @@ const rootCauseSummary = {1-line root cause from Explore, ≤500 chars};
 const affectedFilesHash = sha256(concatenated contents of affectedFiles right now);
 ```
 
-Write to pipeline-state if Full Path (`.claude/.pipeline-states/{specName}.json`):
-```json
-{
-  "rootCauseHash": "sha256...",
-  "rootCauseSummary": "...",
-  "affectedFilesHash": "sha256...",
-  "affectedFiles": ["path/a.ts", "path/b.ts"],
-  "cachedAt": "{ISO}"
-}
-```
-
-For Fast Path (no spec yet), keep the cache in-memory only — it lives for the duration of the bugfix session, which is sufficient for the retry loop.
+For Full Path, keep the root-cause cache in-memory during the session (the retry loop runs within the same session). No pipeline-state JSON write is needed — the projection reads status from SQLite events. For Fast Path, the cache is also in-memory only.
 3. **ASSESS — Decision point:**
    - Explore returns clear root cause in 1-2 files → **Fast Path** (skip PLAN)
    - 3+ files, unclear impact, cross-layer → **Full Path** (brief spec via PLAN)
@@ -208,8 +197,11 @@ Max 2 retries for Transient + Resolvable. Structural failures trigger a targeted
 
 After EXECUTE (fix + validate) completes:
 
-1. Update pipeline state: `phaseName: "QA"`
-2. Run: `mustard-rt run qa-run --spec {specName}` (Full Path only)
+1. Emit phase transition to QA:
+   ```bash
+   mustard-rt run emit-phase --spec {specName} --to QA
+   ```
+2. Run: `mustard-rt run qa-run --spec {specName}` (Full Path only — emits `qa.result` event automatically)
    - For Fast Path: manually verify the bug reproduction command exits 0, emit result to harness
 3. If `overall=pass`: proceed to CLOSE
 4. If `overall=fail`: the bug reproduction AC still fails — return to EXECUTE for targeted fix, max 3 QA iterations
