@@ -46,13 +46,20 @@ struct AcResult {
     stderr_excerpt: String,
 }
 
-/// Locate the spec file: `.claude/specs/{spec}.md`, then
-/// `.claude/spec/active/{spec}/spec.md`, then `completed/`.
+/// Locate the spec file. Tries, in order:
+///   1. `.claude/specs/{spec}.md` (legacy flat layout)
+///   2. `.claude/spec/active/{spec}/spec.md` (single-spec mode)
+///   3. `.claude/spec/active/{spec}/wave-plan.md` (wave-plan mode — the global
+///      ACs live in `wave-plan.md` and `spec.md` does not exist at the root)
+///   4. `.claude/spec/completed/{spec}/spec.md`
+///   5. `.claude/spec/completed/{spec}/wave-plan.md`
 fn find_spec_file(cwd: &Path, spec: &str) -> Option<PathBuf> {
     let candidates = [
         cwd.join(".claude").join("specs").join(format!("{spec}.md")),
         cwd.join(".claude").join("spec").join("active").join(spec).join("spec.md"),
+        cwd.join(".claude").join("spec").join("active").join(spec).join("wave-plan.md"),
         cwd.join(".claude").join("spec").join("completed").join(spec).join("spec.md"),
+        cwd.join(".claude").join("spec").join("completed").join(spec).join("wave-plan.md"),
     ];
     candidates.into_iter().find(|c| c.exists())
 }
@@ -639,6 +646,36 @@ mod tests {
         let dir = tempdir().unwrap();
         let r = run_qa(dir.path(), "ghost");
         assert_eq!(r.overall, "skip");
+    }
+
+    /// Wave-plans keep their global ACs in `wave-plan.md` (no `spec.md` at the
+    /// root). `find_spec_file` must fall back to `wave-plan.md` so qa-run
+    /// closes wave-plans end-to-end without the operator copying/renaming.
+    #[test]
+    fn finds_wave_plan_md_when_spec_md_absent() {
+        let dir = tempdir().unwrap();
+        let spec_dir = dir.path().join(".claude").join("spec").join("active").join("plan-a");
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        let wp = spec_dir.join("wave-plan.md");
+        std::fs::write(&wp, "# Plan A\n## Acceptance Criteria\n- [ ] AC-G1: ok — Command: `true`\n").unwrap();
+        let found = find_spec_file(dir.path(), "plan-a").unwrap();
+        assert_eq!(found, wp);
+    }
+
+    /// When both `spec.md` and `wave-plan.md` exist in the same dir, the
+    /// `spec.md` path wins — preserves the single-spec contract for the rare
+    /// case where an operator authored both (e.g. legacy migrations).
+    #[test]
+    fn spec_md_wins_over_wave_plan_md_when_both_exist() {
+        let dir = tempdir().unwrap();
+        let spec_dir = dir.path().join(".claude").join("spec").join("active").join("plan-b");
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        let sp = spec_dir.join("spec.md");
+        let wp = spec_dir.join("wave-plan.md");
+        std::fs::write(&sp, "# Spec B\n## Acceptance Criteria\n- [ ] AC-1: x — Command: `true`\n").unwrap();
+        std::fs::write(&wp, "# Plan B\n## Acceptance Criteria\n- [ ] AC-G1: y — Command: `true`\n").unwrap();
+        let found = find_spec_file(dir.path(), "plan-b").unwrap();
+        assert_eq!(found, sp);
     }
 
     /// An AC-style command with quotes AND parentheses must survive intact to
