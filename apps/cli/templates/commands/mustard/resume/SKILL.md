@@ -186,6 +186,10 @@ A subtraction `wave-slice` é emitida automaticamente pelo hook `subagent-tracke
 13. **Plan waves:** `Depends on: none` → Wave 1; dependencies → later. DB+Backend parallel. Frontend after Backend UNLESS all parallel override conditions met (see `.claude/pipeline-config.md` Parallel Rules). Review agents: ALWAYS dispatch in single parallel message. Skip completed tasks.
 
 **Note on wave plans:** when `isWavePlan === true`, this step plans the agent wave structure **within** the current wave's spec only — agents internal to the current wave-spec may still split across DB/Backend/Frontend sub-waves. The outer wave (1..N) is the cross-spec sequence managed by Step 12c.
+13b. **Cross-wave memory injection (wave plans only):** If `pipeline-state.isWavePlan === true` AND `currentWave > 1`, run `mustard-rt run memory cross-wave --spec {specName} --wave {currentWave}` and capture stdout into the `{cross_wave_memory}` placeholder of the agent-prompt template (per-wave dynamic content, lives below `<!-- VARIABLE -->`). If `currentWave === 1` (or single-spec mode), leave `{cross_wave_memory}` empty. Fail-open: missing memories → empty placeholder, never block the dispatch.
+
+13c. **Model selection from wave-plan (wave plans only):** Read the `Modelo` column from the row for the active wave in `.claude/spec/active/{specName}/wave-plan.md` and pass that value as the `model` arg of every Task tool call in this wave dispatch. **O agente NUNCA escolhe o modelo; o orquestrador (SKILL) é fonte de verdade lendo o wave-plan.** O `model_routing` module continua bloqueando upgrades em relação à routing table. For single-spec mode (no wave-plan.md), keep the existing behavior — model comes from `pipeline-state.model`.
+
 14. **Build agent prompts using template** (`.claude/refs/agent-prompt/agent-prompt.md`):
     - Read template once, then fill placeholders per agent using `.claude/pipeline-config.md` data:
       - `{subproject}` → from Agents table (Subproject column)
@@ -197,6 +201,7 @@ A subtraction `wave-slice` é emitida automaticamente pelo hook `subagent-tracke
       - `{retry_context}` → empty on first dispatch. On retry, fill per `.claude/refs/agent-prompt/agent-prompt.md § Retry Modes`. Granular retries use Step 4 § Granular Retry Protocol. Fix-loops (after REJECTED review) use Step 19b § Fix Loop Dispatch Protocol.
       - `{task_steps}` → checkboxed steps from spec
       - `{context_md}` → relevance-filtered glossary slice from `.claude/.pipeline-states/{specName}.context-md.md` (see § Context Slice). Empty when no `CONTEXT.md` exists.
+      - `{cross_wave_memory}` → captured stdout from Step 13b (`mustard-rt run memory cross-wave`); empty for wave 1 or single-spec mode.
       - `{recommended_skills}` → from Skill Recommendations in `.claude/pipeline-config.md`:
         1. **Prepend `karpathy-guidelines`** for code-editing agents (impl/backend/frontend/database/bugfix). **Skip** for read-only Explore and Review agents.
         2. Glob `{subproject}/.claude/skills/` for generated pattern skills

@@ -10,6 +10,8 @@ Single unified template for all dispatches:
 
 `{context_md}` is the **relevance-filtered glossary slice** — the subset of `CONTEXT.md` term blocks that match the active spec's entities/files/key-tokens, produced by `context-slice.js`. It sits inside PREFIX-STABLE because the slice is stable for the whole pipeline (the spec does not change mid-run), so the prefix cache holds across dispatches and waves. Leave it empty when `CONTEXT.md` is absent (graceful degrade) — the orchestrator omits the `## SHARED LANGUAGE` block content but keeps the heading harmless. The orchestrator refreshes the slice only on a wave transition.
 
+`{cross_wave_memory}` is a **per-wave dynamic injection** — markdown gerado por `mustard-rt run memory cross-wave --spec <spec> --wave N` resumindo memórias das waves anteriores deste spec; vazio na primeira wave (ou em pipelines single-spec sem wave-plan). Por mudar a cada dispatch de wave, vive na seção VARIABLE (abaixo do marcador `<!-- VARIABLE -->`), nunca em PREFIX-STABLE — caso contrário invalidaria o prompt cache da Anthropic.
+
 `{spec_lang}` is filled from the active spec's `### Lang:` header (`pt` or `en`). Orchestrator reads it from `.claude/spec/active/{specName}/spec.md`. Defaults to `en` if missing.
 
 ---
@@ -64,6 +66,10 @@ In doubt about API/version/pattern → search web for latest docs before impleme
 {retry_context}
 
 <!-- VARIABLE -->
+<!-- per-wave dynamic content -->
+## CROSS-WAVE MEMORY
+{cross_wave_memory}
+
 ## TASK
 {task_steps}
 

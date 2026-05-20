@@ -117,9 +117,25 @@ Cascade (stop at first hit): (1) spec header `### Lang: pt|en`, (2) `.claude/mus
 
 → See `../../../refs/feature/spec-language.md` for full Header Translation Table.
 
-#### Wave Decomposition Pre-Check (Full scope only)
+#### Wave Decomposition (mandatory for Full+deps)
 
-Check whether the work should be decomposed into waves before writing a single spec. Signals: fileCount, layerCount, newEntityCount, knowledgeMatches. Runs `mustard-rt run scope-decompose` + `mustard-rt run wave-dependency`. Produces wave-plan.md + per-wave spec.md if decompose=true.
+Full scope com `file_count ≥ 6` OR `layer_count ≥ 3` OR `independent_subbehaviors ≥ 3` → **OBRIGATÓRIO** rodar `mustard-rt run wave-scaffold --spec-dir <dir> --plan <plan.json>`. O scaffold cria `wave-plan.md` + `wave-N-{role}/spec.md` + `review/spec.md` + `qa/spec.md` num único passo idempotente. Single `spec.md` neste cenário é erro de scaffold — `/mustard:qa` detecta a ausência dos wave-files e bloqueia o close.
+
+Sinais (`file_count`, `layer_count`, `independent_subbehaviors`) derivam da análise feita em ANALYZE; o orquestrador monta um `plan.json` com a decomposição em waves (role + summary + dependências) e o passa para `wave-scaffold`. Se nenhum sinal estourar, segue o fluxo single-spec normal.
+
+Formato esperado do `plan.json`:
+
+```
+{
+  "waves": [
+    {"n": 1, "role": "general|api|ui|database|library", "summary": "...", "depends_on": []}
+  ],
+  "total_waves": N,
+  "lang": "pt" | "en"
+}
+```
+
+Antes do dispatch de cada wave N>1, `/mustard:resume` chama `mustard-rt run memory cross-wave --spec <spec> --wave N` para preencher `{cross_wave_memory}` no agent prompt — memórias das waves anteriores ficam disponíveis sem reler specs.
 
 → See `../../../refs/feature/wave-decomposition.md`
 
