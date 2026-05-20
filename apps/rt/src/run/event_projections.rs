@@ -17,7 +17,13 @@
 
 use crate::report::Report;
 use mustard_core::io::sqlite_store::SqliteEventStore;
-use mustard_core::model::event::HarnessEvent;
+use mustard_core::model::event::{
+    HarnessEvent, EVENT_PIPELINE_DISPATCH_FAILURE, EVENT_PIPELINE_PAUSE,
+    EVENT_PIPELINE_RESUME_MODE, EVENT_PIPELINE_SCOPE, EVENT_PIPELINE_STATUS,
+    EVENT_PIPELINE_TASK_COMPLETE, EVENT_PIPELINE_TASK_DISPATCH, EVENT_PIPELINE_WAVE_COMPLETE,
+    PipelineDispatchFailurePayload,
+};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -687,6 +693,306 @@ pub fn run(view: Option<&str>, spec: Option<&str>, wave: Option<u32>, format: &s
     println!("{json_text}");
 }
 
+// ---------------------------------------------------------------------------
+// Typed pipeline-state projection — Wave 2 of 2026-05-19-pipeline-state-from-sqlite
+// ---------------------------------------------------------------------------
+
+/// A single task tracked inside a pipeline run. Built from `pipeline.task.dispatch`
+/// and `pipeline.task.complete` event pairs.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct PipelineTaskView {
+    /// Human-readable task name matching the wave-plan heading.
+    pub name: String,
+    /// Agent sub-type used for this dispatch (e.g. `"general-purpose"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+    /// Wave number the task belongs to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wave: Option<u32>,
+    /// Role label (e.g. `"implement"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    /// Files in scope at dispatch time, plus any reported as modified at complete.
+    #[serde(default)]
+    pub files: Vec<String>,
+    /// `"pending"` until a matching `pipeline.task.complete` is seen, then `"completed"`.
+    pub status: String,
+    /// ISO-8601 timestamp of the dispatch event.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dispatched_at: Option<String>,
+    /// ISO-8601 timestamp of the complete event.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_at: Option<String>,
+    /// Wall-clock task duration from the complete payload.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+}
+
+/// Typed view of a spec's pipeline state, derived entirely from the event log.
+/// Mirrors the legacy `.pipeline-states/{spec}.json` shape. camelCase serde
+/// renames match the dashboard's existing JSON consumers.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct PipelineStateView {
+    /// Spec identifier.
+    pub spec: String,
+    /// Last `pipeline.status` value (`payload.to`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    /// Pipeline scope token, e.g. `"full"` or `"wave"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+    /// Spec language override.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lang: Option<String>,
+    /// Model routed to for this pipeline run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// `true` when the spec uses a wave plan (from event or FS fallback).
+    #[serde(default, rename = "isWavePlan", skip_serializing_if = "Option::is_none")]
+    pub is_wave_plan: Option<bool>,
+    /// Total wave count declared in the spec.
+    #[serde(default, rename = "totalWaves", skip_serializing_if = "Option::is_none")]
+    pub total_waves: Option<u32>,
+    /// Next wave to dispatch: `max(completed_waves) + 1`, or `1`.
+    #[serde(rename = "currentWave")]
+    pub current_wave: u32,
+    /// Wave numbers that have emitted a `pipeline.wave.complete` event, sorted ASC.
+    #[serde(rename = "completedWaves")]
+    pub completed_waves: Vec<u32>,
+    /// Task views built from dispatch+complete pairs.
+    pub tasks: Vec<PipelineTaskView>,
+    /// Most recent `pipeline.dispatch_failure` payload, cleared if older than 10 min.
+    #[serde(default, rename = "lastDispatchFailure", skip_serializing_if = "Option::is_none")]
+    pub last_dispatch_failure: Option<PipelineDispatchFailurePayload>,
+    /// ISO-8601 timestamp of the last `pipeline.pause` event.
+    #[serde(default, rename = "pausedAt", skip_serializing_if = "Option::is_none")]
+    pub paused_at: Option<String>,
+    /// Human-readable pause reason.
+    #[serde(default, rename = "pauseReason", skip_serializing_if = "Option::is_none")]
+    pub pause_reason: Option<String>,
+    /// Resume mode selected (e.g. `"continue"`, `"rewave"`, `"abort"`).
+    #[serde(default, rename = "resumeMode", skip_serializing_if = "Option::is_none")]
+    pub resume_mode: Option<String>,
+}
+
+/// Ten minutes in milliseconds — the stale-failure cutoff matching the `/resume` Step 0 contract.
+const DISPATCH_FAILURE_TTL_MS: i64 = 10 * 60 * 1_000;
+
+/// Derive a [`PipelineStateView`] for `spec` by folding its event stream.
+///
+/// Queries events ordered by `id ASC` (insertion order). Fail-open on
+/// malformed payloads — a bad row is logged to stderr and skipped, never
+/// panicked. Returns `None` when no events exist for the spec.
+///
+/// `spec_dir` is an optional filesystem path to the spec directory
+/// (`.claude/spec/active/{spec}`). When provided and `wave-plan.md` exists
+/// there, `is_wave_plan` is set to `true` even if no `pipeline.scope` event
+/// recorded it yet.
+#[must_use]
+pub fn pipeline_state_for_spec(
+    store: &SqliteEventStore,
+    spec: &str,
+    spec_dir: Option<&std::path::Path>,
+) -> Option<PipelineStateView> {
+    let events = store.query(Some(spec)).unwrap_or_default();
+    if events.is_empty() {
+        return None;
+    }
+
+    let mut view = PipelineStateView {
+        spec: spec.to_string(),
+        current_wave: 1,
+        ..Default::default()
+    };
+
+    // Raw dispatch-failure payload + its timestamp (cleared after fold if stale).
+    let mut raw_failure: Option<(PipelineDispatchFailurePayload, Option<String>)> = None;
+
+    for ev in &events {
+        match ev.event.as_str() {
+            EVENT_PIPELINE_SCOPE => {
+                // Lenient: missing fields default via #[serde(default)].
+                match serde_json::from_value::<mustard_core::model::event::PipelineScopePayload>(
+                    ev.payload.clone(),
+                ) {
+                    Ok(p) => {
+                        view.scope = Some(p.scope);
+                        if p.lang.is_some() { view.lang = p.lang; }
+                        if p.model.is_some() { view.model = p.model; }
+                        if p.is_wave_plan.is_some() { view.is_wave_plan = p.is_wave_plan; }
+                        if p.total_waves.is_some() { view.total_waves = p.total_waves; }
+                    }
+                    Err(e) => {
+                        eprintln!("[pipeline_state_for_spec] bad {EVENT_PIPELINE_SCOPE} payload for {spec}: {e}");
+                    }
+                }
+            }
+            EVENT_PIPELINE_STATUS => {
+                match serde_json::from_value::<mustard_core::model::event::PipelineStatusPayload>(
+                    ev.payload.clone(),
+                ) {
+                    Ok(p) => view.status = Some(p.to),
+                    Err(e) => {
+                        eprintln!("[pipeline_state_for_spec] bad {EVENT_PIPELINE_STATUS} payload for {spec}: {e}");
+                    }
+                }
+            }
+            EVENT_PIPELINE_TASK_DISPATCH => {
+                match serde_json::from_value::<mustard_core::model::event::PipelineTaskDispatchPayload>(
+                    ev.payload.clone(),
+                ) {
+                    Ok(p) => {
+                        let task = find_or_insert_task(&mut view.tasks, &p.name);
+                        task.agent = p.agent;
+                        task.wave = p.wave;
+                        task.role = p.role;
+                        if let Some(files) = p.files {
+                            for f in files {
+                                if !task.files.contains(&f) {
+                                    task.files.push(f);
+                                }
+                            }
+                        }
+                        task.dispatched_at = Some(ev.ts.clone());
+                        task.status = "pending".to_string();
+                    }
+                    Err(e) => {
+                        eprintln!("[pipeline_state_for_spec] bad {EVENT_PIPELINE_TASK_DISPATCH} payload for {spec}: {e}");
+                    }
+                }
+            }
+            EVENT_PIPELINE_TASK_COMPLETE => {
+                match serde_json::from_value::<mustard_core::model::event::PipelineTaskCompletePayload>(
+                    ev.payload.clone(),
+                ) {
+                    Ok(p) => {
+                        let task = find_or_insert_task(&mut view.tasks, &p.name);
+                        task.status = "completed".to_string();
+                        task.completed_at = Some(ev.ts.clone());
+                        task.duration_ms = p.duration_ms;
+                        if let Some(modified) = p.files_modified {
+                            for f in modified {
+                                if !task.files.contains(&f) {
+                                    task.files.push(f);
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("[pipeline_state_for_spec] bad {EVENT_PIPELINE_TASK_COMPLETE} payload for {spec}: {e}");
+                    }
+                }
+            }
+            EVENT_PIPELINE_WAVE_COMPLETE => {
+                match serde_json::from_value::<mustard_core::model::event::PipelineWaveCompletePayload>(
+                    ev.payload.clone(),
+                ) {
+                    Ok(p) => {
+                        if !view.completed_waves.contains(&p.wave) {
+                            view.completed_waves.push(p.wave);
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("[pipeline_state_for_spec] bad {EVENT_PIPELINE_WAVE_COMPLETE} payload for {spec}: {e}");
+                    }
+                }
+            }
+            EVENT_PIPELINE_DISPATCH_FAILURE => {
+                match serde_json::from_value::<PipelineDispatchFailurePayload>(ev.payload.clone()) {
+                    Ok(p) => {
+                        let at = p.at.clone().or_else(|| {
+                            if ev.ts.is_empty() { None } else { Some(ev.ts.clone()) }
+                        });
+                        raw_failure = Some((p, at));
+                    }
+                    Err(e) => {
+                        eprintln!("[pipeline_state_for_spec] bad {EVENT_PIPELINE_DISPATCH_FAILURE} payload for {spec}: {e}");
+                    }
+                }
+            }
+            EVENT_PIPELINE_PAUSE => {
+                match serde_json::from_value::<mustard_core::model::event::PipelinePausePayload>(
+                    ev.payload.clone(),
+                ) {
+                    Ok(p) => {
+                        // Use the event timestamp as the canonical pause time.
+                        view.paused_at = if ev.ts.is_empty() { None } else { Some(ev.ts.clone()) };
+                        view.pause_reason = p.reason;
+                    }
+                    Err(e) => {
+                        eprintln!("[pipeline_state_for_spec] bad {EVENT_PIPELINE_PAUSE} payload for {spec}: {e}");
+                    }
+                }
+            }
+            EVENT_PIPELINE_RESUME_MODE => {
+                match serde_json::from_value::<mustard_core::model::event::PipelineResumeModePayload>(
+                    ev.payload.clone(),
+                ) {
+                    Ok(p) => view.resume_mode = Some(p.mode),
+                    Err(e) => {
+                        eprintln!("[pipeline_state_for_spec] bad {EVENT_PIPELINE_RESUME_MODE} payload for {spec}: {e}");
+                    }
+                }
+            }
+            _ => {} // Unknown event kinds are silently skipped (fail-open).
+        }
+    }
+
+    // Post-fold: sort and deduplicate completed_waves.
+    view.completed_waves.sort_unstable();
+    view.completed_waves.dedup();
+
+    // current_wave = max completed wave + 1, defaulting to 1.
+    view.current_wave = view
+        .completed_waves
+        .iter()
+        .max()
+        .map(|w| w + 1)
+        .unwrap_or(1);
+
+    // FS fallback for is_wave_plan — takes priority only if not already set by event.
+    if view.is_wave_plan.is_none() {
+        if let Some(dir) = spec_dir {
+            if dir.join("wave-plan.md").exists() {
+                view.is_wave_plan = Some(true);
+            }
+        }
+    }
+
+    // Stale dispatch-failure check: clear if older than 10 minutes.
+    view.last_dispatch_failure = match raw_failure {
+        None => None,
+        Some((payload, Some(at_str))) => {
+            let now_ms = i64::try_from(crate::util::now_millis()).unwrap_or(i64::MAX);
+            let age_ms = crate::run::complete_spec::parse_iso_millis(&at_str)
+                .map(|at_ms| now_ms - at_ms)
+                .unwrap_or(0);
+            if age_ms > DISPATCH_FAILURE_TTL_MS {
+                None // stale — cleared per /resume Step 0 contract
+            } else {
+                Some(payload)
+            }
+        }
+        Some((payload, None)) => Some(payload), // no timestamp → keep (fail-open)
+    };
+
+    Some(view)
+}
+
+/// Find a task by name, or push a new default one and return a mutable ref.
+fn find_or_insert_task<'a>(tasks: &'a mut Vec<PipelineTaskView>, name: &str) -> &'a mut PipelineTaskView {
+    // Linear search — task counts are small (< 50 per spec).
+    if let Some(pos) = tasks.iter().position(|t| t.name == name) {
+        return &mut tasks[pos];
+    }
+    tasks.push(PipelineTaskView {
+        name: name.to_string(),
+        status: "pending".to_string(),
+        ..Default::default()
+    });
+    tasks.last_mut().expect("just pushed")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -781,5 +1087,193 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let v = build_cross_session_timeline(dir.path(), 3);
         assert_eq!(v, json!([]));
+    }
+
+    // -----------------------------------------------------------------------
+    // pipeline_state_for_spec tests — Wave 2 of 2026-05-19-pipeline-state-from-sqlite
+    // -----------------------------------------------------------------------
+
+    use mustard_core::io::event_store::EventSink;
+
+    fn store_in_dir(dir: &std::path::Path) -> SqliteEventStore {
+        SqliteEventStore::new(dir.join("mustard.db")).unwrap()
+    }
+
+    fn pipeline_ev(event: &str, spec: &str, payload: Value) -> HarnessEvent {
+        HarnessEvent {
+            v: SCHEMA_VERSION,
+            ts: "2026-05-20T10:00:00.000Z".to_string(),
+            session_id: "s-pipeline".to_string(),
+            wave: 0,
+            actor: Actor { kind: ActorKind::Hook, id: None, actor_type: None },
+            event: event.to_string(),
+            payload,
+            spec: Some(spec.to_string()),
+        }
+    }
+
+    /// Test 1 — no events for spec → None.
+    #[test]
+    fn ps_no_events_returns_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store_in_dir(dir.path());
+        assert!(pipeline_state_for_spec(&store, "ghost-spec", None).is_none());
+    }
+
+    /// Test 2 — scope + status events only → fields populated, tasks empty, current_wave=1.
+    #[test]
+    fn ps_scope_and_status_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store_in_dir(dir.path());
+        store.append(&pipeline_ev(
+            EVENT_PIPELINE_SCOPE, "spec-a",
+            json!({ "scope": "full", "lang": "en", "model": "claude-opus-4-5" }),
+        )).unwrap();
+        store.append(&pipeline_ev(
+            EVENT_PIPELINE_STATUS, "spec-a",
+            json!({ "to": "active" }),
+        )).unwrap();
+
+        let view = pipeline_state_for_spec(&store, "spec-a", None).unwrap();
+        assert_eq!(view.scope.as_deref(), Some("full"));
+        assert_eq!(view.lang.as_deref(), Some("en"));
+        assert_eq!(view.model.as_deref(), Some("claude-opus-4-5"));
+        assert_eq!(view.status.as_deref(), Some("active"));
+        assert!(view.tasks.is_empty());
+        assert_eq!(view.current_wave, 1);
+        assert!(view.completed_waves.is_empty());
+    }
+
+    /// Test 3 — wave progression → completed_waves=[1,2], current_wave=3.
+    #[test]
+    fn ps_wave_progression() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store_in_dir(dir.path());
+        store.append(&pipeline_ev(
+            EVENT_PIPELINE_WAVE_COMPLETE, "spec-b",
+            json!({ "wave": 1 }),
+        )).unwrap();
+        store.append(&pipeline_ev(
+            EVENT_PIPELINE_WAVE_COMPLETE, "spec-b",
+            json!({ "wave": 2 }),
+        )).unwrap();
+
+        let view = pipeline_state_for_spec(&store, "spec-b", None).unwrap();
+        assert_eq!(view.completed_waves, vec![1u32, 2u32]);
+        assert_eq!(view.current_wave, 3);
+    }
+
+    /// Test 4 — task lifecycle: dispatch + complete → status=completed with timestamps.
+    #[test]
+    fn ps_task_lifecycle_dispatch_then_complete() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store_in_dir(dir.path());
+
+        let mut dispatch_ev = pipeline_ev(
+            EVENT_PIPELINE_TASK_DISPATCH, "spec-c",
+            json!({ "name": "implement-auth", "agent": "general-purpose", "wave": 1 }),
+        );
+        dispatch_ev.ts = "2026-05-20T10:00:00.000Z".to_string();
+        store.append(&dispatch_ev).unwrap();
+
+        let mut complete_ev = pipeline_ev(
+            EVENT_PIPELINE_TASK_COMPLETE, "spec-c",
+            json!({ "name": "implement-auth", "duration_ms": 5000 }),
+        );
+        complete_ev.ts = "2026-05-20T10:05:00.000Z".to_string();
+        store.append(&complete_ev).unwrap();
+
+        let view = pipeline_state_for_spec(&store, "spec-c", None).unwrap();
+        assert_eq!(view.tasks.len(), 1);
+        let task = &view.tasks[0];
+        assert_eq!(task.name, "implement-auth");
+        assert_eq!(task.status, "completed");
+        assert_eq!(task.dispatched_at.as_deref(), Some("2026-05-20T10:00:00.000Z"));
+        assert_eq!(task.completed_at.as_deref(), Some("2026-05-20T10:05:00.000Z"));
+        assert_eq!(task.duration_ms, Some(5000));
+    }
+
+    /// Test 5 — conflicting status events → last wins.
+    #[test]
+    fn ps_last_status_wins() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store_in_dir(dir.path());
+        store.append(&pipeline_ev(
+            EVENT_PIPELINE_STATUS, "spec-d",
+            json!({ "to": "active" }),
+        )).unwrap();
+        store.append(&pipeline_ev(
+            EVENT_PIPELINE_STATUS, "spec-d",
+            json!({ "to": "completed" }),
+        )).unwrap();
+
+        let view = pipeline_state_for_spec(&store, "spec-d", None).unwrap();
+        assert_eq!(view.status.as_deref(), Some("completed"));
+    }
+
+    /// Test 6 — stale dispatch_failure (>10 min old) → cleared in view.
+    #[test]
+    fn ps_stale_dispatch_failure_cleared() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store_in_dir(dir.path());
+        // Use a timestamp far in the past (2020-01-01) to guarantee staleness.
+        store.append(&pipeline_ev(
+            EVENT_PIPELINE_DISPATCH_FAILURE, "spec-e",
+            json!({ "reason": "timeout", "at": "2020-01-01T00:00:00.000Z" }),
+        )).unwrap();
+
+        let view = pipeline_state_for_spec(&store, "spec-e", None).unwrap();
+        assert!(view.last_dispatch_failure.is_none(), "stale failure should be cleared");
+    }
+
+    /// Test 7 — fresh dispatch_failure (<10 min old) → preserved in view.
+    #[test]
+    fn ps_fresh_dispatch_failure_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store_in_dir(dir.path());
+
+        // Use a recent timestamp relative to now. We compute "now - 30s" as a
+        // known-good recent time by querying system time.
+        let now_ms = crate::util::now_millis() as i64;
+        let recent_secs = (now_ms / 1000) - 30; // 30 seconds ago
+        let y = 1970u64 + (recent_secs as u64 / 31_536_000);
+        // Rough but sufficient: just use a very recent ISO string close to now.
+        // The most reliable approach: build from known-good recent milliseconds.
+        // We use the `now_iso8601` helper from util to get the current time as the
+        // failure timestamp — this guarantees it's always fresh.
+        let recent_ts = crate::util::now_iso8601();
+        let _ = y; // suppress warning
+
+        store.append(&pipeline_ev(
+            EVENT_PIPELINE_DISPATCH_FAILURE, "spec-f",
+            json!({ "reason": "budget exceeded", "at": recent_ts }),
+        )).unwrap();
+
+        let view = pipeline_state_for_spec(&store, "spec-f", None).unwrap();
+        assert!(view.last_dispatch_failure.is_some(), "fresh failure should be preserved");
+        assert_eq!(
+            view.last_dispatch_failure.as_ref().unwrap().reason.as_deref(),
+            Some("budget exceeded"),
+        );
+    }
+
+    /// Test 8 — is_wave_plan via FS when no pipeline.scope event present.
+    #[test]
+    fn ps_is_wave_plan_via_fs_fallback() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store_in_dir(dir.path());
+        // Add any event so the spec is present.
+        store.append(&pipeline_ev(
+            EVENT_PIPELINE_STATUS, "spec-g",
+            json!({ "to": "active" }),
+        )).unwrap();
+
+        // Create the spec dir with wave-plan.md.
+        let spec_dir = dir.path().join("spec-dir");
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        std::fs::write(spec_dir.join("wave-plan.md"), "# Wave Plan\n").unwrap();
+
+        let view = pipeline_state_for_spec(&store, "spec-g", Some(&spec_dir)).unwrap();
+        assert_eq!(view.is_wave_plan, Some(true));
     }
 }

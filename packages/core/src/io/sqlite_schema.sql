@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS events (
   actor_id TEXT,
   payload TEXT
 );
-CREATE INDEX IF NOT EXISTS idx_events_spec ON events(spec);
+CREATE INDEX IF NOT EXISTS idx_events_spec ON events(spec); -- used by pipeline_state_for_spec (Wave 2)
 CREATE INDEX IF NOT EXISTS idx_events_event ON events(event);
 CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts);
 
