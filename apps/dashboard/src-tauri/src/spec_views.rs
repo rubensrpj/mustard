@@ -173,6 +173,29 @@ pub struct MetricsWaveStatus {
     pub waves: Vec<MetricsWaveRow>,
 }
 
+/// Wave-3 (2026-05-20, spec `mustard-wave-network-standard`) — one wikilink
+/// occurrence emitted by `mustard-rt run wikilink-extract`. Mirrors the JSON
+/// shape `{from, to, file, line}`.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "snake_case")]
+pub struct Wikilink {
+    pub from: String,
+    pub to: String,
+    pub file: String,
+    pub line: u32,
+}
+
+/// Wave-3 — full payload of `mustard-rt run wikilink-extract`: every wikilink
+/// occurrence plus the list of orphan targets (referenced names that have no
+/// resolvable spec file). The dashboard groups these into parent/waves/dependents
+/// layers client-side.
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+#[serde(rename_all = "snake_case")]
+pub struct WikilinkExtract {
+    pub wikilinks: Vec<Wikilink>,
+    pub orphans: Vec<String>,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "snake_case")]
 pub struct WorkspaceSummary {
@@ -847,4 +870,133 @@ const fn workspace_alert_kind_string(k: mustard_core::WorkspaceAlertKind) -> &'s
         WorkspaceAlertKind::ReviewRejected => "review_rejected",
         WorkspaceAlertKind::BuildBroken => "build_broken",
     }
+}
+
+// ===========================================================================
+// Wave 3 (2026-05-20) — wikilink graph + cross-wave memory bridges.
+//
+// The frontend `SpecNetworkTab` shells out to `mustard-rt run wikilink-extract`
+// once per spec to render the graph, and `mustard-rt run memory cross-wave`
+// once per detected wave for the markdown panel. Both helpers follow the same
+// fail-open contract as `dashboard_metrics_wave_status_run`: subprocess
+// failures resolve to an empty payload so the dashboard renders an empty
+// state instead of throwing. `Err` is reserved for spawn failures so the UI
+// can surface "mustard-rt not on PATH".
+// ===========================================================================
+
+/// Locate the spec directory under `.claude/spec/{active,completed,cancelled}`
+/// for `spec_name`. Mirrors the lookup in `dashboard_spec_markdown` so the
+/// frontend never has to pass a raw filesystem path. Wave-plan parents resolve
+/// to their own dir (`wave-plan.md` lives there) and wave children resolve to
+/// `{parent}/{spec_name}` when present.
+fn resolve_spec_dir(repo_path: &str, spec_name: &str) -> Option<std::path::PathBuf> {
+    use std::path::PathBuf;
+    if spec_name.is_empty()
+        || spec_name.contains('/')
+        || spec_name.contains('\\')
+        || spec_name.contains("..")
+    {
+        return None;
+    }
+    let base = PathBuf::from(repo_path).join(".claude").join("spec");
+    for sub in ["active", "completed", "cancelled"] {
+        let direct = base.join(sub).join(spec_name);
+        if direct.is_dir() {
+            return Some(direct);
+        }
+    }
+    // Wave child nested under a wave-plan parent.
+    for sub in ["active", "completed", "cancelled"] {
+        let bucket = base.join(sub);
+        let Ok(rd) = std::fs::read_dir(&bucket) else { continue };
+        for entry in rd.flatten() {
+            let parent_dir = entry.path();
+            if !parent_dir.is_dir() {
+                continue;
+            }
+            let child = parent_dir.join(spec_name);
+            if child.is_dir() {
+                return Some(child);
+            }
+        }
+    }
+    None
+}
+
+/// Build a `Command` that invokes `mustard-rt` with the given args. Uses
+/// `cmd /C` on Windows so the binary is resolved against PATH the same way
+/// `dashboard_metrics_wave_status_run` does it.
+fn mustard_rt_command(args: &[&str]) -> std::process::Command {
+    #[cfg(target_os = "windows")]
+    {
+        let mut c = std::process::Command::new("cmd");
+        let mut full: Vec<&str> = vec!["/C", "mustard-rt"];
+        full.extend_from_slice(args);
+        c.args(&full);
+        c
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let mut c = std::process::Command::new("mustard-rt");
+        c.args(args);
+        c
+    }
+}
+
+/// Trim any RTK banner / leading log noise so `serde_json::from_str` sees a
+/// pure JSON document starting at the first `{`.
+fn slice_json(stdout: &str) -> &str {
+    match stdout.find('{') {
+        Some(i) => &stdout[i..],
+        None => stdout,
+    }
+}
+
+/// Wave-3 — invoke `mustard-rt run wikilink-extract --spec-dir <dir>` for
+/// `spec_name`, parse the JSON, return the typed payload. Fail-open: spawn
+/// errors surface as `Err`; everything else (missing dir, unparseable JSON)
+/// returns an empty extract so the frontend renders the empty state.
+pub fn dashboard_wikilink_extract_run(
+    repo_path: &str,
+    spec_name: &str,
+) -> Result<WikilinkExtract, String> {
+    let Some(spec_dir) = resolve_spec_dir(repo_path, spec_name) else {
+        return Ok(WikilinkExtract::default());
+    };
+    let dir_str = spec_dir.to_string_lossy().to_string();
+    let mut cmd = mustard_rt_command(&["run", "wikilink-extract", "--spec-dir", &dir_str]);
+    cmd.current_dir(repo_path);
+    let output = match cmd.output() {
+        Ok(o) => o,
+        Err(e) => return Err(format!("spawn mustard-rt: {e}")),
+    };
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    match serde_json::from_str::<WikilinkExtract>(slice_json(&stdout)) {
+        Ok(parsed) => Ok(parsed),
+        Err(_) => Ok(WikilinkExtract::default()),
+    }
+}
+
+/// Wave-3 — invoke `mustard-rt run memory cross-wave --spec <name> --wave <n>`
+/// and return the markdown payload (stdout). Empty string when the subprocess
+/// has nothing to report (the most common case — earlier waves carry no
+/// memory). `Err` is reserved for spawn failures.
+pub fn dashboard_memory_cross_wave_run(
+    repo_path: &str,
+    spec: &str,
+    wave: u32,
+) -> Result<String, String> {
+    if spec.is_empty() || spec.contains('/') || spec.contains('\\') || spec.contains("..") {
+        return Err(format!("invalid spec name: {spec}"));
+    }
+    let wave_str = wave.to_string();
+    let mut cmd = mustard_rt_command(&[
+        "run", "memory", "cross-wave", "--spec", spec, "--wave", &wave_str,
+    ]);
+    cmd.current_dir(repo_path);
+    let output = match cmd.output() {
+        Ok(o) => o,
+        Err(e) => return Err(format!("spawn mustard-rt: {e}")),
+    };
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }

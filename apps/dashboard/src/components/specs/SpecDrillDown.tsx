@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { useSpecWaves } from "@/hooks/useSpecWaves";
 import { useSpecQuality } from "@/hooks/useSpecQuality";
@@ -8,6 +8,7 @@ import { SpecWavesTab } from "./SpecWavesTab";
 import { SpecQualityTab } from "./SpecQualityTab";
 import { SpecTimelineTab } from "./SpecTimelineTab";
 import { SpecEventsTab } from "./SpecEventsTab";
+import { SpecNetworkTab } from "./SpecNetworkTab";
 import type { SpecTimelineNode, EventFilter } from "@/lib/types/specs";
 
 interface SpecDrillDownProps {
@@ -16,7 +17,7 @@ interface SpecDrillDownProps {
   className?: string;
 }
 
-const TABS = ["Ondas", "Qualidade", "Timeline", "Eventos"] as const;
+const TABS = ["Ondas", "Qualidade", "Timeline", "Eventos", "Rede"] as const;
 type Tab = (typeof TABS)[number];
 
 function LoadingRows() {
@@ -44,6 +45,12 @@ export function SpecDrillDown({ repoPath, spec, className }: SpecDrillDownProps)
   const qualityQ = useSpecQuality(repoPath, spec);
   const timelineQ = useSpecTimeline(repoPath, spec);
   const eventsQ = useSpecEvents(repoPath, spec, eventsFilter);
+
+  // Wave numbers known for this spec — fed to nested tabs that surface
+  // per-wave deep links (Timeline). Empty list when waves query is loading.
+  const waveNumbers = useMemo<number[]>(() => {
+    return wavesQ.data?.map((w) => w.wave) ?? [];
+  }, [wavesQ.data]);
 
   function handleTimelineNodeClick(node: SpecTimelineNode) {
     // Navigate to Eventos tab and pre-filter by wave if present
@@ -103,6 +110,9 @@ export function SpecDrillDown({ repoPath, spec, className }: SpecDrillDownProps)
           <SpecTimelineTab
             nodes={timelineQ.data ?? []}
             onNodeClick={handleTimelineNodeClick}
+            repoPath={repoPath}
+            spec={spec}
+            waves={waveNumbers}
           />
         )}
       </TabsContent>
@@ -121,6 +131,11 @@ export function SpecDrillDown({ repoPath, spec, className }: SpecDrillDownProps)
             initialFilter={eventsFilter}
           />
         )}
+      </TabsContent>
+
+      {/* Rede (Wave-3 wikilink graph) */}
+      <TabsContent value="Rede" className="pt-3">
+        <SpecNetworkTab repoPath={repoPath} specName={spec} />
       </TabsContent>
     </Tabs>
   );

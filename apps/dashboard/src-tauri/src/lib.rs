@@ -1424,6 +1424,30 @@ fn dashboard_metrics_wave_status(
     spec_views::dashboard_metrics_wave_status_run(&repo_path, &spec_name)
 }
 
+/// Wave 3 (2026-05-20, spec `mustard-wave-network-standard`) — shell out to
+/// `mustard-rt run wikilink-extract --spec-dir <dir>` for the spec resolved
+/// from `spec_name` and return the parsed `{wikilinks, orphans}` payload. The
+/// `SpecNetworkTab` consumes this to render the dependency graph.
+#[tauri::command]
+fn dashboard_wikilink_extract(
+    repo_path: String,
+    spec_name: String,
+) -> Result<spec_views::WikilinkExtract, String> {
+    spec_views::dashboard_wikilink_extract_run(&repo_path, &spec_name)
+}
+
+/// Wave 3 (2026-05-20) — shell out to `mustard-rt run memory cross-wave
+/// --spec <name> --wave <n>` and return the markdown stdout. Empty string
+/// when there is no cross-wave memory yet (the common case for early waves).
+#[tauri::command]
+fn dashboard_memory_cross_wave(
+    repo_path: String,
+    spec: String,
+    wave: u32,
+) -> Result<String, String> {
+    spec_views::dashboard_memory_cross_wave_run(&repo_path, &spec, wave)
+}
+
 /// Wave 4 (2026-05-20) — delegate to `mustard-core::workspace_summary`.
 /// Fixes the previous `events_per_minute` SQL filter that silently
 /// short-circuited (returned the all-time count → `2904.0` in the audit) and
@@ -1582,7 +1606,9 @@ pub fn run() {
             dashboard_spec_events,
             dashboard_spec_action,
             dashboard_workspace_summary,
-            dashboard_metrics_wave_status
+            dashboard_metrics_wave_status,
+            dashboard_wikilink_extract,
+            dashboard_memory_cross_wave
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

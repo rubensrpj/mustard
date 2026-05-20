@@ -676,3 +676,52 @@ export function dashboardMetricsWaveStatus(
     specName,
   });
 }
+
+// --- Wave-3 wikilink graph + cross-wave memory (spec mustard-wave-network-standard) ---
+
+/** One wikilink occurrence emitted by `mustard-rt run wikilink-extract`. */
+export interface Wikilink {
+  from: string;
+  to: string;
+  file: string;
+  line: number;
+}
+
+/**
+ * Full payload of `mustard-rt run wikilink-extract`: every `[[name]]`
+ * occurrence under the spec dir plus the set of orphan targets (names that
+ * don't resolve to a spec file). The dashboard groups these into
+ * parent/waves/dependents layers client-side.
+ */
+export interface WikilinkExtract {
+  wikilinks: Wikilink[];
+  orphans: string[];
+}
+
+/**
+ * Wave-3 wrapper for `dashboard_wikilink_extract`. The backend resolves the
+ * spec directory under `.claude/spec/{active,completed,cancelled}/<specName>`
+ * so the frontend never passes a raw filesystem path. Always resolves —
+ * missing dir / unparseable JSON collapse to an empty extract.
+ */
+export function dashboardWikilinkExtract(
+  repoPath: string,
+  specName: string,
+): Promise<WikilinkExtract> {
+  return invoke<WikilinkExtract>("dashboard_wikilink_extract", {
+    repoPath,
+    specName,
+  });
+}
+
+/**
+ * Wave-3 wrapper for `dashboard_memory_cross_wave`. Returns the markdown
+ * payload (stdout) — empty string when no prior wave has recorded memory yet.
+ */
+export function dashboardMemoryCrossWave(
+  repoPath: string,
+  spec: string,
+  wave: number,
+): Promise<string> {
+  return invoke<string>("dashboard_memory_cross_wave", { repoPath, spec, wave });
+}
