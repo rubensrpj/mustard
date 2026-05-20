@@ -123,6 +123,16 @@ pub const EVENT_PIPELINE_RESUME_MODE: &str = "pipeline.resume_mode";
 /// Records that a pipeline run was fully closed: captures `closedAt` and the
 /// set of files that were affected during the run.
 pub const EVENT_PIPELINE_COMPLETE: &str = "pipeline.complete";
+/// Records that an amendment window was opened for a closed pipeline.
+pub const EVENT_PIPELINE_AMEND_OPEN: &str = "pipeline.amend_open";
+/// Records a tool activity inside an open amendment window.
+pub const EVENT_PIPELINE_AMEND_ACTIVITY: &str = "pipeline.amend_activity";
+/// Records a user prompt intent observed during an amendment window.
+pub const EVENT_PIPELINE_AMEND_INTENT: &str = "pipeline.amend_intent";
+/// Records drift detected (edits outside the original pipeline file set).
+pub const EVENT_PIPELINE_AMEND_DRIFT: &str = "pipeline.amend_drift";
+/// Records that an amendment window was closed.
+pub const EVENT_PIPELINE_AMEND_CLOSE: &str = "pipeline.amend_close";
 
 // ---------------------------------------------------------------------------
 // Typed payload structs — typed views over `HarnessEvent::payload: Value`.
@@ -272,6 +282,98 @@ pub struct PipelineCompletePayload {
     /// Files touched during the pipeline run (union of harness events + git diff).
     #[serde(default, rename = "affectedFiles")]
     pub affected_files: Vec<String>,
+}
+
+/// Payload for [`EVENT_PIPELINE_AMEND_OPEN`].
+///
+/// Emitted when a new amendment window is opened for a closed pipeline.
+/// `pipeline_file_set` and `subprojects` seed the window's known scope.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PipelineAmendOpenPayload {
+    /// Spec identifier that owns this amendment window.
+    pub spec_id: String,
+    /// Session in which the window was opened.
+    pub session_id: String,
+    /// ISO-8601 timestamp at which the pipeline was originally closed.
+    pub closed_at: String,
+    /// File paths touched during the closed pipeline run (the allowed edit set).
+    pub pipeline_file_set: Vec<String>,
+    /// Subproject identifiers active during the closed pipeline run.
+    pub subprojects: Vec<String>,
+}
+
+/// Payload for [`EVENT_PIPELINE_AMEND_ACTIVITY`].
+///
+/// Emitted on each tool use observed inside an open amendment window.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PipelineAmendActivityPayload {
+    /// Spec identifier for the active amendment window.
+    pub spec_id: String,
+    /// Session identifier for the active amendment window.
+    pub session_id: String,
+    /// Tool name (e.g. `"Write"`, `"Edit"`, `"Bash"`).
+    pub tool: String,
+    /// File path the tool operated on (may be empty for non-file tools).
+    pub file_path: String,
+    /// ISO-8601 timestamp of the activity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<String>,
+}
+
+/// Payload for [`EVENT_PIPELINE_AMEND_INTENT`].
+///
+/// Emitted when a user prompt is observed during an amendment window; used
+/// to classify whether the amendment is in-scope or introduces new work.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PipelineAmendIntentPayload {
+    /// Spec identifier for the active amendment window.
+    pub spec_id: String,
+    /// Session identifier for the active amendment window.
+    pub session_id: String,
+    /// The raw user prompt text (may be truncated).
+    pub prompt_text: String,
+    /// ISO-8601 timestamp of the prompt submission.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<String>,
+}
+
+/// Payload for [`EVENT_PIPELINE_AMEND_DRIFT`].
+///
+/// Emitted when the amendment window detects edits to paths outside the
+/// original `pipeline_file_set`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PipelineAmendDriftPayload {
+    /// Spec identifier for the active amendment window.
+    pub spec_id: String,
+    /// Session identifier for the active amendment window.
+    pub session_id: String,
+    /// Paths that were edited but are not in `pipeline_file_set`.
+    pub unrelated_paths: Vec<String>,
+    /// The drift threshold (number of unrelated paths) that triggered this event.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub threshold: Option<u32>,
+}
+
+/// Payload for [`EVENT_PIPELINE_AMEND_CLOSE`].
+///
+/// Emitted when an amendment window is closed, recording the final outcome.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PipelineAmendClosePayload {
+    /// Spec identifier for the amendment window being closed.
+    pub spec_id: String,
+    /// Session identifier for the amendment window being closed.
+    pub session_id: String,
+    /// Final status: `"completed"`, `"abandoned"`, or `"expired"`.
+    pub status: String,
+    /// ISO-8601 timestamp at which the window was closed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub closed_at: Option<String>,
+    /// Whether the build was green at close time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build_verde: Option<bool>,
+    /// Whether at least one drift event was emitted during the window.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub drift_emitted: Option<bool>,
 }
 
 #[cfg(test)]

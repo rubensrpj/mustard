@@ -25,9 +25,13 @@
 //! that a hook is free to ignore — telemetry is never load-bearing.
 
 use crate::error::{Error, Result};
-use crate::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
+use crate::model::event::{
+    Actor, ActorKind, HarnessEvent, PipelineAmendOpenPayload, PipelineTaskCompletePayload,
+    SCHEMA_VERSION, EVENT_PIPELINE_TASK_COMPLETE,
+};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::Value;
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 /// Directory name of the harness store, under `.claude/`.
@@ -130,6 +134,33 @@ pub struct KnowledgeRow {
     pub description: Option<String>,
     /// Confidence score in `[0, 1]`.
     pub confidence: Option<f64>,
+}
+
+/// One row from the `pipeline_amend_window` table.
+///
+/// Returned by [`SqliteEventStore::amend_window_for_session`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct AmendWindow {
+    /// Spec identifier that owns this window.
+    pub spec_id: String,
+    /// Session identifier this window belongs to.
+    pub session_id: String,
+    /// ISO-8601 timestamp at which the pipeline was originally closed.
+    pub closed_at: String,
+    /// File paths that form the allowed edit set for this amendment window.
+    pub pipeline_file_set: Vec<String>,
+    /// Subproject identifiers active during the original pipeline run.
+    pub subprojects: Vec<String>,
+    /// Window lifecycle status: `"open"`, `"amending"`, `"completed"`, etc.
+    pub status: String,
+    /// ISO-8601 timestamp of the most recent activity in this window.
+    pub last_activity_at: Option<String>,
+    /// ISO-8601 timestamp at which the build turned green.
+    pub build_verde_at: Option<String>,
+    /// Paths edited outside `pipeline_file_set` (drift candidates).
+    pub drift_unrelated_paths: Vec<String>,
+    /// Whether at least one drift event was emitted for this window.
+    pub drift_emitted: bool,
 }
 
 /// SQLite-backed [`EventSink`](super::event_store::EventSink) over a single
@@ -362,6 +393,291 @@ impl SqliteEventStore {
         )?;
         let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
         Ok(rows.filter_map(std::result::Result::ok).collect())
+    }
+
+    /// All amendment windows for `session_id`, ordered by `closed_at` descending.
+    ///
+    /// Returns all rows whose `session_id` matches, regardless of `status`.
+    /// Used by `amend-finalize` to process every window at `SessionEnd`.
+    ///
+    /// JSON columns (`pipeline_file_set`, `subprojects`,
+    /// `drift_unrelated_paths`) are decoded from their stored TEXT; a
+    /// malformed array degrades to an empty `Vec` rather than an `Err`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Sqlite`] for a genuine query failure.
+    pub fn amend_windows_by_session(&self, session_id: &str) -> Result<Vec<AmendWindow>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT spec_id, session_id, closed_at, pipeline_file_set, subprojects, \
+             status, last_activity_at, build_verde_at, drift_unrelated_paths, drift_emitted \
+             FROM pipeline_amend_window \
+             WHERE session_id = ?1 AND status IN ('open', 'amending') \
+             ORDER BY closed_at DESC",
+        )?;
+        let rows = stmt.query_map(params![session_id], |row| {
+            let pipeline_file_set_text: Option<String> = row.get(3)?;
+            let subprojects_text: Option<String> = row.get(4)?;
+            let drift_paths_text: Option<String> = row.get(8)?;
+            let drift_emitted_raw: i64 = row.get::<_, Option<i64>>(9)?.unwrap_or(0);
+            Ok(AmendWindow {
+                spec_id: row.get(0)?,
+                session_id: row.get(1)?,
+                closed_at: row.get(2)?,
+                pipeline_file_set: pipeline_file_set_text
+                    .and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok())
+                    .unwrap_or_default(),
+                subprojects: subprojects_text
+                    .and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok())
+                    .unwrap_or_default(),
+                status: row.get(5)?,
+                last_activity_at: row.get(6)?,
+                build_verde_at: row.get(7)?,
+                drift_unrelated_paths: drift_paths_text
+                    .and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok())
+                    .unwrap_or_default(),
+                drift_emitted: drift_emitted_raw != 0,
+            })
+        })?;
+        Ok(rows.filter_map(std::result::Result::ok).collect())
+    }
+
+    /// The open amendment window for `session_id`, if one exists.
+    ///
+    /// Queries `pipeline_amend_window` for a row whose `session_id` matches
+    /// and whose `status` is `'open'` or `'amending'`, ordered by `closed_at`
+    /// descending so the most recent window is returned. Returns `None` when no
+    /// matching row exists — missing rows are not an error.
+    ///
+    /// JSON columns (`pipeline_file_set`, `subprojects`,
+    /// `drift_unrelated_paths`) are decoded from their stored TEXT; a
+    /// malformed array degrades to an empty `Vec` rather than an `Err`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Sqlite`] for a genuine query failure.
+    pub fn amend_window_for_session(&self, session_id: &str) -> Result<Option<AmendWindow>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT spec_id, session_id, closed_at, pipeline_file_set, subprojects, \
+             status, last_activity_at, build_verde_at, drift_unrelated_paths, drift_emitted \
+             FROM pipeline_amend_window \
+             WHERE session_id = ?1 AND status IN ('open', 'amending') \
+             ORDER BY closed_at DESC LIMIT 1",
+        )?;
+        let row = stmt
+            .query_row(params![session_id], |row| {
+                let pipeline_file_set_text: Option<String> = row.get(3)?;
+                let subprojects_text: Option<String> = row.get(4)?;
+                let drift_paths_text: Option<String> = row.get(8)?;
+                let drift_emitted_raw: i64 = row.get::<_, Option<i64>>(9)?.unwrap_or(0);
+                Ok(AmendWindow {
+                    spec_id: row.get(0)?,
+                    session_id: row.get(1)?,
+                    closed_at: row.get(2)?,
+                    pipeline_file_set: pipeline_file_set_text
+                        .and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok())
+                        .unwrap_or_default(),
+                    subprojects: subprojects_text
+                        .and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok())
+                        .unwrap_or_default(),
+                    status: row.get(5)?,
+                    last_activity_at: row.get(6)?,
+                    build_verde_at: row.get(7)?,
+                    drift_unrelated_paths: drift_paths_text
+                        .and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok())
+                        .unwrap_or_default(),
+                    drift_emitted: drift_emitted_raw != 0,
+                })
+            })
+            .optional()?;
+        Ok(row)
+    }
+
+    /// The union of all files modified across every `pipeline.task.complete`
+    /// event for `spec_id`.
+    ///
+    /// Replays events scoped to `spec_id` (via [`Self::query`]), keeps only
+    /// rows whose `event` field equals `"pipeline.task.complete"`, deserializes
+    /// their `payload` as [`PipelineTaskCompletePayload`], and collects every
+    /// path from `files_modified`. Paths are de-duplicated and returned sorted.
+    ///
+    /// A payload that fails to deserialize is skipped rather than aborting.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Sqlite`] for a query failure.
+    pub fn amend_window_pipeline_file_set(&self, spec_id: &str) -> Result<Vec<String>> {
+        let events = self.query(Some(spec_id))?;
+        let mut seen: BTreeSet<String> = BTreeSet::new();
+        for ev in events {
+            if ev.event != EVENT_PIPELINE_TASK_COMPLETE {
+                continue;
+            }
+            let payload: PipelineTaskCompletePayload =
+                match serde_json::from_value(ev.payload) {
+                    Ok(p) => p,
+                    Err(_) => continue,
+                };
+            for path in payload.files_modified.unwrap_or_default() {
+                seen.insert(path);
+            }
+        }
+        Ok(seen.into_iter().collect())
+    }
+
+    // -------------------------------------------------------------------------
+    // Amendment-window write methods (Wave 2 — session-bound amendments)
+    // -------------------------------------------------------------------------
+
+    /// Insert a new amendment window row.
+    ///
+    /// Uses `INSERT OR IGNORE` so a duplicate `(spec_id, session_id)` is
+    /// silently skipped — idempotent by design.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Sqlite`] for a database failure.
+    pub fn open_amend_window(&self, payload: &PipelineAmendOpenPayload) -> Result<()> {
+        let file_set_json =
+            serde_json::to_string(&payload.pipeline_file_set).map_err(Error::from)?;
+        let subprojects_json =
+            serde_json::to_string(&payload.subprojects).map_err(Error::from)?;
+        self.conn.execute(
+            "INSERT OR IGNORE INTO pipeline_amend_window \
+             (spec_id, session_id, closed_at, pipeline_file_set, subprojects) \
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                payload.spec_id,
+                payload.session_id,
+                payload.closed_at,
+                file_set_json,
+                subprojects_json,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Stamp the `last_activity_at` column for an open amendment window.
+    ///
+    /// Updates the row identified by `(spec_id, session_id)`. A missing row is
+    /// a silent no-op — callers fail open.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Sqlite`] for a database failure.
+    pub fn record_amend_activity(
+        &self,
+        spec_id: &str,
+        session_id: &str,
+        at: &str,
+    ) -> Result<()> {
+        self.conn.execute(
+            "UPDATE pipeline_amend_window \
+             SET last_activity_at = ?3 \
+             WHERE spec_id = ?1 AND session_id = ?2",
+            params![spec_id, session_id, at],
+        )?;
+        Ok(())
+    }
+
+    /// Stamp `build_verde_at` for the open or amending window of `session_id`.
+    ///
+    /// Only updates rows whose `status` is `'open'` or `'amending'`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Sqlite`] for a database failure.
+    pub fn mark_amend_build_verde(&self, session_id: &str, at: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE pipeline_amend_window \
+             SET build_verde_at = ?2 \
+             WHERE session_id = ?1 AND status IN ('open', 'amending')",
+            params![session_id, at],
+        )?;
+        Ok(())
+    }
+
+    /// Append `file_path` to the `drift_unrelated_paths` JSON array for an
+    /// open amendment window; skips duplicates.
+    ///
+    /// Reads the existing array, pushes `file_path` when absent, writes it
+    /// back. Returns the new array length.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Sqlite`] for a database failure or
+    /// [`Error::InvalidInput`] if the existing JSON array is irrecoverably
+    /// malformed.
+    pub fn add_amend_drift_path(
+        &self,
+        spec_id: &str,
+        session_id: &str,
+        file_path: &str,
+    ) -> Result<usize> {
+        // Read current array.
+        let current_json: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT drift_unrelated_paths FROM pipeline_amend_window \
+                 WHERE spec_id = ?1 AND session_id = ?2",
+                params![spec_id, session_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let mut paths: Vec<String> = current_json
+            .as_deref()
+            .and_then(|s| serde_json::from_str(s).ok())
+            .unwrap_or_default();
+        if !paths.iter().any(|p| p == file_path) {
+            paths.push(file_path.to_string());
+        }
+        let new_len = paths.len();
+        let updated_json = serde_json::to_string(&paths).map_err(Error::from)?;
+        self.conn.execute(
+            "UPDATE pipeline_amend_window \
+             SET drift_unrelated_paths = ?3 \
+             WHERE spec_id = ?1 AND session_id = ?2",
+            params![spec_id, session_id, updated_json],
+        )?;
+        Ok(new_len)
+    }
+
+    /// Set the `drift_emitted` flag to `1` for an amendment window.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Sqlite`] for a database failure.
+    pub fn mark_amend_drift_emitted(&self, spec_id: &str, session_id: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE pipeline_amend_window \
+             SET drift_emitted = 1 \
+             WHERE spec_id = ?1 AND session_id = ?2",
+            params![spec_id, session_id],
+        )?;
+        Ok(())
+    }
+
+    /// Transition an amendment window to a terminal `status`.
+    ///
+    /// `status` should be one of `"resolved"`, `"pending"`, `"completed"`, or
+    /// `"abandoned"`. The row is identified by `(spec_id, session_id)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Sqlite`] for a database failure.
+    pub fn close_amend_window(
+        &self,
+        spec_id: &str,
+        session_id: &str,
+        status: &str,
+    ) -> Result<()> {
+        self.conn.execute(
+            "UPDATE pipeline_amend_window \
+             SET status = ?3 \
+             WHERE spec_id = ?1 AND session_id = ?2",
+            params![spec_id, session_id, status],
+        )?;
+        Ok(())
     }
 
     /// Run an event-selecting query and decode each row into a [`HarnessEvent`].
@@ -674,5 +990,143 @@ mod tests {
         let store = SqliteEventStore::for_project(dir.path()).unwrap();
         assert!(store.path().ends_with("mustard.db"));
         assert!(store.replay().unwrap().is_empty());
+    }
+
+    // -------------------------------------------------------------------------
+    // Amendment-window writer round-trip tests
+    // -------------------------------------------------------------------------
+
+    mod amend_window_writers {
+        use super::*;
+        use crate::model::event::PipelineAmendOpenPayload;
+
+        fn open_payload(spec_id: &str, session_id: &str) -> PipelineAmendOpenPayload {
+            PipelineAmendOpenPayload {
+                spec_id: spec_id.to_string(),
+                session_id: session_id.to_string(),
+                closed_at: "2026-05-20T00:00:00.000Z".to_string(),
+                pipeline_file_set: vec![
+                    "apps/rt/src/hooks/mod.rs".to_string(),
+                    "apps/cli/src/main.rs".to_string(),
+                ],
+                subprojects: vec!["apps/rt".to_string(), "apps/cli".to_string()],
+            }
+        }
+
+        #[test]
+        fn open_amend_window_inserts_row() {
+            let dir = tempdir().unwrap();
+            let store = store_in(dir.path());
+            let payload = open_payload("spec-1", "session-a");
+            store.open_amend_window(&payload).unwrap();
+
+            let window = store.amend_window_for_session("session-a").unwrap().unwrap();
+            assert_eq!(window.spec_id, "spec-1");
+            assert_eq!(window.status, "open");
+            assert_eq!(window.pipeline_file_set, payload.pipeline_file_set);
+            assert_eq!(window.subprojects, payload.subprojects);
+        }
+
+        #[test]
+        fn open_amend_window_is_idempotent() {
+            let dir = tempdir().unwrap();
+            let store = store_in(dir.path());
+            let payload = open_payload("spec-1", "session-a");
+            store.open_amend_window(&payload).unwrap();
+            // Second call must be a silent no-op (INSERT OR IGNORE).
+            store.open_amend_window(&payload).unwrap();
+            // Still exactly one window.
+            let window = store.amend_window_for_session("session-a").unwrap();
+            assert!(window.is_some());
+        }
+
+        #[test]
+        fn record_amend_activity_stamps_last_activity() {
+            let dir = tempdir().unwrap();
+            let store = store_in(dir.path());
+            store.open_amend_window(&open_payload("spec-1", "session-a")).unwrap();
+
+            store
+                .record_amend_activity("spec-1", "session-a", "2026-05-20T01:00:00.000Z")
+                .unwrap();
+
+            let window = store.amend_window_for_session("session-a").unwrap().unwrap();
+            assert_eq!(
+                window.last_activity_at.as_deref(),
+                Some("2026-05-20T01:00:00.000Z")
+            );
+        }
+
+        #[test]
+        fn mark_amend_build_verde_stamps_build_verde_at() {
+            let dir = tempdir().unwrap();
+            let store = store_in(dir.path());
+            store.open_amend_window(&open_payload("spec-1", "session-a")).unwrap();
+
+            store
+                .mark_amend_build_verde("session-a", "2026-05-20T02:00:00.000Z")
+                .unwrap();
+
+            let window = store.amend_window_for_session("session-a").unwrap().unwrap();
+            assert_eq!(
+                window.build_verde_at.as_deref(),
+                Some("2026-05-20T02:00:00.000Z")
+            );
+        }
+
+        #[test]
+        fn add_amend_drift_path_accumulates_unique_paths() {
+            let dir = tempdir().unwrap();
+            let store = store_in(dir.path());
+            store.open_amend_window(&open_payload("spec-1", "session-a")).unwrap();
+
+            let len1 = store
+                .add_amend_drift_path("spec-1", "session-a", "packages/core/src/lib.rs")
+                .unwrap();
+            assert_eq!(len1, 1);
+
+            let len2 = store
+                .add_amend_drift_path("spec-1", "session-a", "packages/core/src/error.rs")
+                .unwrap();
+            assert_eq!(len2, 2);
+
+            // Duplicate — length must not grow.
+            let len3 = store
+                .add_amend_drift_path("spec-1", "session-a", "packages/core/src/lib.rs")
+                .unwrap();
+            assert_eq!(len3, 2);
+
+            let window = store.amend_window_for_session("session-a").unwrap().unwrap();
+            assert_eq!(window.drift_unrelated_paths.len(), 2);
+        }
+
+        #[test]
+        fn mark_amend_drift_emitted_sets_flag() {
+            let dir = tempdir().unwrap();
+            let store = store_in(dir.path());
+            store.open_amend_window(&open_payload("spec-1", "session-a")).unwrap();
+
+            let window_before = store.amend_window_for_session("session-a").unwrap().unwrap();
+            assert!(!window_before.drift_emitted);
+
+            store.mark_amend_drift_emitted("spec-1", "session-a").unwrap();
+
+            let window_after = store.amend_window_for_session("session-a").unwrap().unwrap();
+            assert!(window_after.drift_emitted);
+        }
+
+        #[test]
+        fn close_amend_window_transitions_status() {
+            let dir = tempdir().unwrap();
+            let store = store_in(dir.path());
+            store.open_amend_window(&open_payload("spec-1", "session-a")).unwrap();
+
+            store.close_amend_window("spec-1", "session-a", "resolved").unwrap();
+
+            // After close, amend_window_for_session (which filters on
+            // status IN ('open','amending')) must return None.
+            let window = store.amend_window_for_session("session-a").unwrap();
+            assert!(window.is_none());
+        }
     }
 }

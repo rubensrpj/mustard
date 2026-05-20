@@ -1,4 +1,5 @@
 import { useState, useMemo, useDeferredValue } from "react";
+import { AmendActivityBlock } from "@/components/amend/AmendActivityBlock";
 import { useQuery } from "@tanstack/react-query";
 import { useStore } from "@/lib/store";
 import { discoverProjects } from "@/api/discovery";
@@ -305,6 +306,7 @@ export function Activity() {
                           {relativeTime(g.min_ts)} → {relativeTime(g.max_ts)}
                         </span>
                       )}
+                      {g.spec && <AmendActivityBlock specId={g.spec} />}
                     </li>
                   ))}
                 </ul>

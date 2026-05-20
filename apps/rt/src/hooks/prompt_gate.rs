@@ -27,6 +27,7 @@
 //! is absent the gate is a silent no-op — parity with the JS
 //! `if (!fs.existsSync(script)) process.exit(0)`.
 
+use crate::hooks::amend_capture::close_amend_windows_for_session;
 use mustard_core::error::Error;
 use mustard_core::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
 use std::path::Path;
@@ -114,6 +115,13 @@ impl Check for PromptGate {
         if is_pipeline_prompt(prompt) {
             let cwd = project_dir(input, ctx);
             archive_followups(&cwd);
+            // Close any open amendment windows for this session — the user is
+            // starting a new pipeline, so the window's context is done.
+            if let Some(session_id) = input.session_id.as_deref() {
+                if !session_id.is_empty() {
+                    close_amend_windows_for_session(&cwd, session_id);
+                }
+            }
         }
         Ok(Verdict::Allow)
     }

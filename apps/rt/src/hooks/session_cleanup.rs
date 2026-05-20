@@ -30,6 +30,8 @@
 //! no portable, dependency-free signal API, and the file removal alone is the
 //! correct cleanup once the Rust port owns SessionStart.
 
+use crate::run::amend_finalize;
+use mustard_core::io::sqlite_store::SqliteEventStore;
 use mustard_core::model::contract::{Ctx, HookInput, Observer, Trigger};
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -246,6 +248,14 @@ impl Observer for SessionCleanup {
         }
         let cwd = project_dir(input, ctx);
         let claude = Path::new(&cwd).join(".claude");
+
+        // Finalize open amendment windows BEFORE other cleanup.
+        if let Some(session_id) = input.session_id.as_deref().filter(|s| !s.is_empty()) {
+            if let Ok(store) = SqliteEventStore::for_project(&cwd) {
+                let _ = amend_finalize::run(session_id, &store);
+            }
+        }
+
         archive_stale_followups(&cwd);
         clean_pipeline_states(&claude);
         clean_statusline_cache();

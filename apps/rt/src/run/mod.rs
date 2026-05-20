@@ -12,6 +12,7 @@
 //! it shares with the still-JS `sync-registry.js`.
 
 pub mod scan;
+pub mod amend_finalize;
 mod analyze_validation;
 mod artifact_update;
 mod doctor;
@@ -22,10 +23,11 @@ mod docs_stale_check;
 mod emit_event;
 pub mod emit_phase;
 mod emit_pipeline;
-mod env;
+pub mod env;
 mod epic_fold;
 pub mod event_projections;
 pub use event_projections::{pipeline_state_for_spec, PipelineStateView};
+pub use env::current_spec;
 mod exec_rewave_check;
 mod mark_checklist_item;
 mod memory;
@@ -424,6 +426,13 @@ pub enum RunCmd {
         #[arg(long)]
         residue: bool,
     },
+    /// Finalize open amendment windows for a session (appends `## Amendments` to spec.md,
+    /// moves archived specs, updates the DB, and emits `pipeline.amend_close`).
+    AmendFinalize {
+        /// Session identifier whose open windows to finalize.
+        #[arg(long = "session-id")]
+        session_id: String,
+    },
     /// Scan markdown docs for obsolete terms declared in `.claude/.docs-audit.json`.
     ///
     /// Emits a JSON report of stale-doc hits. With `--strict` (or env
@@ -593,5 +602,6 @@ pub fn dispatch(cmd: RunCmd) {
             apply,
             manifest,
         } => artifact_update::run(check, apply, manifest.as_deref()),
+        RunCmd::AmendFinalize { session_id } => amend_finalize::run_cli(&session_id),
     }
 }

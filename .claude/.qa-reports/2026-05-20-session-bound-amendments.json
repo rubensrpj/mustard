@@ -1,0 +1,111 @@
+{
+  "criteria": [
+    {
+      "duration_ms": 2782,
+      "exit": 0,
+      "id": "AC-1",
+      "status": "pass",
+      "stderr_excerpt": ""
+    },
+    {
+      "duration_ms": 410,
+      "exit": 0,
+      "id": "AC-2",
+      "status": "pass",
+      "stderr_excerpt": ""
+    },
+    {
+      "duration_ms": 12543,
+      "exit": 0,
+      "id": "AC-3",
+      "status": "pass",
+      "stderr_excerpt": ""
+    },
+    {
+      "duration_ms": 459,
+      "exit": 0,
+      "id": "AC-4",
+      "status": "pass",
+      "stderr_excerpt": ""
+    },
+    {
+      "duration_ms": 458,
+      "exit": 0,
+      "id": "AC-5",
+      "status": "pass",
+      "stderr_excerpt": ""
+    },
+    {
+      "duration_ms": 459,
+      "exit": 0,
+      "id": "AC-6",
+      "status": "pass",
+      "stderr_excerpt": ""
+    },
+    {
+      "duration_ms": 408,
+      "exit": 0,
+      "id": "AC-7",
+      "status": "pass",
+      "stderr_excerpt": ""
+    },
+    {
+      "duration_ms": 510,
+      "exit": 0,
+      "id": "AC-8",
+      "status": "pass",
+      "stderr_excerpt": ""
+    },
+    {
+      "duration_ms": 460,
+      "exit": 0,
+      "id": "AC-9",
+      "status": "pass",
+      "stderr_excerpt": ""
+    },
+    {
+      "duration_ms": 459,
+      "exit": 0,
+      "id": "AC-10",
+      "status": "pass",
+      "stderr_excerpt": ""
+    },
+    {
+      "duration_ms": 1164,
+      "exit": 0,
+      "id": "AC-11",
+      "status": "pass",
+      "stderr_excerpt": ""
+    },
+    {
+      "duration_ms": 511,
+      "exit": 0,
+      "id": "AC-12",
+      "status": "pass",
+      "stderr_excerpt": ""
+    },
+    {
+      "duration_ms": 460,
+      "exit": 0,
+      "id": "AC-13",
+      "status": "pass",
+      "stderr_excerpt": ""
+    },
+    {
+      "duration_ms": 509,
+      "exit": 0,
+      "id": "AC-14",
+      "status": "pass",
+      "stderr_excerpt": ""
+    },
+    {
+      "duration_ms": 58,
+      "exit": 0,
+      "id": "AC-15",
+      "status": "pass",
+      "stderr_excerpt": ""
+    }
+  ],
+  "overall": "pass",
+  "spec": "2026-05-20-session-bound-amendments"
+}

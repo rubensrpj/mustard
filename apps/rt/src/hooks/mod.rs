@@ -21,6 +21,7 @@
 //!   [`pre_compact`] (the PreCompact snapshot), and [`prompt_gate`] (the
 //!   UserPromptSubmit follow-up archival gate).
 
+pub mod amend_capture;
 pub mod bash_guard;
 pub mod budget;
 pub mod close_gate;

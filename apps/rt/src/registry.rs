@@ -6,6 +6,7 @@
 //! to, so an unrelated invocation skips it entirely instead of running it just
 //! to have it self-`Allow`.
 
+use crate::hooks::amend_capture::AmendCapture;
 use crate::hooks::bash_guard::BashGuard;
 use crate::hooks::budget::BudgetGuard;
 use crate::hooks::close_gate::CloseGate;
@@ -312,6 +313,23 @@ impl Registry {
                 check: Some(Box::new(PromptGate)),
                 observer: None,
             },
+            // ── Wave 6: session-bound amendment window ───────────────────────
+            Module {
+                id: "amend_capture",
+                // Tracks in-session edits after pipeline close.
+                // Observer: PostToolUse(Bash|Write|Edit) + UserPromptSubmit.
+                // Check: PreToolUse(Write|Edit) for look-ahead drift injection.
+                applies_to: &[
+                    (Trigger::PreToolUse, ToolMatch::Named("Write")),
+                    (Trigger::PreToolUse, ToolMatch::Named("Edit")),
+                    (Trigger::PostToolUse, ToolMatch::Named("Bash")),
+                    (Trigger::PostToolUse, ToolMatch::Named("Write")),
+                    (Trigger::PostToolUse, ToolMatch::Named("Edit")),
+                    (Trigger::UserPromptSubmit, ToolMatch::Any),
+                ],
+                check: Some(Box::new(AmendCapture)),
+                observer: Some(Box::new(AmendCapture)),
+            },
         ];
         Self { modules }
     }
@@ -441,6 +459,7 @@ mod tests {
             "session_cleanup",
             "pre_compact",
             "prompt_gate",
+            "amend_capture",
         ] {
             assert!(registry.by_id(id).is_some(), "by_id missing {id}");
         }

@@ -243,3 +243,24 @@ CREATE TRIGGER IF NOT EXISTS memory_lessons_au AFTER UPDATE ON memory_lessons BE
     INSERT INTO memory_lessons_fts(rowid, content, source, context)
     VALUES (new.id, new.content, new.source, new.context);
 END;
+
+-- ============================================================================
+-- Wave 7 — session-bound amendment window (2026-05-20)
+-- Tracks in-progress amend sessions opened after a pipeline closes.
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS pipeline_amend_window (
+    spec_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    closed_at TEXT NOT NULL,
+    pipeline_file_set TEXT NOT NULL,
+    subprojects TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'open',
+    last_activity_at TEXT,
+    build_verde_at TEXT,
+    drift_unrelated_paths TEXT NOT NULL DEFAULT '[]',
+    drift_emitted INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (spec_id, session_id)
+);
+CREATE INDEX IF NOT EXISTS idx_pipeline_amend_window_session_status
+    ON pipeline_amend_window(session_id, status);
