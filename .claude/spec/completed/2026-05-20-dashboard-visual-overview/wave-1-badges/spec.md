@@ -1,10 +1,10 @@
 # Wave 1b — Badges semânticos (success/warning/error/info) em badge.tsx
 
 ### Parent: [[2026-05-20-dashboard-visual-overview]]
-### Status: approved
-### Phase: PLAN
+### Status: completed
+### Phase: CLOSE
 ### Scope: full (wave)
-### Checkpoint: 2026-05-20T23:05:00Z
+### Checkpoint: 2026-05-20T23:59:00Z
 ### Lang: pt
 
 ## PRD

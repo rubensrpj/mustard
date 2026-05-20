@@ -1,10 +1,10 @@
 # Wave 1a — Backend Tauri commands para agregações da Visão Geral
 
 ### Parent: [[2026-05-20-dashboard-visual-overview]]
-### Status: approved
-### Phase: PLAN
+### Status: completed
+### Phase: CLOSE
 ### Scope: full (wave)
-### Checkpoint: 2026-05-20T23:05:00Z
+### Checkpoint: 2026-05-20T23:59:00Z
 ### Lang: pt
 
 ## PRD
@@ -26,7 +26,7 @@ Três `#[tauri::command]` registrados em `main.rs`, callable do front via `invok
 
 ## Acceptance Criteria
 
-- [ ] AC-1: Cargo check passa — Command: `cargo check -p dashboard --manifest-path apps/dashboard/src-tauri/Cargo.toml`
+- [ ] AC-1: Cargo check passa — Command: `cargo check -p mustard-dashboard --manifest-path apps/dashboard/src-tauri/Cargo.toml`
 - [ ] AC-2: 3 commands declarados — Command: `node -e "const t=require('fs').readFileSync('apps/dashboard/src-tauri/src/spec_views.rs','utf8');['dashboard_token_summary','dashboard_month_activity','dashboard_events_feed'].forEach(c=>{if(!t.includes('fn '+c))throw new Error('missing fn '+c)})"`
 - [ ] AC-3: 3 commands registrados no handler — Command: `node -e "const t=require('fs').readFileSync('apps/dashboard/src-tauri/src/main.rs','utf8');['dashboard_token_summary','dashboard_month_activity','dashboard_events_feed'].forEach(c=>{if(!t.includes(c))throw new Error('missing reg '+c)})"`
 

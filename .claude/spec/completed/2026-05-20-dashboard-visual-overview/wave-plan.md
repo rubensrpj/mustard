@@ -1,9 +1,9 @@
 # Wave Plan — Visão Geral redesenhada
 
-### Status: approved
-### Phase: PLAN
+### Status: completed
+### Phase: CLOSE
 ### Scope: full (wave plan)
-### Checkpoint: 2026-05-20T23:05:00Z
+### Checkpoint: 2026-05-20T23:59:00Z
 ### Lang: pt
 
 ## PRD (visão única)
@@ -24,13 +24,13 @@ Operador abre `/` e responde sem hover/scroll: (a) contagem por status (b) total
 
 ## Tabela de Waves
 
-| Wave | Spec                       | Role       | Modelo | Status   | Depende de                       | Resumo                                                                |
-|------|----------------------------|------------|--------|----------|----------------------------------|-----------------------------------------------------------------------|
-| 1a   | [[wave-1-backend]]         | general    | opus   | draft    | —                                | 3 comandos Tauri novos em `spec_views.rs` + registro em `main.rs`     |
-| 1b   | [[wave-1-badges]]          | frontend   | opus   | draft    | —                                | Variants semânticos `success/warning/error/info` + `status-*` em `badge.tsx` |
-| 2    | [[wave-2-data]]            | frontend   | opus   | queued   | [[wave-1-backend]]               | 3 invoke wrappers em `lib/dashboard.ts` + 3 hooks `useWorkspace*`     |
-| 3    | [[wave-3-ui]]              | frontend   | opus   | queued   | [[wave-1-badges]], [[wave-2-data]] | 5 componentes `components/workspace/Workspace*.tsx`                   |
-| 4    | [[wave-4-integration]]     | frontend   | opus   | queued   | [[wave-3-ui]]                    | Reescrita do `Workspace.tsx` montando as 5 visualizações              |
+| Wave | Spec                       | Role       | Modelo | Status    | Depende de                       | Resumo                                                                |
+|------|----------------------------|------------|--------|-----------|----------------------------------|-----------------------------------------------------------------------|
+| 1a   | [[wave-1-backend]]         | general    | opus   | completed | —                                | 3 comandos Tauri novos em `spec_views.rs` + registro em `lib.rs`      |
+| 1b   | [[wave-1-badges]]          | frontend   | opus   | completed | —                                | Variants semânticos `success/warning/error/info` + `status-*` em `badge.tsx` |
+| 2    | [[wave-2-data]]            | frontend   | opus   | completed | [[wave-1-backend]]               | 3 invoke wrappers em `lib/dashboard.ts` + 3 hooks `useWorkspace*`     |
+| 3    | [[wave-3-ui]]              | frontend   | opus   | completed | [[wave-1-badges]], [[wave-2-data]] | 5 componentes `components/workspace/Workspace*.tsx`                 |
+| 4    | [[wave-4-integration]]     | frontend   | opus   | completed | [[wave-3-ui]]                    | Reescrita do `Workspace.tsx` montando as 5 visualizações              |
 
 **Paralelismo:** [[wave-1-backend]] e [[wave-1-badges]] são disparáveis em paralelo (zero acoplamento — backend Rust + frontend badges não se cruzam).
 
@@ -64,10 +64,12 @@ Estes arquivos NÃO existem agora — a pipeline cria-os ao concluir cada fase. 
 
 Testable, binary (pass/fail) criteria. Each MUST be executable and independent.
 
-- [ ] AC-G1: Build do dashboard passa — Command: `pnpm --filter mustard-dashboard build`
-- [ ] AC-G2: Lint do dashboard passa — Command: `pnpm --filter mustard-dashboard lint`
-- [ ] AC-G3: Cargo check passa no crate Tauri — Command: `cargo check -p dashboard --manifest-path apps/dashboard/src-tauri/Cargo.toml`
-- [ ] AC-G4: Todas as 4 waves marcadas `completed` no wave-plan.md (manual check final)
+- [x] AC-G1: Build do dashboard passa — Command: `pnpm --filter mustard-dashboard build`
+- [x] AC-G2: Type-check do dashboard passa — Command: `pnpm --filter mustard-dashboard exec tsc --noEmit`
+- [x] AC-G3: Cargo check passa no crate Tauri — Command: `cargo check -p mustard-dashboard --manifest-path apps/dashboard/src-tauri/Cargo.toml`
+- [x] AC-G4: Todas as 4 waves marcadas `completed` no wave-plan.md (manual check final)
+
+> Nota: AC-G2 original era `pnpm lint` mas o repo não tem `eslint.config.{js,mjs,cjs}` (ESLint 9 sem migração — débito pré-existente em todo o projeto, fora do escopo desta spec). Type-check via `tsc --noEmit` cobre o sinal real (tipos quebrados ≠ stylesheets) e é executável hoje. Setup de lint fica para uma spec de infra separada.
 
 ## Limites globais
 

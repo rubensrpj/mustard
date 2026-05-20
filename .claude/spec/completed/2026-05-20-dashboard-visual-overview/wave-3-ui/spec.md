@@ -1,10 +1,10 @@
 # Wave 3 — 5 componentes da Visão Geral em components/workspace/
 
 ### Parent: [[2026-05-20-dashboard-visual-overview]]
-### Status: queued
-### Phase: PLAN
+### Status: completed
+### Phase: CLOSE
 ### Scope: full (wave)
-### Checkpoint: 2026-05-20T22:30:00Z
+### Checkpoint: 2026-05-20T23:59:00Z
 ### Lang: pt
 
 ## PRD
