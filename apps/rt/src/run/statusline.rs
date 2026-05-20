@@ -12,6 +12,8 @@
 //! and RTK gain are queried directly each render (still fail-open).
 
 use crate::run::rtk_gain::get_rtk_gain;
+use crate::run::pipeline_state_for_spec;
+use mustard_core::io::sqlite_store::SqliteEventStore;
 use serde_json::Value;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -170,38 +172,76 @@ fn rtk_segment() -> Option<String> {
 
 /// Whether any non-terminal pipeline-state file exists under `dir`.
 ///
-/// Phase is derived from `pipeline.phase` events in the SQLite log (Wave-2
-/// migration); the pipeline-state JSON only provides identity / status.
+/// Wave-3a migration: `status` is now derived from the SQLite projection via
+/// `pipeline_state_for_spec` rather than the JSON `status` field. The JSON
+/// state file is still consulted only for the spec name (filesystem identity).
+/// Fail-open: projection `None` → treat status as empty (non-terminal), so the
+/// pipeline still appears in the statusline.
 fn pipeline_segment(dir: &Path) -> Option<String> {
     let states_dir = dir.join(".claude").join(".pipeline-states");
-    let mut pipelines: Vec<Value> = Vec::new();
+    // Open the store once; reuse for all spec projections in this call.
+    let store = SqliteEventStore::for_project(dir).ok();
+
+    let mut pipelines: Vec<(String, String)> = Vec::new(); // (spec_name, last_event_ts)
     if let Ok(entries) = std::fs::read_dir(&states_dir) {
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().to_string();
             if !name.ends_with(".json") {
                 continue;
             }
-            if let Ok(text) = std::fs::read_to_string(entry.path()) {
-                if let Ok(state) = serde_json::from_str::<Value>(&text) {
-                    let status = state.get("status").and_then(Value::as_str).unwrap_or("");
-                    if !TERMINAL.contains(&status) {
-                        pipelines.push(state);
-                    }
+            // Read spec name from the JSON file (filesystem identity — not in projection).
+            let Ok(text) = std::fs::read_to_string(entry.path()) else {
+                continue;
+            };
+            let Ok(state) = serde_json::from_str::<Value>(&text) else {
+                continue;
+            };
+            let Some(spec_name) = state
+                .get("spec")
+                .or_else(|| state.get("specName"))
+                .or_else(|| state.get("feature"))
+                .and_then(Value::as_str)
+            else {
+                // Fall back to the file stem.
+                let stem = name.trim_end_matches(".json").to_string();
+                if !stem.is_empty() {
+                    // No spec name in JSON — treat as non-terminal, empty ts.
+                    pipelines.push((stem, String::new()));
                 }
+                continue;
+            };
+
+            // Derive status from the SQLite projection. Fail-open: None → non-terminal.
+            let status = store
+                .as_ref()
+                .and_then(|s| {
+                    let spec_dir = dir
+                        .join(".claude")
+                        .join("spec")
+                        .join("active")
+                        .join(spec_name);
+                    let spec_dir_opt = if spec_dir.exists() { Some(spec_dir) } else { None };
+                    pipeline_state_for_spec(s, spec_name, spec_dir_opt.as_deref())
+                })
+                .and_then(|v| v.status);
+            let status_str = status.as_deref().unwrap_or("");
+            if TERMINAL.contains(&status_str) {
+                continue;
             }
+            // Use the mtime of the state file as the sort key (replaces `updatedAt`).
+            let mtime_ts = entry
+                .metadata()
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs().to_string())
+                .unwrap_or_default();
+            pipelines.push((spec_name.to_string(), mtime_ts));
         }
     }
-    let most_recent = pipelines.into_iter().max_by(|a, b| {
-        let ta = a.get("updatedAt").and_then(Value::as_str).unwrap_or("");
-        let tb = b.get("updatedAt").and_then(Value::as_str).unwrap_or("");
-        ta.cmp(tb)
-    })?;
-    let spec = most_recent
-        .get("spec")
-        .or_else(|| most_recent.get("feature"))
-        .and_then(Value::as_str)
-        .unwrap_or("?");
-    let phase_name = crate::run::emit_phase::last_phase_for_spec(dir, spec)
+    // Pick the most recently modified state file.
+    let (spec, _) = pipelines.into_iter().max_by(|(_, ta), (_, tb)| ta.cmp(tb))?;
+    let phase_name = crate::run::emit_phase::last_phase_for_spec(dir, &spec)
         .unwrap_or_else(|| "?".to_string());
     Some(format!(
         "{}{spec}{} {}{phase_name}{}",
@@ -301,6 +341,67 @@ pub fn run() {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    // --- Wave-3a: pipeline_segment projection tests -------------------------
+
+    #[test]
+    fn pipeline_segment_none_when_no_state_files() {
+        let dir = tempfile::tempdir().unwrap();
+        // No `.pipeline-states` dir → None (no pipeline banner).
+        assert!(pipeline_segment(dir.path()).is_none());
+    }
+
+    #[test]
+    fn pipeline_segment_fail_open_when_projection_none() {
+        // A state file exists but no SQLite DB → projection None → non-terminal
+        // → pipeline still appears in the statusline.
+        let dir = tempfile::tempdir().unwrap();
+        let states = dir.path().join(".claude").join(".pipeline-states");
+        std::fs::create_dir_all(&states).unwrap();
+        std::fs::write(
+            states.join("myspec.json"),
+            r#"{"spec":"myspec"}"#,
+        )
+        .unwrap();
+        // No DB → projection None → treat as non-terminal → Some(..).
+        let seg = pipeline_segment(dir.path());
+        assert!(seg.is_some(), "fail-open: projection None must still show the pipeline");
+        let s = seg.unwrap();
+        assert!(s.contains("myspec"));
+    }
+
+    #[test]
+    fn pipeline_segment_hides_completed_spec() {
+        use mustard_core::io::event_store::EventSink;
+        use mustard_core::io::sqlite_store::SqliteEventStore;
+        use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
+
+        let dir = tempfile::tempdir().unwrap();
+        let states = dir.path().join(".claude").join(".pipeline-states");
+        std::fs::create_dir_all(&states).unwrap();
+        std::fs::write(states.join("done.json"), r#"{"spec":"done"}"#).unwrap();
+
+        // Seed a pipeline.status "completed" event.
+        let db_path = dir.path().join(".claude").join(".harness").join("mustard.db");
+        std::fs::create_dir_all(db_path.parent().unwrap()).unwrap();
+        let store = SqliteEventStore::new(&db_path).unwrap();
+        store
+            .append(&HarnessEvent {
+                v: SCHEMA_VERSION,
+                ts: "2026-05-20T10:00:00.000Z".to_string(),
+                session_id: "s1".to_string(),
+                wave: 0,
+                actor: Actor { kind: ActorKind::Hook, id: None, actor_type: None },
+                event: "pipeline.status".to_string(),
+                payload: json!({ "to": "completed" }),
+                spec: Some("done".to_string()),
+            })
+            .unwrap();
+
+        // Status "completed" → terminal → hidden from statusline.
+        let seg = pipeline_segment(dir.path());
+        assert!(seg.is_none(), "completed spec must be hidden from the statusline");
+    }
 
     #[test]
     fn context_segment_renders_bar() {

@@ -1432,6 +1432,40 @@ mod tests {
         assert_eq!(extract_phase("not json"), None);
     }
 
+    // --- Wave-3a: projection None → fail-open in close_gate -----------------
+
+    #[test]
+    fn close_gate_allows_when_state_file_absent() {
+        // No pipeline-state JSON at all and no mustard.json → fail-open Allow.
+        // This mirrors the projection-None behaviour: when state is absent the
+        // close gate should not block (spec guard: "Fail-open: projection None
+        // → return Verdict::Allow").
+        let dir = make_project();
+        // Build an input that points at a pipeline-state file path but with
+        // a non-CLOSE phase — gate must Allow without touching any state.
+        let state_file = dir
+            .path()
+            .join(".claude")
+            .join(".pipeline-states")
+            .join("ghost.json");
+        let input = HookInput {
+            tool_name: Some("Write".to_string()),
+            tool_input: json!({
+                "file_path": state_file.to_string_lossy(),
+                "content": json!({ "spec": "ghost", "phase": "CLOSE" }).to_string(),
+            }),
+            hook_event_name: Some("PreToolUse".to_string()),
+            cwd: Some(dir.path().to_string_lossy().into_owned()),
+            ..HookInput::default()
+        };
+        // No mustard.json → build/test gate skips → Allow.
+        assert_eq!(
+            close_gate_with_modes(&input, dir.path().to_str().unwrap(), no_qa()),
+            Verdict::Allow,
+            "missing mustard.json must fail-open (Allow)"
+        );
+    }
+
     // --- new spec-aware entry point used by `emit-phase --to CLOSE` --------
 
     #[test]

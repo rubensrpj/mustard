@@ -1256,6 +1256,23 @@ mod tests {
         PostEdit.observe(&input, &ctx(dir.path().to_str().unwrap()));
     }
 
+    // --- Wave-3a: fail-open when pipeline-state JSON absent -----------------
+
+    #[test]
+    fn checklist_observe_fail_open_no_pipeline_state() {
+        // No `.pipeline-states` dir, no SQLite DB → find_active_spec falls
+        // through to strategy 2 (active spec dir) → no spec dir either →
+        // returns None → observe is a silent no-op. Must not panic.
+        let dir = tempdir().unwrap();
+        let cwd_str = dir.path().to_str().unwrap();
+        let input = edit_input(
+            &dir.path().join("src").join("Foo.ts").to_string_lossy(),
+            "const x = 1;",
+        );
+        // Must not panic.
+        PostEdit.observe(&input, &ctx(cwd_str));
+    }
+
     // pipeline-phase tests removed — the emitter was deleted (see § A.II of
     // the dashboard-phase-from-sqlite migration). `mustard-rt run emit-phase`
     // is the sole producer of `pipeline.phase` events; its tests live in

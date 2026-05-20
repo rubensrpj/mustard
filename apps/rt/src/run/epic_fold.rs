@@ -474,4 +474,45 @@ mod tests {
         let dir = tempdir().unwrap();
         assert!(!fold_epic(dir.path(), "ghost"));
     }
+
+    // --- Wave-3a: state_phase fail-open when no SQLite events exist ----------
+
+    #[test]
+    fn state_phase_falls_back_to_json_field_when_no_events() {
+        // When the SQLite store has no events for the spec, `state_phase` falls
+        // back to the in-JSON `phase` field (backward compat for legacy state
+        // files). This is the fail-open path.
+        let dir = tempdir().unwrap();
+        let state = serde_json::json!({ "spec": "epic-x", "phase": "EXECUTE" });
+        // No DB → last_phase_for_spec returns None → falls back to JSON field.
+        assert_eq!(state_phase(&state, dir.path()), "EXECUTE");
+    }
+
+    #[test]
+    fn state_phase_prefers_event_over_json_field() {
+        use mustard_core::io::event_store::EventSink;
+        use mustard_core::io::sqlite_store::SqliteEventStore;
+        use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
+
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join(".claude").join(".harness").join("mustard.db");
+        std::fs::create_dir_all(db_path.parent().unwrap()).unwrap();
+        let store = SqliteEventStore::new(&db_path).unwrap();
+        store
+            .append(&HarnessEvent {
+                v: SCHEMA_VERSION,
+                ts: "2026-05-20T10:00:00.000Z".to_string(),
+                session_id: "s1".to_string(),
+                wave: 0,
+                actor: Actor { kind: ActorKind::Hook, id: None, actor_type: None },
+                event: "pipeline.phase".to_string(),
+                payload: serde_json::json!({ "from": "EXECUTE", "to": "QA" }),
+                spec: Some("epic-y".to_string()),
+            })
+            .unwrap();
+
+        // JSON says EXECUTE but the SQLite event says QA → event wins.
+        let state = serde_json::json!({ "spec": "epic-y", "phase": "EXECUTE" });
+        assert_eq!(state_phase(&state, dir.path()), "QA");
+    }
 }

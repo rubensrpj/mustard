@@ -34,6 +34,7 @@ use serde_json::json;
 use std::path::Path;
 use std::time::{Duration, SystemTime};
 
+use crate::run::{PipelineStateView, pipeline_state_for_spec};
 use crate::util::now_iso8601;
 
 /// The consolidated Write/Edit path-boundary module.
@@ -184,8 +185,15 @@ fn read_newest_fresh_state(cwd: &str) -> Option<serde_json::Value> {
 /// Resolve the spec.md file for a pipeline-state. Mirrors `resolveSpecFile`:
 /// `.claude/spec/active/{specName}/spec.md`, with a wave-plan branch that
 /// looks for a `wave-{N}-*/spec.md` child directory first.
-fn resolve_spec_file(cwd: &str, state: &serde_json::Value) -> Option<std::path::PathBuf> {
-    let spec_name = state.get("specName").and_then(|v| v.as_str())?;
+///
+/// `spec_name` is the spec identifier (from the JSON state file stem or the
+/// projection's `spec` field). `view` is the typed projection — `None` means
+/// wave info is unknown, so the flat `spec.md` is used.
+fn resolve_spec_file(
+    cwd: &str,
+    spec_name: &str,
+    view: Option<&PipelineStateView>,
+) -> Option<std::path::PathBuf> {
     let base = Path::new(cwd)
         .join(".claude")
         .join("spec")
@@ -194,21 +202,19 @@ fn resolve_spec_file(cwd: &str, state: &serde_json::Value) -> Option<std::path::
     if !base.exists() {
         return None;
     }
-    let is_wave_plan = state
-        .get("isWavePlan")
-        .and_then(serde_json::Value::as_bool)
+    let is_wave_plan = view
+        .and_then(|v| v.is_wave_plan)
         .unwrap_or(false);
     if is_wave_plan {
-        if let Some(wave) = state.get("currentWave").and_then(serde_json::Value::as_i64) {
-            let prefix = format!("wave-{wave}-");
-            if let Ok(entries) = std::fs::read_dir(&base) {
-                for entry in entries.filter_map(std::result::Result::ok) {
-                    let name = entry.file_name().to_string_lossy().into_owned();
-                    if name.starts_with(&prefix) {
-                        let cand = entry.path().join("spec.md");
-                        if cand.exists() {
-                            return Some(cand);
-                        }
+        let wave = view.map(|v| v.current_wave).unwrap_or(1);
+        let prefix = format!("wave-{wave}-");
+        if let Ok(entries) = std::fs::read_dir(&base) {
+            for entry in entries.filter_map(std::result::Result::ok) {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if name.starts_with(&prefix) {
+                    let cand = entry.path().join("spec.md");
+                    if cand.exists() {
+                        return Some(cand);
                     }
                 }
             }
@@ -538,6 +544,13 @@ fn emit_boundary_event(
 /// 1:1 with `boundary-gate.js` — every early `process.exit(0)` maps to
 /// `None` (pass through). A real mismatch → `Deny` in strict mode, `Warn` in
 /// warn mode.
+///
+/// Wave-3a migration: spec fields that are pipeline-state-style (`isWavePlan`,
+/// `currentWave`, `status`) are now derived from the SQLite projection via
+/// `pipeline_state_for_spec`. The JSON state file is still consulted for
+/// `specName` (filesystem identity — not in the projection) and for the mtime
+/// freshness gate. Fail-open: projection `None` → treat status as empty and
+/// wave info as unknown.
 fn boundary_gate(input: &HookInput, cwd: &str) -> Option<Verdict> {
     let mode = boundary_mode();
     if mode == BoundaryMode::Off {
@@ -549,18 +562,41 @@ fn boundary_gate(input: &HookInput, cwd: &str) -> Option<Verdict> {
     if is_meta_path(&rel) {
         return None;
     }
+    // The JSON state file is read only for `specName` (filesystem identity) and
+    // the mtime freshness gate. All pipeline-state-style fields come from the
+    // SQLite projection below.
     let state = read_newest_fresh_state(cwd)?;
     let spec_name = state.get("specName").and_then(|v| v.as_str())?;
-    // Skip when the pipeline is closing / completed. Phase is derived from
-    // the SQLite `pipeline.phase` event log (post-Wave 2 the JSON no longer
-    // carries `phaseName`); status remains a state-file field.
+
+    // Derive the spec's pipeline state from the SQLite event log.
+    // Fail-open: if the store is unavailable or the spec has no events yet, the
+    // projection returns None and we treat status/wave fields as absent.
+    let view: Option<PipelineStateView> = SqliteEventStore::for_project(cwd)
+        .ok()
+        .and_then(|store| {
+            let spec_dir = Path::new(cwd)
+                .join(".claude")
+                .join("spec")
+                .join("active")
+                .join(spec_name);
+            let spec_dir_opt = if spec_dir.exists() { Some(spec_dir) } else { None };
+            pipeline_state_for_spec(&store, spec_name, spec_dir_opt.as_deref())
+        });
+
+    // Skip when the pipeline is closing / completed. Phase derives from the
+    // SQLite `pipeline.phase` event log (post-Wave 2); status derives from the
+    // projection (post-Wave 3a). Fail-open: missing projection → status unknown
+    // → gate runs (conservative).
     let phase = crate::run::emit_phase::last_phase_for_spec(cwd, spec_name)
         .unwrap_or_default();
-    let status = state.get("status").and_then(|v| v.as_str()).unwrap_or("");
+    let status = view
+        .as_ref()
+        .and_then(|v| v.status.as_deref())
+        .unwrap_or("");
     if phase == "CLOSE" || status == "completed" {
         return None;
     }
-    let spec_file = resolve_spec_file(cwd, &state)?;
+    let spec_file = resolve_spec_file(cwd, spec_name, view.as_ref())?;
     let spec_text = std::fs::read_to_string(&spec_file).ok()?;
     let patterns = extract_allowed_patterns(&spec_text);
     if patterns.is_empty() {
@@ -795,6 +831,89 @@ mod tests {
             ..input.clone()
         };
         assert!(boundary_gate(&allowed, &cwd_str).is_none());
+    }
+
+    // --- Wave-3a: projection None → fail-open in boundary_gate ---------------
+
+    #[test]
+    fn boundary_gate_allows_when_projection_none_and_no_patterns() {
+        // No SQLite store → projection None → gate falls through (no spec file
+        // found anyway because the spec dir doesn't exist).
+        let dir = tempdir().unwrap();
+        let cwd = dir.path();
+        let states = cwd.join(".claude").join(".pipeline-states");
+        std::fs::create_dir_all(&states).unwrap();
+        std::fs::write(
+            states.join("ghost.json"),
+            r#"{"specName":"ghost"}"#,
+        )
+        .unwrap();
+        let cwd_str = cwd.to_string_lossy().into_owned();
+        let input = HookInput {
+            tool_name: Some("Edit".to_string()),
+            tool_input: serde_json::json!({ "file_path": "src/any.ts" }),
+            hook_event_name: Some("PreToolUse".to_string()),
+            cwd: Some(cwd_str.clone()),
+            ..HookInput::default()
+        };
+        // Projection None and no spec file → boundary_gate returns None (Allow).
+        assert!(boundary_gate(&input, &cwd_str).is_none());
+    }
+
+    #[test]
+    fn boundary_gate_reads_status_from_projection() {
+        use mustard_core::io::event_store::EventSink;
+        use mustard_core::io::sqlite_store::SqliteEventStore;
+        use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
+
+        let dir = tempdir().unwrap();
+        let cwd = dir.path();
+        let states = cwd.join(".claude").join(".pipeline-states");
+        std::fs::create_dir_all(&states).unwrap();
+        std::fs::write(
+            states.join("myspec.json"),
+            r#"{"specName":"myspec"}"#,
+        )
+        .unwrap();
+        // Spec with a Files section.
+        let spec_dir = cwd.join(".claude").join("spec").join("active").join("myspec");
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        std::fs::write(
+            spec_dir.join("spec.md"),
+            "# Spec\n\n## Files\n\n- `src/allowed.ts`\n",
+        )
+        .unwrap();
+
+        // Seed a pipeline.status "completed" event via the SQLite store.
+        let db_path = cwd.join(".claude").join(".harness").join("mustard.db");
+        std::fs::create_dir_all(db_path.parent().unwrap()).unwrap();
+        let store = SqliteEventStore::new(&db_path).unwrap();
+        store
+            .append(&HarnessEvent {
+                v: SCHEMA_VERSION,
+                ts: "2026-05-20T10:00:00.000Z".to_string(),
+                session_id: "s1".to_string(),
+                wave: 0,
+                actor: Actor { kind: ActorKind::Hook, id: None, actor_type: None },
+                event: "pipeline.status".to_string(),
+                payload: serde_json::json!({ "to": "completed" }),
+                spec: Some("myspec".to_string()),
+            })
+            .unwrap();
+
+        let cwd_str = cwd.to_string_lossy().into_owned();
+        let input = HookInput {
+            tool_name: Some("Edit".to_string()),
+            tool_input: serde_json::json!({ "file_path": "src/forbidden.ts" }),
+            hook_event_name: Some("PreToolUse".to_string()),
+            cwd: Some(cwd_str.clone()),
+            ..HookInput::default()
+        };
+        // Status "completed" → skip (None), even though src/forbidden.ts is outside boundary.
+        assert!(
+            boundary_gate(&input, &cwd_str).is_none(),
+            "completed status must skip the boundary gate"
+        );
     }
 
     // --- gate routing -------------------------------------------------------
