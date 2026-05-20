@@ -1,3 +1,9 @@
+//! Wave 1a (2026-05-20, spec `dashboard-visual-overview`) — three new
+//! aggregations live at the bottom of this file (`dashboard_token_summary`,
+//! `dashboard_month_activity`, `dashboard_events_feed`). They read the
+//! `events` table directly via `db::with_db` and follow the fail-open
+//! contract of the rest of the module (missing DB → empty payload).
+//!
 //! `*_v2` adapter family that delegates to `mustard-core`.
 //!
 //! Each `*_v2` function is a thin adapter — it opens a
@@ -999,4 +1005,338 @@ pub fn dashboard_memory_cross_wave_run(
         Err(e) => return Err(format!("spawn mustard-rt: {e}")),
     };
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+// ===========================================================================
+// Wave 1a (2026-05-20, spec `dashboard-visual-overview`) — three aggregations
+// for the redesigned Overview page. Each command opens the project's
+// `mustard.db` via `crate::db::with_db`, falls back to an empty payload when
+// the harness store is missing/empty, and only returns `Err` for genuinely
+// unrecoverable conditions (currently: invalid month, prepare/query failures
+// are coerced to empty results so the UI renders an empty state).
+//
+// Schema notes (events table):
+//   * the "kind" referenced in the spec maps to column `event`
+//   * payload is a JSON column; sub-fields are extracted via
+//     `json_extract(payload, '$.<name>')`
+//   * `ts` is ISO-8601 text and lexicographically sortable
+// ===========================================================================
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "snake_case")]
+pub struct TopPipeline {
+    pub spec: String,
+    pub saved: i64,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+#[serde(rename_all = "snake_case")]
+pub struct TokenSummary {
+    pub total_saved: i64,
+    pub top_pipelines: Vec<TopPipeline>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "snake_case")]
+pub struct DayActivity {
+    /// `YYYY-MM-DD`
+    pub date: String,
+    pub event_count: i32,
+    pub top_phase: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "snake_case")]
+pub struct FeedEvent {
+    pub id: String,
+    /// ISO-8601 (as stored in `events.ts`).
+    pub ts: String,
+    /// Spec field name is `kind`; underlying column is `events.event`.
+    pub kind: String,
+    pub spec: Option<String>,
+    /// ≤120 chars derived from payload.
+    pub payload_summary: String,
+}
+
+/// `dashboard_token_summary` — aggregate `events` where `event = 'token.saved'`,
+/// sum `payload.saved`, group top 5 by `spec`.
+#[tauri::command]
+pub fn dashboard_token_summary(project_path: String) -> Result<TokenSummary, String> {
+    let base = std::path::PathBuf::from(&project_path);
+    match crate::db::with_db(&base, token_summary_impl) {
+        Some(r) => r,
+        None => Ok(TokenSummary::default()),
+    }
+}
+
+fn token_summary_impl(conn: &Connection) -> Result<TokenSummary, String> {
+    // Total saved across every token.saved event.
+    let total_saved: i64 = conn
+        .query_row(
+            "SELECT COALESCE(SUM(CAST(json_extract(payload, '$.saved') AS INTEGER)), 0) \
+             FROM events WHERE event = 'token.saved'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+
+    // Top 5 pipelines by sum(payload.saved). Skip rows without a spec so the
+    // bar list doesn't show a blank label.
+    let mut stmt = match conn.prepare(
+        "SELECT spec, COALESCE(SUM(CAST(json_extract(payload, '$.saved') AS INTEGER)), 0) AS s \
+         FROM events \
+         WHERE event = 'token.saved' AND spec IS NOT NULL AND spec != '' \
+         GROUP BY spec \
+         ORDER BY s DESC \
+         LIMIT 5",
+    ) {
+        Ok(s) => s,
+        Err(_) => {
+            return Ok(TokenSummary {
+                total_saved,
+                top_pipelines: vec![],
+            });
+        }
+    };
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(TopPipeline {
+                spec: row.get::<_, String>(0)?,
+                saved: row.get::<_, i64>(1)?,
+            })
+        })
+        .map(|r| r.flatten().collect::<Vec<_>>())
+        .unwrap_or_default();
+
+    Ok(TokenSummary {
+        total_saved,
+        top_pipelines: rows,
+    })
+}
+
+/// `dashboard_month_activity` — emit one entry per day of the given month
+/// (1..N) even with 0 events; `top_phase` is the phase with the most events
+/// that day, derived from `pipeline.phase` events' `payload.phase`.
+#[tauri::command]
+pub fn dashboard_month_activity(
+    project_path: String,
+    year: i32,
+    month: u32,
+) -> Result<Vec<DayActivity>, String> {
+    if !(1..=12).contains(&month) {
+        return Err(format!("invalid month: {month}"));
+    }
+    let base = std::path::PathBuf::from(&project_path);
+    let days_in_month = days_in_month(year, month);
+    let scaffold: Vec<DayActivity> = (1..=days_in_month)
+        .map(|d| DayActivity {
+            date: format!("{:04}-{:02}-{:02}", year, month, d),
+            event_count: 0,
+            top_phase: None,
+        })
+        .collect();
+
+    match crate::db::with_db(&base, |conn| month_activity_impl(conn, year, month, scaffold.clone())) {
+        Some(r) => r,
+        None => Ok(scaffold),
+    }
+}
+
+fn month_activity_impl(
+    conn: &Connection,
+    year: i32,
+    month: u32,
+    mut out: Vec<DayActivity>,
+) -> Result<Vec<DayActivity>, String> {
+    // Month bounds in ISO-8601 text. ts strings are lexicographically
+    // comparable for the canonical YYYY-MM-DDTHH:MM:SS format we emit.
+    let start = format!("{:04}-{:02}-01", year, month);
+    let end_excl = if month == 12 {
+        format!("{:04}-01-01", year + 1)
+    } else {
+        format!("{:04}-{:02}-01", year, month + 1)
+    };
+
+    // Event counts per day.
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT substr(ts, 1, 10) AS d, COUNT(*) \
+         FROM events \
+         WHERE ts >= ?1 AND ts < ?2 \
+         GROUP BY d",
+    ) {
+        if let Ok(rows) = stmt.query_map(params![start, end_excl], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        }) {
+            for (date, count) in rows.flatten() {
+                if let Some(slot) = out.iter_mut().find(|d| d.date == date) {
+                    slot.event_count = i32::try_from(count).unwrap_or(i32::MAX);
+                }
+            }
+        }
+    }
+
+    // Top phase per day — phase derived from pipeline.phase events.
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT d, phase FROM ( \
+             SELECT substr(ts, 1, 10) AS d, \
+                    json_extract(payload, '$.phase') AS phase, \
+                    COUNT(*) AS c, \
+                    ROW_NUMBER() OVER (PARTITION BY substr(ts, 1, 10) ORDER BY COUNT(*) DESC) AS rn \
+             FROM events \
+             WHERE ts >= ?1 AND ts < ?2 \
+               AND event = 'pipeline.phase' \
+               AND json_extract(payload, '$.phase') IS NOT NULL \
+             GROUP BY d, phase \
+         ) \
+         WHERE rn = 1",
+    ) {
+        if let Ok(rows) = stmt.query_map(params![start, end_excl], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+        }) {
+            for (date, phase) in rows.flatten() {
+                if let Some(slot) = out.iter_mut().find(|d| d.date == date) {
+                    slot.top_phase = phase;
+                }
+            }
+        }
+    }
+
+    Ok(out)
+}
+
+/// `dashboard_events_feed` — chronological-reverse feed, `ORDER BY ts DESC`
+/// with the caller-supplied `LIMIT`. `payload_summary` is a ≤120-char humanised
+/// rendering of the payload (e.g. `"draft → implementing"` for
+/// `pipeline.status`).
+#[tauri::command]
+pub fn dashboard_events_feed(
+    project_path: String,
+    limit: u32,
+) -> Result<Vec<FeedEvent>, String> {
+    let base = std::path::PathBuf::from(&project_path);
+    let cap = limit.max(1).min(1000); // defensive cap; UI typically asks ≤200
+    match crate::db::with_db(&base, |conn| events_feed_impl(conn, cap)) {
+        Some(r) => r,
+        None => Ok(vec![]),
+    }
+}
+
+fn events_feed_impl(conn: &Connection, limit: u32) -> Result<Vec<FeedEvent>, String> {
+    let mut stmt = match conn.prepare(
+        "SELECT CAST(id AS TEXT), COALESCE(ts, ''), event, spec, \
+                COALESCE(payload, '') \
+         FROM events \
+         ORDER BY ts DESC \
+         LIMIT ?1",
+    ) {
+        Ok(s) => s,
+        Err(_) => return Ok(vec![]),
+    };
+
+    let rows = stmt
+        .query_map(params![limit as i64], |row| {
+            Ok((
+                row.get::<_, Option<String>>(0)?.unwrap_or_default(),
+                row.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                row.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                row.get::<_, Option<String>>(3)?,
+                row.get::<_, Option<String>>(4)?.unwrap_or_default(),
+            ))
+        })
+        .map(|r| r.flatten().collect::<Vec<_>>())
+        .unwrap_or_default();
+
+    let out = rows
+        .into_iter()
+        .map(|(id, ts, kind, spec, payload)| {
+            let summary = summarise_payload(&kind, &payload);
+            FeedEvent {
+                id,
+                ts,
+                kind,
+                spec,
+                payload_summary: summary,
+            }
+        })
+        .collect();
+    Ok(out)
+}
+
+/// Build a short (≤120 char) human-readable summary for a feed row. Kind-aware
+/// for the common pipeline events; otherwise falls back to the first useful
+/// field (`summary` / `description` / `msg`) or a trimmed payload preview.
+fn summarise_payload(kind: &str, payload: &str) -> String {
+    let truncated = |s: &str| -> String {
+        if s.chars().count() <= 120 {
+            s.to_string()
+        } else {
+            s.chars().take(117).collect::<String>() + "..."
+        }
+    };
+
+    let json: Option<serde_json::Value> = if payload.is_empty() {
+        None
+    } else {
+        serde_json::from_str(payload).ok()
+    };
+
+    if let Some(v) = &json {
+        match kind {
+            "pipeline.status" => {
+                let from = v.get("from").and_then(|x| x.as_str()).unwrap_or("");
+                let to = v
+                    .get("to")
+                    .or_else(|| v.get("status"))
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("");
+                if !from.is_empty() && !to.is_empty() {
+                    return truncated(&format!("{from} → {to}"));
+                }
+                if !to.is_empty() {
+                    return truncated(to);
+                }
+            }
+            "pipeline.phase" => {
+                if let Some(phase) = v.get("phase").and_then(|x| x.as_str()) {
+                    return truncated(phase);
+                }
+            }
+            "token.saved" => {
+                if let Some(saved) = v.get("saved").and_then(|x| x.as_i64()) {
+                    return truncated(&format!("saved {saved} tokens"));
+                }
+            }
+            _ => {}
+        }
+
+        for key in ["summary", "description", "msg", "message", "label", "to", "status", "phase"] {
+            if let Some(s) = v.get(key).and_then(|x| x.as_str()) {
+                if !s.is_empty() {
+                    return truncated(s);
+                }
+            }
+        }
+    }
+
+    if payload.is_empty() {
+        return String::new();
+    }
+    truncated(payload)
+}
+
+/// Number of days in `month` for the given `year` (Gregorian).
+const fn days_in_month(year: i32, month: u32) -> u32 {
+    match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 => {
+            // Leap year rule: divisible by 4, except centuries not divisible by 400.
+            if (year % 4 == 0 && year % 100 != 0) || year % 400 == 0 {
+                29
+            } else {
+                28
+            }
+        }
+        _ => 0,
+    }
 }

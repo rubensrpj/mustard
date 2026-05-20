@@ -1608,7 +1608,10 @@ pub fn run() {
             dashboard_workspace_summary,
             dashboard_metrics_wave_status,
             dashboard_wikilink_extract,
-            dashboard_memory_cross_wave
+            dashboard_memory_cross_wave,
+            spec_views::dashboard_token_summary,
+            spec_views::dashboard_month_activity,
+            spec_views::dashboard_events_feed
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
