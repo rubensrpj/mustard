@@ -39,10 +39,17 @@ rusqlite = { version = "0.31", features = ["bundled"] }
 rmcp = { workspace = true }
 tokio = { workspace = true }
 
-# `tempfile` backs the `bash_guard` parity tests that need a throwaway git
-# repo / project dir on disk. Test-only — never linked into the binary.
-[dev-dependencies]
+# `artifact-update` probes external upstreams (crates.io API, skills.directory
+# registry) over HTTP. `ureq` is the workspace's blocking, runtime-free HTTP
+# client — the same one `mustard-cli` uses; no async runtime is pulled in.
+ureq = { workspace = true }
+
+# `tempfile` is used by the `artifact-update --apply` engine to stage a `git
+# clone` before swapping the vendored tree under `apps/cli/templates/`. Also
+# powers the `bash_guard` parity tests.
 tempfile = { workspace = true }
+
+[dev-dependencies]
 
 # Inherit the workspace lint table (pedantic = warn, unwrap_used = deny,
 # unsafe_code = forbid). See the root Cargo.toml `[workspace.lints]`.
