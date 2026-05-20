@@ -4,7 +4,7 @@
 // `.unwrap()` / `.expect()` are the intended test-failure mechanism here.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use mustard_core::io::sqlite_store::SqliteEventStore;
+use mustard_core::store::sqlite_store::SqliteEventStore;
 use mustard_core::model::event::{
     Actor, ActorKind, HarnessEvent, SCHEMA_VERSION,
 };
@@ -99,7 +99,7 @@ fn amend_window_projection_union_dedupes() {
     let dir = tempdir().unwrap();
     let store = open_store(dir.path());
 
-    use mustard_core::io::event_store::EventSink;
+    use mustard_core::store::event_store::EventSink;
 
     let spec = "spec-union";
     let session = "sess-union";

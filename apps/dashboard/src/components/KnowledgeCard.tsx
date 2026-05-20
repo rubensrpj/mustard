@@ -7,8 +7,8 @@ function formatConfidence(c: number): string {
 }
 
 function confBadgeClass(c: number): string {
-  if (c > 0.8) return "border-emerald-500/50 text-emerald-400";
-  if (c >= 0.5) return "border-amber-500/50 text-amber-400";
+  if (c > 0.8) return "border-[--color-ok]/50 text-[--color-ok]";
+  if (c >= 0.5) return "border-[--color-accent-mustard]/50 text-[--color-accent-mustard]";
   return "border-border text-muted-foreground";
 }
 

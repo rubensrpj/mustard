@@ -10,7 +10,7 @@
 //! arguments (the JS contract).
 
 use crate::run::env;
-use mustard_core::io::sqlite_store::SqliteEventStore;
+use mustard_core::store::sqlite_store::SqliteEventStore;
 use mustard_core::model::event::HarnessEvent;
 use serde_json::Value;
 

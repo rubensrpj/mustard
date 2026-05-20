@@ -13,7 +13,7 @@
 //! kept (`python quick_validate.py`); the cluster heuristic is ported intact.
 
 use crate::run::env;
-use mustard_core::io::sqlite_store::SqliteEventStore;
+use mustard_core::store::sqlite_store::SqliteEventStore;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};

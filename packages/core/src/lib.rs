@@ -11,23 +11,42 @@
 //! depend on, so the port from JavaScript (epics B3/B4/B5) stays lean instead
 //! of re-implementing the same primitives dozens of times.
 //!
-//! Layers (built incrementally across the b2 waves):
+//! Layers:
 //!
 //! - [`model`] — pure `serde` data types with zero side effects: the harness
-//!   event schema, the hook contract, and `pipeline-state`. **Wave 1.**
-//! - [`io`] — side-effecting infrastructure behind traits: the event log,
+//!   event schema, the hook contract, pipeline-state, and the SDD ViewModels
+//!   under [`model::view`].
+//! - [`store`] — side-effecting infrastructure behind traits: the event log,
 //!   `pipeline-state` read/write, and fail-open filesystem primitives.
-//!   **Wave 2.**
+//! - [`projection`] — pure folds over `&[HarnessEvent]`: one function per
+//!   ViewModel. No IO, no side effects — deterministic and testable in
+//!   isolation.
+//! - [`reader`] — the [`reader::SpecReader`] trait + two adapters:
+//!   [`reader::SqliteSpecReader`] (production) and
+//!   [`reader::InMemorySpecReader`] (tests). Thin wrappers that supply the
+//!   event slice from the store and delegate to `projection`.
 //! - [`error`] — the crate's typed error plus fail-open helpers.
 //! - cross-cutting foundation — [`config`] (enforcement modes), [`env`] (the
 //!   `hook-env.js` port), [`metrics`] (the `metrics-emit.js` port), and
 //!   [`knowledge`] (knowledge extraction + the inter-agent context-selection
-//!   API). **Wave 3.**
+//!   API).
 
 pub mod config;
 pub mod env;
 pub mod error;
-pub mod io;
+pub mod store;
 pub mod knowledge;
 pub mod metrics;
 pub mod model;
+pub mod projection;
+pub mod reader;
+
+// Root re-exports — consumers can write `use mustard_core::…` without
+// remembering which sub-module owns each name.
+pub use model::view::{
+    AcStatus, AcceptanceCriterion, FileCount, Phase, PhaseSegment, QualityRollup, Scope,
+    SegmentState, SpecFilter, SpecStatus, SpecStatusFilter, SpecSummary, SpecTrack, SpecView,
+    TimeWindow, TimelineKind, TimelineNode, WaveStatus, WaveView, WorkspaceAlert,
+    WorkspaceAlertKind, WorkspaceSummary,
+};
+pub use reader::{InMemorySpecReader, ReadError, SpecReader, SqliteSpecReader};

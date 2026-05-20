@@ -2,17 +2,16 @@ import { useEffect } from "react";
 import { HashRouter, Routes, Route, Navigate } from "react-router";
 import { useQuery } from "@tanstack/react-query";
 import { AppShell } from "@/components/layout/AppShell";
-import { Home } from "@/pages/Home";
+import { Workspace } from "@/pages/Workspace";
+import { Specs } from "@/pages/Specs";
+import { Economia } from "@/pages/Economia";
 import { ProjectDetail } from "@/pages/ProjectDetail";
 import { SpecDetail } from "@/pages/SpecDetail";
 import { Commands } from "@/pages/Commands";
 import { Knowledge } from "@/pages/Knowledge";
-import { Activity } from "@/pages/Activity";
 import { Settings } from "@/pages/Settings";
 import { Preferences } from "@/pages/Preferences";
-import { Telemetry } from "@/pages/Telemetry";
 import { Prd } from "@/pages/Prd";
-import { Quality } from "@/pages/Quality";
 import { CommandPalette } from "@/components/CommandPalette";
 import { Toaster } from "sonner";
 import { useStore } from "@/lib/store";
@@ -57,18 +56,17 @@ function App() {
       <CommandPalette />
       <AppShell>
         <Routes>
-          <Route path="/" element={<Home />} />
+          <Route path="/" element={<Navigate to="/workspace" replace />} />
+          <Route path="/workspace" element={<Workspace />} />
+          <Route path="/specs" element={<Specs />} />
+          <Route path="/economy" element={<Economia />} />
           <Route path="/project/:id" element={<ProjectDetail />} />
           <Route path="/project/:id/spec/:specName" element={<SpecDetail />} />
           <Route path="/knowledge" element={<Knowledge />} />
           <Route path="/commands" element={<Commands />} />
           <Route path="/prd" element={<Prd />} />
-          <Route path="/activity" element={<Activity />} />
-          <Route path="/telemetry" element={<Telemetry />} />
-          <Route path="/quality" element={<Quality />} />
-          {/* Prompt Economy is now the "Economia" tab inside Telemetry —
-              keep the old path working for bookmarks. */}
-          <Route path="/prompt-economy" element={<Navigate to="/telemetry?tab=economia" replace />} />
+          {/* /activity, /telemetry, /quality removed in Wave 6 — consolidated into Workspace/Specs/Economia */}
+          <Route path="/prompt-economy" element={<Navigate to="/economy" replace />} />
           <Route path="/settings" element={<Settings />} />
           <Route path="/preferences" element={<Preferences />} />
         </Routes>

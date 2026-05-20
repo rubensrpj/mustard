@@ -13,8 +13,8 @@
 
 use crate::run::env::session_id;
 use crate::util::now_iso8601;
-use mustard_core::io::event_store::EventSink;
-use mustard_core::io::sqlite_store::SqliteEventStore;
+use mustard_core::store::event_store::EventSink;
+use mustard_core::store::sqlite_store::SqliteEventStore;
 use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use serde_json::{json, Value};
 use std::path::Path;
@@ -37,6 +37,13 @@ fn write_state(path: &Path, value: &Value) -> bool {
 }
 
 /// Emit a `spec.link` harness event. Best-effort.
+///
+/// **Spec attribution:** the event is attributed to the *child* spec — that is
+/// the spec receiving the link (a follow-up, sub-feature, or addendum). The
+/// parent shows up in the payload (`parent`, `reason`) so projections that
+/// walk the lineage still have both names. Pre-2026-05-20 this event left
+/// `spec = NULL`, which made `spec.link` rows invisible to projections that
+/// filter by spec slug.
 fn emit_link_event(cwd: &Path, parent: &str, child: &str, reason: &str) {
     let ev = HarnessEvent {
         v: SCHEMA_VERSION,
@@ -50,7 +57,7 @@ fn emit_link_event(cwd: &Path, parent: &str, child: &str, reason: &str) {
         },
         event: "spec.link".to_string(),
         payload: json!({ "parent": parent, "child": child, "reason": reason }),
-        spec: None,
+        spec: Some(child.to_string()),
     };
     let _ = SqliteEventStore::for_project(cwd).and_then(|store| store.append(&ev));
 }

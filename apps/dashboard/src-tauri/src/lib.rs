@@ -1,8 +1,11 @@
 mod artifact_update;
+pub mod amend_queries;
 mod discovery;
 pub mod db;
 mod projects;
+pub mod spec_views;
 pub mod telemetry;
+pub mod telemetry_agg;
 mod watcher;
 
 use serde::Serialize;
@@ -1330,6 +1333,191 @@ fn mustard_update(path: String) -> Result<(), String> {
     mustard_cli::update(std::path::Path::new(&path), &options).map_err(|e| format!("{e:#}"))
 }
 
+// ── Wave-2 per-spec rollup commands ──────────────────────────────────────────
+
+/// Wave 4 (2026-05-20) — these spec commands now delegate to
+/// `mustard-core` via the `*_v2` adapters in `spec_views.rs`. The legacy
+/// fallback that hard-coded `"unknown"`/`0` for missing data is gone: a spec
+/// with no events resolves to the typed `SpecStatus::NoEvents`, which the
+/// adapter surfaces as the `"no-events"` string, and the UI can render an
+/// honest empty state.
+#[tauri::command]
+fn dashboard_spec_card(repo_path: String, spec: String) -> Result<spec_views::SpecCard, String> {
+    match spec_views::spec_card_v2(&repo_path, &spec)? {
+        Some(card) => Ok(card),
+        None => Ok(spec_views::SpecCard {
+            spec,
+            status: "no-events".to_string(),
+            phase: String::new(),
+            scope: None,
+            started_at: None,
+            last_event_at: None,
+            duration_ms: None,
+            current_wave: None,
+            total_waves: None,
+            ac_passed: 0,
+            ac_total: 0,
+            files_touched: 0,
+            tools_used: 0,
+            model: None,
+        }),
+    }
+}
+
+#[tauri::command]
+fn dashboard_spec_waves(repo_path: String, spec: String) -> Result<Vec<spec_views::SpecWave>, String> {
+    spec_views::spec_waves_v2(&repo_path, &spec)
+}
+
+#[tauri::command]
+fn dashboard_spec_quality(repo_path: String, spec: String) -> Result<Vec<spec_views::SpecQualityItem>, String> {
+    spec_views::spec_quality_v2(&repo_path, &spec)
+}
+
+#[tauri::command]
+fn dashboard_spec_timeline(repo_path: String, spec: String) -> Result<Vec<spec_views::SpecTimelineNode>, String> {
+    spec_views::spec_timeline_v2(&repo_path, &spec)
+}
+
+#[tauri::command]
+fn dashboard_spec_events(
+    repo_path: String,
+    spec: String,
+    filter: Option<spec_views::EventFilter>,
+) -> Result<Vec<spec_views::TimelineEvent>, String> {
+    let base = std::path::PathBuf::from(&repo_path);
+    match db::with_db(&base, |conn| spec_views::spec_events(conn, &spec, filter)) {
+        Some(r) => r,
+        None => Ok(vec![]),
+    }
+}
+
+#[tauri::command]
+fn dashboard_spec_action(repo_path: String, spec: String, action: String) -> Result<spec_views::SpecAction, String> {
+    let base = std::path::PathBuf::from(&repo_path);
+    let action_kind = match action.to_lowercase().as_str() {
+        "reopen" => spec_views::SpecActionKind::Reopen,
+        "close"  => spec_views::SpecActionKind::Close,
+        "remove" => spec_views::SpecActionKind::Remove,
+        other    => return Err(format!("unknown action: {}", other)),
+    };
+    match db::with_db(&base, |conn| spec_views::spec_action(conn, &repo_path, &spec, action_kind)) {
+        Some(r) => r,
+        None => Ok(spec_views::SpecAction {
+            action,
+            spec,
+            result: "error".to_string(),
+            message: Some("banco de dados indisponível".to_string()),
+        }),
+    }
+}
+
+/// Wave 4 (2026-05-20) — delegate to `mustard-core::workspace_summary`.
+/// Fixes the previous `events_per_minute` SQL filter that silently
+/// short-circuited (returned the all-time count → `2904.0` in the audit) and
+/// the `tokens_saved_today LIKE '%token%saved%'` query that never matched
+/// any real event. The new projection counts events strictly within the
+/// trailing 60-second window and sums RTK/hook/routing savings events.
+#[tauri::command]
+fn dashboard_workspace_summary(repo_path: String) -> Result<spec_views::WorkspaceSummary, String> {
+    spec_views::workspace_summary_v2(&repo_path)
+}
+
+// ── Wave-7 telemetry aggregation commands ────────────────────────────────────
+
+#[tauri::command]
+fn dashboard_telemetry_phases(
+    repo_path: String,
+    time_range: String,
+) -> Result<Vec<telemetry_agg::PhaseSummary>, String> {
+    let base = std::path::PathBuf::from(&repo_path);
+    match db::with_db(&base, |conn| telemetry_agg::telemetry_phases(conn, &time_range)) {
+        Some(r) => r,
+        None => Ok(vec![]),
+    }
+}
+
+#[tauri::command]
+fn dashboard_telemetry_timeline(
+    repo_path: String,
+    time_range: String,
+    limit: Option<usize>,
+) -> Result<Vec<telemetry_agg::TimelineEvent>, String> {
+    let base = std::path::PathBuf::from(&repo_path);
+    let cap = limit.unwrap_or(50);
+    match db::with_db(&base, |conn| telemetry_agg::telemetry_timeline(conn, &time_range, cap)) {
+        Some(r) => r,
+        None => Ok(vec![]),
+    }
+}
+
+#[tauri::command]
+fn dashboard_telemetry_heatmap(
+    repo_path: String,
+    time_range: String,
+) -> Result<Vec<telemetry_agg::HeatmapCell>, String> {
+    let base = std::path::PathBuf::from(&repo_path);
+    match db::with_db(&base, |conn| telemetry_agg::telemetry_heatmap(conn, &time_range)) {
+        Some(r) => r,
+        None => Ok(vec![]),
+    }
+}
+
+#[tauri::command]
+fn dashboard_telemetry_history(
+    repo_path: String,
+    time_range: String,
+    limit: Option<usize>,
+) -> Result<Vec<telemetry_agg::HistoryEntry>, String> {
+    let base = std::path::PathBuf::from(&repo_path);
+    let cap = limit.unwrap_or(50);
+    match db::with_db(&base, |conn| telemetry_agg::telemetry_history(conn, &time_range, cap)) {
+        Some(r) => r,
+        None => Ok(vec![]),
+    }
+}
+
+#[tauri::command]
+fn dashboard_telemetry_criteria(
+    repo_path: String,
+    time_range: String,
+) -> Result<Vec<telemetry_agg::AcceptanceCriterion>, String> {
+    let base = std::path::PathBuf::from(&repo_path);
+    match db::with_db(&base, |conn| telemetry_agg::telemetry_criteria(conn, &time_range)) {
+        Some(r) => r,
+        None => Ok(vec![]),
+    }
+}
+
+#[tauri::command]
+fn dashboard_telemetry_effort(
+    repo_path: String,
+    time_range: String,
+) -> Result<telemetry_agg::EffortBreakdown, String> {
+    let base = std::path::PathBuf::from(&repo_path);
+    match db::with_db(&base, |conn| telemetry_agg::telemetry_effort(conn, &time_range)) {
+        Some(r) => r,
+        None => Ok(telemetry_agg::EffortBreakdown {
+            top_files: vec![],
+            top_tools: vec![],
+            top_phases: vec![],
+            top_agents: vec![],
+        }),
+    }
+}
+
+#[tauri::command]
+fn dashboard_telemetry_agents(
+    repo_path: String,
+    time_range: String,
+) -> Result<Vec<telemetry_agg::AgentDispatch>, String> {
+    let base = std::path::PathBuf::from(&repo_path);
+    match db::with_db(&base, |conn| telemetry_agg::telemetry_agents(conn, &time_range)) {
+        Some(r) => r,
+        None => Ok(vec![]),
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -1363,7 +1551,25 @@ pub fn run() {
             projects::uninstall_mustard,
             artifact_update::artifact_update_check,
             artifact_update::artifact_update_apply,
-            artifact_update::is_mustard_repo
+            artifact_update::is_mustard_repo,
+            dashboard_telemetry_phases,
+            dashboard_telemetry_timeline,
+            dashboard_telemetry_heatmap,
+            dashboard_telemetry_history,
+            dashboard_telemetry_criteria,
+            dashboard_telemetry_effort,
+            dashboard_telemetry_agents,
+            amend_queries::amend_resolution_rate,
+            amend_queries::amend_drift_rate,
+            amend_queries::cross_session_amend_count,
+            amend_queries::amend_window_duration,
+            dashboard_spec_card,
+            dashboard_spec_waves,
+            dashboard_spec_quality,
+            dashboard_spec_timeline,
+            dashboard_spec_events,
+            dashboard_spec_action,
+            dashboard_workspace_summary
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

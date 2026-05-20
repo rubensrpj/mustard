@@ -73,7 +73,7 @@ function MetricTile({
       className={cn(
         "flex flex-col gap-1 p-3 rounded-lg border",
         accent
-          ? "border-indigo-500/30 bg-indigo-500/5"
+          ? "border-[--color-accent-mustard]/30 bg-[--color-accent-mustard]/5"
           : "border-border/40 bg-muted/10",
       )}
     >
@@ -83,7 +83,7 @@ function MetricTile({
       <span
         className={cn(
           "text-xl font-mono font-medium tabular-nums",
-          accent ? "text-indigo-400" : "text-foreground",
+          accent ? "text-[--color-accent-mustard]" : "text-foreground",
         )}
       >
         {value}

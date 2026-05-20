@@ -17,8 +17,8 @@
 
 use crate::run::env::project_dir as env_project_dir;
 use crate::util::now_iso8601;
-use mustard_core::io::event_store::EventSink;
-use mustard_core::io::sqlite_store::SqliteEventStore;
+use mustard_core::store::event_store::EventSink;
+use mustard_core::store::sqlite_store::SqliteEventStore;
 use mustard_core::model::event::{
     Actor, ActorKind, HarnessEvent, SCHEMA_VERSION,
     EVENT_PIPELINE_DISPATCH_FAILURE, EVENT_PIPELINE_PAUSE,

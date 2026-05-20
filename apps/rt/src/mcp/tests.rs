@@ -14,7 +14,7 @@
 //! tables exist.
 
 use super::*;
-use mustard_core::io::event_store::EventSink;
+use mustard_core::store::event_store::EventSink;
 use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use std::path::Path;
 use tempfile::TempDir;

@@ -4,22 +4,22 @@ import { cn } from "@/lib/utils";
 export type KPIAccent = "emerald" | "amber" | "rose" | "indigo" | "violet" | "sky" | "zinc";
 
 const ACCENT_STRIPE: Record<KPIAccent, string> = {
-  emerald: "bg-emerald-500/40",
-  amber: "bg-amber-500/40",
-  rose: "bg-rose-500/40",
+  emerald: "bg-[--color-ok]/40",
+  amber: "bg-[--color-accent-mustard]/40",
+  rose: "bg-[--color-error]/40",
   indigo: "bg-primary/40",
-  violet: "bg-violet-500/40",
-  sky: "bg-sky-500/40",
+  violet: "bg-primary/40",
+  sky: "bg-primary/20",
   zinc: "bg-zinc-500/40",
 };
 
 const ACCENT_VALUE: Record<KPIAccent, string> = {
-  emerald: "text-emerald-400",
-  amber: "text-amber-400",
-  rose: "text-rose-400",
+  emerald: "text-[--color-ok]",
+  amber: "text-[--color-accent-mustard]",
+  rose: "text-[--color-error]",
   indigo: "text-primary",
-  violet: "text-violet-400",
-  sky: "text-sky-400",
+  violet: "text-primary",
+  sky: "text-primary",
   zinc: "text-foreground",
 };
 

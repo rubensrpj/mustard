@@ -394,8 +394,6 @@
 
   function suggestSkills(layers, type) {
     const skills = new Set();
-    if (layers.includes('backend')) skills.add('templates-hook-protocol');
-    if (layers.includes('database')) skills.add('templates-sync-detect');
     if (type === 'feature' || type === 'enhancement') skills.add('karpathy-guidelines');
     if (type === 'bugfix') skills.add('karpathy-guidelines');
     return Array.from(skills);

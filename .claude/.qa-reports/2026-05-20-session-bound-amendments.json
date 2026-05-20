@@ -1,7 +1,7 @@
 {
   "criteria": [
     {
-      "duration_ms": 2782,
+      "duration_ms": 409,
       "exit": 0,
       "id": "AC-1",
       "status": "pass",
@@ -15,7 +15,7 @@
       "stderr_excerpt": ""
     },
     {
-      "duration_ms": 12543,
+      "duration_ms": 511,
       "exit": 0,
       "id": "AC-3",
       "status": "pass",
@@ -29,7 +29,7 @@
       "stderr_excerpt": ""
     },
     {
-      "duration_ms": 458,
+      "duration_ms": 462,
       "exit": 0,
       "id": "AC-5",
       "status": "pass",
@@ -43,69 +43,69 @@
       "stderr_excerpt": ""
     },
     {
-      "duration_ms": 408,
+      "duration_ms": 359,
       "exit": 0,
       "id": "AC-7",
       "status": "pass",
       "stderr_excerpt": ""
     },
     {
-      "duration_ms": 510,
+      "duration_ms": 519,
       "exit": 0,
       "id": "AC-8",
       "status": "pass",
       "stderr_excerpt": ""
     },
     {
-      "duration_ms": 460,
+      "duration_ms": 560,
       "exit": 0,
       "id": "AC-9",
       "status": "pass",
       "stderr_excerpt": ""
     },
     {
-      "duration_ms": 459,
+      "duration_ms": 509,
       "exit": 0,
       "id": "AC-10",
       "status": "pass",
       "stderr_excerpt": ""
     },
     {
-      "duration_ms": 1164,
+      "duration_ms": 510,
       "exit": 0,
       "id": "AC-11",
       "status": "pass",
       "stderr_excerpt": ""
     },
     {
-      "duration_ms": 511,
+      "duration_ms": 510,
       "exit": 0,
       "id": "AC-12",
       "status": "pass",
       "stderr_excerpt": ""
     },
     {
-      "duration_ms": 460,
+      "duration_ms": 510,
       "exit": 0,
       "id": "AC-13",
       "status": "pass",
       "stderr_excerpt": ""
     },
     {
-      "duration_ms": 509,
+      "duration_ms": 561,
       "exit": 0,
       "id": "AC-14",
       "status": "pass",
       "stderr_excerpt": ""
     },
     {
-      "duration_ms": 58,
-      "exit": 0,
+      "duration_ms": 108,
+      "exit": 1,
       "id": "AC-15",
-      "status": "pass",
-      "stderr_excerpt": ""
+      "status": "fail",
+      "stderr_excerpt": "node:fs:440\r\n    return binding.readFileUtf8(path, stringToFlags(options.flag));\r\n                  "
     }
   ],
-  "overall": "pass",
+  "overall": "fail",
   "spec": "2026-05-20-session-bound-amendments"
 }

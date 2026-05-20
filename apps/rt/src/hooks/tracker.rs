@@ -36,16 +36,16 @@
 //! [`MetricsTracker`] / [`SkillUsageTracker`], all `Observer`s. The registry
 //! wires each to its own `(event, tool)` pairs.
 
+use crate::run::current_spec;
+use crate::util::now_iso8601;
 use mustard_core::error::Error;
-use mustard_core::io::event_store::EventSink;
-use mustard_core::io::sqlite_store::SqliteEventStore;
+use mustard_core::store::event_store::EventSink;
+use mustard_core::store::sqlite_store::SqliteEventStore;
 use mustard_core::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
 use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use serde_json::{Value, json};
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-
-use crate::util::now_iso8601;
 
 // ===========================================================================
 // Shared helpers
@@ -82,7 +82,7 @@ fn emit_event(project_dir: &str, hook_id: &str, event: &str, payload: Value) {
         },
         event: event.to_string(),
         payload,
-        spec: None,
+        spec: current_spec(project_dir),
     };
     let _ = SqliteEventStore::for_project(project_dir)
         .and_then(|store| store.append(&harness_event));

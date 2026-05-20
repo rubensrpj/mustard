@@ -6,7 +6,7 @@
 //! `mustard-core` to initialise the schema, then operate directly through
 //! `rusqlite::Connection` for the Wave-6b DML.
 
-use mustard_core::io::sqlite_store::SqliteEventStore;
+use mustard_core::store::sqlite_store::SqliteEventStore;
 use rusqlite::{Connection, params};
 use tempfile::tempdir;
 

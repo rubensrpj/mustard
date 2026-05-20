@@ -5,13 +5,13 @@ export type EmptyVariant = "info" | "warning" | "error";
 
 const VARIANT_STYLES: Record<EmptyVariant, string> = {
   info: "border-border bg-card/30",
-  warning: "border-amber-500/30 bg-amber-500/5",
+  warning: "border-[--color-accent-mustard]/30 bg-[--color-accent-mustard]/5",
   error: "border-destructive/40 bg-destructive/5",
 };
 
 const VARIANT_TITLE: Record<EmptyVariant, string> = {
   info: "text-foreground",
-  warning: "text-amber-300",
+  warning: "text-[--color-accent-mustard]",
   error: "text-destructive",
 };
 

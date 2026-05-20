@@ -663,6 +663,12 @@ pub struct FrictionEntry {
 
 /// Read friction entries for a repo. Returns an empty vec when the file is
 /// missing or malformed — friction is genuinely rare, so empty is the norm.
+///
+/// Wave 5 fix (2026-05-20): `friction.json` accumulates one entry per write,
+/// so a hot-loop hook (e.g. `high-hook-retry-*.metrics`) used to surface as
+/// ~11 visually identical rows. We deduplicate by `name`, keeping the row
+/// with the most recent `updated_at`. The on-disk file is unchanged — the
+/// dedup happens in the read path so old data is not lost.
 pub fn friction_entries(repo_path: &Path) -> Vec<FrictionEntry> {
     let path = repo_path
         .join(".claude")
@@ -680,37 +686,61 @@ pub fn friction_entries(repo_path: &Path) -> Vec<FrictionEntry> {
         Some(a) => a,
         None => return vec![],
     };
-    entries
-        .iter()
-        .filter_map(|e| {
-            let name = e.get("name").and_then(|x| x.as_str())?.to_string();
-            Some(FrictionEntry {
-                name,
-                description: e
-                    .get("description")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or("")
-                    .to_string(),
-                source: e.get("source").and_then(|x| x.as_str()).map(String::from),
-                tags: e
-                    .get("tags")
-                    .and_then(|x| x.as_array())
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|t| t.as_str().map(String::from))
-                            .collect()
-                    })
-                    .unwrap_or_default(),
-                retry_count: e.get("retryCount").and_then(|x| x.as_u64()),
-                api_calls: e.get("apiCalls").and_then(|x| x.as_u64()),
-                prescription: e
-                    .get("prescription")
-                    .and_then(|x| x.as_str())
-                    .map(String::from),
-                updated_at: e.get("updatedAt").and_then(|x| x.as_str()).map(String::from),
-            })
-        })
-        .collect()
+
+    // Pass 1 — decode every row, keeping the *latest* per `name`.
+    let mut by_name: std::collections::HashMap<String, FrictionEntry> =
+        std::collections::HashMap::new();
+    for e in entries {
+        let Some(name) = e.get("name").and_then(|x| x.as_str()).map(String::from) else {
+            continue;
+        };
+        let entry = FrictionEntry {
+            name: name.clone(),
+            description: e
+                .get("description")
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .to_string(),
+            source: e.get("source").and_then(|x| x.as_str()).map(String::from),
+            tags: e
+                .get("tags")
+                .and_then(|x| x.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|t| t.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default(),
+            retry_count: e.get("retryCount").and_then(|x| x.as_u64()),
+            api_calls: e.get("apiCalls").and_then(|x| x.as_u64()),
+            prescription: e
+                .get("prescription")
+                .and_then(|x| x.as_str())
+                .map(String::from),
+            updated_at: e.get("updatedAt").and_then(|x| x.as_str()).map(String::from),
+        };
+        match by_name.get(&name) {
+            // First time we've seen this name → keep.
+            None => {
+                by_name.insert(name, entry);
+            }
+            // We've seen it before → keep whichever has the more recent
+            // updated_at (lexicographic compare works for ISO-8601). Entries
+            // without `updated_at` lose to ones that have one.
+            Some(existing) => {
+                let new_ts = entry.updated_at.as_deref().unwrap_or("");
+                let old_ts = existing.updated_at.as_deref().unwrap_or("");
+                if new_ts > old_ts {
+                    by_name.insert(name, entry);
+                }
+            }
+        }
+    }
+
+    // Pass 2 — drain into a Vec sorted by name so the UI shows a stable list.
+    let mut out: Vec<FrictionEntry> = by_name.into_values().collect();
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    out
 }
 
 // ── Honest Prompt Economy (Wave 5) ──────────────────────────────────────────
@@ -1090,6 +1120,12 @@ pub fn collector_health_from_freshness(f: &FreshnessBlock) -> CollectorHealth {
     if f.otel_healthy && fresh {
         CollectorHealth::Live
     } else {
+        // Collector is parado (stopped/stale): log the last known metric timestamp
+        // so diagnostics can surface exactly when data stopped flowing.
+        eprintln!(
+            "collector parado — otel_healthy={}, last_metric_ts={:?}",
+            f.otel_healthy, f.last_metric_ts
+        );
         CollectorHealth::Stale
     }
 }

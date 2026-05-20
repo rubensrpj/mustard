@@ -2,7 +2,7 @@
 //!
 //! Every type in this module is a plain `serde` struct or enum with **no side
 //! effects**: no I/O, no filesystem access, no logging. Side-effecting
-//! infrastructure lives in the `io` layer (Wave 2).
+//! infrastructure lives in the `store` layer.
 //!
 //! Submodules:
 //!
@@ -15,8 +15,23 @@
 //!   [`pipeline::Phase`], [`pipeline::Scope`]).
 //! - [`provenance`] — the managed-artifact manifest
 //!   ([`provenance::ArtifactManifest`], [`provenance::ArtifactRecord`]).
+//! - [`view`] — typed ViewModels for the SDD domain layer: `SpecView`,
+//!   `WaveView`, `QualityRollup`, `WorkspaceSummary`, and the `SpecReader`
+//!   filter/window types.
 
 pub mod contract;
 pub mod event;
 pub mod pipeline;
 pub mod provenance;
+pub mod view;
+
+// Re-export view types for consumers that import from `mustard_core::model`
+// directly. Consumers that need the SDD Phase/Scope should import from
+// `mustard_core::model::view::{Phase, Scope}` to avoid ambiguity with
+// `mustard_core::model::pipeline::{Phase, Scope}`.
+pub use view::{
+    AcStatus, AcceptanceCriterion, FileCount, PhaseSegment, QualityRollup, SegmentState,
+    SpecFilter, SpecStatus, SpecStatusFilter, SpecSummary, SpecTrack, SpecView, TimeWindow,
+    TimelineKind, TimelineNode, WaveStatus, WaveView, WorkspaceAlert, WorkspaceAlertKind,
+    WorkspaceSummary,
+};

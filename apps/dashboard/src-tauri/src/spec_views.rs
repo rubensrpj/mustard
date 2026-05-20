@@ -1,0 +1,745 @@
+//! `*_v2` adapter family that delegates to `mustard-core`.
+//!
+//! Each `*_v2` function is a thin adapter — it opens a
+//! [`mustard_core::SqliteSpecReader`], runs the projection, and maps the
+//! typed ViewModel into the JSON shape the frontend already expects (so React
+//! contracts stay untouched). The legacy hand-rolled SQL functions
+//! (`spec_card`, `spec_waves`, `spec_quality`, `spec_timeline`,
+//! `workspace_summary`) were removed in Wave 2 of spec
+//! `2026-05-20-sdd-domain-finalization`; the Tauri commands in `lib.rs`
+//! already delegated to the `*_v2` adapters since Wave 4 of the audit.
+
+use rusqlite::{Connection, params};
+use serde::{Deserialize, Serialize};
+
+// ── Shapes ───────────────────────────────────────────────────────────────────
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "snake_case")]
+pub struct SpecCard {
+    pub spec: String,
+    pub status: String,
+    pub phase: String,
+    pub scope: Option<String>,
+    pub started_at: Option<String>,
+    pub last_event_at: Option<String>,
+    pub duration_ms: Option<i64>,
+    pub current_wave: Option<i64>,
+    pub total_waves: Option<i64>,
+    pub ac_passed: i64,
+    pub ac_total: i64,
+    pub files_touched: i64,
+    pub tools_used: i64,
+    pub model: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "snake_case")]
+pub struct SpecWave {
+    pub wave: i64,
+    pub role: Option<String>,
+    pub status: String, // queued | in_progress | completed | failed
+    pub started_at: Option<String>,
+    pub completed_at: Option<String>,
+    pub agent_type: Option<String>,
+    pub files_changed: i64,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "snake_case")]
+pub struct SpecQualityItem {
+    pub ac_id: String,
+    pub ac_label: Option<String>,
+    pub status: String, // pass | fail | skip
+    pub wave: Option<i64>,
+    pub command: Option<String>,
+    pub last_run_at: Option<String>,
+    pub fail_reason: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "snake_case")]
+pub struct SpecTimelineNode {
+    pub ts: String,
+    pub kind: String, // phase | wave | qa | review | agent | tool
+    pub label: String,
+    pub phase: Option<String>,
+    pub wave: Option<i64>,
+    pub payload_summary: Option<String>,
+}
+
+/// Filter parameters for spec_events.
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+#[serde(rename_all = "snake_case")]
+pub struct EventFilter {
+    pub kinds: Option<Vec<String>>,
+    pub wave: Option<i64>,
+    pub agent: Option<String>,
+    pub q: Option<String>,
+}
+
+/// Mirrors `telemetry_agg::TimelineEvent` — reused for spec_events output.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "snake_case")]
+pub struct TimelineEvent {
+    pub id: String,
+    pub ts: String,
+    pub phase: Option<String>,
+    pub spec: Option<String>,
+    pub agent: Option<String>,
+    pub summary: String,
+}
+
+/// Action kind for spec_action.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "snake_case")]
+pub enum SpecActionKind {
+    Reopen,
+    Close,
+    Remove,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "snake_case")]
+pub struct SpecAction {
+    pub action: String,
+    pub spec: String,
+    pub result: String,
+    pub message: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "snake_case")]
+pub struct PhaseSegment {
+    pub phase: String, // analyze | plan | execute | qa | close
+    pub state: String, // completed | active | future
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "snake_case")]
+pub struct SpecTrack {
+    pub spec: String,
+    pub status: String,
+    pub current_phase: String,
+    pub current_wave: Option<i64>,
+    pub total_waves: Option<i64>,
+    pub agents_active: i64,
+    pub last_event_at: Option<String>,
+    pub blocked_reason: Option<String>,
+    pub segments: Vec<PhaseSegment>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "snake_case")]
+pub struct WorkspaceAlert {
+    pub kind: String, // wave_failed | qa_fail
+    pub spec: String,
+    pub wave: Option<i64>,
+    pub message: String,
+    pub ts: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "snake_case")]
+pub struct FileCount {
+    pub path: String,
+    pub count: i64,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "snake_case")]
+pub struct WorkspaceSummary {
+    pub events_per_minute: f64,
+    pub tokens_saved_today: i64,
+    pub specs_active_count: i64,
+    pub spec_tracks: Vec<SpecTrack>,
+    pub alerts: Vec<WorkspaceAlert>,
+    pub top_files_today: Vec<FileCount>,
+}
+
+// ── spec_events ───────────────────────────────────────────────────────────────
+
+pub fn spec_events(
+    conn: &Connection,
+    spec: &str,
+    filter: Option<EventFilter>,
+) -> Result<Vec<TimelineEvent>, String> {
+    let filter = filter.unwrap_or_default();
+
+    // Build event kind filter fragment
+    let kinds_clause = match &filter.kinds {
+        Some(kinds) if !kinds.is_empty() => {
+            let placeholders: Vec<String> =
+                kinds.iter().enumerate().map(|(i, _)| format!("?{}", i + 2)).collect();
+            format!("AND event IN ({})", placeholders.join(","))
+        }
+        _ => String::new(),
+    };
+
+    let sql = format!(
+        "SELECT CAST(id AS TEXT), COALESCE(ts,''), \
+                json_extract(payload,'$.phase'), \
+                spec, \
+                COALESCE(json_extract(payload,'$.subagent_type'), \
+                         json_extract(payload,'$.agent_type'), \
+                         actor_id), \
+                COALESCE(json_extract(payload,'$.summary'), \
+                         json_extract(payload,'$.description'), \
+                         json_extract(payload,'$.msg'), \
+                         event, '') \
+         FROM events \
+         WHERE spec=?1 {} \
+         ORDER BY id DESC \
+         LIMIT 500",
+        kinds_clause
+    );
+
+    let mut stmt = match conn.prepare(&sql) {
+        Ok(s) => s,
+        Err(_) => return Ok(vec![]),
+    };
+
+    // Bind spec as first param; bind kinds in order if present
+    let rows_result = if let Some(kinds) = &filter.kinds {
+        if !kinds.is_empty() {
+            // rusqlite doesn't support heterogeneous params! directly — use
+            // a helper that constructs the query with literal placeholders
+            // but we need to pass them one by one. Build params as a Vec<&dyn ToSql>.
+            let mut all_params: Vec<Box<dyn rusqlite::types::ToSql>> =
+                vec![Box::new(spec.to_string())];
+            for k in kinds {
+                all_params.push(Box::new(k.clone()));
+            }
+            let refs: Vec<&dyn rusqlite::types::ToSql> =
+                all_params.iter().map(|b| b.as_ref()).collect();
+            stmt.query_map(refs.as_slice(), map_timeline_row)
+        } else {
+            stmt.query_map(params![spec], map_timeline_row)
+        }
+    } else {
+        stmt.query_map(params![spec], map_timeline_row)
+    };
+
+    let rows = match rows_result {
+        Ok(r) => r,
+        Err(_) => return Ok(vec![]),
+    };
+
+    let mut out: Vec<TimelineEvent> = rows.flatten().collect();
+
+    // Apply optional in-process filters (wave, agent, q substring)
+    if let Some(wave_num) = filter.wave {
+        // We need the wave column — re-query with wave if filter is set.
+        // For simplicity, do a second targeted query.
+        let wave_sql = format!(
+            "SELECT CAST(id AS TEXT), COALESCE(ts,''), \
+                    json_extract(payload,'$.phase'), \
+                    spec, \
+                    COALESCE(json_extract(payload,'$.subagent_type'), \
+                             json_extract(payload,'$.agent_type'), actor_id), \
+                    COALESCE(json_extract(payload,'$.summary'), \
+                             json_extract(payload,'$.description'), \
+                             json_extract(payload,'$.msg'), event, '') \
+             FROM events \
+             WHERE spec=?1 AND wave=?2 {} \
+             ORDER BY id DESC LIMIT 500",
+            kinds_clause
+        );
+        let mut wstmt = match conn.prepare(&wave_sql) {
+            Ok(s) => s,
+            Err(_) => return Ok(out),
+        };
+        let wave_rows = wstmt.query_map(params![spec, wave_num], map_timeline_row);
+        if let Ok(wr) = wave_rows {
+            out = wr.flatten().collect();
+        }
+    }
+
+    if let Some(agent_str) = &filter.agent {
+        let a = agent_str.clone();
+        out.retain(|e| e.agent.as_deref().map_or(false, |ag| ag.contains(a.as_str())));
+    }
+    if let Some(q) = &filter.q {
+        let q = q.to_lowercase();
+        out.retain(|e| {
+            e.summary.to_lowercase().contains(&q)
+                || e.phase.as_deref().map_or(false, |p| p.to_lowercase().contains(&q))
+        });
+    }
+
+    Ok(out)
+}
+
+fn map_timeline_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<TimelineEvent> {
+    Ok(TimelineEvent {
+        id:      row.get::<_, Option<String>>(0)?.unwrap_or_default(),
+        ts:      row.get::<_, Option<String>>(1)?.unwrap_or_default(),
+        phase:   row.get::<_, Option<String>>(2)?,
+        spec:    row.get::<_, Option<String>>(3)?,
+        agent:   row.get::<_, Option<String>>(4)?,
+        summary: row.get::<_, Option<String>>(5)?.unwrap_or_default(),
+    })
+}
+
+// ── 6. spec_action ───────────────────────────────────────────────────────────
+
+pub fn spec_action(
+    _conn: &Connection,
+    repo_path: &str,
+    spec: &str,
+    action: SpecActionKind,
+) -> Result<SpecAction, String> {
+    use std::path::Path;
+
+    let active    = Path::new(repo_path).join(".claude/spec/active").join(spec);
+    let completed = Path::new(repo_path).join(".claude/spec/completed").join(spec);
+
+    match action {
+        SpecActionKind::Reopen => {
+            if !completed.exists() {
+                return Ok(SpecAction {
+                    action:  "reopen".into(),
+                    spec:    spec.into(),
+                    result:  "error".into(),
+                    message: Some("spec não encontrada em completed/".into()),
+                });
+            }
+            std::fs::create_dir_all(active.parent().unwrap())
+                .map_err(|e| e.to_string())?;
+            std::fs::rename(&completed, &active).map_err(|e| e.to_string())?;
+            rewrite_spec_header(&active.join("spec.md"), "implementing", "EXECUTE")?;
+            emit_pipeline_status(repo_path, spec, "reopened");
+            Ok(SpecAction {
+                action:  "reopen".into(),
+                spec:    spec.into(),
+                result:  "ok".into(),
+                message: None,
+            })
+        }
+        SpecActionKind::Close => {
+            if !active.exists() {
+                return Ok(SpecAction {
+                    action:  "close".into(),
+                    spec:    spec.into(),
+                    result:  "error".into(),
+                    message: Some("spec não encontrada em active/".into()),
+                });
+            }
+            std::fs::create_dir_all(completed.parent().unwrap())
+                .map_err(|e| e.to_string())?;
+            std::fs::rename(&active, &completed).map_err(|e| e.to_string())?;
+            rewrite_spec_header(&completed.join("spec.md"), "completed", "CLOSE")?;
+            emit_pipeline_status(repo_path, spec, "closed");
+            Ok(SpecAction {
+                action:  "close".into(),
+                spec:    spec.into(),
+                result:  "ok".into(),
+                message: None,
+            })
+        }
+        SpecActionKind::Remove => {
+            let path = if active.exists() {
+                active
+            } else if completed.exists() {
+                completed
+            } else {
+                return Ok(SpecAction {
+                    action:  "remove".into(),
+                    spec:    spec.into(),
+                    result:  "error".into(),
+                    message: Some("spec não encontrada".into()),
+                });
+            };
+            std::fs::remove_dir_all(&path).map_err(|e| e.to_string())?;
+            emit_pipeline_removed(repo_path, spec);
+            Ok(SpecAction {
+                action:  "remove".into(),
+                spec:    spec.into(),
+                result:  "ok".into(),
+                message: None,
+            })
+        }
+    }
+}
+
+// ── spec_action helpers ───────────────────────────────────────────────────────
+
+/// Rewrite `### Status: ...` and `### Phase: ...` in the first 20 lines of
+/// spec.md. Idempotent — safe to call even when the file is missing.
+fn rewrite_spec_header(spec_md: &std::path::Path, status: &str, phase: &str) -> Result<(), String> {
+    let content = match std::fs::read_to_string(spec_md) {
+        Ok(c) => c,
+        Err(_) => return Ok(()), // missing spec.md is non-fatal
+    };
+
+    let mut lines: Vec<String> = content.lines().map(|l| l.to_string()).collect();
+    let limit = lines.len().min(20);
+
+    for line in lines[..limit].iter_mut() {
+        // ### Status: value  (possibly inside `### Status: X | Phase: Y`)
+        if let Some(replaced) = replace_inline_field(line, "Status", status) {
+            *line = replaced;
+            continue;
+        }
+        // ### Phase: value
+        if let Some(replaced) = replace_inline_field(line, "Phase", phase) {
+            *line = replaced;
+        }
+    }
+
+    let out = lines.join("\n");
+    std::fs::write(spec_md, out).map_err(|e| e.to_string())
+}
+
+/// Within a single line, replace `Key: old_value` with `Key: new_value`.
+/// Handles both `### Status: X` and `### Status: X | Phase: Y` layouts.
+fn replace_inline_field(line: &str, key: &str, new_val: &str) -> Option<String> {
+    // Match `Key:` (case-insensitive) somewhere in the line.
+    let key_col = format!("{}:", key);
+    let pos = line.to_lowercase().find(&key_col.to_lowercase())?;
+    let before = &line[..pos + key_col.len()]; // "### Status:"
+    let after  = &line[pos + key_col.len()..]; // " old_value" or " old_value | Phase: Y"
+
+    // Preserve leading space, replace up to the next `|` or end-of-line.
+    let leading = if after.starts_with(' ') { " " } else { "" };
+    let rest = after.trim_start();
+    let suffix = if let Some(pipe_pos) = rest.find('|') {
+        &rest[pipe_pos..] // keeps " | Phase: Y"
+    } else {
+        ""
+    };
+    let sep = if !suffix.is_empty() { " " } else { "" };
+    Some(format!("{}{}{}{}{}", before, leading, new_val, sep, suffix))
+}
+
+/// Shell out to `mustard-rt run emit-pipeline`. Fail-open: logs to stderr,
+/// never propagates an error to the caller.
+fn emit_pipeline_status(repo_path: &str, spec: &str, status: &str) {
+    let payload = format!(r#"{{"status":"{}"}}"#, status);
+    let result = std::process::Command::new("mustard-rt")
+        .args([
+            "run", "emit-pipeline",
+            "--kind", "pipeline.status",
+            "--spec", spec,
+            "--payload", &payload,
+        ])
+        .current_dir(repo_path)
+        .output();
+    if let Err(e) = result {
+        eprintln!("emit_pipeline_status: {}", e);
+    }
+}
+
+fn emit_pipeline_removed(repo_path: &str, spec: &str) {
+    let result = std::process::Command::new("mustard-rt")
+        .args([
+            "run", "emit-pipeline",
+            "--kind", "pipeline.removed",
+            "--spec", spec,
+            "--payload", r#"{"removed":true}"#,
+        ])
+        .current_dir(repo_path)
+        .output();
+    if let Err(e) = result {
+        eprintln!("emit_pipeline_removed: {}", e);
+    }
+}
+
+// ===========================================================================
+// Wave 4 adapters (2026-05-20) — `*_v2` family backed by `mustard-core`.
+//
+// These produce the *same* JSON shape as the legacy functions above (the
+// shapes themselves did not move), but the projection layer is now the SDD
+// domain crate. The Tauri commands in `lib.rs` call these — the legacy
+// functions stay alongside until `spec_views_test.rs` is retired.
+// ===========================================================================
+
+/// Wave 4 adapter: build a [`SpecCard`] via `mustard-core`.
+///
+/// Opens a [`mustard_core::SqliteSpecReader`] keyed by `repo_path`,
+/// projects the per-spec view, then maps the typed ViewModel into the JSON
+/// shape the React frontend already consumes.
+///
+/// Returns `Ok(None)` when the spec has zero events. The `lib.rs` command
+/// converts that to the empty-state JSON payload.
+pub fn spec_card_v2(repo_path: &str, spec: &str) -> Result<Option<SpecCard>, String> {
+    use mustard_core::SpecReader;
+    let reader = mustard_core::SqliteSpecReader::for_project(repo_path)
+        .map_err(|e| format!("reader open: {e}"))?;
+    let Some(view) = reader.spec_view(spec).map_err(|e| format!("spec_view: {e}"))? else {
+        return Ok(None);
+    };
+    Ok(Some(spec_card_from_view(&view)))
+}
+
+/// Wave 4 adapter: build the wave list via `mustard-core`. Empty `Vec`
+/// when the spec has no wave events.
+pub fn spec_waves_v2(repo_path: &str, spec: &str) -> Result<Vec<SpecWave>, String> {
+    use mustard_core::SpecReader;
+    let reader = mustard_core::SqliteSpecReader::for_project(repo_path)
+        .map_err(|e| format!("reader open: {e}"))?;
+    let waves = reader.waves(spec).map_err(|e| format!("waves: {e}"))?;
+    Ok(waves.iter().map(spec_wave_from_view).collect())
+}
+
+/// Wave 4 adapter: AC roll-up via `mustard-core`.
+pub fn spec_quality_v2(repo_path: &str, spec: &str) -> Result<Vec<SpecQualityItem>, String> {
+    use mustard_core::SpecReader;
+    let reader = mustard_core::SqliteSpecReader::for_project(repo_path)
+        .map_err(|e| format!("reader open: {e}"))?;
+    let rollup = reader.quality(spec).map_err(|e| format!("quality: {e}"))?;
+    Ok(rollup.criteria.iter().map(quality_item_from_view).collect())
+}
+
+/// Wave 4 adapter: timeline projection via `mustard-core`. `All` window;
+/// the dashboard does its own client-side filtering when it needs a narrower
+/// view.
+pub fn spec_timeline_v2(repo_path: &str, spec: &str) -> Result<Vec<SpecTimelineNode>, String> {
+    use mustard_core::SpecReader;
+    let reader = mustard_core::SqliteSpecReader::for_project(repo_path)
+        .map_err(|e| format!("reader open: {e}"))?;
+    let nodes = reader
+        .timeline(spec, mustard_core::TimeWindow::All)
+        .map_err(|e| format!("timeline: {e}"))?;
+    Ok(nodes.iter().map(timeline_node_from_view).collect())
+}
+
+/// Wave 4 adapter: workspace summary via `mustard-core`. Replaces the
+/// broken `events_per_minute` and `tokens_saved_today` SQL with the
+/// projection from `project_workspace`.
+pub fn workspace_summary_v2(repo_path: &str) -> Result<WorkspaceSummary, String> {
+    use mustard_core::SpecReader;
+    let reader = mustard_core::SqliteSpecReader::for_project(repo_path)
+        .map_err(|e| format!("reader open: {e}"))?;
+    let summary = reader
+        .workspace_summary()
+        .map_err(|e| format!("workspace_summary: {e}"))?;
+    Ok(workspace_summary_from_view(&summary))
+}
+
+// ── View → legacy JSON shape mappers ─────────────────────────────────────────
+//
+// These keep the React side unchanged. When you add a field to a
+// `mustard_core::*View`, decide whether the dashboard needs it: if yes,
+// extend the shape above AND its mapper; if no, leave the mapper alone.
+
+/// Map [`mustard_core::SpecView`] into the legacy [`SpecCard`] JSON shape.
+fn spec_card_from_view(view: &mustard_core::SpecView) -> SpecCard {
+    SpecCard {
+        spec: view.spec.clone(),
+        status: spec_status_string(view.status).into(),
+        phase: view
+            .phase
+            .map_or_else(String::new, |p| phase_string(p).to_string()),
+        scope: view.scope.map(|s| scope_string(s).to_string()),
+        started_at: view.started_at.clone(),
+        last_event_at: view.last_event_at.clone(),
+        duration_ms: view.duration_ms,
+        current_wave: view.current_wave.map(i64::from),
+        total_waves: view.total_waves.map(i64::from),
+        ac_passed: i64::from(view.ac_passed),
+        ac_total: i64::from(view.ac_total),
+        files_touched: i64::from(view.files_touched),
+        tools_used: i64::from(view.tools_used),
+        model: view.model.clone(),
+    }
+}
+
+/// Map [`mustard_core::WaveView`] → legacy [`SpecWave`].
+fn spec_wave_from_view(view: &mustard_core::WaveView) -> SpecWave {
+    SpecWave {
+        wave: i64::from(view.wave),
+        role: view.role.clone(),
+        status: wave_status_string(view.status).into(),
+        started_at: view.started_at.clone(),
+        completed_at: view.completed_at.clone(),
+        agent_type: view.agent_type.clone(),
+        files_changed: i64::try_from(view.files_changed.len()).unwrap_or(i64::MAX),
+    }
+}
+
+/// Map [`mustard_core::AcceptanceCriterion`] → legacy [`SpecQualityItem`].
+fn quality_item_from_view(view: &mustard_core::AcceptanceCriterion) -> SpecQualityItem {
+    SpecQualityItem {
+        ac_id: view.id.clone(),
+        ac_label: Some(view.label.clone()).filter(|s| !s.is_empty()),
+        status: ac_status_string(view.status).into(),
+        wave: view.wave.map(i64::from),
+        command: view.command.clone(),
+        last_run_at: view.last_run_at.clone(),
+        fail_reason: view.fail_reason.clone(),
+    }
+}
+
+/// Map [`mustard_core::TimelineNode`] → legacy [`SpecTimelineNode`].
+fn timeline_node_from_view(view: &mustard_core::TimelineNode) -> SpecTimelineNode {
+    SpecTimelineNode {
+        ts: view.ts.clone(),
+        kind: timeline_kind_string(view.kind).into(),
+        label: view.label.clone(),
+        phase: view.phase.map(|p| phase_string(p).to_string()),
+        wave: view.wave.map(i64::from),
+        payload_summary: if view.payload_summary.is_empty() {
+            None
+        } else {
+            Some(view.payload_summary.clone())
+        },
+    }
+}
+
+/// Map [`mustard_core::WorkspaceSummary`] → legacy [`WorkspaceSummary`].
+fn workspace_summary_from_view(view: &mustard_core::WorkspaceSummary) -> WorkspaceSummary {
+    WorkspaceSummary {
+        events_per_minute: view.events_per_minute,
+        // The legacy dashboard shape carries a plain `i64`. The new view
+        // distinguishes "no data" via `Option<i64>`; for the legacy shape we
+        // surface `0` when the source is unavailable. The UI fix in Wave 5
+        // upgrades the JSON shape to `Option<i64>` and renders "—" for None.
+        tokens_saved_today: view.tokens_saved_today.unwrap_or(0),
+        specs_active_count: i64::from(view.specs_active_count),
+        spec_tracks: view.spec_tracks.iter().map(spec_track_from_view).collect(),
+        alerts: view.alerts.iter().map(workspace_alert_from_view).collect(),
+        top_files_today: view
+            .top_files_today
+            .iter()
+            .map(|f| FileCount {
+                path: f.path.clone(),
+                count: i64::from(f.count),
+            })
+            .collect(),
+    }
+}
+
+fn spec_track_from_view(view: &mustard_core::SpecTrack) -> SpecTrack {
+    SpecTrack {
+        spec: view.spec.clone(),
+        status: spec_status_string(view.status).into(),
+        current_phase: view
+            .current_phase
+            .map_or_else(String::new, |p| phase_string(p).to_string()),
+        current_wave: view.current_wave.map(i64::from),
+        total_waves: view.total_waves.map(i64::from),
+        agents_active: i64::from(view.agents_active),
+        last_event_at: view.last_event_at.clone(),
+        blocked_reason: view.blocked_reason.clone(),
+        segments: view
+            .segments
+            .iter()
+            .map(|seg| PhaseSegment {
+                phase: phase_string(seg.phase).to_string(),
+                state: segment_state_string(seg.state).into(),
+            })
+            .collect(),
+    }
+}
+
+fn workspace_alert_from_view(view: &mustard_core::WorkspaceAlert) -> WorkspaceAlert {
+    WorkspaceAlert {
+        kind: workspace_alert_kind_string(view.kind).into(),
+        spec: view.spec.clone(),
+        wave: None, // legacy shape had wave; the new view's message carries it
+        message: view.message.clone(),
+        ts: Some(view.ts.clone()),
+    }
+}
+
+// ── Enum → legacy string mappers ─────────────────────────────────────────────
+//
+// Centralised so a rename in `mustard_core` only needs one edit. The
+// strings match what the React side already understands — match against
+// these in case a future rename breaks UI rendering.
+
+const fn spec_status_string(status: mustard_core::SpecStatus) -> &'static str {
+    use mustard_core::SpecStatus;
+    match status {
+        SpecStatus::NoEvents => "no-events",
+        SpecStatus::Planning => "planning",
+        SpecStatus::Implementing => "implementing",
+        SpecStatus::Reviewing => "reviewing",
+        SpecStatus::Qa => "qa",
+        SpecStatus::ClosedFollowup => "closed-followup",
+        SpecStatus::Completed => "completed",
+        SpecStatus::Cancelled => "cancelled",
+        SpecStatus::Blocked => "blocked",
+        SpecStatus::WaveFailed => "wave-failed",
+    }
+}
+
+const fn phase_string(p: mustard_core::Phase) -> &'static str {
+    use mustard_core::Phase;
+    match p {
+        Phase::Analyze => "analyze",
+        Phase::Plan => "plan",
+        Phase::Execute => "execute",
+        Phase::Qa => "qa",
+        Phase::Close => "close",
+    }
+}
+
+const fn scope_string(s: mustard_core::Scope) -> &'static str {
+    use mustard_core::Scope;
+    match s {
+        Scope::Full => "full",
+        Scope::Light => "light",
+        Scope::Touch => "touch",
+    }
+}
+
+const fn wave_status_string(s: mustard_core::WaveStatus) -> &'static str {
+    use mustard_core::WaveStatus;
+    match s {
+        WaveStatus::Queued => "queued",
+        WaveStatus::InProgress => "in_progress",
+        WaveStatus::Completed => "completed",
+        WaveStatus::Failed => "failed",
+    }
+}
+
+const fn ac_status_string(s: mustard_core::AcStatus) -> &'static str {
+    use mustard_core::AcStatus;
+    match s {
+        AcStatus::Pass => "pass",
+        AcStatus::Fail => "fail",
+        AcStatus::Skip => "skip",
+        AcStatus::Pending => "pending",
+    }
+}
+
+const fn timeline_kind_string(k: mustard_core::TimelineKind) -> &'static str {
+    use mustard_core::TimelineKind;
+    match k {
+        TimelineKind::Scope => "scope",
+        TimelineKind::Phase => "phase",
+        TimelineKind::Status => "status",
+        TimelineKind::Task => "task",
+        TimelineKind::Wave => "wave",
+        TimelineKind::Qa => "qa",
+        TimelineKind::Review => "review",
+        TimelineKind::Agent => "agent",
+        TimelineKind::Tool => "tool",
+        TimelineKind::Decision => "decision",
+        TimelineKind::Other => "other",
+    }
+}
+
+const fn segment_state_string(s: mustard_core::SegmentState) -> &'static str {
+    use mustard_core::SegmentState;
+    match s {
+        SegmentState::Completed => "completed",
+        SegmentState::Active => "active",
+        SegmentState::Future => "future",
+    }
+}
+
+const fn workspace_alert_kind_string(k: mustard_core::WorkspaceAlertKind) -> &'static str {
+    use mustard_core::WorkspaceAlertKind;
+    match k {
+        WorkspaceAlertKind::Blocked => "blocked",
+        WorkspaceAlertKind::QaFail => "qa_fail",
+        WorkspaceAlertKind::WaveFailed => "wave_failed",
+        WorkspaceAlertKind::ReviewRejected => "review_rejected",
+        WorkspaceAlertKind::BuildBroken => "build_broken",
+    }
+}

@@ -2614,6 +2614,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "mustard-cli",
+ "mustard-core",
  "notify",
  "notify-debouncer-mini",
  "rusqlite",

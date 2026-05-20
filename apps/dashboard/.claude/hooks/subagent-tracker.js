@@ -281,7 +281,7 @@ function handlePreToolUse(data, stateDir) {
 /**
  * Parse recommended skills from a Task prompt string.
  * Matches list items under a "Recommended Skills" or "recommended_skills:" header.
- * Returns an array of skill name strings (e.g. ["templates-hook-protocol"]).
+ * Returns an array of skill name strings (e.g. ["karpathy-guidelines"]).
  */
 function parseRecommendedSkills(prompt) {
   const skills = [];

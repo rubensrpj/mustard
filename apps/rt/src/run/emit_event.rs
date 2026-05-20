@@ -11,10 +11,10 @@
 //! fail-open — a write failure degrades to a no-op so telemetry never breaks a
 //! command.
 
-use crate::run::env::{project_dir, session_id};
+use crate::run::env::{current_spec, project_dir, session_id};
 use crate::util::now_iso8601;
-use mustard_core::io::event_store::EventSink;
-use mustard_core::io::sqlite_store::SqliteEventStore;
+use mustard_core::store::event_store::EventSink;
+use mustard_core::store::sqlite_store::SqliteEventStore;
 use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use serde_json::{Map, Value};
 
@@ -49,11 +49,23 @@ fn build_payload(pairs: &[String]) -> Value {
 ///
 /// Fail-open: a missing `--event` prints usage and returns; any append failure
 /// is swallowed.
+///
+/// **Spec attribution:** when `--spec` is omitted the caller still gets the
+/// best-available attribution via [`current_spec`] (env var → SQLite scope
+/// lookup → filesystem hint). This closes the orphan-event hole the
+/// 2026-05-20 audit found: pipeline commands that emitted ad-hoc events
+/// without passing `--spec` used to write `events.spec = NULL`, which
+/// projections then filtered out.
 pub fn run(event: Option<&str>, payload: &[String], spec: Option<&str>, wave: u32) {
     let Some(event) = event.filter(|e| !e.is_empty()) else {
         eprintln!("Usage: emit-event --event <name> [--payload key=value]... [--spec <name>] [--wave <n>]");
         return;
     };
+
+    let dir = project_dir();
+    let resolved_spec = spec
+        .map(str::to_string)
+        .or_else(|| current_spec(&dir));
 
     let harness_event = HarnessEvent {
         v: SCHEMA_VERSION,
@@ -67,9 +79,9 @@ pub fn run(event: Option<&str>, payload: &[String], spec: Option<&str>, wave: u3
         },
         event: event.to_string(),
         payload: build_payload(payload),
-        spec: spec.map(str::to_string),
+        spec: resolved_spec,
     };
-    let _ = SqliteEventStore::for_project(project_dir())
+    let _ = SqliteEventStore::for_project(&dir)
         .and_then(|store| store.append(&harness_event));
 }
 

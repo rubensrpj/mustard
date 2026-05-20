@@ -6,6 +6,9 @@ i18n.use(initReactI18next).init({
     pt: {
       common: {
         "nav.home": "Home",
+        "nav.workspace": "Visão Geral",
+        "nav.specs": "Specs",
+        "nav.economy": "Economia",
         "nav.activity": "Atividade",
         "nav.telemetry": "Telemetria",
         "nav.quality": "Qualidade",
@@ -77,6 +80,9 @@ i18n.use(initReactI18next).init({
     en: {
       common: {
         "nav.home": "Home",
+        "nav.workspace": "Overview",
+        "nav.specs": "Specs",
+        "nav.economy": "Economy",
         "nav.activity": "Activity",
         "nav.telemetry": "Telemetry",
         "nav.quality": "Quality",

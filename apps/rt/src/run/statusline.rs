@@ -13,7 +13,7 @@
 
 use crate::run::rtk_gain::get_rtk_gain;
 use crate::run::pipeline_state_for_spec;
-use mustard_core::io::sqlite_store::SqliteEventStore;
+use mustard_core::store::sqlite_store::SqliteEventStore;
 use serde_json::Value;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -372,8 +372,8 @@ mod tests {
 
     #[test]
     fn pipeline_segment_hides_completed_spec() {
-        use mustard_core::io::event_store::EventSink;
-        use mustard_core::io::sqlite_store::SqliteEventStore;
+        use mustard_core::store::event_store::EventSink;
+        use mustard_core::store::sqlite_store::SqliteEventStore;
         use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 
         let dir = tempfile::tempdir().unwrap();

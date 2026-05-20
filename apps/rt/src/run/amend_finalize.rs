@@ -21,8 +21,8 @@
 
 use crate::util::now_iso8601;
 use mustard_core::error::Result;
-use mustard_core::io::event_store::EventSink;
-use mustard_core::io::sqlite_store::{AmendWindow, SqliteEventStore};
+use mustard_core::store::event_store::EventSink;
+use mustard_core::store::sqlite_store::{AmendWindow, SqliteEventStore};
 use mustard_core::model::event::{
     Actor, ActorKind, HarnessEvent, PipelineAmendClosePayload, PipelineScopePayload,
     SCHEMA_VERSION, EVENT_PIPELINE_AMEND_ACTIVITY, EVENT_PIPELINE_AMEND_CLOSE,

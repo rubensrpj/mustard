@@ -1,0 +1,42 @@
+/* Telemetry motion budget — 3 primitives total.
+   All animations respect prefers-reduced-motion. */
+
+@keyframes number-tick {
+  0%   { transform: scale(1); }
+  50%  { transform: scale(1.02); }
+  100% { transform: scale(1); }
+}
+
+@keyframes wave-glow {
+  0%   { box-shadow: 0 0 0 0 color-mix(in srgb, var(--color-accent-mustard, #dfab01) 40%, transparent); }
+  50%  { box-shadow: 0 0 0 6px color-mix(in srgb, var(--color-accent-mustard, #dfab01) 0%, transparent); }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+
+@keyframes once-on-mount-fade {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-number-tick,
+  .animate-wave-glow,
+  .animate-mount-fade,
+  .animate-ping,
+  .animate-pulse {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+
+.animate-number-tick {
+  animation: number-tick 200ms ease-out;
+}
+
+.animate-wave-glow {
+  animation: wave-glow 1.2s ease-out 1;
+}
+
+.animate-mount-fade {
+  animation: once-on-mount-fade 100ms ease-out both;
+}

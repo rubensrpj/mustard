@@ -205,8 +205,8 @@ function RoiScoreboard({
         </div>
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-          <div className="flex flex-col gap-1 px-3 py-2.5 rounded border border-emerald-500/30 bg-emerald-500/5">
-            <span className="text-[10px] uppercase tracking-wider text-emerald-400">
+          <div className="flex flex-col gap-1 px-3 py-2.5 rounded border border-[--color-ok]/30 bg-[--color-ok]/5">
+            <span className="text-[10px] uppercase tracking-wider text-[--color-ok]">
               COM Mustard — foi ao modelo
             </span>
             <span className="text-xl font-mono font-medium text-foreground tabular-nums">

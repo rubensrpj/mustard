@@ -1,7 +1,7 @@
 //! Crate-level error type and fail-open helpers.
 //!
 //! [`model`](crate::model) is pure and error-free; the moment a layer touches
-//! the filesystem ([`io`](crate::io)), the environment ([`env`](crate::env)),
+//! the filesystem ([`store`](crate::store)), the environment ([`env`](crate::env)),
 //! or parses config ([`config`](crate::config)) it needs a typed error. This
 //! is that type.
 //!
@@ -68,7 +68,7 @@ pub enum Error {
     CheckFailed(String),
 
     /// A SQLite operation failed (open, schema apply, statement, row decode).
-    /// Backs [`SqliteEventStore`](crate::io::sqlite_store::SqliteEventStore);
+    /// Backs [`SqliteEventStore`](crate::store::sqlite_store::SqliteEventStore);
     /// the string is the underlying `rusqlite` message. Callers fail open —
     /// telemetry is never load-bearing — so a failed open or query degrades
     /// to an empty result rather than crashing a hook.

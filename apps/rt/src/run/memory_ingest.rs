@@ -16,7 +16,7 @@
 
 use crate::run::env::project_dir as env_project_dir;
 use crate::run::memory::{insert_decision, insert_lesson, upsert_knowledge_pattern};
-use mustard_core::io::sqlite_store::SqliteEventStore;
+use mustard_core::store::sqlite_store::SqliteEventStore;
 use rusqlite::Connection;
 use serde_json::{Value, json};
 use std::path::Path;

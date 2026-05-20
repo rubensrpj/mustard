@@ -40,6 +40,7 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 # 1.85 (mustard-cli is edition 2024); the dashboard's own `edition`/`rust-version`
 # are intentionally unchanged.
 mustard-cli = { path = "../../cli" }
+mustard-core = { path = "../../../packages/core" }
 
 [[test]]
 name = "db_test"
@@ -60,6 +61,10 @@ path = "tests/specs_phase_from_events_test.rs"
 [[test]]
 name = "pipelines_from_db_test"
 path = "tests/pipelines_from_db_test.rs"
+
+[[test]]
+name = "telemetry_aggregations_test"
+path = "tests/telemetry_aggregations_test.rs"
 
 # Test-only: temp dirs for the B5 Wave 3 mustard-cli integration smoke test.
 [dev-dependencies]

@@ -37,6 +37,8 @@ mod otel;
 mod pipeline_state_ingest;
 mod pipeline_summary;
 mod qa_run;
+mod qa_run_all;
+mod rebuild_specs;
 mod recipe_match;
 mod review_result;
 mod rtk_gain;
@@ -291,6 +293,18 @@ pub enum RunCmd {
         #[arg(long, default_value = "json")]
         format: String,
     },
+    /// Run QA for every active spec and aggregate the results.
+    ///
+    /// Iterates active specs via `SqliteSpecReader`, calls `qa-run` for each,
+    /// and emits a JSON batch report `{ ran, failed, skipped, errors }`.
+    /// Fail-open per spec — individual failures land in `errors[]`.
+    QaRunAll,
+    /// Rematerialise the denormalised `specs` + `metrics_projection` tables
+    /// from the event stream. Closes the gap the eliminate-bun migration
+    /// opened: pre-2026-05-20 nothing populated those tables since the JS
+    /// harness writer was removed, which is why every dashboard spec card
+    /// fell back to `"unknown"`.
+    RebuildSpecs,
     /// Render pipeline + hook telemetry (`collect` / `report` subcommand).
     Metrics {
         /// Subcommand: `collect` or `report`.
@@ -544,6 +558,8 @@ pub fn dispatch(cmd: RunCmd) {
             subproject,
         } => recipe_match::run(entity.as_deref(), operation.as_deref(), subproject.as_deref()),
         RunCmd::QaRun { spec, format } => qa_run::run(&spec, &format),
+        RunCmd::QaRunAll => qa_run_all::run(),
+        RunCmd::RebuildSpecs => rebuild_specs::run(),
         RunCmd::Metrics {
             subcommand,
             args,

@@ -44,7 +44,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use std::path::PathBuf;
 
-use mustard_core::io::sqlite_store::{
+use mustard_core::store::sqlite_store::{
     KnowledgeRow, MetricsRow, SpanRow, SpecRow, SqliteEventStore,
 };
 use mustard_core::model::event::HarnessEvent;

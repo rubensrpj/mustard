@@ -24,10 +24,11 @@
 //! the module-level enforcement mode the dispatcher applies — the dispatcher
 //! repasses the verdict without downgrade.
 
+use crate::run::current_spec;
 use mustard_core::config::Mode;
 use mustard_core::error::Error;
-use mustard_core::io::event_store::EventSink;
-use mustard_core::io::sqlite_store::SqliteEventStore;
+use mustard_core::store::event_store::EventSink;
+use mustard_core::store::sqlite_store::SqliteEventStore;
 use mustard_core::model::contract::{Check, Ctx, HookInput, Observer, Trigger, Verdict};
 use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use serde_json::json;
@@ -545,14 +546,18 @@ fn run_rtk_rewrite_subprocess_with_bin(cmd: &str, binary: &str) -> Option<String
 /// non-empty, distinct stdout, returns `Verdict::Rewrite` carrying the
 /// rewritten command in `updatedInput`. Every other path — already
 /// `rtk`-prefixed, `rtk` missing, non-zero exit, timeout, empty/identical
-/// output — returns `None` (silent allow). Mirrors the JS `rtk-rewrite.js`
-/// contract.
+/// output — falls through to the blanket-prefix path. Mirrors the JS
+/// `rtk-rewrite.js` contract and extends it with the Golden Rule blanket
+/// fallback.
 ///
 /// Split into two layers so unit tests can inject a closure instead of the
 /// real subprocess:
 /// - [`rtk_rewrite_with`] — pure logic, closure-injectable.
 /// - [`rtk_rewrite`]      — production wrapper passing the real subprocess.
-fn rtk_rewrite(cmd: &str) -> Option<Verdict> {
+///
+/// Returns `(Verdict, coverage_tag)` so the caller can emit `coverage` in
+/// telemetry without embedding it in `tool_input`.
+fn rtk_rewrite(cmd: &str) -> Option<(Verdict, &'static str)> {
     #[cfg(test)]
     {
         if RTK_REWRITE_TEST_OVERRIDE.with(|c| c.get()) {
@@ -566,29 +571,190 @@ fn rtk_rewrite(cmd: &str) -> Option<Verdict> {
 /// tests can inject a fake subprocess without touching `PATH`.
 ///
 /// Short-circuits (returns `None`) when the command is already `rtk`-prefixed.
-/// Delegates to `rewriter` for the actual rewrite attempt; returns `None` if
-/// the rewriter yields nothing, an empty string, or a string identical to the
-/// original input. Otherwise returns `Verdict::Rewrite`.
+///
+/// **Specific path**: delegates to `rewriter` for the actual rewrite attempt.
+/// If the rewriter yields a non-empty, distinct string, returns
+/// `Verdict::Rewrite` tagged `coverage = "specific"`.
+///
+/// **Blanket-prefix fallback** (Golden Rule): when the specific path produces
+/// nothing, [`should_blanket_prefix`] decides whether to prepend `rtk` to the
+/// whole command. This ensures every command that RTK can safely wrap is
+/// wrapped, even when no dedicated filter exists yet. Returns
+/// `Verdict::Rewrite` tagged `coverage = "blanket"`.
+///
+/// Returns `(Verdict, coverage_tag)` so the caller can emit the tag in
+/// telemetry without embedding it in `tool_input` (which is forwarded to
+/// Claude Code as-is).
 fn rtk_rewrite_with<F: FnOnce(&str) -> Option<String>>(
     cmd: &str,
     rewriter: F,
-) -> Option<Verdict> {
+) -> Option<(Verdict, &'static str)> {
     // Short-circuit: already wrapped — never double-prefix.
     if cmd.split_whitespace().next().is_some_and(|t| t == "rtk") {
         return None;
     }
 
-    let rewritten = rewriter(cmd)?;
-    let rewritten = rewritten.trim();
-
-    // Identical or empty after trim — nothing to rewrite.
-    if rewritten.is_empty() || rewritten == cmd.trim() {
-        return None;
+    // --- Specific path ---
+    if let Some(rewritten) = rewriter(cmd) {
+        let rewritten = rewritten.trim();
+        if !rewritten.is_empty() && rewritten != cmd.trim() {
+            return Some((
+                Verdict::Rewrite {
+                    tool_input: json!({ "command": rewritten }),
+                },
+                "specific",
+            ));
+        }
     }
 
-    Some(Verdict::Rewrite {
-        tool_input: json!({ "command": rewritten }),
-    })
+    // --- Blanket-prefix fallback (Golden Rule) ---
+    // When RTK has no specific filter for `cmd`, prepend `rtk ` so that:
+    //   a) all future RTK filters automatically apply retroactively, and
+    //   b) every rewrite is captured in telemetry for coverage analysis.
+    // `should_blanket_prefix` guards builtins, subshells, and other cases
+    // where prepending `rtk` would be ambiguous or incorrect.
+    if let Some(prefixed) = blanket_prefix(cmd) {
+        return Some((
+            Verdict::Rewrite {
+                tool_input: json!({ "command": prefixed }),
+            },
+            "blanket",
+        ));
+    }
+
+    None
+}
+
+/// Shell builtins and keywords that must never be wrapped with `rtk`.
+/// RTK would try to exec them as a binary and fail (exit 127).
+const SHELL_BUILTINS: &[&str] = &[
+    "cd", "pwd", "export", "set", "unset", "alias", "unalias", "source", ".",
+    "eval", "exec", "exit", "return", ":", "read", "shift", "let", "local",
+    "declare", "typeset", "readonly", "hash", "times", "umask", "wait",
+    "getopts", "caller", "enable", "bind", "bg", "fg", "disown", "jobs",
+    "kill", "command", "builtin", "type", "true", "false", "test", "[",
+    "[[", "((", "if", "then", "else", "elif", "fi", "for", "do", "done",
+    "while", "until", "case", "esac", "select", "function", "time", "coproc",
+    "in",
+];
+
+/// Returns the slice of `s` after stripping any leading `VAR=value` env
+/// assignments (tokens matching `[A-Za-z_][A-Za-z0-9_]*=…` followed by
+/// whitespace). If no env assignments are present the original slice is
+/// returned unchanged.
+fn strip_env_prefix(s: &str) -> &str {
+    let mut rest = s.trim_start();
+    loop {
+        // An env assignment token starts with an identifier character.
+        let bytes = rest.as_bytes();
+        if bytes.is_empty() {
+            break;
+        }
+        let first = bytes[0] as char;
+        if !(first.is_ascii_alphabetic() || first == '_') {
+            break;
+        }
+        // Find the boundary of this whitespace-separated token.
+        let token_end = rest
+            .find(|c: char| c.is_ascii_whitespace())
+            .unwrap_or(rest.len());
+        let token = &rest[..token_end];
+        // Must contain `=` to be an env assignment.
+        if !token.contains('=') {
+            break;
+        }
+        // The part before `=` must be a valid identifier.
+        let eq_pos = token.find('=').unwrap_or(0); // safe: contains '=' confirmed above
+        let name = &token[..eq_pos];
+        let is_ident = !name.is_empty()
+            && name
+                .chars()
+                .enumerate()
+                .all(|(i, c)| {
+                    if i == 0 {
+                        c.is_ascii_alphabetic() || c == '_'
+                    } else {
+                        c.is_ascii_alphanumeric() || c == '_'
+                    }
+                });
+        if !is_ident {
+            break;
+        }
+        // Advance past this env token and any trailing whitespace.
+        rest = rest[token_end..].trim_start();
+    }
+    rest
+}
+
+/// Returns `true` when it is safe to prepend `rtk ` to `cmd`.
+///
+/// Returns `false` when:
+/// - `cmd` is empty.
+/// - `cmd` contains subshell metacharacters (`(`, `` ` ``, `$(`) that make
+///   blanket-prefixing ambiguous.
+/// - The first executable token (after any `VAR=value` env assignments) is a
+///   shell builtin or keyword (RTK would exit 127 trying to exec it).
+fn should_blanket_prefix(cmd: &str) -> bool {
+    let trimmed = cmd.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    // Reject commands containing subshell / command-substitution metacharacters.
+    // These patterns are ambiguous — `rtk (foo; bar)` or `rtk echo $(date)`
+    // would not do what the author intended.
+    if trimmed.contains('(') || trimmed.contains('`') || trimmed.contains("$(") {
+        return false;
+    }
+    // Strip compound operators (&&, ||, ;, |) and inspect only the first
+    // segment. Prepending `rtk` before the whole pipeline is fine — the shell
+    // expands `&&` / `||` after `rtk` exits — but we must ensure the first
+    // executable is not a builtin.
+    let first_segment = trimmed
+        .split(|c| c == '&' || c == '|' || c == ';')
+        .next()
+        .unwrap_or(trimmed)
+        .trim();
+    // After stripping env assignments, check whether the executable token is
+    // a known builtin or keyword.
+    let executable = strip_env_prefix(first_segment)
+        .split_whitespace()
+        .next()
+        .unwrap_or("");
+    if SHELL_BUILTINS.contains(&executable) {
+        return false;
+    }
+    true
+}
+
+/// Builds the blanket-prefixed command string, handling `VAR=val` env
+/// assignments that must remain before the shell expands the line.
+///
+/// For plain commands (`cargo run -p foo`) this returns `"rtk cargo run -p
+/// foo"`. For env-prefixed commands (`RUST_LOG=debug cargo run`) the env
+/// assignments are kept at the front and `rtk` is inserted before the
+/// executable: `"RUST_LOG=debug rtk cargo run"`. This is the form that both
+/// the shell and RTK accept — the shell sets the env vars before invoking
+/// `rtk`, which then execs the real program.
+///
+/// Returns `None` when [`should_blanket_prefix`] rejects the command.
+fn blanket_prefix(cmd: &str) -> Option<String> {
+    if !should_blanket_prefix(cmd) {
+        return None;
+    }
+    let trimmed = cmd.trim();
+    // Detect how many leading env-assignment tokens precede the executable.
+    let after_env = strip_env_prefix(trimmed);
+    if after_env.len() == trimmed.len() {
+        // No env prefix — simple case.
+        Some(format!("rtk {trimmed}"))
+    } else {
+        // There are env assignments. Insert `rtk` between them and the rest.
+        // env_part_len is derived from pointer arithmetic below; no separate var needed.
+        // env_part includes the trailing space(s) stripped by strip_env_prefix,
+        // so we re-take the original slice up to the start of after_env.
+        let env_part = trimmed[..trimmed.len() - after_env.len()].trim_end();
+        Some(format!("{env_part} rtk {after_env}"))
+    }
 }
 
 #[cfg(test)]
@@ -837,7 +1003,7 @@ fn emit_commit_gate_event(
             "hasSensitive": has_sensitive,
             "buildOk": build_ok,
         }),
-        spec: None,
+        spec: current_spec(project_dir),
     };
     let _ = SqliteEventStore::for_project(project_dir)
         .and_then(|store| store.append(&event));
@@ -1100,7 +1266,7 @@ fn emit_pr_event(
             "spec": spec,
             "command": command_field,
         }),
-        spec: None,
+        spec: spec.clone(),
     };
     let _ = SqliteEventStore::for_project(project_dir)
         .and_then(|store| store.append(&harness_event));
@@ -1162,7 +1328,7 @@ impl Check for BashGuard {
         if let Some(verdict) = bash_native_redirect(&cmd) {
             return Ok(verdict);
         }
-        if let Some(verdict) = rtk_rewrite(&cmd) {
+        if let Some((verdict, coverage)) = rtk_rewrite(&cmd) {
             // Emit `rtk-rewrite` telemetry before returning. Best-effort —
             // a store failure must never block the tool call.
             if let Verdict::Rewrite { ref tool_input } = verdict {
@@ -1186,10 +1352,11 @@ impl Check for BashGuard {
                         "tokens_affected": i64::try_from(cmd.len()).unwrap_or(i64::MAX),
                         "tokens_saved": 0,
                         "note": "rewritten via rtk",
+                        "coverage": coverage,
                         "command_head": &cmd[..cmd.len().min(60)],
                         "rewritten_head": &rewritten[..rewritten.len().min(60)],
                     }),
-                    spec: None,
+                    spec: current_spec(&ctx.project_dir),
                 };
                 let _ = SqliteEventStore::for_project(&ctx.project_dir)
                     .and_then(|store| store.append(&event));
@@ -1271,12 +1438,16 @@ mod tests {
 
     #[test]
     fn safety_allows_normal_git() {
-        assert_eq!(verdict_for("git status"), Verdict::Allow);
+        // `git status` is safe — not blocked. With blanket-prefix active it
+        // returns Rewrite (rtk wraps it) rather than bare Allow, so we test
+        // non-blocking rather than exact equality.
+        assert!(!verdict_for("git status").is_blocking());
     }
 
     #[test]
     fn safety_allows_dotnet_build() {
-        assert_eq!(verdict_for("dotnet build"), Verdict::Allow);
+        // Same reasoning — blanket-prefix may produce Rewrite, not Allow.
+        assert!(!verdict_for("dotnet build").is_blocking());
     }
 
     #[test]
@@ -1288,10 +1459,8 @@ mod tests {
     #[test]
     fn safety_allows_force_with_lease() {
         // `--force-with-lease` is the safe form — not blocked by force-push.
-        assert_eq!(
-            verdict_for("git push --force-with-lease origin dev"),
-            Verdict::Allow
-        );
+        // Blanket-prefix may wrap it with `rtk`; we only assert non-blocking.
+        assert!(!verdict_for("git push --force-with-lease origin dev").is_blocking());
     }
 
     // --- bash-native-redirect parity (hooks.test.js "bash-native-redirect.js")
@@ -1360,8 +1529,10 @@ mod tests {
 
     #[test]
     fn redirect_allows_non_mapped_commands() {
-        assert_eq!(verdict_for("git status"), Verdict::Allow);
-        assert_eq!(verdict_for("npm run build"), Verdict::Allow);
+        // Blanket-prefix wraps unknown commands — Rewrite, not Allow. Assert
+        // non-blocking (the gate intent) rather than exact Verdict::Allow.
+        assert!(!verdict_for("git status").is_blocking());
+        assert!(!verdict_for("npm run build").is_blocking());
     }
 
     #[test]
@@ -1438,11 +1609,13 @@ mod tests {
         assert!(!is_git_commit("git push origin dev"));
     }
 
-    /// A non-commit Bash command never triggers the gate — verdict is `Allow`.
+    /// A non-commit Bash command never triggers the review gate — non-blocking.
+    /// (With blanket-prefix active these may return Rewrite rather than bare
+    /// Allow — the gate's contract is "does not block", not "returns Allow".)
     #[test]
     fn review_gate_ignores_non_commit_commands() {
-        assert_eq!(verdict_for("git status"), Verdict::Allow);
-        assert_eq!(verdict_for("npm run build"), Verdict::Allow);
+        assert!(!verdict_for("git status").is_blocking());
+        assert!(!verdict_for("npm run build").is_blocking());
     }
 
     /// `Mode::Off` skips the gate entirely — even on a `git commit`.
@@ -1680,63 +1853,101 @@ mod rtk_rewrite_tests {
 
     // -----------------------------------------------------------------------
     // AC-2: Rewriter returns a changed string → Verdict::Rewrite with the
-    //       rewritten command in tool_input["command"].
+    //       rewritten command in tool_input["command"], coverage = "specific".
     // -----------------------------------------------------------------------
 
     #[test]
     fn rtk_rewrite_emits_updated_input_when_rewriter_returns_change() {
         let result = rtk_rewrite_with("grep -n x src/", |c| Some(format!("rtk {c}")));
         match result {
-            Some(Verdict::Rewrite { tool_input }) => {
+            Some((Verdict::Rewrite { tool_input }, coverage)) => {
                 assert_eq!(
                     tool_input["command"],
                     "rtk grep -n x src/",
                     "tool_input[\"command\"] mismatch: {tool_input}"
                 );
+                assert_eq!(coverage, "specific", "expected specific coverage tag");
             }
             other => panic!("expected Verdict::Rewrite, got {other:?}"),
         }
     }
 
     // -----------------------------------------------------------------------
-    // AC-3: Rewriter returns None → fail-open (None).
+    // AC-3: Rewriter returns None for a non-builtin command → blanket prefix
+    //       kicks in and returns Verdict::Rewrite, coverage = "blanket".
+    //       Builtins (e.g. `cd`) still return None — see
+    //       rtk_rewrite_skips_shell_builtin_cd below.
     // -----------------------------------------------------------------------
 
     #[test]
-    fn rtk_rewrite_fail_open_when_rewriter_returns_none() {
+    fn rtk_rewrite_blanket_when_rewriter_returns_none_for_non_builtin() {
         let result = rtk_rewrite_with("grep -n x src/", |_| None);
-        assert!(result.is_none(), "expected None when rewriter returns None");
+        match result {
+            Some((Verdict::Rewrite { tool_input }, coverage)) => {
+                assert_eq!(
+                    tool_input["command"],
+                    "rtk grep -n x src/",
+                    "expected blanket-prefixed command; got: {tool_input}"
+                );
+                assert_eq!(coverage, "blanket", "expected blanket coverage tag");
+            }
+            other => panic!("expected blanket Verdict::Rewrite, got {other:?}"),
+        }
     }
 
     // -----------------------------------------------------------------------
-    // AC-4: Rewriter returns the same string → fail-open (None).
+    // AC-4: Rewriter returns the same string → specific path skipped;
+    //       blanket path fires for non-builtins, returning Rewrite.
     // -----------------------------------------------------------------------
 
     #[test]
-    fn rtk_rewrite_fail_open_when_rewriter_returns_identical() {
+    fn rtk_rewrite_blanket_when_rewriter_returns_identical() {
         let result = rtk_rewrite_with("grep -n x", |_| Some("grep -n x".to_string()));
-        assert!(result.is_none(), "expected None when rewriter returns identical string");
+        match result {
+            Some((Verdict::Rewrite { tool_input }, coverage)) => {
+                assert_eq!(
+                    tool_input["command"],
+                    "rtk grep -n x",
+                    "expected blanket-prefixed command; got: {tool_input}"
+                );
+                assert_eq!(coverage, "blanket");
+            }
+            other => panic!("expected blanket Verdict::Rewrite, got {other:?}"),
+        }
     }
 
     // -----------------------------------------------------------------------
-    // AC-5: Rewriter returns empty string → fail-open (None).
+    // AC-5: Rewriter returns empty string → specific path skipped;
+    //       blanket path fires for non-builtins.
     // -----------------------------------------------------------------------
 
     #[test]
-    fn rtk_rewrite_fail_open_when_rewriter_returns_empty() {
+    fn rtk_rewrite_blanket_when_rewriter_returns_empty() {
         let result = rtk_rewrite_with("grep -n x src/", |_| Some(String::new()));
-        assert!(result.is_none(), "expected None when rewriter returns empty string");
+        match result {
+            Some((Verdict::Rewrite { tool_input }, coverage)) => {
+                assert_eq!(tool_input["command"], "rtk grep -n x src/");
+                assert_eq!(coverage, "blanket");
+            }
+            other => panic!("expected blanket Verdict::Rewrite, got {other:?}"),
+        }
     }
 
     // -----------------------------------------------------------------------
-    // AC-6: Rewriter returns whitespace-only → fail-open (None).
-    //       Covers the defensive case where rtk emits only whitespace.
+    // AC-6: Rewriter returns whitespace-only → specific path skipped;
+    //       blanket path fires for non-builtins.
     // -----------------------------------------------------------------------
 
     #[test]
-    fn rtk_rewrite_fail_open_when_rewriter_returns_whitespace_only() {
+    fn rtk_rewrite_blanket_when_rewriter_returns_whitespace_only() {
         let result = rtk_rewrite_with("grep -n x src/", |_| Some("   \n  ".to_string()));
-        assert!(result.is_none(), "expected None when rewriter returns whitespace-only");
+        match result {
+            Some((Verdict::Rewrite { tool_input }, coverage)) => {
+                assert_eq!(tool_input["command"], "rtk grep -n x src/");
+                assert_eq!(coverage, "blanket");
+            }
+            other => panic!("expected blanket Verdict::Rewrite, got {other:?}"),
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -1748,12 +1959,13 @@ mod rtk_rewrite_tests {
     fn rtk_rewrite_strips_trailing_whitespace() {
         let result = rtk_rewrite_with("grep x", |_| Some("rtk grep x\n".to_string()));
         match result {
-            Some(Verdict::Rewrite { tool_input }) => {
+            Some((Verdict::Rewrite { tool_input }, coverage)) => {
                 assert_eq!(
                     tool_input["command"],
                     "rtk grep x",
                     "trailing newline must be stripped; got: {tool_input}"
                 );
+                assert_eq!(coverage, "specific");
             }
             other => panic!("expected Verdict::Rewrite, got {other:?}"),
         }
@@ -1776,6 +1988,143 @@ mod rtk_rewrite_tests {
         assert!(
             result.is_none(),
             "expected None when subprocess binary does not exist; got {result:?}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Blanket-prefix Golden Rule tests (new AC set)
+    // -----------------------------------------------------------------------
+
+    // BL-1: Unknown command with no specific RTK filter → blanket prefix.
+    #[test]
+    fn rtk_rewrite_blanket_prefixes_unknown_command() {
+        let result = rtk_rewrite_with("cargo run -p foo", |_| None);
+        match result {
+            Some((Verdict::Rewrite { tool_input }, coverage)) => {
+                assert_eq!(tool_input["command"], "rtk cargo run -p foo");
+                assert_eq!(coverage, "blanket");
+            }
+            other => panic!("expected blanket Verdict::Rewrite, got {other:?}"),
+        }
+    }
+
+    // BL-2: `node` command with no specific RTK filter → blanket prefix.
+    #[test]
+    fn rtk_rewrite_blanket_prefixes_node_command() {
+        let result = rtk_rewrite_with(r#"node -e "42""#, |_| None);
+        match result {
+            Some((Verdict::Rewrite { tool_input }, coverage)) => {
+                assert_eq!(tool_input["command"], r#"rtk node -e "42""#);
+                assert_eq!(coverage, "blanket");
+            }
+            other => panic!("expected blanket Verdict::Rewrite, got {other:?}"),
+        }
+    }
+
+    // BL-3: Env-prefixed command — `rtk` is inserted AFTER env assignments so
+    //       the shell sets the variable before invoking RTK.
+    //       `RUST_LOG=debug rtk cargo run` is the correct form;
+    //       `rtk RUST_LOG=debug cargo run` would fail (RTK tries to exec
+    //       `RUST_LOG=debug` as a binary name).
+    #[test]
+    fn rtk_rewrite_blanket_with_env_prefix() {
+        let result = rtk_rewrite_with("RUST_LOG=debug cargo run", |_| None);
+        match result {
+            Some((Verdict::Rewrite { tool_input }, coverage)) => {
+                assert_eq!(
+                    tool_input["command"],
+                    "RUST_LOG=debug rtk cargo run",
+                    "rtk must be inserted after env assignments, not before them"
+                );
+                assert_eq!(coverage, "blanket");
+            }
+            other => panic!("expected blanket Verdict::Rewrite, got {other:?}"),
+        }
+    }
+
+    // BL-4: Shell builtin `cd` → blanket must be suppressed (RTK cannot exec
+    //       a shell builtin; it would exit 127 with "Binary 'cd' not found").
+    #[test]
+    fn rtk_rewrite_skips_shell_builtin_cd() {
+        let result = rtk_rewrite_with("cd /tmp", |_| None);
+        assert!(
+            result.is_none(),
+            "expected None for shell builtin 'cd'; got {result:?}"
+        );
+    }
+
+    // BL-5: Env prefix before a builtin — env assignments do not change the
+    //       fact that the executable token is a builtin.
+    #[test]
+    fn rtk_rewrite_skips_shell_builtin_with_env() {
+        let result = rtk_rewrite_with("FOO=bar cd /tmp", |_| None);
+        assert!(
+            result.is_none(),
+            "expected None for env-prefixed builtin 'cd'; got {result:?}"
+        );
+    }
+
+    // BL-6: Subshell expression `(cmd)` — blanket-prefix is ambiguous here;
+    //       `rtk (cargo build; cargo test)` is not valid shell.
+    #[test]
+    fn rtk_rewrite_skips_subshell() {
+        let result = rtk_rewrite_with("(cargo build; cargo test)", |_| None);
+        assert!(
+            result.is_none(),
+            "expected None for subshell expression; got {result:?}"
+        );
+    }
+
+    // BL-7: Command substitution `$(…)` — blanket-prefix is ambiguous.
+    #[test]
+    fn rtk_rewrite_skips_command_substitution() {
+        let result = rtk_rewrite_with("echo $(date)", |_| None);
+        assert!(
+            result.is_none(),
+            "expected None for command substitution; got {result:?}"
+        );
+    }
+
+    // BL-8: When the specific rewriter returns a real rewrite, the specific
+    //       path wins — no blanket path is attempted.
+    #[test]
+    fn rtk_rewrite_specific_takes_precedence_over_blanket() {
+        let result = rtk_rewrite_with("cargo build", |_| Some("rtk cargo build".to_string()));
+        match result {
+            Some((Verdict::Rewrite { tool_input }, coverage)) => {
+                assert_eq!(tool_input["command"], "rtk cargo build");
+                assert_eq!(coverage, "specific", "specific rewriter must win over blanket");
+            }
+            other => panic!("expected specific Verdict::Rewrite, got {other:?}"),
+        }
+    }
+
+    // BL-9: Compound command with `&&` — first segment token (`cargo`) is not
+    //       a builtin so blanket prefix applies to the whole string.
+    //       The shell expands `&&` after RTK exits, so `rtk cargo run &&
+    //       cargo test` correctly runs `cargo test` in the same shell context.
+    #[test]
+    fn rtk_rewrite_compound_blanket_uses_first_segment_check() {
+        // RTK wraps only the first segment's executable; the `&& cargo test`
+        // tail is carried along unchanged. The shell parent handles `&&`.
+        let result = rtk_rewrite_with("cargo run && cargo test", |_| None);
+        match result {
+            Some((Verdict::Rewrite { tool_input }, coverage)) => {
+                assert_eq!(tool_input["command"], "rtk cargo run && cargo test");
+                assert_eq!(coverage, "blanket");
+            }
+            other => panic!("expected blanket Verdict::Rewrite for compound cmd, got {other:?}"),
+        }
+    }
+
+    // BL-10: Already-prefixed command → short-circuit returns None immediately
+    //        (rewriter closure is never invoked).
+    #[test]
+    fn rtk_rewrite_already_prefixed_no_op() {
+        let result = rtk_rewrite_with("rtk cargo run", |_| panic!("should not be called"));
+        assert!(
+            result.is_none(),
+            "expected None for already-prefixed command; got {result:?}"
         );
     }
 }

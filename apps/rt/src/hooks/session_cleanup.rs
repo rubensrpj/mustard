@@ -31,7 +31,7 @@
 //! correct cleanup once the Rust port owns SessionStart.
 
 use crate::run::amend_finalize;
-use mustard_core::io::sqlite_store::SqliteEventStore;
+use mustard_core::store::sqlite_store::SqliteEventStore;
 use mustard_core::model::contract::{Ctx, HookInput, Observer, Trigger};
 use std::path::Path;
 use std::process::{Command, Stdio};

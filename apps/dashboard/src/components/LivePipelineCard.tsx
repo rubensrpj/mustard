@@ -94,7 +94,7 @@ export function LivePipelineCard({ pipeline, projectName, onClick }: LivePipelin
           </span>
           <div className="flex-1 h-1 bg-muted rounded overflow-hidden">
             <div
-              className="h-full bg-amber-500/40"
+              className="h-full bg-[--color-accent-mustard]/40"
               style={{ width: `${(current_wave! / total_waves!) * 100}%` }}
             />
           </div>
@@ -108,15 +108,15 @@ export function LivePipelineCard({ pipeline, projectName, onClick }: LivePipelin
             {tasks_completed}/{total} done
           </span>
           <div className="flex h-1 w-32 rounded overflow-hidden bg-muted">
-            <div className="bg-emerald-500/40" style={{ width: `${completedPct}%` }} />
-            <div className="bg-amber-500/40" style={{ width: `${inProgressPct}%` }} />
+            <div className="bg-[--color-ok]/40" style={{ width: `${completedPct}%` }} />
+            <div className="bg-[--color-accent-mustard]/40" style={{ width: `${inProgressPct}%` }} />
           </div>
         </div>
       )}
 
       {/* Failure banner */}
       {showFailure && (
-        <div className="text-[12px] rounded px-2 py-1 bg-rose-500/10 border border-rose-500/30 text-rose-600 dark:text-rose-400">
+        <div className="text-[12px] rounded px-2 py-1 bg-[--color-error]/10 border border-[--color-error]/30 text-[--color-error]">
           Dispatch failed {formatDurationMs(failure_age_ms ?? 0)} ago — run{" "}
           <code className="font-mono">/resume</code>
         </div>

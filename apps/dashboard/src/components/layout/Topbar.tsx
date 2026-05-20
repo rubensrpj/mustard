@@ -7,13 +7,15 @@ import { discoverProjects } from "@/api/discovery";
 import { fetchActivePipelines } from "@/lib/dashboard";
 
 function pathLabel(pathname: string): string {
-  if (pathname === "/") return "Home";
-  if (pathname === "/settings") return "Settings";
+  if (pathname === "/" || pathname === "/workspace") return "Visão Geral";
+  if (pathname === "/specs") return "Specs";
+  if (pathname === "/economy") return "Economia";
+  if (pathname === "/knowledge") return "Knowledge";
+  if (pathname === "/settings") return "Configurações";
   if (pathname === "/preferences") return "Preferences";
   if (pathname === "/activity") return "Atividade";
   if (pathname === "/telemetry") return "Telemetria";
   if (pathname === "/quality") return "Qualidade";
-  if (pathname === "/knowledge") return "Knowledge";
   if (pathname === "/commands") return "Comandos";
   if (pathname === "/prd") return "PRD";
   if (pathname.startsWith("/project/")) return "Projeto";
@@ -55,7 +57,7 @@ export function Topbar() {
         </nav>
         {hasActive && (
           <div className="flex items-center gap-1 text-[10px] text-muted-foreground">
-            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+            <span className="w-1.5 h-1.5 rounded-full bg-[--color-ok] animate-pulse" />
             <span>live</span>
           </div>
         )}

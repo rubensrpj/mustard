@@ -463,6 +463,70 @@ export function fetchConsumptionGlobal(projectsRoot: string): Promise<GlobalCons
   return invoke<GlobalConsumption>("dashboard_consumption_global", { projectsRoot });
 }
 
+// --- Telemetry aggregation (Wave 7) ---
+
+export type {
+  TimeRange,
+  PhaseSummary,
+  TimelineEvent,
+  HeatmapCell,
+  HistoryEntry,
+  AcceptanceCriterion,
+  EffortBreakdown,
+  AgentDispatch,
+} from "@/lib/types/telemetry";
+
+export function dashboardTelemetryPhases(
+  repoPath: string,
+  timeRange: string,
+): Promise<import("@/lib/types/telemetry").PhaseSummary[]> {
+  return invoke("dashboard_telemetry_phases", { repoPath, timeRange });
+}
+
+export function dashboardTelemetryTimeline(
+  repoPath: string,
+  timeRange: string,
+  limit?: number,
+): Promise<import("@/lib/types/telemetry").TimelineEvent[]> {
+  return invoke("dashboard_telemetry_timeline", { repoPath, timeRange, limit });
+}
+
+export function dashboardTelemetryHeatmap(
+  repoPath: string,
+  timeRange: string,
+): Promise<import("@/lib/types/telemetry").HeatmapCell[]> {
+  return invoke("dashboard_telemetry_heatmap", { repoPath, timeRange });
+}
+
+export function dashboardTelemetryHistory(
+  repoPath: string,
+  timeRange: string,
+  limit?: number,
+): Promise<import("@/lib/types/telemetry").HistoryEntry[]> {
+  return invoke("dashboard_telemetry_history", { repoPath, timeRange, limit });
+}
+
+export function dashboardTelemetryCriteria(
+  repoPath: string,
+  timeRange: string,
+): Promise<import("@/lib/types/telemetry").AcceptanceCriterion[]> {
+  return invoke("dashboard_telemetry_criteria", { repoPath, timeRange });
+}
+
+export function dashboardTelemetryEffort(
+  repoPath: string,
+  timeRange: string,
+): Promise<import("@/lib/types/telemetry").EffortBreakdown> {
+  return invoke("dashboard_telemetry_effort", { repoPath, timeRange });
+}
+
+export function dashboardTelemetryAgents(
+  repoPath: string,
+  timeRange: string,
+): Promise<import("@/lib/types/telemetry").AgentDispatch[]> {
+  return invoke("dashboard_telemetry_agents", { repoPath, timeRange });
+}
+
 // --- useProjects hook ---
 import { useQuery as _useQuery } from "@tanstack/react-query";
 import { discoverProjects as _discoverProjects } from "@/api/discovery";
@@ -484,4 +548,95 @@ export function useProjects(): Project[] {
     staleTime: 60_000,
   });
   return (data as Project[] | undefined) ?? [];
+}
+
+// --- Amend queries (Wave 4, spec 2026-05-20-session-bound-amendments) ---
+
+/** Resolution rate: fraction of closed amend windows that ended 'archived'. */
+export function fetchAmendResolutionRate(repoPath: string): Promise<number> {
+  return invoke<number>("amend_resolution_rate", { repoPath });
+}
+
+/** Drift rate: fraction of closed amend windows that ended 'closed-amend-drift'. */
+export function fetchAmendDriftRate(repoPath: string): Promise<number> {
+  return invoke<number>("amend_drift_rate", { repoPath });
+}
+
+/** Count of windows carrying cross-session debt (status='closed-amend-pending'). */
+export function fetchCrossSessionAmendCount(repoPath: string): Promise<number> {
+  return invoke<number>("cross_session_amend_count", { repoPath });
+}
+
+/** Duration histogram input: Vec<i64> of millisecond durations for closed windows. */
+export function fetchAmendWindowDuration(repoPath: string): Promise<number[]> {
+  return invoke<number[]>("amend_window_duration", { repoPath });
+}
+
+// --- Wave-3 spec-card commands ---
+
+export type {
+  SpecCard,
+  SpecWave,
+  SpecQualityItem,
+  SpecTimelineNode,
+  TimelineEvent as SpecTimelineEvent,
+  EventFilter,
+  SpecActionKind,
+  SpecAction,
+  PhaseSegment,
+  SpecTrack,
+  WorkspaceAlert,
+  WorkspaceSummary,
+  FileCount as SpecFileCount,
+  ContributionCell,
+} from "@/lib/types/specs";
+
+export function dashboardSpecCard(
+  repoPath: string,
+  spec: string,
+): Promise<import("@/lib/types/specs").SpecCard> {
+  return invoke("dashboard_spec_card", { repoPath, spec });
+}
+
+export function dashboardSpecWaves(
+  repoPath: string,
+  spec: string,
+): Promise<import("@/lib/types/specs").SpecWave[]> {
+  return invoke("dashboard_spec_waves", { repoPath, spec });
+}
+
+export function dashboardSpecQuality(
+  repoPath: string,
+  spec: string,
+): Promise<import("@/lib/types/specs").SpecQualityItem[]> {
+  return invoke("dashboard_spec_quality", { repoPath, spec });
+}
+
+export function dashboardSpecTimeline(
+  repoPath: string,
+  spec: string,
+): Promise<import("@/lib/types/specs").SpecTimelineNode[]> {
+  return invoke("dashboard_spec_timeline", { repoPath, spec });
+}
+
+export function dashboardSpecEvents(
+  repoPath: string,
+  spec: string,
+  filter?: import("@/lib/types/specs").EventFilter,
+): Promise<import("@/lib/types/specs").TimelineEvent[]> {
+  return invoke("dashboard_spec_events", { repoPath, spec, filter });
+}
+
+export function dashboardSpecAction(
+  repoPath: string,
+  spec: string,
+  action: import("@/lib/types/specs").SpecActionKind,
+): Promise<import("@/lib/types/specs").SpecAction> {
+  return invoke("dashboard_spec_action", { repoPath, spec, action });
+}
+
+export function dashboardWorkspaceSummary(
+  repoPath: string,
+): Promise<import("@/lib/types/specs").WorkspaceSummary> {
+  return invoke("dashboard_workspace_summary", { repoPath });
 }

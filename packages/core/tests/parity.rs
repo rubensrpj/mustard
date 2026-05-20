@@ -24,9 +24,9 @@ use mustard_core::env::{
     Env, HookProfile, MapEnv, acquire_guard, check_depth, guarded_run, is_in_hook_phase,
     is_self_delegation, is_strict_mode, resolve_cwd, resolve_session_id, should_run,
 };
-use mustard_core::io::event_store::EventSink;
-use mustard_core::io::pipeline_repo::{FsPipelineRepo, PipelineRepo, read_optional};
-use mustard_core::io::sqlite_store::SqliteEventStore;
+use mustard_core::store::event_store::EventSink;
+use mustard_core::store::pipeline_repo::{FsPipelineRepo, PipelineRepo, read_optional};
+use mustard_core::store::sqlite_store::SqliteEventStore;
 use mustard_core::knowledge::{PipelineMetrics, ToolBreakdown, derive_prescription, extract_friction};
 use mustard_core::metrics::{MetricLine, emit_metric, metric_file_path};
 use mustard_core::model::contract::HookInput;

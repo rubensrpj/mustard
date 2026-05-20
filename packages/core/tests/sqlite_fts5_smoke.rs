@@ -11,7 +11,7 @@
 //! file for the INSERT/SELECT work. The store's `conn` field is private — this
 //! approach avoids changing the public API while still validating the schema.
 
-use mustard_core::io::sqlite_store::SqliteEventStore;
+use mustard_core::store::sqlite_store::SqliteEventStore;
 use rusqlite::Connection;
 use tempfile::tempdir;
 

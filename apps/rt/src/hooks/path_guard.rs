@@ -26,8 +26,8 @@
 //! as `0` — exactly the JS fallback. Recorded in the spec `## Concerns`.
 
 use mustard_core::error::Error;
-use mustard_core::io::event_store::EventSink;
-use mustard_core::io::sqlite_store::SqliteEventStore;
+use mustard_core::store::event_store::EventSink;
+use mustard_core::store::sqlite_store::SqliteEventStore;
 use mustard_core::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
 use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use serde_json::json;
@@ -532,7 +532,7 @@ fn emit_boundary_event(
             "mode": mode_str,
             "sample_patterns": sample_patterns.iter().take(6).collect::<Vec<_>>(),
         }),
-        spec: None,
+        spec: Some(spec.to_string()),
     };
     let _ = SqliteEventStore::for_project(project_dir)
         .and_then(|store| store.append(&event));
@@ -862,8 +862,8 @@ mod tests {
 
     #[test]
     fn boundary_gate_reads_status_from_projection() {
-        use mustard_core::io::event_store::EventSink;
-        use mustard_core::io::sqlite_store::SqliteEventStore;
+        use mustard_core::store::event_store::EventSink;
+        use mustard_core::store::sqlite_store::SqliteEventStore;
         use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 
         let dir = tempdir().unwrap();

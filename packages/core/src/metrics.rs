@@ -15,7 +15,7 @@
 //! `{ ts, event, tokens_affected, tokens_saved, note, ...extras }`.
 
 use crate::error::Result;
-use crate::io::fs::append_line;
+use crate::store::fs::append_line;
 use serde_json::{Map, Value};
 use std::path::Path;
 

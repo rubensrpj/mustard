@@ -4,8 +4,8 @@
 //! as a subprocess (`mustard-rt run amend-finalize --session-id <id>`) and use
 //! `mustard_core` + direct SQLite writes for setup and assertion.
 
-use mustard_core::io::event_store::EventSink;
-use mustard_core::io::sqlite_store::SqliteEventStore;
+use mustard_core::store::event_store::EventSink;
+use mustard_core::store::sqlite_store::SqliteEventStore;
 use mustard_core::model::event::{
     Actor, ActorKind, HarnessEvent, PipelineAmendOpenPayload, PipelineScopePayload,
     SCHEMA_VERSION, EVENT_PIPELINE_AMEND_ACTIVITY, EVENT_PIPELINE_AMEND_CLOSE,

@@ -35,8 +35,8 @@
 //! than reuse it, so the env-error/real-failure distinction stays exact.
 
 use mustard_core::error::Error;
-use mustard_core::io::event_store::EventSink;
-use mustard_core::io::sqlite_store::SqliteEventStore;
+use mustard_core::store::event_store::EventSink;
+use mustard_core::store::sqlite_store::SqliteEventStore;
 use mustard_core::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
 use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use serde_json::{Value, json};
@@ -654,7 +654,7 @@ fn run_command(cmd: &str, cwd: &str) -> CommandResult {
 // ---------------------------------------------------------------------------
 
 /// Emit a `close-gate.check` harness event. Best-effort telemetry.
-fn emit_close_gate_event(cwd: &str, payload: Value) {
+fn emit_close_gate_event(cwd: &str, spec: Option<&str>, payload: Value) {
     let event = HarnessEvent {
         v: SCHEMA_VERSION,
         ts: now_iso8601(),
@@ -667,7 +667,7 @@ fn emit_close_gate_event(cwd: &str, payload: Value) {
         },
         event: "close-gate.check".to_string(),
         payload,
-        spec: None,
+        spec: spec.map(str::to_string),
     };
     let _ = SqliteEventStore::for_project(cwd).and_then(|store| store.append(&event));
 }
@@ -800,6 +800,7 @@ fn run_close_gates(cwd: &str, spec_ref: Option<&str>, modes: CloseGateModes) -> 
             if debt_mode == GateMode::Strict {
                 emit_close_gate_event(
                     cwd,
+                    spec_ref,
                     json!({
                         "result": "deny-debt-markers",
                         "mode": mode_str(mode),
@@ -851,6 +852,7 @@ fn run_close_gates(cwd: &str, spec_ref: Option<&str>, modes: CloseGateModes) -> 
             if checklist_mode == GateMode::Strict {
                 emit_close_gate_event(
                     cwd,
+                    spec_ref,
                     json!({
                         "result": "deny-checklist-unmarked",
                         "mode": mode_str(mode),
@@ -891,6 +893,7 @@ fn run_close_gates(cwd: &str, spec_ref: Option<&str>, modes: CloseGateModes) -> 
             if qa_mode == GateMode::Strict {
                 emit_close_gate_event(
                     cwd,
+                    spec_ref,
                     json!({
                         "result": "deny-qa-missing",
                         "mode": mode_str(mode),
@@ -922,6 +925,7 @@ fn run_close_gates(cwd: &str, spec_ref: Option<&str>, modes: CloseGateModes) -> 
             if qa_mode == GateMode::Strict {
                 emit_close_gate_event(
                     cwd,
+                    spec_ref,
                     json!({
                         "result": "deny-qa-fail",
                         "mode": mode_str(mode),
@@ -982,6 +986,7 @@ fn run_close_gates(cwd: &str, spec_ref: Option<&str>, modes: CloseGateModes) -> 
     // Emit the close-gate.check event.
     emit_close_gate_event(
         cwd,
+        spec_ref,
         json!({
             "result": if first_failure.is_some() { "fail" } else { "pass" },
             "stages": stage_results,

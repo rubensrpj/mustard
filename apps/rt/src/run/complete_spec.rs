@@ -23,8 +23,8 @@
 //! reached for in-flight legacy specs. It is preserved here for that case only.
 
 use crate::run::env::session_id;
-use mustard_core::io::event_store::EventSink;
-use mustard_core::io::sqlite_store::SqliteEventStore;
+use mustard_core::store::event_store::EventSink;
+use mustard_core::store::sqlite_store::SqliteEventStore;
 use mustard_core::model::event::{
     Actor, ActorKind, HarnessEvent, SCHEMA_VERSION,
     EVENT_PIPELINE_COMPLETE, EVENT_PIPELINE_STATUS,
@@ -516,8 +516,14 @@ pub fn run(spec: Option<&str>, archive_flag: bool, archive_stale: bool, archive_
         std::process::exit(2);
     };
 
+    // Run QA before any state transition so `qa.result` is always emitted at
+    // CLOSE time, regardless of whether the user ran `/mustard:qa` manually.
+    // Fail-open: a QA failure never aborts the CLOSE flow.
+    run_qa_fail_open(&cwd, spec);
+
     if archive_flag {
         let (moved_spec, had_state) = archive(&cwd, spec);
+        rebuild_one_fail_open(&cwd, spec);
         println!(
             "{}",
             json!({ "ok": true, "mode": "archive", "spec": spec, "movedSpec": moved_spec, "hadState": had_state })
@@ -525,14 +531,51 @@ pub fn run(spec: Option<&str>, archive_flag: bool, archive_stale: bool, archive_
         return;
     }
 
-    println!("{}", mark_followup(&cwd, spec));
+    let followup_value = mark_followup(&cwd, spec);
+    // Refresh the `specs` + `metrics_projection` rows so the dashboard sees
+    // this spec's terminal status without waiting for the next manual
+    // `mustard-rt run rebuild-specs`. Fail-open by design — telemetry never
+    // blocks a CLI flow.
+    rebuild_one_fail_open(&cwd, spec);
+    println!("{followup_value}");
+}
+
+/// Invoke [`crate::run::rebuild_specs::rebuild_one`] but swallow every error.
+///
+/// `complete-spec` is part of the CLI hot path; a rebuild failure on the
+/// projection side must not abort the user's archival / followup workflow.
+fn rebuild_one_fail_open(cwd: &Path, spec: &str) {
+    let project_dir = cwd.to_string_lossy();
+    let _ = crate::run::rebuild_specs::rebuild_one(&project_dir, spec);
+}
+
+/// Invoke [`crate::run::qa_run::run_for_spec`] and log the outcome to stderr.
+///
+/// `cwd` is passed for documentation clarity; `run_for_spec` resolves the
+/// project dir from the process working directory (same as `complete_spec::run`
+/// resolved `cwd` from). Fail-open: a QA failure is logged and the function
+/// returns normally — the CLOSE flow is never blocked.
+fn run_qa_fail_open(_cwd: &Path, spec: &str) {
+    // `self_invoked: true` makes `qa_run::run_for_spec` auto-exclude
+    // `mustard-rt` and `mustard-dashboard` from any `cargo build/test
+    // --workspace` AC. Closes the catch-22: this very process is foreground
+    // holding the exe that cargo would have to relink. See
+    // `qa_run::rewrite_self_invoked_cargo` for the rewrite rules.
+    let outcome = crate::run::qa_run::run_for_spec_with_options(
+        spec,
+        crate::run::qa_run::QaRunOptions { self_invoked: true },
+    );
+    eprintln!(
+        "[complete-spec] QA: spec={} overall={} passed={}/{}",
+        outcome.spec, outcome.overall, outcome.passed, outcome.total,
+    );
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mustard_core::io::event_store::EventSink;
-    use mustard_core::io::sqlite_store::SqliteEventStore;
+    use mustard_core::store::event_store::EventSink;
+    use mustard_core::store::sqlite_store::SqliteEventStore;
     use mustard_core::model::event::{Actor, ActorKind, SCHEMA_VERSION};
     use tempfile::tempdir;
 

@@ -26,11 +26,9 @@ import {
   Home,
   Settings as SettingsIcon,
   BookOpen,
-  Activity as ActivityIcon,
   Gauge,
   Terminal,
   FileText,
-  Sparkles,
   FolderPlus,
   Cog,
   ChevronRight,
@@ -117,9 +115,9 @@ function StatusDotInline({ kind }: { kind: StatusKind }) {
   }
   const color =
     kind === "installed"
-      ? "bg-emerald-500 ring-emerald-500/30"
+      ? "bg-[--color-ok] ring-[--color-ok]/30"
       : kind === "updateAvailable"
-        ? "bg-amber-500 ring-amber-500/30"
+        ? "bg-[--color-accent-mustard] ring-[--color-accent-mustard]/30"
         : "bg-zinc-500 ring-zinc-500/30";
   return (
     <span
@@ -215,13 +213,13 @@ function ProjectTreeNode({
     statusLineColor = "text-red-400";
   } else if (!detection.version) {
     statusLine = t("sidebar.status.versionUnknown");
-    statusLineColor = "text-emerald-400";
+    statusLineColor = "text-[--color-ok]";
   } else {
     const suffix = updateAvailable
       ? t("sidebar.status.updateAvailable")
       : t("sidebar.status.installed");
     statusLine = `v${detection.version} · ${suffix}`;
-    statusLineColor = updateAvailable ? "text-red-400" : "text-emerald-400";
+    statusLineColor = updateAvailable ? "text-red-400" : "text-[--color-ok]";
   }
 
   async function ensureActive() {
@@ -287,13 +285,12 @@ function ProjectTreeNode({
 
   // Build leaves locally so the active-leaf style only fires when both the
   // path matches AND the project itself is the active workspace.
-  const leaves: { to: string; icon: typeof Home; labelKey: string; end?: boolean }[] = [
-    { to: "/", icon: Home, labelKey: "nav.home", end: true },
-    { to: "/activity", icon: ActivityIcon, labelKey: "nav.activity" },
-    { to: "/telemetry", icon: Gauge, labelKey: "nav.telemetry" },
-    { to: "/quality", icon: Sparkles, labelKey: "nav.quality" },
-    { to: "/knowledge", icon: BookOpen, labelKey: "nav.knowledge" },
-    { to: "/settings", icon: SettingsIcon, labelKey: "nav.settings" },
+  const leaves: { to: string; icon: typeof Home; label: string; end?: boolean }[] = [
+    { to: "/workspace", icon: Home, label: "Visão Geral" },
+    { to: "/specs", icon: FileText, label: "Specs" },
+    { to: "/economy", icon: Gauge, label: "Economia" },
+    { to: "/knowledge", icon: BookOpen, label: "Knowledge" },
+    { to: "/settings", icon: SettingsIcon, label: "Configurações" },
   ];
 
   return (
@@ -349,7 +346,7 @@ function ProjectTreeNode({
                   title={t("artifact.staleCount", { count: staleCount })}
                   className={cn(
                     "shrink-0 inline-flex items-center px-1.5 rounded text-[10px] leading-4 tabular-nums",
-                    "border border-amber-500/30 bg-amber-500/10 text-amber-400",
+                    "border border-[--color-accent-mustard]/30 bg-[--color-accent-mustard]/10 text-[--color-accent-mustard]",
                   )}
                 >
                   {t("artifact.staleCount", { count: staleCount })}
@@ -431,7 +428,7 @@ function ProjectTreeNode({
       </div>
       {isExpanded && (
         <div className="flex flex-col gap-0.5 mt-0.5 mb-1">
-          {leaves.map(({ to, icon: Icon, labelKey, end }) => {
+          {leaves.map(({ to, icon: Icon, label, end }) => {
             const pathMatches = end
               ? location.pathname === to
               : location.pathname === to ||
@@ -448,7 +445,7 @@ function ProjectTreeNode({
                 className={leafItemClass(active)}
               >
                 <Icon className="h-3.5 w-3.5" />
-                <span>{t(labelKey)}</span>
+                <span>{label}</span>
               </button>
             );
           })}

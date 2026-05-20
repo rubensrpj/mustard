@@ -14,10 +14,10 @@
 //! Legacy JSON sidecars are no longer written.  Wave 6c migrates the
 //! dashboard reader.
 
-use crate::run::env::{project_dir, session_id};
+use crate::run::env::{current_spec, project_dir, session_id};
 use crate::util::{now_iso8601, now_millis};
-use mustard_core::io::event_store::EventSink;
-use mustard_core::io::sqlite_store::SqliteEventStore;
+use mustard_core::store::event_store::EventSink;
+use mustard_core::store::sqlite_store::SqliteEventStore;
 use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use rusqlite::params;
 use serde_json::{Value, json};
@@ -166,6 +166,14 @@ fn run_agent(input: &Value) {
 }
 
 /// Append a `decision` / `lesson` harness event for the `decision` subcommand.
+///
+/// **Spec attribution:** decisions and lessons are scoped to whatever spec was
+/// active when they were recorded. Pre-2026-05-20 these events left
+/// `spec = NULL`, which made them invisible to per-spec timeline projections.
+/// Now [`current_spec`] feeds the field from the harness state — the same
+/// helper every other emitter uses — so decisions surface in the timeline of
+/// the spec they belong to. Falls back to `None` when no spec is active (the
+/// CLI was invoked outside any pipeline).
 fn emit_decision_event(entry_type: &str, content: &str, context: &str, source: &str, dir: &str) {
     let head: String = content.chars().take(200).collect();
     let (event, payload) = if entry_type == "decision" {
@@ -197,7 +205,7 @@ fn emit_decision_event(entry_type: &str, content: &str, context: &str, source: &
         },
         event: event.to_string(),
         payload,
-        spec: None,
+        spec: current_spec(dir),
     };
     let _ = SqliteEventStore::for_project(dir).and_then(|store| store.append(&ev));
 }

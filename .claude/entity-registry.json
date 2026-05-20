@@ -10,11 +10,11 @@
       "conventions": {
         "naming": {
           "distribution": {
-            "lowercase": 14,
-            "snake_case": 4
+            "lowercase": 15,
+            "snake_case": 5
           },
           "dominant": "lowercase",
-          "total": 18
+          "total": 20
         }
       },
       "discovered": [
@@ -62,13 +62,13 @@
       "conventions": {
         "naming": {
           "distribution": {
-            "camelCase": 11,
+            "camelCase": 25,
             "kebab-case": 5,
-            "lowercase": 13,
+            "lowercase": 16,
             "mixed": 3
           },
           "dominant": null,
-          "total": 32
+          "total": 49
         }
       },
       "discovered": [
@@ -76,7 +76,7 @@
           "declarationKeywords": null,
           "declarationSuffix": null,
           "ext": ".ts",
-          "fileCount": 10,
+          "fileCount": 24,
           "folderPattern": "**/src/",
           "folders": [
             "src/hooks",
@@ -145,11 +145,12 @@
           "components": 1,
           "data": 1,
           "hooks": 1,
-          "lib": 1,
+          "lib": 2,
           "page": 1,
-          "src": 6
+          "src": 7,
+          "types": 1
         },
-        "totalFolders": 7
+        "totalFolders": 8
       },
       "framework": "none",
       "orm": "none",
@@ -301,6 +302,7 @@
       "values": [
         "WaveDependency",
         "ScopeDecompose",
+        "RebuildSpecs",
         "Statusline",
         "RtkGain",
         "OtelCollector"

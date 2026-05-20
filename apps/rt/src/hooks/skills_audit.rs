@@ -331,10 +331,10 @@ mod tests {
 
     #[test]
     fn extracts_markdown_section_bullets() {
-        let prompt = "## Recommended Skills\n- karpathy-guidelines\n- templates-hook-protocol\n\n## Next\n- ignored";
+        let prompt = "## Recommended Skills\n- karpathy-guidelines\n- commit-workflow\n\n## Next\n- ignored";
         let skills = extract_skills(prompt);
         assert!(skills.contains(&"karpathy-guidelines".to_string()));
-        assert!(skills.contains(&"templates-hook-protocol".to_string()));
+        assert!(skills.contains(&"commit-workflow".to_string()));
         assert!(!skills.contains(&"ignored".to_string()));
     }
 

@@ -149,10 +149,26 @@ export function Knowledge() {
     () => (browseRows ?? []).filter((r) => !isFrictionEntry(r)),
     [browseRows],
   );
-  const legacyFriction = useMemo<FrictionEntry[]>(
-    () => (browseRows ?? []).filter(isFrictionEntry).map(toFrictionEntry),
-    [browseRows],
-  );
+  // Wave 5 fix (2026-05-20): the legacy `knowledge.json` extractor appended
+  // one row per friction event without deduplicating, so `high-hook-retry-*`
+  // and `heavy-pipeline-*` series produced 10+ visually identical rows.
+  // Dedup by `name` here at the read path — same shape, fewer rows. We keep
+  // whichever row has the most recent `updated_at` (lexicographic compare
+  // works for ISO-8601 strings; missing dates lose to present ones).
+  const legacyFriction = useMemo<FrictionEntry[]>(() => {
+    const byName = new Map<string, FrictionEntry>();
+    for (const row of browseRows ?? []) {
+      if (!isFrictionEntry(row)) continue;
+      const entry = toFrictionEntry(row);
+      const prev = byName.get(entry.name);
+      const newTs = entry.updated_at ?? "";
+      const oldTs = prev?.updated_at ?? "";
+      if (!prev || newTs > oldTs) {
+        byName.set(entry.name, entry);
+      }
+    }
+    return Array.from(byName.values()).sort((a, b) => a.name.localeCompare(b.name));
+  }, [browseRows]);
 
   // Instant in-memory refinement of the browse list when a query is typed.
   const refinedBrowse = useMemo<KnowledgeBrowseRow[]>(() => {
@@ -340,14 +356,14 @@ function FrictionRow({ f }: { f: FrictionEntry }) {
     <li className="flex flex-col gap-1 border-b border-border/40 last:border-b-0 pb-2 last:pb-0">
       <div className="flex items-baseline gap-2 flex-wrap">
         <AlertTriangle
-          className="h-3.5 w-3.5 text-amber-400 self-center shrink-0"
+          className="h-3.5 w-3.5 text-[--color-accent-mustard] self-center shrink-0"
           aria-hidden
         />
         <span className="font-mono font-medium text-[13px]">{f.name}</span>
         {f.retry_count != null && (
           <Badge
             variant="outline"
-            className="text-[10px] border-amber-500/40 text-amber-300"
+            className="text-[10px] border-[--color-accent-mustard]/40 text-[--color-accent-mustard]"
             title="Retries de hook medidos nesta pipeline (sandbox/stash/re-prompt — não redespacho de agente)."
           >
             {f.retry_count} retries
@@ -356,7 +372,7 @@ function FrictionRow({ f }: { f: FrictionEntry }) {
         {f.api_calls != null && (
           <Badge
             variant="outline"
-            className="text-[10px] border-amber-500/40 text-amber-300"
+            className="text-[10px] border-[--color-accent-mustard]/40 text-[--color-accent-mustard]"
             title="Total de chamadas de API medidas nesta pipeline."
           >
             {f.api_calls} chamadas
@@ -374,7 +390,7 @@ function FrictionRow({ f }: { f: FrictionEntry }) {
         </p>
       )}
       {f.prescription && (
-        <p className="text-[12px] text-emerald-400/90 leading-relaxed pl-6">
+        <p className="text-[12px] text-[--color-ok]/90 leading-relaxed pl-6">
           Sugestão: {f.prescription}
         </p>
       )}

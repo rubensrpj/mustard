@@ -19,8 +19,8 @@
 use crate::report::{table, Report};
 use crate::run::env::{project_dir, session_id};
 use crate::util::now_iso8601;
-use mustard_core::io::event_store::EventSink;
-use mustard_core::io::sqlite_store::SqliteEventStore;
+use mustard_core::store::event_store::EventSink;
+use mustard_core::store::sqlite_store::SqliteEventStore;
 use mustard_core::metrics::{emit_metric, MetricLine};
 use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use serde_json::{json, Value};
@@ -158,13 +158,62 @@ fn build_shell_command(command: &str) -> Command {
     c
 }
 
+/// Rewrite a `cargo build/test --workspace` command to skip the crate(s) in
+/// execution when qa-run is invoked from inside `complete-spec`.
+///
+/// **The catch-22 this solves:** `complete-spec` calls
+/// [`run_for_spec_with_options`] which forks shell commands for each AC. An
+/// AC like `cargo build --workspace` then tries to relink the very
+/// `mustard-rt.exe` that is currently the foreground process —
+/// `Acesso negado. (os error 5)` on Windows. Same story when `dashboard.exe`
+/// is held by a user testing the UI.
+///
+/// Gated by [`QaRunOptions::self_invoked`] (stored in the [`QA_OPTIONS`]
+/// thread-local). When `false`, the rewrite is a no-op — external
+/// `mustard-rt run qa-run` invocations from CI / standalone shells see the
+/// original command untouched.
+///
+/// When `true`, every `cargo (build|test) ... --workspace ...` token sequence
+/// gets `--exclude mustard-rt --exclude mustard-dashboard` appended.
+/// Idempotent: won't double-add if the AC already excluded them.
+fn rewrite_self_invoked_cargo(command: &str) -> String {
+    let opts = QA_OPTIONS.with(std::cell::Cell::get);
+    if !opts.self_invoked {
+        return command.to_string();
+    }
+    // Cheap detection: token sequence `cargo (build|test) ... --workspace`.
+    let lower = command.to_ascii_lowercase();
+    if !(lower.contains("cargo build") || lower.contains("cargo test")) {
+        return command.to_string();
+    }
+    if !lower.contains("--workspace") {
+        return command.to_string();
+    }
+    let mut out = command.to_string();
+    for crate_name in ["mustard-rt", "mustard-dashboard"] {
+        let needle_explicit = format!("--exclude {crate_name}");
+        let needle_eq = format!("--exclude={crate_name}");
+        if out.contains(&needle_explicit) || out.contains(&needle_eq) {
+            continue;
+        }
+        // Append at the end — `cargo` accepts flags positionally after
+        // `--workspace`. Adding to the tail keeps any post-`--` script args
+        // (passed to the test binary) untouched.
+        out.push_str(" --exclude ");
+        out.push_str(crate_name);
+    }
+    out
+}
+
 /// Run one AC command. Mirrors the JS classification: `pass` (exit 0), `fail`
 /// (non-zero exit), `skip` (timeout or spawn failure).
 fn run_ac_command(command: &str, cwd: &Path) -> AcResult {
     let t0 = Instant::now();
     // POSIX-style AC commands assume a shell; use the platform shell. Windows
     // AC are documented to be cross-shell-safe (`node -e`, `bash -c`).
-    let mut cmd = build_shell_command(command);
+    // Self-invoked rewrite first — see `rewrite_self_invoked_cargo` for why.
+    let rewritten = rewrite_self_invoked_cargo(command);
+    let mut cmd = build_shell_command(&rewritten);
     cmd.current_dir(cwd);
 
     // No native wait-with-timeout in std; spawn + poll.
@@ -353,6 +402,93 @@ fn write_html_report(cwd: &Path, spec: &str, overall: &str, criteria: &[AcResult
 struct QaResult {
     overall: String,
     criteria: Vec<AcResult>,
+}
+
+/// Public outcome type returned by [`run_for_spec`].
+///
+/// Callers that do not want process::exit (e.g. `complete_spec`, `qa_run_all`)
+/// use this instead of the stdout-emitting [`run`] entry point.
+pub struct QaSpecOutcome {
+    pub spec: String,
+    pub overall: String,
+    pub passed: u32,
+    pub failed: u32,
+    pub skipped: u32,
+    pub total: u32,
+}
+
+/// Options for [`run_for_spec_with_options`].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct QaRunOptions {
+    /// `true` when invoked from a process that **is itself** the binary
+    /// some AC commands try to rebuild (`mustard-rt`/`mustard-dashboard`).
+    ///
+    /// Setting this flag makes [`rewrite_self_invoked_cargo`] auto-append
+    /// `--exclude mustard-rt --exclude mustard-dashboard` to any
+    /// `cargo build|test ... --workspace ...` command, so the AC does not
+    /// fail with `failed to remove file mustard-rt.exe` (Windows os error 5)
+    /// just because the very process running qa-run is holding the exe.
+    ///
+    /// `complete_spec::run_qa_fail_open` sets this. External callers
+    /// (`mustard-rt run qa-run --spec X` from a CI shell) leave it `false`.
+    pub self_invoked: bool,
+}
+
+/// Run QA for `spec` under the current working directory, emit `qa.result`,
+/// and return a typed outcome — no stdout, no `process::exit`.
+///
+/// Designed for callers that need the result (e.g. `complete_spec`) without
+/// taking over the process. Errors are fail-open: a missing spec returns an
+/// outcome with `overall = "skip"`.
+pub fn run_for_spec(spec: &str) -> QaSpecOutcome {
+    run_for_spec_with_options(spec, QaRunOptions::default())
+}
+
+/// Like [`run_for_spec`] but lets the caller flip [`QaRunOptions::self_invoked`]
+/// to enable the cargo-self-build rewrite.
+pub fn run_for_spec_with_options(spec: &str, opts: QaRunOptions) -> QaSpecOutcome {
+    QA_OPTIONS.with(|cell| cell.set(opts));
+    let outcome = run_for_spec_inner(spec);
+    QA_OPTIONS.with(|cell| cell.set(QaRunOptions::default()));
+    outcome
+}
+
+thread_local! {
+    /// Active [`QaRunOptions`] for the current thread's qa-run.
+    ///
+    /// Set by [`run_for_spec_with_options`] and read by
+    /// [`rewrite_self_invoked_cargo`]. A `thread_local!` Cell — not an env
+    /// var — because `unsafe_code` is forbidden in this crate and Rust 2024
+    /// requires `unsafe` for env mutation, but a Cell-backed `thread_local`
+    /// is plain safe Rust.
+    static QA_OPTIONS: std::cell::Cell<QaRunOptions> = const {
+        std::cell::Cell::new(QaRunOptions { self_invoked: false })
+    };
+}
+
+fn run_for_spec_inner(spec: &str) -> QaSpecOutcome {
+    let cwd = std::env::current_dir()
+        .ok()
+        .or_else(|| Some(std::path::PathBuf::from(crate::run::env::project_dir())))
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    let result = run_qa(&cwd, spec);
+    let (mut passed, mut failed, mut skipped) = (0u32, 0u32, 0u32);
+    for c in &result.criteria {
+        match c.status.as_str() {
+            "pass" => passed += 1,
+            "fail" => failed += 1,
+            _ => skipped += 1,
+        }
+    }
+    let total = passed + failed + skipped;
+    QaSpecOutcome {
+        spec: spec.to_string(),
+        overall: result.overall,
+        passed,
+        failed,
+        skipped,
+        total,
+    }
 }
 
 /// Run QA for `spec` under `cwd`. Always emits the event + metric.

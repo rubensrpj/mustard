@@ -16,7 +16,7 @@
 //! same JSON in a standalone HTML page and prints its path on stderr.
 
 use crate::report::Report;
-use mustard_core::io::sqlite_store::SqliteEventStore;
+use mustard_core::store::sqlite_store::SqliteEventStore;
 use mustard_core::model::event::{
     HarnessEvent, EVENT_PIPELINE_COMPLETE, EVENT_PIPELINE_DISPATCH_FAILURE, EVENT_PIPELINE_PAUSE,
     EVENT_PIPELINE_RESUME_MODE, EVENT_PIPELINE_SCOPE, EVENT_PIPELINE_STATUS,
@@ -1129,7 +1129,7 @@ mod tests {
     // pipeline_state_for_spec tests — Wave 2 of 2026-05-19-pipeline-state-from-sqlite
     // -----------------------------------------------------------------------
 
-    use mustard_core::io::event_store::EventSink;
+    use mustard_core::store::event_store::EventSink;
 
     fn store_in_dir(dir: &std::path::Path) -> SqliteEventStore {
         SqliteEventStore::new(dir.join("mustard.db")).unwrap()

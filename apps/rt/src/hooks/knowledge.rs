@@ -35,8 +35,8 @@
 //!   When `memory.js` is absent the extraction is a silent no-op — parity with
 //!   the JS `if (!fs.existsSync(persistScript)) return false`.
 
-use mustard_core::io::event_store::EventSink;
-use mustard_core::io::sqlite_store::SqliteEventStore;
+use mustard_core::store::event_store::EventSink;
+use mustard_core::store::sqlite_store::SqliteEventStore;
 use mustard_core::model::contract::{Ctx, HookInput, Observer, Trigger};
 use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use serde_json::{Value, json};

@@ -22,8 +22,8 @@
 use crate::run::current_spec;
 use crate::util::now_iso8601;
 use mustard_core::error::Error;
-use mustard_core::io::event_store::EventSink;
-use mustard_core::io::sqlite_store::{AmendWindow, SqliteEventStore};
+use mustard_core::store::event_store::EventSink;
+use mustard_core::store::sqlite_store::{AmendWindow, SqliteEventStore};
 use mustard_core::model::contract::{Check, Ctx, HookInput, Observer, Trigger, Verdict};
 use mustard_core::model::event::{
     Actor, ActorKind, HarnessEvent, PipelineAmendActivityPayload, PipelineAmendClosePayload,
@@ -443,7 +443,7 @@ fn derive_spec_lang(store: &SqliteEventStore, spec_id: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mustard_core::io::sqlite_store::SqliteEventStore;
+    use mustard_core::store::sqlite_store::SqliteEventStore;
     use mustard_core::model::event::{
         PipelineAmendOpenPayload, EVENT_PIPELINE_AMEND_ACTIVITY, EVENT_PIPELINE_AMEND_DRIFT,
         EVENT_PIPELINE_AMEND_INTENT,

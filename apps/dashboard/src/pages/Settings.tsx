@@ -40,7 +40,7 @@ function EnvField({
           {k.label}
         </label>
         {pending && (
-          <Badge variant="outline" className="text-[10px] border-amber-500/40 text-amber-300">
+          <Badge variant="outline" className="text-[10px] border-[--color-accent-mustard]/40 text-[--color-accent-mustard]">
             alteração pendente
           </Badge>
         )}

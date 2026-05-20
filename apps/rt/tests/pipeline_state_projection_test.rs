@@ -11,8 +11,8 @@
 //! as a subprocess (via `CARGO_BIN_EXE_mustard-rt`) and query the SQLite store
 //! through `mustard_core` directly for fold assertions.
 
-use mustard_core::io::event_store::EventSink;
-use mustard_core::io::sqlite_store::SqliteEventStore;
+use mustard_core::store::event_store::EventSink;
+use mustard_core::store::sqlite_store::SqliteEventStore;
 use mustard_core::model::event::{
     Actor, ActorKind, HarnessEvent, SCHEMA_VERSION,
     EVENT_PIPELINE_SCOPE, EVENT_PIPELINE_STATUS, EVENT_PIPELINE_TASK_COMPLETE,
