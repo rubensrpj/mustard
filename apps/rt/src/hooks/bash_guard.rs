@@ -27,6 +27,7 @@
 use crate::run::current_spec;
 use mustard_core::config::Mode;
 use mustard_core::error::Error;
+use mustard_core::process::rtk_command;
 use mustard_core::store::event_store::EventSink;
 use mustard_core::store::sqlite_store::SqliteEventStore;
 use mustard_core::model::contract::{Check, Ctx, HookInput, Observer, Trigger, Verdict};
@@ -542,6 +543,19 @@ fn run_rtk_rewrite_subprocess_with_bin(cmd: &str, binary: &str) -> Option<String
     }
 }
 
+/// Read `MUSTARD_RTK_GATE_MODE` and resolve to a [`Mode`]. Default
+/// [`Mode::Strict`] — the spec (`2026-05-20-rtk-mandatory-everywhere`) makes
+/// `rtk` a mandatory dependency, so an unset/unknown value falls back to
+/// strict-blocking rather than silently degrading. Parse goes through
+/// [`Mode::parse`] (the same case-insensitive parser used by every other
+/// gate), and any unrecognised value also collapses to `Strict`.
+fn rtk_gate_mode() -> Mode {
+    std::env::var("MUSTARD_RTK_GATE_MODE")
+        .ok()
+        .and_then(|raw| Mode::parse(&raw))
+        .unwrap_or(Mode::Strict)
+}
+
 /// Shells out to `rtk rewrite <cmd>` with a 2s timeout. On exit-0 with a
 /// non-empty, distinct stdout, returns `Verdict::Rewrite` carrying the
 /// rewritten command in `updatedInput`. Every other path — already
@@ -551,36 +565,52 @@ fn run_rtk_rewrite_subprocess_with_bin(cmd: &str, binary: &str) -> Option<String
 /// fallback.
 ///
 /// Split into two layers so unit tests can inject a closure instead of the
-/// real subprocess:
-/// - [`rtk_rewrite_with`] — pure logic, closure-injectable.
-/// - [`rtk_rewrite`]      — production wrapper passing the real subprocess.
+/// real subprocess and a [`Mode`] instead of mutating process env (`unsafe`
+/// under edition 2024 because of `#![forbid(unsafe_code)]`):
+/// - [`rtk_rewrite_with`] — pure logic, closure- and mode-injectable.
+/// - [`rtk_rewrite`]      — production wrapper passing the real subprocess
+///   and [`rtk_gate_mode`].
 ///
 /// Returns `(Verdict, coverage_tag)` so the caller can emit `coverage` in
-/// telemetry without embedding it in `tool_input`.
+/// telemetry without embedding it in `tool_input`. The coverage tag for the
+/// strict-mode Deny path is `"deny"`.
 fn rtk_rewrite(cmd: &str) -> Option<(Verdict, &'static str)> {
     #[cfg(test)]
     {
         if RTK_REWRITE_TEST_OVERRIDE.with(|c| c.get()) {
-            return rtk_rewrite_with(cmd, |_| None);
+            // Test override forces the gate off so unrelated `verdict_for`
+            // tests can exercise bash-safety / native-redirect without the
+            // strict-mode rtk gate denying every unprefixed command. Tests
+            // that exercise the gate itself call `rtk_rewrite_with` directly
+            // with an explicit `Mode`.
+            return rtk_rewrite_with(cmd, |_| None, Mode::Off);
         }
     }
-    rtk_rewrite_with(cmd, run_rtk_rewrite_subprocess)
+    rtk_rewrite_with(cmd, run_rtk_rewrite_subprocess, rtk_gate_mode())
 }
 
 /// Pure, testable core of `rtk-rewrite`. Accepts any `rewriter` closure so
-/// tests can inject a fake subprocess without touching `PATH`.
+/// tests can inject a fake subprocess without touching `PATH`, and a [`Mode`]
+/// so tests can drive the gate without mutating process env (`unsafe` under
+/// edition 2024 because of `#![forbid(unsafe_code)]`).
 ///
 /// Short-circuits (returns `None`) when the command is already `rtk`-prefixed.
 ///
-/// **Specific path**: delegates to `rewriter` for the actual rewrite attempt.
-/// If the rewriter yields a non-empty, distinct string, returns
-/// `Verdict::Rewrite` tagged `coverage = "specific"`.
+/// **`Mode::Off`** — gate disabled: returns `None` (no rewrite, no deny).
 ///
-/// **Blanket-prefix fallback** (Golden Rule): when the specific path produces
-/// nothing, [`should_blanket_prefix`] decides whether to prepend `rtk` to the
-/// whole command. This ensures every command that RTK can safely wrap is
-/// wrapped, even when no dedicated filter exists yet. Returns
-/// `Verdict::Rewrite` tagged `coverage = "blanket"`.
+/// **`Mode::Strict`** (default) — when the command is eligible for blanket
+/// wrapping (not a builtin, no leading subshell/backtick) and the user did
+/// not pre-prefix `rtk`, returns `Verdict::Deny` so the UI surfaces both the
+/// original command and the required form. The agent then re-submits the
+/// command with the `rtk` prefix, learning the rule. Coverage tag `"deny"`.
+///
+/// **`Mode::Warn`** — historical behavior, preserved for opt-out:
+/// - **Specific path**: delegates to `rewriter` for the actual rewrite attempt.
+///   If the rewriter yields a non-empty, distinct string, returns
+///   `Verdict::Rewrite` tagged `coverage = "specific"`.
+/// - **Blanket-prefix fallback** (Golden Rule): when the specific path produces
+///   nothing, [`should_blanket_prefix`] decides whether to prepend `rtk` to the
+///   whole command. Returns `Verdict::Rewrite` tagged `coverage = "blanket"`.
 ///
 /// Returns `(Verdict, coverage_tag)` so the caller can emit the tag in
 /// telemetry without embedding it in `tool_input` (which is forwarded to
@@ -588,13 +618,47 @@ fn rtk_rewrite(cmd: &str) -> Option<(Verdict, &'static str)> {
 fn rtk_rewrite_with<F: FnOnce(&str) -> Option<String>>(
     cmd: &str,
     rewriter: F,
+    mode: Mode,
 ) -> Option<(Verdict, &'static str)> {
-    // Short-circuit: already wrapped — never double-prefix.
+    // Gate disabled — no rewrite, no deny.
+    if mode == Mode::Off {
+        return None;
+    }
+
+    // Short-circuit: already wrapped — never double-prefix, never deny.
     if cmd.split_whitespace().next().is_some_and(|t| t == "rtk") {
         return None;
     }
 
-    // --- Specific path ---
+    // Upfront eligibility gate. A command that isn't safe to blanket-wrap
+    // (real subshell, leading backtick-exec, head token is a shell builtin)
+    // isn't safe to hand to the external `rtk rewrite` either — RTK's own
+    // rewriter can corrupt those forms (e.g. `(cargo build; cargo test)`
+    // → `(cargo build; rtk cargo test)`). Skip both paths *and* the strict
+    // deny path: a builtin like `cd` cannot be exec'd through `rtk`, so we
+    // must not ask the agent to "reenvie como: rtk cd /tmp" — that would
+    // fail. Builtins / subshells are silently allowed in every mode.
+    if !should_blanket_prefix(cmd) {
+        return None;
+    }
+
+    // --- Strict mode: deny so the UI surfaces the rule ---
+    if mode == Mode::Strict {
+        let trimmed = cmd.trim();
+        let head: String = trimmed.chars().take(120).collect();
+        let suffix = if trimmed.chars().count() > 120 { "..." } else { "" };
+        return Some((
+            Verdict::Deny {
+                reason: format!(
+                    "[bash_guard rtk] Comando sem prefixo `rtk` — Mustard exige rtk em todo Bash.\n\
+                     Reenvie como: rtk {head}{suffix}"
+                ),
+            },
+            "deny",
+        ));
+    }
+
+    // --- Warn mode: specific path ---
     if let Some(rewritten) = rewriter(cmd) {
         let rewritten = rewritten.trim();
         if !rewritten.is_empty() && rewritten != cmd.trim() {
@@ -607,22 +671,18 @@ fn rtk_rewrite_with<F: FnOnce(&str) -> Option<String>>(
         }
     }
 
-    // --- Blanket-prefix fallback (Golden Rule) ---
+    // --- Warn mode: blanket-prefix fallback (Golden Rule) ---
     // When RTK has no specific filter for `cmd`, prepend `rtk ` so that:
     //   a) all future RTK filters automatically apply retroactively, and
     //   b) every rewrite is captured in telemetry for coverage analysis.
-    // `should_blanket_prefix` guards builtins, subshells, and other cases
-    // where prepending `rtk` would be ambiguous or incorrect.
-    if let Some(prefixed) = blanket_prefix(cmd) {
-        return Some((
+    blanket_prefix(cmd).map(|prefixed| {
+        (
             Verdict::Rewrite {
                 tool_input: json!({ "command": prefixed }),
             },
             "blanket",
-        ));
-    }
-
-    None
+        )
+    })
 }
 
 /// Shell builtins and keywords that must never be wrapped with `rtk`.
@@ -690,36 +750,37 @@ fn strip_env_prefix(s: &str) -> &str {
 ///
 /// Returns `false` when:
 /// - `cmd` is empty.
-/// - `cmd` contains subshell metacharacters (`(`, `` ` ``, `$(`) that make
-///   blanket-prefixing ambiguous.
-/// - The first executable token (after any `VAR=value` env assignments) is a
-///   shell builtin or keyword (RTK would exit 127 trying to exec it).
+/// - The first segment (after any `VAR=value` env assignments) is a real
+///   subshell `(…)` or backtick exec `` `…` `` — those forms have no head
+///   binary, so `rtk` has nothing to wrap.
+/// - The first executable token is a shell builtin or keyword (RTK would
+///   exit 127 trying to exec it).
+///
+/// A literal `(`, `` ` ``, or `$(` *inside an argument* (e.g.
+/// `git log --grep="(scope)"`, `echo $(date)`) is fine — the shell expands
+/// those before invoking `rtk`, which then execs the real binary.
 fn should_blanket_prefix(cmd: &str) -> bool {
     let trimmed = cmd.trim();
     if trimmed.is_empty() {
         return false;
     }
-    // Reject commands containing subshell / command-substitution metacharacters.
-    // These patterns are ambiguous — `rtk (foo; bar)` or `rtk echo $(date)`
-    // would not do what the author intended.
-    if trimmed.contains('(') || trimmed.contains('`') || trimmed.contains("$(") {
-        return false;
-    }
     // Strip compound operators (&&, ||, ;, |) and inspect only the first
     // segment. Prepending `rtk` before the whole pipeline is fine — the shell
-    // expands `&&` / `||` after `rtk` exits — but we must ensure the first
-    // executable is not a builtin.
+    // expands `&&` / `||` after `rtk` exits.
     let first_segment = trimmed
         .split(|c| c == '&' || c == '|' || c == ';')
         .next()
         .unwrap_or(trimmed)
         .trim();
-    // After stripping env assignments, check whether the executable token is
-    // a known builtin or keyword.
-    let executable = strip_env_prefix(first_segment)
-        .split_whitespace()
-        .next()
-        .unwrap_or("");
+    // After stripping env assignments, inspect the head of the segment.
+    let after_env = strip_env_prefix(first_segment);
+    // A segment that *starts* with `(` or `` ` `` has no head binary for `rtk`
+    // to wrap (real subshell / backtick exec). Skip.
+    if after_env.starts_with('(') || after_env.starts_with('`') {
+        return false;
+    }
+    // The executable token: a shell builtin/keyword cannot be exec'd by `rtk`.
+    let executable = after_env.split_whitespace().next().unwrap_or("");
     if SHELL_BUILTINS.contains(&executable) {
         return false;
     }
@@ -760,14 +821,17 @@ fn blanket_prefix(cmd: &str) -> Option<String> {
 #[cfg(test)]
 thread_local! {
     /// In test builds, when set, this short-circuits `rtk_rewrite` to return `None`,
-    /// isolating gate tests from the real `rtk` binary on PATH.
+    /// isolating gate tests from the real `rtk` binary on PATH and from the
+    /// strict-mode rtk gate (default since spec
+    /// `2026-05-20-rtk-mandatory-everywhere`).
     ///
     /// **Side-effect warning for future authors:** any test that calls
-    /// `verdict_for(...)` will have rtk-rewrite forced off — it will NEVER see a
-    /// `Verdict::Rewrite` verdict from the production `rtk_rewrite()` path. Tests
-    /// that need to exercise the rewrite logic must call `rtk_rewrite_with` directly
-    /// (see `rtk_rewrite_tests` below) or drive the binary as a subprocess (see
-    /// `tests/rtk_rewrite_emission.rs`).
+    /// `verdict_for(...)` will have the rtk gate forced to `Mode::Off` — it will
+    /// NEVER see a `Verdict::Rewrite` *or* a strict `Verdict::Deny` from the
+    /// production `rtk_rewrite()` path. Tests that need to exercise the rewrite
+    /// or strict-deny logic must call `rtk_rewrite_with` directly with an explicit
+    /// `Mode` (see `rtk_rewrite_tests` below) or drive the binary as a subprocess
+    /// (see `tests/rtk_rewrite_emission.rs`).
     pub(super) static RTK_REWRITE_TEST_OVERRIDE: std::cell::Cell<bool> = std::cell::Cell::new(false);
 }
 
@@ -935,10 +999,10 @@ fn run_build(cmd: &str, project_dir: &str) -> BuildOutcome {
 /// List staged file paths via `git diff --cached --name-only`.
 ///
 /// Fail-open: `None` when git is unavailable or the command fails (the JS
-/// `catch` branch — no staged-file warnings produced).
+/// `catch` branch — no staged-file warnings produced). Goes through
+/// [`rtk_command`] so the subprocess follows Mustard's Golden Rule.
 fn staged_files(project_dir: &str) -> Option<Vec<String>> {
-    let output = Command::new("git")
-        .args(["diff", "--cached", "--name-only"])
+    let output = rtk_command("git", &["diff", "--cached", "--name-only"])
         .current_dir(project_dir)
         .stdin(Stdio::null())
         .stderr(Stdio::piped())
@@ -1493,6 +1557,24 @@ mod tests {
     }
 
     #[test]
+    fn redirect_denies_bare_ls() {
+        let v = verdict_for("ls");
+        match v {
+            Verdict::Deny { reason } => assert!(reason.contains("Glob"), "reason: {reason}"),
+            other => panic!("expected Deny for bare `ls`, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn redirect_native_function_denies_bare_ls() {
+        let v = bash_native_redirect("ls");
+        match v {
+            Some(Verdict::Deny { reason }) => assert!(reason.contains("Glob"), "reason: {reason}"),
+            other => panic!("expected Some(Deny), got {other:?}"),
+        }
+    }
+
+    #[test]
     fn redirect_denies_head_tail_find() {
         for cmd in ["head -20 file.txt", "tail -50 app.log", "find . -name '*.ts'"] {
             assert!(verdict_for(cmd).is_blocking(), "expected deny for: {cmd}");
@@ -1847,7 +1929,13 @@ mod rtk_rewrite_tests {
     fn rtk_rewrite_passes_through_when_rtk_prefixed() {
         // The panic closure must never be invoked when the command already
         // starts with `rtk` — the short-circuit returns `None` immediately.
-        let result = rtk_rewrite_with("rtk grep x", |_| panic!("should not be called"));
+        // Tested under `Mode::Warn` (historical behavior); `Mode::Strict`
+        // also short-circuits via the same already-prefixed check.
+        let result = rtk_rewrite_with(
+            "rtk grep x",
+            |_| panic!("should not be called"),
+            Mode::Warn,
+        );
         assert!(result.is_none(), "expected None for already-prefixed command");
     }
 
@@ -1858,7 +1946,7 @@ mod rtk_rewrite_tests {
 
     #[test]
     fn rtk_rewrite_emits_updated_input_when_rewriter_returns_change() {
-        let result = rtk_rewrite_with("grep -n x src/", |c| Some(format!("rtk {c}")));
+        let result = rtk_rewrite_with("grep -n x src/", |c| Some(format!("rtk {c}")), Mode::Warn);
         match result {
             Some((Verdict::Rewrite { tool_input }, coverage)) => {
                 assert_eq!(
@@ -1881,7 +1969,7 @@ mod rtk_rewrite_tests {
 
     #[test]
     fn rtk_rewrite_blanket_when_rewriter_returns_none_for_non_builtin() {
-        let result = rtk_rewrite_with("grep -n x src/", |_| None);
+        let result = rtk_rewrite_with("grep -n x src/", |_| None, Mode::Warn);
         match result {
             Some((Verdict::Rewrite { tool_input }, coverage)) => {
                 assert_eq!(
@@ -1902,7 +1990,7 @@ mod rtk_rewrite_tests {
 
     #[test]
     fn rtk_rewrite_blanket_when_rewriter_returns_identical() {
-        let result = rtk_rewrite_with("grep -n x", |_| Some("grep -n x".to_string()));
+        let result = rtk_rewrite_with("grep -n x", |_| Some("grep -n x".to_string()), Mode::Warn);
         match result {
             Some((Verdict::Rewrite { tool_input }, coverage)) => {
                 assert_eq!(
@@ -1923,7 +2011,7 @@ mod rtk_rewrite_tests {
 
     #[test]
     fn rtk_rewrite_blanket_when_rewriter_returns_empty() {
-        let result = rtk_rewrite_with("grep -n x src/", |_| Some(String::new()));
+        let result = rtk_rewrite_with("grep -n x src/", |_| Some(String::new()), Mode::Warn);
         match result {
             Some((Verdict::Rewrite { tool_input }, coverage)) => {
                 assert_eq!(tool_input["command"], "rtk grep -n x src/");
@@ -1940,7 +2028,7 @@ mod rtk_rewrite_tests {
 
     #[test]
     fn rtk_rewrite_blanket_when_rewriter_returns_whitespace_only() {
-        let result = rtk_rewrite_with("grep -n x src/", |_| Some("   \n  ".to_string()));
+        let result = rtk_rewrite_with("grep -n x src/", |_| Some("   \n  ".to_string()), Mode::Warn);
         match result {
             Some((Verdict::Rewrite { tool_input }, coverage)) => {
                 assert_eq!(tool_input["command"], "rtk grep -n x src/");
@@ -1957,7 +2045,7 @@ mod rtk_rewrite_tests {
 
     #[test]
     fn rtk_rewrite_strips_trailing_whitespace() {
-        let result = rtk_rewrite_with("grep x", |_| Some("rtk grep x\n".to_string()));
+        let result = rtk_rewrite_with("grep x", |_| Some("rtk grep x\n".to_string()), Mode::Warn);
         match result {
             Some((Verdict::Rewrite { tool_input }, coverage)) => {
                 assert_eq!(
@@ -1998,7 +2086,7 @@ mod rtk_rewrite_tests {
     // BL-1: Unknown command with no specific RTK filter → blanket prefix.
     #[test]
     fn rtk_rewrite_blanket_prefixes_unknown_command() {
-        let result = rtk_rewrite_with("cargo run -p foo", |_| None);
+        let result = rtk_rewrite_with("cargo run -p foo", |_| None, Mode::Warn);
         match result {
             Some((Verdict::Rewrite { tool_input }, coverage)) => {
                 assert_eq!(tool_input["command"], "rtk cargo run -p foo");
@@ -2011,7 +2099,7 @@ mod rtk_rewrite_tests {
     // BL-2: `node` command with no specific RTK filter → blanket prefix.
     #[test]
     fn rtk_rewrite_blanket_prefixes_node_command() {
-        let result = rtk_rewrite_with(r#"node -e "42""#, |_| None);
+        let result = rtk_rewrite_with(r#"node -e "42""#, |_| None, Mode::Warn);
         match result {
             Some((Verdict::Rewrite { tool_input }, coverage)) => {
                 assert_eq!(tool_input["command"], r#"rtk node -e "42""#);
@@ -2028,7 +2116,7 @@ mod rtk_rewrite_tests {
     //       `RUST_LOG=debug` as a binary name).
     #[test]
     fn rtk_rewrite_blanket_with_env_prefix() {
-        let result = rtk_rewrite_with("RUST_LOG=debug cargo run", |_| None);
+        let result = rtk_rewrite_with("RUST_LOG=debug cargo run", |_| None, Mode::Warn);
         match result {
             Some((Verdict::Rewrite { tool_input }, coverage)) => {
                 assert_eq!(
@@ -2046,7 +2134,7 @@ mod rtk_rewrite_tests {
     //       a shell builtin; it would exit 127 with "Binary 'cd' not found").
     #[test]
     fn rtk_rewrite_skips_shell_builtin_cd() {
-        let result = rtk_rewrite_with("cd /tmp", |_| None);
+        let result = rtk_rewrite_with("cd /tmp", |_| None, Mode::Warn);
         assert!(
             result.is_none(),
             "expected None for shell builtin 'cd'; got {result:?}"
@@ -2057,7 +2145,7 @@ mod rtk_rewrite_tests {
     //       fact that the executable token is a builtin.
     #[test]
     fn rtk_rewrite_skips_shell_builtin_with_env() {
-        let result = rtk_rewrite_with("FOO=bar cd /tmp", |_| None);
+        let result = rtk_rewrite_with("FOO=bar cd /tmp", |_| None, Mode::Warn);
         assert!(
             result.is_none(),
             "expected None for env-prefixed builtin 'cd'; got {result:?}"
@@ -2068,28 +2156,72 @@ mod rtk_rewrite_tests {
     //       `rtk (cargo build; cargo test)` is not valid shell.
     #[test]
     fn rtk_rewrite_skips_subshell() {
-        let result = rtk_rewrite_with("(cargo build; cargo test)", |_| None);
+        let result = rtk_rewrite_with("(cargo build; cargo test)", |_| None, Mode::Warn);
         assert!(
             result.is_none(),
             "expected None for subshell expression; got {result:?}"
         );
     }
 
-    // BL-7: Command substitution `$(…)` — blanket-prefix is ambiguous.
+    // BL-7: Command substitution mid-command (`echo $(date)`) — the head
+    //       binary is `echo`, and the shell expands `$(date)` BEFORE running
+    //       `rtk`, so blanket-prefix is safe (and desirable for token savings).
     #[test]
-    fn rtk_rewrite_skips_command_substitution() {
-        let result = rtk_rewrite_with("echo $(date)", |_| None);
+    fn rtk_rewrite_blanket_with_command_substitution_in_arg() {
+        let result = rtk_rewrite_with("echo $(date)", |_| None, Mode::Warn);
+        match result {
+            Some((Verdict::Rewrite { tool_input }, coverage)) => {
+                assert_eq!(tool_input["command"], "rtk echo $(date)");
+                assert_eq!(coverage, "blanket");
+            }
+            other => panic!("expected blanket Verdict::Rewrite, got {other:?}"),
+        }
+    }
+
+    // BL-7b: A real backtick exec at the start of the command has no head
+    //        binary for `rtk` to wrap, so it must still be skipped.
+    #[test]
+    fn rtk_rewrite_skips_leading_backtick_exec() {
+        let result = rtk_rewrite_with("`echo hi`", |_| None, Mode::Warn);
         assert!(
             result.is_none(),
-            "expected None for command substitution; got {result:?}"
+            "expected None for leading backtick exec; got {result:?}"
         );
+    }
+
+    // BL-7c: A literal `(` *inside an argument* is fine — the shell sees it as
+    //        text, not a subshell. Blanket must still wrap the head binary.
+    #[test]
+    fn rtk_rewrite_blanket_with_paren_inside_arg() {
+        let result = rtk_rewrite_with(r#"git log --grep=(scope)"#, |_| None, Mode::Warn);
+        match result {
+            Some((Verdict::Rewrite { tool_input }, coverage)) => {
+                assert_eq!(tool_input["command"], r#"rtk git log --grep=(scope)"#);
+                assert_eq!(coverage, "blanket");
+            }
+            other => panic!("expected blanket Verdict::Rewrite for paren-in-arg, got {other:?}"),
+        }
+    }
+
+    // BL-7d: Backtick inside an argument (`echo \`date\``) — the head binary
+    //        is `echo`. Wrap.
+    #[test]
+    fn rtk_rewrite_blanket_with_backtick_inside_arg() {
+        let result = rtk_rewrite_with("echo `date`", |_| None, Mode::Warn);
+        match result {
+            Some((Verdict::Rewrite { tool_input }, coverage)) => {
+                assert_eq!(tool_input["command"], "rtk echo `date`");
+                assert_eq!(coverage, "blanket");
+            }
+            other => panic!("expected blanket Verdict::Rewrite for backtick-in-arg, got {other:?}"),
+        }
     }
 
     // BL-8: When the specific rewriter returns a real rewrite, the specific
     //       path wins — no blanket path is attempted.
     #[test]
     fn rtk_rewrite_specific_takes_precedence_over_blanket() {
-        let result = rtk_rewrite_with("cargo build", |_| Some("rtk cargo build".to_string()));
+        let result = rtk_rewrite_with("cargo build", |_| Some("rtk cargo build".to_string()), Mode::Warn);
         match result {
             Some((Verdict::Rewrite { tool_input }, coverage)) => {
                 assert_eq!(tool_input["command"], "rtk cargo build");
@@ -2107,7 +2239,7 @@ mod rtk_rewrite_tests {
     fn rtk_rewrite_compound_blanket_uses_first_segment_check() {
         // RTK wraps only the first segment's executable; the `&& cargo test`
         // tail is carried along unchanged. The shell parent handles `&&`.
-        let result = rtk_rewrite_with("cargo run && cargo test", |_| None);
+        let result = rtk_rewrite_with("cargo run && cargo test", |_| None, Mode::Warn);
         match result {
             Some((Verdict::Rewrite { tool_input }, coverage)) => {
                 assert_eq!(tool_input["command"], "rtk cargo run && cargo test");
@@ -2121,10 +2253,74 @@ mod rtk_rewrite_tests {
     //        (rewriter closure is never invoked).
     #[test]
     fn rtk_rewrite_already_prefixed_no_op() {
-        let result = rtk_rewrite_with("rtk cargo run", |_| panic!("should not be called"));
+        let result = rtk_rewrite_with("rtk cargo run", |_| panic!("should not be called"), Mode::Warn);
         assert!(
             result.is_none(),
             "expected None for already-prefixed command; got {result:?}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Gate-mode tests (spec: 2026-05-20-rtk-mandatory-everywhere)
+    //
+    // The gate-mode parameter is passed in directly so tests do not need to
+    // mutate `MUSTARD_RTK_GATE_MODE` (`std::env::set_var` is `unsafe` under
+    // edition 2024, and the crate forbids `unsafe`).
+    // -----------------------------------------------------------------------
+
+    /// `Mode::Strict` on a non-prefixed, eligible command → `Verdict::Deny`
+    /// carrying the operator-facing reason. The rewriter closure must not be
+    /// invoked — strict mode short-circuits before the specific path.
+    #[test]
+    fn rtk_strict_denies_unprefixed() {
+        let result = rtk_rewrite_with(
+            "grep -n x src/",
+            |_| panic!("rewriter must not be called in strict mode"),
+            Mode::Strict,
+        );
+        match result {
+            Some((Verdict::Deny { reason }, coverage)) => {
+                assert_eq!(coverage, "deny", "expected coverage tag 'deny'");
+                assert!(
+                    reason.contains("Mustard exige rtk"),
+                    "reason should explain the rule; got: {reason}"
+                );
+                assert!(
+                    reason.contains("rtk grep -n x src/"),
+                    "reason should suggest the rtk-prefixed FULL command (not just the head token); got: {reason}"
+                );
+            }
+            other => panic!("expected Verdict::Deny in strict mode, got {other:?}"),
+        }
+    }
+
+    /// `Mode::Warn` preserves the historical rewrite behavior — a non-prefixed
+    /// command becomes a `Verdict::Rewrite` with `coverage = "blanket"`.
+    /// Regression guard for the spec's opt-out path.
+    #[test]
+    fn rtk_warn_rewrites_unprefixed() {
+        let result = rtk_rewrite_with("grep -n x src/", |_| None, Mode::Warn);
+        match result {
+            Some((Verdict::Rewrite { tool_input }, coverage)) => {
+                assert_eq!(tool_input["command"], "rtk grep -n x src/");
+                assert_eq!(coverage, "blanket");
+            }
+            other => panic!("expected Verdict::Rewrite in warn mode, got {other:?}"),
+        }
+    }
+
+    /// `Mode::Off` disables the gate entirely — the rewriter closure must not
+    /// be invoked and the result must be `None` (Allow at the caller).
+    #[test]
+    fn rtk_off_allows_unprefixed() {
+        let result = rtk_rewrite_with(
+            "grep -n x src/",
+            |_| panic!("rewriter must not be called in off mode"),
+            Mode::Off,
+        );
+        assert!(
+            result.is_none(),
+            "expected None (Allow) in off mode; got {result:?}"
         );
     }
 }

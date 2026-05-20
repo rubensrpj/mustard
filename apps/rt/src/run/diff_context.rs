@@ -11,15 +11,21 @@
 //! always empty before work starts).
 
 use std::path::Path;
-use std::process::Command;
+
+use mustard_core::process::rtk_command;
 
 /// Output cap — mirrors `MAX_CHARS` in `diff-context.js`.
 const MAX_CHARS: usize = 3000;
 
 /// Run a git command in `cwd`, returning trimmed stdout or `""` on any error.
+///
+/// Goes through [`rtk_command`] so the subprocess follows Mustard's Golden
+/// Rule (every Bash invocation is prefixed with `rtk`). RTK forwards `git`
+/// unchanged when it has no specific filter, so behavior is unchanged when
+/// no filter is registered — only the program name resolves through `rtk`
+/// instead of directly.
 fn git(cwd: &Path, args: &[&str]) -> String {
-    Command::new("git")
-        .args(args)
+    rtk_command("git", args)
         .current_dir(cwd)
         .output()
         .ok()

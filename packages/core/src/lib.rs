@@ -38,6 +38,7 @@ pub mod store;
 pub mod knowledge;
 pub mod metrics;
 pub mod model;
+pub mod process;
 pub mod projection;
 pub mod reader;
 

@@ -101,7 +101,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "mustard-rt on PreToolUse",
+            "command": "rtk mustard-rt on PreToolUse",
             "timeout": 310
           }
         ]
@@ -114,7 +114,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "mustard-rt on PostToolUse",
+            "command": "rtk mustard-rt on PostToolUse",
             "timeout": 30
           }
         ]
@@ -127,7 +127,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "mustard-rt on SessionStart",
+            "command": "rtk mustard-rt on SessionStart",
             "statusMessage": "Initializing harness, memory, and budgets...",
             "timeout": 15
           }
@@ -141,7 +141,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "mustard-rt on PreCompact",
+            "command": "rtk mustard-rt on PreCompact",
             "timeout": 10
           }
         ]
@@ -154,7 +154,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "mustard-rt on SessionEnd",
+            "command": "rtk mustard-rt on SessionEnd",
             "statusMessage": "Extracting knowledge and cleaning state...",
             "timeout": 15
           }
@@ -167,7 +167,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "mustard-rt on SubagentStart",
+            "command": "rtk mustard-rt on SubagentStart",
             "statusMessage": "Registering agent...",
             "timeout": 5
           }
@@ -180,7 +180,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "mustard-rt on SubagentStop",
+            "command": "rtk mustard-rt on SubagentStop",
             "statusMessage": "Agent completed",
             "timeout": 5
           }
@@ -194,7 +194,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "mustard-rt on UserPromptSubmit",
+            "command": "rtk mustard-rt on UserPromptSubmit",
             "timeout": 10
           }
         ]

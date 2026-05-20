@@ -78,6 +78,16 @@ pub fn init_with_templates(
     templates_dir: &Path,
     options: &InitOptions,
 ) -> Result<()> {
+    // RTK is a mandatory dependency of Mustard — the harness's Golden Rule
+    // prefixes every Bash invocation with `rtk`, and the generated
+    // `settings.json` wires every hook through `rtk mustard-rt on <Event>`.
+    // Probe before touching disk: if `rtk` is missing the install would
+    // produce a `.claude/` that cannot run, so we exit hard with install
+    // instructions instead. Skipped in dry-run mode (no disk writes either).
+    if !options.dry_run {
+        probe_rtk();
+    }
+
     let project_path = project_path
         .canonicalize()
         .with_context(|| format!("resolving project path {}", project_path.display()))?;
@@ -477,6 +487,30 @@ fn rtk_on_path() -> bool {
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false)
+}
+
+/// Probe `rtk --version` and exit hard with install instructions when it
+/// fails. RTK is a mandatory dependency: the generated `settings.json` wires
+/// every hook through `rtk mustard-rt on <Event>`, and the `bash_guard` hook
+/// denies un-prefixed Bash commands in strict mode. A Mustard install without
+/// `rtk` on `PATH` would produce a `.claude/` that cannot run, so we abort
+/// before touching disk rather than failing later in a confusing way.
+///
+/// This is **not** fail-open — unlike [`ensure_rtk`], which is best-effort
+/// during the install phase. The exit code is `1` so CI/Tauri callers can
+/// detect the failure and surface it to the user.
+fn probe_rtk() {
+    if rtk_on_path() {
+        return;
+    }
+    eprintln!(
+        "\nMustard requires RTK (Rust Token Killer) on PATH.\n\
+         Could not run `rtk --version` — RTK is a mandatory dependency.\n\
+         Install RTK and re-run `mustard init`:\n\
+           - Unix:    curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/master/install.sh | sh\n\
+           - Windows: scoop install rtk   (or)   cargo install --git https://github.com/rtk-ai/rtk\n"
+    );
+    std::process::exit(1);
 }
 
 /// Read the RTK revision pinned in the managed-artifact manifest
