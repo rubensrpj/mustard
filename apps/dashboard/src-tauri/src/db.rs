@@ -140,6 +140,42 @@ pub fn metrics_from_db(conn: &Connection) -> Result<MetricsSummary, String> {
 }
 
 pub fn knowledge_from_db(conn: &Connection) -> Result<KnowledgeSummary, String> {
+    // Wave 6c: primary read from knowledge_patterns (Wave 6a table).
+    // knowledge_patterns has no kind/category column, so conventions_count
+    // cannot be derived from it — preserved as 0 for shape compatibility.
+    // TODO(wave-6c): restore conventions_count when knowledge_patterns gains a
+    // `kind` column that distinguishes conventions from patterns.
+
+    let has_patterns: bool = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='knowledge_patterns'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap_or(0)
+        > 0;
+
+    if has_patterns {
+        let patterns_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM knowledge_patterns", [], |row| row.get(0))
+            .map_err(|e| e.to_string())?;
+
+        let high_confidence_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM knowledge_patterns WHERE confidence >= 0.7",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+
+        return Ok(KnowledgeSummary {
+            patterns_count: patterns_count as usize,
+            conventions_count: 0, // no kind column in knowledge_patterns
+            high_confidence_count: high_confidence_count as usize,
+        });
+    }
+
+    // Fallback: legacy `knowledge` table for pre-Wave-6a DBs.
     let mut stmt = conn
         .prepare("SELECT type, COUNT(*) FROM knowledge GROUP BY type")
         .map_err(|e| e.to_string())?;

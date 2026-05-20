@@ -174,38 +174,14 @@ fn dashboard_metrics(repo_path: String) -> Result<MetricsSummary, String> {
 
 #[tauri::command]
 fn dashboard_knowledge(repo_path: String) -> Result<KnowledgeSummary, String> {
+    // Wave 6c: DB is the only source — knowledge.json no longer written by rt.
+    // db::knowledge_from_db queries knowledge_patterns (Wave 6a) with fallback
+    // to the legacy `knowledge` table for pre-Wave-6a DBs.
     let base = PathBuf::from(&repo_path);
-    if let Some(r) = db::with_db(&base, db::knowledge_from_db) {
-        return r;
+    match db::with_db(&base, db::knowledge_from_db) {
+        Some(r) => r,
+        None => Ok(KnowledgeSummary { patterns_count: 0, conventions_count: 0, high_confidence_count: 0 }),
     }
-    let path = base.join(".claude").join("knowledge.json");
-    if !path.exists() {
-        return Ok(KnowledgeSummary { patterns_count: 0, conventions_count: 0, high_confidence_count: 0 });
-    }
-    let content = match std::fs::read_to_string(&path) {
-        Ok(c) => c,
-        Err(_) => return Ok(KnowledgeSummary { patterns_count: 0, conventions_count: 0, high_confidence_count: 0 }),
-    };
-    let v: serde_json::Value = match serde_json::from_str(&content) {
-        Ok(v) => v,
-        Err(_) => return Ok(KnowledgeSummary { patterns_count: 0, conventions_count: 0, high_confidence_count: 0 }),
-    };
-    let mut patterns_count = 0usize;
-    let mut conventions_count = 0usize;
-    let mut high_confidence_count = 0usize;
-    if let Some(obj) = v.as_object() {
-        for entry in obj.values() {
-            match entry["type"].as_str() {
-                Some("pattern") => patterns_count += 1,
-                Some("convention") => conventions_count += 1,
-                _ => {}
-            }
-            if entry["confidence"].as_f64().unwrap_or(0.0) >= 0.8 {
-                high_confidence_count += 1;
-            }
-        }
-    }
-    Ok(KnowledgeSummary { patterns_count, conventions_count, high_confidence_count })
 }
 
 #[derive(Serialize)]

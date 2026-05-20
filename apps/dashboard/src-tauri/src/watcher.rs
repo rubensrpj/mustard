@@ -37,11 +37,10 @@ pub fn classify_kind(path: &Path) -> Option<&'static str> {
         Some("pipeline-state")
     } else if s.contains("spec") && (s.contains("spec/active") || s.contains("spec\\active")) {
         Some("spec")
-    } else if s.contains(".claude") && s.contains("knowledge.json") {
-        Some("knowledge")
-    } else if s.contains(".claude") && s.contains("memory") && (s.contains("decisions.json") || s.contains("lessons.json")) {
-        Some("memory")
     } else {
+        // Wave 6c: knowledge.json and memory/decisions.json / memory/lessons.json
+        // are no longer written by mustard-rt (Wave 6b). Watcher branches for
+        // those paths removed — Knowledge page uses polling (refetchInterval).
         None
     }
 }

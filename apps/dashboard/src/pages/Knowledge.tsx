@@ -113,11 +113,14 @@ export function Knowledge() {
   const hasQuery = trimmed.length >= 2;
 
   // Browse: all knowledge rows for the active workspace.
+  // Wave 6c: DB-backed via knowledge_patterns; poll every 10 s (no watcher).
   const { data: browseRows, isLoading: browseLoading } = useQuery({
     queryKey: ["knowledge-browse", activeProject?.path],
     queryFn: () => fetchKnowledgeBrowse(activeProject!.path, 500),
     enabled: !!activeProject && !hasQuery,
     staleTime: 60_000,
+    refetchOnWindowFocus: true,
+    refetchInterval: 10_000,
   });
 
   // Search: when query >= 2 chars.
@@ -126,6 +129,8 @@ export function Knowledge() {
     queryFn: () => fetchSearchKnowledge(activeProject!.path, trimmed, 200),
     enabled: !!activeProject && hasQuery,
     staleTime: 30_000,
+    refetchOnWindowFocus: true,
+    refetchInterval: 10_000,
   });
 
   // Friction: measured atrito — separate source, separate section.
@@ -134,6 +139,8 @@ export function Knowledge() {
     queryFn: () => fetchFriction(activeProject!.path),
     enabled: !!activeProject,
     staleTime: 60_000,
+    refetchOnWindowFocus: true,
+    refetchInterval: 10_000,
   });
 
   // Split browse rows by real nature: legacy friction telemetry written into
