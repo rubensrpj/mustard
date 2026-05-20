@@ -10,9 +10,8 @@
 //! or piped on stdin (the POSIX fallback). Exit is always `0` (fail-open).
 //!
 //! Wave 6b: `decision` and `knowledge` subcommands write to the Wave 6a SQLite
-//! tables (`memory_decisions`, `memory_lessons`, `knowledge_patterns`).  The
-//! JSON files (`.claude/memory/decisions.json`, `.claude/memory/lessons.json`,
-//! `.claude/knowledge.json`) are no longer written.  Wave 6c migrates the
+//! tables (`memory_decisions`, `memory_lessons`, `knowledge_patterns`).
+//! Legacy JSON sidecars are no longer written.  Wave 6c migrates the
 //! dashboard reader.
 
 use crate::run::env::{project_dir, session_id};

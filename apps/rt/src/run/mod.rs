@@ -25,7 +25,7 @@ mod emit_pipeline;
 mod env;
 mod epic_fold;
 pub mod event_projections;
-pub use event_projections::{pipeline_state_for_spec, PipelineStateView, PipelineTaskView};
+pub use event_projections::{pipeline_state_for_spec, PipelineStateView};
 mod exec_rewave_check;
 mod mark_checklist_item;
 mod memory;

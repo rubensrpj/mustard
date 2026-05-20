@@ -17,6 +17,7 @@
 //! same dedup logic as the `memory` knowledge subcommand, plus the epic-
 //! specific `content` / `spec_children` / `concluded_at` fields).
 
+use crate::run::memory::upsert_knowledge_pattern;
 use crate::util::now_iso8601;
 use mustard_core::io::event_store::EventSink;
 use mustard_core::io::sqlite_store::SqliteEventStore;
@@ -31,6 +32,7 @@ fn read_json(path: &Path) -> Option<Value> {
 }
 
 /// Write a JSON value pretty-printed with a trailing newline. Fail-soft.
+#[cfg(test)]
 fn write_json(path: &Path, value: &Value) -> bool {
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
@@ -129,69 +131,29 @@ fn detect_completed_epics(cwd: &Path) -> Vec<String> {
     candidates
 }
 
-/// Upsert an `epic-summary` entry into `knowledge.json` (dedup by name+type),
-/// carrying the epic-specific `content` / `spec_children` / `concluded_at`.
+/// Upsert an `epic-summary` entry into the `knowledge_patterns` SQLite table.
+/// Pattern shape: `"name: description"` — the same format used by the
+/// `memory knowledge` subcommand and consumed by session_start injection.
+/// Fail-open: any SQLite error is silently discarded.
 fn write_knowledge_entry(
     cwd: &Path,
     name: &str,
     description: &str,
-    content: &str,
-    children: &[String],
-    concluded_at: &str,
+    _content: &str,
+    _children: &[String],
+    _concluded_at: &str,
 ) {
-    let kb_path = cwd.join(".claude").join("knowledge.json");
-    let mut kb = read_json(&kb_path)
-        .filter(|v| v.is_object())
-        .unwrap_or_else(|| json!({ "version": 1, "entries": [] }));
-    if kb.get("entries").and_then(Value::as_array).is_none() {
-        if let Some(obj) = kb.as_object_mut() {
-            obj.insert("entries".to_string(), json!([]));
-        }
-    }
-    let ts = now_iso8601();
-    let Some(entries) = kb.get_mut("entries").and_then(Value::as_array_mut) else {
+    let Ok(store) = SqliteEventStore::for_project(cwd) else {
         return;
     };
-    let idx = entries.iter().position(|e| {
-        e.get("name").and_then(Value::as_str) == Some(name)
-            && e.get("type").and_then(Value::as_str) == Some("epic-summary")
-    });
-    if let Some(i) = idx {
-        if let Some(obj) = entries[i].as_object_mut() {
-            let occ = obj.get("occurrences").and_then(Value::as_i64).unwrap_or(1) + 1;
-            obj.insert("description".to_string(), json!(description));
-            obj.insert("source".to_string(), json!("epic-fold"));
-            obj.insert("tags".to_string(), json!(["epic", "summary"]));
-            obj.insert("updatedAt".to_string(), json!(ts));
-            obj.insert("lastSeen".to_string(), json!(ts));
-            obj.insert("occurrences".to_string(), json!(occ));
-            obj.insert(
-                "confidence".to_string(),
-                json!(f64::min(1.0, 0.3 + (occ as f64) * 0.1)),
-            );
-            obj.insert("content".to_string(), json!(content));
-            obj.insert("spec_children".to_string(), json!(children));
-            obj.insert("concluded_at".to_string(), json!(concluded_at));
-        }
-    } else {
-        entries.push(json!({
-            "id": format!("epic-summary-{}", crate::util::now_millis()),
-            "type": "epic-summary",
-            "name": name,
-            "description": description,
-            "source": "epic-fold",
-            "tags": ["epic", "summary"],
-            "confidence": 0.85,
-            "occurrences": 1,
-            "createdAt": ts,
-            "updatedAt": ts,
-            "lastSeen": ts,
-            "content": content,
-            "spec_children": children,
-            "concluded_at": concluded_at,
-        }));
-    }
-    write_json(&kb_path, &kb);
+    let db_path = store.path().to_path_buf();
+    let Ok(conn) = rusqlite::Connection::open(&db_path) else {
+        return;
+    };
+    let _ = conn.busy_timeout(std::time::Duration::from_millis(5_000));
+    let pattern = format!("{name}: {description}");
+    let now = now_iso8601();
+    let _ = upsert_knowledge_pattern(&conn, &pattern, 0.85, Some("epic-fold"), &now, &now);
 }
 
 /// Fold an epic — returns `true` on success (or when already folded).
@@ -229,15 +191,8 @@ fn fold_epic(cwd: &Path, epic: &str) -> bool {
             && e.payload.get("epic").and_then(Value::as_str) == Some(epic)
     });
     if already_complete {
-        let mut state = read_json(&epic_file).unwrap_or(epic_state);
-        if let Some(obj) = state.as_object_mut() {
-            // Keep the legacy in-JSON `phase` (human-readable shape). The
-            // canonical CLOSE marker is the `pipeline.phase` event emitted
-            // alongside `epic.complete`; `phaseName` writes were dropped in
-            // the dashboard-phase-from-sqlite migration.
-            obj.insert("phase".to_string(), json!("CLOSE"));
-        }
-        write_json(&epic_file, &state);
+        // The canonical CLOSE marker is the `pipeline.phase` event; the
+        // pipeline-state JSON is no longer written (Wave 6b migration).
         emit_event(
             &store,
             "pipeline.phase",
@@ -361,15 +316,8 @@ fn fold_epic(cwd: &Path, epic: &str) -> bool {
     );
 
     // Transition the root to CLOSE. The canonical marker is the
-    // `pipeline.phase` event emitted below; the in-JSON `phase` is kept as a
-    // human-readable shape field. `phaseName` writes were dropped in the
-    // dashboard-phase-from-sqlite migration.
-    let mut updated = epic_state;
-    if let Some(obj) = updated.as_object_mut() {
-        obj.insert("phase".to_string(), json!("CLOSE"));
-        obj.insert("folded_at".to_string(), json!(now_iso8601()));
-    }
-    write_json(&epic_file, &updated);
+    // `pipeline.phase` event; the pipeline-state JSON is no longer written
+    // (Wave 6b migration — phase lives in SQLite pipeline.phase events).
     emit_event(
         &store,
         "pipeline.phase",
