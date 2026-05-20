@@ -32,6 +32,7 @@ mod memory;
 mod memory_ingest;
 mod metrics;
 mod otel;
+mod pipeline_state_ingest;
 mod pipeline_summary;
 mod qa_run;
 mod recipe_match;
@@ -171,6 +172,17 @@ pub enum RunCmd {
     /// Prints a JSON summary. Fail-open per file.
     MemoryIngest {
         /// Remove the source JSON files after a successful ingest.
+        #[arg(long)]
+        delete: bool,
+    },
+    /// One-shot ingest of `.pipeline-states/*.json` files into the SQLite event stream.
+    ///
+    /// Globs `.claude/.pipeline-states/*.json` (excluding `*.metrics.json`), lenient-parses
+    /// each file, and emits retroactive `pipeline.*` events into the harness event store.
+    /// Preserves original `updatedAt` timestamps for correct event ordering.
+    /// Fail-open per file — errors are collected into the output JSON, not propagated.
+    PipelineStateIngest {
+        /// Remove each successfully-ingested JSON file after ingest.
         #[arg(long)]
         delete: bool,
     },
@@ -490,6 +502,9 @@ pub fn dispatch(cmd: RunCmd) {
         } => context_slice::run(&context, spec.as_deref(), max_lines),
         RunCmd::Memory { subcommand, json } => memory::run(&subcommand, json.as_deref()),
         RunCmd::MemoryIngest { delete } => memory_ingest::run(delete),
+        RunCmd::PipelineStateIngest { delete } => {
+            pipeline_state_ingest::run(pipeline_state_ingest::PipelineStateIngestOpts { delete })
+        }
         RunCmd::EpicFold { detect, epic } => epic_fold::run(detect, epic.as_deref()),
         RunCmd::SpecExtract {
             spec,

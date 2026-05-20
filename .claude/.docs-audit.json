@@ -20,6 +20,19 @@
         "phaseName.*pipeline-state"
       ],
       "replacement_hint": "phase derives from pipeline.phase events in SQLite; readers use last_phase_for_spec helper in apps/rt/src/run/emit_phase.rs"
+    },
+    {
+      "from_spec": "2026-05-19-pipeline-state-from-sqlite",
+      "closed_at": null,
+      "obsolete_terms": [
+        "\\.pipeline-states/.*\\.json",
+        "lastDispatchFailure(?!_in_event)",
+        "pipelineState\\.write",
+        "knowledge\\.json",
+        "memory/decisions\\.json",
+        "memory/lessons\\.json"
+      ],
+      "replacement_hint": "Pipeline state derived integralmente de eventos SQLite via pipeline_state_for_spec; knowledge/memory em tabelas knowledge_patterns/memory_decisions/memory_lessons; emissores usam mustard-rt run emit-pipeline / mustard-rt run memory"
     }
   ]
 }
