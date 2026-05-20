@@ -2,18 +2,18 @@ import { useNavigate } from "react-router";
 import { useStore } from "@/lib/store";
 import { useProjects } from "@/lib/dashboard";
 import { useWorkspaceSummarySingle } from "@/hooks/useWorkspaceSummary";
-import { useTelemetryHeatmap } from "@/hooks/useTelemetryHeatmap";
 import {
   PageHeader,
-  SectionHeader,
   EmptyState,
   DataCard,
 } from "@/components/page";
 import { WorkspaceStatusBar } from "@/components/workspace/WorkspaceStatusBar";
-import { SpecTracksList } from "@/components/workspace/SpecTracksList";
-import { WorkspaceEffortFooter } from "@/components/workspace/WorkspaceEffortFooter";
 import { WorkspaceAlertsColumn } from "@/components/workspace/WorkspaceAlertsColumn";
-import { EffortHeatmap } from "@/components/telemetry/EffortHeatmap";
+import { WorkspaceSpecsByStatus } from "@/components/workspace/WorkspaceSpecsByStatus";
+import { WorkspaceTokenSummary } from "@/components/workspace/WorkspaceTokenSummary";
+import { WorkspaceMonthCalendar } from "@/components/workspace/WorkspaceMonthCalendar";
+import { WorkspaceEventsFeed } from "@/components/workspace/WorkspaceEventsFeed";
+import { WorkspaceFilesRanking } from "@/components/workspace/WorkspaceFilesRanking";
 import { PipelineTimeline } from "@/components/telemetry/PipelineTimeline";
 
 export function Workspace() {
@@ -26,11 +26,6 @@ export function Workspace() {
 
   const { data: summary, isLoading } = useWorkspaceSummarySingle(
     activeProject?.path ?? null,
-  );
-
-  const { data: heatmapCells = [] } = useTelemetryHeatmap(
-    activeProject?.path ?? null,
-    "today",
   );
 
   if (!projectsRoot) {
@@ -49,7 +44,7 @@ export function Workspace() {
     );
   }
 
-  if (!activeWorkspaceId) {
+  if (!activeWorkspaceId || !activeProject) {
     return (
       <div className="flex flex-col gap-6 w-full">
         <PageHeader
@@ -80,7 +75,6 @@ export function Workspace() {
 
   const tracks = summary?.spec_tracks ?? [];
   const alerts = summary?.alerts ?? [];
-  const topFiles = summary?.top_files_today ?? [];
 
   // Hero: prefer the first active spec track, fall back to the most recent.
   // PipelineTimeline owns its own empty state when nothing is supplied.
@@ -103,6 +97,8 @@ export function Workspace() {
     navigate(`/specs#${alert.spec}`);
   }
 
+  const repoPath = activeProject.path;
+
   return (
     <div className="flex flex-col gap-6 w-full">
       <PageHeader
@@ -122,38 +118,29 @@ export function Workspace() {
         </div>
       </DataCard>
 
-      {/* Effort heatmap — full width, below hero */}
-      <DataCard padded>
-        <div className="flex flex-col gap-2">
-          <span className="text-[11px] font-medium uppercase tracking-widest text-muted-foreground">
-            Atividade hoje
-          </span>
-          <div className="overflow-x-auto">
-            <EffortHeatmap cells={heatmapCells} />
-          </div>
+      {/* KPI row: specs-by-status (2/3) + token-savings (1/3) */}
+      <div className="grid grid-cols-3 gap-6">
+        <div className="col-span-2">
+          <WorkspaceSpecsByStatus repoPath={repoPath} />
         </div>
-      </DataCard>
+        <WorkspaceTokenSummary repoPath={repoPath} />
+      </div>
 
+      {/* Month-activity calendar — full width */}
+      <WorkspaceMonthCalendar repoPath={repoPath} />
+
+      {/* Main feed + alerts/files aside */}
       <div className="flex gap-6">
-        <main className="flex-1 flex flex-col gap-6 min-w-0">
-          <section className="flex flex-col gap-3">
-            <SectionHeader
-              title="Specs ativas"
-              right={tracks.length > 0 ? String(tracks.length) : undefined}
-            />
-            <DataCard padded>
-              <SpecTracksList tracks={tracks} />
-            </DataCard>
-          </section>
-
-          <WorkspaceEffortFooter topFiles={topFiles} />
+        <main className="flex-1 min-w-0">
+          <WorkspaceEventsFeed repoPath={repoPath} />
         </main>
 
-        <aside className="w-[280px] shrink-0">
+        <aside className="w-[280px] shrink-0 flex flex-col gap-6">
           <WorkspaceAlertsColumn
             alerts={alerts}
             onAlertClick={handleAlertClick}
           />
+          <WorkspaceFilesRanking repoPath={repoPath} />
         </aside>
       </div>
     </div>
