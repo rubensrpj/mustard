@@ -366,6 +366,19 @@ fn map_timeline_row(
 
 // ── 6. spec_action ───────────────────────────────────────────────────────────
 
+/// Wave-3 (2026-05-21-flatten-spec-layout-and-multi-collab): Close / Reopen
+/// no longer move directories between `spec/active/` and `spec/completed/`.
+/// The spec dir stays at `.claude/spec/{name}/` for its entire lifecycle;
+/// the canonical status lives in the SQLite event store and in the
+/// `### Status:` header of `spec.md` (kept in sync by
+/// [`sync_spec_status_header`]).
+///
+/// `Close` emits `pipeline.status: completed`. `Reopen` emits
+/// `pipeline.status: implementing` when prior events exist for this spec
+/// (i.e. the pipeline already ran at least one EXECUTE wave), or
+/// `pipeline.status: planning` when the store has no events for the spec
+/// (treat as never-implemented). `Remove` deletes only `.claude/spec/{name}/`
+/// — no multi-bucket search.
 pub fn spec_action(
     _conn: &Connection,
     repo_path: &str,
@@ -374,24 +387,23 @@ pub fn spec_action(
 ) -> Result<SpecAction, String> {
     use std::path::Path;
 
-    let active    = Path::new(repo_path).join(".claude/spec/active").join(spec);
-    let completed = Path::new(repo_path).join(".claude/spec/completed").join(spec);
+    let spec_dir = Path::new(repo_path).join(".claude").join("spec").join(spec);
 
     match action {
         SpecActionKind::Reopen => {
-            if !completed.exists() {
+            if !spec_dir.exists() {
                 return Ok(SpecAction {
                     action:  "reopen".into(),
                     spec:    spec.into(),
                     result:  "error".into(),
-                    message: Some("spec não encontrada em completed/".into()),
+                    message: Some("spec não encontrada".into()),
                 });
             }
-            std::fs::create_dir_all(active.parent().unwrap())
-                .map_err(|e| e.to_string())?;
-            std::fs::rename(&completed, &active).map_err(|e| e.to_string())?;
-            rewrite_spec_header(&active.join("spec.md"), "implementing", "EXECUTE")?;
-            emit_pipeline_status(repo_path, spec, "reopened");
+            let to = reopen_target_status(repo_path, spec);
+            emit_pipeline_status(repo_path, spec, to);
+            // Header sync is fail-open inside emit_pipeline_status; mirror
+            // here so a stale store still gets a coherent on-disk header.
+            sync_spec_status_header(repo_path, spec, to);
             Ok(SpecAction {
                 action:  "reopen".into(),
                 spec:    spec.into(),
@@ -400,19 +412,16 @@ pub fn spec_action(
             })
         }
         SpecActionKind::Close => {
-            if !active.exists() {
+            if !spec_dir.exists() {
                 return Ok(SpecAction {
                     action:  "close".into(),
                     spec:    spec.into(),
                     result:  "error".into(),
-                    message: Some("spec não encontrada em active/".into()),
+                    message: Some("spec não encontrada".into()),
                 });
             }
-            std::fs::create_dir_all(completed.parent().unwrap())
-                .map_err(|e| e.to_string())?;
-            std::fs::rename(&active, &completed).map_err(|e| e.to_string())?;
-            rewrite_spec_header(&completed.join("spec.md"), "completed", "CLOSE")?;
-            emit_pipeline_status(repo_path, spec, "closed");
+            emit_pipeline_status(repo_path, spec, "completed");
+            sync_spec_status_header(repo_path, spec, "completed");
             Ok(SpecAction {
                 action:  "close".into(),
                 spec:    spec.into(),
@@ -421,19 +430,15 @@ pub fn spec_action(
             })
         }
         SpecActionKind::Remove => {
-            let path = if active.exists() {
-                active
-            } else if completed.exists() {
-                completed
-            } else {
+            if !spec_dir.exists() {
                 return Ok(SpecAction {
                     action:  "remove".into(),
                     spec:    spec.into(),
                     result:  "error".into(),
                     message: Some("spec não encontrada".into()),
                 });
-            };
-            std::fs::remove_dir_all(&path).map_err(|e| e.to_string())?;
+            }
+            std::fs::remove_dir_all(&spec_dir).map_err(|e| e.to_string())?;
             emit_pipeline_removed(repo_path, spec);
             Ok(SpecAction {
                 action:  "remove".into(),
@@ -445,86 +450,171 @@ pub fn spec_action(
     }
 }
 
+/// Pick the `pipeline.status` value Reopen should emit. If the event store
+/// already has events for this spec, the pipeline previously reached at least
+/// EXECUTE — reopen back to `implementing`. Otherwise treat as a fresh spec
+/// and emit `planning`. Fail-open: a missing/unwritable store falls back to
+/// `implementing` (the historically expected value).
+fn reopen_target_status(repo_path: &str, spec: &str) -> &'static str {
+    use mustard_core::store::sqlite_store::SqliteEventStore;
+    let Ok(store) = SqliteEventStore::for_project(repo_path) else {
+        return "implementing";
+    };
+    match store.query(Some(spec)) {
+        Ok(events) if !events.is_empty() => "implementing",
+        Ok(_) => "planning",
+        Err(_) => "implementing",
+    }
+}
+
 // ── spec_action helpers ───────────────────────────────────────────────────────
+//
+// Wave-3 of `2026-05-21-flatten-spec-layout-and-multi-collab` collapsed
+// these helpers down to the bare minimum: one direct `SqliteEventStore::append`
+// for `pipeline.status` / `pipeline.removed`, and a small fail-open header
+// rewriter that mirrors `apps/rt/src/run/emit_pipeline.rs::sync_spec_status_header`
+// so the canonical `### Status:` line in `spec.md` stays consistent with the
+// event store even when the dashboard does the writing (e.g. when the user
+// reopens a spec from the desktop UI on a machine where `mustard-rt` on PATH
+// is stale — the helper is duplicated rather than re-imported because pulling
+// `mustard-rt` as a build dep here would create a workspace cycle).
 
-/// Rewrite `### Status: ...` and `### Phase: ...` in the first 20 lines of
-/// spec.md. Idempotent — safe to call even when the file is missing.
-fn rewrite_spec_header(spec_md: &std::path::Path, status: &str, phase: &str) -> Result<(), String> {
-    let content = match std::fs::read_to_string(spec_md) {
-        Ok(c) => c,
-        Err(_) => return Ok(()), // missing spec.md is non-fatal
+/// Emit `pipeline.status: <to>` via the SQLite event store. Fail-open: any
+/// error during store open / append is logged to stderr and swallowed —
+/// telemetry is never load-bearing per the harness contract.
+fn emit_pipeline_status(repo_path: &str, spec: &str, to: &str) {
+    use mustard_core::model::event::{
+        Actor, ActorKind, EVENT_PIPELINE_STATUS, HarnessEvent, PipelineStatusPayload,
+        SCHEMA_VERSION,
+    };
+    use mustard_core::store::event_store::EventSink;
+    use mustard_core::store::sqlite_store::SqliteEventStore;
+
+    let store = match SqliteEventStore::for_project(repo_path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("emit_pipeline_status: open store: {e}");
+            return;
+        }
     };
 
-    let mut lines: Vec<String> = content.lines().map(|l| l.to_string()).collect();
-    let limit = lines.len().min(20);
+    let payload = serde_json::to_value(PipelineStatusPayload {
+        from: None,
+        to: to.to_string(),
+    })
+    .unwrap_or(serde_json::Value::Null);
 
-    for line in lines[..limit].iter_mut() {
-        // ### Status: value  (possibly inside `### Status: X | Phase: Y`)
-        if let Some(replaced) = replace_inline_field(line, "Status", status) {
-            *line = replaced;
-            continue;
-        }
-        // ### Phase: value
-        if let Some(replaced) = replace_inline_field(line, "Phase", phase) {
-            *line = replaced;
-        }
-    }
-
-    let out = lines.join("\n");
-    std::fs::write(spec_md, out).map_err(|e| e.to_string())
-}
-
-/// Within a single line, replace `Key: old_value` with `Key: new_value`.
-/// Handles both `### Status: X` and `### Status: X | Phase: Y` layouts.
-fn replace_inline_field(line: &str, key: &str, new_val: &str) -> Option<String> {
-    // Match `Key:` (case-insensitive) somewhere in the line.
-    let key_col = format!("{}:", key);
-    let pos = line.to_lowercase().find(&key_col.to_lowercase())?;
-    let before = &line[..pos + key_col.len()]; // "### Status:"
-    let after  = &line[pos + key_col.len()..]; // " old_value" or " old_value | Phase: Y"
-
-    // Preserve leading space, replace up to the next `|` or end-of-line.
-    let leading = if after.starts_with(' ') { " " } else { "" };
-    let rest = after.trim_start();
-    let suffix = if let Some(pipe_pos) = rest.find('|') {
-        &rest[pipe_pos..] // keeps " | Phase: Y"
-    } else {
-        ""
+    let event = HarnessEvent {
+        v: SCHEMA_VERSION,
+        ts: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+        session_id: String::new(),
+        wave: 0,
+        actor: Actor {
+            kind: ActorKind::Cli,
+            id: Some("dashboard-spec-action".to_string()),
+            actor_type: None,
+        },
+        event: EVENT_PIPELINE_STATUS.to_string(),
+        payload,
+        spec: Some(spec.to_string()),
     };
-    let sep = if !suffix.is_empty() { " " } else { "" };
-    Some(format!("{}{}{}{}{}", before, leading, new_val, sep, suffix))
-}
 
-/// Shell out to `mustard-rt run emit-pipeline`. Fail-open: logs to stderr,
-/// never propagates an error to the caller.
-fn emit_pipeline_status(repo_path: &str, spec: &str, status: &str) {
-    let payload = format!(r#"{{"status":"{}"}}"#, status);
-    let result = std::process::Command::new("mustard-rt")
-        .args([
-            "run", "emit-pipeline",
-            "--kind", "pipeline.status",
-            "--spec", spec,
-            "--payload", &payload,
-        ])
-        .current_dir(repo_path)
-        .output();
-    if let Err(e) = result {
-        eprintln!("emit_pipeline_status: {}", e);
+    if let Err(e) = store.append(&event) {
+        eprintln!("emit_pipeline_status: append: {e}");
     }
 }
 
+/// Emit `pipeline.removed` via the SQLite event store. Fail-open like
+/// [`emit_pipeline_status`].
 fn emit_pipeline_removed(repo_path: &str, spec: &str) {
-    let result = std::process::Command::new("mustard-rt")
-        .args([
-            "run", "emit-pipeline",
-            "--kind", "pipeline.removed",
-            "--spec", spec,
-            "--payload", r#"{"removed":true}"#,
-        ])
-        .current_dir(repo_path)
-        .output();
-    if let Err(e) = result {
-        eprintln!("emit_pipeline_removed: {}", e);
+    use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
+    use mustard_core::store::event_store::EventSink;
+    use mustard_core::store::sqlite_store::SqliteEventStore;
+
+    let store = match SqliteEventStore::for_project(repo_path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("emit_pipeline_removed: open store: {e}");
+            return;
+        }
+    };
+
+    let event = HarnessEvent {
+        v: SCHEMA_VERSION,
+        ts: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+        session_id: String::new(),
+        wave: 0,
+        actor: Actor {
+            kind: ActorKind::Cli,
+            id: Some("dashboard-spec-action".to_string()),
+            actor_type: None,
+        },
+        event: "pipeline.removed".to_string(),
+        payload: serde_json::json!({ "removed": true }),
+        spec: Some(spec.to_string()),
+    };
+
+    if let Err(e) = store.append(&event) {
+        eprintln!("emit_pipeline_removed: append: {e}");
+    }
+}
+
+/// Rewrite the `### Status:` line of `.claude/spec/{spec}/spec.md` to match
+/// the freshly emitted `pipeline.status` value. Mirrors
+/// `apps/rt/src/run/emit_pipeline.rs::sync_spec_status_header` — duplicated
+/// here (15 lines) instead of importing because pulling `mustard-rt` into
+/// the dashboard would create a workspace dependency cycle.
+///
+/// Fail-open contract: every failure path (missing file, missing header,
+/// unwritable target) is a warn-and-return — the event has already been
+/// recorded and is the authoritative source. We intentionally do NOT insert
+/// a header when one is missing: that's a `spec.md` shape mutation and the
+/// close-gate is the right place to enforce it.
+fn sync_spec_status_header(repo_path: &str, spec: &str, to: &str) {
+    let path = std::path::Path::new(repo_path)
+        .join(".claude")
+        .join("spec")
+        .join(spec)
+        .join("spec.md");
+
+    let content = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!(
+                "sync_spec_status_header: read {} failed: {e}",
+                path.display()
+            );
+            return;
+        }
+    };
+
+    let mut lines: Vec<String> = content.lines().map(str::to_string).collect();
+    let mut rewrote = false;
+    for line in lines.iter_mut() {
+        if line.trim_start().to_lowercase().starts_with("### status:") {
+            *line = format!("### Status: {to}");
+            rewrote = true;
+            break;
+        }
+    }
+    if !rewrote {
+        eprintln!(
+            "sync_spec_status_header: no `### Status:` header in {}",
+            path.display()
+        );
+        return;
+    }
+
+    // Preserve trailing newline if the original had one.
+    let mut out = lines.join("\n");
+    if content.ends_with('\n') {
+        out.push('\n');
+    }
+    if let Err(e) = std::fs::write(&path, out) {
+        eprintln!(
+            "sync_spec_status_header: write {} failed: {e}",
+            path.display()
+        );
     }
 }
 
@@ -636,7 +726,7 @@ pub fn dashboard_metrics_wave_status_run(
 ) -> Result<MetricsWaveStatus, String> {
     use std::process::Command;
     // Reject obvious traversal — spec_name is a single directory under
-    // .claude/spec/active/, never a path. Mirrors `dashboard_spec_markdown`.
+    // .claude/spec/, never a path. Mirrors `dashboard_spec_markdown`.
     if spec_name.is_empty()
         || spec_name.contains('/')
         || spec_name.contains('\\')
@@ -939,6 +1029,7 @@ const fn spec_status_string(status: mustard_core::SpecStatus) -> &'static str {
         SpecStatus::ClosedFollowup => "closed-followup",
         SpecStatus::Completed => "completed",
         SpecStatus::Cancelled => "cancelled",
+        SpecStatus::Abandoned => "abandoned",
         SpecStatus::Blocked => "blocked",
         SpecStatus::WaveFailed => "wave-failed",
     }
@@ -1033,11 +1124,15 @@ const fn workspace_alert_kind_string(k: mustard_core::WorkspaceAlertKind) -> &'s
 // can surface "mustard-rt not on PATH".
 // ===========================================================================
 
-/// Locate the spec directory under `.claude/spec/{active,completed,cancelled}`
-/// for `spec_name`. Mirrors the lookup in `dashboard_spec_markdown` so the
-/// frontend never has to pass a raw filesystem path. Wave-plan parents resolve
-/// to their own dir (`wave-plan.md` lives there) and wave children resolve to
-/// `{parent}/{spec_name}` when present.
+/// Locate the spec directory for `spec_name` under the flat layout introduced
+/// by wave-3 of `2026-05-21-flatten-spec-layout-and-multi-collab`: every spec
+/// lives directly at `.claude/spec/{name}/` regardless of lifecycle state.
+/// Bucket subdirectories (`active/`, `completed/`, `cancelled/`) are gone.
+///
+/// Wave-plan children stay nested one level deep inside their parent
+/// (`.claude/spec/{parent}/{name}/`) — that nesting is intrinsic to the
+/// wave-plan layout and survives the flatten. We resolve children by scanning
+/// one level under `spec/` (each entry is a potential parent dir).
 fn resolve_spec_dir(repo_path: &str, spec_name: &str) -> Option<std::path::PathBuf> {
     use std::path::PathBuf;
     if spec_name.is_empty()
@@ -1048,25 +1143,24 @@ fn resolve_spec_dir(repo_path: &str, spec_name: &str) -> Option<std::path::PathB
         return None;
     }
     let base = PathBuf::from(repo_path).join(".claude").join("spec");
-    for sub in ["active", "completed", "cancelled"] {
-        let direct = base.join(sub).join(spec_name);
-        if direct.is_dir() {
-            return Some(direct);
-        }
+
+    // Direct hit: `.claude/spec/{spec_name}/`.
+    let direct = base.join(spec_name);
+    if direct.is_dir() {
+        return Some(direct);
     }
-    // Wave child nested under a wave-plan parent.
-    for sub in ["active", "completed", "cancelled"] {
-        let bucket = base.join(sub);
-        let Ok(rd) = std::fs::read_dir(&bucket) else { continue };
-        for entry in rd.flatten() {
-            let parent_dir = entry.path();
-            if !parent_dir.is_dir() {
-                continue;
-            }
-            let child = parent_dir.join(spec_name);
-            if child.is_dir() {
-                return Some(child);
-            }
+
+    // Wave child nested inside a wave-plan parent:
+    // `.claude/spec/{parent}/{spec_name}/`.
+    let Ok(rd) = std::fs::read_dir(&base) else { return None };
+    for entry in rd.flatten() {
+        let parent_dir = entry.path();
+        if !parent_dir.is_dir() {
+            continue;
+        }
+        let child = parent_dir.join(spec_name);
+        if child.is_dir() {
+            return Some(child);
         }
     }
     None
