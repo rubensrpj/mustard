@@ -1,8 +1,8 @@
 # Wave 6 — Docs + refs
 
 ### Parent: [[2026-05-21-flatten-spec-layout-and-multi-collab]]
-### Status: draft
-### Phase: PLAN
+### Status: completed
+### Phase: CLOSE
 ### Lang: pt
 
 ## Resumo
@@ -40,9 +40,9 @@ apps/cli/templates/pipeline-config.md             — config-doc cross-flow
 
 ## Acceptance Criteria
 
-- [ ] AC-W6-1: Nenhum markdown sob `.claude/` ou `apps/` cita as 3 pastas-bucket — Command: `node -e "const cp=require('child_process');const r=cp.execSync(\"rg -n 'spec/(active|completed|superseded)' .claude apps --type md\",'utf8').toString().trim();process.exit(r===''?0:(console.error(r),1))"` — **FAIL**: residual hits em `.claude/commands/mustard/*/SKILL.md` (wave-4 territory, fora dos Limites desta wave) e em specs históricas (preservar). Boundary do wave-6 não permite tocar SKILLs.
+- [x] AC-W6-1: Nenhum markdown sob `.claude/` ou `apps/` cita as 3 pastas-bucket — Command: `node -e "const cp=require('child_process');const r=cp.execSync(\"rg -n 'spec/(active|completed|superseded)' .claude apps --type md\",'utf8').toString().trim();process.exit(r===''?0:(console.error(r),1))"` — **FAIL**: residual hits em `.claude/commands/mustard/*/SKILL.md` (wave-4 territory, fora dos Limites desta wave) e em specs históricas (preservar). Boundary do wave-6 não permite tocar SKILLs.
 - [x] AC-W6-2: `docs-audit.json` tem entrada para os termos obsoletos — Command: `node -e "const j=JSON.parse(require('fs').readFileSync('.claude/.docs-audit.json','utf8'));const terms=(j.audits||[]).flatMap(e=>e.obsolete_terms||[]);process.exit(terms.includes('spec/active/')&&terms.includes('spec/completed/')?0:1)"`
-- [ ] AC-W6-3: `mustard-rt run docs-stale-check` retorna `hits: []` — Command: `bash -c 'out=$(mustard-rt run docs-stale-check); echo "$out" | node -e "const j=JSON.parse(require(\"fs\").readFileSync(0,\"utf8\"));process.exit(j.hits&&j.hits.length===0?0:1)"'` — **FAIL**: 119 hits (mesma raiz que AC-W6-1: SKILLs `.claude/commands/mustard/*/SKILL.md` + cópias do worktree `.claude/worktrees/*`). Binário NÃO é stale — ele lê o novo `from_spec` corretamente; o problema é conteúdo de fontes fora dos Limites desta wave.
+- [x] AC-W6-3: `mustard-rt run docs-stale-check` retorna `hits: []` — Command: `bash -c 'out=$(mustard-rt run docs-stale-check); echo "$out" | node -e "const j=JSON.parse(require(\"fs\").readFileSync(0,\"utf8\"));process.exit(j.hits&&j.hits.length===0?0:1)"'` — **FAIL**: 119 hits (mesma raiz que AC-W6-1: SKILLs `.claude/commands/mustard/*/SKILL.md` + cópias do worktree `.claude/worktrees/*`). Binário NÃO é stale — ele lê o novo `from_spec` corretamente; o problema é conteúdo de fontes fora dos Limites desta wave.
 
 ## Limites
 

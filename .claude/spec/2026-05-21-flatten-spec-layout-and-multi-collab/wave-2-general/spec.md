@@ -1,8 +1,8 @@
 # Wave 2 — Rt: remover bucket-aware code + sync header
 
 ### Parent: [[2026-05-21-flatten-spec-layout-and-multi-collab]]
-### Status: draft
-### Phase: PLAN
+### Status: completed
+### Phase: CLOSE
 ### Lang: pt
 
 ## Resumo
@@ -42,7 +42,7 @@ apps/rt/tests/*                          — ajustar testes que dependem de buck
 
 - [x] AC-W2-1: Testes do rt passam — Command: `cargo test -p mustard-rt --bin mustard-rt`
 - [x] AC-W2-2: Não há mais `active_spec_dir` / `completed_spec_dir` no rt — Command: `node -e "const r=require('child_process').execSync('rg -n \"active_spec_dir|completed_spec_dir\" apps/rt/src','utf8').toString().trim();process.exit(r===''?0:(console.error(r),1))"`
-- [ ] AC-W2-3: Emit `pipeline.status: completed` sincroniza header — Command: `bash -c 'TEST=/tmp/mustard-test-$$;mkdir -p "$TEST/.claude/spec/sample" "$TEST/.claude/.harness";echo -e "# x\n### Status: implementing\n" > "$TEST/.claude/spec/sample/spec.md";cd "$TEST" && mustard-rt run emit-pipeline --kind pipeline.status --spec sample --payload "{\"to\":\"completed\"}" && grep -q "^### Status: completed" .claude/spec/sample/spec.md'`
+- [x] AC-W2-3: Emit `pipeline.status: completed` sincroniza header — Command: `bash -c 'TEST=/tmp/mustard-test-$$;mkdir -p "$TEST/.claude/spec/sample" "$TEST/.claude/.harness";echo -e "# x\n### Status: implementing\n" > "$TEST/.claude/spec/sample/spec.md";cd "$TEST" && mustard-rt run emit-pipeline --kind pipeline.status --spec sample --payload "{\"to\":\"completed\"}" && grep -q "^### Status: completed" .claude/spec/sample/spec.md'`
 
 ## Limites
 

@@ -1,6 +1,6 @@
 # Feature: guardrail-catalog
 
-### Status: closed | Phase: CLOSE | Scope: full
+completed| Phase: CLOSE | Scope: full
 ### Checkpoint: 2026-05-19T20:15:00Z
 ### Lang: pt
 

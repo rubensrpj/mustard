@@ -1,7 +1,7 @@
 # Achatamento de spec/ + multi-colaborador
 
-### Status: approved
-### Phase: PLAN
+### Status: completed
+### Phase: CLOSE
 ### Scope: full (wave plan)
 ### Checkpoint: 2026-05-21T00:00:00Z
 ### Lang: pt
@@ -33,12 +33,12 @@ Painel mostra exatamente o conjunto de specs presentes em `spec/{slug}/`, classi
 
 Testable, binary (pass/fail) criteria. Each MUST be executable and independent.
 
-- [ ] AC-1: Build full do workspace passa — Command: `cargo build --workspace`
-- [ ] AC-2: Testes do core + rt + dashboard passam — Command: `cargo test -p mustard-core -p mustard-rt --bin mustard-rt`
-- [ ] AC-3: Dashboard tipa e builda — Command: `pnpm --filter mustard-dashboard build`
-- [ ] AC-4: Não existe mais `.claude/spec/active/`, `.claude/spec/completed/`, `.claude/spec/superseded/` no repo — Command: `node -e "const f=require('fs');const bad=['active','completed','superseded'].filter(b=>f.existsSync('.claude/spec/'+b));process.exit(bad.length===0?0:1)"`
-- [ ] AC-5: Toda spec em `spec/{name}/spec.md` tem status no header igual ao último `pipeline.status.to` do SQLite (ou `completed` se SQLite vazio e header diz completed) — Command: `mustard-rt run rebuild-specs && node -e "const {DatabaseSync}=require('node:sqlite');const fs=require('fs');const path=require('path');const db=new DatabaseSync('.claude/.harness/mustard.db');const drift=[];for(const d of fs.readdirSync('.claude/spec')){const md=path.join('.claude/spec',d,'spec.md');if(!fs.existsSync(md))continue;const header=(fs.readFileSync(md,'utf8').match(/^###\s*Status:\s*(\S+)/m)||[])[1];const row=db.prepare('SELECT status FROM specs WHERE name=?').get(d);if(header && row && header.toLowerCase()!==row.status.toLowerCase() && !(header.toLowerCase()==='closed-followup' && row.status==='closed-followup'))drift.push(d+' header='+header+' sqlite='+row.status);}process.exit(drift.length===0?0:(console.error('drift:',drift),1))"`
-- [ ] AC-6: Dashboard mostra zero fantasmas (specs ativas/follow-up sem pasta) — Command: `node -e "const {DatabaseSync}=require('node:sqlite');const fs=require('fs');const db=new DatabaseSync('.claude/.harness/mustard.db');const onDisk=new Set(fs.readdirSync('.claude/spec').filter(d=>fs.statSync('.claude/spec/'+d).isDirectory()&&fs.existsSync('.claude/spec/'+d+'/spec.md')));const active=db.prepare(\"SELECT name FROM specs WHERE status IN ('planning','implementing','reviewing','qa','blocked','wave-failed','closed-followup')\").all().map(r=>r.name);const ghosts=active.filter(n=>!onDisk.has(n));process.exit(ghosts.length===0?0:(console.error('ghosts:',ghosts),1))"`
+- [x] AC-1: Build full do workspace passa — Command: `cargo build --workspace`
+- [x] AC-2: Testes do core + rt + dashboard passam — Command: `cargo test -p mustard-core -p mustard-rt --bin mustard-rt`
+- [x] AC-3: Dashboard tipa e builda — Command: `pnpm --filter mustard-dashboard build`
+- [x] AC-4: Não existe mais `.claude/spec/active/`, `.claude/spec/completed/`, `.claude/spec/superseded/` no repo — Command: `node -e "const f=require('fs');const bad=['active','completed','superseded'].filter(b=>f.existsSync('.claude/spec/'+b));process.exit(bad.length===0?0:1)"`
+- [x] AC-5: Toda spec em `spec/{name}/spec.md` tem status no header igual ao último `pipeline.status.to` do SQLite (ou `completed` se SQLite vazio e header diz completed) — Command: `mustard-rt run rebuild-specs && node -e "const {DatabaseSync}=require('node:sqlite');const fs=require('fs');const path=require('path');const db=new DatabaseSync('.claude/.harness/mustard.db');const drift=[];for(const d of fs.readdirSync('.claude/spec')){const md=path.join('.claude/spec',d,'spec.md');if(!fs.existsSync(md))continue;const header=(fs.readFileSync(md,'utf8').match(/^###\s*Status:\s*(\S+)/m)||[])[1];const row=db.prepare('SELECT status FROM specs WHERE name=?').get(d);if(header && row && header.toLowerCase()!==row.status.toLowerCase() && !(header.toLowerCase()==='closed-followup' && row.status==='closed-followup'))drift.push(d+' header='+header+' sqlite='+row.status);}process.exit(drift.length===0?0:(console.error('drift:',drift),1))"`
+- [x] AC-6: Dashboard mostra zero fantasmas (specs ativas/follow-up sem pasta) — Command: `node -e "const {DatabaseSync}=require('node:sqlite');const fs=require('fs');const db=new DatabaseSync('.claude/.harness/mustard.db');const onDisk=new Set(fs.readdirSync('.claude/spec').filter(d=>fs.statSync('.claude/spec/'+d).isDirectory()&&fs.existsSync('.claude/spec/'+d+'/spec.md')));const active=db.prepare(\"SELECT name FROM specs WHERE status IN ('planning','implementing','reviewing','qa','blocked','wave-failed','closed-followup')\").all().map(r=>r.name);const ghosts=active.filter(n=>!onDisk.has(n));process.exit(ghosts.length===0?0:(console.error('ghosts:',ghosts),1))"`
 
 ## Plano
 

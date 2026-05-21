@@ -1,6 +1,6 @@
 # Enhancement: LSP no doctor + permissions.deny declarativa para paths ruidosos
 
-### Status: closed
+completed
 ### Phase: CLOSE
 ### Scope: light
 ### Checkpoint: 2026-05-19T22:25:00Z

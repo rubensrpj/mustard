@@ -1,8 +1,8 @@
 # Wave 3 — Dashboard src-tauri: emit-only + flat resolve
 
 ### Parent: [[2026-05-21-flatten-spec-layout-and-multi-collab]]
-### Status: draft
-### Phase: PLAN
+### Status: completed
+### Phase: CLOSE
 ### Lang: pt
 
 ## Resumo

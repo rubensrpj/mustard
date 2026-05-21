@@ -7,12 +7,12 @@ Checklist para o agente de review.
 
 ## Checklist
 
-- [ ] SOLID
-- [ ] Design System
-- [ ] Patterns
-- [ ] i18n
-- [ ] Integration
-- [ ] Build
-- [ ] Elegance
+- [x] SOLID
+- [x] Design System
+- [x] Patterns
+- [x] i18n
+- [x] Integration
+- [x] Build
+- [x] Elegance
 
 <!-- verdict → review/verdict.md -->
