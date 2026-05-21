@@ -6,21 +6,19 @@
 //!   `git diff`, emit `pipeline.status → closed-followup` + `pipeline.complete`
 //!   events to the SQLite store. The legacy `.pipeline-states/{spec}.json` file
 //!   is NOT written for new pipelines.
-//! - **archive** (`--archive`): move `spec/active/<name>` → `spec/completed/`
-//!   and delete the legacy state JSON if it still exists (back-compat for specs
-//!   that ran before the event migration).
+//! - **archive** (`--archive`): emit the terminal `pipeline.status: completed`
+//!   event for the spec (idempotent). With the wave-2 flat-layout move, archival
+//!   no longer touches the filesystem — the spec directory stays at
+//!   `.claude/spec/{name}/` for its entire lifecycle and the canonical status is
+//!   derived from event-store projections + the `### Status:` header in
+//!   `spec.md`.
 //!
 //! `--archive-stale` / `--archive-followups` sweep every `closed-followup`
-//! spec (the former only those older than 24 h). Both now query the event
+//! spec (the former only those older than 24 h). Both query the event
 //! store via `pipeline_state_for_spec` rather than reading the filesystem.
 //!
 //! All I/O is fail-soft. The stdout JSON line stays shape-compatible with the
 //! JS version (the `/close` command parses it).
-//!
-//! Port note (archive_metrics_from_state): the legacy `state.metrics` sidecar
-//! was written by pre-migration pipelines. Post-migration specs never have a
-//! `.pipeline-states` JSON at all, so `archive_metrics_from_state` is only
-//! reached for in-flight legacy specs. It is preserved here for that case only.
 
 use crate::run::env::session_id;
 use mustard_core::store::event_store::EventSink;
@@ -86,12 +84,18 @@ fn parent_branch_for(cwd: &Path, current_branch: &str) -> String {
     "main".to_string()
 }
 
-/// Path helpers — mirror the JS `*SpecDir` / `pipelineStatePath` helpers.
-fn active_spec_dir(cwd: &Path, spec: &str) -> PathBuf {
-    cwd.join(".claude").join("spec").join("active").join(spec)
-}
-fn completed_spec_dir(cwd: &Path, spec: &str) -> PathBuf {
-    cwd.join(".claude").join("spec").join("completed").join(spec)
+/// Path helpers — flat layout (wave-2 of `2026-05-21-flatten-spec-layout-and-multi-collab`).
+///
+/// `spec_dir` is the single canonical location for a spec directory; there are
+/// no `active/` / `completed/` buckets anymore. The terminal status lives in
+/// the SQLite event store + the `### Status:` header of `spec.md`.
+///
+/// Used by tests today; kept as the documented public helper so any future
+/// wave that needs to read/write the spec directory has a single point of
+/// truth instead of re-deriving the layout.
+#[allow(dead_code)]
+fn spec_dir(cwd: &Path, spec: &str) -> PathBuf {
+    cwd.join(".claude").join("spec").join(spec)
 }
 fn pipeline_state_path(cwd: &Path, spec: &str) -> PathBuf {
     cwd.join(".claude")
@@ -156,35 +160,6 @@ fn collect_affected_files(cwd: &Path, spec: &str, state: &Value) -> Vec<String> 
     files.into_iter().collect()
 }
 
-/// Recursively copy `src` into `dst`.
-fn copy_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
-    if src.is_dir() {
-        std::fs::create_dir_all(dst)?;
-        for entry in std::fs::read_dir(src)? {
-            let entry = entry?;
-            copy_recursive(&entry.path(), &dst.join(entry.file_name()))?;
-        }
-    } else {
-        std::fs::copy(src, dst)?;
-    }
-    Ok(())
-}
-
-/// Move a directory, falling back to copy + remove across devices. Fail-soft.
-fn move_dir(src: &Path, dst: &Path) -> bool {
-    if let Some(parent) = dst.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    if std::fs::rename(src, dst).is_ok() {
-        return true;
-    }
-    if copy_recursive(src, dst).is_ok() {
-        let _ = std::fs::remove_dir_all(src);
-        return true;
-    }
-    false
-}
-
 /// Build a pipeline event with the standard envelope fields.
 fn pipeline_event(kind: &str, spec: &str, payload: Value) -> HarnessEvent {
     HarnessEvent {
@@ -240,6 +215,14 @@ fn mark_followup(cwd: &Path, spec: &str) -> Value {
             })
             .unwrap_or(Value::Null);
 
+            // Emit phase=CLOSE before flipping the status. The dashboard
+            // projection treats phase as the authoritative "how far did the
+            // pipeline get" signal; without this the spec ends up showing
+            // `status=closed-followup, phase=execute` in the Encerradas /
+            // Follow-up tabs, hiding the fact that it actually reached CLOSE.
+            // Idempotent via `emit_phase::last_phase_in_store`.
+            emit_phase_close(&store, spec);
+
             let _ = store.append(&pipeline_event(EVENT_PIPELINE_STATUS, spec, status_payload));
             let _ = store.append(&pipeline_event(EVENT_PIPELINE_COMPLETE, spec, complete_payload));
 
@@ -275,42 +258,6 @@ fn mark_followup(cwd: &Path, spec: &str) -> Value {
     }
 }
 
-/// Archive the legacy `state.metrics` sidecar to `.claude/metrics/<spec>.json`.
-fn archive_metrics_from_state(cwd: &Path, spec: &str, state: &Value) -> bool {
-    let Some(m) = state.get("metrics") else {
-        return false;
-    };
-    let metrics_dir = cwd.join(".claude").join("metrics");
-    if std::fs::create_dir_all(&metrics_dir).is_err() {
-        return false;
-    }
-    let duration = match (
-        m.get("startedAt").and_then(Value::as_str),
-        m.get("updatedAt").and_then(Value::as_str),
-    ) {
-        (Some(a), Some(b)) => match (parse_iso_millis(a), parse_iso_millis(b)) {
-            (Some(sa), Some(ub)) => json!((ub - sa).max(0)),
-            _ => Value::Null,
-        },
-        _ => Value::Null,
-    };
-    let retries = m.get("retries").and_then(Value::as_i64).unwrap_or(0);
-    let out = json!({
-        "name": spec,
-        "completedAt": state.get("completedAt").and_then(Value::as_str)
-            .map(str::to_string).unwrap_or_else(crate::util::now_iso8601),
-        "durationMs": duration,
-        "apiCalls": m.get("apiCalls").and_then(Value::as_i64).unwrap_or(0),
-        "retries": retries,
-        "pass1": retries == 0,
-        "toolBreakdown": m.get("toolBreakdown").cloned().unwrap_or_else(|| json!({})),
-        "agentCount": m.get("agentCount").cloned().unwrap_or(Value::Null),
-        "dispatchFailuresByPhase": m.get("dispatchFailuresByPhase").cloned().unwrap_or(Value::Null),
-        "source": "legacy-state",
-    });
-    write_json(&metrics_dir.join(format!("{spec}.json")), &out)
-}
-
 /// Parse an ISO-8601 timestamp into epoch millis (UTC). `None` on any failure.
 ///
 /// Shared with the `epic-fold` port for event-duration computation.
@@ -343,39 +290,85 @@ pub(crate) fn parse_iso_millis(ts: &str) -> Option<i64> {
     Some(((days * 86_400 + hh * 3600 + mm * 60 + ss) * 1000) + millis)
 }
 
-/// Stage 2 — archive a spec: move the spec dir and drop the legacy state JSON
-/// if it still exists (back-compat for specs written before the event migration).
+/// Stage 2 — finalize archival.
 ///
-/// Metrics archival via `archive_metrics_from_state` is only attempted when a
-/// legacy `.pipeline-states/{spec}.json` with a `metrics` field is found —
-/// post-migration specs have no such file, so they get no `.claude/metrics/`
-/// sidecar (which is acceptable; nothing in CLOSE depends on it).
+/// Wave-2 of `2026-05-21-flatten-spec-layout-and-multi-collab` removed the
+/// directory move: there are no `active/` / `completed/` buckets anymore, so
+/// archival is purely a no-op for the filesystem. The only side effect is the
+/// idempotent terminal `pipeline.status: completed` emit (skipped when the spec
+/// is already `completed` or `cancelled` — preserves deliberate cancellations).
+/// We still scrub a stale `.pipeline-states/{spec}.json` if one survived from
+/// the pre-migration era so the dashboard's projection picks up the SQLite
+/// status without confusion.
+///
+/// Returns `(emitted, had_legacy_state)`:
+/// - `emitted` is always `true` (the emit is fail-open and idempotent; from the
+///   caller's perspective the archive ran).
+/// - `had_legacy_state` is `true` when a legacy `.pipeline-states/{spec}.json`
+///   was present and removed.
 fn archive(cwd: &Path, spec: &str) -> (bool, bool) {
-    let active = active_spec_dir(cwd, spec);
-    let completed = completed_spec_dir(cwd, spec);
     let state_path = pipeline_state_path(cwd, spec);
 
-    let moved_spec = if active.exists() && !completed.exists() {
-        move_dir(&active, &completed)
-    } else {
-        // Already moved (completed exists, active gone) counts as success.
-        !active.exists() && completed.exists()
-    };
-
-    // Legacy metrics archival — only for pre-migration specs that still had
-    // a state JSON with a `metrics` field. Skip entirely for new specs.
-    let state = read_json(&state_path);
-    if let Some(ref s) = state {
-        if s.get("metrics").is_some() {
-            archive_metrics_from_state(cwd, spec, s);
-        }
-    }
+    // Idempotent terminal emit. Fail-open: a missing or unwritable store
+    // never blocks archival.
+    emit_completed_status(cwd, spec);
 
     let had_legacy_state = state_path.exists();
     if had_legacy_state {
         let _ = std::fs::remove_file(&state_path);
     }
-    (moved_spec, had_legacy_state)
+    (true, had_legacy_state)
+}
+
+/// Emit `pipeline.status: completed` so projections see the terminal state.
+/// Idempotent: skips when the projection already shows `completed` or
+/// `cancelled` so a re-archive doesn't rewrite a deliberate cancellation.
+fn emit_completed_status(cwd: &Path, spec: &str) {
+    let Ok(store) = SqliteEventStore::for_project(cwd) else {
+        return;
+    };
+    let current_status = crate::run::event_projections::pipeline_state_for_spec(
+        &store, spec, None,
+    )
+    .and_then(|v| v.status);
+    if matches!(current_status.as_deref(), Some("completed") | Some("cancelled")) {
+        return;
+    }
+    // Emit phase=CLOSE alongside status. Mirrors `mark_followup` so the
+    // projection sees a coherent (phase=close, status=completed) terminal
+    // pair regardless of which path archived the spec.
+    emit_phase_close(&store, spec);
+    let payload = serde_json::to_value(PipelineStatusPayload {
+        from: current_status,
+        to: "completed".to_string(),
+    })
+    .unwrap_or(Value::Null);
+    let _ = store.append(&pipeline_event(EVENT_PIPELINE_STATUS, spec, payload));
+}
+
+/// Idempotently emit `pipeline.phase: CLOSE` when the spec's latest phase is
+/// not already CLOSE. Skips the close-gate sub-gates (debt/checklist/qa/build)
+/// because this is called from the close path itself — the gates already ran.
+fn emit_phase_close(store: &SqliteEventStore, spec: &str) {
+    let last = crate::run::emit_phase::last_phase_in_store(store, spec);
+    if last.as_deref() == Some("CLOSE") {
+        return;
+    }
+    let event = HarnessEvent {
+        v: SCHEMA_VERSION,
+        ts: crate::util::now_iso8601(),
+        session_id: session_id(),
+        wave: 0,
+        actor: Actor {
+            kind: ActorKind::Cli,
+            id: Some("complete-spec".to_string()),
+            actor_type: None,
+        },
+        event: "pipeline.phase".to_string(),
+        payload: json!({ "from": last, "to": "CLOSE" }),
+        spec: Some(spec.to_string()),
+    };
+    let _ = store.append(&event);
 }
 
 /// Sweep every `closed-followup` spec, archiving it (TTL-gated when asked).
@@ -639,17 +632,80 @@ mod tests {
         assert!(payload.closed_at.is_some(), "closedAt should be set");
     }
 
+    /// archive() is a no-op for the filesystem under flat layout — the spec
+    /// dir stays at `.claude/spec/{name}/` for its entire lifecycle. The only
+    /// side effect is the terminal status emit.
     #[test]
-    fn archive_moves_active_spec_to_completed() {
+    fn archive_does_not_move_spec_dir() {
         let dir = tempdir().unwrap();
         let cwd = dir.path();
-        let active = active_spec_dir(cwd, "s1");
-        std::fs::create_dir_all(&active).unwrap();
-        std::fs::write(active.join("spec.md"), "# spec").unwrap();
-        let (moved, _) = archive(cwd, "s1");
-        assert!(moved);
-        assert!(completed_spec_dir(cwd, "s1").join("spec.md").exists());
-        assert!(!active.exists());
+        std::fs::create_dir_all(cwd.join(".claude").join(".harness")).unwrap();
+        let spec_path = spec_dir(cwd, "s1");
+        std::fs::create_dir_all(&spec_path).unwrap();
+        std::fs::write(spec_path.join("spec.md"), "# spec").unwrap();
+        let (ok, _) = archive(cwd, "s1");
+        assert!(ok);
+        // Spec dir stays in place — no bucket move.
+        assert!(spec_path.join("spec.md").exists());
+    }
+
+    /// archive() must emit pipeline.status: completed so the dashboard's
+    /// SQLite-derived status stays in sync with the canonical terminal state.
+    #[test]
+    fn archive_emits_pipeline_status_completed() {
+        let dir = tempdir().unwrap();
+        let cwd = dir.path();
+        std::fs::create_dir_all(cwd.join(".claude").join(".harness")).unwrap();
+
+        // Seed a non-terminal status so the projection has something to read
+        // (mirrors a spec that reached EXECUTE but never closed cleanly).
+        let store = temp_store(cwd);
+        store
+            .append(&ev(EVENT_PIPELINE_STATUS, "s2", json!({ "to": "implementing" })))
+            .unwrap();
+
+        // Materialise a flat spec dir so archive() has the canonical layout.
+        let spec_path = spec_dir(cwd, "s2");
+        std::fs::create_dir_all(&spec_path).unwrap();
+        std::fs::write(spec_path.join("spec.md"), "# s2").unwrap();
+
+        let (ok, _) = archive(cwd, "s2");
+        assert!(ok);
+
+        let events = store.query(Some("s2")).unwrap();
+        let last_terminal = events
+            .iter()
+            .filter(|e| e.event == EVENT_PIPELINE_STATUS)
+            .filter_map(|e| e.payload.get("to").and_then(Value::as_str))
+            .last();
+        assert_eq!(last_terminal, Some("completed"));
+    }
+
+    /// archive() must NOT rewrite the status when the spec is already in a
+    /// deliberate terminal state (cancelled stays cancelled).
+    #[test]
+    fn archive_skips_emit_when_cancelled() {
+        let dir = tempdir().unwrap();
+        let cwd = dir.path();
+        std::fs::create_dir_all(cwd.join(".claude").join(".harness")).unwrap();
+        let store = temp_store(cwd);
+        store
+            .append(&ev(EVENT_PIPELINE_STATUS, "s3", json!({ "to": "cancelled" })))
+            .unwrap();
+
+        let spec_path = spec_dir(cwd, "s3");
+        std::fs::create_dir_all(&spec_path).unwrap();
+        std::fs::write(spec_path.join("spec.md"), "# s3").unwrap();
+
+        archive(cwd, "s3");
+
+        let events = store.query(Some("s3")).unwrap();
+        let last_terminal = events
+            .iter()
+            .filter(|e| e.event == EVENT_PIPELINE_STATUS)
+            .filter_map(|e| e.payload.get("to").and_then(Value::as_str))
+            .last();
+        assert_eq!(last_terminal, Some("cancelled"));
     }
 
     /// archive_followups reads the event store (not the FS) to find closed-followup specs.
@@ -676,15 +732,16 @@ mod tests {
             json!({ "to": "active" }),
         )).unwrap();
 
-        // Create active spec dirs so archive() has something to move.
-        let active_a = active_spec_dir(cwd, "a");
-        std::fs::create_dir_all(&active_a).unwrap();
-        std::fs::write(active_a.join("spec.md"), "# a").unwrap();
+        // Create flat spec dirs so the layout matches production.
+        let dir_a = spec_dir(cwd, "a");
+        std::fs::create_dir_all(&dir_a).unwrap();
+        std::fs::write(dir_a.join("spec.md"), "# a").unwrap();
 
         let (scanned, archived) = archive_followups(cwd, false);
         assert_eq!(scanned, 1, "only 1 spec should be in closed-followup state");
         assert_eq!(archived, 1, "spec a should be archived");
-        assert!(completed_spec_dir(cwd, "a").exists(), "spec a moved to completed");
+        // The spec dir stays in place; the terminal status is in SQLite.
+        assert!(dir_a.exists(), "spec a directory stays at flat layout");
     }
 
     /// Legacy FS fallback: when the event store is empty, fall back to .pipeline-states/*.json.

@@ -47,19 +47,21 @@ struct AcResult {
 }
 
 /// Locate the spec file. Tries, in order:
-///   1. `.claude/specs/{spec}.md` (legacy flat layout)
-///   2. `.claude/spec/active/{spec}/spec.md` (single-spec mode)
-///   3. `.claude/spec/active/{spec}/wave-plan.md` (wave-plan mode — the global
-///      ACs live in `wave-plan.md` and `spec.md` does not exist at the root)
-///   4. `.claude/spec/completed/{spec}/spec.md`
-///   5. `.claude/spec/completed/{spec}/wave-plan.md`
+///   1. `.claude/specs/{spec}.md` (very-legacy single-file layout)
+///   2. `.claude/spec/{spec}/spec.md` (canonical flat layout — single-spec mode)
+///   3. `.claude/spec/{spec}/wave-plan.md` (flat layout — wave-plan mode where
+///      the global ACs live in `wave-plan.md` and `spec.md` is absent)
+///
+/// Flat layout is the post-wave-2 contract of
+/// `2026-05-21-flatten-spec-layout-and-multi-collab`: there are no
+/// `active/` / `completed/` buckets anymore. The spec dir lives at the same
+/// path for its entire lifecycle and the canonical status is in the SQLite
+/// event store + the `### Status:` header.
 fn find_spec_file(cwd: &Path, spec: &str) -> Option<PathBuf> {
     let candidates = [
         cwd.join(".claude").join("specs").join(format!("{spec}.md")),
-        cwd.join(".claude").join("spec").join("active").join(spec).join("spec.md"),
-        cwd.join(".claude").join("spec").join("active").join(spec).join("wave-plan.md"),
-        cwd.join(".claude").join("spec").join("completed").join(spec).join("spec.md"),
-        cwd.join(".claude").join("spec").join("completed").join(spec).join("wave-plan.md"),
+        cwd.join(".claude").join("spec").join(spec).join("spec.md"),
+        cwd.join(".claude").join("spec").join(spec).join("wave-plan.md"),
     ];
     candidates.into_iter().find(|c| c.exists())
 }
@@ -654,7 +656,7 @@ mod tests {
     #[test]
     fn finds_wave_plan_md_when_spec_md_absent() {
         let dir = tempdir().unwrap();
-        let spec_dir = dir.path().join(".claude").join("spec").join("active").join("plan-a");
+        let spec_dir = dir.path().join(".claude").join("spec").join("plan-a");
         std::fs::create_dir_all(&spec_dir).unwrap();
         let wp = spec_dir.join("wave-plan.md");
         std::fs::write(&wp, "# Plan A\n## Acceptance Criteria\n- [ ] AC-G1: ok — Command: `true`\n").unwrap();
@@ -668,7 +670,7 @@ mod tests {
     #[test]
     fn spec_md_wins_over_wave_plan_md_when_both_exist() {
         let dir = tempdir().unwrap();
-        let spec_dir = dir.path().join(".claude").join("spec").join("active").join("plan-b");
+        let spec_dir = dir.path().join(".claude").join("spec").join("plan-b");
         std::fs::create_dir_all(&spec_dir).unwrap();
         let sp = spec_dir.join("spec.md");
         let wp = spec_dir.join("wave-plan.md");

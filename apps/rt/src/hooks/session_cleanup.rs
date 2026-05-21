@@ -111,24 +111,27 @@ fn state_spec_name(path: &Path) -> Option<String> {
         .map(str::to_string)
 }
 
-/// `true` if a spec is done — present under `spec/completed/`, or its active
-/// `spec.md` / `wave-plan.md` header marks it `completed`/`done`. Port of
-/// `isSpecDone`.
+/// `true` if a spec is done — flat layout (wave-2 of
+/// `2026-05-21-flatten-spec-layout-and-multi-collab`) reads the spec dir
+/// directly under `.claude/spec/{name}/`, with no `active/` / `completed/`
+/// buckets. Done means either the directory is gone or the `### Status:`
+/// header in `spec.md` / `wave-plan.md` reads `completed` / `done`.
 fn is_spec_done(claude_dir: &Path, spec_name: &str) -> bool {
-    if claude_dir.join("spec").join("completed").join(spec_name).exists() {
+    let spec_root = claude_dir.join("spec").join(spec_name);
+    if !spec_root.exists() {
+        // Spec deleted → treat as done.
         return true;
     }
-    let active = claude_dir.join("spec").join("active").join(spec_name);
-    let wave_plan = active.join("wave-plan.md");
+    let wave_plan = spec_root.join("wave-plan.md");
     if wave_plan.exists() {
         return std::fs::read_to_string(&wave_plan)
             .ok()
             .map(|t| header_marks_done(&t))
             .unwrap_or(false);
     }
-    let spec_file = active.join("spec.md");
+    let spec_file = spec_root.join("spec.md");
     if !spec_file.exists() {
-        // Spec deleted → done.
+        // Spec dir empty / spec.md absent → treat as done.
         return true;
     }
     std::fs::read_to_string(&spec_file)
@@ -428,8 +431,16 @@ mod tests {
             "orphan",
             &json!({ "status": "implementing", "specName": "old-spec" }),
         );
-        // The spec is in completed/ → its state is orphaned.
-        std::fs::create_dir_all(dir.path().join(".claude/spec/completed/old-spec")).unwrap();
+        // Flat layout (wave-2): the spec dir is at .claude/spec/{name}/ with a
+        // `### Status: completed` header. `is_spec_done` reads the header to
+        // decide the state file is orphaned and removes it.
+        let spec_dir = dir.path().join(".claude/spec/old-spec");
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        std::fs::write(
+            spec_dir.join("spec.md"),
+            "# old-spec\n### Status: completed\n",
+        )
+        .unwrap();
         SessionCleanup.observe(&session_end_input(), &ctx(dir.path().to_str().unwrap()));
         assert!(!dir
             .path()

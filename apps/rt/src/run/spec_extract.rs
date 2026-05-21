@@ -359,11 +359,15 @@ mod tests {
 
     #[test]
     fn detect_mode_recognizes_wave_plan() {
+        // Flat layout (wave-2 of 2026-05-21-flatten-spec-layout-and-multi-collab):
+        // spec dirs sit directly under `.claude/spec/`, no active/completed
+        // buckets. `detect_mode` keys off the `/wave-N-role/spec.md` suffix
+        // and is bucket-agnostic by construction.
         assert_eq!(
-            detect_mode("/x/spec/active/foo/wave-2-backend/spec.md"),
+            detect_mode("/x/spec/foo/wave-2-backend/spec.md"),
             Mode::WavePlan
         );
-        assert_eq!(detect_mode("/x/spec/active/foo/spec.md"), Mode::Monolithic);
+        assert_eq!(detect_mode("/x/spec/foo/spec.md"), Mode::Monolithic);
     }
 
     #[test]

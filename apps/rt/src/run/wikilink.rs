@@ -18,9 +18,10 @@
 //! ```
 //!
 //! An `orphan` is a `to` value whose name does not match any directory under
-//! `.claude/spec/active/` or `.claude/spec/completed/`. Orphan detection is
-//! best-effort — a missing `.claude/spec` tree yields zero orphans rather
-//! than an error.
+//! `.claude/spec/`. Orphan detection is best-effort — a missing `.claude/spec`
+//! tree yields zero orphans rather than an error. Wave-2 of
+//! `2026-05-21-flatten-spec-layout-and-multi-collab` removed the
+//! `active/` / `completed/` buckets; spec dirs live flat under `.claude/spec/`.
 //!
 //! Exit code is always `0` (fail-open).
 
@@ -148,20 +149,18 @@ fn derive_from(root: &Path, abs_path: &Path) -> String {
     parent
 }
 
-/// Collect every spec directory name under `.claude/spec/{active,completed}`.
+/// Collect every spec directory name under `.claude/spec/` (flat layout).
 /// Returns an empty set when the tree is missing — orphan reporting is purely
 /// advisory.
 fn known_specs(project: &Path) -> BTreeSet<String> {
     let mut out: BTreeSet<String> = BTreeSet::new();
-    for sub in ["active", "completed"] {
-        let root = project.join(".claude").join("spec").join(sub);
-        let Ok(entries) = std::fs::read_dir(&root) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-                out.insert(entry.file_name().to_string_lossy().to_string());
-            }
+    let root = project.join(".claude").join("spec");
+    let Ok(entries) = std::fs::read_dir(&root) else {
+        return out;
+    };
+    for entry in entries.flatten() {
+        if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+            out.insert(entry.file_name().to_string_lossy().to_string());
         }
     }
     out

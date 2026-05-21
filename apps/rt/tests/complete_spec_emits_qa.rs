@@ -24,7 +24,8 @@ fn project_dir() -> TempDir {
 }
 
 /// Seed a minimal `spec.md` for `spec_name` under
-/// `.claude/spec/active/<spec_name>/spec.md`.
+/// `.claude/spec/<spec_name>/spec.md` (flat layout, wave-2 of
+/// `2026-05-21-flatten-spec-layout-and-multi-collab`).
 ///
 /// The AC section contains one item whose command is `node -e "process.exit(0)"`,
 /// which always exits 0 (pass) on any platform that has Node.js installed.
@@ -32,7 +33,6 @@ fn seed_spec(project: &Path, spec_name: &str) {
     let spec_dir = project
         .join(".claude")
         .join("spec")
-        .join("active")
         .join(spec_name);
     std::fs::create_dir_all(&spec_dir).expect("create spec dir");
     let content = format!(

@@ -26,6 +26,7 @@ use mustard_core::model::event::{
     EVENT_PIPELINE_TASK_COMPLETE, EVENT_PIPELINE_TASK_DISPATCH, EVENT_PIPELINE_WAVE_COMPLETE,
 };
 use serde_json::Value;
+use std::path::Path;
 
 /// The 9 valid pipeline event kind strings.
 const KNOWN_KINDS: &[&str] = &[
@@ -87,6 +88,11 @@ pub fn run(opts: EmitPipelineOpts) {
         }
     };
 
+    // Capture the values we need after `event` consumes them.
+    let kind_str = opts.kind.clone();
+    let spec_name = opts.spec.clone();
+    let payload_for_header = payload.clone();
+
     let event = HarnessEvent {
         v: SCHEMA_VERSION,
         ts: now_iso8601(),
@@ -104,6 +110,97 @@ pub fn run(opts: EmitPipelineOpts) {
 
     // Fail-open: a write failure is logged but never propagates to an exit 1.
     let _ = store.append(&event);
+
+    // Wave-2 (2026-05-21-flatten-spec-layout-and-multi-collab): keep the
+    // `### Status:` header in `.claude/spec/{spec}/spec.md` in sync with the
+    // canonical status the event store just received. Without this, two
+    // collaborators on different machines see divergent statuses (the local
+    // store says X, git says Y). Fail-open: a missing file or header is a
+    // warn, never an error — the event has already been recorded.
+    if kind_str == EVENT_PIPELINE_STATUS {
+        if let Some(to) = payload_for_header.get("to").and_then(Value::as_str) {
+            let cwd = std::env::current_dir()
+                .unwrap_or_else(|_| std::path::PathBuf::from(project_dir()));
+            sync_spec_status_header(&cwd, &spec_name, to);
+        }
+    }
+}
+
+/// Rewrite the `### Status:` line of `.claude/spec/{spec}/spec.md` so it
+/// matches the freshly emitted `pipeline.status: <to>` event. Pure side
+/// effect — every error path is a warn (the contract is fail-open per the
+/// module-level docs).
+///
+/// The match is intentionally narrow: the first line whose trimmed prefix is
+/// `### Status:` (case-insensitive on the key) gets its value replaced. If
+/// no such line exists we emit a `WARN` to stderr and return — we don't try
+/// to *insert* a header because that would silently mutate spec.md shape
+/// (and the close-gate is the right place to enforce that header exists).
+fn sync_spec_status_header(cwd: &Path, spec: &str, to: &str) {
+    let path = cwd.join(".claude").join("spec").join(spec).join("spec.md");
+    let content = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!(
+                "emit-pipeline: WARN: cannot read {} ({e}); skipping header sync",
+                path.display()
+            );
+            return;
+        }
+    };
+
+    let mut found = false;
+    let mut out = String::with_capacity(content.len() + 16);
+    let mut first = true;
+    for line in content.split('\n') {
+        if !first {
+            out.push('\n');
+        }
+        first = false;
+        if found {
+            out.push_str(line);
+            continue;
+        }
+        let trimmed = line.trim_start();
+        // `^###\s+status\s*:` (case-insensitive on the key) — keep the line's
+        // original indentation so we don't reflow the file.
+        if let Some(rest) = trimmed.strip_prefix("###") {
+            let after_hashes = rest.trim_start_matches([' ', '\t']);
+            if after_hashes.len() < rest.len() {
+                // Case-insensitive prefix match on the literal `Status`.
+                let lower = after_hashes.to_ascii_lowercase();
+                if let Some(tail) = lower.strip_prefix("status") {
+                    let after_status = tail.trim_start_matches([' ', '\t']);
+                    if let Some(_after_colon) = after_status.strip_prefix(':') {
+                        // Reconstruct: original indent + `### Status: <to>`.
+                        let indent_len = line.len() - line.trim_start().len();
+                        let indent = &line[..indent_len];
+                        out.push_str(indent);
+                        out.push_str("### Status: ");
+                        out.push_str(to);
+                        found = true;
+                        continue;
+                    }
+                }
+            }
+        }
+        out.push_str(line);
+    }
+
+    if !found {
+        eprintln!(
+            "emit-pipeline: WARN: no `### Status:` header found in {}; skipping",
+            path.display()
+        );
+        return;
+    }
+
+    if let Err(e) = std::fs::write(&path, out) {
+        eprintln!(
+            "emit-pipeline: WARN: could not write {} ({e}); status header may be stale",
+            path.display()
+        );
+    }
 }
 
 #[cfg(test)]
@@ -280,5 +377,76 @@ mod tests {
         let (_dir, store) = temp_store();
         emit_direct(&store, EVENT_PIPELINE_PAUSE, "demo", json!({"reason": "user request"}));
         assert_eq!(store.replay().unwrap().len(), 1);
+    }
+
+    // -----------------------------------------------------------------------
+    // Wave-2 header sync (2026-05-21-flatten-spec-layout-and-multi-collab)
+    // -----------------------------------------------------------------------
+
+    /// Helper: seed `.claude/spec/{spec}/spec.md` with the given body and
+    /// return the project root + path to spec.md.
+    fn seed_spec_md(spec: &str, body: &str) -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempdir().unwrap();
+        let spec_dir = dir.path().join(".claude").join("spec").join(spec);
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        let path = spec_dir.join("spec.md");
+        std::fs::write(&path, body).unwrap();
+        (dir, path)
+    }
+
+    /// The header sync rewrites the `### Status:` line to the new value when
+    /// the file exists and the marker is present.
+    #[test]
+    fn sync_status_header_rewrites_existing_marker() {
+        let (dir, path) = seed_spec_md(
+            "demo",
+            "# Demo\n\n### Status: implementing\n### Phase: EXECUTE\n\n## Body\nx\n",
+        );
+        super::sync_spec_status_header(dir.path(), "demo", "completed");
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            after.contains("### Status: completed"),
+            "header should be rewritten: {after:?}"
+        );
+        // Other headers untouched.
+        assert!(after.contains("### Phase: EXECUTE"));
+        // The implementing line is gone.
+        assert!(!after.contains("### Status: implementing"));
+    }
+
+    /// Fail-open contract: a missing spec.md is a no-op, never a panic.
+    #[test]
+    fn sync_status_header_missing_file_is_noop() {
+        let dir = tempdir().unwrap();
+        super::sync_spec_status_header(dir.path(), "ghost", "completed");
+        // No file created.
+        assert!(!dir.path().join(".claude/spec/ghost/spec.md").exists());
+    }
+
+    /// Fail-open contract: a spec.md without a `### Status:` line is left
+    /// alone, with a WARN to stderr. We assert the file content is unchanged.
+    #[test]
+    fn sync_status_header_missing_marker_leaves_file_unchanged() {
+        let (dir, path) = seed_spec_md("demo", "# Demo\n\n## Body\nno header\n");
+        let before = std::fs::read_to_string(&path).unwrap();
+        super::sync_spec_status_header(dir.path(), "demo", "completed");
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(before, after);
+    }
+
+    /// Indentation on the header line is preserved (we only rewrite the value
+    /// after the colon, not the leading whitespace).
+    #[test]
+    fn sync_status_header_preserves_original_lines() {
+        let body = "# Spec\n\n### Status: planning\n\nbody line\n";
+        let (dir, path) = seed_spec_md("demo", body);
+        super::sync_spec_status_header(dir.path(), "demo", "implementing");
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert!(after.contains("### Status: implementing"));
+        assert!(after.contains("body line"));
+        // No trailing newline drift: original ended with \n, new should too
+        // (we re-join lines split on `\n` so the trailing empty segment is
+        // preserved).
+        assert_eq!(after.matches('\n').count(), body.matches('\n').count());
     }
 }
