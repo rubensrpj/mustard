@@ -31,9 +31,10 @@
 //! correct cleanup once the Rust port owns SessionStart.
 
 use crate::run::amend_finalize;
+use mustard_core::economy::{self, sources::transcript, sources::IngestContext};
 use mustard_core::store::sqlite_store::SqliteEventStore;
 use mustard_core::model::contract::{Ctx, HookInput, Observer, Trigger};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -231,12 +232,117 @@ fn clean_statusline_cache() {
     let _ = std::fs::remove_file(cache);
 }
 
-/// Remove a stale OTEL collector PID file. See the module-level note: the b3
-/// port does not spawn the collector, so there is no live process to signal —
-/// removing the PID file keeps a legacy JS-spawned collector un-orphaned.
+/// Remove a stale OTEL collector PID file.
+///
+/// As of Wave 3 (economia-moat-unification) `session_start` *does* spawn the
+/// collector itself, but the cleanup contract stays the same: removing the PID
+/// file on `SessionEnd` lets a fresh `SessionStart` re-spawn a healthy
+/// collector without a stale-PID false-positive in the idempotence check.
 fn clean_otel_pid(claude_dir: &Path) {
     let pid_file = claude_dir.join(".harness").join(".otel-collector.pid");
     let _ = std::fs::remove_file(pid_file);
+}
+
+// ---------------------------------------------------------------------------
+// Transcript ingest — Wave 3 (economia-moat-unification)
+// ---------------------------------------------------------------------------
+
+/// Env var Claude Code uses to point hooks at the active session's transcript.
+/// When present we trust it verbatim; otherwise we fall back to the conventional
+/// `~/.claude/projects/<encoded-cwd>/<session-id>.jsonl` layout.
+const CLAUDE_TRANSCRIPT_PATH_ENV: &str = "CLAUDE_TRANSCRIPT_PATH";
+
+/// Resolve the user's home directory cross-platform without a `dirs` crate
+/// dependency: `HOME` on Unix, `USERPROFILE` on Windows.
+fn home_dir() -> Option<PathBuf> {
+    let var = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+    std::env::var_os(var)
+        .map(PathBuf::from)
+        .filter(|p| !p.as_os_str().is_empty())
+}
+
+/// Encode `cwd` the same way Claude Code does for its transcript-projects
+/// layout: every path separator (`/`, `\`) and drive-letter colon collapses
+/// to `-`. E.g. `C:\Atiz\mustard` → `C--Atiz-mustard`.
+///
+/// Tolerant of mixed separators (Windows paths under WSL/Cygwin shells often
+/// arrive with both); kept as a 5-line replacer instead of pulling in a URL
+/// encoding crate.
+fn encode_cwd(cwd: &str) -> String {
+    cwd.chars()
+        .map(|c| match c {
+            '/' | '\\' | ':' => '-',
+            other => other,
+        })
+        .collect()
+}
+
+/// Best-effort resolution of the session transcript path.
+///
+/// Priority:
+/// 1. `CLAUDE_TRANSCRIPT_PATH` env var when set non-empty.
+/// 2. `~/.claude/projects/<encoded-cwd>/<session-id>.jsonl` when both `home`
+///    and `session_id` are available.
+///
+/// Returns `None` when neither path is resolvable (e.g. `HOME`/`USERPROFILE`
+/// unset and the harness did not pass a session id).
+fn resolve_transcript_path(cwd: &str, session_id: Option<&str>) -> Option<PathBuf> {
+    if let Ok(p) = std::env::var(CLAUDE_TRANSCRIPT_PATH_ENV) {
+        if !p.is_empty() {
+            return Some(PathBuf::from(p));
+        }
+    }
+    let session = session_id.filter(|s| !s.is_empty())?;
+    let home = home_dir()?;
+    let encoded = encode_cwd(cwd);
+    Some(
+        home.join(".claude")
+            .join("projects")
+            .join(encoded)
+            .join(format!("{session}.jsonl")),
+    )
+}
+
+/// Translate the session transcript JSONL into `ApiCostFrame`s and persist via
+/// the W1 writer. Fail-open at every step.
+fn ingest_session_transcript(cwd: &str, session_id: Option<&str>) {
+    let Some(path) = resolve_transcript_path(cwd, session_id) else {
+        return;
+    };
+    if !path.exists() {
+        // A fresh session may never have written a transcript — silent skip.
+        return;
+    }
+    let ctx = IngestContext {
+        project_path: cwd.to_string(),
+        session_id: session_id.map(str::to_string),
+    };
+    let frames = match transcript::ingest(&path, &ctx) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!(
+                "session_cleanup: transcript::ingest failed for {}: {e}",
+                path.display()
+            );
+            return;
+        }
+    };
+    if frames.is_empty() {
+        return;
+    }
+    let conn = match economy::store::open_for(cwd) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("session_cleanup: economy::store::open_for failed: {e}");
+            return;
+        }
+    };
+    for frame in frames {
+        if let Err(e) = economy::writer::record_api_cost(&conn, frame) {
+            eprintln!("session_cleanup: record_api_cost failed: {e}");
+            // Keep looping — a single bad row must not lose the rest.
+        }
+    }
 }
 
 impl Observer for SessionCleanup {
@@ -255,6 +361,12 @@ impl Observer for SessionCleanup {
                 let _ = amend_finalize::run(session_id, &store);
             }
         }
+
+        // Wave 3 (economia-moat-unification): ingest the session transcript
+        // into the W1 economy writer BEFORE we wipe state. Pulls one
+        // `ApiCostFrame` per assistant turn out of the Claude Code JSONL so the
+        // `spans` table sees the cheapest cost signal we have.
+        ingest_session_transcript(&cwd, input.session_id.as_deref());
 
         archive_stale_followups(&cwd);
         clean_pipeline_states(&claude);

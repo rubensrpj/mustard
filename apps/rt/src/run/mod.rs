@@ -57,6 +57,7 @@ mod spec_link;
 mod spec_sections;
 mod sync_detect;
 mod sync_registry;
+mod transcript_watcher;
 mod verify_pipeline;
 mod wave_dependency;
 mod wave_lib;
@@ -454,9 +455,17 @@ pub enum RunCmd {
     /// Run the local OTLP/JSON receiver for Claude Code native telemetry.
     ///
     /// Binds a loopback HTTP server on `MUSTARD_OTEL_PORT` (default 4318) and
-    /// projects incoming metrics/logs into the `claude_code_otel` table. Runs
-    /// until a shutdown signal — the harness spawns it as a long-lived child.
+    /// projects incoming metrics/logs/traces into the `claude_code_otel` and
+    /// (Wave 3) economy `spans` tables. Runs until a shutdown signal — the
+    /// harness spawns it as a long-lived child via [`crate::hooks::session_start`].
     OtelCollector,
+    /// Watch `~/.claude/projects/**/*.jsonl` and re-ingest each session
+    /// transcript into the economy `spans` table on every change.
+    ///
+    /// Opt-in daemon (Wave 3 — economia-moat-unification) spawned by
+    /// [`crate::hooks::session_start`] when `MUSTARD_TRANSCRIPT_WATCH=1`.
+    /// Runs until process termination.
+    TranscriptWatcher,
     /// End-to-end health check of the Mustard ↔ Claude Code OTEL pipeline.
     DiagnoseOtel {
         /// Emit the machine-readable JSON report.
@@ -680,6 +689,7 @@ pub fn dispatch(cmd: RunCmd) {
         }
         RunCmd::ScanFinalize { skip_security } => scan_finalize::run(skip_security),
         RunCmd::OtelCollector => otel::collector::run(),
+        RunCmd::TranscriptWatcher => transcript_watcher::run(),
         RunCmd::DiagnoseOtel {
             json,
             expect_rows_after,

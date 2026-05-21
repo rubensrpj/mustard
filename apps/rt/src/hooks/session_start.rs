@@ -24,14 +24,22 @@
 //! consolidated binary it is surfaced as a [`Verdict::Inject`] so the single
 //! `emit_outcome` owns the only stdout write. `SessionStart` is a `Check`.
 //!
-//! ## Out of scope (consciously deferred)
+//! ## OTEL collector spawn (Wave 3 — economia-moat-unification)
 //!
-//! `harness-init.js` also spawns an OTEL collector subprocess. That spawn is
-//! infrastructure plumbing (a long-lived detached process), not enforcement —
-//! `session-cleanup` stops it. It depends on a `.claude/scripts/otel-collector.js`
-//! JS script (B4, out of bounds). The collector spawn is therefore **not
-//! ported**; see the spec Concern. The harness `OTEL_*` env vars in
-//! `settings.json` still drive the harness's own telemetry export, unaffected.
+//! `harness-init.js` historically spawned an OTEL collector subprocess. With
+//! the b4 port complete (`mustard-rt run otel-collector`) the spawn is now
+//! handled in-binary here: [`spawn_otel_collector`] detaches a child via
+//! `Command::new(env::current_exe()?).args(["run","otel-collector"]).spawn()?`
+//! and writes the PID to `<project>/.claude/.harness/.otel-collector.pid`.
+//! Idempotence is enforced by [`is_process_alive`] — a second SessionStart in
+//! the same project finds the PID file, sees the process still up, and skips
+//! the spawn. Every failure path is fail-open: a missing exe, a spawn error,
+//! or an unwritable PID file is logged via `eprintln!` and the SessionStart
+//! payload continues unmodified.
+//!
+//! The opt-in transcript watcher (`mustard-rt run transcript-watcher`) is
+//! spawned the same way when `MUSTARD_TRANSCRIPT_WATCH=1` is set — see
+//! [`spawn_transcript_watcher`].
 //!
 //! ## Profile gate
 //!
@@ -49,6 +57,7 @@ use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION}
 use rusqlite::params;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::util::now_iso8601;
@@ -178,6 +187,156 @@ fn prune_old_sessions(sessions_dir: &Path) {
         if now.saturating_sub(mtime_ms) > RETENTION_MS {
             let _ = std::fs::remove_file(entry.path());
         }
+    }
+}
+
+// ===========================================================================
+// OTEL collector / transcript watcher spawn (Wave 3 — economia-moat-unification)
+// ===========================================================================
+
+/// File where the spawned OTEL collector records its PID, under the project's
+/// harness directory. The same path `session_cleanup` removes on `SessionEnd`.
+const OTEL_PID_FILE: &str = ".otel-collector.pid";
+
+/// Environment opt-in for the transcript watcher daemon. Set to `"1"` to have
+/// `SessionStart` also spawn `mustard-rt run transcript-watcher`. Default off
+/// — the watcher is best for power users / dashboards driving live ingestion.
+const TRANSCRIPT_WATCH_ENV: &str = "MUSTARD_TRANSCRIPT_WATCH";
+
+/// Spawn the local OTEL collector detached, write its PID, and skip if a live
+/// PID file is already present (idempotent across SessionStart invocations).
+///
+/// Fail-open at every step: a missing `current_exe`, an unwritable PID file,
+/// or a spawn error degrades to an `eprintln!` warning and the SessionStart
+/// payload continues unmodified. Telemetry is never load-bearing.
+fn spawn_otel_collector(cwd: &str) {
+    let pid_path = harness_dir(cwd).join(OTEL_PID_FILE);
+
+    // Idempotence: if a previous SessionStart spawned the collector and the
+    // process is still alive, do nothing. A stale PID file (process gone) is
+    // overwritten by the fresh spawn below.
+    if let Some(existing) = read_pid(&pid_path) {
+        if is_process_alive(existing) {
+            return;
+        }
+    }
+
+    let exe = match std::env::current_exe() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("session_start: current_exe failed ({e}); skipping OTEL collector spawn");
+            return;
+        }
+    };
+
+    let child = Command::new(&exe)
+        .args(["run", "otel-collector"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
+    match child {
+        Ok(c) => {
+            let pid = c.id();
+            // Best-effort PID write — collector keeps running even if we can't persist.
+            if let Err(e) = std::fs::create_dir_all(harness_dir(cwd)) {
+                eprintln!("session_start: create_dir_all for OTEL pid file failed ({e})");
+                return;
+            }
+            if let Err(e) = std::fs::write(&pid_path, pid.to_string()) {
+                eprintln!("session_start: write OTEL pid file failed ({e})");
+            }
+        }
+        Err(e) => {
+            eprintln!("session_start: spawn `mustard-rt run otel-collector` failed ({e})");
+        }
+    }
+}
+
+/// Spawn the transcript-watcher daemon when [`TRANSCRIPT_WATCH_ENV`] is `"1"`.
+///
+/// Fire-and-forget: no PID file (the watcher is opt-in tooling, not the
+/// always-on collector). Fail-open on every error path.
+fn spawn_transcript_watcher() {
+    if std::env::var(TRANSCRIPT_WATCH_ENV).as_deref() != Ok("1") {
+        return;
+    }
+    let exe = match std::env::current_exe() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!(
+                "session_start: current_exe failed ({e}); skipping transcript-watcher spawn"
+            );
+            return;
+        }
+    };
+    let spawned = Command::new(&exe)
+        .args(["run", "transcript-watcher"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
+    if let Err(e) = spawned {
+        eprintln!("session_start: spawn `mustard-rt run transcript-watcher` failed ({e})");
+    }
+}
+
+/// Read a PID from `path`. Returns `None` for any IO/parse failure.
+fn read_pid(path: &Path) -> Option<u32> {
+    std::fs::read_to_string(path).ok()?.trim().parse().ok()
+}
+
+/// `true` if a process with `pid` is currently alive on the host.
+///
+/// Cross-platform without `unsafe`: on Unix, sends signal `0` via `kill -0`
+/// (the POSIX existence probe). On Windows, queries `tasklist /FI` for the
+/// PID — slower than `OpenProcess` but `windows-sys` is not a dep and the
+/// crate forbids `unsafe`. A spawn failure (no `kill`/`tasklist` on PATH)
+/// degrades to `false`, which simply forces a re-spawn — safe per the
+/// idempotence contract: the second collector will fail to bind the port and
+/// exit, leaving the first one running.
+#[must_use]
+fn is_process_alive(pid: u32) -> bool {
+    #[cfg(unix)]
+    {
+        Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    }
+    #[cfg(windows)]
+    {
+        // `tasklist /NH /FI "PID eq <pid>"` prints either the matching row or
+        // the literal "INFO: No tasks are running…" string when absent. Probe
+        // stdout for the PID itself, which appears in the matching row only.
+        let pid_str = pid.to_string();
+        let out = Command::new("tasklist")
+            .args(["/NH", "/FI", &format!("PID eq {pid_str}")])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .output();
+        match out {
+            Ok(o) if o.status.success() => {
+                let text = String::from_utf8_lossy(&o.stdout);
+                // The PID appears as a whitespace-separated column only when a
+                // row matched; the "No tasks" message never contains the
+                // numeric PID.
+                text.split_whitespace().any(|tok| tok == pid_str)
+            }
+            _ => false,
+        }
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        // Unknown platform — pessimistically report not-alive so the caller
+        // re-spawns; a duplicate collector will fail to bind and exit cleanly.
+        let _ = pid;
+        false
     }
 }
 
@@ -455,6 +614,11 @@ impl Check for SessionStart {
         }
         let cwd = project_dir(input, ctx);
         run_harness_init(input, &cwd);
+        // Wave 3 (economia-moat-unification): the OTEL collector is no longer
+        // an "out-of-scope spawn" — fire it detached and let `session_cleanup`
+        // remove the PID file on `SessionEnd`. The transcript watcher is opt-in.
+        spawn_otel_collector(&cwd);
+        spawn_transcript_watcher();
         run_spec_hygiene(&cwd);
         Ok(match build_memory_context(&cwd) {
             Some(context) => Verdict::Inject { context },

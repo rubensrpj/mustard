@@ -24,11 +24,14 @@
 
 use super::project::{project_logs, project_metrics};
 use super::store::{claude_dir, Store};
+use mustard_core::economy::{self, sources::otel as otel_source, sources::IngestContext};
 use serde_json::Value;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tiny_http::{Method, Response, Server};
+
+use crate::run::env::{project_dir, session_id};
 
 /// Default OTLP/HTTP port — the OpenTelemetry convention, and the value the
 /// generated `settings.json` points `OTEL_EXPORTER_OTLP_ENDPOINT` at.
@@ -76,6 +79,8 @@ fn project_into_store(store: &Store, harness_dir: &Path, route: &str, body: &Val
                 ),
             }
         }
+    } else if route == "/v1/traces" {
+        written = project_traces_into_economy(harness_dir, body);
     } else {
         for row in project_logs(body, now_ms) {
             match store.upsert_log(&row) {
@@ -89,6 +94,95 @@ fn project_into_store(store: &Store, harness_dir: &Path, route: &str, body: &Val
                     }),
                 ),
             }
+        }
+    }
+    written
+}
+
+/// Translate OTLP/JSON `traces` into [`mustard_core::economy::model::SpanRecord`]
+/// via the W1 ingest adapter, then persist each record via the writer.
+///
+/// Wave 3 (economia-moat-unification): the trace route lands span-level token
+/// usage (`gen_ai.usage.*`) into the unified `spans` table so the economy
+/// reader has a single source of truth across OTEL / transcript / RTK.
+///
+/// Returns the number of `SpanRecord`s persisted. Every failure path is logged
+/// to canary and degraded — a malformed payload returns `0`, a connection
+/// failure returns `0`, a per-row insert failure is logged and the loop
+/// continues.
+fn project_traces_into_economy(harness_dir: &Path, body: &Value) -> usize {
+    let cwd = project_dir();
+    let session = session_id();
+    let session_opt = if session == "unknown" || session.is_empty() {
+        None
+    } else {
+        Some(session)
+    };
+    let ctx = IngestContext {
+        project_path: cwd.clone(),
+        session_id: session_opt,
+    };
+
+    // `sources::otel::ingest` takes the OTLP JSON as a string; re-stringify the
+    // already-parsed `Value` to keep the adapter API surface narrow (and stay
+    // tolerant if a future shape change wants a different representation).
+    let payload = match serde_json::to_string(body) {
+        Ok(s) => s,
+        Err(e) => {
+            canary(
+                harness_dir,
+                &serde_json::json!({
+                    "ts": crate::util::now_iso8601(),
+                    "level": "warn", "route": "/v1/traces",
+                    "msg": "reserialize failed", "err": e.to_string(),
+                }),
+            );
+            return 0;
+        }
+    };
+    let records = match otel_source::ingest(&payload, &ctx) {
+        Ok(v) => v,
+        Err(e) => {
+            canary(
+                harness_dir,
+                &serde_json::json!({
+                    "ts": crate::util::now_iso8601(),
+                    "level": "warn", "route": "/v1/traces",
+                    "msg": "sources::otel::ingest failed", "err": e.to_string(),
+                }),
+            );
+            return 0;
+        }
+    };
+    if records.is_empty() {
+        return 0;
+    }
+    let conn = match economy::store::open_for(&cwd) {
+        Ok(c) => c,
+        Err(e) => {
+            canary(
+                harness_dir,
+                &serde_json::json!({
+                    "ts": crate::util::now_iso8601(),
+                    "level": "warn", "route": "/v1/traces",
+                    "msg": "economy::store::open_for failed", "err": e.to_string(),
+                }),
+            );
+            return 0;
+        }
+    };
+    let mut written = 0;
+    for rec in records {
+        match economy::writer::record_span(&conn, rec) {
+            Ok(()) => written += 1,
+            Err(e) => canary(
+                harness_dir,
+                &serde_json::json!({
+                    "ts": crate::util::now_iso8601(),
+                    "level": "warn", "route": "/v1/traces",
+                    "msg": "record_span failed", "err": e.to_string(),
+                }),
+            ),
         }
     }
     written
@@ -172,8 +266,12 @@ fn handle_one(mut request: tiny_http::Request, store: &Store, harness_dir: &Path
         let _ = request.respond(Response::from_string("ok"));
         return;
     }
-    // Only the two POST routes are projected; everything else is 404.
-    if method != Method::Post || (route != "/v1/metrics" && route != "/v1/logs") {
+    // Only the three POST routes are projected; everything else is 404.
+    // `/v1/traces` lands span-level token usage into the unified `spans` table
+    // via the W1 economy writer (Wave 3 — economia-moat-unification).
+    if method != Method::Post
+        || (route != "/v1/metrics" && route != "/v1/logs" && route != "/v1/traces")
+    {
         let _ = request.respond(Response::from_string("not found").with_status_code(404));
         return;
     }

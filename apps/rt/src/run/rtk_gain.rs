@@ -8,9 +8,23 @@
 //!
 //! Fail-open: `rtk` missing, a timeout, or unparseable JSON yields `None`,
 //! exactly like the JS helper returning `null`.
+//!
+//! ## Wave 3 — economia-moat-unification
+//!
+//! The CLI face (`mustard-rt run rtk-gain`) now *additionally* persists each
+//! rewrite into the W1 `savings_records` table before printing the legacy JSON
+//! summary to stdout. Translation is delegated to
+//! [`mustard_core::economy::sources::rtk::ingest`]; the printed JSON is
+//! unchanged so existing consumers (`run metrics`, `run statusline`, the
+//! dashboard's RTK panel) keep parsing the same shape they did before. The
+//! [`get_rtk_gain`] helper used by `run metrics` keeps its ad-hoc spawn — it
+//! has a different output shape (`--all --format json`) and is read-only.
 
+use mustard_core::economy::{self, sources::rtk as rtk_source, sources::IngestContext};
 use serde_json::{json, Value};
 use std::process::{Command, Stdio};
+
+use crate::run::env::{current_spec, project_dir, session_id};
 
 /// Normalised `rtk gain` summary — the fields `metrics.js` consumed.
 #[derive(Debug, Clone)]
@@ -98,8 +112,22 @@ pub fn get_rtk_gain() -> Option<RtkGain> {
     })
 }
 
-/// Dispatch `mustard-rt run rtk-gain` — print the normalised JSON, or `null`.
+/// Dispatch `mustard-rt run rtk-gain` — persist per-rewrite savings into the
+/// economy `savings_records` table, then print the normalised summary JSON.
+///
+/// The printed JSON shape is unchanged from the JS port (same `saved` /
+/// `originalTotal` / `pct` / `commands` / `byCommand` keys) so existing
+/// consumers (`run metrics`, the dashboard's RTK panel) keep parsing it.
+/// Persistence is best-effort: every failure path is `eprintln!` + continue,
+/// the stdout JSON is still emitted.
 pub fn run() {
+    // Wave 3 (economia-moat-unification): persist savings before printing the
+    // legacy summary so downstream telemetry sees the same rewrites the JSON
+    // summary represents. Translation is delegated to
+    // `mustard_core::economy::sources::rtk::ingest` — see the rtk adapter for
+    // the fail-open contract on a missing `rtk` binary.
+    persist_savings();
+
     match get_rtk_gain() {
         Some(gain) => {
             println!(
@@ -108,6 +136,51 @@ pub fn run() {
             );
         }
         None => println!("null"),
+    }
+}
+
+/// Pull every `rtk gain --json` rewrite into the W1 `savings_records` table.
+///
+/// Fail-open: a missing `rtk` binary, an empty record set, a connection
+/// failure, or a row insert error all degrade to an `eprintln!` and continue.
+/// The caller (`run`) is responsible for emitting the legacy stdout JSON
+/// regardless of this function's outcome.
+fn persist_savings() {
+    let cwd = project_dir();
+    let session = session_id();
+    let session_opt = if session == "unknown" || session.is_empty() {
+        None
+    } else {
+        Some(session.clone())
+    };
+    let _ = current_spec(&cwd); // reserved for future per-spec attribution
+    let ctx = IngestContext {
+        project_path: cwd.clone(),
+        session_id: session_opt,
+    };
+
+    let records = match rtk_source::ingest(&ctx) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("rtk_gain: sources::rtk::ingest failed ({e}); skipping persist");
+            return;
+        }
+    };
+    if records.is_empty() {
+        return;
+    }
+
+    let conn = match economy::store::open_for(&cwd) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("rtk_gain: economy::store::open_for failed ({e}); skipping persist");
+            return;
+        }
+    };
+    for rec in records {
+        if let Err(e) = economy::writer::record_savings(&conn, rec) {
+            eprintln!("rtk_gain: record_savings failed: {e}");
+        }
     }
 }
 

@@ -6,6 +6,7 @@ rust-version = "1.85"
 description = "Mustard enforcement runtime: a single binary that replaces the per-hook `node` processes — a dispatcher running enforcement modules behind the `mustard-core` Check/Observer contract."
 license = "MIT"
 publish = false
+build = "build.rs"
 
 [[bin]]
 name = "mustard-rt"
@@ -48,6 +49,14 @@ ureq = { workspace = true }
 # clone` before swapping the vendored tree under `apps/cli/templates/`. Also
 # powers the `bash_guard` parity tests.
 tempfile = { workspace = true }
+
+# `notify` powers the opt-in `transcript-watcher` daemon (Wave 3, economia-moat-
+# unification). The watcher re-ingests `~/.claude/projects/**/*.jsonl` into the
+# economy `spans` table whenever Claude Code appends a turn. Pinned to the same
+# 6.x line as `apps/dashboard/src-tauri` so the workspace shares one `notify`
+# resolution. Production callers are fail-open: a missing/unparseable event is
+# warned via `eprintln!` and the loop continues.
+notify = { workspace = true }
 
 [dev-dependencies]
 

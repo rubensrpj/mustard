@@ -55,6 +55,14 @@ tokio = { version = "1.52.3", features = ["rt", "io-std", "macros"] }
 # verified on crates.io (0.11.0, 2026-04-08); the 0.10+ line renamed
 # `get_completion_max_tokens` and added the o200k_harmony singleton.
 tiktoken-rs = "0.11"
+# Cross-platform filesystem notification — used by `mustard-rt` for the opt-in
+# `transcript-watcher` daemon (Wave 3 of economia-moat-unification). Pinned to
+# the 6.x line because `apps/dashboard/src-tauri` already vendors `notify = "6"`
+# (via `notify-debouncer-mini = "0.4"`), so reusing the same major keeps the
+# workspace on a single `notify` graph rather than splitting it. Latest stable
+# is 8.2 on crates.io (May 2026); a future workspace-wide bump can move both
+# crates together — see eliminate-bun Wave 4 for the prior `rusqlite` bump.
+notify = "6"
 
 # Workspace-wide lints. A crate opts in with `[lints] workspace = true`.
 # Only `mustard-core` opts in today; the dashboard crate is intentionally
