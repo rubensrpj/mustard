@@ -296,6 +296,56 @@ fn test_economy_summary_wave_scope_filters_to_wave_only() {
     assert_eq!(wave_summary.total_tokens, 100);
 }
 
+/// Regression: `economy_summary` must include rows from the `api_cost_frames`
+/// projection alongside `spans`. The reader unions both tables (migration v5
+/// + `unified_spans_subquery` in `economy::reader`) so adapters that route
+/// directly to `api_cost_frames` show up in the dashboard immediately.
+///
+/// Before the union: writing 22_598 frames to `api_cost_frames` while the
+/// dashboard read `FROM spans` only reported zero — the symptom that drove
+/// this followup.
+#[test]
+fn test_economy_summary_includes_api_cost_frames() {
+    let dir = tempdir().unwrap();
+    let conn = open_conn(dir.path());
+
+    // 1 span on the legacy projection.
+    record_span(&conn, span_for("spec-A", "span-1", 1_000, 100)).unwrap();
+
+    // 2 rows on the dedicated `api_cost_frames` projection. Direct INSERT —
+    // there is no writer entry point for this table today (every adapter
+    // funnels through `record_api_cost` → `spans`), but the schema must keep
+    // the reader honest the day an external adapter does land rows here.
+    conn.execute(
+        "INSERT INTO api_cost_frames(span_id, ts_iso, session_id, model, spec, \
+                                     input_tokens, output_tokens, cost_usd_micros, \
+                                     project_path, is_error) \
+         VALUES('acf-1', '2026-05-21T01:00:00Z', 's1', 'opus', 'spec-A', \
+                200, 50, 2500, ?1, 0)",
+        rusqlite::params![dir.path().to_string_lossy().into_owned()],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO api_cost_frames(span_id, ts_iso, session_id, model, spec, \
+                                     input_tokens, output_tokens, cost_usd_micros, \
+                                     project_path, is_error) \
+         VALUES('acf-2', '2026-05-21T02:00:00Z', 's1', 'opus', 'spec-A', \
+                300, 75, 4000, ?1, 0)",
+        rusqlite::params![dir.path().to_string_lossy().into_owned()],
+    )
+    .unwrap();
+
+    let project_scope = EconomyScope::Project(ProjectPath::new(dir.path()));
+    let summary = economy_summary(&conn, project_scope).unwrap();
+
+    // 1 span (1_000) + 2 api_cost_frames (2_500 + 4_000) = 7_500.
+    assert_eq!(summary.total_cost_usd_micros, 7_500);
+    // tokens: 100 + (200+50) + (300+75) = 725.
+    assert_eq!(summary.total_tokens, 725);
+    // span_count is the union row count (1 + 2 = 3).
+    assert_eq!(summary.span_count, 3);
+}
+
 #[test]
 fn test_estimator_within_tolerance() {
     // The string below is 11 cl100k tokens. Anthropic lands within ±1 token

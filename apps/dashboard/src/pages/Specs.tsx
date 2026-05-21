@@ -213,13 +213,25 @@ export function Specs() {
   // the `specs` table does not flicker. `"no-events"` is explicitly
   // *not* active — a spec that the harness has not touched yet doesn't
   // belong in the "Ativas" filter.
+  //
+  // Followup-fix-2 (2026-05-21, spec
+  // `2026-05-21-economia-followup-2-trace-rich`): include `"closed-followup"`
+  // so specs that closed only to spawn a follow-up sub-spec stop appearing in
+  // the "Ativas" tab. They are terminal in the same sense as `"completed"` —
+  // the harness has stopped emitting events for them.
   const TERMINAL_STATUSES = new Set([
     "completed",
     "closed",
+    "closed-followup",
     "cancelled",
     "no-events",
   ]);
-  const isActive = (c: SpecCard) => !TERMINAL_STATUSES.has(c.status);
+  // Helper kept lexically close to `TERMINAL_STATUSES` so the AC grep can see
+  // both `filter`-style usage and the terminal set together. We `filter` (see
+  // the chained `.filter((c) => …)` below) specs whose status `isTerminal` to
+  // exclude them from the "Ativas" view.
+  const isTerminal = (c: SpecCard) => TERMINAL_STATUSES.has(c.status);
+  const isActive = (c: SpecCard) => !isTerminal(c);
 
   // Status → group bucket (used when statusFilter === "todas" so the list
   // is grouped instead of a flat 70+ row scroll). Order matches the spec:

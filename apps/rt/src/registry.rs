@@ -21,6 +21,7 @@ use crate::hooks::session_cleanup::SessionCleanup;
 use crate::hooks::session_start::SessionStart;
 use crate::hooks::size_gate::SizeGate;
 use crate::hooks::skills_audit::SkillsAudit;
+use crate::hooks::tool_result::ToolResult;
 use crate::hooks::tracker::{
     MainContextCounter, MetricsTracker, SkillUsageTracker, SubagentTracker, ToolUseCounter,
 };
@@ -201,6 +202,23 @@ impl Registry {
                 applies_to: &[(Trigger::PostToolUse, ToolMatch::Named("Skill"))],
                 check: None,
                 observer: Some(Box::new(SkillUsageTracker)),
+            },
+            Module {
+                id: "tool_result",
+                // `tool-result` — PostToolUse capture of rich tool output
+                // (Bash stdout/stderr/exit, Edit/MultiEdit before/after, Write
+                // content, Read content excerpt). Emits a `tool.result` event
+                // the dashboard `<ExecutionTrace>` joins with the matching
+                // `tool.use` (followup-2 § 4b/4c).
+                applies_to: &[
+                    (Trigger::PostToolUse, ToolMatch::Named("Bash")),
+                    (Trigger::PostToolUse, ToolMatch::Named("Edit")),
+                    (Trigger::PostToolUse, ToolMatch::Named("MultiEdit")),
+                    (Trigger::PostToolUse, ToolMatch::Named("Write")),
+                    (Trigger::PostToolUse, ToolMatch::Named("Read")),
+                ],
+                check: None,
+                observer: Some(Box::new(ToolResult)),
             },
             Module {
                 id: "skills_audit",
@@ -448,6 +466,7 @@ mod tests {
             "subagent_tracker",
             "metrics_tracker",
             "skill_usage_tracker",
+            "tool_result",
             "skills_audit",
             "size_gate",
             "path_guard",

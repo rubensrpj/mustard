@@ -46,7 +46,7 @@ use rusqlite::{Connection, OptionalExtension};
 /// Bump this when adding a new `migrate_vN_to_vN_plus_1` step and append the
 /// call inside [`apply`]. A database with `_mustard_meta.schema_version` equal
 /// to [`LATEST_VERSION`] is a no-op on open.
-pub const LATEST_VERSION: u32 = 4;
+pub const LATEST_VERSION: u32 = 5;
 
 /// Sentinel spec name for events that could not be attributed by the v2
 /// backfill — typically pre-pipeline events or rows missing `session_id`.
@@ -73,6 +73,7 @@ pub fn apply(conn: &Connection) -> Result<u32> {
             1 => migrate_v1_to_v2(conn)?,
             2 => migrate_v2_to_v3(conn)?,
             3 => migrate_v3_to_v4(conn)?,
+            4 => migrate_v4_to_v5(conn)?,
             // Future migrations append here. The `LATEST_VERSION` constant is
             // the only invariant — every step must move the version forward.
             other => {
@@ -283,6 +284,76 @@ fn migrate_v3_to_v4(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// v4 → v5 — performance indices on `events` plus the `api_cost_frames`
+/// projection mirror.
+///
+/// Two distinct concerns rolled into one transactional bump:
+///
+/// 1. **Trace query performance.** `dashboard_spec_trace` and the per-actor
+///    drill-downs filter by `(spec, event)` and `(actor_id, event)` on the
+///    `events` table — both were doing index scans bounded only by
+///    `idx_events_spec` / a sequential walk for the actor case. The two
+///    composite indices give the dashboard O(log n) lookup on the hot path.
+///
+/// 2. **`api_cost_frames` projection.** External adapters that exposed the
+///    Anthropic API-cost stream split off into a dedicated projection in
+///    follow-up specs (the W3 ingest landed every frame in `spans` historically;
+///    `record_api_cost` still does, but the reader needs to be union-safe so
+///    future adapters that route to this dedicated table show up in the
+///    economy dashboard immediately). Schema mirrors the subset of `spans`
+///    columns the economy reader projects, so a `SELECT ... FROM api_cost_frames
+///    UNION ALL SELECT ... FROM spans` lines up without per-column coercion.
+///
+/// Idempotent on re-run via `IF NOT EXISTS` on every statement.
+fn migrate_v4_to_v5(conn: &Connection) -> Result<()> {
+    let tx = conn.unchecked_transaction()?;
+
+    // Performance indices on events. Composite (spec, event) accelerates
+    // `dashboard_spec_trace`'s `WHERE spec = ?1 AND event IN (...)` shape;
+    // (actor_id, event) covers the actor-scoped drill-down join.
+    tx.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_events_spec_event \
+             ON events(spec, event); \
+         CREATE INDEX IF NOT EXISTS idx_events_actor_event \
+             ON events(actor_id, event);",
+    )?;
+
+    // api_cost_frames: parallel projection to spans for external API-cost
+    // adapters that route to a dedicated table. Column shape mirrors the
+    // subset the economy reader projects so the union in
+    // [`crate::economy::reader`] requires no per-column coercion.
+    tx.execute_batch(
+        "CREATE TABLE IF NOT EXISTS api_cost_frames (\
+             id INTEGER PRIMARY KEY AUTOINCREMENT,\
+             span_id TEXT,\
+             ts_iso TEXT,\
+             session_id TEXT,\
+             model TEXT,\
+             spec TEXT,\
+             phase TEXT,\
+             wave_id TEXT,\
+             input_tokens INTEGER,\
+             output_tokens INTEGER,\
+             cache_read_input_tokens INTEGER,\
+             cache_creation_input_tokens INTEGER,\
+             cost_usd_micros INTEGER,\
+             tool_use_id TEXT,\
+             project_path TEXT,\
+             is_error INTEGER DEFAULT 0\
+         );\
+         CREATE INDEX IF NOT EXISTS idx_api_cost_frames_project_ts \
+             ON api_cost_frames(project_path, ts_iso);\
+         CREATE INDEX IF NOT EXISTS idx_api_cost_frames_tool_use_id \
+             ON api_cost_frames(tool_use_id);\
+         CREATE INDEX IF NOT EXISTS idx_api_cost_frames_session_ts \
+             ON api_cost_frames(session_id, ts_iso);",
+    )?;
+
+    write_schema_version(&tx, 5)?;
+    tx.commit()?;
+    Ok(())
+}
+
 /// Add `column` to `table` with `decl` only if the column does not already
 /// exist. Probes `pragma_table_info(table)` and issues `ALTER TABLE … ADD
 /// COLUMN` exactly once.
@@ -435,6 +506,50 @@ mod tests {
         // Simulate a re-open: read version directly.
         let version = read_schema_version(&conn).unwrap();
         assert_eq!(version, LATEST_VERSION);
+    }
+
+    #[test]
+    fn v5_creates_event_composite_indices_and_api_cost_frames_table() {
+        let conn = fresh_db();
+        apply(&conn).unwrap();
+
+        // Composite indices on events visible in sqlite_master.
+        let has_spec_event: bool = conn
+            .query_row(
+                "SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_events_spec_event'",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .optional()
+            .unwrap()
+            .is_some();
+        assert!(has_spec_event, "v5 must create idx_events_spec_event");
+
+        let has_actor_event: bool = conn
+            .query_row(
+                "SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_events_actor_event'",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .optional()
+            .unwrap()
+            .is_some();
+        assert!(has_actor_event, "v5 must create idx_events_actor_event");
+
+        // api_cost_frames table accepts the shape the economy reader projects.
+        conn.execute(
+            "INSERT INTO api_cost_frames(span_id, ts_iso, session_id, model, spec, \
+                                         input_tokens, output_tokens, cost_usd_micros, \
+                                         tool_use_id, project_path) \
+             VALUES('req-x', '2026-05-21T00:00:00Z', 's1', 'opus', 'spec-A', \
+                    100, 50, 1000, NULL, '/tmp/p')",
+            [],
+        )
+        .unwrap();
+        let cnt: i64 = conn
+            .query_row("SELECT COUNT(*) FROM api_cost_frames", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(cnt, 1);
     }
 
     #[test]

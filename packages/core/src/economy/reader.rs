@@ -87,7 +87,8 @@ pub fn economy_summary(conn: &Connection, scope: EconomyScope) -> Result<Economy
                         "SELECT COALESCE(SUM(cost_usd_micros), 0), \
                                 COALESCE(SUM(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)), 0), \
                                 COUNT(*) \
-                         FROM spans {where_sql}"
+                         FROM {unified} AS spans {where_sql}",
+                        unified = unified_spans_subquery()
                     );
                     conn.query_row(
                         &span_sql,
@@ -496,7 +497,8 @@ pub fn context_routing_quality(
                 "SELECT \
                     COALESCE(SUM(input_tokens), 0), \
                     COALESCE(SUM(cache_read_input_tokens), 0) \
-                 FROM spans {span_where}"
+                 FROM {unified} AS spans {span_where}",
+                unified = unified_spans_subquery()
             );
             let (input_sum, cache_sum): (i64, i64) = conn
                 .query_row(
@@ -522,6 +524,39 @@ pub fn context_routing_quality(
             })
         }
     }
+}
+
+/// Unified read-only source for cost frames — `spans` ∪ `api_cost_frames`.
+///
+/// The W3 transcript adapter routes through `record_api_cost` → `spans` today,
+/// but a parallel adapter that lands frames directly in the `api_cost_frames`
+/// projection table (added in migration v5) would otherwise be invisible to
+/// the economy reader. This helper materialises a single union-all subquery
+/// over both, projecting the exact column set the reader (and the W4
+/// attribution CTE) read from. The non-spans side fills `trace_id`, `name`,
+/// `started_at`, etc. with `NULL` since those legacy columns do not survive
+/// into the API-cost projection.
+///
+/// Use as `FROM {} AS spans` or `FROM {} AS s` — the parenthesised subquery
+/// supports either alias. Callers must NOT rename columns or assume an
+/// ordering; `UNION ALL` preserves duplicates by design (the only intentional
+/// duplication path is a fixture test that writes the same span_id to both
+/// tables, which is acceptable — the economy reader sums, it does not de-dup).
+fn unified_spans_subquery() -> &'static str {
+    "(SELECT trace_id, span_id, parent_span_id, name, started_at, ended_at, \
+             duration_ms, attributes, spec, phase, model, input_tokens, \
+             output_tokens, is_error, cache_read_input_tokens, \
+             cache_creation_input_tokens, cost_usd_micros, project_path, \
+             ts_iso, session_id, wave_id, tool_use_id \
+      FROM spans \
+      UNION ALL \
+      SELECT NULL AS trace_id, span_id, NULL AS parent_span_id, NULL AS name, \
+             NULL AS started_at, NULL AS ended_at, NULL AS duration_ms, \
+             NULL AS attributes, spec, phase, model, input_tokens, \
+             output_tokens, is_error, cache_read_input_tokens, \
+             cache_creation_input_tokens, cost_usd_micros, project_path, \
+             ts_iso, session_id, wave_id, tool_use_id \
+      FROM api_cost_frames)"
 }
 
 // ---------------------------------------------------------------------------
@@ -654,8 +689,9 @@ fn attribution_cte(span_where: &str) -> String {
                       ORDER BY ev.ts DESC LIMIT 1), \
                      s.wave_id \
                    ) AS attr_wave_id \
-            FROM spans s {span_where} \
-         )"
+            FROM {unified} s {span_where} \
+         )",
+        unified = unified_spans_subquery()
     )
 }
 

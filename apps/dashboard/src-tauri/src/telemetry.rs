@@ -1359,6 +1359,21 @@ struct ToolEvent {
     wave_id: Option<String>,
     actor_id: Option<String>,
     tool_name: Option<String>,
+    /// `tool_use_id` lifted from the payload when present. Used to pair a
+    /// `tool.use` with its matching `tool.result` exactly (see
+    /// `pair_tool_results`). Falls back to chronological ordering per actor
+    /// when missing on either side.
+    tool_use_id: Option<String>,
+    payload: serde_json::Value,
+}
+
+/// One row of the `tool.result` walk — emitted by the post-tool hook for
+/// captured stdout/stderr/diff content. Carries the verbatim payload that
+/// the frontend renders inline once paired with its `tool.use` parent.
+struct ToolResult {
+    ts: String,
+    actor_id: Option<String>,
+    tool_use_id: Option<String>,
     payload: serde_json::Value,
 }
 
@@ -1390,6 +1405,11 @@ pub fn dashboard_spec_trace(
         .map_err(|e| format!("load agent events: {e}"))?;
     let tool_events = load_tool_events(&conn, &spec_name)
         .map_err(|e| format!("load tool events: {e}"))?;
+    // Post-tool hook emits `tool.result` for captured stdout / file diffs.
+    // load_tool_results runs the same SELECT shape so a missing table or
+    // empty result is silently treated as "no results captured yet".
+    let tool_results = load_tool_results(&conn, &spec_name)
+        .map_err(|e| format!("load tool results: {e}"))?;
 
     // Pivot per-agent token totals via the Wave 4 reader. Failure is non-fatal
     // — a fresh project may not have any spans yet, in which case every
@@ -1424,6 +1444,7 @@ pub fn dashboard_spec_trace(
         &spec_name,
         agent_events,
         tool_events,
+        tool_results,
         tokens_by_agent,
     ))
 }
@@ -1487,9 +1508,17 @@ fn load_tool_events(conn: &Connection, spec_name: &str) -> rusqlite::Result<Vec<
                 .get("wave_id")
                 .and_then(|v| v.as_str())
                 .map(String::from);
+            // The real `tool.use` payload uses `tool` (the shape the hook
+            // actually writes). `tool_name`/`name` kept as legacy fallbacks
+            // so older rows still render their label.
             let tool_name = payload
-                .get("tool_name")
+                .get("tool")
+                .or_else(|| payload.get("tool_name"))
                 .or_else(|| payload.get("name"))
+                .and_then(|v| v.as_str())
+                .map(String::from);
+            let tool_use_id = payload
+                .get("tool_use_id")
                 .and_then(|v| v.as_str())
                 .map(String::from);
             Ok(ToolEvent {
@@ -1497,6 +1526,7 @@ fn load_tool_events(conn: &Connection, spec_name: &str) -> rusqlite::Result<Vec<
                 wave_id,
                 actor_id,
                 tool_name,
+                tool_use_id,
                 payload,
             })
         })?
@@ -1505,12 +1535,146 @@ fn load_tool_events(conn: &Connection, spec_name: &str) -> rusqlite::Result<Vec<
     Ok(rows)
 }
 
+/// Load `tool.result` events for `spec_name` ordered by id. Each row carries
+/// captured side-effects of a prior `tool.use` (stdout/stderr for Bash, the
+/// before/after file content for Edit/Write/MultiEdit, the file content for
+/// Read). Pairing happens in `pair_tool_results` — preferred match is by
+/// `tool_use_id` in the payload, with a chronological-per-actor fallback for
+/// events emitted before the id was wired in.
+fn load_tool_results(conn: &Connection, spec_name: &str) -> rusqlite::Result<Vec<ToolResult>> {
+    let mut stmt = conn.prepare(
+        "SELECT ts, actor_id, payload \
+         FROM events \
+         WHERE spec = ?1 AND event = 'tool.result' \
+         ORDER BY id",
+    )?;
+    let rows = stmt
+        .query_map([spec_name], |row| {
+            let ts: String = row.get(0)?;
+            let actor_id: Option<String> = row.get(1)?;
+            let payload_raw: Option<String> = row.get(2)?;
+            let payload: serde_json::Value = payload_raw
+                .as_deref()
+                .and_then(|s| serde_json::from_str(s).ok())
+                .unwrap_or(serde_json::Value::Null);
+            let tool_use_id = payload
+                .get("tool_use_id")
+                .and_then(|v| v.as_str())
+                .map(String::from);
+            Ok(ToolResult {
+                ts,
+                actor_id,
+                tool_use_id,
+                payload,
+            })
+        })?
+        .filter_map(std::result::Result::ok)
+        .collect();
+    Ok(rows)
+}
+
+/// Pair each `tool.use` with its matching `tool.result` payload.
+///
+/// Strategy:
+/// 1. **Exact match by `tool_use_id`** — when both sides carry the id (the
+///    post-tool hook stamps it on every new event), we splice the result
+///    payload directly under `payload.result` on the matching `tool.use`.
+/// 2. **Chronological fallback per `actor_id`** — for legacy rows missing
+///    the id we line up the unmatched results, in order, with unmatched
+///    `tool.use`s from the same actor. This is best-effort: if a tool was
+///    silently skipped by the hook the alignment can drift, but the result
+///    only feeds opt-in render blocks (diffs, stdout) so the worst case is
+///    a wrong stdout snippet, not a crash.
+///
+/// Mutates `tool_events` in place — every paired result is written into the
+/// `tool.use` payload as `payload.result = <result_payload>`.
+fn pair_tool_results(tool_events: &mut [ToolEvent], tool_results: Vec<ToolResult>) {
+    if tool_results.is_empty() {
+        return;
+    }
+
+    // Pass 1 — exact match by tool_use_id.
+    let mut by_id: HashMap<String, serde_json::Value> = HashMap::new();
+    let mut leftover: Vec<ToolResult> = Vec::new();
+    for r in tool_results {
+        match r.tool_use_id.as_deref() {
+            Some(id) if !id.is_empty() => {
+                by_id.insert(id.to_string(), r.payload);
+            }
+            _ => leftover.push(r),
+        }
+    }
+    let mut matched_use_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for ev in tool_events.iter_mut() {
+        if let Some(id) = ev.tool_use_id.as_deref() {
+            if let Some(payload) = by_id.remove(id) {
+                if let Some(obj) = ev.payload.as_object_mut() {
+                    obj.insert("result".to_string(), payload);
+                }
+                matched_use_ids.insert(id.to_string());
+            }
+        }
+    }
+    // Any id-only results that didn't find a use → drop. Mismatched ids
+    // usually mean the use was on a different spec or filtered out earlier;
+    // we'd rather lose the orphan than guess.
+
+    // Pass 2 — chronological fallback per actor_id for unmatched events.
+    let mut results_by_actor: HashMap<String, Vec<ToolResult>> = HashMap::new();
+    for r in leftover {
+        let key = r.actor_id.clone().unwrap_or_default();
+        results_by_actor.entry(key).or_default().push(r);
+    }
+    // Each actor's leftover results are already in id order (ORDER BY id
+    // upstream); we walk the matching unpaired `tool.use`s in the same
+    // order and zip them together by ts.
+    let mut cursor_by_actor: HashMap<String, usize> = HashMap::new();
+    for ev in tool_events.iter_mut() {
+        // Skip events that already received a result via pass 1.
+        let already_paired = ev
+            .payload
+            .as_object()
+            .map(|o| o.contains_key("result"))
+            .unwrap_or(false);
+        if already_paired {
+            continue;
+        }
+        let key = ev.actor_id.clone().unwrap_or_default();
+        let Some(bucket) = results_by_actor.get(&key) else {
+            continue;
+        };
+        let idx = cursor_by_actor.entry(key.clone()).or_insert(0);
+        if *idx >= bucket.len() {
+            continue;
+        }
+        // Cheap chronological guard: result.ts must be >= use.ts. When the
+        // next result is *earlier* than the current use, it belonged to a
+        // dropped/earlier use and is skipped permanently.
+        while *idx < bucket.len() && bucket[*idx].ts < ev.ts {
+            *idx += 1;
+        }
+        if *idx < bucket.len() {
+            let payload = bucket[*idx].payload.clone();
+            if let Some(obj) = ev.payload.as_object_mut() {
+                obj.insert("result".to_string(), payload);
+            }
+            *idx += 1;
+        }
+    }
+}
+
 fn build_trace_tree(
     spec_name: &str,
     agent_events: Vec<AgentEvent>,
-    tool_events: Vec<ToolEvent>,
+    mut tool_events: Vec<ToolEvent>,
+    tool_results: Vec<ToolResult>,
     tokens_by_agent: HashMap<String, TokenBreakdown>,
 ) -> TraceNode {
+    // Splice every `tool.result` payload into its matching `tool.use` BEFORE
+    // we drop the events into the tree, so each tool node already carries
+    // `payload.result` for the frontend to render diffs/stdout inline.
+    pair_tool_results(&mut tool_events, tool_results);
+
     // Pair start/stop per actor_id → derive a duration_ms when both halves
     // exist. Order preserved by `ORDER BY id` upstream.
     let mut starts: HashMap<String, &AgentEvent> = HashMap::new();
@@ -1558,17 +1722,30 @@ fn build_trace_tree(
             .clone()
             .unwrap_or_else(|| "agent-unknown".to_string());
         let tool_name = tool.tool_name.clone().unwrap_or_else(|| "tool".to_string());
-        let target = tool
-            .payload
-            .get("target")
-            .or_else(|| tool.payload.get("file_path"))
-            .or_else(|| tool.payload.get("path"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        let label = if target.is_empty() {
+        // Real shape: `payload.target = { command?, file_path?, description? }`.
+        // Older legacy rows stored a flat string under `target`/`file_path`/
+        // `path` — we keep both branches so historic events still render.
+        let target_obj = tool.payload.get("target");
+        let target_string: String = if let Some(obj) = target_obj.and_then(|v| v.as_object()) {
+            obj.get("file_path")
+                .or_else(|| obj.get("file"))
+                .or_else(|| obj.get("command"))
+                .or_else(|| obj.get("description"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string()
+        } else {
+            target_obj
+                .and_then(|v| v.as_str())
+                .or_else(|| tool.payload.get("file_path").and_then(|v| v.as_str()))
+                .or_else(|| tool.payload.get("path").and_then(|v| v.as_str()))
+                .unwrap_or("")
+                .to_string()
+        };
+        let label = if target_string.is_empty() {
             tool_name.clone()
         } else {
-            format!("{tool_name} · {target}")
+            format!("{tool_name} · {target_string}")
         };
         let node = TraceNode {
             kind: "tool".to_string(),
