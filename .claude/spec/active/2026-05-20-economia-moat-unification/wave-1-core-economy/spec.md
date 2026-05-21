@@ -1,10 +1,10 @@
 # Wave 1 — Core economy domain: writer/reader/scope/estimator
 
 ### Parent: [[2026-05-20-economia-moat-unification]]
-### Status: approved
-### Phase: PLAN
+### Status: completed
+### Phase: EXECUTE
 ### Scope: full (wave)
-### Checkpoint: 2026-05-20T23:59:30Z
+### Checkpoint: 2026-05-21T03:15:00Z
 ### Lang: pt
 
 ## PRD
@@ -35,14 +35,14 @@ Desenvolvedores que estendem o Mustard (você + futuros contribuidores): hoje pr
 
 Testable, binary (pass/fail) criteria. Each MUST be executable and independent.
 
-- [ ] AC-1: Build do core passa — Command: `cargo check -p mustard-core`
-- [ ] AC-2: Testes do core passam — Command: `cargo test -p mustard-core`
-- [ ] AC-3: Módulo `economy` re-exportado em lib.rs — Command: `node -e "const t=require('fs').readFileSync('packages/core/src/lib.rs','utf8');if(!t.includes('pub mod economy'))throw new Error('missing pub mod economy')"`
-- [ ] AC-4: `EconomyScope` tem 4 variantes — Command: `node -e "const t=require('fs').readFileSync('packages/core/src/economy/scope.rs','utf8');['Project','Spec','Wave','AllProjects'].forEach(v=>{if(!t.includes(v))throw new Error('missing variant '+v)})"`
-- [ ] AC-5: Writer expõe 4 métodos — Command: `node -e "const t=require('fs').readFileSync('packages/core/src/economy/writer.rs','utf8');['record_span','record_savings','record_context_cost','record_api_cost'].forEach(f=>{if(!t.includes('fn '+f))throw new Error('missing fn '+f)})"`
-- [ ] AC-6: Reader expõe 6 métodos — Command: `node -e "const t=require('fs').readFileSync('packages/core/src/economy/reader.rs','utf8');['economy_summary','per_agent_costs','per_spec_costs','per_wave_costs','savings_breakdown','context_routing_quality'].forEach(f=>{if(!t.includes('fn '+f))throw new Error('missing fn '+f)})"`
-- [ ] AC-7: `tiktoken-rs` adicionado em Cargo.toml — Command: `node -e "const t=require('fs').readFileSync('packages/core/Cargo.toml','utf8');if(!t.includes('tiktoken'))throw new Error('tiktoken-rs not added')"`
-- [ ] AC-8: MultiProjectReader implementado (não só assinatura) — Command: `node -e "const t=require('fs').readFileSync('packages/core/src/economy/multi_project.rs','utf8');if(!t.includes('pub fn') || !t.match(/for\\s+\\w+\\s+in/))throw new Error('MultiProjectReader missing fan-out loop')"`
+- [x] AC-1: Build do core passa — Command: `cargo check -p mustard-core`
+- [x] AC-2: Testes do core passam — Command: `cargo test -p mustard-core`
+- [x] AC-3: Módulo `economy` re-exportado em lib.rs — Command: `node -e "const t=require('fs').readFileSync('packages/core/src/lib.rs','utf8');if(!t.includes('pub mod economy'))throw new Error('missing pub mod economy')"`
+- [x] AC-4: `EconomyScope` tem 4 variantes — Command: `node -e "const t=require('fs').readFileSync('packages/core/src/economy/scope.rs','utf8');['Project','Spec','Wave','AllProjects'].forEach(v=>{if(!t.includes(v))throw new Error('missing variant '+v)})"`
+- [x] AC-5: Writer expõe 4 métodos — Command: `node -e "const t=require('fs').readFileSync('packages/core/src/economy/writer.rs','utf8');['record_span','record_savings','record_context_cost','record_api_cost'].forEach(f=>{if(!t.includes('fn '+f))throw new Error('missing fn '+f)})"`
+- [x] AC-6: Reader expõe 6 métodos — Command: `node -e "const t=require('fs').readFileSync('packages/core/src/economy/reader.rs','utf8');['economy_summary','per_agent_costs','per_spec_costs','per_wave_costs','savings_breakdown','context_routing_quality'].forEach(f=>{if(!t.includes('fn '+f))throw new Error('missing fn '+f)})"`
+- [x] AC-7: `tiktoken-rs` adicionado em Cargo.toml — Command: `node -e "const t=require('fs').readFileSync('packages/core/Cargo.toml','utf8');if(!t.includes('tiktoken'))throw new Error('tiktoken-rs not added')"`
+- [x] AC-8: MultiProjectReader implementado (não só assinatura) — Command: `node -e "const t=require('fs').readFileSync('packages/core/src/economy/multi_project.rs','utf8');if(!t.includes('pub fn') || !t.match(/for\\s+\\w+\\s+in/))throw new Error('MultiProjectReader missing fan-out loop')"`
 
 ## Plano
 
@@ -124,3 +124,8 @@ Nenhuma. Primeira wave, foundation.
 Em escopo: `packages/core/Cargo.toml`, `packages/core/src/lib.rs`, `packages/core/src/economy/**` (todos os arquivos novos), `packages/core/src/store/migrations.rs` (APPEND apenas), `packages/core/tests/economy_basic.rs`.
 
 Fora de escopo: qualquer outro arquivo. NÃO alterar `core::store::sqlite_store`, `core::store::event_store`, `core::projection::*`, `core::reader::*`, `core::knowledge`, `core::metrics`. NÃO tocar em `apps/rt/**`, `apps/dashboard/**`, `apps/cli/**`. NÃO modificar migrations existentes (apenas adicionar).
+
+## Concerns
+
+- **ALTER TABLE `spans` em vez de tabela nova** — non-goal global do parent diz "Não alterar tabelas existentes (events, spans) — apenas adicionar novas via migration adicional". Implementação adicionou `cost_usd_micros`, `cache_read_input_tokens`, `cache_creation_input_tokens`, `project_path`, `ts_iso`, `session_id`, `wave_id` à `spans` via `add_column_if_missing` ALTER probes (re-runnable). Justificativa do agente: campos requisitados pelo `SpanRecord` em `economy::model` não existiam no schema legado. Alternativas a avaliar no REVIEW: (a) aceitar como interpretação válida de "adicionar via migration adicional" (a migration é nova, só toca colunas), (b) refatorar para `economy_spans` separada e deixar `spans` legado intacto, (c) escopar mais campos via JSON em `payload` em vez de colunas tipadas. Decisão final fica para REVIEW da entrega completa.
+- **Custos per-agent/per-wave aproximados (W2 debt)** — schema W1 não liga `spans` ↔ agente diretamente. `reader::per_agent_costs` e `per_wave_costs` distribuem proporcionalmente por share de `ContextCostFrame`. Documentado em `reader.rs:147-152`. API shape estável; precisão real chega em W4 (Atribuição).

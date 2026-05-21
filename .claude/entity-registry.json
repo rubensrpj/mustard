@@ -93,13 +93,13 @@
       "conventions": {
         "naming": {
           "distribution": {
-            "camelCase": 28,
+            "camelCase": 29,
             "kebab-case": 5,
             "lowercase": 16,
             "mixed": 3
           },
           "dominant": null,
-          "total": 52
+          "total": 53
         }
       },
       "discovered": [
@@ -107,7 +107,7 @@
           "declarationKeywords": null,
           "declarationSuffix": null,
           "ext": ".ts",
-          "fileCount": 27,
+          "fileCount": 28,
           "folderPattern": "**/src/",
           "folders": [
             "src/hooks",

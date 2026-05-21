@@ -20,6 +20,10 @@ rusqlite = { workspace = true }
 # fingerprints vendored template trees. Not a workspace dep: `mustard-core` is
 # the only consumer. Latest stable on crates.io, May 2026.
 sha2 = "0.10.9"
+# BPE tokenizer used by `economy::estimator` to approximate Anthropic Claude
+# token counts via cl100k_base — accuracy is ±5%, never bit-exact. Pulled
+# through the workspace table; see the rationale in the root Cargo.toml.
+tiktoken-rs = { workspace = true }
 
 [dev-dependencies]
 insta = { workspace = true }

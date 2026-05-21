@@ -32,6 +32,7 @@
 //!   API).
 
 pub mod config;
+pub mod economy;
 pub mod env;
 pub mod error;
 pub mod store;
@@ -46,8 +47,11 @@ pub mod reader;
 // remembering which sub-module owns each name.
 pub use model::view::{
     AcStatus, AcceptanceCriterion, FileCount, Phase, PhaseSegment, QualityRollup, Scope,
-    SegmentState, SpecFilter, SpecStatus, SpecStatusFilter, SpecSummary, SpecTrack, SpecView,
-    TimeWindow, TimelineKind, TimelineNode, WaveStatus, WaveView, WorkspaceAlert,
+    SegmentState, SpecChild, SpecFilter, SpecStatus, SpecStatusFilter, SpecSummary, SpecTrack,
+    SpecView, TimeWindow, TimelineKind, TimelineNode, WaveStatus, WaveView, WorkspaceAlert,
     WorkspaceAlertKind, WorkspaceSummary,
 };
 pub use reader::{InMemorySpecReader, ReadError, SpecReader, SqliteSpecReader};
+
+// Economy domain re-exports — see `economy/mod.rs` for the full surface.
+pub use economy::{EconomyScope, EconomySummary, SavingsSource};
