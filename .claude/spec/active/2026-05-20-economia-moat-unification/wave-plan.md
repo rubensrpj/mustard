@@ -1,9 +1,9 @@
 # Wave Plan — Economia: moat de tokens e contexto unificado
 
-### Status: draft
-### Phase: PLAN
+### Status: completed
+### Phase: CLOSE
 ### Scope: full (wave plan)
-### Checkpoint: 2026-05-20T23:59:00Z
+### Checkpoint: 2026-05-21T07:05:00Z
 ### Lang: pt
 
 ## PRD (visão única)
@@ -64,13 +64,13 @@ Memória compartilhada entre waves: cada wave grava agent memory ao terminar; o 
 
 Testable, binary (pass/fail) criteria. Each MUST be executable and independent.
 
-- [ ] AC-G1: Build do core passa — Command: `cargo check -p mustard-core`
-- [ ] AC-G2: Testes do core passam — Command: `cargo test -p mustard-core`
-- [ ] AC-G3: Build do rt passa — Command: `cargo check -p mustard-rt`
-- [ ] AC-G4: Build do dashboard passa — Command: `pnpm --filter mustard-dashboard build`
-- [ ] AC-G5: Type-check do dashboard passa — Command: `pnpm --filter mustard-dashboard exec tsc --noEmit`
-- [ ] AC-G6: Módulo `economy` exporta API pública esperada — Command: `node -e "const t=require('fs').readFileSync('packages/core/src/lib.rs','utf8');if(!t.includes('pub mod economy'))throw new Error('economy module not re-exported')"`
-- [ ] AC-G7: Todas as 8 waves marcadas `completed` no wave-plan.md (manual check final)
+- [x] AC-G1: Build do core passa — Command: `cargo check -p mustard-core`
+- [x] AC-G2: Testes do core passam — Command: `cargo test -p mustard-core`
+- [x] AC-G3: Build do rt passa — Command: `cargo check -p mustard-rt`
+- [x] AC-G4: Build do dashboard passa — Command: `pnpm --filter mustard-dashboard build`
+- [x] AC-G5: Type-check do dashboard passa — Command: `pnpm --filter mustard-dashboard exec tsc --noEmit`
+- [x] AC-G6: Módulo `economy` exporta API pública esperada — Command: `node -e "const t=require('fs').readFileSync('packages/core/src/lib.rs','utf8');if(!t.includes('pub mod economy'))throw new Error('economy module not re-exported')"`
+- [x] AC-G7: Todas as 8 waves marcadas `completed` no wave-plan.md (manual check final)
 
 ## Critique Coverage (auditoria explícita da conversa)
 
