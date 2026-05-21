@@ -142,11 +142,16 @@ impl SqliteSpecReader {
     /// from the repo. Returns the path unconditionally; the projection itself
     /// fails open (`std::fs::read_to_string` → `None`) when the file is missing.
     fn spec_md_path(&self, spec: &str) -> std::path::PathBuf {
-        self.project_dir
-            .join(".claude")
-            .join("spec")
-            .join(spec)
-            .join("spec.md")
+        let base = self.project_dir.join(".claude").join("spec").join(spec);
+        let primary = base.join("spec.md");
+        if primary.exists() {
+            return primary;
+        }
+        let wave_plan = base.join("wave-plan.md");
+        if wave_plan.exists() {
+            return wave_plan;
+        }
+        primary
     }
 }
 
@@ -186,7 +191,33 @@ impl SpecReader for SqliteSpecReader {
     }
 
     fn list_specs(&self, filter: &SpecFilter) -> Result<Vec<SpecSummary>> {
-        let names = self.distinct_specs()?;
+        let mut names: Vec<String> = self.distinct_specs()?;
+        // Also surface specs that exist on disk but have no events yet — a
+        // teammate who pulled the repo or a draft wave-plan never approved
+        // would otherwise stay invisible. Wave 1 of the flatten-spec spec
+        // gave us the header fallback in `spec_view`; this is the listing
+        // side of the same fix.
+        let spec_root = self.project_dir.join(".claude").join("spec");
+        if let Ok(entries) = std::fs::read_dir(&spec_root) {
+            let seen: std::collections::HashSet<&str> = names.iter().map(String::as_str).collect();
+            let mut extras: Vec<String> = Vec::new();
+            for entry in entries.flatten() {
+                if !entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                    continue;
+                }
+                let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+                    continue;
+                };
+                if seen.contains(name.as_str()) {
+                    continue;
+                }
+                let base = entry.path();
+                if base.join("spec.md").exists() || base.join("wave-plan.md").exists() {
+                    extras.push(name);
+                }
+            }
+            names.extend(extras);
+        }
         let needle = filter
             .search
             .as_deref()
