@@ -23,6 +23,7 @@ pub mod multi_project;
 pub mod reader;
 pub mod scope;
 pub mod sources;
+pub mod store;
 pub mod writer;
 
 // Re-exports — consumers `use mustard_core::economy::{…}` without remembering
@@ -41,4 +42,5 @@ pub use reader::{
     savings_breakdown,
 };
 pub use scope::{AgentId, EconomyScope, ProjectPath, SpecId, WaveId};
+pub use store::open_for;
 pub use writer::{record_api_cost, record_context_cost, record_savings, record_span};
