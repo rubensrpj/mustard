@@ -34,8 +34,18 @@ pub enum SpecStatus {
     ClosedFollowup,
     /// Pipeline finished and archived to `completed/`.
     Completed,
-    /// Pipeline was cancelled before completing.
+    /// Pipeline was cancelled before completing — a deliberate, user-initiated
+    /// abort of a real pipeline that produced events. The pipeline ran far
+    /// enough to be worth recording as a decision.
     Cancelled,
+    /// Spec was abandoned without a real pipeline ever running. Distinct from
+    /// [`Self::Cancelled`]: abandoned specs are ghosts — wrong slug typed once,
+    /// leaked test events, manual emit experiments. Zero work happened against
+    /// the slug; the row exists only because the event log captured noise.
+    /// Lives in the terminal bucket so it never blocks "Ativas" filters, but
+    /// the UI surfaces it in its own pile so cleanup of real cancellations
+    /// stays meaningful.
+    Abandoned,
     /// Pipeline is paused — explicit user intervention required.
     Blocked,
     /// Wave plan reached a wave that failed twice in a row.
@@ -60,9 +70,10 @@ impl SpecStatus {
     }
 
     /// Whether this status is terminal (the pipeline is done, success or not).
+    /// `Abandoned` counts as terminal too — it is ghost noise, never active.
     #[must_use]
     pub const fn is_terminal(self) -> bool {
-        matches!(self, Self::Completed | Self::Cancelled)
+        matches!(self, Self::Completed | Self::Cancelled | Self::Abandoned)
     }
 
     /// Parse the on-disk header string. Accepts the legacy `"closed-followup"`
@@ -78,7 +89,8 @@ impl SpecStatus {
             "qa" => Some(Self::Qa),
             "closed-followup" | "closed_followup" => Some(Self::ClosedFollowup),
             "completed" | "closed" => Some(Self::Completed),
-            "cancelled" | "canceled" => Some(Self::Cancelled),
+            "cancelled" | "canceled" | "superseded" => Some(Self::Cancelled),
+            "abandoned" | "orphan" => Some(Self::Abandoned),
             "blocked" | "paused" => Some(Self::Blocked),
             "wave-failed" | "wave_failed" => Some(Self::WaveFailed),
             _ => None,
@@ -197,11 +209,24 @@ pub struct SpecSummary {
     pub ac_passed: u32,
     /// Acceptance Criteria total.
     pub ac_total: u32,
+    /// Number of sub-specs linked to this spec via `spec.link` events.
+    ///
+    /// Populated by [`SpecReader::children_of`](crate::reader::SpecReader::children_of).
+    /// Defaults to `0` so older clients (and rows produced before this field
+    /// existed) deserialize cleanly.
+    ///
+    /// [`SpecReader::children_of`]: crate::reader::SpecReader::children_of
+    #[serde(default)]
+    pub children_count: u32,
 }
 
 impl From<&SpecView> for SpecSummary {
     /// Project a rich view into the lean summary shape. Useful when the same
     /// projection has already paid the cost of computing the rich view.
+    ///
+    /// `children_count` defaults to `0` — the rich view does not carry that
+    /// information; callers that want it must populate it explicitly via
+    /// [`SpecReader::children_of`](crate::reader::SpecReader::children_of).
     fn from(view: &SpecView) -> Self {
         Self {
             spec: view.spec.clone(),
@@ -214,8 +239,36 @@ impl From<&SpecView> for SpecSummary {
             total_waves: view.total_waves,
             ac_passed: view.ac_passed,
             ac_total: view.ac_total,
+            children_count: 0,
         }
     }
+}
+
+/// One child spec linked to a parent via the `spec.link` event.
+///
+/// Produced by [`SpecReader::children_of`](crate::reader::SpecReader::children_of)
+/// — the reader folds every `spec.link` event whose payload `parent` matches
+/// the requested spec, deduplicates by child name, and resolves the child's
+/// status by re-reading its own event stream.
+///
+/// Designed for the dashboard's "Sub-specs" tab: enough metadata to render a
+/// row (name, status, started/completed timestamps, free-form reason) without
+/// forcing the consumer to fan out an extra `spec_summary` call per row.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SpecChild {
+    /// Child spec name — the slug under `.claude/spec/`.
+    pub spec: String,
+    /// Lifecycle status of the child, resolved from its own event stream.
+    /// [`SpecStatus::NoEvents`] when the child has no events yet.
+    pub status: SpecStatus,
+    /// ISO-8601 timestamp of the child's first event, when known.
+    pub started_at: Option<String>,
+    /// ISO-8601 timestamp of the child's most recent terminal event, when known.
+    pub completed_at: Option<String>,
+    /// Free-form reason from the `spec.link` payload (e.g. `"tactical-fix"`).
+    /// The first reason wins when the same parent→child pair is linked
+    /// multiple times.
+    pub reason: Option<String>,
 }
 
 #[cfg(test)]
@@ -249,7 +302,16 @@ mod tests {
         assert!(!SpecStatus::Completed.is_active());
         assert!(SpecStatus::Completed.is_terminal());
         assert!(SpecStatus::Cancelled.is_terminal());
+        assert!(SpecStatus::Abandoned.is_terminal());
+        assert!(!SpecStatus::Abandoned.is_active());
         assert!(!SpecStatus::Implementing.is_terminal());
+    }
+
+    #[test]
+    fn parse_recognises_abandoned_and_its_orphan_synonym() {
+        assert_eq!(SpecStatus::parse("abandoned"), Some(SpecStatus::Abandoned));
+        assert_eq!(SpecStatus::parse("ORPHAN"), Some(SpecStatus::Abandoned));
+        assert_ne!(SpecStatus::parse("abandoned"), Some(SpecStatus::Cancelled));
     }
 
     #[test]
