@@ -527,6 +527,42 @@ export function dashboardTelemetryAgents(
   return invoke("dashboard_telemetry_agents", { repoPath, timeRange });
 }
 
+// --- Economy summary (W7 — 2026-05-20-economia-moat-unification) ---
+//
+// Thin invoke wrapper for the W7 Tauri command. The scope union maps directly
+// onto the Rust `EconomyScopeDto` (internally tagged on `kind` with snake_case
+// variant names) — JS literal `{ kind: "project", project: "/..." }` is the
+// exact payload serde-deserialize expects on the other side.
+
+export type {
+  EconomyScope,
+  EconomyScopeKind,
+  EconomySummary,
+  AgentCost,
+  SavingsSource,
+  SavingsBySource,
+  SavingsBreakdown,
+  ContextRoutingMetrics,
+} from "@/lib/types/economy";
+import type {
+  EconomyScope,
+  EconomySummary,
+  SavingsBreakdown,
+  ContextRoutingMetrics,
+} from "@/lib/types/economy";
+
+export function fetchEconomySummary(scope: EconomyScope): Promise<EconomySummary> {
+  return invoke<EconomySummary>("dashboard_economy_summary", { scope });
+}
+
+export function fetchEconomySavingsBreakdown(scope: EconomyScope): Promise<SavingsBreakdown> {
+  return invoke<SavingsBreakdown>("dashboard_economy_savings_breakdown", { scope });
+}
+
+export function fetchEconomyContextRouting(scope: EconomyScope): Promise<ContextRoutingMetrics> {
+  return invoke<ContextRoutingMetrics>("dashboard_economy_context_routing", { scope });
+}
+
 // --- useProjects hook ---
 import { useQuery as _useQuery } from "@tanstack/react-query";
 import { discoverProjects as _discoverProjects } from "@/api/discovery";
@@ -576,6 +612,8 @@ export function fetchAmendWindowDuration(repoPath: string): Promise<number[]> {
 
 export type {
   SpecCard,
+  SpecChild,
+  SpecSummary,
   SpecWave,
   SpecQualityItem,
   SpecTimelineNode,
@@ -639,6 +677,19 @@ export function dashboardWorkspaceSummary(
   repoPath: string,
 ): Promise<import("@/lib/types/specs").WorkspaceSummary> {
   return invoke("dashboard_workspace_summary", { repoPath });
+}
+
+/**
+ * Wave-3 (2026-05-20, spec `2026-05-20-tactical-fix-via-sub-spec`): list
+ * sub-specs linked to `parent` via the `spec.link` event. Always resolves —
+ * the backend collapses missing rows / DB-unavailable into an empty Vec so
+ * the UI renders an empty state.
+ */
+export function dashboardSpecChildren(
+  repoPath: string,
+  parent: string,
+): Promise<import("@/lib/types/specs").SpecChild[]> {
+  return invoke("dashboard_spec_children", { repoPath, parent });
 }
 
 // --- Wave-4 metrics wave-status (spec mustard-wave-network-standard) ---

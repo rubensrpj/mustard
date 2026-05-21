@@ -66,6 +66,10 @@ path = "tests/pipelines_from_db_test.rs"
 name = "telemetry_aggregations_test"
 path = "tests/telemetry_aggregations_test.rs"
 
+[[test]]
+name = "top_files_today_test"
+path = "tests/top_files_today_test.rs"
+
 # Test-only: temp dirs for the B5 Wave 3 mustard-cli integration smoke test.
 [dev-dependencies]
 tempfile = "3"

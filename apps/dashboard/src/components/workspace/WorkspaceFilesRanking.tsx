@@ -1,20 +1,29 @@
 import { useMemo } from "react";
+import { FileCode } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { DataCard, SectionHeader, EmptyState } from "@/components/page";
+import { MetricsPill } from "@/components/ds";
 import { useWorkspaceSummarySingle } from "@/hooks/useWorkspaceSummary";
+import { useTranslate } from "@/lib/i18n";
 
 interface WorkspaceFilesRankingProps {
   repoPath: string;
 }
 
 const TOP_N = 10;
-const NF = new Intl.NumberFormat("pt-BR");
 
 /**
- * Top-N files touched today, ranked by hits. Reuses the workspace summary
- * payload (`top_files_today`) so no extra round-trip is needed.
+ * Top-N files touched today, ranked by hits. Consumes `top_files_today` from
+ * the workspace summary; Wave 8 (2026-05-21) flipped the source to a
+ * session-agnostic SQL aggregation on the Rust side so this list keeps
+ * populating across spec CLOSEs.
+ *
+ * Visual: each row now leads with a `FileCode` icon and renders the hit count
+ * as a `<MetricsPill>` so the dense list reads consistently with the rest of
+ * the design system (W5 primitives).
  */
 export function WorkspaceFilesRanking({ repoPath }: WorkspaceFilesRankingProps) {
+  const t = useTranslate();
   const { data, isLoading } = useWorkspaceSummarySingle(repoPath);
 
   const rows = useMemo(
@@ -25,10 +34,10 @@ export function WorkspaceFilesRanking({ repoPath }: WorkspaceFilesRankingProps) 
   return (
     <DataCard padded>
       <SectionHeader
-        title="Arquivos mais tocados hoje"
+        title={t("workspace.filesRanking")}
         right={
           <span
-            className="tabular-nums"
+            className="text-[11px] text-muted-foreground tabular-nums"
             style={{ fontVariantNumeric: "tabular-nums" }}
           >
             top {Math.min(rows.length, TOP_N)}
@@ -37,11 +46,11 @@ export function WorkspaceFilesRanking({ repoPath }: WorkspaceFilesRankingProps) 
       />
 
       {isLoading && rows.length === 0 ? (
-        <p className="mt-3 text-[12.5px] text-muted-foreground/70">Carregando…</p>
+        <p className="mt-3 text-[12.5px] text-muted-foreground/70">{t("common.loading")}</p>
       ) : rows.length === 0 ? (
         <EmptyState
           className="mt-3"
-          title="Sem arquivos tocados hoje"
+          title={t("common.empty")}
           description="Edits feitos via pipeline aparecem aqui à medida que acontecem."
         />
       ) : (
@@ -50,10 +59,14 @@ export function WorkspaceFilesRanking({ repoPath }: WorkspaceFilesRankingProps) 
             <li
               key={`${row.path}-${idx}`}
               className={cn(
-                "flex items-center justify-between gap-3 px-2 py-1.5",
+                "flex items-center gap-3 px-2 py-1.5",
                 "border-b border-border/30 last:border-b-0",
               )}
             >
+              <FileCode
+                className="h-3.5 w-3.5 shrink-0 text-[--ds-text-tertiary]"
+                aria-hidden
+              />
               <span
                 // Truncate-left effect: render in RTL so the start is clipped,
                 // keeping the meaningful tail (filename) visible. The inner
@@ -64,12 +77,7 @@ export function WorkspaceFilesRanking({ repoPath }: WorkspaceFilesRankingProps) 
               >
                 <span dir="ltr">{row.path}</span>
               </span>
-              <span
-                className="text-[12px] tabular-nums text-muted-foreground shrink-0"
-                style={{ fontVariantNumeric: "tabular-nums" }}
-              >
-                {NF.format(row.count)}
-              </span>
+              <MetricsPill value={row.count} unit="hit" />
             </li>
           ))}
         </ul>

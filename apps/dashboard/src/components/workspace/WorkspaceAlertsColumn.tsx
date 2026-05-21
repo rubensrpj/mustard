@@ -1,7 +1,9 @@
 import { useMemo, useState } from "react";
-import { AlertTriangle } from "lucide-react";
+import { AlertTriangle, Ban, XCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { Badge } from "@/components/ui/badge";
 import { relativeTime } from "@/lib/time";
+import { useTranslate } from "@/lib/i18n";
 import type { WorkspaceAlert } from "@/lib/types/specs";
 
 interface WorkspaceAlertsColumnProps {
@@ -15,19 +17,46 @@ const KIND_LABEL: Record<string, string> = {
   qa_fail: "QA falhou",
   build_broken: "Build quebrado",
   review_rejected: "Review rejeitado",
+  blocked: "Bloqueado",
 };
 
 const COLLAPSE_THRESHOLD = 3;
+
+/**
+ * Mapping of alert kind → (Lucide icon, badge variant). Wave 8 (2026-05-21,
+ * spec `2026-05-20-economia-moat-unification/wave-8-visao-geral-revamp`) — the
+ * column used to render plain text; this version threads a semantic icon and a
+ * coloured `<Badge>` so severity reads at a glance from the new 50/50 split
+ * layout in `Workspace.tsx`.
+ */
+const KIND_ICON: Record<string, typeof AlertTriangle> = {
+  wave_failed: XCircle,
+  qa_fail: AlertTriangle,
+  build_broken: XCircle,
+  review_rejected: XCircle,
+  blocked: Ban,
+};
+
+const KIND_BADGE: Record<string, "error" | "warning" | "info"> = {
+  wave_failed: "error",
+  qa_fail: "warning",
+  build_broken: "error",
+  review_rejected: "error",
+  blocked: "info",
+};
 
 function alertAccent(kind: string): string {
   switch (kind) {
     case "build_broken":
     case "wave_failed":
-      return "text-[--color-error]";
+    case "review_rejected":
+      return "text-[--ds-intent-error]";
     case "qa_fail":
-      return "text-[--color-accent-mustard]";
+      return "text-[--ds-intent-warning]";
+    case "blocked":
+      return "text-[--ds-intent-info]";
     default:
-      return "text-[--color-error]";
+      return "text-[--ds-intent-error]";
   }
 }
 
@@ -60,6 +89,8 @@ function AlertRow({
   alert: WorkspaceAlert;
   onAlertClick?: (a: WorkspaceAlert) => void;
 }) {
+  const Icon = KIND_ICON[alert.kind] ?? AlertTriangle;
+  const badgeVariant = KIND_BADGE[alert.kind] ?? "error";
   return (
     <li>
       <button
@@ -68,18 +99,18 @@ function AlertRow({
         className={cn(
           "w-full text-left flex items-center gap-1.5 rounded px-2 py-1",
           "hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2",
-          "focus-visible:ring-[--color-accent-mustard] transition-colors",
+          "focus-visible:ring-[--ds-accent-primary]/60 transition-colors",
           "cursor-pointer",
         )}
         aria-label={`${KIND_LABEL[alert.kind] ?? alert.kind} em ${alert.spec}. Clique para detalhes.`}
       >
-        <AlertTriangle
-          className={cn("h-3 w-3 shrink-0", alertAccent(alert.kind))}
+        <Icon
+          className={cn("h-3.5 w-3.5 shrink-0", alertAccent(alert.kind))}
           aria-hidden
         />
-        <span className="text-[11px] font-medium text-muted-foreground shrink-0">
+        <Badge variant={badgeVariant} className="shrink-0">
           {KIND_LABEL[alert.kind] ?? alert.kind}
-        </span>
+        </Badge>
         {alert.wave != null && (
           <span
             className="text-[11px] text-muted-foreground/60 tabular-nums shrink-0"
@@ -141,9 +172,9 @@ function AlertGroup({
           type="button"
           onClick={() => setExpanded((v) => !v)}
           className={cn(
-            "text-[11px] text-[--color-accent-mustard] hover:underline",
+            "text-[11px] text-[--ds-accent-primary] hover:underline",
             "self-start px-1 py-0.5 rounded focus-visible:outline-none",
-            "focus-visible:ring-2 focus-visible:ring-[--color-accent-mustard]",
+            "focus-visible:ring-2 focus-visible:ring-[--ds-accent-primary]/60",
           )}
           aria-expanded={expanded}
         >
@@ -156,24 +187,30 @@ function AlertGroup({
   );
 }
 
+/**
+ * Wave 8 update: dropped the fixed `w-[280px]` so the column can sit inside a
+ * 50/50 grid alongside `<WorkspaceFilesRanking>` (see `Workspace.tsx`). The
+ * width is now driven by the parent grid cell.
+ */
 export function WorkspaceAlertsColumn({
   alerts,
   onAlertClick,
   className,
 }: WorkspaceAlertsColumnProps) {
+  const t = useTranslate();
   const grouped = useMemo(() => groupBySpec(alerts), [alerts]);
 
   if (alerts.length === 0) {
     return (
       <aside
-        aria-label="Alertas do workspace"
+        aria-label={t("workspace.alerts")}
         className={cn(
-          "w-[280px] shrink-0 flex flex-col gap-2 rounded-lg border border-border bg-card/20 p-3",
+          "flex flex-col gap-2 rounded-lg border border-border bg-card/20 p-3",
           className,
         )}
       >
         <p className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1">
-          Alertas
+          {t("workspace.alerts")}
         </p>
         <p className="text-[12px] text-muted-foreground/60">Nenhum problema detectado.</p>
       </aside>
@@ -182,16 +219,16 @@ export function WorkspaceAlertsColumn({
 
   return (
     <aside
-      aria-label="Alertas do workspace"
+      aria-label={t("workspace.alerts")}
       className={cn(
-        "w-[280px] shrink-0 flex flex-col gap-2 rounded-lg border border-border bg-card/20 p-3",
+        "flex flex-col gap-2 rounded-lg border border-border bg-card/20 p-3",
         className,
       )}
     >
       <p className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1">
-        Alertas{" "}
+        {t("workspace.alerts")}{" "}
         <span
-          className="text-[--color-error] tabular-nums"
+          className="text-[--ds-intent-error] tabular-nums"
           style={{ fontVariantNumeric: "tabular-nums" }}
         >
           {alerts.length}

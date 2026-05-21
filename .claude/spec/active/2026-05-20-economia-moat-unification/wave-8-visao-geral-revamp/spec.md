@@ -1,10 +1,10 @@
 # Wave 8 — Visão Geral revamp (cosméticos + multi-spec + i18n + bug fixes)
 
 ### Parent: [[2026-05-20-economia-moat-unification]]
-### Status: queued
-### Phase: PLAN
+### Status: completed
+### Phase: EXECUTE
 ### Scope: full (wave)
-### Checkpoint: 2026-05-20T23:59:00Z
+### Checkpoint: 2026-05-21T06:00:00Z
 ### Lang: pt
 
 ## PRD
@@ -31,15 +31,15 @@ Operador abre `/` (com 2+ specs ativas) e responde sem hover/scroll: (a) quantas
 
 Testable, binary (pass/fail) criteria. Each MUST be executable and independent.
 
-- [ ] AC-1: Build passa — Command: `pnpm --filter mustard-dashboard build`
-- [ ] AC-2: Type-check passa — Command: `pnpm --filter mustard-dashboard exec tsc --noEmit`
-- [ ] AC-3: i18n provider existe e bindado em Preferences — Command: `node -e "if(!require('fs').existsSync('apps/dashboard/src/lib/i18n.ts'))throw new Error('i18n provider missing');const t=require('fs').readFileSync('apps/dashboard/src/lib/i18n.ts','utf8');if(!/preferences|usePreference/i.test(t))throw new Error('i18n not bound to Preferences')"`
-- [ ] AC-4: Hero multi-spec — Command: `node -e "const t=require('fs').readFileSync('apps/dashboard/src/components/workspace/WorkspaceHero.tsx','utf8');if(!/map|forEach/.test(t))throw new Error('Hero must iterate pipelines (multi-spec)')"`
-- [ ] AC-5: StatusCounters substituiu calendar — Command: `node -e "const t=require('fs').readFileSync('apps/dashboard/src/pages/Workspace.tsx','utf8');if(t.includes('WorkspaceMonthCalendar'))throw new Error('MonthCalendar still imported');if(!t.includes('WorkspaceStatusCounters'))throw new Error('StatusCounters not imported')"`
-- [ ] AC-6: Alerts+Files split 50/50 — Command: `node -e "const t=require('fs').readFileSync('apps/dashboard/src/pages/Workspace.tsx','utf8');if(!/w-1\\/2|grid-cols-2/.test(t))throw new Error('Alerts+Files not split 50/50')"`
-- [ ] AC-7: top_files_today não esvazia pós-CLOSE — Command: `cargo test -p mustard-dashboard test_top_files_today_post_close --manifest-path apps/dashboard/src-tauri/Cargo.toml`
-- [ ] AC-8: "ECONOMIZADOS HOJE" não está mais no StatusBar — Command: `node -e "const t=require('fs').readFileSync('apps/dashboard/src/components/workspace/WorkspaceStatusBar.tsx','utf8');if(/economizados\\s+hoje|economizados_hoje|savedToday/i.test(t))throw new Error('savedToday still in StatusBar')"`
-- [ ] AC-9: SpecsByStatus ocupa full-width (sem className col-span-2) — Command: `node -e "const t=require('fs').readFileSync('apps/dashboard/src/pages/Workspace.tsx','utf8');const m=t.match(/<WorkspaceSpecsByStatus[^>]*>/);if(m && /col-span-2/.test(m[0]))throw new Error('SpecsByStatus still wrapped in col-span-2')"`
+- [x] AC-1: Build passa — Command: `pnpm --filter mustard-dashboard build`
+- [x] AC-2: Type-check passa — Command: `pnpm --filter mustard-dashboard exec tsc --noEmit`
+- [x] AC-3: i18n provider existe e bindado em Preferences — Command: `node -e "if(!require('fs').existsSync('apps/dashboard/src/lib/i18n.ts'))throw new Error('i18n provider missing');const t=require('fs').readFileSync('apps/dashboard/src/lib/i18n.ts','utf8');if(!/preferences|usePreference/i.test(t))throw new Error('i18n not bound to Preferences')"`
+- [x] AC-4: Hero multi-spec — Command: `node -e "const t=require('fs').readFileSync('apps/dashboard/src/components/workspace/WorkspaceHero.tsx','utf8');if(!/map|forEach/.test(t))throw new Error('Hero must iterate pipelines (multi-spec)')"`
+- [x] AC-5: StatusCounters substituiu calendar — Command: `node -e "const t=require('fs').readFileSync('apps/dashboard/src/pages/Workspace.tsx','utf8');if(t.includes('WorkspaceMonthCalendar'))throw new Error('MonthCalendar still imported');if(!t.includes('WorkspaceStatusCounters'))throw new Error('StatusCounters not imported')"`
+- [x] AC-6: Alerts+Files split 50/50 — Command: `node -e "const t=require('fs').readFileSync('apps/dashboard/src/pages/Workspace.tsx','utf8');if(!/w-1\\/2|grid-cols-2/.test(t))throw new Error('Alerts+Files not split 50/50')"`
+- [x] AC-7: top_files_today não esvazia pós-CLOSE — Command: `cargo test -p mustard-dashboard test_top_files_today_post_close --manifest-path apps/dashboard/src-tauri/Cargo.toml`
+- [x] AC-8: "ECONOMIZADOS HOJE" não está mais no StatusBar — Command: `node -e "const t=require('fs').readFileSync('apps/dashboard/src/components/workspace/WorkspaceStatusBar.tsx','utf8');if(/economizados\\s+hoje|economizados_hoje|savedToday/i.test(t))throw new Error('savedToday still in StatusBar')"`
+- [x] AC-9: SpecsByStatus ocupa full-width (sem className col-span-2) — Command: `node -e "const t=require('fs').readFileSync('apps/dashboard/src/pages/Workspace.tsx','utf8');const m=t.match(/<WorkspaceSpecsByStatus[^>]*>/);if(m && /col-span-2/.test(m[0]))throw new Error('SpecsByStatus still wrapped in col-span-2')"`
 
 ## Plano
 
@@ -104,3 +104,9 @@ apps/dashboard/src-tauri/src/spec_views.rs                  (modify — fix dash
 Em escopo: `apps/dashboard/src/lib/i18n.ts` (novo), `apps/dashboard/src/components/workspace/Workspace{Hero,StatusCounters}.tsx` (novos), `apps/dashboard/src/components/workspace/Workspace{StatusBar,FilesRanking,AlertsColumn}.tsx` (edit), `apps/dashboard/src/pages/Workspace.tsx` (edit), `apps/dashboard/src-tauri/src/spec_views.rs` (edit — só `dashboard_workspace_summary`).
 
 Fora de escopo: outras páginas (`Specs`, `Economia`, `Knowledge`, `Settings`, `Preferences`); outros Tauri commands; Sidebar/Topbar; migração de outras páginas para i18n (lazy).
+
+## Concerns
+
+- **i18n bindado a `useStore.language` (slice existente)** — não criou slice nova. Setter `setLanguage` já sincroniza i18next legado, então toggle em `/preferences` afeta tanto labels novas (Visão Geral) quanto legadas. Sem duplicar fonte de verdade. REVIEW deve avaliar se migra labels existentes (Sidebar/Topbar/outras pages) lazily ou faz one-shot via tactical-fix.
+- **`top_files_today` fix via override no adapter do dashboard** — em vez de tocar `mustard-core::reader` (fora do boundary W8), `dashboard_workspace_summary` agora sobrescreve o campo após o core retornar, via `top_files_today_impl(conn)` local que ignora `session_id`. Funciona, mas duplica lógica de query. REVIEW pode propor exposing `reader::top_files_today_all_sessions` no core.
+- **Hero usa `agents_active` como sinal de "vivo"** — tokens-por-spec exigiriam round-trip extra ao economy reader, que ainda não está exposto via Tauri pro Workspace. Adequado para W8; W9/QA pode propor enriquecer Hero com tokens reais via `useEconomySummary` (já existe em W7).

@@ -2,6 +2,7 @@ mod artifact_update;
 pub mod amend_queries;
 mod discovery;
 pub mod db;
+mod prd_lapidator;
 mod projects;
 pub mod spec_views;
 pub mod telemetry;
@@ -1313,6 +1314,52 @@ fn dashboard_write_env(repo_path: String, env: HashMap<String, String>) -> Resul
 ///
 /// `anyhow::Error` is not `Serialize`, so the error is flattened to a string
 /// for the frontend (the Tauri-2 idiom for `Result`-returning commands).
+/// Reads `.claude/entity-registry.json` from the given repo root and returns
+/// the discovered entity names. Used by the PRD lapidator's EntityPicker
+/// (Wave 3 of spec 2026-05-20-dashboard-prd-ai-lapidator).
+///
+/// Returns an empty list when the registry file is missing or unreadable so
+/// the UI never crashes on a project that hasn't been scanned yet. When the
+/// registry has an explicit `entities` key (top-level array or object) it is
+/// preferred; otherwise we fall back to top-level keys minus reserved `_*`
+/// prefixes (today's shape — `_patterns`, `_enums`, `_meta`).
+#[tauri::command]
+fn read_entity_registry(repo_path: String) -> Result<Vec<String>, String> {
+    let registry_path = PathBuf::from(&repo_path)
+        .join(".claude")
+        .join("entity-registry.json");
+    if !registry_path.exists() {
+        return Ok(vec![]);
+    }
+    let content = std::fs::read_to_string(&registry_path).map_err(|e| e.to_string())?;
+    let v: serde_json::Value = serde_json::from_str(&content).map_err(|e| e.to_string())?;
+    // Preferred: explicit `entities` key.
+    if let Some(entities) = v.get("entities") {
+        if let Some(arr) = entities.as_array() {
+            let names: Vec<String> = arr
+                .iter()
+                .filter_map(|e| e.as_str().map(|s| s.to_string()))
+                .collect();
+            return Ok(names);
+        }
+        if let Some(obj) = entities.as_object() {
+            return Ok(obj.keys().cloned().collect());
+        }
+    }
+    // Fallback: top-level keys minus reserved `_*` prefixes.
+    let obj = match v.as_object() {
+        Some(o) => o,
+        None => return Ok(vec![]),
+    };
+    let mut names: Vec<String> = obj
+        .keys()
+        .filter(|k| !k.starts_with('_'))
+        .cloned()
+        .collect();
+    names.sort();
+    Ok(names)
+}
+
 #[tauri::command]
 fn mustard_install(path: String) -> Result<(), String> {
     let options = mustard_cli::InitOptions {
@@ -1360,6 +1407,7 @@ fn dashboard_spec_card(repo_path: String, spec: String) -> Result<spec_views::Sp
             files_touched: 0,
             tools_used: 0,
             model: None,
+            children_count: 0,
         }),
     }
 }
@@ -1410,6 +1458,18 @@ fn dashboard_spec_action(repo_path: String, spec: String, action: String) -> Res
             message: Some("banco de dados indisponível".to_string()),
         }),
     }
+}
+
+/// Wave-3 (2026-05-20, spec `2026-05-20-tactical-fix-via-sub-spec`) — list
+/// sub-specs linked to `parent` via `spec.link` events. Delegates to
+/// `spec_views::spec_children_v2` which in turn calls
+/// `mustard_core::SpecReader::children_of`.
+#[tauri::command]
+async fn dashboard_spec_children(
+    repo_path: String,
+    parent: String,
+) -> Result<Vec<spec_views::SpecChild>, String> {
+    spec_views::spec_children_v2(&repo_path, &parent)
 }
 
 /// Wave 4 (2026-05-20, spec `mustard-wave-network-standard`) — shell out to
@@ -1576,6 +1636,10 @@ pub fn run() {
             dashboard_search_events, dashboard_search_knowledge,
             dashboard_telemetry, dashboard_live_activity, dashboard_friction,
             telemetry::dashboard_prompt_economy,
+            telemetry::dashboard_economy_summary,
+            telemetry::dashboard_economy_savings_breakdown,
+            telemetry::dashboard_economy_context_routing,
+            telemetry::dashboard_spec_trace,
             telemetry::collector_health,
             dashboard_consumption, dashboard_consumption_global,
             dashboard_activity_aggregated, dashboard_quality_metrics, dashboard_knowledge_browse,
@@ -1605,13 +1669,17 @@ pub fn run() {
             dashboard_spec_timeline,
             dashboard_spec_events,
             dashboard_spec_action,
+            dashboard_spec_children,
             dashboard_workspace_summary,
             dashboard_metrics_wave_status,
             dashboard_wikilink_extract,
             dashboard_memory_cross_wave,
             spec_views::dashboard_token_summary,
             spec_views::dashboard_month_activity,
-            spec_views::dashboard_events_feed
+            spec_views::dashboard_events_feed,
+            prd_lapidator::lapidate_prd,
+            prd_lapidator::check_claude_available,
+            read_entity_registry
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

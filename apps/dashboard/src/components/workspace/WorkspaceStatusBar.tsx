@@ -16,22 +16,20 @@ function LiveDot() {
   );
 }
 
+/**
+ * Wave 8 (2026-05-21, spec
+ * `2026-05-20-economia-moat-unification/wave-8-visao-geral-revamp`): the
+ * token-savings hero block was removed from this status bar so the Visão
+ * Geral hero stops competing with the dedicated savings card. Token savings
+ * now live in `<WorkspaceTokenSummary>` (and the `/economia` page from Wave
+ * 7). This component is kept as a thin live-rate strip in case a future page
+ * wants the same surface; the Wave-8 layout (`Workspace.tsx`) replaced the
+ * StatusBar+PipelineTimeline pair with `<WorkspaceHero>` and no longer mounts
+ * this component on the Overview page.
+ */
 export function WorkspaceStatusBar({ summary, className }: WorkspaceStatusBarProps) {
   const epm = summary?.events_per_minute ?? 0;
   const active = summary?.specs_active_count ?? 0;
-  const saved = summary?.tokens_saved_today ?? null;
-
-  // Render "—" when the underlying projection has no token-savings data
-  // (e.g. RTK absent), distinguishing "unavailable" from a real "0".
-  const formattedSaved =
-    saved == null
-      ? "—"
-      : saved >= 1_000_000
-        ? `${(saved / 1_000_000).toFixed(1)}M`
-        : saved >= 1_000
-          ? `${(saved / 1_000).toFixed(1)}k`
-          : String(saved);
-
 
   return (
     <div
@@ -47,11 +45,10 @@ export function WorkspaceStatusBar({ summary, className }: WorkspaceStatusBarPro
         <span
           className="text-sm text-foreground/80 tabular-nums"
           style={{ fontVariantNumeric: "tabular-nums" }}
-          aria-label={`${epm.toFixed(1)} eventos por minuto — taxa de eventos do harness na última janela de 60 segundos`}
-          title="taxa de eventos do harness na última janela de 60 segundos"
+          aria-label={`${epm.toFixed(1)} events per minute`}
         >
           <span className="font-medium">{epm.toFixed(1)}</span>
-          <span className="text-muted-foreground text-[12px]"> eventos/min</span>
+          <span className="text-muted-foreground text-[12px]"> events/min</span>
         </span>
       </div>
 
@@ -60,40 +57,11 @@ export function WorkspaceStatusBar({ summary, className }: WorkspaceStatusBarPro
         <span
           className="text-sm tabular-nums"
           style={{ fontVariantNumeric: "tabular-nums" }}
-          aria-label={`${active} specs ativas`}
+          aria-label={`${active} active specs`}
         >
           <span className="font-medium">{active}</span>
-          <span className="text-muted-foreground text-[12px]"> specs ativas</span>
+          <span className="text-muted-foreground text-[12px]"> active specs</span>
         </span>
-      </div>
-
-      {/* Hero: tokens saved today */}
-      <div className="flex items-center gap-1.5 ml-auto min-w-0">
-        <span className="text-[11px] text-muted-foreground uppercase tracking-wide">
-          economizados hoje
-        </span>
-        <span
-          className={cn(
-            "text-lg font-bold tabular-nums",
-            saved == null ? "text-muted-foreground" : "text-[--color-accent-mustard]",
-          )}
-          style={{ fontVariantNumeric: "tabular-nums" }}
-          aria-label={
-            saved == null
-              ? "tokens economizados indisponível"
-              : `${formattedSaved} tokens economizados hoje`
-          }
-          title={
-            saved == null
-              ? "dados de economia de tokens indisponíveis"
-              : undefined
-          }
-        >
-          {formattedSaved}
-        </span>
-        {saved != null && (
-          <span className="text-[11px] text-muted-foreground">tokens</span>
-        )}
       </div>
     </div>
   );

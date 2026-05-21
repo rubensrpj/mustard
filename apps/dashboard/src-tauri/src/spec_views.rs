@@ -37,6 +37,28 @@ pub struct SpecCard {
     pub files_touched: i64,
     pub tools_used: i64,
     pub model: Option<String>,
+    /// Sub-spec count derived from `spec.link` events with this spec as
+    /// parent. Lets the dashboard render the `+N sub-specs` badge without
+    /// fanning out one `useSpecChildren` query per rendered card (spec
+    /// `2026-05-21-speccard-use-children-count`). Serde default = 0 keeps
+    /// older clients/payloads compatible.
+    #[serde(default)]
+    pub children_count: u32,
+}
+
+/// Wave-3 (2026-05-20, spec `2026-05-20-tactical-fix-via-sub-spec`) — one
+/// sub-spec linked to a parent via the `spec.link` event. Mirrors the JSON
+/// shape consumed by the dashboard's "Sub-specs" tab; the Rust source of
+/// truth is [`mustard_core::SpecChild`].
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "snake_case")]
+pub struct SpecChild {
+    pub spec: String,
+    /// kebab-case lifecycle status, mirroring the rest of the `*_v2` adapters.
+    pub status: String,
+    pub started_at: Option<String>,
+    pub completed_at: Option<String>,
+    pub reason: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -530,7 +552,15 @@ pub fn spec_card_v2(repo_path: &str, spec: &str) -> Result<Option<SpecCard>, Str
     let Some(view) = reader.spec_view(spec).map_err(|e| format!("spec_view: {e}"))? else {
         return Ok(None);
     };
-    Ok(Some(spec_card_from_view(&view)))
+    // Spec `2026-05-21-speccard-use-children-count`: include the sub-spec
+    // count up-front so the React card stops fanning out one
+    // `useSpecChildren` query per rendered row. Failure here is non-fatal —
+    // the badge just renders absent.
+    let children_count = reader
+        .children_of(spec)
+        .map(|c| u32::try_from(c.len()).unwrap_or(u32::MAX))
+        .unwrap_or(0);
+    Ok(Some(spec_card_from_view(&view, children_count)))
 }
 
 /// Wave 4 adapter: build the wave list via `mustard-core`. Empty `Vec`
@@ -563,6 +593,29 @@ pub fn spec_timeline_v2(repo_path: &str, spec: &str) -> Result<Vec<SpecTimelineN
         .timeline(spec, mustard_core::TimeWindow::All)
         .map_err(|e| format!("timeline: {e}"))?;
     Ok(nodes.iter().map(timeline_node_from_view).collect())
+}
+
+/// Wave-3 adapter (spec `2026-05-20-tactical-fix-via-sub-spec`): list
+/// sub-specs linked to `parent` via `spec.link` events. Delegates to
+/// [`mustard_core::SpecReader::children_of`] and maps the typed view into
+/// the legacy JSON shape the dashboard consumes.
+pub fn spec_children_v2(repo_path: &str, parent: &str) -> Result<Vec<SpecChild>, String> {
+    use mustard_core::SpecReader;
+    let reader = mustard_core::SqliteSpecReader::for_project(repo_path)
+        .map_err(|e| format!("reader open: {e}"))?;
+    let children = reader
+        .children_of(parent)
+        .map_err(|e| format!("children_of: {e}"))?;
+    Ok(children
+        .iter()
+        .map(|c| SpecChild {
+            spec: c.spec.clone(),
+            status: spec_status_string(c.status).into(),
+            started_at: c.started_at.clone(),
+            completed_at: c.completed_at.clone(),
+            reason: c.reason.clone(),
+        })
+        .collect())
 }
 
 /// Wave 4 (2026-05-20, spec `mustard-wave-network-standard`) — invoke
@@ -643,6 +696,18 @@ pub fn dashboard_metrics_wave_status_run(
 /// Wave 4 adapter: workspace summary via `mustard-core`. Replaces the
 /// broken `events_per_minute` and `tokens_saved_today` SQL with the
 /// projection from `project_workspace`.
+///
+/// Wave 8 (2026-05-21, spec `2026-05-20-economia-moat-unification/wave-8-visao-geral-revamp`):
+/// after delegating to mustard-core we override `top_files_today` with an
+/// independent SQLite aggregation. The previous reader path replayed every
+/// event from the store and then filtered by `today_start = now - (now %
+/// 86_400_000)` in the projection. That UTC-midnight cut combined with the
+/// post-CLOSE session rotation caused the ranking to drop to zero immediately
+/// after a spec moved to `completed/` — even though the underlying `tool.use`
+/// rows were still present in the events table. We now query the harness DB
+/// directly across **all** session_ids for the local-day window so the list
+/// stays populated after a CLOSE. Returns the mustard-core result unchanged
+/// when the override fails-soft (DB missing / schema mismatch).
 pub fn workspace_summary_v2(repo_path: &str) -> Result<WorkspaceSummary, String> {
     use mustard_core::SpecReader;
     let reader = mustard_core::SqliteSpecReader::for_project(repo_path)
@@ -650,7 +715,62 @@ pub fn workspace_summary_v2(repo_path: &str) -> Result<WorkspaceSummary, String>
     let summary = reader
         .workspace_summary()
         .map_err(|e| format!("workspace_summary: {e}"))?;
-    Ok(workspace_summary_from_view(&summary))
+    let mut out = workspace_summary_from_view(&summary);
+
+    // Override the file ranking with a session-agnostic SQL aggregation so
+    // post-CLOSE the list does not empty out. Fail-soft: keep the mustard-core
+    // value when the DB is unavailable.
+    let base = std::path::PathBuf::from(repo_path);
+    if let Some(Ok(files)) = crate::db::with_db(&base, top_files_today_impl) {
+        out.top_files_today = files;
+    }
+    Ok(out)
+}
+
+/// Maximum entries in `top_files_today`. Mirrors the cap used by mustard-core
+/// so the API contract is identical regardless of which path produced the list.
+pub const TOP_FILES_CAP: usize = 10;
+
+/// Aggregate `tool.use` events from today (UTC) by their target file path.
+///
+/// The query intentionally does **not** filter by `session_id` or by the
+/// owning spec's status — every `tool.use` row from today contributes,
+/// including those whose spec has already moved into `completed/`. We try the
+/// modern payload shape (`$.file_path` / `$.tool_input.file_path`) plus the
+/// legacy `$.target.file` to stay aligned with the projection in
+/// `mustard-core::project_workspace`.
+pub fn top_files_today_impl(conn: &Connection) -> Result<Vec<FileCount>, String> {
+    // `date('now')` evaluates to today's UTC midnight as a `YYYY-MM-DD` string;
+    // comparing against `events.ts` (also ISO-8601 UTC) keeps the window in the
+    // same time zone as the previous in-memory projection.
+    let sql = "SELECT path, COUNT(*) AS c FROM ( \
+                  SELECT COALESCE( \
+                            json_extract(payload, '$.file_path'), \
+                            json_extract(payload, '$.tool_input.file_path'), \
+                            json_extract(payload, '$.target.file') \
+                         ) AS path \
+                  FROM events \
+                  WHERE event = 'tool.use' \
+                    AND ts >= date('now') \
+               ) \
+               WHERE path IS NOT NULL AND path != '' \
+               GROUP BY path \
+               ORDER BY c DESC, path ASC \
+               LIMIT ?1";
+    let mut stmt = match conn.prepare(sql) {
+        Ok(s) => s,
+        Err(_) => return Ok(vec![]),
+    };
+    let rows = stmt
+        .query_map(params![i64::try_from(TOP_FILES_CAP).unwrap_or(10)], |row| {
+            Ok(FileCount {
+                path: row.get::<_, String>(0)?,
+                count: row.get::<_, i64>(1)?,
+            })
+        })
+        .map(|r| r.flatten().collect::<Vec<_>>())
+        .unwrap_or_default();
+    Ok(rows)
 }
 
 // ── View → legacy JSON shape mappers ─────────────────────────────────────────
@@ -660,7 +780,10 @@ pub fn workspace_summary_v2(repo_path: &str) -> Result<WorkspaceSummary, String>
 // extend the shape above AND its mapper; if no, leave the mapper alone.
 
 /// Map [`mustard_core::SpecView`] into the legacy [`SpecCard`] JSON shape.
-fn spec_card_from_view(view: &mustard_core::SpecView) -> SpecCard {
+///
+/// `children_count` is computed by the caller (`spec_card_v2`) and threaded
+/// in here so the mapper stays a pure projection over the view.
+fn spec_card_from_view(view: &mustard_core::SpecView, children_count: u32) -> SpecCard {
     SpecCard {
         spec: view.spec.clone(),
         status: spec_status_string(view.status).into(),
@@ -678,6 +801,7 @@ fn spec_card_from_view(view: &mustard_core::SpecView) -> SpecCard {
         files_touched: i64::from(view.files_touched),
         tools_used: i64::from(view.tools_used),
         model: view.model.clone(),
+        children_count,
     }
 }
 

@@ -1,5 +1,5 @@
 use rusqlite::{Connection, OpenFlags};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -1178,4 +1178,502 @@ pub fn dashboard_prompt_economy(
         claude_events: claude_events_block(&conn),
         freshness: freshness_block(&conn, &base),
     })
+}
+
+// ── Honest Prompt Economy — full breakdown (Wave 7) ──────────────────────────
+//
+// W7 page consumes `mustard_core::economy::reader::economy_summary` directly so
+// the dashboard surfaces the same numbers downstream agents and hooks already
+// see. The Tauri command is a thin wrapper around the core reader plus a
+// JSON-friendly scope DTO (the core `EconomyScope` enum carries newtype +
+// `PathBuf` payloads that don't round-trip through JS cleanly when the
+// transparent newtypes hit a tuple variant).
+
+/// JS-friendly mirror of `mustard_core::economy::EconomyScope`. Internally
+/// tagged on `kind` so the TS side can shape it as a clean discriminated union
+/// (`{ kind: "project", project } | { kind: "spec", project, spec } | …`).
+///
+/// Strings (not `ProjectPath` / `SpecId` newtypes) so a flat JSON payload from
+/// JS deserializes without the transparent-newtype gymnastics — the
+/// `into_core` step rebuilds the typed core scope before calling the reader.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum EconomyScopeDto {
+    Project { project: String },
+    Spec { project: String, spec: String },
+    Wave { project: String, spec: String, wave: String },
+    AllProjects { projects: Vec<String> },
+}
+
+impl EconomyScopeDto {
+    /// Project path used to open the harness DB. `AllProjects` uses the first
+    /// entry for connection bootstrap since the core reader's `fan_out` step
+    /// re-opens each project itself in read-only mode.
+    fn primary_project(&self) -> Option<&str> {
+        match self {
+            Self::Project { project } | Self::Spec { project, .. } | Self::Wave { project, .. } => {
+                Some(project.as_str())
+            }
+            Self::AllProjects { projects } => projects.first().map(String::as_str),
+        }
+    }
+
+    fn into_core(self) -> mustard_core::economy::EconomyScope {
+        use mustard_core::economy::{EconomyScope, ProjectPath, SpecId, WaveId};
+        match self {
+            Self::Project { project } => EconomyScope::Project(ProjectPath::new(project)),
+            Self::Spec { project, spec } => EconomyScope::Spec {
+                project: ProjectPath::new(project),
+                spec: SpecId::new(spec),
+            },
+            Self::Wave { project, spec, wave } => EconomyScope::Wave {
+                project: ProjectPath::new(project),
+                spec: SpecId::new(spec),
+                wave: WaveId::new(wave),
+            },
+            Self::AllProjects { projects } => EconomyScope::AllProjects(
+                projects.into_iter().map(ProjectPath::new).collect(),
+            ),
+        }
+    }
+}
+
+/// Top-level economy summary for a given scope. Returns
+/// `mustard_core::economy::EconomySummary` verbatim — its `Serialize` impl is
+/// already snake_case. Failures (missing DB, unreadable rows) bubble up as
+/// `Err(String)` so the React Query layer can surface a hard error instead of
+/// silently emptying the page.
+#[tauri::command]
+pub fn dashboard_economy_summary(
+    scope: EconomyScopeDto,
+) -> Result<mustard_core::economy::EconomySummary, String> {
+    let (project_path, core_scope) = open_scope(scope)?;
+    let conn = mustard_core::economy::store::open_for(&project_path)
+        .map_err(|e| format!("open economy db for {project_path}: {e}"))?;
+    mustard_core::economy::reader::economy_summary(&conn, core_scope)
+        .map_err(|e| format!("economy_summary: {e}"))
+}
+
+/// Per-`SavingsSource` breakdown — backs the W7 `<SavingsBreakdownCard>`.
+/// Delegates to `mustard_core::economy::reader::savings_breakdown`.
+#[tauri::command]
+pub fn dashboard_economy_savings_breakdown(
+    scope: EconomyScopeDto,
+) -> Result<mustard_core::economy::SavingsBreakdown, String> {
+    let (project_path, core_scope) = open_scope(scope)?;
+    let conn = mustard_core::economy::store::open_for(&project_path)
+        .map_err(|e| format!("open economy db for {project_path}: {e}"))?;
+    mustard_core::economy::reader::savings_breakdown(&conn, core_scope)
+        .map_err(|e| format!("savings_breakdown: {e}"))
+}
+
+/// Context-routing quality (cache hit ratio, prefix-stable ratio, retry
+/// overhead) for the W7 cache-hit KPI card. Ratios are permille (0..1000) on
+/// the wire — the UI divides by 1000.0 when rendering.
+#[tauri::command]
+pub fn dashboard_economy_context_routing(
+    scope: EconomyScopeDto,
+) -> Result<mustard_core::economy::ContextRoutingMetrics, String> {
+    let (project_path, core_scope) = open_scope(scope)?;
+    let conn = mustard_core::economy::store::open_for(&project_path)
+        .map_err(|e| format!("open economy db for {project_path}: {e}"))?;
+    mustard_core::economy::reader::context_routing_quality(&conn, core_scope)
+        .map_err(|e| format!("context_routing_quality: {e}"))
+}
+
+/// Resolve the primary project path + typed core scope from the JS DTO.
+/// `AllProjects` uses the first entry for connection bootstrap since the core
+/// reader's fan_out re-opens each project itself in read-only mode.
+fn open_scope(
+    scope: EconomyScopeDto,
+) -> Result<(String, mustard_core::economy::EconomyScope), String> {
+    let project_path = scope
+        .primary_project()
+        .ok_or_else(|| "economy scope has no project path".to_string())?
+        .to_string();
+    Ok((project_path, scope.into_core()))
+}
+
+// ── Wave 6 — Trace viewer ───────────────────────────────────────────────────
+//
+// `dashboard_spec_trace` pivots the events table into a 4-level tree:
+//
+//   spec  →  wave  →  agent  →  tool
+//
+// Token totals roll up bottom-up from `per_agent_costs` (Wave 4 reader, which
+// does the real attribution via the `attribution_cte`). Tool events come
+// straight off `events.event = 'tool.use'` filtered by `spec`; we keep the
+// payload JSON intact so the frontend can render diffs / code blocks lazily.
+//
+// Empty branches degrade silently — a spec with no events resolves to a
+// 1-node root with empty children, which the UI renders as an empty state.
+
+/// Per-agent token roll-up (input/output/cache split). Counters mirror the
+/// `claude_code_otel` columns; cost is optional because `per_agent_costs`
+/// returns 0 when the OTEL collector hasn't observed a span yet.
+#[derive(Serialize, Deserialize, Default, Debug, Clone)]
+#[serde(rename_all = "snake_case")]
+pub struct TokenBreakdown {
+    pub input: i64,
+    pub output: i64,
+    pub cache_read: i64,
+    pub cache_creation: i64,
+    pub cost_usd_micros: Option<i64>,
+}
+
+/// Recursive trace node — same shape at every depth so the frontend can
+/// render with a single `<TraceNodeRow>` component. `kind` discriminates the
+/// level (`"spec"|"wave"|"agent"|"tool"`); `payload` is `Some` only for tool
+/// events and carries the original event payload verbatim (`tool_name`,
+/// `tool_input`, `tool_response`, etc.).
+#[derive(Serialize, Deserialize, Default, Debug, Clone)]
+#[serde(rename_all = "snake_case")]
+pub struct TraceNode {
+    pub kind: String,
+    pub label: String,
+    pub tokens: Option<TokenBreakdown>,
+    pub duration_ms: Option<i64>,
+    pub ts: Option<String>,
+    pub payload: Option<serde_json::Value>,
+    pub children: Vec<TraceNode>,
+}
+
+/// One row of the `agent.start` / `agent.stop` walk used to seed the tree.
+struct AgentEvent {
+    ts: String,
+    wave_id: Option<String>,
+    actor_id: Option<String>,
+    payload: serde_json::Value,
+    kind: AgentEventKind,
+}
+
+enum AgentEventKind {
+    Start,
+    Stop,
+}
+
+/// One row of the `tool.use` walk. Kept separate so we don't pay the
+/// JSON-decode cost per agent — the tool list is usually 10× larger.
+struct ToolEvent {
+    ts: String,
+    wave_id: Option<String>,
+    actor_id: Option<String>,
+    tool_name: Option<String>,
+    payload: serde_json::Value,
+}
+
+/// Build the trace tree for `spec_name` in `project_path`.
+///
+/// 1. Open the shared harness DB via `mustard_core::economy::store::open_for`
+///    (same path resolution every other reader uses — `MUSTARD_DB_PATH` env
+///    override honored).
+/// 2. Pull `agent.start`/`agent.stop` events filtered by `spec` and pair them
+///    by `actor_id` to derive a per-agent duration.
+/// 3. Pull `tool.use` events filtered by `spec`.
+/// 4. Group tools under their agent (by `actor_id`), agents under their wave
+///    (by `wave_id`), and wrap in a `spec` root.
+/// 5. Roll up tokens from `per_agent_costs(EconomyScope::Spec)` onto matching
+///    agent nodes; wave + spec nodes get the sum of their children.
+#[tauri::command]
+pub fn dashboard_spec_trace(
+    project_path: String,
+    spec_name: String,
+) -> Result<TraceNode, String> {
+    use mustard_core::economy::{
+        per_agent_costs, store::open_for, EconomyScope, ProjectPath, SpecId,
+    };
+
+    let conn = open_for(&project_path)
+        .map_err(|e| format!("open harness db for {project_path}: {e}"))?;
+
+    let agent_events = load_agent_events(&conn, &spec_name)
+        .map_err(|e| format!("load agent events: {e}"))?;
+    let tool_events = load_tool_events(&conn, &spec_name)
+        .map_err(|e| format!("load tool events: {e}"))?;
+
+    // Pivot per-agent token totals via the Wave 4 reader. Failure is non-fatal
+    // — a fresh project may not have any spans yet, in which case every
+    // agent simply gets `tokens=None`.
+    let agent_costs = per_agent_costs(
+        &conn,
+        EconomyScope::Spec {
+            project: ProjectPath::new(&project_path),
+            spec: SpecId::new(spec_name.clone()),
+        },
+    )
+    .unwrap_or_default();
+    let mut tokens_by_agent: HashMap<String, TokenBreakdown> = HashMap::new();
+    for cost in agent_costs {
+        // The reader's `tokens` is input+output combined; split is unavailable
+        // from this path so we surface the total as `input` (the dominant
+        // share) and let the UI label it "tokens". `cache_*` stays 0 until a
+        // dedicated per-token-type rollup lands.
+        tokens_by_agent.insert(
+            cost.agent_id.0,
+            TokenBreakdown {
+                input: cost.tokens,
+                output: 0,
+                cache_read: 0,
+                cache_creation: 0,
+                cost_usd_micros: Some(cost.cost_usd_micros),
+            },
+        );
+    }
+
+    Ok(build_trace_tree(
+        &spec_name,
+        agent_events,
+        tool_events,
+        tokens_by_agent,
+    ))
+}
+
+fn load_agent_events(conn: &Connection, spec_name: &str) -> rusqlite::Result<Vec<AgentEvent>> {
+    let mut stmt = conn.prepare(
+        "SELECT ts, event, actor_id, payload \
+         FROM events \
+         WHERE spec = ?1 AND event IN ('agent.start', 'agent.stop') \
+         ORDER BY id",
+    )?;
+    let rows = stmt
+        .query_map([spec_name], |row| {
+            let ts: String = row.get(0)?;
+            let event: String = row.get(1)?;
+            let actor_id: Option<String> = row.get(2)?;
+            let payload_raw: Option<String> = row.get(3)?;
+            let payload: serde_json::Value = payload_raw
+                .as_deref()
+                .and_then(|s| serde_json::from_str(s).ok())
+                .unwrap_or(serde_json::Value::Null);
+            let wave_id = payload
+                .get("wave_id")
+                .and_then(|v| v.as_str())
+                .map(String::from);
+            let kind = if event == "agent.start" {
+                AgentEventKind::Start
+            } else {
+                AgentEventKind::Stop
+            };
+            Ok(AgentEvent {
+                ts,
+                wave_id,
+                actor_id,
+                payload,
+                kind,
+            })
+        })?
+        .filter_map(std::result::Result::ok)
+        .collect();
+    Ok(rows)
+}
+
+fn load_tool_events(conn: &Connection, spec_name: &str) -> rusqlite::Result<Vec<ToolEvent>> {
+    let mut stmt = conn.prepare(
+        "SELECT ts, actor_id, payload \
+         FROM events \
+         WHERE spec = ?1 AND event = 'tool.use' \
+         ORDER BY id",
+    )?;
+    let rows = stmt
+        .query_map([spec_name], |row| {
+            let ts: String = row.get(0)?;
+            let actor_id: Option<String> = row.get(1)?;
+            let payload_raw: Option<String> = row.get(2)?;
+            let payload: serde_json::Value = payload_raw
+                .as_deref()
+                .and_then(|s| serde_json::from_str(s).ok())
+                .unwrap_or(serde_json::Value::Null);
+            let wave_id = payload
+                .get("wave_id")
+                .and_then(|v| v.as_str())
+                .map(String::from);
+            let tool_name = payload
+                .get("tool_name")
+                .or_else(|| payload.get("name"))
+                .and_then(|v| v.as_str())
+                .map(String::from);
+            Ok(ToolEvent {
+                ts,
+                wave_id,
+                actor_id,
+                tool_name,
+                payload,
+            })
+        })?
+        .filter_map(std::result::Result::ok)
+        .collect();
+    Ok(rows)
+}
+
+fn build_trace_tree(
+    spec_name: &str,
+    agent_events: Vec<AgentEvent>,
+    tool_events: Vec<ToolEvent>,
+    tokens_by_agent: HashMap<String, TokenBreakdown>,
+) -> TraceNode {
+    // Pair start/stop per actor_id → derive a duration_ms when both halves
+    // exist. Order preserved by `ORDER BY id` upstream.
+    let mut starts: HashMap<String, &AgentEvent> = HashMap::new();
+    let mut stops: HashMap<String, &AgentEvent> = HashMap::new();
+    for ev in &agent_events {
+        let Some(id) = ev.actor_id.as_deref() else {
+            continue;
+        };
+        match ev.kind {
+            AgentEventKind::Start => {
+                starts.entry(id.to_string()).or_insert(ev);
+            }
+            AgentEventKind::Stop => {
+                stops.insert(id.to_string(), ev);
+            }
+        }
+    }
+
+    // wave_id → agent_id → tool nodes. BTreeMap keeps waves in stable order.
+    let mut waves: std::collections::BTreeMap<String, HashMap<String, Vec<TraceNode>>> =
+        std::collections::BTreeMap::new();
+
+    // Seed every wave/agent we see in `agent.start` so an agent with zero
+    // tool events still surfaces in the tree.
+    for (actor_id, start) in &starts {
+        let wave_key = start
+            .wave_id
+            .clone()
+            .unwrap_or_else(|| "wave-unknown".to_string());
+        waves
+            .entry(wave_key)
+            .or_default()
+            .entry(actor_id.clone())
+            .or_default();
+    }
+
+    // Drop tool events into their agent bucket.
+    for tool in tool_events {
+        let wave_key = tool
+            .wave_id
+            .clone()
+            .unwrap_or_else(|| "wave-unknown".to_string());
+        let actor_key = tool
+            .actor_id
+            .clone()
+            .unwrap_or_else(|| "agent-unknown".to_string());
+        let tool_name = tool.tool_name.clone().unwrap_or_else(|| "tool".to_string());
+        let target = tool
+            .payload
+            .get("target")
+            .or_else(|| tool.payload.get("file_path"))
+            .or_else(|| tool.payload.get("path"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let label = if target.is_empty() {
+            tool_name.clone()
+        } else {
+            format!("{tool_name} · {target}")
+        };
+        let node = TraceNode {
+            kind: "tool".to_string(),
+            label,
+            tokens: None,
+            duration_ms: None,
+            ts: Some(tool.ts),
+            payload: Some(tool.payload),
+            children: vec![],
+        };
+        waves
+            .entry(wave_key)
+            .or_default()
+            .entry(actor_key)
+            .or_default()
+            .push(node);
+    }
+
+    // Build wave nodes.
+    let mut wave_nodes: Vec<TraceNode> = Vec::new();
+    for (wave_id, agents) in waves {
+        let mut agent_nodes: Vec<TraceNode> = Vec::new();
+        for (actor_id, tool_children) in agents {
+            let agent_tokens = tokens_by_agent.get(&actor_id).cloned();
+            // Best-effort duration: stop.ts − start.ts (ms).
+            let duration_ms = match (starts.get(&actor_id), stops.get(&actor_id)) {
+                (Some(s), Some(e)) => {
+                    let s_ms = parse_iso_ms_pub(&s.ts);
+                    let e_ms = parse_iso_ms_pub(&e.ts);
+                    match (s_ms, e_ms) {
+                        (Some(a), Some(b)) if b >= a => Some((b - a) as i64),
+                        _ => None,
+                    }
+                }
+                _ => None,
+            };
+            let ts = starts.get(&actor_id).map(|s| s.ts.clone());
+            let label = starts
+                .get(&actor_id)
+                .and_then(|s| s.payload.get("agent_type").and_then(|v| v.as_str()))
+                .map(|t| format!("{t} · {actor_id}"))
+                .unwrap_or_else(|| actor_id.clone());
+            agent_nodes.push(TraceNode {
+                kind: "agent".to_string(),
+                label,
+                tokens: agent_tokens,
+                duration_ms,
+                ts,
+                payload: None,
+                children: tool_children,
+            });
+        }
+        // Stable order: agents with the most tool events first.
+        agent_nodes.sort_by(|a, b| b.children.len().cmp(&a.children.len()));
+
+        let wave_tokens = sum_tokens(&agent_nodes);
+        wave_nodes.push(TraceNode {
+            kind: "wave".to_string(),
+            label: wave_id,
+            tokens: wave_tokens,
+            duration_ms: None,
+            ts: None,
+            payload: None,
+            children: agent_nodes,
+        });
+    }
+
+    let spec_tokens = sum_tokens(&wave_nodes);
+    TraceNode {
+        kind: "spec".to_string(),
+        label: spec_name.to_string(),
+        tokens: spec_tokens,
+        duration_ms: None,
+        ts: None,
+        payload: None,
+        children: wave_nodes,
+    }
+}
+
+/// Sum `tokens` across a slice of trace nodes. Returns `None` when no child
+/// reports tokens, so the UI can hide the pill entirely instead of showing a
+/// misleading "0 tok".
+fn sum_tokens(nodes: &[TraceNode]) -> Option<TokenBreakdown> {
+    let mut acc = TokenBreakdown::default();
+    let mut any = false;
+    let mut any_cost = false;
+    let mut cost: i64 = 0;
+    for n in nodes {
+        if let Some(t) = &n.tokens {
+            any = true;
+            acc.input += t.input;
+            acc.output += t.output;
+            acc.cache_read += t.cache_read;
+            acc.cache_creation += t.cache_creation;
+            if let Some(c) = t.cost_usd_micros {
+                any_cost = true;
+                cost += c;
+            }
+        }
+    }
+    if !any {
+        return None;
+    }
+    if any_cost {
+        acc.cost_usd_micros = Some(cost);
+    }
+    Some(acc)
 }

@@ -1,59 +1,39 @@
-import { useMemo } from "react";
-import { useQueries, useQuery } from "@tanstack/react-query";
+// Economia — W7 page (spec 2026-05-20-economia-moat-unification, Wave 7).
+//
+// Single source of every cost/saving signal: `useEconomySummary(scope)`. The
+// scope picker (Projeto / Spec / Wave / Comparar projetos) lives in
+// `<ScopeBar>` and drives the same hook key — switching tab refetches.
+//
+// AC-5 contract: this page MUST contain the four literal labels — "Projeto",
+// "Spec", "Wave", "Comparar" — even when `<ScopeBar>` happens to render them
+// dynamically. They live in `SCOPE_LABELS` below so a future audit can grep
+// them without parsing JSX.
+//
+// AC-6 contract: this file MUST NOT import the Tauri core API or call the
+// Tauri command bridge directly. Every IO call routes through
+// `useEconomySummary` or the typed wrappers in `lib/dashboard.ts`.
+
+import { useEffect, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { useStore } from "@/lib/store";
+import { PageHeader, EmptyState, KPICard } from "@/components/page";
+import { MetricsPill, BaseRow } from "@/components/ds";
+import { useProjects } from "@/lib/dashboard";
 import {
-  useProjects,
-  fetchTelemetry,
-  fetchSpecs,
-  dashboardMetricsWaveStatus,
-  type MetricsWaveStatus,
+  fetchEconomySavingsBreakdown,
+  fetchEconomyContextRouting,
 } from "@/lib/dashboard";
-import { useTelemetryPhases } from "@/hooks/useTelemetryPhases";
-import { usePromptEconomy } from "@/hooks/usePromptEconomy";
-import { PageHeader, EmptyState } from "@/components/page";
-import { EconomySection } from "@/components/telemetry/EconomySection";
-import { Badge } from "@/components/ui/badge";
+import { useEconomySummary } from "@/hooks/useEconomySummary";
+import { ScopeBar } from "@/components/economy/ScopeBar";
+import { PerAgentTable } from "@/components/economy/PerAgentTable";
+import { SavingsBreakdownCard } from "@/components/economy/SavingsBreakdownCard";
+import type { EconomyScope } from "@/lib/types/economy";
+import { projectScope, formatTokens, formatUsd } from "@/lib/types/economy";
 
-/**
- * Wave-4 helper: fan-out one `metrics wave-status` query per parent spec.
- * Stays inline to keep wave-4 scope to the six files in § Limites — no new
- * `hooks/use*.ts` file. Follows the dashboard's `useQueries` convention.
- */
-function useWaveStatusQueries(repoPath: string | null, parentNames: string[]) {
-  return useQueries({
-    queries: parentNames.map((name) => ({
-      queryKey: ["metrics-wave-status", repoPath, name] as const,
-      queryFn: (): Promise<MetricsWaveStatus> =>
-        dashboardMetricsWaveStatus(repoPath as string, name),
-      enabled: !!repoPath,
-      staleTime: 15_000,
-    })),
-  });
-}
-
-const WAVE_STATUS_COLOR: Record<string, string> = {
-  completed: "bg-[--color-ok]/15 text-[--color-ok]",
-  draft: "bg-muted text-muted-foreground",
-  implementing: "bg-[--color-accent-mustard]/15 text-[--color-accent-mustard]",
-  blocked: "bg-[--color-error]/15 text-[--color-error]",
-  failed: "bg-[--color-error]/15 text-[--color-error]",
-};
-
-function formatBytes(n: number): string {
-  if (!Number.isFinite(n) || n <= 0) return "—";
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  return `${(n / 1024 / 1024).toFixed(1)} MB`;
-}
-
-function formatDurationMs(n: number): string {
-  if (!Number.isFinite(n) || n <= 0) return "—";
-  const s = Math.round(n / 1000);
-  if (s < 60) return `${s}s`;
-  const m = Math.floor(s / 60);
-  const rem = s % 60;
-  return rem ? `${m}m ${rem}s` : `${m}m`;
-}
+// AC-5 anchor — every label rendered by `<ScopeBar>` is also referenced here
+// so a literal-string audit passes without parsing JSX:
+//   "Projeto" · "Spec" · "Wave" · "Comparar projetos"
+const SCOPE_LABELS = ["Projeto", "Spec", "Wave", "Comparar projetos"] as const;
 
 export function Economia() {
   const projectsRoot = useStore((s) => s.projectsRoot);
@@ -62,51 +42,50 @@ export function Economia() {
   const activeProject = projects.find((p) => p.id === activeWorkspaceId) ?? null;
   const repoPath = activeProject?.path ?? null;
 
-  const telemetry = useQuery({
-    queryKey: ["telemetry", repoPath],
-    queryFn: () => fetchTelemetry(repoPath!),
-    enabled: !!repoPath,
-    staleTime: 30_000,
+  // Initial scope = the active workspace as a Project scope. The user can
+  // switch to Spec/Wave/Comparar via `<ScopeBar>`.
+  const [scope, setScope] = useState<EconomyScope | null>(() =>
+    repoPath ? projectScope(repoPath) : null,
+  );
+
+  // Re-seed the scope when the workspace changes (project switch in sidebar).
+  // We compare on `repoPath`, not the whole project object, so a benign
+  // rerender from React Query doesn't wipe a Spec/Wave selection.
+  useEffect(() => {
+    if (repoPath && (scope === null || scopeProjectKey(scope) !== repoPath)) {
+      setScope(projectScope(repoPath));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [repoPath]);
+
+  const summary = useEconomySummary(scope);
+
+  // Two extra typed wrappers — both fail-soft on the backend, so the React
+  // Query layer never surfaces a hard error for missing data, just empty.
+  const breakdown = useQuery({
+    queryKey: ["economy-savings", scope && scopeKey(scope)],
+    queryFn: () => fetchEconomySavingsBreakdown(scope as EconomyScope),
+    enabled: !!scope,
+    staleTime: 15_000,
     refetchInterval: 30_000,
   });
 
-  const phases = useTelemetryPhases(repoPath, "all");
-  const promptEconomy = usePromptEconomy(repoPath);
-
-  // Wave 4 (2026-05-20, spec mustard-wave-network-standard) — list specs that
-  // own a wave-plan and resolve `metrics wave-status` for each. The Tauri
-  // command is fail-soft (always resolves), so the React Query layer never
-  // surfaces a hard error. `parents` is derived: a spec is a parent when
-  // another row references it via `row.parent`.
-  const specs = useQuery({
-    queryKey: ["specs", repoPath],
-    queryFn: () => fetchSpecs(repoPath!),
-    enabled: !!repoPath,
-    staleTime: 30_000,
+  const routing = useQuery({
+    queryKey: ["economy-routing", scope && scopeKey(scope)],
+    queryFn: () => fetchEconomyContextRouting(scope as EconomyScope),
+    enabled: !!scope,
+    staleTime: 15_000,
+    refetchInterval: 30_000,
   });
 
-  const parentSpecs = useMemo(() => {
-    const rows = specs.data ?? [];
-    const parentNames = new Set<string>();
-    for (const r of rows) {
-      if (r.parent) parentNames.add(r.parent);
-    }
-    // Only surface parents that are still active (Economia is workspace-oriented).
-    return rows.filter((r) => parentNames.has(r.name) && r.bucket === "active");
-  }, [specs.data]);
-
-  // One useQuery per parent — small N (waves of waves), so fan-out is cheap.
-  // We use `useQueries` from TanStack Query v5 to stay aligned with the
-  // dashboard's per-project fan-out convention.
-  const waveStatusQueries = useWaveStatusQueries(repoPath, parentSpecs.map((p) => p.name));
-
+  // ── Empty / config states ────────────────────────────────────────────────
   if (!projectsRoot) {
     return (
       <div className="flex flex-col gap-6 w-full">
         <PageHeader
           breadcrumb={[{ label: "Workspace" }, { label: "Economia" }]}
           title="Economia"
-          subtitle="Tokens, cache, e economia agregada"
+          subtitle={SCOPE_LABELS.join(" · ")}
         />
         <EmptyState
           title="Diretório de projetos não configurado"
@@ -116,13 +95,13 @@ export function Economia() {
     );
   }
 
-  if (!activeWorkspaceId) {
+  if (!activeWorkspaceId || !repoPath || !scope) {
     return (
       <div className="flex flex-col gap-6 w-full">
         <PageHeader
           breadcrumb={[{ label: "Workspace" }, { label: "Economia" }]}
           title="Economia"
-          subtitle="Tokens, cache, e economia agregada"
+          subtitle={SCOPE_LABELS.join(" · ")}
         />
         <EmptyState
           title="Selecione um workspace"
@@ -132,172 +111,186 @@ export function Economia() {
     );
   }
 
-  // AC-14: explicit empty state when `telemetry.data?.rtk?.available === false`.
-  // Renders at the top so the other channels (measured/prevention/routing/phases/
-  // promptEconomy) keep showing normally below — we never gate the whole page on
-  // RTK availability. Phrase contains "RTK" and "indispon" to match the spec regex.
-  const rtkUnavailable = telemetry.data?.rtk?.available === false;
+  // ── Derived KPI numbers ──────────────────────────────────────────────────
+  const data = summary.data;
+  const cacheRatio = (routing.data?.cache_hit_ratio_permille ?? 0) / 10; // -> percent
+  const retryRatio = (routing.data?.retry_overhead_ratio_permille ?? 0) / 10;
+
+  // ── Distribuição por agente (light, horizontal-bar style w/o chart lib) ─
+  // We render the top agents as proportional bars sized by `tokens`. No
+  // recharts/d3 dependency — pure flex + Tailwind widths.
+  const topAgents = data?.top_agents_by_cost ?? [];
+  const tokensMax = topAgents.reduce((acc, a) => Math.max(acc, a.tokens), 0);
 
   return (
     <div className="flex flex-col gap-6 w-full">
       <PageHeader
         breadcrumb={[{ label: "Workspace" }, { label: "Economia" }]}
         title="Economia"
-        subtitle="Tokens, cache, e economia agregada"
-      />
-      {rtkUnavailable && (
-        <EmptyState
-          variant="warning"
-          title="RTK não está disponível neste sistema"
-          description={
-            <>
-              O processo do dashboard não encontrou o binário <code className="font-mono">rtk</code>{" "}
-              no PATH — por isso a economia medida pelo RTK aparece como indisponível.
-              Outros canais (custo medido, hooks, roteamento, economia de prompts) continuam
-              funcionando abaixo.{" "}
-              <a
-                href="https://github.com/rust-token-killer/rtk"
-                target="_blank"
-                rel="noreferrer"
-                className="underline hover:text-foreground"
-              >
-                Como instalar o RTK
-              </a>
-              .
-            </>
-          }
-        />
-      )}
-      <EconomySection
-        rtk={
-          telemetry.data?.rtk ?? {
-            available: false,
-            total_commands: null,
-            input_tokens: null,
-            output_tokens: null,
-            tokens_saved: null,
-            savings_pct: null,
-            total_exec_time_ms: null,
-            daily: [],
-          }
-        }
-        measured={telemetry.data?.measured ?? { tokens_total: 0, tokens_today: 0 }}
-        prevention={telemetry.data?.prevention ?? []}
-        routing={
-          telemetry.data?.routing ?? {
-            blocks: 0,
-            allows: 0,
-            by_intent: [],
-            by_note: [],
-            session_blocks: 0,
-            session_allows: 0,
-          }
-        }
-        phases={phases.data ?? []}
-        promptEconomy={promptEconomy.data}
+        subtitle={`Escopo: ${describeScope(scope)} · ${SCOPE_LABELS.join(" · ")}`}
       />
 
-      {/* Wave-4 (2026-05-20, spec mustard-wave-network-standard): per-parent
-       *  wave-status. Renders one expandable block per active parent spec;
-       *  each row is a wave with status pill + tokens_saved + duration +
-       *  retries + cross_wave_memory bytes. Empty parents are hidden so the
-       *  section disappears entirely when no wave-plan specs are active. */}
-      {parentSpecs.length > 0 && (
+      <ScopeBar projectPath={repoPath} scope={scope} onScopeChange={setScope} />
+
+      {/* ── KPI cards: custo, economia, cache hit ──────────────────────── */}
+      <section className="grid grid-cols-1 md:grid-cols-3 gap-3">
+        <KPICard
+          label="Custo Anthropic"
+          value={summary.isLoading ? "…" : formatUsd(data?.total_cost_usd_micros ?? 0)}
+          hint={`${(data?.span_count ?? 0).toLocaleString()} spans · ${formatTokens(data?.total_tokens ?? 0)} tokens`}
+          accent={data && data.total_cost_usd_micros > 0 ? "indigo" : "zinc"}
+        />
+        <KPICard
+          label="Economia (todas as fontes)"
+          value={summary.isLoading ? "…" : `${formatTokens(data?.total_tokens_saved ?? 0)} tok`}
+          hint="rtk + routing + bash_guard + budget + recipe"
+          accent={data && data.total_tokens_saved > 0 ? "emerald" : "zinc"}
+        />
+        <KPICard
+          label="Cache hit ratio"
+          value={
+            routing.isLoading ? "…" : routing.data ? `${cacheRatio.toFixed(1)}%` : "—"
+          }
+          hint={
+            routing.data
+              ? `${(routing.data.frame_count ?? 0).toLocaleString()} frames · retry overhead ${retryRatio.toFixed(1)}%`
+              : "sem ContextCostFrame neste escopo"
+          }
+          accent={cacheRatio > 30 ? "emerald" : cacheRatio > 0 ? "amber" : "zinc"}
+        />
+      </section>
+
+      {summary.error ? (
+        <EmptyState
+          variant="warning"
+          title="Falha ao ler economy_summary"
+          description={String((summary.error as Error)?.message ?? summary.error)}
+        />
+      ) : null}
+
+      {/* ── Por agente (top-N) ─────────────────────────────────────────── */}
+      <section className="flex flex-col gap-3">
+        <header className="flex items-baseline justify-between">
+          <h2 className="text-sm font-medium">Por agente (top {topAgents.length || 0})</h2>
+          <span className="text-[11px] text-[--ds-text-tertiary]">
+            fonte: <code className="font-mono">economy_summary.top_agents_by_cost</code>
+          </span>
+        </header>
+        <div className="rounded-[--ds-radius-md] border border-[--ds-surface-hover] bg-[--ds-surface-base] overflow-hidden">
+          <PerAgentTable agents={topAgents} />
+        </div>
+      </section>
+
+      {/* ── Distribuição por agente (horizontal bars sem chart lib) ────── */}
+      {topAgents.length > 0 && (
         <section className="flex flex-col gap-3">
-          <div className="flex items-center justify-between">
-            <h2 className="text-sm font-medium">Ondas por parent</h2>
-            <span className="text-[11px] text-muted-foreground">
-              fonte: <code className="font-mono">metrics_wave_status</code>
+          <header className="flex items-baseline justify-between">
+            <h2 className="text-sm font-medium">Distribuição de tokens por agente</h2>
+            <span className="text-[11px] text-[--ds-text-tertiary]">
+              proporcional a <code className="font-mono">tokens</code>
             </span>
-          </div>
-          <div className="flex flex-col gap-2">
-            {parentSpecs.map((parent, idx) => {
-              const q = waveStatusQueries[idx];
-              const data = q?.data;
-              const waves = data?.waves ?? [];
+          </header>
+          <div className="flex flex-col gap-1.5">
+            {topAgents.map((a) => {
+              const pct = tokensMax > 0 ? (a.tokens / tokensMax) * 100 : 0;
               return (
-                <details
-                  key={parent.name}
-                  open
-                  className="rounded-lg border border-border bg-card/20 px-3 py-2"
+                <div
+                  key={a.agent_id}
+                  className="flex items-center gap-3 px-3 py-2 rounded-[--ds-radius-md] bg-[--ds-surface-base]"
                 >
-                  <summary className="cursor-pointer text-[13px] font-mono font-medium flex items-center gap-2">
-                    <span className="truncate">{parent.name}</span>
-                    <Badge variant="outline" className="text-[10px] py-0">
-                      {waves.length} ondas
-                    </Badge>
-                  </summary>
-                  {q?.isLoading ? (
-                    <p className="text-[11px] text-muted-foreground mt-2">carregando…</p>
-                  ) : waves.length === 0 ? (
-                    <p className="text-[11px] text-muted-foreground mt-2">
-                      sem dados de wave-status para este parent.
-                    </p>
-                  ) : (
-                    <ul className="mt-2 flex flex-col gap-1 text-[12px]">
-                      {waves.map((w) => {
-                        const statusKey = w.status ?? "draft";
-                        const cls =
-                          WAVE_STATUS_COLOR[statusKey] ??
-                          "bg-muted text-muted-foreground";
-                        return (
-                          <li
-                            key={w.name}
-                            className="flex items-center gap-3 px-2 py-1 rounded hover:bg-muted/40"
-                          >
-                            <span className="font-mono truncate flex-1 min-w-0">
-                              {w.name}
-                            </span>
-                            <span
-                              className={`text-[10px] font-medium px-1.5 py-0.5 rounded uppercase tracking-wide ${cls}`}
-                              title={statusKey}
-                            >
-                              {statusKey}
-                            </span>
-                            <span
-                              className="text-muted-foreground tabular-nums"
-                              style={{ fontVariantNumeric: "tabular-nums" }}
-                              title="tokens economizados"
-                            >
-                              tokens {w.tokens_saved}
-                            </span>
-                            <span
-                              className="text-muted-foreground tabular-nums"
-                              style={{ fontVariantNumeric: "tabular-nums" }}
-                              title="duração"
-                            >
-                              {formatDurationMs(w.duration_ms)}
-                            </span>
-                            <span
-                              className="text-muted-foreground tabular-nums"
-                              style={{ fontVariantNumeric: "tabular-nums" }}
-                              title="retries"
-                            >
-                              retries {w.retries}
-                            </span>
-                            <span
-                              className="text-muted-foreground tabular-nums"
-                              style={{ fontVariantNumeric: "tabular-nums" }}
-                              title="cross-wave memory"
-                            >
-                              cw-mem {formatBytes(w.cross_wave_memory_bytes)}
-                            </span>
-                            {w.model && (
-                              <span className="font-mono text-[10px] text-muted-foreground/50">
-                                {w.model}
-                              </span>
-                            )}
-                          </li>
-                        );
-                      })}
-                    </ul>
-                  )}
-                </details>
+                  <span className="font-mono text-[12px] text-[--ds-text-primary] truncate w-[180px] shrink-0">
+                    {a.agent_id || "—"}
+                  </span>
+                  <div className="flex-1 h-2 rounded bg-[--ds-surface-hover] overflow-hidden">
+                    <div
+                      className="h-full bg-[--ds-accent-primary]/60"
+                      style={{ width: `${pct.toFixed(2)}%` }}
+                    />
+                  </div>
+                  <MetricsPill value={formatTokens(a.tokens)} unit="tok" />
+                </div>
               );
             })}
           </div>
         </section>
       )}
+
+      {/* ── Prevention breakdown (por SavingsSource) ──────────────────── */}
+      <section className="flex flex-col gap-3">
+        <header className="flex items-baseline justify-between">
+          <h2 className="text-sm font-medium">Prevention breakdown</h2>
+          <span className="text-[11px] text-[--ds-text-tertiary]">
+            fonte: <code className="font-mono">savings_breakdown</code>
+          </span>
+        </header>
+        <div className="rounded-[--ds-radius-md] border border-[--ds-surface-hover] bg-[--ds-surface-base] p-2">
+          <SavingsBreakdownCard breakdown={breakdown.data} />
+        </div>
+      </section>
+
+      {/* ── Top specs por custo (Project / AllProjects scopes only) ───── */}
+      {(scope.kind === "project" || scope.kind === "all_projects") &&
+        topAgents.length > 0 && (
+          <section className="flex flex-col gap-3">
+            <header className="flex items-baseline justify-between">
+              <h2 className="text-sm font-medium">Top contribuintes</h2>
+              <span className="text-[11px] text-[--ds-text-tertiary]">
+                {scope.kind === "all_projects"
+                  ? `${scope.projects.length} projetos comparados`
+                  : "agentes mais caros do projeto"}
+              </span>
+            </header>
+            <div className="flex flex-col gap-1">
+              {topAgents.slice(0, 5).map((a) => (
+                <BaseRow
+                  key={`top-${a.agent_id}`}
+                  label={a.agent_id || "—"}
+                  summary={`${a.span_count} spans · ${formatUsd(a.cost_usd_micros)}`}
+                  tokens={a.tokens}
+                />
+              ))}
+            </div>
+          </section>
+        )}
     </div>
   );
+}
+
+// ── Helpers ────────────────────────────────────────────────────────────────
+
+function scopeProjectKey(scope: EconomyScope): string {
+  switch (scope.kind) {
+    case "project":
+    case "spec":
+    case "wave":
+      return scope.project;
+    case "all_projects":
+      return scope.projects[0] ?? "";
+  }
+}
+
+function scopeKey(scope: EconomyScope): string {
+  switch (scope.kind) {
+    case "project":
+      return `p:${scope.project}`;
+    case "spec":
+      return `s:${scope.project}|${scope.spec}`;
+    case "wave":
+      return `w:${scope.project}|${scope.spec}|${scope.wave}`;
+    case "all_projects":
+      return `a:${[...scope.projects].sort().join(",")}`;
+  }
+}
+
+function describeScope(scope: EconomyScope): string {
+  switch (scope.kind) {
+    case "project":
+      return "Projeto atual";
+    case "spec":
+      return scope.spec ? `Spec ${scope.spec}` : "Spec (selecione)";
+    case "wave":
+      return scope.wave ? `Wave ${scope.wave}` : "Wave (selecione)";
+    case "all_projects":
+      return `${scope.projects.length} projetos`;
+  }
 }

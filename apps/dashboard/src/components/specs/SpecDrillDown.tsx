@@ -4,11 +4,14 @@ import { useSpecWaves } from "@/hooks/useSpecWaves";
 import { useSpecQuality } from "@/hooks/useSpecQuality";
 import { useSpecTimeline } from "@/hooks/useSpecTimeline";
 import { useSpecEvents } from "@/hooks/useSpecEvents";
+import { useSpecChildren } from "@/hooks/useSpecChildren";
 import { SpecWavesTab } from "./SpecWavesTab";
 import { SpecQualityTab } from "./SpecQualityTab";
 import { SpecTimelineTab } from "./SpecTimelineTab";
 import { SpecEventsTab } from "./SpecEventsTab";
 import { SpecNetworkTab } from "./SpecNetworkTab";
+import { SpecChildrenTab } from "./SpecChildrenTab";
+import { ExecutionTrace } from "@/components/trace/ExecutionTrace";
 import type { SpecTimelineNode, EventFilter } from "@/lib/types/specs";
 
 interface SpecDrillDownProps {
@@ -17,7 +20,11 @@ interface SpecDrillDownProps {
   className?: string;
 }
 
-const TABS = ["Ondas", "Qualidade", "Timeline", "Eventos", "Rede"] as const;
+// Wave 6 (2026-05-21): "Trace" added as the hierarchical view of the same
+// data the linear "Eventos" tab surfaces. Eventos stays as the linear
+// fallback for users who want a flat timeline; Trace is the recommended
+// default for diagnosis. Both coexist — see Wave 6 spec §Tarefas.
+const TABS = ["Ondas", "Trace", "Qualidade", "Timeline", "Eventos", "Rede", "Sub-specs"] as const;
 type Tab = (typeof TABS)[number];
 
 function LoadingRows() {
@@ -40,11 +47,17 @@ export function SpecDrillDown({ repoPath, spec, className }: SpecDrillDownProps)
   const [activeTab, setActiveTab] = useState<Tab>("Ondas");
   const [eventsFilter, setEventsFilter] = useState<EventFilter | undefined>();
 
-  // All 4 queries are always mounted so switching tabs is instant
+  // All queries are always mounted so switching tabs is instant
   const wavesQ = useSpecWaves(repoPath, spec);
   const qualityQ = useSpecQuality(repoPath, spec);
   const timelineQ = useSpecTimeline(repoPath, spec);
   const eventsQ = useSpecEvents(repoPath, spec, eventsFilter);
+  // Wave-3 (spec `2026-05-20-tactical-fix-via-sub-spec`): sub-specs query
+  // for the 5th tab label counter. The same hook is consumed inside
+  // `SpecChildrenTab` for the actual row list, and React Query dedupes by
+  // queryKey so we don't fire the invoke twice.
+  const childrenQ = useSpecChildren(repoPath, spec);
+  const childrenCount = childrenQ.data?.length ?? 0;
 
   // Wave numbers known for this spec — fed to nested tabs that surface
   // per-wave deep links (Timeline). Empty list when waves query is loading.
@@ -67,7 +80,19 @@ export function SpecDrillDown({ repoPath, spec, className }: SpecDrillDownProps)
       <TabsList>
         {TABS.map((tab) => (
           <TabsTrigger key={tab} value={tab}>
-            {tab}
+            {tab === "Sub-specs" && childrenCount > 0 ? (
+              <>
+                Sub-specs{" "}
+                <span
+                  className="ml-1 tabular-nums text-muted-foreground"
+                  style={{ fontVariantNumeric: "tabular-nums" }}
+                >
+                  ({childrenCount})
+                </span>
+              </>
+            ) : (
+              tab
+            )}
           </TabsTrigger>
         ))}
       </TabsList>
@@ -83,6 +108,11 @@ export function SpecDrillDown({ repoPath, spec, className }: SpecDrillDownProps)
         ) : (
           <SpecWavesTab waves={wavesQ.data ?? []} />
         )}
+      </TabsContent>
+
+      {/* Trace (Wave 6 — hierarchical spec → wave → agent → tool) */}
+      <TabsContent value="Trace" className="pt-3">
+        <ExecutionTrace projectPath={repoPath} specName={spec} />
       </TabsContent>
 
       {/* Qualidade */}
@@ -136,6 +166,11 @@ export function SpecDrillDown({ repoPath, spec, className }: SpecDrillDownProps)
       {/* Rede (Wave-3 wikilink graph) */}
       <TabsContent value="Rede" className="pt-3">
         <SpecNetworkTab repoPath={repoPath} specName={spec} />
+      </TabsContent>
+
+      {/* Sub-specs (Wave-3, spec 2026-05-20-tactical-fix-via-sub-spec) */}
+      <TabsContent value="Sub-specs" className="pt-3">
+        <SpecChildrenTab repoPath={repoPath} parent={spec} />
       </TabsContent>
     </Tabs>
   );
