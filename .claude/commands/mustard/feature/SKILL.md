@@ -117,6 +117,22 @@ Cascade (stop at first hit): (1) spec header `### Lang: pt|en`, (2) `.claude/mus
 
 → See `../../../refs/feature/spec-language.md` for full Header Translation Table.
 
+#### Concern Coverage Audit (mandatory — Full and Light scope)
+
+Before drafting the spec, audit the **entire conversation** since this `/feature` was invoked (or since the topic was introduced if the user pivoted from earlier discussion). Extract every concrete user complaint, critique, wish, or constraint — even minor ones.
+
+For each extracted item, categorize in **exactly one** of three buckets, explicit in the resulting spec:
+
+| Category | Where in spec | When |
+|---|---|---|
+| **Covered by wave/task** | `## Critique Coverage` table in `wave-plan.md` (Full+wave plan) OR `## Cobertura` section at end of PRD layer (single-spec) | When a wave/task addresses it |
+| **Non-goal justified** | `## Não-Objetivos` (Lang=pt) / `## Non-Goals` (Lang=en) with 1-line justification | When intentionally out of scope |
+| **Surfaced for decision** | Flagged inside the `AskUserQuestion` before approve, with explicit option | When user must choose |
+
+**HARD RULE:** Before the final `AskUserQuestion` of approve, every concrete user concern from the conversation MUST map to one of the three categories above. If any item is orphaned, STOP and revise the spec — re-present only after every concern is categorized.
+
+**Why this exists:** Pipelines that pivot architecturally (e.g., a UI critique that becomes an infrastructure refactor) routinely drop visual/UX requirements raised early in the conversation. Forcing explicit categorization eliminates that drift. Documented in user memory as `feedback_coverage_audit_before_spec.md`.
+
 #### Wave Decomposition Pre-Check (Full scope only)
 
 Check whether the work should be decomposed into waves before writing a single spec. Signals: fileCount, layerCount, newEntityCount, knowledgeMatches. Runs `mustard-rt run scope-decompose` + `mustard-rt run wave-dependency`. Produces wave-plan.md + per-wave spec.md if decompose=true.
@@ -133,7 +149,12 @@ When `scope-decompose` returns `reason: "roadmap-signal"` and `roadmapMatches` c
    - `wave-plan.md` (table copied/adapted from the plans file, status column initialized to `queued` for all)
    - `wave-1-{role}/spec.md` — full detail (Status: draft, narrative copied)
    - `wave-N-{role}/spec.md` for N=2..total — skeleton only (Status: queued, Title + 1-line summary)
-4. **Emit initial pipeline state event** — a wave plan has no root `spec.md`, so this is the only point its pipeline state is born. Run: `mustard-rt run emit-pipeline --kind pipeline.status --spec {spec-name} --payload '{"status":"draft","scope":"full","isWavePlan":true,"currentWave":1,"totalWaves":<N>,"completedWaves":[],"failedWaves":[]}'`. `/mustard:approve` § Step 3b reads state via `event-projections --view pipeline-state`. Phase is derived from `pipeline.phase` events in SQLite via `pipeline_state_for_spec`; do not persist a phase name field.
+4. **Emit pipeline scope event** — a wave plan has no root `spec.md`, so this scaffold is the only place its initial pipeline state is born. Emit two events:
+   ```bash
+   mustard-rt run emit-pipeline --kind scope --spec {spec-name} --payload "{\"scope\":\"full\",\"lang\":\"{lang}\",\"model\":\"opus\",\"is_wave_plan\":true,\"total_waves\":{wave-count}}"
+   mustard-rt run emit-pipeline --kind status --spec {spec-name} --payload "{\"from\":null,\"to\":\"draft\"}"
+   ```
+   `/mustard:approve` § Step 3b reads `pipeline_state_for_spec` from SQLite — no JSON file is written here.
 5. **No AskUserQuestion** — proceed silently per the agnostic auto-detection contract.
 
 #### Full Scope
@@ -175,7 +196,11 @@ The spec is a **SINGLE file** organized in two named layers — `## PRD` (the *w
      - Mark `(parallel-safe)` on frontend tasks with no dependency on new backend endpoints
    - **CONDITIONAL: `## Component Contract` section (UI specs only)** — append between `## Arquivos` and `## Tarefas` (inside the Plano layer) when ANALYZE detects component creation/refactoring (new `*.tsx|*.vue|*.svelte|*.dart|*.swift` widget/View, or props/variants change). Template + rationale at `../../../refs/feature/spec-language.md § Component Contract`. **Skip for non-UI work** — adding this section to backend/database specs is bloat.
 2. Add checkpoint fields: `Status: draft`, `Phase: PLAN`, `Scope: full`, `Checkpoint: {now}`
-3. Emit `mustard-rt run emit-pipeline --kind pipeline.status --spec {spec-name} --payload '{"status":"active","scope":"full"}'` (phase is sourced from `pipeline.phase` events in SQLite via `pipeline_state_for_spec`; do not persist a phase name field)
+3. Emit pipeline events for Full scope spec:
+   ```bash
+   mustard-rt run emit-pipeline --kind scope --spec {spec-name} --payload "{\"scope\":\"full\",\"lang\":\"{lang}\",\"model\":\"{model}\",\"is_wave_plan\":false}"
+   mustard-rt run emit-pipeline --kind status --spec {spec-name} --payload "{\"from\":null,\"to\":\"draft\"}"
+   ```
 4. Elegance Check: 3+ files or complex logic → "Is there a more elegant approach?"
 5. **Present full spec to user:** Read spec file and print ENTIRE contents verbatim in a fenced markdown block. Add 1-line change summary (WHAT + WHY). Then `AskUserQuestion`: **"Approve and implement?"** / **"Adjust (give feedback)"** / **"Save for later (stop)"**.
 
@@ -190,7 +215,11 @@ Light keeps the same two-layer shape but **lean** — a thin PRD layer and a thi
 1. Create `.claude/spec/active/{date}-{name}/spec.md` with compact format — headers: `# Enhancement: {name}`, `### Status: draft | Phase: PLAN | Scope: light`, `### Checkpoint: {ISO}`, `### Lang: {pt|en}`, then:
    - **PRD layer** — `## PRD` divider, then `## Contexto` (Lang=pt) or `## Context` (Lang=en) — heading EXACT, body **narrative prose 3-6 lines** (how the system should work + what's the gap + user/business impact; NO line numbers/method names/tables — see `../../../refs/feature/spec-language.md § Contexto Narrative Rules`), then `## Métrica de sucesso` (1 line — the single observable outcome that proves it worked), then `## Acceptance Criteria` (1-3 items, `- [ ] AC-1: {description} — Command: \`{exact command}\``; at least AC-1 must verify the feature works).
    - **Plano layer** — `## Plano` divider, then `## Summary` (1-2 lines, technical synthesis), `## Checklist` → `### {Agent} Agent` (steps + build/type-check), `## Files (~{N})` (paths).
-2. Emit `mustard-rt run emit-pipeline --kind pipeline.status --spec {spec-name} --payload '{"status":"active","scope":"light"}'`
+2. Emit pipeline events for Light scope spec:
+   ```bash
+   mustard-rt run emit-pipeline --kind scope --spec {spec-name} --payload "{\"scope\":\"light\",\"lang\":\"{lang}\",\"model\":\"sonnet\",\"is_wave_plan\":false}"
+   mustard-rt run emit-pipeline --kind status --spec {spec-name} --payload "{\"from\":null,\"to\":\"draft\"}"
+   ```
 3. **Present full spec to user:** Print ENTIRE contents verbatim in fenced markdown block. Then `AskUserQuestion`: **"Approve and implement now"** / **"Approve for later"** / **"Adjust"**.
 
 #### Spec Boundaries
@@ -208,7 +237,10 @@ Dispatch 1 Haiku Task(Explore) to verify work is still needed. Pre-check via `rt
 When user chooses "Approve and implement now":
 0. **Pre-EXECUTE Rewave Check:** Run `mustard-rt run exec-rewave-check --spec .claude/spec/active/{spec-name}/spec.md`. Parse JSON output. If `action: "decomposed"`, the spec was just split into N waves — proceed using wave-1's spec (`wave-1-{role}/spec.md`) instead of the original. If `action: "keep-single"` or `"skip"`, continue with the original spec normally. Silent operation — no AskUserQuestion.
 1. Update spec: `Status: implementing`, `Phase: EXECUTE`. Every agent prompt MUST include: `Return format cap: ≤50 lines. Apply compact Return Format from .claude/pipeline-config.md strictly.`
-2. Update pipeline state: `status: "implementing"`, `phase: 3`
+2. Emit status transition to implementing:
+   ```bash
+   mustard-rt run emit-pipeline --kind status --spec {spec-name} --payload "{\"from\":\"draft\",\"to\":\"implementing\"}"
+   ```
 3. Read `.claude/pipeline-config.md` for agent config. Grep `entity-registry.json` for specific entity block only
 4. Match recipes by title via Grep on `{subproject}/.claude/commands/recipes.md` — do NOT read full file
 4b. **Structured Recipe (if available):** Run `mustard-rt run recipe-match --entity {entity} --operation {operation} --subproject {subproject_path}`. If non-empty JSON, inject into agent prompt as `{recipe_context}`. Gives agent a 90%-complete skeleton.

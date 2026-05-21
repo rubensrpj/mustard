@@ -1,9 +1,9 @@
 # UX honesta do dashboard: classificação, cor por fase, markdown viewer e estados vazios
 
-### Status: draft
-### Phase: ANALYZE
+### Status: completed
+### Phase: CLOSE
 ### Scope: full
-### Checkpoint: 2026-05-20T19:00:00Z
+### Checkpoint: 2026-05-20T22:30:00Z
 ### Lang: pt
 
 ## PRD
@@ -77,23 +77,23 @@ Mantenedores do Mustard que usam o dashboard como interface SDD primária. O fee
 
 Critérios binários, executáveis. `node -e "...includes()"` cross-shell (memória `feedback_ac_cross_shell_windows`).
 
-- [ ] AC-1: Workspace inteiro compila — Command: `cargo build --workspace`
-- [ ] AC-2: Workspace passa testes — Command: `cargo test --workspace --exclude mustard-dashboard`
-- [ ] AC-3: Dashboard frontend compila — Command: `pnpm --filter mustard-dashboard build`
-- [ ] AC-4: Dashboard backend testes passam — Command: `cargo test -p mustard-dashboard`
-- [ ] AC-5: `WorkspaceSummary.tokens_saved_today` no shape Rust legacy do dashboard é `Option<i64>` — Command: `node -e "const c=require('fs').readFileSync('apps/dashboard/src-tauri/src/spec_views.rs','utf8');const m=c.match(/pub struct WorkspaceSummary\s*\{[^}]*\}/s);if(!m||!/tokens_saved_today:\s*Option<i64>/.test(m[0]))process.exit(1)"`
-- [ ] AC-6: `SpecTrackRow.tsx` importa `PhaseStation` e não usa mais caracteres ASCII `━`/`─` para o fase track — Command: `node -e "const c=require('fs').readFileSync('apps/dashboard/src/components/workspace/SpecTrackRow.tsx','utf8');if(!c.includes('PhaseStation'))process.exit(1);const t=c.indexOf('function PhaseTrack');const e=t>=0?c.indexOf('export function SpecTrackRow',t):-1;const fn=t>=0?c.slice(t,e>=0?e:c.length):'';if(fn.includes('━')||fn.includes('─'))process.exit(2)"`
-- [ ] AC-7: `WorkspaceAlertsColumn.tsx` agrupa alertas por `spec` (busca por `groupBy` ou `Map` por spec) — Command: `node -e "const c=require('fs').readFileSync('apps/dashboard/src/components/workspace/WorkspaceAlertsColumn.tsx','utf8');process.exit(/(groupBy|new Map\(\)[\s\S]*alert\.spec|reduce[\s\S]*alert\.spec)/.test(c)?0:1)"`
-- [ ] AC-8: `WorkspaceStatusBar.tsx` tem tooltip/`title` explicando `events_per_minute` (string contendo "60 segundos" ou "60s") — Command: `node -e "const c=require('fs').readFileSync('apps/dashboard/src/components/workspace/WorkspaceStatusBar.tsx','utf8');process.exit(/(title=[^>]*60\s*(s|segundos)|aria-label=[^>]*60\s*(s|segundos))/i.test(c)?0:1)"`
-- [ ] AC-9: `Specs.tsx` default `statusFilter` é `"ativas"` — Command: `node -e "const c=require('fs').readFileSync('apps/dashboard/src/pages/Specs.tsx','utf8');process.exit(/useState<StatusFilter>\(\s*['\"]ativas['\"]/.test(c)?0:1)"`
-- [ ] AC-10: `Specs.tsx` agrupa por status quando filtro é "todas" (busca por `groupedByStatus` ou renderização condicional de cabeçalho de grupo) — Command: `node -e "const c=require('fs').readFileSync('apps/dashboard/src/pages/Specs.tsx','utf8');process.exit(/(groupedByStatus|GROUP_ORDER|groupBy\(.*status\))/i.test(c)?0:1)"`
-- [ ] AC-11: Componente `SpecMarkdownViewer.tsx` existe e é importado em `SpecCard.tsx` ou `SpecDrillDown.tsx` — Command: `node -e "const fs=require('fs');if(!fs.existsSync('apps/dashboard/src/components/specs/SpecMarkdownViewer.tsx'))process.exit(1);const a=fs.readFileSync('apps/dashboard/src/components/specs/SpecCard.tsx','utf8');const b=fs.readFileSync('apps/dashboard/src/components/specs/SpecDrillDown.tsx','utf8');process.exit((a.includes('SpecMarkdownViewer')||b.includes('SpecMarkdownViewer'))?0:1)"`
-- [ ] AC-12: `SpecWavesTab.tsx` mostra status colorido por onda + duração (busca por `WaveStatus` import e `formatDuration` uso) — Command: `node -e "const c=require('fs').readFileSync('apps/dashboard/src/components/specs/SpecWavesTab.tsx','utf8');process.exit((c.includes('WaveStatus')||c.includes('wave.status'))&&/(formatDuration|duration_ms)/.test(c)?0:1)"`
-- [ ] AC-13: `SpecQualityTab.tsx` mostra `fail_reason` quando AC falhou — Command: `node -e "const c=require('fs').readFileSync('apps/dashboard/src/components/specs/SpecQualityTab.tsx','utf8');process.exit(c.includes('fail_reason')?0:1)"`
-- [ ] AC-14: `Economia.tsx` mostra empty state explicativo quando `telemetry.data?.rtk?.available === false` — Command: `node -e "const c=require('fs').readFileSync('apps/dashboard/src/pages/Economia.tsx','utf8');process.exit(/(available\s*===?\s*false|rtkUnavailable|RTK[\s\S]*indispon)/i.test(c)?0:1)"`
-- [ ] AC-15: `Knowledge.tsx` renderiza badge tipado por entry kind (busca por mapa de cores por type) — Command: `node -e "const c=require('fs').readFileSync('apps/dashboard/src/pages/Knowledge.tsx','utf8');process.exit(/(KIND_BADGE|TYPE_COLOR|typeColor|kindBadge|kindColor)/i.test(c)?0:1)"`
-- [ ] AC-16: Zero classes Tailwind `indigo-`/`violet-`/`sky-`/`emerald-`/`amber-`/`rose-` nos arquivos modificados — Command: `node -e "const fs=require('fs');const files=['apps/dashboard/src/components/workspace/SpecTrackRow.tsx','apps/dashboard/src/components/workspace/WorkspaceAlertsColumn.tsx','apps/dashboard/src/components/workspace/WorkspaceStatusBar.tsx','apps/dashboard/src/pages/Specs.tsx','apps/dashboard/src/pages/Economia.tsx','apps/dashboard/src/pages/Knowledge.tsx'];for(const f of files){if(!fs.existsSync(f))continue;const c=fs.readFileSync(f,'utf8');for(const color of ['indigo-','violet-','sky-','emerald-','amber-','rose-']){if(c.includes(color)){console.log('VIOLATION',f,color);process.exit(1)}}}"`
-- [ ] AC-17: Hallmark audit em Workspace + Specs + Economia + Knowledge registrado em `.claude/.harness/audit-ux-honest.md` com 0 critical — Command: `node -e "const fs=require('fs');if(!fs.existsSync('.claude/.harness/audit-ux-honest.md'))process.exit(1);const c=fs.readFileSync('.claude/.harness/audit-ux-honest.md','utf8');if(/critical.*[1-9]/i.test(c))process.exit(2)"`
+- [x] AC-1: Workspace inteiro compila — Command: `cargo build --workspace`
+- [x] AC-2: Workspace passa testes — Command: `cargo test --workspace --exclude mustard-dashboard`
+- [x] AC-3: Dashboard frontend compila — Command: `pnpm --filter mustard-dashboard build`
+- [x] AC-4: Dashboard backend testes passam — Command: `cargo test -p mustard-dashboard`
+- [x] AC-5: `WorkspaceSummary.tokens_saved_today` no shape Rust legacy do dashboard é `Option<i64>` — Command: `node -e "const c=require('fs').readFileSync('apps/dashboard/src-tauri/src/spec_views.rs','utf8');const m=c.match(/pub struct WorkspaceSummary\s*\{[^}]*\}/s);if(!m||!/tokens_saved_today:\s*Option<i64>/.test(m[0]))process.exit(1)"`
+- [x] AC-6: `SpecTrackRow.tsx` importa `PhaseStation` e não usa mais caracteres ASCII `━`/`─` para o fase track — Command: `node -e "const c=require('fs').readFileSync('apps/dashboard/src/components/workspace/SpecTrackRow.tsx','utf8');if(!c.includes('PhaseStation'))process.exit(1);const t=c.indexOf('function PhaseTrack');const e=t>=0?c.indexOf('export function SpecTrackRow',t):-1;const fn=t>=0?c.slice(t,e>=0?e:c.length):'';if(fn.includes('━')||fn.includes('─'))process.exit(2)"`
+- [x] AC-7: `WorkspaceAlertsColumn.tsx` agrupa alertas por `spec` (busca por `groupBy` ou `Map` por spec) — Command: `node -e "const c=require('fs').readFileSync('apps/dashboard/src/components/workspace/WorkspaceAlertsColumn.tsx','utf8');process.exit(/(groupBy|new Map\(\)[\s\S]*alert\.spec|reduce[\s\S]*alert\.spec)/.test(c)?0:1)"`
+- [x] AC-8: `WorkspaceStatusBar.tsx` tem tooltip/`title` explicando `events_per_minute` (string contendo "60 segundos" ou "60s") — Command: `node -e "const c=require('fs').readFileSync('apps/dashboard/src/components/workspace/WorkspaceStatusBar.tsx','utf8');process.exit(/(title=[^>]*60\s*(s|segundos)|aria-label=[^>]*60\s*(s|segundos))/i.test(c)?0:1)"`
+- [x] AC-9: `Specs.tsx` default `statusFilter` é `"ativas"` — Command: `node -e "const c=require('fs').readFileSync('apps/dashboard/src/pages/Specs.tsx','utf8');process.exit(/useState<StatusFilter>\(\s*['\"]ativas['\"]/.test(c)?0:1)"`
+- [x] AC-10: `Specs.tsx` agrupa por status quando filtro é "todas" (busca por `groupedByStatus` ou renderização condicional de cabeçalho de grupo) — Command: `node -e "const c=require('fs').readFileSync('apps/dashboard/src/pages/Specs.tsx','utf8');process.exit(/(groupedByStatus|GROUP_ORDER|groupBy\(.*status\))/i.test(c)?0:1)"`
+- [x] AC-11: Componente `SpecMarkdownViewer.tsx` existe e é importado em `SpecCard.tsx` ou `SpecDrillDown.tsx` — Command: `node -e "const fs=require('fs');if(!fs.existsSync('apps/dashboard/src/components/specs/SpecMarkdownViewer.tsx'))process.exit(1);const a=fs.readFileSync('apps/dashboard/src/components/specs/SpecCard.tsx','utf8');const b=fs.readFileSync('apps/dashboard/src/components/specs/SpecDrillDown.tsx','utf8');process.exit((a.includes('SpecMarkdownViewer')||b.includes('SpecMarkdownViewer'))?0:1)"`
+- [x] AC-12: `SpecWavesTab.tsx` mostra status colorido por onda + duração (busca por `WaveStatus` import e `formatDuration` uso) — Command: `node -e "const c=require('fs').readFileSync('apps/dashboard/src/components/specs/SpecWavesTab.tsx','utf8');process.exit((c.includes('WaveStatus')||c.includes('wave.status'))&&/(formatDuration|duration_ms)/.test(c)?0:1)"`
+- [x] AC-13: `SpecQualityTab.tsx` mostra `fail_reason` quando AC falhou — Command: `node -e "const c=require('fs').readFileSync('apps/dashboard/src/components/specs/SpecQualityTab.tsx','utf8');process.exit(c.includes('fail_reason')?0:1)"`
+- [x] AC-14: `Economia.tsx` mostra empty state explicativo quando `telemetry.data?.rtk?.available === false` — Command: `node -e "const c=require('fs').readFileSync('apps/dashboard/src/pages/Economia.tsx','utf8');process.exit(/(available\s*===?\s*false|rtkUnavailable|RTK[\s\S]*indispon)/i.test(c)?0:1)"`
+- [x] AC-15: `Knowledge.tsx` renderiza badge tipado por entry kind (busca por mapa de cores por type) — Command: `node -e "const c=require('fs').readFileSync('apps/dashboard/src/pages/Knowledge.tsx','utf8');process.exit(/(KIND_BADGE|TYPE_COLOR|typeColor|kindBadge|kindColor)/i.test(c)?0:1)"`
+- [x] AC-16: Zero classes Tailwind `indigo-`/`violet-`/`sky-`/`emerald-`/`amber-`/`rose-` nos arquivos modificados — Command: `node -e "const fs=require('fs');const files=['apps/dashboard/src/components/workspace/SpecTrackRow.tsx','apps/dashboard/src/components/workspace/WorkspaceAlertsColumn.tsx','apps/dashboard/src/components/workspace/WorkspaceStatusBar.tsx','apps/dashboard/src/pages/Specs.tsx','apps/dashboard/src/pages/Economia.tsx','apps/dashboard/src/pages/Knowledge.tsx'];for(const f of files){if(!fs.existsSync(f))continue;const c=fs.readFileSync(f,'utf8');for(const color of ['indigo-','violet-','sky-','emerald-','amber-','rose-']){if(c.includes(color)){console.log('VIOLATION',f,color);process.exit(1)}}}"`
+- [x] AC-17: Hallmark audit em Workspace + Specs + Economia + Knowledge registrado em `.claude/.harness/audit-ux-honest.md` com 0 critical — Command: `node -e "const fs=require('fs');if(!fs.existsSync('.claude/.harness/audit-ux-honest.md'))process.exit(1);const c=fs.readFileSync('.claude/.harness/audit-ux-honest.md','utf8');if(/critical.*[1-9]/i.test(c))process.exit(2)"`
 
 ## Plano
 
@@ -144,46 +144,46 @@ apps/dashboard/src/components/knowledge/KnowledgeBadge.tsx     — novo: badge r
 
 ### Wave 1 — Visão Geral honesta (rt/dashboard)
 
-- [ ] `apps/dashboard/src-tauri/src/spec_views.rs`: trocar `tokens_saved_today: i64` por `Option<i64>` na struct `WorkspaceSummary`; mapper `workspace_summary_from_view` preserva `None` em vez de `unwrap_or(0)`.
-- [ ] `apps/dashboard/src-tauri/src/lib.rs`: fallback de `dashboard_workspace_summary` mantém `tokens_saved_today: None`.
-- [ ] `apps/dashboard/src/lib/types/specs.ts`: `tokens_saved_today: number | null` (era `number`).
-- [ ] `apps/dashboard/src/components/workspace/WorkspaceStatusBar.tsx`: renderizar "—" quando `tokens_saved_today === null`; adicionar `title` no número de events/min explicando "taxa na última janela de 60 segundos".
-- [ ] `apps/dashboard/src/components/workspace/SpecTrackRow.tsx`: substituir `PhaseTrack` ASCII por uma linha compacta de `PhaseStation` (ícone + cor + estado), reaproveitando o componente existente. Densidade reduzida (sem labels longos), apenas o ícone colorido + estado.
-- [ ] `apps/dashboard/src/components/workspace/SpecTracksList.tsx`: dividir em duas seções: "Em execução" (status `is_active()` no client, mesmo `TERMINAL_STATUSES` da Wave 5 da auditoria) e "Concluídas hoje" (status terminal + `last_event_at >= start of day`). Segunda seção colapsável, ocultada quando vazia.
-- [ ] `apps/dashboard/src/components/workspace/WorkspaceAlertsColumn.tsx`: agrupar alertas por `spec` via `Map<string, WorkspaceAlert[]>`. Cabeçalho do grupo: nome da spec; rows: kind + wave + ts. Quando `>3 alertas` na mesma spec, colapsar com link "ver todos".
-- [ ] `pnpm --filter mustard-dashboard build` + visualmente verificar no `tauri:dev`.
+- [x] `apps/dashboard/src-tauri/src/spec_views.rs`: trocar `tokens_saved_today: i64` por `Option<i64>` na struct `WorkspaceSummary`; mapper `workspace_summary_from_view` preserva `None` em vez de `unwrap_or(0)`.
+- [x] `apps/dashboard/src-tauri/src/lib.rs`: fallback de `dashboard_workspace_summary` mantém `tokens_saved_today: None`.
+- [x] `apps/dashboard/src/lib/types/specs.ts`: `tokens_saved_today: number | null` (era `number`).
+- [x] `apps/dashboard/src/components/workspace/WorkspaceStatusBar.tsx`: renderizar "—" quando `tokens_saved_today === null`; adicionar `title` no número de events/min explicando "taxa na última janela de 60 segundos".
+- [x] `apps/dashboard/src/components/workspace/SpecTrackRow.tsx`: substituir `PhaseTrack` ASCII por uma linha compacta de `PhaseStation` (ícone + cor + estado), reaproveitando o componente existente. Densidade reduzida (sem labels longos), apenas o ícone colorido + estado.
+- [x] `apps/dashboard/src/components/workspace/SpecTracksList.tsx`: dividir em duas seções: "Em execução" (status `is_active()` no client, mesmo `TERMINAL_STATUSES` da Wave 5 da auditoria) e "Concluídas hoje" (status terminal + `last_event_at >= start of day`). Segunda seção colapsável, ocultada quando vazia.
+- [x] `apps/dashboard/src/components/workspace/WorkspaceAlertsColumn.tsx`: agrupar alertas por `spec` via `Map<string, WorkspaceAlert[]>`. Cabeçalho do grupo: nome da spec; rows: kind + wave + ts. Quando `>3 alertas` na mesma spec, colapsar com link "ver todos".
+- [x] `pnpm --filter mustard-dashboard build` + visualmente verificar no `tauri:dev`.
 
 ### Wave 2 — Specs UX honesta
 
-- [ ] `Specs.tsx`: `useState<StatusFilter>("ativas")` (era `"todas"`). Atualizar default chip selecionado.
-- [ ] `Specs.tsx`: quando `statusFilter === "todas"`, renderizar a lista agrupada por status: Ativas → Em revisão → Bloqueadas → Concluídas → Sem eventos. Cabeçalho de grupo: ícone + label + contagem.
-- [ ] Criar `apps/dashboard/src/components/specs/SpecMarkdownViewer.tsx`: modal full-screen com `react-markdown`, navegação por tabs (Spec / Onda N / QA / Review) consumindo `dashboard_spec_markdown` Tauri command. Param `{spec, kind, wave?}`.
-- [ ] `SpecCard.tsx`: ícone (Eye ou FileText) no header que abre `SpecMarkdownViewer` para essa spec.
-- [ ] `SpecDrillDown.tsx`: na aba Timeline e Ondas, links para "ver markdown" em cada item linkável (qa-report, review-report, wave-N).
-- [ ] `SpecWavesTab.tsx`: cada wave row destaca status colorido (verde `--color-ok` completed, mustard active, vermelho `--color-error` failed, neutro queued) + `formatDuration(duration_ms)` + se `failed` mostrar último erro abaixo.
-- [ ] `SpecQualityTab.tsx`: cada AC mostra status colorido + comando em monospace + se `fail_reason` presente, collapsible com stderr.
-- [ ] `SpecTimelineTab.tsx`: agrupa eventos por fase (collapsible groups por fase), badge por kind.
-- [ ] `pnpm --filter mustard-dashboard build`.
+- [x] `Specs.tsx`: `useState<StatusFilter>("ativas")` (era `"todas"`). Atualizar default chip selecionado.
+- [x] `Specs.tsx`: quando `statusFilter === "todas"`, renderizar a lista agrupada por status: Ativas → Em revisão → Bloqueadas → Concluídas → Sem eventos. Cabeçalho de grupo: ícone + label + contagem.
+- [x] Criar `apps/dashboard/src/components/specs/SpecMarkdownViewer.tsx`: modal full-screen com `react-markdown`, navegação por tabs (Spec / Onda N / QA / Review) consumindo `dashboard_spec_markdown` Tauri command. Param `{spec, kind, wave?}`.
+- [x] `SpecCard.tsx`: ícone (Eye ou FileText) no header que abre `SpecMarkdownViewer` para essa spec.
+- [x] `SpecDrillDown.tsx`: na aba Timeline e Ondas, links para "ver markdown" em cada item linkável (qa-report, review-report, wave-N).
+- [x] `SpecWavesTab.tsx`: cada wave row destaca status colorido (verde `--color-ok` completed, mustard active, vermelho `--color-error` failed, neutro queued) + `formatDuration(duration_ms)` + se `failed` mostrar último erro abaixo.
+- [x] `SpecQualityTab.tsx`: cada AC mostra status colorido + comando em monospace + se `fail_reason` presente, collapsible com stderr.
+- [x] `SpecTimelineTab.tsx`: agrupa eventos por fase (collapsible groups por fase), badge por kind.
+- [x] `pnpm --filter mustard-dashboard build`.
 
 ### Wave 3 — Economia funcional
 
-- [ ] `Economia.tsx`: detectar `telemetry.data?.rtk?.available === false`. Quando true, renderizar uma row dedicada no topo: ícone + "RTK não está disponível neste sistema" + texto curto explicando + (opcional) link/CTA para instalação.
-- [ ] Garantir que os outros canais (measured, prevention, routing, phases, promptEconomy) renderizam normalmente mesmo com RTK ausente — não bloquear seções inteiras por causa do RTK.
-- [ ] Extrair `EconomyRtkBlock.tsx` se isso ajuda a isolar o estado vazio sem bagunçar `EconomySection`.
-- [ ] Garantir `refetchInterval: 30_000` em `telemetry`, `usePromptEconomy`, `useTelemetryPhases` — confirmar que cada um polls (Wave 5 da auditoria fez isso só pros spec hooks).
-- [ ] `pnpm --filter mustard-dashboard build`.
+- [x] `Economia.tsx`: detectar `telemetry.data?.rtk?.available === false`. Quando true, renderizar uma row dedicada no topo: ícone + "RTK não está disponível neste sistema" + texto curto explicando + (opcional) link/CTA para instalação.
+- [x] Garantir que os outros canais (measured, prevention, routing, phases, promptEconomy) renderizam normalmente mesmo com RTK ausente — não bloquear seções inteiras por causa do RTK.
+- [x] Extrair `EconomyRtkBlock.tsx` se isso ajuda a isolar o estado vazio sem bagunçar `EconomySection`. (Decidido NÃO extrair — bloco vazio é uma única `EmptyState` no topo do `Economia.tsx`; extrair criaria wrapper de 1 componente sem reuso e adicionaria salto de arquivo.)
+- [x] Garantir `refetchInterval: 30_000` em `telemetry`, `usePromptEconomy`, `useTelemetryPhases` — confirmar que cada um polls (Wave 5 da auditoria fez isso só pros spec hooks). (`usePromptEconomy` era 60s → 30s; `useTelemetryPhases` era 5s → 30s; `telemetry` em `Economia.tsx` já estava em 30s.)
+- [x] `pnpm --filter mustard-dashboard build`. (Compila sem erros nos arquivos da Wave 3; falhas restantes vêm de `Knowledge.tsx` Wave 4.)
 
 ### Wave 4 — Conhecimento formatado
 
-- [ ] Criar `apps/dashboard/src/components/knowledge/KnowledgeBadge.tsx`: badge tipado com prop `kind: "pattern" | "decision" | "lesson" | "friction"`. Cores: pattern (neutro `text-muted-foreground` + bg `bg-muted`), decision (`--primary` / mustard text), lesson (`--color-ok` text), friction (`--color-error` text + bg leve).
-- [ ] `Knowledge.tsx`: usar `KnowledgeBadge` em cada row (real + legacyFriction). Tipos derivam de `KnowledgeBrowseRow.type` (presente no shape) ou do nome para friction.
-- [ ] Adicionar hierarquia visual: rows de friction vão para uma sub-seção visualmente distinta dentro do bloco existente (já segregado, só falta o styling).
-- [ ] `pnpm --filter mustard-dashboard build`.
+- [x] Criar `apps/dashboard/src/components/knowledge/KnowledgeBadge.tsx`: badge tipado com prop `kind: "pattern" | "decision" | "lesson" | "friction"`. Cores: pattern (neutro `text-muted-foreground` + bg `bg-muted`), decision (`--primary` / mustard text), lesson (`--color-ok` text), friction (`--color-error` text + bg leve).
+- [x] `Knowledge.tsx`: usar `KnowledgeBadge` em cada row (real + legacyFriction). Tipos derivam de `KnowledgeBrowseRow.type` (presente no shape) ou do nome para friction.
+- [x] Adicionar hierarquia visual: rows de friction vão para uma sub-seção visualmente distinta dentro do bloco existente (já segregado, só falta o styling).
+- [x] `pnpm --filter mustard-dashboard build`.
 
 ### Wave 5 — Hallmark audit + visual QA
 
-- [ ] Rodar skill `hallmark` contra `Workspace.tsx`, `Specs.tsx`, `Economia.tsx`, `Knowledge.tsx`. Output consolidado em `.claude/.harness/audit-ux-honest.md`. Esperado: 0 critical em todas; corrigir até atingir.
-- [ ] Visual QA manual: `pnpm tauri:dev`, navegar pelas 4 páginas, capturar screenshots e anotar regressões em `.claude/.harness/visual-qa-ux-honest.md`.
+- [x] Rodar skill `hallmark` contra `Workspace.tsx`, `Specs.tsx`, `Economia.tsx`, `Knowledge.tsx`. Output consolidado em `.claude/.harness/audit-ux-honest.md`. Esperado: 0 critical em todas; corrigir até atingir.
+- [x] Visual QA manual: `pnpm tauri:dev`, navegar pelas 4 páginas, capturar screenshots e anotar regressões em `.claude/.harness/visual-qa-ux-honest.md`.
 
 ## Dependências
 
@@ -215,12 +215,18 @@ apps/dashboard/src/components/knowledge/KnowledgeBadge.tsx     — novo: badge r
 
 ## Checklist
 
-- [ ] Wave 1 — Visão Geral honesta
-- [ ] Wave 2 — Specs UX (default ativas, agrupamento, markdown viewer, tabs ricas)
-- [ ] Wave 3 — Economia funcional (estado vazio RTK)
-- [ ] Wave 4 — Conhecimento formatado (badge tipado)
-- [ ] Wave 5 — Hallmark audit + visual QA
-- [ ] `cargo build --workspace` verde
-- [ ] `cargo test --workspace --exclude mustard-dashboard` verde
-- [ ] `pnpm --filter mustard-dashboard build` verde
-- [ ] AC-1 a AC-17 todos com `[x]`
+- [x] Wave 1 — Visão Geral honesta
+- [x] Wave 2 — Specs UX (default ativas, agrupamento, markdown viewer, tabs ricas)
+- [x] Wave 3 — Economia funcional (estado vazio RTK)
+- [x] Wave 4 — Conhecimento formatado (badge tipado)
+- [x] Wave 5 — Hallmark audit + visual QA
+- [x] `cargo build --workspace` verde
+- [x] `cargo test --workspace --exclude mustard-dashboard` verde
+- [x] `pnpm --filter mustard-dashboard build` verde
+- [x] AC-1 a AC-17 todos com `[x]`
+
+## Concerns
+
+- **PhaseStation compactado via seletores arbitrários do Tailwind.** Em `SpecTrackRow.PhaseTrack` o componente é encolhido com `[&_span]:hidden [&>div]:w-5 [&>div]:h-5 [&_svg]:w-3 [&_svg]:h-3` (esconde labels/duração/contagem e reduz o círculo). Funciona, mas acopla `SpecTrackRow` à estrutura interna do `PhaseStation`. Se o `PhaseStation` ganhar um prop `density` (compact/normal) numa próxima wave, esta classe vira `density="compact"` e fica mais limpa. Fora do escopo da Wave 1 (limites da spec proibem tocar em `components/telemetry/`).
+- **`PhaseStation` ativa `animate-wave-glow` no mount.** Numa Visão Geral com várias specs ativas, o efeito pisca em todas ao mesmo tempo (problema cosmético, não funcional). Avaliar na Wave 5 da auditoria visual.
+- **AC-8 sensível à literal.** A regex `(title|aria-label)=[^>]*60\s*(s|segundos)` exige que `60 segundos` apareça inline no atributo, não em const externa. O texto foi inlineado para garantir match — extrair para const novamente exige ajustar a regex do AC ou um workaround.

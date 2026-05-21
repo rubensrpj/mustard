@@ -136,6 +136,18 @@ mod tests {
     }
 
     #[test]
+    fn dispatch_denies_bare_ls_for_bash_pretooluse() {
+        let input = bash_input("ls", "PreToolUse");
+        let outcome = run_event(Some(Trigger::PreToolUse), &input);
+        assert!(
+            outcome.is_blocking(),
+            "expected blocking outcome for bare ls; got {:?}, warnings {:?}",
+            outcome.verdict,
+            outcome.warnings
+        );
+    }
+
+    #[test]
     fn warn_mode_downgrades_deny_to_warn() {
         let downgraded = apply_mode(
             Verdict::Deny {

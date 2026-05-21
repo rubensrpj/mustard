@@ -1,7 +1,7 @@
 {
   "_meta": {
     "version": "4.0",
-    "generated": "2026-05-20",
+    "generated": "2026-05-21",
     "generator": "mustard-rt run sync-registry"
   },
   "_patterns": {
@@ -10,11 +10,11 @@
       "conventions": {
         "naming": {
           "distribution": {
-            "lowercase": 15,
-            "snake_case": 5
+            "lowercase": 34,
+            "snake_case": 7
           },
           "dominant": "lowercase",
-          "total": 20
+          "total": 41
         }
       },
       "discovered": [
@@ -45,16 +45,47 @@
           "subprojectName": "rt",
           "suffix": "mod",
           "topOfFileLines": null
+        },
+        {
+          "declarationKeywords": null,
+          "declarationSuffix": null,
+          "ext": ".rs",
+          "fileCount": 6,
+          "folderPattern": "**/src/mod.rs",
+          "folders": [
+            "src/model",
+            "src/model/view",
+            "src/process",
+            "src/projection",
+            "src/reader",
+            "src/store"
+          ],
+          "kind": "filename-cluster",
+          "label": "mod",
+          "memberSuffixes": null,
+          "namingPattern": null,
+          "samples": [
+            "src/model/mod.rs",
+            "src/model/view/mod.rs",
+            "src/process/mod.rs"
+          ],
+          "subprojectName": "core",
+          "suffix": "mod",
+          "topOfFileLines": null
         }
       ],
       "folderFrequency": {
         "segments": {
-          "io": 1,
-          "model": 1,
-          "src": 3,
-          "tests": 1
+          "model": 2,
+          "process": 1,
+          "projection": 1,
+          "reader": 1,
+          "src": 7,
+          "store": 1,
+          "tests": 1,
+          "view": 1
         },
-        "totalFolders": 4
+        "totalFolders": 8
       }
     },
     "typescript": {
@@ -62,13 +93,13 @@
       "conventions": {
         "naming": {
           "distribution": {
-            "camelCase": 25,
+            "camelCase": 28,
             "kebab-case": 5,
             "lowercase": 16,
             "mixed": 3
           },
           "dominant": null,
-          "total": 49
+          "total": 52
         }
       },
       "discovered": [
@@ -76,7 +107,7 @@
           "declarationKeywords": null,
           "declarationSuffix": null,
           "ext": ".ts",
-          "fileCount": 24,
+          "fileCount": 27,
           "folderPattern": "**/src/",
           "folders": [
             "src/hooks",
@@ -162,6 +193,26 @@
     }
   },
   "_enums": {
+    "AcStatus": {
+      "decorators": [
+        "Debug",
+        "Clone",
+        "Copy",
+        "PartialEq",
+        "Eq",
+        "Hash",
+        "Serialize",
+        "Deserialize"
+      ],
+      "file": "src/model/view/quality.rs",
+      "valueConvention": "PascalCase",
+      "values": [
+        "Pass",
+        "Fail",
+        "Skip",
+        "Pending"
+      ]
+    },
     "ActorKind": {
       "decorators": [
         "Debug",
@@ -280,16 +331,27 @@
         "Serialize",
         "Deserialize"
       ],
-      "file": "src/model/pipeline.rs",
+      "file": "src/model/view/mod.rs",
       "valueConvention": "PascalCase",
       "values": [
         "Analyze",
         "Plan",
         "Execute",
-        "Review",
         "Qa",
-        "Close",
-        "Coordinate"
+        "Close"
+      ]
+    },
+    "ReadError": {
+      "decorators": [
+        "Debug",
+        "thiserror::Error"
+      ],
+      "file": "src/reader/error.rs",
+      "valueConvention": "PascalCase",
+      "values": [
+        "Io",
+        "Decode",
+        "Invalid"
       ]
     },
     "RunCmd": {
@@ -302,6 +364,7 @@
       "values": [
         "WaveDependency",
         "ScopeDecompose",
+        "QaRunAll",
         "RebuildSpecs",
         "Statusline",
         "RtkGain",
@@ -315,16 +378,114 @@
         "Copy",
         "PartialEq",
         "Eq",
+        "Serialize",
+        "Deserialize"
+      ],
+      "file": "src/model/view/mod.rs",
+      "valueConvention": "PascalCase",
+      "values": [
+        "Full",
+        "Light",
+        "Touch"
+      ]
+    },
+    "SegmentState": {
+      "decorators": [
+        "Debug",
+        "Clone",
+        "Copy",
+        "PartialEq",
+        "Eq",
         "Hash",
         "Serialize",
         "Deserialize"
       ],
-      "file": "src/model/pipeline.rs",
+      "file": "src/model/view/workspace.rs",
       "valueConvention": "PascalCase",
       "values": [
-        "Light",
-        "Medium",
-        "Full"
+        "Completed",
+        "Active",
+        "Future"
+      ]
+    },
+    "SpecStatus": {
+      "decorators": [
+        "Debug",
+        "Clone",
+        "Copy",
+        "PartialEq",
+        "Eq",
+        "Hash",
+        "Serialize",
+        "Deserialize"
+      ],
+      "file": "src/model/view/spec.rs",
+      "valueConvention": "PascalCase",
+      "values": [
+        "NoEvents",
+        "Planning",
+        "Implementing",
+        "Reviewing",
+        "Qa",
+        "...(10 total)"
+      ]
+    },
+    "SpecStatusFilter": {
+      "decorators": [
+        "Debug",
+        "Clone",
+        "PartialEq",
+        "Eq",
+        "Serialize",
+        "Deserialize"
+      ],
+      "file": "src/model/view/filter.rs",
+      "valueConvention": "PascalCase",
+      "values": [
+        "Active",
+        "Closed",
+        "Any"
+      ]
+    },
+    "TimeWindow": {
+      "decorators": [
+        "Debug",
+        "Clone",
+        "Copy",
+        "PartialEq",
+        "Eq",
+        "Serialize",
+        "Deserialize"
+      ],
+      "file": "src/model/view/filter.rs",
+      "valueConvention": "PascalCase",
+      "values": [
+        "Today",
+        "SevenDays",
+        "ThirtyDays",
+        "All"
+      ]
+    },
+    "TimelineKind": {
+      "decorators": [
+        "Debug",
+        "Clone",
+        "Copy",
+        "PartialEq",
+        "Eq",
+        "Hash",
+        "Serialize",
+        "Deserialize"
+      ],
+      "file": "src/model/view/timeline.rs",
+      "valueConvention": "PascalCase",
+      "values": [
+        "Scope",
+        "Phase",
+        "Status",
+        "Task",
+        "Wave",
+        "...(11 total)"
       ]
     },
     "ToolMatch": {
@@ -380,6 +541,49 @@
       "valueConvention": "PascalCase",
       "values": [
         "Allow"
+      ]
+    },
+    "WaveStatus": {
+      "decorators": [
+        "Debug",
+        "Clone",
+        "Copy",
+        "PartialEq",
+        "Eq",
+        "Hash",
+        "Serialize",
+        "Deserialize"
+      ],
+      "file": "src/model/view/wave.rs",
+      "valueConvention": "PascalCase",
+      "values": [
+        "Queued",
+        "InProgress",
+        "Completed",
+        "Failed"
+      ]
+    },
+    "WorkspaceAlertKind": {
+      "decorators": [
+        "Debug",
+        "Clone",
+        "Copy",
+        "PartialEq",
+        "Eq",
+        "Hash",
+        "PartialOrd",
+        "Ord",
+        "Serialize",
+        "Deserialize"
+      ],
+      "file": "src/model/view/workspace.rs",
+      "valueConvention": "PascalCase",
+      "values": [
+        "Blocked",
+        "QaFail",
+        "WaveFailed",
+        "ReviewRejected",
+        "BuildBroken"
       ]
     }
   },

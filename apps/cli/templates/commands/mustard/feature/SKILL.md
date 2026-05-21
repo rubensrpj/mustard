@@ -117,6 +117,22 @@ Cascade (stop at first hit): (1) spec header `### Lang: pt|en`, (2) `.claude/mus
 
 → See `../../../refs/feature/spec-language.md` for full Header Translation Table.
 
+#### Concern Coverage Audit (mandatory — Full and Light scope)
+
+Before drafting the spec, audit the **entire conversation** since this `/feature` was invoked (or since the topic was introduced if the user pivoted from earlier discussion). Extract every concrete user complaint, critique, wish, or constraint — even minor ones.
+
+For each extracted item, categorize in **exactly one** of three buckets, explicit in the resulting spec:
+
+| Category | Where in spec | When |
+|---|---|---|
+| **Covered by wave/task** | `## Critique Coverage` table in `wave-plan.md` (Full+wave plan) OR `## Cobertura` section at end of PRD layer (single-spec) | When a wave/task addresses it |
+| **Non-goal justified** | `## Não-Objetivos` (Lang=pt) / `## Non-Goals` (Lang=en) with 1-line justification | When intentionally out of scope |
+| **Surfaced for decision** | Flagged inside the `AskUserQuestion` before approve, with explicit option | When user must choose |
+
+**HARD RULE:** Before the final `AskUserQuestion` of approve, every concrete user concern from the conversation MUST map to one of the three categories above. If any item is orphaned, STOP and revise the spec — re-present only after every concern is categorized.
+
+**Why this exists:** Pipelines that pivot architecturally (e.g., a UI critique that becomes an infrastructure refactor) routinely drop visual/UX requirements raised early in the conversation. Forcing explicit categorization eliminates that drift. Documented in user memory as `feedback_coverage_audit_before_spec.md`.
+
 #### Wave Decomposition (mandatory for Full+deps)
 
 Full scope com `file_count ≥ 6` OR `layer_count ≥ 3` OR `independent_subbehaviors ≥ 3` → **OBRIGATÓRIO** rodar `mustard-rt run wave-scaffold --spec-dir <dir> --plan <plan.json>`. O scaffold cria `wave-plan.md` + `wave-N-{role}/spec.md` + `review/spec.md` + `qa/spec.md` num único passo idempotente. Single `spec.md` neste cenário é erro de scaffold — `/mustard:qa` detecta a ausência dos wave-files e bloqueia o close.

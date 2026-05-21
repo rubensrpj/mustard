@@ -172,13 +172,23 @@ pub enum RunCmd {
         /// Input JSON (Windows-friendly form; stdin is the POSIX fallback).
         #[arg(long)]
         json: Option<String>,
-        /// `cross-wave` only — parent spec name. The help text surfaces the
-        /// `--spec` flag so external grep-based AC succeed.
+        /// `agent` / `cross-wave` — spec name (pipeline attribution for
+        /// `agent`; parent spec for `cross-wave`).
         #[arg(long)]
         spec: Option<String>,
-        /// `cross-wave` only — current wave number (1-based).
+        /// `agent` / `cross-wave` — wave number (1-based).
         #[arg(long)]
         wave: Option<u32>,
+        /// `agent` only — agent identifier/role (becomes `agent_type`).
+        #[arg(long)]
+        agent: Option<String>,
+        /// `agent` only — one-line summary of what the agent produced.
+        #[arg(long)]
+        summary: Option<String>,
+        /// `agent` only — comma-separated list of files affected
+        /// (recorded under `details.files`).
+        #[arg(long)]
+        files: Option<String>,
     },
     /// One-shot ingest of legacy JSON files into the SQLite Wave 6a tables.
     ///
@@ -569,7 +579,18 @@ pub fn dispatch(cmd: RunCmd) {
             json,
             spec,
             wave,
-        } => memory::dispatch(&subcommand, json.as_deref(), spec.as_deref(), wave),
+            agent,
+            summary,
+            files,
+        } => memory::dispatch(
+            &subcommand,
+            json.as_deref(),
+            spec.as_deref(),
+            wave,
+            agent.as_deref(),
+            summary.as_deref(),
+            files.as_deref(),
+        ),
         RunCmd::MemoryIngest { delete } => memory_ingest::run(delete),
         RunCmd::PipelineStateIngest { delete } => {
             pipeline_state_ingest::run(pipeline_state_ingest::PipelineStateIngestOpts { delete })

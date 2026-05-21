@@ -1,6 +1,8 @@
 import { useNavigate } from "react-router";
 import { cn } from "@/lib/utils";
+import { PhaseStation } from "../telemetry/PhaseStation";
 import type { SpecTrack } from "@/lib/types/specs";
+import type { PhaseStationProps } from "../telemetry/PhaseStation";
 
 interface SpecTrackRowProps {
   track: SpecTrack;
@@ -64,39 +66,35 @@ function RightIndicator({ track }: { track: SpecTrack }) {
   );
 }
 
-/** 5-segment phase track */
+/**
+ * Compact phase track — one [`PhaseStation`] per phase (ANALYZE → PLAN →
+ * EXECUTE → QA → CLOSE). Replaces the previous ASCII glyph track; reuses the
+ * same component the `PipelineTimeline` uses so the visual language stays
+ * consistent across Visão Geral and drill-down. Density-reduced (no
+ * duration/event counts, no labels — handled by PhaseStation's defaults).
+ */
 function PhaseTrack({ segments }: { segments: SpecTrack["segments"] }) {
-  // Build a map phase→state for quick lookup
-  const stateMap = new Map(segments.map((s) => [s.phase.toLowerCase(), s.state]));
+  const stateMap = new Map(
+    segments.map((s) => [s.phase.toLowerCase(), s.state]),
+  );
 
   return (
-    <div className="flex items-center gap-0.5" role="img" aria-label="Fases da pipeline">
-      {PHASE_ORDER.map((phase, i) => {
-        const state = stateMap.get(phase) ?? "future";
+    <div
+      className="flex items-center gap-1"
+      role="img"
+      aria-label="Fases da pipeline"
+    >
+      {PHASE_ORDER.map((phase) => {
+        const raw = stateMap.get(phase) ?? "future";
+        const state: PhaseStationProps["state"] =
+          raw === "completed" || raw === "active" ? raw : "future";
         return (
-          <span key={phase} className="flex items-center">
-            {i > 0 && (
-              <span
-                className={cn(
-                  "mx-0.5 text-[10px] leading-none select-none",
-                  state === "future" ? "text-border" : "text-muted-foreground/50",
-                )}
-              >
-                {state === "future" ? "─" : "━"}
-              </span>
-            )}
-            <span
-              className={cn(
-                "text-[11px] leading-none select-none",
-                state === "completed" && "text-foreground",
-                state === "active" && "text-[--color-accent-mustard]",
-                state === "future" && "text-border",
-              )}
-              title={`${phase}: ${state}`}
-            >
-              {state === "completed" ? "━" : state === "active" ? "●" : "─"}
-            </span>
-          </span>
+          <PhaseStation
+            key={phase}
+            phase={phase}
+            state={state}
+            className="min-w-0 gap-0 [&_span]:hidden [&>div]:w-5 [&>div]:h-5 [&_svg]:w-3 [&_svg]:h-3"
+          />
         );
       })}
     </div>

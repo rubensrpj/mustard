@@ -111,7 +111,8 @@ export interface FileCount {
 
 export interface WorkspaceSummary {
   events_per_minute: number;
-  tokens_saved_today: number;
+  /** `null` when token-savings data is unavailable — render "—" not "0". */
+  tokens_saved_today: number | null;
   specs_active_count: number;
   spec_tracks: SpecTrack[];
   alerts: WorkspaceAlert[];

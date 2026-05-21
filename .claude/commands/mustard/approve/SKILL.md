@@ -32,7 +32,7 @@ Check if the located spec is a wave plan: look for `.claude/spec/active/{specNam
 
 **If `wave-plan.md` exists:**
 
-1. Read pipeline state via `mustard-rt run event-projections --view pipeline-state --spec {specName}` — expect `isWavePlan: true`, `totalWaves: N`, `currentWave: 1`, `completedWaves: []`.
+1. Read `.claude/.pipeline-states/{specName}.json` — expect `isWavePlan: true`, `totalWaves: N`, `currentWave: 1`, `completedWaves: []`.
 2. Read `wave-plan.md` and print its ENTIRE contents verbatim inside a fenced markdown block (```` ```markdown ... ``` ````). List each wave spec file path below the block (one line each).
 2b. **Wave size audit (advisory):** run `mustard-rt run wave-size-check --spec-dir .claude/spec/active/{specName}`.
    - If the result is `action: "audited"` and `oversizedCount > 0`, print an advisory block listing each oversized wave:
@@ -51,10 +51,12 @@ Check if the located spec is a wave plan: look for `.claude/spec/active/{specNam
    - `### Status: approved`
    - `### Phase: PLAN`
    - `### Checkpoint: {ISO timestamp now}`
-5. **Pipeline State — emit events via `mustard-rt run emit-pipeline`:**
+5. **Pipeline State — emit status transition to approved:**
    - Extract `spec-name` from the spec directory (e.g. basename of path → `2026-02-26-linked-services-card`)
-   - **If wave plan (from Step 3b):** emit `mustard-rt run emit-pipeline --kind pipeline.status --spec {spec-name} --payload '{"status":"approved","currentWave":1}'`. Parse tasks from **wave-1** spec only (not all waves). Preserve `isWavePlan`, `totalWaves`, `completedWaves`, `failedWaves` via prior events — do not rewrite.
-   - **If single spec:** Parse Tasks from spec to extract tasks per agent (DB, Backend, Frontend, etc.). Emit `mustard-rt run emit-pipeline --kind pipeline.status --spec {spec-name} --payload '{"status":"approved","tasks":[...],"model":"..."}'`. Phase is derived from `pipeline.phase` events in SQLite via `pipeline_state_for_spec`; do not persist a phase name field. The `mustard-rt run emit-phase` calls elsewhere in the pipeline remain the canonical phase signal.
+   ```bash
+   mustard-rt run emit-pipeline --kind status --spec {spec-name} --payload "{\"from\":\"draft\",\"to\":\"approved\"}"
+   ```
+   - Phase is derived from `pipeline.phase` events in SQLite; the `mustard-rt run emit-phase` calls elsewhere in the pipeline remain the canonical phase signal. No JSON file is written here.
 5b. **Memory Persist — record architectural decisions:**
    - For each significant decision in the spec (technology choices, design patterns, trade-offs):
      ```bash

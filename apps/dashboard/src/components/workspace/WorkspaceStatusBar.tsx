@@ -19,14 +19,19 @@ function LiveDot() {
 export function WorkspaceStatusBar({ summary, className }: WorkspaceStatusBarProps) {
   const epm = summary?.events_per_minute ?? 0;
   const active = summary?.specs_active_count ?? 0;
-  const saved = summary?.tokens_saved_today ?? 0;
+  const saved = summary?.tokens_saved_today ?? null;
 
+  // Render "—" when the underlying projection has no token-savings data
+  // (e.g. RTK absent), distinguishing "unavailable" from a real "0".
   const formattedSaved =
-    saved >= 1_000_000
-      ? `${(saved / 1_000_000).toFixed(1)}M`
-      : saved >= 1_000
-        ? `${(saved / 1_000).toFixed(1)}k`
-        : String(saved);
+    saved == null
+      ? "—"
+      : saved >= 1_000_000
+        ? `${(saved / 1_000_000).toFixed(1)}M`
+        : saved >= 1_000
+          ? `${(saved / 1_000).toFixed(1)}k`
+          : String(saved);
+
 
   return (
     <div
@@ -42,7 +47,8 @@ export function WorkspaceStatusBar({ summary, className }: WorkspaceStatusBarPro
         <span
           className="text-sm text-foreground/80 tabular-nums"
           style={{ fontVariantNumeric: "tabular-nums" }}
-          aria-label={`${epm.toFixed(1)} eventos por minuto`}
+          aria-label={`${epm.toFixed(1)} eventos por minuto — taxa de eventos do harness na última janela de 60 segundos`}
+          title="taxa de eventos do harness na última janela de 60 segundos"
         >
           <span className="font-medium">{epm.toFixed(1)}</span>
           <span className="text-muted-foreground text-[12px]"> eventos/min</span>
@@ -67,13 +73,27 @@ export function WorkspaceStatusBar({ summary, className }: WorkspaceStatusBarPro
           economizados hoje
         </span>
         <span
-          className="text-lg font-bold text-[--color-accent-mustard] tabular-nums"
+          className={cn(
+            "text-lg font-bold tabular-nums",
+            saved == null ? "text-muted-foreground" : "text-[--color-accent-mustard]",
+          )}
           style={{ fontVariantNumeric: "tabular-nums" }}
-          aria-label={`${formattedSaved} tokens economizados hoje`}
+          aria-label={
+            saved == null
+              ? "tokens economizados indisponível"
+              : `${formattedSaved} tokens economizados hoje`
+          }
+          title={
+            saved == null
+              ? "dados de economia de tokens indisponíveis"
+              : undefined
+          }
         >
           {formattedSaved}
         </span>
-        <span className="text-[11px] text-muted-foreground">tokens</span>
+        {saved != null && (
+          <span className="text-[11px] text-muted-foreground">tokens</span>
+        )}
       </div>
     </div>
   );

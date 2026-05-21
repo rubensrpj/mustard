@@ -207,7 +207,7 @@ apps/dashboard/src/components/specs/SpecChildrenTab.tsx         — novo: tree c
 - [ ] Wave 3 — dashboard: badge + aba "Sub-specs" + tree
 - [ ] Wave 4 — memória persistente + validação final
 - [ ] `cargo build --workspace` verde
-- [ ] `cargo test --workspace --exclude mustard-dashboard` verde
+- [x] `cargo test --workspace --exclude mustard-dashboard` verde
 - [ ] `pnpm --filter mustard-dashboard build` verde
 - [ ] AC-1 a AC-13 todos com `[x]`
 - [ ] `mustard-rt run docs-stale-check` retorna 0 hits

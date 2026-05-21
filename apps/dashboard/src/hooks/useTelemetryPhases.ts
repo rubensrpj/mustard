@@ -8,7 +8,9 @@ export function useTelemetryPhases(repoPath: string | null, timeRange: TimeRange
     queryFn: () => dashboardTelemetryPhases(repoPath as string, timeRange),
     enabled: !!repoPath,
     staleTime: 5_000,
-    refetchInterval: 5_000,
+    // spec 2026-05-20-dashboard-ux-honest Wave 3: align polling cadence of the
+    // Economia hooks (telemetry / promptEconomy / phases) at 30s.
+    refetchInterval: 30_000,
     refetchOnWindowFocus: true,
   });
 }

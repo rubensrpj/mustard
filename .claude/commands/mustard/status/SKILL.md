@@ -11,7 +11,7 @@ Shows consolidated project status. With `--harness`, shows the enforcement layer
 ## Action
 
 1. **Git Status** — run `rtk git status` and `rtk git log -1 --format=%H %s` for current branch, modified files, and last commit.
-2. **Pipeline** — run `mustard-rt run metrics collect` and surface `pipelines.specs[]` — split active (`isOrphaned: false`) from orphaned (`isOrphaned: true`). Do NOT attempt to read pipeline-state files directly. The canonical source is `pipeline_state_for_spec` projection via SQLite, surfaced through the command above.
+2. **Pipeline** — run `mustard-rt run metrics collect` and surface `pipelines.specs[]` — split active (`isOrphaned: false`) from orphaned (`isOrphaned: true`). Do NOT attempt to read `.claude/pipeline-state.json` (legacy singular path, no longer written). The canonical source is `.claude/.pipeline-states/*.json`, read via the command above.
 3. **Build** — if `.claude/.last-build.json` exists, report timestamp and pass/fail; otherwise note "no build state persisted".
 4. **Entity Registry** — read `.claude/entity-registry.json` and report `_meta.version`, `_meta.generatedAt`, and total entity count (length of `entities` or equivalent top-level collection).
 

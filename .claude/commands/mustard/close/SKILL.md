@@ -104,8 +104,12 @@ See `.claude/pipeline-config.md` Escalation Statuses for concern classification 
    - Spec is auto-archived (moved to `completed/` + state removed) when:
      - `session-cleanup` runs and the spec has been `closed-followup` for more than 24h, OR
      - A new `/mustard:feature|bugfix|task` invocation runs `mustard-rt run complete-spec <spec-name> --archive` on any pending followups first.
-6. **Pipeline State — note:**
-   - The `closed-followup` state intentionally stays around so follow-up edits get linked. The `--archive` stage emits the terminal pipeline event; no JSON file to delete.
+6. **Pipeline State — emit completion:**
+   - Emit the status transition so the SQLite projection reflects the closed state:
+     ```bash
+     mustard-rt run emit-pipeline --kind status --spec {spec-name} --payload "{\"from\":\"implementing\",\"to\":\"completed\"}"
+     ```
+   - The `closed-followup` state intentionally stays around so follow-up edits get linked. No JSON file is deleted here — the `--archive` stage in `mustard-rt run complete-spec` handles archival.
 6b. **Knowledge Capture:**
    - Review patterns discovered during this pipeline
    - For each significant pattern/convention/entity discovered:
@@ -129,7 +133,7 @@ See `.claude/pipeline-config.md` Escalation Statuses for concern classification 
    - If RTK available: extract `saved_tokens` and `savings_pct`
    - Include in output block below
 6d. **Metrics Archive:**
-   - Read metrics from `mustard-rt run event-projections --view pipeline-state --spec {spec-name}`
+   - Read metrics from `.claude/.pipeline-states/{spec-name}.json`
    - If metrics exist, ensure `.claude/metrics/` directory exists
    - Save to `.claude/metrics/{spec-name}.json`:
      ```json
@@ -184,7 +188,10 @@ See `.claude/pipeline-config.md` Escalation Statuses for concern classification 
 If the user wants to cancel (not complete):
 - Update spec: `### Status: cancelled`
 - Move to `completed/` anyway (for history)
-- Emit `mustard-rt run emit-pipeline --kind pipeline.status --spec {spec-name} --payload '{"status":"cancelled"}'`
+- Emit cancellation status event:
+  ```bash
+  mustard-rt run emit-pipeline --kind status --spec {spec-name} --payload "{\"from\":null,\"to\":\"cancelled\"}"
+  ```
 - Output: "Pipeline cancelled. Spec archived in completed/."
 
 ## Results Documentation
@@ -203,7 +210,7 @@ If output lists epics ready to fold:
 ```bash
 mustard-rt run epic-fold --epic <name>
 ```
-This consolidates learning into the `knowledge_patterns` SQLite table and marks granular events compactable.
+This consolidates learning into knowledge.json and marks granular events compactable.
 
 ## When to Use
 

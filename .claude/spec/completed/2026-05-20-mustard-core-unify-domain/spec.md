@@ -132,39 +132,39 @@ Legenda: `~` modificado, `+` criado/movido, `—` deletado.
 
 ### Wave 1 — core: renomear `io/` → `store/`
 
-- [ ] Mover fisicamente `packages/core/src/io/*.rs` para `packages/core/src/store/*.rs` (6 arquivos: mod, event_store, sqlite_store, pipeline_repo, migrations, fs).
-- [ ] Em `packages/core/src/lib.rs`: trocar `pub mod io;` por `pub mod store;`.
-- [ ] Atualizar imports internos: `use crate::io::fs` → `use crate::store::fs` (em `metrics.rs`, `store/pipeline_repo.rs`).
-- [ ] Atualizar `use crate::io::event_store::EventSink` em testes de `store/sqlite_store.rs`.
-- [ ] Atualizar doc-comments em `error.rs` (`crate::io::sqlite_store::SqliteEventStore` → `crate::store::sqlite_store::SqliteEventStore`) e em `lib.rs` (header comment).
-- [ ] Build verde: `cargo build -p mustard-core && cargo test -p mustard-core`.
+- [x] Mover fisicamente `packages/core/src/io/*.rs` para `packages/core/src/store/*.rs` (6 arquivos: mod, event_store, sqlite_store, pipeline_repo, migrations, fs).
+- [x] Em `packages/core/src/lib.rs`: trocar `pub mod io;` por `pub mod store;`.
+- [x] Atualizar imports internos: `use crate::io::fs` → `use crate::store::fs` (em `metrics.rs`, `store/pipeline_repo.rs`).
+- [x] Atualizar `use crate::io::event_store::EventSink` em testes de `store/sqlite_store.rs`.
+- [x] Atualizar doc-comments em `error.rs` (`crate::io::sqlite_store::SqliteEventStore` → `crate::store::sqlite_store::SqliteEventStore`) e em `lib.rs` (header comment).
+- [x] Build verde: `cargo build -p mustard-core && cargo test -p mustard-core`.
 
 ### Wave 2 — core: absorver `mustard-specsdb`
 
-- [ ] Criar diretório `packages/core/src/model/view/` e mover os 7 arquivos de `packages/specsdb/src/model/*.rs`, renomeando para perder o sufixo `_view` redundante (`spec_view.rs` → `spec.rs`, etc.). `filter.rs` e `mod.rs` mantêm nome.
-- [ ] Em `packages/core/src/model/view/mod.rs`: atualizar `pub mod spec_view` → `pub mod spec`, etc., preservando os `pub use` de cada item.
-- [ ] Em `packages/core/src/model/mod.rs`: adicionar `pub mod view;` + `pub use view::{…}` espelhando o que `specsdb/src/lib.rs` re-exportava.
-- [ ] Criar `packages/core/src/projection/` e mover os 6 arquivos de `packages/specsdb/src/projection/`. Atualizar imports internos: `use crate::model::…` agora resolve em `core::model::view::…` (ajustar caminhos).
-- [ ] Em `packages/core/src/lib.rs`: adicionar `pub mod projection;`.
-- [ ] Criar `packages/core/src/reader/` e mover os 3 arquivos de `packages/specsdb/src/reader/` (mod, sqlite, memory).
-- [ ] Mover `packages/specsdb/src/error.rs` para `packages/core/src/reader/error.rs`. Trocar `From<mustard_core::error::Error>` por `From<crate::error::Error>`. Atualizar doc-comment.
-- [ ] Em `packages/core/src/reader/mod.rs`: adicionar `pub mod error;` + `pub use error::{ReadError, Result as ReadResult}`. Renomear o alias para evitar colisão com `crate::error::Result`.
-- [ ] Em `packages/core/src/lib.rs`: adicionar `pub mod reader;` e re-exports raiz: `pub use reader::{InMemorySpecReader, ReadError, SpecReader, SqliteSpecReader}` + `pub use model::view::{AcStatus, AcceptanceCriterion, FileCount, Phase, PhaseSegment, QualityRollup, Scope, SegmentState, SpecFilter, SpecStatus, SpecStatusFilter, SpecSummary, SpecTrack, SpecView, TimeWindow, TimelineKind, TimelineNode, WaveStatus, WaveView, WorkspaceAlert, WorkspaceAlertKind, WorkspaceSummary}` (espelha o lib.rs do specsdb).
-- [ ] Mover `packages/specsdb/tests/reader_contract.rs` → `packages/core/tests/reader_contract.rs`. Trocar `use mustard_specsdb::` por `use mustard_core::`.
-- [ ] Atualizar header doc de `packages/core/src/lib.rs` para mencionar as camadas novas (`projection`, `reader`, `model::view`) e remover a justificativa "infra-only".
-- [ ] Build verde: `cargo build -p mustard-core && cargo test -p mustard-core`.
+- [x] Criar diretório `packages/core/src/model/view/` e mover os 7 arquivos de `packages/specsdb/src/model/*.rs`, renomeando para perder o sufixo `_view` redundante (`spec_view.rs` → `spec.rs`, etc.). `filter.rs` e `mod.rs` mantêm nome.
+- [x] Em `packages/core/src/model/view/mod.rs`: atualizar `pub mod spec_view` → `pub mod spec`, etc., preservando os `pub use` de cada item.
+- [x] Em `packages/core/src/model/mod.rs`: adicionar `pub mod view;` + `pub use view::{…}` espelhando o que `specsdb/src/lib.rs` re-exportava.
+- [x] Criar `packages/core/src/projection/` e mover os 6 arquivos de `packages/specsdb/src/projection/`. Atualizar imports internos: `use crate::model::…` agora resolve em `core::model::view::…` (ajustar caminhos).
+- [x] Em `packages/core/src/lib.rs`: adicionar `pub mod projection;`.
+- [x] Criar `packages/core/src/reader/` e mover os 3 arquivos de `packages/specsdb/src/reader/` (mod, sqlite, memory).
+- [x] Mover `packages/specsdb/src/error.rs` para `packages/core/src/reader/error.rs`. Trocar `From<mustard_core::error::Error>` por `From<crate::error::Error>`. Atualizar doc-comment.
+- [x] Em `packages/core/src/reader/mod.rs`: adicionar `pub mod error;` + `pub use error::{ReadError, Result as ReadResult}`. Renomear o alias para evitar colisão com `crate::error::Result`.
+- [x] Em `packages/core/src/lib.rs`: adicionar `pub mod reader;` e re-exports raiz: `pub use reader::{InMemorySpecReader, ReadError, SpecReader, SqliteSpecReader}` + `pub use model::view::{AcStatus, AcceptanceCriterion, FileCount, Phase, PhaseSegment, QualityRollup, Scope, SegmentState, SpecFilter, SpecStatus, SpecStatusFilter, SpecSummary, SpecTrack, SpecView, TimeWindow, TimelineKind, TimelineNode, WaveStatus, WaveView, WorkspaceAlert, WorkspaceAlertKind, WorkspaceSummary}` (espelha o lib.rs do specsdb).
+- [x] Mover `packages/specsdb/tests/reader_contract.rs` → `packages/core/tests/reader_contract.rs`. Trocar `use mustard_specsdb::` por `use mustard_core::`.
+- [x] Atualizar header doc de `packages/core/src/lib.rs` para mencionar as camadas novas (`projection`, `reader`, `model::view`) e remover a justificativa "infra-only".
+- [x] Build verde: `cargo build -p mustard-core && cargo test -p mustard-core`.
 
 ### Wave 3 — consumidores + delete
 
-- [ ] `apps/rt/Cargo.toml`: remover linha `mustard-specsdb = { path = "../../packages/specsdb" }`.
-- [ ] `apps/rt/src/run/qa_run_all.rs`: trocar `use mustard_specsdb::{SpecFilter, SpecStatusFilter, SqliteSpecReader, SpecReader}` por `use mustard_core::{SpecFilter, SpecStatusFilter, SqliteSpecReader, SpecReader}`. Trocar `mustard_specsdb::TimeWindow::All` por `mustard_core::TimeWindow::All`.
-- [ ] `apps/rt/src/run/rebuild_specs.rs`: trocar todas as ocorrências de `mustard_specsdb::` por `mustard_core::` (use statements + qualifiers em `Phase::Analyze`, `SpecView`, etc.).
-- [ ] `apps/dashboard/src-tauri/Cargo.toml`: remover linha `mustard-specsdb = { path = "../../../packages/specsdb" }`.
-- [ ] `apps/dashboard/src-tauri/src/spec_views.rs`: trocar as ~10 ocorrências de `mustard_specsdb::` por `mustard_core::`.
-- [ ] `Cargo.toml` raiz: remover `"packages/specsdb"` da lista `members`.
-- [ ] Deletar diretório `packages/specsdb/` inteiro.
-- [ ] Rodar `cargo build --workspace --exclude mustard-dashboard` para regenerar `Cargo.lock` sem a entrada `mustard-specsdb`.
-- [ ] Build verde: `cargo build --workspace --exclude mustard-dashboard && cargo test -p mustard-rt && cargo test -p mustard-dashboard && pnpm --filter mustard-dashboard build`.
+- [x] `apps/rt/Cargo.toml`: remover linha `mustard-specsdb = { path = "../../packages/specsdb" }`.
+- [x] `apps/rt/src/run/qa_run_all.rs`: trocar `use mustard_specsdb::{SpecFilter, SpecStatusFilter, SqliteSpecReader, SpecReader}` por `use mustard_core::{SpecFilter, SpecStatusFilter, SqliteSpecReader, SpecReader}`. Trocar `mustard_specsdb::TimeWindow::All` por `mustard_core::TimeWindow::All`.
+- [x] `apps/rt/src/run/rebuild_specs.rs`: trocar todas as ocorrências de `mustard_specsdb::` por `mustard_core::` (use statements + qualifiers em `Phase::Analyze`, `SpecView`, etc.).
+- [x] `apps/dashboard/src-tauri/Cargo.toml`: remover linha `mustard-specsdb = { path = "../../../packages/specsdb" }`.
+- [x] `apps/dashboard/src-tauri/src/spec_views.rs`: trocar as ~10 ocorrências de `mustard_specsdb::` por `mustard_core::`.
+- [x] `Cargo.toml` raiz: remover `"packages/specsdb"` da lista `members`.
+- [x] Deletar diretório `packages/specsdb/` inteiro.
+- [x] Rodar `cargo build --workspace --exclude mustard-dashboard` para regenerar `Cargo.lock` sem a entrada `mustard-specsdb`.
+- [x] Build verde: `cargo build --workspace --exclude mustard-dashboard && cargo test -p mustard-rt && cargo test -p mustard-dashboard && pnpm --filter mustard-dashboard build`.
 
 ## Dependências
 

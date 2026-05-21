@@ -1,11 +1,12 @@
 # metrics-writers-pipeline-key — números honestos para `metrics wave-status`
 
 ### Parent: [[2026-05-20-mustard-wave-network-standard]]
-### Status: draft
-### Phase: ANALYZE
+### Status: superseded
+### Phase: CANCELLED
 ### Scope: full
-### Checkpoint: 2026-05-20T20:50:00Z
+### Checkpoint: 2026-05-20T23:59:00Z
 ### Lang: pt
+### Superseded-by: [[2026-05-20-economia-moat-unification]] — wave-4-attribution AC-5/AC-6 absorvem os 2 itens que esta spec não cobria por outro caminho. O fix proposto aqui (patch local em `metrics_wave_status.rs`) foi substituído pelo refactor de domínio em `packages/core/src/economy/` que resolve a causa raiz (writers emitindo dados incompletos + reader procurando no lugar errado) ao consolidar tudo num módulo único.
 
 ## PRD
 

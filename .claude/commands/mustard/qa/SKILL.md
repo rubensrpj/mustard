@@ -41,32 +41,25 @@ mustard-rt run qa-run --spec {specName}
 
 If `mustard-rt` not found: dispatch Task(general-purpose) with QA agent context loaded from `.claude/context/qa/qa.core.md`.
 
-### Step 4 — Update pipeline state
+### Step 4 — QA result is emitted automatically
 
-```json
-{
-  "phaseName": "QA",
-  "qa": {
-    "iteration": 1,
-    "lastRun": "{ISO now}",
-    "overall": "pass|fail|skip"
-  }
-}
-```
+`mustard-rt run qa-run` emits a `qa.result` event into the SQLite store on every run. No pipeline-state JSON write is needed — the close-gate reads the `qa.result` event directly from the event log.
 
 ### Step 5 — Branch on result
 
 **Overall = pass:**
 - Output QA report
-- Update pipeline state: `phaseName: "CLOSE"`
+- Emit phase transition to CLOSE:
+  ```bash
+  mustard-rt run emit-phase --spec {specName} --to CLOSE
+  ```
 - Output: "QA passed. All criteria met. Run `/mustard:close` or proceed to CLOSE."
 
 **Overall = fail:**
 - Output QA report with failing criteria
 - Output: "QA failed. Fix the following before re-running /mustard:qa:"
   - List each FAIL criterion with its command
-- Increment `qa.iteration` in pipeline state
-- If `qa.iteration >= 3`: STOP and `AskUserQuestion`: "QA has failed 3 times. Manual intervention required. Review the failing criteria and decide: (a) Fix and retry, (b) Relax the AC in the spec, (c) Abort pipeline."
+- Track iteration count in memory (no pipeline-state write). After 3 failures: STOP and `AskUserQuestion`: "QA has failed 3 times. Manual intervention required. Review the failing criteria and decide: (a) Fix and retry, (b) Relax the AC in the spec, (c) Abort pipeline."
 
 **Overall = skip (no AC section):**
 - Warn user: "No Acceptance Criteria in spec — QA skipped. Consider adding AC before CLOSE."

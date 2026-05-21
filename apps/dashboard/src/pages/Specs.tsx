@@ -1,6 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery, useQueries } from "@tanstack/react-query";
-import { Search } from "lucide-react";
+import {
+  Search,
+  PlayCircle,
+  Eye,
+  AlertOctagon,
+  CheckCircle2,
+  CircleDashed,
+} from "lucide-react";
 import { useStore } from "@/lib/store";
 import {
   useProjects,
@@ -102,6 +109,43 @@ function SpecsTopBar({
   );
 }
 
+// ── Row + drill-down combo (used by flat and grouped renderings) ────────────
+interface SpecRowProps {
+  s: SpecCard;
+  repoPath: string | null;
+  expanded: boolean;
+  onToggle: () => void;
+}
+
+function SpecRow({ s, repoPath, expanded, onToggle }: SpecRowProps) {
+  return (
+    <div className="flex flex-col">
+      {/* Clicking the card header area toggles drill-down; the FileText
+          button and SpecActionMenu have stopPropagation internally. */}
+      <div
+        role="button"
+        tabIndex={0}
+        onClick={onToggle}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            onToggle();
+          }
+        }}
+        className="cursor-pointer"
+        aria-expanded={expanded}
+      >
+        <SpecCardComponent data={s} repoPath={repoPath} />
+      </div>
+      {expanded && (
+        <div className="mt-1 ml-2 border-l-2 border-border/40 pl-3">
+          <SpecDrillDown repoPath={repoPath} spec={s.spec} />
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Main page ─────────────────────────────────────────────────────────────────
 export function Specs() {
   const projectsRoot = useStore((s) => s.projectsRoot);
@@ -109,7 +153,10 @@ export function Specs() {
   const projects = useProjects();
   const activeProject = projects.find((p) => p.id === activeWorkspaceId) ?? null;
 
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>("todas");
+  // Default to "ativas" — the primary use-case is "what's running now",
+  // not "everything ever". The legacy default of "todas" buried current
+  // work under closed history (spec 2026-05-20-dashboard-ux-honest).
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("ativas");
   const [dateFilter, setDateFilter] = useState<DateFilter>("all");
   const [search, setSearch] = useState("");
   const [expanded, setExpanded] = useState<string | null>(null);
@@ -174,6 +221,35 @@ export function Specs() {
   ]);
   const isActive = (c: SpecCard) => !TERMINAL_STATUSES.has(c.status);
 
+  // Status → group bucket (used when statusFilter === "todas" so the list
+  // is grouped instead of a flat 70+ row scroll). Order matches the spec:
+  // Ativas → Em revisão → Bloqueadas → Concluídas → Sem eventos.
+  type GroupKey = "ativas" | "revisao" | "bloqueadas" | "concluidas" | "sem-eventos";
+  const GROUP_ORDER: GroupKey[] = [
+    "ativas",
+    "revisao",
+    "bloqueadas",
+    "concluidas",
+    "sem-eventos",
+  ];
+  const GROUP_META: Record<
+    GroupKey,
+    { label: string; Icon: typeof PlayCircle }
+  > = {
+    ativas: { label: "Ativas", Icon: PlayCircle },
+    revisao: { label: "Em revisão", Icon: Eye },
+    bloqueadas: { label: "Bloqueadas", Icon: AlertOctagon },
+    concluidas: { label: "Concluídas", Icon: CheckCircle2 },
+    "sem-eventos": { label: "Sem eventos", Icon: CircleDashed },
+  };
+  function groupKeyForStatus(status: string): GroupKey {
+    if (status === "no-events") return "sem-eventos";
+    if (status === "blocked" || status === "wave-failed") return "bloqueadas";
+    if (status === "reviewing" || status === "qa") return "revisao";
+    if (TERMINAL_STATUSES.has(status)) return "concluidas";
+    return "ativas";
+  }
+
   const filteredSpecs = useMemo<SpecCard[]>(() => {
     return cards
       .filter((c) => {
@@ -209,6 +285,21 @@ export function Specs() {
         return tb - ta;
       });
   }, [cards, statusFilter, dateCutoff, search]);
+
+  // When the user explicitly asks for "todas", surface the spec mix as
+  // semantic groups instead of a flat list. The flat list still wins for
+  // "ativas" / "encerradas" since those filters are already single-bucket.
+  const groupedByStatus = useMemo<[GroupKey, SpecCard[]][]>(() => {
+    if (statusFilter !== "todas") return [];
+    const map = new Map<GroupKey, SpecCard[]>();
+    for (const key of GROUP_ORDER) map.set(key, []);
+    for (const c of filteredSpecs) {
+      const key = groupKeyForStatus(c.status);
+      map.get(key)!.push(c);
+    }
+    return GROUP_ORDER.map((k) => [k, map.get(k) ?? []] as [GroupKey, SpecCard[]])
+      .filter(([, list]) => list.length > 0);
+  }, [statusFilter, filteredSpecs]);
 
   // ── Gate cascade ─────────────────────────────────────────────────────────
   if (!projectsRoot) {
@@ -277,39 +368,51 @@ export function Specs() {
             title="Nenhuma spec encontrada"
             description="Ajuste os filtros ou rode uma pipeline com /mustard:feature."
           />
+        ) : statusFilter === "todas" ? (
+          <div className="flex flex-col gap-5">
+            {groupedByStatus.map(([key, list]) => {
+              const meta = GROUP_META[key];
+              const Icon = meta.Icon;
+              return (
+                <section key={key} className="flex flex-col gap-2">
+                  <header className="flex items-center gap-2 text-[11px] uppercase tracking-wide text-muted-foreground">
+                    <Icon className="h-3.5 w-3.5" aria-hidden />
+                    <span className="font-medium">{meta.label}</span>
+                    <span className="tabular-nums text-muted-foreground/60"
+                      style={{ fontVariantNumeric: "tabular-nums" }}
+                    >
+                      {list.length}
+                    </span>
+                  </header>
+                  <div className="flex flex-col gap-2">
+                    {list.map((s) => (
+                      <SpecRow
+                        key={s.spec}
+                        s={s}
+                        repoPath={activeProject?.path ?? null}
+                        expanded={expanded === s.spec}
+                        onToggle={() =>
+                          setExpanded((prev) => (prev === s.spec ? null : s.spec))
+                        }
+                      />
+                    ))}
+                  </div>
+                </section>
+              );
+            })}
+          </div>
         ) : (
           <div className="flex flex-col gap-2">
             {filteredSpecs.map((s) => (
-              <div key={s.spec} className="flex flex-col">
-                {/* Clicking the card header area toggles drill-down; the
-                    SpecActionMenu (kebab) has stopPropagation internally. */}
-                <div
-                  role="button"
-                  tabIndex={0}
-                  onClick={() => setExpanded((prev) => (prev === s.spec ? null : s.spec))}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" || e.key === " ") {
-                      e.preventDefault();
-                      setExpanded((prev) => (prev === s.spec ? null : s.spec));
-                    }
-                  }}
-                  className="cursor-pointer"
-                  aria-expanded={expanded === s.spec}
-                >
-                  <SpecCardComponent
-                    data={s}
-                    repoPath={activeProject?.path ?? null}
-                  />
-                </div>
-                {expanded === s.spec && (
-                  <div className="mt-1 ml-2 border-l-2 border-border/40 pl-3">
-                    <SpecDrillDown
-                      repoPath={activeProject?.path ?? null}
-                      spec={s.spec}
-                    />
-                  </div>
-                )}
-              </div>
+              <SpecRow
+                key={s.spec}
+                s={s}
+                repoPath={activeProject?.path ?? null}
+                expanded={expanded === s.spec}
+                onToggle={() =>
+                  setExpanded((prev) => (prev === s.spec ? null : s.spec))
+                }
+              />
             ))}
           </div>
         )}

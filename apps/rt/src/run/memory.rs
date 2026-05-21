@@ -363,17 +363,54 @@ fn run_knowledge(input: &Value) {
     }
 }
 
+/// Build the [`run_agent`] input JSON from flat CLI flags. Used when the
+/// caller passes `--agent`/`--summary`/`--files`/`--spec`/`--wave` instead
+/// of crafting a full `--json '{...}'` payload.
+fn agent_input_from_flags(
+    spec: Option<&str>,
+    wave: Option<u32>,
+    agent: Option<&str>,
+    summary: Option<&str>,
+    files: Option<&str>,
+) -> Value {
+    let files_arr: Vec<Value> = files
+        .map(|s| {
+            s.split(',')
+                .map(str::trim)
+                .filter(|p| !p.is_empty())
+                .map(|p| Value::String(p.to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut details = serde_json::Map::new();
+    if !files_arr.is_empty() {
+        details.insert("files".to_string(), Value::Array(files_arr));
+    }
+    json!({
+        "agent_type": agent.unwrap_or("unknown"),
+        "wave": wave,
+        "pipeline": spec.unwrap_or(""),
+        "summary": summary.unwrap_or(""),
+        "details": Value::Object(details),
+    })
+}
+
 /// Dispatch `mustard-rt run memory <subcommand>`.
 ///
 /// `agent`, `decision`, `knowledge` are the write subcommands fed by JSON via
-/// `--json`/stdin. `cross-wave` is the read subcommand; clap parses its
-/// `--spec` / `--wave` flags into the dedicated arguments threaded through
-/// from `RunCmd::Memory`.
+/// `--json`/stdin, **or** — for `agent` only — via the flat flags
+/// `--agent`/`--summary`/`--files`/`--spec`/`--wave` (PowerShell-friendly,
+/// no quoting gymnastics). `cross-wave` is the read subcommand; clap parses
+/// its `--spec` / `--wave` flags into the dedicated arguments threaded
+/// through from `RunCmd::Memory`.
 pub fn dispatch(
     subcommand: &str,
     json_arg: Option<&str>,
     spec: Option<&str>,
     wave: Option<u32>,
+    agent: Option<&str>,
+    summary: Option<&str>,
+    files: Option<&str>,
 ) {
     if subcommand == "cross-wave" || subcommand == "cross_wave" {
         crate::run::memory_cross_wave::run(spec, wave);
@@ -383,9 +420,23 @@ pub fn dispatch(
         println!(
             "Usage: memory <agent|decision|knowledge|cross-wave> [--json '<JSON>']"
         );
-        println!("  cross-wave: --spec <name> --wave <N>");
+        println!("  agent (flat form): --spec <name> --wave <N> --agent <type> --summary <text> --files <a.ts,b.ts>");
+        println!("  cross-wave:        --spec <name> --wave <N>");
         return;
     }
+
+    // Flat-flag ergonomic form for `agent`: no --json, but at least one of
+    // --agent / --summary / --files / --spec / --wave provided. Skips
+    // stdin entirely so callers that never wired stdin (most one-shot CLI
+    // invocations and pipeline orchestrators) work out of the box.
+    let has_any_flat =
+        agent.is_some() || summary.is_some() || files.is_some() || spec.is_some() || wave.is_some();
+    if subcommand == "agent" && json_arg.is_none() && has_any_flat {
+        let input = agent_input_from_flags(spec, wave, agent, summary, files);
+        run_agent(&input);
+        return;
+    }
+
     let raw = read_input(json_arg);
     let input: Value = match serde_json::from_str(&raw) {
         Ok(v) => v,
@@ -479,6 +530,32 @@ mod tests {
         assert_eq!(count, 2);
         // confidence is updated to the latest value.
         assert!((confidence - 0.6).abs() < 1e-9);
+    }
+
+    #[test]
+    fn agent_input_from_flags_builds_expected_shape() {
+        let input = agent_input_from_flags(
+            Some("spec-X"),
+            Some(2),
+            Some("wave-1-badges"),
+            Some("did the thing"),
+            Some("a.ts, b.ts ,c.ts"),
+        );
+        assert_eq!(input["agent_type"], json!("wave-1-badges"));
+        assert_eq!(input["wave"], json!(2));
+        assert_eq!(input["pipeline"], json!("spec-X"));
+        assert_eq!(input["summary"], json!("did the thing"));
+        assert_eq!(input["details"]["files"], json!(["a.ts", "b.ts", "c.ts"]));
+    }
+
+    #[test]
+    fn agent_input_from_flags_handles_omitted_fields() {
+        let input = agent_input_from_flags(None, None, None, None, None);
+        assert_eq!(input["agent_type"], json!("unknown"));
+        assert_eq!(input["wave"], Value::Null);
+        assert_eq!(input["pipeline"], json!(""));
+        assert_eq!(input["summary"], json!(""));
+        assert!(input["details"].as_object().unwrap().is_empty());
     }
 
     #[test]

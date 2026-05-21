@@ -30,11 +30,11 @@ description: Manage the project knowledge base — list entries, search by term,
 
 ## list
 
-Reads knowledge patterns from the `knowledge_patterns` SQLite table and displays all entries grouped by type.
+Reads `.claude/knowledge.json` and displays all entries grouped by type.
 
 ### Flow
 
-1. Run `mustard-rt run event-projections --view knowledge-list` (if command fails or returns empty: "No knowledge base found. Run a pipeline or use `/knowledge add` to start one.")
+1. Read `.claude/knowledge.json` (if missing: "No knowledge base found. Run a pipeline or use `/knowledge add` to start one.")
 2. Group entries by `type` (pattern / convention / entity)
 3. Display formatted:
    ```
@@ -120,7 +120,7 @@ Filters knowledge entries matching the search term across `name`, `description`,
 
 ### Flow
 
-1. Run `mustard-rt run event-projections --view knowledge-list` and filter results
+1. Read `.claude/knowledge.json`
 2. Lowercase-match `term` against `name`, `description`, and each tag
 3. Display matching entries grouped by type (same format as `list`)
 4. If no matches: "No entries matching '{term}' found."
@@ -239,7 +239,7 @@ Reads export JSON, pipes each entry to `mustard-rt run memory knowledge` (dedupl
 
 ## Rules
 
-- The `knowledge_patterns` SQLite table is persistent — never deleted by session-cleanup
+- knowledge.json is persistent — never deleted by session-cleanup
 - `add` and pipeline capture both call the same `mustard-rt run memory knowledge` subcommand
 - `search` is case-insensitive
 - Always show entry count in list/search output

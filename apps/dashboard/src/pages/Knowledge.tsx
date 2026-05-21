@@ -14,6 +14,11 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { KnowledgeCard } from "@/components/KnowledgeCard";
 import {
+  KnowledgeBadge,
+  KIND_BADGE,
+  kindFromType,
+} from "@/components/knowledge/KnowledgeBadge";
+import {
   PageHeader,
   SectionHeader,
   EmptyState,
@@ -55,6 +60,11 @@ function typeRank(t: string): number {
   const i = TYPE_ORDER.indexOf(t);
   return i === -1 ? TYPE_ORDER.length : i;
 }
+
+// Page-level alias of the kind→colour lookup from `KnowledgeBadge`, used to
+// theme container styles (not just inline badges) so the friction sub-section
+// frame stays consistent with the friction badge swatch.
+const typeColor = KIND_BADGE;
 
 function truncate(s: string, n: number): string {
   return s.length > n ? s.slice(0, n - 1) + "…" : s;
@@ -273,9 +283,10 @@ export function Knowledge() {
                     key={row.id}
                     className="flex items-baseline gap-2 flex-wrap px-2 py-1.5 rounded hover:bg-muted/40"
                   >
-                    <Badge variant="secondary" className="text-[11px] py-0">
-                      {labelType(row.type)}
-                    </Badge>
+                    <KnowledgeBadge
+                      kind={kindFromType(row.type)}
+                      label={labelType(row.type)}
+                    />
                     <span className="font-mono font-medium text-[13px]">{row.name}</span>
                     {row.description && (
                       <span className="text-muted-foreground text-[12.5px] basis-full pl-1">
@@ -324,9 +335,10 @@ export function Knowledge() {
                 {grouped.map(([type, rows]) => (
                   <div key={type} className="flex flex-col gap-2">
                     <div className="flex items-baseline gap-2">
-                      <h3 className="text-[11px] uppercase tracking-wider font-medium text-muted-foreground">
-                        {labelType(type)}
-                      </h3>
+                      <KnowledgeBadge
+                        kind={kindFromType(type)}
+                        label={labelType(type)}
+                      />
                       <span className="text-[11px] font-mono text-muted-foreground/50">
                         {rows.length}
                       </span>
@@ -359,6 +371,7 @@ function FrictionRow({ f }: { f: FrictionEntry }) {
           className="h-3.5 w-3.5 text-[--color-accent-mustard] self-center shrink-0"
           aria-hidden
         />
+        <KnowledgeBadge kind="friction" />
         <span className="font-mono font-medium text-[13px]">{f.name}</span>
         {f.retry_count != null && (
           <Badge
@@ -436,18 +449,31 @@ function FrictionSection({
             </ul>
           )}
           {legacyFriction.length > 0 && (
-            <CollapsibleGroup
-              label="Telemetria legada"
-              count={legacyFriction.length}
-              hint="Entradas de fricção (heavy-pipeline, high-hook-retry, .metrics) gravadas em knowledge.json por um extractor antigo, sem contadores medidos. Mantidas só para inspeção."
-              className={measured.length > 0 ? "border-t border-border/40 pt-1" : ""}
+            <div
+              className={
+                "rounded bg-muted/30 p-3 mt-3 " +
+                typeColor.friction +
+                (measured.length > 0 ? " border-t" : "")
+              }
             >
-              <ul className="flex flex-col gap-2 mt-2">
-                {legacyFriction.map((f) => (
-                  <FrictionRow key={f.name} f={f} />
-                ))}
-              </ul>
-            </CollapsibleGroup>
+              <div className="flex items-baseline gap-2 mb-2">
+                <KnowledgeBadge kind="friction" label="Atrito" />
+                <span className="text-[11px] uppercase tracking-wider font-medium text-muted-foreground">
+                  Telemetria legada
+                </span>
+              </div>
+              <CollapsibleGroup
+                label="Mostrar entradas"
+                count={legacyFriction.length}
+                hint="Entradas de fricção (heavy-pipeline, high-hook-retry, .metrics) gravadas em knowledge.json por um extractor antigo, sem contadores medidos. Mantidas só para inspeção."
+              >
+                <ul className="flex flex-col gap-2 mt-2">
+                  {legacyFriction.map((f) => (
+                    <FrictionRow key={f.name} f={f} />
+                  ))}
+                </ul>
+              </CollapsibleGroup>
+            </div>
           )}
         </DataCard>
       )}
