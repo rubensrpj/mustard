@@ -1,12 +1,29 @@
-// Wave 6 — recursive trace viewer.
+// Wave 6 + Followup-fix (2026-05-21, spec `2026-05-21-economia-moat-followup-fixes`).
 //
-// Renders a spec → wave → agent → tool tree as nested native <details>
-// blocks so keyboard / a11y come for free and lazy rendering of `payload`
-// happens via the browser instead of React state. `TraceNodeRow` is memoized
-// to keep large trees performant — pure presentation, no fetch.
+// Hierarchical trace viewer for `spec → wave → agent → tool`. Each node is
+// rendered as a card (claude-devtools style): elevated background when open,
+// flat sunken background when collapsed; large coloured icon per kind on the
+// left; semantic badges (kind label, model, duration, tokens) on the right.
+//
+// Hierarchy is conveyed by a solid `border-l-2` connector + left padding,
+// not by a tree-of-rows. Native `<details>` keeps a11y / keyboard for free
+// and lets the browser handle lazy mounting of `payload` for tool nodes.
+//
+// Top-level toolbar exposes "Expand all" / "Collapse all" via a numeric
+// generation counter — each click bumps a `forcedKey` that `<TraceNodeRow>`
+// merges into its `<details>` `open` prop, so users can also collapse /
+// expand individual sub-trees manually between bulk actions.
 
-import { memo, type ReactNode } from "react";
-import { Square, Layers, Cpu, Wrench, ChevronRight } from "lucide-react";
+import { memo, useState, type ReactNode } from "react";
+import {
+  Square,
+  Layers,
+  Cpu,
+  Wrench,
+  ChevronRight,
+  ChevronsDownUp,
+  ChevronsUpDown,
+} from "lucide-react";
 import { useSpecTrace } from "@/hooks/useSpecTrace";
 import type { TraceKind, TraceNode, TokenBreakdown } from "@/lib/types/trace";
 import { MetricsPill } from "@/components/ds";
@@ -22,9 +39,7 @@ interface ExecutionTraceProps {
 
 /**
  * Top-level trace container. Renders the empty state when the query has no
- * inputs (no active spec, no workspace) and lets the recursive `TraceNodeRow`
- * handle the rest. The component is intentionally thin so other pages
- * (Workspace, Specs drill-down) can embed it without re-wrapping.
+ * inputs and delegates the rest to the recursive `TraceNodeRow`.
  */
 export function ExecutionTrace({
   projectPath,
@@ -32,6 +47,12 @@ export function ExecutionTrace({
   className,
 }: ExecutionTraceProps) {
   const { data, isLoading, error } = useSpecTrace(projectPath, specName);
+  // `forced` carries the latest bulk-expand/collapse intent. `null` means
+  // "respect each node's default"; any number is an even/odd generation that
+  // toggles every click so the same intent applied twice still re-renders.
+  const [forced, setForced] = useState<{ open: boolean; gen: number } | null>(
+    null,
+  );
 
   if (!projectPath || !specName) {
     return (
@@ -42,9 +63,12 @@ export function ExecutionTrace({
   }
   if (isLoading) {
     return (
-      <div className={cn("flex flex-col gap-1 px-2 py-3", className)}>
+      <div className={cn("flex flex-col gap-2 px-2 py-3", className)}>
         {[0, 1, 2].map((i) => (
-          <div key={i} className="h-7 bg-[--ds-surface-hover] rounded animate-pulse" />
+          <div
+            key={i}
+            className="h-12 bg-[--ds-surface-hover] rounded-[--ds-radius-md] animate-pulse"
+          />
         ))}
       </div>
     );
@@ -65,8 +89,40 @@ export function ExecutionTrace({
   }
 
   return (
-    <div className={cn("flex flex-col gap-0.5 font-sans text-[13px]", className)}>
-      <TraceNodeRow node={data} depth={0} />
+    <div className={cn("flex flex-col gap-2 font-sans text-[13px]", className)}>
+      <div className="flex items-center gap-1 self-end text-[11px] text-[--ds-text-tertiary]">
+        <button
+          type="button"
+          onClick={() =>
+            setForced({ open: true, gen: (forced?.gen ?? 0) + 1 })
+          }
+          className={cn(
+            "inline-flex items-center gap-1 px-2 py-1 rounded-[--ds-radius-sm]",
+            "hover:bg-[--ds-surface-hover] hover:text-[--ds-text-primary]",
+            "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[--ds-accent-primary]/60",
+          )}
+          title="Expandir tudo"
+        >
+          <ChevronsUpDown size={12} aria-hidden />
+          Expandir tudo
+        </button>
+        <button
+          type="button"
+          onClick={() =>
+            setForced({ open: false, gen: (forced?.gen ?? 0) + 1 })
+          }
+          className={cn(
+            "inline-flex items-center gap-1 px-2 py-1 rounded-[--ds-radius-sm]",
+            "hover:bg-[--ds-surface-hover] hover:text-[--ds-text-primary]",
+            "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[--ds-accent-primary]/60",
+          )}
+          title="Colapsar tudo"
+        >
+          <ChevronsDownUp size={12} aria-hidden />
+          Colapsar tudo
+        </button>
+      </div>
+      <TraceNodeRow node={data} depth={0} forced={forced} />
     </div>
   );
 }
@@ -76,6 +132,8 @@ export function ExecutionTrace({
 interface TraceNodeRowProps {
   node: TraceNode;
   depth: number;
+  /** Latest bulk expand/collapse intent (see `ExecutionTrace`). */
+  forced: { open: boolean; gen: number } | null;
 }
 
 const KIND_ICON: Record<TraceKind, typeof Square> = {
@@ -85,87 +143,156 @@ const KIND_ICON: Record<TraceKind, typeof Square> = {
   tool: Wrench,
 };
 
-const KIND_TEXT: Record<TraceKind, string> = {
-  spec:  "text-[--ds-accent-primary]",
-  wave:  "text-[--ds-intent-info]",
-  agent: "text-[--ds-text-primary]",
-  tool:  "text-[--ds-text-secondary]",
+/** Icon colour per kind — see spec `2026-05-21-economia-moat-followup-fixes`
+ *  (claude-devtools palette: indigo / blue / green / amber). */
+const KIND_ICON_COLOR: Record<TraceKind, string> = {
+  spec: "text-[--ds-accent-primary]",
+  wave: "text-[--ds-intent-info]",
+  agent: "text-[--ds-intent-success]",
+  tool: "text-[--ds-status-draft]",
+};
+
+const KIND_LABEL: Record<TraceKind, string> = {
+  spec: "SPEC",
+  wave: "WAVE",
+  agent: "AGENT",
+  tool: "TOOL",
 };
 
 const TraceNodeRow = memo(function TraceNodeRow({
   node,
   depth,
+  forced,
 }: TraceNodeRowProps) {
   const Icon = KIND_ICON[node.kind];
+  const iconColor = KIND_ICON_COLOR[node.kind];
   const hasChildren = node.children.length > 0;
-  // Specs and waves stay open by default (top-of-tree context); agents and
-  // tools collapse so the initial view doesn't drown the reader.
+  // Specs and waves stay open by default; agents/tools collapse so the
+  // initial view doesn't drown the reader.
   const defaultOpen = node.kind === "spec" || node.kind === "wave";
-  // Indentation is a flat margin per depth — keeps the tree shallow visually
-  // even at depth=3 (tool nodes) while still preserving hierarchy.
-  const indentClass = depth === 0 ? "" : "ml-3 pl-2 border-l border-dashed border-[--ds-surface-hover]";
 
-  const summary: ReactNode = (
+  // Local open state — initialised from `defaultOpen`, overridden whenever a
+  // new bulk intent (`forced.gen`) lands. Users can still toggle individual
+  // nodes between bulk actions because we only consume `forced` on the
+  // generation change.
+  const [open, setOpen] = useState<boolean>(defaultOpen);
+  const [lastGen, setLastGen] = useState<number>(0);
+  if (forced && forced.gen !== lastGen) {
+    setLastGen(forced.gen);
+    setOpen(forced.open);
+  }
+
+  // Indentation is owned by the parent's `children` container, so each row
+  // only worries about its own card. Tool leaves get no expand chevron when
+  // they have no payload.
+  const expandable = hasChildren || node.kind === "tool";
+
+  const header: ReactNode = (
     <div
       className={cn(
-        "flex items-center gap-2 py-1 px-1.5 rounded-[--ds-radius-sm] cursor-pointer select-none",
-        "hover:bg-[--ds-surface-hover]",
+        "flex items-center gap-2.5 px-3 py-2 rounded-[--ds-radius-md]",
+        "cursor-pointer select-none transition-colors",
+        open
+          ? "bg-[--ds-surface-elevated] border border-[--ds-surface-hover]"
+          : "bg-[--ds-surface-base] border border-transparent hover:bg-[--ds-surface-hover]",
       )}
     >
-      {hasChildren ? (
+      {expandable ? (
         <ChevronRight
-          size={12}
-          className="text-[--ds-text-tertiary] transition-transform group-open:rotate-90 shrink-0"
+          size={14}
+          className={cn(
+            "text-[--ds-text-tertiary] shrink-0 transition-transform",
+            open && "rotate-90",
+          )}
+          aria-hidden
         />
       ) : (
-        <span className="inline-block w-3 shrink-0" />
+        <span className="inline-block w-3.5 shrink-0" />
       )}
-      <Icon size={13} className={cn("shrink-0", KIND_TEXT[node.kind])} />
-      <span className={cn("truncate flex-1 text-[13px]", KIND_TEXT[node.kind])}>
+      <Icon size={18} className={cn("shrink-0", iconColor)} aria-hidden />
+      <span className="font-medium text-[13px] text-[--ds-text-primary] truncate flex-1 min-w-0">
         {node.label}
       </span>
+      <span
+        className={cn(
+          "shrink-0 px-1.5 py-0.5 rounded-[--ds-radius-sm]",
+          "text-[10px] tracking-wide font-medium",
+          "bg-[--ds-surface-hover] text-[--ds-text-secondary]",
+        )}
+        title={`kind: ${node.kind}`}
+      >
+        {KIND_LABEL[node.kind]}
+      </span>
+      {modelOf(node) ? (
+        <span
+          className={cn(
+            "shrink-0 px-1.5 py-0.5 rounded-[--ds-radius-sm]",
+            "text-[10px] font-mono text-[--ds-text-tertiary]",
+            "bg-[--ds-surface-sunken]",
+          )}
+          title="model"
+        >
+          {modelOf(node)}
+        </span>
+      ) : null}
       {node.duration_ms != null ? (
-        <MetricsPill value={formatDuration(node.duration_ms)} unit="" intent="neutral" />
+        <MetricsPill
+          value={formatDuration(node.duration_ms)}
+          unit=""
+          intent="neutral"
+        />
       ) : null}
       {node.tokens ? <TokenPill tokens={node.tokens} /> : null}
     </div>
   );
 
-  // Leaf (tool) — render via ToolEventRow which knows how to pivot payload.
-  if (node.kind === "tool") {
-    return (
-      <div className={indentClass}>
-        <details className="group">
-          <summary className="list-none [&::-webkit-details-marker]:hidden">
-            {summary}
-          </summary>
-          <div className="mt-1 ml-5">
-            <ToolEventRow node={node} />
-          </div>
-        </details>
-      </div>
-    );
-  }
+  // Container that wraps children with the solid vertical connector. Depth
+  // is consumed only to widen the connector colour on deeper trees; the
+  // first level keeps the same accent for visual continuity.
+  const childrenContainer = (
+    <div
+      className={cn(
+        "mt-1.5 ml-4 pl-3 border-l-2 border-[--ds-surface-hover]",
+        "flex flex-col gap-1.5",
+      )}
+    >
+      {hasChildren
+        ? node.children.map((child, idx) => (
+            <TraceNodeRow
+              key={`${child.kind}-${idx}-${child.label}`}
+              node={child}
+              depth={depth + 1}
+              forced={forced}
+            />
+          ))
+        : null}
+      {node.kind === "tool" ? (
+        <div className="rounded-[--ds-radius-md] overflow-hidden">
+          <ToolEventRow node={node} />
+        </div>
+      ) : null}
+    </div>
+  );
 
-  if (!hasChildren) {
-    return <div className={indentClass}>{summary}</div>;
+  if (!expandable) {
+    return <div>{header}</div>;
   }
 
   return (
-    <details open={defaultOpen} className={cn("group", indentClass)}>
-      <summary className="list-none [&::-webkit-details-marker]:hidden">
-        {summary}
-      </summary>
-      <div className="mt-0.5">
-        {node.children.map((child, idx) => (
-          <TraceNodeRow
-            key={`${child.kind}-${idx}-${child.label}`}
-            node={child}
-            depth={depth + 1}
-          />
-        ))}
-      </div>
-    </details>
+    <div>
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        className={cn(
+          "block w-full text-left rounded-[--ds-radius-md]",
+          "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[--ds-accent-primary]/60",
+        )}
+      >
+        {header}
+      </button>
+      {open ? childrenContainer : null}
+    </div>
   );
 });
 
@@ -179,17 +306,29 @@ function formatDuration(ms: number): string {
   return `${minutes}m${seconds.toString().padStart(2, "0")}s`;
 }
 
+/** Extract a model identifier from the node's payload (agent / tool nodes
+ *  may carry `model` directly). Returns null when absent. */
+function modelOf(node: TraceNode): string | null {
+  const p = node.payload as Record<string, unknown> | null;
+  if (!p) return null;
+  const v = p["model"] ?? p["model_id"];
+  return typeof v === "string" && v.length > 0 ? v : null;
+}
+
 interface TokenPillProps {
   tokens: TokenBreakdown;
 }
 
 function TokenPill({ tokens }: TokenPillProps) {
-  const total = tokens.input + tokens.output + tokens.cache_read + tokens.cache_creation;
+  const total =
+    tokens.input + tokens.output + tokens.cache_read + tokens.cache_creation;
   if (total <= 0) return null;
   const tooltip =
     `input ${tokens.input} · output ${tokens.output}` +
     (tokens.cache_read > 0 ? ` · cache_read ${tokens.cache_read}` : "") +
-    (tokens.cache_creation > 0 ? ` · cache_creation ${tokens.cache_creation}` : "") +
+    (tokens.cache_creation > 0
+      ? ` · cache_creation ${tokens.cache_creation}`
+      : "") +
     (tokens.cost_usd_micros != null
       ? ` · cost ${(tokens.cost_usd_micros / 1_000_000).toFixed(4)} USD`
       : "");

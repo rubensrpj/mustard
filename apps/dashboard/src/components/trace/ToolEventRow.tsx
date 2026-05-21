@@ -1,18 +1,21 @@
-// Wave 6 — payload renderer for `kind === "tool"` nodes.
+// Wave 6 + Followup-fix (2026-05-21, spec `2026-05-21-economia-moat-followup-fixes`).
 //
-// The component picks the right DS primitive based on `payload.tool_name`:
+// Payload renderer for `kind === "tool"` trace nodes. Each tool variant gets
+// a card with a dedicated header (tool name + file path / command) and the
+// matching DS primitive for the body:
 //
-//   Edit / Write → <DiffViewer> (before/after)
-//   Read         → <CodeBlock> with language inferred from path extension
-//   Bash         → <CodeBlock> with the command on top and stdout below
-//   *            → JSON fallback via <CodeBlock lang="json">
+//   Edit / Write / MultiEdit → <DiffViewer mode="split"> + file path subheader
+//   Read                     → <CodeBlock> with lang inferred from path
+//   Bash                     → <CodeBlock> for the command + stdout (+ stderr)
+//   *                        → JSON fallback via <CodeBlock lang="json">
 //
-// Rendering only happens when the parent <details> is open (lazy by
-// construction — React still renders us, but heavy payloads stay collapsed
-// until expanded because <ExecutionTrace> mounts this inside <details>).
+// We never `throw` — when expected payload fields are missing (backend has
+// not populated `before`/`after`/`command`/etc. yet) we fall back to the
+// JSON view so the user still sees *something*.
 
 import { memo } from "react";
 import { DiffViewer, CodeBlock, type CodeLang } from "@/components/ds";
+import { cn } from "@/lib/utils";
 import type { TraceNode } from "@/lib/types/trace";
 
 interface ToolEventRowProps {
@@ -21,9 +24,9 @@ interface ToolEventRowProps {
 
 export const ToolEventRow = memo(function ToolEventRow({ node }: ToolEventRowProps) {
   const payload = (node.payload ?? {}) as Record<string, unknown>;
-  const toolName = strField(payload, "tool_name") ?? strField(payload, "name") ?? "";
+  const toolName =
+    strField(payload, "tool_name") ?? strField(payload, "name") ?? "";
 
-  // Edit / Write — render as a unified diff.
   if (toolName === "Edit" || toolName === "Write" || toolName === "MultiEdit") {
     const before =
       strField(payload, "before") ??
@@ -35,48 +38,156 @@ export const ToolEventRow = memo(function ToolEventRow({ node }: ToolEventRowPro
       strField(payload, "new_string") ??
       strField(payload, "content") ??
       "";
+    const path = pathOf(payload);
     if (before || after) {
       return (
-        <DiffViewer before={before} after={after} mode="unified" maxLines={200} />
+        <PayloadCard toolName={toolName} subheader={path}>
+          <DiffViewer
+            before={before}
+            after={after}
+            mode="split"
+            maxLines={200}
+          />
+        </PayloadCard>
       );
     }
+    return <FallbackJson toolName={toolName} subheader={path} payload={payload} />;
   }
 
-  // Read — render the excerpt with language inferred from the path.
   if (toolName === "Read") {
     const content =
       strField(payload, "content") ??
       strField(payload, "content_excerpt") ??
       strField(payload, "tool_response") ??
       "";
-    const path = strField(payload, "file_path") ?? strField(payload, "path") ?? "";
+    const path = pathOf(payload);
     if (content) {
       return (
-        <CodeBlock
-          code={truncate(content, 200)}
-          lang={detectLang(path)}
-          showLineNumbers
-        />
+        <PayloadCard toolName="Read" subheader={path}>
+          <CodeBlock
+            code={truncate(content, 200)}
+            lang={detectLang(path)}
+            showLineNumbers
+          />
+        </PayloadCard>
       );
     }
+    return <FallbackJson toolName="Read" subheader={path} payload={payload} />;
   }
 
-  // Bash — render the command followed by the stdout/stderr.
   if (toolName === "Bash") {
     const command = strField(payload, "command") ?? "";
-    const stdout = strField(payload, "stdout") ?? strField(payload, "tool_response") ?? "";
-    const code = stdout ? `$ ${command}\n---\n${truncate(stdout, 100)}` : `$ ${command}`;
-    return <CodeBlock code={code} lang="plain" />;
+    const stdout =
+      strField(payload, "stdout") ?? strField(payload, "tool_response") ?? "";
+    const stderr = strField(payload, "stderr") ?? "";
+    return (
+      <PayloadCard
+        toolName="Bash"
+        subheader={command ? `$ ${command}` : undefined}
+        subheaderMono
+      >
+        {stdout ? (
+          <CodeBlock code={truncate(stdout, 200)} lang="plain" />
+        ) : null}
+        {stderr ? (
+          <div
+            className={cn(
+              "mt-2 rounded-[--ds-radius-sm] overflow-hidden",
+              "ring-1 ring-[--ds-intent-error]/30",
+              "bg-[--ds-intent-error]/10",
+            )}
+          >
+            <CodeBlock code={truncate(stderr, 200)} lang="plain" />
+          </div>
+        ) : null}
+        {!stdout && !stderr && !command ? (
+          <CodeBlock
+            code={truncate(JSON.stringify(payload, null, 2), 200)}
+            lang="json"
+          />
+        ) : null}
+      </PayloadCard>
+    );
   }
 
-  // Fallback — pretty-print the payload as JSON.
+  // Fallback — pretty-print whatever payload arrived.
   return (
-    <CodeBlock
-      code={truncate(JSON.stringify(payload, null, 2), 200)}
-      lang="json"
+    <FallbackJson
+      toolName={toolName || "tool.use"}
+      subheader={pathOf(payload)}
+      payload={payload}
     />
   );
 });
+
+// ── Card wrapper ───────────────────────────────────────────────────────────
+
+interface PayloadCardProps {
+  toolName: string;
+  subheader?: string;
+  subheaderMono?: boolean;
+  children: React.ReactNode;
+}
+
+/** Shared card frame so every tool variant has the same visual rhythm:
+ *  small uppercase tool-name pill on top, optional file-path / command
+ *  subheader underneath, then the actual payload renderer. */
+function PayloadCard({
+  toolName,
+  subheader,
+  subheaderMono,
+  children,
+}: PayloadCardProps) {
+  return (
+    <div
+      className={cn(
+        "rounded-[--ds-radius-md] border border-[--ds-surface-hover]",
+        "bg-[--ds-surface-base] overflow-hidden",
+      )}
+    >
+      <div className="flex items-center gap-2 px-3 py-1.5 bg-[--ds-surface-sunken] border-b border-[--ds-surface-hover]">
+        <span
+          className={cn(
+            "px-1.5 py-0.5 rounded-[--ds-radius-sm]",
+            "text-[10px] font-medium tracking-wide uppercase",
+            "bg-[--ds-accent-primary]/15 text-[--ds-accent-primary]",
+          )}
+        >
+          {toolName}
+        </span>
+        {subheader ? (
+          <span
+            className={cn(
+              "text-[11px] text-[--ds-text-tertiary] truncate flex-1 min-w-0",
+              subheaderMono && "font-mono",
+            )}
+            title={subheader}
+          >
+            {subheader}
+          </span>
+        ) : null}
+      </div>
+      <div className="p-2">{children}</div>
+    </div>
+  );
+}
+
+interface FallbackJsonProps {
+  toolName: string;
+  subheader?: string;
+  payload: Record<string, unknown>;
+}
+
+function FallbackJson({ toolName, subheader, payload }: FallbackJsonProps) {
+  return (
+    <PayloadCard toolName={toolName} subheader={subheader}>
+      <CodeBlock
+        code={truncate(JSON.stringify(payload, null, 2), 200)}
+        lang="json"
+      />
+    </PayloadCard>
+  );
+}
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -85,11 +196,16 @@ function strField(obj: Record<string, unknown>, key: string): string | undefined
   return typeof v === "string" ? v : undefined;
 }
 
-/**
- * Truncate to `maxLines` lines so a 5k-line `Read` payload doesn't
- * blow up the row height. The DS `CodeBlock` already supports
- * `showLineNumbers`; truncation is the only thing we need to enforce here.
- */
+function pathOf(payload: Record<string, unknown>): string | undefined {
+  return (
+    strField(payload, "file_path") ??
+    strField(payload, "path") ??
+    strField(payload, "filepath") ??
+    undefined
+  );
+}
+
+/** Truncate to `maxLines` lines so a 5k-line payload doesn't blow up the row. */
 function truncate(s: string, maxLines: number): string {
   const lines = s.split("\n");
   if (lines.length <= maxLines) return s;
@@ -104,7 +220,8 @@ const EXT_TO_LANG: Record<string, CodeLang> = {
   sql: "sql",
 };
 
-function detectLang(path: string): CodeLang {
+function detectLang(path: string | undefined): CodeLang {
+  if (!path) return "plain";
   const ext = path.toLowerCase().split(".").pop() ?? "";
   return EXT_TO_LANG[ext] ?? "plain";
 }

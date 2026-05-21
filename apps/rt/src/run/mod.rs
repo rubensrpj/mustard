@@ -464,8 +464,15 @@ pub enum RunCmd {
     ///
     /// Opt-in daemon (Wave 3 — economia-moat-unification) spawned by
     /// [`crate::hooks::session_start`] when `MUSTARD_TRANSCRIPT_WATCH=1`.
-    /// Runs until process termination.
-    TranscriptWatcher,
+    /// Runs until process termination. With `--once`, performs a single
+    /// backfill sweep of the current cwd's transcript directory and exits.
+    TranscriptWatcher {
+        /// Backfill mode: ingest every transcript currently in
+        /// `~/.claude/projects/<encoded(cwd)>/` once, then exit. Default `false`
+        /// (long-lived daemon).
+        #[arg(long)]
+        once: bool,
+    },
     /// End-to-end health check of the Mustard ↔ Claude Code OTEL pipeline.
     DiagnoseOtel {
         /// Emit the machine-readable JSON report.
@@ -689,7 +696,7 @@ pub fn dispatch(cmd: RunCmd) {
         }
         RunCmd::ScanFinalize { skip_security } => scan_finalize::run(skip_security),
         RunCmd::OtelCollector => otel::collector::run(),
-        RunCmd::TranscriptWatcher => transcript_watcher::run(),
+        RunCmd::TranscriptWatcher { once } => transcript_watcher::run(once),
         RunCmd::DiagnoseOtel {
             json,
             expect_rows_after,

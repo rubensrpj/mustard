@@ -717,6 +717,17 @@ pub fn workspace_summary_v2(repo_path: &str) -> Result<WorkspaceSummary, String>
         .map_err(|e| format!("workspace_summary: {e}"))?;
     let mut out = workspace_summary_from_view(&summary);
 
+    // Followup-fix (2026-05-21, spec `2026-05-21-economia-moat-followup-fixes`):
+    // strip terminal-status specs from `spec_tracks` so the "PIPELINES ATIVOS"
+    // hero card never lists a `completed` / `cancelled` / `closed-followup`
+    // spec as if it were still in EXECUTE. The previous behaviour leaked the
+    // last `pipeline.phase` event regardless of whether `pipeline.status` had
+    // since moved the spec into a terminal bucket. The TS side mirrors the
+    // same filter in `WorkspaceHero.tsx`; both layers stay in sync.
+    out.spec_tracks
+        .retain(|track| !is_terminal_status(track.status.as_str()));
+    out.specs_active_count = i64::try_from(out.spec_tracks.len()).unwrap_or(i64::MAX);
+
     // Override the file ranking with a session-agnostic SQL aggregation so
     // post-CLOSE the list does not empty out. Fail-soft: keep the mustard-core
     // value when the DB is unavailable.
@@ -725,6 +736,14 @@ pub fn workspace_summary_v2(repo_path: &str) -> Result<WorkspaceSummary, String>
         out.top_files_today = files;
     }
     Ok(out)
+}
+
+/// Returns true for spec statuses that represent a finished / parked pipeline
+/// — those rows should not appear in the "PIPELINES ATIVOS" hero list.
+/// Centralised here so the same set is reused if other commands ever need
+/// the same predicate. Kebab-case strings mirror `spec_status_string`.
+fn is_terminal_status(status: &str) -> bool {
+    matches!(status, "completed" | "closed-followup" | "cancelled")
 }
 
 /// Maximum entries in `top_files_today`. Mirrors the cap used by mustard-core

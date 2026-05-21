@@ -14,8 +14,21 @@ interface WorkspaceHeroProps {
 }
 
 /** Filter terms that mean "this spec is parked / done". Mirrors the same
- *  bucket used by `WorkspaceSpecsByStatus`. */
-const TERMINAL = new Set(["completed", "closed", "cancelled", "no-events"]);
+ *  bucket used by `WorkspaceSpecsByStatus`.
+ *
+ *  Followup-fix (2026-05-21, spec `2026-05-21-economia-moat-followup-fixes`):
+ *  `closed-followup` added so specs sitting in the 24h follow-up window
+ *  after CLOSE don't render as "active pipelines". The Rust side also
+ *  filters in `spec_views::workspace_summary_v2` — keeping both layers in
+ *  sync provides defense-in-depth.
+ */
+const TERMINAL = new Set([
+  "completed",
+  "closed",
+  "closed-followup",
+  "cancelled",
+  "no-events",
+]);
 
 /**
  * Active-pipeline list rendering one row per ongoing spec. Replaces the
