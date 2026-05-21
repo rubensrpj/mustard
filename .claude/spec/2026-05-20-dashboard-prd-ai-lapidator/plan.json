@@ -1,0 +1,24 @@
+{
+  "waves": [
+    {
+      "n": 1,
+      "role": "general",
+      "summary": "Criar slash command /mustard:prd em apps/cli/templates/commands/mustard/prd/SKILL.md e cópia em .claude/commands/mustard/prd/SKILL.md. Recebe intenção livre, faz confronto leve (Grep entity-registry + Glob de paths), retorna JSON estruturado no shape do PrdForm do dashboard.",
+      "depends_on": []
+    },
+    {
+      "n": 2,
+      "role": "general",
+      "summary": "Adicionar Tauri command lapidate_prd em apps/dashboard/src-tauri/src/prd_lapidator.rs que executa claude -p '/mustard:prd <intent>' --output-format json --model claude-sonnet-4-6 com cwd no projeto ativo. Provider trait PrdProvider preparado pra OpenRouter futuro. Registrar em lib.rs.",
+      "depends_on": ["1"]
+    },
+    {
+      "n": 3,
+      "role": "ui",
+      "summary": "Integrar lapidador na página Prd.tsx: textarea 'Intenção livre' no topo, botão 'Lapidar com IA' com spinner, handler que chama invoke('lapidate_prd'), distribui retorno via setForm({...prev, ...parsed}), banner de avisos do confronto (entitiesMissing/pathsMissing). Novo wrapper TS em src/api/prd.ts + tipos em src/lib/types/prd.ts.",
+      "depends_on": ["2"]
+    }
+  ],
+  "total_waves": 3,
+  "lang": "pt"
+}

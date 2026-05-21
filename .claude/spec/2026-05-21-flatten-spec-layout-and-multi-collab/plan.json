@@ -1,0 +1,42 @@
+{
+  "waves": [
+    {
+      "n": 1,
+      "role": "library",
+      "summary": "Core fallback: project_spec_view importa do header da spec.md quando SQLite nao tem nenhum evento pipeline.status pra spec. Header vira canon cross-dev.",
+      "depends_on": []
+    },
+    {
+      "n": 2,
+      "role": "general",
+      "summary": "Rt: remover bucket-aware code (active/completed/superseded). complete_spec::archive vira so emit (sem mv). session_cleanup perde mv. resolve helpers passam a buscar em spec/{name}/ flat. emit_pipeline.status sincroniza header da spec.md.",
+      "depends_on": ["1"]
+    },
+    {
+      "n": 3,
+      "role": "general",
+      "summary": "Dashboard src-tauri: spec_action::Close/Reopen viram emit-only (sem mv). resolve_spec_dir flat. spec_views fallback para header quando reader vazio.",
+      "depends_on": ["1"]
+    },
+    {
+      "n": 4,
+      "role": "general",
+      "summary": "CLI + templates: SKILLs (close, resume, feature, bugfix, tactical-fix, qa, approve) param de assumir buckets. init.rs/update.rs criam so spec/ em novos projetos. pipeline-config.md atualiza paths.",
+      "depends_on": ["2", "3"]
+    },
+    {
+      "n": 5,
+      "role": "general",
+      "summary": "Migration one-shot do repo Mustard atual: mover spec/active/* + spec/completed/* + spec/superseded/* para spec/{name}/. Backfill: para cada spec sem pipeline.status terminal no SQLite mas com header indicando completed, emitir os eventos sinteticos. Garantir header sync.",
+      "depends_on": ["2", "3", "4"]
+    },
+    {
+      "n": 6,
+      "role": "general",
+      "summary": "Docs + refs: CLAUDE.md raiz + apps/CLAUDE.md + refs/feature/ + refs/close/ + pipeline-config.md tiram mencoes a active/completed/superseded. Atualizar docs-audit.json com termos obsoletos.",
+      "depends_on": ["4"]
+    }
+  ],
+  "total_waves": 6,
+  "lang": "pt"
+}
