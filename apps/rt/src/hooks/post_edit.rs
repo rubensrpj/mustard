@@ -418,11 +418,11 @@ fn parse_module_using(line: &str) -> Option<(String, String)> {
     Some((module, import_path))
 }
 
-/// Scan active specs for a `## Boundaries` section the edited file violates.
+/// Scan specs for a `## Boundaries` section the edited file violates.
 /// Advisory only — returns the warning message or `None`. Port of
-/// `checkBoundaries`.
+/// `checkBoundaries`. Flat layout: scans `.claude/spec/` directly.
 fn check_boundaries(file_path: &str, cwd: &str) -> Option<String> {
-    let spec_root = Path::new(cwd).join(".claude").join("spec").join("active");
+    let spec_root = Path::new(cwd).join(".claude").join("spec");
     let entries = std::fs::read_dir(&spec_root).ok()?;
     let normalized_edit = file_path.replace('\\', "/");
 
@@ -913,7 +913,7 @@ fn is_checklist_heading(line: &str) -> bool {
 }
 
 /// Find the active spec for `cwd`. Strategy: the newest pipeline-state's
-/// `spec`/`specName`, else the newest `.claude/spec/active/*/spec.md`.
+/// `spec`/`specName`, else the newest `.claude/spec/{name}/spec.md` (flat layout).
 /// Port of `findActiveSpec`. Returns `(spec_path, spec_name)`.
 fn find_active_spec(cwd: &str) -> Option<(String, String)> {
     let claude = Path::new(cwd).join(".claude");
@@ -946,7 +946,6 @@ fn find_active_spec(cwd: &str) -> Option<(String, String)> {
                     if let Some(name) = name {
                         let candidate = claude
                             .join("spec")
-                            .join("active")
                             .join(name)
                             .join("spec.md");
                         if candidate.exists() {
@@ -960,8 +959,8 @@ fn find_active_spec(cwd: &str) -> Option<(String, String)> {
             }
         }
     }
-    // Strategy 2: newest active spec dir.
-    let active = claude.join("spec").join("active");
+    // Strategy 2: newest spec dir (flat layout — scan spec/ directly).
+    let active = claude.join("spec");
     let entries = std::fs::read_dir(&active).ok()?;
     let mut best: Option<(SystemTime, String, String)> = None;
     for entry in entries.filter_map(std::result::Result::ok) {
@@ -1160,7 +1159,6 @@ mod tests {
         let spec_dir = dir
             .join(".claude")
             .join("spec")
-            .join("active")
             .join(spec_name);
         std::fs::create_dir_all(&spec_dir).unwrap();
         let spec_file = spec_dir.join("spec.md");

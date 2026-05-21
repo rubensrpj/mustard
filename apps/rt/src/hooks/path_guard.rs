@@ -183,7 +183,7 @@ fn read_newest_fresh_state(cwd: &str) -> Option<serde_json::Value> {
 }
 
 /// Resolve the spec.md file for a pipeline-state. Mirrors `resolveSpecFile`:
-/// `.claude/spec/active/{specName}/spec.md`, with a wave-plan branch that
+/// `.claude/spec/{specName}/spec.md` (flat layout), with a wave-plan branch that
 /// looks for a `wave-{N}-*/spec.md` child directory first.
 ///
 /// `spec_name` is the spec identifier (from the JSON state file stem or the
@@ -197,7 +197,6 @@ fn resolve_spec_file(
     let base = Path::new(cwd)
         .join(".claude")
         .join("spec")
-        .join("active")
         .join(spec_name);
     if !base.exists() {
         return None;
@@ -802,8 +801,8 @@ mod tests {
             json!({ "specName": "demo" }).to_string(),
         )
         .unwrap();
-        // spec.md with a Files section.
-        let spec_dir = cwd.join(".claude").join("spec").join("active").join("demo");
+        // spec.md with a Files section (flat layout — no active/ bucket).
+        let spec_dir = cwd.join(".claude").join("spec").join("demo");
         std::fs::create_dir_all(&spec_dir).unwrap();
         std::fs::write(
             spec_dir.join("spec.md"),

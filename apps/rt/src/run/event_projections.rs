@@ -793,7 +793,7 @@ const DISPATCH_FAILURE_TTL_MS: i64 = 10 * 60 * 1_000;
 /// panicked. Returns `None` when no events exist for the spec.
 ///
 /// `spec_dir` is an optional filesystem path to the spec directory
-/// (`.claude/spec/active/{spec}`). When provided and `wave-plan.md` exists
+/// (`.claude/spec/{spec}` — flat layout). When provided and `wave-plan.md` exists
 /// there, `is_wave_plan` is set to `true` even if no `pipeline.scope` event
 /// recorded it yet.
 #[must_use]

@@ -14,7 +14,7 @@
 //! - `session-memory.js` — injects persistent memory (knowledge base,
 //!   cross-session timeline, decisions, lessons) as `additionalContext`.
 //! - `spec-hygiene.js` — auto-moves stale completed/cancelled specs from
-//!   `spec/active/` to `spec/completed/`.
+//!   `spec/{name}/` (flat layout — status lives in SQLite, no bucket moves).
 //!
 //! ## Contract shape
 //!
@@ -341,10 +341,11 @@ fn is_process_alive(pid: u32) -> bool {
 }
 
 // ===========================================================================
-// spec-hygiene — auto-move stale specs from active/ to completed/
+// spec-hygiene — flat layout; classification helpers kept for unit tests
 // ===========================================================================
 
-/// The classification of a spec for hygiene purposes.
+/// The classification of a spec (retained for tests; hygiene is a no-op in prod).
+#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SpecClass {
     /// Completed/cancelled with all checklist items done → move to completed/.
@@ -353,7 +354,8 @@ enum SpecClass {
     Silent,
 }
 
-/// Classify a spec from its `spec.md` content. Port of `classify`.
+/// Classify a spec from its `spec.md` content. Port of `classify` (test-only).
+#[cfg_attr(not(test), allow(dead_code))]
 fn classify_spec(content: &str) -> SpecClass {
     // 1. Status from the `### Status:` header — first word.
     let Some(status_raw) = parse_status(content) else {
@@ -378,7 +380,8 @@ fn classify_spec(content: &str) -> SpecClass {
     SpecClass::Silent
 }
 
-/// Parse the first word of the `### Status:` header, lowercased.
+/// Parse the first word of the `### Status:` header, lowercased (test-only).
+#[cfg_attr(not(test), allow(dead_code))]
 fn parse_status(content: &str) -> Option<String> {
     for line in content.lines() {
         let t = line.trim_start();
@@ -399,7 +402,8 @@ fn parse_status(content: &str) -> Option<String> {
     None
 }
 
-/// Extract the body of an `## <name>` section up to the next `## ` heading.
+/// Extract the body of an `## <name>` section up to the next `## ` heading (test-only).
+#[cfg_attr(not(test), allow(dead_code))]
 fn section_body(content: &str, name: &str) -> Option<String> {
     let lines: Vec<&str> = content.lines().collect();
     let mut start = None;
@@ -422,7 +426,8 @@ fn section_body(content: &str, name: &str) -> Option<String> {
 }
 
 /// `true` if `line` is an `## <name>` heading (case-sensitive name match,
-/// word-boundaried).
+/// word-boundaried) (test-only).
+#[cfg_attr(not(test), allow(dead_code))]
 fn is_h2_named(line: &str, name: &str) -> bool {
     let Some(rest) = line.strip_prefix("##") else {
         return false;
@@ -439,45 +444,20 @@ fn is_h2_named(line: &str, name: &str) -> bool {
         .is_none_or(|&b| !(b.is_ascii_alphanumeric() || b == b'_'))
 }
 
-/// Count case-insensitive occurrences of `needle` in `haystack`.
+/// Count case-insensitive occurrences of `needle` in `haystack` (test-only).
+#[cfg_attr(not(test), allow(dead_code))]
 fn count_occurrences_ci(haystack: &str, needle: &str) -> usize {
     haystack.to_ascii_lowercase().matches(needle).count()
 }
 
-/// `spec-hygiene`: scan `spec/active/`, move stale completed/cancelled specs
-/// to `spec/completed/`, and clean orphan pipeline-state files. Pure side
-/// effect — fail-open throughout. Port of `runHygiene`.
-fn run_spec_hygiene(cwd: &str) {
-    let active = Path::new(cwd).join(".claude").join("spec").join("active");
-    let Ok(entries) = std::fs::read_dir(&active) else {
-        return;
-    };
-    for entry in entries.filter_map(std::result::Result::ok) {
-        let name = entry.file_name().to_string_lossy().into_owned();
-        let spec_dir = entry.path();
-        let spec_file = spec_dir.join("spec.md");
-        let Ok(content) = std::fs::read_to_string(&spec_file) else {
-            continue;
-        };
-        if classify_spec(&content) != SpecClass::AutoMove {
-            continue;
-        }
-        let completed = Path::new(cwd).join(".claude").join("spec").join("completed");
-        let dest = completed.join(&name);
-        let _ = std::fs::create_dir_all(&completed);
-        // Atomic rename — if it fails, state is untouched.
-        if std::fs::rename(&spec_dir, &dest).is_err() {
-            continue;
-        }
-        // Best-effort: remove orphan pipeline-state files.
-        let states = Path::new(cwd).join(".claude").join(".pipeline-states");
-        for stale in [
-            states.join(format!("{name}.json")),
-            states.join(format!("{name}.diff.md")),
-        ] {
-            let _ = std::fs::remove_file(stale);
-        }
-    }
+/// `spec-hygiene`: flat layout — spec status lives in the SQLite event store;
+/// no bucket directories to move specs between (wave-2 removed them).
+/// Retained as a no-op so call sites remain stable while a future wave may
+/// add SQLite-driven hygiene (e.g. pruning stale orphan pipeline-state files).
+/// Pure side effect — fail-open throughout. Port of `runHygiene`.
+fn run_spec_hygiene(_cwd: &str) {
+    // No-op under flat layout. See wave-2 of
+    // `2026-05-21-flatten-spec-layout-and-multi-collab`.
 }
 
 // ===========================================================================
@@ -693,15 +673,16 @@ mod tests {
 
     // --- spec-hygiene parity -----------------------------------------------
 
-    /// Write an active spec with the given `spec.md` body.
+    /// Write a spec with the given `spec.md` body (flat layout — no active/ bucket).
     fn write_active_spec(dir: &Path, name: &str, body: &str) {
-        let spec_dir = dir.join(".claude/spec/active").join(name);
+        let spec_dir = dir.join(".claude/spec").join(name);
         std::fs::create_dir_all(&spec_dir).unwrap();
         std::fs::write(spec_dir.join("spec.md"), body).unwrap();
     }
 
     #[test]
-    fn hygiene_moves_completed_spec_with_all_done() {
+    fn hygiene_noop_completed_spec_stays_flat() {
+        // Flat layout: no bucket moves — spec stays in spec/{name}/ regardless of status.
         let dir = tempdir().unwrap();
         write_active_spec(
             dir.path(),
@@ -711,12 +692,11 @@ mod tests {
         SessionStart
             .evaluate(&session_input("s"), &ctx(dir.path().to_str().unwrap()))
             .unwrap();
-        assert!(!dir.path().join(".claude/spec/active/done-spec").exists());
-        assert!(dir.path().join(".claude/spec/completed/done-spec").exists());
+        assert!(dir.path().join(".claude/spec/done-spec").exists());
     }
 
     #[test]
-    fn hygiene_keeps_implementing_spec() {
+    fn hygiene_noop_implementing_spec_stays_flat() {
         let dir = tempdir().unwrap();
         write_active_spec(
             dir.path(),
@@ -726,11 +706,11 @@ mod tests {
         SessionStart
             .evaluate(&session_input("s"), &ctx(dir.path().to_str().unwrap()))
             .unwrap();
-        assert!(dir.path().join(".claude/spec/active/wip-spec").exists());
+        assert!(dir.path().join(".claude/spec/wip-spec").exists());
     }
 
     #[test]
-    fn hygiene_keeps_blocked_spec() {
+    fn hygiene_noop_blocked_spec_stays_flat() {
         let dir = tempdir().unwrap();
         write_active_spec(
             dir.path(),
@@ -740,7 +720,7 @@ mod tests {
         SessionStart
             .evaluate(&session_input("s"), &ctx(dir.path().to_str().unwrap()))
             .unwrap();
-        assert!(dir.path().join(".claude/spec/active/blocked-spec").exists());
+        assert!(dir.path().join(".claude/spec/blocked-spec").exists());
     }
 
     #[test]

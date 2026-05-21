@@ -11,7 +11,7 @@
 //!   `retry.attempt` event per measured hook-level retry.
 //! - `session-knowledge-inc.js` — `PostToolUse(Task)`: the incremental variant
 //!   — throttled, writes friction telemetry for the most recent pipeline-state.
-//! - `memory-auto-extract.js` — `SessionEnd`: scans `spec/active/**/spec.md`
+//! - `memory-auto-extract.js` — `SessionEnd`: scans `spec/{name}/spec.md`
 //!   for `## Decisions` / `## Lessons` (EN+PT) bullets and persists them as
 //!   memory decisions.
 //!
@@ -942,7 +942,7 @@ mod tests {
     fn memory_extract_is_noop_without_memory_script() {
         // No memory.js stub → persist_memory returns false → nothing breaks.
         let dir = tempdir().unwrap();
-        let active = dir.path().join(".claude/spec/active/demo");
+        let active = dir.path().join(".claude/spec/demo");
         std::fs::create_dir_all(&active).unwrap();
         std::fs::write(
             active.join("spec.md"),

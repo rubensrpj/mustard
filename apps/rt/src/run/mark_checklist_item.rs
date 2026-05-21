@@ -3,7 +3,7 @@
 //!
 //! Marks a single `- [ ]` item as `- [x]` in a spec's `## Checklist` section.
 //! Idempotent. Resolves a bare spec name to
-//! `.claude/spec/active/<name>/spec.md`.
+//! `.claude/spec/<name>/spec.md` (flat layout).
 //!
 //! Output (stdout): one line — `marked` | `already-marked` | `error: <reason>`.
 //! Exit codes: 0 success/no-op, 1 not-found/no-section/not-located, 2 bad args.
@@ -22,14 +22,13 @@ fn resolve_spec_path(spec: &str, cwd: &Path) -> Option<PathBuf> {
     if p.is_absolute() && spec.ends_with(".md") && p.exists() {
         return Some(p.to_path_buf());
     }
-    let active = cwd
+    let flat = cwd
         .join(".claude")
         .join("spec")
-        .join("active")
         .join(spec)
         .join("spec.md");
-    if active.exists() {
-        return Some(active);
+    if flat.exists() {
+        return Some(flat);
     }
     let as_dir = Path::new(spec).join("spec.md");
     if as_dir.exists() {

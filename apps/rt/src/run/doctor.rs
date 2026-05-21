@@ -576,7 +576,7 @@ fn check_state_health(claude_dir: &Path) -> CheckResult {
         return CheckResult::warn("state-health", warnings);
     }
 
-    // Collect active spec names from spec/active/.
+    // Collect spec names from spec/ (flat layout — no buckets).
     let active_specs = collect_active_spec_names(claude_dir);
 
     let Ok(entries) = std::fs::read_dir(&states_dir) else {
@@ -621,14 +621,14 @@ fn check_state_health(claude_dir: &Path) -> CheckResult {
             continue;
         }
 
-        // Detect orphan: state file whose spec is not in spec/active/.
+        // Detect orphan: state file whose spec is not in spec/ (flat layout).
         let spec_name = val
             .get("spec")
             .and_then(serde_json::Value::as_str)
             .unwrap_or("")
             .to_string();
         if !spec_name.is_empty() && !active_specs.contains(&spec_name) {
-            warnings.push(format!("orphan state file '{file_name}' (spec '{spec_name}' not in spec/active/)"));
+            warnings.push(format!("orphan state file '{file_name}' (spec '{spec_name}' not in spec/)"));
         }
     }
 
@@ -639,9 +639,9 @@ fn check_state_health(claude_dir: &Path) -> CheckResult {
     }
 }
 
-/// Collect the directory names under `.claude/spec/active/`.
+/// Collect the directory names under `.claude/spec/` (flat layout — no buckets).
 fn collect_active_spec_names(claude_dir: &Path) -> Vec<String> {
-    let active_dir = claude_dir.join("spec").join("active");
+    let active_dir = claude_dir.join("spec");
     let Ok(entries) = std::fs::read_dir(&active_dir) else {
         return Vec::new();
     };
@@ -912,7 +912,7 @@ mod tests {
         let claude_dir = dir.path().join(".claude");
         let states_dir = claude_dir.join(".pipeline-states");
         std::fs::create_dir_all(&states_dir).unwrap();
-        // Plant an orphan state file (spec not in spec/active/).
+        // Plant an orphan state file (spec not in spec/ flat dir).
         write_file(
             &states_dir.join("orphan.json"),
             r#"{ "spec": "2026-01-01-nonexistent-spec", "state": "execute" }"#,

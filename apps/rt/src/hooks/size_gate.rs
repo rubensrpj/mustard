@@ -143,26 +143,20 @@ fn file_path_of(input: &HookInput) -> Option<String> {
 // spec-size-gate — PreToolUse(Write|Edit) size gate for spec files
 // ---------------------------------------------------------------------------
 
-/// `true` when `file_path` is a spec markdown file. Mirrors `isSpecPath`:
-/// `.claude/spec/(active|completed)/.+\.md` or any `/spec/.+\.md`.
+/// `true` when `file_path` is a spec markdown file. Flat layout:
+/// `.claude/spec/{name}/.+\.md` or any `/spec/.+\.md`.
 fn is_spec_path(file_path: &str) -> bool {
     let p = file_path.replace('\\', "/");
-    if p.contains(".claude/spec/active/") && p.ends_with(".md") {
-        // The JS regex requires at least one char between the prefix and `.md`.
-        if let Some(rest) = p.split(".claude/spec/active/").nth(1) {
+    // Flat layout: `.claude/spec/{name}/*.md` — requires at least one char
+    // between the prefix and `.md` (mirrors the JS regex).
+    if p.contains(".claude/spec/") && p.ends_with(".md") {
+        if let Some(rest) = p.split(".claude/spec/").nth(1) {
             if rest.len() > ".md".len() {
                 return true;
             }
         }
     }
-    if p.contains(".claude/spec/completed/") && p.ends_with(".md") {
-        if let Some(rest) = p.split(".claude/spec/completed/").nth(1) {
-            if rest.len() > ".md".len() {
-                return true;
-            }
-        }
-    }
-    // `/spec/.+\.md$` — a `/spec/` segment followed by a non-empty `.md` file.
+    // Generic: any `/spec/` segment followed by a non-empty `.md` file.
     if p.ends_with(".md") {
         if let Some(idx) = p.find("/spec/") {
             let rest = &p[idx + "/spec/".len()..];
@@ -442,8 +436,8 @@ fn ac_non_binary_reason(ac_lower: &str) -> Option<&'static str> {
     if matches!(stripped, "nenhum" | "none" | "n/a" | "—" | "-" | "") {
         return Some("empty");
     }
-    // hard-coded active spec path.
-    if after.contains(".claude/spec/active/") {
+    // hard-coded spec path (flat layout: .claude/spec/{name}/).
+    if after.contains(".claude/spec/") {
         return Some("active-path");
     }
     None
@@ -512,7 +506,7 @@ fn ac_quality_advisory(content: &str) -> Option<String> {
             "AC Quality",
             &format!(
                 "{}/{} AC are non-binary ({}) — past-tense validation, moveable \
-                 path (spec/active/), or no Command",
+                 path (spec/), or no Command",
                 audit.non_binary,
                 audit.total,
                 audit.non_binary_reasons.join(", ")
@@ -930,10 +924,12 @@ mod tests {
 
     #[test]
     fn spec_path_recognition() {
-        assert!(is_spec_path("/project/.claude/spec/active/my-epic/spec.md"));
+        // Flat layout (no buckets).
+        assert!(is_spec_path("/project/.claude/spec/my-epic/spec.md"));
         assert!(is_spec_path(
-            "C:\\proj\\.claude\\spec\\completed\\done\\spec.md"
+            "C:\\proj\\.claude\\spec\\done-spec\\spec.md"
         ));
+        // Generic /spec/ segment (unchanged).
         assert!(is_spec_path("/repo/spec/feature/x.md"));
         assert!(!is_spec_path("/project/README.md"));
         assert!(!is_spec_path("/project/.claude/skills/x/SKILL.md"));
@@ -1059,7 +1055,7 @@ mod tests {
         let input = HookInput {
             tool_name: Some("Edit".to_string()),
             tool_input: json!({
-                "file_path": "/nonexistent/.claude/spec/active/x/spec.md",
+                "file_path": "/nonexistent/.claude/spec/x/spec.md",
                 "old_string": "",
                 "new_string": make_content(250),
             }),
@@ -1074,7 +1070,7 @@ mod tests {
 
     #[test]
     fn non_pre_tool_use_trigger_allows() {
-        let (input, _) = write_input("/p/.claude/spec/active/x/spec.md", &make_content(999));
+        let (input, _) = write_input("/p/.claude/spec/x/spec.md", &make_content(999));
         let ctx = Ctx {
             project_dir: String::new(),
             trigger: Some(Trigger::PostToolUse),

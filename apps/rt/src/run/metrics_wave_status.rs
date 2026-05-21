@@ -24,7 +24,7 @@
 //! Wave detection: first read `<parent>/wave-plan.md` and parse the `Tabela de
 //! Waves` table (Spec column + Modelo column); if no plan exists, fall back to
 //! globbing every `wave-*-*/` directory under
-//! `.claude/spec/active/<parent>/` and treating the folder name as the wave
+//! `.claude/spec/<parent>/` (flat layout) and treating the folder name as the wave
 //! name.
 //!
 //! Fail-open: a missing parent dir, missing DB, or missing wave-plan all
@@ -328,7 +328,7 @@ pub fn run(args: &[String]) {
     // Tolerate `--help` so the AC grep matches.
     if args.iter().any(|a| a == "--help" || a == "-h") {
         println!("Usage: metrics wave-status --spec <parent>");
-        println!("  --spec <parent>   parent spec name (under .claude/spec/active/)");
+        println!("  --spec <parent>   parent spec name (under .claude/spec/, flat layout)");
         return;
     }
 

@@ -309,7 +309,7 @@ pub enum RunCmd {
     },
     /// Execute a spec's Acceptance Criteria; emit a `qa.result` event.
     QaRun {
-        /// Spec name (resolved under `.claude/specs` or `.claude/spec/active`).
+        /// Spec name (resolved under `.claude/specs` or `.claude/spec` — flat layout).
         #[arg(long)]
         spec: String,
         /// Output format: `json` (default) or `html` (extra artifact).
@@ -347,7 +347,7 @@ pub enum RunCmd {
     /// via argv pre-routing in `main.rs`.
     #[command(name = "metrics-wave-status")]
     MetricsWaveStatus {
-        /// Parent (epic) spec name under `.claude/spec/active/`.
+        /// Parent (epic) spec name under `.claude/spec/` (flat layout).
         #[arg(long)]
         spec: Option<String>,
     },
