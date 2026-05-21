@@ -44,7 +44,6 @@
         "active_spec_dir",
         "completed_spec_dir"
       ],
-      "hint": "Use spec/{name}/ (flatten layout)",
       "replacement_hint": "Use spec/{name}/ (flatten layout) — status is read from the spec header, not from a bucket directory; archival is semantic-only via the pipeline.status event"
     }
   ]
