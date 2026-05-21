@@ -153,6 +153,39 @@ impl SqliteSpecReader {
         }
         primary
     }
+
+    /// Scan `.claude/spec/{spec}/wave-N-{role}/` to build a planned wave
+    /// list when no task events exist yet. Returns waves sorted by number.
+    fn waves_from_disk(&self, spec: &str) -> Vec<WaveView> {
+        let base = self.project_dir.join(".claude").join("spec").join(spec);
+        let Ok(entries) = std::fs::read_dir(&base) else {
+            return Vec::new();
+        };
+        let mut planned: Vec<WaveView> = Vec::new();
+        for entry in entries.flatten() {
+            if !entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                continue;
+            }
+            let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+                continue;
+            };
+            let Some(rest) = name.strip_prefix("wave-") else {
+                continue;
+            };
+            // `wave-N-{role}` — split on first `-` after the number.
+            let Some((num_str, role)) = rest.split_once('-') else {
+                continue;
+            };
+            let Ok(num) = num_str.parse::<u32>() else {
+                continue;
+            };
+            let mut view = WaveView::queued(num);
+            view.role = Some(role.to_string());
+            planned.push(view);
+        }
+        planned.sort_by_key(|w| w.wave);
+        planned
+    }
 }
 
 impl SpecReader for SqliteSpecReader {
@@ -282,7 +315,15 @@ impl SpecReader for SqliteSpecReader {
             return Err(crate::reader::error::ReadError::invalid("spec name cannot be empty"));
         }
         let events = self.store()?.query(Some(spec))?;
-        Ok(project_waves(spec, &events))
+        let from_events = project_waves(spec, &events);
+        if !from_events.is_empty() {
+            return Ok(from_events);
+        }
+        // No events for this spec yet — surface the planned wave structure
+        // by scanning `wave-N-{role}/` subdirectories under the spec dir.
+        // Mirrors the wave-1 filesystem-fallback philosophy for waves
+        // (a draft wave plan a teammate pulled in stays visible).
+        Ok(self.waves_from_disk(spec))
     }
 
     fn quality(&self, spec: &str) -> Result<QualityRollup> {
