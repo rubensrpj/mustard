@@ -1,8 +1,8 @@
 # Tactical-fix — dashboard src-tauri lib.rs + watcher.rs flatten
 
 ### Parent: [[2026-05-21-flatten-spec-layout-and-multi-collab]]
-### Status: implementing
-### Phase: EXECUTE
+### Status: completed
+### Phase: CLOSE
 ### Lang: pt
 ### Checkpoint: 2026-05-21
 
