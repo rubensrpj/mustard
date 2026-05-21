@@ -1,17 +1,18 @@
 //! Filter and window types accepted by the reader trait.
 //!
-//! Kept tiny on purpose — these are arguments, not ViewModels. They serialize
+//! Kept tiny on purpose — these are arguments, not `ViewModels`. They serialize
 //! so a Tauri command can accept them straight from the React frontend without
 //! a hand-rolled converter.
 
 use serde::{Deserialize, Serialize};
 
 /// Time window for queries that span "recent" data. Designed to map 1:1 to
-/// the SQL window expressions used by the SQLite reader.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// the SQL window expressions used by the `SQLite` reader.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum TimeWindow {
     /// Calendar today (UTC).
+    #[default]
     Today,
     /// Last 7 days.
     SevenDays,
@@ -21,15 +22,9 @@ pub enum TimeWindow {
     All,
 }
 
-impl Default for TimeWindow {
-    fn default() -> Self {
-        Self::Today
-    }
-}
-
 impl TimeWindow {
     /// SQL fragment that selects this window on the `events` table. Used by
-    /// the SQLite reader. Returns the empty string for `All`.
+    /// the `SQLite` reader. Returns the empty string for `All`.
     ///
     /// The boundary expressions match `datetime('now', '-X')` so they work on
     /// ISO-8601 timestamps stored as TEXT.
@@ -45,20 +40,15 @@ impl TimeWindow {
 }
 
 /// Filter on a list of specs.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum SpecStatusFilter {
     /// Specs whose status is `is_active()`.
     Active,
     /// Specs whose status is `is_terminal()`.
     Closed,
     /// No filter.
+    #[default]
     Any,
-}
-
-impl Default for SpecStatusFilter {
-    fn default() -> Self {
-        Self::Any
-    }
 }
 
 /// Composite filter for `SpecReader::list_specs`.

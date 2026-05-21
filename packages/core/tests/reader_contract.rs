@@ -8,12 +8,16 @@
 //!
 //! [Liskov]: https://en.wikipedia.org/wiki/Liskov_substitution_principle
 
+// The legacy `status` field is exercised alongside the canonical `state` so
+// the contract covers both during the W1→W7 migration window.
+#![allow(deprecated)]
+
 use mustard_core::store::event_store::EventSink;
 use mustard_core::store::sqlite_store::SqliteEventStore;
 use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use mustard_core::{
-    AcStatus, InMemorySpecReader, Phase, SegmentState, SpecFilter, SpecReader, SpecStatus,
-    SqliteSpecReader, TimeWindow, WaveStatus,
+    AcStatus, InMemorySpecReader, Outcome, Phase, SegmentState, SpecFilter, SpecReader,
+    SpecStatus, SqliteSpecReader, Stage, TimeWindow, WaveStatus,
 };
 use mustard_core::model::view::SpecChild;
 use serde_json::json;
@@ -124,6 +128,13 @@ fn build_memory_reader() -> InMemorySpecReader {
 fn assert_spec_view_matches_fixture<R: SpecReader>(reader: &R) {
     let view = reader.spec_view("auth").unwrap().expect("spec view present");
     assert_eq!(view.spec, "auth");
+    // Canonical state (the source of truth): a scoped, executing spec is at
+    // Plan + Active in Wave 1 (the fold seeds Planning from the scope event,
+    // which lifts to Stage::Plan).
+    assert_eq!(view.state.stage, Stage::Plan);
+    assert_eq!(view.state.outcome, Outcome::Active);
+    assert!(view.state.is_active());
+    // Legacy status, derived from state.
     assert_eq!(view.status, SpecStatus::Planning);
     assert_eq!(view.phase, Some(Phase::Execute));
     assert_eq!(view.lang.as_deref(), Some("pt"));
@@ -382,9 +393,12 @@ fn assert_children_of_parent_x<R: SpecReader>(reader: &R) {
     assert_eq!(child_b.reason.as_deref(), Some("tactical-fix-2"));
 
     // Each child resolves through its own event stream — neither should be
-    // NoEvents because both have a pipeline.scope event.
+    // NoEvents because both have a pipeline.scope event. The canonical state
+    // is populated alongside the legacy status.
     assert_ne!(child_a.status, SpecStatus::NoEvents);
     assert_ne!(child_b.status, SpecStatus::NoEvents);
+    assert!(child_a.state.is_active());
+    assert!(child_b.state.is_active());
 
     // The parent's summary reports the same count, populated via children_of.
     let parent_summary = reader.spec_summary("parent-x").unwrap().expect("parent summary");

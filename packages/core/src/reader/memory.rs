@@ -3,12 +3,14 @@
 //! Same contract as [`SqliteSpecReader`] — the contract test in
 //! `tests/reader_contract.rs` exercises both behind a single set of
 //! assertions. Useful when a consumer wants to verify a projection without
-//! standing up a SQLite database.
+//! standing up a `SQLite` database.
 
 use crate::reader::error::Result;
+#[allow(deprecated)] // empty-view detection and child fallback still read the legacy SpecStatus.
+use crate::model::view::SpecStatus;
 use crate::model::view::{
-    QualityRollup, SpecChild, SpecFilter, SpecStatusFilter, SpecStatus, SpecSummary, SpecView,
-    TimeWindow, TimelineNode, WaveView, WorkspaceSummary,
+    Outcome, QualityRollup, SpecChild, SpecFilter, SpecState, SpecStatusFilter, SpecSummary,
+    SpecView, Stage, TimeWindow, TimelineNode, WaveView, WorkspaceSummary,
 };
 use crate::projection::{
     project_quality, project_spec_view, project_spec_view_with_header, project_timeline,
@@ -27,7 +29,7 @@ pub struct InMemorySpecReader {
     events: RwLock<Vec<HarnessEvent>>,
     /// Optional override for "now" so workspace-summary tests are
     /// deterministic. `None` falls back to `SystemTime::now()` — same as the
-    /// SQLite reader.
+    /// `SQLite` reader.
     now_ms_override: RwLock<Option<i64>>,
     /// Optional root directory under which `{root}/{spec}/spec.md` lives.
     ///
@@ -58,7 +60,7 @@ impl InMemorySpecReader {
 
     /// Pin a root directory under which `{root}/{spec}/spec.md` lives, so the
     /// header fallback (Wave 1) can be exercised in tests without standing up
-    /// a SQLite store. `None` (default) keeps the fallback off.
+    /// a `SQLite` store. `None` (default) keeps the fallback off.
     ///
     /// # Panics
     /// Only on lock poisoning.
@@ -101,8 +103,7 @@ impl InMemorySpecReader {
             .unwrap_or_else(|| {
                 std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
-                    .unwrap_or(0)
+                    .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
             })
     }
 
@@ -160,6 +161,7 @@ impl InMemorySpecReader {
 }
 
 impl SpecReader for InMemorySpecReader {
+    #[allow(deprecated)] // `NoEvents` is the empty-stream sentinel — only the legacy enum carries it.
     fn spec_view(&self, spec: &str) -> Result<Option<SpecView>> {
         if spec.is_empty() {
             return Err(crate::reader::error::ReadError::invalid("spec name cannot be empty"));
@@ -256,8 +258,8 @@ impl SpecReader for InMemorySpecReader {
                 .map_or(0, |set| u32::try_from(set.len()).unwrap_or(u32::MAX));
             let keep = match filter.status.as_ref().unwrap_or(&SpecStatusFilter::Any) {
                 SpecStatusFilter::Any => true,
-                SpecStatusFilter::Active => summary.status.is_active(),
-                SpecStatusFilter::Closed => summary.status.is_terminal(),
+                SpecStatusFilter::Active => summary.state.is_active(),
+                SpecStatusFilter::Closed => summary.state.is_terminal(),
             };
             if keep {
                 summaries.push(summary);
@@ -296,6 +298,7 @@ impl SpecReader for InMemorySpecReader {
         Ok(project_workspace(&events, self.now_ms()))
     }
 
+    #[allow(deprecated)] // populates the derived legacy `status` field on SpecChild.
     fn children_of(&self, parent: &str) -> Result<Vec<SpecChild>> {
         if parent.is_empty() {
             return Err(crate::reader::error::ReadError::invalid(
@@ -305,20 +308,31 @@ impl SpecReader for InMemorySpecReader {
         let links = self.link_payloads_for(parent);
         let mut children: Vec<SpecChild> = Vec::with_capacity(links.len());
         for (child, reason) in links {
-            let (status, started_at, completed_at) = match self.spec_summary_core(&child)? {
+            let (state, status, started_at, completed_at) = match self.spec_summary_core(&child)? {
                 Some(sum) => (
+                    sum.state.clone(),
                     sum.status,
                     sum.started_at.clone(),
-                    if sum.status.is_terminal() {
+                    if sum.state.is_terminal() {
                         sum.last_event_at.clone()
                     } else {
                         None
                     },
                 ),
-                None => (SpecStatus::NoEvents, None, None),
+                None => (
+                    SpecState {
+                        stage: Stage::Plan,
+                        outcome: Outcome::Active,
+                        flags: crate::model::view::Flags::default(),
+                    },
+                    SpecStatus::NoEvents,
+                    None,
+                    None,
+                ),
             };
             children.push(SpecChild {
                 spec: child,
+                state,
                 status,
                 started_at,
                 completed_at,

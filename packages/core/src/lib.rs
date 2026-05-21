@@ -14,12 +14,12 @@
 //! Layers:
 //!
 //! - [`model`] — pure `serde` data types with zero side effects: the harness
-//!   event schema, the hook contract, pipeline-state, and the SDD ViewModels
+//!   event schema, the hook contract, pipeline-state, and the SDD `ViewModels`
 //!   under [`model::view`].
 //! - [`store`] — side-effecting infrastructure behind traits: the event log,
 //!   `pipeline-state` read/write, and fail-open filesystem primitives.
 //! - [`projection`] — pure folds over `&[HarnessEvent]`: one function per
-//!   ViewModel. No IO, no side effects — deterministic and testable in
+//!   `ViewModel`. No IO, no side effects — deterministic and testable in
 //!   isolation.
 //! - [`reader`] — the [`reader::SpecReader`] trait + two adapters:
 //!   [`reader::SqliteSpecReader`] (production) and
@@ -45,11 +45,13 @@ pub mod reader;
 
 // Root re-exports — consumers can write `use mustard_core::…` without
 // remembering which sub-module owns each name.
+#[allow(deprecated)] // SpecStatus is re-exported during the W1→W7 migration window.
+pub use model::view::SpecStatus;
 pub use model::view::{
-    AcStatus, AcceptanceCriterion, FileCount, Phase, PhaseSegment, QualityRollup, Scope,
-    SegmentState, SpecChild, SpecFilter, SpecStatus, SpecStatusFilter, SpecSummary, SpecTrack,
-    SpecView, TimeWindow, TimelineKind, TimelineNode, WaveStatus, WaveView, WorkspaceAlert,
-    WorkspaceAlertKind, WorkspaceSummary,
+    AcStatus, AcceptanceCriterion, FileCount, Flags, Outcome, Phase, PhaseSegment, QualityRollup,
+    Scope, SegmentState, SpecChild, SpecFilter, SpecState, SpecStatusFilter, SpecSummary,
+    SpecTrack, SpecView, Stage, StateError, TimeWindow, TimelineKind, TimelineNode, WaveStatus,
+    WaveView, WorkspaceAlert, WorkspaceAlertKind, WorkspaceSummary,
 };
 pub use reader::{InMemorySpecReader, ReadError, SpecReader, SqliteSpecReader};
 

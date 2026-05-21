@@ -6,9 +6,11 @@
 //! window, picks the top files of the day, and emits one `SpecTrack` per
 //! active spec.
 
+#[allow(deprecated)] // SpecTrack still carries the legacy SpecStatus this wave.
+use crate::model::view::SpecStatus;
 use crate::model::view::{
-    FileCount, Phase, PhaseSegment, SegmentState, SpecStatus, SpecTrack, WorkspaceAlert,
-    WorkspaceAlertKind, WorkspaceSummary,
+    FileCount, Phase, PhaseSegment, SegmentState, SpecTrack, WorkspaceAlert, WorkspaceAlertKind,
+    WorkspaceSummary,
 };
 use crate::projection::card::project_spec_view;
 use crate::model::event::HarnessEvent;
@@ -25,6 +27,7 @@ const TOP_FILES_CAP: usize = 10;
 /// a fixed value for deterministic output; the SQLite reader path passes
 /// `SystemTime::now()`.
 #[must_use]
+#[allow(deprecated)] // SpecTrack still keys off the legacy SpecStatus this wave.
 pub fn project_workspace(events: &[HarnessEvent], now_ms: i64) -> WorkspaceSummary {
     if events.is_empty() {
         return WorkspaceSummary::empty();
@@ -206,6 +209,7 @@ pub fn project_workspace(events: &[HarnessEvent], now_ms: i64) -> WorkspaceSumma
 }
 
 /// Build a single [`SpecTrack`] for one spec from its slice of events.
+#[allow(deprecated)] // SpecTrack still keys off the legacy SpecStatus this wave.
 fn build_track(spec: &str, events: &[HarnessEvent]) -> SpecTrack {
     let view = project_spec_view(spec, events);
     let segments = build_segments(view.phase, view.status);
@@ -234,6 +238,7 @@ fn build_track(spec: &str, events: &[HarnessEvent]) -> SpecTrack {
 }
 
 /// Build the five phase segments for a SpecTrack.
+#[allow(deprecated)] // segment colouring still keys off the legacy SpecStatus this wave.
 fn build_segments(current: Option<Phase>, status: SpecStatus) -> Vec<PhaseSegment> {
     let target_idx = current.map(Phase::index);
     Phase::all()

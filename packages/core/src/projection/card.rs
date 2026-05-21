@@ -26,7 +26,7 @@
 //! When the event stream is empty and a `spec.md` path is supplied, the fold
 //! parses the `### Status:` / `### Phase:` / `### Scope:` / `### Lang:` lines
 //! from the header and seeds the [`SpecView`] from them. This is the
-//! cross-collaborator path: the SQLite event log is per-machine and never
+//! cross-collaborator path: the `SQLite` event log is per-machine and never
 //! versioned, but the `spec.md` header *is* checked into git. A teammate who
 //! pulls the repo sees a populated dashboard without re-emitting any events.
 //!
@@ -34,7 +34,9 @@
 //! `None` because the header alone cannot prove when work started or last
 //! happened.
 
-use crate::model::view::{Phase, Scope, SpecStatus, SpecView};
+#[allow(deprecated)] // the fold still computes the legacy SpecStatus, then derives SpecState from it.
+use crate::model::view::SpecStatus;
+use crate::model::view::{Flags, Outcome, Phase, Scope, SpecState, SpecView, Stage};
 use crate::model::event::{
     Actor, ActorKind, HarnessEvent, PipelineScopePayload, PipelineTaskCompletePayload,
     PipelineWaveCompletePayload, SCHEMA_VERSION,
@@ -128,7 +130,6 @@ fn project_from_events(spec_name: &str, events: &[HarnessEvent]) -> SpecView {
             // dashboard bucket. The authoritative status source is
             // `pipeline.status` — `pipeline.complete` only carries `closedAt`
             // and the affected files list. Leave the status alone here.
-            "pipeline.complete" => {}
             "qa.result" => apply_qa_result(&mut view, ev),
             "tool.use" => view.tools_used = view.tools_used.saturating_add(1),
             "agent.start" => view.agents_dispatched = view.agents_dispatched.saturating_add(1),
@@ -149,11 +150,43 @@ fn project_from_events(spec_name: &str, events: &[HarnessEvent]) -> SpecView {
         view.current_wave = Some((max_completed + 1).min(total));
     }
 
+    // Derive the canonical SpecState from the legacy fold. Wave 1 keeps the
+    // event fold expressed in the legacy `SpecStatus` vocabulary (see
+    // `fold_legacy_status`) and lifts it into `SpecState` as a final step, so
+    // both fields stay consistent for every projection branch.
+    sync_state(&mut view);
+
     view
+}
+
+/// Keep [`SpecView::state`] in sync with the legacy [`SpecView::status`] fold.
+///
+/// The Wave 1 projection still folds the event stream in the flat
+/// [`SpecStatus`] vocabulary — that fold is now named [`fold_legacy_status`]
+/// for clarity — and derives the canonical [`SpecState`] from it here. Later
+/// waves can flip the relationship (fold straight into `SpecState`) without
+/// touching every per-event helper.
+#[allow(deprecated)] // bridges the deprecated `status` field into `state`.
+fn sync_state(view: &mut SpecView) {
+    view.state = SpecState::from(fold_legacy_status(view));
+}
+
+/// The legacy event fold expressed in [`SpecStatus`] terms.
+///
+/// Retained as a named, documented entry point for the bridge in
+/// [`sync_state`]: the per-event helpers (`apply_status`, `apply_scope`, …)
+/// mutate `view.status`, and this is the value that fold produces. Marked
+/// `#[allow(deprecated)]` because reading the deprecated field is intentional
+/// here, not a misuse.
+#[must_use]
+#[allow(deprecated)]
+pub fn fold_legacy_status(view: &SpecView) -> SpecStatus {
+    view.status
 }
 
 /// `pipeline.scope` — first observation of a spec's metadata. Promotes the
 /// view from `NoEvents` to `Planning` and records scope/lang/model.
+#[allow(deprecated)] // mutates the legacy `status` fold; `state` is derived later.
 fn apply_scope(view: &mut SpecView, ev: &HarnessEvent) {
     if let Ok(payload) = serde_json::from_value::<PipelineScopePayload>(ev.payload.clone()) {
         view.scope = Scope::parse(&payload.scope);
@@ -171,6 +204,7 @@ fn apply_scope(view: &mut SpecView, ev: &HarnessEvent) {
 
 /// `pipeline.status` — typed transitions. Unknown strings leave status
 /// unchanged rather than dropping back to `NoEvents`.
+#[allow(deprecated)] // mutates the legacy `status` fold; `state` is derived later.
 fn apply_status(view: &mut SpecView, ev: &HarnessEvent) {
     let Some(to) = ev.payload.get("to").and_then(serde_json::Value::as_str) else {
         return;
@@ -213,6 +247,7 @@ fn apply_wave_complete(view: &mut SpecView, ev: &HarnessEvent) {
 
 /// `pipeline.wave.failed` — track failed waves. The event has no typed
 /// payload struct in `mustard-core` yet, so we read the `wave` field directly.
+#[allow(deprecated)] // mutates the legacy `status` fold; `state` is derived later.
 fn apply_wave_failed(view: &mut SpecView, ev: &HarnessEvent) {
     let Some(wave) = ev
         .payload
@@ -291,6 +326,7 @@ fn apply_qa_result(view: &mut SpecView, ev: &HarnessEvent) {
 /// When a status is parsed and `emit_sink` is provided, a single synthetic
 /// `pipeline.status` event is appended. Failures are swallowed: telemetry is
 /// never load-bearing.
+#[allow(deprecated)] // seeds the legacy `status` field from the header; `state` derived after.
 fn view_from_header(
     spec_name: &str,
     path: &Path,
@@ -303,6 +339,26 @@ fn view_from_header(
     }
 
     let mut view = SpecView::empty(spec_name);
+
+    // New canonical header (`### Stage:` / `### Outcome:` / `### Flags:`) takes
+    // precedence when a `### Stage:` line is present. The legacy `### Status:`
+    // / `### Phase:` block remains the fallback for specs not yet rewritten
+    // (rewrite is Wave 7). When the new header parses into a legal SpecState we
+    // seed both `state` (canonical) and `status` (derived, for the synthetic
+    // emit and back-compat readers).
+    if let Some(state) = state_from_new_header(&header) {
+        view.state = state.clone();
+        if let Ok(status) = SpecStatus::try_from(state) {
+            view.status = status;
+        }
+        if let Some(phase_raw) = header.get("phase") {
+            if let Some(phase) = Phase::parse(phase_raw) {
+                view.phase = Some(phase);
+            }
+        }
+        seed_header_metadata(&mut view, &header);
+        return Some(view);
+    }
 
     if let Some(status_raw) = header.get("status") {
         if let Some(status) = SpecStatus::parse(status_raw) {
@@ -335,6 +391,20 @@ fn view_from_header(
             view.phase = Some(phase);
         }
     }
+    seed_header_metadata(&mut view, &header);
+
+    // Derive the canonical state from the legacy `status` the header seeded.
+    sync_state(&mut view);
+
+    Some(view)
+}
+
+/// Seed `scope` and `lang` from the header map. Shared by the new-format and
+/// legacy-format paths in [`view_from_header`].
+fn seed_header_metadata(
+    view: &mut SpecView,
+    header: &std::collections::BTreeMap<String, String>,
+) {
     if let Some(scope_raw) = header.get("scope") {
         if let Some(scope) = Scope::parse(scope_raw) {
             view.scope = Some(scope);
@@ -346,8 +416,26 @@ fn view_from_header(
             view.lang = Some(trimmed.to_string());
         }
     }
+}
 
-    Some(view)
+/// Build a [`SpecState`] from the new canonical header fields, when present.
+///
+/// Requires a `### Stage:` line — that is the marker that distinguishes the new
+/// format from the legacy `### Status:` block. `### Outcome:` defaults to
+/// `Active` when absent (a running spec rarely writes it); `### Flags:` is an
+/// optional comma/space-separated list. Returns `None` when no `Stage` line is
+/// present, when the stage value is unparseable, or when the resulting triple
+/// is illegal (so the caller falls back to the legacy header).
+fn state_from_new_header(
+    header: &std::collections::BTreeMap<String, String>,
+) -> Option<SpecState> {
+    let stage = Stage::parse(header.get("stage")?)?;
+    let outcome = header
+        .get("outcome")
+        .and_then(|raw| Outcome::parse(raw))
+        .unwrap_or(Outcome::Active);
+    let flags = header.get("flags").map(|raw| Flags::parse(raw)).unwrap_or_default();
+    SpecState::new(stage, outcome, flags).ok()
 }
 
 /// Walk the file and collect `### Key: value` pairs from the leading header
@@ -403,13 +491,17 @@ fn parse_header_fields(raw: &str) -> std::collections::BTreeMap<String, String> 
 /// clock-error case so the emit still passes the store's schema validation.
 /// Mirrors the formatting helper in `economy::sources::time::now_iso` — kept
 /// inline because that helper is `pub(super)` to its module.
-#[allow(clippy::cast_possible_truncation)]
+#[allow(
+    clippy::cast_possible_truncation, // i64 → u32: day/month/hour/min/sec fit safely in u32
+    clippy::cast_sign_loss,           // i64 → u32: calendar fields are always non-negative
+    clippy::cast_possible_wrap,       // u64 → i64: seconds-since-epoch fits in i64 for millennia
+    clippy::many_single_char_names    // Howard Hinnant's civil-to-date algorithm uses its canonical variable names
+)]
 fn header_emit_timestamp() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
+        .map_or(0, |d| d.as_secs() as i64);
     // Howard Hinnant's days-from-civil, inverted. Same algorithm used in
     // `economy::sources::time` — duplicated rather than re-exported because
     // the only other consumer keeps the helper module-private.
@@ -432,6 +524,7 @@ fn header_emit_timestamp() -> String {
 }
 
 #[cfg(test)]
+#[allow(deprecated)] // these tests intentionally assert against the legacy SpecStatus path.
 mod tests {
     use super::*;
     use crate::model::view::Phase;

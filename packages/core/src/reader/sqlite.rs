@@ -6,9 +6,11 @@
 //! is a *thin* layer — it picks queries, never folds.
 
 use crate::reader::error::Result;
+#[allow(deprecated)] // empty-view detection and child fallback still read the legacy SpecStatus.
+use crate::model::view::SpecStatus;
 use crate::model::view::{
-    QualityRollup, SpecChild, SpecFilter, SpecStatusFilter, SpecStatus, SpecSummary, SpecView,
-    TimeWindow, TimelineNode, WaveView, WorkspaceSummary,
+    Outcome, QualityRollup, SpecChild, SpecFilter, SpecState, SpecStatusFilter, SpecSummary,
+    SpecView, Stage, TimeWindow, TimelineNode, WaveView, WorkspaceSummary,
 };
 use crate::projection::{
     project_quality, project_spec_view, project_spec_view_with_header, project_timeline,
@@ -28,7 +30,7 @@ use std::path::{Path, PathBuf};
 ///    `RefCell` internally). The [`SpecReader`] trait is `Send + Sync` so a
 ///    consumer can share readers across Tauri command handlers and threads.
 ///    Holding the connection inside the reader would force a `Mutex` and
-///    serialize every query — pointless when SQLite's own WAL already permits
+///    serialize every query — pointless when `SQLite`'s own WAL already permits
 ///    concurrent readers.
 /// 2. **Migration freshness.** Opening the store runs
 ///    [`migrations::apply`](crate::store::migrations::apply) every time,
@@ -163,7 +165,7 @@ impl SqliteSpecReader {
         };
         let mut planned: Vec<WaveView> = Vec::new();
         for entry in entries.flatten() {
-            if !entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+            if !entry.file_type().is_ok_and(|t| t.is_dir()) {
                 continue;
             }
             let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
@@ -189,6 +191,7 @@ impl SqliteSpecReader {
 }
 
 impl SpecReader for SqliteSpecReader {
+    #[allow(deprecated)] // `NoEvents` is the empty-stream sentinel — only the legacy enum carries it.
     fn spec_view(&self, spec: &str) -> Result<Option<SpecView>> {
         if spec.is_empty() {
             return Err(crate::reader::error::ReadError::invalid("spec name cannot be empty"));
@@ -235,7 +238,7 @@ impl SpecReader for SqliteSpecReader {
             let seen: std::collections::HashSet<&str> = names.iter().map(String::as_str).collect();
             let mut extras: Vec<String> = Vec::new();
             for entry in entries.flatten() {
-                if !entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                if !entry.file_type().is_ok_and(|t| t.is_dir()) {
                     continue;
                 }
                 let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
@@ -298,8 +301,8 @@ impl SpecReader for SqliteSpecReader {
             // Filter by status bucket if requested.
             let keep = match filter.status.as_ref().unwrap_or(&SpecStatusFilter::Any) {
                 SpecStatusFilter::Any => true,
-                SpecStatusFilter::Active => summary.status.is_active(),
-                SpecStatusFilter::Closed => summary.status.is_terminal(),
+                SpecStatusFilter::Active => summary.state.is_active(),
+                SpecStatusFilter::Closed => summary.state.is_terminal(),
             };
             if keep {
                 summaries.push(summary);
@@ -348,6 +351,7 @@ impl SpecReader for SqliteSpecReader {
         Ok(project_workspace(&events, now_ms))
     }
 
+    #[allow(deprecated)] // populates the derived legacy `status` field on SpecChild.
     fn children_of(&self, parent: &str) -> Result<Vec<SpecChild>> {
         if parent.is_empty() {
             return Err(crate::reader::error::ReadError::invalid(
@@ -357,22 +361,35 @@ impl SpecReader for SqliteSpecReader {
         let links = self.link_payloads_for(parent)?;
         let mut children: Vec<SpecChild> = Vec::with_capacity(links.len());
         for (child, reason) in links {
-            // Look up the child's own status; `spec_summary_core` returns the
-            // base summary without re-entering `children_of`.
-            let (status, started_at, completed_at) = match self.spec_summary_core(&child)? {
+            // Look up the child's own state; `spec_summary_core` returns the
+            // base summary without re-entering `children_of`. The legacy
+            // `status` field is derived from `state` for back-compat.
+            #[allow(deprecated)]
+            let (state, status, started_at, completed_at) = match self.spec_summary_core(&child)? {
                 Some(sum) => (
+                    sum.state.clone(),
                     sum.status,
                     sum.started_at.clone(),
-                    if sum.status.is_terminal() {
+                    if sum.state.is_terminal() {
                         sum.last_event_at.clone()
                     } else {
                         None
                     },
                 ),
-                None => (SpecStatus::NoEvents, None, None),
+                None => (
+                    SpecState {
+                        stage: Stage::Plan,
+                        outcome: Outcome::Active,
+                        flags: crate::model::view::Flags::default(),
+                    },
+                    SpecStatus::NoEvents,
+                    None,
+                    None,
+                ),
             };
             children.push(SpecChild {
                 spec: child,
+                state,
                 status,
                 started_at,
                 completed_at,
@@ -388,13 +405,14 @@ impl SpecReader for SqliteSpecReader {
 fn now_epoch_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
-        .unwrap_or(0)
+        .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
 }
 
 #[cfg(test)]
+#[allow(deprecated)] // tests assert against the legacy SpecStatus path intentionally.
 mod tests {
     use super::*;
+    #[allow(deprecated)]
     use crate::model::view::SpecStatus;
     use crate::store::event_store::EventSink;
     use crate::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};

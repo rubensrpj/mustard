@@ -1,4 +1,4 @@
-//! Pure folds over `&[HarnessEvent]` — one function per ViewModel.
+//! Pure folds over `&[HarnessEvent]` — one function per `ViewModel`.
 //!
 //! Every projection here is total (always returns *something*) and
 //! deterministic (same input → same output). They take a slice of events and
@@ -7,7 +7,7 @@
 //!
 //! This is what makes the crate testable without IO: a test seeds a `Vec`,
 //! calls the projection, asserts the view. The [`reader`](crate::reader)
-//! layer is a thin shim that just supplies the slice from SQLite.
+//! layer is a thin shim that just supplies the slice from `SQLite`.
 
 mod card;
 mod quality;
@@ -38,6 +38,7 @@ pub(crate) fn extract_to_phase(ev: &HarnessEvent) -> Option<Phase> {
 /// Difference between two ISO-8601 timestamps in milliseconds. Returns `None`
 /// if either side fails to parse — used to compute durations without a
 /// dedicated date library in this crate. Pre-1970 timestamps clamp to zero.
+#[must_use]
 pub fn iso_diff_ms(start_iso: &str, end_iso: &str) -> Option<i64> {
     let start = parse_iso_millis(start_iso)?;
     let end = parse_iso_millis(end_iso)?;
@@ -50,6 +51,7 @@ pub fn iso_diff_ms(start_iso: &str, end_iso: &str) -> Option<i64> {
 /// trailing `.fff` is ignored. This is the same algorithm used by
 /// `apps/rt/src/hooks/tracker.rs::parse_iso_millis` — kept inline to avoid
 /// pulling jiff into a domain crate.
+#[must_use]
 pub fn parse_iso_millis(iso: &str) -> Option<i64> {
     let bytes = iso.as_bytes();
     if bytes.len() < 19 || bytes[4] != b'-' || bytes[7] != b'-' || bytes[10] != b'T' {

@@ -1,4 +1,4 @@
-//! Typed ViewModels — the surface other crates render against.
+//! Typed `ViewModels` — the surface other crates render against.
 //!
 //! Each sub-module owns one cohesive shape so the project naturally honours
 //! the Single Responsibility Principle: a change to "how we surface
@@ -15,7 +15,9 @@ mod workspace;
 
 pub use filter::{SpecFilter, SpecStatusFilter, TimeWindow};
 pub use quality::{AcStatus, AcceptanceCriterion, QualityRollup};
-pub use spec::{SpecChild, SpecStatus, SpecSummary, SpecView};
+#[allow(deprecated)] // SpecStatus is re-exported during the W1→W7 migration window.
+pub use spec::SpecStatus;
+pub use spec::{Flags, Outcome, SpecChild, SpecState, SpecSummary, SpecView, Stage, StateError};
 pub use timeline::{TimelineKind, TimelineNode};
 pub use wave::{WaveStatus, WaveView};
 pub use workspace::{

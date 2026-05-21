@@ -5,7 +5,9 @@
 //! prompt-economy events) may be unavailable on this host, and the UI
 //! distinguishes "no data" from "zero" — a literal `0` would mislead.
 
-use super::{Phase, SpecStatus};
+use super::Phase;
+#[allow(deprecated)] // SpecTrack still surfaces the legacy SpecStatus until Wave 3 migrates it.
+use super::SpecStatus;
 use serde::{Deserialize, Serialize};
 
 /// One file + its count for "top files today" rolls-ups.
@@ -42,10 +44,12 @@ pub struct PhaseSegment {
 
 /// One row of the "Sala de Operações multi-track" — one spec, one trajectory.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[allow(deprecated)] // carries the legacy `status` field until Wave 3 migrates SpecTrack to SpecState.
 pub struct SpecTrack {
     /// Spec name.
     pub spec: String,
     /// Current status.
+    #[deprecated(note = "Use SpecState. Migrated to SpecTrack.state in spec-lifecycle-unification W3.")]
     pub status: SpecStatus,
     /// Phase the spec is currently in.
     pub current_phase: Option<Phase>,

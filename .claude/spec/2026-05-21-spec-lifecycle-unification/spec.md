@@ -1,6 +1,6 @@
 # Spec lifecycle unification + Linear-style /specs redesign
 
-### Status: approved
+### Status: implementing
 ### Phase: PLAN
 ### Lang: pt
 ### Scope: full
