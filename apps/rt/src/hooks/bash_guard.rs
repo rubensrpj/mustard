@@ -1460,14 +1460,21 @@ impl Check for BashGuard {
                 let spec_slug = current_spec(&ctx.project_dir);
                 // Typed savings record (W2): tokens we did NOT have to ship as a
                 // verbose Bash response because `rtk` summarised the command.
-                // `BashGuardBlock` is the closest source enum today — a future
-                // `RtkRewrite` variant would let the dashboard split the two.
+                // `RtkRewrite` is the dedicated source bucket — `BashGuardBlock`
+                // is reserved for actual deny verdicts so the W7 dashboard can
+                // surface "rewrites vs blocks" without conflating the two.
                 if let Some(conn) = open_economy_conn(&ctx.project_dir) {
-                    let saved = estimator::estimate_input_tokens(&cmd, "") as i64;
+                    // Source the active model so `estimate_input_tokens` picks
+                    // the right per-tier ratio. `Ctx` does not carry the model
+                    // (b3 only exposes `project_dir` + `trigger`), so we fall
+                    // back to the `CLAUDE_MODEL` env var the harness sets per
+                    // turn; empty string keeps the estimator on its default.
+                    let model = std::env::var("CLAUDE_MODEL").unwrap_or_default();
+                    let saved = estimator::estimate_input_tokens(&cmd, &model) as i64;
                     let saved = saved.max(1);
                     let rec = SavingsRecord {
                         ts: now_iso8601(),
-                        source: SavingsSource::BashGuardBlock,
+                        source: SavingsSource::RtkRewrite,
                         tokens_saved: saved,
                         model_target: None,
                         project_path: ProjectPath::new(&ctx.project_dir),

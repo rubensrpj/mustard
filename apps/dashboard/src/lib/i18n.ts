@@ -18,7 +18,6 @@
 //    `useTranslation()` from `react-i18next` stay correct — this module just
 //    gives the Overview page a smaller, dependency-free surface.
 
-import { useSyncExternalStore } from "react";
 import { useStore } from "@/lib/store";
 
 export type Lang = "pt" | "en";
@@ -109,8 +108,3 @@ export function translate(key: string, fallback?: string): string {
   if (row) return row[lang];
   return fallback ?? key;
 }
-
-// Silence the unused-import lint on platforms that strip dev-only checks.
-// `useSyncExternalStore` is referenced via the zustand selector under the hood;
-// keeping the explicit import documents the React contract.
-void useSyncExternalStore;

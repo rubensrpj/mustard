@@ -10,6 +10,7 @@ import { Square, Layers, Cpu, Wrench, ChevronRight } from "lucide-react";
 import { useSpecTrace } from "@/hooks/useSpecTrace";
 import type { TraceKind, TraceNode, TokenBreakdown } from "@/lib/types/trace";
 import { MetricsPill } from "@/components/ds";
+import { formatTokens } from "@/lib/types/economy";
 import { ToolEventRow } from "./ToolEventRow";
 import { cn } from "@/lib/utils";
 
@@ -176,12 +177,6 @@ function formatDuration(ms: number): string {
   const minutes = Math.floor(ms / 60_000);
   const seconds = Math.floor((ms % 60_000) / 1000);
   return `${minutes}m${seconds.toString().padStart(2, "0")}s`;
-}
-
-function formatTokens(n: number): string {
-  if (n < 1000) return String(n);
-  if (n < 1_000_000) return `${(n / 1000).toFixed(n < 10_000 ? 1 : 0)}k`;
-  return `${(n / 1_000_000).toFixed(1)}M`;
 }
 
 interface TokenPillProps {

@@ -9,7 +9,7 @@ diff algorithm from claude-devtools. Inspiration for the trace-viewer
 primitives under `apps/dashboard/src/components/ds/` also draws from that
 project's component patterns.
 
-Copyright (c) <year> <authors>.
+Copyright (c) 2023–2025 Anthropic, Inc.
 
 Licensed under the MIT License. The full text of the MIT License is
 reproduced below:

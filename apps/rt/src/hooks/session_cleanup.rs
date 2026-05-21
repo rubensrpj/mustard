@@ -252,30 +252,12 @@ fn clean_otel_pid(claude_dir: &Path) {
 /// `~/.claude/projects/<encoded-cwd>/<session-id>.jsonl` layout.
 const CLAUDE_TRANSCRIPT_PATH_ENV: &str = "CLAUDE_TRANSCRIPT_PATH";
 
-/// Resolve the user's home directory cross-platform without a `dirs` crate
-/// dependency: `HOME` on Unix, `USERPROFILE` on Windows.
-fn home_dir() -> Option<PathBuf> {
-    let var = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
-    std::env::var_os(var)
-        .map(PathBuf::from)
-        .filter(|p| !p.as_os_str().is_empty())
-}
-
-/// Encode `cwd` the same way Claude Code does for its transcript-projects
-/// layout: every path separator (`/`, `\`) and drive-letter colon collapses
-/// to `-`. E.g. `C:\Atiz\mustard` → `C--Atiz-mustard`.
-///
-/// Tolerant of mixed separators (Windows paths under WSL/Cygwin shells often
-/// arrive with both); kept as a 5-line replacer instead of pulling in a URL
-/// encoding crate.
-fn encode_cwd(cwd: &str) -> String {
-    cwd.chars()
-        .map(|c| match c {
-            '/' | '\\' | ':' => '-',
-            other => other,
-        })
-        .collect()
-}
+// `home_dir` and `encode_cwd` live in `crate::util` since the post-Wave-2
+// tactical bundle (b3 Wave 5 review follow-up): both `session_cleanup` and
+// `transcript_watcher` resolved transcript paths and drift between two copies
+// of the `:`-collapsing rule would silently mismatch the path Claude Code
+// writes to. Imported here, not redefined.
+use crate::util::{encode_cwd, home_dir};
 
 /// Best-effort resolution of the session transcript path.
 ///

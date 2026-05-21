@@ -101,7 +101,13 @@ export function CodeBlock({
       )}
     >
       {tokenized.map((toks, idx) => (
-        <div key={idx} className="grid grid-cols-[auto_1fr] gap-3 px-3">
+        <div
+          key={idx}
+          className={cn(
+            "px-3",
+            showLineNumbers ? "grid grid-cols-[auto_1fr] gap-3" : "block",
+          )}
+        >
           {showLineNumbers ? (
             <span
               className="text-right text-[--ds-text-tertiary] select-none"

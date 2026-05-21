@@ -37,15 +37,11 @@ use std::time::Duration;
 /// idle CPU stays near zero.
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
 
-/// Resolve the user's home directory cross-platform without a `dirs` crate
-/// dependency. Mirrors the helper in [`crate::hooks::session_cleanup`] — kept
-/// duplicated rather than pulled into `util` so each module stays self-contained.
-fn home_dir() -> Option<PathBuf> {
-    let var = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
-    std::env::var_os(var)
-        .map(PathBuf::from)
-        .filter(|p| !p.as_os_str().is_empty())
-}
+// `home_dir` (and `encode_cwd`, used by `session_cleanup`) live in
+// `crate::util` after the b3 Wave 5 review-bundle consolidation: a duplicated
+// `:`-collapsing rule would silently break transcript discovery if one side
+// drifted. Imported here.
+use crate::util::home_dir;
 
 /// Filesystem root the watcher recurses under. Returns `None` when the home
 /// directory cannot be resolved (the caller logs and exits cleanly).

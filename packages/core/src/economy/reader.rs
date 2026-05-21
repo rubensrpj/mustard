@@ -39,8 +39,8 @@ pub fn economy_summary(conn: &Connection, scope: EconomyScope) -> Result<Economy
     match scope {
         EconomyScope::AllProjects(ref projects) => {
             let reader = MultiProjectReader::new();
-            let per_project = reader.fan_out(projects, |c| {
-                economy_summary(c, EconomyScope::Project(projects[0].clone()))
+            let per_project = reader.fan_out(projects, |c, project| {
+                economy_summary(c, EconomyScope::Project(project.clone()))
             });
             let mut acc = EconomySummary::default();
             for s in per_project.values() {
@@ -57,30 +57,58 @@ pub fn economy_summary(conn: &Connection, scope: EconomyScope) -> Result<Economy
             Ok(acc)
         }
         _ => {
-            let (where_sql, spec_param, wave_param) = scope_where(&scope);
-            let span_sql = format!(
-                "SELECT COALESCE(SUM(cost_usd_micros), 0), \
-                        COALESCE(SUM(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)), 0), \
-                        COUNT(*) \
-                 FROM spans {where_sql}"
-            );
-            let (total_cost, total_tokens, span_count): (i64, i64, i64) = conn
-                .query_row(
-                    &span_sql,
-                    params![spec_param.as_deref(), wave_param.as_deref()],
-                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-                )
-                .map_err(Error::from)?;
+            // Spans aggregation: Wave scope cannot filter on the `spans` table
+            // directly (no native `wave_id` column), so it routes through the
+            // attribution CTE — same join `per_agent_costs` uses — and filters
+            // on the resolved `attr_wave_id`. Project/Spec scopes stay on the
+            // direct path; the CTE is one extra index walk we only pay when
+            // the caller actually constrained to a wave.
+            let (total_cost, total_tokens, span_count) = match &scope {
+                EconomyScope::Wave { spec, wave, .. } => {
+                    let sql = format!(
+                        "{cte} \
+                         SELECT COALESCE(SUM(cost_usd_micros), 0), \
+                                COALESCE(SUM(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)), 0), \
+                                COUNT(*) \
+                         FROM attributed_spans \
+                         WHERE attr_spec_id = ?1 AND attr_wave_id = ?2",
+                        cte = attribution_cte("WHERE 1=1"),
+                    );
+                    conn.query_row(
+                        &sql,
+                        params![spec.0.as_str(), wave.0.as_str()],
+                        |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?)),
+                    )
+                    .map_err(Error::from)?
+                }
+                _ => {
+                    let (where_sql, spec_param) = spans_scope_where(&scope);
+                    let span_sql = format!(
+                        "SELECT COALESCE(SUM(cost_usd_micros), 0), \
+                                COALESCE(SUM(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)), 0), \
+                                COUNT(*) \
+                         FROM spans {where_sql}"
+                    );
+                    conn.query_row(
+                        &span_sql,
+                        rusqlite::params_from_iter(spec_param.iter()),
+                        |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?)),
+                    )
+                    .map_err(Error::from)?
+                }
+            };
 
+            // Savings aggregation always uses `savings_records` directly —
+            // the table carries native `spec_id` and `wave_id` columns so
+            // every scope variant has a real, non-tautological filter.
             let savings_sql = format!(
-                "SELECT COALESCE(SUM(tokens_saved), 0) FROM savings_records \
-                 {}",
+                "SELECT COALESCE(SUM(tokens_saved), 0) FROM savings_records {}",
                 savings_where(&scope)
             );
             let total_saved: i64 = conn
                 .query_row(
                     &savings_sql,
-                    params![spec_param.as_deref(), wave_param.as_deref()],
+                    rusqlite::params_from_iter(savings_params(&scope).iter()),
                     |r| r.get(0),
                 )
                 .map_err(Error::from)?;
@@ -117,8 +145,8 @@ pub fn per_agent_costs(conn: &Connection, scope: EconomyScope) -> Result<Vec<Age
     match scope {
         EconomyScope::AllProjects(ref projects) => {
             let reader = MultiProjectReader::new();
-            let per_project = reader.fan_out(projects, |c| {
-                per_agent_costs(c, EconomyScope::Project(projects[0].clone()))
+            let per_project = reader.fan_out(projects, |c, project| {
+                per_agent_costs(c, EconomyScope::Project(project.clone()))
             });
             // Merge by agent_id.
             let mut merged: std::collections::HashMap<String, AgentCost> =
@@ -193,8 +221,8 @@ pub fn per_spec_costs(conn: &Connection, scope: EconomyScope) -> Result<Vec<Spec
     match scope {
         EconomyScope::AllProjects(ref projects) => {
             let reader = MultiProjectReader::new();
-            let per_project = reader.fan_out(projects, |c| {
-                per_spec_costs(c, EconomyScope::Project(projects[0].clone()))
+            let per_project = reader.fan_out(projects, |c, project| {
+                per_spec_costs(c, EconomyScope::Project(project.clone()))
             });
             let mut merged: std::collections::HashMap<String, SpecCost> =
                 std::collections::HashMap::new();
@@ -270,8 +298,8 @@ pub fn per_wave_costs(conn: &Connection, scope: EconomyScope) -> Result<Vec<Wave
     match scope {
         EconomyScope::AllProjects(ref projects) => {
             let reader = MultiProjectReader::new();
-            let per_project = reader.fan_out(projects, |c| {
-                per_wave_costs(c, EconomyScope::Project(projects[0].clone()))
+            let per_project = reader.fan_out(projects, |c, project| {
+                per_wave_costs(c, EconomyScope::Project(project.clone()))
             });
             let mut merged: std::collections::HashMap<(String, String), WaveCost> =
                 std::collections::HashMap::new();
@@ -344,8 +372,8 @@ pub fn savings_breakdown(conn: &Connection, scope: EconomyScope) -> Result<Savin
     match scope {
         EconomyScope::AllProjects(ref projects) => {
             let reader = MultiProjectReader::new();
-            let per_project = reader.fan_out(projects, |c| {
-                savings_breakdown(c, EconomyScope::Project(projects[0].clone()))
+            let per_project = reader.fan_out(projects, |c, project| {
+                savings_breakdown(c, EconomyScope::Project(project.clone()))
             });
             let mut total = 0i64;
             let mut per_source: std::collections::HashMap<SavingsSource, (i64, i64)> =
@@ -374,7 +402,7 @@ pub fn savings_breakdown(conn: &Connection, scope: EconomyScope) -> Result<Savin
         }
         _ => {
             let savings_where_sql = savings_where(&scope);
-            let (_, spec_param, wave_param) = scope_where(&scope);
+            let bind_params = savings_params(&scope);
             let sql = format!(
                 "SELECT source, COALESCE(SUM(tokens_saved), 0), COUNT(*) \
                  FROM savings_records {savings_where_sql} \
@@ -384,7 +412,7 @@ pub fn savings_breakdown(conn: &Connection, scope: EconomyScope) -> Result<Savin
             let mut total = 0i64;
             let mut per_source = Vec::new();
             let rows = stmt.query_map(
-                params![spec_param.as_deref(), wave_param.as_deref()],
+                rusqlite::params_from_iter(bind_params.iter()),
                 |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?)),
             )?;
             for row in rows.filter_map(std::result::Result::ok) {
@@ -419,8 +447,8 @@ pub fn context_routing_quality(
     match scope {
         EconomyScope::AllProjects(ref projects) => {
             let reader = MultiProjectReader::new();
-            let per_project = reader.fan_out(projects, |c| {
-                context_routing_quality(c, EconomyScope::Project(projects[0].clone()))
+            let per_project = reader.fan_out(projects, |c, project| {
+                context_routing_quality(c, EconomyScope::Project(project.clone()))
             });
             let mut acc = ContextRoutingMetrics::default();
             let mut weight_total = 0i64;
@@ -440,7 +468,7 @@ pub fn context_routing_quality(
             Ok(acc)
         }
         _ => {
-            let (frame_where, spec_param, wave_param) = scope_where_frames(&scope);
+            let (frame_where, frame_params) = frames_scope_where(&scope);
             let sql = format!(
                 "SELECT \
                     COALESCE(SUM(prompt_size_bytes), 0), \
@@ -452,12 +480,18 @@ pub fn context_routing_quality(
             let (prompt_sum, prefix_sum, retry_sum, frame_count): (i64, i64, i64, i64) = conn
                 .query_row(
                     &sql,
-                    params![spec_param.as_deref(), wave_param.as_deref()],
+                    rusqlite::params_from_iter(frame_params.iter()),
                     |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
                 )
                 .map_err(Error::from)?;
 
-            let (span_where, sp2, wp2) = scope_where(&scope);
+            // Span ratios (cache hit, prefix-stable share): the `spans` table
+            // has no native wave column, so a Wave-scoped caller falls back to
+            // the spec roll-up. Today this widens the denominator on the wave
+            // breakdown — a real per-wave ratio would route through the
+            // attribution CTE the way `economy_summary` does. Tracked as W5
+            // follow-up; flagged here so the next reviewer does not chase it.
+            let (span_where, span_params) = spans_scope_where(&scope);
             let span_sql = format!(
                 "SELECT \
                     COALESCE(SUM(input_tokens), 0), \
@@ -467,7 +501,7 @@ pub fn context_routing_quality(
             let (input_sum, cache_sum): (i64, i64) = conn
                 .query_row(
                     &span_sql,
-                    params![sp2.as_deref(), wp2.as_deref()],
+                    rusqlite::params_from_iter(span_params.iter()),
                     |r| Ok((r.get(0)?, r.get(1)?)),
                 )
                 .map_err(Error::from)?;
@@ -628,64 +662,64 @@ fn attribution_cte(span_where: &str) -> String {
 // ---------------------------------------------------------------------------
 // Shared scope-to-SQL helpers.
 //
-// Returns: (where-clause-with-numbered-binds, spec_param, wave_param).
-// Binds are positional (`?1`, `?2`) so callers always pass the same params
-// list shape regardless of the variant.
+// Each helper returns `(where_clause, params)` where `params` is the exact
+// list of bind values referenced by the SQL — no `?2 = ?2` tautologies, no
+// `NULL IS NULL` placeholders. Callers feed the params into rusqlite via
+// `params_from_iter`, so the helper's `Vec` length matches the SQL's `?N`
+// count for every scope variant. Wave-scoped callers on the `spans` table
+// must route through [`attribution_cte`] separately — spans have no native
+// wave column, so this helper deliberately collapses Wave→Spec for the
+// `spans` SQL (the real wave filter lives in the CTE-driven query path).
 // ---------------------------------------------------------------------------
 
-/// Builds the `WHERE` clause for the `spans` table.
-fn scope_where(scope: &EconomyScope) -> (String, Option<String>, Option<String>) {
+/// Builds the `WHERE` clause + bind list for the `spans` table.
+///
+/// Wave scope collapses to Spec for this helper: the `spans` table has no
+/// native `wave_id` column, so Wave-aware callers must use the attribution
+/// CTE (see `economy_summary`). Returning a real filter here — instead of
+/// the legacy `?2 = ?2` tautology — keeps the bug from compiling silently.
+fn spans_scope_where(scope: &EconomyScope) -> (&'static str, Vec<String>) {
     match scope {
-        EconomyScope::Project(_) | EconomyScope::AllProjects(_) => {
-            ("WHERE (?1 IS NULL OR spec = ?1) AND (?2 IS NULL OR ?2 = ?2)".to_string(), None, None)
+        EconomyScope::Project(_) | EconomyScope::AllProjects(_) => ("", Vec::new()),
+        EconomyScope::Spec { spec, .. } | EconomyScope::Wave { spec, .. } => {
+            ("WHERE spec = ?1", vec![spec.0.clone()])
         }
-        EconomyScope::Spec { spec, .. } => (
-            "WHERE spec = ?1 AND (?2 IS NULL OR ?2 = ?2)".to_string(),
-            Some(spec.0.clone()),
-            None,
-        ),
-        EconomyScope::Wave { spec, wave, .. } => (
-            // Spans do not carry a native wave column; the wave filter is
-            // injected via context_cost_frames in callers that need it.
-            "WHERE spec = ?1 AND (?2 IS NULL OR ?2 = ?2)".to_string(),
-            Some(spec.0.clone()),
-            Some(wave.0.clone()),
-        ),
     }
 }
 
-/// Builds the `WHERE` clause for `context_cost_frames` (which has its own
-/// `spec_id` + `wave_id` columns).
-fn scope_where_frames(scope: &EconomyScope) -> (String, Option<String>, Option<String>) {
+/// Builds the `WHERE` clause + bind list for `context_cost_frames`
+/// (which has native `spec_id` and `wave_id` columns).
+fn frames_scope_where(scope: &EconomyScope) -> (&'static str, Vec<String>) {
     match scope {
-        EconomyScope::Project(_) | EconomyScope::AllProjects(_) => (
-            "WHERE (?1 IS NULL OR spec_id = ?1) AND (?2 IS NULL OR wave_id = ?2)".to_string(),
-            None,
-            None,
-        ),
-        EconomyScope::Spec { spec, .. } => (
-            "WHERE spec_id = ?1 AND (?2 IS NULL OR wave_id = ?2)".to_string(),
-            Some(spec.0.clone()),
-            None,
-        ),
+        EconomyScope::Project(_) | EconomyScope::AllProjects(_) => ("", Vec::new()),
+        EconomyScope::Spec { spec, .. } => ("WHERE spec_id = ?1", vec![spec.0.clone()]),
         EconomyScope::Wave { spec, wave, .. } => (
-            "WHERE spec_id = ?1 AND wave_id = ?2".to_string(),
-            Some(spec.0.clone()),
-            Some(wave.0.clone()),
+            "WHERE spec_id = ?1 AND wave_id = ?2",
+            vec![spec.0.clone(), wave.0.clone()],
         ),
     }
 }
 
 /// Builds the `WHERE` clause for `savings_records`.
-fn savings_where(scope: &EconomyScope) -> String {
+///
+/// `savings_records` carries native `spec_id` + `wave_id` columns, so every
+/// scope variant gets a real, non-tautological filter. Pair with
+/// [`savings_params`] to bind the right number of positional params.
+fn savings_where(scope: &EconomyScope) -> &'static str {
     match scope {
-        EconomyScope::Project(_) | EconomyScope::AllProjects(_) => {
-            "WHERE (?1 IS NULL OR spec_id = ?1) AND (?2 IS NULL OR wave_id = ?2)".to_string()
-        }
-        EconomyScope::Spec { .. } => {
-            "WHERE spec_id = ?1 AND (?2 IS NULL OR wave_id = ?2)".to_string()
-        }
-        EconomyScope::Wave { .. } => "WHERE spec_id = ?1 AND wave_id = ?2".to_string(),
+        EconomyScope::Project(_) | EconomyScope::AllProjects(_) => "",
+        EconomyScope::Spec { .. } => "WHERE spec_id = ?1",
+        EconomyScope::Wave { .. } => "WHERE spec_id = ?1 AND wave_id = ?2",
+    }
+}
+
+/// Positional bind list for the `savings_records` SQL built by
+/// [`savings_where`] — length matches the number of `?N` placeholders.
+fn savings_params(scope: &EconomyScope) -> Vec<String> {
+    match scope {
+        EconomyScope::Project(_) | EconomyScope::AllProjects(_) => Vec::new(),
+        EconomyScope::Spec { spec, .. } => vec![spec.0.clone()],
+        EconomyScope::Wave { spec, wave, .. } => vec![spec.0.clone(), wave.0.clone()],
     }
 }
 

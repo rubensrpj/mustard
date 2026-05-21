@@ -13,7 +13,7 @@ use mustard_core::economy::{
 use mustard_core::economy::scope::{AgentId, ProjectPath, SpecId, WaveId};
 use mustard_core::store::sqlite_store::SqliteEventStore;
 use rusqlite::Connection;
-use serde_json::Map;
+use serde_json::{Map, Value, json};
 use tempfile::tempdir;
 
 fn open_conn(dir: &std::path::Path) -> Connection {
@@ -190,7 +190,7 @@ fn test_multi_project_reader_fanout() {
         ProjectPath::new(path_a),
         ProjectPath::new(path_b),
     ];
-    let per_project = reader.fan_out(&projects, |c| {
+    let per_project = reader.fan_out(&projects, |c, _project| {
         let total: i64 = c
             .query_row(
                 "SELECT COALESCE(SUM(cost_usd_micros), 0) FROM spans",
@@ -203,6 +203,97 @@ fn test_multi_project_reader_fanout() {
     assert_eq!(per_project.len(), 2);
     let totals: i64 = per_project.values().sum();
     assert_eq!(totals, 3000);
+}
+
+/// Regression: `economy_summary(scope=Wave)` must aggregate ONLY spans from
+/// the targeted wave, not every span in the spec. Two waves in the same
+/// spec, each with its own `agent.start` + tool_use_id-attributed span;
+/// the Wave-scoped summary must surface one wave's totals exclusively.
+///
+/// Guards against a regression of the `?2 = ?2` tautology in `scope_where`
+/// that previously made Wave-scoped span totals a silent no-op (caller got
+/// the spec-wide totals instead of the wave's).
+#[test]
+fn test_economy_summary_wave_scope_filters_to_wave_only() {
+    let dir = tempdir().unwrap();
+    let conn = open_conn(dir.path());
+
+    // Two `agent.start` events, same spec but different waves. Each has a
+    // distinct `tool_use_id` so the attribution CTE's primary join leg lands
+    // each span on the right wave deterministically.
+    let payload_w1: Value = json!({
+        "agent_id": "agent-w1",
+        "spec_id": "spec-shared",
+        "wave_id": "wave-1",
+        "tool_use_id": "toolu_W1",
+    });
+    let payload_w2: Value = json!({
+        "agent_id": "agent-w2",
+        "spec_id": "spec-shared",
+        "wave_id": "wave-2",
+        "tool_use_id": "toolu_W2",
+    });
+    conn.execute(
+        "INSERT INTO events(ts, session_id, wave, spec, event, actor_kind, actor_id, payload) \
+         VALUES('2026-05-21T09:00:00Z','sess-w1',1,'spec-shared','agent.start','hook','orch',?1)",
+        rusqlite::params![payload_w1.to_string()],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO events(ts, session_id, wave, spec, event, actor_kind, actor_id, payload) \
+         VALUES('2026-05-21T09:30:00Z','sess-w2',2,'spec-shared','agent.start','hook','orch',?1)",
+        rusqlite::params![payload_w2.to_string()],
+    )
+    .unwrap();
+
+    // One span per wave, joined via tool_use_id. The span carries the spec
+    // directly so Spec-scope queries (which hit the direct `spans.spec`
+    // filter) see them too — the wave is resolved exclusively via the
+    // agent.start attribution.
+    let span_for_wave = |span_id: &str, session: &str, tuid: &str, cost: i64, tokens: i64| {
+        let mut extra = Map::new();
+        extra.insert("tool_use_id".into(), Value::String(tuid.into()));
+        SpanRecord {
+            ts: "2026-05-21T09:15:00Z".into(),
+            session_id: Some(session.into()),
+            span_id: span_id.into(),
+            model: Some("claude-3-5-sonnet".into()),
+            spec: Some("spec-shared".into()),
+            phase: None,
+            input_tokens: Some(tokens),
+            output_tokens: Some(0),
+            cache_read_input_tokens: None,
+            cache_creation_input_tokens: None,
+            cost_usd_micros: Some(cost),
+            is_error: false,
+            extra,
+        }
+    };
+    record_span(&conn, span_for_wave("r-w1", "sess-w1", "toolu_W1", 1_000, 100)).unwrap();
+    record_span(&conn, span_for_wave("r-w2", "sess-w2", "toolu_W2", 5_000, 500)).unwrap();
+
+    // Spec-wide sanity: both spans present.
+    let spec_scope = EconomyScope::Spec {
+        project: ProjectPath::new(dir.path()),
+        spec: SpecId::new("spec-shared"),
+    };
+    let spec_summary = economy_summary(&conn, spec_scope).unwrap();
+    assert_eq!(spec_summary.span_count, 2, "spec scope must see both spans");
+    assert_eq!(spec_summary.total_cost_usd_micros, 6_000);
+
+    // Wave-1 scope: must see ONLY the wave-1 span (1_000 cost, 100 tokens).
+    let wave_scope = EconomyScope::Wave {
+        project: ProjectPath::new(dir.path()),
+        spec: SpecId::new("spec-shared"),
+        wave: WaveId::new("wave-1"),
+    };
+    let wave_summary = economy_summary(&conn, wave_scope).unwrap();
+    assert_eq!(
+        wave_summary.span_count, 1,
+        "Wave scope must filter spans by wave (regression: ?2=?2 made this a no-op)"
+    );
+    assert_eq!(wave_summary.total_cost_usd_micros, 1_000);
+    assert_eq!(wave_summary.total_tokens, 100);
 }
 
 #[test]

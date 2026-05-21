@@ -32,6 +32,7 @@ use crate::economy::model::SpanRecord;
 use crate::error::{Error, Result};
 
 use super::IngestContext;
+use super::time::{epoch_secs_to_ymdhms, now_iso};
 
 /// Translate an OTLP/JSON `traces` payload into a list of [`SpanRecord`]s.
 ///
@@ -256,40 +257,6 @@ fn unix_nanos_to_iso(s: &str) -> Option<String> {
     ))
 }
 
-/// Now, formatted ISO-8601 to second precision (UTC).
-///
-/// Implemented without `jiff` to keep the core dep surface narrow — adapters
-/// must run in a hook's allotted milliseconds.
-fn now_iso() -> String {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
-    let (y, mo, d, h, mi, s) = epoch_secs_to_ymdhms(now);
-    format!("{y:04}-{mo:02}-{d:02}T{h:02}:{mi:02}:{s:02}Z")
-}
-
-/// Howard Hinnant's days-from-civil algorithm, in reverse. Returns
-/// `(year, month, day, hour, minute, second)` in UTC.
-#[allow(clippy::cast_possible_truncation)]
-fn epoch_secs_to_ymdhms(secs: i64) -> (i64, u32, u32, u32, u32, u32) {
-    let days = secs.div_euclid(86_400);
-    let tod = secs.rem_euclid(86_400);
-    let z = days + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
-    let y = if m <= 2 { y + 1 } else { y };
-    let h = (tod / 3600) as u32;
-    let mi = ((tod % 3600) / 60) as u32;
-    let s = (tod % 60) as u32;
-    (y, m, d, h, mi, s)
-}
 
 #[cfg(test)]
 mod tests {

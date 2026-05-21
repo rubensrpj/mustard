@@ -48,6 +48,14 @@ impl MultiProjectReader {
     /// Run `query` against every project in `projects`, returning a map of
     /// per-project results.
     ///
+    /// The closure receives the open connection AND the [`ProjectPath`] it
+    /// belongs to. Callers that recurse back into a per-scope reader MUST use
+    /// the supplied path to build the inner scope — passing `projects[0]`
+    /// (or any fixed index) silently mis-attributes every iteration after
+    /// the first. Today this is masked because the per-project SQL does not
+    /// filter on path, but the moment a path filter lands the bug becomes
+    /// observable; the closure signature makes the right path mechanical.
+    ///
     /// Projects whose database cannot be opened (or whose query returns an
     /// error) are silently skipped — the call is fail-open. A successful run
     /// with zero entries in the map means every project failed to open, not
@@ -56,7 +64,7 @@ impl MultiProjectReader {
     /// The loop is sequential by design (W1 — paralleling is a W7+ debt).
     pub fn fan_out<T, F>(&self, projects: &[ProjectPath], query: F) -> HashMap<ProjectPath, T>
     where
-        F: Fn(&Connection) -> Result<T>,
+        F: Fn(&Connection, &ProjectPath) -> Result<T>,
     {
         let mut out: HashMap<ProjectPath, T> = HashMap::new();
         for project in projects {
@@ -70,7 +78,7 @@ impl MultiProjectReader {
             };
             // Fail-open per project: a query failure on one DB must not
             // poison the rest. The fallback (`None`) is filtered out below.
-            let result: Option<T> = fail_open(query(&conn).map(Some), None);
+            let result: Option<T> = fail_open(query(&conn, project).map(Some), None);
             if let Some(value) = result {
                 out.insert(project.clone(), value);
             }
@@ -91,7 +99,7 @@ impl MultiProjectReader {
     ) -> (HashMap<ProjectPath, T>, Option<T>)
     where
         T: Clone,
-        F: Fn(&Connection) -> Result<T>,
+        F: Fn(&Connection, &ProjectPath) -> Result<T>,
         M: Fn(T, T) -> T,
     {
         let per_project = self.fan_out(projects, query);
@@ -125,7 +133,7 @@ mod tests {
         let projects = vec![
             ProjectPath::new("/definitely/not/a/path/at/all"),
         ];
-        let out = reader.fan_out(&projects, |_| Ok::<_, crate::error::Error>(1u32));
+        let out = reader.fan_out(&projects, |_, _| Ok::<_, crate::error::Error>(1u32));
         assert!(out.is_empty(), "missing project DB must be silently skipped");
     }
 
@@ -139,7 +147,7 @@ mod tests {
         let reader = MultiProjectReader::new();
         let out = reader.fan_out(
             &[path_a.clone(), path_b.clone()],
-            |conn| {
+            |conn, _project| {
                 // Trivial query: how many tables does the DB have?
                 let count: i64 = conn
                     .query_row(
@@ -166,7 +174,7 @@ mod tests {
         let reader = MultiProjectReader::new();
         let (per_project, aggregate) = reader.fan_out_merge(
             &[path_a.clone(), path_b.clone()],
-            |_| Ok::<_, crate::error::Error>(5i64),
+            |_, _| Ok::<_, crate::error::Error>(5i64),
             |a, b| a + b,
         );
         assert_eq!(per_project.len(), 2);

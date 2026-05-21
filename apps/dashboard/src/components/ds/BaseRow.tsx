@@ -5,6 +5,7 @@
 import type { ReactNode } from "react";
 import { ChevronRight } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { formatTokens } from "@/lib/types/economy";
 import { MetricsPill } from "./MetricsPill";
 
 export type RowStatus =
@@ -32,12 +33,6 @@ const DOT: Record<RowStatus, string> = {
   completed:     "bg-[--ds-status-completed]",
   archived:      "bg-[--ds-status-archived]",
 };
-
-function formatTokens(n: number): string {
-  if (n < 1000) return String(n);
-  if (n < 1_000_000) return `${(n / 1000).toFixed(n < 10_000 ? 1 : 0)}k`;
-  return `${(n / 1_000_000).toFixed(1)}M`;
-}
 
 export function BaseRow({
   icon,
