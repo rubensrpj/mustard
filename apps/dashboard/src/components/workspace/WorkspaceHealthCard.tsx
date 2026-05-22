@@ -20,7 +20,7 @@ import type { WorkspaceHealth } from "@/lib/types/specs";
  *     `blocked`, or `wave_failed`).
  *   - Default collapsed when everything is zero (no hygiene noise).
  *
- * Live-updates via `refetchInterval: 12_000` (matches the active-pipelines hook).
+ * Live-updates via a 60s fallback `refetchInterval` (no dedicated watcher kind).
  */
 
 interface WorkspaceHealthCardProps {
@@ -137,7 +137,8 @@ export function WorkspaceHealthCard({ repoPath }: WorkspaceHealthCardProps) {
     queryFn: () => fetchWorkspaceHealth(repoPath),
     enabled: !!repoPath,
     staleTime: 10_000,
-    refetchInterval: 12_000,
+    // No dedicated watcher kind — long 60s fallback (Wave 3, 2026-05-22).
+    refetchInterval: 60_000,
     refetchIntervalInBackground: false,
   });
 

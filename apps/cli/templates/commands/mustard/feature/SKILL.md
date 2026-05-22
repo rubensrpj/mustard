@@ -262,7 +262,7 @@ Add `## Boundaries` section before writing tasks: list only paths intentionally 
 
 ### Pre-EXECUTE Existence Gate (Full scope only)
 
-Dispatch 1 Haiku Task(Explore) to verify work is still needed. Pre-check via `rtk git diff --stat` first (skip if <10 insertions/deletions). Decision: all-no → transparent; mixed → mark done tasks [x], re-dispatch for remaining; all-yes → mandatory AskUserQuestion before closing as already-implemented.
+Dispatch 1 Sonnet Task(Explore) to verify work is still needed. Pre-check via `rtk git diff --stat` first (skip if <10 insertions/deletions). Decision: all-no → transparent; mixed → mark done tasks [x], re-dispatch for remaining; all-yes → mandatory AskUserQuestion before closing as already-implemented.
 
 → See `../../../refs/feature/existence-gate.md`
 

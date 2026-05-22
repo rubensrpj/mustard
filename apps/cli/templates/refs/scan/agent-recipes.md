@@ -34,7 +34,7 @@ Generate `.claude/agents/{subproject.name}-impl.md` per detected subproject (nam
 - YAML frontmatter: name (`{subproject.name}-impl`), description, model (sonnet default), tools, memory (project)
 - Body: mandatory reads, boundary, validation, return format
 - Mark `<!-- mustard:generated -->` AFTER closing `---` (NEVER before opening `---` — breaks YAML frontmatter parsing)
-- Explorer agent always generated (`{subproject.name}-explorer.md`, model: haiku, read-only tools, with skill refs — see `scan.md` §4.5 for full template)
+- Explorer agent always generated (`{subproject.name}-explorer.md`, model: sonnet, read-only tools, with skill refs — see `scan.md` §4.5 for full template)
 
 | Role | Tools | Boundary |
 |------|-------|----------|

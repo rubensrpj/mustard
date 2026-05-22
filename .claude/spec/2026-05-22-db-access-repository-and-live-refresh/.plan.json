@@ -1,0 +1,24 @@
+{
+  "waves": [
+    {
+      "n": 1,
+      "role": "library",
+      "summary": "packages/core: ponto unico de acesso a dados (Repository) com cache de conexao por path, schema fast-path, pragmas, queries agregadas (mata N+1), indices faltantes e prune de events",
+      "depends_on": []
+    },
+    {
+      "n": 2,
+      "role": "general",
+      "summary": "apps/rt: dispatch constroi 1 repository por invocacao e passa aos modulos; tracker/knowledge/economy param de reabrir; replay-como-lookup vira existence query; session_start agrupa queries",
+      "depends_on": ["1"]
+    },
+    {
+      "n": 3,
+      "role": "ui",
+      "summary": "apps/dashboard: repository em tauri::State (.manage), with_db reusa conexao; reduzir polling redundante apoiando no FS watcher; reativar paths de knowledge no watcher",
+      "depends_on": ["1"]
+    }
+  ],
+  "total_waves": 3,
+  "lang": "pt"
+}

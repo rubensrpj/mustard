@@ -1,0 +1,2 @@
+- [Core fs seam](project_core_fs_seam.md) — packages/core/src/fs/ is THE canonical std::fs seam (Fs port + RealFs + FakeFs + free fns); store/fs.rs is now a shim; rt/cli/dashboard migrate next
+- [Core spec module rename](project_core_spec_module_rename.md) — spec_doc → spec (2026-05-22), layered on crate::fs; other crates still import spec_doc and break until next pass

@@ -8,7 +8,7 @@ export function useTelemetryHeatmap(repoPath: string | null, timeRange: TimeRang
     queryFn: () => dashboardTelemetryHeatmap(repoPath as string, timeRange),
     enabled: !!repoPath,
     staleTime: 5_000,
-    refetchInterval: 5_000,
+    refetchInterval: 60_000,
     refetchOnWindowFocus: true,
   });
 }

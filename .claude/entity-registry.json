@@ -11,10 +11,10 @@
         "naming": {
           "distribution": {
             "lowercase": 46,
-            "snake_case": 10
+            "snake_case": 11
           },
           "dominant": "lowercase",
-          "total": 56
+          "total": 57
         }
       },
       "discovered": [
@@ -22,7 +22,7 @@
           "declarationKeywords": null,
           "declarationSuffix": null,
           "ext": ".rs",
-          "fileCount": 7,
+          "fileCount": 8,
           "folderPattern": "**/src/mod.rs",
           "folders": [
             "src/hooks",
@@ -31,6 +31,7 @@
             "src/run",
             "src/run/otel",
             "src/run/scan",
+            "src/run/statusline",
             "src/util"
           ],
           "kind": "filename-cluster",
@@ -97,13 +98,13 @@
       "conventions": {
         "naming": {
           "distribution": {
-            "camelCase": 33,
-            "kebab-case": 5,
+            "camelCase": 36,
+            "kebab-case": 8,
             "lowercase": 22,
             "mixed": 3
           },
           "dominant": null,
-          "total": 63
+          "total": 69
         }
       },
       "discovered": [
@@ -111,7 +112,7 @@
           "declarationKeywords": null,
           "declarationSuffix": null,
           "ext": ".ts",
-          "fileCount": 33,
+          "fileCount": 36,
           "folderPattern": "**/src/",
           "folders": [
             "src/hooks",
@@ -177,16 +178,17 @@
         "segments": {
           ".": 1,
           "api": 1,
-          "components": 2,
+          "components": 3,
           "data": 1,
           "ds": 1,
           "hooks": 1,
           "lib": 2,
           "page": 1,
-          "src": 8,
+          "specs": 1,
+          "src": 9,
           "types": 1
         },
-        "totalFolders": 9
+        "totalFolders": 10
       },
       "framework": "none",
       "orm": "none",
@@ -274,6 +276,38 @@
         "Manual"
       ]
     },
+    "ChildSource": {
+      "decorators": [
+        "Serialize",
+        "Debug",
+        "Clone",
+        "Copy",
+        "PartialEq",
+        "Eq"
+      ],
+      "file": "src/run/spec_children.rs",
+      "valueConvention": "PascalCase",
+      "values": [
+        "Event",
+        "Header",
+        "Both"
+      ]
+    },
+    "Color": {
+      "decorators": [
+        "Debug",
+        "Clone",
+        "Copy",
+        "PartialEq",
+        "Eq"
+      ],
+      "file": "src/run/statusline/theme.rs",
+      "valueConvention": "PascalCase",
+      "values": [
+        "Ansi",
+        "Rgb"
+      ]
+    },
     "EconomyScope": {
       "decorators": [
         "Debug",
@@ -341,6 +375,26 @@
         "Strict"
       ]
     },
+    "Outcome": {
+      "decorators": [
+        "Debug",
+        "Clone",
+        "Copy",
+        "PartialEq",
+        "Eq",
+        "Hash",
+        "Serialize",
+        "Deserialize"
+      ],
+      "file": "src/model/view/spec.rs",
+      "valueConvention": "PascalCase",
+      "values": [
+        "Active",
+        "Completed",
+        "Cancelled",
+        "Abandoned"
+      ]
+    },
     "Phase": {
       "decorators": [
         "Debug",
@@ -387,7 +441,6 @@
         "ScopeDecompose",
         "QaRunAll",
         "RebuildSpecs",
-        "Statusline",
         "RtkGain",
         "OtelCollector"
       ]
@@ -450,6 +503,19 @@
         "Future"
       ]
     },
+    "Separator": {
+      "decorators": [
+        "Debug",
+        "Clone",
+        "Copy"
+      ],
+      "file": "src/run/statusline/theme.rs",
+      "valueConvention": "PascalCase",
+      "values": [
+        "Pipe",
+        "Whitespace"
+      ]
+    },
     "SpecStatus": {
       "decorators": [
         "Debug",
@@ -478,6 +544,7 @@
         "Clone",
         "PartialEq",
         "Eq",
+        "Default",
         "Serialize",
         "Deserialize"
       ],
@@ -489,6 +556,63 @@
         "Any"
       ]
     },
+    "Stage": {
+      "decorators": [
+        "Debug",
+        "Clone",
+        "Copy",
+        "PartialEq",
+        "Eq",
+        "Hash",
+        "Serialize",
+        "Deserialize"
+      ],
+      "file": "src/model/view/spec.rs",
+      "valueConvention": "PascalCase",
+      "values": [
+        "Analyze",
+        "Plan",
+        "Execute",
+        "QaReview",
+        "Close"
+      ]
+    },
+    "StateError": {
+      "decorators": [
+        "Debug",
+        "Clone",
+        "Copy",
+        "PartialEq",
+        "Eq",
+        "thiserror::Error"
+      ],
+      "file": "src/model/view/spec.rs",
+      "valueConvention": "PascalCase",
+      "values": [
+        "InvalidTerminalStage",
+        "InvalidFollowupContext",
+        "InvalidWaveFailedContext"
+      ]
+    },
+    "ThemeId": {
+      "decorators": [
+        "Debug",
+        "Clone",
+        "Copy",
+        "PartialEq",
+        "Eq"
+      ],
+      "file": "src/run/statusline/theme.rs",
+      "valueConvention": "PascalCase",
+      "values": [
+        "Default",
+        "Minimal",
+        "TokyoNight",
+        "Catppuccin",
+        "PastelPowerline",
+        "GruvboxRainbow"
+      ]
+    },
     "TimeWindow": {
       "decorators": [
         "Debug",
@@ -496,6 +620,7 @@
         "Copy",
         "PartialEq",
         "Eq",
+        "Default",
         "Serialize",
         "Deserialize"
       ],

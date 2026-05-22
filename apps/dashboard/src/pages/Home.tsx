@@ -27,21 +27,22 @@ export function Home() {
 
   const activeProject = (discovered as DiscoveryProject[] | undefined ?? []).find((p) => p.id === activeWorkspaceId) ?? null;
 
+  // Wave 3 (2026-05-22): ["active-pipelines"] is invalidated by the FS watcher
+  // on every "pipeline-state" change, so the 12s poll is redundant. staleTime
+  // remains the cache-freshness floor.
   const { data: livePipelines } = useQuery({
     queryKey: ['active-pipelines', activeProject?.path],
     queryFn: () => fetchActivePipelines(activeProject!.path),
     enabled: !!activeProject,
     staleTime: 5_000,
-    refetchInterval: 12_000,
   });
 
-  // Portfolio mode: live pipelines across all projects
+  // Portfolio mode: live pipelines across all projects (watcher-driven too).
   const livePipelinesQueries = useQueries({
     queries: (!activeProject ? (discovered ?? []) : []).map((p) => ({
       queryKey: ['active-pipelines', p.path],
       queryFn: () => fetchActivePipelines(p.path),
       staleTime: 5_000,
-      refetchInterval: 12_000,
     })),
   });
 

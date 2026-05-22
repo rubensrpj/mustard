@@ -20,6 +20,8 @@ CREATE TABLE IF NOT EXISTS events (
 CREATE INDEX IF NOT EXISTS idx_events_spec ON events(spec); -- used by pipeline_state_for_spec (Wave 2)
 CREATE INDEX IF NOT EXISTS idx_events_event ON events(event);
 CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts);
+-- Session-scoped lookups (last_pipeline_scope_for_session, amend windows by session).
+CREATE INDEX IF NOT EXISTS idx_events_session_id ON events(session_id);
 
 -- FTS5 virtual table — full-text search over events.
 -- content='events' + content_rowid='id' = external content table; FTS stores
@@ -33,6 +35,14 @@ CREATE VIRTUAL TABLE IF NOT EXISTS events_fts USING fts5(
 CREATE TRIGGER IF NOT EXISTS events_ai AFTER INSERT ON events BEGIN
   INSERT INTO events_fts(rowid, event, spec, payload_text)
   VALUES (new.id, new.event, new.spec, new.payload);
+END;
+
+-- Keep FTS in sync on delete (external-content FTS5 needs explicit removal —
+-- see prune_events_older_than). Same external-content 'delete' form as
+-- knowledge_patterns_ad; column list matches events_ai exactly.
+CREATE TRIGGER IF NOT EXISTS events_ad AFTER DELETE ON events BEGIN
+  INSERT INTO events_fts(events_fts, rowid, event, spec, payload_text)
+  VALUES ('delete', old.id, old.event, old.spec, old.payload);
 END;
 
 -- Denormalized projections (regenerable from events via rebuild()).
@@ -143,6 +153,9 @@ CREATE TABLE IF NOT EXISTS knowledge_patterns (
 );
 CREATE INDEX IF NOT EXISTS idx_knowledge_patterns_pattern ON knowledge_patterns(pattern);
 CREATE INDEX IF NOT EXISTS idx_knowledge_patterns_last_seen ON knowledge_patterns(last_seen);
+-- Composite for the SessionStart rank: ORDER BY confidence DESC, last_seen DESC.
+CREATE INDEX IF NOT EXISTS idx_knowledge_patterns_confidence_last_seen
+    ON knowledge_patterns(confidence DESC, last_seen DESC);
 
 -- memory_decisions: persistent architectural decisions (replaces
 -- memory/decisions.json). One row per decision entry.

@@ -19,58 +19,58 @@ use crate::projection::{
 use crate::reader::SpecReader;
 use crate::store::sqlite_store::SqliteEventStore;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 /// Production [`SpecReader`] backed by the harness `mustard.db`.
 ///
-/// Stores the project directory path and opens a fresh
-/// [`SqliteEventStore`] per call. Two reasons not to keep a long-lived
-/// connection:
+/// Opens the store **once** and reuses it for every query rather than
+/// reopening per call. The store owns a `rusqlite::Connection`, which is
+/// `Send` but not `Sync`; wrapping it in an `Arc<Mutex<…>>` keeps the reader
+/// `Clone + Send + Sync` (the [`SpecReader`] trait is `Send + Sync` so Tauri
+/// command handlers can share it). The `Mutex` only serializes access to the
+/// single cached connection; SQLite's WAL still lets a separate writer process
+/// proceed concurrently.
 ///
-/// 1. **`Send` + `Sync`.** `rusqlite::Connection` is neither (it holds a
-///    `RefCell` internally). The [`SpecReader`] trait is `Send + Sync` so a
-///    consumer can share readers across Tauri command handlers and threads.
-///    Holding the connection inside the reader would force a `Mutex` and
-///    serialize every query — pointless when `SQLite`'s own WAL already permits
-///    concurrent readers.
-/// 2. **Migration freshness.** Opening the store runs
-///    [`migrations::apply`](crate::store::migrations::apply) every time,
-///    which is cheap when the database is already at the latest version
-///    (one `SELECT` against `_mustard_meta`) and free of side effects.
+/// Reusing the store avoids paying [`SqliteEventStore::new`]'s open cost on
+/// every method — even with the `user_version` fast-path the open is not free
+/// (file open, pragma round-trips). `project_dir` is retained for the
+/// filesystem fallbacks (`spec.md` header reads, planned-wave scans).
 #[derive(Clone, Debug)]
 pub struct SqliteSpecReader {
     project_dir: PathBuf,
+    store: Arc<Mutex<SqliteEventStore>>,
 }
 
 impl SqliteSpecReader {
     /// Build a reader for `project_dir`'s harness DB.
     ///
-    /// Resolves the database path through
-    /// [`SqliteEventStore::for_project`] on each call, which honours the
-    /// `MUSTARD_DB_PATH` env var when set.
+    /// Resolves the database path through [`SqliteEventStore::for_project`],
+    /// which honours the `MUSTARD_DB_PATH` env var when set, and opens the
+    /// store once up front.
     ///
     /// # Errors
     ///
     /// Returns [`ReadError`](crate::reader::error::ReadError) if the DB cannot be
-    /// opened during this initial probe.
+    /// opened.
     pub fn for_project(project_dir: impl AsRef<Path>) -> Result<Self> {
-        // Verify we can open the store at least once — gives a clear error at
-        // construction time rather than at first query.
-        let _ = SqliteEventStore::for_project(project_dir.as_ref())?;
+        let store = SqliteEventStore::for_project(project_dir.as_ref())?;
         Ok(Self {
             project_dir: project_dir.as_ref().to_path_buf(),
+            store: Arc::new(Mutex::new(store)),
         })
     }
 
-    /// Open a fresh store for one query. Cheap — WAL mode is on, schema is
-    /// idempotent, migrations are version-gated.
-    fn store(&self) -> Result<SqliteEventStore> {
-        Ok(SqliteEventStore::for_project(&self.project_dir)?)
+    /// Lock the shared store. A poisoned lock is recovered — the guarded data
+    /// is a connection handle, and a panic in a prior query cannot corrupt it
+    /// (a genuine corruption would surface as a query error on the next use).
+    fn store(&self) -> MutexGuard<'_, SqliteEventStore> {
+        self.store.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// Return all distinct spec names known to the store, excluding the
     /// `__orphan__` sentinel.
     fn distinct_specs(&self) -> Result<Vec<String>> {
-        let mut specs = self.store()?.distinct_specs()?;
+        let mut specs = self.store().distinct_specs()?;
         specs.retain(|s| s != "__orphan__");
         Ok(specs)
     }
@@ -95,7 +95,7 @@ impl SqliteSpecReader {
     /// store's public surface untouched at the cost of a full event scan,
     /// which is fine for the harness's event volumes.
     fn link_payloads_for(&self, parent: &str) -> Result<Vec<(String, Option<String>)>> {
-        let events = self.store()?.replay()?;
+        let events = self.store().replay()?;
         let mut seen: std::collections::BTreeMap<String, Option<String>> =
             std::collections::BTreeMap::new();
         let mut order: Vec<String> = Vec::new();
@@ -194,7 +194,7 @@ impl SpecReader for SqliteSpecReader {
         if spec.is_empty() {
             return Err(crate::reader::error::ReadError::invalid("spec name cannot be empty"));
         }
-        let events = self.store()?.query(Some(spec))?;
+        let events = self.store().query(Some(spec))?;
         if !events.is_empty() {
             return Ok(Some(project_spec_view(spec, &events)));
         }
@@ -255,13 +255,20 @@ impl SpecReader for SqliteSpecReader {
             .map(str::to_lowercase)
             .filter(|s| !s.is_empty());
 
-        // Hoist the link-event replay out of the per-spec loop: one full scan
-        // builds a parent→child-set map, mirroring the dedupe semantics of
-        // `link_payloads_for`. Avoids O(N) replays for N specs.
-        let events = self.store()?.replay()?;
+        // ONE full replay feeds the whole listing — no per-spec store open or
+        // `query()` round-trip (the old N+1). In a single pass we both (a)
+        // group every event under its spec so each spec is projected from its
+        // in-memory slice, and (b) build the parent→child-set map for the
+        // sub-spec count, mirroring the dedupe semantics of `link_payloads_for`.
+        let events = self.store().replay()?;
+        let mut by_spec: std::collections::HashMap<&str, Vec<&crate::model::event::HarnessEvent>> =
+            std::collections::HashMap::new();
         let mut counts: std::collections::HashMap<String, std::collections::HashSet<String>> =
             std::collections::HashMap::new();
         for ev in &events {
+            if let Some(spec) = ev.spec.as_deref() {
+                by_spec.entry(spec).or_default().push(ev);
+            }
             if ev.event != "spec.link" {
                 continue;
             }
@@ -286,10 +293,21 @@ impl SpecReader for SqliteSpecReader {
                     continue;
                 }
             }
-            let Some(view) = self.spec_view(&name)? else {
+            // Project from the in-memory event slice when the spec has events;
+            // otherwise fall back to the on-disk `spec.md` header (a teammate's
+            // pulled draft with no events yet). Only the no-event case touches
+            // the filesystem — and it never reopens the store.
+            let summary_opt: Option<SpecSummary> = match by_spec.get(name.as_str()) {
+                Some(slice) => {
+                    let owned: Vec<crate::model::event::HarnessEvent> =
+                        slice.iter().map(|e| (*e).clone()).collect();
+                    Some((&project_spec_view(&name, &owned)).into())
+                }
+                None => self.spec_view(&name)?.as_ref().map(SpecSummary::from),
+            };
+            let Some(mut summary) = summary_opt else {
                 continue;
             };
-            let mut summary: SpecSummary = (&view).into();
             summary.children_count = counts
                 .get(&name)
                 .map_or(0, |set| u32::try_from(set.len()).unwrap_or(u32::MAX));
@@ -312,7 +330,7 @@ impl SpecReader for SqliteSpecReader {
         if spec.is_empty() {
             return Err(crate::reader::error::ReadError::invalid("spec name cannot be empty"));
         }
-        let events = self.store()?.query(Some(spec))?;
+        let events = self.store().query(Some(spec))?;
         let from_events = project_waves(spec, &events);
         if !from_events.is_empty() {
             return Ok(from_events);
@@ -328,7 +346,7 @@ impl SpecReader for SqliteSpecReader {
         if spec.is_empty() {
             return Err(crate::reader::error::ReadError::invalid("spec name cannot be empty"));
         }
-        let events = self.store()?.query(Some(spec))?;
+        let events = self.store().query(Some(spec))?;
         Ok(project_quality(spec, &events))
     }
 
@@ -336,13 +354,18 @@ impl SpecReader for SqliteSpecReader {
         if spec.is_empty() {
             return Err(crate::reader::error::ReadError::invalid("spec name cannot be empty"));
         }
-        let events = self.store()?.query(Some(spec))?;
+        let events = self.store().query(Some(spec))?;
         Ok(project_timeline(spec, &events, window))
     }
 
     fn workspace_summary(&self) -> Result<WorkspaceSummary> {
-        let events = self.store()?.replay()?;
+        // Bound the scan to a recent window instead of replaying the whole
+        // append-only log. The workspace card surfaces current activity, so a
+        // generous lookback keeps every live spec visible while letting the
+        // `idx_events_ts` index prune ancient telemetry from the scan.
         let now_ms = now_epoch_ms();
+        let since = iso_cutoff(now_ms, WORKSPACE_LOOKBACK_DAYS);
+        let events = self.store().replay_since(since.as_deref())?;
         Ok(project_workspace(&events, now_ms))
     }
 
@@ -395,12 +418,61 @@ impl SpecReader for SqliteSpecReader {
     }
 }
 
+/// How far back `workspace_summary` scans the event log. Generous on purpose —
+/// the workspace card must keep every live spec visible; the window only exists
+/// to let `idx_events_ts` prune long-dead telemetry from the scan.
+const WORKSPACE_LOOKBACK_DAYS: i64 = 120;
+
 /// Wall-clock `now` in epoch milliseconds. Used only by `workspace_summary`;
 /// projections themselves are pure.
 fn now_epoch_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
+}
+
+/// Build the inclusive lower-bound timestamp `now_ms - lookback_days`, as a
+/// prefix ISO-8601 string `YYYY-MM-DDTHH:MM:SS` (no trailing `Z`).
+///
+/// The bound is deliberately *un*terminated: stored timestamps may carry
+/// millisecond precision (`…SS.mmmZ`) or a trailing `Z`, and `Z`/`.` sort
+/// *after* the digit positions, so a seconds-only prefix is a correct lexical
+/// lower bound for either shape. Returns `None` when `now_ms` is non-positive
+/// (clock unset) so the caller falls back to an unbounded replay rather than
+/// silently dropping every event.
+fn iso_cutoff(now_ms: i64, lookback_days: i64) -> Option<String> {
+    if now_ms <= 0 {
+        return None;
+    }
+    let cutoff_secs = now_ms / 1_000 - lookback_days * 86_400;
+    if cutoff_secs <= 0 {
+        return None;
+    }
+    let (y, mo, d, h, mi, s) = epoch_secs_to_ymdhms(cutoff_secs);
+    Some(format!("{y:04}-{mo:02}-{d:02}T{h:02}:{mi:02}:{s:02}"))
+}
+
+/// Howard Hinnant's days-from-civil algorithm (reverse) → `(y, mo, d, h, mi,
+/// s)` in UTC. Mirrors `economy::sources::time::epoch_secs_to_ymdhms`; kept
+/// local because that one is `pub(super)` to the economy module.
+#[allow(clippy::cast_possible_truncation)]
+fn epoch_secs_to_ymdhms(secs: i64) -> (i64, u32, u32, u32, u32, u32) {
+    let days = secs.div_euclid(86_400);
+    let tod = secs.rem_euclid(86_400);
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    let y = if m <= 2 { y + 1 } else { y };
+    let h = (tod / 3600) as u32;
+    let mi = ((tod % 3600) / 60) as u32;
+    let s = (tod % 60) as u32;
+    (y, m, d, h, mi, s)
 }
 
 #[cfg(test)]

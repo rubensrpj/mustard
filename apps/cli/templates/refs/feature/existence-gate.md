@@ -4,11 +4,11 @@
 
 ### Pre-EXECUTE Existence Gate (Full scope only)
 
-**Skip conditions**: Light scope OR `## Files` section lists more than 8 files (cost-benefit inverts — Haiku 10-tool-use cap will not cover).
+**Skip conditions**: Light scope OR `## Files` section lists more than 8 files (cost-benefit inverts — the explorer's self-cap of ≤10 tool uses will not cover).
 
-Before dispatching implementation agents, run 1 Haiku explorer to verify the work is still needed.
+Before dispatching implementation agents, run 1 Sonnet explorer to verify the work is still needed.
 
-**Pre-check (free, zero LLM tokens)**: Before dispatching Haiku, run:
+**Pre-check (free, zero LLM tokens)**: Before dispatching the explorer, run:
 
 ```bash
 rtk git diff --stat HEAD -- <files listed in `## Files` of spec>
@@ -17,14 +17,14 @@ rtk git diff --stat HEAD -- <files listed in `## Files` of spec>
 Skip rules based on pre-check output:
 - **Empty output** (no changes) → skip gate entirely, proceed to EXECUTE normally (nothing to verify)
 - **<10 total insertions/deletions** → skip gate entirely, proceed to EXECUTE normally (trivial changes, verification not worth the overhead)
-- **≥10 insertions/deletions** → proceed with Haiku dispatch below
+- **≥10 insertions/deletions** → proceed with the explorer dispatch below
 
 **Dispatch:**
 
 ```javascript
 Task({
   subagent_type: "Explore",
-  model: "haiku",
+  model: "sonnet",
   description: "Pre-EXECUTE existence check",
   prompt: `# EXISTENCE CHECK
 Read .claude/spec/{specName}/spec.md sections: "## Files" and "## Checklist".

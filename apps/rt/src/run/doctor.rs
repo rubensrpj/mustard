@@ -131,6 +131,7 @@ const KNOWN_RUN_SUBCOMMANDS: &[&str] = &[
     "otel-collector",
     "diagnose-otel",
     "doctor",
+    "db-maintain",
 ];
 
 /// The Mustard-owned folders that `mustard-cli update` regenerates.

@@ -39,12 +39,30 @@ pub fn classify_kind(path: &Path) -> Option<&'static str> {
         // Flat layout: .claude/spec/{name}/spec.md — any write inside the
         // spec directory (regardless of bucket) is a spec-change event.
         Some("spec")
+    } else if is_knowledge_path(&s) {
+        // Wave 3 (2026-05-22): re-enable event-driven knowledge refresh. The
+        // knowledge base now lives in `mustard.db` (tables
+        // `knowledge_patterns` / `memory_decisions` / `memory_lessons`), so a DB
+        // write is the primary trigger — the frontend `events` branch also
+        // invalidates the knowledge query keys for that reason. This branch
+        // additionally classifies any legacy/file-based knowledge or memory
+        // path (`knowledge.json`, `memory/decisions.json`,
+        // `memory/lessons.json`) as `knowledge` so a file writer is covered too,
+        // letting the Knowledge page stop relying on a 10s `refetchInterval`.
+        Some("knowledge")
     } else {
-        // Wave 6c: knowledge.json and memory/decisions.json / memory/lessons.json
-        // are no longer written by mustard-rt (Wave 6b). Watcher branches for
-        // those paths removed — Knowledge page uses polling (refetchInterval).
         None
     }
+}
+
+/// Recognise file paths that back the knowledge base (file-based variants).
+/// SQLite-backed knowledge changes arrive via the `mustard.db` → `events`
+/// branch; this covers the JSON fallbacks that some installs still write.
+fn is_knowledge_path(s: &str) -> bool {
+    let has_knowledge_json = s.contains("knowledge.json");
+    let has_memory_doc = (s.contains("/memory/") || s.contains("\\memory\\"))
+        && (s.contains("decisions.json") || s.contains("lessons.json"));
+    has_knowledge_json || has_memory_doc
 }
 
 pub fn ensure_watching(

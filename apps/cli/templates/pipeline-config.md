@@ -206,9 +206,9 @@ When parallel override applies:
 | Bugfix (any) | sonnet |
 | Feature ≤5 files, known patterns | sonnet |
 | Feature 5+ files, new patterns | opus |
-| Exploration (structural) | haiku |
+| Exploration (structural) | sonnet (haiku allowed as opt-in downgrade) |
 | Audit (quality evaluation) | sonnet |
-| Compare (cross-subproject) | haiku (explorers) + sonnet (consolidation) |
+| Compare (cross-subproject) | sonnet (explorers + consolidation) |
 
 Default: **sonnet**
 

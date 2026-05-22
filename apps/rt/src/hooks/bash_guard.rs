@@ -371,6 +371,58 @@ fn redirect_for(token: &str) -> Option<(&'static str, &'static str)> {
         .map(|(_, tool, tip)| (*tool, *tip))
 }
 
+/// Read-only search commands that `rtk` does **not** filter — it execs the
+/// bare binary, which may be absent (e.g. `rg` on Windows → exit 127). These
+/// are redirected to the native Grep tool *even when prefixed with `rtk`*,
+/// unlike `rtk grep` / `rtk cat` (which `rtk` filters and which exist on this
+/// platform — those keep passing through). User decision 2026-05-21.
+const RTK_TRANSPARENT_REDIRECT: &[&str] = &["rg", "egrep", "fgrep"];
+
+/// Strip a single leading `rtk ` wrapper token, returning the rest. When `cmd`
+/// is not `rtk`-prefixed it is returned unchanged.
+fn strip_leading_rtk(cmd: &str) -> &str {
+    let trimmed = cmd.trim_start();
+    if let Some(rest) = trimmed.strip_prefix("rtk") {
+        if rest.starts_with(char::is_whitespace) {
+            return rest.trim_start();
+        }
+    }
+    cmd
+}
+
+/// Replace shell metacharacters that appear *inside single/double quotes* with
+/// spaces, leaving everything else (including the quote chars and the byte
+/// length) intact. Used so that a quoted argument like a Grep alternation
+/// pattern (`"emit-pipeline|emit-phase"`) is not mistaken for a real shell
+/// pipe by [`has_shell_operator`] / the segment splitters. Only single ASCII
+/// operator bytes are swapped for a single ASCII space, so the result is
+/// always valid UTF-8 and byte-aligned with the input.
+fn mask_quoted_operators(cmd: &str) -> String {
+    let mut out: Vec<u8> = Vec::with_capacity(cmd.len());
+    let mut quote: Option<u8> = None;
+    for &b in cmd.as_bytes() {
+        match quote {
+            Some(q) => {
+                if b == q {
+                    quote = None;
+                    out.push(b);
+                } else if matches!(b, b'&' | b'|' | b';' | b'>' | b'<' | b'`' | b'\n' | b'\r') {
+                    out.push(b' ');
+                } else {
+                    out.push(b);
+                }
+            }
+            None => {
+                if b == b'\'' || b == b'"' {
+                    quote = Some(b);
+                }
+                out.push(b);
+            }
+        }
+    }
+    String::from_utf8(out).unwrap_or_else(|_| cmd.to_string())
+}
+
 /// `[|&;]|\$\(|`|<<|>>` — a shell operator that marks a composed command.
 fn has_shell_operator(cmd: &str) -> bool {
     cmd.contains('|')
@@ -380,6 +432,17 @@ fn has_shell_operator(cmd: &str) -> bool {
         || cmd.contains('`')
         || cmd.contains("<<")
         || cmd.contains(">>")
+}
+
+/// `true` when `c` separates one shell command from the next: `&`, `|`, `;`,
+/// or a newline. Newlines matter because the Bash tool routinely receives
+/// multi-line `command` strings (a sanity `echo` on line 1, the real `rtk …`
+/// on line 2); bash treats the line break exactly like `;`, so the segment
+/// splitters must too — otherwise an `rtk`-prefixed later line is invisible to
+/// the "already wrapped" short-circuit and the gate wrongly denies the whole
+/// command.
+fn is_cmd_separator(c: char) -> bool {
+    c == '&' || c == '|' || c == ';' || c == '\n' || c == '\r'
 }
 
 /// `(?<![<>])>(?![>])` — a lone `>` output redirect (writing to a file).
@@ -442,25 +505,42 @@ fn bash_native_redirect(raw_cmd: &str) -> Option<Verdict> {
         return None;
     }
 
+    // Mask operators inside quotes so a quoted Grep pattern like
+    // `"emit-pipeline|emit-phase"` is not mistaken for a shell pipe. Operator
+    // and segment-boundary detection runs on the masked view; command names
+    // and flags (never quoted) are unchanged, so token lookups still work.
+    let masked = mask_quoted_operators(&cmd);
+
     // Output redirect — writing a file, not reading. Pass through.
-    if has_output_redirect(&cmd) {
+    if has_output_redirect(&masked) {
         return None;
     }
 
     // Piped/chained: cannot deny safely. If the first segment is a
     // redirectable command, advise via `Inject`; otherwise pass.
-    if has_shell_operator(&cmd) {
-        let first_segment = cmd
-            .split(|c| c == '|' || c == '&' || c == ';')
+    if has_shell_operator(&masked) {
+        let first_segment = masked
+            .split(is_cmd_separator)
             .next()
             .unwrap_or("")
             .trim();
         if let Some(seg_token) = first_token(first_segment) {
-            if seg_token != "rtk" {
-                if let Some((tool, tip)) = redirect_for(&seg_token.to_ascii_lowercase()) {
+            // See through a leading `rtk` only for the ripgrep family (which
+            // rtk does not filter); other `rtk`-prefixed first segments pass.
+            let effective = if seg_token == "rtk" {
+                first_token(strip_leading_rtk(first_segment)).unwrap_or("")
+            } else {
+                seg_token
+            };
+            let effective_lc = effective.to_ascii_lowercase();
+            let advisable = effective != "rtk"
+                && (seg_token != "rtk"
+                    || RTK_TRANSPARENT_REDIRECT.contains(&effective_lc.as_str()));
+            if advisable {
+                if let Some((tool, tip)) = redirect_for(&effective_lc) {
                     return Some(Verdict::Inject {
                         context: format!(
-                            "[Native Tool Redirect] The `{seg_token}` part of this piped \
+                            "[Native Tool Redirect] The `{effective}` part of this piped \
                              command could use the {tool} tool instead. {tip}. Consider \
                              splitting the pipeline to use native tools where possible."
                         ),
@@ -473,8 +553,23 @@ fn bash_native_redirect(raw_cmd: &str) -> Option<Verdict> {
 
     let token = first_token(&cmd)?;
 
-    // Already RTK-wrapped — pass through.
+    // RTK-wrapped: pass through, EXCEPT for the ripgrep family (`rg`/`egrep`/
+    // `fgrep`) which rtk execs as a bare binary that may be absent. Redirect
+    // those to the native Grep tool; everything else (`rtk grep`, `rtk cat`,
+    // `rtk cargo …`) still passes.
     if token == "rtk" {
+        let inner = first_token(strip_leading_rtk(&cmd)).unwrap_or("");
+        let inner_lc = inner.to_ascii_lowercase();
+        if RTK_TRANSPARENT_REDIRECT.contains(&inner_lc.as_str()) {
+            if let Some((tool, tip)) = redirect_for(&inner_lc) {
+                return Some(Verdict::Deny {
+                    reason: format!(
+                        "[Native Tool Redirect] Use the {tool} tool instead of `rtk {inner_lc}` \
+                         in Bash ({inner_lc} is not installed / not filtered by rtk). {tip}"
+                    ),
+                });
+            }
+        }
         return None;
     }
 
@@ -806,12 +901,11 @@ fn should_blanket_prefix(cmd: &str) -> bool {
     }
     // Strip compound operators (&&, ||, ;, |) and inspect only the first
     // segment. Prepending `rtk` before the whole pipeline is fine — the shell
-    // expands `&&` / `||` after `rtk` exits.
-    let first_segment = trimmed
-        .split(|c| c == '&' || c == '|' || c == ';')
-        .next()
-        .unwrap_or(trimmed)
-        .trim();
+    // expands `&&` / `||` after `rtk` exits. Mask quoted operators first so a
+    // quoted argument containing `|`/`;` does not split the head off early.
+    let masked = mask_quoted_operators(trimmed);
+    let seg_end = masked.find(is_cmd_separator).unwrap_or(masked.len());
+    let first_segment = trimmed[..seg_end].trim();
     // After stripping env assignments, inspect the head of the segment.
     let after_env = strip_env_prefix(first_segment);
     // A segment that *starts* with `(` or `` ` `` has no head binary for `rtk`
@@ -868,7 +962,12 @@ fn blanket_prefix(cmd: &str) -> Option<String> {
 /// denying nor blanket-prefixing is correct — the user has already
 /// demonstrated rtk awareness and chosen where the wrap applies.
 fn has_rtk_in_any_segment(cmd: &str) -> bool {
-    cmd.split(|c| c == '&' || c == '|' || c == ';')
+    // Split on the masked view so a quoted operator (e.g. `|` inside a Grep
+    // pattern) does not create a phantom segment that hides a real `rtk` stage.
+    // The head token of each segment is a command name, never quoted, so it is
+    // identical in the masked and original strings.
+    mask_quoted_operators(cmd)
+        .split(is_cmd_separator)
         .any(|seg| {
             let after_env = strip_env_prefix(seg.trim());
             after_env.split_whitespace().next() == Some("rtk")
@@ -1696,7 +1795,60 @@ mod tests {
 
     #[test]
     fn redirect_allows_rtk_prefixed() {
+        // `rtk grep` keeps passing — rtk filters grep and the binary exists.
         assert!(!verdict_for("rtk grep -r pattern src/").is_blocking());
+    }
+
+    /// `rtk rg` must be redirected to the Grep tool: rtk does not filter `rg`,
+    /// so it execs the bare binary, which may be absent (Windows → exit 127).
+    /// Regression for the 2026-05-21 pipeline failure.
+    #[test]
+    fn redirect_denies_rtk_rg_suggesting_grep() {
+        let v = bash_native_redirect("rtk rg -n pattern src/");
+        match v {
+            Some(Verdict::Deny { reason }) => {
+                assert!(reason.contains("Grep"), "reason: {reason}");
+                assert!(reason.contains("rg"), "reason should name rg: {reason}");
+            }
+            other => panic!("expected Deny for `rtk rg`, got {other:?}"),
+        }
+    }
+
+    /// The original failing command: `rtk rg` with an alternation pattern whose
+    /// `|` is inside quotes (must NOT be read as a shell pipe) plus a `2>&1`
+    /// stderr redirect. Must still reach the ripgrep redirect → Deny.
+    #[test]
+    fn redirect_denies_rtk_rg_with_quoted_pipe_pattern() {
+        let v = bash_native_redirect(
+            r#"rtk rg -n "emit-pipeline|emit-phase|pipeline\.status" src/ 2>&1"#,
+        );
+        match v {
+            Some(Verdict::Deny { reason }) => assert!(reason.contains("Grep"), "reason: {reason}"),
+            other => panic!("expected Deny for quoted-pipe `rtk rg`, got {other:?}"),
+        }
+    }
+
+    /// A quoted operator must not be treated as a shell pipe: bare `grep` with
+    /// an alternation pattern is a plain (non-piped) command → hard Deny, not
+    /// the advisory Inject reserved for genuine pipelines.
+    #[test]
+    fn redirect_quoted_pipe_pattern_is_not_a_real_pipe() {
+        let v = bash_native_redirect(r#"grep -n "foo|bar" src/"#);
+        match v {
+            Some(Verdict::Deny { reason }) => assert!(reason.contains("Grep"), "reason: {reason}"),
+            other => panic!("expected hard Deny (quoted | is not a pipe), got {other:?}"),
+        }
+    }
+
+    /// A genuine pipe is still detected (advisory Inject), even with a quoted
+    /// operator earlier in the line.
+    #[test]
+    fn redirect_real_pipe_still_advisory() {
+        let v = bash_native_redirect(r#"grep -n "foo|bar" src/ | sort"#);
+        assert!(
+            matches!(v, Some(Verdict::Inject { .. })),
+            "real pipe must stay advisory, got {v:?}"
+        );
     }
 
     #[test]
@@ -2366,6 +2518,32 @@ mod rtk_rewrite_tests {
         let cmd = "rtk cargo build && cargo test";
         let result = rtk_rewrite_with(cmd, |_| panic!("should not be called"), Mode::Strict);
         assert!(result.is_none(), "rtk in first compound segment must short-circuit, got {result:?}");
+    }
+
+    /// Bug-fix regression (2026-05-21): a multi-line `command` string whose
+    /// first line is a non-`rtk` sanity command (`echo …`) but whose second
+    /// line IS `rtk`-prefixed must short-circuit. A newline separates shell
+    /// commands exactly like `;`, so the later `rtk` stage counts as wrapped —
+    /// the gate must not deny the whole multi-line command.
+    #[test]
+    fn rtk_rewrite_newline_with_rtk_on_second_line_no_op() {
+        let cmd = "echo \"--- sanity ---\"\nrtk mustard-rt run emit-pipeline --help";
+        let result = rtk_rewrite_with(cmd, |_| panic!("should not be called"), Mode::Strict);
+        assert!(
+            result.is_none(),
+            "rtk on a later line must short-circuit, got {result:?}"
+        );
+    }
+
+    /// `\r\n` (Windows) line endings split the same way as `\n`.
+    #[test]
+    fn rtk_rewrite_crlf_with_rtk_on_second_line_no_op() {
+        let cmd = "echo sanity\r\nrtk mustard-rt run emit-pipeline --help";
+        let result = rtk_rewrite_with(cmd, |_| panic!("should not be called"), Mode::Strict);
+        assert!(
+            result.is_none(),
+            "rtk on a later CRLF line must short-circuit, got {result:?}"
+        );
     }
 
     // -----------------------------------------------------------------------

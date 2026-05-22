@@ -345,14 +345,17 @@ export function Specs() {
   }, []);
 
   // Fetch spec list (SpecRow names) then fan out one SpecCard per spec.
+  // Wave 3 (2026-05-22): ["specs"] is invalidated by the FS watcher on
+  // "spec"/"pipeline-state" changes — drop the 15s poll, keep staleTime.
   const { data: specRows, isLoading: listLoading } = useQuery({
     queryKey: ["specs", activeProject?.path],
     queryFn: () => fetchSpecs(activeProject!.path),
     enabled: !!activeProject,
     staleTime: 10_000,
-    refetchInterval: 15_000,
   });
 
+  // spec-card has no dedicated watcher kind; events arrive via mutations
+  // (useSpecAction invalidates it). Keep a long 60s fallback instead of 5s.
   const cardQueries = useQueries({
     queries: (specRows ?? []).map((row) => ({
       queryKey: ["spec-card", activeProject?.path, row.name] as const,
@@ -360,7 +363,7 @@ export function Specs() {
         dashboardSpecCard(activeProject!.path, row.name),
       enabled: !!activeProject,
       staleTime: 5_000,
-      refetchInterval: 5_000,
+      refetchInterval: 60_000,
       refetchIntervalInBackground: false,
     })),
   });
@@ -377,7 +380,8 @@ export function Specs() {
     queryFn: () => fetchWorkspaceHealth(activeProject!.path),
     enabled: !!activeProject,
     staleTime: 10_000,
-    refetchInterval: 12_000,
+    // No dedicated watcher kind — long 60s fallback instead of 12s.
+    refetchInterval: 60_000,
     refetchIntervalInBackground: false,
   });
 

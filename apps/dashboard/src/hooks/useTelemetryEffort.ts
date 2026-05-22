@@ -8,7 +8,7 @@ export function useTelemetryEffort(repoPath: string | null, timeRange: TimeRange
     queryFn: () => dashboardTelemetryEffort(repoPath as string, timeRange),
     enabled: !!repoPath,
     staleTime: 5_000,
-    refetchInterval: 5_000,
+    refetchInterval: 60_000,
     refetchOnWindowFocus: true,
   });
 }

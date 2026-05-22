@@ -184,8 +184,21 @@ impl SqliteEventStore {
     /// Open (creating if absent) a store backed by the database at `path`.
     ///
     /// On open the connection is switched to WAL journal mode, given a
-    /// [`BUSY_TIMEOUT_MS`] busy timeout, and the idempotent [`SCHEMA_SQL`] is
-    /// applied. The parent directory is created if it does not exist.
+    /// [`BUSY_TIMEOUT_MS`] busy timeout and `synchronous = NORMAL`. The
+    /// idempotent [`SCHEMA_SQL`] and the [`migrations`](super::migrations)
+    /// ladder are applied **only when the database is not already at the latest
+    /// schema version** — gated by SQLite's `PRAGMA user_version`, a header
+    /// integer that costs nothing to read (no table access). The parent
+    /// directory is created if it does not exist.
+    ///
+    /// # Why the fast-path
+    ///
+    /// The harness spawns a fresh process per hook event, so this constructor
+    /// runs on every tool use. Running the full DDL plus the migration ladder
+    /// every time was the dominant fixed cost. `user_version` lets a
+    /// steady-state open skip both: it is `0` on a brand-new file and is
+    /// stamped to [`LATEST_VERSION`](super::migrations::LATEST_VERSION) once the
+    /// schema is materialized, so the gate is correct without a table read.
     ///
     /// # Errors
     ///
@@ -200,21 +213,40 @@ impl SqliteEventStore {
             }
         }
         let conn = Connection::open(&path)?;
-        // WAL: concurrent readers + a single writer, the harness access shape.
-        // `query_row` because `journal_mode` returns the mode it settled on.
+        // Per-connection pragmas — always set, they do not persist with the
+        // database file. WAL: concurrent readers + a single writer, the harness
+        // access shape. `query_row` because `journal_mode` returns the mode it
+        // settled on.
         conn.query_row("PRAGMA journal_mode = WAL", [], |_| Ok(()))?;
+        // synchronous = NORMAL is safe under WAL (a crash can lose the tail of
+        // the last transaction, never corrupt the database) and trades a full
+        // fsync per commit for far fewer — telemetry writes are not durability
+        // critical, so this is a clear win for the per-hook hot path.
+        conn.execute_batch("PRAGMA synchronous = NORMAL")?;
         // A contended write waits up to BUSY_TIMEOUT_MS instead of erroring —
         // parallel hooks must not lose events to a transient lock.
         conn.busy_timeout(std::time::Duration::from_millis(u64::from(
             BUSY_TIMEOUT_MS,
         )))?;
-        conn.execute_batch(SCHEMA_SQL)?;
-        // Apply versioned data migrations after the shape is in place. Pre-v2
-        // databases have `events.spec` rows left NULL by the six emitters
-        // identified in the 2026-05-20 attribution audit; the v2 step
-        // backfills them so projections that filter by spec stop dropping
-        // those events. See `migrations.rs` for the full ladder.
-        super::migrations::apply(&conn)?;
+
+        // Fast-path: skip DDL + migrations when the database is already
+        // materialized at the latest version. `user_version` is a 32-bit
+        // header field, so reading it touches no table.
+        let user_version: i64 =
+            conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+        if user_version != i64::from(super::migrations::LATEST_VERSION) {
+            conn.execute_batch(SCHEMA_SQL)?;
+            // Apply versioned data migrations after the shape is in place. The
+            // v2 step backfills `events.spec` rows left NULL by the six
+            // emitters identified in the 2026-05-20 attribution audit so
+            // projections that filter by spec stop dropping those events. See
+            // `migrations.rs` for the full ladder.
+            let latest = super::migrations::apply(&conn)?;
+            // Stamp the header so the next open takes the fast-path. Pragmas
+            // do not accept bound parameters, so the value is formatted in —
+            // it is a crate constant, never user input.
+            conn.execute_batch(&format!("PRAGMA user_version = {latest}"))?;
+        }
         Ok(Self { conn, path })
     }
 
@@ -237,6 +269,30 @@ impl SqliteEventStore {
         &self.path
     }
 
+    /// Borrow the store's open [`Connection`].
+    ///
+    /// Lets a caller reuse the single connection the constructor opened for the
+    /// `writer` / `reader` free functions (which take `&Connection`) while still
+    /// holding the store for its higher-level methods (`append`, `replay`, …) —
+    /// so one open serves both the [`EventSink`](crate::store::event_store::EventSink)
+    /// path and raw writer transactions within a single hook invocation.
+    #[must_use]
+    pub fn conn(&self) -> &Connection {
+        &self.conn
+    }
+
+    /// Consume the store, yielding its already-opened [`Connection`].
+    ///
+    /// Lets a caller that needs a bare `&Connection` (the `writer` / `reader`
+    /// free functions) reuse the single connection the constructor opened —
+    /// instead of constructing the store to apply schema, dropping it, then
+    /// re-opening a second connection to the same file. The schema + migration
+    /// work done in [`new`](Self::new) is already on this connection.
+    #[must_use]
+    pub fn into_connection(self) -> Connection {
+        self.conn
+    }
+
     /// Replay every event, oldest first (by insertion `id`).
     ///
     /// Fail-open: a row that cannot be decoded into a [`HarnessEvent`] is
@@ -249,6 +305,49 @@ impl SqliteEventStore {
     pub fn replay(&self) -> Result<Vec<HarnessEvent>> {
         self.select_events("SELECT id, ts, session_id, wave, spec, event, \
              actor_kind, actor_id, payload FROM events ORDER BY id", [])
+    }
+
+    /// Replay events whose `ts` is `>= since_ts`, oldest first.
+    ///
+    /// `ts` is the ISO-8601 string column; the comparison is lexical, which is
+    /// correct for the fixed-width UTC timestamps the harness emits. A `None`
+    /// argument is equivalent to [`replay`](Self::replay) (no lower bound).
+    ///
+    /// Used by the workspace summary to avoid an unbounded full scan of the
+    /// `events` table — only the recent window the dashboard renders is read.
+    ///
+    /// Fail-open: a row that cannot be decoded is skipped, not fatal.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Sqlite`] only for a genuine query failure.
+    pub fn replay_since(&self, since_ts: Option<&str>) -> Result<Vec<HarnessEvent>> {
+        match since_ts {
+            Some(ts) => self.select_events(
+                "SELECT id, ts, session_id, wave, spec, event, actor_kind, \
+                 actor_id, payload FROM events WHERE ts >= ?1 ORDER BY id",
+                params![ts],
+            ),
+            None => self.replay(),
+        }
+    }
+
+    /// Delete `events` rows older than `cutoff_ts` (an ISO-8601 string).
+    ///
+    /// Retention helper for the append-only log: removes rows whose `ts` is
+    /// strictly less than `cutoff_ts`. The `events_fts` external-content index
+    /// is kept consistent by the `events_ad` AFTER DELETE trigger, which removes
+    /// each pruned row's FTS entry incrementally — no orphaned index rows remain.
+    /// Returns the number of rows removed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Sqlite`] for a database failure.
+    pub fn prune_events_older_than(&self, cutoff_ts: &str) -> Result<usize> {
+        let removed = self
+            .conn
+            .execute("DELETE FROM events WHERE ts < ?1", params![cutoff_ts])?;
+        Ok(removed)
     }
 
     /// Replay the events for a single spec, oldest first.
@@ -399,6 +498,27 @@ impl SqliteEventStore {
         )?;
         let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
         Ok(rows.filter_map(std::result::Result::ok).collect())
+    }
+
+    /// `true` when at least one row in `events` has the given `event` name and
+    /// `spec`. A cheap existence probe (`SELECT 1 ... LIMIT 1`) — the intended
+    /// replacement for `replay()`-as-lookup, which scans and decodes the whole
+    /// table just to test membership.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Sqlite`] for a genuine query failure. A missing match
+    /// is `Ok(false)`, not an error.
+    pub fn has_event_for_spec(&self, event: &str, spec: &str) -> Result<bool> {
+        let found: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT 1 FROM events WHERE event = ?1 AND spec = ?2 LIMIT 1",
+                params![event, spec],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(found.is_some())
     }
 
     /// Spec name of the most recent `pipeline.scope` event in `session_id`,
@@ -916,6 +1036,103 @@ mod tests {
 
     fn store_in(dir: &Path) -> SqliteEventStore {
         SqliteEventStore::new(dir.join("mustard.db")).unwrap()
+    }
+
+    #[test]
+    fn second_open_takes_fast_path_and_preserves_user_version() {
+        let dir = tempdir().unwrap();
+        let db = dir.path().join("mustard.db");
+
+        // First open materializes the schema and stamps user_version.
+        {
+            let store = SqliteEventStore::new(&db).unwrap();
+            let uv: i64 = store
+                .conn
+                .query_row("PRAGMA user_version", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(uv, i64::from(crate::store::migrations::LATEST_VERSION));
+        }
+
+        // Drop a sentinel row into _mustard_meta. If the second open re-ran the
+        // migration ladder it would touch this table; the fast-path must not.
+        {
+            let probe = Connection::open(&db).unwrap();
+            probe
+                .execute(
+                    "INSERT OR REPLACE INTO _mustard_meta(key, value) \
+                     VALUES('fast_path_probe', 'untouched')",
+                    [],
+                )
+                .unwrap();
+        }
+
+        // Second open: user_version already at latest -> DDL + migrations skip.
+        let store = SqliteEventStore::new(&db).unwrap();
+        let uv: i64 = store
+            .conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(uv, i64::from(crate::store::migrations::LATEST_VERSION));
+        let probe: String = store
+            .conn
+            .query_row(
+                "SELECT value FROM _mustard_meta WHERE key = 'fast_path_probe'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(probe, "untouched");
+    }
+
+    #[test]
+    fn prune_events_older_than_removes_expected_rows() {
+        let dir = tempdir().unwrap();
+        let store = store_in(dir.path());
+        for ts in ["2026-01-01T00:00:00Z", "2026-03-01T00:00:00Z", "2026-06-01T00:00:00Z"] {
+            let mut ev = sample_event("tool.use", None);
+            ev.ts = ts.to_string();
+            store.append(&ev).unwrap();
+        }
+        let removed = store.prune_events_older_than("2026-04-01T00:00:00Z").unwrap();
+        assert_eq!(removed, 2);
+        assert_eq!(store.replay().unwrap().len(), 1);
+        // replay_since with a lower bound matches only the surviving row.
+        assert_eq!(
+            store.replay_since(Some("2026-05-01T00:00:00Z")).unwrap().len(),
+            1
+        );
+    }
+
+    #[test]
+    fn prune_events_older_than_clears_fts_index_for_pruned_rows() {
+        let dir = tempdir().unwrap();
+        let store = store_in(dir.path());
+
+        // A pruned row carries a unique event term; a surviving row carries another.
+        let mut old_ev = sample_event("uniquepruned", None);
+        old_ev.ts = "2026-01-01T00:00:00Z".to_string();
+        store.append(&old_ev).unwrap();
+        let mut new_ev = sample_event("uniquekept", None);
+        new_ev.ts = "2026-06-01T00:00:00Z".to_string();
+        store.append(&new_ev).unwrap();
+
+        let fts_count = |term: &str| -> i64 {
+            store
+                .conn
+                .query_row(
+                    "SELECT COUNT(*) FROM events_fts WHERE events_fts MATCH ?1",
+                    params![term],
+                    |r| r.get(0),
+                )
+                .unwrap()
+        };
+        assert_eq!(fts_count("uniquepruned"), 1);
+
+        store.prune_events_older_than("2026-04-01T00:00:00Z").unwrap();
+
+        // The pruned row's FTS entry is gone; the surviving row's remains.
+        assert_eq!(fts_count("uniquepruned"), 0);
+        assert_eq!(fts_count("uniquekept"), 1);
     }
 
     #[test]

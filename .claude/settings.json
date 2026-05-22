@@ -18,7 +18,8 @@
     "OTEL_EXPORTER_OTLP_PROTOCOL": "http/json",
     "OTEL_EXPORTER_OTLP_ENDPOINT": "http://127.0.0.1:4318",
     "OTEL_METRICS_INCLUDE_SESSION_ID": "true",
-    "MUSTARD_HARNESS_DUAL_EMIT": "1"
+    "MUSTARD_HARNESS_DUAL_EMIT": "1",
+    "MUSTARD_STATUSLINE_THEME": "tokyo-night"
   },
 
   "mcpServers": {

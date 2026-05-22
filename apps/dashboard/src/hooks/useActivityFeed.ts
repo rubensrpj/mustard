@@ -29,7 +29,7 @@ export function useActivityFeed(
       queryKey: ["activity-feed", p.path, limitPerProject],
       queryFn: () => fetchRecentEvents(p.path, limitPerProject),
       staleTime: 5_000,
-      refetchInterval: 5_000,
+      // Wave 3 (2026-05-22): watcher-driven via "events" — poll removed.
       refetchOnWindowFocus: true,
     })),
   });

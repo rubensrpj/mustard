@@ -49,6 +49,10 @@ cargo run   -p mustard-rt -- run scan-orchestrate # /scan pre-dispatch
 | Dependencies | `mustard-core`, `serde_json`, `clap`, `tiny_http`, `rusqlite` (bundled 0.31), `rmcp`, `tokio` (current_thread, mcp only) |
 | Binary faces | `on <event>`, `check <id>`, `run <subcommand>`, `mcp` |
 
+## Statusline themes
+
+`mustard-rt run statusline` reads `MUSTARD_STATUSLINE_THEME` (defaults to `catppuccin`). Accepted values: `default`, `minimal`, `tokyo-night`, `catppuccin`, `pastel-powerline`, `gruvbox-rainbow`. Powerline themes require a Nerd Font; users without one should set `MUSTARD_STATUSLINE_THEME=default`. Preview all themes with `mustard-rt run statusline --preview`.
+
 ## Commands
 
 ```bash

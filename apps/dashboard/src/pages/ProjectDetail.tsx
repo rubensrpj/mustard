@@ -89,12 +89,12 @@ export function ProjectDetail() {
 
   const { subprojects, recipes, skills, recentEvents, loading, error } = useProject(project);
 
+  // Wave 3 (2026-05-22): watcher-driven via "pipeline-state" — no poll needed.
   const { data: activePipelines } = useQuery({
     queryKey: ['active-pipelines', project?.path],
     queryFn: () => fetchActivePipelines(project!.path),
     enabled: !!project,
     staleTime: 5_000,
-    refetchInterval: 12_000,
   });
 
   const groupedSkills = useMemo(() => {

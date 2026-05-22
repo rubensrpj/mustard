@@ -345,14 +345,12 @@ fn read_state_objects(claude_dir: &Path) -> Vec<StateObject> {
 // ===========================================================================
 
 /// `true` when the harness log already has a `retry.attempt` event for `spec`.
+///
+/// Uses a cheap existence probe (`has_event_for_spec`) instead of a full
+/// `replay()` table scan — the only fact this lookup needs is membership.
 fn spec_has_retry_events(cwd: &str, spec: &str) -> bool {
     SqliteEventStore::for_project(cwd)
-        .and_then(|store| store.replay())
-        .map(|events| {
-            events
-                .iter()
-                .any(|e| e.event == "retry.attempt" && e.spec.as_deref() == Some(spec))
-        })
+        .and_then(|store| store.has_event_for_spec("retry.attempt", spec))
         .unwrap_or(false)
 }
 

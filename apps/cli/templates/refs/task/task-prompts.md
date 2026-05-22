@@ -8,7 +8,7 @@
 // analyze
 Task({
   subagent_type: "Explore",
-  model: "haiku",
+  model: "sonnet",
   description: `Analyze: ${scope}`,
   prompt: `
     # CODE ANALYSIS TASK
@@ -130,7 +130,7 @@ Task({
 // compare — Phase 1: Parallel exploration
 subprojects.forEach(sp => Task({
   subagent_type: "Explore",
-  model: "haiku",
+  model: "sonnet",
   description: `Compare scan: ${sp.name} — ${criteria}`,
   prompt: `# COMPARISON SCAN\n## Criteria: ${criteria}\n## Subproject: ${sp.name}\nCollect relevant data and report findings.`
 }))

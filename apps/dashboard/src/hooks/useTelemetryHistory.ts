@@ -12,7 +12,7 @@ export function useTelemetryHistory(
     queryFn: () => dashboardTelemetryHistory(repoPath as string, timeRange, limit),
     enabled: !!repoPath,
     staleTime: 5_000,
-    refetchInterval: 5_000,
+    refetchInterval: 60_000,
     refetchOnWindowFocus: true,
   });
 }

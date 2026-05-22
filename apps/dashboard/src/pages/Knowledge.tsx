@@ -121,34 +121,36 @@ export function Knowledge() {
   const hasQuery = trimmed.length >= 2;
 
   // Browse: all knowledge rows for the active workspace.
-  // Wave 6c: DB-backed via knowledge_patterns; poll every 10 s (no watcher).
+  // Wave 3 (2026-05-22): DB-backed via knowledge_patterns. Now event-driven —
+  // the FS watcher invalidates ["knowledge-browse"] on every mustard.db write
+  // (kind "events") and on knowledge-file writes (kind "knowledge"), so the
+  // 10s poll is gone. staleTime + window-focus refetch remain as a safety net.
   const { data: browseRows, isLoading: browseLoading } = useQuery({
     queryKey: ["knowledge-browse", activeProject?.path],
     queryFn: () => fetchKnowledgeBrowse(activeProject!.path, 500),
     enabled: !!activeProject && !hasQuery,
     staleTime: 60_000,
     refetchOnWindowFocus: true,
-    refetchInterval: 10_000,
   });
 
-  // Search: when query >= 2 chars.
+  // Search: when query >= 2 chars. Event-driven via the same watcher kinds.
   const { data: searchRows, isLoading: searchLoading } = useQuery({
     queryKey: ["knowledge-search", activeProject?.path, trimmed],
     queryFn: () => fetchSearchKnowledge(activeProject!.path, trimmed, 200),
     enabled: !!activeProject && hasQuery,
     staleTime: 30_000,
     refetchOnWindowFocus: true,
-    refetchInterval: 10_000,
   });
 
-  // Friction: measured atrito — separate source, separate section.
+  // Friction: measured atrito — separate source (friction.json), no watcher
+  // kind. Keep a long 60s fallback poll instead of the old 10s.
   const { data: friction } = useQuery({
     queryKey: ["friction", activeProject?.path],
     queryFn: () => fetchFriction(activeProject!.path),
     enabled: !!activeProject,
     staleTime: 60_000,
     refetchOnWindowFocus: true,
-    refetchInterval: 10_000,
+    refetchInterval: 60_000,
   });
 
   // Split browse rows by real nature: legacy friction telemetry written into

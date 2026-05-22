@@ -7,7 +7,7 @@ export function useSpecWaves(repoPath: string | null, spec: string | null) {
     queryFn: () => dashboardSpecWaves(repoPath as string, spec as string),
     enabled: !!repoPath && !!spec,
     staleTime: 5_000,
-    refetchInterval: 5_000,
+    refetchInterval: 60_000,
     refetchIntervalInBackground: false,
   });
 }

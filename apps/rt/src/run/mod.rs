@@ -15,6 +15,7 @@ pub mod scan;
 pub mod amend_finalize;
 mod analyze_validation;
 mod artifact_update;
+mod db_maintain;
 mod doctor;
 mod complete_spec;
 mod context_slice;
@@ -555,6 +556,19 @@ pub enum RunCmd {
         #[arg(long)]
         residue: bool,
     },
+    /// SQLite harness database maintenance.
+    ///
+    /// Default (no flags): emit a JSON size/space report (read-only).
+    /// `--vacuum`: WAL checkpoint + VACUUM; print before/after byte counts.
+    /// `--prune-keep <N>`: delete all but the N most-recent events by id.
+    DbMaintain {
+        /// Run `PRAGMA wal_checkpoint(TRUNCATE)` then `VACUUM`.
+        #[arg(long)]
+        vacuum: bool,
+        /// Keep only the N most-recent events; delete the rest.
+        #[arg(long = "prune-keep")]
+        prune_keep: Option<u32>,
+    },
     /// Finalize open amendment windows for a session (appends `## Amendments` to spec.md,
     /// moves archived specs, updates the DB, and emits `pipeline.amend_close`).
     AmendFinalize {
@@ -787,6 +801,17 @@ pub fn dispatch(cmd: RunCmd) {
             expect_rows_after,
         } => otel::diagnose::run(json, expect_rows_after.as_deref()),
         RunCmd::Doctor { residue } => doctor::run(residue),
+        RunCmd::DbMaintain { vacuum, prune_keep } => {
+            let mut args: Vec<String> = Vec::new();
+            if vacuum {
+                args.push("--vacuum".to_string());
+            }
+            if let Some(n) = prune_keep {
+                args.push("--prune-keep".to_string());
+                args.push(n.to_string());
+            }
+            db_maintain::run(&args);
+        }
         RunCmd::DocsStaleCheck { from, strict, include_nested } => {
             docs_stale_check::run(from.as_deref(), strict, include_nested)
         }

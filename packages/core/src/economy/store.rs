@@ -20,10 +20,10 @@
 //!
 //! This mirrors [`crate::store::sqlite_store::SqliteEventStore::for_project`]
 //! exactly — we delegate to it to construct (and migrate) the database, then
-//! drop the wrapper and hand back a bare [`rusqlite::Connection`]. The wrapper
-//! holds no per-process state once the schema is in place, so the dual-open
-//! is cheap and keeps the call site free to use the connection inside writer
-//! transactions.
+//! hand back the very connection it opened via
+//! [`SqliteEventStore::into_connection`]. A single open per call: the wrapper
+//! holds no per-process state once the schema is in place, so reusing its
+//! connection keeps the call site free to use it inside writer transactions.
 //!
 //! ## Fail-open contract
 //!
@@ -66,15 +66,10 @@ const DB_FILE: &str = "mustard.db";
 /// directory cannot be created.
 pub fn open_for(project_path: &str) -> Result<Connection> {
     let path = resolve_db_path(project_path);
-    // Construct-and-drop: applies the schema + migrations, then releases the
-    // handle so the caller's bare Connection has the file all to itself.
-    // WAL mode is sticky on the file, not the connection, so the bare open
-    // below inherits it.
-    {
-        let _store = SqliteEventStore::new(&path)?;
-    }
-    let conn = Connection::open(&path)?;
-    Ok(conn)
+    // Single open: construct the store (applies schema + migrations on this
+    // connection) and hand back the same connection it opened, rather than
+    // dropping the wrapper and re-opening a second connection to the same file.
+    Ok(SqliteEventStore::new(&path)?.into_connection())
 }
 
 /// Resolve the database path for `project_path`, honouring `MUSTARD_DB_PATH`.

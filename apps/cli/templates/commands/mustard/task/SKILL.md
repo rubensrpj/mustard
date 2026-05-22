@@ -12,9 +12,9 @@
 
 | Action | Agent | Model | Description |
 |--------|-------|-------|-------------|
-| `analyze` | Explore | haiku | Code exploration and pattern analysis |
+| `analyze` | Explore | sonnet | Code exploration and pattern analysis |
 | `audit` | general-purpose | sonnet | Quality audit with domain checklist (copy, design, a11y, i18n, consistency, api-contract) |
-| `compare` | parallel explorers → Plan | haiku + sonnet | Cross-subproject comparison and alignment |
+| `compare` | parallel explorers → Plan | sonnet | Cross-subproject comparison and alignment |
 | `review` | general-purpose | opus | Code quality review (SOLID, security, perf) |
 | `docs` | general-purpose | sonnet | Documentation generation |
 | `refactor` | Plan → general-purpose | sonnet/opus | Plan + approve + implement refactoring |

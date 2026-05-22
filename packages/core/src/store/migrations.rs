@@ -46,7 +46,7 @@ use rusqlite::{Connection, OptionalExtension};
 /// Bump this when adding a new `migrate_vN_to_vN_plus_1` step and append the
 /// call inside [`apply`]. A database with `_mustard_meta.schema_version` equal
 /// to [`LATEST_VERSION`] is a no-op on open.
-pub const LATEST_VERSION: u32 = 5;
+pub const LATEST_VERSION: u32 = 7;
 
 /// Sentinel spec name for events that could not be attributed by the v2
 /// backfill — typically pre-pipeline events or rows missing `session_id`.
@@ -74,6 +74,8 @@ pub fn apply(conn: &Connection) -> Result<u32> {
             2 => migrate_v2_to_v3(conn)?,
             3 => migrate_v3_to_v4(conn)?,
             4 => migrate_v4_to_v5(conn)?,
+            5 => migrate_v5_to_v6(conn)?,
+            6 => migrate_v6_to_v7(conn)?,
             // Future migrations append here. The `LATEST_VERSION` constant is
             // the only invariant — every step must move the version forward.
             other => {
@@ -354,6 +356,56 @@ fn migrate_v4_to_v5(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// v5 → v6 — performance indices for session-scoped scans and the
+/// `knowledge_patterns` confidence rank.
+///
+/// `sqlite_schema.sql` ships these via `CREATE INDEX IF NOT EXISTS`, so a fresh
+/// database already has them after the DDL pass. This step exists so a database
+/// that predates the index additions (already at v5) acquires them on its next
+/// open without a full DDL re-run.
+///
+/// 1. `idx_events_session_id` — `last_pipeline_scope_for_session` and the
+///    amend-window-by-session queries filter on `session_id`.
+/// 2. `idx_knowledge_patterns_confidence_last_seen` — the `SessionStart`
+///    injection ranks patterns by `ORDER BY confidence DESC, last_seen DESC`.
+///
+/// Idempotent on re-run via `IF NOT EXISTS` on every statement.
+fn migrate_v5_to_v6(conn: &Connection) -> Result<()> {
+    let tx = conn.unchecked_transaction()?;
+    tx.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_events_session_id ON events(session_id); \
+         CREATE INDEX IF NOT EXISTS idx_knowledge_patterns_confidence_last_seen \
+             ON knowledge_patterns(confidence DESC, last_seen DESC);",
+    )?;
+    write_schema_version(&tx, 6)?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// v6 → v7 — add the `events_ad` AFTER DELETE trigger so pruning base rows
+/// removes their `events_fts` external-content entries incrementally.
+///
+/// `events_fts` is an FTS5 external-content index fed only by the `events_ai`
+/// insert trigger. `prune_events_older_than` deletes base rows; without a
+/// matching delete trigger the FTS index keeps orphaned entries. `sqlite_schema.sql`
+/// ships this trigger via `CREATE TRIGGER IF NOT EXISTS`, so a fresh database
+/// already has it after the DDL pass. This step exists so a database that
+/// predates the trigger (already at v6) acquires it on its next open.
+///
+/// Idempotent on re-run via `IF NOT EXISTS`.
+fn migrate_v6_to_v7(conn: &Connection) -> Result<()> {
+    let tx = conn.unchecked_transaction()?;
+    tx.execute_batch(
+        "CREATE TRIGGER IF NOT EXISTS events_ad AFTER DELETE ON events BEGIN \
+             INSERT INTO events_fts(events_fts, rowid, event, spec, payload_text) \
+             VALUES ('delete', old.id, old.event, old.spec, old.payload); \
+         END;",
+    )?;
+    write_schema_version(&tx, 7)?;
+    tx.commit()?;
+    Ok(())
+}
+
 /// Add `column` to `table` with `decl` only if the column does not already
 /// exist. Probes `pragma_table_info(table)` and issues `ALTER TABLE … ADD
 /// COLUMN` exactly once.
@@ -550,6 +602,43 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM api_cost_frames", [], |r| r.get(0))
             .unwrap();
         assert_eq!(cnt, 1);
+    }
+
+    #[test]
+    fn v6_creates_session_and_knowledge_rank_indices() {
+        let conn = fresh_db();
+        apply(&conn).unwrap();
+        for idx in [
+            "idx_events_session_id",
+            "idx_knowledge_patterns_confidence_last_seen",
+        ] {
+            let exists: bool = conn
+                .query_row(
+                    "SELECT 1 FROM sqlite_master WHERE type='index' AND name=?1",
+                    rusqlite::params![idx],
+                    |r| r.get::<_, i64>(0),
+                )
+                .optional()
+                .unwrap()
+                .is_some();
+            assert!(exists, "v6 must create {idx}");
+        }
+    }
+
+    #[test]
+    fn v7_creates_events_delete_trigger() {
+        let conn = fresh_db();
+        apply(&conn).unwrap();
+        let exists: bool = conn
+            .query_row(
+                "SELECT 1 FROM sqlite_master WHERE type='trigger' AND name='events_ad'",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .optional()
+            .unwrap()
+            .is_some();
+        assert!(exists, "v7 must create the events_ad delete trigger");
     }
 
     #[test]

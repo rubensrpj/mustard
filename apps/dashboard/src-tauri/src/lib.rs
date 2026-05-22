@@ -12,6 +12,7 @@ mod watcher;
 
 use mustard_core::fs;
 use serde::Serialize;
+use tauri::Manager;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::path::PathBuf;
@@ -844,10 +845,6 @@ fn lib_emit_pipeline_status(repo_path: &str, spec: &str, to: &str) {
     use mustard_core::store::event_store::EventSink;
     use mustard_core::store::sqlite_store::SqliteEventStore;
 
-    let store = match SqliteEventStore::for_project(repo_path) {
-        Ok(s) => s,
-        Err(e) => { eprintln!("lib_emit_pipeline_status: open store: {e}"); return; }
-    };
     let payload = serde_json::to_value(PipelineStatusPayload {
         from: None,
         to: to.to_string(),
@@ -862,8 +859,24 @@ fn lib_emit_pipeline_status(repo_path: &str, spec: &str, to: &str) {
         payload,
         spec: Some(spec.to_string()),
     };
-    if let Err(e) = store.append(&event) {
-        eprintln!("lib_emit_pipeline_status: append: {e}");
+
+    // Wave 3: append through the shared, managed store keyed by repo path
+    // instead of opening a fresh `SqliteEventStore` per call. `with_store`
+    // returns `None` only when the DB file does not yet exist; in that single
+    // case fall back to `for_project`, which creates it on open.
+    let base = std::path::Path::new(repo_path);
+    let appended = db::with_store(base, |store| store.append(&event).map_err(|e| e.to_string()));
+    match appended {
+        Some(Ok(())) => {}
+        Some(Err(e)) => eprintln!("lib_emit_pipeline_status: append: {e}"),
+        None => match SqliteEventStore::for_project(repo_path) {
+            Ok(store) => {
+                if let Err(e) = store.append(&event) {
+                    eprintln!("lib_emit_pipeline_status: append (fresh): {e}");
+                }
+            }
+            Err(e) => eprintln!("lib_emit_pipeline_status: open store: {e}"),
+        },
     }
 }
 
@@ -1651,9 +1664,23 @@ pub fn run() {
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .plugin(tauri_plugin_dialog::init())
         .manage(Arc::new(Mutex::new(watcher::WatcherState::default())))
+        // Shared DB handle (Wave 3): one `SqliteEventStore` per repo path, opened
+        // once and reused, instead of a fresh connection per command. Registered
+        // in managed state so it lives for the app's lifetime; the same cache is
+        // also handed to `db::init_db_cache` so the free `db::with_db` helpers
+        // reach it without threading `State<DbCache>` through every command.
+        .manage(mustard_core::store::db_cache::DbCache::new())
         .setup(|app| {
             #[cfg(desktop)]
             app.handle().plugin(tauri_plugin_updater::Builder::new().build())?;
+            // Hand the managed cache to the db module's process-global handle.
+            // `DbCache` is `Clone` (its map lives behind an `Arc`), so the
+            // managed copy and the `db` module's copy share the same open stores.
+            let cache = app
+                .state::<mustard_core::store::db_cache::DbCache>()
+                .inner()
+                .clone();
+            db::init_db_cache(cache);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

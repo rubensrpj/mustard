@@ -19,11 +19,10 @@ export function useSpecTrace(
         specName: specName as string,
       }),
     enabled: !!projectPath && !!specName,
-    // Trees are append-mostly: revalidate often enough to feel live, but
-    // not so often that scrolling a deep tree thrashes. 10s matches the
-    // existing `useSpecWaves` cadence.
+    // Trees are append-mostly and have no watcher kind; a 60s fallback poll
+    // (Wave 3, 2026-05-22) keeps them eventually-fresh without thrashing.
     staleTime: 10_000,
-    refetchInterval: 10_000,
+    refetchInterval: 60_000,
     refetchIntervalInBackground: false,
   });
 }

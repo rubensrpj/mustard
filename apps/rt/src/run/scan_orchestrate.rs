@@ -405,7 +405,7 @@ fn build_impl_agent(title: &str, name: &str, path: &str, role: &str, stack: &str
 /// The `<name>-explorer.md` agent template.
 fn build_explorer_agent(title: &str, name: &str, path: &str, role: &str) -> String {
     format!(
-        "---\nname: {name}-explorer\ndescription: Read-only exploration agent for {name} codebase analysis and investigation.\nmodel: haiku\ntools: [Read, Grep, Glob]\nmemory: project\n---\n<!-- mustard:generated at:{} role:{role} -->\n\n\
+        "---\nname: {name}-explorer\ndescription: Read-only exploration agent for {name} codebase analysis and investigation.\nmodel: sonnet\ntools: [Read, Grep, Glob]\nmemory: project\n---\n<!-- mustard:generated at:{} role:{role} -->\n\n\
          # {title} Explorer Agent\n\n\
          > Read-only analysis of {name} codebase. Patterns, dependencies, architecture, quality evaluation.\n\n\
          ## Mandatory Reads\n1. `{path}/CLAUDE.md` — project rules, guards, stack\n2. `{path}/.claude/commands/guards.md` — DO/DON'T rules\n\n\

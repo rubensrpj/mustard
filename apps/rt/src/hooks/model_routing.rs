@@ -261,11 +261,14 @@ struct Expected {
 fn determine_expected(subagent_type: &str, state: Option<&PipelineState>) -> Expected {
     let agent_type = subagent_type.to_ascii_lowercase();
 
-    // Rule 1: Explore is mechanical search → haiku.
+    // Rule 1: Explore is read-only search → sonnet. Sonnet is the floor for
+    // exploration (fewer missed matches on ambiguous naming conventions);
+    // haiku stays available as an explicit downgrade since it ranks below
+    // sonnet and downgrades are allowed.
     if agent_type == "explore" {
         return Expected {
-            model: "haiku",
-            reason: "Explore agents use haiku (mechanical search)",
+            model: "sonnet",
+            reason: "Explore agents use sonnet (read-only search, quality-first)",
         };
     }
     // Rule 2: Plan needs deep reasoning → opus.
@@ -347,8 +350,8 @@ fn model_routing_gate(input: &HookInput, project_dir: &str, mode: GateMode) -> V
             return Verdict::Deny {
                 reason: format!(
                     "[Model Routing] Explorer agents must specify model explicitly \
-                     (haiku or sonnet). Add model: \"haiku\" to your Task dispatch. \
-                     {}.",
+                     (sonnet, or haiku to downgrade). Add model: \"sonnet\" to your \
+                     Task dispatch. {}.",
                     expected.reason
                 ),
             };
@@ -591,9 +594,9 @@ mod tests {
     // --- expected-model resolution -----------------------------------------
 
     #[test]
-    fn explore_expects_haiku() {
+    fn explore_expects_sonnet() {
         let e = determine_expected("Explore", None);
-        assert_eq!(e.model, "haiku");
+        assert_eq!(e.model, "sonnet");
     }
 
     #[test]
@@ -665,11 +668,11 @@ mod tests {
 
     #[test]
     fn upgrade_is_blocked_explore_with_opus() {
-        // Explore expects haiku; dispatching with opus is an upgrade → deny.
+        // Explore expects sonnet; dispatching with opus is an upgrade → deny.
         let dir = tempdir().unwrap();
         let input = task_input("Explore", Some("opus"), "search");
         match run(&input, dir.path().to_str().unwrap()) {
-            Verdict::Deny { reason } => assert!(reason.contains("haiku")),
+            Verdict::Deny { reason } => assert!(reason.contains("sonnet")),
             other => panic!("expected Deny, got {other:?}"),
         }
     }
@@ -684,6 +687,16 @@ mod tests {
 
     #[test]
     fn matching_model_allows() {
+        // Explore now expects sonnet — an exact match is allowed.
+        let dir = tempdir().unwrap();
+        let input = task_input("Explore", Some("sonnet"), "search");
+        assert_eq!(run(&input, dir.path().to_str().unwrap()), Verdict::Allow);
+    }
+
+    #[test]
+    fn explore_with_haiku_is_allowed_as_downgrade() {
+        // Explore expects sonnet; haiku ranks below it, so an explicit haiku
+        // dispatch is a downgrade — still allowed (opt-in cost saving).
         let dir = tempdir().unwrap();
         let input = task_input("Explore", Some("haiku"), "search");
         assert_eq!(run(&input, dir.path().to_str().unwrap()), Verdict::Allow);

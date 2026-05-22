@@ -49,32 +49,8 @@ use mustard_core::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
 use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use rusqlite::Connection;
 use serde_json::{Map, Value, json};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-
-/// Resolve the harness SQLite path the same way [`SqliteEventStore::for_project`]
-/// does internally — env override `MUSTARD_DB_PATH` wins, else
-/// `{project_dir}/.claude/.harness/mustard.db`. Mirrored privately here to
-/// keep the `mustard-core` surface unchanged for W2.
-fn economy_db_path(project_dir: &str) -> PathBuf {
-    if let Ok(value) = std::env::var("MUSTARD_DB_PATH") {
-        if !value.trim().is_empty() {
-            return PathBuf::from(value);
-        }
-    }
-    Path::new(project_dir)
-        .join(".claude")
-        .join(".harness")
-        .join("mustard.db")
-}
-
-/// Open a raw [`Connection`] to the harness DB, applying schema/migrations
-/// via [`SqliteEventStore::for_project`] first. Returns `None` on failure;
-/// tracker telemetry is best-effort.
-fn open_economy_conn(project_dir: &str) -> Option<Connection> {
-    let _ = SqliteEventStore::for_project(project_dir).ok()?;
-    Connection::open(economy_db_path(project_dir)).ok()
-}
 
 /// Finalise an agent's Task dispatch as one `spans` row + one `api_cost`
 /// frame, derived from the PostToolUse(Task) payload. `model` is the model id
@@ -83,7 +59,7 @@ fn open_economy_conn(project_dir: &str) -> Option<Connection> {
 /// `tool_response`; `input_tokens` / `output_tokens` come from the API usage
 /// payload when present, else estimated from the byte size. Fail-open.
 fn record_task_span(
-    project_dir: &str,
+    conn: &Connection,
     session_id: Option<&str>,
     span_id: String,
     model: &str,
@@ -94,9 +70,6 @@ fn record_task_span(
     api_output_tokens: Option<i64>,
     is_error: bool,
 ) {
-    let Some(conn) = open_economy_conn(project_dir) else {
-        return;
-    };
     let input_tokens = api_input_tokens
         .unwrap_or_else(|| i64::from(estimator::estimate_input_tokens(input_text, model)));
     let output_tokens = api_output_tokens
@@ -132,8 +105,8 @@ fn record_task_span(
     // Writer side: one `spans` insert (the internal estimator path), then a
     // second alias call to mark provenance — they share the same row via
     // `INSERT OR REPLACE` on `span_id`.
-    let _ = writer::record_span(&conn, rec.clone());
-    let _ = writer::record_api_cost(&conn, rec as ApiCostFrame);
+    let _ = writer::record_span(conn, rec.clone());
+    let _ = writer::record_api_cost(conn, rec as ApiCostFrame);
 }
 
 // ===========================================================================
@@ -157,9 +130,14 @@ fn project_dir(input: &HookInput) -> String {
     }
 }
 
-/// Emit one harness event, best-effort. Telemetry is never load-bearing.
-fn emit_event(project_dir: &str, hook_id: &str, event: &str, payload: Value) {
-    let harness_event = HarnessEvent {
+/// Build one harness event from the hook context.
+fn build_harness_event(
+    project_dir: &str,
+    hook_id: &str,
+    event: &str,
+    payload: Value,
+) -> HarnessEvent {
+    HarnessEvent {
         v: SCHEMA_VERSION,
         ts: now_iso8601(),
         session_id: "unknown".to_string(),
@@ -172,9 +150,29 @@ fn emit_event(project_dir: &str, hook_id: &str, event: &str, payload: Value) {
         event: event.to_string(),
         payload,
         spec: current_spec(project_dir),
-    };
+    }
+}
+
+/// Emit one harness event, best-effort, opening the store itself. Telemetry is
+/// never load-bearing. Callers that already hold an open store for the same
+/// invocation should prefer [`emit_event_via`] to avoid a second open.
+fn emit_event(project_dir: &str, hook_id: &str, event: &str, payload: Value) {
+    let harness_event = build_harness_event(project_dir, hook_id, event, payload);
     let _ = SqliteEventStore::for_project(project_dir)
         .and_then(|store| store.append(&harness_event));
+}
+
+/// Emit one harness event onto an already-open store, best-effort. Lets a hook
+/// invocation that opens the store once reuse it for the event append.
+fn emit_event_via(
+    store: &SqliteEventStore,
+    project_dir: &str,
+    hook_id: &str,
+    event: &str,
+    payload: Value,
+) {
+    let harness_event = build_harness_event(project_dir, hook_id, event, payload);
+    let _ = store.append(&harness_event);
 }
 
 // ===========================================================================
@@ -717,7 +715,16 @@ impl mustard_core::model::contract::Observer for SubagentTracker {
                     })
                     .unwrap_or_default();
                 let summary: String = tool_response.chars().take(800).collect();
-                emit_event(
+                // Open the harness store ONCE for this invocation and reuse it
+                // for both the `agent.stop` append and the span writes below,
+                // instead of opening it twice (one for the event append, one
+                // for the economy span writes).
+                // Best-effort: if the open fails, telemetry is simply skipped.
+                let Ok(store) = SqliteEventStore::for_project(&project) else {
+                    return;
+                };
+                emit_event_via(
+                    &store,
                     &project,
                     "subagent-tracker",
                     "agent.stop",
@@ -760,7 +767,7 @@ impl mustard_core::model::contract::Observer for SubagentTracker {
                         format!("{sid}-{}-task", now_iso8601())
                     });
                 record_task_span(
-                    &project,
+                    store.conn(),
                     input.session_id.as_deref(),
                     span_id,
                     &model_str,

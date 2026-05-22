@@ -23,6 +23,7 @@
 //! [`Result`](crate::error::Result) and never panics, so the hooks that
 //! consume it can degrade safely on any I/O failure.
 
+pub mod db_cache;
 pub mod event_store;
 pub mod fs;
 pub mod migrations;

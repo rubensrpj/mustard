@@ -147,11 +147,11 @@ The slice is stable for the whole pipeline, so it sits in the PREFIX-STABLE bloc
 11b. **Pre-EXECUTE Rewave Check** (skip if `pipeline-state.isWavePlan === true`): Run `mustard-rt run exec-rewave-check --spec .claude/spec/{specName}/spec.md`. Parse JSON output. If `action: "decomposed"`, the spec was split into N waves — update `pipeline-state.isWavePlan: true, currentWave: 1` and proceed using wave-1's spec (`wave-1-{role}/spec.md`). If `action: "keep-single"` or `"skip"`, continue with the original spec. Silent — no AskUserQuestion.
 
 12. **Match recipe by name only:** Grep `{subproject}/.claude/commands/recipes.md` for recipe title matching the task type — do NOT read the full recipes file. Extract only: recipe number, pattern refs, reference modules
-12b. **Pre-EXECUTE Existence Gate**: Same gate as `feature/SKILL.md § Pre-EXECUTE Existence Gate`. Invoke identically (Full scope only, `## Files` ≤ 8). On retry/resume, the gate naturally handles idempotence: tasks already `[x]` from a prior run are treated as Mixed — the Haiku confirms they stay done and the orchestrator only re-dispatches what remains `[ ]`.
+12b. **Pre-EXECUTE Existence Gate**: Same gate as `feature/SKILL.md § Pre-EXECUTE Existence Gate`. Invoke identically (Full scope only, `## Files` ≤ 8). On retry/resume, the gate naturally handles idempotence: tasks already `[x]` from a prior run are treated as Mixed — the explorer confirms they stay done and the orchestrator only re-dispatches what remains `[ ]`.
 
    **Skip entirely if `resumeMode === "continued"`** (Step 0.5). The `continued` mode trusts pipeline-state checkboxes as-is. If the stale-context fallback escalates to `reanalyze`, the gate runs on the re-dispatch.
 
-    **Pre-check (same as `feature/SKILL.md § Pre-EXECUTE Existence Gate`):** Before dispatching Haiku, run `rtk git diff --stat HEAD -- <files listed in spec's ## Files>`. Skip gate entirely if output is empty (no changes) or total insertions/deletions <10. Only proceed with Haiku dispatch if ≥10 lines changed.
+    **Pre-check (same as `feature/SKILL.md § Pre-EXECUTE Existence Gate`):** Before dispatching the explorer, run `rtk git diff --stat HEAD -- <files listed in spec's ## Files>`. Skip gate entirely if output is empty (no changes) or total insertions/deletions <10. Only proceed with the explorer dispatch if ≥10 lines changed.
 
 12c. **Wave Plan Scope (conditional — only if `pipeline-state.isWavePlan === true`):**
 

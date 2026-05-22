@@ -148,7 +148,7 @@ Models are auto-selected by intent. Upgrades blocked, downgrades allowed (opt-in
 
 | Intent | Model | Why |
 |---|---|---|
-| Explore (mechanical search) | haiku | cheap, fast, no reasoning needed |
+| Explore (read-only search) | sonnet | quality-first; haiku allowed as opt-in downgrade |
 | Plan | opus | bad plan = bad implementation |
 | Feature pipeline (any) | opus | quality-first |
 | Bugfix pipeline | opus | diagnosis needs deep reasoning |

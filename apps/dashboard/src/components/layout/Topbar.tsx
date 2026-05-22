@@ -43,12 +43,12 @@ export function Topbar() {
     staleTime: 60_000,
   });
 
+  // Wave 3 (2026-05-22): watcher-driven via "pipeline-state" — no poll needed.
   const liveQueries = useQueries({
     queries: (projects ?? []).map((p) => ({
       queryKey: ['active-pipelines', p.path],
       queryFn: () => fetchActivePipelines(p.path),
       staleTime: 5_000,
-      refetchInterval: 12_000,
     })),
   });
 

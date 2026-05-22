@@ -18,7 +18,6 @@ import { Badge } from "@/components/ui/badge";
 import { relativeTime } from "@/lib/time";
 import { parseQaOverall } from "@/lib/qa";
 
-const POLL_MS = 15_000;
 const FRESH_MS = 5 * 60_000;
 
 interface Props {
@@ -121,32 +120,33 @@ function HeatBars({ daily }: { daily: DailyPoint[] }) {
 export function WorkspaceDigest({ project }: Props) {
   const queryClient = useQueryClient();
 
+  // Wave 3 (2026-05-22): metrics / active-pipelines / specs / activity-agg /
+  // recent-events are all invalidated by the FS watcher (kinds "events",
+  // "pipeline-state", "spec"), so their per-query polls are dropped. staleTime
+  // stays as the cache floor. consumption + the QA-today window have no watcher
+  // kind and keep a long 60s fallback.
   const { data: metrics } = useQuery({
     queryKey: ["metrics", project.path],
     queryFn: () => fetchMetrics(project.path),
     staleTime: 10_000,
-    refetchInterval: POLL_MS,
   });
 
   const { data: pipelines } = useQuery({
     queryKey: ["active-pipelines", project.path],
     queryFn: () => fetchActivePipelines(project.path),
     staleTime: 5_000,
-    refetchInterval: POLL_MS,
   });
 
   const { data: specs } = useQuery({
     queryKey: ["specs", project.path],
     queryFn: () => fetchSpecs(project.path),
     staleTime: 30_000,
-    refetchInterval: 30_000,
   });
 
   const { data: agg } = useQuery({
     queryKey: ["activity-agg", project.path],
     queryFn: () => fetchActivityAggregated(project.path, 200),
     staleTime: 15_000,
-    refetchInterval: 30_000,
   });
 
   const { data: consumption } = useQuery({
@@ -160,7 +160,6 @@ export function WorkspaceDigest({ project }: Props) {
     queryKey: ["recent-events", project.path, 5],
     queryFn: () => fetchRecentEvents(project.path, 5),
     staleTime: 5_000,
-    refetchInterval: 10_000,
   });
 
   // Wider window strictly for QA verdicts today; 200 events covers most days
@@ -170,7 +169,7 @@ export function WorkspaceDigest({ project }: Props) {
     queryKey: ["recent-events-qa-today", project.path],
     queryFn: () => fetchRecentEvents(project.path, 200),
     staleTime: 15_000,
-    refetchInterval: 30_000,
+    refetchInterval: 60_000,
   });
 
   const completedToday = useMemo(

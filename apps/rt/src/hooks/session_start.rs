@@ -473,10 +473,7 @@ fn run_spec_hygiene(_cwd: &str) {
 /// (it was a legacy JSON field only); all SQL-backed entries are treated as
 /// unverified to preserve the AC-4 prefix logic until a future wave adds the
 /// column.
-fn load_knowledge_sql(db_path: &Path) -> Vec<String> {
-    let Ok(conn) = rusqlite::Connection::open(db_path) else {
-        return Vec::new();
-    };
+fn load_knowledge_sql(conn: &rusqlite::Connection) -> Vec<String> {
     let sql = "SELECT pattern, confidence FROM knowledge_patterns \
                WHERE confidence >= ?1 \
                ORDER BY confidence DESC, last_seen DESC \
@@ -501,10 +498,7 @@ fn load_knowledge_sql(db_path: &Path) -> Vec<String> {
 
 /// Load the `max` most-recent rows from `memory_decisions` or `memory_lessons`,
 /// formatted as `- [source] content`. Ordered by `at DESC`.
-fn load_memory_sql(db_path: &Path, table: &str, max: usize) -> Vec<String> {
-    let Ok(conn) = rusqlite::Connection::open(db_path) else {
-        return Vec::new();
-    };
+fn load_memory_sql(conn: &rusqlite::Connection, table: &str, max: usize) -> Vec<String> {
     // Table name is controlled by this module (never from user input) so
     // format! interpolation is safe here.
     let sql = format!(
@@ -551,19 +545,25 @@ fn build_memory_context(cwd: &str) -> Option<String> {
         return None;
     }
 
+    // Open the DB ONCE and run all three reads on it, instead of opening a
+    // fresh connection per query. Fail-open to empty on an open failure.
+    let Ok(conn) = rusqlite::Connection::open(&db_path) else {
+        return None;
+    };
+
     let mut parts: Vec<String> = Vec::new();
 
-    let kb = load_knowledge_sql(&db_path);
+    let kb = load_knowledge_sql(&conn);
     if !kb.is_empty() {
         parts.push("## Project Knowledge".to_string());
         parts.extend(kb);
     }
-    let decisions = load_memory_sql(&db_path, "memory_decisions", 5);
+    let decisions = load_memory_sql(&conn, "memory_decisions", 5);
     if !decisions.is_empty() {
         parts.push("## Recent Decisions".to_string());
         parts.extend(decisions);
     }
-    let lessons = load_memory_sql(&db_path, "memory_lessons", 5);
+    let lessons = load_memory_sql(&conn, "memory_lessons", 5);
     if !lessons.is_empty() {
         parts.push("## Lessons Learned".to_string());
         parts.extend(lessons);

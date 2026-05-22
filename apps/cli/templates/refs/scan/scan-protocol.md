@@ -254,7 +254,7 @@ Also generate `.claude/agents/{subproject.name}-explorer.md`:
 ---
 name: {subproject.name}-explorer
 description: Read-only exploration agent for {subproject.name} codebase analysis and investigation.
-model: haiku
+model: sonnet
 tools: [Read, Grep, Glob]
 memory: project
 ---

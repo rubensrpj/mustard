@@ -16,6 +16,17 @@ export function subscribeFsChange(): Promise<() => void> {
         queryClient.invalidateQueries({ queryKey: ["metrics", repo_path] });
         queryClient.invalidateQueries({ queryKey: ["activity"] });
         queryClient.invalidateQueries({ queryKey: ["telemetry", repo_path] });
+        // These activity views are all derived from mustard.db too, so a DB
+        // write is their trigger as well (their query keys don't share the
+        // "activity" prefix above — they are distinct first elements).
+        queryClient.invalidateQueries({ queryKey: ["activity-feed", repo_path] });
+        queryClient.invalidateQueries({ queryKey: ["activity-agg", repo_path] });
+        // Knowledge lives in mustard.db (knowledge_patterns / memory_decisions),
+        // so a DB write is also a knowledge change — invalidate those keys here
+        // so the Knowledge page refreshes event-driven instead of polling.
+        queryClient.invalidateQueries({ queryKey: ["knowledge-browse", repo_path] });
+        queryClient.invalidateQueries({ queryKey: ["knowledge-search", repo_path] });
+        queryClient.invalidateQueries({ queryKey: ["knowledge", repo_path] });
       } else if (kind === "pipeline-state") {
         queryClient.invalidateQueries({ queryKey: ["active-pipelines", repo_path] });
         queryClient.invalidateQueries({ queryKey: ["specs", repo_path] });

@@ -1,6 +1,9 @@
-use rusqlite::{Connection, OpenFlags, params};
+use rusqlite::{Connection, params};
 use std::path::Path;
+use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+use mustard_core::store::db_cache::{DbCache, SharedStore};
 
 use crate::{
     ActivePipeline, ActivityGroup, AgentUsage, ConsumptionSummary, DailyPoint, KnowledgeRow,
@@ -8,14 +11,42 @@ use crate::{
     RecentEvent, RoleQuality, SlowestWave, SpecRow, SpecUsage,
 };
 
-/// Open a SQLite connection in read-only mode. Returns an error if the file
-/// does not exist on disk (rusqlite would otherwise create it with default flags).
-pub fn open_readonly(db_path: &Path) -> Result<Connection, String> {
+/// Process-wide handle to the shared [`DbCache`] (Wave 3 of
+/// `2026-05-22-db-access-repository-and-live-refresh`).
+///
+/// The cache opens one `SqliteEventStore` per `mustard.db` path and reuses it,
+/// replacing the previous open-a-connection-per-command behaviour. It is also
+/// registered in Tauri managed state via `.manage(DbCache)` in `lib::run` so it
+/// lives for the app's lifetime; this `OnceLock` lets the free `with_db` /
+/// `with_store` helpers reach the *same* cache (a `DbCache` clone shares its
+/// inner `Arc<Mutex<HashMap>>`) without threading `State<DbCache>` through every
+/// command signature.
+static DB_CACHE: OnceLock<DbCache> = OnceLock::new();
+
+/// Install the shared cache. Called once from `lib::run`'s `.setup`. Idempotent:
+/// a second call is a no-op (the first cache wins), so tests that pre-seed a
+/// cache are unaffected.
+pub fn init_db_cache(cache: DbCache) {
+    let _ = DB_CACHE.set(cache);
+}
+
+/// Resolve the standard harness DB path for a project root.
+fn harness_db_path(repo_path: &Path) -> std::path::PathBuf {
+    repo_path.join(".claude").join(".harness").join("mustard.db")
+}
+
+/// Borrow the cached [`SharedStore`] for `repo_path`'s harness DB, opening it on
+/// first use. Returns `None` when the DB file does not exist (mirrors the old
+/// `with_db` contract) or when the cache cannot open it.
+fn cached_store(repo_path: &Path) -> Option<SharedStore> {
+    let db_path = harness_db_path(repo_path);
     if !db_path.exists() {
-        return Err("db not found".to_string());
+        return None;
     }
-    Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
-        .map_err(|e| e.to_string())
+    // The cache is initialised in `.setup`; fall back to a private, lazily
+    // created cache if a caller (e.g. a unit test) reaches here before `run`.
+    let cache = DB_CACHE.get_or_init(DbCache::new);
+    cache.get(&db_path).ok()
 }
 
 /// Return true if the connection has at least 3 of the 4 expected Phase 1 tables
@@ -38,22 +69,38 @@ pub fn has_phase1_schema(conn: &Connection) -> bool {
 /// Try to run a closure against the SQLite reader. Returns `None` when the DB
 /// is missing, unreadable, or doesn't expose the Phase 1 schema — signalling
 /// the caller to fall back to the legacy JSONL/JSON readers.
+///
+/// Wave 3: the connection is now borrowed from the shared [`DbCache`] keyed by
+/// `repo_path` instead of opening a fresh read-only `rusqlite::Connection` per
+/// call. The store is opened once and reused; the cache's per-store `Mutex`
+/// serialises access to that one connection (WAL still allows other processes
+/// to read/write concurrently). Behaviour is otherwise identical — the same
+/// `&Connection` borrow is handed to `f`, and the same `has_phase1_schema`
+/// gate decides whether to fall through.
 pub fn with_db<T, F>(repo_path: &Path, f: F) -> Option<Result<T, String>>
 where
     F: FnOnce(&Connection) -> Result<T, String>,
 {
-    let db_path = repo_path.join(".claude").join(".harness").join("mustard.db");
-    if !db_path.exists() {
+    let shared = cached_store(repo_path)?;
+    let store = shared.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let conn = store.conn();
+    if !has_phase1_schema(conn) {
         return None;
     }
-    let conn = match open_readonly(&db_path) {
-        Ok(c) => c,
-        Err(_) => return None,
-    };
-    if !has_phase1_schema(&conn) {
-        return None;
-    }
-    Some(f(&conn))
+    Some(f(conn))
+}
+
+/// Like [`with_db`] but for write paths: hands the closure the cached
+/// [`SqliteEventStore`] so callers can use `append` (or any store method) on the
+/// shared, managed handle rather than opening a new store per command. Returns
+/// `None` when the DB file does not exist or the cache cannot open it.
+pub fn with_store<T, F>(repo_path: &Path, f: F) -> Option<Result<T, String>>
+where
+    F: FnOnce(&mustard_core::store::sqlite_store::SqliteEventStore) -> Result<T, String>,
+{
+    let shared = cached_store(repo_path)?;
+    let store = shared.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    Some(f(&store))
 }
 
 /// Escape a free-text query for FTS5 MATCH. Returns `None` for empty input

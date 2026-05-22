@@ -132,7 +132,7 @@ Generate `recipes.md` from import chains and module structure. One recipe per re
 
 ## 9. Agent Generation
 
-Generate `{subproject.name}-impl.md` + `{subproject.name}-explorer.md` in root `.claude/agents/` (NOT subproject). YAML frontmatter BEFORE `<!-- mustard:generated -->`. Explorer uses haiku + read-only tools. Clean up stale leftover files from prior projects.
+Generate `{subproject.name}-impl.md` + `{subproject.name}-explorer.md` in root `.claude/agents/` (NOT subproject). YAML frontmatter BEFORE `<!-- mustard:generated -->`. Explorer uses sonnet + read-only tools. Clean up stale leftover files from prior projects.
 
 > Reference (optional, only if the agent template is unclear): `../../../refs/scan/agent-recipes.md`
 

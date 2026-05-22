@@ -35,6 +35,6 @@ export function useCollectorHealth(repoPath: string | null) {
     queryKey: ["collectorHealth", repoPath],
     queryFn: () => fetchCollectorHealth(repoPath as string),
     enabled: !!repoPath,
-    refetchInterval: 10_000,
+    refetchInterval: 60_000,
   });
 }
