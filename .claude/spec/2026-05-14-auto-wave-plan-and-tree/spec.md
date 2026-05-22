@@ -1,5 +1,8 @@
 # Feature: auto-wave-plan-and-tree
-### Status: completed | Phase: CLOSE | Scope: full
+### Stage: Close
+### Outcome: Completed
+### Flags: 
+### Scope: full
 ### Checkpoint: 2026-05-14T09:00:00Z
 ### Lang: pt
 

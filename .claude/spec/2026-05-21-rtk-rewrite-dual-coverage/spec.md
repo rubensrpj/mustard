@@ -1,7 +1,8 @@
 # rtk_rewrite dual-mode coverage — testes cobrem Warn (rewrite) e Strict (deny)
 
-### Status: completed
-### Phase: CLOSE
+### Stage: Close
+### Outcome: Completed
+### Flags: 
 ### Scope: light
 ### Checkpoint: 2026-05-21T01:35:00Z
 ### Lang: pt

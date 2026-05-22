@@ -1,8 +1,9 @@
 # Review — economia-moat-unification
 
 ### Parent: [[2026-05-20-economia-moat-unification]]
-### Status: implementing
-### Phase: REVIEW
+### Stage: QaReview
+### Outcome: Active
+### Flags: 
 ### Scope: full (wave plan)
 ### Checkpoint: 2026-05-21T06:15:00Z
 ### Lang: pt

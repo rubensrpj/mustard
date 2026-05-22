@@ -1,8 +1,9 @@
 # metrics-writers-pipeline-key — números honestos para `metrics wave-status`
 
 ### Parent: [[2026-05-20-mustard-wave-network-standard]]
-### Status: cancelled
-### Phase: CLOSE
+### Stage: Close
+### Outcome: Cancelled
+### Flags: 
 ### Scope: full
 ### Checkpoint: 2026-05-20T23:59:00Z
 ### Lang: pt

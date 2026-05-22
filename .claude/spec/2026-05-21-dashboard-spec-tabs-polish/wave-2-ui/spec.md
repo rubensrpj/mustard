@@ -1,8 +1,9 @@
 # Wave 2 — Ondas restruct: Onda #0 + pin + sub-specs aninhadas
 
 ### Parent: [[2026-05-21-dashboard-spec-tabs-polish]]
-### Status: completed
-### Phase: CLOSE
+### Stage: Close
+### Outcome: Completed
+### Flags: 
 ### Lang: pt
 ### Checkpoint: 2026-05-21T17:00:00Z
 

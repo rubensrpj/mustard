@@ -1,8 +1,9 @@
 # QA — dashboard-spec-tabs-polish
 
 ### Parent: [[2026-05-21-dashboard-spec-tabs-polish]]
-### Status: draft
-### Phase: QA
+### Stage: QaReview
+### Outcome: Active
+### Flags: 
 ### Lang: pt
 ### Checkpoint: 2026-05-21T17:00:00Z
 

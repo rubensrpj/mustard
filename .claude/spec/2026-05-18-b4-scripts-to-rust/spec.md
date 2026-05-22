@@ -1,6 +1,9 @@
 # Feature: b4-scripts-to-rust
 
-### Status: completed | Phase: CLOSE | Scope: full
+### Stage: Close
+### Outcome: Completed
+### Flags: 
+### Scope: full
 ### Checkpoint: 2026-05-19T20:00:00Z
 ### Lang: pt
 

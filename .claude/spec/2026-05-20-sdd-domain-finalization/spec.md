@@ -1,7 +1,8 @@
 # Finalização da camada de domínio SDD (qa.result, legado e telemetria visual)
 
-### Status: completed
-### Phase: CLOSE
+### Stage: Close
+### Outcome: Completed
+### Flags: 
 ### Scope: full
 ### Checkpoint: 2026-05-20T20:30:00Z
 ### Lang: pt

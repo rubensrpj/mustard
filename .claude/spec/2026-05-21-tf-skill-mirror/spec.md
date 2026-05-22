@@ -1,8 +1,9 @@
 # Tactical-fix — mirror wave-4 flatten into installed SKILLs
 
 ### Parent: [[2026-05-21-flatten-spec-layout-and-multi-collab]]
-### Status: approved
-### Phase: EXECUTE
+### Stage: Execute
+### Outcome: Active
+### Flags: 
 ### Lang: pt
 ### Checkpoint: 2026-05-21T00:00:00Z
 

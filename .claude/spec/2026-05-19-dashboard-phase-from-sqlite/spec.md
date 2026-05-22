@@ -1,7 +1,8 @@
 # Dashboard derivação de fase a partir do SQlite (store único)
 
-### Status: completed
-### Phase: CLOSE
+### Stage: Close
+### Outcome: Completed
+### Flags: 
 ### Scope: full
 ### Checkpoint: 2026-05-20T01:55:00Z
 ### Lang: pt

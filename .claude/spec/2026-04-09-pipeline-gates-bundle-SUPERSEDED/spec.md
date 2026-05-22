@@ -1,5 +1,8 @@
 # Feature: pipeline-gates-bundle
-### Status: draft | Phase: PLAN | Scope: full
+### Stage: Plan
+### Outcome: Active
+### Flags: 
+### Scope: full
 ### Checkpoint: 2026-04-09T00:00:00Z
 
 ## Summary

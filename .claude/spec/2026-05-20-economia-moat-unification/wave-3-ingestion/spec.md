@@ -1,8 +1,9 @@
 # Wave 3 — Ingestão externa: adapters OTEL + JSONL + RTK
 
 ### Parent: [[2026-05-20-economia-moat-unification]]
-### Status: completed
-### Phase: EXECUTE
+### Stage: Close
+### Outcome: Completed
+### Flags: 
 ### Scope: full (wave)
 ### Checkpoint: 2026-05-21T04:35:00Z
 ### Lang: pt

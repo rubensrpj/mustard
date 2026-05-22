@@ -1,6 +1,9 @@
 # Feature: b6-dashboard-projects
 
-### Status: completed | Phase: CLOSE | Scope: full
+### Stage: Close
+### Outcome: Completed
+### Flags: 
+### Scope: full
 ### Checkpoint: 2026-05-19T00:03:00Z
 ### Lang: pt
 

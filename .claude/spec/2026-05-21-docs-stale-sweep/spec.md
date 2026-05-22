@@ -1,7 +1,8 @@
 # docs-stale-check sweep — atualizar SKILLs para SQLite event log
 
-### Status: completed
-### Phase: CLOSE
+### Stage: Close
+### Outcome: Completed
+### Flags: 
 ### Scope: light
 ### Checkpoint: 2026-05-21T01:20:00Z
 ### Lang: pt

@@ -1,7 +1,8 @@
 # Wave Plan — Wave network como padrão Mustard
 
-### Status: completed
-### Phase: CLOSE
+### Stage: Close
+### Outcome: Completed
+### Flags: 
 ### Scope: full (wave plan)
 ### Checkpoint: 2026-05-20T19:59:00Z
 ### Lang: pt

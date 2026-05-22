@@ -1,7 +1,8 @@
 # Spec lifecycle unification + Linear-style /specs redesign
 
-### Status: implementing
-### Phase: PLAN
+### Stage: Plan
+### Outcome: Active
+### Flags: 
 ### Lang: pt
 ### Scope: full
 ### Checkpoint: 2026-05-21T00:00:00Z

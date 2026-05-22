@@ -1,6 +1,9 @@
 # Feature: Prompt Prefix Cacheável + Wave Diff + Métricas no Dashboard
 
-### Status: done | Phase: CLOSE | Scope: full
+### Stage: Close
+### Outcome: Completed
+### Flags: 
+### Scope: full
 ### Checkpoint: 2026-05-14T12:20:00Z
 ### Lang: pt
 

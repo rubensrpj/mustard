@@ -1,8 +1,9 @@
 # wave-4-frontend
 
 ### Parent: [[2026-05-21-wave-integrity-and-doctor-check]]
-### Status: queued
-### Phase: PLAN
+### Stage: Plan
+### Outcome: Active
+### Flags: 
 
 ## Resumo
 

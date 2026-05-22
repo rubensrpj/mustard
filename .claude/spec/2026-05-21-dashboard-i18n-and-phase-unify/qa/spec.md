@@ -1,8 +1,9 @@
 # QA — dashboard-i18n-and-phase-unify
 
 ### Parent: [[2026-05-21-dashboard-i18n-and-phase-unify]]
-### Status: draft
-### Phase: QA
+### Stage: QaReview
+### Outcome: Active
+### Flags: 
 ### Lang: pt
 ### Checkpoint: 2026-05-21T18:00:00Z
 

@@ -3,8 +3,9 @@
 ### Parent: [[2026-05-21-spec-lifecycle-unification]]
 ### Wave: 4
 ### Role: cli
-### Status: completed
-### Phase: CLOSE
+### Stage: Close
+### Outcome: Completed
+### Flags: 
 ### Lang: pt
 ### Checkpoint: 2026-05-22T01:12:00Z
 

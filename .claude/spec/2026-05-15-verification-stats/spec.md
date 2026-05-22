@@ -1,6 +1,9 @@
 # Feature: verification-stats
 
-### Status: completed | Phase: CLOSE | Scope: full
+### Stage: Close
+### Outcome: Completed
+### Flags: 
+### Scope: full
 ### Checkpoint: 2026-05-18T23:17:29Z
 ### Lang: pt
 

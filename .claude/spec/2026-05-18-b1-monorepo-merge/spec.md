@@ -1,6 +1,9 @@
 # Feature: b1-monorepo-merge
 
-### Status: completed | Phase: CLOSE | Scope: full
+### Stage: Close
+### Outcome: Completed
+### Flags: 
+### Scope: full
 ### Checkpoint: 2026-05-19T00:15:15Z
 ### Lang: pt
 

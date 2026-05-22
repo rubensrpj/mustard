@@ -3,8 +3,9 @@
 ### Parent: [[2026-05-21-spec-lifecycle-unification]]
 ### Wave: 6
 ### Role: dashboard
-### Status: completed
-### Phase: CLOSE
+### Stage: Close
+### Outcome: Completed
+### Flags: 
 ### Lang: pt
 ### Checkpoint: 2026-05-22T01:42:00Z
 

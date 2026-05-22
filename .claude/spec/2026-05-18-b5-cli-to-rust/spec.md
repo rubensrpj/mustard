@@ -1,6 +1,9 @@
 # Feature: b5-cli-to-rust
 
-### Status: completed | Phase: CLOSE | Scope: full
+### Stage: Close
+### Outcome: Completed
+### Flags: 
+### Scope: full
 ### Checkpoint: 2026-05-19T15:10:00Z
 ### Lang: pt
 

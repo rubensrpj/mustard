@@ -1,7 +1,8 @@
 # SpecCard usa children_count em vez de useSpecChildren — eliminar N+1 invocações
 
-### Status: completed
-### Phase: CLOSE
+### Stage: Close
+### Outcome: Completed
+### Flags: 
 ### Scope: light
 ### Checkpoint: 2026-05-21T01:00:00Z
 ### Lang: pt

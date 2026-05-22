@@ -1,7 +1,8 @@
 # Integridade do scaffolder de waves + check no doctor
 
-### Status: draft
-### Phase: PLAN
+### Stage: Plan
+### Outcome: Active
+### Flags: 
 ### Scope: full (wave plan)
 ### Checkpoint: 2026-05-21T00:00:00Z
 ### Lang: pt

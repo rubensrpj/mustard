@@ -1,7 +1,8 @@
 # Wave 3 — PATH integration per-SO (NSIS, postinst, macOS first-run)
 
-### Status: queued
-### Phase: PLAN
+### Stage: Plan
+### Outcome: Active
+### Flags: 
 ### Scope: full (wave)
 ### Wave: 3
 ### Role: general

@@ -1,8 +1,9 @@
 # Mustard 2.0 — Phase 2: OpenTelemetry + Token Measurement Real
 
 - **Lang**: ptbr
-- **Status**: completed
-- **Phase**: CLOSE
+### Stage: Close
+### Outcome: Completed
+### Flags: 
 - **Checkpoint**: 2026-05-12T20:25:00Z
 - **Scope**: Full
 - **Type**: feature

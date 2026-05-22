@@ -1,8 +1,9 @@
 # Mustard 2.0 — Phase 0: Runtime Compatibility Layer
 
 - **Lang**: ptbr
-- **Status**: completed
-- **Phase**: CLOSE
+### Stage: Close
+### Outcome: Completed
+### Flags: 
 - **Checkpoint**: 2026-05-12T18:35:00Z
 - **Scope**: Full
 - **Type**: feature

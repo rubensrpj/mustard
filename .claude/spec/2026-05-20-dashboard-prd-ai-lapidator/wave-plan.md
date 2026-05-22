@@ -1,6 +1,8 @@
 # Plano de Waves: dashboard-prd-ai-lapidator (v2)
 
-### Status: draft
+### Stage: Plan
+### Outcome: Active
+### Flags: 
 ### Scope: full (wave plan)
 ### Total waves: 3
 ### Lang: pt

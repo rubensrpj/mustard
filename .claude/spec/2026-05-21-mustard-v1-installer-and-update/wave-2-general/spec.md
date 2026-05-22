@@ -1,7 +1,8 @@
 # Wave 2 — CI release workflow multi-SO + RTK bundle
 
-### Status: queued
-### Phase: PLAN
+### Stage: Plan
+### Outcome: Active
+### Flags: 
 ### Scope: full (wave)
 ### Wave: 2
 ### Role: general

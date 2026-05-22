@@ -1,5 +1,8 @@
 # Enhancement: scan-no-confirmation-prompts
-### Status: completed | Phase: CLOSE | Scope: light
+### Stage: Close
+### Outcome: Completed
+### Flags: 
+### Scope: light
 ### Checkpoint: 2026-04-17T00:00:00Z
 
 ## Summary

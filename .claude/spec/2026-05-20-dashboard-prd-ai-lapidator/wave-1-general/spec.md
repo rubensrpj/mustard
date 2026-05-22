@@ -1,8 +1,9 @@
 # wave-1-general: slash command /mustard:prd
 
 ### Parent: [[2026-05-20-dashboard-prd-ai-lapidator]]
-### Status: draft
-### Phase: PLAN
+### Stage: Plan
+### Outcome: Active
+### Flags: 
 ### Scope: full
 ### Lang: pt
 ### Checkpoint: 2026-05-20T00:00:00Z

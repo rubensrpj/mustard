@@ -1,8 +1,9 @@
 # Followup — economia-moat-unification: 4 fixes pós-CLOSE
 
 ### Parent: [[2026-05-20-economia-moat-unification]]
-### Status: completed
-### Phase: EXECUTE
+### Stage: Close
+### Outcome: Completed
+### Flags: 
 ### Scope: light (tactical-fix bundle)
 ### Checkpoint: 2026-05-21T07:55:00Z
 ### Lang: pt

@@ -1,8 +1,9 @@
 # Tactical Fix — SpecCard polish (6 itens: unificar + 5 visuais)
 
 ### Parent: [[2026-05-21-dashboard-i18n-and-phase-unify]]
-### Status: completed
-### Phase: CLOSE
+### Stage: Close
+### Outcome: Completed
+### Flags: 
 ### Scope: light
 ### Checkpoint: 2026-05-21T18:30:00Z
 ### Lang: pt

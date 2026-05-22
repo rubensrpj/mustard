@@ -1,7 +1,9 @@
 # Plano de Review
 
 ### Parent: [[2026-05-21-flatten-spec-layout-and-multi-collab]]
-### Status: queued
+### Stage: Plan
+### Outcome: Active
+### Flags: 
 
 Checklist para o agente de review.
 

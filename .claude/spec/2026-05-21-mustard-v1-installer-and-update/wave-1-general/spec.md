@@ -1,7 +1,8 @@
 # Wave 1 — Foundation rename e versão 1.0.0
 
-### Status: draft
-### Phase: PLAN
+### Stage: Plan
+### Outcome: Active
+### Flags: 
 ### Scope: full (wave)
 ### Wave: 1
 ### Role: general

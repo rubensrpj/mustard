@@ -1,7 +1,8 @@
 # Migrar runtime state (pipeline + memory + knowledge) para SQLite
 
-### Status: completed
-### Phase: CLOSE
+### Stage: Close
+### Outcome: Completed
+### Flags: 
 ### Scope: full
 ### Checkpoint: 2026-05-20T09:20:00Z
 ### Lang: pt

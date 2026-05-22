@@ -1,6 +1,9 @@
 # Feature: command-namespace-cleanup
 
-### Status: completed | Phase: CLOSE | Scope: full
+### Stage: Close
+### Outcome: Completed
+### Flags: 
+### Scope: full
 ### Checkpoint: 2026-05-18T19:34:04Z
 ### Lang: pt
 

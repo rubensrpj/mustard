@@ -1,5 +1,8 @@
 # Enhancement: retry-context-fix-loop-aware
-### Status: completed | Phase: CLOSE | Scope: light
+### Stage: Close
+### Outcome: Completed
+### Flags: 
+### Scope: light
 ### Checkpoint: 2026-04-21T11:45:00Z
 
 ## Summary

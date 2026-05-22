@@ -1,8 +1,9 @@
 # Wave 1 — Bugs: tab vazia + ondas FS + trace expand
 
 ### Parent: [[2026-05-21-dashboard-spec-tabs-polish]]
-### Status: completed
-### Phase: CLOSE
+### Stage: Close
+### Outcome: Completed
+### Flags: 
 ### Lang: pt
 ### Checkpoint: 2026-05-21T17:00:00Z
 

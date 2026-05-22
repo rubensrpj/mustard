@@ -1,8 +1,9 @@
 # Wave 7 — Economia.tsx repaginada com scope picker (incl. Comparar Projetos)
 
 ### Parent: [[2026-05-20-economia-moat-unification]]
-### Status: completed
-### Phase: EXECUTE
+### Stage: Close
+### Outcome: Completed
+### Flags: 
 ### Scope: full (wave)
 ### Checkpoint: 2026-05-21T06:00:00Z
 ### Lang: pt

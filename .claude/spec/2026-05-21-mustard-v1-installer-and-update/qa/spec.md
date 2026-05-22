@@ -1,7 +1,8 @@
 # QA — Mustard v1 installer
 
-### Status: queued
-### Phase: QA
+### Stage: QaReview
+### Outcome: Active
+### Flags: 
 ### Scope: full (wave plan)
 ### Role: qa
 ### Checkpoint: 2026-05-21T18:00:00Z

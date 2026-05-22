@@ -1,8 +1,9 @@
 # Wave 2 — Hooks emitem números reais via core::economy::writer
 
 ### Parent: [[2026-05-20-economia-moat-unification]]
-### Status: completed
-### Phase: EXECUTE
+### Stage: Close
+### Outcome: Completed
+### Flags: 
 ### Scope: full (wave)
 ### Checkpoint: 2026-05-21T03:55:00Z
 ### Lang: pt

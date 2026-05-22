@@ -2,7 +2,11 @@
 
 > Reference: `../wave-plan.md`
 
-### Status: completed | Phase: CLOSE | Scope: full | Wave: 2b/3
+### Stage: Close
+### Outcome: Completed
+### Flags: 
+### Scope: full
+### Wave: 2b/3
 ### Checkpoint: 2026-04-23
 ### Depends on: wave-2a-refactor-low-risk (CLOSED)
 

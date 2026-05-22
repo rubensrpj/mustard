@@ -1,5 +1,8 @@
 # Enhancement: end-implementation-summary
-### Status: completed | Phase: CLOSE | Scope: light
+### Stage: Close
+### Outcome: Completed
+### Flags: 
+### Scope: light
 ### Checkpoint: 2026-05-14T00:00:00Z
 ### Lang: pt
 

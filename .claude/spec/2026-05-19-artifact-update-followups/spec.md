@@ -1,7 +1,8 @@
 # Follow-ups do esquema de atualização de artefatos
 
-### Status: completed
-### Phase: CLOSE
+### Stage: Close
+### Outcome: Completed
+### Flags: 
 ### Scope: full
 ### Checkpoint: 2026-05-20T01:00:00Z
 ### Lang: pt

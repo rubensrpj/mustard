@@ -1,6 +1,9 @@
 # Feature: RTK Integration (Core)
 
-### Status: completed | Phase: CLOSE | Scope: full
+### Stage: Close
+### Outcome: Completed
+### Flags: 
+### Scope: full
 ### Checkpoint: 2026-03-29T02:00:00Z
 
 ## Summary

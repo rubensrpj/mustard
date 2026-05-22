@@ -1,8 +1,9 @@
 # Wave 1b — Badges semânticos (success/warning/error/info) em badge.tsx
 
 ### Parent: [[2026-05-20-dashboard-visual-overview]]
-### Status: completed
-### Phase: CLOSE
+### Stage: Close
+### Outcome: Completed
+### Flags: 
 ### Scope: full (wave)
 ### Checkpoint: 2026-05-20T23:59:00Z
 ### Lang: pt

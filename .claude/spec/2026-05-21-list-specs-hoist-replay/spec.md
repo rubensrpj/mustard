@@ -1,7 +1,8 @@
 # list_specs hoist replay — eliminar O(N×M) ao popular children_count
 
-### Status: completed
-### Phase: CLOSE
+### Stage: Close
+### Outcome: Completed
+### Flags: 
 ### Scope: light
 ### Checkpoint: 2026-05-21T00:40:00Z
 ### Lang: pt

@@ -1,6 +1,9 @@
 # Feature: mustard-doctor
 
-completed| Phase: CLOSE | Scope: full
+### Stage: Close
+### Outcome: Completed
+### Flags:
+### Scope: full
 ### Checkpoint: 2026-05-19T23:30:00Z
 ### Lang: pt
 

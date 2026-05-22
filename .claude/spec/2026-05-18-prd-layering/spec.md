@@ -1,6 +1,9 @@
 # Feature: prd-layering
 
-### Status: completed | Phase: CLOSE | Scope: full
+### Stage: Close
+### Outcome: Completed
+### Flags: 
+### Scope: full
 ### Checkpoint: 2026-05-18T22:49:58Z
 ### Lang: pt
 

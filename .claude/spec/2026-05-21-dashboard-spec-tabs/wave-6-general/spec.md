@@ -1,8 +1,9 @@
 # Wave 6 — Sub-specs: union spec.link + Parent: header
 
 ### Parent: [[2026-05-21-dashboard-spec-tabs]]
-### Status: completed
-### Phase: CLOSE
+### Stage: Close
+### Outcome: Completed
+### Flags: 
 ### Lang: pt
 ### Checkpoint: 2026-05-21T16:00:00Z
 

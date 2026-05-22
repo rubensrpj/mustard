@@ -1,8 +1,9 @@
 # Followup-2 — Trace rico + Specs filter + Performance + Economia union
 
 ### Parent: [[2026-05-20-economia-moat-unification]]
-### Status: completed
-### Phase: EXECUTE
+### Stage: Close
+### Outcome: Completed
+### Flags: 
 ### Scope: full (tactical-fix bundle ampliado)
 ### Checkpoint: 2026-05-21T11:50:00Z
 ### Lang: pt

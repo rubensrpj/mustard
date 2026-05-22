@@ -1,6 +1,9 @@
 # Bugfix: QA nunca executa em pipelines Full/wave
 
-### Status: completed | Phase: CLOSE | Scope: full
+### Stage: Close
+### Outcome: Completed
+### Flags: 
+### Scope: full
 ### Checkpoint: 2026-05-15T19:48:42Z
 ### Lang: pt
 

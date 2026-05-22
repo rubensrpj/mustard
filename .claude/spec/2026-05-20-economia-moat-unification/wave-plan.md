@@ -1,7 +1,8 @@
 # Wave Plan — Economia: moat de tokens e contexto unificado
 
-### Status: completed
-### Phase: CLOSE
+### Stage: Close
+### Outcome: Completed
+### Flags: 
 ### Scope: full (wave plan)
 ### Checkpoint: 2026-05-21T07:05:00Z
 ### Lang: pt

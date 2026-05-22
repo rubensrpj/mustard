@@ -1,8 +1,9 @@
 # Tactical Fix — Detail usa SpecCard + fases menores
 
 ### Parent: [[2026-05-21-tf-speccard-polish]]
-### Status: completed
-### Phase: CLOSE
+### Stage: Close
+### Outcome: Completed
+### Flags: 
 ### Scope: light
 ### Checkpoint: 2026-05-21T19:00:00Z
 ### Lang: pt

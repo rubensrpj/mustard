@@ -1,8 +1,9 @@
 # Wave 4 — Atribuição por agente (join session_id ↔ tool_use_id)
 
 ### Parent: [[2026-05-20-economia-moat-unification]]
-### Status: completed
-### Phase: EXECUTE
+### Stage: Close
+### Outcome: Completed
+### Flags: 
 ### Scope: full (wave)
 ### Checkpoint: 2026-05-21T05:05:00Z
 ### Lang: pt

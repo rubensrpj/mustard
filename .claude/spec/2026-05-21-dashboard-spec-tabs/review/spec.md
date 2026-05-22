@@ -1,8 +1,9 @@
 # Review — dashboard-spec-tabs
 
 ### Parent: [[2026-05-21-dashboard-spec-tabs]]
-### Status: draft
-### Phase: REVIEW
+### Stage: QaReview
+### Outcome: Active
+### Flags: 
 ### Lang: pt
 ### Checkpoint: 2026-05-21T16:00:00Z
 

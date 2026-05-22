@@ -1,7 +1,8 @@
 # Wave plan — spec-lifecycle-unification
 
-### Status: approved
-### Phase: PLAN
+### Stage: Plan
+### Outcome: Active
+### Flags: 
 ### Lang: pt
 ### Checkpoint: 2026-05-21T00:00:00Z
 

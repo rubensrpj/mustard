@@ -1,5 +1,8 @@
 # Enhancement: rtk-subagent-coverage
-### Status: completed | Phase: CLOSE | Scope: light
+### Stage: Close
+### Outcome: Completed
+### Flags: 
+### Scope: light
 ### Checkpoint: 2026-04-09T00:00:00Z
 
 ## Summary

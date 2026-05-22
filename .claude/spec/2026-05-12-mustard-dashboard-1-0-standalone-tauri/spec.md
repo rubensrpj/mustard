@@ -1,8 +1,9 @@
 # Mustard Dashboard 1.0 — Remove Legacy Dashboard (Pre-Standalone)
 
 - **Lang**: ptbr
-- **Status**: completed
-- **Phase**: CLOSE
+### Stage: Close
+### Outcome: Completed
+### Flags: 
 - **Checkpoint**: 2026-05-12T22:22:56Z
 - **Scope**: Full (this pipeline: removal only; standalone app continues in dedicated repo)
 - **Type**: feature

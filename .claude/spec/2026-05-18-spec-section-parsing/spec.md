@@ -1,6 +1,9 @@
 # Feature: spec-section-parsing
 
-### Status: completed | Phase: CLOSE | Scope: full
+### Stage: Close
+### Outcome: Completed
+### Flags: 
+### Scope: full
 ### Checkpoint: 2026-05-18T21:51:01Z
 ### Lang: pt
 

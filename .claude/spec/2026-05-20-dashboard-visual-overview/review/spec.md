@@ -1,8 +1,9 @@
 # Review Plan — Visão Geral redesenhada
 
 ### Parent: [[2026-05-20-dashboard-visual-overview]]
-### Status: queued
-### Phase: REVIEW (plano)
+### Stage: Plan
+### Outcome: Active
+### Flags: 
 ### Scope: review
 ### Checkpoint: 2026-05-20T22:55:00Z
 ### Lang: pt

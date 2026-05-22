@@ -1,8 +1,9 @@
 # Wave 2 — SKILL /feature força wave-files + agent-prompt injeta cross-wave memory
 
 ### Parent: [[2026-05-20-mustard-wave-network-standard]]
-### Status: completed
-### Phase: CLOSE
+### Stage: Close
+### Outcome: Completed
+### Flags: 
 ### Scope: full (wave)
 ### Checkpoint: 2026-05-20T21:00:00Z
 ### Lang: pt

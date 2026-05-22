@@ -1,7 +1,8 @@
 # Review — Mustard v1 installer
 
-### Status: queued
-### Phase: REVIEW
+### Stage: QaReview
+### Outcome: Active
+### Flags: 
 ### Scope: full (wave plan)
 ### Role: review
 ### Checkpoint: 2026-05-21T18:00:00Z

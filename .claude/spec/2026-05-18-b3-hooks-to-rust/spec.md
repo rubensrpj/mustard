@@ -1,6 +1,9 @@
 # Feature: b3-hooks-to-rust
 
-### Status: completed | Phase: CLOSE | Scope: full
+### Stage: Close
+### Outcome: Completed
+### Flags: 
+### Scope: full
 ### Checkpoint: 2026-05-19T10:33:25Z
 ### Lang: pt
 

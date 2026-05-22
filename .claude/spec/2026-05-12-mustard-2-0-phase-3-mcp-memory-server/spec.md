@@ -1,8 +1,9 @@
 # Mustard 2.0 — Phase 3: MCP Memory Server
 
 - **Lang**: ptbr
-- **Status**: completed
-- **Phase**: CLOSE
+### Stage: Close
+### Outcome: Completed
+### Flags: 
 - **Checkpoint**: 2026-05-12T21:00:00Z
 - **Scope**: Full
 - **Type**: feature

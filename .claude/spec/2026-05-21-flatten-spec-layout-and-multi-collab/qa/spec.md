@@ -1,7 +1,9 @@
 # Plano de QA
 
 ### Parent: [[2026-05-21-flatten-spec-layout-and-multi-collab]]
-### Status: queued
+### Stage: Plan
+### Outcome: Active
+### Flags: 
 
 Critérios de Aceitação consolidados de todas as waves.
 

@@ -1,7 +1,8 @@
 # Wave 5 — Frontend: Add Project adaptativo + banners + welcome + InstallLog
 
-### Status: queued
-### Phase: PLAN
+### Stage: Plan
+### Outcome: Active
+### Flags: 
 ### Scope: full (wave)
 ### Wave: 5
 ### Role: ui

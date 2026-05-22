@@ -1,5 +1,8 @@
 # Enhancement: budget-observability
-### Status: done | Phase: CLOSE | Scope: light
+### Stage: Close
+### Outcome: Completed
+### Flags: 
+### Scope: light
 ### Checkpoint: 2026-04-09T12:30:00Z
 
 ## Summary

@@ -1,7 +1,8 @@
 # Extract StatusPill — DRY entre SpecCard e SpecChildrenTab
 
-### Status: completed
-### Phase: CLOSE
+### Stage: Close
+### Outcome: Completed
+### Flags: 
 ### Scope: light
 ### Checkpoint: 2026-05-21T01:10:00Z
 ### Lang: pt

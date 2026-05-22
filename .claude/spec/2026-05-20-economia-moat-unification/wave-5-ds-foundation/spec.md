@@ -1,8 +1,9 @@
 # Wave 5 — Design System Foundation (Tailwind 4 @theme + primitivas caseiras)
 
 ### Parent: [[2026-05-20-economia-moat-unification]]
-### Status: completed
-### Phase: EXECUTE
+### Stage: Close
+### Outcome: Completed
+### Flags: 
 ### Scope: full (wave)
 ### Checkpoint: 2026-05-21T05:25:00Z
 ### Lang: pt

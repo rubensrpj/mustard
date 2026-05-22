@@ -1,6 +1,9 @@
 # Feature: eliminate-bun
 
-### Status: completed | Phase: CLOSE | Scope: full
+### Stage: Close
+### Outcome: Completed
+### Flags: 
+### Scope: full
 ### Checkpoint: 2026-05-19T22:00:00Z
 ### Lang: pt
 

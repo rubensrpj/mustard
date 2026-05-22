@@ -1,6 +1,9 @@
 # Feature: context-glossary
 
-### Status: completed | Phase: CLOSE | Scope: full
+### Stage: Close
+### Outcome: Completed
+### Flags: 
+### Scope: full
 ### Checkpoint: 2026-05-18T21:32:49Z
 ### Lang: pt
 

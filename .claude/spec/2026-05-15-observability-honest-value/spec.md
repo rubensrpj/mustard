@@ -1,6 +1,10 @@
 # Feature: Observability Honesta — Vocabulário de Eventos + Dashboard que Prova Valor
 
-### Status: completed | Phase: CLOSE | Scope: full | Waves: 7 (0-6)
+### Stage: Close
+### Outcome: Completed
+### Flags: 
+### Scope: full
+### Waves: 7 (0-6)
 ### Checkpoint: 2026-05-15T13:00:00Z
 ### Lang: pt
 ### Repos: C:/Atiz/mustard (raiz) + C:/Atiz/mustard-dashboard (UI)

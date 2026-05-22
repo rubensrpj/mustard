@@ -1,7 +1,8 @@
 # Tactical-fix como sub-spec linkada: SDD puro com rastreabilidade no dashboard
 
-### Status: completed
-### Phase: CLOSE
+### Stage: Close
+### Outcome: Completed
+### Flags: 
 ### Scope: full
 ### Checkpoint: 2026-05-21T00:35:00Z
 ### Lang: pt

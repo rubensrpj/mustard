@@ -1,7 +1,8 @@
 # Wave 4 — Update-notify (GitHub API) + project sync backend
 
-### Status: queued
-### Phase: PLAN
+### Stage: Plan
+### Outcome: Active
+### Flags: 
 ### Scope: full (wave)
 ### Wave: 4
 ### Role: general

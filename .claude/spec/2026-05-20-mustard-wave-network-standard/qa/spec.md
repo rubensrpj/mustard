@@ -1,8 +1,9 @@
 # QA Plan — Wave network como padrão Mustard
 
 ### Parent: [[2026-05-20-mustard-wave-network-standard]]
-### Status: queued
-### Phase: QA (plano)
+### Stage: Plan
+### Outcome: Active
+### Flags: 
 ### Scope: qa
 ### Checkpoint: 2026-05-20T22:55:00Z
 ### Lang: pt

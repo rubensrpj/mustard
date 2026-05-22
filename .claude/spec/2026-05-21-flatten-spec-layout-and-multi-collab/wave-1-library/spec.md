@@ -1,8 +1,9 @@
 # Wave 1 — Core: fallback header → SQLite
 
 ### Parent: [[2026-05-21-flatten-spec-layout-and-multi-collab]]
-### Status: completed
-### Phase: CLOSE
+### Stage: Close
+### Outcome: Completed
+### Flags: 
 ### Lang: pt
 ### Checkpoint: 2026-05-21T14:05:00Z
 

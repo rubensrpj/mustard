@@ -1,7 +1,8 @@
 # Telemetria dashboard — redesign completo (timeline-led + heatmap + bug fix de spec attribution)
 
-### Status: completed
-### Phase: CLOSE
+### Stage: Close
+### Outcome: Completed
+### Flags: 
 ### Scope: full
 ### Checkpoint: 2026-05-20T01:30:00Z
 ### Lang: pt

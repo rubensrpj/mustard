@@ -1,6 +1,10 @@
 # Wave Plan: progressive-disclosure-skills-specs
 
-### Status: completed | Phase: CLOSE | Scope: full | Decomposed: yes (3 waves)
+### Stage: Close
+### Outcome: Completed
+### Flags: 
+### Scope: full
+### Decomposed: yes (3 waves)
 ### Checkpoint: 2026-04-23
 ### Reason: deep-layers (3 layers: hooks, scripts, commands; 13+ files; 2 new hook entities) + user requested risk isolation for feature/SKILL.md
 

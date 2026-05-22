@@ -1,7 +1,8 @@
 # Feature: dashboard-sidebar-tree
 
-### Status: completed
-### Phase: CLOSE
+### Stage: Close
+### Outcome: Completed
+### Flags: 
 ### Scope: full
 ### Checkpoint: 2026-05-19T23:30:00Z
 ### Lang: pt

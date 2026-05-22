@@ -1,8 +1,9 @@
 # wave-1-library
 
 ### Parent: [[2026-05-21-wave-integrity-and-doctor-check]]
-### Status: draft
-### Phase: PLAN
+### Stage: Plan
+### Outcome: Active
+### Flags: 
 
 ## Resumo
 
