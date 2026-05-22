@@ -7,6 +7,7 @@
 
 use super::file_utils::{collect_files, read_file_safe, relative_path};
 use super::{detect_value_convention, EntityInfo, EnumInfo, Scanner};
+use mustard_core::fs as mfs;
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -25,13 +26,11 @@ fn is_entity_file(rel: &str) -> bool {
 
 impl Scanner for DotnetScanner {
     fn detect(&self, root: &Path) -> bool {
-        std::fs::read_dir(root)
+        mfs::read_dir(root)
             .map(|entries| {
-                entries.flatten().any(|e| {
-                    e.file_name()
-                        .to_str()
-                        .is_some_and(|n| n.ends_with(".csproj") || n.ends_with(".sln"))
-                })
+                entries
+                    .iter()
+                    .any(|e| e.file_name.ends_with(".csproj") || e.file_name.ends_with(".sln"))
             })
             .unwrap_or(false)
     }

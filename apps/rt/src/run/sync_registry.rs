@@ -23,6 +23,7 @@
 use super::scan::cluster_discovery::{compute_folder_frequency, discover_clusters};
 use super::scan::project_conventions::compute_project_conventions;
 use super::scan::{load_scanner, EntityInfo, EnumInfo, ScanResult};
+use mustard_core::fs;
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -66,7 +67,7 @@ pub fn run(root: &Path, force: bool) {
     let registry_path = root.join(".claude").join("entity-registry.json");
 
     // 1. Read the current registry (for the populated-check + version upgrade).
-    let current: Option<Value> = std::fs::read_to_string(&registry_path)
+    let current: Option<Value> = fs::read_to_string(&registry_path)
         .ok()
         .and_then(|raw| serde_json::from_str(&raw).ok());
 
@@ -156,12 +157,9 @@ pub fn run(root: &Path, force: bool) {
     let (enriched, scanned) = enrich_descriptions(&mut registry.e, root);
 
     // 6. Write the output.
-    if let Some(parent) = registry_path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
     match serde_json::to_string_pretty(&registry) {
         Ok(json) => {
-            if std::fs::write(&registry_path, format!("{json}\n")).is_err() {
+            if fs::write_atomic(&registry_path, format!("{json}\n").as_bytes()).is_err() {
                 eprintln!("sync-registry: failed to write {}", registry_path.display());
                 return;
             }
@@ -431,7 +429,7 @@ fn extract_description(file_path: &Path, entity_name: &str) -> Option<String> {
     if entity_name.is_empty() {
         return None;
     }
-    let raw = std::fs::read_to_string(file_path).ok()?;
+    let raw = fs::read_to_string(file_path).ok()?;
     let lines: Vec<&str> = raw.split('\n').collect();
     if lines.len() > MAX_SCAN_LINES {
         return None;
@@ -675,16 +673,14 @@ fn walk_for_claude_md(
         out.push(rel_dir.replace('\\', "/"));
         return;
     }
-    let Ok(entries) = std::fs::read_dir(abs_dir) else {
+    let Ok(entries) = fs::read_dir(abs_dir) else {
         return;
     };
-    for e in entries.flatten() {
-        if !e.path().is_dir() {
+    for e in entries {
+        if !e.is_dir {
             continue;
         }
-        let Some(name) = e.file_name().to_str().map(str::to_string) else {
-            continue;
-        };
+        let name = e.file_name.clone();
         if name.starts_with('.') || ignore.contains(&name.as_str()) {
             continue;
         }
@@ -693,7 +689,7 @@ fn walk_for_claude_md(
         } else {
             format!("{rel_dir}/{name}")
         };
-        walk_for_claude_md(&e.path(), &next_rel, depth + 1, ignore, out);
+        walk_for_claude_md(&e.path, &next_rel, depth + 1, ignore, out);
     }
 }
 

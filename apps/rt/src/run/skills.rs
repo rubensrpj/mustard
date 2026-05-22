@@ -13,6 +13,7 @@
 //! kept (`python quick_validate.py`); the cluster heuristic is ported intact.
 
 use crate::run::env;
+use mustard_core::fs;
 use mustard_core::store::sqlite_store::SqliteEventStore;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -30,7 +31,7 @@ struct Skill {
 
 /// Read a file, returning `""` on any error (JS `fsReadSafe`).
 fn read_safe(p: &Path) -> String {
-    std::fs::read_to_string(p).unwrap_or_default()
+    fs::read_to_string(p).unwrap_or_default()
 }
 
 /// Parse `name:` from YAML frontmatter, tolerating CRLF (JS `extractSkillName`).
@@ -67,14 +68,14 @@ fn strip_frontmatter(content: &str) -> String {
 /// Collect `SKILL.md` paths one level under `skills_dir` (JS `collectSkillsAt`).
 fn collect_skills_at(skills_dir: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
-    let Ok(entries) = std::fs::read_dir(skills_dir) else {
+    let Ok(entries) = fs::read_dir(skills_dir) else {
         return out;
     };
-    for entry in entries.flatten() {
-        if !entry.path().is_dir() {
+    for entry in entries {
+        if !entry.is_dir {
             continue;
         }
-        let candidate = entry.path().join("SKILL.md");
+        let candidate = entry.path.join("SKILL.md");
         if candidate.exists() {
             out.push(candidate);
         }
@@ -89,22 +90,22 @@ fn discover_skills(project_dir: &Path) -> Vec<Skill> {
         project_dir.join("templates").join("skills"),
         project_dir.join(".claude").join("skills"),
     ];
-    if let Ok(entries) = std::fs::read_dir(project_dir) {
-        for entry in entries.flatten() {
-            if !entry.path().is_dir() {
+    if let Ok(entries) = fs::read_dir(project_dir) {
+        for entry in entries {
+            if !entry.is_dir {
                 continue;
             }
-            let name = entry.file_name().to_string_lossy().to_string();
+            let name = entry.file_name.clone();
             if name.starts_with('.') || name == "node_modules" {
                 continue;
             }
-            candidates.push(entry.path().join(".claude").join("skills"));
+            candidates.push(entry.path.join(".claude").join("skills"));
         }
     }
     let mut found: BTreeMap<String, Skill> = BTreeMap::new();
     for dir in candidates {
         for md in collect_skills_at(&dir) {
-            let Ok(content) = std::fs::read_to_string(&md) else {
+            let Ok(content) = fs::read_to_string(&md) else {
                 continue;
             };
             let name = extract_skill_name(&content).unwrap_or_else(|| {
@@ -129,7 +130,7 @@ fn validate_root() -> PathBuf {
 fn collect_skill_dirs(root: &Path) -> Vec<(PathBuf, String)> {
     let mut dirs = vec![(root.join(".claude").join("skills"), "<root>".to_string())];
     let cache_path = root.join(".claude").join(".detect-cache.json");
-    let cache: Option<Value> = std::fs::read_to_string(&cache_path)
+    let cache: Option<Value> = fs::read_to_string(&cache_path)
         .ok()
         .and_then(|t| serde_json::from_str(&t).ok());
     let subs = cache
@@ -139,13 +140,13 @@ fn collect_skill_dirs(root: &Path) -> Vec<(PathBuf, String)> {
         .cloned()
         .unwrap_or_default();
     if subs.is_empty() {
-        if let Ok(entries) = std::fs::read_dir(root) {
-            for entry in entries.flatten() {
-                let name = entry.file_name().to_string_lossy().to_string();
-                if !entry.path().is_dir() || name.starts_with('.') {
+        if let Ok(entries) = fs::read_dir(root) {
+            for entry in entries {
+                let name = entry.file_name.clone();
+                if !entry.is_dir || name.starts_with('.') {
                     continue;
                 }
-                let candidate = entry.path().join(".claude").join("skills");
+                let candidate = entry.path.join(".claude").join("skills");
                 if candidate.exists() {
                     dirs.push((candidate, name));
                 }
@@ -258,7 +259,7 @@ fn run_validate_structural(root: &Path, json_out: bool, quiet: bool, only: Optio
     let (mut total, mut failed) = (0usize, 0usize);
     for (dir, label) in collect_skill_dirs(root) {
         for file in collect_skills_at(&dir) {
-            let content = std::fs::read_to_string(&file);
+            let content = fs::read_to_string(&file);
             let rel = rel_posix(root, &file);
             match content {
                 Err(_) => {

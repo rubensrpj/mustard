@@ -19,6 +19,7 @@
 
 use crate::run::memory::upsert_knowledge_pattern;
 use crate::util::now_iso8601;
+use mustard_core::fs;
 use mustard_core::store::event_store::EventSink;
 use mustard_core::store::sqlite_store::SqliteEventStore;
 use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
@@ -27,7 +28,7 @@ use std::path::Path;
 
 /// Read a JSON file, returning `None` on any error.
 fn read_json(path: &Path) -> Option<Value> {
-    let text = std::fs::read_to_string(path).ok()?;
+    let text = fs::read_to_string(path).ok()?;
     serde_json::from_str(&text).ok()
 }
 
@@ -85,16 +86,16 @@ fn emit_event(store: &SqliteEventStore, event: &str, payload: Value, spec: &str)
 /// and the root itself not yet `CLOSE`.
 fn detect_completed_epics(cwd: &Path) -> Vec<String> {
     let states_dir = cwd.join(".claude").join(".pipeline-states");
-    let Ok(entries) = std::fs::read_dir(&states_dir) else {
+    let Ok(entries) = fs::read_dir(&states_dir) else {
         return Vec::new();
     };
     let mut candidates = Vec::new();
-    for entry in entries.flatten() {
-        let name = entry.file_name().to_string_lossy().to_string();
+    for entry in entries {
+        let name = entry.file_name.clone();
         if !name.ends_with(".json") {
             continue;
         }
-        let Some(state) = read_json(&entry.path()) else {
+        let Some(state) = read_json(&entry.path) else {
             continue;
         };
         // Must be a root spec — `parent_spec` explicitly null/absent.

@@ -21,6 +21,7 @@ use std::path::Path;
 use std::process::Command;
 
 use anyhow::{Context, Result, bail};
+use mustard_core::fs as mfs;
 use serde_json::{Value, json};
 
 /// The Claude Messages API endpoint.
@@ -146,7 +147,7 @@ fn truncate_diff(diff: &str) -> String {
 
 /// Read up to `limit` bytes of `path` (on a char boundary), or `None`.
 fn read_capped(path: &Path, limit: usize) -> Option<String> {
-    let raw = std::fs::read_to_string(path).ok()?;
+    let raw = mfs::read_to_string(path).ok()?;
     if raw.len() <= limit {
         return Some(raw);
     }

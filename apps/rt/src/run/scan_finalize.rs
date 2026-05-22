@@ -13,6 +13,7 @@
 //! The JS ran the four in parallel — this port runs them sequentially, which
 //! is simpler and still fast since each is a short binary invocation.
 
+use mustard_core::fs;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -65,7 +66,7 @@ fn run_subcommand(root: &Path, args: &[&str]) -> StepResult {
 fn verify_dispatch(root: &Path) -> (Value, Vec<String>) {
     let mut warnings = Vec::new();
     let state_path = root.join(".claude").join(".scan-dispatch.json");
-    let state: Option<Value> = std::fs::read_to_string(&state_path)
+    let state: Option<Value> = fs::read_to_string(&state_path)
         .ok()
         .and_then(|t| serde_json::from_str(&t).ok());
     let dispatch = state
@@ -91,11 +92,11 @@ fn verify_dispatch(root: &Path) -> (Value, Vec<String>) {
         if !skills_dir.exists() {
             status = "missing-dir";
         } else {
-            if let Ok(entries) = std::fs::read_dir(&skills_dir) {
-                for entry in entries.flatten() {
-                    let entry_name = entry.file_name().to_string_lossy().to_string();
-                    if entry.path().is_dir() {
-                        if entry.path().join("SKILL.md").exists() {
+            if let Ok(entries) = fs::read_dir(&skills_dir) {
+                for entry in entries {
+                    let entry_name = entry.file_name.clone();
+                    if entry.is_dir {
+                        if entry.path.join("SKILL.md").exists() {
                             skills.push(entry_name);
                         }
                     } else if entry_name == "_no-patterns.md" {

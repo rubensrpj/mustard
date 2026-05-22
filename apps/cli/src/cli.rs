@@ -14,6 +14,7 @@ use clap::{Parser, Subcommand};
 use crate::commands::add::{self, AddOptions};
 use crate::commands::config::{self, ConfigOptions};
 use crate::commands::init::{self, InitOptions};
+use crate::commands::install_nerd_font::{self, InstallNerdFontOptions};
 use crate::commands::review::{self, ReviewOptions};
 use crate::commands::update::{self, UpdateOptions};
 
@@ -72,6 +73,20 @@ enum Commands {
         #[arg(long)]
         pr: Option<u64>,
     },
+    /// Install a Nerd Font on the host (required for powerline statusline themes).
+    #[command(name = "install-nerd-font")]
+    InstallNerdFont {
+        /// Font family. Default: JetBrainsMono.
+        /// One of: JetBrainsMono, CaskaydiaCove, FiraCode, Hack.
+        #[arg(long)]
+        font: Option<String>,
+        /// Reinstall even if the font is already detected.
+        #[arg(short, long)]
+        force: bool,
+        /// Print intended actions without invoking any package manager.
+        #[arg(long = "dry-run")]
+        dry_run: bool,
+    },
 }
 
 /// Parse process arguments and dispatch to the matching subcommand.
@@ -108,6 +123,18 @@ fn dispatch(cli: Cli) -> Result<()> {
             add::add(&cwd, &template, &AddOptions { force })
         }
         Commands::Review { ci, pr } => review::review(&cwd, &ReviewOptions { ci, pr }),
+        Commands::InstallNerdFont {
+            font,
+            force,
+            dry_run,
+        } => install_nerd_font::install_nerd_font(
+            &cwd,
+            &InstallNerdFontOptions {
+                font,
+                force,
+                dry_run,
+            },
+        ),
     }
 }
 

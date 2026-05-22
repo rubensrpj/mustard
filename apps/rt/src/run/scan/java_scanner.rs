@@ -7,6 +7,7 @@
 
 use super::file_utils::{collect_files, read_file_safe, relative_path};
 use super::{detect_value_convention, EntityInfo, EnumInfo, Scanner};
+use mustard_core::fs as mfs;
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -138,18 +139,16 @@ fn collect_dir_names(dir: &Path, depth: usize, out: &mut Vec<String>) {
     if depth == 0 {
         return;
     }
-    let Ok(entries) = std::fs::read_dir(dir) else {
+    let Ok(entries) = mfs::read_dir(dir) else {
         return;
     };
-    for e in entries.flatten() {
-        if e.path().is_dir() {
-            if let Some(name) = e.file_name().to_str() {
-                if name.starts_with('.') {
-                    continue;
-                }
-                out.push(name.to_string());
-                collect_dir_names(&e.path(), depth - 1, out);
+    for e in entries {
+        if e.is_dir {
+            if e.file_name.starts_with('.') {
+                continue;
             }
+            out.push(e.file_name.clone());
+            collect_dir_names(&e.path, depth - 1, out);
         }
     }
 }

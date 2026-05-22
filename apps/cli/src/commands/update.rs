@@ -32,6 +32,7 @@ use std::path::Path;
 use anyhow::{Context, Result, bail};
 use dialoguer::Confirm;
 use dialoguer::theme::ColorfulTheme;
+use mustard_core::fs as mfs;
 use serde_json::json;
 
 use crate::commands::git_flow;
@@ -109,7 +110,7 @@ pub fn update_with_templates(
     for folder in CORE_FOLDERS {
         let target = claude_path.join(folder);
         if target.exists() {
-            std::fs::remove_dir_all(&target)
+            mfs::remove_dir_all(&target)
                 .with_context(|| format!("removing {}", target.display()))?;
         }
     }
@@ -160,7 +161,8 @@ fn copy_settings(templates_dir: &Path, claude_path: &Path) -> Result<usize> {
     if !src.is_file() {
         return Ok(0);
     }
-    std::fs::copy(&src, claude_path.join("settings.json"))
+    let bytes = mfs::read(&src).with_context(|| format!("reading {}", src.display()))?;
+    mfs::write_atomic(&claude_path.join("settings.json"), &bytes)
         .with_context(|| format!("copying {}", src.display()))?;
     Ok(1)
 }

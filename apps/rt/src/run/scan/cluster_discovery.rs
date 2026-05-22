@@ -15,6 +15,7 @@
 use super::file_utils::{collect_files, read_file_safe, relative_path};
 use super::project_conventions::primary_ext_for_stack;
 use crate::util::sha256::Sha256;
+use mustard_core::fs as mfs;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -231,15 +232,14 @@ fn compute_file_set_hash(stack_id: &str, files: &[String]) -> String {
     let mut sorted: Vec<&String> = files.iter().collect();
     sorted.sort();
     for f in sorted {
-        match std::fs::metadata(f) {
-            Ok(meta) => {
-                let mtime = meta
-                    .modified()
+        match mfs::modified(Path::new(f)) {
+            Ok(t) => {
+                let mtime = t
+                    .duration_since(std::time::UNIX_EPOCH)
                     .ok()
-                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                     .map(|d| d.as_millis())
                     .unwrap_or(0);
-                hash.update(format!("{f}|{}|{mtime}\n", meta.len()).as_bytes());
+                hash.update(format!("{f}|{mtime}\n").as_bytes());
             }
             Err(_) => hash.update(format!("{f}|missing\n").as_bytes()),
         }
@@ -248,7 +248,7 @@ fn compute_file_set_hash(stack_id: &str, files: &[String]) -> String {
 }
 
 fn read_cluster_cache(subproject_path: &Path) -> Option<Value> {
-    let raw = std::fs::read_to_string(cluster_cache_path(subproject_path)).ok()?;
+    let raw = mfs::read_to_string(&cluster_cache_path(subproject_path)).ok()?;
     let parsed: Value = serde_json::from_str(&raw).ok()?;
     if parsed.get("cacheVersion").and_then(Value::as_u64) != Some(CLUSTER_CACHE_VERSION) {
         return None;
@@ -272,11 +272,8 @@ fn write_cluster_cache(subproject_path: &Path, stack_id: &str, hash: &str, clust
             );
         }
     }
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
     if let Ok(serialized) = serde_json::to_string(&payload) {
-        let _ = std::fs::write(&path, serialized);
+        let _ = mfs::write_atomic(&path, serialized.as_bytes());
     }
 }
 

@@ -21,6 +21,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result, bail};
+use mustard_core::fs as mfs;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -193,7 +194,7 @@ fn npm_tarball_url(package: &str) -> Result<String> {
 /// the known `.claude/` subdirectories present.
 fn load_manifest(fetched: &Path, name: &str) -> TemplateManifest {
     let manifest_path = fetched.join("mustard-template.json");
-    if let Ok(raw) = std::fs::read_to_string(&manifest_path) {
+    if let Ok(raw) = mfs::read_to_string(&manifest_path) {
         if let Ok(manifest) = serde_json::from_str::<TemplateManifest>(&raw) {
             return manifest;
         }
@@ -264,10 +265,12 @@ fn copy_files(
 /// Copy a single file, creating its parent directory.
 fn copy_one(src: &Path, dest: &Path) -> Result<()> {
     if let Some(parent) = dest.parent() {
-        std::fs::create_dir_all(parent)
+        mfs::create_dir_all(parent)
             .with_context(|| format!("creating {}", parent.display()))?;
     }
-    std::fs::copy(src, dest)
+    let bytes = mfs::read(src)
+        .with_context(|| format!("reading {}", src.display()))?;
+    mfs::write_atomic(dest, &bytes)
         .with_context(|| format!("copying {} -> {}", src.display(), dest.display()))?;
     Ok(())
 }
@@ -275,19 +278,17 @@ fn copy_one(src: &Path, dest: &Path) -> Result<()> {
 /// Recursively collect file paths under `dir`, skipping `.git`/`node_modules`.
 fn walk_dir(dir: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
-    let Ok(entries) = std::fs::read_dir(dir) else {
+    let Ok(entries) = mfs::read_dir(dir) else {
         return out;
     };
-    for entry in entries.filter_map(Result::ok) {
-        let path = entry.path();
-        let name = entry.file_name();
-        if path.is_dir() {
-            if name == ".git" || name == "node_modules" {
+    for entry in entries {
+        if entry.is_dir {
+            if entry.file_name == ".git" || entry.file_name == "node_modules" {
                 continue;
             }
-            out.extend(walk_dir(&path));
+            out.extend(walk_dir(&entry.path));
         } else {
-            out.push(path);
+            out.push(entry.path);
         }
     }
     out
@@ -351,7 +352,7 @@ fn merge_hook_additions(claude_dir: &Path, manifest: &TemplateManifest) -> Resul
     let mut serialized = serde_json::to_string_pretty(&Value::Object(settings))
         .context("serializing settings.json")?;
     serialized.push('\n');
-    std::fs::write(&settings_path, serialized)
+    mfs::write_atomic(&settings_path, serialized.as_bytes())
         .with_context(|| format!("writing {}", settings_path.display()))?;
     Ok(())
 }
@@ -369,7 +370,7 @@ impl TempDir {
             .map(|d| d.as_nanos())
             .unwrap_or(0);
         let path = std::env::temp_dir().join(format!("mustard-template-{name}-{stamp}"));
-        std::fs::create_dir_all(&path)
+        mfs::create_dir_all(&path)
             .with_context(|| format!("creating temp dir {}", path.display()))?;
         Ok(Self { path })
     }
@@ -382,7 +383,7 @@ impl TempDir {
 impl Drop for TempDir {
     fn drop(&mut self) {
         // Best-effort cleanup — a leftover temp dir is harmless.
-        let _ = std::fs::remove_dir_all(&self.path);
+        let _ = mfs::remove_dir_all(&self.path);
     }
 }
 

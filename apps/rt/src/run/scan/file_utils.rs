@@ -5,6 +5,7 @@
 //! Every function is fail-open (an unreadable directory yields an empty result,
 //! never an error), matching the JS module's `try { … } catch { … }` shape.
 
+use mustard_core::fs as mfs;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
@@ -75,7 +76,7 @@ fn ignore_set(dir: &Path, ignore: &[&str]) -> BTreeSet<String> {
             }
         }
     }
-    if let Ok(content) = std::fs::read_to_string(dir.join(".gitignore")) {
+    if let Ok(content) = mfs::read_to_string(&dir.join(".gitignore")) {
         for name in parse_gitignore_dirs(&content) {
             set.insert(name);
         }
@@ -97,27 +98,18 @@ pub fn collect_files(dir: &Path, extension: &str, ignore: &[&str]) -> Vec<PathBu
 }
 
 fn walk(current: &Path, extension: &str, skip: &BTreeSet<String>, results: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(current) else {
+    let Ok(entries) = mfs::read_dir(current) else {
         return;
     };
-    for entry in entries.flatten() {
-        let name = entry.file_name();
-        let Some(name) = name.to_str() else {
-            continue;
-        };
-        match entry.file_type() {
-            Ok(ft) if ft.is_dir() => {
-                if skip.contains(name) || name.starts_with('.') {
-                    continue;
-                }
-                walk(&entry.path(), extension, skip, results);
+    for entry in entries {
+        let name: &str = &entry.file_name;
+        if entry.is_dir {
+            if skip.contains(name) || name.starts_with('.') {
+                continue;
             }
-            Ok(ft) if ft.is_file() => {
-                if name.ends_with(extension) {
-                    results.push(entry.path());
-                }
-            }
-            _ => {}
+            walk(&entry.path, extension, skip, results);
+        } else if name.ends_with(extension) {
+            results.push(entry.path);
         }
     }
 }
@@ -134,7 +126,7 @@ pub fn relative_path(base: &Path, file_path: &Path) -> String {
 /// Read a file as UTF-8, returning `None` on any error — a port of `readFileSafe()`.
 #[must_use]
 pub fn read_file_safe(file_path: &Path) -> Option<String> {
-    std::fs::read_to_string(file_path).ok()
+    mfs::read_to_string(file_path).ok()
 }
 
 /// Most common parent folder across a list of relative file paths.

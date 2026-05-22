@@ -16,6 +16,7 @@
 
 use crate::run::env::{current_spec, project_dir, session_id};
 use crate::util::{now_iso8601, now_millis};
+use mustard_core::fs;
 use mustard_core::store::event_store::EventSink;
 use mustard_core::store::sqlite_store::SqliteEventStore;
 use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
@@ -70,13 +71,13 @@ fn truncate_summary(text: &str, max_len: usize) -> String {
 /// `.agent-state/*.json` `session_id`, else the OS process id.
 fn resolve_session_prefix(project_dir: &Path) -> String {
     let state_dir = project_dir.join(".claude").join(".agent-state");
-    if let Ok(entries) = std::fs::read_dir(&state_dir) {
-        for entry in entries.flatten() {
-            let name = entry.file_name().to_string_lossy().to_string();
+    if let Ok(entries) = fs::read_dir(&state_dir) {
+        for entry in entries {
+            let name = entry.file_name.clone();
             if !name.ends_with(".json") || name == "_queue.json" {
                 continue;
             }
-            if let Ok(text) = std::fs::read_to_string(entry.path()) {
+            if let Ok(text) = fs::read_to_string(&entry.path) {
                 if let Ok(v) = serde_json::from_str::<Value>(&text) {
                     if let Some(sid) = v.get("session_id").and_then(Value::as_str) {
                         if !sid.is_empty() {
@@ -96,7 +97,7 @@ fn run_agent(input: &Value) {
     let project_dir = input_cwd(input);
     let project_dir = Path::new(&project_dir);
     let mem_dir = project_dir.join(".claude").join(".agent-memory");
-    if std::fs::create_dir_all(&mem_dir).is_err() {
+    if fs::create_dir_all(&mem_dir).is_err() {
         return;
     }
 
@@ -134,12 +135,12 @@ fn run_agent(input: &Value) {
         "details": input.get("details").cloned().unwrap_or_else(|| json!({})),
     });
     if let Ok(text) = serde_json::to_string_pretty(&entry) {
-        let _ = std::fs::write(mem_dir.join(&filename), text);
+        let _ = fs::write_atomic(&mem_dir.join(&filename), text.as_bytes());
     }
 
     // Rolling index.
     let index_path = mem_dir.join("_index.json");
-    let mut index: Vec<Value> = std::fs::read_to_string(&index_path)
+    let mut index: Vec<Value> = fs::read_to_string(&index_path)
         .ok()
         .and_then(|t| serde_json::from_str::<Vec<Value>>(&t).ok())
         .unwrap_or_default();
@@ -156,12 +157,12 @@ fn run_agent(input: &Value) {
         let excess = index.len() - AGENT_CAP;
         for old in index.drain(..excess) {
             if let Some(f) = old.get("file").and_then(Value::as_str) {
-                let _ = std::fs::remove_file(mem_dir.join(f));
+                let _ = fs::remove_file(&mem_dir.join(f));
             }
         }
     }
     if let Ok(text) = serde_json::to_string_pretty(&index) {
-        let _ = std::fs::write(&index_path, text);
+        let _ = fs::write_atomic(&index_path, text.as_bytes());
     }
 }
 

@@ -16,6 +16,7 @@ use crate::run::spec_sections::is_heading;
 use crate::util::now_iso8601;
 use mustard_core::economy::writer;
 use mustard_core::economy::{AgentId, ContextCostFrame, ProjectPath, SpecId, WaveId};
+use mustard_core::fs;
 use mustard_core::store::sqlite_store::SqliteEventStore;
 use rusqlite::Connection;
 use serde_json::{Map, json};
@@ -123,7 +124,7 @@ fn detect_mode(spec_path: &str) -> Mode {
 
 /// Read a spec file, returning `None` on any error.
 fn read_spec(spec_path: &str) -> Option<String> {
-    std::fs::read_to_string(spec_path).ok()
+    fs::read_to_string(Path::new(spec_path)).ok()
 }
 
 /// Trim trailing whitespace (`\s+$`).
@@ -201,9 +202,9 @@ fn measure(spec_path: &str, n: Option<u32>) -> Option<serde_json::Value> {
             if let Ok(meta) = std::fs::metadata(&wave_plan) {
                 wave_plan_md = meta.len();
             }
-            if let Ok(entries) = std::fs::read_dir(root) {
-                for entry in entries.flatten() {
-                    let name = entry.file_name().to_string_lossy().to_lowercase();
+            if let Ok(entries) = fs::read_dir(root) {
+                for entry in entries {
+                    let name = entry.file_name.to_lowercase();
                     if !name.starts_with("wave-") {
                         continue;
                     }
@@ -213,7 +214,7 @@ fn measure(spec_path: &str, n: Option<u32>) -> Option<serde_json::Value> {
                     if digits_end == 0 || !after[digits_end..].starts_with('-') {
                         continue;
                     }
-                    let sib_dir = entry.path();
+                    let sib_dir = entry.path.clone();
                     if Some(sib_dir.as_path()) == wave_dir {
                         continue;
                     }

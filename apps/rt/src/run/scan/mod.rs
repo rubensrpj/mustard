@@ -29,6 +29,7 @@ mod python_scanner;
 mod rust_scanner;
 mod typescript_scanner;
 
+use mustard_core::fs as mfs;
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -239,12 +240,8 @@ const STACK_SIGNALS: &[(&str, &[&str])] = &[
 fn signal_present(root: &Path, pattern: &str) -> bool {
     if let Some(ext) = pattern.strip_prefix('*') {
         // Glob-like `*.ext` — match any file ending with `ext`.
-        match std::fs::read_dir(root) {
-            Ok(entries) => entries.flatten().any(|e| {
-                e.file_name()
-                    .to_str()
-                    .is_some_and(|name| name.ends_with(ext))
-            }),
+        match mfs::read_dir(root) {
+            Ok(entries) => entries.iter().any(|e| e.file_name.ends_with(ext)),
             Err(_) => false,
         }
     } else {

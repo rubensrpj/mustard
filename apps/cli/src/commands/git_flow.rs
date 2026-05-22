@@ -21,6 +21,7 @@ use std::path::Path;
 use std::process::Command;
 
 use anyhow::{Context, Result};
+use mustard_core::fs as mfs;
 use dialoguer::theme::ColorfulTheme;
 use dialoguer::{Confirm, Input, Select};
 use serde::{Deserialize, Serialize};
@@ -186,7 +187,7 @@ pub fn generate_mustard_json(project_path: &Path, interactive: bool) -> Result<(
 
     let mut serialized = serde_json::to_string_pretty(&config).context("serializing mustard.json")?;
     serialized.push('\n');
-    std::fs::write(&config_path, serialized)
+    mfs::write_atomic(&config_path, serialized.as_bytes())
         .with_context(|| format!("writing {}", config_path.display()))?;
     println!("  created mustard.json");
     Ok(())

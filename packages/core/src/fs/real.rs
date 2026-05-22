@@ -140,6 +140,26 @@ impl Fs for RealFs {
         let meta = fs::metadata(path).map_err(|e| map_io(path, e))?;
         meta.modified().map_err(Error::from)
     }
+
+    fn rename(&self, from: &Path, to: &Path) -> Result<()> {
+        fs::rename(from, to).map_err(|e| map_io(from, e))
+    }
+
+    fn remove_dir_all(&self, path: &Path) -> Result<()> {
+        match fs::remove_dir_all(path) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(Error::from(e)),
+        }
+    }
+
+    fn remove_dir(&self, path: &Path) -> Result<()> {
+        fs::remove_dir(path).map_err(|e| map_io(path, e))
+    }
+
+    fn canonicalize(&self, path: &Path) -> Result<PathBuf> {
+        fs::canonicalize(path).map_err(|e| map_io(path, e))
+    }
 }
 
 #[cfg(test)]
@@ -248,5 +268,80 @@ mod tests {
         let path = dir.path().join("m.txt");
         fs().write_atomic(&path, b"z").unwrap();
         assert!(fs().modified(&path).is_ok());
+    }
+
+    #[test]
+    fn rename_moves_file() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("src.txt");
+        let dst = dir.path().join("dst.txt");
+        fs().write_atomic(&src, b"payload").unwrap();
+        fs().rename(&src, &dst).unwrap();
+        assert!(!fs().exists(&src));
+        assert_eq!(fs().read_to_string(&dst).unwrap(), "payload");
+    }
+
+    #[test]
+    fn rename_missing_is_not_found() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("ghost.txt");
+        let dst = dir.path().join("nowhere.txt");
+        match fs().rename(&src, &dst) {
+            Err(Error::NotFound(_)) => {}
+            other => panic!("expected NotFound, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn remove_dir_all_removes_tree() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().join("tree");
+        fs().create_dir_all(&root.join("sub")).unwrap();
+        fs().write_atomic(&root.join("sub").join("f.txt"), b"x").unwrap();
+        fs().remove_dir_all(&root).unwrap();
+        assert!(!fs().exists(&root));
+    }
+
+    #[test]
+    fn remove_dir_all_absent_is_ok() {
+        let dir = tempdir().unwrap();
+        // Calling remove_dir_all on a path that never existed must succeed.
+        fs().remove_dir_all(&dir.path().join("does_not_exist")).unwrap();
+    }
+
+    #[test]
+    fn remove_dir_removes_empty_dir() {
+        let dir = tempdir().unwrap();
+        let empty = dir.path().join("empty");
+        fs().create_dir_all(&empty).unwrap();
+        fs().remove_dir(&empty).unwrap();
+        assert!(!fs().exists(&empty));
+    }
+
+    #[test]
+    fn remove_dir_missing_is_not_found() {
+        let dir = tempdir().unwrap();
+        match fs().remove_dir(&dir.path().join("ghost")) {
+            Err(Error::NotFound(_)) => {}
+            other => panic!("expected NotFound, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn canonicalize_resolves_existing_path() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("canon.txt");
+        fs().write_atomic(&path, b"c").unwrap();
+        let canon = fs().canonicalize(&path).unwrap();
+        assert!(canon.is_absolute());
+    }
+
+    #[test]
+    fn canonicalize_missing_is_not_found() {
+        let dir = tempdir().unwrap();
+        match fs().canonicalize(&dir.path().join("absent")) {
+            Err(Error::NotFound(_)) => {}
+            other => panic!("expected NotFound, got {other:?}"),
+        }
     }
 }

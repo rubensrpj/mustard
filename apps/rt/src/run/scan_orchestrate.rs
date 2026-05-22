@@ -19,6 +19,7 @@ use crate::run::scan_precompute::{
     purge_generated_skills,
 };
 use crate::util::now_iso8601;
+use mustard_core::fs;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -112,7 +113,7 @@ const EMPTY_REGISTRY: &str = r#"{
 
 /// Read a file as a string, `None` on any error.
 fn read_safe(p: &Path) -> Option<String> {
-    std::fs::read_to_string(p).ok()
+    fs::read_to_string(p).ok()
 }
 
 /// Read + parse JSON, `None` on any error.
@@ -122,13 +123,7 @@ fn read_json(p: &Path) -> Option<Value> {
 
 /// Write a file, creating parent directories. Records a write error.
 fn write_safe(result: &mut ScanResult, root: &Path, p: &Path, content: &str) -> bool {
-    if let Some(parent) = p.parent() {
-        if std::fs::create_dir_all(parent).is_err() {
-            result.errors.push(format!("write {}: mkdir failed", rel_posix(root, p)));
-            return false;
-        }
-    }
-    if std::fs::write(p, content).is_err() {
+    if fs::write_atomic(p, content.as_bytes()).is_err() {
         result.errors.push(format!("write {}: failed", rel_posix(root, p)));
         return false;
     }
@@ -425,7 +420,7 @@ fn force_refresh(root: &Path, detect: &Value, result: &mut ScanResult) {
     for sub in detect.get("subprojects").and_then(Value::as_array).cloned().unwrap_or_default() {
         let path = sub.get("path").and_then(Value::as_str).unwrap_or("");
         let cache = root.join(path).join(".claude").join(".cluster-cache.json");
-        if cache.exists() && std::fs::remove_file(&cache).is_ok() {
+        if fs::exists(&cache) && fs::remove_file(&cache).is_ok() {
             result.cleanup.push(rel_posix(root, &cache));
         }
     }

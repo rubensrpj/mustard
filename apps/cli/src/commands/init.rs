@@ -26,6 +26,7 @@ use std::process::Command;
 use anyhow::{Context, Result};
 use dialoguer::Select;
 use dialoguer::theme::ColorfulTheme;
+use mustard_core::fs as mfs;
 use serde_json::json;
 
 use crate::commands::git_flow;
@@ -323,7 +324,7 @@ fn seed_entity_registry(claude_path: &Path) -> Result<()> {
     }
     let body = serde_json::to_string_pretty(&json!({ "_patterns": {}, "_enums": {}, "e": {} }))
         .context("serializing the empty entity registry")?;
-    std::fs::write(&registry, body)
+    mfs::write_atomic(&registry, body.as_bytes())
         .with_context(|| format!("writing {}", registry.display()))?;
     Ok(())
 }
@@ -413,13 +414,13 @@ pub(crate) fn ensure_global_permissions() -> Result<()> {
         return Ok(());
     }
 
-    std::fs::create_dir_all(&claude_dir)
+    mfs::create_dir_all(&claude_dir)
         .with_context(|| format!("creating {}", claude_dir.display()))?;
     let mut serialized =
         serde_json::to_string_pretty(&serde_json::Value::Object(settings))
             .context("serializing global settings")?;
     serialized.push('\n');
-    std::fs::write(&settings_path, serialized)
+    mfs::write_atomic(&settings_path, serialized.as_bytes())
         .with_context(|| format!("writing {}", settings_path.display()))?;
     if !added.is_empty() {
         println!("  Global permissions: added {} to ~/.claude/settings.json", added.join(", "));
@@ -525,7 +526,7 @@ fn probe_rtk() {
 /// rev is usable as `cargo install --rev`, so callers receive `None` for it.
 fn rtk_pinned_rev() -> Option<String> {
     let manifest_path = resolve_templates_dir().ok()?.join(".artifacts.json");
-    let raw = std::fs::read_to_string(&manifest_path).ok()?;
+    let raw = mfs::read_to_string(&manifest_path).ok()?;
     let manifest: mustard_core::model::provenance::ArtifactManifest =
         serde_json::from_str(&raw).ok()?;
     let version = manifest
@@ -581,13 +582,12 @@ fn install_cursor_adapter(templates_dir: &Path, project_path: &Path, claude_path
 
     let result = (|| -> Result<()> {
         copy_dir(&adapter_src, &adapter_dest, true, &[])?;
-        std::fs::create_dir_all(&cursor_hooks)
+        mfs::create_dir_all(&cursor_hooks)
             .with_context(|| format!("creating {}", cursor_hooks.display()))?;
-        std::fs::copy(
-            adapter_src.join("adapter.js"),
-            cursor_hooks.join("adapter.js"),
-        )
-        .context("copying the Cursor adapter")?;
+        let adapter_bytes = mfs::read(&adapter_src.join("adapter.js"))
+            .context("reading the Cursor adapter")?;
+        mfs::write_atomic(&cursor_hooks.join("adapter.js"), &adapter_bytes)
+            .context("copying the Cursor adapter")?;
         Ok(())
     })();
 

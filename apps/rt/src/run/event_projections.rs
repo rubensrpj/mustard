@@ -16,6 +16,7 @@
 //! same JSON in a standalone HTML page and prints its path on stderr.
 
 use crate::report::Report;
+use mustard_core::fs;
 use mustard_core::store::sqlite_store::SqliteEventStore;
 use mustard_core::model::event::{
     HarnessEvent, EVENT_PIPELINE_COMPLETE, EVENT_PIPELINE_DISPATCH_FAILURE, EVENT_PIPELINE_PAUSE,
@@ -260,7 +261,7 @@ fn phase_from_events(events: &[HarnessEvent], spec: &str) -> Option<String> {
 fn build_epic_summary(events: &[HarnessEvent], cwd: &Path, epic: &str) -> Value {
     let states_dir = cwd.join(".claude").join(".pipeline-states");
     let read_state = |name: &str| -> Option<Value> {
-        std::fs::read_to_string(states_dir.join(format!("{name}.json")))
+        fs::read_to_string(&states_dir.join(format!("{name}.json")))
             .ok()
             .and_then(|t| serde_json::from_str(&t).ok())
     };
@@ -357,18 +358,15 @@ const MAX_SPEC_TREE_DEPTH: u32 = 3;
 /// summary is enriched with `epicInfo` for specs that have `children_specs`.
 fn build_cross_session_timeline(cwd: &Path, limit: usize) -> Value {
     let sessions_dir = cwd.join(".claude").join(".harness").join("sessions");
-    let Ok(entries) = std::fs::read_dir(&sessions_dir) else {
+    let Ok(entries) = fs::read_dir(&sessions_dir) else {
         return json!([]);
     };
     let mut files: Vec<(std::path::PathBuf, std::time::SystemTime)> = entries
-        .flatten()
-        .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("jsonl"))
+        .into_iter()
+        .filter(|e| e.path.extension().and_then(|x| x.to_str()) == Some("jsonl"))
         .map(|e| {
-            let mtime = e
-                .metadata()
-                .and_then(|m| m.modified())
-                .unwrap_or(std::time::UNIX_EPOCH);
-            (e.path(), mtime)
+            let mtime = fs::modified(&e.path).unwrap_or(std::time::UNIX_EPOCH);
+            (e.path, mtime)
         })
         .collect();
     files.sort_by(|a, b| b.1.cmp(&a.1));
@@ -377,7 +375,7 @@ fn build_cross_session_timeline(cwd: &Path, limit: usize) -> Value {
     let states_dir = cwd.join(".claude").join(".pipeline-states");
     let mut results: Vec<Value> = Vec::new();
     for (file, _) in files {
-        let Ok(raw) = std::fs::read_to_string(&file) else {
+        let Ok(raw) = fs::read_to_string(&file) else {
             continue;
         };
         let events: Vec<HarnessEvent> = raw
@@ -430,7 +428,7 @@ fn build_cross_session_timeline(cwd: &Path, limit: usize) -> Value {
 
 /// Read a `.pipeline-states/<name>.json` file, `None` on any error.
 fn read_state(states_dir: &Path, name: &str) -> Option<Value> {
-    serde_json::from_str(&std::fs::read_to_string(states_dir.join(format!("{name}.json"))).ok()?).ok()
+    serde_json::from_str(&fs::read_to_string(&states_dir.join(format!("{name}.json"))).ok()?).ok()
 }
 
 /// `buildSpecTree` — the recursive parent/child spec hierarchy (max depth 3),
@@ -672,11 +670,11 @@ fn project(cwd: &Path, view: &str, spec: Option<&str>, wave: Option<u32>) -> Val
 /// Write the standalone HTML report wrapping the projection JSON.
 fn write_html_report(cwd: &Path, view: &str, json_text: &str) -> Option<PathBuf> {
     let dir = cwd.join(".claude").join(".qa-reports");
-    std::fs::create_dir_all(&dir).ok()?;
+    fs::create_dir_all(&dir).ok()?;
     let mut report = Report::new(format!("Event Projection — {view}"), "harness event log view");
     report.pre_section("Projection", json_text);
     let path = dir.join(format!("event-projection-{view}.html"));
-    std::fs::write(&path, report.render()).ok()?;
+    fs::write_atomic(&path, report.render().as_bytes()).ok()?;
     Some(path)
 }
 

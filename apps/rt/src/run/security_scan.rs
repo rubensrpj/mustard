@@ -10,6 +10,7 @@
 //! `SECRET_PATTERNS` / `FP_FILE_PATTERNS` in the JS one-for-one.
 
 use crate::util::now_iso8601;
+use mustard_core::fs;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
@@ -162,11 +163,11 @@ fn scan_dir(dir: &Path, results: &mut Results, depth: usize) {
     if depth > MAX_DEPTH {
         return;
     }
-    let Ok(entries) = std::fs::read_dir(dir) else {
+    let Ok(entries) = fs::read_dir(dir) else {
         return;
     };
-    for entry in entries.flatten() {
-        let name = entry.file_name().to_string_lossy().to_string();
+    for entry in entries {
+        let name = entry.file_name.clone();
         let is_env = name.starts_with(".env");
         if name.starts_with('.') && !is_env {
             continue;
@@ -174,17 +175,16 @@ fn scan_dir(dir: &Path, results: &mut Results, depth: usize) {
         if IGNORE_DIRS.contains(&name.as_str()) {
             continue;
         }
-        let path = entry.path();
-        if path.is_dir() {
-            scan_dir(&path, results, depth + 1);
+        if entry.is_dir {
+            scan_dir(&entry.path, results, depth + 1);
         } else {
-            let ext = path
+            let ext = entry.path
                 .extension()
                 .and_then(|e| e.to_str())
                 .map(str::to_lowercase)
                 .unwrap_or_default();
             if SCAN_EXTS.contains(&ext.as_str()) || is_env {
-                scan_file(&path, results);
+                scan_file(&entry.path, results);
             }
         }
     }
@@ -198,7 +198,7 @@ fn scan_file(path: &Path, results: &mut Results) {
     if meta.len() > MAX_FILE_SIZE {
         return;
     }
-    let Ok(content) = std::fs::read_to_string(path) else {
+    let Ok(content) = fs::read_to_string(path) else {
         return;
     };
     let base = path
@@ -224,7 +224,7 @@ fn scan_file(path: &Path, results: &mut Results) {
 /// `.env`-exposure check — an `.env*` file present but absent from `.gitignore`.
 fn check_env_exposure(cwd: &Path, results: &mut Results) {
     let env_files = [".env", ".env.local", ".env.production", ".env.staging"];
-    let gitignore = std::fs::read_to_string(cwd.join(".gitignore")).unwrap_or_default();
+    let gitignore = fs::read_to_string(&cwd.join(".gitignore")).unwrap_or_default();
     for env_file in env_files {
         if !cwd.join(env_file).exists() {
             continue;
@@ -245,7 +245,7 @@ fn check_env_exposure(cwd: &Path, results: &mut Results) {
 /// Hook-permission check — dangerous patterns in `.claude/settings.json` allow.
 fn check_hook_permissions(cwd: &Path, results: &mut Results) {
     let settings_path = cwd.join(".claude").join("settings.json");
-    let Ok(text) = std::fs::read_to_string(&settings_path) else {
+    let Ok(text) = fs::read_to_string(&settings_path) else {
         return;
     };
     let Ok(settings) = serde_json::from_str::<Value>(&text) else {

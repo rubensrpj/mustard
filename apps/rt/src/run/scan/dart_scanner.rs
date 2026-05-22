@@ -15,6 +15,7 @@
 
 use super::file_utils::{collect_files, infer_common_folder, read_file_safe, relative_path};
 use super::{detect_value_convention, DtoInfo, EntityInfo, EnumInfo, ScanResult, Scanner};
+use mustard_core::fs as mfs;
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -30,23 +31,21 @@ const DART_IGNORE: &[&str] = &[".dart_tool", "build"];
 /// `node_modules`. Fail-open: an unreadable tree yields `false`.
 fn has_dir_recursive(base: &Path, segment: &str) -> bool {
     let lower = segment.to_lowercase();
-    let Ok(entries) = std::fs::read_dir(base) else {
+    let Ok(entries) = mfs::read_dir(base) else {
         return false;
     };
-    for entry in entries.flatten() {
-        let Ok(ft) = entry.file_type() else { continue };
-        if !ft.is_dir() {
+    for entry in entries {
+        if !entry.is_dir {
             continue;
         }
-        let name = entry.file_name();
-        let Some(name) = name.to_str() else { continue };
+        let name = entry.file_name.as_str();
         if name.starts_with('.') || name == "node_modules" {
             continue;
         }
         if name.to_lowercase() == lower {
             return true;
         }
-        if has_dir_recursive(&entry.path(), segment) {
+        if has_dir_recursive(&entry.path, segment) {
             return true;
         }
     }

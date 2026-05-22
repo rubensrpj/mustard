@@ -190,6 +190,92 @@ impl Fs for FakeFs {
             Err(Error::NotFound(path.display().to_string()))
         }
     }
+
+    fn rename(&self, from: &Path, to: &Path) -> Result<()> {
+        // Move the map entry: remove `from`, insert under `to`.
+        let mut files = self
+            .files
+            .write()
+            .map_err(|_| Error::Io(std::io::Error::other("fakefs lock poisoned")))?;
+        let bytes = files
+            .remove(from)
+            .ok_or_else(|| Error::NotFound(from.display().to_string()))?;
+        files.insert(to.to_path_buf(), bytes);
+        // Update the directory index so `exists` / `read_dir` stay consistent.
+        drop(files);
+        self.mark_parents(to);
+        Ok(())
+    }
+
+    fn remove_dir_all(&self, path: &Path) -> Result<()> {
+        // Drop every file whose path starts with `path`, then drop every dir entry
+        // that is `path` itself or is nested under it.
+        let path_buf = path.to_path_buf();
+        {
+            let mut files = self
+                .files
+                .write()
+                .map_err(|_| Error::Io(std::io::Error::other("fakefs lock poisoned")))?;
+            files.retain(|k, _| !k.starts_with(&path_buf));
+        }
+        {
+            let mut dirs = self
+                .dirs
+                .write()
+                .map_err(|_| Error::Io(std::io::Error::other("fakefs lock poisoned")))?;
+            dirs.retain(|k| !k.starts_with(&path_buf));
+        }
+        Ok(())
+    }
+
+    fn remove_dir(&self, path: &Path) -> Result<()> {
+        // The directory must exist and must be empty (no files, no sub-dirs).
+        let files = self
+            .files
+            .read()
+            .map_err(|_| Error::Io(std::io::Error::other("fakefs lock poisoned")))?;
+        let dirs = self
+            .dirs
+            .read()
+            .map_err(|_| Error::Io(std::io::Error::other("fakefs lock poisoned")))?;
+
+        let exists = dirs.contains(path)
+            || files.keys().any(|p| p.parent() == Some(path))
+            || dirs.iter().any(|p| p.parent() == Some(path));
+        if !exists {
+            return Err(Error::NotFound(path.display().to_string()));
+        }
+
+        // Non-empty check: any file directly inside path, or any dir directly inside path.
+        let has_children = files.keys().any(|p| p.parent() == Some(path))
+            || dirs.iter().any(|p| p.parent() == Some(path));
+        if has_children {
+            return Err(Error::Io(std::io::Error::other(format!(
+                "directory not empty: {}",
+                path.display()
+            ))));
+        }
+
+        drop(files);
+        drop(dirs);
+
+        let mut dirs_w = self
+            .dirs
+            .write()
+            .map_err(|_| Error::Io(std::io::Error::other("fakefs lock poisoned")))?;
+        dirs_w.remove(path);
+        Ok(())
+    }
+
+    fn canonicalize(&self, path: &Path) -> Result<PathBuf> {
+        // The fake has no real symlinks or relative paths; just confirm existence
+        // and return the path unchanged (it is already absolute in tests).
+        if self.exists(path) {
+            Ok(path.to_path_buf())
+        } else {
+            Err(Error::NotFound(path.display().to_string()))
+        }
+    }
 }
 
 #[cfg(test)]
@@ -265,5 +351,86 @@ mod tests {
         fs.create_dir_all(d).unwrap();
         assert!(fs.exists(d));
         assert!(fs.exists(Path::new("/deep")));
+    }
+
+    #[test]
+    fn rename_moves_file_key() {
+        let fs = FakeFs::new();
+        let src = Path::new("/a/src.txt");
+        let dst = Path::new("/a/dst.txt");
+        fs.write_atomic(src, b"data").unwrap();
+        fs.rename(src, dst).unwrap();
+        assert!(!fs.exists(src));
+        assert_eq!(fs.read_to_string(dst).unwrap(), "data");
+    }
+
+    #[test]
+    fn rename_missing_is_not_found() {
+        let fs = FakeFs::new();
+        match fs.rename(Path::new("/ghost"), Path::new("/dst")) {
+            Err(Error::NotFound(_)) => {}
+            other => panic!("expected NotFound, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn remove_dir_all_drops_files_and_dirs() {
+        let fs = FakeFs::new();
+        fs.seed("/tree/sub/f.txt", "x");
+        fs.create_dir_all(Path::new("/tree/empty")).unwrap();
+        fs.remove_dir_all(Path::new("/tree")).unwrap();
+        assert!(!fs.exists(Path::new("/tree")));
+        assert!(!fs.exists(Path::new("/tree/sub/f.txt")));
+    }
+
+    #[test]
+    fn remove_dir_all_absent_is_ok() {
+        let fs = FakeFs::new();
+        fs.remove_dir_all(Path::new("/never/existed")).unwrap();
+    }
+
+    #[test]
+    fn remove_dir_removes_empty_directory() {
+        let fs = FakeFs::new();
+        let d = Path::new("/emp");
+        fs.create_dir_all(d).unwrap();
+        fs.remove_dir(d).unwrap();
+        assert!(!fs.exists(d));
+    }
+
+    #[test]
+    fn remove_dir_missing_is_not_found() {
+        let fs = FakeFs::new();
+        match fs.remove_dir(Path::new("/ghost_dir")) {
+            Err(Error::NotFound(_)) => {}
+            other => panic!("expected NotFound, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn remove_dir_non_empty_is_io_error() {
+        let fs = FakeFs::new();
+        fs.seed("/nonempty/child.txt", "y");
+        match fs.remove_dir(Path::new("/nonempty")) {
+            Err(Error::Io(_)) => {}
+            other => panic!("expected Io error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn canonicalize_existing_returns_path() {
+        let fs = FakeFs::new();
+        let p = Path::new("/some/file.txt");
+        fs.write_atomic(p, b"z").unwrap();
+        assert_eq!(fs.canonicalize(p).unwrap(), p);
+    }
+
+    #[test]
+    fn canonicalize_missing_is_not_found() {
+        let fs = FakeFs::new();
+        match fs.canonicalize(Path::new("/absent")) {
+            Err(Error::NotFound(_)) => {}
+            other => panic!("expected NotFound, got {other:?}"),
+        }
     }
 }

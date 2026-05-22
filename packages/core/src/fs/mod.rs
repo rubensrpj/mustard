@@ -144,6 +144,43 @@ pub trait Fs {
     /// exist; [`Error::Io`](crate::error::Error::Io) when the platform does not
     /// expose a modified time or the metadata read fails.
     fn modified(&self, path: &Path) -> Result<SystemTime>;
+
+    /// Rename (move) `from` to `to`, replacing `to` if it exists. The source
+    /// and destination should reside on the same filesystem so the rename is
+    /// atomic. Use [`Fs::write_atomic`] for cross-device writes.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::NotFound`](crate::error::Error::NotFound) when `from` does not
+    /// exist; [`Error::Io`](crate::error::Error::Io) otherwise.
+    fn rename(&self, from: &Path, to: &Path) -> Result<()>;
+
+    /// Recursively remove `path` and all of its contents. A no-op (success) when
+    /// `path` does not exist, mirroring the fail-open convention of the other
+    /// removal helpers.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Io`](crate::error::Error::Io) if any entry beneath `path` cannot
+    /// be removed.
+    fn remove_dir_all(&self, path: &Path) -> Result<()>;
+
+    /// Remove an empty directory at `path`.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::NotFound`](crate::error::Error::NotFound) when `path` does not
+    /// exist; [`Error::Io`](crate::error::Error::Io) if the directory is
+    /// non-empty or another OS error occurs.
+    fn remove_dir(&self, path: &Path) -> Result<()>;
+
+    /// Resolve `path` to an absolute, canonical path with all symlinks resolved.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::NotFound`](crate::error::Error::NotFound) when `path` does not
+    /// exist; [`Error::Io`](crate::error::Error::Io) otherwise.
+    fn canonicalize(&self, path: &Path) -> Result<PathBuf>;
 }
 
 /// The process-wide default [`Fs`] backing the module-level free functions.
@@ -175,8 +212,8 @@ pub fn real() -> &'static dyn Fs {
 ///
 /// [`Error::NotFound`](crate::error::Error::NotFound) on absence, else
 /// [`Error::Io`](crate::error::Error::Io).
-pub fn read_to_string(path: &Path) -> Result<String> {
-    DEFAULT.read_to_string(path)
+pub fn read_to_string(path: impl AsRef<Path>) -> Result<String> {
+    DEFAULT.read_to_string(path.as_ref())
 }
 
 /// Read `path` to bytes via the default real filesystem. See [`Fs::read`].
@@ -185,8 +222,8 @@ pub fn read_to_string(path: &Path) -> Result<String> {
 ///
 /// [`Error::NotFound`](crate::error::Error::NotFound) on absence, else
 /// [`Error::Io`](crate::error::Error::Io).
-pub fn read(path: &Path) -> Result<Vec<u8>> {
-    DEFAULT.read(path)
+pub fn read(path: impl AsRef<Path>) -> Result<Vec<u8>> {
+    DEFAULT.read(path.as_ref())
 }
 
 /// Atomically write `contents` to `path` via the default real filesystem. See
@@ -195,8 +232,8 @@ pub fn read(path: &Path) -> Result<Vec<u8>> {
 /// # Errors
 ///
 /// [`Error::Io`](crate::error::Error::Io) on failure.
-pub fn write_atomic(path: &Path, contents: &[u8]) -> Result<()> {
-    DEFAULT.write_atomic(path, contents)
+pub fn write_atomic(path: impl AsRef<Path>, contents: &[u8]) -> Result<()> {
+    DEFAULT.write_atomic(path.as_ref(), contents)
 }
 
 /// Append a newline-terminated `line` to `path` via the default real
@@ -205,14 +242,14 @@ pub fn write_atomic(path: &Path, contents: &[u8]) -> Result<()> {
 /// # Errors
 ///
 /// [`Error::Io`](crate::error::Error::Io) on failure.
-pub fn append_line(path: &Path, line: &str) -> Result<()> {
-    DEFAULT.append_line(path, line)
+pub fn append_line(path: impl AsRef<Path>, line: &str) -> Result<()> {
+    DEFAULT.append_line(path.as_ref(), line)
 }
 
 /// `true` if `path` exists. See [`Fs::exists`].
 #[must_use]
-pub fn exists(path: &Path) -> bool {
-    DEFAULT.exists(path)
+pub fn exists(path: impl AsRef<Path>) -> bool {
+    DEFAULT.exists(path.as_ref())
 }
 
 /// List the immediate entries of directory `path` via the default real
@@ -222,8 +259,8 @@ pub fn exists(path: &Path) -> bool {
 ///
 /// [`Error::NotFound`](crate::error::Error::NotFound) on absence, else
 /// [`Error::Io`](crate::error::Error::Io).
-pub fn read_dir(path: &Path) -> Result<Vec<DirEntry>> {
-    DEFAULT.read_dir(path)
+pub fn read_dir(path: impl AsRef<Path>) -> Result<Vec<DirEntry>> {
+    DEFAULT.read_dir(path.as_ref())
 }
 
 /// Recursively create `path` via the default real filesystem. See
@@ -232,8 +269,8 @@ pub fn read_dir(path: &Path) -> Result<Vec<DirEntry>> {
 /// # Errors
 ///
 /// [`Error::Io`](crate::error::Error::Io) on failure.
-pub fn create_dir_all(path: &Path) -> Result<()> {
-    DEFAULT.create_dir_all(path)
+pub fn create_dir_all(path: impl AsRef<Path>) -> Result<()> {
+    DEFAULT.create_dir_all(path.as_ref())
 }
 
 /// Remove the file at `path` via the default real filesystem. See
@@ -243,8 +280,8 @@ pub fn create_dir_all(path: &Path) -> Result<()> {
 ///
 /// [`Error::NotFound`](crate::error::Error::NotFound) on absence, else
 /// [`Error::Io`](crate::error::Error::Io).
-pub fn remove_file(path: &Path) -> Result<()> {
-    DEFAULT.remove_file(path)
+pub fn remove_file(path: impl AsRef<Path>) -> Result<()> {
+    DEFAULT.remove_file(path.as_ref())
 }
 
 /// The last-modified time of `path` via the default real filesystem. See
@@ -254,6 +291,49 @@ pub fn remove_file(path: &Path) -> Result<()> {
 ///
 /// [`Error::NotFound`](crate::error::Error::NotFound) on absence, else
 /// [`Error::Io`](crate::error::Error::Io).
-pub fn modified(path: &Path) -> Result<SystemTime> {
-    DEFAULT.modified(path)
+pub fn modified(path: impl AsRef<Path>) -> Result<SystemTime> {
+    DEFAULT.modified(path.as_ref())
+}
+
+/// Rename (move) `from` to `to` via the default real filesystem. See
+/// [`Fs::rename`].
+///
+/// # Errors
+///
+/// [`Error::NotFound`](crate::error::Error::NotFound) when `from` is absent,
+/// else [`Error::Io`](crate::error::Error::Io).
+pub fn rename(from: impl AsRef<Path>, to: impl AsRef<Path>) -> Result<()> {
+    DEFAULT.rename(from.as_ref(), to.as_ref())
+}
+
+/// Recursively remove `path` and all its contents via the default real
+/// filesystem. See [`Fs::remove_dir_all`].
+///
+/// # Errors
+///
+/// [`Error::Io`](crate::error::Error::Io) on failure.
+pub fn remove_dir_all(path: impl AsRef<Path>) -> Result<()> {
+    DEFAULT.remove_dir_all(path.as_ref())
+}
+
+/// Remove an empty directory at `path` via the default real filesystem. See
+/// [`Fs::remove_dir`].
+///
+/// # Errors
+///
+/// [`Error::NotFound`](crate::error::Error::NotFound) on absence, else
+/// [`Error::Io`](crate::error::Error::Io).
+pub fn remove_dir(path: impl AsRef<Path>) -> Result<()> {
+    DEFAULT.remove_dir(path.as_ref())
+}
+
+/// Resolve `path` to an absolute canonical path via the default real
+/// filesystem. See [`Fs::canonicalize`].
+///
+/// # Errors
+///
+/// [`Error::NotFound`](crate::error::Error::NotFound) on absence, else
+/// [`Error::Io`](crate::error::Error::Io).
+pub fn canonicalize(path: impl AsRef<Path>) -> Result<PathBuf> {
+    DEFAULT.canonicalize(path.as_ref())
 }
