@@ -681,14 +681,6 @@ fn emit_pipeline_status(repo_path: &str, spec: &str, to: &str) {
     use mustard_core::store::event_store::EventSink;
     use mustard_core::store::sqlite_store::SqliteEventStore;
 
-    let store = match SqliteEventStore::for_project(repo_path) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("emit_pipeline_status: open store: {e}");
-            return;
-        }
-    };
-
     let payload = serde_json::to_value(PipelineStatusPayload {
         from: None,
         to: to.to_string(),
@@ -710,8 +702,25 @@ fn emit_pipeline_status(repo_path: &str, spec: &str, to: &str) {
         spec: Some(spec.to_string()),
     };
 
-    if let Err(e) = store.append(&event) {
-        eprintln!("emit_pipeline_status: append: {e}");
+    // Wave 3 (db-access-repository): append through the shared, managed store
+    // keyed by repo path instead of opening a fresh `SqliteEventStore` per call,
+    // preserving the single-shared-store invariant the rest of the dashboard
+    // relies on. Mirrors `lib::lib_emit_pipeline_status`. `with_store` returns
+    // `None` only when the DB file does not yet exist; in that single case fall
+    // back to `for_project`, which creates it on open (fail-open).
+    let base = std::path::Path::new(repo_path);
+    let appended = crate::db::with_store(base, |store| store.append(&event).map_err(|e| e.to_string()));
+    match appended {
+        Some(Ok(())) => {}
+        Some(Err(e)) => eprintln!("emit_pipeline_status: append: {e}"),
+        None => match SqliteEventStore::for_project(repo_path) {
+            Ok(store) => {
+                if let Err(e) = store.append(&event) {
+                    eprintln!("emit_pipeline_status: append (fresh): {e}");
+                }
+            }
+            Err(e) => eprintln!("emit_pipeline_status: open store: {e}"),
+        },
     }
 }
 
@@ -1148,7 +1157,7 @@ pub fn top_files_today_impl(conn: &Connection) -> Result<Vec<FileCount>, String>
 fn spec_card_from_view(view: &mustard_core::SpecView, children_count: u32) -> SpecCard {
     SpecCard {
         spec: view.spec.clone(),
-        status: spec_status_string(view.status).into(),
+        status: mustard_core::spec::status_word(&view.state).into(),
         phase: view
             .phase
             .map_or_else(String::new, |p| phase_string(p).to_string()),
@@ -1235,7 +1244,7 @@ fn workspace_summary_from_view(view: &mustard_core::WorkspaceSummary) -> Workspa
 fn spec_track_from_view(view: &mustard_core::SpecTrack) -> SpecTrack {
     SpecTrack {
         spec: view.spec.clone(),
-        status: spec_status_string(view.status).into(),
+        status: mustard_core::spec::status_word(&view.state).into(),
         current_phase: view
             .current_phase
             .map_or_else(String::new, |p| phase_string(p).to_string()),
@@ -1271,22 +1280,6 @@ fn workspace_alert_from_view(view: &mustard_core::WorkspaceAlert) -> WorkspaceAl
 // strings match what the React side already understands — match against
 // these in case a future rename breaks UI rendering.
 
-const fn spec_status_string(status: mustard_core::SpecStatus) -> &'static str {
-    use mustard_core::SpecStatus;
-    match status {
-        SpecStatus::NoEvents => "no-events",
-        SpecStatus::Planning => "planning",
-        SpecStatus::Implementing => "implementing",
-        SpecStatus::Reviewing => "reviewing",
-        SpecStatus::Qa => "qa",
-        SpecStatus::ClosedFollowup => "closed-followup",
-        SpecStatus::Completed => "completed",
-        SpecStatus::Cancelled => "cancelled",
-        SpecStatus::Abandoned => "abandoned",
-        SpecStatus::Blocked => "blocked",
-        SpecStatus::WaveFailed => "wave-failed",
-    }
-}
 
 const fn phase_string(p: mustard_core::Phase) -> &'static str {
     use mustard_core::Phase;

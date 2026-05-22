@@ -227,6 +227,7 @@ fn build_track(spec: &str, events: &[HarnessEvent]) -> SpecTrack {
     SpecTrack {
         spec: spec.to_string(),
         status: view.status,
+        state: view.state.clone(),
         current_phase: view.phase,
         current_wave: view.current_wave,
         total_waves: view.total_waves,

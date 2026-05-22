@@ -6,8 +6,9 @@
 //! distinguishes "no data" from "zero" — a literal `0` would mislead.
 
 use super::Phase;
-#[allow(deprecated)] // SpecTrack still surfaces the legacy SpecStatus until Wave 3 migrates it.
+#[allow(deprecated)] // SpecTrack still surfaces the legacy SpecStatus alongside the canonical state.
 use super::SpecStatus;
+use super::SpecState;
 use serde::{Deserialize, Serialize};
 
 /// One file + its count for "top files today" rolls-ups.
@@ -49,8 +50,11 @@ pub struct SpecTrack {
     /// Spec name.
     pub spec: String,
     /// Current status.
-    #[deprecated(note = "Use SpecState. Migrated to SpecTrack.state in spec-lifecycle-unification W3.")]
+    #[deprecated(note = "Use the canonical `state` field; this legacy projection is kept for back-compat.")]
     pub status: SpecStatus,
+    /// Canonical lifecycle state (Stage/Outcome/Flags) — the source of truth.
+    /// Consumers should read this; `status` above is a derived legacy alias.
+    pub state: SpecState,
     /// Phase the spec is currently in.
     pub current_phase: Option<Phase>,
     /// Current wave (1-based) when this is a wave plan.
