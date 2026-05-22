@@ -51,11 +51,12 @@ Write `.claude/spec/<slug>/spec.md` with this header:
 ```text
 # Tactical Fix: <descrição>
 
-### Status: draft
-### Phase: ANALYZE
+### Stage: Analyze
+### Outcome: Active
+### Flags:
 ### Scope: <scope-flag>
-### Checkpoint: <ISO timestamp now>
 ### Lang: <inherited from parent, default en>
+### Checkpoint: <ISO timestamp now>
 ### Parent: <parent>
 ```
 

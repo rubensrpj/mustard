@@ -21,7 +21,7 @@ Before starting a new pipeline, audit specs in `.claude/spec/`:
 3. **Verify completed/cancelled specs:**
    - If `Status: completed` or `Status: cancelled`:
      - **Analyze first**: check that ALL checklist items are `[x]`, no `## Concerns` with unresolved `BLOCKED` items, and build/type-check references are satisfied
-     - If analysis confirms done → flip status via `mustard-rt run complete-spec {name} --archive`, delete the `.diff.md` if it exists (pipeline phase is derived from `pipeline.phase` events in SQLite — there is no JSON state file to delete; no filesystem move happens, the spec dir stays at `.claude/spec/{name}/`), log: `[HYGIENE] Verified and archived {name}`
+     - If analysis confirms done → flip status via `mustard-rt run complete-spec {name} --archive`, delete the `.diff.md` if it exists (pipeline stage is derived from `pipeline.stage` events in SQLite — there is no JSON state file to delete; no filesystem move happens, the spec dir stays at `.claude/spec/{name}/`), log: `[HYGIENE] Verified and archived {name}`
      - If analysis finds incomplete items → update `Status: implementing`, log: `[HYGIENE] {name} marked completed but has {N} unchecked items — reverted to implementing`, then treat as in-progress (step 4)
 4. **In-progress specs** (`Status: draft` or `Status: implementing`):
    - Use `AskUserQuestion`: _"Found spec in progress: **{name}** (Status: {status}, Phase: {phase}, {done}/{total} tasks done). Do you want to continue this spec before starting a new one?"_
@@ -33,7 +33,7 @@ This step is silent when there's nothing to audit — no output if no active spe
 
 ### ANALYZE (diagnose + assess)
 
-**Phase marker (first action, before any Grep):** Run `mustard-rt run emit-phase --spec {spec-name} --to ANALYZE`. ANALYZE runs in the parent before any pipeline-state file exists, so `pipeline-phase.js` cannot see it — this is the only point that knows ANALYZE started. Idempotent (script skips if already emitted for this spec) and fail-open.
+**Phase marker (first action, before any Grep):** Run `mustard-rt run emit-pipeline --kind pipeline.stage --spec {spec-name} --payload "{\"stage\":\"Analyze\"}"`. ANALYZE runs in the parent before any pipeline-state file exists — this is the only point that knows ANALYZE started. Idempotent (the binary deduplicates) and fail-open.
 
 1. **AUTO-SYNC:** Run `mustard-rt run sync-detect`. If output shows any subproject with `hashChanged: true`, then run `mustard-rt run sync-registry`. Otherwise skip sync-registry entirely.
 
@@ -197,9 +197,9 @@ Max 2 retries for Transient + Resolvable. Structural failures trigger a targeted
 
 After EXECUTE (fix + validate) completes:
 
-1. Emit phase transition to QA:
+1. Emit stage transition to QaReview:
    ```bash
-   mustard-rt run emit-phase --spec {specName} --to QA
+   mustard-rt run emit-pipeline --kind pipeline.stage --spec {specName} --payload "{\"stage\":\"QaReview\"}"
    ```
 2. Run: `mustard-rt run qa-run --spec {specName}` (Full Path only — emits `qa.result` event automatically)
    - For Fast Path: manually verify the bug reproduction command exits 0, emit result to harness

@@ -35,7 +35,9 @@ Stop here.
 
 ### Step 3 — Run QA
 
+Emit stage transition to QaReview, then run:
 ```bash
+mustard-rt run emit-pipeline --kind pipeline.stage --spec {specName} --payload "{\"stage\":\"QaReview\"}"
 mustard-rt run qa-run --spec {specName}
 ```
 
@@ -49,9 +51,9 @@ If `mustard-rt` not found: dispatch Task(general-purpose) with QA agent context 
 
 **Overall = pass:**
 - Output QA report
-- Emit phase transition to CLOSE:
+- Emit stage transition to Close:
   ```bash
-  mustard-rt run emit-phase --spec {specName} --to CLOSE
+  mustard-rt run emit-pipeline --kind pipeline.stage --spec {specName} --payload "{\"stage\":\"Close\"}"
   ```
 - Output: "QA passed. All criteria met. Run `/mustard:close` or proceed to CLOSE."
 

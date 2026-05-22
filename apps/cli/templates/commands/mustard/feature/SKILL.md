@@ -35,7 +35,7 @@ The slice is stable for the whole pipeline (the spec does not change mid-run), s
 
 ### ANALYZE Phase
 
-**Phase marker (first action, before any Grep):** Run `mustard-rt run emit-phase --spec {spec-name} --to ANALYZE`. ANALYZE runs in the parent before any pipeline-state file exists, so `pipeline-phase.js` cannot see it — this is the only point that knows ANALYZE started. Idempotent (script skips if already emitted for this spec) and fail-open.
+**Phase marker (first action, before any Grep):** Run `mustard-rt run emit-pipeline --kind pipeline.stage --spec {spec-name} --payload "{\"stage\":\"Analyze\"}"`. ANALYZE runs in the parent before any pipeline-state file exists — this is the only point that knows ANALYZE started. Idempotent (the binary deduplicates) and fail-open.
 
 **Auto-sync (silent):** Run `mustard-rt run sync-detect`. If output shows any subproject with `hashChanged: true`, then run `mustard-rt run sync-registry`. Otherwise skip sync-registry entirely.
 
@@ -168,7 +168,7 @@ When `scope-decompose` returns `reason: "roadmap-signal"` and `roadmapMatches` c
 4. **Emit pipeline scope event** — a wave plan has no root `spec.md`, so this scaffold is the only place its initial pipeline state is born. Emit two events:
    ```bash
    mustard-rt run emit-pipeline --kind pipeline.scope --spec {spec-name} --payload "{\"scope\":\"full\",\"lang\":\"{lang}\",\"model\":\"opus\",\"is_wave_plan\":true,\"total_waves\":{wave-count}}"
-   mustard-rt run emit-pipeline --kind status --spec {spec-name} --payload "{\"from\":null,\"to\":\"draft\"}"
+   mustard-rt run emit-pipeline --kind pipeline.stage --spec {spec-name} --payload "{\"stage\":\"Plan\"}"
    ```
    `/mustard:approve` § Step 3b reads `pipeline_state_for_spec` from SQLite — no JSON file is written here.
 5. **No AskUserQuestion** — proceed silently per the agnostic auto-detection contract.
@@ -211,11 +211,20 @@ The spec is a **SINGLE file** organized in two named layers — `## PRD` (the *w
      - 3-8 checkboxed steps per agent, decomposed by operation type (NOT by file)
      - Mark `(parallel-safe)` on frontend tasks with no dependency on new backend endpoints
    - **CONDITIONAL: `## Component Contract` section (UI specs only)** — append between `## Arquivos` and `## Tarefas` (inside the Plano layer) when ANALYZE detects component creation/refactoring (new `*.tsx|*.vue|*.svelte|*.dart|*.swift` widget/View, or props/variants change). Template + rationale at `../../../refs/feature/spec-language.md § Component Contract`. **Skip for non-UI work** — adding this section to backend/database specs is bloat.
-2. Add checkpoint fields: `Status: draft`, `Phase: PLAN`, `Scope: full`, `Checkpoint: {now}`. The optional `### Parent: <slug>` header is recognised by the spec parser as a link to a parent spec — `/feature` does NOT emit it (this command creates root specs), but must not break if a user adds it manually. See `pipeline-config.md § Tactical Fix Discovery` and `commands/mustard/tactical-fix/SKILL.md` for the convention.
+2. Add checkpoint header block:
+   ```
+   ### Stage: Plan
+   ### Outcome: Active
+   ### Flags:
+   ### Scope: full
+   ### Lang: {lang}
+   ### Checkpoint: {ISO_DATE}
+   ```
+   The optional `### Parent: <slug>` header is recognised by the spec parser as a link to a parent spec — `/feature` does NOT emit it (this command creates root specs), but must not break if a user adds it manually. See `pipeline-config.md § Tactical Fix Discovery` and `commands/mustard/tactical-fix/SKILL.md` for the convention.
 3. Emit pipeline events for Full scope spec:
    ```bash
    mustard-rt run emit-pipeline --kind pipeline.scope --spec {spec-name} --payload "{\"scope\":\"full\",\"lang\":\"{lang}\",\"model\":\"{model}\",\"is_wave_plan\":false}"
-   mustard-rt run emit-pipeline --kind status --spec {spec-name} --payload "{\"from\":null,\"to\":\"draft\"}"
+   mustard-rt run emit-pipeline --kind pipeline.stage --spec {spec-name} --payload "{\"stage\":\"Plan\"}"
    ```
 4. Elegance Check: 3+ files or complex logic → "Is there a more elegant approach?"
 5. **Present full spec to user:** Read spec file and print ENTIRE contents verbatim in a fenced markdown block. Add 1-line change summary (WHAT + WHY). Then `AskUserQuestion`: **"Approve and implement?"** / **"Adjust (give feedback)"** / **"Save for later (stop)"**.
@@ -228,13 +237,22 @@ Run `mustard-rt run wave-tree --spec-dir .claude/spec/{spec-name}` and print the
 
 Light keeps the same two-layer shape but **lean** — a thin PRD layer and a thin Plano layer. Do NOT add bureaucracy: no Usuários/Stakeholders, no Não-Objetivos, no Entity Info, no Dependencies sections. The two dividers cost one line each and keep Light specs consistent with Full.
 
-1. Create `.claude/spec/{date}-{name}/spec.md` with compact format — headers: `# Enhancement: {name}`, `### Status: draft | Phase: PLAN | Scope: light`, `### Checkpoint: {ISO}`, `### Lang: {pt|en}`, then:
+1. Create `.claude/spec/{date}-{name}/spec.md` with compact format — headers: `# Enhancement: {name}`, then the header block:
+   ```
+   ### Stage: Plan
+   ### Outcome: Active
+   ### Flags:
+   ### Scope: light
+   ### Lang: {pt|en}
+   ### Checkpoint: {ISO}
+   ```
+   Then:
    - **PRD layer** — `## PRD` divider, then `## Contexto` (Lang=pt) or `## Context` (Lang=en) — heading EXACT, body **narrative prose 3-6 lines** (how the system should work + what's the gap + user/business impact; NO line numbers/method names/tables — see `../../../refs/feature/spec-language.md § Contexto Narrative Rules`), then `## Métrica de sucesso` (1 line — the single observable outcome that proves it worked), then `## Acceptance Criteria` (1-3 items, `- [ ] AC-1: {description} — Command: \`{exact command}\``; at least AC-1 must verify the feature works).
    - **Plano layer** — `## Plano` divider, then `## Summary` (1-2 lines, technical synthesis), `## Checklist` → `### {Agent} Agent` (steps + build/type-check), `## Files (~{N})` (paths).
 2. Emit pipeline events for Light scope spec:
    ```bash
    mustard-rt run emit-pipeline --kind pipeline.scope --spec {spec-name} --payload "{\"scope\":\"light\",\"lang\":\"{lang}\",\"model\":\"sonnet\",\"is_wave_plan\":false}"
-   mustard-rt run emit-pipeline --kind status --spec {spec-name} --payload "{\"from\":null,\"to\":\"draft\"}"
+   mustard-rt run emit-pipeline --kind pipeline.stage --spec {spec-name} --payload "{\"stage\":\"Plan\"}"
    ```
 3. **Present full spec to user:** Print ENTIRE contents verbatim in fenced markdown block. Then `AskUserQuestion`: **"Approve and implement now"** / **"Approve for later"** / **"Adjust"**.
 
@@ -252,10 +270,10 @@ Dispatch 1 Haiku Task(Explore) to verify work is still needed. Pre-check via `rt
 
 When user chooses "Approve and implement now":
 0. **Pre-EXECUTE Rewave Check:** Run `mustard-rt run exec-rewave-check --spec .claude/spec/{spec-name}/spec.md`. Parse JSON output. If `action: "decomposed"`, the spec was just split into N waves — proceed using wave-1's spec (`wave-1-{role}/spec.md`) instead of the original. If `action: "keep-single"` or `"skip"`, continue with the original spec normally. Silent operation — no AskUserQuestion.
-1. Update spec: `Status: implementing`, `Phase: EXECUTE`. Every agent prompt MUST include: `Return format cap: ≤50 lines. Apply compact Return Format from .claude/pipeline-config.md strictly.`
-2. Emit status transition to implementing:
+1. Update spec header: `### Stage: Execute`. Every agent prompt MUST include: `Return format cap: ≤50 lines. Apply compact Return Format from .claude/pipeline-config.md strictly.`
+2. Emit stage transition to Execute:
    ```bash
-   mustard-rt run emit-pipeline --kind status --spec {spec-name} --payload "{\"from\":\"draft\",\"to\":\"implementing\"}"
+   mustard-rt run emit-pipeline --kind pipeline.stage --spec {spec-name} --payload "{\"stage\":\"Execute\"}"
    ```
 3. Read `.claude/pipeline-config.md` for agent config. Grep `entity-registry.json` for specific entity block only
 4. Match recipes by title via Grep on `{subproject}/.claude/commands/recipes.md` — do NOT read full file
@@ -288,7 +306,7 @@ Classify before retrying: (1) **Transient?** → retry once immediately. (2) **R
 
 ### QA Phase (Wave 10)
 
-After all EXECUTE tasks complete: (1) emit phase transition via `mustard-rt run emit-phase --spec {specName} --to QA`. (2) Run `mustard-rt run qa-run --spec {specName}`. (3) `overall=pass` → update `## Acceptance Criteria` checkboxes, then emit `mustard-rt run emit-phase --spec {specName} --to CLOSE` (triggers `close-gate`) → CLOSE; `overall=fail` → return failing AC list to implementation agent, re-run; `overall=skip` (no AC) → warn + allow CLOSE. Max 3 QA iterations — then `AskUserQuestion`: "QA has failed 3 times. Choose: (a) Fix manually and retry, (b) Relax the AC, (c) Abort pipeline."
+After all EXECUTE tasks complete: (1) emit stage transition via `mustard-rt run emit-pipeline --kind pipeline.stage --spec {specName} --payload "{\"stage\":\"QaReview\"}"`. (2) Run `mustard-rt run qa-run --spec {specName}`. (3) `overall=pass` → update `## Acceptance Criteria` checkboxes, then emit `mustard-rt run emit-pipeline --kind pipeline.stage --spec {specName} --payload "{\"stage\":\"Close\"}"` (triggers `close-gate`) → CLOSE; `overall=fail` → return failing AC list to implementation agent, re-run; `overall=skip` (no AC) → warn + allow CLOSE. Max 3 QA iterations — then `AskUserQuestion`: "QA has failed 3 times. Choose: (a) Fix manually and retry, (b) Relax the AC, (c) Abort pipeline."
 
 Update `## Acceptance Criteria` checkboxes: `[x]` passed, `[ ]` failed. Visual: `[v] ANALYZE  [v] PLAN  [v] EXECUTE  [>] QA  [ ] CLOSE`
 

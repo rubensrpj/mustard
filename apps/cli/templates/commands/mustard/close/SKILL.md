@@ -85,9 +85,9 @@ See `.claude/pipeline-config.md` Escalation Statuses for concern classification 
 
 1. Locate spec in `.claude/spec/{name}/` (flat layout — no `active/completed/superseded` buckets; status is read from the spec header / SQLite projection)
 2. If none exists → inform user and stop
-3. **Spec Checkpoint — update spec header:**
-   - `### Status: completed`
-   - `### Phase: CLOSE`
+3. **Spec Checkpoint — update spec header (rewrite legacy `### Status:`/`### Phase:` lines if present):**
+   - `### Stage: Close`
+   - `### Outcome: Completed`
    - `### Checkpoint: {ISO timestamp now}`
    - **Verify Checklist consistency** — count `- [ ]` lines in `## Checklist`. If any remain, ABORT and report the unmarked items to the user (each item should already have been marked by the executor agent during EXECUTE via `mustard-rt run mark-checklist-item`). Do NOT batch-mark on behalf of the agents. `close-gate.js` enforces this same rule with `MUSTARD_CHECKLIST_GATE_MODE=strict`.
 4. **Entity Registry — update if needed:**
@@ -104,11 +104,13 @@ See `.claude/pipeline-config.md` Escalation Statuses for concern classification 
      - `session-cleanup` runs and the spec has been `closed-followup` for more than 24h, OR
      - A new `/mustard:feature|bugfix|task` invocation runs `mustard-rt run complete-spec <spec-name> --archive` on any pending followups first.
 6. **Pipeline State — emit completion:**
-   - Emit the status transition so the SQLite projection reflects the closed state:
+   - Emit the stage and outcome so the SQLite projection reflects the closed state:
      ```bash
-     mustard-rt run emit-pipeline --kind pipeline.status --spec {spec-name} --payload "{\"from\":\"implementing\",\"to\":\"completed\"}"
+     mustard-rt run emit-pipeline --kind pipeline.stage --spec {spec-name} --payload "{\"stage\":\"Close\"}"
+     mustard-rt run emit-pipeline --kind pipeline.outcome --spec {spec-name} --payload "{\"outcome\":\"Completed\"}"
+     mustard-rt run emit-pipeline --kind pipeline.flag.set --spec {spec-name} --payload "{\"flag\":\"followup_open\"}"
      ```
-   - The `closed-followup` state intentionally stays around so follow-up edits get linked. No JSON file is deleted here — the `--archive` stage in `mustard-rt run complete-spec` handles archival.
+   - The `followup_open` flag keeps the spec visible for follow-up edits. No JSON file is deleted here — the `--archive` stage in `mustard-rt run complete-spec` handles archival.
 6b. **Knowledge Capture:**
    - Review patterns discovered during this pipeline
    - For each significant pattern/convention/entity discovered:
@@ -185,12 +187,13 @@ See `.claude/pipeline-config.md` Escalation Statuses for concern classification 
 ## Cancellation Flow
 
 If the user wants to cancel (not complete):
-- Update spec: `### Status: cancelled`
-- Emit cancellation status event (no filesystem move — status lives in the header + SQLite projection):
+- Update spec header: `### Stage: Close`, `### Outcome: Cancelled`
+- Emit cancellation (no filesystem move — status lives in the header + SQLite projection):
   ```bash
-  mustard-rt run emit-pipeline --kind pipeline.status --spec {spec-name} --payload "{\"from\":null,\"to\":\"cancelled\"}"
+  mustard-rt run emit-pipeline --kind pipeline.stage --spec {spec-name} --payload "{\"stage\":\"Close\"}"
+  mustard-rt run emit-pipeline --kind pipeline.outcome --spec {spec-name} --payload "{\"outcome\":\"Cancelled\"}"
   ```
-- Output: "Pipeline cancelled. Spec marked status=cancelled."
+- Output: "Pipeline cancelled. Spec marked Stage=Close / Outcome=Cancelled."
 
 ## Results Documentation
 

@@ -47,16 +47,18 @@ Check if the located spec is a wave plan: look for `.claude/spec/{specName}/wave
 
 **If `wave-plan.md` does NOT exist:** proceed as a single spec (original behavior below).
 
-4. **Spec Checkpoint — update spec header:**
-   - `### Status: approved`
-   - `### Phase: PLAN`
+4. **Spec Checkpoint — update spec header to new format (rewrite legacy `### Status:`/`### Phase:` lines if present):**
+   - `### Stage: Plan`
+   - `### Outcome: Active`
+   - `### Flags:`
    - `### Checkpoint: {ISO timestamp now}`
-5. **Pipeline State — emit status transition to approved:**
+   (preserve existing `### Scope:`, `### Lang:`, `### Parent:` lines)
+5. **Pipeline State — emit stage transition to Plan:**
    - Extract `spec-name` from the spec directory (e.g. basename of path → `2026-02-26-linked-services-card`)
    ```bash
-   mustard-rt run emit-pipeline --kind pipeline.status --spec {spec-name} --payload "{\"from\":\"draft\",\"to\":\"approved\"}"
+   mustard-rt run emit-pipeline --kind pipeline.stage --spec {spec-name} --payload "{\"stage\":\"Plan\"}"
    ```
-   - Phase is derived from `pipeline.phase` events in SQLite; the `mustard-rt run emit-phase` calls elsewhere in the pipeline remain the canonical phase signal. No JSON file is written here.
+   - No JSON file is written here.
 5b. **Memory Persist — record architectural decisions:**
    - For each significant decision in the spec (technology choices, design patterns, trade-offs):
      ```bash

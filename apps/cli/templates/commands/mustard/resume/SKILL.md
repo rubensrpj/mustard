@@ -79,11 +79,10 @@ Before loading heavy context (sync-registry, diff-context, Explore Gate), ask th
         1. Run `mustard-rt run wave-tree --spec-dir .claude/spec/{specName} --format json` and parse `waves[]` (each has `{label, folder, status}`).
         2. **Truly fresh plan** — every wave has `status === "queued"` (never executed) → stop and instruct: `Wave plan isn't approved yet. Run /mustard:approve {specName} first.`
         3. **Plan already in progress** — at least one wave has `status !== "queued"` (proves it was approved & started, the state file was just lost):
-           - Reconstruct state by emitting events into SQLite (phase is derived from `pipeline.phase` events; omit any phase-name field):
+           - Reconstruct state by emitting events into SQLite:
              ```bash
              mustard-rt run emit-pipeline --kind pipeline.scope --spec {specName} --payload "{\"scope\":\"full\",\"is_wave_plan\":true,\"total_waves\":{waves.length}}"
-             mustard-rt run emit-pipeline --kind pipeline.status --spec {specName} --payload "{\"from\":null,\"to\":\"implementing\"}"
-             mustard-rt run emit-phase --spec {specName} --to EXECUTE
+             mustard-rt run emit-pipeline --kind pipeline.stage --spec {specName} --payload "{\"stage\":\"Execute\"}"
              ```
            - The projection `pipeline_state_for_spec` will derive `completedWaves`, `currentWave`, and `totalWaves` from the wave.complete events already in the log — no JSON file is written.
            - Inform user inline: `Reconstruí pipeline-state do wave-plan.md (W{completed} done, W{currentWave} next).`
@@ -100,7 +99,7 @@ Before loading heavy context (sync-registry, diff-context, Explore Gate), ask th
      4. Proceed to step 4 with the now-expanded spec.
 4. **Read entire operational spec** (single Read) — extract header (Status/Phase/Checkpoint) + count `[x]` vs `[ ]` + identify agents/waves from headers `### {Agent} Agent (Wave {N})`
 
-   4a. **Phase marker on ANALYZE resume:** if the extracted `Phase` is `ANALYZE`, run `mustard-rt run emit-phase --spec {specName} --to ANALYZE`. A pipeline interrupted mid-ANALYZE has no pipeline-state file yet, so `pipeline-phase.js` never recorded it — emit the marker here. Idempotent (no duplicate if already emitted) and fail-open. Skip for any other phase (those already have a pipeline-state file the hook tracks).
+   4a. **Phase marker on ANALYZE resume:** if the extracted `### Stage:` is `Analyze` (or legacy `### Phase: ANALYZE`), run `mustard-rt run emit-pipeline --kind pipeline.stage --spec {specName} --payload "{\"stage\":\"Analyze\"}"`. A pipeline interrupted mid-ANALYZE has no events yet — emit the marker here. Idempotent (the binary deduplicates) and fail-open. Skip for any other stage.
 5. Load pipeline state derived from the SQLite event log (`mustard-rt run event-projections --view pipeline-state --spec {specName}`) (single-spec mode; wave-plan mode already loaded it in step 3) → read for current wave + scope + `explorationSummary` + `decisions`. Optionally enrich with harness view (fail-open). Validate integrity (trust spec header on mismatch).
 6. **Present Handoff Summary** — compiled from pipeline state + spec + agent memory + git context.
 
@@ -133,13 +132,12 @@ Alongside the diff-context refresh, produce the relevance-filtered glossary slic
 The slice is stable for the whole pipeline, so it sits in the PREFIX-STABLE block and caches across dispatches. **Re-run the snapshot only on a wave transition** (same cadence as the diff refresh). **Skip if `resumeMode === "continued"`** unless a wave just completed — the prior snapshot is reused from `.claude/.pipeline-states/{specName}.context-md.md`.
 
 7. **Read** `.claude/pipeline-config.md`. For `entity-registry.json`: use Grep to extract ONLY the relevant entity block (e.g. `"Contract":`), NEVER read the full JSON
-9. **Update spec header:** `Status: implementing`, `Phase: EXECUTE`, `Checkpoint: {ISO now}`
-10. **Emit status transition to implementing:**
+9. **Update spec header:** `### Stage: Execute`, `### Checkpoint: {ISO now}`
+10. **Emit stage transition to Execute:**
     ```bash
-    mustard-rt run emit-pipeline --kind pipeline.status --spec {specName} --payload "{\"from\":\"approved\",\"to\":\"implementing\"}"
-    mustard-rt run emit-phase --spec {specName} --to EXECUTE
+    mustard-rt run emit-pipeline --kind pipeline.stage --spec {specName} --payload "{\"stage\":\"Execute\"}"
     ```
-    Phase is derived from `pipeline.phase` events in SQLite — no JSON file is written.
+    No JSON file is written.
 11. **TaskCreate** — 1 per pending agent (skip completed)
 
 ### Step 3: Execute — Wave System
@@ -262,10 +260,10 @@ Extract CRITICAL findings verbatim from review return (or harness view). Build r
 
 After REVIEW returns APPROVED, run QA before CLOSE. NEVER go REVIEW→CLOSE directly — `close-gate.js` denies CLOSE without a passing `qa.result` event.
 
-1. Emit phase transition: `mustard-rt run emit-phase --spec {specName} --to QA`.
+1. Emit stage transition: `mustard-rt run emit-pipeline --kind pipeline.stage --spec {specName} --payload "{\"stage\":\"QaReview\"}"`.
 2. Run `mustard-rt run qa-run --spec {specName}`. For wave plans, `{specName}` is the wave-plan directory name.
 3. Branch on `overall`:
-   - **pass** — update `## Acceptance Criteria` checkboxes in the spec (`[x]` for each passed AC), then emit `mustard-rt run emit-phase --spec {specName} --to CLOSE` (`close-gate` verifies the `qa.result` event before allowing CLOSE) → proceed to Step 20.
+   - **pass** — update `## Acceptance Criteria` checkboxes in the spec (`[x]` for each passed AC), then emit `mustard-rt run emit-pipeline --kind pipeline.stage --spec {specName} --payload "{\"stage\":\"Close\"}"` (`close-gate` verifies the `qa.result` event before allowing CLOSE) → proceed to Step 20.
    - **fail** — extract the failing AC list and re-dispatch via the Step 19b Fix Loop Dispatch Protocol, then re-run this step. Maximum 3 QA iterations.
    - **skip** (no Acceptance Criteria section) — inform inline `QA pulado — spec sem Acceptance Criteria`, then proceed to Step 20.
 4. After 3 failed QA iterations → `AskUserQuestion`: "(a) corrigir manualmente e repetir, (b) relaxar o AC na spec, (c) abortar pipeline."
@@ -276,7 +274,12 @@ After REVIEW returns APPROVED, run QA before CLOSE. NEVER go REVIEW→CLOSE dire
     - `mustard-rt run sync-registry`
     - Spec: `Status: completed`, `Phase: CLOSE`, all `[ ]` → `[x]`. For wave plans: mark `wave-plan.md` status `completed`, and mark each `wave-N-{role}/spec.md` completed too.
     - The spec dir stays at `.claude/spec/{specName}/` — status flips to `completed` via the emit below; no filesystem move.
-    - **Emit completion** via `mustard-rt run emit-pipeline --kind pipeline.status --spec {spec-name} --payload "{\"from\":\"implementing\",\"to\":\"completed\"}"` (no JSON file to delete — phase is derived from `pipeline.phase` events in SQLite; the harness handles archival).
+    - **Emit completion:**
+      ```bash
+      mustard-rt run emit-pipeline --kind pipeline.stage --spec {spec-name} --payload "{\"stage\":\"Close\"}"
+      mustard-rt run emit-pipeline --kind pipeline.outcome --spec {spec-name} --payload "{\"outcome\":\"Completed\"}"
+      ```
+      No JSON file to delete — the harness handles archival.
     - **Pipeline Summary (BEFORE banner):** run `mustard-rt run pipeline-summary --spec-dir .claude/spec/{specName}` and print the markdown inline. For wave plans, the same spec-dir applies (the command reads the root `spec.md`; for wave-plan-final closes, use the wave-plan dir). Fail-open: on non-zero exit, log a warning and continue with the banner — do NOT abort CLOSE. Apply to both single-spec and wave-plan-final paths.
     - **Wave Tree (before banner):** `mustard-rt run wave-tree --spec-dir .claude/spec/{specName}`. Fail-open.
     - Output with agent colors: `═══ PIPELINE COMPLETE — {name} | Agents: {n} ok | Files: {c} created, {m} modified ═══` (for wave plans: append `| Waves: {totalWaves}`).
