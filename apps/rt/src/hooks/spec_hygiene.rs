@@ -37,7 +37,8 @@ use mustard_core::store::event_store::EventSink;
 use mustard_core::store::sqlite_store::SqliteEventStore;
 use mustard_core::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
 use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
-use mustard_core::Outcome as SpecOutcome;
+use mustard_core::spec;
+use mustard_core::{Flags, Outcome as SpecOutcome, SpecState, Stage};
 use serde_json::{json, Value};
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -187,52 +188,16 @@ impl Evidence {
 /// `true` when a spec's `spec.md` header marks it as still active — i.e. its
 /// canonical [`SpecOutcome`] is `Active` (or no terminal status is declared).
 ///
-/// Reads `### Outcome:` (new header) first, then the legacy `### Status:`.
-/// A header with no recognised terminal token is treated as active.
+/// Delegates to the canonical [`mustard_core::spec`] parser, which is
+/// tolerant of the new `### Stage:`/`### Outcome:` header *and* every legacy
+/// `### Status:`/`### Phase:` shape. A spec with no recognisable lifecycle
+/// header is treated as active (a fresh spec).
 fn is_active_spec(spec_md: &str) -> bool {
-    // The new `### Outcome:` header is the source of truth when present.
-    if let Some(outcome_raw) = header_field(spec_md, "Outcome") {
-        return !is_terminal_outcome(&outcome_raw);
+    match spec::parse_state(spec_md) {
+        Some(state) => state.is_active(),
+        // No recognisable lifecycle header → treat as active.
+        None => true,
     }
-    // Fall back to the legacy `### Status:` header.
-    if let Some(status_raw) = header_field(spec_md, "Status") {
-        return !is_terminal_outcome(&status_raw);
-    }
-    // No status header at all → treat as active (a fresh spec).
-    true
-}
-
-/// `true` when a header value parses to a terminal [`SpecOutcome`]
-/// (`Completed` / `Cancelled` / `Abandoned`). `SpecOutcome::parse` already maps
-/// the legacy spellings (`closed`, `superseded`, `orphan`, …).
-fn is_terminal_outcome(raw: &str) -> bool {
-    matches!(
-        SpecOutcome::parse(raw),
-        Some(SpecOutcome::Completed) | Some(SpecOutcome::Cancelled) | Some(SpecOutcome::Abandoned)
-    )
-}
-
-/// The value of an `### <Key>:` header line (case-insensitive on the key),
-/// trimmed. Returns `None` when the key is absent in the leading header block.
-fn header_field(spec_md: &str, key: &str) -> Option<String> {
-    let want = key.to_ascii_lowercase();
-    for line in spec_md.lines() {
-        let t = line.trim_start();
-        let Some(rest) = t.strip_prefix("###") else {
-            continue;
-        };
-        let rest = rest.trim_start();
-        let lower = rest.to_ascii_lowercase();
-        if let Some(after_key) = lower.strip_prefix(&want) {
-            let after_key = after_key.trim_start();
-            if let Some(after_colon) = after_key.strip_prefix(':') {
-                // Map back onto the original (preserving case of the value).
-                let value_start = rest.len() - after_colon.len();
-                return Some(rest[value_start..].trim().to_string());
-            }
-        }
-    }
-    None
 }
 
 /// Compute AC evidence from a spec body: `(ac_pct, ac_complete, has_ac)`.
@@ -514,57 +479,19 @@ fn run_close_gate(cwd: &Path, spec: &str) -> Result<(), Blocker> {
     }
 }
 
-/// Rewrite the spec header so its outcome reads `Completed`. Sets `### Outcome:
-/// Completed` when an `### Outcome:` line exists; otherwise rewrites a legacy
-/// `### Status:` line to `completed`. Fail-open: a missing file or marker is a
-/// no-op.
+/// Rewrite the spec header so it reads the terminal `Close` + `Completed`
+/// canonical state, emitting the NEW three-line header format regardless of the
+/// legacy shape it started in. Delegates the atomic, byte-stable rewrite to the
+/// canonical [`mustard_core::spec`] writer. Fail-open: a missing file or a
+/// write error is a silent no-op (the `pipeline.outcome` event the caller also
+/// emits remains the durable record).
 fn mark_completed(spec_md_path: &Path) {
-    let Ok(content) = std::fs::read_to_string(spec_md_path) else {
+    // `SpecState::new(Close, Completed, default)` is always legal; the
+    // unreachable Err arm degrades to a no-op via the `Ok(_)` guard.
+    let Ok(state) = SpecState::new(Stage::Close, SpecOutcome::Completed, Flags::default()) else {
         return;
     };
-    let has_outcome = header_field(&content, "Outcome").is_some();
-    let (key, value) = if has_outcome {
-        ("Outcome", "Completed")
-    } else {
-        ("Status", "completed")
-    };
-    let want = key.to_ascii_lowercase();
-    let mut out = String::with_capacity(content.len() + 16);
-    let mut first = true;
-    let mut done = false;
-    for line in content.split('\n') {
-        if !first {
-            out.push('\n');
-        }
-        first = false;
-        if done {
-            out.push_str(line);
-            continue;
-        }
-        let trimmed = line.trim_start();
-        if let Some(rest) = trimmed.strip_prefix("###") {
-            let after_hashes = rest.trim_start();
-            let lower = after_hashes.to_ascii_lowercase();
-            if let Some(tail) = lower.strip_prefix(&want) {
-                if tail.trim_start().starts_with(':') {
-                    let indent_len = line.len() - line.trim_start().len();
-                    out.push_str(&line[..indent_len]);
-                    out.push_str("### ");
-                    out.push_str(key);
-                    out.push_str(": ");
-                    out.push_str(value);
-                    done = true;
-                    continue;
-                }
-            }
-        }
-        out.push_str(line);
-    }
-    // Only write when we actually rewrote a header line (avoid touching files
-    // that never had the marker).
-    if done {
-        let _ = std::fs::write(spec_md_path, out);
-    }
+    let _ = spec::write_state(spec_md_path, &state);
 }
 
 // ---------------------------------------------------------------------------

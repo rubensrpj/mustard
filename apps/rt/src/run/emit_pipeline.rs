@@ -25,7 +25,8 @@ use mustard_core::model::event::{
     EVENT_PIPELINE_RESUME_MODE, EVENT_PIPELINE_SCOPE, EVENT_PIPELINE_STATUS,
     EVENT_PIPELINE_TASK_COMPLETE, EVENT_PIPELINE_TASK_DISPATCH, EVENT_PIPELINE_WAVE_COMPLETE,
 };
-use mustard_core::{Outcome, Stage};
+use mustard_core::spec;
+use mustard_core::{Flags, Outcome, SpecState, Stage};
 use serde_json::{json, Value};
 use std::path::Path;
 
@@ -284,76 +285,64 @@ fn alias_event(
     })
 }
 
-/// Rewrite the `### Status:` line of `.claude/spec/{spec}/spec.md` so it
-/// matches the freshly emitted `pipeline.status: <to>` event. Pure side
-/// effect — every error path is a warn (the contract is fail-open per the
-/// module-level docs).
+/// Resolve a `pipeline.status: <to>` target word into a canonical
+/// [`SpecState`]. Accepts a [`Stage`] spelling (`plan`/`execute`/…), a legacy
+/// flat status (`implementing`/`reviewing`/…), a terminal [`Outcome`]
+/// (`completed`/…), or a qualifier (`closed-followup`/`blocked`/`wave-failed`).
+/// Fail-open: an unrecognised token degrades to the earliest-meaningful state
+/// (`Plan` + `Active`).
+fn state_from_status_word(to: &str) -> SpecState {
+    let fallback = SpecState::new(Stage::Plan, Outcome::Active, Flags::default())
+        .unwrap_or(SpecState { stage: Stage::Plan, outcome: Outcome::Active, flags: Flags::default() });
+    let lower = to.trim().to_ascii_lowercase();
+
+    // Terminal outcomes pin the stage to Close.
+    if let Some(outcome) = Outcome::parse(&lower) {
+        if outcome != Outcome::Active {
+            return SpecState::new(Stage::Close, outcome, Flags::default()).unwrap_or(fallback);
+        }
+    }
+    // Qualifier words map to Close+Active+followup / a flag.
+    if matches!(lower.as_str(), "closed-followup" | "closed_followup") {
+        return SpecState::new(
+            Stage::Close,
+            Outcome::Active,
+            Flags { followup_open: true, ..Flags::default() },
+        )
+        .unwrap_or(fallback);
+    }
+    let flags = Flags::parse(&lower);
+    if flags.wave_failed {
+        return SpecState::new(Stage::Execute, Outcome::Active, flags).unwrap_or(fallback);
+    }
+    if flags.blocked {
+        return SpecState::new(Stage::Plan, Outcome::Active, flags).unwrap_or(fallback);
+    }
+    // Otherwise a stage spelling.
+    let stage = Stage::parse(&lower).unwrap_or(Stage::Plan);
+    SpecState::new(stage, Outcome::Active, Flags::default()).unwrap_or(fallback)
+}
+
+/// Rewrite the lifecycle header of `.claude/spec/{spec}/spec.md` so it matches
+/// the freshly emitted `pipeline.status: <to>` event, **always emitting the
+/// canonical new three-line header** regardless of the legacy shape it started
+/// in. Delegates the atomic, byte-stable rewrite (including header insertion
+/// when one is absent) to the canonical [`mustard_core::spec`] writer.
 ///
-/// The match is intentionally narrow: the first line whose trimmed prefix is
-/// `### Status:` (case-insensitive on the key) gets its value replaced. If
-/// no such line exists we emit a `WARN` to stderr and return — we don't try
-/// to *insert* a header because that would silently mutate spec.md shape
-/// (and the close-gate is the right place to enforce that header exists).
+/// Pure side effect — every error path is a warn (the contract is fail-open per
+/// the module-level docs). A missing file warns and returns; the event has
+/// already been recorded so a stale header is non-fatal.
 fn sync_spec_status_header(cwd: &Path, spec: &str, to: &str) {
     let path = cwd.join(".claude").join("spec").join(spec).join("spec.md");
-    let content = match std::fs::read_to_string(&path) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!(
-                "emit-pipeline: WARN: cannot read {} ({e}); skipping header sync",
-                path.display()
-            );
-            return;
-        }
-    };
-
-    let mut found = false;
-    let mut out = String::with_capacity(content.len() + 16);
-    let mut first = true;
-    for line in content.split('\n') {
-        if !first {
-            out.push('\n');
-        }
-        first = false;
-        if found {
-            out.push_str(line);
-            continue;
-        }
-        let trimmed = line.trim_start();
-        // `^###\s+status\s*:` (case-insensitive on the key) — keep the line's
-        // original indentation so we don't reflow the file.
-        if let Some(rest) = trimmed.strip_prefix("###") {
-            let after_hashes = rest.trim_start_matches([' ', '\t']);
-            if after_hashes.len() < rest.len() {
-                // Case-insensitive prefix match on the literal `Status`.
-                let lower = after_hashes.to_ascii_lowercase();
-                if let Some(tail) = lower.strip_prefix("status") {
-                    let after_status = tail.trim_start_matches([' ', '\t']);
-                    if let Some(_after_colon) = after_status.strip_prefix(':') {
-                        // Reconstruct: original indent + `### Status: <to>`.
-                        let indent_len = line.len() - line.trim_start().len();
-                        let indent = &line[..indent_len];
-                        out.push_str(indent);
-                        out.push_str("### Status: ");
-                        out.push_str(to);
-                        found = true;
-                        continue;
-                    }
-                }
-            }
-        }
-        out.push_str(line);
-    }
-
-    if !found {
+    if !path.exists() {
         eprintln!(
-            "emit-pipeline: WARN: no `### Status:` header found in {}; skipping",
+            "emit-pipeline: WARN: cannot read {}; skipping header sync",
             path.display()
         );
         return;
     }
-
-    if let Err(e) = std::fs::write(&path, out) {
+    let state = state_from_status_word(to);
+    if let Err(e) = spec::write_state(&path, &state) {
         eprintln!(
             "emit-pipeline: WARN: could not write {} ({e}); status header may be stale",
             path.display()
@@ -604,8 +593,8 @@ mod tests {
         (dir, path)
     }
 
-    /// The header sync rewrites the `### Status:` line to the new value when
-    /// the file exists and the marker is present.
+    /// The header sync rewrites the legacy header into the canonical NEW
+    /// three-line form, dropping the legacy `### Status:`/`### Phase:` lines.
     #[test]
     fn sync_status_header_rewrites_existing_marker() {
         let (dir, path) = seed_spec_md(
@@ -614,14 +603,18 @@ mod tests {
         );
         super::sync_spec_status_header(dir.path(), "demo", "completed");
         let after = std::fs::read_to_string(&path).unwrap();
-        assert!(
-            after.contains("### Status: completed"),
-            "header should be rewritten: {after:?}"
+        // New canonical header emitted; legacy lines removed.
+        assert!(after.contains("### Stage: Close"), "{after:?}");
+        assert!(after.contains("### Outcome: Completed"), "{after:?}");
+        assert!(!after.contains("### Status:"));
+        assert!(!after.contains("### Phase:"));
+        // Re-parsing yields the terminal completed state.
+        assert_eq!(
+            spec::parse_state(&after).map(|s| spec::status_word(&s).to_string()),
+            Some("completed".to_string())
         );
-        // Other headers untouched.
-        assert!(after.contains("### Phase: EXECUTE"));
-        // The implementing line is gone.
-        assert!(!after.contains("### Status: implementing"));
+        // Body preserved.
+        assert!(after.contains("## Body"));
     }
 
     /// Fail-open contract: a missing spec.md is a no-op, never a panic.
@@ -633,30 +626,31 @@ mod tests {
         assert!(!dir.path().join(".claude/spec/ghost/spec.md").exists());
     }
 
-    /// Fail-open contract: a spec.md without a `### Status:` line is left
-    /// alone, with a WARN to stderr. We assert the file content is unchanged.
+    /// A spec.md without any lifecycle header gains a canonical header (the
+    /// core writer inserts one after the `# Title`).
     #[test]
-    fn sync_status_header_missing_marker_leaves_file_unchanged() {
+    fn sync_status_header_inserts_when_absent() {
         let (dir, path) = seed_spec_md("demo", "# Demo\n\n## Body\nno header\n");
-        let before = std::fs::read_to_string(&path).unwrap();
         super::sync_spec_status_header(dir.path(), "demo", "completed");
         let after = std::fs::read_to_string(&path).unwrap();
-        assert_eq!(before, after);
+        assert!(after.contains("### Stage: Close"));
+        assert!(after.contains("### Outcome: Completed"));
+        assert!(after.contains("no header"));
     }
 
-    /// Indentation on the header line is preserved (we only rewrite the value
-    /// after the colon, not the leading whitespace).
+    /// A legacy header is rewritten to the canonical form and re-parses to the
+    /// requested status; body lines are preserved.
     #[test]
-    fn sync_status_header_preserves_original_lines() {
+    fn sync_status_header_round_trips_new_value() {
         let body = "# Spec\n\n### Status: planning\n\nbody line\n";
         let (dir, path) = seed_spec_md("demo", body);
         super::sync_spec_status_header(dir.path(), "demo", "implementing");
         let after = std::fs::read_to_string(&path).unwrap();
-        assert!(after.contains("### Status: implementing"));
+        assert!(after.contains("### Stage: Execute"));
         assert!(after.contains("body line"));
-        // No trailing newline drift: original ended with \n, new should too
-        // (we re-join lines split on `\n` so the trailing empty segment is
-        // preserved).
-        assert_eq!(after.matches('\n').count(), body.matches('\n').count());
+        assert_eq!(
+            spec::parse_state(&after).map(|s| spec::status_word(&s).to_string()),
+            Some("implementing".to_string())
+        );
     }
 }

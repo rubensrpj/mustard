@@ -12,7 +12,6 @@
 //! data with no side effects; [`tree_checksum`] is the one helper that touches
 //! the filesystem, and it is consumed by the `artifact-update` engine.
 
-use std::fs;
 use std::io;
 use std::path::Path;
 
@@ -133,7 +132,8 @@ pub fn tree_checksum(dir: &Path) -> io::Result<String> {
     for (rel, abs) in files {
         hasher.update(rel.as_bytes());
         hasher.update([0u8]);
-        hasher.update(fs::read(&abs)?);
+        let bytes = crate::fs::read(&abs).map_err(|e| io::Error::other(e.to_string()))?;
+        hasher.update(bytes);
     }
     Ok(hex_encode(&hasher.finalize()))
 }
@@ -145,10 +145,10 @@ fn collect_files(
     dir: &Path,
     out: &mut Vec<(String, std::path::PathBuf)>,
 ) -> io::Result<()> {
-    for entry in fs::read_dir(dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        if entry.file_type()?.is_dir() {
+    let entries = crate::fs::read_dir(dir).map_err(|e| io::Error::other(e.to_string()))?;
+    for entry in entries {
+        let path = entry.path;
+        if entry.is_dir {
             collect_files(root, &path, out)?;
         } else {
             let rel = path
@@ -240,16 +240,16 @@ mod tests {
     #[test]
     fn tree_checksum_is_stable_and_path_sensitive() {
         let dir = tempfile::tempdir().unwrap();
-        fs::write(dir.path().join("a.txt"), b"alpha").unwrap();
-        fs::create_dir(dir.path().join("sub")).unwrap();
-        fs::write(dir.path().join("sub/b.txt"), b"beta").unwrap();
+        crate::fs::write_atomic(&dir.path().join("a.txt"), b"alpha").unwrap();
+        crate::fs::create_dir_all(&dir.path().join("sub")).unwrap();
+        crate::fs::write_atomic(&dir.path().join("sub/b.txt"), b"beta").unwrap();
 
         let first = tree_checksum(dir.path()).unwrap();
         let second = tree_checksum(dir.path()).unwrap();
         assert_eq!(first, second, "checksum must be deterministic");
         assert_eq!(first.len(), 64, "sha256 hex is 64 chars");
 
-        fs::write(dir.path().join("sub/b.txt"), b"gamma").unwrap();
+        crate::fs::write_atomic(&dir.path().join("sub/b.txt"), b"gamma").unwrap();
         assert_ne!(first, tree_checksum(dir.path()).unwrap(), "content change shifts digest");
     }
 }

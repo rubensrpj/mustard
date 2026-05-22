@@ -196,7 +196,7 @@ impl SqliteEventStore {
         let path = path.into();
         if let Some(parent) = path.parent() {
             if !parent.as_os_str().is_empty() && !parent.exists() {
-                std::fs::create_dir_all(parent)?;
+                crate::fs::create_dir_all(parent)?;
             }
         }
         let conn = Connection::open(&path)?;

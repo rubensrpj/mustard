@@ -11,7 +11,7 @@ source: scan
 - Trait methods return `Result<T>` (using `crate::error::Result`). Implementations never panic.
 - An in-memory fake for the trait lives inside `#[cfg(test)]` in the same file. It uses `RefCell<Vec<_>>` (single-threaded) or `Mutex<HashMap<_,_>>` (when Send is needed).
 - The production struct holds a `PathBuf` root; `for_project(dir)` is the standard constructor.
-- Atomic writes use `io::fs::write_atomic` — a rename guarantees readers never see a torn file.
+- Atomic writes use `fs::write_atomic` (the canonical `crate::fs` seam) — a rename guarantees readers never see a torn file.
 - Missing files are `Error::NotFound`, not `Error::Io` — callers can fail-open on absence without swallowing real failures.
 
 ## Real examples in this codebase
@@ -20,7 +20,7 @@ source: scan
 - Trait + FS implementation: `packages/core/src/io/pipeline_repo.rs` — `PipelineRepo` / `FsPipelineRepo`
 - Env abstraction: `packages/core/src/env.rs` — `Env` trait, `ProcessEnv`, `MapEnv`
 - Knowledge selector: `packages/core/src/knowledge.rs` — `ContextSelector`, `PassthroughSelector`
-- Atomic write primitive: `packages/core/src/io/fs.rs` — `write_atomic`, `append_line`
+- Filesystem seam (port + RealFs + FakeFs + free fns): `packages/core/src/fs/` — `Fs`, `RealFs`, `FakeFs`, `write_atomic`, `append_line`
 
 ## References
 

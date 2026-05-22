@@ -30,6 +30,9 @@
 //!   preserved. The rewrite never indexes a string with `&s[a..b]` (which
 //!   panics off a char boundary) — it operates on whole lines.
 
+use mustard_core::spec::{
+    self, flags_label, header_field, outcome_label, stage_label,
+};
 use mustard_core::{Flags, Outcome, Stage};
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -65,48 +68,6 @@ struct Resolved {
     flags: Flags,
     /// `Some(note)` when the terminal/qualifier rules overrode the `Phase`.
     inferred_stage_override: Option<String>,
-}
-
-/// The TitleCase header spelling of a [`Stage`] (round-trips through
-/// [`Stage::parse`], which is case-insensitive).
-fn stage_label(stage: Stage) -> &'static str {
-    match stage {
-        Stage::Analyze => "Analyze",
-        Stage::Plan => "Plan",
-        Stage::Execute => "Execute",
-        Stage::QaReview => "QaReview",
-        Stage::Close => "Close",
-        // `Stage` is `#[non_exhaustive]`; a future variant degrades to Plan.
-        _ => "Plan",
-    }
-}
-
-/// The TitleCase header spelling of an [`Outcome`].
-fn outcome_label(outcome: Outcome) -> &'static str {
-    match outcome {
-        Outcome::Active => "Active",
-        Outcome::Completed => "Completed",
-        Outcome::Cancelled => "Cancelled",
-        Outcome::Abandoned => "Abandoned",
-        // `Outcome` is `#[non_exhaustive]`; a future variant degrades to Active.
-        _ => "Active",
-    }
-}
-
-/// The comma-separated flag tokens of a [`Flags`] (canonical snake_case
-/// spellings; empty string when no flag is set).
-fn flags_label(flags: &Flags) -> String {
-    let mut out: Vec<&str> = Vec::new();
-    if flags.blocked {
-        out.push("blocked");
-    }
-    if flags.wave_failed {
-        out.push("wave_failed");
-    }
-    if flags.followup_open {
-        out.push("followup_open");
-    }
-    out.join(", ")
 }
 
 /// Whether a legacy `Status` token is terminal (Completed / Cancelled /
@@ -266,125 +227,28 @@ fn resolve(status: Option<&str>, phase: Option<&str>) -> Option<Resolved> {
 }
 
 // ---------------------------------------------------------------------------
-// Header extraction (tolerant, CRLF-safe)
+// Header extraction (tolerant, CRLF-safe) — delegated to `mustard_core::spec`
+//
+// The header-region scoping + the `### Key:` / `- **Key**:` tolerant extraction
+// + the byte-stable rewrite all live in the canonical core module now; this
+// subcommand only adds the dry-run/audit envelope on top.
 // ---------------------------------------------------------------------------
 
-/// Strip a legacy header prefix off a trimmed line, returning the remainder
-/// after the key (i.e. starting at the `:`). Recognizes BOTH legacy shapes,
-/// case-insensitively on the key:
-///
-/// - `### <Key>:` — the `###`-heading form.
-/// - `- **<Key>**:` — the bullet-list form (`**`-bold key), as used by the
-///   older `# Mustard 2.0 — Phase N` specs.
-///
-/// Returns `(value_after_colon_trimmed)` with the original casing preserved.
-fn strip_header_key(line: &str, key: &str) -> Option<String> {
-    let want = key.to_ascii_lowercase();
-    let t = line.trim_start();
-    // `### <Key>:` form.
-    if let Some(rest) = t.strip_prefix("###") {
-        let rest = rest.trim_start();
-        let lower = rest.to_ascii_lowercase();
-        if let Some(after_key) = lower.strip_prefix(&want) {
-            let after_key = after_key.trim_start();
-            if let Some(after_colon) = after_key.strip_prefix(':') {
-                let value_start = rest.len() - after_colon.len();
-                return Some(rest[value_start..].trim().to_string());
-            }
-        }
-    }
-    // `- **<Key>**:` bullet form.
-    if let Some(rest) = t.strip_prefix("- **").or_else(|| t.strip_prefix("-\t**")) {
-        let lower = rest.to_ascii_lowercase();
-        if let Some(after_key) = lower.strip_prefix(&want) {
-            let after_key = after_key.trim_start();
-            // Expect the closing `**` then a `:`.
-            if let Some(after_bold) = after_key.strip_prefix("**") {
-                let after_bold = after_bold.trim_start();
-                if let Some(after_colon) = after_bold.strip_prefix(':') {
-                    let value_start = rest.len() - after_colon.len();
-                    return Some(rest[value_start..].trim().to_string());
-                }
-            }
-        }
-    }
-    None
-}
-
-/// The number of leading lines that make up the **header region** — the
-/// contiguous metadata block at the top of a spec, *before* the body begins.
-///
-/// A spec header is a run of `### Key:` / `- **Key**:` lines (with blank lines
-/// and a leading `# Title` allowed). The region ends at the first line that is
-/// unmistakably body: a level-2 `## ` section heading, or the opening of a
-/// fenced code block (```` ``` ````/`~~~`). Any `### Stage:`/`### Status:` that
-/// appears *after* this point is prose or an example — never a real header — so
-/// scoping header detection to `line_index < header_region_lines(content)`
-/// stops the migration from being fooled by specs that document the new format.
-///
-/// We deliberately do NOT terminate on the first prose paragraph: legacy specs
-/// interleave a `## Justificativa` body section, but their header bullets always
-/// precede the first `## `/code-fence, so the level-2/fence boundary is the
-/// robust, language-agnostic cutoff.
-fn header_region_lines(content: &str) -> usize {
-    let mut count = 0usize;
-    for line in content.lines() {
-        let t = line.trim_start();
-        // A level-2 (or deeper-but-not-3) ATX heading ends the header block.
-        // `## ` / `#### ` start a body section; `### ` and `# ` do not.
-        if t.starts_with("## ") {
-            break;
-        }
-        // A fenced code block opener ends the header block.
-        if t.starts_with("```") || t.starts_with("~~~") {
-            break;
-        }
-        count += 1;
-    }
-    count
-}
-
-/// The value of a legacy `<Key>` header line (either shape; case-insensitive on
-/// the key), trimmed — searching only the **header region** so a `### Status:`
-/// mentioned in prose or a code fence is not mistaken for the header. Mirrors
-/// the tolerant parser in `hooks::spec_hygiene`. Returns `None` when absent.
-fn header_field(spec_md: &str, key: &str) -> Option<String> {
-    let region = header_region_lines(spec_md);
-    spec_md
-        .lines()
-        .take(region)
-        .find_map(|line| strip_header_key(line, key))
-}
-
-/// `true` when a header line (trimmed) is a legacy header for `key` in either
-/// shape (case-insensitive). Used to identify the two legacy lines to replace.
-fn is_header_line(line: &str, key: &str) -> bool {
-    strip_header_key(line, key).is_some()
-}
-
-/// Split a combined single-line header value into its pipe-separated segments.
-///
-/// Older specs cram the whole header onto the `### Status:` line:
-///
-/// ```text
-/// ### Status: completed | Phase: CLOSE | Scope: light
-/// ```
-///
-/// `header_field("Status")` returns `completed | Phase: CLOSE | Scope: light`.
-/// This splits on `|` into the leading status value plus the trailing
-/// `Key: value` segments, returning `(status_value, extra_segments)` where each
-/// extra is `(key, value)` with original casing preserved and trimmed.
-fn split_combined_status(value: &str) -> (String, Vec<(String, String)>) {
-    let mut parts = value.split('|');
-    let status = parts.next().unwrap_or("").trim().to_string();
-    let extras = parts
+/// Split a combined single-line header value into its pipe-separated segments,
+/// returning the trailing non-`Phase` `Key: value` extras (e.g. `Scope: light`)
+/// so the migration can preserve them as their own header lines — information
+/// the canonical three-line header does not itself carry.
+fn combined_extras(value: &str) -> Vec<(String, String)> {
+    value
+        .split('|')
+        .skip(1)
         .filter_map(|seg| {
             let seg = seg.trim();
             seg.split_once(':')
                 .map(|(k, v)| (k.trim().to_string(), v.trim().to_string()))
         })
-        .collect();
-    (status, extras)
+        .filter(|(k, _)| !k.eq_ignore_ascii_case("phase"))
+        .collect()
 }
 
 /// The classification of a `*.md` file before migration.
@@ -406,14 +270,13 @@ enum Plan {
 
 /// Classify + (when migratable) compute the rewritten content for `content`.
 ///
-/// The rewrite replaces the **first** legacy header line (`### Status:` or
-/// `### Phase:`, whichever appears first) in place with the three canonical
-/// lines, and drops any further legacy line. All other bytes — CRLF
-/// terminators, indentation, accents — are copied verbatim.
+/// Detection, header-region scoping, the tolerant legacy parse and the
+/// byte-stable rewrite are all delegated to [`mustard_core::spec`] — this
+/// function only adds the audit-specific bits (the `inferred_stage_override`
+/// note and combined-line `Scope:`-style extras preservation).
 fn plan_for(content: &str) -> Plan {
-    // All header detection is scoped to the header region (lines before the
-    // first `## ` section / code fence), so a `### Stage:`/`### Status:` written
-    // in prose or an example never counts as the header.
+    // Already migrated: the canonical `### Stage:` header exists (region-scoped
+    // by core, so a body `### Stage:` does not count).
     if header_field(content, "Stage").is_some() {
         return Plan::AlreadyMigrated;
     }
@@ -423,89 +286,85 @@ fn plan_for(content: &str) -> Plan {
         return Plan::NoStatusHeader;
     }
 
-    // Combined single-line form: `### Status: completed | Phase: CLOSE | Scope: light`.
-    // Split the status value; pull a `Phase` segment out when there is no
-    // separate `### Phase:` line, and preserve every other segment (e.g.
-    // `Scope: light`) as its own canonical `### Key: value` line so no info is
-    // lost. `status` becomes just the leading value.
-    let mut extras: Vec<(String, String)> = Vec::new();
-    let status = if let Some(raw) = raw_status.as_deref() {
-        let (lead, segs) = split_combined_status(raw);
-        for (k, v) in segs {
-            if k.eq_ignore_ascii_case("phase") {
-                if phase.is_none() {
-                    phase = Some(v);
+    // Combined single-line form: `### Status: completed | Phase: CLOSE | ...`.
+    // Pull a `Phase` segment out when there is no separate `### Phase:` line,
+    // and remember every other segment (e.g. `Scope: light`) so we can re-emit
+    // it as its own canonical header line.
+    let extras: Vec<(String, String)> = raw_status
+        .as_deref()
+        .map(combined_extras)
+        .unwrap_or_default();
+    if phase.is_none() {
+        if let Some(raw) = raw_status.as_deref() {
+            if let Some(seg) = raw
+                .split('|')
+                .skip(1)
+                .map(str::trim)
+                .find(|s| s.to_ascii_lowercase().starts_with("phase:"))
+            {
+                if let Some((_, v)) = seg.split_once(':') {
+                    phase = Some(v.trim().to_string());
                 }
-            } else {
-                extras.push((k, v));
             }
         }
-        Some(lead)
-    } else {
-        None
-    };
+    }
 
+    // The leading status token (before any `|`), for the audit `before`.
+    let status = raw_status
+        .as_deref()
+        .map(|raw| raw.split('|').next().unwrap_or(raw).trim().to_string());
+
+    // The audit override note still needs the explicit resolution.
     let Some(resolved) = resolve(status.as_deref(), phase.as_deref()) else {
         return Plan::Malformed;
     };
 
-    // Split into lines while keeping each terminator (`\n` / `\r\n`). We rebuild
-    // byte-for-byte: every segment that is not a legacy header is re-emitted
-    // unchanged, so CRLF and trailing-newline shape are preserved exactly. Only
-    // legacy lines inside the header region are rewritten — a `### Status:` in
-    // the body (prose/code) is copied verbatim like any other line.
-    let region = header_region_lines(content);
-    let mut out = String::with_capacity(content.len() + 64);
-    let mut placed = false;
-    for (idx, seg) in content.split_inclusive('\n').enumerate() {
-        // The terminator (`\r\n` or `\n`, or none on a final unterminated line).
-        let body = seg.trim_end_matches(['\n', '\r']);
-        let terminator = &seg[body.len()..];
-        let in_region = idx < region;
-        if in_region && (is_header_line(body, "Status") || is_header_line(body, "Phase")) {
-            if !placed {
-                // Preserve the indentation of the first legacy line, and reuse
-                // its terminator for each of the new lines.
-                let indent_len = body.len() - body.trim_start().len();
-                let indent = &body[..indent_len];
-                let term = if terminator.is_empty() { "\n" } else { terminator };
-                out.push_str(indent);
-                out.push_str("### Stage: ");
-                out.push_str(stage_label(resolved.stage));
-                out.push_str(term);
-                out.push_str(indent);
-                out.push_str("### Outcome: ");
-                out.push_str(outcome_label(resolved.outcome));
-                out.push_str(term);
-                out.push_str(indent);
-                out.push_str("### Flags: ");
-                out.push_str(&flags_label(&resolved.flags));
-                out.push_str(term);
-                // Preserve any extra segments carried on a combined single line
-                // (e.g. `Scope: light`) as their own canonical header lines.
-                for (k, v) in &extras {
-                    out.push_str(indent);
-                    out.push_str("### ");
-                    out.push_str(k);
-                    out.push_str(": ");
-                    out.push_str(v);
-                    out.push_str(term);
-                }
-                placed = true;
-            }
-            // Drop the legacy line (the first one was already replaced above;
-            // a second legacy line is simply removed).
-            continue;
-        }
-        out.push_str(seg);
+    // The canonical state (single source of truth for the *value* written).
+    let Some(state) = spec::parse_state(content) else {
+        return Plan::Malformed;
+    };
+
+    // Core performs the byte-stable, CRLF/multibyte-safe header rewrite.
+    let mut new_content = spec::rewrite_header(content, &state);
+
+    // Preserve combined-line extras (e.g. `Scope: light`) as their own
+    // canonical header lines, inserted right after the `### Flags:` line.
+    if !extras.is_empty() {
+        new_content = inject_extras(&new_content, &extras);
     }
 
     Plan::Migrate {
         resolved_status: raw_status,
         resolved_phase: phase,
         resolved,
-        new_content: out,
+        new_content,
     }
+}
+
+/// Insert `extras` as `### Key: value` header lines immediately after the
+/// `### Flags:` line core emitted, reusing that line's terminator. Byte-stable:
+/// the only mutation is the inserted lines. Fail-open: if no `### Flags:` line
+/// is found the content is returned unchanged.
+fn inject_extras(content: &str, extras: &[(String, String)]) -> String {
+    let mut out = String::with_capacity(content.len() + 64);
+    let mut injected = false;
+    for seg in content.split_inclusive('\n') {
+        out.push_str(seg);
+        let body = seg.trim_end_matches(['\n', '\r']);
+        if !injected && body.trim_start().starts_with("### Flags:") {
+            let terminator = seg.get(body.len()..).unwrap_or("");
+            let term = if terminator.is_empty() { "\n" } else { terminator };
+            for (k, v) in extras {
+                out.push_str("### ");
+                out.push_str(k);
+                out.push_str(": ");
+                out.push_str(v);
+                out.push_str(term);
+            }
+            injected = true;
+        }
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -899,7 +758,7 @@ mod tests {
         let md = "# T\n### Status: approved\n### Phase: PLAN\n\n## Tarefas\n### Stage: Plan\n";
         // The header region covers the first four lines; the `### Stage:` after
         // `## Tarefas` is body, not a header.
-        assert_eq!(header_region_lines(md), 4);
+        assert_eq!(spec::header_region_lines(md),4);
         assert!(header_field(md, "Stage").is_none(), "body Stage not a header");
         assert!(header_field(md, "Status").is_some());
     }
@@ -907,7 +766,7 @@ mod tests {
     #[test]
     fn header_region_stops_at_code_fence() {
         let md = "# T\n### Status: approved\n\n```text\n### Stage: Plan\n```\n";
-        assert_eq!(header_region_lines(md), 3);
+        assert_eq!(spec::header_region_lines(md),3);
         assert!(header_field(md, "Stage").is_none());
     }
 
@@ -927,12 +786,12 @@ mod tests {
     }
 
     #[test]
-    fn split_combined_status_extracts_segments() {
-        let (status, extras) = split_combined_status("completed | Phase: CLOSE | Scope: light");
-        assert_eq!(status, "completed");
-        assert_eq!(extras.len(), 2);
-        assert_eq!(extras[0], ("Phase".to_string(), "CLOSE".to_string()));
-        assert_eq!(extras[1], ("Scope".to_string(), "light".to_string()));
+    fn combined_extras_keeps_non_phase_segments() {
+        // The `Phase` segment is consumed by the parser; the rest survive as
+        // their own header lines.
+        let extras = combined_extras("completed | Phase: CLOSE | Scope: light");
+        assert_eq!(extras.len(), 1);
+        assert_eq!(extras[0], ("Scope".to_string(), "light".to_string()));
     }
 
     #[test]

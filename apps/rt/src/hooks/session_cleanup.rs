@@ -32,6 +32,7 @@
 
 use crate::run::amend_finalize;
 use mustard_core::economy::{self, sources::transcript, sources::IngestContext};
+use mustard_core::spec;
 use mustard_core::store::sqlite_store::SqliteEventStore;
 use mustard_core::model::contract::{Ctx, HookInput, Observer, Trigger};
 use std::path::{Path, PathBuf};
@@ -140,26 +141,16 @@ fn is_spec_done(claude_dir: &Path, spec_name: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// `true` if the first 500 chars of a spec body contain a
-/// `Status: completed|done` marker. Mirrors the JS `/Status:\s*(completed|done)\b/i`.
+/// `true` when a spec's lifecycle header resolves to the terminal `Completed`
+/// outcome. Delegates to the canonical [`mustard_core::spec`] parser, so
+/// the new `### Stage:`/`### Outcome:` header and every legacy `### Status:`
+/// shape (`completed`/`done`/`closed`) are recognised. Fail-open: an
+/// unparseable header is treated as not-done (the spec stays, its state file is
+/// not reaped).
 fn header_marks_done(content: &str) -> bool {
-    let head: String = content.chars().take(500).collect();
-    let lower = head.to_ascii_lowercase();
-    for marker in ["completed", "done"] {
-        if let Some(idx) = lower.find("status:") {
-            let after = lower[idx + "status:".len()..].trim_start();
-            if after.starts_with(marker) {
-                let boundary_ok = after
-                    .as_bytes()
-                    .get(marker.len())
-                    .is_none_or(|&b| !(b.is_ascii_alphanumeric() || b == b'_'));
-                if boundary_ok {
-                    return true;
-                }
-            }
-        }
-    }
-    false
+    spec::parse_state(content)
+        .map(|s| s.outcome == mustard_core::Outcome::Completed)
+        .unwrap_or(false)
 }
 
 /// Remove terminal / orphaned pipeline-state files. Port of

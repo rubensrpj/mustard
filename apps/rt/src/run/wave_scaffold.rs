@@ -22,9 +22,26 @@
 //! Idempotent: each output file is only created when absent. The stdout JSON
 //! reports which were created vs skipped.
 
+use mustard_core::spec;
+use mustard_core::{Flags, Outcome, SpecState, Stage};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
+
+/// The canonical three-line lifecycle header for a freshly scaffolded spec at
+/// `stage` (always `Outcome::Active`, no flags), terminated by `\n` per line.
+/// Wave plans / sub-plan / review / qa scaffolds all start active — a `queued`
+/// or `draft` sub-plan is a not-yet-started Plan item, so its canonical stage
+/// stays `Plan`. Delegates the spelling to [`mustard_core::spec`].
+fn header_block(stage: Stage) -> String {
+    let state = SpecState::new(stage, Outcome::Active, Flags::default()).unwrap_or(SpecState {
+        stage: Stage::Plan,
+        outcome: Outcome::Active,
+        flags: Flags::default(),
+    });
+    let [s, o, f] = spec::serialize_header(&state);
+    format!("{s}\n{o}\n{f}\n")
+}
 
 /// One wave entry inside the plan JSON.
 #[derive(Debug, Clone, Deserialize)]
@@ -111,7 +128,7 @@ fn render_wave_plan(plan: &Plan, hd: &Headings<'_>) -> String {
     let mut out = String::new();
     out.push_str(hd.wave_plan_title);
     out.push_str("\n\n");
-    out.push_str("### Status: draft\n");
+    out.push_str(&header_block(Stage::Plan));
     out.push_str("### Scope: full (wave plan)\n");
     out.push_str(&format!("### Total waves: {total}\n\n"));
     out.push_str(hd.wave_table_caption);
@@ -148,13 +165,15 @@ fn wave_name(w: &WavePlanEntry) -> String {
 
 /// Render an individual wave's `spec.md` skeleton.
 fn render_wave_spec(parent: &str, w: &WavePlanEntry, hd: &Headings<'_>) -> String {
-    let status = if w.n == 1 { "draft" } else { "queued" };
     let name = wave_name(w);
     let mut out = String::new();
     out.push_str(&format!("# {name}\n\n"));
     out.push_str(&format!("### {p}: [[{parent}]]\n", p = hd.parent));
-    out.push_str(&format!("### Status: {status}\n"));
-    out.push_str("### Phase: PLAN\n\n");
+    // Both `draft` (wave 1) and `queued` (later waves) are not-yet-started Plan
+    // items in the canonical model — the wave-plan tracks progression via
+    // events, not a per-wave header status word.
+    out.push_str(&header_block(Stage::Plan));
+    out.push('\n');
     out.push_str("## Resumo\n\n");
     if w.summary.is_empty() {
         out.push_str("_(preencher)_\n\n");
@@ -181,7 +200,8 @@ fn render_review(parent: &str, hd: &Headings<'_>) -> String {
     out.push_str(hd.review_title);
     out.push_str("\n\n");
     out.push_str(&format!("### {p}: [[{parent}]]\n", p = hd.parent));
-    out.push_str("### Status: queued\n\n");
+    out.push_str(&header_block(Stage::Plan));
+    out.push('\n');
     out.push_str(hd.review_intro);
     out.push_str("\n\n");
     out.push_str("## Checklist\n\n");
@@ -202,7 +222,8 @@ fn render_qa(parent: &str, hd: &Headings<'_>) -> String {
     out.push_str(hd.qa_title);
     out.push_str("\n\n");
     out.push_str(&format!("### {p}: [[{parent}]]\n", p = hd.parent));
-    out.push_str("### Status: queued\n\n");
+    out.push_str(&header_block(Stage::Plan));
+    out.push('\n');
     out.push_str(hd.qa_intro);
     out.push_str("\n\n");
     out.push_str("## Acceptance Criteria (consolidated)\n\n");
@@ -370,9 +391,11 @@ mod tests {
         let plan = sample_plan();
         let s1 = render_wave_spec("epic-x", &plan.waves[0], &hd);
         assert!(s1.contains("### Parent: [[epic-x]]"));
-        assert!(s1.contains("### Status: draft"));
+        // New canonical header: every freshly scaffolded wave is Plan + Active.
+        assert!(s1.contains("### Stage: Plan"));
+        assert!(s1.contains("### Outcome: Active"));
         let s2 = render_wave_spec("epic-x", &plan.waves[1], &hd);
-        assert!(s2.contains("### Status: queued"));
+        assert!(s2.contains("### Stage: Plan"));
         assert!(s2.contains("[[wave-1-general]]"));
         assert!(s2.contains("## Network"));
     }
@@ -414,7 +437,7 @@ mod tests {
         let s1 =
             std::fs::read_to_string(spec_dir.join("wave-1-general").join("spec.md")).unwrap();
         assert!(s1.contains("### Parent: [[epic-x]]"));
-        assert!(s1.contains("### Status: draft"));
+        assert!(s1.contains("### Stage: Plan"));
         assert!(s1.contains("## Network"));
 
         // Second run is idempotent — no overwrites, no errors.

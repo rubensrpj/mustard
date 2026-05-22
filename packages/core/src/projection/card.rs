@@ -332,7 +332,7 @@ fn view_from_header(
     path: &Path,
     emit_sink: Option<&dyn EventSink>,
 ) -> Option<SpecView> {
-    let raw = std::fs::read_to_string(path).ok()?;
+    let raw = crate::fs::read_to_string(path).ok()?;
     let header = parse_header_fields(&raw);
     if header.is_empty() {
         return None;
@@ -531,7 +531,6 @@ mod tests {
     use crate::store::event_store::EventSink;
     use crate::error::Result as CoreResult;
     use std::cell::RefCell;
-    use std::io::Write;
     use serde_json::json;
 
     /// Build a minimal event with given kind and payload, scoped to `spec`.
@@ -843,8 +842,7 @@ mod tests {
     /// Write `body` to `path.join(file_name)` and return the full path.
     fn write_spec_md(dir: &std::path::Path, body: &str) -> std::path::PathBuf {
         let path = dir.join("spec.md");
-        let mut f = std::fs::File::create(&path).expect("temp spec.md create");
-        f.write_all(body.as_bytes()).expect("temp spec.md write");
+        crate::fs::write_atomic(&path, body.as_bytes()).expect("temp spec.md write");
         path
     }
 

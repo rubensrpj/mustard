@@ -24,6 +24,7 @@
 //! Fail-open: any I/O or SQLite failure is silently downgraded to an empty
 //! contribution from that side. The subcommand always emits valid JSON.
 
+use mustard_core::spec;
 use mustard_core::{SpecChild, SpecReader, SpecStatus, SqliteSpecReader, WaveView};
 use serde::Serialize;
 use std::collections::HashMap;
@@ -107,40 +108,26 @@ fn strip_wikilink(raw: &str) -> String {
     }
 }
 
-/// Parse the `### Parent:` and `### Status:` lines out of the leading window
-/// of a `spec.md`. Returns `(parent_slug, status_kebab_opt)` when a parent
+/// Parse the `### Parent:` link and the lifecycle status out of a `spec.md`'s
+/// leading window. Returns `(parent_slug, status_kebab_opt)` when a parent
 /// header is found, else `None`.
 ///
-/// The parent slug is normalised: surrounding `[[wikilink]]` brackets are
-/// stripped. The status (when present) is kebab-cased via
-/// [`SpecStatus::parse`] so legacy spellings like `draft` map to `planning`;
-/// unknown spellings fall back to the raw lowercase token.
+/// The parent slug is normalised (surrounding `[[wikilink]]` brackets are
+/// stripped). The status is resolved through the canonical
+/// [`mustard_core::spec`] parser — so the new `### Stage:`/`### Outcome:`
+/// header *and* every legacy `### Status:` shape are understood — and projected
+/// to the kebab-case status word the dashboard's sub-spec rows expect. A spec
+/// with a `### Parent:` but no lifecycle header surfaces `status = None`
+/// (callers default it to `"unknown"`).
 fn parse_header_window(window: &str) -> Option<(String, Option<String>)> {
-    let mut parent: Option<String> = None;
-    let mut status: Option<String> = None;
-    for line in window.lines() {
-        // Cheap prefix check — both headers we care about start with `### `.
-        if !line.starts_with("### ") {
-            continue;
-        }
-        if let Some(rest) = line.strip_prefix("### Parent:") {
-            let slug = strip_wikilink(rest);
-            if !slug.is_empty() {
-                parent = Some(slug);
-            }
-        } else if let Some(rest) = line.strip_prefix("### Status:") {
-            let raw = rest.trim();
-            if !raw.is_empty() {
-                // Prefer the canonical enum spelling; fall back to the raw
-                // lowercase token so unknown header values still surface.
-                let kebab = SpecStatus::parse(raw)
-                    .map(spec_status_to_kebab)
-                    .unwrap_or_else(|| raw.to_ascii_lowercase());
-                status = Some(kebab);
-            }
-        }
-    }
-    parent.map(|p| (p, status))
+    // `### Parent:` is not part of the lifecycle-header domain — read it via the
+    // shared header-region-scoped accessor so prose mentions never match.
+    let parent = spec::header_field(window, "Parent")
+        .map(|raw| strip_wikilink(&raw))
+        .filter(|s| !s.is_empty())?;
+    // Lifecycle status: canonical parse → projected status word.
+    let status = spec::parse_state(window).map(|st| spec::status_word(&st).to_string());
+    Some((parent, status))
 }
 
 /// Read at most the first `cap` bytes of a file as UTF-8 (lossy on invalid
@@ -440,12 +427,15 @@ mod tests {
     }
 
     #[test]
-    fn parse_header_window_keeps_raw_unknown_status() {
+    fn parse_header_window_unknown_status_degrades_to_none() {
+        // An unrecognised lifecycle token yields no canonical state, so the
+        // status is `None` (callers default it to `"unknown"`). The canonical
+        // parser does not preserve arbitrary free-text status words — the
+        // status vocabulary is the closed Stage/Outcome/Flags set.
         let window = "### Parent: p\n### Status: weird-status\n";
         let parsed = parse_header_window(window).expect("should parse");
         assert_eq!(parsed.0, "p");
-        // Unknown -> falls back to lowercased raw token.
-        assert_eq!(parsed.1.as_deref(), Some("weird-status"));
+        assert_eq!(parsed.1, None);
     }
 
     #[test]

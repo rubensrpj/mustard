@@ -16,8 +16,12 @@
 //! - [`model`] — pure `serde` data types with zero side effects: the harness
 //!   event schema, the hook contract, pipeline-state, and the SDD `ViewModels`
 //!   under [`model::view`].
+//! - [`fs`] — the single canonical filesystem seam: the [`fs::Fs`] port,
+//!   [`fs::real::RealFs`], an in-memory [`fs::memory::FakeFs`], and module-level
+//!   free functions that are the drop-in replacement for `std::fs`. Every other
+//!   `std::fs` call in the workspace migrates onto this.
 //! - [`store`] — side-effecting infrastructure behind traits: the event log,
-//!   `pipeline-state` read/write, and fail-open filesystem primitives.
+//!   `pipeline-state` read/write, layered on [`fs`].
 //! - [`projection`] — pure folds over `&[HarnessEvent]`: one function per
 //!   `ViewModel`. No IO, no side effects — deterministic and testable in
 //!   isolation.
@@ -35,6 +39,7 @@ pub mod config;
 pub mod economy;
 pub mod env;
 pub mod error;
+pub mod fs;
 pub mod store;
 pub mod knowledge;
 pub mod metrics;
@@ -42,6 +47,7 @@ pub mod model;
 pub mod process;
 pub mod projection;
 pub mod reader;
+pub mod spec;
 
 // Root re-exports — consumers can write `use mustard_core::…` without
 // remembering which sub-module owns each name.
@@ -54,6 +60,14 @@ pub use model::view::{
     WaveView, WorkspaceAlert, WorkspaceAlertKind, WorkspaceSummary,
 };
 pub use reader::{InMemorySpecReader, ReadError, SpecReader, SqliteSpecReader};
+
+// Spec-document I/O — the single canonical owner of parsing / serializing /
+// rewriting the lifecycle header of a spec `.md` file. See `spec/mod.rs`.
+// Layered on top of the canonical filesystem seam `crate::fs`.
+pub use spec::{
+    flags_label, header_field, header_region_lines, outcome_label, parse_state, read_state,
+    rewrite_header, serialize_header, stage_label, status_word, write_state,
+};
 
 // Economy domain re-exports — see `economy/mod.rs` for the full surface.
 pub use economy::{EconomyScope, EconomySummary, SavingsSource};

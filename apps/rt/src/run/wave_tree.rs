@@ -9,6 +9,7 @@
 //! The `--format json` shape is parsed by `wave-size-check`, so it is preserved
 //! exactly: `{ kind, root, waves: [{ label, folder, status, icon }] }`.
 
+use mustard_core::spec;
 use serde_json::json;
 use std::path::Path;
 
@@ -32,31 +33,18 @@ struct Wave {
     icon: String,
 }
 
-/// Read the `### Status:` line from a spec file, defaulting to `"queued"`.
+/// Read the lifecycle status word from a spec file, defaulting to `"queued"`.
+///
+/// Delegates to the canonical [`mustard_core::spec`] parser (tolerant of
+/// the new `### Stage:`/`### Outcome:`/`### Flags:` header **and** every legacy
+/// shape) and projects the resulting [`SpecState`] to the legacy status word
+/// the icon map keys off. A missing file / unparseable header → `"queued"`
+/// (a not-yet-started wave), exactly as the old inline parser defaulted.
 fn read_status(spec_file: &Path) -> String {
-    let Ok(content) = std::fs::read_to_string(spec_file) else {
-        return "queued".to_string();
-    };
-    // `^###\s*Status:\s*([a-z-]+)` case-insensitive, multiline.
-    for line in content.split('\n') {
-        let lower = line.to_lowercase();
-        let Some(rest) = lower.strip_prefix("###") else {
-            continue;
-        };
-        let rest = rest.trim_start_matches([' ', '\t']);
-        let Some(rest) = rest.strip_prefix("status:") else {
-            continue;
-        };
-        let rest = rest.trim_start_matches([' ', '\t']);
-        let token: String = rest
-            .chars()
-            .take_while(|c| c.is_ascii_lowercase() || *c == '-')
-            .collect();
-        if !token.is_empty() {
-            return token;
-        }
+    match spec::read_state(spec_file) {
+        Some(state) => spec::status_word(&state).to_string(),
+        None => "queued".to_string(),
     }
-    "queued".to_string()
 }
 
 /// Whether a token looks like a wave folder name.

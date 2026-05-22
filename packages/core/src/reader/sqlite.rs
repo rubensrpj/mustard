@@ -142,7 +142,7 @@ impl SqliteSpecReader {
     /// sub-buckets — because Wave 2 / Wave 5 of
     /// `2026-05-21-flatten-spec-layout-and-multi-collab` removes those buckets
     /// from the repo. Returns the path unconditionally; the projection itself
-    /// fails open (`std::fs::read_to_string` → `None`) when the file is missing.
+    /// fails open (`crate::fs::read_to_string` → `None`) when the file is missing.
     fn spec_md_path(&self, spec: &str) -> std::path::PathBuf {
         let base = self.project_dir.join(".claude").join("spec").join(spec);
         let primary = base.join("spec.md");
@@ -160,17 +160,15 @@ impl SqliteSpecReader {
     /// list when no task events exist yet. Returns waves sorted by number.
     fn waves_from_disk(&self, spec: &str) -> Vec<WaveView> {
         let base = self.project_dir.join(".claude").join("spec").join(spec);
-        let Ok(entries) = std::fs::read_dir(&base) else {
+        let Ok(entries) = crate::fs::read_dir(&base) else {
             return Vec::new();
         };
         let mut planned: Vec<WaveView> = Vec::new();
-        for entry in entries.flatten() {
-            if !entry.file_type().is_ok_and(|t| t.is_dir()) {
+        for entry in entries {
+            if !entry.is_dir {
                 continue;
             }
-            let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
-                continue;
-            };
+            let name = entry.file_name;
             let Some(rest) = name.strip_prefix("wave-") else {
                 continue;
             };
@@ -234,22 +232,19 @@ impl SpecReader for SqliteSpecReader {
         // gave us the header fallback in `spec_view`; this is the listing
         // side of the same fix.
         let spec_root = self.project_dir.join(".claude").join("spec");
-        if let Ok(entries) = std::fs::read_dir(&spec_root) {
+        if let Ok(entries) = crate::fs::read_dir(&spec_root) {
             let seen: std::collections::HashSet<&str> = names.iter().map(String::as_str).collect();
             let mut extras: Vec<String> = Vec::new();
-            for entry in entries.flatten() {
-                if !entry.file_type().is_ok_and(|t| t.is_dir()) {
+            for entry in entries {
+                if !entry.is_dir {
                     continue;
                 }
-                let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
-                    continue;
-                };
-                if seen.contains(name.as_str()) {
+                if seen.contains(entry.file_name.as_str()) {
                     continue;
                 }
-                let base = entry.path();
+                let base = entry.path;
                 if base.join("spec.md").exists() || base.join("wave-plan.md").exists() {
-                    extras.push(name);
+                    extras.push(entry.file_name);
                 }
             }
             names.extend(extras);

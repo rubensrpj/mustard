@@ -19,7 +19,7 @@ source: scan
 - Error enum and helpers: `packages/core/src/error.rs`
 - Fail-silent emit: `packages/core/src/metrics.rs` — `emit_metric` returns `bool`
 - Config fail-open: `packages/core/src/config.rs` — `EnforcementConfig::resolve` swallows a bad file
-- NotFound vs Io: `packages/core/src/io/fs.rs` — `read_to_string` maps `NotFound` separately
+- NotFound vs Io: `packages/core/src/fs/real.rs` — `map_io` maps `NotFound` separately
 - Pipeline repo fail-open helper: `packages/core/src/io/pipeline_repo.rs` — `read_optional`
 
 ## References

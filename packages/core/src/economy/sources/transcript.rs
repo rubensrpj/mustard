@@ -32,15 +32,13 @@
 //! continue; the function returns `Err` only if the file itself cannot be
 //! opened.
 
-use std::fs::File;
-use std::io::{BufRead, BufReader};
 use std::path::Path;
 
 use serde_json::Value;
 
 use crate::economy::estimator::model_pricing_usd_micros_per_million;
 use crate::economy::model::ApiCostFrame;
-use crate::error::{Error, Result};
+use crate::error::Result;
 
 use super::IngestContext;
 use super::time::now_iso;
@@ -56,25 +54,18 @@ use super::time::now_iso;
 /// Returns [`Error::Io`] only if the file cannot be opened. Per-line parse
 /// errors are absorbed (fail-open) and never propagate.
 pub fn ingest(transcript_path: &Path, ctx: &IngestContext) -> Result<Vec<ApiCostFrame>> {
-    let file = File::open(transcript_path).map_err(Error::from)?;
-    let reader = BufReader::new(file);
+    // Route the read through the canonical filesystem seam. A session
+    // transcript is bounded JSONL read once during economy ingest (not a
+    // per-tool hot path), so reading it whole rather than streaming is a fair
+    // trade for keeping `std::fs` confined to `core::fs`.
+    let contents = crate::fs::read_to_string(transcript_path)?;
     let mut out: Vec<ApiCostFrame> = Vec::new();
 
-    for (lineno, line) in reader.lines().enumerate() {
-        let Ok(text) = line else {
-            // I/O error mid-stream — warn and stop reading; the frames we have
-            // are still good, and the caller has a valid Vec.
-            eprintln!(
-                "transcript::ingest: read failure at line {} of {}; truncating",
-                lineno + 1,
-                transcript_path.display()
-            );
-            break;
-        };
+    for (lineno, text) in contents.lines().enumerate() {
         if text.trim().is_empty() {
             continue;
         }
-        let value: Value = match serde_json::from_str(&text) {
+        let value: Value = match serde_json::from_str(text) {
             Ok(v) => v,
             Err(_) => {
                 eprintln!(
@@ -227,7 +218,7 @@ fn price_frame(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
+    use crate::error::Error;
     use tempfile::tempdir;
 
     fn fixture_ctx() -> IngestContext {
@@ -241,18 +232,17 @@ mod tests {
     fn ingest_returns_one_frame_per_assistant_line_skipping_other_lines() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("session.jsonl");
-        let mut f = File::create(&path).unwrap();
-        // Three lines: assistant with usage, a system line w/o usage, broken JSON.
-        writeln!(
-            f,
-            r#"{{"type":"assistant","sessionId":"s-1","timestamp":"2026-05-21T00:00:00Z","message":{{"id":"req-1","model":"claude-3-5-sonnet","usage":{{"input_tokens":200,"output_tokens":50,"cache_read_input_tokens":100,"cache_creation_input_tokens":0}}}}}}"#
-        )
-        .unwrap();
-        writeln!(f, r#"{{"type":"system","content":"hello"}}"#).unwrap();
-        writeln!(f, "this-is-not-json").unwrap();
-        // Empty line — should be silently skipped, not warned.
-        writeln!(f).unwrap();
-        drop(f);
+        // Three lines: assistant with usage, a system line w/o usage, broken
+        // JSON, then an empty line (silently skipped, not warned).
+        let body = concat!(
+            r#"{"type":"assistant","sessionId":"s-1","timestamp":"2026-05-21T00:00:00Z","message":{"id":"req-1","model":"claude-3-5-sonnet","usage":{"input_tokens":200,"output_tokens":50,"cache_read_input_tokens":100,"cache_creation_input_tokens":0}}}"#,
+            "\n",
+            r#"{"type":"system","content":"hello"}"#,
+            "\n",
+            "this-is-not-json",
+            "\n\n",
+        );
+        crate::fs::write_atomic(&path, body.as_bytes()).unwrap();
 
         let ctx = fixture_ctx();
         let frames = ingest(&path, &ctx).unwrap();
@@ -271,20 +261,20 @@ mod tests {
     fn ingest_returns_error_when_file_missing() {
         let ctx = fixture_ctx();
         let err = ingest(Path::new("/definitely/not/there.jsonl"), &ctx).unwrap_err();
-        matches!(err, Error::Io(_));
+        // The canonical seam maps a missing file to `NotFound` (distinct from a
+        // real I/O failure), so callers can fail open on absence.
+        assert!(matches!(err, Error::NotFound(_)));
     }
 
     #[test]
     fn ingest_falls_back_to_ctx_session_id_when_field_absent() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("session.jsonl");
-        let mut f = File::create(&path).unwrap();
-        writeln!(
-            f,
-            r#"{{"type":"assistant","message":{{"model":"claude-haiku","usage":{{"input_tokens":1,"output_tokens":1}}}}}}"#
-        )
-        .unwrap();
-        drop(f);
+        let body = concat!(
+            r#"{"type":"assistant","message":{"model":"claude-haiku","usage":{"input_tokens":1,"output_tokens":1}}}"#,
+            "\n",
+        );
+        crate::fs::write_atomic(&path, body.as_bytes()).unwrap();
 
         let ctx = fixture_ctx();
         let frames = ingest(&path, &ctx).unwrap();

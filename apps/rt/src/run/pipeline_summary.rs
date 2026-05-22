@@ -8,26 +8,31 @@
 //! prints `{ done, left, nextSteps, followUps }`. No `--format html`.
 
 use crate::run::spec_sections::is_heading;
+use mustard_core::spec;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
-/// Parsed `### Status:` / `### Phase:` / `### Lang:` header + spec name.
+/// Lifecycle status word + spec name + language for the summary header line.
 struct Header {
     status: String,
     name: String,
     lang: String,
 }
 
-/// Parse the spec header lines.
+/// Parse the spec header. The lifecycle status is resolved through the
+/// canonical [`mustard_core::spec`] parser (so the new `### Stage:` header
+/// and every legacy shape both work); `Lang` and the `# Title` are read inline
+/// since they are not part of the lifecycle header domain. An absent lifecycle
+/// header yields an empty status (rendered as `unknown` downstream, unchanged).
 fn parse_header(text: &str) -> Header {
-    let mut status = String::new();
+    let status = spec::parse_state(text)
+        .map(|s| spec::status_word(&s).to_string())
+        .unwrap_or_default();
     let mut lang = "en".to_string();
     let mut name = "spec".to_string();
     for line in text.split('\n') {
         let t = line.trim_end();
-        if let Some(v) = t.strip_prefix("### Status:") {
-            status = v.split('|').next().unwrap_or("").trim().to_string();
-        } else if let Some(v) = t.strip_prefix("### Lang:") {
+        if let Some(v) = t.strip_prefix("### Lang:") {
             let first = v.trim().to_lowercase();
             let tok = first.split([' ', '|', '\t']).next().unwrap_or("en");
             lang = if tok == "pt" { "pt" } else { "en" }.to_string();
@@ -447,10 +452,20 @@ mod tests {
 
     #[test]
     fn parses_header_name_status_lang() {
-        let h = parse_header("# My Spec\n\n### Status: Done | Phase: CLOSE\n### Lang: pt\n");
+        // New canonical header: status word is projected from the SpecState.
+        let h = parse_header("# My Spec\n\n### Stage: Close\n### Outcome: Completed\n### Lang: pt\n");
         assert_eq!(h.name, "My Spec");
-        assert_eq!(h.status, "Done");
+        assert_eq!(h.status, "completed");
         assert_eq!(h.lang, "pt");
+    }
+
+    #[test]
+    fn parses_legacy_status_phase_header() {
+        // Legacy header still resolves (tolerant core parser); a terminal
+        // `### Status: completed` projects to the `completed` word.
+        let h = parse_header("# My Spec\n\n### Status: completed | Phase: CLOSE\n### Lang: en\n");
+        assert_eq!(h.name, "My Spec");
+        assert_eq!(h.status, "completed");
     }
 
     #[test]

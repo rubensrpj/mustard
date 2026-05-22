@@ -15,7 +15,7 @@
 //! `{ ts, event, tokens_affected, tokens_saved, note, ...extras }`.
 
 use crate::error::Result;
-use crate::store::fs::append_line;
+use crate::fs::append_line;
 use serde_json::{Map, Value};
 use std::path::Path;
 
@@ -199,7 +199,7 @@ mod tests {
         assert!(emit_metric(dir.path(), &line));
 
         let shard = metric_file_path(dir.path(), "spec-hygiene-move");
-        let contents = std::fs::read_to_string(&shard).unwrap();
+        let contents = crate::fs::read_to_string(&shard).unwrap();
         assert!(contents.ends_with('\n'));
         let parsed: Value = serde_json::from_str(contents.trim()).unwrap();
         assert_eq!(parsed["event"], json!("spec-hygiene-move"));
@@ -212,7 +212,7 @@ mod tests {
         assert!(emit_metric(dir.path(), &MetricLine::new("t1", "ev")));
         assert!(emit_metric(dir.path(), &MetricLine::new("t2", "ev")));
         let shard = metric_file_path(dir.path(), "ev");
-        let lines: Vec<_> = std::fs::read_to_string(&shard)
+        let lines: Vec<_> = crate::fs::read_to_string(&shard)
             .unwrap()
             .lines()
             .map(str::to_string)

@@ -8,7 +8,7 @@
 //!
 //! Consumers depend on the [`PipelineRepo`] **trait** so a test can inject a
 //! fake; [`FsPipelineRepo`] is the filesystem-backed implementation. Writes go
-//! through [`fs::write_atomic`](crate::store::fs::write_atomic) — a pipeline-state
+//! through [`fs::write_atomic`](crate::fs::write_atomic) — a pipeline-state
 //! is never left half-written, even if the process dies mid-write.
 //!
 //! Reads are fail-open: an absent state file is reported as
@@ -16,7 +16,7 @@
 //! without treating it as a failure.
 
 use crate::error::{Error, Result};
-use crate::store::fs;
+use crate::fs;
 use crate::model::pipeline::PipelineState;
 use std::path::{Path, PathBuf};
 
@@ -163,13 +163,9 @@ mod tests {
         let dir = tempdir().unwrap();
         let repo = FsPipelineRepo::new(dir.path());
         repo.write("spec-a", &sample_state()).unwrap();
-        let entries: Vec<_> = std::fs::read_dir(dir.path())
-            .unwrap()
-            .filter_map(std::result::Result::ok)
-            .map(|e| e.file_name())
-            .collect();
+        let entries = crate::fs::read_dir(dir.path()).unwrap();
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0], std::ffi::OsStr::new("spec-a.json"));
+        assert_eq!(entries[0].file_name, "spec-a.json");
     }
 
     #[test]

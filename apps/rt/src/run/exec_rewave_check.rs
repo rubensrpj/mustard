@@ -17,6 +17,8 @@ use crate::run::scope_decompose::decide;
 use crate::run::wave_dependency::compute_waves;
 use crate::run::wave_lib::{detect_role, parse_files_section};
 use crate::util::now_iso8601;
+use mustard_core::spec;
+use mustard_core::{Flags, Outcome, SpecState, Stage};
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -125,8 +127,18 @@ fn build_wave_plan_md(spec_name: &str, waves: &[Value], spec_text: &str, reason:
         })
         .collect();
 
+    // Canonical lifecycle header (NEW three-line form). The plan is freshly
+    // decomposed at EXECUTE entry → Stage::Execute + Active. The non-lifecycle
+    // `Scope`/`Decomposed` metadata follows as its own header lines.
+    let [stage_line, outcome_line, flags_line] = spec::serialize_header(
+        &SpecState::new(Stage::Execute, Outcome::Active, Flags::default()).unwrap_or(SpecState {
+            stage: Stage::Execute,
+            outcome: Outcome::Active,
+            flags: Flags::default(),
+        }),
+    );
     format!(
-        "<!-- mustard:generated -->\n# Wave Plan: {spec_name}\n### Status: draft | Phase: EXECUTE | Scope: full | Decomposed: yes\n### Checkpoint: {now}\n### Reason: {reason}\n### Source: exec-rewave-check (re-evaluated at EXECUTE entry)\n\n## Summary\n{summary}\n\n## Waves\n{}\n\n## Rationale\nDecomposed at EXECUTE entry by exec-rewave-check.\nThreshold: layerCount >= 2 (reason: {reason}).\n",
+        "<!-- mustard:generated -->\n# Wave Plan: {spec_name}\n{stage_line}\n{outcome_line}\n{flags_line}\n### Scope: full\n### Decomposed: yes\n### Checkpoint: {now}\n### Reason: {reason}\n### Source: exec-rewave-check (re-evaluated at EXECUTE entry)\n\n## Summary\n{summary}\n\n## Waves\n{}\n\n## Rationale\nDecomposed at EXECUTE entry by exec-rewave-check.\nThreshold: layerCount >= 2 (reason: {reason}).\n",
         wave_lines.join("\n\n")
     )
 }

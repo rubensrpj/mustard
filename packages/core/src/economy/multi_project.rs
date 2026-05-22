@@ -120,7 +120,7 @@ mod tests {
     fn make_project(name: &str) -> tempfile::TempDir {
         let dir = tempdir().unwrap();
         let project_root = dir.path().join(name);
-        std::fs::create_dir_all(project_root.join(".claude/.harness")).unwrap();
+        crate::fs::create_dir_all(&project_root.join(".claude/.harness")).unwrap();
         let _store = SqliteEventStore::new(project_root.join(DB_REL_PATH)).unwrap();
         // Re-pack: callers want the project root, not the temp root.
         // Hand back the original TempDir; the project lives under `name`.
