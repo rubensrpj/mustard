@@ -161,13 +161,21 @@ fn rematerialize_all(project_dir: &str) -> CoreResult<RebuildReport> {
 }
 
 /// Translate a [`SpecView`] into the legacy [`SpecRow`] shape.
+///
+/// The persisted `status` is derived from the canonical [`SpecState`]
+/// (`view.state`) rather than the deprecated flat `view.status`, so the
+/// rematerialised row stays consistent with the state model during the W1→W7
+/// migration (spec-lifecycle-unification W2). The two should already agree —
+/// `view.status` is itself derived from `view.state` in the projection — but
+/// keying off the canonical source removes any risk of drift.
 fn spec_row_from_view(view: &mustard_core::SpecView) -> SpecRow {
+    let status = SpecStatus::try_from(view.state.clone()).unwrap_or(SpecStatus::NoEvents);
     SpecRow {
         name: view.spec.clone(),
-        status: Some(spec_status_string(view.status)),
+        status: Some(spec_status_string(status)),
         phase: view.phase.map(|p| phase_string(p).to_string()),
         started_at: view.started_at.clone(),
-        completed_at: if view.status == SpecStatus::Completed {
+        completed_at: if view.state.outcome == mustard_core::Outcome::Completed {
             view.last_event_at.clone()
         } else {
             None

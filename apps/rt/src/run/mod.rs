@@ -53,6 +53,7 @@ mod skills;
 mod statusline;
 mod verify_emit;
 mod spec_children;
+mod spec_children_tree;
 mod spec_extract;
 mod spec_link;
 mod spec_sections;
@@ -262,6 +263,15 @@ pub enum RunCmd {
         #[arg(long)]
         parent: Option<String>,
     },
+    /// Project a parent spec's waves + acceptance criteria + sub-specs into a
+    /// single JSON document. Consumed by the dashboard's `spec_children_tree`
+    /// Tauri command (Wave 3 of `spec-lifecycle-unification`). Fail-open: a
+    /// missing spec or store degrades to empty arrays.
+    SpecChildrenTree {
+        /// Parent spec slug under `.claude/spec/` (flat layout).
+        #[arg(long)]
+        spec: Option<String>,
+    },
     /// Validate a spec's structure (WARN-level — never blocks).
     AnalyzeValidation {
         /// Path to the spec file.
@@ -423,8 +433,13 @@ pub enum RunCmd {
         #[arg(long)]
         subproject: Option<String>,
     },
-    /// Render the Claude Code status bar (reads the payload JSON from stdin).
-    Statusline,
+    /// Render the Claude Code status bar (reads the payload JSON from stdin),
+    /// or `--preview` every shipped theme on its own labelled line.
+    Statusline {
+        /// Skip stdin; render every theme with a synthetic payload.
+        #[arg(long)]
+        preview: bool,
+    },
     /// Skill-family CLI: `validate`, `graph`, or `orphans`.
     Skills {
         /// Subcommand: `validate`, `graph`, or `orphans`.
@@ -650,6 +665,7 @@ pub fn dispatch(cmd: RunCmd) {
             reason,
         } => spec_link::run(parent.as_deref(), child.as_deref(), reason.as_deref()),
         RunCmd::SpecChildren { parent } => spec_children::run(parent.as_deref()),
+        RunCmd::SpecChildrenTree { spec } => spec_children_tree::run(spec.as_deref()),
         RunCmd::AnalyzeValidation { spec } => analyze_validation::run(spec.as_deref()),
         RunCmd::MarkChecklistItem {
             spec,
@@ -700,7 +716,7 @@ pub fn dispatch(cmd: RunCmd) {
             critical,
             subproject,
         } => review_result::run(spec.as_deref(), verdict.as_deref(), critical, subproject.as_deref()),
-        RunCmd::Statusline => statusline::run(),
+        RunCmd::Statusline { preview } => statusline::run(preview),
         RunCmd::Skills { subcommand, args } => skills::run(subcommand.as_deref(), &args),
         RunCmd::SecurityScan { dir, json } => security_scan::run(dir.as_deref(), json),
         RunCmd::VerifyEmit {

@@ -25,10 +25,37 @@ use mustard_core::model::event::{
     EVENT_PIPELINE_RESUME_MODE, EVENT_PIPELINE_SCOPE, EVENT_PIPELINE_STATUS,
     EVENT_PIPELINE_TASK_COMPLETE, EVENT_PIPELINE_TASK_DISPATCH, EVENT_PIPELINE_WAVE_COMPLETE,
 };
-use serde_json::Value;
+use mustard_core::{Outcome, Stage};
+use serde_json::{json, Value};
 use std::path::Path;
 
-/// The 9 valid pipeline event kind strings.
+// --- Canonical state-model event kinds (spec-lifecycle-unification W2) -------
+//
+// These are not yet `EVENT_PIPELINE_*` constants in `mustard-core` (that crate
+// is out of this wave's boundary), so they live here as literals. When core
+// gains the constants in a later wave, swap these for the re-exports.
+
+/// `pipeline.stage` — a canonical [`Stage`] transition (replaces the legacy
+/// `pipeline.phase`).
+const EVENT_PIPELINE_STAGE: &str = "pipeline.stage";
+/// `pipeline.outcome` — a terminal [`Outcome`] transition (replaces the
+/// terminal half of the legacy `pipeline.status`).
+const EVENT_PIPELINE_OUTCOME: &str = "pipeline.outcome";
+/// `pipeline.flag.set` — a [`Flags`](mustard_core::Flags) qualifier was raised.
+const EVENT_PIPELINE_FLAG_SET: &str = "pipeline.flag.set";
+/// `pipeline.flag.clear` — a [`Flags`](mustard_core::Flags) qualifier was cleared.
+const EVENT_PIPELINE_FLAG_CLEAR: &str = "pipeline.flag.clear";
+
+/// `pipeline.phase` — the legacy phase-transition event. Accepted here only so
+/// `emit-pipeline --kind pipeline.phase` can fan out the `pipeline.stage`
+/// alias (it is otherwise emitted by `emit-phase`). Not part of the
+/// directly-emittable "new" set.
+const EVENT_PIPELINE_PHASE: &str = "pipeline.phase";
+
+/// The 13 valid pipeline event kind strings: the 9 legacy `pipeline.*` kinds,
+/// plus the legacy `pipeline.phase` (alias-only), plus the 4 new canonical
+/// state-model kinds. A literal list — no magic alias resolution
+/// (cf. memory `project_emit_pipeline_kind_full_prefix`).
 const KNOWN_KINDS: &[&str] = &[
     EVENT_PIPELINE_SCOPE,
     EVENT_PIPELINE_STATUS,
@@ -39,6 +66,11 @@ const KNOWN_KINDS: &[&str] = &[
     EVENT_PIPELINE_PAUSE,
     EVENT_PIPELINE_RESUME_MODE,
     EVENT_PIPELINE_COMPLETE,
+    EVENT_PIPELINE_PHASE,
+    EVENT_PIPELINE_STAGE,
+    EVENT_PIPELINE_OUTCOME,
+    EVENT_PIPELINE_FLAG_SET,
+    EVENT_PIPELINE_FLAG_CLEAR,
 ];
 
 /// Options for `mustard-rt run emit-pipeline`.
@@ -93,10 +125,29 @@ pub fn run(opts: EmitPipelineOpts) {
     let spec_name = opts.spec.clone();
     let payload_for_header = payload.clone();
 
+    // One shared `ts` + `session_id` for the whole transition: a legacy event
+    // and its new-kind alias must land on the *same* timestamp/session so the
+    // projection layer can correlate them as one transition (AC-W2-6).
+    let ts = now_iso8601();
+    let sid = session_id();
+
+    // Resolve any legacy → new alias *before* moving the payload into the
+    // primary event. `aliased` carries the equivalent new event when the
+    // incoming kind is a legacy kind that maps onto the canonical state model.
+    let aliased = alias_event(&kind_str, &payload, &ts, &sid, &spec_name);
+
+    // When we are about to fan out an alias, tag the legacy event's payload so
+    // an auditor can distinguish the back-compat write from a first-class one.
+    let primary_payload = if aliased.is_some() {
+        tag_legacy_alias(payload)
+    } else {
+        payload
+    };
+
     let event = HarnessEvent {
         v: SCHEMA_VERSION,
-        ts: now_iso8601(),
-        session_id: session_id(),
+        ts: ts.clone(),
+        session_id: sid.clone(),
         wave: 0,
         actor: Actor {
             kind: ActorKind::Orchestrator,
@@ -104,12 +155,19 @@ pub fn run(opts: EmitPipelineOpts) {
             actor_type: None,
         },
         event: opts.kind,
-        payload,
+        payload: primary_payload,
         spec: Some(opts.spec),
     };
 
     // Fail-open: a write failure is logged but never propagates to an exit 1.
     let _ = store.append(&event);
+
+    // Emit the canonical new-kind alias for a legacy transition. Same ts +
+    // session as the legacy event. Emitting a *new* kind directly produces no
+    // alias here (`alias_event` returns `None` for new kinds) — idempotency.
+    if let Some(alias) = aliased {
+        let _ = store.append(&alias);
+    }
 
     // Wave-2 (2026-05-21-flatten-spec-layout-and-multi-collab): keep the
     // `### Status:` header in `.claude/spec/{spec}/spec.md` in sync with the
@@ -124,6 +182,87 @@ pub fn run(opts: EmitPipelineOpts) {
             sync_spec_status_header(&cwd, &spec_name, to);
         }
     }
+}
+
+/// Set `legacy_alias = true` on an event payload. A non-object payload (e.g.
+/// `null` or a bare string) is wrapped into `{ "legacy_alias": true }` so the
+/// audit tag is always present without losing the original value (kept under
+/// `value` when wrapping).
+fn tag_legacy_alias(payload: Value) -> Value {
+    match payload {
+        Value::Object(mut map) => {
+            map.insert("legacy_alias".to_string(), Value::Bool(true));
+            Value::Object(map)
+        }
+        Value::Null => json!({ "legacy_alias": true }),
+        other => json!({ "legacy_alias": true, "value": other }),
+    }
+}
+
+/// Build the canonical new-kind event a legacy `kind` aliases to, or `None`
+/// when `kind` is not a legacy kind (a new kind emitted directly never
+/// aliases — that is the idempotency guarantee of task #7).
+///
+/// Mapping (per Wave 2 task #6):
+/// - `pipeline.status` with payload `{to: <terminal>}` → `pipeline.outcome`
+///   `{outcome: <terminal>}`.
+/// - `pipeline.status` with payload `{to: <stage>}` → `pipeline.stage`
+///   `{stage: <stage>}`.
+/// - `pipeline.phase` with payload `{to: <stage>}` → `pipeline.stage`
+///   `{stage: <stage>}`.
+///
+/// The alias carries the same `ts` + `session_id` as the legacy event so the
+/// pair is correlatable as one transition.
+fn alias_event(
+    kind: &str,
+    payload: &Value,
+    ts: &str,
+    session_id: &str,
+    spec: &str,
+) -> Option<HarnessEvent> {
+    // Both legacy kinds carry the transition target under `payload.to`.
+    let to = payload.get("to").and_then(Value::as_str)?;
+
+    let (event_kind, alias_payload) = match kind {
+        EVENT_PIPELINE_STATUS => {
+            // A terminal status maps to an outcome; a non-terminal one to a
+            // stage. `Outcome::Active` is not a terminal status, so fall
+            // through to the stage mapping.
+            match Outcome::parse(to) {
+                Some(outcome) if outcome != Outcome::Active => {
+                    (EVENT_PIPELINE_OUTCOME, json!({ "outcome": to }))
+                }
+                _ => {
+                    let stage = Stage::parse(to)?;
+                    let _ = stage; // validated; we forward the original token.
+                    (EVENT_PIPELINE_STAGE, json!({ "stage": to }))
+                }
+            }
+        }
+        EVENT_PIPELINE_PHASE => {
+            // A phase is always a stage spelling. Validate it parses, then
+            // forward the original token spelling.
+            Stage::parse(to)?;
+            (EVENT_PIPELINE_STAGE, json!({ "stage": to }))
+        }
+        // Not a legacy kind — no alias (idempotent for new kinds).
+        _ => return None,
+    };
+
+    Some(HarnessEvent {
+        v: SCHEMA_VERSION,
+        ts: ts.to_string(),
+        session_id: session_id.to_string(),
+        wave: 0,
+        actor: Actor {
+            kind: ActorKind::Orchestrator,
+            id: Some("emit-pipeline".to_string()),
+            actor_type: None,
+        },
+        event: event_kind.to_string(),
+        payload: alias_payload,
+        spec: Some(spec.to_string()),
+    })
 }
 
 /// Rewrite the `### Status:` line of `.claude/spec/{spec}/spec.md` so it
@@ -233,8 +372,10 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn known_kinds_list_covers_all_nine_constants() {
-        assert_eq!(KNOWN_KINDS.len(), 9);
+    fn known_kinds_list_covers_legacy_and_new_kinds() {
+        // 9 legacy + 1 legacy phase (alias-only) + 4 new canonical kinds.
+        assert_eq!(KNOWN_KINDS.len(), 14);
+        // Legacy nine.
         assert!(KNOWN_KINDS.contains(&EVENT_PIPELINE_SCOPE));
         assert!(KNOWN_KINDS.contains(&EVENT_PIPELINE_STATUS));
         assert!(KNOWN_KINDS.contains(&EVENT_PIPELINE_TASK_DISPATCH));
@@ -244,6 +385,48 @@ mod tests {
         assert!(KNOWN_KINDS.contains(&EVENT_PIPELINE_PAUSE));
         assert!(KNOWN_KINDS.contains(&EVENT_PIPELINE_RESUME_MODE));
         assert!(KNOWN_KINDS.contains(&EVENT_PIPELINE_COMPLETE));
+        // Legacy phase (alias-only).
+        assert!(KNOWN_KINDS.contains(&EVENT_PIPELINE_PHASE));
+        // New canonical state-model kinds.
+        assert!(KNOWN_KINDS.contains(&EVENT_PIPELINE_STAGE));
+        assert!(KNOWN_KINDS.contains(&EVENT_PIPELINE_OUTCOME));
+        assert!(KNOWN_KINDS.contains(&EVENT_PIPELINE_FLAG_SET));
+        assert!(KNOWN_KINDS.contains(&EVENT_PIPELINE_FLAG_CLEAR));
+    }
+
+    #[test]
+    fn alias_event_maps_legacy_status_terminal_to_outcome() {
+        let p = json!({ "to": "completed" });
+        let ev = super::alias_event(EVENT_PIPELINE_STATUS, &p, "T", "S", "demo")
+            .expect("terminal status aliases to outcome");
+        assert_eq!(ev.event, EVENT_PIPELINE_OUTCOME);
+        assert_eq!(ev.payload["outcome"], json!("completed"));
+        assert_eq!(ev.ts, "T");
+        assert_eq!(ev.session_id, "S");
+    }
+
+    #[test]
+    fn alias_event_maps_legacy_phase_to_stage() {
+        let p = json!({ "to": "execute" });
+        let ev = super::alias_event(EVENT_PIPELINE_PHASE, &p, "T", "S", "demo")
+            .expect("phase aliases to stage");
+        assert_eq!(ev.event, EVENT_PIPELINE_STAGE);
+        assert_eq!(ev.payload["stage"], json!("execute"));
+    }
+
+    #[test]
+    fn alias_event_returns_none_for_new_kinds() {
+        // A directly-emitted new kind produces no alias (idempotency).
+        let p = json!({ "stage": "execute" });
+        assert!(super::alias_event(EVENT_PIPELINE_STAGE, &p, "T", "S", "demo").is_none());
+        assert!(super::alias_event(EVENT_PIPELINE_OUTCOME, &p, "T", "S", "demo").is_none());
+    }
+
+    #[test]
+    fn tag_legacy_alias_sets_flag_on_object() {
+        let tagged = super::tag_legacy_alias(json!({ "to": "execute" }));
+        assert_eq!(tagged["legacy_alias"], json!(true));
+        assert_eq!(tagged["to"], json!("execute"));
     }
 
     #[test]
@@ -299,7 +482,11 @@ mod tests {
         }
 
         let events = store.replay().unwrap();
-        assert_eq!(events.len(), 9, "expected 9 events, one per kind");
+        assert_eq!(
+            events.len(),
+            KNOWN_KINDS.len(),
+            "expected one event per kind"
+        );
 
         for (i, &kind) in KNOWN_KINDS.iter().enumerate() {
             assert_eq!(events[i].event, kind, "event name mismatch at index {i}");
