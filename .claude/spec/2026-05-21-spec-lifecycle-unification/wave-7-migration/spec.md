@@ -3,10 +3,11 @@
 ### Parent: [[2026-05-21-spec-lifecycle-unification]]
 ### Wave: 7
 ### Role: rt
-### Status: approved
-### Phase: PLAN
+### Stage: Close
+### Outcome: Completed
+### Flags: 
 ### Lang: pt
-### Checkpoint: 2026-05-21T00:00:00Z
+### Checkpoint: 2026-05-22T02:05:00Z
 
 ## Resumo
 
@@ -136,15 +137,24 @@ Após implementar a ferramenta:
 
 ## Acceptance Criteria
 
-- [ ] AC-W7-1: `cargo build -p mustard-rt` passa.
-- [ ] AC-W7-2: `cargo test -p mustard-rt` passa (incluindo os 7 cenários de `migrate_spec_headers.rs`).
-- [ ] AC-W7-3: `cargo test --test spec_invariants -p mustard-rt` passa após `--apply` rodado.
-- [ ] AC-W7-4: `mustard-rt run migrate-spec-headers --dry-run` produz `.claude/.harness/migration-{date}.log.json` com `mode: "dry-run"` e nenhuma modificação em disco.
-- [ ] AC-W7-5: `mustard-rt run migrate-spec-headers --apply` (rodado uma vez no repo Mustard) atualiza todas as specs com header legado. Diff revisado e commitado.
-- [ ] AC-W7-6 (transversal): `rg -n '### Status:' .claude/spec/` retorna vazio.
-- [ ] AC-W7-7 (transversal): `rg -n '### Phase:' .claude/spec/` retorna vazio.
-- [ ] AC-W7-8 (transversal): `rg -n '### Stage:' .claude/spec/` retorna ≥1 hit por spec.
-- [ ] AC-W7-9: Smoke `/specs` no dashboard mostra todas as specs em grupos coerentes (nenhuma "perdida" ou em "no-events" indevidamente).
+- [x] AC-W7-1: `cargo build -p mustard-rt` passa. ✅
+- [x] AC-W7-2: `cargo test -p mustard-rt` passa — **782 passed**, incl. 12 cenários de `migrate_spec_headers.rs` (7 originais + bullet + body-mentions-stage + combined-pipe + queued+parenthetical). ✅
+- [x] AC-W7-3: `cargo test -p mustard-rt --test spec_invariants` passa após `--apply` (un-ignored). Varre 166 specs: 0 erro de parse, 0 header legado, `SpecState::new` legal em todas. ✅
+- [x] AC-W7-4: `--dry-run` produziu `migration-2026-05-22.log.json` (`mode: dry-run`), zero modificação em disco. ✅
+- [x] AC-W7-5: `--apply` rodado; **166/166 spec.md no formato novo** (auditoria header-scoped). Migração em 2 passadas (cobertura estendida p/ formato bullet + combined-pipe descobertos no dry-run). Diff commitado em separado. ✅
+- [x] AC-W7-6/7 (transversal, met-by-intent): **nenhum header legado** `### Status:`/`### Phase:` (provado por `spec_invariants` que parseia o header). O `rg '### Status:'` literal retorna apenas **menções em prosa** (backticks/tabelas) nas próprias specs de migração/skill que documentam o formato legado — corretas de manter. AC-P-1 do parent já antecipava isso ("apenas legado pré-migração ou vazio"). ✅
+- [x] AC-W7-8 (transversal): **166/166 spec.md** com `### Stage:` no header (auditoria). ✅
+- [~] AC-W7-9 (build-verified; visual manual pendente): dashboard build passa e o parser lê todas as 166 no formato novo; smoke visual `/specs` em `tauri:dev` não lançável nesta sessão — verificação visual manual recomendada.
+
+## Descobertas durante a execução (3 formatos legados, não 1)
+
+O dry-run revelou que o repo tinha **3 formatos de header legado**, não só `### Status:`+`### Phase:` separados:
+1. `### Status:` + `### Phase:` (linhas separadas) — previsto.
+2. `- **Status**:` + `- **Phase**:` (bullet, specs mustard-2.0/dashboard-1.0 de mai/12) — fix-loop 1.
+3. `### Status: X | Phase: Y | Scope: Z` (combined-pipe, ~52 specs de mar-abr) — fix-loop 2.
++ 2 specs com header corrompido (`completed| Phase: CLOSE`) consertadas à mão (guardrail-catalog, mustard-doctor).
++ Bug de idempotência: o check `### Stage:` varria o corpo inteiro → specs que **documentam** o formato (wave-4/7/parent) eram puladas falsamente. Corrigido com header-region scoping (até o primeiro `## ` ou fence).
+**Lição:** auditar cobertura por *formato real parseável*, não por presença do token `### Status:`.
 
 ## Limites
 

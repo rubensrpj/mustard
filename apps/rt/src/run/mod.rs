@@ -32,6 +32,7 @@ mod exec_rewave_check;
 mod mark_checklist_item;
 mod memory;
 mod memory_cross_wave;
+mod migrate_spec_headers;
 mod memory_ingest;
 mod metrics;
 mod metrics_wave_status;
@@ -141,6 +142,29 @@ pub enum RunCmd {
         /// Optional JSON payload string.
         #[arg(long)]
         payload: Option<String>,
+    },
+    /// Rewrite legacy spec headers (`### Status:` + `### Phase:`) into the
+    /// canonical `### Stage:` / `### Outcome:` / `### Flags:` triple
+    /// (spec-lifecycle-unification Wave 7). Dry-run by default; `--apply`
+    /// (mutually exclusive with `--dry-run`) writes atomically per file. The
+    /// audit log is written in both modes.
+    MigrateSpecHeaders {
+        /// Preview only — write the audit log, touch no spec files (default).
+        #[arg(long, default_value_t = true, conflicts_with = "apply")]
+        dry_run: bool,
+        /// Apply the rewrite (atomic per file). Required to mutate spec files.
+        #[arg(long)]
+        apply: bool,
+        /// Root directory to scan recursively. Defaults to `.claude/spec`.
+        #[arg(long, default_value = ".claude/spec")]
+        root: PathBuf,
+        /// Audit-log path. Defaults to
+        /// `.claude/.harness/migration-{date}.log.json`.
+        #[arg(long)]
+        log: Option<PathBuf>,
+        /// Case-insensitive substring filter on the file path (subset).
+        #[arg(long)]
+        filter: Option<String>,
     },
     /// Finalize a pipeline spec (followup mark, archive, or stale sweep).
     CompleteSpec {
@@ -619,6 +643,23 @@ pub fn dispatch(cmd: RunCmd) {
         }
         RunCmd::EmitPipeline { kind, spec, payload } => {
             emit_pipeline::run(emit_pipeline::EmitPipelineOpts { kind, spec, payload })
+        }
+        RunCmd::MigrateSpecHeaders {
+            dry_run,
+            apply,
+            root,
+            log,
+            filter,
+        } => {
+            // `--apply` overrides the default `dry_run: true`; the clap
+            // `conflicts_with` prevents both being passed explicitly.
+            let _ = dry_run;
+            migrate_spec_headers::run(migrate_spec_headers::MigrateOpts {
+                apply,
+                root,
+                log,
+                filter,
+            });
         }
         RunCmd::CompleteSpec {
             spec,
