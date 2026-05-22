@@ -37,7 +37,7 @@ mod migrate_spec_headers;
 mod memory_ingest;
 mod metrics;
 mod metrics_wave_status;
-mod otel;
+pub(crate) mod otel;
 mod pipeline_state_ingest;
 mod pipeline_summary;
 mod qa_run;
@@ -520,13 +520,15 @@ pub enum RunCmd {
     },
     /// Run the local OTLP/JSON receiver for Claude Code native telemetry.
     ///
-    /// Binds a loopback HTTP server on `MUSTARD_OTEL_PORT` (default 4318) and
-    /// projects incoming metrics/logs/traces into the `claude_code_otel` and
-    /// (Wave 3) economy `spans` tables. Runs until a shutdown signal — the
-    /// harness spawns it as a long-lived child via [`crate::hooks::session_start`].
+    /// Binds a loopback HTTP server on `MUSTARD_OTEL_PORT` (default 4318).
+    /// Metrics/logs project into `claude_code_otel` (mustard.db); traces land
+    /// span-level token usage as `run_usage` rows in telemetry.db via the
+    /// telemetry writer (rows stamped with attribution at write time). Runs
+    /// until a shutdown signal — the harness spawns it as a long-lived child
+    /// via [`crate::hooks::session_start`].
     OtelCollector,
     /// Watch `~/.claude/projects/**/*.jsonl` and re-ingest each session
-    /// transcript into the economy `spans` table on every change.
+    /// transcript into telemetry.db's `run_usage` table on every change.
     ///
     /// Opt-in daemon (Wave 3 — economia-moat-unification) spawned by
     /// [`crate::hooks::session_start`] when `MUSTARD_TRANSCRIPT_WATCH=1`.

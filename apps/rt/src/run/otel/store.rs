@@ -1,48 +1,30 @@
-//! SQLite store for the OTEL ports — a `rusqlite` handle on the harness
-//! `mustard.db`.
+//! SQLite store for the OTEL ports.
 //!
-//! The JS `otel-collector.js` / `diagnose-otel.js` reached the database
-//! through `_lib/event-store.js`, the CJS wrapper around the compiled
-//! `EventStore` class. The Rust ports cannot load that class, so this module
-//! opens the same `.claude/.harness/mustard.db` file directly with `rusqlite`.
+//! As of Wave 2 (telemetry-separation) the collector writes telemetry into the
+//! dedicated `.claude/.harness/telemetry.db` (the `mustard_core::telemetry`
+//! domain), **not** the hot `mustard.db` the hooks open on every tool use.
+//! Metrics and logs are reduced onto `usage_totals` (one row per
+//! `(metric, model, session_id)`, accumulating `sum`); the legacy per-minute
+//! `claude_code_otel` bucket / `token_type` / `attrs` / `count` / `signal`
+//! columns are dropped.
 //!
-//! The schema MUST stay byte-identical to `SCHEMA_SQL` in
-//! `packages/cli/src/runtime/event-store.ts` (and its mirror
-//! `runtime/schema.sql`) so a database created by either runtime is
-//! interchangeable — same columns, same types, and the same composite
-//! `PRIMARY KEY (ts_bucket, metric, session_id, model, token_type)`, which is
-//! the `ON CONFLICT` target the UPSERTs depend on.
+//! `subtractions_since` still reads the `events` table, which lives in
+//! `mustard.db`; that one query opens the harness store directly.
 
 use mustard_core::fs;
-use rusqlite::{params, Connection};
+use mustard_core::telemetry::model::UsageMetric;
+use mustard_core::telemetry::{writer as telemetry_writer, TelemetryStore};
+use rusqlite::params;
 use std::path::{Path, PathBuf};
 
-/// The `claude_code_otel` table plus its three indexes, copied verbatim from
-/// `event-store.ts`'s `SCHEMA_SQL`. `IF NOT EXISTS` makes it idempotent: when
-/// the JS `EventStore` already created the table this is a no-op, and when it
-/// has not, the columns match exactly so either runtime can populate it.
-const OTEL_SCHEMA_SQL: &str = "
-CREATE TABLE IF NOT EXISTS claude_code_otel (
-  ts_bucket INTEGER NOT NULL,
-  signal TEXT NOT NULL,
-  metric TEXT NOT NULL,
-  session_id TEXT,
-  model TEXT,
-  token_type TEXT,
-  sum REAL DEFAULT 0,
-  count INTEGER DEFAULT 0,
-  attrs TEXT,
-  PRIMARY KEY (ts_bucket, metric, session_id, model, token_type)
-);
-CREATE INDEX IF NOT EXISTS idx_cco_metric ON claude_code_otel(metric);
-CREATE INDEX IF NOT EXISTS idx_cco_session ON claude_code_otel(session_id);
-CREATE INDEX IF NOT EXISTS idx_cco_bucket ON claude_code_otel(ts_bucket);
-";
-
 /// One projected metric datapoint — the argument bundle for [`Store::upsert_metric`].
+///
+/// Reduced for Wave 2: only `(metric, model, session_id, sum)` survive plus the
+/// `ts_bucket` (now used solely as the `updated_at` freshness signal, not a
+/// primary-key bucket). `token_type` / `attrs` are gone.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MetricRow {
-    /// Minute-floored ms-epoch bucket.
+    /// Minute-floored ms-epoch — now the `updated_at` freshness signal.
     pub ts_bucket: i64,
     /// OTLP metric name, e.g. `claude_code.token.usage`.
     pub metric: String,
@@ -50,18 +32,21 @@ pub struct MetricRow {
     pub session_id: Option<String>,
     /// `model` attribute, if present.
     pub model: Option<String>,
-    /// `type` attribute (only on token.usage), if present.
+    /// `type` attribute (only on token.usage), if present. Retained on the
+    /// projection struct for the `project` walker's compatibility, but no
+    /// longer persisted (the reduced schema drops it).
     pub token_type: Option<String>,
     /// The datapoint's numeric value.
     pub sum: f64,
-    /// JSON of the remaining (non-projected) attributes.
+    /// JSON of the remaining (non-projected) attributes. Retained on the
+    /// projection struct but no longer persisted.
     pub attrs: String,
 }
 
 /// One projected log record — the argument bundle for [`Store::upsert_log`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct LogRow {
-    /// Minute-floored ms-epoch bucket.
+    /// Minute-floored ms-epoch — now the `updated_at` freshness signal.
     pub ts_bucket: i64,
     /// The log's `body.stringValue`, or `"log"` when absent.
     pub metric: String,
@@ -69,18 +54,20 @@ pub struct LogRow {
     pub session_id: Option<String>,
     /// `model` attribute, if present.
     pub model: Option<String>,
-    /// JSON of all the log's attributes.
+    /// JSON of all the log's attributes. Retained on the projection struct but
+    /// no longer persisted.
     pub attrs: String,
 }
 
-/// A `rusqlite` handle on the harness `mustard.db`.
+/// A handle on the dedicated `telemetry.db` (`usage_totals`), plus the
+/// project root for the on-demand `mustard.db` open `subtractions_since` needs.
 pub struct Store {
-    conn: Connection,
+    telemetry: TelemetryStore,
+    claude_dir: PathBuf,
 }
 
 impl Store {
-    /// Open (creating if absent) `<claude_dir>/.harness/mustard.db` and ensure
-    /// the `claude_code_otel` schema exists.
+    /// Open (creating if absent) the telemetry store under `<claude_dir>`.
     ///
     /// # Errors
     /// Returns the `rusqlite` error when the directory cannot be created, the
@@ -92,118 +79,140 @@ impl Store {
         if fs::create_dir_all(&harness_dir).is_err() {
             return Err(rusqlite::Error::InvalidPath(harness_dir));
         }
-        let db_path = harness_dir.join("mustard.db");
-        let conn = Connection::open(&db_path)?;
-        conn.execute_batch(OTEL_SCHEMA_SQL)?;
-        Ok(Self { conn })
+        let telemetry = telemetry_open(claude_dir)?;
+        Ok(Self {
+            telemetry,
+            claude_dir: claude_dir.to_path_buf(),
+        })
     }
 
-    /// Open against an explicit database path — used by the inline tests with
-    /// an in-memory or `tempfile` database.
+    /// Open against an explicit project's `.harness` directory — used by the
+    /// inline tests with a `tempfile` database. `db_path` points at the legacy
+    /// `mustard.db` slot; the telemetry store is opened beside it.
     ///
     /// # Errors
     /// Returns the `rusqlite` error when the database cannot be opened or the
     /// schema DDL fails.
     #[cfg(test)]
     pub fn open_at(db_path: &Path) -> rusqlite::Result<Self> {
-        let conn = Connection::open(db_path)?;
-        conn.execute_batch(OTEL_SCHEMA_SQL)?;
-        Ok(Self { conn })
+        // `db_path` is `<harness>/mustard.db`; the telemetry db sits beside it.
+        let harness_dir = db_path
+            .parent()
+            .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
+        let telemetry = TelemetryStore::new(harness_dir.join("telemetry.db"))
+            .map_err(|_| rusqlite::Error::InvalidPath(harness_dir.clone()))?;
+        Ok(Self {
+            telemetry,
+            // `claude_dir` is the parent of `.harness`; tests that exercise
+            // `subtractions_since` pass a real `.harness/mustard.db` path.
+            claude_dir: harness_dir
+                .parent()
+                .map_or_else(|| PathBuf::from("."), Path::to_path_buf),
+        })
     }
 
-    /// UPSERT one metric datapoint into the 1-minute bucket.
+    /// UPSERT one metric datapoint into `usage_totals` (reduced schema).
     ///
-    /// On a `(ts_bucket, metric, session_id, model, token_type)` collision the
-    /// `sum` and `count` are accumulated — identical to the JS
-    /// `upsertMetricStmt` (`sum = sum + excluded.sum`,
-    /// `count = count + excluded.count`).
+    /// On a `(metric, model, session_id)` collision `sum` is accumulated and
+    /// `updated_at` advances to the latest contributing datapoint.
     ///
     /// # Errors
     /// Returns the `rusqlite` error when the statement fails.
     pub fn upsert_metric(&self, row: &MetricRow) -> rusqlite::Result<()> {
-        self.conn.execute(
-            "INSERT INTO claude_code_otel
-               (ts_bucket, signal, metric, session_id, model, token_type, sum, count, attrs)
-             VALUES (?1, 'metric', ?2, ?3, ?4, ?5, ?6, 1, ?7)
-             ON CONFLICT(ts_bucket, metric, session_id, model, token_type)
-             DO UPDATE SET sum = sum + excluded.sum, count = count + excluded.count",
-            params![
-                row.ts_bucket,
-                row.metric,
-                row.session_id,
-                row.model,
-                row.token_type,
-                row.sum,
-                row.attrs,
-            ],
-        )?;
+        // Ingestion filter: persist only the metrics the dashboard actually
+        // reads (`telemetry::CONSUMED_METRICS`). Every other Claude Code OTEL
+        // metric is dropped here — silently `Ok`, never written — so the ~9
+        // unread metric types stop accumulating dead rows in `usage_totals`.
+        if !mustard_core::telemetry::CONSUMED_METRICS.contains(&row.metric.as_str()) {
+            return Ok(());
+        }
+        telemetry_writer::upsert_usage_metric(
+            self.telemetry.conn(),
+            &UsageMetric {
+                metric: row.metric.clone(),
+                model: row.model.clone(),
+                session_id: row.session_id.clone(),
+                sum: row.sum,
+                updated_at: Some(row.ts_bucket),
+            },
+        )
+        .map_err(to_sqlite_err)
+    }
+
+    /// Drop one log record — no longer persisted.
+    ///
+    /// Log bodies arrive as OTLP log records (`claude_code.api_request`,
+    /// `user_prompt`, …); none of them is a `telemetry::CONSUMED_METRICS` name,
+    /// so the dashboard never reads a log-bodied row. Persisting them only grew
+    /// `usage_totals` with dead weight, so this is now a no-op that the projection
+    /// loop still calls (keeping the public signature stable). Always `Ok`.
+    ///
+    /// # Errors
+    /// Never errors; the `Result` is retained for signature compatibility.
+    pub fn upsert_log(&self, _row: &LogRow) -> rusqlite::Result<()> {
         Ok(())
     }
 
-    /// UPSERT one log record into the 1-minute bucket.
-    ///
-    /// On a key collision only `count` is incremented (logs carry no `sum`) —
-    /// identical to the JS `upsertLogStmt`.
+    /// One-time cleanup: delete every `usage_totals` row whose `metric` is not in
+    /// `telemetry::CONSUMED_METRICS`. Purges the ~120 already-written irrelevant
+    /// rows from before the ingestion filter existed. Idempotent — re-running
+    /// after the filter is in place deletes nothing. Shares the allowlist with
+    /// [`Store::upsert_metric`] so the filter and the purge can never drift.
     ///
     /// # Errors
     /// Returns the `rusqlite` error when the statement fails.
-    pub fn upsert_log(&self, row: &LogRow) -> rusqlite::Result<()> {
-        self.conn.execute(
-            "INSERT INTO claude_code_otel
-               (ts_bucket, signal, metric, session_id, model, token_type, sum, count, attrs)
-             VALUES (?1, 'log', ?2, ?3, ?4, NULL, 0, 1, ?5)
-             ON CONFLICT(ts_bucket, metric, session_id, model, token_type)
-             DO UPDATE SET count = count + 1",
-            params![
-                row.ts_bucket,
-                row.metric,
-                row.session_id,
-                row.model,
-                row.attrs,
-            ],
-        )?;
-        Ok(())
+    pub fn purge_unconsumed_metrics(&self) -> rusqlite::Result<usize> {
+        // Build the `NOT IN (?, ?, …)` placeholder list from the shared
+        // allowlist so adding/removing a consumed metric needs no edit here.
+        let allow = mustard_core::telemetry::CONSUMED_METRICS;
+        let placeholders = vec!["?"; allow.len()].join(", ");
+        let sql = format!("DELETE FROM usage_totals WHERE metric NOT IN ({placeholders})");
+        let params: Vec<&dyn rusqlite::ToSql> =
+            allow.iter().map(|m| m as &dyn rusqlite::ToSql).collect();
+        self.telemetry
+            .conn()
+            .execute(&sql, params.as_slice())
     }
 
-    /// Total `claude_code_otel` row count.
+    /// Total `usage_totals` row count.
     ///
     /// # Errors
     /// Returns the `rusqlite` error when the query fails.
     pub fn otel_row_count(&self) -> rusqlite::Result<i64> {
-        self.conn
-            .query_row("SELECT COUNT(*) FROM claude_code_otel", [], |r| r.get(0))
+        self.telemetry
+            .conn()
+            .query_row("SELECT COUNT(*) FROM usage_totals", [], |r| r.get(0))
     }
 
-    /// `MAX(ts_bucket)` — the latest minute that has rows, or `None` when the
+    /// `MAX(updated_at)` — the latest contributing datapoint, or `None` when the
     /// table is empty.
     ///
     /// # Errors
     /// Returns the `rusqlite` error when the query fails.
     pub fn otel_last_bucket(&self) -> rusqlite::Result<Option<i64>> {
-        self.conn
-            .query_row("SELECT MAX(ts_bucket) FROM claude_code_otel", [], |r| {
-                r.get(0)
-            })
+        self.telemetry
+            .conn()
+            .query_row("SELECT MAX(updated_at) FROM usage_totals", [], |r| r.get(0))
     }
 
-    /// The latest five rows, newest first — the diagnose `[data]` sample.
+    /// The latest five rows by `updated_at`, newest first — the diagnose
+    /// `[data]` sample, adjusted to the reduced schema.
     ///
     /// # Errors
     /// Returns the `rusqlite` error when the query fails.
     pub fn otel_sample(&self) -> rusqlite::Result<Vec<SampleRow>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT ts_bucket, metric, session_id, model, token_type, sum, count
-             FROM claude_code_otel ORDER BY ts_bucket DESC LIMIT 5",
+        let conn = self.telemetry.conn();
+        let mut stmt = conn.prepare(
+            "SELECT metric, session_id, model, sum, updated_at \
+             FROM usage_totals ORDER BY updated_at DESC LIMIT 5",
         )?;
         let rows = stmt.query_map([], |r| {
             Ok(SampleRow {
-                ts_bucket: r.get(0)?,
-                metric: r.get(1)?,
-                session_id: r.get(2)?,
-                model: r.get(3)?,
-                token_type: r.get(4)?,
-                sum: r.get(5)?,
-                count: r.get(6)?,
+                metric: r.get(0)?,
+                session_id: r.get(1)?,
+                model: r.get(2)?,
+                sum: r.get(3)?,
+                updated_at: r.get(4)?,
             })
         })?;
         rows.collect()
@@ -212,17 +221,18 @@ impl Store {
     /// Count `events` rows with `event = 'mustard.subtraction.applied'` whose
     /// `ts` is newer than the ISO-8601 `since` timestamp.
     ///
-    /// Mirrors the JS `checkSubtractions`. The `events` table is part of the
-    /// shared `EventStore` schema; this query is read-only and tolerant — if
-    /// the table is missing (a database the JS store never initialised) the
-    /// `rusqlite` error propagates and the caller reports it fail-open.
+    /// The `events` table lives in `mustard.db` (the harness event bus), not in
+    /// `telemetry.db`, so this opens the harness store on demand. Read-only and
+    /// tolerant — a missing `events` table (or a missing `mustard.db`) surfaces
+    /// as a `rusqlite` error the caller reports fail-open.
     ///
     /// # Errors
-    /// Returns the `rusqlite` error when the query fails (e.g. no `events`
-    /// table).
+    /// Returns the `rusqlite` error when the database or query fails.
     pub fn subtractions_since(&self, since_iso: &str) -> rusqlite::Result<i64> {
-        self.conn.query_row(
-            "SELECT COUNT(*) FROM events
+        let db_path = self.claude_dir.join(".harness").join("mustard.db");
+        let conn = rusqlite::Connection::open(&db_path)?;
+        conn.query_row(
+            "SELECT COUNT(*) FROM events \
              WHERE event = 'mustard.subtraction.applied' AND ts > ?1",
             params![since_iso],
             |r| r.get(0),
@@ -230,26 +240,35 @@ impl Store {
     }
 }
 
-/// A single `[data]` sample row, mirroring the JS diagnose sample shape.
+/// Open the telemetry store for a `.claude` dir, mapping the core error onto a
+/// `rusqlite` error so the OTEL ports keep their single error type.
+fn telemetry_open(claude_dir: &Path) -> rusqlite::Result<TelemetryStore> {
+    let path = claude_dir.join(".harness").join("telemetry.db");
+    TelemetryStore::new(&path).map_err(|_| rusqlite::Error::InvalidPath(path))
+}
+
+/// Collapse a core telemetry error onto a `rusqlite` error. The OTEL ports fail
+/// open on any store error, so the specific variant is not load-bearing.
+fn to_sqlite_err(_e: mustard_core::error::Error) -> rusqlite::Error {
+    rusqlite::Error::ExecuteReturnedResults
+}
+
+/// A single `[data]` sample row, adjusted to the reduced `usage_totals` schema.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SampleRow {
-    /// Minute-floored ms-epoch bucket.
-    pub ts_bucket: i64,
     /// OTLP metric name (or log body).
     pub metric: String,
     /// `session.id` attribute.
     pub session_id: Option<String>,
     /// `model` attribute.
     pub model: Option<String>,
-    /// `type` attribute (token.usage only).
-    pub token_type: Option<String>,
-    /// Aggregated value within the bucket.
+    /// Aggregated value across every contributing datapoint.
     pub sum: f64,
-    /// Number of datapoints summed.
-    pub count: i64,
+    /// ms-epoch of the most recent contributing datapoint.
+    pub updated_at: Option<i64>,
 }
 
-/// Resolve `<project>/.claude/.harness/mustard.db`'s parent `.claude` dir.
+/// Resolve `<project>/.claude/.harness/...`'s parent `.claude` dir.
 #[must_use]
 pub fn claude_dir() -> PathBuf {
     PathBuf::from(crate::run::env::project_dir()).join(".claude")
@@ -260,9 +279,14 @@ mod tests {
     use super::*;
 
     fn mem_store() -> Store {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(OTEL_SCHEMA_SQL).unwrap();
-        Store { conn }
+        let tmp = tempfile::tempdir().unwrap();
+        let harness = tmp.path().join(".harness");
+        std::fs::create_dir_all(&harness).unwrap();
+        let store = Store::open_at(&harness.join("mustard.db")).unwrap();
+        // Keep the tempdir alive for the store's lifetime by leaking it — the
+        // test process is short-lived and this avoids threading a guard out.
+        std::mem::forget(tmp);
+        store
     }
 
     fn metric(bucket: i64, sum: f64) -> MetricRow {
@@ -278,37 +302,31 @@ mod tests {
     }
 
     #[test]
-    fn metric_upsert_aggregates_within_bucket() {
+    fn metric_upsert_accumulates_on_reduced_key() {
         let store = mem_store();
         store.upsert_metric(&metric(60_000, 10.0)).unwrap();
-        store.upsert_metric(&metric(60_000, 5.0)).unwrap();
-        // Same composite key → one row, sum accumulated, count incremented.
+        store.upsert_metric(&metric(120_000, 5.0)).unwrap();
+        // Same (metric, model, session_id) → one row, sum accumulated, the
+        // freshness signal advances to the latest bucket.
         assert_eq!(store.otel_row_count().unwrap(), 1);
         let sample = store.otel_sample().unwrap();
         assert_eq!(sample.len(), 1);
         assert!((sample[0].sum - 15.0).abs() < f64::EPSILON);
-        assert_eq!(sample[0].count, 2);
-    }
-
-    #[test]
-    fn metric_distinct_buckets_are_separate_rows() {
-        let store = mem_store();
-        store.upsert_metric(&metric(60_000, 10.0)).unwrap();
-        store.upsert_metric(&metric(120_000, 7.0)).unwrap();
-        assert_eq!(store.otel_row_count().unwrap(), 2);
         assert_eq!(store.otel_last_bucket().unwrap(), Some(120_000));
     }
 
     #[test]
-    fn log_upsert_inserts_zero_sum_rows() {
-        // A log row carries `sum = 0` and `count = 1`. Note: `upsert_log`
-        // always writes `token_type = NULL`, and SQLite treats NULL as
-        // distinct inside a UNIQUE/PRIMARY KEY — so the log `ON CONFLICT`
-        // never actually fires and every log is a fresh row. This is
-        // faithful to the JS `upsertLogStmt`, which has the identical PK and
-        // the identical effective behaviour. The aggregating `count = count
-        // + 1` path therefore only matters for a hypothetical non-NULL
-        // `token_type` log; see the metric path for the real aggregation.
+    fn distinct_session_keys_are_separate_rows() {
+        let store = mem_store();
+        store.upsert_metric(&metric(60_000, 10.0)).unwrap();
+        let mut other = metric(60_000, 7.0);
+        other.session_id = Some("s2".to_string());
+        store.upsert_metric(&other).unwrap();
+        assert_eq!(store.otel_row_count().unwrap(), 2);
+    }
+
+    #[test]
+    fn log_upsert_is_a_no_op() {
         let store = mem_store();
         let log = LogRow {
             ts_bucket: 60_000,
@@ -317,14 +335,45 @@ mod tests {
             model: Some("opus".to_string()),
             attrs: "{}".to_string(),
         };
+        // Logs are no longer persisted — no consumed metric arrives via logs.
         store.upsert_log(&log).unwrap();
-        store.upsert_log(&log).unwrap();
-        let sample = store.otel_sample().unwrap();
-        assert_eq!(sample.len(), 2);
-        for row in &sample {
-            assert_eq!(row.count, 1);
-            assert!(row.sum.abs() < f64::EPSILON);
-        }
+        assert_eq!(store.otel_row_count().unwrap(), 0);
+    }
+
+    #[test]
+    fn unconsumed_metric_is_dropped_on_ingestion() {
+        let store = mem_store();
+        let mut row = metric(60_000, 10.0);
+        row.metric = "claude_code.hook_execution_start".to_string();
+        // Outside CONSUMED_METRICS → silently dropped, no row written.
+        store.upsert_metric(&row).unwrap();
+        assert_eq!(store.otel_row_count().unwrap(), 0);
+    }
+
+    #[test]
+    fn purge_removes_only_unconsumed_rows() {
+        let store = mem_store();
+        // A consumed metric survives; an unconsumed one is removed. We bypass
+        // the ingestion filter for the unconsumed row by writing it directly,
+        // simulating a pre-filter legacy row.
+        store.upsert_metric(&metric(60_000, 10.0)).unwrap();
+        telemetry_writer::upsert_usage_metric(
+            store.telemetry.conn(),
+            &UsageMetric {
+                metric: "claude_code.api_request".to_string(),
+                model: Some("opus".to_string()),
+                session_id: Some("s9".to_string()),
+                sum: 1.0,
+                updated_at: Some(60_000),
+            },
+        )
+        .unwrap();
+        assert_eq!(store.otel_row_count().unwrap(), 2);
+        let removed = store.purge_unconsumed_metrics().unwrap();
+        assert_eq!(removed, 1);
+        assert_eq!(store.otel_row_count().unwrap(), 1);
+        // Idempotent: a second purge removes nothing.
+        assert_eq!(store.purge_unconsumed_metrics().unwrap(), 0);
     }
 
     #[test]
@@ -333,18 +382,5 @@ mod tests {
         assert_eq!(store.otel_row_count().unwrap(), 0);
         assert_eq!(store.otel_last_bucket().unwrap(), None);
         assert!(store.otel_sample().unwrap().is_empty());
-    }
-
-    #[test]
-    fn open_at_creates_interchangeable_schema() {
-        let tmp = tempfile::tempdir().unwrap();
-        let db = tmp.path().join("mustard.db");
-        {
-            let store = Store::open_at(&db).unwrap();
-            store.upsert_metric(&metric(60_000, 3.0)).unwrap();
-        }
-        // Re-open the same file: schema is idempotent, data persists.
-        let reopened = Store::open_at(&db).unwrap();
-        assert_eq!(reopened.otel_row_count().unwrap(), 1);
     }
 }

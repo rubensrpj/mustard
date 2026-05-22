@@ -8,14 +8,15 @@
 //! covered by the `tests/mcp.rs` integration test.
 //!
 //! `SqliteEventStore`'s only write API is `append` (events). To seed the
-//! denormalized projections (`knowledge`, `specs`, `metrics_projection`,
-//! `spans`) the tests open a second plain `rusqlite::Connection` to the same
+//! denormalized projections (`knowledge`, `specs`, `metrics_projection`)
+//! the tests open a second plain `rusqlite::Connection` to the same
 //! database file — the store has already applied the schema on open, so the
-//! tables exist.
+//! tables exist. `run_usage` rows are seeded via the telemetry writer.
 
 use super::*;
 use mustard_core::store::event_store::EventSink;
 use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
+use mustard_core::telemetry::{RunUsage, TelemetryStore, TelemetryWriter};
 use std::path::Path;
 use tempfile::TempDir;
 
@@ -45,6 +46,53 @@ fn seed(path: &Path, sql: &str) {
 /// Build a server bound to a temp project directory.
 fn server_in(dir: &TempDir) -> MustardMemory {
     MustardMemory::new(dir.path().to_path_buf())
+}
+
+/// Build a `run_usage` record with the fields the run summary aggregates.
+/// `started` orders the rows so the `limit` cap is deterministic.
+fn run_usage(
+    span: &str,
+    spec: &str,
+    phase: &str,
+    model: &str,
+    input: i64,
+    output: i64,
+    duration_ms: i64,
+    started: i64,
+) -> RunUsage {
+    RunUsage {
+        trace_id: None,
+        span_id: span.into(),
+        parent_span_id: None,
+        name: None,
+        started_at: Some(started),
+        ended_at: None,
+        duration_ms: Some(duration_ms),
+        attributes: None,
+        spec: Some(spec.into()),
+        phase: Some(phase.into()),
+        model: Some(model.into()),
+        input_tokens: Some(input),
+        output_tokens: Some(output),
+        cache_read_input_tokens: None,
+        cache_creation_input_tokens: None,
+        cost_usd_micros: None,
+        is_error: false,
+        project_path: None,
+        ts_iso: None,
+        session_id: None,
+        wave_id: None,
+        tool_use_id: None,
+        agent_id: None,
+    }
+}
+
+/// Seed `run_usage` rows into the telemetry database for a temp project.
+fn seed_runs(dir: &TempDir, rows: &[RunUsage]) {
+    let store = TelemetryStore::for_project(dir.path()).expect("open telemetry store");
+    for row in rows {
+        store.record_run(row).expect("record run");
+    }
 }
 
 /// Extract the single text payload from a `CallToolResult` and parse it.
@@ -282,27 +330,26 @@ fn get_spec_metrics_returns_row_or_error_object() {
 }
 
 #[test]
-fn get_span_summary_aggregates_totals_and_groups_by_model() {
+fn get_run_summary_aggregates_totals_and_groups_by_model() {
     let dir = TempDir::new().unwrap();
-    let store = store_in(&dir);
-    drop(store);
-    seed(
-        &db_path(&dir),
-        "INSERT INTO specs (name) VALUES ('2026-spec'); \
-         INSERT INTO spans (span_id, spec, phase, model, input_tokens, output_tokens, duration_ms, is_error) \
-         VALUES ('sp-1', '2026-spec', 'PLAN', 'opus', 100, 50, 1000, 0); \
-         INSERT INTO spans (span_id, spec, phase, model, input_tokens, output_tokens, duration_ms, is_error) \
-         VALUES ('sp-2', '2026-spec', 'EXECUTE', 'opus', 200, 80, 2000, 0); \
-         INSERT INTO spans (span_id, spec, phase, model, input_tokens, output_tokens, duration_ms, is_error) \
-         VALUES ('sp-3', '2026-spec', 'PLAN', 'haiku', 10, 5, 100, 0);",
+    // The summary reads `run_usage` from the dedicated telemetry database.
+    // Seed three runs via the telemetry writer, mirroring the telemetry
+    // module's own tests, then bind the server to the same project.
+    seed_runs(
+        &dir,
+        &[
+            run_usage("sp-1", "2026-spec", "PLAN", "opus", 100, 50, 1000, 1),
+            run_usage("sp-2", "2026-spec", "EXECUTE", "opus", 200, 80, 2000, 2),
+            run_usage("sp-3", "2026-spec", "PLAN", "haiku", 10, 5, 100, 3),
+        ],
     );
 
     let server = server_in(&dir);
 
-    // Spec-scoped: all three spans aggregate.
+    // Spec-scoped: all three runs aggregate.
     let summary = payload(
         &server
-            .get_span_summary(Parameters(GetSpanSummaryArgs {
+            .get_run_summary(Parameters(GetRunSummaryArgs {
                 spec: Some("2026-spec".to_string()),
                 phase: None,
                 limit: None,
@@ -317,10 +364,10 @@ fn get_span_summary_aggregates_totals_and_groups_by_model() {
     assert_eq!(summary["byModel"]["opus"]["in"], json!(300));
     assert_eq!(summary["byModel"]["haiku"]["count"], json!(1));
 
-    // Phase filter trims to the PLAN spans.
+    // Phase filter trims to the PLAN runs.
     let plan = payload(
         &server
-            .get_span_summary(Parameters(GetSpanSummaryArgs {
+            .get_run_summary(Parameters(GetRunSummaryArgs {
                 spec: Some("2026-spec".to_string()),
                 phase: Some("PLAN".to_string()),
                 limit: None,
@@ -332,7 +379,7 @@ fn get_span_summary_aggregates_totals_and_groups_by_model() {
     // No-spec aggregation fans out over the specs projection.
     let all = payload(
         &server
-            .get_span_summary(Parameters(GetSpanSummaryArgs {
+            .get_run_summary(Parameters(GetRunSummaryArgs {
                 spec: None,
                 phase: None,
                 limit: None,
@@ -372,7 +419,7 @@ fn tools_on_empty_db_return_empty_results_not_errors() {
 
     let s = payload(
         &server
-            .get_span_summary(Parameters(GetSpanSummaryArgs {
+            .get_run_summary(Parameters(GetRunSummaryArgs {
                 spec: None,
                 phase: None,
                 limit: None,

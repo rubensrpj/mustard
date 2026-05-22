@@ -10,15 +10,18 @@
 //!
 //! | Function | Target table | Source |
 //! |---|---|---|
-//! | [`record_span`] | `spans` | internal estimator (W1) |
-//! | [`record_api_cost`] | `spans` | external adapter (OTEL/JSONL, W3) |
-//! | [`record_savings`] | `savings_records` (added in v3) | every Mustard intervention |
-//! | [`record_context_cost`] | `context_cost_frames` (added in v3) | `apps/rt` dispatch hooks (W2) |
+//! | [`record_run`] | `run_usage` (telemetry.db) | internal estimator (W1) |
+//! | [`record_api_cost`] | `run_usage` (telemetry.db) | external adapter (OTEL/JSONL, W3) |
+//! | [`record_savings`] | `savings_records` (mustard.db) | every Mustard intervention |
+//! | [`record_context_cost`] | `context_cost_frames` (mustard.db) | `apps/rt` dispatch hooks (W2) |
 //!
-//! `record_span` and `record_api_cost` share the same table because semantically
-//! they store the same thing (one Anthropic request's worth of tokens + price);
-//! only the call site signals provenance. See
-//! [`ApiCostFrame`](super::model::ApiCostFrame) for the alias rationale.
+//! `record_run` and `record_api_cost` share the same `run_usage` row because
+//! semantically they store the same thing (one Anthropic request's worth of
+//! tokens + price); only the call site signals provenance. As of Wave 2
+//! (telemetry-separation) both delegate to
+//! [`crate::telemetry::writer::record_run`], so `conn` must be a `telemetry.db`
+//! connection. See [`ApiCostFrame`](super::model::ApiCostFrame) for the alias
+//! rationale.
 
 use rusqlite::{Connection, params};
 use serde_json::Value;
@@ -26,32 +29,35 @@ use serde_json::Value;
 use crate::error::{Error, Result};
 
 use super::model::{ApiCostFrame, ContextCostFrame, SavingsRecord, SpanRecord};
+use crate::telemetry::model::RunUsage;
 
-/// Persist a [`SpanRecord`] into the harness `spans` table.
+/// Persist a [`SpanRecord`] as one `run_usage` row in the telemetry store.
 ///
-/// `record.span_id` is the primary key; collisions surface as
-/// [`Error::Sqlite`]. Optional fields are stored as `NULL` on the column the
-/// W3 migration added.
+/// Wave 2 (telemetry-separation): the run no longer lands in `mustard.db`'s
+/// `spans` — it is mapped onto a [`RunUsage`] and written to `telemetry.db` via
+/// the dedicated telemetry writer. `conn` is therefore expected to be a
+/// `telemetry.db` connection (the legacy `spans` columns the reader projected
+/// carry over 1:1). `record.span_id` is the primary key; a re-record of the
+/// same id is an idempotent upsert.
 ///
 /// # Errors
 ///
-/// Returns [`Error::Sqlite`] for any database failure (open transaction,
-/// statement prepare, row insert).
-pub fn record_span(conn: &Connection, rec: SpanRecord) -> Result<()> {
-    insert_span_row(conn, rec)
+/// Returns [`Error::Sqlite`] for any database failure.
+pub fn record_run(conn: &Connection, rec: SpanRecord) -> Result<()> {
+    crate::telemetry::writer::record_run(conn, &span_to_run(rec))
 }
 
 /// Persist an [`ApiCostFrame`] — semantically equivalent to
-/// [`record_span`] but signals the call site is an external adapter (OTEL,
+/// [`record_run`] but signals the call site is an external adapter (OTEL,
 /// JSONL ingest in W3) rather than the internal estimator.
 ///
-/// Wires into the same `spans` row. See module docs for the rationale.
+/// Wires into the same `run_usage` row in `telemetry.db`. See module docs.
 ///
 /// # Errors
 ///
-/// Same as [`record_span`].
+/// Same as [`record_run`].
 pub fn record_api_cost(conn: &Connection, rec: ApiCostFrame) -> Result<()> {
-    insert_span_row(conn, rec)
+    crate::telemetry::writer::record_run(conn, &span_to_run(rec))
 }
 
 /// Persist a [`SavingsRecord`] into `savings_records`.
@@ -125,63 +131,56 @@ pub fn record_context_cost(conn: &Connection, rec: ContextCostFrame) -> Result<(
     Ok(())
 }
 
-/// Shared INSERT for `record_span` / `record_api_cost`.
+/// Map a [`SpanRecord`] onto a [`RunUsage`] for the telemetry `run_usage`
+/// table (Wave 2 telemetry-separation).
 ///
-/// Uses `INSERT OR REPLACE` on the `span_id` PK so a re-ingest of the same
-/// Anthropic request id is idempotent — the legacy schema already shipped
-/// `span_id` as primary key, so duplicates would otherwise produce a
-/// constraint violation that fails the whole batch.
-fn insert_span_row(conn: &Connection, rec: SpanRecord) -> Result<()> {
-    let tx = conn.unchecked_transaction()?;
-    // W4 attribution channel: extract `tool_use_id` from the lenient `extra`
-    // map (set by W3 adapters when the upstream payload exposes Anthropic's
-    // tool_use id). Keeping the field in `extra` rather than bumping the
-    // SpanRecord struct shape preserves the W1-frozen API surface that
-    // downstream crates struct-init against.
+/// The legacy `spans` columns carry over 1:1; `started_at` is derived from the
+/// ISO timestamp, and the W4 `tool_use_id` attribution key is pulled out of the
+/// lenient `extra` map (set by W3 adapters when the upstream payload exposes
+/// Anthropic's tool_use id). Adapters that have already resolved `spec` /
+/// `wave_id` / `agent_id` (the Wave 2 write-time attribution) carry them on the
+/// record; the rest stay `None`.
+fn span_to_run(rec: SpanRecord) -> RunUsage {
     let tool_use_id = rec
         .extra
         .get("tool_use_id")
         .and_then(|v| v.as_str())
         .map(str::to_owned);
-    tx.execute(
-        "INSERT OR REPLACE INTO spans \
-            (trace_id, span_id, parent_span_id, name, started_at, \
-             ended_at, duration_ms, attributes, spec, phase, model, \
-             input_tokens, output_tokens, is_error, \
-             cache_read_input_tokens, cache_creation_input_tokens, \
-             cost_usd_micros, project_path, ts_iso, session_id, wave_id, \
-             tool_use_id) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, \
-                 ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)",
-        params![
-            // trace_id / parent_span_id / name are not part of SpanRecord;
-            // adapters that have them stash them in `extra`.
-            Option::<String>::None,
-            rec.span_id,
-            Option::<String>::None,
-            Option::<String>::None,
-            iso_to_epoch_ms(&rec.ts), // started_at
-            Option::<i64>::None,      // ended_at
-            Option::<i64>::None,      // duration_ms
-            Option::<String>::None,   // attributes (JSON blob — unused in W1)
-            rec.spec,
-            rec.phase,
-            rec.model,
-            rec.input_tokens,
-            rec.output_tokens,
-            i64::from(rec.is_error),
-            rec.cache_read_input_tokens,
-            rec.cache_creation_input_tokens,
-            rec.cost_usd_micros,
-            Option::<String>::None, // project_path — set by reader queries that filter
-            rec.ts.clone(),
-            rec.session_id,
-            Option::<String>::None, // wave_id — populated by adapters that know it
-            tool_use_id,            // v4: W4 attribution join key
-        ],
-    )?;
-    tx.commit()?;
-    Ok(())
+    let wave_id = rec
+        .extra
+        .get("wave_id")
+        .and_then(|v| v.as_str())
+        .map(str::to_owned);
+    let agent_id = rec
+        .extra
+        .get("agent_id")
+        .and_then(|v| v.as_str())
+        .map(str::to_owned);
+    RunUsage {
+        trace_id: None,
+        span_id: rec.span_id,
+        parent_span_id: None,
+        name: None,
+        started_at: Some(iso_to_epoch_ms(&rec.ts)),
+        ended_at: None,
+        duration_ms: None,
+        attributes: None,
+        spec: rec.spec,
+        phase: rec.phase,
+        model: rec.model,
+        input_tokens: rec.input_tokens,
+        output_tokens: rec.output_tokens,
+        cache_read_input_tokens: rec.cache_read_input_tokens,
+        cache_creation_input_tokens: rec.cache_creation_input_tokens,
+        cost_usd_micros: rec.cost_usd_micros,
+        is_error: rec.is_error,
+        project_path: None,
+        ts_iso: Some(rec.ts),
+        session_id: rec.session_id,
+        wave_id,
+        tool_use_id,
+        agent_id,
+    }
 }
 
 /// Best-effort ISO-8601 → epoch-millis converter for the timestamp column.
@@ -242,9 +241,13 @@ mod tests {
     }
 
     #[test]
-    fn record_span_inserts_one_row() {
+    fn record_run_inserts_one_run_usage_row() {
+        // Wave 2: `record_run` now writes `run_usage` in telemetry.db, so the
+        // connection is a TelemetryStore connection (not mustard.db).
         let dir = tempdir().unwrap();
-        let conn = fresh_conn(dir.path());
+        let conn = crate::telemetry::store::TelemetryStore::new(dir.path().join("telemetry.db"))
+            .unwrap()
+            .into_connection();
         let rec = SpanRecord {
             ts: "2026-05-21T00:00:00Z".into(),
             session_id: Some("s-1".into()),
@@ -260,9 +263,9 @@ mod tests {
             is_error: false,
             extra: Map::new(),
         };
-        record_span(&conn, rec).unwrap();
+        record_run(&conn, rec).unwrap();
         let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM spans", [], |r| r.get(0))
+            .query_row("SELECT COUNT(*) FROM run_usage", [], |r| r.get(0))
             .unwrap();
         assert_eq!(count, 1);
     }

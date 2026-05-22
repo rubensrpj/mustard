@@ -2,12 +2,15 @@
 //!
 //! A local OTLP/JSON receiver for Claude Code native telemetry. Binds a
 //! `tiny_http` server to `127.0.0.1` (loopback only — never the network) on
-//! `MUSTARD_OTEL_PORT` (default 4318) and projects incoming payloads into the
-//! `claude_code_otel` table of `.claude/.harness/mustard.db`.
+//! `MUSTARD_OTEL_PORT` (default 4318). Metrics and logs project into the
+//! `claude_code_otel` table of `.claude/.harness/mustard.db`; traces land
+//! span-level token usage as `run_usage` rows in `.harness/telemetry.db` via
+//! the telemetry writer (each row stamped with attribution at write time).
 //!
 //! Routes:
 //!   - `POST /v1/metrics` — OTLP MetricsService (`resourceMetrics[]`).
 //!   - `POST /v1/logs`    — OTLP LogsService    (`resourceLogs[]`).
+//!   - `POST /v1/traces`  — OTLP TracesService  (`resourceSpans[]`) → `run_usage`.
 //!   - `GET  /healthz`    — liveness probe.
 //!
 //! Lifecycle: the harness spawns the collector as a long-lived child and
@@ -24,8 +27,10 @@
 
 use super::project::{project_logs, project_metrics};
 use super::store::{claude_dir, Store};
-use mustard_core::economy::{self, sources::otel as otel_source, sources::IngestContext};
+use mustard_core::economy::{sources::otel as otel_source, sources::IngestContext, SpanRecord};
 use mustard_core::fs;
+use mustard_core::telemetry::model::RunUsage;
+use mustard_core::telemetry::{migrate, writer as telemetry_writer, TelemetryStore};
 use serde_json::Value;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -45,7 +50,7 @@ fn canary(harness_dir: &Path, record: &Value) {
 }
 
 /// Resolve the listen port from `MUSTARD_OTEL_PORT`, defaulting to 4318.
-fn resolve_port() -> u16 {
+pub(crate) fn resolve_port() -> u16 {
     std::env::var("MUSTARD_OTEL_PORT")
         .ok()
         .and_then(|s| s.parse::<u16>().ok())
@@ -91,15 +96,18 @@ fn project_into_store(store: &Store, harness_dir: &Path, route: &str, body: &Val
     written
 }
 
-/// Translate OTLP/JSON `traces` into [`mustard_core::economy::model::SpanRecord`]
-/// via the W1 ingest adapter, then persist each record via the writer.
+/// Translate OTLP/JSON `traces` into [`SpanRecord`]s via the W1 ingest adapter,
+/// stamp each with its write-time attribution, then persist as `run_usage`.
 ///
-/// Wave 3 (economia-moat-unification): the trace route lands span-level token
-/// usage (`gen_ai.usage.*`) into the unified `spans` table so the economy
-/// reader has a single source of truth across OTEL / transcript / RTK.
+/// Wave 2 (telemetry-separation): the trace route lands span-level token usage
+/// into `telemetry.db`'s `run_usage` table. Each run is
+/// born attributed — before writing, the collector looks up the attribution the
+/// `agent.start` hook stamped for `(session_id, tool_use_id)` and copies
+/// `spec` / `wave_id` / `agent_id` onto the run. No match → the run is written
+/// unattributed (the same behaviour as the legacy no-match read-time JOIN).
 ///
-/// Returns the number of `SpanRecord`s persisted. Every failure path is logged
-/// to canary and degraded — a malformed payload returns `0`, a connection
+/// Returns the number of `run_usage` rows persisted. Every failure path is
+/// logged to canary and degraded — a malformed payload returns `0`, a store
 /// failure returns `0`, a per-row insert failure is logged and the loop
 /// continues.
 fn project_traces_into_economy(harness_dir: &Path, body: &Value) -> usize {
@@ -149,15 +157,15 @@ fn project_traces_into_economy(harness_dir: &Path, body: &Value) -> usize {
     if records.is_empty() {
         return 0;
     }
-    let conn = match economy::store::open_for(&cwd) {
-        Ok(c) => c,
+    let store = match TelemetryStore::for_project(&cwd) {
+        Ok(s) => s,
         Err(e) => {
             canary(
                 harness_dir,
                 &serde_json::json!({
                     "ts": crate::util::now_iso8601(),
                     "level": "warn", "route": "/v1/traces",
-                    "msg": "economy::store::open_for failed", "err": e.to_string(),
+                    "msg": "TelemetryStore::for_project failed", "err": e.to_string(),
                 }),
             );
             return 0;
@@ -165,19 +173,150 @@ fn project_traces_into_economy(harness_dir: &Path, body: &Value) -> usize {
     };
     let mut written = 0;
     for rec in records {
-        match economy::writer::record_span(&conn, rec) {
+        let run = stamp_attribution(&store, span_to_run(rec));
+        match telemetry_writer::record_run(store.conn(), &run) {
             Ok(()) => written += 1,
             Err(e) => canary(
                 harness_dir,
                 &serde_json::json!({
                     "ts": crate::util::now_iso8601(),
                     "level": "warn", "route": "/v1/traces",
-                    "msg": "record_span failed", "err": e.to_string(),
+                    "msg": "record_run failed", "err": e.to_string(),
                 }),
             ),
         }
     }
     written
+}
+
+/// Map an ingested [`SpanRecord`] onto a [`RunUsage`], pulling the W4
+/// `tool_use_id` attribution key out of the lenient `extra` map.
+fn span_to_run(rec: SpanRecord) -> RunUsage {
+    let tool_use_id = rec
+        .extra
+        .get("tool_use_id")
+        .and_then(|v| v.as_str())
+        .map(str::to_owned);
+    RunUsage {
+        trace_id: None,
+        span_id: rec.span_id,
+        parent_span_id: None,
+        name: None,
+        started_at: None,
+        ended_at: None,
+        duration_ms: None,
+        attributes: None,
+        spec: rec.spec,
+        phase: rec.phase,
+        model: rec.model,
+        input_tokens: rec.input_tokens,
+        output_tokens: rec.output_tokens,
+        cache_read_input_tokens: rec.cache_read_input_tokens,
+        cache_creation_input_tokens: rec.cache_creation_input_tokens,
+        cost_usd_micros: rec.cost_usd_micros,
+        is_error: rec.is_error,
+        project_path: None,
+        ts_iso: Some(rec.ts),
+        session_id: rec.session_id,
+        wave_id: None,
+        tool_use_id,
+        agent_id: None,
+    }
+}
+
+/// Stamp `spec` / `wave_id` / `agent_id` onto `run` from the write-time
+/// attribution map.
+///
+/// Two-tier lookup, both keyed on the run's `session_id` (a run without a
+/// session can never be attributed and is returned unchanged):
+///
+/// 1. **Primary** — `(session_id, tool_use_id)`, when the run carries a
+///    `tool_use_id`. This is the exact stamp the `agent.start` hook recorded.
+/// 2. **Session-only fallback** — when the run has no `tool_use_id`, or the
+///    primary lookup found no row. Picks the most-recent stamp for the session
+///    at or before the run's timestamp, restoring the read-time CTE's
+///    session-level fallback (a span without a `tool_use_id` used to match the
+///    most-recent `agent.start` for the same session with `ts <= span.ts`).
+///    Without this, any span that arrives without a `tool_use_id` would be left
+///    permanently unattributed — the regression this repairs.
+///
+/// `before_ts` is derived from the run's `ts_iso` (ms-epoch); an unparseable /
+/// absent timestamp drops the time bound so the fallback still recovers the
+/// session's most-recent stamp. Fail-open: a lookup error leaves the run
+/// unstamped.
+fn stamp_attribution(store: &TelemetryStore, mut run: RunUsage) -> RunUsage {
+    let Some(session) = run.session_id.clone() else {
+        return run;
+    };
+
+    // Tier 1: exact (session, tool_use_id) stamp.
+    if let Some(tool_use_id) = run.tool_use_id.as_deref() {
+        if let Ok(Some(attr)) =
+            telemetry_writer::lookup_attribution(store.conn(), &session, tool_use_id)
+        {
+            run.spec = attr.spec;
+            run.wave_id = attr.wave_id;
+            run.agent_id = attr.agent_id;
+            return run;
+        }
+    }
+
+    // Tier 2: session-only fallback (most-recent stamp at or before the span).
+    let before_ts = run
+        .ts_iso
+        .as_deref()
+        .and_then(mustard_core::projection::parse_iso_millis);
+    if let Ok(Some(attr)) =
+        telemetry_writer::lookup_attribution_by_session(store.conn(), &session, before_ts)
+    {
+        run.spec = attr.spec;
+        run.wave_id = attr.wave_id;
+        run.agent_id = attr.agent_id;
+    }
+    run
+}
+
+/// Run the one-shot, idempotent migration that carries the legacy telemetry in
+/// `mustard.db` into `telemetry.db`. Wired at collector startup (the long-lived
+/// daemon); fail-open — a migration error must never stop the collector from
+/// serving. Resolves the `mustard.db` path the same way the rest of rt does
+/// (`MUSTARD_DB_PATH` override, else `{project}/.claude/.harness/mustard.db`).
+fn run_migration_once(harness_dir: &Path) {
+    let cwd = project_dir();
+    let store = match TelemetryStore::for_project(&cwd) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    let mustard_db_path = match std::env::var("MUSTARD_DB_PATH") {
+        Ok(v) if !v.is_empty() => v,
+        _ => Path::new(&cwd)
+            .join(".claude")
+            .join(".harness")
+            .join("mustard.db")
+            .to_string_lossy()
+            .into_owned(),
+    };
+    match migrate::migrate_from_mustard_db(store.conn(), &mustard_db_path) {
+        Ok(n) => {
+            if n > 0 {
+                canary(
+                    harness_dir,
+                    &serde_json::json!({
+                        "ts": crate::util::now_iso8601(),
+                        "level": "info", "msg": "telemetry migration carried history",
+                        "run_usage_rows": n,
+                    }),
+                );
+            }
+        }
+        Err(e) => canary(
+            harness_dir,
+            &serde_json::json!({
+                "ts": crate::util::now_iso8601(),
+                "level": "warn", "msg": "telemetry migration failed", "err": e.to_string(),
+            }),
+        ),
+    }
 }
 
 /// Dispatch `mustard-rt run otel-collector`. Runs until a shutdown signal or a
@@ -220,6 +359,18 @@ pub fn run() {
         }
     };
 
+    // One-shot, idempotent migration: carry the legacy telemetry that still
+    // lives in `mustard.db` into `telemetry.db` so history is not lost when the
+    // collector switches its writes over (Wave 2). Fail-open — runs once at
+    // daemon startup, before the accept loop.
+    run_migration_once(&harness_dir);
+
+    // One-time cleanup: purge the dead `usage_totals` rows written before the
+    // ingestion filter existed (every metric outside `CONSUMED_METRICS`).
+    // Fail-open and idempotent — once the filter is in place this deletes
+    // nothing on subsequent startups.
+    let _ = store.purge_unconsumed_metrics();
+
     // The flag is the test seam (see module docs); in production the process
     // is terminated by the OS, so it stays `false` for the binary's lifetime.
     let shutdown = Arc::new(AtomicBool::new(false));
@@ -259,8 +410,8 @@ fn handle_one(mut request: tiny_http::Request, store: &Store, harness_dir: &Path
         return;
     }
     // Only the three POST routes are projected; everything else is 404.
-    // `/v1/traces` lands span-level token usage into the unified `spans` table
-    // via the W1 economy writer (Wave 3 — economia-moat-unification).
+    // `/v1/traces` lands span-level token usage as `run_usage` rows in
+    // telemetry.db via the telemetry writer (Wave 2 — telemetry-separation).
     if method != Method::Post
         || (route != "/v1/metrics" && route != "/v1/logs" && route != "/v1/traces")
     {

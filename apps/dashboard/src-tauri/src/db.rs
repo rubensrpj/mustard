@@ -35,6 +35,33 @@ fn harness_db_path(repo_path: &Path) -> std::path::PathBuf {
     repo_path.join(".claude").join(".harness").join("mustard.db")
 }
 
+/// Extract the numeric wave from a `run_usage.wave_id` slug. The slug is TEXT
+/// like `"wave-1-core"` (Wave 3), so a bare `parse::<i64>()` always fails; we
+/// instead take the integer that follows `"wave-"`, falling back to the first
+/// run of digits anywhere in the string. Returns `None` when no digits exist
+/// (preserving the `SlowestWave.wave: Option<i64>` shape).
+fn wave_num_from_slug(slug: &str) -> Option<i64> {
+    let after = slug
+        .find("wave-")
+        .map(|i| &slug[i + "wave-".len()..])
+        .unwrap_or(slug);
+    let digits: String = after
+        .chars()
+        .skip_while(|c| !c.is_ascii_digit())
+        .take_while(|c| c.is_ascii_digit())
+        .collect();
+    digits.parse::<i64>().ok()
+}
+
+/// UTC midnight (ms epoch) for today — shared by the token/cost summaries.
+fn utc_midnight_ms() -> i64 {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    (now / 86_400) * 86_400 * 1000
+}
+
 /// Borrow the cached [`SharedStore`] for `repo_path`'s harness DB, opening it on
 /// first use. Returns `None` when the DB file does not exist (mirrors the old
 /// `with_db` contract) or when the cache cannot open it.
@@ -49,12 +76,14 @@ fn cached_store(repo_path: &Path) -> Option<SharedStore> {
     cache.get(&db_path).ok()
 }
 
-/// Return true if the connection has at least 3 of the 4 expected Phase 1 tables
-/// (events, specs, knowledge, spans). Tolerant to partial Phase 1.
+/// Return true if the connection has at least 2 of the 3 expected harness tables
+/// (events, specs, knowledge). Tolerant to a partial schema. `spans` was retired
+/// in the telemetry-separation refactor (telemetry now lives in telemetry.db), so
+/// it is no longer probed here.
 pub fn has_phase1_schema(conn: &Connection) -> bool {
     let mut stmt = match conn.prepare(
         "SELECT COUNT(*) FROM sqlite_master \
-         WHERE type='table' AND name IN ('events','specs','knowledge','spans')",
+         WHERE type='table' AND name IN ('events','specs','knowledge')",
     ) {
         Ok(s) => s,
         Err(_) => return false,
@@ -63,7 +92,7 @@ pub fn has_phase1_schema(conn: &Connection) -> bool {
         Ok(n) => n,
         Err(_) => return false,
     };
-    count >= 3
+    count >= 2
 }
 
 /// Try to run a closure against the SQLite reader. Returns `None` when the DB
@@ -123,17 +152,10 @@ pub fn fts_escape(q: &str) -> Option<String> {
     }
 }
 
-/// Milliseconds since UNIX epoch for today's UTC midnight.
-fn utc_midnight_ms_today() -> i64 {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
-    let day = now / 86_400;
-    day * 86_400 * 1000
-}
-
-pub fn metrics_from_db(conn: &Connection) -> Result<MetricsSummary, String> {
+pub fn metrics_from_db(
+    conn: &Connection,
+    tele: Option<&mustard_core::telemetry::TelemetryStore>,
+) -> Result<MetricsSummary, String> {
     let total_events: i64 = conn
         .query_row("SELECT COUNT(*) FROM events", [], |row| row.get(0))
         .map_err(|e| e.to_string())?;
@@ -158,23 +180,11 @@ pub fn metrics_from_db(conn: &Connection) -> Result<MetricsSummary, String> {
         .query_row("SELECT MAX(ts) FROM events", [], |row| row.get(0))
         .map_err(|e| e.to_string())?;
 
-    let tokens_total: i64 = conn
-        .query_row(
-            "SELECT COALESCE(SUM(COALESCE(input_tokens,0) + COALESCE(output_tokens,0)), 0) FROM spans",
-            [],
-            |row| row.get(0),
-        )
-        .map_err(|e| e.to_string())?;
-
-    let midnight_ms = utc_midnight_ms_today();
-    let tokens_today: i64 = conn
-        .query_row(
-            "SELECT COALESCE(SUM(COALESCE(input_tokens,0) + COALESCE(output_tokens,0)), 0) \
-             FROM spans WHERE started_at >= ?1",
-            [midnight_ms],
-            |row| row.get(0),
-        )
-        .map_err(|e| e.to_string())?;
+    // Token totals (lifetime + today) come from telemetry.db's `run_usage`
+    // (Wave 3). Fail-soft to zeros when telemetry is unavailable.
+    let (tokens_total, tokens_today) = tele
+        .and_then(|t| mustard_core::telemetry::reader::token_totals(t.conn(), utc_midnight_ms()).ok())
+        .unwrap_or((0, 0));
 
     Ok(MetricsSummary {
         total_events: total_events as usize,
@@ -608,10 +618,17 @@ pub fn search_knowledge_from_db(
 }
 
 /// Aggregate activity events into 5-minute buckets grouped by spec/wave/tool.
-/// Joins spans on spec to sum tokens. Fail-soft: returns empty vec on any
-/// schema mismatch (missing columns/tables on partial Phase 1 DBs).
+/// Fail-soft: returns empty vec on any schema mismatch (missing columns/tables
+/// on partial Phase 1 DBs).
+///
+/// Wave 3: the per-spec token total no longer comes from a `LEFT JOIN spans`
+/// inside the event query (spans is retired). Instead we read a `spec → tokens`
+/// map from telemetry.db's `run_usage` and attach it in Rust. The legacy JOIN
+/// summed the spec's spans tokens once per event row in the group (a cartesian
+/// product), so we preserve that exact arithmetic: `tokens_per_spec × count`.
 pub fn aggregate_activity_from_db(
     conn: &Connection,
+    tele: Option<&mustard_core::telemetry::TelemetryStore>,
     limit: usize,
 ) -> Result<Vec<ActivityGroup>, String> {
     // 5-minute bucket = 300 seconds. ts is ISO-8601 string, so use strftime('%s', ts)/300.
@@ -620,29 +637,32 @@ pub fn aggregate_activity_from_db(
                       COUNT(*) AS cnt, \
                       MIN(e.ts) AS min_ts, \
                       MAX(e.ts) AS max_ts, \
-                      COALESCE(SUM(COALESCE(s.input_tokens,0) + COALESCE(s.output_tokens,0)), 0) AS tokens_total, \
                       COUNT(DISTINCT json_extract(e.payload, '$.target.file')) AS files_touched \
                FROM events e \
-               LEFT JOIN spans s ON s.spec = e.spec \
                GROUP BY e.spec, e.wave, action_kind, CAST(strftime('%s', e.ts) AS INTEGER) / 300 \
                ORDER BY max_ts DESC \
                LIMIT ?1";
+
+    // spec → Σ(input+output) tokens from telemetry.db. Empty when telemetry is
+    // unavailable, so token totals degrade to 0 (the LEFT JOIN's NULL→0 case).
+    let tokens_by_spec = tele
+        .and_then(|t| mustard_core::telemetry::reader::tokens_by_spec_map(t.conn()).ok())
+        .unwrap_or_default();
 
     let mut stmt = match conn.prepare(sql) {
         Ok(s) => s,
         Err(_) => return Ok(vec![]),
     };
     let rows = match stmt.query_map([limit as i64], |row| {
-        Ok(ActivityGroup {
-            spec: row.get::<_, Option<String>>(0)?,
-            wave: row.get::<_, Option<i64>>(1)?,
-            action_kind: row.get::<_, Option<String>>(2)?,
-            count: row.get::<_, Option<i64>>(3)?.unwrap_or(0),
-            min_ts: row.get::<_, Option<String>>(4)?,
-            max_ts: row.get::<_, Option<String>>(5)?,
-            tokens_total: row.get::<_, Option<i64>>(6)?.unwrap_or(0),
-            files_touched: row.get::<_, Option<i64>>(7)?.unwrap_or(0),
-        })
+        Ok((
+            row.get::<_, Option<String>>(0)?,
+            row.get::<_, Option<i64>>(1)?,
+            row.get::<_, Option<String>>(2)?,
+            row.get::<_, Option<i64>>(3)?.unwrap_or(0),
+            row.get::<_, Option<String>>(4)?,
+            row.get::<_, Option<String>>(5)?,
+            row.get::<_, Option<i64>>(6)?.unwrap_or(0),
+        ))
     }) {
         Ok(r) => r,
         Err(_) => return Ok(vec![]),
@@ -650,8 +670,23 @@ pub fn aggregate_activity_from_db(
 
     let mut out = Vec::new();
     for r in rows {
-        if let Ok(group) = r {
-            out.push(group);
+        if let Ok((spec, wave, action_kind, count, min_ts, max_ts, files_touched)) = r {
+            // Mirror the legacy JOIN: spec tokens summed once per event in the
+            // group → tokens_per_spec × count.
+            let per_spec = spec
+                .as_deref()
+                .and_then(|s| tokens_by_spec.get(s).copied())
+                .unwrap_or(0);
+            out.push(ActivityGroup {
+                spec,
+                wave,
+                action_kind,
+                count,
+                min_ts,
+                max_ts,
+                tokens_total: per_spec * count,
+                files_touched,
+            });
         }
     }
     Ok(out)
@@ -661,7 +696,10 @@ pub fn aggregate_activity_from_db(
 /// fail-soft so partial schemas (e.g. spans without duration_ms) still return
 /// a partially-populated `QualityMetrics`. Returns `QualityMetrics::default()`
 /// if the connection doesn't satisfy `has_phase1_schema`.
-pub fn quality_metrics_from_db(conn: &Connection) -> Result<QualityMetrics, String> {
+pub fn quality_metrics_from_db(
+    conn: &Connection,
+    tele: Option<&mustard_core::telemetry::TelemetryStore>,
+) -> Result<QualityMetrics, String> {
     if !has_phase1_schema(conn) {
         return Ok(QualityMetrics::default());
     }
@@ -690,70 +728,50 @@ pub fn quality_metrics_from_db(conn: &Connection) -> Result<QualityMetrics, Stri
         .flatten()
         .unwrap_or(0.0);
 
-    // avg_phase_duration_ms: AVG(duration_ms) from spans.
-    metrics.avg_phase_duration_ms = conn
-        .query_row(
-            "SELECT COALESCE(AVG(duration_ms), 0.0) FROM spans",
-            [],
-            |row| row.get::<_, Option<f64>>(0),
-        )
-        .ok()
-        .flatten()
-        .unwrap_or(0.0);
+    // The duration / role / slowest-wave / tokens-by-phase signals all come
+    // from telemetry.db's `run_usage` (Wave 3 — spans is retired). A `wave`
+    // column on `SlowestWave` is `i64`, but `run_usage.wave_id` is TEXT; the
+    // legacy `spans.wave` was also rarely populated, so we parse the wave id to
+    // an integer when possible and fall back to `None` (same shape, fail-soft).
+    if let Some(tele) = tele {
+        use mustard_core::telemetry::reader;
+        let tc = tele.conn();
 
-    // by_role: top actor_ids by sample count from spans.
-    if let Ok(mut stmt) = conn.prepare(
-        "SELECT COALESCE(actor_id, 'unknown') AS role, COUNT(*) AS samples \
-         FROM spans GROUP BY role ORDER BY samples DESC LIMIT 10",
-    ) {
-        if let Ok(rows) = stmt.query_map([], |row| {
-            Ok(RoleQuality {
-                role: row.get::<_, Option<String>>(0)?.unwrap_or_default(),
-                pass_at_1: 0.0,
-                fix_loops: 0,
-                samples: row.get::<_, Option<i64>>(1)?.unwrap_or(0),
-            })
-        }) {
-            for r in rows.flatten() {
-                metrics.by_role.push(r);
+        // avg_phase_duration_ms: AVG(duration_ms) over run_usage.
+        metrics.avg_phase_duration_ms = reader::avg_duration_ms(tc).unwrap_or(0.0);
+
+        // by_role: top agents by sample count (legacy grouped spans.actor_id;
+        // run_usage.agent_id is the native, self-attributed equivalent).
+        if let Ok(rows) = reader::samples_by_agent(tc, 10) {
+            for (role, samples) in rows {
+                metrics.by_role.push(RoleQuality {
+                    role,
+                    pass_at_1: 0.0,
+                    fix_loops: 0,
+                    samples,
+                });
             }
         }
-    }
 
-    // slowest_waves: top 5 by duration_ms.
-    if let Ok(mut stmt) = conn.prepare(
-        "SELECT spec, wave, COALESCE(duration_ms, 0) FROM spans \
-         ORDER BY duration_ms DESC LIMIT 5",
-    ) {
-        if let Ok(rows) = stmt.query_map([], |row| {
-            Ok(SlowestWave {
-                spec: row.get::<_, Option<String>>(0)?,
-                wave: row.get::<_, Option<i64>>(1)?,
-                duration_ms: row.get::<_, Option<i64>>(2)?.unwrap_or(0),
-            })
-        }) {
-            for r in rows.flatten() {
-                metrics.slowest_waves.push(r);
+        // slowest_waves: top 5 runs by duration_ms.
+        if let Ok(rows) = reader::slowest_runs(tc, 5) {
+            for (spec, wave_id, duration_ms) in rows {
+                metrics.slowest_waves.push(SlowestWave {
+                    spec,
+                    wave: wave_id.as_deref().and_then(wave_num_from_slug),
+                    duration_ms,
+                });
             }
         }
-    }
 
-    // tokens_by_phase: average input/output per phase.
-    if let Ok(mut stmt) = conn.prepare(
-        "SELECT COALESCE(phase, 'unknown') AS phase, \
-                COALESCE(AVG(input_tokens), 0.0), \
-                COALESCE(AVG(output_tokens), 0.0) \
-         FROM spans GROUP BY phase ORDER BY phase",
-    ) {
-        if let Ok(rows) = stmt.query_map([], |row| {
-            Ok(PhaseTokens {
-                phase: row.get::<_, Option<String>>(0)?.unwrap_or_default(),
-                input_avg: row.get::<_, Option<f64>>(1)?.unwrap_or(0.0),
-                output_avg: row.get::<_, Option<f64>>(2)?.unwrap_or(0.0),
-            })
-        }) {
-            for r in rows.flatten() {
-                metrics.tokens_by_phase.push(r);
+        // tokens_by_phase: average input/output per phase.
+        if let Ok(rows) = reader::tokens_by_phase(tc) {
+            for (phase, input_avg, output_avg) in rows {
+                metrics.tokens_by_phase.push(PhaseTokens {
+                    phase,
+                    input_avg,
+                    output_avg,
+                });
             }
         }
     }
@@ -761,19 +779,22 @@ pub fn quality_metrics_from_db(conn: &Connection) -> Result<QualityMetrics, Stri
     Ok(metrics)
 }
 
-// ── Consumption / cost queries (spans table) ────────────────────────────────
+// ── Consumption / cost queries (telemetry.db `run_usage`) ────────────────────
 //
-// All queries fail-soft: missing tables/columns or malformed `attributes` JSON
-// degrade to empty/zero rather than propagating. Phase 1 dashboards may show
-// a partially-populated summary when spans have not been emitted yet.
-//
-// Cost is materialised at span emit time by `pricing.ts` and persisted under
-// `attributes -> 'mustard.cost_usd'`. We sum it back via json_extract.
+// Wave 3: every consumption read moved off the retired mustard.db `spans` table
+// onto telemetry.db's self-attributed `run_usage`, via
+// `mustard_core::telemetry::reader`. The legacy path derived cost from
+// `attributes -> 'mustard.cost_usd'` (REAL USD) and the agent from
+// `attributes -> 'mustard.agent_type'`; `run_usage` carries native
+// `cost_usd_micros` (÷ 1_000_000 → USD) and `agent_id`. All fail-soft: a
+// missing telemetry store degrades to empty/zero, exactly as the old missing
+// `spans` table did.
 
-const COST_EXTRACT: &str =
-    "CAST(json_extract(attributes, '$.\"mustard.cost_usd\"') AS REAL)";
-const AGENT_EXTRACT: &str =
-    "json_extract(attributes, '$.\"mustard.agent_type\"')";
+/// Micro-USD (`run_usage.cost_usd_micros`) → USD, matching the legacy REAL USD
+/// the dashboard consumed.
+fn micros_to_usd(micros: i64) -> f64 {
+    micros as f64 / 1_000_000.0
+}
 
 fn fourteen_days_ago_ms() -> i64 {
     let now = SystemTime::now()
@@ -783,36 +804,30 @@ fn fourteen_days_ago_ms() -> i64 {
     now - 14 * 86_400 * 1000
 }
 
-pub fn consumption_by_model(conn: &Connection) -> Result<Vec<ModelUsage>, String> {
-    let sql = format!(
-        "SELECT COALESCE(model, 'unknown') AS model, \
-                COUNT(*) AS calls, \
-                COALESCE(SUM(input_tokens), 0) AS input_tokens, \
-                COALESCE(SUM(output_tokens), 0) AS output_tokens, \
-                COALESCE(SUM(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)), 0) AS total_tokens, \
-                COALESCE(SUM({cost}), 0.0) AS cost_usd \
-         FROM spans GROUP BY model ORDER BY total_tokens DESC",
-        cost = COST_EXTRACT
-    );
-    let mut stmt = match conn.prepare(&sql) {
-        Ok(s) => s,
-        Err(_) => return Ok(vec![]),
+pub fn consumption_by_model(
+    tele: Option<&mustard_core::telemetry::TelemetryStore>,
+) -> Result<Vec<ModelUsage>, String> {
+    let groups = match tele {
+        Some(t) => mustard_core::telemetry::reader::consumption_by_model(t.conn()).unwrap_or_default(),
+        None => return Ok(vec![]),
     };
-    let rows = stmt
-        .query_map([], |row| {
-            Ok(ModelUsage {
-                model: row.get::<_, Option<String>>(0)?.unwrap_or_default(),
-                calls: row.get::<_, Option<i64>>(1)?.unwrap_or(0) as u64,
-                input_tokens: row.get::<_, Option<i64>>(2)?.unwrap_or(0) as u64,
-                output_tokens: row.get::<_, Option<i64>>(3)?.unwrap_or(0) as u64,
-                total_tokens: row.get::<_, Option<i64>>(4)?.unwrap_or(0) as u64,
-                cost_usd: row.get::<_, Option<f64>>(5)?.unwrap_or(0.0),
+    let mut out: Vec<ModelUsage> = groups
+        .into_iter()
+        .map(|g| {
+            let total = (g.input_tokens + g.output_tokens).max(0) as u64;
+            ModelUsage {
+                // Legacy COALESCE(model, 'unknown'); the reader collapses NULL
+                // to the empty string, so re-apply the 'unknown' label.
+                model: if g.key.is_empty() { "unknown".into() } else { g.key },
+                calls: g.calls.max(0) as u64,
+                input_tokens: g.input_tokens.max(0) as u64,
+                output_tokens: g.output_tokens.max(0) as u64,
+                total_tokens: total,
+                cost_usd: micros_to_usd(g.cost_usd_micros),
                 pct_tokens: 0.0,
-            })
+            }
         })
-        .map_err(|e| e.to_string())?;
-
-    let mut out: Vec<ModelUsage> = rows.flatten().collect();
+        .collect();
     let grand_total: u64 = out.iter().map(|r| r.total_tokens).sum();
     if grand_total > 0 {
         for r in &mut out {
@@ -822,33 +837,23 @@ pub fn consumption_by_model(conn: &Connection) -> Result<Vec<ModelUsage>, String
     Ok(out)
 }
 
-pub fn consumption_by_agent_type(conn: &Connection) -> Result<Vec<AgentUsage>, String> {
-    let sql = format!(
-        "SELECT COALESCE({agent}, 'unknown') AS agent_type, \
-                COUNT(*) AS calls, \
-                COALESCE(SUM(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)), 0) AS total_tokens, \
-                COALESCE(SUM({cost}), 0.0) AS cost_usd \
-         FROM spans GROUP BY agent_type ORDER BY total_tokens DESC",
-        agent = AGENT_EXTRACT,
-        cost = COST_EXTRACT
-    );
-    let mut stmt = match conn.prepare(&sql) {
-        Ok(s) => s,
-        Err(_) => return Ok(vec![]),
+pub fn consumption_by_agent_type(
+    tele: Option<&mustard_core::telemetry::TelemetryStore>,
+) -> Result<Vec<AgentUsage>, String> {
+    let groups = match tele {
+        Some(t) => mustard_core::telemetry::reader::consumption_by_agent(t.conn()).unwrap_or_default(),
+        None => return Ok(vec![]),
     };
-    let rows = stmt
-        .query_map([], |row| {
-            Ok(AgentUsage {
-                agent_type: row.get::<_, Option<String>>(0)?.unwrap_or_default(),
-                calls: row.get::<_, Option<i64>>(1)?.unwrap_or(0) as u64,
-                total_tokens: row.get::<_, Option<i64>>(2)?.unwrap_or(0) as u64,
-                cost_usd: row.get::<_, Option<f64>>(3)?.unwrap_or(0.0),
-                pct_tokens: 0.0,
-            })
+    let mut out: Vec<AgentUsage> = groups
+        .into_iter()
+        .map(|g| AgentUsage {
+            agent_type: if g.key.is_empty() { "unknown".into() } else { g.key },
+            calls: g.calls.max(0) as u64,
+            total_tokens: (g.input_tokens + g.output_tokens).max(0) as u64,
+            cost_usd: micros_to_usd(g.cost_usd_micros),
+            pct_tokens: 0.0,
         })
-        .map_err(|e| e.to_string())?;
-
-    let mut out: Vec<AgentUsage> = rows.flatten().collect();
+        .collect();
     let grand_total: u64 = out.iter().map(|r| r.total_tokens).sum();
     if grand_total > 0 {
         for r in &mut out {
@@ -858,33 +863,30 @@ pub fn consumption_by_agent_type(conn: &Connection) -> Result<Vec<AgentUsage>, S
     Ok(out)
 }
 
-pub fn consumption_top_specs(conn: &Connection, limit: usize) -> Result<Vec<SpecUsage>, String> {
-    let sql = format!(
-        "SELECT spec, COUNT(*) AS calls, \
-                COALESCE(SUM(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)), 0) AS total_tokens, \
-                COALESCE(SUM({cost}), 0.0) AS cost_usd \
-         FROM spans WHERE spec IS NOT NULL \
-         GROUP BY spec ORDER BY total_tokens DESC LIMIT ?1",
-        cost = COST_EXTRACT
-    );
-    let mut stmt = match conn.prepare(&sql) {
-        Ok(s) => s,
-        Err(_) => return Ok(vec![]),
+pub fn consumption_top_specs(
+    tele: Option<&mustard_core::telemetry::TelemetryStore>,
+    limit: usize,
+) -> Result<Vec<SpecUsage>, String> {
+    let groups = match tele {
+        Some(t) => mustard_core::telemetry::reader::consumption_top_specs(t.conn(), limit)
+            .unwrap_or_default(),
+        None => return Ok(vec![]),
     };
-    let rows = stmt
-        .query_map([limit as i64], |row| {
-            Ok(SpecUsage {
-                spec: row.get::<_, Option<String>>(0)?.unwrap_or_default(),
-                calls: row.get::<_, Option<i64>>(1)?.unwrap_or(0) as u64,
-                total_tokens: row.get::<_, Option<i64>>(2)?.unwrap_or(0) as u64,
-                cost_usd: row.get::<_, Option<f64>>(3)?.unwrap_or(0.0),
-            })
+    Ok(groups
+        .into_iter()
+        .map(|g| SpecUsage {
+            spec: g.key,
+            calls: g.calls.max(0) as u64,
+            total_tokens: (g.input_tokens + g.output_tokens).max(0) as u64,
+            cost_usd: micros_to_usd(g.cost_usd_micros),
         })
-        .map_err(|e| e.to_string())?;
-    Ok(rows.flatten().collect())
+        .collect())
 }
 
-pub fn consumption_daily_series(conn: &Connection, days: u32) -> Result<Vec<DailyPoint>, String> {
+pub fn consumption_daily_series(
+    tele: Option<&mustard_core::telemetry::TelemetryStore>,
+    days: u32,
+) -> Result<Vec<DailyPoint>, String> {
     let since_ms = fourteen_days_ago_ms().max(0);
     // Allow caller to override window size while keeping the default at 14d.
     let window_ms = (days as i64) * 86_400 * 1000;
@@ -895,87 +897,82 @@ pub fn consumption_daily_series(conn: &Connection, days: u32) -> Result<Vec<Dail
         - window_ms)
         .max(since_ms);
 
-    let sql = format!(
-        "SELECT date(started_at/1000, 'unixepoch') AS d, \
-                COUNT(*) AS calls, \
-                COALESCE(SUM(input_tokens), 0) AS input_tokens, \
-                COALESCE(SUM(output_tokens), 0) AS output_tokens, \
-                COALESCE(SUM(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)), 0) AS total_tokens, \
-                COALESCE(SUM({cost}), 0.0) AS cost_usd \
-         FROM spans WHERE started_at >= ?1 \
-         GROUP BY d ORDER BY d ASC",
-        cost = COST_EXTRACT
-    );
-    let mut stmt = match conn.prepare(&sql) {
-        Ok(s) => s,
-        Err(_) => return Ok(vec![]),
+    let points = match tele {
+        Some(t) => mustard_core::telemetry::reader::consumption_daily_series(t.conn(), since)
+            .unwrap_or_default(),
+        None => return Ok(vec![]),
     };
-    let rows = stmt
-        .query_map([since], |row| {
-            Ok(DailyPoint {
-                date: row.get::<_, Option<String>>(0)?.unwrap_or_default(),
-                calls: row.get::<_, Option<i64>>(1)?.unwrap_or(0) as u64,
-                input_tokens: row.get::<_, Option<i64>>(2)?.unwrap_or(0) as u64,
-                output_tokens: row.get::<_, Option<i64>>(3)?.unwrap_or(0) as u64,
-                total_tokens: row.get::<_, Option<i64>>(4)?.unwrap_or(0) as u64,
-                cost_usd: row.get::<_, Option<f64>>(5)?.unwrap_or(0.0),
-            })
+    Ok(points
+        .into_iter()
+        .map(|p| DailyPoint {
+            date: p.date,
+            calls: p.calls.max(0) as u64,
+            input_tokens: p.input_tokens.max(0) as u64,
+            output_tokens: p.output_tokens.max(0) as u64,
+            total_tokens: (p.input_tokens + p.output_tokens).max(0) as u64,
+            cost_usd: micros_to_usd(p.cost_usd_micros),
         })
-        .map_err(|e| e.to_string())?;
-    Ok(rows.flatten().collect())
+        .collect())
 }
 
-/// Token + cost totals (lifetime and today). Single-row query; conditional
-/// aggregation avoids the cost of two scans.
-pub fn cost_summary(conn: &Connection) -> Result<(u64, u64, f64, f64), String> {
-    let midnight_ms = {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0);
-        let day = now / 86_400;
-        day * 86_400 * 1000
+/// Token + cost totals (lifetime and today). Reads telemetry.db's `run_usage`
+/// in a single pass via `telemetry::reader::cost_summary`. Returns
+/// `(tokens_total, tokens_today, cost_total_usd, cost_today_usd)`.
+pub fn cost_summary(
+    tele: Option<&mustard_core::telemetry::TelemetryStore>,
+) -> Result<(u64, u64, f64, f64), String> {
+    let midnight_ms = utc_midnight_ms();
+    let (tokens_total, tokens_today, cost_total_micros, cost_today_micros) = match tele {
+        Some(t) => mustard_core::telemetry::reader::cost_summary(t.conn(), midnight_ms)
+            .unwrap_or((0, 0, 0, 0)),
+        None => (0, 0, 0, 0),
     };
-    let sql = format!(
-        "SELECT \
-            COALESCE(SUM(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)), 0) AS tokens_total, \
-            COALESCE(SUM({cost}), 0.0) AS cost_total, \
-            COALESCE(SUM(CASE WHEN started_at >= ?1 \
-                              THEN COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0) \
-                              ELSE 0 END), 0) AS tokens_today, \
-            COALESCE(SUM(CASE WHEN started_at >= ?1 \
-                              THEN {cost} \
-                              ELSE 0 END), 0.0) AS cost_today \
-         FROM spans",
-        cost = COST_EXTRACT
-    );
-    let row = conn
-        .query_row(&sql, [midnight_ms], |row| {
-            Ok((
-                row.get::<_, Option<i64>>(0)?.unwrap_or(0) as u64,
-                row.get::<_, Option<f64>>(1)?.unwrap_or(0.0),
-                row.get::<_, Option<i64>>(2)?.unwrap_or(0) as u64,
-                row.get::<_, Option<f64>>(3)?.unwrap_or(0.0),
-            ))
-        })
-        .map_err(|e| e.to_string())?;
-    Ok((row.0, row.2, row.1, row.3))
+    Ok((
+        tokens_total.max(0) as u64,
+        tokens_today.max(0) as u64,
+        micros_to_usd(cost_total_micros),
+        micros_to_usd(cost_today_micros),
+    ))
 }
 
 /// One-shot consumption summary used by the `dashboard_consumption` Tauri
 /// command. Composes the breakdowns above into a single payload.
-pub fn consumption_summary_from_db(conn: &Connection) -> Result<ConsumptionSummary, String> {
-    let (tokens_total, tokens_today, cost_total_usd, cost_today_usd) = cost_summary(conn)?;
+///
+/// Wave fix (NOTE-7/NOTE-5): the dedicated `TelemetryStore` is opened ONCE by
+/// the caller and passed in, rather than re-opened per sub-query via
+/// `telemetry_for_conn`. The caller (`telemetry_store_for`) opens it OUTSIDE
+/// the mustard.db cache mutex, so we never acquire the telemetry store while
+/// holding that mutex (closes the latent deadlock and the 4× open cost).
+pub fn consumption_summary_from_db(
+    tele: Option<&mustard_core::telemetry::TelemetryStore>,
+) -> Result<ConsumptionSummary, String> {
+    let (tokens_total, tokens_today, cost_total_usd, cost_today_usd) = cost_summary(tele)?;
     Ok(ConsumptionSummary {
         tokens_total,
         tokens_today,
         cost_total_usd,
         cost_today_usd,
-        by_model: consumption_by_model(conn).unwrap_or_default(),
-        by_agent_type: consumption_by_agent_type(conn).unwrap_or_default(),
-        top_specs: consumption_top_specs(conn, 10).unwrap_or_default(),
-        daily_series: consumption_daily_series(conn, 14).unwrap_or_default(),
+        by_model: consumption_by_model(tele).unwrap_or_default(),
+        by_agent_type: consumption_by_agent_type(tele).unwrap_or_default(),
+        top_specs: consumption_top_specs(tele, 10).unwrap_or_default(),
+        daily_series: consumption_daily_series(tele, 14).unwrap_or_default(),
     })
+}
+
+/// Open the dedicated telemetry store sitting beside a project's mustard.db,
+/// WITHOUT touching the mustard.db cache mutex. Mirrors `telemetry_for_conn`'s
+/// path resolution (the `MUSTARD_TELEMETRY_DB_PATH` override, else
+/// `<repo>/.claude/.harness/telemetry.db`) but keyed on `repo_path` so a Tauri
+/// command can hoist the single open to the top, before any `with_db` call.
+/// Returns `None` (fail-soft) when the store can't be opened.
+pub fn telemetry_store_for(repo_path: &Path) -> Option<mustard_core::telemetry::TelemetryStore> {
+    if let Ok(override_path) = std::env::var("MUSTARD_TELEMETRY_DB_PATH") {
+        if !override_path.trim().is_empty() {
+            return mustard_core::telemetry::TelemetryStore::new(override_path).ok();
+        }
+    }
+    let sibling = harness_db_path(repo_path).with_file_name("telemetry.db");
+    mustard_core::telemetry::TelemetryStore::new(sibling).ok()
 }
 
 /// Agent activity — aggregates agent.start / agent.stop pairs from the events

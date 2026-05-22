@@ -7,13 +7,17 @@
 
 use mustard_core::economy::{
     ContextCostFrame, EconomyScope, MultiProjectReader, SavingsRecord, SavingsSource, SpanRecord,
-    economy_summary, estimate_input_tokens, per_spec_costs, record_context_cost, record_savings,
-    record_span,
+    economy_summary, estimate_input_tokens, per_spec_costs, record_context_cost, record_run,
+    record_savings,
 };
 use mustard_core::economy::scope::{AgentId, ProjectPath, SpecId, WaveId};
 use mustard_core::store::sqlite_store::SqliteEventStore;
+use mustard_core::telemetry::TelemetryWriter;
+use mustard_core::telemetry::model::{RunUsage, UsageMetric};
+use mustard_core::telemetry::store::TelemetryStore;
+use mustard_core::telemetry::writer::upsert_usage_metric;
 use rusqlite::Connection;
-use serde_json::{Map, Value, json};
+use serde_json::Map;
 use tempfile::tempdir;
 
 fn open_conn(dir: &std::path::Path) -> Connection {
@@ -39,17 +43,86 @@ fn span_for(spec: &str, span_id: &str, cost: i64, tokens: i64) -> SpanRecord {
     }
 }
 
+/// Seed a self-attributed `run_usage` row into the telemetry.db the economy
+/// reader opens for `dir` (`{dir}/.claude/.harness/telemetry.db`). Wave 3 moved
+/// every span-based aggregation onto `run_usage`, so the round-trip tests seed
+/// it directly. `wave` is optional (the per-wave / wave-scope tests set it).
+#[allow(clippy::too_many_arguments)]
+fn seed_run(
+    dir: &std::path::Path,
+    span_id: &str,
+    spec: &str,
+    wave: Option<&str>,
+    agent: Option<&str>,
+    cost: i64,
+    tokens: i64,
+) {
+    let store = TelemetryStore::for_project(dir).unwrap();
+    store
+        .record_run(&RunUsage {
+            trace_id: None,
+            span_id: span_id.into(),
+            parent_span_id: None,
+            name: None,
+            started_at: Some(0),
+            ended_at: None,
+            duration_ms: None,
+            attributes: None,
+            spec: Some(spec.into()),
+            phase: Some("EXECUTE".into()),
+            model: Some("claude-3-5-sonnet".into()),
+            input_tokens: Some(tokens),
+            output_tokens: Some(0),
+            cache_read_input_tokens: Some(0),
+            cache_creation_input_tokens: Some(0),
+            cost_usd_micros: Some(cost),
+            is_error: false,
+            project_path: None,
+            ts_iso: Some("2026-05-21T00:00:00Z".into()),
+            session_id: Some("s-test".into()),
+            wave_id: wave.map(Into::into),
+            tool_use_id: None,
+            agent_id: agent.map(Into::into),
+        })
+        .unwrap();
+}
+
+/// Seed a MEASURED `usage_totals` counter (Anthropic's billed OTEL metric) into
+/// the same telemetry.db. `claude_code.cost.usage` is USD; `.token.usage` is a
+/// token count. These back the unfiltered (project-wide) `economy_summary`
+/// headline, which now prefers the measured source over `run_usage` estimates.
+fn seed_measured(dir: &std::path::Path, metric: &str, sum: f64) {
+    let store = TelemetryStore::for_project(dir).unwrap();
+    upsert_usage_metric(
+        store.conn(),
+        &UsageMetric {
+            metric: metric.into(),
+            model: Some("claude-3-5-sonnet".into()),
+            session_id: Some("s-test".into()),
+            sum,
+            updated_at: Some(0),
+        },
+    )
+    .unwrap();
+}
+
 #[test]
 fn test_writer_roundtrip_span() {
+    // Wave 2: `record_run` writes telemetry.db's `run_usage`, not mustard.db's
+    // `spans`. The connection is a TelemetryStore connection.
     let dir = tempdir().unwrap();
-    let conn = open_conn(dir.path());
+    let conn = mustard_core::telemetry::store::TelemetryStore::new(dir.path().join("telemetry.db"))
+        .unwrap()
+        .into_connection();
     let rec = span_for("spec-A", "req-1", 1234, 100);
-    record_span(&conn, rec).unwrap();
+    record_run(&conn, rec).unwrap();
 
     let count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM spans WHERE span_id = 'req-1'", [], |r| {
-            r.get(0)
-        })
+        .query_row(
+            "SELECT COUNT(*) FROM run_usage WHERE span_id = 'req-1'",
+            [],
+            |r| r.get(0),
+        )
         .unwrap();
     assert_eq!(count, 1);
 }
@@ -117,10 +190,17 @@ fn test_reader_scope_project_aggregates() {
     let dir = tempdir().unwrap();
     let conn = open_conn(dir.path());
 
-    // 3 spans split across 2 specs.
-    record_span(&conn, span_for("spec-A", "r1", 1000, 100)).unwrap();
-    record_span(&conn, span_for("spec-A", "r2", 2000, 200)).unwrap();
-    record_span(&conn, span_for("spec-B", "r3", 3000, 300)).unwrap();
+    // 3 runs split across 2 specs (self-attributed `run_usage` in telemetry.db).
+    seed_run(dir.path(), "r1", "spec-A", None, None, 1000, 100);
+    seed_run(dir.path(), "r2", "spec-A", None, None, 2000, 200);
+    // spec-B strictly larger so the per-spec roll-up order is unambiguous
+    // (spec-A's two runs sum to exactly 3000, so a 3000 spec-B would tie).
+    seed_run(dir.path(), "r3", "spec-B", None, None, 4000, 400);
+    // Measured project-wide totals (no spec/wave dim) — the unfiltered
+    // `economy_summary` headline reads these, not the run_usage estimate.
+    // 0.007 USD -> 7000 micro-USD; 700 measured tokens.
+    seed_measured(dir.path(), "claude_code.cost.usage", 0.007);
+    seed_measured(dir.path(), "claude_code.token.usage", 700.0);
     // 2 savings, one per spec.
     for (spec, tokens) in [("spec-A", 500i64), ("spec-B", 700)] {
         record_savings(
@@ -140,11 +220,12 @@ fn test_reader_scope_project_aggregates() {
         .unwrap();
     }
 
-    // Project scope: sums everything.
+    // Project scope: cost/tokens from MEASURED usage_totals (7000 micros / 700
+    // tokens), run count + savings from run_usage / savings_records.
     let project_scope = EconomyScope::Project(ProjectPath::new(dir.path()));
     let summary = economy_summary(&conn, project_scope.clone()).unwrap();
-    assert_eq!(summary.total_cost_usd_micros, 6000);
-    assert_eq!(summary.total_tokens, 600);
+    assert_eq!(summary.total_cost_usd_micros, 7000);
+    assert_eq!(summary.total_tokens, 700);
     assert_eq!(summary.total_tokens_saved, 1200);
     assert_eq!(summary.span_count, 3);
 
@@ -152,7 +233,7 @@ fn test_reader_scope_project_aggregates() {
     let by_spec = per_spec_costs(&conn, project_scope).unwrap();
     assert_eq!(by_spec.len(), 2);
     assert_eq!(by_spec[0].spec_id.as_str(), "spec-B");
-    assert_eq!(by_spec[0].cost_usd_micros, 3000);
+    assert_eq!(by_spec[0].cost_usd_micros, 4000);
 
     // Spec scope: filters to spec-A only.
     let spec_scope = EconomyScope::Spec {
@@ -168,32 +249,32 @@ fn test_reader_scope_project_aggregates() {
 
 #[test]
 fn test_multi_project_reader_fanout() {
-    // Two project dirs, two DBs, fan-out merges results.
+    // Two project dirs, two DBs, fan-out merges results. The fan-out opens each
+    // project's mustard.db (read-only); the run_usage totals live in each
+    // project's telemetry.db, so the closure opens that sibling per project.
     let root = tempdir().unwrap();
     let path_a = root.path().join("project-a");
     let path_b = root.path().join("project-b");
     std::fs::create_dir_all(path_a.join(".claude/.harness")).unwrap();
     std::fs::create_dir_all(path_b.join(".claude/.harness")).unwrap();
-    let conn_a = open_conn(&path_a);
-    let conn_b = open_conn(&path_b);
+    // Materialise each mustard.db so the fan-out can open it read-only.
+    drop(open_conn(&path_a));
+    drop(open_conn(&path_b));
 
-    record_span(&conn_a, span_for("spec-A", "r1", 1000, 100)).unwrap();
-    record_span(&conn_b, span_for("spec-B", "r2", 2000, 200)).unwrap();
-
-    // Drop the per-project handles so the readers can open read-only without
-    // contention on Windows (where the writer's WAL holds a shared lock).
-    drop(conn_a);
-    drop(conn_b);
+    seed_run(&path_a, "r1", "spec-A", None, None, 1000, 100);
+    seed_run(&path_b, "r2", "spec-B", None, None, 2000, 200);
 
     let reader = MultiProjectReader::new();
     let projects = vec![
         ProjectPath::new(path_a),
         ProjectPath::new(path_b),
     ];
-    let per_project = reader.fan_out(&projects, |c, _project| {
-        let total: i64 = c
+    let per_project = reader.fan_out(&projects, |_c, project| {
+        let tele = TelemetryStore::for_project(project.as_path()).unwrap();
+        let total: i64 = tele
+            .conn()
             .query_row(
-                "SELECT COALESCE(SUM(cost_usd_micros), 0) FROM spans",
+                "SELECT COALESCE(SUM(cost_usd_micros), 0) FROM run_usage",
                 [],
                 |r| r.get(0),
             )
@@ -205,83 +286,32 @@ fn test_multi_project_reader_fanout() {
     assert_eq!(totals, 3000);
 }
 
-/// Regression: `economy_summary(scope=Wave)` must aggregate ONLY spans from
-/// the targeted wave, not every span in the spec. Two waves in the same
-/// spec, each with its own `agent.start` + tool_use_id-attributed span;
-/// the Wave-scoped summary must surface one wave's totals exclusively.
+/// Regression: `economy_summary(scope=Wave)` must aggregate ONLY runs from the
+/// targeted wave, not every run in the spec. Two waves in the same spec; the
+/// Wave-scoped summary must surface one wave's totals exclusively.
 ///
-/// Guards against a regression of the `?2 = ?2` tautology in `scope_where`
-/// that previously made Wave-scoped span totals a silent no-op (caller got
-/// the spec-wide totals instead of the wave's).
+/// Wave 3: attribution is self-contained on each `run_usage` row (`spec` +
+/// `wave_id` stamped at write time), so the wave filter is a plain `WHERE
+/// wave_id = ?` — no `agent.start` JOIN to reconstruct it.
 #[test]
 fn test_economy_summary_wave_scope_filters_to_wave_only() {
     let dir = tempdir().unwrap();
     let conn = open_conn(dir.path());
 
-    // Two `agent.start` events, same spec but different waves. Each has a
-    // distinct `tool_use_id` so the attribution CTE's primary join leg lands
-    // each span on the right wave deterministically.
-    let payload_w1: Value = json!({
-        "agent_id": "agent-w1",
-        "spec_id": "spec-shared",
-        "wave_id": "wave-1",
-        "tool_use_id": "toolu_W1",
-    });
-    let payload_w2: Value = json!({
-        "agent_id": "agent-w2",
-        "spec_id": "spec-shared",
-        "wave_id": "wave-2",
-        "tool_use_id": "toolu_W2",
-    });
-    conn.execute(
-        "INSERT INTO events(ts, session_id, wave, spec, event, actor_kind, actor_id, payload) \
-         VALUES('2026-05-21T09:00:00Z','sess-w1',1,'spec-shared','agent.start','hook','orch',?1)",
-        rusqlite::params![payload_w1.to_string()],
-    )
-    .unwrap();
-    conn.execute(
-        "INSERT INTO events(ts, session_id, wave, spec, event, actor_kind, actor_id, payload) \
-         VALUES('2026-05-21T09:30:00Z','sess-w2',2,'spec-shared','agent.start','hook','orch',?1)",
-        rusqlite::params![payload_w2.to_string()],
-    )
-    .unwrap();
+    // One run per wave, same spec, self-attributed.
+    seed_run(dir.path(), "r-w1", "spec-shared", Some("wave-1"), Some("agent-w1"), 1_000, 100);
+    seed_run(dir.path(), "r-w2", "spec-shared", Some("wave-2"), Some("agent-w2"), 5_000, 500);
 
-    // One span per wave, joined via tool_use_id. The span carries the spec
-    // directly so Spec-scope queries (which hit the direct `spans.spec`
-    // filter) see them too — the wave is resolved exclusively via the
-    // agent.start attribution.
-    let span_for_wave = |span_id: &str, session: &str, tuid: &str, cost: i64, tokens: i64| {
-        let mut extra = Map::new();
-        extra.insert("tool_use_id".into(), Value::String(tuid.into()));
-        SpanRecord {
-            ts: "2026-05-21T09:15:00Z".into(),
-            session_id: Some(session.into()),
-            span_id: span_id.into(),
-            model: Some("claude-3-5-sonnet".into()),
-            spec: Some("spec-shared".into()),
-            phase: None,
-            input_tokens: Some(tokens),
-            output_tokens: Some(0),
-            cache_read_input_tokens: None,
-            cache_creation_input_tokens: None,
-            cost_usd_micros: Some(cost),
-            is_error: false,
-            extra,
-        }
-    };
-    record_span(&conn, span_for_wave("r-w1", "sess-w1", "toolu_W1", 1_000, 100)).unwrap();
-    record_span(&conn, span_for_wave("r-w2", "sess-w2", "toolu_W2", 5_000, 500)).unwrap();
-
-    // Spec-wide sanity: both spans present.
+    // Spec-wide sanity: both runs present.
     let spec_scope = EconomyScope::Spec {
         project: ProjectPath::new(dir.path()),
         spec: SpecId::new("spec-shared"),
     };
     let spec_summary = economy_summary(&conn, spec_scope).unwrap();
-    assert_eq!(spec_summary.span_count, 2, "spec scope must see both spans");
+    assert_eq!(spec_summary.span_count, 2, "spec scope must see both runs");
     assert_eq!(spec_summary.total_cost_usd_micros, 6_000);
 
-    // Wave-1 scope: must see ONLY the wave-1 span (1_000 cost, 100 tokens).
+    // Wave-1 scope: must see ONLY the wave-1 run (1_000 cost, 100 tokens).
     let wave_scope = EconomyScope::Wave {
         project: ProjectPath::new(dir.path()),
         spec: SpecId::new("spec-shared"),
@@ -290,59 +320,39 @@ fn test_economy_summary_wave_scope_filters_to_wave_only() {
     let wave_summary = economy_summary(&conn, wave_scope).unwrap();
     assert_eq!(
         wave_summary.span_count, 1,
-        "Wave scope must filter spans by wave (regression: ?2=?2 made this a no-op)"
+        "Wave scope must filter runs by wave_id"
     );
     assert_eq!(wave_summary.total_cost_usd_micros, 1_000);
     assert_eq!(wave_summary.total_tokens, 100);
 }
 
-/// Regression: `economy_summary` must include rows from the `api_cost_frames`
-/// projection alongside `spans`. The reader unions both tables (migration v5
-/// + `unified_spans_subquery` in `economy::reader`) so adapters that route
-/// directly to `api_cost_frames` show up in the dashboard immediately.
-///
-/// Before the union: writing 22_598 frames to `api_cost_frames` while the
-/// dashboard read `FROM spans` only reported zero — the symptom that drove
-/// this followup.
+/// `economy_summary` aggregates whatever `run_usage` carries — the Wave 3
+/// telemetry table that every cost adapter (internal estimator + external
+/// OTEL/JSONL) now funnels into via `record_run`. (Pre-Wave-3 this exercised a
+/// `spans` ∪ `api_cost_frames` union in mustard.db; that union is retired now
+/// that there is a single self-attributed table.)
 #[test]
 fn test_economy_summary_includes_api_cost_frames() {
     let dir = tempdir().unwrap();
     let conn = open_conn(dir.path());
 
-    // 1 span on the legacy projection.
-    record_span(&conn, span_for("spec-A", "span-1", 1_000, 100)).unwrap();
-
-    // 2 rows on the dedicated `api_cost_frames` projection. Direct INSERT —
-    // there is no writer entry point for this table today (every adapter
-    // funnels through `record_api_cost` → `spans`), but the schema must keep
-    // the reader honest the day an external adapter does land rows here.
-    conn.execute(
-        "INSERT INTO api_cost_frames(span_id, ts_iso, session_id, model, spec, \
-                                     input_tokens, output_tokens, cost_usd_micros, \
-                                     project_path, is_error) \
-         VALUES('acf-1', '2026-05-21T01:00:00Z', 's1', 'opus', 'spec-A', \
-                200, 50, 2500, ?1, 0)",
-        rusqlite::params![dir.path().to_string_lossy().into_owned()],
-    )
-    .unwrap();
-    conn.execute(
-        "INSERT INTO api_cost_frames(span_id, ts_iso, session_id, model, spec, \
-                                     input_tokens, output_tokens, cost_usd_micros, \
-                                     project_path, is_error) \
-         VALUES('acf-2', '2026-05-21T02:00:00Z', 's1', 'opus', 'spec-A', \
-                300, 75, 4000, ?1, 0)",
-        rusqlite::params![dir.path().to_string_lossy().into_owned()],
-    )
-    .unwrap();
+    // 3 runs in one project's telemetry.db.
+    seed_run(dir.path(), "span-1", "spec-A", None, None, 1_000, 100);
+    seed_run(dir.path(), "acf-1", "spec-A", None, None, 2_500, 250);
+    seed_run(dir.path(), "acf-2", "spec-A", None, None, 4_000, 375);
+    // Measured project-wide totals back the unfiltered headline.
+    // 0.0075 USD -> 7_500 micro-USD; 725 measured tokens.
+    seed_measured(dir.path(), "claude_code.cost.usage", 0.0075);
+    seed_measured(dir.path(), "claude_code.token.usage", 725.0);
 
     let project_scope = EconomyScope::Project(ProjectPath::new(dir.path()));
     let summary = economy_summary(&conn, project_scope).unwrap();
 
-    // 1 span (1_000) + 2 api_cost_frames (2_500 + 4_000) = 7_500.
+    // Measured: 0.0075 USD -> 7_500 micro-USD (not the run_usage estimate).
     assert_eq!(summary.total_cost_usd_micros, 7_500);
-    // tokens: 100 + (200+50) + (300+75) = 725.
+    // Measured tokens: 725.
     assert_eq!(summary.total_tokens, 725);
-    // span_count is the union row count (1 + 2 = 3).
+    // Run count still from run_usage.
     assert_eq!(summary.span_count, 3);
 }
 

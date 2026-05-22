@@ -1,108 +1,86 @@
-//! Integration tests for the W4 economy attribution join.
+//! Integration tests for the economy attribution roll-ups.
 //!
-//! Each test seeds spans and `agent.start` events into a fresh harness
-//! database, then asserts the reader's `per_agent_costs`, `per_spec_costs`,
-//! and `per_wave_costs` aggregations resolve the right (agent, spec, wave)
-//! triple via the spans↔events join (primary `tool_use_id` key, fallback
-//! temporal window keyed on `session_id` + `ts`).
+//! Wave 3 (telemetry-separation) moved every span-based aggregation onto the
+//! self-attributed `run_usage` table in the dedicated `telemetry.db`. The
+//! reader no longer reconstructs `(agent, spec, wave)` from a `spans`↔events
+//! JOIN — the triple is stamped on each `run_usage` row at write time (Wave 2)
+//! and backfilled for history (Wave 1). These tests therefore seed `run_usage`
+//! rows directly and assert `per_agent_costs` / `per_spec_costs` /
+//! `per_wave_costs` group them correctly.
 
 use mustard_core::economy::{
-    EconomyScope, SpanRecord, per_agent_costs, per_spec_costs, per_wave_costs, record_span,
+    EconomyScope, per_agent_costs, per_spec_costs, per_wave_costs,
 };
 use mustard_core::economy::scope::{ProjectPath, SpecId, WaveId};
 use mustard_core::store::sqlite_store::SqliteEventStore;
-use rusqlite::Connection;
-use serde_json::{Map, Value, json};
+use mustard_core::telemetry::TelemetryWriter;
+use mustard_core::telemetry::model::RunUsage;
+use mustard_core::telemetry::store::TelemetryStore;
 use tempfile::tempdir;
 
-fn open_conn(dir: &std::path::Path) -> Connection {
+/// Materialise the harness DB so a project root looks real, then return a
+/// telemetry store rooted at the same project (`for_project` resolves
+/// `{project}/.claude/.harness/telemetry.db`, which is where the economy reader
+/// looks).
+fn telemetry_for(dir: &std::path::Path) -> TelemetryStore {
     let _store = SqliteEventStore::new(dir.join(".claude/.harness/mustard.db")).unwrap();
-    Connection::open(dir.join(".claude/.harness/mustard.db")).unwrap()
+    TelemetryStore::for_project(dir).unwrap()
 }
 
-/// Seed one `agent.start` event row directly — bypasses the hook path so the
-/// test can place arbitrary `(spec, wave, payload)` triples without spinning
-/// up the apps/rt observer machinery.
+/// Seed one self-attributed `run_usage` row.
 #[allow(clippy::too_many_arguments)]
-fn seed_agent_start(
-    conn: &Connection,
-    ts: &str,
-    session_id: Option<&str>,
-    spec: Option<&str>,
-    wave: i64,
-    actor_id: Option<&str>,
-    payload: Value,
-) {
-    conn.execute(
-        "INSERT INTO events(ts, session_id, wave, spec, event, actor_kind, actor_id, payload) \
-         VALUES(?1, ?2, ?3, ?4, 'agent.start', 'hook', ?5, ?6)",
-        rusqlite::params![ts, session_id, wave, spec, actor_id, payload.to_string()],
-    )
-    .unwrap();
-}
-
-/// Span with `tool_use_id` stashed in `extra` — the writer pulls it into the
-/// `spans.tool_use_id` column for the primary join leg.
-fn span_with_tool_use(
-    ts: &str,
+fn seed_run(
+    store: &TelemetryStore,
     span_id: &str,
-    session_id: &str,
-    tool_use_id: Option<&str>,
+    spec: &str,
+    wave: &str,
+    agent: &str,
     cost: i64,
     tokens: i64,
-) -> SpanRecord {
-    let mut extra = Map::new();
-    if let Some(t) = tool_use_id {
-        extra.insert("tool_use_id".into(), Value::String(t.into()));
-    }
-    SpanRecord {
-        ts: ts.into(),
-        session_id: Some(session_id.into()),
-        span_id: span_id.into(),
-        model: Some("claude-3-5-sonnet".into()),
-        spec: None, // attribution comes from the agent.start, not the span
-        phase: None,
-        input_tokens: Some(tokens),
-        output_tokens: Some(0),
-        cache_read_input_tokens: None,
-        cache_creation_input_tokens: None,
-        cost_usd_micros: Some(cost),
-        is_error: false,
-        extra,
-    }
+) {
+    store
+        .record_run(&RunUsage {
+            trace_id: None,
+            span_id: span_id.into(),
+            parent_span_id: None,
+            name: None,
+            started_at: Some(0),
+            ended_at: None,
+            duration_ms: None,
+            attributes: None,
+            spec: Some(spec.into()),
+            phase: None,
+            model: Some("claude-3-5-sonnet".into()),
+            input_tokens: Some(tokens),
+            output_tokens: Some(0),
+            cache_read_input_tokens: None,
+            cache_creation_input_tokens: None,
+            cost_usd_micros: Some(cost),
+            is_error: false,
+            project_path: None,
+            ts_iso: Some("2026-05-21T10:00:00Z".into()),
+            session_id: Some("sess-1".into()),
+            wave_id: Some(wave.into()),
+            tool_use_id: None,
+            agent_id: Some(agent.into()),
+        })
+        .unwrap();
+}
+
+/// A throwaway mustard.db connection to satisfy the reader signature. The
+/// span-based roll-ups read telemetry.db (resolved from the scope's project),
+/// not this connection — but the savings/frames half still expects a real one.
+fn open_conn(dir: &std::path::Path) -> rusqlite::Connection {
+    let _store = SqliteEventStore::new(dir.join(".claude/.harness/mustard.db")).unwrap();
+    rusqlite::Connection::open(dir.join(".claude/.harness/mustard.db")).unwrap()
 }
 
 #[test]
-fn test_tool_use_id_join_primary() {
+fn test_agent_rollup_single() {
     let dir = tempdir().unwrap();
+    let store = telemetry_for(dir.path());
     let conn = open_conn(dir.path());
-
-    seed_agent_start(
-        &conn,
-        "2026-05-21T10:00:00.000Z",
-        Some("sess-1"),
-        Some("spec-A"),
-        1,
-        Some("orchestrator"),
-        json!({
-            "agent_id": "core-impl",
-            "spec_id": "spec-A",
-            "wave_id": "wave-1",
-            "tool_use_id": "toolu_PRIMARY",
-        }),
-    );
-    record_span(
-        &conn,
-        span_with_tool_use(
-            "2026-05-21T10:00:30.000Z",
-            "req-1",
-            "sess-1",
-            Some("toolu_PRIMARY"),
-            10_000,
-            500,
-        ),
-    )
-    .unwrap();
+    seed_run(&store, "req-1", "spec-A", "wave-1", "core-impl", 10_000, 500);
 
     let rows =
         per_agent_costs(&conn, EconomyScope::Project(ProjectPath::new(dir.path()))).unwrap();
@@ -114,37 +92,39 @@ fn test_tool_use_id_join_primary() {
 }
 
 #[test]
-fn test_temporal_window_fallback() {
+fn test_agent_rollup_excludes_unattributed() {
     let dir = tempdir().unwrap();
+    let store = telemetry_for(dir.path());
     let conn = open_conn(dir.path());
-
-    // agent.start at t=10:00, span at t=10:05 — no tool_use_id on either side,
-    // so the temporal fallback (`session_id` + `ts <=`) must catch it.
-    seed_agent_start(
-        &conn,
-        "2026-05-21T10:00:00.000Z",
-        Some("sess-fallback"),
-        Some("spec-F"),
-        2,
-        Some("orchestrator"),
-        json!({
-            "agent_id": "core-explore",
-            "spec_id": "spec-F",
-            "wave_id": "wave-2",
-        }),
-    );
-    record_span(
-        &conn,
-        span_with_tool_use(
-            "2026-05-21T10:05:00.000Z",
-            "req-fb",
-            "sess-fallback",
-            None,
-            7_500,
-            300,
-        ),
-    )
-    .unwrap();
+    // A run with no agent_id must be excluded from the per-agent roll-up.
+    store
+        .record_run(&RunUsage {
+            trace_id: None,
+            span_id: "no-agent".into(),
+            parent_span_id: None,
+            name: None,
+            started_at: Some(0),
+            ended_at: None,
+            duration_ms: None,
+            attributes: None,
+            spec: Some("spec-F".into()),
+            phase: None,
+            model: Some("claude-3-5-sonnet".into()),
+            input_tokens: Some(300),
+            output_tokens: Some(0),
+            cache_read_input_tokens: None,
+            cache_creation_input_tokens: None,
+            cost_usd_micros: Some(7_500),
+            is_error: false,
+            project_path: None,
+            ts_iso: Some("2026-05-21T10:05:00Z".into()),
+            session_id: Some("sess-fallback".into()),
+            wave_id: Some("wave-2".into()),
+            tool_use_id: None,
+            agent_id: None,
+        })
+        .unwrap();
+    seed_run(&store, "with-agent", "spec-F", "wave-2", "core-explore", 7_500, 300);
 
     let rows =
         per_agent_costs(&conn, EconomyScope::Project(ProjectPath::new(dir.path()))).unwrap();
@@ -158,71 +138,27 @@ fn test_temporal_window_fallback() {
 fn test_empty_all_projects() {
     // AC-4: AllProjects scope with zero entries returns Vec empty, no error.
     let scope = EconomyScope::AllProjects(vec![]);
-    // No conn needed for the empty-fan-out path — the function bypasses SQL.
-    // We still need *a* connection to satisfy the signature; build a fresh
-    // throwaway DB so the call is realistic end-to-end.
     let dir = tempdir().unwrap();
     let conn = open_conn(dir.path());
     let rows = per_agent_costs(&conn, scope).unwrap();
     assert!(rows.is_empty(), "empty AllProjects must return Vec::new()");
 
-    let rows = per_spec_costs(
-        &conn,
-        EconomyScope::AllProjects(vec![]),
-    )
-    .unwrap();
+    let rows = per_spec_costs(&conn, EconomyScope::AllProjects(vec![])).unwrap();
     assert!(rows.is_empty());
 
-    let rows = per_wave_costs(
-        &conn,
-        EconomyScope::AllProjects(vec![]),
-    )
-    .unwrap();
+    let rows = per_wave_costs(&conn, EconomyScope::AllProjects(vec![])).unwrap();
     assert!(rows.is_empty());
 }
 
 #[test]
 fn test_per_spec_aggregation() {
     let dir = tempdir().unwrap();
+    let store = telemetry_for(dir.path());
     let conn = open_conn(dir.path());
 
-    // Two agent.starts in two different specs.
-    seed_agent_start(
-        &conn,
-        "2026-05-21T09:00:00.000Z",
-        Some("sess-a"),
-        Some("spec-X"),
-        1,
-        Some("orchestrator"),
-        json!({"agent_id": "agent-x", "spec_id": "spec-X", "wave_id": "w1",
-               "tool_use_id": "toolu_X"}),
-    );
-    seed_agent_start(
-        &conn,
-        "2026-05-21T09:30:00.000Z",
-        Some("sess-b"),
-        Some("spec-Y"),
-        1,
-        Some("orchestrator"),
-        json!({"agent_id": "agent-y", "spec_id": "spec-Y", "wave_id": "w1",
-               "tool_use_id": "toolu_Y"}),
-    );
-
-    record_span(
-        &conn,
-        span_with_tool_use("2026-05-21T09:01:00.000Z", "r1", "sess-a", Some("toolu_X"), 1_000, 100),
-    )
-    .unwrap();
-    record_span(
-        &conn,
-        span_with_tool_use("2026-05-21T09:02:00.000Z", "r2", "sess-a", Some("toolu_X"), 2_000, 200),
-    )
-    .unwrap();
-    record_span(
-        &conn,
-        span_with_tool_use("2026-05-21T09:31:00.000Z", "r3", "sess-b", Some("toolu_Y"), 5_000, 500),
-    )
-    .unwrap();
+    seed_run(&store, "r1", "spec-X", "w1", "agent-x", 1_000, 100);
+    seed_run(&store, "r2", "spec-X", "w1", "agent-x", 2_000, 200);
+    seed_run(&store, "r3", "spec-Y", "w1", "agent-y", 5_000, 500);
 
     let scope = EconomyScope::Project(ProjectPath::new(dir.path()));
     let by_spec = per_spec_costs(&conn, scope).unwrap();
@@ -239,40 +175,11 @@ fn test_per_spec_aggregation() {
 #[test]
 fn test_per_wave_aggregation() {
     let dir = tempdir().unwrap();
+    let store = telemetry_for(dir.path());
     let conn = open_conn(dir.path());
 
-    // Same spec, two waves — verifies (spec, wave) grouping splits correctly.
-    seed_agent_start(
-        &conn,
-        "2026-05-21T08:00:00.000Z",
-        Some("sess-w"),
-        Some("spec-W"),
-        1,
-        Some("orchestrator"),
-        json!({"agent_id": "core-impl", "spec_id": "spec-W", "wave_id": "wave-alpha",
-               "tool_use_id": "toolu_A"}),
-    );
-    seed_agent_start(
-        &conn,
-        "2026-05-21T08:30:00.000Z",
-        Some("sess-w"),
-        Some("spec-W"),
-        2,
-        Some("orchestrator"),
-        json!({"agent_id": "core-impl", "spec_id": "spec-W", "wave_id": "wave-beta",
-               "tool_use_id": "toolu_B"}),
-    );
-
-    record_span(
-        &conn,
-        span_with_tool_use("2026-05-21T08:01:00.000Z", "r1", "sess-w", Some("toolu_A"), 1_200, 120),
-    )
-    .unwrap();
-    record_span(
-        &conn,
-        span_with_tool_use("2026-05-21T08:31:00.000Z", "r2", "sess-w", Some("toolu_B"), 3_400, 340),
-    )
-    .unwrap();
+    seed_run(&store, "r1", "spec-W", "wave-alpha", "core-impl", 1_200, 120);
+    seed_run(&store, "r2", "spec-W", "wave-beta", "core-impl", 3_400, 340);
 
     let scope = EconomyScope::Project(ProjectPath::new(dir.path()));
     let by_wave = per_wave_costs(&conn, scope).unwrap();
@@ -300,46 +207,17 @@ fn test_per_wave_aggregation() {
 /// Regression test for AC-6 — the literal name is grepped by the AC binary.
 ///
 /// Models the scenario the superseded `metrics-writers-pipeline-key` spec
-/// described: an `agent.start` is emitted on a parent spec (because the
-/// orchestrator session is rooted there) but it carries a `wave_id` for a
-/// *child* wave that the parent dispatched into. The W4 join must follow the
-/// payload's `wave_id`, not the event row's `spec`, so the attributed roll-up
-/// surfaces the child wave correctly.
+/// described: a run dispatched on a parent spec's session but carrying the
+/// child wave it was launched against. With self-attribution the run row's own
+/// `spec` / `wave_id` columns already hold the right values, so the roll-up
+/// surfaces the child wave directly.
 #[test]
 fn test_parent_spec_child_wave_attribution() {
     let dir = tempdir().unwrap();
+    let store = telemetry_for(dir.path());
     let conn = open_conn(dir.path());
 
-    // The event row's top-level `spec` column is the parent; the payload's
-    // `spec_id` + `wave_id` point at the child wave the agent was dispatched
-    // against. The attribution CTE prefers the payload over the row column.
-    seed_agent_start(
-        &conn,
-        "2026-05-21T12:00:00.000Z",
-        Some("sess-parent"),
-        Some("parent-spec"),
-        0,
-        Some("orchestrator"),
-        json!({
-            "agent_id": "core-impl",
-            "spec_id": "parent-spec",
-            "wave_id": "child-wave",
-            "tool_use_id": "toolu_PARENT_CHILD",
-        }),
-    );
-
-    record_span(
-        &conn,
-        span_with_tool_use(
-            "2026-05-21T12:00:15.000Z",
-            "req-pc",
-            "sess-parent",
-            Some("toolu_PARENT_CHILD"),
-            8_888,
-            444,
-        ),
-    )
-    .unwrap();
+    seed_run(&store, "req-pc", "parent-spec", "child-wave", "core-impl", 8_888, 444);
 
     let scope = EconomyScope::Project(ProjectPath::new(dir.path()));
     let by_wave = per_wave_costs(&conn, scope.clone()).unwrap();
@@ -348,7 +226,7 @@ fn test_parent_spec_child_wave_attribution() {
     assert_eq!(
         by_wave[0].wave_id.as_str(),
         "child-wave",
-        "agent.start payload wave_id must drive the wave attribution"
+        "the run row's own wave_id must drive the wave attribution"
     );
 
     let by_spec = per_spec_costs(&conn, scope.clone()).unwrap();

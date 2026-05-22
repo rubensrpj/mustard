@@ -104,7 +104,7 @@ pub struct ToolCount {
 }
 
 /// Per-agent-type aggregation of agent.start / agent.stop pairs from
-/// the events table. Tokens come from spans table (not yet wired); duration
+/// the events table. Tokens come from telemetry.db `run_usage`; duration
 /// is derived from start→stop timestamps when both halves exist.
 #[derive(Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -559,7 +559,9 @@ fn parse_iso_ms(s: &str) -> Option<u64> {
 // ── Measured ─────────────────────────────────────────────────────────────────
 
 pub fn measured(repo_path: &Path) -> MeasuredBlock {
-    if let Some(r) = crate::db::with_db(repo_path, crate::db::metrics_from_db) {
+    // Telemetry store opened once, outside the mustard.db cache mutex.
+    let tele = crate::db::telemetry_store_for(repo_path);
+    if let Some(r) = crate::db::with_db(repo_path, |conn| crate::db::metrics_from_db(conn, tele.as_ref())) {
         if let Ok(m) = r {
             return MeasuredBlock {
                 tokens_total: m.tokens_total,
@@ -743,7 +745,7 @@ pub fn friction_entries(repo_path: &Path) -> Vec<FrictionEntry> {
 // ── Honest Prompt Economy (Wave 5) ──────────────────────────────────────────
 //
 // Three honest blocks the dashboard surfaces side by side:
-//   A · Cost from Claude Code native OTEL (claude_code_otel table)
+//   A · Cost from Claude Code native OTEL (telemetry.db `usage_totals`)
 //   B · Bytes the orchestrator chose NOT to send (events table, `mustard.subtraction.applied`)
 //   C · Operational counters from Claude Code (session count + active time)
 //
@@ -845,51 +847,37 @@ fn ms_to_iso(ms: i64) -> Option<String> {
     chrono::DateTime::<chrono::Utc>::from_timestamp(secs, nsec).map(|dt| dt.to_rfc3339())
 }
 
-/// Cost block — three queries against `claude_code_otel`. Each is fail-soft
-/// (returns the default block) when the table is missing or empty.
-fn cost_block(conn: &Connection) -> CostBlock {
+/// Cost block — read from telemetry.db's `usage_totals` via
+/// `mustard_core::telemetry::reader` (Wave 3). The legacy `claude_code_otel`
+/// table in mustard.db no longer receives data; the reduced `usage_totals`
+/// carries the same `claude_code.cost.usage` sum (no `token_type` split, so the
+/// total matches). Fail-soft: any reader error degrades to the default block.
+/// `by_session` is truncated to the top 10 to match the legacy `LIMIT 10`.
+fn cost_block(tele: &mustard_core::telemetry::TelemetryStore) -> CostBlock {
+    use mustard_core::telemetry::reader;
+    let conn = tele.conn();
+
     let mut out = CostBlock::default();
+    out.usd_total = reader::cost_total(conn).unwrap_or(0.0);
 
-    out.usd_total = conn
-        .query_row(
-            "SELECT COALESCE(SUM(sum), 0) FROM claude_code_otel \
-             WHERE metric = 'claude_code.cost.usage'",
-            [],
-            |row| row.get::<_, Option<f64>>(0),
-        )
-        .ok()
-        .flatten()
-        .unwrap_or(0.0);
+    // by_model: legacy filtered `model IS NOT NULL`; the reader collapses NULL
+    // to the empty-string key, so we drop empty-key rows to preserve parity.
+    out.by_model = reader::cost_by_model(conn)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|(model, _)| !model.is_empty())
+        .map(|(model, usd)| ModelCost { model, usd })
+        .collect();
 
-    if let Ok(mut stmt) = conn.prepare(
-        "SELECT model, COALESCE(SUM(sum), 0) AS usd FROM claude_code_otel \
-         WHERE metric = 'claude_code.cost.usage' AND model IS NOT NULL \
-         GROUP BY model ORDER BY usd DESC",
-    ) {
-        if let Ok(rows) = stmt.query_map([], |row| {
-            Ok(ModelCost {
-                model: row.get::<_, Option<String>>(0)?.unwrap_or_default(),
-                usd: row.get::<_, Option<f64>>(1)?.unwrap_or(0.0),
-            })
-        }) {
-            out.by_model = rows.flatten().collect();
-        }
-    }
-
-    if let Ok(mut stmt) = conn.prepare(
-        "SELECT session_id, COALESCE(SUM(sum), 0) AS usd FROM claude_code_otel \
-         WHERE metric = 'claude_code.cost.usage' AND session_id IS NOT NULL \
-         GROUP BY session_id ORDER BY usd DESC LIMIT 10",
-    ) {
-        if let Ok(rows) = stmt.query_map([], |row| {
-            Ok(SessionCost {
-                session_id: row.get::<_, Option<String>>(0)?.unwrap_or_default(),
-                usd: row.get::<_, Option<f64>>(1)?.unwrap_or(0.0),
-            })
-        }) {
-            out.by_session = rows.flatten().collect();
-        }
-    }
+    // by_session: same NULL→empty filter, plus the legacy LIMIT 10. The reader
+    // returns rows ordered by usd DESC, so truncation keeps the top 10.
+    out.by_session = reader::cost_by_session(conn)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|(session, _)| !session.is_empty())
+        .take(10)
+        .map(|(session_id, usd)| SessionCost { session_id, usd })
+        .collect();
 
     out
 }
@@ -961,28 +949,13 @@ fn subtractions_block(conn: &Connection, session_since: Option<&str>) -> Subtrac
     out
 }
 
-/// Claude Code operational counters — session.count and active_time.total.
-fn claude_events_block(conn: &Connection) -> ClaudeEventsBlock {
-    let session_count = conn
-        .query_row(
-            "SELECT COALESCE(SUM(sum), 0) FROM claude_code_otel \
-             WHERE metric = 'claude_code.session.count'",
-            [],
-            |row| row.get::<_, Option<f64>>(0),
-        )
-        .ok()
-        .flatten()
-        .unwrap_or(0.0);
-    let active_time_seconds = conn
-        .query_row(
-            "SELECT COALESCE(SUM(sum), 0) FROM claude_code_otel \
-             WHERE metric = 'claude_code.active_time.total'",
-            [],
-            |row| row.get::<_, Option<f64>>(0),
-        )
-        .ok()
-        .flatten()
-        .unwrap_or(0.0);
+/// Claude Code operational counters — session.count and active_time.total,
+/// read from telemetry.db's `usage_totals` via `telemetry::reader` (Wave 3).
+fn claude_events_block(tele: &mustard_core::telemetry::TelemetryStore) -> ClaudeEventsBlock {
+    use mustard_core::telemetry::reader;
+    let conn = tele.conn();
+    let session_count = reader::session_count(conn).unwrap_or(0.0);
+    let active_time_seconds = reader::active_time(conn).unwrap_or(0.0);
     ClaudeEventsBlock {
         session_count: session_count.max(0.0).round() as u64,
         active_time_seconds,
@@ -994,15 +967,14 @@ fn claude_events_block(conn: &Connection) -> ClaudeEventsBlock {
 /// OR a PID file exists at `<repo>/.claude/.harness/.otel-collector.pid`.
 /// (We don't probe the process — `sysinfo` isn't a dep; spec allows trusting
 /// PID-file presence as a fallback.)
-fn freshness_block(conn: &Connection, repo_path: &Path) -> FreshnessBlock {
-    let last_metric_ms: Option<i64> = conn
-        .query_row(
-            "SELECT MAX(ts_bucket) FROM claude_code_otel",
-            [],
-            |row| row.get::<_, Option<i64>>(0),
-        )
-        .ok()
-        .flatten();
+fn freshness_block(
+    conn: &Connection,
+    repo_path: &Path,
+    last_metric_ms: Option<i64>,
+) -> FreshnessBlock {
+    // `last_metric_ms` is telemetry.db's `MAX(usage_totals.updated_at)` (Wave 3
+    // freshness signal), supplied by the caller. The subtraction-event freshness
+    // below still reads mustard.db's `events` — those are not telemetry.
     let last_metric_ts = last_metric_ms.and_then(ms_to_iso);
 
     let last_subtraction_ts: Option<String> = conn
@@ -1136,12 +1108,22 @@ pub fn collector_health(repo_path: String) -> Result<CollectorHealth, String> {
     let base = std::path::PathBuf::from(&repo_path);
     match open_repo_db(&base) {
         Ok(conn) => {
-            let freshness = freshness_block(&conn, &base);
+            let last_metric_ms = telemetry_freshness_ms(&base);
+            let freshness = freshness_block(&conn, &base, last_metric_ms);
             Ok(collector_health_from_freshness(&freshness))
         }
         // No harness DB yet → OTEL was never wired up for this project.
         Err(_) => Ok(CollectorHealth::Off),
     }
+}
+
+/// Telemetry freshness signal — `MAX(usage_totals.updated_at)` (ms epoch) from
+/// the project's telemetry.db. Returns `None` when the store cannot be opened
+/// or the table is empty (fail-soft — the badge degrades to Off/Stale).
+fn telemetry_freshness_ms(repo_path: &Path) -> Option<i64> {
+    use mustard_core::telemetry::reader;
+    let tele = mustard_core::telemetry::TelemetryStore::for_project(repo_path).ok()?;
+    reader::freshness(tele.conn()).ok().flatten()
 }
 
 /// Open the mustard.db file for a given repo. Returns a descriptive error when
@@ -1168,11 +1150,29 @@ pub fn dashboard_prompt_economy(
     let base = std::path::PathBuf::from(&repo_path);
     let conn = open_repo_db(&base)?;
     let session_since = session_start_ts(&base);
+
+    // Telemetry (cost / counters / freshness) now comes from the dedicated
+    // telemetry.db; subtractions stay on mustard.db's `events`. The store is
+    // opened once and shared across the three telemetry blocks. A failure to
+    // open it degrades the telemetry blocks to their defaults (fail-soft) — the
+    // page shows zeros rather than erroring on a project with no telemetry yet.
+    let tele = mustard_core::telemetry::TelemetryStore::for_project(&base).ok();
+    let (cost, claude_events, last_metric_ms) = match tele.as_ref() {
+        Some(t) => (
+            cost_block(t),
+            claude_events_block(t),
+            mustard_core::telemetry::reader::freshness(t.conn())
+                .ok()
+                .flatten(),
+        ),
+        None => (CostBlock::default(), ClaudeEventsBlock::default(), None),
+    };
+
     Ok(DashboardPromptEconomy {
-        cost: cost_block(&conn),
+        cost,
         subtractions: subtractions_block(&conn, session_since.as_deref()),
-        claude_events: claude_events_block(&conn),
-        freshness: freshness_block(&conn, &base),
+        claude_events,
+        freshness: freshness_block(&conn, &base, last_metric_ms),
     })
 }
 
@@ -1304,9 +1304,9 @@ fn open_scope(
 // Empty branches degrade silently — a spec with no events resolves to a
 // 1-node root with empty children, which the UI renders as an empty state.
 
-/// Per-agent token roll-up (input/output/cache split). Counters mirror the
-/// `claude_code_otel` columns; cost is optional because `per_agent_costs`
-/// returns 0 when the OTEL collector hasn't observed a span yet.
+/// Per-agent token roll-up (input/output/cache split). Counters come from
+/// telemetry.db `run_usage`; cost is optional because `per_agent_costs`
+/// returns 0 when the OTEL collector hasn't observed a run yet.
 #[derive(Serialize, Deserialize, Default, Debug, Clone)]
 #[serde(rename_all = "snake_case")]
 pub struct TokenBreakdown {

@@ -48,6 +48,7 @@ pub mod process;
 pub mod projection;
 pub mod reader;
 pub mod spec;
+pub mod telemetry;
 
 // Root re-exports — consumers can write `use mustard_core::…` without
 // remembering which sub-module owns each name.

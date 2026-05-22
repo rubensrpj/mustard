@@ -15,20 +15,57 @@
 //! The single-project SQL stays *minimal* — no projection beyond what the
 //! aggregate needs. The intent is that hooks, dashboards, and tests all call
 //! the same six entry points; UI-specific shaping happens on the consumer
-//! side. The per-agent / per-spec / per-wave roll-ups share the W4
-//! attribution CTE ([`attribution_cte`]) so the spans↔`agent.start` join is
-//! defined exactly once.
+//! side.
+//!
+//! ## Wave 3 — self-attributed reads, no JOIN
+//!
+//! The per-spec / per-wave / per-agent roll-ups (and the cost half of
+//! `economy_summary`) used to read the `spans` table in `mustard.db` and
+//! recover spec/wave/agent through the legacy W4 attribution CTE (a `spans`
+//! LEFT JOIN on the agent-launch event). Telemetry now lives in a dedicated
+//! `telemetry.db` whose `run_usage` table is **self-attributed** — `spec` /
+//! `wave_id` / `agent_id` are stamped at write time (Wave 2) and backfilled for
+//! history — so the read is a plain `GROUP BY` via
+//! [`crate::telemetry::reader`]. The savings (`savings_records`) and
+//! context-frame (`context_cost_frames`) aggregations still read the passed
+//! `mustard.db` connection: those tables are not telemetry.
 
-use rusqlite::{Connection, params};
+use rusqlite::Connection;
 
 use crate::error::{Error, Result};
+use crate::telemetry::{self, TelemetryStore};
 
 use super::model::{
     AgentCost, ContextRoutingMetrics, EconomySummary, SavingsBreakdown, SavingsBySource,
-    SavingsSource, SpecCost, WaveCost,
+    SavingsSource, SessionCost, SpecCost, WaveCost,
 };
 use super::multi_project::MultiProjectReader;
 use super::scope::{AgentId, EconomyScope, SpecId, WaveId};
+
+/// Open the dedicated telemetry store for the project a scope is rooted at.
+///
+/// Single-project scopes carry their own root; `AllProjects` is handled by the
+/// fan-out before this is reached, so its first path is a safe bootstrap. The
+/// `MUSTARD_TELEMETRY_DB_PATH` env override is honoured by
+/// [`TelemetryStore::for_project`], which is what the reader tests rely on.
+fn open_telemetry(scope: &EconomyScope) -> Result<TelemetryStore> {
+    let project = scope
+        .project_paths()
+        .first()
+        .map(|p| p.as_path().to_path_buf())
+        .unwrap_or_default();
+    TelemetryStore::for_project(project)
+}
+
+/// `(spec, wave)` filter for the telemetry `run_usage` reads, derived from the
+/// scope. Wave scope yields both; Spec yields the spec only; Project/AllProjects
+/// yield neither.
+fn telemetry_filter(scope: &EconomyScope) -> (Option<String>, Option<String>) {
+    (
+        scope.spec_filter().map(|s| s.0.clone()),
+        scope.wave_filter().map(|w| w.0.clone()),
+    )
+}
 
 /// Top-level summary — total cost, total tokens, total savings, top 3 agents.
 ///
@@ -49,54 +86,71 @@ pub fn economy_summary(conn: &Connection, scope: EconomyScope) -> Result<Economy
                 acc.total_tokens_saved += s.total_tokens_saved;
                 acc.span_count += s.span_count;
                 acc.top_agents_by_cost.extend(s.top_agents_by_cost.clone());
+                // Per-project summaries are unfiltered (Project scope), so each
+                // already carries its own measured `by_session` / freshness.
+                acc.by_session.extend(s.by_session.clone());
+                acc.last_updated_ms = acc.last_updated_ms.max(s.last_updated_ms);
             }
             // Re-sort and truncate top agents after the merge.
             acc.top_agents_by_cost
                 .sort_by(|a, b| b.cost_usd_micros.cmp(&a.cost_usd_micros));
             acc.top_agents_by_cost.truncate(3);
+            // Re-sort + cap the merged sessions the same way the single-project
+            // path does (top by USD descending).
+            acc.by_session
+                .sort_by(|a, b| b.usd.partial_cmp(&a.usd).unwrap_or(std::cmp::Ordering::Equal));
+            acc.by_session.truncate(8);
             Ok(acc)
         }
         _ => {
-            // Spans aggregation: Wave scope cannot filter on the `spans` table
-            // directly (no native `wave_id` column), so it routes through the
-            // attribution CTE — same join `per_agent_costs` uses — and filters
-            // on the resolved `attr_wave_id`. Project/Spec scopes stay on the
-            // direct path; the CTE is one extra index walk we only pay when
-            // the caller actually constrained to a wave.
-            let (total_cost, total_tokens, span_count) = match &scope {
-                EconomyScope::Wave { spec, wave, .. } => {
-                    let sql = format!(
-                        "{cte} \
-                         SELECT COALESCE(SUM(cost_usd_micros), 0), \
-                                COALESCE(SUM(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)), 0), \
-                                COUNT(*) \
-                         FROM attributed_spans \
-                         WHERE attr_spec_id = ?1 AND attr_wave_id = ?2",
-                        cte = attribution_cte("WHERE 1=1"),
-                    );
-                    conn.query_row(
-                        &sql,
-                        params![spec.0.as_str(), wave.0.as_str()],
-                        |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?)),
-                    )
-                    .map_err(Error::from)?
-                }
-                _ => {
-                    let (where_sql, spec_param) = spans_scope_where(&scope);
-                    let span_sql = format!(
-                        "SELECT COALESCE(SUM(cost_usd_micros), 0), \
-                                COALESCE(SUM(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)), 0), \
-                                COUNT(*) \
-                         FROM {unified} AS spans {where_sql}",
-                        unified = unified_spans_subquery()
-                    );
-                    conn.query_row(
-                        &span_sql,
-                        rusqlite::params_from_iter(spec_param.iter()),
-                        |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?)),
-                    )
-                    .map_err(Error::from)?
-                }
+            // Run count always comes from telemetry.db's self-attributed
+            // `run_usage` (Wave 3): it's a count of dispatched runs, meaningful
+            // at every scope. The estimated cost/token totals from the same
+            // query are only used when the scope filters by spec or wave.
+            let (spec_f, wave_f) = telemetry_filter(&scope);
+            let tele = open_telemetry(&scope)?;
+            let (est_cost, est_tokens, span_count) = telemetry::reader::scoped_totals(
+                tele.conn(),
+                spec_f.as_deref(),
+                wave_f.as_deref(),
+            )?;
+
+            // For an unfiltered (project-wide / single-project) scope the
+            // headline cost + token totals come from the MEASURED `usage_totals`
+            // OTEL counters (Anthropic's billed `claude_code.cost.usage` /
+            // `.token.usage`), which carry no spec/wave dimension. When the scope
+            // DOES filter by spec or wave we fall back to the ESTIMATED
+            // `run_usage` totals — `usage_totals` cannot be attributed to a spec.
+            let unfiltered = spec_f.is_none() && wave_f.is_none();
+            let (total_cost, total_tokens) = if unfiltered {
+                let measured_cost_usd = telemetry::reader::cost_total(tele.conn())?;
+                let measured_tokens = telemetry::reader::token_total(tele.conn())?;
+                // `usage_totals` carries cost in USD and tokens as a float
+                // counter; `EconomySummary` is micro-USD + integer tokens.
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                let cost_micros = (measured_cost_usd * 1_000_000.0).round() as i64;
+                #[allow(clippy::cast_possible_truncation)]
+                let tokens = measured_tokens.round() as i64;
+                (cost_micros, tokens)
+            } else {
+                (est_cost, est_tokens)
+            };
+
+            // MEASURED cost-by-session + freshness — populated ONLY at the
+            // unfiltered (project) scope, since `usage_totals` carries no
+            // spec/wave dimension. At spec/wave scope these stay empty/None.
+            // Top sessions by USD, capped so the UI list stays compact.
+            let (by_session, last_updated_ms) = if unfiltered {
+                let sessions = telemetry::reader::cost_by_session(tele.conn())?
+                    .into_iter()
+                    .filter(|(_, usd)| *usd > 0.0)
+                    .take(8)
+                    .map(|(session_id, usd)| SessionCost { session_id, usd })
+                    .collect();
+                let fresh = telemetry::reader::freshness(tele.conn())?;
+                (sessions, fresh)
+            } else {
+                (Vec::new(), None)
             };
 
             // Savings aggregation always uses `savings_records` directly —
@@ -125,6 +179,8 @@ pub fn economy_summary(conn: &Connection, scope: EconomyScope) -> Result<Economy
                 total_tokens_saved: total_saved,
                 span_count,
                 top_agents_by_cost: top,
+                by_session,
+                last_updated_ms,
             })
         }
     }
@@ -132,17 +188,16 @@ pub fn economy_summary(conn: &Connection, scope: EconomyScope) -> Result<Economy
 
 /// Per-agent cost roll-up, ordered by cost descending.
 ///
-/// W4 attribution: each in-scope `spans` row is joined to the originating
-/// `agent.start` event by [`ATTRIBUTION_CTE`] — primary key is the Anthropic
-/// `tool_use_id` (when both sides expose it), with a temporal-window fallback
-/// keyed on `session_id` + the most-recent `agent.start.ts <= spans.ts_iso`.
-/// Spans that fail both legs are excluded from the roll-up (they have no
-/// agent to attribute to).
+/// Reads telemetry.db's self-attributed `run_usage` (Wave 3): each row carries
+/// its own `agent_id` (stamped at write time, backfilled for history), so the
+/// roll-up is a plain `GROUP BY agent_id`. Rows with a `NULL`/empty `agent_id`
+/// are excluded — they have no agent to attribute to, matching the legacy
+/// behaviour. A Wave scope additionally filters on `wave_id`.
 ///
 /// # Errors
 ///
 /// Returns [`Error::Sqlite`] for a database failure.
-pub fn per_agent_costs(conn: &Connection, scope: EconomyScope) -> Result<Vec<AgentCost>> {
+pub fn per_agent_costs(_conn: &Connection, scope: EconomyScope) -> Result<Vec<AgentCost>> {
     match scope {
         EconomyScope::AllProjects(ref projects) => {
             let reader = MultiProjectReader::new();
@@ -170,43 +225,19 @@ pub fn per_agent_costs(conn: &Connection, scope: EconomyScope) -> Result<Vec<Age
             Ok(out)
         }
         _ => {
-            // The W4 attribution flips ordering: span row's `spec` is no
-            // longer authoritative (the joined agent.start is). So the CTE
-            // walks every span; the scope filter runs post-attribution.
-            let span_where = "WHERE 1=1";
-            let (wave_filter, scope_params) = wave_filter_for(&scope);
-            // CTE-based join: every span is attributed once, then we GROUP BY
-            // agent_id in the outer select. The CTE keeps the read path
-            // O(N spans × log N events) with the `idx_events_event` +
-            // `idx_spans_tool_use_id` indices doing the heavy lifting.
-            let sql = format!(
-                "{cte} \
-                 SELECT attr_agent_id, \
-                        COALESCE(SUM(cost_usd_micros), 0) AS cost, \
-                        COALESCE(SUM(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)), 0) AS tokens, \
-                        COUNT(*) AS span_count \
-                 FROM attributed_spans \
-                 WHERE attr_agent_id IS NOT NULL AND attr_agent_id != '' {wave_filter} \
-                 GROUP BY attr_agent_id \
-                 ORDER BY cost DESC",
-                cte = attribution_cte(span_where),
-            );
-            let mut stmt = conn.prepare(&sql)?;
-            let rows = stmt
-                .query_map(
-                    rusqlite::params_from_iter(scope_params.iter()),
-                    |r| {
-                        Ok(AgentCost {
-                            agent_id: AgentId(r.get(0)?),
-                            cost_usd_micros: r.get(1)?,
-                            tokens: r.get(2)?,
-                            span_count: r.get(3)?,
-                        })
-                    },
-                )?
-                .filter_map(std::result::Result::ok)
-                .collect();
-            Ok(rows)
+            let (_, wave_f) = telemetry_filter(&scope);
+            let tele = open_telemetry(&scope)?;
+            let groups =
+                telemetry::reader::runs_by_agent_scoped(tele.conn(), None, wave_f.as_deref())?;
+            Ok(groups
+                .into_iter()
+                .map(|g| AgentCost {
+                    agent_id: AgentId(g.key),
+                    cost_usd_micros: g.cost_usd_micros,
+                    tokens: g.tokens,
+                    span_count: g.run_count,
+                })
+                .collect())
         }
     }
 }
@@ -218,7 +249,7 @@ pub fn per_agent_costs(conn: &Connection, scope: EconomyScope) -> Result<Vec<Age
 /// # Errors
 ///
 /// Returns [`Error::Sqlite`] for a database failure.
-pub fn per_spec_costs(conn: &Connection, scope: EconomyScope) -> Result<Vec<SpecCost>> {
+pub fn per_spec_costs(_conn: &Connection, scope: EconomyScope) -> Result<Vec<SpecCost>> {
     match scope {
         EconomyScope::AllProjects(ref projects) => {
             let reader = MultiProjectReader::new();
@@ -245,48 +276,27 @@ pub fn per_spec_costs(conn: &Connection, scope: EconomyScope) -> Result<Vec<Spec
             Ok(out)
         }
         _ => {
-            // W4 attribution: aggregate by the spec_id resolved through the
-            // attribution CTE (favours the `agent.start` payload's spec over
-            // the span's own column — they differ in parent-spec/child-wave
-            // dispatches where the span carries the parent and the agent was
-            // launched against the child).
-            let span_where = "WHERE 1=1";
-            let (wave_filter, scope_params) = wave_filter_for(&scope);
-            let sql = format!(
-                "{cte} \
-                 SELECT COALESCE(attr_spec_id, '') AS spec, \
-                        COALESCE(SUM(cost_usd_micros), 0) AS cost, \
-                        COALESCE(SUM(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)), 0) AS tokens, \
-                        COUNT(*) AS span_count \
-                 FROM attributed_spans \
-                 WHERE 1=1 {wave_filter} \
-                 GROUP BY spec \
-                 ORDER BY cost DESC",
-                cte = attribution_cte(span_where),
-            );
-            let mut stmt = conn.prepare(&sql)?;
-            let rows = stmt
-                .query_map(
-                    rusqlite::params_from_iter(scope_params.iter()),
-                    |r| {
-                        Ok(SpecCost {
-                            spec_id: SpecId(r.get(0)?),
-                            cost_usd_micros: r.get(1)?,
-                            tokens: r.get(2)?,
-                            span_count: r.get(3)?,
-                        })
-                    },
-                )?
-                .filter_map(std::result::Result::ok)
-                .collect();
-            Ok(rows)
+            // Self-attributed `run_usage` (Wave 3): GROUP BY the native `spec`
+            // column. A Wave scope additionally filters on `wave_id`.
+            let (_, wave_f) = telemetry_filter(&scope);
+            let tele = open_telemetry(&scope)?;
+            let groups = telemetry::reader::runs_by_spec_scoped(tele.conn(), wave_f.as_deref())?;
+            Ok(groups
+                .into_iter()
+                .map(|g| SpecCost {
+                    spec_id: SpecId(g.key),
+                    cost_usd_micros: g.cost_usd_micros,
+                    tokens: g.tokens,
+                    span_count: g.run_count,
+                })
+                .collect())
         }
     }
 }
 
-/// Per-wave cost roll-up. W4 attribution: the wave id comes from the joined
-/// `agent.start` event payload, not from the span — so spans dispatched into a
-/// child wave from a parent-spec context are correctly bucketed.
+/// Per-wave cost roll-up. The wave id is the run row's own `wave_id` column
+/// (self-attributed at write time), so runs dispatched into a child wave from a
+/// parent-spec context are correctly bucketed.
 ///
 /// Regression-tested by `parent_spec_child_wave_attribution` in
 /// `tests/economy_attribution.rs` (AC-6, absorbed from the superseded
@@ -295,7 +305,7 @@ pub fn per_spec_costs(conn: &Connection, scope: EconomyScope) -> Result<Vec<Spec
 /// # Errors
 ///
 /// Returns [`Error::Sqlite`] for a database failure.
-pub fn per_wave_costs(conn: &Connection, scope: EconomyScope) -> Result<Vec<WaveCost>> {
+pub fn per_wave_costs(_conn: &Connection, scope: EconomyScope) -> Result<Vec<WaveCost>> {
     match scope {
         EconomyScope::AllProjects(ref projects) => {
             let reader = MultiProjectReader::new();
@@ -324,42 +334,22 @@ pub fn per_wave_costs(conn: &Connection, scope: EconomyScope) -> Result<Vec<Wave
             Ok(out)
         }
         _ => {
-            // W4 attribution: aggregate by (spec_id, wave_id) resolved through
-            // the attribution CTE. Spans that join cleanly to an `agent.start`
-            // carry the wave it was dispatched against — which is the answer
-            // the "parent-spec/child-wave" regression case needs.
-            let span_where = "WHERE 1=1";
-            let (wave_filter, scope_params) = wave_filter_for(&scope);
-            let sql = format!(
-                "{cte} \
-                 SELECT COALESCE(attr_spec_id, '') AS spec, \
-                        COALESCE(attr_wave_id, '') AS wave, \
-                        COALESCE(SUM(cost_usd_micros), 0) AS cost, \
-                        COALESCE(SUM(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)), 0) AS tokens, \
-                        COUNT(*) AS span_count \
-                 FROM attributed_spans \
-                 WHERE 1=1 {wave_filter} \
-                 GROUP BY spec, wave \
-                 ORDER BY cost DESC",
-                cte = attribution_cte(span_where),
-            );
-            let mut stmt = conn.prepare(&sql)?;
-            let rows = stmt
-                .query_map(
-                    rusqlite::params_from_iter(scope_params.iter()),
-                    |r| {
-                        Ok(WaveCost {
-                            spec_id: SpecId(r.get(0)?),
-                            wave_id: WaveId(r.get(1)?),
-                            cost_usd_micros: r.get(2)?,
-                            tokens: r.get(3)?,
-                            span_count: r.get(4)?,
-                        })
-                    },
-                )?
-                .filter_map(std::result::Result::ok)
-                .collect();
-            Ok(rows)
+            // Self-attributed `run_usage` (Wave 3): GROUP BY (spec, wave_id).
+            // Each row carries the wave it was dispatched against, which is the
+            // answer the parent-spec/child-wave regression case needs.
+            let (_, wave_f) = telemetry_filter(&scope);
+            let tele = open_telemetry(&scope)?;
+            let groups = telemetry::reader::runs_by_wave_scoped(tele.conn(), wave_f.as_deref())?;
+            Ok(groups
+                .into_iter()
+                .map(|g| WaveCost {
+                    spec_id: SpecId(g.spec),
+                    wave_id: WaveId(g.wave_id),
+                    cost_usd_micros: g.cost_usd_micros,
+                    tokens: g.tokens,
+                    span_count: g.run_count,
+                })
+                .collect())
         }
     }
 }
@@ -486,27 +476,14 @@ pub fn context_routing_quality(
                 )
                 .map_err(Error::from)?;
 
-            // Span ratios (cache hit, prefix-stable share): the `spans` table
-            // has no native wave column, so a Wave-scoped caller falls back to
-            // the spec roll-up. Today this widens the denominator on the wave
-            // breakdown — a real per-wave ratio would route through the
-            // attribution CTE the way `economy_summary` does. Tracked as W5
-            // follow-up; flagged here so the next reviewer does not chase it.
-            let (span_where, span_params) = spans_scope_where(&scope);
-            let span_sql = format!(
-                "SELECT \
-                    COALESCE(SUM(input_tokens), 0), \
-                    COALESCE(SUM(cache_read_input_tokens), 0) \
-                 FROM {unified} AS spans {span_where}",
-                unified = unified_spans_subquery()
-            );
-            let (input_sum, cache_sum): (i64, i64) = conn
-                .query_row(
-                    &span_sql,
-                    rusqlite::params_from_iter(span_params.iter()),
-                    |r| Ok((r.get(0)?, r.get(1)?)),
-                )
-                .map_err(Error::from)?;
+            // Cache-hit ratio comes from telemetry.db's `run_usage` (Wave 3).
+            // `run_usage` has no native wave column on this read path either, so
+            // a Wave-scoped caller still collapses to the spec roll-up — same
+            // denominator behaviour as before, just sourced self-attributed.
+            let (spec_f, _) = telemetry_filter(&scope);
+            let tele = open_telemetry(&scope)?;
+            let cache_hit_ratio_permille =
+                telemetry::reader::cache_hit_ratio_permille_for_spec(tele.conn(), spec_f.as_deref())?;
 
             let permille = |num: i64, den: i64| -> i64 {
                 if den <= 0 {
@@ -518,7 +495,7 @@ pub fn context_routing_quality(
 
             Ok(ContextRoutingMetrics {
                 prefix_stable_ratio_permille: permille(prefix_sum, prompt_sum),
-                cache_hit_ratio_permille: permille(cache_sum, input_sum + cache_sum),
+                cache_hit_ratio_permille,
                 retry_overhead_ratio_permille: permille(retry_sum, prompt_sum),
                 frame_count,
             })
@@ -526,202 +503,18 @@ pub fn context_routing_quality(
     }
 }
 
-/// Unified read-only source for cost frames — `spans` ∪ `api_cost_frames`.
-///
-/// The W3 transcript adapter routes through `record_api_cost` → `spans` today,
-/// but a parallel adapter that lands frames directly in the `api_cost_frames`
-/// projection table (added in migration v5) would otherwise be invisible to
-/// the economy reader. This helper materialises a single union-all subquery
-/// over both, projecting the exact column set the reader (and the W4
-/// attribution CTE) read from. The non-spans side fills `trace_id`, `name`,
-/// `started_at`, etc. with `NULL` since those legacy columns do not survive
-/// into the API-cost projection.
-///
-/// Use as `FROM {} AS spans` or `FROM {} AS s` — the parenthesised subquery
-/// supports either alias. Callers must NOT rename columns or assume an
-/// ordering; `UNION ALL` preserves duplicates by design (the only intentional
-/// duplication path is a fixture test that writes the same span_id to both
-/// tables, which is acceptable — the economy reader sums, it does not de-dup).
-fn unified_spans_subquery() -> &'static str {
-    "(SELECT trace_id, span_id, parent_span_id, name, started_at, ended_at, \
-             duration_ms, attributes, spec, phase, model, input_tokens, \
-             output_tokens, is_error, cache_read_input_tokens, \
-             cache_creation_input_tokens, cost_usd_micros, project_path, \
-             ts_iso, session_id, wave_id, tool_use_id \
-      FROM spans \
-      UNION ALL \
-      SELECT NULL AS trace_id, span_id, NULL AS parent_span_id, NULL AS name, \
-             NULL AS started_at, NULL AS ended_at, NULL AS duration_ms, \
-             NULL AS attributes, spec, phase, model, input_tokens, \
-             output_tokens, is_error, cache_read_input_tokens, \
-             cache_creation_input_tokens, cost_usd_micros, project_path, \
-             ts_iso, session_id, wave_id, tool_use_id \
-      FROM api_cost_frames)"
-}
-
 // ---------------------------------------------------------------------------
-// W4 attribution CTE — single source of truth for the spans↔agent.start join.
-//
-// Build via [`attribution_cte`] with a `spans` WHERE clause (currently always
-// `WHERE 1=1` — scope filtering moved to the outer query, see
-// [`wave_filter_for`]). Three columns are projected for downstream GROUP BY:
-//
-// - `attr_agent_id` — `agent.start.payload.agent_id` ?? `subagentType` ?? `actor_id`
-// - `attr_spec_id`  — `agent.start.payload.spec_id`  ?? `events.spec` ?? `spans.spec`
-// - `attr_wave_id`  — `agent.start.payload.wave_id`  ?? `CAST(events.wave AS TEXT)` ?? `spans.wave_id`
-//
-// The final `spans.*` legs keep W1 backward compatibility: a span recorded
-// without an `agent.start` (legacy ingest, fixture tests) still attributes
-// via its own columns instead of bucketing into the empty-string sentinel.
-//
-// The two correlated subqueries walk the join legs in priority order — the
-// primary one keys on `tool_use_id` (an Anthropic-issued block id present
-// when the W3 adapter could harvest it), the fallback walks the temporal
-// window (most-recent `agent.start.ts <= spans.ts_iso` in the same session).
-// Both are bounded by indices: `idx_spans_tool_use_id` (v4) for the primary,
-// `idx_events_event` for the fallback's event-kind filter.
-// ---------------------------------------------------------------------------
-
-/// Build the outer-query filter that constrains attributed spans to the scope.
-///
-/// The W4 attribution flips the W1 ordering: spans no longer carry the
-/// authoritative spec/wave (that lives on the joined `agent.start`), so the
-/// scope filter applies *after* the CTE resolves attribution rather than
-/// before it on the raw `spans` rows.
-///
-/// Returns the WHERE fragment plus the matching positional params, so the
-/// caller passes exactly as many binds as the SQL references — rusqlite
-/// rejects extra binds with `"Wrong number of parameters"`.
-///
-/// - Project / AllProjects → no filter, no params.
-/// - Spec → `AND attr_spec_id = ?1` + `[spec]`.
-/// - Wave → `AND attr_spec_id = ?1 AND attr_wave_id = ?2` + `[spec, wave]`.
-fn wave_filter_for(scope: &EconomyScope) -> (&'static str, Vec<String>) {
-    match scope {
-        EconomyScope::Wave { spec, wave, .. } => (
-            "AND attr_spec_id = ?1 AND attr_wave_id = ?2",
-            vec![spec.0.clone(), wave.0.clone()],
-        ),
-        EconomyScope::Spec { spec, .. } => {
-            ("AND attr_spec_id = ?1", vec![spec.0.clone()])
-        }
-        _ => ("", vec![]),
-    }
-}
-
-/// Build the `WITH attributed_spans AS (...)` CTE prefix for the W4 join.
-///
-/// `span_where` is the scope filter as built by [`scope_where`] — it gets
-/// inlined into the spans-side of the CTE so the join only walks rows the
-/// caller actually wants. The two attribution legs (primary tool_use_id,
-/// fallback temporal window) live as correlated subqueries — `COALESCE`
-/// short-circuits to the second when the first is `NULL`.
-fn attribution_cte(span_where: &str) -> String {
-    // The primary leg joins on `JSON_EXTRACT(events.payload, '$.tool_use_id')`,
-    // gated by `s.tool_use_id IS NOT NULL` so the index range scan does not
-    // touch every event row for spans that have no id to match on.
-    //
-    // The fallback leg picks the most-recent `agent.start` in the same session
-    // whose `ts` is on-or-before `spans.ts_iso`. `events.ts` is an ISO-8601
-    // TEXT column — string sort matches chronological sort for that format,
-    // so `ORDER BY ev.ts DESC LIMIT 1` is the temporal window upper bound.
-    // A future `agent.stop` upper bound is not required: a later `agent.start`
-    // in the same session already moves the window forward (the DESC + LIMIT 1
-    // selects the most-recent ancestor, which is the active agent).
-    format!(
-        "WITH attributed_spans AS (\
-            SELECT s.cost_usd_micros, s.input_tokens, s.output_tokens, \
-                   COALESCE( \
-                     (SELECT COALESCE( \
-                                JSON_EXTRACT(ev.payload, '$.agent_id'), \
-                                JSON_EXTRACT(ev.payload, '$.subagentType'), \
-                                ev.actor_id) \
-                      FROM events ev \
-                      WHERE ev.event = 'agent.start' \
-                        AND s.tool_use_id IS NOT NULL \
-                        AND JSON_EXTRACT(ev.payload, '$.tool_use_id') = s.tool_use_id \
-                      LIMIT 1), \
-                     (SELECT COALESCE( \
-                                JSON_EXTRACT(ev.payload, '$.agent_id'), \
-                                JSON_EXTRACT(ev.payload, '$.subagentType'), \
-                                ev.actor_id) \
-                      FROM events ev \
-                      WHERE ev.event = 'agent.start' \
-                        AND ev.session_id IS NOT NULL \
-                        AND s.session_id IS NOT NULL \
-                        AND ev.session_id = s.session_id \
-                        AND ev.ts <= s.ts_iso \
-                      ORDER BY ev.ts DESC LIMIT 1) \
-                   ) AS attr_agent_id, \
-                   COALESCE( \
-                     (SELECT COALESCE(JSON_EXTRACT(ev.payload, '$.spec_id'), ev.spec) \
-                      FROM events ev \
-                      WHERE ev.event = 'agent.start' \
-                        AND s.tool_use_id IS NOT NULL \
-                        AND JSON_EXTRACT(ev.payload, '$.tool_use_id') = s.tool_use_id \
-                      LIMIT 1), \
-                     (SELECT COALESCE(JSON_EXTRACT(ev.payload, '$.spec_id'), ev.spec) \
-                      FROM events ev \
-                      WHERE ev.event = 'agent.start' \
-                        AND ev.session_id IS NOT NULL \
-                        AND s.session_id IS NOT NULL \
-                        AND ev.session_id = s.session_id \
-                        AND ev.ts <= s.ts_iso \
-                      ORDER BY ev.ts DESC LIMIT 1), \
-                     s.spec \
-                   ) AS attr_spec_id, \
-                   COALESCE( \
-                     (SELECT COALESCE(JSON_EXTRACT(ev.payload, '$.wave_id'), \
-                                      CAST(ev.wave AS TEXT)) \
-                      FROM events ev \
-                      WHERE ev.event = 'agent.start' \
-                        AND s.tool_use_id IS NOT NULL \
-                        AND JSON_EXTRACT(ev.payload, '$.tool_use_id') = s.tool_use_id \
-                      LIMIT 1), \
-                     (SELECT COALESCE(JSON_EXTRACT(ev.payload, '$.wave_id'), \
-                                      CAST(ev.wave AS TEXT)) \
-                      FROM events ev \
-                      WHERE ev.event = 'agent.start' \
-                        AND ev.session_id IS NOT NULL \
-                        AND s.session_id IS NOT NULL \
-                        AND ev.session_id = s.session_id \
-                        AND ev.ts <= s.ts_iso \
-                      ORDER BY ev.ts DESC LIMIT 1), \
-                     s.wave_id \
-                   ) AS attr_wave_id \
-            FROM {unified} s {span_where} \
-         )",
-        unified = unified_spans_subquery()
-    )
-}
-
-// ---------------------------------------------------------------------------
-// Shared scope-to-SQL helpers.
+// Shared scope-to-SQL helpers for the NON-telemetry tables that still live in
+// `mustard.db` (`savings_records`, `context_cost_frames`). The span-based
+// reads moved to `telemetry::reader` (self-attributed `run_usage`, Wave 3), so
+// there is no longer a spans↔events JOIN to express here.
 //
 // Each helper returns `(where_clause, params)` where `params` is the exact
 // list of bind values referenced by the SQL — no `?2 = ?2` tautologies, no
 // `NULL IS NULL` placeholders. Callers feed the params into rusqlite via
 // `params_from_iter`, so the helper's `Vec` length matches the SQL's `?N`
-// count for every scope variant. Wave-scoped callers on the `spans` table
-// must route through [`attribution_cte`] separately — spans have no native
-// wave column, so this helper deliberately collapses Wave→Spec for the
-// `spans` SQL (the real wave filter lives in the CTE-driven query path).
+// count for every scope variant.
 // ---------------------------------------------------------------------------
-
-/// Builds the `WHERE` clause + bind list for the `spans` table.
-///
-/// Wave scope collapses to Spec for this helper: the `spans` table has no
-/// native `wave_id` column, so Wave-aware callers must use the attribution
-/// CTE (see `economy_summary`). Returning a real filter here — instead of
-/// the legacy `?2 = ?2` tautology — keeps the bug from compiling silently.
-fn spans_scope_where(scope: &EconomyScope) -> (&'static str, Vec<String>) {
-    match scope {
-        EconomyScope::Project(_) | EconomyScope::AllProjects(_) => ("", Vec::new()),
-        EconomyScope::Spec { spec, .. } | EconomyScope::Wave { spec, .. } => {
-            ("WHERE spec = ?1", vec![spec.0.clone()])
-        }
-    }
-}
 
 /// Builds the `WHERE` clause + bind list for `context_cost_frames`
 /// (which has native `spec_id` and `wave_id` columns).
@@ -762,10 +555,13 @@ fn savings_params(scope: &EconomyScope) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::economy::model::{SavingsRecord, SpanRecord};
+    use crate::economy::model::SavingsRecord;
     use crate::economy::scope::{AgentId, ProjectPath};
-    use crate::economy::writer::{record_savings, record_span};
+    use crate::economy::writer::record_savings;
     use crate::store::sqlite_store::SqliteEventStore;
+    use crate::telemetry::TelemetryWriter;
+    use crate::telemetry::model::{RunUsage, UsageMetric};
+    use crate::telemetry::writer::upsert_usage_metric;
     use rusqlite::Connection;
     use serde_json::Map;
     use tempfile::tempdir;
@@ -775,30 +571,130 @@ mod tests {
         Connection::open(dir.join("mustard.db")).unwrap()
     }
 
-    fn span(id: &str, spec: &str, cost: i64, tokens: i64) -> SpanRecord {
-        SpanRecord {
-            ts: "2026-05-21T00:00:00Z".into(),
-            session_id: None,
-            span_id: id.into(),
-            model: Some("claude-3-5-sonnet".into()),
-            spec: Some(spec.into()),
-            phase: None,
-            input_tokens: Some(tokens),
-            output_tokens: Some(0),
-            cache_read_input_tokens: None,
-            cache_creation_input_tokens: None,
-            cost_usd_micros: Some(cost),
-            is_error: false,
-            extra: Map::new(),
-        }
+    /// Seed one `run_usage` row into the telemetry.db the economy reader opens
+    /// for a project (`{project}/.claude/.harness/telemetry.db`). Wave 3 moved
+    /// every span-based aggregation onto the self-attributed `run_usage` table,
+    /// so the reader no longer touches the legacy `spans` table.
+    fn seed_run(dir: &std::path::Path, id: &str, spec: &str, cost: i64, tokens: i64) {
+        let store = TelemetryStore::for_project(dir).unwrap();
+        store
+            .record_run(&RunUsage {
+                trace_id: None,
+                span_id: id.into(),
+                parent_span_id: None,
+                name: None,
+                started_at: Some(0),
+                ended_at: None,
+                duration_ms: None,
+                attributes: None,
+                spec: Some(spec.into()),
+                phase: None,
+                model: Some("claude-3-5-sonnet".into()),
+                input_tokens: Some(tokens),
+                output_tokens: Some(0),
+                cache_read_input_tokens: None,
+                cache_creation_input_tokens: None,
+                cost_usd_micros: Some(cost),
+                is_error: false,
+                project_path: None,
+                ts_iso: Some("2026-05-21T00:00:00Z".into()),
+                session_id: None,
+                wave_id: None,
+                tool_use_id: None,
+                agent_id: Some("explore".into()),
+            })
+            .unwrap();
+    }
+
+    /// Seed one MEASURED `usage_totals` counter row (Anthropic's billed OTEL
+    /// metric) into the same telemetry.db. `cost.usage` is USD, `token.usage`
+    /// is a token count — both float counters with no spec/wave dimension.
+    fn seed_measured(dir: &std::path::Path, metric: &str, sum: f64) {
+        let store = TelemetryStore::for_project(dir).unwrap();
+        upsert_usage_metric(
+            store.conn(),
+            &UsageMetric {
+                metric: metric.into(),
+                model: Some("claude-3-5-sonnet".into()),
+                session_id: Some("sess-1".into()),
+                sum,
+                updated_at: Some(0),
+            },
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn economy_summary_unfiltered_uses_measured_totals() {
+        // Project scope (no spec/wave filter): headline cost + tokens come from
+        // the MEASURED `usage_totals`, NOT the ESTIMATED `run_usage` sums.
+        let dir = tempdir().unwrap();
+        let conn = fresh_conn(dir.path());
+        // Estimated run_usage: cost 3000 micros, 300 tokens — must be ignored.
+        seed_run(dir.path(), "s1", "spec-A", 1000, 100);
+        seed_run(dir.path(), "s2", "spec-A", 2000, 200);
+        // Measured: $49.00 cost, 1234 tokens.
+        seed_measured(dir.path(), "claude_code.cost.usage", 49.0);
+        seed_measured(dir.path(), "claude_code.token.usage", 1234.0);
+        record_savings(
+            &conn,
+            SavingsRecord {
+                ts: "2026-05-21T00:00:00Z".into(),
+                source: SavingsSource::RtkRewrite,
+                tokens_saved: 500,
+                model_target: None,
+                project_path: ProjectPath::new("/tmp/p"),
+                spec_id: None,
+                wave_id: None,
+                agent_id: None,
+                extra: Map::new(),
+            },
+        )
+        .unwrap();
+
+        let scope = EconomyScope::Project(ProjectPath::new(dir.path()));
+        let summary = economy_summary(&conn, scope).unwrap();
+        // Measured cost: $49.00 -> 49_000_000 micro-USD (not the 3000 estimate).
+        assert_eq!(summary.total_cost_usd_micros, 49_000_000);
+        // Measured tokens: 1234 (not the 300 estimate).
+        assert_eq!(summary.total_tokens, 1234);
+        // Run count + savings still come from run_usage / savings_records.
+        assert_eq!(summary.span_count, 2);
+        assert_eq!(summary.total_tokens_saved, 500);
+    }
+
+    #[test]
+    fn economy_summary_spec_scope_uses_estimated_run_usage() {
+        // Spec scope: usage_totals has no spec dimension, so the totals stay on
+        // the ESTIMATED run_usage path even when measured counters are present.
+        let dir = tempdir().unwrap();
+        let conn = fresh_conn(dir.path());
+        seed_run(dir.path(), "s1", "spec-A", 1000, 100);
+        seed_run(dir.path(), "s2", "spec-A", 2000, 200);
+        // Measured present but must NOT leak into a spec-scoped summary.
+        seed_measured(dir.path(), "claude_code.cost.usage", 49.0);
+        seed_measured(dir.path(), "claude_code.token.usage", 1234.0);
+
+        let scope = EconomyScope::Spec {
+            project: ProjectPath::new(dir.path()),
+            spec: SpecId::new("spec-A"),
+        };
+        let summary = economy_summary(&conn, scope).unwrap();
+        // Estimated run_usage totals (3000 micros, 300 tokens), not measured.
+        assert_eq!(summary.total_cost_usd_micros, 3000);
+        assert_eq!(summary.total_tokens, 300);
+        assert_eq!(summary.span_count, 2);
     }
 
     #[test]
     fn economy_summary_aggregates_spans_and_savings() {
         let dir = tempdir().unwrap();
         let conn = fresh_conn(dir.path());
-        record_span(&conn, span("s1", "spec-A", 1000, 100)).unwrap();
-        record_span(&conn, span("s2", "spec-A", 2000, 200)).unwrap();
+        seed_run(dir.path(), "s1", "spec-A", 1000, 100);
+        seed_run(dir.path(), "s2", "spec-A", 2000, 200);
+        // Measured totals so the unfiltered project scope has a real headline.
+        seed_measured(dir.path(), "claude_code.cost.usage", 0.003);
+        seed_measured(dir.path(), "claude_code.token.usage", 300.0);
         record_savings(
             &conn,
             SavingsRecord {

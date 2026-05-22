@@ -13,6 +13,8 @@
 //! 3. Removes the statusline git cache from the temp dir.
 //! 4. Removes `.compact-state` files older than 24h.
 //! 5. Removes a stale OTEL collector PID file.
+//! 6. Prunes telemetry rows (`run_usage`/`usage_totals`) older than the
+//!    retention window from `.harness/telemetry.db`.
 //!
 //! ## Contract shape
 //!
@@ -20,15 +22,15 @@
 //!
 //! ## OTEL collector note
 //!
-//! `session-cleanup.js` *stopped* the OTEL collector that `harness-init.js`
-//! *spawned*. The b3 port of `harness-init` (in [`crate::hooks::session_start`])
-//! deliberately does **not** spawn the collector — that subprocess depends on
-//! a B4 script (out of bounds). With no Rust-side spawn there is nothing for
-//! this module to stop; it still removes a stale `.otel-collector.pid` file so
-//! a legacy JS-spawned collector from a pre-migration install is not orphaned
-//! by a leftover PID file. The actual `process.kill` is not ported — there is
-//! no portable, dependency-free signal API, and the file removal alone is the
-//! correct cleanup once the Rust port owns SessionStart.
+//! `session_start` spawns the OTEL collector (in
+//! [`crate::hooks::session_start`]); this module tears it down on `SessionEnd`.
+//! Because there is one collector per machine on the OTLP port, [`clean_otel_pid`]
+//! now **kills** the process whose PID is in `.otel-collector.pid` before
+//! removing the file — leaving it alive would let the next project's telemetry
+//! bind to this project's lingering listener (cross-project contamination).
+//! The kill is signal-free (subprocess `taskkill`/`kill`, the crate forbids
+//! `unsafe`) and fail-open: a dead PID or a missing kill binary degrades to a
+//! warning and the PID file is still removed.
 
 use crate::run::amend_finalize;
 use mustard_core::economy::{self, sources::transcript, sources::IngestContext};
@@ -42,6 +44,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// `.compact-state` files older than this are pruned — 24 hours.
 const ONE_DAY_MS: u128 = 24 * 60 * 60 * 1000;
+
+/// Telemetry retention window — `run_usage`/`usage_totals` rows older than this
+/// many days are pruned on `SessionEnd`. Fail-open: pruning never aborts cleanup.
+const TELEMETRY_RETENTION_DAYS: i64 = 90;
 
 /// Terminal pipeline-state statuses — these files are removed on cleanup.
 const TERMINAL_STATUSES: &[&str] = &["implemented", "completed", "validated", "cancelled"];
@@ -228,15 +234,56 @@ fn clean_statusline_cache() {
     let _ = fs::remove_file(&cache);
 }
 
-/// Remove a stale OTEL collector PID file.
+/// Kill this project's OTEL collector (if any) and remove its PID file.
 ///
-/// As of Wave 3 (economia-moat-unification) `session_start` *does* spawn the
-/// collector itself, but the cleanup contract stays the same: removing the PID
-/// file on `SessionEnd` lets a fresh `SessionStart` re-spawn a healthy
-/// collector without a stale-PID false-positive in the idempotence check.
+/// As of the cross-project telemetry-contamination fix, `SessionEnd` must
+/// actually terminate the collector process — not merely drop the PID file.
+/// There is one collector per machine on the OTLP port; leaving project A's
+/// collector alive when the user moves to project B means B's telemetry binds
+/// to A's lingering listener and lands in A's `telemetry.db`. Killing on
+/// SessionEnd guarantees the live collector always belongs to the active
+/// project. Fail-open: a kill failure (process already gone, no `taskkill`/
+/// `kill` on PATH) degrades to a warning and we still remove the PID file.
 fn clean_otel_pid(claude_dir: &Path) {
     let pid_file = claude_dir.join(".harness").join(".otel-collector.pid");
+    if let Some(pid) = read_pid(&pid_file) {
+        kill_pid(pid);
+    }
     let _ = fs::remove_file(&pid_file);
+}
+
+/// Read a PID from `path`. Returns `None` for any IO/parse failure.
+fn read_pid(path: &Path) -> Option<u32> {
+    fs::read_to_string(path).ok()?.trim().parse().ok()
+}
+
+/// Best-effort, signal-free process termination via a subprocess (the crate
+/// forbids `unsafe`, so no raw signal API). `cmd /C taskkill /F /PID` on
+/// Windows; `sh -c kill` on POSIX. Fail-open: any error is dropped — telemetry
+/// teardown must never abort session cleanup.
+fn kill_pid(pid: u32) {
+    let _ = spawn_kill(pid);
+}
+
+/// Spawn the platform kill command for `pid`, waiting for it to complete.
+fn spawn_kill(pid: u32) -> std::io::Result<()> {
+    #[cfg(windows)]
+    let mut cmd = {
+        let mut c = Command::new("cmd");
+        c.args(["/C", &format!("taskkill /F /PID {pid}")]);
+        c
+    };
+    #[cfg(not(windows))]
+    let mut cmd = {
+        let mut c = Command::new("sh");
+        c.args(["-c", &format!("kill {pid}")]);
+        c
+    };
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|_| ())
 }
 
 // ---------------------------------------------------------------------------
@@ -308,19 +355,37 @@ fn ingest_session_transcript(cwd: &str, session_id: Option<&str>) {
     if frames.is_empty() {
         return;
     }
-    let conn = match economy::store::open_for(cwd) {
-        Ok(c) => c,
+    // Wave 2 (telemetry-separation): `record_api_cost` now writes `run_usage`
+    // in telemetry.db, so open the dedicated telemetry store (not mustard.db).
+    let store = match mustard_core::telemetry::TelemetryStore::for_project(cwd) {
+        Ok(s) => s,
         Err(e) => {
-            eprintln!("session_cleanup: economy::store::open_for failed: {e}");
+            eprintln!("session_cleanup: TelemetryStore::for_project failed: {e}");
             return;
         }
     };
     for frame in frames {
-        if let Err(e) = economy::writer::record_api_cost(&conn, frame) {
+        if let Err(e) = economy::writer::record_api_cost(store.conn(), frame) {
             eprintln!("session_cleanup: record_api_cost failed: {e}");
             // Keep looping — a single bad row must not lose the rest.
         }
     }
+}
+
+/// Prune telemetry rows older than [`TELEMETRY_RETENTION_DAYS`] from the
+/// dedicated telemetry store (`.harness/telemetry.db`). Best-effort: a
+/// store-open failure or a prune error is dropped — telemetry retention must
+/// never abort session cleanup.
+fn prune_telemetry(cwd: &str) {
+    let Ok(store) = mustard_core::telemetry::TelemetryStore::for_project(cwd) else {
+        return;
+    };
+    let now_ms = now_millis().min(i64::MAX as u128) as i64;
+    let _ = mustard_core::telemetry::writer::prune_older_than_days(
+        store.conn(),
+        TELEMETRY_RETENTION_DAYS,
+        now_ms,
+    );
 }
 
 impl Observer for SessionCleanup {
@@ -343,8 +408,12 @@ impl Observer for SessionCleanup {
         // Wave 3 (economia-moat-unification): ingest the session transcript
         // into the W1 economy writer BEFORE we wipe state. Pulls one
         // `ApiCostFrame` per assistant turn out of the Claude Code JSONL so the
-        // `spans` table sees the cheapest cost signal we have.
+        // `run_usage` table sees the cheapest cost signal we have.
         ingest_session_transcript(&cwd, input.session_id.as_deref());
+
+        // Telemetry retention: drop `run_usage`/`usage_totals` rows past the
+        // window so telemetry.db does not grow without bound. Fail-open.
+        prune_telemetry(&cwd);
 
         archive_stale_followups(&cwd);
         clean_pipeline_states(&claude);

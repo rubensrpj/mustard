@@ -45,21 +45,27 @@ use mustard_core::error::Error;
 use mustard_core::fs;
 use mustard_core::store::event_store::EventSink;
 use mustard_core::store::sqlite_store::SqliteEventStore;
+use mustard_core::telemetry::model::RunAttribution;
+use mustard_core::telemetry::{writer as telemetry_writer, TelemetryStore};
 use mustard_core::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
 use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
-use rusqlite::Connection;
 use serde_json::{Map, Value, json};
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-/// Finalise an agent's Task dispatch as one `spans` row + one `api_cost`
-/// frame, derived from the PostToolUse(Task) payload. `model` is the model id
-/// the dispatch ran under (may be empty — pricing falls through to `(0, 0)`).
+/// Finalise an agent's Task dispatch as one `run_usage` row in `telemetry.db`,
+/// derived from the PostToolUse(Task) payload. `model` is the model id the
+/// dispatch ran under (may be empty — pricing falls through to `(0, 0)`).
 /// `input_bytes` and `output_bytes` are the byte sizes of `tool_input` /
 /// `tool_response`; `input_tokens` / `output_tokens` come from the API usage
 /// payload when present, else estimated from the byte size. Fail-open.
-fn record_task_span(
-    conn: &Connection,
+///
+/// Wave 2 (telemetry-separation): the run lands in `telemetry.db` via
+/// `economy::writer::record_run` (which delegates to the telemetry writer),
+/// in the `run_usage` table. The function opens its own `TelemetryStore` —
+/// `project_dir` is needed for the open.
+fn record_task_run(
+    project_dir: &str,
     session_id: Option<&str>,
     span_id: String,
     model: &str,
@@ -102,11 +108,16 @@ fn record_task_span(
         is_error,
         extra: Map::new(),
     };
-    // Writer side: one `spans` insert (the internal estimator path), then a
-    // second alias call to mark provenance — they share the same row via
-    // `INSERT OR REPLACE` on `span_id`.
-    let _ = writer::record_span(conn, rec.clone());
-    let _ = writer::record_api_cost(conn, rec as ApiCostFrame);
+    // Writer side: open the dedicated telemetry store and write one `run_usage`
+    // row. `record_run` and `record_api_cost` are aliases that land the *same*
+    // `INSERT OR REPLACE`-keyed row (on `span_id`), so issuing both was a wasted
+    // write — the second silently overwrote the first with identical data. A
+    // single `record_api_cost` carries the cost (`cost_usd_micros` is set on
+    // `rec`) and signals external/adapter provenance. Best-effort: a store-open
+    // failure simply drops the telemetry.
+    if let Ok(store) = TelemetryStore::for_project(project_dir) {
+        let _ = writer::record_api_cost(store.conn(), rec as ApiCostFrame);
+    }
 }
 
 // ===========================================================================
@@ -173,6 +184,53 @@ fn emit_event_via(
 ) {
     let harness_event = build_harness_event(project_dir, hook_id, event, payload);
     let _ = store.append(&harness_event);
+}
+
+/// Resolve the active wave id from `MUSTARD_ACTIVE_WAVE` (the convention the
+/// other hooks read for attribution). `None` when unset or blank.
+fn current_wave_id() -> Option<String> {
+    std::env::var("MUSTARD_ACTIVE_WAVE")
+        .ok()
+        .filter(|s| !s.is_empty())
+}
+
+/// Extract `tool_use_id` from the hook payload — Claude Code may place it at the
+/// root or nested under `tool_response`. Mirrors `tool_result::extract_tool_use_id`.
+fn extract_tool_use_id(input: &HookInput) -> Option<String> {
+    if let Some(s) = input.raw.get("tool_use_id").and_then(|v| v.as_str()) {
+        return Some(s.to_string());
+    }
+    input
+        .raw
+        .get("tool_response")
+        .and_then(|v| v.get("tool_use_id"))
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+}
+
+/// UPSERT one write-time attribution stamp into `telemetry.db`'s
+/// `run_attribution`, keyed on `(session_id, tool_use_id)`. Telemetry is never
+/// load-bearing — the caller wraps this in `let _ = ...`.
+fn upsert_run_attribution(
+    project_dir: &str,
+    session_id: &str,
+    tool_use_id: &str,
+    spec: Option<String>,
+    wave_id: Option<String>,
+    agent_id: Option<String>,
+) -> Result<(), mustard_core::error::Error> {
+    let store = TelemetryStore::for_project(project_dir)?;
+    telemetry_writer::upsert_attribution(
+        store.conn(),
+        &RunAttribution {
+            session_id: session_id.to_string(),
+            tool_use_id: tool_use_id.to_string(),
+            spec,
+            wave_id,
+            agent_id,
+            updated_at: i64::try_from(now_millis()).ok(),
+        },
+    )
 }
 
 // ===========================================================================
@@ -694,16 +752,52 @@ impl mustard_core::model::contract::Observer for SubagentTracker {
                     .and_then(|v| v.as_str())
                     .unwrap_or("unknown");
                 let model = tool_input.get("model").cloned().unwrap_or(Value::Null);
-                emit_event(
-                    &project,
-                    "subagent-tracker",
-                    "agent.start",
-                    json!({
-                        "description": description,
-                        "model": model,
-                        "subagentType": subagent_type,
-                    }),
-                );
+
+                // Wave 2 (telemetry-separation): make the run born attributed.
+                // The dispatch already carries everything needed to attribute
+                // its eventual span — resolve it here and (a) stamp it onto the
+                // `agent.start` payload (the legacy read-time JOIN keys) and
+                // (b) record it write-time into telemetry.db's `run_attribution`
+                // so the OTLP collector can stamp the span the moment it lands.
+                let spec = current_spec(&project);
+                let wave_id = current_wave_id();
+                // The agent id the reader's attribution CTE keys on:
+                // `agent_id` ?? `subagent_type`.
+                let agent_id = tool_input
+                    .get("agent_id")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string)
+                    .unwrap_or_else(|| subagent_type.to_string());
+                let tool_use_id = extract_tool_use_id(input);
+
+                let mut payload = json!({
+                    "description": description,
+                    "model": model,
+                    "subagentType": subagent_type,
+                    "agent_id": agent_id,
+                    "spec_id": spec.clone(),
+                    "wave_id": wave_id.clone(),
+                });
+                if let Some(tu) = &tool_use_id {
+                    payload["tool_use_id"] = json!(tu);
+                }
+                emit_event(&project, "subagent-tracker", "agent.start", payload);
+
+                // Write-time attribution stamp. Telemetry is never load-bearing
+                // (`let _ = ...`): a missing session/tool_use_id or a store
+                // failure simply means the run falls back to unattributed.
+                if let (Some(session), Some(tool_use)) =
+                    (input.session_id.as_deref(), tool_use_id.as_deref())
+                {
+                    let _ = upsert_run_attribution(
+                        &project,
+                        session,
+                        tool_use,
+                        spec.clone(),
+                        wave_id.clone(),
+                        Some(agent_id.clone()),
+                    );
+                }
             }
             Some(Trigger::PostToolUse) if is_dispatch => {
                 let tool_response = input
@@ -716,9 +810,9 @@ impl mustard_core::model::contract::Observer for SubagentTracker {
                     .unwrap_or_default();
                 let summary: String = tool_response.chars().take(800).collect();
                 // Open the harness store ONCE for this invocation and reuse it
-                // for both the `agent.stop` append and the span writes below,
+                // for both the `agent.stop` append and the run writes below,
                 // instead of opening it twice (one for the event append, one
-                // for the economy span writes).
+                // for the run_usage writes).
                 // Best-effort: if the open fails, telemetry is simply skipped.
                 let Ok(store) = SqliteEventStore::for_project(&project) else {
                     return;
@@ -730,8 +824,8 @@ impl mustard_core::model::contract::Observer for SubagentTracker {
                     "agent.stop",
                     json!({ "summary": summary }),
                 );
-                // Finalise the dispatch into the economy spans table (W2):
-                // one `record_span` + one `record_api_cost` derived from the
+                // Finalise the dispatch into telemetry.db's `run_usage` (W2):
+                // one `record_api_cost` derived from the
                 // payload. Token counts come from the Anthropic `usage`
                 // payload when the harness forwards it, else are estimated
                 // from byte sizes. Best-effort — never blocks the verdict.
@@ -766,8 +860,8 @@ impl mustard_core::model::contract::Observer for SubagentTracker {
                         let sid = input.session_id.as_deref().unwrap_or("unknown");
                         format!("{sid}-{}-task", now_iso8601())
                     });
-                record_task_span(
-                    store.conn(),
+                record_task_run(
+                    &project,
                     input.session_id.as_deref(),
                     span_id,
                     &model_str,

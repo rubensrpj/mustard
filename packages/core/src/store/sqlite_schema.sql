@@ -87,49 +87,13 @@ CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_fts USING fts5(
   id UNINDEXED, name, description
 );
 
--- Spans projection (legacy Phase 2). Kept idempotent — Phase 2's homegrown
--- span emitter was removed in favor of consuming Claude Code's native OTEL.
--- See claude_code_otel table (added Fase 6) for the live data path.
-CREATE TABLE IF NOT EXISTS spans (
-  trace_id TEXT,
-  span_id TEXT PRIMARY KEY,
-  parent_span_id TEXT,
-  name TEXT,
-  started_at INTEGER,  -- ms epoch
-  ended_at INTEGER,
-  duration_ms INTEGER,
-  attributes TEXT,     -- JSON
-  spec TEXT,
-  phase TEXT,
-  model TEXT,
-  input_tokens INTEGER,
-  output_tokens INTEGER,
-  is_error INTEGER     -- bool
-);
-CREATE INDEX IF NOT EXISTS idx_spans_spec ON spans(spec);
-CREATE INDEX IF NOT EXISTS idx_spans_phase ON spans(phase);
-CREATE INDEX IF NOT EXISTS idx_spans_started ON spans(started_at);
-
--- Claude Code native OTEL projection. Populated by the local OTLP collector
--- (`mustard-rt run otel-collector`) that receives metrics/logs from the
--- Claude Code CLI when CLAUDE_CODE_ENABLE_TELEMETRY=1 is set. Rows are
--- aggregated per minute by (metric, session_id, model, token_type) — same
--- composite is the natural PK to keep cardinality bounded.
-CREATE TABLE IF NOT EXISTS claude_code_otel (
-  ts_bucket INTEGER NOT NULL,         -- ms epoch, floored to minute
-  signal TEXT NOT NULL,               -- 'metric' | 'log'
-  metric TEXT NOT NULL,               -- 'claude_code.token.usage', 'claude_code.cost.usage', etc.
-  session_id TEXT,
-  model TEXT,
-  token_type TEXT,                    -- 'input' | 'output' | 'cacheRead' | 'cacheCreation' (only for token.usage); null otherwise
-  sum REAL DEFAULT 0,                 -- aggregated value within the bucket
-  count INTEGER DEFAULT 0,            -- number of datapoints summed
-  attrs TEXT,                         -- JSON of remaining OTel attributes
-  PRIMARY KEY (ts_bucket, metric, session_id, model, token_type)
-);
-CREATE INDEX IF NOT EXISTS idx_cco_metric ON claude_code_otel(metric);
-CREATE INDEX IF NOT EXISTS idx_cco_session ON claude_code_otel(session_id);
-CREATE INDEX IF NOT EXISTS idx_cco_bucket ON claude_code_otel(ts_bucket);
+-- NOTE (Wave 3, 2026-05-22 telemetry-separation): the legacy `spans` and
+-- `claude_code_otel` projections used to live here. Telemetry now owns a
+-- dedicated `telemetry.db` (`mustard_core::telemetry`): `usage_totals` replaces
+-- `claude_code_otel` and `run_usage` replaces `spans`, both read via
+-- `telemetry::reader`. The two tables are dropped from existing `mustard.db`
+-- files by migration v7 → v8 (which also VACUUMs to reclaim the space). They are
+-- intentionally NOT recreated here.
 
 -- ============================================================================
 -- Wave 6a — knowledge + memory tables (2026-05-20)

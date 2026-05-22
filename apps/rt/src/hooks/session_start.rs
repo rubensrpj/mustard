@@ -213,13 +213,20 @@ fn spawn_otel_collector(cwd: &str) {
     let pid_path = harness_dir(cwd).join(OTEL_PID_FILE);
 
     // Idempotence: if a previous SessionStart spawned the collector and the
-    // process is still alive, do nothing. A stale PID file (process gone) is
-    // overwritten by the fresh spawn below.
+    // process is still alive, do nothing — this project already owns the port.
+    // A stale PID file (process gone) is overwritten by the fresh spawn below.
     if let Some(existing) = read_pid(&pid_path) {
         if is_process_alive(existing) {
             return;
         }
     }
+
+    // Cross-project takeover: a previous project's collector may still be
+    // holding the OTLP port (its SessionEnd may not have fired, or a kill may
+    // have failed). Free the port before spawning, otherwise THIS project's
+    // collector fails to bind and the foreign listener silently captures this
+    // project's telemetry. Best-effort, fail-open.
+    free_otel_port();
 
     let exe = match std::env::current_exe() {
         Ok(p) => p,
@@ -284,6 +291,133 @@ fn spawn_transcript_watcher() {
 /// Read a PID from `path`. Returns `None` for any IO/parse failure.
 fn read_pid(path: &Path) -> Option<u32> {
     fs::read_to_string(path).ok()?.trim().parse().ok()
+}
+
+/// Free the OTLP port so THIS project's collector can bind it. Finds whatever
+/// process is listening on `127.0.0.1:<port>` and kills it. The port is
+/// resolved from the same `resolve_port()` the collector uses (respects
+/// `MUSTARD_OTEL_PORT`), so the takeover targets the exact port the new
+/// collector will bind. Best-effort and fail-open at every step — a missing
+/// `netstat`/`lsof`/`kill`, an empty result, or a kill error degrades to a
+/// warning and the spawn proceeds (a duplicate that fails to bind exits
+/// cleanly). The idempotence check above already short-circuits when this
+/// project's own healthy collector owns the port, so this only ever reaps a
+/// foreign or dead listener.
+fn free_otel_port() {
+    let port = crate::run::otel::collector::resolve_port();
+    for pid in listening_pids(port) {
+        kill_pid(pid);
+    }
+}
+
+/// PIDs listening on `127.0.0.1:<port>`, parsed from a platform query. Empty
+/// on any failure (no tool on PATH, nothing listening, unparseable output).
+fn listening_pids(port: u16) -> Vec<u32> {
+    #[cfg(windows)]
+    {
+        // `netstat -ano` rows look like:
+        //   TCP    127.0.0.1:4318    0.0.0.0:0    LISTENING    12345
+        // The trailing column is the owning PID. Filter to LISTENING rows for
+        // our port and parse the last whitespace-separated token.
+        let query = format!("netstat -ano | findstr :{port} | findstr LISTENING");
+        let out = Command::new("cmd")
+            .args(["/C", &query])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .output();
+        match out {
+            Ok(o) => parse_netstat_pids(&String::from_utf8_lossy(&o.stdout), port),
+            Err(e) => {
+                eprintln!("session_start: netstat for port {port} failed ({e})");
+                Vec::new()
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        // `lsof -ti tcp:<port>` prints one PID per line (TCP, no header).
+        let out = Command::new("sh")
+            .args(["-c", &format!("lsof -ti tcp:{port}")])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .output();
+        match out {
+            Ok(o) => parse_lsof_pids(&String::from_utf8_lossy(&o.stdout)),
+            Err(e) => {
+                eprintln!("session_start: lsof for port {port} failed ({e})");
+                Vec::new()
+            }
+        }
+    }
+}
+
+/// Parse owning PIDs from `netstat -ano` output, keeping only LISTENING rows
+/// whose local address ends in `:<port>`. The PID is the final whitespace token.
+/// Pure string parse — unit-testable without spawning `netstat`.
+#[cfg_attr(not(any(windows, test)), allow(dead_code))]
+fn parse_netstat_pids(text: &str, port: u16) -> Vec<u32> {
+    let suffix = format!(":{port}");
+    let mut pids = Vec::new();
+    for line in text.lines() {
+        let cols: Vec<&str> = line.split_whitespace().collect();
+        // Expect: PROTO LOCAL REMOTE STATE PID (at least 5 columns).
+        if cols.len() < 5 || !cols.iter().any(|c| c.eq_ignore_ascii_case("LISTENING")) {
+            continue;
+        }
+        // Local address is column 1; match on the :<port> suffix.
+        if !cols[1].ends_with(&suffix) {
+            continue;
+        }
+        if let Ok(pid) = cols[cols.len() - 1].parse::<u32>() {
+            if !pids.contains(&pid) {
+                pids.push(pid);
+            }
+        }
+    }
+    pids
+}
+
+/// Parse PIDs from `lsof -ti` output — one PID per line. Pure string parse —
+/// unit-testable without spawning `lsof`.
+#[cfg_attr(not(any(unix, test)), allow(dead_code))]
+fn parse_lsof_pids(text: &str) -> Vec<u32> {
+    let mut pids = Vec::new();
+    for line in text.lines() {
+        if let Ok(pid) = line.trim().parse::<u32>() {
+            if !pids.contains(&pid) {
+                pids.push(pid);
+            }
+        }
+    }
+    pids
+}
+
+/// Best-effort, signal-free process termination via a subprocess (the crate
+/// forbids `unsafe`). `cmd /C taskkill /F /PID` on Windows; `sh -c kill` on
+/// POSIX. Fail-open: any error degrades to a warning.
+fn kill_pid(pid: u32) {
+    #[cfg(windows)]
+    let mut cmd = {
+        let mut c = Command::new("cmd");
+        c.args(["/C", &format!("taskkill /F /PID {pid}")]);
+        c
+    };
+    #[cfg(not(windows))]
+    let mut cmd = {
+        let mut c = Command::new("sh");
+        c.args(["-c", &format!("kill {pid}")]);
+        c
+    };
+    if let Err(e) = cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+    {
+        eprintln!("session_start: kill pid {pid} failed ({e})");
+    }
 }
 
 /// `true` if a process with `pid` is currently alive on the host.
@@ -738,6 +872,43 @@ mod tests {
     #[test]
     fn classify_no_status_is_silent() {
         assert_eq!(classify_spec("# Spec\nno header here\n"), SpecClass::Silent);
+    }
+
+    // --- port-takeover PID parsing -----------------------------------------
+
+    #[test]
+    fn parse_netstat_pid_from_listening_row() {
+        // Real `netstat -ano` shape: PROTO LOCAL REMOTE STATE PID.
+        let text = "  TCP    127.0.0.1:4318    0.0.0.0:0    LISTENING    12345\r\n";
+        assert_eq!(parse_netstat_pids(text, 4318), vec![12345]);
+    }
+
+    #[test]
+    fn parse_netstat_ignores_other_ports_and_states() {
+        let text = "\
+  TCP    127.0.0.1:4318    0.0.0.0:0    LISTENING       12345\r\n\
+  TCP    127.0.0.1:9999    0.0.0.0:0    LISTENING       67890\r\n\
+  TCP    127.0.0.1:4318    127.0.0.1:55000  ESTABLISHED  24680\r\n";
+        // Only the LISTENING row on :4318 contributes; ESTABLISHED + :9999 drop.
+        assert_eq!(parse_netstat_pids(text, 4318), vec![12345]);
+    }
+
+    #[test]
+    fn parse_netstat_empty_on_no_match() {
+        assert!(parse_netstat_pids("", 4318).is_empty());
+        assert!(parse_netstat_pids("garbage line with no pid", 4318).is_empty());
+    }
+
+    #[test]
+    fn parse_lsof_pids_one_per_line_dedup() {
+        let text = "12345\n67890\n12345\n";
+        assert_eq!(parse_lsof_pids(text), vec![12345, 67890]);
+    }
+
+    #[test]
+    fn parse_lsof_empty_on_blank() {
+        assert!(parse_lsof_pids("").is_empty());
+        assert!(parse_lsof_pids("\n  \n").is_empty());
     }
 
     // --- session-memory parity (Wave 6b: reads from SQLite) ---------------

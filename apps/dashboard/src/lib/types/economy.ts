@@ -43,6 +43,26 @@ export interface EconomySummary {
   span_count: number;
   /** Top 3 agents ordered by `cost_usd_micros` desc (truncated to <= 3). */
   top_agents_by_cost: AgentCost[];
+  /**
+   * MEASURED cost per session (`usage_totals.cost.usage`), ordered by USD desc.
+   * Populated ONLY at project / all-projects scope — empty at spec/wave scope.
+   * Lets the user match one session against Claude Code's `/cost`.
+   */
+  by_session: SessionCost[];
+  /**
+   * Epoch-ms of the last MEASURED counter refresh (`MAX(usage_totals.updated_at)`).
+   * `null` at spec/wave scope or when no measured row exists.
+   */
+  last_updated_ms: number | null;
+}
+
+/**
+ * MEASURED cost for one session, in USD (NOT micro-USD — sourced from the
+ * `cost.usage` float counter). Matches `mustard_core::economy::SessionCost`.
+ */
+export interface SessionCost {
+  session_id: string;
+  usd: number;
 }
 
 /** Stable snake_case keys for `SavingsSource` (`mustard_core::economy`). */

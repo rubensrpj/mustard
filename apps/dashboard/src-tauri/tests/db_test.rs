@@ -111,10 +111,14 @@ fn setup() -> Connection {
 #[test]
 fn metrics_counts_events_and_tokens() {
     let conn = setup();
-    let m = metrics_from_db(&conn).unwrap();
+    // Token totals now come from the dedicated telemetry.db (`run_usage`), not
+    // the legacy in-memory `spans` table. With no telemetry store wired in this
+    // unit test we pass `None`, so the token counters degrade to 0 (fail-soft);
+    // the event/agent counts still come from the in-memory `events` table.
+    let m = metrics_from_db(&conn, None).unwrap();
     assert_eq!(m.total_events, 3);
     assert_eq!(m.agents_dispatched, 1);
-    assert_eq!(m.tokens_total, 300);
+    assert_eq!(m.tokens_total, 0);
 }
 
 #[test]

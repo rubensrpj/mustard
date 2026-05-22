@@ -226,7 +226,11 @@ pub type ApiCostFrame = SpanRecord;
 // ---------------------------------------------------------------------------
 
 /// Top-level summary the dashboard's hero card reads.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+//
+// No `Eq`: `by_session` carries `f64` USD values (no total order), so the
+// struct is `PartialEq` only. Reader tests use `assert_eq!`, which only needs
+// `PartialEq`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct EconomySummary {
     /// Total cost in micro-USD across every span in scope.
     pub total_cost_usd_micros: i64,
@@ -238,6 +242,30 @@ pub struct EconomySummary {
     pub span_count: i64,
     /// Top 3 agents ordered by cost descending (truncated to <=3).
     pub top_agents_by_cost: Vec<AgentCost>,
+    /// MEASURED cost per session (Anthropic billed `cost.usage`), ordered by USD
+    /// descending. Populated ONLY at the unfiltered project / all-projects scope
+    /// — `usage_totals` carries no spec/wave dimension, so spec/wave scopes leave
+    /// this empty. Lets the user cross-check ONE session against Claude Code's
+    /// own `/cost` to confirm the headline number is real.
+    #[serde(default)]
+    pub by_session: Vec<SessionCost>,
+    /// `MAX(usage_totals.updated_at)` epoch-ms — when the MEASURED counters were
+    /// last refreshed. `None` at spec/wave scope or when no measured row exists.
+    /// Drives the "atualizado há Xs" freshness caption on the cost KPI.
+    #[serde(default)]
+    pub last_updated_ms: Option<i64>,
+}
+
+/// MEASURED cost for one Claude Code session, in USD (not micro-USD — sourced
+/// from `usage_totals.cost.usage`, which is a float USD counter). Ordered by
+/// `usd` descending by the reader. The session id matches what Claude Code's
+/// `/cost` reports, so the user can match a single row one-to-one.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SessionCost {
+    /// Claude Code session id (`usage_totals.session_id`).
+    pub session_id: String,
+    /// Aggregate measured cost for the session, in USD.
+    pub usd: f64,
 }
 
 /// Per-agent cost roll-up. Ordered by `cost_usd_micros` desc by the reader.

@@ -174,16 +174,14 @@ fn check_data(store: Option<&Store>) -> Value {
     })
 }
 
-/// Serialise one [`SampleRow`] to the JS diagnose sample shape.
+/// Serialise one [`SampleRow`] to the diagnose sample shape (reduced schema).
 fn sample_json(r: &SampleRow) -> Value {
     json!({
-        "ts_bucket": r.ts_bucket,
         "metric": r.metric,
         "session_id": r.session_id,
         "model": r.model,
-        "token_type": r.token_type,
         "sum": r.sum,
-        "count": r.count,
+        "updated_at": r.updated_at,
     })
 }
 
@@ -393,7 +391,8 @@ mod tests {
         store
             .upsert_metric(&super::super::store::MetricRow {
                 ts_bucket: 60_000,
-                metric: "m".to_string(),
+                // A consumed metric so it survives the ingestion filter.
+                metric: "claude_code.token.usage".to_string(),
                 session_id: None,
                 model: None,
                 token_type: None,

@@ -30,8 +30,11 @@ struct FsChangePayload {
 
 pub fn classify_kind(path: &Path) -> Option<&'static str> {
     let s = path.to_string_lossy();
-    // mustard.db and its WAL/SHM companions all trigger a data-change refresh.
-    if s.contains(".harness") && (s.contains("mustard.db")) {
+    // mustard.db / telemetry.db and their WAL/SHM companions all trigger a
+    // data-change refresh. telemetry.db (run_usage / usage_totals) is written
+    // by the OTEL collector; its writes must refresh the economy/telemetry
+    // views just like a mustard.db write does.
+    if s.contains(".harness") && (s.contains("mustard.db") || s.contains("telemetry.db")) {
         Some("events")
     } else if s.contains(".pipeline-states") {
         Some("pipeline-state")

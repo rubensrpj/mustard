@@ -31,13 +31,16 @@ struct McpProcess {
 }
 
 impl McpProcess {
-    /// Spawn `mustard-rt mcp` with `MUSTARD_DB_PATH` bound to `db_path`.
-    fn spawn(db_path: &std::path::Path) -> Self {
+    /// Spawn `mustard-rt mcp` with `MUSTARD_DB_PATH` bound to `db_path` and
+    /// `MUSTARD_TELEMETRY_DB_PATH` bound to `telemetry_path` (the dedicated
+    /// telemetry database `get_run_summary` reads).
+    fn spawn(db_path: &std::path::Path, telemetry_path: &std::path::Path) -> Self {
         // `CARGO_BIN_EXE_mustard-rt` is injected by Cargo for integration
         // tests — it is the freshly built binary, no PATH lookup needed.
         let mut child = Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
             .arg("mcp")
             .env("MUSTARD_DB_PATH", db_path)
+            .env("MUSTARD_TELEMETRY_DB_PATH", telemetry_path)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -146,11 +149,13 @@ impl Drop for McpProcess {
     }
 }
 
-/// Create a temp `mustard.db`, apply the harness schema (via a throwaway
-/// connection), and seed every projection the five tools read.
-fn seed_db() -> (TempDir, std::path::PathBuf) {
+/// Create a temp `mustard.db` + `telemetry.db`, apply the schemas (via
+/// throwaway connections), and seed every projection the five tools read.
+/// Returns `(dir, mustard_db_path, telemetry_db_path)`.
+fn seed_db() -> (TempDir, std::path::PathBuf, std::path::PathBuf) {
     let dir = TempDir::new().expect("temp dir");
     let db_path = dir.path().join("mustard.db");
+    let telemetry_path = dir.path().join("telemetry.db");
     let conn = Connection::open(&db_path).expect("open db");
     // The schema the `mustard-rt mcp` server expects. Mirrors the subset of
     // `sqlite_schema.sql` the five tools touch — the server re-applies the
@@ -171,11 +176,6 @@ fn seed_db() -> (TempDir, std::path::PathBuf) {
             spec TEXT PRIMARY KEY, api_calls INTEGER, retries INTEGER,
             pass1 INTEGER, tool_breakdown TEXT, dispatch_failures_by_phase TEXT,
             agent_count INTEGER, updated_at TEXT);
-         CREATE TABLE spans (
-            trace_id TEXT, span_id TEXT PRIMARY KEY, parent_span_id TEXT,
-            name TEXT, started_at INTEGER, ended_at INTEGER, duration_ms INTEGER,
-            attributes TEXT, spec TEXT, phase TEXT, model TEXT,
-            input_tokens INTEGER, output_tokens INTEGER, is_error INTEGER);
 
          INSERT INTO events (ts, session_id, wave, spec, event, actor_kind, actor_id, payload)
             VALUES ('2026-05-19T01:00:00.000Z', 's-1', 0, 'demo-spec', 'tool.use', 'hook', 'h', '{}');
@@ -190,21 +190,41 @@ fn seed_db() -> (TempDir, std::path::PathBuf) {
          INSERT INTO specs (name, status, phase) VALUES ('demo-spec', 'active', 'EXECUTE');
 
          INSERT INTO metrics_projection (spec, api_calls, retries, pass1)
-            VALUES ('demo-spec', 7, 0, 1);
-
-         INSERT INTO spans (span_id, spec, phase, model, input_tokens, output_tokens, duration_ms, is_error)
-            VALUES ('sp-1', 'demo-spec', 'EXECUTE', 'opus', 120, 40, 800, 0);",
+            VALUES ('demo-spec', 7, 0, 1);",
     )
     .expect("apply schema + seed");
     drop(conn);
-    (dir, db_path)
+
+    // get_run_summary reads `run_usage` from the dedicated telemetry
+    // database. Create it + the table directly (the server re-applies the
+    // idempotent telemetry schema on open) and seed the run the test asserts.
+    let tconn = Connection::open(&telemetry_path).expect("open telemetry db");
+    tconn
+        .execute_batch(
+            "CREATE TABLE run_usage (
+                trace_id TEXT, span_id TEXT PRIMARY KEY, parent_span_id TEXT,
+                name TEXT, started_at INTEGER, ended_at INTEGER, duration_ms INTEGER,
+                attributes TEXT, spec TEXT, phase TEXT, model TEXT,
+                input_tokens INTEGER, output_tokens INTEGER,
+                cache_read_input_tokens INTEGER, cache_creation_input_tokens INTEGER,
+                cost_usd_micros INTEGER, is_error INTEGER, project_path TEXT,
+                ts_iso TEXT, session_id TEXT, wave_id TEXT, tool_use_id TEXT,
+                agent_id TEXT);
+             INSERT INTO run_usage
+                (span_id, spec, phase, model, input_tokens, output_tokens, duration_ms, is_error)
+                VALUES ('sp-1', 'demo-spec', 'EXECUTE', 'opus', 120, 40, 800, 0);",
+        )
+        .expect("apply telemetry schema + seed");
+    drop(tconn);
+
+    (dir, db_path, telemetry_path)
 }
 
 /// One end-to-end run: `initialize` + `tools/list` + each of the five tools.
 #[test]
 fn mcp_server_handshakes_and_serves_all_five_tools() {
-    let (_dir, db_path) = seed_db();
-    let mut mcp = McpProcess::spawn(&db_path);
+    let (_dir, db_path, telemetry_path) = seed_db();
+    let mut mcp = McpProcess::spawn(&db_path, &telemetry_path);
 
     // --- initialize handshake ---------------------------------------------
     let init = mcp.initialize();
@@ -228,7 +248,7 @@ fn mcp_server_handshakes_and_serves_all_five_tools() {
         "query_events",
         "find_similar_specs",
         "get_spec_metrics",
-        "get_span_summary",
+        "get_run_summary",
     ] {
         assert!(names.contains(&expected), "tool {expected} not advertised");
     }
@@ -265,8 +285,8 @@ fn mcp_server_handshakes_and_serves_all_five_tools() {
         mcp.call_tool("get_spec_metrics", json!({ "spec": "nope" }));
     assert_eq!(missing["error"], json!("no metrics for spec"));
 
-    // --- tool 5: get_span_summary -----------------------------------------
-    let summary = mcp.call_tool("get_span_summary", json!({ "spec": "demo-spec" }));
+    // --- tool 5: get_run_summary ------------------------------------------
+    let summary = mcp.call_tool("get_run_summary", json!({ "spec": "demo-spec" }));
     assert_eq!(summary["count"], json!(1));
     assert_eq!(summary["totalInputTokens"], json!(120));
     assert_eq!(summary["totalOutputTokens"], json!(40));

@@ -94,30 +94,30 @@ pub struct MetricsRow {
     pub updated_at: Option<String>,
 }
 
-/// One row from the `spans` projection — a single OTEL-style span.
+/// One row from the `run_usage` projection — a single execution's usage.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SpanRow {
-    /// Trace the span belongs to.
+pub struct RunRow {
+    /// Trace the run belongs to.
     pub trace_id: Option<String>,
-    /// Span identifier (primary key).
+    /// Run identifier (the `span_id` primary key).
     pub span_id: String,
-    /// Parent span, when this is a child span.
+    /// Parent run, when this is a child run.
     pub parent_span_id: Option<String>,
-    /// Human-readable span name.
+    /// Human-readable run name.
     pub name: Option<String>,
     /// Wall-clock duration in milliseconds.
     pub duration_ms: Option<i64>,
-    /// Spec the span is attributed to.
+    /// Spec the run is attributed to.
     pub spec: Option<String>,
-    /// Pipeline phase the span occurred in.
+    /// Pipeline phase the run occurred in.
     pub phase: Option<String>,
-    /// Model in use during the span.
+    /// Model in use during the run.
     pub model: Option<String>,
-    /// Input token count, when the span carried token usage.
+    /// Input token count, when the run carried token usage.
     pub input_tokens: Option<i64>,
-    /// Output token count, when the span carried token usage.
+    /// Output token count, when the run carried token usage.
     pub output_tokens: Option<i64>,
-    /// Whether the span ended in an error.
+    /// Whether the run ended in an error.
     pub is_error: bool,
 }
 
@@ -453,34 +453,53 @@ impl SqliteEventStore {
         Ok(row)
     }
 
-    /// The `spans` projection rows for `spec`, ordered by start time.
+    /// The per-execution run rows for `spec`, ordered by start time.
+    ///
+    /// Wave 3 (telemetry-separation): this reads the self-attributed `run_usage`
+    /// table in the dedicated `telemetry.db` (a sibling of this `mustard.db`),
+    /// not the retired `spans` table — the returned [`RunRow`] shape is
+    /// preserved for the MCP span summary consumer. The telemetry store is
+    /// opened via [`crate::telemetry::TelemetryStore`], honouring its
+    /// `MUSTARD_TELEMETRY_DB_PATH` env override; the sibling default sits next
+    /// to this store's path.
     ///
     /// # Errors
     ///
     /// Returns [`Error::Sqlite`] for a query failure.
-    pub fn spans(&self, spec: &str) -> Result<Vec<SpanRow>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT trace_id, span_id, parent_span_id, name, duration_ms, \
-             spec, phase, model, input_tokens, output_tokens, is_error \
-             FROM spans WHERE spec = ?1 ORDER BY started_at",
-        )?;
-        let rows = stmt.query_map(params![spec], |row| {
-            Ok(SpanRow {
-                trace_id: row.get(0)?,
-                span_id: row.get(1)?,
-                parent_span_id: row.get(2)?,
-                name: row.get(3)?,
-                duration_ms: row.get(4)?,
-                spec: row.get(5)?,
-                phase: row.get(6)?,
-                model: row.get(7)?,
-                input_tokens: row.get(8)?,
-                output_tokens: row.get(9)?,
-                // `is_error` is stored as 0/1; treat any non-zero as true.
-                is_error: row.get::<_, Option<i64>>(10)?.unwrap_or(0) != 0,
+    pub fn runs_by_spec(&self, spec: &str) -> Result<Vec<RunRow>> {
+        let tele = self.open_telemetry()?;
+        let rows = crate::telemetry::reader::runs_full_by_spec(tele.conn(), spec)?;
+        Ok(rows
+            .into_iter()
+            .map(|r| RunRow {
+                trace_id: r.trace_id,
+                span_id: r.span_id,
+                parent_span_id: r.parent_span_id,
+                name: r.name,
+                duration_ms: r.duration_ms,
+                spec: r.spec,
+                phase: r.phase,
+                model: r.model,
+                input_tokens: r.input_tokens,
+                output_tokens: r.output_tokens,
+                is_error: r.is_error,
             })
-        })?;
-        Ok(rows.filter_map(std::result::Result::ok).collect())
+            .collect())
+    }
+
+    /// Open the dedicated telemetry store that sits beside this `mustard.db`.
+    ///
+    /// `MUSTARD_TELEMETRY_DB_PATH` wins when set (matching how the harness opens
+    /// telemetry elsewhere); otherwise the path is the sibling `telemetry.db` in
+    /// this store's own directory — robust regardless of where `mustard.db`
+    /// lives (the standard layout puts both under `.claude/.harness/`).
+    fn open_telemetry(&self) -> Result<crate::telemetry::TelemetryStore> {
+        if let Ok(override_path) = std::env::var("MUSTARD_TELEMETRY_DB_PATH") {
+            if !override_path.trim().is_empty() {
+                return crate::telemetry::TelemetryStore::new(override_path);
+            }
+        }
+        crate::telemetry::TelemetryStore::new(self.path.with_file_name("telemetry.db"))
     }
 
     /// All distinct non-null spec names present in the `events` table, sorted
@@ -1159,7 +1178,7 @@ mod tests {
         assert!(store.query(Some("nope")).unwrap().is_empty());
         assert!(store.specs().unwrap().is_empty());
         assert!(store.metrics("nope").unwrap().is_none());
-        assert!(store.spans("nope").unwrap().is_empty());
+        assert!(store.runs_by_spec("nope").unwrap().is_empty());
         assert!(store.search("anything").unwrap().is_empty());
     }
 
@@ -1259,14 +1278,22 @@ mod tests {
                 [],
             )
             .unwrap();
-        store
-            .conn
-            .execute(
-                "INSERT INTO spans (span_id, name, spec, phase, is_error) \
-                 VALUES ('sp-1', 'plan', '2026-spec', 'PLAN', 0)",
-                [],
+        // Wave 3: `runs_by_spec()` reads the sibling telemetry.db `run_usage`,
+        // not the retired mustard.db `spans` table. Seed a run there via the
+        // same sibling-path resolution `open_telemetry` uses.
+        {
+            let tele = crate::telemetry::TelemetryStore::new(
+                store.path.with_file_name("telemetry.db"),
             )
             .unwrap();
+            tele.conn()
+                .execute(
+                    "INSERT INTO run_usage (span_id, name, spec, phase, is_error) \
+                     VALUES ('sp-1', 'plan', '2026-spec', 'PLAN', 0)",
+                    [],
+                )
+                .unwrap();
+        }
 
         let specs = store.specs().unwrap();
         assert_eq!(specs.len(), 1);
@@ -1277,10 +1304,10 @@ mod tests {
         assert_eq!(metrics.api_calls, Some(12));
         assert_eq!(metrics.retries, Some(3));
 
-        let spans = store.spans("2026-spec").unwrap();
-        assert_eq!(spans.len(), 1);
-        assert_eq!(spans[0].span_id, "sp-1");
-        assert!(!spans[0].is_error);
+        let runs = store.runs_by_spec("2026-spec").unwrap();
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].span_id, "sp-1");
+        assert!(!runs[0].is_error);
     }
 
     #[test]

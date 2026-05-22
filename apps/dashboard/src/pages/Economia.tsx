@@ -13,15 +13,20 @@
 
 import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import dayjs from "dayjs";
 import { useStore } from "@/lib/store";
 import { EmptyState, KPICard } from "@/components/page";
 import { MetricsPill, BaseRow } from "@/components/ds";
+import { StatusDot, type StatusDotVariant } from "@/components/StatusDot";
+import { relativeTime } from "@/lib/time";
 import { useProjects } from "@/lib/dashboard";
 import {
   fetchEconomySavingsBreakdown,
   fetchEconomyContextRouting,
 } from "@/lib/dashboard";
 import { useEconomySummary } from "@/hooks/useEconomySummary";
+import { useCollectorHealth } from "@/hooks/usePromptEconomy";
+import type { CollectorHealth } from "@/api/promptEconomy";
 import { ScopeBar } from "@/components/economy/ScopeBar";
 import { PerAgentTable } from "@/components/economy/PerAgentTable";
 import { SavingsBreakdownCard } from "@/components/economy/SavingsBreakdownCard";
@@ -72,6 +77,10 @@ export function Economia() {
     refetchInterval: 30_000,
   });
 
+  // Collector-health badge — tells the user the cost number is CURRENT, not a
+  // ghost from a crashed collector. Same hook every other economy page uses.
+  const collectorHealth = useCollectorHealth(repoPath);
+
   // ── Empty / config states ────────────────────────────────────────────────
   if (!projectsRoot) {
     return (
@@ -100,6 +109,20 @@ export function Economia() {
   const cacheRatio = (routing.data?.cache_hit_ratio_permille ?? 0) / 10; // -> percent
   const retryRatio = (routing.data?.retry_overhead_ratio_permille ?? 0) / 10;
 
+  // ── Freshness / collector-health badge ───────────────────────────────────
+  // `last_updated_ms` is epoch-ms of the last MEASURED counter (project scope
+  // only). The badge label maps the unified collector state to PT-BR; the
+  // relative-time tail reads from the measured timestamp so it tracks the
+  // headline cost, not the badge's own 60s poll.
+  const health = collectorHealth.data;
+  const lastUpdatedIso =
+    typeof data?.last_updated_ms === "number"
+      ? dayjs(data.last_updated_ms).toISOString()
+      : null;
+  const updatedAgo = lastUpdatedIso ? relativeTime(lastUpdatedIso) : null;
+  const { badgeLabel, badgeVariant } = collectorBadge(health);
+  const sessions = data?.by_session ?? [];
+
   // ── Distribuição por agente (light, horizontal-bar style w/o chart lib) ─
   // We render the top agents as proportional bars sized by `tokens`. No
   // recharts/d3 dependency — pure flex + Tailwind widths.
@@ -112,12 +135,25 @@ export function Economia() {
 
       {/* ── KPI cards: custo, economia, cache hit ──────────────────────── */}
       <section className="grid grid-cols-1 md:grid-cols-3 gap-3">
-        <KPICard
-          label="Custo Anthropic"
-          value={summary.isLoading ? "…" : formatUsd(data?.total_cost_usd_micros ?? 0)}
-          hint={`${(data?.span_count ?? 0).toLocaleString()} spans · ${formatTokens(data?.total_tokens ?? 0)} tokens`}
-          accent={data && data.total_cost_usd_micros > 0 ? "indigo" : "zinc"}
-        />
+        <div className="flex flex-col gap-1.5">
+          <KPICard
+            label="Custo medido (Anthropic)"
+            value={summary.isLoading ? "…" : formatUsd(data?.total_cost_usd_micros ?? 0)}
+            hint={`${(data?.span_count ?? 0).toLocaleString()} spans · ${formatTokens(data?.total_tokens ?? 0)} tokens`}
+            accent={data && data.total_cost_usd_micros > 0 ? "indigo" : "zinc"}
+          />
+          {/* Freshness badge — "ao vivo / parado / desligado" + atualizado há Xs. */}
+          <div className="flex items-center gap-1.5 px-1 text-[11px] text-[--ds-text-tertiary]">
+            <StatusDot variant={badgeVariant} pulse={badgeVariant === "active"} size="sm" />
+            <span>{badgeLabel}</span>
+            {updatedAgo ? <span>· atualizado {updatedAgo}</span> : null}
+          </div>
+          {/* Provenance — make clear this is the BILLED measure, not an estimate. */}
+          <p className="px-1 text-[10px] leading-tight text-[--ds-text-tertiary]">
+            fonte: custo medido (Anthropic) · <code className="font-mono">cost.usage</code> via OTEL
+            {updatedAgo ? ` · atualizado ${updatedAgo}` : ""}
+          </p>
+        </div>
         <KPICard
           label="Economia (todas as fontes)"
           value={summary.isLoading ? "…" : `${formatTokens(data?.total_tokens_saved ?? 0)} tok`}
@@ -206,6 +242,30 @@ export function Economia() {
         </div>
       </section>
 
+      {/* ── Custo por sessão (medido) — o cross-check real ─────────────── */}
+      {sessions.length > 0 && (
+        <section className="flex flex-col gap-3">
+          <header className="flex items-baseline justify-between">
+            <h2 className="text-sm font-medium">Custo por sessão (medido)</h2>
+            <span className="text-[11px] text-[--ds-text-tertiary]">
+              fonte: <code className="font-mono">usage_totals.cost.usage</code>
+            </span>
+          </header>
+          <p className="text-[11px] text-[--ds-text-tertiary]">
+            compare uma sessão com <code className="font-mono">/cost</code> do Claude Code para conferir
+          </p>
+          <div className="flex flex-col gap-1">
+            {sessions.map((s) => (
+              <BaseRow
+                key={`sess-${s.session_id}`}
+                label={s.session_id ? s.session_id.slice(0, 8) : "—"}
+                summary={`$${s.usd.toFixed(s.usd < 0.01 ? 4 : s.usd < 1 ? 3 : 2)}`}
+              />
+            ))}
+          </div>
+        </section>
+      )}
+
       {/* ── Top specs por custo (Project / AllProjects scopes only) ───── */}
       {(scope.kind === "project" || scope.kind === "all_projects") &&
         topAgents.length > 0 && (
@@ -235,6 +295,26 @@ export function Economia() {
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
+
+/**
+ * Map the unified collector-health state to a PT-BR label + status-dot variant.
+ * `undefined` (still loading) reads as "desligado" so the badge never claims
+ * the data is live before we know.
+ */
+function collectorBadge(health: CollectorHealth | undefined): {
+  badgeLabel: string;
+  badgeVariant: StatusDotVariant;
+} {
+  switch (health) {
+    case "live":
+      return { badgeLabel: "ao vivo", badgeVariant: "active" };
+    case "stale":
+      return { badgeLabel: "parado", badgeVariant: "blocked" };
+    case "off":
+    default:
+      return { badgeLabel: "desligado", badgeVariant: "idle" };
+  }
+}
 
 function scopeProjectKey(scope: EconomyScope): string {
   switch (scope.kind) {

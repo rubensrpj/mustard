@@ -173,7 +173,10 @@ fn dashboard_pipelines(repo_path: String) -> Result<Vec<PipelineSummary>, String
 #[tauri::command]
 fn dashboard_metrics(repo_path: String) -> Result<MetricsSummary, String> {
     let base = PathBuf::from(&repo_path);
-    if let Some(r) = db::with_db(&base, db::metrics_from_db) {
+    // Open the dedicated telemetry store ONCE, OUTSIDE the mustard.db cache
+    // mutex held by `with_db` (avoids the per-call re-open + latent deadlock).
+    let tele = db::telemetry_store_for(&base);
+    if let Some(r) = db::with_db(&base, |conn| db::metrics_from_db(conn, tele.as_ref())) {
         return r;
     }
     Ok(MetricsSummary { total_events: 0, sessions_recent: 0, agents_dispatched: 0, last_event_at: None, tokens_total: 0, tokens_today: 0 })
@@ -953,7 +956,8 @@ fn dashboard_search_knowledge(repo_path: String, query: String, limit: Option<us
 fn dashboard_activity_aggregated(repo_path: String, limit: Option<usize>) -> Result<Vec<ActivityGroup>, String> {
     let lim = limit.unwrap_or(200);
     let base = PathBuf::from(&repo_path);
-    match db::with_db(&base, |conn| db::aggregate_activity_from_db(conn, lim)) {
+    let tele = db::telemetry_store_for(&base);
+    match db::with_db(&base, |conn| db::aggregate_activity_from_db(conn, tele.as_ref(), lim)) {
         Some(r) => r,
         None => Ok(vec![]),
     }
@@ -962,7 +966,8 @@ fn dashboard_activity_aggregated(repo_path: String, limit: Option<usize>) -> Res
 #[tauri::command]
 fn dashboard_quality_metrics(repo_path: String) -> Result<QualityMetrics, String> {
     let base = PathBuf::from(&repo_path);
-    match db::with_db(&base, |conn| db::quality_metrics_from_db(conn)) {
+    let tele = db::telemetry_store_for(&base);
+    match db::with_db(&base, |conn| db::quality_metrics_from_db(conn, tele.as_ref())) {
         Some(r) => r,
         None => Ok(QualityMetrics::default()),
     }
@@ -1021,10 +1026,11 @@ fn dashboard_live_activity(repo_path: String) -> Result<telemetry::LiveActivity,
 #[tauri::command]
 fn dashboard_consumption(repo_path: String) -> Result<ConsumptionSummary, String> {
     let base = std::path::PathBuf::from(&repo_path);
-    match db::with_db(&base, db::consumption_summary_from_db) {
-        Some(r) => r,
-        None => Ok(ConsumptionSummary::default()),
-    }
+    // Consumption reads only telemetry.db's `run_usage` — open it once here,
+    // never under the mustard.db cache mutex. A missing telemetry store yields
+    // an all-zero summary, matching the prior "uninitialised → defaults".
+    let tele = db::telemetry_store_for(&base);
+    db::consumption_summary_from_db(tele.as_ref())
 }
 
 /// Cross-project (global) consumption: walks every project discovered under
@@ -1052,7 +1058,10 @@ fn dashboard_consumption_global(projects_root: String) -> Result<GlobalConsumpti
             last_activity_ms: p.last_activity_ms,
         };
 
-        if let Some(Ok(summary)) = db::with_db(&project_path, db::consumption_summary_from_db) {
+        // Per-project telemetry store, opened once (no mustard.db mutex). A
+        // missing store yields an all-zero summary that contributes nothing.
+        let tele = db::telemetry_store_for(&project_path);
+        if let Ok(summary) = db::consumption_summary_from_db(tele.as_ref()) {
             row.tokens_total = summary.tokens_total;
             row.tokens_today = summary.tokens_today;
             row.cost_total_usd = summary.cost_total_usd;

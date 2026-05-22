@@ -4,7 +4,7 @@
 //!
 //! Tails `~/.claude/projects/<encoded-cwd>/*.jsonl` (recursive across every
 //! project directory Claude Code maintains) and re-ingests the active session
-//! transcripts into the unified economy `spans` table whenever Claude Code
+//! transcripts into telemetry.db's `run_usage` table whenever Claude Code
 //! appends a turn. The complement to `session_cleanup`'s one-shot ingest at
 //! `SessionEnd`: this daemon lands frames live so the dashboard sees costs
 //! during the session, not only after it ends.
@@ -96,15 +96,17 @@ fn ingest_one(path: &Path) {
     if frames.is_empty() {
         return;
     }
-    let conn = match economy::store::open_for(&cwd) {
-        Ok(c) => c,
+    // Wave 2 (telemetry-separation): `record_api_cost` now writes `run_usage`
+    // in telemetry.db, so open the dedicated telemetry store (not mustard.db).
+    let store = match mustard_core::telemetry::TelemetryStore::for_project(&cwd) {
+        Ok(s) => s,
         Err(e) => {
-            eprintln!("transcript_watcher: economy::store::open_for failed: {e}");
+            eprintln!("transcript_watcher: TelemetryStore::for_project failed: {e}");
             return;
         }
     };
     for frame in frames {
-        if let Err(e) = economy::writer::record_api_cost(&conn, frame) {
+        if let Err(e) = economy::writer::record_api_cost(store.conn(), frame) {
             eprintln!("transcript_watcher: record_api_cost failed: {e}");
         }
     }
@@ -205,8 +207,8 @@ fn enumerate_jsonl(project_dir: &Path) -> Vec<PathBuf> {
     out
 }
 
-/// Backfill every transcript currently in `project_dir` into the economy
-/// `spans` table for `project_path`. Returns `(files_processed, frames_persisted)`.
+/// Backfill every transcript currently in `project_dir` into telemetry.db's
+/// `run_usage` table for `project_path`. Returns `(files_processed, frames_persisted)`.
 ///
 /// Fail-open per file: a malformed transcript line emits an `eprintln!` warning
 /// from `transcript::ingest` and the surrounding files still process. Opens the
@@ -217,11 +219,12 @@ fn backfill_once(project_dir: &Path, project_path: &str) -> (usize, usize) {
         return (0, 0);
     }
     let ctx = IngestContext::for_project(project_path);
-    let conn = match economy::store::open_for(project_path) {
-        Ok(c) => c,
+    // Wave 2 (telemetry-separation): backfill `run_usage` rows into telemetry.db.
+    let store = match mustard_core::telemetry::TelemetryStore::for_project(project_path) {
+        Ok(s) => s,
         Err(e) => {
             eprintln!(
-                "transcript-backfill: economy::store::open_for({project_path}) failed: {e}; aborting backfill"
+                "transcript-backfill: TelemetryStore::for_project({project_path}) failed: {e}; aborting backfill"
             );
             return (0, 0);
         }
@@ -241,7 +244,7 @@ fn backfill_once(project_dir: &Path, project_path: &str) -> (usize, usize) {
         };
         files_processed += 1;
         for frame in frames {
-            match economy::writer::record_api_cost(&conn, frame) {
+            match economy::writer::record_api_cost(store.conn(), frame) {
                 Ok(()) => frames_persisted += 1,
                 Err(e) => {
                     eprintln!(
@@ -263,7 +266,7 @@ fn backfill_once(project_dir: &Path, project_path: &str) -> (usize, usize) {
 ///
 /// `once = true`: resolves `~/.claude/projects/<encoded(current_dir)>/` and
 /// ingests every `*.jsonl` file under it exactly once, then exits. Useful as
-/// a one-shot backfill to seed the economy `spans` table from transcripts
+/// a one-shot backfill to seed telemetry.db's `run_usage` table from transcripts
 /// captured before the daemon was wired up.
 pub fn run(once: bool) {
     if once {
@@ -361,8 +364,9 @@ mod tests {
     #[test]
     fn backfill_once_persists_frames_and_tolerates_malformed_lines() {
         // Layout: <tempdir>/project/{...code...} is the "project root" passed
-        // to `economy::store::open_for`; the harness DB lands at
-        // <project>/.claude/.harness/mustard.db. The transcript dir is a
+        // to the telemetry store; the telemetry DB lands at
+        // <project>/.claude/.harness/telemetry.db (Wave 2 — backfill writes
+        // `run_usage` there, not mustard.db's `spans`). The transcript dir is a
         // sibling tempdir holding one .jsonl with 3 valid + 1 malformed line.
         let tmp = tempdir().expect("tempdir");
         let project = tmp.path().join("project");
@@ -392,9 +396,9 @@ mod tests {
         assert_eq!(files, 1, "one .jsonl file enumerated");
         assert_eq!(frames, 3, "3 valid frames persisted, malformed line skipped");
 
-        // Sanity: the harness DB was created under the project root.
-        let db = project.join(".claude").join(".harness").join("mustard.db");
-        assert!(db.exists(), "harness DB created at {}", db.display());
+        // Sanity: the telemetry DB was created under the project root.
+        let db = project.join(".claude").join(".harness").join("telemetry.db");
+        assert!(db.exists(), "telemetry DB created at {}", db.display());
     }
 
     #[test]

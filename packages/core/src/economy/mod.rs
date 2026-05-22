@@ -33,8 +33,8 @@ pub use estimator::{
 };
 pub use model::{
     AgentCost, ApiCostFrame, ContextCostFrame, ContextRoutingMetrics, EconomySummary,
-    SavingsBreakdown, SavingsBySource, SavingsRecord, SavingsSource, SpanRecord, SpecCost,
-    WaveCost,
+    SavingsBreakdown, SavingsBySource, SavingsRecord, SavingsSource, SessionCost, SpanRecord,
+    SpecCost, WaveCost,
 };
 pub use multi_project::MultiProjectReader;
 pub use reader::{
@@ -43,4 +43,4 @@ pub use reader::{
 };
 pub use scope::{AgentId, EconomyScope, ProjectPath, SpecId, WaveId};
 pub use store::open_for;
-pub use writer::{record_api_cost, record_context_cost, record_savings, record_span};
+pub use writer::{record_api_cost, record_context_cost, record_run, record_savings};

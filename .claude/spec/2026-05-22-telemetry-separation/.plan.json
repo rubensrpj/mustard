@@ -1,0 +1,24 @@
+{
+  "waves": [
+    {
+      "n": 1,
+      "role": "library",
+      "summary": "packages/core: telemetry.db separado (open path no modulo store) + schema reduzido de claude_code_otel (metric,model,session_id,sum,updated_at) + spans movido p/ telemetry.db + helper ATTACH p/ join spans<->events + migracao (agrega otel existente, copia spans, dropa de mustard.db, VACUUM)",
+      "depends_on": []
+    },
+    {
+      "n": 2,
+      "role": "general",
+      "summary": "apps/rt: coletor OTLP escreve no telemetry.db; upsert_metric/upsert_log gravam no schema reduzido (sem minuto/token_type/attrs/count); record_span grava spans no telemetry.db",
+      "depends_on": ["1"]
+    },
+    {
+      "n": 3,
+      "role": "ui",
+      "summary": "apps/dashboard + core economy reader: telemetry.rs/db.rs/economy reader leem do telemetry.db; queries de spans usam ATTACH (tel.spans JOIN main.events); preservar todas as medicoes mapeadas",
+      "depends_on": ["1"]
+    }
+  ],
+  "total_waves": 3,
+  "lang": "pt"
+}

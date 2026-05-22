@@ -16,7 +16,7 @@
 //! - `query_events`       — filter the event log by spec / event / since.
 //! - `find_similar_specs` — rank specs by token overlap on a description.
 //! - `get_spec_metrics`   — the `metrics_projection` row for a spec.
-//! - `get_span_summary`   — aggregated token / duration totals from `spans`.
+//! - `get_run_summary`    — aggregated token / duration totals from `run_usage`.
 //!
 //! ## Runtime scoping
 //!
@@ -45,9 +45,10 @@ use serde_json::{Map, Value, json};
 use std::path::PathBuf;
 
 use mustard_core::store::sqlite_store::{
-    KnowledgeRow, MetricsRow, SpanRow, SpecRow, SqliteEventStore,
+    KnowledgeRow, MetricsRow, SpecRow, SqliteEventStore,
 };
 use mustard_core::model::event::HarnessEvent;
+use mustard_core::telemetry::{SummaryRow, TelemetryReader, TelemetryStore};
 
 // ---------------------------------------------------------------------------
 // Entry point
@@ -149,16 +150,16 @@ struct GetSpecMetricsArgs {
     spec: String,
 }
 
-/// Input for `get_span_summary`.
+/// Input for `get_run_summary`.
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
-struct GetSpanSummaryArgs {
+struct GetRunSummaryArgs {
     /// Optional spec filter.
     #[serde(default)]
     spec: Option<String>,
     /// Optional pipeline-phase filter.
     #[serde(default)]
     phase: Option<String>,
-    /// Maximum spans to aggregate (`1..=5000`, default `1000`).
+    /// Maximum runs to aggregate (`1..=5000`, default `1000`).
     #[serde(default)]
     limit: Option<u32>,
 }
@@ -312,7 +313,7 @@ impl From<MetricsRow> for MetricsOut {
     }
 }
 
-/// Per-model aggregate bucket in `get_span_summary` output.
+/// Per-model aggregate bucket in `get_run_summary` output.
 #[derive(Debug, Default, Serialize)]
 struct ModelBucket {
     count: u64,
@@ -322,9 +323,9 @@ struct ModelBucket {
     duration_ms: i64,
 }
 
-/// Aggregated `get_span_summary` output. Mirrors the TS object exactly.
+/// Aggregated `get_run_summary` output. Mirrors the TS object exactly.
 #[derive(Debug, Serialize)]
-struct SpanSummary {
+struct RunSummary {
     count: usize,
     #[serde(rename = "totalInputTokens")]
     total_input_tokens: i64,
@@ -392,6 +393,12 @@ impl MustardMemory {
     /// Open the harness store for this project, fail-open.
     fn open_store(&self) -> Option<SqliteEventStore> {
         SqliteEventStore::for_project(&self.project_dir).ok()
+    }
+
+    /// Open the dedicated telemetry store (`.harness/telemetry.db`) for this
+    /// project, fail-open. Backs `get_run_summary` after the telemetry split.
+    fn open_telemetry(&self) -> Option<TelemetryStore> {
+        TelemetryStore::for_project(&self.project_dir).ok()
     }
 
     /// Tool 1 — full-text search past learnings / decisions / patterns.
@@ -532,23 +539,25 @@ impl MustardMemory {
         }
     }
 
-    /// Tool 5 — aggregated token / duration summary from the `spans` table.
+    /// Tool 5 — aggregated token / duration summary from `run_usage`.
     ///
-    /// Totals plus a per-model breakdown, matching the TS object exactly.
-    /// [`SqliteEventStore::spans`] requires a spec argument, so the per-spec
-    /// case is served directly; the no-spec case aggregates across every
-    /// spec found in the `specs` projection (see the module note).
-    #[tool(description = "Aggregated token/duration summary from the spans table; groups by model")]
-    fn get_span_summary(
+    /// Totals plus a per-model breakdown, matching the TS object exactly. The
+    /// data lives in the dedicated telemetry database (`.harness/telemetry.db`,
+    /// table `run_usage`), so the spec/phase filter and `limit` cap are pushed
+    /// into [`TelemetryReader::runs_for_summary`]; the output shape is unchanged.
+    #[tool(description = "Aggregated token/duration summary from run_usage; groups by model")]
+    fn get_run_summary(
         &self,
-        Parameters(args): Parameters<GetSpanSummaryArgs>,
+        Parameters(args): Parameters<GetRunSummaryArgs>,
     ) -> Result<CallToolResult, McpError> {
         let limit = args.limit.unwrap_or(1000).clamp(1, 5000) as usize;
-        let Some(store) = self.open_store() else {
-            return Ok(json_result(&empty_span_summary()));
+        let Some(store) = self.open_telemetry() else {
+            return Ok(json_result(&empty_run_summary()));
         };
-        let spans = collect_spans(&store, args.spec.as_deref(), args.phase.as_deref(), limit);
-        Ok(json_result(&summarize_spans(&spans)))
+        let rows = store
+            .runs_for_summary(args.spec.as_deref(), args.phase.as_deref(), limit)
+            .unwrap_or_default();
+        Ok(json_result(&summarize_runs(&rows)))
     }
 }
 
@@ -573,7 +582,7 @@ impl ServerHandler for MustardMemory {
         info.server_info = server_info;
         info.instructions = Some(
             "Read-only query access to the Mustard harness store \
-             (events, knowledge, specs, metrics, spans)."
+             (events, knowledge, specs, metrics, run_usage)."
                 .to_string(),
         );
         info
@@ -609,37 +618,11 @@ fn missing_metrics(spec: &str) -> Value {
     json!({ "error": "no metrics for spec", "spec": spec })
 }
 
-/// Gather the spans `get_span_summary` aggregates over.
+/// Aggregate `run_usage` summary rows into the `get_run_summary` output shape.
 ///
-/// With a spec, defers to [`SqliteEventStore::spans`]. Without one, the TS
-/// tool aggregated across *all* spans; the Rust read API is spec-scoped, so
-/// the no-spec case fans out over every spec in the `specs` projection. The
-/// `phase` filter and `limit` cap are then applied in-process — the `spans`
-/// SQL query has no phase/limit parameters on the Rust side.
-fn collect_spans(
-    store: &SqliteEventStore,
-    spec: Option<&str>,
-    phase: Option<&str>,
-    limit: usize,
-) -> Vec<SpanRow> {
-    let mut spans: Vec<SpanRow> = match spec {
-        Some(name) => store.spans(name).unwrap_or_default(),
-        None => store
-            .specs()
-            .unwrap_or_default()
-            .iter()
-            .flat_map(|s| store.spans(&s.name).unwrap_or_default())
-            .collect(),
-    };
-    if let Some(want) = phase {
-        spans.retain(|s| s.phase.as_deref() == Some(want));
-    }
-    spans.truncate(limit);
-    spans
-}
-
-/// Aggregate spans into the `get_span_summary` output shape.
-fn summarize_spans(spans: &[SpanRow]) -> SpanSummary {
+/// The per-model breakdown and the four totals are computed from the
+/// [`SummaryRow`]s the telemetry reader returns for `run_usage`.
+fn summarize_runs(runs: &[SummaryRow]) -> RunSummary {
     let mut by_model: Map<String, Value> = Map::new();
     let mut buckets: std::collections::BTreeMap<String, ModelBucket> =
         std::collections::BTreeMap::new();
@@ -647,15 +630,15 @@ fn summarize_spans(spans: &[SpanRow]) -> SpanSummary {
     let mut total_output = 0_i64;
     let mut total_duration = 0_i64;
 
-    for span in spans {
-        let input = span.input_tokens.unwrap_or(0);
-        let output = span.output_tokens.unwrap_or(0);
-        let duration = span.duration_ms.unwrap_or(0);
+    for run in runs {
+        let input = run.input_tokens.unwrap_or(0);
+        let output = run.output_tokens.unwrap_or(0);
+        let duration = run.duration_ms.unwrap_or(0);
         total_input += input;
         total_output += output;
         total_duration += duration;
 
-        let model = span.model.clone().unwrap_or_else(|| "unknown".to_string());
+        let model = run.model.clone().unwrap_or_else(|| "unknown".to_string());
         let bucket = buckets.entry(model).or_default();
         bucket.count += 1;
         bucket.r#in += input;
@@ -669,8 +652,8 @@ fn summarize_spans(spans: &[SpanRow]) -> SpanSummary {
         }
     }
 
-    SpanSummary {
-        count: spans.len(),
+    RunSummary {
+        count: runs.len(),
         total_input_tokens: total_input,
         total_output_tokens: total_output,
         total_duration_ms: total_duration,
@@ -678,9 +661,9 @@ fn summarize_spans(spans: &[SpanRow]) -> SpanSummary {
     }
 }
 
-/// The `get_span_summary` output for an empty / unavailable span set.
-fn empty_span_summary() -> SpanSummary {
-    summarize_spans(&[])
+/// The `get_run_summary` output for an empty / unavailable run set.
+fn empty_run_summary() -> RunSummary {
+    summarize_runs(&[])
 }
 
 #[cfg(test)]
