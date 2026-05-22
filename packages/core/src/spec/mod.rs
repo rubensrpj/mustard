@@ -53,7 +53,8 @@
 //! `mustard-rt::run::migrate_spec_headers`, which now depends on this module —
 //! proving the single-source-of-truth property.
 
-use crate::model::view::{Flags, Outcome, SpecState, Stage};
+#[allow(deprecated)] // SpecStatus is the legacy projection target `status_word` delegates to.
+use crate::model::view::{Flags, Outcome, SpecState, SpecStatus, Stage};
 use std::path::Path;
 
 // ---------------------------------------------------------------------------
@@ -446,31 +447,13 @@ pub fn serialize_header(state: &SpecState) -> [String; 3] {
 /// `### Status:` vocabulary the old icon maps keyed off, so the rendered output
 /// is byte-identical to pre-migration behaviour.
 #[must_use]
+#[allow(deprecated)] // delegates through the legacy SpecStatus to share ONE mapping table.
 pub fn status_word(state: &SpecState) -> &'static str {
-    // Terminal outcomes win first.
-    match state.outcome {
-        Outcome::Completed => return "completed",
-        Outcome::Cancelled => return "cancelled",
-        Outcome::Abandoned => return "abandoned",
-        Outcome::Active => {}
-    }
-    // Active: qualifier flags take precedence over stage (mirrors the legacy
-    // SpecStatus projection so blocked / wave-failed / follow-up keep showing).
-    if state.flags.blocked {
-        return "blocked";
-    }
-    if state.flags.wave_failed {
-        return "wave-failed";
-    }
-    if state.flags.followup_open {
-        return "closed-followup";
-    }
-    match state.stage {
-        Stage::Analyze | Stage::Plan => "planning",
-        Stage::Execute => "implementing",
-        Stage::QaReview => "qa",
-        Stage::Close => "closed-followup",
-    }
+    // Single source of truth — no mapping table lives here. Project to the
+    // legacy enum (one place: `TryFrom<SpecState> for SpecStatus`) then render
+    // its canonical kebab spelling (one place: `SpecStatus::as_kebab`). The
+    // `no-events` fallback is structurally unreachable for a validated state.
+    SpecStatus::try_from(state.clone()).map_or("no-events", SpecStatus::as_kebab)
 }
 
 // ---------------------------------------------------------------------------

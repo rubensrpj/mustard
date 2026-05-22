@@ -424,6 +424,27 @@ impl SpecStatus {
             _ => None,
         }
     }
+
+    /// The canonical kebab-case wire string — the inverse of [`parse`](Self::parse)
+    /// and the SINGLE source every consumer serializes through (the `specs.status`
+    /// column + `### Status:` header spelling). Do not hand-roll this mapping
+    /// elsewhere; call `status.as_kebab()`.
+    #[must_use]
+    pub const fn as_kebab(self) -> &'static str {
+        match self {
+            Self::NoEvents => "no-events",
+            Self::Planning => "planning",
+            Self::Implementing => "implementing",
+            Self::Reviewing => "reviewing",
+            Self::Qa => "qa",
+            Self::ClosedFollowup => "closed-followup",
+            Self::Completed => "completed",
+            Self::Cancelled => "cancelled",
+            Self::Abandoned => "abandoned",
+            Self::Blocked => "blocked",
+            Self::WaveFailed => "wave-failed",
+        }
+    }
 }
 
 /// Rich per-spec view — the shape the dashboard drill-down renders.

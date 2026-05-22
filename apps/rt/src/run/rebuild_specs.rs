@@ -213,23 +213,10 @@ fn metrics_row_from_view(view: &mustard_core::SpecView) -> MetricsRow {
     }
 }
 
-/// Serialised form for [`SpecStatus`]. Matches the kebab-case the dashboard
-/// already uses on the `specs.status` column.
+/// Serialised form for [`SpecStatus`] — delegates to the canonical
+/// [`SpecStatus::as_kebab`] (single source of truth for the mapping).
 fn spec_status_string(status: SpecStatus) -> String {
-    match status {
-        SpecStatus::NoEvents => "no-events",
-        SpecStatus::Planning => "planning",
-        SpecStatus::Implementing => "implementing",
-        SpecStatus::Reviewing => "reviewing",
-        SpecStatus::Qa => "qa",
-        SpecStatus::ClosedFollowup => "closed-followup",
-        SpecStatus::Completed => "completed",
-        SpecStatus::Cancelled => "cancelled",
-        SpecStatus::Abandoned => "abandoned",
-        SpecStatus::Blocked => "blocked",
-        SpecStatus::WaveFailed => "wave-failed",
-    }
-    .to_string()
+    status.as_kebab().to_string()
 }
 
 /// Lowercase phase tag — matches the spec.md header convention.

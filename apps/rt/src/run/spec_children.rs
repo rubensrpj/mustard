@@ -70,17 +70,10 @@ pub struct ChildEntry {
     pub wave: Option<u32>,
 }
 
-/// Render a [`SpecStatus`] as the kebab-case spelling used on the
-/// `### Status:` header line. We rely on the type's `Serialize` impl
-/// (`#[serde(rename_all = "kebab-case")]`) so this stays in sync with the
-/// canonical projection.
+/// Render a [`SpecStatus`] as its kebab-case spelling — delegates to the
+/// canonical [`SpecStatus::as_kebab`] (single source of truth).
 fn spec_status_to_kebab(status: SpecStatus) -> String {
-    // Round-trip through serde_json — the enum serializes to a JSON string
-    // already in kebab-case. Strip the surrounding quotes.
-    match serde_json::to_string(&status) {
-        Ok(quoted) => quoted.trim_matches('"').to_string(),
-        Err(_) => "unknown".to_string(),
-    }
+    status.as_kebab().to_string()
 }
 
 /// Convert a [`SpecChild`] (SQLite side) into our UNION row, tagged `Event`
