@@ -6,6 +6,7 @@
 //! `{ "ok": bool, "issues": [{ severity, type, message, file? }] }`.
 
 use crate::run::spec_sections::is_heading;
+use mustard_core::fs;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
@@ -196,7 +197,7 @@ fn validate(abs_path: &Path, content: &str) -> Vec<Value> {
             .map(String::as_str)
             .unwrap_or("");
         let is_create = line_with_ref.to_lowercase().contains("(create)");
-        let resolved = spec_dir.join(&r).exists() || Path::new(&r).exists();
+        let resolved = fs::exists(&spec_dir.join(&r)) || fs::exists(Path::new(&r));
         if !is_create && !resolved {
             issues.push(json!({
                 "severity": "WARN",
@@ -227,7 +228,7 @@ fn validate(abs_path: &Path, content: &str) -> Vec<Value> {
                     .unwrap_or_else(|_| PathBuf::from("."))
                     .join(".claude")
                     .join("entity-registry.json");
-                if let Ok(registry) = std::fs::read_to_string(&registry_path) {
+                if let Ok(registry) = fs::read_to_string(&registry_path) {
                     if !registry.to_lowercase().contains(&entity.to_lowercase()) {
                         issues.push(json!({
                             "severity": "WARN",
@@ -256,10 +257,10 @@ pub fn run(spec: Option<&str>) {
     };
     let abs_path = std::fs::canonicalize(spec)
         .unwrap_or_else(|_| PathBuf::from(spec));
-    if !abs_path.exists() {
+    if !fs::exists(&abs_path) {
         crash(&format!("Spec file not found: {}", abs_path.display()));
     }
-    let content = match std::fs::read_to_string(&abs_path) {
+    let content = match fs::read_to_string(&abs_path) {
         Ok(c) => c,
         Err(e) => crash(&format!("{e}")),
     };

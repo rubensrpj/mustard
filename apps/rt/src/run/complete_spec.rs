@@ -21,6 +21,7 @@
 //! JS version (the `/close` command parses it).
 
 use crate::run::env::session_id;
+use mustard_core::fs;
 use mustard_core::store::event_store::EventSink;
 use mustard_core::store::sqlite_store::SqliteEventStore;
 use mustard_core::model::event::{
@@ -38,17 +39,17 @@ const FOLLOWUP_TTL_MS: i64 = 24 * 60 * 60 * 1000;
 
 /// Read a JSON file, returning `None` on any error.
 fn read_json(path: &Path) -> Option<Value> {
-    let text = std::fs::read_to_string(path).ok()?;
+    let text = fs::read_to_string(path).ok()?;
     serde_json::from_str(&text).ok()
 }
 
 /// Write a JSON value pretty-printed with a trailing newline. Fail-soft.
 fn write_json(path: &Path, value: &Value) -> bool {
     if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
+        let _ = fs::create_dir_all(parent);
     }
     match serde_json::to_string_pretty(value) {
-        Ok(text) => std::fs::write(path, format!("{text}\n")).is_ok(),
+        Ok(text) => fs::write_atomic(path, format!("{text}\n").as_bytes()).is_ok(),
         Err(_) => false,
     }
 }
@@ -313,9 +314,9 @@ fn archive(cwd: &Path, spec: &str) -> (bool, bool) {
     // never blocks archival.
     emit_completed_status(cwd, spec);
 
-    let had_legacy_state = state_path.exists();
+    let had_legacy_state = fs::exists(&state_path);
     if had_legacy_state {
-        let _ = std::fs::remove_file(&state_path);
+        let _ = fs::remove_file(&state_path);
     }
     (true, had_legacy_state)
 }
@@ -437,17 +438,17 @@ fn archive_followups(cwd: &Path, require_ttl: bool) -> (usize, usize) {
 /// Used when the event store is unavailable.
 fn archive_followups_legacy_fs(cwd: &Path, require_ttl: bool) -> (usize, usize) {
     let states_dir = cwd.join(".claude").join(".pipeline-states");
-    let Ok(entries) = std::fs::read_dir(&states_dir) else {
+    let Ok(entries) = fs::read_dir(&states_dir) else {
         return (0, 0);
     };
     let (mut scanned, mut archived) = (0usize, 0usize);
-    for entry in entries.flatten() {
-        let name = entry.file_name().to_string_lossy().to_string();
+    for entry in entries {
+        let name = entry.file_name.clone();
         if !name.ends_with(".json") || name.ends_with(".metrics.json") {
             continue;
         }
         scanned += 1;
-        let Some(state) = read_json(&entry.path()) else {
+        let Some(state) = read_json(&entry.path) else {
             continue;
         };
         if state.get("status").and_then(Value::as_str) != Some("closed-followup") {

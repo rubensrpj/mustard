@@ -5,6 +5,7 @@
 //! Task agents: backup generated `*.md`, purge generated skills, ensure the
 //! `notes.md` skeleton, and build the tooling / structure prompt blocks.
 
+use mustard_core::fs;
 use std::path::Path;
 
 /// Directories never descended into — mirrors the JS `DEFAULT_IGNORE`.
@@ -15,7 +16,7 @@ const DEFAULT_IGNORE: &[&str] = &[
 
 /// Whether a file carries the `<!-- mustard:generated` marker anywhere.
 fn has_generated_marker(path: &Path) -> bool {
-    std::fs::read_to_string(path)
+    fs::read_to_string(path)
         .map(|c| c.contains("<!-- mustard:generated"))
         .unwrap_or(false)
 }
@@ -24,21 +25,20 @@ fn has_generated_marker(path: &Path) -> bool {
 /// Returns the moved file names. Fail-open.
 pub fn backup_generated_mds(commands_dir: &Path) -> Vec<String> {
     let mut moved = Vec::new();
-    let Ok(entries) = std::fs::read_dir(commands_dir) else {
+    let Ok(entries) = fs::read_dir(commands_dir) else {
         return moved;
     };
     let backup_dir = commands_dir.join("_backup");
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let name = entry.file_name().to_string_lossy().to_string();
-        if !path.is_file() || !name.ends_with(".md") || !has_generated_marker(&path) {
+    for entry in entries {
+        if entry.is_dir || !entry.file_name.ends_with(".md") || !has_generated_marker(&entry.path) {
             continue;
         }
-        if std::fs::create_dir_all(&backup_dir).is_err() {
+        if fs::create_dir_all(&backup_dir).is_err() {
             continue;
         }
-        if std::fs::rename(&path, backup_dir.join(&name)).is_ok() {
-            moved.push(name);
+        // std::fs::rename has no facade equivalent — keep it for the move.
+        if std::fs::rename(&entry.path, backup_dir.join(&entry.file_name)).is_ok() {
+            moved.push(entry.file_name);
         }
     }
     moved
@@ -47,18 +47,18 @@ pub fn backup_generated_mds(commands_dir: &Path) -> Vec<String> {
 /// Remove every generated skill subdir of `skills_dir`. Returns removed names.
 pub fn purge_generated_skills(skills_dir: &Path) -> Vec<String> {
     let mut removed = Vec::new();
-    let Ok(entries) = std::fs::read_dir(skills_dir) else {
+    let Ok(entries) = fs::read_dir(skills_dir) else {
         return removed;
     };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if !path.is_dir() {
+    for entry in entries {
+        if !entry.is_dir {
             continue;
         }
-        let skill_md = path.join("SKILL.md");
-        if skill_md.exists() && has_generated_marker(&skill_md) {
-            if std::fs::remove_dir_all(&path).is_ok() {
-                removed.push(entry.file_name().to_string_lossy().to_string());
+        let skill_md = entry.path.join("SKILL.md");
+        if fs::exists(&skill_md) && has_generated_marker(&skill_md) {
+            // std::fs::remove_dir_all has no facade equivalent — keep it.
+            if std::fs::remove_dir_all(&entry.path).is_ok() {
+                removed.push(entry.file_name);
             }
         }
     }
@@ -69,10 +69,10 @@ pub fn purge_generated_skills(skills_dir: &Path) -> Vec<String> {
 /// Never overwrites a user-authored file.
 pub fn ensure_notes_md(commands_dir: &Path, name: &str, role: &str) -> bool {
     let notes_path = commands_dir.join("notes.md");
-    if notes_path.exists() {
+    if fs::exists(&notes_path) {
         return false;
     }
-    if std::fs::create_dir_all(commands_dir).is_err() {
+    if fs::create_dir_all(commands_dir).is_err() {
         return false;
     }
     let content = format!(
@@ -80,7 +80,7 @@ pub fn ensure_notes_md(commands_dir: &Path, name: &str, role: &str) -> bool {
          > Project-specific notes for {name}. Edit freely — this file is never overwritten by /scan.\n\n\
          ## Mandatory Patterns\n\n## Known Pitfalls\n\n## Observations\n"
     );
-    std::fs::write(&notes_path, content).is_ok()
+    fs::write_atomic(&notes_path, content.as_bytes()).is_ok()
 }
 
 /// Build the `## Tooling detected` block from `package.json` / `*.csproj` /
@@ -97,7 +97,7 @@ pub fn build_tooling_block(subproject_path: &Path, stack: &str) -> String {
     let mut lines: Vec<String> = Vec::new();
     if !is_net && !is_python {
         let pkg_path = subproject_path.join("package.json");
-        if let Ok(text) = std::fs::read_to_string(&pkg_path) {
+        if let Ok(text) = fs::read_to_string(&pkg_path) {
             if let Ok(pkg) = serde_json::from_str::<serde_json::Value>(&text) {
                 if let Some(scripts) = pkg.get("scripts").and_then(|s| s.as_object()) {
                     for key in ["build", "test", "lint", "typecheck", "type-check", "check"] {
@@ -110,10 +110,10 @@ pub fn build_tooling_block(subproject_path: &Path, stack: &str) -> String {
             }
         }
     } else if is_net {
-        if let Ok(entries) = std::fs::read_dir(subproject_path) {
+        if let Ok(entries) = fs::read_dir(subproject_path) {
             if let Some(csproj) = entries
-                .flatten()
-                .map(|e| e.file_name().to_string_lossy().to_string())
+                .into_iter()
+                .map(|e| e.file_name)
                 .find(|n| n.ends_with(".csproj"))
             {
                 lines.push(format!("- build: dotnet build (source: {csproj})"));
@@ -121,7 +121,7 @@ pub fn build_tooling_block(subproject_path: &Path, stack: &str) -> String {
             }
         }
     } else if is_python {
-        if let Ok(content) = std::fs::read_to_string(subproject_path.join("pyproject.toml")) {
+        if let Ok(content) = fs::read_to_string(&subproject_path.join("pyproject.toml")) {
             if content.contains("pytest") {
                 lines.push("- test: pytest (source: pyproject.toml)".to_string());
             }
@@ -142,19 +142,13 @@ pub fn build_tooling_block(subproject_path: &Path, stack: &str) -> String {
 /// Build the `## Project structure` block — depth-1 dirs with file counts.
 /// Returns `""` when one directory or fewer survives the ignore filter.
 pub fn build_structure_block(subproject_path: &Path) -> String {
-    let Ok(entries) = std::fs::read_dir(subproject_path) else {
+    let Ok(entries) = fs::read_dir(subproject_path) else {
         return String::new();
     };
-    let dirs: Vec<std::path::PathBuf> = entries
-        .flatten()
-        .filter(|e| e.path().is_dir())
-        .map(|e| e.path())
-        .filter(|p| {
-            p.file_name()
-                .and_then(|n| n.to_str())
-                .map(|n| !DEFAULT_IGNORE.contains(&n))
-                .unwrap_or(false)
-        })
+    let dirs: Vec<mustard_core::fs::DirEntry> = entries
+        .into_iter()
+        .filter(|e| e.is_dir)
+        .filter(|e| !DEFAULT_IGNORE.contains(&e.file_name.as_str()))
         .take(12)
         .collect();
     if dirs.len() <= 1 {
@@ -162,11 +156,10 @@ pub fn build_structure_block(subproject_path: &Path) -> String {
     }
     let mut lines = vec!["## Project structure".to_string()];
     for dir in dirs {
-        let count = std::fs::read_dir(&dir)
-            .map(|es| es.flatten().filter(|e| e.path().is_file()).count())
+        let count = fs::read_dir(&dir.path)
+            .map(|es| es.iter().filter(|e| !e.is_dir).count())
             .unwrap_or(0);
-        let name = dir.file_name().and_then(|n| n.to_str()).unwrap_or("");
-        lines.push(format!("- {name}/ — {count} files"));
+        lines.push(format!("- {}/ — {count} files", dir.file_name));
     }
     lines.push(String::new());
     lines.join("\n")

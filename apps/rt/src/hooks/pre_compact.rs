@@ -24,6 +24,7 @@
 //! / `implementing`.
 
 use mustard_core::error::Error;
+use mustard_core::fs;
 use mustard_core::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
 use rusqlite::params;
 use serde_json::Value;
@@ -66,18 +67,17 @@ fn git(cwd: &str, args: &[&str]) -> Option<String> {
 /// Mirrors the JS "no active pipeline → exit silently" gate.
 fn has_active_pipeline(claude_dir: &Path) -> bool {
     let states = claude_dir.join(".pipeline-states");
-    let Ok(entries) = std::fs::read_dir(&states) else {
+    let Ok(entries) = fs::read_dir(&states) else {
         // No states dir → the JS validation block is skipped entirely (it
         // only early-exits when the dir *exists* with no active state), so a
         // missing dir does NOT silence the snapshot.
         return true;
     };
-    for entry in entries.filter_map(std::result::Result::ok) {
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if !name.ends_with(".json") {
+    for entry in entries {
+        if !entry.file_name.ends_with(".json") {
             continue;
         }
-        if let Ok(text) = std::fs::read_to_string(entry.path()) {
+        if let Ok(text) = fs::read_to_string(&entry.path) {
             if let Ok(obj) = serde_json::from_str::<Value>(&text) {
                 let status = obj.get("status").and_then(|v| v.as_str()).unwrap_or("");
                 if status == "active" || status == "implementing" {
@@ -160,13 +160,10 @@ fn build_snapshot(input: &HookInput, cwd: &str) -> String {
     // Active pipelines.
     let claude = Path::new(cwd).join(".claude");
     let states = claude.join(".pipeline-states");
-    if let Ok(entries) = std::fs::read_dir(&states) {
+    if let Ok(entries) = fs::read_dir(&states) {
         let names: Vec<String> = entries
-            .filter_map(std::result::Result::ok)
-            .filter_map(|e| {
-                let n = e.file_name().to_string_lossy().into_owned();
-                n.strip_suffix(".json").map(str::to_string)
-            })
+            .into_iter()
+            .filter_map(|e| e.file_name.strip_suffix(".json").map(str::to_string))
             .collect();
         if !names.is_empty() {
             parts.push(format!("Active pipelines: {}", names.join(", ")));
@@ -197,12 +194,12 @@ fn build_snapshot(input: &HookInput, cwd: &str) -> String {
 /// Save the snapshot to `.claude/.compact-state/{timestamp}.txt`. Best-effort.
 fn save_snapshot(cwd: &str, summary: &str) {
     let state_dir = Path::new(cwd).join(".claude").join(".compact-state");
-    if std::fs::create_dir_all(&state_dir).is_err() {
+    if fs::create_dir_all(&state_dir).is_err() {
         return;
     }
     // The JS filename is `toISOString()` with `:`/`.` replaced by `-`.
     let timestamp = now_iso8601().replace([':', '.'], "-");
-    let _ = std::fs::write(state_dir.join(format!("{timestamp}.txt")), summary);
+    let _ = fs::write_atomic(&state_dir.join(format!("{timestamp}.txt")), summary.as_bytes());
 }
 
 impl Check for PreCompact {

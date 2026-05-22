@@ -41,6 +41,7 @@
 //! an [`Verdict::Inject`].
 
 use mustard_core::error::Error;
+use mustard_core::fs;
 use mustard_core::model::contract::{Check, Ctx, HookInput, Observer, Trigger, Verdict};
 use serde_json::Value;
 use std::path::Path;
@@ -423,17 +424,13 @@ fn parse_module_using(line: &str) -> Option<(String, String)> {
 /// `checkBoundaries`. Flat layout: scans `.claude/spec/` directly.
 fn check_boundaries(file_path: &str, cwd: &str) -> Option<String> {
     let spec_root = Path::new(cwd).join(".claude").join("spec");
-    let entries = std::fs::read_dir(&spec_root).ok()?;
+    let entries = fs::read_dir(&spec_root).ok()?;
     let normalized_edit = file_path.replace('\\', "/");
 
-    for entry in entries.filter_map(std::result::Result::ok) {
-        let Ok(ft) = entry.file_type() else { continue };
-        if !ft.is_dir() {
-            continue;
-        }
-        let dir_name = entry.file_name().to_string_lossy().into_owned();
-        let spec_file = entry.path().join("spec.md");
-        let Ok(content) = std::fs::read_to_string(&spec_file) else {
+    for entry in entries.into_iter().filter(|e| e.is_dir) {
+        let dir_name = entry.file_name.clone();
+        let spec_file = entry.path.join("spec.md");
+        let Ok(content) = fs::read_to_string(&spec_file) else {
             continue;
         };
         let Some(lines) = boundary_block_lines(&content) else {
@@ -722,15 +719,14 @@ fn run_dotnet_format(file_path: &str) {
         let Some(dir) = search_dir.clone() else {
             break;
         };
-        if let Ok(entries) = std::fs::read_dir(&dir) {
+        if let Ok(entries) = fs::read_dir(&dir) {
             let mut sln = None;
             let mut csproj = None;
-            for entry in entries.filter_map(std::result::Result::ok) {
-                let name = entry.file_name().to_string_lossy().into_owned();
-                if name.ends_with(".sln") {
-                    sln = Some(entry.path());
-                } else if name.ends_with(".csproj") {
-                    csproj = Some(entry.path());
+            for entry in entries {
+                if entry.file_name.ends_with(".sln") {
+                    sln = Some(entry.path.clone());
+                } else if entry.file_name.ends_with(".csproj") {
+                    csproj = Some(entry.path.clone());
                 }
             }
             if let Some(p) = sln.or(csproj) {
@@ -787,7 +783,7 @@ fn run_checklist_auto_mark(input: &HookInput, cwd: &str) {
     if same_path(&file_path, &spec_path) {
         return;
     }
-    let Ok(raw) = std::fs::read_to_string(&spec_path) else {
+    let Ok(raw) = fs::read_to_string(Path::new(&spec_path)) else {
         return;
     };
     let mut lines: Vec<String> = raw.split('\n').map(str::to_string).collect();
@@ -832,7 +828,7 @@ fn run_checklist_auto_mark(input: &HookInput, cwd: &str) {
     }
 
     if dirty {
-        let _ = std::fs::write(&spec_path, lines.join("\n"));
+        let _ = fs::write_atomic(Path::new(&spec_path), lines.join("\n").as_bytes());
     }
 }
 
@@ -922,22 +918,21 @@ fn find_active_spec(cwd: &str) -> Option<(String, String)> {
     }
     // Strategy 1: newest pipeline-state.
     let states = claude.join(".pipeline-states");
-    if let Ok(entries) = std::fs::read_dir(&states) {
+    if let Ok(entries) = fs::read_dir(&states) {
         let mut best: Option<(SystemTime, std::path::PathBuf)> = None;
-        for entry in entries.filter_map(std::result::Result::ok) {
-            let name = entry.file_name().to_string_lossy().into_owned();
-            if !name.ends_with(".json") || name.ends_with(".metrics.json") {
+        for entry in entries {
+            if !entry.file_name.ends_with(".json") || entry.file_name.ends_with(".metrics.json") {
                 continue;
             }
-            let Ok(mtime) = entry.metadata().and_then(|m| m.modified()) else {
+            let Ok(mtime) = fs::modified(&entry.path) else {
                 continue;
             };
             if best.as_ref().is_none_or(|(t, _)| mtime > *t) {
-                best = Some((mtime, entry.path()));
+                best = Some((mtime, entry.path));
             }
         }
         if let Some((_, path)) = best {
-            if let Ok(text) = std::fs::read_to_string(&path) {
+            if let Ok(text) = fs::read_to_string(&path) {
                 if let Ok(obj) = serde_json::from_str::<Value>(&text) {
                     let name = obj
                         .get("spec")
@@ -961,15 +956,15 @@ fn find_active_spec(cwd: &str) -> Option<(String, String)> {
     }
     // Strategy 2: newest spec dir (flat layout — scan spec/ directly).
     let active = claude.join("spec");
-    let entries = std::fs::read_dir(&active).ok()?;
+    let entries = fs::read_dir(&active).ok()?;
     let mut best: Option<(SystemTime, String, String)> = None;
-    for entry in entries.filter_map(std::result::Result::ok) {
-        let dir_name = entry.file_name().to_string_lossy().into_owned();
-        let candidate = entry.path().join("spec.md");
-        if !candidate.exists() {
+    for entry in entries.into_iter().filter(|e| e.is_dir) {
+        let dir_name = entry.file_name.clone();
+        let candidate = entry.path.join("spec.md");
+        if !fs::exists(&candidate) {
             continue;
         }
-        let Ok(mtime) = candidate.metadata().and_then(|m| m.modified()) else {
+        let Ok(mtime) = fs::modified(&candidate) else {
             continue;
         };
         if best.as_ref().is_none_or(|(t, _, _)| mtime > *t) {

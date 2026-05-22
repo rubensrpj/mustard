@@ -35,6 +35,7 @@
 //!   When `memory.js` is absent the extraction is a silent no-op — parity with
 //!   the JS `if (!fs.existsSync(persistScript)) return false`.
 
+use mustard_core::fs;
 use mustard_core::store::event_store::EventSink;
 use mustard_core::store::sqlite_store::SqliteEventStore;
 use mustard_core::model::contract::{Ctx, HookInput, Observer, Trigger};
@@ -250,10 +251,10 @@ fn save_friction(entries: &[FrictionEntry], claude_dir: &Path) {
         return;
     }
     let metrics_dir = claude_dir.join(".metrics");
-    let _ = std::fs::create_dir_all(&metrics_dir);
+    let _ = fs::create_dir_all(&metrics_dir);
     let friction_path = metrics_dir.join("friction.json");
 
-    let mut store: Value = std::fs::read_to_string(&friction_path)
+    let mut store: Value = fs::read_to_string(&friction_path)
         .ok()
         .and_then(|t| serde_json::from_str(&t).ok())
         .unwrap_or_else(|| json!({ "version": 1, "entries": [] }));
@@ -306,31 +307,30 @@ fn save_friction(entries: &[FrictionEntry], claude_dir: &Path) {
     });
     store_entries.truncate(FRICTION_MAX_ENTRIES);
 
-    let _ = std::fs::write(
+    let _ = fs::write_atomic(
         &friction_path,
-        serde_json::to_string_pretty(&store).unwrap_or_default(),
+        serde_json::to_string_pretty(&store).unwrap_or_default().as_bytes(),
     );
 }
 
 /// Read every `.pipeline-states/*.json` into [`StateObject`]s.
 fn read_state_objects(claude_dir: &Path) -> Vec<StateObject> {
     let states_dir = claude_dir.join(".pipeline-states");
-    let Ok(entries) = std::fs::read_dir(&states_dir) else {
+    let Ok(entries) = fs::read_dir(&states_dir) else {
         return Vec::new();
     };
     let mut out = Vec::new();
-    for entry in entries.filter_map(std::result::Result::ok) {
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if !name.ends_with(".json") {
+    for entry in entries {
+        if !entry.file_name.ends_with(".json") {
             continue;
         }
-        let Ok(text) = std::fs::read_to_string(entry.path()) else {
+        let Ok(text) = fs::read_to_string(&entry.path) else {
             continue;
         };
         let Ok(json) = serde_json::from_str::<Value>(&text) else {
             continue;
         };
-        let file_label = name.trim_end_matches(".json").to_string();
+        let file_label = entry.file_name.trim_end_matches(".json").to_string();
         let label = json
             .get("specName")
             .and_then(|v| v.as_str())
@@ -424,7 +424,7 @@ fn run_session_knowledge_inc(cwd: &str) {
         return;
     }
     let seen_path = claude.join(".knowledge-seen.json");
-    let mut seen: Value = std::fs::read_to_string(&seen_path)
+    let mut seen: Value = fs::read_to_string(&seen_path)
         .ok()
         .and_then(|t| serde_json::from_str(&t).ok())
         .unwrap_or_else(|| json!({ "_meta": { "recentExtractions": [] } }));
@@ -449,26 +449,25 @@ fn run_session_knowledge_inc(cwd: &str) {
 
     // Most-recently modified pipeline-state.
     let states_dir = claude.join(".pipeline-states");
-    let Ok(entries) = std::fs::read_dir(&states_dir) else {
+    let Ok(entries) = fs::read_dir(&states_dir) else {
         return;
     };
     let mut newest: Option<(SystemTime, PathBuf)> = None;
-    for entry in entries.filter_map(std::result::Result::ok) {
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if !name.ends_with(".json") {
+    for entry in entries {
+        if !entry.file_name.ends_with(".json") {
             continue;
         }
-        let Ok(mtime) = entry.metadata().and_then(|m| m.modified()) else {
+        let Ok(mtime) = fs::modified(&entry.path) else {
             continue;
         };
         if newest.as_ref().is_none_or(|(t, _)| mtime > *t) {
-            newest = Some((mtime, entry.path()));
+            newest = Some((mtime, entry.path));
         }
     }
     let Some((_, latest_path)) = newest else {
         return;
     };
-    let Ok(text) = std::fs::read_to_string(&latest_path) else {
+    let Ok(text) = fs::read_to_string(&latest_path) else {
         return;
     };
     let Ok(json) = serde_json::from_str::<Value>(&text) else {
@@ -659,10 +658,10 @@ fn run_memory_auto_extract(cwd: &str) {
     if !active.exists() {
         return;
     }
-    let _ = std::fs::create_dir_all(claude.join("memory"));
+    let _ = fs::create_dir_all(&claude.join("memory"));
 
     let seen_path = claude.join(".memory-seen.json");
-    let mut seen_hashes: Vec<String> = std::fs::read_to_string(&seen_path)
+    let mut seen_hashes: Vec<String> = fs::read_to_string(&seen_path)
         .ok()
         .and_then(|t| serde_json::from_str::<Value>(&t).ok())
         .and_then(|v| {
@@ -686,7 +685,7 @@ fn run_memory_auto_extract(cwd: &str) {
             .and_then(|p| p.strip_prefix(&active).ok())
             .map(|p| p.to_string_lossy().replace('\\', "/"))
             .unwrap_or_default();
-        let Ok(content) = std::fs::read_to_string(&spec_path) else {
+        let Ok(content) = fs::read_to_string(&spec_path) else {
             continue;
         };
         for item in extract_memory_items(&content) {
@@ -712,9 +711,9 @@ fn run_memory_auto_extract(cwd: &str) {
         seen_hashes.extend(new_hashes);
         let start = seen_hashes.len().saturating_sub(500);
         let kept = &seen_hashes[start..];
-        let _ = std::fs::write(
+        let _ = fs::write_atomic(
             &seen_path,
-            serde_json::to_string_pretty(&json!({ "hashes": kept })).unwrap_or_default(),
+            serde_json::to_string_pretty(&json!({ "hashes": kept })).unwrap_or_default().as_bytes(),
         );
     }
 }
@@ -722,15 +721,14 @@ fn run_memory_auto_extract(cwd: &str) {
 /// Recursively collect every `spec.md` file under `dir`.
 fn collect_spec_files(dir: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
-    let Ok(entries) = std::fs::read_dir(dir) else {
+    let Ok(entries) = fs::read_dir(dir) else {
         return out;
     };
-    for entry in entries.filter_map(std::result::Result::ok) {
-        let path = entry.path();
-        if path.is_dir() {
-            out.extend(collect_spec_files(&path));
-        } else if path.file_name().and_then(|n| n.to_str()) == Some("spec.md") {
-            out.push(path);
+    for entry in entries {
+        if entry.is_dir {
+            out.extend(collect_spec_files(&entry.path));
+        } else if entry.file_name == "spec.md" {
+            out.push(entry.path);
         }
     }
     out

@@ -26,6 +26,7 @@
 //! as `0` — exactly the JS fallback. Recorded in the spec `## Concerns`.
 
 use mustard_core::error::Error;
+use mustard_core::fs;
 use mustard_core::store::event_store::EventSink;
 use mustard_core::store::sqlite_store::SqliteEventStore;
 use mustard_core::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
@@ -155,18 +156,17 @@ const STATE_FRESHNESS_MS: u128 = 10 * 60 * 1000;
 /// within the freshness window.
 fn read_newest_fresh_state(cwd: &str) -> Option<serde_json::Value> {
     let dir = Path::new(cwd).join(".claude").join(".pipeline-states");
-    let entries = std::fs::read_dir(&dir).ok()?;
+    let entries = fs::read_dir(&dir).ok()?;
     let mut best: Option<(SystemTime, std::path::PathBuf)> = None;
-    for entry in entries.filter_map(std::result::Result::ok) {
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if !name.ends_with(".json") || name.ends_with(".metrics.json") {
+    for entry in entries {
+        if !entry.file_name.ends_with(".json") || entry.file_name.ends_with(".metrics.json") {
             continue;
         }
-        let Ok(mtime) = entry.metadata().and_then(|m| m.modified()) else {
+        let Ok(mtime) = fs::modified(&entry.path) else {
             continue;
         };
         if best.as_ref().is_none_or(|(t, _)| mtime > *t) {
-            best = Some((mtime, entry.path()));
+            best = Some((mtime, entry.path));
         }
     }
     let (mtime, path) = best?;
@@ -178,7 +178,7 @@ fn read_newest_fresh_state(cwd: &str) -> Option<serde_json::Value> {
     if age > STATE_FRESHNESS_MS {
         return None;
     }
-    let text = std::fs::read_to_string(&path).ok()?;
+    let text = fs::read_to_string(&path).ok()?;
     serde_json::from_str(&text).ok()
 }
 
@@ -207,14 +207,11 @@ fn resolve_spec_file(
     if is_wave_plan {
         let wave = view.map(|v| v.current_wave).unwrap_or(1);
         let prefix = format!("wave-{wave}-");
-        if let Ok(entries) = std::fs::read_dir(&base) {
-            for entry in entries.filter_map(std::result::Result::ok) {
-                let name = entry.file_name().to_string_lossy().into_owned();
-                if name.starts_with(&prefix) {
-                    let cand = entry.path().join("spec.md");
-                    if cand.exists() {
-                        return Some(cand);
-                    }
+        if let Ok(entries) = fs::read_dir(&base) {
+            for entry in entries.into_iter().filter(|e| e.is_dir && e.file_name.starts_with(&prefix)) {
+                let cand = entry.path.join("spec.md");
+                if fs::exists(&cand) {
+                    return Some(cand);
                 }
             }
         }
@@ -595,7 +592,7 @@ fn boundary_gate(input: &HookInput, cwd: &str) -> Option<Verdict> {
         return None;
     }
     let spec_file = resolve_spec_file(cwd, spec_name, view.as_ref())?;
-    let spec_text = std::fs::read_to_string(&spec_file).ok()?;
+    let spec_text = fs::read_to_string(&spec_file).ok()?;
     let patterns = extract_allowed_patterns(&spec_text);
     if patterns.is_empty() {
         return None;

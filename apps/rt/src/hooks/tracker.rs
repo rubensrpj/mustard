@@ -42,6 +42,7 @@ use mustard_core::economy::estimator;
 use mustard_core::economy::writer;
 use mustard_core::economy::{ApiCostFrame, SpanRecord};
 use mustard_core::error::Error;
+use mustard_core::fs;
 use mustard_core::store::event_store::EventSink;
 use mustard_core::store::sqlite_store::SqliteEventStore;
 use mustard_core::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
@@ -301,7 +302,7 @@ impl ToolUseCounter {
         };
 
         let dir = Self::state_dir(project_dir);
-        let _ = std::fs::create_dir_all(&dir);
+        let _ = fs::create_dir_all(&dir);
 
         let limit = EXPLORE_LIMIT; // agent_type == "Explore"
         let warn_at = EXPLORE_WARN;
@@ -313,9 +314,9 @@ impl ToolUseCounter {
         };
         let iso = now_iso8601();
         let file = dir.join(format!("{agent_id}.counter.json"));
-        let _ = std::fs::write(
+        let _ = fs::write_atomic(
             &file,
-            serde_json::to_string_pretty(&counter.to_json(&iso)).unwrap_or_default(),
+            serde_json::to_string_pretty(&counter.to_json(&iso)).unwrap_or_default().as_bytes(),
         );
 
         Verdict::Inject {
@@ -335,9 +336,8 @@ impl ToolUseCounter {
             .and_then(|v| v.as_str())
             .unwrap_or_default();
         if !agent_id.is_empty() {
-            let file =
-                Self::state_dir(project_dir).join(format!("{agent_id}.counter.json"));
-            let _ = std::fs::remove_file(file);
+            let file = Self::state_dir(project_dir).join(format!("{agent_id}.counter.json"));
+            let _ = fs::remove_file(&file);
         }
         Verdict::Allow
     }
@@ -346,11 +346,10 @@ impl ToolUseCounter {
     /// with clean counters.
     fn handle_session_start(project_dir: &str) -> Verdict {
         let dir = Self::state_dir(project_dir);
-        if let Ok(entries) = std::fs::read_dir(&dir) {
-            for entry in entries.filter_map(std::result::Result::ok) {
-                let name = entry.file_name().to_string_lossy().into_owned();
-                if name.ends_with(".counter.json") {
-                    let _ = std::fs::remove_file(entry.path());
+        if let Ok(entries) = fs::read_dir(&dir) {
+            for entry in entries {
+                if entry.file_name.ends_with(".counter.json") {
+                    let _ = fs::remove_file(&entry.path);
                 }
             }
         }
@@ -363,17 +362,13 @@ impl ToolUseCounter {
     /// counter to hit `warn_at` warns. A stale counter is deleted and skipped.
     fn handle_pre_tool_use(project_dir: &str) -> Verdict {
         let dir = Self::state_dir(project_dir);
-        let Ok(entries) = std::fs::read_dir(&dir) else {
+        let Ok(entries) = fs::read_dir(&dir) else {
             return Verdict::Allow; // no state dir → no active Explore agents
         };
         let counter_files: Vec<std::path::PathBuf> = entries
-            .filter_map(std::result::Result::ok)
-            .map(|e| e.path())
-            .filter(|p| {
-                p.file_name()
-                    .and_then(|n| n.to_str())
-                    .is_some_and(|n| n.ends_with(".counter.json"))
-            })
+            .into_iter()
+            .filter(|e| e.file_name.ends_with(".counter.json"))
+            .map(|e| e.path)
             .collect();
         if counter_files.is_empty() {
             return Verdict::Allow;
@@ -384,7 +379,7 @@ impl ToolUseCounter {
         let mut warn: Option<Verdict> = None;
 
         for file in counter_files {
-            let Ok(text) = std::fs::read_to_string(&file) else {
+            let Ok(text) = fs::read_to_string(&file) else {
                 continue;
             };
             let Ok(value) = serde_json::from_str::<Value>(&text) else {
@@ -398,7 +393,7 @@ impl ToolUseCounter {
 
             // Staleness: delete and skip.
             if now.saturating_sub(created_at_ms) > COUNTER_STALE_MS {
-                let _ = std::fs::remove_file(&file);
+                let _ = fs::remove_file(&file);
                 continue;
             }
 
@@ -429,10 +424,11 @@ impl ToolUseCounter {
                 warn_at,
                 count,
             };
-            let _ = std::fs::write(
+            let _ = fs::write_atomic(
                 &file,
                 serde_json::to_string_pretty(&updated.to_json(created_at_iso))
-                    .unwrap_or_default(),
+                    .unwrap_or_default()
+                    .as_bytes(),
             );
 
             if count >= limit {
@@ -544,7 +540,7 @@ impl MainContextCounter {
 
     /// Read the persisted state. Fail-open: any error → a zeroed state.
     fn read_state(project_dir: &str) -> MainState {
-        let Ok(text) = std::fs::read_to_string(Self::counter_path(project_dir)) else {
+        let Ok(text) = fs::read_to_string(&Self::counter_path(project_dir)) else {
             return MainState::default();
         };
         let Ok(value) = serde_json::from_str::<Value>(&text) else {
@@ -565,13 +561,13 @@ impl MainContextCounter {
     /// Persist the state. Fail-open.
     fn write_state(project_dir: &str, state: &MainState) {
         let dir = Path::new(project_dir).join(".claude").join(".agent-state");
-        let _ = std::fs::create_dir_all(&dir);
+        let _ = fs::create_dir_all(&dir);
         let body = json!({
             "mainCount": state.main_count,
             "subagentDepth": state.subagent_depth,
             "updatedAt": now_iso8601(),
         });
-        let _ = std::fs::write(Self::counter_path(project_dir), body.to_string());
+        let _ = fs::write_atomic(&Self::counter_path(project_dir), body.to_string().as_bytes());
     }
 }
 

@@ -50,6 +50,7 @@
 //! effects with no verdict impact, so the change is observably inert.
 
 use mustard_core::error::Error;
+use mustard_core::fs;
 use mustard_core::store::event_store::EventSink;
 use mustard_core::store::sqlite_store::SqliteEventStore;
 use mustard_core::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
@@ -136,8 +137,8 @@ fn current_session_id(input: &HookInput) -> String {
 fn run_harness_init(input: &HookInput, cwd: &str) {
     let harness = harness_dir(cwd);
     let sessions = sessions_dir(cwd);
-    let _ = std::fs::create_dir_all(&harness);
-    let _ = std::fs::create_dir_all(&sessions);
+    let _ = fs::create_dir_all(&harness);
+    let _ = fs::create_dir_all(&sessions);
 
     let current_id = current_session_id(input);
     // Clean up legacy NDJSON session archives; WAL needs no file rotation.
@@ -169,23 +170,22 @@ fn run_harness_init(input: &HookInput, cwd: &str) {
 
 /// Delete archived `sessions/*.jsonl` files older than the retention window.
 fn prune_old_sessions(sessions_dir: &Path) {
-    let Ok(entries) = std::fs::read_dir(sessions_dir) else {
+    let Ok(entries) = fs::read_dir(sessions_dir) else {
         return;
     };
     let now = now_millis();
-    for entry in entries.filter_map(std::result::Result::ok) {
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if !name.ends_with(".jsonl") {
+    for entry in entries {
+        if !entry.file_name.ends_with(".jsonl") {
             continue;
         }
-        let Ok(modified) = entry.metadata().and_then(|m| m.modified()) else {
+        let Ok(modified) = fs::modified(&entry.path) else {
             continue;
         };
         let mtime_ms = modified
             .duration_since(UNIX_EPOCH)
             .map_or(0, |d| d.as_millis());
         if now.saturating_sub(mtime_ms) > RETENTION_MS {
-            let _ = std::fs::remove_file(entry.path());
+            let _ = fs::remove_file(&entry.path);
         }
     }
 }
@@ -239,11 +239,11 @@ fn spawn_otel_collector(cwd: &str) {
         Ok(c) => {
             let pid = c.id();
             // Best-effort PID write — collector keeps running even if we can't persist.
-            if let Err(e) = std::fs::create_dir_all(harness_dir(cwd)) {
+            if let Err(e) = fs::create_dir_all(&harness_dir(cwd)) {
                 eprintln!("session_start: create_dir_all for OTEL pid file failed ({e})");
                 return;
             }
-            if let Err(e) = std::fs::write(&pid_path, pid.to_string()) {
+            if let Err(e) = fs::write_atomic(&pid_path, pid.to_string().as_bytes()) {
                 eprintln!("session_start: write OTEL pid file failed ({e})");
             }
         }
@@ -283,7 +283,7 @@ fn spawn_transcript_watcher() {
 
 /// Read a PID from `path`. Returns `None` for any IO/parse failure.
 fn read_pid(path: &Path) -> Option<u32> {
-    std::fs::read_to_string(path).ok()?.trim().parse().ok()
+    fs::read_to_string(path).ok()?.trim().parse().ok()
 }
 
 /// `true` if a process with `pid` is currently alive on the host.

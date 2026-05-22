@@ -32,6 +32,7 @@
 
 use crate::run::amend_finalize;
 use mustard_core::economy::{self, sources::transcript, sources::IngestContext};
+use mustard_core::fs;
 use mustard_core::spec;
 use mustard_core::store::sqlite_store::SqliteEventStore;
 use mustard_core::model::contract::{Ctx, HookInput, Observer, Trigger};
@@ -96,7 +97,7 @@ fn archive_stale_followups(cwd: &str) {
 
 /// Read the `status` field of a pipeline-state JSON file.
 fn state_status(path: &Path) -> Option<String> {
-    let text = std::fs::read_to_string(path).ok()?;
+    let text = fs::read_to_string(path).ok()?;
     let obj: serde_json::Value = serde_json::from_str(&text).ok()?;
     obj.get("status")
         .and_then(|v| v.as_str())
@@ -105,7 +106,7 @@ fn state_status(path: &Path) -> Option<String> {
 
 /// The `specName` field of a pipeline-state JSON file.
 fn state_spec_name(path: &Path) -> Option<String> {
-    let text = std::fs::read_to_string(path).ok()?;
+    let text = fs::read_to_string(path).ok()?;
     let obj: serde_json::Value = serde_json::from_str(&text).ok()?;
     obj.get("specName")
         .and_then(|v| v.as_str())
@@ -124,18 +125,18 @@ fn is_spec_done(claude_dir: &Path, spec_name: &str) -> bool {
         return true;
     }
     let wave_plan = spec_root.join("wave-plan.md");
-    if wave_plan.exists() {
-        return std::fs::read_to_string(&wave_plan)
+    if fs::exists(&wave_plan) {
+        return fs::read_to_string(&wave_plan)
             .ok()
             .map(|t| header_marks_done(&t))
             .unwrap_or(false);
     }
     let spec_file = spec_root.join("spec.md");
-    if !spec_file.exists() {
+    if !fs::exists(&spec_file) {
         // Spec dir empty / spec.md absent → treat as done.
         return true;
     }
-    std::fs::read_to_string(&spec_file)
+    fs::read_to_string(&spec_file)
         .ok()
         .map(|t| header_marks_done(&t))
         .unwrap_or(false)
@@ -157,30 +158,30 @@ fn header_marks_done(content: &str) -> bool {
 /// `cleanPipelineStates` (`closed-followup` is intentionally non-terminal).
 fn clean_pipeline_states(claude_dir: &Path) {
     let states_dir = claude_dir.join(".pipeline-states");
-    if let Ok(entries) = std::fs::read_dir(&states_dir) {
-        for entry in entries.filter_map(std::result::Result::ok) {
-            let name = entry.file_name().to_string_lossy().into_owned();
-            if !name.ends_with(".json") {
+    if let Ok(entries) = fs::read_dir(&states_dir) {
+        for entry in entries {
+            if !entry.file_name.ends_with(".json") {
                 continue;
             }
-            let path = entry.path();
-            if let Some(status) = state_status(&path) {
+            let path = &entry.path;
+            if let Some(status) = state_status(path) {
                 if TERMINAL_STATUSES.contains(&status.as_str()) {
-                    let _ = std::fs::remove_file(&path);
+                    let _ = fs::remove_file(path);
                     continue;
                 }
             }
-            if let Some(spec) = state_spec_name(&path) {
+            if let Some(spec) = state_spec_name(path) {
                 if is_spec_done(claude_dir, &spec) {
-                    let _ = std::fs::remove_file(&path);
+                    let _ = fs::remove_file(path);
                 }
             }
         }
         // Remove the directory when empty.
-        let is_empty = std::fs::read_dir(&states_dir)
-            .map(|mut d| d.next().is_none())
+        let is_empty = fs::read_dir(&states_dir)
+            .map(|d| d.is_empty())
             .unwrap_or(false);
         if is_empty {
+            // std::fs::remove_dir has no facade equivalent — one-off use is fine.
             let _ = std::fs::remove_dir(&states_dir);
         }
     }
@@ -188,7 +189,7 @@ fn clean_pipeline_states(claude_dir: &Path) {
     let legacy = claude_dir.join(".pipeline-state.json");
     if let Some(status) = state_status(&legacy) {
         if TERMINAL_STATUSES.contains(&status.as_str()) {
-            let _ = std::fs::remove_file(&legacy);
+            let _ = fs::remove_file(&legacy);
         }
     }
 }
@@ -196,13 +197,13 @@ fn clean_pipeline_states(claude_dir: &Path) {
 /// Remove `.compact-state` files older than 24h; remove the dir when empty.
 fn clean_compact_state(claude_dir: &Path) {
     let dir = claude_dir.join(".compact-state");
-    let Ok(entries) = std::fs::read_dir(&dir) else {
+    let Ok(entries) = fs::read_dir(&dir) else {
         return;
     };
     let now = now_millis();
     let mut remaining = 0;
-    for entry in entries.filter_map(std::result::Result::ok) {
-        let Ok(modified) = entry.metadata().and_then(|m| m.modified()) else {
+    for entry in entries {
+        let Ok(modified) = fs::modified(&entry.path) else {
             remaining += 1;
             continue;
         };
@@ -210,12 +211,13 @@ fn clean_compact_state(claude_dir: &Path) {
             .duration_since(UNIX_EPOCH)
             .map_or(0, |d| d.as_millis());
         if now.saturating_sub(mtime_ms) > ONE_DAY_MS {
-            let _ = std::fs::remove_file(entry.path());
+            let _ = fs::remove_file(&entry.path);
         } else {
             remaining += 1;
         }
     }
     if remaining == 0 {
+        // std::fs::remove_dir has no facade equivalent — one-off use is fine.
         let _ = std::fs::remove_dir(&dir);
     }
 }
@@ -223,7 +225,7 @@ fn clean_compact_state(claude_dir: &Path) {
 /// Remove the statusline git cache from the temp dir.
 fn clean_statusline_cache() {
     let cache = std::env::temp_dir().join("claude-statusline-git.json");
-    let _ = std::fs::remove_file(cache);
+    let _ = fs::remove_file(&cache);
 }
 
 /// Remove a stale OTEL collector PID file.
@@ -234,7 +236,7 @@ fn clean_statusline_cache() {
 /// collector without a stale-PID false-positive in the idempotence check.
 fn clean_otel_pid(claude_dir: &Path) {
     let pid_file = claude_dir.join(".harness").join(".otel-collector.pid");
-    let _ = std::fs::remove_file(pid_file);
+    let _ = fs::remove_file(&pid_file);
 }
 
 // ---------------------------------------------------------------------------

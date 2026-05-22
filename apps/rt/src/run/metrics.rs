@@ -16,6 +16,7 @@
 //! contract for the Rust port (markdown is a human concern, JSON is consumable).
 
 use crate::report::{table, Report};
+use mustard_core::fs;
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -70,15 +71,14 @@ fn aggregate_metrics(
     event_filter: Option<&str>,
 ) -> BTreeMap<String, EventAgg> {
     let mut agg: BTreeMap<String, EventAgg> = BTreeMap::new();
-    let Ok(entries) = std::fs::read_dir(metrics_dir) else {
+    let Ok(entries) = fs::read_dir(metrics_dir) else {
         return agg;
     };
-    for entry in entries.flatten() {
-        let name = entry.file_name().to_string_lossy().to_string();
-        if !name.ends_with(".jsonl") {
+    for entry in entries {
+        if !entry.file_name.ends_with(".jsonl") {
             continue;
         }
-        let Ok(content) = std::fs::read_to_string(entry.path()) else {
+        let Ok(content) = fs::read_to_string(&entry.path) else {
             continue;
         };
         for line in content.lines() {
@@ -155,15 +155,15 @@ fn agg_to_json(agg: &BTreeMap<String, EventAgg>) -> Value {
 fn collect_specs(claude_dir: &Path) -> Vec<Value> {
     let states_dir = claude_dir.join(".pipeline-states");
     let mut out = Vec::new();
-    let Ok(entries) = std::fs::read_dir(&states_dir) else {
+    let Ok(entries) = fs::read_dir(&states_dir) else {
         return out;
     };
-    for entry in entries.flatten() {
-        let name = entry.file_name().to_string_lossy().to_string();
+    for entry in entries {
+        let name = entry.file_name.clone();
         if !name.ends_with(".json") || name.ends_with(".metrics.json") {
             continue;
         }
-        let Ok(text) = std::fs::read_to_string(entry.path()) else {
+        let Ok(text) = fs::read_to_string(&entry.path) else {
             continue;
         };
         let Ok(state) = serde_json::from_str::<Value>(&text) else {
@@ -280,15 +280,14 @@ fn aggregate_window(
     event_filter: Option<&str>,
 ) -> BTreeMap<String, CompareAgg> {
     let mut agg: BTreeMap<String, CompareAgg> = BTreeMap::new();
-    let Ok(entries) = std::fs::read_dir(metrics_dir) else {
+    let Ok(entries) = fs::read_dir(metrics_dir) else {
         return agg;
     };
-    for entry in entries.flatten() {
-        let name = entry.file_name().to_string_lossy().to_string();
-        if !name.ends_with(".jsonl") {
+    for entry in entries {
+        if !entry.file_name.ends_with(".jsonl") {
             continue;
         }
-        let Ok(content) = std::fs::read_to_string(entry.path()) else {
+        let Ok(content) = fs::read_to_string(&entry.path) else {
             continue;
         };
         for line in content.lines() {
@@ -396,7 +395,7 @@ fn build_compare(
 /// Write a standalone HTML report wrapping the metrics document.
 fn write_html_report(cwd: &Path, subcommand: &str, doc: &Value) -> Option<PathBuf> {
     let dir = cwd.join(".claude").join(".qa-reports");
-    std::fs::create_dir_all(&dir).ok()?;
+    fs::create_dir_all(&dir).ok()?;
     let mut report = Report::new(format!("Metrics — {subcommand}"), "pipeline + hook telemetry");
 
     // Render the hook-event table when present.
@@ -425,7 +424,7 @@ fn write_html_report(cwd: &Path, subcommand: &str, doc: &Value) -> Option<PathBu
     }
     report.pre_section("Raw", &serde_json::to_string_pretty(doc).unwrap_or_default());
     let path = dir.join(format!("metrics-{subcommand}.html"));
-    std::fs::write(&path, report.render()).ok()?;
+    fs::write_atomic(&path, report.render().as_bytes()).ok()?;
     Some(path)
 }
 

@@ -35,6 +35,7 @@
 //! than reuse it, so the env-error/real-failure distinction stays exact.
 
 use mustard_core::error::Error;
+use mustard_core::fs;
 use mustard_core::store::event_store::EventSink;
 use mustard_core::store::sqlite_store::SqliteEventStore;
 use mustard_core::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
@@ -169,7 +170,7 @@ fn find_debt_markers(cwd: &str, spec: Option<&str>) -> Vec<DebtMarker> {
         .join("spec")
         .join(spec)
         .join("spec.md");
-    let Ok(raw) = std::fs::read_to_string(&spec_path) else {
+    let Ok(raw) = fs::read_to_string(&spec_path) else {
         return Vec::new();
     };
 
@@ -416,7 +417,7 @@ fn find_unmarked_checklist(cwd: &str, spec: Option<&str>) -> (bool, Vec<String>)
         .join("spec")
         .join(spec)
         .join("spec.md");
-    let Ok(raw) = std::fs::read_to_string(&spec_path) else {
+    let Ok(raw) = fs::read_to_string(&spec_path) else {
         return (false, Vec::new());
     };
     let lines: Vec<&str> = raw.split('\n').collect();
@@ -537,7 +538,7 @@ struct MustardCommands {
 /// Read the command fields from `mustard.json`. `None` when the file is absent
 /// or unreadable (the JS `readMustardCommands` returns `null`).
 fn read_mustard_commands(cwd: &str) -> Option<MustardCommands> {
-    let text = std::fs::read_to_string(Path::new(cwd).join("mustard.json")).ok()?;
+    let text = fs::read_to_string(&Path::new(cwd).join("mustard.json")).ok()?;
     let cfg: Value = serde_json::from_str(&text).ok()?;
     let field = |k: &str| {
         cfg.get(k)

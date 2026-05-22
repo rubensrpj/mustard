@@ -37,6 +37,7 @@
 //! the same line — covering every shape the seed audits use today.
 
 use crate::run::env::project_dir;
+use mustard_core::fs;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
@@ -70,7 +71,7 @@ struct Hit {
 /// Load and parse the audit file. Returns an empty list when the file is
 /// missing or unreadable — every error is reported in `errors`.
 fn load_audits(path: &Path, errors: &mut Vec<String>, only: Option<&str>) -> Vec<Audit> {
-    let text = match std::fs::read_to_string(path) {
+    let text = match fs::read_to_string(path) {
         Ok(t) => t,
         Err(e) => {
             errors.push(format!("audit-file: {e}"));
@@ -149,7 +150,7 @@ fn line_matches(line: &str, pattern: &str) -> bool {
 
 /// Scan a single file against every term of every audit, appending hits.
 fn scan_file(path: &Path, audits: &[Audit], hits: &mut Vec<Hit>, errors: &mut Vec<String>) {
-    let text = match std::fs::read_to_string(path) {
+    let text = match fs::read_to_string(path) {
         Ok(t) => t,
         Err(e) => {
             errors.push(format!("read {}: {e}", path.display()));
@@ -260,17 +261,17 @@ fn walk(
     if depth > MAX_DEPTH {
         return;
     }
-    let entries = match std::fs::read_dir(dir) {
+    let entries = match fs::read_dir(dir) {
         Ok(rd) => rd,
         Err(e) => {
             errors.push(format!("read_dir {}: {e}", dir.display()));
             return;
         }
     };
-    for entry in entries.flatten() {
-        let name = entry.file_name().to_string_lossy().to_string();
-        let path = entry.path();
-        let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+    for entry in entries {
+        let name = entry.file_name.clone();
+        let path = entry.path.clone();
+        let is_dir = entry.is_dir;
         if is_dir {
             // Skip ignored dirs, but allow `.claude` (it is a hidden dir
             // that holds the docs we audit).

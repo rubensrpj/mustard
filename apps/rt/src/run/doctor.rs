@@ -19,8 +19,13 @@
 //! - **state health** — orphan `.pipeline-states/` files (no matching active
 //!   spec), expired `closed-followup` state files, missing
 //!   `entity-registry.json`. WARN per anomaly.
+//! - **nerd-font** — at least one Nerd Font detected in the OS font
+//!   directories. WARN with install hint (`mustard install-nerd-font`) when
+//!   absent. Powerline statusline themes require this; without it the
+//!   transition glyphs render as tofu.
 
 use crate::util::sha256::Sha256;
+use mustard_core::fs;
 use std::path::{Path, PathBuf};
 
 // ---------------------------------------------------------------------------
@@ -141,7 +146,7 @@ const CORE_FOLDERS: &[&str] = &["commands/mustard", "hooks", "skills", "scripts"
 /// subcommand.
 fn check_wiring(claude_dir: &Path) -> CheckResult {
     let settings_path = claude_dir.join("settings.json");
-    let text = match std::fs::read_to_string(&settings_path) {
+    let text = match fs::read_to_string(&settings_path) {
         Ok(t) => t,
         Err(e) => {
             return CheckResult::warn(
@@ -227,7 +232,7 @@ fn check_residue(claude_dir: &Path) -> CheckResult {
 
     // Check for dead .js script references in settings.json.
     let settings_path = claude_dir.join("settings.json");
-    if let Ok(text) = std::fs::read_to_string(&settings_path) {
+    if let Ok(text) = fs::read_to_string(&settings_path) {
         scan_for_dead_js_refs(&text, claude_dir, "settings.json", &mut hits);
     }
 
@@ -236,11 +241,10 @@ fn check_residue(claude_dir: &Path) -> CheckResult {
 
     // Check if CORE_FOLDERS lists scripts/ but no scripts exist.
     let scripts_dir = claude_dir.join("scripts");
-    if scripts_dir.exists() {
-        match std::fs::read_dir(&scripts_dir) {
+    if fs::exists(&scripts_dir) {
+        match fs::read_dir(&scripts_dir) {
             Ok(entries) => {
-                let count = entries.flatten().count();
-                if count == 0 {
+                if entries.is_empty() {
                     hits.push("scripts/ directory is empty (CORE_FOLDER with no content)".to_string());
                 }
             }
@@ -283,7 +287,7 @@ fn scan_md_files_for_dead_refs(claude_dir: &Path, hits: &mut Vec<String>) {
     for path in walker {
         let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
         if name.ends_with(".md") {
-            if let Ok(text) = std::fs::read_to_string(&path) {
+            if let Ok(text) = fs::read_to_string(&path) {
                 let source = path.to_string_lossy().into_owned();
                 scan_for_dead_js_refs(&text, claude_dir, &source, hits);
             }
@@ -302,15 +306,14 @@ fn collect_recursive_inner(dir: &Path, max_depth: usize, depth: usize, out: &mut
     if depth > max_depth {
         return;
     }
-    let Ok(entries) = std::fs::read_dir(dir) else {
+    let Ok(entries) = fs::read_dir(dir) else {
         return;
     };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            collect_recursive_inner(&path, max_depth, depth + 1, out);
+    for entry in entries {
+        if entry.is_dir {
+            collect_recursive_inner(&entry.path, max_depth, depth + 1, out);
         } else {
-            out.push(path);
+            out.push(entry.path);
         }
     }
 }
@@ -392,7 +395,7 @@ fn hash_directory(dir: &Path) -> String {
 
     let mut hasher = Sha256::new();
     for file_path in &files {
-        if let Ok(bytes) = std::fs::read(file_path) {
+        if let Ok(bytes) = fs::read(file_path) {
             // Mix in the relative path for rename detection.
             let rel = file_path
                 .strip_prefix(dir)
@@ -435,7 +438,7 @@ fn detect_stacks(project_dir: &Path) -> Vec<&'static str> {
     // Rust: Cargo.toml with [package]
     let cargo = project_dir.join("Cargo.toml");
     if cargo.is_file() {
-        if std::fs::read_to_string(&cargo)
+        if fs::read_to_string(&cargo)
             .unwrap_or_default()
             .contains("[package]")
         {
@@ -458,7 +461,7 @@ fn detect_stacks(project_dir: &Path) -> Vec<&'static str> {
     // TypeScript/JavaScript: package.json
     let pkg_path = project_dir.join("package.json");
     if pkg_path.is_file() {
-        let content = std::fs::read_to_string(&pkg_path).unwrap_or_default();
+        let content = fs::read_to_string(&pkg_path).unwrap_or_default();
         if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
             let deps_have_ts = ["dependencies", "devDependencies"].iter().any(|section| {
                 json.get(*section)
@@ -476,10 +479,10 @@ fn detect_stacks(project_dir: &Path) -> Vec<&'static str> {
     }
 
     // C#: any *.csproj present
-    if let Ok(entries) = std::fs::read_dir(project_dir) {
+    if let Ok(entries) = fs::read_dir(project_dir) {
         let has_csproj = entries
-            .flatten()
-            .any(|e| e.file_name().to_string_lossy().ends_with(".csproj"));
+            .iter()
+            .any(|e| e.file_name.ends_with(".csproj"));
         if has_csproj {
             stacks.push("csharp");
         }
@@ -579,7 +582,7 @@ fn check_state_health(claude_dir: &Path) -> CheckResult {
     // Collect spec names from spec/ (flat layout — no buckets).
     let active_specs = collect_active_spec_names(claude_dir);
 
-    let Ok(entries) = std::fs::read_dir(&states_dir) else {
+    let Ok(entries) = fs::read_dir(&states_dir) else {
         warnings.push("cannot read .pipeline-states/ directory".to_string());
         return CheckResult::warn("state-health", warnings);
     };
@@ -588,12 +591,12 @@ fn check_state_health(claude_dir: &Path) -> CheckResult {
     const FOLLOWUP_EXPIRY_MS: u128 = 24 * 60 * 60 * 1_000;
     let now_ms = crate::util::now_millis();
 
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let file_name = entry.file_name().to_string_lossy().into_owned();
+    for entry in entries {
+        let path = entry.path.clone();
+        let file_name = entry.file_name.clone();
 
         // Parse the state file (JSON with at least a `spec` or `state` field).
-        let Ok(text) = std::fs::read_to_string(&path) else {
+        let Ok(text) = fs::read_to_string(&path) else {
             continue;
         };
         let Ok(val) = serde_json::from_str::<serde_json::Value>(&text) else {
@@ -642,13 +645,13 @@ fn check_state_health(claude_dir: &Path) -> CheckResult {
 /// Collect the directory names under `.claude/spec/` (flat layout — no buckets).
 fn collect_active_spec_names(claude_dir: &Path) -> Vec<String> {
     let active_dir = claude_dir.join("spec");
-    let Ok(entries) = std::fs::read_dir(&active_dir) else {
+    let Ok(entries) = fs::read_dir(&active_dir) else {
         return Vec::new();
     };
     entries
-        .flatten()
-        .filter(|e| e.path().is_dir())
-        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .into_iter()
+        .filter(|e| e.is_dir)
+        .map(|e| e.file_name)
         .collect()
 }
 
@@ -702,6 +705,102 @@ fn approx_epoch_secs(year: u64, month: u64, day: u64, hour: u64, minute: u64, se
 }
 
 // ---------------------------------------------------------------------------
+// Check: nerd-font
+// ---------------------------------------------------------------------------
+
+/// Probe OS font directories for *any* Nerd Font (filename containing both a
+/// font-family-ish token and "nerd" or "nf-"). WARN when none is found, since
+/// the powerline statusline themes need one.
+///
+/// Fail-open: read errors degrade to "not detected" (WARN) rather than
+/// blocking the doctor run.
+fn check_nerd_font() -> CheckResult {
+    let dirs = nerd_font_search_dirs();
+    if dirs.iter().any(|d| scan_for_any_nerd_font(d)) {
+        return CheckResult::ok("nerd-font");
+    }
+    // Linux: fontconfig is authoritative if the binary is on PATH.
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(output) = std::process::Command::new("fc-list").output() {
+            if output.status.success() {
+                let listing = String::from_utf8_lossy(&output.stdout).to_ascii_lowercase();
+                if listing.contains("nerd") {
+                    return CheckResult::ok("nerd-font");
+                }
+            }
+        }
+    }
+    CheckResult::warn(
+        "nerd-font",
+        vec![
+            "no Nerd Font detected on this host — powerline statusline themes will render \
+             tofu (□) instead of separator arrows."
+                .to_string(),
+            "fix: run `mustard install-nerd-font` (default JetBrainsMono)".to_string(),
+            "or set MUSTARD_STATUSLINE_THEME=default (pipe-only, no Nerd Font needed)"
+                .to_string(),
+        ],
+    )
+}
+
+fn nerd_font_search_dirs() -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(local) = std::env::var("LOCALAPPDATA") {
+            dirs.push(
+                PathBuf::from(local)
+                    .join("Microsoft")
+                    .join("Windows")
+                    .join("Fonts"),
+            );
+        }
+        dirs.push(PathBuf::from("C:/Windows/Fonts"));
+    }
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(home) = std::env::var("HOME") {
+            dirs.push(PathBuf::from(home).join("Library").join("Fonts"));
+        }
+        dirs.push(PathBuf::from("/Library/Fonts"));
+    }
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(home) = std::env::var("HOME") {
+            dirs.push(PathBuf::from(home).join(".local/share/fonts"));
+        }
+        dirs.push(PathBuf::from("/usr/share/fonts"));
+    }
+    dirs
+}
+
+/// One level + immediate subdirectories. Match any file whose lowercased
+/// name contains "nerd" or "nf-".
+fn scan_for_any_nerd_font(dir: &Path) -> bool {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return false;
+    };
+    for entry in entries {
+        let name = entry.file_name.to_ascii_lowercase();
+        if name.contains("nerd") || name.contains("nf-") {
+            return true;
+        }
+        if entry.is_dir {
+            if let Ok(sub) = fs::read_dir(&entry.path) {
+                for s in sub {
+                    let sn = s.file_name.to_ascii_lowercase();
+                    if sn.contains("nerd") || sn.contains("nf-") {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    false
+}
+
+// ---------------------------------------------------------------------------
 // Report renderer
 // ---------------------------------------------------------------------------
 
@@ -744,6 +843,7 @@ pub fn run(residue: bool) {
     results.push(check_drift(&claude_dir));
     results.push(check_state_health(&claude_dir));
     results.push(lsp_check(&cwd));
+    results.push(check_nerd_font());
 
     if residue {
         results.push(check_residue(&claude_dir));

@@ -18,6 +18,7 @@
 
 use crate::report::{table, Report};
 use crate::run::env::{project_dir, session_id};
+use mustard_core::fs;
 use crate::util::now_iso8601;
 use mustard_core::store::event_store::EventSink;
 use mustard_core::store::sqlite_store::SqliteEventStore;
@@ -375,18 +376,18 @@ fn criteria_json(criteria: &[AcResult]) -> Vec<Value> {
 /// Write the JSON sidecar at `.claude/.qa-reports/{spec}.json`.
 fn write_sidecar(cwd: &Path, spec: &str, payload: &Value) {
     let dir = cwd.join(".claude").join(".qa-reports");
-    if std::fs::create_dir_all(&dir).is_err() {
+    if fs::create_dir_all(&dir).is_err() {
         return;
     }
     if let Ok(text) = serde_json::to_string_pretty(payload) {
-        let _ = std::fs::write(dir.join(format!("{spec}.json")), text);
+        let _ = fs::write_atomic(&dir.join(format!("{spec}.json")), text.as_bytes());
     }
 }
 
 /// Write the standalone HTML report at `.claude/.qa-reports/{spec}.html`.
 fn write_html_report(cwd: &Path, spec: &str, overall: &str, criteria: &[AcResult]) -> Option<PathBuf> {
     let dir = cwd.join(".claude").join(".qa-reports");
-    std::fs::create_dir_all(&dir).ok()?;
+    fs::create_dir_all(&dir).ok()?;
     let mut report = Report::new(
         format!("QA Report — {spec}"),
         format!("overall: {overall} · {} criteria", criteria.len()),
@@ -408,7 +409,7 @@ fn write_html_report(cwd: &Path, spec: &str, overall: &str, criteria: &[AcResult
         &table(&["ID", "Status", "Exit", "Duration", "stderr"], &rows),
     );
     let path = dir.join(format!("{spec}.html"));
-    std::fs::write(&path, report.render()).ok()?;
+    fs::write_atomic(&path, report.render().as_bytes()).ok()?;
     Some(path)
 }
 
@@ -512,7 +513,7 @@ fn run_qa(cwd: &Path, spec: &str) -> QaResult {
         emit_qa_metric(cwd, spec, "skip", &[]);
         return QaResult { overall: "skip".to_string(), criteria: Vec::new() };
     };
-    let markdown = match std::fs::read_to_string(&spec_file) {
+    let markdown = match fs::read_to_string(&spec_file) {
         Ok(m) => m,
         Err(err) => {
             eprintln!("[qa-run] Cannot read spec file: {err}");
