@@ -148,7 +148,7 @@ A coleta de arquivos do scanner (`scan/file_utils.rs`) ignora pastas em ordem ad
 
 ## Spec Layout
 
-Specs live under a **flat** directory: `.claude/spec/{name}/`. There are no `active/`, `completed/`, or `superseded/` bucket subdirectories — status comes from the `### Status:` header inside `spec.md`, and archival is semantic-only (the `pipeline.status` event in SQLite, not a filesystem move). Wave plans add a `wave-plan.md` plus `wave-N-{role}/spec.md` subdirs inside the same `{name}/` directory.
+Specs live under a **flat** directory: `.claude/spec/{name}/`. There are no `active/`, `completed/`, or `superseded/` bucket subdirectories — status comes from the `### Stage:` + `### Outcome:` headers inside `spec.md`, and archival is semantic-only (the `pipeline.status` event in SQLite, not a filesystem move). Wave plans add a `wave-plan.md` plus `wave-N-{role}/spec.md` subdirs inside the same `{name}/` directory.
 
 ## Full Reference
 Rules, pipeline, naming: `pipeline-config.md`

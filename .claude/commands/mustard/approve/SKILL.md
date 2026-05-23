@@ -24,7 +24,7 @@ A spec has two named layers (see `/feature` § Full Scope): `## PRD` — the *wh
    - `mustard-rt run sync-registry`
    - Do NOT proceed to step 2 without running this command
 2. **Read** `.claude/pipeline-config.md` — agents, model selection
-3. Locate the active spec in `.claude/spec/{specName}/` (filter by `Status:` header — skip `completed`/`cancelled`)
+3. Locate the active spec in `.claude/spec/{specName}/` (filter by `Stage:` + `Outcome:` headers — skip specs with `Outcome: Completed` or `Outcome: Abandoned`)
 
 ### Step 3b: Wave Plan Detection
 
@@ -48,7 +48,8 @@ Check if the located spec is a wave plan: look for `.claude/spec/{specName}/wave
 **If `wave-plan.md` does NOT exist:** proceed as a single spec (original behavior below).
 
 4. **Spec Checkpoint — update spec header:**
-   - `### Status: approved`
+   - `### Stage: Plan`
+   - `### Outcome: Active`
    - `### Phase: PLAN`
    - `### Checkpoint: {ISO timestamp now}`
 5. **Pipeline State — emit status transition to approved:**

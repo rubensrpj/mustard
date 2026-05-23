@@ -90,7 +90,7 @@ Before loading heavy context (sync-registry, diff-context, Explore Gate), ask th
            - The projection `pipeline_state_for_spec` will derive `completedWaves`, `currentWave`, and `totalWaves` from the wave.complete events already in the log — no JSON file is written.
            - Inform user inline: `Reconstruí pipeline-state do wave-plan.md (W{completed} done, W{currentWave} next).`
      c. With state (loaded or reconstructed), operational spec = result of Glob `.claude/spec/{specName}/wave-{currentWave}-*/spec.md` (one match expected).
-   - **3d. Stub Expansion (wave-plan mode only).** By design `/feature` expands wave-1 fully and leaves waves N≥2 as skeletons (Status: queued, Title + 1-line summary). When resume picks up wave N≥2, the stub must be expanded inline — no `/mustard:approve` roundtrip:
+   - **3d. Stub Expansion (wave-plan mode only).** By design `/feature` expands wave-1 fully and leaves waves N≥2 as skeletons (`### Stage: Plan` + `### Outcome: Active`, Title + 1-line summary). When resume picks up wave N≥2, the stub must be expanded inline — no `/mustard:approve` roundtrip:
      1. Read first 30 lines of the operational spec. Treat as **stub** if `### Stage: Plan` AND `### Outcome: Active` AND neither `## Files` nor `## Tasks` heading is present.
      2. If not a stub → continue to step 4.
      3. If stub → expand inline via `Task(Plan)` (single dispatch, `model: "opus"`):
@@ -135,7 +135,7 @@ Alongside the diff-context refresh, produce the relevance-filtered glossary slic
 The slice is stable for the whole pipeline, so it sits in the PREFIX-STABLE block and caches across dispatches. **Re-run the snapshot only on a wave transition** (same cadence as the diff refresh). **Skip if `resumeMode === "continued"`** unless a wave just completed — the prior snapshot is reused from `.claude/.pipeline-states/{specName}.context-md.md`.
 
 7. **Read** `.claude/pipeline-config.md`. For `entity-registry.json`: use Grep to extract ONLY the relevant entity block (e.g. `"Contract":`), NEVER read the full JSON
-9. **Update spec header:** `Status: implementing`, `Phase: EXECUTE`, `Checkpoint: {ISO now}`
+9. **Update spec header:** `### Stage: Execute` + `### Outcome: Active`, `Phase: EXECUTE`, `Checkpoint: {ISO now}`
 10. **Emit status transition to implementing:**
     ```bash
     mustard-rt run emit-pipeline --kind pipeline.status --spec {specName} --payload "{\"from\":\"approved\",\"to\":\"implementing\"}"

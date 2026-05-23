@@ -10,7 +10,7 @@ Single source of truth — phase names, descriptions, entry triggers: `refs/cano
 
 ### Spec Layout — Flat `spec/{name}/`
 
-Specs live under a single flat directory: `.claude/spec/{name}/`. There are no `active/`, `completed/`, or `superseded/` bucket subdirectories. Status is read from the `### Status:` header inside `spec.md`; archival is semantic-only — `/close` emits a `pipeline.status` event into SQLite (no filesystem move). Wave plans add `wave-plan.md` plus `wave-N-{role}/spec.md` subdirectories inside the same `{name}/` directory.
+Specs live under a single flat directory: `.claude/spec/{name}/`. There are no `active/`, `completed/`, or `superseded/` bucket subdirectories. Status is read from the `### Stage:` + `### Outcome:` headers inside `spec.md`; archival is semantic-only — `/close` emits a `pipeline.status` event into SQLite (no filesystem move). Wave plans add `wave-plan.md` plus `wave-N-{role}/spec.md` subdirectories inside the same `{name}/` directory.
 
 ### Two-Stage Close — Emit-Only
 

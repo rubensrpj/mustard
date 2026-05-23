@@ -86,7 +86,8 @@ See `.claude/pipeline-config.md` Escalation Statuses for concern classification 
 1. Locate spec in `.claude/spec/{name}/` (flat layout — no `active/completed/superseded` buckets; status is read from the spec header / SQLite projection)
 2. If none exists → inform user and stop
 3. **Spec Checkpoint — update spec header:**
-   - `### Status: completed`
+   - `### Stage: Close`
+   - `### Outcome: Completed`
    - `### Phase: CLOSE`
    - `### Checkpoint: {ISO timestamp now}`
    - **Verify Checklist consistency** — count `- [ ]` lines in `## Checklist`. If any remain, ABORT and report the unmarked items to the user (each item should already have been marked by the executor agent during EXECUTE via `mustard-rt run mark-checklist-item`). Do NOT batch-mark on behalf of the agents. `close-gate.js` enforces this same rule with `MUSTARD_CHECKLIST_GATE_MODE=strict`.
@@ -185,7 +186,7 @@ See `.claude/pipeline-config.md` Escalation Statuses for concern classification 
 ## Cancellation Flow
 
 If the user wants to cancel (not complete):
-- Update spec: `### Status: cancelled`
+- Update spec: `### Stage: Close` + `### Outcome: Abandoned`
 - Emit cancellation status event (no filesystem move — status lives in the header + SQLite projection):
   ```bash
   mustard-rt run emit-pipeline --kind pipeline.status --spec {spec-name} --payload "{\"from\":null,\"to\":\"cancelled\"}"

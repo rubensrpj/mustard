@@ -18,7 +18,9 @@ Once resolved, write the chosen value as a header line in `spec.md`:
 
 ```
 # {Title}
-### Status: draft | Phase: PLAN | Scope: {scope}
+### Stage: Plan
+### Outcome: Active
+### Scope: {scope}
 ### Checkpoint: {ISO}
 ### Lang: pt
 ```
@@ -226,7 +228,9 @@ Without an explicit contract, FE agents improvise variants/states/a11y, leading 
 
 ```markdown
 # Enhancement: adicionar campo email no usuário
-### Status: draft | Phase: PLAN | Scope: light
+### Stage: Plan
+### Outcome: Active
+### Scope: light
 ### Checkpoint: 2026-05-08T10:00:00Z
 ### Lang: pt
 
@@ -243,7 +247,9 @@ de update.
 
 ```markdown
 # Enhancement: add email field to user
-### Status: draft | Phase: PLAN | Scope: light
+### Stage: Plan
+### Outcome: Active
+### Scope: light
 ### Checkpoint: 2026-05-08T10:00:00Z
 ### Lang: en
 

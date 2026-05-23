@@ -20,7 +20,7 @@ This is Wave 10 of the Mustard pipeline — the formal Dev/QA contract.
 ### Step 1 — Identify spec
 
 If `--spec <name>` provided: use that spec name.
-Otherwise: Glob `.claude/spec/*/spec.md`, filter by `Status:` header (skip `completed`/`cancelled`), and pick the most recently modified.
+Otherwise: Glob `.claude/spec/*/spec.md`, filter by `Stage:` + `Outcome:` headers (skip `Outcome: Completed` / `Outcome: Abandoned`), and pick the most recently modified.
 
 ### Step 2 — Validate spec has AC
 

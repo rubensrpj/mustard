@@ -48,7 +48,10 @@ Before writing the single spec in Full scope, check whether the work should be d
    `wave-plan.md` contains:
    ```markdown
    # Wave Plan: {name}
-   ### Status: draft | Phase: PLAN | Scope: full | Decomposed: yes
+   ### Stage: Plan
+   ### Outcome: Active
+   ### Scope: full
+   ### Decomposed: yes
    ### Checkpoint: {ISO now}
    ### Reason: {decompose.reason}
 

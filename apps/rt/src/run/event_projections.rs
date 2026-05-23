@@ -17,6 +17,7 @@
 
 use crate::report::Report;
 use mustard_core::fs;
+use mustard_core::model::view::Phase;
 use mustard_core::store::sqlite_store::SqliteEventStore;
 use mustard_core::model::event::{
     HarnessEvent, EVENT_PIPELINE_COMPLETE, EVENT_PIPELINE_DISPATCH_FAILURE, EVENT_PIPELINE_PAUSE,
@@ -639,26 +640,6 @@ fn build_pr_metrics(events: &[HarnessEvent], cwd: &Path, days: i64) -> Value {
     })
 }
 
-/// Convert a `pipeline.phase` UPPERCASE value to Title Case for unified display.
-/// Known values: ANALYZE, PLAN, EXECUTE, REVIEW, QAREVIEW, CLOSE. Unknown values
-/// are title-cased by capitalising the first character only.
-fn phase_uppercase_to_title(s: &str) -> String {
-    match s.to_ascii_uppercase().as_str() {
-        "ANALYZE"  => "Analyze".to_string(),
-        "PLAN"     => "Plan".to_string(),
-        "EXECUTE"  => "Execute".to_string(),
-        "REVIEW"   => "Review".to_string(),
-        "QAREVIEW" => "QaReview".to_string(),
-        "CLOSE"    => "Close".to_string(),
-        _ => {
-            let mut c = s.chars();
-            match c.next() {
-                None => String::new(),
-                Some(f) => f.to_uppercase().collect::<String>() + &c.as_str().to_lowercase(),
-            }
-        }
-    }
-}
 
 /// `buildActivePipelines` — specs that have at least one event and whose last
 /// `pipeline.stage` OR `pipeline.phase` event is not `Close`. Ordered by
@@ -697,7 +678,9 @@ fn build_active_pipelines(events: &[HarnessEvent]) -> Value {
                     .or_else(|| ev.payload.get("from"))
                     .and_then(Value::as_str);
                 if let Some(r) = raw {
-                    entry.1 = Some(phase_uppercase_to_title(r));
+                    if let Some(p) = Phase::parse(r) {
+                        entry.1 = Some(format!("{p:?}"));
+                    }
                 }
             }
             _ => {}
