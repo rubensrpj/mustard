@@ -1,11 +1,12 @@
 # Plano de Waves — Economia didática + economias reais
 
-### Stage: Plan
+### Stage: Done
 ### Outcome: Active
 ### Flags:
 ### Scope: full (wave plan)
 ### Lang: pt
 ### Total waves: 3
+### Closed: 2026-05-22T19:00:00Z
 
 ## Contexto
 
@@ -49,12 +50,12 @@ a de injeção rotulada "estimado". Builds e testes verdes.
 
 Testáveis, binários (passa/falha). Cada um executável e independente.
 
-- [ ] AC-1: Build do workspace passa — Command: `cargo build -p mustard-core -p mustard-rt -p mustard-dashboard`
-- [ ] AC-2: Testes core+rt passam — Command: `bash -c "cargo test -p mustard-core && cargo test -p mustard-rt"`
-- [ ] AC-3: Emissor de economia de injeção existe — Command: `bash -c "grep -rq 'RecipeInjection' apps/rt/src && echo ok"`
-- [ ] AC-4: RTK contínuo ligado no session_cleanup — Command: `bash -c "grep -riq 'rtk' apps/rt/src/hooks/session_cleanup.rs && echo ok"`
-- [ ] AC-5: Reader expõe custo por sessão — Command: `bash -c "grep -rq 'by_session' packages/core/src/economy/model.rs && echo ok"`
-- [ ] AC-6: Economia sem nome de campo interno nos rótulos — Command: `node -e "const fs=require('fs');const s=fs.readFileSync('apps/dashboard/src/pages/Economia.tsx','utf8');process.exit(/economy_summary\.|usage_totals\.cost|savings_breakdown\b/.test(s)?1:0)"`
+- [x] AC-1: Build do workspace passa — Command: `cargo build -p mustard-core -p mustard-rt -p mustard-dashboard`
+- [x] AC-2: Testes core+rt passam — Command: `bash -c "cargo test -p mustard-core && cargo test -p mustard-rt"`
+- [x] AC-3: Emissor de economia de injeção existe — Command: `bash -c "grep -rq 'RecipeInjection' apps/rt/src && echo ok"`
+- [x] AC-4: RTK contínuo ligado no session_cleanup — Command: `bash -c "grep -riq 'rtk' apps/rt/src/hooks/session_cleanup.rs && echo ok"`
+- [x] AC-5: Reader expõe custo por sessão — Command: `bash -c "grep -rq 'by_session' packages/core/src/economy/model.rs && echo ok"`
+- [x] AC-6: Economia sem nome de campo interno nos rótulos — Command: `node -e "const fs=require('fs');const s=fs.readFileSync('apps/dashboard/src/pages/Economia.tsx','utf8');process.exit(/economy_summary\.|usage_totals\.cost|savings_breakdown\b/.test(s)?1:0)"`
 
 ## Tabela de Waves
 

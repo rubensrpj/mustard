@@ -1,11 +1,11 @@
 # wave-3-ui — Economia didática + card por-sessão + economias reais
 
 ### Parent: [[2026-05-22-economia-didatica-e-economias-reais]]
-### Stage: Execute
+### Stage: Done
 ### Outcome: Active
 ### Flags:
 ### Lang: pt
-### Checkpoint: 2026-05-22T18:30:00Z
+### Checkpoint: 2026-05-22T19:00:00Z
 
 ## Resumo
 
@@ -43,18 +43,18 @@ significa. As economias de RTK/injeção aparecem 0.
 
 ### UI Agent (Wave 3)
 
-- [ ] Remover todos os rótulos "fonte: <campo>" e substituir por legenda em linguagem comum; traduzir jargão (mapa acima).
-- [ ] Card por-sessão: data/hora + custo + chips de spec (consumir `by_session` enriquecido da Wave 1); null-guard `data?.field`.
-- [ ] Seção de economias: exibir RTK e injeção (agora populadas pela Wave 2); injeção com selo "(estimado)"; cada item com título PT + 1 linha.
-- [ ] Seção custo por spec/onda (estimado): consumir `per_spec_costs`/`per_wave_costs`, rotulada; empty-state didático.
-- [ ] `economy.ts`: adicionar `last_at_ms`/`specs` ao tipo de sessão.
-- [ ] `cargo build -p mustard-dashboard` + `pnpm --filter mustard-dashboard build`.
+- [x] Remover todos os rótulos "fonte: <campo>" e substituir por legenda em linguagem comum; traduzir jargão (mapa acima).
+- [x] Card por-sessão: data/hora + custo + chips de spec (consumir `by_session` enriquecido da Wave 1); null-guard `data?.field`.
+- [x] Seção de economias: exibir RTK e injeção (agora populadas pela Wave 2); injeção com selo "(estimado)"; cada item com título PT + 1 linha.
+- [x] Seção custo por spec/onda (estimado): consumir `per_spec_costs`/`per_wave_costs`, rotulada; empty-state didático.
+- [x] `economy.ts`: adicionar `last_at_ms`/`specs` ao tipo de sessão.
+- [x] `cargo build -p mustard-dashboard` + `pnpm --filter mustard-dashboard build`.
 
 ## Critérios de Aceitação
 
-- [ ] AC-1: `cargo build -p mustard-dashboard` passa — Command: `cargo build -p mustard-dashboard`
-- [ ] AC-2: build do front passa — Command: `pnpm --filter mustard-dashboard build`
-- [ ] AC-3: sem nome de campo interno nos rótulos — Command: `node -e "const fs=require('fs');const s=fs.readFileSync('apps/dashboard/src/pages/Economia.tsx','utf8');process.exit(/economy_summary\.|usage_totals\.cost|savings_breakdown\b/.test(s)?1:0)"`
+- [x] AC-1: `cargo build -p mustard-dashboard` passa — Command: `cargo build -p mustard-dashboard`
+- [x] AC-2: build do front passa — Command: `pnpm --filter mustard-dashboard build`
+- [x] AC-3: sem nome de campo interno nos rótulos — Command: `node -e "const fs=require('fs');const s=fs.readFileSync('apps/dashboard/src/pages/Economia.tsx','utf8');process.exit(/economy_summary\.|usage_totals\.cost|savings_breakdown\b/.test(s)?1:0)"`
 
 ## Limites
 

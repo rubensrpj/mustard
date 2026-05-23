@@ -1,11 +1,11 @@
 # wave-1-library — Reader por-sessão + métrica de injeção
 
 ### Parent: [[2026-05-22-economia-didatica-e-economias-reais]]
-### Stage: Execute
+### Stage: Done
 ### Outcome: Active
 ### Flags:
 ### Lang: pt
-### Checkpoint: 2026-05-22T17:25:00Z
+### Checkpoint: 2026-05-22T19:00:00Z
 
 ## Resumo
 
@@ -31,17 +31,17 @@ mas ninguém escreve).
 
 ### Library Agent (Wave 1)
 
-- [ ] `model.rs`: adicionar `last_at_ms` e `specs` ao `SessionCost` (aditivo; não quebrar a serialização existente).
-- [ ] `reader.rs`: no ramo não-filtrado, para cada sessão do `cost_by_session`, preencher `last_at_ms` e `specs` via os novos métodos do `telemetry::reader` (mesma conexão do telemetry.db; sem cruzar mustard.db).
-- [ ] `telemetry/reader.rs`: métodos aditivos para specs-por-sessão e last_at-por-sessão (leem `run_usage`/`usage_totals`).
-- [ ] `economy/writer.rs`: `injection_savings_tokens` (proxy; puro, testável). Não emite nada ainda — só o cálculo (Wave 2 chama no emissor).
-- [ ] Testes: by_session traz specs+last_at no escopo projeto; `injection_savings_tokens` calcula o proxy esperado. `cargo test -p mustard-core`.
+- [x] `model.rs`: adicionar `last_at_ms` e `specs` ao `SessionCost` (aditivo; não quebrar a serialização existente).
+- [x] `reader.rs`: no ramo não-filtrado, para cada sessão do `cost_by_session`, preencher `last_at_ms` e `specs` via os novos métodos do `telemetry::reader` (mesma conexão do telemetry.db; sem cruzar mustard.db).
+- [x] `telemetry/reader.rs`: métodos aditivos para specs-por-sessão e last_at-por-sessão (leem `run_usage`/`usage_totals`).
+- [x] `economy/writer.rs`: `injection_savings_tokens` (proxy; puro, testável). Não emite nada ainda — só o cálculo (Wave 2 chama no emissor).
+- [x] Testes: by_session traz specs+last_at no escopo projeto; `injection_savings_tokens` calcula o proxy esperado. `cargo test -p mustard-core`.
 
 ## Critérios de Aceitação
 
-- [ ] AC-1: `cargo build -p mustard-core` passa — Command: `cargo build -p mustard-core`
-- [ ] AC-2: `cargo test -p mustard-core` passa — Command: `cargo test -p mustard-core`
-- [ ] AC-3: by_session enriquecido — Command: `bash -c "grep -q 'specs' packages/core/src/economy/model.rs && grep -q 'last_at' packages/core/src/economy/model.rs && echo ok"`
+- [x] AC-1: `cargo build -p mustard-core` passa — Command: `cargo build -p mustard-core`
+- [x] AC-2: `cargo test -p mustard-core` passa — Command: `cargo test -p mustard-core`
+- [x] AC-3: by_session enriquecido — Command: `bash -c "grep -q 'specs' packages/core/src/economy/model.rs && grep -q 'last_at' packages/core/src/economy/model.rs && echo ok"`
 
 ## Limites
 

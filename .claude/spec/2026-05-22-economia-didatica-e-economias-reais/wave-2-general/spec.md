@@ -1,11 +1,11 @@
 # wave-2-general — Emissores de economia que faltam (RTK contínuo + injeção)
 
 ### Parent: [[2026-05-22-economia-didatica-e-economias-reais]]
-### Stage: Execute
+### Stage: Done
 ### Outcome: Active
 ### Flags:
 ### Lang: pt
-### Checkpoint: 2026-05-22T17:35:00Z
+### Checkpoint: 2026-05-22T19:00:00Z
 
 ## Resumo
 
@@ -31,17 +31,17 @@ fica atrás de um veredito `Rewrite` que não ocorre no modo strict (padrão).
 
 ### General Agent (Wave 2)
 
-- [ ] `recipe_match.rs`: ao retornar recipe não-vazio, calcular `injection_savings_tokens(skeleton)` (Wave 1) e `record_savings(RecipeInjection, ...)`. Idempotência/dedup razoável (não somar o mesmo match repetido na mesma invocação). Fail-open.
-- [ ] `session_cleanup.rs`: no SessionEnd, rodar a ingestão do `rtk gain --json` (mesma lógica de `run/rtk_gain.rs`) para gravar a economia real do RTK em `savings_records`. Fail-open; nunca abortar o cleanup.
-- [ ] Confirmar que `savings_breakdown` (reader) passa a retornar RTK e RecipeInjection não-zero quando houve atividade.
-- [ ] `cargo build -p mustard-rt` + `cargo test -p mustard-rt` (+ `-p mustard-core` se tocar writer).
+- [x] `recipe_match.rs`: ao retornar recipe não-vazio, calcular `injection_savings_tokens(skeleton)` (Wave 1) e `record_savings(RecipeInjection, ...)`. Idempotência/dedup razoável (não somar o mesmo match repetido na mesma invocação). Fail-open.
+- [x] `session_cleanup.rs`: no SessionEnd, rodar a ingestão do `rtk gain --json` (mesma lógica de `run/rtk_gain.rs`) para gravar a economia real do RTK em `savings_records`. Fail-open; nunca abortar o cleanup.
+- [x] Confirmar que `savings_breakdown` (reader) passa a retornar RTK e RecipeInjection não-zero quando houve atividade.
+- [x] `cargo build -p mustard-rt` + `cargo test -p mustard-rt` (+ `-p mustard-core` se tocar writer).
 
 ## Critérios de Aceitação
 
-- [ ] AC-1: `cargo build -p mustard-rt` passa — Command: `cargo build -p mustard-rt`
-- [ ] AC-2: `cargo test -p mustard-rt` passa — Command: `cargo test -p mustard-rt`
-- [ ] AC-3: emissor de injeção existe — Command: `bash -c "grep -rq 'RecipeInjection' apps/rt/src/run/recipe_match.rs && echo ok"`
-- [ ] AC-4: RTK ingerido no cleanup — Command: `bash -c "grep -riq 'rtk' apps/rt/src/hooks/session_cleanup.rs && echo ok"`
+- [x] AC-1: `cargo build -p mustard-rt` passa — Command: `cargo build -p mustard-rt`
+- [x] AC-2: `cargo test -p mustard-rt` passa — Command: `cargo test -p mustard-rt`
+- [x] AC-3: emissor de injeção existe — Command: `bash -c "grep -rq 'RecipeInjection' apps/rt/src/run/recipe_match.rs && echo ok"`
+- [x] AC-4: RTK ingerido no cleanup — Command: `bash -c "grep -riq 'rtk' apps/rt/src/hooks/session_cleanup.rs && echo ok"`
 
 ## Limites
 
