@@ -15,7 +15,7 @@
 import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import dayjs from "dayjs";
-import { Info } from "lucide-react";
+import { AlertTriangle, Info } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useStore } from "@/lib/store";
 import { EmptyState, KPICard } from "@/components/page";
@@ -143,6 +143,25 @@ export function Economia() {
   const { badgeLabel, badgeVariant } = collectorBadge(health);
   const sessions = data?.by_session ?? [];
 
+  // ── Ingestion staleness signal ───────────────────────────────────────────
+  // The estimated path (`run_usage`) and the measured path (`usage_totals`)
+  // are fed by different writers. When the OTEL collector daemon stops or
+  // Claude Code is not exporting OTEL, the estimated table freezes while the
+  // measured counters keep advancing. We surface a banner once the gap
+  // crosses STALENESS_HOURS so the user knows the per-spec estimates are
+  // out of date — without having to compare timestamps by hand.
+  const STALENESS_HOURS = 6;
+  const lastMeasuredMs = data?.last_updated_ms ?? null;
+  const lastEstimatedMs = data?.last_estimated_ms ?? null;
+  const ingestionStaleHours =
+    lastMeasuredMs != null && lastEstimatedMs != null
+      ? (lastMeasuredMs - lastEstimatedMs) / 3_600_000
+      : null;
+  const showStaleBanner =
+    (scope.kind === "project" || scope.kind === "all_projects") &&
+    ingestionStaleHours != null &&
+    ingestionStaleHours > STALENESS_HOURS;
+
   // ── Distribuição por agente (light, horizontal-bar style w/o chart lib) ─
   // We render the top agents as proportional bars sized by `tokens`. No
   // recharts/d3 dependency — pure flex + Tailwind widths.
@@ -152,6 +171,10 @@ export function Economia() {
   return (
     <div className="flex flex-col gap-6 w-full">
       <ScopeBar projectPath={repoPath} scope={scope} onScopeChange={setScope} />
+
+      {showStaleBanner && ingestionStaleHours != null && (
+        <IngestionStaleBanner hours={ingestionStaleHours} />
+      )}
 
       {/* ── KPI cards: custo, economia, cache hit ──────────────────────── */}
       <section className="grid grid-cols-1 md:grid-cols-3 gap-3">
@@ -394,6 +417,43 @@ function SessionRow({
         )}
       </div>
       <MetricsPill value={usdText} intent={usd > 0 ? "info" : "neutral"} />
+    </div>
+  );
+}
+
+/**
+ * Banner shown when the ESTIMATED ingestion path (`run_usage`) has fallen
+ * behind the MEASURED path (`usage_totals`) by more than 6h. Renders amber
+ * (warning), not red (error) — the data on screen is not wrong, it is just
+ * outdated for the per-spec/per-wave estimates. The MEASURED cost stays
+ * accurate independently.
+ */
+function IngestionStaleBanner({ hours }: { hours: number }) {
+  // Round to a friendly bucket so the message reads naturally: "há 9 horas"
+  // is more useful than "há 8.73 horas". For very large gaps (>48h) we tip
+  // over to "há N dias" because hours stop being legible past two days.
+  const label =
+    hours >= 48
+      ? `${Math.round(hours / 24)} dias`
+      : `${Math.round(hours)} horas`;
+  return (
+    <div className="flex items-start gap-3 px-4 py-3 rounded-lg border border-amber-500/30 bg-amber-500/10 text-[12.5px]">
+      <AlertTriangle
+        className="h-4 w-4 text-amber-500 shrink-0 mt-0.5"
+        strokeWidth={2}
+      />
+      <div className="flex flex-col gap-1 min-w-0">
+        <p className="font-medium text-[--ds-text-primary]">
+          A tabela de custo estimado por spec/onda parou de receber dados há {label}.
+        </p>
+        <p className="text-[--ds-text-secondary] leading-relaxed">
+          O custo medido (do card "Custo do projeto") continua atualizado — só a
+          quebra por feature está congelada. Para retomar a estimação por spec:
+          verifique que o collector do <code className="font-mono text-[11px]">mustard-rt</code> está rodando
+          e que o Claude Code está exportando OTEL via{" "}
+          <code className="font-mono text-[11px]">OTEL_EXPORTER_OTLP_ENDPOINT</code>.
+        </p>
+      </div>
     </div>
   );
 }

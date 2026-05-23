@@ -335,6 +335,27 @@ pub fn cache_hit_ratio_permille(conn: &Connection) -> Result<i64> {
     }
 }
 
+/// Epoch-ms timestamp of the most recent `run_usage` row.
+///
+/// Source of truth for "when did the ESTIMATED ingestion path last receive
+/// a span". The dashboard compares this against `usage_totals.updated_at`
+/// (the MEASURED path's freshness) — a large gap means the OTEL collector
+/// stopped flowing while Anthropic's metric counters kept advancing, and
+/// the per-spec/per-wave estimates are stale.
+///
+/// Fail-open at the SQL layer: a `prepare`/`query_row` failure returns
+/// `None`, never propagates. The banner that consumes this is advisory
+/// anyway.
+#[must_use]
+pub fn last_run_usage_ts(conn: &Connection) -> Option<i64> {
+    let row: rusqlite::Result<Option<i64>> = conn.query_row(
+        "SELECT MAX(started_at) FROM run_usage",
+        [],
+        |r| r.get::<_, Option<i64>>(0),
+    );
+    row.unwrap_or(None)
+}
+
 /// Every `run_usage` row attributed to `spec`, ordered by start time.
 ///
 /// # Errors

@@ -90,6 +90,9 @@ pub fn economy_summary(conn: &Connection, scope: EconomyScope) -> Result<Economy
                 // already carries its own measured `by_session` / freshness.
                 acc.by_session.extend(s.by_session.clone());
                 acc.last_updated_ms = acc.last_updated_ms.max(s.last_updated_ms);
+                // Freshest estimated ingestion across the fan-out. `max` of
+                // two Options picks the larger Some, or any Some over None.
+                acc.last_estimated_ms = acc.last_estimated_ms.max(s.last_estimated_ms);
             }
             // Re-sort and truncate top agents after the merge.
             acc.top_agents_by_cost
@@ -139,6 +142,14 @@ pub fn economy_summary(conn: &Connection, scope: EconomyScope) -> Result<Economy
             // MEASURED cost-by-session + freshness — populated ONLY at the
             // unfiltered (project) scope, since `usage_totals` carries no
             // spec/wave dimension. At spec/wave scope these stay empty/None.
+            // `last_estimated_ms` follows the same scope rule because the
+            // staleness banner that consumes it only makes sense when both
+            // freshness signals are available.
+            let last_estimated_ms = if unfiltered {
+                telemetry::reader::last_run_usage_ts(tele.conn())
+            } else {
+                None
+            };
             // Top sessions by USD, capped so the UI list stays compact.
             let (by_session, last_updated_ms) = if unfiltered {
                 let sessions = telemetry::reader::cost_by_session(tele.conn())?
@@ -196,6 +207,7 @@ pub fn economy_summary(conn: &Connection, scope: EconomyScope) -> Result<Economy
                 top_agents_by_cost: top,
                 by_session,
                 last_updated_ms,
+                last_estimated_ms,
             })
         }
     }

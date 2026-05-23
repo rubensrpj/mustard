@@ -54,6 +54,14 @@ export interface EconomySummary {
    * `null` at spec/wave scope or when no measured row exists.
    */
   last_updated_ms: number | null;
+  /**
+   * Epoch-ms of the last ESTIMATED row in `run_usage`. `null` at spec/wave
+   * scope or when the table is empty. Compared against `last_updated_ms` to
+   * detect stalled OTEL ingestion — a large positive `last_updated_ms -
+   * last_estimated_ms` means measured counters kept advancing while the
+   * per-spec estimator went silent.
+   */
+  last_estimated_ms: number | null;
 }
 
 /**

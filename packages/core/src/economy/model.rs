@@ -254,6 +254,13 @@ pub struct EconomySummary {
     /// Drives the "atualizado há Xs" freshness caption on the cost KPI.
     #[serde(default)]
     pub last_updated_ms: Option<i64>,
+    /// `MAX(run_usage.started_at)` epoch-ms — when the ESTIMATED counters were
+    /// last ingested. `None` at spec/wave scope or when `run_usage` is empty.
+    /// The dashboard compares this against `last_updated_ms`: when the gap
+    /// exceeds the staleness threshold the UI surfaces a banner so the user
+    /// knows the per-spec estimation has stopped catching new dispatches.
+    #[serde(default)]
+    pub last_estimated_ms: Option<i64>,
 }
 
 /// MEASURED cost for one Claude Code session, in USD (not micro-USD — sourced
