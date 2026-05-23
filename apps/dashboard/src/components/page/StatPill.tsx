@@ -8,7 +8,7 @@ import { cn } from "@/lib/utils";
 
 export type Intent = "success" | "warning" | "error" | "info" | "neutral";
 
-export interface MetricsPillProps {
+export interface StatPillProps {
   value: string | number;
   unit?: string;
   intent?: Intent;
@@ -32,13 +32,13 @@ const TEXT: Record<Intent, string> = {
   info:    "text-[--ds-intent-info]",
 };
 
-export function MetricsPill({
+export function StatPill({
   value,
   unit,
   intent = "neutral",
   tooltip,
   className,
-}: MetricsPillProps) {
+}: StatPillProps) {
   const title = typeof tooltip === "string" ? tooltip : undefined;
   return (
     <span

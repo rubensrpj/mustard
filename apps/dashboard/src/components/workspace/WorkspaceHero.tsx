@@ -2,9 +2,7 @@ import { useMemo } from "react";
 import { useNavigate } from "react-router";
 import { Activity } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { DataCard, EmptyState, SectionHeader } from "@/components/page";
-import { PhaseChip } from "@/components/page/PhaseChip";
-import { MetricsPill } from "@/components/ds";
+import { DataCard, EmptyState, PhaseChip, SectionHeader, StatPill } from "@/components/page";
 import { useTranslate } from "@/lib/i18n";
 import { relativeTime } from "@/lib/time";
 import type { SpecTrack, WorkspaceSummary } from "@/lib/types/specs";
@@ -108,7 +106,7 @@ export function WorkspaceHero({ summary }: WorkspaceHeroProps) {
               </span>
               <PhaseChip phase={track.current_phase || null} size="sm" />
               {track.agents_active > 0 ? (
-                <MetricsPill
+                <StatPill
                   value={track.agents_active}
                   unit="ag"
                   intent="info"

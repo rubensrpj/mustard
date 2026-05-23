@@ -21,7 +21,7 @@ import { AlertTriangle, Info } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useStore } from "@/lib/store";
 import { EmptyState, KPICard } from "@/components/page";
-import { MetricsPill } from "@/components/ds";
+import { StatPill } from "@/components/page";
 import { StatusDot, type StatusDotVariant } from "@/components/StatusDot";
 import { relativeTime } from "@/lib/time";
 import { useProjects } from "@/lib/dashboard";
@@ -405,7 +405,7 @@ function SessionRow({
           </span>
         )}
       </div>
-      <MetricsPill value={usdText} intent={usd > 0 ? "info" : "neutral"} />
+      <StatPill value={usdText} intent={usd > 0 ? "info" : "neutral"} />
     </div>
   );
 }

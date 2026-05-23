@@ -26,7 +26,7 @@ import {
 } from "lucide-react";
 import { useSpecTrace } from "@/hooks/useSpecTrace";
 import type { TraceKind, TraceNode, TokenBreakdown } from "@/lib/types/trace";
-import { MetricsPill } from "@/components/ds";
+import { StatPill } from "@/components/page";
 import { formatTokens } from "@/lib/types/economy";
 import { ToolEventRow } from "./ToolEventRow";
 import { cn } from "@/lib/utils";
@@ -296,7 +296,7 @@ const TraceNodeRow = memo(function TraceNodeRow({
         </span>
       ) : null}
       {node.duration_ms != null ? (
-        <MetricsPill
+        <StatPill
           value={formatDuration(node.duration_ms)}
           unit=""
           intent="neutral"
@@ -399,5 +399,5 @@ function TokenPill({ tokens }: TokenPillProps) {
     (tokens.cost_usd_micros != null
       ? ` · cost ${(tokens.cost_usd_micros / 1_000_000).toFixed(4)} USD`
       : "");
-  return <MetricsPill value={formatTokens(total)} unit="tok" tooltip={tooltip} />;
+  return <StatPill value={formatTokens(total)} unit="tok" tooltip={tooltip} />;
 }

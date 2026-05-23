@@ -27,7 +27,7 @@
 import { memo, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import { ChevronDown, ChevronRight, Copy, Check } from "lucide-react";
-import { DiffViewer, CodeBlock, type CodeLang } from "@/components/ds";
+import { DiffViewer, CodeBlock, type CodeLang } from "@/components/page";
 import { cn } from "@/lib/utils";
 import { relativeTime } from "@/lib/time";
 import type {

@@ -9,7 +9,7 @@
 // `Economia.tsx` is now the single title for this section.
 
 import { useTranslation } from "react-i18next";
-import { BaseRow } from "@/components/ds";
+import { BaseRow } from "@/components/page";
 import type { SavingsBreakdown, SavingsSource } from "@/lib/types/economy";
 import { formatTokens } from "@/lib/types/economy";
 

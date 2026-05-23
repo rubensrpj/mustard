@@ -2,7 +2,7 @@ import { useMemo } from "react";
 import { FileCode } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { DataCard, SectionHeader, EmptyState } from "@/components/page";
-import { MetricsPill } from "@/components/ds";
+import { StatPill } from "@/components/page";
 import { useWorkspaceSummarySingle } from "@/hooks/useWorkspaceSummary";
 import { useTranslate } from "@/lib/i18n";
 
@@ -19,7 +19,7 @@ const TOP_N = 10;
  * populating across spec CLOSEs.
  *
  * Visual: each row now leads with a `FileCode` icon and renders the hit count
- * as a `<MetricsPill>` so the dense list reads consistently with the rest of
+ * as a `<StatPill>` so the dense list reads consistently with the rest of
  * the design system (W5 primitives).
  */
 export function WorkspaceFilesRanking({ repoPath }: WorkspaceFilesRankingProps) {
@@ -77,7 +77,7 @@ export function WorkspaceFilesRanking({ repoPath }: WorkspaceFilesRankingProps) 
               >
                 <span dir="ltr">{row.path}</span>
               </span>
-              <MetricsPill value={row.count} unit="hit" />
+              <StatPill value={row.count} unit="hit" />
             </li>
           ))}
         </ul>

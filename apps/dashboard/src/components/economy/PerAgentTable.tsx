@@ -15,7 +15,7 @@
 
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
-import { MetricsPill } from "@/components/ds";
+import { StatPill } from "@/components/page";
 import type { AgentCost } from "@/lib/types/economy";
 import { formatTokens, formatUsd } from "@/lib/types/economy";
 
@@ -123,10 +123,10 @@ export function PerAgentTable({
               {r.span_count.toLocaleString()}
             </td>
             <td className="px-3 py-2 text-right">
-              <MetricsPill value={formatTokens(r.tokens)} unit="tok" />
+              <StatPill value={formatTokens(r.tokens)} unit="tok" />
             </td>
             <td className="px-3 py-2 text-right">
-              <MetricsPill
+              <StatPill
                 value={formatUsd(r.cost_usd_micros)}
                 intent={r.cost_usd_micros > 0 ? "info" : "neutral"}
               />
@@ -143,10 +143,10 @@ export function PerAgentTable({
               {restAggregate.span_count.toLocaleString()}
             </td>
             <td className="px-3 py-2 text-right">
-              <MetricsPill value={formatTokens(restAggregate.tokens)} unit="tok" />
+              <StatPill value={formatTokens(restAggregate.tokens)} unit="tok" />
             </td>
             <td className="px-3 py-2 text-right">
-              <MetricsPill
+              <StatPill
                 value={formatUsd(restAggregate.cost_usd_micros)}
                 intent="neutral"
               />
@@ -163,10 +163,10 @@ export function PerAgentTable({
             {total.span_count.toLocaleString()}
           </td>
           <td className="px-3 py-2.5 text-right">
-            <MetricsPill value={formatTokens(total.tokens)} unit="tok" />
+            <StatPill value={formatTokens(total.tokens)} unit="tok" />
           </td>
           <td className="px-3 py-2.5 text-right">
-            <MetricsPill
+            <StatPill
               value={formatUsd(total.cost_usd_micros)}
               intent={total.cost_usd_micros > 0 ? "info" : "neutral"}
             />

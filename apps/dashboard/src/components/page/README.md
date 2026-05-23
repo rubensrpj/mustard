@@ -9,9 +9,11 @@ KPI on every page.
 
 ```tsx
 import {
+  PageSurface,
   PageHeader, SectionHeader, KPICard, EmptyState,
   DataCard, PhaseChip, EventChip, AcBreakdown,
   WaveRowLabel, CollapsibleGroup,
+  StatPill, BaseRow, CodeBlock, DiffViewer, TreeNode,
 } from "@/components/page";
 
 export function MyPage() {

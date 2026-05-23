@@ -6,7 +6,7 @@ import type { ReactNode } from "react";
 import { ChevronRight } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { formatTokens } from "@/lib/types/economy";
-import { MetricsPill } from "./MetricsPill";
+import { StatPill } from "./StatPill";
 
 export type RowStatus =
   | "draft"
@@ -81,7 +81,7 @@ export function BaseRow({
         ) : null}
       </div>
       {typeof tokens === "number" ? (
-        <MetricsPill value={formatTokens(tokens)} unit="tok" />
+        <StatPill value={formatTokens(tokens)} unit="tok" />
       ) : null}
       {chevron ? (
         <ChevronRight size={14} className="shrink-0 text-[--ds-text-tertiary]" />
