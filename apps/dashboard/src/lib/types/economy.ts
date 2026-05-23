@@ -59,10 +59,17 @@ export interface EconomySummary {
 /**
  * MEASURED cost for one session, in USD (NOT micro-USD — sourced from the
  * `cost.usage` float counter). Matches `mustard_core::economy::SessionCost`.
+ *
+ * `last_at_ms` is epoch-ms (same units as `EconomySummary.last_updated_ms`) of
+ * the most recent usage row for this session; `null` when telemetry has no
+ * `usage_totals` row for the session yet. `specs` are the distinct specs
+ * touched during the session (empty when none were recorded).
  */
 export interface SessionCost {
   session_id: string;
   usd: number;
+  last_at_ms: number | null;
+  specs: string[];
 }
 
 /** Stable snake_case keys for `SavingsSource` (`mustard_core::economy`). */

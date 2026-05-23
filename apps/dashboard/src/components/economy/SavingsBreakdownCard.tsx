@@ -14,20 +14,32 @@ const SOURCE_ORDER: readonly SavingsSource[] = [
   "recipe_injection",
 ] as const;
 
+// User-facing labels: plain PT, no internal module names. The `estimated`
+// flag triggers a small "(estimado)" suffix in the rendered row — used for
+// recipe injection where the saving is a per-call estimate, not a measured
+// counter delta.
 const SOURCE_LABEL: Record<SavingsSource, string> = {
-  rtk_rewrite: "RTK rewrite",
-  model_routing_downgrade: "Model routing (downgrade)",
-  bash_guard_block: "Bash guard block",
-  budget_output_cut: "Budget output cut",
-  recipe_injection: "Recipe injection",
+  rtk_rewrite: "Reescrita de comando shell",
+  model_routing_downgrade: "Modelo mais barato quando seguro",
+  bash_guard_block: "Comando bloqueado por segurança",
+  budget_output_cut: "Resposta cortada por orçamento",
+  recipe_injection: "Esqueleto de receita",
 };
 
 const SOURCE_HINT: Record<SavingsSource, string> = {
-  rtk_rewrite: "rtk reescreveu o comando em forma compacta",
-  model_routing_downgrade: "routing trocou Opus por modelo mais barato (seguro)",
-  bash_guard_block: "bash_guard bloqueou comando destrutivo/ruidoso",
-  budget_output_cut: "budget cortou retorno antes de re-injetar no pai",
-  recipe_injection: "recipe esqueleto injetado em vez de derivar do zero",
+  rtk_rewrite: "encurtou o comando antes de rodar, mantendo o resultado",
+  model_routing_downgrade: "trocou para um modelo mais barato quando a tarefa permitia",
+  bash_guard_block: "barrou um comando destrutivo ou ruidoso antes da execução",
+  budget_output_cut: "cortou uma resposta muito longa antes de devolver ao pai",
+  recipe_injection: "injetou um esqueleto pronto em vez de pedir um do zero",
+};
+
+const SOURCE_ESTIMATED: Record<SavingsSource, boolean> = {
+  rtk_rewrite: false,
+  model_routing_downgrade: false,
+  bash_guard_block: false,
+  budget_output_cut: false,
+  recipe_injection: true,
 };
 
 export interface SavingsBreakdownCardProps {
@@ -49,20 +61,23 @@ export function SavingsBreakdownCard({ breakdown }: SavingsBreakdownCardProps) {
     <div className="flex flex-col gap-1">
       <div className="flex items-baseline justify-between px-1 pb-2">
         <span className="text-[11px] text-[--ds-text-tertiary] uppercase tracking-wide">
-          tokens economizados por intervenção
+          tokens que a ferramenta evitou de gastar
         </span>
         <span className="text-[11px] text-[--ds-text-tertiary] tabular-nums">
           total: {formatTokens(breakdown?.total_tokens_saved ?? 0)} tok ·{" "}
-          {totalEvents.toLocaleString()} eventos
+          {totalEvents.toLocaleString()} ocorrências
         </span>
       </div>
       <div className="flex flex-col gap-1">
         {SOURCE_ORDER.map((src) => {
           const tokens = bySource.get(src) ?? 0;
+          const label = SOURCE_ESTIMATED[src]
+            ? `${SOURCE_LABEL[src]} (estimado)`
+            : SOURCE_LABEL[src];
           return (
             <BaseRow
               key={src}
-              label={SOURCE_LABEL[src]}
+              label={label}
               summary={SOURCE_HINT[src]}
               tokens={tokens}
             />

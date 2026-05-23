@@ -1,10 +1,11 @@
 # wave-3-ui — Economia didática + card por-sessão + economias reais
 
 ### Parent: [[2026-05-22-economia-didatica-e-economias-reais]]
-### Stage: Plan
+### Stage: Execute
 ### Outcome: Active
 ### Flags:
 ### Lang: pt
+### Checkpoint: 2026-05-22T18:30:00Z
 
 ## Resumo
 

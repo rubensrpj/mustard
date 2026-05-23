@@ -1,22 +1,23 @@
-// Economia — W7 page (spec 2026-05-20-economia-moat-unification, Wave 7).
+// Economia — didactic rewrite (spec
+// `.claude/spec/2026-05-22-economia-didatica-e-economias-reais/wave-3-ui`).
 //
-// Single source of every cost/saving signal: `useEconomySummary(scope)`. The
-// scope picker (Projeto / Spec / Wave / Comparar projetos) lives in
-// `<ScopeBar>` and drives the same hook key — switching tab refetches.
+// The Wave-3 brief is plain: every card needs a PT title + one-line caption
+// that says what it measures and why it matters. Internal DTO field names
+// and raw module names MUST NOT appear as user-facing labels — AC-3 greps
+// this file for those literals (see spec) and fails the build if any slip
+// through. Keep this comment paraphrased to avoid tripping the grep.
 //
-// AC-5 contract: the four scope labels — "Projeto", "Spec", "Wave",
-// "Comparar projetos" — are rendered by `<ScopeBar>`.
-//
-// AC-6 contract: this file MUST NOT import the Tauri core API or call the
-// Tauri command bridge directly. Every IO call routes through
-// `useEconomySummary` or the typed wrappers in `lib/dashboard.ts`.
+// The data hook (`useEconomySummary`) is unchanged from Wave 7: it routes
+// through the typed `lib/dashboard.ts` wrappers and the `<ScopeBar>` drives
+// the same query key. The new wire we now consume is `SessionCost.last_at_ms`
+// + `SessionCost.specs`, populated by Wave 1 of this spec.
 
 import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import dayjs from "dayjs";
 import { useStore } from "@/lib/store";
 import { EmptyState, KPICard } from "@/components/page";
-import { MetricsPill, BaseRow } from "@/components/ds";
+import { MetricsPill } from "@/components/ds";
 import { StatusDot, type StatusDotVariant } from "@/components/StatusDot";
 import { relativeTime } from "@/lib/time";
 import { useProjects } from "@/lib/dashboard";
@@ -107,11 +108,10 @@ export function Economia() {
   // ── Derived KPI numbers ──────────────────────────────────────────────────
   const data = summary.data;
   const cacheRatio = (routing.data?.cache_hit_ratio_permille ?? 0) / 10; // -> percent
-  const retryRatio = (routing.data?.retry_overhead_ratio_permille ?? 0) / 10;
 
   // ── Freshness / collector-health badge ───────────────────────────────────
   // `last_updated_ms` is epoch-ms of the last MEASURED counter (project scope
-  // only). The badge label maps the unified collector state to PT-BR; the
+  // only). The badge label maps the unified collector state to PT and the
   // relative-time tail reads from the measured timestamp so it tracks the
   // headline cost, not the badge's own 60s poll.
   const health = collectorHealth.data;
@@ -137,9 +137,9 @@ export function Economia() {
       <section className="grid grid-cols-1 md:grid-cols-3 gap-3">
         <div className="flex flex-col gap-1.5">
           <KPICard
-            label="Custo medido (Anthropic)"
+            label="Custo do projeto (medido)"
             value={summary.isLoading ? "…" : formatUsd(data?.total_cost_usd_micros ?? 0)}
-            hint={`${(data?.span_count ?? 0).toLocaleString()} spans · ${formatTokens(data?.total_tokens ?? 0)} tokens`}
+            hint={`${(data?.span_count ?? 0).toLocaleString()} execuções · ${formatTokens(data?.total_tokens ?? 0)} tokens`}
             accent={data && data.total_cost_usd_micros > 0 ? "indigo" : "zinc"}
           />
           {/* Freshness badge — "ao vivo / parado / desligado" + atualizado há Xs. */}
@@ -148,47 +148,59 @@ export function Economia() {
             <span>{badgeLabel}</span>
             {updatedAgo ? <span>· atualizado {updatedAgo}</span> : null}
           </div>
-          {/* Provenance — make clear this is the BILLED measure, not an estimate. */}
+          {/* Caption — explica o que é o número e por que ele importa. */}
           <p className="px-1 text-[10px] leading-tight text-[--ds-text-tertiary]">
-            fonte: custo medido (Anthropic) · <code className="font-mono">cost.usage</code> via OTEL
+            cobrado pela Anthropic, somado por sessão
             {updatedAgo ? ` · atualizado ${updatedAgo}` : ""}
           </p>
         </div>
-        <KPICard
-          label="Economia (todas as fontes)"
-          value={summary.isLoading ? "…" : `${formatTokens(data?.total_tokens_saved ?? 0)} tok`}
-          hint="rtk + routing + bash_guard + budget + recipe"
-          accent={data && data.total_tokens_saved > 0 ? "emerald" : "zinc"}
-        />
-        <KPICard
-          label="Cache hit ratio"
-          value={
-            routing.isLoading ? "…" : routing.data ? `${cacheRatio.toFixed(1)}%` : "—"
-          }
-          hint={
-            routing.data
-              ? `${(routing.data.frame_count ?? 0).toLocaleString()} frames · retry overhead ${retryRatio.toFixed(1)}%`
-              : "sem ContextCostFrame neste escopo"
-          }
-          accent={cacheRatio > 30 ? "emerald" : cacheRatio > 0 ? "amber" : "zinc"}
-        />
+        <div className="flex flex-col gap-1.5">
+          <KPICard
+            label="Economia total (tokens)"
+            value={summary.isLoading ? "…" : `${formatTokens(data?.total_tokens_saved ?? 0)} tok`}
+            hint="abaixo, o detalhe por origem"
+            accent={data && data.total_tokens_saved > 0 ? "emerald" : "zinc"}
+          />
+          <p className="px-1 text-[10px] leading-tight text-[--ds-text-tertiary]">
+            tokens que a ferramenta evitou de gastar — abaixo, o detalhe por origem
+          </p>
+        </div>
+        <div className="flex flex-col gap-1.5">
+          <KPICard
+            label="Cache hit"
+            value={
+              routing.isLoading ? "…" : routing.data ? `${cacheRatio.toFixed(1)}%` : "—"
+            }
+            hint={
+              routing.data
+                ? `${(routing.data.frame_count ?? 0).toLocaleString()} trechos de contexto`
+                : "sem dados de contexto neste escopo"
+            }
+            accent={cacheRatio > 30 ? "emerald" : cacheRatio > 0 ? "amber" : "zinc"}
+          />
+          <p className="px-1 text-[10px] leading-tight text-[--ds-text-tertiary]">
+            quanto do contexto a Anthropic reaproveitou — quanto maior, mais barato
+          </p>
+        </div>
       </section>
 
       {summary.error ? (
         <EmptyState
           variant="warning"
-          title="Falha ao ler economy_summary"
+          title="Falha ao ler os dados de economia"
           description={String((summary.error as Error)?.message ?? summary.error)}
         />
       ) : null}
 
       {/* ── Por agente (top-N) ─────────────────────────────────────────── */}
       <section className="flex flex-col gap-3">
-        <header className="flex items-baseline justify-between">
-          <h2 className="text-sm font-medium">Por agente (top {topAgents.length || 0})</h2>
-          <span className="text-[11px] text-[--ds-text-tertiary]">
-            fonte: <code className="font-mono">economy_summary.top_agents_by_cost</code>
-          </span>
+        <header className="flex flex-col gap-0.5">
+          <h2 className="text-sm font-medium">
+            {topAgents.length > 0 ? `Por agente (top ${topAgents.length})` : "Por agente"}
+          </h2>
+          <p className="text-[11px] text-[--ds-text-tertiary]">
+            agentes que mais consumiram tokens nesta janela
+          </p>
         </header>
         <div className="rounded-[--ds-radius-md] border border-[--ds-surface-hover] bg-[--ds-surface-base] overflow-hidden">
           <PerAgentTable agents={topAgents} />
@@ -198,11 +210,11 @@ export function Economia() {
       {/* ── Distribuição por agente (horizontal bars sem chart lib) ────── */}
       {topAgents.length > 0 && (
         <section className="flex flex-col gap-3">
-          <header className="flex items-baseline justify-between">
+          <header className="flex flex-col gap-0.5">
             <h2 className="text-sm font-medium">Distribuição de tokens por agente</h2>
-            <span className="text-[11px] text-[--ds-text-tertiary]">
-              proporcional a <code className="font-mono">tokens</code>
-            </span>
+            <p className="text-[11px] text-[--ds-text-tertiary]">
+              cada barra é proporcional aos tokens consumidos pelo agente
+            </p>
           </header>
           <div className="flex flex-col gap-1.5">
             {topAgents.map((a) => {
@@ -229,67 +241,60 @@ export function Economia() {
         </section>
       )}
 
-      {/* ── Prevention breakdown (por SavingsSource) ──────────────────── */}
+      {/* ── Por sessão (custo medido por sessão do Claude Code) ───────── */}
       <section className="flex flex-col gap-3">
-        <header className="flex items-baseline justify-between">
-          <h2 className="text-sm font-medium">Prevention breakdown</h2>
-          <span className="text-[11px] text-[--ds-text-tertiary]">
-            fonte: <code className="font-mono">savings_breakdown</code>
-          </span>
+        <header className="flex flex-col gap-0.5">
+          <h2 className="text-sm font-medium">Por sessão</h2>
+          <p className="text-[11px] text-[--ds-text-tertiary]">
+            uma linha por sessão do Claude Code — compare o custo com <code className="font-mono">/cost</code> para conferir
+          </p>
+        </header>
+        {sessions.length > 0 ? (
+          <div className="flex flex-col gap-1">
+            {sessions.map((s) => (
+              <SessionRow
+                key={`sess-${s.session_id}`}
+                sessionId={s.session_id}
+                usd={s.usd}
+                lastAtMs={s.last_at_ms}
+                specs={s.specs}
+              />
+            ))}
+          </div>
+        ) : (
+          <EmptyState
+            title="Sem sessões registradas"
+            description="As sessões aparecem aqui depois que o Claude Code rodar com telemetria ligada."
+          />
+        )}
+      </section>
+
+      {/* ── O que a ferramenta evitou de gastar (savings by source) ────── */}
+      <section className="flex flex-col gap-3">
+        <header className="flex flex-col gap-0.5">
+          <h2 className="text-sm font-medium">O que a ferramenta evitou de gastar</h2>
+          <p className="text-[11px] text-[--ds-text-tertiary]">
+            cada linha é uma estratégia que poupa tokens — a injeção de receita é estimada
+          </p>
         </header>
         <div className="rounded-[--ds-radius-md] border border-[--ds-surface-hover] bg-[--ds-surface-base] p-2">
           <SavingsBreakdownCard breakdown={breakdown.data} />
         </div>
       </section>
 
-      {/* ── Custo por sessão (medido) — o cross-check real ─────────────── */}
-      {sessions.length > 0 && (
-        <section className="flex flex-col gap-3">
-          <header className="flex items-baseline justify-between">
-            <h2 className="text-sm font-medium">Custo por sessão (medido)</h2>
-            <span className="text-[11px] text-[--ds-text-tertiary]">
-              fonte: <code className="font-mono">usage_totals.cost.usage</code>
-            </span>
-          </header>
+      {/* ── Custo estimado por spec / onda (empty-state — Em breve) ───── */}
+      <section className="flex flex-col gap-3">
+        <header className="flex flex-col gap-0.5">
+          <h2 className="text-sm font-medium">Custo estimado por spec / onda</h2>
           <p className="text-[11px] text-[--ds-text-tertiary]">
-            compare uma sessão com <code className="font-mono">/cost</code> do Claude Code para conferir
+            estimativa por execução — útil para comparar features
           </p>
-          <div className="flex flex-col gap-1">
-            {sessions.map((s) => (
-              <BaseRow
-                key={`sess-${s.session_id}`}
-                label={s.session_id ? s.session_id.slice(0, 8) : "—"}
-                summary={`$${s.usd.toFixed(s.usd < 0.01 ? 4 : s.usd < 1 ? 3 : 2)}`}
-              />
-            ))}
-          </div>
-        </section>
-      )}
-
-      {/* ── Top specs por custo (Project / AllProjects scopes only) ───── */}
-      {(scope.kind === "project" || scope.kind === "all_projects") &&
-        topAgents.length > 0 && (
-          <section className="flex flex-col gap-3">
-            <header className="flex items-baseline justify-between">
-              <h2 className="text-sm font-medium">Top contribuintes</h2>
-              <span className="text-[11px] text-[--ds-text-tertiary]">
-                {scope.kind === "all_projects"
-                  ? `${scope.projects.length} projetos comparados`
-                  : "agentes mais caros do projeto"}
-              </span>
-            </header>
-            <div className="flex flex-col gap-1">
-              {topAgents.slice(0, 5).map((a) => (
-                <BaseRow
-                  key={`top-${a.agent_id}`}
-                  label={a.agent_id || "—"}
-                  summary={`${a.span_count} spans · ${formatUsd(a.cost_usd_micros)}`}
-                  tokens={a.tokens}
-                />
-              ))}
-            </div>
-          </section>
-        )}
+        </header>
+        <EmptyState
+          title="Em breve"
+          description="A quebra estimada por spec e onda aparecerá aqui assim que executarmos pipelines com receitas casadas."
+        />
+      </section>
     </div>
   );
 }
@@ -297,7 +302,79 @@ export function Economia() {
 // ── Helpers ────────────────────────────────────────────────────────────────
 
 /**
- * Map the unified collector-health state to a PT-BR label + status-dot variant.
+ * One row of the "Por sessão" card. Layout: date · short-id · chips · cost.
+ *
+ * Spec chips overflow gracefully — we show the first three and collapse the
+ * remainder behind a `+N` chip so a session that touched ten specs doesn't
+ * blow up the row width. `last_at_ms == null` falls back to "—" rather than
+ * rendering `Invalid Date`.
+ */
+function SessionRow({
+  sessionId,
+  usd,
+  lastAtMs,
+  specs,
+}: {
+  sessionId: string;
+  usd: number;
+  lastAtMs: number | null;
+  specs: string[];
+}) {
+  const date = formatSessionDate(lastAtMs);
+  const shortId = sessionId ? sessionId.slice(0, 8) : "—";
+  const visibleSpecs = specs.slice(0, 3);
+  const overflowCount = Math.max(0, specs.length - visibleSpecs.length);
+  const usdText = `$${usd.toFixed(usd < 0.01 ? 4 : usd < 1 ? 3 : 2)}`;
+
+  return (
+    <div className="flex items-center gap-3 px-3 py-2 rounded-[--ds-radius-md] bg-[--ds-surface-base]">
+      <span className="font-mono text-[12px] text-[--ds-text-secondary] tabular-nums w-[88px] shrink-0">
+        {date}
+      </span>
+      <span className="font-mono text-[12px] text-[--ds-text-primary] w-[72px] shrink-0">
+        {shortId}
+      </span>
+      <div className="flex flex-wrap items-center gap-1 min-w-0 flex-1">
+        {visibleSpecs.length === 0 ? (
+          <span className="text-[11px] text-[--ds-text-tertiary] italic">
+            sem spec registrada
+          </span>
+        ) : (
+          visibleSpecs.map((spec) => (
+            <span
+              key={`${sessionId}-spec-${spec}`}
+              className="px-1.5 py-0.5 rounded text-[10.5px] font-mono text-[--ds-text-secondary] bg-[--ds-surface-hover] truncate max-w-[180px]"
+              title={spec}
+            >
+              {spec}
+            </span>
+          ))
+        )}
+        {overflowCount > 0 && (
+          <span
+            className="px-1.5 py-0.5 rounded text-[10.5px] font-mono text-[--ds-text-tertiary] bg-[--ds-surface-hover]"
+            title={specs.slice(visibleSpecs.length).join(", ")}
+          >
+            +{overflowCount}
+          </span>
+        )}
+      </div>
+      <MetricsPill value={usdText} intent={usd > 0 ? "info" : "neutral"} />
+    </div>
+  );
+}
+
+/**
+ * Format an epoch-ms timestamp as `DD/MM HH:mm`. `null` (no measured row for
+ * the session yet) becomes the en-dash so the column width stays stable.
+ */
+function formatSessionDate(ms: number | null): string {
+  if (ms == null) return "—";
+  return dayjs(ms).format("DD/MM HH:mm");
+}
+
+/**
+ * Map the unified collector-health state to a PT label + status-dot variant.
  * `undefined` (still loading) reads as "desligado" so the badge never claims
  * the data is live before we know.
  */
@@ -339,4 +416,3 @@ function scopeKey(scope: EconomyScope): string {
       return `a:${[...scope.projects].sort().join(",")}`;
   }
 }
-
