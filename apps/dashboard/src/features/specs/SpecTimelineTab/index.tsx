@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { ChevronRight, FileText } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { relativeTime } from "@/lib/time";
-import { SpecMarkdownViewer, type SpecMarkdownKind } from "./SpecMarkdownViewer";
+import { SpecMarkdownViewer, type SpecMarkdownKind } from "../SpecMarkdownViewer";
 import type { SpecTimelineNode } from "@/lib/types/specs";
 
 interface SpecTimelineTabProps {
@@ -17,9 +17,9 @@ interface SpecTimelineTabProps {
 }
 
 const KIND_ACCENT: Record<string, string> = {
-  phase:  "text-[--color-accent-mustard]",
+  phase:  "text-[--primary]",
   wave:   "text-foreground/80",
-  qa:     "text-[--color-ok]",
+  qa:     "text-[--intent-success]",
   review: "text-muted-foreground",
   agent:  "text-muted-foreground",
   tool:   "text-muted-foreground/60",
@@ -27,9 +27,9 @@ const KIND_ACCENT: Record<string, string> = {
 };
 
 const KIND_BADGE_CLS: Record<string, string> = {
-  phase:  "bg-[--color-accent-mustard]/15 text-[--color-accent-mustard]",
+  phase:  "bg-[--primary]/15 text-[--primary]",
   wave:   "bg-muted text-foreground/80",
-  qa:     "bg-[--color-ok]/15 text-[--color-ok]",
+  qa:     "bg-[--intent-success]/15 text-[--intent-success]",
   review: "bg-muted text-muted-foreground",
   agent:  "bg-muted text-muted-foreground",
   tool:   "bg-muted/60 text-muted-foreground/70",
@@ -130,7 +130,7 @@ export function SpecTimelineTab({
               className={cn(
                 "flex items-center gap-1 text-[11px] uppercase tracking-wide font-medium",
                 "text-muted-foreground hover:text-foreground transition-colors",
-                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[--color-accent-mustard] rounded-sm",
+                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[--primary] rounded-sm",
               )}
             >
               <ChevronRight
@@ -161,7 +161,7 @@ export function SpecTimelineTab({
                         className={cn(
                           "absolute -left-[5px] top-2.5 w-2 h-2 rounded-full border bg-background",
                           node.kind === "phase"
-                            ? "border-[--color-accent-mustard]"
+                            ? "border-[--primary]"
                             : "border-border",
                         )}
                         aria-hidden
@@ -174,7 +174,7 @@ export function SpecTimelineTab({
                           className={cn(
                             "flex-1 text-left flex flex-col gap-0.5 rounded-r-md min-w-0",
                             "hover:bg-muted/30 focus-visible:outline-none focus-visible:ring-2",
-                            "focus-visible:ring-[--color-accent-mustard] transition-colors",
+                            "focus-visible:ring-[--primary] transition-colors",
                             onNodeClick ? "cursor-pointer" : "cursor-default",
                           )}
                           aria-label={`${node.label}${node.phase ? `, fase ${node.phase}` : ""}${node.wave != null ? `, onda ${node.wave}` : ""}, ${relativeTime(node.ts)}`}
@@ -220,7 +220,7 @@ export function SpecTimelineTab({
                             className={cn(
                               "shrink-0 h-6 w-6 mt-0.5 flex items-center justify-center rounded",
                               "text-muted-foreground/60 hover:text-foreground hover:bg-muted/60",
-                              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[--color-accent-mustard]",
+                              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[--primary]",
                               "transition-colors opacity-0 group-hover:opacity-100 focus-visible:opacity-100",
                             )}
                           >

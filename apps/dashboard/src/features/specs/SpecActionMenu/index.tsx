@@ -7,7 +7,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useSpecAction } from "@/hooks/useSpecAction";
-import { SpecActionConfirm } from "./SpecActionConfirm";
+import { SpecActionConfirm } from "../SpecActionConfirm";
 
 interface SpecActionMenuProps {
   repoPath: string | null;
@@ -36,7 +36,7 @@ export function SpecActionMenu({ repoPath, spec, status }: SpecActionMenuProps) 
           <button
             type="button"
             aria-label={`Ações para spec ${spec}`}
-            className="h-6 w-6 flex items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[--color-accent-mustard] transition-colors opacity-0 group-hover/speccard:opacity-100 focus-visible:opacity-100"
+            className="h-6 w-6 flex items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[--primary] transition-colors opacity-0 group-hover/speccard:opacity-100 focus-visible:opacity-100"
           >
             ⋮
           </button>
@@ -54,7 +54,7 @@ export function SpecActionMenu({ repoPath, spec, status }: SpecActionMenuProps) 
           <DropdownMenuSeparator />
           <DropdownMenuItem
             onClick={() => setConfirmOpen(true)}
-            className="text-[--color-error] focus:text-[--color-error]"
+            className="text-[--intent-error] focus:text-[--intent-error]"
             disabled={mutation.isPending}
           >
             Remover

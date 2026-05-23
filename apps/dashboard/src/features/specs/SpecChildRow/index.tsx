@@ -1,5 +1,5 @@
 import { cn } from "@/lib/utils";
-import { StageBullet } from "./StageBullet";
+import { StageBullet } from "../StageBullet";
 import { useT } from "@/lib/i18n";
 import type { Stage, SpecState } from "@/lib/types/specs";
 
@@ -75,7 +75,7 @@ export function SpecChildRow({
       className={cn(
         "flex items-center gap-2 h-8 pl-12 pr-4 rounded-md text-[11px]",
         onClick &&
-          "cursor-pointer transition-colors hover:bg-muted/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[--color-accent-mustard]",
+          "cursor-pointer transition-colors hover:bg-muted/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[--primary]",
       )}
     >
       <StageBullet

@@ -22,7 +22,7 @@ function MiniSparkline({ data, className }: { data: number[]; className?: string
       <polyline
         points={pts}
         fill="none"
-        stroke="var(--color-accent-mustard, #e6c84a)"
+        stroke="var(--primary, #e6c84a)"
         strokeWidth="1.5"
         strokeLinejoin="round"
         strokeLinecap="round"
@@ -68,7 +68,7 @@ function RtkCard({ rtk }: { rtk: RtkBlock }) {
         <div>
           <p className="text-[11px] text-muted-foreground mb-1">tokens economizados · RTK</p>
           <div
-            className="text-3xl font-bold tabular-nums leading-none text-[--color-accent-mustard]"
+            className="text-3xl font-bold tabular-nums leading-none text-[--primary]"
             style={{ fontVariantNumeric: "tabular-nums" }}
           >
             {rtk.available ? formatTokens(rtk.tokens_saved) : "—"}
@@ -293,7 +293,7 @@ export function EconomySection({
         <p className="text-[12px] text-muted-foreground">tokens economizados no total</p>
         <div className="flex items-end gap-3">
           <span
-            className="font-bold tabular-nums text-[--color-accent-mustard] leading-none"
+            className="font-bold tabular-nums text-[--primary] leading-none"
             style={{
               fontSize: "clamp(48px, 7vw, 72px)",
               fontVariantNumeric: "tabular-nums",

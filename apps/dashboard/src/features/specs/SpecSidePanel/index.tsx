@@ -4,8 +4,8 @@ import { Link } from "react-router";
 import { X } from "lucide-react";
 import { fetchSpecMarkdown, type SpecRow } from "@/lib/dashboard";
 import { resolveWaveFamily } from "@/lib/waves";
-import { Markdown } from "@/components/Markdown";
-import { WaveNav } from "@/components/WaveNav";
+import { Markdown } from "@/components/page/Markdown";
+import { WaveNav } from "@/features/specs/WaveNav";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 

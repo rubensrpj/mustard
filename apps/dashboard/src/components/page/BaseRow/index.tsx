@@ -6,7 +6,7 @@ import type { ReactNode } from "react";
 import { ChevronRight } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { formatTokens } from "@/lib/types/economy";
-import { StatPill } from "./StatPill";
+import { StatPill } from "../StatPill";
 
 export type RowStatus =
   | "draft"

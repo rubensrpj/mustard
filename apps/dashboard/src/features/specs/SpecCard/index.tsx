@@ -1,8 +1,8 @@
 import { Maximize2, ArrowUpRight } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { PipelineTimeline } from "@/components/telemetry/PipelineTimeline";
-import { SpecActionMenu } from "./SpecActionMenu";
-import { StatusPill } from "./spec-status";
+import { PipelineTimeline } from "@/features/telemetry/PipelineTimeline";
+import { SpecActionMenu } from "../SpecActionMenu";
+import { StatusPill } from "../_shared/spec-status";
 import type { SpecCard as SpecCardData } from "@/lib/types/specs";
 
 interface SpecCardProps {
@@ -134,7 +134,7 @@ export function SpecCard({
           {/* Wave 4 (spec `2026-05-21-dashboard-spec-tabs-polish`): the
               +N waves badge now reads in mustard accent (not muted) so the
               eye picks it up as a "parent has children to drill into" cue.
-              The canonical className="bg-[--color-accent-mustard]/15 ..."
+              The canonical className="bg-[--primary]/15 ..."
               applied below is what keeps AC-W4-4 honest. */}
           {hasChildren && (
             networkHref ? (
@@ -142,14 +142,14 @@ export function SpecCard({
                 href={networkHref}
                 onClick={(e) => e.stopPropagation()}
                 title={`${childWaves} waves — abrir aba Network`}
-                className="text-[10px] font-mono font-medium px-1.5 py-0.5 rounded uppercase tracking-wide bg-[--color-accent-mustard]/15 text-[--color-accent-mustard] hover:bg-[--color-accent-mustard]/25 transition-colors"
+                className="text-[10px] font-mono font-medium px-1.5 py-0.5 rounded uppercase tracking-wide bg-[--primary]/15 text-[--primary] hover:bg-[--primary]/25 transition-colors"
               >
                 +{childWaves} waves
               </a>
             ) : (
               <span
                 title={`${childWaves} waves`}
-                className="text-[10px] font-mono font-medium px-1.5 py-0.5 rounded uppercase tracking-wide bg-[--color-accent-mustard]/15 text-[--color-accent-mustard]"
+                className="text-[10px] font-mono font-medium px-1.5 py-0.5 rounded uppercase tracking-wide bg-[--primary]/15 text-[--primary]"
               >
                 +{childWaves} waves
               </span>

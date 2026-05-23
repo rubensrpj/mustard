@@ -7,14 +7,14 @@ import {
   EmptyState,
   DataCard,
 } from "@/components/page";
-import { WorkspaceHero } from "@/components/workspace/WorkspaceHero";
-import { WorkspaceHealthCard } from "@/components/workspace/WorkspaceHealthCard";
-import { WorkspaceStatusCounters } from "@/components/workspace/WorkspaceStatusCounters";
-import { WorkspaceAlertsColumn } from "@/components/workspace/WorkspaceAlertsColumn";
-import { WorkspaceSpecsByStatus } from "@/components/workspace/WorkspaceSpecsByStatus";
-import { WorkspaceTokenSummary } from "@/components/workspace/WorkspaceTokenSummary";
-import { WorkspaceFilesRanking } from "@/components/workspace/WorkspaceFilesRanking";
-import { ExecutionTrace } from "@/components/trace/ExecutionTrace";
+import { WorkspaceHero } from "@/features/workspace/WorkspaceHero";
+import { WorkspaceHealthCard } from "@/features/workspace/WorkspaceHealthCard";
+import { WorkspaceStatusCounters } from "@/features/workspace/WorkspaceStatusCounters";
+import { WorkspaceAlertsColumn } from "@/features/workspace/WorkspaceAlertsColumn";
+import { WorkspaceSpecsByStatus } from "@/features/workspace/WorkspaceSpecsByStatus";
+import { WorkspaceTokenSummary } from "@/features/workspace/WorkspaceTokenSummary";
+import { WorkspaceFilesRanking } from "@/features/workspace/WorkspaceFilesRanking";
+import { ExecutionTrace } from "@/features/trace/ExecutionTrace";
 
 /**
  * Wave 8 (2026-05-21, spec

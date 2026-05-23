@@ -1,16 +1,16 @@
 import { Link, useNavigate } from "react-router";
 import { useQuery, useQueries } from "@tanstack/react-query";
 import { FolderGit2 } from "lucide-react";
-import { StatusDot } from "@/components/StatusDot";
+import { StatusDot } from "@/components/page/StatusDot";
 import { useStore } from "@/lib/store";
 import { discoverProjects } from "@/api/discovery";
 import type { Project as DiscoveryProject } from "@/api/discovery";
 import { relativeTime } from "@/lib/time";
-import { AggregateOverview } from "@/components/AggregateOverview";
+import { AggregateOverview } from "@/features/workspace/AggregateOverview";
 import { Separator } from "@/components/ui/separator";
 import { fetchActivePipelines } from "@/lib/dashboard";
-import { LivePipelineCard } from "@/components/LivePipelineCard";
-import { WorkspaceDigest } from "@/components/WorkspaceDigest";
+import { LivePipelineCard } from "@/features/workspace/LivePipelineCard";
+import { WorkspaceDigest } from "@/features/workspace/WorkspaceDigest";
 
 export function Home() {
   const navigate = useNavigate();

@@ -12,12 +12,12 @@ import {
   type FrictionEntry,
 } from "@/lib/dashboard";
 import { Badge } from "@/components/ui/badge";
-import { KnowledgeCard } from "@/components/KnowledgeCard";
+import { KnowledgeCard } from "@/features/knowledge/KnowledgeCard";
 import {
   KnowledgeBadge,
   KIND_BADGE,
   kindFromType,
-} from "@/components/knowledge/KnowledgeBadge";
+} from "@/features/knowledge/KnowledgeBadge";
 import {
   SectionHeader,
   EmptyState,

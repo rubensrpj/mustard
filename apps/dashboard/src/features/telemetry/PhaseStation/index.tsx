@@ -100,7 +100,7 @@ export function PhaseStation({
       className={cn(
         "flex flex-col items-center gap-1",
         minWidth,
-        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[--color-accent-mustard] focus-visible:rounded-sm",
+        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[--primary] focus-visible:rounded-sm",
         className,
       )}
       title={`${label}${eventsCount != null ? ` — ${eventsCount} eventos` : ""}`}
@@ -132,7 +132,7 @@ export function PhaseStation({
                 state === "future" && "border-border text-muted-foreground/50 bg-transparent",
                 state === "active" &&
                   cn(
-                    "border-[--color-accent-mustard] text-[--color-accent-mustard] bg-[--color-accent-mustard]/10 motion-safe:animate-pulse",
+                    "border-[--primary] text-[--primary] bg-[--primary]/10 motion-safe:animate-pulse",
                     activeRing,
                   ),
                 state === "completed" && "border-transparent text-foreground bg-muted",
@@ -155,7 +155,7 @@ export function PhaseStation({
               )
             : cn(
                 state === "future" && "text-muted-foreground/50",
-                state === "active" && "text-[--color-accent-mustard]",
+                state === "active" && "text-[--primary]",
                 state === "completed" && "text-foreground",
               ),
         )}

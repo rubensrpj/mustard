@@ -47,7 +47,7 @@ function MiniSparkline({ data }: { data: number[] }) {
       <polyline
         points={points}
         fill="none"
-        stroke="var(--color-accent-mustard, #e6c84a)"
+        stroke="var(--primary, #e6c84a)"
         strokeWidth="1.5"
         strokeLinejoin="round"
         strokeLinecap="round"
@@ -95,10 +95,10 @@ export function CriteriaPanel({ criteria, className }: CriteriaPanelProps) {
           <span
             className={
               passPct >= 80
-                ? "text-[--color-ok]"
+                ? "text-[--intent-success]"
                 : passPct >= 50
-                  ? "text-[--color-accent-mustard]"
-                  : "text-[--color-error]"
+                  ? "text-[--primary]"
+                  : "text-[--intent-error]"
             }
           >
             {passPct}%
@@ -117,7 +117,7 @@ export function CriteriaPanel({ criteria, className }: CriteriaPanelProps) {
       <div className="flex flex-col gap-1">
         <p className="text-[10px] text-muted-foreground mb-1">últimas falhas</p>
         {failures.length === 0 ? (
-          <p className="text-[11px] text-[--color-ok]">Sem falhas recentes</p>
+          <p className="text-[11px] text-[--intent-success]">Sem falhas recentes</p>
         ) : (
           failures.map((c) => (
             <div
@@ -125,7 +125,7 @@ export function CriteriaPanel({ criteria, className }: CriteriaPanelProps) {
               className="text-[11px] text-muted-foreground truncate"
               title={`${c.id} · ${c.spec}`}
             >
-              <span className="text-[--color-error] font-medium">{c.id}</span>
+              <span className="text-[--intent-error] font-medium">{c.id}</span>
               {" · "}
               <span className="text-foreground/70">{shortSpec(c.spec)}</span>
               {c.last_run_at && (

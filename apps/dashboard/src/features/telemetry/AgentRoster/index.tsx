@@ -91,10 +91,10 @@ export function AgentRoster({ agents, topN = 8, className }: AgentRosterProps) {
             .map((a) => (
               <div key={`err-${a.subagent_type}`} className="flex items-center gap-1.5">
                 <span
-                  className="inline-block w-1.5 h-1.5 rounded-full bg-[--color-error] flex-shrink-0"
+                  className="inline-block w-1.5 h-1.5 rounded-full bg-[--intent-error] flex-shrink-0"
                   aria-hidden="true"
                 />
-                <span className="text-[11px] text-[--color-error] tabular-nums">
+                <span className="text-[11px] text-[--intent-error] tabular-nums">
                   {a.subagent_type} · {a.error_count} erro{a.error_count !== 1 ? "s" : ""}
                 </span>
               </div>

@@ -92,10 +92,10 @@ function EventRow({
             onSpecClick(event.spec as string);
           }}
           className={cn(
-            "font-mono text-[11.5px] text-[--color-accent-mustard] hover:underline",
+            "font-mono text-[11.5px] text-[--primary] hover:underline",
             "truncate max-w-[180px] shrink-0 mt-0.5",
             "focus-visible:outline-none focus-visible:ring-2",
-            "focus-visible:ring-[--color-accent-mustard] rounded",
+            "focus-visible:ring-[--primary] rounded",
           )}
           title={event.spec}
         >

@@ -6,9 +6,9 @@ import { cn } from "@/lib/utils";
 export type KPIAccent = "emerald" | "amber" | "rose" | "indigo" | "violet" | "sky" | "zinc";
 
 const ACCENT_STRIPE: Record<KPIAccent, string> = {
-  emerald: "bg-[--color-ok]/40",
-  amber: "bg-[--color-accent-mustard]/40",
-  rose: "bg-[--color-error]/40",
+  emerald: "bg-[--intent-success]/40",
+  amber: "bg-[--primary]/40",
+  rose: "bg-[--intent-error]/40",
   indigo: "bg-primary/40",
   violet: "bg-primary/40",
   sky: "bg-primary/20",
@@ -16,9 +16,9 @@ const ACCENT_STRIPE: Record<KPIAccent, string> = {
 };
 
 const ACCENT_VALUE: Record<KPIAccent, string> = {
-  emerald: "text-[--color-ok]",
-  amber: "text-[--color-accent-mustard]",
-  rose: "text-[--color-error]",
+  emerald: "text-[--intent-success]",
+  amber: "text-[--primary]",
+  rose: "text-[--intent-error]",
   indigo: "text-primary",
   violet: "text-primary",
   sky: "text-primary",

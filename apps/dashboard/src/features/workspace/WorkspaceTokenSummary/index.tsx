@@ -42,7 +42,7 @@ export function WorkspaceTokenSummary({ repoPath }: WorkspaceTokenSummaryProps) 
         <>
           <div className="mt-3 flex items-baseline gap-2">
             <span
-              className="text-3xl font-bold tabular-nums text-[--color-accent-mustard]"
+              className="text-3xl font-bold tabular-nums text-[--primary]"
               style={{ fontVariantNumeric: "tabular-nums" }}
               aria-label={`${NF.format(data?.total_saved ?? 0)} tokens economizados nos últimos 30 dias`}
             >
@@ -85,9 +85,9 @@ export function WorkspaceTokenSummary({ repoPath }: WorkspaceTokenSummaryProps) 
             navigate("/economia");
           }}
           className={cn(
-            "text-[11px] text-[--color-accent-mustard] hover:underline",
+            "text-[11px] text-[--primary] hover:underline",
             "focus-visible:outline-none focus-visible:ring-2",
-            "focus-visible:ring-[--color-accent-mustard] rounded",
+            "focus-visible:ring-[--primary] rounded",
           )}
         >
           Ver detalhes →

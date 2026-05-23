@@ -7,7 +7,7 @@ import { fetchSpecs, fetchSpecMarkdown } from "@/lib/dashboard";
 import type { Project } from "@/api/discovery";
 import { Badge } from "@/components/ui/badge";
 import { relativeTime } from "@/lib/time";
-import { Markdown } from "@/components/Markdown";
+import { Markdown } from "@/components/page/Markdown";
 
 export function SpecDetail() {
   const { id, specName: rawSpecName } = useParams<{ id: string; specName: string }>();

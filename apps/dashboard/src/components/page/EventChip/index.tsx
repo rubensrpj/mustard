@@ -29,9 +29,9 @@ export function EventChip({ eventType, overall, size = "default", className }: E
   let title = t.detail;
   if (eventType === "qa.result" && overall) {
     displayLabel = overall === "pass" ? "qa ✓" : overall === "fail" ? "qa ✗" : "qa ⊘";
-    text = overall === "pass" ? "text-[--color-ok]" : overall === "fail" ? "text-[--color-error]" : "text-[--color-accent-mustard]";
-    bg = overall === "pass" ? "bg-[--color-ok]/10" : overall === "fail" ? "bg-[--color-error]/10" : "bg-[--color-accent-mustard]/10";
-    border = overall === "pass" ? "border-[--color-ok]/25" : overall === "fail" ? "border-[--color-error]/25" : "border-[--color-accent-mustard]/25";
+    text = overall === "pass" ? "text-[--intent-success]" : overall === "fail" ? "text-[--intent-error]" : "text-[--primary]";
+    bg = overall === "pass" ? "bg-[--intent-success]/10" : overall === "fail" ? "bg-[--intent-error]/10" : "bg-[--primary]/10";
+    border = overall === "pass" ? "border-[--intent-success]/25" : overall === "fail" ? "border-[--intent-error]/25" : "border-[--primary]/25";
     title = `QA overall: ${overall}`;
   }
 

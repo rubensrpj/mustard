@@ -68,7 +68,7 @@ export function HistoryStrip({ entries, onSelect, className }: HistoryStripProps
             className={cn(
               "flex-shrink-0 flex flex-col gap-1 rounded-lg border border-border bg-card/40",
               "px-3 py-2 text-left transition-colors hover:bg-muted/60 min-w-[140px] max-w-[180px]",
-              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[--color-accent-mustard]",
+              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[--primary]",
             )}
           >
             <span

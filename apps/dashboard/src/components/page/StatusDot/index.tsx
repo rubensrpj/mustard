@@ -11,12 +11,12 @@ interface StatusDotProps {
 
 const COLOR: Record<StatusDotVariant, string> = {
   idle: "bg-zinc-500",
-  active: "bg-[--color-ok]",
-  planning: "bg-[--color-accent-mustard]",
-  blocked: "bg-[--color-error]",
+  active: "bg-[--intent-success]",
+  planning: "bg-[--primary]",
+  blocked: "bg-[--intent-error]",
   done: "bg-zinc-400",
-  success: "bg-[--color-ok]",
-  error: "bg-[--color-error]",
+  success: "bg-[--intent-success]",
+  error: "bg-[--intent-error]",
 };
 
 const SIZE: Record<NonNullable<StatusDotProps["size"]>, string> = {
@@ -32,7 +32,7 @@ export function StatusDot({ variant, pulse, size = "md", className }: StatusDotP
         "inline-block rounded-full",
         SIZE[size],
         COLOR[variant],
-        variant === "active" && "ring-1 ring-[--color-ok]/30",
+        variant === "active" && "ring-1 ring-[--intent-success]/30",
         pulse && variant === "active" && "animate-pulse",
         className,
       )}

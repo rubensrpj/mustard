@@ -1,8 +1,8 @@
 import { useNavigate } from "react-router";
 import { cn } from "@/lib/utils";
-import { PhaseStation } from "../telemetry/PhaseStation";
+import { PhaseStation } from "@/features/telemetry/PhaseStation";
 import type { SpecTrack } from "@/lib/types/specs";
-import type { PhaseStationProps } from "../telemetry/PhaseStation";
+import type { PhaseStationProps } from "@/features/telemetry/PhaseStation";
 
 interface SpecTrackRowProps {
   track: SpecTrack;
@@ -32,11 +32,11 @@ function statusColor(status: string): string {
     case "closed":
       return "text-muted-foreground";
     case "blocked":
-      return "text-[--color-error]";
+      return "text-[--intent-error]";
     case "cancelled":
       return "text-muted-foreground/50";
     default:
-      return "text-[--color-accent-mustard]";
+      return "text-[--primary]";
   }
 }
 
@@ -44,7 +44,7 @@ function statusColor(status: string): string {
 function RightIndicator({ track }: { track: SpecTrack }) {
   if (track.blocked_reason) {
     return (
-      <span className="text-[11px] font-medium text-[--color-error] shrink-0">
+      <span className="text-[11px] font-medium text-[--intent-error] shrink-0">
         ⚠ BLOCKED
       </span>
     );
@@ -58,7 +58,7 @@ function RightIndicator({ track }: { track: SpecTrack }) {
   }
   return (
     <span
-      className="text-[12px] text-[--color-accent-mustard] shrink-0"
+      className="text-[12px] text-[--primary] shrink-0"
       aria-label="Em execução"
     >
       ▶
@@ -133,7 +133,7 @@ export function SpecTrackRow({ track, className }: SpecTrackRowProps) {
       className={cn(
         "flex items-center gap-3 px-3 py-2 rounded-md cursor-pointer",
         "hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2",
-        "focus-visible:ring-[--color-accent-mustard] focus-visible:rounded-md",
+        "focus-visible:ring-[--primary] focus-visible:rounded-md",
         "transition-colors min-w-0",
         className,
       )}

@@ -73,7 +73,7 @@ function MetricTile({
       className={cn(
         "flex flex-col gap-1 p-3 rounded-lg border",
         accent
-          ? "border-[--color-accent-mustard]/30 bg-[--color-accent-mustard]/5"
+          ? "border-[--primary]/30 bg-[--primary]/5"
           : "border-border/40 bg-muted/10",
       )}
     >
@@ -83,7 +83,7 @@ function MetricTile({
       <span
         className={cn(
           "text-xl font-mono font-medium tabular-nums",
-          accent ? "text-[--color-accent-mustard]" : "text-foreground",
+          accent ? "text-[--primary]" : "text-foreground",
         )}
       >
         {value}
@@ -148,7 +148,7 @@ export function AmendMetricsCard() {
         <div className="flex flex-col gap-0.5">
           <h3
             className="text-[13px] font-medium tracking-tight"
-            style={{ color: "var(--color-accent-mustard, #f5a623)" }}
+            style={{ color: "var(--primary, #f5a623)" }}
           >
             Janelas de emenda
           </h3>

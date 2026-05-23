@@ -95,7 +95,7 @@ export function EffortHeatmap({ cells, className }: EffortHeatmapProps) {
                   fill:
                     opacity === 0
                       ? "var(--color-paper, #252525)"
-                      : `color-mix(in srgb, var(--color-accent-mustard, #e6c84a) ${Math.round(opacity * 100)}%, var(--color-paper, #252525))`,
+                      : `color-mix(in srgb, var(--primary, #e6c84a) ${Math.round(opacity * 100)}%, var(--color-paper, #252525))`,
                   cursor: "crosshair",
                 }}
                 onMouseEnter={(e) => {

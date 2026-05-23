@@ -82,7 +82,7 @@ export function SpecEventsTab({ events, initialFilter }: SpecEventsTabProps) {
               className={cn(
                 "text-[11px] px-2 py-0.5 rounded-full border transition-colors",
                 selectedKind === chip.value
-                  ? "border-[--color-accent-mustard] text-[--color-accent-mustard] bg-[--color-accent-mustard]/10"
+                  ? "border-[--primary] text-[--primary] bg-[--primary]/10"
                   : "border-border text-muted-foreground hover:border-muted-foreground",
               )}
               aria-pressed={selectedKind === chip.value}

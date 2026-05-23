@@ -1,6 +1,6 @@
 import { cn } from "@/lib/utils";
 import { PHASE_COLORS, phaseColor } from "@/lib/phase-palette";
-import { PhaseStation, type PhaseStationState } from "./PhaseStation";
+import { PhaseStation, type PhaseStationState } from "../PhaseStation";
 
 const PHASES: Array<"analyze" | "plan" | "execute" | "qa" | "close"> = [
   "analyze",

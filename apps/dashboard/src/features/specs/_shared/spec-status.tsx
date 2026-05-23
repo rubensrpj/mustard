@@ -50,9 +50,9 @@ export const STATUS_CLASSES: Record<string, string> = {
   qa:                "bg-emerald-500/15 text-emerald-400",
   "closed-followup": "bg-cyan-500/15 text-cyan-400",
   completed:         "bg-slate-500/15 text-slate-400",
-  cancelled:         "bg-red-500/10 text-red-400/70",
-  blocked:           "bg-red-500/15 text-red-400",
-  "wave-failed":     "bg-red-500/15 text-red-400",
+  cancelled:         "bg-[--intent-error]/15/10 text-[--intent-error]/70",
+  blocked:           "bg-[--intent-error]/15/15 text-[--intent-error]",
+  "wave-failed":     "bg-[--intent-error]/15/15 text-[--intent-error]",
   abandoned:         "bg-muted/40 text-muted-foreground/60",
   // Pre-Wave-4 fallback strings (older DB rows).
   active:            "bg-green-500/15 text-green-400",
@@ -61,8 +61,8 @@ export const STATUS_CLASSES: Record<string, string> = {
   // Tonal palette revisited by Wave 4 of `2026-05-21-dashboard-spec-tabs-polish`:
   // skip/unknown are split into two distinct grey tints so the eye can still
   // tell "ran-but-skipped" from "never-ran-yet" at a glance.
-  pass:              "bg-[--color-ok]/15 text-[--color-ok]",
-  fail:              "bg-[--color-error]/15 text-[--color-error]",
+  pass:              "bg-[--intent-success]/15 text-[--intent-success]",
+  fail:              "bg-[--intent-error]/15 text-[--intent-error]",
   skip:              "bg-muted/40 text-muted-foreground",
   unknown:           "bg-muted text-muted-foreground/70",
 };

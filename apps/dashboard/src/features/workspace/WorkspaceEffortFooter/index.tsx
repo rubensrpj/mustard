@@ -43,7 +43,7 @@ export function WorkspaceEffortFooter({ topFiles, className }: WorkspaceEffortFo
               </span>
               <div className="flex-shrink-0 w-16 h-1 rounded-full bg-muted overflow-hidden">
                 <div
-                  className="h-full rounded-full bg-[--color-accent-mustard]/60"
+                  className="h-full rounded-full bg-[--primary]/60"
                   style={{ width: `${pct.toFixed(1)}%` }}
                   aria-hidden
                 />

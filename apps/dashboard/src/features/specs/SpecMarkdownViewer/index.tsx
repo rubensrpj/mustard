@@ -7,7 +7,7 @@ import {
   DialogTitle,
   DialogDescription,
 } from "@/components/ui/dialog";
-import { Markdown } from "@/components/Markdown";
+import { Markdown } from "@/components/page/Markdown";
 import { fetchSpecMarkdown } from "@/lib/dashboard";
 import { cn } from "@/lib/utils";
 
@@ -172,9 +172,9 @@ export function SpecMarkdownViewer({
                 onClick={() => setActiveId(t.id)}
                 className={cn(
                   "shrink-0 text-[12px] px-2.5 py-1.5 rounded-t-md transition-colors",
-                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[--color-accent-mustard]",
+                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[--primary]",
                   selected
-                    ? "text-foreground border-b-2 border-[--color-accent-mustard] -mb-px font-medium"
+                    ? "text-foreground border-b-2 border-[--primary] -mb-px font-medium"
                     : "text-muted-foreground hover:text-foreground hover:bg-muted/40",
                 )}
               >

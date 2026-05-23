@@ -3,10 +3,10 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { useSpecWaves } from "@/hooks/useSpecWaves";
 import { useSpecQuality } from "@/hooks/useSpecQuality";
 import { useSpecChildren } from "@/hooks/useSpecChildren";
-import { SpecWavesTab } from "./SpecWavesTab";
-import { SpecQualityTab } from "./SpecQualityTab";
-import { SpecNetworkTab } from "./SpecNetworkTab";
-import { ExecutionTrace } from "@/components/trace/ExecutionTrace";
+import { SpecWavesTab } from "../SpecWavesTab";
+import { SpecQualityTab } from "../SpecQualityTab";
+import { SpecNetworkTab } from "../SpecNetworkTab";
+import { ExecutionTrace } from "@/features/trace/ExecutionTrace";
 
 interface SpecDrillDownProps {
   repoPath: string | null;
@@ -98,7 +98,7 @@ export function SpecDrillDown({
         {wavesQ.isLoading ? (
           <LoadingRows />
         ) : wavesQ.error ? (
-          <p className="text-[13px] text-[--color-error]">
+          <p className="text-[13px] text-[--intent-error]">
             Erro ao carregar ondas: {wavesQ.error.message}
           </p>
         ) : (
@@ -126,7 +126,7 @@ export function SpecDrillDown({
         {qualityQ.isLoading ? (
           <LoadingRows />
         ) : qualityQ.error ? (
-          <p className="text-[13px] text-[--color-error]">
+          <p className="text-[13px] text-[--intent-error]">
             Erro ao carregar qualidade: {qualityQ.error.message}
           </p>
         ) : (

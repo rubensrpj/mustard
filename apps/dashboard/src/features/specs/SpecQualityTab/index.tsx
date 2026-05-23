@@ -1,6 +1,6 @@
 import { relativeTime } from "@/lib/time";
 import { extractTestLink } from "@/lib/quality-link";
-import { StatusPill } from "@/components/specs/spec-status";
+import { StatusPill } from "@/features/specs/_shared/spec-status";
 import type { SpecQualityItem } from "@/lib/types/specs";
 
 interface SpecQualityTabProps {
@@ -85,7 +85,7 @@ function AcRow({
           href={editorUrl}
           target="_blank"
           rel="noopener noreferrer"
-          className="text-[11px] text-[--color-accent-mustard] hover:underline self-start"
+          className="text-[11px] text-[--primary] hover:underline self-start"
           title={testLink ?? undefined}
         >
           abrir arquivo de teste
@@ -93,7 +93,7 @@ function AcRow({
       )}
 
       {item.status === "fail" && item.fail_reason && (
-        <pre className="text-[--color-error] text-[11px] whitespace-pre-wrap mt-1">
+        <pre className="text-[--intent-error] text-[11px] whitespace-pre-wrap mt-1">
           {item.fail_reason}
         </pre>
       )}

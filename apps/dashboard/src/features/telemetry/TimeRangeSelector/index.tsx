@@ -1,5 +1,5 @@
 import { cn } from "@/lib/utils";
-import { useTelemetryTimeRange } from "./TelemetryTimeRangeContext";
+import { useTelemetryTimeRange } from "../TelemetryTimeRangeContext";
 import type { TimeRange } from "@/lib/types/telemetry";
 
 const OPTIONS: { value: TimeRange; label: string }[] = [
@@ -35,9 +35,9 @@ export function TimeRangeSelector({ className }: TimeRangeSelectorProps) {
             aria-pressed={active}
             className={cn(
               "rounded-full px-3 py-1 text-[12px] font-medium transition-colors",
-              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[--color-accent-mustard] focus-visible:ring-offset-1",
+              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[--primary] focus-visible:ring-offset-1",
               active
-                ? "bg-[--color-accent-mustard]/20 text-[--color-accent-mustard] shadow-sm"
+                ? "bg-[--primary]/20 text-[--primary] shadow-sm"
                 : "text-muted-foreground hover:text-foreground hover:bg-muted",
             )}
           >

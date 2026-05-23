@@ -27,16 +27,16 @@ export function AcBreakdown({ pass, fail, skip, className }: AcBreakdownProps) {
       title={`${pass} passou · ${fail} falhou · ${skip} pulou (total ${total})`}
     >
       <div className="flex h-1 w-14 rounded-full overflow-hidden bg-muted/30 shrink-0">
-        {pass > 0 && <div className="bg-[--color-ok]/80" style={{ width: `${passW}%` }} />}
-        {fail > 0 && <div className="bg-[--color-error]/80" style={{ width: `${failW}%` }} />}
-        {skip > 0 && <div className="bg-[--color-accent-mustard]/80" style={{ width: `${skipW}%` }} />}
+        {pass > 0 && <div className="bg-[--intent-success]/80" style={{ width: `${passW}%` }} />}
+        {fail > 0 && <div className="bg-[--intent-error]/80" style={{ width: `${failW}%` }} />}
+        {skip > 0 && <div className="bg-[--primary]/80" style={{ width: `${skipW}%` }} />}
       </div>
       <span className="font-mono text-[11px] tabular-nums shrink-0">
-        <span className="text-[--color-ok]">{pass}</span>
+        <span className="text-[--intent-success]">{pass}</span>
         {fail > 0 && <span className="text-muted-foreground/40">/</span>}
-        {fail > 0 && <span className="text-[--color-error]">{fail}</span>}
+        {fail > 0 && <span className="text-[--intent-error]">{fail}</span>}
         {skip > 0 && <span className="text-muted-foreground/40">/</span>}
-        {skip > 0 && <span className="text-[--color-accent-mustard]">{skip}</span>}
+        {skip > 0 && <span className="text-[--primary]">{skip}</span>}
         <span className="text-muted-foreground/40"> de {total}</span>
       </span>
     </div>

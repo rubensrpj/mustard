@@ -217,7 +217,7 @@ export function WorkspaceDigest({ project }: Props) {
       <div className="flex items-center gap-3 px-3 py-2 border border-border rounded-md bg-card/30">
         <span
           className={`inline-block w-2 h-2 rounded-full ${
-            isFresh ? "bg-[--color-ok] animate-pulse ring-1 ring-[--color-ok]/30" : "bg-zinc-500"
+            isFresh ? "bg-[--intent-success] animate-pulse ring-1 ring-[--intent-success]/30" : "bg-zinc-500"
           }`}
           aria-hidden
         />

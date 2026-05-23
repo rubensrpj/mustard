@@ -12,16 +12,16 @@ import {
 } from "@/lib/dashboard";
 import { useT } from "@/lib/i18n";
 import { SectionHeader, EmptyState } from "@/components/page";
-import { SpecRow } from "@/components/specs/SpecRow";
-import { SpecGroupHeader } from "@/components/specs/SpecGroupHeader";
-import { SpecChildrenTree } from "@/components/specs/SpecChildrenTree";
+import { SpecRow } from "@/features/specs/SpecRow";
+import { SpecGroupHeader } from "@/features/specs/SpecGroupHeader";
+import { SpecChildrenTree } from "@/features/specs/SpecChildrenTree";
 import {
   stateFromStatus,
   filterBucket,
   type SpecFilterBucket,
-} from "@/components/specs/stage-from-status";
-import { SpecTabBar, type SpecTab } from "@/components/specs/SpecTabBar";
-import { SpecDetailDashboard } from "@/components/specs/SpecDetailDashboard";
+} from "@/features/specs/_shared/stage-from-status";
+import { SpecTabBar, type SpecTab } from "@/features/specs/SpecTabBar";
+import { SpecDetailDashboard } from "@/features/specs/SpecDetailDashboard";
 import {
   Dialog,
   DialogContent,

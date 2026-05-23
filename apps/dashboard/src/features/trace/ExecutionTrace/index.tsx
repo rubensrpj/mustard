@@ -28,7 +28,7 @@ import { useSpecTrace } from "@/hooks/useSpecTrace";
 import type { TraceKind, TraceNode, TokenBreakdown } from "@/lib/types/trace";
 import { StatPill } from "@/components/page";
 import { formatTokens } from "@/lib/types/economy";
-import { ToolEventRow } from "./ToolEventRow";
+import { ToolEventRow } from "../ToolEventRow";
 import { cn } from "@/lib/utils";
 
 interface ExecutionTraceProps {

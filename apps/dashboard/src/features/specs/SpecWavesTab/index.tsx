@@ -6,8 +6,8 @@ import { relativeTime } from "@/lib/time";
 import type { SpecChild, SpecWave } from "@/lib/types/specs";
 import { useSpecWaveFiles } from "@/hooks/useSpecWaveFiles";
 import { useSpecWavesPlanned } from "@/hooks/useSpecWavesPlanned";
-import { WaveMarkdownDrawer } from "./WaveMarkdownDrawer";
-import { StatusPill } from "./spec-status";
+import { WaveMarkdownDrawer } from "../WaveMarkdownDrawer";
+import { StatusPill } from "../_shared/spec-status";
 
 interface SpecWavesTabProps {
   waves: SpecWave[];
@@ -39,15 +39,15 @@ interface SpecWavesTabProps {
 
 /**
  * Wave status palette — mirrors `mustard_specsdb::WaveStatus`.
- * Mustard yellow for the active wave, --color-ok for completed,
- * --color-error for failed, neutral grey for queued. AC-12 of
+ * Mustard yellow for the active wave, --intent-success for completed,
+ * --intent-error for failed, neutral grey for queued. AC-12 of
  * spec 2026-05-20-dashboard-ux-honest pins this file as the one
  * that must read wave.status + render formatDuration.
  */
 const STATUS_CLS: Record<string, string> = {
-  completed:   "bg-[--color-ok]/15 text-[--color-ok]",
-  in_progress: "bg-[--color-accent-mustard]/15 text-[--color-accent-mustard]",
-  failed:      "bg-[--color-error]/15 text-[--color-error]",
+  completed:   "bg-[--intent-success]/15 text-[--intent-success]",
+  in_progress: "bg-[--primary]/15 text-[--primary]",
+  failed:      "bg-[--intent-error]/15 text-[--intent-error]",
   queued:      "bg-muted text-muted-foreground",
 };
 
@@ -135,7 +135,7 @@ function ChildRow({ child }: { child: SpecChild }) {
         className={cn(
           "w-full flex items-center gap-2 py-1.5 px-2 text-left rounded",
           "hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2",
-          "focus-visible:ring-[--color-accent-mustard] transition-colors",
+          "focus-visible:ring-[--primary] transition-colors",
         )}
         title={`Abrir ${child.spec}`}
       >
@@ -240,11 +240,11 @@ function WaveLi({
   const borderClass =
     borderOverride ??
     (wave.status === "completed"
-      ? "border-[--color-ok]/30"
+      ? "border-[--intent-success]/30"
       : wave.status === "in_progress"
-        ? "border-[--color-accent-mustard]/40"
+        ? "border-[--primary]/40"
         : isFailed
-          ? "border-[--color-error]/40"
+          ? "border-[--intent-error]/40"
           : "border-border/50");
 
   const clickable = !!onOpenWave;
@@ -263,7 +263,7 @@ function WaveLi({
         "flex flex-col gap-1.5 px-3 py-2.5 rounded-md border bg-card/10",
         borderClass,
         clickable &&
-          "cursor-pointer hover:bg-card/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[--color-accent-mustard]",
+          "cursor-pointer hover:bg-card/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[--primary]",
       )}
       onClick={clickable ? handleOpen : undefined}
       onKeyDown={clickable ? handleKeyDown : undefined}
@@ -287,7 +287,7 @@ function WaveLi({
                 ? "Esconder sub-specs desta onda"
                 : `Mostrar ${childCount} sub-spec${childCount === 1 ? "" : "s"} desta onda`
             }
-            className="shrink-0 mt-0.5 h-5 w-5 flex items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[--color-accent-mustard] transition-colors"
+            className="shrink-0 mt-0.5 h-5 w-5 flex items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[--primary] transition-colors"
           >
             <ChevronRight
               className={cn(
@@ -375,7 +375,7 @@ function WaveLi({
           hint nudges the user to open the markdown viewer or QA tab
           where the actual stderr lives. */}
       {isFailed && (
-        <p className="text-[11px] text-[--color-error]/80 pl-7">
+        <p className="text-[11px] text-[--intent-error]/80 pl-7">
           Onda falhou — ver Qualidade / markdown para detalhes do último erro.
         </p>
       )}
@@ -517,7 +517,7 @@ export function SpecWavesTab({
           // No children correlation for Onda #0 (children are nested under
           // numbered waves; orphans render in the bucket at the bottom).
           childrenOfWave={undefined}
-          borderOverride="border-[--color-accent-mustard]/40 bg-[--color-accent-mustard]/5"
+          borderOverride="border-[--primary]/40 bg-[--primary]/5"
           labelOverride="Spec principal"
         />
       )}

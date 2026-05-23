@@ -8,7 +8,7 @@ import {
   type TimelineRow,
 } from "@/hooks/useAggregate";
 import type { Project } from "@/api/discovery";
-import { StatusDot, type StatusDotVariant } from "@/components/StatusDot";
+import { StatusDot, type StatusDotVariant } from "@/components/page/StatusDot";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { relativeTime } from "@/lib/time";
@@ -205,8 +205,8 @@ function RoiScoreboard({
         </div>
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-          <div className="flex flex-col gap-1 px-3 py-2.5 rounded border border-[--color-ok]/30 bg-[--color-ok]/5">
-            <span className="text-[10px] uppercase tracking-wider text-[--color-ok]">
+          <div className="flex flex-col gap-1 px-3 py-2.5 rounded border border-[--intent-success]/30 bg-[--intent-success]/5">
+            <span className="text-[10px] uppercase tracking-wider text-[--intent-success]">
               COM Mustard — foi ao modelo
             </span>
             <span className="text-xl font-mono font-medium text-foreground tabular-nums">

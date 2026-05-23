@@ -2,7 +2,7 @@ import { Loader2, Wand2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { Tooltip, TooltipContent, TooltipTrigger, TooltipProvider } from '@/components/ui/tooltip';
-import { ConfrontBanner } from '@/components/prd/ConfrontBanner';
+import { ConfrontBanner } from '@/features/prd/ConfrontBanner';
 import type { PrdConfront } from '@/lib/types/prd';
 
 /**

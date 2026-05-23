@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
-import { Sidebar } from "./Sidebar";
-import { Topbar } from "./Topbar";
+import { Sidebar } from "../Sidebar";
+import { Topbar } from "../Topbar";
 
 /**
  * Single page shell for every route. The `<main>` scrolls; inside it a

@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { SpecTrackRow } from "./SpecTrackRow";
+import { SpecTrackRow } from "../SpecTrackRow";
 import type { SpecTrack } from "@/lib/types/specs";
 
 interface SpecTracksListProps {
@@ -94,7 +94,7 @@ export function SpecTracksList({ tracks, className }: SpecTracksListProps) {
               "flex items-center gap-1 text-[11px] uppercase tracking-wide",
               "text-muted-foreground font-medium px-3 py-1 rounded",
               "hover:text-foreground focus-visible:outline-none",
-              "focus-visible:ring-2 focus-visible:ring-[--color-accent-mustard]",
+              "focus-visible:ring-2 focus-visible:ring-[--primary]",
             )}
           >
             {closedExpanded ? (

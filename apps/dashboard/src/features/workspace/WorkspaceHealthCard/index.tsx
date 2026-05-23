@@ -47,7 +47,7 @@ function Counter({ label, value, filterKey, hasSignal }: CounterProps) {
       onClick={handleClick}
       className={cn(
         "flex flex-col items-center gap-0.5 px-4 py-2 rounded-md transition-colors",
-        "hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[--color-accent-mustard]",
+        "hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[--primary]",
         "min-w-[80px]",
       )}
       title={`Filtrar por: ${label}`}
@@ -167,7 +167,7 @@ export function WorkspaceHealthCard({ repoPath }: WorkspaceHealthCardProps) {
         className={cn(
           "w-full flex items-center justify-between gap-3 px-4 py-2.5",
           "text-left transition-colors hover:bg-muted/20",
-          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[--color-accent-mustard]",
+          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[--primary]",
         )}
         aria-expanded={resolvedExpanded}
       >

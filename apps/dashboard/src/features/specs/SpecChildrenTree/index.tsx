@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { fetchSpecChildrenTree } from "@/lib/dashboard";
-import { SpecChildRow } from "./SpecChildRow";
+import { SpecChildRow } from "../SpecChildRow";
 import { useT } from "@/lib/i18n";
 
 interface SpecChildrenTreeProps {

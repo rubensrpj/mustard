@@ -4,7 +4,7 @@ import { useNavigate } from "react-router";
 import { FileText, MoreHorizontal, CheckCircle2, XCircle, RotateCcw } from "lucide-react";
 import { fetchSpecs, type SpecRow, type SpecBucket } from "@/lib/dashboard";
 import type { Project } from "@/api/discovery";
-import { StatusDot, type StatusDotVariant } from "@/components/StatusDot";
+import { StatusDot, type StatusDotVariant } from "@/components/page/StatusDot";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {

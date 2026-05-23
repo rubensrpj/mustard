@@ -105,7 +105,7 @@ export function WorkspaceSpecsByStatus({ repoPath }: WorkspaceSpecsByStatusProps
           className={cn(
             "px-2 py-0.5 text-[11px] rounded transition-colors",
             "focus-visible:outline-none focus-visible:ring-2",
-            "focus-visible:ring-[--color-accent-mustard]",
+            "focus-visible:ring-[--primary]",
             p === period
               ? "bg-foreground/10 text-foreground"
               : "text-muted-foreground hover:text-foreground",
@@ -159,9 +159,9 @@ export function WorkspaceSpecsByStatus({ repoPath }: WorkspaceSpecsByStatusProps
             navigate("/specs");
           }}
           className={cn(
-            "text-[11px] text-[--color-accent-mustard] hover:underline",
+            "text-[11px] text-[--primary] hover:underline",
             "focus-visible:outline-none focus-visible:ring-2",
-            "focus-visible:ring-[--color-accent-mustard] rounded",
+            "focus-visible:ring-[--primary] rounded",
           )}
         >
           Ver detalhes →

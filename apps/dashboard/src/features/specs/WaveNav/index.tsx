@@ -72,10 +72,10 @@ function StateDot({ state }: { state: WaveState }) {
       aria-hidden
       className={cn(
         "inline-block size-1.5 rounded-full shrink-0",
-        state === "done" && "bg-[--color-ok]",
-        state === "active" && "bg-[--color-accent-mustard] animate-pulse",
+        state === "done" && "bg-[--intent-success]",
+        state === "active" && "bg-[--primary] animate-pulse",
         state === "pending" && "bg-zinc-500/60",
-        state === "cancelled" && "bg-[--color-error]",
+        state === "cancelled" && "bg-[--intent-error]",
       )}
     />
   );

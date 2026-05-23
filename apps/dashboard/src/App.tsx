@@ -12,7 +12,7 @@ import { Knowledge } from "@/pages/Knowledge";
 import { Settings } from "@/pages/Settings";
 import { Preferences } from "@/pages/Preferences";
 import { Prd } from "@/pages/Prd";
-import { CommandPalette } from "@/components/CommandPalette";
+import { CommandPalette } from "@/components/layout/CommandPalette";
 import { Toaster } from "sonner";
 import { useStore } from "@/lib/store";
 import { useProjectsStore } from "@/lib/projects-store";

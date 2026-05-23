@@ -1,5 +1,5 @@
 import { Badge } from "@/components/ui/badge";
-import { Markdown } from "@/components/Markdown";
+import { Markdown } from "@/components/page/Markdown";
 import type { KnowledgeRow } from "@/lib/dashboard";
 
 function formatConfidence(c: number): string {
@@ -7,8 +7,8 @@ function formatConfidence(c: number): string {
 }
 
 function confBadgeClass(c: number): string {
-  if (c > 0.8) return "border-[--color-ok]/50 text-[--color-ok]";
-  if (c >= 0.5) return "border-[--color-accent-mustard]/50 text-[--color-accent-mustard]";
+  if (c > 0.8) return "border-[--intent-success]/50 text-[--intent-success]";
+  if (c >= 0.5) return "border-[--primary]/50 text-[--primary]";
   return "border-border text-muted-foreground";
 }
 

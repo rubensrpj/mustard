@@ -51,7 +51,7 @@ const OUTCOME_META: Record<
   Exclude<Outcome, "active">,
   { color: string; Icon: typeof Check }
 > = {
-  completed: { color: "var(--color-ok, #22c55e)", Icon: Check },
+  completed: { color: "var(--intent-success, #22c55e)", Icon: Check },
   cancelled: { color: "var(--color-phase-plan, #f59e0b)", Icon: Ban },
   abandoned: { color: "var(--color-muted-foreground, #71717a)", Icon: X },
 };
@@ -171,7 +171,7 @@ export function StageBullet({
       )}
       {!isTerminal && waveFailed && (
         <AlertTriangle
-          className="absolute -bottom-0.5 -right-0.5 text-red-400"
+          className="absolute -bottom-0.5 -right-0.5 text-[--intent-error]"
           style={{ width: size * 0.5, height: size * 0.5 }}
           aria-label="Onda falhou"
         />

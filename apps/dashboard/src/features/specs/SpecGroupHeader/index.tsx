@@ -29,7 +29,7 @@ export function SpecGroupHeader({
         "flex items-center gap-1.5 h-7 px-2 rounded-md w-full text-left",
         "text-[11px] uppercase tracking-wide text-muted-foreground",
         "hover:bg-muted/30 hover:text-foreground transition-colors",
-        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[--color-accent-mustard]",
+        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[--primary]",
       )}
     >
       <Chevron className="h-3.5 w-3.5 text-muted-foreground/50" aria-hidden />

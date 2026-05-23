@@ -24,13 +24,13 @@ const badgeVariants = cva(
         "tag-orange":
           "rounded-sm bg-orange-100 text-orange-700 dark:bg-orange-500/15 dark:text-orange-300",
         "tag-green":
-          "rounded-sm bg-[--color-ok]/10 text-[--color-ok] dark:bg-[--color-ok]/15",
+          "rounded-sm bg-[--intent-success]/10 text-[--intent-success] dark:bg-[--intent-success]/15",
         success:
           "bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300",
         warning:
           "bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-300",
         error:
-          "bg-red-100 text-red-700 dark:bg-red-500/15 dark:text-red-300",
+          "bg-red-100 text-[--intent-error] dark:bg-[--intent-error]/15/15 dark:text-red-300",
         info: "bg-sky-100 text-sky-700 dark:bg-sky-500/15 dark:text-sky-300",
         "status-draft":
           "bg-sky-100 text-sky-700 dark:bg-sky-500/15 dark:text-sky-300",

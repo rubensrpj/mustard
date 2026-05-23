@@ -13,10 +13,10 @@ export type KnowledgeKind = "pattern" | "decision" | "lesson" | "friction";
 export const KIND_BADGE: Record<KnowledgeKind, string> = {
   pattern: "bg-muted text-muted-foreground border border-border/60",
   decision:
-    "bg-[--color-accent-mustard]/10 text-[--color-accent-mustard] border border-[--color-accent-mustard]/40",
-  lesson: "bg-[--color-ok]/10 text-[--color-ok] border border-[--color-ok]/40",
+    "bg-[--primary]/10 text-[--primary] border border-[--primary]/40",
+  lesson: "bg-[--intent-success]/10 text-[--intent-success] border border-[--intent-success]/40",
   friction:
-    "bg-[--color-error]/10 text-[--color-error] border border-[--color-error]/40",
+    "bg-[--intent-error]/10 text-[--intent-error] border border-[--intent-error]/40",
 };
 
 const KIND_LABEL: Record<KnowledgeKind, string> = {

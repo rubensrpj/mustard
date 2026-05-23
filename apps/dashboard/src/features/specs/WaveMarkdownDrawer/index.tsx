@@ -7,7 +7,7 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 import { cn } from "@/lib/utils";
-import { Markdown } from "@/components/Markdown";
+import { Markdown } from "@/components/page/Markdown";
 import { useSpecWaveFiles } from "@/hooks/useSpecWaveFiles";
 
 interface WaveMarkdownDrawerProps {
@@ -89,7 +89,7 @@ function DrawerHeader({
           onClick={() => onPinChange(!pinned)}
           aria-label={pinTitle}
           title={pinTitle}
-          className="h-6 w-6 flex items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[--color-accent-mustard] transition-colors"
+          className="h-6 w-6 flex items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[--primary] transition-colors"
         >
           <PinIcon className="h-3.5 w-3.5" aria-hidden />
         </button>
@@ -100,7 +100,7 @@ function DrawerHeader({
           onClick={onClose}
           aria-label="Fechar"
           title="Fechar"
-          className="h-6 w-6 flex items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[--color-accent-mustard] transition-colors"
+          className="h-6 w-6 flex items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[--primary] transition-colors"
         >
           <X className="h-3.5 w-3.5" aria-hidden />
         </button>

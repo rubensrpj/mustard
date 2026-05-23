@@ -1,8 +1,8 @@
 import { ChevronRight, ChevronDown, ArrowRight } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { StageBullet } from "./StageBullet";
-import { SpecBadge } from "./SpecBadge";
-import { stateFromStatus } from "./stage-from-status";
+import { StageBullet } from "../StageBullet";
+import { SpecBadge } from "../SpecBadge";
+import { stateFromStatus } from "../_shared/stage-from-status";
 import type { SpecCard } from "@/lib/types/specs";
 
 interface SpecRowProps {
@@ -78,7 +78,7 @@ export function SpecRow({
       className={cn(
         "group/specrow flex items-center gap-2 h-8 px-4 rounded-md",
         "cursor-pointer transition-colors hover:bg-muted/30",
-        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[--color-accent-mustard]",
+        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[--primary]",
       )}
     >
       {/* Leading: chevron + stage bullet. */}

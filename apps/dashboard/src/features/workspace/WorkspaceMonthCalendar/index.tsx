@@ -104,7 +104,7 @@ export function WorkspaceMonthCalendar({ repoPath }: WorkspaceMonthCalendarProps
         className={cn(
           "p-1 rounded hover:bg-muted/50 text-muted-foreground hover:text-foreground",
           "focus-visible:outline-none focus-visible:ring-2",
-          "focus-visible:ring-[--color-accent-mustard]",
+          "focus-visible:ring-[--primary]",
         )}
       >
         <ChevronLeft className="h-3.5 w-3.5" aria-hidden />
@@ -122,7 +122,7 @@ export function WorkspaceMonthCalendar({ repoPath }: WorkspaceMonthCalendarProps
         className={cn(
           "p-1 rounded hover:bg-muted/50 text-muted-foreground hover:text-foreground",
           "focus-visible:outline-none focus-visible:ring-2",
-          "focus-visible:ring-[--color-accent-mustard]",
+          "focus-visible:ring-[--primary]",
         )}
       >
         <ChevronRight className="h-3.5 w-3.5" aria-hidden />
@@ -173,7 +173,7 @@ export function WorkspaceMonthCalendar({ repoPath }: WorkspaceMonthCalendarProps
                     "flex items-center justify-center",
                     "border border-border/40 hover:border-foreground/30",
                     "focus-visible:outline-none focus-visible:ring-2",
-                    "focus-visible:ring-[--color-accent-mustard] transition-colors",
+                    "focus-visible:ring-[--primary] transition-colors",
                     densityClass(count),
                     count === 0
                       ? "text-muted-foreground/60"

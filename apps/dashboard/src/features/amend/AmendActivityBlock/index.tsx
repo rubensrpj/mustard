@@ -90,7 +90,7 @@ export function AmendActivityBlock({ specId }: AmendActivityBlockProps) {
         // soft mustard background at 10% opacity via CSS custom prop fallback
       )}
       style={{
-        backgroundColor: "color-mix(in srgb, var(--color-accent-mustard, #f5a623) 10%, transparent)",
+        backgroundColor: "color-mix(in srgb, var(--primary, #f5a623) 10%, transparent)",
       }}
     >
       <p className="text-[10px] uppercase tracking-wider text-muted-foreground/60 mb-1.5 font-medium">
@@ -103,7 +103,7 @@ export function AmendActivityBlock({ specId }: AmendActivityBlockProps) {
             className="flex items-baseline gap-2 text-[12px] min-w-0"
           >
             <span
-              className="shrink-0 font-mono text-[--color-accent-mustard] opacity-70"
+              className="shrink-0 font-mono text-[--primary] opacity-70"
               aria-hidden
             >
               {iconFor(e.event_type)}

@@ -6,16 +6,16 @@ import { useProject } from "@/hooks/useProject";
 import { useStore } from "@/lib/store";
 import { queryClient } from "@/lib/query-client";
 import type { Project } from "@/api/discovery";
-import { StatusDot, type StatusDotVariant } from "@/components/StatusDot";
+import { StatusDot, type StatusDotVariant } from "@/components/page/StatusDot";
 import { relativeTime } from "@/lib/time";
 import { Separator } from "@/components/ui/separator";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { SpecsList } from "@/components/SpecsList";
+import { SpecsList } from "@/features/specs/SpecsList";
 import type { SkillMeta } from "@/lib/dashboard";
 import { fetchActivePipelines } from "@/lib/dashboard";
-import { LivePipelineCard } from "@/components/LivePipelineCard";
+import { LivePipelineCard } from "@/features/workspace/LivePipelineCard";
 
 function truncate(s: string, n: number): string {
   return s.length > n ? s.slice(0, n - 1) + "…" : s;

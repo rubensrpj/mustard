@@ -3,14 +3,14 @@ import { useSpecChildren } from "@/hooks/useSpecChildren";
 import { useSpecWaves } from "@/hooks/useSpecWaves";
 import { useSpecMemoryCrossWave } from "@/hooks/useSpecMemoryCrossWave";
 import { EmptyState } from "@/components/page";
-import { Markdown } from "@/components/Markdown";
+import { Markdown } from "@/components/page/Markdown";
 import {
   radialLayout,
   simulate,
   type GraphEdge,
   type GraphNode,
   type NodeKind,
-} from "./spec-graph-layout";
+} from "../_shared/spec-graph-layout";
 
 interface SpecNetworkTabProps {
   /** Absolute path to the active project repo. Backend resolves the spec
@@ -82,7 +82,7 @@ function buildGraph({ specName, waves, children }: BuildInput): BuildResult {
 function colorFor(kind: NodeKind): string {
   switch (kind) {
     case "parent":
-      return "var(--color-accent-mustard)";
+      return "var(--primary)";
     case "wave":
       return "#5b8def";
     case "subspec":

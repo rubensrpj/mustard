@@ -2,9 +2,9 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { dashboardSpecCard } from "@/lib/dashboard";
 import type { SpecCard as SpecCardData } from "@/lib/types/specs";
-import { SpecCard } from "./SpecCard";
-import { SpecDrillDown } from "./SpecDrillDown";
-import { WaveMarkdownDrawer } from "./WaveMarkdownDrawer";
+import { SpecCard } from "../SpecCard";
+import { SpecDrillDown } from "../SpecDrillDown";
+import { WaveMarkdownDrawer } from "../WaveMarkdownDrawer";
 import { useSpecWaves } from "@/hooks/useSpecWaves";
 
 interface SpecDetailDashboardProps {

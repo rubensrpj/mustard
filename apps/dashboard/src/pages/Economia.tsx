@@ -22,7 +22,7 @@ import { cn } from "@/lib/utils";
 import { useStore } from "@/lib/store";
 import { EmptyState, KPICard } from "@/components/page";
 import { StatPill } from "@/components/page";
-import { StatusDot, type StatusDotVariant } from "@/components/StatusDot";
+import { StatusDot, type StatusDotVariant } from "@/components/page/StatusDot";
 import { relativeTime } from "@/lib/time";
 import { useProjects } from "@/lib/dashboard";
 import {
@@ -34,9 +34,9 @@ import {
 import { useEconomySummary } from "@/hooks/useEconomySummary";
 import { useCollectorHealth } from "@/hooks/usePromptEconomy";
 import type { CollectorHealth } from "@/api/promptEconomy";
-import { ScopeBar } from "@/components/economy/ScopeBar";
-import { PerAgentTable } from "@/components/economy/PerAgentTable";
-import { SavingsBreakdownCard } from "@/components/economy/SavingsBreakdownCard";
+import { ScopeBar } from "@/features/economy/ScopeBar";
+import { PerAgentTable } from "@/features/economy/PerAgentTable";
+import { SavingsBreakdownCard } from "@/features/economy/SavingsBreakdownCard";
 import type { EconomyScope, SpecCost, WaveCost } from "@/lib/types/economy";
 import { projectScope, formatTokens, formatUsd } from "@/lib/types/economy";
 
