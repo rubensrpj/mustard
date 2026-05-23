@@ -1,0 +1,48 @@
+{
+  "criteria": [
+    {
+      "duration_ms": 309,
+      "exit": 0,
+      "id": "AC-1",
+      "status": "pass",
+      "stderr_excerpt": ""
+    },
+    {
+      "duration_ms": 9571,
+      "exit": 0,
+      "id": "AC-2",
+      "status": "pass",
+      "stderr_excerpt": ""
+    },
+    {
+      "duration_ms": 110,
+      "exit": 0,
+      "id": "AC-3",
+      "status": "pass",
+      "stderr_excerpt": ""
+    },
+    {
+      "duration_ms": 107,
+      "exit": 0,
+      "id": "AC-4",
+      "status": "pass",
+      "stderr_excerpt": ""
+    },
+    {
+      "duration_ms": 57,
+      "exit": 0,
+      "id": "AC-5",
+      "status": "pass",
+      "stderr_excerpt": ""
+    },
+    {
+      "duration_ms": 107,
+      "exit": 0,
+      "id": "AC-6",
+      "status": "pass",
+      "stderr_excerpt": ""
+    }
+  ],
+  "overall": "pass",
+  "spec": "2026-05-23-economia-creative-redesign"
+}

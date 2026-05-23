@@ -160,9 +160,8 @@ Models are auto-selected by intent. Upgrades blocked, downgrades allowed (opt-in
 
 - `/mustard:feature` - Start feature pipeline
 - `/mustard:bugfix` - Start bugfix pipeline
-- `/mustard:approve` - Approve spec
+- `/mustard:spec` - Approve or resume a spec (unified picker — letter to act, letter+r to approve+execute inline)
 - `/mustard:complete` - Finalize pipeline
-- `/mustard:resume` - Resume active pipeline
 
 ### Task (L0 Delegation)
 

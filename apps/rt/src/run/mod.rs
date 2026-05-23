@@ -21,6 +21,7 @@ mod db_maintain;
 mod doctor;
 mod complete_spec;
 mod context_slice;
+mod dependency_precheck;
 mod diff_context;
 mod docs_stale_check;
 mod emit_event;
@@ -351,6 +352,21 @@ pub enum RunCmd {
         /// Path to the spec file.
         #[arg(long)]
         spec: Option<String>,
+    },
+    /// Pre-dispatch factual gate: greps the spec's subproject for every JSX
+    /// symbol and named import it references, and reports those whose
+    /// `export` is missing. Self-created paths (declared in `## Files`) are
+    /// excluded. Output is single-line JSON; exit code is always 0
+    /// (fail-open) — the orchestrator decides whether to block dispatch.
+    DependencyPrecheck {
+        /// Path to the spec file or its containing directory (resolves
+        /// `<dir>/spec.md`).
+        #[arg(long)]
+        spec: Option<String>,
+        /// Override the auto-detected subproject scan root
+        /// (`apps/<name>` / `packages/<name>` common ancestor of `## Files`).
+        #[arg(long)]
+        subproject: Option<String>,
     },
     /// Audit per-wave file/layer counts inside a wave-plan.
     WaveSizeCheck {
@@ -755,6 +771,9 @@ pub fn dispatch(cmd: RunCmd) {
         RunCmd::WaveFiles { spec, wave } => wave_files::run(spec.as_deref(), wave),
         RunCmd::ScopeDecompose => scope_decompose::run(),
         RunCmd::ExecRewaveCheck { spec } => exec_rewave_check::run(spec.as_deref()),
+        RunCmd::DependencyPrecheck { spec, subproject } => {
+            dependency_precheck::run(spec.as_deref(), subproject.as_deref())
+        }
         RunCmd::WaveSizeCheck { spec_dir } => wave_size_check::run(spec_dir.as_deref()),
         RunCmd::RecipeMatch {
             entity,

@@ -1,0 +1,34 @@
+{
+  "criteria": [
+    {
+      "duration_ms": 458,
+      "exit": 0,
+      "id": "AC-1",
+      "status": "pass",
+      "stderr_excerpt": ""
+    },
+    {
+      "duration_ms": 3742,
+      "exit": 0,
+      "id": "AC-2",
+      "status": "pass",
+      "stderr_excerpt": ""
+    },
+    {
+      "duration_ms": 110,
+      "exit": 0,
+      "id": "AC-3",
+      "status": "pass",
+      "stderr_excerpt": ""
+    },
+    {
+      "duration_ms": 158,
+      "exit": 0,
+      "id": "AC-4",
+      "status": "pass",
+      "stderr_excerpt": ""
+    }
+  ],
+  "overall": "pass",
+  "spec": "2026-05-23-backfill-null-cost-rows"
+}

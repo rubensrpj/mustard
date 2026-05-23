@@ -1,8 +1,8 @@
 # Wave 3 — Layout shell refit (AppShell, Sidebar, Topbar, SplitDetail, button signature)
 
 ### Parent: [[2026-05-23-dashboard-design-system]]
-### Stage: Execute
-### Outcome: Active
+### Stage: Close
+### Outcome: Completed
 ### Flags:
 ### Scope: full (wave 3 of 5)
 ### Lang: pt

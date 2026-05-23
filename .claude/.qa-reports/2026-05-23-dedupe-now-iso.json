@@ -1,0 +1,41 @@
+{
+  "criteria": [
+    {
+      "duration_ms": 308,
+      "exit": 0,
+      "id": "AC-1",
+      "status": "pass",
+      "stderr_excerpt": ""
+    },
+    {
+      "duration_ms": 509,
+      "exit": 0,
+      "id": "AC-2",
+      "status": "pass",
+      "stderr_excerpt": ""
+    },
+    {
+      "duration_ms": 1050,
+      "exit": 0,
+      "id": "AC-3",
+      "status": "pass",
+      "stderr_excerpt": ""
+    },
+    {
+      "duration_ms": 110,
+      "exit": 0,
+      "id": "AC-4",
+      "status": "pass",
+      "stderr_excerpt": ""
+    },
+    {
+      "duration_ms": 112,
+      "exit": 0,
+      "id": "AC-5",
+      "status": "pass",
+      "stderr_excerpt": ""
+    }
+  ],
+  "overall": "pass",
+  "spec": "2026-05-23-dedupe-now-iso"
+}

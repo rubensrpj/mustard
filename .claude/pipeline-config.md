@@ -65,7 +65,7 @@ The Mustard rule: a tactical fix gets its own sub-spec, linked to the parent via
 
 - **REVIEW and QA agents** list tactical-fix candidates in their return section under `## Tactical Fix Candidates` (or `## Candidatos a Tactical Fix` when Lang=pt). Each entry: one-line description + the file path(s) involved.
 - **The orchestrator** (parent context) sees that section and suggests `/mustard:tactical-fix <parent> "<descrição>"` to the user — one suggestion per candidate.
-- This is **advisory only** — it does NOT block `/mustard:approve` of the REVIEW verdict, does NOT block `/mustard:close` after QA pass, and does NOT trigger a fix-loop.
+- This is **advisory only** — it does NOT block `/mustard:spec` (approve flow) of the REVIEW verdict, does NOT block `/mustard:close` after QA pass, and does NOT trigger a fix-loop.
 
 ### Qualification criteria
 

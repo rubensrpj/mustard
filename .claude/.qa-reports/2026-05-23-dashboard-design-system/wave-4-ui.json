@@ -1,0 +1,76 @@
+{
+  "criteria": [
+    {
+      "duration_ms": 10229,
+      "exit": 0,
+      "id": "AC-W4-1",
+      "status": "pass",
+      "stderr_excerpt": ""
+    },
+    {
+      "duration_ms": 110,
+      "exit": 0,
+      "id": "AC-W4-2",
+      "status": "pass",
+      "stderr_excerpt": ""
+    },
+    {
+      "duration_ms": 109,
+      "exit": 0,
+      "id": "AC-W4-3",
+      "status": "pass",
+      "stderr_excerpt": ""
+    },
+    {
+      "duration_ms": 112,
+      "exit": 0,
+      "id": "AC-W4-4",
+      "status": "pass",
+      "stderr_excerpt": ""
+    },
+    {
+      "duration_ms": 59,
+      "exit": 0,
+      "id": "AC-W4-5",
+      "status": "pass",
+      "stderr_excerpt": ""
+    },
+    {
+      "duration_ms": 108,
+      "exit": 0,
+      "id": "AC-W4-6",
+      "status": "pass",
+      "stderr_excerpt": ""
+    },
+    {
+      "duration_ms": 189,
+      "exit": 0,
+      "id": "AC-W4-7",
+      "status": "pass",
+      "stderr_excerpt": ""
+    },
+    {
+      "duration_ms": 112,
+      "exit": 0,
+      "id": "AC-W4-8",
+      "status": "pass",
+      "stderr_excerpt": ""
+    },
+    {
+      "duration_ms": 108,
+      "exit": 0,
+      "id": "AC-W4-9",
+      "status": "pass",
+      "stderr_excerpt": ""
+    },
+    {
+      "duration_ms": 361,
+      "exit": 0,
+      "id": "AC-W4-10",
+      "status": "pass",
+      "stderr_excerpt": ""
+    }
+  ],
+  "overall": "pass",
+  "spec": "2026-05-23-dashboard-design-system/wave-4-ui"
+}

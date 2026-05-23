@@ -1,7 +1,7 @@
 {
   "permissions": {
     "allow": [
-"Read(//c/Atiz/Mustard/$APPDATA/Claude/**)",
+      "Read(//c/Atiz/Mustard/$APPDATA/Claude/**)",
       "Read(//c/Atiz/Mustard/$HOME/.claude/**)",
       "Bash(git push origin main:*)",
       "Bash(git push origin dev:*)",

@@ -151,7 +151,7 @@ Formato esperado do `plan.json`:
 }
 ```
 
-Antes do dispatch de cada wave N>1, `/mustard:resume` chama `mustard-rt run memory cross-wave --spec <spec> --wave N` para preencher `{cross_wave_memory}` no agent prompt — memórias das waves anteriores ficam disponíveis sem reler specs.
+Antes do dispatch de cada wave N>1, `/mustard:spec` (fluxo de resume) chama `mustard-rt run memory cross-wave --spec <spec> --wave N` para preencher `{cross_wave_memory}` no agent prompt — memórias das waves anteriores ficam disponíveis sem reler specs.
 
 → See `../../../refs/feature/wave-decomposition.md`
 
@@ -170,7 +170,7 @@ When `scope-decompose` returns `reason: "roadmap-signal"` and `roadmapMatches` c
    mustard-rt run emit-pipeline --kind pipeline.scope --spec {spec-name} --payload "{\"scope\":\"full\",\"lang\":\"{lang}\",\"model\":\"opus\",\"is_wave_plan\":true,\"total_waves\":{wave-count}}"
    mustard-rt run emit-pipeline --kind pipeline.stage --spec {spec-name} --payload "{\"stage\":\"Plan\"}"
    ```
-   `/mustard:approve` § Step 3b reads `pipeline_state_for_spec` from SQLite — no JSON file is written here.
+   `/mustard:spec` (approve-only flow) § Step 3b reads `pipeline_state_for_spec` from SQLite — no JSON file is written here.
 5. **No AskUserQuestion** — proceed silently per the agnostic auto-detection contract.
 
 #### Full Scope
@@ -278,6 +278,7 @@ When user chooses "Approve and implement now":
 3. Read `.claude/pipeline-config.md` for agent config. Grep `entity-registry.json` for specific entity block only
 4. Match recipes by title via Grep on `{subproject}/.claude/commands/recipes.md` — do NOT read full file
 4b. **Structured Recipe (if available):** Run `mustard-rt run recipe-match --entity {entity} --operation {operation} --subproject {subproject_path}`. If non-empty JSON, inject into agent prompt as `{recipe_context}`. Gives agent a 90%-complete skeleton.
+4c. **Dependency Precheck (factual gate)**: Run `mustard-rt run dependency-precheck --spec .claude/spec/{spec-name}/spec.md`. Parse JSON. If `ok: false`, surface missing symbols + suggested tactical-fix paths via AskUserQuestion (auto-create | investigate | override). On override, emit `pipeline.precheck_override` event. On ok:true (or env `MUSTARD_DEPENDENCY_PRECHECK_MODE=off`), continue silently.
 5. Identify relevant skills for `{recommended_skills}`: **prepend `karpathy-guidelines`** for code-editing agents (impl/backend/frontend/database/bugfix); skip karpathy for Explore and Review. Then list task-relevant skill names. See `.claude/refs/agent-prompt/agent-prompt.md § How to fill {recommended_skills}`.
 6. Dispatch agents (wave rules: DB+Backend parallel, Frontend after Backend UNLESS `(parallel-safe)`)
 7. Wave transitions between waves (from `.claude/pipeline-config.md`)
@@ -339,4 +340,5 @@ Write AC commands in portable form: prefer `node -e "..."` for multi-step assert
 - Context budget: Grep entity-registry (not full read), Grep recipes (not full read), line-by-line checkbox updates
 - Wave decomposition is opt-in via signals (knowledge matches, layer/file/entity counts) — never force waves on small scopes
 - If wave decomposition is approved, single-spec Full Scope flow is skipped — waves execute sequentially via `/resume`
+- ALWAYS run dependency-precheck before EXECUTE dispatch (Light + Extended Light) — block on missing externals
 ULTRATHINK

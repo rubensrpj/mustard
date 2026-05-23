@@ -106,11 +106,11 @@
           "distribution": {
             "camelCase": 36,
             "kebab-case": 9,
-            "lowercase": 22,
+            "lowercase": 31,
             "mixed": 3
           },
           "dominant": null,
-          "total": 70
+          "total": 79
         }
       },
       "discovered": [
@@ -183,18 +183,28 @@
       "folderFrequency": {
         "segments": {
           ".": 1,
+          "_shared": 1,
+          "amend": 1,
           "api": 1,
           "components": 3,
           "data": 1,
-          "ds": 1,
+          "economy": 1,
+          "features": 9,
           "hooks": 1,
+          "knowledge": 1,
+          "layout": 1,
           "lib": 2,
           "page": 1,
-          "specs": 1,
-          "src": 9,
-          "types": 1
+          "prd": 1,
+          "specs": 2,
+          "src": 18,
+          "telemetry": 1,
+          "trace": 1,
+          "types": 1,
+          "ui": 1,
+          "workspace": 1
         },
-        "totalFolders": 10
+        "totalFolders": 19
       },
       "framework": "none",
       "orm": "none",
@@ -448,6 +458,7 @@
         "QaRunAll",
         "RebuildSpecs",
         "RtkGain",
+        "BackfillRunUsageSpec",
         "OtelCollector"
       ]
     },

@@ -93,7 +93,7 @@ Print, verbatim:
 ```
 Sub-spec created at .claude/spec/<slug>/spec.md
 Parent: <parent>
-Edit the spec (Contexto, Critérios de Aceitação, Arquivos) and run /mustard:approve <slug> to start the pipeline.
+Edit the spec (Contexto, Critérios de Aceitação, Arquivos) and run /mustard:spec, then pick the letter for <slug>, to start the pipeline.
 ```
 
 Do NOT auto-approve. The sub-spec passes through the normal pipeline (ANALYZE if you want a fresh look, then PLAN, EXECUTE, REVIEW, QA, CLOSE).
