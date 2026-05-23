@@ -1,0 +1,24 @@
+{
+  "waves": [
+    {
+      "n": 1,
+      "role": "library",
+      "summary": "packages/core: reader da Economia ganha visao por-sessao (custo do usage_totals + data/hora do updated_at + spec(s) da sessao via run_usage, juntando por session_id); helper de metrica da economia de injecao (tokens do esqueleto - input do esqueleto); garantir que o reader de savings expoe todas as fontes limpo p/ a UI",
+      "depends_on": []
+    },
+    {
+      "n": 2,
+      "role": "general",
+      "summary": "apps/rt: emissores de economia que faltam — injecao de recipe (record_savings RecipeInjection com o proxy 'geracao evitada' na hora do recipe-match/inject) e RTK continuo (session_cleanup ingere rtk gain --json em savings_records, hoje so manual)",
+      "depends_on": ["1"]
+    },
+    {
+      "n": 3,
+      "role": "ui",
+      "summary": "apps/dashboard: reformular Economia com didatica (titulo claro PT + 1 linha por card, sem nome de campo/jargao), card por-sessao (data/hora + custo + specs), exibir economias agora populadas (RTK + injecao rotulada estimado) e quebra por spec/onda estimada (run_usage) rotulada",
+      "depends_on": ["1"]
+    }
+  ],
+  "total_waves": 3,
+  "lang": "pt"
+}

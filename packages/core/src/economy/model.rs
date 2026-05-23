@@ -260,12 +260,27 @@ pub struct EconomySummary {
 /// from `usage_totals.cost.usage`, which is a float USD counter). Ordered by
 /// `usd` descending by the reader. The session id matches what Claude Code's
 /// `/cost` reports, so the user can match a single row one-to-one.
+///
+/// `last_at_ms` and `specs` are populated only at the unfiltered project /
+/// all-projects scope (the same scope that populates `by_session` on
+/// [`EconomySummary`]). At spec/wave scope they stay defaulted (`None` / empty)
+/// because `usage_totals` carries no spec/wave dimension. Both fields are
+/// `#[serde(default)]` so older payloads round-trip without breaking.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionCost {
     /// Claude Code session id (`usage_totals.session_id`).
     pub session_id: String,
     /// Aggregate measured cost for the session, in USD.
     pub usd: f64,
+    /// `MAX(usage_totals.updated_at)` for this session — epoch-ms of the most
+    /// recent measured counter update. Drives the per-session freshness caption.
+    #[serde(default)]
+    pub last_at_ms: Option<i64>,
+    /// Distinct specs the session worked on, sourced from
+    /// `run_usage.spec` (self-attributed at write time). Sorted ascending.
+    /// Empty when the session has no spec-attributed runs yet.
+    #[serde(default)]
+    pub specs: Vec<String>,
 }
 
 /// Per-agent cost roll-up. Ordered by `cost_usd_micros` desc by the reader.

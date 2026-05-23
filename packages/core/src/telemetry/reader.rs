@@ -169,6 +169,48 @@ pub fn freshness(conn: &Connection) -> Result<Option<i64>> {
     Ok(max)
 }
 
+/// Per-session freshness — `MAX(usage_totals.updated_at)` filtered to
+/// `session_id`. Returns `None` when the session has no measured rows. Fail-open:
+/// a SQL failure collapses to `None` so a degraded telemetry.db never breaks
+/// the per-session card on the dashboard.
+///
+/// # Errors
+///
+/// Never returns an error — the signature is `Result` only for parity with the
+/// other reader functions; internal failures fall through to `None`.
+pub fn session_last_at(conn: &Connection, session_id: &str) -> Result<Option<i64>> {
+    let row = conn.query_row(
+        "SELECT MAX(updated_at) FROM usage_totals WHERE session_id = ?1",
+        rusqlite::params![session_id],
+        |r| r.get::<_, Option<i64>>(0),
+    );
+    Ok(row.unwrap_or(None))
+}
+
+/// Distinct specs attributed to `session_id` over `run_usage`, ascending.
+/// Excludes `NULL` specs (a run that never resolved a spec attribution).
+/// Fail-open: a SQL failure collapses to an empty `Vec` so a degraded
+/// telemetry.db never breaks the per-session card on the dashboard.
+///
+/// # Errors
+///
+/// Never returns an error — the signature is `Result` only for parity with the
+/// other reader functions; internal failures fall through to an empty vector.
+pub fn specs_for_session(conn: &Connection, session_id: &str) -> Result<Vec<String>> {
+    let stmt = conn.prepare(
+        "SELECT DISTINCT spec FROM run_usage \
+         WHERE session_id = ?1 AND spec IS NOT NULL ORDER BY spec",
+    );
+    let Ok(mut stmt) = stmt else {
+        return Ok(Vec::new());
+    };
+    let Ok(rows) = stmt.query_map(rusqlite::params![session_id], |r| r.get::<_, String>(0))
+    else {
+        return Ok(Vec::new());
+    };
+    Ok(rows.filter_map(std::result::Result::ok).collect())
+}
+
 // ---------------------------------------------------------------------------
 // run_usage aggregates (per-execution cost)
 // ---------------------------------------------------------------------------

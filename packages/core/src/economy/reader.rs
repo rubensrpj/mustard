@@ -145,7 +145,22 @@ pub fn economy_summary(conn: &Connection, scope: EconomyScope) -> Result<Economy
                     .into_iter()
                     .filter(|(_, usd)| *usd > 0.0)
                     .take(8)
-                    .map(|(session_id, usd)| SessionCost { session_id, usd })
+                    .map(|(session_id, usd)| {
+                        // Same telemetry.db connection — never cross into mustard.db
+                        // from a telemetry read. Both helpers are fail-open at the
+                        // SQL layer, so a degraded row still surfaces the cost.
+                        let last_at_ms =
+                            telemetry::reader::session_last_at(tele.conn(), &session_id)
+                                .unwrap_or(None);
+                        let specs = telemetry::reader::specs_for_session(tele.conn(), &session_id)
+                            .unwrap_or_default();
+                        SessionCost {
+                            session_id,
+                            usd,
+                            last_at_ms,
+                            specs,
+                        }
+                    })
                     .collect();
                 let fresh = telemetry::reader::freshness(tele.conn())?;
                 (sessions, fresh)
@@ -610,18 +625,68 @@ mod tests {
     /// metric) into the same telemetry.db. `cost.usage` is USD, `token.usage`
     /// is a token count — both float counters with no spec/wave dimension.
     fn seed_measured(dir: &std::path::Path, metric: &str, sum: f64) {
+        seed_measured_at(dir, metric, sum, "sess-1", 0);
+    }
+
+    /// Same as [`seed_measured`] but with an explicit `session_id` + `updated_at`
+    /// so the per-session enrichment test can populate distinct sessions.
+    fn seed_measured_at(
+        dir: &std::path::Path,
+        metric: &str,
+        sum: f64,
+        session_id: &str,
+        updated_at: i64,
+    ) {
         let store = TelemetryStore::for_project(dir).unwrap();
         upsert_usage_metric(
             store.conn(),
             &UsageMetric {
                 metric: metric.into(),
                 model: Some("claude-3-5-sonnet".into()),
-                session_id: Some("sess-1".into()),
+                session_id: Some(session_id.into()),
                 sum,
-                updated_at: Some(0),
+                updated_at: Some(updated_at),
             },
         )
         .unwrap();
+    }
+
+    /// Seed one `run_usage` row carrying an explicit `session_id` so the
+    /// per-session enrichment can pick up its specs.
+    fn seed_run_for_session(
+        dir: &std::path::Path,
+        span_id: &str,
+        spec: &str,
+        session_id: &str,
+    ) {
+        let store = TelemetryStore::for_project(dir).unwrap();
+        store
+            .record_run(&RunUsage {
+                trace_id: None,
+                span_id: span_id.into(),
+                parent_span_id: None,
+                name: None,
+                started_at: Some(0),
+                ended_at: None,
+                duration_ms: None,
+                attributes: None,
+                spec: Some(spec.into()),
+                phase: None,
+                model: Some("claude-3-5-sonnet".into()),
+                input_tokens: Some(10),
+                output_tokens: Some(0),
+                cache_read_input_tokens: None,
+                cache_creation_input_tokens: None,
+                cost_usd_micros: Some(100),
+                is_error: false,
+                project_path: None,
+                ts_iso: Some("2026-05-22T00:00:00Z".into()),
+                session_id: Some(session_id.into()),
+                wave_id: None,
+                tool_use_id: None,
+                agent_id: Some("explore".into()),
+            })
+            .unwrap();
     }
 
     #[test]
@@ -717,6 +782,37 @@ mod tests {
         assert_eq!(summary.total_tokens, 300);
         assert_eq!(summary.total_tokens_saved, 500);
         assert_eq!(summary.span_count, 2);
+    }
+
+    #[test]
+    fn by_session_populated_with_specs_and_last_at_at_project_scope() {
+        // Project (unfiltered) scope must enrich each `by_session` row with the
+        // per-session freshness (`usage_totals.updated_at`) and the distinct
+        // specs the session worked on (`run_usage.spec`). Spec/wave scope keeps
+        // `by_session` empty, so this only exercises the unfiltered path.
+        let dir = tempdir().unwrap();
+        let conn = fresh_conn(dir.path());
+        // Session A — measured cost 12 USD at updated_at=2000; two specs.
+        seed_measured_at(dir.path(), "claude_code.cost.usage", 12.0, "sess-A", 2000);
+        seed_run_for_session(dir.path(), "r1", "spec-Alpha", "sess-A");
+        seed_run_for_session(dir.path(), "r2", "spec-Beta", "sess-A");
+        seed_run_for_session(dir.path(), "r3", "spec-Alpha", "sess-A");
+        // Session B — measured cost 1 USD at updated_at=1000; one spec.
+        seed_measured_at(dir.path(), "claude_code.cost.usage", 1.0, "sess-B", 1000);
+        seed_run_for_session(dir.path(), "r4", "spec-Gamma", "sess-B");
+
+        let scope = EconomyScope::Project(ProjectPath::new(dir.path()));
+        let summary = economy_summary(&conn, scope).unwrap();
+        // Ordered by USD descending: sess-A (12) before sess-B (1).
+        assert_eq!(summary.by_session.len(), 2);
+        let a = &summary.by_session[0];
+        assert_eq!(a.session_id, "sess-A");
+        assert_eq!(a.last_at_ms, Some(2000));
+        assert_eq!(a.specs, vec!["spec-Alpha".to_string(), "spec-Beta".into()]);
+        let b = &summary.by_session[1];
+        assert_eq!(b.session_id, "sess-B");
+        assert_eq!(b.last_at_ms, Some(1000));
+        assert_eq!(b.specs, vec!["spec-Gamma".to_string()]);
     }
 
     #[test]

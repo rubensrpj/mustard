@@ -131,6 +131,30 @@ pub fn record_context_cost(conn: &Connection, rec: ContextCostFrame) -> Result<(
     Ok(())
 }
 
+/// Proxy "generation avoided" metric for a recipe skeleton injection.
+///
+/// When `mustard-rt` injects a recipe skeleton into a Task prompt, the agent no
+/// longer has to *derive* that scaffolding from scratch — every character we
+/// hand it is a character the model did not have to emit. The cleanest closed
+/// form for that saving is the skeleton's own size in tokens.
+///
+/// We approximate the token count via the well-known `chars / 4` rule of thumb
+/// (a stable enough proxy for English/Portuguese mixed prose + code, the regime
+/// recipes operate in). The result is saturated at zero so an empty or
+/// pathological input never produces a negative value the savings writer would
+/// have to filter out downstream.
+///
+/// Pure: no IO, no panics. Wave 2 will consume this from the emitter that
+/// records a `SavingsSource::RecipeInjection` row.
+#[must_use]
+pub fn injection_savings_tokens(skeleton_text: &str) -> i64 {
+    // `usize` → `i64` conversion is safe in practice (skeletons are kilobytes,
+    // not exabytes); saturate defensively all the same.
+    let chars = skeleton_text.chars().count();
+    let tokens = i64::try_from(chars / 4).unwrap_or(i64::MAX);
+    tokens.max(0)
+}
+
 /// Map a [`SpanRecord`] onto a [`RunUsage`] for the telemetry `run_usage`
 /// table (Wave 2 telemetry-separation).
 ///
@@ -335,5 +359,19 @@ mod tests {
     fn iso_to_epoch_ms_malformed_is_zero() {
         assert_eq!(iso_to_epoch_ms("not-a-date"), 0);
         assert_eq!(iso_to_epoch_ms(""), 0);
+    }
+
+    #[test]
+    fn injection_savings_tokens_proxy() {
+        // Empty input -> 0 (floor); non-trivial skeleton -> positive; never < 0.
+        assert_eq!(super::injection_savings_tokens(""), 0);
+        // chars/4 proxy: a 12-char skeleton yields 3 tokens.
+        assert_eq!(super::injection_savings_tokens("abcdefghijkl"), 3);
+        // Any reasonably-sized recipe scaffolding must be strictly positive.
+        let big = "x".repeat(2_000);
+        let saved = super::injection_savings_tokens(&big);
+        assert!(saved > 0, "expected positive saving for a 2k-char skeleton");
+        // Sub-4-char input still floors at 0 instead of going negative.
+        assert_eq!(super::injection_savings_tokens("abc"), 0);
     }
 }
