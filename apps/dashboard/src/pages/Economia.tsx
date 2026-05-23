@@ -15,6 +15,8 @@
 import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import dayjs from "dayjs";
+import { Info } from "lucide-react";
+import { cn } from "@/lib/utils";
 import { useStore } from "@/lib/store";
 import { EmptyState, KPICard } from "@/components/page";
 import { MetricsPill } from "@/components/ds";
@@ -307,13 +309,19 @@ export function Economia() {
         </div>
       </section>
 
-      {/* ── Custo estimado por spec / onda (run_usage, self-attributed) ── */}
+      {/* ── Custo estimado por spec / onda (per-dispatch attribution) ──── */}
       <section className="flex flex-col gap-3">
-        <header className="flex flex-col gap-0.5">
-          <h2 className="text-sm font-medium">Custo estimado por spec / onda</h2>
-          <p className="text-[11px] text-[--ds-text-tertiary]">
-            soma do que cada execução custou em <code className="font-mono">run_usage</code> — estimativa por dispatch, útil para comparar features. Não é o valor cobrado pela Anthropic.
-          </p>
+        <header className="flex items-baseline justify-between gap-3 flex-wrap">
+          <div className="flex flex-col gap-0.5">
+            <h2 className="text-sm font-medium">Custo estimado por spec / onda</h2>
+            <p className="text-[11px] text-[--ds-text-tertiary] max-w-[680px]">
+              soma do custo de cada execução atribuída à spec — uma estimativa interna por dispatch,
+              útil para comparar features. Não é o valor cobrado pela Anthropic.
+            </p>
+          </div>
+          <span className="px-2 py-0.5 rounded-full text-[10px] uppercase tracking-[0.14em] font-medium text-primary/70 bg-primary/10 border border-primary/20">
+            estimado
+          </span>
         </header>
         <EstimatedBySpecWave
           perSpec={perSpec.data ?? []}
@@ -401,10 +409,17 @@ function formatSessionDate(ms: number | null): string {
 
 /**
  * "Custo estimado por spec / onda" — renders self-attributed `run_usage`
- * roll-ups. Spec rows are top-level; wave rows fold under their spec as a
- * thin secondary table. We tag everything as "estimado" since these are NOT
- * Anthropic-billed figures (those come from `usage_totals`, which has no
- * spec/wave dimension).
+ * roll-ups as a tabular grid. Rules:
+ *
+ * - Unattributed rows (`spec_id === ""`) are excluded from the body and
+ *   surfaced in a footer counter — they are noise in a per-spec comparison.
+ * - Waves with no `wave_id` are excluded; they would duplicate the parent
+ *   spec row visually.
+ * - Costs of exactly $0 are rendered as "—" instead of "$0.00" so the row
+ *   doesn't look like a measured zero when it's a missing-data zero.
+ *
+ * Layout: a 4-column grid (spec/wave name · dispatches · tokens · USD) with
+ * tabular-nums on the numeric columns so digits align across rows.
  */
 function EstimatedBySpecWave({
   perSpec,
@@ -422,75 +437,161 @@ function EstimatedBySpecWave({
       </div>
     );
   }
-  if (perSpec.length === 0) {
+  const namedSpecs = perSpec.filter((row) => row.spec_id);
+  const unattributed = perSpec.filter((row) => !row.spec_id);
+  const unattributedDispatches = unattributed.reduce((acc, r) => acc + r.span_count, 0);
+  if (namedSpecs.length === 0) {
     return (
       <EmptyState
         title="Sem execuções atribuídas neste escopo"
-        description="As linhas aparecem aqui assim que dispatches com spec/onda forem registrados em run_usage."
+        description="As linhas aparecem aqui assim que dispatches forem registrados com a spec correspondente."
       />
     );
   }
-  // Group waves under their parent spec for easy nesting.
+  // Group waves under their parent spec; drop wave rows without a wave_id.
   const wavesBySpec = new Map<string, WaveCost[]>();
   for (const w of perWave) {
+    if (!w.spec_id || !w.wave_id) continue;
     const list = wavesBySpec.get(w.spec_id) ?? [];
     list.push(w);
     wavesBySpec.set(w.spec_id, list);
   }
+
   return (
-    <div className="flex flex-col gap-2">
-      {perSpec.map((row) => {
-        const waves = wavesBySpec.get(row.spec_id) ?? [];
-        return (
-          <div
-            key={`spec-${row.spec_id}`}
-            className="rounded-[--ds-radius-md] border border-[--ds-surface-hover] bg-[--ds-surface-base] overflow-hidden"
-          >
-            <div className="flex items-center gap-3 px-3 py-2 border-b border-[--ds-surface-hover]">
-              <span
-                className="font-mono text-[12px] text-[--ds-text-primary] truncate flex-1"
-                title={row.spec_id}
-              >
-                {row.spec_id || "—"}
-              </span>
-              <span className="text-[10px] uppercase tracking-wider text-[--ds-text-tertiary]">
-                estimado
-              </span>
-              <span className="font-mono text-[12px] text-[--ds-text-secondary] tabular-nums w-[64px] text-right">
-                {row.span_count.toLocaleString()} dispatch
-                {row.span_count === 1 ? "" : "es"}
-              </span>
-              <MetricsPill value={formatTokens(row.tokens)} unit="tok" />
-              <MetricsPill value={formatUsd(row.cost_usd_micros)} intent="info" />
+    <div className="rounded-[--ds-radius-md] border border-[--ds-surface-hover] bg-[--ds-surface-base] overflow-hidden">
+      {/* Column header row */}
+      <div className="grid grid-cols-[1fr_110px_110px_110px] gap-3 px-3 py-2 text-[10px] uppercase tracking-[0.14em] font-medium text-[--ds-text-tertiary] border-b border-[--ds-surface-hover]">
+        <span>Spec / onda</span>
+        <span className="text-right">Execuções</span>
+        <span className="text-right">Tokens</span>
+        <span className="text-right">Custo</span>
+      </div>
+
+      <div className="flex flex-col">
+        {namedSpecs.map((row, idx) => {
+          const waves = wavesBySpec.get(row.spec_id) ?? [];
+          const isLast = idx === namedSpecs.length - 1;
+          return (
+            <div
+              key={`spec-${row.spec_id}`}
+              className={cn(
+                !isLast && "border-b border-[--ds-surface-hover]/60",
+              )}
+            >
+              <SpecOrWaveRow
+                name={row.spec_id}
+                dispatches={row.span_count}
+                tokens={row.tokens}
+                costMicros={row.cost_usd_micros}
+              />
+              {waves.length > 0 && (
+                <div className="flex flex-col">
+                  {waves.map((w) => (
+                    <SpecOrWaveRow
+                      key={`wave-${w.spec_id}-${w.wave_id}`}
+                      name={w.wave_id}
+                      dispatches={w.span_count}
+                      tokens={w.tokens}
+                      costMicros={w.cost_usd_micros}
+                      nested
+                    />
+                  ))}
+                </div>
+              )}
             </div>
-            {waves.length > 0 && (
-              <div className="flex flex-col gap-px bg-[--ds-surface-hover]/30">
-                {waves.map((w) => (
-                  <div
-                    key={`wave-${w.spec_id}-${w.wave_id}`}
-                    className="flex items-center gap-3 px-3 py-1.5 bg-[--ds-surface-base]"
-                  >
-                    <span className="text-[--ds-text-tertiary] text-[12px] w-3 shrink-0">
-                      ↳
-                    </span>
-                    <span
-                      className="font-mono text-[11.5px] text-[--ds-text-secondary] truncate flex-1"
-                      title={w.wave_id}
-                    >
-                      {w.wave_id || "—"}
-                    </span>
-                    <span className="font-mono text-[11px] text-[--ds-text-tertiary] tabular-nums w-[64px] text-right">
-                      {w.span_count.toLocaleString()}×
-                    </span>
-                    <MetricsPill value={formatTokens(w.tokens)} unit="tok" />
-                    <MetricsPill value={formatUsd(w.cost_usd_micros)} intent="info" />
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        );
-      })}
+          );
+        })}
+      </div>
+
+      {unattributedDispatches > 0 && (
+        <div className="px-3 py-2 border-t border-[--ds-surface-hover]/60 bg-[--ds-surface-hover]/20 text-[10.5px] text-[--ds-text-tertiary] flex items-center gap-1.5">
+          <Info className="h-3 w-3 text-[--ds-text-tertiary] shrink-0" strokeWidth={2} />
+          <span>
+            {unattributedDispatches.toLocaleString()} execução
+            {unattributedDispatches === 1 ? "" : "ões"} sem spec registrada
+            {unattributedDispatches === 1 ? "" : "s"} — não aparecem na tabela
+            porque não dá pra atribuir a uma feature específica.
+          </span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * One row of the spec/wave estimate table. Same column shape for parent and
+ * nested rows; `nested` only changes typography weight, indent, and the
+ * leading arrow glyph. Costs of exactly zero render as "—" so the user sees
+ * "sem dado" instead of a misleading "$0.00".
+ */
+function SpecOrWaveRow({
+  name,
+  dispatches,
+  tokens,
+  costMicros,
+  nested = false,
+}: {
+  name: string;
+  dispatches: number;
+  tokens: number;
+  costMicros: number;
+  nested?: boolean;
+}) {
+  return (
+    <div
+      className={cn(
+        "grid grid-cols-[1fr_110px_110px_110px] gap-3 items-center px-3 py-2 transition-colors hover:bg-[--ds-surface-hover]/30",
+        nested && "pl-7 bg-[--ds-surface-hover]/10",
+      )}
+    >
+      <div className="flex items-center gap-2 min-w-0">
+        {nested && (
+          <span className="text-[--ds-text-tertiary] text-[12px] shrink-0">↳</span>
+        )}
+        <span
+          className={cn(
+            "font-mono truncate",
+            nested
+              ? "text-[11.5px] text-[--ds-text-secondary]"
+              : "text-[12.5px] text-[--ds-text-primary]",
+          )}
+          title={name}
+        >
+          {name}
+        </span>
+      </div>
+      <span
+        className={cn(
+          "font-mono tabular-nums text-right",
+          nested
+            ? "text-[11px] text-[--ds-text-tertiary]"
+            : "text-[12px] text-[--ds-text-secondary]",
+        )}
+      >
+        {dispatches.toLocaleString()}
+      </span>
+      <span
+        className={cn(
+          "font-mono tabular-nums text-right",
+          nested
+            ? "text-[11px] text-[--ds-text-tertiary]"
+            : "text-[12px] text-[--ds-text-secondary]",
+        )}
+      >
+        {formatTokens(tokens)}
+      </span>
+      <span
+        className={cn(
+          "font-mono tabular-nums text-right",
+          costMicros > 0
+            ? nested
+              ? "text-[11.5px] text-[--ds-text-secondary]"
+              : "text-[12.5px] text-[--ds-text-primary]"
+            : "text-[11.5px] text-[--ds-text-tertiary]",
+        )}
+      >
+        {costMicros > 0 ? formatUsd(costMicros) : "—"}
+      </span>
     </div>
   );
 }
