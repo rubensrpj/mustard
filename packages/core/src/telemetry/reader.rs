@@ -300,28 +300,38 @@ pub fn daily_series(conn: &Connection) -> Result<Vec<DailyPoint>> {
     Ok(rows.filter_map(std::result::Result::ok).collect())
 }
 
-/// Cache-hit ratio in permille (0–1000): cache-read tokens over total input
-/// (cache-read + non-cached input). Returns `0` when the denominator is zero.
+/// Cache-hit ratio in permille (0–1000), Anthropic's honest denominator:
+/// `cache_read / (cache_read + cache_creation + input)`. Returns `0` when the
+/// denominator is zero.
+///
+/// Anthropic's API exposes three input-side counters: `cache_read_input_tokens`
+/// (served from cache, charged at 0.10x), `cache_creation_input_tokens`
+/// (written to cache for the first time, charged at 1.25x or 2x) and
+/// `input_tokens` (post-cache-breakpoint, not cacheable). The total input the
+/// model processes is the sum of all three. Including `cache_creation` in the
+/// denominator prevents a first-build dispatch from disappearing and inflating
+/// the aggregate read-rate towards 100% on subsequent reuses.
 ///
 /// # Errors
 ///
 /// Returns [`Error::Sqlite`] for a query failure.
 pub fn cache_hit_ratio_permille(conn: &Connection) -> Result<i64> {
-    let (input_sum, cache_sum): (i64, i64) = conn
+    let (input_sum, cache_read_sum, cache_creation_sum): (i64, i64, i64) = conn
         .query_row(
             "SELECT COALESCE(SUM(input_tokens), 0), \
-                    COALESCE(SUM(cache_read_input_tokens), 0) \
+                    COALESCE(SUM(cache_read_input_tokens), 0), \
+                    COALESCE(SUM(cache_creation_input_tokens), 0) \
              FROM run_usage",
             [],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .map_err(Error::from)?;
-    let den = input_sum + cache_sum;
+    let den = input_sum + cache_read_sum + cache_creation_sum;
     if den <= 0 {
         Ok(0)
     } else {
         #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
-        Ok(((cache_sum as f64) * 1000.0 / (den as f64)) as i64)
+        Ok(((cache_read_sum as f64) * 1000.0 / (den as f64)) as i64)
     }
 }
 
@@ -585,19 +595,21 @@ pub fn cache_hit_ratio_permille_for_spec(conn: &Connection, spec: Option<&str>) 
     let (where_sql, params) = scope_where(spec, None);
     let sql = format!(
         "SELECT COALESCE(SUM(input_tokens), 0), \
-                COALESCE(SUM(cache_read_input_tokens), 0) FROM run_usage {where_sql}"
+                COALESCE(SUM(cache_read_input_tokens), 0), \
+                COALESCE(SUM(cache_creation_input_tokens), 0) \
+         FROM run_usage {where_sql}"
     );
-    let (input_sum, cache_sum): (i64, i64) = conn
+    let (input_sum, cache_read_sum, cache_creation_sum): (i64, i64, i64) = conn
         .query_row(&sql, rusqlite::params_from_iter(params.iter()), |r| {
-            Ok((r.get(0)?, r.get(1)?))
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?))
         })
         .map_err(Error::from)?;
-    let den = input_sum + cache_sum;
+    let den = input_sum + cache_read_sum + cache_creation_sum;
     if den <= 0 {
         Ok(0)
     } else {
         #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
-        Ok(((cache_sum as f64) * 1000.0 / (den as f64)) as i64)
+        Ok(((cache_read_sum as f64) * 1000.0 / (den as f64)) as i64)
     }
 }
 

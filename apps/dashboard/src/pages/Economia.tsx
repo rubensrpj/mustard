@@ -171,15 +171,12 @@ export function Economia() {
             value={
               routing.isLoading ? "…" : routing.data ? `${cacheRatio.toFixed(1)}%` : "—"
             }
-            hint={
-              routing.data
-                ? `${(routing.data.frame_count ?? 0).toLocaleString()} trechos de contexto`
-                : "sem dados de contexto neste escopo"
-            }
-            accent={cacheRatio > 30 ? "emerald" : cacheRatio > 0 ? "amber" : "zinc"}
+            hint={routing.data ? cacheHitTier(cacheRatio) : "sem dados nesta janela"}
+            accent={cacheRatio >= 80 ? "emerald" : cacheRatio >= 50 ? "amber" : "zinc"}
           />
           <p className="px-1 text-[10px] leading-tight text-[--ds-text-tertiary]">
-            quanto do contexto a Anthropic reaproveitou — quanto maior, mais barato
+            tokens servidos do cache ÷ (cache + escrita no cache + input novo).
+            Acima de 80% é ótimo — a Anthropic cobra só 10% do preço normal nesses tokens.
           </p>
         </div>
       </section>
@@ -371,6 +368,23 @@ function SessionRow({
 function formatSessionDate(ms: number | null): string {
   if (ms == null) return "—";
   return dayjs(ms).format("DD/MM HH:mm");
+}
+
+/**
+ * Plain-language tier for the cache-hit percentage. Matches the accent on the
+ * KPICard so the colour and the word reinforce each other.
+ *
+ * - >= 80% — cache is reusing most of the input. The Anthropic billing for
+ *   cache reads is 0.10x the base input price, so anything in this band is a
+ *   meaningful cost reduction.
+ * - 50-79% — partial reuse. Often means the stable prefix is drifting.
+ * - < 50% — little reuse; the prefix is either small or churning.
+ */
+function cacheHitTier(percent: number): string {
+  if (percent >= 80) return "ótimo · cache funcionando";
+  if (percent >= 50) return "morno · prefixo mudando";
+  if (percent > 0) return "frio · pouco reuso";
+  return "sem reuso medido";
 }
 
 /**
