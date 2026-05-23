@@ -32,6 +32,13 @@ export interface KPICardProps {
   label: string;
   value: ReactNode;
   hint?: string;
+  /**
+   * Smaller didactic line that explains what the value means and why it
+   * matters. Lives inside the card, below the hint, in a quieter style.
+   * Accepts JSX so callers can compose badges (e.g. a freshness StatusDot)
+   * with prose.
+   */
+  caption?: ReactNode;
   /** Color of the top accent stripe and the value text. */
   accent?: KPIAccent;
   /** Hover tooltip. */
@@ -45,6 +52,7 @@ export function KPICard({
   label,
   value,
   hint,
+  caption,
   accent = "zinc",
   tooltip,
   valueClassName,
@@ -72,6 +80,11 @@ export function KPICard({
       </div>
       {hint && (
         <div className="text-[11.5px] text-muted-foreground">{hint}</div>
+      )}
+      {caption && (
+        <div className="mt-1 text-[10px] leading-tight text-muted-foreground/80">
+          {caption}
+        </div>
       )}
     </div>
   );

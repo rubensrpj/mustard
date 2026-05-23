@@ -135,50 +135,42 @@ export function Economia() {
 
       {/* ── KPI cards: custo, economia, cache hit ──────────────────────── */}
       <section className="grid grid-cols-1 md:grid-cols-3 gap-3">
-        <div className="flex flex-col gap-1.5">
-          <KPICard
-            label="Custo do projeto (medido)"
-            value={summary.isLoading ? "…" : formatUsd(data?.total_cost_usd_micros ?? 0)}
-            hint={`${(data?.span_count ?? 0).toLocaleString()} execuções · ${formatTokens(data?.total_tokens ?? 0)} tokens`}
-            accent={data && data.total_cost_usd_micros > 0 ? "indigo" : "zinc"}
-          />
-          {/* Freshness badge — "ao vivo / parado / desligado" + atualizado há Xs. */}
-          <div className="flex items-center gap-1.5 px-1 text-[11px] text-[--ds-text-tertiary]">
-            <StatusDot variant={badgeVariant} pulse={badgeVariant === "active"} size="sm" />
-            <span>{badgeLabel}</span>
-            {updatedAgo ? <span>· atualizado {updatedAgo}</span> : null}
-          </div>
-          {/* Caption — explica o que é o número e por que ele importa. */}
-          <p className="px-1 text-[10px] leading-tight text-[--ds-text-tertiary]">
-            cobrado pela Anthropic, somado por sessão
-            {updatedAgo ? ` · atualizado ${updatedAgo}` : ""}
-          </p>
-        </div>
-        <div className="flex flex-col gap-1.5">
-          <KPICard
-            label="Economia total (tokens)"
-            value={summary.isLoading ? "…" : `${formatTokens(data?.total_tokens_saved ?? 0)} tok`}
-            hint="abaixo, o detalhe por origem"
-            accent={data && data.total_tokens_saved > 0 ? "emerald" : "zinc"}
-          />
-          <p className="px-1 text-[10px] leading-tight text-[--ds-text-tertiary]">
-            tokens que a ferramenta evitou de gastar — abaixo, o detalhe por origem
-          </p>
-        </div>
-        <div className="flex flex-col gap-1.5">
-          <KPICard
-            label="Cache hit"
-            value={
-              routing.isLoading ? "…" : routing.data ? `${cacheRatio.toFixed(1)}%` : "—"
-            }
-            hint={routing.data ? cacheHitTier(cacheRatio) : "sem dados nesta janela"}
-            accent={cacheRatio >= 80 ? "emerald" : cacheRatio >= 50 ? "amber" : "zinc"}
-          />
-          <p className="px-1 text-[10px] leading-tight text-[--ds-text-tertiary]">
-            tokens servidos do cache ÷ (cache + escrita no cache + input novo).
-            Acima de 80% é ótimo — a Anthropic cobra só 10% do preço normal nesses tokens.
-          </p>
-        </div>
+        <KPICard
+          label="Custo do projeto (medido)"
+          value={summary.isLoading ? "…" : formatUsd(data?.total_cost_usd_micros ?? 0)}
+          hint={`${(data?.span_count ?? 0).toLocaleString()} execuções · ${formatTokens(data?.total_tokens ?? 0)} tokens`}
+          accent={data && data.total_cost_usd_micros > 0 ? "indigo" : "zinc"}
+          caption={
+            <div className="flex flex-col gap-1">
+              <div className="flex items-center gap-1.5">
+                <StatusDot
+                  variant={badgeVariant}
+                  pulse={badgeVariant === "active"}
+                  size="sm"
+                />
+                <span>{badgeLabel}</span>
+                {updatedAgo ? <span>· atualizado {updatedAgo}</span> : null}
+              </div>
+              <span>cobrado pela Anthropic, somado por sessão</span>
+            </div>
+          }
+        />
+        <KPICard
+          label="Economia total (tokens)"
+          value={summary.isLoading ? "…" : `${formatTokens(data?.total_tokens_saved ?? 0)} tok`}
+          hint="abaixo, o detalhe por origem"
+          accent={data && data.total_tokens_saved > 0 ? "emerald" : "zinc"}
+          caption="tokens que a ferramenta evitou de gastar — abaixo, o detalhe por origem"
+        />
+        <KPICard
+          label="Cache hit"
+          value={
+            routing.isLoading ? "…" : routing.data ? `${cacheRatio.toFixed(1)}%` : "—"
+          }
+          hint={routing.data ? cacheHitTier(cacheRatio) : "sem dados nesta janela"}
+          accent={cacheRatio >= 80 ? "emerald" : cacheRatio >= 50 ? "amber" : "zinc"}
+          caption="tokens servidos do cache ÷ (cache + escrita no cache + input novo). Acima de 80% é ótimo — a Anthropic cobra só 10% do preço normal nesses tokens."
+        />
       </section>
 
       {summary.error ? (
