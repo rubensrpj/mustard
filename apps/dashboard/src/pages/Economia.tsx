@@ -24,6 +24,8 @@ import { useProjects } from "@/lib/dashboard";
 import {
   fetchEconomySavingsBreakdown,
   fetchEconomyContextRouting,
+  fetchEconomyPerSpecCosts,
+  fetchEconomyPerWaveCosts,
 } from "@/lib/dashboard";
 import { useEconomySummary } from "@/hooks/useEconomySummary";
 import { useCollectorHealth } from "@/hooks/usePromptEconomy";
@@ -31,7 +33,7 @@ import type { CollectorHealth } from "@/api/promptEconomy";
 import { ScopeBar } from "@/components/economy/ScopeBar";
 import { PerAgentTable } from "@/components/economy/PerAgentTable";
 import { SavingsBreakdownCard } from "@/components/economy/SavingsBreakdownCard";
-import type { EconomyScope } from "@/lib/types/economy";
+import type { EconomyScope, SpecCost, WaveCost } from "@/lib/types/economy";
 import { projectScope, formatTokens, formatUsd } from "@/lib/types/economy";
 
 
@@ -73,6 +75,22 @@ export function Economia() {
   const routing = useQuery({
     queryKey: ["economy-routing", scope && scopeKey(scope)],
     queryFn: () => fetchEconomyContextRouting(scope as EconomyScope),
+    enabled: !!scope,
+    staleTime: 15_000,
+    refetchInterval: 30_000,
+  });
+
+  const perSpec = useQuery({
+    queryKey: ["economy-per-spec", scope && scopeKey(scope)],
+    queryFn: () => fetchEconomyPerSpecCosts(scope as EconomyScope),
+    enabled: !!scope,
+    staleTime: 15_000,
+    refetchInterval: 30_000,
+  });
+
+  const perWave = useQuery({
+    queryKey: ["economy-per-wave", scope && scopeKey(scope)],
+    queryFn: () => fetchEconomyPerWaveCosts(scope as EconomyScope),
     enabled: !!scope,
     staleTime: 15_000,
     refetchInterval: 30_000,
@@ -169,7 +187,20 @@ export function Economia() {
           }
           hint={routing.data ? cacheHitTier(cacheRatio) : "sem dados nesta janela"}
           accent={cacheRatio >= 80 ? "emerald" : cacheRatio >= 50 ? "amber" : "zinc"}
-          caption="tokens servidos do cache ÷ (cache + escrita no cache + input novo). Acima de 80% é ótimo — a Anthropic cobra só 10% do preço normal nesses tokens."
+          caption={
+            <div className="flex flex-col gap-1">
+              <span>
+                tokens servidos do cache ÷ (cache + escrita no cache + input novo).
+                Acima de 80% é ótimo — a Anthropic cobra só 10% do preço normal nesses tokens.
+              </span>
+              {scope.kind === "wave" && (
+                <span className="text-amber-500/80">
+                  ⓘ no filtro de Wave, o número é da spec inteira — o cache da
+                  Anthropic não distingue waves dentro de uma mesma spec.
+                </span>
+              )}
+            </div>
+          }
         />
       </section>
 
@@ -250,6 +281,11 @@ export function Economia() {
               />
             ))}
           </div>
+        ) : scope.kind === "spec" || scope.kind === "wave" ? (
+          <EmptyState
+            title="Não disponível neste filtro"
+            description="A Anthropic atribui custo medido só por sessão — sessão não tem dimensão de spec nem onda. Para ver as sessões, volte ao filtro Projeto."
+          />
         ) : (
           <EmptyState
             title="Sem sessões registradas"
@@ -271,17 +307,18 @@ export function Economia() {
         </div>
       </section>
 
-      {/* ── Custo estimado por spec / onda (empty-state — Em breve) ───── */}
+      {/* ── Custo estimado por spec / onda (run_usage, self-attributed) ── */}
       <section className="flex flex-col gap-3">
         <header className="flex flex-col gap-0.5">
           <h2 className="text-sm font-medium">Custo estimado por spec / onda</h2>
           <p className="text-[11px] text-[--ds-text-tertiary]">
-            estimativa por execução — útil para comparar features
+            soma do que cada execução custou em <code className="font-mono">run_usage</code> — estimativa por dispatch, útil para comparar features. Não é o valor cobrado pela Anthropic.
           </p>
         </header>
-        <EmptyState
-          title="Em breve"
-          description="A quebra estimada por spec e onda aparecerá aqui assim que executarmos pipelines com receitas casadas."
+        <EstimatedBySpecWave
+          perSpec={perSpec.data ?? []}
+          perWave={perWave.data ?? []}
+          isLoading={perSpec.isLoading || perWave.isLoading}
         />
       </section>
     </div>
@@ -360,6 +397,102 @@ function SessionRow({
 function formatSessionDate(ms: number | null): string {
   if (ms == null) return "—";
   return dayjs(ms).format("DD/MM HH:mm");
+}
+
+/**
+ * "Custo estimado por spec / onda" — renders self-attributed `run_usage`
+ * roll-ups. Spec rows are top-level; wave rows fold under their spec as a
+ * thin secondary table. We tag everything as "estimado" since these are NOT
+ * Anthropic-billed figures (those come from `usage_totals`, which has no
+ * spec/wave dimension).
+ */
+function EstimatedBySpecWave({
+  perSpec,
+  perWave,
+  isLoading,
+}: {
+  perSpec: SpecCost[];
+  perWave: WaveCost[];
+  isLoading: boolean;
+}) {
+  if (isLoading) {
+    return (
+      <div className="rounded-[--ds-radius-md] border border-[--ds-surface-hover] bg-[--ds-surface-base] p-4 text-[12px] text-[--ds-text-tertiary]">
+        carregando…
+      </div>
+    );
+  }
+  if (perSpec.length === 0) {
+    return (
+      <EmptyState
+        title="Sem execuções atribuídas neste escopo"
+        description="As linhas aparecem aqui assim que dispatches com spec/onda forem registrados em run_usage."
+      />
+    );
+  }
+  // Group waves under their parent spec for easy nesting.
+  const wavesBySpec = new Map<string, WaveCost[]>();
+  for (const w of perWave) {
+    const list = wavesBySpec.get(w.spec_id) ?? [];
+    list.push(w);
+    wavesBySpec.set(w.spec_id, list);
+  }
+  return (
+    <div className="flex flex-col gap-2">
+      {perSpec.map((row) => {
+        const waves = wavesBySpec.get(row.spec_id) ?? [];
+        return (
+          <div
+            key={`spec-${row.spec_id}`}
+            className="rounded-[--ds-radius-md] border border-[--ds-surface-hover] bg-[--ds-surface-base] overflow-hidden"
+          >
+            <div className="flex items-center gap-3 px-3 py-2 border-b border-[--ds-surface-hover]">
+              <span
+                className="font-mono text-[12px] text-[--ds-text-primary] truncate flex-1"
+                title={row.spec_id}
+              >
+                {row.spec_id || "—"}
+              </span>
+              <span className="text-[10px] uppercase tracking-wider text-[--ds-text-tertiary]">
+                estimado
+              </span>
+              <span className="font-mono text-[12px] text-[--ds-text-secondary] tabular-nums w-[64px] text-right">
+                {row.span_count.toLocaleString()} dispatch
+                {row.span_count === 1 ? "" : "es"}
+              </span>
+              <MetricsPill value={formatTokens(row.tokens)} unit="tok" />
+              <MetricsPill value={formatUsd(row.cost_usd_micros)} intent="info" />
+            </div>
+            {waves.length > 0 && (
+              <div className="flex flex-col gap-px bg-[--ds-surface-hover]/30">
+                {waves.map((w) => (
+                  <div
+                    key={`wave-${w.spec_id}-${w.wave_id}`}
+                    className="flex items-center gap-3 px-3 py-1.5 bg-[--ds-surface-base]"
+                  >
+                    <span className="text-[--ds-text-tertiary] text-[12px] w-3 shrink-0">
+                      ↳
+                    </span>
+                    <span
+                      className="font-mono text-[11.5px] text-[--ds-text-secondary] truncate flex-1"
+                      title={w.wave_id}
+                    >
+                      {w.wave_id || "—"}
+                    </span>
+                    <span className="font-mono text-[11px] text-[--ds-text-tertiary] tabular-nums w-[64px] text-right">
+                      {w.span_count.toLocaleString()}×
+                    </span>
+                    <MetricsPill value={formatTokens(w.tokens)} unit="tok" />
+                    <MetricsPill value={formatUsd(w.cost_usd_micros)} intent="info" />
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
 }
 
 /**

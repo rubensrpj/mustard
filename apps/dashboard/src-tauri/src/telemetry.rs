@@ -1277,6 +1277,34 @@ pub fn dashboard_economy_context_routing(
         .map_err(|e| format!("context_routing_quality: {e}"))
 }
 
+/// Per-spec cost roll-up — ESTIMATED from self-attributed `run_usage`. Backs
+/// the "Custo estimado por spec" section on the Economia page. Returns rows
+/// ordered by `cost_usd_micros` desc; the UI tags each row as `(estimado)`.
+#[tauri::command]
+pub fn dashboard_economy_per_spec_costs(
+    scope: EconomyScopeDto,
+) -> Result<Vec<mustard_core::economy::SpecCost>, String> {
+    let (project_path, core_scope) = open_scope(scope)?;
+    let conn = mustard_core::economy::store::open_for(&project_path)
+        .map_err(|e| format!("open economy db for {project_path}: {e}"))?;
+    mustard_core::economy::reader::per_spec_costs(&conn, core_scope)
+        .map_err(|e| format!("per_spec_costs: {e}"))
+}
+
+/// Per-wave cost roll-up — ESTIMATED from self-attributed `run_usage`. Backs
+/// the "Custo estimado por onda" section. Rows carry both `spec_id` and
+/// `wave_id` so the UI can group / label them.
+#[tauri::command]
+pub fn dashboard_economy_per_wave_costs(
+    scope: EconomyScopeDto,
+) -> Result<Vec<mustard_core::economy::WaveCost>, String> {
+    let (project_path, core_scope) = open_scope(scope)?;
+    let conn = mustard_core::economy::store::open_for(&project_path)
+        .map_err(|e| format!("open economy db for {project_path}: {e}"))?;
+    mustard_core::economy::reader::per_wave_costs(&conn, core_scope)
+        .map_err(|e| format!("per_wave_costs: {e}"))
+}
+
 /// Resolve the primary project path + typed core scope from the JS DTO.
 /// `AllProjects` uses the first entry for connection bootstrap since the core
 /// reader's fan_out re-opens each project itself in read-only mode.

@@ -549,6 +549,8 @@ import type {
   EconomySummary,
   SavingsBreakdown,
   ContextRoutingMetrics,
+  SpecCost,
+  WaveCost,
 } from "@/lib/types/economy";
 
 export function fetchEconomySummary(scope: EconomyScope): Promise<EconomySummary> {
@@ -561,6 +563,14 @@ export function fetchEconomySavingsBreakdown(scope: EconomyScope): Promise<Savin
 
 export function fetchEconomyContextRouting(scope: EconomyScope): Promise<ContextRoutingMetrics> {
   return invoke<ContextRoutingMetrics>("dashboard_economy_context_routing", { scope });
+}
+
+export function fetchEconomyPerSpecCosts(scope: EconomyScope): Promise<SpecCost[]> {
+  return invoke<SpecCost[]>("dashboard_economy_per_spec_costs", { scope });
+}
+
+export function fetchEconomyPerWaveCosts(scope: EconomyScope): Promise<WaveCost[]> {
+  return invoke<WaveCost[]>("dashboard_economy_per_wave_costs", { scope });
 }
 
 // --- useProjects hook ---

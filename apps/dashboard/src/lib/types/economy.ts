@@ -109,6 +109,30 @@ export interface ContextRoutingMetrics {
   frame_count: number;
 }
 
+/**
+ * ESTIMATED per-spec cost row — sourced from self-attributed `run_usage`, NOT
+ * from Anthropic's billed `usage_totals`. Matches
+ * `mustard_core::economy::SpecCost`. UI labels every value as "estimado".
+ */
+export interface SpecCost {
+  spec_id: string;
+  cost_usd_micros: number;
+  tokens: number;
+  span_count: number;
+}
+
+/**
+ * ESTIMATED per-wave cost row. Carries both `spec_id` and `wave_id` so the UI
+ * can group rows by spec. Matches `mustard_core::economy::WaveCost`.
+ */
+export interface WaveCost {
+  spec_id: string;
+  wave_id: string;
+  cost_usd_micros: number;
+  tokens: number;
+  span_count: number;
+}
+
 // ── Scope constructors ──────────────────────────────────────────────────────
 //
 // Small helpers so consumer components don't have to remember the variant

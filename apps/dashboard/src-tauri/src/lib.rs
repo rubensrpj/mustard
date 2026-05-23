@@ -1703,6 +1703,8 @@ pub fn run() {
             telemetry::dashboard_economy_summary,
             telemetry::dashboard_economy_savings_breakdown,
             telemetry::dashboard_economy_context_routing,
+            telemetry::dashboard_economy_per_spec_costs,
+            telemetry::dashboard_economy_per_wave_costs,
             telemetry::dashboard_spec_trace,
             telemetry::collector_health,
             dashboard_consumption, dashboard_consumption_global,
