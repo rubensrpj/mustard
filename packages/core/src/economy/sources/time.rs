@@ -8,8 +8,11 @@
 //! duplicated verbatim in all three adapters — this module is the single
 //! source of truth so a clock or calendar bug only has to be fixed once.
 //!
-//! The module is `pub(super)` because the helpers are an implementation
-//! detail of the adapters, not part of the public economy API.
+//! `now_iso` is `pub` so other crates (e.g. `mustard-rt`) can stamp savings
+//! records with the same ISO-8601 format and the same Howard Hinnant
+//! roundtrip the economy adapters use; `epoch_secs_to_ymdhms` stays
+//! `pub(super)` since it is a calendar primitive only the local adapters
+//! need.
 
 /// Now, formatted ISO-8601 to second precision (UTC).
 ///
@@ -17,7 +20,7 @@
 /// clock is unset or runs before the epoch — the adapters treat that as a
 /// recoverable degradation (the record still lands, it just sorts at the
 /// bottom).
-pub(super) fn now_iso() -> String {
+pub fn now_iso() -> String {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)

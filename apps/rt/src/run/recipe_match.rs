@@ -21,6 +21,7 @@ use mustard_core::economy::{
     self,
     model::{SavingsRecord, SavingsSource},
     scope::{ProjectPath, SpecId},
+    sources::time::now_iso,
 };
 use mustard_core::fs;
 use serde_json::{json, Map, Value};
@@ -222,42 +223,6 @@ fn persist_injection_savings(matched: &Value, cwd: &Path) {
     if let Err(e) = economy::writer::record_savings(&conn, record) {
         eprintln!("recipe_match: record_savings failed: {e}");
     }
-}
-
-/// Wall-clock now in ISO-8601 second precision (UTC).
-///
-/// Mirrors `economy::sources::time::now_iso`, which is `pub(super)` to its
-/// module. Inlined here per the same precedent as
-/// `projection::card::header_emit_timestamp` — the helper is too small to
-/// justify a new public export, and a single source of bugs (Howard
-/// Hinnant's days-from-civil) is already audited there.
-#[allow(
-    clippy::cast_possible_truncation, // i64 → u32: calendar fields fit safely in u32.
-    clippy::cast_sign_loss,           // i64 → u32: calendar fields are always non-negative.
-    clippy::cast_possible_wrap,       // u64 → i64: seconds-since-epoch fits in i64 for millennia.
-    clippy::many_single_char_names    // Canonical variable names from the civil-to-date algorithm.
-)]
-fn now_iso() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs() as i64);
-    let days = secs.div_euclid(86_400);
-    let tod = secs.rem_euclid(86_400);
-    let z = days + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
-    let y = if m <= 2 { y + 1 } else { y };
-    let h = (tod / 3600) as u32;
-    let mi = ((tod % 3600) / 60) as u32;
-    let s = (tod % 60) as u32;
-    format!("{y:04}-{m:02}-{d:02}T{h:02}:{mi:02}:{s:02}Z")
 }
 
 #[cfg(test)]
