@@ -12,9 +12,12 @@
 //! it shares with the still-JS `sync-registry.js`.
 
 pub mod scan;
+pub mod active_specs;
+pub mod agent_prompt_render;
 pub mod amend_finalize;
 mod analyze_validation;
 mod artifact_update;
+mod knowledge;
 mod backfill_run_usage_cost;
 mod backfill_run_usage_spec;
 mod db_maintain;
@@ -47,13 +50,17 @@ mod qa_run;
 mod qa_run_all;
 mod rebuild_specs;
 mod recipe_match;
+pub mod resume_bootstrap;
+mod review_prefetch;
 mod review_result;
 mod rtk_gain;
+mod status;
 mod scan_finalize;
 mod scan_orchestrate;
 mod scan_precompute;
 mod scope_decompose;
 mod security_scan;
+pub mod skill_discovery_lint;
 mod skills;
 mod statusline;
 mod verify_emit;
@@ -198,8 +205,9 @@ pub enum RunCmd {
     },
     /// Persist agent memory, decisions/lessons, or knowledge entries.
     /// `cross-wave` is the read-side: emits markdown summarising prior waves.
+    /// `list` emits all memory entries (knowledge_patterns + decisions + lessons).
     Memory {
-        /// Subcommand: `agent`, `decision`, `knowledge`, or `cross-wave`.
+        /// Subcommand: `agent`, `decision`, `knowledge`, `list`, or `cross-wave`.
         subcommand: String,
         /// Input JSON (Windows-friendly form; stdin is the POSIX fallback).
         #[arg(long)]
@@ -221,6 +229,12 @@ pub enum RunCmd {
         /// (recorded under `details.files`).
         #[arg(long)]
         files: Option<String>,
+        /// `list` only — group entries by type (pattern / decision / convention).
+        #[arg(long)]
+        grouped: bool,
+        /// `list` only — output format: `json` (default) or `table`.
+        #[arg(long, default_value = "json")]
+        format: String,
     },
     /// One-shot ingest of legacy JSON files into the SQLite Wave 6a tables.
     ///
@@ -593,6 +607,12 @@ pub enum RunCmd {
         /// Also scan for dead file/script references (slower).
         #[arg(long)]
         residue: bool,
+        /// Run a specific named check in isolation (e.g. `skill-discovery`).
+        #[arg(long)]
+        check: Option<String>,
+        /// Output format: `text` (default) or `json`.
+        #[arg(long, default_value = "text")]
+        format: String,
     },
     /// SQLite harness database maintenance.
     ///
@@ -668,6 +688,128 @@ pub enum RunCmd {
         #[arg(long)]
         manifest: Option<String>,
     },
+    /// Discover active specs from the filesystem (Outcome=Active, Stage=Plan|Execute).
+    ///
+    /// Replaces the LLM-side glob/grep loop in `/mustard:spec`: reads
+    /// `.claude/spec/*/spec.md` directly, filters headers, counts wave
+    /// progress, extracts a one-line resumo, and backfills SQLite events for
+    /// specs that arrived via `git pull` without local pipeline events.
+    /// Output is either a markdown table (default) or a JSON document.
+    ActiveSpecs {
+        /// Output format: `table` (default) or `json`.
+        #[arg(long, default_value = "table")]
+        format: String,
+        /// Project root directory (default: current working directory).
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        /// Skip the SQLite backfill step (useful in tests / read-only contexts).
+        #[arg(long)]
+        no_backfill: bool,
+    },
+    /// Project + harness status snapshot.
+    ///
+    /// Default mode: git branch, modified files, active vs orphaned pipelines,
+    /// last build result, entity-registry summary.
+    ///
+    /// `--harness` mode: reads `.claude/settings.json`, groups hooks by lifecycle
+    /// event, resolves enforcement mode from env vars, and renders a 4-column
+    /// table (Hook | Matcher | Enforces | Mode).
+    Status {
+        /// Include hooks table (harness view).
+        #[arg(long)]
+        harness: bool,
+        /// Output format: `table` (default) or `json`.
+        #[arg(long, default_value = "table")]
+        format: String,
+        /// Project root directory (default: current working directory).
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
+    /// List installed skills with name, source, and description.
+    ///
+    /// Globs `<root>/.claude/skills/*/SKILL.md`, parses YAML frontmatter, and
+    /// renders a table or JSON array. Source defaults to `manual` when the
+    /// frontmatter `source:` field is absent.
+    SkillsList {
+        /// Output format: `table` (default) or `json`.
+        #[arg(long, default_value = "table")]
+        format: String,
+        /// Project root directory (default: current working directory).
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
+    /// Browse entity registry and knowledge base.
+    ///
+    /// Subcommand `glossary`: reads `<root>/.claude/entity-registry.json`,
+    /// iterates entities (skipping `_`-prefixed metadata keys), and renders
+    /// name + description + first ref. Optional `--filter TERM` narrows by
+    /// case-insensitive substring match on name or description.
+    Knowledge {
+        /// Subcommand: `glossary`.
+        subcommand: Option<String>,
+        /// Case-insensitive substring filter on name or description (`glossary`).
+        #[arg(long)]
+        filter: Option<String>,
+        /// Output format: `table` (default) or `json`.
+        #[arg(long, default_value = "table")]
+        format: String,
+        /// Project root directory (default: current working directory).
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
+    /// Prefetch a GitHub Pull Request into a structured JSON document.
+    ///
+    /// Shell-outs to `gh pr view --json ...` and re-emits a clean structure
+    /// ready for the LLM to consume. `--format table` prints a compact
+    /// executive summary (title, author, scope, comments, review states).
+    /// Fail-open: if `gh` is not in the PATH, emits `{"error":"gh-not-found"}`.
+    ReviewPrefetch {
+        /// PR reference: a number (`123`) or GitHub URL.
+        pr_ref: Option<String>,
+        /// Output format: `json` (default) or `table`.
+        #[arg(long, default_value = "json")]
+        format: String,
+        /// Project root override (optional).
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
+    /// Single-shot resume decision for `/mustard:spec`: mode, stage, operational
+    /// spec path, wave progress, dispatch failure, refresh flags, wave model,
+    /// resumo, agent roles. Emits `pipeline.resume_mode` before returning
+    /// (idempotent — debounced 10 s). Fail-open: every IO error degrades a
+    /// field to `null`/`false`; exit 0 always.
+    ResumeBootstrap {
+        /// Spec slug under `.claude/spec/`.
+        #[arg(long)]
+        spec: String,
+        /// Emit pretty JSON instead of the compact text table.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Render the agent dispatch prompt server-side from the embedded
+    /// template. Substitutes every `{placeholder}` it can resolve; warns on
+    /// stderr for any left unfilled. Stdout = raw prompt string ready for
+    /// the Task tool (no JSON framing).
+    AgentPromptRender {
+        /// Spec slug under `.claude/spec/`.
+        #[arg(long)]
+        spec: String,
+        /// Wave number (1-based). Omitted for non-wave specs.
+        #[arg(long)]
+        wave: Option<u32>,
+        /// Agent role token (e.g. `ui`, `backend`).
+        #[arg(long)]
+        role: String,
+        /// Subproject path relative to the project root (e.g. `apps/dashboard`).
+        #[arg(long)]
+        subproject: PathBuf,
+        /// Render mode: `first` (default), `granular`, `fix-loop`.
+        #[arg(long, default_value = "first")]
+        mode: String,
+        /// File containing the `{retry_context}` text for granular/fix-loop.
+        #[arg(long = "retry-context-file")]
+        retry_context_file: Option<PathBuf>,
+    },
 }
 
 /// Dispatch a `run` subcommand.
@@ -732,6 +874,8 @@ pub fn dispatch(cmd: RunCmd) {
             agent,
             summary,
             files,
+            grouped,
+            format,
         } => memory::dispatch(
             &subcommand,
             json.as_deref(),
@@ -740,6 +884,8 @@ pub fn dispatch(cmd: RunCmd) {
             agent.as_deref(),
             summary.as_deref(),
             files.as_deref(),
+            grouped,
+            &format,
         ),
         RunCmd::MemoryIngest { delete } => memory_ingest::run(delete),
         RunCmd::PipelineStateIngest { delete } => {
@@ -843,7 +989,11 @@ pub fn dispatch(cmd: RunCmd) {
             json,
             expect_rows_after,
         } => otel::diagnose::run(json, expect_rows_after.as_deref()),
-        RunCmd::Doctor { residue } => doctor::run(residue),
+        RunCmd::Doctor { residue, check, format } => doctor::run(doctor::DoctorOpts {
+            residue,
+            check,
+            format,
+        }),
         RunCmd::DbMaintain { vacuum, prune_keep } => {
             let mut args: Vec<String> = Vec::new();
             if vacuum {
@@ -868,5 +1018,63 @@ pub fn dispatch(cmd: RunCmd) {
         RunCmd::WaveScaffold { spec_dir, plan } => {
             wave_scaffold::run(spec_dir.as_deref(), plan.as_deref())
         }
+        RunCmd::ActiveSpecs { format, root, no_backfill } => {
+            active_specs::run(active_specs::ActiveSpecsOpts {
+                format,
+                root,
+                no_backfill,
+            })
+        }
+        RunCmd::Status { harness, format, root } => {
+            status::run(status::StatusOpts { harness, format, root })
+        }
+        RunCmd::SkillsList { format, root } => {
+            // Delegate to the existing skills::run with the "list" subcommand,
+            // passing --format and --root via the args slice.
+            let mut args: Vec<String> = Vec::new();
+            args.push("--format".to_string());
+            args.push(format);
+            args.push("--root".to_string());
+            args.push(root.display().to_string());
+            skills::run(Some("list"), &args);
+        }
+        RunCmd::Knowledge { subcommand, filter, format, root } => {
+            match subcommand.as_deref() {
+                Some("glossary") | None => {
+                    knowledge::run(knowledge::GlossaryOpts { filter, format, root })
+                }
+                Some(other) => {
+                    eprintln!("knowledge: unknown subcommand '{other}'. Try: glossary");
+                    std::process::exit(1);
+                }
+            }
+        }
+        RunCmd::ReviewPrefetch { pr_ref, format, root } => {
+            let pr_ref = pr_ref.unwrap_or_default();
+            if pr_ref.is_empty() {
+                println!("{}",
+                    serde_json::to_string_pretty(&serde_json::json!({"error":"pr-ref-required"}))
+                        .unwrap_or_default()
+                );
+            } else {
+                review_prefetch::run(review_prefetch::ReviewPrefetchOpts { pr_ref, format, root })
+            }
+        }
+        RunCmd::ResumeBootstrap { spec, json } => resume_bootstrap::run(&spec, json),
+        RunCmd::AgentPromptRender {
+            spec,
+            wave,
+            role,
+            subproject,
+            mode,
+            retry_context_file,
+        } => agent_prompt_render::run(
+            &spec,
+            wave,
+            &role,
+            &subproject,
+            agent_prompt_render::RenderMode::parse(&mode),
+            retry_context_file.as_deref(),
+        ),
     }
 }
