@@ -1,0 +1,69 @@
+{
+  "criteria": [
+    {
+      "duration_ms": 18029,
+      "exit": 0,
+      "id": "AC-1",
+      "status": "pass",
+      "stderr_excerpt": ""
+    },
+    {
+      "duration_ms": 110,
+      "exit": 0,
+      "id": "AC-3",
+      "status": "pass",
+      "stderr_excerpt": ""
+    },
+    {
+      "duration_ms": 111,
+      "exit": 0,
+      "id": "AC-4",
+      "status": "pass",
+      "stderr_excerpt": ""
+    },
+    {
+      "duration_ms": 60,
+      "exit": 1,
+      "id": "AC-5",
+      "status": "fail",
+      "stderr_excerpt": ""
+    },
+    {
+      "duration_ms": 110,
+      "exit": 1,
+      "id": "AC-6",
+      "status": "fail",
+      "stderr_excerpt": "[check-pages-imports] 6 violation(s):\n  C:\\Atiz\\mustard\\apps\\dashboard\\src\\pages\\Economia.tsx -> @/c"
+    },
+    {
+      "duration_ms": 110,
+      "exit": 0,
+      "id": "AC-7",
+      "status": "pass",
+      "stderr_excerpt": ""
+    },
+    {
+      "duration_ms": 136,
+      "exit": 0,
+      "id": "AC-8",
+      "status": "pass",
+      "stderr_excerpt": ""
+    },
+    {
+      "duration_ms": 110,
+      "exit": 0,
+      "id": "AC-9",
+      "status": "pass",
+      "stderr_excerpt": ""
+    },
+    {
+      "duration_ms": 109,
+      "exit": 1,
+      "id": "AC-10",
+      "status": "fail",
+      "stderr_excerpt": "node:internal/modules/cjs/loader:1413\r\n  throw err;\r\n  ^\r\n\r\nError: Cannot find module 'C:\\Atiz\\musta"
+    }
+  ],
+  "overall": "fail",
+  "spec": "2026-05-23-dashboard-design-system"
+}

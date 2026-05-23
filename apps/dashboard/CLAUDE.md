@@ -18,6 +18,7 @@ When the user asks to "create the API", "scaffold the dashboard", etc., they are
 | `mustard.json` | Declared build/test/lint/type-check commands and git flow (`dev → main`, GitHub provider) | Manual |
 | `.claude/entity-registry.json` | Domain entities discovered by `/scan` | **Generated** — currently empty |
 | `.claude/recipes/*.json` | Structured recipes consumed by `recipe-match.js` (5 entries today: add-field, add-endpoint, add-component, add-validation, null-guard) | Manual or `/scan`-generated |
+| `DESIGN.md` | Norte visual do design system (Binance pack via `getdesign`) | Manual — atualizar via `npx getdesign add binance --force` |
 
 ## Commands that actually run today
 

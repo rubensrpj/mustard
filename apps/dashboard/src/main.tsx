@@ -5,9 +5,10 @@ import { QueryClientProvider } from "@tanstack/react-query";
 import App from "./App";
 import { queryClient } from "./lib/query-client";
 import "@fontsource-variable/inter";
-import "@fontsource-variable/jetbrains-mono";
+import "@fontsource/ibm-plex-mono/400.css";
+import "@fontsource/ibm-plex-mono/500.css";
+import "@fontsource/ibm-plex-mono/600.css";
 import "./style.css";
-import "./styles/theme.css";
 
 window.addEventListener("contextmenu", (e) => e.preventDefault());
 

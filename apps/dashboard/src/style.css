@@ -8,18 +8,23 @@
 @variant dark (&:where(.dark, .dark *));
 
 /* ─────────────────────────────────────────────────────────────────────────
-   Notion design system — token foundation.
+   Binance design system — token foundation.
 
-   Light (`:root`) carries the Notion homepage palette verbatim: purple
-   primary, warm-charcoal text, off-white surfaces, pastel feature tints.
-   Dark (`.dark`) is a coherent derivation using Notion's own dark surfaces
-   (#191919 family) and stays the app default per the dashboard spec.
+   Dark (`.dark`) is the dashboard default (dark-first). Light (`:root`) is
+   the secondary theme. Token map defined in `apps/dashboard/DESIGN.md`.
+
+   One override from the Binance pack: `--primary` is Mustard yellow
+   (#dfab01) rather than Binance yellow (#FCD535). All other hex values
+   are adopted verbatim from the Binance design system.
+
+   Lifecycle phase tokens (`--color-phase-*`) are preserved — they encode
+   pipeline state, not trading direction.
    ───────────────────────────────────────────────────────────────────────── */
 
 @theme inline {
   --font-heading: var(--font-sans);
   --font-sans: 'Inter Variable', ui-sans-serif, system-ui, 'Segoe UI', Helvetica, sans-serif;
-  --font-mono: 'JetBrains Mono Variable', ui-monospace, 'SFMono-Regular', monospace;
+  --font-mono: 'IBM Plex Mono', ui-monospace, 'SFMono-Regular', monospace;
 
   /* shadcn semantic surface map */
   --color-sidebar-ring: var(--sidebar-ring);
@@ -54,43 +59,14 @@
   --color-foreground: var(--foreground);
   --color-background: var(--background);
 
-  /* Notion brand & extended tokens */
+  /* Extended semantic tokens */
   --color-primary-pressed: var(--primary-pressed);
-  --color-primary-deep: var(--primary-deep);
-  --color-brand-navy: var(--brand-navy);
-  --color-brand-navy-deep: var(--brand-navy-deep);
-  --color-brand-navy-mid: var(--brand-navy-mid);
-  --color-link: var(--link-blue);
-  --color-link-pressed: var(--link-blue-pressed);
+  --color-intent-success: var(--intent-success);
+  --color-intent-error: var(--intent-error);
+  --color-intent-warning: var(--intent-warning);
+  --color-intent-info: var(--intent-info);
 
-  --color-brand-pink: var(--brand-pink);
-  --color-brand-orange: var(--brand-orange);
-  --color-brand-purple: var(--brand-purple);
-  --color-brand-teal: var(--brand-teal);
-  --color-brand-green: var(--brand-green);
-  --color-brand-yellow: var(--brand-yellow);
-  --color-brand-brown: var(--brand-brown);
-
-  --color-tint-peach: var(--tint-peach);
-  --color-tint-rose: var(--tint-rose);
-  --color-tint-mint: var(--tint-mint);
-  --color-tint-lavender: var(--tint-lavender);
-  --color-tint-sky: var(--tint-sky);
-  --color-tint-yellow: var(--tint-yellow);
-  --color-tint-yellow-bold: var(--tint-yellow-bold);
-  --color-tint-cream: var(--tint-cream);
-  --color-tint-gray: var(--tint-gray);
-
-  --color-ink-deep: var(--ink-deep);
-  --color-charcoal: var(--charcoal);
-  --color-slate: var(--slate);
-  --color-steel: var(--steel);
-  --color-stone: var(--stone);
-
-  --color-success: var(--success);
-  --color-warning: var(--warning);
-
-  /* Radius — Notion editorial scale: 8px buttons, 12px cards */
+  /* Radius — Binance scale */
   --radius-xs: 4px;
   --radius-sm: 6px;
   --radius-md: 8px;
@@ -100,7 +76,7 @@
   --radius-3xl: 24px;
   --radius-4xl: 9999px;
 
-  /* Elevation — Notion diffuse drop shadows */
+  /* Elevation */
   --shadow-elev-1: var(--elev-1);
   --shadow-elev-2: var(--elev-2);
   --shadow-elev-3: var(--elev-3);
@@ -114,95 +90,58 @@
   --text-body: 15px;
   --text-code: 14px;
   --leading-body: 1.55;
-  --radius: 8px;
+  --radius: 6px;
+  --radius-card: 8px;
+  --editorial-band-py: 80px;
 
-  /* Surface */
+  /* Surface — Binance light */
   --background: #ffffff;
-  --foreground: #37352f;
+  --foreground: #1e2329;
   --card: #ffffff;
-  --card-foreground: #37352f;
+  --card-foreground: #1e2329;
   --popover: #ffffff;
-  --popover-foreground: #37352f;
+  --popover-foreground: #1e2329;
 
-  /* Primary — Mustard yellow brand */
+  /* Primary — Mustard yellow brand (override: #dfab01 vs Binance #FCD535) */
   --primary: #dfab01;
-  --primary-foreground: #1a1a1a;
+  --primary-foreground: #000000;
   --primary-pressed: #b88c00;
-  --primary-deep: #8e6c00;
 
-  --secondary: #f7f6f3;
-  --secondary-foreground: #37352f;
-  --muted: #f1f0ee;
-  --muted-foreground: #787774;
-  --accent: #f1f0ee;
-  --accent-foreground: #37352f;
-  --destructive: #e03e3e;
+  --secondary: #f5f5f5;
+  --secondary-foreground: #1e2329;
+  --muted: #f5f5f5;
+  --muted-foreground: #848e9c;
+  --accent: #f5f5f5;
+  --accent-foreground: #1e2329;
+  --destructive: #f6465d;
 
-  --border: #e9e9e7;
-  --input: #d9d8d4;
+  --border: #eaecef;
+  --input: #eaecef;
   --ring: #dfab01;
 
-  /* Charts — Mustard-led brand spectrum */
+  /* Charts — Binance trading palette */
   --chart-1: #dfab01;
-  --chart-2: #2d7ff9;
-  --chart-3: #4dab9a;
-  --chart-4: #d9730d;
-  --chart-5: #dd5fa8;
+  --chart-2: #0ecb81;
+  --chart-3: #f6465d;
+  --chart-4: #1e88e5;
+  --chart-5: #f0b90b;
 
-  --radius: 8px;
-  --sidebar: #f7f6f3;
-  --sidebar-foreground: #37352f;
+  --sidebar: #f5f5f5;
+  --sidebar-foreground: #1e2329;
   --sidebar-primary: #dfab01;
-  --sidebar-primary-foreground: #1a1a1a;
-  --sidebar-accent: #efeeeb;
-  --sidebar-accent-foreground: #37352f;
-  --sidebar-border: #e9e9e7;
+  --sidebar-primary-foreground: #000000;
+  --sidebar-accent: #eaecef;
+  --sidebar-accent-foreground: #1e2329;
+  --sidebar-border: #eaecef;
   --sidebar-ring: #dfab01;
 
-  /* Brand navy (hero bands) */
-  --brand-navy: #15162e;
-  --brand-navy-deep: #0e0f22;
-  --brand-navy-mid: #252648;
+  /* Intent / trading direction (Binance) */
+  --intent-success: #0ecb81;
+  --intent-error: #f6465d;
+  --intent-warning: #f0b90b;
+  --intent-info: #1e88e5;
 
-  /* Link blue — distinct from primary purple */
-  --link-blue: #2d7ff9;
-  --link-blue-pressed: #1f5fc9;
-
-  /* Brand color spectrum */
-  --brand-pink: #dd5fa8;
-  --brand-orange: #d9730d;
-  --brand-purple: #9065b0;
-  --brand-teal: #4dab9a;
-  --brand-green: #2f9e6e;
-  --brand-yellow: #dfab01;
-  --brand-brown: #9f6b53;
-
-  /* Pastel feature card tints */
-  --tint-peach: #faebdd;
-  --tint-rose: #fbe4e4;
-  --tint-mint: #ddedea;
-  --tint-lavender: #eae4f2;
-  --tint-sky: #ddebf1;
-  --tint-yellow: #fbf3db;
-  --tint-yellow-bold: #ffdc5e;
-  --tint-cream: #f6f3ee;
-  --tint-gray: #ebeced;
-
-  /* Text shades — Notion warm-charcoal ladder */
-  --ink-deep: #0f0f0f;
-  --charcoal: #37352f;
-  --slate: #5f5e57;
-  --steel: #787774;
-  --stone: #9b9a97;
-
-  /* Mustard brand accent — yellow/amber focal color */
-  --color-accent-mustard: #dfab01;
-  --color-ok: #448361;
-  --color-error: #e03e3e;
-  --color-paper: #f7f6f3;
-  --color-ink-subtle: #e9e9e7;
-
-  /* Pipeline phase semantic tokens (light) */
+  /* Pipeline phase semantic tokens (light) — lifecycle state, not trading direction */
   --color-phase-analyze:        #0369a1;
   --color-phase-analyze-bg:     #e0f2fe;
   --color-phase-analyze-border: #bae6fd;
@@ -228,18 +167,14 @@
   --color-phase-backlog-border: #e2e8f0;
   --color-phase-backlog-stripe: rgb(100 116 139 / 0.6);
 
-  --color-phase-close:        #52525b; /* zinc-600  */
-  --color-phase-close-bg:     #f4f4f5; /* zinc-100  */
-  --color-phase-close-border: #e4e4e7; /* zinc-200  */
-  --color-phase-close-stripe: rgb(113 113 122 / 0.6); /* zinc-500/60 */
+  --color-phase-close:        #52525b;
+  --color-phase-close-bg:     #f4f4f5;
+  --color-phase-close-border: #e4e4e7;
+  --color-phase-close-stripe: rgb(113 113 122 / 0.6);
 
   --color-event-fail:          #be123c;
   --color-event-fail-bg:       #ffe4e6;
   --color-event-fail-border:   #fecdd3;
-
-  /* Semantic */
-  --success: #448361;
-  --warning: #d9730d;
 
   /* Elevation */
   --elev-1: 0 1px 2px 0 rgb(15 15 15 / 0.04);
@@ -256,87 +191,53 @@
   --text-code: 14px;
   --leading-body: 1.55;
 
-  /* Surface — Notion dark family */
-  --background: #191919;
-  --foreground: #d4d4d4;
-  --card: #202020;
-  --card-foreground: #d4d4d4;
-  --popover: #252525;
-  --popover-foreground: #e6e6e6;
+  /* Surface — Binance dark */
+  --background: #0b0e11;
+  --foreground: #eaecef;
+  --card: #1e2329;
+  --card-foreground: #eaecef;
+  --popover: #1e2329;
+  --popover-foreground: #eaecef;
 
   /* Primary — Mustard yellow lifted for dark contrast */
   --primary: #e6c84a;
-  --primary-foreground: #1a1a1a;
+  --primary-foreground: #000000;
   --primary-pressed: #c8a92e;
-  --primary-deep: #ab8d1e;
 
-  --secondary: #252525;
-  --secondary-foreground: #d4d4d4;
-  --muted: #262626;
-  --muted-foreground: #8b8b89;
-  --accent: #2c2c2c;
-  --accent-foreground: #e6e6e6;
-  --destructive: #ff6b6b;
+  --secondary: #2b3139;
+  --secondary-foreground: #eaecef;
+  --muted: #2b3139;
+  --muted-foreground: #848e9c;
+  --accent: #2b3139;
+  --accent-foreground: #eaecef;
+  --destructive: #f6465d;
 
-  --border: #2f2f2f;
-  --input: #383838;
+  --border: #2b3139;
+  --input: #2b3139;
   --ring: #e6c84a;
 
   --chart-1: #e6c84a;
-  --chart-2: #5a9bfb;
-  --chart-3: #6cc5b4;
-  --chart-4: #e8954a;
-  --chart-5: #e784bd;
+  --chart-2: #0ecb81;
+  --chart-3: #f6465d;
+  --chart-4: #1e88e5;
+  --chart-5: #f0b90b;
 
-  --sidebar: #202020;
-  --sidebar-foreground: #d4d4d4;
+  --sidebar: #1e2329;
+  --sidebar-foreground: #eaecef;
   --sidebar-primary: #e6c84a;
-  --sidebar-primary-foreground: #1a1a1a;
-  --sidebar-accent: #2c2c2c;
-  --sidebar-accent-foreground: #e6e6e6;
-  --sidebar-border: #2f2f2f;
+  --sidebar-primary-foreground: #000000;
+  --sidebar-accent: #2b3139;
+  --sidebar-accent-foreground: #eaecef;
+  --sidebar-border: #2b3139;
   --sidebar-ring: #e6c84a;
 
-  --brand-navy: #15162e;
-  --brand-navy-deep: #0e0f22;
-  --brand-navy-mid: #303158;
+  /* Intent / trading direction (Binance) */
+  --intent-success: #0ecb81;
+  --intent-error: #f6465d;
+  --intent-warning: #f0b90b;
+  --intent-info: #1e88e5;
 
-  --link-blue: #5a9bfb;
-  --link-blue-pressed: #7cb0fc;
-
-  --brand-pink: #e784bd;
-  --brand-orange: #e8954a;
-  --brand-purple: #b08fcc;
-  --brand-teal: #6cc5b4;
-  --brand-green: #5cb98a;
-  --brand-yellow: #e6c84a;
-  --brand-brown: #bb8d76;
-
-  /* Pastel tints — muted dark equivalents */
-  --tint-peach: #3a2e25;
-  --tint-rose: #3d2a2a;
-  --tint-mint: #23362f;
-  --tint-lavender: #322a3f;
-  --tint-sky: #1f3a47;
-  --tint-yellow: #3a3520;
-  --tint-yellow-bold: #d8b842;
-  --tint-cream: #2a2824;
-  --tint-gray: #2c2c2c;
-
-  --ink-deep: #ffffff;
-  --charcoal: #d4d4d4;
-  --slate: #a8a8a5;
-  --steel: #8b8b89;
-  --stone: #6f6f6c;
-
-  /* Mustard brand accent — dark equivalents */
-  --color-accent-mustard: #e6c84a;
-  --color-ok: #5cb98a;
-  --color-error: #ff6b6b;
-  --color-paper: #252525;
-  --color-ink-subtle: #2f2f2f;
-
-  /* Pipeline phase semantic tokens (dark) */
+  /* Pipeline phase semantic tokens (dark) — lifecycle state, not trading direction */
   --color-phase-analyze:        #7dd3fc;
   --color-phase-analyze-bg:     rgb(14 165 233 / 0.10);
   --color-phase-analyze-border: rgb(14 165 233 / 0.25);
@@ -362,7 +263,7 @@
   --color-phase-backlog-border: rgb(100 116 139 / 0.25);
   --color-phase-backlog-stripe: rgb(100 116 139 / 0.6);
 
-  --color-phase-close:        #d4d4d8; /* zinc-300  */
+  --color-phase-close:        #d4d4d8;
   --color-phase-close-bg:     rgb(113 113 122 / 0.10);
   --color-phase-close-border: rgb(113 113 122 / 0.25);
   --color-phase-close-stripe: rgb(113 113 122 / 0.6);
@@ -371,9 +272,7 @@
   --color-event-fail-bg:       rgb(244 63 94 / 0.10);
   --color-event-fail-border:   rgb(244 63 94 / 0.25);
 
-  --success: #5cb98a;
-  --warning: #e8954a;
-
+  /* Elevation */
   --elev-1: 0 1px 2px 0 rgb(0 0 0 / 0.30);
   --elev-2: 0 4px 12px 0 rgb(0 0 0 / 0.40);
   --elev-3: 0 24px 48px -8px rgb(0 0 0 / 0.60);
