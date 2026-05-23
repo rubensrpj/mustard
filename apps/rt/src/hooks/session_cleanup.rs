@@ -33,7 +33,9 @@
 //! warning and the PID file is still removed.
 
 use crate::run::amend_finalize;
-use mustard_core::economy::{self, sources::transcript, sources::IngestContext};
+use mustard_core::economy::{
+    self, sources::rtk as rtk_source, sources::transcript, sources::IngestContext,
+};
 use mustard_core::fs;
 use mustard_core::spec;
 use mustard_core::store::sqlite_store::SqliteEventStore;
@@ -372,6 +374,50 @@ fn ingest_session_transcript(cwd: &str, session_id: Option<&str>) {
     }
 }
 
+/// Pull every `rtk gain --json` rewrite into the W1 `savings_records` table
+/// once per session.
+///
+/// Mirrors [`crate::run::rtk_gain`]'s own `persist_savings()` — same
+/// [`IngestContext`], same fail-open `eprintln!` blocks, same write loop via
+/// [`economy::writer::record_savings`]. We re-use the shared `rtk_source`
+/// adapter rather than duplicating the JSON-parsing logic.
+///
+/// Fail-open: a missing `rtk` binary, an empty record set, a connection
+/// failure, or a row insert error each degrade to an `eprintln!` + continue.
+/// SessionEnd cleanup must never abort because the RTK ledger could not be
+/// drained.
+fn ingest_rtk_savings(cwd: &str, session_id: Option<&str>) {
+    let ctx = IngestContext {
+        project_path: cwd.to_string(),
+        session_id: session_id.map(str::to_string),
+    };
+
+    let records = match rtk_source::ingest(&ctx) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("session_cleanup: rtk_source::ingest failed ({e}); skipping persist");
+            return;
+        }
+    };
+    if records.is_empty() {
+        return;
+    }
+
+    let conn = match economy::store::open_for(cwd) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("session_cleanup: economy::store::open_for failed ({e}); skipping rtk persist");
+            return;
+        }
+    };
+    for rec in records {
+        if let Err(e) = economy::writer::record_savings(&conn, rec) {
+            eprintln!("session_cleanup: record_savings failed: {e}");
+            // Keep looping — a single bad row must not lose the rest.
+        }
+    }
+}
+
 /// Prune telemetry rows older than [`TELEMETRY_RETENTION_DAYS`] from the
 /// dedicated telemetry store (`.harness/telemetry.db`). Best-effort: a
 /// store-open failure or a prune error is dropped — telemetry retention must
@@ -404,6 +450,14 @@ impl Observer for SessionCleanup {
                 let _ = amend_finalize::run(session_id, &store);
             }
         }
+
+        // Wave 2 (economia-didatica-e-economias-reais): drain the local
+        // `rtk gain --json` ledger into `savings_records` once per session.
+        // Mirrors the per-invocation persistence already done by
+        // `mustard-rt run rtk-gain`, but for sessions that never explicitly
+        // run that subcommand — without this hook, RTK rewrites never land in
+        // the W1 savings table. Strict side-effect, fail-open.
+        ingest_rtk_savings(&cwd, input.session_id.as_deref());
 
         // Wave 3 (economia-moat-unification): ingest the session transcript
         // into the W1 economy writer BEFORE we wipe state. Pulls one
