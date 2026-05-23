@@ -16,6 +16,7 @@ pub mod amend_finalize;
 mod analyze_validation;
 mod artifact_update;
 mod backfill_run_usage_cost;
+mod backfill_run_usage_spec;
 mod db_maintain;
 mod doctor;
 mod complete_spec;
@@ -508,6 +509,9 @@ pub enum RunCmd {
     /// Backfill `cost_usd_micros` on legacy `run_usage` rows with NULL cost,
     /// applying the same sonnet fallback the writer uses for new spans.
     BackfillRunUsageCost,
+    /// Backfill `spec` / `wave_id` / `agent_id` on legacy `run_usage` rows
+    /// that came in without attribution, by joining against `run_attribution`.
+    BackfillRunUsageSpec,
     /// Pre-dispatch orchestration for `/scan` — emits the dispatch plan JSON.
     ScanOrchestrate {
         /// Single subproject to scan (optional positional).
@@ -797,6 +801,7 @@ pub fn dispatch(cmd: RunCmd) {
         ),
         RunCmd::RtkGain => rtk_gain::run(),
         RunCmd::BackfillRunUsageCost => backfill_run_usage_cost::run(),
+        RunCmd::BackfillRunUsageSpec => backfill_run_usage_spec::run(),
         RunCmd::ScanOrchestrate { target, force } => {
             scan_orchestrate::run(force, target.as_deref())
         }

@@ -217,6 +217,115 @@ pub fn lookup_attribution_by_session(
 /// Milliseconds in one day — the unit for the [`prune_older_than_days`] wrapper.
 const MS_PER_DAY: i64 = 86_400_000;
 
+/// Outcome of a [`backfill_null_spec`] sweep — how many rows we visited and
+/// where the match came from. The two `updated_*` counters split so the user
+/// can see whether attribution recovered via the precise (session, tool_use)
+/// key or fell back to the session-only match.
+#[derive(Debug, Clone, Copy, Default, serde::Serialize)]
+pub struct SpecBackfillReport {
+    /// Rows where `spec IS NULL AND session_id IS NOT NULL`.
+    pub scanned: usize,
+    /// Rows matched via `(session_id, tool_use_id)` lookup. High-precision.
+    pub updated_primary: usize,
+    /// Rows matched via session-only fallback (most-recent stamp at/before the
+    /// row's `started_at`). Coarser but covers spans without a tool_use_id.
+    pub updated_fallback: usize,
+    /// Rows where neither lookup found a stamp — left as NULL.
+    pub unmatched: usize,
+}
+
+/// Backfill `spec` (and the sibling `wave_id` / `agent_id`) on `run_usage`
+/// rows that arrived without write-time attribution.
+///
+/// The legacy migration in `telemetry::migrate::migrate_from_mustard_db` is a
+/// pure data copy — it does NOT call `stamp_attribution`. So rows carried
+/// over from `mustard.db` land with `spec = NULL` even when the matching
+/// `run_attribution` stamp existed. This function fixes that retroactively.
+///
+/// Lookup strategy mirrors the live OTEL collector's `stamp_attribution`
+/// (`apps/rt/src/run/otel/collector.rs::stamp_attribution`):
+///
+/// 1. **Primary** — `(session_id, tool_use_id)` when the row has a
+///    `tool_use_id`. Exact match by both fields.
+/// 2. **Session-only fallback** — picks the most-recent stamp for the
+///    session at-or-before the row's `started_at`. Same temporal rule the
+///    collector uses for spans that arrive without a `tool_use_id`.
+///
+/// Idempotent: only rows with `spec IS NULL AND session_id IS NOT NULL` are
+/// candidates, so a second run finds nothing new. Single transaction; an
+/// UPDATE failure rolls back the whole sweep.
+///
+/// # Errors
+///
+/// Returns [`Error::Sqlite`] on a database failure.
+pub fn backfill_null_spec(conn: &Connection) -> Result<SpecBackfillReport> {
+    // ── Step 1: collect candidates ─────────────────────────────────────
+    // SELECT before UPDATE so we control the iteration order and can do the
+    // lookups outside the write transaction (lookups read the same DB and
+    // would compete with an open write tx).
+    let mut stmt = conn.prepare(
+        "SELECT span_id, session_id, tool_use_id, started_at \
+         FROM run_usage \
+         WHERE spec IS NULL AND session_id IS NOT NULL",
+    )?;
+    type CandidateRow = (String, String, Option<String>, Option<i64>);
+    let candidates: Vec<CandidateRow> = stmt
+        .query_map([], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+        })?
+        .filter_map(std::result::Result::ok)
+        .collect();
+    drop(stmt);
+
+    let scanned = candidates.len();
+    if scanned == 0 {
+        return Ok(SpecBackfillReport::default());
+    }
+
+    // ── Step 2: resolve attribution per candidate ──────────────────────
+    // Two-tier mirrors `stamp_attribution`: primary by (session, tool_use_id)
+    // when both are present; otherwise session-only with the row's started_at
+    // as the upper time bound. A row that matches nothing stays NULL.
+    let mut updated_primary = 0usize;
+    let mut updated_fallback = 0usize;
+    let mut unmatched = 0usize;
+    let mut resolved: Vec<(String, RunAttribution)> = Vec::new();
+    for (span_id, session_id, tool_use_id, started_at) in candidates {
+        // Primary lookup: (session, tool_use_id).
+        if let Some(tool) = tool_use_id.as_deref() {
+            if let Some(attr) = lookup_attribution(conn, &session_id, tool)? {
+                updated_primary += 1;
+                resolved.push((span_id, attr));
+                continue;
+            }
+        }
+        // Session-only fallback: most-recent stamp <= started_at.
+        if let Some(attr) = lookup_attribution_by_session(conn, &session_id, started_at)? {
+            updated_fallback += 1;
+            resolved.push((span_id, attr));
+            continue;
+        }
+        unmatched += 1;
+    }
+
+    // ── Step 3: UPDATE inside a single transaction ─────────────────────
+    if resolved.is_empty() {
+        return Ok(SpecBackfillReport { scanned, updated_primary, updated_fallback, unmatched });
+    }
+    let tx = conn.unchecked_transaction()?;
+    for (span_id, attr) in resolved {
+        tx.execute(
+            "UPDATE run_usage \
+             SET spec = ?1, wave_id = ?2, agent_id = ?3 \
+             WHERE span_id = ?4 AND spec IS NULL",
+            params![attr.spec, attr.wave_id, attr.agent_id, span_id],
+        )?;
+    }
+    tx.commit()?;
+
+    Ok(SpecBackfillReport { scanned, updated_primary, updated_fallback, unmatched })
+}
+
 /// Outcome of a [`backfill_null_costs`] sweep — how many rows we looked at and
 /// how many we wrote back. The caller (a `mustard-rt run` subcommand) prints
 /// this as JSON so the user can confirm the operation did something.
