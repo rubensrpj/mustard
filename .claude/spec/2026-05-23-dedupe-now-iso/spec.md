@@ -1,7 +1,7 @@
 # Tactical Fix: dedupe now_iso entre core e rt
 
-### Stage: Done
-### Outcome: Active
+### Stage: Close
+### Outcome: Completed
 ### Flags: 
 ### Scope: touch
 ### Checkpoint: 2026-05-23T00:00:00Z
@@ -28,7 +28,7 @@ Fix: promover `time::now_iso` para `pub` dentro de `mustard_core::economy::sourc
 - [x] AC-2: build rt verde — Command: `cargo build -p mustard-rt`
 - [x] AC-3: testes core verdes — Command: `cargo test -p mustard-core --lib`
 - [x] AC-4: implementação inline removida — Command: `bash -c "test $(grep -c 'fn now_iso' apps/rt/src/run/recipe_match.rs) -eq 0 && echo ok"`
-- [x] AC-5: import do helper presente — Command: `bash -c "grep -q 'mustard_core::economy::sources::time::now_iso\\|use.*now_iso' apps/rt/src/run/recipe_match.rs && echo ok"`
+- [x] AC-5: import do helper presente — Command: `bash -c "grep -q 'sources::time::now_iso' apps/rt/src/run/recipe_match.rs && echo ok"`
 
 ## Limites
 
