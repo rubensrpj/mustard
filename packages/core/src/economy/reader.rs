@@ -292,14 +292,26 @@ pub fn per_spec_costs(_conn: &Connection, scope: EconomyScope) -> Result<Vec<Spe
                         cost_usd_micros: 0,
                         tokens: 0,
                         span_count: 0,
+                        last_started_at: None,
                     });
                     entry.cost_usd_micros += row.cost_usd_micros;
                     entry.tokens += row.tokens;
                     entry.span_count += row.span_count;
+                    // Keep the freshest `started_at` across the fan-out.
+                    // `max` on `Option<i64>` picks the larger `Some` (or any
+                    // `Some` over `None`), which is what the UI's
+                    // "newest first" sort expects.
+                    entry.last_started_at = entry.last_started_at.max(row.last_started_at);
                 }
             }
             let mut out: Vec<SpecCost> = merged.into_values().collect();
-            out.sort_by(|a, b| b.cost_usd_micros.cmp(&a.cost_usd_micros));
+            // Sort by recency desc; cost desc breaks ties so two specs sharing
+            // the freshest timestamp still rank deterministically.
+            out.sort_by(|a, b| {
+                b.last_started_at
+                    .cmp(&a.last_started_at)
+                    .then_with(|| b.cost_usd_micros.cmp(&a.cost_usd_micros))
+            });
             Ok(out)
         }
         _ => {
@@ -308,15 +320,24 @@ pub fn per_spec_costs(_conn: &Connection, scope: EconomyScope) -> Result<Vec<Spe
             let (_, wave_f) = telemetry_filter(&scope);
             let tele = open_telemetry(&scope)?;
             let groups = telemetry::reader::runs_by_spec_scoped(tele.conn(), wave_f.as_deref())?;
-            Ok(groups
+            let mut out: Vec<SpecCost> = groups
                 .into_iter()
                 .map(|g| SpecCost {
                     spec_id: SpecId(g.key),
                     cost_usd_micros: g.cost_usd_micros,
                     tokens: g.tokens,
                     span_count: g.run_count,
+                    last_started_at: g.last_started_at,
                 })
-                .collect())
+                .collect();
+            // Newest spec first; cost desc as the tiebreaker for equal/None
+            // timestamps (matches `AllProjects` branch ordering).
+            out.sort_by(|a, b| {
+                b.last_started_at
+                    .cmp(&a.last_started_at)
+                    .then_with(|| b.cost_usd_micros.cmp(&a.cost_usd_micros))
+            });
+            Ok(out)
         }
     }
 }

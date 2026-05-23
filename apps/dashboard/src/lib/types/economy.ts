@@ -127,6 +127,14 @@ export interface SpecCost {
   cost_usd_micros: number;
   tokens: number;
   span_count: number;
+  /**
+   * Epoch-ms of MAX(started_at) for the spec — used by UI for descending sort.
+   * Optional/null because the field is being rolled out aditively by a parallel
+   * backend change; when absent, the UI falls back to lexical sort on spec_id
+   * (Mustard slugs are date-prefixed `YYYY-MM-DD-*`, so reverse sort by id is
+   * a chronological-enough proxy until the wire field lands).
+   */
+  last_started_at?: number | null;
 }
 
 /**
@@ -139,6 +147,8 @@ export interface WaveCost {
   cost_usd_micros: number;
   tokens: number;
   span_count: number;
+  /** Epoch-ms of MAX(started_at) for the wave — optional, sort fallback. */
+  last_started_at?: number | null;
 }
 
 // ── Scope constructors ──────────────────────────────────────────────────────
@@ -174,10 +184,21 @@ export function microsToUsd(microsUsd: number): number {
   return microsUsd / 1_000_000;
 }
 
-/** Format a micro-USD value as `$1.234`, `$0.012`, `$0.00` … */
+/**
+ * Format a micro-USD value as `$1.234`, `$0.012`, `$0.000123`, `$0.00`.
+ *
+ * The 6-decimal band (<$0.0001) exists for the per-spec estimate rows: with
+ * cache-heavy traffic, a freshly attributed dispatch can land on the order of
+ * tens of micro-USD. Truncating to "$0.00" / "—" hides real signal — the user
+ * was specifically confused by an i18n-migration spec showing 2.5k tokens but
+ * a missing cost. We render six decimals so cents-of-a-cent stays visible
+ * instead of vanishing. Use `formatUsdOrDash` when "missing data" should still
+ * read as an explicit em-dash.
+ */
 export function formatUsd(microsUsd: number): string {
   const usd = microsToUsd(microsUsd);
   if (usd === 0) return "$0.00";
+  if (usd < 0.0001) return `$${usd.toFixed(6)}`;
   if (usd < 0.01) return `$${usd.toFixed(4)}`;
   if (usd < 1) return `$${usd.toFixed(3)}`;
   return `$${usd.toFixed(2)}`;

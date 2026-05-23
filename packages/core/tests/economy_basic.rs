@@ -356,6 +356,77 @@ fn test_economy_summary_includes_api_cost_frames() {
     assert_eq!(summary.span_count, 3);
 }
 
+/// Seed one `run_usage` row at an explicit `started_at` (epoch-ms). The shared
+/// `seed_run` helper hardcodes `started_at: Some(0)`, which is fine for the
+/// other tests but useless for asserting recency-based ordering.
+#[allow(clippy::too_many_arguments)]
+fn seed_run_at(
+    dir: &std::path::Path,
+    span_id: &str,
+    spec: &str,
+    started_at: i64,
+    cost: i64,
+    tokens: i64,
+) {
+    let store = TelemetryStore::for_project(dir).unwrap();
+    store
+        .record_run(&RunUsage {
+            trace_id: None,
+            span_id: span_id.into(),
+            parent_span_id: None,
+            name: None,
+            started_at: Some(started_at),
+            ended_at: None,
+            duration_ms: None,
+            attributes: None,
+            spec: Some(spec.into()),
+            phase: None,
+            model: Some("claude-3-5-sonnet".into()),
+            input_tokens: Some(tokens),
+            output_tokens: Some(0),
+            cache_read_input_tokens: None,
+            cache_creation_input_tokens: None,
+            cost_usd_micros: Some(cost),
+            is_error: false,
+            project_path: None,
+            ts_iso: Some("2026-05-21T00:00:00Z".into()),
+            session_id: Some("s-test".into()),
+            wave_id: None,
+            tool_use_id: None,
+            agent_id: Some("explore".into()),
+        })
+        .unwrap();
+}
+
+/// `per_spec_costs` must surface the freshest spec first (the dashboard's
+/// "newest spec at the top" expectation), with cost desc only as a tiebreaker.
+///
+/// Three specs with distinct `started_at`. Cheap-but-fresh ranks above
+/// expensive-but-stale — that's the inversion the cost-only sort produced
+/// before, and the user feedback (spec C4) that motivated this change.
+#[test]
+fn per_spec_costs_orders_by_recency_desc() {
+    let dir = tempdir().unwrap();
+    let conn = open_conn(dir.path());
+
+    // spec-old: highest cost but oldest timestamp.
+    seed_run_at(dir.path(), "r-old", "spec-old", 1_000, 9_000, 900);
+    // spec-mid: middle on both axes.
+    seed_run_at(dir.path(), "r-mid", "spec-mid", 2_000, 5_000, 500);
+    // spec-new: lowest cost but freshest timestamp — must rank first.
+    seed_run_at(dir.path(), "r-new", "spec-new", 3_000, 1_000, 100);
+
+    let scope = EconomyScope::Project(ProjectPath::new(dir.path()));
+    let by_spec = per_spec_costs(&conn, scope).unwrap();
+    assert_eq!(by_spec.len(), 3);
+    assert_eq!(by_spec[0].spec_id.as_str(), "spec-new");
+    assert_eq!(by_spec[0].last_started_at, Some(3_000));
+    assert_eq!(by_spec[1].spec_id.as_str(), "spec-mid");
+    assert_eq!(by_spec[1].last_started_at, Some(2_000));
+    assert_eq!(by_spec[2].spec_id.as_str(), "spec-old");
+    assert_eq!(by_spec[2].last_started_at, Some(1_000));
+}
+
 #[test]
 fn test_estimator_within_tolerance() {
     // The string below is 11 cl100k tokens. Anthropic lands within ±1 token

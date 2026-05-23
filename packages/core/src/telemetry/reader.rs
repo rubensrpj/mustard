@@ -29,6 +29,10 @@ pub struct CostGroup {
     pub tokens: i64,
     /// Number of runs in the group.
     pub run_count: i64,
+    /// `MAX(started_at)` (epoch-ms) across the rows in the group. `None` when
+    /// every row in the group has a `NULL` `started_at`. Lets callers sort the
+    /// roll-up by recency without re-querying.
+    pub last_started_at: Option<i64>,
 }
 
 /// A cost roll-up keyed by `(spec, wave)`.
@@ -947,7 +951,9 @@ fn scope_where(spec: Option<&str>, wave: Option<&str>) -> (String, Vec<String>) 
 }
 
 /// Cost roll-up over `run_usage` grouped by a trusted column, with a caller-built
-/// `WHERE` clause and binds. Ordered by cost descending.
+/// `WHERE` clause and binds. Ordered by cost descending. Each group carries the
+/// `MAX(started_at)` of the rows that rolled into it (column 4) so callers can
+/// sort by recency without a second query.
 fn cost_group_scoped(
     conn: &Connection,
     column: &str,
@@ -958,7 +964,9 @@ fn cost_group_scoped(
         "SELECT COALESCE({column}, '') AS key, \
                 COALESCE(SUM(cost_usd_micros), 0), \
                 COALESCE(SUM(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)), 0), \
-                COUNT(*) FROM run_usage {where_sql} GROUP BY {column} ORDER BY 2 DESC"
+                COUNT(*), \
+                MAX(started_at) \
+         FROM run_usage {where_sql} GROUP BY {column} ORDER BY 2 DESC"
     );
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(rusqlite::params_from_iter(params.iter()), |r| {
@@ -967,6 +975,7 @@ fn cost_group_scoped(
             cost_usd_micros: r.get(1)?,
             tokens: r.get(2)?,
             run_count: r.get(3)?,
+            last_started_at: r.get::<_, Option<i64>>(4)?,
         })
     })?;
     Ok(rows.filter_map(std::result::Result::ok).collect())
@@ -1004,7 +1013,8 @@ fn cost_group_by(conn: &Connection, column: &str) -> Result<Vec<CostGroup>> {
         "SELECT COALESCE({column}, '') AS key, \
                 COALESCE(SUM(cost_usd_micros), 0), \
                 COALESCE(SUM(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)), 0), \
-                COUNT(*) \
+                COUNT(*), \
+                MAX(started_at) \
          FROM run_usage GROUP BY {column} ORDER BY 2 DESC"
     );
     let mut stmt = conn.prepare(&sql)?;
@@ -1014,6 +1024,7 @@ fn cost_group_by(conn: &Connection, column: &str) -> Result<Vec<CostGroup>> {
             cost_usd_micros: r.get(1)?,
             tokens: r.get(2)?,
             run_count: r.get(3)?,
+            last_started_at: r.get::<_, Option<i64>>(4)?,
         })
     })?;
     Ok(rows.filter_map(std::result::Result::ok).collect())

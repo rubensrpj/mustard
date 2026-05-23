@@ -314,6 +314,11 @@ pub struct SpecCost {
     pub tokens: i64,
     /// Span count under the spec.
     pub span_count: i64,
+    /// `MAX(run_usage.started_at)` for the spec — populated by
+    /// [`super::reader::per_spec_costs`] so the UI can sort newest specs first.
+    /// `None` when the spec has no timestamped rows.
+    #[serde(default)]
+    pub last_started_at: Option<i64>,
 }
 
 /// Per-wave cost roll-up.

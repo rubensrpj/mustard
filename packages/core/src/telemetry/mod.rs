@@ -573,21 +573,30 @@ fn group_usage_sum(
 /// Cost roll-up over `run_usage` grouped by a key extractor, descending by cost.
 #[cfg(test)]
 fn group_runs(runs: &[RunUsage], key: impl Fn(&RunUsage) -> String) -> Vec<CostGroup> {
-    let mut acc: std::collections::HashMap<String, (i64, i64, i64)> =
+    // (cost, tokens, count, MAX(started_at)) — the last slot mirrors the SQL
+    // `MAX(started_at)` the real reader emits.
+    let mut acc: std::collections::HashMap<String, (i64, i64, i64, Option<i64>)> =
         std::collections::HashMap::new();
     for r in runs.iter() {
         let e = acc.entry(key(r)).or_default();
         e.0 += r.cost_usd_micros.unwrap_or(0);
         e.1 += r.input_tokens.unwrap_or(0) + r.output_tokens.unwrap_or(0);
         e.2 += 1;
+        e.3 = match (e.3, r.started_at) {
+            (Some(a), Some(b)) => Some(a.max(b)),
+            (Some(a), None) => Some(a),
+            (None, Some(b)) => Some(b),
+            (None, None) => None,
+        };
     }
     let mut out: Vec<CostGroup> = acc
         .into_iter()
-        .map(|(key, (cost, tokens, n))| CostGroup {
+        .map(|(key, (cost, tokens, n, last_started_at))| CostGroup {
             key,
             cost_usd_micros: cost,
             tokens,
             run_count: n,
+            last_started_at,
         })
         .collect();
     out.sort_by(|a, b| b.cost_usd_micros.cmp(&a.cost_usd_micros));

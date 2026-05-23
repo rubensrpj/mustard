@@ -254,7 +254,10 @@ export function Economia() {
           </p>
         </header>
         <div className="rounded-[--ds-radius-md] border border-[--ds-surface-hover] bg-[--ds-surface-base] overflow-hidden">
-          <PerAgentTable agents={topAgents} />
+          <PerAgentTable
+            agents={topAgents}
+            measuredCostMicros={data?.total_cost_usd_micros ?? null}
+          />
         </div>
       </section>
 
@@ -277,7 +280,7 @@ export function Economia() {
                 usd={s.usd}
                 lastAtMs={s.last_at_ms}
                 specs={s.specs}
-                noSpecLabel={t("economy.bySession.noSpec")}
+                noSpecLabel={t("economy.bySession.noSpecChip")}
               />
             ))}
           </div>
@@ -333,12 +336,18 @@ export function Economia() {
 // ── Helpers ────────────────────────────────────────────────────────────────
 
 /**
- * One row of the "Por sessão" card. Layout: date · short-id · chips · cost.
+ * One row of the "Por sessão" card. Layout: date · spec chips · cost.
  *
- * Spec chips overflow gracefully — we show the first three and collapse the
- * remainder behind a `+N` chip so a session that touched ten specs doesn't
- * blow up the row width. `last_at_ms == null` falls back to "—" rather than
- * rendering `Invalid Date`.
+ * The dedicated short-id column was removed (creative redesign feedback): the
+ * eight-char hash had no semantic load on its own — useful only as a search
+ * handle. We preserve it as the tooltip on the date span so power users can
+ * still see/copy it on hover. Spec chips now own all the freed horizontal
+ * space and only truncate when the spec slug actually exceeds the wider band
+ * (280px). `last_at_ms == null` falls back to "—" rather than `Invalid Date`.
+ *
+ * Empty state uses a neutral chip ("sem spec" / "no spec") instead of italic
+ * grey text — italic mid-row reads like an apology; the chip reads like a
+ * structured value.
  */
 function SessionRow({
   sessionId,
@@ -354,29 +363,33 @@ function SessionRow({
   noSpecLabel: string;
 }) {
   const date = formatSessionDate(lastAtMs);
-  const shortId = sessionId ? sessionId.slice(0, 8) : "—";
+  // Truncate the session id for the date tooltip only — the dedicated column
+  // was removed (creative redesign feedback). 8 chars stays enough to copy
+  // for cross-reference with /cost output without owning visible real estate.
+  const shortId = sessionId ? sessionId.substring(0, 8) : "";
   const visibleSpecs = specs.slice(0, 3);
   const overflowCount = Math.max(0, specs.length - visibleSpecs.length);
   const usdText = `$${usd.toFixed(usd < 0.01 ? 4 : usd < 1 ? 3 : 2)}`;
+  const dateTooltip = shortId ? `${date} · session ${shortId}` : date;
 
   return (
-    <div className="flex items-center gap-3 px-3 py-2 rounded-[--ds-radius-md] bg-[--ds-surface-base]">
-      <span className="font-mono text-[12px] text-[--ds-text-secondary] tabular-nums w-[88px] shrink-0">
+    <div className="grid grid-cols-[88px_1fr_auto] items-center gap-3 px-3 py-2 rounded-[--ds-radius-md] bg-[--ds-surface-base] hover:bg-[--ds-surface-hover]/25 transition-colors">
+      <span
+        className="font-mono text-[12px] text-[--ds-text-secondary] tabular-nums shrink-0"
+        title={dateTooltip}
+      >
         {date}
       </span>
-      <span className="font-mono text-[12px] text-[--ds-text-primary] w-[72px] shrink-0">
-        {shortId}
-      </span>
-      <div className="flex flex-wrap items-center gap-1 min-w-0 flex-1">
+      <div className="flex flex-wrap items-center gap-1 min-w-0">
         {visibleSpecs.length === 0 ? (
-          <span className="text-[11px] text-[--ds-text-tertiary] italic">
+          <span className="px-1.5 py-0.5 rounded text-[10.5px] text-[--ds-text-tertiary] bg-[--ds-surface-hover]/60">
             {noSpecLabel}
           </span>
         ) : (
           visibleSpecs.map((spec) => (
             <span
               key={`${sessionId}-spec-${spec}`}
-              className="px-1.5 py-0.5 rounded text-[10.5px] font-mono text-[--ds-text-secondary] bg-[--ds-surface-hover] truncate max-w-[180px]"
+              className="px-1.5 py-0.5 rounded text-[10.5px] font-mono text-[--ds-text-secondary] bg-[--ds-surface-hover] truncate max-w-[280px]"
               title={spec}
             >
               {spec}
@@ -452,13 +465,20 @@ function formatSessionDate(ms: number | null): string {
  *
  * - Unattributed rows (`spec_id === ""`) are excluded from the body and
  *   surfaced in a footer counter — they are noise in a per-spec comparison.
- * - Waves with no `wave_id` are excluded; they would duplicate the parent
- *   spec row visually.
- * - Costs of exactly $0 are rendered as "—" instead of "$0.00" so the row
- *   doesn't look like a measured zero when it's a missing-data zero.
- *
- * Layout: a 4-column grid (spec/wave name · dispatches · tokens · USD) with
- * tabular-nums on the numeric columns so digits align across rows.
+ * - When a spec has wave rows without a `wave_id`, we no longer render a
+ *   muted sub-row apologizing for missing attribution — that pattern bloated
+ *   every spec by an extra line and the user couldn't tell signal from noise.
+ *   Instead, we surface an inline amber "sem onda" badge on the parent row;
+ *   the parent's totals already include the unwaved dispatches/tokens/cost.
+ * - Sub-rows render ONLY when the spec has at least one named wave. A spec
+ *   whose entire spend is in the unwaved bucket stays as a single row with a
+ *   badge — no fake hierarchy.
+ * - Ordering: `last_started_at` descending when the wire field is populated
+ *   (parallel backend rollout), falling back to reverse-lexical `spec_id`
+ *   (Mustard slugs are `YYYY-MM-DD-*`, so reverse alpha ≈ chronological).
+ * - Costs of exactly $0 still render as "—"; for nonzero-but-tiny costs the
+ *   `formatUsd` band now extends to six decimals so cache-heavy traffic
+ *   doesn't read as "no data".
  */
 function EstimatedBySpecWave({
   perSpec,
@@ -477,9 +497,24 @@ function EstimatedBySpecWave({
       </div>
     );
   }
-  const namedSpecs = perSpec.filter((row) => row.spec_id);
   const unattributed = perSpec.filter((row) => !row.spec_id);
   const unattributedDispatches = unattributed.reduce((acc, r) => acc + r.span_count, 0);
+  // Defensive sort: backend will eventually deliver rows pre-sorted by
+  // last_started_at desc, but the field is still rolling out. We sort here so
+  // the UI is correct regardless of wire order.
+  const namedSpecs = perSpec
+    .filter((row) => row.spec_id)
+    .slice()
+    .sort((a, b) => {
+      const aTs = a.last_started_at ?? null;
+      const bTs = b.last_started_at ?? null;
+      if (aTs != null && bTs != null) return bTs - aTs;
+      if (aTs != null) return -1;
+      if (bTs != null) return 1;
+      // Fallback: reverse lexical on spec_id; Mustard slugs prefix YYYY-MM-DD
+      // so reverse alpha is chronological-enough until the wire field lands.
+      return b.spec_id.localeCompare(a.spec_id);
+    });
   if (namedSpecs.length === 0) {
     return (
       <EmptyState
@@ -488,10 +523,9 @@ function EstimatedBySpecWave({
       />
     );
   }
-  // Group waves under their parent spec. We split a spec's wave rows into two
-  // buckets: those with a real `wave_id` (rendered normally) and those without
-  // (collapsed into a single "sem onda atribuída" footer row so the user sees
-  // the attribution gap instead of silently missing dispatches).
+  // Group waves under their parent spec. Real waves render as sub-rows;
+  // unwaved rows are collapsed into a single aggregate per spec and surfaced
+  // as a parent-row badge (no muted "ghost" sub-row).
   const wavesBySpec = new Map<string, WaveCost[]>();
   const unwavedBySpec = new Map<string, WaveCost>();
   for (const w of perWave) {
@@ -525,6 +559,11 @@ function EstimatedBySpecWave({
       <div className="flex flex-col">
         {namedSpecs.map((row, idx) => {
           const waves = wavesBySpec.get(row.spec_id) ?? [];
+          const hasUnwaved = unwavedBySpec.has(row.spec_id);
+          // Only render sub-rows when there's a real wave to render. A spec
+          // whose entire spend is unwaved stays as one row with a badge —
+          // synthetic hierarchy adds noise without adding signal.
+          const showSubRows = waves.length > 0;
           const isLast = idx === namedSpecs.length - 1;
           return (
             <div
@@ -538,8 +577,9 @@ function EstimatedBySpecWave({
                 dispatches={row.span_count}
                 tokens={row.tokens}
                 costMicros={row.cost_usd_micros}
+                badge={hasUnwaved ? t("economy.estimated.noWaveBadge") : null}
               />
-              {(waves.length > 0 || unwavedBySpec.has(row.spec_id)) && (
+              {showSubRows && (
                 <div className="flex flex-col">
                   {waves.map((w) => (
                     <SpecOrWaveRow
@@ -551,17 +591,6 @@ function EstimatedBySpecWave({
                       nested
                     />
                   ))}
-                  {unwavedBySpec.has(row.spec_id) && (
-                    <SpecOrWaveRow
-                      key={`wave-${row.spec_id}-unattributed`}
-                      name={t("economy.estimated.noWaveAttributed")}
-                      dispatches={unwavedBySpec.get(row.spec_id)!.span_count}
-                      tokens={unwavedBySpec.get(row.spec_id)!.tokens}
-                      costMicros={unwavedBySpec.get(row.spec_id)!.cost_usd_micros}
-                      nested
-                      muted
-                    />
-                  )}
                 </div>
               )}
             </div>
@@ -587,7 +616,12 @@ function EstimatedBySpecWave({
  * One row of the spec/wave estimate table. Same column shape for parent and
  * nested rows; `nested` only changes typography weight, indent, and the
  * leading arrow glyph. Costs of exactly zero render as "—" so the user sees
- * "sem dado" instead of a misleading "$0.00".
+ * "sem dado" instead of a misleading "$0.00"; nonzero-tiny costs go through
+ * `formatUsd` and get the 6-decimal band so cache-heavy traffic stays visible.
+ *
+ * `badge` (optional) renders an inline amber pill after the row name — used
+ * by the parent row to flag "this spec has unwaved dispatches mixed in".
+ * Lives next to the name so the eye reads `<spec> [badge]` as one unit.
  */
 function SpecOrWaveRow({
   name,
@@ -595,15 +629,15 @@ function SpecOrWaveRow({
   tokens,
   costMicros,
   nested = false,
-  muted = false,
+  badge = null,
 }: {
   name: string;
   dispatches: number;
   tokens: number;
   costMicros: number;
   nested?: boolean;
-  /** Render the row as a "missing attribution" entry: italic + dimmer. */
-  muted?: boolean;
+  /** Inline pill rendered after the name. `null` = no badge. */
+  badge?: string | null;
 }) {
   return (
     <div
@@ -618,17 +652,20 @@ function SpecOrWaveRow({
         )}
         <span
           className={cn(
-            "truncate",
-            muted ? "italic font-normal" : "font-mono",
+            "truncate font-mono",
             nested
               ? "text-[11.5px] text-[--ds-text-secondary]"
               : "text-[12.5px] text-[--ds-text-primary]",
-            muted && "text-[--ds-text-tertiary]",
           )}
           title={name}
         >
           {name}
         </span>
+        {badge && (
+          <span className="shrink-0 px-1.5 py-0.5 rounded-full text-[9.5px] uppercase tracking-[0.12em] font-medium border bg-amber-500/10 border-amber-500/30 text-amber-500">
+            {badge}
+          </span>
+        )}
       </div>
       <span
         className={cn(

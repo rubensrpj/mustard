@@ -129,6 +129,29 @@ i18n.use(initReactI18next).init({
         "economy.byAgent.titleFallback": "Por agente",
         "economy.byAgent.caption":
           "agentes que mais consumiram tokens nesta janela",
+        // Humanized agent labels — fallback to raw id when the key is missing.
+        // Listed alphabetically so adding a new role stays a one-line change.
+        "economy.agents.core-impl": "Núcleo (biblioteca)",
+        "economy.agents.core-explorer": "Núcleo (exploração)",
+        "economy.agents.rt-impl": "Runtime",
+        "economy.agents.rt-explorer": "Runtime (exploração)",
+        "economy.agents.dashboard-impl": "Dashboard",
+        "economy.agents.dashboard-explorer": "Dashboard (exploração)",
+        "economy.agents.cli-impl": "CLI",
+        "economy.agents.cli-explorer": "CLI (exploração)",
+        "economy.agents.templates-impl": "Templates",
+        "economy.agents.templates-explorer": "Templates (exploração)",
+        "economy.agents.general-purpose": "Geral",
+        "economy.agents.Explore": "Explorador",
+        "economy.agents.Plan": "Planejador",
+        // Aggregate rows below the top-3.
+        "economy.byAgent.others_one": "Outros ({{count}} agente)",
+        "economy.byAgent.others_other": "Outros ({{count}} agentes)",
+        "economy.byAgent.total": "Total estimado",
+        "economy.byAgent.matchMeasured": "≈ medido {{cost}}",
+        // Inline badges used by the per-spec table and per-session rows.
+        "economy.estimated.noWaveBadge": "sem onda",
+        "economy.bySession.noSpecChip": "sem spec",
         "economy.bySession.title": "Por sessão",
         "economy.bySession.captionBefore":
           "uma linha por sessão do Claude Code — compare o custo com ",
@@ -321,6 +344,28 @@ i18n.use(initReactI18next).init({
         "economy.byAgent.titleFallback": "By agent",
         "economy.byAgent.caption":
           "agents that consumed the most tokens in this window",
+        // Humanized agent labels — fallback to raw id when the key is missing.
+        "economy.agents.core-impl": "Core (library)",
+        "economy.agents.core-explorer": "Core (exploration)",
+        "economy.agents.rt-impl": "Runtime",
+        "economy.agents.rt-explorer": "Runtime (exploration)",
+        "economy.agents.dashboard-impl": "Dashboard",
+        "economy.agents.dashboard-explorer": "Dashboard (exploration)",
+        "economy.agents.cli-impl": "CLI",
+        "economy.agents.cli-explorer": "CLI (exploration)",
+        "economy.agents.templates-impl": "Templates",
+        "economy.agents.templates-explorer": "Templates (exploration)",
+        "economy.agents.general-purpose": "General",
+        "economy.agents.Explore": "Explorer",
+        "economy.agents.Plan": "Planner",
+        // Aggregate rows below the top-3.
+        "economy.byAgent.others_one": "Others ({{count}} agent)",
+        "economy.byAgent.others_other": "Others ({{count}} agents)",
+        "economy.byAgent.total": "Estimated total",
+        "economy.byAgent.matchMeasured": "≈ measured {{cost}}",
+        // Inline badges used by the per-spec table and per-session rows.
+        "economy.estimated.noWaveBadge": "no wave",
+        "economy.bySession.noSpecChip": "no spec",
         "economy.bySession.title": "By session",
         "economy.bySession.captionBefore":
           "one row per Claude Code session — cross-check the cost against ",
