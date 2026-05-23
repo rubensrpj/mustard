@@ -17,7 +17,7 @@
 
 use crate::report::Report;
 use mustard_core::fs;
-use mustard_core::model::view::Phase;
+use mustard_core::model::view::{Phase, Stage};
 use mustard_core::store::sqlite_store::SqliteEventStore;
 use mustard_core::model::event::{
     HarnessEvent, EVENT_PIPELINE_COMPLETE, EVENT_PIPELINE_DISPATCH_FAILURE, EVENT_PIPELINE_PAUSE,
@@ -25,6 +25,7 @@ use mustard_core::model::event::{
     EVENT_PIPELINE_TASK_COMPLETE, EVENT_PIPELINE_TASK_DISPATCH, EVENT_PIPELINE_WAVE_COMPLETE,
     PipelineCompletePayload, PipelineDispatchFailurePayload,
 };
+use mustard_core::projection::project_spec_view_with_header;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
@@ -641,11 +642,21 @@ fn build_pr_metrics(events: &[HarnessEvent], cwd: &Path, days: i64) -> Value {
 }
 
 
-/// `buildActivePipelines` — specs that have at least one event and whose last
-/// `pipeline.stage` OR `pipeline.phase` event is not `Close`. Ordered by
-/// `lastEventAt` descending. Specs closed more than 30 days ago are also
-/// excluded (defensive filter).
-fn build_active_pipelines(events: &[HarnessEvent]) -> Value {
+/// `buildActivePipelines` — specs that have at least one event (or a parseable
+/// header on disk) and whose last `pipeline.stage` / `pipeline.phase` (event
+/// stream) or `### Stage:` header (disk fallback) is not `Close`. Ordered by
+/// `lastEventAt` descending. Specs with no activity in the last 30 days are
+/// also excluded (defensive filter).
+///
+/// Two-pass algorithm:
+/// 1. Fold the event stream exactly as before, populating `per_spec`.
+/// 2. Glob `.claude/spec/*/spec.md` (+ `wave-plan.md` fallback). For every
+///    spec present on disk but absent from the event-stream map, delegate to
+///    `mustard_core::projection::project_spec_view_with_header` which parses
+///    the `### Stage:` / `### Outcome:` header and emits a synthetic
+///    `pipeline.status` event into the local SQLite store. The resulting
+///    `SpecView` is merged into `per_spec` before the filter+sort step.
+fn build_active_pipelines(events: &[HarnessEvent], cwd: &Path) -> Value {
     use std::collections::BTreeMap;
 
     let now_ms = crate::util::now_millis() as i64;
@@ -654,6 +665,8 @@ fn build_active_pipelines(events: &[HarnessEvent]) -> Value {
 
     // Per-spec accumulator: (last_event_ts, last_stage).
     let mut per_spec: BTreeMap<String, (String, Option<String>)> = BTreeMap::new();
+
+    // --- Pass 1: fold the event stream ---
 
     for ev in events {
         let Some(spec) = ev.spec.as_deref() else { continue };
@@ -684,6 +697,106 @@ fn build_active_pipelines(events: &[HarnessEvent]) -> Value {
                 }
             }
             _ => {}
+        }
+    }
+
+    // --- Pass 2: disk fallback for specs absent from the event stream ---
+    //
+    // Glob `.claude/spec/*/spec.md` + `wave-plan.md`. For each spec whose
+    // directory name is not already in `per_spec`, call the canonical core
+    // projection with the header fallback enabled. This covers the "git pull
+    // brings a new spec from a teammate; no local event has been emitted yet"
+    // case. Side-effect: a synthetic `pipeline.status` event is written to
+    // the local SQLite store so subsequent reads are O(1).
+    let spec_root = cwd.join(".claude").join("spec");
+    if let Ok(rd) = std::fs::read_dir(&spec_root) {
+        // Open the local SQLite store once for the synthetic emit sink.
+        // Fail-open: if the store cannot be opened, the fallback still runs
+        // (without emitting) — we just pass `None` as the sink.
+        let store_opt = SqliteEventStore::for_project(cwd).ok();
+
+        for entry in rd.flatten() {
+            let spec_dir = entry.path();
+            if !spec_dir.is_dir() { continue; }
+
+            let spec_name = match spec_dir.file_name().and_then(|n| n.to_str()) {
+                Some(n) => n.to_string(),
+                None => continue,
+            };
+
+            // Only process specs that have NO events — the event stream already
+            // won for the others.
+            if per_spec.contains_key(&spec_name) { continue; }
+
+            // Resolve the spec.md path; accept wave-plan.md as a fallback.
+            let spec_md = spec_dir.join("spec.md");
+            let wave_plan_md = spec_dir.join("wave-plan.md");
+            let spec_md_path = if spec_md.exists() {
+                spec_md.clone()
+            } else if wave_plan_md.exists() {
+                wave_plan_md.clone()
+            } else {
+                continue; // no readable spec file — skip
+            };
+
+            // Delegate to the canonical core projection (parses header, emits
+            // synthetic event). `events` is the full slice; the function
+            // filters by spec_name internally.
+            let view = project_spec_view_with_header(
+                &spec_name,
+                events,
+                Some(spec_md_path.as_path()),
+                store_opt.as_ref().map(|s| s as &dyn mustard_core::store::event_store::EventSink),
+            );
+
+            // Extract the stage string. Use Debug formatting to match the
+            // phase-based path above (`format!("{p:?}")`): "Execute", "Plan", etc.
+            let stage_str = format!("{:?}", view.state.stage);
+
+            // Skip specs whose header says Close (non-active) or has no stage
+            // signal (NoEvents maps to Stage::Plan — treat as active, include).
+            // Stage::Close means terminal; exclude.
+            if view.state.stage == Stage::Close {
+                continue;
+            }
+
+            // Derive a `lastEventAt` sentinel from the spec.md mtime when the
+            // header fallback fires (last_event_at == None from the projection).
+            // This ensures the row has a sortable timestamp and passes the
+            // 30-day cutoff filter. Falls back to now_iso8601 when mtime is
+            // unavailable so the row is always included.
+            let last_event_at = view.last_event_at.clone().unwrap_or_else(|| {
+                // Use spec.md mtime as a proxy for "when the spec was written".
+                std::fs::metadata(&spec_md_path)
+                    .and_then(|m| m.modified())
+                    .map(|mtime| {
+                        use std::time::UNIX_EPOCH;
+                        let secs = mtime
+                            .duration_since(UNIX_EPOCH)
+                            .map_or(0, |d| d.as_secs() as i64);
+                        // Format as ISO-8601 seconds precision (same algorithm as
+                        // `header_emit_timestamp` in mustard-core/projection/card.rs).
+                        let days = secs.div_euclid(86_400);
+                        let tod  = secs.rem_euclid(86_400);
+                        let z = days + 719_468;
+                        let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+                        let doe = z - era * 146_097;
+                        let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+                        let y_raw = yoe + era * 400;
+                        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+                        let mp  = (5 * doy + 2) / 153;
+                        let d   = (doy - (153 * mp + 2) / 5 + 1) as u32;
+                        let m   = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+                        let y   = if m <= 2 { y_raw + 1 } else { y_raw };
+                        let h   = (tod / 3_600) as u32;
+                        let mi  = ((tod % 3_600) / 60) as u32;
+                        let s   = (tod % 60) as u32;
+                        format!("{y:04}-{m:02}-{d:02}T{h:02}:{mi:02}:{s:02}Z")
+                    })
+                    .unwrap_or_else(|_| crate::util::now_iso8601())
+            });
+
+            per_spec.insert(spec_name, (last_event_at, Some(stage_str)));
         }
     }
 
@@ -745,7 +858,7 @@ fn project(cwd: &Path, view: &str, spec: Option<&str>, wave: Option<u32>) -> Val
             let days = wave.map(i64::from).unwrap_or(30);
             build_pr_metrics(&read_events(cwd), cwd, days)
         }
-        "active-pipelines" => build_active_pipelines(&read_events(cwd)),
+        "active-pipelines" => build_active_pipelines(&read_events(cwd), cwd),
         other => json!({ "error": format!("Unknown view: {other}") }),
     }
 }
