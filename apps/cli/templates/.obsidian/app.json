@@ -1,0 +1,13 @@
+{
+  "promptDelete": false,
+  "alwaysUpdateLinks": true,
+  "newLinkFormat": "shortest",
+  "useMarkdownLinks": false,
+  "attachmentFolderPath": "graph/attachments",
+  "showLineNumber": true,
+  "livePreview": true,
+  "defaultViewMode": "preview",
+  "readableLineLength": true,
+  "strictLineBreaks": false,
+  "showFrontmatter": true
+}

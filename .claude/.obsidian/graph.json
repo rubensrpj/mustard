@@ -1,0 +1,39 @@
+{
+  "collapse-filter": false,
+  "search": "path:graph/ OR path:skills/ OR path:recipes/",
+  "showTags": false,
+  "showAttachments": false,
+  "hideUnresolved": false,
+  "showOrphans": true,
+  "collapse-color-groups": true,
+  "colorGroups": [
+    {
+      "query": "path:graph/ file:.conv.",
+      "color": { "a": 1, "rgb": 7841685 }
+    },
+    {
+      "query": "path:graph/ file:.entity.",
+      "color": { "a": 1, "rgb": 14048348 }
+    },
+    {
+      "query": "path:skills/",
+      "color": { "a": 1, "rgb": 5025616 }
+    },
+    {
+      "query": "path:recipes/",
+      "color": { "a": 1, "rgb": 16753920 }
+    }
+  ],
+  "collapse-display": false,
+  "showArrow": true,
+  "textFadeMultiplier": 0,
+  "nodeSizeMultiplier": 1,
+  "lineSizeMultiplier": 1,
+  "collapse-forces": false,
+  "centerStrength": 0.5,
+  "repelStrength": 12,
+  "linkStrength": 1,
+  "linkDistance": 250,
+  "scale": 1,
+  "close": false
+}

@@ -150,5 +150,47 @@ A coleta de arquivos do scanner (`scan/file_utils.rs`) ignora pastas em ordem ad
 
 Specs live under a **flat** directory: `.claude/spec/{name}/`. There are no `active/`, `completed/`, or `superseded/` bucket subdirectories — status comes from the `### Stage:` + `### Outcome:` headers inside `spec.md`, and archival is semantic-only (the `pipeline.status` event in SQLite, not a filesystem move). Wave plans add a `wave-plan.md` plus `wave-N-{role}/spec.md` subdirs inside the same `{name}/` directory.
 
+## Vault layout (`.claude/` é um Obsidian vault)
+
+A pasta `.claude/` é um vault: abre direto no Obsidian e o graph view mostra conhecimento navegável. A configuração mínima vive em `.claude/.obsidian/` (sem plugins, sem links, sem estado de usuário); arquivos voláteis como `workspace.json` ficam no `.gitignore` local da pasta.
+
+```
+.claude/                      # vault root
+├── .obsidian/                # config do app (app.json, graph.json)
+├── graph/
+│   ├── index.md              # MOC — porta de entrada (gerado)
+│   ├── {sub}.conv.*.md       # nós-conceito (convenções) com arestas [[ ]]
+│   └── {sub}.entity.*.md     # nós-conceito (entidades)
+├── skills/<name>/SKILL.md    # skill pesado; `aliases:[{sub}.skill.<name>]`
+├── recipes/*.json            # recipes
+└── entity-registry.json      # faceta entidade (mesmo perfil)
+```
+
+### Convenção de id
+
+Todo nó tem `id = {sub}.{kind}.{slug}` (kebab):
+
+- `{sub}` — subprojeto detectado pelo scanner (ex.: `cli`, `rt`, `dashboard`).
+- `{kind}` — `conv` | `entity` | `skill` | `recipe`.
+- `{slug}` — nome kebab-case do conceito (ex.: `failopen-pattern`).
+
+Exemplos: `cli.conv.failopen-pattern`, `rt.skill.hook-pattern`, `dashboard.entity.workspace`.
+
+O `id` é o nome navegável no Obsidian (graph view + autocomplete `[[`) **e** a chave do índice `id→path` (gerado por `mustard-rt run graph-index`) que o resolver dereferencia. `SKILL.md` pesados ganham `aliases:[id]` no frontmatter para serem alcançáveis sem colisão de nome (todo skill é `SKILL.md`, todo guard é `guards.md`).
+
+### Fronteira conhecimento × plumbing
+
+Nem toda relação no projeto vira aresta do grafo. Só relações de **significado** entre conceitos viram `[[wirelink]]`:
+
+| Vira `[[wirelink]]` (entra no grafo) | Continua path (fora do grafo) |
+|---|---|
+| convenção → convenção | `CLAUDE.md` → `pipeline-config.md` |
+| skill → recipe / convenção | `settings.json` → hooks |
+| entidade → padrão | imports de código (`use`, `import`) |
+| spec → skill | refs de plumbing entre arquivos de configuração |
+| command → ref progressivo | |
+
+Arrastar plumbing pro grafo polui o graph view e faz o resolver seguir arestas que não são relevância — proibido. Se a relação é "este arquivo aponta para aquele por configuração de runtime", ela não é uma aresta do grafo.
+
 ## Full Reference
 Rules, pipeline, naming: `pipeline-config.md`

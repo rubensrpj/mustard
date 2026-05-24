@@ -1,10 +1,10 @@
 # Wave 3 (rt + templates) — Grafo de wirelinks + vault Obsidian
 
-### Stage: Plan
+### Stage: Execute
 ### Outcome: Active
 ### Flags:
 ### Lang: pt
-### Checkpoint: 2026-05-22T00:00:00Z
+### Checkpoint: 2026-05-24T09:05:08.646Z
 ### Parent: 2026-05-22-project-profiler
 
 ## PRD
@@ -19,9 +19,9 @@ O `.claude/` abre como vault no Obsidian sem colisão de nome; o graph view most
 
 ## Critérios de Aceitação
 
-- [ ] AC-1: vault presente — `.claude/.obsidian/` + `.claude/graph/index.md` (MOC) existem — Command: `node -e "const fs=require('fs');process.exit(fs.existsSync('.claude/.obsidian')&&fs.existsSync('.claude/graph/index.md')?0:1)"`
-- [ ] AC-2: índice id→path resolve todas as arestas; órfã/ciclo viram warning, não panic — Command: `cargo test -p mustard-rt graph_validation`
-- [ ] AC-3: ids únicos — nenhum `id`/alias duplicado no grafo — Command: `cargo test -p mustard-rt graph_ids_unique`
+- [x] AC-1: vault presente — `.claude/.obsidian/` + `.claude/graph/index.md` (MOC) existem — Command: `node -e "const fs=require('fs');process.exit(fs.existsSync('.claude/.obsidian')&&fs.existsSync('.claude/graph/index.md')?0:1)"`
+- [x] AC-2: índice id→path resolve todas as arestas; órfã/ciclo viram warning, não panic — Command: `cargo test -p mustard-rt graph_validation`
+- [x] AC-3: ids únicos — nenhum `id`/alias duplicado no grafo — Command: `cargo test -p mustard-rt graph_ids_unique`
 
 ## Plano
 
@@ -41,16 +41,16 @@ Definir o schema do nó-conceito (frontmatter `id`, `provides`, corpo com `[[id]
 
 ### rt Agent (Wave 3)
 
-- [ ] Definir schema do nó-conceito e a convenção de `id` (`{sub}.{kind}.{slug}`, kebab).
-- [ ] `interpret` emite nós em `.claude/graph/` e injeta `aliases:[id]` no frontmatter dos `SKILL.md`.
-- [ ] `graph.rs`: parser `[[id]]` (regex trivial), adjacência, tabela `id→path`, validação (aresta órfã → warning; ciclo → corta), geração do `index.md` (MOC).
-- [ ] `mustard-rt run graph-index` (JSON byte-estável) + registro no dispatcher.
-- [ ] Testes: `graph_validation`, `graph_ids_unique`.
+- [x] Definir schema do nó-conceito e a convenção de `id` (`{sub}.{kind}.{slug}`, kebab).
+- [x] `interpret` emite nós em `.claude/graph/` e injeta `aliases:[id]` no frontmatter dos `SKILL.md`.
+- [x] `graph.rs`: parser `[[id]]` (regex trivial), adjacência, tabela `id→path`, validação (aresta órfã → warning; ciclo → corta), geração do `index.md` (MOC).
+- [x] `mustard-rt run graph-index` (JSON byte-estável) + registro no dispatcher.
+- [x] Testes: `graph_validation`, `graph_ids_unique`.
 
 ### templates Agent (Wave 3)
 
-- [ ] Adicionar `apps/cli/templates/.obsidian/` mínima (config, sem links) copiada no `init`/`update`.
-- [ ] Atualizar `templates/CLAUDE.md`: vault, layout `.claude/graph/`, fronteira conhecimento×plumbing.
+- [x] Adicionar `apps/cli/templates/.obsidian/` mínima (config, sem links) copiada no `init`/`update`.
+- [x] Atualizar `templates/CLAUDE.md`: vault, layout `.claude/graph/`, fronteira conhecimento×plumbing.
 
 ## Limites
 

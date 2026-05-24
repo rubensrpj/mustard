@@ -38,6 +38,7 @@ use mustard_core::fs as mfs;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 /// One entity recovered from the interpreted profile.
@@ -505,6 +506,191 @@ fn parse_response(text: &str) -> Option<InterpretedResult> {
     })
 }
 
+/// One concept-node materialised from an interpretation pass.
+///
+/// Wave 3 introduced the concept-node schema: every entity and enum the
+/// interpreter recovers becomes a markdown file under `.claude/graph/`,
+/// addressable by a `{sub}.{kind}.{slug}` id and linked to its neighbours
+/// through `[[id]]` wikilinks. The schema is intentionally minimal — the
+/// orchestrator (Wave 4 resolver) reads the frontmatter `id` + `provides`
+/// fields and the inline `[[ ]]` edges; no other body structure is required.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConceptNode {
+    /// Unique navigable id (`{sub}.{kind}.{slug}`, kebab-case).
+    pub id: String,
+    /// Node category — `entity`, `enum`, `conv`, `skill`, `recipe`, …
+    pub kind: String,
+    /// Subproject slug — the `sub` component of the id.
+    pub sub: String,
+    /// Display name (PascalCase / human form), used in the body heading.
+    pub name: String,
+    /// Source file the node was synthesised from (relative path, when known).
+    pub source: Option<String>,
+    /// Capabilities the node advertises (consumed by the Wave 4 resolver).
+    pub provides: Vec<String>,
+    /// Outbound `[[id]]` edges declared in the body.
+    pub edges: Vec<String>,
+}
+
+/// Lower-case + kebab-case a free-form name into the `slug` component of an id.
+///
+/// Replaces any character outside `[a-z0-9]` with `-`, collapses runs of `-`,
+/// and trims leading/trailing dashes. Always returns at least one character —
+/// an entirely non-alphanumeric input degrades to `"x"`.
+#[must_use]
+pub fn slugify(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut prev_dash = false;
+    for ch in input.chars() {
+        let lc = ch.to_ascii_lowercase();
+        if lc.is_ascii_alphanumeric() {
+            out.push(lc);
+            prev_dash = false;
+        } else if !prev_dash {
+            out.push('-');
+            prev_dash = true;
+        }
+    }
+    let trimmed = out.trim_matches('-').to_string();
+    if trimmed.is_empty() {
+        "x".to_string()
+    } else {
+        trimmed
+    }
+}
+
+/// Compose a concept-node id from its three components — `{sub}.{kind}.{slug}`.
+///
+/// All three pieces are slugified so the id is always kebab-safe regardless
+/// of input casing or punctuation. Public so the Wave 4 resolver and external
+/// callers can deterministically compute the id of an entity without going
+/// through [`emit_concept_nodes`] first.
+#[must_use]
+pub fn compose_id(sub: &str, kind: &str, raw_slug: &str) -> String {
+    format!("{}.{}.{}", slugify(sub), slugify(kind), slugify(raw_slug))
+}
+
+/// Translate an [`InterpretedResult`] into a vector of [`ConceptNode`]s for a
+/// given subproject slug. Entities become `{sub}.entity.{slug}` nodes, enums
+/// become `{sub}.enum.{slug}` nodes. The model-supplied `edges` (already in
+/// `[[id]]` form) are preserved as outbound edges; bare names that the model
+/// returned without brackets are normalised to `[[{sub}.entity.{slug}]]`.
+#[must_use]
+pub fn interpreted_to_nodes(sub: &str, result: &InterpretedResult) -> Vec<ConceptNode> {
+    let mut nodes: Vec<ConceptNode> = Vec::new();
+    for entity in &result.entities {
+        let id = compose_id(sub, "entity", &entity.name);
+        let edges: Vec<String> = entity
+            .edges
+            .iter()
+            .map(|raw| normalise_edge(sub, "entity", raw))
+            .filter(|s| !s.is_empty())
+            .collect();
+        nodes.push(ConceptNode {
+            id,
+            kind: "entity".to_string(),
+            sub: sub.to_string(),
+            name: entity.name.clone(),
+            source: Some(entity.file.clone()),
+            provides: Vec::new(),
+            edges,
+        });
+    }
+    for en in &result.enums {
+        let id = compose_id(sub, "enum", &en.name);
+        nodes.push(ConceptNode {
+            id,
+            kind: "enum".to_string(),
+            sub: sub.to_string(),
+            name: en.name.clone(),
+            source: Some(en.file.clone()),
+            provides: en.values.clone(),
+            edges: Vec::new(),
+        });
+    }
+    nodes
+}
+
+/// Normalise a model-supplied edge into a bracketed `[[id]]` form. Accepts
+/// both `[[sub.entity.foo]]` (returned untouched) and bare `Foo` (rewritten
+/// to `[[sub.entity.foo]]` using the supplied default kind). Empty / invalid
+/// inputs degrade to `""`, dropped by the caller.
+fn normalise_edge(sub: &str, default_kind: &str, raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    if let Some(inner) = trimmed
+        .strip_prefix("[[")
+        .and_then(|s| s.strip_suffix("]]"))
+    {
+        let body = inner.trim();
+        if body.is_empty() {
+            return String::new();
+        }
+        // Already-bracketed edges keep the model's id verbatim.
+        return format!("[[{body}]]");
+    }
+    let id = compose_id(sub, default_kind, trimmed);
+    format!("[[{id}]]")
+}
+
+/// Render a [`ConceptNode`] into its on-disk markdown form. Byte-stable
+/// frontmatter (`id`, `kind`, `sub`, `source`, `provides`) followed by the
+/// body heading and one `Edges:` line per outbound link.
+#[must_use]
+pub fn render_concept_node(node: &ConceptNode) -> String {
+    let mut out = String::new();
+    out.push_str("---\n");
+    let _ = writeln!(out, "id: {}", node.id);
+    let _ = writeln!(out, "kind: {}", node.kind);
+    let _ = writeln!(out, "sub: {}", node.sub);
+    if let Some(src) = &node.source {
+        let _ = writeln!(out, "source: {src}");
+    }
+    if !node.provides.is_empty() {
+        out.push_str("provides:\n");
+        for p in &node.provides {
+            let _ = writeln!(out, "  - {p}");
+        }
+    }
+    out.push_str("---\n\n");
+    let _ = writeln!(out, "# {}\n", node.name);
+    if node.edges.is_empty() {
+        out.push_str("_No outbound edges._\n");
+    } else {
+        out.push_str("## Edges\n\n");
+        for edge in &node.edges {
+            let _ = writeln!(out, "- {edge}");
+        }
+    }
+    out
+}
+
+/// Write every node from [`interpreted_to_nodes`] under
+/// `{project_root}/.claude/graph/{id}.md`. Fail-open: filesystem errors are
+/// swallowed so the registry pipeline never aborts because the vault could
+/// not be materialised. Returns the count of nodes successfully written.
+pub fn emit_concept_nodes(project_root: &Path, sub: &str, result: &InterpretedResult) -> usize {
+    let nodes = interpreted_to_nodes(sub, result);
+    if nodes.is_empty() {
+        return 0;
+    }
+    let dir = project_root.join(".claude").join("graph");
+    if mfs::create_dir_all(&dir).is_err() {
+        return 0;
+    }
+    let mut written = 0usize;
+    for node in &nodes {
+        let path = dir.join(format!("{}.md", node.id));
+        let body = render_concept_node(node);
+        if mfs::write_atomic(&path, body.as_bytes()).is_ok() {
+            written += 1;
+        }
+    }
+    written
+}
+
 /// Write a synthetic cache entry for the given file-set. Used by tests to
 /// force a "frozen" path without a real API call. Production code never
 /// touches this — but it lives in the same module so the cache schema can
@@ -713,6 +899,66 @@ mod tests {
         for s in &profile.samples {
             assert!(s.head.len() <= MAX_SAMPLE_BYTES);
         }
+    }
+
+    /// Slug + id helpers normalise casing and punctuation into a kebab id.
+    #[test]
+    fn slugify_and_compose_id_are_kebab_safe() {
+        assert_eq!(slugify("HelloWorld"), "helloworld");
+        assert_eq!(slugify("Hello World"), "hello-world");
+        assert_eq!(slugify("foo___bar"), "foo-bar");
+        assert_eq!(slugify("///"), "x");
+        assert_eq!(compose_id("Apps/Rt", "Entity", "User"), "apps-rt.entity.user");
+    }
+
+    /// `interpreted_to_nodes` converts every entity + enum into a concept-node
+    /// and rewrites bare-name edges into bracketed `[[id]]` form.
+    #[test]
+    fn interpreted_to_nodes_emits_entity_and_enum_nodes() {
+        let result = InterpretedResult {
+            entities: vec![InterpretedEntity {
+                name: "User".to_string(),
+                file: "src/user.rs".to_string(),
+                edges: vec!["Order".to_string(), "[[apps-rt.enum.role]]".to_string()],
+            }],
+            enums: vec![InterpretedEnum {
+                name: "Role".to_string(),
+                file: "src/role.rs".to_string(),
+                values: vec!["Admin".to_string(), "Guest".to_string()],
+            }],
+            ..InterpretedResult::default()
+        };
+        let nodes = interpreted_to_nodes("apps-rt", &result);
+        assert_eq!(nodes.len(), 2);
+        assert_eq!(nodes[0].id, "apps-rt.entity.user");
+        assert_eq!(nodes[0].edges, vec![
+            "[[apps-rt.entity.order]]".to_string(),
+            "[[apps-rt.enum.role]]".to_string(),
+        ]);
+        assert_eq!(nodes[1].id, "apps-rt.enum.role");
+        assert_eq!(nodes[1].provides, vec!["Admin".to_string(), "Guest".to_string()]);
+    }
+
+    /// `emit_concept_nodes` materialises files under `.claude/graph/`.
+    #[test]
+    fn emit_concept_nodes_writes_markdown_files() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let result = InterpretedResult {
+            entities: vec![InterpretedEntity {
+                name: "Invoice".to_string(),
+                file: "src/invoice.rs".to_string(),
+                edges: Vec::new(),
+            }],
+            ..InterpretedResult::default()
+        };
+        let written = emit_concept_nodes(root, "apps-rt", &result);
+        assert_eq!(written, 1);
+        let path = root.join(".claude/graph/apps-rt.entity.invoice.md");
+        assert!(path.exists());
+        let body = std::fs::read_to_string(&path).unwrap();
+        assert!(body.contains("id: apps-rt.entity.invoice"));
+        assert!(body.contains("# Invoice"));
     }
 
     /// Parser strips ```json fences and trailing prose, then reads the inner

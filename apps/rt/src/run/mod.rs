@@ -28,6 +28,7 @@ mod dependency_precheck;
 mod diff_context;
 mod docs_stale_check;
 mod emit_event;
+mod graph_index;
 pub mod emit_phase;
 mod emit_pipeline;
 pub mod env;
@@ -634,6 +635,15 @@ pub enum RunCmd {
         #[arg(long = "session-id")]
         session_id: String,
     },
+    /// Build the concept-node graph index from `.claude/graph/`.
+    ///
+    /// Walks every markdown file under `.claude/graph/`, parses its frontmatter
+    /// `id` + inline `[[id]]` edges, constructs the `id → path` lookup table +
+    /// adjacency map, validates (orphan / cycle → warning), writes the
+    /// `index.md` MOC, and (best-effort) injects `aliases:[id]` into matching
+    /// `.claude/skills/*/SKILL.md` files. Emits byte-stable pretty JSON.
+    /// Fail-open: a missing graph directory degrades to an empty index.
+    GraphIndex,
     /// Extract `[[wikilink]]` occurrences from every `.md` under `--spec-dir`,
     /// persist them into the `wikilinks` table, emit `{wikilinks,orphans}` JSON.
     WikilinkExtract {
@@ -1014,6 +1024,7 @@ pub fn dispatch(cmd: RunCmd) {
             manifest,
         } => artifact_update::run(check, apply, manifest.as_deref()),
         RunCmd::AmendFinalize { session_id } => amend_finalize::run_cli(&session_id),
+        RunCmd::GraphIndex => graph_index::run(),
         RunCmd::WikilinkExtract { spec_dir } => wikilink::run(spec_dir.as_deref()),
         RunCmd::WaveScaffold { spec_dir, plan } => {
             wave_scaffold::run(spec_dir.as_deref(), plan.as_deref());

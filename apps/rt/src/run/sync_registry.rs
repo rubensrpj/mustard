@@ -22,6 +22,7 @@
 
 use super::scan::cluster_discovery::{compute_folder_frequency, discover_clusters};
 use super::scan::file_utils;
+use super::scan::interpret;
 use super::scan::project_conventions::compute_project_conventions;
 use super::scan::{load_scanner, EntityInfo, EnumInfo, ScanResult};
 use mustard_core::fs;
@@ -157,6 +158,15 @@ pub fn run(root: &Path, force: bool) {
                 let conventions = compute_project_conventions(&abs, &stack_id);
                 (result, discovered, folder_frequency, conventions)
             });
+
+        // Wave 3 (project-profiler) — emit concept-nodes into the vault under
+        // `<root>/.claude/graph/` BEFORE merging into the registry, while the
+        // `discovered` vector is still in scope. `interpret::interpret` is
+        // cached per-subproject so this is a hash lookup, not a second model
+        // round-trip. Fail-open — the registry is the source of truth, the
+        // vault is enrichment.
+        let interpreted = interpret::interpret(&abs, &stack_id, &visited, &discovered);
+        let _ = interpret::emit_concept_nodes(root, &sub.name, &interpreted);
 
         let entry = scan_results.entry(stack_id.clone()).or_default();
         entry.merge(result, discovered, folder_frequency, conventions);
