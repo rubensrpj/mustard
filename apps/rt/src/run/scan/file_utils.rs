@@ -191,8 +191,11 @@ pub fn read_file_safe(file_path: &Path) -> Option<String> {
 /// Most common parent folder across a list of relative file paths.
 ///
 /// A faithful port of `inferCommonFolder()` — returns the most frequent parent
-/// directory with a trailing slash, or `None` for an empty input.
+/// directory with a trailing slash, or `None` for an empty input. Wave 2
+/// removed the per-language scanners that called this; it stays public for
+/// forward-compat enrichment passes that may reintroduce a folder-locator.
 #[must_use]
+#[allow(dead_code)]
 pub fn infer_common_folder(file_paths: &[String]) -> Option<String> {
     if file_paths.is_empty() {
         return None;
@@ -394,7 +397,11 @@ pub fn visit(root: &Path, ignore: &[&str]) -> Vec<VisitedFile> {
 /// `true` if a [`with_cache`] scope on the current thread already covers `root`
 /// (i.e. `root` equals the cache root or sits under it in either the original
 /// or the canonical form). Lets nested callers avoid re-visiting the same tree.
+///
+/// Kept public for [`ensure_cache`] and any future nesting consumer; Wave 2's
+/// generic interpreter does not call it directly.
 #[must_use]
+#[allow(dead_code)]
 pub fn cache_covers(root: &Path) -> bool {
     let root_canon = mfs::canonicalize(root).ok();
     CACHE_STACK.with(|stack| {
@@ -414,6 +421,11 @@ pub fn cache_covers(root: &Path) -> bool {
 /// an enclosing scope already covers it. Lets the registry pipeline visit each
 /// subproject once at the outer scope and nest scanner / cluster-discovery /
 /// enrichment calls inside without re-walking.
+///
+/// Wave 2's generic interpreter does not call this directly (the registry
+/// pipeline does the outer `with_cache`); it stays public so a future caller
+/// that owns its own scope can opt in.
+#[allow(dead_code)]
 pub fn ensure_cache<R>(root: &Path, ignore: &[&str], body: impl FnOnce() -> R) -> R {
     if cache_covers(root) {
         return body();

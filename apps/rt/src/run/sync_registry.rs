@@ -134,10 +134,10 @@ pub fn run(root: &Path, force: bool) {
         } else {
             root.join(&sub.rel_path)
         };
-        let Some(scanner) = load_scanner(&abs, None) else {
-            println!("  {}: no scanner available", sub.name);
-            continue;
-        };
+        // Wave 2 — `load_scanner` is total: it always returns the generic
+        // interpreter (with `stack_id = "unknown"` when no manifest signal
+        // matched). The pre-Wave-2 `None` arm could never trigger.
+        let scanner = load_scanner(&abs, None);
         let stack_id = match super::scan::detect_stack(&abs) {
             Some(s) => s.to_string(),
             None => "unknown".to_string(),
@@ -145,7 +145,11 @@ pub fn run(root: &Path, force: bool) {
         let visited = file_utils::visit(&abs, &[]);
         let (result, discovered, folder_frequency, conventions) =
             file_utils::with_cache(&abs, visited.clone(), || {
-                let result = scanner.scan(&abs);
+                // Wave 2 — `Scanner::scan_with_visited` consumes the visit we
+                // already paid for, skipping the trait default's redundant
+                // walk. The interpreter then runs cluster discovery + model
+                // interpretation through the active cache.
+                let result = scanner.scan_with_visited(&abs, &visited);
                 // Agnostic enrichment layers, tagged per subproject — all
                 // resolve their file reads through the active cache.
                 let discovered = discover_clusters(&abs, &stack_id, Some(&sub.name));

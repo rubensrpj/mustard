@@ -1,33 +1,34 @@
-//! The scanner subsystem — a port of `registry/scanner-contract.js`,
-//! `scanner-loader.js`, and the seven `*-scanner.js` language scanners.
+//! The scanner subsystem — a single, language-agnostic interpreter that
+//! consumes the Wave 1 single-pass profile and (when an LLM round-trip is
+//! available) augments it with model-interpreted nodes and edges.
 //!
-//! The JS design used a dynamic `require` to load `scanners/{stack}-scanner.js`
-//! at runtime. Rust has no dynamic loading, so the mechanism is adapted
-//! idiomatically: every scanner implements the [`Scanner`] trait, and
-//! [`load_scanner`] is a static `match` over the detected stack id. Adding a
-//! stack is a new struct plus one `match` arm — the JS "drop a file in
-//! `scanners/`" extension point becomes a compile-checked enum-like dispatch.
+//! ## Why the per-language scanners are gone
 //!
-//! The contract data types ([`EntityInfo`], [`EnumInfo`], …) mirror the JSDoc
-//! typedefs in `scanner-contract.js` field-for-field, so the registry assembled
-//! in a later wave consumes the same shapes the JS scanners produced.
+//! Wave 2 of `project-profiler` removed the eight hand-written
+//! `*_scanner.rs` files (`dotnet`, `typescript`, `dart`, `php`, `python`,
+//! `java`, `go`, `rust`). Each one encoded fixed conventions — `Entities/`
+//! and `Domain/` folders for `.NET`, `pgTable` calls for TypeScript, derive
+//! macros for Rust — and silently missed projects that used neighbouring
+//! conventions (`Features/`+`DbSet`, `mysqlTable`/`sqliteTable`, structs
+//! without ORM derives, …).
 //!
-//! Wave 2 wires the subsystem into `run sync-registry`, which consumes the
-//! scanners, the route/dto/service maps, and per-stack pattern inference.
+//! In their place, [`load_scanner`] now returns a single generic scanner
+//! whose [`Scanner::scan`] implementation:
+//!
+//! 1. Visits the subproject once (Wave 1 [`file_utils::visit`]).
+//! 2. Runs the agnostic [`cluster_discovery`] pass.
+//! 3. Calls [`interpret::interpret`] for model-assisted entity/enum/edge
+//!    extraction (cached cold-path; fail-open when no model is available).
+//!
+//! The contract data types ([`EntityInfo`], [`EnumInfo`], …) are unchanged —
+//! callers in [`crate::run::sync_registry`] consume the same shapes as
+//! before, so the registry JSON stays byte-stable across the rewrite.
 
 pub mod cluster_discovery;
 pub mod file_utils;
+pub mod interpret;
 pub mod pluralize;
 pub mod project_conventions;
-
-mod dart_scanner;
-mod dotnet_scanner;
-mod go_scanner;
-mod java_scanner;
-mod php_scanner;
-mod python_scanner;
-mod rust_scanner;
-mod typescript_scanner;
 
 use mustard_core::fs as mfs;
 use std::collections::BTreeMap;
@@ -35,9 +36,9 @@ use std::path::Path;
 
 /// A scanned entity (model / domain object).
 ///
-/// Mirrors the `EntityInfo` typedef in `scanner-contract.js`. Optional fields
-/// are `None` when the JS object omitted the key, so a later `serde`
-/// serialization can `skip_serializing_if` to reproduce the JSON shape.
+/// Mirrors the `EntityInfo` typedef in the legacy `scanner-contract.js`.
+/// Optional fields are `None` when omitted so serialisation can
+/// `skip_serializing_if` to reproduce the JSON shape.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct EntityInfo {
     /// Relative path from the subproject root.
@@ -71,11 +72,11 @@ pub struct EnumInfo {
     pub value_convention: Option<String>,
 }
 
-/// A scanned route group — mirrors the `RouteInfo` typedef.
+/// A scanned route group — mirrors the legacy `RouteInfo` typedef.
 ///
-/// The contract types mirror the JS typedefs field-for-field; `infer_patterns`
-/// reads only the fields a given stack's pattern inference needs, so the rest
-/// are a deliberate, future-proof surface — hence the `dead_code` allow.
+/// The contract types mirror the legacy typedefs field-for-field; the generic
+/// interpreter does not populate routes today, so the rest of the surface is
+/// deliberately future-proof — hence the `dead_code` allow.
 #[derive(Debug, Clone, Default)]
 #[allow(dead_code)]
 pub struct RouteInfo {
@@ -99,7 +100,7 @@ pub struct EndpointInfo {
     pub name: Option<String>,
 }
 
-/// A scanned DTO / schema / view-model — mirrors the `DtoInfo` typedef.
+/// A scanned DTO / schema / view-model — mirrors the legacy `DtoInfo` typedef.
 #[derive(Debug, Clone, Default)]
 #[allow(dead_code)]
 pub struct DtoInfo {
@@ -111,7 +112,7 @@ pub struct DtoInfo {
     pub validation_pattern: String,
 }
 
-/// A scanned service class — mirrors the `ServiceInfo` typedef.
+/// A scanned service class — mirrors the legacy `ServiceInfo` typedef.
 #[derive(Debug, Clone, Default)]
 #[allow(dead_code)]
 pub struct ServiceInfo {
@@ -123,12 +124,14 @@ pub struct ServiceInfo {
     pub dependencies: Vec<String>,
 }
 
-/// The combined output of a full scan — mirrors the object `ScannerContract.scan()`
-/// returns. `patterns` carries the inferred `_patterns.{stack}` object as
-/// JSON; the registry assembles it straight into the registry file.
+/// The combined output of a full scan — mirrors the legacy object shape so
+/// `sync_registry::build_registry` consumes the same fields as before.
 ///
-/// `services` mirrors the JS `scan()` shape; like the JS `inferPatterns` it is
-/// carried but not yet read by any consumer — hence the field-level allow.
+/// `routes` / `dtos` / `services` / `architecture` are carried but no longer
+/// populated by the generic interpreter (the JS scanners that populated them
+/// are gone). They stay on the struct so the registry consumer and any
+/// future enrichment pass keep the same shape — hence the field-level
+/// `dead_code` allows.
 #[derive(Debug, Clone, Default)]
 pub struct ScanResult {
     /// Entities keyed by entity name.
@@ -136,102 +139,128 @@ pub struct ScanResult {
     /// Enums keyed by enum name.
     pub enums: BTreeMap<String, EnumInfo>,
     /// Route groups keyed by route key.
+    #[allow(dead_code)]
     pub routes: BTreeMap<String, RouteInfo>,
     /// DTOs keyed by DTO name.
+    #[allow(dead_code)]
     pub dtos: BTreeMap<String, DtoInfo>,
     /// Services keyed by service class name.
     #[allow(dead_code)]
     pub services: BTreeMap<String, ServiceInfo>,
-    /// The detected architecture pattern (`solid`, `layered`, `minimal`, …).
+    /// The detected architecture pattern (`unknown` until a future wave
+    /// reintroduces architecture inference on top of the interpreter).
+    #[allow(dead_code)]
     pub architecture: String,
     /// Inferred `_patterns.{stack}` object — a `serde_json::Value::Object`.
     pub patterns: serde_json::Value,
 }
 
-/// Base contract for stack scanners — a port of the `ScannerContract` class.
+/// Base contract for the scanner subsystem.
 ///
-/// Every scanner reports whether it [`detect`](Scanner::detect)s its stack and
-/// runs a [`scan`](Scanner::scan). The default `scan` calls each `scan_*` method
-/// then records the architecture, exactly like `ScannerContract.scan()`.
+/// Today there is one concrete implementor — [`InterpretedScanner`] — but the
+/// trait surface stays so the `sync_registry` pipeline can swap in
+/// alternative interpreters (e.g. a future "fast path" or "offline"
+/// implementation) without touching its call sites.
 pub trait Scanner {
-    /// `true` if this scanner applies to the subproject at `root`.
-    fn detect(&self, root: &Path) -> bool;
-
-    /// The high-level architecture of the project (`unknown` by default).
-    fn detect_architecture(&self, _root: &Path) -> String {
-        "unknown".to_string()
-    }
-
-    /// Scan entities (models / domain objects). Empty by default.
-    fn scan_entities(&self, _root: &Path) -> BTreeMap<String, EntityInfo> {
-        BTreeMap::new()
-    }
-
-    /// Scan enums / value types. Empty by default.
-    fn scan_enums(&self, _root: &Path) -> BTreeMap<String, EnumInfo> {
-        BTreeMap::new()
-    }
-
-    /// Scan routes / endpoints. Empty by default.
-    fn scan_routes(&self, _root: &Path) -> BTreeMap<String, RouteInfo> {
-        BTreeMap::new()
-    }
-
-    /// Scan DTOs / schemas / view-models. Empty by default.
-    fn scan_dtos(&self, _root: &Path) -> BTreeMap<String, DtoInfo> {
-        BTreeMap::new()
-    }
-
-    /// Scan service classes. Empty by default.
-    fn scan_services(&self, _root: &Path) -> BTreeMap<String, ServiceInfo> {
-        BTreeMap::new()
-    }
-
-    /// Infer the `_patterns.{stack}` object from the scanned data — a port of
-    /// `inferPatterns()`. The default is an empty object (the scanner declined
-    /// to infer patterns). Implementors return a `serde_json::Value::Object`.
-    fn infer_patterns(&self, _root: &Path, _result: &ScanResult) -> serde_json::Value {
-        serde_json::Value::Object(serde_json::Map::new())
-    }
-
-    /// Run the full scan pipeline — a port of `ScannerContract.scan()`.
+    /// Run the full scan pipeline and return the merged [`ScanResult`].
     ///
-    /// Wave 1 (`project-profiler`): wraps the per-faceta scans in a
-    /// single-pass [`file_utils::ensure_cache`] scope so each source file is
-    /// read exactly once across `scan_entities`, `scan_enums`, `scan_routes`,
-    /// `scan_dtos`, `scan_services`, `detect_architecture`, and
-    /// `infer_patterns`. The cache is a no-op when an outer caller (e.g.
-    /// `sync-registry`) has already installed one for `root`.
+    /// The default implementation runs [`file_utils::visit`] itself; callers
+    /// that already visited the tree (e.g. `sync_registry`) should use
+    /// [`scan_with_visited`](Scanner::scan_with_visited) to avoid double work.
+    ///
+    /// Production callers always go through `scan_with_visited`; the default
+    /// is kept for ergonomics + test parity coverage — hence `dead_code`.
+    #[allow(dead_code)]
     fn scan(&self, root: &Path) -> ScanResult {
-        file_utils::ensure_cache(root, &[], || {
-            let mut result = ScanResult {
-                entities: self.scan_entities(root),
-                enums: self.scan_enums(root),
-                routes: self.scan_routes(root),
-                dtos: self.scan_dtos(root),
-                services: self.scan_services(root),
-                architecture: self.detect_architecture(root),
-                patterns: serde_json::Value::Object(serde_json::Map::new()),
-            };
-            // `inferPatterns` runs after every scan_* method, then `scan()`
-            // records `architecture` onto the patterns object (matching the
-            // JS contract).
-            let mut patterns = self.infer_patterns(root, &result);
-            if let serde_json::Value::Object(ref mut map) = patterns {
-                map.insert(
-                    "architecture".to_string(),
-                    serde_json::Value::String(result.architecture.clone()),
-                );
-            }
-            result.patterns = patterns;
-            result
-        })
+        let visited = file_utils::visit(root, &[]);
+        self.scan_with_visited(root, &visited)
+    }
+
+    /// Run the scan against a pre-visited file vector. Useful when the outer
+    /// caller already paid the visit cost (the registry pipeline visits once
+    /// per subproject and shares the result across scanners + enrichment).
+    fn scan_with_visited(&self, root: &Path, visited: &[file_utils::VisitedFile])
+        -> ScanResult;
+}
+
+/// The generic interpreter — Wave 2 replacement for the eight per-language
+/// scanners.
+///
+/// Wraps the visit-cache, cluster discovery, and model interpretation into a
+/// single [`Scanner::scan`] call. The stack id is carried so the cluster
+/// discovery and interpret cache can key on it; the rest of the pipeline is
+/// fully agnostic. `env_override` lets tests inject a synthetic
+/// [`interpret::InterpretEnv`] (empty API key ⇒ no network) without touching
+/// process env, which is `unsafe` on edition 2024 and forbidden in this
+/// crate.
+pub struct InterpretedScanner {
+    /// Stack id resolved by [`detect_stack`] (or supplied as a hint by the
+    /// caller); flows into the cluster cache + interpret cache keys.
+    pub stack_id: String,
+    /// Test-only env override. Production code leaves it `None` and
+    /// `interpret::interpret` reads `InterpretEnv::from_process()`.
+    pub env_override: Option<interpret::InterpretEnv>,
+}
+
+impl Scanner for InterpretedScanner {
+    fn scan_with_visited(&self, root: &Path, visited: &[file_utils::VisitedFile]) -> ScanResult {
+        // Step 1 — agnostic cluster discovery. Output is used both as input
+        // to the model and as the raw cluster surface in `_patterns.{stack}`.
+        let clusters = cluster_discovery::discover_clusters(root, &self.stack_id, None);
+
+        // Step 2 — model interpretation (fail-open). Empty result ⇒ we fall
+        // through to a registry that carries only the agnostic floor.
+        let interpreted = match &self.env_override {
+            Some(env) => interpret::interpret_with(root, &self.stack_id, visited, &clusters, env),
+            None => interpret::interpret(root, &self.stack_id, visited, &clusters),
+        };
+
+        // Step 4 — merge into the legacy ScanResult shape so build_registry
+        // consumes the same fields as before.
+        let mut entities = BTreeMap::new();
+        for e in interpreted.entities {
+            entities.insert(
+                e.name.clone(),
+                EntityInfo {
+                    file: e.file,
+                    refs: e.edges,
+                    ..EntityInfo::default()
+                },
+            );
+        }
+        let mut enums = BTreeMap::new();
+        for e in interpreted.enums {
+            enums.insert(
+                e.name.clone(),
+                EnumInfo {
+                    values: e.values,
+                    file: e.file,
+                    ..EnumInfo::default()
+                },
+            );
+        }
+
+        // The patterns overlay carries `clusterLabels`, `dominant`, `edges`
+        // (any subset). The outer caller layers in the cluster discovery
+        // output / folder frequency / conventions, so we only return the
+        // overlay here — `sync_registry` does the merge.
+        let patterns = interpreted.patterns_overlay;
+
+        ScanResult {
+            entities,
+            enums,
+            routes: BTreeMap::new(),
+            dtos: BTreeMap::new(),
+            services: BTreeMap::new(),
+            architecture: "unknown".to_string(),
+            patterns,
+        }
     }
 }
 
-/// The eight stack ids and their file-presence signals — a port of
-/// `STACK_SIGNALS` in `scanner-loader.js`. Order matters: the first match wins,
-/// so the list stays "most specific first" as the JS object did.
+/// Manifest / file-presence signals used to detect the dominant stack of a
+/// subproject. Agnostic: the list is "manifests common across the language
+/// communities Mustard sees", not "languages Mustard knows scanners for".
 const STACK_SIGNALS: &[(&str, &[&str])] = &[
     ("dotnet", &["*.csproj", "*.sln"]),
     ("typescript", &["package.json", "tsconfig.json"]),
@@ -259,8 +288,11 @@ fn signal_present(root: &Path, pattern: &str) -> bool {
     }
 }
 
-/// Detect which stack a subproject uses via file-presence heuristics — a port
-/// of `detectStack()`. Returns the stack id, or `None` when unrecognised.
+/// Detect which stack a subproject uses via file-presence heuristics.
+///
+/// Returns the stack id, or `None` when no manifest signal matched. The
+/// returned id is purely a label flowing into the cluster cache + interpret
+/// cache; it never gates which entities the interpreter recovers.
 #[must_use]
 pub fn detect_stack(root: &Path) -> Option<&'static str> {
     for (stack_id, signals) in STACK_SIGNALS {
@@ -271,59 +303,32 @@ pub fn detect_stack(root: &Path) -> Option<&'static str> {
     None
 }
 
-/// Load the scanner for a subproject — a port of `loadScanner()`.
+/// Load the scanner for a subproject — Wave 2 returns a single generic
+/// [`InterpretedScanner`] regardless of the detected stack.
 ///
-/// Resolution: use `stack_hint` (the `subprojectMeta.stack` field) when given,
-/// else fall back to [`detect_stack`]; then map the stack id to its scanner via
-/// a static `match` (the Rust replacement for the JS dynamic `require`). Returns
-/// `None` when no stack is recognised or the scanner's `detect()` is false.
+/// `stack_hint` (the `subprojectMeta.stack` field) wins over [`detect_stack`]
+/// when both are present. When neither resolves to a known signal, the
+/// scanner is still returned with `stack_id = "unknown"` — the interpreter
+/// runs against the agnostic profile and may still recover entities. The
+/// pre-Wave-2 `Option` return is gone (the function is now total) since the
+/// per-language gate it once expressed no longer exists.
 #[must_use]
-pub fn load_scanner(root: &Path, stack_hint: Option<&str>) -> Option<Box<dyn Scanner>> {
-    let stack_id = stack_hint.or_else(|| detect_stack(root))?;
-    let scanner: Box<dyn Scanner> = match stack_id {
-        "dotnet" => Box::new(dotnet_scanner::DotnetScanner),
-        "typescript" => Box::new(typescript_scanner::TypeScriptScanner),
-        "python" => Box::new(python_scanner::PythonScanner),
-        "java" => Box::new(java_scanner::JavaScanner),
-        "go" => Box::new(go_scanner::GoScanner),
-        "rust" => Box::new(rust_scanner::RustScanner),
-        "php" => Box::new(php_scanner::PhpScanner),
-        "dart" => Box::new(dart_scanner::DartScanner),
-        _ => return None,
-    };
-    if scanner.detect(root) {
-        Some(scanner)
-    } else {
-        None
-    }
+pub fn load_scanner(root: &Path, stack_hint: Option<&str>) -> Box<dyn Scanner> {
+    let stack_id = stack_hint
+        .map(str::to_string)
+        .or_else(|| detect_stack(root).map(str::to_string))
+        .unwrap_or_else(|| "unknown".to_string());
+    Box::new(InterpretedScanner {
+        stack_id,
+        env_override: None,
+    })
 }
 
-/// List the stack ids that have a scanner available — a port of
-/// `listAvailableScanners()`.
-///
-/// `sync-registry` resolves scanners per-subproject via [`load_scanner`], so it
-/// never needs the flat list; kept as the faithful public-API counterpart of
-/// the JS export.
+/// Detect a value convention from enum member names — kept as a shared helper
+/// for any consumer that wants to bucket a value list by case. The
+/// interpreter does not call this today; future enrichment may.
 #[must_use]
 #[allow(dead_code)]
-pub fn list_available_scanners() -> Vec<&'static str> {
-    vec![
-        "dotnet",
-        "typescript",
-        "python",
-        "java",
-        "go",
-        "rust",
-        "php",
-        "dart",
-    ]
-}
-
-/// Detect a value convention from enum member names.
-///
-/// Shared by several scanners — a port of the `detectValueConvention` helper
-/// duplicated across `typescript-scanner.js`, `python-scanner.js`, etc.
-#[must_use]
 pub(crate) fn detect_value_convention(values: &[String]) -> String {
     if values.is_empty() {
         return "unknown".to_string();
@@ -388,18 +393,31 @@ mod tests {
     }
 
     #[test]
-    fn load_scanner_returns_rust_scanner() {
+    fn load_scanner_returns_generic_interpreter() {
         let dir = tempdir().unwrap();
         std::fs::write(dir.path().join("Cargo.toml"), "[package]").unwrap();
-        assert!(load_scanner(dir.path(), None).is_some());
+        // The interpreter is returned for every detected stack — Wave 2 no
+        // longer dispatches per language; calling `.scan_with_visited` must
+        // simply run without panicking.
+        let scanner = load_scanner(dir.path(), None);
+        let _ = scanner.scan_with_visited(dir.path(), &[]);
     }
 
     #[test]
-    fn load_scanner_stack_hint_overrides_detection() {
+    fn load_scanner_uses_stack_hint() {
         let dir = tempdir().unwrap();
-        std::fs::write(dir.path().join("Cargo.toml"), "[package]").unwrap();
-        // The hint says go, but there is no go.mod — detect() fails -> None.
-        assert!(load_scanner(dir.path(), Some("go")).is_none());
+        // No manifest present; the hint still wins and a scanner is returned.
+        let scanner = load_scanner(dir.path(), Some("python"));
+        let _ = scanner.scan_with_visited(dir.path(), &[]);
+    }
+
+    #[test]
+    fn load_scanner_unknown_stack_still_returns() {
+        let dir = tempdir().unwrap();
+        // Wave 2: no per-language gating — even an unknown stack yields a
+        // scanner that runs against the agnostic profile.
+        let scanner = load_scanner(dir.path(), None);
+        let _ = scanner.scan_with_visited(dir.path(), &[]);
     }
 
     #[test]
@@ -412,21 +430,13 @@ mod tests {
     }
 
     // --- Wave 1 (`project-profiler`) single-pass behaviour ----------------
+    //
+    // Wave 2 removed the per-language scanners but the single-pass guarantee
+    // still holds: the generic interpreter (cluster discovery + interpret)
+    // resolves every file read through the active visit cache. These tests
+    // assert that contract on the new code path.
 
-    /// Historical mutex kept for symmetry with earlier revisions that used
-    /// a global atomic counter. Wave 1 (`project-profiler`) moved the
-    /// disk-read / disk-hit counters into `thread_local!` cells, so each
-    /// test owns its own slot and the two `single_pass_*` tests cannot
-    /// contaminate each other (or any other parallel test) any more. The
-    /// lock is retained as a no-op safety net should a future refactor
-    /// reintroduce shared state.
-    static COUNTER_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    /// Build a multi-stack fixture: one Rust subproject with a diesel entity,
-    /// one TypeScript subproject with a drizzle table and a TS enum. Returns
-    /// each subproject's root path.
     fn build_multi_stack_fixture(dir: &Path) -> (std::path::PathBuf, std::path::PathBuf) {
-        // Rust subproject.
         let rust = dir.join("rust-app");
         std::fs::create_dir_all(rust.join("src")).unwrap();
         std::fs::write(
@@ -441,7 +451,6 @@ mod tests {
              #[derive(Debug, Clone)]\npub enum Status {\n    Active,\n    Pending,\n}\n",
         )
         .unwrap();
-        // TypeScript subproject.
         let ts = dir.join("ts-app");
         std::fs::create_dir_all(ts.join("src")).unwrap();
         std::fs::write(
@@ -458,132 +467,73 @@ mod tests {
         (rust, ts)
     }
 
-    /// Build a `ScanResult` by calling each per-faceta method directly — the
-    /// "baseline" form that bypasses `Scanner::scan`'s single-pass cache.
-    fn scan_uncached(scanner: &dyn Scanner, root: &Path) -> ScanResult {
-        let mut result = ScanResult {
-            entities: scanner.scan_entities(root),
-            enums: scanner.scan_enums(root),
-            routes: scanner.scan_routes(root),
-            dtos: scanner.scan_dtos(root),
-            services: scanner.scan_services(root),
-            architecture: scanner.detect_architecture(root),
-            patterns: serde_json::Value::Object(serde_json::Map::new()),
-        };
-        let mut patterns = scanner.infer_patterns(root, &result);
-        if let serde_json::Value::Object(ref mut map) = patterns {
-            map.insert(
-                "architecture".to_string(),
-                serde_json::Value::String(result.architecture.clone()),
-            );
+    /// Build a generic interpreter with the empty `InterpretEnv` so the test
+    /// never reads `ANTHROPIC_API_KEY` from the host (the crate forbids
+    /// `unsafe`, so `set_var`/`remove_var` are unavailable on edition 2024).
+    fn test_scanner(stack: &str) -> InterpretedScanner {
+        InterpretedScanner {
+            stack_id: stack.to_string(),
+            env_override: Some(interpret::InterpretEnv::default()),
         }
-        result.patterns = patterns;
-        result
     }
 
-    /// Serialise a `ScanResult` to a byte-stable string for diffing. The
-    /// `BTreeMap`s in `ScanResult` already iterate alphabetically; this helper
-    /// projects each entry to a deterministic JSON shape.
-    fn scan_result_signature(r: &ScanResult) -> String {
-        let entities: Vec<(String, &EntityInfo)> = r
-            .entities
-            .iter()
-            .map(|(k, v)| (k.clone(), v))
-            .collect();
-        let enums: Vec<(String, &EnumInfo)> = r.enums.iter().map(|(k, v)| (k.clone(), v)).collect();
-        format!(
-            "arch={}\nentities={:?}\nenums={:?}\npatterns={}",
-            r.architecture,
-            entities,
-            enums,
-            serde_json::to_string(&r.patterns).unwrap_or_default()
-        )
-    }
-
-    /// AC-1 — the single-pass cache produces a registry result that is
-    /// byte-identical to the baseline (per-faceta) form for every stack in a
-    /// multi-stack fixture.
+    /// Parent AC-P-4 — paridade pós-W1. Wave 2 reinterprets the parity
+    /// claim: `scan()` (which now visits internally) and
+    /// `scan_with_visited()` (which reuses a pre-visited vector) must
+    /// produce a byte-equal `ScanResult` on the same fixture. The cluster
+    /// discovery output flows through the cache identically either way.
     #[test]
     fn single_pass_parity() {
         let dir = tempfile::tempdir().unwrap();
         let (rust_root, ts_root) = build_multi_stack_fixture(dir.path());
+        // Empty InterpretEnv ⇒ interpret is a no-op (empty API key) for
+        // both calls; the parity check is between two purely deterministic
+        // code paths.
+        let rust_scanner = test_scanner("rust");
+        let ts_scanner = test_scanner("typescript");
 
-        let rust_scanner = load_scanner(&rust_root, None).expect("rust scanner");
-        let ts_scanner = load_scanner(&ts_root, None).expect("ts scanner");
+        let rust_default = rust_scanner.scan(&rust_root);
+        let ts_default = ts_scanner.scan(&ts_root);
 
-        // Cached (Wave 1 default): `Scanner::scan` installs the visit cache.
-        let rust_cached = rust_scanner.scan(&rust_root);
-        let ts_cached = ts_scanner.scan(&ts_root);
-        // Baseline: bypass the cache by driving each per-faceta method.
-        let rust_baseline = scan_uncached(rust_scanner.as_ref(), &rust_root);
-        let ts_baseline = scan_uncached(ts_scanner.as_ref(), &ts_root);
+        let rust_visited = file_utils::visit(&rust_root, &[]);
+        let ts_visited = file_utils::visit(&ts_root, &[]);
+        let rust_handed = rust_scanner.scan_with_visited(&rust_root, &rust_visited);
+        let ts_handed = ts_scanner.scan_with_visited(&ts_root, &ts_visited);
 
-        assert_eq!(
-            scan_result_signature(&rust_cached),
-            scan_result_signature(&rust_baseline),
-            "rust scan should be byte-stable across cached vs baseline"
-        );
-        assert_eq!(
-            scan_result_signature(&ts_cached),
-            scan_result_signature(&ts_baseline),
-            "typescript scan should be byte-stable across cached vs baseline"
-        );
+        let sig = |r: &ScanResult| {
+            format!(
+                "arch={}\nentities={:?}\nenums={:?}\npatterns={}",
+                r.architecture,
+                r.entities,
+                r.enums,
+                serde_json::to_string(&r.patterns).unwrap_or_default()
+            )
+        };
+        assert_eq!(sig(&rust_default), sig(&rust_handed));
+        assert_eq!(sig(&ts_default), sig(&ts_handed));
     }
 
-    /// AC-2 — during a single `Scanner::scan` call no source file is re-opened
-    /// via `read_file_safe` after the visit pass has cached it. The per-faceta
-    /// scanners would otherwise re-read each file ≈5 times (one per `scan_*`
-    /// method). The counters live in `thread_local!` cells, so the test is
-    /// immune to interference from parallel tests; `COUNTER_LOCK` is held as
-    /// a no-op for forward compatibility (see its docstring).
+    /// AC-2 (Wave 1) — during a single `Scanner::scan_with_visited` call no
+    /// source file is re-opened via `read_file_safe` after the visit pass
+    /// has cached it. Wave 2's generic interpreter still routes every read
+    /// through the cache.
     #[test]
     fn single_pass_reads_once() {
-        let _guard = COUNTER_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let dir = tempfile::tempdir().unwrap();
         let (rust_root, _) = build_multi_stack_fixture(dir.path());
-        let scanner = load_scanner(&rust_root, None).expect("rust scanner");
+        let scanner = test_scanner("rust");
 
-        // Count how many distinct source files the visitor will see.
         let visited = file_utils::visit(&rust_root, &[]);
-        let visited_count = visited.len() as u64;
-        assert!(visited_count > 0, "fixture must contain at least one source file");
+        assert!(!visited.is_empty(), "fixture must contain source files");
 
         file_utils::reset_disk_read_count();
-        let _ = scanner.scan(&rust_root);
+        let _ = file_utils::with_cache(&rust_root, visited.clone(), || {
+            scanner.scan_with_visited(&rust_root, &visited)
+        });
         let hits = file_utils::disk_hit_count();
-        // Disk *attempts* may be non-zero (scanners probe absent paths like
-        // `src/main.rs`/`src/lib.rs` for architecture detection); what matters
-        // is that no *existing* source file was opened a second time after the
-        // visit pass already cached its contents.
         assert_eq!(
             hits, 0,
             "expected zero disk hits through `read_file_safe`, got {hits}"
-        );
-    }
-
-    /// Sanity check: bypassing the cache should leave the disk-read counter
-    /// strictly greater than the visited count — the historical 6× behaviour.
-    /// This protects the AC-2 test against a future refactor that silently
-    /// drops the cache (the counter would still report `0`).
-    #[test]
-    fn single_pass_reads_once_baseline_is_higher() {
-        let _guard = COUNTER_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let dir = tempfile::tempdir().unwrap();
-        let (rust_root, _) = build_multi_stack_fixture(dir.path());
-        let scanner = load_scanner(&rust_root, None).expect("rust scanner");
-
-        file_utils::reset_disk_read_count();
-        // Call each per-faceta method directly — no `ensure_cache` wrapper,
-        // so `read_file_safe` falls through to the disk every time.
-        let _ = scan_uncached(scanner.as_ref(), &rust_root);
-        let hits = file_utils::disk_hit_count();
-        assert!(
-            hits >= 2,
-            "baseline scan should read source files multiple times, got {hits}"
         );
     }
 }

@@ -1,10 +1,10 @@
 # Wave 2 (rt) — Interpretação por modelo (cold path)
 
-### Stage: Plan
+### Stage: Execute
 ### Outcome: Active
 ### Flags:
 ### Lang: pt
-### Checkpoint: 2026-05-22T00:00:00Z
+### Checkpoint: 2026-05-24T09:05:08.646Z
 ### Parent: 2026-05-22-project-profiler
 
 ## PRD
@@ -24,10 +24,10 @@ Os 8 `*_scanner.rs` são removidos por completo (`dart`, `dotnet`, `java`, `go`,
 
 ## Critérios de Aceitação
 
-- [ ] AC-1: zero scanners por linguagem — todos os 8 `*_scanner.rs` removidos — Command: `node -e "const fs=require('fs');const n=fs.readdirSync('apps/rt/src/run/scan').filter(f=>/_scanner\.rs$/.test(f)).length;process.exit(n===0?0:1)"`
-- [ ] AC-2: cache congelado — segunda chamada sem mudança de file-set não dispara modelo (flag de cache hit no teste) — Command: `cargo test -p mustard-rt interpret_cache_frozen`
-- [ ] AC-3: detecção multi-stack — matriz de fixtures que os scanners hardcoded perdiam (.NET `Features/`+`DbSet`, TS `mysqlTable`, Go sem `gorm`, Rust sem derive ORM) detecta a entidade em cada uma — Command: `cargo test -p mustard-rt interpret_multistack_entities`
-- [ ] AC-4: modelo selecionável por env (default sonnet) — Command: `cargo test -p mustard-rt interpret_model_env_default`
+- [x] AC-1: zero scanners por linguagem — todos os 8 `*_scanner.rs` removidos — Command: `node -e "const fs=require('fs');const n=fs.readdirSync('apps/rt/src/run/scan').filter(f=>/_scanner\.rs$/.test(f)).length;process.exit(n===0?0:1)"`
+- [x] AC-2: cache congelado — segunda chamada sem mudança de file-set não dispara modelo (flag de cache hit no teste) — Command: `cargo test -p mustard-rt interpret_cache_frozen`
+- [x] AC-3: detecção multi-stack — matriz de fixtures que os scanners hardcoded perdiam (.NET `Features/`+`DbSet`, TS `mysqlTable`, Go sem `gorm`, Rust sem derive ORM) detecta a entidade em cada uma — Command: `cargo test -p mustard-rt interpret_multistack_entities`
+- [x] AC-4: modelo selecionável por env (default sonnet) — Command: `cargo test -p mustard-rt interpret_model_env_default`
 
 ## Plano
 
@@ -47,13 +47,13 @@ Novo módulo `scan/interpret.rs` (cold path) que recebe o perfil compacto (`_pat
 
 ### rt Agent (Wave 2)
 
-- [ ] Definir o contrato do perfil compacto que entra no modelo (subset do `_patterns` + N amostras representativas por cluster).
-- [ ] Implementar `interpret.rs`: prompt, chamada de modelo, parse robusto (fail-open: erro → cai no piso agnóstico), cache por SHA do file-set.
-- [ ] Env `MUSTARD_SCAN_MODEL` (default `sonnet`); honrar a política de no-downgrade.
-- [ ] Remover os 8 `*_scanner.rs` e o dispatch por linguagem; `load_scanner` → interpretador genérico.
-- [ ] `build_registry` usa os nós interpretados; manter saída byte-estável.
-- [ ] Testes: `interpret_cache_frozen`, `dotnet_features_entity`, `interpret_model_env_default`.
-- [ ] Atualizar `apps/rt/CLAUDE.md` (seção scan) e checar `docs-stale-check`.
+- [x] Definir o contrato do perfil compacto que entra no modelo (subset do `_patterns` + N amostras representativas por cluster).
+- [x] Implementar `interpret.rs`: prompt, chamada de modelo, parse robusto (fail-open: erro → cai no piso agnóstico), cache por SHA do file-set.
+- [x] Env `MUSTARD_SCAN_MODEL` (default `sonnet`); honrar a política de no-downgrade.
+- [x] Remover os 8 `*_scanner.rs` e o dispatch por linguagem; `load_scanner` → interpretador genérico.
+- [x] `build_registry` usa os nós interpretados; manter saída byte-estável.
+- [x] Testes: `interpret_cache_frozen`, `interpret_multistack_entities`, `interpret_model_env_default`.
+- [x] Atualizar `apps/rt/CLAUDE.md` (seção scan) e checar `docs-stale-check`.
 
 ## Limites
 
