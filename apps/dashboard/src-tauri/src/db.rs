@@ -669,25 +669,23 @@ pub fn aggregate_activity_from_db(
     };
 
     let mut out = Vec::new();
-    for r in rows {
-        if let Ok((spec, wave, action_kind, count, min_ts, max_ts, files_touched)) = r {
-            // Mirror the legacy JOIN: spec tokens summed once per event in the
-            // group → tokens_per_spec × count.
-            let per_spec = spec
-                .as_deref()
-                .and_then(|s| tokens_by_spec.get(s).copied())
-                .unwrap_or(0);
-            out.push(ActivityGroup {
-                spec,
-                wave,
-                action_kind,
-                count,
-                min_ts,
-                max_ts,
-                tokens_total: per_spec * count,
-                files_touched,
-            });
-        }
+    for (spec, wave, action_kind, count, min_ts, max_ts, files_touched) in rows.flatten() {
+        // Mirror the legacy JOIN: spec tokens summed once per event in the
+        // group → tokens_per_spec × count.
+        let per_spec = spec
+            .as_deref()
+            .and_then(|s| tokens_by_spec.get(s).copied())
+            .unwrap_or(0);
+        out.push(ActivityGroup {
+            spec,
+            wave,
+            action_kind,
+            count,
+            min_ts,
+            max_ts,
+            tokens_total: per_spec * count,
+            files_touched,
+        });
     }
     Ok(out)
 }
@@ -696,6 +694,7 @@ pub fn aggregate_activity_from_db(
 /// fail-soft so partial schemas (e.g. spans without duration_ms) still return
 /// a partially-populated `QualityMetrics`. Returns `QualityMetrics::default()`
 /// if the connection doesn't satisfy `has_phase1_schema`.
+#[allow(clippy::field_reassign_with_default)]
 pub fn quality_metrics_from_db(
     conn: &Connection,
     tele: Option<&mustard_core::telemetry::TelemetryStore>,
@@ -1018,7 +1017,7 @@ pub fn agent_activity_from_db(conn: &Connection) -> Result<crate::telemetry::Age
                 let entry = acc.entry(aid.clone()).or_insert_with(|| Acc { starts: 0, stops: 0, errors: 0, durations_ms: vec![], last_ts: None });
                 entry.starts += 1;
                 if let Some(ref t) = ts {
-                    if entry.last_ts.as_ref().map_or(true, |cur| t > cur) {
+                    if entry.last_ts.as_ref().is_none_or(|cur| t > cur) {
                         entry.last_ts = Some(t.clone());
                     }
                     pending.insert(format!("{}|{}", sid, aid), t.clone());
@@ -1044,7 +1043,7 @@ pub fn agent_activity_from_db(conn: &Connection) -> Result<crate::telemetry::Age
                 entry.stops += 1;
                 if is_error { entry.errors += 1; }
                 if let Some(ref t) = ts {
-                    if entry.last_ts.as_ref().map_or(true, |cur| t > cur) {
+                    if entry.last_ts.as_ref().is_none_or(|cur| t > cur) {
                         entry.last_ts = Some(t.clone());
                     }
                     let key = format!("{}|{}", sid, aid);
@@ -1711,11 +1710,6 @@ pub fn knowledge_browse_from_db(
         Err(_) => return Ok(vec![]),
     };
 
-    let mut out = Vec::new();
-    for r in rows {
-        if let Ok(row) = r {
-            out.push(row);
-        }
-    }
+    let out: Vec<_> = rows.flatten().collect();
     Ok(out)
 }

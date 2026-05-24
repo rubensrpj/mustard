@@ -1,13 +1,5 @@
 # Followup-2 — Trace rico + Specs filter + Performance + Economia union
 
-### Parent: [[2026-05-20-economia-moat-unification]]
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Scope: full (tactical-fix bundle ampliado)
-### Checkpoint: 2026-05-21T11:50:00Z
-### Lang: pt
-
 ## PRD
 
 Round 2 de followup do parent identificou 4 problemas concretos via uso real do dashboard. Round 1 endereçou parcialmente (visual, filter básico, --once flag) mas faltou diagnóstico arquitetural:

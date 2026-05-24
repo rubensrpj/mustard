@@ -663,7 +663,7 @@ pub fn telemetry_agents(
         });
         entry.count += 1;
         if let Some(ref t) = s.ts {
-            if entry.last_ts.as_ref().map_or(true, |cur| t > cur) {
+            if entry.last_ts.as_ref().is_none_or(|cur| t > cur) {
                 entry.last_ts = Some(t.clone());
             }
         }
@@ -684,7 +684,7 @@ pub fn telemetry_agents(
                 }
             }
             if let Some(ref t) = s.ts {
-                if entry.last_ts.as_ref().map_or(true, |cur| t > cur) {
+                if entry.last_ts.as_ref().is_none_or(|cur| t > cur) {
                     entry.last_ts = Some(t.clone());
                 }
             }

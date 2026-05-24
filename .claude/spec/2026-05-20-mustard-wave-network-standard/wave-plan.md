@@ -1,12 +1,5 @@
 # Wave Plan — Wave network como padrão Mustard
 
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Scope: full (wave plan)
-### Checkpoint: 2026-05-20T19:59:00Z
-### Lang: pt
-
 ## PRD (visão única)
 
 Eleva a quebra em waves de "opt-in via signals frágeis" para característica **padrão** do Mustard, com seis peças amarradas como uma só (SDD canônico: cada fase é artefato primeiro-classe em arquivo próprio):

@@ -1,13 +1,5 @@
 # Tactical Fix: `active-pipelines` view inclui specs sem evento via header fallback
 
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Scope: light
-### Checkpoint: 2026-05-23T13:30:00Z
-### Lang: pt
-### Parent: [[2026-05-21-flatten-spec-layout-and-multi-collab]]
-
 ## Contexto
 
 O parent `2026-05-21-flatten-spec-layout-and-multi-collab` definiu a arquitetura multi-colaborador: SQLite local (telemetria privada) vs `spec.md` header (canon cross-dev em git). Mecanismo concreto vive em `packages/core/src/projection/card.rs::project_spec_view_with_header` — quando o event stream local **não tem evento** pra uma spec presente em disco, a função parseia `### Stage:`/`### Outcome:` do header e seeda o `SpecView`, com synthetic-emit gravando um `pipeline.status` no SQLite local pra hidratá-lo.

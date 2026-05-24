@@ -1,12 +1,5 @@
 # Wave 1 — Core: fallback header → SQLite
 
-### Parent: [[2026-05-21-flatten-spec-layout-and-multi-collab]]
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Lang: pt
-### Checkpoint: 2026-05-21T14:05:00Z
-
 ## Resumo
 
 Quando o SQLite local não tem nenhum evento `pipeline.status` para uma spec, o `project_spec_view` em `packages/core/src/projection/card.rs` lê o cabeçalho `### Status:` do `spec.md` correspondente e usa esse valor como ponto de partida. Isso faz o header versionado em git virar a fonte canônica de status entre colaboradores, sem precisar emitir eventos manualmente no SQLite do colega que deu pull.

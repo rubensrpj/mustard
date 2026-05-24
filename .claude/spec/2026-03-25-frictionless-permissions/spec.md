@@ -1,9 +1,4 @@
 # Enhancement: frictionless-permissions
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Scope: light
-### Checkpoint: 2026-03-25T20:10:00Z
 
 ## Summary
 Substituir permissões Bash granulares por `"Bash"` blanket no settings.json template, confiando na deny list + bash-safety.js hook como camadas de segurança. Elimina prompts de confirmação para comandos seguros.

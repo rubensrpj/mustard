@@ -1,12 +1,5 @@
 # Feature: command-namespace-cleanup
 
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Scope: full
-### Checkpoint: 2026-05-18T19:34:04Z
-### Lang: pt
-
 ## Contexto
 
 O Mustard expõe seus comandos como subpastas de `templates/commands/mustard/`, e o Claude Code registra automaticamente cada subpasta como um slash command. Hoje existem 18 subpastas, mas duas delas não são comandos de usuário: `scan-format` e `templates/agent-prompt` são instruções internas consumidas por agentes, e mesmo assim aparecem na lista de comandos como ruído. Além disso, `/metrics` e `/stats` se sobrepõem ao ponto de suas descrições precisarem se referenciar mutuamente para o usuário descobrir qual usar — sinal claro de que deveriam ser um só comando. E `/complete` tem um nome que não diz o que completa, divergindo da fase canônica `CLOSE` do pipeline. O resultado é uma superfície de comandos inflada e ambígua, que contradiz o objetivo de tornar o Mustard uma ferramenta enxuta. Esta limpeza reduz de 18 para 15 comandos reais sem alterar nenhum comportamento de pipeline.

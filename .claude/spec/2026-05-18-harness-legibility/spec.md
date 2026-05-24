@@ -1,12 +1,5 @@
 # Feature: harness-legibility
 
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Scope: full
-### Checkpoint: 2026-05-18T23:55:00Z
-### Lang: pt
-
 > Spec de backlog (Parte A, item A5). Rascunho criado em lote — passa por ANALYZE de refino quando for aprovada via `/approve`.
 
 ## Contexto

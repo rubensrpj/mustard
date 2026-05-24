@@ -343,8 +343,7 @@ fn merge_hook_additions(claude_dir: &Path, manifest: &TemplateManifest) -> Resul
             }));
             let basename = Path::new(&hook.command)
                 .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| hook.command.clone());
+                .map_or_else(|| hook.command.clone(), |n| n.to_string_lossy().into_owned());
             println!("  Registered hook: {} -> {basename}", hook.event);
         }
     }
@@ -367,8 +366,7 @@ impl TempDir {
     fn new(name: &str) -> Result<Self> {
         let stamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
+            .map_or(0, |d| d.as_nanos());
         let path = std::env::temp_dir().join(format!("mustard-template-{name}-{stamp}"));
         mfs::create_dir_all(&path)
             .with_context(|| format!("creating temp dir {}", path.display()))?;

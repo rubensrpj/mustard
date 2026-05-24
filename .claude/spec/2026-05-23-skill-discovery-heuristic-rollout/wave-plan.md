@@ -1,13 +1,5 @@
 # Wave Plan — skill-discovery-heuristic-rollout
 
-### Stage: Close
-### Outcome: Completed
-### Flags:
-### Scope: full (wave plan)
-### Checkpoint: 2026-05-23T19:30:00Z
-### Lang: pt
-### Total waves: 3
-
 ## Waves
 
 | N | Role | Modelo | Files | Depends on | Rationale |

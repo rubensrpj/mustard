@@ -1,11 +1,5 @@
 # Wave plan — spec-lifecycle-unification
 
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Lang: pt
-### Checkpoint: 2026-05-22T02:10:00Z
-
 ## Visão geral
 
 Sete waves sequenciais, cada uma com escopo e role bem definidos. Waves dependem da anterior compilar e passar nos próprios ACs antes de iniciar.

@@ -1,9 +1,4 @@
 # Enhancement: existence-gate-diff-precheck
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Scope: light
-### Checkpoint: 2026-04-09T00:00:00Z
 
 ## Summary
 Adicionar pre-check de git diff ANTES do dispatch Haiku no Pre-EXECUTE Existence Gate. Se os arquivos do spec não têm mudanças (ou <10 linhas changed), **pular o gate inteiramente**. Cost do pre-check: ~50ms bash call + 0 tokens LLM. Elimina custo fixo de ~2.5K tokens por pipeline Full onde nada mudou desde criação do spec.

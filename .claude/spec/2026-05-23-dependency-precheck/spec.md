@@ -1,12 +1,5 @@
 # dependency-precheck — gate factual de pré-condições antes de dispatch
 
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Scope: full
-### Checkpoint: 2026-05-23T00:00:00Z
-### Lang: pt
-
 ## PRD
 
 ## Contexto

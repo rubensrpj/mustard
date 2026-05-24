@@ -1,12 +1,5 @@
 # Per-spec event log no estilo claude-devtools
 
-### Stage: Plan
-### Outcome: Active
-### Flags:
-### Scope: full (wave plan)
-### Lang: pt
-### Total waves: 5
-
 ## PRD
 
 ### Contexto

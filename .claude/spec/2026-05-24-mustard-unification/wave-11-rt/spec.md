@@ -1,13 +1,5 @@
 # W11 — verify-pipeline multistack expansion
 
-### Stage: Plan
-### Outcome: Active
-### Phase: PLAN
-### Scope: light
-### Checkpoint: 2026-05-24T19:30:00Z
-### Lang: pt-BR
-### Parent: 2026-05-24-mustard-unification
-
 ## Contexto
 
 W0 entregou o fix mínimo (`discover_defaults` prefere Cargo.toml; `effective_timeout` por stack). Esta onda generaliza: cada subprojeto detectado pelo `sync-detect` ganha sua própria verification parcial (paralelo via rayon). Saída JSON inclui `per_subproject` breakdown.
@@ -48,11 +40,11 @@ W0 entregou o fix mínimo (`discover_defaults` prefere Cargo.toml; `effective_ti
 
 ## Critérios de Aceitação
 
-- [ ] **AC-11.1.** `mustard-rt run verify-pipeline --json` em monorepo Mustard retorna `per_subproject` com pelo menos 4 entries (cli, rt, core, dashboard). Command: `rtk mustard-rt run verify-pipeline --json | node -e "let s='';process.stdin.on('data',c=>s+=c);process.stdin.on('end',()=>{const j=JSON.parse(s);if(!j.per_subproject||Object.keys(j.per_subproject).length<4)process.exit(1)})"`
-- [ ] **AC-11.2.** `total_duration_ms < sum(per_subproject.duration_ms)` (paralelização real). Command: derived from AC-11.1 output.
-- [ ] **AC-11.3.** `cargo test -p mustard-rt verify_pipeline_per_subproject` passa.
-- [ ] **AC-11.4.** Env override `MUSTARD_VERIFY_TIMEOUT_RUST=10` força timeout custom. Command: `MUSTARD_VERIFY_TIMEOUT_RUST=10 rtk mustard-rt run verify-pipeline --json` (em projeto canário que leva >10s).
-- [ ] **AC-11.5.** Saída antiga (`passed`/`failed`/`skipped`) ainda presente (retro-compat). Command: derived.
+- [ ] AC-W11-1: `mustard-rt run verify-pipeline --json` em monorepo Mustard retorna `per_subproject` com pelo menos 4 entries (cli, rt, core, dashboard). Command: `rtk mustard-rt run verify-pipeline --json | node -e "let s='';process.stdin.on('data',c=>s+=c);process.stdin.on('end',()=>{const j=JSON.parse(s);if(!j.per_subproject||Object.keys(j.per_subproject).length<4)process.exit(1)})"`
+- [ ] AC-W11-2: `total_duration_ms < sum(per_subproject.duration_ms)` (paralelização real). Command: derived from AC-11.1 output.
+- [ ] AC-W11-3: `cargo test -p mustard-rt verify_pipeline_per_subproject` passa.
+- [ ] AC-W11-4: Env override `MUSTARD_VERIFY_TIMEOUT_RUST=10` força timeout custom. Command: `MUSTARD_VERIFY_TIMEOUT_RUST=10 rtk mustard-rt run verify-pipeline --json` (em projeto canário que leva >10s).
+- [ ] AC-W11-5: Saída antiga (`passed`/`failed`/`skipped`) ainda presente (retro-compat). Command: derived.
 
 ## Notas
 

@@ -1,9 +1,4 @@
 # Feature: pre-execute-existence-gate
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Scope: full
-### Checkpoint: 2026-04-09T00:00:00Z
 
 ## Summary
 Adicionar Gate de verificação de existência entre PLAN→EXECUTE no `/mustard:feature` e `/mustard:resume`: ANTES de dispatchar impl agents, rodar 1 explorer Haiku (`subagent_type: "Explore"`, `model: "haiku"`, prompt ≤2000 chars) que analisa CADA task do checklist (task-level, não file-level) e verifica se os identifiers correspondentes já existem nos arquivos alvo. 3 desfechos:

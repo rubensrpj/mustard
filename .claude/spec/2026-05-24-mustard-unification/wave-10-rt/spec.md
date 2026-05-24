@@ -1,13 +1,5 @@
 # W10 — Stop and Notification triggers
 
-### Stage: Plan
-### Outcome: Active
-### Phase: PLAN
-### Scope: light
-### Checkpoint: 2026-05-24T19:30:00Z
-### Lang: pt-BR
-### Parent: 2026-05-24-mustard-unification
-
 ## Contexto
 
 O enum `Trigger` em `packages/core/src/model/contract.rs:29-46` modela 8 eventos: `PreToolUse`, `PostToolUse`, `SessionStart`, `SessionEnd`, `PreCompact`, `SubagentStart`, `SubagentStop`, `UserPromptSubmit`. Claude Code emite 10 — faltam `Stop` e `Notification`.
@@ -44,12 +36,12 @@ O enum `Trigger` em `packages/core/src/model/contract.rs:29-46` modela 8 eventos
 
 ## Critérios de Aceitação
 
-- [ ] **AC-10.1.** `Trigger::from_event_name("Stop")` retorna `Some(Trigger::Stop)`. Command: `rtk cargo test -p mustard-core trigger_from_event_name_handles_stop 2>&1 | grep -q "ok"`
-- [ ] **AC-10.2.** `Trigger::from_event_name("Notification")` retorna `Some(Trigger::Notification)`. Command: idem.
-- [ ] **AC-10.3.** Hook `stop` persiste entry em `agent_memory` quando há edit recente. Command: fixture test.
-- [ ] **AC-10.4.** Hook `stop` é no-op (anti-spam) quando não há edit recente. Command: fixture test.
-- [ ] **AC-10.5.** Hook `notification` emite event `notification.received` no SQLite. Command: SQL query após fixture.
-- [ ] **AC-10.6.** Dashboard renderiza badge "paused" quando aplicável. Verificação manual.
+- [ ] AC-W10-1: `Trigger::from_event_name("Stop")` retorna `Some(Trigger::Stop)`. Command: `rtk cargo test -p mustard-core trigger_from_event_name_handles_stop 2>&1 | grep -q "ok"`
+- [ ] AC-W10-2: `Trigger::from_event_name("Notification")` retorna `Some(Trigger::Notification)`. Command: idem.
+- [ ] AC-W10-3: Hook `stop` persiste entry em `agent_memory` quando há edit recente. Command: fixture test.
+- [ ] AC-W10-4: Hook `stop` é no-op (anti-spam) quando não há edit recente. Command: fixture test.
+- [ ] AC-W10-5: Hook `notification` emite event `notification.received` no SQLite. Command: SQL query após fixture.
+- [ ] AC-W10-6: Dashboard renderiza badge "paused" quando aplicável. Verificação manual.
 
 ## Notas
 

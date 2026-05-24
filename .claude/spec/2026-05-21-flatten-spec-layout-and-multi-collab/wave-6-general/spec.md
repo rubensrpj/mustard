@@ -1,11 +1,5 @@
 # Wave 6 — Docs + refs
 
-### Parent: [[2026-05-21-flatten-spec-layout-and-multi-collab]]
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Lang: pt
-
 ## Resumo
 
 Limpar toda a documentação que ainda descreve o modelo antigo de buckets. CLAUDE.md (raiz + por subprojeto), refs de feature/close, pipeline-config.md, e o registro de docs-audit. Nada de mention a "spec/active/", "spec/completed/", "spec/superseded/" sobrevive a esta wave. Adicionar entrada em `.docs-audit.json` para que o `docs-stale-check` bloqueie regressões em closes futuros.

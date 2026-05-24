@@ -1,11 +1,5 @@
 # Wave plan — project-profiler
 
-### Stage: Plan
-### Outcome: Active
-### Flags:
-### Lang: pt
-### Checkpoint: 2026-05-22T00:00:00Z
-
 ## Visão geral
 
 Cinco waves funcionais em sequência, da performance pura (sem modelo) até o grafo de injeção e o write-back. Cada wave depende da anterior compilar e passar nos próprios ACs. Performance primeiro: a W1 entrega valor (scan rápido) antes de qualquer modelo entrar em cena.

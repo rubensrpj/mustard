@@ -1,11 +1,5 @@
 # Wave 2 — Core reader per-spec + projection refresh
 
-### Parent: [[2026-05-23-per-spec-event-log-claude-devtools]]
-### Stage: Plan
-### Outcome: Active
-### Flags:
-### Lang: pt
-
 ## PRD
 
 ### Contexto

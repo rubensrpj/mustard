@@ -1,13 +1,5 @@
 # Wave 6 — Trace viewer (dashboard_spec_trace + ExecutionTrace component)
 
-### Parent: [[2026-05-20-economia-moat-unification]]
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Scope: full (wave)
-### Checkpoint: 2026-05-21T06:00:00Z
-### Lang: pt
-
 ## PRD
 
 Hoje a Visão Geral mostra eventos numa lista linear chapada (`WorkspaceEventsFeed`) e a página `/specs` tem timeline horizontal + lista de eventos separadas. Cinco crítica: nenhuma das duas mostra hierarquia spec→wave→agent→tool, nem renderiza diffs inline, nem mostra tokens por nível, nem permite colapsar/expandir. Esta wave entrega o `<ExecutionTrace>` — componente recursivo (não pelo nó, mas pelo container) inspirado em claude-devtools, que pivota o `mustard.db` em árvore navegável: spec colapsável → wave colapsável → agent colapsável → tool event com preview + diff inline. Backend novo `dashboard_spec_trace(projectPath, specName) -> TraceNode` faz o pivot via reader da W4. Frontend usa primitivas da W5 (`BaseRow`, `TreeNode`, `DiffViewer`, `CodeBlock`, `MetricsPill`). Substitui `WorkspaceEventsFeed` na Visão Geral e timeline+events na `/specs`.

@@ -6,6 +6,12 @@ import { useStore } from '@/lib/store';
 import { discoverProjects } from '@/api/discovery';
 import { readEnv, writeEnv } from '@/api/env';
 import { ENV_CATALOG, type EnvKey } from '@/data/env-catalog';
+import {
+  readSettings,
+  setLanguage,
+  setTone,
+  type ProjectSettings,
+} from '@/lib/dashboard';
 import { Card, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import {
@@ -82,6 +88,91 @@ function EnvField({
         </p>
       )}
     </div>
+  );
+}
+
+/**
+ * Wave 4 mustard-unification — per-project language + tone selector.
+ *
+ * Writes are routed through `commands::settings::{set_language,set_tone}` so
+ * the BCP-47 / tone validation lives on the Rust side. The UI keeps two
+ * native `<select>` controls (matching the `EnvField` style) — no fancy combo
+ * box — because the catalog is small and stable.
+ */
+function LanguageAndToneCard({ repoPath }: { repoPath: string }) {
+  const qc = useQueryClient();
+  const { data } = useQuery<ProjectSettings>({
+    queryKey: ['settings', repoPath],
+    queryFn: () => readSettings(repoPath),
+    staleTime: 60_000,
+  });
+
+  const currentLang = data?.lang ?? 'pt-BR';
+  const currentTone = data?.tone ?? 'didactic';
+
+  const langMutation = useMutation({
+    mutationFn: (lang: string) => setLanguage(repoPath, lang),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['settings', repoPath] });
+      toast.success('Idioma atualizado');
+    },
+    onError: (e: Error) => toast.error('Erro: ' + e.message),
+  });
+
+  const toneMutation = useMutation({
+    mutationFn: (tone: string) => setTone(repoPath, tone),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['settings', repoPath] });
+      toast.success('Tom atualizado');
+    },
+    onError: (e: Error) => toast.error('Erro: ' + e.message),
+  });
+
+  return (
+    <DataCard>
+      <Card size="sm" className="border-none bg-transparent">
+        <CardHeader>
+          <CardTitle className="text-sm font-medium">Idioma e tom (locale)</CardTitle>
+          <CardDescription className="text-[13px] text-muted-foreground">
+            Define o idioma dos banners e o tom de voz em `mustard.json`. Valores
+            BCP-47: `pt-BR` ou `en-US`.
+          </CardDescription>
+        </CardHeader>
+        <div className="px-4 pb-3 pt-1 flex flex-col gap-1">
+          <label htmlFor="settings-lang" className="text-[13px] font-medium text-foreground">
+            Idioma (lang / locale)
+          </label>
+          <code className="font-mono text-[11px] text-muted-foreground">mustard.json#lang</code>
+          <select
+            id="settings-lang"
+            className="bg-card border border-border rounded-md text-sm px-2 py-1 focus:border-primary outline-none w-full transition-colors"
+            value={currentLang}
+            disabled={langMutation.isPending}
+            onChange={(e) => langMutation.mutate(e.target.value)}
+          >
+            <option value="pt-BR">pt-BR — Portugues do Brasil</option>
+            <option value="en-US">en-US — English (United States)</option>
+          </select>
+        </div>
+        <div className="px-4 pb-3 pt-1 flex flex-col gap-1">
+          <label htmlFor="settings-tone" className="text-[13px] font-medium text-foreground">
+            Tom (tone)
+          </label>
+          <code className="font-mono text-[11px] text-muted-foreground">mustard.json#tone</code>
+          <select
+            id="settings-tone"
+            className="bg-card border border-border rounded-md text-sm px-2 py-1 focus:border-primary outline-none w-full transition-colors"
+            value={currentTone}
+            disabled={toneMutation.isPending}
+            onChange={(e) => toneMutation.mutate(e.target.value)}
+          >
+            <option value="didactic">didactic — didatico (expande siglas)</option>
+            <option value="technical">technical — tecnico (mantem jargao)</option>
+            <option value="concise">concise — conciso (sem parenteticos)</option>
+          </select>
+        </div>
+      </Card>
+    </DataCard>
   );
 }
 
@@ -166,6 +257,7 @@ export function Settings() {
         />
       ) : (
         <>
+          <LanguageAndToneCard repoPath={selectedProject.path} />
           <div className="flex flex-col gap-1">
             <h2 className="text-sm font-medium">{t('settings.envTitle')} — {selectedProject.name}</h2>
             <p className="text-[13px] text-muted-foreground">

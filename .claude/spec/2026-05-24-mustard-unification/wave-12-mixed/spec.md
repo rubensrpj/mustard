@@ -1,13 +1,5 @@
 # W12 — Telemetry perf followup + Economy dashboard wiring
 
-### Stage: Plan
-### Outcome: Active
-### Phase: PLAN
-### Scope: full
-### Checkpoint: 2026-05-24T19:30:00Z
-### Lang: pt-BR
-### Parent: 2026-05-24-mustard-unification
-
 ## Contexto
 
 Duas frentes convergem:
@@ -86,11 +78,11 @@ Duas frentes convergem:
 
 ### T12.8 — 5 ACs globais de metrification (verificáveis aqui)
 
-- [ ] **AC-Metric-1.** Toda wave que substituiu operação de IA por Rust emite ao menos 1 `pipeline.economy.baseline.captured` event antes de iniciar.
-- [ ] **AC-Metric-2.** Cada subcomando novo (W6) emite `pipeline.economy.operation.invoked` em ao menos 1 caminho de execução.
-- [ ] **AC-Metric-3.** `mustard-rt run economy reconcile --wave WN` produz row em `economy_savings` para cada wave de W2 a W11.
-- [ ] **AC-Metric-4.** Dashboard `/economia` mostra "Unification savings (total)" não-zero após pelo menos W2+W4+W5+W6 fecharem.
-- [ ] **AC-Metric-5.** Tabela `economy_baselines` + `economy_savings` exportável via `mustard-rt run economy report --format json --wave all` para auditoria.
+- [ ] AC-Metric-1: Toda wave que substituiu operação de IA por Rust emite ao menos 1 `pipeline.economy.baseline.captured` event antes de iniciar.
+- [ ] AC-Metric-2: Cada subcomando novo (W6) emite `pipeline.economy.operation.invoked` em ao menos 1 caminho de execução.
+- [ ] AC-Metric-3: `mustard-rt run economy reconcile --wave WN` produz row em `economy_savings` para cada wave de W2 a W11.
+- [ ] AC-Metric-4: Dashboard `/economia` mostra "Unification savings (total)" não-zero após pelo menos W2+W4+W5+W6 fecharem.
+- [ ] AC-Metric-5: Tabela `economy_baselines` + `economy_savings` exportável via `mustard-rt run economy report --format json --wave all` para auditoria.
 
 ## Files
 
@@ -107,13 +99,13 @@ Duas frentes convergem:
 
 ## Critérios de Aceitação
 
-- [ ] **AC-12.1.** `2026-05-22-telemetry-separation` review e qa subdirs com `Outcome: Completed`. Command: `node -e "const fs=require('fs');for(const sub of ['review','qa']){const m=JSON.parse(fs.readFileSync('.claude/spec/2026-05-22-telemetry-separation/'+sub+'/meta.json','utf8'));if(m.outcome!=='Completed')process.exit(1)}"`
-- [ ] **AC-12.2.** Tabelas `economy_baselines` e `economy_savings` existem em `telemetry.db`. Command: `node -e "const{execSync}=require('child_process');for(const t of ['economy_baselines','economy_savings']){const out=execSync('sqlite3 .claude/.telemetry/telemetry.db \".schema '+t+'\"',{encoding:'utf8'});if(!out.includes('CREATE TABLE'))process.exit(1)}"`
-- [ ] **AC-12.3.** `economy reconcile --wave W5` cria row em `economy_savings`. Command: fixture.
-- [ ] **AC-12.4.** Dashboard `/economia` mostra card "Unification savings (total)" não-zero. Command: manual.
-- [ ] **AC-12.5.** `economy report --format json --wave all` retorna JSON com >= 10 entries (W2-W11). Command: `rtk mustard-rt run economy report --format json --wave all | node -e "let s='';process.stdin.on('data',c=>s+=c);process.stdin.on('end',()=>{const j=JSON.parse(s);if(!Array.isArray(j.waves)||j.waves.length<10)process.exit(1)})"`
-- [ ] **AC-12.6.** Índices criados na telemetry.db. Command: `node -e "const{execSync}=require('child_process');const out=execSync('sqlite3 .claude/.telemetry/telemetry.db \".indexes run_usage\"',{encoding:'utf8'});if(!out.includes('idx_'))process.exit(1)"`
-- [ ] **AC-12.7.** `db-maintain --telemetry-only --prune-older-than 90d --dry-run` lista o que seria apagado. Command: fixture.
+- [ ] AC-W12-1: `2026-05-22-telemetry-separation` review e qa subdirs com `Outcome: Completed`. Command: `node -e "const fs=require('fs');for(const sub of ['review','qa']){const m=JSON.parse(fs.readFileSync('.claude/spec/2026-05-22-telemetry-separation/'+sub+'/meta.json','utf8'));if(m.outcome!=='Completed')process.exit(1)}"`
+- [ ] AC-W12-2: Tabelas `economy_baselines` e `economy_savings` existem em `telemetry.db`. Command: `node -e "const{execSync}=require('child_process');for(const t of ['economy_baselines','economy_savings']){const out=execSync('sqlite3 .claude/.telemetry/telemetry.db \".schema '+t+'\"',{encoding:'utf8'});if(!out.includes('CREATE TABLE'))process.exit(1)}"`
+- [ ] AC-W12-3: `economy reconcile --wave W5` cria row em `economy_savings`. Command: fixture.
+- [ ] AC-W12-4: Dashboard `/economia` mostra card "Unification savings (total)" não-zero. Command: manual.
+- [ ] AC-W12-5: `economy report --format json --wave all` retorna JSON com >= 10 entries (W2-W11). Command: `rtk mustard-rt run economy report --format json --wave all | node -e "let s='';process.stdin.on('data',c=>s+=c);process.stdin.on('end',()=>{const j=JSON.parse(s);if(!Array.isArray(j.waves)||j.waves.length<10)process.exit(1)})"`
+- [ ] AC-W12-6: Índices criados na telemetry.db. Command: `node -e "const{execSync}=require('child_process');const out=execSync('sqlite3 .claude/.telemetry/telemetry.db \".indexes run_usage\"',{encoding:'utf8'});if(!out.includes('idx_'))process.exit(1)"`
+- [ ] AC-W12-7: `db-maintain --telemetry-only --prune-older-than 90d --dry-run` lista o que seria apagado. Command: fixture.
 
 ## Notas
 

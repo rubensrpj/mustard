@@ -1,13 +1,5 @@
 # Unificação do Mustard — refatoração profunda e metrificação real
 
-### Stage: Plan
-### Outcome: Active
-### Phase: PLAN
-### Scope: full
-### Checkpoint: 2026-05-24T19:00:00Z
-### Lang: pt-BR
-### Total waves: 14
-
 ## PRD
 
 ## Contexto

@@ -1,14 +1,5 @@
 # Polimento das abas do dashboard
 
-### Parent: [[2026-05-21-dashboard-spec-tabs]]
-### Stage: Close
-### Outcome: Active
-### Flags: followup_open
-### Scope: full (wave plan)
-### Checkpoint: 2026-05-21T17:00:00Z
-### Lang: pt
-### Total waves: 4
-
 ## PRD
 
 ## Contexto

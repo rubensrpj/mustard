@@ -1,14 +1,7 @@
 # Wave 4 — Update-notify (GitHub API) + project sync backend
 
-### Stage: Plan
-### Outcome: Active
-### Flags: 
-### Scope: full (wave)
 ### Wave: 4
 ### Role: general
-### Checkpoint: 2026-05-21T18:00:00Z
-### Lang: pt
-### Parent: 2026-05-21-mustard-v1-installer-and-update
 
 ## PRD
 

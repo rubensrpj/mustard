@@ -1,13 +1,5 @@
 # Abas para o dashboard de specs
 
-### Stage: Close
-### Outcome: Active
-### Flags: followup_open
-### Scope: full (wave plan)
-### Checkpoint: 2026-05-21T16:00:00Z
-### Lang: pt
-### Total waves: 6
-
 ## PRD
 
 ## Contexto

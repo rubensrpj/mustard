@@ -1,12 +1,5 @@
 # Alinhamento com Harness Engineering
 
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Scope: full
-### Checkpoint: 2026-05-19T23:00:00Z
-### Lang: pt
-
 > **Referência externa:** `~/Downloads/book1-claude-code-en.pdf` (agentway.dev, 2026-04-01) — capítulos 5-7, 9 e Appendix A. Esta spec endereça 4 desalinhamentos concretos identificados em auditoria contra o livro.
 
 ## PRD

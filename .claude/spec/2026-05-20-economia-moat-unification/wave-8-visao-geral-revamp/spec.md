@@ -1,13 +1,5 @@
 # Wave 8 — Visão Geral revamp (cosméticos + multi-spec + i18n + bug fixes)
 
-### Parent: [[2026-05-20-economia-moat-unification]]
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Scope: full (wave)
-### Checkpoint: 2026-05-21T06:00:00Z
-### Lang: pt
-
 ## PRD
 
 A crítica original do usuário sobre a Visão Geral redesenhada (entregue na spec `2026-05-20-dashboard-visual-overview`) identificou 7 problemas. Desses, **2 foram cobertos** pelas waves W1-W7 desta feature: ECONOMIA DE TOKENS vazia (W1-W4-W7 atacam a raiz) e Events feed linear (W6 substitui por trace hierárquico). Os **5 restantes** são UI cosmética da Visão Geral que esta wave entrega: hero útil só pra 1 spec (precisa ser lista compacta multi-spec, sem "eventos/min" técnico, com "ECONOMIZADOS HOJE" movido pro card Economia); SPECS POR STATUS dividindo width com Economia e labels hard-coded em PT (precisa full-width + i18n via Preferences); MonthCalendar grande e inútil (precisa virar `<StatusCounters>` compacto com concluídas/pendentes/QA/blocked); Alerts + Files columns finos verticais sem ícones (precisa split 50/50 com ícones Lucide coloridos); bug do `top_files_today` esvaziando pós-CLOSE. Consome primitivas DS da W5. Não bloqueia W6/W7 — paralelizável.

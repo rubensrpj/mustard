@@ -1,13 +1,5 @@
 # Wave 7 — Economia.tsx repaginada com scope picker (incl. Comparar Projetos)
 
-### Parent: [[2026-05-20-economia-moat-unification]]
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Scope: full (wave)
-### Checkpoint: 2026-05-21T06:00:00Z
-### Lang: pt
-
 ## PRD
 
 Hoje `Economia.tsx` mistura adapters com leitura de banco e nunca mostra dado vivo. Esta wave reescreve a página usando único `useEconomySummary(scope)` que invoca `dashboard_economy_summary(scope)` que delega para `core::economy::reader::economy_summary(scope)` da W4. Scope picker no topo (Projeto / Spec / Wave / Comparar Projetos), todos funcionais — Comparar Projetos usa `MultiProjectReader` da W1. Cards consumindo dados reais: custo Anthropic oficial (via OTEL+JSONL), economia RTK real, prevention breakdown (cada hook que economizou tokens, com magnitude), distribuição por modelo (Sonnet/Opus/Haiku usage), contexto per-agente (composição + ratio cache hit), top specs/agentes mais caros. Visual baseado em primitivas DS da W5.

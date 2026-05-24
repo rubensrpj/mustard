@@ -1,13 +1,5 @@
 # Tactical Fix: Economia — redesign criativo + ajustes de dados
 
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Scope: light
-### Checkpoint: 2026-05-23T04:00:00Z
-### Lang: pt
-### Parent: [[2026-05-22-economia-didatica-e-economias-reais]]
-
 ## Contexto
 
 Derivado de [[2026-05-22-economia-didatica-e-economias-reais]].

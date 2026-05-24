@@ -24,7 +24,7 @@
 
 use mustard_core::fs;
 use mustard_core::spec;
-use mustard_core::{Flags, Outcome, SpecState, Stage};
+use mustard_core::{Flags, Meta, Outcome, SpecState, Stage, write_meta};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::fmt::Write as _;
@@ -339,6 +339,74 @@ pub fn run(spec_dir_arg: Option<&str>, plan_arg: Option<&str>) {
         render_qa(&parent_name, &hd),
     );
 
+    // Wave 3 of mustard-unification: emit `meta.json` alongside every spec.md
+    // we just wrote so consumers can read lifecycle metadata as structured
+    // JSON instead of regexing the markdown. Fail-open per file.
+    let total_waves = plan.total_waves.unwrap_or(plan.waves.len() as u32);
+    write_scaffold_meta(
+        &spec_dir,
+        Meta {
+            stage: Some("Plan".into()),
+            outcome: Some("Active".into()),
+            phase: None,
+            scope: Some("full (wave plan)".into()),
+            lang: Some(mustard_core::normalise_lang(lang)),
+            checkpoint: None,
+            parent: None,
+            is_wave_plan: Some(true),
+            total_waves: Some(total_waves),
+            raw: Value::Null,
+        },
+    );
+    for w in &plan.waves {
+        let wave_dir = spec_dir.join(wave_name(w));
+        write_scaffold_meta(
+            &wave_dir,
+            Meta {
+                stage: Some("Plan".into()),
+                outcome: Some("Active".into()),
+                phase: None,
+                scope: None,
+                lang: Some(mustard_core::normalise_lang(lang)),
+                checkpoint: None,
+                parent: Some(parent_name.clone()),
+                is_wave_plan: None,
+                total_waves: None,
+                raw: Value::Null,
+            },
+        );
+    }
+    write_scaffold_meta(
+        &spec_dir.join("review"),
+        Meta {
+            stage: Some("Plan".into()),
+            outcome: Some("Active".into()),
+            phase: None,
+            scope: None,
+            lang: Some(mustard_core::normalise_lang(lang)),
+            checkpoint: None,
+            parent: Some(parent_name.clone()),
+            is_wave_plan: None,
+            total_waves: None,
+            raw: Value::Null,
+        },
+    );
+    write_scaffold_meta(
+        &spec_dir.join("qa"),
+        Meta {
+            stage: Some("Plan".into()),
+            outcome: Some("Active".into()),
+            phase: None,
+            scope: None,
+            lang: Some(mustard_core::normalise_lang(lang)),
+            checkpoint: None,
+            parent: Some(parent_name.clone()),
+            is_wave_plan: None,
+            total_waves: None,
+            raw: Value::Null,
+        },
+    );
+
     let out: Value = json!({
         "created_files": created,
         "skipped": skipped,
@@ -347,6 +415,22 @@ pub fn run(spec_dir_arg: Option<&str>, plan_arg: Option<&str>) {
         "{}",
         serde_json::to_string_pretty(&out).unwrap_or_else(|_| "{}".to_string())
     );
+}
+
+/// Write `meta.json` beside a scaffolded spec.md, only when one is absent.
+/// Fail-open: a write failure warns on stderr and never panics.
+fn write_scaffold_meta(dir: &Path, meta: Meta) {
+    let path = dir.join("meta.json");
+    if fs::exists(&path) {
+        return;
+    }
+    let _ = fs::create_dir_all(dir);
+    if let Err(e) = write_meta(&path, &meta) {
+        eprintln!(
+            "[wave-scaffold] WARN: could not write {} ({e})",
+            path.display()
+        );
+    }
 }
 
 #[cfg(test)]

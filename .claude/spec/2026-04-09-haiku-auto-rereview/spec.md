@@ -1,9 +1,4 @@
 # Enhancement: haiku-auto-rereview
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Scope: light
-### Checkpoint: 2026-04-09T00:00:00Z
 
 ## Summary
 Adicionar heurística que downgrade automático de re-reviews para `model: "haiku"` quando a fix list do primeiro review é trivial (≤3 issues OU diff <20 linhas). Reviews iniciais permanecem no modelo default (sonnet/opus). Economia estimada: ~600 tokens por re-review, reduzindo custo total de fix loops.

@@ -1,13 +1,5 @@
 # W8 — Shared memory hardening
 
-### Stage: Plan
-### Outcome: Active
-### Phase: PLAN
-### Scope: full
-### Checkpoint: 2026-05-24T19:30:00Z
-### Lang: pt-BR
-### Parent: 2026-05-24-mustard-unification
-
 ## Contexto
 
 Memória entre agentes hoje:
@@ -47,14 +39,14 @@ W5.T5.6 já criou o DDL final no schema redesenhado. Esta onda implementa a lóg
 
 ## Critérios de Aceitação
 
-- [ ] **AC-8.1.** Tabela `agent_memory` tem colunas `spec`, `wave`, `confidence`, `status`. Command: `node -e "const{execSync}=require('child_process');const out=execSync('sqlite3 .claude/.harness/mustard.db \".schema agent_memory\"',{encoding:'utf8'});for(const k of ['spec','wave','confidence','status']){if(!out.includes(k))process.exit(1)}"`
-- [ ] **AC-8.2.** `mustard-rt run memory search --term X` retorna FTS hits. Command: `rtk mustard-rt run memory search --term 'spec' --top 3 --json | node -e "let s='';process.stdin.on('data',c=>s+=c);process.stdin.on('end',()=>{const j=JSON.parse(s);if(!Array.isArray(j.hits))process.exit(1)})"`
-- [ ] **AC-8.3.** `mustard-rt run memory feedback --target-table agent_memory --target-id 1 --action depreciate` muda `status` da linha. Command: setup fixture + verify.
-- [ ] **AC-8.4.** `mustard-rt run memory write --type decision --json '{"content":"x"}' --verify` retorna stdout `{ok:true,id:N}`. Command: `rtk mustard-rt run memory write --type decision --json '{"content":"test"}' --verify | node -e "let s='';process.stdin.on('data',c=>s+=c);process.stdin.on('end',()=>{const j=JSON.parse(s);if(!j.ok)process.exit(1)})"`
-- [ ] **AC-8.5.** `.claude/.agent-memory/_index.json` migrado para `agent_memory` table (após `memory-ingest --agent-memory`). Dir antigo renomeado para `.agent-memory.archived/`.
-- [ ] **AC-8.6.** Hook `auto_capture_summary` registrado. Command: `node -e "const t=require('fs').readFileSync('apps/rt/src/registry.rs','utf8');if(!/auto_capture_summary/.test(t))process.exit(1)"`
-- [ ] **AC-8.7.** Reader respeita scope-by-spec por padrão. Command: teste `memory_reader_filters_by_spec`.
-- [ ] **AC-8.8.** `rtk cargo test -p mustard-rt memory` passa.
+- [ ] AC-W8-1: Tabela `agent_memory` tem colunas `spec`, `wave`, `confidence`, `status`. Command: `node -e "const{execSync}=require('child_process');const out=execSync('sqlite3 .claude/.harness/mustard.db \".schema agent_memory\"',{encoding:'utf8'});for(const k of ['spec','wave','confidence','status']){if(!out.includes(k))process.exit(1)}"`
+- [ ] AC-W8-2: `mustard-rt run memory search --term X` retorna FTS hits. Command: `rtk mustard-rt run memory search --term 'spec' --top 3 --json | node -e "let s='';process.stdin.on('data',c=>s+=c);process.stdin.on('end',()=>{const j=JSON.parse(s);if(!Array.isArray(j.hits))process.exit(1)})"`
+- [ ] AC-W8-3: `mustard-rt run memory feedback --target-table agent_memory --target-id 1 --action depreciate` muda `status` da linha. Command: setup fixture + verify.
+- [ ] AC-W8-4: `mustard-rt run memory write --type decision --json '{"content":"x"}' --verify` retorna stdout `{ok:true,id:N}`. Command: `rtk mustard-rt run memory write --type decision --json '{"content":"test"}' --verify | node -e "let s='';process.stdin.on('data',c=>s+=c);process.stdin.on('end',()=>{const j=JSON.parse(s);if(!j.ok)process.exit(1)})"`
+- [ ] AC-W8-5: `.claude/.agent-memory/_index.json` migrado para `agent_memory` table (após `memory-ingest --agent-memory`). Dir antigo renomeado para `.agent-memory.archived/`.
+- [ ] AC-W8-6: Hook `auto_capture_summary` registrado. Command: `node -e "const t=require('fs').readFileSync('apps/rt/src/registry.rs','utf8');if(!/auto_capture_summary/.test(t))process.exit(1)"`
+- [ ] AC-W8-7: Reader respeita scope-by-spec por padrão. Command: teste `memory_reader_filters_by_spec`.
+- [ ] AC-W8-8: `rtk cargo test -p mustard-rt memory` passa.
 
 ## Notas
 

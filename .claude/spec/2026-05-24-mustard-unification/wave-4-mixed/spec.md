@@ -1,13 +1,5 @@
 # W4 — Language and tone (absorve `2026-05-24-config-idioma-tom`)
 
-### Stage: Plan
-### Outcome: Active
-### Phase: PLAN
-### Scope: full
-### Checkpoint: 2026-05-24T19:30:00Z
-### Lang: pt-BR
-### Parent: 2026-05-24-mustard-unification
-
 ## Contexto
 
 Absorve integralmente a spec ativa `2026-05-24-config-idioma-tom`. Hoje há tabelas bilíngues PT/EN espalhadas em três ou mais arquivos, banners hardcoded em pt-BR misturados com código en-US, e nenhum módulo central que aplique tom (didático vs técnico). O user formalizou:
@@ -52,12 +44,12 @@ Absorve integralmente a spec ativa `2026-05-24-config-idioma-tom`. Hoje há tabe
 
 ## Critérios de Aceitação
 
-- [ ] **AC-4.1.** `packages/core/src/i18n.rs` existe com `enum Locale { PtBr, EnUs }`. Command: `node -e "const t=require('fs').readFileSync('packages/core/src/i18n.rs','utf8');if(!/enum Locale/.test(t)||!/PtBr/.test(t)||!/EnUs/.test(t))process.exit(1)"`
-- [ ] **AC-4.2.** `mustard.json` tem `lang` em BCP-47. Command: `node -e "const j=JSON.parse(require('fs').readFileSync('mustard.json','utf8'));if(!/^(pt-BR|en-US)$/.test(j.lang||''))process.exit(1)"`
-- [ ] **AC-4.3.** Locale curto rejeitado. Command: `rtk cargo test -p mustard-core i18n_rejects_short_form 2>&1 | grep -q "ok"`
-- [ ] **AC-4.4.** Banners hardcoded em pt-BR em `apps/rt/src/**` reduzidos a zero (ou no máximo dentro de seções de erro raras). Command: `node -e "const{execSync}=require('child_process');const out=execSync('rg -t rust \"(Aprovar|Está|Você está|Avançar|Confirmar)\" apps/rt/src/ -l',{encoding:'utf8'}).trim();if(out.split('\\n').filter(Boolean).length>3)process.exit(1)"`
-- [ ] **AC-4.5.** Dashboard Settings tem seletor de lang. Command: `node -e "const t=require('fs').readFileSync('apps/dashboard/src/pages/Settings.tsx','utf8');if(!/lang|locale/i.test(t))process.exit(1)"`
-- [ ] **AC-4.6.** `cargo test -p mustard-core i18n_translates_known_keys` passa.
+- [ ] AC-W4-1: `packages/core/src/i18n.rs` existe com `enum Locale { PtBr, EnUs }`. Command: `node -e "const t=require('fs').readFileSync('packages/core/src/i18n.rs','utf8');if(!/enum Locale/.test(t)||!/PtBr/.test(t)||!/EnUs/.test(t))process.exit(1)"`
+- [ ] AC-W4-2: `mustard.json` tem `lang` em BCP-47. Command: `node -e "const j=JSON.parse(require('fs').readFileSync('mustard.json','utf8'));if(!/^(pt-BR|en-US)$/.test(j.lang||''))process.exit(1)"`
+- [ ] AC-W4-3: Locale curto rejeitado. Command: `rtk cargo test -p mustard-core i18n_rejects_short_form 2>&1 | grep -q "ok"`
+- [ ] AC-W4-4: Banners hardcoded em pt-BR em `apps/rt/src/**` reduzidos a zero (ou no máximo dentro de seções de erro raras). Command: `node -e "const{execSync}=require('child_process');const out=execSync('rg -t rust \"(Aprovar|Está|Você está|Avançar|Confirmar)\" apps/rt/src/ -l',{encoding:'utf8'}).trim();if(out.split('\\n').filter(Boolean).length>3)process.exit(1)"`
+- [ ] AC-W4-5: Dashboard Settings tem seletor de lang. Command: `node -e "const t=require('fs').readFileSync('apps/dashboard/src/pages/Settings.tsx','utf8');if(!/lang|locale/i.test(t))process.exit(1)"`
+- [ ] AC-W4-6: `cargo test -p mustard-core i18n_translates_known_keys` passa.
 
 ## Notas
 

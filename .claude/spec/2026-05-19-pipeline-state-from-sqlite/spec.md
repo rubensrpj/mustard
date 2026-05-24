@@ -1,12 +1,5 @@
 # Migrar runtime state (pipeline + memory + knowledge) para SQLite
 
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Scope: full
-### Checkpoint: 2026-05-20T09:20:00Z
-### Lang: pt
-
 > **Continua a migração iniciada em `2026-05-19-dashboard-phase-from-sqlite` (CLOSE 2026-05-20).** Aquela spec moveu só o campo `phase` para SQLite. Esta finaliza o trabalho em duas frentes:
 > 1. **Pipeline state** — elimina `.claude/.pipeline-states/{spec}.json` como source, derivando o estado completo (status, scope, lang, tasks, currentWave, completedWaves, isWavePlan, lastDispatchFailure, pausedAt, resumeMode) de eventos no `SqliteEventStore`.
 > 2. **Memory + knowledge** — migra `.claude/knowledge.json` + `.claude/memory/decisions.json` + `.claude/memory/lessons.json` para tabelas SQLite com índice FTS5 (full-text search built-in, zero deps extras). Mesma motivação: append O(1), busca indexada, sem race em escrita concorrente.

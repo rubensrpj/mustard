@@ -1,9 +1,4 @@
 # Enhancement: enforcement-integration-tests
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Scope: light
-### Checkpoint: 2026-04-09T00:00:00Z
 
 ## Summary
 Criar `templates/hooks/__tests__/integration.test.js` cobrindo o enforcement flow completo: fail-open paths, context-budget edge cases, spec-hygiene decision tree, sequencial firing de hooks em uma sessão simulada. ADICIONA aos 26 testes unitários existentes sem substituir.

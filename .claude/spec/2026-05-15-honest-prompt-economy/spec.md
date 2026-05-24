@@ -1,13 +1,7 @@
 # Feature: Honest Prompt Economy — Native OTEL + Mustard Subtractions
 
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Scope: full
 ### Waves: 5 of 5 done
-### Checkpoint: 2026-05-15T03:20:00Z
 ### QA: pass (12 pass, 2 partial AC-8/AC-10 env-dependent, 0 fail) — see qa.result event
-### Lang: pt
 ### Supersedes: 2026-05-14-prompt-prefix-metrics (closed with debt — see Concerns)
 
 ## Contexto

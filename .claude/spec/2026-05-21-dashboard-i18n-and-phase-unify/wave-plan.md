@@ -1,14 +1,5 @@
 # i18n consistente + componente único de fases
 
-### Parent: [[2026-05-21-dashboard-spec-tabs-polish]]
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Scope: full (wave plan)
-### Checkpoint: 2026-05-21T18:00:00Z
-### Lang: pt
-### Total waves: 2
-
 ## PRD
 
 ## Contexto

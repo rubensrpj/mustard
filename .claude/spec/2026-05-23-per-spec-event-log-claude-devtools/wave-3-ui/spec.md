@@ -1,11 +1,5 @@
 # Wave 3 — Dashboard claude-devtools-style
 
-### Parent: [[2026-05-23-per-spec-event-log-claude-devtools]]
-### Stage: Plan
-### Outcome: Active
-### Flags:
-### Lang: pt
-
 ## PRD
 
 ### Contexto

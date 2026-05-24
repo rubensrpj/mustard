@@ -1,0 +1,8 @@
+{
+  "stage": "Close",
+  "outcome": "Completed",
+  "phase": null,
+  "scope": "Full (this pipeline: removal only; standalone app continues in dedicated repo)",
+  "lang": "ptbr",
+  "checkpoint": "2026-05-12T22:22:56Z"
+}

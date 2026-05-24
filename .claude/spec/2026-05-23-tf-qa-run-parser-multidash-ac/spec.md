@@ -1,13 +1,5 @@
 # Tactical Fix: qa-run parser aceita ACs com dash interno (AC-W4-1, AC-G-7, etc.)
 
-### Stage: Close
-### Outcome: Done
-### Phase: EXECUTE
-### Scope: touch
-### Checkpoint: 2026-05-23T13:00:00Z
-### Lang: pt
-### Parent: 2026-05-23-dashboard-design-system
-
 ## Contexto
 
 Tactical fix derivado de [[2026-05-23-dashboard-design-system]] (surface em wave-4 QA).

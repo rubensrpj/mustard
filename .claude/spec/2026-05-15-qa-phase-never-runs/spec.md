@@ -1,12 +1,5 @@
 # Bugfix: QA nunca executa em pipelines Full/wave
 
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Scope: full
-### Checkpoint: 2026-05-15T19:48:42Z
-### Lang: pt
-
 ## Contexto
 
 O pipeline Mustard define a fase QA (Wave 10) como o contrato Dev/QA: depois que o EXECUTE termina, o `qa-run.js` executa cada Acceptance Criteria da spec e só então o pipeline pode fechar. Na prática isso não acontece. O comando `/resume` — que orquestra todo pipeline Full scope e todo wave plan — vai direto de REVIEW para CLOSE, sem nenhum passo de QA. O `/feature` tem uma seção "QA Phase" escrita, mas o fluxo numerado do EXECUTE Light pula essa seção e fecha logo após o review. O resultado é que projetos reais (observado em sialia) fecham o pipeline sem rodar nenhum AC e sem gerar relatório de QA.

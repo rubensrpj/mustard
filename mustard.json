@@ -6,5 +6,7 @@
     },
     "provider": "github",
     "submodules": false
-  }
+  },
+  "lang": "pt-BR",
+  "tone": "didactic"
 }

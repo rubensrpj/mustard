@@ -1,12 +1,5 @@
 # wave-2-general — Emissores de economia que faltam (RTK contínuo + injeção)
 
-### Parent: [[2026-05-22-economia-didatica-e-economias-reais]]
-### Stage: Done
-### Outcome: Active
-### Flags:
-### Lang: pt
-### Checkpoint: 2026-05-22T19:00:00Z
-
 ## Resumo
 
 Escrever os dois emissores de economia que hoje deixam a tela zerada: a **injeção

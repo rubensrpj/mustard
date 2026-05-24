@@ -1,9 +1,4 @@
 # Enhancement: metrics-command
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Scope: light
-### Checkpoint: 2026-04-09T00:00:00Z
 
 ## Summary
 Criar `/mustard:metrics` — comando único com subcomandos para gerenciar enforcement metrics:

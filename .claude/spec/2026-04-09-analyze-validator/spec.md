@@ -1,9 +1,4 @@
 # Enhancement: analyze-validator
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Scope: light
-### Checkpoint: 2026-04-09T00:00:00Z
 
 ## Summary
 Criar `templates/scripts/analyze-validation.js` (~60 linhas, built-ins only) que lê um spec.md no final do ANALYZE phase e retorna JSON `{ok, issues}` com 3 validações WARN-level (nunca bloqueantes):

@@ -1,12 +1,5 @@
 # Feature: b2-mustard-core-crate
 
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Scope: full
-### Checkpoint: 2026-05-19T01:17:00Z
-### Lang: pt
-
 > Spec de backlog (Parte B, item B2). ÉPICO em rascunho grosso — decompõe no ANALYZE. Depende de B1 (concluído). Revisada 2026-05-18: ganha o contrato de hook, a config de enforcement e o módulo `knowledge`.
 
 ## Contexto

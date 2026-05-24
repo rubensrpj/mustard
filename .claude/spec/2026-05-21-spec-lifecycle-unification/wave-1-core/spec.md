@@ -1,13 +1,7 @@
 # Wave 1 — Core: Stage + Outcome + Flags + parser tolerante
 
-### Parent: [[2026-05-21-spec-lifecycle-unification]]
 ### Wave: 1
 ### Role: core
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Lang: pt
-### Checkpoint: 2026-05-21T23:40:00Z
 
 ## Resumo
 

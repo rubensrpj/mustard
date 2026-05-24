@@ -1,12 +1,5 @@
 # Feature: context-glossary
 
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Scope: full
-### Checkpoint: 2026-05-18T21:32:49Z
-### Lang: pt
-
 > Spec de backlog (Parte A, item A1). Reescrita em 2026-05-18: injeção **filtrada por relevância** (padrão do entity-registry) + wiring do `grill-with-docs` na PLAN do `/feature`. A6 concluída — as skills do Matt já existem em `templates/skills/`.
 
 ## Contexto

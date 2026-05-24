@@ -1,9 +1,4 @@
 # Enhancement: enforcement-metrics
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Scope: light
-### Checkpoint: 2026-04-09T00:00:00Z
 
 ## Summary
 Criar framework de métricas append-only em JSONL para visibilidade das ações dos enforcement hooks e pipeline gates. Inclui:

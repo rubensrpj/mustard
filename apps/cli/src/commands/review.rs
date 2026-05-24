@@ -88,8 +88,7 @@ fn command_available(binary: &str) -> bool {
     Command::new(binary)
         .arg("--version")
         .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+        .is_ok_and(|o| o.status.success())
 }
 
 /// Fetch PR metadata as a JSON object via `gh pr view --json`.

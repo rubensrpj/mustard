@@ -218,7 +218,7 @@ fn decide_existing_action(claude_path: &Path, options: &InitOptions) -> Result<E
     let choices = ["Backup and overwrite", "Merge (skip existing files)", "Cancel"];
     let choice = Select::with_theme(&ColorfulTheme::default())
         .with_prompt(".claude/ already exists")
-        .items(&choices)
+        .items(choices)
         .default(1)
         .interact()
         .context("reading the .claude/ conflict choice")?;
@@ -240,8 +240,7 @@ fn backup_claude_dir(claude_path: &Path) -> Result<()> {
         "{}.backup.{stamp}",
         claude_path
             .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| ".claude".to_string())
+            .map_or_else(|| ".claude".to_string(), |n| n.to_string_lossy().into_owned())
     ));
     copy_dir(claude_path, &backup, true, &[])?;
     println!("  Backup: {}", backup.display());
@@ -258,8 +257,7 @@ fn backup_claude_dir(claude_path: &Path) -> Result<()> {
 pub(crate) fn timestamp_slug() -> String {
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+        .map_or(0, |d| d.as_secs());
     let days = secs / 86_400;
     let tod = secs % 86_400;
     let (hh, mm, ss) = (tod / 3600, (tod % 3600) / 60, tod % 60);
@@ -437,11 +435,10 @@ pub(crate) fn ensure_global_permissions() -> Result<()> {
 /// `MUSTARD_GLOBAL_PERMISSIONS` to `1` or `true` (case-insensitive).
 fn global_permissions_opt_in() -> bool {
     std::env::var("MUSTARD_GLOBAL_PERMISSIONS")
-        .map(|v| {
+        .is_ok_and(|v| {
             let v = v.trim().to_ascii_lowercase();
             v == "1" || v == "true"
         })
-        .unwrap_or(false)
 }
 
 /// The user's home directory, cross-platform, without a `dirs` crate
@@ -487,8 +484,7 @@ fn rtk_on_path() -> bool {
     Command::new("rtk")
         .arg("--version")
         .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+        .is_ok_and(|o| o.status.success())
 }
 
 /// Probe `rtk --version` and exit hard with install instructions when it
@@ -554,7 +550,7 @@ fn rtk_pinned_rev() -> Option<String> {
 ///   fall back to `cargo install --git`.
 fn install_rtk(pinned_rev: Option<&str>) -> bool {
     let run_ok = |cmd: &mut Command| -> bool {
-        cmd.output().map(|o| o.status.success()).unwrap_or(false)
+        cmd.output().is_ok_and(|o| o.status.success())
     };
 
     if cfg!(windows) {
@@ -617,8 +613,7 @@ fn rg_on_path() -> bool {
     Command::new("rg")
         .arg("--version")
         .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+        .is_ok_and(|o| o.status.success())
 }
 
 /// Best-effort ripgrep auto-install. Returns `true` only when an installer
@@ -630,7 +625,7 @@ fn rg_on_path() -> bool {
 ///   from source and take minutes, which is hostile in an installer flow).
 fn install_ripgrep() -> bool {
     let run_ok = |cmd: &mut Command| -> bool {
-        cmd.output().map(|o| o.status.success()).unwrap_or(false)
+        cmd.output().is_ok_and(|o| o.status.success())
     };
 
     if cfg!(windows) {
@@ -653,9 +648,9 @@ fn install_cursor_adapter(templates_dir: &Path, project_path: &Path, claude_path
         copy_dir(&adapter_src, &adapter_dest, true, &[])?;
         mfs::create_dir_all(&cursor_hooks)
             .with_context(|| format!("creating {}", cursor_hooks.display()))?;
-        let adapter_bytes = mfs::read(&adapter_src.join("adapter.js"))
+        let adapter_bytes = mfs::read(adapter_src.join("adapter.js"))
             .context("reading the Cursor adapter")?;
-        mfs::write_atomic(&cursor_hooks.join("adapter.js"), &adapter_bytes)
+        mfs::write_atomic(cursor_hooks.join("adapter.js"), &adapter_bytes)
             .context("copying the Cursor adapter")?;
         Ok(())
     })();

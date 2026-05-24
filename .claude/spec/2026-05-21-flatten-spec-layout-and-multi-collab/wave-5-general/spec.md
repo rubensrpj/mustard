@@ -1,11 +1,5 @@
 # Wave 5 — Migration one-shot do repo Mustard
 
-### Parent: [[2026-05-21-flatten-spec-layout-and-multi-collab]]
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Lang: pt
-
 ## Resumo
 
 Migração única do repositório Mustard atual para o novo layout. Move tudo de `spec/active/*`, `spec/completed/*` e `spec/superseded/*` para `spec/{name}/`. Faz backfill de eventos para specs cujo SQLite está em desacordo com o header (caso típico do colaborador). Garante o header sync das specs que sofreram emit manual nesta sessão.

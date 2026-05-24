@@ -1,13 +1,5 @@
 # Wave 4 — Atribuição por agente (join session_id ↔ tool_use_id)
 
-### Parent: [[2026-05-20-economia-moat-unification]]
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Scope: full (wave)
-### Checkpoint: 2026-05-21T05:05:00Z
-### Lang: pt
-
 ## PRD
 
 Depois das W2+W3, o `mustard.db` tem custo real Anthropic (via OTEL/JSONL com `session_id`) e tem `agent.start`/`agent.stop` events (com `agent_id`, `wave`, `spec`, timestamp). Esta wave entrega o **join** que ninguém mais faz: pivota tudo por `(spec, wave, agent)` para responder "esse Task custou X USD, recebeu Y tokens de contexto, retornou Z tokens". Atribuição é o moat — Claude Code, RTK, claude-devtools não atribuem por agente. Reader expõe `per_agent_costs`/`per_spec_costs`/`per_wave_costs` com agregação correta nos 4 scopes (Project/Spec/Wave/AllProjects). JSONL traz `tool_use_id` por mensagem assistant; correlaciona com `agent.start`/`agent.stop` por janela temporal + `session_id`.

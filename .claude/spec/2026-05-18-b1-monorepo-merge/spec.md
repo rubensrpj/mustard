@@ -1,12 +1,5 @@
 # Feature: b1-monorepo-merge
 
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Scope: full
-### Checkpoint: 2026-05-19T00:15:15Z
-### Lang: pt
-
 > Parte B, item B1 — raiz. Refinada em 2026-05-18: as três decisões de merge foram fechadas (ver Resumo). Aprovável. **Parte A concluída — B pode começar.**
 
 ## Contexto

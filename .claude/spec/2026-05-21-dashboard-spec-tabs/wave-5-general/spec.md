@@ -1,12 +1,5 @@
 # Wave 5 — Rede: grafo Obsidian + fix memory cross-wave
 
-### Parent: [[2026-05-21-dashboard-spec-tabs]]
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Lang: pt
-### Checkpoint: 2026-05-21T16:00:00Z
-
 ## Resumo
 
 Dois problemas distintos vivem na aba "Rede". O primeiro é cosmético: `<SpecNetworkTab>` renderiza um grafo desformatado, com nós sem label, sem força gravitacional e sem destaque de vizinhos no hover. Wave 5a refaz o grafo no padrão Obsidian (force-directed simulator simples, nós com label, hover destacando vizinhos com fade nos outros). O segundo é estrutural: a coluna de memória cross-wave fica zerada. A query `mustard-rt run memory cross-wave` faz `WHERE payload.pipeline = <wave-name>`, mas o writer `memory agent` grava `payload.pipeline = "{spec-name}"` (slug-pai), nunca o wave-name. Os testes só passam porque usam `pipeline = "wave-X"` na fixture. Wave 5b conserta a query (passa a casar por `spec` + `wave`) e amplia o parser de `wave-plan.md` pra ter fallback de filesystem quando a tabela canônica não existe.

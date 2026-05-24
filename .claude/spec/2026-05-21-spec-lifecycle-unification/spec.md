@@ -1,11 +1,5 @@
 # Spec lifecycle unification + Linear-style /specs redesign
 
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Lang: pt
-### Scope: full
-### Checkpoint: 2026-05-22T02:10:00Z
 ### Wave-plan: true
 
 ## Resumo
@@ -98,15 +92,19 @@ struct Flags {
 
 ## Header da spec (formato novo, escrito a partir de Wave 4)
 
+<!-- doc-example: keys spelled with trailing space before colon to dodge the
+     `^### Key:` strip pattern; the legacy header format is documented here
+     only for posterity (Wave 3 of mustard-unification moved these to meta.json). -->
+
 ```
-### Stage: Execute
-### Outcome: Active
-### Flags: blocked, wave_failed
-### Lang: pt
-### Checkpoint: 2026-05-21T00:00:00Z
+### Stage : Execute
+### Outcome : Active
+### Flags : blocked, wave_failed
+### Lang : pt
+### Checkpoint : 2026-05-21T00:00:00Z
 ```
 
-Campos `### Status:` e `### Phase:` legados continuam **legíveis** pelo parser (Wave 1) durante a transição. Wave 7 reescreve todos os headers existentes para o formato novo.
+Campos `Status` e `Phase` legados continuam **legíveis** pelo parser (Wave 1) durante a transição. Wave 7 reescreve todos os headers existentes para o formato novo. *Nota: a partir do Wave 3 de mustard-unification, os campos acima vivem em `meta.json` lateral — o exemplo permanece como referência histórica do formato in-md.*
 
 ## Wave plan
 

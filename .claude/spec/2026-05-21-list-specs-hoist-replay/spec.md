@@ -1,13 +1,5 @@
 # list_specs hoist replay — eliminar O(N×M) ao popular children_count
 
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Scope: light
-### Checkpoint: 2026-05-21T00:40:00Z
-### Lang: pt
-### Parent: 2026-05-20-tactical-fix-via-sub-spec
-
 ## Contexto
 
 Tactical fix derivado de [[2026-05-20-tactical-fix-via-sub-spec]]. O review backend desta spec apontou que `SqliteSpecReader::list_specs` e `InMemorySpecReader::list_specs` agora chamam `self.children_of(name)` dentro do loop por spec. Cada chamada faz um `store.replay()` (ou `self.snapshot()`) completo — `SELECT * FROM events` sem WHERE — depois filtra eventos `spec.link` em Rust. Para N specs e M total de eventos, a operação é O(N×M). Em monorepos reais com >>10k eventos e >>50 specs, isso adiciona segundos a um endpoint que é hot path da Sidebar do dashboard.

@@ -1,12 +1,5 @@
 # Wave 2 — Ondas restruct: Onda #0 + pin + sub-specs aninhadas
 
-### Parent: [[2026-05-21-dashboard-spec-tabs-polish]]
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Lang: pt
-### Checkpoint: 2026-05-21T17:00:00Z
-
 ## Resumo
 
 Três mudanças relacionadas na aba "Ondas": (3) remover o botão de markdown viewer do `<SpecCard>` (que abre modal pelo card) e mover esse acesso para a aba Ondas tratando a spec principal como "Onda #0"; (4) o drawer da onda ganha botão pin que alterna entre overlay (Sheet) e inline (embeddado no painel); (8) sub-specs deixam de ser uma aba separada e viram subnível de cada onda — uma onda expandível mostra as sub-specs que ela gerou.

@@ -106,9 +106,15 @@ Env knobs:
 
 - `MUSTARD_SCAN_MODEL` — `sonnet` (default), `opus`, `haiku` (opt-in only —
   no silent downgrade; unknown values resolve up to Sonnet).
-- `ANTHROPIC_API_KEY` — required for the model round-trip; absent ⇒ no-op.
 - `MUSTARD_INTERPRET_CACHE=off` — bypass both read + write of the interpret
   cache (used by `interpret_cache_frozen` to assert the freeze).
+
+LLM invocation: the cold path calls the `claude` CLI binary
+(`Command::new("claude").args(["--print", "--model", <model>])`) via subprocess,
+feeding the prompt through stdin. No `ANTHROPIC_API_KEY` is required — the
+user's Claude subscription covers the cost. When `claude` is absent from PATH,
+the layer fails open (returns empty interpretation; the agnostic cluster floor
+is used instead). The `doctor` subcommand reports `claude_cli` presence.
 
 Adding a new language is no longer "write a new `*_scanner.rs`". The
 interpreter is language-agnostic; the only place a language id leaves a

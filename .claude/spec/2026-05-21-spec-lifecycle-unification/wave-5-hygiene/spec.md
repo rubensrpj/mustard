@@ -1,13 +1,7 @@
 # Wave 5 — Hygiene: spec_hygiene hook + auto-close protegido por gate
 
-### Parent: [[2026-05-21-spec-lifecycle-unification]]
 ### Wave: 5
 ### Role: rt
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Lang: pt
-### Checkpoint: 2026-05-22T01:32:00Z
 
 ## Resumo
 

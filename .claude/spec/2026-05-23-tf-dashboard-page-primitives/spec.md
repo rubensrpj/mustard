@@ -1,13 +1,5 @@
 # Tactical Fix: primitives ausentes em components/page
 
-### Stage: Execute
-### Outcome: Active
-### Flags: 
-### Scope: light
-### Checkpoint: 2026-05-23T20:30:00Z
-### Lang: pt
-### Parent: 2026-05-23-dashboard-design-system
-
 ## Contexto
 
 Tactical fix derivado de [[2026-05-23-dashboard-design-system]] (Wave 5 BLOCKED).

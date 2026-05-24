@@ -1,12 +1,5 @@
 # Feature: eliminate-bun
 
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Scope: full
-### Checkpoint: 2026-05-19T22:00:00Z
-### Lang: pt
-
 > Continuação do roadmap Parte B. B3/B4/B5 portaram hooks, scripts e a CLI para Rust. Esta spec elimina o último resíduo de runtime não-Rust da ferramenta — o servidor MCP `mustard-memory` em TypeScript/`bun` — consolida o storage do harness em SQLite único, e fecha a migração de instalações antigas. Informada pela investigação de 2026-05-19 (auditoria de código morto + sondagem de `templates/` + decisão de arquitetura de storage).
 
 ## Contexto

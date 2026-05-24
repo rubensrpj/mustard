@@ -1,11 +1,5 @@
 # Enhancement: Memory Usage & Token Economy Optimization
 
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Scope: full
-### Checkpoint: 2026-03-27T00:00:00Z
-
 ## Summary
 
 Otimizar runtime (memory) dos sync scripts/hooks e reduzir redundância de tokens nos skills/commands do Mustard. Part A ataca RAM em monorepos grandes; Part B elimina conteúdo duplicado entre skills.

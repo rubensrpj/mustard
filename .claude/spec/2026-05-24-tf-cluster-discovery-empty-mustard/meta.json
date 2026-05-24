@@ -1,0 +1,9 @@
+{
+  "stage": "Close",
+  "outcome": "Cancelled",
+  "phase": null,
+  "scope": "light",
+  "lang": "pt-BR",
+  "checkpoint": "2026-05-24T22:00:00Z",
+  "parent": "2026-05-24-mustard-unification"
+}

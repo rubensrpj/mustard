@@ -1,12 +1,5 @@
 # Wave 3 — Rede: mapa mental radial full-painel
 
-### Parent: [[2026-05-21-dashboard-spec-tabs-polish]]
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Lang: pt
-### Checkpoint: 2026-05-21T17:00:00Z
-
 ## Resumo
 
 O grafo da aba "Rede" entregue na parent ficou pequeno (`aspect-[4/3]`, ~600px de altura no melhor caso) e o layout force-directed não ficou legível com ~6-8 nós. Refazer como **mapa mental radial**: parent no centro, waves em órbita ao redor (anel 1), sub-specs como filhos das waves no anel 2. SVG ocupa o painel inteiro (altura via `100%` flexível, sem `aspect-*`). Layout determinístico (sem simulação iterativa), legível por hierarquia.

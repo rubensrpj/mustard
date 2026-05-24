@@ -1,13 +1,5 @@
 # Review — economia-moat-unification
 
-### Parent: [[2026-05-20-economia-moat-unification]]
-### Stage: QaReview
-### Outcome: Active
-### Flags: 
-### Scope: full (wave plan)
-### Checkpoint: 2026-05-21T06:15:00Z
-### Lang: pt
-
 ## PRD
 
 Auditar as 8 waves entregues contra a checklist canônica do Mustard (SOLID, Design System, Patterns, i18n, Integration, Build, Elegance). 3 reviewers paralelos (1 por subprojeto afetado): `mustard-core`, `mustard-rt`, `mustard-dashboard`. Cada reviewer classifica achados em CRITICAL / WARNING / NOTE. Verdict consolidado em `verdict.md`.

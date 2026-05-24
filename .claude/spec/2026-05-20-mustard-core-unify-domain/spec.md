@@ -1,12 +1,5 @@
 # Unificar `mustard-specsdb` em `mustard-core`
 
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Scope: full
-### Checkpoint: 2026-05-20T23:30:00Z
-### Lang: pt
-
 ## PRD
 
 ## Contexto

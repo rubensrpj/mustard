@@ -1,14 +1,7 @@
 # Wave 5 — Frontend: Add Project adaptativo + banners + welcome + InstallLog
 
-### Stage: Plan
-### Outcome: Active
-### Flags: 
-### Scope: full (wave)
 ### Wave: 5
 ### Role: ui
-### Checkpoint: 2026-05-21T18:00:00Z
-### Lang: pt
-### Parent: 2026-05-21-mustard-v1-installer-and-update
 
 ## PRD
 

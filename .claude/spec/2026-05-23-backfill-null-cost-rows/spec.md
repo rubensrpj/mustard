@@ -1,13 +1,5 @@
 # Tactical Fix: backfill de cost NULL em run_usage
 
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Scope: light
-### Checkpoint: 2026-05-23T01:30:00Z
-### Lang: pt
-### Parent: [[2026-05-22-economia-didatica-e-economias-reais]]
-
 ## Contexto
 
 Derivado de [[2026-05-22-economia-didatica-e-economias-reais]] e do tactical-fix [[2026-05-23-price-frame-model-fallback]].

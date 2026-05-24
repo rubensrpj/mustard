@@ -40,8 +40,10 @@ pub mod economy;
 pub mod env;
 pub mod error;
 pub mod fs;
+pub mod i18n;
 pub mod store;
 pub mod knowledge;
+pub mod meta;
 pub mod metrics;
 pub mod model;
 pub mod process;
@@ -72,3 +74,14 @@ pub use spec::{
 
 // Economy domain re-exports — see `economy/mod.rs` for the full surface.
 pub use economy::{EconomyScope, EconomySummary, SavingsSource};
+
+// Meta sidecar — single canonical owner of `meta.json` schema + IO. See
+// `meta.rs`. Sidecar replaces the legacy `### Stage:` / `### Outcome:` /
+// `### Phase:` / `### Scope:` / `### Lang:` / `### Checkpoint:` / `### Parent:`
+// headers under `.claude/spec/**`.
+pub use meta::{normalise_lang, read_meta, write_meta, Meta};
+
+// i18n — central language + tone module for Mustard banners. See `i18n.rs`.
+// Locale is BCP-47 (`pt-BR`/`en-US`); short forms are rejected with
+// `LocaleError::ShortForm` per `project_locale_codes`.
+pub use i18n::{apply_tone, slugify, translate, wave_label, I18n, Locale, LocaleError, Tone};

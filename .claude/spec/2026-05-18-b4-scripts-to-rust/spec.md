@@ -1,12 +1,5 @@
 # Feature: b4-scripts-to-rust
 
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Scope: full
-### Checkpoint: 2026-05-19T20:00:00Z
-### Lang: pt
-
 > Spec de backlog (Parte B, item B4). **ÉPICO** — porta os scripts JS para subcomandos do binário `mustard-rt`. Depende de B2; rodou em paralelo a B3 (concluído). Refinada 2026-05-19 no ANALYZE: inventário real (~48 arquivos), mapa de invocações (~40 sites), forma de invocação aninhada (`mustard-rt script <nome>`) e decomposição em 7 waves por família.
 
 ## Contexto

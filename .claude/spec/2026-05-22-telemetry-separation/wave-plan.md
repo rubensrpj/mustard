@@ -1,12 +1,5 @@
 # Plano de Waves — Separar e enxugar a telemetria
 
-### Stage: Close
-### Outcome: Completed
-### Flags:
-### Scope: full (wave plan)
-### Lang: pt
-### Total waves: 3
-
 ## Contexto
 
 O banco do harness (`mustard.db`) é aberto pelos hooks a cada ação do usuário, então

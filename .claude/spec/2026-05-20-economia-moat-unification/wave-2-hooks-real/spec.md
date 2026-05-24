@@ -1,13 +1,5 @@
 # Wave 2 — Hooks emitem números reais via core::economy::writer
 
-### Parent: [[2026-05-20-economia-moat-unification]]
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Scope: full (wave)
-### Checkpoint: 2026-05-21T03:55:00Z
-### Lang: pt
-
 ## PRD
 
 Os hooks do `apps/rt` hoje emitem economia simulada (`tokens_saved: 0`, JSON inline construído à mão) e custo de contexto ad-hoc. Esta wave reescreve os 5 pontos de emissão para chamar exclusivamente `core::economy::writer::*`, garantindo que toda telemetria de economia, custo de contexto e custo de API passe pela API tipada entregue em [[wave-1-core-economy]].

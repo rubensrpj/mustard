@@ -1,13 +1,5 @@
 # Wave 4 — Folder-per-component + features/ namespace (refator estrutural)
 
-### Parent: [[2026-05-23-dashboard-design-system]]
-### Stage: Close
-### Outcome: Completed
-### Flags:
-### Scope: full (wave 4 of 6)
-### Lang: pt
-### Checkpoint: 2026-05-23T12:30:00Z
-
 ## Resumo
 
 Refator estrutural cirúrgico, sem mudança de UI nem de comportamento, alinhando o dashboard ao padrão React/Tauri 2026 confirmado por pesquisa: cada componente em sua própria pasta com `index.tsx`, lógica de domínio fora de `components/` (que vira só primitivas compartilhadas) e dentro de `src/features/`. Hoje `src/components/` mistura 11 subpastas: 8 de domínio (`specs/`, `workspace/`, `economy/`, `knowledge/`, `prd/`, `telemetry/`, `amend/`, `trace/`) e 3 compartilhadas (`page/`, `layout/`, `ui/`), além de 10 arquivos soltos no root (`AggregateOverview`, `CommandPalette`, `KnowledgeCard`, `LivePipelineCard`, `Markdown`, `SpecSidePanel`, `SpecsList`, `StatusDot`, `WaveNav`, `WorkspaceDigest`). Cada `.tsx` é flat e o barrel `page/index.ts` é único — features de domínio importam diretamente do arquivo. Esta wave (a) move as 8 pastas de domínio para `src/features/`, (b) converte CADA `.tsx` em `Component/index.tsx` (folder-per-component, padrão Robin Wieruch 2026 / FSD shared), (c) realoca os 10 strays para suas features ou para shared, (d) adiciona `@/features/*` ao `tsconfig.json` e ao `vite.config.ts` para alias path, (e) atualiza TODOS os imports em `src/` via codemod determinístico, (f) cria o script faltante `scripts/check-pages-no-inline-visual.mjs` (AC-10 do parent), (g) varre tokens fantasmas (`--color-ok`, `--color-accent-mustard`, `text-red-*`) nos arquivos movidos durante o trânsito — eliminando ~107 ocorrências surfaceadas no review da Wave 3. Zero mudança de prop, zero refit visual, zero novo componente. No fim: 3 pastas em `components/` (page, layout, ui) só com primitivas; 8 pastas em `features/` com lógica de domínio; cada componente em sua pasta com `index.tsx`; tokens fantasmas erradicados; script AC-10 existindo. Waves 5 e 6 consomem `@/features/*` direto sem nova refatoração.

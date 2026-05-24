@@ -1,12 +1,5 @@
 # Feature: skills-absorption
 
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Scope: full
-### Checkpoint: 2026-05-18T20:35:00Z
-### Lang: pt
-
 > Spec de backlog (Parte B... não — Parte A, item A6). Rascunho ajustado em 2026-05-18: a diretiva passou a ser **adicionar as skills do Matt verbatim, sem adaptar**.
 
 ## Contexto

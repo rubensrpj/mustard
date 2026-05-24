@@ -1,12 +1,5 @@
 # Dashboard SDD-first: reorganização IA + drill-down por spec + correções operacionais
 
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Scope: full
-### Checkpoint: 2026-05-20T13:00:00Z
-### Lang: pt
-
 ## PRD
 
 ## Contexto

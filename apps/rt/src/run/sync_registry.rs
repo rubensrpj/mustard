@@ -171,6 +171,37 @@ pub fn run(root: &Path, force: bool) {
         let entry = scan_results.entry(stack_id.clone()).or_default();
         entry.merge(result, discovered, folder_frequency, conventions);
 
+        // Wave 2 (mustard-unification) — promote model-interpreted entities
+        // into the registry as a fallback layer. Entities already found by the
+        // structural scanner are NOT overwritten (scanner wins); only names
+        // absent from the scanner output are inserted. This lets the claude CLI
+        // cold-path surface entities that ORM-pattern matching misses (e.g.
+        // plain Rust structs, Go types without gorm tags, generic TS objects).
+        for i_entity in &interpreted.entities {
+            if !i_entity.name.is_empty() && !entry.entities.contains_key(&i_entity.name) {
+                use super::scan::EntityInfo;
+                // Translate wikilink edges (e.g. "[[sub.entity.foo]]") into
+                // plain ref names by stripping the bracket decoration.
+                let refs: Vec<String> = i_entity
+                    .edges
+                    .iter()
+                    .map(|e| {
+                        e.trim_start_matches('[')
+                            .trim_end_matches(']')
+                            .split('.')
+                            .last()
+                            .unwrap_or(e.as_str())
+                            .to_string()
+                    })
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                entry.entities.insert(
+                    i_entity.name.clone(),
+                    EntityInfo { file: i_entity.file.clone(), refs, ..EntityInfo::default() },
+                );
+            }
+        }
+
         let e = entry.entities.len();
         let en = entry.enums.len();
         println!("    {e} entities, {en} enums");
@@ -717,6 +748,14 @@ fn clean_doc_block(text: &str, kind: DocKind) -> Option<String> {
 
 /// Discover subprojects via the `CLAUDE.md` BFS scan — the same discovery
 /// `sync-detect` uses. Single-root projects fall back to `.`.
+///
+/// Fallback chain (in order):
+/// 1. BFS walk finds directories that contain `CLAUDE.md`.
+/// 2. If none found but root has `CLAUDE.md`, use root.
+/// 3. If none found but root looks like a project (has any recognised
+///    manifest), use root without requiring `CLAUDE.md`. This lets
+///    `sync-registry` scan bare projects (e.g. integration test fixtures)
+///    that have not yet been initialised with `mustard init`.
 fn discover_subprojects(root: &Path) -> Vec<Subproject> {
     const IGNORE: &[&str] = &[
         "node_modules",
@@ -729,10 +768,38 @@ fn discover_subprojects(root: &Path) -> Vec<Subproject> {
         ".claude",
         ".git",
     ];
+    /// Manifest files that indicate a project root (used for the bare-project
+    /// fallback only; CLAUDE.md always takes precedence).
+    const MANIFESTS: &[&str] = &[
+        "Cargo.toml",
+        "package.json",
+        "go.mod",
+        "pyproject.toml",
+        "requirements.txt",
+        "pom.xml",
+        "build.gradle",
+        "pubspec.yaml",
+        "composer.json",
+    ];
+
     let mut rel_paths: Vec<String> = Vec::new();
     walk_for_claude_md(root, "", 0, IGNORE, &mut rel_paths);
     if rel_paths.is_empty() && root.join("CLAUDE.md").exists() {
         rel_paths.push(".".to_string());
+    }
+    // Bare-project fallback: no CLAUDE.md anywhere, but the root directory
+    // has a recognised project manifest. Treat root as the single subproject
+    // so the scanner can still run and the registry can be populated.
+    if rel_paths.is_empty() {
+        let has_manifest = MANIFESTS.iter().any(|m| root.join(m).exists());
+        if has_manifest {
+            let name = root
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("project")
+                .to_string();
+            return vec![Subproject { name, rel_path: ".".to_string() }];
+        }
     }
     rel_paths
         .into_iter()

@@ -1,12 +1,6 @@
 # Feature: Medição Automática de Prompt Economy (Subtraction)
 
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Scope: full
-### Checkpoint: 2026-05-15T17:45:00Z
 ### QA: pass (8/8 AC) | Review: APPROVED (mustard + dashboard, 0 CRITICAL)
-### Lang: pt
 ### Repos: C:/Atiz/mustard + C:/Atiz/mustard-dashboard
 
 ## Contexto

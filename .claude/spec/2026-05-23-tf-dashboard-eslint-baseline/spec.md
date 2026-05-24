@@ -1,12 +1,5 @@
 # Tactical-fix — dashboard ESLint baseline (flat config + zero violações)
 
-### Parent: [[2026-05-23-dashboard-design-system]]
-### Stage: Plan
-### Outcome: Active
-### Flags: 
-### Lang: pt
-### Checkpoint: 2026-05-23T00:00:00Z
-
 ## Resumo
 
 O `apps/dashboard/` declara `"lint": "eslint ."` em `package.json` mas o repo nunca teve um `eslint.config.js` commitado. ESLint v9 exige flat config — sem ele, `pnpm --filter mustard-dashboard lint` aborta antes de avaliar qualquer regra. Wave 1 do parent (`2026-05-23-dashboard-design-system`) flagou isso como CONCERN pré-existente: não é regressão da Wave 1, mas trava AC-W1.6 (lint passa) e AC-2 (parent: dashboard lint passa após refactor). Esta tactical-fix instala o flat config mínimo + plugins React/TS + baseline as warnings (não erros) e fecha apontamentos triviais até `pnpm lint` rodar exit 0 numa primeira passagem.

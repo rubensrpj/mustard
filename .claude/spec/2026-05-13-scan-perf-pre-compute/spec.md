@@ -1,9 +1,6 @@
 # /scan performance — pre-compute deterministic work in orchestrate.js
 
 - **Lang**: ptbr
-### Stage: Close
-### Outcome: Completed
-### Flags: 
 - **Checkpoint**: 2026-05-13T00:00:02Z
 - **Scope**: Full
 - **Type**: feature

@@ -1,13 +1,5 @@
 # Tactical Fix: dedupe now_iso entre core e rt
 
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Scope: touch
-### Checkpoint: 2026-05-23T00:00:00Z
-### Lang: pt
-### Parent: [[2026-05-22-economia-didatica-e-economias-reais]]
-
 ## Contexto
 
 Tactical fix derivado de [[2026-05-22-economia-didatica-e-economias-reais]] (wave-2).

@@ -1,9 +1,4 @@
 # Enhancement: budget-gate-doc-fix
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Scope: light
-### Checkpoint: 2026-04-09T00:00:00Z
 
 ## Summary
 Fix documentation drift: o spec anterior de `budget-gate-enforcement` declarava "não bloquear Explore" nos Guards, mas o código implementa hard-block em ~10K chars (o que está correto conforme `pipeline-config.md`). Este patch apenas clarifica semântica — zero mudança comportamental. O budget aplica ao `input.prompt` (o briefing do Task), NÃO ao contexto que o explorer coleta internamente via Grep/Read.

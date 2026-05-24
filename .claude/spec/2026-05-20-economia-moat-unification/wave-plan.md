@@ -1,12 +1,5 @@
 # Wave Plan — Economia: moat de tokens e contexto unificado
 
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Scope: full (wave plan)
-### Checkpoint: 2026-05-21T07:05:00Z
-### Lang: pt
-
 ## PRD (visão única)
 
 O Mustard hoje grava cinco sinais de economia (RTK gain, `tokens_saved` de hooks, decisão de roteamento de modelo, tamanho de contexto enviado a agente, custo Anthropic medido) em cinco lugares diferentes — cada hook monta seu próprio JSON, cada query SQL fica espalhada no `src-tauri/` do dashboard, e a página de Economia mistura adapters com leitura de banco no mesmo arquivo. Resultado: `bash_guard` e `model_routing` emitem `tokens_saved: 0` cravado desde sempre, ninguém faz `INSERT INTO spans`, o collector OTEL nunca é iniciado após a migração JS→Rust (1 linha de spawn faltando), o JSONL local do Claude Code (que carrega o custo real e o conteúdo das requisições) nunca é parseado. Dashboard mostra zeros em campos que tecnicamente existem mas nunca recebem escrita real. Esta feature consolida o domínio de economia em `packages/core/src/economy/` espelhando o padrão SQLite (`core::store::sqlite_store`), absorve OTEL+JSONL+RTK como adapters paralelos do mesmo domain model, instrumenta hooks pra emitir números reais via estimador `tiktoken-rs`, atribui cada custo por agente (join `session_id` ↔ `agent.start`/`agent.stop` ↔ `tool_use_id`), suporta `EconomyScope` (Projeto/Spec/Wave/Comparar Projetos) como cidadão de primeira classe desde a fundação. Em paralelo, estabelece o Design System Foundation com Tailwind 4 `@theme` + CSS vars + primitivas caseiras (DiffViewer LCS, syntax highlighter, TreeNode) — base do trace viewer estilo claude-devtools que substitui Events feed da Visão Geral + timeline da página `/specs`. Fim: Economia.tsx repaginada usando único `reader::economy_summary(scope)` com scope picker funcional.

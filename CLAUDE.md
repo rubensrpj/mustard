@@ -186,6 +186,11 @@ Models are auto-selected by intent. Upgrades blocked, downgrades allowed (opt-in
 - `/mustard:validate` - Build + type-check
 - `/mustard:status` - Project status
 
+### Kill-switch
+
+- `/mustard:unhook [--scope this|monorepo|all] [--confirm]` - Rename `.claude/settings.json` to `settings.json.disabled-<timestamp>` and wipe volatile harness state (`.agent-state/`, `.cluster-cache.json`, `.worktrees/`). `--scope all` requires `--confirm` to also touch `~/.claude/settings.json`.
+- `/mustard:rehook [--scope this|monorepo|all] [--confirm]` - Reverse of `unhook`: restore the most recent `settings.json.disabled*` snapshot in each `.claude/` in scope.
+
 ## Enforcement Hooks (highlights)
 
 Enforcement runs as the single Rust binary `mustard-rt` (the `apps/rt` crate): `settings.json` wires one `mustard-rt on <event>` entry per lifecycle event, and the dispatcher runs every registered module for that event. Highlights below — behavioral docs at `templates/pipeline-config.md`, module source at `apps/rt/src/hooks/`.
@@ -256,6 +261,15 @@ Runs build/test verification for the active pipeline:
 - Executes build and test commands
 - Reports pass/fail status per subproject
 - Used during pipeline EXECUTE/CLOSE phases
+
+### unhook / rehook
+
+Harness kill-switch + restore:
+
+- `unhook` renames every `.claude/settings.json` in scope to `settings.json.disabled-<timestamp>` and wipes volatile state (`.agent-state/`, `.cluster-cache.json`, `.worktrees/`).
+- `rehook` reverses it: restores the newest `settings.json.disabled*` snapshot per `.claude/` in scope.
+- Scope: `this` (default, repo only), `monorepo` (+ `apps/*/.claude/` + `packages/*/.claude/`), `all` (+ user-global `~/.claude/`, gated by `--confirm`).
+- Output is a JSON report with one entry per `.claude/` touched and a `revert_with` one-liner.
 
 ## Project Structure
 

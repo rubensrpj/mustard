@@ -1,9 +1,4 @@
 # Enhancement: haiku-heuristic-table
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Scope: light
-### Checkpoint: 2026-04-09T00:00:00Z
 
 ## Summary
 Reescrever a seção "Model Selection" em `review/SKILL.md` como tabela de decisão imperativa (single source of truth). Substituir a prose em `feature/SKILL.md` e `complete/SKILL.md` por referência de 1 linha à tabela. DRY + copy-pasteable + inambígua.

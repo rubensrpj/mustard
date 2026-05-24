@@ -1,12 +1,5 @@
 # Feature: Prompt Prefix Cacheável + Wave Diff + Métricas no Dashboard
 
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Scope: full
-### Checkpoint: 2026-05-14T12:20:00Z
-### Lang: pt
-
 ## Contexto
 
 Pipelines do Mustard dispacham hoje entre 5 e 9 agentes por feature, cada um recebendo prompt de 8-15k tokens com sobreposição grande de conteúdo estático (skills, recipe, pipeline-config snippet, instruções de papel). A API da Anthropic faz cache automático em prefixos byte-identical com ≥1024 tokens, cobrando 10% do normal nos hits, mas o template atual em `agent-prompt/SKILL.md` interleava blocos estáticos e dinâmicos (spec, diff, task) — então cada dispatch é único em bytes e o cache nunca ativa. Em paralelo, wave N+1 recebe a spec inteira de novo quando só precisa do slice da sua wave somado ao diff que a wave anterior produziu; o review agent re-lê 5-10 arquivos quando o diff cobre 90% do contexto; e `diff-context.js` é executado na fase ANALYZE quando ainda não houve trabalho — diff é sempre vazio. O impacto observável é que pipelines médios pagam 70-200k tokens por execução em conteúdo repetido, sem ganho de qualidade, e nenhum sinal disso aparece no dashboard para validar otimizações futuras.

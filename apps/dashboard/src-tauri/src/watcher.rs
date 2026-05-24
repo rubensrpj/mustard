@@ -7,18 +7,10 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 
+#[derive(Default)]
 pub struct WatcherState {
     pub watchers: HashMap<String, Debouncer<RecommendedWatcher>>,
     pub last_emit: HashMap<String, Instant>,
-}
-
-impl Default for WatcherState {
-    fn default() -> Self {
-        Self {
-            watchers: HashMap::new(),
-            last_emit: HashMap::new(),
-        }
-    }
 }
 
 #[derive(Serialize, Clone)]
@@ -104,7 +96,7 @@ pub fn ensure_watching(
                 let should_emit = guard
                     .last_emit
                     .get(&key)
-                    .map_or(true, |t| now.duration_since(*t) > Duration::from_millis(100));
+                    .is_none_or(|t| now.duration_since(*t) > Duration::from_millis(100));
                 if !should_emit {
                     continue;
                 }

@@ -1,13 +1,5 @@
 # Wave 4 — Métricas: diagnose do que está quebrado + fix com agrupamento por parent
 
-### Parent: [[2026-05-20-mustard-wave-network-standard]]
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Scope: full (wave)
-### Checkpoint: 2026-05-20T20:40:00Z
-### Lang: pt
-
 ## PRD
 
 ## Contexto

@@ -1,12 +1,5 @@
 # Feature: verification-stats
 
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Scope: full
-### Checkpoint: 2026-05-18T23:17:29Z
-### Lang: pt
-
 ## Contexto
 
 O Mustard tem duas fases que verificam um pipeline antes do CLOSE: REVIEW — um agente audita o código e devolve APPROVED ou REJECTED — e QA, que executa os Acceptance Criteria da spec. O comando `/stats` deveria mostrar a saúde dessas verificações, mas hoje nenhuma das duas aparece. O `qa-run.js` só grava no log de harness (`events.jsonl`), nunca emite uma métrica de hook — e o `metrics.js`, que alimenta o `/stats`, lê apenas o log de métricas (`.claude/.metrics/*.jsonl`). A fase REVIEW não emite nada em lugar nenhum. O resultado é que o usuário não consegue responder "meus pipelines estão sendo verificados antes de fechar?" — a estatística simplesmente não existe. Além disso, o `/close` (finalize manual) pode fechar um pipeline sem nunca ter rodado QA, porque não checa o resultado de QA antes de finalizar.

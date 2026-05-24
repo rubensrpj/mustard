@@ -133,6 +133,8 @@ const KNOWN_RUN_SUBCOMMANDS: &[&str] = &[
     "diagnose-otel",
     "doctor",
     "db-maintain",
+    "unhook",
+    "rehook",
 ];
 
 /// The Mustard-owned folders that `mustard-cli update` regenerates.
@@ -407,6 +409,47 @@ fn hash_directory(dir: &Path) -> String {
         }
     }
     hasher.hex_digest()
+}
+
+// ---------------------------------------------------------------------------
+// Check: claude_cli
+// ---------------------------------------------------------------------------
+
+/// Probe for the `claude` CLI binary and report its resolved path.
+///
+/// Searches `PATH` the same way the OS would, also probing `.cmd` / `.bat`
+/// wrappers on Windows. Produces `OK` when found, `WARN` when absent (the
+/// scan cold-path falls back to the agnostic floor without blocking).
+fn check_claude_cli() -> CheckResult {
+    let path_var = std::env::var("PATH").unwrap_or_default();
+    let sep = if cfg!(windows) { ';' } else { ':' };
+
+    for dir in path_var.split(sep) {
+        let base = std::path::Path::new(dir).join("claude");
+        if base.exists() {
+            let p = base.to_string_lossy().into_owned();
+            return CheckResult { name: "claude_cli", status: Status::Ok, details: vec![p] };
+        }
+        // Windows: try .cmd / .bat / .exe extensions.
+        #[cfg(windows)]
+        for ext in &[".cmd", ".bat", ".exe"] {
+            let candidate = std::path::Path::new(dir).join(format!("claude{ext}"));
+            if candidate.exists() {
+                let p = candidate.to_string_lossy().into_owned();
+                return CheckResult { name: "claude_cli", status: Status::Ok, details: vec![p] };
+            }
+        }
+    }
+
+    CheckResult::warn(
+        "claude_cli",
+        vec![
+            "claude CLI not found on PATH — scan cold-path will fall back to the agnostic floor."
+                .to_string(),
+            "fix: install Claude Code (https://claude.ai/code) and ensure the binary is on PATH"
+                .to_string(),
+        ],
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -934,6 +977,7 @@ pub fn run(opts: DoctorOpts) {
         check_wiring(&claude_dir),
         check_drift(&claude_dir),
         check_state_health(&claude_dir),
+        check_claude_cli(),
         lsp_check(&cwd),
         check_nerd_font(),
         // skill-discovery is always included in the full run (advisory).

@@ -1,12 +1,6 @@
 # Enhancement: LSP no doctor + permissions.deny declarativa para paths ruidosos
 
 completed
-### Stage: Close
-### Outcome: Active
-### Flags: 
-### Scope: light
-### Checkpoint: 2026-05-19T22:25:00Z
-### Lang: pt
 
 ## PRD
 

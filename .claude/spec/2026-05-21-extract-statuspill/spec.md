@@ -1,13 +1,5 @@
 # Extract StatusPill — DRY entre SpecCard e SpecChildrenTab
 
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Scope: light
-### Checkpoint: 2026-05-21T01:10:00Z
-### Lang: pt
-### Parent: 2026-05-20-tactical-fix-via-sub-spec
-
 ## Contexto
 
 Tactical fix derivado de [[2026-05-20-tactical-fix-via-sub-spec]]. O review frontend apontou que `StatusPill` (com seus mapas `STATUS_LABELS` e `STATUS_CLASSES`) está duplicado verbatim entre `SpecCard.tsx` e `SpecChildrenTab.tsx`. Duas cópias significam dois lugares para atualizar quando um novo status string aparecer. Hoje as cópias estão em sincronia, mas a próxima adição vai derivar (e bugs vão emergir só quando um status novo for renderizado).

@@ -26,7 +26,7 @@ use mustard_core::model::event::{
     EVENT_PIPELINE_TASK_COMPLETE, EVENT_PIPELINE_TASK_DISPATCH, EVENT_PIPELINE_WAVE_COMPLETE,
 };
 use mustard_core::spec;
-use mustard_core::{Flags, Outcome, SpecState, Stage};
+use mustard_core::{Flags, Outcome, SpecState, Stage, read_meta, write_meta};
 use serde_json::{json, Value};
 use std::path::Path;
 
@@ -69,10 +69,17 @@ const EVENT_HYGIENE_AUTOCLOSE: &str = "hygiene.autoclose";
 /// active. Payload carries the `blocker`.
 const EVENT_HYGIENE_SKIPPED: &str = "hygiene.skipped";
 
-/// The 17 valid pipeline event kind strings: the 9 legacy `pipeline.*` kinds,
+/// `pipeline.economy.operation.invoked` — a model operation was completed via
+/// the `claude` CLI cold-path (scan interpret). Payload carries `operation`,
+/// `duration_ms`, and `tokens_used: 0` (cost via CLI subscription, not API
+/// key). Feeds the `/economia` dashboard (W12).
+const EVENT_ECONOMY_OPERATION_INVOKED: &str = "pipeline.economy.operation.invoked";
+
+/// The 18 valid pipeline event kind strings: the 9 legacy `pipeline.*` kinds,
 /// plus the legacy `pipeline.phase` (alias-only), plus the 4 new canonical
-/// state-model kinds, plus the 3 W5 `hygiene.*` kinds. A literal list — no
-/// magic alias resolution (cf. memory `project_emit_pipeline_kind_full_prefix`).
+/// state-model kinds, plus the 3 W5 `hygiene.*` kinds, plus the 1 W2
+/// `pipeline.economy.*` kind. A literal list — no magic alias resolution
+/// (cf. memory `project_emit_pipeline_kind_full_prefix`).
 const KNOWN_KINDS: &[&str] = &[
     EVENT_PIPELINE_SCOPE,
     EVENT_PIPELINE_STATUS,
@@ -91,6 +98,7 @@ const KNOWN_KINDS: &[&str] = &[
     EVENT_HYGIENE_DETECTED,
     EVENT_HYGIENE_AUTOCLOSE,
     EVENT_HYGIENE_SKIPPED,
+    EVENT_ECONOMY_OPERATION_INVOKED,
 ];
 
 /// Options for `mustard-rt run emit-pipeline`.
@@ -200,6 +208,10 @@ pub fn run(opts: EmitPipelineOpts) {
             let cwd = std::env::current_dir()
                 .unwrap_or_else(|_| std::path::PathBuf::from(project_dir()));
             sync_spec_status_header(&cwd, &spec_name, to);
+            // Wave 3 of mustard-unification: keep `meta.json` in lock-step with
+            // the markdown header. Fail-open — a missing sidecar warns, never
+            // aborts; downstream readers fall back to the markdown parser.
+            sync_spec_meta_sidecar(&cwd, &spec_name, to, &ts);
         }
     }
 }
@@ -333,6 +345,38 @@ fn state_from_status_word(to: &str) -> SpecState {
     SpecState::new(stage, Outcome::Active, Flags::default()).unwrap_or(fallback)
 }
 
+/// Wave 3 of mustard-unification: refresh `.claude/spec/{spec}/meta.json` so it
+/// agrees with the freshly emitted `pipeline.status: <to>` event. Reads the
+/// existing sidecar when present (so unknown forward-compat fields under `raw`
+/// survive), patches the lifecycle fields, and writes it back atomically.
+/// Fail-open: a missing sidecar is treated as "create from the status alone";
+/// a write failure warns on stderr but never propagates.
+fn sync_spec_meta_sidecar(cwd: &Path, spec: &str, to: &str, ts: &str) {
+    let path = cwd.join(".claude").join("spec").join(spec).join("meta.json");
+    let state = state_from_status_word(to);
+    let stage = spec::stage_label(state.stage).to_string();
+    let outcome = spec::outcome_label(state.outcome).to_string();
+
+    // Preserve unknown forward-compat fields by reading the existing sidecar
+    // when one is present.
+    let mut meta = read_meta(&path).unwrap_or_default();
+    meta.stage = Some(stage);
+    meta.outcome = Some(outcome);
+    meta.checkpoint = Some(ts.to_string());
+
+    // Ensure the parent dir exists so a brand-new sidecar can be created.
+    if let Some(parent) = path.parent() {
+        let _ = mustard_core::fs::create_dir_all(parent);
+    }
+
+    if let Err(e) = write_meta(&path, &meta) {
+        eprintln!(
+            "emit-pipeline: WARN: could not write {} ({e}); meta.json may be stale",
+            path.display()
+        );
+    }
+}
+
 /// Rewrite the lifecycle header of `.claude/spec/{spec}/spec.md` so it matches
 /// the freshly emitted `pipeline.status: <to>` event, **always emitting the
 /// canonical new three-line header** regardless of the legacy shape it started
@@ -391,8 +435,9 @@ mod tests {
 
     #[test]
     fn known_kinds_list_covers_legacy_and_new_kinds() {
-        // 9 legacy + 1 legacy phase (alias-only) + 4 new canonical + 3 hygiene.
-        assert_eq!(KNOWN_KINDS.len(), 17);
+        // 9 legacy + 1 legacy phase (alias-only) + 4 new canonical + 3 hygiene
+        // + 1 economy (W2 mustard-unification).
+        assert_eq!(KNOWN_KINDS.len(), 18);
         // Legacy nine.
         assert!(KNOWN_KINDS.contains(&EVENT_PIPELINE_SCOPE));
         assert!(KNOWN_KINDS.contains(&EVENT_PIPELINE_STATUS));
@@ -414,6 +459,8 @@ mod tests {
         assert!(KNOWN_KINDS.contains(&EVENT_HYGIENE_DETECTED));
         assert!(KNOWN_KINDS.contains(&EVENT_HYGIENE_AUTOCLOSE));
         assert!(KNOWN_KINDS.contains(&EVENT_HYGIENE_SKIPPED));
+        // W2 economy kind.
+        assert!(KNOWN_KINDS.contains(&EVENT_ECONOMY_OPERATION_INVOKED));
     }
 
     #[test]

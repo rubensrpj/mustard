@@ -469,13 +469,20 @@ mod tests {
         (rust, ts)
     }
 
-    /// Build a generic interpreter with the empty `InterpretEnv` so the test
-    /// never reads `ANTHROPIC_API_KEY` from the host (the crate forbids
+    /// Build a generic interpreter with a no-op `InterpretEnv` so unit tests
+    /// never invoke the real `claude` CLI. `claude_bin` is set to a path that
+    /// is guaranteed not to exist, making `probe_claude_binary` return `false`
+    /// and keeping the model layer a deliberate no-op (the crate forbids
     /// `unsafe`, so `set_var`/`remove_var` are unavailable on edition 2024).
     fn test_scanner(stack: &str) -> InterpretedScanner {
         InterpretedScanner {
             stack_id: stack.to_string(),
-            env_override: Some(interpret::InterpretEnv::default()),
+            env_override: Some(interpret::InterpretEnv {
+                // Point at a path that cannot exist — keeps the model a no-op.
+                claude_bin: "/dev/null/no-such-claude".to_string(),
+                cache_disabled: true,
+                ..interpret::InterpretEnv::default()
+            }),
         }
     }
 

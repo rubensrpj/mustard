@@ -1,9 +1,4 @@
 # Enhancement: git-skill-hardening
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Scope: light
-### Checkpoint: 2026-04-17T00:00:00Z
 
 ## Summary
 Endurecer `commands/mustard/git/SKILL.md` com auto-stash universal + sentinel, tratamento de paths ephemeral (Claude/RTK), retries em race-condition de checkout, preservação de stashes pré-existentes, `--scope` explícito em `commit`, output compacto em ff-merge, sub-fluxo para ephemerals já tracked, resumo final categorizado, e banimento explícito de operações destrutivas.

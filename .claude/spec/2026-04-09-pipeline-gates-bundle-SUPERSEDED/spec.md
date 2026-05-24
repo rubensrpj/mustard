@@ -1,9 +1,4 @@
 # Feature: pipeline-gates-bundle
-### Stage: Plan
-### Outcome: Active
-### Flags: 
-### Scope: full
-### Checkpoint: 2026-04-09T00:00:00Z
 
 ## Summary
 Adicionar dois gates defensivos na pipeline do Mustard que evitam os 2 maiores desperdícios de tokens observados em sessões recentes:

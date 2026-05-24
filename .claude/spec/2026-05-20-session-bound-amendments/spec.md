@@ -1,12 +1,5 @@
 # Janelas de emenda vinculadas à sessão (session-bound amendments)
 
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Scope: full
-### Checkpoint: 2026-05-20T12:15:00Z
-### Lang: pt
-
 ## PRD
 
 ## Contexto

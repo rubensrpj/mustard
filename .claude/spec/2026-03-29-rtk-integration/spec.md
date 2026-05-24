@@ -1,11 +1,5 @@
 # Feature: RTK Integration (Core)
 
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Scope: full
-### Checkpoint: 2026-03-29T02:00:00Z
-
 ## Summary
 
 Integrar RTK (Rust Token Killer) como infraestrutura core do Mustard para economia de tokens.

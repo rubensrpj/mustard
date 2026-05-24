@@ -1,12 +1,5 @@
 # Review — dashboard-spec-tabs
 
-### Parent: [[2026-05-21-dashboard-spec-tabs]]
-### Stage: QaReview
-### Outcome: Active
-### Flags: 
-### Lang: pt
-### Checkpoint: 2026-05-21T16:00:00Z
-
 ## Resumo
 
 Code review consolidado após todas as 6 waves rodarem. Dois reviews em paralelo: um pra `apps/dashboard/` (UI + Tauri) e outro pra `apps/rt/` + `packages/core/` (Rust subcommands + helper de union).

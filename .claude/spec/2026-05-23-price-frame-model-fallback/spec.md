@@ -1,13 +1,5 @@
 # Tactical Fix: price_frame fallback quando model é None/desconhecido
 
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Scope: light
-### Checkpoint: 2026-05-23T00:30:00Z
-### Lang: pt
-### Parent: [[2026-05-22-economia-didatica-e-economias-reais]]
-
 ## Contexto
 
 Derivado de [[2026-05-22-economia-didatica-e-economias-reais]].

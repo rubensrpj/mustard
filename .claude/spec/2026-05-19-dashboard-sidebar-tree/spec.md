@@ -1,12 +1,5 @@
 # Feature: dashboard-sidebar-tree
 
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Scope: full
-### Checkpoint: 2026-05-19T23:30:00Z
-### Lang: pt
-
 > Continuação de `b6-dashboard-projects`. A pipeline anterior entregou o registry de projetos no dashboard e a bridge `addProject → activeWorkspaceId`. Plano detalhado de referência: `.claude/plans/quase-ok-ajustes-1-prancy-cerf.md`.
 
 ## PRD

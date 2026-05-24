@@ -1,13 +1,5 @@
 # Wave 5 — Design System Foundation (Tailwind 4 @theme + primitivas caseiras)
 
-### Parent: [[2026-05-20-economia-moat-unification]]
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Scope: full (wave)
-### Checkpoint: 2026-05-21T05:25:00Z
-### Lang: pt
-
 ## PRD
 
 Hoje os tokens de design ficam cravados inline em ~40+ componentes (`bg-emerald-100`, `dark:bg-emerald-500/15` repetidos). Tailwind 4.3 já está no projeto — mas o recurso novo `@theme` (CSS vars first) não é usado. Esta wave estabelece o Design System Foundation em `apps/dashboard/src/components/ds/` com tokens centralizados via `@theme` em `apps/dashboard/src/styles/theme.css`, primitivas caseiras (`DiffViewer` com LCS, `CodeBlock` com syntax highlighter caseiro, `TreeNode` colapsável, `MetricsPill`, `BaseRow`) que alimentam o trace viewer da W6 e a página Economia da W7. Aesthetic: dark-first Linear+Notion, accent indigo/violet, Inter, status dots — alinhado com `feedback_design_aesthetic.md` da memória.

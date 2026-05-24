@@ -1,11 +1,5 @@
 # wave-3-ui — Leitores consomem telemetry::reader (sem join com events)
 
-### Parent: [[2026-05-22-telemetry-separation]]
-### Stage: Close
-### Outcome: Completed
-### Flags:
-### Lang: pt
-
 ## Resumo
 
 Apontar todos os leitores de telemetria para o `telemetry.db` e — como o span agora

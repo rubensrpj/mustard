@@ -1,13 +1,5 @@
 # Wave 1 — Core economy domain: writer/reader/scope/estimator
 
-### Parent: [[2026-05-20-economia-moat-unification]]
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Scope: full (wave)
-### Checkpoint: 2026-05-21T03:15:00Z
-### Lang: pt
-
 ## PRD
 
 ## Contexto

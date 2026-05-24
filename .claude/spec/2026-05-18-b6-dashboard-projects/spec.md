@@ -1,12 +1,5 @@
 # Feature: b6-dashboard-projects
 
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Scope: full
-### Checkpoint: 2026-05-19T00:03:00Z
-### Lang: pt
-
 > Spec de backlog (Parte B, item B6). Rascunho grosso — criada em lote. Depende de B1 (monorepo) e do carimbo de versão de B5. Inclui trabalho de UI. Revisada 2026-05-18: linka os relatórios HTML gerados por B4.
 >
 > **Revisada 2026-05-19 (epic _self-verifiability_).** O `mustard-dashboard` é o **canal de instalação**: o cliente baixa o dashboard, seleciona o diretório, instala o Mustard por dentro dele e só então registra os repos/monorepos — o modelo de "mapear um workspace e carregar tudo" é descontinuado. O status por-projeto passa a consumir `mustard-rt run doctor` como fonte de saúde da instalação. O dashboard **já tem telemetria** — o surfacing de saúde/guardrails é extensão das views existentes, não infraestrutura nova. Ajuste pleno de escopo/tarefas quando a b6 for tratada (após o `mustard-doctor`).

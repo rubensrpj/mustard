@@ -1,13 +1,7 @@
 # Wave 7 — Migration: migrate-spec-headers + execução criteriosa + testes de invariante
 
-### Parent: [[2026-05-21-spec-lifecycle-unification]]
 ### Wave: 7
 ### Role: rt
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Lang: pt
-### Checkpoint: 2026-05-22T02:05:00Z
 
 ## Resumo
 

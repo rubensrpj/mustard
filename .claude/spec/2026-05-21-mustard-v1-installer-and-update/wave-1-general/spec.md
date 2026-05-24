@@ -1,14 +1,7 @@
 # Wave 1 — Foundation rename e versão 1.0.0
 
-### Stage: Plan
-### Outcome: Active
-### Flags: 
-### Scope: full (wave)
 ### Wave: 1
 ### Role: general
-### Checkpoint: 2026-05-21T18:00:00Z
-### Lang: pt
-### Parent: 2026-05-21-mustard-v1-installer-and-update
 
 ## PRD
 

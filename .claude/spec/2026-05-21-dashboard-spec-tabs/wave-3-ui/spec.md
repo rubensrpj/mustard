@@ -1,12 +1,5 @@
 # Wave 3 — Trace: painel expandido com payload + ts + actor
 
-### Parent: [[2026-05-21-dashboard-spec-tabs]]
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Lang: pt
-### Checkpoint: 2026-05-21T16:00:00Z
-
 ## Resumo
 
 A aba "Trace" usa `<ExecutionTrace>` (hierárquico spec → wave → agent → tool). O expand já existe mecanicamente, mas o painel expandido não evidencia `payload + timestamp + actor`. O usuário quer cada evento clicável abrindo um painel inline com essas três coisas visíveis sem ginástica. Wave 3 ajusta `<ToolEventRow>` (e qualquer outro `*Row` similar) pra renderizar essa tríade de forma consistente.

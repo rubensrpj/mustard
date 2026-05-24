@@ -1,13 +1,5 @@
 # Tactical Fix: clippy-pedantic cleanup do crate mustard-rt
 
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Scope: full
-### Checkpoint: 2026-05-24T20:00:00Z
-### Lang: pt
-### Parent: 2026-05-22-project-profiler
-
 ## Contexto
 
 Surfaced durante QA da Wave 1 de [[2026-05-22-project-profiler]]. O AC-3 da W1 e o AC-P-2 do parent exigem `cargo clippy -p mustard-rt -- -D warnings`. O workspace declara `[workspace.lints.clippy] pedantic = "warn"` em `Cargo.toml`, deixando centenas de advisories pedantic pré-existentes em `packages/core` + `apps/rt/hooks` + outros módulos do rt. Os arquivos novos da W1 (`scan/file_utils.rs`, `scan/mod.rs`, `sync_registry.rs`) estão clippy-clean — quem suja a saída é código antigo.

@@ -1,11 +1,5 @@
 # Project Profiler — motor de scan unificado + grafo de injeção
 
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Checkpoint: 2026-05-24T13:15:00.000Z
-### Lang: pt
-
 ## PRD
 
 ## Contexto

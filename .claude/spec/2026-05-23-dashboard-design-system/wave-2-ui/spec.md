@@ -1,13 +1,5 @@
 # Wave 2 — Primitives consolidados (ds/* → page/*, PageSurface novo, MetricsPill→StatPill)
 
-### Parent: [[2026-05-23-dashboard-design-system]]
-### Stage: Close
-### Outcome: Completed
-### Flags:
-### Scope: full (wave 2 of 5)
-### Lang: pt
-### Checkpoint: 2026-05-23T00:00:00Z
-
 ## Resumo
 
 Consolidar fisicamente o barril legado `components/ds/` dentro do barril canônico `components/page/`, criar a primitiva `PageSurface` (wrapper de 1ª camada com ritmo editorial 80px), renomear `MetricsPill` para `StatPill` (nome alinhado ao DESIGN.md Binance), e reapontar todos os 22 arquivos consumidores. `ds/` é resíduo de uma tentativa de design system pré-Binance (índigo/violeta com tokens `--ds-*` já removidos na Wave 1); `page/` é a única fonte de primitivas pós-DESIGN.md. Sem mudança de comportamento, sem refit visual, sem novas primitivas além do `PageSurface` — apenas move + rename + create-wrapper + find/replace. No fim da wave: zero referências vivas a `@/components/ds` ou `MetricsPill`, `components/ds/` deletado, e `PageSurface` disponível em `@/components/page` para Wave 3 montar o shell.

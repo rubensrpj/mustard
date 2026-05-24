@@ -1,12 +1,5 @@
 # Plano de Waves — Acesso a dados unificado + refresh ao vivo
 
-### Stage: Close
-### Outcome: Completed
-### Flags:
-### Scope: full (wave plan)
-### Lang: pt
-### Total waves: 3
-
 ## Contexto
 
 O sistema deveria abrir o banco SQLite uma vez e reusar a conexão para todas as

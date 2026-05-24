@@ -1,13 +1,5 @@
 # Plano de Waves: dashboard-prd-ai-lapidator (v2)
 
-### Stage: Plan
-### Outcome: Active
-### Flags: 
-### Scope: full (wave plan)
-### Total waves: 3
-### Lang: pt
-### Checkpoint: 2026-05-20T00:00:00Z
-
 ## Contexto
 
 O dashboard Mustard já tem uma página `PRD Builder` (`apps/dashboard/src/pages/Prd.tsx`) onde o usuário preenche ~10 campos manualmente (tipo, slug, título, escopo, resumo, layers, boundaries, checklist, AC, decisões, não-objetivos) e copia o markdown final pro CLI. O atrito real é triplo: o usuário tem uma intenção curta na cabeça e precisa estruturar tudo à mão; o sistema já conhece dados que ele está sendo forçado a redigitar (entidades do registry, paths do projeto, slug derivável); e a UI não distingue visualmente onde começar nem o que é mais importante.

@@ -1,11 +1,5 @@
 # wave-2-general — Coletor OTLP grava no telemetry.db reduzido
 
-### Parent: [[2026-05-22-telemetry-separation]]
-### Stage: Close
-### Outcome: Completed
-### Flags:
-### Lang: pt
-
 ## Resumo
 
 Fazer o span **nascer atribuído**: o hook que emite `agent.start` grava

@@ -1,10 +1,5 @@
 # wave-2-general
 
-### Parent: [[2026-05-21-wave-integrity-and-doctor-check]]
-### Stage: Plan
-### Outcome: Active
-### Flags: 
-
 ## Resumo
 
 Eliminar a causa raiz do bug "só wave-1 criada". Hoje o SKILL `/feature` (linhas 138-156) descreve em prosa: "o orquestrador monta um `plan.json` com a decomposição em waves". Isso joga a responsabilidade de montar o JSON pro LLM, que regularmente esquece de iterar todas as waves no array. Esta wave troca a prosa por uma chamada a um subcomando Rust determinístico: `mustard-rt run plan-from-spec --waves N --roles a,b,c --summaries 's1|s2|s3' --deps '2:1;3:1,2' --lang pt|en` emite JSON canônico com array completo. O SKILL passa a chamar `plan-from-spec | wave-scaffold` em vez de pedir ao LLM para escrever JSON na mão.

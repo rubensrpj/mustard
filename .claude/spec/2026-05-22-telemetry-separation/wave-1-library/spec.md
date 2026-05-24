@@ -1,11 +1,5 @@
 # wave-1-library — Módulo telemetry/ dedicado + telemetry.db independente
 
-### Parent: [[2026-05-22-telemetry-separation]]
-### Stage: Close
-### Outcome: Completed
-### Flags:
-### Lang: pt
-
 ## Resumo
 
 Criar um **módulo dedicado** `packages/core/src/telemetry/` (SOLID: responsabilidade

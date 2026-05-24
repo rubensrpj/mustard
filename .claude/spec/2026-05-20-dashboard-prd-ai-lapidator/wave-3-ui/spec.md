@@ -1,13 +1,5 @@
 # wave-3-ui: lapidador + redesign da página PRD Builder
 
-### Parent: [[2026-05-20-dashboard-prd-ai-lapidator]]
-### Stage: Plan
-### Outcome: Active
-### Flags: 
-### Scope: full
-### Lang: pt
-### Checkpoint: 2026-05-20T00:00:00Z
-
 ## PRD
 
 ## Contexto

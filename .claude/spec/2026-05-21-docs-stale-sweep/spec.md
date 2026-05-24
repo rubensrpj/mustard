@@ -1,13 +1,5 @@
 # docs-stale-check sweep — atualizar SKILLs para SQLite event log
 
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Scope: light
-### Checkpoint: 2026-05-21T01:20:00Z
-### Lang: pt
-### Parent: 2026-05-20-tactical-fix-via-sub-spec
-
 ## Contexto
 
 Tactical fix derivado de [[2026-05-20-tactical-fix-via-sub-spec]]. O `mustard-rt run docs-stale-check` reporta 11 hits em 5 SKILLs do `.claude/commands/mustard/` referenciando arquivos legados (`.pipeline-states/*.json`, `knowledge.json`) que foram superseded pela spec `2026-05-19-pipeline-state-from-sqlite` (pipeline state derivado integralmente de eventos SQLite via `pipeline_state_for_spec`; knowledge/memory em tabelas `knowledge_patterns`/`memory_decisions`/`memory_lessons`).

@@ -1,5 +1,6 @@
 mod artifact_update;
 pub mod amend_queries;
+pub mod commands;
 mod discovery;
 pub mod db;
 mod prd_lapidator;
@@ -542,7 +543,7 @@ fn dashboard_specs(repo_path: String) -> Result<Vec<SpecRow>, String> {
 // The legacy state-file walk was removed in Wave 3b of spec
 // 2026-05-19-pipeline-state-from-sqlite: the event log is canonical for all
 // pipeline fields; FS JSON files are stale artifacts.
-fn specs_from_fs(base: &PathBuf) -> Vec<SpecRow> {
+fn specs_from_fs(base: &std::path::Path) -> Vec<SpecRow> {
     let spec_root = base.join(".claude").join("spec");
     let mut rows: Vec<(SpecRow, Option<std::time::SystemTime>)> = Vec::new();
 
@@ -1108,7 +1109,7 @@ fn dashboard_consumption_global(projects_root: String) -> Result<GlobalConsumpti
             m.pct_tokens = m.total_tokens as f64 / grand_total as f64;
         }
     }
-    models.sort_by(|a, b| b.total_tokens.cmp(&a.total_tokens));
+    models.sort_by_key(|a| std::cmp::Reverse(a.total_tokens));
     out.by_model = models;
 
     let mut series: Vec<DailyPoint> = daily_acc.into_values().collect();
@@ -1152,7 +1153,7 @@ pub struct ActivePipeline {
 fn parse_iso_to_unix_secs(s: &str) -> Option<u64> {
     // Trim trailing Z or +00:00 / -00:00
     let s = s.trim();
-    let s = if s.ends_with('Z') { &s[..s.len() - 1] } else { s };
+    let s = s.strip_suffix('Z').unwrap_or(s);
     let s = if let Some(pos) = s.rfind('+') {
         if pos > 10 { &s[..pos] } else { s }
     } else if let Some(pos) = s[10..].rfind('-') {
@@ -1695,7 +1696,10 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             dashboard_pipelines, dashboard_metrics, dashboard_knowledge,
             dashboard_subprojects, dashboard_recipes, dashboard_skills, dashboard_recent_events,
-            dashboard_specs, dashboard_spec_markdown,
+            dashboard_specs, dashboard_spec_markdown, commands::specs::read_spec_meta,
+            commands::settings::set_language,
+            commands::settings::set_tone,
+            commands::settings::read_settings,
             dashboard_spec_complete, dashboard_spec_cancel, dashboard_spec_reactivate,
             dashboard_search_events, dashboard_search_knowledge,
             dashboard_telemetry, dashboard_live_activity, dashboard_friction,

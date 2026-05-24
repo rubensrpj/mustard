@@ -1,10 +1,5 @@
 # wave-3-general
 
-### Parent: [[2026-05-21-wave-integrity-and-doctor-check]]
-### Stage: Plan
-### Outcome: Active
-### Flags: 
-
 ## Resumo
 
 Catch-all retroativo via doctor. Mesmo com wave-1 (gate ruidoso) + wave-2 (montagem programática), specs já criadas no repo podem ter discrepância entre `wave-plan.md` e diretórios reais. Esta wave adiciona um check `wave-integrity` em `doctor.rs` que percorre cada spec sob `.claude/spec/{name}/` (layout flat, pós flatten-spec), parsea os wikilinks `[[wave-N-role]]` da tabela em `wave-plan.md`, lista os diretórios reais sob o spec, e reporta WARN para cada mismatch — com hint do comando exato pra arrumar. Aproveita a mesma passada pra tornar `doctor.rs::collect_active_spec_names` flat-aware (renomeia para `collect_spec_names`, lê `.claude/spec/` direto): gap que a flatten-spec-layout não listou nos `## Arquivos` dela. Roda automaticamente em `mustard-rt run doctor` sem novo hook nem trigger automático em pipeline (feedback `analysis_pattern`: doctor continua reativo).

@@ -1,12 +1,5 @@
 # Feature: skill-wiring-cleanup
 
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Scope: full
-### Checkpoint: 2026-05-18T21:15:34Z
-### Lang: pt
-
 > Spec de backlog (Parte A, item A6.1 — desdobramento). Criada em 2026-05-18: a A6 já concluiu adicionando as skills do Matt verbatim, mas sem wiring de comando. Esta spec liga as duas que faltam e remove o `frontend-design` (redundante com `design-craft`).
 
 ## Contexto

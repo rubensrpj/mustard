@@ -1,12 +1,5 @@
 # QA — dashboard-spec-tabs-polish
 
-### Parent: [[2026-05-21-dashboard-spec-tabs-polish]]
-### Stage: QaReview
-### Outcome: Active
-### Flags: 
-### Lang: pt
-### Checkpoint: 2026-05-21T17:00:00Z
-
 ## Resumo
 
 Executa todos os ACs do wave-plan + por wave.

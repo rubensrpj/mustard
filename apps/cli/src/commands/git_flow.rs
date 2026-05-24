@@ -227,8 +227,7 @@ fn prompt_config(facts: &GitFacts, existing: Option<&MustardConfig>) -> Result<M
         .as_ref()
         .and_then(|dev| existing.and_then(|c| c.git.flow.get(dev).cloned()));
     let existing_provider = existing
-        .map(|c| c.git.provider.clone())
-        .unwrap_or_else(|| "github".to_string());
+        .map_or_else(|| "github".to_string(), |c| c.git.provider.clone());
 
     println!("\nGit Flow Configuration\n");
     if let Some(branch) = &facts.current_branch {
@@ -261,7 +260,7 @@ fn prompt_config(facts: &GitFacts, existing: Option<&MustardConfig>) -> Result<M
         .unwrap_or(0);
     let provider_idx = Select::with_theme(&theme)
         .with_prompt("Git provider")
-        .items(&providers)
+        .items(providers)
         .default(provider_default)
         .interact()
         .context("reading git provider")?;

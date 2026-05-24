@@ -1,12 +1,5 @@
 # Wave 1 — Bugs: tab vazia + ondas FS + trace expand
 
-### Parent: [[2026-05-21-dashboard-spec-tabs-polish]]
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Lang: pt
-### Checkpoint: 2026-05-21T17:00:00Z
-
 ## Resumo
 
 Três bugs reais surfaceados em runtime: (1) primeira visita à rota `/specs` mostra a aba "Lista" vazia mesmo com cards disponíveis; (5) durante uma pipeline EXECUTE rodando, a aba Ondas mostra "Nenhuma onda registrada" porque o `useSpecWaves` lê só do SQLite (que enche gradualmente conforme eventos chegam); (6) aba Trace exibe rows mas o click não expande (regressão / falso-positivo do agent W3). Wave 1 conserta os três e adiciona fallback robusto para ondas baseado em `wave-plan.md` + filesystem.

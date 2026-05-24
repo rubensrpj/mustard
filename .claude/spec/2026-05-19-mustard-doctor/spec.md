@@ -1,12 +1,5 @@
 # Feature: mustard-doctor
 
-### Stage: Close
-### Outcome: Completed
-### Flags:
-### Scope: full
-### Checkpoint: 2026-05-19T23:30:00Z
-### Lang: pt
-
 > **Fase 1 de 2** do epic *Mustard verificável sobre si mesmo* — ver `.claude/plans/self-verifiability-roadmap.md`. Direção derivada da análise competitiva `claude-code-harness` → Mustard (2026-05-19): das seis ideias avaliadas, esta ataca a única fricção **já registrada** na memória do projeto. As demais foram descartadas: já resolvidas (engine nativo, crítico de plano), em conflito com o design (release/PR, advisor) ou nice-não-necessário (review multi-perspectiva). Esta spec é Rust-first, agnóstica e read-only — não adiciona enforcement, adiciona diagnóstico.
 
 ## PRD

@@ -1,12 +1,5 @@
 # QA — project-profiler
 
-### Stage: Plan
-### Outcome: Active
-### Flags:
-### Lang: pt
-### Checkpoint: 2026-05-22T00:00:00Z
-### Parent: 2026-05-22-project-profiler
-
 ## PRD
 
 ## Contexto

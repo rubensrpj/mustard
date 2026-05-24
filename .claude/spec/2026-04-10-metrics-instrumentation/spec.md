@@ -1,11 +1,5 @@
 # Enhancement: metrics-instrumentation
 
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Scope: light
-### Checkpoint: 2026-04-10T00:00:00Z
-
 ## Summary
 
 O JSONL de enforcement metrics (`.claude/.metrics/budget-observations.jsonl`) só recebe eventos de `context-budget.js` e sem os campos `tokens_saved`/`tokens_affected` que o `metrics-report.js` agrega. Resultado: `rtk node scripts/metrics-report.js` mostra `| budget-check | 10 | - | - | - |` — contagem sim, economia não. Este enhancement popula os campos faltantes e estende a emissão para dois outros hooks onde o cálculo é barato (`spec-hygiene.js`, `rtk-rewrite.js`), via um helper compartilhado em `_lib/`.

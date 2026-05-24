@@ -1,12 +1,5 @@
 # Wave 4 — Design: cores por fase + pulse + paleta de badges
 
-### Parent: [[2026-05-21-dashboard-spec-tabs-polish]]
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Lang: pt
-### Checkpoint: 2026-05-21T17:00:00Z
-
 ## Resumo
 
 Dois polimentos visuais: (9) o `<PipelineTimeline>` (ANALYZE/PLAN/EXECUTE/REVIEW/QA/CLOSE) ganha cor distinta por fase e a fase ATIVA pulsa via `animate-pulse`; (10) auditoria de todos os badges do app — `StatusPill`, `PhaseChip`, `+N waves`, `+N sub-specs`, source badge ("evento"/"header"/"ambos"), wave status pill, AC status — todos ganham cor com semântica consistente.

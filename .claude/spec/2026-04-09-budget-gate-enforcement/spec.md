@@ -1,9 +1,4 @@
 # Enhancement: budget-gate-enforcement
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Scope: light
-### Checkpoint: 2026-04-09T00:00:00Z
 
 ## Summary
 Extender `templates/hooks/context-budget.js` para bloquear (não apenas avisar) dispatches de Task que excedam budgets por role: explorer ≤2500 chars no prompt, impl ≤5000, review ≤3000. Hoje o hook é apenas advisory (verifica `.claude/` markdown footprint). Este enhancement adiciona uma segunda verificação: o tamanho do `prompt` do Task sendo despachado.

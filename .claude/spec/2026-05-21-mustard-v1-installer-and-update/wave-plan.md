@@ -1,13 +1,5 @@
 # Mustard v1 — Instalador multi-SO, PATH integration e update-notify
 
-### Stage: Plan
-### Outcome: Active
-### Flags: 
-### Scope: full (wave plan)
-### Checkpoint: 2026-05-21T18:00:00Z
-### Lang: pt
-### Total waves: 5
-
 ## PRD
 
 ## Contexto

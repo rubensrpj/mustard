@@ -1,9 +1,4 @@
 # Enhancement: scan-no-confirmation-prompts
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Scope: light
-### Checkpoint: 2026-04-17T00:00:00Z
 
 ## Summary
 Durante `/scan`, os Task agents geradores pedem confirmações ao sobrescrever/criar arquivos, travando o fluxo. A regra "NO confirmation prompts" existe em `scan/SKILL.md` (linha 14) mas NÃO é propagada ao prompt dos Task agents nem ao `scan-format/SKILL.md` que eles leem. Objetivo: reforçar a regra em ambos para que a geração seja totalmente automática.

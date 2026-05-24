@@ -1,12 +1,5 @@
 # Feature: eliminate-bun-followups
 
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Scope: full
-### Checkpoint: 2026-05-19T23:40:00Z
-### Lang: pt
-
 > Follow-up direto da spec `eliminate-bun` (concluída 2026-05-19, ver `.claude/spec/completed/2026-05-19-eliminate-bun`). Aquela spec consolidou o storage do harness em SQLite único (`mustard.db`) e eliminou o `events.jsonl`, mas deixou explicitamente fora dos limites dois consumidores que ainda dependem do estado antigo. Esta spec fecha esses dois pontos. Informada pelos `CONCERN`s registrados no REVIEW da `eliminate-bun` e por uma sondagem de código de 2026-05-19.
 
 ## Contexto

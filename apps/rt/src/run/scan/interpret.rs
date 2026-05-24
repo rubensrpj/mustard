@@ -9,12 +9,12 @@
 //!
 //! ## Fail-open
 //!
-//! The interpreter is allowed to fail silently. When the model is unavailable
-//! (no `ANTHROPIC_API_KEY`), the network round-trip errors, the response does
-//! not parse, or the cache write fails, [`interpret`] returns an empty
-//! [`InterpretedResult`] — the registry pipeline then falls back to the
-//! agnostic floor (cluster discovery + folder frequency) from Wave 1. The
-//! interpretation layer is an *enrichment*, never a dependency.
+//! The interpreter is allowed to fail silently. When the `claude` CLI binary is
+//! absent, the subprocess exits with an error, the response does not parse, or
+//! the cache write fails, [`interpret`] returns an empty [`InterpretedResult`]
+//! — the registry pipeline then falls back to the agnostic floor (cluster
+//! discovery + folder frequency) from Wave 1. The interpretation layer is an
+//! *enrichment*, never a dependency.
 //!
 //! ## Caching
 //!
@@ -27,10 +27,17 @@
 //!
 //! ## Model selection
 //!
-//! `MUSTARD_SCAN_MODEL` (default `sonnet`) picks the model. The selected name
-//! is normalised through the same tier mapping `model_routing` uses, and
-//! Haiku is *only* honoured when set explicitly — every other value resolves
-//! upward to Sonnet (no silent downgrade). Opus is permitted.
+//! `MUSTARD_SCAN_MODEL` (default `sonnet`) picks the model name passed to
+//! `claude --model`. The selected name is normalised through the same tier
+//! mapping `model_routing` uses; Haiku is *only* honoured when set explicitly
+//! — every other value resolves upward to Sonnet (no silent downgrade). Opus
+//! is permitted.
+//!
+//! ## LLM invocation
+//!
+//! All model calls go through the `claude` CLI binary (subprocess) — never
+//! directly to the Anthropic REST API. The user's existing Claude subscription
+//! covers the cost; `mustard-rt` requires no API key in the environment.
 
 use super::file_utils::VisitedFile;
 use crate::util::sha256::Sha256;
@@ -39,6 +46,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 /// One entity recovered from the interpreted profile.
@@ -90,10 +98,18 @@ const INTERPRET_CACHE_VERSION: u64 = 1;
 
 /// Model selection env var — Sonnet default; no silent downgrade.
 const MODEL_ENV: &str = "MUSTARD_SCAN_MODEL";
-/// API key env var — when absent the layer is a no-op (fail-open).
-const API_KEY_ENV: &str = "ANTHROPIC_API_KEY";
 /// Cache toggle env var — `off` bypasses both read and write paths.
 const CACHE_TOGGLE_ENV: &str = "MUSTARD_INTERPRET_CACHE";
+/// Economy event kind emitted after each cold-path model call.
+const EVENT_ECONOMY_OPERATION: &str = "pipeline.economy.operation.invoked";
+
+/// Recursion guard: set on the `claude` CLI subprocess we spawn so the parent
+/// `mustard-rt` `SessionStart` hook (inherited by the sub-session) detects the
+/// re-entrancy and self-allows instead of re-spawning collectors / hygiene /
+/// memory injection — any of which could re-enter the cold path. Read by
+/// `crate::hooks::session_start::SessionStart::evaluate`; tests rely on the
+/// constant so the marker stays in lockstep across modules.
+pub const COLD_PATH_INVOKED_ENV: &str = "MUSTARD_COLD_PATH_INVOKED";
 
 /// Resolve the model id to use, honouring the no-downgrade policy.
 ///
@@ -180,8 +196,15 @@ fn build_profile<'a>(
         if samples.len() >= MAX_TOTAL_SAMPLES {
             break;
         }
-        let files = cluster.get("files").and_then(Value::as_array);
-        let Some(files) = files else { continue };
+        // The cluster discovery emits representative paths under `samples`
+        // (see `cluster_discovery::ClusterFinding`). Some legacy / external
+        // clusters may use `files` instead — accept either for forward
+        // compatibility.
+        let cluster_files = cluster
+            .get("samples")
+            .and_then(Value::as_array)
+            .or_else(|| cluster.get("files").and_then(Value::as_array));
+        let Some(files) = cluster_files else { continue };
         let mut taken = 0usize;
         for f in files {
             if taken >= MAX_SAMPLES_PER_CLUSTER || samples.len() >= MAX_TOTAL_SAMPLES {
@@ -234,14 +257,9 @@ Rules:
 Profile follows:
 "#;
 
-/// Anthropic Messages API endpoint.
-const API_URL: &str = "https://api.anthropic.com/v1/messages";
-/// Anthropic API version header.
-const API_VERSION: &str = "2023-06-01";
-/// Hard upper bound on response tokens — keeps cost predictable.
-const MAX_TOKENS: u32 = 4096;
-/// HTTP timeout for the model round-trip.
-const HTTP_TIMEOUT_SECS: u64 = 30;
+/// Timeout for the `claude` CLI subprocess (seconds). The cold path only
+/// runs once per subproject; 60 s is generous even for large profiles.
+const CLAUDE_TIMEOUT_SECS: u64 = 60;
 
 /// Environment overrides used by [`interpret_with`] — tests inject explicit
 /// values so they never need to mutate process env (the crate forbids
@@ -250,8 +268,9 @@ const HTTP_TIMEOUT_SECS: u64 = 30;
 pub struct InterpretEnv {
     /// Effective `MUSTARD_SCAN_MODEL` value. Empty ⇒ Sonnet.
     pub model_env: String,
-    /// Effective `ANTHROPIC_API_KEY`. Empty ⇒ skip the model call (no-op).
-    pub api_key: String,
+    /// Override path to the `claude` CLI binary. Empty ⇒ use `"claude"` from
+    /// PATH. Tests inject a fake binary path here without mutating env.
+    pub claude_bin: String,
     /// `true` mirrors `MUSTARD_INTERPRET_CACHE=off` — bypass read + write.
     pub cache_disabled: bool,
 }
@@ -262,7 +281,7 @@ impl InterpretEnv {
     pub fn from_process() -> Self {
         Self {
             model_env: std::env::var(MODEL_ENV).unwrap_or_default(),
-            api_key: std::env::var(API_KEY_ENV).unwrap_or_default(),
+            claude_bin: String::new(), // use PATH lookup
             cache_disabled: std::env::var(CACHE_TOGGLE_ENV)
                 .is_ok_and(|v| v.eq_ignore_ascii_case("off")),
         }
@@ -282,7 +301,7 @@ pub fn interpret(
 
 /// Run the interpretation pass with explicit env overrides.
 ///
-/// Fail-open at every step: empty API key, network failure, malformed
+/// Fail-open at every step: absent `claude` CLI, subprocess failure, malformed
 /// response, or cache-write error all degrade to an empty
 /// [`InterpretedResult`]. The caller treats an empty result as "no model
 /// interpretation available — use the agnostic floor."
@@ -313,8 +332,16 @@ pub fn interpret_with(
         return InterpretedResult::default();
     }
 
-    // 3. Resolve the API key — without it the layer is a deliberate no-op.
-    if env.api_key.is_empty() {
+    // 3. Probe for the claude CLI binary — without it the layer is a
+    //    deliberate no-op (fail-open). Tests inject `claude_bin` directly;
+    //    production uses `"claude"` resolved from PATH.
+    let bin = if env.claude_bin.is_empty() {
+        "claude".to_string()
+    } else {
+        env.claude_bin.clone()
+    };
+    if !probe_claude_binary(&bin) {
+        eprintln!("interpret: claude CLI not found ('{bin}' not on PATH) — skipping model interpretation");
         return InterpretedResult::default();
     }
 
@@ -324,10 +351,13 @@ pub fn interpret_with(
     };
     let prompt = format!("{PROMPT_TEMPLATE}{prompt_json}");
 
-    // 4. Call the model. Fail-open on any error.
-    let Some(response_text) = call_model(&env.api_key, model, &prompt) else {
+    // 4. Call the model via the claude CLI subprocess. Measure wall-clock for
+    //    the economy event. Fail-open on any error.
+    let t0 = std::time::Instant::now();
+    let Some(response_text) = call_model(&bin, model, &prompt) else {
         return InterpretedResult::default();
     };
+    let duration_ms = t0.elapsed().as_millis();
 
     // 5. Parse + validate the response. Reject anything that does not look
     //    like the expected shape; fall back to empty rather than corrupt.
@@ -339,6 +369,9 @@ pub fn interpret_with(
     if !env.cache_disabled {
         write_cache(root, stack_id, &file_set_hash, &parsed);
     }
+
+    // 7. Emit economy telemetry (fail-open — never load-bearing).
+    let _ = emit_economy_event(root, duration_ms);
 
     parsed
 }
@@ -416,35 +449,181 @@ fn write_cache(root: &Path, stack_id: &str, file_set_hash: &str, result: &Interp
     let _ = mfs::write_atomic(&path, format!("{pretty}\n").as_bytes());
 }
 
-/// POST the prompt to Anthropic and return the assistant's text content.
+/// Probe whether `bin` is an executable reachable on PATH (or as an absolute
+/// path when `bin` contains a path separator). Fail-open: any IO error ⇒
+/// `false`.
+fn probe_claude_binary(bin: &str) -> bool {
+    // Absolute / relative path given directly by tests.
+    if bin.contains('/') || bin.contains('\\') {
+        return std::path::Path::new(bin).exists();
+    }
+    // Walk PATH the same way the OS would.
+    let path_var = std::env::var("PATH").unwrap_or_default();
+    let sep = if cfg!(windows) { ';' } else { ':' };
+    for dir in path_var.split(sep) {
+        let candidate = std::path::Path::new(dir).join(bin);
+        if candidate.exists() {
+            return true;
+        }
+        #[cfg(windows)]
+        {
+            // Also probe .cmd and .bat wrappers (common for Node-based CLIs).
+            for ext in &[".cmd", ".bat", ".exe"] {
+                let with_ext = std::path::Path::new(dir).join(format!("{bin}{ext}"));
+                if with_ext.exists() {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Invoke the `claude` CLI as a subprocess, feeding the prompt over stdin.
 ///
-/// Fail-open: any transport error, non-2xx status, or unexpected response
-/// shape returns `None`. The caller falls back to the agnostic floor.
-fn call_model(api_key: &str, model: &str, prompt: &str) -> Option<String> {
-    let agent = ureq::Agent::config_builder()
-        .timeout_global(Some(std::time::Duration::from_secs(HTTP_TIMEOUT_SECS)))
-        .build()
-        .new_agent();
-    let body = json!({
-        "model": model,
-        "max_tokens": MAX_TOKENS,
-        "messages": [{"role": "user", "content": prompt}],
+/// Default invocation (when `bin` == `"claude"`):
+///   `Command::new("claude").args(["--print", "--no-session-persistence", "--disable-slash-commands", "--tools", "", "--model", <model>])`
+///
+/// **NOT** `--bare`: that flag forces auth to come strictly from
+/// `ANTHROPIC_API_KEY` (OAuth + keychain are bypassed). The project rule
+/// (`feedback_llm_via_claude_cli`) is that LLM calls ride on the user's
+/// Claude CLI subscription, not on an API key. Using `--bare` here would
+/// make every cold-path subprocess exit with "Not logged in" and the
+/// fail-open path would silently produce an empty `entity-registry.json`.
+///
+/// Recursion is prevented in depth instead, via the
+/// [`COLD_PATH_INVOKED_ENV`] guard:
+/// - This function sets `MUSTARD_COLD_PATH_INVOKED=1` on the spawned child
+///   process's environment.
+/// - The parent `mustard-rt` `SessionStart` hook short-circuits to
+///   `Verdict::Allow` (no `spawn_otel_collector`, no `spec-hygiene`, no
+///   memory injection) when that env is set, so the headless sub-session
+///   inherits the env, fires the hook, sees the marker, and returns
+///   immediately without re-entering the cold path.
+/// - `--tools ""` strips all tool access so the child can only produce text
+///   even if a hook somehow still ran.
+/// - `--no-session-persistence` keeps the headless session out of the
+///   resume catalogue.
+/// - `--disable-slash-commands` avoids skill auto-discovery overhead.
+///
+/// On Windows the command is wrapped through `cmd /C` so that `.cmd` / `.bat`
+/// wrappers (common for Node-based CLIs like the real `claude` install) are
+/// resolved by the shell — `CreateProcess` alone does not expand them.
+///
+/// Spawns the child, writes `prompt` to stdin, waits up to
+/// [`CLAUDE_TIMEOUT_SECS`], and returns stdout on success. Any spawn failure,
+/// timeout, or non-zero exit degrades to `None` (fail-open).
+fn call_model(bin: &str, model: &str, prompt: &str) -> Option<String> {
+    use std::process::{Command, Stdio};
+
+    // Flags shared across platforms. Keep ordering stable so logs are diffable.
+    // The `--tools ""` argument needs to be passed as two separate tokens
+    // because the empty string is significant.
+    const FLAGS: &[&str] = &[
+        "--print",
+        "--no-session-persistence",
+        "--disable-slash-commands",
+    ];
+
+    // On Windows, route through `cmd /S /C "<cmd>"` so `.cmd`/`.bat` wrappers
+    // (common for Node-based CLIs like the real `claude` install) are resolved
+    // by the shell — CreateProcess alone does not expand them. `raw_arg` is
+    // used to pass the full command line verbatim; with `/S`, cmd.exe strips
+    // exactly the outer quote pair and runs the remainder literally.
+    #[cfg(windows)]
+    let mut child = {
+        use std::os::windows::process::CommandExt as _;
+        let flags = FLAGS.join(" ");
+        let cmd_line = format!("{bin} {flags} --tools \"\" --model {model}");
+        Command::new("cmd")
+            .raw_arg(format!("/S /C \"{cmd_line}\""))
+            .env(COLD_PATH_INVOKED_ENV, "1")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .ok()?
+    };
+    #[cfg(not(windows))]
+    let mut child = {
+        let mut cmd = Command::new(bin);
+        cmd.args(FLAGS)
+            .args(["--tools", ""])
+            .args(["--model", model])
+            .env(COLD_PATH_INVOKED_ENV, "1")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null()); // suppress claude CLI banners / progress output
+        cmd.spawn().ok()?
+    };
+
+    // Write the prompt to stdin then close the pipe so the child sees EOF.
+    if let Some(mut stdin) = child.stdin.take() {
+        // Ignore write errors — if stdin closed early the child will still
+        // complete (or exit non-zero, caught below).
+        let _ = stdin.write_all(prompt.as_bytes());
+    }
+
+    // Wait with a wall-clock timeout via a helper thread.
+    let output = wait_with_timeout(child, CLAUDE_TIMEOUT_SECS)?;
+
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8(output.stdout).ok()
+}
+
+/// Wait for `child` to finish, killing it if `timeout_secs` elapses first.
+///
+/// Returns `None` on timeout or if the helper thread panics.
+fn wait_with_timeout(
+    child: std::process::Child,
+    timeout_secs: u64,
+) -> Option<std::process::Output> {
+    use std::sync::mpsc;
+
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let out = child.wait_with_output();
+        let _ = tx.send(out);
     });
-    let mut response = agent
-        .post(API_URL)
-        .header("x-api-key", api_key)
-        .header("anthropic-version", API_VERSION)
-        .header("content-type", "application/json")
-        .send_json(body)
-        .ok()?;
-    let parsed: Value = response.body_mut().read_json::<Value>().ok()?;
-    parsed
-        .get("content")
-        .and_then(Value::as_array)
-        .and_then(|arr| arr.first())
-        .and_then(|first| first.get("text"))
-        .and_then(Value::as_str)
-        .map(str::to_string)
+    rx.recv_timeout(std::time::Duration::from_secs(timeout_secs))
+        .ok()
+        .and_then(|r| r.ok())
+}
+
+/// Emit a `pipeline.economy.operation.invoked` event to the project store.
+///
+/// Tokens are reported as `0` — the cost is charged to the user's Claude
+/// subscription via the `claude` CLI, not to any Mustard API key.
+/// Fail-open: any store error is silently swallowed.
+fn emit_economy_event(root: &Path, duration_ms: u128) -> Result<(), Box<dyn std::error::Error>> {
+    use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
+    use mustard_core::store::event_store::EventSink;
+    use mustard_core::store::sqlite_store::SqliteEventStore;
+
+    let store = SqliteEventStore::for_project(root.to_string_lossy().as_ref())?;
+    let session_id = std::env::var("MUSTARD_SESSION_ID")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .or_else(|| std::env::var("CLAUDE_SESSION_ID").ok().filter(|s| !s.is_empty()))
+        .unwrap_or_else(|| "unknown".to_string());
+    let event = HarnessEvent {
+        v: SCHEMA_VERSION,
+        ts: crate::util::now_iso8601(),
+        session_id,
+        wave: 0,
+        actor: Actor { kind: ActorKind::Hook, id: Some("scan-cold-path".to_string()), actor_type: None },
+        event: EVENT_ECONOMY_OPERATION.to_string(),
+        payload: json!({
+            "operation": "scan-cold-path",
+            "duration_ms": duration_ms,
+            "tokens_used": 0,
+        }),
+        spec: None,
+    };
+    let _ = store.append(&event);
+    Ok(())
 }
 
 /// Parse the model's reply into an [`InterpretedResult`].
@@ -741,12 +920,15 @@ mod tests {
         assert_eq!(resolve_model_for("claude-opus-4-7"), "claude-opus-4-7");
     }
 
-    /// Build a no-op env: empty API key (skip the model call), cache
-    /// enabled (so hits register), Sonnet model.
+    /// Build a no-op env: no claude binary override (binary probe will fail in
+    /// CI / unit tests since no real claude is present), cache enabled (so
+    /// cache hits still register), Sonnet model. The cold path falls back to
+    /// the agnostic empty floor when the binary is absent — which is the
+    /// desired behaviour for these unit tests.
     fn empty_env() -> InterpretEnv {
         InterpretEnv {
             model_env: String::new(),
-            api_key: String::new(),
+            claude_bin: String::new(),
             cache_disabled: false,
         }
     }
@@ -846,8 +1028,8 @@ mod tests {
         }
     }
 
-    /// A cache miss without an API key returns the empty fallback — the
-    /// agnostic floor stays the source of truth.
+    /// A cache miss without the claude CLI binary returns the empty fallback —
+    /// the agnostic floor stays the source of truth.
     #[test]
     fn interpret_without_api_key_is_empty() {
         let dir = tempdir().unwrap();
@@ -970,5 +1152,48 @@ mod tests {
         assert_eq!(parsed.entities.len(), 1);
         assert_eq!(parsed.entities[0].name, "User");
         assert!(parse_response("no json here").is_none());
+    }
+
+    /// End-to-end fake-binary path: inject a fake `claude` binary via
+    /// `InterpretEnv::claude_bin` and verify `interpret_with` consumes its
+    /// stdout. This covers the Windows `cmd /S /C` shell wrapper and the
+    /// Unix `sh -c` path in a single cross-platform test.
+    #[test]
+    fn interpret_with_fake_binary_returns_entities() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join(".claude")).unwrap();
+        let visited = vec![make_visited("src/lib.rs", "pub struct Widget { pub id: i64 }")];
+        let json = r#"{"entities":[{"name":"Widget","file":"src/lib.rs","edges":[]}],"enums":[],"patternsOverlay":{}}"#;
+
+        #[cfg(windows)]
+        let (bin_path, _bin_dir) = {
+            let bin_dir = tempdir().unwrap();
+            let p = bin_dir.path().join("fake_claude.cmd");
+            std::fs::write(&p, format!("@echo off\r\necho {json}\r\n")).unwrap();
+            (p.to_string_lossy().into_owned(), bin_dir)
+        };
+        #[cfg(not(windows))]
+        let (bin_path, _bin_dir) = {
+            use std::os::unix::fs::PermissionsExt as _;
+            let bin_dir = tempdir().unwrap();
+            let p = bin_dir.path().join("fake_claude");
+            std::fs::write(&p, format!("#!/bin/sh\nprintf '%s' '{json}'\n")).unwrap();
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+            (p.to_string_lossy().into_owned(), bin_dir)
+        };
+
+        let env = InterpretEnv {
+            model_env: String::new(),
+            claude_bin: bin_path,
+            cache_disabled: true,
+        };
+        let result = interpret_with(root, "rust", &visited, &[], &env);
+        assert!(
+            !result.from_cache,
+            "must not come from cache (cache_disabled=true)"
+        );
+        assert_eq!(result.entities.len(), 1, "fake binary output must be parsed");
+        assert_eq!(result.entities[0].name, "Widget");
     }
 }

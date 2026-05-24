@@ -1,12 +1,5 @@
 # QA — dashboard-spec-tabs
 
-### Parent: [[2026-05-21-dashboard-spec-tabs]]
-### Stage: QaReview
-### Outcome: Active
-### Flags: 
-### Lang: pt
-### Checkpoint: 2026-05-21T16:00:00Z
-
 ## Resumo
 
 Executar os 8 Acceptance Criteria do `wave-plan.md` (AC-1..AC-8) mais os ACs por wave. `mustard-rt run qa-run --spec 2026-05-21-dashboard-spec-tabs` itera todos os blocos `## Acceptance Criteria` da árvore de specs e roda cada `Command:`. Falha → retorna para implementação; passa → libera CLOSE.

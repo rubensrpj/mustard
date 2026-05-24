@@ -1,13 +1,5 @@
 # W13 — Close and archive
 
-### Stage: Plan
-### Outcome: Active
-### Phase: PLAN
-### Scope: light
-### Checkpoint: 2026-05-24T19:30:00Z
-### Lang: pt-BR
-### Parent: 2026-05-24-mustard-unification
-
 ## Contexto
 
 Encerrar a mega-spec consistentemente e gerar artefatos auditáveis. Confirma que tudo o que foi prometido foi entregue: backup das specs, schema do `mustard.db` lean, economia visível em `/economia`, ADR consolidada, vault Obsidian atualizado.
@@ -83,15 +75,15 @@ Encerrar a mega-spec consistentemente e gerar artefatos auditáveis. Confirma qu
 
 ## Critérios de Aceitação
 
-- [ ] **AC-13.1.** Backup em `~/.mustard-backups/2026-05-24-pre-unification/MANIFEST.json` existe. Command: `node -e "const fs=require('fs'),os=require('os'),path=require('path');const p=path.join(os.homedir(),'.mustard-backups/2026-05-24-pre-unification/MANIFEST.json');if(!fs.existsSync(p))process.exit(1);const j=JSON.parse(fs.readFileSync(p,'utf8'));if(!j.checksums||Object.keys(j.checksums).length<50)process.exit(1)"`
-- [ ] **AC-13.2.** Todas as ~55 specs Close/Completed têm event `pipeline.status: archived`. Command: SQL query no `mustard.db`.
-- [ ] **AC-13.3.** `entity-registry.json` tem `entities[]` não-vazio. Command: `node -e "const j=JSON.parse(require('fs').readFileSync('.claude/entity-registry.json','utf8'));if(!Array.isArray(j.entities)||j.entities.length===0)process.exit(1)"`
-- [ ] **AC-13.4.** `docs/adr/2026-05-24-mustard-unification.md` existe e referencia as 4 specs absorvidas via wikilinks. Command: `node -e "const t=require('fs').readFileSync('docs/adr/2026-05-24-mustard-unification.md','utf8');for(const s of ['2026-05-24-meta-sidecar','2026-05-24-config-idioma-tom','2026-05-23-per-spec-event-log-claude-devtools','2026-05-22-telemetry-separation']){if(!t.includes('[['+s)){console.error('missing wikilink',s);process.exit(1)}}"`
-- [ ] **AC-13.5.** `verify-pipeline --json` retorna `overall: pass`. Command: `rtk mustard-rt run verify-pipeline --json | node -e "let s='';process.stdin.on('data',c=>s+=c);process.stdin.on('end',()=>{const j=JSON.parse(s);if(j.overall!=='pass')process.exit(1)})"`
-- [ ] **AC-13.6.** `cargo clippy --workspace -- -D warnings` limpo. Command: `rtk cargo clippy --workspace -- -D warnings 2>&1 | grep -q "No issues found"`
-- [ ] **AC-13.7.** `mustard.db` em projeto canário `< 1MB`. Command: `node -e "const fs=require('fs');const s=fs.statSync('.claude/.harness/mustard.db').size;if(s>1024*1024)process.exit(1)"`
-- [ ] **AC-13.8.** mega-spec `meta.json` tem `Outcome: Completed`. Command: `node -e "const m=JSON.parse(require('fs').readFileSync('.claude/spec/2026-05-24-mustard-unification/meta.json','utf8'));if(m.outcome!=='Completed')process.exit(1)"`
-- [ ] **AC-13.9.** `economy report --format json --wave all` exportado e anexado ao ADR. Command: derived from AC-13.4.
+- [ ] AC-W13-1: Backup em `~/.mustard-backups/2026-05-24-pre-unification/MANIFEST.json` existe. Command: `node -e "const fs=require('fs'),os=require('os'),path=require('path');const p=path.join(os.homedir(),'.mustard-backups/2026-05-24-pre-unification/MANIFEST.json');if(!fs.existsSync(p))process.exit(1);const j=JSON.parse(fs.readFileSync(p,'utf8'));if(!j.checksums||Object.keys(j.checksums).length<50)process.exit(1)"`
+- [ ] AC-W13-2: Todas as ~55 specs Close/Completed têm event `pipeline.status: archived`. Command: SQL query no `mustard.db`.
+- [ ] AC-W13-3: `entity-registry.json` tem `entities[]` não-vazio. Command: `node -e "const j=JSON.parse(require('fs').readFileSync('.claude/entity-registry.json','utf8'));if(!Array.isArray(j.entities)||j.entities.length===0)process.exit(1)"`
+- [ ] AC-W13-4: `docs/adr/2026-05-24-mustard-unification.md` existe e referencia as 4 specs absorvidas via wikilinks. Command: `node -e "const t=require('fs').readFileSync('docs/adr/2026-05-24-mustard-unification.md','utf8');for(const s of ['2026-05-24-meta-sidecar','2026-05-24-config-idioma-tom','2026-05-23-per-spec-event-log-claude-devtools','2026-05-22-telemetry-separation']){if(!t.includes('[['+s)){console.error('missing wikilink',s);process.exit(1)}}"`
+- [ ] AC-W13-5: `verify-pipeline --json` retorna `overall: pass`. Command: `rtk mustard-rt run verify-pipeline --json | node -e "let s='';process.stdin.on('data',c=>s+=c);process.stdin.on('end',()=>{const j=JSON.parse(s);if(j.overall!=='pass')process.exit(1)})"`
+- [ ] AC-W13-6: `cargo clippy --workspace -- -D warnings` limpo. Command: `rtk cargo clippy --workspace -- -D warnings 2>&1 | grep -q "No issues found"`
+- [ ] AC-W13-7: `mustard.db` em projeto canário `< 1MB`. Command: `node -e "const fs=require('fs');const s=fs.statSync('.claude/.harness/mustard.db').size;if(s>1024*1024)process.exit(1)"`
+- [ ] AC-W13-8: mega-spec `meta.json` tem `Outcome: Completed`. Command: `node -e "const m=JSON.parse(require('fs').readFileSync('.claude/spec/2026-05-24-mustard-unification/meta.json','utf8'));if(m.outcome!=='Completed')process.exit(1)"`
+- [ ] AC-W13-9: `economy report --format json --wave all` exportado e anexado ao ADR. Command: derived from AC-13.4.
 
 ## Notas
 

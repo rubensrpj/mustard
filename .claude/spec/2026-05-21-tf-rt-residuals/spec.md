@@ -1,12 +1,5 @@
 # Tactical-fix — rt modules bucket residuals
 
-### Parent: [[2026-05-21-flatten-spec-layout-and-multi-collab]]
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Lang: pt
-### Checkpoint: 2026-05-21
-
 ## Resumo
 
 Wave-2 do parent so tocou 6 modulos de rt (complete_spec/spec_extract/qa_run/wave_tree/wikilink/emit_pipeline + session_cleanup). 10 outros modulos ainda tem referencias a `spec/active|completed|superseded` — alguns sao paths reais (operacoes de fs), outros sao comentarios ou logs. Esta fix audita os 32 hits e flattena os que ainda fazem trabalho real (path resolution / fs operations); os textuais reescrevem-se em uma frase.

@@ -1,13 +1,5 @@
 # W7 — Templates cuts + opt-in skills
 
-### Stage: Plan
-### Outcome: Active
-### Phase: PLAN
-### Scope: full
-### Checkpoint: 2026-05-24T19:30:00Z
-### Lang: pt-BR
-### Parent: 2026-05-24-mustard-unification
-
 ## Contexto
 
 Os `SKILL.md` em `apps/cli/templates/commands/mustard/` somam ~2630 linhas. Alvo: ≤1100 (-56%). Cada `SKILL.md` cortado delega para um dos 15 subcomandos novos (W6 entregou). Skills 3rdparty grandes (hallmark com 100+ arquivos, design-craft, grill-me, react-best-practices) viram opt-in via `mustard add skill:nome`, instaladas em cache global `~/.claude/skill-cache/`. Refs duplicados consolidados em fonte única.
@@ -110,13 +102,13 @@ Refs expandidos (já existem; absorvem texto duplicado de SKILL.md):
 
 ## Critérios de Aceitação
 
-- [ ] **AC-7.1.** Soma de linhas dos 18 SKILL.md ≤ 1100. Command: `node -e "const{execSync}=require('child_process');const out=execSync('find apps/cli/templates/commands/mustard -name SKILL.md -exec wc -l {} +',{encoding:'utf8'});const total=out.split('\\n').reverse().find(l=>l.includes('total'));const n=parseInt(total.trim().split(/\\s+/)[0]);if(n>1100){console.error('total',n);process.exit(1)}"`
-- [ ] **AC-7.2.** Skills opt-in não estão em `apps/cli/templates/skills/`. Command: `node -e "const fs=require('fs');for(const s of ['hallmark','design-craft','react-best-practices','grill-me']){if(fs.existsSync('apps/cli/templates/skills/'+s))process.exit(1)}"`
-- [ ] **AC-7.3.** `mustard add skill:hallmark` em projeto canário cria symlink em `.claude/skills/hallmark/`. Command: manual em projeto canário.
-- [ ] **AC-7.4.** `mustard init` mostra mensagem de extras disponíveis. Command: `node -e "const t=require('fs').readFileSync('apps/cli/src/commands/init.rs','utf8');if(!/Optional skills|mustard add skill:/i.test(t))process.exit(1)"`
-- [ ] **AC-7.5.** `adapter.js` deletado; `adapt-cursor` referenciado no README. Command: `node -e "const fs=require('fs');if(fs.existsSync('apps/cli/templates/adapters/cursor/adapter.js'))process.exit(1);const r=fs.readFileSync('apps/cli/templates/adapters/cursor/README.md','utf8');if(!/adapt-cursor/.test(r))process.exit(1)"`
-- [ ] **AC-7.6.** Banners pt-BR hardcoded em SKILL.md ≤ 3 ocorrências. Command: `node -e "const{execSync}=require('child_process');const out=execSync('rg -E \"(Está|Você|Aprovar)\" apps/cli/templates/commands/mustard --type md',{encoding:'utf8'}).trim();if(out.split('\\n').filter(Boolean).length>3)process.exit(1)"`
-- [ ] **AC-7.7.** Referência python órfã removida de skill/SKILL.md. Command: `node -e "const t=require('fs').readFileSync('apps/cli/templates/commands/mustard/skill/SKILL.md','utf8');if(/python .*run_loop\\.py/.test(t))process.exit(1)"`
+- [ ] AC-W7-1: Soma de linhas dos 18 SKILL.md ≤ 1100. Command: `node -e "const{execSync}=require('child_process');const out=execSync('find apps/cli/templates/commands/mustard -name SKILL.md -exec wc -l {} +',{encoding:'utf8'});const total=out.split('\\n').reverse().find(l=>l.includes('total'));const n=parseInt(total.trim().split(/\\s+/)[0]);if(n>1100){console.error('total',n);process.exit(1)}"`
+- [ ] AC-W7-2: Skills opt-in não estão em `apps/cli/templates/skills/`. Command: `node -e "const fs=require('fs');for(const s of ['hallmark','design-craft','react-best-practices','grill-me']){if(fs.existsSync('apps/cli/templates/skills/'+s))process.exit(1)}"`
+- [ ] AC-W7-3: `mustard add skill:hallmark` em projeto canário cria symlink em `.claude/skills/hallmark/`. Command: manual em projeto canário.
+- [ ] AC-W7-4: `mustard init` mostra mensagem de extras disponíveis. Command: `node -e "const t=require('fs').readFileSync('apps/cli/src/commands/init.rs','utf8');if(!/Optional skills|mustard add skill:/i.test(t))process.exit(1)"`
+- [ ] AC-W7-5: `adapter.js` deletado; `adapt-cursor` referenciado no README. Command: `node -e "const fs=require('fs');if(fs.existsSync('apps/cli/templates/adapters/cursor/adapter.js'))process.exit(1);const r=fs.readFileSync('apps/cli/templates/adapters/cursor/README.md','utf8');if(!/adapt-cursor/.test(r))process.exit(1)"`
+- [ ] AC-W7-6: Banners pt-BR hardcoded em SKILL.md ≤ 3 ocorrências. Command: `node -e "const{execSync}=require('child_process');const out=execSync('rg -E \"(Está|Você|Aprovar)\" apps/cli/templates/commands/mustard --type md',{encoding:'utf8'}).trim();if(out.split('\\n').filter(Boolean).length>3)process.exit(1)"`
+- [ ] AC-W7-7: Referência python órfã removida de skill/SKILL.md. Command: `node -e "const t=require('fs').readFileSync('apps/cli/templates/commands/mustard/skill/SKILL.md','utf8');if(/python .*run_loop\\.py/.test(t))process.exit(1)"`
 
 ## Notas
 

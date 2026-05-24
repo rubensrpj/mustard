@@ -1,13 +1,5 @@
 # Wave 1 — mustard-rt infra: wikilink-extract + memory cross-wave + schema
 
-### Parent: [[2026-05-20-mustard-wave-network-standard]]
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Scope: full (wave)
-### Checkpoint: 2026-05-20T20:25:00Z
-### Lang: pt
-
 ## PRD
 
 ## Contexto

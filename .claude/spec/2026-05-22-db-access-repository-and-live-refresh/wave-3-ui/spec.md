@@ -1,11 +1,5 @@
 # wave-3-ui — Estado compartilhado no dashboard + refresh enxuto
 
-### Parent: [[2026-05-22-db-access-repository-and-live-refresh]]
-### Stage: Close
-### Outcome: Completed
-### Flags:
-### Lang: pt
-
 ## Resumo
 
 Manter o `store::DbCache` (Wave 1) vivo no estado gerenciado do Tauri e fazer

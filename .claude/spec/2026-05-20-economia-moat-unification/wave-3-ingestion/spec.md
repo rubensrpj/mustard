@@ -1,13 +1,5 @@
 # Wave 3 — Ingestão externa: adapters OTEL + JSONL + RTK
 
-### Parent: [[2026-05-20-economia-moat-unification]]
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Scope: full (wave)
-### Checkpoint: 2026-05-21T04:35:00Z
-### Lang: pt
-
 ## PRD
 
 Três fontes de telemetria de custo/economia hoje vivem desligadas do `economy::writer` unificado entregue na W1: (a) o coletor OTEL existe em `apps/rt/src/run/otel/` mas ninguém o spawna no `SessionStart`, então spans `gen_ai.*` nunca chegam ao SQLite; (b) o transcript JSONL de cada sessão Claude Code contém `message.usage` linha-a-linha, mas nenhum parser nosso o lê — perdemos a fonte mais barata de `ApiCostFrame`; (c) `mustard-rt run rtk-gain` já calcula tokens economizados via rewriter, mas imprime JSON pro stdout sem persistir em `savings_records`. A W3 fecha as três pontas: cria adapters puros em `mustard_core::economy::sources::{otel, transcript, rtk}` que traduzem o formato externo em records do W1, e fia-os nos hooks/subcomandos do rt para que cada fonte produza linhas reais no banco a cada sessão.

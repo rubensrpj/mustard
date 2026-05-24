@@ -1,12 +1,5 @@
 # Token Economy do `/mustard:spec` resume
 
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Scope: full
-### Lang: pt
-### Checkpoint: 2026-05-23T17:00:00Z
-
 ## Resumo
 
 O fluxo `/mustard:spec` (continuar spec em EXEC) está gastando ~60k tokens só pra começar a primeira wave — antes mesmo do primeiro Edit do agente. Auditoria do resume da spec `2026-05-23-dashboard-design-system` nesta sessão mostrou: ~25k de tokens evitáveis vindo de (a) leitura do ref `resume-flow.md` (323 linhas) p/ rotear uma decisão simples, (b) leitura do ref `agent-prompt.md` (180 linhas) p/ montar um prompt, (c) `spec-extract` redumpando ~200 linhas que o orchestrator já tinha lido, (d) `diff-context --subproject` retornando o stat global de divergência em vez do escopo pedido, (e) 5 chamadas `emit-pipeline` sequenciais. Esta spec move trabalho do LLM (caro) para o `mustard-rt` (gratuito): um único comando `resume-bootstrap` decide modo + caminho operacional + necessidade de diff/slice, um `agent-prompt-render` materializa o prompt server-side, e `diff-context` passa a respeitar o `--subproject`. Os refs viram folha fina (≤80 linhas, só invariantes + tabela de estados). Meta concreta: corte de ≥40% no contexto até o primeiro Task dispatch num resume típico.

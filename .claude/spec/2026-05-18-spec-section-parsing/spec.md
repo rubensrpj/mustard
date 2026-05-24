@@ -1,12 +1,5 @@
 # Feature: spec-section-parsing
 
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Scope: full
-### Checkpoint: 2026-05-18T21:51:01Z
-### Lang: pt
-
 ## Contexto
 
 O Mustard gera cada arquivo de spec num idioma escolhido uma vez por projeto — português ou inglês — e essa escolha já é resolvida e guardada de forma central (campo `specLang`, gravado pela própria ferramenta no primeiro uso). Quando o idioma é português, a spec inteira é escrita em português, inclusive os cabeçalhos de cada seção: a seção de arquivos vira "Arquivos", a de tarefas vira "Tarefas", e assim por diante.

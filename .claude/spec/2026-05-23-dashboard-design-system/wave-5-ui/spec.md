@@ -1,13 +1,5 @@
 # Wave 5 — Pages high-traffic (Workspace, Specs, Economia, Knowledge)
 
-### Parent: [[2026-05-23-dashboard-design-system]]
-### Stage: Close
-### Outcome: Completed
-### Flags:
-### Scope: full (wave 5 of 6)
-### Lang: pt
-### Checkpoint: 2026-05-23T22:30:00Z
-
 ## Resumo
 
 Migrar as 4 páginas de maior tráfego para o padrão Binance consolidado pelas Waves 1-4. Cada página passa a (a) compor `<PageSurface>` em vez de wrapper hand-rolled, (b) abrir com `<EditorialBand>` para o herói (eyebrow + título + subtítulo + ações), (c) consumir primitivas do barril `@/components/page` (KPI numerics, StatPill, DeltaText, DataCard, DataRow), (d) importar features de domínio via `@/features/{specs,workspace,economy,knowledge}` (caminho novo da Wave 4), (e) eliminar QUALQUER hex hardcoded, classe Tailwind de cor (`text-{cor}`, `bg-{cor}`, `border-{cor}`), radius (`rounded-*`), elevação (`shadow-*`) ou `style={{...}}` visual residual nas páginas — só layout estrutural (`grid/flex/gap/w/h/max-w/col-span`) e composição de primitivas. Não é refactor de feature; cada componente de domínio continua onde está (em `features/*`). É refactor de **página** — a página consome, não inventa visual. Métrica concreta: `node scripts/check-pages-no-inline-visual.mjs apps/dashboard/src/pages/{Workspace,Specs,Economia,Knowledge}.tsx` retorna 0 (Wave 4 criou o script; aqui ele finalmente passa nas 4 páginas).

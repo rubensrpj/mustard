@@ -1,12 +1,5 @@
 # Wave 1 — Tab system + SpecDetailDashboard
 
-### Parent: [[2026-05-21-dashboard-spec-tabs]]
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Lang: pt
-### Checkpoint: 2026-05-21T16:00:00Z
-
 ## Resumo
 
 Substituir o drill-down inline da rota `/specs` por um sistema de abas no padrão Claude Code: uma `<SpecTabBar>` no topo, com aba "Lista" sempre presente, abas de spec dinâmicas, botão `+` que abre quick-open, botão `×` por aba e botão de atualizar dados. Cada `<SpecCard>` ganha botão "Detalhes" que dispara um callback `onOpenSpec(specName)`. O conteúdo da aba de spec é o novo `<SpecDetailDashboard>` — cabeçalho com a `<PipelineTimeline>` (ANALYZE/PLAN/EXECUTE/REVIEW/QA/CLOSE) + as cinco sub-abas reaproveitadas do drill-down (Ondas, Trace, Qualidade, Rede, Sub-specs). State vive em `Specs.tsx` (route-local); sair da rota descarta.

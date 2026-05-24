@@ -163,7 +163,7 @@ fn copy_settings(templates_dir: &Path, claude_path: &Path) -> Result<usize> {
         return Ok(0);
     }
     let bytes = mfs::read(&src).with_context(|| format!("reading {}", src.display()))?;
-    mfs::write_atomic(&claude_path.join("settings.json"), &bytes)
+    mfs::write_atomic(claude_path.join("settings.json"), &bytes)
         .with_context(|| format!("copying {}", src.display()))?;
     Ok(1)
 }
@@ -173,8 +173,7 @@ fn backup_claude_dir(claude_path: &Path) -> Result<std::path::PathBuf> {
     let stamp = timestamp_slug();
     let name = claude_path
         .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| ".claude".to_string());
+        .map_or_else(|| ".claude".to_string(), |n| n.to_string_lossy().into_owned());
     let backup = claude_path.with_file_name(format!("{name}.backup.{stamp}"));
     copy_dir(claude_path, &backup, true, &[])?;
     Ok(backup)

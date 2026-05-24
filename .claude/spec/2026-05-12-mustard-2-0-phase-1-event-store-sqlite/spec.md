@@ -1,9 +1,6 @@
 # Mustard 2.0 — Phase 1: Event Store SQLite + Projeções
 
 - **Lang**: ptbr
-### Stage: Close
-### Outcome: Completed
-### Flags: 
 - **Checkpoint**: 2026-05-12T19:15:00Z
 - **Scope**: Full
 - **Type**: feature

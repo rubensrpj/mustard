@@ -1,12 +1,5 @@
 # Wave Plan — Visão Geral redesenhada
 
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Scope: full (wave plan)
-### Checkpoint: 2026-05-20T23:59:00Z
-### Lang: pt
-
 ## PRD (visão única)
 
 A página `Visão Geral` (`Workspace.tsx`) será reorganizada em 5 visualizações navegáveis (specs por status com filtro de período, total de tokens economizados, calendário mensal de atividades, feed de eventos com badges por tipo e atalho clicável pra spec, ranking de arquivos mais usados) sustentadas por um sistema de badges semânticos novo (`success/warning/error/info`, estilo Notion) em `badge.tsx`. Hoje a página é um mosaico raso: heatmap só de "hoje", lista de specs duplicando `/specs`, badges sem semântica, sem visão acumulada de economia nem feed cronológico — o operador precisa abrir três páginas pra montar a foto. O sucesso é o operador abrir a Visão Geral e em ≤3 segundos saber em voz alta: quantas specs por status, quanto economizou no total, qual o dia mais ativo da semana (clicável), qual o último evento e em qual spec.

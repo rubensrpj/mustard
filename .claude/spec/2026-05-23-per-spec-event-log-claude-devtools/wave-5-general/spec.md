@@ -1,11 +1,5 @@
 # Wave 5 — Comando /mustard:spec clear
 
-### Parent: [[2026-05-23-per-spec-event-log-claude-devtools]]
-### Stage: Plan
-### Outcome: Active
-### Flags:
-### Lang: pt
-
 ## PRD
 
 ### Contexto

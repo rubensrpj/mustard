@@ -1,13 +1,5 @@
 # Wave 3 — Dashboard: aba "Network" no SpecDrillDown renderiza grafo wikilink
 
-### Parent: [[2026-05-20-mustard-wave-network-standard]]
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Scope: full (wave)
-### Checkpoint: 2026-05-20T21:05:00Z
-### Lang: pt
-
 ## PRD
 
 ## Contexto

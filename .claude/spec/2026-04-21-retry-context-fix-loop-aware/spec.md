@@ -1,9 +1,4 @@
 # Enhancement: retry-context-fix-loop-aware
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Scope: light
-### Checkpoint: 2026-04-21T11:45:00Z
 
 ## Summary
 Enriquecer o placeholder `{retry_context}` do template de dispatch para reutilizar o trabalho da dispatch anterior em fix-loops (review REJECTED → fix agent) e granular retries (step failure). Em retry mode, o template substitui o bloco pesado de CONTEXT/REFERENCE/ENTITY/SKILLS/RECIPE por um cabeçalho mínimo que referencia prior-dispatch memory + files modificados + findings verbatim da review. Objetivo: reduzir wall clock (~30-50%), liberar context headroom do agent (~30%) e cortar re-scans redundantes. Billed tokens caem ~20-30% (cache já absorve boa parte dos re-Reads). Não altera L0, roteamento sonnet, review mandatório, ou limite de 2 fix-loops.

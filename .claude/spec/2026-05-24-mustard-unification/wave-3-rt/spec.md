@@ -1,13 +1,5 @@
 # W3 — Spec meta sidecar (absorve `2026-05-24-meta-sidecar`)
 
-### Stage: Plan
-### Outcome: Active
-### Phase: PLAN
-### Scope: full
-### Checkpoint: 2026-05-24T19:30:00Z
-### Lang: pt-BR
-### Parent: 2026-05-24-mustard-unification
-
 ## Contexto
 
 Absorve integralmente a spec ativa `2026-05-24-meta-sidecar`. Hoje cada spec guarda metadata (stage, outcome, phase, scope, lang, checkpoint, parent) como `### X:` headers no início do `spec.md`. O parser (`apps/rt/src/run/spec_sections.rs`) varre regex e mantém tabela bilíngue de variantes. Esta onda move metadata para `meta.json` lateral, simplifica o parser, e atualiza todos os escritores.
@@ -39,12 +31,12 @@ A absorção significa: as 4 ondas originais da spec `2026-05-24-meta-sidecar` v
 
 ## Critérios de Aceitação
 
-- [ ] **AC-3.1.** Toda spec em `.claude/spec/**` tem `meta.json` válido com campos obrigatórios. Command: `node -e "const fs=require('fs'),path=require('path');const root='.claude/spec';for(const d of fs.readdirSync(root)){const p=path.join(root,d);if(!fs.statSync(p).isDirectory())continue;const m=path.join(p,'meta.json');if(!fs.existsSync(m)){console.error('missing',m);process.exit(1)}const j=JSON.parse(fs.readFileSync(m,'utf8'));for(const k of ['stage','outcome','phase','scope','lang','checkpoint']){if(!(k in j)){console.error('missing field',k,'in',m);process.exit(1)}}}"`
-- [ ] **AC-3.2.** `pipeline_state_ingest.rs` lê `meta.json`. Command: `node -e "const t=require('fs').readFileSync('apps/rt/src/run/pipeline_state_ingest.rs','utf8');if(!/meta\\.json/.test(t))process.exit(1)"`
-- [ ] **AC-3.3.** `wave_scaffold.rs` e `emit_pipeline.rs` escrevem meta.json. Command: `node -e "const fs=require('fs');for(const f of ['apps/rt/src/run/wave_scaffold.rs','apps/rt/src/run/emit_pipeline.rs']){if(!/write_meta|meta\\.json/.test(fs.readFileSync(f,'utf8'))){console.error(f);process.exit(1)}}"`
-- [ ] **AC-3.4.** Dashboard tem comando Tauri `read_spec_meta`. Command: `node -e "const t=require('fs').readFileSync('apps/dashboard/src-tauri/src/commands/specs.rs','utf8');if(!/read_spec_meta|meta\\.json/.test(t))process.exit(1)"`
-- [ ] **AC-3.5.** Após migração, `.md` não contém headers `### X:` mais. Command: `node -e "const fs=require('fs'),path=require('path');const root='.claude/spec';let bad=[];for(const d of fs.readdirSync(root)){const p=path.join(root,d);if(!fs.statSync(p).isDirectory())continue;for(const f of fs.readdirSync(p)){if(!f.endsWith('.md'))continue;const txt=fs.readFileSync(path.join(p,f),'utf8');if(/^###\\s+(Stage|Outcome|Phase|Scope|Lang|Checkpoint|Parent):/m.test(txt))bad.push(path.join(p,f))}}if(bad.length){console.error(bad);process.exit(1)}"`
-- [ ] **AC-3.6.** `spec_sections.rs` não contém tabela de variantes para `stage`/`outcome`/`phase`/`scope`. Command: `node -e "const t=require('fs').readFileSync('apps/rt/src/run/spec_sections.rs','utf8');if(/\"stage\"|\"outcome\"|\"phase\"|\"scope\"/.test(t))process.exit(1)"`
+- [ ] AC-W3-1: Toda spec em `.claude/spec/**` tem `meta.json` válido com campos obrigatórios. Command: `node -e "const fs=require('fs'),path=require('path');const root='.claude/spec';for(const d of fs.readdirSync(root)){const p=path.join(root,d);if(!fs.statSync(p).isDirectory())continue;const m=path.join(p,'meta.json');if(!fs.existsSync(m)){console.error('missing',m);process.exit(1)}const j=JSON.parse(fs.readFileSync(m,'utf8'));for(const k of ['stage','outcome','phase','scope','lang','checkpoint']){if(!(k in j)){console.error('missing field',k,'in',m);process.exit(1)}}}"`
+- [ ] AC-W3-2: `pipeline_state_ingest.rs` lê `meta.json`. Command: `node -e "const t=require('fs').readFileSync('apps/rt/src/run/pipeline_state_ingest.rs','utf8');if(!/meta\\.json/.test(t))process.exit(1)"`
+- [ ] AC-W3-3: `wave_scaffold.rs` e `emit_pipeline.rs` escrevem meta.json. Command: `node -e "const fs=require('fs');for(const f of ['apps/rt/src/run/wave_scaffold.rs','apps/rt/src/run/emit_pipeline.rs']){if(!/write_meta|meta\\.json/.test(fs.readFileSync(f,'utf8'))){console.error(f);process.exit(1)}}"`
+- [ ] AC-W3-4: Dashboard tem comando Tauri `read_spec_meta`. Command: `node -e "const t=require('fs').readFileSync('apps/dashboard/src-tauri/src/commands/specs.rs','utf8');if(!/read_spec_meta|meta\\.json/.test(t))process.exit(1)"`
+- [ ] AC-W3-5: Após migração, `.md` não contém headers `### X:` mais. Command: `node -e "const fs=require('fs'),path=require('path');const root='.claude/spec';let bad=[];for(const d of fs.readdirSync(root)){const p=path.join(root,d);if(!fs.statSync(p).isDirectory())continue;for(const f of fs.readdirSync(p)){if(!f.endsWith('.md'))continue;const txt=fs.readFileSync(path.join(p,f),'utf8');if(/^###\\s+(Stage|Outcome|Phase|Scope|Lang|Checkpoint|Parent):/m.test(txt))bad.push(path.join(p,f))}}if(bad.length){console.error(bad);process.exit(1)}"`
+- [ ] AC-W3-6: `spec_sections.rs` não contém tabela de variantes para `stage`/`outcome`/`phase`/`scope`. Command: `node -e "const t=require('fs').readFileSync('apps/rt/src/run/spec_sections.rs','utf8');if(/\"stage\"|\"outcome\"|\"phase\"|\"scope\"/.test(t))process.exit(1)"`
 
 ## Notas
 

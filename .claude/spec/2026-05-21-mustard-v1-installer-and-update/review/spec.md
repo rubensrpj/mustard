@@ -1,13 +1,6 @@
 # Review — Mustard v1 installer
 
-### Stage: QaReview
-### Outcome: Active
-### Flags: 
-### Scope: full (wave plan)
 ### Role: review
-### Checkpoint: 2026-05-21T18:00:00Z
-### Lang: pt
-### Parent: 2026-05-21-mustard-v1-installer-and-update
 
 ## Critérios de Aceitação
 

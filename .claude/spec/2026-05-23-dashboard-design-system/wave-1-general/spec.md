@@ -1,13 +1,5 @@
 # Wave 1 — DS foundation (Binance tokens + fonts swap)
 
-### Parent: [[2026-05-23-dashboard-design-system]]
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Scope: full (wave 1 of 5)
-### Lang: pt
-### Checkpoint: 2026-05-23T09:50:00Z
-
 ## Resumo
 
 Materializar o `DESIGN.md` Binance na raiz do `apps/dashboard/`, consolidar os tokens CSS em **um único** arquivo `src/style.css` adotando os hex Binance (canvas `#0b0e11`, card `#1e2329`, hairline `#eaecef`, trading `#0ecb81`/`#f6465d`, 80px editorial, CTA black-on-yellow) com **uma exceção única**: `--primary` preservado como amarelo Mustard `#dfab01`. Trocar fontes: remover JetBrains Mono (substituto de BinancePlex) e adicionar IBM Plex Mono (mais próximo do espírito Binance). Deletar o arquivo legado `src/styles/theme.css` (sistema de tokens duplicado) e criar o script `scripts/check-pages-imports.mjs` que alimenta AC-6 no QA final.

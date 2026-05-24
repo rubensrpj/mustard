@@ -1,12 +1,5 @@
 # Wave 4 — Qualidade: AC details + link de teste
 
-### Parent: [[2026-05-21-dashboard-spec-tabs]]
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Lang: pt
-### Checkpoint: 2026-05-21T16:00:00Z
-
 ## Resumo
 
 Hoje a aba "Qualidade" mostra um veredito (passou/falhou) sem revelar o contexto de cada AC. O usuário quer ver cada AC com `id`, `label`, `command`, `status`, e `last_run_at`. Quando o comando referencia um arquivo de teste (caso comum: `cargo test --lib path::module` ou `node -e "..."`), surface o link pra abrir o arquivo. A query Tauri já devolve esses campos no `SpecQualityItem` — Wave 4 é só repaginar a UI.

@@ -1,10 +1,5 @@
 # wave-4-frontend
 
-### Parent: [[2026-05-21-wave-integrity-and-doctor-check]]
-### Stage: Plan
-### Outcome: Active
-### Flags: 
-
 ## Resumo
 
 Fecha o loop UX. Wave 3 entrega o check `wave-integrity` no doctor, mas hoje o usuário só vê o resultado se lembrar de rodar `/mustard:maint doctor` manualmente. Esta wave faz o dashboard sugerir — adiciona uma flag `--json` ao doctor (output parseável), um Tauri command que invoca `mustard-rt run doctor --json` no mount do app, e um badge sutil no footer da Sidebar que muda de cor conforme severidade (verde OK / amarelo WARN com contagem / vermelho FAIL). Click no badge abre um tooltip com a lista de checks falhos + hint dos comandos de fix. Sem polling: refresh manual via botão no tooltip ou remontagem do app. Memory `feedback_no_permission_loops`: chamada do binário é via Tauri command, sem prompt de permissão por edit.

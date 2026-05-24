@@ -1,11 +1,5 @@
 # Wave 1 — RT writer per-spec NDJSON
 
-### Parent: [[2026-05-23-per-spec-event-log-claude-devtools]]
-### Stage: Plan
-### Outcome: Active
-### Flags:
-### Lang: pt
-
 ## PRD
 
 ### Contexto

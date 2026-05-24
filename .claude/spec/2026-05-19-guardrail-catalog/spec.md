@@ -1,12 +1,5 @@
 # Feature: guardrail-catalog
 
-### Stage: Close
-### Outcome: Completed
-### Flags:
-### Scope: full
-### Checkpoint: 2026-05-19T20:15:00Z
-### Lang: pt
-
 > **Fase 2 de 2** do epic *Mustard verificável sobre si mesmo* — ver `.claude/plans/self-verifiability-roadmap.md`. A fase 1 (`mustard-doctor`) entregou o diagnóstico; esta fecha o gap de medição. Reframe honesto: o valor não são os IDs (polimento) — é a cobertura de regressão por regra que prova que cada guardrail funciona, espelhando os 17 testes R01–R13 do harness concorrente. Os IDs são o meio: não se escreve "teste para BG05" sem BG05 existir.
 
 ## PRD

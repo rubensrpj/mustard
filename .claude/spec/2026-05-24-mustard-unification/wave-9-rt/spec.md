@@ -1,13 +1,5 @@
 # W9 — Context injection optimization
 
-### Stage: Plan
-### Outcome: Active
-### Phase: PLAN
-### Scope: full
-### Checkpoint: 2026-05-24T19:30:00Z
-### Lang: pt-BR
-### Parent: 2026-05-24-mustard-unification
-
 ## Contexto
 
 Hoje:
@@ -79,14 +71,14 @@ Alvos:
 
 ## Critérios de Aceitação
 
-- [ ] **AC-9.1.** `SessionStart` em projeto com spec ativa injeta bloco resume. Command: fixture + verify stdout.
-- [ ] **AC-9.2.** `UserPromptSubmit` injeta 1 linha apenas se prompt não é `/mustard:*` e há spec ativa. Command: fixture.
-- [ ] **AC-9.3.** Novo hook `subagent_inject` registrado. Command: `node -e "const t=require('fs').readFileSync('apps/rt/src/registry.rs','utf8');if(!/subagent_inject/.test(t))process.exit(1)"`
-- [ ] **AC-9.4.** `context-slice --doc CLAUDE.md --spec X` funciona (não só CONTEXT.md). Command: `rtk mustard-rt run context-slice --doc CLAUDE.md --spec test --json | node -e "let s='';process.stdin.on('data',c=>s+=c);process.stdin.on('end',()=>{const j=JSON.parse(s);if(!j.slice)process.exit(1)})"`
-- [ ] **AC-9.5.** `agent-prompt-render --budget-tokens 15000` trunca por prioridade. Command: fixture.
-- [ ] **AC-9.6.** `resume-bootstrap --summary-only --json` retorna objeto com `coolness`. Command: `rtk mustard-rt run resume-bootstrap --summary-only --json --spec test | node -e "let s='';process.stdin.on('data',c=>s+=c);process.stdin.on('end',()=>{const j=JSON.parse(s);if(!('coolness' in j))process.exit(1)})"`
-- [ ] **AC-9.7.** Orchestrator inicial em projeto canário ≤25k tokens. Verificável via `context-budget --role main`.
-- [ ] **AC-9.8.** `pipeline.economy.context.served` aparece em events após session boot. Command: SQL query.
+- [ ] AC-W9-1: `SessionStart` em projeto com spec ativa injeta bloco resume. Command: fixture + verify stdout.
+- [ ] AC-W9-2: `UserPromptSubmit` injeta 1 linha apenas se prompt não é `/mustard:*` e há spec ativa. Command: fixture.
+- [ ] AC-W9-3: Novo hook `subagent_inject` registrado. Command: `node -e "const t=require('fs').readFileSync('apps/rt/src/registry.rs','utf8');if(!/subagent_inject/.test(t))process.exit(1)"`
+- [ ] AC-W9-4: `context-slice --doc CLAUDE.md --spec X` funciona (não só CONTEXT.md). Command: `rtk mustard-rt run context-slice --doc CLAUDE.md --spec test --json | node -e "let s='';process.stdin.on('data',c=>s+=c);process.stdin.on('end',()=>{const j=JSON.parse(s);if(!j.slice)process.exit(1)})"`
+- [ ] AC-W9-5: `agent-prompt-render --budget-tokens 15000` trunca por prioridade. Command: fixture.
+- [ ] AC-W9-6: `resume-bootstrap --summary-only --json` retorna objeto com `coolness`. Command: `rtk mustard-rt run resume-bootstrap --summary-only --json --spec test | node -e "let s='';process.stdin.on('data',c=>s+=c);process.stdin.on('end',()=>{const j=JSON.parse(s);if(!('coolness' in j))process.exit(1)})"`
+- [ ] AC-W9-7: Orchestrator inicial em projeto canário ≤25k tokens. Verificável via `context-budget --role main`.
+- [ ] AC-W9-8: `pipeline.economy.context.served` aparece em events após session boot. Command: SQL query.
 
 ## Notas
 

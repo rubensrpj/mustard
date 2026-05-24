@@ -1,10 +1,5 @@
 # Plano de Review
 
-### Parent: [[2026-05-23-dashboard-design-system]]
-### Stage: Plan
-### Outcome: Active
-### Flags: 
-
 Checklist para o agente de review.
 
 ## Checklist

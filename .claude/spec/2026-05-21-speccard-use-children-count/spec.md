@@ -1,13 +1,5 @@
 # SpecCard usa children_count em vez de useSpecChildren — eliminar N+1 invocações
 
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Scope: light
-### Checkpoint: 2026-05-21T01:00:00Z
-### Lang: pt
-### Parent: 2026-05-20-tactical-fix-via-sub-spec
-
 ## Contexto
 
 Tactical fix derivado de [[2026-05-20-tactical-fix-via-sub-spec]]. O review frontend apontou que `SpecCard.tsx` chama `useSpecChildren(repoPath, data.spec)` por card renderizado. Em uma Sidebar com 20 specs ativas, são 20 invocações Tauri independentes (mitigadas por `refetchInterval: 30_000` mas ainda caras).

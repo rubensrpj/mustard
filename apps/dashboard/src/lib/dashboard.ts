@@ -917,3 +917,34 @@ export function dashboardMonthActivity(
 export function dashboardEventsFeed(projectPath: string, limit: number): Promise<FeedEvent[]> {
   return invoke<FeedEvent[]>("dashboard_events_feed", { projectPath, limit });
 }
+
+// --- Wave 4 mustard-unification — language + tone settings ----------------
+//
+// `mustard.json#lang` (BCP-47 `pt-BR`/`en-US`) and `mustard.json#tone`
+// (`didactic`/`technical`/`concise`) are written via these Tauri commands so
+// the validation + telemetry contract is centralised on the backend.
+
+/** Shape returned by `commands::settings::read_settings`. Both fields are
+ *  optional — a fresh project ships `mustard.json` without either. */
+export interface ProjectSettings {
+  lang: string | null;
+  tone: string | null;
+}
+
+/** Read `lang` + `tone` from `mustard.json`. Fail-open: a missing or
+ *  malformed file resolves to `{ lang: null, tone: null }`. */
+export function readSettings(repoPath: string): Promise<ProjectSettings> {
+  return invoke<ProjectSettings>("read_settings", { repoPath });
+}
+
+/** Write `mustard.json#lang` after validating against the BCP-47 catalog
+ *  (`pt-BR` / `en-US`). Rejects legacy short forms with a typed error. */
+export function setLanguage(repoPath: string, lang: string): Promise<void> {
+  return invoke<void>("set_language", { repoPath, lang });
+}
+
+/** Write `mustard.json#tone` after validating against the catalog
+ *  (`didactic` / `technical` / `concise`). */
+export function setTone(repoPath: string, tone: string): Promise<void> {
+  return invoke<void>("set_tone", { repoPath, tone });
+}

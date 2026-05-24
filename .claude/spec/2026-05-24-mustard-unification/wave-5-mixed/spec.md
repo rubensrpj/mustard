@@ -1,13 +1,5 @@
 # W5 — mustard.db redesign + per-spec event log + dashboard fast/lean
 
-### Stage: Plan
-### Outcome: Active
-### Phase: PLAN
-### Scope: full
-### Checkpoint: 2026-05-24T19:30:00Z
-### Lang: pt-BR
-### Parent: 2026-05-24-mustard-unification
-
 ## Contexto
 
 Três problemas convergem nesta onda:
@@ -60,16 +52,16 @@ Esta onda absorve integralmente a spec ativa `2026-05-23-per-spec-event-log-clau
 
 ## Critérios de Aceitação
 
-- [ ] **AC-5.1.** Tabela `events` dropada do schema. Command: `node -e "const t=require('fs').readFileSync('packages/core/src/store/sqlite_schema.sql','utf8');if(/CREATE TABLE events\\b/.test(t))process.exit(1)"`
-- [ ] **AC-5.2.** Tabelas `pipeline_events` e `sessions` existem no schema. Command: `node -e "const t=require('fs').readFileSync('packages/core/src/store/sqlite_schema.sql','utf8');for(const k of ['CREATE TABLE pipeline_events','CREATE TABLE sessions']){if(!t.includes(k))process.exit(1)}"`
-- [ ] **AC-5.3.** `.claude/spec/{ativa}/events/*.ndjson` existe após pipeline rodar. Command: `node -e "const fs=require('fs');const p='.claude/spec/2026-05-24-mustard-unification/events';if(!fs.existsSync(p))process.exit(1);if(!fs.readdirSync(p).some(f=>f.endsWith('.ndjson')))process.exit(1)"`
-- [ ] **AC-5.4.** Tabela `knowledge` (legacy) e `metrics_projection` dropadas. Command: `node -e "const t=require('fs').readFileSync('packages/core/src/store/sqlite_schema.sql','utf8');for(const k of ['CREATE TABLE knowledge\\\\b','CREATE TABLE metrics_projection']){if(new RegExp(k).test(t))process.exit(1)}"`
-- [ ] **AC-5.5.** `package.json` do dashboard não tem dep de força-grafo. Command: `node -e "const j=JSON.parse(require('fs').readFileSync('apps/dashboard/package.json','utf8'));for(const k of ['react-force-graph','react-force-graph-2d','d3-force','vis-network']){if(j.dependencies?.[k]||j.devDependencies?.[k])process.exit(1)}"`
-- [ ] **AC-5.6.** Wikilinks no dashboard chamam `obsidian://` URI. Command: `node -e "const{execSync}=require('child_process');const out=execSync('rg \"obsidian://\" apps/dashboard/src',{encoding:'utf8'}).trim();if(!out)process.exit(1)"`
-- [ ] **AC-5.7.** `mustard-rt run spec-clear --help` lista flags `--dry-run`/`--apply`/`--age-days`. Command: `rtk mustard-rt run spec-clear --help 2>&1 | grep -qE "dry-run.*apply.*age-days"`
-- [ ] **AC-5.8.** Hot path de evento `<50µs` benchmark. Command: `rtk cargo test -p mustard-rt event_writer_ndjson_hot_path 2>&1 | grep -q "ok"`
-- [ ] **AC-5.9.** `mustard.db` em projeto canário `< 1MB`. Command: `node -e "const fs=require('fs');const s=fs.statSync('.claude/.harness/mustard.db').size;if(s>1024*1024){console.error(s);process.exit(1)}"`
-- [ ] **AC-5.10.** Página `/specs` `<200ms` tempo até interativa. Verificável manualmente via React DevTools Profiler.
+- [ ] AC-W5-1: Tabela `events` dropada do schema. Command: `node -e "const t=require('fs').readFileSync('packages/core/src/store/sqlite_schema.sql','utf8');if(/CREATE TABLE events\\b/.test(t))process.exit(1)"`
+- [ ] AC-W5-2: Tabelas `pipeline_events` e `sessions` existem no schema. Command: `node -e "const t=require('fs').readFileSync('packages/core/src/store/sqlite_schema.sql','utf8');for(const k of ['CREATE TABLE pipeline_events','CREATE TABLE sessions']){if(!t.includes(k))process.exit(1)}"`
+- [ ] AC-W5-3: `.claude/spec/{ativa}/events/*.ndjson` existe após pipeline rodar. Command: `node -e "const fs=require('fs');const p='.claude/spec/2026-05-24-mustard-unification/events';if(!fs.existsSync(p))process.exit(1);if(!fs.readdirSync(p).some(f=>f.endsWith('.ndjson')))process.exit(1)"`
+- [ ] AC-W5-4: Tabela `knowledge` (legacy) e `metrics_projection` dropadas. Command: `node -e "const t=require('fs').readFileSync('packages/core/src/store/sqlite_schema.sql','utf8');for(const k of ['CREATE TABLE knowledge\\\\b','CREATE TABLE metrics_projection']){if(new RegExp(k).test(t))process.exit(1)}"`
+- [ ] AC-W5-5: `package.json` do dashboard não tem dep de força-grafo. Command: `node -e "const j=JSON.parse(require('fs').readFileSync('apps/dashboard/package.json','utf8'));for(const k of ['react-force-graph','react-force-graph-2d','d3-force','vis-network']){if(j.dependencies?.[k]||j.devDependencies?.[k])process.exit(1)}"`
+- [ ] AC-W5-6: Wikilinks no dashboard chamam `obsidian://` URI. Command: `node -e "const{execSync}=require('child_process');const out=execSync('rg \"obsidian://\" apps/dashboard/src',{encoding:'utf8'}).trim();if(!out)process.exit(1)"`
+- [ ] AC-W5-7: `mustard-rt run spec-clear --help` lista flags `--dry-run`/`--apply`/`--age-days`. Command: `rtk mustard-rt run spec-clear --help 2>&1 | grep -qE "dry-run.*apply.*age-days"`
+- [ ] AC-W5-8: Hot path de evento `<50µs` benchmark. Command: `rtk cargo test -p mustard-rt event_writer_ndjson_hot_path 2>&1 | grep -q "ok"`
+- [ ] AC-W5-9: `mustard.db` em projeto canário `< 1MB`. Command: `node -e "const fs=require('fs');const s=fs.statSync('.claude/.harness/mustard.db').size;if(s>1024*1024){console.error(s);process.exit(1)}"`
+- [ ] AC-W5-10: Página `/specs` `<200ms` tempo até interativa. Verificável manualmente via React DevTools Profiler.
 
 ## Notas
 

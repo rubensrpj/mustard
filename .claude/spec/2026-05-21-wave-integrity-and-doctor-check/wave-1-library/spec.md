@@ -1,10 +1,5 @@
 # wave-1-library
 
-### Parent: [[2026-05-21-wave-integrity-and-doctor-check]]
-### Stage: Plan
-### Outcome: Active
-### Flags: 
-
 ## Resumo
 
 Hard gate no consumidor do `plan.json`. Quando o arquivo declara `waves: []` ou `total_waves != waves.len()`, o scaffolder hoje cria silenciosamente `wave-plan.md` + `review/spec.md` + `qa/spec.md` sem nenhum `wave-N-role/spec.md`, e o caller não tem como saber. Esta wave transforma esse silêncio em erro visível (stderr) e JSON com campo `error`, e impede a criação dos artefatos órfãos quando `waves` está vazio.

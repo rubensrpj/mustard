@@ -1,0 +1,9 @@
+{
+  "stage": "Close",
+  "outcome": "Completed",
+  "phase": null,
+  "scope": "light",
+  "lang": "pt-BR",
+  "checkpoint": "2026-05-23T17:30:00Z",
+  "parent": "2026-05-23-tf-unify-spec-command"
+}

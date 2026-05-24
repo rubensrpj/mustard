@@ -1,5 +1,18 @@
 //! `mustard-rt run migrate-spec-headers` — the terminal spec-header migration.
 //!
+//! ## Retirement note (Wave 3 of mustard-unification, 2026-05-24)
+//!
+//! Wave 3 of `2026-05-24-mustard-unification` moved every machine-parseable
+//! lifecycle field (`Stage`/`Outcome`/`Flags`/`Phase`/`Scope`/`Lang`/
+//! `Checkpoint`/`Parent`/`Total waves`) from in-`.md` headers into a sidecar
+//! `meta.json`, and the second-pass `mustard-rt run migrate-to-meta
+//! --strip-headers` removed them from every existing `.md`. This module is no
+//! longer used by the canonical pipeline — its **subcommand stays wired** as a
+//! retroactive tool for one-off audits / rescues of git-history specs that
+//! still carry the old shape (e.g. a co-worker's branch that has not been
+//! re-migrated yet). Once that scenario disappears the module can be deleted
+//! in a follow-up; until then, every public function and test stays unchanged.
+//!
 //! ## Scope (spec-lifecycle-unification Wave 7)
 //!
 //! Rewrites every legacy spec header (`### Status:` + `### Phase:`) under

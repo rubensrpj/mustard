@@ -1,10 +1,5 @@
 # Plano de Review
 
-### Parent: [[2026-05-20-dashboard-prd-ai-lapidator]]
-### Stage: Plan
-### Outcome: Active
-### Flags: 
-
 Checklist para o agente de review.
 
 ## Checklist

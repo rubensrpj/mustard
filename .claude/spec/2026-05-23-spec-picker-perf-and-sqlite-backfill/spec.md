@@ -1,13 +1,5 @@
 # Tactical Fix: spec picker perf + SQLite backfill multi-dev
 
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Scope: light
-### Checkpoint: 2026-05-23T17:30:00Z
-### Lang: pt
-### Parent: 2026-05-23-tf-unify-spec-command
-
 ## Contexto
 
 Tactical fix derivado de [[2026-05-23-tf-unify-spec-command]].

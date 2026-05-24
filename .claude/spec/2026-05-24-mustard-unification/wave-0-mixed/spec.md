@@ -1,12 +1,5 @@
 # W0 — Stop the bleeding (bloqueadores)
 
-### Stage: Close
-### Outcome: Completed
-### Phase: CLOSE
-### Scope: light
-### Checkpoint: 2026-05-24T19:30:00Z
-### Lang: pt-BR
-
 ## Contexto
 
 Três fixes independentes que estavam bloqueando o pipeline:
@@ -35,8 +28,8 @@ Esta onda já foi executada nesta sessão e está fechada. Documenta o que foi f
 
 ## Critérios de Aceitação
 
-- [x] **AC-0.1.** `rtk cargo clippy -p mustard-rt -- -D warnings` sai com "No issues found". Command: `rtk cargo clippy -p mustard-rt -- -D warnings 2>&1 | grep -q "No issues found"`
-- [x] **AC-0.2.** `docs-stale-check` não enxerga `**/worktrees/**`. Command: `node -e "const t=require('fs').readFileSync('apps/rt/src/run/docs_stale_check.rs','utf8');if(!/\"worktrees\"/.test(t)||!/\".worktrees\"/.test(t))process.exit(1)"`
-- [x] **AC-0.3.** `verify_pipeline` prefere `Cargo.toml` antes de `package.json`. Command: `node -e "const t=require('fs').readFileSync('apps/rt/src/run/verify_pipeline.rs','utf8');const m=t.match(/discover_defaults[\\s\\S]*?fn /);if(!m||!/Cargo\\.toml[\\s\\S]*?package\\.json/.test(m[0]))process.exit(1)"`
-- [x] **AC-0.4.** Helper `effective_timeout` existe e respeita env `MUSTARD_VERIFY_TIMEOUT_RUST`. Command: `node -e "const t=require('fs').readFileSync('apps/rt/src/run/verify_pipeline.rs','utf8');if(!/fn effective_timeout/.test(t)||!/MUSTARD_VERIFY_TIMEOUT_RUST/.test(t))process.exit(1)"`
-- [x] **AC-0.5.** `rtk cargo test -p mustard-rt verify_pipeline docs_stale_check` passa. Command: `rtk cargo test -p mustard-rt verify_pipeline 2>&1 | grep -q "0 failed" && rtk cargo test -p mustard-rt docs_stale_check 2>&1 | grep -q "0 failed"`
+- [x] AC-W0-1: `rtk cargo clippy -p mustard-rt -- -D warnings` sai com "No issues found". Command: `rtk cargo clippy -p mustard-rt -- -D warnings 2>&1 | grep -q "No issues found"`
+- [x] AC-W0-2: `docs-stale-check` não enxerga `**/worktrees/**`. Command: `node -e "const t=require('fs').readFileSync('apps/rt/src/run/docs_stale_check.rs','utf8');if(!/\"worktrees\"/.test(t)||!/\".worktrees\"/.test(t))process.exit(1)"`
+- [x] AC-W0-3: `verify_pipeline` prefere `Cargo.toml` antes de `package.json`. Command: `node -e "const t=require('fs').readFileSync('apps/rt/src/run/verify_pipeline.rs','utf8');const m=t.match(/discover_defaults[\\s\\S]*?fn /);if(!m||!/Cargo\\.toml[\\s\\S]*?package\\.json/.test(m[0]))process.exit(1)"`
+- [x] AC-W0-4: Helper `effective_timeout` existe e respeita env `MUSTARD_VERIFY_TIMEOUT_RUST`. Command: `node -e "const t=require('fs').readFileSync('apps/rt/src/run/verify_pipeline.rs','utf8');if(!/fn effective_timeout/.test(t)||!/MUSTARD_VERIFY_TIMEOUT_RUST/.test(t))process.exit(1)"`
+- [x] AC-W0-5: `rtk cargo test -p mustard-rt verify_pipeline docs_stale_check` passa. Command: `rtk cargo test -p mustard-rt verify_pipeline 2>&1 | grep -q "0 failed" && rtk cargo test -p mustard-rt docs_stale_check 2>&1 | grep -q "0 failed"`

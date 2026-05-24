@@ -1,13 +1,7 @@
 # Wave 2 — RT: spec_children_tree + AC detalhado + emit-pipeline aceita novos kinds
 
-### Parent: [[2026-05-21-spec-lifecycle-unification]]
 ### Wave: 2
 ### Role: rt
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Lang: pt
-### Checkpoint: 2026-05-22T00:15:00Z
 
 ## Resumo
 

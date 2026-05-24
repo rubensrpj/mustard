@@ -1,12 +1,5 @@
 # Feature: Skill Discovery Heuristic — rollout em SKILLs + lint enforcement
 
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Scope: full
-### Checkpoint: 2026-05-23T19:30:00Z
-### Lang: pt
-
 ## PRD
 
 ## Contexto

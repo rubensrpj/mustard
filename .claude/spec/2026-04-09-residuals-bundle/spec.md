@@ -1,9 +1,4 @@
 # Enhancement: residuals-bundle
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Scope: light
-### Checkpoint: 2026-04-09T12:00:00Z
 
 ## Summary
 Bundle de 4 residual inefficiency fixes, cada um pequeno (~5-15 linhas de código), independentes, arquivos disjuntos. Bundled porque review overhead dominaria se fossem 4 specs separados.

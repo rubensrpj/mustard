@@ -1,12 +1,5 @@
 # wave-1-library — Reader por-sessão + métrica de injeção
 
-### Parent: [[2026-05-22-economia-didatica-e-economias-reais]]
-### Stage: Done
-### Outcome: Active
-### Flags:
-### Lang: pt
-### Checkpoint: 2026-05-22T19:00:00Z
-
 ## Resumo
 
 Enriquecer o reader de economia em `packages/core` para alimentar o card

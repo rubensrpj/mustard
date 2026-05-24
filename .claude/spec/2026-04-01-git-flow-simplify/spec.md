@@ -1,9 +1,4 @@
 # Enhancement: git-flow-simplify
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Scope: light
-### Checkpoint: 2026-04-01T00:00:00Z
 
 ## Summary
 Simplificar git flow: remover mapeamento de branch pessoal do `init`, bloquear commits direto em main/dev, wildcard `*→dev` como padrão, merge sempre para dev com sync obrigatório antes.

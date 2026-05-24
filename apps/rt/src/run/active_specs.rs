@@ -15,6 +15,7 @@
 //! all degrade to partial results, never to a panic or non-zero exit.
 
 use mustard_core::fs;
+use mustard_core::meta;
 use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use mustard_core::store::event_store::EventSink;
 use mustard_core::store::sqlite_store::SqliteEventStore;
@@ -113,13 +114,49 @@ fn read_header_bytes(path: &Path) -> Option<String> {
     Some(String::from_utf8_lossy(&buf).into_owned())
 }
 
-/// Parse the header fields from the first ~30 lines of a spec.md.
+/// Try to read the spec header from a `meta.json` sidecar next to `spec_file`.
 ///
-/// Uses the **first occurrence** of each `### Key:` line — any duplicate
-/// further down in the body is intentionally ignored (header-drift handling).
-/// Stops scanning once a non-`###` line follows the last `###` line read
-/// (i.e. when the header block ends).
+/// Returns `None` when the sidecar is absent, unreadable, or lacks both
+/// `stage` and `outcome` (the two fields the picker filter requires).
+/// Delegates the IO + lenient parse to [`mustard_core::meta`] — this is
+/// just the type-shape conversion from [`meta::Meta`] to the local
+/// [`SpecHeader`] (picker uses a narrower projection — `phase` /
+/// `isWavePlan` / `totalWaves` are not needed here).
+fn parse_header_from_meta(spec_file: &Path) -> Option<SpecHeader> {
+    let m = meta::read_meta_beside(spec_file)?;
+    let nonempty = |opt: Option<String>| opt.filter(|s| !s.is_empty());
+    let header = SpecHeader {
+        stage: nonempty(m.stage),
+        outcome: nonempty(m.outcome),
+        scope: nonempty(m.scope),
+        parent: nonempty(m.parent).map(|s| strip_wikilink(&s)),
+        checkpoint: nonempty(m.checkpoint),
+    };
+    // Require at least stage+outcome — otherwise the sidecar is incomplete
+    // and we fall through to the .md parser (which may have legacy headers).
+    if header.stage.is_none() && header.outcome.is_none() {
+        return None;
+    }
+    Some(header)
+}
+
+/// Parse the header fields, preferring `meta.json` sidecar (W3 onward),
+/// with fall-back to the legacy `### Key:` markdown header.
+///
+/// Resolution order:
+/// 1. `meta.json` next to `spec_file` — authoritative after the W3
+///    `meta-sidecar` migration removed header lines from the `.md`.
+/// 2. Legacy header lines in the first 2 KiB of the `.md` — kept so a
+///    teammate's un-migrated spec (e.g. pulled from a feature branch)
+///    still shows up in the picker.
+///
+/// Uses the **first occurrence** of each `### Key:` line in the `.md`
+/// fallback — any duplicate further down in the body is intentionally
+/// ignored (header-drift handling).
 fn parse_header(path: &Path) -> SpecHeader {
+    if let Some(header) = parse_header_from_meta(path) {
+        return header;
+    }
     let Some(text) = read_header_bytes(path) else {
         return SpecHeader::default();
     };

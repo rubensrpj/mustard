@@ -1,12 +1,5 @@
 # Feature: prd-layering
 
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Scope: full
-### Checkpoint: 2026-05-18T22:49:58Z
-### Lang: pt
-
 > Spec de backlog (Parte A, item A4). Rascunho criado em lote — passa por ANALYZE de refino quando for aprovada via `/approve`.
 
 ## Contexto

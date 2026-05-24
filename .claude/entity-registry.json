@@ -6,6 +6,9 @@
   },
   "_patterns": {
     "rust": {
+      "clusterLabels": {
+        "mod": "Rust module re-export files"
+      },
       "conventions": {
         "naming": {
           "distribution": {
@@ -78,6 +81,13 @@
           "topOfFileLines": null
         }
       ],
+      "dominant": "hierarchical-modularization",
+      "edges": [
+        "[[mustard-core]]",
+        "[[Check]]",
+        "[[Observer]]",
+        "[[pipeline]]"
+      ],
       "folderFrequency": {
         "segments": {
           "economy": 2,
@@ -98,6 +108,10 @@
       }
     },
     "typescript": {
+      "clusterLabels": {
+        "tauri": "Tauri IPC Wrappers",
+        "use": "React Hooks (use* pattern)"
+      },
       "conventions": {
         "naming": {
           "distribution": {
@@ -162,6 +176,10 @@
           ]
         }
       ],
+      "dominant": "use",
+      "edges": [
+        "[[use]] -> [[tauri]]"
+      ],
       "folderFrequency": {
         "segments": {
           ".": 1,
@@ -190,6 +208,188 @@
       }
     }
   },
-  "_enums": {},
-  "e": {}
+  "_enums": {
+    "EconomyScope": {
+      "file": "src/economy/scope.rs",
+      "values": [
+        "AllProjects"
+      ]
+    },
+    "SpecBucket": {
+      "file": "src/lib/dashboard.ts",
+      "values": [
+        "active",
+        "completed",
+        "cancelled"
+      ]
+    }
+  },
+  "e": {
+    "ActivePipelineRow": {
+      "file": "src/hooks/useAggregate.ts",
+      "refs": [
+        "[[Project]]",
+        "[[SpecRow]]"
+      ]
+    },
+    "ActivityFeedResult": {
+      "file": "src/hooks/useActivityFeed.ts",
+      "refs": [
+        "ActivityFeedRow"
+      ]
+    },
+    "ActivityFeedRow": {
+      "file": "src/hooks/useActivityFeed.ts",
+      "refs": [
+        "[[Project]]",
+        "[[RecentEvent]]"
+      ]
+    },
+    "AggregateCounters": {
+      "file": "src/hooks/useAggregate.ts"
+    },
+    "AggregateResult": {
+      "file": "src/hooks/useAggregate.ts",
+      "refs": [
+        "ActivePipelineRow",
+        "AggregateCounters",
+        "TimelineRow"
+      ]
+    },
+    "KnowledgeRow": {
+      "file": "src/lib/dashboard.ts"
+    },
+    "KnowledgeSummary": {
+      "file": "src/lib/dashboard.ts"
+    },
+    "MetricsSummary": {
+      "file": "src/lib/dashboard.ts"
+    },
+    "PipelineSummary": {
+      "file": "src/lib/dashboard.ts"
+    },
+    "RecentEvent": {
+      "file": "src/lib/dashboard.ts",
+      "refs": [
+        "[[Project]]"
+      ]
+    },
+    "SpecRow": {
+      "file": "src/lib/dashboard.ts",
+      "refs": [
+        "[[Project]]",
+        "[[SpecBucket]]"
+      ]
+    },
+    "TimelineRow": {
+      "file": "src/hooks/useAggregate.ts",
+      "refs": [
+        "[[Project]]",
+        "[[RecentEvent]]"
+      ]
+    },
+    "bash_guard": {
+      "file": "src/hooks/bash_guard.rs",
+      "refs": [
+        "[[Bash]]",
+        "[[Check]]",
+        "[[Observer]]"
+      ]
+    },
+    "budget": {
+      "file": "src/hooks/budget.rs",
+      "refs": [
+        "[[Check]]",
+        "[[Subagent]]",
+        "[[Task]]"
+      ]
+    },
+    "close_gate": {
+      "file": "src/hooks/close_gate.rs",
+      "refs": [
+        "[[CLOSE]]",
+        "[[Check]]",
+        "[[pipeline]]"
+      ]
+    },
+    "enforce_registry": {
+      "file": "src/hooks/enforce_registry.rs",
+      "refs": [
+        "[[Check]]",
+        "[[entity-registry]]",
+        "[[pipeline]]"
+      ]
+    },
+    "knowledge": {
+      "file": "src/hooks/knowledge.rs",
+      "refs": [
+        "[[Observer]]",
+        "[[SessionEnd]]",
+        "[[memory]]"
+      ]
+    },
+    "model_routing": {
+      "file": "src/hooks/model_routing.rs",
+      "refs": [
+        "[[Check]]",
+        "[[Task]]"
+      ]
+    },
+    "path_guard": {
+      "file": "src/hooks/path_guard.rs",
+      "refs": [
+        "[[Check]]",
+        "[[Edit]]",
+        "[[Write]]"
+      ]
+    },
+    "post_edit": {
+      "file": "src/hooks/post_edit.rs",
+      "refs": [
+        "[[Edit]]",
+        "[[Observer]]",
+        "[[Write]]",
+        "[[pipeline]]"
+      ]
+    },
+    "session_cleanup": {
+      "file": "src/hooks/session_cleanup.rs",
+      "refs": [
+        "[[Observer]]",
+        "[[SessionEnd]]",
+        "[[pipeline]]"
+      ]
+    },
+    "session_start": {
+      "file": "src/hooks/session_start.rs",
+      "refs": [
+        "[[Observer]]",
+        "[[SessionStart]]",
+        "[[memory]]"
+      ]
+    },
+    "size_gate": {
+      "file": "src/hooks/size_gate.rs",
+      "refs": [
+        "[[Check]]",
+        "[[Edit]]",
+        "[[Write]]"
+      ]
+    },
+    "skills_audit": {
+      "file": "src/hooks/skills_audit.rs",
+      "refs": [
+        "[[Observer]]",
+        "[[Skill]]"
+      ]
+    },
+    "tracker": {
+      "file": "src/hooks/tracker.rs",
+      "refs": [
+        "[[Observer]]",
+        "[[Task]]",
+        "[[telemetry]]"
+      ]
+    }
+  }
 }

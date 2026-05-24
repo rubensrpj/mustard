@@ -1,13 +1,5 @@
 # Tactical Fix: Limpar clippy warnings em packages/core
 
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Scope: light
-### Checkpoint: 2026-05-24T18:00:00Z
-### Lang: pt
-### Parent: 2026-05-22-project-profiler
-
 ## Contexto
 
 Tactical fix derivado de [[2026-05-22-project-profiler]].

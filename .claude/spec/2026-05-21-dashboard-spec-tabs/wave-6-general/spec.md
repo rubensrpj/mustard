@@ -1,12 +1,5 @@
 # Wave 6 — Sub-specs: union spec.link + Parent: header
 
-### Parent: [[2026-05-21-dashboard-spec-tabs]]
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Lang: pt
-### Checkpoint: 2026-05-21T16:00:00Z
-
 ## Resumo
 
 Hoje `spec_children_v2` em `apps/dashboard/src-tauri/src/spec_views.rs` chama `mustard_core::SqliteSpecReader::children_of(parent)` que consulta apenas a projeção do SQLite (eventos `spec.link`). Sub-specs criadas via `/mustard:tactical-fix` que tenham `### Parent: <slug>` no header MAS não tenham emitido evento `spec.link` (ou cujo SQLite local nunca viu o evento — colaborador que deu pull) ficam invisíveis. Wave 6 faz o `spec_children_v2` retornar a **union** de duas fontes: eventos do SQLite + scan filesystem de `spec/*/spec.md` procurando `### Parent: <slug>`. Dedupe por slug.

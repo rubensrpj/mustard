@@ -1,14 +1,7 @@
 # Wave 3 — PATH integration per-SO (NSIS, postinst, macOS first-run)
 
-### Stage: Plan
-### Outcome: Active
-### Flags: 
-### Scope: full (wave)
 ### Wave: 3
 ### Role: general
-### Checkpoint: 2026-05-21T18:00:00Z
-### Lang: pt
-### Parent: 2026-05-21-mustard-v1-installer-and-update
 
 ## PRD
 

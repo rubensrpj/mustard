@@ -1,13 +1,5 @@
 # Tactical Fix: unificar /mustard:approve + /mustard:resume em /mustard:spec
 
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Scope: light
-### Checkpoint: 2026-05-23T18:20:00Z
-### Lang: pt
-### Parent: 2026-05-23-dashboard-design-system
-
 ## Contexto
 
 Hoje existem dois comandos com escopo redundante:

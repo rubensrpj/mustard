@@ -5,7 +5,22 @@
 // is applied explicitly: under `cfg(test)`, `.unwrap()` / `.expect()` are
 // allowed (a panicking assertion *is* a test failure). Non-test code keeps the
 // `deny`.
-#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::float_cmp,
+        clippy::len_zero,
+        clippy::format_push_string,
+        clippy::needless_range_loop,
+        clippy::double_ended_iterator_last,
+        clippy::map_unwrap_or,
+        clippy::uninlined_format_args,
+        clippy::vec_init_then_push,
+        clippy::items_after_test_module,
+    )
+)]
 //! `mustard-rt` — the Mustard enforcement runtime.
 //!
 //! One binary replaces the dozens of per-hook `node` processes the harness

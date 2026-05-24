@@ -1,12 +1,5 @@
 # Telemetria dashboard — redesign completo (timeline-led + heatmap + bug fix de spec attribution)
 
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Scope: full
-### Checkpoint: 2026-05-20T01:30:00Z
-### Lang: pt
-
 > **Bloqueada por `2026-05-19-pipeline-state-from-sqlite`.** Não aprovar/executar antes daquela spec fechar (Wave 5 do ingest + delete dos JSONs precisa landar) — esta spec lê todas as agregações de telemetria de eventos consolidados no SQLite. Sem aquele consolidamento, o redesign trabalha em cima de source-of-truth fragmentada.
 
 ## PRD

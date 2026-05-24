@@ -1,9 +1,4 @@
 # Enhancement: budget-observability
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Scope: light
-### Checkpoint: 2026-04-09T12:30:00Z
 
 ## Summary
 Adicionar 3 modos ao `context-budget.js`: `strict` (atual, hard-block), `warn` (log + allow), `observe` (log tamanho real a `.claude/.metrics/budget-observations.jsonl`, zero block). Mode via env var `CONTEXT_BUDGET_MODE`. Default = `strict` (zero mudança comportamental sem opt-in explícito). Permite coletar dados reais para tuning futuro do threshold.

@@ -1,9 +1,6 @@
 # Mustard 2.0 — Phase 4: Hardening, Tests, CI
 
 - **Lang**: ptbr
-### Stage: Close
-### Outcome: Completed
-### Flags: 
 - **Checkpoint**: 2026-05-12T21:45:00Z
 - **Scope**: Full
 - **Type**: feature

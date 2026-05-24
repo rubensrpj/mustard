@@ -1,11 +1,5 @@
 # Wave 4 — CLI + SKILLs: limpar bucket references
 
-### Parent: [[2026-05-21-flatten-spec-layout-and-multi-collab]]
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Lang: pt
-
 ## Resumo
 
 Os SKILLs de pipeline (`/close`, `/resume`, `/feature`, `/bugfix`, `/tactical-fix`, `/qa`, `/approve`) e os comandos `init`/`update` da CLI ainda escrevem ou citam `spec/active/`, `spec/completed/`, `spec/superseded/`. Wave 4 trata todos esses textos: substitui paths para `spec/{name}/` e ajusta a redação dos passos (não mais "mover para completed/").

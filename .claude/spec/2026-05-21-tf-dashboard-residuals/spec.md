@@ -1,12 +1,5 @@
 # Tactical-fix — dashboard src-tauri lib.rs + watcher.rs flatten
 
-### Parent: [[2026-05-21-flatten-spec-layout-and-multi-collab]]
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Lang: pt
-### Checkpoint: 2026-05-21
-
 ## Resumo
 
 A wave-3 do parent flattenou apenas `spec_views.rs`. Os Tauri commands `dashboard_spec_complete`/`dashboard_spec_cancel` em `lib.rs` (~lines 895-928) ainda chamam `move_spec_dir` que usa `fs::rename` entre buckets, e `watcher.rs:38` ainda filtra por `spec/active`. Esta fix mata os dois — Close/Cancel passam a emit-only via SqliteEventStore (mesmo padrão de spec_views.rs), e watcher.rs passa a observar `.claude/spec/` flat.

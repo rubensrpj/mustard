@@ -1,0 +1,10 @@
+{
+  "stage": "Close",
+  "outcome": "Completed",
+  "phase": null,
+  "scope": "full (wave plan)",
+  "lang": "pt-BR",
+  "checkpoint": null,
+  "isWavePlan": true,
+  "totalWaves": 3
+}

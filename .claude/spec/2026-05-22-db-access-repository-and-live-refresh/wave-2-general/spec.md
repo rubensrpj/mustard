@@ -1,11 +1,5 @@
 # wave-2-general — Rotear hooks pelo repository único
 
-### Parent: [[2026-05-22-db-access-repository-and-live-refresh]]
-### Stage: Close
-### Outcome: Completed
-### Flags:
-### Lang: pt
-
 ## Resumo
 
 Fazer o `mustard-rt` construir um único `Repository` por invocação de processo e

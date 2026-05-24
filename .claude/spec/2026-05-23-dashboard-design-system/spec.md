@@ -1,12 +1,5 @@
 # Design system unificado (Binance DESIGN.md aplicado, brand Mustard só na cor)
 
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Scope: full
-### Checkpoint: 2026-05-23T23:55:00Z
-### Lang: pt
-
 ## PRD
 
 ## Contexto

@@ -1,12 +1,5 @@
 # Feature: b5-cli-to-rust
 
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Scope: full
-### Checkpoint: 2026-05-19T15:10:00Z
-### Lang: pt
-
 > Parte B, item B5. Refinada pelo ANALYZE em 2026-05-19: o `src/` real foi inventariado (12 arquivos `.ts`), as fronteiras com `mustard-core` foram confirmadas e as decisões em aberto (mcp-memory, migrate, carimbo de versão) foram resolvidas. Depende de B2; B3/B4 concluídos.
 
 ## Contexto

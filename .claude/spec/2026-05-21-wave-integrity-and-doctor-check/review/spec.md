@@ -1,10 +1,5 @@
 # Plano de Review
 
-### Parent: [[2026-05-21-wave-integrity-and-doctor-check]]
-### Stage: Plan
-### Outcome: Active
-### Flags: 
-
 Checklist para o agente de review.
 
 ## Checklist

@@ -20,6 +20,11 @@ use crate::util::now_iso8601;
 use mustard_core::fs;
 use mustard_core::store::event_store::EventSink;
 use mustard_core::store::sqlite_store::SqliteEventStore;
+// Wave 3 of mustard-unification: the sidecar `meta.json` is the canonical
+// source of `scope`/`lang`/`isWavePlan`/`totalWaves` going forward. The legacy
+// `.pipeline-states/*.json` ingest now consults `meta.json` first for fields
+// the legacy JSON omits, falling back to the legacy values otherwise.
+use mustard_core::read_meta;
 use mustard_core::model::event::{
     Actor, ActorKind, HarnessEvent, SCHEMA_VERSION,
     EVENT_PIPELINE_DISPATCH_FAILURE, EVENT_PIPELINE_PAUSE,
@@ -167,18 +172,48 @@ pub fn run(opts: PipelineStateIngestOpts) {
         let mut file_errors: Vec<Value> = Vec::new();
 
         // --- pipeline.scope ---
-        if state.scope.is_some()
+        //
+        // Read `.claude/spec/<spec>/meta.json` FIRST (Wave 3 mustard-unification):
+        // the sidecar is canonical for `scope`/`lang`/`isWavePlan`/`totalWaves`.
+        // The legacy JSON only fills the gap for fields the sidecar omits.
+        let meta_path = Path::new(&cwd)
+            .join(".claude")
+            .join("spec")
+            .join(&spec)
+            .join("meta.json");
+        let meta_sidecar = read_meta(&meta_path);
+
+        let scope_value = meta_sidecar
+            .as_ref()
+            .and_then(|m| m.scope.clone())
+            .or_else(|| state.scope.clone())
+            .unwrap_or_else(|| "full".to_string());
+        let lang_value = meta_sidecar
+            .as_ref()
+            .and_then(|m| m.lang.clone())
+            .or_else(|| state.lang.clone());
+        let is_wave_plan = meta_sidecar
+            .as_ref()
+            .and_then(|m| m.is_wave_plan)
+            .or(state.is_wave_plan);
+        let total_waves = meta_sidecar
+            .as_ref()
+            .and_then(|m| m.total_waves)
+            .or(state.total_waves);
+
+        if meta_sidecar.is_some()
+            || state.scope.is_some()
             || state.lang.is_some()
             || state.model.is_some()
             || state.is_wave_plan.is_some()
             || state.total_waves.is_some()
         {
             let payload = json!({
-                "scope": state.scope.as_deref().unwrap_or("full"),
-                "lang": state.lang,
+                "scope": scope_value,
+                "lang": lang_value,
                 "model": state.model,
-                "isWavePlan": state.is_wave_plan,
-                "totalWaves": state.total_waves,
+                "isWavePlan": is_wave_plan,
+                "totalWaves": total_waves,
             });
             if let Err(e) = append(&store, EVENT_PIPELINE_SCOPE, &spec, &at, payload) {
                 file_errors.push(json!({ "file": file_label, "event": EVENT_PIPELINE_SCOPE, "error": e}));

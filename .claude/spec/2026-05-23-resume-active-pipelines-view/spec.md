@@ -1,13 +1,5 @@
 # Tactical Fix: `/mustard:resume` lê 117 paths porque filtra por `Status:` morto
 
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Scope: light
-### Checkpoint: 2026-05-23T12:30:00Z
-### Lang: pt
-### Parent: [[2026-05-21-spec-lifecycle-unification]]
-
 ## Contexto
 
 `/mustard:resume` consumiu ~117 paths + 6 Greps redundantes numa única invocação. Diagnóstico em 4 raízes (todas decorrem de drift entre a unificação de lifecycle de spec e a skill que lê o cabeçalho):

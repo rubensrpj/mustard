@@ -1,11 +1,5 @@
 # Wave 3 — Dashboard src-tauri: emit-only + flat resolve
 
-### Parent: [[2026-05-21-flatten-spec-layout-and-multi-collab]]
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Lang: pt
-
 ## Resumo
 
 `spec_action::Close` e `Reopen` deixam de mover pastas — passam a emitir o evento `pipeline.status` correspondente e atualizar o cabeçalho (já garantido pelo lado da Wave 2 via `emit_pipeline.rs`). `resolve_spec_dir` (em `spec_views.rs`) deixa de iterar buckets e resolve diretamente em `spec/{name}/`. O carregador de `spec_view` continua o mesmo — só precisa estar alinhado com o fallback da Wave 1.

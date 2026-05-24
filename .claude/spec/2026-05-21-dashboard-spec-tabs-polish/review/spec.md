@@ -1,12 +1,5 @@
 # Review — dashboard-spec-tabs-polish
 
-### Parent: [[2026-05-21-dashboard-spec-tabs-polish]]
-### Stage: QaReview
-### Outcome: Active
-### Flags: 
-### Lang: pt
-### Checkpoint: 2026-05-21T17:00:00Z
-
 ## Resumo
 
 Code review consolidado após W1-W4 fecharem. Um review pra dashboard (UI + Tauri), um pra rt (apenas se W2 modificou `spec_children.rs`).

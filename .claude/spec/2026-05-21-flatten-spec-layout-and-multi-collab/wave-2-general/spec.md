@@ -1,11 +1,5 @@
 # Wave 2 — Rt: remover bucket-aware code + sync header
 
-### Parent: [[2026-05-21-flatten-spec-layout-and-multi-collab]]
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Lang: pt
-
 ## Resumo
 
 Remover do `mustard-rt` toda lógica que depende de `spec/{active,completed,superseded}/`. `complete_spec::archive` perde a parte de mover pasta (vira só emit). `session_cleanup` perde o varredor de mv. Todos os helpers que resolvem caminho passam a buscar `spec/{name}/` flat. `emit-pipeline --kind pipeline.status` ganha um lado de write: sincroniza o cabeçalho `### Status:` do `spec.md` correspondente para a fonte canônica cross-dev.

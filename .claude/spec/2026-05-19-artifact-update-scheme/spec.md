@@ -1,12 +1,5 @@
 # Esquema de proveniência e atualização de artefatos gerenciados
 
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Scope: full
-### Checkpoint: 2026-05-19T21:05:00Z
-### Lang: pt
-
 ## PRD
 
 ## Contexto

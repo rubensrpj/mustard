@@ -1,13 +1,7 @@
 # Wave 4 — Skills: 18 SKILLs emitem pipeline.stage/outcome/flag + header novo
 
-### Parent: [[2026-05-21-spec-lifecycle-unification]]
 ### Wave: 4
 ### Role: cli
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Lang: pt
-### Checkpoint: 2026-05-22T01:12:00Z
 
 ## Resumo
 

@@ -1,12 +1,5 @@
 # Feature: b3-hooks-to-rust
 
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Scope: full
-### Checkpoint: 2026-05-19T10:33:25Z
-### Lang: pt
-
 > Spec de backlog (Parte B, item B3). **ÉPICO** — decompõe no ANALYZE em waves por família de hook (provavelmente specs-filhas). Depende de B2. Revisada 2026-05-18: **não é porte 1:1** — os 37 hooks viram ~15 módulos atrás de um dispatcher.
 
 ## Contexto

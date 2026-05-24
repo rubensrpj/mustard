@@ -1,12 +1,5 @@
 # Wave 5 (rt + templates) — Write-back spec→skill + telemetria
 
-### Stage: Execute
-### Outcome: Active
-### Flags:
-### Lang: pt
-### Checkpoint: 2026-05-24T09:05:08.646Z
-### Parent: 2026-05-22-project-profiler
-
 ## PRD
 
 ## Contexto

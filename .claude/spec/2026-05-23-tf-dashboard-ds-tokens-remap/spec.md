@@ -1,12 +1,5 @@
 # Tactical-fix — remap `--ds-*` tokens nas primitivas migradas para tokens Binance
 
-### Parent: [[2026-05-23-dashboard-design-system]]
-### Stage: Plan
-### Outcome: Active
-### Flags:
-### Lang: pt
-### Checkpoint: 2026-05-23T00:00:00Z
-
 ## Resumo
 
 Wave 1 do parent eliminou os tokens legados `--ds-*` (sistema índigo/violeta pré-Binance) ao consolidar `src/style.css`. Wave 2 moveu 5 primitivas de `components/ds/` para `components/page/` byte-equivalente — preservou comportamento, mas as referências internas `var(--ds-surface-elevated)`, `var(--ds-intent-success)`, `var(--ds-text-secondary)`, `var(--ds-radius-md)`, etc. agora apontam para tokens **inexistentes**. CSS resolve para `unset`/`initial` silenciosamente: o build passa, o lint passa, mas `StatPill`, `BaseRow`, `CodeBlock`, `DiffViewer`, `TreeNode` renderizam sem cor de fundo, sem borda, sem cor de texto distintiva. Wave 4 vai compor `BaseRow` em listas de spec/economia e `StatPill` em todos os KPIs — se o remap não acontecer antes, a regressão visual escala para todas as páginas. Esta TF mapeia cada `--ds-*` usado para seu equivalente Binance no atual `style.css` e atualiza inline em cada um dos 5 arquivos.

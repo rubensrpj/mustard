@@ -10,7 +10,7 @@
 //! exactly: `{ kind, root, waves: [{ label, folder, status, icon }] }`.
 
 use mustard_core::fs;
-use mustard_core::spec;
+use mustard_core::{meta, spec};
 use serde_json::json;
 use std::path::Path;
 
@@ -36,12 +36,21 @@ struct Wave {
 
 /// Read the lifecycle status word from a spec file, defaulting to `"queued"`.
 ///
-/// Delegates to the canonical [`mustard_core::spec`] parser (tolerant of
-/// the new `### Stage:`/`### Outcome:`/`### Flags:` header **and** every legacy
-/// shape) and projects the resulting [`SpecState`] to the legacy status word
-/// the icon map keys off. A missing file / unparseable header → `"queued"`
-/// (a not-yet-started wave), exactly as the old inline parser defaulted.
+/// Resolution order (W3 onward):
+/// 1. `meta.json` sidecar in the same directory — the authoritative source
+///    after the W3 `meta-sidecar` migration removed `### Stage:` /
+///    `### Outcome:` headers from the markdown. Delegates the read +
+///    `stage`+`outcome` → label mapping to [`mustard_core::meta`] (single
+///    source of truth — never re-implement the table here).
+/// 2. Legacy `### Stage:` / `### Outcome:` headers via
+///    [`mustard_core::spec::read_state`] — kept for forward-compat with
+///    specs that arrive un-migrated (e.g. from a teammate's branch).
+///
+/// A missing file / unparseable header / unreadable meta.json → `"queued"`.
 fn read_status(spec_file: &Path) -> String {
+    if let Some(m) = meta::read_meta_beside(spec_file) {
+        return meta::status_word(&m).to_string();
+    }
     match spec::read_state(spec_file) {
         Some(state) => spec::status_word(&state).to_string(),
         None => "queued".to_string(),

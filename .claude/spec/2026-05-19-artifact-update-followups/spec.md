@@ -1,12 +1,5 @@
 # Follow-ups do esquema de atualização de artefatos
 
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Scope: full
-### Checkpoint: 2026-05-20T01:00:00Z
-### Lang: pt
-
 > **Bloqueada por `2026-05-18-b6-dashboard-projects`.** Não aprovar/executar esta spec antes de b6 fechar — a Wave 3 consome a infraestrutura de projetos e a invocação nativa de `init`/`update` que b6 entrega.
 
 ## PRD

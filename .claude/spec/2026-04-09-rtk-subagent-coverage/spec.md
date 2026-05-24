@@ -1,9 +1,4 @@
 # Enhancement: rtk-subagent-coverage
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Scope: light
-### Checkpoint: 2026-04-09T00:00:00Z
 
 ## Summary
 Auditoria apontou que `rtk-rewrite.js` está registrado apenas no matcher `PreToolUse(Bash)` do orchestrator. Objetivo: verificar se hooks `PreToolUse(Bash)` propagam para Task subagents no Claude Code. Se não propagam, aplicar fix (extender matcher, ou injetar instrução "sempre prefira `rtk`" no prompt dos agents via `_core.md` / templates). Alvo: recuperar 40-60% de economia de tokens em outputs shell dentro de waves.

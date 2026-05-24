@@ -42,7 +42,9 @@ mod mark_checklist_item;
 mod memory;
 mod memory_cross_wave;
 mod migrate_spec_headers;
+mod migrate_to_meta;
 mod memory_ingest;
+mod rehook;
 mod metrics;
 mod metrics_wave_status;
 pub(crate) mod otel;
@@ -71,8 +73,12 @@ mod spec_children_tree;
 mod spec_extract;
 mod spec_link;
 mod spec_sections;
+// W4: lang-aware spec slug helper. Thin facade over `mustard_core::slugify`.
+// W6: subcommand entry point (`i18n translate-heading`, `spec-lang resolve`).
+pub mod spec_slug;
 mod sync_detect;
 mod sync_registry;
+pub mod unhook;
 mod transcript_watcher;
 mod verify_pipeline;
 mod wave_dependency;
@@ -82,6 +88,7 @@ mod wave_scaffold;
 mod wave_size_check;
 mod wave_tree;
 mod wikilink;
+pub mod worktree_gc;
 
 use clap::Subcommand;
 use std::path::PathBuf;
@@ -178,6 +185,26 @@ pub enum RunCmd {
         /// Case-insensitive substring filter on the file path (subset).
         #[arg(long)]
         filter: Option<String>,
+    },
+    /// Extract lifecycle headers from every `.md` under `<root>` into a
+    /// sidecar `meta.json` (Wave 3 of mustard-unification). Atomic per file,
+    /// idempotent (skips when sidecar already present unless `--force`).
+    ///
+    /// The headers stay in the `.md` for this step — the second-pass clean-up
+    /// removes them once every consumer reads from `meta.json`.
+    MigrateToMeta {
+        /// Root directory to walk recursively. Defaults to `.claude/spec`.
+        #[arg(long)]
+        root: Option<PathBuf>,
+        /// Force-rewrite existing `meta.json` sidecars.
+        #[arg(long)]
+        force: bool,
+        /// After writing each `meta.json`, also strip the legacy `### Stage:` /
+        /// `### Outcome:` / `### Phase:` / `### Scope:` / `### Lang:` /
+        /// `### Checkpoint:` / `### Parent:` / `### Flags:` /
+        /// `### Total waves:` / `### Status:` headers from the `.md`. Idempotent.
+        #[arg(long = "strip-headers")]
+        strip_headers: bool,
     },
     /// Finalize a pipeline spec (followup mark, archive, or stale sweep).
     CompleteSpec {
@@ -844,6 +871,63 @@ pub enum RunCmd {
         #[arg(long = "retry-context-file")]
         retry_context_file: Option<PathBuf>,
     },
+    /// Garbage-collect orphan Claude agent worktrees under
+    /// `<repo>/.claude/worktrees/agent-*`.
+    ///
+    /// Enumerates the directory, computes each entry's age (via
+    /// `<repo>/.git/worktrees/<name>/HEAD` mtime, falling back to the dir's
+    /// own mtime), and reports/removes entries older than `--age-days N`
+    /// (default 7). Dry-run by default; `--apply` is required to mutate the
+    /// filesystem. Emits `worktree.gc.run` and
+    /// `pipeline.economy.operation.invoked` to the harness event store.
+    WorktreeGc {
+        /// Repo root override. Defaults to the current working directory.
+        #[arg(long)]
+        repo: Option<PathBuf>,
+        /// Age threshold in whole days. Worktrees older than this are
+        /// eligible for removal.
+        #[arg(long = "age-days", default_value_t = worktree_gc::DEFAULT_AGE_DAYS)]
+        age_days: u32,
+        /// Preview only — no filesystem mutation (the default).
+        #[arg(long, default_value_t = true, conflicts_with = "apply")]
+        dry_run: bool,
+        /// Apply the removal. Required to mutate the filesystem.
+        #[arg(long)]
+        apply: bool,
+    },
+    /// Kill-switch: rename `.claude/settings.json` → `.disabled-<ts>` and wipe
+    /// volatile harness state (`.agent-state/`, `.cluster-cache.json`,
+    /// `.worktrees/`). Restore with [`Self::Rehook`].
+    ///
+    /// `--scope this` (default) acts on the current repo's `.claude/` only.
+    /// `--scope monorepo` also sweeps every `apps/*/.claude/` +
+    /// `packages/*/.claude/`. `--scope all` adds the user-global
+    /// `~/.claude/settings.json`, gated by `--confirm` (otherwise reported as
+    /// `state: "skipped"`). Emits a pretty JSON report.
+    Unhook {
+        /// Repo root override. Defaults to the current working directory.
+        #[arg(long)]
+        repo: Option<PathBuf>,
+        /// Scope: `this` (default), `monorepo`, or `all`.
+        #[arg(long, default_value = "this")]
+        scope: String,
+        /// Required for `--scope all` to also touch the user-global
+        /// `~/.claude/settings.json`.
+        #[arg(long)]
+        confirm: bool,
+    },
+    /// Reverse [`Self::Unhook`]: in each `.claude/` in scope, rename the
+    /// newest `settings.json.disabled*` snapshot back to `settings.json`.
+    /// Volatile state directories that `unhook` wiped are left alone — the
+    /// runtime regenerates them on the next run. Emits a pretty JSON report.
+    Rehook {
+        #[arg(long)]
+        repo: Option<PathBuf>,
+        #[arg(long, default_value = "this")]
+        scope: String,
+        #[arg(long)]
+        confirm: bool,
+    },
 }
 
 /// Dispatch a `run` subcommand.
@@ -887,6 +971,13 @@ pub fn dispatch(cmd: RunCmd) {
                 root,
                 log,
                 filter,
+            });
+        }
+        RunCmd::MigrateToMeta { root, force, strip_headers } => {
+            migrate_to_meta::run(migrate_to_meta::MigrateToMetaOpts {
+                root,
+                force,
+                strip_headers,
             });
         }
         RunCmd::CompleteSpec {
@@ -1116,5 +1207,26 @@ pub fn dispatch(cmd: RunCmd) {
             agent_prompt_render::RenderMode::parse(&mode),
             retry_context_file.as_deref(),
         ),
+        RunCmd::WorktreeGc {
+            repo,
+            age_days,
+            dry_run,
+            apply,
+        } => {
+            // `dry_run` defaults to `true`; clap's `conflicts_with` blocks
+            // passing both. `--apply` is the authoritative mutator flag.
+            let _ = dry_run;
+            worktree_gc::run(worktree_gc::WorktreeGcOpts {
+                repo,
+                age_days,
+                apply,
+            });
+        }
+        RunCmd::Unhook { repo, scope, confirm } => {
+            unhook::run(unhook::UnhookOpts { repo, scope, confirm });
+        }
+        RunCmd::Rehook { repo, scope, confirm } => {
+            rehook::run(rehook::RehookOpts { repo, scope, confirm });
+        }
     }
 }

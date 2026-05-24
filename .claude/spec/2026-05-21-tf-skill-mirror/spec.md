@@ -1,12 +1,5 @@
 # Tactical-fix — mirror wave-4 flatten into installed SKILLs
 
-### Parent: [[2026-05-21-flatten-spec-layout-and-multi-collab]]
-### Stage: Execute
-### Outcome: Active
-### Flags: 
-### Lang: pt
-### Checkpoint: 2026-05-21T00:00:00Z
-
 ## Resumo
 
 Wave-4 do parent só tocou `apps/cli/templates/` (a fonte canônica do payload). As cópias instaladas no próprio repo Mustard (`.claude/commands/mustard/*/SKILL.md` + `.claude/skills/pipeline-execution/SKILL.md`) continuam citando `spec/active/`, `spec/completed/`, `spec/superseded/` — quebrando o AC-W6-1 do parent (37 hits em 7 SKILLs + 2 hits em pipeline-execution). Esta tactical-fix replica as substituições wave-4 nas cópias instaladas.

@@ -1,13 +1,5 @@
 # wave-2-general: Tauri command lapidate_prd
 
-### Parent: [[2026-05-20-dashboard-prd-ai-lapidator]]
-### Stage: Plan
-### Outcome: Active
-### Flags: 
-### Scope: full
-### Lang: pt
-### Checkpoint: 2026-05-20T00:00:00Z
-
 ## PRD
 
 ## Contexto

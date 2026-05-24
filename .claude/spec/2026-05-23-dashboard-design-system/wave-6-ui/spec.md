@@ -1,13 +1,5 @@
 # Wave 6 — Pages secondary (ProjectDetail, SpecDetail, Prd, Commands, Settings, Preferences, Home)
 
-### Parent: [[2026-05-23-dashboard-design-system]]
-### Stage: Close
-### Outcome: Completed
-### Flags:
-### Scope: full (wave 6 of 6 — final)
-### Lang: pt
-### Checkpoint: 2026-05-23T23:55:00Z
-
 ## Resumo
 
 Replicar o padrão validado na Wave 5 nas 7 páginas secundárias do dashboard. Cada uma compõe `<PageSurface>` + `<EditorialBand>` (quando faz sentido — `Preferences` e `Home` podem ter aberturas mais discretas), consome primitivas do barril `@/components/page`, importa features via `@/features/{name}`, e zera resíduo visual inline. Mesma regra HARD da Wave 5: pages NÃO inventam visual; só layout estrutural + composição. Este é o fechamento do wave plan: ao fim, `check-pages-no-inline-visual.mjs` passa em TODAS as 11 páginas, `check-pages-imports.mjs` confirma zero imports legacy, e AC-6 + AC-10 do parent finalmente ficam verdes — destravando o CLOSE do wave plan inteiro.

@@ -1,9 +1,4 @@
 # Enhancement: hygiene-race-fix
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Scope: light
-### Checkpoint: 2026-04-09T00:00:00Z
 
 ## Summary
 Refactor do cleanup em `spec-hygiene.js` para garantir idempotência: cada `fs.unlinkSync` dos arquivos de state em seu próprio `try/catch`. Documentar ordem (rename atomic PRIMEIRO, cleanup best-effort DEPOIS) com comentário explicando recovery semantics. Zero mudança funcional — só robustez a falhas parciais.

@@ -1,13 +1,5 @@
 # Tactical Fix: ACs cross-platform sem dependência de `rg`
 
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Scope: touch
-### Checkpoint: 2026-05-23T13:15:00Z
-### Lang: pt
-### Parent: 2026-05-23-dashboard-design-system
-
 ## Contexto
 
 Tactical fix derivado de [[2026-05-23-dashboard-design-system]] (Wave 4 REVIEW WARNING).

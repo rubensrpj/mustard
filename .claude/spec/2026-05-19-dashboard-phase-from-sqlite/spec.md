@@ -1,12 +1,5 @@
 # Dashboard derivação de fase a partir do SQlite (store único)
 
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Scope: full
-### Checkpoint: 2026-05-20T01:55:00Z
-### Lang: pt
-
 > **Roda antes de b6** (não depende dele) e é prerequisite arquitetural da Wave 3 de `2026-05-19-artifact-update-followups` — não faz sentido surface de "artefatos defasados" no dashboard se a base de phase reading ainda é fragmentada.
 
 ## PRD

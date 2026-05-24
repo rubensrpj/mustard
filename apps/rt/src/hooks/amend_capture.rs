@@ -399,24 +399,24 @@ impl Check for AmendCapture {
         }
 
         // Derive lang from the spec's pipeline.scope event (best-effort).
-        let lang = derive_spec_lang(&store, &window.spec_id).unwrap_or_else(|| "en".to_string());
+        // Banner copy is centralised in `mustard_core::i18n` (W4 of
+        // mustard-unification); we only interpolate the per-event fields
+        // (file_path, spec_id, forecast_len) on top of the catalog template.
+        let lang = derive_spec_lang_locale(&store, &window.spec_id);
         let n = forecast_len;
-        let warning = if lang == "pt" {
-            format!(
+        let body = mustard_core::translate("banner.amend.drift", lang);
+        let warning = match lang {
+            mustard_core::Locale::PtBr => format!(
                 "Você está editando `{file_path}` em outro escopo da spec ativa \
                  `{spec_id}` (pós-CLOSE). Já são {n} arquivos fora do escopo declarado. \
-                 Considere abrir `/mustard:feature` ou `/mustard:task` separado — a sessão \
-                 continua, mas o drift não é absorvido pela spec original.",
+                 {body}",
                 spec_id = window.spec_id,
-            )
-        } else {
-            format!(
+            ),
+            mustard_core::Locale::EnUs => format!(
                 "You're editing `{file_path}` outside the active spec `{spec_id}` scope \
-                 (post-CLOSE). {n} files outside declared scope so far. Consider opening a \
-                 separate `/mustard:feature` or `/mustard:task` — the session continues, but \
-                 drift is not absorbed by the original spec.",
+                 (post-CLOSE). {n} files outside declared scope so far. {body}",
                 spec_id = window.spec_id,
-            )
+            ),
         };
         Ok(Verdict::Inject { context: warning })
     }
@@ -432,6 +432,28 @@ fn derive_spec_lang(store: &SqliteEventStore, spec_id: &str) -> Option<String> {
         .rfind(|e| e.event == EVENT_PIPELINE_SCOPE)
         .and_then(|e| serde_json::from_value::<PipelineScopePayload>(e.payload).ok())
         .and_then(|p| p.lang)
+}
+
+/// `derive_spec_lang` + BCP-47 normalisation. The raw store value can be the
+/// legacy short form (`pt` / `en`); we parse it leniently and fall back to
+/// the [`mustard_core::Locale`] default (`PtBr`) when absent. The `ShortForm`
+/// branch is intentionally NOT treated as an error here — drift-banner
+/// emission must never break on a legacy spec.
+fn derive_spec_lang_locale(store: &SqliteEventStore, spec_id: &str) -> mustard_core::Locale {
+    use std::str::FromStr;
+    let raw = derive_spec_lang(store, spec_id).unwrap_or_default();
+    match mustard_core::Locale::from_str(&raw) {
+        Ok(loc) => loc,
+        Err(mustard_core::LocaleError::ShortForm(s)) => {
+            // Legacy `pt` / `en` → expand to BCP-47.
+            if s.eq_ignore_ascii_case("pt") {
+                mustard_core::Locale::PtBr
+            } else {
+                mustard_core::Locale::EnUs
+            }
+        }
+        Err(_) => mustard_core::Locale::default(),
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -1,12 +1,5 @@
 # Wave 2 — i18n audit: t(key) global + sidebar/topbar/specs
 
-### Parent: [[2026-05-21-dashboard-i18n-and-phase-unify]]
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Lang: pt
-### Checkpoint: 2026-05-21T18:00:00Z
-
 ## Resumo
 
 Auditar e centralizar as strings de UI do caminho da sidebar + rota `/specs` + página Knowledge via `t(key)` exportada de `@/lib/i18n`. Catálogo PT+EN com bootstrap a partir de Preferences (zustand store). Quando o usuário troca idioma em Preferences, todas essas strings flipam. A sidebar para de mostrar "Knowledge" em EN quando idioma é PT.

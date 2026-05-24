@@ -1,13 +1,5 @@
 # Wave 3 — Layout shell refit (AppShell, Sidebar, Topbar, SplitDetail, button signature)
 
-### Parent: [[2026-05-23-dashboard-design-system]]
-### Stage: Close
-### Outcome: Completed
-### Flags:
-### Scope: full (wave 3 of 5)
-### Lang: pt
-### Checkpoint: 2026-05-23T00:00:00Z
-
 ## Resumo
 
 Aplicar o pack Binance do `DESIGN.md` na camada de shell do dashboard, fechando o último gap visual antes das pages migrarem (Waves 4 e 5). Hoje o `AppShell` declara um grid `[220px_1fr] [48px_1fr]` com `py-6` interno (ritmo Notion legado), o `Topbar` é `h-12` (48px) com `border-b border-border`, e o `Sidebar` usa `bg-sidebar` mas com weights pesados (`font-medium`), badges `bg-[--color-accent-mustard]/10` hardcoded e indicadores `bg-[--color-ok]` que apontam para tokens removidos na Wave 1. O `button` `variant=default` já é `bg-primary text-primary-foreground` mas mora em `h-8` (32px) — fora da assinatura Binance "black on yellow 40px". Esta wave aterrissa a assinatura Binance em 5 arquivos: grid passa a `[40px_1fr]` (Topbar 40px), `Topbar` perde o `border-b` em favor do degrau `#0b0e11 → #1e2329` (depth sem shadow, regra `DESIGN.md` §Elevation), `Sidebar` consome `bg-card` + weights ≤500, `SplitDetail` re-alinha `top-[40px]` para casar o grid novo, e `button` ganha `size=default` em `h-10` + `rounded-md` (6px) para a assinatura "preto sobre amarelo" exigida pelo `DESIGN.md` §CTA Button. Risco surfaceiado: as referências vivas `--color-ok` (Sidebar L119/229, Topbar L67) e `--color-accent-mustard` (Sidebar L121/358) são tokens fantasma de `styles/theme.css` deletado na Wave 1 — esta wave reaponta os usos dentro dos 5 arquivos para `--intent-success`/`--primary`, mas pode haver consumidores fora do escopo; se aparecerem, Waves 4/5 limpam.

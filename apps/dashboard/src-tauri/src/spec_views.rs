@@ -529,13 +529,13 @@ pub fn spec_events(
 
     if let Some(agent_str) = &filter.agent {
         let a = agent_str.clone();
-        out.retain(|e| e.agent.as_deref().map_or(false, |ag| ag.contains(a.as_str())));
+        out.retain(|e| e.agent.as_deref().is_some_and(|ag| ag.contains(a.as_str())));
     }
     if let Some(q) = &filter.q {
         let q = q.to_lowercase();
         out.retain(|e| {
             e.summary.to_lowercase().contains(&q)
-                || e.phase.as_deref().map_or(false, |p| p.to_lowercase().contains(&q))
+                || e.phase.as_deref().is_some_and(|p| p.to_lowercase().contains(&q))
         });
     }
 
@@ -1986,7 +1986,7 @@ pub fn dashboard_events_feed(
     limit: u32,
 ) -> Result<Vec<FeedEvent>, String> {
     let base = std::path::PathBuf::from(&project_path);
-    let cap = limit.max(1).min(1000); // defensive cap; UI typically asks ≤200
+    let cap = limit.clamp(1, 1000); // defensive cap; UI typically asks ≤200
     match crate::db::with_db(&base, |conn| events_feed_impl(conn, cap)) {
         Some(r) => r,
         None => Ok(vec![]),

@@ -1,13 +1,5 @@
 # Plano de ondas — Unificação do Mustard
 
-### Stage: Plan
-### Outcome: Active
-### Phase: PLAN
-### Scope: full (wave plan)
-### Checkpoint: 2026-05-24T19:00:00Z
-### Lang: pt-BR
-### Total waves: 14
-
 ## Contexto
 
 Esta unificação consolida três specs ativas (`2026-05-24-meta-sidecar`, `2026-05-24-config-idioma-tom`, `2026-05-23-per-spec-event-log-claude-devtools`), fecha review/qa pendentes de `2026-05-22-telemetry-separation`, e fecha o ciclo da refatoração Rust do Mustard. PRD em `spec.md`; plano completo em `C:\Users\ruben\.claude\plans\o-mustard-vem-passando-humble-whale.md`.

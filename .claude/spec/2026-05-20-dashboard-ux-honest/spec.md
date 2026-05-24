@@ -1,12 +1,5 @@
 # UX honesta do dashboard: classificação, cor por fase, markdown viewer e estados vazios
 
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Scope: full
-### Checkpoint: 2026-05-20T22:30:00Z
-### Lang: pt
-
 ## PRD
 
 ## Contexto

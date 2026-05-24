@@ -1,12 +1,5 @@
 # Wave 2 (rt) — Interpretação por modelo (cold path)
 
-### Stage: Execute
-### Outcome: Active
-### Flags:
-### Lang: pt
-### Checkpoint: 2026-05-24T09:05:08.646Z
-### Parent: 2026-05-22-project-profiler
-
 ## PRD
 
 ## Contexto

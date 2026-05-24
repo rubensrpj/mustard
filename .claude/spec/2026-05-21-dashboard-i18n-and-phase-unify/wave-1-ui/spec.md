@@ -1,12 +1,5 @@
 # Wave 1 — PipelineTimeline unificado + Execute verde
 
-### Parent: [[2026-05-21-dashboard-i18n-and-phase-unify]]
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Lang: pt
-### Checkpoint: 2026-05-21T18:00:00Z
-
 ## Resumo
 
 Unificar o componente de fases entre Lista e Detalhes: `PipelineTimeline` ganha prop `variant: "compact" | "default"`. O `MiniTimeline` (local em `SpecCard.tsx`) some — `SpecCard` passa a usar `<PipelineTimeline variant="compact">` direto. O `SpecDetailDashboard` usa `<PipelineTimeline variant="default">` full-width (ocupando todo o painel). EXECUTE muda de mustard para verde brilhante (`green-500`); REVIEW muda de teal para amber para evitar conflito visual com qa (emerald). O subtitle redundante "{spec slug}" abaixo do Analyze no `SpecDetailDashboard` some.

@@ -1,10 +1,5 @@
 # Plano de Review
 
-### Parent: [[2026-05-23-per-spec-event-log-claude-devtools]]
-### Stage: Plan
-### Outcome: Active
-### Flags: 
-
 Checklist para o agente de review.
 
 ## Checklist

@@ -1,9 +1,4 @@
 # Enhancement: sonnet-always-rereview
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Scope: light
-### Checkpoint: 2026-04-09T00:00:00Z
 
 ## Summary
 Reverter a heurística Haiku de re-review adicionada nesta sessão (specs #2 `haiku-auto-rereview` + #7 `haiku-heuristic-table`). Substituir por regra única: **"re-reviews sempre usam Sonnet, independente do modelo do review inicial"**. Elimina 100% do risco R3 (Haiku perdendo issues sutis), preserva economia em casos Opus→Sonnet (~$5.40/re-review em Full+new-patterns), e remove a decision table + referências em 3 SKILL.md.

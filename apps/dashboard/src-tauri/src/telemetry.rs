@@ -434,7 +434,7 @@ pub fn routing_breakdown(repo_path: &Path, session_since: Option<&str>) -> Routi
         .into_iter()
         .map(|(note, count)| RoutingByNote { note, count })
         .collect();
-    by_note.sort_by(|a, b| b.count.cmp(&a.count));
+    by_note.sort_by_key(|a| std::cmp::Reverse(a.count));
 
     RoutingBlock {
         blocks: total_blocks,
@@ -561,13 +561,11 @@ fn parse_iso_ms(s: &str) -> Option<u64> {
 pub fn measured(repo_path: &Path) -> MeasuredBlock {
     // Telemetry store opened once, outside the mustard.db cache mutex.
     let tele = crate::db::telemetry_store_for(repo_path);
-    if let Some(r) = crate::db::with_db(repo_path, |conn| crate::db::metrics_from_db(conn, tele.as_ref())) {
-        if let Ok(m) = r {
-            return MeasuredBlock {
-                tokens_total: m.tokens_total,
-                tokens_today: m.tokens_today,
-            };
-        }
+    if let Some(Ok(m)) = crate::db::with_db(repo_path, |conn| crate::db::metrics_from_db(conn, tele.as_ref())) {
+        return MeasuredBlock {
+            tokens_total: m.tokens_total,
+            tokens_today: m.tokens_today,
+        };
     }
     MeasuredBlock { tokens_total: 0, tokens_today: 0 }
 }
@@ -853,6 +851,7 @@ fn ms_to_iso(ms: i64) -> Option<String> {
 /// carries the same `claude_code.cost.usage` sum (no `token_type` split, so the
 /// total matches). Fail-soft: any reader error degrades to the default block.
 /// `by_session` is truncated to the top 10 to match the legacy `LIMIT 10`.
+#[allow(clippy::field_reassign_with_default)]
 fn cost_block(tele: &mustard_core::telemetry::TelemetryStore) -> CostBlock {
     use mustard_core::telemetry::reader;
     let conn = tele.conn();
@@ -1823,7 +1822,7 @@ fn build_trace_tree(
             });
         }
         // Stable order: agents with the most tool events first.
-        agent_nodes.sort_by(|a, b| b.children.len().cmp(&a.children.len()));
+        agent_nodes.sort_by_key(|a| std::cmp::Reverse(a.children.len()));
 
         let wave_tokens = sum_tokens(&agent_nodes);
         wave_nodes.push(TraceNode {

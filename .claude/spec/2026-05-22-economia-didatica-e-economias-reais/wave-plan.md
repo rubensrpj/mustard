@@ -1,11 +1,5 @@
 # Plano de Waves — Economia didática + economias reais
 
-### Stage: Done
-### Outcome: Active
-### Flags:
-### Scope: full (wave plan)
-### Lang: pt
-### Total waves: 3
 ### Closed: 2026-05-22T19:00:00Z
 
 ## Contexto

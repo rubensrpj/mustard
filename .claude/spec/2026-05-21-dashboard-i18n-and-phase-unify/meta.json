@@ -1,0 +1,11 @@
+{
+  "stage": "Close",
+  "outcome": "Completed",
+  "phase": null,
+  "scope": "full (wave plan)",
+  "lang": "pt-BR",
+  "checkpoint": "2026-05-21T18:00:00Z",
+  "parent": "[[2026-05-21-dashboard-spec-tabs-polish]]",
+  "isWavePlan": true,
+  "totalWaves": 2
+}

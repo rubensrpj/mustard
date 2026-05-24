@@ -1,12 +1,5 @@
 # Wave 2 — Ondas: contagem real + drawer com markdown
 
-### Parent: [[2026-05-21-dashboard-spec-tabs]]
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Lang: pt
-### Checkpoint: 2026-05-21T16:00:00Z
-
 ## Resumo
 
 A aba "Ondas" hoje mostra `wave.files_changed` que vem do projeção SQLite e é zero para waves sem eventos `tool.use` (caso comum em specs migradas / fechadas há tempo). O usuário quer ver o número real de arquivos listados no bloco `## Arquivos` do `wave-N-{role}/spec.md` da sub-spec — esse é o canon versionado. Adicionalmente, clicar numa wave abre um drawer (`<WaveMarkdownDrawer>`) com o markdown completo daquela wave renderizado. Adiciona-se um subcommand Rust `mustard-rt run wave-files --spec --wave` que devolve a contagem + o markdown, e um command Tauri `dashboard_spec_wave_files` que invoca esse subcommand.

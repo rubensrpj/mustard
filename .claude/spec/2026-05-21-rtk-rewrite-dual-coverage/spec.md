@@ -1,13 +1,5 @@
 # rtk_rewrite dual-mode coverage — testes cobrem Warn (rewrite) e Strict (deny)
 
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Scope: light
-### Checkpoint: 2026-05-21T01:35:00Z
-### Lang: pt
-### Parent: 2026-05-20-rtk-mandatory-everywhere
-
 ## Contexto
 
 Tactical fix derivado de [[2026-05-20-rtk-mandatory-everywhere]] (e relacionado a [[2026-05-20-restore-rtk-rewrite]], dona dos testes afetados). Descoberto durante a validação final da spec [[2026-05-20-tactical-fix-via-sub-spec]]: os testes `rtk_rewrite_e2e_rewrites_unprefixed_command` e `rtk_rewrite_emission` (em `apps/rt/tests/rtk_rewrite_emission.rs`, criados pela `restore-rtk-rewrite`) falham porque exercitam `Mode::Warn` → `Verdict::Rewrite` com `updatedInput.command`, mas a `rtk-mandatory-everywhere` mudou o default do gate para `Mode::Strict` → `Verdict::Deny`. Os testes não setam env explícita, então herdam Strict e batem contra o shape antigo.

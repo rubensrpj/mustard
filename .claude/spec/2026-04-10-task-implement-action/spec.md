@@ -1,11 +1,5 @@
 # Enhancement: task-implement-action
 
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Scope: light
-### Checkpoint: 2026-04-10T00:00:00Z
-
 ## Summary
 
 Adicionar uma nova action `implement` ao `/mustard:task` que entrega código padronizado com baixo custo de token. Gap atual: `/task refactor` escreve código mas sem injeção de guards/patterns/recipes, e `/feature` Light scope carrega ~60-120K por causa do overhead de pipeline. O `implement` preenche o meio: single dispatch, guards/patterns/recipes injetados inline via Grep cirúrgico, sem spec, sem state, sem review gate. Alvo: ~25-50K por invocação.

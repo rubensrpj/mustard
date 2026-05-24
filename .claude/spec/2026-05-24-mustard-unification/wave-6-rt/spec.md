@@ -1,13 +1,5 @@
 # W6 — rt new subcommands (15 subcomandos novos)
 
-### Stage: Plan
-### Outcome: Active
-### Phase: PLAN
-### Scope: full
-### Checkpoint: 2026-05-24T19:30:00Z
-### Lang: pt-BR
-### Parent: 2026-05-24-mustard-unification
-
 ## Contexto
 
 Pré-requisito para o corte massivo dos `SKILL.md` (W7). Cada subcomando substitui um bloco grande de lógica que hoje vive em markdown e gasta tokens no agente. Padrão consolidado: `Options struct + split entry-point` (`cli-command-pattern`), `rt-run-subcommand-pattern`, saída JSON byte-stable. Todos seguem fail-open.
@@ -48,11 +40,11 @@ Pré-requisito para o corte massivo dos `SKILL.md` (W7). Cada subcomando substit
 
 ## Critérios de Aceitação
 
-- [ ] **AC-6.1.** `mustard-rt run --help` lista os 15 subcomandos novos. Command: `node -e "const{execSync}=require('child_process');const out=execSync('rtk mustard-rt run --help 2>&1',{encoding:'utf8'});for(const k of ['spec-scaffold','close-orchestrate','review-dispatch','tactical-fix-create','prd-build','skill-fetch','adapt-cursor','maint-deps','maint-validate','task-checklist','bugfix-cache','context-budget','backup-specs','economy']){if(!out.includes(k)){console.error('missing',k);process.exit(1)}}"`
-- [ ] **AC-6.2.** Cada subcomando tem teste passando. Command: `rtk cargo test -p mustard-rt 2>&1 | grep -E "(spec_scaffold|close_orchestrate|review_dispatch|tactical_fix_create|prd_build|skill_fetch|adapt_cursor|maint_deps|task_checklist|bugfix_cache|context_budget|backup_specs|economy)" | grep -q "ok"`
-- [ ] **AC-6.3.** `rtk cargo clippy -p mustard-rt -- -D warnings` limpo.
-- [ ] **AC-6.4.** `prd-build --intent "add user auth"` retorna JSON com `scope`, `entities`, `paths`, `acceptanceCriteria`. Command: `rtk mustard-rt run prd-build --intent "add user auth" --json | node -e "let s='';process.stdin.on('data',c=>s+=c);process.stdin.on('end',()=>{const j=JSON.parse(s);for(const k of ['scope','entities','paths','acceptanceCriteria']){if(!(k in j))process.exit(1)}})"`
-- [ ] **AC-6.5.** `backup-specs --dry-run --target ~/.mustard-backups/test/` lista todas as ~70 specs. Command: `rtk mustard-rt run backup-specs --dry-run --target /tmp/test-backup --json | node -e "let s='';process.stdin.on('data',c=>s+=c);process.stdin.on('end',()=>{const j=JSON.parse(s);if(!Array.isArray(j.would_move)||j.would_move.length<50)process.exit(1)})"`
+- [ ] AC-W6-1: `mustard-rt run --help` lista os 15 subcomandos novos. Command: `node -e "const{execSync}=require('child_process');const out=execSync('rtk mustard-rt run --help 2>&1',{encoding:'utf8'});for(const k of ['spec-scaffold','close-orchestrate','review-dispatch','tactical-fix-create','prd-build','skill-fetch','adapt-cursor','maint-deps','maint-validate','task-checklist','bugfix-cache','context-budget','backup-specs','economy']){if(!out.includes(k)){console.error('missing',k);process.exit(1)}}"`
+- [ ] AC-W6-2: Cada subcomando tem teste passando. Command: `rtk cargo test -p mustard-rt 2>&1 | grep -E "(spec_scaffold|close_orchestrate|review_dispatch|tactical_fix_create|prd_build|skill_fetch|adapt_cursor|maint_deps|task_checklist|bugfix_cache|context_budget|backup_specs|economy)" | grep -q "ok"`
+- [ ] AC-W6-3: `rtk cargo clippy -p mustard-rt -- -D warnings` limpo.
+- [ ] AC-W6-4: `prd-build --intent "add user auth"` retorna JSON com `scope`, `entities`, `paths`, `acceptanceCriteria`. Command: `rtk mustard-rt run prd-build --intent "add user auth" --json | node -e "let s='';process.stdin.on('data',c=>s+=c);process.stdin.on('end',()=>{const j=JSON.parse(s);for(const k of ['scope','entities','paths','acceptanceCriteria']){if(!(k in j))process.exit(1)}})"`
+- [ ] AC-W6-5: `backup-specs --dry-run --target ~/.mustard-backups/test/` lista todas as ~70 specs. Command: `rtk mustard-rt run backup-specs --dry-run --target /tmp/test-backup --json | node -e "let s='';process.stdin.on('data',c=>s+=c);process.stdin.on('end',()=>{const j=JSON.parse(s);if(!Array.isArray(j.would_move)||j.would_move.length<50)process.exit(1)})"`
 
 ## Notas
 

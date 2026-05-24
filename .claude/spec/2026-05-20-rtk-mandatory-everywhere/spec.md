@@ -1,13 +1,5 @@
 # rtk obrigatório em todos os lugares — Mustard self-consistency
 
-### Parent: [[2026-05-20-mustard-wave-network-standard]] (sister)
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Scope: full
-### Checkpoint: 2026-05-20T22:00:00Z
-### Lang: pt
-
 ## PRD
 
 ## Contexto

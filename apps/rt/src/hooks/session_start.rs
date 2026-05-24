@@ -733,6 +733,20 @@ impl Check for SessionStart {
         if ctx.trigger != Some(Trigger::SessionStart) {
             return Ok(Verdict::Allow);
         }
+        // Recursion guard: the cold-path interpreter spawns `claude --print`
+        // sub-sessions to label clusters. Those sub-sessions inherit the
+        // parent `mustard-rt` hooks. Without this short-circuit, this very
+        // function would re-spawn the OTEL collector, re-run spec-hygiene,
+        // re-inject memory, and (more importantly) potentially trigger any
+        // downstream side effect that calls back into the registry scan —
+        // infinite recursion. The cold-path sets
+        // `MUSTARD_COLD_PATH_INVOKED=1` on every subprocess it spawns; we
+        // self-allow here so the sub-session is effectively hook-less while
+        // OAuth/keychain auth still works (which `claude --bare` would have
+        // broken — see `crate::run::scan::interpret::call_model` rationale).
+        if std::env::var_os(crate::run::scan::interpret::COLD_PATH_INVOKED_ENV).is_some() {
+            return Ok(Verdict::Allow);
+        }
         let cwd = project_dir(input, ctx);
         run_harness_init(input, &cwd);
         // Wave 3 (economia-moat-unification): the OTEL collector is no longer
@@ -741,6 +755,11 @@ impl Check for SessionStart {
         spawn_otel_collector(&cwd);
         spawn_transcript_watcher();
         run_spec_hygiene(&cwd);
+        // Wave 1 (mustard-unification): advisory probe for orphan agent
+        // worktrees under `<repo>/.claude/worktrees/agent-*`. Read-only;
+        // emits a single stderr warning when the orphan count exceeds the
+        // module's threshold. Fail-open at every step.
+        crate::run::worktree_gc::session_start_probe(Path::new(&cwd));
         Ok(match build_memory_context(&cwd) {
             Some(context) => Verdict::Inject { context },
             None => Verdict::Allow,

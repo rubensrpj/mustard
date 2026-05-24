@@ -1,13 +1,7 @@
 # Wave 3 — Dashboard: SpecRow + StageBullet + agrupamento + árvore expansível
 
-### Parent: [[2026-05-21-spec-lifecycle-unification]]
 ### Wave: 3
 ### Role: dashboard
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Lang: pt
-### Checkpoint: 2026-05-22T00:58:00Z
 
 ## Resumo
 

@@ -1,13 +1,5 @@
 # amend_capture stack overflow — aumentar /STACK do binário rt no Windows
 
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Scope: light
-### Checkpoint: 2026-05-21T00:55:00Z
-### Lang: pt
-### Parent: 2026-05-20-tactical-fix-via-sub-spec
-
 ## Contexto
 
 Tactical fix derivado de [[2026-05-20-tactical-fix-via-sub-spec]]. O teste de integração `apps/rt/tests/amend_capture.rs::amend_capture_dispatcher_exits_zero` falha no debug build do Windows com exit code `-1073741571` (`STATUS_STACK_OVERFLOW` / `0xC00000FD`). Confirmado pelo review backend como regressão pré-existente — o dispatcher em debug mode (frames grandes por monomorfização) ultrapassa a stack default de 1 MiB do binário Windows. Reproduzido localmente rodando o `target\debug\mustard-rt.exe` com payload trivial: `thread 'main' has overflowed its stack`.

@@ -1,12 +1,5 @@
 # Plano de Waves
 
-### Stage: Close
-### Outcome: Completed
-### Flags: 
-### Scope: full (wave plan)
-### Total waves: 6
-### Checkpoint: 2026-05-23T23:55:00Z
-
 ## Tabela de Waves
 
 | Wave | Spec | Role | Modelo | Depende de | Resumo |
