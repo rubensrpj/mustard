@@ -1,10 +1,10 @@
 # Wave 4 (rt) — Resolver de injeção mínima
 
-### Stage: Plan
+### Stage: Execute
 ### Outcome: Active
 ### Flags:
 ### Lang: pt
-### Checkpoint: 2026-05-22T00:00:00Z
+### Checkpoint: 2026-05-24T09:05:08.646Z
 ### Parent: 2026-05-22-project-profiler
 
 ## PRD
@@ -23,9 +23,9 @@ Com o grafo no lugar, o orquestrador pode parar de injetar arquivos inteiros e p
 
 ## Critérios de Aceitação
 
-- [ ] AC-1: fecho mínimo — resolve um escopo de teste e retorna menos nós que o total, com dedup — Command: `cargo test -p mustard-rt resolve_closure_is_minimal`
-- [ ] AC-2: corte por budget — fecho que estoura o budget do papel é truncado por distância no grafo — Command: `cargo test -p mustard-rt resolve_respects_budget`
-- [ ] AC-3: dereferência — saída traz conteúdo resolvido, sem `[[ ]]` cru — Command: `cargo test -p mustard-rt resolve_dereferences_ids`
+- [x] AC-1: fecho mínimo — resolve um escopo de teste e retorna menos nós que o total, com dedup — Command: `cargo test -p mustard-rt resolve_closure_is_minimal`
+- [x] AC-2: corte por budget — fecho que estoura o budget do papel é truncado por distância no grafo — Command: `cargo test -p mustard-rt resolve_respects_budget`
+- [x] AC-3: dereferência — saída traz conteúdo resolvido, sem `[[ ]]` cru — Command: `cargo test -p mustard-rt resolve_dereferences_ids`
 
 ## Plano
 
@@ -44,12 +44,12 @@ Novo `mustard-rt run context-resolve --scope '{entities,operation,layer}'` que c
 
 ### rt Agent (Wave 4)
 
-- [ ] `resolve.rs`: BFS sobre `requires`, dedup por `id`, ordenação por distância do nó de entrada.
-- [ ] Corte por budget do papel (reusar tabela do `budget.rs`); truncar os nós mais distantes primeiro.
-- [ ] Dereferência `id→path` → conteúdo; garantir que nenhum `[[ ]]` cru sai na saída.
-- [ ] `mustard-rt run context-resolve` (JSON byte-estável) + registro no dispatcher; cache por hash do escopo.
-- [ ] Migrar `recipe-match`/`context-slice`/refs/skill-match para delegar ao resolver (unificação).
-- [ ] Testes: `resolve_closure_is_minimal`, `resolve_respects_budget`, `resolve_dereferences_ids`.
+- [x] `resolve.rs`: BFS sobre `requires`, dedup por `id`, ordenação por distância do nó de entrada.
+- [x] Corte por budget do papel (reusar tabela do `budget.rs`); truncar os nós mais distantes primeiro.
+- [x] Dereferência `id→path` → conteúdo; garantir que nenhum `[[ ]]` cru sai na saída.
+- [x] `mustard-rt run context-resolve` (JSON byte-estável) + registro no dispatcher; cache por hash do escopo.
+- [x] Migrar `recipe-match`/`context-slice`/refs/skill-match para delegar ao resolver (unificação).
+- [x] Testes: `resolve_closure_is_minimal`, `resolve_respects_budget`, `resolve_dereferences_ids`.
 
 ## Limites
 
