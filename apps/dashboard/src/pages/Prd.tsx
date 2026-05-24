@@ -2,11 +2,16 @@ import { useState, useEffect, useMemo, useDeferredValue, useRef } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Plus, X } from 'lucide-react';
 import { toast } from 'sonner';
-import { Markdown } from '@/components/page/Markdown';
+import {
+  Markdown,
+  CollapsibleGroup,
+  PageSurface,
+  EditorialBand,
+  DataCard,
+} from '@/components/page';
 import { generatePrdMarkdown, slugify } from '@/lib/prd-template';
 import { useStore } from '@/lib/store';
 import { discoverProjects } from '@/api/discovery';
-import { CollapsibleGroup } from '@/components/page';
 import { IntentHero } from '@/features/prd/IntentHero';
 import { EntityPicker } from '@/features/prd/EntityPicker';
 import { EditableList } from '@/features/prd/EditableList';
@@ -271,12 +276,12 @@ export function Prd() {
   const showScopeButtons = scopeOverride || !lap.confront;
 
   return (
-    <div className="flex flex-col gap-4">
-      <div>
-        <span className="text-[11px] uppercase tracking-wider text-muted-foreground">Mustard / PRD</span>
-        <h1 className="text-base font-medium">PRD Builder</h1>
-        <p className="text-[13px] text-muted-foreground">Gere specs no formato Mustard.</p>
-      </div>
+    <PageSurface>
+      <EditorialBand
+        eyebrow="Mustard / PRD"
+        title="PRD Builder"
+        subtitle="Gere specs no formato Mustard a partir de uma intenção livre, com lapidação automática contra o registry do projeto."
+      />
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         {/* Form column */}
@@ -542,12 +547,14 @@ export function Prd() {
         {/* Preview */}
         <div className="flex flex-col gap-2">
           <div className="text-[11px] uppercase tracking-wider text-muted-foreground">Preview</div>
-          <div
-            className="border border-border rounded p-4 bg-card overflow-y-auto"
-            style={{ maxHeight: 'calc(100vh - 200px)' }}
+          <DataCard
+            padded
+            className="overflow-y-auto"
           >
-            <Markdown content={markdownPreview} />
-          </div>
+            <div style={{ maxHeight: 'calc(100vh - 200px)' }}>
+              <Markdown content={markdownPreview} />
+            </div>
+          </DataCard>
         </div>
       </div>
 
@@ -569,6 +576,6 @@ export function Prd() {
           Limpar
         </Button>
       </div>
-    </div>
+    </PageSurface>
   );
 }

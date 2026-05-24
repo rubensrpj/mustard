@@ -11,7 +11,12 @@ import {
   type SpecCard,
 } from "@/lib/dashboard";
 import { useT } from "@/lib/i18n";
-import { SectionHeader, EmptyState } from "@/components/page";
+import {
+  SectionHeader,
+  EmptyState,
+  PageSurface,
+  EditorialBand,
+} from "@/components/page";
 import { SpecRow } from "@/features/specs/SpecRow";
 import { SpecGroupHeader } from "@/features/specs/SpecGroupHeader";
 import { SpecChildrenTree } from "@/features/specs/SpecChildrenTree";
@@ -115,7 +120,7 @@ function SpecQuickOpenDialog({
         <div className="flex flex-col gap-2">
           <div className="relative">
             <Search
-              className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3 w-3 text-muted-foreground"
+              className="absolute left-2.5 inset-y-0 my-auto h-3 w-3 text-muted-foreground"
               aria-hidden
             />
             <input
@@ -225,7 +230,7 @@ function SpecsFilterBar({
       {/* Search */}
       <div className="relative flex-1 min-w-[160px]">
         <Search
-          className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3 w-3 text-muted-foreground"
+          className="absolute left-2.5 inset-y-0 my-auto h-3 w-3 text-muted-foreground"
           aria-hidden
         />
         <input
@@ -455,23 +460,23 @@ export function Specs() {
   // ── Gate cascade ─────────────────────────────────────────────────────────
   if (!projectsRoot) {
     return (
-      <div className="flex flex-col gap-6 w-full">
+      <PageSurface>
         <EmptyState
           title="Diretório de projetos não configurado"
           description="Vá em Configurações e aponte para a pasta onde estão seus repos."
         />
-      </div>
+      </PageSurface>
     );
   }
 
   if (!activeWorkspaceId) {
     return (
-      <div className="flex flex-col gap-6 w-full">
+      <PageSurface>
         <EmptyState
           title="Selecione um workspace"
           description="Use o seletor na sidebar para escolher um projeto."
         />
-      </div>
+      </PageSurface>
     );
   }
 
@@ -479,7 +484,12 @@ export function Specs() {
   const repoPath = activeProject?.path ?? null;
 
   return (
-    <div className="flex flex-col gap-4 w-full">
+    <PageSurface>
+      <EditorialBand
+        eyebrow="Specs"
+        title="Pipelines e specs"
+        subtitle="Lista de specs do workspace agrupadas por estágio. Use os filtros abaixo para isolar por estado, janela de tempo ou nome."
+      />
       <SpecTabBar
         tabs={tabs}
         activeId={activeTabId}
@@ -516,7 +526,7 @@ export function Specs() {
             {specsLoading ? (
               <ul className="flex flex-col gap-1">
                 {[0, 1, 2, 3, 4].map((i) => (
-                  <li key={i} className="h-8 bg-muted/40 rounded-md animate-pulse" />
+                  <li key={i} className="h-8 bg-muted rounded-md animate-pulse" />
                 ))}
               </ul>
             ) : filteredSpecs.length === 0 ? (
@@ -571,6 +581,6 @@ export function Specs() {
       ) : (
         <SpecDetailDashboard repoPath={repoPath} spec={activeTab.specName} />
       )}
-    </div>
+    </PageSurface>
   );
 }

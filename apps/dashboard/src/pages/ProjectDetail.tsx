@@ -6,7 +6,15 @@ import { useProject } from "@/hooks/useProject";
 import { useStore } from "@/lib/store";
 import { queryClient } from "@/lib/query-client";
 import type { Project } from "@/api/discovery";
-import { StatusDot, type StatusDotVariant } from "@/components/page/StatusDot";
+import {
+  StatusDot,
+  type StatusDotVariant,
+  PageSurface,
+  EditorialBand,
+  DataCard,
+  SectionHeader,
+  EmptyState,
+} from "@/components/page";
 import { relativeTime } from "@/lib/time";
 import { Separator } from "@/components/ui/separator";
 import { Badge } from "@/components/ui/badge";
@@ -52,12 +60,10 @@ function SectionHeading({
   return (
     <div className="flex items-baseline gap-2 mb-2">
       {Icon && <Icon className="h-4 w-4 text-foreground self-center" />}
-      <h2
-        className={`text-xs uppercase tracking-wider font-medium ${Icon ? "text-foreground" : "text-muted-foreground"}`}
-      >
+      <h2 className="text-xs uppercase tracking-wider font-medium text-foreground">
         {title}
       </h2>
-      <span className="text-[13px] text-muted-foreground/50 font-mono">
+      <span className="text-[13px] text-muted-foreground font-mono">
         {loading ? "…" : count}
       </span>
     </div>
@@ -125,32 +131,48 @@ export function ProjectDetail() {
 
   if (!project) {
     return (
-      <div className="text-sm text-muted-foreground">
-        Projeto não encontrado. Volte ao{" "}
-        <Link to="/" className="underline">Home</Link> ou configure root em{" "}
-        <Link to="/settings" className="underline">Settings</Link>.
-      </div>
+      <PageSurface>
+        <EmptyState
+          title="Projeto não encontrado"
+          description={
+            <>
+              Volte ao{" "}
+              <Link to="/" className="underline">Home</Link> ou configure root em{" "}
+              <Link to="/settings" className="underline">Settings</Link>.
+            </>
+          }
+        />
+      </PageSurface>
     );
   }
 
   if (error) {
-    return <p className="text-destructive text-sm">{error}</p>;
+    return (
+      <PageSurface>
+        <p className="text-destructive text-sm">{error}</p>
+      </PageSurface>
+    );
   }
 
+  const status = activePipelines && activePipelines.length > 0
+    ? `${activePipelines.length} pipeline${activePipelines.length === 1 ? '' : 's'} em execução`
+    : 'sem pipeline ativa';
+
   return (
-    <div className="flex flex-col gap-1">
-      <div className="flex flex-col gap-1 mb-4">
-        <nav className="text-[13px] text-muted-foreground">
-          Mustard / Projetos / <span className="text-foreground">{project.name}</span>
-        </nav>
-        <h1 className="text-base font-medium">{project.name}</h1>
-      </div>
+    <PageSurface>
+      <EditorialBand
+        eyebrow={
+          <>
+            Mustard / <Link to="/" className="hover:underline">Projetos</Link>
+          </>
+        }
+        title={project.name}
+        subtitle={status}
+      />
 
       {activePipelines && activePipelines.length > 0 && (
-        <section className="mb-4">
-          <h2 className="text-xs uppercase tracking-wider font-medium text-muted-foreground mb-1">
-            Em execução
-          </h2>
+        <section className="flex flex-col gap-2">
+          <SectionHeader title="Em execução" />
           <ul className="flex flex-col gap-0.5">
             {activePipelines.slice(0, 3).map((pipeline) => (
               <LivePipelineCard key={pipeline.spec_name} pipeline={pipeline} />
@@ -167,7 +189,7 @@ export function ProjectDetail() {
           setSearchParams(next, { replace: true });
         }}
       >
-        <TabsList variant="line" className="gap-4 h-9 text-sm mb-4">
+        <TabsList variant="line" className="gap-4 h-9 text-sm">
           <TabsTrigger value="specs" className="text-sm px-1">
             Specs
           </TabsTrigger>
@@ -193,22 +215,24 @@ export function ProjectDetail() {
             ) : subprojects && subprojects.length === 0 ? (
               <EmptyBlock icon={Layers} text="Nenhum subprojeto detectado." />
             ) : (
-              <ul className="flex flex-col gap-0.5 text-sm">
-                {subprojects?.map((s) => (
-                  <li
-                    key={s.name}
-                    className="flex items-center gap-2 px-2 py-1 rounded hover:bg-muted/40"
-                  >
-                    <StatusDot variant="idle" />
-                    <span>{s.name}</span>
-                    {s.role && (
-                      <Badge variant="outline" className="text-[11px] py-0">
-                        {s.role}
-                      </Badge>
-                    )}
-                  </li>
-                ))}
-              </ul>
+              <DataCard padded>
+                <ul className="flex flex-col gap-0.5 text-sm">
+                  {subprojects?.map((s) => (
+                    <li
+                      key={s.name}
+                      className="flex items-center gap-2 px-2 py-1 rounded hover:bg-muted"
+                    >
+                      <StatusDot variant="idle" />
+                      <span>{s.name}</span>
+                      {s.role && (
+                        <Badge variant="outline" className="text-[11px] py-0">
+                          {s.role}
+                        </Badge>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              </DataCard>
             )}
           </section>
 
@@ -224,19 +248,21 @@ export function ProjectDetail() {
             {loading ? (
               <p className="text-muted-foreground text-sm">Carregando…</p>
             ) : (
-              <ul className="flex flex-col gap-0.5 text-sm">
-                {recipes?.map((r) => (
-                  <li
-                    key={r.name}
-                    className="flex items-baseline gap-2 px-2 py-1 rounded hover:bg-muted/40"
-                  >
-                    <span className="font-medium">{r.name}</span>
-                    <span className="text-muted-foreground text-[13px]">
-                      — {truncate(r.description, 120)}
-                    </span>
-                  </li>
-                ))}
-              </ul>
+              <DataCard padded>
+                <ul className="flex flex-col gap-0.5 text-sm">
+                  {recipes?.map((r) => (
+                    <li
+                      key={r.name}
+                      className="flex items-baseline gap-2 px-2 py-1 rounded hover:bg-muted"
+                    >
+                      <span className="font-medium">{r.name}</span>
+                      <span className="text-muted-foreground text-[13px]">
+                        — {truncate(r.description, 120)}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </DataCard>
             )}
           </section>
 
@@ -293,7 +319,7 @@ export function ProjectDetail() {
                     return (
                       <li
                         key={i}
-                        className="flex items-baseline gap-2 px-2 py-1 rounded hover:bg-muted/40"
+                        className="flex items-baseline gap-2 px-2 py-1 rounded hover:bg-muted"
                       >
                         <StatusDot
                           variant={variant}
@@ -342,6 +368,6 @@ export function ProjectDetail() {
           </section>
         </TabsContent>
       </Tabs>
-    </div>
+    </PageSurface>
   );
 }

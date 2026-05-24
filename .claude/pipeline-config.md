@@ -55,6 +55,36 @@ Strategic `/compact` suggestions to optimize context window usage during pipelin
 **Format:** Present as an advisory suggestion, never block or auto-compact:
 > "Heavy analysis complete. Consider running `/compact` before EXECUTE to optimize context window. Then use `/resume` to continue."
 
+## Skill Discovery Heuristic
+
+**Regra**: Se um SKILL faz glob + parse + agregação de filesystem state e devolve uma tabela determinística, isso é trabalho de `mustard-rt`, não do LLM.
+
+**Critério decisor**: A operação muda com estado do disco/SQLite, ou com decisão humana?
+- Só estado do disco/SQLite → mora num subcomando `mustard-rt run <X>`.
+- Decisão humana (judgment, prosa, prioridade) → fica no LLM.
+
+**Sinais de violação no SKILL.md** (telltale phrases):
+- `Glob \`.claude/...\`` seguido de iteração
+- `For each {spec|skill|entity|wave}...` para extrair campos estruturados
+- `Parse YAML frontmatter` linha-a-linha
+- `Iterate \`registry.e\``
+- `read .* lines` repetido por arquivo
+- Renderização de tabela markdown a partir de N arquivos do filesystem
+
+**Padrão correto**:
+1. SKILL chama UM comando: `rtk mustard-rt run <subcomando> --format table`.
+2. SKILL imprime a saída verbatim.
+3. SKILL embute blocos ESTÁTICOS (siglas, modos de seleção, instruções fixas) como literais — sem regeneração dinâmica.
+4. SKILL faz parsing da resposta do USUÁRIO e roteia ação (judgment, multi-turno) — esse é o trabalho não-determinístico que justifica o LLM.
+
+**Enforcement**: `mustard-rt run doctor --check skill-discovery` escaneia todos os SKILLs e reporta violações com severidade WARN. Roda em `/mustard:maint doctor`. Não bloqueia; é avisativo.
+
+**Exemplos**:
+- `/mustard:spec` (após 2026-05-23-spec-picker-perf-and-sqlite-backfill): chama `mustard-rt run active-specs --format table`. ~2k tokens.
+- `/mustard:stats`: wrapper sobre `mustard-rt run metrics`.
+
+Padrão emergiu de medições reais: o picker antigo de `/mustard:spec` consumia ~60k tokens só para listar 9 specs ativas; após o fix, ~2k.
+
 ## Tactical Fix Discovery
 
 Characteristic of Mustard: a tactical fix surfaced during REVIEW or QA must NOT become a silent follow-up, and must NOT become a new wave grafted onto an in-flight EXECUTE. Either path breaks SDD purity — the first hides work, the second mutates a spec that was already approved.

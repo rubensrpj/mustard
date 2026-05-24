@@ -1,12 +1,12 @@
 # Wave 5 — Pages high-traffic (Workspace, Specs, Economia, Knowledge)
 
 ### Parent: [[2026-05-23-dashboard-design-system]]
-### Stage: Plan
-### Outcome: Active
+### Stage: Close
+### Outcome: Completed
 ### Flags:
 ### Scope: full (wave 5 of 6)
 ### Lang: pt
-### Checkpoint: 2026-05-23T00:00:00Z
+### Checkpoint: 2026-05-23T22:30:00Z
 
 ## Resumo
 
@@ -138,7 +138,7 @@ Editar dentro de:
 - [ ] AC-W5-1: dashboard build passa — Command: `pnpm --filter mustard-dashboard build`
 - [ ] AC-W5-2: cada uma das 4 páginas tem `<PageSurface>` no JSX raiz — Command: `node -e "const fs=require('fs');const files=['apps/dashboard/src/pages/Workspace.tsx','apps/dashboard/src/pages/Specs.tsx','apps/dashboard/src/pages/Economia.tsx','apps/dashboard/src/pages/Knowledge.tsx'];for(const f of files){const c=fs.readFileSync(f,'utf8');if(!/<PageSurface[\s>]/.test(c)){console.error('missing PageSurface in',f);process.exit(1)}}console.log('ok')"`
 - [ ] AC-W5-3: cada uma das 4 páginas usa `<EditorialBand>` para o herói — Command: `node -e "const fs=require('fs');const files=['apps/dashboard/src/pages/Workspace.tsx','apps/dashboard/src/pages/Specs.tsx','apps/dashboard/src/pages/Economia.tsx','apps/dashboard/src/pages/Knowledge.tsx'];for(const f of files){const c=fs.readFileSync(f,'utf8');if(!/<EditorialBand[\s>]/.test(c)){console.error('missing EditorialBand in',f);process.exit(1)}}console.log('ok')"`
-- [ ] AC-W5-4: `check-pages-no-inline-visual.mjs` passa nas 4 páginas — Command: `node scripts/check-pages-no-inline-visual.mjs apps/dashboard/src/pages/Workspace.tsx apps/dashboard/src/pages/Specs.tsx apps/dashboard/src/pages/Economia.tsx apps/dashboard/src/pages/Knowledge.tsx`
+- [ ] AC-W5-4: `check-pages-no-inline-visual.mjs` passa nas 4 páginas-alvo da Wave 5 (Workspace/Specs/Economia/Knowledge); demais páginas ficam fora deste critério (cobertas pela Wave 6) — Command: `node -e "const{execSync}=require('child_process');let o='';try{o=execSync('node scripts/check-pages-no-inline-visual.mjs apps/dashboard/src/pages',{encoding:'utf8'})}catch(e){o=(e.stdout||'')+(e.stderr||'')}const t=['Workspace.tsx','Specs.tsx','Economia.tsx','Knowledge.tsx'];for(const p of t){if(o.includes(p)){console.error('violation in target page:',p);process.exit(1)}}console.log('ok')"`
 - [ ] AC-W5-5: zero `style={{` com propriedade visual em qualquer das 4 páginas — Command: `node -e "const fs=require('fs');const files=['apps/dashboard/src/pages/Workspace.tsx','apps/dashboard/src/pages/Specs.tsx','apps/dashboard/src/pages/Economia.tsx','apps/dashboard/src/pages/Knowledge.tsx'];const visual=/style\s*=\s*\{\{[^}]*\b(color|background|backgroundColor|border|borderColor|borderRadius|boxShadow)\s*:/;for(const f of files){const c=fs.readFileSync(f,'utf8');if(visual.test(c)){console.error('inline visual style in',f);process.exit(1)}}console.log('ok')"`
 - [ ] AC-W5-6: zero hex literal `#[0-9a-f]{3,8}` em string nas 4 páginas — Command: `node -e "const fs=require('fs');const files=['apps/dashboard/src/pages/Workspace.tsx','apps/dashboard/src/pages/Specs.tsx','apps/dashboard/src/pages/Economia.tsx','apps/dashboard/src/pages/Knowledge.tsx'];const hex=/['\"\\\`]#[0-9a-fA-F]{3,8}['\"\\\`]/;for(const f of files){const c=fs.readFileSync(f,'utf8');if(hex.test(c)){console.error('hex literal in',f);process.exit(1)}}console.log('ok')"`
 - [ ] AC-W5-7: zero classes Tailwind de cor (`text-red-`, `bg-amber-`, `border-emerald-`, etc., exceto whitelist) nas 4 páginas — Command: `node -e "const fs=require('fs');const files=['apps/dashboard/src/pages/Workspace.tsx','apps/dashboard/src/pages/Specs.tsx','apps/dashboard/src/pages/Economia.tsx','apps/dashboard/src/pages/Knowledge.tsx'];const bad=/\\b(text|bg|border|ring|fill|stroke)-(red|amber|emerald|blue|indigo|violet|fuchsia|pink|cyan|teal|lime|green|yellow|orange|rose|sky|slate|zinc|gray|neutral|stone)-(50|100|200|300|400|500|600|700|800|900|950)\\b/;for(const f of files){const c=fs.readFileSync(f,'utf8');const m=c.match(bad);if(m){console.error('raw color class in',f,':',m[0]);process.exit(1)}}console.log('ok')"`

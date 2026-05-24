@@ -20,8 +20,13 @@ import dayjs from "dayjs";
 import { AlertTriangle, Info } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useStore } from "@/lib/store";
-import { EmptyState, KPICard } from "@/components/page";
-import { StatPill } from "@/components/page";
+import {
+  EmptyState,
+  KPICard,
+  StatPill,
+  PageSurface,
+  EditorialBand,
+} from "@/components/page";
 import { StatusDot, type StatusDotVariant } from "@/components/page/StatusDot";
 import { relativeTime } from "@/lib/time";
 import { useProjects } from "@/lib/dashboard";
@@ -108,23 +113,23 @@ export function Economia() {
   // ── Empty / config states ────────────────────────────────────────────────
   if (!projectsRoot) {
     return (
-      <div className="flex flex-col gap-6 w-full">
+      <PageSurface>
         <EmptyState
           title={t("economy.empty.noRoot.title")}
           description={t("economy.empty.noRoot.description")}
         />
-      </div>
+      </PageSurface>
     );
   }
 
   if (!activeWorkspaceId || !repoPath || !scope) {
     return (
-      <div className="flex flex-col gap-6 w-full">
+      <PageSurface>
         <EmptyState
           title={t("economy.empty.noWorkspace.title")}
           description={t("economy.empty.noWorkspace.description")}
         />
-      </div>
+      </PageSurface>
     );
   }
 
@@ -172,7 +177,12 @@ export function Economia() {
   const topAgents = data?.top_agents_by_cost ?? [];
 
   return (
-    <div className="flex flex-col gap-6 w-full">
+    <PageSurface>
+      <EditorialBand
+        eyebrow="Economia"
+        title={t("economy.kpi.cost.label")}
+        subtitle={t("economy.byAgent.caption")}
+      />
       <ScopeBar projectPath={repoPath} scope={scope} onScopeChange={setScope} />
 
       {showStaleBanner && ingestionStaleHours != null && (
@@ -224,7 +234,7 @@ export function Economia() {
             <div className="flex flex-col gap-1">
               <span>{t("economy.kpi.cache.caption")}</span>
               {scope.kind === "wave" && (
-                <span className="text-amber-500/80">
+                <span className="text-[--intent-warning]/80">
                   {t("economy.kpi.cache.collapseWave")}
                 </span>
               )}
@@ -315,7 +325,7 @@ export function Economia() {
         <header className="flex flex-col gap-1">
           <div className="flex items-center gap-2">
             <h2 className="text-sm font-medium">{t("economy.estimated.title")}</h2>
-            <span className="px-2 py-0.5 rounded-full text-[10px] uppercase tracking-[0.14em] font-medium text-primary/70 bg-primary/10 border border-primary/20">
+            <span className="px-2 py-0.5 rounded-full text-[10px] uppercase tracking-[0.14em] font-medium text-[--primary]/70 bg-[--primary]/10 border border-[--primary]/20">
               {t("economy.estimated.badge")}
             </span>
           </div>
@@ -329,7 +339,7 @@ export function Economia() {
           isLoading={perSpec.isLoading || perWave.isLoading}
         />
       </section>
-    </div>
+    </PageSurface>
   );
 }
 
@@ -429,9 +439,9 @@ function IngestionStaleBanner({ hours }: { hours: number }) {
     ? t("economy.staleBanner.label_days", { count })
     : t("economy.staleBanner.label_hours", { count });
   return (
-    <div className="flex items-start gap-3 px-4 py-3 rounded-lg border border-amber-500/30 bg-amber-500/10 text-[12.5px]">
+    <div className="flex items-start gap-3 px-4 py-3 rounded-lg border border-[--intent-warning]/30 bg-[--intent-warning]/10 text-[12.5px]">
       <AlertTriangle
-        className="h-4 w-4 text-amber-500 shrink-0 mt-0.5"
+        className="h-4 w-4 text-[--intent-warning] shrink-0 mt-0.5"
         strokeWidth={2}
       />
       <div className="flex flex-col gap-1 min-w-0">
@@ -662,7 +672,7 @@ function SpecOrWaveRow({
           {name}
         </span>
         {badge && (
-          <span className="shrink-0 px-1.5 py-0.5 rounded-full text-[9.5px] uppercase tracking-[0.12em] font-medium border bg-amber-500/10 border-amber-500/30 text-amber-500">
+          <span className="shrink-0 px-1.5 py-0.5 rounded-full text-[9.5px] uppercase tracking-[0.12em] font-medium border bg-[--intent-warning]/10 border-[--intent-warning]/30 text-[--intent-warning]">
             {badge}
           </span>
         )}

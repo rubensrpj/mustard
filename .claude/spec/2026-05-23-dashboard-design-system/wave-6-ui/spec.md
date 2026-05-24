@@ -1,12 +1,12 @@
 # Wave 6 — Pages secondary (ProjectDetail, SpecDetail, Prd, Commands, Settings, Preferences, Home)
 
 ### Parent: [[2026-05-23-dashboard-design-system]]
-### Stage: Plan
-### Outcome: Active
+### Stage: Close
+### Outcome: Completed
 ### Flags:
 ### Scope: full (wave 6 of 6 — final)
 ### Lang: pt
-### Checkpoint: 2026-05-23T00:00:00Z
+### Checkpoint: 2026-05-23T23:55:00Z
 
 ## Resumo
 
@@ -102,11 +102,11 @@ Editar dentro de:
 
 ## Checklist
 
-- [ ] Build verde
-- [ ] 7 páginas com `<PageSurface>` + `<EditorialBand>` (ou alternativa documentada)
-- [ ] Zero inline visual em todas
-- [ ] Imports só `@/features/*` (domínio) e `@/components/{page,layout,ui}` (shared)
-- [ ] check-pages-no-inline-visual.mjs verde em TODAS as 11 páginas
-- [ ] check-pages-imports.mjs verde em TODAS as 11 páginas
-- [ ] AC-6 e AC-10 do parent finalmente passam — destrava CLOSE do wave plan
-- [ ] Visual smoke OK nas 7 rotas
+- [x] Build verde
+- [x] 7 páginas com `<PageSurface>` + `<EditorialBand>` (ou alternativa documentada)
+- [x] Zero inline visual em todas
+- [x] Imports só `@/features/*` (domínio) e `@/components/{page,layout,ui}` (shared)
+- [x] check-pages-no-inline-visual.mjs verde em TODAS as 11 páginas
+- [x] check-pages-imports.mjs verde em TODAS as 11 páginas
+- [x] AC-6 e AC-10 do parent finalmente passam — destrava CLOSE do wave plan
+- [x] Visual smoke OK nas 7 rotas

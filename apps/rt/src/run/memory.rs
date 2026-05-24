@@ -396,6 +396,190 @@ fn agent_input_from_flags(
     })
 }
 
+// ---------------------------------------------------------------------------
+// `list` subcommand — read `knowledge_patterns` + `memory_decisions` +
+// `memory_lessons` from SQLite and emit a JSON array or grouped table.
+// ---------------------------------------------------------------------------
+
+/// One row from the combined memory read.
+#[derive(Debug, serde::Serialize)]
+struct MemoryRow {
+    #[serde(rename = "type")]
+    entry_type: String,
+    name: String,
+    description: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    confidence: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    occurrences: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_seen: Option<String>,
+}
+
+fn run_list(grouped: bool, format: &str) {
+    let project_dir = crate::run::env::project_dir();
+    let store = match mustard_core::store::sqlite_store::SqliteEventStore::for_project(&project_dir) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("[memory list] cannot open store (fail-open): {e}");
+            println!("[]");
+            return;
+        }
+    };
+    let db_path = store.path().to_path_buf();
+    let conn = match rusqlite::Connection::open(&db_path) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("[memory list] cannot open connection (fail-open): {e}");
+            println!("[]");
+            return;
+        }
+    };
+    let _ = conn.busy_timeout(std::time::Duration::from_millis(3_000));
+
+    let mut rows: Vec<MemoryRow> = Vec::new();
+
+    // --- knowledge_patterns ---
+    {
+        let mut stmt = match conn.prepare(
+            "SELECT pattern, confidence, count, last_seen FROM knowledge_patterns ORDER BY confidence DESC, last_seen DESC",
+        ) {
+            Ok(s) => s,
+            Err(_) => {
+                // Table may not exist in very old installs; skip silently.
+                conn.prepare("SELECT 1 WHERE 0").unwrap()
+            }
+        };
+        if let Ok(iter) = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, f64>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        }) {
+            for item in iter.flatten() {
+                // pattern is stored as "name: description" → split on first ':'
+                let (name, description) = item.0
+                    .split_once(':')
+                    .map(|(n, d)| (n.trim().to_string(), d.trim().to_string()))
+                    .unwrap_or_else(|| (item.0.clone(), String::new()));
+                rows.push(MemoryRow {
+                    entry_type: "pattern".to_string(),
+                    name,
+                    description,
+                    confidence: Some(item.1),
+                    occurrences: Some(item.2),
+                    last_seen: Some(item.3.chars().take(10).collect()),
+                });
+            }
+        }
+    }
+
+    // --- memory_decisions ---
+    {
+        let mut stmt = match conn.prepare(
+            "SELECT content, source, at FROM memory_decisions ORDER BY at DESC LIMIT 50",
+        ) {
+            Ok(s) => s,
+            Err(_) => conn.prepare("SELECT 1 WHERE 0").unwrap(),
+        };
+        if let Ok(iter) = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        }) {
+            for item in iter.flatten() {
+                let name: String = item.0.chars().take(80).collect();
+                rows.push(MemoryRow {
+                    entry_type: "decision".to_string(),
+                    name,
+                    description: item.1.unwrap_or_default(),
+                    confidence: None,
+                    occurrences: None,
+                    last_seen: Some(item.2.chars().take(10).collect()),
+                });
+            }
+        }
+    }
+
+    // --- memory_lessons ---
+    {
+        let mut stmt = match conn.prepare(
+            "SELECT content, source, at FROM memory_lessons ORDER BY at DESC LIMIT 50",
+        ) {
+            Ok(s) => s,
+            Err(_) => conn.prepare("SELECT 1 WHERE 0").unwrap(),
+        };
+        if let Ok(iter) = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        }) {
+            for item in iter.flatten() {
+                let name: String = item.0.chars().take(80).collect();
+                rows.push(MemoryRow {
+                    entry_type: "convention".to_string(),
+                    name,
+                    description: item.1.unwrap_or_default(),
+                    confidence: None,
+                    occurrences: None,
+                    last_seen: Some(item.2.chars().take(10).collect()),
+                });
+            }
+        }
+    }
+
+    if format == "table" && grouped {
+        render_grouped_table(&rows);
+    } else {
+        // Default: JSON (back-compat — no flags = raw JSON array)
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&rows)
+                .unwrap_or_else(|_| "[]".to_string())
+        );
+    }
+}
+
+fn render_grouped_table(rows: &[MemoryRow]) {
+    let types = ["pattern", "decision", "convention"];
+    for t in &types {
+        let group: Vec<&MemoryRow> = rows.iter().filter(|r| r.entry_type == *t).collect();
+        if group.is_empty() {
+            continue;
+        }
+        println!("\n### {}\n", t.to_ascii_uppercase());
+        println!("| Name                                           | Description                           | Confidence | Seen       |");
+        println!("|------------------------------------------------|---------------------------------------|------------|------------|");
+        for row in &group {
+            let name_col = truncate_col(&row.name, 46);
+            let desc_col = truncate_col(&row.description, 37);
+            let conf_col = row.confidence.map(|c| format!("{:.2}", c)).unwrap_or_else(|| "-".to_string());
+            let seen_col = row.last_seen.clone().unwrap_or_else(|| "-".to_string());
+            println!("| {name_col:<46} | {desc_col:<37} | {conf_col:<10} | {seen_col:<10} |");
+        }
+    }
+}
+
+fn truncate_col(s: &str, max: usize) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    if chars.len() <= max {
+        s.to_string()
+    } else {
+        let t: String = chars[..max - 1].iter().collect();
+        format!("{t}…")
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Dispatch
+// ---------------------------------------------------------------------------
+
 /// Dispatch `mustard-rt run memory <subcommand>`.
 ///
 /// `agent`, `decision`, `knowledge` are the write subcommands fed by JSON via
@@ -404,6 +588,7 @@ fn agent_input_from_flags(
 /// no quoting gymnastics). `cross-wave` is the read subcommand; clap parses
 /// its `--spec` / `--wave` flags into the dedicated arguments threaded
 /// through from `RunCmd::Memory`.
+/// `list` is the combined read subcommand that emits all memory entries.
 pub fn dispatch(
     subcommand: &str,
     json_arg: Option<&str>,
@@ -412,17 +597,24 @@ pub fn dispatch(
     agent: Option<&str>,
     summary: Option<&str>,
     files: Option<&str>,
+    grouped: bool,
+    format: &str,
 ) {
     if subcommand == "cross-wave" || subcommand == "cross_wave" {
         crate::run::memory_cross_wave::run(spec, wave);
         return;
     }
+    if subcommand == "list" {
+        run_list(grouped, format);
+        return;
+    }
     if !matches!(subcommand, "agent" | "decision" | "knowledge") {
         println!(
-            "Usage: memory <agent|decision|knowledge|cross-wave> [--json '<JSON>']"
+            "Usage: memory <agent|decision|knowledge|list|cross-wave> [--json '<JSON>']"
         );
         println!("  agent (flat form): --spec <name> --wave <N> --agent <type> --summary <text> --files <a.ts,b.ts>");
         println!("  cross-wave:        --spec <name> --wave <N>");
+        println!("  list:              [--grouped] [--format table|json]");
         return;
     }
 
@@ -575,5 +767,52 @@ mod tests {
         let json_path =
             dir.path().join(".claude").join("memory").join("decisions.json");
         assert!(!json_path.exists(), "decisions.json must NOT be written in Wave 6b+");
+    }
+
+    #[test]
+    fn grouped_table_groups_by_type() {
+        let rows = vec![
+            MemoryRow {
+                entry_type: "pattern".to_string(),
+                name: "repo-pattern: use repo".to_string(),
+                description: "use a repository layer".to_string(),
+                confidence: Some(0.8),
+                occurrences: Some(3),
+                last_seen: Some("2026-05-23".to_string()),
+            },
+            MemoryRow {
+                entry_type: "decision".to_string(),
+                name: "chose SQLite over Postgres".to_string(),
+                description: "simpler deployment".to_string(),
+                confidence: None,
+                occurrences: None,
+                last_seen: Some("2026-05-22".to_string()),
+            },
+            MemoryRow {
+                entry_type: "convention".to_string(),
+                name: "always fail-open".to_string(),
+                description: "hooks must never abort work".to_string(),
+                confidence: None,
+                occurrences: None,
+                last_seen: Some("2026-05-20".to_string()),
+            },
+        ];
+        // Call render_grouped_table — smoke test only (check it doesn't panic
+        // and produces output); we cannot capture stdout easily here.
+        render_grouped_table(&rows);
+    }
+
+    #[test]
+    fn truncate_col_truncates_correctly() {
+        let s = "A".repeat(50);
+        let result = truncate_col(&s, 10);
+        assert_eq!(result.chars().count(), 10);
+        assert!(result.ends_with('…'));
+    }
+
+    #[test]
+    fn truncate_col_passthrough_when_short() {
+        let result = truncate_col("hello", 10);
+        assert_eq!(result, "hello");
     }
 }

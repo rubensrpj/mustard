@@ -20,7 +20,13 @@ This is Wave 10 of the Mustard pipeline — the formal Dev/QA contract.
 ### Step 1 — Identify spec
 
 If `--spec <name>` provided: use that spec name.
-Otherwise: Glob `.claude/spec/*/spec.md`, filter by `Stage:` + `Outcome:` headers (skip `Outcome: Completed` / `Outcome: Abandoned`), and pick the most recently modified.
+Senão:
+
+```bash
+rtk mustard-rt run active-specs --format json
+```
+
+Pegue a 1ª spec do array (mais recente). O array já vem filtrado por `Outcome=Active` AND `Stage ∈ {Plan, Execute}` e ordenado por data desc.
 
 ### Step 2 — Validate spec has AC
 
@@ -35,7 +41,9 @@ Stop here.
 
 ### Step 3 — Run QA
 
+Emit stage transition to QaReview, then run:
 ```bash
+mustard-rt run emit-pipeline --kind pipeline.stage --spec {specName} --payload "{\"stage\":\"QaReview\"}"
 mustard-rt run qa-run --spec {specName}
 ```
 
@@ -49,9 +57,9 @@ If `mustard-rt` not found: dispatch Task(general-purpose) with QA agent context 
 
 **Overall = pass:**
 - Output QA report
-- Emit phase transition to CLOSE:
+- Emit stage transition to Close:
   ```bash
-  mustard-rt run emit-phase --spec {specName} --to CLOSE
+  mustard-rt run emit-pipeline --kind pipeline.stage --spec {specName} --payload "{\"stage\":\"Close\"}"
   ```
 - Output: "QA passed. All criteria met. Run `/mustard:close` or proceed to CLOSE."
 

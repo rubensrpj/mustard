@@ -24,6 +24,7 @@
 //!   absent. Powerline statusline themes require this; without it the
 //!   transition glyphs render as tofu.
 
+use crate::run::skill_discovery_lint;
 use crate::util::sha256::Sha256;
 use mustard_core::fs;
 use std::path::{Path, PathBuf};
@@ -833,11 +834,105 @@ fn render_report(results: &[CheckResult]) {
 // Entry point
 // ---------------------------------------------------------------------------
 
-/// Dispatch `mustard-rt run doctor [--residue]`.
-pub fn run(residue: bool) {
+// ---------------------------------------------------------------------------
+// skill-discovery check integration
+// ---------------------------------------------------------------------------
+
+/// Run the skill-discovery lint and return a `CheckResult`.
+fn run_skill_discovery_check(root: &Path) -> CheckResult {
+    let report = skill_discovery_lint::check(root);
+    if report.violations.is_empty() {
+        let mut r = CheckResult::ok("skill-discovery");
+        r.details.push(format!("scanned {} SKILL.md file(s) — no violations", report.scanned));
+        r
+    } else {
+        let details: Vec<String> = report
+            .violations
+            .iter()
+            .map(|v| format!("{}:{} — {}", v.path, v.line, v.phrase))
+            .collect();
+        CheckResult::warn("skill-discovery", details)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// JSON renderer
+// ---------------------------------------------------------------------------
+
+/// Serialize the report as compact JSON for `--format json`.
+fn render_report_json(results: &[CheckResult]) {
+    // Build a JSON object manually to avoid pulling in a derive macro.
+    let checks: Vec<String> = results
+        .iter()
+        .map(|r| {
+            let details_json: Vec<String> = r
+                .details
+                .iter()
+                .map(|d| format!("\"{}\"", d.replace('\\', "\\\\").replace('"', "\\\"")))
+                .collect();
+            format!(
+                "{{\"name\":\"{}\",\"status\":\"{}\",\"details\":[{}]}}",
+                r.name,
+                r.status.label(),
+                details_json.join(",")
+            )
+        })
+        .collect();
+
+    // Collect all violations from skill-discovery checks for a flat list.
+    let violations: Vec<String> = results
+        .iter()
+        .filter(|r| r.name == "skill-discovery" && r.status == Status::Warn)
+        .flat_map(|r| r.details.iter())
+        .map(|d| format!("\"{}\"", d.replace('\\', "\\\\").replace('"', "\\\"")))
+        .collect();
+
+    println!(
+        "{{\"checks\":[{}],\"violations\":[{}]}}",
+        checks.join(","),
+        violations.join(",")
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Entry point
+// ---------------------------------------------------------------------------
+
+/// Options for `mustard-rt run doctor`.
+pub struct DoctorOpts {
+    /// Also scan for dead file/script references (slower).
+    pub residue: bool,
+    /// Named check to run in isolation (e.g. `skill-discovery`).
+    pub check: Option<String>,
+    /// Output format: `text` (default) or `json`.
+    pub format: String,
+}
+
+/// Dispatch `mustard-rt run doctor [--residue] [--check <CHECK>] [--format json]`.
+pub fn run(opts: DoctorOpts) {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let claude_dir = cwd.join(".claude");
 
+    // When a specific --check is requested, run only that check.
+    if let Some(ref check_name) = opts.check {
+        match check_name.as_str() {
+            "skill-discovery" => {
+                let result = run_skill_discovery_check(&cwd);
+                if opts.format == "json" {
+                    render_report_json(&[result]);
+                } else {
+                    render_report(&[result]);
+                }
+            }
+            other => {
+                eprintln!("doctor: unknown check '{other}'. Known: skill-discovery");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+
+    // Default: run all checks.
     let mut results: Vec<CheckResult> = Vec::new();
 
     results.push(check_wiring(&claude_dir));
@@ -845,12 +940,18 @@ pub fn run(residue: bool) {
     results.push(check_state_health(&claude_dir));
     results.push(lsp_check(&cwd));
     results.push(check_nerd_font());
+    // skill-discovery is always included in the full run (advisory).
+    results.push(run_skill_discovery_check(&cwd));
 
-    if residue {
+    if opts.residue {
         results.push(check_residue(&claude_dir));
     }
 
-    render_report(&results);
+    if opts.format == "json" {
+        render_report_json(&results);
+    } else {
+        render_report(&results);
+    }
 
     let any_fail = results.iter().any(|r| r.status == Status::Fail);
     if any_fail {

@@ -1,6 +1,6 @@
 import { useTranslation } from 'react-i18next';
 import { useStore } from '@/lib/store';
-import { Card, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { PageSurface, EditorialBand, DataCard, SectionHeader } from '@/components/page';
 
 // TODO: future preferences (theme, telemetry opt-in) entram aqui.
 export function Preferences() {
@@ -9,15 +9,19 @@ export function Preferences() {
   const setLanguage = useStore((s) => s.setLanguage);
 
   return (
-    <div className="flex flex-col gap-4 w-full">
-      <Card size="sm">
-        <CardHeader>
-          <CardTitle className="text-sm font-medium">{t('preferences.language')}</CardTitle>
-          <CardDescription className="text-[13px] text-muted-foreground">
-            {t('preferences.description')}
-          </CardDescription>
-        </CardHeader>
-        <div className="px-4 pb-4 flex items-center gap-2">
+    <PageSurface>
+      <EditorialBand
+        eyebrow="Mustard"
+        title={t('preferences.language')}
+        subtitle={t('preferences.description')}
+      />
+
+      <DataCard padded>
+        <SectionHeader
+          title={t('preferences.language')}
+          description={t('preferences.description')}
+        />
+        <div className="flex items-center gap-2 pt-3">
           {(['pt', 'en'] as const).map((lng) => (
             <button
               key={lng}
@@ -30,7 +34,7 @@ export function Preferences() {
             </button>
           ))}
         </div>
-      </Card>
-    </div>
+      </DataCard>
+    </PageSurface>
   );
 }

@@ -40,7 +40,35 @@ If no PR found for current branch → error:
 
 ---
 
-## Step 2 — Emit DORA event (review.start)
+## Step 2 — Prefetch PR data
+
+```bash
+rtk mustard-rt run review-prefetch <pr-ref> --format json
+```
+
+`<pr-ref>` is the PR number or URL resolved in Step 1. The binary fetches all PR data natively and returns a JSON object with the following fields:
+
+| Field | Description |
+|-------|-------------|
+| `title` | PR title |
+| `body` | PR description |
+| `author` | PR author login |
+| `base` | Base branch ref |
+| `head` | Head branch ref |
+| `additions` | Lines added |
+| `deletions` | Lines removed |
+| `changedFiles` | Number of changed files |
+| `files[]` | Array of changed file objects (path, patch, status) |
+| `comments[]` | Inline and general PR comments |
+| `reviews[]` | Existing review submissions (author, state, body) |
+
+Use this JSON as the source of truth for all subsequent steps. Do NOT call `gh pr view --json ...` or any other `gh` subcommands to re-fetch data already present in the prefetch output. Only reach for `gh` when the prefetch is unavailable (see fallback below).
+
+**Fallback:** If `mustard-rt run review-prefetch` exits non-zero or is not found, fall back to the previous approach: `gh pr view --json title,body,author,baseRefName,headRefName,additions,deletions,changedFiles 2>/dev/null` + `gh pr diff`.
+
+---
+
+## Step 3 — Emit DORA event (review.start)
 
 Before invoking the review, emit `review.start` to the harness event bus so `/mustard:stats --pr` can compute review-time DORA metrics:
 
@@ -50,7 +78,7 @@ mustard-rt run emit-event --event review.start --spec "$MUSTARD_SPEC" --payload 
 
 `$PR_TARGET` is the PR number or URL resolved in Step 1. Set `MUSTARD_SPEC` from the most recent active spec if available (best-effort); omit the `--spec`/`spec=` arguments when no active spec is known. The `spec` payload key is what `event-projections`' `pr-metrics` view uses to pair `review.start` with `review.complete`.
 
-## Step 3 — Invoke Code Review
+## Step 4 — Invoke Code Review
 
 ### Diff-First Dispatch
 
@@ -78,7 +106,7 @@ Task({
 
 ---
 
-## Step 4 — Emit DORA event (review.complete) + Report
+## Step 5 — Emit DORA event (review.complete) + Report
 
 After the review returns, emit `review.complete`:
 
@@ -90,7 +118,7 @@ Then present the review results as returned by the skill/agent.
 
 ---
 
-## Step 5 — Tactical Fix Discovery (advisory)
+## Step 6 — Tactical Fix Discovery (advisory)
 
 After the verdict is presented (APPROVED or REJECTED), scan the review agent's return for a `## Tactical Fix Candidates` (or `## Candidatos a Tactical Fix`) section. Each entry there is a small adjacent fix the reviewer flagged — by the qualification criteria in `pipeline-config.md § Tactical Fix Discovery` (≤100 LOC, no public contract change, no pending design decision, no new dependency).
 

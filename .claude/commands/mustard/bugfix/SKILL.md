@@ -17,7 +17,13 @@ Autonomous pipeline to diagnose and fix bugs. Zero context-switch — never ask 
 Before starting a new pipeline, audit specs in `.claude/spec/`:
 
 1. **Scan** all specs in `.claude/spec/*/spec.md`
-2. **For each spec**, read the full header and checklist to extract `Stage:`, `Outcome:`, `Phase:`, and checkbox completion (`[x]` vs `[ ]`). Filter by `Stage:` + `Outcome:` (and/or SQLite `pipeline_state_for_spec`) — specs already `Outcome: Completed` are skipped.
+2. **Identificar spec ativa:**
+
+   ```bash
+   rtk mustard-rt run active-specs --format json
+   ```
+
+   O binário devolve todas as specs com `Outcome=Active` AND `Stage ∈ {Plan, Execute}`, ordenadas por data desc. Use este output para as etapas 3-5 abaixo — não leia cabeçalhos de spec individualmente.
 3. **Verify completed/cancelled specs:**
    - If `Outcome: Completed` or `Outcome: Abandoned`:
      - **Analyze first**: check that ALL checklist items are `[x]`, no `## Concerns` with unresolved `BLOCKED` items, and build/type-check references are satisfied
@@ -33,7 +39,7 @@ This step is silent when there's nothing to audit — no output if no active spe
 
 ### ANALYZE (diagnose + assess)
 
-**Phase marker (first action, before any Grep):** Run `mustard-rt run emit-phase --spec {spec-name} --to ANALYZE`. ANALYZE runs in the parent before any pipeline-state file exists, so `pipeline-phase.js` cannot see it — this is the only point that knows ANALYZE started. Idempotent (script skips if already emitted for this spec) and fail-open.
+**Phase marker (first action, before any Grep):** Run `mustard-rt run emit-pipeline --kind pipeline.stage --spec {spec-name} --payload "{\"stage\":\"Analyze\"}"`. ANALYZE runs in the parent before any pipeline-state file exists — this is the only point that knows ANALYZE started. Idempotent (the binary deduplicates) and fail-open.
 
 1. **AUTO-SYNC:** Run `mustard-rt run sync-detect`. If output shows any subproject with `hashChanged: true`, then run `mustard-rt run sync-registry`. Otherwise skip sync-registry entirely.
 
@@ -197,9 +203,9 @@ Max 2 retries for Transient + Resolvable. Structural failures trigger a targeted
 
 After EXECUTE (fix + validate) completes:
 
-1. Emit phase transition to QA:
+1. Emit stage transition to QaReview:
    ```bash
-   mustard-rt run emit-phase --spec {specName} --to QA
+   mustard-rt run emit-pipeline --kind pipeline.stage --spec {specName} --payload "{\"stage\":\"QaReview\"}"
    ```
 2. Run: `mustard-rt run qa-run --spec {specName}` (Full Path only — emits `qa.result` event automatically)
    - For Fast Path: manually verify the bug reproduction command exits 0, emit result to harness

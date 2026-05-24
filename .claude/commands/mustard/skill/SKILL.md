@@ -1,3 +1,9 @@
+---
+name: mustard-skill-manager
+description: Use when the user runs /skill or asks about installing, creating, listing, removing, optimizing, or evaluating skills. Handles install, create, list, remove, optimize, eval, and update actions.
+source: manual
+---
+<!-- mustard:generated -->
 # /skill - Skill Manager
 
 > Manage skills: install, create, list, remove, optimize, eval.
@@ -78,9 +84,11 @@ List all installed skills with source, role hints, and description.
 
 ### Flow
 
-1. Glob `.claude/skills/*/SKILL.md`
-2. Parse YAML frontmatter of each
-3. Display table:
+```bash
+rtk mustard-rt run skills list --format table
+```
+
+The binary globs `.claude/skills/*/SKILL.md`, parses the YAML frontmatter of each, and returns the table ready to print. Print the output verbatim.
 
 ```
 | Name | Source | Description |

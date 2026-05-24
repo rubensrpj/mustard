@@ -1,0 +1,41 @@
+{
+  "criteria": [
+    {
+      "duration_ms": 13247,
+      "exit": 0,
+      "id": "AC-TF-1",
+      "status": "pass",
+      "stderr_excerpt": ""
+    },
+    {
+      "duration_ms": 112,
+      "exit": 0,
+      "id": "AC-TF-2",
+      "status": "pass",
+      "stderr_excerpt": ""
+    },
+    {
+      "duration_ms": 109,
+      "exit": 0,
+      "id": "AC-TF-3",
+      "status": "pass",
+      "stderr_excerpt": ""
+    },
+    {
+      "duration_ms": 109,
+      "exit": 0,
+      "id": "AC-TF-4",
+      "status": "pass",
+      "stderr_excerpt": ""
+    },
+    {
+      "duration_ms": 108,
+      "exit": 0,
+      "id": "AC-TF-5",
+      "status": "pass",
+      "stderr_excerpt": ""
+    }
+  ],
+  "overall": "pass",
+  "spec": "2026-05-23-tf-dashboard-page-primitives"
+}

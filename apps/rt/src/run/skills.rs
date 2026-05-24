@@ -644,6 +644,95 @@ fn rel_posix(root: &Path, p: &Path) -> String {
         .replace('\\', "/")
 }
 
+// ── skills list ──────────────────────────────────────────────────────────────
+
+/// A discovered skill for the `list` subcommand — carries name, description,
+/// and source (from frontmatter, defaulting to `"manual"` when absent).
+#[derive(Debug, serde::Serialize)]
+struct SkillListEntry {
+    name: String,
+    source: String,
+    description: String,
+}
+
+/// Extract the `description:` value from YAML frontmatter — tolerates
+/// multi-line continuation and quoted values.
+fn extract_description(fm: &str) -> Option<String> {
+    description_value(fm)
+}
+
+/// Glob `<root>/.claude/skills/*/SKILL.md`, parse each YAML frontmatter, and
+/// return a sorted list of [`SkillListEntry`].
+fn list_skills(root: &Path) -> Vec<SkillListEntry> {
+    let skills_dir = root.join(".claude").join("skills");
+    let mut entries: Vec<SkillListEntry> = Vec::new();
+
+    let skill_paths = collect_skills_at(&skills_dir);
+    for path in &skill_paths {
+        let content = match fs::read_to_string(path) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        let normalized = content.replace("\r\n", "\n");
+        let name = extract_skill_name(&normalized).unwrap_or_else(|| {
+            path.parent()
+                .and_then(|p| p.file_name())
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default()
+        });
+        let (source, description) = if let Some(fm) = frontmatter(&normalized) {
+            let src = field(&fm, "source:")
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "manual".to_string());
+            let desc = extract_description(&fm).unwrap_or_default();
+            (src, desc)
+        } else {
+            ("manual".to_string(), String::new())
+        };
+
+        entries.push(SkillListEntry {
+            name,
+            source,
+            description,
+        });
+    }
+
+    entries.sort_by(|a, b| a.name.cmp(&b.name));
+    entries
+}
+
+fn truncate_skills(s: &str, max: usize) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    if chars.len() <= max {
+        s.to_string()
+    } else {
+        let t: String = chars[..max - 1].iter().collect();
+        format!("{t}…")
+    }
+}
+
+/// Run `skills list [--format table|json] [--root PATH]`.
+fn run_list(root: &Path, json_out: bool) {
+    let entries = list_skills(root);
+    if json_out {
+        let doc = serde_json::json!({ "skills": entries });
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&doc).unwrap_or_default()
+        );
+    } else {
+        println!("| {:<40} | {:<8} | Description                                                     |", "Name", "Source");
+        println!("|------------------------------------------|----------|------------------------------------------------------------------|");
+        for e in &entries {
+            let name_col = format!("{:<40}", &e.name);
+            let src_col  = format!("{:<8}", &e.source);
+            let desc_col = truncate_skills(&e.description, 64);
+            println!("| {name_col} | {src_col} | {desc_col:<64} |");
+        }
+        println!("\n{} skill(s) found.", entries.len());
+    }
+}
+
 /// Dispatch `mustard-rt run skills`.
 pub fn run(subcommand: Option<&str>, args: &[String]) {
     let has = |flag: &str| args.iter().any(|a| a == flag);
@@ -700,6 +789,13 @@ pub fn run(subcommand: Option<&str>, args: &[String]) {
                 .unwrap_or(30);
             run_orphans(&project_dir, days, has("--json"));
         }
+        Some("list") => {
+            let root = arg_after("--root")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from(env::project_dir()));
+            run_list(&root, has("--format") && arg_after("--format").as_deref() == Some("json")
+                || has("--json"));
+        }
         _ => {
             println!("Usage: skills <subcommand> [flags]");
             println!();
@@ -707,6 +803,7 @@ pub fn run(subcommand: Option<&str>, args: &[String]) {
             println!("  validate [--json] [--quiet] [--factual] [--lines] [--only scan|manual]");
             println!("  graph    [--json] [--cwd PATH]");
             println!("  orphans  [--days N] [--json] [--cwd PATH]");
+            println!("  list     [--format table|json] [--root PATH]");
         }
     }
 }
@@ -826,5 +923,62 @@ mod tests {
         adj.insert("a".into(), vec!["b".into()]);
         adj.insert("b".into(), vec![]);
         assert!(find_cycles(&adj).is_empty());
+    }
+
+    // ── skills list tests ────────────────────────────────────────────────────
+
+    fn write_skill_md(root: &std::path::Path, skill_name: &str, content: &str) {
+        let dir = root.join(".claude").join("skills").join(skill_name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("SKILL.md"), content).unwrap();
+    }
+
+    #[test]
+    fn list_skills_parses_frontmatter() {
+        let td = tempfile::tempdir().unwrap();
+        write_skill_md(
+            td.path(),
+            "my-skill",
+            "---\nname: my-skill\ndescription: Use when the user wants to do something useful in the project.\nsource: manual\n---\n# body",
+        );
+        let entries = list_skills(td.path());
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, "my-skill");
+        assert_eq!(entries[0].source, "manual");
+        assert!(entries[0].description.contains("Use when"), "got: {:?}", entries[0].description);
+    }
+
+    #[test]
+    fn list_skills_defaults_source_to_manual_when_absent() {
+        let td = tempfile::tempdir().unwrap();
+        write_skill_md(
+            td.path(),
+            "no-source",
+            "---\nname: no-source\ndescription: Use when the user wants to do something.\n---\nbody",
+        );
+        let entries = list_skills(td.path());
+        assert_eq!(entries[0].source, "manual");
+    }
+
+    #[test]
+    fn list_skills_empty_dir_returns_empty() {
+        let td = tempfile::tempdir().unwrap();
+        let entries = list_skills(td.path());
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn list_skills_sorted_by_name() {
+        let td = tempfile::tempdir().unwrap();
+        for name in &["zebra-skill", "alpha-skill", "mango-skill"] {
+            write_skill_md(
+                td.path(),
+                name,
+                &format!("---\nname: {name}\ndescription: Use when anything happens in the project.\nsource: scan\n---\nbody"),
+            );
+        }
+        let entries = list_skills(td.path());
+        let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, vec!["alpha-skill", "mango-skill", "zebra-skill"]);
     }
 }

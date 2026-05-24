@@ -20,7 +20,13 @@ This is Wave 10 of the Mustard pipeline — the formal Dev/QA contract.
 ### Step 1 — Identify spec
 
 If `--spec <name>` provided: use that spec name.
-Otherwise: Glob `.claude/spec/*/spec.md`, filter by `Status:` header (skip `completed`/`cancelled`), and pick the most recently modified.
+Senão:
+
+```bash
+rtk mustard-rt run active-specs --format json
+```
+
+Pegue a 1ª spec do array (mais recente). O array já vem filtrado por `Outcome=Active` AND `Stage ∈ {Plan, Execute}` e ordenado por data desc.
 
 ### Step 2 — Validate spec has AC
 

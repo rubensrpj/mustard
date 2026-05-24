@@ -1,10 +1,10 @@
 # Tactical Fix: primitives ausentes em components/page
 
-### Stage: Plan
+### Stage: Execute
 ### Outcome: Active
-### Phase: ANALYZE
+### Flags: 
 ### Scope: light
-### Checkpoint: 2026-05-23T00:00:00Z
+### Checkpoint: 2026-05-23T20:30:00Z
 ### Lang: pt
 ### Parent: 2026-05-23-dashboard-design-system
 
@@ -39,11 +39,21 @@ A Wave 6 (`wave-6-ui`, pages secundárias) depende dos mesmos primitives — cri
 
 **Pós-criação**: rodar `node scripts/refactor-folder-per-component.mjs` para regenerar `components/page/index.ts` (barrel auto-gerado lista 18 hoje, deve listar 25 depois).
 
+## Tarefas
+
+0. **Antes de tudo**, ler a spec completa em `.claude/spec/2026-05-23-tf-dashboard-page-primitives/spec.md` — a fonte de verdade para a tabela de 7 primitivas, exports nomeados, regras inegociáveis, arquivos, limites e critérios de aceitação está toda lá. As seções referenciadas a seguir (`## Contexto`, `## Critérios de Aceitação`, `## Arquivos`, `## Limites`) ficam nesse arquivo.
+1. Para cada uma das 7 primitivas da tabela em `## Contexto`, criar `apps/dashboard/src/components/page/{Nome}/index.tsx` com os exports nomeados indicados.
+2. Antes do primeiro Write, ler `apps/dashboard/src/components/page/KPICard/index.tsx` e `apps/dashboard/src/components/page/DataCard/index.tsx` como sibling-reference para confirmar convenções (import order, typed slots, props pattern, classe Tailwind permitida).
+3. Honrar as **Regras inegociáveis** acima literalmente — zero hex, zero classes Tailwind cru de cor, stateless, mono tabular onde aplicável.
+4. Após criar as 7 pastas, rodar `node apps/dashboard/scripts/refactor-folder-per-component.mjs` (a partir da raiz do repo) para regenerar `apps/dashboard/src/components/page/index.ts`. Confirmar via grep que o barrel passou de 18 para 25 exports.
+5. Rodar `pnpm --filter mustard-dashboard build` para validar que tudo compila e o type-check passa.
+6. Reportar arquivos criados + qualquer decisão de design não-trivial (ex.: escolha de `cn()` para concat de classes, decisão de slot vs prop para `EditorialBand`).
+
 ## Critérios de Aceitação
 
 - [ ] AC-TF-1: dashboard build verde — Command: `pnpm --filter mustard-dashboard build`
 - [ ] AC-TF-2: barril `components/page/index.ts` lista as 7 novas pastas — Command: `node -e "const fs=require('fs');const c=fs.readFileSync('apps/dashboard/src/components/page/index.ts','utf8');const need=['EditorialBand','KpiValue','KPIRow','DeltaText','DataRow','CostBar','LegendSwatch'];for(const n of need){if(!c.includes('./'+n)){console.error('missing barrel entry:',n);process.exit(1)}}console.log('ok')"`
-- [ ] AC-TF-3: cada pasta tem `index.tsx` com export nomeado — Command: `node -e "const fs=require('fs');const path=require('path');const need=[['EditorialBand',['EditorialBand','EditorialEyebrow','EditorialTitle','EditorialSubtitle']],['KpiValue',['KpiValue','KpiLabel','KpiHint']],['KPIRow',['KPIRow']],['DeltaText',['DeltaText']],['DataRow',['DataRow']],['CostBar',['CostBar','BarTrack','BarFill']],['LegendSwatch',['LegendSwatch']]];for(const [folder,exports] of need){const f='apps/dashboard/src/components/page/'+folder+'/index.tsx';if(!fs.existsSync(f)){console.error('missing file:',f);process.exit(1)}const c=fs.readFileSync(f,'utf8');for(const ex of exports){const re=new RegExp('export\\\\s+(function|const|interface|type)\\\\s+'+ex+'\\\\b');if(!re.test(c)){console.error('missing export',ex,'in',f);process.exit(1)}}}console.log('ok')"`
+- [ ] AC-TF-3: cada pasta tem `index.tsx` com export nomeado — Command: `node -e "const fs=require('fs');const need=[['EditorialBand',['EditorialBand','EditorialEyebrow','EditorialTitle','EditorialSubtitle']],['KpiValue',['KpiValue','KpiLabel','KpiHint']],['KPIRow',['KPIRow']],['DeltaText',['DeltaText']],['DataRow',['DataRow']],['CostBar',['CostBar','BarTrack','BarFill']],['LegendSwatch',['LegendSwatch']]];const kws=['function','const','interface','type','class'];for(const [folder,exports] of need){const f='apps/dashboard/src/components/page/'+folder+'/index.tsx';if(!fs.existsSync(f)){console.error('missing file:',f);process.exit(1)}const c=fs.readFileSync(f,'utf8');for(const ex of exports){let ok=false;for(const kw of kws){if(c.indexOf('export '+kw+' '+ex)!==-1){ok=true;break;}}if(!ok){console.error('missing export',ex,'in',f);process.exit(1)}}}console.log('ok')"`
 - [ ] AC-TF-4: zero hex literal nas 7 novas pastas — Command: `node -e "const fs=require('fs');const folders=['EditorialBand','KpiValue','KPIRow','DeltaText','DataRow','CostBar','LegendSwatch'];const hex=/['\"\\\`]#[0-9a-fA-F]{3,8}['\"\\\`]/;for(const fo of folders){const f='apps/dashboard/src/components/page/'+fo+'/index.tsx';const c=fs.readFileSync(f,'utf8');if(hex.test(c)){console.error('hex literal in',f);process.exit(1)}}console.log('ok')"`
 - [ ] AC-TF-5: zero classes Tailwind de cor cru nas 7 novas pastas (whitelist: card, foreground, muted-foreground, primary, border, intent-success, intent-error, intent-warning via `bg-[--...]`/`text-[--...]`) — Command: `node -e "const fs=require('fs');const folders=['EditorialBand','KpiValue','KPIRow','DeltaText','DataRow','CostBar','LegendSwatch'];const bad=/\\b(text|bg|border|ring|fill|stroke)-(red|amber|emerald|blue|indigo|violet|fuchsia|pink|cyan|teal|lime|green|yellow|orange|rose|sky|slate|zinc|gray|neutral|stone)-(50|100|200|300|400|500|600|700|800|900|950)\\b/;for(const fo of folders){const f='apps/dashboard/src/components/page/'+fo+'/index.tsx';const c=fs.readFileSync(f,'utf8');const m=c.match(bad);if(m){console.error('raw color class in',f,':',m[0]);process.exit(1)}}console.log('ok')"`
 

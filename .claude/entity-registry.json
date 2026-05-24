@@ -445,6 +445,22 @@
         "Invalid"
       ]
     },
+    "RenderMode": {
+      "decorators": [
+        "Debug",
+        "Clone",
+        "Copy",
+        "PartialEq",
+        "Eq"
+      ],
+      "file": "src/run/agent_prompt_render.rs",
+      "valueConvention": "PascalCase",
+      "values": [
+        "First",
+        "Granular",
+        "FixLoop"
+      ]
+    },
     "RunCmd": {
       "decorators": [
         "Debug",

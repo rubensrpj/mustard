@@ -8,7 +8,13 @@ import { readEnv, writeEnv } from '@/api/env';
 import { ENV_CATALOG, type EnvKey } from '@/data/env-catalog';
 import { Card, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { CollapsibleGroup } from '@/components/page';
+import {
+  PageSurface,
+  EditorialBand,
+  DataCard,
+  CollapsibleGroup,
+  EmptyState,
+} from '@/components/page';
 
 function omitKey(obj: Record<string, string>, key: string): Record<string, string> {
   const next = { ...obj };
@@ -45,7 +51,7 @@ function EnvField({
           </Badge>
         )}
       </div>
-      <code className="font-mono text-[11px] text-muted-foreground/70">{k.key}</code>
+      <code className="font-mono text-[11px] text-muted-foreground">{k.key}</code>
       <p className="text-[12.5px] text-muted-foreground leading-relaxed">{k.desc}</p>
       {k.options.length === 0 ? (
         <input
@@ -71,7 +77,7 @@ function EnvField({
         </select>
       )}
       {k.valueDocs[value] && (
-        <p className="text-[12px] text-muted-foreground/70 mt-0.5">
+        <p className="text-[12px] text-muted-foreground mt-0.5">
           {k.valueDocs[value]}
         </p>
       )}
@@ -140,27 +146,27 @@ export function Settings() {
   }
 
   return (
-    <div className="flex flex-col gap-4 w-full">
-      <div className="flex flex-col gap-1">
-        <nav className="text-[12px] text-muted-foreground">
-          Mustard <span className="opacity-50">/</span>{" "}
-          <span className="text-foreground">{t('settings.title')}</span>
-        </nav>
-        <h1 className="text-xl font-medium tracking-tight">{t('settings.title')}</h1>
-        <p className="text-[13px] text-muted-foreground leading-relaxed">
-          {t('settings.envDescriptionBefore')}
-          <code className="font-mono">.claude/settings.json#env</code>
-          {t('settings.envDescriptionAfter')}
-        </p>
-      </div>
-      {/* Environment section */}
+    <PageSurface>
+      <EditorialBand
+        eyebrow="Mustard"
+        title={t('settings.title')}
+        subtitle={
+          <>
+            {t('settings.envDescriptionBefore')}
+            <code className="font-mono">.claude/settings.json#env</code>
+            {t('settings.envDescriptionAfter')}
+          </>
+        }
+      />
+
       {!selectedProject ? (
-        <p className="text-[13px] text-muted-foreground">
-          {t('settings.envSelectProject')}
-        </p>
+        <EmptyState
+          title={t('settings.envSelectProject')}
+          description={t('settings.envSelectProject')}
+        />
       ) : (
         <>
-          <div>
+          <div className="flex flex-col gap-1">
             <h2 className="text-sm font-medium">{t('settings.envTitle')} — {selectedProject.name}</h2>
             <p className="text-[13px] text-muted-foreground">
               {t('settings.envHelpTextBefore')}<code className="font-mono">MUSTARD_*</code>{t('settings.envHelpTextSep')}<code className="font-mono">OTEL_*</code>{t('settings.envHelpTextSep')}<code className="font-mono">CLAUDE_CODE_*</code>{t('settings.envHelpTextAfter')}<code className="font-mono">.claude/settings.json#env</code>{t('settings.envHelpTextEnd')}
@@ -170,44 +176,46 @@ export function Settings() {
             const basicKeys = group.keys.filter((k) => !k.advanced);
             const advancedKeys = group.keys.filter((k) => k.advanced);
             return (
-              <Card key={group.group} size="sm">
-                <CardHeader>
-                  <CardTitle className="text-sm font-medium">{group.group}</CardTitle>
-                  <CardDescription className="text-[13px] text-muted-foreground">
-                    {group.desc}
-                  </CardDescription>
-                </CardHeader>
-                {basicKeys.map((k) => (
-                  <EnvField
-                    key={k.key}
-                    envKey={k}
-                    value={effectiveEnv[k.key] ?? k.default}
-                    pending={k.key in pendingEnv}
-                    onChange={onSelectChange}
-                  />
-                ))}
-                {advancedKeys.length > 0 && (
-                  <div className="px-4 pb-3">
-                    <CollapsibleGroup
-                      label="Avançado"
-                      count={advancedKeys.length}
-                      hint="Knobs de baixo nível (porta, protocolo, transporte). A maioria dos usuários nunca precisa mexer."
-                    >
-                      <div className="flex flex-col -mx-4 mt-1">
-                        {advancedKeys.map((k) => (
-                          <EnvField
-                            key={k.key}
-                            envKey={k}
-                            value={effectiveEnv[k.key] ?? k.default}
-                            pending={k.key in pendingEnv}
-                            onChange={onSelectChange}
-                          />
-                        ))}
-                      </div>
-                    </CollapsibleGroup>
-                  </div>
-                )}
-              </Card>
+              <DataCard key={group.group}>
+                <Card size="sm" className="border-none bg-transparent">
+                  <CardHeader>
+                    <CardTitle className="text-sm font-medium">{group.group}</CardTitle>
+                    <CardDescription className="text-[13px] text-muted-foreground">
+                      {group.desc}
+                    </CardDescription>
+                  </CardHeader>
+                  {basicKeys.map((k) => (
+                    <EnvField
+                      key={k.key}
+                      envKey={k}
+                      value={effectiveEnv[k.key] ?? k.default}
+                      pending={k.key in pendingEnv}
+                      onChange={onSelectChange}
+                    />
+                  ))}
+                  {advancedKeys.length > 0 && (
+                    <div className="px-4 pb-3">
+                      <CollapsibleGroup
+                        label="Avançado"
+                        count={advancedKeys.length}
+                        hint="Knobs de baixo nível (porta, protocolo, transporte). A maioria dos usuários nunca precisa mexer."
+                      >
+                        <div className="flex flex-col mt-1">
+                          {advancedKeys.map((k) => (
+                            <EnvField
+                              key={k.key}
+                              envKey={k}
+                              value={effectiveEnv[k.key] ?? k.default}
+                              pending={k.key in pendingEnv}
+                              onChange={onSelectChange}
+                            />
+                          ))}
+                        </div>
+                      </CollapsibleGroup>
+                    </div>
+                  )}
+                </Card>
+              </DataCard>
             );
           })}
           <div className="flex items-center gap-2 pt-2 border-t border-border">
@@ -231,6 +239,6 @@ export function Settings() {
           </div>
         </>
       )}
-    </div>
+    </PageSurface>
   );
 }

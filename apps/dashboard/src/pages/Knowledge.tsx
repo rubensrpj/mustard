@@ -23,6 +23,8 @@ import {
   EmptyState,
   DataCard,
   CollapsibleGroup,
+  PageSurface,
+  EditorialBand,
 } from "@/components/page";
 import { relativeTime } from "@/lib/time";
 
@@ -207,21 +209,25 @@ export function Knowledge() {
     : [];
 
   return (
-    <div className="flex flex-col gap-6 w-full">
+    <PageSurface>
+      <EditorialBand
+        eyebrow="Knowledge"
+        title="Conhecimento e atrito"
+        subtitle="Padrões, decisões e lições reutilizáveis extraídos das pipelines, separados dos sinais de fricção medidos durante as execuções."
+      />
+
       {/* Search */}
       <div className="relative w-full">
         <Search
-          className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground"
+          className="absolute left-3 inset-y-0 my-auto h-3.5 w-3.5 text-muted-foreground"
           aria-hidden
         />
-        <label htmlFor="knowledge-search" className="sr-only">
-          Buscar conhecimento
-        </label>
         <input
           id="knowledge-search"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder="Buscar padrões, convenções, decisões, lições…"
+          aria-label="Buscar conhecimento"
           className="w-full pl-9 pr-3 py-2 bg-card border border-border rounded-md text-sm outline-none placeholder:text-muted-foreground focus:border-primary transition-colors"
         />
       </div>
@@ -244,7 +250,7 @@ export function Knowledge() {
         searchLoading ? (
           <ul className="flex flex-col gap-1">
             {[0, 1, 2].map((i) => (
-              <li key={i} className="h-8 bg-muted/40 rounded animate-pulse" />
+              <li key={i} className="h-8 bg-muted rounded animate-pulse" />
             ))}
           </ul>
         ) : searchResults.length === 0 ? (
@@ -291,7 +297,7 @@ export function Knowledge() {
             {browseLoading ? (
               <ul className="flex flex-col gap-1">
                 {[0, 1, 2].map((i) => (
-                  <li key={i} className="h-8 bg-muted/40 rounded animate-pulse" />
+                  <li key={i} className="h-8 bg-muted rounded animate-pulse" />
                 ))}
               </ul>
             ) : realRows.length === 0 ? (
@@ -337,14 +343,14 @@ export function Knowledge() {
           <FrictionSection friction={friction} legacyFriction={legacyFriction} />
         </div>
       )}
-    </div>
+    </PageSurface>
   );
 }
 
 /** One friction row — measured signal or legacy telemetry. */
 function FrictionRow({ f }: { f: FrictionEntry }) {
   return (
-    <li className="flex flex-col gap-1 border-b border-border/40 last:border-b-0 pb-2 last:pb-0">
+    <li className="flex flex-col gap-1 py-2">
       <div className="flex items-baseline gap-2 flex-wrap">
         <AlertTriangle
           className="h-3.5 w-3.5 text-[--color-accent-mustard] self-center shrink-0"
@@ -421,7 +427,7 @@ function FrictionSection({
       ) : (
         <DataCard padded>
           {measured.length > 0 && (
-            <ul className="flex flex-col gap-2">
+            <ul className="flex flex-col divide-y divide-border">
               {measured.map((f) => (
                 <FrictionRow key={f.name} f={f} />
               ))}
@@ -446,7 +452,7 @@ function FrictionSection({
                 count={legacyFriction.length}
                 hint="Entradas de fricção (heavy-pipeline, high-hook-retry, .metrics) gravadas em knowledge.json por um extractor antigo, sem contadores medidos. Mantidas só para inspeção."
               >
-                <ul className="flex flex-col gap-2 mt-2">
+                <ul className="flex flex-col divide-y divide-border mt-2">
                   {legacyFriction.map((f) => (
                     <FrictionRow key={f.name} f={f} />
                   ))}

@@ -195,13 +195,23 @@ pub fn run(opts: EmitPipelineOpts) {
     // collaborators on different machines see divergent statuses (the local
     // store says X, git says Y). Fail-open: a missing file or header is a
     // warn, never an error — the event has already been recorded.
-    if kind_str == EVENT_PIPELINE_STATUS {
+    if kind_str == EVENT_PIPELINE_STATUS && should_sync_parent_header(&payload_for_header) {
         if let Some(to) = payload_for_header.get("to").and_then(Value::as_str) {
             let cwd = std::env::current_dir()
                 .unwrap_or_else(|_| std::path::PathBuf::from(project_dir()));
             sync_spec_status_header(&cwd, &spec_name, to);
         }
     }
+}
+
+/// Decide whether a `pipeline.status` event should sync the **parent**
+/// `spec.md` header. A payload carrying `"wave": N` describes a wave-level
+/// transition inside a wave-plan and MUST NOT mutate the parent header —
+/// the wave's own `wave-N-{role}/spec.md` is managed directly by the
+/// orchestrator. Only top-level (parent) transitions, which omit `wave`,
+/// reach the header.
+fn should_sync_parent_header(payload: &Value) -> bool {
+    payload.get("wave").is_none()
 }
 
 /// Set `legacy_alias = true` on an event payload. A non-object payload (e.g.
@@ -636,6 +646,34 @@ mod tests {
         assert!(after.contains("### Stage: Close"));
         assert!(after.contains("### Outcome: Completed"));
         assert!(after.contains("no header"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Parent-vs-wave header sync gate (regression: 2026-05-23, wave-level
+    // close events were rewriting the parent spec.md header).
+    // -----------------------------------------------------------------------
+
+    /// A `pipeline.status` payload carrying a `wave` field is a wave-level
+    /// transition and MUST NOT trigger a parent-header rewrite.
+    #[test]
+    fn should_sync_parent_header_false_when_payload_has_wave() {
+        let p = json!({"from":"approved","to":"completed","wave":5});
+        assert!(!super::should_sync_parent_header(&p));
+    }
+
+    /// A `pipeline.status` payload without a `wave` field is a top-level
+    /// (parent) transition — sync proceeds normally.
+    #[test]
+    fn should_sync_parent_header_true_when_payload_omits_wave() {
+        let p = json!({"from":"draft","to":"approved"});
+        assert!(super::should_sync_parent_header(&p));
+    }
+
+    /// `Value::Null` (a `pipeline.status` event with no payload at all) is
+    /// treated as a parent transition — sync proceeds.
+    #[test]
+    fn should_sync_parent_header_true_on_null_payload() {
+        assert!(super::should_sync_parent_header(&Value::Null));
     }
 
     /// A legacy header is rewritten to the canonical form and re-parses to the

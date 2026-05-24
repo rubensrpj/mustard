@@ -6,6 +6,8 @@ import { useTranslate } from "@/lib/i18n";
 import {
   EmptyState,
   DataCard,
+  PageSurface,
+  EditorialBand,
 } from "@/components/page";
 import { WorkspaceHero } from "@/features/workspace/WorkspaceHero";
 import { WorkspaceHealthCard } from "@/features/workspace/WorkspaceHealthCard";
@@ -52,31 +54,31 @@ export function Workspace() {
 
   if (!projectsRoot) {
     return (
-      <div className="flex flex-col gap-6 w-full">
+      <PageSurface>
         <EmptyState
           title="Diretório de projetos não configurado"
           description="Vá em Configurações e aponte para a pasta onde estão seus repos."
         />
-      </div>
+      </PageSurface>
     );
   }
 
   if (!activeWorkspaceId || !activeProject) {
     return (
-      <div className="flex flex-col gap-6 w-full">
+      <PageSurface>
         <EmptyState
           title="Selecione um workspace"
           description="Use o seletor na sidebar para escolher um projeto."
         />
-      </div>
+      </PageSurface>
     );
   }
 
   if (isLoading) {
     return (
-      <div className="flex flex-col gap-6 w-full">
+      <PageSurface>
         <p className="text-[13px] text-muted-foreground">{t("common.loading")}</p>
-      </div>
+      </PageSurface>
     );
   }
 
@@ -102,7 +104,13 @@ export function Workspace() {
   const repoPath = activeProject.path;
 
   return (
-    <div className="flex flex-col gap-6 w-full">
+    <PageSurface>
+      <EditorialBand
+        eyebrow="Workspace"
+        title={activeProject.name}
+        subtitle={`Visão geral das pipelines ativas, saúde do projeto e atividade recente para ${activeProject.name}.`}
+      />
+
       {/* Hero: multi-spec list (replaces single-pipeline StatusBar + Timeline). */}
       <WorkspaceHero summary={summary} />
 
@@ -138,6 +146,6 @@ export function Workspace() {
           specName={primaryActiveSpec}
         />
       </DataCard>
-    </div>
+    </PageSurface>
   );
 }

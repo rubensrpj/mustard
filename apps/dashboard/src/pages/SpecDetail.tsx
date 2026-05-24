@@ -7,7 +7,14 @@ import { fetchSpecs, fetchSpecMarkdown } from "@/lib/dashboard";
 import type { Project } from "@/api/discovery";
 import { Badge } from "@/components/ui/badge";
 import { relativeTime } from "@/lib/time";
-import { Markdown } from "@/components/page/Markdown";
+import {
+  Markdown,
+  PageSurface,
+  EditorialBand,
+  SectionHeader,
+  DataCard,
+  EmptyState,
+} from "@/components/page";
 
 export function SpecDetail() {
   const { id, specName: rawSpecName } = useParams<{ id: string; specName: string }>();
@@ -44,33 +51,45 @@ export function SpecDetail() {
 
   if (!project) {
     return (
-      <div className="text-sm text-muted-foreground">
-        Projeto não encontrado. Volte ao{" "}
-        <Link to="/" className="underline">
-          Home
-        </Link>
-        .
-      </div>
+      <PageSurface>
+        <EmptyState
+          title="Projeto não encontrado"
+          description={
+            <>
+              Volte ao{" "}
+              <Link to="/" className="underline">Home</Link>.
+            </>
+          }
+        />
+      </PageSurface>
     );
   }
 
+  const subtitleParts: string[] = [];
+  if (row?.started_at) subtitleParts.push(`iniciado ${relativeTime(row.started_at)}`);
+  if (row?.completed_at) subtitleParts.push(`concluído ${relativeTime(row.completed_at)}`);
+  if (dataUpdatedAt > 0) subtitleParts.push(`atualizado ${relativeTime(new Date(dataUpdatedAt).toISOString())}`);
+  const subtitle = subtitleParts.length > 0 ? subtitleParts.join(' · ') : undefined;
+
   return (
-    <div className="flex flex-col gap-1">
-      <div className="flex items-start justify-between gap-2 mb-4">
-        <div className="flex flex-col gap-1 min-w-0">
-          <nav className="text-[13px] text-muted-foreground">
-            Mustard / Projetos /{" "}
+    <PageSurface>
+      <EditorialBand
+        eyebrow={
+          <>
+            Mustard /{" "}
             <Link to={`/project/${project.id}?tab=about`} className="hover:underline">
               {project.name}
             </Link>{" "}
             /{" "}
             <Link to={`/project/${project.id}?tab=specs`} className="hover:underline">
               Specs
-            </Link>{" "}
-            / <span className="text-foreground">{specName}</span>
-          </nav>
-          <h1 className="text-base font-medium font-mono break-all">{specName}</h1>
-          <div className="flex items-center gap-2 flex-wrap">
+            </Link>
+          </>
+        }
+        title={specName}
+        subtitle={subtitle}
+        actions={
+          <div className="flex items-center gap-2">
             {row?.phase && (
               <Badge variant="secondary" className="text-[11px] py-0">
                 {row.phase}
@@ -81,35 +100,20 @@ export function SpecDetail() {
                 {row.status}
               </Badge>
             )}
-            {row?.started_at && (
-              <span className="text-[13px] text-muted-foreground">
-                started {relativeTime(row.started_at)}
-              </span>
-            )}
-            {row?.completed_at && (
-              <span className="text-[13px] text-muted-foreground">
-                completed {relativeTime(row.completed_at)}
-              </span>
-            )}
-            {dataUpdatedAt > 0 && (
-              <span className="text-[10px] text-muted-foreground">
-                Atualizado {relativeTime(new Date(dataUpdatedAt).toISOString())}
-              </span>
-            )}
+            <Link
+              to={`/project/${project.id}?tab=specs`}
+              className="text-[13px] text-muted-foreground hover:text-foreground border border-border rounded px-2 py-1 shrink-0"
+            >
+              ← Voltar para Specs
+            </Link>
           </div>
-        </div>
-        <Link
-          to={`/project/${project.id}?tab=specs`}
-          className="text-[13px] text-muted-foreground hover:text-foreground border border-border rounded px-2 py-1 shrink-0"
-        >
-          ← Voltar para Specs
-        </Link>
-      </div>
+        }
+      />
 
       {mdLoading && (
         <div className="flex flex-col gap-2">
           {[0, 1, 2].map((i) => (
-            <div key={i} className="h-16 bg-muted/40 rounded animate-pulse" />
+            <div key={i} className="h-16 bg-muted rounded animate-pulse" />
           ))}
         </div>
       )}
@@ -124,24 +128,24 @@ export function SpecDetail() {
             <Markdown content={markdown} />
           </section>
 
-          <section>
-            <h2 className="text-xs uppercase tracking-wider font-medium text-foreground mb-2">
-              Affected files
-            </h2>
+          <section className="flex flex-col gap-2">
+            <SectionHeader title="Affected files" />
             {!row || row.affected_files.length === 0 ? (
               <p className="text-[13px] text-muted-foreground">Sem arquivos registrados.</p>
             ) : (
-              <ul className="font-mono text-xs flex flex-col gap-0.5">
-                {row.affected_files.map((f) => (
-                  <li key={f} className="text-muted-foreground">
-                    {f}
-                  </li>
-                ))}
-              </ul>
+              <DataCard padded>
+                <ul className="font-mono text-xs flex flex-col gap-0.5">
+                  {row.affected_files.map((f) => (
+                    <li key={f} className="text-muted-foreground">
+                      {f}
+                    </li>
+                  ))}
+                </ul>
+              </DataCard>
             )}
           </section>
         </div>
       )}
-    </div>
+    </PageSurface>
   );
 }
