@@ -64,17 +64,16 @@ fn extract_summary(spec_text: &str) -> String {
     let lines: Vec<&str> = spec_text.split('\n').collect();
     let Some(start) = lines.iter().position(|l| {
         l.strip_prefix("##")
-            .map(|r| {
+            .is_some_and(|r| {
                 let t = r.trim_start_matches([' ', '\t']);
                 t.len() != r.len() && t.to_lowercase().trim_end() == "summary"
             })
-            .unwrap_or(false)
     }) else {
         return "(see spec)".to_string();
     };
     let mut body = Vec::new();
     for l in lines.iter().skip(start + 1) {
-        if l.strip_prefix("##").map(|r| r.starts_with([' ', '\t'])).unwrap_or(false) {
+        if l.strip_prefix("##").is_some_and(|r| r.starts_with([' ', '\t'])) {
             break;
         }
         body.push(*l);
@@ -159,16 +158,15 @@ fn build_wave_spec_md(
         .iter()
         .position(|l| {
             l.strip_prefix("##")
-                .map(|r| {
+                .is_some_and(|r| {
                     let t = r.trim_start_matches([' ', '\t']);
                     t.len() != r.len() && t.to_lowercase().trim_end() == "tasks"
                 })
-                .unwrap_or(false)
         })
         .map(|start| {
             let mut body = Vec::new();
             for l in lines.iter().skip(start + 1) {
-                if l.strip_prefix("##").map(|r| r.starts_with([' ', '\t'])).unwrap_or(false) {
+                if l.strip_prefix("##").is_some_and(|r| r.starts_with([' ', '\t'])) {
                     break;
                 }
                 body.push(*l);
@@ -197,7 +195,7 @@ pub fn run(spec_arg: Option<&str>) {
     } else {
         cwd.join(spec_arg)
     };
-    let spec_dir = spec_file.parent().map(Path::to_path_buf).unwrap_or_else(|| cwd.clone());
+    let spec_dir = spec_file.parent().map_or_else(|| cwd.clone(), Path::to_path_buf);
     let project_root = find_project_root(&spec_dir).unwrap_or_else(|| cwd.clone());
 
     let result = (|| -> Value {

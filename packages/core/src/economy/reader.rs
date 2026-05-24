@@ -72,145 +72,142 @@ fn telemetry_filter(scope: &EconomyScope) -> (Option<String>, Option<String>) {
 /// # Errors
 ///
 /// Returns [`Error::Sqlite`] for a database failure.
+#[allow(clippy::too_many_lines)]
 pub fn economy_summary(conn: &Connection, scope: EconomyScope) -> Result<EconomySummary> {
-    match scope {
-        EconomyScope::AllProjects(ref projects) => {
-            let reader = MultiProjectReader::new();
-            let per_project = reader.fan_out(projects, |c, project| {
-                economy_summary(c, EconomyScope::Project(project.clone()))
-            });
-            let mut acc = EconomySummary::default();
-            for s in per_project.values() {
-                acc.total_cost_usd_micros += s.total_cost_usd_micros;
-                acc.total_tokens += s.total_tokens;
-                acc.total_tokens_saved += s.total_tokens_saved;
-                acc.span_count += s.span_count;
-                acc.top_agents_by_cost.extend(s.top_agents_by_cost.clone());
-                // Per-project summaries are unfiltered (Project scope), so each
-                // already carries its own measured `by_session` / freshness.
-                acc.by_session.extend(s.by_session.clone());
-                acc.last_updated_ms = acc.last_updated_ms.max(s.last_updated_ms);
-                // Freshest estimated ingestion across the fan-out. `max` of
-                // two Options picks the larger Some, or any Some over None.
-                acc.last_estimated_ms = acc.last_estimated_ms.max(s.last_estimated_ms);
-            }
-            // Re-sort and truncate top agents after the merge.
-            acc.top_agents_by_cost
-                .sort_by(|a, b| b.cost_usd_micros.cmp(&a.cost_usd_micros));
-            acc.top_agents_by_cost.truncate(3);
-            // Re-sort + cap the merged sessions the same way the single-project
-            // path does (top by USD descending).
-            acc.by_session
-                .sort_by(|a, b| b.usd.partial_cmp(&a.usd).unwrap_or(std::cmp::Ordering::Equal));
-            acc.by_session.truncate(8);
-            Ok(acc)
+    if let EconomyScope::AllProjects(ref projects) = scope {
+        let reader = MultiProjectReader::new();
+        let per_project = reader.fan_out(projects, |c, project| {
+            economy_summary(c, EconomyScope::Project(project.clone()))
+        });
+        let mut acc = EconomySummary::default();
+        for s in per_project.values() {
+            acc.total_cost_usd_micros += s.total_cost_usd_micros;
+            acc.total_tokens += s.total_tokens;
+            acc.total_tokens_saved += s.total_tokens_saved;
+            acc.span_count += s.span_count;
+            acc.top_agents_by_cost.extend(s.top_agents_by_cost.clone());
+            // Per-project summaries are unfiltered (Project scope), so each
+            // already carries its own measured `by_session` / freshness.
+            acc.by_session.extend(s.by_session.clone());
+            acc.last_updated_ms = acc.last_updated_ms.max(s.last_updated_ms);
+            // Freshest estimated ingestion across the fan-out. `max` of
+            // two Options picks the larger Some, or any Some over None.
+            acc.last_estimated_ms = acc.last_estimated_ms.max(s.last_estimated_ms);
         }
-        _ => {
-            // Run count always comes from telemetry.db's self-attributed
-            // `run_usage` (Wave 3): it's a count of dispatched runs, meaningful
-            // at every scope. The estimated cost/token totals from the same
-            // query are only used when the scope filters by spec or wave.
-            let (spec_f, wave_f) = telemetry_filter(&scope);
-            let tele = open_telemetry(&scope)?;
-            let (est_cost, est_tokens, span_count) = telemetry::reader::scoped_totals(
-                tele.conn(),
-                spec_f.as_deref(),
-                wave_f.as_deref(),
-            )?;
-
-            // For an unfiltered (project-wide / single-project) scope the
-            // headline cost + token totals come from the MEASURED `usage_totals`
-            // OTEL counters (Anthropic's billed `claude_code.cost.usage` /
-            // `.token.usage`), which carry no spec/wave dimension. When the scope
-            // DOES filter by spec or wave we fall back to the ESTIMATED
-            // `run_usage` totals — `usage_totals` cannot be attributed to a spec.
-            let unfiltered = spec_f.is_none() && wave_f.is_none();
-            let (total_cost, total_tokens) = if unfiltered {
-                let measured_cost_usd = telemetry::reader::cost_total(tele.conn())?;
-                let measured_tokens = telemetry::reader::token_total(tele.conn())?;
-                // `usage_totals` carries cost in USD and tokens as a float
-                // counter; `EconomySummary` is micro-USD + integer tokens.
-                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-                let cost_micros = (measured_cost_usd * 1_000_000.0).round() as i64;
-                #[allow(clippy::cast_possible_truncation)]
-                let tokens = measured_tokens.round() as i64;
-                (cost_micros, tokens)
-            } else {
-                (est_cost, est_tokens)
-            };
-
-            // MEASURED cost-by-session + freshness — populated ONLY at the
-            // unfiltered (project) scope, since `usage_totals` carries no
-            // spec/wave dimension. At spec/wave scope these stay empty/None.
-            // `last_estimated_ms` follows the same scope rule because the
-            // staleness banner that consumes it only makes sense when both
-            // freshness signals are available.
-            let last_estimated_ms = if unfiltered {
-                telemetry::reader::last_run_usage_ts(tele.conn())
-            } else {
-                None
-            };
-            // Top sessions by USD, capped so the UI list stays compact.
-            let (by_session, last_updated_ms) = if unfiltered {
-                let sessions = telemetry::reader::cost_by_session(tele.conn())?
-                    .into_iter()
-                    .filter(|(_, usd)| *usd > 0.0)
-                    .take(8)
-                    .map(|(session_id, usd)| {
-                        // Same telemetry.db connection — never cross into mustard.db
-                        // from a telemetry read. Both helpers are fail-open at the
-                        // SQL layer, so a degraded row still surfaces the cost.
-                        let last_at_ms =
-                            telemetry::reader::session_last_at(tele.conn(), &session_id)
-                                .unwrap_or(None);
-                        let specs = telemetry::reader::specs_for_session(tele.conn(), &session_id)
-                            .unwrap_or_default();
-                        SessionCost {
-                            session_id,
-                            usd,
-                            last_at_ms,
-                            specs,
-                        }
-                    })
-                    .collect();
-                let fresh = telemetry::reader::freshness(tele.conn())?;
-                (sessions, fresh)
-            } else {
-                (Vec::new(), None)
-            };
-
-            // Savings aggregation always uses `savings_records` directly —
-            // the table carries native `spec_id` and `wave_id` columns so
-            // every scope variant has a real, non-tautological filter.
-            let savings_sql = format!(
-                "SELECT COALESCE(SUM(tokens_saved), 0) FROM savings_records {}",
-                savings_where(&scope)
-            );
-            let total_saved: i64 = conn
-                .query_row(
-                    &savings_sql,
-                    rusqlite::params_from_iter(savings_params(&scope).iter()),
-                    |r| r.get(0),
-                )
-                .map_err(Error::from)?;
-
-            let top = per_agent_costs(conn, scope)?
-                .into_iter()
-                .take(3)
-                .collect::<Vec<_>>();
-
-            Ok(EconomySummary {
-                total_cost_usd_micros: total_cost,
-                total_tokens,
-                total_tokens_saved: total_saved,
-                span_count,
-                top_agents_by_cost: top,
-                by_session,
-                last_updated_ms,
-                last_estimated_ms,
-            })
-        }
+        // Re-sort and truncate top agents after the merge.
+        acc.top_agents_by_cost
+            .sort_by_key(|b| std::cmp::Reverse(b.cost_usd_micros));
+        acc.top_agents_by_cost.truncate(3);
+        // Re-sort + cap the merged sessions the same way the single-project
+        // path does (top by USD descending).
+        acc.by_session
+            .sort_by(|a, b| b.usd.partial_cmp(&a.usd).unwrap_or(std::cmp::Ordering::Equal));
+        acc.by_session.truncate(8);
+        return Ok(acc);
     }
+    // Run count always comes from telemetry.db's self-attributed
+    // `run_usage` (Wave 3): it's a count of dispatched runs, meaningful
+    // at every scope. The estimated cost/token totals from the same
+    // query are only used when the scope filters by spec or wave.
+    let (spec_f, wave_f) = telemetry_filter(&scope);
+    let tele = open_telemetry(&scope)?;
+    let (est_cost, est_tokens, span_count) = telemetry::reader::scoped_totals(
+        tele.conn(),
+        spec_f.as_deref(),
+        wave_f.as_deref(),
+    )?;
+
+    // For an unfiltered (project-wide / single-project) scope the
+    // headline cost + token totals come from the MEASURED `usage_totals`
+    // OTEL counters (Anthropic's billed `claude_code.cost.usage` /
+    // `.token.usage`), which carry no spec/wave dimension. When the scope
+    // DOES filter by spec or wave we fall back to the ESTIMATED
+    // `run_usage` totals — `usage_totals` cannot be attributed to a spec.
+    let unfiltered = spec_f.is_none() && wave_f.is_none();
+    let (total_cost, total_tokens) = if unfiltered {
+        let measured_cost_usd = telemetry::reader::cost_total(tele.conn())?;
+        let measured_tokens = telemetry::reader::token_total(tele.conn())?;
+        // `usage_totals` carries cost in USD and tokens as a float
+        // counter; `EconomySummary` is micro-USD + integer tokens.
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let cost_micros = (measured_cost_usd * 1_000_000.0).round() as i64;
+        #[allow(clippy::cast_possible_truncation)]
+        let tokens = measured_tokens.round() as i64;
+        (cost_micros, tokens)
+    } else {
+        (est_cost, est_tokens)
+    };
+
+    // MEASURED cost-by-session + freshness — populated ONLY at the
+    // unfiltered (project) scope, since `usage_totals` carries no
+    // spec/wave dimension. At spec/wave scope these stay empty/None.
+    // `last_estimated_ms` follows the same scope rule because the
+    // staleness banner that consumes it only makes sense when both
+    // freshness signals are available.
+    let last_estimated_ms = if unfiltered {
+        telemetry::reader::last_run_usage_ts(tele.conn())
+    } else {
+        None
+    };
+    // Top sessions by USD, capped so the UI list stays compact.
+    let (by_session, last_updated_ms) = if unfiltered {
+        let sessions = telemetry::reader::cost_by_session(tele.conn())?
+            .into_iter()
+            .filter(|(_, usd)| *usd > 0.0)
+            .take(8)
+            .map(|(session_id, usd)| {
+                // Same telemetry.db connection — never cross into mustard.db
+                // from a telemetry read. Both helpers are fail-open at the
+                // SQL layer, so a degraded row still surfaces the cost.
+                let last_at_ms =
+                    telemetry::reader::session_last_at(tele.conn(), &session_id)
+                        .unwrap_or(None);
+                let specs = telemetry::reader::specs_for_session(tele.conn(), &session_id)
+                    .unwrap_or_default();
+                SessionCost {
+                    session_id,
+                    usd,
+                    last_at_ms,
+                    specs,
+                }
+            })
+            .collect();
+        let fresh = telemetry::reader::freshness(tele.conn())?;
+        (sessions, fresh)
+    } else {
+        (Vec::new(), None)
+    };
+
+    // Savings aggregation always uses `savings_records` directly —
+    // the table carries native `spec_id` and `wave_id` columns so
+    // every scope variant has a real, non-tautological filter.
+    let savings_sql = format!(
+        "SELECT COALESCE(SUM(tokens_saved), 0) FROM savings_records {}",
+        savings_where(&scope)
+    );
+    let total_saved: i64 = conn
+        .query_row(
+            &savings_sql,
+            rusqlite::params_from_iter(savings_params(&scope).iter()),
+            |r| r.get(0),
+        )
+        .map_err(Error::from)?;
+
+    let top = per_agent_costs(conn, scope)?
+        .into_iter()
+        .take(3)
+        .collect::<Vec<_>>();
+
+    Ok(EconomySummary {
+        total_cost_usd_micros: total_cost,
+        total_tokens,
+        total_tokens_saved: total_saved,
+        span_count,
+        top_agents_by_cost: top,
+        by_session,
+        last_updated_ms,
+        last_estimated_ms,
+    })
 }
 
 /// Per-agent cost roll-up, ordered by cost descending.
@@ -224,49 +221,46 @@ pub fn economy_summary(conn: &Connection, scope: EconomyScope) -> Result<Economy
 /// # Errors
 ///
 /// Returns [`Error::Sqlite`] for a database failure.
+#[allow(clippy::needless_pass_by_value)] // EconomyScope is consumed by the fan-out branch; callers own the value
 pub fn per_agent_costs(_conn: &Connection, scope: EconomyScope) -> Result<Vec<AgentCost>> {
-    match scope {
-        EconomyScope::AllProjects(ref projects) => {
-            let reader = MultiProjectReader::new();
-            let per_project = reader.fan_out(projects, |c, project| {
-                per_agent_costs(c, EconomyScope::Project(project.clone()))
-            });
-            // Merge by agent_id.
-            let mut merged: std::collections::HashMap<String, AgentCost> =
-                std::collections::HashMap::new();
-            for rows in per_project.values() {
-                for row in rows {
-                    let entry = merged.entry(row.agent_id.0.clone()).or_insert(AgentCost {
-                        agent_id: row.agent_id.clone(),
-                        cost_usd_micros: 0,
-                        tokens: 0,
-                        span_count: 0,
-                    });
-                    entry.cost_usd_micros += row.cost_usd_micros;
-                    entry.tokens += row.tokens;
-                    entry.span_count += row.span_count;
-                }
+    if let EconomyScope::AllProjects(ref projects) = scope {
+        let reader = MultiProjectReader::new();
+        let per_project = reader.fan_out(projects, |c, project| {
+            per_agent_costs(c, EconomyScope::Project(project.clone()))
+        });
+        // Merge by agent_id.
+        let mut merged: std::collections::HashMap<String, AgentCost> =
+            std::collections::HashMap::new();
+        for rows in per_project.values() {
+            for row in rows {
+                let entry = merged.entry(row.agent_id.0.clone()).or_insert(AgentCost {
+                    agent_id: row.agent_id.clone(),
+                    cost_usd_micros: 0,
+                    tokens: 0,
+                    span_count: 0,
+                });
+                entry.cost_usd_micros += row.cost_usd_micros;
+                entry.tokens += row.tokens;
+                entry.span_count += row.span_count;
             }
-            let mut out: Vec<AgentCost> = merged.into_values().collect();
-            out.sort_by(|a, b| b.cost_usd_micros.cmp(&a.cost_usd_micros));
-            Ok(out)
         }
-        _ => {
-            let (_, wave_f) = telemetry_filter(&scope);
-            let tele = open_telemetry(&scope)?;
-            let groups =
-                telemetry::reader::runs_by_agent_scoped(tele.conn(), None, wave_f.as_deref())?;
-            Ok(groups
-                .into_iter()
-                .map(|g| AgentCost {
-                    agent_id: AgentId(g.key),
-                    cost_usd_micros: g.cost_usd_micros,
-                    tokens: g.tokens,
-                    span_count: g.run_count,
-                })
-                .collect())
-        }
+        let mut out: Vec<AgentCost> = merged.into_values().collect();
+        out.sort_by_key(|b| std::cmp::Reverse(b.cost_usd_micros));
+        return Ok(out);
     }
+    let (_, wave_f) = telemetry_filter(&scope);
+    let tele = open_telemetry(&scope)?;
+    let groups =
+        telemetry::reader::runs_by_agent_scoped(tele.conn(), None, wave_f.as_deref())?;
+    Ok(groups
+        .into_iter()
+        .map(|g| AgentCost {
+            agent_id: AgentId(g.key),
+            cost_usd_micros: g.cost_usd_micros,
+            tokens: g.tokens,
+            span_count: g.run_count,
+        })
+        .collect())
 }
 
 /// Per-spec cost roll-up. Meaningful for [`EconomyScope::Project`] and
@@ -276,70 +270,67 @@ pub fn per_agent_costs(_conn: &Connection, scope: EconomyScope) -> Result<Vec<Ag
 /// # Errors
 ///
 /// Returns [`Error::Sqlite`] for a database failure.
+#[allow(clippy::needless_pass_by_value)] // EconomyScope is consumed by the fan-out branch; callers own the value
 pub fn per_spec_costs(_conn: &Connection, scope: EconomyScope) -> Result<Vec<SpecCost>> {
-    match scope {
-        EconomyScope::AllProjects(ref projects) => {
-            let reader = MultiProjectReader::new();
-            let per_project = reader.fan_out(projects, |c, project| {
-                per_spec_costs(c, EconomyScope::Project(project.clone()))
-            });
-            let mut merged: std::collections::HashMap<String, SpecCost> =
-                std::collections::HashMap::new();
-            for rows in per_project.values() {
-                for row in rows {
-                    let entry = merged.entry(row.spec_id.0.clone()).or_insert(SpecCost {
-                        spec_id: row.spec_id.clone(),
-                        cost_usd_micros: 0,
-                        tokens: 0,
-                        span_count: 0,
-                        last_started_at: None,
-                    });
-                    entry.cost_usd_micros += row.cost_usd_micros;
-                    entry.tokens += row.tokens;
-                    entry.span_count += row.span_count;
-                    // Keep the freshest `started_at` across the fan-out.
-                    // `max` on `Option<i64>` picks the larger `Some` (or any
-                    // `Some` over `None`), which is what the UI's
-                    // "newest first" sort expects.
-                    entry.last_started_at = entry.last_started_at.max(row.last_started_at);
-                }
+    if let EconomyScope::AllProjects(ref projects) = scope {
+        let reader = MultiProjectReader::new();
+        let per_project = reader.fan_out(projects, |c, project| {
+            per_spec_costs(c, EconomyScope::Project(project.clone()))
+        });
+        let mut merged: std::collections::HashMap<String, SpecCost> =
+            std::collections::HashMap::new();
+        for rows in per_project.values() {
+            for row in rows {
+                let entry = merged.entry(row.spec_id.0.clone()).or_insert(SpecCost {
+                    spec_id: row.spec_id.clone(),
+                    cost_usd_micros: 0,
+                    tokens: 0,
+                    span_count: 0,
+                    last_started_at: None,
+                });
+                entry.cost_usd_micros += row.cost_usd_micros;
+                entry.tokens += row.tokens;
+                entry.span_count += row.span_count;
+                // Keep the freshest `started_at` across the fan-out.
+                // `max` on `Option<i64>` picks the larger `Some` (or any
+                // `Some` over `None`), which is what the UI's
+                // "newest first" sort expects.
+                entry.last_started_at = entry.last_started_at.max(row.last_started_at);
             }
-            let mut out: Vec<SpecCost> = merged.into_values().collect();
-            // Sort by recency desc; cost desc breaks ties so two specs sharing
-            // the freshest timestamp still rank deterministically.
-            out.sort_by(|a, b| {
-                b.last_started_at
-                    .cmp(&a.last_started_at)
-                    .then_with(|| b.cost_usd_micros.cmp(&a.cost_usd_micros))
-            });
-            Ok(out)
         }
-        _ => {
-            // Self-attributed `run_usage` (Wave 3): GROUP BY the native `spec`
-            // column. A Wave scope additionally filters on `wave_id`.
-            let (_, wave_f) = telemetry_filter(&scope);
-            let tele = open_telemetry(&scope)?;
-            let groups = telemetry::reader::runs_by_spec_scoped(tele.conn(), wave_f.as_deref())?;
-            let mut out: Vec<SpecCost> = groups
-                .into_iter()
-                .map(|g| SpecCost {
-                    spec_id: SpecId(g.key),
-                    cost_usd_micros: g.cost_usd_micros,
-                    tokens: g.tokens,
-                    span_count: g.run_count,
-                    last_started_at: g.last_started_at,
-                })
-                .collect();
-            // Newest spec first; cost desc as the tiebreaker for equal/None
-            // timestamps (matches `AllProjects` branch ordering).
-            out.sort_by(|a, b| {
-                b.last_started_at
-                    .cmp(&a.last_started_at)
-                    .then_with(|| b.cost_usd_micros.cmp(&a.cost_usd_micros))
-            });
-            Ok(out)
-        }
+        let mut out: Vec<SpecCost> = merged.into_values().collect();
+        // Sort by recency desc; cost desc breaks ties so two specs sharing
+        // the freshest timestamp still rank deterministically.
+        out.sort_by(|a, b| {
+            b.last_started_at
+                .cmp(&a.last_started_at)
+                .then_with(|| b.cost_usd_micros.cmp(&a.cost_usd_micros))
+        });
+        return Ok(out);
     }
+    // Self-attributed `run_usage` (Wave 3): GROUP BY the native `spec`
+    // column. A Wave scope additionally filters on `wave_id`.
+    let (_, wave_f) = telemetry_filter(&scope);
+    let tele = open_telemetry(&scope)?;
+    let groups = telemetry::reader::runs_by_spec_scoped(tele.conn(), wave_f.as_deref())?;
+    let mut out: Vec<SpecCost> = groups
+        .into_iter()
+        .map(|g| SpecCost {
+            spec_id: SpecId(g.key),
+            cost_usd_micros: g.cost_usd_micros,
+            tokens: g.tokens,
+            span_count: g.run_count,
+            last_started_at: g.last_started_at,
+        })
+        .collect();
+    // Newest spec first; cost desc as the tiebreaker for equal/None
+    // timestamps (matches `AllProjects` branch ordering).
+    out.sort_by(|a, b| {
+        b.last_started_at
+            .cmp(&a.last_started_at)
+            .then_with(|| b.cost_usd_micros.cmp(&a.cost_usd_micros))
+    });
+    Ok(out)
 }
 
 /// Per-wave cost roll-up. The wave id is the run row's own `wave_id` column
@@ -353,53 +344,50 @@ pub fn per_spec_costs(_conn: &Connection, scope: EconomyScope) -> Result<Vec<Spe
 /// # Errors
 ///
 /// Returns [`Error::Sqlite`] for a database failure.
+#[allow(clippy::needless_pass_by_value)] // EconomyScope is consumed by the fan-out branch; callers own the value
 pub fn per_wave_costs(_conn: &Connection, scope: EconomyScope) -> Result<Vec<WaveCost>> {
-    match scope {
-        EconomyScope::AllProjects(ref projects) => {
-            let reader = MultiProjectReader::new();
-            let per_project = reader.fan_out(projects, |c, project| {
-                per_wave_costs(c, EconomyScope::Project(project.clone()))
-            });
-            let mut merged: std::collections::HashMap<(String, String), WaveCost> =
-                std::collections::HashMap::new();
-            for rows in per_project.values() {
-                for row in rows {
-                    let key = (row.spec_id.0.clone(), row.wave_id.0.clone());
-                    let entry = merged.entry(key).or_insert(WaveCost {
-                        spec_id: row.spec_id.clone(),
-                        wave_id: row.wave_id.clone(),
-                        cost_usd_micros: 0,
-                        tokens: 0,
-                        span_count: 0,
-                    });
-                    entry.cost_usd_micros += row.cost_usd_micros;
-                    entry.tokens += row.tokens;
-                    entry.span_count += row.span_count;
-                }
+    if let EconomyScope::AllProjects(ref projects) = scope {
+        let reader = MultiProjectReader::new();
+        let per_project = reader.fan_out(projects, |c, project| {
+            per_wave_costs(c, EconomyScope::Project(project.clone()))
+        });
+        let mut merged: std::collections::HashMap<(String, String), WaveCost> =
+            std::collections::HashMap::new();
+        for rows in per_project.values() {
+            for row in rows {
+                let key = (row.spec_id.0.clone(), row.wave_id.0.clone());
+                let entry = merged.entry(key).or_insert(WaveCost {
+                    spec_id: row.spec_id.clone(),
+                    wave_id: row.wave_id.clone(),
+                    cost_usd_micros: 0,
+                    tokens: 0,
+                    span_count: 0,
+                });
+                entry.cost_usd_micros += row.cost_usd_micros;
+                entry.tokens += row.tokens;
+                entry.span_count += row.span_count;
             }
-            let mut out: Vec<WaveCost> = merged.into_values().collect();
-            out.sort_by(|a, b| b.cost_usd_micros.cmp(&a.cost_usd_micros));
-            Ok(out)
         }
-        _ => {
-            // Self-attributed `run_usage` (Wave 3): GROUP BY (spec, wave_id).
-            // Each row carries the wave it was dispatched against, which is the
-            // answer the parent-spec/child-wave regression case needs.
-            let (_, wave_f) = telemetry_filter(&scope);
-            let tele = open_telemetry(&scope)?;
-            let groups = telemetry::reader::runs_by_wave_scoped(tele.conn(), wave_f.as_deref())?;
-            Ok(groups
-                .into_iter()
-                .map(|g| WaveCost {
-                    spec_id: SpecId(g.spec),
-                    wave_id: WaveId(g.wave_id),
-                    cost_usd_micros: g.cost_usd_micros,
-                    tokens: g.tokens,
-                    span_count: g.run_count,
-                })
-                .collect())
-        }
+        let mut out: Vec<WaveCost> = merged.into_values().collect();
+        out.sort_by_key(|b| std::cmp::Reverse(b.cost_usd_micros));
+        return Ok(out);
     }
+    // Self-attributed `run_usage` (Wave 3): GROUP BY (spec, wave_id).
+    // Each row carries the wave it was dispatched against, which is the
+    // answer the parent-spec/child-wave regression case needs.
+    let (_, wave_f) = telemetry_filter(&scope);
+    let tele = open_telemetry(&scope)?;
+    let groups = telemetry::reader::runs_by_wave_scoped(tele.conn(), wave_f.as_deref())?;
+    Ok(groups
+        .into_iter()
+        .map(|g| WaveCost {
+            spec_id: SpecId(g.spec),
+            wave_id: WaveId(g.wave_id),
+            cost_usd_micros: g.cost_usd_micros,
+            tokens: g.tokens,
+            span_count: g.run_count,
+        })
+        .collect())
 }
 
 /// Savings roll-up by [`SavingsSource`].
@@ -407,70 +395,67 @@ pub fn per_wave_costs(_conn: &Connection, scope: EconomyScope) -> Result<Vec<Wav
 /// # Errors
 ///
 /// Returns [`Error::Sqlite`] for a database failure.
+#[allow(clippy::needless_pass_by_value)] // EconomyScope is consumed by the fan-out branch; callers own the value
 pub fn savings_breakdown(conn: &Connection, scope: EconomyScope) -> Result<SavingsBreakdown> {
-    match scope {
-        EconomyScope::AllProjects(ref projects) => {
-            let reader = MultiProjectReader::new();
-            let per_project = reader.fan_out(projects, |c, project| {
-                savings_breakdown(c, EconomyScope::Project(project.clone()))
-            });
-            let mut total = 0i64;
-            let mut per_source: std::collections::HashMap<SavingsSource, (i64, i64)> =
-                std::collections::HashMap::new();
-            for b in per_project.values() {
-                total += b.total_tokens_saved;
-                for row in &b.per_source {
-                    let entry = per_source.entry(row.source).or_insert((0, 0));
-                    entry.0 += row.tokens_saved;
-                    entry.1 += row.event_count;
-                }
+    if let EconomyScope::AllProjects(ref projects) = scope {
+        let reader = MultiProjectReader::new();
+        let per_project = reader.fan_out(projects, |c, project| {
+            savings_breakdown(c, EconomyScope::Project(project.clone()))
+        });
+        let mut total = 0i64;
+        let mut per_source: std::collections::HashMap<SavingsSource, (i64, i64)> =
+            std::collections::HashMap::new();
+        for b in per_project.values() {
+            total += b.total_tokens_saved;
+            for row in &b.per_source {
+                let entry = per_source.entry(row.source).or_insert((0, 0));
+                entry.0 += row.tokens_saved;
+                entry.1 += row.event_count;
             }
-            let mut rows: Vec<SavingsBySource> = per_source
-                .into_iter()
-                .map(|(source, (tokens_saved, event_count))| SavingsBySource {
-                    source,
-                    tokens_saved,
-                    event_count,
-                })
-                .collect();
-            rows.sort_by(|a, b| b.tokens_saved.cmp(&a.tokens_saved));
-            Ok(SavingsBreakdown {
-                total_tokens_saved: total,
-                per_source: rows,
-            })
         }
-        _ => {
-            let savings_where_sql = savings_where(&scope);
-            let bind_params = savings_params(&scope);
-            let sql = format!(
-                "SELECT source, COALESCE(SUM(tokens_saved), 0), COUNT(*) \
-                 FROM savings_records {savings_where_sql} \
-                 GROUP BY source"
-            );
-            let mut stmt = conn.prepare(&sql)?;
-            let mut total = 0i64;
-            let mut per_source = Vec::new();
-            let rows = stmt.query_map(
-                rusqlite::params_from_iter(bind_params.iter()),
-                |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?)),
-            )?;
-            for row in rows.filter_map(std::result::Result::ok) {
-                if let Some(source) = SavingsSource::from_str_opt(&row.0) {
-                    total += row.1;
-                    per_source.push(SavingsBySource {
-                        source,
-                        tokens_saved: row.1,
-                        event_count: row.2,
-                    });
-                }
-            }
-            per_source.sort_by(|a, b| b.tokens_saved.cmp(&a.tokens_saved));
-            Ok(SavingsBreakdown {
-                total_tokens_saved: total,
-                per_source,
+        let mut rows: Vec<SavingsBySource> = per_source
+            .into_iter()
+            .map(|(source, (tokens_saved, event_count))| SavingsBySource {
+                source,
+                tokens_saved,
+                event_count,
             })
+            .collect();
+        rows.sort_by_key(|b| std::cmp::Reverse(b.tokens_saved));
+        return Ok(SavingsBreakdown {
+            total_tokens_saved: total,
+            per_source: rows,
+        });
+    }
+    let savings_where_sql = savings_where(&scope);
+    let bind_params = savings_params(&scope);
+    let sql = format!(
+        "SELECT source, COALESCE(SUM(tokens_saved), 0), COUNT(*) \
+         FROM savings_records {savings_where_sql} \
+         GROUP BY source"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let mut total = 0i64;
+    let mut per_source = Vec::new();
+    let rows = stmt.query_map(
+        rusqlite::params_from_iter(bind_params.iter()),
+        |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?)),
+    )?;
+    for row in rows.filter_map(std::result::Result::ok) {
+        if let Some(source) = SavingsSource::from_str_opt(&row.0) {
+            total += row.1;
+            per_source.push(SavingsBySource {
+                source,
+                tokens_saved: row.1,
+                event_count: row.2,
+            });
         }
     }
+    per_source.sort_by_key(|b| std::cmp::Reverse(b.tokens_saved));
+    Ok(SavingsBreakdown {
+        total_tokens_saved: total,
+        per_source,
+    })
 }
 
 /// Context-routing quality metrics — cache hit ratio, prefix-stable ratio,
@@ -479,76 +464,75 @@ pub fn savings_breakdown(conn: &Connection, scope: EconomyScope) -> Result<Savin
 /// # Errors
 ///
 /// Returns [`Error::Sqlite`] for a database failure.
+#[allow(clippy::needless_pass_by_value)] // EconomyScope is consumed by the fan-out branch; callers own the value
 pub fn context_routing_quality(
     conn: &Connection,
     scope: EconomyScope,
 ) -> Result<ContextRoutingMetrics> {
-    match scope {
-        EconomyScope::AllProjects(ref projects) => {
-            let reader = MultiProjectReader::new();
-            let per_project = reader.fan_out(projects, |c, project| {
-                context_routing_quality(c, EconomyScope::Project(project.clone()))
-            });
-            let mut acc = ContextRoutingMetrics::default();
-            let mut weight_total = 0i64;
-            for m in per_project.values() {
-                let w = m.frame_count.max(1);
-                acc.prefix_stable_ratio_permille += m.prefix_stable_ratio_permille * w;
-                acc.cache_hit_ratio_permille += m.cache_hit_ratio_permille * w;
-                acc.retry_overhead_ratio_permille += m.retry_overhead_ratio_permille * w;
-                acc.frame_count += m.frame_count;
-                weight_total += w;
-            }
-            if weight_total > 0 {
-                acc.prefix_stable_ratio_permille /= weight_total;
-                acc.cache_hit_ratio_permille /= weight_total;
-                acc.retry_overhead_ratio_permille /= weight_total;
-            }
-            Ok(acc)
+    if let EconomyScope::AllProjects(ref projects) = scope {
+        let reader = MultiProjectReader::new();
+        let per_project = reader.fan_out(projects, |c, project| {
+            context_routing_quality(c, EconomyScope::Project(project.clone()))
+        });
+        let mut acc = ContextRoutingMetrics::default();
+        let mut weight_total = 0i64;
+        for m in per_project.values() {
+            let w = m.frame_count.max(1);
+            acc.prefix_stable_ratio_permille += m.prefix_stable_ratio_permille * w;
+            acc.cache_hit_ratio_permille += m.cache_hit_ratio_permille * w;
+            acc.retry_overhead_ratio_permille += m.retry_overhead_ratio_permille * w;
+            acc.frame_count += m.frame_count;
+            weight_total += w;
         }
-        _ => {
-            let (frame_where, frame_params) = frames_scope_where(&scope);
-            let sql = format!(
-                "SELECT \
-                    COALESCE(SUM(prompt_size_bytes), 0), \
-                    COALESCE(SUM(prefix_stable_bytes), 0), \
-                    COALESCE(SUM(retry_overhead_bytes), 0), \
-                    COUNT(*) \
-                 FROM context_cost_frames {frame_where}"
-            );
-            let (prompt_sum, prefix_sum, retry_sum, frame_count): (i64, i64, i64, i64) = conn
-                .query_row(
-                    &sql,
-                    rusqlite::params_from_iter(frame_params.iter()),
-                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-                )
-                .map_err(Error::from)?;
-
-            // Cache-hit ratio comes from telemetry.db's `run_usage` (Wave 3).
-            // `run_usage` has no native wave column on this read path either, so
-            // a Wave-scoped caller still collapses to the spec roll-up — same
-            // denominator behaviour as before, just sourced self-attributed.
-            let (spec_f, _) = telemetry_filter(&scope);
-            let tele = open_telemetry(&scope)?;
-            let cache_hit_ratio_permille =
-                telemetry::reader::cache_hit_ratio_permille_for_spec(tele.conn(), spec_f.as_deref())?;
-
-            let permille = |num: i64, den: i64| -> i64 {
-                if den <= 0 {
-                    0
-                } else {
-                    ((num as f64) * 1000.0 / (den as f64)) as i64
-                }
-            };
-
-            Ok(ContextRoutingMetrics {
-                prefix_stable_ratio_permille: permille(prefix_sum, prompt_sum),
-                cache_hit_ratio_permille,
-                retry_overhead_ratio_permille: permille(retry_sum, prompt_sum),
-                frame_count,
-            })
+        if weight_total > 0 {
+            acc.prefix_stable_ratio_permille /= weight_total;
+            acc.cache_hit_ratio_permille /= weight_total;
+            acc.retry_overhead_ratio_permille /= weight_total;
         }
+        return Ok(acc);
     }
+    let (frame_where, frame_params) = frames_scope_where(&scope);
+    let sql = format!(
+        "SELECT \
+            COALESCE(SUM(prompt_size_bytes), 0), \
+            COALESCE(SUM(prefix_stable_bytes), 0), \
+            COALESCE(SUM(retry_overhead_bytes), 0), \
+            COUNT(*) \
+         FROM context_cost_frames {frame_where}"
+    );
+    let (prompt_sum, prefix_sum, retry_sum, frame_count): (i64, i64, i64, i64) = conn
+        .query_row(
+            &sql,
+            rusqlite::params_from_iter(frame_params.iter()),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .map_err(Error::from)?;
+
+    // Cache-hit ratio comes from telemetry.db's `run_usage` (Wave 3).
+    // `run_usage` has no native wave column on this read path either, so
+    // a Wave-scoped caller still collapses to the spec roll-up — same
+    // denominator behaviour as before, just sourced self-attributed.
+    let (spec_f, _) = telemetry_filter(&scope);
+    let tele = open_telemetry(&scope)?;
+    let cache_hit_ratio_permille =
+        telemetry::reader::cache_hit_ratio_permille_for_spec(tele.conn(), spec_f.as_deref())?;
+
+    // Intentional truncation: permille is always in 0..=1000, well within i64.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+    let permille = |num: i64, den: i64| -> i64 {
+        if den <= 0 {
+            0
+        } else {
+            ((num as f64) * 1000.0 / (den as f64)) as i64
+        }
+    };
+
+    Ok(ContextRoutingMetrics {
+        prefix_stable_ratio_permille: permille(prefix_sum, prompt_sum),
+        cache_hit_ratio_permille,
+        retry_overhead_ratio_permille: permille(retry_sum, prompt_sum),
+        frame_count,
+    })
 }
 
 // ---------------------------------------------------------------------------

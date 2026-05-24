@@ -90,14 +90,12 @@ fn parse_plan_rows(wave_plan_text: &str) -> Vec<(String, Option<String>)> {
         }
         // Skip rows whose label (first cell) is not a wave number.
         let label = cells[0].to_lowercase();
-        let label_body = label
+        let label_body: &str = label
             .strip_prefix('w')
-            .map(str::trim_start)
-            .unwrap_or(&label);
-        let label_body = label_body
+            .map_or(&label, str::trim_start);
+        let label_body: &str = label_body
             .strip_prefix("ave")
-            .map(str::trim_start)
-            .unwrap_or(label_body);
+            .map_or(label_body, str::trim_start);
         if label_body.is_empty() || !label_body.chars().all(|c| c.is_ascii_digit()) {
             continue;
         }
@@ -155,8 +153,7 @@ fn fallback_wave_dirs(parent_dir: &Path) -> Vec<String> {
                 && lc[5..]
                     .chars()
                     .next()
-                    .map(|c| c.is_ascii_digit())
-                    .unwrap_or(false)
+                    .is_some_and(|c| c.is_ascii_digit())
         })
         .collect();
     names.sort_by_key(|n| wave_number(n));
@@ -240,7 +237,7 @@ fn open_conn(project: &Path) -> Option<Connection> {
     let store = SqliteEventStore::for_project(project).ok()?;
     let db_path = store.path().to_path_buf();
     let conn = Connection::open(&db_path).ok()?;
-    let _ = conn.busy_timeout(std::time::Duration::from_millis(5_000));
+    let _ = conn.busy_timeout(std::time::Duration::from_secs(5));
     Some(conn)
 }
 

@@ -256,17 +256,14 @@ fn run_ac_command(command: &str, cwd: &Path) -> AcResult {
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn();
-    let mut child = match child {
-        Ok(c) => c,
-        Err(_) => {
-            return AcResult {
-                id: String::new(),
-                status: "skip".to_string(),
-                exit: None,
-                duration_ms: t0.elapsed().as_millis(),
-                stderr_excerpt: "command not found".to_string(),
-            };
-        }
+    let Ok(mut child) = child else {
+        return AcResult {
+            id: String::new(),
+            status: "skip".to_string(),
+            exit: None,
+            duration_ms: t0.elapsed().as_millis(),
+            stderr_excerpt: "command not found".to_string(),
+        };
     };
 
     let deadline = Instant::now() + std::time::Duration::from_secs(AC_TIMEOUT_SECS);
@@ -303,7 +300,7 @@ fn run_ac_command(command: &str, cwd: &Path) -> AcResult {
                 return AcResult {
                     id: String::new(),
                     status: "fail".to_string(),
-                    exit: Some(status.code().map(i64::from).unwrap_or(1)),
+                    exit: Some(status.code().map_or(1, i64::from)),
                     duration_ms,
                     stderr_excerpt: combined,
                 };
@@ -399,7 +396,7 @@ fn write_sidecar(cwd: &Path, spec: &str, payload: &Value) {
         return;
     }
     if let Ok(text) = serde_json::to_string_pretty(payload) {
-        let _ = fs::write_atomic(&dir.join(format!("{spec}.json")), text.as_bytes());
+        let _ = fs::write_atomic(dir.join(format!("{spec}.json")), text.as_bytes());
     }
 }
 
@@ -417,7 +414,7 @@ fn write_html_report(cwd: &Path, spec: &str, overall: &str, criteria: &[AcResult
             vec![
                 c.id.clone(),
                 c.status.to_uppercase(),
-                c.exit.map(|e| e.to_string()).unwrap_or_else(|| "n/a".to_string()),
+                c.exit.map_or_else(|| "n/a".to_string(), |e| e.to_string()),
                 format!("{:.1}s", c.duration_ms as f64 / 1000.0),
                 c.stderr_excerpt.chars().take(80).collect(),
             ]
@@ -558,7 +555,7 @@ fn run_qa(cwd: &Path, spec: &str) -> QaResult {
     let (mut fail_count, mut skip_count) = (0usize, 0usize);
     for item in &items {
         let mut res = run_ac_command(&item.command, cwd);
-        res.id = item.id.clone();
+        res.id.clone_from(&item.id);
         if res.status == "fail" {
             fail_count += 1;
         } else if res.status == "skip" {

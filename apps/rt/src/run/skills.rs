@@ -423,9 +423,9 @@ fn contains_word(haystack: &str, word: &str) -> bool {
     while let Some(rel) = haystack[from..].find(word) {
         let i = from + rel;
         let before_ok = i == 0
-            || haystack[..i].chars().next_back().map(boundary).unwrap_or(true);
+            || haystack[..i].chars().next_back().is_none_or(boundary);
         let after = &haystack[i + word.len()..];
-        let after_ok = after.chars().next().map(boundary).unwrap_or(true);
+        let after_ok = after.chars().next().is_none_or(boundary);
         if before_ok && after_ok {
             return true;
         }
@@ -503,8 +503,7 @@ fn find_cycles(adj: &BTreeMap<String, Vec<String>>) -> Vec<Vec<String>> {
             .iter()
             .enumerate()
             .min_by(|a, b| a.1.cmp(b.1))
-            .map(|(i, _)| i)
-            .unwrap_or(0);
+            .map_or(0, |(i, _)| i);
         let mut rotated: Vec<&str> = ring[min_idx..].iter().map(String::as_str).collect();
         rotated.extend(ring[..min_idx].iter().map(String::as_str));
         rotated.join(">")
@@ -601,8 +600,7 @@ fn run_orphans(project_dir: &Path, days: i64, json_out: bool) -> ! {
     for name in &orphans {
         let date = last_invoked
             .get(name)
-            .map(|t| t.chars().take(10).collect::<String>())
-            .unwrap_or_else(|| "never".to_string());
+            .map_or_else(|| "never".to_string(), |t| t.chars().take(10).collect::<String>());
         println!("  {name} (last invoked: {date})");
     }
     std::process::exit(0);
@@ -628,7 +626,7 @@ fn scan_invocations(project_dir: &Path, since_ms: i64) -> BTreeMap<String, Strin
         };
         let entry = last.entry(skill.to_string()).or_default();
         if ev.ts.as_str() > entry.as_str() {
-            *entry = ev.ts.clone();
+            entry.clone_from(&ev.ts);
         }
     }
     last
@@ -669,9 +667,8 @@ fn list_skills(root: &Path) -> Vec<SkillListEntry> {
 
     let skill_paths = collect_skills_at(&skills_dir);
     for path in &skill_paths {
-        let content = match fs::read_to_string(path) {
-            Ok(c) => c,
-            Err(_) => continue,
+        let Ok(content) = fs::read_to_string(path) else {
+            continue;
         };
         let normalized = content.replace("\r\n", "\n");
         let name = extract_skill_name(&normalized).unwrap_or_else(|| {
@@ -747,8 +744,7 @@ pub fn run(subcommand: Option<&str>, args: &[String]) {
                 // `--factual` keeps the JS behaviour: WARN-by-default cluster
                 // audit. The full heuristic is mode-gated; honour `off`.
                 let mode = std::env::var("MUSTARD_SKILL_VALIDATE_MODE")
-                    .map(|m| m.to_lowercase())
-                    .unwrap_or_else(|_| "strict".to_string());
+                    .map_or_else(|_| "strict".to_string(), |m| m.to_lowercase());
                 if mode == "off" {
                     if json_out {
                         println!("{}", json!({ "mode": "off", "total": 0, "violations": [] }));
@@ -769,14 +765,12 @@ pub fn run(subcommand: Option<&str>, args: &[String]) {
         }
         Some("graph") => {
             let project_dir = arg_after("--cwd")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| PathBuf::from(env::project_dir()));
+                .map_or_else(|| PathBuf::from(env::project_dir()), PathBuf::from);
             run_graph(&project_dir, has("--json"));
         }
         Some("orphans") => {
             let project_dir = arg_after("--cwd")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| PathBuf::from(env::project_dir()));
+                .map_or_else(|| PathBuf::from(env::project_dir()), PathBuf::from);
             let days = arg_after("--days")
                 .and_then(|d| d.parse::<i64>().ok())
                 .filter(|d| *d > 0)
@@ -791,8 +785,7 @@ pub fn run(subcommand: Option<&str>, args: &[String]) {
         }
         Some("list") => {
             let root = arg_after("--root")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| PathBuf::from(env::project_dir()));
+                .map_or_else(|| PathBuf::from(env::project_dir()), PathBuf::from);
             run_list(&root, has("--format") && arg_after("--format").as_deref() == Some("json")
                 || has("--json"));
         }

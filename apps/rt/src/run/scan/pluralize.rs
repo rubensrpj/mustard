@@ -81,8 +81,8 @@ pub fn singularize(word: &str) -> String {
     }
 
     // -ies -> -y (companies -> company).
-    if word.ends_with("ies") {
-        return format!("{}y", &word[..word.len() - 3]);
+    if let Some(stem) = word.strip_suffix("ies") {
+        return format!("{stem}y");
     }
 
     // -sses -> -ss (addresses -> address).

@@ -117,15 +117,13 @@ fn detect_completed_epics(cwd: &Path) -> Vec<String> {
         let all_closed = children.iter().all(|child| {
             let child_file = states_dir.join(format!("{child}.json"));
             read_json(&child_file)
-                .map(|cs| state_phase(&cs, cwd) == "CLOSE")
-                .unwrap_or(false)
+                .is_some_and(|cs| state_phase(&cs, cwd) == "CLOSE")
         });
         if all_closed {
             let spec = state
                 .get("spec")
                 .and_then(Value::as_str)
-                .map(str::to_string)
-                .unwrap_or_else(|| name.trim_end_matches(".json").to_string());
+                .map_or_else(|| name.trim_end_matches(".json").to_string(), str::to_string);
             candidates.push(spec);
         }
     }
@@ -151,7 +149,7 @@ fn write_knowledge_entry(
     let Ok(conn) = rusqlite::Connection::open(&db_path) else {
         return;
     };
-    let _ = conn.busy_timeout(std::time::Duration::from_millis(5_000));
+    let _ = conn.busy_timeout(std::time::Duration::from_secs(5));
     let pattern = format!("{name}: {description}");
     let now = now_iso8601();
     let _ = upsert_knowledge_pattern(&conn, &pattern, 0.85, Some("epic-fold"), &now, &now);
@@ -224,10 +222,10 @@ fn fold_epic(cwd: &Path, epic: &str) -> bool {
             continue;
         }
         if !ev.ts.is_empty() {
-            if min_ts.as_deref().map(|m| ev.ts.as_str() < m).unwrap_or(true) {
+            if min_ts.as_deref().is_none_or(|m| ev.ts.as_str() < m) {
                 min_ts = Some(ev.ts.clone());
             }
-            if max_ts.as_deref().map(|m| ev.ts.as_str() > m).unwrap_or(true) {
+            if max_ts.as_deref().is_none_or(|m| ev.ts.as_str() > m) {
                 max_ts = Some(ev.ts.clone());
             }
         }
@@ -291,8 +289,7 @@ fn fold_epic(cwd: &Path, epic: &str) -> bool {
                 .payload
                 .get("confidence")
                 .and_then(Value::as_f64)
-                .map(|c| format!("{c:.2}"))
-                .unwrap_or_else(|| "?".to_string());
+                .map_or_else(|| "?".to_string(), |c| format!("{c:.2}"));
             format!("{}. [conf={conf}] {content}", i + 1)
         })
         .collect();

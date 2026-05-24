@@ -332,7 +332,7 @@ fn emit_completed_status(cwd: &Path, spec: &str) {
         &store, spec, None,
     )
     .and_then(|v| v.status);
-    if matches!(current_status.as_deref(), Some("completed") | Some("cancelled")) {
+    if matches!(current_status.as_deref(), Some("completed" | "cancelled")) {
         return;
     }
     // Emit phase=CLOSE alongside status. Mirrors `mark_followup` so the
@@ -472,8 +472,7 @@ fn archive_followups_legacy_fs(cwd: &Path, require_ttl: bool) -> (usize, usize) 
         let spec = state
             .get("specName")
             .and_then(Value::as_str)
-            .map(str::to_string)
-            .unwrap_or_else(|| name.trim_end_matches(".json").to_string());
+            .map_or_else(|| name.trim_end_matches(".json").to_string(), str::to_string);
         let (moved, had_state) = archive(cwd, &spec);
         if moved || had_state {
             archived += 1;

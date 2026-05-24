@@ -283,9 +283,7 @@ fn scan_for_dead_js_refs(text: &str, claude_dir: &Path, source: &str, hits: &mut
 
 /// Walk `.claude/` looking for SKILL.md files and scan them for dead refs.
 fn scan_md_files_for_dead_refs(claude_dir: &Path, hits: &mut Vec<String>) {
-    let Ok(walker) = collect_files_recursive(claude_dir, 4) else {
-        return;
-    };
+    let walker = collect_files_recursive(claude_dir, 4);
     for path in walker {
         let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
         if name.ends_with(".md") {
@@ -298,10 +296,10 @@ fn scan_md_files_for_dead_refs(claude_dir: &Path, hits: &mut Vec<String>) {
 }
 
 /// Collect all files under `dir` up to `max_depth` levels deep. Fail-open.
-fn collect_files_recursive(dir: &Path, max_depth: usize) -> std::io::Result<Vec<PathBuf>> {
+fn collect_files_recursive(dir: &Path, max_depth: usize) -> Vec<PathBuf> {
     let mut results = Vec::new();
     collect_recursive_inner(dir, max_depth, 0, &mut results);
-    Ok(results)
+    results
 }
 
 fn collect_recursive_inner(dir: &Path, max_depth: usize, depth: usize, out: &mut Vec<PathBuf>) {
@@ -439,13 +437,12 @@ fn detect_stacks(project_dir: &Path) -> Vec<&'static str> {
 
     // Rust: Cargo.toml with [package]
     let cargo = project_dir.join("Cargo.toml");
-    if cargo.is_file() {
-        if fs::read_to_string(&cargo)
+    if cargo.is_file()
+        && fs::read_to_string(&cargo)
             .unwrap_or_default()
             .contains("[package]")
-        {
-            stacks.push("rust");
-        }
+    {
+        stacks.push("rust");
     }
 
     // Go: go.mod
@@ -933,15 +930,15 @@ pub fn run(opts: DoctorOpts) {
     }
 
     // Default: run all checks.
-    let mut results: Vec<CheckResult> = Vec::new();
-
-    results.push(check_wiring(&claude_dir));
-    results.push(check_drift(&claude_dir));
-    results.push(check_state_health(&claude_dir));
-    results.push(lsp_check(&cwd));
-    results.push(check_nerd_font());
-    // skill-discovery is always included in the full run (advisory).
-    results.push(run_skill_discovery_check(&cwd));
+    let mut results: Vec<CheckResult> = vec![
+        check_wiring(&claude_dir),
+        check_drift(&claude_dir),
+        check_state_health(&claude_dir),
+        lsp_check(&cwd),
+        check_nerd_font(),
+        // skill-discovery is always included in the full run (advisory).
+        run_skill_discovery_check(&cwd),
+    ];
 
     if opts.residue {
         results.push(check_residue(&claude_dir));

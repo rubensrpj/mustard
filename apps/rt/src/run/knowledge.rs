@@ -47,35 +47,26 @@ pub struct GlossaryOutput {
 
 fn load_entities(root: &std::path::Path, filter: Option<&str>) -> GlossaryOutput {
     let path = root.join(".claude").join("entity-registry.json");
-    let text = match fs::read_to_string(&path) {
-        Ok(t) => t,
-        Err(_) => {
-            return GlossaryOutput {
-                entities: Vec::new(),
-                total_with_description: 0,
-                total_scanned: 0,
-            }
+    let Ok(text) = fs::read_to_string(&path) else {
+        return GlossaryOutput {
+            entities: Vec::new(),
+            total_with_description: 0,
+            total_scanned: 0,
         }
     };
-    let registry: Value = match serde_json::from_str(&text) {
-        Ok(v) => v,
-        Err(_) => {
-            return GlossaryOutput {
-                entities: Vec::new(),
-                total_with_description: 0,
-                total_scanned: 0,
-            }
+    let Ok(registry): Result<Value, _> = serde_json::from_str(&text) else {
+        return GlossaryOutput {
+            entities: Vec::new(),
+            total_with_description: 0,
+            total_scanned: 0,
         }
     };
 
-    let obj = match registry.as_object() {
-        Some(o) => o,
-        None => {
-            return GlossaryOutput {
-                entities: Vec::new(),
-                total_with_description: 0,
-                total_scanned: 0,
-            }
+    let Some(obj) = registry.as_object() else {
+        return GlossaryOutput {
+            entities: Vec::new(),
+            total_with_description: 0,
+            total_scanned: 0,
         }
     };
 

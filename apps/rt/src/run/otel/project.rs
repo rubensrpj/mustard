@@ -5,7 +5,7 @@
 //! attribute flattening and datapoint-value extraction are unit-testable
 //! without binding a socket.
 
-use super::store::{LogRow, MetricRow};
+use super::store::MetricRow;
 use serde_json::Value;
 
 /// Floor `time_unix_nano` (a protobuf-JSON number-or-string) to the start of
@@ -141,50 +141,6 @@ pub fn project_metrics(body: &Value, now_ms: i64) -> Vec<MetricRow> {
     out
 }
 
-/// Walk an OTLP logs body (`resourceLogs[].scopeLogs[].logRecords[]`) into a
-/// flat list of [`LogRow`]s.
-#[must_use]
-pub fn project_logs(body: &Value, now_ms: i64) -> Vec<LogRow> {
-    let mut out = Vec::new();
-    let Some(resource_logs) = body.get("resourceLogs").and_then(Value::as_array) else {
-        return out;
-    };
-    for rl in resource_logs {
-        let Some(scope_logs) = rl.get("scopeLogs").and_then(Value::as_array) else {
-            continue;
-        };
-        for sl in scope_logs {
-            let Some(records) = sl.get("logRecords").and_then(Value::as_array) else {
-                continue;
-            };
-            for lr in records {
-                let attrs = flatten_attrs(lr.get("attributes"));
-                let time = lr
-                    .get("timeUnixNano")
-                    .or_else(|| lr.get("observedTimeUnixNano"));
-                let bucket = bucket_ms(time, now_ms);
-                let session_id =
-                    attrs.get("session.id").and_then(Value::as_str).map(str::to_string);
-                let model = attrs.get("model").and_then(Value::as_str).map(str::to_string);
-                let metric = lr
-                    .get("body")
-                    .and_then(|b| b.get("stringValue"))
-                    .and_then(Value::as_str)
-                    .unwrap_or("log")
-                    .to_string();
-                out.push(LogRow {
-                    ts_bucket: bucket,
-                    metric,
-                    session_id,
-                    model,
-                    attrs: Value::Object(attrs).to_string(),
-                });
-            }
-        }
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -291,35 +247,4 @@ mod tests {
         assert!(project_metrics(&body, 0).is_empty());
     }
 
-    #[test]
-    fn project_logs_uses_body_string_value() {
-        let body = json!({
-            "resourceLogs": [{
-                "scopeLogs": [{
-                    "logRecords": [{
-                        "timeUnixNano": "90000000000",
-                        "body": { "stringValue": "claude_code.api_request" },
-                        "attributes": [
-                            { "key": "session.id", "value": { "stringValue": "s9" } }
-                        ]
-                    }]
-                }]
-            }]
-        });
-        let rows = project_logs(&body, 0);
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].metric, "claude_code.api_request");
-        assert_eq!(rows[0].session_id.as_deref(), Some("s9"));
-        assert_eq!(rows[0].ts_bucket, 60_000);
-    }
-
-    #[test]
-    fn project_logs_defaults_metric_to_log() {
-        let body = json!({ "resourceLogs": [{ "scopeLogs": [{
-            "logRecords": [{ "observedTimeUnixNano": "120000000000" }] }] }] });
-        let rows = project_logs(&body, 0);
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].metric, "log");
-        assert_eq!(rows[0].ts_bucket, 120_000);
-    }
 }

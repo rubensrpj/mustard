@@ -218,7 +218,7 @@ fn ac_evidence(spec_md: &str) -> (f64, bool, bool) {
             let mark = chars.next();
             if chars.next() == Some(']') {
                 total += 1;
-                if matches!(mark, Some('x') | Some('X')) {
+                if matches!(mark, Some('x' | 'X')) {
                     checked += 1;
                 }
             }
@@ -268,8 +268,7 @@ fn ac_section(spec_md: &str) -> Option<&str> {
     let start_off = lines.get(start_idx).map(|(o, _)| *o)?;
     let end_off = lines
         .get(end_idx)
-        .map(|(o, _)| *o)
-        .unwrap_or(spec_md.len())
+        .map_or(spec_md.len(), |(o, _)| *o)
         .min(spec_md.len());
     // Defense in depth: never index with `&spec_md[a..b]` (panics off a char
     // boundary). `get` returns `None` instead — degrade to "no AC section"

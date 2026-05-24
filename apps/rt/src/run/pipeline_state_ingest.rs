@@ -101,7 +101,7 @@ pub fn run(opts: PipelineStateIngestOpts) {
             let out = json!({
                 "ingested": 0,
                 "deleted": 0,
-                "errors": [{ "file": "(store)", "error": e.to_string() }]
+                "errors": [{ "file": "(store)", "error": e.to_string()}]
             });
             println!("{out}");
             return;
@@ -115,7 +115,7 @@ pub fn run(opts: PipelineStateIngestOpts) {
             let out = json!({
                 "ingested": 0,
                 "deleted": 0,
-                "errors": [{ "file": "(glob)", "error": e.to_string() }]
+                "errors": [{ "file": "(glob)", "error": e}]
             });
             println!("{out}");
             return;
@@ -129,13 +129,12 @@ pub fn run(opts: PipelineStateIngestOpts) {
     for path in &candidates {
         let file_label = path
             .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| path.to_string_lossy().to_string());
+            .map_or_else(|| path.to_string_lossy().to_string(), |n| n.to_string_lossy().to_string());
 
         let raw = match fs::read_to_string(path) {
             Ok(t) => t,
             Err(e) => {
-                errors.push(json!({ "file": file_label, "error": e.to_string() }));
+                errors.push(json!({ "file": file_label, "error": e.to_string()}));
                 continue;
             }
         };
@@ -155,8 +154,7 @@ pub fn run(opts: PipelineStateIngestOpts) {
             .or_else(|| state.spec.clone())
             .unwrap_or_else(|| {
                 path.file_stem()
-                    .map(|s| s.to_string_lossy().to_string())
-                    .unwrap_or_else(|| "unknown".to_string())
+                    .map_or_else(|| "unknown".to_string(), |s| s.to_string_lossy().to_string())
             });
 
         // Canonical timestamp for all emitted events.
@@ -183,7 +181,7 @@ pub fn run(opts: PipelineStateIngestOpts) {
                 "totalWaves": state.total_waves,
             });
             if let Err(e) = append(&store, EVENT_PIPELINE_SCOPE, &spec, &at, payload) {
-                file_errors.push(json!({ "file": file_label, "event": EVENT_PIPELINE_SCOPE, "error": e.to_string() }));
+                file_errors.push(json!({ "file": file_label, "event": EVENT_PIPELINE_SCOPE, "error": e}));
             }
         }
 
@@ -191,7 +189,7 @@ pub fn run(opts: PipelineStateIngestOpts) {
         if let Some(ref status) = state.status {
             let payload = json!({ "from": Value::Null, "to": status });
             if let Err(e) = append(&store, EVENT_PIPELINE_STATUS, &spec, &at, payload) {
-                file_errors.push(json!({ "file": file_label, "event": EVENT_PIPELINE_STATUS, "error": e.to_string() }));
+                file_errors.push(json!({ "file": file_label, "event": EVENT_PIPELINE_STATUS, "error": e}));
             }
         }
 
@@ -210,7 +208,7 @@ pub fn run(opts: PipelineStateIngestOpts) {
                 "files": if task.files.is_empty() { Value::Null } else { json!(task.files) },
             });
             if let Err(e) = append(&store, EVENT_PIPELINE_TASK_DISPATCH, &spec, &at, dispatch_payload) {
-                file_errors.push(json!({ "file": file_label, "event": EVENT_PIPELINE_TASK_DISPATCH, "task": name, "error": e.to_string() }));
+                file_errors.push(json!({ "file": file_label, "event": EVENT_PIPELINE_TASK_DISPATCH, "task": name, "error": e}));
             }
 
             if task.status.as_deref() == Some("completed") {
@@ -220,7 +218,7 @@ pub fn run(opts: PipelineStateIngestOpts) {
                     "wave": task.wave,
                 });
                 if let Err(e) = append(&store, EVENT_PIPELINE_TASK_COMPLETE, &spec, &at, complete_payload) {
-                    file_errors.push(json!({ "file": file_label, "event": EVENT_PIPELINE_TASK_COMPLETE, "task": name, "error": e.to_string() }));
+                    file_errors.push(json!({ "file": file_label, "event": EVENT_PIPELINE_TASK_COMPLETE, "task": name, "error": e}));
                 }
             }
         }
@@ -229,14 +227,14 @@ pub fn run(opts: PipelineStateIngestOpts) {
         for &wave in &state.completed_waves {
             let payload = json!({ "wave": wave });
             if let Err(e) = append(&store, EVENT_PIPELINE_WAVE_COMPLETE, &spec, &at, payload) {
-                file_errors.push(json!({ "file": file_label, "event": EVENT_PIPELINE_WAVE_COMPLETE, "wave": wave, "error": e.to_string() }));
+                file_errors.push(json!({ "file": file_label, "event": EVENT_PIPELINE_WAVE_COMPLETE, "wave": wave, "error": e}));
             }
         }
 
         // --- pipeline.dispatch_failure ---
         if let Some(ref failure) = state.last_dispatch_failure {
             if let Err(e) = append(&store, EVENT_PIPELINE_DISPATCH_FAILURE, &spec, &at, failure.clone()) {
-                file_errors.push(json!({ "file": file_label, "event": EVENT_PIPELINE_DISPATCH_FAILURE, "error": e.to_string() }));
+                file_errors.push(json!({ "file": file_label, "event": EVENT_PIPELINE_DISPATCH_FAILURE, "error": e}));
             }
         }
 
@@ -246,7 +244,7 @@ pub fn run(opts: PipelineStateIngestOpts) {
             // Use paused_at as the event timestamp when available.
             let pause_at = state.paused_at.as_deref().unwrap_or(&at).to_string();
             if let Err(e) = append(&store, EVENT_PIPELINE_PAUSE, &spec, &pause_at, payload) {
-                file_errors.push(json!({ "file": file_label, "event": EVENT_PIPELINE_PAUSE, "error": e.to_string() }));
+                file_errors.push(json!({ "file": file_label, "event": EVENT_PIPELINE_PAUSE, "error": e}));
             }
         }
 
@@ -255,10 +253,8 @@ pub fn run(opts: PipelineStateIngestOpts) {
 
         if !had_error {
             ingested += 1;
-            if opts.delete {
-                if fs::remove_file(path).is_ok() {
-                    deleted += 1;
-                }
+            if opts.delete && fs::remove_file(path).is_ok() {
+                deleted += 1;
             }
         }
     }

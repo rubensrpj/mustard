@@ -17,7 +17,7 @@
 //! not `Sync`. Wrapping each store in a `Mutex` makes the shared handle
 //! `Send + Sync` so the dashboard can hold the cache behind an `Arc` across
 //! Tauri command handlers. WAL mode already permits concurrent *readers* at the
-//! SQLite layer; the `Mutex` only serializes access to the one cached
+//! `SQLite` layer; the `Mutex` only serializes access to the one cached
 //! connection — separate paths never contend.
 
 use crate::error::Result;
@@ -45,7 +45,7 @@ pub struct DbCache {
 
 impl std::fmt::Debug for DbCache {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let len = self.inner.lock().map(|m| m.len()).unwrap_or(0);
+        let len = self.inner.lock().map_or(0, |m| m.len());
         f.debug_struct("DbCache").field("cached_paths", &len).finish()
     }
 }
@@ -84,7 +84,7 @@ impl DbCache {
     /// Number of distinct paths currently cached. Mainly for diagnostics/tests.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.inner.lock().map(|m| m.len()).unwrap_or(0)
+        self.inner.lock().map_or(0, |m| m.len())
     }
 
     /// Whether the cache holds no open stores.

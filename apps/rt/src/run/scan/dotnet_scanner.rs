@@ -27,12 +27,11 @@ fn is_entity_file(rel: &str) -> bool {
 impl Scanner for DotnetScanner {
     fn detect(&self, root: &Path) -> bool {
         mfs::read_dir(root)
-            .map(|entries| {
+            .is_ok_and(|entries| {
                 entries
                     .iter()
                     .any(|e| e.file_name.ends_with(".csproj") || e.file_name.ends_with(".sln"))
             })
-            .unwrap_or(false)
     }
 
     fn detect_architecture(&self, root: &Path) -> String {

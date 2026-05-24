@@ -244,14 +244,14 @@ fn resolve(status: Option<&str>, phase: Option<&str>) -> Option<SpecState> {
     // 0. `queued` sub-plan sentinel: not-yet-started Plan item.
     if let Some(status) = status {
         if value_token(status).eq_ignore_ascii_case("queued") {
-            return state_or_fallback(Stage::Plan, Outcome::Active, Flags::default());
+            return Some(state_or_fallback(Stage::Plan, Outcome::Active, Flags::default()));
         }
     }
 
     // 1. Terminal status wins outright — only legal at Close.
     if let Some(status) = status {
         if let Some(outcome) = terminal_outcome(status) {
-            return state_or_fallback(Stage::Close, outcome, Flags::default());
+            return Some(state_or_fallback(Stage::Close, outcome, Flags::default()));
         }
     }
 
@@ -259,14 +259,14 @@ fn resolve(status: Option<&str>, phase: Option<&str>) -> Option<SpecState> {
     if let Some(status) = status {
         let lower = value_token(status).to_ascii_lowercase();
         if matches!(lower.as_str(), "closed-followup" | "closed_followup") {
-            return state_or_fallback(
+            return Some(state_or_fallback(
                 Stage::Close,
                 Outcome::Active,
                 Flags {
                     followup_open: true,
                     ..Flags::default()
                 },
-            );
+            ));
         }
     }
 
@@ -283,25 +283,25 @@ fn resolve(status: Option<&str>, phase: Option<&str>) -> Option<SpecState> {
             let stage = phase_stage.unwrap_or(default_stage);
             // wave_failed is only legal at Execute — clamp.
             let stage = if flags.wave_failed { Stage::Execute } else { stage };
-            return state_or_fallback(stage, Outcome::Active, flags);
+            return Some(state_or_fallback(stage, Outcome::Active, flags));
         }
     }
 
     // 4. Non-terminal status: Phase refines, Status decides Outcome (Active).
     let status_stage = status.and_then(parse_stage_tolerant);
     let stage = phase_stage.or(status_stage)?;
-    state_or_fallback(stage, Outcome::Active, Flags::default())
+    Some(state_or_fallback(stage, Outcome::Active, Flags::default()))
 }
 
 /// Build a legal [`SpecState`], degrading to the earliest-meaningful state
 /// (`Plan` + `Active`) rather than returning `None` on an illegal triple.
 #[must_use]
-fn state_or_fallback(stage: Stage, outcome: Outcome, flags: Flags) -> Option<SpecState> {
-    Some(SpecState::new(stage, outcome, flags).unwrap_or_else(|_| SpecState {
+fn state_or_fallback(stage: Stage, outcome: Outcome, flags: Flags) -> SpecState {
+    SpecState::new(stage, outcome, flags).unwrap_or_else(|_| SpecState {
         stage: Stage::Plan,
         outcome: Outcome::Active,
         flags: Flags::default(),
-    }))
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -343,7 +343,7 @@ pub fn parse_state(spec_md: &str) -> Option<SpecState> {
         let flags = header_field(spec_md, "Flags")
             .map(|f| Flags::parse(&f))
             .unwrap_or_default();
-        return state_or_fallback(stage, outcome, flags);
+        return Some(state_or_fallback(stage, outcome, flags));
     }
 
     // --- Legacy form: `### Status:` (+ `### Phase:`). ---
@@ -381,7 +381,7 @@ pub fn read_state(path: &Path) -> Option<SpecState> {
 // Public: serialize + status word
 // ---------------------------------------------------------------------------
 
-/// The TitleCase header spelling of a [`Stage`] (round-trips through the
+/// The `TitleCase` header spelling of a [`Stage`] (round-trips through the
 /// case-insensitive [`Stage::parse`]).
 #[must_use]
 pub fn stage_label(stage: Stage) -> &'static str {
@@ -394,7 +394,7 @@ pub fn stage_label(stage: Stage) -> &'static str {
     }
 }
 
-/// The TitleCase header spelling of an [`Outcome`].
+/// The `TitleCase` header spelling of an [`Outcome`].
 #[must_use]
 pub fn outcome_label(outcome: Outcome) -> &'static str {
     match outcome {
@@ -449,10 +449,6 @@ pub fn serialize_header(state: &SpecState) -> [String; 3] {
 #[must_use]
 #[allow(deprecated)] // delegates through the legacy SpecStatus to share ONE mapping table.
 pub fn status_word(state: &SpecState) -> &'static str {
-    // Single source of truth — no mapping table lives here. Project to the
-    // legacy enum (one place: `TryFrom<SpecState> for SpecStatus`) then render
-    // its canonical kebab spelling (one place: `SpecStatus::as_kebab`). The
-    // `no-events` fallback is structurally unreachable for a validated state.
     SpecStatus::try_from(state.clone()).map_or("no-events", SpecStatus::as_kebab)
 }
 

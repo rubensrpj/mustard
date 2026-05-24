@@ -26,7 +26,7 @@
 
 use mustard_core::fs;
 use mustard_core::spec;
-use mustard_core::{SpecChild, SpecReader, SpecStatus, SqliteSpecReader, WaveView};
+use mustard_core::{SpecChild, SpecReader, SqliteSpecReader, WaveView};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -70,19 +70,13 @@ pub struct ChildEntry {
     pub wave: Option<u32>,
 }
 
-/// Render a [`SpecStatus`] as its kebab-case spelling — delegates to the
-/// canonical [`SpecStatus::as_kebab`] (single source of truth).
-fn spec_status_to_kebab(status: SpecStatus) -> String {
-    status.as_kebab().to_string()
-}
-
 /// Convert a [`SpecChild`] (SQLite side) into our UNION row, tagged `Event`
 /// by default. The `source` may be promoted to `Both` later if filesystem
 /// scan also matches. `wave` is filled later by [`correlate_waves`].
 fn child_from_event(child: &SpecChild) -> ChildEntry {
     ChildEntry {
         spec: child.spec.clone(),
-        status: spec_status_to_kebab(child.status),
+        status: child.state.status_kebab().to_string(),
         started_at: child.started_at.clone(),
         completed_at: child.completed_at.clone(),
         reason: child.reason.clone(),

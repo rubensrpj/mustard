@@ -171,7 +171,7 @@ fn open_conn(project: &Path) -> Option<Connection> {
     let store = SqliteEventStore::for_project(project).ok()?;
     let db_path = store.path().to_path_buf();
     let conn = Connection::open(&db_path).ok()?;
-    let _ = conn.busy_timeout(std::time::Duration::from_millis(5_000));
+    let _ = conn.busy_timeout(std::time::Duration::from_secs(5));
     wikilinks::ensure_schema(&conn).ok()?;
     Some(conn)
 }

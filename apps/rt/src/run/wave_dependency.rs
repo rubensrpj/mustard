@@ -240,9 +240,10 @@ fn topological_waves(graph: &BTreeMap<PathBuf, BTreeSet<PathBuf>>) -> TopoResult
 
 /// Relativize `abs` against `project_root`, with forward slashes.
 fn to_relative(abs: &Path, project_root: &Path) -> String {
-    abs.strip_prefix(project_root)
-        .map(|p| p.to_string_lossy().replace('\\', "/"))
-        .unwrap_or_else(|_| abs.to_string_lossy().replace('\\', "/"))
+    abs.strip_prefix(project_root).map_or_else(
+        |_| abs.to_string_lossy().replace('\\', "/"),
+        |p| p.to_string_lossy().replace('\\', "/"),
+    )
 }
 
 /// Compute the wave-DAG result JSON for a list of files.
@@ -321,8 +322,10 @@ pub fn run() {
     let project_root = parsed
         .get("projectRoot")
         .and_then(Value::as_str)
-        .map(PathBuf::from)
-        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+        .map_or_else(
+            || std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            PathBuf::from,
+        );
     let root_abs = if project_root.is_absolute() {
         project_root
     } else {

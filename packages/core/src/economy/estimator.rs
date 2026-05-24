@@ -3,7 +3,7 @@
 //! Wraps [`tiktoken-rs`](tiktoken_rs) so call sites can ask "roughly how many
 //! tokens would Anthropic charge for this string under model X?" without
 //! pulling in the dependency themselves. The answer is an *approximation* —
-//! Anthropic's tokenizer is proprietary and `tiktoken-rs` ships the OpenAI
+//! Anthropic's tokenizer is proprietary and `tiktoken-rs` ships the `OpenAI`
 //! `cl100k_base` BPE table, which empirically lands within ±5% of Claude's
 //! real count on English text. Bit-exact accuracy is a non-goal for W1; the
 //! estimator only feeds preview UIs and budget-warning thresholds.
@@ -144,26 +144,23 @@ pub fn compute_cost_micros(
     // because `model` was `None` or because the model is missing from the
     // pricing table — apply the documented sonnet fallback. We log each
     // fallback once per frame so the cause stays traceable in stderr.
-    let (effective_model, in_per_m, out_per_m) = match model {
-        Some(m) => {
-            let (i, o) = model_pricing_usd_micros_per_million(m);
-            if i == 0 && o == 0 {
-                eprintln!(
-                    "compute_cost_micros: unknown model '{m}' — falling back to {FALLBACK_MODEL} pricing"
-                );
-                let (fi, fo) = model_pricing_usd_micros_per_million(FALLBACK_MODEL);
-                (FALLBACK_MODEL, fi, fo)
-            } else {
-                (m, i, o)
-            }
-        }
-        None => {
+    let (effective_model, in_per_m, out_per_m) = if let Some(m) = model {
+        let (i, o) = model_pricing_usd_micros_per_million(m);
+        if i == 0 && o == 0 {
             eprintln!(
-                "compute_cost_micros: frame has no model attribute — falling back to {FALLBACK_MODEL} pricing"
+                "compute_cost_micros: unknown model '{m}' — falling back to {FALLBACK_MODEL} pricing"
             );
             let (fi, fo) = model_pricing_usd_micros_per_million(FALLBACK_MODEL);
             (FALLBACK_MODEL, fi, fo)
+        } else {
+            (m, i, o)
         }
+    } else {
+        eprintln!(
+            "compute_cost_micros: frame has no model attribute — falling back to {FALLBACK_MODEL} pricing"
+        );
+        let (fi, fo) = model_pricing_usd_micros_per_million(FALLBACK_MODEL);
+        (FALLBACK_MODEL, fi, fo)
     };
 
     // ── Point 3: defensive — fallback model itself missing from table ──

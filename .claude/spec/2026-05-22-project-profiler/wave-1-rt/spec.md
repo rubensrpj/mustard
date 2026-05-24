@@ -1,10 +1,10 @@
 # Wave 1 (rt) — Passada única e paralela
 
-### Stage: Plan
+### Stage: Execute
 ### Outcome: Active
 ### Flags:
 ### Lang: pt
-### Checkpoint: 2026-05-22T00:00:00Z
+### Checkpoint: 2026-05-23T00:00:00Z
 ### Parent: 2026-05-22-project-profiler
 
 ## PRD

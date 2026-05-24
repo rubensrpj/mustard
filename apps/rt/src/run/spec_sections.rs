@@ -62,7 +62,7 @@ pub fn is_heading(line: &str, key: &str) -> bool {
     let lower = after_ws.to_lowercase();
     // Longest variants first so the longer PT name wins over a shorter prefix.
     let mut sorted: Vec<&str> = names.to_vec();
-    sorted.sort_by(|a, b| b.len().cmp(&a.len()));
+    sorted.sort_by_key(|b| std::cmp::Reverse(b.len()));
     for name in sorted {
         let name_lower = name.to_lowercase();
         if let Some(tail) = lower.strip_prefix(&name_lower) {
@@ -89,6 +89,7 @@ pub fn is_heading(line: &str, key: &str) -> bool {
 ///
 /// String-only implementation: the crate carries no regex dependency and
 /// this function is not worth adding one.
+#[allow(dead_code)] // kept for API consistency with sibling spec-section helpers
 #[must_use]
 pub fn extract_parent(markdown: &str) -> Option<String> {
     const KEY: &str = "parent";

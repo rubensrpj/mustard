@@ -19,6 +19,7 @@
 use super::store::{claude_dir, SampleRow, Store};
 use mustard_core::fs;
 use serde_json::{json, Value};
+use std::fmt::Write as _;
 use std::net::TcpStream;
 use std::time::Duration;
 
@@ -76,11 +77,10 @@ fn pid_alive(pid: u32) -> bool {
         std::process::Command::new("tasklist")
             .args(["/FI", &format!("PID eq {pid}"), "/NH"])
             .output()
-            .map(|o| {
+            .is_ok_and(|o| {
                 let out = String::from_utf8_lossy(&o.stdout);
                 out.contains(&pid.to_string())
             })
-            .unwrap_or(false)
     }
     #[cfg(not(windows))]
     {
@@ -228,62 +228,54 @@ fn render_human(report: &Value) -> String {
     if let Some(status) = report["env"]["status"].as_object() {
         for (k, v) in status {
             let shown = v.as_str().map_or_else(|| "(unset)".to_string(), str::to_string);
-            out.push_str(&format!("  {k} = {shown}\n"));
+            let _ = writeln!(out, "  {k} = {shown}");
         }
     }
     let env_ok = if report["env"]["ok"].as_bool() == Some(true) { "OK" } else { "INCOMPLETE" };
-    out.push_str(&format!("  status: {env_ok}\n\n[collector]\n"));
-    out.push_str(&format!(
-        "  pid: {}\n  alive: {}\n",
+    let _ = write!(out, "  status: {env_ok}\n\n[collector]\n");
+    let _ = write!(out, "  pid: {}\n  alive: {}\n",
         report["collector"]["pid"].as_u64().map_or_else(|| "(none)".to_string(), |p| p.to_string()),
-        report["collector"]["ok"].as_bool().unwrap_or(false),
-    ));
+        report["collector"]["ok"].as_bool().unwrap_or(false));
     if report["collector"]["ok"].as_bool() != Some(true) {
         if let Some(r) = report["collector"]["reason"].as_str() {
-            out.push_str(&format!("  reason: {r}\n"));
+            let _ = writeln!(out, "  reason: {r}");
         }
     }
     out.push_str("\n[health]\n");
-    out.push_str(&format!(
-        "  status: {}\n  ok: {}\n",
+    let _ = write!(out, "  status: {}\n  ok: {}\n",
         report["health"]["status"].as_u64().map_or_else(|| "(unreachable)".to_string(), |s| s.to_string()),
-        report["health"]["ok"].as_bool().unwrap_or(false),
-    ));
+        report["health"]["ok"].as_bool().unwrap_or(false));
     out.push_str("\n[data]\n");
     if report["data"]["ok"].as_bool() == Some(true) {
-        out.push_str(&format!("  rows: {}\n", report["data"]["rows"].as_i64().unwrap_or(0)));
+        let _ = writeln!(out, "  rows: {}", report["data"]["rows"].as_i64().unwrap_or(0));
         let last = report["data"]["lastBucketMs"]
             .as_i64()
             .map_or_else(|| "(none)".to_string(), iso_from_ms);
-        out.push_str(&format!("  last bucket: {last}\n"));
+        let _ = writeln!(out, "  last bucket: {last}");
         if let Some(sample) = report["data"]["sample"].as_array() {
             if !sample.is_empty() {
                 out.push_str("  sample (latest 5):\n");
                 for r in sample {
-                    out.push_str(&format!(
-                        "    - {} {} session={} model={} type={} sum={} count={}\n",
+                    let _ = writeln!(out, "    - {} {} session={} model={} type={} sum={} count={}",
                         iso_from_ms(r["ts_bucket"].as_i64().unwrap_or(0)),
                         r["metric"].as_str().unwrap_or("-"),
                         r["session_id"].as_str().unwrap_or("-"),
                         r["model"].as_str().unwrap_or("-"),
                         r["token_type"].as_str().unwrap_or("-"),
                         r["sum"].as_f64().unwrap_or(0.0),
-                        r["count"].as_i64().unwrap_or(0),
-                    ));
+                        r["count"].as_i64().unwrap_or(0));
                 }
             }
         }
     } else if let Some(r) = report["data"]["reason"].as_str() {
-        out.push_str(&format!("  reason: {r}\n"));
+        let _ = writeln!(out, "  reason: {r}");
     }
     out.push_str("\n[subtractions]\n");
     if report["subtractions"]["ok"].as_bool() == Some(true) {
-        out.push_str(&format!(
-            "  applied (last 24h): {}\n",
-            report["subtractions"]["count"].as_i64().unwrap_or(0),
-        ));
+        let _ = writeln!(out, "  applied (last 24h): {}",
+            report["subtractions"]["count"].as_i64().unwrap_or(0));
     } else if let Some(r) = report["subtractions"]["reason"].as_str() {
-        out.push_str(&format!("  reason: {r}\n"));
+        let _ = writeln!(out, "  reason: {r}");
     }
     out
 }

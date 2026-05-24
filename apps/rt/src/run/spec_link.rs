@@ -103,7 +103,7 @@ fn link_spec(cwd: &Path, parent: &str, child: &str, reason: &str) -> bool {
         json!({ "spec": child, "parent_spec": parent, "children_specs": [] })
     });
     if let Some(obj) = child_state.as_object_mut() {
-        if !obj.get("children_specs").map(Value::is_array).unwrap_or(false) {
+        if !obj.get("children_specs").is_some_and(Value::is_array) {
             obj.insert("children_specs".to_string(), json!([]));
         }
         obj.insert("parent_spec".to_string(), json!(parent));

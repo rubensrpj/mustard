@@ -28,7 +28,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 /// `Send` but not `Sync`; wrapping it in an `Arc<Mutex<…>>` keeps the reader
 /// `Clone + Send + Sync` (the [`SpecReader`] trait is `Send + Sync` so Tauri
 /// command handlers can share it). The `Mutex` only serializes access to the
-/// single cached connection; SQLite's WAL still lets a separate writer process
+/// single cached connection; `SQLite`'s WAL still lets a separate writer process
 /// proceed concurrently.
 ///
 /// Reusing the store avoids paying [`SqliteEventStore::new`]'s open cost on
@@ -455,7 +455,9 @@ fn iso_cutoff(now_ms: i64, lookback_days: i64) -> Option<String> {
 /// Howard Hinnant's days-from-civil algorithm (reverse) → `(y, mo, d, h, mi,
 /// s)` in UTC. Mirrors `economy::sources::time::epoch_secs_to_ymdhms`; kept
 /// local because that one is `pub(super)` to the economy module.
-#[allow(clippy::cast_possible_truncation)]
+// cast_sign_loss: Howard Hinnant's algorithm guarantees calendar values are non-negative.
+// many_single_char_names: single-char names are idiomatic for this well-known algorithm.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::many_single_char_names)]
 fn epoch_secs_to_ymdhms(secs: i64) -> (i64, u32, u32, u32, u32, u32) {
     let days = secs.div_euclid(86_400);
     let tod = secs.rem_euclid(86_400);

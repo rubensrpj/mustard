@@ -27,6 +27,7 @@ use mustard_core::spec;
 use mustard_core::{Flags, Outcome, SpecState, Stage};
 use serde::Deserialize;
 use serde_json::{Value, json};
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 /// The canonical three-line lifecycle header for a freshly scaffolded spec at
@@ -123,15 +124,13 @@ fn headings_for(lang: &str) -> Headings<'static> {
 
 /// Render the wave-plan markdown index.
 fn render_wave_plan(plan: &Plan, hd: &Headings<'_>) -> String {
-    let total = plan
-        .total_waves
-        .unwrap_or_else(|| plan.waves.len() as u32);
+    let total = plan.total_waves.unwrap_or(plan.waves.len() as u32);
     let mut out = String::new();
     out.push_str(hd.wave_plan_title);
     out.push_str("\n\n");
     out.push_str(&header_block(Stage::Plan));
     out.push_str("### Scope: full (wave plan)\n");
-    out.push_str(&format!("### Total waves: {total}\n\n"));
+    let _ = writeln!(out, "### Total waves: {total}\n");
     out.push_str(hd.wave_table_caption);
     out.push_str("\n\n");
     out.push_str(hd.table_header);
@@ -150,11 +149,12 @@ fn render_wave_plan(plan: &Plan, hd: &Headings<'_>) -> String {
                 .join(", ")
         };
         let summary = w.summary.replace('|', "\\|");
-        out.push_str(&format!(
-            "| {n} | [[{name}]] | {role} | {deps} | {summary} |\n",
+        let _ = writeln!(
+            out,
+            "| {n} | [[{name}]] | {role} | {deps} | {summary} |",
             n = w.n,
             role = w.role,
-        ));
+        );
     }
     out
 }
@@ -168,8 +168,8 @@ fn wave_name(w: &WavePlanEntry) -> String {
 fn render_wave_spec(parent: &str, w: &WavePlanEntry, hd: &Headings<'_>) -> String {
     let name = wave_name(w);
     let mut out = String::new();
-    out.push_str(&format!("# {name}\n\n"));
-    out.push_str(&format!("### {p}: [[{parent}]]\n", p = hd.parent));
+    let _ = writeln!(out, "# {name}\n");
+    let _ = writeln!(out, "### {p}: [[{parent}]]", p = hd.parent);
     // Both `draft` (wave 1) and `queued` (later waves) are not-yet-started Plan
     // items in the canonical model — the wave-plan tracks progression via
     // events, not a per-wave header status word.
@@ -179,18 +179,18 @@ fn render_wave_spec(parent: &str, w: &WavePlanEntry, hd: &Headings<'_>) -> Strin
     if w.summary.is_empty() {
         out.push_str("_(preencher)_\n\n");
     } else {
-        out.push_str(&format!("{}\n\n", w.summary));
+        let _ = writeln!(out, "{}\n", w.summary);
     }
     out.push_str(hd.network);
     out.push_str("\n\n");
-    out.push_str(&format!("- {p}: [[{parent}]]\n", p = hd.parent));
+    let _ = writeln!(out, "- {p}: [[{parent}]]", p = hd.parent);
     if !w.depends_on.is_empty() {
         let deps: Vec<String> = w
             .depends_on
             .iter()
             .map(|d| format!("[[{d}]]"))
             .collect();
-        out.push_str(&format!("- Depende de: {}\n", deps.join(", ")));
+        let _ = writeln!(out, "- Depende de: {}", deps.join(", "));
     }
     out
 }
@@ -200,7 +200,7 @@ fn render_review(parent: &str, hd: &Headings<'_>) -> String {
     let mut out = String::new();
     out.push_str(hd.review_title);
     out.push_str("\n\n");
-    out.push_str(&format!("### {p}: [[{parent}]]\n", p = hd.parent));
+    let _ = writeln!(out, "### {p}: [[{parent}]]", p = hd.parent);
     out.push_str(&header_block(Stage::Plan));
     out.push('\n');
     out.push_str(hd.review_intro);
@@ -222,7 +222,7 @@ fn render_qa(parent: &str, hd: &Headings<'_>) -> String {
     let mut out = String::new();
     out.push_str(hd.qa_title);
     out.push_str("\n\n");
-    out.push_str(&format!("### {p}: [[{parent}]]\n", p = hd.parent));
+    let _ = writeln!(out, "### {p}: [[{parent}]]", p = hd.parent);
     out.push_str(&header_block(Stage::Plan));
     out.push('\n');
     out.push_str(hd.qa_intro);
@@ -308,8 +308,10 @@ pub fn run(spec_dir_arg: Option<&str>, plan_arg: Option<&str>) {
     let mut emit = |path: &Path, body: String| {
         let rel = path
             .strip_prefix(&spec_dir)
-            .map(|p| p.to_string_lossy().replace('\\', "/"))
-            .unwrap_or_else(|_| path.to_string_lossy().to_string());
+            .map_or_else(
+                |_| path.to_string_lossy().to_string(),
+                |p| p.to_string_lossy().replace('\\', "/"),
+            );
         if write_if_absent(path, &body) {
             created.push(rel);
         } else {

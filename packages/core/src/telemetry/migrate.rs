@@ -119,8 +119,7 @@ pub fn migrate_into_telemetry_db(mustard_conn: &Connection) -> Result<usize> {
         Ok(v) if !v.trim().is_empty() => std::path::PathBuf::from(v),
         _ => std::path::Path::new(&mustard_path)
             .parent()
-            .map(|dir| dir.join("telemetry.db"))
-            .unwrap_or_else(|| std::path::PathBuf::from("telemetry.db")),
+            .map_or_else(|| std::path::PathBuf::from("telemetry.db"), |dir| dir.join("telemetry.db")),
     };
 
     // Step 3: open the telemetry store (creating it if absent) and run the
@@ -160,7 +159,7 @@ fn migrate_attached(conn: &Connection) -> Result<usize> {
 }
 
 /// The `INSERT OR IGNORE INTO run_usage SELECT ... FROM src.spans` statement,
-/// with the spec / wave_id / agent_id attribution backfill inlined.
+/// with the spec / `wave_id` / `agent_id` attribution backfill inlined.
 ///
 /// The backfill replicates the W4 CTE in `economy::reader::attribution_cte`:
 /// for each span, two correlated subqueries walk the join legs in priority
@@ -173,9 +172,9 @@ fn migrate_attached(conn: &Connection) -> Result<usize> {
 /// and the resolved value is `COALESCE`'d with the span's own column so a span
 /// recorded without any `agent.start` still keeps its native attribution:
 ///
-/// - `agent_id` = payload.agent_id ?? payload.subagentType ?? events.actor_id
-/// - `spec`     = payload.spec_id  ?? events.spec ?? span.spec
-/// - `wave_id`  = payload.wave_id  ?? CAST(events.wave AS TEXT) ?? span.wave_id
+/// - `agent_id` = `payload.agent_id` ?? payload.subagentType ?? `events.actor_id`
+/// - `spec`     = `payload.spec_id`  ?? events.spec ?? span.spec
+/// - `wave_id`  = `payload.wave_id`  ?? CAST(events.wave AS TEXT) ?? `span.wave_id`
 fn copy_spans_sql() -> String {
     // Each backfill column is built from a primary-leg subquery COALESCE'd with
     // a fallback-leg subquery, then COALESCE'd with the span's own column.

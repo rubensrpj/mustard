@@ -203,7 +203,7 @@ fn build_collect(cwd: &Path, hooks_only: bool) -> Value {
             "active": active.len(),
             "orphaned": orphaned.len(),
             "pass1": pass1,
-            "pass1Pct": if total_specs > 0 { (pass1 * 100 / total_specs) as i64 } else { 0 },
+            "pass1Pct": (pass1 * 100).checked_div(total_specs).map_or(0, |v| v as i64),
             "specs": specs,
         },
     })

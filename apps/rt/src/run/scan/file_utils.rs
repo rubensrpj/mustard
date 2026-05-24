@@ -4,10 +4,29 @@
 //! Only filesystem utilities live here: no scanning logic, no schema building.
 //! Every function is fail-open (an unreadable directory yields an empty result,
 //! never an error), matching the JS module's `try { … } catch { … }` shape.
+//!
+//! ## Single-pass file visitor (Wave 1 — project-profiler)
+//!
+//! [`visit`] walks a subproject root **once**, computes the ignore-set a single
+//! time, and reads every regular file in parallel via rayon. The returned
+//! [`VisitedFile`] vector is sorted by relative path so downstream consumers
+//! (scanners, cluster discovery, description enrichment) see deterministic
+//! input regardless of OS / filesystem order.
+//!
+//! To avoid touching the per-stack scanner detection logic, [`visit`]'s output
+//! is also exposed as a process-local **read cache** ([`with_cache`]): while a
+//! cache is active, every [`read_file_safe`] / [`collect_files`] call resolves
+//! from memory instead of disk. Production callers wrap their scan in
+//! `with_cache(visit(root, ext_hint), || scanner.scan(root))` — the scanners
+//! themselves keep their existing signatures and bodies, but every file is read
+//! exactly once per `Scanner::scan()` invocation.
 
 use mustard_core::fs as mfs;
-use std::collections::BTreeSet;
+use rayon::prelude::*;
+use std::cell::RefCell;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Universal directory skip-list — mirrors `DEFAULT_IGNORE` in `file-utils.js`.
 pub const DEFAULT_IGNORE: &[&str] = &[
@@ -76,7 +95,7 @@ fn ignore_set(dir: &Path, ignore: &[&str]) -> BTreeSet<String> {
             }
         }
     }
-    if let Ok(content) = mfs::read_to_string(&dir.join(".gitignore")) {
+    if let Ok(content) = mfs::read_to_string(dir.join(".gitignore")) {
         for name in parse_gitignore_dirs(&content) {
             set.insert(name);
         }
@@ -89,8 +108,16 @@ fn ignore_set(dir: &Path, ignore: &[&str]) -> BTreeSet<String> {
 /// Skips ignored directories, dot-directories, and the `ignore` argument —
 /// a faithful port of `collectFiles()`. `extension` includes the dot
 /// (e.g. `.rs`). Fail-open: unreadable directories are silently skipped.
+///
+/// When a [single-pass cache](with_cache) is installed for `dir` (or an
+/// ancestor), the matching subset is served from memory without touching the
+/// filesystem — the single read in [`visit`] is reused. Outside that scope the
+/// function falls back to a fresh directory walk.
 #[must_use]
 pub fn collect_files(dir: &Path, extension: &str, ignore: &[&str]) -> Vec<PathBuf> {
+    if let Some(cached) = cache_collect_files(dir, extension) {
+        return cached;
+    }
     let skip = ignore_set(dir, ignore);
     let mut results = Vec::new();
     walk(dir, extension, &skip, &mut results);
@@ -114,6 +141,26 @@ fn walk(current: &Path, extension: &str, skip: &BTreeSet<String>, results: &mut 
     }
 }
 
+/// Collect every regular file under `dir` (no extension filter) along with the
+/// directory entries themselves. Internal helper for [`visit`] — keeps a single
+/// directory walk that downstream code splits by extension in memory.
+fn walk_all(current: &Path, skip: &BTreeSet<String>, results: &mut Vec<PathBuf>) {
+    let Ok(entries) = mfs::read_dir(current) else {
+        return;
+    };
+    for entry in entries {
+        let name: &str = &entry.file_name;
+        if entry.is_dir {
+            if skip.contains(name) || name.starts_with('.') {
+                continue;
+            }
+            walk_all(&entry.path, skip, results);
+        } else {
+            results.push(entry.path);
+        }
+    }
+}
+
 /// Relative path from `base` to `file_path`, normalised with forward slashes.
 ///
 /// A faithful port of `relativePath()`.
@@ -124,9 +171,22 @@ pub fn relative_path(base: &Path, file_path: &Path) -> String {
 }
 
 /// Read a file as UTF-8, returning `None` on any error — a port of `readFileSafe()`.
+///
+/// When a [single-pass cache](with_cache) covers `file_path`, the cached
+/// content is returned without any filesystem call. Outside the cache scope (or
+/// on a path the cache did not visit) the function falls back to a fresh disk
+/// read.
 #[must_use]
 pub fn read_file_safe(file_path: &Path) -> Option<String> {
-    mfs::read_to_string(file_path).ok()
+    if let Some(hit) = cache_read(file_path) {
+        return Some(hit);
+    }
+    DISK_READ_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let result = mfs::read_to_string(file_path).ok();
+    if result.is_some() {
+        DISK_HIT_COUNTER.fetch_add(1, Ordering::Relaxed);
+    }
+    result
 }
 
 /// Most common parent folder across a list of relative file paths.
@@ -155,6 +215,318 @@ pub fn infer_common_folder(file_paths: &[String]) -> Option<String> {
         .into_iter()
         .max_by_key(|(_, count)| *count)
         .map(|(dir, _)| format!("{dir}/"))
+}
+
+// ---------------------------------------------------------------------------
+// Single-pass visitor + per-scan read cache (Wave 1 — project-profiler).
+//
+// The cache lives in a thread-local so it never escapes the call that
+// installed it; the visitor itself parallelises the per-file disk read via
+// rayon, so the cache is *populated* on a worker pool but *consumed* on the
+// thread that calls `with_cache`. That is exactly what the registry pipeline
+// needs: every per-faceta scan (`scan_entities`, `scan_enums`, …) and the
+// agnostic helpers (`cluster_discovery`, `enrich_descriptions`) run on the
+// caller thread and consult the cache without re-touching disk.
+// ---------------------------------------------------------------------------
+
+/// One file produced by the single-pass [`visit`] walk.
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub struct VisitedFile {
+    /// Absolute path to the file.
+    pub abs: PathBuf,
+    /// Relative path from the visited root, forward-slash normalised.
+    pub rel: String,
+    /// UTF-8 contents. `None` when the read failed (binary / permission).
+    pub content: Option<String>,
+}
+
+/// The cached output of a single [`visit`] call — shared by `read_file_safe`
+/// and `collect_files` while a [`with_cache`] scope is active.
+#[derive(Debug, Clone)]
+struct VisitCache {
+    /// Visited root as the caller passed it (used for `starts_with` matching
+    /// against the absolute paths produced by [`visit`]).
+    root: PathBuf,
+    /// Canonical form of `root` when available — extends cache hits to callers
+    /// that pass the same logical directory in a different surface form.
+    root_canon: Option<PathBuf>,
+    /// Absolute path → file contents (only entries whose content is `Some`).
+    by_abs: BTreeMap<PathBuf, String>,
+    /// Every visited file path, in deterministic order.
+    files: Vec<PathBuf>,
+}
+
+thread_local! {
+    /// The cache stack — `with_cache` pushes on entry and pops on drop, so
+    /// nested calls (e.g. cluster discovery inside a scan) inherit the
+    /// innermost cache without leaking it to sibling threads.
+    static CACHE_STACK: RefCell<Vec<VisitCache>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Global counter of disk reads performed by [`read_file_safe`] when no cache
+/// covered the path. Used by the single-pass parity test (AC-2) to assert that
+/// a scan reads each source file at most once. Production callers ignore it.
+static DISK_READ_COUNTER: AtomicU64 = AtomicU64::new(0);
+/// Companion counter: increments only when the disk read returned `Some` —
+/// i.e. when an *existing* file slipped past the cache. Tests assert this stays
+/// at zero, which is the real "single-pass" guarantee. Probes for absent files
+/// (`Cargo.toml`/`main.rs` shortcuts) are tracked by `DISK_READ_COUNTER` only.
+static DISK_HIT_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// Snapshot the disk-read attempt counter — test-only helper.
+#[doc(hidden)]
+#[must_use]
+#[allow(dead_code)]
+pub fn disk_read_count() -> u64 {
+    DISK_READ_COUNTER.load(Ordering::Relaxed)
+}
+
+/// Snapshot the disk-hit counter (disk reads that returned content) —
+/// test-only helper.
+#[doc(hidden)]
+#[must_use]
+#[allow(dead_code)]
+pub fn disk_hit_count() -> u64 {
+    DISK_HIT_COUNTER.load(Ordering::Relaxed)
+}
+
+/// Reset both global counters — test-only helper.
+#[doc(hidden)]
+#[allow(dead_code)]
+pub fn reset_disk_read_count() {
+    DISK_READ_COUNTER.store(0, Ordering::Relaxed);
+    DISK_HIT_COUNTER.store(0, Ordering::Relaxed);
+}
+
+/// Source-file extensions the scanner family reads. Everything else under the
+/// subproject root is skipped by [`visit`] so binaries and large generated
+/// assets are not opened just to be discarded as non-UTF-8.
+///
+/// The list mirrors the union of extensions any [`Scanner`](super::Scanner)
+/// implementation passes to [`collect_files`], plus a handful of manifest
+/// files the scanners load by name (`package.json`, `Cargo.toml`, etc.). It is
+/// intentionally a literal allow-list — adding a stack is a one-line change
+/// here that the cache then serves automatically.
+const SOURCE_EXTENSIONS: &[&str] = &[
+    ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".cs", ".rs", ".go", ".java",
+    ".kt", ".dart", ".py", ".php", ".prisma",
+];
+
+/// Manifest / configuration files the scanners load by full name. Treated as
+/// "source" even though they have no source-file extension.
+const SOURCE_FILENAMES: &[&str] = &[
+    "package.json",
+    "tsconfig.json",
+    "Cargo.toml",
+    "go.mod",
+    "pubspec.yaml",
+    "composer.json",
+    "artisan",
+    "pyproject.toml",
+    "setup.py",
+    "requirements.txt",
+    "manage.py",
+    "pom.xml",
+    "build.gradle",
+    "build.gradle.kts",
+    ".gitignore",
+];
+
+fn is_source_file(name: &str) -> bool {
+    if SOURCE_FILENAMES.contains(&name) {
+        return true;
+    }
+    if name.ends_with(".csproj") || name.ends_with(".sln") {
+        return true;
+    }
+    SOURCE_EXTENSIONS.iter().any(|ext| name.ends_with(ext))
+}
+
+/// Walk `root` once and read every relevant source file in parallel.
+///
+/// The ignore-set is computed exactly once (default skip list + explicit
+/// `ignore` argument + `MUSTARD_SCAN_IGNORE` env + parsed `.gitignore`) and
+/// reused by the directory walk. The returned vector is sorted by relative
+/// path so downstream consumers (entity / enum scanners, cluster discovery)
+/// see a deterministic order regardless of OS or filesystem reporting order.
+///
+/// Only files matching the [`SOURCE_EXTENSIONS`] / [`SOURCE_FILENAMES`]
+/// allow-list are opened — binaries and generated assets are skipped, matching
+/// the union of extensions the per-stack scanners actually consume.
+///
+/// Fail-open: unreadable files yield `VisitedFile { content: None, .. }` and
+/// missing directories are silently skipped.
+#[must_use]
+pub fn visit(root: &Path, ignore: &[&str]) -> Vec<VisitedFile> {
+    let skip = ignore_set(root, ignore);
+    let mut paths = Vec::new();
+    walk_all(root, &skip, &mut paths);
+    // Filter to source-like files only — keeps the parallel read pool from
+    // opening every PNG and lockfile under the subproject root.
+    paths.retain(|p| {
+        p.file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(is_source_file)
+    });
+    // Sort by absolute path; the relative form is stably derived from it.
+    paths.sort();
+    // Parallel UTF-8 reads. Rayon's default pool work-steals across cores.
+    paths
+        .into_par_iter()
+        .map(|abs| {
+            let rel = relative_path(root, &abs);
+            let content = mfs::read_to_string(&abs).ok();
+            VisitedFile { abs, rel, content }
+        })
+        .collect()
+}
+
+/// `true` if a [`with_cache`] scope on the current thread already covers `root`
+/// (i.e. `root` equals the cache root or sits under it in either the original
+/// or the canonical form). Lets nested callers avoid re-visiting the same tree.
+#[must_use]
+pub fn cache_covers(root: &Path) -> bool {
+    let root_canon = mfs::canonicalize(root).ok();
+    CACHE_STACK.with(|stack| {
+        let stack = stack.borrow();
+        stack.iter().any(|entry| {
+            let original = root == entry.root.as_path() || root.starts_with(&entry.root);
+            let canonical = match (&root_canon, &entry.root_canon) {
+                (Some(d), Some(r)) => d == r || d.starts_with(r),
+                _ => false,
+            };
+            original || canonical
+        })
+    })
+}
+
+/// Install a single-pass cache for `root` for the duration of `body`, **unless**
+/// an enclosing scope already covers it. Lets the registry pipeline visit each
+/// subproject once at the outer scope and nest scanner / cluster-discovery /
+/// enrichment calls inside without re-walking.
+pub fn ensure_cache<R>(root: &Path, ignore: &[&str], body: impl FnOnce() -> R) -> R {
+    if cache_covers(root) {
+        return body();
+    }
+    let visited = visit(root, ignore);
+    with_cache(root, visited, body)
+}
+
+/// Install `visited` as the active read cache for the duration of `body`.
+///
+/// All [`read_file_safe`] / [`collect_files`] calls performed during `body`
+/// (transitively, on the same thread) resolve from the cache without touching
+/// disk. The cache is popped on return, panic, or early exit, so it can never
+/// leak across calls.
+pub fn with_cache<R>(root: &Path, visited: Vec<VisitedFile>, body: impl FnOnce() -> R) -> R {
+    let mut by_abs = BTreeMap::new();
+    let mut files = Vec::with_capacity(visited.len());
+    for v in visited {
+        files.push(v.abs.clone());
+        if let Some(c) = v.content {
+            by_abs.insert(v.abs, c);
+        }
+    }
+    // Canonicalise the root so callers that pass the same path with different
+    // surface forms (extra trailing slash, `./prefix`) still hit the cache.
+    let root_canon = mfs::canonicalize(root).ok();
+    let entry = VisitCache {
+        root: root.to_path_buf(),
+        root_canon,
+        by_abs,
+        files,
+    };
+    CACHE_STACK.with(|stack| stack.borrow_mut().push(entry));
+    // Guard restores the stack even if `body` panics.
+    let _guard = PopGuard;
+    body()
+}
+
+/// RAII guard that pops the innermost cache off the thread-local stack on
+/// drop, even if `body` panics. Defined at module scope (rather than inside
+/// [`with_cache`]) so the `Drop` impl satisfies the pedantic "items after
+/// statements" lint without changing observable behaviour.
+struct PopGuard;
+impl Drop for PopGuard {
+    fn drop(&mut self) {
+        CACHE_STACK.with(|stack| {
+            let _ = stack.borrow_mut().pop();
+        });
+    }
+}
+
+/// Resolve `path` against the active cache, returning the stored contents on
+/// hit. Tries the innermost cache first; falls through caches for which the
+/// path is outside the visited root.
+fn cache_read(path: &Path) -> Option<String> {
+    CACHE_STACK.with(|stack| {
+        let stack = stack.borrow();
+        let canon = mfs::canonicalize(path).ok();
+        for entry in stack.iter().rev() {
+            // Direct hit on the absolute path the cache stored.
+            if let Some(hit) = entry.by_abs.get(path) {
+                return Some(hit.clone());
+            }
+            if let Some(canon) = &canon {
+                if let Some(hit) = entry.by_abs.get(canon) {
+                    return Some(hit.clone());
+                }
+            }
+            // Some callers pass a path the visitor *should* have produced but
+            // never read (e.g. an existing-but-empty file). Fall through to
+            // disk in that case rather than returning `None` as "hit".
+        }
+        None
+    })
+}
+
+/// List cached files matching `extension` under `dir`, when a cache covers the
+/// directory. Returns `None` when no active cache contains `dir` or any of its
+/// children — the caller then falls back to a fresh `walk()`.
+fn cache_collect_files(dir: &Path, extension: &str) -> Option<Vec<PathBuf>> {
+    CACHE_STACK.with(|stack| {
+        let stack = stack.borrow();
+        if stack.is_empty() {
+            return None;
+        }
+        let dir_canon = mfs::canonicalize(dir).ok();
+        for entry in stack.iter().rev() {
+            // `dir` covered by this cache when it equals or sits under the
+            // cache root in either the original or the canonical form.
+            let covers_original = dir == entry.root.as_path() || dir.starts_with(&entry.root);
+            let covers_canon = match (&dir_canon, &entry.root_canon) {
+                (Some(d), Some(r)) => d == r || d.starts_with(r),
+                _ => false,
+            };
+            if !(covers_original || covers_canon) {
+                continue;
+            }
+            // Filter the cache's flat file list to entries that sit under
+            // `dir` (matching the surface form the visitor produced) and end
+            // with the requested extension.
+            let mut out: Vec<PathBuf> = entry
+                .files
+                .iter()
+                .filter(|p| {
+                    // Match against the visitor's own absolute paths first;
+                    // those are derived from `entry.root` so a `starts_with`
+                    // against the cache's view of `dir` is the safe check.
+                    p.starts_with(dir)
+                        || dir_canon.as_ref().is_some_and(|d| p.starts_with(d))
+                })
+                .filter(|p| {
+                    p.file_name()
+                        .and_then(|n| n.to_str())
+                        .is_some_and(|n| n.ends_with(extension))
+                })
+                .cloned()
+                .collect();
+            out.sort();
+            return Some(out);
+        }
+        None
+    })
 }
 
 #[cfg(test)]

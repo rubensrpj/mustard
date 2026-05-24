@@ -237,7 +237,7 @@ impl Check for SkillsAudit {
         if ctx.trigger != Some(Trigger::PreToolUse) {
             return Ok(Verdict::Allow);
         }
-        if !matches!(input.tool_name.as_deref(), Some("Task") | Some("Agent")) {
+        if !matches!(input.tool_name.as_deref(), Some("Task" | "Agent")) {
             return Ok(Verdict::Allow);
         }
         let project = if ctx.project_dir.is_empty() {

@@ -63,6 +63,11 @@ tiktoken-rs = "0.11"
 # is 8.2 on crates.io (May 2026); a future workspace-wide bump can move both
 # crates together — see eliminate-bun Wave 4 for the prior `rusqlite` bump.
 notify = "6"
+# Data-parallelism primitives — `mustard-rt run sync-registry` uses rayon to
+# parallelise the single-pass file visitor (`scan::file_utils::visit`) so each
+# subproject is read once across all scanners instead of once per faceta.
+# Latest stable on crates.io (1.10, May 2026); pure-Rust, no async runtime.
+rayon = "1.10"
 
 # Workspace-wide lints. A crate opts in with `[lints] workspace = true`.
 # Only `mustard-core` opts in today; the dashboard crate is intentionally
@@ -72,11 +77,61 @@ notify = "6"
 unsafe_code = "forbid"
 
 [workspace.lints.clippy]
-# Pedantic is advisory: it surfaces style issues without failing the build,
-# so a frozen module (model/contract.rs) may carry a few warnings. It is a
-# lint *group*, so it needs an explicit lower `priority` than the individual
-# lints below — otherwise Cargo rejects the equal-priority ambiguity.
+# Pedantic is enabled to catch real bugs (filter_next, map_unwrap_or, manual_*
+# anti-patterns, format_push_string, etc.). Per Clippy's own guidance, the
+# group "contains opinionated lints ... users should expect to use allow
+# attributes frequently" — so the explicitly-noisy/opinionated members are
+# listed below as `allow`, while bug-catchers remain `warn`. Group has lower
+# `priority` than overrides — Cargo rejects equal-priority ambiguity.
 pedantic = { level = "warn", priority = -1 }
+
+# Pedantic lints muted at workspace level — pure style/opinion, no bug value
+# for a single-binary internal runtime (no public API surface).
+#
+# Documentation noise (no published API)
+missing_errors_doc = "allow"      # internal hooks, no rustdoc consumers
+missing_panics_doc = "allow"      # same
+doc_markdown = "allow"            # demands backticks around every CamelCase
+module_name_repetitions = "allow" # Clippy's own README example allows this
+must_use_candidate = "allow"      # same
+#
+# Cast lints — flag any numeric cast. The codebase has many intentional
+# `i64 <-> usize/u64` conversions for SQLite row counts, sizes, indices.
+# Promoted to allow only after auditing: every cast in apps/rt is bounded
+# (counts, file sizes, kb-scale offsets). If a real overflow risk surfaces,
+# add `#[deny(...)]` at the call site.
+cast_possible_truncation = "allow"
+cast_possible_wrap = "allow"
+cast_sign_loss = "allow"
+cast_precision_loss = "allow"
+cast_lossless = "allow"
+#
+# Function-shape opinions (no public API to police)
+too_many_lines = "allow"
+too_many_arguments = "allow"
+struct_excessive_bools = "allow"
+unused_self = "allow"             # often intentional for trait dispatch
+items_after_statements = "allow"  # late helper fns are clearer locally
+#
+# Naming opinions
+similar_names = "allow"           # "store" vs "score" is not a bug
+many_single_char_names = "allow"  # common in algorithm/parsing code
+#
+# Stylistic preferences (cosmetic, no bug catch)
+if_not_else = "allow"
+single_match_else = "allow"
+match_same_arms = "allow"
+default_trait_access = "allow"
+bool_to_int_with_if = "allow"
+ref_option = "allow"
+needless_pass_by_value = "allow"  # sometimes required for trait obj / generics
+redundant_closure_for_method_calls = "allow"
+#
+# File-extension comparisons — Mustard convention is lowercase-only extensions
+# (`.md`, `.json`, `.rs`, `.toml`). A case-insensitive match would over-match
+# files we intentionally ignore (e.g. screenshot `.PNG` from external tools).
+case_sensitive_file_extension_comparisons = "allow"
+
 # `.unwrap()` panics — a panic in a hook breaks the fail-open contract. Deny
 # it crate-wide. Clippy already exempts `#[cfg(test)]` code from this lint, so
 # test modules may still use `.unwrap()`.

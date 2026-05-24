@@ -18,7 +18,7 @@
 //! ```
 //!
 //! This adapter walks the file line-by-line, extracts those usage blocks, and
-//! returns one [`ApiCostFrame`] per assistant turn — *without* touching SQLite.
+//! returns one [`ApiCostFrame`] per assistant turn — *without* touching `SQLite`.
 //! Pricing is computed locally via
 //! [`crate::economy::estimator::model_pricing_usd_micros_per_million`].
 //!
@@ -65,16 +65,15 @@ pub fn ingest(transcript_path: &Path, ctx: &IngestContext) -> Result<Vec<ApiCost
         if text.trim().is_empty() {
             continue;
         }
-        let value: Value = match serde_json::from_str(text) {
-            Ok(v) => v,
-            Err(_) => {
-                eprintln!(
-                    "transcript::ingest: malformed JSON at line {} of {}; skipping",
-                    lineno + 1,
-                    transcript_path.display()
-                );
-                continue;
-            }
+        let value: Value = if let Ok(v) = serde_json::from_str(text) {
+            v
+        } else {
+            eprintln!(
+                "transcript::ingest: malformed JSON at line {} of {}; skipping",
+                lineno + 1,
+                transcript_path.display()
+            );
+            continue;
         };
         if let Some(frame) = translate_line(&value, ctx) {
             out.push(frame);

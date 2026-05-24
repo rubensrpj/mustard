@@ -328,7 +328,7 @@ pub fn run(spec: &str, wave: Option<u32>, ac: bool, measure_flag: bool) {
     // wave (the AC branch does not measure a wave so it is skipped here).
     if !ac {
         let project_dir = crate::run::env::project_dir();
-        let full_bytes = std::fs::metadata(spec).map(|m| m.len() as usize).unwrap_or(out.len());
+        let full_bytes = std::fs::metadata(spec).map_or(out.len(), |m| m.len() as usize);
         let spec_slug = current_spec(&project_dir);
         let wave_id_str = wave.map(|n| format!("wave-{n}"));
         record_extract_frame(

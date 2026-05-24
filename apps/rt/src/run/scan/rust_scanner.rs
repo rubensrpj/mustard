@@ -51,7 +51,7 @@ fn parse_cargo_toml(content: &str) -> Vec<String> {
 /// `true` if `deps` contains `pkg` (case-insensitive exact match).
 fn has_dep(deps: &[String], pkg: &str) -> bool {
     let needle = pkg.to_ascii_lowercase();
-    deps.iter().any(|d| *d == needle)
+    deps.contains(&needle)
 }
 
 /// Extract the body of the first balanced `{ … }` pair at or after `start`.
@@ -301,7 +301,7 @@ impl Scanner for RustScanner {
                             && ident.starts_with(|c: char| c.is_ascii_uppercase())
                             && (t == ident
                                 || t[ident.len()..]
-                                    .starts_with(|c: char| c == '(' || c == '{'))
+                                    .starts_with(['(', '{']))
                         {
                             Some(ident)
                         } else {

@@ -59,8 +59,7 @@ fn max_enrichment_samples() -> usize {
 }
 fn cluster_cache_disabled() -> bool {
     std::env::var("MUSTARD_CLUSTER_CACHE")
-        .map(|v| v.to_lowercase() == "off")
-        .unwrap_or(false)
+        .is_ok_and(|v| v.to_lowercase() == "off")
 }
 
 /// Cache schema version — bumped when the cluster shape changes (JS is at v3).
@@ -159,7 +158,7 @@ pub fn discover_clusters(
     all.extend(fn_prefix);
     all.extend(filename);
     let mut merged = merge_clusters(all);
-    merged.sort_by(|a, b| file_count(b).cmp(&file_count(a)));
+    merged.sort_by_key(|b| std::cmp::Reverse(file_count(b)));
 
     let mut kept: Vec<Value> = merged.into_iter().take(max_clusters()).collect();
 
@@ -237,8 +236,7 @@ fn compute_file_set_hash(stack_id: &str, files: &[String]) -> String {
                 let mtime = t
                     .duration_since(std::time::UNIX_EPOCH)
                     .ok()
-                    .map(|d| d.as_millis())
-                    .unwrap_or(0);
+                    .map_or(0, |d| d.as_millis());
                 hash.update(format!("{f}|{mtime}\n").as_bytes());
             }
             Err(_) => hash.update(format!("{f}|missing\n").as_bytes()),
@@ -248,7 +246,7 @@ fn compute_file_set_hash(stack_id: &str, files: &[String]) -> String {
 }
 
 fn read_cluster_cache(subproject_path: &Path) -> Option<Value> {
-    let raw = mfs::read_to_string(&cluster_cache_path(subproject_path)).ok()?;
+    let raw = mfs::read_to_string(cluster_cache_path(subproject_path)).ok()?;
     let parsed: Value = serde_json::from_str(&raw).ok()?;
     if parsed.get("cacheVersion").and_then(Value::as_u64) != Some(CLUSTER_CACHE_VERSION) {
         return None;
@@ -882,8 +880,8 @@ fn top_level_function_names(line: &str, stack_id: &str) -> Vec<String> {
                 let tail = after.trim_start()[name.len()..].trim_start();
                 if !name.is_empty() {
                     // Skip an optional `: Type` annotation, then require `= ( | = async (`.
-                    let tail = tail.split('=').nth(1).map(str::trim_start).unwrap_or("");
-                    let tail = tail.strip_prefix("async ").map(str::trim_start).unwrap_or(tail);
+                    let tail = tail.split('=').nth(1).map_or("", str::trim_start);
+                    let tail = tail.strip_prefix("async ").map_or(tail, str::trim_start);
                     if tail.starts_with('(') {
                         out.push(name);
                     }
@@ -1094,8 +1092,7 @@ fn extract_naming_pattern(target: &str, contents: &[(std::path::PathBuf, String)
         let base = p
             .file_name()
             .and_then(|n| n.to_str())
-            .map(|n| n.strip_suffix(&ext).unwrap_or(n))
-            .unwrap_or("");
+            .map_or("", |n| n.strip_suffix(&ext).unwrap_or(n));
         if base == target {
             continue;
         }
@@ -1182,7 +1179,7 @@ fn top_n(items: &[String], n: usize) -> Vec<String> {
             counts.push((item.clone(), 1));
         }
     }
-    counts.sort_by(|a, b| b.1.cmp(&a.1));
+    counts.sort_by_key(|b| std::cmp::Reverse(b.1));
     counts.into_iter().take(n).map(|(v, _)| v).collect()
 }
 

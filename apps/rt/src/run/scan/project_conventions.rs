@@ -105,8 +105,7 @@ pub fn compute_project_conventions(subproject_path: &Path, stack_id: &str) -> se
         let base = file
             .file_name()
             .and_then(|n| n.to_str())
-            .map(|n| n.strip_suffix(ext).unwrap_or(n))
-            .unwrap_or("");
+            .map_or("", |n| n.strip_suffix(ext).unwrap_or(n));
         *distribution.entry(classify_name(base)).or_insert(0) += 1;
     }
     let total = files.len();

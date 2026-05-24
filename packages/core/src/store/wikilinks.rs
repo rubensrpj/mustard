@@ -127,6 +127,8 @@ pub fn list_for_spec(conn: &Connection, spec_name: &str) -> Result<Vec<Wikilink>
             from: row.get(0)?,
             to: row.get(1)?,
             file: row.get(2)?,
+            // cast_sign_loss/cast_possible_truncation: line numbers are non-negative and fit in u32.
+            #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
             line: row.get::<_, i64>(3)? as u32,
         })
     })?;

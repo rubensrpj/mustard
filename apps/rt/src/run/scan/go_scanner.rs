@@ -104,7 +104,7 @@ impl Scanner for GoScanner {
                     .lines()
                     .filter(|l| l.contains("gorm:\""))
                     .filter_map(|l| {
-                        let mut parts = l.trim().split_whitespace();
+                        let mut parts = l.split_whitespace();
                         let field = parts.next()?;
                         let ty = parts.next()?;
                         Some(format!("{field} {ty}"))

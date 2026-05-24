@@ -17,9 +17,9 @@
 //!   [`enforce_registry`] (the entity-registry pre-pipeline gate).
 //! - Wave 5: the session-lifecycle families — [`session_start`] (harness-init
 //!   / session-memory / spec-hygiene), [`knowledge`] (session-knowledge /
-//!   -inc / memory-auto-extract), [`session_cleanup`] (SessionEnd cleanup),
-//!   [`pre_compact`] (the PreCompact snapshot), and [`prompt_gate`] (the
-//!   UserPromptSubmit follow-up archival gate).
+//!   -inc / memory-auto-extract), [`session_cleanup`] (`SessionEnd` cleanup),
+//!   [`pre_compact`] (the `PreCompact` snapshot), and [`prompt_gate`] (the
+//!   `UserPromptSubmit` follow-up archival gate).
 
 pub mod amend_capture;
 pub mod bash_guard;

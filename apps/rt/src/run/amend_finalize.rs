@@ -96,14 +96,10 @@ pub fn project_root() -> PathBuf {
 /// Derive `lang` from the latest `pipeline.scope` event for `spec_id`.
 /// Defaults to `"en"` when absent or unreadable.
 fn resolve_lang(store: &SqliteEventStore, spec_id: &str) -> String {
-    let events = match store.query(Some(spec_id)) {
-        Ok(v) => v,
-        Err(_) => return "en".to_string(),
-    };
+    let Ok(events) = store.query(Some(spec_id)) else { return "en".to_string() };
     events
         .into_iter()
-        .filter(|e| e.event == EVENT_PIPELINE_SCOPE)
-        .last()
+        .rfind(|e| e.event == EVENT_PIPELINE_SCOPE)
         .and_then(|e| serde_json::from_value::<PipelineScopePayload>(e.payload).ok())
         .and_then(|p| p.lang)
         .unwrap_or_else(|| "en".to_string())
@@ -164,17 +160,11 @@ fn build_amendments_block(
     now: &str,
 ) -> String {
     let session_short = window.session_id.chars().take(8).collect::<String>();
-    let header = if lang == "pt" {
-        format!(
-            "## Amendments (session {}, {} → {})\n",
-            session_short, window.closed_at, now
-        )
-    } else {
-        format!(
-            "## Amendments (session {}, {} → {})\n",
-            session_short, window.closed_at, now
-        )
-    };
+    let _ = lang; // currently unused; kept for future language-specific wording
+    let header = format!(
+        "## Amendments (session {}, {} → {})\n",
+        session_short, window.closed_at, now
+    );
 
     let mut lines = vec![header];
 
@@ -188,9 +178,9 @@ fn build_amendments_block(
                     .and_then(Value::as_str)
                     .unwrap_or("");
                 if lang == "pt" {
-                    lines.push(format!("- {} prompt do usuário: \"{}\"", at, prompt_text));
+                    lines.push(format!("- {at} prompt do usuário: \"{prompt_text}\""));
                 } else {
-                    lines.push(format!("- {} user prompt: \"{}\"", at, prompt_text));
+                    lines.push(format!("- {at} user prompt: \"{prompt_text}\""));
                 }
             }
             k if k == EVENT_PIPELINE_AMEND_ACTIVITY => {
@@ -204,19 +194,18 @@ fn build_amendments_block(
                     .get("file_path")
                     .and_then(Value::as_str)
                     .unwrap_or("");
-                lines.push(format!("- {} {} `{}`", at, tool, file_path));
+                lines.push(format!("- {at} {tool} `{file_path}`"));
             }
             k if k == EVENT_PIPELINE_AMEND_DRIFT => {
                 let n = ev
                     .payload
                     .get("unrelated_paths")
                     .and_then(Value::as_array)
-                    .map(Vec::len)
-                    .unwrap_or(0);
+                    .map_or(0, Vec::len);
                 if lang == "pt" {
-                    lines.push(format!("- {} drift detectado: {} arquivos fora do escopo", at, n));
+                    lines.push(format!("- {at} drift detectado: {n} arquivos fora do escopo"));
                 } else {
-                    lines.push(format!("- {} drift detected: {} files outside scope", at, n));
+                    lines.push(format!("- {at} drift detected: {n} files outside scope"));
                 }
             }
             // EVENT_PIPELINE_AMEND_OPEN is informational only — skip it.
@@ -227,16 +216,16 @@ fn build_amendments_block(
     // Check for build verde indicator (build_verde_at stamped on window).
     if let Some(bv) = &window.build_verde_at {
         if lang == "pt" {
-            lines.push(format!("- {} build verde", bv));
+            lines.push(format!("- {bv} build verde"));
         } else {
-            lines.push(format!("- {} build green", bv));
+            lines.push(format!("- {bv} build green"));
         }
     }
 
     if lang == "pt" {
-        lines.push(format!("- resolução: {}", status));
+        lines.push(format!("- resolução: {status}"));
     } else {
-        lines.push(format!("- resolution: {}", status));
+        lines.push(format!("- resolution: {status}"));
     }
 
     lines.join("\n")

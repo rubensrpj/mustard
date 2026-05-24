@@ -42,6 +42,7 @@ use mustard_core::fs;
 use mustard_core::store::sqlite_store::SqliteEventStore;
 use rusqlite::{Connection, params};
 use serde_json::Value;
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 /// At most this many memory rows per prior wave land in the rendered block —
@@ -82,14 +83,12 @@ pub(crate) fn parse_wave_names(wave_plan_text: &str) -> Vec<String> {
         }
         let label = cells[0].to_lowercase();
         // Skip header & separator rows.
-        let label_body = label
+        let label_body: &str = label
             .strip_prefix('w')
-            .map(str::trim_start)
-            .unwrap_or(&label);
-        let label_body = label_body
+            .map_or(&label, str::trim_start);
+        let label_body: &str = label_body
             .strip_prefix("ave")
-            .map(str::trim_start)
-            .unwrap_or(label_body);
+            .map_or(label_body, str::trim_start);
         if label_body.is_empty() || !label_body.chars().all(|c| c.is_ascii_digit()) {
             continue;
         }
@@ -108,7 +107,7 @@ fn open_conn(project: &Path) -> Option<Connection> {
     let store = SqliteEventStore::for_project(project).ok()?;
     let db_path = store.path().to_path_buf();
     let conn = Connection::open(&db_path).ok()?;
-    let _ = conn.busy_timeout(std::time::Duration::from_millis(5_000));
+    let _ = conn.busy_timeout(std::time::Duration::from_secs(5));
     Some(conn)
 }
 
@@ -129,10 +128,7 @@ fn parse_wave_number(wave_name: &str) -> Option<i64> {
 ///
 /// I/O errors yield an empty `Vec` (fail-open).
 pub(crate) fn parse_wave_dirs_from_fs(spec_dir: &Path) -> Vec<String> {
-    let entries = match fs::read_dir(spec_dir) {
-        Ok(it) => it,
-        Err(_) => return Vec::new(),
-    };
+    let Ok(entries) = fs::read_dir(spec_dir) else { return Vec::new() };
     let mut hits: Vec<(i64, String)> = Vec::new();
     for entry in entries {
         if !entry.is_dir {
@@ -168,18 +164,15 @@ pub(crate) fn memories_for_spec_wave(
     spec_slug: &str,
     wave_n: i64,
 ) -> Vec<Value> {
-    let mut stmt = match conn.prepare(
+    let Ok(mut stmt) = conn.prepare(
         "SELECT payload FROM events \
          WHERE event = 'agent.memory' \
            AND (json_extract(payload, '$.spec') = ?1 OR spec = ?1) \
            AND (json_extract(payload, '$.wave') = ?2 OR wave = ?2) \
          ORDER BY ts DESC \
          LIMIT ?3",
-    ) {
-        Ok(s) => s,
-        Err(_) => return Vec::new(),
-    };
-    let rows = match stmt.query_map(
+    ) else { return Vec::new() };
+    let Ok(rows) = stmt.query_map(
         params![spec_slug, wave_n, MAX_MEMORIES_PER_WAVE as i64],
         |row| {
             let text: Option<String> = row.get(0)?;
@@ -187,10 +180,7 @@ pub(crate) fn memories_for_spec_wave(
                 .and_then(|t| serde_json::from_str::<Value>(&t).ok())
                 .unwrap_or(Value::Null))
         },
-    ) {
-        Ok(it) => it,
-        Err(_) => return Vec::new(),
-    };
+    ) else { return Vec::new() };
     rows.filter_map(std::result::Result::ok)
         .filter(|v| !v.is_null())
         .collect()
@@ -223,18 +213,18 @@ pub(crate) fn render(
             continue;
         }
         let mut block = String::new();
-        block.push_str(&format!("### [[{name}]]\n"));
+        let _ = writeln!(block, "### [[{name}]]");
         for m in mems {
             // Prefer `summary`, fall back to a compact JSON line.
             if let Some(s) = m.get("summary").and_then(Value::as_str) {
                 if !s.is_empty() {
-                    block.push_str(&format!("- {s}\n"));
+                    let _ = writeln!(block, "- {s}");
                     continue;
                 }
             }
             let compact = serde_json::to_string(&m).unwrap_or_default();
             if !compact.is_empty() {
-                block.push_str(&format!("- {compact}\n"));
+                let _ = writeln!(block, "- {compact}");
             }
         }
         sections.push(block);

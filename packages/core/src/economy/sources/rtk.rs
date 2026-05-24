@@ -37,7 +37,7 @@
 //!
 //! This adapter shells out to the binary via [`std::process::Command`], parses
 //! the JSON, and returns one [`SavingsRecord`] per row — *without* writing to
-//! SQLite. The caller is responsible for persisting via
+//! `SQLite`. The caller is responsible for persisting via
 //! [`crate::economy::writer::record_savings`].
 //!
 //! ## Testability
@@ -237,8 +237,7 @@ fn map_daily_array(daily: Vec<Value>, project: &ProjectPath) -> Vec<SavingsRecor
         let ts = entry
             .get("date")
             .and_then(Value::as_str)
-            .map(|d| format!("{d}T12:00:00Z"))
-            .unwrap_or_else(now_iso);
+            .map_or_else(now_iso, |d| format!("{d}T12:00:00Z"));
         let extra = match entry {
             Value::Object(map) => map,
             _ => serde_json::Map::new(),

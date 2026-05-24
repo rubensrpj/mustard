@@ -161,11 +161,12 @@ impl HookInput {
 ///
 /// `#[non_exhaustive]`: a future check kind can add a variant without breaking
 /// downstream `match` arms (they keep a wildcard arm).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "decision", rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum Verdict {
     /// Permit the action with no change. The neutral verdict.
+    #[default]
     Allow,
 
     /// Block the action. The string is the user-facing reason
@@ -204,11 +205,7 @@ impl Verdict {
     }
 }
 
-impl Default for Verdict {
-    fn default() -> Self {
-        Self::Allow
-    }
-}
+
 
 // ---------------------------------------------------------------------------
 // Outcome

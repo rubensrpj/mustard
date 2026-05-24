@@ -12,6 +12,7 @@
 
 pub mod sha256;
 
+use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -112,7 +113,7 @@ pub fn format_gate_message(gate: &str, what: &str, why: &str, exit: &str) -> Str
         if !tail.ends_with(['.', '!', '?', '…']) {
             tail.push('.');
         }
-        msg.push_str(&format!(" Saída: {tail}"));
+        let _ = write!(msg, " Saída: {tail}");
     }
     msg
 }

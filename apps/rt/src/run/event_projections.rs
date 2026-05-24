@@ -263,7 +263,7 @@ fn phase_from_events(events: &[HarnessEvent], spec: &str) -> Option<String> {
 fn build_epic_summary(events: &[HarnessEvent], cwd: &Path, epic: &str) -> Value {
     let states_dir = cwd.join(".claude").join(".pipeline-states");
     let read_state = |name: &str| -> Option<Value> {
-        fs::read_to_string(&states_dir.join(format!("{name}.json")))
+        fs::read_to_string(states_dir.join(format!("{name}.json")))
             .ok()
             .and_then(|t| serde_json::from_str(&t).ok())
     };
@@ -310,10 +310,10 @@ fn build_epic_summary(events: &[HarnessEvent], cwd: &Path, epic: &str) -> Value 
             continue;
         }
         if !ev.ts.is_empty() {
-            if min_ts.as_deref().map(|m| ev.ts.as_str() < m).unwrap_or(true) {
+            if min_ts.as_deref().is_none_or(|m| ev.ts.as_str() < m) {
                 min_ts = Some(ev.ts.clone());
             }
-            if max_ts.as_deref().map(|m| ev.ts.as_str() > m).unwrap_or(true) {
+            if max_ts.as_deref().is_none_or(|m| ev.ts.as_str() > m) {
                 max_ts = Some(ev.ts.clone());
             }
         }
@@ -371,7 +371,7 @@ fn build_cross_session_timeline(cwd: &Path, limit: usize) -> Value {
             (e.path, mtime)
         })
         .collect();
-    files.sort_by(|a, b| b.1.cmp(&a.1));
+    files.sort_by_key(|b| std::cmp::Reverse(b.1));
     files.truncate(limit);
 
     let states_dir = cwd.join(".claude").join(".pipeline-states");
@@ -430,7 +430,7 @@ fn build_cross_session_timeline(cwd: &Path, limit: usize) -> Value {
 
 /// Read a `.pipeline-states/<name>.json` file, `None` on any error.
 fn read_state(states_dir: &Path, name: &str) -> Option<Value> {
-    serde_json::from_str(&fs::read_to_string(&states_dir.join(format!("{name}.json"))).ok()?).ok()
+    serde_json::from_str(&fs::read_to_string(states_dir.join(format!("{name}.json"))).ok()?).ok()
 }
 
 /// `buildSpecTree` — the recursive parent/child spec hierarchy (max depth 3),
@@ -503,7 +503,7 @@ fn build_spec_node(
     let mut children: Vec<Value> = Vec::new();
     for child in &children_set {
         let node = build_spec_node(events, states_dir, link_children, link_parent, child, depth + 1, &new_ancestors);
-        if node.get("error").and_then(Value::as_str).map(|e| e.contains("cycle")).unwrap_or(false) {
+        if node.get("error").and_then(Value::as_str).is_some_and(|e| e.contains("cycle")) {
             return json!({ "error": "cycle-detected", "parent": spec, "child": child });
         }
         children.push(node);
@@ -526,8 +526,7 @@ fn build_pr_metrics(events: &[HarnessEvent], cwd: &Path, days: i64) -> Value {
     let from_ms = now_ms - days * 86_400_000;
     let in_window = |ts: &str| -> bool {
         crate::run::complete_spec::parse_iso_millis(ts)
-            .map(|t| t >= from_ms && t <= now_ms)
-            .unwrap_or(false)
+            .is_some_and(|t| t >= from_ms && t <= now_ms)
     };
     let pair_key = |ev: &HarnessEvent| -> Option<String> {
         ev.payload
@@ -675,7 +674,7 @@ fn build_active_pipelines(events: &[HarnessEvent], cwd: &Path) -> Value {
         let entry = per_spec.entry(spec.to_string()).or_insert_with(|| (ev.ts.clone(), None));
         // Track the maximum timestamp (ISO-8601 lexicographic order is correct for UTC).
         if ev.ts > entry.0 {
-            entry.0 = ev.ts.clone();
+            entry.0.clone_from(&ev.ts);
         }
         // Track the last stage from `pipeline.stage` (Title Case) OR
         // `pipeline.phase` (UPPERCASE → Title Case). Whichever appears latest
@@ -769,7 +768,7 @@ fn build_active_pipelines(events: &[HarnessEvent], cwd: &Path) -> Value {
                 // Use spec.md mtime as a proxy for "when the spec was written".
                 std::fs::metadata(&spec_md_path)
                     .and_then(|m| m.modified())
-                    .map(|mtime| {
+                    .map_or_else(|_| crate::util::now_iso8601(), |mtime| {
                         use std::time::UNIX_EPOCH;
                         let secs = mtime
                             .duration_since(UNIX_EPOCH)
@@ -793,7 +792,6 @@ fn build_active_pipelines(events: &[HarnessEvent], cwd: &Path) -> Value {
                         let s   = (tod % 60) as u32;
                         format!("{y:04}-{m:02}-{d:02}T{h:02}:{mi:02}:{s:02}Z")
                     })
-                    .unwrap_or_else(|_| crate::util::now_iso8601())
             });
 
             per_spec.insert(spec_name, (last_event_at, Some(stage_str)));
@@ -808,7 +806,7 @@ fn build_active_pipelines(events: &[HarnessEvent], cwd: &Path) -> Value {
                 return false;
             }
             // Exclude specs whose last stage is Close.
-            if last_stage.as_deref().map(|s| s.eq_ignore_ascii_case("close")).unwrap_or(false) {
+            if last_stage.as_deref().is_some_and(|s| s.eq_ignore_ascii_case("close")) {
                 return false;
             }
             // Exclude specs with no activity in the last 30 days.
@@ -846,7 +844,7 @@ fn project(cwd: &Path, view: &str, spec: Option<&str>, wave: Option<u32>) -> Val
         },
         "cross-session-timeline" => {
             // `--wave` doubles as the optional `--limit` for this view.
-            let limit = wave.map(|w| w as usize).unwrap_or(CROSS_SESSION_LIMIT);
+            let limit = wave.map_or(CROSS_SESSION_LIMIT, |w| w as usize);
             build_cross_session_timeline(cwd, limit)
         }
         "spec-tree" => match spec {
@@ -855,7 +853,7 @@ fn project(cwd: &Path, view: &str, spec: Option<&str>, wave: Option<u32>) -> Val
         },
         "pr-metrics" => {
             // `--wave` doubles as the optional `--days` window for this view.
-            let days = wave.map(i64::from).unwrap_or(30);
+            let days = wave.map_or(30, i64::from);
             build_pr_metrics(&read_events(cwd), cwd, days)
         }
         "active-pipelines" => build_active_pipelines(&read_events(cwd), cwd),
@@ -1175,8 +1173,7 @@ pub fn pipeline_state_for_spec(
         .completed_waves
         .iter()
         .max()
-        .map(|w| w + 1)
-        .unwrap_or(1);
+        .map_or(1, |w| w + 1);
 
     // FS fallback for is_wave_plan — takes priority only if not already set by event.
     if view.is_wave_plan.is_none() {
@@ -1202,8 +1199,7 @@ pub fn pipeline_state_for_spec(
         Some((payload, Some(at_str))) => {
             let now_ms = i64::try_from(crate::util::now_millis()).unwrap_or(i64::MAX);
             let age_ms = crate::run::complete_spec::parse_iso_millis(&at_str)
-                .map(|at_ms| now_ms - at_ms)
-                .unwrap_or(0);
+                .map_or(0, |at_ms| now_ms - at_ms);
             if age_ms > DISPATCH_FAILURE_TTL_MS {
                 None // stale — cleared per /resume Step 0 contract
             } else {

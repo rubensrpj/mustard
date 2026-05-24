@@ -4,8 +4,8 @@
 //! against this enum and never have to know about `rusqlite::Error` directly.
 //! The variants reflect the only ways a reader call can legitimately fail:
 //!
-//! - `Io` — opening or accessing the SQLite database failed
-//! - `Decode` — a row could not be deserialized into a ViewModel
+//! - `Io` — opening or accessing the `SQLite` database failed
+//! - `Decode` — a row could not be deserialized into a `ViewModel`
 //! - `Invalid` — a caller passed a malformed argument (empty spec name, etc.)
 //!
 //! Missing data is **never** an error: a spec with zero events resolves to
@@ -28,7 +28,7 @@ pub enum ReadError {
     #[error("io error: {0}")]
     Io(String),
 
-    /// A row was found but could not be decoded into a ViewModel — a malformed
+    /// A row was found but could not be decoded into a `ViewModel` — a malformed
     /// JSON payload or an event schema mismatch. The reader skips the row and
     /// continues; this variant only surfaces when the failure is fatal to the
     /// whole query.

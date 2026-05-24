@@ -219,7 +219,11 @@ impl AttributeView<'_> {
                 n.as_i64()
                     .or_else(|| n.as_str().and_then(|s| s.parse::<i64>().ok()))
             })
-            .or_else(|| v.get("doubleValue").and_then(Value::as_f64).map(|d| d as i64))
+            .or_else(|| v.get("doubleValue").and_then(Value::as_f64).map(|d| {
+                // Intentional truncation: OTLP double attributes used as counters fit in i64.
+                #[allow(clippy::cast_possible_truncation)]
+                { d as i64 }
+            }))
     }
 
     fn get_string(&self, key: &str) -> Option<String> {
@@ -250,6 +254,8 @@ fn unix_nanos_to_iso(s: &str) -> Option<String> {
     // millis are not real timestamps.
     let ms_total: i64 = i64::try_from(nanos / 1_000_000).ok()?;
     let secs = ms_total / 1_000;
+    // cast_sign_loss: ms_total is derived from a parsed u128 via i64::try_from, so it is non-negative.
+    #[allow(clippy::cast_sign_loss)]
     let millis = (ms_total % 1_000) as u32;
     let (y, mo, d, h, mi, s) = epoch_secs_to_ymdhms(secs);
     Some(format!(

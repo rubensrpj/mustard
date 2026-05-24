@@ -45,7 +45,7 @@ use std::time::Duration;
 
 use crate::util::{format_gate_message, now_iso8601};
 
-/// Resolve the SQLite store path for `project_dir`, mirroring
+/// Resolve the `SQLite` store path for `project_dir`, mirroring
 /// [`SqliteEventStore::for_project`]'s private resolver. The env override
 /// `MUSTARD_DB_PATH` wins; otherwise `{project_dir}/.claude/.harness/mustard.db`.
 ///
@@ -285,8 +285,7 @@ fn is_branch_delete_main(cmd: &str) -> bool {
     }
     let tokens: Vec<&str> = cmd.split_whitespace().collect();
     tokens.windows(2).any(|w| {
-        w[0] == "-d" && (w[1] == "main" || w[1] == "master")
-            || w[0] == "-D" && (w[1] == "main" || w[1] == "master")
+        (w[0] == "-d" || w[0] == "-D") && (w[1] == "main" || w[1] == "master")
     })
 }
 
@@ -401,29 +400,26 @@ fn mask_quoted_operators(cmd: &str) -> String {
     let mut out: Vec<u8> = Vec::with_capacity(cmd.len());
     let mut quote: Option<u8> = None;
     for &b in cmd.as_bytes() {
-        match quote {
-            Some(q) => {
-                if b == q {
-                    quote = None;
-                    out.push(b);
-                } else if matches!(b, b'&' | b'|' | b';' | b'>' | b'<' | b'`' | b'\n' | b'\r') {
-                    out.push(b' ');
-                } else {
-                    out.push(b);
-                }
-            }
-            None => {
-                if b == b'\'' || b == b'"' {
-                    quote = Some(b);
-                }
+        if let Some(q) = quote {
+            if b == q {
+                quote = None;
+                out.push(b);
+            } else if matches!(b, b'&' | b'|' | b';' | b'>' | b'<' | b'`' | b'\n' | b'\r') {
+                out.push(b' ');
+            } else {
                 out.push(b);
             }
+        } else {
+            if b == b'\'' || b == b'"' {
+                quote = Some(b);
+            }
+            out.push(b);
         }
     }
     String::from_utf8(out).unwrap_or_else(|_| cmd.to_string())
 }
 
-/// `[|&;]|\$\(|`|<<|>>` — a shell operator that marks a composed command.
+/// Shell operator that marks a composed command: `[|&;]`, `$(`, backtick, `<<`, `>>`.
 fn has_shell_operator(cmd: &str) -> bool {
     cmd.contains('|')
         || cmd.contains('&')
@@ -632,11 +628,8 @@ fn run_rtk_rewrite_subprocess_with_bin(cmd: &str, binary: &str) -> Option<String
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
 
-    let mut child = match command.spawn() {
-        Ok(child) => child,
-        // Path 1: binary not found / ENOENT — fail open.
-        Err(_) => return None,
-    };
+    // Path 1: binary not found / ENOENT — fail open.
+    let Ok(mut child) = command.spawn() else { return None };
 
     let (tx, rx) = std::sync::mpsc::channel();
     let stdout_handle = child.stdout.take();
@@ -1023,17 +1016,17 @@ fn commit_gate_mode() -> Mode {
 /// in warn-mode.
 fn is_strict_profile() -> bool {
     std::env::var("MUSTARD_HOOK_PROFILE")
-        .map(|v| v.trim().eq_ignore_ascii_case("strict"))
-        .unwrap_or(false)
+        .is_ok_and(|v| v.trim().eq_ignore_ascii_case("strict"))
 }
+
+const SENSITIVE_EXT: &[&str] = &[
+    ".env", ".pem", ".key", ".secret", ".p12", ".pfx", ".cer", ".crt",
+];
 
 /// `true` if a staged path matches a sensitive-file pattern. Mirrors the
 /// `sensitiveFiles` filter in `review-gate.js`.
 fn is_sensitive_path(path: &str) -> bool {
     let normalized = path.replace('\\', "/").to_ascii_lowercase();
-    const SENSITIVE_EXT: &[&str] = &[
-        ".env", ".pem", ".key", ".secret", ".p12", ".pfx", ".cer", ".crt",
-    ];
     if SENSITIVE_EXT.iter().any(|ext| normalized.ends_with(ext)) {
         return true;
     }
@@ -1240,6 +1233,9 @@ fn emit_commit_gate_event(
 /// - strict mode + a blocking finding (staged secret / broken build) → `Deny`;
 /// - any warnings → `Warn` (or `Deny` when the hook profile is `strict`);
 /// - no warnings → `None` (pass).
+// review_gate contains a single sequential logic block; splitting it would
+// require threading many local variables through helper fns with no clarity gain.
+#[allow(clippy::too_many_lines)]
 fn review_gate(cmd: &str, ctx: &Ctx, mode: Mode) -> Option<Verdict> {
     // Mode `off` — skip entirely.
     if mode == Mode::Off {
@@ -1430,7 +1426,9 @@ fn detect_recent_spec(project_dir: &str) -> Option<String> {
     let mut best: Option<(std::time::SystemTime, String)> = None;
     for entry in entries.filter_map(std::result::Result::ok) {
         let name = entry.file_name().to_string_lossy().into_owned();
-        if !name.ends_with(".json") || name.ends_with(".metrics.json") {
+        if !std::path::Path::new(&name)
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("json")) || name.ends_with(".metrics.json") {
             continue;
         }
         let Ok(mtime) = entry.metadata().and_then(|m| m.modified()) else {
@@ -1569,7 +1567,7 @@ impl Check for BashGuard {
                     // back to the `CLAUDE_MODEL` env var the harness sets per
                     // turn; empty string keeps the estimator on its default.
                     let model = std::env::var("CLAUDE_MODEL").unwrap_or_default();
-                    let saved = estimator::estimate_input_tokens(&cmd, &model) as i64;
+                    let saved = i64::from(estimator::estimate_input_tokens(&cmd, &model));
                     let saved = saved.max(1);
                     let rec = SavingsRecord {
                         ts: now_iso8601(),

@@ -28,9 +28,9 @@ impl Scanner for JavaScanner {
         let has = |d: &str| names.iter().any(|n| n == d);
         if has("domain") && has("application") && has("infrastructure") && has("ports") {
             "hexagonal".to_string()
-        } else if has("domain") && has("application") && has("infrastructure") {
-            "layered".to_string()
-        } else if has("controller") && has("service") && has("repository") {
+        } else if (has("domain") && has("application") && has("infrastructure"))
+            || (has("controller") && has("service") && has("repository"))
+        {
             "layered".to_string()
         } else {
             "minimal".to_string()

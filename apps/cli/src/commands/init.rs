@@ -142,6 +142,7 @@ pub fn init_with_templates(
         eprintln!("[mustard] warning: could not update global permissions: {err}");
     });
     ensure_rtk();
+    ensure_ripgrep();
 
     if options.cursor {
         install_cursor_adapter(templates_dir, &project_path, &claude_path);
@@ -571,6 +572,74 @@ fn install_rtk(pinned_rev: Option<&str>) -> bool {
             "curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/master/install.sh | sh",
         ))
     }
+}
+
+/// Ensure ripgrep (`rg`) is installed. Best-effort and fail-open: a missing
+/// `rg` — and a *failed* install — never blocks `init`.
+///
+/// Why: RTK's `grep`/`find` filters use `rg` as their search engine. When `rg`
+/// is missing (the default state on a fresh Windows install — `mustard init`
+/// installs `rtk` but Scoop's `rtk` manifest does not depend on `ripgrep`),
+/// RTK prints `Failed to resolve 'rg' via PATH, falling back to direct exec`
+/// on every invocation and falls back to system `grep`. The warning is
+/// harmless but pollutes every Bash tool output with ~50 input+output tokens.
+///
+/// Flow: if `rg` is already on PATH, return silently. Otherwise attempt
+/// auto-install via Scoop (Windows) or `cargo install ripgrep`; on Unix only
+/// print manual instructions (the package manager varies — apt/brew/pacman —
+/// and `rg` ships pre-installed on most modern dev distros).
+///
+/// Shared with `update`, which re-runs the same ripgrep guarantee.
+pub fn ensure_ripgrep() {
+    if rg_on_path() {
+        return;
+    }
+
+    println!("  ripgrep not found - attempting auto-install (silences RTK `rg` fallback warning)...");
+    if install_ripgrep() && rg_on_path() {
+        println!("  ripgrep installed");
+        return;
+    }
+
+    println!("  ripgrep auto-install skipped or unavailable - install manually:");
+    if cfg!(windows) {
+        println!("    Windows: scoop install ripgrep");
+        println!("         or: cargo install ripgrep");
+    } else if cfg!(target_os = "macos") {
+        println!("    macOS:   brew install ripgrep");
+    } else {
+        println!("    Linux:   apt install ripgrep | pacman -S ripgrep | dnf install ripgrep");
+    }
+}
+
+/// Whether `rg --version` succeeds (ripgrep reachable on PATH).
+fn rg_on_path() -> bool {
+    Command::new("rg")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// Best-effort ripgrep auto-install. Returns `true` only when an installer
+/// command exited successfully. Every spawn failure is swallowed.
+///
+/// - Windows: try `scoop install ripgrep` first, then `cargo install ripgrep`.
+/// - Unix: return `false` so the caller prints manual instructions (no single
+///   default package manager to invoke; `cargo install ripgrep` would compile
+///   from source and take minutes, which is hostile in an installer flow).
+fn install_ripgrep() -> bool {
+    let run_ok = |cmd: &mut Command| -> bool {
+        cmd.output().map(|o| o.status.success()).unwrap_or(false)
+    };
+
+    if cfg!(windows) {
+        if run_ok(Command::new("scoop").args(["install", "ripgrep"])) {
+            return true;
+        }
+        return run_ok(Command::new("cargo").args(["install", "ripgrep"]));
+    }
+    false
 }
 
 /// Install the experimental Cursor IDE adapter. Fail-open — a failure prints a

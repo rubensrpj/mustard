@@ -33,7 +33,7 @@
 //!
 //! ## Verdict note (guard-verify)
 //!
-//! `guard-verify.js` is a PostToolUse hook that writes the `decision:
+//! `guard-verify.js` is a `PostToolUse` hook that writes the `decision:
 //! "block"/"approve"` protocol. The `mustard-core` contract has one blocking
 //! [`Verdict::Deny`] and the dispatcher encodes it as `permissionDecision`.
 //! The **verdict** (block on a critical violation) is preserved exactly; only
@@ -77,7 +77,7 @@ fn project_dir(input: &HookInput, ctx: &Ctx) -> String {
 
 /// `true` if this is a `Write` or `Edit` tool invocation.
 fn is_write_or_edit(input: &HookInput) -> bool {
-    matches!(input.tool_name.as_deref(), Some("Write") | Some("Edit"))
+    matches!(input.tool_name.as_deref(), Some("Write" | "Edit"))
 }
 
 /// The basename (last `/`- or `\`-separated segment) of a path.
@@ -161,13 +161,17 @@ fn check_critical_rules(content: &str, rel: &str) -> Vec<String> {
         }
     }
     // Rule: `new \w+(Service|Repository)(` in a `.cs` file.
-    if p.ends_with(".cs") && content_has_new_service_or_repository(content) {
+    if std::path::Path::new(&p)
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("cs")) && content_has_new_service_or_repository(content) {
         violations.push(format!(
             "DIP: inject interface, NEVER concrete class (in {rel})"
         ));
     }
     // Rule: `\b(uint|int)\s+\w*[Ii]d\b` in a `.cs` file.
-    if p.ends_with(".cs") && content_has_int_id(content) {
+    if std::path::Path::new(&p)
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("cs")) && content_has_int_id(content) {
         violations.push(format!(
             "IDs must be Guid (UUIDv7), never int/uint (in {rel})"
         ));
@@ -346,11 +350,13 @@ fn is_word_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_'
 }
 
-/// Scan `.cs` import statements for cross-module Repository / DbContext
+/// Scan `.cs` import statements for cross-module Repository / `DbContext`
 /// imports. Port of `analyzeImports`.
 fn analyze_imports(rel: &str, content: &str) -> Vec<String> {
     let p = rel.replace('\\', "/");
-    if !p.ends_with(".cs") {
+    if !std::path::Path::new(&p)
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("cs")) {
         return Vec::new();
     }
     let Some(current_module) = module_of(rel) else {
@@ -723,7 +729,9 @@ fn run_dotnet_format(file_path: &str) {
             let mut sln = None;
             let mut csproj = None;
             for entry in entries {
-                if entry.file_name.ends_with(".sln") {
+                if std::path::Path::new(&entry.file_name)
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("sln")) {
                     sln = Some(entry.path.clone());
                 } else if entry.file_name.ends_with(".csproj") {
                     csproj = Some(entry.path.clone());
@@ -806,9 +814,8 @@ fn run_checklist_auto_mark(input: &HookInput, cwd: &str) {
             if norm_edited.ends_with(&target)
                 || norm_edited.contains(&format!("/{target}"))
                 || norm_edited == target
+                || basename(&target) == edited_base.to_ascii_lowercase()
             {
-                matched = true;
-            } else if basename(&target) == edited_base.to_ascii_lowercase() {
                 matched = true;
             }
         }
@@ -921,7 +928,9 @@ fn find_active_spec(cwd: &str) -> Option<(String, String)> {
     if let Ok(entries) = fs::read_dir(&states) {
         let mut best: Option<(SystemTime, std::path::PathBuf)> = None;
         for entry in entries {
-            if !entry.file_name.ends_with(".json") || entry.file_name.ends_with(".metrics.json") {
+            if !std::path::Path::new(&entry.file_name)
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("json")) || entry.file_name.ends_with(".metrics.json") {
                 continue;
             }
             let Ok(mtime) = fs::modified(&entry.path) else {

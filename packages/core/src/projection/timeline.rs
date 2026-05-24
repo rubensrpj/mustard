@@ -51,13 +51,12 @@ fn window_cutoff_ms(window: TimeWindow) -> Option<i64> {
 
 /// Today, 00:00:00 UTC, in epoch milliseconds. Reads from `SystemTime` —
 /// not pure, but only used when the caller asked for a windowed projection
-/// in memory. The SQLite reader path uses [`TimeWindow::sql_filter`] and
+/// in memory. The `SQLite` reader path uses [`TimeWindow::sql_filter`] and
 /// never calls this.
 fn today_cutoff_ms() -> i64 {
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
-        .unwrap_or(0);
+        .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX));
     // Truncate to start-of-day.
     now_ms - (now_ms % 86_400_000)
 }

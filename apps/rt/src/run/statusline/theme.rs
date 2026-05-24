@@ -12,6 +12,7 @@
 //! escape hatch is `MUSTARD_STATUSLINE_THEME=default`.
 
 use super::segment::{Segment, SegmentKind, SEGMENT_KIND_COUNT};
+use std::fmt::Write as _;
 
 /// Env-var read by [`ThemeId::from_env`].
 pub const ENV_VAR: &str = "MUSTARD_STATUSLINE_THEME";
@@ -271,19 +272,19 @@ fn render_powerline(theme: &Theme, segs: &[Segment], glyph: char) -> String {
         let bg = style.bg.map(Color::bg_seq).unwrap_or_default();
         let bold = if style.bold { BOLD } else { "" };
         // " text " — pad with spaces so the bg has breathing room
-        out.push_str(&format!("{bold}{fg}{bg} {} {RESET}", seg.text));
+        let _ = write!(out, "{bold}{fg}{bg} {} {RESET}", seg.text);
 
         // Transition (or end-cap) glyph
         if i < last {
             let next_style = theme.style_for(segs[i + 1].kind);
             let prev_bg_as_fg = style.bg.map(Color::fg_seq).unwrap_or_default();
             let next_bg = next_style.bg.map(Color::bg_seq).unwrap_or_default();
-            out.push_str(&format!("{prev_bg_as_fg}{next_bg}{glyph}{RESET}"));
+            let _ = write!(out, "{prev_bg_as_fg}{next_bg}{glyph}{RESET}");
         } else {
             // End-cap: the glyph in the last segment's bg color, on the
             // terminal background.
             let prev_bg_as_fg = style.bg.map(Color::fg_seq).unwrap_or_default();
-            out.push_str(&format!("{prev_bg_as_fg}{BG_RESET}{glyph}{RESET}"));
+            let _ = write!(out, "{prev_bg_as_fg}{BG_RESET}{glyph}{RESET}");
         }
     }
     out

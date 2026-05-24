@@ -36,7 +36,7 @@ use std::path::{Path, PathBuf};
 use crate::run::current_spec;
 use crate::util::now_iso8601;
 
-/// Resolve the harness SQLite path the same way [`SqliteEventStore::for_project`]
+/// Resolve the harness `SQLite` path the same way [`SqliteEventStore::for_project`]
 /// does internally — env override `MUSTARD_DB_PATH` wins, else
 /// `{project_dir}/.claude/.harness/mustard.db`. Kept private here so the
 /// `mustard-core` surface need not grow a public connection accessor for W2.
@@ -80,7 +80,7 @@ fn record_routing_downgrade(
     };
     // Approximate savings as the input-token count we would have spent on the
     // more expensive tier — the dashboard can re-price via the pricing table.
-    let tokens = estimator::estimate_input_tokens(prompt, from_model) as i64;
+    let tokens = i64::from(estimator::estimate_input_tokens(prompt, from_model));
     let tokens = tokens.max(1);
     let agent_id = if subagent_type.is_empty() {
         "model_routing".to_string()
@@ -205,7 +205,9 @@ fn load_newest_pipeline_state(project_dir: &str) -> Option<PipelineState> {
     let mut best: Option<(std::time::SystemTime, std::path::PathBuf)> = None;
     for entry in entries.filter_map(std::result::Result::ok) {
         let name = entry.file_name().to_string_lossy().into_owned();
-        if !name.ends_with(".json") || name.ends_with(".metrics.json") {
+        if !std::path::Path::new(&name)
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("json")) || name.ends_with(".metrics.json") {
             continue;
         }
         let Ok(mtime) = entry.metadata().and_then(|m| m.modified()) else {
@@ -317,6 +319,9 @@ fn determine_expected(subagent_type: &str, state: Option<&PipelineState>) -> Exp
 /// where pipeline-state files are read from; `mode` is the resolved
 /// `MUSTARD_MODEL_GATE_MODE` — passed in so the gate is testable without
 /// mutating process environment.
+// model_routing_gate is a single sequential flow; splitting would require threading
+// many local variables without clarity gain.
+#[allow(clippy::too_many_lines)]
 fn model_routing_gate(input: &HookInput, project_dir: &str, mode: GateMode) -> Verdict {
     let tool_input = &input.tool_input;
     let raw_model = tool_input
@@ -521,7 +526,7 @@ impl Check for ModelRoutingGate {
         if ctx.trigger != Some(Trigger::PreToolUse) {
             return Ok(Verdict::Allow);
         }
-        if !matches!(input.tool_name.as_deref(), Some("Task") | Some("Agent")) {
+        if !matches!(input.tool_name.as_deref(), Some("Task" | "Agent")) {
             return Ok(Verdict::Allow);
         }
         let project_dir = if ctx.project_dir.is_empty() {

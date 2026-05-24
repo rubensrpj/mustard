@@ -20,7 +20,7 @@ fn die(code: i32, msg: &str) -> ! {
 /// Resolve a spec argument to a `spec.md` path.
 fn resolve_spec_path(spec: &str, cwd: &Path) -> Option<PathBuf> {
     let p = Path::new(spec);
-    if p.is_absolute() && spec.ends_with(".md") && p.exists() {
+    if p.is_absolute() && std::path::Path::new(spec).extension().is_some_and(|ext| ext.eq_ignore_ascii_case("md")) && p.exists() {
         return Some(p.to_path_buf());
     }
     let flat = cwd
@@ -45,24 +45,23 @@ fn find_checklist_section(lines: &[&str]) -> Option<(usize, usize)> {
     let start = lines.iter().position(|l| {
         // `^##\s+Checklist\b`
         l.strip_prefix("##")
-            .map(|r| {
+            .is_some_and(|r| {
                 let t = r.trim_start_matches([' ', '\t']);
                 t.len() != r.len()
                     && {
                         let lower = t.to_lowercase();
-                        lower.strip_prefix("checklist").map_or(false, |tail| {
+                        lower.strip_prefix("checklist").is_some_and(|tail| {
                             tail.chars()
                                 .next()
-                                .map_or(true, |c| !(c.is_ascii_alphanumeric() || c == '_'))
+                                .is_none_or(|c| !(c.is_ascii_alphanumeric() || c == '_'))
                         })
                     }
             })
-            .unwrap_or(false)
     })? + 1;
     let mut end = lines.len();
     for (i, l) in lines.iter().enumerate().skip(start) {
         // `^##\s`
-        if l.strip_prefix("##").map(|r| r.starts_with([' ', '\t'])).unwrap_or(false) {
+        if l.strip_prefix("##").is_some_and(|r| r.starts_with([' ', '\t'])) {
             end = i;
             break;
         }
@@ -122,8 +121,7 @@ pub fn run(spec: Option<&str>, item: Option<&str>, line: Option<usize>, cwd_arg:
     }
 
     let cwd = cwd_arg
-        .map(PathBuf::from)
-        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+        .map_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")), PathBuf::from);
     let Some(spec_path) = resolve_spec_path(spec, &cwd) else {
         die(1, &format!("spec not found: {spec}"));
     };
@@ -156,8 +154,8 @@ pub fn run(spec: Option<&str>, item: Option<&str>, line: Option<usize>, cwd_arg:
     } else {
         let item = item.unwrap_or("");
         let mut found: Option<usize> = None;
-        for i in start..end {
-            if let Some(cb) = parse_checkbox(&lines[i]) {
+        for (i, line) in lines.iter().enumerate().take(end).skip(start) {
+            if let Some(cb) = parse_checkbox(line) {
                 if cb.state == ' ' && cb.text.contains(item) {
                     found = Some(i);
                     break;
@@ -168,8 +166,8 @@ pub fn run(spec: Option<&str>, item: Option<&str>, line: Option<usize>, cwd_arg:
             Some(i) => i,
             None => {
                 // Idempotency: was the only match already `[x]`?
-                for i in start..end {
-                    if let Some(cb) = parse_checkbox(&lines[i]) {
+                for line in lines.iter().take(end).skip(start) {
+                    if let Some(cb) = parse_checkbox(line) {
                         if (cb.state == 'x' || cb.state == 'X') && cb.text.contains(item) {
                             println!("already-marked");
                             std::process::exit(0);
@@ -182,10 +180,7 @@ pub fn run(spec: Option<&str>, item: Option<&str>, line: Option<usize>, cwd_arg:
     };
 
     let new_line = {
-        let cb = match parse_checkbox(&lines[target_idx]) {
-            Some(c) => c,
-            None => die(1, "target line is not a checkbox"),
-        };
+        let Some(cb) = parse_checkbox(&lines[target_idx]) else { die(1, "target line is not a checkbox") };
         if cb.state == 'x' || cb.state == 'X' {
             println!("already-marked");
             std::process::exit(0);

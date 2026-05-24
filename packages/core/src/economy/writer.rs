@@ -161,7 +161,7 @@ pub fn injection_savings_tokens(skeleton_text: &str) -> i64 {
 /// The legacy `spans` columns carry over 1:1; `started_at` is derived from the
 /// ISO timestamp, and the W4 `tool_use_id` attribution key is pulled out of the
 /// lenient `extra` map (set by W3 adapters when the upstream payload exposes
-/// Anthropic's tool_use id). Adapters that have already resolved `spec` /
+/// Anthropic's `tool_use` id). Adapters that have already resolved `spec` /
 /// `wave_id` / `agent_id` (the Wave 2 write-time attribution) carry them on the
 /// record; the rest stay `None`.
 fn span_to_run(rec: SpanRecord) -> RunUsage {
@@ -218,6 +218,8 @@ fn iso_to_epoch_ms(ts: &str) -> i64 {
     // into core today); a naive ISO parse covers the format Mustard's hooks
     // emit (`YYYY-MM-DDTHH:MM:SS[.sss]Z`). Anything fancier — timezones,
     // sub-millisecond — is delegated to the W3 OTEL/JSONL adapters.
+    // many_single_char_names: single-char names are idiomatic for Howard Hinnant's date algorithm.
+    #[allow(clippy::many_single_char_names)]
     fn parse(ts: &str) -> Option<i64> {
         // YYYY MM DD HH MM SS [millis]
         let bytes = ts.as_bytes();

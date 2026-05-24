@@ -11,6 +11,8 @@
 //! page it can still emit valid JSON instead. The functions here are pure —
 //! they build a `String` and never touch the filesystem or exit the process.
 
+use std::fmt::Write as _;
+
 /// Embedded stylesheet — kept terse; the report is a utilitarian artifact, not
 /// a marketing page. Dark-first to match the Mustard dashboard aesthetic.
 const STYLE: &str = "\
@@ -111,13 +113,13 @@ impl Report {
 pub fn table(headers: &[&str], rows: &[Vec<String>]) -> String {
     let mut html = String::from("<table><thead><tr>");
     for h in headers {
-        html.push_str(&format!("<th>{}</th>", escape(h)));
+        let _ = write!(html, "<th>{}</th>", escape(h));
     }
     html.push_str("</tr></thead><tbody>");
     for row in rows {
         html.push_str("<tr>");
         for cell in row {
-            html.push_str(&format!("<td>{}</td>", escape(cell)));
+            let _ = write!(html, "<td>{}</td>", escape(cell));
         }
         html.push_str("</tr>");
     }

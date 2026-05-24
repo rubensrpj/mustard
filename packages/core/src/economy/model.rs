@@ -171,8 +171,8 @@ pub struct SavingsRecord {
 ///
 /// Tracked so the W5 dashboard can answer "are we paying for the same prefix
 /// twice?" (prefix-stable ratio), "is wave-slice doing its job?"
-/// (slice_bytes / prompt_size_bytes), and "how much of my token spend is
-/// retry overhead?" (retry_overhead_bytes / prompt_size_bytes).
+/// (`slice_bytes` / `prompt_size_bytes`), and "how much of my token spend is
+/// retry overhead?" (`retry_overhead_bytes` / `prompt_size_bytes`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContextCostFrame {
     /// ISO-8601 wall-clock timestamp of the dispatch.

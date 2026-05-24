@@ -46,7 +46,7 @@ const DB_PATH_ENV: &str = "MUSTARD_DB_PATH";
 /// Directory name of the harness store, under `.claude/`.
 const HARNESS_DIR: &str = ".claude/.harness";
 
-/// File name of the SQLite database within the harness directory.
+/// File name of the `SQLite` database within the harness directory.
 const DB_FILE: &str = "mustard.db";
 
 /// Open the harness database for `project_path`, applying schema + migrations.

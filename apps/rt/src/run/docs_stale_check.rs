@@ -203,8 +203,7 @@ fn is_target(path: &Path) -> bool {
                 if parent
                     .file_name()
                     .and_then(|n| n.to_str())
-                    .map(|n| n == ".claude")
-                    .unwrap_or(false)
+                    .is_some_and(|n| n == ".claude")
                 {
                     return true;
                 }
@@ -244,7 +243,7 @@ fn is_nested_install_claude(dir: &Path, root: &Path) -> bool {
     // Treat any `apps/<x>/.claude` under the repo root as nested install.
     // Comparing path equality rather than canonicalising — both come from
     // walking down `root` so they share the same prefix bytes.
-    grandparent.parent().map(|p| p == root).unwrap_or(false)
+    grandparent.parent().is_some_and(|p| p == root)
 }
 
 /// Recursively walk `dir`, calling `scan_file` on every matching markdown file.
@@ -317,8 +316,7 @@ pub fn run(from: Option<&str>, strict: bool, include_nested: bool) {
     // CLI flag wins; env var is the documented equivalent.
     let include_nested = include_nested
         || std::env::var("MUSTARD_DOCS_AUDIT_INCLUDE_NESTED")
-            .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE" | "yes"))
-            .unwrap_or(false);
+            .is_ok_and(|v| matches!(v.as_str(), "1" | "true" | "TRUE" | "yes"));
 
     let mut errors: Vec<String> = Vec::new();
     let audits = load_audits(&audit_path, &mut errors, from);

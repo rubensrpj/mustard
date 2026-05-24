@@ -58,6 +58,12 @@ tempfile = { workspace = true }
 # warned via `eprintln!` and the loop continues.
 notify = { workspace = true }
 
+# Data-parallelism for the single-pass file visitor in `scan::file_utils::visit`.
+# The visitor walks each subproject once and reads every relevant file in
+# parallel; rayon's work-stealing pool turns the per-file I/O into a near-linear
+# speedup on multi-core machines. Pinned via the workspace table.
+rayon = { workspace = true }
+
 [dev-dependencies]
 
 # Inherit the workspace lint table (pedantic = warn, unwrap_used = deny,

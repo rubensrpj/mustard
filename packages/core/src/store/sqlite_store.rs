@@ -1,7 +1,7 @@
 //! The SQLite-backed harness store — `.claude/.harness/mustard.db`.
 //!
 //! [`SqliteEventStore`] is the single store the harness reads from and writes
-//! to. It persists events in one SQLite database opened in **WAL mode**: WAL
+//! to. It persists events in one `SQLite` database opened in **WAL mode**: WAL
 //! lets a writer and any number of readers proceed concurrently, and a
 //! per-connection `busy_timeout` makes a contended write *wait* instead of
 //! erroring — the property the harness needs when several hooks fire in
@@ -37,7 +37,7 @@ use std::path::{Path, PathBuf};
 /// Directory name of the harness store, under `.claude/`.
 const HARNESS_DIR: &str = ".harness";
 
-/// Default file name of the SQLite database.
+/// Default file name of the `SQLite` database.
 const DB_FILE: &str = "mustard.db";
 
 /// Environment variable overriding the resolved database path.
@@ -174,7 +174,7 @@ pub struct AmendWindow {
 /// to.
 #[derive(Debug)]
 pub struct SqliteEventStore {
-    /// The open SQLite connection. WAL mode + `busy_timeout` are set on open.
+    /// The open `SQLite` connection. WAL mode + `busy_timeout` are set on open.
     conn: Connection,
     /// The database path, kept for diagnostics ([`SqliteEventStore::path`]).
     path: PathBuf,
@@ -187,7 +187,7 @@ impl SqliteEventStore {
     /// [`BUSY_TIMEOUT_MS`] busy timeout and `synchronous = NORMAL`. The
     /// idempotent [`SCHEMA_SQL`] and the [`migrations`](super::migrations)
     /// ladder are applied **only when the database is not already at the latest
-    /// schema version** — gated by SQLite's `PRAGMA user_version`, a header
+    /// schema version** — gated by `SQLite`'s `PRAGMA user_version`, a header
     /// integer that costs nothing to read (no table access). The parent
     /// directory is created if it does not exist.
     ///
@@ -944,6 +944,8 @@ impl SqliteEventStore {
                 v: SCHEMA_VERSION,
                 ts: row.get(1)?,
                 session_id: row.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                // cast_sign_loss/cast_possible_truncation: wave numbers are non-negative and small.
+                #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
                 wave: row.get::<_, Option<i64>>(3)?.unwrap_or(0) as u32,
                 actor: Actor {
                     kind: parse_actor_kind(actor_kind.as_deref()),

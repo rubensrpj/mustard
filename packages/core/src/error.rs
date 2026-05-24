@@ -67,7 +67,7 @@ pub enum Error {
     #[error("check failed: {0}")]
     CheckFailed(String),
 
-    /// A SQLite operation failed (open, schema apply, statement, row decode).
+    /// A `SQLite` operation failed (open, schema apply, statement, row decode).
     /// Backs [`SqliteEventStore`](crate::store::sqlite_store::SqliteEventStore);
     /// the string is the underlying `rusqlite` message. Callers fail open —
     /// telemetry is never load-bearing — so a failed open or query degrades

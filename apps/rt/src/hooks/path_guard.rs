@@ -56,6 +56,9 @@ fn sensitive_pattern_match(path: &str) -> Option<&'static str> {
         return Some("credentials");
     }
     // /\.pem$/i, /\.key$/i, /\.pfx$/i, /\.p12$/i — extension.
+    // `lower` is already ASCII-lowercased, so ends_with is case-insensitive here.
+    #[allow(clippy::case_sensitive_file_extension_comparisons)]
+    {
     if lower.ends_with(".pem") {
         return Some("\\.pem$");
     }
@@ -67,6 +70,7 @@ fn sensitive_pattern_match(path: &str) -> Option<&'static str> {
     }
     if lower.ends_with(".p12") {
         return Some("\\.p12$");
+    }
     }
     // /\.git[/\\]config$/i — `.git/config` at the end of the path.
     if lower.ends_with(".git/config") {
@@ -159,7 +163,9 @@ fn read_newest_fresh_state(cwd: &str) -> Option<serde_json::Value> {
     let entries = fs::read_dir(&dir).ok()?;
     let mut best: Option<(SystemTime, std::path::PathBuf)> = None;
     for entry in entries {
-        if !entry.file_name.ends_with(".json") || entry.file_name.ends_with(".metrics.json") {
+        if !std::path::Path::new(&entry.file_name)
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("json")) || entry.file_name.ends_with(".metrics.json") {
             continue;
         }
         let Ok(mtime) = fs::modified(&entry.path) else {
@@ -205,7 +211,7 @@ fn resolve_spec_file(
         .and_then(|v| v.is_wave_plan)
         .unwrap_or(false);
     if is_wave_plan {
-        let wave = view.map(|v| v.current_wave).unwrap_or(1);
+        let wave = view.map_or(1, |v| v.current_wave);
         let prefix = format!("wave-{wave}-");
         if let Ok(entries) = fs::read_dir(&base) {
             for entry in entries.into_iter().filter(|e| e.is_dir && e.file_name.starts_with(&prefix)) {
@@ -299,7 +305,7 @@ fn is_other_h2(line: &str) -> bool {
     t.starts_with("## ") && t.len() > 3 && !t.as_bytes()[3].is_ascii_whitespace()
 }
 
-/// Every backtick-delimited span on a line — JS `/`([^`\n]+?)`/g`.
+/// Every backtick-delimited span on a line — JS pattern `[^\`\n]+?` between backticks.
 fn backtick_spans(line: &str) -> Vec<&str> {
     let mut out = Vec::new();
     let bytes = line.as_bytes();
@@ -313,9 +319,8 @@ fn backtick_spans(line: &str) -> Vec<&str> {
                 }
                 i = i + 1 + rel + 1;
                 continue;
-            } else {
-                break;
             }
+            break;
         }
         i += 1;
     }
@@ -542,7 +547,7 @@ fn emit_boundary_event(
 /// warn mode.
 ///
 /// Wave-3a migration: spec fields that are pipeline-state-style (`isWavePlan`,
-/// `currentWave`, `status`) are now derived from the SQLite projection via
+/// `currentWave`, `status`) are now derived from the `SQLite` projection via
 /// `pipeline_state_for_spec`. The JSON state file is still consulted for
 /// `specName` (filesystem identity — not in the projection) and for the mtime
 /// freshness gate. Fail-open: projection `None` → treat status as empty and

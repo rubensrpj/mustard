@@ -24,10 +24,10 @@ const TOP_FILES_CAP: usize = 10;
 /// Fold the entire event stream into a [`WorkspaceSummary`].
 ///
 /// `now_ms` is the current wall-clock time in epoch milliseconds. Tests pass
-/// a fixed value for deterministic output; the SQLite reader path passes
+/// a fixed value for deterministic output; the `SQLite` reader path passes
 /// `SystemTime::now()`.
 #[must_use]
-#[allow(deprecated)] // SpecTrack still keys off the legacy SpecStatus this wave.
+#[allow(deprecated, clippy::too_many_lines)] // SpecTrack still keys off the legacy SpecStatus this wave.
 pub fn project_workspace(events: &[HarnessEvent], now_ms: i64) -> WorkspaceSummary {
     if events.is_empty() {
         return WorkspaceSummary::empty();
@@ -238,7 +238,7 @@ fn build_track(spec: &str, events: &[HarnessEvent]) -> SpecTrack {
     }
 }
 
-/// Build the five phase segments for a SpecTrack.
+/// Build the five phase segments for a `SpecTrack`.
 #[allow(deprecated)] // segment colouring still keys off the legacy SpecStatus this wave.
 fn build_segments(current: Option<Phase>, status: SpecStatus) -> Vec<PhaseSegment> {
     let target_idx = current.map(Phase::index);

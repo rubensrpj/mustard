@@ -9,6 +9,7 @@
 use super::theme::Color;
 use crate::run::rtk_gain::get_rtk_gain;
 use serde_json::Value;
+use std::fmt::Write as _;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
@@ -67,8 +68,7 @@ impl Segment {
 pub fn module_segment(cwd: &Path) -> Segment {
     let module = cwd
         .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| "?".to_string());
+        .map_or_else(|| "?".to_string(), |n| n.to_string_lossy().to_string());
     Segment::new(SegmentKind::Module, module)
 }
 
@@ -96,13 +96,13 @@ pub fn git_segment(cwd: &Path) -> Option<Segment> {
     }
     let mut status = String::new();
     if staged > 0 {
-        status.push_str(&format!("+{staged}"));
+        let _ = write!(status, "+{staged}");
     }
     if modified > 0 {
-        status.push_str(&format!("~{modified}"));
+        let _ = write!(status, "~{modified}");
     }
     if untracked > 0 {
-        status.push_str(&format!("?{untracked}"));
+        let _ = write!(status, "?{untracked}");
     }
     let suffix = if status.is_empty() {
         " \u{2713}".to_string()
@@ -207,10 +207,10 @@ pub fn diff_segment(data: &Value) -> Option<Segment> {
     }
     let mut parts = String::new();
     if la > 0 {
-        parts.push_str(&format!("+{la}"));
+        let _ = write!(parts, "+{la}");
     }
     if lr > 0 {
-        parts.push_str(&format!("-{lr}"));
+        let _ = write!(parts, "-{lr}");
     }
     Some(Segment::new(SegmentKind::Diff, parts))
 }

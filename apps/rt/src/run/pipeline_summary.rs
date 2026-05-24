@@ -244,7 +244,7 @@ fn build_model(header: &Header, text: &str, state: &Value) -> Model {
     let ac_done: Vec<&Ac> = ac_list.iter().filter(|a| a.done).collect();
     let ac_failed: Vec<&Ac> = ac_list.iter().filter(|a| !a.done).collect();
     let concerns = section_for(text, "concerns").map(|s| parse_bullets(&s)).unwrap_or_default();
-    let checklist = section_for(text, "tasks").map(|s| parse_checklist(&s)).unwrap_or((0, 0));
+    let checklist = section_for(text, "tasks").map_or((0, 0), |s| parse_checklist(&s));
     let files = section_for(text, "files").map(|s| parse_files(&s)).unwrap_or_default();
 
     // Done lines.

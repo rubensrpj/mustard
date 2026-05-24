@@ -101,13 +101,11 @@ fn file_exists(dir: &Path, pattern: &str) -> bool {
     if parts.len() != 2 {
         return false;
     }
-    fs::read_dir(dir)
-        .map(|entries| {
-            entries.into_iter().any(|e| {
-                e.file_name.starts_with(parts[0]) && e.file_name.ends_with(parts[1])
-            })
+    fs::read_dir(dir).is_ok_and(|entries| {
+        entries.into_iter().any(|e| {
+            e.file_name.starts_with(parts[0]) && e.file_name.ends_with(parts[1])
         })
-        .unwrap_or(false)
+    })
 }
 
 /// `true` if `dir_name` exists as a directory inside `base` (or one level deep).

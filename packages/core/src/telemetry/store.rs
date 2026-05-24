@@ -1,6 +1,6 @@
 //! The dedicated telemetry store — `.claude/.harness/telemetry.db`.
 //!
-//! [`TelemetryStore`] owns a SQLite database that is **independent** of
+//! [`TelemetryStore`] owns a `SQLite` database that is **independent** of
 //! `mustard.db`. The harness opens `mustard.db` on every tool use; keeping the
 //! high-volume telemetry tables (`usage_totals`, `run_usage`,
 //! `run_attribution`) in a separate file means that hot path never pays to
@@ -50,7 +50,7 @@ const SCHEMA_SQL: &str = include_str!("schema.sql");
 /// for the lifetime of the store; it is not `Clone`.
 #[derive(Debug)]
 pub struct TelemetryStore {
-    /// The open SQLite connection. WAL + pragmas are set on open.
+    /// The open `SQLite` connection. WAL + pragmas are set on open.
     conn: Connection,
     /// The database path, kept for diagnostics.
     path: PathBuf,

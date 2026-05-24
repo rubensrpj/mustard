@@ -43,22 +43,6 @@ pub struct MetricRow {
     pub attrs: String,
 }
 
-/// One projected log record — the argument bundle for [`Store::upsert_log`].
-#[derive(Debug, Clone, PartialEq)]
-pub struct LogRow {
-    /// Minute-floored ms-epoch — now the `updated_at` freshness signal.
-    pub ts_bucket: i64,
-    /// The log's `body.stringValue`, or `"log"` when absent.
-    pub metric: String,
-    /// `session.id` attribute, if present.
-    pub session_id: Option<String>,
-    /// `model` attribute, if present.
-    pub model: Option<String>,
-    /// JSON of all the log's attributes. Retained on the projection struct but
-    /// no longer persisted.
-    pub attrs: String,
-}
-
 /// A handle on the dedicated `telemetry.db` (`usage_totals`), plus the
 /// project root for the on-demand `mustard.db` open `subtractions_since` needs.
 pub struct Store {
@@ -137,20 +121,6 @@ impl Store {
             },
         )
         .map_err(to_sqlite_err)
-    }
-
-    /// Drop one log record — no longer persisted.
-    ///
-    /// Log bodies arrive as OTLP log records (`claude_code.api_request`,
-    /// `user_prompt`, …); none of them is a `telemetry::CONSUMED_METRICS` name,
-    /// so the dashboard never reads a log-bodied row. Persisting them only grew
-    /// `usage_totals` with dead weight, so this is now a no-op that the projection
-    /// loop still calls (keeping the public signature stable). Always `Ok`.
-    ///
-    /// # Errors
-    /// Never errors; the `Result` is retained for signature compatibility.
-    pub fn upsert_log(&self, _row: &LogRow) -> rusqlite::Result<()> {
-        Ok(())
     }
 
     /// One-time cleanup: delete every `usage_totals` row whose `metric` is not in
@@ -323,21 +293,6 @@ mod tests {
         other.session_id = Some("s2".to_string());
         store.upsert_metric(&other).unwrap();
         assert_eq!(store.otel_row_count().unwrap(), 2);
-    }
-
-    #[test]
-    fn log_upsert_is_a_no_op() {
-        let store = mem_store();
-        let log = LogRow {
-            ts_bucket: 60_000,
-            metric: "claude_code.api_request".to_string(),
-            session_id: Some("s1".to_string()),
-            model: Some("opus".to_string()),
-            attrs: "{}".to_string(),
-        };
-        // Logs are no longer persisted — no consumed metric arrives via logs.
-        store.upsert_log(&log).unwrap();
-        assert_eq!(store.otel_row_count().unwrap(), 0);
     }
 
     #[test]

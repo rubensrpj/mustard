@@ -44,8 +44,7 @@ fn input_cwd(input: &Value) -> String {
         .get("cwd")
         .and_then(Value::as_str)
         .filter(|s| !s.is_empty())
-        .map(str::to_string)
-        .unwrap_or_else(project_dir)
+        .map_or_else(project_dir, str::to_string)
 }
 
 /// Truncate `text` to `max_len`, preferring a sentence boundary.
@@ -74,7 +73,9 @@ fn resolve_session_prefix(project_dir: &Path) -> String {
     if let Ok(entries) = fs::read_dir(&state_dir) {
         for entry in entries {
             let name = entry.file_name.clone();
-            if !name.ends_with(".json") || name == "_queue.json" {
+            if !std::path::Path::new(&name)
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("json")) || name == "_queue.json" {
                 continue;
             }
             if let Ok(text) = fs::read_to_string(&entry.path) {
@@ -135,7 +136,7 @@ fn run_agent(input: &Value) {
         "details": input.get("details").cloned().unwrap_or_else(|| json!({})),
     });
     if let Ok(text) = serde_json::to_string_pretty(&entry) {
-        let _ = fs::write_atomic(&mem_dir.join(&filename), text.as_bytes());
+        let _ = fs::write_atomic(mem_dir.join(&filename), text.as_bytes());
     }
 
     // Rolling index.
@@ -157,7 +158,7 @@ fn run_agent(input: &Value) {
         let excess = index.len() - AGENT_CAP;
         for old in index.drain(..excess) {
             if let Some(f) = old.get("file").and_then(Value::as_str) {
-                let _ = fs::remove_file(&mem_dir.join(f));
+                let _ = fs::remove_file(mem_dir.join(f));
             }
         }
     }
@@ -220,7 +221,7 @@ pub(crate) fn insert_decision(
     context: Option<&str>,
     at: Option<&str>,
 ) -> rusqlite::Result<()> {
-    let at_val = at.map(str::to_string).unwrap_or_else(now_iso8601);
+    let at_val = at.map_or_else(now_iso8601, str::to_string);
     conn.execute(
         "INSERT INTO memory_decisions (content, source, context, at) VALUES (?1, ?2, ?3, ?4)",
         params![content, source, context, at_val],
@@ -236,7 +237,7 @@ pub(crate) fn insert_lesson(
     context: Option<&str>,
     at: Option<&str>,
 ) -> rusqlite::Result<()> {
-    let at_val = at.map(str::to_string).unwrap_or_else(now_iso8601);
+    let at_val = at.map_or_else(now_iso8601, str::to_string);
     conn.execute(
         "INSERT INTO memory_lessons (content, source, context, at) VALUES (?1, ?2, ?3, ?4)",
         params![content, source, context, at_val],
@@ -295,7 +296,7 @@ fn run_decision(input: &Value) {
         // direct rusqlite connection to the same DB file for the INSERT.
         let db_path = store.path().to_path_buf();
         if let Ok(conn) = rusqlite::Connection::open(&db_path) {
-            let _ = conn.busy_timeout(std::time::Duration::from_millis(5_000));
+            let _ = conn.busy_timeout(std::time::Duration::from_secs(5));
             let result = if entry_type == "decision" {
                 insert_decision(
                     &conn,
@@ -354,7 +355,7 @@ fn run_knowledge(input: &Value) {
     if let Ok(store) = store_result {
         let db_path = store.path().to_path_buf();
         if let Ok(conn) = rusqlite::Connection::open(&db_path) {
-            let _ = conn.busy_timeout(std::time::Duration::from_millis(5_000));
+            let _ = conn.busy_timeout(std::time::Duration::from_secs(5));
             if let Err(e) =
                 upsert_knowledge_pattern(&conn, &pattern, confidence, source.as_deref(), &now, &now)
             {
@@ -435,7 +436,7 @@ fn run_list(grouped: bool, format: &str) {
             return;
         }
     };
-    let _ = conn.busy_timeout(std::time::Duration::from_millis(3_000));
+    let _ = conn.busy_timeout(std::time::Duration::from_secs(3));
 
     let mut rows: Vec<MemoryRow> = Vec::new();
 
@@ -447,7 +448,7 @@ fn run_list(grouped: bool, format: &str) {
             Ok(s) => s,
             Err(_) => {
                 // Table may not exist in very old installs; skip silently.
-                conn.prepare("SELECT 1 WHERE 0").unwrap()
+                conn.prepare("SELECT 1 WHERE 0").expect("static SQL is always valid")
             }
         };
         if let Ok(iter) = stmt.query_map([], |row| {
@@ -462,8 +463,7 @@ fn run_list(grouped: bool, format: &str) {
                 // pattern is stored as "name: description" → split on first ':'
                 let (name, description) = item.0
                     .split_once(':')
-                    .map(|(n, d)| (n.trim().to_string(), d.trim().to_string()))
-                    .unwrap_or_else(|| (item.0.clone(), String::new()));
+                    .map_or_else(|| (item.0.clone(), String::new()), |(n, d)| (n.trim().to_string(), d.trim().to_string()));
                 rows.push(MemoryRow {
                     entry_type: "pattern".to_string(),
                     name,
@@ -482,7 +482,7 @@ fn run_list(grouped: bool, format: &str) {
             "SELECT content, source, at FROM memory_decisions ORDER BY at DESC LIMIT 50",
         ) {
             Ok(s) => s,
-            Err(_) => conn.prepare("SELECT 1 WHERE 0").unwrap(),
+            Err(_) => conn.prepare("SELECT 1 WHERE 0").expect("static SQL is always valid"),
         };
         if let Ok(iter) = stmt.query_map([], |row| {
             Ok((
@@ -511,7 +511,7 @@ fn run_list(grouped: bool, format: &str) {
             "SELECT content, source, at FROM memory_lessons ORDER BY at DESC LIMIT 50",
         ) {
             Ok(s) => s,
-            Err(_) => conn.prepare("SELECT 1 WHERE 0").unwrap(),
+            Err(_) => conn.prepare("SELECT 1 WHERE 0").expect("static SQL is always valid"),
         };
         if let Ok(iter) = stmt.query_map([], |row| {
             Ok((
@@ -559,7 +559,7 @@ fn render_grouped_table(rows: &[MemoryRow]) {
         for row in &group {
             let name_col = truncate_col(&row.name, 46);
             let desc_col = truncate_col(&row.description, 37);
-            let conf_col = row.confidence.map(|c| format!("{:.2}", c)).unwrap_or_else(|| "-".to_string());
+            let conf_col = row.confidence.map_or_else(|| "-".to_string(), |c| format!("{c:.2}"));
             let seen_col = row.last_seen.clone().unwrap_or_else(|| "-".to_string());
             println!("| {name_col:<46} | {desc_col:<37} | {conf_col:<10} | {seen_col:<10} |");
         }

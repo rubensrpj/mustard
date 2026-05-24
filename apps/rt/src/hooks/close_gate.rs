@@ -102,7 +102,9 @@ fn is_pipeline_state_file(file_path: &str) -> bool {
     let Some(rest) = after.strip_prefix('/') else {
         return false;
     };
-    !rest.contains('/') && rest.ends_with(".json")
+    !rest.contains('/') && std::path::Path::new(rest)
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("json"))
 }
 
 /// Extract the post-write content of a Write/Edit invocation. `Write` uses
@@ -483,7 +485,7 @@ fn unchecked_item_text(line: &str) -> Option<String> {
 // ---------------------------------------------------------------------------
 
 /// The last `qa.result` for a spec. Returns `(found, overall, failed_count)`.
-/// Port of `findLastQAResult` — a single replay over the SQLite harness store.
+/// Port of `findLastQAResult` — a single replay over the `SQLite` harness store.
 fn find_last_qa_result(cwd: &str, spec: Option<&str>) -> (bool, Option<String>, usize) {
     let events = SqliteEventStore::for_project(cwd)
         .and_then(|store| store.replay())
@@ -538,7 +540,7 @@ struct MustardCommands {
 /// Read the command fields from `mustard.json`. `None` when the file is absent
 /// or unreadable (the JS `readMustardCommands` returns `null`).
 fn read_mustard_commands(cwd: &str) -> Option<MustardCommands> {
-    let text = fs::read_to_string(&Path::new(cwd).join("mustard.json")).ok()?;
+    let text = fs::read_to_string(Path::new(cwd).join("mustard.json")).ok()?;
     let cfg: Value = serde_json::from_str(&text).ok()?;
     let field = |k: &str| {
         cfg.get(k)
@@ -756,13 +758,16 @@ fn close_gate_with_modes(input: &HookInput, cwd: &str, modes: CloseGateModes) ->
 
 /// Run every close-gate sub-gate against an already-resolved `(cwd, spec)`
 /// pair — the spec-aware entry point used by `mustard-rt run emit-phase --to
-/// CLOSE`. No JSON dependency, no HookInput coupling.
+/// CLOSE`. No JSON dependency, no `HookInput` coupling.
 ///
 /// Returns:
 /// - [`Verdict::Allow`] when every gate passes (or every gate is in `off`).
 /// - [`Verdict::Deny`] when any strict gate fires.
 /// - [`Verdict::Warn`] only for the build/test gate in `warn` mode; the
 ///   debt/checklist/qa gates degrade to `Allow` in `warn`.
+// run_close_gates is a sequential gate pipeline; splitting would require threading
+// many local mode/spec variables through helpers without clarity gain.
+#[allow(clippy::too_many_lines)]
 fn run_close_gates(cwd: &str, spec_ref: Option<&str>, modes: CloseGateModes) -> Verdict {
     let mode = modes.close;
 
@@ -777,13 +782,13 @@ fn run_close_gates(cwd: &str, spec_ref: Option<&str>, modes: CloseGateModes) -> 
                 .map(|m| format!("  - line {} ({}): {}", m.line, m.pattern, m.snippet))
                 .collect::<Vec<_>>()
                 .join("\n");
-            let more = if markers.len() > 5 {
+            let extra_debt = if markers.len() > 5 {
                 format!("\n  …and {} more", markers.len() - 5)
             } else {
                 String::new()
             };
             let reason = format!(
-                "{}\n{top}{more}",
+                "{}\n{top}{extra_debt}",
                 format_gate_message(
                     "Close Gate",
                     &format!(
@@ -825,13 +830,13 @@ fn run_close_gates(cwd: &str, spec_ref: Option<&str>, modes: CloseGateModes) -> 
                 .map(|t| format!("  - {t}"))
                 .collect::<Vec<_>>()
                 .join("\n");
-            let more = if unmarked.len() > 5 {
+            let extra_check = if unmarked.len() > 5 {
                 format!("\n  …and {} more", unmarked.len() - 5)
             } else {
                 String::new()
             };
             let reason = format!(
-                "{}\n{preview}{more}",
+                "{}\n{preview}{extra_check}",
                 format_gate_message(
                     "Close Gate",
                     &format!(
@@ -1058,7 +1063,7 @@ impl Check for CloseGate {
         if ctx.trigger != Some(Trigger::PreToolUse) {
             return Ok(Verdict::Allow);
         }
-        if !matches!(input.tool_name.as_deref(), Some("Write") | Some("Edit")) {
+        if !matches!(input.tool_name.as_deref(), Some("Write" | "Edit")) {
             return Ok(Verdict::Allow);
         }
         let cwd = if ctx.project_dir.is_empty() {

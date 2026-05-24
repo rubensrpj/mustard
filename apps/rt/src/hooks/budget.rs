@@ -65,7 +65,7 @@ use std::path::{Path, PathBuf};
 use crate::run::current_spec;
 use crate::util::{format_gate_message, now_iso8601};
 
-/// Resolve the harness SQLite path (mirrors `SqliteEventStore::for_project`'s
+/// Resolve the harness `SQLite` path (mirrors `SqliteEventStore::for_project`'s
 /// private resolver). Env override `MUSTARD_DB_PATH` wins, else the standard
 /// `.claude/.harness/mustard.db` under the project root.
 fn economy_db_path(project_dir: &str) -> PathBuf {
@@ -105,7 +105,7 @@ fn record_output_cut(
     let Some(conn) = open_economy_conn(project_dir) else {
         return;
     };
-    let saved = estimator::estimate_output_tokens(dropped_tail, model_hint.unwrap_or("")) as i64;
+    let saved = i64::from(estimator::estimate_output_tokens(dropped_tail, model_hint.unwrap_or("")));
     let saved = saved.max(1);
     let rec = SavingsRecord {
         ts: now_iso8601(),
@@ -261,7 +261,7 @@ fn has_1m_token(s: &str) -> bool {
             // Bracket/sep before is one of `[ ( - _`; the JS also matches the
             // `1m\b` branch where any boundary suffices regardless of prefix.
             let bracket_before =
-                matches!(before, Some(b'[') | Some(b'(') | Some(b'-') | Some(b'_'));
+                matches!(before, Some(b'[' | b'(' | b'-' | b'_'));
             let _ = bracket_before; // the `1m\b` branch alone already suffices
             if after_word_boundary {
                 return true;
@@ -290,6 +290,9 @@ const COMPACT_PCT: f64 = 0.65;
 /// `.claude/skills|context/*.md` path strings — kept here for the Dumb-Zone
 /// percentage, but the legacy 50K absolute branch is advisory-only and
 /// extremely rare, so the percentage path is the one the parity tests exercise.
+// context_budget is a single sequential flow with many local variables; splitting
+// would require threading state through helpers without clarity gain.
+#[allow(clippy::too_many_lines)]
 fn context_budget(input: &HookInput) -> Verdict {
     let tool_input = &input.tool_input;
     let prompt = tool_input
@@ -320,11 +323,13 @@ fn context_budget(input: &HookInput) -> Verdict {
         #[allow(clippy::cast_precision_loss)]
         let near_miss = (actual as f64) > (limit as f64) * 0.9;
         if would_block || near_miss {
+            #[allow(clippy::cast_possible_wrap)] // usize fits i64 in practice; runtime values are prompt char counts
             let saved = if would_block {
                 ((actual - limit) / 4) as i64
             } else {
                 0
             };
+            #[allow(clippy::cast_possible_wrap)]
             let line = MetricLine::new(now_iso8601(), "budget-check")
                 .tokens_affected((actual / 4) as i64)
                 .tokens_saved(saved)
@@ -491,6 +496,7 @@ fn evaluate_output_budget(input: &HookInput) -> Option<OutputBudgetResult> {
     let role_label = output_role_label(role, subagent_type);
     // `toolResponse.split('\n').length` — number of newline-separated segments.
     let actual = tool_response.split('\n').count();
+    #[allow(clippy::cast_possible_wrap)] // byte count / 4 fits i64 in practice
     let tokens_affected = (tool_response.len() / 4) as i64;
     let over_budget = actual > limit;
 
@@ -651,7 +657,7 @@ impl Check for BudgetGuard {
 
 /// `true` if this invocation is a `Task` (or legacy `Agent`) tool call.
 fn is_task_tool(input: &HookInput) -> bool {
-    matches!(input.tool_name.as_deref(), Some("Task") | Some("Agent"))
+    matches!(input.tool_name.as_deref(), Some("Task" | "Agent"))
 }
 
 #[cfg(test)]

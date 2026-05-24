@@ -61,7 +61,7 @@ impl ScanResult {
 }
 
 /// The orchestrator `.claude/CLAUDE.md` template (always regenerated).
-const ORCH_CLAUDE_TEMPLATE: &str = r#"<!-- mustard:generated -->
+const ORCH_CLAUDE_TEMPLATE: &str = r"<!-- mustard:generated -->
 # Orchestrator Rules
 
 ## Role
@@ -99,7 +99,7 @@ Any change that touches production code (schema, API, UI) → Pipeline Feature.
 
 ## Full Reference
 Rules, pipeline, naming: `.claude/pipeline-config.md`
-"#;
+";
 
 /// The empty entity-registry v4.0 skeleton.
 const EMPTY_REGISTRY: &str = r#"{
@@ -140,6 +140,7 @@ fn rel_posix(root: &Path, p: &Path) -> String {
 
 /// Run `mustard-rt run sync-detect` and parse its JSON. Fallback to a
 /// CLAUDE.md scan when the binary path cannot be resolved.
+#[allow(clippy::unnecessary_wraps)] // signature kept for future fallback that may legitimately return None
 fn run_detect(root: &Path, result: &mut ScanResult) -> Option<Value> {
     if let Ok(exe) = std::env::current_exe() {
         let output = Command::new(&exe)
@@ -184,8 +185,7 @@ fn fallback_detect(root: &Path) -> Value {
                 .trim_start_matches('|')
                 .split('|')
                 .next()
-                .map(str::trim)
-                .unwrap_or("");
+                .map_or("", str::trim);
             if cell.is_empty()
                 || cell == "-"
                 || cell.starts_with('(')

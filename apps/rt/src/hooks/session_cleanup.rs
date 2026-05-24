@@ -1,4 +1,4 @@
-//! `session_cleanup` — the SessionEnd state-cleanup module.
+//! `session_cleanup` — the `SessionEnd` state-cleanup module.
 //!
 //! ## Scope (b3 Wave 5, session family)
 //!
@@ -54,7 +54,7 @@ const TELEMETRY_RETENTION_DAYS: i64 = 90;
 /// Terminal pipeline-state statuses — these files are removed on cleanup.
 const TERMINAL_STATUSES: &[&str] = &["implemented", "completed", "validated", "cancelled"];
 
-/// The SessionEnd state-cleanup module.
+/// The `SessionEnd` state-cleanup module.
 pub struct SessionCleanup;
 
 /// Resolve the project dir for an invocation: the harness `cwd`, else `.`.
@@ -136,8 +136,7 @@ fn is_spec_done(claude_dir: &Path, spec_name: &str) -> bool {
     if fs::exists(&wave_plan) {
         return fs::read_to_string(&wave_plan)
             .ok()
-            .map(|t| header_marks_done(&t))
-            .unwrap_or(false);
+            .is_some_and(|t| header_marks_done(&t));
     }
     let spec_file = spec_root.join("spec.md");
     if !fs::exists(&spec_file) {
@@ -146,8 +145,7 @@ fn is_spec_done(claude_dir: &Path, spec_name: &str) -> bool {
     }
     fs::read_to_string(&spec_file)
         .ok()
-        .map(|t| header_marks_done(&t))
-        .unwrap_or(false)
+        .is_some_and(|t| header_marks_done(&t))
 }
 
 /// `true` when a spec's lifecycle header resolves to the terminal `Completed`
@@ -158,8 +156,7 @@ fn is_spec_done(claude_dir: &Path, spec_name: &str) -> bool {
 /// not reaped).
 fn header_marks_done(content: &str) -> bool {
     spec::parse_state(content)
-        .map(|s| s.outcome == mustard_core::Outcome::Completed)
-        .unwrap_or(false)
+        .is_some_and(|s| s.outcome == mustard_core::Outcome::Completed)
 }
 
 /// Remove terminal / orphaned pipeline-state files. Port of
@@ -168,7 +165,9 @@ fn clean_pipeline_states(claude_dir: &Path) {
     let states_dir = claude_dir.join(".pipeline-states");
     if let Ok(entries) = fs::read_dir(&states_dir) {
         for entry in entries {
-            if !entry.file_name.ends_with(".json") {
+            if !std::path::Path::new(&entry.file_name)
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("json")) {
                 continue;
             }
             let path = &entry.path;
@@ -186,8 +185,7 @@ fn clean_pipeline_states(claude_dir: &Path) {
         }
         // Remove the directory when empty.
         let is_empty = fs::read_dir(&states_dir)
-            .map(|d| d.is_empty())
-            .unwrap_or(false);
+            .is_ok_and(|d| d.is_empty());
         if is_empty {
             // std::fs::remove_dir has no facade equivalent — one-off use is fine.
             let _ = std::fs::remove_dir(&states_dir);

@@ -37,7 +37,7 @@ use serde_json::json;
 
 use crate::commands::git_flow;
 use crate::commands::init::{
-    ensure_global_permissions, ensure_rtk, resolve_templates_dir, timestamp_slug,
+    ensure_global_permissions, ensure_ripgrep, ensure_rtk, resolve_templates_dir, timestamp_slug,
 };
 use crate::fs_ops::{copy_dir, merge_json};
 
@@ -129,6 +129,7 @@ pub fn update_with_templates(
         eprintln!("[mustard] warning: could not update global permissions: {err}");
     });
     ensure_rtk();
+    ensure_ripgrep();
 
     // Re-stamp the version into .claude/mustard.json (surgical — `runtime` and
     // any other keys are preserved).

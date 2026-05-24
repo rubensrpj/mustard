@@ -14,7 +14,7 @@
 //! ## Verdict note
 //!
 //! `enforce-registry.js` writes `permissionDecision: "block"` on the wire,
-//! while the other PreToolUse gates write `"deny"`. Both are *blocking*
+//! while the other `PreToolUse` gates write `"deny"`. Both are *blocking*
 //! decisions; the `mustard-core` contract has a single blocking [`Verdict::Deny`]
 //! and the dispatcher's `emit_outcome` encodes it as `"deny"`. The **verdict**
 //! (block the Skill) is preserved exactly — only the wire string normalises

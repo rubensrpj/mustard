@@ -149,7 +149,6 @@ fn search_knowledge_returns_ranked_rows_and_respects_type_filter() {
                 r#type: None,
                 limit: None,
             }))
-            .unwrap(),
     );
     assert_eq!(all.as_array().unwrap().len(), 2);
     assert_eq!(all[0]["type"], json!("pattern"));
@@ -162,7 +161,6 @@ fn search_knowledge_returns_ranked_rows_and_respects_type_filter() {
                 r#type: Some("pattern".to_string()),
                 limit: None,
             }))
-            .unwrap(),
     );
     assert_eq!(patterns.as_array().unwrap().len(), 1);
     assert_eq!(patterns[0]["id"], json!("k1"));
@@ -175,7 +173,6 @@ fn search_knowledge_returns_ranked_rows_and_respects_type_filter() {
                 r#type: None,
                 limit: Some(1),
             }))
-            .unwrap(),
     );
     assert_eq!(capped.as_array().unwrap().len(), 1);
 }
@@ -206,7 +203,6 @@ fn query_events_filters_by_spec_event_and_since() {
                 since: None,
                 limit: None,
             }))
-            .unwrap(),
     );
     assert_eq!(by_spec.as_array().unwrap().len(), 2);
 
@@ -219,7 +215,6 @@ fn query_events_filters_by_spec_event_and_since() {
                 since: None,
                 limit: None,
             }))
-            .unwrap(),
     );
     assert_eq!(by_event.as_array().unwrap().len(), 2);
 
@@ -232,7 +227,6 @@ fn query_events_filters_by_spec_event_and_since() {
                 since: Some("2026-05-19T02:30:00.000Z".to_string()),
                 limit: None,
             }))
-            .unwrap(),
     );
     assert_eq!(since.as_array().unwrap().len(), 1);
     assert_eq!(since[0]["event"], json!("decision"));
@@ -248,7 +242,6 @@ fn query_events_filters_by_spec_event_and_since() {
                 since: None,
                 limit: Some(1),
             }))
-            .unwrap(),
     );
     assert_eq!(capped.as_array().unwrap().len(), 1);
 }
@@ -273,7 +266,6 @@ fn find_similar_specs_scores_by_token_overlap() {
                 description: "auth login execute".to_string(),
                 limit: None,
             }))
-            .unwrap(),
     );
     let arr = matches.as_array().unwrap();
     // Only the auth spec overlaps; billing scores zero and is filtered out.
@@ -288,7 +280,6 @@ fn find_similar_specs_scores_by_token_overlap() {
                 description: "   ".to_string(),
                 limit: None,
             }))
-            .unwrap(),
     );
     assert_eq!(empty.as_array().unwrap().len(), 0);
 }
@@ -312,7 +303,6 @@ fn get_spec_metrics_returns_row_or_error_object() {
             .get_spec_metrics(Parameters(GetSpecMetricsArgs {
                 spec: "2026-spec".to_string(),
             }))
-            .unwrap(),
     );
     assert_eq!(hit["apiCalls"], json!(12));
     assert_eq!(hit["pass1"], json!(true));
@@ -323,7 +313,6 @@ fn get_spec_metrics_returns_row_or_error_object() {
             .get_spec_metrics(Parameters(GetSpecMetricsArgs {
                 spec: "no-such-spec".to_string(),
             }))
-            .unwrap(),
     );
     assert_eq!(miss["error"], json!("no metrics for spec"));
     assert_eq!(miss["spec"], json!("no-such-spec"));
@@ -354,7 +343,6 @@ fn get_run_summary_aggregates_totals_and_groups_by_model() {
                 phase: None,
                 limit: None,
             }))
-            .unwrap(),
     );
     assert_eq!(summary["count"], json!(3));
     assert_eq!(summary["totalInputTokens"], json!(310));
@@ -372,7 +360,6 @@ fn get_run_summary_aggregates_totals_and_groups_by_model() {
                 phase: Some("PLAN".to_string()),
                 limit: None,
             }))
-            .unwrap(),
     );
     assert_eq!(plan["count"], json!(2));
 
@@ -384,7 +371,6 @@ fn get_run_summary_aggregates_totals_and_groups_by_model() {
                 phase: None,
                 limit: None,
             }))
-            .unwrap(),
     );
     assert_eq!(all["count"], json!(3));
 }
@@ -401,7 +387,6 @@ fn tools_on_empty_db_return_empty_results_not_errors() {
                 r#type: None,
                 limit: None,
             }))
-            .unwrap(),
     );
     assert_eq!(k.as_array().unwrap().len(), 0);
 
@@ -413,7 +398,6 @@ fn tools_on_empty_db_return_empty_results_not_errors() {
                 since: None,
                 limit: None,
             }))
-            .unwrap(),
     );
     assert_eq!(e.as_array().unwrap().len(), 0);
 
@@ -424,7 +408,6 @@ fn tools_on_empty_db_return_empty_results_not_errors() {
                 phase: None,
                 limit: None,
             }))
-            .unwrap(),
     );
     assert_eq!(s["count"], json!(0));
     assert!(s["byModel"].as_object().unwrap().is_empty());

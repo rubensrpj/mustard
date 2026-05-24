@@ -162,12 +162,9 @@ pub fn run(spec: Option<&str>, wave: Option<u32>) {
         return;
     };
 
-    let markdown = match fs::read_to_string(&path) {
-        Ok(text) => text,
-        Err(_) => {
-            emit_empty();
-            return;
-        }
+    let Ok(markdown) = fs::read_to_string(&path) else {
+        emit_empty();
+        return;
     };
 
     let count = parse_arquivos_count(&markdown);

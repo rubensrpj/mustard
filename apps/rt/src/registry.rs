@@ -45,7 +45,7 @@ pub enum ToolMatch {
     #[allow(dead_code)]
     None,
     /// Every tool (the `".*"` matcher), and also non-tool events: the JS `.*`
-    /// PreToolUse matcher fires for any invocation.
+    /// `PreToolUse` matcher fires for any invocation.
     Any,
     /// One specific tool name.
     Named(&'static str),
@@ -102,6 +102,9 @@ impl Registry {
     /// families (`budget`, `size_gate`, …) here, leaving the dispatcher
     /// untouched.
     #[must_use]
+    // Registry::new() is a flat list of module registrations — refactoring into
+    // helper functions would obscure the registry structure without reducing complexity.
+    #[allow(clippy::too_many_lines)]
     pub fn new() -> Self {
         let modules = vec![
             Module {

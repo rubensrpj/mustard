@@ -69,12 +69,11 @@ impl MultiProjectReader {
         let mut out: HashMap<ProjectPath, T> = HashMap::new();
         for project in projects {
             let db_path = project.as_path().join(DB_REL_PATH);
-            let conn = match Connection::open_with_flags(
+            let Ok(conn) = Connection::open_with_flags(
                 &db_path,
                 OpenFlags::SQLITE_OPEN_READ_ONLY,
-            ) {
-                Ok(c) => c,
-                Err(_) => continue, // Fail-open: missing project DB is not fatal.
+            ) else {
+                continue; // Fail-open: missing project DB is not fatal.
             };
             // Fail-open per project: a query failure on one DB must not
             // poison the rest. The fallback (`None`) is filtered out below.
@@ -106,7 +105,7 @@ impl MultiProjectReader {
         let aggregate = per_project
             .values()
             .cloned()
-            .reduce(|acc, v| merge(acc, v));
+            .reduce(merge);
         (per_project, aggregate)
     }
 }

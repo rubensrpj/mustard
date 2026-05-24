@@ -104,7 +104,7 @@ fn top_event_kinds(conn: &rusqlite::Connection) -> Vec<Value> {
 /// WAL file size in bytes (0 when the file is absent or unreadable).
 fn wal_bytes(db_path: &std::path::Path) -> u64 {
     let wal = db_path.with_extension("db-wal");
-    std::fs::metadata(&wal).map(|m| m.len()).unwrap_or(0)
+    std::fs::metadata(&wal).map_or(0, |m| m.len())
 }
 
 /// Stats-only (read-only) mode — prints the size/space JSON report.
@@ -308,7 +308,7 @@ mod tests {
         assert!(doc.get("reclaimable_bytes").is_some());
         // dbstat may or may not be available — either field must be present.
         let has_per_table = doc.get("per_table").is_some();
-        let has_dbstat_note = doc.get("dbstat").map(|v| v == "unavailable").unwrap_or(false);
+        let has_dbstat_note = doc.get("dbstat").is_some_and(|v| v == "unavailable");
         assert!(
             has_per_table || has_dbstat_note,
             "expected per_table or dbstat=unavailable"

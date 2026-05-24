@@ -36,8 +36,10 @@ fn build_segments(data: &Value) -> Vec<Segment> {
         .and_then(|w| w.get("current_dir"))
         .or_else(|| data.get("cwd"))
         .and_then(Value::as_str)
-        .map(PathBuf::from)
-        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+        .map_or_else(
+            || std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            PathBuf::from,
+        );
 
     let mut segs = vec![module_segment(&cwd)];
     if let Some(s) = git_segment(&cwd) {

@@ -150,8 +150,7 @@ fn backtick_file_refs(text: &str) -> Vec<String> {
                 && token
                     .rsplit('.')
                     .next()
-                    .map(|ext| !ext.is_empty() && ext.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
-                    .unwrap_or(false);
+                    .is_some_and(|ext| !ext.is_empty() && ext.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'));
             if ok {
                 refs.push(token.to_string());
             }
@@ -194,10 +193,9 @@ fn validate(abs_path: &Path, content: &str) -> Vec<Value> {
         let line_with_ref = file_lines
             .iter()
             .find(|l| l.contains(&format!("`{r}`")))
-            .map(String::as_str)
-            .unwrap_or("");
+            .map_or("", String::as_str);
         let is_create = line_with_ref.to_lowercase().contains("(create)");
-        let resolved = fs::exists(&spec_dir.join(&r)) || fs::exists(Path::new(&r));
+        let resolved = fs::exists(spec_dir.join(&r)) || fs::exists(Path::new(&r));
         if !is_create && !resolved {
             issues.push(json!({
                 "severity": "WARN",
@@ -211,7 +209,7 @@ fn validate(abs_path: &Path, content: &str) -> Vec<Value> {
     // Validation 3: task decomposition sane.
     for (agent_name, block) in agent_blocks(content) {
         let tasks = count_tasks(&block);
-        if tasks < 2 || tasks > 10 {
+        if !(2..=10).contains(&tasks) {
             issues.push(json!({
                 "severity": "WARN",
                 "type": "task-count",

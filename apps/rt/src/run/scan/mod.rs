@@ -195,27 +195,37 @@ pub trait Scanner {
     }
 
     /// Run the full scan pipeline — a port of `ScannerContract.scan()`.
+    ///
+    /// Wave 1 (`project-profiler`): wraps the per-faceta scans in a
+    /// single-pass [`file_utils::ensure_cache`] scope so each source file is
+    /// read exactly once across `scan_entities`, `scan_enums`, `scan_routes`,
+    /// `scan_dtos`, `scan_services`, `detect_architecture`, and
+    /// `infer_patterns`. The cache is a no-op when an outer caller (e.g.
+    /// `sync-registry`) has already installed one for `root`.
     fn scan(&self, root: &Path) -> ScanResult {
-        let mut result = ScanResult {
-            entities: self.scan_entities(root),
-            enums: self.scan_enums(root),
-            routes: self.scan_routes(root),
-            dtos: self.scan_dtos(root),
-            services: self.scan_services(root),
-            architecture: self.detect_architecture(root),
-            patterns: serde_json::Value::Object(serde_json::Map::new()),
-        };
-        // `inferPatterns` runs after every scan_* method, then `scan()` records
-        // `architecture` onto the patterns object (matching the JS contract).
-        let mut patterns = self.infer_patterns(root, &result);
-        if let serde_json::Value::Object(ref mut map) = patterns {
-            map.insert(
-                "architecture".to_string(),
-                serde_json::Value::String(result.architecture.clone()),
-            );
-        }
-        result.patterns = patterns;
-        result
+        file_utils::ensure_cache(root, &[], || {
+            let mut result = ScanResult {
+                entities: self.scan_entities(root),
+                enums: self.scan_enums(root),
+                routes: self.scan_routes(root),
+                dtos: self.scan_dtos(root),
+                services: self.scan_services(root),
+                architecture: self.detect_architecture(root),
+                patterns: serde_json::Value::Object(serde_json::Map::new()),
+            };
+            // `inferPatterns` runs after every scan_* method, then `scan()`
+            // records `architecture` onto the patterns object (matching the
+            // JS contract).
+            let mut patterns = self.infer_patterns(root, &result);
+            if let serde_json::Value::Object(ref mut map) = patterns {
+                map.insert(
+                    "architecture".to_string(),
+                    serde_json::Value::String(result.architecture.clone()),
+                );
+            }
+            result.patterns = patterns;
+            result
+        })
     }
 }
 
@@ -399,5 +409,177 @@ mod tests {
         let pascal = vec!["Active".to_string(), "Pending".to_string()];
         assert_eq!(detect_value_convention(&pascal), "PascalCase");
         assert_eq!(detect_value_convention(&[]), "unknown");
+    }
+
+    // --- Wave 1 (`project-profiler`) single-pass behaviour ----------------
+
+    /// Serialises access to the disk-read / disk-hit global counters so the
+    /// two read-count tests below do not race when `cargo test` runs them on
+    /// separate threads of the default pool.
+    static COUNTER_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Build a multi-stack fixture: one Rust subproject with a diesel entity,
+    /// one TypeScript subproject with a drizzle table and a TS enum. Returns
+    /// each subproject's root path.
+    fn build_multi_stack_fixture(dir: &Path) -> (std::path::PathBuf, std::path::PathBuf) {
+        // Rust subproject.
+        let rust = dir.join("rust-app");
+        std::fs::create_dir_all(rust.join("src")).unwrap();
+        std::fs::write(
+            rust.join("Cargo.toml"),
+            "[package]\nname = \"app\"\n\n[dependencies]\ndiesel = \"2\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            rust.join("src").join("models.rs"),
+            "/// A registered user.\n#[derive(Queryable, Debug)]\n\
+             pub struct User {\n    pub id: i32,\n    pub name: String,\n}\n\n\
+             #[derive(Debug, Clone)]\npub enum Status {\n    Active,\n    Pending,\n}\n",
+        )
+        .unwrap();
+        // TypeScript subproject.
+        let ts = dir.join("ts-app");
+        std::fs::create_dir_all(ts.join("src")).unwrap();
+        std::fs::write(
+            ts.join("package.json"),
+            r#"{"name":"ts-app","dependencies":{"drizzle-orm":"0.1"}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            ts.join("src").join("schema.ts"),
+            "export const users = pgTable('users', {\n  id: serial(),\n  name: text(),\n});\n\
+             export enum Role {\n  Admin = 'admin',\n  User = 'user',\n}\n",
+        )
+        .unwrap();
+        (rust, ts)
+    }
+
+    /// Build a `ScanResult` by calling each per-faceta method directly — the
+    /// "baseline" form that bypasses `Scanner::scan`'s single-pass cache.
+    fn scan_uncached(scanner: &dyn Scanner, root: &Path) -> ScanResult {
+        let mut result = ScanResult {
+            entities: scanner.scan_entities(root),
+            enums: scanner.scan_enums(root),
+            routes: scanner.scan_routes(root),
+            dtos: scanner.scan_dtos(root),
+            services: scanner.scan_services(root),
+            architecture: scanner.detect_architecture(root),
+            patterns: serde_json::Value::Object(serde_json::Map::new()),
+        };
+        let mut patterns = scanner.infer_patterns(root, &result);
+        if let serde_json::Value::Object(ref mut map) = patterns {
+            map.insert(
+                "architecture".to_string(),
+                serde_json::Value::String(result.architecture.clone()),
+            );
+        }
+        result.patterns = patterns;
+        result
+    }
+
+    /// Serialise a `ScanResult` to a byte-stable string for diffing. The
+    /// `BTreeMap`s in `ScanResult` already iterate alphabetically; this helper
+    /// projects each entry to a deterministic JSON shape.
+    fn scan_result_signature(r: &ScanResult) -> String {
+        let entities: Vec<(String, &EntityInfo)> = r
+            .entities
+            .iter()
+            .map(|(k, v)| (k.clone(), v))
+            .collect();
+        let enums: Vec<(String, &EnumInfo)> = r.enums.iter().map(|(k, v)| (k.clone(), v)).collect();
+        format!(
+            "arch={}\nentities={:?}\nenums={:?}\npatterns={}",
+            r.architecture,
+            entities,
+            enums,
+            serde_json::to_string(&r.patterns).unwrap_or_default()
+        )
+    }
+
+    /// AC-1 — the single-pass cache produces a registry result that is
+    /// byte-identical to the baseline (per-faceta) form for every stack in a
+    /// multi-stack fixture.
+    #[test]
+    fn single_pass_parity() {
+        let dir = tempfile::tempdir().unwrap();
+        let (rust_root, ts_root) = build_multi_stack_fixture(dir.path());
+
+        let rust_scanner = load_scanner(&rust_root, None).expect("rust scanner");
+        let ts_scanner = load_scanner(&ts_root, None).expect("ts scanner");
+
+        // Cached (Wave 1 default): `Scanner::scan` installs the visit cache.
+        let rust_cached = rust_scanner.scan(&rust_root);
+        let ts_cached = ts_scanner.scan(&ts_root);
+        // Baseline: bypass the cache by driving each per-faceta method.
+        let rust_baseline = scan_uncached(rust_scanner.as_ref(), &rust_root);
+        let ts_baseline = scan_uncached(ts_scanner.as_ref(), &ts_root);
+
+        assert_eq!(
+            scan_result_signature(&rust_cached),
+            scan_result_signature(&rust_baseline),
+            "rust scan should be byte-stable across cached vs baseline"
+        );
+        assert_eq!(
+            scan_result_signature(&ts_cached),
+            scan_result_signature(&ts_baseline),
+            "typescript scan should be byte-stable across cached vs baseline"
+        );
+    }
+
+    /// AC-2 — during a single `Scanner::scan` call no source file is re-opened
+    /// via `read_file_safe` after the visit pass has cached it. The per-faceta
+    /// scanners would otherwise re-read each file ≈5 times (one per `scan_*`
+    /// method). Tests using the global counters acquire `COUNTER_LOCK` so they
+    /// do not race when `cargo test` runs them concurrently on the same thread
+    /// pool.
+    #[test]
+    fn single_pass_reads_once() {
+        let _guard = COUNTER_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = tempfile::tempdir().unwrap();
+        let (rust_root, _) = build_multi_stack_fixture(dir.path());
+        let scanner = load_scanner(&rust_root, None).expect("rust scanner");
+
+        // Count how many distinct source files the visitor will see.
+        let visited = file_utils::visit(&rust_root, &[]);
+        let visited_count = visited.len() as u64;
+        assert!(visited_count > 0, "fixture must contain at least one source file");
+
+        file_utils::reset_disk_read_count();
+        let _ = scanner.scan(&rust_root);
+        let hits = file_utils::disk_hit_count();
+        // Disk *attempts* may be non-zero (scanners probe absent paths like
+        // `src/main.rs`/`src/lib.rs` for architecture detection); what matters
+        // is that no *existing* source file was opened a second time after the
+        // visit pass already cached its contents.
+        assert_eq!(
+            hits, 0,
+            "expected zero disk hits through `read_file_safe`, got {hits}"
+        );
+    }
+
+    /// Sanity check: bypassing the cache should leave the disk-read counter
+    /// strictly greater than the visited count — the historical 6× behaviour.
+    /// This protects the AC-2 test against a future refactor that silently
+    /// drops the cache (the counter would still report `0`).
+    #[test]
+    fn single_pass_reads_once_baseline_is_higher() {
+        let _guard = COUNTER_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = tempfile::tempdir().unwrap();
+        let (rust_root, _) = build_multi_stack_fixture(dir.path());
+        let scanner = load_scanner(&rust_root, None).expect("rust scanner");
+
+        file_utils::reset_disk_read_count();
+        // Call each per-faceta method directly — no `ensure_cache` wrapper,
+        // so `read_file_safe` falls through to the disk every time.
+        let _ = scan_uncached(scanner.as_ref(), &rust_root);
+        let hits = file_utils::disk_hit_count();
+        assert!(
+            hits >= 2,
+            "baseline scan should read source files multiple times, got {hits}"
+        );
     }
 }

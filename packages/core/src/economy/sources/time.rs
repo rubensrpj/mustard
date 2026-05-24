@@ -20,11 +20,13 @@
 /// clock is unset or runs before the epoch — the adapters treat that as a
 /// recoverable degradation (the record still lands, it just sorts at the
 /// bottom).
+#[must_use]
 pub fn now_iso() -> String {
+    // cast_possible_wrap: UNIX epoch seconds fit comfortably in i64 until year 2262.
+    #[allow(clippy::cast_possible_wrap)]
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
+        .map_or(0, |d| d.as_secs() as i64);
     let (y, mo, d, h, mi, s) = epoch_secs_to_ymdhms(now);
     format!("{y:04}-{mo:02}-{d:02}T{h:02}:{mi:02}:{s:02}Z")
 }
@@ -35,7 +37,9 @@ pub fn now_iso() -> String {
 /// The algorithm is the same one `writer::iso_to_epoch_ms` uses in the
 /// forward direction; pairing them avoids drift between ingest and
 /// roundtrip queries.
-#[allow(clippy::cast_possible_truncation)]
+// cast_sign_loss: Howard Hinnant's algorithm guarantees calendar values are non-negative.
+// many_single_char_names: single-char names are idiomatic for this well-known algorithm.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::many_single_char_names)]
 pub(super) fn epoch_secs_to_ymdhms(secs: i64) -> (i64, u32, u32, u32, u32, u32) {
     let days = secs.div_euclid(86_400);
     let tod = secs.rem_euclid(86_400);

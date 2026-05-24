@@ -833,10 +833,10 @@ pub fn dispatch(cmd: RunCmd) {
             wave,
         } => emit_event::run(event.as_deref(), &payload, spec.as_deref(), wave),
         RunCmd::EmitPhase { spec, to, from } => {
-            emit_phase::run(&spec, &to, from.as_deref())
+            emit_phase::run(&spec, &to, from.as_deref());
         }
         RunCmd::EmitPipeline { kind, spec, payload } => {
-            emit_pipeline::run(emit_pipeline::EmitPipelineOpts { kind, spec, payload })
+            emit_pipeline::run(emit_pipeline::EmitPipelineOpts { kind, spec, payload });
         }
         RunCmd::MigrateSpecHeaders {
             dry_run,
@@ -889,7 +889,7 @@ pub fn dispatch(cmd: RunCmd) {
         ),
         RunCmd::MemoryIngest { delete } => memory_ingest::run(delete),
         RunCmd::PipelineStateIngest { delete } => {
-            pipeline_state_ingest::run(pipeline_state_ingest::PipelineStateIngestOpts { delete })
+            pipeline_state_ingest::run(pipeline_state_ingest::PipelineStateIngestOpts { delete });
         }
         RunCmd::EpicFold { detect, epic } => epic_fold::run(detect, epic.as_deref()),
         RunCmd::SpecExtract {
@@ -918,7 +918,7 @@ pub fn dispatch(cmd: RunCmd) {
         RunCmd::ScopeDecompose => scope_decompose::run(),
         RunCmd::ExecRewaveCheck { spec } => exec_rewave_check::run(spec.as_deref()),
         RunCmd::DependencyPrecheck { spec, subproject } => {
-            dependency_precheck::run(spec.as_deref(), subproject.as_deref())
+            dependency_precheck::run(spec.as_deref(), subproject.as_deref());
         }
         RunCmd::WaveSizeCheck { spec_dir } => wave_size_check::run(spec_dir.as_deref()),
         RunCmd::RecipeMatch {
@@ -950,7 +950,7 @@ pub fn dispatch(cmd: RunCmd) {
         } => event_projections::run(view.as_deref(), spec.as_deref(), wave, &format),
         RunCmd::VerifyPipeline { format } => verify_pipeline::run(&format),
         RunCmd::PipelineSummary { spec_dir, format } => {
-            pipeline_summary::run(spec_dir.as_deref(), &format)
+            pipeline_summary::run(spec_dir.as_deref(), &format);
         }
         RunCmd::ReviewResult {
             spec,
@@ -980,7 +980,7 @@ pub fn dispatch(cmd: RunCmd) {
         RunCmd::BackfillRunUsageCost { force } => backfill_run_usage_cost::run(force),
         RunCmd::BackfillRunUsageSpec => backfill_run_usage_spec::run(),
         RunCmd::ScanOrchestrate { target, force } => {
-            scan_orchestrate::run(force, target.as_deref())
+            scan_orchestrate::run(force, target.as_deref());
         }
         RunCmd::ScanFinalize { skip_security } => scan_finalize::run(skip_security),
         RunCmd::OtelCollector => otel::collector::run(),
@@ -1006,7 +1006,7 @@ pub fn dispatch(cmd: RunCmd) {
             db_maintain::run(&args);
         }
         RunCmd::DocsStaleCheck { from, strict, include_nested } => {
-            docs_stale_check::run(from.as_deref(), strict, include_nested)
+            docs_stale_check::run(from.as_deref(), strict, include_nested);
         }
         RunCmd::ArtifactUpdate {
             check,
@@ -1016,32 +1016,33 @@ pub fn dispatch(cmd: RunCmd) {
         RunCmd::AmendFinalize { session_id } => amend_finalize::run_cli(&session_id),
         RunCmd::WikilinkExtract { spec_dir } => wikilink::run(spec_dir.as_deref()),
         RunCmd::WaveScaffold { spec_dir, plan } => {
-            wave_scaffold::run(spec_dir.as_deref(), plan.as_deref())
+            wave_scaffold::run(spec_dir.as_deref(), plan.as_deref());
         }
         RunCmd::ActiveSpecs { format, root, no_backfill } => {
             active_specs::run(active_specs::ActiveSpecsOpts {
                 format,
                 root,
                 no_backfill,
-            })
+            });
         }
         RunCmd::Status { harness, format, root } => {
-            status::run(status::StatusOpts { harness, format, root })
+            status::run(status::StatusOpts { harness, format, root });
         }
         RunCmd::SkillsList { format, root } => {
             // Delegate to the existing skills::run with the "list" subcommand,
             // passing --format and --root via the args slice.
-            let mut args: Vec<String> = Vec::new();
-            args.push("--format".to_string());
-            args.push(format);
-            args.push("--root".to_string());
-            args.push(root.display().to_string());
+            let args: Vec<String> = vec![
+                "--format".to_string(),
+                format,
+                "--root".to_string(),
+                root.display().to_string(),
+            ];
             skills::run(Some("list"), &args);
         }
         RunCmd::Knowledge { subcommand, filter, format, root } => {
             match subcommand.as_deref() {
                 Some("glossary") | None => {
-                    knowledge::run(knowledge::GlossaryOpts { filter, format, root })
+                    knowledge::run(knowledge::GlossaryOpts { filter, format, root });
                 }
                 Some(other) => {
                     eprintln!("knowledge: unknown subcommand '{other}'. Try: glossary");
@@ -1057,7 +1058,7 @@ pub fn dispatch(cmd: RunCmd) {
                         .unwrap_or_default()
                 );
             } else {
-                review_prefetch::run(review_prefetch::ReviewPrefetchOpts { pr_ref, format, root })
+                review_prefetch::run(review_prefetch::ReviewPrefetchOpts { pr_ref, format, root });
             }
         }
         RunCmd::ResumeBootstrap { spec, json } => resume_bootstrap::run(&spec, json),

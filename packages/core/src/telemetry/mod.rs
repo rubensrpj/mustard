@@ -4,7 +4,7 @@
 //! Single responsibility: telemetry storage + the raw read/write API. The
 //! module is trait-backed for Dependency Inversion — production code talks to
 //! [`TelemetryWriter`] / [`TelemetryReader`], and tests swap in the in-memory
-//! [`FakeTelemetry`]. The concrete SQLite implementation is
+//! [`FakeTelemetry`]. The concrete `SQLite` implementation is
 //! [`store::TelemetryStore`].
 //!
 //! Tables (see `schema.sql`):
@@ -30,7 +30,7 @@ use crate::error::Result;
 /// The only `usage_totals` metric names the dashboard ever reads (see
 /// [`reader::cost_total`] / [`reader::token_total`] / [`reader::session_count`] /
 /// [`reader::active_time`]). Every other Claude Code OTEL metric (hook-execution,
-/// tool_decision, api_request, lines_of_code, user_prompt, …) is dead weight:
+/// `tool_decision`, `api_request`, `lines_of_code`, `user_prompt`, …) is dead weight:
 /// never queried, so never worth persisting. The collector filters ingestion
 /// against this list, and the one-time startup cleanup purges anything outside
 /// it — keep both in sync by referencing this single source.
@@ -50,7 +50,7 @@ pub use store::TelemetryStore;
 
 /// Write side of the telemetry store (Dependency Inversion seam).
 ///
-/// Every method returns [`Result`] and never panics. The SQLite implementation
+/// Every method returns [`Result`] and never panics. The `SQLite` implementation
 /// is [`TelemetryStore`]; [`FakeTelemetry`] is the in-memory test double.
 pub trait TelemetryWriter {
     /// UPSERT one aggregated usage counter (accumulates `sum`).

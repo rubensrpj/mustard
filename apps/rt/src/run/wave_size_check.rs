@@ -22,8 +22,7 @@ fn resolve_limit() -> usize {
     std::env::var("MUSTARD_WAVE_SIZE_LIMIT")
         .ok()
         .and_then(|v| v.parse::<i64>().ok())
-        .map(|n| if n < 3 { 3 } else { n as usize })
-        .unwrap_or(10)
+        .map_or(10, |n| if n < 3 { 3 } else { n as usize })
 }
 
 /// An enumerated wave folder.
@@ -46,7 +45,7 @@ fn enumerate_waves(spec_dir: &Path) -> Option<Vec<WaveFolder>> {
                     // `^wave-\d+`
                     let lower = n.to_lowercase();
                     lower.starts_with("wave-")
-                        && lower[5..].chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false)
+                        && lower[5..].chars().next().is_some_and(|c| c.is_ascii_digit())
                 })
                 .collect()
         })
@@ -63,8 +62,7 @@ fn wave_number_of(name: &str) -> Option<u32> {
     let start = name.find(|c: char| c.is_ascii_digit())?;
     let end = name[start..]
         .find(|c: char| !c.is_ascii_digit())
-        .map(|e| start + e)
-        .unwrap_or(name.len());
+        .map_or(name.len(), |e| start + e);
     name[start..end].parse().ok()
 }
 
@@ -138,7 +136,7 @@ fn is_wave_header(line: &str, wave_num: u32) -> bool {
         && after[digits.len()..]
             .chars()
             .next()
-            .map_or(true, |c| !(c.is_ascii_alphanumeric() || c == '_'))
+            .is_none_or(|c| !(c.is_ascii_alphanumeric() || c == '_'))
 }
 
 /// `^Files\s*\(\d+\)\s*:\s*(.+)$`
@@ -172,7 +170,7 @@ fn is_table_row_for_wave(line: &str, wave_num: u32) -> bool {
         && rest[digits.len()..]
             .chars()
             .next()
-            .map_or(true, |c| !(c.is_ascii_alphanumeric() || c == '_'))
+            .is_none_or(|c| !(c.is_ascii_alphanumeric() || c == '_'))
 }
 
 /// Audit a single wave.

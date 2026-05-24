@@ -110,7 +110,7 @@ fn find_project_root(start_dir: &Path) -> Option<PathBuf> {
 
 /// Whether `name` is a known HTML/SVG primitive (case-sensitive — JSX is).
 fn is_html_svg_primitive(name: &str) -> bool {
-    HTML_SVG_WHITELIST.iter().any(|n| *n == name)
+    HTML_SVG_WHITELIST.contains(&name)
 }
 
 /// Test whether a line is a `## ` heading whose name matches `target`
@@ -581,7 +581,7 @@ fn grep_symbol_in_subproject(symbol: &str, subproject: &Path) -> bool {
             let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
                 continue;
             };
-            if !exts.iter().any(|e| *e == ext) {
+            if !exts.contains(&ext) {
                 continue;
             }
             let Ok(content) = fs::read_to_string(&path) else {
@@ -727,6 +727,7 @@ fn is_deps_header(header_cell: &str) -> bool {
 /// `current_wave`. Recognized tokens:
 ///   - `[[N]]`, `[[wave-N]]`, `[[wave-N-role]]`
 ///   - bare `N`, `wave-N`, `wave-N-role`
+///
 /// Tokens are separated by `,`, `;`, whitespace, or the wikilink wrappers.
 /// Returns an empty vec when no waves table is found, the current row is
 /// missing, or the deps cell is `—` / `-` / `none`.
@@ -882,13 +883,12 @@ pub fn run(spec_arg: Option<&str>, subproject_override: Option<&str>) {
     } else {
         spec_path_raw
     };
-    let spec_dir = spec_path.parent().map(Path::to_path_buf).unwrap_or_else(|| cwd.clone());
+    let spec_dir = spec_path.parent().map_or_else(|| cwd.clone(), Path::to_path_buf);
     let repo_root = find_project_root(&spec_dir).unwrap_or_else(|| cwd.clone());
 
     let spec_slug = spec_path
         .strip_prefix(&repo_root)
-        .map(|p| p.to_string_lossy().replace('\\', "/"))
-        .unwrap_or_else(|_| spec_arg.to_string());
+        .map_or_else(|_| spec_arg.to_string(), |p| p.to_string_lossy().replace('\\', "/"));
 
     let Ok(spec_text) = fs::read_to_string(&spec_path) else {
         emit(json!({
@@ -935,7 +935,7 @@ pub fn run(spec_arg: Option<&str>, subproject_override: Option<&str>) {
     for d in extract_jsx(&stripped).into_iter().chain(extract_imports(&stripped)) {
         deps.entry(d.symbol.clone()).and_modify(|existing| {
             if existing.import_path.is_none() && d.import_path.is_some() {
-                existing.import_path = d.import_path.clone();
+                existing.import_path.clone_from(&d.import_path);
             }
         }).or_insert(d);
     }
@@ -953,8 +953,7 @@ pub fn run(spec_arg: Option<&str>, subproject_override: Option<&str>) {
         .as_ref()
         .and_then(|p| p.strip_prefix(&repo_root).ok().map(Path::to_path_buf))
         .map(|p| p.to_string_lossy().replace('\\', "/"))
-        .map(Value::String)
-        .unwrap_or(Value::Null);
+        .map_or(Value::Null, Value::String);
 
     let mut missing: Vec<Value> = Vec::new();
     let mut suggested: BTreeSet<String> = BTreeSet::new();
@@ -1005,8 +1004,7 @@ pub fn run(spec_arg: Option<&str>, subproject_override: Option<&str>) {
         };
         let plan_dir = plan_path
             .parent()
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| spec_dir.clone());
+            .map_or_else(|| spec_dir.clone(), Path::to_path_buf);
         let promise_map = parent_wave_promises(&plan_dir, &parent_waves);
         let mut out: Vec<Value> = Vec::new();
         for entry in &missing {

@@ -84,13 +84,11 @@ fn discover_via_sync_detect(cwd: &Path) -> Vec<VerifyTarget> {
             .get("name")
             .or_else(|| sp.get("path"))
             .and_then(Value::as_str)
-            .map(str::to_string)
-            .unwrap_or_else(|| format!("subproject-{i}"));
+            .map_or_else(|| format!("subproject-{i}"), str::to_string);
         let sp_cwd = sp
             .get("path")
             .and_then(Value::as_str)
-            .map(|p| cwd.join(p))
-            .unwrap_or_else(|| cwd.to_path_buf());
+            .map_or_else(|| cwd.to_path_buf(), |p| cwd.join(p));
         out.push(VerifyTarget { name, cwd: sp_cwd, build, test });
     }
     out

@@ -159,7 +159,7 @@ fn watch_loop(shutdown: &AtomicBool) {
             Ok(Err(e)) => {
                 eprintln!("transcript_watcher: notify event error: {e}; continuing");
             }
-            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 // The watcher dropped its send half — terminate cleanly.
                 return;

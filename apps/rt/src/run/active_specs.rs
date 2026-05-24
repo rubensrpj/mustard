@@ -143,31 +143,26 @@ fn parse_header(path: &Path) -> SpecHeader {
                     let key = rest[..colon_pos].trim();
                     let val = rest[colon_pos + 1..].trim().to_string();
                     match key.to_ascii_lowercase().as_str() {
-                        "stage" => {
-                            if header.stage.is_none() && !val.is_empty() {
+                        "stage"
+                            if header.stage.is_none() && !val.is_empty() => {
                                 header.stage = Some(val);
                             }
-                        }
-                        "outcome" => {
-                            if header.outcome.is_none() && !val.is_empty() {
+                        "outcome"
+                            if header.outcome.is_none() && !val.is_empty() => {
                                 header.outcome = Some(val);
                             }
-                        }
-                        "scope" => {
-                            if header.scope.is_none() && !val.is_empty() {
+                        "scope"
+                            if header.scope.is_none() && !val.is_empty() => {
                                 header.scope = Some(val);
                             }
-                        }
-                        "parent" => {
-                            if header.parent.is_none() && !val.is_empty() {
+                        "parent"
+                            if header.parent.is_none() && !val.is_empty() => {
                                 header.parent = Some(strip_wikilink(&val));
                             }
-                        }
-                        "checkpoint" => {
-                            if header.checkpoint.is_none() && !val.is_empty() {
+                        "checkpoint"
+                            if header.checkpoint.is_none() && !val.is_empty() => {
                                 header.checkpoint = Some(val);
                             }
-                        }
                         _ => {}
                     }
                 }
@@ -254,17 +249,15 @@ fn filter_active(candidates: Vec<SpecCandidate>) -> Vec<SpecCandidate> {
                 .header
                 .outcome
                 .as_deref()
-                .map(|o| o.to_ascii_lowercase() == "active")
-                .unwrap_or(false);
+                .is_some_and(|o| o.eq_ignore_ascii_case("active"));
             let stage_ok = c
                 .header
                 .stage
                 .as_deref()
-                .map(|s| {
+                .is_some_and(|s| {
                     let lower = s.to_ascii_lowercase();
                     lower == "plan" || lower == "execute"
-                })
-                .unwrap_or(false);
+                });
             outcome_ok && stage_ok
         })
         .collect()
@@ -302,7 +295,7 @@ fn count_wave_progress(spec_dir: &Path) -> Option<WaveProgress> {
         }
         // Verify it's a "wave-N-" directory (has digits after "wave-")
         let after_wave = &entry.file_name["wave-".len()..];
-        if !after_wave.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false) {
+        if !after_wave.chars().next().is_some_and(|c| c.is_ascii_digit()) {
             continue;
         }
         total += 1;
@@ -310,13 +303,11 @@ fn count_wave_progress(spec_dir: &Path) -> Option<WaveProgress> {
         let stage_close = hdr
             .stage
             .as_deref()
-            .map(|s| s.to_ascii_lowercase() == "close")
-            .unwrap_or(false);
+            .is_some_and(|s| s.eq_ignore_ascii_case("close"));
         let outcome_completed = hdr
             .outcome
             .as_deref()
-            .map(|o| o.to_ascii_lowercase() == "completed")
-            .unwrap_or(false);
+            .is_some_and(|o| o.eq_ignore_ascii_case("completed"));
         if stage_close && outcome_completed {
             done += 1;
         }
@@ -387,10 +378,7 @@ fn truncate_str(s: &str, max_chars: usize) -> String {
 /// first sentence break (`.`, `\n\n`, or `:`). Strips wikilinks and markdown
 /// bold/italic. Truncates to 70 chars with `…`.
 fn extract_resumo(path: &Path) -> String {
-    let text = match std::fs::read_to_string(path) {
-        Ok(t) => t,
-        Err(_) => return String::new(),
-    };
+    let Ok(text) = std::fs::read_to_string(path) else { return String::new() };
 
     // Try headings in priority order
     let headings = ["## Resumo", "## Contexto", "## Summary", "## Context"];
@@ -662,7 +650,7 @@ fn determine_timestamp(checkpoint: &Option<String>, spec_md: &Path) -> String {
     if let Some(cp) = checkpoint.as_deref() {
         let cp = cp.trim();
         // Accept anything that looks like YYYY-MM-DDT...
-        if cp.len() >= 10 && cp.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false) {
+        if cp.len() >= 10 && cp.chars().next().is_some_and(|c| c.is_ascii_digit()) {
             return cp.to_string();
         }
     }
@@ -740,7 +728,7 @@ fn find_first_active_wave(spec_dir: &Path) -> Option<String> {
             continue;
         }
         let after_wave = &entry.file_name["wave-".len()..];
-        if !after_wave.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false) {
+        if !after_wave.chars().next().is_some_and(|c| c.is_ascii_digit()) {
             continue;
         }
         // Extract wave number
@@ -756,8 +744,7 @@ fn find_first_active_wave(spec_dir: &Path) -> Option<String> {
         let outcome_active = hdr
             .outcome
             .as_deref()
-            .map(|o| o.to_ascii_lowercase() == "active")
-            .unwrap_or(false);
+            .is_some_and(|o| o.eq_ignore_ascii_case("active"));
         if outcome_active {
             active_waves.push((num, entry.file_name.clone()));
         }
@@ -819,23 +806,21 @@ fn render_table(specs: &[ActiveSpec]) -> String {
         let prog = spec
             .progress
             .as_ref()
-            .map(|p| format!("{}/{}", p.done, p.total))
-            .unwrap_or_else(|| " - ".to_string());
+            .map_or_else(|| " - ".to_string(), |p| format!("{}/{}", p.done, p.total));
 
         let scope_str = spec
             .scope
             .as_ref()
-            .map(|s| scope_abbrev(&Some(s.clone())))
-            .unwrap_or_else(|| "-".to_string());
+            .map_or_else(|| "-".to_string(), |s| scope_abbrev(&Some(s.clone())));
 
         let stage_str = stage_abbrev(&spec.stage);
 
         // Pad/truncate columns for alignment
         let letter = format!("{:<2}", spec.letter);
         let name = format!("{:<45}", &spec.name);
-        let esc = format!("{:<3}", scope_str);
-        let stage_col = format!("{:<7}", stage_str);
-        let prog_col = format!("{:>4}", prog);
+        let esc = format!("{scope_str:<3}");
+        let stage_col = format!("{stage_str:<7}");
+        let prog_col = format!("{prog:>4}");
         let status_col = format!("{:<10}", spec.status);
         let resumo_col = &spec.resumo;
 

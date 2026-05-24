@@ -33,8 +33,7 @@
 use crate::run::env::project_dir;
 use crate::run::spec_children::{list_children, ChildEntry};
 use mustard_core::{
-    AcStatus, Outcome, SpecChild, SpecReader, SpecState, SpecStatus, SqliteSpecReader, Stage,
-    WaveStatus, WaveView,
+    AcStatus, Outcome, SpecReader, SpecState, SqliteSpecReader, Stage, WaveStatus, WaveView,
 };
 use serde::Serialize;
 use std::path::{Path, PathBuf};
@@ -92,6 +91,27 @@ pub struct AcChild {
     pub evidence: Option<String>,
 }
 
+/// One sub-spec row in the children tree.
+///
+/// Wire format the dashboard reads: `status` is the kebab-case lifecycle token
+/// derived from the canonical [`SpecState`] via [`SpecState::status_kebab`].
+#[derive(Debug, Clone, Serialize)]
+pub struct Subspec {
+    /// Child spec slug.
+    pub spec: String,
+    /// Canonical lifecycle state of the child.
+    pub state: SpecState,
+    /// Kebab-case status token (`planning`, `implementing`, `closed-followup`,
+    /// `completed`, …). Derived from [`Self::state`].
+    pub status: String,
+    /// ISO-8601 of the child's first event, when known.
+    pub started_at: Option<String>,
+    /// ISO-8601 of the child's most recent terminal event, when known.
+    pub completed_at: Option<String>,
+    /// Free-form reason from the `spec.link` payload.
+    pub reason: Option<String>,
+}
+
 /// The full projection returned by [`build_tree`] and serialised by [`run`].
 #[derive(Debug, Clone, Serialize)]
 pub struct ChildrenTree {
@@ -102,7 +122,7 @@ pub struct ChildrenTree {
     /// Per-AC rows, ordered by spec id.
     pub acs: Vec<AcChild>,
     /// Linked sub-specs (UNION of `spec.link` events + `### Parent:` headers).
-    pub subspecs: Vec<SpecChild>,
+    pub subspecs: Vec<Subspec>,
 }
 
 /// Derive a [`SpecState`] from a kebab-case status token (the spelling carried
@@ -137,18 +157,13 @@ fn fallback_state() -> SpecState {
         })
 }
 
-/// Convert a UNION [`ChildEntry`] into the core [`SpecChild`] shape. The
-/// `status` is derived as the kebab-case [`Stage`] of the resolved
-/// [`SpecState`], matching the contract: "`status` inside `subspecs` is the
-/// `Stage` of the sub-spec (kebab-case)".
-#[allow(deprecated)] // populates the derived legacy `status` field on SpecChild.
-fn child_from_entry(entry: ChildEntry) -> SpecChild {
+/// Convert a UNION [`ChildEntry`] into the wire-shape [`Subspec`] row. The
+/// `status` is the kebab-case projection of the resolved [`SpecState`].
+fn child_from_entry(entry: ChildEntry) -> Subspec {
     let state = state_from_kebab(&entry.status);
-    SpecChild {
+    Subspec {
         spec: entry.spec,
-        // Legacy flat status, derived (lossy) from the canonical state. Kept
-        // populated during the W1→W7 back-compat window.
-        status: SpecStatus::try_from(state.clone()).unwrap_or(SpecStatus::NoEvents),
+        status: state.status_kebab().to_string(),
         state,
         started_at: entry.started_at,
         completed_at: entry.completed_at,
@@ -192,7 +207,7 @@ pub fn build_tree(project: &Path, spec: &str) -> ChildrenTree {
     // Sub-specs: reuse the cross-developer UNION (events + `### Parent:`
     // headers) so a tactical-fix linked only via its filesystem header still
     // surfaces. `list_children` is already sorted by slug.
-    let subspecs: Vec<SpecChild> = list_children(project, spec)
+    let subspecs: Vec<Subspec> = list_children(project, spec)
         .into_iter()
         .map(child_from_entry)
         .collect();

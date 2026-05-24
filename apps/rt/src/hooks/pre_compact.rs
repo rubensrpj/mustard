@@ -1,4 +1,4 @@
-//! `pre_compact` — the PreCompact context-snapshot module.
+//! `pre_compact` — the `PreCompact` context-snapshot module.
 //!
 //! ## Scope (b3 Wave 5, session family)
 //!
@@ -33,7 +33,7 @@ use std::process::{Command, Stdio};
 
 use crate::util::now_iso8601;
 
-/// The PreCompact context-snapshot module.
+/// The `PreCompact` context-snapshot module.
 pub struct PreCompact;
 
 /// Resolve the project dir for an invocation: the harness `cwd`, else `.`.
@@ -66,15 +66,17 @@ fn git(cwd: &str, args: &[&str]) -> Option<String> {
 /// `true` if there is at least one `active` / `implementing` pipeline-state.
 /// Mirrors the JS "no active pipeline → exit silently" gate.
 fn has_active_pipeline(claude_dir: &Path) -> bool {
-    let states = claude_dir.join(".pipeline-states");
-    let Ok(entries) = fs::read_dir(&states) else {
+    let pipeline_states_dir = claude_dir.join(".pipeline-states");
+    let Ok(entries) = fs::read_dir(&pipeline_states_dir) else {
         // No states dir → the JS validation block is skipped entirely (it
         // only early-exits when the dir *exists* with no active state), so a
         // missing dir does NOT silence the snapshot.
         return true;
     };
     for entry in entries {
-        if !entry.file_name.ends_with(".json") {
+        if !std::path::Path::new(&entry.file_name)
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("json")) {
             continue;
         }
         if let Ok(text) = fs::read_to_string(&entry.path) {
@@ -94,7 +96,7 @@ fn has_active_pipeline(claude_dir: &Path) -> bool {
     false
 }
 
-/// Count rows in a Wave 6a SQLite table (`memory_decisions` or
+/// Count rows in a Wave 6a `SQLite` table (`memory_decisions` or
 /// `memory_lessons`). Resolves the DB path the same way
 /// `SqliteEventStore::for_project` does. Fail-open: returns 0 on any error.
 fn count_memory_rows(cwd: &str, table: &str) -> usize {
@@ -113,9 +115,12 @@ fn count_memory_rows(cwd: &str, table: &str) -> usize {
     };
     // Table name is an internal constant — no injection risk.
     let sql = format!("SELECT COUNT(*) FROM {table}");
-    conn.query_row(&sql, params![], |r| r.get::<_, i64>(0))
-        .map(|n| n as usize)
-        .unwrap_or(0)
+    // Row count from SQLite fits usize; sign loss is safe (count is never negative).
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let n = conn
+        .query_row(&sql, params![], |r| r.get::<_, i64>(0))
+        .map_or(0, |n: i64| n as usize);
+    n
 }
 
 /// Build the snapshot text. Port of the `pre-compact.js` `parts` assembly.
@@ -199,7 +204,7 @@ fn save_snapshot(cwd: &str, summary: &str) {
     }
     // The JS filename is `toISOString()` with `:`/`.` replaced by `-`.
     let timestamp = now_iso8601().replace([':', '.'], "-");
-    let _ = fs::write_atomic(&state_dir.join(format!("{timestamp}.txt")), summary.as_bytes());
+    let _ = fs::write_atomic(state_dir.join(format!("{timestamp}.txt")), summary.as_bytes());
 }
 
 impl Check for PreCompact {

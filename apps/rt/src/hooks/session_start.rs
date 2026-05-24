@@ -1,4 +1,4 @@
-//! `session_start` — the consolidated SessionStart lifecycle module.
+//! `session_start` — the consolidated `SessionStart` lifecycle module.
 //!
 //! ## Scope (b3 Wave 5, session family)
 //!
@@ -9,12 +9,12 @@
 //! - `harness-init.js` — bootstraps the harness event bus: ensures
 //!   `.claude/.harness/` exists, prunes legacy archived sessions older than
 //!   30 days, and emits a `session.start` event. The events now live in a
-//!   single WAL-mode SQLite store (`mustard.db`), so there is no NDJSON log
+//!   single WAL-mode `SQLite` store (`mustard.db`), so there is no NDJSON log
 //!   to rotate per session.
 //! - `session-memory.js` — injects persistent memory (knowledge base,
 //!   cross-session timeline, decisions, lessons) as `additionalContext`.
 //! - `spec-hygiene.js` — auto-moves stale completed/cancelled specs from
-//!   `spec/{name}/` (flat layout — status lives in SQLite, no bucket moves).
+//!   `spec/{name}/` (flat layout — status lives in `SQLite`, no bucket moves).
 //!
 //! ## Contract shape
 //!
@@ -31,10 +31,10 @@
 //! handled in-binary here: [`spawn_otel_collector`] detaches a child via
 //! `Command::new(env::current_exe()?).args(["run","otel-collector"]).spawn()?`
 //! and writes the PID to `<project>/.claude/.harness/.otel-collector.pid`.
-//! Idempotence is enforced by [`is_process_alive`] — a second SessionStart in
+//! Idempotence is enforced by [`is_process_alive`] — a second `SessionStart` in
 //! the same project finds the PID file, sees the process still up, and skips
 //! the spawn. Every failure path is fail-open: a missing exe, a spawn error,
-//! or an unwritable PID file is logged via `eprintln!` and the SessionStart
+//! or an unwritable PID file is logged via `eprintln!` and the `SessionStart`
 //! payload continues unmodified.
 //!
 //! The opt-in transcript watcher (`mustard-rt run transcript-watcher`) is
@@ -63,7 +63,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::util::now_iso8601;
 
-/// Archived sessions older than this are pruned on SessionStart (30 days).
+/// Archived sessions older than this are pruned on `SessionStart` (30 days).
 const RETENTION_MS: u128 = 30 * 24 * 60 * 60 * 1000;
 
 /// The advisory-context size cap for the injected persistent memory.
@@ -73,7 +73,7 @@ const KB_MIN_CONFIDENCE: f64 = 0.5;
 /// Number of knowledge entries injected, ranked by confidence × recency.
 const KB_MAX_ENTRIES: usize = 5;
 
-/// The consolidated SessionStart module.
+/// The consolidated `SessionStart` module.
 pub struct SessionStart;
 
 // ===========================================================================
@@ -132,7 +132,7 @@ fn current_session_id(input: &HookInput) -> String {
 
 /// `harness-init`: ensure the harness dirs exist, prune legacy archived
 /// sessions, and emit a `session.start` event. The harness event bus is a
-/// single WAL-mode SQLite store, so there is no per-session NDJSON log to
+/// single WAL-mode `SQLite` store, so there is no per-session NDJSON log to
 /// rotate. Pure side effect — fail-open throughout.
 fn run_harness_init(input: &HookInput, cwd: &str) {
     let harness = harness_dir(cwd);
@@ -175,7 +175,9 @@ fn prune_old_sessions(sessions_dir: &Path) {
     };
     let now = now_millis();
     for entry in entries {
-        if !entry.file_name.ends_with(".jsonl") {
+        if !std::path::Path::new(&entry.file_name)
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("jsonl")) {
             continue;
         }
         let Ok(modified) = fs::modified(&entry.path) else {
@@ -204,10 +206,10 @@ const OTEL_PID_FILE: &str = ".otel-collector.pid";
 const TRANSCRIPT_WATCH_ENV: &str = "MUSTARD_TRANSCRIPT_WATCH";
 
 /// Spawn the local OTEL collector detached, write its PID, and skip if a live
-/// PID file is already present (idempotent across SessionStart invocations).
+/// PID file is already present (idempotent across `SessionStart` invocations).
 ///
 /// Fail-open at every step: a missing `current_exe`, an unwritable PID file,
-/// or a spawn error degrades to an `eprintln!` warning and the SessionStart
+/// or a spawn error degrades to an `eprintln!` warning and the `SessionStart`
 /// payload continues unmodified. Telemetry is never load-bearing.
 fn spawn_otel_collector(cwd: &str) {
     let pid_path = harness_dir(cwd).join(OTEL_PID_FILE);
@@ -246,7 +248,7 @@ fn spawn_otel_collector(cwd: &str) {
         Ok(c) => {
             let pid = c.id();
             // Best-effort PID write — collector keeps running even if we can't persist.
-            if let Err(e) = fs::create_dir_all(&harness_dir(cwd)) {
+            if let Err(e) = fs::create_dir_all(harness_dir(cwd)) {
                 eprintln!("session_start: create_dir_all for OTEL pid file failed ({e})");
                 return;
             }
@@ -525,7 +527,7 @@ fn parse_status(content: &str) -> Option<String> {
                 let word: String = after
                     .trim_start()
                     .chars()
-                    .take_while(|c| c.is_ascii_alphanumeric())
+                    .take_while(char::is_ascii_alphanumeric)
                     .collect();
                 if !word.is_empty() {
                     return Some(word.to_ascii_lowercase());
@@ -584,7 +586,7 @@ fn count_occurrences_ci(haystack: &str, needle: &str) -> usize {
     haystack.to_ascii_lowercase().matches(needle).count()
 }
 
-/// `spec-hygiene`: flat layout — spec status lives in the SQLite event store;
+/// `spec-hygiene`: flat layout — spec status lives in the `SQLite` event store;
 /// no bucket directories to move specs between (wave-2 removed them).
 /// Retained as a no-op so call sites remain stable while a future wave may
 /// add SQLite-driven hygiene (e.g. pruning stale orphan pipeline-state files).
@@ -599,10 +601,10 @@ fn run_spec_hygiene(_cwd: &str) {
 // ===========================================================================
 
 /// Load up to `KB_MAX_ENTRIES` knowledge patterns from `knowledge_patterns`,
-/// ordered by confidence DESC, last_seen DESC. Patterns below `KB_MIN_CONFIDENCE`
+/// ordered by confidence DESC, `last_seen` DESC. Patterns below `KB_MIN_CONFIDENCE`
 /// are excluded at the SQL layer.
 ///
-/// Wave 6b: reads from the `knowledge_patterns` SQLite table instead of
+/// Wave 6b: reads from the `knowledge_patterns` `SQLite` table instead of
 /// `knowledge.json`. The `verifiedAt` column does not exist in the new table
 /// (it was a legacy JSON field only); all SQL-backed entries are treated as
 /// unverified to preserve the AC-4 prefix logic until a future wave adds the
@@ -615,8 +617,11 @@ fn load_knowledge_sql(conn: &rusqlite::Connection) -> Vec<String> {
     let Ok(mut stmt) = conn.prepare(sql) else {
         return Vec::new();
     };
+    // KB_MAX_ENTRIES is a small compile-time constant; cast to i64 cannot wrap.
+    #[allow(clippy::cast_possible_wrap)]
+    let max_entries_i64 = KB_MAX_ENTRIES as i64;
     let rows = stmt.query_map(
-        params![KB_MIN_CONFIDENCE, KB_MAX_ENTRIES as i64],
+        params![KB_MIN_CONFIDENCE, max_entries_i64],
         |r| Ok((r.get::<_, String>(0)?, r.get::<_, f64>(1)?)),
     );
     let Ok(rows) = rows else {
@@ -641,10 +646,12 @@ fn load_memory_sql(conn: &rusqlite::Connection, table: &str, max: usize) -> Vec<
     let Ok(mut stmt) = conn.prepare(&sql) else {
         return Vec::new();
     };
-    let rows =
-        stmt.query_map(params![max as i64], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
-        });
+    // max is a small runtime count; cast to i64 cannot wrap.
+    #[allow(clippy::cast_possible_wrap)]
+    let max_i64 = max as i64;
+    let rows = stmt.query_map(params![max_i64], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
+    });
     let Ok(rows) = rows else {
         return Vec::new();
     };
@@ -659,7 +666,7 @@ fn load_memory_sql(conn: &rusqlite::Connection, table: &str, max: usize) -> Vec<
 /// Build the persistent-memory `additionalContext` payload, or `None` when no
 /// source has any content.
 ///
-/// Wave 6b: reads all three data sources from SQLite tables
+/// Wave 6b: reads all three data sources from `SQLite` tables
 /// (`knowledge_patterns`, `memory_decisions`, `memory_lessons`) instead of
 /// JSON files. Injection cap of [`MEMORY_MAX_CHARS`] is preserved unchanged.
 fn build_memory_context(cwd: &str) -> Option<String> {

@@ -321,7 +321,9 @@ fn read_state_objects(claude_dir: &Path) -> Vec<StateObject> {
     };
     let mut out = Vec::new();
     for entry in entries {
-        if !entry.file_name.ends_with(".json") {
+        if !std::path::Path::new(&entry.file_name)
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("json")) {
             continue;
         }
         let Ok(text) = fs::read_to_string(&entry.path) else {
@@ -452,7 +454,9 @@ fn run_session_knowledge_inc(cwd: &str) {
     };
     let mut newest: Option<(SystemTime, PathBuf)> = None;
     for entry in entries {
-        if !entry.file_name.ends_with(".json") {
+        if !std::path::Path::new(&entry.file_name)
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("json")) {
             continue;
         }
         let Ok(mtime) = fs::modified(&entry.path) else {
@@ -656,7 +660,7 @@ fn run_memory_auto_extract(cwd: &str) {
     if !active.exists() {
         return;
     }
-    let _ = fs::create_dir_all(&claude.join("memory"));
+    let _ = fs::create_dir_all(claude.join("memory"));
 
     let seen_path = claude.join(".memory-seen.json");
     let mut seen_hashes: Vec<String> = fs::read_to_string(&seen_path)
@@ -748,7 +752,7 @@ impl Observer for Knowledge {
                 run_memory_auto_extract(&cwd);
             }
             Some(Trigger::PostToolUse) => {
-                if matches!(input.tool_name.as_deref(), Some("Task") | Some("Agent")) {
+                if matches!(input.tool_name.as_deref(), Some("Task" | "Agent")) {
                     run_session_knowledge_inc(&cwd);
                 }
             }

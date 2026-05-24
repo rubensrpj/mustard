@@ -219,7 +219,7 @@ const MS_PER_DAY: i64 = 86_400_000;
 
 /// Outcome of a [`backfill_null_spec`] sweep — how many rows we visited and
 /// where the match came from. The two `updated_*` counters split so the user
-/// can see whether attribution recovered via the precise (session, tool_use)
+/// can see whether attribution recovered via the precise (session, `tool_use`)
 /// key or fell back to the session-only match.
 #[derive(Debug, Clone, Copy, Default, serde::Serialize)]
 pub struct SpecBackfillReport {
@@ -228,7 +228,7 @@ pub struct SpecBackfillReport {
     /// Rows matched via `(session_id, tool_use_id)` lookup. High-precision.
     pub updated_primary: usize,
     /// Rows matched via session-only fallback (most-recent stamp at/before the
-    /// row's `started_at`). Coarser but covers spans without a tool_use_id.
+    /// row's `started_at`). Coarser but covers spans without a `tool_use_id`.
     pub updated_fallback: usize,
     /// Rows where neither lookup found a stamp — left as NULL.
     pub unmatched: usize,
@@ -263,12 +263,12 @@ pub fn backfill_null_spec(conn: &Connection) -> Result<SpecBackfillReport> {
     // SELECT before UPDATE so we control the iteration order and can do the
     // lookups outside the write transaction (lookups read the same DB and
     // would compete with an open write tx).
+    type CandidateRow = (String, String, Option<String>, Option<i64>);
     let mut stmt = conn.prepare(
         "SELECT span_id, session_id, tool_use_id, started_at \
          FROM run_usage \
          WHERE spec IS NULL AND session_id IS NOT NULL",
     )?;
-    type CandidateRow = (String, String, Option<String>, Option<i64>);
     let candidates: Vec<CandidateRow> = stmt
         .query_map([], |r| {
             Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
@@ -368,6 +368,14 @@ pub struct BackfillReport {
 /// Returns [`Error::Sqlite`] on a database failure.
 pub fn backfill_null_costs(conn: &Connection, force: bool) -> Result<BackfillReport> {
     use crate::economy::estimator::compute_cost_micros;
+    type CandidateRow = (
+        String,
+        Option<String>,
+        Option<i64>,
+        Option<i64>,
+        Option<i64>,
+        Option<i64>,
+    );
 
     // ── Step 1: collect candidates ─────────────────────────────────────
     // SELECT before UPDATE so we know the exact span_id set we touched, and
@@ -398,14 +406,6 @@ pub fn backfill_null_costs(conn: &Connection, force: bool) -> Result<BackfillRep
     };
 
     let mut stmt = conn.prepare(select_sql)?;
-    type CandidateRow = (
-        String,
-        Option<String>,
-        Option<i64>,
-        Option<i64>,
-        Option<i64>,
-        Option<i64>,
-    );
     let candidates: Vec<CandidateRow> = stmt
         .query_map([], |r| {
             Ok((

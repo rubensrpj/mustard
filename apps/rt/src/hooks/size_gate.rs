@@ -149,7 +149,9 @@ fn is_spec_path(file_path: &str) -> bool {
     let p = file_path.replace('\\', "/");
     // Flat layout: `.claude/spec/{name}/*.md` — requires at least one char
     // between the prefix and `.md` (mirrors the JS regex).
-    if p.contains(".claude/spec/") && p.ends_with(".md") {
+    if p.contains(".claude/spec/") && std::path::Path::new(&p)
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("md")) {
         if let Some(rest) = p.split(".claude/spec/").nth(1) {
             if rest.len() > ".md".len() {
                 return true;
@@ -157,7 +159,9 @@ fn is_spec_path(file_path: &str) -> bool {
         }
     }
     // Generic: any `/spec/` segment followed by a non-empty `.md` file.
-    if p.ends_with(".md") {
+    if std::path::Path::new(&p)
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("md")) {
         if let Some(idx) = p.find("/spec/") {
             let rest = &p[idx + "/spec/".len()..];
             if rest.len() > ".md".len() {
@@ -401,7 +405,7 @@ fn ac_is_poor(ac_lower: &str) -> bool {
         let Some(script) = next else { continue };
         let script = script.trim_end_matches('`');
         if matches!(script, "test" | "build" | "lint" | "tsc" | "type-check")
-            && tokens.next().map(|t| t.trim_end_matches('`')).unwrap_or("").is_empty()
+            && tokens.next().map_or("", |t| t.trim_end_matches('`')).is_empty()
         {
             return true;
         }
@@ -411,9 +415,7 @@ fn ac_is_poor(ac_lower: &str) -> bool {
 
 /// The non-binary reason label for an AC item, if any. `ac_lower` is lowercased.
 fn ac_non_binary_reason(ac_lower: &str) -> Option<&'static str> {
-    let Some(cmd_idx) = ac_lower.find("command:") else {
-        return None;
-    };
+    let cmd_idx = ac_lower.find("command:")?;
     let after = ac_lower[cmd_idx + "command:".len()..].trim_start();
     // pt: "já validado" / "já validada".
     if after.starts_with("já validad") || after.starts_with("ja validad") {

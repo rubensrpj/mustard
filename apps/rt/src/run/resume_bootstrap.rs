@@ -343,8 +343,7 @@ fn normalise_stage(raw: &str) -> String {
 /// section in the first ~30 lines.
 fn detect_stub(head: &str) -> bool {
     let is_plan = parse_header_value(head, "stage")
-        .map(|s| s.eq_ignore_ascii_case("plan"))
-        .unwrap_or(false);
+        .is_some_and(|s| s.eq_ignore_ascii_case("plan"));
     if !is_plan {
         return false;
     }
@@ -464,8 +463,7 @@ fn render_dispatch_failure(fail: &PipelineDispatchFailurePayload) -> serde_json:
         .at
         .as_deref()
         .and_then(crate::run::complete_spec::parse_iso_millis)
-        .map(|at_ms| now_ms - at_ms)
-        .unwrap_or(0);
+        .map_or(0, |at_ms| now_ms - at_ms);
     json!({
         "at": fail.at.clone().unwrap_or_default(),
         "ageMs": age_ms,
@@ -528,7 +526,7 @@ fn open_conn(project: &Path) -> Option<Connection> {
     let store = SqliteEventStore::for_project(project).ok()?;
     let db_path = store.path().to_path_buf();
     let conn = Connection::open(&db_path).ok()?;
-    let _ = conn.busy_timeout(std::time::Duration::from_millis(5_000));
+    let _ = conn.busy_timeout(std::time::Duration::from_secs(5));
     Some(conn)
 }
 

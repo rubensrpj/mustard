@@ -25,7 +25,7 @@
 //! server — losing a few datapoints beats taking down the harness pipeline.
 //! A canary log line (`.canary.log`) records each request and each error.
 
-use super::project::{project_logs, project_metrics};
+use super::project::project_metrics;
 use super::store::{claude_dir, Store};
 use mustard_core::economy::{sources::otel as otel_source, sources::IngestContext, SpanRecord};
 use mustard_core::fs;
@@ -78,21 +78,10 @@ fn project_into_store(store: &Store, harness_dir: &Path, route: &str, body: &Val
         }
     } else if route == "/v1/traces" {
         written = project_traces_into_economy(harness_dir, body);
-    } else {
-        for row in project_logs(body, now_ms) {
-            match store.upsert_log(&row) {
-                Ok(()) => written += 1,
-                Err(e) => canary(
-                    harness_dir,
-                    &serde_json::json!({
-                        "ts": crate::util::now_iso8601(),
-                        "level": "warn", "route": route,
-                        "msg": "logRecord failed", "err": e.to_string(),
-                    }),
-                ),
-            }
-        }
     }
+    // /v1/logs and any other route: nothing to persist. Claude Code log bodies
+    // are not in `telemetry::CONSUMED_METRICS`, so they never reach the dashboard;
+    // the collector accepts the payload (HTTP 200) but `written` stays 0.
     written
 }
 
@@ -283,9 +272,8 @@ fn stamp_attribution(store: &TelemetryStore, mut run: RunUsage) -> RunUsage {
 /// (`MUSTARD_DB_PATH` override, else `{project}/.claude/.harness/mustard.db`).
 fn run_migration_once(harness_dir: &Path) {
     let cwd = project_dir();
-    let store = match TelemetryStore::for_project(&cwd) {
-        Ok(s) => s,
-        Err(_) => return,
+    let Ok(store) = TelemetryStore::for_project(&cwd) else {
+        return;
     };
     let mustard_db_path = match std::env::var("MUSTARD_DB_PATH") {
         Ok(v) if !v.is_empty() => v,
@@ -470,7 +458,7 @@ fn handle_one(mut request: tiny_http::Request, store: &Store, harness_dir: &Path
                     // An unparseable static header is impossible; degrade to a
                     // bare 200 rather than panic.
                     tiny_http::Header::from_bytes(&b"X"[..], &b"Y"[..])
-                        .unwrap_or_else(|_| unreachable!("static header"))
+                        .unwrap_or_else(|()|  unreachable!("static header"))
                 }),
         );
     let _ = request.respond(resp);

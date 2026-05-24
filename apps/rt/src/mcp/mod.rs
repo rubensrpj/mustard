@@ -38,7 +38,7 @@ use rmcp::model::{
     CallToolResult, Content, Implementation, ServerCapabilities, ServerInfo,
 };
 use rmcp::{
-    ErrorData as McpError, ServerHandler, ServiceExt, schemars, tool, tool_handler, tool_router,
+    ServerHandler, ServiceExt, schemars, tool, tool_handler, tool_router,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
@@ -413,11 +413,11 @@ impl MustardMemory {
     fn search_knowledge(
         &self,
         Parameters(args): Parameters<SearchKnowledgeArgs>,
-    ) -> Result<CallToolResult, McpError> {
+    ) -> CallToolResult {
         // Clamp `limit` to the TS schema bounds (1..=50, default 10).
         let limit = args.limit.unwrap_or(10).clamp(1, 50) as usize;
         let Some(store) = self.open_store() else {
-            return Ok(json_result(&Vec::<KnowledgeOut>::new()));
+            return json_result(&Vec::<KnowledgeOut>::new());
         };
         // A malformed FTS MATCH expression fails-open to no results.
         let candidates = store.search(&args.query).unwrap_or_default();
@@ -431,7 +431,7 @@ impl MustardMemory {
             .take(limit)
             .map(KnowledgeOut::from)
             .collect();
-        Ok(json_result(&rows))
+        json_result(&rows)
     }
 
     /// Tool 2 — filter events by spec / event / since.
@@ -446,10 +446,10 @@ impl MustardMemory {
     fn query_events(
         &self,
         Parameters(args): Parameters<QueryEventsArgs>,
-    ) -> Result<CallToolResult, McpError> {
+    ) -> CallToolResult {
         let limit = args.limit.unwrap_or(100).clamp(1, 500) as usize;
         let Some(store) = self.open_store() else {
-            return Ok(json_result(&Vec::<EventOut>::new()));
+            return json_result(&Vec::<EventOut>::new());
         };
         let events = store.replay().unwrap_or_default();
         let rows: Vec<EventOut> = events
@@ -472,7 +472,7 @@ impl MustardMemory {
             .take(limit)
             .map(EventOut::from)
             .collect();
-        Ok(json_result(&rows))
+        json_result(&rows)
     }
 
     /// Tool 3 — rank specs by token overlap against a free-text description.
@@ -486,7 +486,7 @@ impl MustardMemory {
     fn find_similar_specs(
         &self,
         Parameters(args): Parameters<FindSimilarSpecsArgs>,
-    ) -> Result<CallToolResult, McpError> {
+    ) -> CallToolResult {
         let limit = args.limit.unwrap_or(5).clamp(1, 20) as usize;
         let tokens: Vec<String> = args
             .description
@@ -495,10 +495,10 @@ impl MustardMemory {
             .map(str::to_string)
             .collect();
         if tokens.is_empty() {
-            return Ok(json_result(&Vec::<SpecMatch>::new()));
+            return json_result(&Vec::<SpecMatch>::new());
         }
         let Some(store) = self.open_store() else {
-            return Ok(json_result(&Vec::<SpecMatch>::new()));
+            return json_result(&Vec::<SpecMatch>::new());
         };
         let specs = store.specs().unwrap_or_default();
         let mut matches: Vec<SpecMatch> = specs
@@ -521,7 +521,7 @@ impl MustardMemory {
         // `Reverse` gives the descending key without a hand-written closure.
         matches.sort_by_key(|m| std::cmp::Reverse(m.score));
         matches.truncate(limit);
-        Ok(json_result(&matches))
+        json_result(&matches)
     }
 
     /// Tool 4 — the `metrics_projection` row for a spec, or `{ error }`.
@@ -529,13 +529,13 @@ impl MustardMemory {
     fn get_spec_metrics(
         &self,
         Parameters(args): Parameters<GetSpecMetricsArgs>,
-    ) -> Result<CallToolResult, McpError> {
+    ) -> CallToolResult {
         let Some(store) = self.open_store() else {
-            return Ok(json_result(&missing_metrics(&args.spec)));
+            return json_result(&missing_metrics(&args.spec));
         };
         match store.metrics(&args.spec).ok().flatten() {
-            Some(row) => Ok(json_result(&MetricsOut::from(row))),
-            None => Ok(json_result(&missing_metrics(&args.spec))),
+            Some(row) => json_result(&MetricsOut::from(row)),
+            None => json_result(&missing_metrics(&args.spec)),
         }
     }
 
@@ -549,15 +549,15 @@ impl MustardMemory {
     fn get_run_summary(
         &self,
         Parameters(args): Parameters<GetRunSummaryArgs>,
-    ) -> Result<CallToolResult, McpError> {
+    ) -> CallToolResult {
         let limit = args.limit.unwrap_or(1000).clamp(1, 5000) as usize;
         let Some(store) = self.open_telemetry() else {
-            return Ok(json_result(&empty_run_summary()));
+            return json_result(&empty_run_summary());
         };
         let rows = store
             .runs_for_summary(args.spec.as_deref(), args.phase.as_deref(), limit)
             .unwrap_or_default();
-        Ok(json_result(&summarize_runs(&rows)))
+        json_result(&summarize_runs(&rows))
     }
 }
 

@@ -2,7 +2,7 @@
 //!
 //! Three submodules translate external telemetry formats into the W1 record
 //! types defined in [`super::model`]. Each adapter is a *pure translator*: it
-//! returns a `Vec<...>` and never touches SQLite directly. The caller (a hook
+//! returns a `Vec<...>` and never touches `SQLite` directly. The caller (a hook
 //! or `run` subcommand in `apps/rt`) opens a connection via
 //! [`super::store::open_for`] and loops the appropriate writer function:
 //!
@@ -38,7 +38,7 @@ pub mod transcript;
 /// Per-call context every adapter needs to attribute its records.
 ///
 /// `project_path` is mandatory — it is the key the writer uses to bind the
-/// record to the right SQLite database (and the dashboard uses to scope
+/// record to the right `SQLite` database (and the dashboard uses to scope
 /// queries). `session_id` is best-effort: Claude Code provides it in the
 /// `CLAUDE_SESSION_ID` env var when a session is active; adapters set it to
 /// the resolved value if available, `None` otherwise.

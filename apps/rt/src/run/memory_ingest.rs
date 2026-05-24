@@ -111,8 +111,7 @@ fn ingest_memory_file(
     }
     let file_name = file_path
         .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| table_label.to_string());
+        .map_or_else(|| table_label.to_string(), |n| n.to_string_lossy().to_string());
     let raw = match fs::read_to_string(file_path) {
         Ok(t) => t,
         Err(e) => {
@@ -202,7 +201,7 @@ pub fn run(delete: bool) {
             return;
         }
     };
-    let _ = conn.busy_timeout(std::time::Duration::from_millis(5_000));
+    let _ = conn.busy_timeout(std::time::Duration::from_secs(5));
 
     let mut errors: Vec<Value> = Vec::new();
     let knowledge_path = claude.join("knowledge.json");
@@ -229,20 +228,17 @@ pub fn run(delete: bool) {
 
     let mut deleted_any = false;
     if delete {
-        if knowledge_ok && !knowledge_had_error {
-            if fs::remove_file(&knowledge_path).is_ok() {
-                deleted_any = true;
-            }
+        if knowledge_ok && !knowledge_had_error
+            && fs::remove_file(&knowledge_path).is_ok() {
+            deleted_any = true;
         }
-        if decisions_ok && !decisions_had_error {
-            if fs::remove_file(&decisions_path).is_ok() {
-                deleted_any = true;
-            }
+        if decisions_ok && !decisions_had_error
+            && fs::remove_file(&decisions_path).is_ok() {
+            deleted_any = true;
         }
-        if lessons_ok && !lessons_had_error {
-            if fs::remove_file(&lessons_path).is_ok() {
-                deleted_any = true;
-            }
+        if lessons_ok && !lessons_had_error
+            && fs::remove_file(&lessons_path).is_ok() {
+            deleted_any = true;
         }
     }
 

@@ -457,21 +457,18 @@ pub fn run(opts: MigrateOpts) {
         }
         total += 1;
 
-        let content = match fs::read_to_string(path) {
-            Ok(c) => c,
-            Err(_) => {
-                // Fail-open: a per-file read error is logged, never aborts.
-                errors += 1;
-                records.push(FileRecord {
-                    path: rel,
-                    action: "error",
-                    before: None,
-                    after: None,
-                    reason: Some("read-failed"),
-                    inferred_stage_override: None,
-                });
-                continue;
-            }
+        let Ok(content) = fs::read_to_string(path) else {
+            // Fail-open: a per-file read error is logged, never aborts.
+            errors += 1;
+            records.push(FileRecord {
+                path: rel,
+                action: "error",
+                before: None,
+                after: None,
+                reason: Some("read-failed"),
+                inferred_stage_override: None,
+            });
+            continue;
         };
 
         match plan_for(&content) {

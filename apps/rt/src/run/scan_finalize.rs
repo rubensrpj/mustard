@@ -159,8 +159,7 @@ fn finalize(root: &Path, skip_security: bool) -> Value {
 
     // Step 6 — validate skills (--factual), mode-gated.
     let mode = std::env::var("MUSTARD_SKILL_VALIDATE_MODE")
-        .map(|m| m.to_lowercase())
-        .unwrap_or_else(|_| "strict".to_string());
+        .map_or_else(|_| "strict".to_string(), |m| m.to_lowercase());
     let skills_step;
     if mode == "off" {
         skills_step = json!({ "ran": false, "ok": true, "mode": mode });
@@ -193,7 +192,7 @@ fn finalize(root: &Path, skip_security: bool) -> Value {
     } else {
         let security = run_subcommand(root, &["run", "security-scan", "--json"]);
         // security-scan exits 0 (clean) or 1 (findings) — both are useful.
-        if matches!(security.status, Some(0) | Some(1)) {
+        if matches!(security.status, Some(0 | 1)) {
             let findings = serde_json::from_str::<Value>(&security.stdout)
                 .ok()
                 .and_then(|v| v.get("secrets").and_then(Value::as_array).map(Vec::len))

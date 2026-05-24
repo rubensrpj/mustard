@@ -443,6 +443,7 @@ pub struct SummaryRow {
 /// # Errors
 ///
 /// Returns [`Error::Sqlite`] for a query failure.
+#[allow(clippy::cast_possible_wrap)] // limit is a small SQL LIMIT, never wraps in practice
 pub fn runs_for_summary(
     conn: &Connection,
     spec: Option<&str>,
@@ -712,6 +713,7 @@ pub fn consumption_by_agent(conn: &Connection) -> Result<Vec<ConsumptionGroup>> 
 /// # Errors
 ///
 /// Returns [`Error::Sqlite`] for a query failure.
+#[allow(clippy::cast_possible_wrap)] // limit is a small SQL LIMIT, never wraps in practice
 pub fn consumption_top_specs(conn: &Connection, limit: usize) -> Result<Vec<ConsumptionGroup>> {
     let sql = format!(
         "SELECT COALESCE(spec, '') AS key, COUNT(*), \
@@ -816,6 +818,7 @@ pub fn avg_duration_ms(conn: &Connection) -> Result<f64> {
 /// # Errors
 ///
 /// Returns [`Error::Sqlite`] for a query failure.
+#[allow(clippy::cast_possible_wrap)] // limit is a small SQL LIMIT, never wraps in practice
 pub fn samples_by_agent(conn: &Connection, limit: usize) -> Result<Vec<(String, i64)>> {
     let sql = format!(
         "SELECT COALESCE(agent_id, 'unknown') AS role, COUNT(*) AS samples \
@@ -833,6 +836,7 @@ pub fn samples_by_agent(conn: &Connection, limit: usize) -> Result<Vec<(String, 
 /// # Errors
 ///
 /// Returns [`Error::Sqlite`] for a query failure.
+#[allow(clippy::cast_possible_wrap, clippy::type_complexity)] // limit is a SQL LIMIT; tuple type is an internal detail
 pub fn slowest_runs(
     conn: &Connection,
     limit: usize,

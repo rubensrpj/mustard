@@ -25,6 +25,7 @@ pub struct ReviewPrefetchOpts {
     pub pr_ref: String,
     pub format: String,
     /// Optional project root (currently unused but kept for future remote resolution).
+    #[allow(dead_code)] // kept for API consistency with sibling opts structs
     pub root: PathBuf,
 }
 
@@ -249,8 +250,7 @@ fn render_table(pr: &Value) -> String {
         .filter(|r| r["state"].as_str() == Some("DISMISSED"))
         .count();
     lines.push(format!(
-        "Reviews: {} APPROVED / {} CHANGES_REQUESTED / {} DISMISSED",
-        approved, changes, dismissed
+        "Reviews: {approved} APPROVED / {changes} CHANGES_REQUESTED / {dismissed} DISMISSED"
     ));
 
     // Top 5 changed files

@@ -17,8 +17,7 @@ const DEFAULT_IGNORE: &[&str] = &[
 /// Whether a file carries the `<!-- mustard:generated` marker anywhere.
 fn has_generated_marker(path: &Path) -> bool {
     fs::read_to_string(path)
-        .map(|c| c.contains("<!-- mustard:generated"))
-        .unwrap_or(false)
+        .is_ok_and(|c| c.contains("<!-- mustard:generated"))
 }
 
 /// Move every generated `*.md` (depth 1) in `commands_dir` into `_backup/`.
@@ -121,7 +120,7 @@ pub fn build_tooling_block(subproject_path: &Path, stack: &str) -> String {
             }
         }
     } else if is_python {
-        if let Ok(content) = fs::read_to_string(&subproject_path.join("pyproject.toml")) {
+        if let Ok(content) = fs::read_to_string(subproject_path.join("pyproject.toml")) {
             if content.contains("pytest") {
                 lines.push("- test: pytest (source: pyproject.toml)".to_string());
             }
@@ -157,8 +156,7 @@ pub fn build_structure_block(subproject_path: &Path) -> String {
     let mut lines = vec!["## Project structure".to_string()];
     for dir in dirs {
         let count = fs::read_dir(&dir.path)
-            .map(|es| es.iter().filter(|e| !e.is_dir).count())
-            .unwrap_or(0);
+            .map_or(0, |es| es.iter().filter(|e| !e.is_dir).count());
         lines.push(format!("- {}/ — {count} files", dir.file_name));
     }
     lines.push(String::new());

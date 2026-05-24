@@ -108,7 +108,7 @@ fn is_whitelisted(lines: &[&str], match_idx: usize) -> bool {
 
     // 2. A <!-- example --> tag within the 2 lines before the match.
     let look_back_start = match_idx.saturating_sub(2);
-    for prior in lines[look_back_start..match_idx].iter() {
+    for prior in &lines[look_back_start..match_idx] {
         if prior.to_ascii_lowercase().contains("<!-- example -->") {
             return true;
         }
@@ -116,7 +116,7 @@ fn is_whitelisted(lines: &[&str], match_idx: usize) -> bool {
 
     // 3. Inside an open <details> block (scan from the start to match_idx).
     let mut details_depth: i32 = 0;
-    for prior in lines[..match_idx].iter() {
+    for prior in &lines[..match_idx] {
         let lc = prior.to_ascii_lowercase();
         if lc.contains("<details") {
             details_depth += 1;
@@ -138,9 +138,8 @@ fn is_whitelisted(lines: &[&str], match_idx: usize) -> bool {
 
 /// Scan a single SKILL.md file for violations.
 fn scan_file(path: &Path, violations: &mut Vec<Violation>) {
-    let content = match fs::read_to_string(path) {
-        Ok(c) => c,
-        Err(_) => return, // fail-open
+    let Ok(content) = fs::read_to_string(path) else {
+        return; // fail-open
     };
 
     let lines: Vec<&str> = content.lines().collect();

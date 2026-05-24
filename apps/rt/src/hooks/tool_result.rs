@@ -31,12 +31,13 @@ use mustard_core::model::contract::{Ctx, HookInput, Observer, Trigger};
 use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::fmt::Write as _;
 use std::path::Path;
 
 /// Truncation cap for Bash stdout slice.
 const STDOUT_CAP: usize = 2 * 1024;
 /// Truncation cap for Bash stderr slice.
-const STDERR_CAP: usize = 1 * 1024;
+const STDERR_CAP: usize = 1024;
 /// Truncation cap for Read content excerpts.
 const CONTENT_CAP: usize = 4 * 1024;
 /// Truncation cap for Edit/Write file_before / file_after slices.
@@ -98,7 +99,7 @@ fn truncate(s: &str, max: usize) -> String {
     let extra = s.len().saturating_sub(boundary);
     let mut out = String::with_capacity(boundary + 40);
     out.push_str(&s[..boundary]);
-    out.push_str(&format!("... [truncated, {extra} bytes more]"));
+    let _ = write!(out, "... [truncated, {extra} bytes more]");
     out
 }
 
@@ -143,9 +144,10 @@ fn response_string_field(resp: &Value, field: &str) -> Option<String> {
     }
 }
 
-/// Build the [`ToolResultPayload`] for a given tool. Returns `None` only when
-/// the tool is not modelled (unknown tool name) — every supported tool
-/// produces a payload, even if half its fields are `None`.
+/// Build the [`ToolResultPayload`] for a given tool. Every tool produces a
+/// payload (the `_ =>` branch emits minimal identification fields). Call sites
+/// use `Option` for uniform pattern-matching with the observer's emit path.
+#[allow(clippy::unnecessary_wraps)] // Option kept for uniform call-site pattern
 fn build_payload(tool: &str, input: &HookInput) -> Option<ToolResultPayload> {
     let tool_input = &input.tool_input;
     let tool_response = input.raw.get("tool_response").cloned().unwrap_or(Value::Null);

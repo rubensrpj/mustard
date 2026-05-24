@@ -52,7 +52,7 @@ fn read_status(spec_file: &Path) -> String {
 fn looks_like_folder(c: &str) -> bool {
     let lower = c.to_lowercase();
     let wave_prefixed = lower.starts_with("wave-")
-        && lower[5..].chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false);
+        && lower[5..].chars().next().is_some_and(|c| c.is_ascii_digit());
     if wave_prefixed {
         return true;
     }
@@ -74,8 +74,7 @@ fn first_number(s: &str) -> Option<String> {
     let start = s.find(|c: char| c.is_ascii_digit())?;
     let end = s[start..]
         .find(|c: char| !c.is_ascii_digit())
-        .map(|e| start + e)
-        .unwrap_or(s.len());
+        .map_or(s.len(), |e| start + e);
     Some(s[start..end].to_string())
 }
 
@@ -100,8 +99,8 @@ fn parse_wave_plan(wave_plan_file: &Path, spec_dir: &Path) -> Vec<Wave> {
         // label cell must be `W?\d+` or `Wave\s*\d+`.
         let label_ok = {
             let lc = label_cell.to_lowercase();
-            let body = lc.strip_prefix('w').map(str::trim_start).unwrap_or(&lc);
-            let body = body.strip_prefix("ave").map(str::trim_start).unwrap_or(body);
+            let body = lc.strip_prefix('w').map_or(lc.as_str(), str::trim_start);
+            let body = body.strip_prefix("ave").map_or(body, str::trim_start);
             !body.is_empty() && body.chars().all(|c| c.is_ascii_digit())
         };
         if !label_ok {
@@ -148,11 +147,11 @@ fn parse_wave_plan(wave_plan_file: &Path, spec_dir: &Path) -> Vec<Wave> {
                     if let Some(m) = entries.iter().find(|e| {
                         let el = e.to_lowercase();
                         el == prefix
-                            || el.strip_prefix(&prefix).map(|t| {
+                            || el.strip_prefix(&prefix).is_some_and(|t| {
                                 t.starts_with('-') || t.starts_with('_')
-                            }).unwrap_or(false)
+                            })
                     }) {
-                        folder = m.clone();
+                        folder.clone_from(m);
                     }
                 }
             }

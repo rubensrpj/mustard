@@ -8,7 +8,7 @@
 //! The production implementation is
 //! [`SqliteEventStore`](super::sqlite_store::SqliteEventStore) — a single
 //! WAL-mode `.claude/.harness/mustard.db` database. (Earlier waves shipped a
-//! `JsonlEventStore` over an append-only NDJSON log; the SQLite store
+//! `JsonlEventStore` over an append-only NDJSON log; the `SQLite` store
 //! superseded it and that log was removed.)
 //!
 //! Every implementation must fail open: an [`EventSink::append`] that fails

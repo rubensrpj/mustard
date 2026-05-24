@@ -596,7 +596,7 @@ impl MainContextCounter {
 
     /// Read the persisted state. Fail-open: any error → a zeroed state.
     fn read_state(project_dir: &str) -> MainState {
-        let Ok(text) = fs::read_to_string(&Self::counter_path(project_dir)) else {
+        let Ok(text) = fs::read_to_string(Self::counter_path(project_dir)) else {
             return MainState::default();
         };
         let Ok(value) = serde_json::from_str::<Value>(&text) else {
@@ -623,7 +623,7 @@ impl MainContextCounter {
             "subagentDepth": state.subagent_depth,
             "updatedAt": now_iso8601(),
         });
-        let _ = fs::write_atomic(&Self::counter_path(project_dir), body.to_string().as_bytes());
+        let _ = fs::write_atomic(Self::counter_path(project_dir), body.to_string().as_bytes());
     }
 }
 
@@ -739,7 +739,7 @@ impl mustard_core::model::contract::Observer for SubagentTracker {
         };
         let tool_input = &input.tool_input;
         let is_dispatch =
-            matches!(input.tool_name.as_deref(), Some("Task") | Some("Agent"));
+            matches!(input.tool_name.as_deref(), Some("Task" | "Agent"));
 
         match ctx.trigger {
             Some(Trigger::PreToolUse) if is_dispatch => {
@@ -766,8 +766,7 @@ impl mustard_core::model::contract::Observer for SubagentTracker {
                 let agent_id = tool_input
                     .get("agent_id")
                     .and_then(|v| v.as_str())
-                    .map(str::to_string)
-                    .unwrap_or_else(|| subagent_type.to_string());
+                    .map_or_else(|| subagent_type.to_string(), str::to_string);
                 let tool_use_id = extract_tool_use_id(input);
 
                 let mut payload = json!({
@@ -855,11 +854,10 @@ impl mustard_core::model::contract::Observer for SubagentTracker {
                     .raw
                     .get("request_id")
                     .and_then(|v| v.as_str())
-                    .map(str::to_string)
-                    .unwrap_or_else(|| {
+                    .map_or_else(|| {
                         let sid = input.session_id.as_deref().unwrap_or("unknown");
                         format!("{sid}-{}-task", now_iso8601())
-                    });
+                    }, str::to_string);
                 record_task_run(
                     &project,
                     input.session_id.as_deref(),

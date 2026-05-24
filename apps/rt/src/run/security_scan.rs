@@ -224,7 +224,7 @@ fn scan_file(path: &Path, results: &mut Results) {
 /// `.env`-exposure check — an `.env*` file present but absent from `.gitignore`.
 fn check_env_exposure(cwd: &Path, results: &mut Results) {
     let env_files = [".env", ".env.local", ".env.production", ".env.staging"];
-    let gitignore = fs::read_to_string(&cwd.join(".gitignore")).unwrap_or_default();
+    let gitignore = fs::read_to_string(cwd.join(".gitignore")).unwrap_or_default();
     for env_file in env_files {
         if !cwd.join(env_file).exists() {
             continue;
@@ -289,9 +289,10 @@ fn to_json(results: &Results, scan_dir: &Path) -> Value {
 
 /// Dispatch `mustard-rt run security-scan`.
 pub fn run(dir: Option<&str>, json_output: bool) {
-    let cwd = dir
-        .map(PathBuf::from)
-        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    let cwd = dir.map_or_else(
+        || std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+        PathBuf::from,
+    );
     let mut results = Results::default();
     scan_dir(&cwd, &mut results, 0);
     check_env_exposure(&cwd, &mut results);

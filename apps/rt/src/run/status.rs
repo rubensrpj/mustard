@@ -77,10 +77,7 @@ fn hook_mode_env(name: &str) -> Option<&'static str> {
 /// Read `settings.json`, enumerate hooks, resolve modes from env section.
 fn collect_hook_entries(root: &Path) -> Vec<Value> {
     let settings_path = root.join(".claude").join("settings.json");
-    let text = match fs::read_to_string(&settings_path) {
-        Ok(t) => t,
-        Err(_) => return Vec::new(),
-    };
+    let Ok(text) = fs::read_to_string(&settings_path) else { return Vec::new() };
     let settings: Value = match serde_json::from_str(&text) {
         Ok(v) => v,
         Err(_) => return Vec::new(),
@@ -101,10 +98,7 @@ fn collect_hook_entries(root: &Path) -> Vec<Value> {
     let mut entries: Vec<Value> = Vec::new();
 
     for (event, event_val) in &hooks_obj {
-        let hook_blocks = match event_val.as_array() {
-            Some(a) => a,
-            None => continue,
-        };
+        let Some(hook_blocks) = event_val.as_array() else { continue };
         for block in hook_blocks {
             let matcher = block
                 .get("matcher")
@@ -112,10 +106,7 @@ fn collect_hook_entries(root: &Path) -> Vec<Value> {
                 .unwrap_or("*")
                 .to_string();
 
-            let inner_hooks = match block.get("hooks").and_then(Value::as_array) {
-                Some(a) => a,
-                None => continue,
-            };
+            let Some(inner_hooks) = block.get("hooks").and_then(Value::as_array) else { continue };
 
             for hook_entry in inner_hooks {
                 let command = hook_entry
@@ -238,8 +229,7 @@ fn git_status(root: &Path) -> GitStatus {
         run_git(root, &["log", "-1", "--format=%H %s"]).unwrap_or_default();
     let (hash, subject) = log_line
         .split_once(' ')
-        .map(|(h, s)| (h.to_string(), s.to_string()))
-        .unwrap_or_else(|| ("".to_string(), "".to_string()));
+        .map_or_else(|| (String::new(), String::new()), |(h, s)| (h.to_string(), s.to_string()));
 
     GitStatus {
         branch,
@@ -279,25 +269,19 @@ struct RegistryMeta {
 
 fn registry_meta(root: &Path) -> RegistryMeta {
     let path = root.join(".claude").join("entity-registry.json");
-    let text = match fs::read_to_string(&path) {
-        Ok(t) => t,
-        Err(_) => {
-            return RegistryMeta {
-                version: "missing".to_string(),
-                generated_at: String::new(),
-                entity_count: 0,
-            }
-        }
+    let Ok(text) = fs::read_to_string(&path) else {
+        return RegistryMeta {
+            version: "missing".to_string(),
+            generated_at: String::new(),
+            entity_count: 0,
+        };
     };
-    let v: Value = match serde_json::from_str(&text) {
-        Ok(v) => v,
-        Err(_) => {
-            return RegistryMeta {
-                version: "parse-error".to_string(),
-                generated_at: String::new(),
-                entity_count: 0,
-            }
-        }
+    let Ok(v): Result<Value, _> = serde_json::from_str(&text) else {
+        return RegistryMeta {
+            version: "parse-error".to_string(),
+            generated_at: String::new(),
+            entity_count: 0,
+        };
     };
 
     let version = v
@@ -315,8 +299,7 @@ fn registry_meta(root: &Path) -> RegistryMeta {
 
     let entity_count = v
         .as_object()
-        .map(|obj| obj.keys().filter(|k| !k.starts_with('_')).count())
-        .unwrap_or(0);
+        .map_or(0, |obj| obj.keys().filter(|k| !k.starts_with('_')).count());
 
     RegistryMeta {
         version,
@@ -369,9 +352,8 @@ fn pipeline_summary(root: &Path) -> PipelineSummary {
         // Read just the first 512 bytes for the header
         let header_text = {
             use std::io::Read as _;
-            let mut f = match std::fs::File::open(&spec_md) {
-                Ok(f) => f,
-                Err(_) => continue,
+            let Ok(mut f) = std::fs::File::open(&spec_md) else {
+                continue;
             };
             let mut buf = vec![0u8; 512];
             let n = f.read(&mut buf).unwrap_or(0);
@@ -412,7 +394,7 @@ fn render_default_table(
 ) -> String {
     let mut lines = Vec::new();
 
-    lines.push(format!("## Git\n"));
+    lines.push("## Git\n".to_string());
     lines.push(format!("  Branch   : {}", git.branch));
     lines.push(format!(
         "  Modified : {} file(s)",
@@ -426,7 +408,7 @@ fn render_default_table(
     }
 
     lines.push(String::new());
-    lines.push(format!("## Pipelines\n"));
+    lines.push("## Pipelines\n".to_string());
     lines.push(format!("  Active   : {}", pipelines.active.len()));
     for name in &pipelines.active {
         lines.push(format!("    - {name}"));
@@ -439,7 +421,7 @@ fn render_default_table(
     }
 
     lines.push(String::new());
-    lines.push(format!("## Build\n"));
+    lines.push("## Build\n".to_string());
     match build {
         Some(b) => {
             let status = if b.ok { "pass" } else { "fail" };
@@ -450,7 +432,7 @@ fn render_default_table(
     }
 
     lines.push(String::new());
-    lines.push(format!("## Registry\n"));
+    lines.push("## Registry\n".to_string());
     lines.push(format!("  Version  : {}", registry.version));
     if !registry.generated_at.is_empty() {
         let short_date: String = registry.generated_at.chars().take(19).collect();

@@ -20,7 +20,7 @@
 //! 4. Cover the new step with a unit test that seeds the previous state and
 //!    asserts the post-state plus `_mustard_meta`.
 //!
-//! Every migration runs inside its own SQLite transaction — a failure mid-flight
+//! Every migration runs inside its own `SQLite` transaction — a failure mid-flight
 //! leaves the database at the previous version, never half-applied. The runner
 //! itself is fail-open at the *open* layer: [`SqliteEventStore::new`] still
 //! returns [`Error::Sqlite`] if a migration fails, callers degrade safely.
@@ -542,7 +542,7 @@ fn sibling_telemetry_path(conn: &Connection) -> Result<Option<std::path::PathBuf
 /// Returns `Ok(true)` when the drop ran and the version was stamped to 8,
 /// `Ok(false)` when a source table held rows the destination never received (a
 /// failed copy) — in that case nothing is dropped and the version stays at v7 so
-/// the next open retries. Propagates any SQLite error (the caller treats it as
+/// the next open retries. Propagates any `SQLite` error (the caller treats it as
 /// fail-open: leave the data).
 fn copy_then_verified_drop(conn: &Connection) -> Result<bool> {
     // Source row counts BEFORE the copy. `count_main_table` propagates errors
@@ -651,7 +651,7 @@ fn drop_legacy_and_stamp(conn: &Connection) -> Result<()> {
 }
 
 /// The `INSERT OR IGNORE INTO tel.run_usage SELECT ... FROM main.spans`
-/// statement, with the same spec / wave_id / agent_id attribution backfill as
+/// statement, with the same spec / `wave_id` / `agent_id` attribution backfill as
 /// [`crate::telemetry::migrate`], but reading the source off `main` (the
 /// `mustard.db` owned by `conn`) and writing into the attached `tel.run_usage`.
 ///
@@ -660,9 +660,9 @@ fn drop_legacy_and_stamp(conn: &Connection) -> Result<()> {
 /// even while the migration's own write transaction is in flight. Attribution
 /// semantics are identical to the collector path:
 ///
-/// - `agent_id` = payload.agent_id ?? payload.subagentType ?? events.actor_id
-/// - `spec`     = payload.spec_id  ?? events.spec ?? span.spec
-/// - `wave_id`  = payload.wave_id  ?? CAST(events.wave AS TEXT) ?? span.wave_id
+/// - `agent_id` = `payload.agent_id` ?? payload.subagentType ?? `events.actor_id`
+/// - `spec`     = `payload.spec_id`  ?? events.spec ?? span.spec
+/// - `wave_id`  = `payload.wave_id`  ?? CAST(events.wave AS TEXT) ?? `span.wave_id`
 fn copy_spans_into_tel_sql() -> String {
     let agent_primary = "(SELECT COALESCE(JSON_EXTRACT(ev.payload,'$.agent_id'), \
                                           JSON_EXTRACT(ev.payload,'$.subagentType'), ev.actor_id) \

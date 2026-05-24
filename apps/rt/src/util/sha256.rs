@@ -83,9 +83,10 @@ impl Sha256 {
             block.copy_from_slice(chunk);
             self.process_block(&block);
         }
+        use std::fmt::Write as _;
         let mut out = String::with_capacity(64);
         for word in self.state {
-            out.push_str(&format!("{word:08x}"));
+            let _ = write!(out, "{word:08x}");
         }
         out
     }

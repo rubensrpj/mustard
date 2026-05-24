@@ -91,7 +91,7 @@ fn exit_code(input: &HookInput) -> i64 {
         .raw
         .get("tool_response")
         .and_then(|r| r.get("exit_code"))
-        .and_then(|v| v.as_i64())
+        .and_then(serde_json::Value::as_i64)
         .unwrap_or(1)
 }
 
@@ -296,9 +296,8 @@ fn observe_write_edit(project_dir: &str, session_id: &str, tool: &str, file_path
             return;
         }
         let threshold = drift_threshold(project_dir);
-        let new_len = match store.add_amend_drift_path(&window.spec_id, session_id, file_path) {
-            Ok(n) => n,
-            Err(_) => return,
+        let Ok(new_len) = store.add_amend_drift_path(&window.spec_id, session_id, file_path) else {
+            return;
         };
         if u32::try_from(new_len).unwrap_or(u32::MAX) >= threshold {
             let _ = store.mark_amend_drift_emitted(&window.spec_id, session_id);
@@ -319,7 +318,7 @@ fn observe_write_edit(project_dir: &str, session_id: &str, tool: &str, file_path
     }
 }
 
-/// Handle UserPromptSubmit — emit intent event when a window is open.
+/// Handle `UserPromptSubmit` — emit intent event when a window is open.
 fn observe_user_prompt(input: &HookInput, _ctx: &Ctx, project_dir: &str, session_id: &str) {
     let Ok(store) = SqliteEventStore::for_project(project_dir) else {
         return;
@@ -430,8 +429,7 @@ fn derive_spec_lang(store: &SqliteEventStore, spec_id: &str) -> Option<String> {
     let events = store.query(Some(spec_id)).ok()?;
     events
         .into_iter()
-        .filter(|e| e.event == EVENT_PIPELINE_SCOPE)
-        .last()
+        .rfind(|e| e.event == EVENT_PIPELINE_SCOPE)
         .and_then(|e| serde_json::from_value::<PipelineScopePayload>(e.payload).ok())
         .and_then(|p| p.lang)
 }

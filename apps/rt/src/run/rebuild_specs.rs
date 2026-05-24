@@ -48,7 +48,7 @@
 use crate::run::env::project_dir;
 use mustard_core::error::Result as CoreResult;
 use mustard_core::store::sqlite_store::{MetricsRow, SpecRow, SqliteEventStore};
-use mustard_core::{SpecFilter, SpecReader, SpecStatus, SqliteSpecReader};
+use mustard_core::{SpecFilter, SpecReader, SqliteSpecReader};
 use serde_json::json;
 use std::time::Instant;
 
@@ -100,13 +100,11 @@ pub fn rebuild_one(project_dir: &str, spec: &str) -> CoreResult<()> {
         return Ok(());
     }
     let store = SqliteEventStore::for_project(project_dir)?;
-    let reader = match SqliteSpecReader::for_project(project_dir) {
-        Ok(r) => r,
-        Err(_) => return Ok(()),
+    let Ok(reader) = SqliteSpecReader::for_project(project_dir) else {
+        return Ok(());
     };
-    let view = match reader.spec_view(spec) {
-        Ok(Some(v)) => v,
-        Ok(None) | Err(_) => return Ok(()),
+    let Ok(Some(view)) = reader.spec_view(spec) else {
+        return Ok(());
     };
     let _ = store.upsert_spec(&spec_row_from_view(&view));
     let _ = store.upsert_metrics(&metrics_row_from_view(&view));
@@ -162,17 +160,13 @@ fn rematerialize_all(project_dir: &str) -> CoreResult<RebuildReport> {
 
 /// Translate a [`SpecView`] into the legacy [`SpecRow`] shape.
 ///
-/// The persisted `status` is derived from the canonical [`SpecState`]
-/// (`view.state`) rather than the deprecated flat `view.status`, so the
-/// rematerialised row stays consistent with the state model during the W1→W7
-/// migration (spec-lifecycle-unification W2). The two should already agree —
-/// `view.status` is itself derived from `view.state` in the projection — but
-/// keying off the canonical source removes any risk of drift.
+/// The persisted `status` string is derived from the canonical
+/// [`mustard_core::SpecState`] via [`SpecState::status_kebab`], which is the
+/// single source of truth for the kebab-case mapping the dashboard reads.
 fn spec_row_from_view(view: &mustard_core::SpecView) -> SpecRow {
-    let status = SpecStatus::try_from(view.state.clone()).unwrap_or(SpecStatus::NoEvents);
     SpecRow {
         name: view.spec.clone(),
-        status: Some(spec_status_string(status)),
+        status: Some(view.state.status_kebab().to_string()),
         phase: view.phase.map(|p| phase_string(p).to_string()),
         started_at: view.started_at.clone(),
         completed_at: if view.state.outcome == mustard_core::Outcome::Completed {
@@ -211,12 +205,6 @@ fn metrics_row_from_view(view: &mustard_core::SpecView) -> MetricsRow {
         agent_count: Some(i64::from(view.agents_dispatched)),
         updated_at: view.last_event_at.clone(),
     }
-}
-
-/// Serialised form for [`SpecStatus`] — delegates to the canonical
-/// [`SpecStatus::as_kebab`] (single source of truth for the mapping).
-fn spec_status_string(status: SpecStatus) -> String {
-    status.as_kebab().to_string()
 }
 
 /// Lowercase phase tag — matches the spec.md header convention.

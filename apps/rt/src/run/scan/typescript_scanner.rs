@@ -334,8 +334,7 @@ impl TypeScriptScanner {
                 let cidx = csearch + rel_idx;
                 csearch = cidx + "@Controller".len();
                 let prefix = Self::decorator_string_arg(&content[cidx..])
-                    .map(|p| format!("/{}", p.trim_start_matches('/')))
-                    .unwrap_or_else(|| "/".to_string());
+                    .map_or_else(|| "/".to_string(), |p| format!("/{}", p.trim_start_matches('/')));
                 let after_ctrl = &content[cidx..];
                 let mut endpoints = Vec::new();
                 let mut msearch = 0;
@@ -493,7 +492,7 @@ impl TypeScriptScanner {
                         continue;
                     }
                     let rest = content[idx + "export const ".len() + name.len()..].trim_start();
-                    let rest = rest.strip_prefix('=').map(str::trim_start).unwrap_or(rest);
+                    let rest = rest.strip_prefix('=').map_or(rest, str::trim_start);
                     if rest.starts_with("z.") {
                         dtos.insert(
                             name,

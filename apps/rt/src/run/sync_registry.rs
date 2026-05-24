@@ -21,6 +21,7 @@
 //! the subproject list, which is cheap and must always be fresh.
 
 use super::scan::cluster_discovery::{compute_folder_frequency, discover_clusters};
+use super::scan::file_utils;
 use super::scan::project_conventions::compute_project_conventions;
 use super::scan::{load_scanner, EntityInfo, EnumInfo, ScanResult};
 use mustard_core::fs;
@@ -91,8 +92,7 @@ pub fn run(root: &Path, force: bool) {
             let entity_count = reg
                 .get("e")
                 .and_then(Value::as_object)
-                .map(|e| e.keys().filter(|k| !k.starts_with('_')).count())
-                .unwrap_or(0);
+                .map_or(0, |e| e.keys().filter(|k| !k.starts_with('_')).count());
             if entity_count > 0 {
                 let version = reg
                     .get("_meta")
@@ -118,7 +118,16 @@ pub fn run(root: &Path, force: bool) {
     );
 
     // 4. Scan each subproject; merge results keyed by stack id.
+    //
+    // Wave 1 (`project-profiler`) — install a single-pass file-content cache
+    // per subproject so the scanner, cluster discovery, folder-frequency and
+    // project-conventions all share one disk read per file instead of
+    // performing ~6 independent walks each. The visited file map is also
+    // retained per subproject so the description-enricher (step 5b below) can
+    // reuse the same in-memory contents instead of re-reading each entity
+    // file from disk.
     let mut scan_results: BTreeMap<String, MergedStack> = BTreeMap::new();
+    let mut visited_by_sub: Vec<(std::path::PathBuf, Vec<file_utils::VisitedFile>)> = Vec::new();
     for sub in &subprojects {
         let abs = if sub.rel_path == "." {
             root.to_path_buf()
@@ -133,28 +142,45 @@ pub fn run(root: &Path, force: bool) {
             Some(s) => s.to_string(),
             None => "unknown".to_string(),
         };
-        let result = scanner.scan(&abs);
+        let visited = file_utils::visit(&abs, &[]);
+        let (result, discovered, folder_frequency, conventions) =
+            file_utils::with_cache(&abs, visited.clone(), || {
+                let result = scanner.scan(&abs);
+                // Agnostic enrichment layers, tagged per subproject — all
+                // resolve their file reads through the active cache.
+                let discovered = discover_clusters(&abs, &stack_id, Some(&sub.name));
+                let folder_frequency = compute_folder_frequency(&abs, &stack_id);
+                let conventions = compute_project_conventions(&abs, &stack_id);
+                (result, discovered, folder_frequency, conventions)
+            });
 
-        // Agnostic enrichment layers, tagged per subproject.
-        let discovered = discover_clusters(&abs, &stack_id, Some(&sub.name));
-        let folder_frequency = compute_folder_frequency(&abs, &stack_id);
-        let conventions = compute_project_conventions(&abs, &stack_id);
-
-        let entry = scan_results
-            .entry(stack_id.clone())
-            .or_insert_with(MergedStack::default);
+        let entry = scan_results.entry(stack_id.clone()).or_default();
         entry.merge(result, discovered, folder_frequency, conventions);
 
         let e = entry.entities.len();
         let en = entry.enums.len();
         println!("    {e} entities, {en} enums");
+
+        visited_by_sub.push((abs, visited));
     }
 
     // 5. Build the v4.0 registry document.
     let mut registry = build_registry(&scan_results);
 
     // 5b. Enrich entities with doc-comment descriptions (the glossary).
-    let (enriched, scanned) = enrich_descriptions(&mut registry.e, root);
+    //
+    // Wave 1 — the enricher consults the per-subproject visit cache before
+    // reaching for disk, so each entity file is read at most once for the
+    // whole `sync-registry` run (scanners + enrichment share the same bytes).
+    let mut visit_contents: BTreeMap<std::path::PathBuf, String> = BTreeMap::new();
+    for (_, files) in &visited_by_sub {
+        for v in files {
+            if let Some(content) = &v.content {
+                visit_contents.insert(v.abs.clone(), content.clone());
+            }
+        }
+    }
+    let (enriched, scanned) = enrich_descriptions(&mut registry.e, root, &visit_contents);
 
     // 6. Write the output.
     match serde_json::to_string_pretty(&registry) {
@@ -353,8 +379,7 @@ fn compress_values(values: &[String]) -> Vec<String> {
 fn current_date() -> String {
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+        .map_or(0, |d| d.as_secs());
     // Days since 1970-01-01, converted with the civil-from-days algorithm.
     let days = (secs / 86_400) as i64;
     let (y, m, d) = civil_from_days(days);
@@ -385,7 +410,15 @@ const MAX_SCAN_LINES: usize = 10_000;
 
 /// Walk the registry's `e` map, adding a `description` from the entity's first
 /// ref file — a port of `enrichDescriptions()`. Returns `(enriched, scanned)`.
-fn enrich_descriptions(entities_value: &mut Value, project_root: &Path) -> (usize, usize) {
+///
+/// Wave 1 — `visited` carries the per-subproject file contents read by the
+/// scanner pass; the enricher prefers an in-memory hit (matching against
+/// every cached absolute path) before falling back to a fresh disk read.
+fn enrich_descriptions(
+    entities_value: &mut Value,
+    project_root: &Path,
+    visited: &BTreeMap<std::path::PathBuf, String>,
+) -> (usize, usize) {
     let mut enriched = 0;
     let mut scanned = 0;
     let Some(entities) = entities_value.as_object_mut() else {
@@ -409,13 +442,12 @@ fn enrich_descriptions(entities_value: &mut Value, project_root: &Path) -> (usiz
         let Some(ref_path) = ref_path else {
             continue;
         };
-        let abs = if Path::new(ref_path).is_absolute() {
-            std::path::PathBuf::from(ref_path)
-        } else {
-            project_root.join(ref_path)
-        };
         scanned += 1;
-        if let Some(desc) = extract_description(&abs, name) {
+        // Resolve the cached content. Entity `file` paths are relative to
+        // their subproject root, so the absolute form may differ across
+        // monorepo subprojects — match by suffix against every visited path.
+        let content = lookup_visited(visited, ref_path, project_root);
+        if let Some(desc) = extract_description_from(name, content.as_deref(), ref_path, project_root) {
             map.insert("description".to_string(), json!(desc));
             enriched += 1;
         }
@@ -423,13 +455,66 @@ fn enrich_descriptions(entities_value: &mut Value, project_root: &Path) -> (usiz
     (enriched, scanned)
 }
 
-/// Extract a doc-comment description for `entity_name` from `file_path` — a
-/// faithful port of `extractDescription()`.
-fn extract_description(file_path: &Path, entity_name: &str) -> Option<String> {
+/// Find the cached content for `ref_path` (which is relative to a subproject)
+/// among the visited files of every subproject in the monorepo. Falls through
+/// to a direct `project_root.join(ref_path)` lookup as a last attempt.
+fn lookup_visited(
+    visited: &BTreeMap<std::path::PathBuf, String>,
+    ref_path: &str,
+    project_root: &Path,
+) -> Option<String> {
+    if Path::new(ref_path).is_absolute() {
+        return visited.get(Path::new(ref_path)).cloned();
+    }
+    // Try `<project_root>/<ref_path>` first (single-root projects).
+    let direct = project_root.join(ref_path);
+    if let Some(hit) = visited.get(&direct) {
+        return Some(hit.clone());
+    }
+    // Fall back to suffix matching — handles `apps/rt/src/foo.rs` vs an entity
+    // file recorded as `src/foo.rs` (relative to the `apps/rt` subproject).
+    let needle = ref_path.replace('\\', "/");
+    for (abs, content) in visited {
+        let abs_str = abs.to_string_lossy().replace('\\', "/");
+        if abs_str.ends_with(&needle) {
+            return Some(content.clone());
+        }
+    }
+    None
+}
+
+/// Extract a description with an optional pre-read content. Falls back to
+/// reading `<project_root>/<ref_path>` when the cache had nothing for it.
+fn extract_description_from(
+    entity_name: &str,
+    cached: Option<&str>,
+    ref_path: &str,
+    project_root: &Path,
+) -> Option<String> {
     if entity_name.is_empty() {
         return None;
     }
-    let raw = fs::read_to_string(file_path).ok()?;
+    let owned: String;
+    let raw: &str = if let Some(c) = cached {
+        c
+    } else {
+        // Disk fallback — preserves the historical behaviour on paths the
+        // visitor never saw (e.g. cross-subproject `refs[0]` pointers).
+        owned = fs::read_to_string(if Path::new(ref_path).is_absolute() {
+            std::path::PathBuf::from(ref_path)
+        } else {
+            project_root.join(ref_path)
+        })
+        .ok()?;
+        &owned
+    };
+    extract_description_inner(raw, entity_name)
+}
+
+/// Extract a doc-comment description for `entity_name` from the contents of a
+/// source file — a faithful port of `extractDescription()`. Operates on an
+/// already-read string so the caller can supply cached bytes.
+fn extract_description_inner(raw: &str, entity_name: &str) -> Option<String> {
     let lines: Vec<&str> = raw.split('\n').collect();
     if lines.len() > MAX_SCAN_LINES {
         return None;
@@ -710,24 +795,16 @@ mod tests {
 
     #[test]
     fn extract_description_reads_jsdoc() {
-        let dir = tempdir().unwrap();
-        let file = dir.path().join("user.ts");
-        std::fs::write(
-            &file,
-            "/**\n * A registered user of the system.\n */\nexport class User {}\n",
-        )
-        .unwrap();
-        let desc = extract_description(&file, "User");
+        let raw = "/**\n * A registered user of the system.\n */\nexport class User {}\n";
+        let desc = extract_description_inner(raw, "User");
         assert_eq!(desc.as_deref(), Some("A registered user of the system."));
     }
 
     #[test]
     fn extract_description_reads_triple_slash() {
-        let dir = tempdir().unwrap();
-        let file = dir.path().join("order.rs");
-        std::fs::write(&file, "/// A customer order.\nstruct Order;\n").unwrap();
+        let raw = "/// A customer order.\nstruct Order;\n";
         assert_eq!(
-            extract_description(&file, "Order").as_deref(),
+            extract_description_inner(raw, "Order").as_deref(),
             Some("A customer order.")
         );
     }
