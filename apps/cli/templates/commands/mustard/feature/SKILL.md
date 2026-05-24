@@ -284,6 +284,15 @@ When user chooses "Approve and implement now":
 7. Wave transitions between waves (from `.claude/pipeline-config.md`)
 8. On return: validate (build/type-check). The `checklist-auto-mark.js` hook already marked Checklist items as the agent edited matching files (silent, no tool call). If any item didn't auto-mark (no file pista in the item text), close-gate at CLOSE will surface it.
 8b. **Agent Memory:** `mustard-rt run memory agent --json '{"agent_type":"{type}","wave":{N},"pipeline":"{spec-name}","summary":"{what}","details":{...}}'` — one per agent. Skip if single-wave pipeline.
+8c. **Graph write-back (concept-node edges injected → spec):** After every EXECUTE wave returns (i.e. once the wave's agents are done and validated, before REVIEW), append the `[[id]]` edges that the resolver injected back into the active spec so the graph stays bidirectional and the Obsidian vault shows backlinks. Expected call:
+
+   ```bash
+   mustard-rt run write-back --spec {spec-name} --wave {N} --kind injected
+   ```
+
+   The binary derives the closure from the resolver cache (`.claude/.resolve-cache.json`) — the orchestrator does NOT pass the closure inline. Edges are written under the spec's `## Linked nodes` section (created if absent), each prefixed with `injected:` so future `applied` inferences stay distinguishable. Fail-open: a missing graph or empty closure is a silent no-op. See `templates/CLAUDE.md § Backlinks` and `wave-5-rt/spec.md` for the rationale (`injected` is the certainty arm; `applied` is the inference arm).
+
+   <!-- TODO: confirm exact flag names against `mustard-rt run write-back --help` once the rt agent (Wave 5) ships the subcommand. The signature above mirrors the wave-5-rt spec ("write-back grava `injected` a partir do fecho do resolver") and the resolver cache shape; align if the rt agent picks different flag names. -->
 
 #### Escalation Status Handling
 

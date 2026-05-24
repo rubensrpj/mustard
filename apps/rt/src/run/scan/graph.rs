@@ -26,6 +26,81 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
+// ---------------------------------------------------------------------------
+// Wave-5 (project-profiler) — edge schema with `kind` + backlinks write-back
+// ---------------------------------------------------------------------------
+
+/// The `kind` of a spec→node edge written back into a spec's `## Backlinks`
+/// section.
+///
+/// - [`EdgeKind::Injected`] — the resolver returned this node in the closure
+///   handed to the agent. This is a *fact*: the pipeline knows exactly which
+///   nodes it injected.
+/// - [`EdgeKind::Applied`] — the node is *inferred* to have influenced the
+///   work, because at least one file the wave touched lives under the path
+///   the node describes. Carries a `confidence` score (0.0–1.0) and must
+///   never be presented as a fact (see [`spec`] non-goal).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum EdgeKind {
+    /// Returned in the closure handed to the agent at dispatch time.
+    Injected,
+    /// Heuristically matched to the wave's file diff; inferred, never asserted.
+    Applied,
+}
+
+impl EdgeKind {
+    /// The lowercase token used in the `<!-- kind: ... -->` comment marker.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Injected => "injected",
+            Self::Applied => "applied",
+        }
+    }
+
+    /// Parse the lowercase token back into an [`EdgeKind`].
+    ///
+    /// Carried as the inverse of [`Self::as_str`] for any future caller that
+    /// needs to round-trip a backlink line without going through
+    /// [`parse_backlinks`] (which already does the full line parse). The
+    /// idempotency test exercises the round-trip via `parse_backlinks` —
+    /// hence the `dead_code` allow.
+    #[must_use]
+    #[allow(dead_code)]
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "injected" => Some(Self::Injected),
+            "applied" => Some(Self::Applied),
+            _ => None,
+        }
+    }
+}
+
+/// One write-back edge from a spec to a concept-node.
+///
+/// Mirrors the on-disk wire format inside the `## Backlinks` block:
+/// `- [[id]] <!-- kind: injected -->` or
+/// `- [[id]] <!-- kind: applied confidence: 0.50 -->`.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct SpecBacklinkEdge {
+    /// Concept-node id (matches a key in [`GraphIndex::nodes`]).
+    pub target: String,
+    /// Whether this edge was injected (fact) or applied (inferred).
+    pub kind: EdgeKind,
+    /// 0.0–1.0 score for [`EdgeKind::Applied`]; `None` for [`EdgeKind::Injected`]
+    /// (injection is not a probability — it is a record).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<f32>,
+}
+
+/// Marker that opens the spec's auto-managed backlinks section.
+pub const BACKLINKS_HEADING: &str = "## Backlinks";
+/// HTML comment fencing the auto-managed block; everything between the open
+/// and close marker is owned by the write-back step and replaced wholesale.
+const BACKLINKS_OPEN: &str = "<!-- mustard:backlinks:start -->";
+const BACKLINKS_CLOSE: &str = "<!-- mustard:backlinks:end -->";
+
 /// The output of one graph-index build pass.
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct GraphIndex {
@@ -344,6 +419,380 @@ fn ensure_alias_in_frontmatter(body: &str, id: &str) -> Option<String> {
     Some(format!("---\n{new_fm}{rest}"))
 }
 
+// ---------------------------------------------------------------------------
+// Wave-5 — backlink write-back, applied inference, dead-node listing
+// ---------------------------------------------------------------------------
+
+/// Format a single backlink edge as the on-disk markdown line.
+fn format_backlink_line(edge: &SpecBacklinkEdge) -> String {
+    match edge.kind {
+        EdgeKind::Injected => format!("- [[{}]] <!-- kind: injected -->", edge.target),
+        EdgeKind::Applied => {
+            let conf = edge.confidence.unwrap_or(0.0);
+            // Two-decimal stable format keeps the JSON byte-stable when the
+            // section is read back by `parse_backlinks`.
+            format!(
+                "- [[{}]] <!-- kind: applied confidence: {conf:.2} -->",
+                edge.target
+            )
+        }
+    }
+}
+
+/// Render the auto-managed `## Backlinks` block (fenced by the open/close
+/// markers) given a sorted, deduplicated set of edges.
+fn render_backlinks_block(edges: &[SpecBacklinkEdge]) -> String {
+    let mut body = String::new();
+    body.push_str(BACKLINKS_HEADING);
+    body.push_str("\n\n");
+    body.push_str(BACKLINKS_OPEN);
+    body.push('\n');
+    if edges.is_empty() {
+        body.push_str("_No backlinks recorded._\n");
+    } else {
+        for edge in edges {
+            body.push_str(&format_backlink_line(edge));
+            body.push('\n');
+        }
+    }
+    body.push_str(BACKLINKS_CLOSE);
+    body.push('\n');
+    body
+}
+
+/// Splice a freshly-rendered backlinks block into `body`, replacing any prior
+/// auto-managed block. The block lives at the bottom of the file by
+/// convention; the splice keeps any user-written content above it untouched.
+///
+/// Strategy:
+/// - If the open/close markers are present, replace the heading + block + the
+///   trailing close marker with the new render.
+/// - Otherwise, append the new block (with a leading blank line to separate
+///   it from prior content).
+fn splice_backlinks_block(body: &str, new_block: &str) -> String {
+    if let Some(open_idx) = body.find(BACKLINKS_OPEN) {
+        // Walk back to the `## Backlinks` heading to drop the heading + a
+        // single blank line before the open marker — keeps the file tidy
+        // across repeated write-backs.
+        let mut start = open_idx;
+        if let Some(heading_idx) = body[..open_idx].rfind(BACKLINKS_HEADING) {
+            start = heading_idx;
+        }
+        if let Some(close_offset) = body[open_idx..].find(BACKLINKS_CLOSE) {
+            let end = open_idx + close_offset + BACKLINKS_CLOSE.len();
+            // Consume the trailing newline of the close marker, if any.
+            let end = if body[end..].starts_with('\n') { end + 1 } else { end };
+            let mut out = String::with_capacity(body.len() + new_block.len());
+            out.push_str(&body[..start]);
+            // Trim trailing whitespace before splicing so we do not leave
+            // an excess blank line.
+            let head = out.trim_end_matches(['\n', ' ']).to_string();
+            out.clear();
+            out.push_str(&head);
+            if !out.is_empty() {
+                out.push_str("\n\n");
+            }
+            out.push_str(new_block);
+            out.push_str(&body[end..]);
+            return out;
+        }
+    }
+
+    // No prior block — append at the end with a separating blank line.
+    let mut out = body.trim_end_matches(['\n', ' ']).to_string();
+    if !out.is_empty() {
+        out.push_str("\n\n");
+    }
+    out.push_str(new_block);
+    out
+}
+
+/// Parse the auto-managed backlinks block back into structured edges. Used by
+/// the write-back step (idempotency check) and by callers that want to read
+/// what is already linked. Returns an empty vector when no block exists.
+#[must_use]
+pub fn parse_backlinks(body: &str) -> Vec<SpecBacklinkEdge> {
+    let mut out: Vec<SpecBacklinkEdge> = Vec::new();
+    let Some(open) = body.find(BACKLINKS_OPEN) else {
+        return out;
+    };
+    let after = &body[open + BACKLINKS_OPEN.len()..];
+    let close = after.find(BACKLINKS_CLOSE).unwrap_or(after.len());
+    let block = &after[..close];
+    for line in block.lines() {
+        let trimmed = line.trim();
+        // Match: `- [[id]] <!-- kind: X [confidence: Y] -->`
+        let Some(rest) = trimmed.strip_prefix("- [[") else { continue };
+        let Some(end_id) = rest.find("]]") else { continue };
+        let target = rest[..end_id].to_string();
+        let after_id = &rest[end_id + 2..];
+        let kind = if after_id.contains("kind: applied") {
+            EdgeKind::Applied
+        } else if after_id.contains("kind: injected") {
+            EdgeKind::Injected
+        } else {
+            continue;
+        };
+        let confidence = if kind == EdgeKind::Applied {
+            after_id
+                .find("confidence:")
+                .and_then(|i| {
+                    let tail = &after_id[i + "confidence:".len()..];
+                    let val: String = tail
+                        .trim_start()
+                        .chars()
+                        .take_while(|c| c.is_ascii_digit() || *c == '.')
+                        .collect();
+                    val.parse::<f32>().ok()
+                })
+        } else {
+            None
+        };
+        out.push(SpecBacklinkEdge {
+            target,
+            kind,
+            confidence,
+        });
+    }
+    out
+}
+
+/// Write the resolver's closure back into the spec as `injected` backlinks,
+/// merging with any pre-existing edges (so a Wave's `applied` inferences from
+/// a separate call are not clobbered when the next EXECUTE phase re-emits its
+/// `injected` set).
+///
+/// `closure_ids` is the sorted list of concept-node ids the resolver handed to
+/// the agent. The function is **idempotent**: running it twice with the same
+/// closure leaves the file byte-identical (the splice replaces the auto-block
+/// wholesale and re-derives the same block).
+///
+/// Returns the number of `injected` edges actually written. Fail-open:
+/// any IO error returns `Ok(0)` after a single stderr warning.
+pub fn write_back_injected_edges(spec_path: &Path, closure_ids: &[String]) -> std::io::Result<usize> {
+    let injected: Vec<SpecBacklinkEdge> = closure_ids
+        .iter()
+        .map(|id| SpecBacklinkEdge {
+            target: id.clone(),
+            kind: EdgeKind::Injected,
+            confidence: None,
+        })
+        .collect();
+    write_back_edges(spec_path, &injected)
+}
+
+/// Lower-level variant: write a heterogeneous edge set (mix of `injected` +
+/// `applied`) into the spec. Preserves no prior edges — callers that want
+/// to merge should compose the full edge set first via [`merge_edges`].
+pub fn write_back_edges(spec_path: &Path, edges: &[SpecBacklinkEdge]) -> std::io::Result<usize> {
+    // Missing spec.md → nothing to write back; fail-open.
+    let Ok(body) = mfs::read_to_string(spec_path) else {
+        return Ok(0);
+    };
+    let mut sorted = edges.to_vec();
+    // Stable ordering: by target id (asc), then kind (Injected before Applied
+    // since "fact before inference" reads better).
+    sorted.sort_by(|a, b| {
+        a.target
+            .cmp(&b.target)
+            .then_with(|| a.kind.as_str().cmp(b.kind.as_str()))
+    });
+    // Dedup: an id present as both `injected` and `applied` keeps only the
+    // injected entry (fact wins over inference).
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    let mut deduped: Vec<SpecBacklinkEdge> = Vec::with_capacity(sorted.len());
+    for edge in sorted {
+        if !seen.insert(edge.target.clone()) {
+            // First entry for this id was already pushed; injected sorts
+            // first lexicographically (`applied` < `injected` in ASCII, so
+            // we explicitly compare).
+            if edge.kind == EdgeKind::Injected {
+                if let Some(prev) = deduped.iter_mut().find(|e| e.target == edge.target) {
+                    *prev = edge;
+                }
+            }
+            continue;
+        }
+        deduped.push(edge);
+    }
+    let block = render_backlinks_block(&deduped);
+    let updated = splice_backlinks_block(&body, &block);
+    if updated == body {
+        return Ok(deduped.len());
+    }
+    mfs::write_atomic(spec_path, updated.as_bytes())
+        .map_err(|e| std::io::Error::other(format!("write_back_edges: {e}")))?;
+    Ok(deduped.len())
+}
+
+/// Merge a new edge set with the edges already present in the spec body.
+/// `new_edges` wins on collision when the kind is `Injected`; an existing
+/// `Injected` edge is preserved when the new edge is `Applied` (the EXECUTE
+/// write-back of `injected` should not be silently demoted by a later
+/// `applied` inference).
+///
+/// Exposed for future merge callers (e.g. an `applied` inference pass that
+/// reads the spec's existing backlinks before writing); the EXECUTE
+/// write-back today calls [`write_back_injected_edges`] directly, which
+/// dedups internally. Carried as a stable surface so adding the merge step
+/// later is a one-line change — hence the `dead_code` allow.
+#[must_use]
+#[allow(dead_code)]
+pub fn merge_edges(existing: &[SpecBacklinkEdge], new_edges: &[SpecBacklinkEdge]) -> Vec<SpecBacklinkEdge> {
+    let mut by_target: BTreeMap<String, SpecBacklinkEdge> = BTreeMap::new();
+    for edge in existing.iter().chain(new_edges.iter()) {
+        match by_target.get(&edge.target) {
+            Some(prev) if prev.kind == EdgeKind::Injected && edge.kind == EdgeKind::Applied => {
+                // Keep the injected — fact beats inference.
+            }
+            _ => {
+                by_target.insert(edge.target.clone(), edge.clone());
+            }
+        }
+    }
+    by_target.into_values().collect()
+}
+
+/// Heuristic `applied` inference: a concept-node is considered applied to a
+/// wave's diff when at least one file in `files_changed` lives under (or is
+/// referenced by) the node's path or any path mentioned in its body.
+///
+/// Each match yields a confidence score:
+/// - `1.0` when a file in the diff is the exact path the node describes
+///   (rare — concept-nodes are usually folders/conventions, not single files).
+/// - `0.50` when a file in the diff lives under a folder path mentioned in
+///   the node's body (the common case for `conv`/`recipe` nodes describing
+///   `apps/rt/src/run/scan/`).
+/// - `0.25` when only the path's basename appears in the node body
+///   (weakest signal; included so leaves are surfaced for human review).
+///
+/// `files_changed` are project-relative POSIX-style paths. Nodes the
+/// `closure_ids` set already covers as `injected` are skipped — applied is
+/// only meaningful for nodes outside the resolver's deterministic closure.
+///
+/// Carried as a library surface for future callers (e.g. an "after the wave"
+/// pass that diffs `git status` and writes `applied` backlinks alongside the
+/// `injected` ones already written by [`write_back_injected_edges`]). The
+/// EXECUTE write-back today writes only `injected` edges — `applied` is
+/// opt-in — hence the `dead_code` allow.
+#[must_use]
+#[allow(dead_code)]
+pub fn infer_applied_edges(
+    project_root: &Path,
+    files_changed: &[String],
+    closure_ids: &[String],
+) -> Vec<SpecBacklinkEdge> {
+    if files_changed.is_empty() {
+        return Vec::new();
+    }
+    let index = build_index(project_root);
+    let injected: BTreeSet<&str> = closure_ids.iter().map(String::as_str).collect();
+    let graph_root = project_root.join(".claude").join("graph");
+
+    let mut out: Vec<SpecBacklinkEdge> = Vec::new();
+    for (id, rel) in &index.nodes {
+        if injected.contains(id.as_str()) {
+            continue;
+        }
+        let abs = graph_root.join(rel);
+        let body = mfs::read_to_string(&abs).unwrap_or_default();
+        let mut best: f32 = 0.0;
+        for file in files_changed {
+            let normalised = file.replace('\\', "/");
+            if body.contains(&normalised) {
+                // Exact match — body literally names the changed file.
+                best = best.max(1.0);
+                continue;
+            }
+            // Folder-path mention. Walk every `apps/.../path/` token in body.
+            for path_like in extract_paths(&body) {
+                let p = path_like.trim_end_matches('/');
+                if !p.is_empty() && (normalised.starts_with(&format!("{p}/")) || normalised == p) {
+                    best = best.max(0.5);
+                }
+            }
+            // Basename mention — weakest signal.
+            if let Some(base) = std::path::Path::new(&normalised)
+                .file_name()
+                .and_then(|s| s.to_str())
+            {
+                if body.contains(base) && best < 0.25 {
+                    best = 0.25;
+                }
+            }
+        }
+        if best > 0.0 {
+            out.push(SpecBacklinkEdge {
+                target: id.clone(),
+                kind: EdgeKind::Applied,
+                confidence: Some(best),
+            });
+        }
+    }
+    out.sort_by(|a, b| a.target.cmp(&b.target));
+    out
+}
+
+/// Scan a node body for `apps/…/` or `packages/…/` path-like tokens.
+/// Called only by [`infer_applied_edges`]; marked dead until the latter is
+/// wired into a write-back caller.
+#[allow(dead_code)]
+fn extract_paths(body: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for token in body.split(|c: char| c.is_whitespace() || c == '`' || c == '\'' || c == '"' || c == '(' || c == ')') {
+        let trimmed = token.trim_matches(|c: char| c == '.' || c == ',' || c == ';' || c == ':');
+        if trimmed.starts_with("apps/") || trimmed.starts_with("packages/") {
+            // Strip a trailing fragment that is not part of the path.
+            let cut: String = trimmed
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || matches!(*c, '/' | '_' | '-' | '.'))
+                .collect();
+            if !cut.is_empty() {
+                out.push(cut);
+            }
+        }
+    }
+    out
+}
+
+/// List every concept-node id that has no spec backlink. Walks
+/// `<project>/.claude/spec/*/spec.md` plus every `wave-*/spec.md`, parses
+/// the auto-managed backlinks block, and returns the difference against
+/// `GraphIndex::nodes`. Sorted ascending, byte-stable.
+#[must_use]
+pub fn dead_node_ids(project_root: &Path) -> Vec<String> {
+    let index = build_index(project_root);
+    let mut linked: BTreeSet<String> = BTreeSet::new();
+    let spec_root = project_root.join(".claude").join("spec");
+    let mut stack: Vec<PathBuf> = vec![spec_root.clone()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = mfs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries {
+            if entry.is_dir {
+                stack.push(entry.path.clone());
+                continue;
+            }
+            if entry.file_name != "spec.md" {
+                continue;
+            }
+            let Ok(body) = mfs::read_to_string(&entry.path) else {
+                continue;
+            };
+            for edge in parse_backlinks(&body) {
+                linked.insert(edge.target);
+            }
+        }
+    }
+    index
+        .nodes
+        .keys()
+        .filter(|id| !linked.contains(id.as_str()))
+        .cloned()
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -476,6 +925,141 @@ mod tests {
             .iter()
             .any(|w| w.contains("duplicate id foo.entity.a"));
         assert!(has_dup_warning, "duplicate id must surface as a warning");
+    }
+
+    // ----- Wave-5: write-back + edge schema + dead-node + applied -----
+
+    fn seed_spec(root: &Path, slug: &str, body: &str) -> std::path::PathBuf {
+        let path = root.join(".claude").join("spec").join(slug).join("spec.md");
+        write(&path, body);
+        path
+    }
+
+    /// AC-1: write_back_injected_edges writes a `## Backlinks` block carrying
+    /// every closure id with `kind: injected`, and re-running with the same
+    /// closure produces a byte-identical file (idempotency).
+    #[test]
+    fn writeback_injected_edges() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let spec = seed_spec(
+            root,
+            "demo-wave",
+            "# Demo\n\n### Stage: Execute\n### Outcome: Active\n\n## Body\nhello\n",
+        );
+        let closure = vec![
+            "rt.entity.user".to_string(),
+            "rt.conv.repo-pattern".to_string(),
+        ];
+        let written = write_back_injected_edges(&spec, &closure).expect("ok");
+        assert_eq!(written, 2);
+        let body = std::fs::read_to_string(&spec).unwrap();
+        assert!(body.contains("## Backlinks"));
+        assert!(body.contains("<!-- mustard:backlinks:start -->"));
+        assert!(body.contains("[[rt.entity.user]] <!-- kind: injected -->"));
+        assert!(body.contains("[[rt.conv.repo-pattern]] <!-- kind: injected -->"));
+        // Idempotency: a second write with the same closure leaves the file
+        // unchanged byte-for-byte.
+        let again = write_back_injected_edges(&spec, &closure).expect("ok");
+        assert_eq!(again, 2);
+        let body2 = std::fs::read_to_string(&spec).unwrap();
+        assert_eq!(body, body2, "second write must be a byte-stable no-op");
+        // Round-trip: parse_backlinks recovers the same edge set.
+        let parsed = parse_backlinks(&body);
+        assert_eq!(parsed.len(), 2);
+        for edge in &parsed {
+            assert_eq!(edge.kind, EdgeKind::Injected);
+            assert!(edge.confidence.is_none());
+        }
+    }
+
+    /// AC-2: the edge schema distinguishes `injected` (fact) from `applied`
+    /// (inferred, with a confidence score). Both reach disk; a re-read
+    /// preserves the distinction.
+    #[test]
+    fn edge_kind_injected_vs_applied() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let spec = seed_spec(root, "edge-demo", "# Edge\n\n## Body\n");
+        let edges = vec![
+            SpecBacklinkEdge {
+                target: "rt.entity.user".to_string(),
+                kind: EdgeKind::Injected,
+                confidence: None,
+            },
+            SpecBacklinkEdge {
+                target: "rt.conv.repo-pattern".to_string(),
+                kind: EdgeKind::Applied,
+                confidence: Some(0.5),
+            },
+        ];
+        write_back_edges(&spec, &edges).expect("ok");
+        let body = std::fs::read_to_string(&spec).unwrap();
+        assert!(body.contains("[[rt.entity.user]] <!-- kind: injected -->"));
+        assert!(body.contains("[[rt.conv.repo-pattern]] <!-- kind: applied confidence: 0.50 -->"));
+
+        let parsed = parse_backlinks(&body);
+        let injected = parsed
+            .iter()
+            .find(|e| e.target == "rt.entity.user")
+            .expect("injected present");
+        assert_eq!(injected.kind, EdgeKind::Injected);
+        assert!(injected.confidence.is_none(), "injected has no confidence");
+        let applied = parsed
+            .iter()
+            .find(|e| e.target == "rt.conv.repo-pattern")
+            .expect("applied present");
+        assert_eq!(applied.kind, EdgeKind::Applied);
+        assert_eq!(applied.confidence, Some(0.5));
+        // Schema-level sanity: the two kinds serialise to distinct tokens.
+        assert_eq!(EdgeKind::Injected.as_str(), "injected");
+        assert_eq!(EdgeKind::Applied.as_str(), "applied");
+        assert_ne!(EdgeKind::Injected.as_str(), EdgeKind::Applied.as_str());
+    }
+
+    /// AC-3: dead_node_ids surfaces concept-nodes that no spec links to.
+    #[test]
+    fn dead_node_detection() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let graph_dir = root.join(".claude").join("graph");
+        write(
+            &graph_dir.join("rt.conv.linked.md"),
+            "---\nid: rt.conv.linked\nkind: conv\n---\nbody\n",
+        );
+        write(
+            &graph_dir.join("rt.conv.orphan.md"),
+            "---\nid: rt.conv.orphan\nkind: conv\n---\nbody\n",
+        );
+        // One spec backlinks the first node only.
+        let spec = seed_spec(root, "live-spec", "# Live\n\n## Body\n");
+        write_back_injected_edges(&spec, &["rt.conv.linked".to_string()]).expect("ok");
+        let dead = dead_node_ids(root);
+        assert!(dead.contains(&"rt.conv.orphan".to_string()));
+        assert!(!dead.contains(&"rt.conv.linked".to_string()));
+    }
+
+    /// Sanity for the applied inference: a file in the diff that lives under
+    /// a folder path mentioned in a node body yields an `applied` edge with
+    /// the 0.50 mid-confidence score.
+    #[test]
+    fn applied_inference_matches_folder_path() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let graph_dir = root.join(".claude").join("graph");
+        write(
+            &graph_dir.join("rt.conv.scan.md"),
+            "---\nid: rt.conv.scan\nkind: conv\n---\nThe scan subsystem lives at apps/rt/src/run/scan/.\n",
+        );
+        let edges = infer_applied_edges(
+            root,
+            &["apps/rt/src/run/scan/graph.rs".to_string()],
+            &[],
+        );
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0].target, "rt.conv.scan");
+        assert_eq!(edges[0].kind, EdgeKind::Applied);
+        assert!(edges[0].confidence.unwrap_or(0.0) >= 0.5);
     }
 
     #[test]

@@ -28,6 +28,7 @@ mod dependency_precheck;
 mod diff_context;
 mod docs_stale_check;
 mod emit_event;
+mod graph_dead;
 mod graph_index;
 pub mod emit_phase;
 mod emit_pipeline;
@@ -203,6 +204,21 @@ pub enum RunCmd {
         /// Override the line cap (`MUSTARD_GLOSSARY_MAX_LINES`).
         #[arg(long = "max-lines")]
         max_lines: Option<usize>,
+    },
+    /// Resolve a scope into its minimum concept-node closure.
+    ///
+    /// Walks the Wave-3 graph (`.claude/graph/`) from the seeds derived from
+    /// `{entities, operation, layer, role, seeds}`, dedup'ing by id, sorted
+    /// by distance, truncated by the role's prompt budget, and dereferenced
+    /// to in-line content. Emits byte-stable JSON. Fail-open: a missing
+    /// graph or an empty scope degrades to an empty closure.
+    ContextResolve {
+        /// Scope JSON literal (e.g. `{"entities":["user"],"role":"explore"}`).
+        #[arg(long)]
+        scope: Option<String>,
+        /// Read the scope JSON from a file instead of `--scope`.
+        #[arg(long = "scope-file")]
+        scope_file: Option<PathBuf>,
     },
     /// Persist agent memory, decisions/lessons, or knowledge entries.
     /// `cross-wave` is the read-side: emits markdown summarising prior waves.
@@ -644,6 +660,14 @@ pub enum RunCmd {
     /// `.claude/skills/*/SKILL.md` files. Emits byte-stable pretty JSON.
     /// Fail-open: a missing graph directory degrades to an empty index.
     GraphIndex,
+    /// List concept-nodes with zero spec backlinks (deletion candidates).
+    ///
+    /// Walks `<project>/.claude/spec/**/spec.md`, parses each auto-managed
+    /// `## Backlinks` block, and returns the set of ids in `.claude/graph/`
+    /// that no spec links to. Emits byte-stable pretty JSON
+    /// (`{ "dead": [...], "count": <usize> }`). Fail-open: a missing graph
+    /// or spec tree degrades to `{ "dead": [], "count": 0 }`.
+    GraphDead,
     /// Extract `[[wikilink]]` occurrences from every `.md` under `--spec-dir`,
     /// persist them into the `wikilinks` table, emit `{wikilinks,orphans}` JSON.
     WikilinkExtract {
@@ -876,6 +900,9 @@ pub fn dispatch(cmd: RunCmd) {
             spec,
             max_lines,
         } => context_slice::run(&context, spec.as_deref(), max_lines),
+        RunCmd::ContextResolve { scope, scope_file } => {
+            scan::resolve::run(scope.as_deref(), scope_file.as_deref());
+        }
         RunCmd::Memory {
             subcommand,
             json,
@@ -1025,6 +1052,7 @@ pub fn dispatch(cmd: RunCmd) {
         } => artifact_update::run(check, apply, manifest.as_deref()),
         RunCmd::AmendFinalize { session_id } => amend_finalize::run_cli(&session_id),
         RunCmd::GraphIndex => graph_index::run(),
+        RunCmd::GraphDead => graph_dead::run(),
         RunCmd::WikilinkExtract { spec_dir } => wikilink::run(spec_dir.as_deref()),
         RunCmd::WaveScaffold { spec_dir, plan } => {
             wave_scaffold::run(spec_dir.as_deref(), plan.as_deref());

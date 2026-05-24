@@ -192,5 +192,26 @@ Nem toda relação no projeto vira aresta do grafo. Só relações de **signific
 
 Arrastar plumbing pro grafo polui o graph view e faz o resolver seguir arestas que não são relevância — proibido. Se a relação é "este arquivo aponta para aquele por configuração de runtime", ela não é uma aresta do grafo.
 
+### Backlinks (spec ← skill/convenção)
+
+Toda spec executada vira nó no grafo: no fim de cada wave de EXECUTE (em `/mustard:feature` e `/mustard:bugfix` Full Path), o pipeline grava as arestas `[[id]]` que o resolver **injetou** de volta na `spec.md`, sob a seção `## Linked nodes`. Cada aresta carrega um prefixo de tipo:
+
+- `injected:` — **certo**. O resolver entregou esse nó como contexto para o(s) agente(s) daquela wave. É medido (`mustard-rt run write-back` lê o cache `.claude/.resolve-cache.json`).
+- `applied:` — **inferido**. Sinal mais fraco de que o nó realmente influenciou o código tocado (cruzando arquivos modificados × nós descritos). Sempre marcado como inferência, nunca vendido como fato.
+
+O efeito prático: abrindo o `SKILL.md` ou o nó-conceito no Obsidian, o painel de backlinks lista todas as specs que linkam para ele — análise de impacto antes de mexer numa convenção (`"esta convenção foi usada por estas 7 specs nas últimas 2 semanas"`). O Claude Code nunca vê `[[ ]]` cru — recebe o conteúdo já resolvido pelo `context-resolve`.
+
+`/mustard:task` **não** grava write-back (é spec-less por design): se a tarefa surfar necessidade de backlink persistente, promova para `/mustard:feature` Light.
+
+### Detecção de morto
+
+Um nó-conceito sem **nenhum** backlink de spec é um candidato a deleção — convenção/skill/recipe que nenhuma feature consumiu desde que foi escrita. Para listar:
+
+```bash
+mustard-rt run graph-dead
+```
+
+Saída: JSON `{ "dead": [ { "id": "...", "path": "...", "kind": "conv|entity|skill|recipe" }, ... ] }`. Fail-open (grafo ausente devolve `dead: []`). Use periodicamente (ex.: revisão de housekeeping mensal) para podar conhecimento órfão — manter nó morto polui o graph view e infla o fecho do resolver para escopos vizinhos. Antes de deletar: confirmar manualmente que o nó não está sendo carregado por outra via (alias, frontmatter de `SKILL.md` pesado) e que nenhuma spec ativa pretende linkar para ele.
+
 ## Full Reference
 Rules, pipeline, naming: `pipeline-config.md`

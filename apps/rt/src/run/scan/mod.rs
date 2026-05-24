@@ -30,6 +30,7 @@ pub mod graph;
 pub mod interpret;
 pub mod pluralize;
 pub mod project_conventions;
+pub mod resolve;
 
 use mustard_core::fs as mfs;
 use std::collections::BTreeMap;

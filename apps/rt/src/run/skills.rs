@@ -789,6 +789,28 @@ pub fn run(subcommand: Option<&str>, args: &[String]) {
             run_list(&root, has("--format") && arg_after("--format").as_deref() == Some("json")
                 || has("--json"));
         }
+        Some("match") => {
+            // Wave 4 (project-profiler): the unified skill-matching face.
+            // Builds a resolver scope from `--entity` / `--operation` /
+            // `--role` and prints the resolved closure (skill nodes + their
+            // requires) as the same byte-stable envelope `context-resolve`
+            // emits. Public JSON shape == `context-resolve` so downstream
+            // tooling can use either entry point interchangeably.
+            let entity = arg_after("--entity");
+            let operation = arg_after("--operation");
+            let role = arg_after("--role");
+            let project = arg_after("--cwd")
+                .map_or_else(|| PathBuf::from(env::project_dir()), PathBuf::from);
+            let scope = crate::run::scan::resolve::ResolveScope {
+                entities: entity.map(|e| vec![e]).unwrap_or_default(),
+                operation,
+                role,
+                ..crate::run::scan::resolve::ResolveScope::default()
+            };
+            let out = crate::run::scan::resolve::resolve_closure(&project, &scope);
+            let pretty = serde_json::to_string_pretty(&out).unwrap_or_else(|_| "{}".to_string());
+            println!("{pretty}");
+        }
         _ => {
             println!("Usage: skills <subcommand> [flags]");
             println!();
@@ -797,6 +819,7 @@ pub fn run(subcommand: Option<&str>, args: &[String]) {
             println!("  graph    [--json] [--cwd PATH]");
             println!("  orphans  [--days N] [--json] [--cwd PATH]");
             println!("  list     [--format table|json] [--root PATH]");
+            println!("  match    [--entity NAME] [--operation OP] [--role ROLE] [--cwd PATH]");
         }
     }
 }

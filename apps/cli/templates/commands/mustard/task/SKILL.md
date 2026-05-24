@@ -71,6 +71,12 @@ Concrete prompt templates for each action (analyze, review, docs, refactor, audi
 
 → See `../../../refs/task/task-prompts.md`
 
+## Graph write-back (concept-node edges injected → spec)
+
+`/task` actions are **spec-less by design** ("No spec, no pipeline state, no review gate. Surgical.") — there is no target file for `[[id]]` backlinks to land in. Write-back is therefore **N/A for `/task`**: the resolver may still inject context, but the edges are not persisted back. This is intentional; `/feature` and `/bugfix` (Full Path) own the spec-side bookkeeping for the graph.
+
+If a `/task` invocation surfaces a need for persistent backlinks (e.g. the work uncovers a recurring pattern worth linking from a parent spec), promote it to `/feature` Light or open a tactical-fix sub-spec — see `templates/CLAUDE.md § Backlinks` for the rationale.
+
 ## Domain Checklists (for `audit`)
 
 Orchestrator infers domain from scope keywords. Multiple domains can be combined.

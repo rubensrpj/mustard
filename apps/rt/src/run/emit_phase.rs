@@ -84,6 +84,18 @@ pub fn run(spec: &str, to: &str, from: Option<&str>) {
     // `from` defaults to the spec's last known phase (null when none).
     let from_phase = from.map(str::to_string).or(last);
 
+    // Wave-5 (project-profiler) write-back: when a spec transitions OUT of
+    // EXECUTE, gather every concept-node id the resolver cached during the
+    // session and write them back into `spec.md` as `injected` backlinks.
+    // Fail-open — any IO error is swallowed, telemetry stays best-effort.
+    if from_phase
+        .as_deref()
+        .is_some_and(|p| p.eq_ignore_ascii_case("EXECUTE"))
+        && !to.eq_ignore_ascii_case("EXECUTE")
+    {
+        write_back_after_execute(spec);
+    }
+
     let event = HarnessEvent {
         v: SCHEMA_VERSION,
         ts: now_iso8601(),
@@ -99,6 +111,28 @@ pub fn run(spec: &str, to: &str, from: Option<&str>) {
         spec: Some(spec.to_string()),
     };
     let _ = store.append(&event);
+}
+
+/// Resolve the spec.md path for `spec` under the active project, then write
+/// the union of every cached resolver closure as `injected` backlinks. Fully
+/// fail-open: a missing project dir, missing spec dir, empty cache, or any
+/// IO failure degrades to a silent no-op. Telemetry must never block a phase
+/// transition.
+fn write_back_after_execute(spec: &str) {
+    let project_root = std::path::PathBuf::from(project_dir());
+    let spec_path = project_root
+        .join(".claude")
+        .join("spec")
+        .join(spec)
+        .join("spec.md");
+    if !spec_path.exists() {
+        return;
+    }
+    let closure_ids = crate::run::scan::resolve::collect_cached_closure_ids(&project_root);
+    if closure_ids.is_empty() {
+        return;
+    }
+    let _ = crate::run::scan::graph::write_back_injected_edges(&spec_path, &closure_ids);
 }
 
 #[cfg(test)]

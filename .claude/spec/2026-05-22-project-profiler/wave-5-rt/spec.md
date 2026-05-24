@@ -1,10 +1,10 @@
 # Wave 5 (rt + templates) — Write-back spec→skill + telemetria
 
-### Stage: Plan
+### Stage: Execute
 ### Outcome: Active
 ### Flags:
 ### Lang: pt
-### Checkpoint: 2026-05-22T00:00:00Z
+### Checkpoint: 2026-05-24T09:05:08.646Z
 ### Parent: 2026-05-22-project-profiler
 
 ## PRD
@@ -23,10 +23,10 @@ Toda spec executada ganha arestas `[[skill]]` automáticas (`injected`); o Obsid
 
 ## Critérios de Aceitação
 
-- [ ] AC-1: write-back automático — após uma fase EXECUTE simulada, a spec contém arestas `[[id]]` marcadas `injected` — Command: `cargo test -p mustard-rt writeback_injected_edges`
-- [ ] AC-2: distinção injected vs applied presente no schema da aresta — Command: `cargo test -p mustard-rt edge_kind_injected_vs_applied`
-- [ ] AC-3: detecção de morto — nó sem nenhum backlink de spec é listado por um comando — Command: `cargo test -p mustard-rt dead_node_detection`
-- [ ] AC-4: telemetria de injeção comparável — o resolver emite o tamanho do fecho via a métrica de prompt do `budget` — Command: `cargo test -p mustard-rt resolve_emits_prompt_metric`
+- [x] AC-1: write-back automático — após uma fase EXECUTE simulada, a spec contém arestas `[[id]]` marcadas `injected` — Command: `cargo test -p mustard-rt writeback_injected_edges`
+- [x] AC-2: distinção injected vs applied presente no schema da aresta — Command: `cargo test -p mustard-rt edge_kind_injected_vs_applied`
+- [x] AC-3: detecção de morto — nó sem nenhum backlink de spec é listado por um comando — Command: `cargo test -p mustard-rt dead_node_detection`
+- [x] AC-4: telemetria de injeção comparável — o resolver emite o tamanho do fecho via a métrica de prompt do `budget` — Command: `cargo test -p mustard-rt resolve_emits_prompt_metric`
 
 ## Plano
 
@@ -45,16 +45,16 @@ No fim da fase de execução, o pipeline grava na spec as arestas `[[id]]` do fe
 
 ### rt Agent (Wave 5)
 
-- [ ] Schema de aresta com `kind: injected|applied`; write-back grava `injected` a partir do fecho do resolver.
-- [ ] Inferência opcional `applied` (arquivos tocados × nós descritos), claramente marcada como inferida.
-- [ ] `mustard-rt run graph-dead` — lista nós-conceito sem backlink de spec.
-- [ ] Resolver emite tamanho do fecho via métrica de prompt do `budget` (telemetria para o A/B).
-- [ ] Testes: `writeback_injected_edges`, `edge_kind_injected_vs_applied`, `dead_node_detection`, `resolve_emits_prompt_metric`.
+- [x] Schema de aresta com `kind: injected|applied`; write-back grava `injected` a partir do fecho do resolver.
+- [x] Inferência opcional `applied` (arquivos tocados × nós descritos), claramente marcada como inferida.
+- [x] `mustard-rt run graph-dead` — lista nós-conceito sem backlink de spec.
+- [x] Resolver emite tamanho do fecho via métrica de prompt do `budget` (telemetria para o A/B).
+- [x] Testes: `writeback_injected_edges`, `edge_kind_injected_vs_applied`, `dead_node_detection`, `resolve_emits_prompt_metric`.
 
 ### templates Agent (Wave 5)
 
-- [ ] SKILLs de pipeline (`feature`/`bugfix`/`task`) registram as arestas `injected` no fim do EXECUTE.
-- [ ] Documentar backlinks e detecção de morto no `templates/CLAUDE.md`.
+- [x] SKILLs de pipeline (`feature`/`bugfix`/`task`) registram as arestas `injected` no fim do EXECUTE.
+- [x] Documentar backlinks e detecção de morto no `templates/CLAUDE.md`.
 
 ## Limites
 

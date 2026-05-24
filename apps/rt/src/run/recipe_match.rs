@@ -142,6 +142,15 @@ pub fn run(entity: Option<&str>, operation: Option<&str>, subproject: Option<&st
     // `eprintln!` + continue — the stdout emission below is the contract.
     persist_injection_savings(&matched, &cwd);
 
+    // Wave 4 (project-profiler): delegate the convention-closure resolution
+    // to `context-resolve`. The recipe's entity + operation make a natural
+    // scope; the resolver walks the concept-node graph and returns the
+    // minimum closure of conventions to inject alongside the skeleton. The
+    // stdout JSON of `recipe-match` stays byte-stable (the resolver's
+    // closure rides on stderr as a debug line — pipeline tooling parses
+    // stdout only). Fail-open: no graph / no nodes ⇒ silent skip.
+    delegate_to_resolver(entity, operation, &cwd);
+
     let resolved_files: Vec<Value> = matched
         .get("files")
         .and_then(Value::as_array)
@@ -222,6 +231,28 @@ fn persist_injection_savings(matched: &Value, cwd: &Path) {
     };
     if let Err(e) = economy::writer::record_savings(&conn, record) {
         eprintln!("recipe_match: record_savings failed: {e}");
+    }
+}
+
+/// Wave-4 delegation: route the recipe match through the unified
+/// `context-resolve` walk. The resolver is a pure function of the on-disk
+/// vault — no network, no SQLite — so the cost is bounded by the size of
+/// `.claude/graph/`. Output rides on stderr as a one-line summary; stdout
+/// stays byte-stable for the legacy parser.
+fn delegate_to_resolver(entity: &str, operation: &str, cwd: &Path) {
+    let scope = crate::run::scan::resolve::ResolveScope {
+        entities: vec![entity.to_string()],
+        operation: Some(operation.to_string()),
+        ..crate::run::scan::resolve::ResolveScope::default()
+    };
+    let out = crate::run::scan::resolve::resolve_closure(cwd, &scope);
+    if !out.closure.is_empty() {
+        eprintln!(
+            "recipe_match: context-resolve closure={} dist=[0..{}] truncated={}",
+            out.closure.len(),
+            out.closure.iter().map(|n| n.distance).max().unwrap_or(0),
+            out.truncated,
+        );
     }
 }
 

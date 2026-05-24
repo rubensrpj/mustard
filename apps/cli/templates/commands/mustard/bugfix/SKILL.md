@@ -163,6 +163,17 @@ Dispatch bugfix agent with:
 - No regression in adjacent code
 - If build fails: diagnose + fix (max 3 iterations)
 
+**Graph write-back (concept-node edges injected → spec):**
+After validate passes and before QA, append the `[[id]]` edges that the resolver injected for this fix back into the active spec (Full Path only — Fast Path has no spec). Keeps the graph bidirectional and surfaces backlinks in the Obsidian vault. Expected call:
+
+```bash
+mustard-rt run write-back --spec {spec-name} --kind injected
+```
+
+The binary reads the closure from the resolver cache (`.claude/.resolve-cache.json`) — no closure flag is passed inline. Edges go under `## Linked nodes` in the spec, each prefixed with `injected:` (an `applied:` arm can be added later as a separate inference pass). Fail-open: missing graph / empty closure is a silent no-op. See `templates/CLAUDE.md § Backlinks` for the rationale.
+
+<!-- TODO: confirm exact flag names against `mustard-rt run write-back --help` once the rt agent (Wave 5 of project-profiler) ships the subcommand. Signature above mirrors wave-5-rt/spec.md and the resolver cache shape; align if the rt agent picks different flag names. -->
+
 #### Escalation Status Handling
 
 After the bugfix agent returns, check for an escalation status before closing:
