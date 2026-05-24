@@ -1,9 +1,9 @@
 # Project Profiler — motor de scan unificado + grafo de injeção
 
-### Stage: Plan
-### Outcome: Active
+### Stage: Close
+### Outcome: Completed
 ### Flags: 
-### Checkpoint: 2026-05-24T09:05:08.646Z
+### Checkpoint: 2026-05-24T13:15:00.000Z
 ### Lang: pt
 
 ## PRD
@@ -33,14 +33,14 @@ Tokens injetados por agente caem de forma mensurável (telemetria de prompt do `
 
 Critérios transversais (AC-P). Cada wave declara os seus próprios no respectivo `wave-N-*/spec.md`. Testáveis, binários (passa/falha), executáveis e independentes.
 
-- [ ] AC-P-1: workspace compila — Command: `cargo build --workspace`
-- [ ] AC-P-2: clippy sem warnings no rt — Command: `cargo clippy -p mustard-rt -- -D warnings`
-- [ ] AC-P-3: testes do rt passam — Command: `cargo test -p mustard-rt`
-- [ ] AC-P-4: paridade pós-W1 — o registry gerado pela passada única é igual ao baseline congelado — Command: `cargo test -p mustard-rt single_pass_parity`
-- [ ] AC-P-5: nenhum scanner por linguagem resta após W2 — Command: `node -e "const fs=require('fs');const d='apps/rt/src/run/scan';const n=fs.readdirSync(d).filter(f=>/_scanner\.rs$/.test(f)).length;process.exit(n===0?0:1)"`
-- [ ] AC-P-6: grafo válido (sem aresta órfã nem ciclo) — Command: `cargo test -p mustard-rt graph_validation`
-- [ ] AC-P-7: vault Obsidian presente — `.claude/.obsidian/` + `.claude/graph/index.md` existem — Command: `node -e "const fs=require('fs');process.exit(fs.existsSync('.claude/.obsidian')&&fs.existsSync('.claude/graph/index.md')?0:1)"`
-- [ ] AC-P-8: injeção mínima comprovada — o fecho resolvido para um escopo de teste é menor que o conjunto completo de nós — Command: `cargo test -p mustard-rt resolve_closure_is_minimal`
+- [x] AC-P-1: workspace compila — Command: `cargo build --workspace`
+- [x] AC-P-2: clippy sem warnings no rt — Command: `cargo clippy -p mustard-rt -- -D warnings`
+- [x] AC-P-3: testes do rt passam — Command: `cargo test -p mustard-rt`
+- [x] AC-P-4: paridade pós-W1 — o registry gerado pela passada única é igual ao baseline congelado — Command: `cargo test -p mustard-rt single_pass_parity`
+- [x] AC-P-5: nenhum scanner por linguagem resta após W2 — Command: `node -e "const fs=require('fs');const d='apps/rt/src/run/scan';const n=fs.readdirSync(d).filter(f=>/_scanner\.rs$/.test(f)).length;process.exit(n===0?0:1)"`
+- [x] AC-P-6: grafo válido (sem aresta órfã nem ciclo) — Command: `cargo test -p mustard-rt graph_validation`
+- [x] AC-P-7: vault Obsidian presente — `.claude/.obsidian/` + `.claude/graph/index.md` existem — Command: `node -e "const fs=require('fs');process.exit(fs.existsSync('.claude/.obsidian')&&fs.existsSync('.claude/graph/index.md')?0:1)"`
+- [x] AC-P-8: injeção mínima comprovada — o fecho resolvido para um escopo de teste é menor que o conjunto completo de nós — Command: `cargo test -p mustard-rt resolve_closure_is_minimal`
 
 ## Plano
 
