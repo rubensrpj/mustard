@@ -14,7 +14,6 @@ export * from "./SpecDrillDown";
 export * from "./SpecEventsTab";
 export * from "./SpecGroupHeader";
 export * from "./SpecMarkdownViewer";
-export * from "./SpecNetworkTab";
 export * from "./SpecQualityTab";
 export * from "./SpecRow";
 export * from "./SpecSidePanel";

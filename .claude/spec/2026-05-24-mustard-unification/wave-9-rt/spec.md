@@ -1,86 +1,53 @@
-# W9 — Context injection optimization
+# W6 — rt new subcommands (15 subcomandos novos)
 
 ## Contexto
 
-Hoje:
+Pré-requisito para o corte massivo dos `SKILL.md` (W7). Cada subcomando substitui um bloco grande de lógica que hoje vive em markdown e gasta tokens no agente. Padrão consolidado: `Options struct + split entry-point` (`cli-command-pattern`), `rt-run-subcommand-pattern`, saída JSON byte-stable. Todos seguem fail-open.
 
-- `SessionStart` injeta top-5 patterns + top-5 decisions + top-5 lessons (~1500 tokens fixos), sem filtrar por spec ativa.
-- `SubagentStart` e `UserPromptSubmit` não injetam nada.
-- Sub-agentes EXECUTE recebem `CLAUDE.md` inteiro + `entity-registry.json` inteiro.
+## Tarefas (15 subcomandos)
 
-Alvos:
-
-- Orchestrator inicial `≤25k` tokens.
-- Sub-agents Explore/Plan `≤15k`.
-- Agents EXECUTE `≤30k`.
-
-## Tarefas
-
-### T9.1 — Reformulação de injeções por evento
-
-| Evento | Hoje | Proposta | Trigger condicional | Custo |
-|---|---|---|---|---|
-| `SessionStart` | top-5×3 fixo, 1500 chars | scope-by-current-spec: 3 spec-scoped + 2 globais (`spec IS NULL AND confidence >= 0.8`). Cap 1500. | sempre | ~500-1500 tokens |
-| `SessionStart` (resume) | nenhum | + Bloco "Pipelines em curso" se `has_active_pipeline`: `{spec} @ wave {N}/{total} — {stage}` + delta tempo. Usa `resume-bootstrap --summary-only` (novo flag). | `has_active_pipeline` | +50-300 tokens |
-| `UserPromptSubmit` | só archive | + 1 linha "Pipeline em curso: {spec} @ {stage}" se prompt não inicia `/mustard:*` e há spec ativa | conditional | ~50 tokens |
-| `SubagentStart` | só counter | novo hook `subagent_inject`: slice mínimo só se `HookInput.raw.prompt_size < 4000` (Task sem SKILL) | conditional | 0-300 tokens |
-| `PostToolUse(Task)` | budget | + observer `auto_capture_summary` (W8 já adicionou) | sempre | 0 (escrita) |
-| `PreCompact` | git+pipeline | + até 3 `agent_memory` recentes da spec ativa | `has_active_pipeline` | +200 tokens |
-| `SessionEnd` | knowledge | + consolidação: `agent_memory active confidence>=0.7 referenciado 2+x` vira candidate `memory_decisions/lessons` | `has_active_pipeline` | 0 |
-| `SubagentStop` | nada | observer: bump `last_used` em memórias citadas no `tool_response` | sempre | 0 |
-
-### T9.2 — Otimização de carga inicial
-
-| Item hoje | Tipo | Como otimizar | Onde |
+| # | Subcomando | Substitui | Arquivo |
 |---|---|---|---|
-| `CLAUDE.md` (root + sub) | markdown ~3-5k linhas | SLICE por seção (`## Guards`, `## Stack`, `## Patterns`) | `agent_prompt_render::read_guards_block` (estender para 2-3 seções) |
-| `CONTEXT.md` glossário | markdown ~500 termos | SLICE existente: `context-slice` (cap 250 linhas) | já funciona |
-| `entity-registry.json` | JSON ~2k entries | SUMMARY via `knowledge glossary --filter <spec-entities-only>` ou SLICE via `context-resolve` | `apps/rt/src/run/mod.rs` |
-| Active pipeline state | JSON ~500 bytes/spec | PARÂMETRO: `resume-bootstrap --json` produz objeto estruturado | já existe |
-| Skills index | markdown ~1k linhas | SLICE por role: `recommended_skills` por role já em `guess_recommended_skills` | já funciona |
-| Prior wave diff | unified diff ~2k linhas | CACHE já existe `.pipeline-states/{spec}.wave-N.diff.md` | já bom |
-| Cross-wave memory | markdown ~10-30 linhas | SUMMARY já existe (cap 5 por wave) | já bom |
-| Spec body | markdown 2-10k tokens | PARÂMETRO: já recebe só `## Tasks` via `read_task_steps` | já bom |
+| T6.1 | `spec-scaffold --kind {feature\|bugfix\|tactical-fix} --scope {light\|full} --lang {pt-BR\|en-US}` | header generator em feature/bugfix/tactical-fix SKILL.md | `apps/rt/src/run/spec_scaffold.rs` |
+| T6.2 | `close-orchestrate` | steps imperativos em close/SKILL.md (verify → qa → docs-stale → summary → complete) | `apps/rt/src/run/close_orchestrate.rs` |
+| T6.3 | `review-dispatch --pr <N>` | Steps 1-5 em review/SKILL.md | `apps/rt/src/run/review_dispatch.rs` |
+| T6.4 | `tactical-fix-create --parent X --description Y --scope Z` | Steps 1-4 em tactical-fix/SKILL.md | `apps/rt/src/run/tactical_fix_create.rs` |
+| T6.5 | `prd-build --intent "..."` | TODO prd/SKILL.md (167 linhas determinísticas: scope + entities + paths + JSON) | `apps/rt/src/run/prd_build.rs` |
+| T6.6 | `skill-fetch --name X` + `skill-cache --check X` | Steps de install em skill/SKILL.md (sparse-clone + validate + cache) | `apps/rt/src/run/skill_fetch.rs` + `skill_cache.rs` |
+| T6.7 | `adapt-cursor` | `apps/cli/templates/adapters/cursor/adapter.js` (bun shebang + CommonJS) | `apps/rt/src/run/adapt_cursor.rs` |
+| T6.8 | `maint-deps` + `maint-validate` | maint/SKILL.md (install + build/typecheck em todos subprojects) | `apps/rt/src/run/maint_deps.rs` + `maint_validate.rs` |
+| T6.9 | `task-checklist --domain X` | Domain Checklists em task/SKILL.md | `apps/rt/src/run/task_checklist.rs` |
+| T6.10 | `bugfix-cache --hash X` | pseudo-código em bugfix/SKILL.md (hash + invalidation) | `apps/rt/src/run/bugfix_cache.rs` |
+| T6.11 | `context-budget --role X --spec Y --wave N` | (novo — planning de orçamento ANTES do prompt) | `apps/rt/src/run/context_budget.rs` |
+| T6.12 | `backup-specs --target <path> --filter all\|legacy-headers-only\|active-only --dry-run` | comando explícito de backup (idempotente, cross-platform, emit `backup.specs.created`) | `apps/rt/src/run/backup_specs.rs` |
+| T6.13 | `i18n translate-heading --from "## Tasks" --to-lang pt-BR` | consulta a Header Translation Table no caso médio | `apps/rt/src/run/i18n_translate.rs` |
+| T6.14 | `spec-lang resolve --spec <path>` | resolução de idioma em 2 SKILLs | `apps/rt/src/run/spec_lang_resolve.rs` |
+| T6.15 | `economy capture-baseline --operation X --wave Y [--from-history]` + `economy reconcile --wave W` + `economy report --format json\|table` | métrica auditável | `apps/rt/src/run/economy_capture_baseline.rs` + `economy_reconcile.rs` + `economy_report.rs` |
 
-### T9.3 — Implementação
+## Tarefas comuns a todos
 
-- [ ] Modificar `apps/rt/src/hooks/session_start.rs`: scope-by-spec inject; bloco resume condicional.
-- [ ] Novo hook `apps/rt/src/hooks/subagent_inject.rs` (observer que injeta condicional).
-- [ ] Estender `apps/rt/src/hooks/prompt_gate.rs` (UserPromptSubmit) para injetar 1 linha condicional.
-- [ ] Modificar `apps/rt/src/hooks/pre_compact.rs`: adicionar 3 `agent_memory` recentes.
-- [ ] Modificar `apps/rt/src/hooks/knowledge.rs` (SessionEnd): consolidação.
-- [ ] Novo hook `apps/rt/src/hooks/subagent_stop_bump.rs` (SubagentStop observer).
-- [ ] Modificar `apps/rt/src/run/context_slice.rs`: estender para `CLAUDE.md` (heuristically por `## Guards`/`## Stack`/`## Patterns`).
-- [ ] Modificar `apps/rt/src/run/agent_prompt_render.rs`: adicionar flag `--budget-tokens N` que trunca placeholders por prioridade.
-- [ ] Modificar `apps/rt/src/run/resume_bootstrap.rs`: adicionar flag `--summary-only` + campo `coolness: hot|paused|cooled|cold`.
-- [ ] Registrar novos hooks em `apps/rt/src/registry.rs`.
-- [ ] Cada injeção emite `pipeline.economy.context.served { role, spec, wave, tokens_served, tokens_full_estimate }` para `/economia`.
+- [ ] **T6.A.** Cada subcomando segue `rt-run-subcommand-pattern`: `Options` struct, `parse(args)`, `run(opts)`, saída JSON byte-stable com `Report` helper.
+- [ ] **T6.B.** Cada um registrado em `apps/rt/src/run/mod.rs` no enum `RunCmd` + dispatch.
+- [ ] **T6.C.** Testes: cada subcomando com `cargo test` (happy path + error path + JSON shape).
+- [ ] **T6.D.** Cada um emite `pipeline.economy.operation.invoked { operation: <name>, duration_ms, tokens_used: 0, was_rust_only: true }` para alimentar `/economia` (W12).
+- [ ] **T6.E.** Documentação inline (doc-comments rustdoc) em en-US.
 
 ## Files
 
-- `apps/rt/src/hooks/session_start.rs`
-- `apps/rt/src/hooks/subagent_inject.rs` (novo)
-- `apps/rt/src/hooks/prompt_gate.rs`
-- `apps/rt/src/hooks/pre_compact.rs`
-- `apps/rt/src/hooks/knowledge.rs`
-- `apps/rt/src/hooks/subagent_stop_bump.rs` (novo)
-- `apps/rt/src/registry.rs`
-- `apps/rt/src/run/context_slice.rs`
-- `apps/rt/src/run/agent_prompt_render.rs`
-- `apps/rt/src/run/resume_bootstrap.rs`
+- `apps/rt/src/run/mod.rs` (registrar 15+ subcomandos)
+- 15 arquivos novos em `apps/rt/src/run/` (ver tabela acima)
+- `apps/cli/src/commands/add.rs` (W7 — extender; aqui só consume `skill-fetch`)
 
 ## Critérios de Aceitação
 
-- [ ] AC-W9-1: `SessionStart` em projeto com spec ativa injeta bloco resume. Command: fixture + verify stdout.
-- [ ] AC-W9-2: `UserPromptSubmit` injeta 1 linha apenas se prompt não é `/mustard:*` e há spec ativa. Command: fixture.
-- [ ] AC-W9-3: Novo hook `subagent_inject` registrado. Command: `node -e "const t=require('fs').readFileSync('apps/rt/src/registry.rs','utf8');if(!/subagent_inject/.test(t))process.exit(1)"`
-- [ ] AC-W9-4: `context-slice --doc CLAUDE.md --spec X` funciona (não só CONTEXT.md). Command: `rtk mustard-rt run context-slice --doc CLAUDE.md --spec test --json | node -e "let s='';process.stdin.on('data',c=>s+=c);process.stdin.on('end',()=>{const j=JSON.parse(s);if(!j.slice)process.exit(1)})"`
-- [ ] AC-W9-5: `agent-prompt-render --budget-tokens 15000` trunca por prioridade. Command: fixture.
-- [ ] AC-W9-6: `resume-bootstrap --summary-only --json` retorna objeto com `coolness`. Command: `rtk mustard-rt run resume-bootstrap --summary-only --json --spec test | node -e "let s='';process.stdin.on('data',c=>s+=c);process.stdin.on('end',()=>{const j=JSON.parse(s);if(!('coolness' in j))process.exit(1)})"`
-- [ ] AC-W9-7: Orchestrator inicial em projeto canário ≤25k tokens. Verificável via `context-budget --role main`.
-- [ ] AC-W9-8: `pipeline.economy.context.served` aparece em events após session boot. Command: SQL query.
+- [ ] AC-W6-1: `mustard-rt run --help` lista os 15 subcomandos novos. Command: `node -e "const{execSync}=require('child_process');const out=execSync('rtk mustard-rt run --help 2>&1',{encoding:'utf8'});for(const k of ['spec-scaffold','close-orchestrate','review-dispatch','tactical-fix-create','prd-build','skill-fetch','adapt-cursor','maint-deps','maint-validate','task-checklist','bugfix-cache','context-budget','backup-specs','economy']){if(!out.includes(k)){console.error('missing',k);process.exit(1)}}"`
+- [ ] AC-W6-2: Cada subcomando tem teste passando. Command: `rtk cargo test -p mustard-rt 2>&1 | grep -E "(spec_scaffold|close_orchestrate|review_dispatch|tactical_fix_create|prd_build|skill_fetch|adapt_cursor|maint_deps|task_checklist|bugfix_cache|context_budget|backup_specs|economy)" | grep -q "ok"`
+- [ ] AC-W6-3: `rtk cargo clippy -p mustard-rt -- -D warnings` limpo.
+- [ ] AC-W6-4: `prd-build --intent "add user auth"` retorna JSON com `scope`, `entities`, `paths`, `acceptanceCriteria`. Command: `rtk mustard-rt run prd-build --intent "add user auth" --json | node -e "let s='';process.stdin.on('data',c=>s+=c);process.stdin.on('end',()=>{const j=JSON.parse(s);for(const k of ['scope','entities','paths','acceptanceCriteria']){if(!(k in j))process.exit(1)}})"`
+- [ ] AC-W6-5: `backup-specs --dry-run --target ~/.mustard-backups/test/` lista todas as ~70 specs. Command: `rtk mustard-rt run backup-specs --dry-run --target /tmp/test-backup --json | node -e "let s='';process.stdin.on('data',c=>s+=c);process.stdin.on('end',()=>{const j=JSON.parse(s);if(!Array.isArray(j.would_move)||j.would_move.length<50)process.exit(1)})"`
 
 ## Notas
 
-- Bloqueia W12 (que conecta os eventos `economy.context.served` ao dashboard).
-- W10 (Stop/Notification) pode rodar em paralelo (eventos diferentes).
+- Bloqueia W7 (cortes em SKILL.md dependem desses subcomandos existirem).
+- Cada subcomando é independente — podem ser entregues em paralelo se necessário (cada um é arquivo isolado em `apps/rt/src/run/`).
+- `adapt-cursor` substitui `adapter.js` mas o `.js` físico só é removido em W7.

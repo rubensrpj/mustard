@@ -5,7 +5,6 @@ import { useSpecQuality } from "@/hooks/useSpecQuality";
 import { useSpecChildren } from "@/hooks/useSpecChildren";
 import { SpecWavesTab } from "../SpecWavesTab";
 import { SpecQualityTab } from "../SpecQualityTab";
-import { SpecNetworkTab } from "../SpecNetworkTab";
 import { ExecutionTrace } from "@/features/trace/ExecutionTrace";
 
 interface SpecDrillDownProps {
@@ -41,7 +40,12 @@ interface SpecDrillDownProps {
 // Ondas tab (each wave shows the tactical-fixes / children that started
 // during its execution window). The `SpecChildrenTab` component file stays
 // in the tree as a legacy reference but is no longer mounted here.
-const TABS = ["Ondas", "Trace", "Qualidade", "Rede"] as const;
+//
+// W0/T0.6 (spec `2026-05-25-mustard-deep-refactor`): the "Rede" tab was
+// REMOVED with its internal force-graph implementation. Cross-spec relations
+// are now navigated externally via Obsidian (wikilinks `[[X]]` resolve to
+// `obsidian://open?vault=…&file=…` inside the markdown renderer).
+const TABS = ["Ondas", "Trace", "Qualidade"] as const;
 type Tab = (typeof TABS)[number];
 
 function LoadingRows() {
@@ -55,10 +59,12 @@ function LoadingRows() {
 }
 
 /**
- * SpecDrillDown — 4-tab expanded view for a spec (Ondas / Trace / Qualidade /
- * Rede). The 5th legacy tab ("Sub-specs") was removed in Wave 2 of spec
- * `2026-05-21-dashboard-spec-tabs-polish`: sub-specs now nest under their
- * owning wave inside the Ondas tab (correlated via `started_at`).
+ * SpecDrillDown — 3-tab expanded view for a spec (Ondas / Trace / Qualidade).
+ * The legacy "Sub-specs" tab was removed in Wave 2 of spec
+ * `2026-05-21-dashboard-spec-tabs-polish`: sub-specs nest under their owning
+ * wave inside the Ondas tab. The "Rede" tab was removed in W0/T0.6 of
+ * `2026-05-25-mustard-deep-refactor`: cross-spec navigation moved to
+ * Obsidian via wikilink URIs.
  */
 export function SpecDrillDown({
   repoPath,
@@ -132,11 +138,6 @@ export function SpecDrillDown({
         ) : (
           <SpecQualityTab items={qualityQ.data ?? []} repoPath={repoPath} />
         )}
-      </TabsContent>
-
-      {/* Rede (Wave-3 wikilink graph) */}
-      <TabsContent value="Rede" className="pt-3">
-        <SpecNetworkTab repoPath={repoPath} specName={spec} />
       </TabsContent>
     </Tabs>
   );
