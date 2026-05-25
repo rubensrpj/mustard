@@ -2,7 +2,12 @@ import { useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Copy, Check } from "lucide-react";
-import type { ComponentProps } from "react";
+import type { ComponentProps, ReactNode } from "react";
+import {
+  tokeniseWikilinks,
+  vaultNameFromPath,
+  DEFAULT_OBSIDIAN_VAULT_PATH,
+} from "@/lib/wikilinks";
 
 type CodeProps = ComponentProps<"code"> & { className?: string };
 
@@ -25,7 +30,58 @@ function CopyButton({ text }: { text: string }) {
   );
 }
 
-export function Markdown({ content }: { content: string }) {
+// W5.T5.7: render any `[[wikilink]]` inside an `<a>` that opens the matching
+// note in Obsidian via the `obsidian://open` URI scheme. The vault NAME defaults
+// to the last path segment of `obsidianVaultPath` (`mustard.json#obsidianVault`,
+// default `.claude/.obsidian`). Each segment maps 1:1 to a React node so React
+// keys stay stable.
+function renderWithWikilinks(text: string, vaultName: string): ReactNode {
+  const segments = tokeniseWikilinks(text, vaultName);
+  if (segments.length === 1 && segments[0].kind === "text") return text;
+  return segments.map((seg, i) => {
+    if (seg.kind === "text") return <span key={`t-${i}`}>{seg.text}</span>;
+    return (
+      <a
+        key={`w-${i}`}
+        href={seg.href}
+        title={`Abrir ${seg.target} no Obsidian`}
+        className="text-primary underline underline-offset-4 decoration-primary/40 hover:decoration-primary"
+      >
+        {seg.target}
+      </a>
+    );
+  });
+}
+
+function transformChildren(children: ReactNode, vaultName: string): ReactNode {
+  if (typeof children === "string") return renderWithWikilinks(children, vaultName);
+  if (Array.isArray(children)) {
+    return children.map((c, i) =>
+      typeof c === "string" ? (
+        <span key={`s-${i}`}>{renderWithWikilinks(c, vaultName)}</span>
+      ) : (
+        c
+      ),
+    );
+  }
+  return children;
+}
+
+export interface MarkdownProps {
+  content: string;
+  /**
+   * Vault path (relative or absolute) used to derive the Obsidian vault NAME
+   * for wikilink URIs. Default `.claude/.obsidian`; override via
+   * `mustard.json#obsidianVault`.
+   */
+  obsidianVaultPath?: string;
+}
+
+export function Markdown({
+  content,
+  obsidianVaultPath = DEFAULT_OBSIDIAN_VAULT_PATH,
+}: MarkdownProps) {
+  const vaultName = vaultNameFromPath(obsidianVaultPath);
   return (
     <div className="max-w-[720px] leading-relaxed text-foreground">
       <ReactMarkdown
@@ -67,14 +123,28 @@ export function Markdown({ content }: { content: string }) {
           h2: (props) => <h2 className="text-xl font-semibold mt-5 mb-2 pb-1 border-b border-border/60" {...props} />,
           h3: (props) => <h3 className="text-lg font-medium mt-4 mb-2" {...props} />,
           h4: (props) => <h4 className="text-base font-medium mt-3 mb-1" {...props} />,
-          p: (props) => <p className="text-sm leading-relaxed text-foreground/90 my-2" {...props} />,
+          p: ({ children, ...props }) => (
+            <p className="text-sm leading-relaxed text-foreground/90 my-2" {...props}>
+              {transformChildren(children, vaultName)}
+            </p>
+          ),
           ul: (props) => <ul className="my-2 pl-5 space-y-1 text-sm list-disc marker:text-muted-foreground/60" {...props} />,
           ol: (props) => <ol className="my-2 pl-5 space-y-1 text-sm list-decimal marker:text-muted-foreground/60" {...props} />,
-          li: (props) => <li className="leading-relaxed" {...props} />,
+          li: ({ children, ...props }) => (
+            <li className="leading-relaxed" {...props}>
+              {transformChildren(children, vaultName)}
+            </li>
+          ),
           a: (props) => <a className="text-primary underline underline-offset-4 decoration-primary/40 hover:decoration-primary" {...props} />,
-          strong: (props) => <strong className="font-semibold text-foreground" {...props} />,
-          blockquote: (props) => (
-            <blockquote className="border-l-2 border-border pl-3 italic text-muted-foreground my-3" {...props} />
+          strong: ({ children, ...props }) => (
+            <strong className="font-semibold text-foreground" {...props}>
+              {transformChildren(children, vaultName)}
+            </strong>
+          ),
+          blockquote: ({ children, ...props }) => (
+            <blockquote className="border-l-2 border-border pl-3 italic text-muted-foreground my-3" {...props}>
+              {transformChildren(children, vaultName)}
+            </blockquote>
           ),
           hr: () => <hr className="my-6 border-border/60" />,
           table: (props) => (

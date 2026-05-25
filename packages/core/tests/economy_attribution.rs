@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used)]
 //! Integration tests for the economy attribution roll-ups.
 //!
 //! Wave 3 (telemetry-separation) moved every span-based aggregation onto the

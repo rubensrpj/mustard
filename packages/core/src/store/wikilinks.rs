@@ -174,7 +174,7 @@ mod tests {
             file: "spec.md".into(),
             line: 12,
         };
-        assert_eq!(upsert_batch(&conn, &[link.clone()]).unwrap(), 1);
+        assert_eq!(upsert_batch(&conn, std::slice::from_ref(&link)).unwrap(), 1);
         // Same primary key, different `line` — must REPLACE, not duplicate.
         let updated = Wikilink { line: 42, ..link };
         assert_eq!(upsert_batch(&conn, &[updated]).unwrap(), 1);

@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used)]
 //! Integration tests for the economy domain (Wave 1).
 //!
 //! Exercises the writer/reader/multi-project triplet end-to-end against a

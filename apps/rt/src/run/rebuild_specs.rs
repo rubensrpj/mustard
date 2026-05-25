@@ -1,16 +1,24 @@
-//! `mustard-rt run rebuild-specs` — rematerialise the denormalised
-//! `specs` + `metrics_projection` tables from the event stream.
+//! `mustard-rt run rebuild-specs` — rematerialise the denormalised `specs`
+//! cache from the per-spec NDJSON event streams.
 //!
 //! Why a dedicated subcommand
 //! --------------------------
 //!
-//! The two tables (`specs.name/status/phase/…` and `metrics_projection.spec/…`)
-//! used to be filled by the JS harness. After the `eliminate-bun` migration
-//! removed that payload, nothing populated them — every column read by the
-//! dashboard fell back to `NULL`, which the readers translated into the literal
-//! `"unknown"` badges the 2026-05-20 audit captured. This subcommand closes
-//! that gap by reading from the canonical event log and writing the projected
-//! rows back in place.
+//! Per spec `2026-05-24-mustard-unification` Wave 5, the high-volume event
+//! stream lives in per-spec NDJSON files under
+//! `.claude/spec/{name}/events/*.ndjson`; the SQLite `events` table is gone
+//! and `metrics_projection` is retired (metrics live in
+//! `telemetry.db.run_usage`). The lean `specs` cache table in `mustard.db`
+//! still backs the dashboard's spec list, so a periodic rebuild keeps it in
+//! sync with whatever NDJSON files exist on disk.
+//!
+//! For now the rebuild reads `pipeline_events` (the lifecycle index that
+//! survived the cut) via [`SpecReader`] and projects per-spec rows from
+//! there. A future iteration will scan the NDJSON files directly so the
+//! denormalised cache picks up tool/agent counters too — those signals only
+//! exist in NDJSON post-W5. The empty cache still produces a usable spec
+//! list (the `pipeline_events`-derived status/phase is enough for the
+//! dashboard's primary surfaces).
 //!
 //! Design
 //! ------
@@ -254,6 +262,9 @@ mod tests {
         let project = dir.path().to_str().unwrap();
         let store = SqliteEventStore::for_project(project).unwrap();
 
+        // W5: only `pipeline.*` events land in `pipeline_events`; tool.use is
+        // dropped by `EventSink::append` and lives in NDJSON instead. Seed a
+        // pipeline.scope so spec discovery picks up `auth`.
         seed(
             &store,
             "auth",
@@ -261,7 +272,6 @@ mod tests {
             "pipeline.scope",
             json!({ "scope": "full", "lang": "pt" }),
         );
-        seed(&store, "auth", "2026-05-20T10:00:01Z", "tool.use", json!({}));
 
         let report = rematerialize_all(project).unwrap();
         assert_eq!(report.specs_count, 1);
@@ -273,10 +283,12 @@ mod tests {
         let row = specs.iter().find(|s| s.name == "auth").expect("spec row present");
         assert_eq!(row.status.as_deref(), Some("planning"));
 
-        let metrics = store2.metrics("auth").unwrap().expect("metrics row present");
-        let tb: serde_json::Value =
-            serde_json::from_str(metrics.tool_breakdown.as_deref().unwrap_or("{}")).unwrap();
-        assert_eq!(tb["tools_used"], 1);
+        // W5: `metrics_projection` is retired (data duplicated `telemetry.db.run_usage`).
+        // `SqliteEventStore::metrics` is a stub returning Ok(None) — assert that.
+        assert!(
+            store2.metrics("auth").unwrap().is_none(),
+            "metrics_projection retired; readers should hit `telemetry::reader` now"
+        );
     }
 
     #[test]
@@ -284,8 +296,22 @@ mod tests {
         let dir = tempdir().unwrap();
         let project = dir.path().to_str().unwrap();
         let store = SqliteEventStore::for_project(project).unwrap();
-        seed(&store, "auth", "2026-05-20T10:00:00Z", "tool.use", json!({}));
-        seed(&store, "billing", "2026-05-20T10:00:00Z", "tool.use", json!({}));
+        // W5: seed pipeline.* events so spec discovery picks them up; tool.use
+        // is non-pipeline and silently dropped by `append`.
+        seed(
+            &store,
+            "auth",
+            "2026-05-20T10:00:00Z",
+            "pipeline.scope",
+            json!({ "scope": "full" }),
+        );
+        seed(
+            &store,
+            "billing",
+            "2026-05-20T10:00:00Z",
+            "pipeline.scope",
+            json!({ "scope": "full" }),
+        );
 
         rebuild_one(project, "auth").unwrap();
 
@@ -301,7 +327,14 @@ mod tests {
         let dir = tempdir().unwrap();
         let project = dir.path().to_str().unwrap();
         let store = SqliteEventStore::for_project(project).unwrap();
-        seed(&store, "auth", "2026-05-20T10:00:00Z", "tool.use", json!({}));
+        // W5: seed a pipeline.* event so the spec is discoverable.
+        seed(
+            &store,
+            "auth",
+            "2026-05-20T10:00:00Z",
+            "pipeline.scope",
+            json!({ "scope": "full" }),
+        );
 
         let first = rematerialize_all(project).unwrap();
         let second = rematerialize_all(project).unwrap();

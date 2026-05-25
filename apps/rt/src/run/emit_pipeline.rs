@@ -17,8 +17,6 @@
 
 use crate::run::env::{project_dir, session_id};
 use crate::util::now_iso8601;
-use mustard_core::store::event_store::EventSink;
-use mustard_core::store::sqlite_store::SqliteEventStore;
 use mustard_core::model::event::{
     Actor, ActorKind, HarnessEvent, SCHEMA_VERSION,
     EVENT_PIPELINE_COMPLETE, EVENT_PIPELINE_DISPATCH_FAILURE, EVENT_PIPELINE_PAUSE,
@@ -139,14 +137,8 @@ pub fn run(opts: EmitPipelineOpts) {
         },
     };
 
-    // --- Open store (fail-open on error) ---
-    let store = match SqliteEventStore::for_project(project_dir()) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("emit-pipeline: could not open event store: {e} (skipping)");
-            return;
-        }
-    };
+    // W5: the event router (`event_route::emit`) opens the SQLite store on
+    // demand for `pipeline.*` events; there is no need to open it eagerly here.
 
     // Capture the values we need after `event` consumes them.
     let kind_str = opts.kind.clone();
@@ -188,13 +180,15 @@ pub fn run(opts: EmitPipelineOpts) {
     };
 
     // Fail-open: a write failure is logged but never propagates to an exit 1.
-    let _ = store.append(&event);
+    // W5: route through `event_route::emit` so `pipeline.*` → SQLite while
+    // `hygiene.*` / other non-pipeline kinds land in the per-spec NDJSON sink.
+    let _ = crate::run::event_route::emit(&project_dir(), &event);
 
     // Emit the canonical new-kind alias for a legacy transition. Same ts +
     // session as the legacy event. Emitting a *new* kind directly produces no
     // alias here (`alias_event` returns `None` for new kinds) — idempotency.
     if let Some(alias) = aliased {
-        let _ = store.append(&alias);
+        let _ = crate::run::event_route::emit(&project_dir(), &alias);
     }
 
     // Wave-2 (2026-05-21-flatten-spec-layout-and-multi-collab): keep the
@@ -411,6 +405,7 @@ mod tests {
     use mustard_core::store::sqlite_store::SqliteEventStore;
     use mustard_core::model::event::SCHEMA_VERSION;
     use serde_json::json;
+    use std::path::Path;
     use tempfile::tempdir;
 
     /// Build a store backed by a fresh temp DB.
@@ -418,15 +413,6 @@ mod tests {
         let dir = tempdir().unwrap();
         let store = SqliteEventStore::new(dir.path().join("mustard.db")).unwrap();
         (dir, store)
-    }
-
-    /// Build opts with a known-good kind.
-    fn opts(kind: &str, spec: &str, payload: Option<&str>) -> EmitPipelineOpts {
-        EmitPipelineOpts {
-            kind: kind.to_string(),
-            spec: spec.to_string(),
-            payload: payload.map(str::to_string),
-        }
     }
 
     // -----------------------------------------------------------------------
@@ -520,9 +506,29 @@ mod tests {
     // Store integration — use a real tempfile DB.
     // -----------------------------------------------------------------------
 
-    /// Helper: append one pipeline event directly through `store.append`.
-    /// This exercises the same code path as `run()` but without going through
-    /// the process exit on validation failure.
+    /// Helper: route one event through the W5 event-router (the same path
+    /// `run()` takes). `pipeline.*` lands in SQLite; `hygiene.*` / others land
+    /// in per-spec NDJSON.
+    fn emit_routed(project: &Path, kind: &str, spec: &str, payload: Value) {
+        let event = HarnessEvent {
+            v: SCHEMA_VERSION,
+            ts: "2026-05-20T00:00:00.000Z".to_string(),
+            session_id: "test-session".to_string(),
+            wave: 0,
+            actor: Actor {
+                kind: ActorKind::Orchestrator,
+                id: Some("emit-pipeline".to_string()),
+                actor_type: None,
+            },
+            event: kind.to_string(),
+            payload,
+            spec: Some(spec.to_string()),
+        };
+        crate::run::event_route::emit(project.to_str().unwrap(), &event);
+    }
+
+    /// Legacy helper retained for the round-trip tests below which only emit
+    /// `pipeline.*` events and want to read them back through `store.replay`.
     fn emit_direct(store: &SqliteEventStore, kind: &str, spec: &str, payload: Value) {
         let event = HarnessEvent {
             v: SCHEMA_VERSION,
@@ -543,24 +549,39 @@ mod tests {
 
     #[test]
     fn each_kind_appended_once_with_correct_event_name() {
-        let (_dir, store) = temp_store();
+        let dir = tempdir().unwrap();
+        let project = dir.path();
         let spec = "2026-05-20-pipeline-state-from-sqlite";
 
         for &kind in KNOWN_KINDS {
-            emit_direct(&store, kind, spec, json!({"test": true}));
+            emit_routed(project, kind, spec, json!({"test": true}));
         }
 
-        let events = store.replay().unwrap();
-        assert_eq!(
-            events.len(),
-            KNOWN_KINDS.len(),
-            "expected one event per kind"
+        // Pipeline events land in SQLite via append_pipeline_event.
+        let store = SqliteEventStore::for_project(project).unwrap();
+        let mut events = store.query(Some(spec)).unwrap();
+        // Non-pipeline events (`hygiene.*`, `pipeline.economy.operation.invoked`)
+        // land in the per-spec NDJSON sink.
+        let events_dir = project.join(".claude").join("spec").join(spec).join("events");
+        let mut ndjson = mustard_core::projection::read_harness_events_from_ndjson_dir(
+            &events_dir,
         );
+        // Filter the auto-emitted economy.event.written sidecars (T5.8) — they
+        // are not first-class kinds, just per-write breadcrumbs.
+        ndjson.retain(|e| e.event != "pipeline.economy.event.written");
+        events.append(&mut ndjson);
 
-        for (i, &kind) in KNOWN_KINDS.iter().enumerate() {
-            assert_eq!(events[i].event, kind, "event name mismatch at index {i}");
-            assert_eq!(events[i].spec.as_deref(), Some(spec));
-            assert_eq!(events[i].payload["test"], json!(true));
+        let counts: std::collections::BTreeMap<&str, usize> = KNOWN_KINDS
+            .iter()
+            .map(|k| (*k, events.iter().filter(|e| e.event == *k).count()))
+            .collect();
+
+        for &kind in KNOWN_KINDS {
+            assert_eq!(
+                counts.get(kind).copied(),
+                Some(1),
+                "expected exactly one event for kind {kind}; counts: {counts:?}"
+            );
         }
     }
 

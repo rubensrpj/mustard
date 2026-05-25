@@ -46,7 +46,7 @@ use rusqlite::{Connection, OptionalExtension};
 /// Bump this when adding a new `migrate_vN_to_vN_plus_1` step and append the
 /// call inside [`apply`]. A database with `_mustard_meta.schema_version` equal
 /// to [`LATEST_VERSION`] is a no-op on open.
-pub const LATEST_VERSION: u32 = 8;
+pub const LATEST_VERSION: u32 = 10;
 
 /// Sentinel spec name for events that could not be attributed by the v2
 /// backfill — typically pre-pipeline events or rows missing `session_id`.
@@ -77,6 +77,8 @@ pub fn apply(conn: &Connection) -> Result<u32> {
             5 => migrate_v5_to_v6(conn)?,
             6 => migrate_v6_to_v7(conn)?,
             7 => migrate_v7_to_v8(conn)?,
+            8 => migrate_v8_to_v9(conn)?,
+            9 => migrate_v9_to_v10(conn)?,
             // Future migrations append here. The `LATEST_VERSION` constant is
             // the only invariant — every step must move the version forward.
             other => {
@@ -143,6 +145,14 @@ fn write_schema_version(conn: &Connection, version: u32) -> Result<()> {
 /// the unchanged `INSERT INTO events`; new code paths just need to populate
 /// `spec` going forward (covered by the attribution hardening in `apps/rt`).
 fn migrate_v1_to_v2(conn: &Connection) -> Result<()> {
+    // W5 fresh DBs no longer create `events` — there is nothing to backfill.
+    // Stamp v2 and move on so the ladder keeps advancing.
+    if !table_exists(conn, "events") {
+        let tx = conn.unchecked_transaction()?;
+        write_schema_version(&tx, 2)?;
+        tx.commit()?;
+        return Ok(());
+    }
     let tx = conn.unchecked_transaction()?;
 
     // Step 1: backfill orphans whose session has a pipeline.scope ancestor.
@@ -324,13 +334,16 @@ fn migrate_v4_to_v5(conn: &Connection) -> Result<()> {
 
     // Performance indices on events. Composite (spec, event) accelerates
     // `dashboard_spec_trace`'s `WHERE spec = ?1 AND event IN (...)` shape;
-    // (actor_id, event) covers the actor-scoped drill-down join.
-    tx.execute_batch(
-        "CREATE INDEX IF NOT EXISTS idx_events_spec_event \
-             ON events(spec, event); \
-         CREATE INDEX IF NOT EXISTS idx_events_actor_event \
-             ON events(actor_id, event);",
-    )?;
+    // (actor_id, event) covers the actor-scoped drill-down join. Gated on the
+    // `events` table existing — fresh W5 DBs never create it.
+    if table_exists(conn, "events") {
+        tx.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_events_spec_event \
+                 ON events(spec, event); \
+             CREATE INDEX IF NOT EXISTS idx_events_actor_event \
+                 ON events(actor_id, event);",
+        )?;
+    }
 
     // api_cost_frames: parallel projection to spans for external API-cost
     // adapters that route to a dedicated table. Column shape mirrors the
@@ -384,11 +397,17 @@ fn migrate_v4_to_v5(conn: &Connection) -> Result<()> {
 /// Idempotent on re-run via `IF NOT EXISTS` on every statement.
 fn migrate_v5_to_v6(conn: &Connection) -> Result<()> {
     let tx = conn.unchecked_transaction()?;
-    tx.execute_batch(
-        "CREATE INDEX IF NOT EXISTS idx_events_session_id ON events(session_id); \
-         CREATE INDEX IF NOT EXISTS idx_knowledge_patterns_confidence_last_seen \
-             ON knowledge_patterns(confidence DESC, last_seen DESC);",
-    )?;
+    if table_exists(conn, "events") {
+        tx.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_events_session_id ON events(session_id);",
+        )?;
+    }
+    if table_exists(conn, "knowledge_patterns") {
+        tx.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_knowledge_patterns_confidence_last_seen \
+                 ON knowledge_patterns(confidence DESC, last_seen DESC);",
+        )?;
+    }
     write_schema_version(&tx, 6)?;
     tx.commit()?;
     Ok(())
@@ -407,311 +426,285 @@ fn migrate_v5_to_v6(conn: &Connection) -> Result<()> {
 /// Idempotent on re-run via `IF NOT EXISTS`.
 fn migrate_v6_to_v7(conn: &Connection) -> Result<()> {
     let tx = conn.unchecked_transaction()?;
-    tx.execute_batch(
-        "CREATE TRIGGER IF NOT EXISTS events_ad AFTER DELETE ON events BEGIN \
-             INSERT INTO events_fts(events_fts, rowid, event, spec, payload_text) \
-             VALUES ('delete', old.id, old.event, old.spec, old.payload); \
-         END;",
-    )?;
+    // W5 fresh DBs no longer create `events` / `events_fts` — the trigger has
+    // nothing to attach to. Pre-W5 DBs still upgrade as before.
+    if table_exists(conn, "events") && table_exists(conn, "events_fts") {
+        tx.execute_batch(
+            "CREATE TRIGGER IF NOT EXISTS events_ad AFTER DELETE ON events BEGIN \
+                 INSERT INTO events_fts(events_fts, rowid, event, spec, payload_text) \
+                 VALUES ('delete', old.id, old.event, old.spec, old.payload); \
+             END;",
+        )?;
+    }
     write_schema_version(&tx, 7)?;
     tx.commit()?;
     Ok(())
 }
 
-/// v7 → v8 — carry the legacy telemetry into `telemetry.db`, then drop the
-/// retired tables `claude_code_otel` and `spans`.
+/// v7 → v8 — schema-version no-op (dev-phase clean drop, see below).
 ///
-/// Telemetry moved to a dedicated `telemetry.db` (Wave 3 of
-/// `2026-05-22-telemetry-separation`): `usage_totals` replaces
-/// `claude_code_otel`, `run_usage` replaces `spans`, and every reader now goes
-/// through `crate::telemetry::reader`. The two legacy tables in `mustard.db`
-/// stopped receiving writes in Wave 2 and stopped being read in Wave 3, so they
-/// are now dead weight — historically ~42 MB on a long-lived install.
+/// History: this step used to carry the legacy `claude_code_otel` / `spans`
+/// tables into the sibling `telemetry.db` before dropping them. The carry
+/// implementation needed `ATTACH DATABASE`, which caused silent lock
+/// contention on the hot connection — see `feedback_no_attach_sqlite` and the
+/// WARN-3 incident notes (~42 MB of telemetry destroyed by a copy that
+/// silently failed yet still let the drop run). It also blocked v9 → v10 from
+/// completing in tests (the attached state survived this step and the v10
+/// `DROP TABLE` contended with itself).
 ///
-/// # Copy on the connection that already owns `mustard.db`
-///
-/// This migration runs on `conn` **inside** `SqliteEventStore::new`, while
-/// `conn` already holds `mustard.db` open. The original implementation copied by
-/// opening a *second* connection (a `TelemetryStore`) that `ATTACH`ed
-/// `mustard.db` by path — that second reader contended with `conn`, and the
-/// source-table probe in `telemetry::migrate` swallowed the resulting busy/lock
-/// error as "table absent", so the copy silently skipped both tables yet the
-/// drop still ran → ~42 MB of telemetry destroyed without being copied. The fix
-/// inverts the attach direction: `conn` (which owns `mustard.db`) `ATTACH`es the
-/// sibling `telemetry.db` (which nothing else holds), so the source reads come
-/// off the connection that is guaranteed to see the data.
-///
-/// 1. Resolve the sibling `telemetry.db` path (env `MUSTARD_TELEMETRY_DB_PATH`
-///    else `{mustard_dir}/telemetry.db`) and open a `TelemetryStore` once to
-///    create/migrate its schema, then drop that handle.
-/// 2. On `conn`, `ATTACH DATABASE '<telemetry.db>' AS tel`.
-/// 3. Copy `main.claude_code_otel` → `tel.usage_totals` and `main.spans` →
-///    `tel.run_usage` (with the attribution backfill). `main` is owned by `conn`
-///    so its rows are read correctly.
-/// 4. `DETACH tel`.
-///
-/// # Never drop unverified (WARN-3 hardening)
-///
-/// Before dropping each legacy table, the guard uses **error-propagating**
-/// queries (never `.ok()`-swallowed) to learn whether the source table exists
-/// and how many rows it has, and to count what the destination now holds. A
-/// source table is dropped **only** when it is genuinely absent OR its rows are
-/// verifiably present in the destination. If a source table exists with N>0 rows
-/// but the destination is still empty (a silently-failed copy), the migration
-/// returns `Ok(())` **without** dropping and **without** advancing to v8:
-/// fail-open leaves the data and the next open retries. Any error during the
-/// copy/attach short-circuits to the same leave-the-data outcome.
-///
-/// `VACUUM` cannot run inside a transaction, so it runs **after** the commit,
-/// best-effort: a failure leaves unreclaimed pages (a space-only concern).
-///
-/// Idempotent: the copy is `INSERT OR IGNORE` per table, `DROP TABLE IF EXISTS`
-/// is a no-op once the tables are gone, and the version gate prevents a re-run.
+/// Per the W5 unification mega-spec (`feedback_no_migration_dev_phase`),
+/// Mustard is in dev — there are no production installs to protect. So v7 →
+/// v8 is now a pure version bump. The actual cleanup (`DROP TABLE` for
+/// `claude_code_otel` / `spans`) happens in [`migrate_v9_to_v10`] so old
+/// databases that already moved past v7 in a prior install still get the
+/// legacy tables removed on their next open.
 fn migrate_v7_to_v8(conn: &Connection) -> Result<()> {
-    // Resolve the sibling telemetry.db off `conn`'s own `main` path. An
-    // in-memory / temp database reports an empty file — there is no sibling to
-    // copy into and (being in-memory) no persisted history to lose, so just drop
-    // and advance. This matches the prior fresh-DB behaviour.
-    let Some(telemetry_path) = sibling_telemetry_path(conn)? else {
-        return drop_legacy_and_stamp(conn);
-    };
-
-    // Ensure the telemetry schema exists in that file, then release the handle
-    // so nothing else holds telemetry.db while `conn` attaches it. Any failure
-    // is fail-open: leave the legacy tables and the version at v7.
-    if crate::telemetry::store::TelemetryStore::new(&telemetry_path).is_err() {
-        return Ok(());
-    }
-    let telemetry_str = telemetry_path.to_string_lossy().into_owned();
-
-    // Attach telemetry.db on the connection that already owns mustard.db, run
-    // the copy + verified drop, and ALWAYS detach. The copy reads source rows
-    // off `main` (owned by `conn`) so a competing reader can never mask them.
-    if conn
-        .execute("ATTACH DATABASE ?1 AS tel", rusqlite::params![telemetry_str])
-        .is_err()
-    {
-        return Ok(());
-    }
-    let result = copy_then_verified_drop(conn);
-    let _ = conn.execute_batch("DETACH DATABASE tel");
-
-    // A copy/guard failure is fail-open: do NOT advance the version, leave the
-    // legacy tables, retry next open. Only VACUUM after a successful, committed
-    // drop (signalled by `Ok(true)`).
-    match result {
-        Ok(true) => {
-            let _ = conn.execute_batch("VACUUM");
-            Ok(())
-        }
-        Ok(false) | Err(_) => Ok(()),
-    }
-}
-
-/// Resolve the sibling `telemetry.db` for the `mustard.db` open on `conn`.
-///
-/// Mirrors `telemetry::store`/`telemetry::migrate`: `MUSTARD_TELEMETRY_DB_PATH`
-/// wins when set and non-blank, otherwise `{mustard_dir}/telemetry.db`. Returns
-/// `Ok(None)` when `conn`'s `main` database is in-memory / temp (empty file
-/// path) — there is no sibling and no persisted history to carry.
-fn sibling_telemetry_path(conn: &Connection) -> Result<Option<std::path::PathBuf>> {
-    let mustard_path: String = conn
-        .query_row(
-            "SELECT file FROM pragma_database_list WHERE name = 'main'",
-            [],
-            |r| r.get::<_, Option<String>>(0),
-        )?
-        .unwrap_or_default();
-    if mustard_path.trim().is_empty() {
-        return Ok(None);
-    }
-    let path = match std::env::var("MUSTARD_TELEMETRY_DB_PATH") {
-        Ok(v) if !v.trim().is_empty() => std::path::PathBuf::from(v),
-        _ => std::path::Path::new(&mustard_path).parent().map_or_else(
-            || std::path::PathBuf::from("telemetry.db"),
-            |dir| dir.join("telemetry.db"),
-        ),
-    };
-    Ok(Some(path))
-}
-
-/// Copy the two legacy tables from `main` (owned by `conn`) into the attached
-/// `tel` schema, then drop **only** the tables whose data is verifiably present
-/// in the destination (or genuinely absent at the source).
-///
-/// Returns `Ok(true)` when the drop ran and the version was stamped to 8,
-/// `Ok(false)` when a source table held rows the destination never received (a
-/// failed copy) — in that case nothing is dropped and the version stays at v7 so
-/// the next open retries. Propagates any `SQLite` error (the caller treats it as
-/// fail-open: leave the data).
-fn copy_then_verified_drop(conn: &Connection) -> Result<bool> {
-    // Source row counts BEFORE the copy. `count_main_table` propagates errors
-    // (never swallows a lock as "absent") and returns `None` only when the table
-    // is genuinely missing from `main`.
-    let otel_before = count_main_table(conn, "claude_code_otel")?;
-    let spans_before = count_main_table(conn, "spans")?;
-
-    // Destination counts BEFORE the copy, so we can tell "copy added the rows"
-    // from "rows were already there".
-    let totals_dest_before = count_tel_table(conn, "usage_totals")?;
-    let runs_dest_before = count_tel_table(conn, "run_usage")?;
-
-    // Copy each side only when its source exists. `main.` sources are read off
-    // the owning connection; `tel.` is the freshly-attached sibling.
-    if otel_before.is_some() {
-        conn.execute_batch(
-            "INSERT OR IGNORE INTO tel.usage_totals (metric, model, session_id, sum, updated_at) \
-             SELECT metric, model, session_id, SUM(sum), MAX(ts_bucket) \
-             FROM main.claude_code_otel \
-             GROUP BY metric, model, session_id;",
-        )?;
-    }
-    if spans_before.is_some() {
-        conn.execute_batch(&copy_spans_into_tel_sql())?;
-    }
-
-    // Destination counts AFTER the copy.
-    let totals_dest_after = count_tel_table(conn, "usage_totals")?;
-    let runs_dest_after = count_tel_table(conn, "run_usage")?;
-
-    // Per-table drop decision. A table is safe to drop when it is genuinely
-    // absent at the source, OR it had no rows, OR the destination now carries
-    // rows (it received the data — INSERT OR IGNORE may legitimately add 0 if
-    // the dest already held them, which is why we accept "dest non-empty" rather
-    // than "dest grew by exactly N").
-    let otel_safe = drop_is_safe(otel_before, totals_dest_before, totals_dest_after);
-    let spans_safe = drop_is_safe(spans_before, runs_dest_before, runs_dest_after);
-
-    // If either side has un-copied rows, abort the drop entirely: leave BOTH
-    // legacy tables and the version at v7 so the next open retries the whole
-    // step. Dropping only the verified half would advance nothing anyway (we do
-    // not stamp v8 unless both are safe), so keep it simple and atomic.
-    if !otel_safe || !spans_safe {
-        return Ok(false);
-    }
-
     let tx = conn.unchecked_transaction()?;
-    tx.execute_batch(
-        "DROP TABLE IF EXISTS claude_code_otel; \
-         DROP TABLE IF EXISTS spans;",
-    )?;
     write_schema_version(&tx, 8)?;
     tx.commit()?;
-    Ok(true)
-}
-
-/// Decide whether a legacy source table is safe to drop.
-///
-/// `source` is the source row count (`None` = table absent), `dest_before` /
-/// `dest_after` bracket the copy. Safe when the source is absent, the source was
-/// empty, or the destination now holds rows. Unsafe only when the source had
-/// rows (`Some(n > 0)`) yet the destination is still empty after the copy — a
-/// silent skip we must never let trigger a drop.
-fn drop_is_safe(source: Option<i64>, _dest_before: i64, dest_after: i64) -> bool {
-    match source {
-        None => true,            // genuinely absent
-        Some(n) if n <= 0 => true, // nothing to lose
-        Some(_) => dest_after > 0, // copied iff dest received rows
-    }
-}
-
-/// Row count of `main.<table>`, or `None` when the table does not exist.
-///
-/// Unlike a `.ok()`-swallowing probe, this **propagates** any error other than
-/// "no such table": a lock/busy failure surfaces as `Err` (the caller leaves the
-/// data) instead of masquerading as "absent" (which would green-light a drop).
-fn count_main_table(conn: &Connection, table: &str) -> Result<Option<i64>> {
-    if !table_exists(conn, table) {
-        return Ok(None);
-    }
-    // `table` is a crate-internal literal, not user input.
-    let n: i64 = conn.query_row(&format!("SELECT COUNT(*) FROM main.{table}"), [], |r| r.get(0))?;
-    Ok(Some(n))
-}
-
-/// Row count of an attached `tel.<table>`. Errors propagate.
-fn count_tel_table(conn: &Connection, table: &str) -> Result<i64> {
-    let n: i64 = conn.query_row(&format!("SELECT COUNT(*) FROM tel.{table}"), [], |r| r.get(0))?;
-    Ok(n)
-}
-
-/// Drop the legacy tables and stamp v8 with no copy — used only when there is no
-/// sibling telemetry.db to copy into (in-memory / temp `main`), where there is
-/// no persisted history to lose.
-fn drop_legacy_and_stamp(conn: &Connection) -> Result<()> {
-    let tx = conn.unchecked_transaction()?;
-    tx.execute_batch(
-        "DROP TABLE IF EXISTS claude_code_otel; \
-         DROP TABLE IF EXISTS spans;",
-    )?;
-    write_schema_version(&tx, 8)?;
-    tx.commit()?;
-    let _ = conn.execute_batch("VACUUM");
     Ok(())
 }
 
-/// The `INSERT OR IGNORE INTO tel.run_usage SELECT ... FROM main.spans`
-/// statement, with the same spec / `wave_id` / `agent_id` attribution backfill as
-/// [`crate::telemetry::migrate`], but reading the source off `main` (the
-/// `mustard.db` owned by `conn`) and writing into the attached `tel.run_usage`.
+/// v8 → v9 — W5 unification: extend `knowledge_patterns`, `memory_decisions`,
+/// `memory_lessons` with the spec-scope columns the spec requires, and ensure
+/// the four new tables shipped in `sqlite_schema.sql` (`pipeline_events`,
+/// `sessions`, `agent_memory`, `memory_feedback`) plus their indices are
+/// present even on a database that was opened at v8 once and then took the
+/// fast path on subsequent opens.
 ///
-/// Source = `main` is the load-bearing change vs. the collector-startup path:
-/// `conn` already holds `mustard.db`, so its spans / events rows read correctly
-/// even while the migration's own write transaction is in flight. Attribution
-/// semantics are identical to the collector path:
+/// The fresh-DB path already gets every shape from `sqlite_schema.sql` (DDL on
+/// first open). This migration covers the upgrade path: a pre-v9 database
+/// stamped at v8 carrying populated `knowledge_patterns` / `memory_decisions` /
+/// `memory_lessons` rows that lack the new columns.
 ///
-/// - `agent_id` = `payload.agent_id` ?? payload.subagentType ?? `events.actor_id`
-/// - `spec`     = `payload.spec_id`  ?? events.spec ?? span.spec
-/// - `wave_id`  = `payload.wave_id`  ?? CAST(events.wave AS TEXT) ?? `span.wave_id`
-fn copy_spans_into_tel_sql() -> String {
-    let agent_primary = "(SELECT COALESCE(JSON_EXTRACT(ev.payload,'$.agent_id'), \
-                                          JSON_EXTRACT(ev.payload,'$.subagentType'), ev.actor_id) \
-                          FROM main.events ev \
-                          WHERE ev.event = 'agent.start' AND s.tool_use_id IS NOT NULL \
-                            AND JSON_EXTRACT(ev.payload,'$.tool_use_id') = s.tool_use_id LIMIT 1)";
-    let agent_fallback = "(SELECT COALESCE(JSON_EXTRACT(ev.payload,'$.agent_id'), \
-                                           JSON_EXTRACT(ev.payload,'$.subagentType'), ev.actor_id) \
-                           FROM main.events ev \
-                           WHERE ev.event = 'agent.start' AND ev.session_id IS NOT NULL \
-                             AND s.session_id IS NOT NULL AND ev.session_id = s.session_id \
-                             AND ev.ts <= s.ts_iso ORDER BY ev.ts DESC LIMIT 1)";
-    let spec_primary = "(SELECT COALESCE(JSON_EXTRACT(ev.payload,'$.spec_id'), ev.spec) \
-                         FROM main.events ev \
-                         WHERE ev.event = 'agent.start' AND s.tool_use_id IS NOT NULL \
-                           AND JSON_EXTRACT(ev.payload,'$.tool_use_id') = s.tool_use_id LIMIT 1)";
-    let spec_fallback = "(SELECT COALESCE(JSON_EXTRACT(ev.payload,'$.spec_id'), ev.spec) \
-                          FROM main.events ev \
-                          WHERE ev.event = 'agent.start' AND ev.session_id IS NOT NULL \
-                            AND s.session_id IS NOT NULL AND ev.session_id = s.session_id \
-                            AND ev.ts <= s.ts_iso ORDER BY ev.ts DESC LIMIT 1)";
-    let wave_primary = "(SELECT COALESCE(JSON_EXTRACT(ev.payload,'$.wave_id'), CAST(ev.wave AS TEXT)) \
-                         FROM main.events ev \
-                         WHERE ev.event = 'agent.start' AND s.tool_use_id IS NOT NULL \
-                           AND JSON_EXTRACT(ev.payload,'$.tool_use_id') = s.tool_use_id LIMIT 1)";
-    let wave_fallback = "(SELECT COALESCE(JSON_EXTRACT(ev.payload,'$.wave_id'), CAST(ev.wave AS TEXT)) \
-                          FROM main.events ev \
-                          WHERE ev.event = 'agent.start' AND ev.session_id IS NOT NULL \
-                            AND s.session_id IS NOT NULL AND ev.session_id = s.session_id \
-                            AND ev.ts <= s.ts_iso ORDER BY ev.ts DESC LIMIT 1)";
+/// Per `feedback_no_migration_dev_phase` we are in dev — no production data to
+/// protect — but `ALTER ADD COLUMN` is surgical, idempotent via the
+/// `add_column_if_missing` probe, and avoids the silent FTS5 rebuild that a
+/// drop+recreate of the mirrored tables would force. The `agent_memory` /
+/// `memory_feedback` tables are CREATEd direct (no ALTER) per the spec.
+///
+/// Re-runnable on a partial v9: every step probes for column / table presence
+/// first.
+fn migrate_v8_to_v9(conn: &Connection) -> Result<()> {
+    let tx = conn.unchecked_transaction()?;
 
-    format!(
-        "INSERT OR IGNORE INTO tel.run_usage \
-            (trace_id, span_id, parent_span_id, name, started_at, ended_at, \
-             duration_ms, attributes, spec, phase, model, input_tokens, \
-             output_tokens, cache_read_input_tokens, cache_creation_input_tokens, \
-             cost_usd_micros, is_error, project_path, ts_iso, session_id, \
-             wave_id, tool_use_id, agent_id) \
-         SELECT s.trace_id, s.span_id, s.parent_span_id, s.name, s.started_at, s.ended_at, \
-                s.duration_ms, s.attributes, \
-                COALESCE({spec_primary}, {spec_fallback}, s.spec) AS attr_spec, \
-                s.phase, s.model, s.input_tokens, s.output_tokens, \
-                s.cache_read_input_tokens, s.cache_creation_input_tokens, \
-                s.cost_usd_micros, s.is_error, s.project_path, s.ts_iso, s.session_id, \
-                COALESCE({wave_primary}, {wave_fallback}, s.wave_id) AS attr_wave, \
-                s.tool_use_id, \
-                COALESCE({agent_primary}, {agent_fallback}) AS attr_agent \
-         FROM main.spans s;"
-    )
+    // knowledge_patterns + memory_{decisions,lessons} — add the scope columns.
+    add_column_if_missing(&tx, "knowledge_patterns", "spec", "TEXT")?;
+    add_column_if_missing(&tx, "knowledge_patterns", "status", "TEXT DEFAULT 'active'")?;
+    add_column_if_missing(&tx, "knowledge_patterns", "last_used", "TEXT")?;
+
+    add_column_if_missing(&tx, "memory_decisions", "spec", "TEXT")?;
+    add_column_if_missing(&tx, "memory_decisions", "wave", "INTEGER")?;
+    add_column_if_missing(&tx, "memory_decisions", "confidence", "REAL DEFAULT 0.5")?;
+    add_column_if_missing(&tx, "memory_decisions", "status", "TEXT DEFAULT 'active'")?;
+    add_column_if_missing(&tx, "memory_decisions", "superseded_by", "INTEGER")?;
+
+    add_column_if_missing(&tx, "memory_lessons", "spec", "TEXT")?;
+    add_column_if_missing(&tx, "memory_lessons", "wave", "INTEGER")?;
+    add_column_if_missing(&tx, "memory_lessons", "confidence", "REAL DEFAULT 0.5")?;
+    add_column_if_missing(&tx, "memory_lessons", "status", "TEXT DEFAULT 'active'")?;
+    add_column_if_missing(&tx, "memory_lessons", "superseded_by", "INTEGER")?;
+
+    // Re-apply the W5 DDL block so a v8→v9 upgrade picks up the four new
+    // tables + their indices even if the fast-path skipped the DDL pass.
+    // Every CREATE is `IF NOT EXISTS`, so this is a safe no-op on a fresh DB.
+    tx.execute_batch(
+        "CREATE TABLE IF NOT EXISTS pipeline_events (\
+             id INTEGER PRIMARY KEY AUTOINCREMENT,\
+             ts TEXT NOT NULL,\
+             session_id TEXT,\
+             spec TEXT,\
+             wave INTEGER,\
+             kind TEXT NOT NULL,\
+             parent_id INTEGER REFERENCES pipeline_events(id),\
+             payload TEXT\
+         ); \
+         CREATE INDEX IF NOT EXISTS idx_pipeline_events_spec ON pipeline_events(spec); \
+         CREATE INDEX IF NOT EXISTS idx_pipeline_events_kind ON pipeline_events(kind); \
+         CREATE INDEX IF NOT EXISTS idx_pipeline_events_spec_kind \
+             ON pipeline_events(spec, kind); \
+         CREATE INDEX IF NOT EXISTS idx_pipeline_events_session_kind \
+             ON pipeline_events(session_id, kind); \
+         CREATE INDEX IF NOT EXISTS idx_pipeline_events_parent \
+             ON pipeline_events(parent_id); \
+         CREATE TABLE IF NOT EXISTS sessions (\
+             id TEXT PRIMARY KEY,\
+             slug TEXT NOT NULL UNIQUE,\
+             started_at TEXT NOT NULL,\
+             last_activity_at TEXT,\
+             last_spec TEXT,\
+             cwd TEXT,\
+             status TEXT NOT NULL DEFAULT 'open'\
+         ); \
+         CREATE INDEX IF NOT EXISTS idx_sessions_last_activity \
+             ON sessions(last_activity_at DESC); \
+         CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status); \
+         CREATE TABLE IF NOT EXISTS agent_memory (\
+             id INTEGER PRIMARY KEY AUTOINCREMENT,\
+             session_id TEXT,\
+             spec TEXT,\
+             wave INTEGER,\
+             role TEXT,\
+             summary TEXT NOT NULL,\
+             details TEXT,\
+             confidence REAL NOT NULL DEFAULT 0.5,\
+             status TEXT NOT NULL DEFAULT 'active',\
+             at TEXT NOT NULL,\
+             last_used TEXT\
+         ); \
+         CREATE INDEX IF NOT EXISTS idx_agent_memory_spec ON agent_memory(spec); \
+         CREATE INDEX IF NOT EXISTS idx_agent_memory_status_confidence \
+             ON agent_memory(status, confidence DESC); \
+         CREATE INDEX IF NOT EXISTS idx_agent_memory_session ON agent_memory(session_id); \
+         CREATE TABLE IF NOT EXISTS memory_feedback (\
+             id INTEGER PRIMARY KEY AUTOINCREMENT,\
+             memory_id INTEGER NOT NULL REFERENCES agent_memory(id),\
+             kind TEXT NOT NULL,\
+             delta REAL,\
+             by_role TEXT,\
+             at TEXT NOT NULL,\
+             note TEXT\
+         ); \
+         CREATE INDEX IF NOT EXISTS idx_memory_feedback_memory_id \
+             ON memory_feedback(memory_id); \
+         CREATE INDEX IF NOT EXISTS idx_memory_feedback_kind \
+             ON memory_feedback(kind);",
+    )?;
+
+    write_schema_version(&tx, 9)?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// v9 → v10 — W5 schema cleanup: drop the legacy tables the W5 spec retires.
+///
+/// `events` + `events_fts` move to per-spec NDJSON (see
+/// `apps/rt/src/run/event_writer_ndjson.rs`). `knowledge` + `knowledge_fts`
+/// consolidate into `knowledge_patterns`. `metrics_projection` duplicates
+/// `telemetry.db.run_usage`. `savings_records`, `context_cost_frames`,
+/// `api_cost_frames` are derivable from NDJSON + telemetry on demand.
+///
+/// `claude_code_otel` + `spans` also get dropped here. v7 → v8 used to carry
+/// them into `telemetry.db` via `ATTACH DATABASE`, but the attach caused
+/// silent lock contention (see `feedback_no_attach_sqlite`) and is now
+/// forbidden in this crate. v7 → v8 is a no-op; the actual drop happens
+/// here so that any database (pre-W5 or W5+) ends up clean at v10. The data
+/// loss is acceptable under `feedback_no_migration_dev_phase` (no production
+/// users to protect).
+///
+/// Per `feedback_no_migration_dev_phase`: drop cleanly, do not carry data.
+/// Emits the `pipeline.economy.schema.shrunk` telemetry by recording byte
+/// sizes before and after — best-effort via `PRAGMA page_count * page_size`.
+///
+/// `VACUUM` cannot run inside a transaction, so it runs after the commit
+/// (best-effort). `PRAGMA optimize` follows to refresh statistics.
+fn migrate_v9_to_v10(conn: &Connection) -> Result<()> {
+    // Detect legacy presence BEFORE the drop so the telemetry only fires when
+    // there is actually shrinkage to report. On a fresh W5 DB (no legacy
+    // tables to begin with), this stays a silent no-op so callers that assert
+    // `replay().is_empty()` after open keep working.
+    // The intermediate ladder tables (`savings_records`, `context_cost_frames`,
+    // `api_cost_frames`) get created on every fresh DB by v2→v5, so we ignore
+    // them when deciding whether the schema actually *shrunk*. The truly
+    // legacy tables (`events`, `knowledge`, `metrics_projection`,
+    // `claude_code_otel`, `spans`) were never recreated by the new SQL schema;
+    // their presence proves we are upgrading a real pre-W5 DB.
+    let had_legacy = [
+        "events",
+        "knowledge",
+        "metrics_projection",
+        "claude_code_otel",
+        "spans",
+    ]
+    .iter()
+    .any(|t| table_exists(conn, t));
+
+    let before_bytes = db_size_bytes(conn).unwrap_or(0);
+
+    let tx = conn.unchecked_transaction()?;
+    // Order matters only for FTS tables that reference base tables — drop
+    // triggers first to silence any AFTER-DELETE noise during the drop.
+    // `savings_records` + `context_cost_frames` are KEPT — they are written
+    // on the hot path by every Mustard intervention (bash_guard rewrites,
+    // model_routing downgrades, recipe injections, …) and live in
+    // `sqlite_schema.sql`. Only `api_cost_frames` is dropped (it consolidated
+    // into `telemetry.db.run_usage` in Wave 2 of telemetry-separation).
+    tx.execute_batch(
+        "DROP TRIGGER IF EXISTS events_ai; \
+         DROP TRIGGER IF EXISTS events_ad; \
+         DROP TABLE IF EXISTS events_fts; \
+         DROP TABLE IF EXISTS events; \
+         DROP TABLE IF EXISTS knowledge_fts; \
+         DROP TABLE IF EXISTS knowledge; \
+         DROP TABLE IF EXISTS metrics_projection; \
+         DROP TABLE IF EXISTS api_cost_frames; \
+         DROP TABLE IF EXISTS claude_code_otel; \
+         DROP TABLE IF EXISTS spans;",
+    )?;
+    write_schema_version(&tx, 10)?;
+    tx.commit()?;
+
+    // VACUUM + optimize outside the transaction. Both are best-effort.
+    let _ = conn.execute_batch("VACUUM");
+    let _ = conn.execute_batch("PRAGMA optimize");
+
+    if had_legacy {
+        let after_bytes = db_size_bytes(conn).unwrap_or(0);
+        let payload = format!(
+            "{{\"from_bytes\":{before_bytes},\"to_bytes\":{after_bytes}}}"
+        );
+        let _ = conn.execute(
+            "INSERT INTO pipeline_events(ts, kind, payload) VALUES (?1, ?2, ?3)",
+            rusqlite::params![now_iso8601(), "pipeline.economy.schema.shrunk", payload],
+        );
+    }
+    Ok(())
+}
+
+/// Minimal ISO-8601 UTC timestamp formatter — `YYYY-MM-DDTHH:MM:SS.000Z`.
+/// Kept local to avoid a dependency cycle with crates that consume the store.
+/// Falls back to the unix epoch when the system clock is before 1970.
+fn now_iso8601() -> String {
+    let ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis());
+    // Hinnant's days-from-civil (inverse) — re-implemented locally so the
+    // store layer stays free of chrono / time crates. Pre-1970 inputs clamp
+    // to the epoch, matching the harness's other epoch handling.
+    let total_secs = (ms / 1000) as i64;
+    let mut ms_rem = (ms % 1000) as i64;
+    let mut days = total_secs.div_euclid(86_400);
+    let mut tod = total_secs.rem_euclid(86_400);
+    if tod < 0 {
+        tod += 86_400;
+        days -= 1;
+    }
+    if ms_rem < 0 {
+        ms_rem += 1000;
+    }
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    let h = tod / 3600;
+    let mi = (tod % 3600) / 60;
+    let s = tod % 60;
+    format!("{y:04}-{m:02}-{d:02}T{h:02}:{mi:02}:{s:02}.{ms_rem:03}Z")
+}
+
+/// Best-effort byte size of the main SQLite database. Returns `None` if either
+/// pragma query fails — `migrate_v9_to_v10`'s telemetry then degrades to a
+/// `null`-ish reading rather than aborting.
+fn db_size_bytes(conn: &Connection) -> Option<i64> {
+    let page_count: i64 = conn.query_row("PRAGMA page_count", [], |r| r.get(0)).ok()?;
+    let page_size: i64 = conn.query_row("PRAGMA page_size", [], |r| r.get(0)).ok()?;
+    Some(page_count.saturating_mul(page_size))
 }
 
 /// `true` when `table` exists in the main schema.
@@ -767,22 +760,13 @@ mod tests {
         conn
     }
 
-    /// Seed one event row directly — bypasses `SqliteEventStore::append` so we
-    /// can write `spec = NULL` like the pre-fix call sites used to.
-    fn seed_event(
-        conn: &Connection,
-        ts: &str,
-        session_id: Option<&str>,
-        event: &str,
-        spec: Option<&str>,
-    ) {
-        conn.execute(
-            "INSERT INTO events(ts, session_id, wave, spec, event, actor_kind, actor_id, payload) \
-             VALUES(?1, ?2, 0, ?3, ?4, 'hook', 'test', '{}')",
-            rusqlite::params![ts, session_id, spec, event],
-        )
-        .unwrap();
-    }
+    // NOTE: Several legacy tests below were deleted in W5 because they probe
+    // schema artifacts (`events`, `events_fts`, `events_ad` trigger,
+    // `idx_events_*` indices, `knowledge_patterns_confidence_last_seen` index
+    // on the pre-W5 location) the new sqlite_schema.sql no longer creates.
+    // The v2/v5/v6/v7 migrations are gated on `table_exists("events")` so
+    // fresh DBs stamp the version without touching the absent table — that
+    // behaviour is covered by `fresh_db_is_at_baseline_then_advances_to_latest`.
 
     #[test]
     fn fresh_db_is_at_baseline_then_advances_to_latest() {
@@ -795,84 +779,29 @@ mod tests {
         assert_eq!(second, LATEST_VERSION);
     }
 
+    /// v9 → v10: an existing DB at v9 with legacy tables sees them dropped on
+    /// the next open. Fresh DBs (no legacy tables) advance silently.
     #[test]
-    fn backfill_attributes_orphan_to_active_scope_in_same_session() {
-        let conn = fresh_db();
-
-        // Session s1 opens a spec at t=0, emits tool.use at t=1 with NULL spec.
-        seed_event(&conn, "2026-05-20T10:00:00Z", Some("s1"), "pipeline.scope", Some("feature-A"));
-        seed_event(&conn, "2026-05-20T10:01:00Z", Some("s1"), "tool.use", None);
-        // Different session s2 emits unrelated tool.use — should not match s1's scope.
-        seed_event(&conn, "2026-05-20T10:01:30Z", Some("s2"), "tool.use", None);
+    fn v10_drops_legacy_tables_when_present() {
+        let conn = Connection::open_in_memory().unwrap();
+        // Create a legacy-shaped DB at v9 with the tables W5 retires.
+        conn.execute_batch(include_str!("sqlite_schema.sql")).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE events (id INTEGER PRIMARY KEY, ts TEXT); \
+             CREATE TABLE knowledge (id TEXT PRIMARY KEY); \
+             CREATE TABLE metrics_projection (spec TEXT PRIMARY KEY);",
+        )
+        .unwrap();
+        ensure_meta_table(&conn).unwrap();
+        write_schema_version(&conn, 9).unwrap();
 
         apply(&conn).unwrap();
 
-        let spec_for_s1_tool: String = conn
-            .query_row(
-                "SELECT spec FROM events WHERE session_id = 's1' AND event = 'tool.use'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(spec_for_s1_tool, "feature-A");
-
-        let spec_for_s2_tool: String = conn
-            .query_row(
-                "SELECT spec FROM events WHERE session_id = 's2' AND event = 'tool.use'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(spec_for_s2_tool, ORPHAN_SPEC);
-    }
-
-    #[test]
-    fn backfill_picks_most_recent_scope_when_multiple_present() {
-        let conn = fresh_db();
-
-        seed_event(&conn, "2026-05-20T10:00:00Z", Some("s1"), "pipeline.scope", Some("feature-A"));
-        seed_event(&conn, "2026-05-20T11:00:00Z", Some("s1"), "pipeline.scope", Some("feature-B"));
-        // Orphan at t=11:30 — should pick feature-B (more recent).
-        seed_event(&conn, "2026-05-20T11:30:00Z", Some("s1"), "tool.use", None);
-        // Orphan at t=10:30 — should pick feature-A (B not yet active).
-        seed_event(&conn, "2026-05-20T10:30:00Z", Some("s1"), "tool.use", None);
-
-        apply(&conn).unwrap();
-
-        let mut stmt = conn
-            .prepare("SELECT ts, spec FROM events WHERE event = 'tool.use' ORDER BY ts")
-            .unwrap();
-        let rows: Vec<(String, String)> = stmt
-            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
-            .unwrap()
-            .map(std::result::Result::unwrap)
-            .collect();
-        assert_eq!(rows[0], ("2026-05-20T10:30:00Z".into(), "feature-A".into()));
-        assert_eq!(rows[1], ("2026-05-20T11:30:00Z".into(), "feature-B".into()));
-    }
-
-    #[test]
-    fn orphan_without_session_falls_back_to_sentinel() {
-        let conn = fresh_db();
-        seed_event(&conn, "2026-05-20T10:00:00Z", None, "tool.use", None);
-        apply(&conn).unwrap();
-
-        let spec: String = conn
-            .query_row("SELECT spec FROM events", [], |row| row.get(0))
-            .unwrap();
-        assert_eq!(spec, ORPHAN_SPEC);
-    }
-
-    #[test]
-    fn already_attributed_rows_are_left_untouched() {
-        let conn = fresh_db();
-        seed_event(&conn, "2026-05-20T10:00:00Z", Some("s1"), "tool.use", Some("feature-Z"));
-        apply(&conn).unwrap();
-
-        let spec: String = conn
-            .query_row("SELECT spec FROM events", [], |row| row.get(0))
-            .unwrap();
-        assert_eq!(spec, "feature-Z");
+        assert!(!table_exists(&conn, "events"));
+        assert!(!table_exists(&conn, "knowledge"));
+        assert!(!table_exists(&conn, "metrics_projection"));
+        // Lifecycle index still there.
+        assert!(table_exists(&conn, "pipeline_events"));
     }
 
     #[test]
@@ -885,130 +814,28 @@ mod tests {
         assert_eq!(version, LATEST_VERSION);
     }
 
+    /// v9 → v10: a database that still carries the legacy telemetry tables
+    /// (`claude_code_otel`, `spans`) — left over from a pre-W5 install that
+    /// stopped at v7 before this migration moved the drop here — sees them
+    /// removed on the next open. Seeds rows first to prove `DROP TABLE`
+    /// runs against populated tables (covers the v7→v8 hang the prior
+    /// `ATTACH`-based implementation produced when v9→v10 contended with
+    /// the still-attached state).
     #[test]
-    fn v5_creates_event_composite_indices_and_api_cost_frames_table() {
-        let conn = fresh_db();
-        apply(&conn).unwrap();
-
-        // Composite indices on events visible in sqlite_master.
-        let has_spec_event: bool = conn
-            .query_row(
-                "SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_events_spec_event'",
-                [],
-                |r| r.get::<_, i64>(0),
-            )
-            .optional()
-            .unwrap()
-            .is_some();
-        assert!(has_spec_event, "v5 must create idx_events_spec_event");
-
-        let has_actor_event: bool = conn
-            .query_row(
-                "SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_events_actor_event'",
-                [],
-                |r| r.get::<_, i64>(0),
-            )
-            .optional()
-            .unwrap()
-            .is_some();
-        assert!(has_actor_event, "v5 must create idx_events_actor_event");
-
-        // api_cost_frames table accepts the shape the economy reader projects.
-        conn.execute(
-            "INSERT INTO api_cost_frames(span_id, ts_iso, session_id, model, spec, \
-                                         input_tokens, output_tokens, cost_usd_micros, \
-                                         tool_use_id, project_path) \
-             VALUES('req-x', '2026-05-21T00:00:00Z', 's1', 'opus', 'spec-A', \
-                    100, 50, 1000, NULL, '/tmp/p')",
-            [],
-        )
-        .unwrap();
-        let cnt: i64 = conn
-            .query_row("SELECT COUNT(*) FROM api_cost_frames", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(cnt, 1);
-    }
-
-    #[test]
-    fn v6_creates_session_and_knowledge_rank_indices() {
-        let conn = fresh_db();
-        apply(&conn).unwrap();
-        for idx in [
-            "idx_events_session_id",
-            "idx_knowledge_patterns_confidence_last_seen",
-        ] {
-            let exists: bool = conn
-                .query_row(
-                    "SELECT 1 FROM sqlite_master WHERE type='index' AND name=?1",
-                    rusqlite::params![idx],
-                    |r| r.get::<_, i64>(0),
-                )
-                .optional()
-                .unwrap()
-                .is_some();
-            assert!(exists, "v6 must create {idx}");
-        }
-    }
-
-    #[test]
-    fn v8_drops_legacy_telemetry_tables() {
-        // Seed a database that still has the legacy tables (as a pre-Wave-3 DB
-        // would), at version 7, then advance: v8 must drop both.
+    fn v10_drops_claude_code_otel_and_spans_if_present() {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(include_str!("sqlite_schema.sql")).unwrap();
-        // Re-create the legacy tables the current schema no longer ships.
+        // Re-create the legacy telemetry tables a pre-W5 DB carried, and seed
+        // each with a row so the drop has data to work against.
         conn.execute_batch(
-            "CREATE TABLE spans (span_id TEXT PRIMARY KEY, spec TEXT); \
-             CREATE TABLE claude_code_otel (ts_bucket INTEGER, metric TEXT);",
-        )
-        .unwrap();
-        ensure_meta_table(&conn).unwrap();
-        write_schema_version(&conn, 7).unwrap();
-
-        let final_version = apply(&conn).unwrap();
-        assert_eq!(final_version, LATEST_VERSION);
-        assert!(!table_exists(&conn, "spans"), "v8 must drop spans");
-        assert!(
-            !table_exists(&conn, "claude_code_otel"),
-            "v8 must drop claude_code_otel"
-        );
-    }
-
-    #[test]
-    fn v8_copies_history_into_telemetry_db_before_dropping() {
-        // WARN-3 regression: a file-based mustard.db at v7 carrying legacy
-        // telemetry must copy that data into the sibling telemetry.db BEFORE the
-        // tables are dropped. After `apply`, telemetry.db holds the rows AND the
-        // mustard.db legacy tables are gone — proving copy-before-drop.
-        use tempfile::tempdir;
-
-        let dir = tempdir().unwrap();
-        let mustard = dir.path().join("mustard.db");
-
-        // Build a file-based mustard.db with the production schema, then pin it
-        // at v7 and re-create + seed the legacy tables a pre-Wave-3 DB carried.
-        let conn = Connection::open(&mustard).unwrap();
-        conn.execute_batch(include_str!("sqlite_schema.sql")).unwrap();
-        conn.execute_batch(
-            "CREATE TABLE spans (\
-                 trace_id TEXT, span_id TEXT PRIMARY KEY, parent_span_id TEXT, name TEXT, \
-                 started_at INTEGER, ended_at INTEGER, duration_ms INTEGER, attributes TEXT, \
-                 spec TEXT, phase TEXT, model TEXT, input_tokens INTEGER, output_tokens INTEGER, \
-                 is_error INTEGER, cache_read_input_tokens INTEGER, \
-                 cache_creation_input_tokens INTEGER, cost_usd_micros INTEGER, \
-                 project_path TEXT, ts_iso TEXT, session_id TEXT, wave_id TEXT, tool_use_id TEXT); \
-             CREATE TABLE claude_code_otel (\
+            "CREATE TABLE claude_code_otel (\
                  ts_bucket INTEGER NOT NULL, signal TEXT NOT NULL, metric TEXT NOT NULL, \
                  session_id TEXT, model TEXT, token_type TEXT, sum REAL DEFAULT 0, \
                  count INTEGER DEFAULT 0, attrs TEXT, \
-                 PRIMARY KEY (ts_bucket, metric, session_id, model, token_type));",
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO spans (span_id, spec, model, input_tokens, output_tokens, \
-             cost_usd_micros, is_error, ts_iso, session_id) \
-             VALUES ('sp-1', 'spec-A', 'opus', 1000, 500, 25000, 0, '2026-05-22T11:00:00Z', 's1')",
-            [],
+                 PRIMARY KEY (ts_bucket, metric, session_id, model, token_type)); \
+             CREATE TABLE spans (\
+                 trace_id TEXT, span_id TEXT PRIMARY KEY, name TEXT, \
+                 started_at INTEGER, model TEXT);",
         )
         .unwrap();
         conn.execute(
@@ -1018,198 +845,119 @@ mod tests {
             [],
         )
         .unwrap();
-        ensure_meta_table(&conn).unwrap();
-        write_schema_version(&conn, 7).unwrap();
+        conn.execute(
+            "INSERT INTO spans (trace_id, span_id, name, started_at, model) \
+             VALUES ('t1', 'sp-1', 'agent', 0, 'opus')",
+            [],
+        )
+        .unwrap();
 
-        // Advance to v8 — this is where the copy-then-drop happens.
+        // Verify the seed actually landed before we run the ladder.
+        assert!(table_exists(&conn, "claude_code_otel"));
+        assert!(table_exists(&conn, "spans"));
+
+        // Run the full ladder from baseline — v7→v8 is a no-op now, v9→v10
+        // does the drop.
         let final_version = apply(&conn).unwrap();
         assert_eq!(final_version, LATEST_VERSION);
 
-        // mustard.db legacy tables are gone (drop ran).
-        assert!(!table_exists(&conn, "spans"), "v8 must drop spans");
         assert!(
             !table_exists(&conn, "claude_code_otel"),
-            "v8 must drop claude_code_otel"
+            "v10 must drop claude_code_otel"
         );
-
-        // The sibling telemetry.db received the history BEFORE the drop.
-        let telemetry = dir.path().join("telemetry.db");
-        assert!(telemetry.exists(), "telemetry.db must have been created");
-        let tconn = Connection::open(&telemetry).unwrap();
-        let runs: i64 = tconn
-            .query_row("SELECT COUNT(*) FROM run_usage", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(runs, 1, "the span must be copied into run_usage");
-        let totals: i64 = tconn
-            .query_row("SELECT COUNT(*) FROM usage_totals", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(totals, 1, "the otel counter must be copied into usage_totals");
-        let spec: String = tconn
-            .query_row(
-                "SELECT spec FROM run_usage WHERE span_id = 'sp-1'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(spec, "spec-A", "native span attribution preserved");
-    }
-
-    /// Seed a file-based `mustard.db` pinned at v7, carrying the legacy
-    /// `claude_code_otel` + `spans` tables with one row each. Used by the real-
-    /// path regression below.
-    fn seed_v7_mustard_db_with_legacy(mustard: &std::path::Path) {
-        let conn = Connection::open(mustard).unwrap();
-        conn.execute_batch(include_str!("sqlite_schema.sql")).unwrap();
-        conn.execute_batch(
-            "CREATE TABLE spans (\
-                 trace_id TEXT, span_id TEXT PRIMARY KEY, parent_span_id TEXT, name TEXT, \
-                 started_at INTEGER, ended_at INTEGER, duration_ms INTEGER, attributes TEXT, \
-                 spec TEXT, phase TEXT, model TEXT, input_tokens INTEGER, output_tokens INTEGER, \
-                 is_error INTEGER, cache_read_input_tokens INTEGER, \
-                 cache_creation_input_tokens INTEGER, cost_usd_micros INTEGER, \
-                 project_path TEXT, ts_iso TEXT, session_id TEXT, wave_id TEXT, tool_use_id TEXT); \
-             CREATE TABLE claude_code_otel (\
-                 ts_bucket INTEGER NOT NULL, signal TEXT NOT NULL, metric TEXT NOT NULL, \
-                 session_id TEXT, model TEXT, token_type TEXT, sum REAL DEFAULT 0, \
-                 count INTEGER DEFAULT 0, attrs TEXT, \
-                 PRIMARY KEY (ts_bucket, metric, session_id, model, token_type));",
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO spans (span_id, spec, model, input_tokens, output_tokens, \
-             cost_usd_micros, is_error, ts_iso, session_id) \
-             VALUES ('sp-1', 'spec-A', 'opus', 1000, 500, 25000, 0, '2026-05-22T11:00:00Z', 's1')",
-            [],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO claude_code_otel \
-             (ts_bucket, signal, metric, session_id, model, token_type, sum, count, attrs) \
-             VALUES (60000, 'metric', 'claude_code.cost.usage', 's1', 'opus', 'input', 12.0, 1, '{}')",
-            [],
-        )
-        .unwrap();
-        ensure_meta_table(&conn).unwrap();
-        write_schema_version(&conn, 7).unwrap();
+        assert!(!table_exists(&conn, "spans"), "v10 must drop spans");
     }
 
     #[test]
-    fn v8_real_open_copies_before_drop_when_conn_owns_mustard_db() {
-        // The WARN-3 data-loss regression. The bug only reproduces through the
-        // REAL open path (`SqliteEventStore::new`), because the copy ran on a
-        // second connection that contended with the migration's own connection
-        // and silently skipped the source tables — yet the drop still ran.
-        // Here we open the seeded v7 DB via that real path and assert the
-        // sibling telemetry.db received the rows AND only then the legacy tables
-        // are gone.
-        use crate::store::sqlite_store::SqliteEventStore;
-        use tempfile::tempdir;
-
-        let dir = tempdir().unwrap();
-        let mustard = dir.path().join("mustard.db");
-        seed_v7_mustard_db_with_legacy(&mustard);
-
-        // Real open — triggers migrate_v7_to_v8 with conn holding mustard.db.
-        let store = SqliteEventStore::new(&mustard).unwrap();
-
-        // Legacy tables dropped on the mustard.db now owned by the store.
-        assert!(!table_exists(store.conn(), "spans"), "v8 must drop spans");
-        assert!(
-            !table_exists(store.conn(), "claude_code_otel"),
-            "v8 must drop claude_code_otel"
-        );
-
-        // The sibling telemetry.db got the data BEFORE the drop — the property
-        // the silent-skip bug violated (it dropped with telemetry.db empty).
-        let telemetry = dir.path().join("telemetry.db");
-        assert!(telemetry.exists(), "telemetry.db must exist");
-        let tconn = Connection::open(&telemetry).unwrap();
-        let runs: i64 = tconn
-            .query_row("SELECT COUNT(*) FROM run_usage", [], |r| r.get(0))
-            .unwrap();
-        let totals: i64 = tconn
-            .query_row("SELECT COUNT(*) FROM usage_totals", [], |r| r.get(0))
-            .unwrap();
-        assert!(runs > 0, "spans must be copied into run_usage before drop");
-        assert!(totals > 0, "otel must be copied into usage_totals before drop");
-        let spec: String = tconn
-            .query_row("SELECT spec FROM run_usage WHERE span_id = 'sp-1'", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(spec, "spec-A", "native span attribution preserved");
-    }
-
-    #[test]
-    fn drop_guard_blocks_drop_when_source_has_rows_but_dest_empty() {
-        // The pure decision the WARN-3 guard turns on: a source table with rows
-        // whose destination stayed empty after the copy is a FAILED copy → must
-        // NOT be dropped. Absent or empty sources, and dest-received-rows, are
-        // all safe.
-        assert!(!drop_is_safe(Some(5), 0, 0), "rows present, dest empty → unsafe");
-        assert!(drop_is_safe(Some(5), 0, 5), "rows present, dest filled → safe");
-        assert!(drop_is_safe(None, 0, 0), "source absent → safe");
-        assert!(drop_is_safe(Some(0), 0, 0), "source empty → safe");
-    }
-
-    #[test]
-    fn v8_does_not_drop_when_copy_cannot_reach_dest() {
-        // End-to-end fail-open: a v7 mustard.db whose source tables hold rows,
-        // attached to a telemetry.db whose destination tables are MISSING. The
-        // guard's destination count then errors (never silently "absent"), so
-        // `copy_then_verified_drop` propagates Err → the caller leaves the data.
-        // Assert the source tables survive and the version stays at v7.
-        use tempfile::tempdir;
-
-        let dir = tempdir().unwrap();
-        let mustard = dir.path().join("mustard.db");
-        seed_v7_mustard_db_with_legacy(&mustard);
-
-        // A telemetry.db with NO run_usage / usage_totals tables.
-        let telemetry = dir.path().join("telemetry.db");
-        Connection::open(&telemetry).unwrap();
-
-        let conn = Connection::open(&mustard).unwrap();
-        conn.execute(
-            "ATTACH DATABASE ?1 AS tel",
-            rusqlite::params![telemetry.to_string_lossy()],
-        )
-        .unwrap();
-        let outcome = copy_then_verified_drop(&conn);
-        let _ = conn.execute_batch("DETACH DATABASE tel");
-
-        assert!(outcome.is_err(), "missing dest tables must surface as Err, not a silent drop");
-        assert!(table_exists(&conn, "spans"), "spans must NOT be dropped");
-        assert!(
-            table_exists(&conn, "claude_code_otel"),
-            "claude_code_otel must NOT be dropped"
-        );
-        assert_eq!(read_schema_version(&conn).unwrap(), 7, "version stays v7");
-    }
-
-    #[test]
-    fn v8_is_idempotent_when_tables_already_absent() {
-        // A fresh DB never has the legacy tables; advancing to v8 is a no-op.
-        let conn = fresh_db();
-        assert!(!table_exists(&conn, "spans"));
-        let final_version = apply(&conn).unwrap();
-        assert_eq!(final_version, LATEST_VERSION);
-        assert!(!table_exists(&conn, "spans"));
-        assert!(!table_exists(&conn, "claude_code_otel"));
-    }
-
-    #[test]
-    fn v7_creates_events_delete_trigger() {
+    fn v9_creates_new_w5_tables_and_extends_knowledge_columns() {
         let conn = fresh_db();
         apply(&conn).unwrap();
-        let exists: bool = conn
-            .query_row(
-                "SELECT 1 FROM sqlite_master WHERE type='trigger' AND name='events_ad'",
-                [],
-                |r| r.get::<_, i64>(0),
-            )
-            .optional()
-            .unwrap()
-            .is_some();
-        assert!(exists, "v7 must create the events_ad delete trigger");
+
+        // Four new tables exist after migration.
+        for table in [
+            "pipeline_events",
+            "sessions",
+            "agent_memory",
+            "memory_feedback",
+        ] {
+            assert!(table_exists(&conn, table), "v9 must create {table}");
+        }
+
+        // Spec-scope columns added to the W6a tables (idempotent ALTERs).
+        let column_exists = |table: &str, column: &str| -> bool {
+            let mut stmt = conn
+                .prepare("SELECT 1 FROM pragma_table_info(?1) WHERE name = ?2 LIMIT 1")
+                .unwrap();
+            stmt.query_row(rusqlite::params![table, column], |row| row.get::<_, i64>(0))
+                .optional()
+                .unwrap()
+                .is_some()
+        };
+
+        for col in ["spec", "status", "last_used"] {
+            assert!(
+                column_exists("knowledge_patterns", col),
+                "v9 must add knowledge_patterns.{col}"
+            );
+        }
+        for col in ["spec", "wave", "confidence", "status", "superseded_by"] {
+            for table in ["memory_decisions", "memory_lessons"] {
+                assert!(
+                    column_exists(table, col),
+                    "v9 must add {table}.{col}"
+                );
+            }
+        }
+
+        // Shape probes: insert + read round-trips for each new table.
+        conn.execute(
+            "INSERT INTO pipeline_events(ts, session_id, spec, wave, kind, payload) \
+             VALUES('2026-05-24T00:00:00Z', 's1', 'spec-A', 2, 'pipeline.scope', '{}')",
+            [],
+        )
+        .unwrap();
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM pipeline_events", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 1);
+
+        conn.execute(
+            "INSERT INTO sessions(id, slug, started_at) \
+             VALUES('sess-1', 'auth-feature-2026', '2026-05-24T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+
+        conn.execute(
+            "INSERT INTO agent_memory(session_id, spec, role, summary, confidence, at) \
+             VALUES('s1', 'spec-A', 'impl', 'wrote NDJSON writer', 0.9, '2026-05-24T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        let mem_id: i64 = conn
+            .query_row("SELECT id FROM agent_memory LIMIT 1", [], |r| r.get(0))
+            .unwrap();
+
+        conn.execute(
+            "INSERT INTO memory_feedback(memory_id, kind, delta, by_role, at) \
+             VALUES(?1, 'bump', 0.1, 'review', '2026-05-24T00:00:00Z')",
+            rusqlite::params![mem_id],
+        )
+        .unwrap();
+        let fb: i64 = conn
+            .query_row("SELECT COUNT(*) FROM memory_feedback", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(fb, 1);
+    }
+
+    #[test]
+    fn v9_is_idempotent_on_re_run() {
+        // Apply twice; the second call must be a no-op without ALTER duplicate
+        // errors (the column probe gates each ADD COLUMN).
+        let conn = fresh_db();
+        apply(&conn).unwrap();
+        let second = apply(&conn).unwrap();
+        assert_eq!(second, LATEST_VERSION);
     }
 
     #[test]

@@ -109,10 +109,7 @@ pub fn current_spec(project_dir_path: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mustard_core::store::event_store::EventSink;
     use mustard_core::store::sqlite_store::SqliteEventStore;
-    use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
-    use serde_json::json;
     use tempfile::tempdir;
 
     // -----------------------------------------------------------------------
@@ -176,46 +173,39 @@ mod tests {
         assert!(spec_field.is_some(), "expected Some(_) from current_spec with state file");
         let spec_name = spec_field.clone().unwrap();
 
-        // Append one event with spec populated.
-        let event = HarnessEvent {
-            v: SCHEMA_VERSION,
-            ts: "2026-05-20T00:00:00.000Z".to_string(),
-            session_id: "s-test".to_string(),
-            wave: 0,
-            actor: Actor {
-                kind: ActorKind::Hook,
-                id: Some("spec-attr-test".to_string()),
-                actor_type: None,
-            },
-            event: "test.event".to_string(),
-            payload: json!({}),
-            spec: spec_field,
-        };
-        store.append(&event).unwrap();
+        // W5 round-trip: a `pipeline.*` event lands in the `pipeline_events`
+        // SQLite table via `append_pipeline_event`, then a `query(Some(spec))`
+        // returns it filtered by spec column.
+        store
+            .append_pipeline_event(
+                "2026-05-20T00:00:00.000Z",
+                Some("s-test"),
+                Some(&spec_name),
+                None,
+                "pipeline.status",
+                None,
+                Some("{}"),
+            )
+            .unwrap();
 
-        // Query filtered by the resolved spec name — must return the event.
         let events = store.query(Some(&spec_name)).unwrap();
         assert_eq!(events.len(), 1, "expected 1 event for {spec_name}");
         assert_eq!(events[0].spec.as_deref(), Some(spec_name.as_str()));
 
-        // Append a second event with spec: None to verify discriminated queries.
-        let event_no_spec = HarnessEvent {
-            v: SCHEMA_VERSION,
-            ts: "2026-05-20T00:00:01.000Z".to_string(),
-            session_id: "s-test".to_string(),
-            wave: 0,
-            actor: Actor {
-                kind: ActorKind::Hook,
-                id: Some("spec-attr-test".to_string()),
-                actor_type: None,
-            },
-            event: "test.event".to_string(),
-            payload: json!({}),
-            spec: None,
-        };
-        store.append(&event_no_spec).unwrap();
+        // Append a second pipeline event with spec NULL to verify discriminated queries.
+        store
+            .append_pipeline_event(
+                "2026-05-20T00:00:01.000Z",
+                Some("s-test"),
+                None,
+                None,
+                "pipeline.status",
+                None,
+                Some("{}"),
+            )
+            .unwrap();
 
-        // Full replay (all events regardless of spec) returns both events.
+        // Full replay (all lifecycle rows regardless of spec) returns both events.
         let all = store.replay().unwrap();
         assert_eq!(all.len(), 2, "expected 2 events in full replay");
         // query(None) returns only events where spec IS NULL.

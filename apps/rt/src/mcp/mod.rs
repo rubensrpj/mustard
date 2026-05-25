@@ -436,10 +436,11 @@ impl MustardMemory {
 
     /// Tool 2 — filter events by spec / event / since.
     ///
-    /// [`SqliteEventStore`] has no compound event filter, so this replays the
-    /// log (the established `mustard-rt` reader pattern) and applies the
-    /// `spec` / `event` / `since` predicates in-process — the same predicates
-    /// the TS `EventStore.query` applied in SQL.
+    /// W5: events live in two stores — `pipeline_events` (SQLite lifecycle
+    /// index) and per-spec NDJSON files (`.claude/spec/<spec>/events/`). This
+    /// folds both sources together so MCP consumers see a single timeline.
+    /// When `spec` is given, only that spec's NDJSON dir is read; otherwise
+    /// every spec dir under `.claude/spec/` contributes.
     #[tool(
         description = "Filter events by spec/event/since (ISO ts). Returns up to `limit` rows."
     )]
@@ -448,12 +449,42 @@ impl MustardMemory {
         Parameters(args): Parameters<QueryEventsArgs>,
     ) -> CallToolResult {
         let limit = args.limit.unwrap_or(100).clamp(1, 500) as usize;
-        let Some(store) = self.open_store() else {
-            return json_result(&Vec::<EventOut>::new());
+
+        // 1) Lifecycle slice from SQLite.
+        let mut events = match self.open_store() {
+            Some(store) => store.replay().unwrap_or_default(),
+            None => Vec::new(),
         };
-        let events = store.replay().unwrap_or_default();
+
+        // 2) NDJSON slice — per-spec dirs.
+        let specs_root = self.project_dir.join(".claude").join("spec");
+        if let Some(spec) = args.spec.as_deref() {
+            let dir = specs_root.join(spec).join("events");
+            events.extend(
+                mustard_core::projection::read_harness_events_from_ndjson_dir(&dir),
+            );
+        } else if let Ok(entries) = std::fs::read_dir(&specs_root) {
+            for entry in entries.flatten() {
+                if !entry.path().is_dir() {
+                    continue;
+                }
+                let dir = entry.path().join("events");
+                events.extend(
+                    mustard_core::projection::read_harness_events_from_ndjson_dir(&dir),
+                );
+            }
+        }
+
+        // Chronological sort so the lexical `since` comparison stays correct.
+        events.sort_by(|a, b| a.ts.cmp(&b.ts));
+
         let rows: Vec<EventOut> = events
             .into_iter()
+            // Internal meta-telemetry emitted by the NDJSON writer for the
+            // `/economia` dashboard (see `event_writer_ndjson::write_event`'s
+            // T5.8 inline emission). Surfaces every other row in `query_events`
+            // and is never what a consumer wants — filter it out at the boundary.
+            .filter(|ev| ev.event != "pipeline.economy.event.written")
             .filter(|ev| match &args.spec {
                 Some(s) => ev.spec.as_deref() == Some(s.as_str()),
                 None => true,
@@ -463,9 +494,8 @@ impl MustardMemory {
                 None => true,
             })
             .filter(|ev| match &args.since {
-                // `replay` returns events in insertion order; the TS query
-                // compared the ISO `ts` lexically, which is correct for
-                // RFC-3339 timestamps. Mirror that comparison.
+                // ISO-8601 timestamps compare lexically per RFC-3339; mirror
+                // the legacy SQL `WHERE ts >= ?` semantics.
                 Some(since) => ev.ts.as_str() >= since.as_str(),
                 None => true,
             })

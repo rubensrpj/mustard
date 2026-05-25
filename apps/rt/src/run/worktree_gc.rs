@@ -46,8 +46,6 @@
 use crate::run::env::{current_spec, session_id};
 use crate::util::now_iso8601;
 use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
-use mustard_core::store::event_store::EventSink;
-use mustard_core::store::sqlite_store::SqliteEventStore;
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
@@ -336,10 +334,11 @@ fn emit_telemetry(
         spec,
     };
 
-    if let Ok(store) = SqliteEventStore::for_project(&dir) {
-        let _ = store.append(&gc_event);
-        let _ = store.append(&econ_event);
-    }
+    // W5: `worktree.gc.run` is non-pipeline (NDJSON); `pipeline.economy.*`
+    // is pipeline (SQLite). The router classifies each correctly so we no
+    // longer need the open-store-then-append shape.
+    let _ = crate::run::event_route::emit(&dir, &gc_event);
+    let _ = crate::run::event_route::emit(&dir, &econ_event);
 }
 
 // ---------------------------------------------------------------------------

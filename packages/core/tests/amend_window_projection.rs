@@ -93,7 +93,7 @@ fn schema_amend_window_present() {
 /// overlapping `files_modified` lists must be unioned and deduplicated.
 ///
 /// wave1 = [a.rs, b.rs], wave2 = [b.rs, c.rs], wave3 = [c.rs, d.rs]
-/// Expected result = ["a.rs", "b.rs", "c.rs", "d.rs"] sorted.
+/// Expected result = `["a.rs", "b.rs", "c.rs", "d.rs"]` sorted.
 #[test]
 fn amend_window_projection_union_dedupes() {
     let dir = tempdir().unwrap();

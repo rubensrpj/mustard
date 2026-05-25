@@ -37,9 +37,25 @@ fn spec_root() -> Option<PathBuf> {
 }
 
 /// The value of an `### <Key>:` header line (case-insensitive on the key).
+///
+/// Lines inside fenced code blocks (```...```) are ignored — a documentation
+/// example like `### Stage: {stage}` inside a code fence is illustrative, not
+/// a real header. Without this guard, a wave-plan that documents the migration
+/// algorithm trips the invariant on its own example output.
 fn header_field(spec_md: &str, key: &str) -> Option<String> {
     let want = key.to_ascii_lowercase();
+    let mut in_fence = false;
     for line in spec_md.lines() {
+        // Toggle fence state on any line whose first non-whitespace token is
+        // a triple-backtick (open or close). We do not validate the language
+        // tag — only the toggle matters for header detection.
+        if line.trim_start().starts_with("```") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_fence {
+            continue;
+        }
         let t = line.trim_start();
         let Some(rest) = t.strip_prefix("###") else {
             continue;

@@ -1,3 +1,13 @@
+// Integration tests are separate binary targets and not exempt from
+// `clippy::unwrap_used` etc. via `#[cfg(test)]`. Mirror the carve-out from
+// `src/main.rs` so test panics on `.unwrap()` remain valid assertions.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::map_unwrap_or,
+    clippy::uninlined_format_args
+)]
+
 //! Integration tests for Wave 6b — SQLite-backed memory writes and FTS5 search.
 //!
 //! Opens the harness DB (schema applied via `SqliteEventStore::for_project`)
@@ -18,7 +28,7 @@ fn open_db(project: &std::path::Path) -> Connection {
     let store = SqliteEventStore::for_project(project).expect("store opens");
     let db_path = store.path().to_path_buf();
     let conn = Connection::open(&db_path).expect("direct connection opens");
-    let _ = conn.busy_timeout(std::time::Duration::from_millis(5_000));
+    let _ = conn.busy_timeout(std::time::Duration::from_secs(5));
     conn
 }
 

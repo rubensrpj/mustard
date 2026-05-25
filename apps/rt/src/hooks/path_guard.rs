@@ -27,7 +27,6 @@
 
 use mustard_core::error::Error;
 use mustard_core::fs;
-use mustard_core::store::event_store::EventSink;
 use mustard_core::store::sqlite_store::SqliteEventStore;
 use mustard_core::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
 use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
@@ -535,8 +534,8 @@ fn emit_boundary_event(
         }),
         spec: Some(spec.to_string()),
     };
-    let _ = SqliteEventStore::for_project(project_dir)
-        .and_then(|store| store.append(&event));
+    // `boundary.expansion` is non-pipeline → per-spec NDJSON via the W5 router.
+    let _ = crate::run::event_route::emit(project_dir, &event);
 }
 
 /// The `boundary-gate` gate: flag a Write/Edit outside the active spec's

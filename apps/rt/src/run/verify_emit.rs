@@ -128,7 +128,10 @@ pub fn run(
         quiet,
     };
 
-    let events = match SqliteEventStore::for_project(env::project_dir())
+    // W5: fold both sources (pipeline_events SQLite + per-spec NDJSON) so
+    // verify-emit can see non-pipeline events (`hygiene.*`, `qa.*`, …) too.
+    let project = env::project_dir();
+    let mut events = match SqliteEventStore::for_project(&project)
         .and_then(|store| store.replay())
     {
         Ok(events) => events,
@@ -139,6 +142,19 @@ pub fn run(
             std::process::exit(1);
         }
     };
+    let specs_root = std::path::Path::new(&project).join(".claude").join("spec");
+    if let Some(spec) = args.spec.as_deref() {
+        let dir = specs_root.join(spec).join("events");
+        events.extend(mustard_core::projection::read_harness_events_from_ndjson_dir(&dir));
+    } else if let Ok(entries) = std::fs::read_dir(&specs_root) {
+        for entry in entries.flatten() {
+            if entry.path().is_dir() {
+                let dir = entry.path().join("events");
+                events.extend(mustard_core::projection::read_harness_events_from_ndjson_dir(&dir));
+            }
+        }
+    }
+    events.sort_by(|a, b| a.ts.cmp(&b.ts));
 
     let now_ms = crate::util::now_millis() as i64;
     match scan(&events, &args, now_ms) {

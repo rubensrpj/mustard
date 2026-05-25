@@ -16,10 +16,12 @@
 //! - `run_attribution` — write-time spec/wave/agent stamp keyed on
 //!   `(session_id, tool_use_id)`.
 //!
-//! The one-shot [`migrate`] step builds `telemetry.db` from the data still in
-//! `mustard.db` (additive this wave — the legacy tables are left in place).
+//! Legacy carry-over from `mustard.db` was deleted in the W5 unification wave:
+//! `ATTACH DATABASE` on the hot-path connection caused silent lock contention
+//! that destroyed telemetry historically (see the WARN-3 incident notes in
+//! `feedback_no_attach_sqlite`). The v9 → v10 schema migration drops the legacy
+//! `claude_code_otel` / `spans` tables outright — there is no copy step.
 
-pub mod migrate;
 pub mod model;
 pub mod reader;
 pub mod store;
@@ -440,7 +442,7 @@ impl TelemetryReader for FakeTelemetry {
                 run_count: n,
             })
             .collect();
-        out.sort_by(|a, b| b.cost_usd_micros.cmp(&a.cost_usd_micros));
+        out.sort_by_key(|g| std::cmp::Reverse(g.cost_usd_micros));
         Ok(out)
     }
 
@@ -577,7 +579,7 @@ fn group_runs(runs: &[RunUsage], key: impl Fn(&RunUsage) -> String) -> Vec<CostG
     // `MAX(started_at)` the real reader emits.
     let mut acc: std::collections::HashMap<String, (i64, i64, i64, Option<i64>)> =
         std::collections::HashMap::new();
-    for r in runs.iter() {
+    for r in runs {
         let e = acc.entry(key(r)).or_default();
         e.0 += r.cost_usd_micros.unwrap_or(0);
         e.1 += r.input_tokens.unwrap_or(0) + r.output_tokens.unwrap_or(0);
@@ -599,7 +601,7 @@ fn group_runs(runs: &[RunUsage], key: impl Fn(&RunUsage) -> String) -> Vec<CostG
             last_started_at,
         })
         .collect();
-    out.sort_by(|a, b| b.cost_usd_micros.cmp(&a.cost_usd_micros));
+    out.sort_by_key(|g| std::cmp::Reverse(g.cost_usd_micros));
     out
 }
 

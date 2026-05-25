@@ -23,8 +23,6 @@ use crate::run::memory_cross_wave;
 use crate::run::resume_bootstrap::{read_wave_model, resolve_operational_spec_path};
 use crate::run::spec_sections::is_heading;
 use mustard_core::fs as mfs;
-use mustard_core::store::sqlite_store::SqliteEventStore;
-use rusqlite::Connection;
 use std::path::{Path, PathBuf};
 
 /// Render mode — picks which template block (dispatch vs retry) is filled.
@@ -275,18 +273,7 @@ fn render_cross_wave(project: &Path, spec: &str, wave: Option<u32>) -> String {
     }
     let n_prior = (w as usize).saturating_sub(1).min(names.len());
     let prior: Vec<String> = names.into_iter().take(n_prior).collect();
-    let conn = open_conn(project);
-    memory_cross_wave::render(&prior, conn.as_ref(), spec)
-}
-
-/// Open a raw rusqlite [`Connection`] to the project's harness DB. `None` on
-/// any failure.
-fn open_conn(project: &Path) -> Option<Connection> {
-    let store = SqliteEventStore::for_project(project).ok()?;
-    let db_path = store.path().to_path_buf();
-    let conn = Connection::open(&db_path).ok()?;
-    let _ = conn.busy_timeout(std::time::Duration::from_secs(5));
-    Some(conn)
+    memory_cross_wave::render(&prior, project, spec)
 }
 
 /// Heuristic skill list per role — mirrors the table in the legacy ref. Kept

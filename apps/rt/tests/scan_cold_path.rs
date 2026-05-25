@@ -1,3 +1,13 @@
+// Integration tests are separate binary targets and not exempt from
+// `clippy::unwrap_used` etc. via `#[cfg(test)]`. Mirror the carve-out from
+// `src/main.rs` so test panics on `.unwrap()` remain valid assertions.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::map_unwrap_or,
+    clippy::uninlined_format_args
+)]
+
 //! Regression test: scan cold-path (W2 — mustard-unification).
 //!
 //! Injects a fake `claude` CLI binary onto PATH, drives
@@ -38,7 +48,7 @@ fn write_fake_claude(bin_dir: &Path) -> PathBuf {
         // Use `type` to output the response file verbatim (preserves all chars
         // including `"`) then exit 0. The response file path uses a %~dp0
         // reference so the .cmd works regardless of cwd.
-        let content = format!("@echo off\r\ntype \"%~dp0claude_response.json\"\r\n");
+        let content = "@echo off\r\ntype \"%~dp0claude_response.json\"\r\n".to_string();
         std::fs::write(&path, content).expect("write fake claude.cmd");
         path
     }

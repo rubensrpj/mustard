@@ -189,7 +189,7 @@ pub fn run(root: &Path, force: bool) {
                         e.trim_start_matches('[')
                             .trim_end_matches(']')
                             .split('.')
-                            .last()
+                            .next_back()
                             .unwrap_or(e.as_str())
                             .to_string()
                     })

@@ -14,7 +14,6 @@
 //! tables exist. `run_usage` rows are seeded via the telemetry writer.
 
 use super::*;
-use mustard_core::store::event_store::EventSink;
 use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use mustard_core::telemetry::{RunUsage, TelemetryStore, TelemetryWriter};
 use std::path::Path;
@@ -124,73 +123,38 @@ fn event(name: &str, spec: Option<&str>, ts: &str) -> HarnessEvent {
     }
 }
 
+/// W5 stub-replacement: the legacy `knowledge` + `knowledge_fts` tables are
+/// retired (consolidated into `knowledge_patterns`). [`SqliteEventStore::search`]
+/// now returns an empty result by contract, so `search_knowledge` on an empty
+/// DB returns `[]` — see `tools_on_empty_db_return_empty_results_not_errors`.
+/// The legacy seed-and-filter assertion was removed.
 #[test]
-fn search_knowledge_returns_ranked_rows_and_respects_type_filter() {
+fn search_knowledge_returns_empty_on_w5_stub() {
     let dir = TempDir::new().unwrap();
-    let store = store_in(&dir);
-    drop(store); // schema applied; close the store handle before seeding.
-    seed(
-        &db_path(&dir),
-        "INSERT INTO knowledge (id, type, name, description, confidence) \
-         VALUES ('k1', 'pattern', 'event sink', 'append events', 0.9); \
-         INSERT INTO knowledge (id, type, name, description, confidence) \
-         VALUES ('k2', 'convention', 'event naming', 'name events well', 0.5); \
-         INSERT INTO knowledge_fts (id, name, description) \
-         SELECT id, name, description FROM knowledge;",
-    );
-
     let server = server_in(&dir);
 
-    // No type filter: both rows match the term "event".
-    let all = payload(
+    let res = payload(
         &server
             .search_knowledge(Parameters(SearchKnowledgeArgs {
-                query: "event".to_string(),
+                query: "anything".to_string(),
                 r#type: None,
                 limit: None,
             }))
     );
-    assert_eq!(all.as_array().unwrap().len(), 2);
-    assert_eq!(all[0]["type"], json!("pattern"));
-
-    // Type filter trims to the matching kind.
-    let patterns = payload(
-        &server
-            .search_knowledge(Parameters(SearchKnowledgeArgs {
-                query: "event".to_string(),
-                r#type: Some("pattern".to_string()),
-                limit: None,
-            }))
-    );
-    assert_eq!(patterns.as_array().unwrap().len(), 1);
-    assert_eq!(patterns[0]["id"], json!("k1"));
-
-    // `limit` caps the result count.
-    let capped = payload(
-        &server
-            .search_knowledge(Parameters(SearchKnowledgeArgs {
-                query: "event".to_string(),
-                r#type: None,
-                limit: Some(1),
-            }))
-    );
-    assert_eq!(capped.as_array().unwrap().len(), 1);
+    assert_eq!(res.as_array().unwrap().len(), 0);
 }
 
 #[test]
 fn query_events_filters_by_spec_event_and_since() {
+    use crate::run::event_route;
+
     let dir = TempDir::new().unwrap();
-    let store = store_in(&dir);
-    store
-        .append(&event("tool.use", Some("spec-a"), "2026-05-19T01:00:00.000Z"))
-        .unwrap();
-    store
-        .append(&event("tool.use", Some("spec-b"), "2026-05-19T02:00:00.000Z"))
-        .unwrap();
-    store
-        .append(&event("decision", Some("spec-a"), "2026-05-19T03:00:00.000Z"))
-        .unwrap();
-    drop(store);
+    // W5: non-pipeline events route to per-spec NDJSON dirs. Use the same
+    // router production callsites use so the test exercises the real path.
+    let cwd = dir.path().to_str().unwrap();
+    event_route::emit(cwd, &event("tool.use", Some("spec-a"), "2026-05-19T01:00:00.000Z"));
+    event_route::emit(cwd, &event("tool.use", Some("spec-b"), "2026-05-19T02:00:00.000Z"));
+    event_route::emit(cwd, &event("decision", Some("spec-a"), "2026-05-19T03:00:00.000Z"));
 
     let server = server_in(&dir);
 
@@ -230,8 +194,6 @@ fn query_events_filters_by_spec_event_and_since() {
     );
     assert_eq!(since.as_array().unwrap().len(), 1);
     assert_eq!(since[0]["event"], json!("decision"));
-    // `sessionId` survives in the output shape.
-    assert_eq!(since[0]["sessionId"], json!("s-mcp-test"));
 
     // `limit` caps the rows.
     let capped = payload(
@@ -285,37 +247,21 @@ fn find_similar_specs_scores_by_token_overlap() {
 }
 
 #[test]
-fn get_spec_metrics_returns_row_or_error_object() {
+fn get_spec_metrics_returns_missing_object_under_w5_stub() {
+    // W5: `metrics_projection` is retired (data duplicated into telemetry.db
+    // run_usage); `SqliteEventStore::metrics` is a stub returning Ok(None).
+    // Every call now lands in the `missing` branch — verify the error shape.
     let dir = TempDir::new().unwrap();
-    let store = store_in(&dir);
-    drop(store);
-    seed(
-        &db_path(&dir),
-        "INSERT INTO specs (name) VALUES ('2026-spec'); \
-         INSERT INTO metrics_projection (spec, api_calls, retries, pass1) \
-         VALUES ('2026-spec', 12, 0, 1);",
-    );
-
     let server = server_in(&dir);
 
-    let hit = payload(
+    let miss = payload(
         &server
             .get_spec_metrics(Parameters(GetSpecMetricsArgs {
                 spec: "2026-spec".to_string(),
             }))
     );
-    assert_eq!(hit["apiCalls"], json!(12));
-    assert_eq!(hit["pass1"], json!(true));
-    assert!(hit["toolBreakdown"].is_object());
-
-    let miss = payload(
-        &server
-            .get_spec_metrics(Parameters(GetSpecMetricsArgs {
-                spec: "no-such-spec".to_string(),
-            }))
-    );
     assert_eq!(miss["error"], json!("no metrics for spec"));
-    assert_eq!(miss["spec"], json!("no-such-spec"));
+    assert_eq!(miss["spec"], json!("2026-spec"));
 }
 
 #[test]

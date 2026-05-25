@@ -14,7 +14,6 @@
 use mustard_core::fs;
 use mustard_core::telemetry::model::UsageMetric;
 use mustard_core::telemetry::{writer as telemetry_writer, TelemetryStore};
-use rusqlite::params;
 use std::path::{Path, PathBuf};
 
 /// One projected metric datapoint — the argument bundle for [`Store::upsert_metric`].
@@ -47,6 +46,11 @@ pub struct MetricRow {
 /// project root for the on-demand `mustard.db` open `subtractions_since` needs.
 pub struct Store {
     telemetry: TelemetryStore,
+    /// Project's `.claude` dir. Retained for the future
+    /// `subtractions_since` re-implementation that will walk the per-spec
+    /// NDJSON sink (today the method is a W5 stub returning 0 — see
+    /// [`Self::subtractions_since`]).
+    #[allow(dead_code)]
     claude_dir: PathBuf,
 }
 
@@ -188,25 +192,26 @@ impl Store {
         rows.collect()
     }
 
-    /// Count `events` rows with `event = 'mustard.subtraction.applied'` whose
-    /// `ts` is newer than the ISO-8601 `since` timestamp.
+    /// Count `mustard.subtraction.applied` events whose `ts` is newer than the
+    /// ISO-8601 `since` timestamp.
     ///
-    /// The `events` table lives in `mustard.db` (the harness event bus), not in
-    /// `telemetry.db`, so this opens the harness store on demand. Read-only and
-    /// tolerant — a missing `events` table (or a missing `mustard.db`) surfaces
-    /// as a `rusqlite` error the caller reports fail-open.
+    /// W5: the high-volume `events` table is retired. `mustard.subtraction.applied`
+    /// is a non-pipeline event family that now lands in per-spec NDJSON files;
+    /// the diagnose-otel summary that called this helper does not yet walk the
+    /// NDJSON sink (counting subtractions cross-spec is out of scope of the OTEL
+    /// health probe). Returns `Ok(0)` instead — the field stays in the JSON
+    /// shape but always reads zero. A future probe that wants the count should
+    /// walk `.claude/spec/<spec>/events/*.ndjson` directly.
     ///
     /// # Errors
-    /// Returns the `rusqlite` error when the database or query fails.
+    /// Never. Returns `Ok(0)` unconditionally — kept fallible for API stability
+    /// with the pre-W5 signature so the caller's `match` arms (and the
+    /// eventual NDJSON-walking re-implementation, which WILL be fallible)
+    /// stay unchanged.
+    #[allow(clippy::unnecessary_wraps)]
     pub fn subtractions_since(&self, since_iso: &str) -> rusqlite::Result<i64> {
-        let db_path = self.claude_dir.join(".harness").join("mustard.db");
-        let conn = rusqlite::Connection::open(&db_path)?;
-        conn.query_row(
-            "SELECT COUNT(*) FROM events \
-             WHERE event = 'mustard.subtraction.applied' AND ts > ?1",
-            params![since_iso],
-            |r| r.get(0),
-        )
+        let _ = since_iso;
+        Ok(0)
     }
 }
 

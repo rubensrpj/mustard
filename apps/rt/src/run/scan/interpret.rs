@@ -371,7 +371,7 @@ pub fn interpret_with(
     }
 
     // 7. Emit economy telemetry (fail-open — never load-bearing).
-    let _ = emit_economy_event(root, duration_ms);
+    emit_economy_event(root, duration_ms);
 
     parsed
 }
@@ -597,12 +597,9 @@ fn wait_with_timeout(
 /// Tokens are reported as `0` — the cost is charged to the user's Claude
 /// subscription via the `claude` CLI, not to any Mustard API key.
 /// Fail-open: any store error is silently swallowed.
-fn emit_economy_event(root: &Path, duration_ms: u128) -> Result<(), Box<dyn std::error::Error>> {
+fn emit_economy_event(root: &Path, duration_ms: u128) {
     use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
-    use mustard_core::store::event_store::EventSink;
-    use mustard_core::store::sqlite_store::SqliteEventStore;
 
-    let store = SqliteEventStore::for_project(root.to_string_lossy().as_ref())?;
     let session_id = std::env::var("MUSTARD_SESSION_ID")
         .ok()
         .filter(|s| !s.is_empty())
@@ -622,8 +619,10 @@ fn emit_economy_event(root: &Path, duration_ms: u128) -> Result<(), Box<dyn std:
         }),
         spec: None,
     };
-    let _ = store.append(&event);
-    Ok(())
+    // `pipeline.economy.operation.invoked` is a pipeline.* event — the W5
+    // router classifies it to SQLite. Fail-open: every error is swallowed
+    // inside `event_route::emit`.
+    let _ = crate::run::event_route::emit(root.to_string_lossy().as_ref(), &event);
 }
 
 /// Parse the model's reply into an [`InterpretedResult`].

@@ -34,6 +34,7 @@ use crate::run::complete_spec::parse_iso_millis;
 use crate::run::env::project_dir;
 use crate::run::memory_cross_wave;
 use mustard_core::fs;
+use mustard_core::projection::read_harness_events_from_ndjson_dir;
 use mustard_core::store::sqlite_store::SqliteEventStore;
 use rusqlite::{Connection, params};
 use serde::Serialize;
@@ -161,17 +162,25 @@ fn fallback_wave_dirs(parent_dir: &Path) -> Vec<String> {
 }
 
 /// Aggregate events for a single wave name.
+///
+/// W5 split: `pipeline.status` lives in `pipeline_events` (SQLite), while
+/// `token.saved` / `retry.attempt` live in the per-spec NDJSON sink. The wave
+/// pipeline is identified by `payload.pipeline = wave_name`; spec attribution
+/// on NDJSON events is by reading the wave-name's own per-spec dir (the wave
+/// "spec" slug is the wave name itself).
 fn aggregate_wave(
     conn: &Connection,
+    project: &Path,
     wave_name: &str,
     model: Option<String>,
     cross_wave_bytes: usize,
 ) -> WaveStatus {
-    // status: last `pipeline.status` event for this wave's pipeline.
+    // status: last `pipeline.status` event for this wave's pipeline. Now in
+    // `pipeline_events` (W5 lifecycle index).
     let status: Option<String> = conn
         .query_row(
-            "SELECT json_extract(payload, '$.to') FROM events \
-             WHERE event = 'pipeline.status' \
+            "SELECT json_extract(payload, '$.to') FROM pipeline_events \
+             WHERE kind = 'pipeline.status' \
                AND json_extract(payload, '$.pipeline') = ?1 \
              ORDER BY id DESC LIMIT 1",
             params![wave_name],
@@ -180,27 +189,42 @@ fn aggregate_wave(
         .ok()
         .flatten();
 
-    // tokens_saved: SUM(payload.saved) where event='token.saved'.
-    let tokens_saved: i64 = conn
-        .query_row(
-            "SELECT COALESCE(SUM(CAST(json_extract(payload, '$.saved') AS INTEGER)), 0) \
-             FROM events \
-             WHERE event = 'token.saved' \
-               AND json_extract(payload, '$.pipeline') = ?1",
-            params![wave_name],
-            |row| row.get(0),
-        )
-        .unwrap_or(0);
-
-    // duration_ms: max(ts) - min(ts) over all events for this pipeline.
-    let (min_ts, max_ts): (Option<String>, Option<String>) = conn
-        .query_row(
-            "SELECT MIN(ts), MAX(ts) FROM events \
-             WHERE json_extract(payload, '$.pipeline') = ?1",
-            params![wave_name],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .unwrap_or((None, None));
+    // tokens_saved / retries / duration: walk the per-spec NDJSON dir for the
+    // wave name. Wave events are written under `<project>/.claude/spec/<wave_name>/events/`.
+    let dir = project
+        .join(".claude")
+        .join("spec")
+        .join(wave_name)
+        .join("events");
+    let events = read_harness_events_from_ndjson_dir(&dir);
+    let mut tokens_saved: i64 = 0;
+    let mut retries: i64 = 0;
+    let mut min_ts: Option<String> = None;
+    let mut max_ts: Option<String> = None;
+    for ev in events {
+        let pipeline = ev
+            .payload
+            .get("pipeline")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        if pipeline != wave_name {
+            continue;
+        }
+        // Track min/max ts for duration.
+        if min_ts.as_deref().is_none_or(|t| ev.ts.as_str() < t) {
+            min_ts = Some(ev.ts.clone());
+        }
+        if max_ts.as_deref().is_none_or(|t| ev.ts.as_str() > t) {
+            max_ts = Some(ev.ts.clone());
+        }
+        if ev.event == "token.saved" {
+            if let Some(saved) = ev.payload.get("saved").and_then(Value::as_i64) {
+                tokens_saved += saved;
+            }
+        } else if ev.event == "retry.attempt" {
+            retries += 1;
+        }
+    }
     let duration_ms = match (min_ts.as_deref(), max_ts.as_deref()) {
         (Some(a), Some(b)) => match (parse_iso_millis(a), parse_iso_millis(b)) {
             (Some(sa), Some(eb)) => (eb - sa).max(0),
@@ -208,17 +232,6 @@ fn aggregate_wave(
         },
         _ => 0,
     };
-
-    // retries: COUNT(*) where event='retry.attempt'.
-    let retries: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM events \
-             WHERE event = 'retry.attempt' \
-               AND json_extract(payload, '$.pipeline') = ?1",
-            params![wave_name],
-            |row| row.get(0),
-        )
-        .unwrap_or(0);
 
     WaveStatus {
         name: wave_name.to_string(),
@@ -245,7 +258,7 @@ fn open_conn(project: &Path) -> Option<Connection> {
 /// in wave N's agent prompt — exactly what `memory cross-wave --wave N` would
 /// emit. Returns 0 for wave 1 (no prior waves) or when nothing is in memory.
 fn cross_wave_bytes_for(
-    conn: &Connection,
+    project: &Path,
     all_wave_names: &[String],
     n: u32,
     spec: &str,
@@ -255,7 +268,7 @@ fn cross_wave_bytes_for(
     }
     let n_prior = (n as usize).saturating_sub(1).min(all_wave_names.len());
     let prior: Vec<String> = all_wave_names.iter().take(n_prior).cloned().collect();
-    memory_cross_wave::render(&prior, Some(conn), spec).len()
+    memory_cross_wave::render(&prior, project, spec).len()
 }
 
 /// Build the full result JSON for `--spec <parent>`.
@@ -293,8 +306,8 @@ fn build_result(project: &Path, parent: &str) -> Value {
                 let n = wave_number(name);
                 let n = if n == 0 { (idx + 1) as u32 } else { n };
                 let model = models.get(name).cloned().flatten();
-                let bytes = cross_wave_bytes_for(&conn, &wave_names, n, parent);
-                serde_json::to_value(aggregate_wave(&conn, name, model, bytes))
+                let bytes = cross_wave_bytes_for(project, &wave_names, n, parent);
+                serde_json::to_value(aggregate_wave(&conn, project, name, model, bytes))
                     .unwrap_or(Value::Null)
             })
             .collect()
@@ -363,7 +376,6 @@ pub fn run(args: &[String]) {
 mod tests {
     use super::*;
     use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
-    use mustard_core::store::event_store::EventSink;
     use tempfile::tempdir;
 
     fn ev(event: &str, ts: &str, pipeline: &str, extra: Value) -> HarnessEvent {
@@ -415,69 +427,75 @@ mod tests {
     #[test]
     fn aggregates_per_wave() {
         let dir = tempdir().unwrap();
-        let store = SqliteEventStore::new(dir.path().join("mustard.db")).unwrap();
+        let project = dir.path();
+        // Place mustard.db where `SqliteEventStore::for_project` would resolve it,
+        // even though we open it explicitly via `for_project` below.
+        let store = SqliteEventStore::for_project(project).unwrap();
 
-        // Wave 1: status=completed, 100+200 tokens saved, 1 retry.
+        // Pipeline-status events land in SQLite via `append_pipeline_event` (W5).
         store
-            .append(&ev(
-                "pipeline.status",
+            .append_pipeline_event(
                 "2026-05-20T10:00:00.000Z",
-                "wave-1-rt-infra",
-                json!({ "to": "completed" }),
-            ))
+                Some("s-test"),
+                Some("wave-1-rt-infra"),
+                None,
+                "pipeline.status",
+                None,
+                Some(r#"{"pipeline":"wave-1-rt-infra","to":"completed"}"#),
+            )
             .unwrap();
         store
-            .append(&ev(
-                "token.saved",
-                "2026-05-20T10:00:05.000Z",
-                "wave-1-rt-infra",
-                json!({ "saved": 100 }),
-            ))
-            .unwrap();
-        store
-            .append(&ev(
-                "token.saved",
-                "2026-05-20T10:00:10.000Z",
-                "wave-1-rt-infra",
-                json!({ "saved": 200 }),
-            ))
-            .unwrap();
-        store
-            .append(&ev(
-                "retry.attempt",
-                "2026-05-20T10:01:00.000Z",
-                "wave-1-rt-infra",
-                json!({}),
-            ))
+            .append_pipeline_event(
+                "2026-05-20T11:00:00.000Z",
+                Some("s-test"),
+                Some("wave-2-skill-template"),
+                None,
+                "pipeline.status",
+                None,
+                Some(r#"{"pipeline":"wave-2-skill-template","to":"draft"}"#),
+            )
             .unwrap();
 
-        // Wave 2: status=draft, 50 tokens, 0 retries.
-        store
-            .append(&ev(
-                "pipeline.status",
-                "2026-05-20T11:00:00.000Z",
-                "wave-2-skill-template",
-                json!({ "to": "draft" }),
-            ))
-            .unwrap();
-        store
-            .append(&ev(
-                "token.saved",
-                "2026-05-20T11:00:05.000Z",
-                "wave-2-skill-template",
-                json!({ "saved": 50 }),
-            ))
-            .unwrap();
+        // Token-savings and retry events land in the per-spec NDJSON sink (W5).
+        let _ = ev; // suppress dead-code warning on the legacy helper.
+        let route = |event: &str, ts: &str, pipeline: &str, extra: Value| {
+            let mut payload = json!({ "pipeline": pipeline });
+            if let Some(map) = extra.as_object() {
+                for (k, v) in map {
+                    payload[k] = v.clone();
+                }
+            }
+            let evt = HarnessEvent {
+                v: SCHEMA_VERSION,
+                ts: ts.to_string(),
+                session_id: "s-test".to_string(),
+                wave: 0,
+                actor: Actor {
+                    kind: ActorKind::Hook,
+                    id: None,
+                    actor_type: None,
+                },
+                event: event.to_string(),
+                payload,
+                spec: Some(pipeline.to_string()),
+            };
+            crate::run::event_route::emit(project.to_str().unwrap(), &evt);
+        };
+        route("token.saved", "2026-05-20T10:00:05.000Z", "wave-1-rt-infra", json!({ "saved": 100 }));
+        route("token.saved", "2026-05-20T10:00:10.000Z", "wave-1-rt-infra", json!({ "saved": 200 }));
+        route("retry.attempt", "2026-05-20T10:01:00.000Z", "wave-1-rt-infra", json!({}));
+        route("token.saved", "2026-05-20T11:00:05.000Z", "wave-2-skill-template", json!({ "saved": 50 }));
 
         let conn = Connection::open(store.path()).unwrap();
-        let w1 = aggregate_wave(&conn, "wave-1-rt-infra", Some("opus".into()), 0);
+        let w1 = aggregate_wave(&conn, project, "wave-1-rt-infra", Some("opus".into()), 0);
         assert_eq!(w1.status.as_deref(), Some("completed"));
         assert_eq!(w1.tokens_saved, 300);
         assert_eq!(w1.retries, 1);
         assert_eq!(w1.model.as_deref(), Some("opus"));
-        assert!(w1.duration_ms >= 60_000); // 10:00:00 → 10:01:00
+        // Duration spans the min/max of the NDJSON events (10:00:05 → 10:01:00).
+        assert!(w1.duration_ms >= 55_000);
 
-        let w2 = aggregate_wave(&conn, "wave-2-skill-template", Some("opus".into()), 0);
+        let w2 = aggregate_wave(&conn, project, "wave-2-skill-template", Some("opus".into()), 0);
         assert_eq!(w2.status.as_deref(), Some("draft"));
         assert_eq!(w2.tokens_saved, 50);
         assert_eq!(w2.retries, 0);

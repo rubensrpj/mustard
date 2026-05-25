@@ -662,15 +662,16 @@ fn backfill_sqlite(specs: &[SpecCandidate], root: &Path) -> usize {
 }
 
 /// Returns `true` if the spec already has at least one `pipeline.stage` or
-/// `pipeline.status` event in the store.
+/// `pipeline.status` event in the store. W5: lifecycle rows live in
+/// `pipeline_events` (column `kind`), not in the retired `events` table.
 fn has_pipeline_events(
     conn: &rusqlite::Connection,
     spec_name: &str,
 ) -> rusqlite::Result<bool> {
     let count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM events \
+        "SELECT COUNT(*) FROM pipeline_events \
          WHERE spec = ?1 \
-         AND event IN ('pipeline.stage','pipeline.status') \
+         AND kind IN ('pipeline.stage','pipeline.status') \
          LIMIT 1",
         params![spec_name],
         |row| row.get(0),
@@ -1041,10 +1042,7 @@ pub fn run(opts: ActiveSpecsOpts) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
-    use mustard_core::store::event_store::EventSink;
     use mustard_core::store::sqlite_store::SqliteEventStore;
-    use serde_json::json;
     use tempfile::tempdir;
 
     // -----------------------------------------------------------------------
@@ -1069,19 +1067,6 @@ mod tests {
             format!("# Wave {wave}\n\n### Stage: {stage}\n### Outcome: {outcome}\n"),
         )
         .unwrap();
-    }
-
-    fn make_wave_plan(root: &Path, name: &str, stage: &str, outcome: &str) {
-        let dir = root.join(".claude").join("spec").join(name);
-        std::fs::create_dir_all(&dir).unwrap();
-        // spec.md carries the header
-        std::fs::write(
-            dir.join("spec.md"),
-            format!("# {name}\n\n### Stage: {stage}\n### Outcome: {outcome}\n### Scope: full\n"),
-        )
-        .unwrap();
-        // wave-plan.md marks it as a wave plan
-        std::fs::write(dir.join("wave-plan.md"), "# Wave Plan\n").unwrap();
     }
 
     // -----------------------------------------------------------------------

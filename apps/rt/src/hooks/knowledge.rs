@@ -36,8 +36,7 @@
 //!   the JS `if (!fs.existsSync(persistScript)) return false`.
 
 use mustard_core::fs;
-use mustard_core::store::event_store::EventSink;
-use mustard_core::store::sqlite_store::SqliteEventStore;
+use mustard_core::projection::read_harness_events_from_ndjson_dir;
 use mustard_core::model::contract::{Ctx, HookInput, Observer, Trigger};
 use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use serde_json::{Value, json};
@@ -346,14 +345,22 @@ fn read_state_objects(claude_dir: &Path) -> Vec<StateObject> {
 // session-knowledge — SessionEnd retry.attempt emission + friction
 // ===========================================================================
 
-/// `true` when the harness log already has a `retry.attempt` event for `spec`.
+/// `true` when the per-spec NDJSON log already carries a `retry.attempt` event.
 ///
-/// Uses a cheap existence probe (`has_event_for_spec`) instead of a full
-/// `replay()` table scan — the only fact this lookup needs is membership.
+/// W5: `retry.attempt` lives in the per-spec NDJSON sink, not in `pipeline_events`.
+/// Existence-only probe (a single line is enough), so this returns early.
 fn spec_has_retry_events(cwd: &str, spec: &str) -> bool {
-    SqliteEventStore::for_project(cwd)
-        .and_then(|store| store.has_event_for_spec("retry.attempt", spec))
-        .unwrap_or(false)
+    let events_dir = Path::new(cwd)
+        .join(".claude")
+        .join("spec")
+        .join(spec)
+        .join("events");
+    for ev in read_harness_events_from_ndjson_dir(&events_dir) {
+        if ev.event == "retry.attempt" {
+            return true;
+        }
+    }
+    false
 }
 
 /// Emit one `retry.attempt` event per measured hook-level retry. Idempotent:
@@ -373,9 +380,6 @@ fn emit_retry_attempts(state: &StateObject, input: &HookInput, cwd: &str) {
     if spec_has_retry_events(cwd, spec) {
         return;
     }
-    let Ok(store) = SqliteEventStore::for_project(cwd) else {
-        return;
-    };
     for _ in 0..retries {
         let event = HarnessEvent {
             v: SCHEMA_VERSION,
@@ -391,7 +395,10 @@ fn emit_retry_attempts(state: &StateObject, input: &HookInput, cwd: &str) {
             payload: json!({ "reason": "hook-level", "tool": Value::Null }),
             spec: Some(spec.clone()),
         };
-        let _ = store.append(&event);
+        // `retry.attempt` is non-pipeline → routed to the per-spec NDJSON
+        // sink by the W5 split. `event_route::emit` is the single
+        // classifier; see `apps/rt/src/run/event_route.rs`.
+        let _ = crate::run::event_route::emit(cwd, &event);
     }
 }
 
@@ -861,6 +868,24 @@ mod tests {
         assert_eq!(parsed["entries"].as_array().unwrap().len(), 1);
     }
 
+    /// Count `retry.attempt` rows across every per-spec NDJSON dir (W5).
+    fn count_retry_events(project: &Path) -> usize {
+        let specs_root = project.join(".claude").join("spec");
+        let Ok(entries) = std::fs::read_dir(&specs_root) else {
+            return 0;
+        };
+        let mut total = 0usize;
+        for entry in entries.flatten() {
+            let dir = entry.path().join("events");
+            for ev in read_harness_events_from_ndjson_dir(&dir) {
+                if ev.event == "retry.attempt" {
+                    total += 1;
+                }
+            }
+        }
+        total
+    }
+
     #[test]
     fn session_knowledge_emits_retry_attempt_events() {
         let dir = tempdir().unwrap();
@@ -877,11 +902,11 @@ mod tests {
             ..HookInput::default()
         };
         Knowledge.observe(&input, &ctx(Trigger::SessionEnd, project));
-        let events = SqliteEventStore::for_project(project)
-            .and_then(|s| s.replay())
-            .unwrap();
-        let retries = events.iter().filter(|e| e.event == "retry.attempt").count();
-        assert_eq!(retries, 3, "one retry.attempt per measured retry");
+        assert_eq!(
+            count_retry_events(dir.path()),
+            3,
+            "one retry.attempt per measured retry"
+        );
     }
 
     #[test]
@@ -901,11 +926,11 @@ mod tests {
         // Run twice — the second run must not double-count.
         Knowledge.observe(&input, &ctx(Trigger::SessionEnd, project));
         Knowledge.observe(&input, &ctx(Trigger::SessionEnd, project));
-        let events = SqliteEventStore::for_project(project)
-            .and_then(|s| s.replay())
-            .unwrap();
-        let retries = events.iter().filter(|e| e.event == "retry.attempt").count();
-        assert_eq!(retries, 2, "idempotent — no re-emission");
+        assert_eq!(
+            count_retry_events(dir.path()),
+            2,
+            "idempotent — no re-emission"
+        );
     }
 
     // --- memory-auto-extract parity ----------------------------------------

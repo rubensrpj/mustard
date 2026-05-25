@@ -7,17 +7,19 @@
 //! erroring — the property the harness needs when several hooks fire in
 //! parallel.
 //!
-//! The schema is the one shipped by the legacy TypeScript event store
-//! (`apps/cli/src/runtime/schema.sql`): an append-only `events` table with an
-//! `events_fts` FTS5 mirror, plus the denormalized `specs`, `metrics_projection`,
-//! `knowledge` (+ standalone `knowledge_fts`), and `spans` projections. Every
-//! `CREATE` is `IF NOT EXISTS`, so [`SqliteEventStore::new`] applies it on
-//! every open without harm.
+//! ## W5 layout (2026-05-24-mustard-unification)
 //!
-//! This store implements the [`EventSink`](super::event_store::EventSink)
-//! trait: `append` is INSERT-only, preserving the append-only / audit
-//! semantics of the event log. The FTS mirror is kept in sync by the
-//! `events_ai` trigger in the schema, not by application code.
+//! The high-volume `events` table is gone. Tool / agent / qa / scope events now
+//! live in per-spec NDJSON files under `.claude/spec/{name}/events/*.ndjson`
+//! (written by `apps/rt/src/run/event_writer_ndjson.rs`). What remains in
+//! SQLite is the **lifecycle index** — `pipeline_events` carries
+//! `pipeline.scope`, `pipeline.status`, `pipeline.phase`, the
+//! `pipeline.task.*` pair, `pipeline.wave.*` pair, and `pipeline.complete`.
+//!
+//! The legacy `replay`/`query`/`distinct_specs` methods are kept as
+//! **compatibility shims**: they read from `pipeline_events` instead of the
+//! retired `events` table. Tool-level event consumers must read NDJSON files
+//! directly (see [`crate::projection::timeline`]).
 //!
 //! Every method is **fail-open**: it returns [`Result`] and never panics. A
 //! database that cannot be opened, a query that fails, or a row that cannot be
@@ -293,7 +295,12 @@ impl SqliteEventStore {
         self.conn
     }
 
-    /// Replay every event, oldest first (by insertion `id`).
+    /// Replay every lifecycle event, oldest first (by insertion `id`).
+    ///
+    /// W5 compatibility shim: the legacy `events` table is gone. This now
+    /// reads from `pipeline_events` (lifecycle facts only — `pipeline.*`
+    /// kinds). Tool / agent / qa events live in per-spec NDJSON files; see
+    /// [`crate::projection::timeline`] for the NDJSON reader.
     ///
     /// Fail-open: a row that cannot be decoded into a [`HarnessEvent`] is
     /// skipped rather than aborting the replay.
@@ -303,42 +310,36 @@ impl SqliteEventStore {
     /// Returns [`Error::Sqlite`] only for a genuine query failure — never for
     /// an empty table or an individual bad row.
     pub fn replay(&self) -> Result<Vec<HarnessEvent>> {
-        self.select_events("SELECT id, ts, session_id, wave, spec, event, \
-             actor_kind, actor_id, payload FROM events ORDER BY id", [])
+        self.select_pipeline_events(
+            "SELECT id, ts, session_id, wave, spec, kind, payload \
+             FROM pipeline_events ORDER BY id",
+            [],
+        )
     }
 
-    /// Replay events whose `ts` is `>= since_ts`, oldest first.
+    /// Replay lifecycle events whose `ts` is `>= since_ts`, oldest first.
     ///
-    /// `ts` is the ISO-8601 string column; the comparison is lexical, which is
-    /// correct for the fixed-width UTC timestamps the harness emits. A `None`
-    /// argument is equivalent to [`replay`](Self::replay) (no lower bound).
-    ///
-    /// Used by the workspace summary to avoid an unbounded full scan of the
-    /// `events` table — only the recent window the dashboard renders is read.
-    ///
-    /// Fail-open: a row that cannot be decoded is skipped, not fatal.
+    /// W5 compatibility shim — reads from `pipeline_events`. See
+    /// [`Self::replay`].
     ///
     /// # Errors
     ///
     /// Returns [`Error::Sqlite`] only for a genuine query failure.
     pub fn replay_since(&self, since_ts: Option<&str>) -> Result<Vec<HarnessEvent>> {
         match since_ts {
-            Some(ts) => self.select_events(
-                "SELECT id, ts, session_id, wave, spec, event, actor_kind, \
-                 actor_id, payload FROM events WHERE ts >= ?1 ORDER BY id",
+            Some(ts) => self.select_pipeline_events(
+                "SELECT id, ts, session_id, wave, spec, kind, payload \
+                 FROM pipeline_events WHERE ts >= ?1 ORDER BY id",
                 params![ts],
             ),
             None => self.replay(),
         }
     }
 
-    /// Delete `events` rows older than `cutoff_ts` (an ISO-8601 string).
+    /// Delete `pipeline_events` rows older than `cutoff_ts` (an ISO-8601 string).
     ///
-    /// Retention helper for the append-only log: removes rows whose `ts` is
-    /// strictly less than `cutoff_ts`. The `events_fts` external-content index
-    /// is kept consistent by the `events_ad` AFTER DELETE trigger, which removes
-    /// each pruned row's FTS entry incrementally — no orphaned index rows remain.
-    /// Returns the number of rows removed.
+    /// W5 compatibility shim: prunes the lifecycle index. NDJSON files are
+    /// pruned by `mustard-rt run spec-clear`.
     ///
     /// # Errors
     ///
@@ -346,60 +347,45 @@ impl SqliteEventStore {
     pub fn prune_events_older_than(&self, cutoff_ts: &str) -> Result<usize> {
         let removed = self
             .conn
-            .execute("DELETE FROM events WHERE ts < ?1", params![cutoff_ts])?;
+            .execute(
+                "DELETE FROM pipeline_events WHERE ts < ?1",
+                params![cutoff_ts],
+            )?;
         Ok(removed)
     }
 
-    /// Replay the events for a single spec, oldest first.
+    /// Replay lifecycle events for a single spec, oldest first.
     ///
-    /// A `None` argument matches events with no resolved spec (`spec IS NULL`).
+    /// W5 compatibility shim — reads from `pipeline_events`. A `None` argument
+    /// matches events with no resolved spec (`spec IS NULL`).
     ///
     /// # Errors
     ///
     /// Returns [`Error::Sqlite`] for a query failure.
     pub fn query(&self, spec: Option<&str>) -> Result<Vec<HarnessEvent>> {
         match spec {
-            Some(name) => self.select_events(
-                "SELECT id, ts, session_id, wave, spec, event, actor_kind, \
-                 actor_id, payload FROM events WHERE spec = ?1 ORDER BY id",
+            Some(name) => self.select_pipeline_events(
+                "SELECT id, ts, session_id, wave, spec, kind, payload \
+                 FROM pipeline_events WHERE spec = ?1 ORDER BY id",
                 params![name],
             ),
-            None => self.select_events(
-                "SELECT id, ts, session_id, wave, spec, event, actor_kind, \
-                 actor_id, payload FROM events WHERE spec IS NULL ORDER BY id",
+            None => self.select_pipeline_events(
+                "SELECT id, ts, session_id, wave, spec, kind, payload \
+                 FROM pipeline_events WHERE spec IS NULL ORDER BY id",
                 [],
             ),
         }
     }
 
-    /// Full-text search the `knowledge` table, ranked by FTS5 `bm25`.
-    ///
-    /// `query` is an FTS5 MATCH expression; results come back best-match
-    /// first. `knowledge_fts` is a standalone (non-content) FTS5 table whose
-    /// `id` column is `UNINDEXED`, so the match is joined back to `knowledge`
-    /// on `id` to recover the full row.
+    /// W5 stub — the legacy `knowledge` FTS5 table is retired. Always returns
+    /// an empty result. Callers should query `knowledge_patterns_fts` via
+    /// dedicated readers (W6+).
     ///
     /// # Errors
     ///
-    /// Returns [`Error::Sqlite`] for a query failure (including a malformed
-    /// MATCH expression).
-    pub fn search(&self, query: &str) -> Result<Vec<KnowledgeRow>> {
-        let sql = "SELECT k.id, k.type, k.name, k.description, k.confidence \
-                   FROM knowledge_fts f \
-                   JOIN knowledge k ON k.id = f.id \
-                   WHERE knowledge_fts MATCH ?1 \
-                   ORDER BY bm25(knowledge_fts)";
-        let mut stmt = self.conn.prepare(sql)?;
-        let rows = stmt.query_map(params![query], |row| {
-            Ok(KnowledgeRow {
-                id: row.get(0)?,
-                kind: row.get(1)?,
-                name: row.get(2)?,
-                description: row.get(3)?,
-                confidence: row.get(4)?,
-            })
-        })?;
-        Ok(rows.filter_map(std::result::Result::ok).collect())
+    /// Never. Kept fallible for API compatibility with the pre-W5 signature.
+    pub fn search(&self, _query: &str) -> Result<Vec<KnowledgeRow>> {
+        Ok(Vec::new())
     }
 
     /// All rows of the `specs` projection.
@@ -425,32 +411,16 @@ impl SqliteEventStore {
         Ok(rows.filter_map(std::result::Result::ok).collect())
     }
 
-    /// The `metrics_projection` row for `spec`, if one exists.
+    /// W5 stub — the `metrics_projection` table is retired (data duplicated
+    /// `telemetry.db.run_usage`). Always returns `Ok(None)`. Callers that
+    /// genuinely want metrics should query `telemetry::reader` against
+    /// `run_usage` directly.
     ///
     /// # Errors
     ///
-    /// Returns [`Error::Sqlite`] for a query failure.
-    pub fn metrics(&self, spec: &str) -> Result<Option<MetricsRow>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT spec, api_calls, retries, pass1, tool_breakdown, \
-             dispatch_failures_by_phase, agent_count, updated_at \
-             FROM metrics_projection WHERE spec = ?1",
-        )?;
-        let row = stmt
-            .query_row(params![spec], |row| {
-                Ok(MetricsRow {
-                    spec: row.get(0)?,
-                    api_calls: row.get(1)?,
-                    retries: row.get(2)?,
-                    pass1: row.get(3)?,
-                    tool_breakdown: row.get(4)?,
-                    dispatch_failures_by_phase: row.get(5)?,
-                    agent_count: row.get(6)?,
-                    updated_at: row.get(7)?,
-                })
-            })
-            .optional()?;
-        Ok(row)
+    /// Never. Kept fallible for API compatibility with the pre-W5 signature.
+    pub fn metrics(&self, _spec: &str) -> Result<Option<MetricsRow>> {
+        Ok(None)
     }
 
     /// The per-execution run rows for `spec`, ordered by start time.
@@ -502,27 +472,23 @@ impl SqliteEventStore {
         crate::telemetry::TelemetryStore::new(self.path.with_file_name("telemetry.db"))
     }
 
-    /// All distinct non-null spec names present in the `events` table, sorted
-    /// alphabetically.
-    ///
-    /// Used by `archive_followups` to enumerate every spec the event store
-    /// knows about without scanning the filesystem.
+    /// All distinct non-null spec names present in `pipeline_events`, sorted
+    /// alphabetically. W5 compatibility shim — reads from the lifecycle index.
     ///
     /// # Errors
     ///
     /// Returns [`Error::Sqlite`] for a query failure.
     pub fn distinct_specs(&self) -> Result<Vec<String>> {
         let mut stmt = self.conn.prepare(
-            "SELECT DISTINCT spec FROM events WHERE spec IS NOT NULL ORDER BY spec",
+            "SELECT DISTINCT spec FROM pipeline_events \
+             WHERE spec IS NOT NULL ORDER BY spec",
         )?;
         let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
         Ok(rows.filter_map(std::result::Result::ok).collect())
     }
 
-    /// `true` when at least one row in `events` has the given `event` name and
-    /// `spec`. A cheap existence probe (`SELECT 1 ... LIMIT 1`) — the intended
-    /// replacement for `replay()`-as-lookup, which scans and decodes the whole
-    /// table just to test membership.
+    /// `true` when at least one row in `pipeline_events` has the given `kind`
+    /// and `spec`. W5 compatibility shim (kind = the canonical event name).
     ///
     /// # Errors
     ///
@@ -532,7 +498,7 @@ impl SqliteEventStore {
         let found: Option<i64> = self
             .conn
             .query_row(
-                "SELECT 1 FROM events WHERE event = ?1 AND spec = ?2 LIMIT 1",
+                "SELECT 1 FROM pipeline_events WHERE kind = ?1 AND spec = ?2 LIMIT 1",
                 params![event, spec],
                 |row| row.get(0),
             )
@@ -568,8 +534,8 @@ impl SqliteEventStore {
         let spec: Option<String> = self
             .conn
             .query_row(
-                "SELECT spec FROM events \
-                 WHERE event = 'pipeline.scope' \
+                "SELECT spec FROM pipeline_events \
+                 WHERE kind = 'pipeline.scope' \
                    AND session_id = ?1 \
                    AND spec IS NOT NULL \
                    AND spec <> '__orphan__' \
@@ -745,28 +711,15 @@ impl SqliteEventStore {
         Ok(())
     }
 
-    /// Insert-or-replace a row in the denormalized `metrics_projection` table.
+    /// W5 stub — the `metrics_projection` table is retired. This is a no-op
+    /// preserved so existing callers (e.g. `mustard-rt run rebuild-specs`)
+    /// compile while metrics flow through `telemetry::reader` against
+    /// `telemetry.db.run_usage`.
     ///
     /// # Errors
     ///
-    /// Returns [`Error::Sqlite`] for a database failure.
-    pub fn upsert_metrics(&self, row: &MetricsRow) -> Result<()> {
-        self.conn.execute(
-            "INSERT OR REPLACE INTO metrics_projection(\
-             spec, api_calls, retries, pass1, tool_breakdown, \
-             dispatch_failures_by_phase, agent_count, updated_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            params![
-                row.spec,
-                row.api_calls,
-                row.retries,
-                row.pass1,
-                row.tool_breakdown,
-                row.dispatch_failures_by_phase,
-                row.agent_count,
-                row.updated_at,
-            ],
-        )?;
+    /// Never. Kept fallible for API compatibility.
+    pub fn upsert_metrics(&self, _row: &MetricsRow) -> Result<()> {
         Ok(())
     }
 
@@ -902,6 +855,122 @@ impl SqliteEventStore {
         Ok(())
     }
 
+    // -------------------------------------------------------------------------
+    // W5 (2026-05-24-mustard-unification) — pipeline_events + sessions helpers.
+    //
+    // The hot-path event log moved to per-spec NDJSON files; SQLite keeps a
+    // small `pipeline_events` table for the lifecycle events the dashboard
+    // needs random-access reads for, plus a `sessions` registry for the
+    // Sessions sidebar. The NDJSON writer (`apps/rt/src/run/event_writer_ndjson.rs`)
+    // funnels the matching event kinds through `append_pipeline_event` so the
+    // two stay in sync — NDJSON is the truth, SQLite is the index.
+    // -------------------------------------------------------------------------
+
+    /// Append one row to `pipeline_events`. `parent_id` ties Task children back
+    /// to their dispatching event so the timeline UI can render execution
+    /// trees (see W5.T5.3).
+    ///
+    /// `payload` is serialized once by the caller; passing it pre-serialized
+    /// lets the hot path avoid a second `to_string` when it already holds the
+    /// JSON text from the NDJSON write.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Sqlite`] for a database failure.
+    pub fn append_pipeline_event(
+        &self,
+        ts: &str,
+        session_id: Option<&str>,
+        spec: Option<&str>,
+        wave: Option<u32>,
+        kind: &str,
+        parent_id: Option<i64>,
+        payload_json: Option<&str>,
+    ) -> Result<i64> {
+        self.conn.execute(
+            "INSERT INTO pipeline_events \
+             (ts, session_id, spec, wave, kind, parent_id, payload) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![ts, session_id, spec, wave, kind, parent_id, payload_json],
+        )?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    /// Insert or update one session row in the `sessions` registry.
+    ///
+    /// `INSERT OR REPLACE` keyed on `id`: the writer can call this on every
+    /// `session.start` and every activity stamp without checking existence.
+    /// `slug` is unique; conflicts on slug are rare in practice (timestamp +
+    /// counter) and would return `Error::Sqlite` to the caller.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Sqlite`] for a database failure (including a slug
+    /// collision).
+    pub fn upsert_session(
+        &self,
+        id: &str,
+        slug: &str,
+        started_at: &str,
+        last_activity_at: Option<&str>,
+        last_spec: Option<&str>,
+        cwd: Option<&str>,
+        status: &str,
+    ) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO sessions \
+             (id, slug, started_at, last_activity_at, last_spec, cwd, status) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) \
+             ON CONFLICT(id) DO UPDATE SET \
+                last_activity_at = excluded.last_activity_at, \
+                last_spec        = excluded.last_spec, \
+                cwd              = excluded.cwd, \
+                status           = excluded.status",
+            params![id, slug, started_at, last_activity_at, last_spec, cwd, status],
+        )?;
+        Ok(())
+    }
+
+    /// Most-recent sessions, ordered by `last_activity_at DESC`. `limit` caps
+    /// the result set; pass `None` for "all".
+    ///
+    /// Returns tuples of `(id, slug, started_at, last_activity_at, last_spec,
+    /// cwd, status)` — kept as a tuple to avoid a public DTO until the
+    /// dashboard reader stabilizes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Sqlite`] for a database failure.
+    #[allow(clippy::type_complexity)]
+    pub fn recent_sessions(
+        &self,
+        limit: Option<u32>,
+    ) -> Result<Vec<(String, String, String, Option<String>, Option<String>, Option<String>, String)>> {
+        let sql = match limit {
+            Some(_) => "SELECT id, slug, started_at, last_activity_at, last_spec, cwd, status \
+                        FROM sessions ORDER BY COALESCE(last_activity_at, started_at) DESC LIMIT ?1",
+            None => "SELECT id, slug, started_at, last_activity_at, last_spec, cwd, status \
+                     FROM sessions ORDER BY COALESCE(last_activity_at, started_at) DESC",
+        };
+        let mut stmt = self.conn.prepare(sql)?;
+        let row_map = |row: &rusqlite::Row<'_>| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, Option<String>>(3)?,
+                row.get::<_, Option<String>>(4)?,
+                row.get::<_, Option<String>>(5)?,
+                row.get::<_, String>(6)?,
+            ))
+        };
+        let rows = match limit {
+            Some(n) => stmt.query_map(params![n], row_map)?.collect::<Vec<_>>(),
+            None => stmt.query_map([], row_map)?.collect::<Vec<_>>(),
+        };
+        Ok(rows.into_iter().filter_map(std::result::Result::ok).collect())
+    }
+
     /// Transition an amendment window to a terminal `status`.
     ///
     /// `status` should be one of `"resolved"`, `"pending"`, `"completed"`, or
@@ -925,31 +994,31 @@ impl SqliteEventStore {
         Ok(())
     }
 
-    /// Run an event-selecting query and decode each row into a [`HarnessEvent`].
+    /// Run a `pipeline_events`-selecting query and decode each row into a
+    /// [`HarnessEvent`].
     ///
-    /// Shared by [`replay`](Self::replay) and [`query`](Self::query). The
-    /// column order is fixed: `id, ts, session_id, wave, spec, event,
-    /// actor_kind, actor_id, payload`. A row that fails to decode is skipped.
-    fn select_events(
+    /// W5 helper: replaces the old `select_events` that read from the retired
+    /// `events` table. Column order is fixed: `id, ts, session_id, wave, spec,
+    /// kind, payload` — `pipeline_events` has no `actor_kind`/`actor_id` columns,
+    /// so the decoded event always reports [`ActorKind::Hook`] with `id = None`.
+    /// A row that fails to decode is skipped.
+    fn select_pipeline_events(
         &self,
         sql: &str,
         params: impl rusqlite::Params,
     ) -> Result<Vec<HarnessEvent>> {
         let mut stmt = self.conn.prepare(sql)?;
         let rows = stmt.query_map(params, |row| {
-            let actor_kind: Option<String> = row.get(6)?;
-            let actor_id: Option<String> = row.get(7)?;
-            let payload_text: Option<String> = row.get(8)?;
+            let payload_text: Option<String> = row.get(6)?;
             Ok(HarnessEvent {
                 v: SCHEMA_VERSION,
                 ts: row.get(1)?,
                 session_id: row.get::<_, Option<String>>(2)?.unwrap_or_default(),
-                // cast_sign_loss/cast_possible_truncation: wave numbers are non-negative and small.
                 #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
                 wave: row.get::<_, Option<i64>>(3)?.unwrap_or(0) as u32,
                 actor: Actor {
-                    kind: parse_actor_kind(actor_kind.as_deref()),
-                    id: actor_id,
+                    kind: ActorKind::Hook,
+                    id: None,
                     actor_type: None,
                 },
                 event: row.get(5)?,
@@ -981,48 +1050,46 @@ fn resolve_db_path(project_dir: &Path, env_override: Option<&str>) -> PathBuf {
     }
 }
 
-/// Decode the stored `actor_kind` string into an [`ActorKind`].
-///
-/// Falls back to [`ActorKind::Hook`] for an absent or unrecognised value —
-/// the harness emits `"hook"` for the overwhelming majority of events, so it
-/// is the safe default rather than an error.
-fn parse_actor_kind(raw: Option<&str>) -> ActorKind {
-    match raw {
-        Some("agent") => ActorKind::Agent,
-        Some("orchestrator") => ActorKind::Orchestrator,
-        Some("cli") => ActorKind::Cli,
-        _ => ActorKind::Hook,
-    }
-}
+// `parse_actor_kind` was used by the legacy `events`-table reader (which
+// carried an `actor_kind` text column). `pipeline_events` does not.
 
-/// Render an [`ActorKind`] back to its lowercase wire string.
-fn actor_kind_str(kind: ActorKind) -> &'static str {
-    match kind {
-        ActorKind::Hook => "hook",
-        ActorKind::Agent => "agent",
-        ActorKind::Orchestrator => "orchestrator",
-        ActorKind::Cli => "cli",
-    }
-}
+// `actor_kind_str` was used by the legacy `events`-table writer (which carried
+// `actor_kind` / `actor_id` columns). `pipeline_events` does not, so the
+// W5-era `EventSink::append` no longer needs the helper.
 
 impl super::event_store::EventSink for SqliteEventStore {
+    /// Persist `event` according to the W5 split:
+    ///
+    /// - `pipeline.*` lifecycle events land in `pipeline_events` (the lean
+    ///   in-database index the dashboard reads by spec).
+    /// - Every other event kind (`tool.use`, `agent.start`, `qa.result`, …)
+    ///   is a **no-op** at this sink: those events belong in the per-spec
+    ///   NDJSON files (`apps/rt/src/run/event_writer_ndjson.rs`).
+    ///
+    /// The split keeps existing callers compiling without bypassing the W5
+    /// hot-path split. Callers that want to make sure their event reaches the
+    /// NDJSON sink must call `event_writer_ndjson::write_event` directly.
     fn append(&self, event: &HarnessEvent) -> Result<()> {
-        // INSERT-only: the events table is append-only. The `events_ai`
-        // trigger in the schema mirrors the row into `events_fts`.
+        if !event.event.starts_with("pipeline.") {
+            return Ok(());
+        }
         let payload = serde_json::to_string(&event.payload)?;
+        let session_id: Option<&str> = if event.session_id.is_empty() {
+            None
+        } else {
+            Some(event.session_id.as_str())
+        };
         self.conn
             .execute(
-                "INSERT INTO events \
-                 (ts, session_id, wave, spec, event, actor_kind, actor_id, payload) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                "INSERT INTO pipeline_events \
+                 (ts, session_id, spec, wave, kind, payload) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 params![
                     event.ts,
-                    event.session_id,
-                    event.wave,
+                    session_id,
                     event.spec,
+                    event.wave,
                     event.event,
-                    actor_kind_str(event.actor.kind),
-                    event.actor.id,
                     payload,
                 ],
             )
@@ -1038,7 +1105,7 @@ mod tests {
     use serde_json::json;
     use tempfile::tempdir;
 
-    fn sample_event(name: &str, spec: Option<&str>) -> HarnessEvent {
+    fn lifecycle_event(name: &str, spec: Option<&str>) -> HarnessEvent {
         HarnessEvent {
             v: SCHEMA_VERSION,
             ts: "2026-05-19T00:00:00.000Z".to_string(),
@@ -1059,295 +1126,200 @@ mod tests {
         SqliteEventStore::new(dir.join("mustard.db")).unwrap()
     }
 
+    /// W5 schema check: `events` and its FTS5 mirror must NOT be present
+    /// after a fresh open at LATEST_VERSION.
     #[test]
-    fn second_open_takes_fast_path_and_preserves_user_version() {
-        let dir = tempdir().unwrap();
-        let db = dir.path().join("mustard.db");
-
-        // First open materializes the schema and stamps user_version.
-        {
-            let store = SqliteEventStore::new(&db).unwrap();
-            let uv: i64 = store
-                .conn
-                .query_row("PRAGMA user_version", [], |r| r.get(0))
-                .unwrap();
-            assert_eq!(uv, i64::from(crate::store::migrations::LATEST_VERSION));
-        }
-
-        // Drop a sentinel row into _mustard_meta. If the second open re-ran the
-        // migration ladder it would touch this table; the fast-path must not.
-        {
-            let probe = Connection::open(&db).unwrap();
-            probe
-                .execute(
-                    "INSERT OR REPLACE INTO _mustard_meta(key, value) \
-                     VALUES('fast_path_probe', 'untouched')",
-                    [],
-                )
-                .unwrap();
-        }
-
-        // Second open: user_version already at latest -> DDL + migrations skip.
-        let store = SqliteEventStore::new(&db).unwrap();
-        let uv: i64 = store
-            .conn
-            .query_row("PRAGMA user_version", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(uv, i64::from(crate::store::migrations::LATEST_VERSION));
-        let probe: String = store
-            .conn
-            .query_row(
-                "SELECT value FROM _mustard_meta WHERE key = 'fast_path_probe'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(probe, "untouched");
-    }
-
-    #[test]
-    fn prune_events_older_than_removes_expected_rows() {
+    fn fresh_open_has_no_legacy_events_table() {
         let dir = tempdir().unwrap();
         let store = store_in(dir.path());
-        for ts in ["2026-01-01T00:00:00Z", "2026-03-01T00:00:00Z", "2026-06-01T00:00:00Z"] {
-            let mut ev = sample_event("tool.use", None);
-            ev.ts = ts.to_string();
-            store.append(&ev).unwrap();
-        }
-        let removed = store.prune_events_older_than("2026-04-01T00:00:00Z").unwrap();
-        assert_eq!(removed, 2);
-        assert_eq!(store.replay().unwrap().len(), 1);
-        // replay_since with a lower bound matches only the surviving row.
-        assert_eq!(
-            store.replay_since(Some("2026-05-01T00:00:00Z")).unwrap().len(),
-            1
-        );
-    }
-
-    #[test]
-    fn prune_events_older_than_clears_fts_index_for_pruned_rows() {
-        let dir = tempdir().unwrap();
-        let store = store_in(dir.path());
-
-        // A pruned row carries a unique event term; a surviving row carries another.
-        let mut old_ev = sample_event("uniquepruned", None);
-        old_ev.ts = "2026-01-01T00:00:00Z".to_string();
-        store.append(&old_ev).unwrap();
-        let mut new_ev = sample_event("uniquekept", None);
-        new_ev.ts = "2026-06-01T00:00:00Z".to_string();
-        store.append(&new_ev).unwrap();
-
-        let fts_count = |term: &str| -> i64 {
+        let exists = |name: &str| -> bool {
             store
                 .conn
                 .query_row(
-                    "SELECT COUNT(*) FROM events_fts WHERE events_fts MATCH ?1",
-                    params![term],
-                    |r| r.get(0),
+                    "SELECT 1 FROM sqlite_master WHERE name = ?1 LIMIT 1",
+                    params![name],
+                    |r| r.get::<_, i64>(0),
                 )
+                .optional()
                 .unwrap()
+                .is_some()
         };
-        assert_eq!(fts_count("uniquepruned"), 1);
-
-        store.prune_events_older_than("2026-04-01T00:00:00Z").unwrap();
-
-        // The pruned row's FTS entry is gone; the surviving row's remains.
-        assert_eq!(fts_count("uniquepruned"), 0);
-        assert_eq!(fts_count("uniquekept"), 1);
+        for table in ["events", "events_fts", "knowledge", "knowledge_fts", "metrics_projection"] {
+            assert!(!exists(table), "{table} must not exist in W5 schema");
+        }
+        for table in ["pipeline_events", "sessions", "specs", "pipeline_amend_window"] {
+            assert!(exists(table), "{table} must exist in W5 schema");
+        }
     }
 
+    /// Append-then-replay round-trips a lifecycle event through pipeline_events.
+    /// Filters out the `pipeline.economy.schema.shrunk` migration-emitted event
+    /// the v9→v10 step writes when legacy intermediate tables were dropped.
     #[test]
-    fn append_then_replay_round_trips() {
+    fn append_lifecycle_event_round_trips() {
         let dir = tempdir().unwrap();
         let store = store_in(dir.path());
-        store.append(&sample_event("session.start", None)).unwrap();
-        store.append(&sample_event("tool.use", None)).unwrap();
-
-        let events = store.replay().unwrap();
+        store
+            .append(&lifecycle_event("pipeline.scope", Some("spec-a")))
+            .unwrap();
+        store
+            .append(&lifecycle_event("pipeline.phase", Some("spec-a")))
+            .unwrap();
+        let events: Vec<_> = store
+            .replay()
+            .unwrap()
+            .into_iter()
+            .filter(|e| e.event != "pipeline.economy.schema.shrunk")
+            .collect();
         assert_eq!(events.len(), 2);
-        assert_eq!(events[0].event, "session.start");
-        assert_eq!(events[1].event, "tool.use");
-        assert_eq!(events[1].payload, json!({"k": "v"}));
-        assert_eq!(events[1].actor.kind, ActorKind::Hook);
-        assert_eq!(events[1].actor.id.as_deref(), Some("sqlite-store-test"));
+        assert_eq!(events[0].event, "pipeline.scope");
+        assert_eq!(events[1].event, "pipeline.phase");
+        assert_eq!(events[0].spec.as_deref(), Some("spec-a"));
     }
 
+    /// Non-pipeline events (tool.use, etc) are no-ops in the SQLite sink —
+    /// the W5 contract moves them to per-spec NDJSON files. The migration
+    /// `pipeline.economy.schema.shrunk` event (from v9→v10) is filtered out.
     #[test]
-    fn replay_fresh_db_is_empty_not_error() {
+    fn append_non_pipeline_event_is_no_op() {
         let dir = tempdir().unwrap();
         let store = store_in(dir.path());
-        assert!(store.replay().unwrap().is_empty());
-        assert!(store.query(Some("nope")).unwrap().is_empty());
-        assert!(store.specs().unwrap().is_empty());
-        assert!(store.metrics("nope").unwrap().is_none());
-        assert!(store.runs_by_spec("nope").unwrap().is_empty());
-        assert!(store.search("anything").unwrap().is_empty());
+        store.append(&lifecycle_event("tool.use", Some("spec-a"))).unwrap();
+        store.append(&lifecycle_event("agent.start", Some("spec-a"))).unwrap();
+        let events: Vec<_> = store
+            .replay()
+            .unwrap()
+            .into_iter()
+            .filter(|e| e.event != "pipeline.economy.schema.shrunk")
+            .collect();
+        assert!(events.is_empty());
     }
 
+    /// `query` filters by spec on the pipeline_events table.
     #[test]
     fn query_filters_by_spec() {
         let dir = tempdir().unwrap();
         let store = store_in(dir.path());
-        store.append(&sample_event("a", Some("spec-x"))).unwrap();
-        store.append(&sample_event("b", Some("spec-y"))).unwrap();
-        store.append(&sample_event("c", Some("spec-x"))).unwrap();
-        store.append(&sample_event("d", None)).unwrap();
-
-        let x = store.query(Some("spec-x")).unwrap();
-        assert_eq!(x.len(), 2);
-        assert_eq!(x[0].event, "a");
-        assert_eq!(x[1].event, "c");
-
-        let none = store.query(None).unwrap();
-        assert_eq!(none.len(), 1);
-        assert_eq!(none[0].event, "d");
+        store
+            .append(&lifecycle_event("pipeline.scope", Some("spec-x")))
+            .unwrap();
+        store
+            .append(&lifecycle_event("pipeline.scope", Some("spec-y")))
+            .unwrap();
+        store
+            .append(&lifecycle_event("pipeline.phase", Some("spec-x")))
+            .unwrap();
+        assert_eq!(store.query(Some("spec-x")).unwrap().len(), 2);
+        assert_eq!(store.query(Some("spec-y")).unwrap().len(), 1);
     }
 
+    /// `distinct_specs` reads off pipeline_events and excludes NULLs.
     #[test]
-    fn search_ranks_knowledge_by_bm25() {
+    fn distinct_specs_lists_known_specs() {
         let dir = tempdir().unwrap();
         let store = store_in(dir.path());
-        // Seed the knowledge table directly; the harness owns its rowid.
-        store
-            .conn
-            .execute(
-                "INSERT INTO knowledge (id, type, name, description, confidence) \
-                 VALUES ('k1', 'pattern', 'event sink trait', \
-                 'an interface for appending events', 0.9)",
-                [],
-            )
-            .unwrap();
-        store
-            .conn
-            .execute(
-                "INSERT INTO knowledge (id, type, name, description, confidence) \
-                 VALUES ('k2', 'convention', 'naming', \
-                 'use snake_case for files', 0.5)",
-                [],
-            )
-            .unwrap();
-        store
-            .conn
-            .execute(
-                "INSERT INTO knowledge_fts (id, name, description) \
-                 SELECT id, name, description FROM knowledge",
-                [],
-            )
-            .unwrap();
-
-        let hits = store.search("event").unwrap();
-        assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].id, "k1");
-        assert_eq!(hits[0].kind.as_deref(), Some("pattern"));
-
-        // A term in both rows returns both.
-        store
-            .conn
-            .execute(
-                "INSERT INTO knowledge (id, type, name, description, confidence) \
-                 VALUES ('k3', 'pattern', 'files', 'event log files', 0.7)",
-                [],
-            )
-            .unwrap();
-        store
-            .conn
-            .execute(
-                "INSERT INTO knowledge_fts (id, name, description) \
-                 VALUES ('k3', 'files', 'event log files')",
-                [],
-            )
-            .unwrap();
-        assert_eq!(store.search("files").unwrap().len(), 2);
-    }
-
-    #[test]
-    fn specs_metrics_and_spans_decode() {
-        let dir = tempdir().unwrap();
-        let store = store_in(dir.path());
-        store
-            .conn
-            .execute(
-                "INSERT INTO specs (name, status, phase) \
-                 VALUES ('2026-spec', 'active', 'EXECUTE')",
-                [],
-            )
-            .unwrap();
-        store
-            .conn
-            .execute(
-                "INSERT INTO metrics_projection (spec, api_calls, retries) \
-                 VALUES ('2026-spec', 12, 3)",
-                [],
-            )
-            .unwrap();
-        // Wave 3: `runs_by_spec()` reads the sibling telemetry.db `run_usage`,
-        // not the retired mustard.db `spans` table. Seed a run there via the
-        // same sibling-path resolution `open_telemetry` uses.
-        {
-            let tele = crate::telemetry::TelemetryStore::new(
-                store.path.with_file_name("telemetry.db"),
-            )
-            .unwrap();
-            tele.conn()
-                .execute(
-                    "INSERT INTO run_usage (span_id, name, spec, phase, is_error) \
-                     VALUES ('sp-1', 'plan', '2026-spec', 'PLAN', 0)",
-                    [],
-                )
-                .unwrap();
+        for s in ["spec-a", "spec-b", "spec-a"] {
+            store.append(&lifecycle_event("pipeline.scope", Some(s))).unwrap();
         }
+        let specs = store.distinct_specs().unwrap();
+        assert_eq!(specs, vec!["spec-a".to_string(), "spec-b".to_string()]);
+    }
 
-        let specs = store.specs().unwrap();
-        assert_eq!(specs.len(), 1);
-        assert_eq!(specs[0].name, "2026-spec");
-        assert_eq!(specs[0].status.as_deref(), Some("active"));
-
-        let metrics = store.metrics("2026-spec").unwrap().unwrap();
-        assert_eq!(metrics.api_calls, Some(12));
-        assert_eq!(metrics.retries, Some(3));
-
-        let runs = store.runs_by_spec("2026-spec").unwrap();
-        assert_eq!(runs.len(), 1);
-        assert_eq!(runs[0].span_id, "sp-1");
-        assert!(!runs[0].is_error);
+    /// W5 stubs: `search`, `metrics`, `upsert_metrics` are no-ops that compile.
+    #[test]
+    fn w5_stubs_compile_and_return_empty() {
+        let dir = tempdir().unwrap();
+        let store = store_in(dir.path());
+        assert!(store.search("anything").unwrap().is_empty());
+        assert!(store.metrics("nope").unwrap().is_none());
+        let row = MetricsRow {
+            spec: "spec-a".into(),
+            api_calls: None,
+            retries: None,
+            pass1: None,
+            tool_breakdown: None,
+            dispatch_failures_by_phase: None,
+            agent_count: None,
+            updated_at: None,
+        };
+        store.upsert_metrics(&row).unwrap();
     }
 
     #[test]
     fn resolve_db_path_honors_env_override() {
-        // A non-blank MUSTARD_DB_PATH wins verbatim, ignoring the project dir.
-        let resolved =
-            resolve_db_path(Path::new("/unused/project"), Some("/custom/my.db"));
+        let resolved = resolve_db_path(Path::new("/unused/project"), Some("/custom/my.db"));
         assert_eq!(resolved, PathBuf::from("/custom/my.db"));
     }
 
     #[test]
     fn resolve_db_path_falls_back_to_standard_path() {
-        // No override (and a blank override) resolves the standard location.
         for env in [None, Some("   ")] {
             let resolved = resolve_db_path(Path::new("/proj"), env);
             assert!(resolved.ends_with("mustard.db"));
-            assert!(
-                resolved
-                    .components()
-                    .any(|c| c.as_os_str() == ".harness")
-            );
+            assert!(resolved.components().any(|c| c.as_os_str() == ".harness"));
         }
     }
 
     #[test]
     fn for_project_opens_a_usable_store() {
-        // `for_project` reads the real env; with no override set it resolves
-        // under the given dir. End-to-end: it must open and replay empty.
         let dir = tempdir().unwrap();
         let store = SqliteEventStore::for_project(dir.path()).unwrap();
         assert!(store.path().ends_with("mustard.db"));
-        assert!(store.replay().unwrap().is_empty());
+        // The v9→v10 migration emits a single `pipeline.economy.schema.shrunk`
+        // event when intermediate ladder tables (savings_records, etc.) get
+        // dropped on first open — filter it out for the empty-replay assertion.
+        let events: Vec<_> = store
+            .replay()
+            .unwrap()
+            .into_iter()
+            .filter(|e| e.event != "pipeline.economy.schema.shrunk")
+            .collect();
+        assert!(events.is_empty());
     }
 
-    // -------------------------------------------------------------------------
-    // Amendment-window writer round-trip tests
-    // -------------------------------------------------------------------------
+    /// AC-G3: an existing DB that still carries the legacy `events` table sees
+    /// it dropped during the v9→v10 migration on the next open.
+    #[test]
+    fn ac_g3_legacy_events_dropped_on_migration() {
+        let dir = tempdir().unwrap();
+        let db = dir.path().join("mustard.db");
+        // Build a database pinned at v9 with the legacy `events` table present.
+        {
+            let conn = Connection::open(&db).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE events (id INTEGER PRIMARY KEY, ts TEXT); \
+                 CREATE TABLE knowledge (id TEXT PRIMARY KEY); \
+                 CREATE TABLE metrics_projection (spec TEXT PRIMARY KEY); \
+                 CREATE TABLE _mustard_meta (key TEXT PRIMARY KEY, value TEXT); \
+                 INSERT INTO _mustard_meta(key, value) VALUES('schema_version', '9'); \
+                 PRAGMA user_version = 0;",
+            )
+            .unwrap();
+        }
 
+        // Real open triggers migrate_v9_to_v10.
+        let store = SqliteEventStore::new(&db).unwrap();
+        let exists = |name: &str| -> bool {
+            store
+                .conn
+                .query_row(
+                    "SELECT 1 FROM sqlite_master WHERE name = ?1 LIMIT 1",
+                    params![name],
+                    |r| r.get::<_, i64>(0),
+                )
+                .optional()
+                .unwrap()
+                .is_some()
+        };
+        assert!(!exists("events"), "events must be dropped by v10 migration");
+        assert!(!exists("knowledge"), "knowledge must be dropped by v10");
+        assert!(
+            !exists("metrics_projection"),
+            "metrics_projection must be dropped by v10"
+        );
+    }
+
+    /// Amendment-window writer round-trip — the core of the lean SQLite face.
     mod amend_window_writers {
         use super::*;
         use crate::model::event::PipelineAmendOpenPayload;
@@ -1357,128 +1329,25 @@ mod tests {
                 spec_id: spec_id.to_string(),
                 session_id: session_id.to_string(),
                 closed_at: "2026-05-20T00:00:00.000Z".to_string(),
-                pipeline_file_set: vec![
-                    "apps/rt/src/hooks/mod.rs".to_string(),
-                    "apps/cli/src/main.rs".to_string(),
-                ],
-                subprojects: vec!["apps/rt".to_string(), "apps/cli".to_string()],
+                pipeline_file_set: vec!["apps/rt/src/hooks/mod.rs".to_string()],
+                subprojects: vec!["apps/rt".to_string()],
             }
         }
 
         #[test]
-        fn open_amend_window_inserts_row() {
+        fn open_then_close_amend_window_round_trips() {
             let dir = tempdir().unwrap();
             let store = store_in(dir.path());
-            let payload = open_payload("spec-1", "session-a");
-            store.open_amend_window(&payload).unwrap();
+            store.open_amend_window(&open_payload("spec-1", "session-a")).unwrap();
 
             let window = store.amend_window_for_session("session-a").unwrap().unwrap();
             assert_eq!(window.spec_id, "spec-1");
             assert_eq!(window.status, "open");
-            assert_eq!(window.pipeline_file_set, payload.pipeline_file_set);
-            assert_eq!(window.subprojects, payload.subprojects);
-        }
-
-        #[test]
-        fn open_amend_window_is_idempotent() {
-            let dir = tempdir().unwrap();
-            let store = store_in(dir.path());
-            let payload = open_payload("spec-1", "session-a");
-            store.open_amend_window(&payload).unwrap();
-            // Second call must be a silent no-op (INSERT OR IGNORE).
-            store.open_amend_window(&payload).unwrap();
-            // Still exactly one window.
-            let window = store.amend_window_for_session("session-a").unwrap();
-            assert!(window.is_some());
-        }
-
-        #[test]
-        fn record_amend_activity_stamps_last_activity() {
-            let dir = tempdir().unwrap();
-            let store = store_in(dir.path());
-            store.open_amend_window(&open_payload("spec-1", "session-a")).unwrap();
 
             store
-                .record_amend_activity("spec-1", "session-a", "2026-05-20T01:00:00.000Z")
+                .close_amend_window("spec-1", "session-a", "resolved")
                 .unwrap();
-
-            let window = store.amend_window_for_session("session-a").unwrap().unwrap();
-            assert_eq!(
-                window.last_activity_at.as_deref(),
-                Some("2026-05-20T01:00:00.000Z")
-            );
-        }
-
-        #[test]
-        fn mark_amend_build_verde_stamps_build_verde_at() {
-            let dir = tempdir().unwrap();
-            let store = store_in(dir.path());
-            store.open_amend_window(&open_payload("spec-1", "session-a")).unwrap();
-
-            store
-                .mark_amend_build_verde("session-a", "2026-05-20T02:00:00.000Z")
-                .unwrap();
-
-            let window = store.amend_window_for_session("session-a").unwrap().unwrap();
-            assert_eq!(
-                window.build_verde_at.as_deref(),
-                Some("2026-05-20T02:00:00.000Z")
-            );
-        }
-
-        #[test]
-        fn add_amend_drift_path_accumulates_unique_paths() {
-            let dir = tempdir().unwrap();
-            let store = store_in(dir.path());
-            store.open_amend_window(&open_payload("spec-1", "session-a")).unwrap();
-
-            let len1 = store
-                .add_amend_drift_path("spec-1", "session-a", "packages/core/src/lib.rs")
-                .unwrap();
-            assert_eq!(len1, 1);
-
-            let len2 = store
-                .add_amend_drift_path("spec-1", "session-a", "packages/core/src/error.rs")
-                .unwrap();
-            assert_eq!(len2, 2);
-
-            // Duplicate — length must not grow.
-            let len3 = store
-                .add_amend_drift_path("spec-1", "session-a", "packages/core/src/lib.rs")
-                .unwrap();
-            assert_eq!(len3, 2);
-
-            let window = store.amend_window_for_session("session-a").unwrap().unwrap();
-            assert_eq!(window.drift_unrelated_paths.len(), 2);
-        }
-
-        #[test]
-        fn mark_amend_drift_emitted_sets_flag() {
-            let dir = tempdir().unwrap();
-            let store = store_in(dir.path());
-            store.open_amend_window(&open_payload("spec-1", "session-a")).unwrap();
-
-            let window_before = store.amend_window_for_session("session-a").unwrap().unwrap();
-            assert!(!window_before.drift_emitted);
-
-            store.mark_amend_drift_emitted("spec-1", "session-a").unwrap();
-
-            let window_after = store.amend_window_for_session("session-a").unwrap().unwrap();
-            assert!(window_after.drift_emitted);
-        }
-
-        #[test]
-        fn close_amend_window_transitions_status() {
-            let dir = tempdir().unwrap();
-            let store = store_in(dir.path());
-            store.open_amend_window(&open_payload("spec-1", "session-a")).unwrap();
-
-            store.close_amend_window("spec-1", "session-a", "resolved").unwrap();
-
-            // After close, amend_window_for_session (which filters on
-            // status IN ('open','amending')) must return None.
-            let window = store.amend_window_for_session("session-a").unwrap();
-            assert!(window.is_none());
+            assert!(store.amend_window_for_session("session-a").unwrap().is_none());
         }
     }
 }

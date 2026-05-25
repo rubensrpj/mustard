@@ -16,6 +16,12 @@ export function subscribeFsChange(): Promise<() => void> {
         queryClient.invalidateQueries({ queryKey: ["metrics", repo_path] });
         queryClient.invalidateQueries({ queryKey: ["activity"] });
         queryClient.invalidateQueries({ queryKey: ["telemetry", repo_path] });
+        // W5 (T5.3 / T5.4): per-spec timeline + sessions are written into
+        // mustard.db by the harness, so a DB write is their refresh trigger.
+        // Keeping these keys broad (no repo_path leaf) so any spec timeline
+        // currently mounted picks the new rows up without a remount.
+        queryClient.invalidateQueries({ queryKey: ["spec-timeline"] });
+        queryClient.invalidateQueries({ queryKey: ["sessions", repo_path] });
         // These activity views are all derived from mustard.db too, so a DB
         // write is their trigger as well (their query keys don't share the
         // "activity" prefix above — they are distinct first elements).

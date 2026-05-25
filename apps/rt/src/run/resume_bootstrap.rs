@@ -483,11 +483,12 @@ fn compute_needs_refresh(project: &Path, spec: &str) -> (bool, Option<i64>) {
     };
     let now_ms = i64::try_from(crate::util::now_millis()).unwrap_or(i64::MAX);
 
-    // Last `pipeline.resume_mode` ts (or NULL).
+    // Last `pipeline.resume_mode` ts (or NULL). W5: lifecycle rows live in
+    // `pipeline_events` (column `kind`).
     let last_resume_ts: Option<String> = conn
         .query_row(
-            "SELECT ts FROM events \
-             WHERE event = ?1 AND spec = ?2 \
+            "SELECT ts FROM pipeline_events \
+             WHERE kind = ?1 AND spec = ?2 \
              ORDER BY id DESC LIMIT 1",
             rusqlite::params![EVENT_PIPELINE_RESUME_MODE, spec],
             |row| row.get(0),
@@ -502,16 +503,16 @@ fn compute_needs_refresh(project: &Path, spec: &str) -> (bool, Option<i64>) {
     let needs = match last_resume_ts.as_deref() {
         Some(ts) => conn
             .query_row(
-                "SELECT 1 FROM events \
-                 WHERE event = ?1 AND spec = ?2 AND ts > ?3 LIMIT 1",
+                "SELECT 1 FROM pipeline_events \
+                 WHERE kind = ?1 AND spec = ?2 AND ts > ?3 LIMIT 1",
                 rusqlite::params![EVENT_PIPELINE_WAVE_COMPLETE, spec, ts],
                 |_| Ok(()),
             )
             .is_ok(),
         None => conn
             .query_row(
-                "SELECT 1 FROM events \
-                 WHERE event = ?1 AND spec = ?2 LIMIT 1",
+                "SELECT 1 FROM pipeline_events \
+                 WHERE kind = ?1 AND spec = ?2 LIMIT 1",
                 rusqlite::params![EVENT_PIPELINE_WAVE_COMPLETE, spec],
                 |_| Ok(()),
             )

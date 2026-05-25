@@ -495,6 +495,11 @@ fn parity_replay_real_harness_store() {
 /// Append-then-replay round-trip through `SqliteEventStore`: each appended
 /// event is recovered, in insertion order, with its payload intact. This is
 /// the harness event bus written and read back through the `EventSink` trait.
+///
+/// W5: only `pipeline.*` events round-trip through SQLite — every other event
+/// kind (`tool.use`, `agent.start`, …) is a no-op in the SQLite sink and lives
+/// in per-spec NDJSON files (see `apps/rt/src/run/event_writer_ndjson.rs`).
+/// The round-trip here exercises the lifecycle index path.
 #[test]
 fn parity_event_store_append_replay_round_trip() {
     use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
@@ -512,12 +517,12 @@ fn parity_event_store_append_replay_round_trip() {
         spec: None,
     };
     for i in 0..5 {
-        store.append(&mk("tool.use", i)).unwrap();
+        store.append(&mk("pipeline.scope", i)).unwrap();
     }
     let events = store.replay().unwrap();
     assert_eq!(events.len(), 5);
     for (i, ev) in events.iter().enumerate() {
-        assert_eq!(ev.event, "tool.use");
+        assert_eq!(ev.event, "pipeline.scope");
         assert_eq!(ev.payload["i"], json!(i64::try_from(i).unwrap()));
     }
 }

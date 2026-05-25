@@ -16,6 +16,10 @@ pub mod active_specs;
 pub mod agent_prompt_render;
 pub mod amend_finalize;
 mod analyze_validation;
+pub mod blob_spill;
+pub mod event_route;
+pub mod event_writer_ndjson;
+pub mod spec_clear;
 mod artifact_update;
 mod knowledge;
 mod backfill_run_usage_cost;
@@ -928,6 +932,34 @@ pub enum RunCmd {
         #[arg(long)]
         confirm: bool,
     },
+    /// Sweep terminal, idle spec directories under `.claude/spec/` (W5.T5.5).
+    ///
+    /// Default is **dry-run**: enumerates every spec whose `meta.json` reports
+    /// `stage=close` + `outcome=completed` and whose most-recent NDJSON event
+    /// is older than `--age-days N` (default 15). Pass `--apply` to
+    /// `fs::remove_dir_all` each candidate. Emits a JSON report and a
+    /// `spec.clear.run` harness event.
+    SpecClear {
+        /// Repo root override. Defaults to the current working directory.
+        #[arg(long)]
+        repo: Option<PathBuf>,
+        /// Age threshold in whole days. Specs whose newest event is older than
+        /// this become candidates.
+        #[arg(long = "age-days", default_value_t = spec_clear::DEFAULT_AGE_DAYS)]
+        age_days: u32,
+        /// Preview only — emit the report, mutate nothing (the default).
+        #[arg(long, default_value_t = true, conflicts_with = "apply")]
+        dry_run: bool,
+        /// Apply the removals. Required to mutate the filesystem.
+        #[arg(long)]
+        apply: bool,
+        /// Sweep every terminal spec regardless of age.
+        #[arg(long)]
+        all: bool,
+        /// Restrict the sweep to one spec slug.
+        #[arg(long)]
+        name: Option<String>,
+    },
 }
 
 /// Dispatch a `run` subcommand.
@@ -1227,6 +1259,25 @@ pub fn dispatch(cmd: RunCmd) {
         }
         RunCmd::Rehook { repo, scope, confirm } => {
             rehook::run(rehook::RehookOpts { repo, scope, confirm });
+        }
+        RunCmd::SpecClear {
+            repo,
+            age_days,
+            dry_run,
+            apply,
+            all,
+            name,
+        } => {
+            // `dry_run` defaults to `true`; clap's `conflicts_with` ensures the
+            // two flags don't co-exist. `--apply` is the authoritative mutator.
+            let _ = dry_run;
+            spec_clear::run(spec_clear::SpecClearOpts {
+                repo,
+                age_days,
+                apply,
+                all,
+                name,
+            });
         }
     }
 }

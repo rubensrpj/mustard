@@ -12,8 +12,6 @@
 
 use crate::run::env::{project_dir, session_id};
 use crate::util::now_iso8601;
-use mustard_core::store::event_store::EventSink;
-use mustard_core::store::sqlite_store::SqliteEventStore;
 use mustard_core::metrics::{emit_metric, MetricLine};
 use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use serde_json::json;
@@ -49,7 +47,8 @@ fn record_review(
         payload: payload.clone(),
         spec: Some(spec.to_string()),
     };
-    let _ = SqliteEventStore::for_project(cwd).and_then(|store| store.append(&ev));
+    // `review.result` is non-pipeline → per-spec NDJSON via the W5 router.
+    let _ = crate::run::event_route::emit(cwd.to_string_lossy().as_ref(), &ev);
 
     // Metric (fail-silent).
     let line = MetricLine::new(now_iso8601(), "review").note(verdict).extras(json!({
@@ -98,10 +97,29 @@ mod tests {
         assert_eq!(payload["verdict"], json!("approved"));
         assert_eq!(payload["subproject"], json!("api"));
 
-        let store = SqliteEventStore::for_project(dir.path()).unwrap();
-        let events = store.replay().unwrap();
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].event, "review.result");
+        // W5: `review.result` is non-pipeline → per-spec NDJSON under
+        // `<project>/.claude/spec/demo/events/`.
+        let events_dir = dir
+            .path()
+            .join(".claude")
+            .join("spec")
+            .join("demo")
+            .join("events");
+        assert!(events_dir.exists(), "events dir must exist");
+        let mut found = false;
+        for f in std::fs::read_dir(&events_dir).unwrap() {
+            let body = std::fs::read_to_string(f.unwrap().path()).unwrap_or_default();
+            if body.lines().any(|l| {
+                serde_json::from_str::<serde_json::Value>(l)
+                    .ok()
+                    .and_then(|v| v["event"].as_str().map(str::to_string))
+                    .as_deref()
+                    == Some("review.result")
+            }) {
+                found = true;
+            }
+        }
+        assert!(found, "review.result NDJSON line must be present");
 
         let metric = dir.path().join(".claude").join(".metrics").join("review.jsonl");
         assert!(metric.exists());

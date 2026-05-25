@@ -1,3 +1,13 @@
+// Integration tests are separate binary targets and not exempt from
+// `clippy::unwrap_used` etc. via `#[cfg(test)]`. Mirror the carve-out from
+// `src/main.rs` so test panics on `.unwrap()` remain valid assertions.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::map_unwrap_or,
+    clippy::uninlined_format_args
+)]
+
 //! Integration tests for `pipeline_state_ingest` + `pipeline_state_for_spec` round-trip.
 //!
 //! AC-11 / AC-12 coverage:
@@ -11,10 +21,8 @@
 //! as a subprocess (via `CARGO_BIN_EXE_mustard-rt`) and query the SQLite store
 //! through `mustard_core` directly for fold assertions.
 
-use mustard_core::store::event_store::EventSink;
 use mustard_core::store::sqlite_store::SqliteEventStore;
 use mustard_core::model::event::{
-    Actor, ActorKind, HarnessEvent, SCHEMA_VERSION,
     EVENT_PIPELINE_SCOPE, EVENT_PIPELINE_STATUS, EVENT_PIPELINE_TASK_COMPLETE,
     EVENT_PIPELINE_TASK_DISPATCH, EVENT_PIPELINE_WAVE_COMPLETE,
 };
@@ -65,19 +73,9 @@ fn run_ingest(dir: &Path, delete: bool) -> Value {
         .unwrap_or_else(|e| json!({ "parse_error": e.to_string(), "raw": stdout.as_ref() }))
 }
 
-/// Minimal helper to build a `HarnessEvent` for direct store inserts.
-fn pipeline_ev(event: &str, spec: &str, payload: Value, ts: &str) -> HarnessEvent {
-    HarnessEvent {
-        v: SCHEMA_VERSION,
-        ts: ts.to_string(),
-        session_id: "test".to_string(),
-        wave: 0,
-        actor: Actor { kind: ActorKind::Hook, id: None, actor_type: None },
-        event: event.to_string(),
-        payload,
-        spec: Some(spec.to_string()),
-    }
-}
+// `pipeline_ev` was the legacy in-memory HarnessEvent builder; deleted along
+// with the unused imports — every test in this file ingests through the
+// `mustard-rt` binary subprocess and reads the result via `SqliteEventStore`.
 
 // ---------------------------------------------------------------------------
 // Test 1 — happy path: full pipeline-state JSON → events → store round-trip
@@ -234,8 +232,7 @@ fn malformed_json_skipped_without_aborting_siblings() {
     let bad_error = errors.iter().find(|e| {
         e.get("file")
             .and_then(Value::as_str)
-            .map(|f| f.contains("zzzz-bad"))
-            .unwrap_or(false)
+            .is_some_and(|f| f.contains("zzzz-bad"))
     });
     assert!(bad_error.is_some(), "error for zzzz-bad.json must be present: {errors:?}");
 }

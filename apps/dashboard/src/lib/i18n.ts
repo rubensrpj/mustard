@@ -91,6 +91,7 @@ const DICTIONARY = new Map<string, TranslationRow>([
   ["sidebar.preferences", { pt: "Preferências", en: "Preferences" }],
   ["sidebar.settings", { pt: "Configurações", en: "Settings" }],
   ["sidebar.prd", { pt: "PRD", en: "PRD" }],
+  ["sidebar.sessions", { pt: "Sessões", en: "Sessions" }],
   ["sidebar.activity", { pt: "Atividade", en: "Activity" }],
   ["sidebar.telemetry", { pt: "Telemetria", en: "Telemetry" }],
   ["sidebar.quality", { pt: "Qualidade", en: "Quality" }],

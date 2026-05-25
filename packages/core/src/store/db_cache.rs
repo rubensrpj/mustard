@@ -103,13 +103,17 @@ mod tests {
     use tempfile::tempdir;
 
     fn sample_event() -> HarnessEvent {
+        // W5: only `pipeline.*` events are persisted by the SqliteEventStore
+        // sink — tool/agent/qa events route through the per-spec NDJSON writer.
+        // The round-trip check below replays from `pipeline_events`, so seed
+        // with a lifecycle event so the assert matches the store's contract.
         HarnessEvent {
             v: SCHEMA_VERSION,
             ts: "2026-05-22T00:00:00.000Z".to_string(),
             session_id: "s-cache".to_string(),
             wave: 0,
             actor: Actor { kind: ActorKind::Hook, id: None, actor_type: None },
-            event: "tool.use".to_string(),
+            event: "pipeline.scope".to_string(),
             payload: json!({}),
             spec: None,
         }

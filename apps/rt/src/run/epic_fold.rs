@@ -20,7 +20,6 @@
 use crate::run::memory::upsert_knowledge_pattern;
 use crate::util::now_iso8601;
 use mustard_core::fs;
-use mustard_core::store::event_store::EventSink;
 use mustard_core::store::sqlite_store::SqliteEventStore;
 use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use serde_json::{json, Value};
@@ -63,7 +62,13 @@ fn state_phase(state: &Value, cwd: &Path) -> String {
 }
 
 /// Append a harness event for the given epic. Best-effort.
-fn emit_event(store: &SqliteEventStore, event: &str, payload: Value, spec: &str) {
+///
+/// W5: routed through [`crate::run::event_route::emit`] — `pipeline.*` epic
+/// events (the bulk of what this emitter produces) land in SQLite; anything
+/// else (test-only `epic.detected`-style events) lands in the per-spec NDJSON
+/// sink. The `_store` arg is preserved for caller-shape parity and ignored.
+#[allow(clippy::needless_pass_by_value)]
+fn emit_event(_store: &SqliteEventStore, project_dir: &str, event: &str, payload: Value, spec: &str) {
     let ev = HarnessEvent {
         v: SCHEMA_VERSION,
         ts: now_iso8601(),
@@ -78,7 +83,7 @@ fn emit_event(store: &SqliteEventStore, event: &str, payload: Value, spec: &str)
         payload,
         spec: Some(spec.to_string()),
     };
-    let _ = store.append(&ev);
+    let _ = crate::run::event_route::emit(project_dir, &ev);
 }
 
 /// Scan `.pipeline-states/*.json` for epics ready to fold:
@@ -194,6 +199,7 @@ fn fold_epic(cwd: &Path, epic: &str) -> bool {
         // pipeline-state JSON is no longer written (Wave 6b migration).
         emit_event(
             &store,
+            cwd.to_string_lossy().as_ref(),
             "pipeline.phase",
             json!({ "from": null, "to": "CLOSE" }),
             epic,
@@ -263,6 +269,7 @@ fn fold_epic(cwd: &Path, epic: &str) -> bool {
     // Emit `epic.complete`.
     emit_event(
         &store,
+        cwd.to_string_lossy().as_ref(),
         "epic.complete",
         json!({
             "epic": epic,
@@ -318,6 +325,7 @@ fn fold_epic(cwd: &Path, epic: &str) -> bool {
     // (Wave 6b migration — phase lives in SQLite pipeline.phase events).
     emit_event(
         &store,
+        cwd.to_string_lossy().as_ref(),
         "pipeline.phase",
         json!({ "from": null, "to": "CLOSE" }),
         epic,
@@ -328,6 +336,7 @@ fn fold_epic(cwd: &Path, epic: &str) -> bool {
     compactable.extend(children.iter().cloned());
     emit_event(
         &store,
+        cwd.to_string_lossy().as_ref(),
         "epic.fold",
         json!({
             "epic": epic,

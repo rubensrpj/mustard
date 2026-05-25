@@ -183,11 +183,9 @@ fn strip_header_lines(content: &str) -> String {
     ];
     let region = mustard_core::header_region_lines(content);
     let mut out = String::with_capacity(content.len());
-    let mut idx = 0usize;
     let mut prev_was_blank = false;
-    for line_with_terminator in content.split_inclusive('\n') {
+    for (idx, line_with_terminator) in content.split_inclusive('\n').enumerate() {
         let in_region = idx < region;
-        idx += 1;
         let trimmed = line_with_terminator.trim_start();
         if in_region {
             let mut matched = false;

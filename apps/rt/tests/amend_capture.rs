@@ -1,3 +1,13 @@
+// Integration tests are separate binary targets and not exempt from
+// `clippy::unwrap_used` etc. via `#[cfg(test)]`. Mirror the carve-out from
+// `src/main.rs` so test panics on `.unwrap()` remain valid assertions.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::map_unwrap_or,
+    clippy::uninlined_format_args
+)]
+
 //! Integration smoke test for the `amend_capture` hook module.
 //!
 //! AC-3 … AC-10 are tested as unit tests inside
@@ -30,7 +40,7 @@ fn amend_capture_dispatcher_exits_zero() {
         .expect("spawn mustard-rt");
     if let Some(stdin) = child.stdin.take() {
         let mut stdin = stdin;
-        let _ = write!(stdin, "{}", input);
+        let _ = write!(stdin, "{input}");
     }
     let status = child.wait().expect("wait");
     assert_eq!(status.code(), Some(0), "mustard-rt must exit 0 (fail-open)");

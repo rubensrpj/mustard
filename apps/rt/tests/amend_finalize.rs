@@ -1,3 +1,13 @@
+// Integration tests are separate binary targets and not exempt from
+// `clippy::unwrap_used` etc. via `#[cfg(test)]`. Mirror the carve-out from
+// `src/main.rs` so test panics on `.unwrap()` remain valid assertions.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::map_unwrap_or,
+    clippy::uninlined_format_args
+)]
+
 //! Integration tests for `amend-finalize` (AC-11 … AC-14).
 //!
 //! Since `mustard-rt` is binary-only (no lib), these tests drive the subcommand
@@ -131,7 +141,7 @@ fn create_spec_md(project_root: &Path, spec_id: &str) {
     std::fs::create_dir_all(&spec_dir).unwrap();
     std::fs::write(
         spec_dir.join("spec.md"),
-        format!("# Spec {}\n\nSome content.\n", spec_id),
+        format!("# Spec {spec_id}\n\nSome content.\n"),
     )
     .unwrap();
 }

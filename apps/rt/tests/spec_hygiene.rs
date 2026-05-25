@@ -129,15 +129,28 @@ fn run_session_start(project: &Path, mode: Option<&str>) -> std::process::Output
     child.wait_with_output().expect("wait")
 }
 
-/// Count events of `kind` attributed to `spec` in the project store.
+/// Count events of `kind` attributed to `spec` across both stores.
+///
+/// W5 split: `pipeline.*` lives in SQLite (`pipeline_events`) and everything
+/// else lives in `<project>/.claude/spec/<spec>/events/*.ndjson`. This helper
+/// folds both sources so legacy callers can assert counts without caring which
+/// store a kind landed in.
 fn count_events(project: &Path, spec: &str, kind: &str) -> usize {
     let store = SqliteEventStore::for_project(project).expect("store");
-    store
+    let sqlite_count = store
         .query(Some(spec))
         .expect("query")
         .iter()
         .filter(|e| e.event == kind)
-        .count()
+        .count();
+    let events_dir = project.join(".claude").join("spec").join(spec).join("events");
+    let ndjson_count = mustard_core::projection::read_harness_events_from_ndjson_dir(
+        &events_dir,
+    )
+    .iter()
+    .filter(|e| e.event == kind)
+    .count();
+    sqlite_count + ndjson_count
 }
 
 /// `now - hours` as an ISO-8601 string the hook can parse.
@@ -263,13 +276,16 @@ fn scenario_2_build_red_skips() {
         "a red build must emit hygiene.skipped"
     );
     // The blocker is build_red, and the spec is still active.
-    let store = SqliteEventStore::for_project(project).expect("store");
-    let skipped: Vec<_> = store
-        .query(Some(spec))
-        .expect("query")
-        .into_iter()
-        .filter(|e| e.event == "hygiene.skipped")
-        .collect();
+    // W5/W6: `hygiene.*` is a non-pipeline family routed to per-spec NDJSON
+    // (see `event_route::classify_kind`); read it from the NDJSON sink, not
+    // from `SqliteEventStore::query` (which only sees `pipeline_events`).
+    let events_dir = project.join(".claude").join("spec").join(spec).join("events");
+    let skipped: Vec<_> = mustard_core::projection::read_harness_events_from_ndjson_dir(
+        &events_dir,
+    )
+    .into_iter()
+    .filter(|e| e.event == "hygiene.skipped")
+    .collect();
     assert_eq!(skipped[0].payload["blocker"], Value::String("build_red".into()));
     let after = std::fs::read_to_string(
         project.join(".claude").join("spec").join(spec).join("spec.md"),
@@ -300,13 +316,15 @@ fn scenario_3_abandoned_suspect_detect() {
     let out = run_session_start(project, None);
     assert!(out.status.success(), "stderr:\n{}", String::from_utf8_lossy(&out.stderr));
 
-    let store = SqliteEventStore::for_project(project).expect("store");
-    let detected: Vec<_> = store
-        .query(Some(spec))
-        .expect("query")
-        .into_iter()
-        .filter(|e| e.event == "hygiene.detected")
-        .collect();
+    // W5/W6: `hygiene.*` is non-pipeline → per-spec NDJSON. Reading via
+    // `SqliteEventStore::query` would always return 0 for this family.
+    let events_dir = project.join(".claude").join("spec").join(spec).join("events");
+    let detected: Vec<_> = mustard_core::projection::read_harness_events_from_ndjson_dir(
+        &events_dir,
+    )
+    .into_iter()
+    .filter(|e| e.event == "hygiene.detected")
+    .collect();
     assert_eq!(detected.len(), 1, "must emit exactly one hygiene.detected");
     assert_eq!(
         detected[0].payload["reason"],

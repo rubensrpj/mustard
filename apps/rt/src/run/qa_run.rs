@@ -20,8 +20,6 @@ use crate::report::{table, Report};
 use crate::run::env::{project_dir, session_id};
 use mustard_core::fs;
 use crate::util::now_iso8601;
-use mustard_core::store::event_store::EventSink;
-use mustard_core::store::sqlite_store::SqliteEventStore;
 use mustard_core::metrics::{emit_metric, MetricLine};
 use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use serde_json::{json, Value};
@@ -348,7 +346,8 @@ fn emit_qa_event(cwd: &Path, spec: &str, overall: &str, criteria: &[Value]) {
         payload: json!({ "spec": spec, "overall": overall, "criteria": criteria }),
         spec: Some(spec.to_string()),
     };
-    let _ = SqliteEventStore::for_project(cwd).and_then(|store| store.append(&ev));
+    // `qa.result` is non-pipeline → per-spec NDJSON via the W5 router.
+    let _ = crate::run::event_route::emit(cwd.to_string_lossy().as_ref(), &ev);
 }
 
 /// Emit the `qa` metric (fail-silent).

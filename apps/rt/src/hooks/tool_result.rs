@@ -25,8 +25,6 @@
 
 use crate::run::current_spec;
 use crate::util::now_iso8601;
-use mustard_core::store::event_store::EventSink;
-use mustard_core::store::sqlite_store::SqliteEventStore;
 use mustard_core::model::contract::{Ctx, HookInput, Observer, Trigger};
 use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use serde::{Deserialize, Serialize};
@@ -286,8 +284,8 @@ fn emit_event(project_dir: &str, payload: ToolResultPayload) {
         payload: value,
         spec: current_spec(project_dir),
     };
-    let _ = SqliteEventStore::for_project(project_dir)
-        .and_then(|store| store.append(&harness_event));
+    // `tool.result` is non-pipeline → per-spec NDJSON via the W5 router.
+    let _ = crate::run::event_route::emit(project_dir, &harness_event);
 }
 
 /// The PostToolUse `Observer` family member that emits `tool.result` events.
@@ -330,6 +328,11 @@ impl Observer for ToolResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // SQLite store is reused for the legacy assertion shape "no tool.result
+    // row landed under PreToolUse". The W5 split sends `tool.result` to the
+    // NDJSON sink, so the positive `observe_emits_tool_result_for_bash` test
+    // reads the NDJSON file directly instead.
+    use mustard_core::store::sqlite_store::SqliteEventStore;
     use serde_json::json;
     use tempfile::tempdir;
 
@@ -433,9 +436,9 @@ mod tests {
         assert_eq!(payload.file_path.as_deref(), Some("/tmp/m.rs"));
         let before = payload.file_before.expect("before");
         let after = payload.file_after.expect("after");
-        assert!(before.contains("a") && before.contains("b"));
+        assert!(before.contains('a') && before.contains('b'));
         assert!(before.contains("edit boundary"));
-        assert!(after.contains("A") && after.contains("B"));
+        assert!(after.contains('A') && after.contains('B'));
     }
 
     #[test]
@@ -527,20 +530,42 @@ mod tests {
             ..HookInput::default()
         };
         ToolResult.observe(&input, &ctx(project));
-        let events = SqliteEventStore::for_project(project)
-            .and_then(|s| s.replay())
-            .expect("replay");
-        let evt = events
-            .iter()
-            .find(|e| e.event == "tool.result")
-            .expect("tool.result emitted");
-        assert_eq!(evt.payload.get("tool").and_then(|v| v.as_str()), Some("Bash"));
+
+        // W5: `tool.result` is non-pipeline → lives in the NDJSON sink under
+        // `<project>/.claude/.session/<slug>/events/` (no spec resolves in
+        // this test). Read the first file and confirm the payload landed.
+        let events_root = dir.path().join(".claude").join(".session");
+        // Walk for the first .ndjson file under any session slug.
+        let mut found_payload = None;
+        'outer: for entry in std::fs::read_dir(&events_root).expect("session dir") {
+            let sess = entry.unwrap().path();
+            let events_dir = sess.join("events");
+            if !events_dir.exists() {
+                continue;
+            }
+            for f in std::fs::read_dir(&events_dir).unwrap() {
+                let p = f.unwrap().path();
+                let body = std::fs::read_to_string(&p).unwrap_or_default();
+                for line in body.lines() {
+                    let v: serde_json::Value = match serde_json::from_str(line) {
+                        Ok(v) => v,
+                        Err(_) => continue,
+                    };
+                    if v["event"] == "tool.result" {
+                        found_payload = Some(v["payload"].clone());
+                        break 'outer;
+                    }
+                }
+            }
+        }
+        let payload = found_payload.expect("tool.result NDJSON line present");
+        assert_eq!(payload.get("tool").and_then(|v| v.as_str()), Some("Bash"));
         assert_eq!(
-            evt.payload.get("stdout_excerpt").and_then(|v| v.as_str()),
+            payload.get("stdout_excerpt").and_then(|v| v.as_str()),
             Some("file1\nfile2\n")
         );
         assert_eq!(
-            evt.payload.get("exit_code").and_then(serde_json::Value::as_i64),
+            payload.get("exit_code").and_then(serde_json::Value::as_i64),
             Some(0)
         );
     }

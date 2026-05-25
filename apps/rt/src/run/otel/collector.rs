@@ -30,7 +30,7 @@ use super::store::{claude_dir, Store};
 use mustard_core::economy::{sources::otel as otel_source, sources::IngestContext, SpanRecord};
 use mustard_core::fs;
 use mustard_core::telemetry::model::RunUsage;
-use mustard_core::telemetry::{migrate, writer as telemetry_writer, TelemetryStore};
+use mustard_core::telemetry::{writer as telemetry_writer, TelemetryStore};
 use serde_json::Value;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -265,48 +265,6 @@ fn stamp_attribution(store: &TelemetryStore, mut run: RunUsage) -> RunUsage {
     run
 }
 
-/// Run the one-shot, idempotent migration that carries the legacy telemetry in
-/// `mustard.db` into `telemetry.db`. Wired at collector startup (the long-lived
-/// daemon); fail-open — a migration error must never stop the collector from
-/// serving. Resolves the `mustard.db` path the same way the rest of rt does
-/// (`MUSTARD_DB_PATH` override, else `{project}/.claude/.harness/mustard.db`).
-fn run_migration_once(harness_dir: &Path) {
-    let cwd = project_dir();
-    let Ok(store) = TelemetryStore::for_project(&cwd) else {
-        return;
-    };
-    let mustard_db_path = match std::env::var("MUSTARD_DB_PATH") {
-        Ok(v) if !v.is_empty() => v,
-        _ => Path::new(&cwd)
-            .join(".claude")
-            .join(".harness")
-            .join("mustard.db")
-            .to_string_lossy()
-            .into_owned(),
-    };
-    match migrate::migrate_from_mustard_db(store.conn(), &mustard_db_path) {
-        Ok(n) => {
-            if n > 0 {
-                canary(
-                    harness_dir,
-                    &serde_json::json!({
-                        "ts": crate::util::now_iso8601(),
-                        "level": "info", "msg": "telemetry migration carried history",
-                        "run_usage_rows": n,
-                    }),
-                );
-            }
-        }
-        Err(e) => canary(
-            harness_dir,
-            &serde_json::json!({
-                "ts": crate::util::now_iso8601(),
-                "level": "warn", "msg": "telemetry migration failed", "err": e.to_string(),
-            }),
-        ),
-    }
-}
-
 /// Dispatch `mustard-rt run otel-collector`. Runs until a shutdown signal or a
 /// fatal bind/store failure; this function does not return on the happy path
 /// (it `exit`s).
@@ -346,12 +304,6 @@ pub fn run() {
             std::process::exit(1);
         }
     };
-
-    // One-shot, idempotent migration: carry the legacy telemetry that still
-    // lives in `mustard.db` into `telemetry.db` so history is not lost when the
-    // collector switches its writes over (Wave 2). Fail-open — runs once at
-    // daemon startup, before the accept loop.
-    run_migration_once(&harness_dir);
 
     // One-time cleanup: purge the dead `usage_totals` rows written before the
     // ingestion filter existed (every metric outside `CONSUMED_METRICS`).

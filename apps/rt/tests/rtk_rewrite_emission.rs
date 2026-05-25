@@ -1,3 +1,13 @@
+// Integration tests are separate binary targets and not exempt from
+// `clippy::unwrap_used` etc. via `#[cfg(test)]`. Mirror the carve-out from
+// `src/main.rs` so test panics on `.unwrap()` remain valid assertions.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::map_unwrap_or,
+    clippy::uninlined_format_args
+)]
+
 //! Integration tests for spec 2026-05-20-restore-rtk-rewrite — AC-3, AC-4, AC-5,
 //! plus dual-coverage sibling tests for spec 2026-05-21-rtk-rewrite-dual-coverage
 //! (warn vs strict mode emitted by `bash_guard`).
@@ -20,8 +30,7 @@ fn rtk_available() -> bool {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+        .is_ok_and(|s| s.success())
 }
 
 /// Drive `mustard-rt on PreToolUse` under the requested gate mode.
@@ -120,7 +129,11 @@ fn rtk_rewrite_e2e_passes_through_rtk_prefixed_command() {
 }
 
 /// AC-5: when `bash_guard` rewrites a `Bash` command via `rtk`, an `rtk-rewrite`
-/// event must be persisted in the SQLite event store.
+/// event must be persisted.
+///
+/// W5: `rtk-rewrite` is a non-pipeline event and now lands in the per-spec /
+/// per-session NDJSON sink under `<project>/.claude/.session/<slug>/events/`.
+/// The test scans every `*.ndjson` file under `.claude/` for the rewrite line.
 ///
 /// The test is skipped gracefully when `rtk` is absent from PATH — printing a
 /// message and returning early still counts as 1 passed for `cargo test`.
@@ -135,45 +148,61 @@ fn rtk_rewrite_emission() {
     let tmp = TempDir::new().expect("create tempdir");
 
     // `git status` is a canonical command that `rtk` rewrites to `rtk git status`.
-    let db_path = run_hook(&tmp, "git status");
+    let _db_path = run_hook(&tmp, "git status");
 
-    // The store file must exist — the hook creates it on first write.
+    // Walk every `*.ndjson` under `.claude/` (event_route lands `rtk-rewrite`
+    // under `.session/<slug>/events/` when no spec is in scope).
+    let claude_dir = tmp.path().join(".claude");
+    let mut found_event = false;
+    let mut command_head_seen: Option<String> = None;
+    walk_ndjson(&claude_dir, &mut |body| {
+        for line in body.lines() {
+            let Ok(record) = serde_json::from_str::<Value>(line) else {
+                continue;
+            };
+            if record.get("event").and_then(Value::as_str) != Some("rtk-rewrite") {
+                continue;
+            }
+            found_event = true;
+            if command_head_seen.is_none() {
+                if let Some(head) = record
+                    .pointer("/payload/command_head")
+                    .and_then(Value::as_str)
+                {
+                    command_head_seen = Some(head.to_string());
+                }
+            }
+        }
+    });
+
+    assert!(found_event, "expected at least 1 rtk-rewrite event in NDJSON");
+    let head = command_head_seen.expect("payload.command_head must be present");
     assert!(
-        db_path.exists(),
-        "SQLite DB was not created at {}",
-        db_path.display()
+        head.contains("git"),
+        "command_head should reference 'git', got: {head:?}"
     );
+}
 
-    let conn = Connection::open(&db_path)
-        .unwrap_or_else(|e| panic!("open DB at {}: {e}", db_path.display()));
-
-    let count: i64 = conn
-        .query_row(
-            "SELECT count(*) FROM events WHERE event = 'rtk-rewrite'",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap_or_else(|e| panic!("query events: {e}"));
-
-    assert!(
-        count >= 1,
-        "expected at least 1 rtk-rewrite event in SQLite, found {count}"
-    );
-
-    // Bonus: confirm the stored payload references the original command head.
-    let command_head: String = conn
-        .query_row(
-            "SELECT json_extract(payload, '$.command_head') \
-             FROM events WHERE event = 'rtk-rewrite' LIMIT 1",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap_or_else(|e| panic!("query command_head: {e}"));
-
-    assert!(
-        command_head.contains("git"),
-        "command_head should reference 'git', got: {command_head:?}"
-    );
+/// Walk every `*.ndjson` file under `root` (recursively) and call `cb` with the
+/// file body. No-op for missing roots or unreadable files (fail-open).
+fn walk_ndjson(root: &std::path::Path, cb: &mut dyn FnMut(&str)) {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            walk_ndjson(&path, cb);
+        } else if path
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| e.eq_ignore_ascii_case("ndjson"))
+        {
+            if let Ok(body) = std::fs::read_to_string(&path) {
+                cb(&body);
+            }
+        }
+    }
 }
 
 // -----------------------------------------------------------------------------

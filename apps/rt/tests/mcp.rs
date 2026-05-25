@@ -1,3 +1,13 @@
+// Integration tests are separate binary targets and not exempt from
+// `clippy::unwrap_used` etc. via `#[cfg(test)]`. Mirror the carve-out from
+// `src/main.rs` so test panics on `.unwrap()` remain valid assertions.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::map_unwrap_or,
+    clippy::uninlined_format_args
+)]
+
 //! Integration test for the `mcp` face — the JSON-RPC protocol path.
 //!
 //! Where `src/mcp/tests.rs` calls the tool methods in-process, this test
@@ -31,14 +41,20 @@ struct McpProcess {
 }
 
 impl McpProcess {
-    /// Spawn `mustard-rt mcp` with `MUSTARD_DB_PATH` bound to `db_path` and
-    /// `MUSTARD_TELEMETRY_DB_PATH` bound to `telemetry_path` (the dedicated
-    /// telemetry database `get_run_summary` reads).
-    fn spawn(db_path: &std::path::Path, telemetry_path: &std::path::Path) -> Self {
+    /// Spawn `mustard-rt mcp` with `MUSTARD_DB_PATH` bound to `db_path`,
+    /// `MUSTARD_TELEMETRY_DB_PATH` bound to `telemetry_path`, and the working
+    /// directory pinned to `project` so the W5 per-spec NDJSON dir resolves to
+    /// the seeded location (`<project>/.claude/spec/<spec>/events/`).
+    fn spawn(
+        project: &std::path::Path,
+        db_path: &std::path::Path,
+        telemetry_path: &std::path::Path,
+    ) -> Self {
         // `CARGO_BIN_EXE_mustard-rt` is injected by Cargo for integration
         // tests — it is the freshly built binary, no PATH lookup needed.
         let mut child = Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
             .arg("mcp")
+            .current_dir(project)
             .env("MUSTARD_DB_PATH", db_path)
             .env("MUSTARD_TELEMETRY_DB_PATH", telemetry_path)
             .stdin(Stdio::piped())
@@ -149,51 +165,74 @@ impl Drop for McpProcess {
     }
 }
 
-/// Create a temp `mustard.db` + `telemetry.db`, apply the schemas (via
-/// throwaway connections), and seed every projection the five tools read.
-/// Returns `(dir, mustard_db_path, telemetry_db_path)`.
+/// Create a temp `mustard.db` + `telemetry.db`, apply the W5 schema via a
+/// throwaway `SqliteEventStore::new`, then seed:
+///
+/// - `specs` (still in SQLite under W5)
+/// - two NDJSON events under `<dir>/.claude/spec/demo-spec/events/` (the W5
+///   replacement for the retired `events` table — `query_events` reads both
+///   `pipeline_events` and NDJSON now).
+///
+/// `knowledge` + `metrics_projection` are W5 stubs (search_knowledge returns
+/// `[]`, get_spec_metrics returns `{error}`) so they need no seeds.
 fn seed_db() -> (TempDir, std::path::PathBuf, std::path::PathBuf) {
+    use mustard_core::store::sqlite_store::SqliteEventStore;
+
     let dir = TempDir::new().expect("temp dir");
-    let db_path = dir.path().join("mustard.db");
-    let telemetry_path = dir.path().join("telemetry.db");
-    let conn = Connection::open(&db_path).expect("open db");
-    // The schema the `mustard-rt mcp` server expects. Mirrors the subset of
-    // `sqlite_schema.sql` the five tools touch — the server re-applies the
-    // full idempotent schema on open, so partial seeding here is safe.
+    // The MCP server resolves `<project>/.claude/.harness/mustard.db` when
+    // `MUSTARD_DB_PATH` is set. Put the DB exactly there so the per-spec
+    // NDJSON dir resolution (under `<project>/.claude/spec/`) lines up.
+    let claude_dir = dir.path().join(".claude").join(".harness");
+    std::fs::create_dir_all(&claude_dir).expect("claude dir");
+    let db_path = claude_dir.join("mustard.db");
+    let telemetry_path = claude_dir.join("telemetry.db");
+
+    // Apply the W5 schema via the canonical opener.
+    let _ = SqliteEventStore::new(&db_path).expect("open mustard.db");
+
+    // Seed the W5-shaped projections directly.
+    let conn = Connection::open(&db_path).expect("reopen for seed");
     conn.execute_batch(
-        "CREATE TABLE events (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT NOT NULL,
-            session_id TEXT, wave INTEGER, spec TEXT, event TEXT NOT NULL,
-            actor_kind TEXT, actor_id TEXT, payload TEXT);
-         CREATE TABLE knowledge (
-            id TEXT PRIMARY KEY, type TEXT, name TEXT, description TEXT,
-            confidence REAL, created_at TEXT, updated_at TEXT, source TEXT);
-         CREATE VIRTUAL TABLE knowledge_fts USING fts5(id UNINDEXED, name, description);
-         CREATE TABLE specs (
-            name TEXT PRIMARY KEY, status TEXT, phase TEXT, started_at TEXT,
-            completed_at TEXT, affected_files TEXT);
-         CREATE TABLE metrics_projection (
-            spec TEXT PRIMARY KEY, api_calls INTEGER, retries INTEGER,
-            pass1 INTEGER, tool_breakdown TEXT, dispatch_failures_by_phase TEXT,
-            agent_count INTEGER, updated_at TEXT);
-
-         INSERT INTO events (ts, session_id, wave, spec, event, actor_kind, actor_id, payload)
-            VALUES ('2026-05-19T01:00:00.000Z', 's-1', 0, 'demo-spec', 'tool.use', 'hook', 'h', '{}');
-         INSERT INTO events (ts, session_id, wave, spec, event, actor_kind, actor_id, payload)
-            VALUES ('2026-05-19T02:00:00.000Z', 's-1', 0, 'demo-spec', 'decision', 'hook', 'h', '{}');
-
-         INSERT INTO knowledge (id, type, name, description, confidence)
-            VALUES ('k1', 'pattern', 'event sink trait', 'append harness events', 0.9);
-         INSERT INTO knowledge_fts (id, name, description)
-            SELECT id, name, description FROM knowledge;
-
-         INSERT INTO specs (name, status, phase) VALUES ('demo-spec', 'active', 'EXECUTE');
-
-         INSERT INTO metrics_projection (spec, api_calls, retries, pass1)
-            VALUES ('demo-spec', 7, 0, 1);",
+        "INSERT INTO specs (name, status, phase) VALUES ('demo-spec', 'active', 'EXECUTE');",
     )
-    .expect("apply schema + seed");
+    .expect("seed specs");
     drop(conn);
+
+    // Seed the two demo-spec events into NDJSON — query_events folds NDJSON
+    // alongside pipeline_events under W5.
+    let events_dir = dir
+        .path()
+        .join(".claude")
+        .join("spec")
+        .join("demo-spec")
+        .join("events");
+    std::fs::create_dir_all(&events_dir).expect("events dir");
+    let body = format!(
+        "{}\n{}\n",
+        serde_json::to_string(&json!({
+            "ts": "2026-05-19T01:00:00.000Z",
+            "ts_ms": 0,
+            "event": "tool.use",
+            "kind": "tool",
+            "spec": "demo-spec",
+            "session_id": "s-1",
+            "actor": "h",
+            "payload": {},
+        }))
+        .unwrap(),
+        serde_json::to_string(&json!({
+            "ts": "2026-05-19T02:00:00.000Z",
+            "ts_ms": 0,
+            "event": "decision",
+            "kind": "knowledge",
+            "spec": "demo-spec",
+            "session_id": "s-1",
+            "actor": "h",
+            "payload": {},
+        }))
+        .unwrap()
+    );
+    std::fs::write(events_dir.join("seed.ndjson"), body).expect("write ndjson");
 
     // get_run_summary reads `run_usage` from the dedicated telemetry
     // database. Create it + the table directly (the server re-applies the
@@ -223,8 +262,8 @@ fn seed_db() -> (TempDir, std::path::PathBuf, std::path::PathBuf) {
 /// One end-to-end run: `initialize` + `tools/list` + each of the five tools.
 #[test]
 fn mcp_server_handshakes_and_serves_all_five_tools() {
-    let (_dir, db_path, telemetry_path) = seed_db();
-    let mut mcp = McpProcess::spawn(&db_path, &telemetry_path);
+    let (dir, db_path, telemetry_path) = seed_db();
+    let mut mcp = McpProcess::spawn(dir.path(), &db_path, &telemetry_path);
 
     // --- initialize handshake ---------------------------------------------
     let init = mcp.initialize();
@@ -253,12 +292,13 @@ fn mcp_server_handshakes_and_serves_all_five_tools() {
         assert!(names.contains(&expected), "tool {expected} not advertised");
     }
 
-    // --- tool 1: search_knowledge -----------------------------------------
+    // --- tool 1: search_knowledge (W5 stub — always empty) ----------------
     let knowledge = mcp.call_tool("search_knowledge", json!({ "query": "event" }));
     let rows = knowledge.as_array().expect("knowledge array");
-    assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0]["id"], json!("k1"));
-    assert_eq!(rows[0]["type"], json!("pattern"));
+    assert!(
+        rows.is_empty(),
+        "search_knowledge is a W5 stub (legacy `knowledge` table retired)"
+    );
 
     // --- tool 2: query_events ---------------------------------------------
     let events = mcp.call_tool("query_events", json!({ "spec": "demo-spec" }));
@@ -277,10 +317,13 @@ fn mcp_server_handshakes_and_serves_all_five_tools() {
     assert_eq!(matches[0]["spec"]["name"], json!("demo-spec"));
     assert!(matches[0]["score"].as_u64().unwrap() >= 1);
 
-    // --- tool 4: get_spec_metrics -----------------------------------------
+    // --- tool 4: get_spec_metrics (W5 stub — always {error}) --------------
     let metrics = mcp.call_tool("get_spec_metrics", json!({ "spec": "demo-spec" }));
-    assert_eq!(metrics["apiCalls"], json!(7));
-    assert_eq!(metrics["pass1"], json!(true));
+    assert_eq!(
+        metrics["error"],
+        json!("no metrics for spec"),
+        "metrics_projection retired in W5"
+    );
     let missing =
         mcp.call_tool("get_spec_metrics", json!({ "spec": "nope" }));
     assert_eq!(missing["error"], json!("no metrics for spec"));

@@ -51,8 +51,6 @@
 
 use mustard_core::error::Error;
 use mustard_core::fs;
-use mustard_core::store::event_store::EventSink;
-use mustard_core::store::sqlite_store::SqliteEventStore;
 use mustard_core::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
 use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use rusqlite::params;
@@ -165,7 +163,9 @@ fn run_harness_init(input: &HookInput, cwd: &str) {
         payload: json!({ "cwd": cwd, "source": source }),
         spec: None,
     };
-    let _ = SqliteEventStore::for_project(cwd).and_then(|store| store.append(&event));
+    // `session.start` is non-pipeline → per-spec NDJSON (or session fallback
+    // when there is no active spec yet) via the W5 router.
+    let _ = crate::run::event_route::emit(cwd, &event);
 }
 
 /// Delete archived `sessions/*.jsonl` files older than the retention window.
@@ -770,6 +770,12 @@ impl Check for SessionStart {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // `session.start` lands in the per-session NDJSON sink under W5; the
+    // `mustard.db` existence assertion uses raw path checks instead of opening
+    // the store. But several tests still seed `knowledge_patterns` directly,
+    // and the W5 harness-init path no longer opens the SQLite store — so we
+    // explicitly open it in the test helpers to apply the schema.
+    use mustard_core::store::sqlite_store::SqliteEventStore;
     use tempfile::tempdir;
 
     fn ctx(dir: &str) -> Ctx {
@@ -811,22 +817,46 @@ mod tests {
         let input = session_input("s-new");
         SessionStart.evaluate(&input, &ctx(project)).unwrap();
         assert!(dir.path().join(".claude/.harness/sessions").is_dir());
-        let events = SqliteEventStore::for_project(project)
-            .and_then(|s| s.replay())
-            .unwrap();
-        assert!(events.iter().any(|e| e.event == "session.start"));
+
+        // W5: `session.start` is non-pipeline → lands in the per-session NDJSON
+        // sink under `<project>/.claude/.session/<slug>/events/`.
+        let session_root = dir.path().join(".claude").join(".session");
+        let mut found = false;
+        if session_root.exists() {
+            for entry in std::fs::read_dir(&session_root).unwrap() {
+                let events_dir = entry.unwrap().path().join("events");
+                if !events_dir.exists() {
+                    continue;
+                }
+                for f in std::fs::read_dir(&events_dir).unwrap() {
+                    let body = std::fs::read_to_string(f.unwrap().path()).unwrap_or_default();
+                    if body.lines().any(|l| {
+                        serde_json::from_str::<serde_json::Value>(l)
+                            .ok()
+                            .and_then(|v| v["event"].as_str().map(str::to_string))
+                            .as_deref()
+                            == Some("session.start")
+                    }) {
+                        found = true;
+                    }
+                }
+            }
+        }
+        assert!(found, "session.start NDJSON line must be present");
     }
 
     #[test]
     fn harness_init_writes_session_start_to_sqlite_store() {
-        // The harness event bus is a single WAL-mode SQLite store; the
-        // `session.start` event lands in `mustard.db`, with no NDJSON log.
+        // W5: `session.start` is non-pipeline → it lands in the per-session
+        // NDJSON sink, NOT in `mustard.db`. The harness directory still gets
+        // created so the SQLite store can land later pipeline.* events. The
+        // legacy `events.jsonl` log stays absent.
         let dir = tempdir().unwrap();
         let project = dir.path().to_str().unwrap();
         SessionStart
             .evaluate(&session_input("new-session"), &ctx(project))
             .unwrap();
-        assert!(dir.path().join(".claude/.harness/mustard.db").exists());
+        assert!(dir.path().join(".claude/.harness").is_dir());
         assert!(!dir.path().join(".claude/.harness/events.jsonl").exists());
     }
 
@@ -938,6 +968,15 @@ mod tests {
 
     // --- session-memory parity (Wave 6b: reads from SQLite) ---------------
 
+    /// Ensure the harness DB exists with the W5 schema applied. Returns the
+    /// path so callers can open a plain `rusqlite::Connection` to seed
+    /// projection rows. Necessary because the W5 SessionStart hook no longer
+    /// opens the SQLite store at all — session.start lands in NDJSON.
+    fn ensure_db(project: &std::path::Path) -> std::path::PathBuf {
+        let store = SqliteEventStore::for_project(project).expect("open store");
+        store.path().to_path_buf()
+    }
+
     /// Seed the `knowledge_patterns` table directly so `build_memory_context`
     /// can load it without going through the `memory` run subcommand.
     fn seed_knowledge(db_path: &std::path::Path, pattern: &str, confidence: f64) {
@@ -954,11 +993,11 @@ mod tests {
     #[test]
     fn memory_injection_surfaces_knowledge_as_inject() {
         let dir = tempdir().unwrap();
-        // Run SessionStart once to create the DB + schema.
         let project = dir.path().to_str().unwrap();
+        // W5: SessionStart no longer opens SQLite (session.start → NDJSON).
+        // Open the store explicitly to apply the schema before seeding.
+        let db_path = ensure_db(dir.path());
         SessionStart.evaluate(&session_input("s-init"), &ctx(project)).unwrap();
-        // Now seed the knowledge table.
-        let db_path = dir.path().join(".claude/.harness/mustard.db");
         seed_knowledge(&db_path, "Foo: use bar", 0.9);
         let verdict = SessionStart
             .evaluate(&session_input("s"), &ctx(project))
@@ -988,9 +1027,10 @@ mod tests {
     fn low_confidence_knowledge_is_filtered() {
         let dir = tempdir().unwrap();
         let project = dir.path().to_str().unwrap();
-        // Initialise DB.
+        // W5: open the store explicitly to apply the schema; SessionStart no
+        // longer touches SQLite.
+        let db_path = ensure_db(dir.path());
         SessionStart.evaluate(&session_input("s-init"), &ctx(project)).unwrap();
-        let db_path = dir.path().join(".claude/.harness/mustard.db");
         // confidence 0.2 < KB_MIN_CONFIDENCE 0.5 → must be excluded by SQL WHERE.
         seed_knowledge(&db_path, "Weak: x", 0.2);
         // Below KB_MIN_CONFIDENCE → no Project Knowledge section → Allow.
@@ -1017,8 +1057,10 @@ mod tests {
         // column in the schema). Both entries must carry the unverified prefix.
         let dir = tempdir().unwrap();
         let project = dir.path().to_str().unwrap();
+        // W5: open the store explicitly to apply the schema; SessionStart no
+        // longer touches SQLite.
+        let db_path = ensure_db(dir.path());
         SessionStart.evaluate(&session_input("s-init"), &ctx(project)).unwrap();
-        let db_path = dir.path().join(".claude/.harness/mustard.db");
         seed_knowledge(&db_path, "alpha-entry: some description", 0.9);
         let verdict = SessionStart
             .evaluate(&session_input("s"), &ctx(project))

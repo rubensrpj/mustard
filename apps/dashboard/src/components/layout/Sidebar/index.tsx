@@ -30,6 +30,7 @@ import {
   Terminal,
   FileText,
   FolderPlus,
+  History,
   Cog,
   ChevronRight,
   ChevronDown,
@@ -580,6 +581,9 @@ export function Sidebar() {
         </NavLink>
         <NavLink to="/prd" className={toolNavItemClass}>
           <FileText className="h-3.5 w-3.5" /> {tLib("sidebar.prd")}
+        </NavLink>
+        <NavLink to="/sessions" className={toolNavItemClass}>
+          <History className="h-3.5 w-3.5" /> {tLib("sidebar.sessions")}
         </NavLink>
 
         <div className="mt-auto" />

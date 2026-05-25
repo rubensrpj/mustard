@@ -81,10 +81,14 @@ fn query_dbstat(conn: &rusqlite::Connection) -> Option<Vec<(String, i64)>> {
     rows.ok()
 }
 
-/// `SELECT event, COUNT(*) c FROM events GROUP BY event ORDER BY c DESC LIMIT 10`.
+/// `SELECT kind, COUNT(*) c FROM pipeline_events GROUP BY kind ORDER BY c DESC LIMIT 10`.
+///
+/// W5: the high-volume `events` table is gone; the lifecycle index
+/// `pipeline_events` (column `kind`) is the SQLite-side equivalent. Non-pipeline
+/// events live in per-spec NDJSON files and are not aggregated here.
 fn top_event_kinds(conn: &rusqlite::Connection) -> Vec<Value> {
     let Ok(mut stmt) = conn.prepare(
-        "SELECT event, COUNT(*) c FROM events GROUP BY event ORDER BY c DESC LIMIT 10",
+        "SELECT kind, COUNT(*) c FROM pipeline_events GROUP BY kind ORDER BY c DESC LIMIT 10",
     ) else {
         return Vec::new();
     };
@@ -111,13 +115,12 @@ fn wal_bytes(db_path: &std::path::Path) -> u64 {
 fn run_stats(store: &SqliteEventStore) -> Value {
     let conn = store.conn();
 
+    // W5: the high-volume `events` table is retired; the per-spec NDJSON sink
+    // owns the hot path. SQLite keeps the lean `pipeline_events` lifecycle index.
     let events_count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))
+        .query_row("SELECT COUNT(*) FROM pipeline_events", [], |r| r.get(0))
         .unwrap_or(0);
-
-    let events_fts_count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM events_fts", [], |r| r.get(0))
-        .unwrap_or(-1); // -1 signals unavailable
+    let events_fts_count: i64 = -1; // events_fts retired in W5.
 
     let (page_count, freelist_count, page_size) = read_size_pragmas(conn);
     let db_bytes = page_count * page_size;
@@ -196,14 +199,16 @@ fn run_vacuum(store: &SqliteEventStore) {
     println!("{}", serde_json::to_string_pretty(&doc).unwrap_or_else(|_| "{}".to_string()));
 }
 
-/// `--prune-keep <N>` mode: delete all but the N most-recent events.
+/// `--prune-keep <N>` mode: delete all but the N most-recent rows from
+/// `pipeline_events` (the W5 lifecycle index). NDJSON spec files are pruned
+/// separately via `mustard-rt run spec-clear`.
 fn run_prune(store: &SqliteEventStore, keep: u32) {
     let conn = store.conn();
 
     let rows_deleted: usize = conn
         .execute(
-            "DELETE FROM events WHERE id NOT IN \
-             (SELECT id FROM events ORDER BY id DESC LIMIT ?1)",
+            "DELETE FROM pipeline_events WHERE id NOT IN \
+             (SELECT id FROM pipeline_events ORDER BY id DESC LIMIT ?1)",
             rusqlite::params![keep],
         )
         .unwrap_or(0);
@@ -321,27 +326,31 @@ mod tests {
         let db_path = dir.path().join("mustard.db");
         let store = SqliteEventStore::new(&db_path).unwrap();
         let conn = store.conn();
-        // Insert 5 bare-minimum events.
+        // W5: insert 5 lifecycle rows into `pipeline_events`.
         for i in 0..5u32 {
             conn.execute(
-                "INSERT INTO events (session_id, event, payload, ts) VALUES (?1, ?2, ?3, ?4)",
+                "INSERT INTO pipeline_events (session_id, kind, payload, ts) \
+                 VALUES (?1, ?2, ?3, ?4)",
                 rusqlite::params![
                     format!("sess-{i}"),
-                    "test",
+                    "pipeline.status",
                     "{}",
                     format!("2026-05-{:02}T00:00:00Z", i + 1)
                 ],
             )
             .unwrap();
         }
-        let count_before: i64 =
-            conn.query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0)).unwrap();
+        let count_before: i64 = conn
+            .query_row("SELECT COUNT(*) FROM pipeline_events", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(count_before, 5);
 
         run_prune(&store, 3);
 
-        let count_after: i64 =
-            store.conn().query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0)).unwrap();
+        let count_after: i64 = store
+            .conn()
+            .query_row("SELECT COUNT(*) FROM pipeline_events", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(count_after, 3);
     }
 }

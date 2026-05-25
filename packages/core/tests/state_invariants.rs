@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used)]
 //! Invariant tests for the canonical [`SpecState`] model introduced in
 //! `spec-lifecycle-unification` Wave 1.
 //!

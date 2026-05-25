@@ -1,3 +1,4 @@
 - [notify v6 workspace pin](project_notify_v6_pin.md) — Por que `notify = "6"` (não 8.x): dashboard já vendoriza 6.x via debouncer-mini, evita split do grafo de dep
 - [OTEL collector /v1/traces route](project_otel_traces_route.md) — W3b adicionou rota traces → economy::spans via sources::otel::ingest; metrics/logs continuam em claude_code_otel
 - [SessionStart spawns OTEL collector](project_session_start_spawns_collector.md) — Spawn detached + PID idempotente; comment "out of scope" foi invertido; clean_otel_pid agora é parte ativa do contrato
+- [W5 event_route split](project_w5_event_route_split.md) — event_route::emit é o único classificador (pipeline.* → SQLite, else → NDJSON); consumers ainda lendo non-pipeline da SQLite são W6+ follow-up

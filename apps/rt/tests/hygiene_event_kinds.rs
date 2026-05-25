@@ -5,8 +5,7 @@
 //! --kind hygiene.*` writes exactly one row and exits 0. An unknown kind still
 //! exits 1 (the validation contract is unchanged).
 
-use mustard_core::store::event_store::EventSink;
-use mustard_core::store::sqlite_store::SqliteEventStore;
+use mustard_core::projection::read_harness_events_from_ndjson_dir;
 use std::path::Path;
 use tempfile::TempDir;
 
@@ -41,8 +40,9 @@ fn hygiene_kinds_are_accepted_and_write_single_rows() {
         );
     }
 
-    let store = SqliteEventStore::for_project(project).expect("open store");
-    let events = store.query(Some(spec)).expect("query");
+    // W5: hygiene.* events route to per-spec NDJSON, not SQLite.
+    let events_dir = project.join(".claude").join("spec").join(spec).join("events");
+    let events = read_harness_events_from_ndjson_dir(&events_dir);
     for kind in ["hygiene.detected", "hygiene.autoclose", "hygiene.skipped"] {
         let n = events.iter().filter(|e| e.event == kind).count();
         assert_eq!(n, 1, "exactly one {kind} row (no alias fan-out)");

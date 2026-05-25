@@ -39,8 +39,7 @@
 
 use crate::run::env::project_dir;
 use mustard_core::fs;
-use mustard_core::store::sqlite_store::SqliteEventStore;
-use rusqlite::{Connection, params};
+use mustard_core::projection::read_harness_events_from_ndjson_dir;
 use serde_json::Value;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -100,15 +99,10 @@ pub(crate) fn parse_wave_names(wave_plan_text: &str) -> Vec<String> {
     out
 }
 
-/// Open a fresh rusqlite [`Connection`] pointing at the project store —
-/// reuses the store's resolved DB path. The `SqliteEventStore` itself is
-/// dropped immediately; only the path is borrowed.
-fn open_conn(project: &Path) -> Option<Connection> {
-    let store = SqliteEventStore::for_project(project).ok()?;
-    let db_path = store.path().to_path_buf();
-    let conn = Connection::open(&db_path).ok()?;
-    let _ = conn.busy_timeout(std::time::Duration::from_secs(5));
-    Some(conn)
+/// Resolve the per-spec NDJSON events directory:
+/// `<project>/.claude/spec/<spec>/events`.
+fn spec_events_dir(project: &Path, spec_slug: &str) -> PathBuf {
+    project.join(".claude").join("spec").join(spec_slug).join("events")
 }
 
 /// Parse the wave number `N` from a wave name like `wave-3-frontend`. Returns
@@ -153,37 +147,47 @@ pub(crate) fn parse_wave_dirs_from_fs(spec_dir: &Path) -> Vec<String> {
 /// Fetch up to [`MAX_MEMORIES_PER_WAVE`] `agent.memory` payloads for a single
 /// `(spec, wave)` pair, newest first.
 ///
+/// W5: `agent.memory` events live in the per-spec NDJSON sink under
+/// `<project>/.claude/spec/<spec>/events/`. The walker hydrates every NDJSON
+/// line into a `HarnessEvent`, then filters in-memory.
+///
 /// Matches both attribution conventions described in the module docs:
 ///
-/// - envelope-level: `events.spec = ?1 AND events.wave = ?2`
-/// - payload-level:  `payload.spec = ?1 AND payload.wave = ?2`
+/// - envelope-level: `event.spec == spec_slug && event.wave == wave_n`
+/// - payload-level:  `payload.spec == spec_slug && payload.wave == wave_n`
 ///
 /// The two are OR'd so a writer that sets only one source still matches.
 pub(crate) fn memories_for_spec_wave(
-    conn: &Connection,
+    project: &Path,
     spec_slug: &str,
     wave_n: i64,
 ) -> Vec<Value> {
-    let Ok(mut stmt) = conn.prepare(
-        "SELECT payload FROM events \
-         WHERE event = 'agent.memory' \
-           AND (json_extract(payload, '$.spec') = ?1 OR spec = ?1) \
-           AND (json_extract(payload, '$.wave') = ?2 OR wave = ?2) \
-         ORDER BY ts DESC \
-         LIMIT ?3",
-    ) else { return Vec::new() };
-    let Ok(rows) = stmt.query_map(
-        params![spec_slug, wave_n, MAX_MEMORIES_PER_WAVE as i64],
-        |row| {
-            let text: Option<String> = row.get(0)?;
-            Ok(text
-                .and_then(|t| serde_json::from_str::<Value>(&t).ok())
-                .unwrap_or(Value::Null))
-        },
-    ) else { return Vec::new() };
-    rows.filter_map(std::result::Result::ok)
-        .filter(|v| !v.is_null())
-        .collect()
+    let dir = spec_events_dir(project, spec_slug);
+    let mut events = read_harness_events_from_ndjson_dir(&dir);
+    // Newest first.
+    events.sort_by(|a, b| b.ts.cmp(&a.ts));
+
+    let wave_n_u32 = u32::try_from(wave_n).unwrap_or(0);
+    let mut out: Vec<Value> = Vec::new();
+    for ev in events {
+        if ev.event != "agent.memory" {
+            continue;
+        }
+        let payload_spec = ev.payload.get("spec").and_then(Value::as_str);
+        let envelope_spec = ev.spec.as_deref();
+        let spec_match = payload_spec == Some(spec_slug) || envelope_spec == Some(spec_slug);
+        let payload_wave = ev.payload.get("wave").and_then(Value::as_i64);
+        let envelope_wave = i64::from(ev.wave);
+        let wave_match = payload_wave == Some(wave_n) || envelope_wave == i64::from(wave_n_u32);
+        if !(spec_match && wave_match) {
+            continue;
+        }
+        out.push(ev.payload);
+        if out.len() >= MAX_MEMORIES_PER_WAVE {
+            break;
+        }
+    }
+    out
 }
 
 /// Render the prior-wave memories block. Returns the empty string when there
@@ -194,21 +198,18 @@ pub(crate) fn memories_for_spec_wave(
 /// query `(spec, wave_n)`. Wave names whose prefix does not parse are skipped.
 pub(crate) fn render(
     wave_names: &[String],
-    conn: Option<&Connection>,
+    project: &Path,
     spec: &str,
 ) -> String {
     if wave_names.is_empty() {
         return String::new();
     }
-    let Some(conn) = conn else {
-        return String::new();
-    };
     let mut sections: Vec<String> = Vec::new();
     for name in wave_names {
         let Some(wave_n) = parse_wave_number(name) else {
             continue;
         };
-        let mems = memories_for_spec_wave(conn, spec, wave_n);
+        let mems = memories_for_spec_wave(project, spec, wave_n);
         if mems.is_empty() {
             continue;
         }
@@ -270,8 +271,7 @@ pub fn run(spec: Option<&str>, wave: Option<u32>) {
     let n_prior = (wave as usize).saturating_sub(1).min(all_names.len());
     let prior: Vec<String> = all_names.into_iter().take(n_prior).collect();
 
-    let conn = open_conn(&project);
-    let rendered = render(&prior, conn.as_ref(), spec);
+    let rendered = render(&prior, &project, spec);
     if !rendered.is_empty() {
         print!("{rendered}");
     }
@@ -280,8 +280,8 @@ pub fn run(spec: Option<&str>, wave: Option<u32>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::run::event_route;
     use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
-    use mustard_core::store::event_store::EventSink;
     use serde_json::json;
     use tempfile::tempdir;
 
@@ -307,8 +307,10 @@ mod tests {
     }
 
     /// Build an `agent.memory` fixture using payload-level attribution only
-    /// (`payload.spec` + `payload.wave`). Used to assert the OR branch of the
-    /// query matches when the envelope columns are unset.
+    /// (`payload.spec` + `payload.wave`). The router uses the envelope's `spec`
+    /// field to pick the per-spec NDJSON dir, so the envelope still carries
+    /// `Some(spec)` here — the assertion is purely about the OR branch in
+    /// `memories_for_spec_wave` matching `payload.spec` / `payload.wave`.
     fn mem_event_payload_only(spec: &str, wave: u32, summary: &str) -> HarnessEvent {
         HarnessEvent {
             v: SCHEMA_VERSION,
@@ -322,7 +324,10 @@ mod tests {
             },
             event: "agent.memory".to_string(),
             payload: json!({ "spec": spec, "wave": wave, "summary": summary }),
-            spec: None,
+            // Envelope still needs `spec` so the router lands the NDJSON file
+            // under <project>/.claude/spec/<spec>/events/. The OR branch under
+            // test still fires because `wave = 0` here (envelope-wave mismatch).
+            spec: Some(spec.to_string()),
         }
     }
 
@@ -356,28 +361,20 @@ mod tests {
     #[test]
     fn reads_prior_waves() {
         let dir = tempdir().unwrap();
-        let store = SqliteEventStore::new(dir.path().join("mustard.db")).unwrap();
+        let project = dir.path();
+        let cwd = project.to_str().unwrap();
         // Two memories for wave 1, one for wave 2 — all under spec "foo".
-        store
-            .append(&mem_event("foo", 1, "rt infra delivered four subcommands"))
-            .unwrap();
-        store
-            .append(&mem_event("foo", 1, "wikilinks table created"))
-            .unwrap();
-        store
-            .append(&mem_event("foo", 2, "SKILLs updated"))
-            .unwrap();
+        event_route::emit(cwd, &mem_event("foo", 1, "rt infra delivered four subcommands"));
+        event_route::emit(cwd, &mem_event("foo", 1, "wikilinks table created"));
+        event_route::emit(cwd, &mem_event("foo", 2, "SKILLs updated"));
         // Noise: a different spec must not bleed into the rendered block.
-        store
-            .append(&mem_event("other", 1, "should not appear"))
-            .unwrap();
+        event_route::emit(cwd, &mem_event("other", 1, "should not appear"));
 
-        let conn = Connection::open(store.path()).unwrap();
         let prior = vec![
             "wave-1-rt-infra".to_string(),
             "wave-2-skill-template".to_string(),
         ];
-        let md = render(&prior, Some(&conn), "foo");
+        let md = render(&prior, project, "foo");
         assert!(md.starts_with("## Memórias de waves anteriores"));
         assert!(md.contains("### [[wave-1-rt-infra]]"));
         assert!(md.contains("### [[wave-2-skill-template]]"));
@@ -390,13 +387,13 @@ mod tests {
     #[test]
     fn reads_prior_waves_via_spec_and_wave() {
         let dir = tempdir().unwrap();
-        let store = SqliteEventStore::new(dir.path().join("mustard.db")).unwrap();
-        store
-            .append(&mem_event_payload_only("foo", 1, "bar"))
-            .unwrap();
+        let project = dir.path();
+        event_route::emit(
+            project.to_str().unwrap(),
+            &mem_event_payload_only("foo", 1, "bar"),
+        );
 
-        let conn = Connection::open(store.path()).unwrap();
-        let mems = memories_for_spec_wave(&conn, "foo", 1);
+        let mems = memories_for_spec_wave(project, "foo", 1);
         assert_eq!(mems.len(), 1);
         assert_eq!(
             mems[0].get("summary").and_then(Value::as_str),
@@ -432,18 +429,14 @@ mod tests {
     #[test]
     fn render_empty_when_no_prior_waves() {
         let dir = tempdir().unwrap();
-        let store = SqliteEventStore::new(dir.path().join("mustard.db")).unwrap();
-        let conn = Connection::open(store.path()).unwrap();
-        let md = render(&[], Some(&conn), "foo");
+        let md = render(&[], dir.path(), "foo");
         assert!(md.is_empty());
     }
 
     #[test]
     fn render_empty_when_no_memories_match() {
         let dir = tempdir().unwrap();
-        let store = SqliteEventStore::new(dir.path().join("mustard.db")).unwrap();
-        let conn = Connection::open(store.path()).unwrap();
-        let md = render(&["wave-1-rt-infra".to_string()], Some(&conn), "foo");
+        let md = render(&["wave-1-rt-infra".to_string()], dir.path(), "foo");
         assert!(md.is_empty());
     }
 }

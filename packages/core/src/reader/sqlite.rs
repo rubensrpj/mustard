@@ -14,7 +14,7 @@ use crate::model::view::{
 };
 use crate::projection::{
     project_quality, project_spec_view, project_spec_view_with_header, project_timeline,
-    project_waves, project_workspace,
+    project_waves, project_workspace, read_harness_events_from_ndjson_dir,
 };
 use crate::reader::SpecReader;
 use crate::store::sqlite_store::SqliteEventStore;
@@ -91,11 +91,14 @@ impl SqliteSpecReader {
     ///
     /// Returns one `(child_name, reason)` tuple per distinct child, with the
     /// first-seen reason winning when the same pair is linked more than once.
-    /// Reads via [`SqliteEventStore::replay`] and filters in Rust — keeps the
-    /// store's public surface untouched at the cost of a full event scan,
-    /// which is fine for the harness's event volumes.
+    /// Reads via [`SqliteEventStore::replay`] for any lifecycle-event-shaped
+    /// link, plus the parent's per-spec NDJSON directory (W5 — `spec.link`
+    /// events live there alongside tool/agent records).
     fn link_payloads_for(&self, parent: &str) -> Result<Vec<(String, Option<String>)>> {
-        let events = self.store().replay()?;
+        let mut events = self.store().replay()?;
+        let mut ndjson = read_harness_events_from_ndjson_dir(&self.ndjson_events_dir(parent));
+        events.append(&mut ndjson);
+        events.sort_by(|a, b| a.ts.cmp(&b.ts));
         let mut seen: std::collections::BTreeMap<String, Option<String>> =
             std::collections::BTreeMap::new();
         let mut order: Vec<String> = Vec::new();
@@ -156,6 +159,35 @@ impl SqliteSpecReader {
         primary
     }
 
+    /// On-disk events directory the NDJSON writer uses for `spec`.
+    ///
+    /// Path: `{project_dir}/.claude/spec/{spec}/events/`. The directory is
+    /// optional — a brand-new spec has no tool/agent events yet and the
+    /// folder simply does not exist; [`read_harness_events_from_ndjson_dir`]
+    /// returns an empty `Vec` in that case.
+    fn ndjson_events_dir(&self, spec: &str) -> std::path::PathBuf {
+        self.project_dir
+            .join(".claude")
+            .join("spec")
+            .join(spec)
+            .join("events")
+    }
+
+    /// Return the merged event slice for `spec`: lifecycle events from the
+    /// `pipeline_events` SQLite index plus tool / agent / qa events from the
+    /// per-spec NDJSON directory, sorted by `ts`.
+    ///
+    /// This is the W5 successor to "query the events table" — every projection
+    /// in this reader feeds off it so the slice the SQLite reader hands to the
+    /// pure folds matches what the in-memory reader sees.
+    fn merged_events_for(&self, spec: &str) -> Result<Vec<crate::model::event::HarnessEvent>> {
+        let mut events = self.store().query(Some(spec))?;
+        let mut ndjson = read_harness_events_from_ndjson_dir(&self.ndjson_events_dir(spec));
+        events.append(&mut ndjson);
+        events.sort_by(|a, b| a.ts.cmp(&b.ts));
+        Ok(events)
+    }
+
     /// Scan `.claude/spec/{spec}/wave-N-{role}/` to build a planned wave
     /// list when no task events exist yet. Returns waves sorted by number.
     fn waves_from_disk(&self, spec: &str) -> Vec<WaveView> {
@@ -194,7 +226,7 @@ impl SpecReader for SqliteSpecReader {
         if spec.is_empty() {
             return Err(crate::reader::error::ReadError::invalid("spec name cannot be empty"));
         }
-        let events = self.store().query(Some(spec))?;
+        let events = self.merged_events_for(spec)?;
         if !events.is_empty() {
             return Ok(Some(project_spec_view(spec, &events)));
         }
@@ -295,12 +327,18 @@ impl SpecReader for SqliteSpecReader {
             }
             // Project from the in-memory event slice when the spec has events;
             // otherwise fall back to the on-disk `spec.md` header (a teammate's
-            // pulled draft with no events yet). Only the no-event case touches
-            // the filesystem — and it never reopens the store.
+            // pulled draft with no events yet). The SQLite slice carries only
+            // `pipeline.*` lifecycle events (W5); merge in the per-spec NDJSON
+            // (tool/agent/qa events) so the projection sees the full timeline
+            // — mirrors what `merged_events_for` does on the single-spec path.
             let summary_opt: Option<SpecSummary> = match by_spec.get(name.as_str()) {
                 Some(slice) => {
-                    let owned: Vec<crate::model::event::HarnessEvent> =
+                    let mut owned: Vec<crate::model::event::HarnessEvent> =
                         slice.iter().map(|e| (*e).clone()).collect();
+                    let mut ndjson =
+                        read_harness_events_from_ndjson_dir(&self.ndjson_events_dir(&name));
+                    owned.append(&mut ndjson);
+                    owned.sort_by(|a, b| a.ts.cmp(&b.ts));
                     Some((&project_spec_view(&name, &owned)).into())
                 }
                 None => self.spec_view(&name)?.as_ref().map(SpecSummary::from),
@@ -330,7 +368,7 @@ impl SpecReader for SqliteSpecReader {
         if spec.is_empty() {
             return Err(crate::reader::error::ReadError::invalid("spec name cannot be empty"));
         }
-        let events = self.store().query(Some(spec))?;
+        let events = self.merged_events_for(spec)?;
         let from_events = project_waves(spec, &events);
         if !from_events.is_empty() {
             return Ok(from_events);
@@ -346,7 +384,7 @@ impl SpecReader for SqliteSpecReader {
         if spec.is_empty() {
             return Err(crate::reader::error::ReadError::invalid("spec name cannot be empty"));
         }
-        let events = self.store().query(Some(spec))?;
+        let events = self.merged_events_for(spec)?;
         Ok(project_quality(spec, &events))
     }
 
@@ -354,7 +392,7 @@ impl SpecReader for SqliteSpecReader {
         if spec.is_empty() {
             return Err(crate::reader::error::ReadError::invalid("spec name cannot be empty"));
         }
-        let events = self.store().query(Some(spec))?;
+        let events = self.merged_events_for(spec)?;
         Ok(project_timeline(spec, &events, window))
     }
 
@@ -520,6 +558,11 @@ mod tests {
 
     #[test]
     fn spec_view_projects_events_into_view() {
+        // W5: only `pipeline.*` events land in SQLite (`pipeline_events`); tool
+        // events live in per-spec NDJSON files and are out of this reader's
+        // scope. The view here is built solely from the lifecycle index, so
+        // `tools_used` stays 0 — the NDJSON path is exercised by
+        // `crate::projection::timeline` tests, not the SQLite reader's.
         let dir = tempdir().unwrap();
         let store = store_for(dir.path());
         store
@@ -534,8 +577,8 @@ mod tests {
             .append(&event(
                 "auth",
                 "2026-05-20T10:00:01Z",
-                "tool.use",
-                json!({}),
+                "pipeline.phase",
+                json!({ "phase": "PLAN" }),
             ))
             .unwrap();
 
@@ -543,7 +586,6 @@ mod tests {
         let view = reader.spec_view("auth").unwrap().unwrap();
         assert_eq!(view.spec, "auth");
         assert_eq!(view.status, SpecStatus::Planning);
-        assert_eq!(view.tools_used, 1);
         assert_eq!(view.lang.as_deref(), Some("pt"));
     }
 
@@ -559,11 +601,14 @@ mod tests {
 
     #[test]
     fn list_specs_excludes_orphans_and_applies_search() {
+        // W5: `distinct_specs` reads from `pipeline_events`, so seeding has to
+        // go through a `pipeline.*` event (the only kind the SQLite sink writes).
+        // Tool events live in NDJSON and are not part of the listing surface.
         let dir = tempdir().unwrap();
         let store = store_for(dir.path());
         for name in ["auth", "billing", "__orphan__"] {
             store
-                .append(&event(name, "2026-05-20T10:00:00Z", "tool.use", json!({})))
+                .append(&event(name, "2026-05-20T10:00:00Z", "pipeline.scope", json!({})))
                 .unwrap();
         }
         let reader = open_reader(dir.path());
@@ -574,8 +619,10 @@ mod tests {
         assert!(names.contains(&"billing".to_string()));
         assert!(!names.contains(&"__orphan__".to_string()));
 
-        let mut filter = SpecFilter::default();
-        filter.search = Some("auth".into());
+        let filter = SpecFilter {
+            search: Some("auth".into()),
+            ..SpecFilter::default()
+        };
         let only_auth = reader.list_specs(&filter).unwrap();
         assert_eq!(only_auth.len(), 1);
         assert_eq!(only_auth[0].spec, "auth");

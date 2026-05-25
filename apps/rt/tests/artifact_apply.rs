@@ -1,3 +1,13 @@
+// Integration tests are separate binary targets and not exempt from
+// `clippy::unwrap_used` etc. via `#[cfg(test)]`. Mirror the carve-out from
+// `src/main.rs` so test panics on `.unwrap()` remain valid assertions.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::map_unwrap_or,
+    clippy::uninlined_format_args
+)]
+
 //! Integration tests for `mustard-rt run artifact-update --apply`.
 //!
 //! These drive the **real `mustard-rt` subprocess** end-to-end: they synthesise
@@ -26,8 +36,7 @@ fn git_available() -> bool {
     Command::new("git")
         .arg("--version")
         .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+        .is_ok_and(|o| o.status.success())
 }
 
 /// Build a one-commit local repo at `dir` containing a single file `hello.md`

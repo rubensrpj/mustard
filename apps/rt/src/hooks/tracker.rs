@@ -43,7 +43,6 @@ use mustard_core::economy::writer;
 use mustard_core::economy::{ApiCostFrame, SpanRecord};
 use mustard_core::error::Error;
 use mustard_core::fs;
-use mustard_core::store::event_store::EventSink;
 use mustard_core::store::sqlite_store::SqliteEventStore;
 use mustard_core::telemetry::model::RunAttribution;
 use mustard_core::telemetry::{writer as telemetry_writer, TelemetryStore};
@@ -164,26 +163,31 @@ fn build_harness_event(
     }
 }
 
-/// Emit one harness event, best-effort, opening the store itself. Telemetry is
-/// never load-bearing. Callers that already hold an open store for the same
-/// invocation should prefer [`emit_event_via`] to avoid a second open.
+/// Emit one harness event, best-effort. Telemetry is never load-bearing.
+///
+/// Routes through the W5 [`crate::run::event_route::emit`] classifier:
+/// `pipeline.*` lands in SQLite, everything else (the vast majority of
+/// `tracker` events — `tool.use`, `agent.start`, `agent.stop`,
+/// `subagent.*`, etc.) lands in the per-spec NDJSON sink.
 fn emit_event(project_dir: &str, hook_id: &str, event: &str, payload: Value) {
     let harness_event = build_harness_event(project_dir, hook_id, event, payload);
-    let _ = SqliteEventStore::for_project(project_dir)
-        .and_then(|store| store.append(&harness_event));
+    let _ = crate::run::event_route::emit(project_dir, &harness_event);
 }
 
-/// Emit one harness event onto an already-open store, best-effort. Lets a hook
-/// invocation that opens the store once reuse it for the event append.
+/// Emit one harness event onto a caller-held store, best-effort. Kept as a
+/// distinct entry point so a hook invocation that already opened the store
+/// for some other read can still pass it in — the router opens its own
+/// connection internally, so the `_store` arg is now ignored.
+#[allow(clippy::needless_pass_by_value)]
 fn emit_event_via(
-    store: &SqliteEventStore,
+    _store: &SqliteEventStore,
     project_dir: &str,
     hook_id: &str,
     event: &str,
     payload: Value,
 ) {
     let harness_event = build_harness_event(project_dir, hook_id, event, payload);
-    let _ = store.append(&harness_event);
+    let _ = crate::run::event_route::emit(project_dir, &harness_event);
 }
 
 /// Resolve the active wave id from `MUSTARD_ACTIVE_WAVE` (the convention the
@@ -1332,11 +1336,27 @@ mod tests {
         };
         use mustard_core::model::contract::Observer;
         SkillUsageTracker.observe(&input, &ctx(Trigger::PostToolUse, project));
-        // The event log must now carry a `skill.invoked` line.
-        let events = SqliteEventStore::for_project(project)
-            .and_then(|s| s.replay())
-            .unwrap();
-        assert!(events.iter().any(|e| e.event == "skill.invoked"));
+
+        // W5: `skill.invoked` is non-pipeline → per-session NDJSON (no spec
+        // resolves in this test). Scan every NDJSON file under
+        // `<project>/.claude/.session/*/events/`.
+        let session_root = dir.path().join(".claude").join(".session");
+        let mut found = false;
+        if session_root.exists() {
+            for entry in std::fs::read_dir(&session_root).unwrap() {
+                let events_dir = entry.unwrap().path().join("events");
+                if !events_dir.exists() {
+                    continue;
+                }
+                for f in std::fs::read_dir(&events_dir).unwrap() {
+                    let body = std::fs::read_to_string(f.unwrap().path()).unwrap_or_default();
+                    if body.lines().any(|l| l.contains("\"event\":\"skill.invoked\"")) {
+                        found = true;
+                    }
+                }
+            }
+        }
+        assert!(found, "skill.invoked NDJSON line must be present");
     }
 
     #[test]

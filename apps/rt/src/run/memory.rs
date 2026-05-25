@@ -17,7 +17,6 @@
 use crate::run::env::{current_spec, project_dir, session_id};
 use crate::util::{now_iso8601, now_millis};
 use mustard_core::fs;
-use mustard_core::store::event_store::EventSink;
 use mustard_core::store::sqlite_store::SqliteEventStore;
 use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use rusqlite::params;
@@ -209,7 +208,8 @@ fn emit_decision_event(entry_type: &str, content: &str, context: &str, source: &
         payload,
         spec: current_spec(dir),
     };
-    let _ = SqliteEventStore::for_project(dir).and_then(|store| store.append(&ev));
+    // W5 routing: `agent.memory` / `memory.*` events are non-pipeline → NDJSON.
+    let _ = crate::run::event_route::emit(dir, &ev);
 }
 
 /// Insert a decision row into `memory_decisions`. Fail-open — errors are

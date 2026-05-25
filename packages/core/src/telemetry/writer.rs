@@ -237,10 +237,11 @@ pub struct SpecBackfillReport {
 /// Backfill `spec` (and the sibling `wave_id` / `agent_id`) on `run_usage`
 /// rows that arrived without write-time attribution.
 ///
-/// The legacy migration in `telemetry::migrate::migrate_from_mustard_db` is a
-/// pure data copy — it does NOT call `stamp_attribution`. So rows carried
-/// over from `mustard.db` land with `spec = NULL` even when the matching
-/// `run_attribution` stamp existed. This function fixes that retroactively.
+/// Rows can arrive `spec = NULL` when the collector's write-time stamping path
+/// loses the race against the `run_attribution` upsert (the agent.start hook
+/// writes the stamp on a separate connection, so a fast trace can land first).
+/// This function fixes that retroactively by replaying the same lookup the
+/// collector uses on the hot path.
 ///
 /// Lookup strategy mirrors the live OTEL collector's `stamp_attribution`
 /// (`apps/rt/src/run/otel/collector.rs::stamp_attribution`):
@@ -809,7 +810,7 @@ mod tests {
 
         let now = 100 * MS_PER_DAY;
         seed_run(conn, "ancient", Some(now - 91 * MS_PER_DAY));
-        seed_run(conn, "fresh", Some(now - 1 * MS_PER_DAY));
+        seed_run(conn, "fresh", Some(now - MS_PER_DAY));
 
         // 90-day window: the 91-day-old run is pruned, the 1-day-old one kept.
         let removed = prune_older_than_days(conn, 90, now).unwrap();

@@ -116,15 +116,16 @@ mod tests {
         let expected = dir.path().join(HARNESS_DIR).join(DB_FILE);
         assert!(expected.exists(), "db file must be created on first open");
         // The schema applied via SqliteEventStore must be visible on the bare
-        // connection — the `events` table is part of the legacy schema.
+        // connection — `pipeline_events` is the W5 lifecycle index that
+        // replaced the legacy `events` table.
         let row: i64 = conn
             .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='events'",
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='pipeline_events'",
                 [],
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(row, 1, "events table must exist after open_for");
+        assert_eq!(row, 1, "pipeline_events table must exist after open_for");
     }
 
     #[test]

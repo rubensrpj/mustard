@@ -14,8 +14,6 @@
 use crate::run::env::session_id;
 use crate::util::now_iso8601;
 use mustard_core::fs;
-use mustard_core::store::event_store::EventSink;
-use mustard_core::store::sqlite_store::SqliteEventStore;
 use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use serde_json::{json, Value};
 use std::path::Path;
@@ -57,7 +55,8 @@ fn emit_link_event(cwd: &Path, parent: &str, child: &str, reason: &str) {
         payload: json!({ "parent": parent, "child": child, "reason": reason }),
         spec: Some(child.to_string()),
     };
-    let _ = SqliteEventStore::for_project(cwd).and_then(|store| store.append(&ev));
+    // `spec.link` is non-pipeline → per-spec NDJSON via the W5 router.
+    let _ = crate::run::event_route::emit(cwd.to_string_lossy().as_ref(), &ev);
 }
 
 /// Core link logic. Returns `true` when the link was applied (fail-open).

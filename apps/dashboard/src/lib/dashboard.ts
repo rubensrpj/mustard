@@ -104,6 +104,25 @@ export function fetchRecentEvents(repoPath: string, limit?: number): Promise<Rec
   return invoke<RecentEvent[]>("dashboard_recent_events", { repoPath, limit });
 }
 
+// W5 (`2026-05-24-mustard-unification`, T5.4) — recent sessions from the
+// `sessions` table (mirrors Rust `SessionRow`). The page lists open sessions
+// first (status === "open") and re-renders on watcher `events` ticks so it
+// tails live (`subscribeFsChange` already invalidates `["sessions", repoPath]`).
+export interface SessionRow {
+  id: string;
+  slug: string;
+  started_at: string;
+  last_activity_at: string | null;
+  last_spec: string | null;
+  cwd: string | null;
+  /** `"open" | "closed"` (per the W5 schema default). */
+  status: string;
+}
+
+export function fetchSessions(repoPath: string, limit?: number): Promise<SessionRow[]> {
+  return invoke<SessionRow[]>("dashboard_sessions", { repoPath, limit });
+}
+
 export function fetchSpecs(repoPath: string): Promise<SpecRow[]> {
   return invoke<SpecRow[]>("dashboard_specs", { repoPath });
 }

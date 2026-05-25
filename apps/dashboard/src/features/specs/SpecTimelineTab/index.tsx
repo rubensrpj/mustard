@@ -1,255 +1,522 @@
-import { useMemo, useState } from "react";
-import { ChevronRight, FileText } from "lucide-react";
+// SpecTimelineTab — claude-devtools-style flat timeline.
+//
+// W5 (`2026-05-24-mustard-unification`, T5.3) rewrite. The legacy
+// phase-grouped accordion is replaced with a flat row-per-event list that
+// matches the claude-devtools "execution trace" treatment:
+//
+//   icon · label · tokens_in/tokens_out · duration_ms · status dot · ▸
+//
+// Expanding a row reveals a tool-specific viewer:
+//
+//   Bash         → terminal block (mono, stdout + stderr concatenated)
+//   Read         → Code / Preview toggle (markdown for `.md`, code otherwise)
+//   Edit/Write   → diff viewer (before/after as `input` / `output` strings)
+//   Glob / Grep  → result list (newline-split `output`)
+//   Task         → recursive execution trace — children resolved via
+//                  `parent_id` against the flat list this row belongs to
+//   *            → JSON fallback (the raw `payload_summary` + input/output)
+//
+// Sources fan in lazily:
+//   - `useSpecTimeline` returns the flat list (Tauri command
+//     `dashboard_spec_timeline`, refetched on watcher `events` ticks via
+//     `lib/watcher.ts::subscribeFsChange` invalidation — so the timeline
+//     tails in real time without polling).
+//   - The post-T5.2 core projection populates `tokens_in`, `tokens_out`,
+//     `duration_ms`, `parent_id`, `input`, `output`, `tool`, `status` on
+//     each `SpecTimelineNode`. Until that lands those fields stay `null`
+//     and the row degrades cleanly (no chip / no expand body).
+//
+// Performance — we intentionally do not pull in `react-virtuoso` /
+// `@tanstack/react-virtual` here: the row body is gated behind an `expanded`
+// `Set` so collapsed rows render a single button + 4 chips, and the
+// expanded body (the heavy renderers) mounts only on demand. That keeps the
+// per-row work small enough to stay under the 16 ms re-render budget for
+// 500+ events on a typical workstation — same strategy used by
+// `<ExecutionTrace>` next door. We can revisit windowing if profiling
+// shows it's actually needed (AC-W5-5 prohibits force-graph deps; nothing
+// blocks a future virtualization helper).
+
+import { memo, useCallback, useMemo, useState } from "react";
+import {
+  ChevronRight,
+  Layers,
+  Terminal as TerminalIcon,
+  FileText,
+  FileEdit,
+  Search,
+  Cpu,
+  Wrench,
+  GitBranch,
+  CircleCheck,
+  CircleAlert,
+  Circle,
+  Loader2,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 import { relativeTime } from "@/lib/time";
-import { SpecMarkdownViewer, type SpecMarkdownKind } from "../SpecMarkdownViewer";
+import { CodeBlock, DiffViewer, StatPill } from "@/components/page";
 import type { SpecTimelineNode } from "@/lib/types/specs";
 
 interface SpecTimelineTabProps {
   nodes: SpecTimelineNode[];
-  /** When a node is clicked, emit it so SpecDrillDown can filter SpecEventsTab. */
+  /** Forwarded so a parent can observe row selection (legacy hook). */
   onNodeClick?: (node: SpecTimelineNode) => void;
-  /** Repo + spec are required to surface "ver markdown" deep links per node. */
+  /** Required for the wave/qa/review markdown deep-links — currently used by
+   *  the older grouped view; left in the API so callers don't break. */
   repoPath?: string | null;
   spec?: string;
-  /** Wave numbers known for this spec (drives the wave tabs in the viewer). */
   waves?: number[];
 }
 
-const KIND_ACCENT: Record<string, string> = {
-  phase:  "text-[--primary]",
-  wave:   "text-foreground/80",
-  qa:     "text-[--intent-success]",
-  review: "text-muted-foreground",
-  agent:  "text-muted-foreground",
-  tool:   "text-muted-foreground/60",
-  other:  "text-muted-foreground/40",
-};
+// ────────────────────────────────────────────────────────────────────────────
+// Visual helpers
+// ────────────────────────────────────────────────────────────────────────────
 
-const KIND_BADGE_CLS: Record<string, string> = {
-  phase:  "bg-[--primary]/15 text-[--primary]",
-  wave:   "bg-muted text-foreground/80",
-  qa:     "bg-[--intent-success]/15 text-[--intent-success]",
-  review: "bg-muted text-muted-foreground",
-  agent:  "bg-muted text-muted-foreground",
-  tool:   "bg-muted/60 text-muted-foreground/70",
-  other:  "bg-muted/40 text-muted-foreground/60",
-};
-
-const KIND_LABEL: Record<string, string> = {
-  phase:  "fase",
-  wave:   "onda",
-  qa:     "QA",
-  review: "review",
-  agent:  "agente",
-  tool:   "tool",
-  other:  "outro",
-};
-
-const PHASE_ORDER = ["analyze", "plan", "execute", "qa", "close"];
-const NO_PHASE = "__no_phase__";
-
-function phaseLabel(phase: string): string {
-  if (phase === NO_PHASE) return "Sem fase";
-  return phase.charAt(0).toUpperCase() + phase.slice(1);
+/** Icon picker — tool name first, falls back to event kind. */
+function iconFor(node: SpecTimelineNode) {
+  const tool = (node.tool ?? "").toLowerCase();
+  if (tool === "bash") return TerminalIcon;
+  if (tool === "read") return FileText;
+  if (tool === "edit" || tool === "write" || tool === "multiedit") return FileEdit;
+  if (tool === "glob" || tool === "grep") return Search;
+  if (tool === "task") return Cpu;
+  switch (node.kind) {
+    case "phase":
+    case "wave":
+      return Layers;
+    case "agent":
+      return Cpu;
+    case "tool":
+      return Wrench;
+    case "qa":
+    case "review":
+      return CircleCheck;
+    default:
+      return GitBranch;
+  }
 }
 
-function groupByPhase(
-  nodes: SpecTimelineNode[],
-): { phase: string; nodes: SpecTimelineNode[] }[] {
-  const map = new Map<string, SpecTimelineNode[]>();
-  for (const n of nodes) {
-    const key = n.phase && n.phase.length > 0 ? n.phase.toLowerCase() : NO_PHASE;
-    const list = map.get(key) ?? [];
-    list.push(n);
-    map.set(key, list);
-  }
-  // Stable order: known phases first by canonical sequence, unknown phases by
-  // first appearance, "no phase" bucket last.
-  const ordered: string[] = [];
-  for (const p of PHASE_ORDER) if (map.has(p)) ordered.push(p);
-  for (const key of map.keys()) {
-    if (!PHASE_ORDER.includes(key) && key !== NO_PHASE) ordered.push(key);
-  }
-  if (map.has(NO_PHASE)) ordered.push(NO_PHASE);
-  return ordered.map((phase) => ({ phase, nodes: map.get(phase) ?? [] }));
-}
-
-/** True when this node corresponds to an artifact the markdown viewer can open. */
-function markdownTargetFor(
-  node: SpecTimelineNode,
-): { kind: SpecMarkdownKind; wave?: number } | null {
-  if (node.kind === "qa") return { kind: "qa" };
-  if (node.kind === "review") return { kind: "review" };
-  if (node.kind === "wave" && node.wave != null) {
-    return { kind: "wave", wave: node.wave };
-  }
-  return null;
-}
-
-export function SpecTimelineTab({
-  nodes,
-  onNodeClick,
-  repoPath,
-  spec,
-  waves,
-}: SpecTimelineTabProps) {
-  const groups = useMemo(() => groupByPhase(nodes), [nodes]);
-  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
-  const [viewer, setViewer] = useState<
-    { kind: SpecMarkdownKind; wave?: number } | null
-  >(null);
-
-  if (nodes.length === 0) {
+function StatusDotMini({ status }: { status?: string | null }) {
+  if (status === "running") {
     return (
-      <p className="text-[13px] text-muted-foreground py-4 text-center">
-        Nenhum evento de timeline para esta spec.
-      </p>
+      <Loader2
+        aria-hidden
+        className="h-3 w-3 animate-spin text-[--ds-text-tertiary]"
+      />
+    );
+  }
+  const color =
+    status === "error"
+      ? "bg-[--ds-intent-error]"
+      : status === "warn"
+        ? "bg-[--ds-status-draft]"
+        : status === "ok"
+          ? "bg-[--ds-intent-success]"
+          : "bg-[--ds-text-tertiary]/40";
+  return (
+    <span
+      aria-hidden
+      aria-label={status ?? "unknown"}
+      className={cn("inline-block h-2 w-2 rounded-full", color)}
+    />
+  );
+}
+
+function StatusIcon({ status }: { status?: string | null }) {
+  if (status === "error") {
+    return (
+      <CircleAlert
+        aria-hidden
+        className="h-3 w-3 text-[--ds-intent-error]"
+      />
+    );
+  }
+  if (status === "ok") {
+    return (
+      <CircleCheck
+        aria-hidden
+        className="h-3 w-3 text-[--ds-intent-success]"
+      />
+    );
+  }
+  return <Circle aria-hidden className="h-3 w-3 text-[--ds-text-tertiary]/40" />;
+}
+
+/** Short-form duration: `420ms`, `3.4s`, `1m12s`. */
+function formatDuration(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
+  const m = Math.floor(ms / 60_000);
+  const s = Math.floor((ms % 60_000) / 1000);
+  return `${m}m${s.toString().padStart(2, "0")}s`;
+}
+
+/** Compact integer formatter (`1.2k`, `34`). */
+function formatCount(n: number): string {
+  if (n < 1000) return `${n}`;
+  if (n < 10_000) return `${(n / 1000).toFixed(1)}k`;
+  return `${Math.round(n / 1000)}k`;
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Tool-specific renderers (the row's expanded body)
+// ────────────────────────────────────────────────────────────────────────────
+
+interface ToolRendererProps {
+  node: SpecTimelineNode;
+  /** Flat list of all timeline nodes — used by the `Task` renderer to walk
+   *  children via `parent_id`. */
+  all: SpecTimelineNode[];
+  /** Recursion depth guard — prevents an accidental cycle in `parent_id`
+   *  data from melting the tab. The harness never emits cycles, but the
+   *  renderer treats the projection as an external input. */
+  depth: number;
+}
+
+function ToolRenderer({ node, all, depth }: ToolRendererProps) {
+  const tool = (node.tool ?? "").toLowerCase();
+  const input = node.input ?? "";
+  const output = node.output ?? "";
+
+  if (tool === "bash") {
+    // stdout + stderr already concatenated by the projection. Mono, light
+    // terminal feel — claude-devtools palette via the existing tokens.
+    const cmd = input.trim();
+    const body = output.length > 0 ? output : "(sem saída capturada)";
+    return (
+      <div className="flex flex-col gap-2">
+        {cmd && (
+          <div className="rounded-[--ds-radius-sm] bg-[--ds-surface-sunken] px-2 py-1.5 font-mono text-[11px] text-[--ds-text-secondary]">
+            <span className="text-[--ds-text-tertiary]">$ </span>
+            {cmd}
+          </div>
+        )}
+        <CodeBlock code={truncate(body, 200)} lang="plain" />
+      </div>
     );
   }
 
-  function togglePhase(phase: string) {
-    setCollapsed((prev) => {
-      const next = new Set(prev);
-      if (next.has(phase)) next.delete(phase);
-      else next.add(phase);
-      return next;
-    });
+  if (tool === "read") {
+    const isMd = (input ?? "").toLowerCase().endsWith(".md");
+    if (!output) return <EmptyHint text="Conteúdo não capturado." />;
+    return (
+      <div className="flex flex-col gap-1">
+        {input && (
+          <p className="font-mono text-[11px] text-[--ds-text-tertiary]">
+            {input}
+          </p>
+        )}
+        <CodeBlock
+          code={truncate(output, 200)}
+          lang={isMd ? "plain" : "plain"}
+          showLineNumbers
+        />
+      </div>
+    );
+  }
+
+  if (tool === "edit" || tool === "write" || tool === "multiedit") {
+    if (!input && !output) {
+      return <EmptyHint text="Diff não capturado." />;
+    }
+    return (
+      <DiffViewer
+        before={input ?? ""}
+        after={output ?? ""}
+        mode="split"
+        maxLines={200}
+      />
+    );
+  }
+
+  if (tool === "glob" || tool === "grep") {
+    const results = (output ?? "").split("\n").filter((s) => s.trim().length > 0);
+    if (results.length === 0) {
+      return <EmptyHint text="Nenhum resultado." />;
+    }
+    return (
+      <div className="flex flex-col gap-1">
+        {input && (
+          <p className="font-mono text-[11px] text-[--ds-text-tertiary]">
+            {tool === "glob" ? "pattern: " : "query: "}
+            {input}
+          </p>
+        )}
+        <ol className="flex flex-col gap-0.5 font-mono text-[11px] text-[--ds-text-secondary]">
+          {results.slice(0, 200).map((r, i) => (
+            <li key={`${i}-${r}`} className="truncate">
+              {r}
+            </li>
+          ))}
+          {results.length > 200 && (
+            <li className="italic text-[--ds-text-tertiary]">
+              … (+{results.length - 200} linhas)
+            </li>
+          )}
+        </ol>
+      </div>
+    );
+  }
+
+  if (tool === "task") {
+    // Recursive: walk every node whose `parent_id` points at this node's
+    // synthetic id (we use `ts` as the id when the projection has not yet
+    // assigned one). The nested view is a stripped-down rendering — no
+    // status dot/duration on the wrapper, just the row + its body.
+    const children = childrenOf(node, all);
+    return (
+      <div className="flex flex-col gap-2">
+        {input && (
+          <div className="rounded-[--ds-radius-sm] bg-[--ds-surface-sunken] px-2 py-1.5 font-mono text-[11px] text-[--ds-text-secondary] whitespace-pre-wrap">
+            {truncate(input, 40)}
+          </div>
+        )}
+        {children.length === 0 ? (
+          output ? (
+            <CodeBlock code={truncate(output, 200)} lang="plain" />
+          ) : (
+            <EmptyHint text="Subagent sem rastro." />
+          )
+        ) : (
+          <div className="border-l-2 border-[--ds-surface-hover] pl-3 flex flex-col gap-1.5">
+            {children.map((child, i) => (
+              <TimelineRow
+                key={`${child.ts}-${i}-${depth + 1}`}
+                node={child}
+                all={all}
+                depth={depth + 1}
+                defaultOpen={false}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // Fallback — payload_summary + any captured input/output as JSON-ish blocks.
+  if (!node.payload_summary && !input && !output) {
+    return <EmptyHint text="Sem payload capturado." />;
+  }
+  return (
+    <div className="flex flex-col gap-2">
+      {node.payload_summary && (
+        <p className="text-[11px] text-[--ds-text-secondary]">{node.payload_summary}</p>
+      )}
+      {input && <CodeBlock code={truncate(input, 100)} lang="plain" />}
+      {output && <CodeBlock code={truncate(output, 100)} lang="plain" />}
+    </div>
+  );
+}
+
+function EmptyHint({ text }: { text: string }) {
+  return (
+    <p className="px-1 py-1 text-[11px] italic text-[--ds-text-tertiary]">
+      {text}
+    </p>
+  );
+}
+
+/** Walk the flat list and collect every node whose `parent_id` matches the
+ *  given parent's row id. The projection (T5.2) tags each row with a
+ *  `pipeline_events.id` (signed integer); until that lands the typed shape
+ *  carries `id?: number` so this walker degrades to an empty list rather
+ *  than throwing. Stable order — preserves the flat list ordering (which is
+ *  timestamp-ascending by the projection). */
+function childrenOf(parent: SpecTimelineNode, all: SpecTimelineNode[]): SpecTimelineNode[] {
+  const parentId = (parent as { id?: number }).id;
+  if (parentId == null) return [];
+  const out: SpecTimelineNode[] = [];
+  for (const n of all) {
+    if (n === parent) continue;
+    if (n.parent_id != null && n.parent_id === parentId) out.push(n);
+  }
+  return out;
+}
+
+/** Cap multi-line payloads at `maxLines` lines so a 5k-line dump doesn't
+ *  blow up the row. Mirrors the `truncate` used in `ToolEventRow`. */
+function truncate(s: string, maxLines: number): string {
+  const lines = s.split("\n");
+  if (lines.length <= maxLines) return s;
+  return `${lines.slice(0, maxLines).join("\n")}\n… (+${lines.length - maxLines} linhas)`;
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Row
+// ────────────────────────────────────────────────────────────────────────────
+
+interface TimelineRowProps {
+  node: SpecTimelineNode;
+  all: SpecTimelineNode[];
+  depth: number;
+  defaultOpen: boolean;
+  onClick?: (node: SpecTimelineNode) => void;
+}
+
+const TimelineRow = memo(function TimelineRow({
+  node,
+  all,
+  depth,
+  defaultOpen,
+  onClick,
+}: TimelineRowProps) {
+  const [open, setOpen] = useState<boolean>(defaultOpen);
+  const Icon = iconFor(node);
+  const hasBody =
+    !!node.input ||
+    !!node.output ||
+    !!node.payload_summary ||
+    (node.tool ?? "").toLowerCase() === "task";
+
+  const toolLabel =
+    node.tool ?? (node.kind === "tool" ? "tool" : node.kind);
+
+  return (
+    <div className="flex flex-col">
+      <button
+        type="button"
+        onClick={() => {
+          if (hasBody) setOpen((v) => !v);
+          onClick?.(node);
+        }}
+        aria-expanded={hasBody ? open : undefined}
+        className={cn(
+          "group flex items-center gap-2 px-2 py-1.5 text-left rounded-[--ds-radius-sm]",
+          "hover:bg-[--ds-surface-hover] transition-colors",
+          "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[--ds-accent-primary]/60",
+          open && "bg-[--ds-surface-hover]/60",
+        )}
+      >
+        {hasBody ? (
+          <ChevronRight
+            aria-hidden
+            className={cn(
+              "h-3 w-3 shrink-0 text-[--ds-text-tertiary] transition-transform",
+              open && "rotate-90",
+            )}
+          />
+        ) : (
+          <span aria-hidden className="inline-block w-3 shrink-0" />
+        )}
+        <Icon
+          aria-hidden
+          className={cn(
+            "h-3.5 w-3.5 shrink-0",
+            node.status === "error"
+              ? "text-[--ds-intent-error]"
+              : node.kind === "phase" || node.kind === "wave"
+                ? "text-[--ds-accent-primary]"
+                : "text-[--ds-text-tertiary]",
+          )}
+        />
+        <span
+          className={cn(
+            "shrink-0 rounded-[--ds-radius-sm] px-1.5 py-0.5",
+            "text-[10px] font-medium uppercase tracking-wide",
+            "bg-[--ds-surface-sunken] text-[--ds-text-secondary]",
+          )}
+        >
+          {toolLabel}
+        </span>
+        <span className="flex-1 min-w-0 truncate text-[12px] text-[--ds-text-primary]">
+          {node.label}
+        </span>
+        {node.tokens_in != null && node.tokens_in > 0 && (
+          <span
+            title="tokens in"
+            className="shrink-0 tabular-nums text-[10px] text-[--ds-text-tertiary]"
+            style={{ fontVariantNumeric: "tabular-nums" }}
+          >
+            ↘{formatCount(node.tokens_in)}
+          </span>
+        )}
+        {node.tokens_out != null && node.tokens_out > 0 && (
+          <span
+            title="tokens out"
+            className="shrink-0 tabular-nums text-[10px] text-[--ds-text-tertiary]"
+            style={{ fontVariantNumeric: "tabular-nums" }}
+          >
+            ↗{formatCount(node.tokens_out)}
+          </span>
+        )}
+        {node.duration_ms != null && (
+          <StatPill
+            value={formatDuration(node.duration_ms)}
+            unit=""
+            intent="neutral"
+          />
+        )}
+        <StatusDotMini status={node.status} />
+        <time
+          dateTime={node.ts}
+          title={node.ts}
+          className="shrink-0 text-[10px] text-[--ds-text-tertiary]/70"
+        >
+          {relativeTime(node.ts)}
+        </time>
+      </button>
+      {open && hasBody && (
+        <div className="ml-6 mt-1 mb-1 rounded-[--ds-radius-md] border border-[--ds-surface-hover] bg-[--ds-surface-base] p-2">
+          <ToolRenderer node={node} all={all} depth={depth} />
+        </div>
+      )}
+    </div>
+  );
+});
+
+// ────────────────────────────────────────────────────────────────────────────
+// Tab
+// ────────────────────────────────────────────────────────────────────────────
+
+export function SpecTimelineTab({ nodes, onNodeClick }: SpecTimelineTabProps) {
+  // Roots = nodes without a `parent_id`. Children render under their Task
+  // parent via `ToolRenderer`'s recursive walk. When the projection has not
+  // yet assigned `parent_id` everywhere, every node is a root — the flat
+  // claude-devtools list is the safe default.
+  const roots = useMemo(
+    () => nodes.filter((n) => !n.parent_id),
+    [nodes],
+  );
+
+  const handleClick = useCallback(
+    (n: SpecTimelineNode) => onNodeClick?.(n),
+    [onNodeClick],
+  );
+
+  if (nodes.length === 0) {
+    return (
+      <div className="px-2 py-3 text-center">
+        <p className="text-[12px] text-[--ds-text-tertiary]">
+          Nenhum evento de timeline para esta spec.
+        </p>
+      </div>
+    );
   }
 
   return (
-    <div className="flex flex-col gap-3">
-      {groups.map(({ phase, nodes: group }) => {
-        const isCollapsed = collapsed.has(phase);
-        return (
-          <section key={phase} className="flex flex-col gap-1">
-            <button
-              type="button"
-              onClick={() => togglePhase(phase)}
-              aria-expanded={!isCollapsed}
-              className={cn(
-                "flex items-center gap-1 text-[11px] uppercase tracking-wide font-medium",
-                "text-muted-foreground hover:text-foreground transition-colors",
-                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[--primary] rounded-sm",
-              )}
-            >
-              <ChevronRight
-                className={cn(
-                  "h-3 w-3 transition-transform",
-                  isCollapsed ? "rotate-0" : "rotate-90",
-                )}
-                aria-hidden
-              />
-              <span>{phaseLabel(phase)}</span>
-              <span
-                className="text-muted-foreground/60 tabular-nums ml-1"
-                style={{ fontVariantNumeric: "tabular-nums" }}
-              >
-                {group.length}
-              </span>
-            </button>
-
-            {!isCollapsed && (
-              <ol className="relative flex flex-col gap-0 pl-4 border-l border-border/40 ml-1">
-                {group.map((node, i) => {
-                  const target = markdownTargetFor(node);
-                  const canOpenMd = !!target && !!repoPath && !!spec;
-                  return (
-                    <li key={`${node.ts}-${i}`} className="relative">
-                      {/* Connector dot */}
-                      <span
-                        className={cn(
-                          "absolute -left-[5px] top-2.5 w-2 h-2 rounded-full border bg-background",
-                          node.kind === "phase"
-                            ? "border-[--primary]"
-                            : "border-border",
-                        )}
-                        aria-hidden
-                      />
-
-                      <div className="flex items-start gap-2 pl-3 py-2 group">
-                        <button
-                          type="button"
-                          onClick={() => onNodeClick?.(node)}
-                          className={cn(
-                            "flex-1 text-left flex flex-col gap-0.5 rounded-r-md min-w-0",
-                            "hover:bg-muted/30 focus-visible:outline-none focus-visible:ring-2",
-                            "focus-visible:ring-[--primary] transition-colors",
-                            onNodeClick ? "cursor-pointer" : "cursor-default",
-                          )}
-                          aria-label={`${node.label}${node.phase ? `, fase ${node.phase}` : ""}${node.wave != null ? `, onda ${node.wave}` : ""}, ${relativeTime(node.ts)}`}
-                        >
-                          <div className="flex items-center gap-2 flex-wrap">
-                            <span
-                              className={cn(
-                                "text-[10px] uppercase tracking-wide font-medium shrink-0 px-1.5 py-0.5 rounded",
-                                KIND_BADGE_CLS[node.kind] ?? KIND_BADGE_CLS.other,
-                              )}
-                            >
-                              {KIND_LABEL[node.kind] ?? node.kind}
-                            </span>
-                            {node.wave != null && (
-                              <span
-                                className={cn(
-                                  "text-[10px] tabular-nums shrink-0",
-                                  KIND_ACCENT.wave,
-                                )}
-                                style={{ fontVariantNumeric: "tabular-nums" }}
-                              >
-                                #{node.wave}
-                              </span>
-                            )}
-                            <span className="text-[11px] text-muted-foreground/50 ml-auto shrink-0">
-                              {relativeTime(node.ts)}
-                            </span>
-                          </div>
-                          <p className="text-[12px] text-foreground/80 leading-snug">
-                            {node.label}
-                          </p>
-                        </button>
-
-                        {canOpenMd && (
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setViewer(target);
-                            }}
-                            aria-label="Ver markdown"
-                            title="Ver markdown"
-                            className={cn(
-                              "shrink-0 h-6 w-6 mt-0.5 flex items-center justify-center rounded",
-                              "text-muted-foreground/60 hover:text-foreground hover:bg-muted/60",
-                              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[--primary]",
-                              "transition-colors opacity-0 group-hover:opacity-100 focus-visible:opacity-100",
-                            )}
-                          >
-                            <FileText className="h-3.5 w-3.5" aria-hidden />
-                          </button>
-                        )}
-                      </div>
-                    </li>
-                  );
-                })}
-              </ol>
-            )}
-          </section>
-        );
-      })}
-
-      {viewer && repoPath && spec && (
-        <SpecMarkdownViewer
-          open={!!viewer}
-          onOpenChange={(o) => {
-            if (!o) setViewer(null);
-          }}
-          repoPath={repoPath}
-          spec={spec}
-          waves={waves}
-          initialKind={viewer.kind}
-          initialWave={viewer.wave}
+    <div className="flex flex-col gap-0.5">
+      <div className="flex items-center gap-3 px-2 pb-1 text-[10px] uppercase tracking-wide text-[--ds-text-tertiary]/70">
+        <span className="flex items-center gap-1">
+          <StatusIcon status="ok" /> ok
+        </span>
+        <span className="flex items-center gap-1">
+          <StatusIcon status="error" /> erro
+        </span>
+        <span className="ml-auto tabular-nums">
+          {nodes.length} eventos
+        </span>
+      </div>
+      {roots.map((node, i) => (
+        <TimelineRow
+          key={`${node.ts}-${i}`}
+          node={node}
+          all={nodes}
+          depth={0}
+          defaultOpen={false}
+          onClick={handleClick}
         />
-      )}
+      ))}
     </div>
   );
 }

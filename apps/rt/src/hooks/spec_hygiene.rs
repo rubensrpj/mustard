@@ -33,7 +33,6 @@
 //! - `auto`  — default; the full behavior described above.
 
 use mustard_core::error::Error;
-use mustard_core::store::event_store::EventSink;
 use mustard_core::store::sqlite_store::SqliteEventStore;
 use mustard_core::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
 use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
@@ -385,9 +384,14 @@ fn last_commit_iso(cwd: &Path, spec_dir: &Path) -> Option<String> {
 // Event emission
 // ---------------------------------------------------------------------------
 
-/// Append a `hygiene.*` event to the project store. Best-effort: a store
-/// failure is swallowed (telemetry is never load-bearing).
-fn emit(store: &SqliteEventStore, kind: &str, spec: &str, payload: Value) {
+/// Append a `hygiene.*` event to the per-spec NDJSON sink. Best-effort: a
+/// write failure is swallowed (telemetry is never load-bearing).
+///
+/// `_store` is kept in the signature to preserve the caller shape — the W5
+/// router opens its own store / file handle as needed. We accept the legacy
+/// arg rather than threading every callsite, since `spec_hygiene` is the
+/// single emitter for this family.
+fn emit(_store: &SqliteEventStore, project_dir: &str, kind: &str, spec: &str, payload: Value) {
     let event = HarnessEvent {
         v: SCHEMA_VERSION,
         ts: now_iso8601(),
@@ -402,7 +406,8 @@ fn emit(store: &SqliteEventStore, kind: &str, spec: &str, payload: Value) {
         payload,
         spec: Some(spec.to_string()),
     };
-    let _ = store.append(&event);
+    // `hygiene.*` is non-pipeline → per-spec NDJSON via the W5 router.
+    let _ = crate::run::event_route::emit(project_dir, &event);
 }
 
 // ---------------------------------------------------------------------------
@@ -588,6 +593,7 @@ fn process_spec(
         Category::Stale | Category::AbandonedSuspect => {
             emit(
                 store,
+                cwd,
                 "hygiene.detected",
                 spec_name,
                 json!({
@@ -602,6 +608,7 @@ fn process_spec(
                 // detect mode never auto-closes — surface as detected.
                 emit(
                     store,
+                    cwd,
                     "hygiene.detected",
                     spec_name,
                     json!({
@@ -617,6 +624,7 @@ fn process_spec(
                 Ok(()) => {
                     emit(
                         store,
+                        cwd,
                         "hygiene.autoclose",
                         spec_name,
                         json!({
@@ -628,6 +636,7 @@ fn process_spec(
                     // Record the canonical terminal outcome + rewrite header.
                     emit(
                         store,
+                        cwd,
                         "pipeline.outcome",
                         spec_name,
                         json!({ "outcome": "completed" }),
@@ -637,6 +646,7 @@ fn process_spec(
                 Err(blocker) => {
                     emit(
                         store,
+                        cwd,
                         "hygiene.skipped",
                         spec_name,
                         json!({

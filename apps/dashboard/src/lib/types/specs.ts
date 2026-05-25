@@ -178,6 +178,32 @@ export interface SpecTimelineNode {
   phase: string | null;
   wave: number | null;
   payload_summary: string | null;
+  /**
+   * W5 (`2026-05-24-mustard-unification`, T5.2) — the core projection rewrite
+   * adds per-event execution metrics so the timeline can render the
+   * claude-devtools style flat list (icon · label · tokens · duration ·
+   * status dot · expand to reveal input/output renderer). All fields are
+   * optional so the dashboard renders gracefully against pre-T5.2 cores —
+   * `null` simply omits the corresponding chip / nested view.
+   */
+  tokens_in?: number | null;
+  tokens_out?: number | null;
+  duration_ms?: number | null;
+  /** Parent NDJSON line offset / `pipeline_events.id` for `Task` children —
+   *  drives the recursive execution-trace nested view. Numeric to match the
+   *  core projection (signed integer). */
+  parent_id?: number | null;
+  /** Tool-specific input. For `Bash` → command string, `Read` → path, `Edit` →
+   *  pre-edit snapshot, `Glob`/`Grep` → query, `Task` → subagent prompt. */
+  input?: string | null;
+  /** Tool-specific output. For `Bash` → stdout/stderr, `Read` → file body
+   *  excerpt, `Edit` → diff, `Glob`/`Grep` → result list, `Task` → final reply. */
+  output?: string | null;
+  /** Raw tool name when `kind === "tool"` (e.g. `"Bash"`, `"Read"`, `"Edit"`,
+   *  `"Glob"`, `"Grep"`, `"Task"`). Lets the renderer pick the right viewer. */
+  tool?: string | null;
+  /** Lifecycle status of this row — drives the status dot. */
+  status?: "ok" | "error" | "running" | "warn" | null;
 }
 
 export interface TimelineEvent {

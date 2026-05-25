@@ -1,3 +1,13 @@
+// Integration tests are separate binary targets and not exempt from
+// `clippy::unwrap_used` etc. via `#[cfg(test)]`. Mirror the carve-out from
+// `src/main.rs` so test panics on `.unwrap()` remain valid assertions.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::map_unwrap_or,
+    clippy::uninlined_format_args
+)]
+
 //! Integration test: `spec-children-tree` projects a parent spec's waves,
 //! acceptance criteria and sub-specs into a single JSON document.
 //!
@@ -24,6 +34,10 @@ fn project_dir() -> TempDir {
     dir
 }
 
+/// Seed a HarnessEvent through the store's append path. With W5 this only
+/// works for `pipeline.*` events — `qa.result` and other non-pipeline kinds
+/// must be seeded via the binary subprocess so they land in NDJSON. Use the
+/// `subprocess_seed` helper below for those.
 fn seed(store: &SqliteEventStore, spec: &str, ts: &str, kind: &str, payload: Value) {
     store
         .append(&HarnessEvent {
@@ -41,6 +55,34 @@ fn seed(store: &SqliteEventStore, spec: &str, ts: &str, kind: &str, payload: Val
             spec: Some(spec.into()),
         })
         .expect("append");
+}
+
+/// Seed a non-pipeline event by writing a one-line NDJSON file directly under
+/// `<project>/.claude/spec/<spec>/events/`. Matches the W5 writer shape so the
+/// timeline reader picks it up.
+fn seed_ndjson(project: &Path, spec: &str, ts: &str, kind: &str, payload: Value) {
+    let dir = project.join(".claude").join("spec").join(spec).join("events");
+    std::fs::create_dir_all(&dir).expect("events dir");
+    let path = dir.join("seed.ndjson");
+    let line = serde_json::to_string(&json!({
+        "ts": ts,
+        "ts_ms": 0,
+        "event": kind,
+        "kind": "qa",
+        "spec": spec,
+        "session_id": "s-tree",
+        "actor": "test",
+        "payload": payload,
+    }))
+    .unwrap();
+    let body = format!("{line}\n");
+    use std::io::Write;
+    let mut f = std::fs::OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(&path)
+        .expect("open ndjson file");
+    f.write_all(body.as_bytes()).expect("write ndjson line");
 }
 
 /// Write a sub-spec under `.claude/spec/<slug>/spec.md` with a `### Parent:`
@@ -94,8 +136,9 @@ fn spec_children_tree_emits_waves_acs_and_subspecs() {
     );
 
     // --- One qa.result with 3 ACs: pass / fail / pending. -------------------
-    seed(
-        &store,
+    // W5: qa.result is non-pipeline → per-spec NDJSON. Seed it directly.
+    seed_ndjson(
+        project,
         parent,
         "2026-05-21T10:20:00.000Z",
         "qa.result",

@@ -36,8 +36,7 @@
 
 use mustard_core::error::Error;
 use mustard_core::fs;
-use mustard_core::store::event_store::EventSink;
-use mustard_core::store::sqlite_store::SqliteEventStore;
+use mustard_core::projection::read_harness_events_from_ndjson_dir;
 use mustard_core::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
 use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use serde_json::{Value, json};
@@ -485,11 +484,31 @@ fn unchecked_item_text(line: &str) -> Option<String> {
 // ---------------------------------------------------------------------------
 
 /// The last `qa.result` for a spec. Returns `(found, overall, failed_count)`.
-/// Port of `findLastQAResult` — a single replay over the `SQLite` harness store.
+///
+/// W5: `qa.result` events live in the per-spec NDJSON sink, not in `pipeline_events`,
+/// so this reads the spec's `events/` directory directly. With `spec = None` we
+/// fall back to scanning every spec dir under `.claude/spec/` — slow but rare.
 fn find_last_qa_result(cwd: &str, spec: Option<&str>) -> (bool, Option<String>, usize) {
-    let events = SqliteEventStore::for_project(cwd)
-        .and_then(|store| store.replay())
-        .unwrap_or_default();
+    let project = Path::new(cwd);
+    let mut events: Vec<HarnessEvent> = Vec::new();
+    if let Some(spec_name) = spec.filter(|s| !s.is_empty()) {
+        let events_dir = project.join(".claude").join("spec").join(spec_name).join("events");
+        events.extend(read_harness_events_from_ndjson_dir(&events_dir));
+    } else {
+        // No spec attribution — scan every per-spec events/ dir under .claude/spec/.
+        let specs_root = project.join(".claude").join("spec");
+        if let Ok(entries) = fs::read_dir(&specs_root) {
+            for entry in entries {
+                if !entry.is_dir {
+                    continue;
+                }
+                let dir = specs_root.join(&entry.file_name).join("events");
+                events.extend(read_harness_events_from_ndjson_dir(&dir));
+            }
+        }
+    }
+    // Chronological scan — most recent qa.result wins.
+    events.sort_by(|a, b| a.ts.cmp(&b.ts));
     let mut last: Option<HarnessEvent> = None;
     for ev in events {
         if ev.event != "qa.result" {
@@ -670,7 +689,8 @@ fn emit_close_gate_event(cwd: &str, spec: Option<&str>, payload: Value) {
         payload,
         spec: spec.map(str::to_string),
     };
-    let _ = SqliteEventStore::for_project(cwd).and_then(|store| store.append(&event));
+    // `close-gate.check` is non-pipeline → per-spec NDJSON via the W5 router.
+    let _ = crate::run::event_route::emit(cwd, &event);
 }
 
 /// Truncate a string to `max` bytes (char-boundary safe).
@@ -1078,6 +1098,10 @@ impl Check for CloseGate {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // W5 follow-up landed: `qa.result` events seed straight into the per-spec
+    // NDJSON dir, mirroring `qa-run`'s production write path through
+    // `event_route::emit`.
+    use crate::run::event_route;
     use serde_json::json;
     use tempfile::tempdir;
 
@@ -1123,8 +1147,8 @@ mod tests {
     }
 
     fn write_qa_event(cwd: &Path, spec: &str, overall: &str, criteria: Value) {
-        // Append a `qa.result` event through the SQLite harness store, the
-        // same path `qa-run` uses in production.
+        // Route a `qa.result` through the event router — W5 lands it in the
+        // per-spec NDJSON sink, same path `qa-run` uses in production.
         let event = HarnessEvent {
             v: SCHEMA_VERSION,
             ts: "2026-05-19T00:00:00.000Z".to_string(),
@@ -1139,9 +1163,10 @@ mod tests {
             payload: json!({ "spec": spec, "overall": overall, "criteria": criteria }),
             spec: Some(spec.to_string()),
         };
-        SqliteEventStore::for_project(cwd)
-            .and_then(|store| store.append(&event))
-            .unwrap();
+        assert!(
+            event_route::emit(cwd.to_str().unwrap(), &event),
+            "router must land qa.result for {spec}"
+        );
     }
 
     /// The strict-cmd commands that exit non-zero / zero, cross-platform.
@@ -1428,10 +1453,39 @@ mod tests {
         );
         let input = close_input(dir.path(), "spec-event");
         let _ = close_gate_with_modes(&input, dir.path().to_str().unwrap(), no_qa());
-        let events = SqliteEventStore::for_project(dir.path().to_str().unwrap())
-            .and_then(|s| s.replay())
-            .unwrap();
-        assert!(events.iter().any(|e| e.event == "close-gate.check"));
+
+        // W5: `close-gate.check` is non-pipeline → per-spec NDJSON. The spec
+        // dir is created by `write_active_spec` indirectly via close_gate's
+        // path resolution; with no spec attribution the event falls back to
+        // the session dir.
+        let spec_events = dir
+            .path()
+            .join(".claude")
+            .join("spec")
+            .join("spec-event")
+            .join("events");
+        let session_root = dir.path().join(".claude").join(".session");
+        let candidate_dirs: Vec<std::path::PathBuf> = std::iter::once(spec_events)
+            .chain(
+                std::fs::read_dir(&session_root)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|e| e.ok().map(|e| e.path().join("events"))),
+            )
+            .collect();
+        let mut found = false;
+        for d in candidate_dirs {
+            if !d.exists() {
+                continue;
+            }
+            for f in std::fs::read_dir(&d).unwrap() {
+                let body = std::fs::read_to_string(f.unwrap().path()).unwrap_or_default();
+                if body.lines().any(|l| l.contains("\"event\":\"close-gate.check\"")) {
+                    found = true;
+                }
+            }
+        }
+        assert!(found, "close-gate.check NDJSON line must be present");
     }
 
     // --- extractPhase / extractSpec parity ---------------------------------

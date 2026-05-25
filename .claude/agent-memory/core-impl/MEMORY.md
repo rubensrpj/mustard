@@ -1,3 +1,4 @@
 - [Core fs seam](project_core_fs_seam.md) — packages/core/src/fs/ is THE canonical std::fs seam (Fs port + RealFs + FakeFs + free fns); store/fs.rs is now a shim; rt/cli/dashboard migrate next
 - [Core spec module rename](project_core_spec_module_rename.md) — spec_doc → spec (2026-05-22), layered on crate::fs; other crates still import spec_doc and break until next pass
 - [Telemetry span→run rename](project_telemetry_span_to_run_rename.md) — record_span→record_run, SpanRow→RunRow, spans()→runs_by_spec (2026-05-22); SpanRecord KEPT (OTLP wire); columns kept; + prune_older_than retention API
+- [No ATTACH SQLite](feedback_no_attach_sqlite.md) — ATTACH DATABASE forbidden in packages/core/src/{store,telemetry}/**; v7→v8 is no-op, legacy drops moved to v9→v10 (2026-05-24)

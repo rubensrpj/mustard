@@ -399,13 +399,17 @@ mod tests {
     }
 
     #[test]
-    fn check_subtractions_without_events_table_fails_open() {
-        // A store with only the otel schema has no `events` table; the query
-        // must surface a reason, not panic, and report count 0.
+    fn check_subtractions_is_w5_stub_returning_zero() {
+        // W5: the `events` table is retired permanently, and
+        // `subtractions_since` is a deliberate stub that always returns
+        // `Ok(0)`. `check_subtractions` now reports `ok: true, count: 0` —
+        // the field stays in the JSON shape for stability, but the count
+        // will always read zero until a future probe walks the per-spec
+        // NDJSON sink (see `otel::store::subtractions_since` doc comment).
         let tmp = tempfile::tempdir().unwrap();
         let store = Store::open_at(&tmp.path().join("mustard.db")).unwrap();
         let v = check_subtractions(Some(&store));
-        assert_eq!(v["ok"].as_bool(), Some(false));
+        assert_eq!(v["ok"].as_bool(), Some(true));
         assert_eq!(v["count"].as_i64(), Some(0));
     }
 

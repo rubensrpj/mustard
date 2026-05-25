@@ -33,7 +33,6 @@ use mustard_core::economy::{
 };
 use mustard_core::error::Error;
 use mustard_core::process::rtk_command;
-use mustard_core::store::event_store::EventSink;
 use mustard_core::store::sqlite_store::SqliteEventStore;
 use mustard_core::model::contract::{Check, Ctx, HookInput, Observer, Trigger, Verdict};
 use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
@@ -981,7 +980,7 @@ thread_local! {
     /// or strict-deny logic must call `rtk_rewrite_with` directly with an explicit
     /// `Mode` (see `rtk_rewrite_tests` below) or drive the binary as a subprocess
     /// (see `tests/rtk_rewrite_emission.rs`).
-    pub(super) static RTK_REWRITE_TEST_OVERRIDE: std::cell::Cell<bool> = std::cell::Cell::new(false);
+    pub(super) static RTK_REWRITE_TEST_OVERRIDE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 // ---------------------------------------------------------------------------
@@ -1218,8 +1217,8 @@ fn emit_commit_gate_event(
         }),
         spec: current_spec(project_dir),
     };
-    let _ = SqliteEventStore::for_project(project_dir)
-        .and_then(|store| store.append(&event));
+    // `commit-gate.check` is non-pipeline → per-spec NDJSON via W5 router.
+    let _ = crate::run::event_route::emit(project_dir, &event);
 }
 
 /// The `review-gate` gate: validate a `git commit` command.
@@ -1486,8 +1485,8 @@ fn emit_pr_event(
         }),
         spec: spec.clone(),
     };
-    let _ = SqliteEventStore::for_project(project_dir)
-        .and_then(|store| store.append(&harness_event));
+    // `pr.detect` family events are non-pipeline → NDJSON via W5 router.
+    let _ = crate::run::event_route::emit(project_dir, &harness_event);
 }
 
 /// Truncate a string to `max` bytes (char-boundary safe).
@@ -1609,8 +1608,8 @@ impl Check for BashGuard {
                     }),
                     spec: spec_slug,
                 };
-                let _ = SqliteEventStore::for_project(&ctx.project_dir)
-                    .and_then(|store| store.append(&event));
+                // `rtk-rewrite` is non-pipeline → NDJSON via W5 router.
+                let _ = crate::run::event_route::emit(&ctx.project_dir, &event);
             }
             return Ok(verdict);
         }
@@ -2433,10 +2432,10 @@ mod rtk_rewrite_tests {
     //        text, not a subshell. Blanket must still wrap the head binary.
     #[test]
     fn rtk_rewrite_blanket_with_paren_inside_arg() {
-        let result = rtk_rewrite_with(r#"git log --grep=(scope)"#, |_| None, Mode::Warn);
+        let result = rtk_rewrite_with(r"git log --grep=(scope)", |_| None, Mode::Warn);
         match result {
             Some((Verdict::Rewrite { tool_input }, coverage)) => {
-                assert_eq!(tool_input["command"], r#"rtk git log --grep=(scope)"#);
+                assert_eq!(tool_input["command"], r"rtk git log --grep=(scope)");
                 assert_eq!(coverage, "blanket");
             }
             other => panic!("expected blanket Verdict::Rewrite for paren-in-arg, got {other:?}"),

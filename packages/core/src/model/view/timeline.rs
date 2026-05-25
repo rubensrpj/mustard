@@ -56,6 +56,11 @@ impl TimelineKind {
 }
 
 /// One timeline row.
+///
+/// W5 shape (2026-05-24-mustard-unification): adds the pre-extracted hints the
+/// dashboard tail-renderer relies on (`input`, `output`, `tokens_in`,
+/// `tokens_out`, `duration_ms`, `parent_id`) so the UI never has to re-parse
+/// the payload.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TimelineNode {
     /// ISO-8601 of the underlying event.
@@ -77,6 +82,28 @@ pub struct TimelineNode {
     pub payload_summary: String,
     /// Original event kind, kept verbatim for filtering and search.
     pub raw_event: String,
+    /// Pre-extracted input — Bash command, Read path, Edit `old_string`, Task
+    /// prompt, etc. Renderers pick the right view based on `kind`/`raw_event`.
+    /// `None` for events without a meaningful input payload.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input: Option<String>,
+    /// Pre-extracted output — Bash stdout, Read body, Edit result, Task
+    /// transcript. Capped by the writer; renderers display verbatim.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<String>,
+    /// Tokens-in for tool calls that report usage (Task, model invocations).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tokens_in: Option<u64>,
+    /// Tokens-out for tool calls that report usage.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tokens_out: Option<u64>,
+    /// Wall-clock duration of the tool call, in milliseconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+    /// Parent NDJSON line offset or `pipeline_events.id` when this row is a
+    /// Task child — drives execution-trace recursion in the timeline UI.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<i64>,
 }
 
 #[cfg(test)]
