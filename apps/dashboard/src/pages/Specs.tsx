@@ -346,7 +346,6 @@ export function Specs() {
   useEffect(() => {
     const hash = window.location.hash.replace(/^#/, "");
     if (hash && /^\d{4}-\d{2}-\d{2}-/.test(hash)) openSpec(hash);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Fetch spec list (SpecRow names) then fan out one SpecCard per spec.

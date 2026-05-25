@@ -859,7 +859,7 @@ pub enum RunCmd {
         /// Spec slug under `.claude/spec/`.
         #[arg(long)]
         spec: String,
-        /// Wave number (1-based). Omitted for non-wave specs.
+        /// Wave number (0-based, matching `wave-N-*` directories). Omitted for non-wave specs.
         #[arg(long)]
         wave: Option<u32>,
         /// Agent role token (e.g. `ui`, `backend`).
@@ -874,6 +874,11 @@ pub enum RunCmd {
         /// File containing the `{retry_context}` text for granular/fix-loop.
         #[arg(long = "retry-context-file")]
         retry_context_file: Option<PathBuf>,
+        /// Keep only task lines whose content matches this pattern (e.g.
+        /// `"T0\\.(1|5)"`). Supports literal chars, `\\.` escape, and
+        /// `(a|b)` alternation. Omit to include all tasks.
+        #[arg(long = "task-filter")]
+        task_filter: Option<String>,
     },
     /// Garbage-collect orphan Claude agent worktrees under
     /// `<repo>/.claude/worktrees/agent-*`.
@@ -1231,6 +1236,7 @@ pub fn dispatch(cmd: RunCmd) {
             subproject,
             mode,
             retry_context_file,
+            task_filter,
         } => agent_prompt_render::run(
             &spec,
             wave,
@@ -1238,6 +1244,7 @@ pub fn dispatch(cmd: RunCmd) {
             &subproject,
             agent_prompt_render::RenderMode::parse(&mode),
             retry_context_file.as_deref(),
+            task_filter.as_deref(),
         ),
         RunCmd::WorktreeGc {
             repo,

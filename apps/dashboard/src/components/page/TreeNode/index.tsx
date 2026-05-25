@@ -30,7 +30,8 @@ export function TreeNode({
   className,
 }: TreeNodeProps) {
   const hasChildren = (node.children?.length ?? 0) > 0;
-  const indent = depth === 0 ? "" : "ml-3 pl-3 border-l border-dashed border-[--ds-surface-hover]";
+  // TF remap: --ds-surface-hover → --accent; Binance accent = hover surface swatch
+  const indent = depth === 0 ? "" : "ml-3 pl-3 border-l border-dashed border-[--accent]";
 
   const row = (
     <div
@@ -39,22 +40,25 @@ export function TreeNode({
         onSelect?.(node);
       }}
       className={cn(
-        "flex items-center gap-1.5 py-1 px-1.5 rounded-[--ds-radius-sm] cursor-pointer",
-        "hover:bg-[--ds-surface-hover]",
-        "text-[13px] text-[--ds-text-primary]",
+        // TF remap: --ds-radius-sm → var(--radius) (6px button radius); --ds-surface-hover → --accent; --ds-text-primary → --foreground
+        "flex items-center gap-1.5 py-1 px-1.5 rounded-[--radius] cursor-pointer",
+        "hover:bg-[--accent]",
+        "text-[13px] text-[--foreground]",
       )}
     >
       {hasChildren ? (
         <ChevronRight
           size={12}
-          className="text-[--ds-text-tertiary] transition-transform group-open:rotate-90"
+          // TF remap: --ds-text-tertiary → --muted-foreground
+          className="text-[--muted-foreground] transition-transform group-open:rotate-90"
         />
       ) : (
         <span className="inline-block w-3" />
       )}
       <span className="truncate flex-1">{node.label}</span>
       {node.meta ? (
-        <span className="text-[11px] text-[--ds-text-tertiary] font-mono">{node.meta}</span>
+        // TF remap: --ds-text-tertiary → --muted-foreground
+        <span className="text-[11px] text-[--muted-foreground] font-mono">{node.meta}</span>
       ) : null}
     </div>
   );

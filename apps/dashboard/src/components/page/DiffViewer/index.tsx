@@ -84,17 +84,20 @@ function diffLines(beforeText: string, afterText: string): DiffLine[] {
 }
 
 const ROW = "grid grid-cols-[3rem_3rem_1rem_1fr] gap-2 font-mono text-[12px] leading-[1.55] px-2";
-const GUTTER = "text-right text-[--ds-text-tertiary] select-none";
+// TF remap: --ds-text-tertiary → --muted-foreground; no tertiary tier in Binance
+const GUTTER = "text-right text-[--muted-foreground] select-none";
 
 function Sigil({ op }: { op: Op }) {
   const ch = op === "add" ? "+" : op === "del" ? "-" : " ";
-  return <span className="text-[--ds-text-tertiary] select-none">{ch}</span>;
+  // TF remap: --ds-text-tertiary → --muted-foreground
+  return <span className="text-[--muted-foreground] select-none">{ch}</span>;
 }
 
 function bgFor(op: Op): string {
-  if (op === "add") return "bg-[--ds-intent-success]/10 text-[--ds-text-primary]";
-  if (op === "del") return "bg-[--ds-intent-error]/10 text-[--ds-text-primary]";
-  return "text-[--ds-text-secondary]";
+  // TF remap: --ds-intent-success → --intent-success; --ds-intent-error → --intent-error; --ds-text-primary → --foreground; --ds-text-secondary → --muted-foreground
+  if (op === "add") return "bg-[--intent-success]/10 text-[--foreground]";
+  if (op === "del") return "bg-[--intent-error]/10 text-[--foreground]";
+  return "text-[--muted-foreground]";
 }
 
 export function DiffViewer({
@@ -112,11 +115,13 @@ export function DiffViewer({
     return (
       <div
         className={cn(
-          "rounded-[--ds-radius-md] border border-[--ds-surface-hover] bg-[--ds-surface-sunken] overflow-hidden",
+          // TF remap: --ds-radius-md → var(--radius-card); --ds-surface-hover → --accent; --ds-surface-sunken → --background
+          "rounded-[--radius-card] border border-[--accent] bg-[--background] overflow-hidden",
           className,
         )}
       >
-        <div className="grid grid-cols-2 divide-x divide-[--ds-surface-hover]">
+        {/* TF remap: --ds-surface-hover → --accent */}
+        <div className="grid grid-cols-2 divide-x divide-[--accent]">
           <div>
             {shown.map((l, idx) => (
               <div
@@ -143,7 +148,8 @@ export function DiffViewer({
           </div>
         </div>
         {truncated && (
-          <div className="px-3 py-1.5 text-[11px] text-[--ds-text-tertiary] border-t border-[--ds-surface-hover]">… {lines.length - shown.length} more lines</div>
+          // TF remap: --ds-text-tertiary → --muted-foreground; --ds-surface-hover → --accent
+          <div className="px-3 py-1.5 text-[11px] text-[--muted-foreground] border-t border-[--accent]">… {lines.length - shown.length} more lines</div>
         )}
       </div>
     );
@@ -152,7 +158,8 @@ export function DiffViewer({
   return (
     <div
       className={cn(
-        "rounded-[--ds-radius-md] border border-[--ds-surface-hover] bg-[--ds-surface-sunken] overflow-hidden",
+        // TF remap: --ds-radius-md → var(--radius-card); --ds-surface-hover → --accent; --ds-surface-sunken → --background
+        "rounded-[--radius-card] border border-[--accent] bg-[--background] overflow-hidden",
         className,
       )}
     >
@@ -165,7 +172,8 @@ export function DiffViewer({
         </div>
       ))}
       {truncated && (
-        <div className="px-3 py-1.5 text-[11px] text-[--ds-text-tertiary] border-t border-[--ds-surface-hover]">… {lines.length - shown.length} more lines</div>
+        // TF remap: --ds-text-tertiary → --muted-foreground; --ds-surface-hover → --accent
+        <div className="px-3 py-1.5 text-[11px] text-[--muted-foreground] border-t border-[--accent]">… {lines.length - shown.length} more lines</div>
       )}
     </div>
   );

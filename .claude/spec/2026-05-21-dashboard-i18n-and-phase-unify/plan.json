@@ -1,9 +1,0 @@
-{
-  "parent": "2026-05-21-dashboard-spec-tabs-polish",
-  "waves": [
-    {"n": 1, "role": "ui", "summary": "PipelineTimeline unificado + Execute verde + subtitle redundante removido", "depends_on": []},
-    {"n": 2, "role": "ui", "summary": "i18n audit: t() global + sidebar/topbar/specs/knowledge", "depends_on": []}
-  ],
-  "total_waves": 2,
-  "lang": "pt"
-}

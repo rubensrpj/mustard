@@ -60,6 +60,7 @@ pub fn run(
     subproject: &Path,
     mode: RenderMode,
     retry_context_file: Option<&Path>,
+    task_filter: Option<&str>,
 ) {
     let project = PathBuf::from(project_dir());
     let spec_dir = project.join(".claude").join("spec").join(spec);
@@ -81,7 +82,13 @@ pub fn run(
     let guards_summary = read_guards_block(&project.join(&subproject_str));
     let role_block = build_role_block(&project.join(&subproject_str), role);
     let spec_lang = read_spec_lang(&op_spec_path);
-    let task_steps = read_task_steps(&op_spec_path);
+    let task_steps = {
+        let raw = read_task_steps(&op_spec_path);
+        match task_filter {
+            Some(pat) => filter_task_lines(&raw, pat),
+            None => raw,
+        }
+    };
     let context_md = read_cached(&project, spec, "context-md");
     let prior_wave_diff = wave
         .filter(|&w| w > 1)
@@ -244,6 +251,99 @@ fn read_task_steps(spec_path: &Path) -> String {
         }
     }
     lines[start..end].join("\n").trim_end().to_string()
+}
+
+/// Filter the lines of a task block by a regex-style pattern.
+///
+/// The heading line (e.g. `## Tarefas`) is always kept. Every subsequent
+/// top-level bullet is kept only when its content matches `pattern`.
+/// Sub-bullets / blank continuation lines follow the parent bullet's fate.
+///
+/// Pattern support: literal characters + `\\.` escape + `(a|b|c)` alternation.
+/// This covers the common `T0\\.(1|5)` dispatch-slicing use case without
+/// pulling in a full regex crate. Patterns that cannot be parsed warn on
+/// stderr and leave the block unfiltered.
+fn filter_task_lines(raw: &str, pattern: &str) -> String {
+    // Expand the pattern into one or more literal alternatives so that
+    // `T0\.(1|5)` becomes ["T0.1", "T0.5"].
+    let alternatives = expand_pattern(pattern);
+
+    let mut out: Vec<&str> = Vec::new();
+    let mut keep_continuation = false;
+    for line in raw.lines() {
+        // Section headings are always kept.
+        if line.starts_with("## ") || line.starts_with("# ") {
+            out.push(line);
+            keep_continuation = false;
+            continue;
+        }
+        // Top-level bullet (not indented).
+        if line.starts_with("- ") {
+            // Strip `- [ ] ` / `- [x] ` / `- ` prefix to reach the content.
+            let content = line
+                .trim_start_matches('-')
+                .trim_start()
+                .trim_start_matches(['[', 'x', ' ', ']'])
+                .trim_start();
+            keep_continuation = alternatives.iter().any(|alt| content.contains(alt.as_str()));
+            if keep_continuation {
+                out.push(line);
+            }
+        } else {
+            // Blank lines and continuation/sub-bullet lines follow parent.
+            if keep_continuation {
+                out.push(line);
+            }
+        }
+    }
+    out.join("\n")
+}
+
+/// Expand a simplified pattern into a set of literal strings to match against.
+///
+/// Rules applied in order:
+/// 1. `\\.` → literal `.` (unescape).
+/// 2. `(a|b|c)` → cross-product with the prefix/suffix around the group.
+/// 3. All other characters are kept as-is.
+///
+/// If the pattern contains unsupported constructs (nested groups, `*`, `+`,
+/// `?`, `^`, `$`, character classes `[...]`), the function logs a warning and
+/// returns the raw pattern as a single alternative (substring match fallback).
+fn expand_pattern(pattern: &str) -> Vec<String> {
+    // Detect unsupported constructs (anything beyond `\.` and `(a|b)`).
+    let unsupported = pattern
+        .chars()
+        .any(|c| matches!(c, '*' | '+' | '?' | '^' | '$' | '[' | ']'));
+    if unsupported {
+        eprintln!(
+            "agent-prompt-render: WARN: --task-filter pattern '{pattern}' \
+             contains unsupported regex construct — using as literal substring"
+        );
+        return vec![pattern.to_string()];
+    }
+
+    // Unescape `\.` → `.` first, then expand one `(a|b|c)` group if present.
+    let unescaped = pattern.replace("\\.", ".");
+    match unescaped.find('(') {
+        None => vec![unescaped],
+        Some(open) => {
+            let close = unescaped[open..].find(')').map(|i| open + i);
+            let Some(close) = close else {
+                eprintln!(
+                    "agent-prompt-render: WARN: --task-filter pattern '{pattern}' \
+                     has unmatched '(' — using as literal substring"
+                );
+                return vec![unescaped];
+            };
+            let prefix = &unescaped[..open];
+            let suffix = &unescaped[close + 1..];
+            let inner = &unescaped[open + 1..close];
+            inner
+                .split('|')
+                .map(|alt| format!("{prefix}{alt}{suffix}"))
+                .collect()
+        }
+    }
 }
 
 /// Read a cached `.claude/.pipeline-states/{spec}.{name}.md` file. Empty on

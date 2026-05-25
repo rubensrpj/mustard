@@ -52,7 +52,8 @@ pub struct ResumeBootstrap {
     /// Whether the spec uses a wave plan.
     #[serde(rename = "isWavePlan")]
     pub is_wave_plan: bool,
-    /// Current wave (1-based). `0` when not a wave plan.
+    /// Current wave index (0-based, matching `wave-N-*` directory names).
+    /// `0` when not a wave plan or when no waves have completed yet.
     #[serde(rename = "currentWave")]
     pub current_wave: u32,
     /// Total wave count. `0` when not a wave plan.
@@ -108,12 +109,17 @@ pub fn run(spec: &str, json_flag: bool) {
         .unwrap_or(has_wave_plan);
 
     if let Some(v) = view.as_ref() {
-        out.current_wave = if out.is_wave_plan { v.current_wave } else { 0 };
         out.total_waves = if out.is_wave_plan {
             v.total_waves.unwrap_or(0)
         } else {
             0
         };
+        if out.is_wave_plan {
+            // Re-derive current wave 0-based from completed_waves instead of
+            // trusting `v.current_wave` which defaults to 1 (1-based legacy).
+            // 0 completed waves → wave 0 is current; N completed waves → wave N.
+            out.current_wave = v.completed_waves.iter().max().map_or(0, |&m| m + 1);
+        }
     } else if out.is_wave_plan {
         // No events yet, but a plan exists on disk — fall back to FS scan.
         let (current, total) = count_wave_progress_from_fs(&spec_dir);
@@ -130,9 +136,8 @@ pub fn run(spec: &str, json_flag: bool) {
             out.total_waves = fs_total;
         }
     }
-    if out.is_wave_plan && out.current_wave == 0 {
-        out.current_wave = 1;
-    }
+    // Note: wave directories are 0-based in Mustard (wave-0-*, wave-1-*, …).
+    // When no events exist yet, current_wave stays 0 — do NOT bump to 1.
 
     // --- Resolve operational spec path. ---
     let op_path = if out.is_wave_plan {
@@ -162,11 +167,18 @@ pub fn run(spec: &str, json_flag: bool) {
         .unwrap_or_default();
     out.spec_summary = extract_summary(&body);
 
-    // --- waveModel from wave-plan.md table row of the current wave. ---
-    if out.is_wave_plan && wave_plan_path.exists() {
-        if let Ok(plan_text) = mfs::read_to_string(&wave_plan_path) {
-            out.wave_model = extract_wave_model(&plan_text, out.current_wave);
-        }
+    // --- waveModel: wave-plan.md Modelo column → meta.json model → feature default. ---
+    if out.is_wave_plan {
+        // Try the wave-plan table first (when a "Modelo" column exists).
+        let plan_model = wave_plan_path
+            .exists()
+            .then(|| mfs::read_to_string(&wave_plan_path).ok())
+            .flatten()
+            .and_then(|t| extract_wave_model(&t, out.current_wave));
+        // Fall back to the parent spec's meta.json `model` field.
+        let meta_model = plan_model.or_else(|| read_meta_model(&spec_dir));
+        // Last resort: feature intent → opus.
+        out.wave_model = Some(meta_model.unwrap_or_else(|| "opus".to_string()));
     }
 
     // --- agentRoles: derive from the wave subdir name (`wave-N-{role}`) when
@@ -281,7 +293,9 @@ fn count_wave_progress_from_fs(spec_dir: &Path) -> (u32, u32) {
             }
         }
     }
-    let current = (done + 1).min(total.max(1));
+    // Wave directories are 0-based: `current` is the first incomplete wave.
+    // When nothing is done yet, current = 0; after N waves complete, current = N.
+    let current = done.min(total.saturating_sub(1));
     (current, total)
 }
 
@@ -643,6 +657,18 @@ pub fn read_wave_model(spec_dir: &Path, wave: u32) -> Option<String> {
     let plan = spec_dir.join("wave-plan.md");
     let text = mfs::read_to_string(&plan).ok()?;
     extract_wave_model(&text, wave)
+}
+
+/// Read the `model` field from a spec directory's `meta.json`. Returns `None`
+/// when the file is absent or the field is missing/empty.
+fn read_meta_model(spec_dir: &Path) -> Option<String> {
+    let text = mfs::read_to_string(spec_dir.join("meta.json")).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let model = v.get("model")?.as_str()?;
+    if model.is_empty() {
+        return None;
+    }
+    Some(model.to_string())
 }
 
 #[cfg(test)]

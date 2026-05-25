@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["apps/cli", "apps/dashboard/src-tauri", "apps/rt", "packages/core"]
+members = ["apps/cli", "apps/rt", "packages/core"]
 
 # Single source of dependency-version truth for every Mustard crate. A crate
 # opts in with `dep = { workspace = true }`; the dashboard crate keeps its own

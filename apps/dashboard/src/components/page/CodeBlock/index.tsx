@@ -1,7 +1,7 @@
 // Keyword-based syntax highlighter — no highlight.js / prism / shiki.
 // We tokenise strings, line/block comments, numbers, and a small keyword
 // set per language. Anything else falls back to the plain text color
-// (`--ds-text-primary`). Good enough for the trace-viewer and Economia
+// (`--foreground`). Good enough for the trace-viewer and Economia
 // snippets; not a full parser.
 
 import { useMemo } from "react";
@@ -47,7 +47,8 @@ type Tok = { cls: string; text: string };
 
 /** Tokenise one line. Strings/comments first, then keywords, then numbers. */
 function tokenizeLine(line: string, lang: CodeLang): Tok[] {
-  if (lang === "plain") return [{ cls: "text-[--ds-text-primary]", text: line }];
+  // TF remap: --ds-text-primary → --foreground
+  if (lang === "plain") return [{ cls: "text-[--foreground]", text: line }];
   const kw = new Set(KEYWORDS[lang]);
   const out: Tok[] = [];
   // Pattern order matters — strings first (incl. /* */), then //-line-comments,
@@ -57,28 +58,34 @@ function tokenizeLine(line: string, lang: CodeLang): Tok[] {
   let m: RegExpExecArray | null;
   while ((m = re.exec(line))) {
     if (m.index > last) {
-      out.push({ cls: "text-[--ds-text-primary]", text: line.slice(last, m.index) });
+      // TF remap: --ds-text-primary → --foreground
+      out.push({ cls: "text-[--foreground]", text: line.slice(last, m.index) });
     }
     if (m[1] || m[2]) {
-      out.push({ cls: "text-[--ds-text-tertiary] italic", text: m[0] });
+      // TF remap: --ds-text-tertiary → --muted-foreground; no tertiary tier in Binance
+      out.push({ cls: "text-[--muted-foreground] italic", text: m[0] });
     } else if (m[3]) {
-      out.push({ cls: "text-[--ds-intent-success]", text: m[0] });
+      // TF remap: --ds-intent-success → --intent-success
+      out.push({ cls: "text-[--intent-success]", text: m[0] });
     } else if (m[4]) {
-      out.push({ cls: "text-[--ds-intent-warning]", text: m[0] });
+      // TF remap: --ds-intent-warning → --intent-warning
+      out.push({ cls: "text-[--intent-warning]", text: m[0] });
     } else if (m[5]) {
       const word = m[5];
       const isKw = lang === "sql" ? kw.has(word.toUpperCase()) : kw.has(word);
       out.push({
-        cls: isKw ? "text-[--ds-accent-primary] font-medium" : "text-[--ds-text-primary]",
+        // TF remap: --ds-accent-primary → --primary (Mustard yellow brand); --ds-text-primary → --foreground
+        cls: isKw ? "text-[--primary] font-medium" : "text-[--foreground]",
         text: word,
       });
     }
     last = m.index + m[0].length;
   }
   if (last < line.length) {
-    out.push({ cls: "text-[--ds-text-primary]", text: line.slice(last) });
+    // TF remap: --ds-text-primary → --foreground
+    out.push({ cls: "text-[--foreground]", text: line.slice(last) });
   }
-  if (out.length === 0) out.push({ cls: "text-[--ds-text-primary]", text: "" });
+  if (out.length === 0) out.push({ cls: "text-[--foreground]", text: "" });
   return out;
 }
 
@@ -95,7 +102,8 @@ export function CodeBlock({
   return (
     <pre
       className={cn(
-        "rounded-[--ds-radius-md] border border-[--ds-surface-hover] bg-[--ds-surface-sunken] overflow-auto",
+        // TF remap: --ds-radius-md → var(--radius-card); --ds-surface-hover → --accent; --ds-surface-sunken → --background (flat canvas)
+        "rounded-[--radius-card] border border-[--accent] bg-[--background] overflow-auto",
         "font-mono text-[12px] leading-[1.55] py-2",
         className,
       )}
@@ -110,7 +118,8 @@ export function CodeBlock({
         >
           {showLineNumbers ? (
             <span
-              className="text-right text-[--ds-text-tertiary] select-none"
+              // TF remap: --ds-text-tertiary → --muted-foreground
+              className="text-right text-[--muted-foreground] select-none"
               style={{ minWidth: `${gutterW}ch` }}
             >
               {idx + 1}

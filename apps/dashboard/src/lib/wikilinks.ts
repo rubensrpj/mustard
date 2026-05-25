@@ -14,7 +14,7 @@
 // `WikilinkText`/`renderWithWikilinks`.
 
 /** Regex that matches `[[anything-but-brackets]]`. Captures the inner text. */
-export const WIKILINK_PATTERN = /\[\[([^\[\]]+)\]\]/g;
+export const WIKILINK_PATTERN = /\[\[([^[\]]+)\]\]/g;
 
 /** Default vault directory (relative to the project root). The user can
  *  override via `mustard.json#obsidianVault`. */

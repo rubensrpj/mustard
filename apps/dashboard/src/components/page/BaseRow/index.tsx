@@ -27,11 +27,12 @@ export interface BaseRowProps {
 }
 
 const DOT: Record<RowStatus, string> = {
-  draft:         "bg-[--ds-status-draft]",
-  implementing:  "bg-[--ds-status-implementing]",
-  "awaiting-qa": "bg-[--ds-status-awaiting-qa]",
-  completed:     "bg-[--ds-status-completed]",
-  archived:      "bg-[--ds-status-archived]",
+  // TF remap: --ds-status-* → Binance intent/phase tokens (no status-dot tier in Binance pack)
+  draft:         "bg-[--muted-foreground]",          /* TF remap: --ds-status-draft → --muted-foreground; inactive/pending */
+  implementing:  "bg-[--color-phase-execute]",        /* TF remap: --ds-status-implementing → --color-phase-execute; in-flight */
+  "awaiting-qa": "bg-[--color-phase-qa]",             /* TF remap: --ds-status-awaiting-qa → --color-phase-qa; QA lifecycle phase */
+  completed:     "bg-[--intent-success]",             /* TF remap: --ds-status-completed → --intent-success; #0ecb81 Binance green */
+  archived:      "bg-[--muted-foreground]",           /* TF remap: --ds-status-archived → --muted-foreground; inactive */
 };
 
 export function BaseRow({
@@ -61,13 +62,17 @@ export function BaseRow({
           : undefined
       }
       className={cn(
-        "flex items-center gap-3 px-3 py-2 rounded-[--ds-radius-md]",
-        "bg-[--ds-surface-base]",
-        interactive && "cursor-pointer hover:bg-[--ds-surface-hover] focus:outline-none focus-visible:ring-2 focus-visible:ring-[--ds-accent-primary]/60",
+        // TF remap: --ds-radius-md → var(--radius-card) (8px card radius Binance)
+        // TF remap: --ds-surface-base → --background (canvas)
+        "flex items-center gap-3 px-3 py-2 rounded-[--radius-card]",
+        "bg-[--background]",
+        // TF remap: --ds-surface-hover → --accent; --ds-accent-primary → --primary
+        interactive && "cursor-pointer hover:bg-[--accent] focus:outline-none focus-visible:ring-2 focus-visible:ring-[--primary]/60",
         className,
       )}
     >
-      {icon ? <span className="shrink-0 text-[--ds-text-tertiary]">{icon}</span> : null}
+      {/* TF remap: --ds-text-tertiary → --muted-foreground; no tertiary tier in Binance */}
+      {icon ? <span className="shrink-0 text-[--muted-foreground]">{icon}</span> : null}
       {status ? (
         <span
           aria-label={`status: ${status}`}
@@ -75,16 +80,18 @@ export function BaseRow({
         />
       ) : null}
       <div className="min-w-0 flex-1">
-        <div className="text-[13px] font-medium text-[--ds-text-primary] truncate">{label}</div>
+        {/* TF remap: --ds-text-primary → --foreground; --ds-text-secondary → --muted-foreground */}
+        <div className="text-[13px] font-medium text-[--foreground] truncate">{label}</div>
         {summary ? (
-          <div className="text-[12px] text-[--ds-text-secondary] truncate">{summary}</div>
+          <div className="text-[12px] text-[--muted-foreground] truncate">{summary}</div>
         ) : null}
       </div>
       {typeof tokens === "number" ? (
         <StatPill value={formatTokens(tokens)} unit="tok" />
       ) : null}
+      {/* TF remap: --ds-text-tertiary → --muted-foreground */}
       {chevron ? (
-        <ChevronRight size={14} className="shrink-0 text-[--ds-text-tertiary]" />
+        <ChevronRight size={14} className="shrink-0 text-[--muted-foreground]" />
       ) : null}
     </div>
   );

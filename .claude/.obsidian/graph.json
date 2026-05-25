@@ -9,19 +9,31 @@
   "colorGroups": [
     {
       "query": "path:graph/ file:.conv.",
-      "color": { "a": 1, "rgb": 7841685 }
+      "color": {
+        "a": 1,
+        "rgb": 7841685
+      }
     },
     {
       "query": "path:graph/ file:.entity.",
-      "color": { "a": 1, "rgb": 14048348 }
+      "color": {
+        "a": 1,
+        "rgb": 14048348
+      }
     },
     {
       "query": "path:skills/",
-      "color": { "a": 1, "rgb": 5025616 }
+      "color": {
+        "a": 1,
+        "rgb": 5025616
+      }
     },
     {
       "query": "path:recipes/",
-      "color": { "a": 1, "rgb": 16753920 }
+      "color": {
+        "a": 1,
+        "rgb": 16753920
+      }
     }
   ],
   "collapse-display": false,
@@ -34,6 +46,6 @@
   "repelStrength": 12,
   "linkStrength": 1,
   "linkDistance": 250,
-  "scale": 1,
+  "scale": 0.3628873693012074,
   "close": false
 }
