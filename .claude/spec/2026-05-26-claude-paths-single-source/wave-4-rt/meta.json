@@ -1,10 +1,21 @@
 {
-  "stage": "Plan",
-  "outcome": "Active",
-  "phase": "PLAN",
+  "stage": "Close",
+  "outcome": "Completed",
+  "phase": "CLOSE",
   "scope": "single",
   "lang": "pt-BR",
-  "checkpoint": "2026-05-26T03:00:00.000Z",
+  "checkpoint": "2026-05-26T14:41:35.630Z",
+  "parent": "2026-05-26-claude-paths-single-source",
+  "isWavePlan": false,
+  "ac_pass": 5,
+  "ac_skipped": [
+    "W4.3",
+    "W4.4"
+  ],
+  "ac_skipped_reason": "sialia explicitly out of scope per operator decision",
+  "ac_total": 5,
   "flags": [],
-  "model": "opus"
+  "model": "opus",
+  "role": "rt",
+  "wave": 4
 }

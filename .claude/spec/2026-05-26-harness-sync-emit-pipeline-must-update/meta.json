@@ -2,9 +2,10 @@
   "stage": "Close",
   "outcome": "Completed",
   "phase": "CLOSE",
-  "scope": "medium",
+  "scope": "light",
   "lang": "pt-BR",
-  "checkpoint": "2026-05-26T14:41:18.891Z",
+  "checkpoint": "2026-05-26T14:41:59.001Z",
   "parent": "2026-05-26-claude-paths-single-source",
-  "isWavePlan": false
+  "ac_count": 3,
+  "kind": "tactical-fix"
 }

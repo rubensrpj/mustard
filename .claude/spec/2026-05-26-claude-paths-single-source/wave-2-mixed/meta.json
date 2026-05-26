@@ -1,10 +1,17 @@
 {
-  "stage": "Plan",
-  "outcome": "Active",
-  "phase": "PLAN",
+  "stage": "Close",
+  "outcome": "Partial",
+  "phase": "CLOSE",
   "scope": "medium",
   "lang": "pt-BR",
-  "checkpoint": "2026-05-26T03:00:00Z",
+  "checkpoint": "2026-05-26T07:00:00.000Z",
   "isWavePlan": false,
-  "parent": "2026-05-26-claude-paths-single-source"
+  "parent": "2026-05-26-claude-paths-single-source",
+  "wave": 2,
+  "role": "mixed",
+  "ac_pass": 6,
+  "ac_total": 10,
+  "open_acs": ["W2.4", "W2.6", "W2.7", "W2.9"],
+  "open_ac_reason": "Wave-plan declared 33 files but T2.7 enumerated 18. Global grep AC catches the ~50 unlisted files. Test-leak AC needs integration-test fixture wiring. Legacy artifact cleanup deferred.",
+  "followup": "2026-05-26-w2-residuals-50-unlisted-apps-rt"
 }

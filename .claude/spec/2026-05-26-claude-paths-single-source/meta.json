@@ -1,13 +1,25 @@
 {
-  "stage": "Plan",
-  "outcome": "Active",
-  "phase": "PLAN",
+  "stage": "Close",
+  "outcome": "Completed",
+  "phase": "CLOSE",
   "scope": "medium (wave plan)",
   "lang": "pt-BR",
-  "checkpoint": "2026-05-26T03:53:09.444Z",
+  "checkpoint": "2026-05-26T14:41:35.630Z",
   "isWavePlan": true,
   "totalWaves": 4,
-  "currentWave": 1,
+  "completedWaves": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "currentWave": 4,
   "flags": [],
-  "model": "opus"
+  "followups": [
+    "2026-05-26-w2-residuals-50-unlisted-apps-rt"
+  ],
+  "model": "opus",
+  "partialWaves": [
+    2
+  ]
 }

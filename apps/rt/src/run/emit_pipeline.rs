@@ -238,6 +238,21 @@ pub fn run(opts: EmitPipelineOpts) {
         }
     }
 
+    // Tactical-fix 2026-05-26-harness-sync-emit-pipeline-must-update:
+    // `pipeline.wave.complete` must drive the wave's own `meta.json` to
+    // Close/Completed/CLOSE *and* bump the parent's progress fields
+    // (`currentWave`, `completedWaves`, `phase`). Without this, finished waves
+    // stay `Plan/Active/PLAN` forever and the dashboard/picker never see
+    // progress. Fail-open: missing sidecars warn but never abort.
+    if kind_str == EVENT_PIPELINE_WAVE_COMPLETE {
+        if let Some(wave) = payload_for_header.get("wave").and_then(Value::as_u64) {
+            let cwd = std::env::current_dir()
+                .unwrap_or_else(|_| std::path::PathBuf::from(project_dir()));
+            sync_wave_meta_sidecar(&cwd, &spec_name, wave, &ts);
+            bump_parent_progress(&cwd, &spec_name, wave, &ts);
+        }
+    }
+
     // Cleanup: remove the `.pipeline-states/{spec}.json` file when a terminal
     // event is emitted so `current_spec` step-3 (FS fallback) doesn't return
     // this closed spec in a future session. Fail-open: missing file is fine.
@@ -472,6 +487,123 @@ fn sync_spec_meta_sidecar(cwd: &Path, spec: &str, to: &str, ts: &str) {
     if let Err(e) = write_meta(&path, &meta) {
         eprintln!(
             "emit-pipeline: WARN: could not write {} ({e}); meta.json may be stale",
+            path.display()
+        );
+    }
+}
+
+/// Tactical-fix 2026-05-26: update `wave-{N}-*/meta.json` to
+/// `Close / Completed / CLOSE` on a `pipeline.wave.complete` event.
+///
+/// The wave's directory carries a role suffix the dispatcher does not know
+/// (`wave-1-rt`, `wave-3-cli`, …). We glob the parent spec dir for entries
+/// starting with `wave-{N}-` via `read_dir` (no globset dep) and take the
+/// first match.
+///
+/// Fail-open: a missing spec dir, missing wave dir, unreadable sidecar, or
+/// write failure all warn on stderr and return without propagating.
+fn sync_wave_meta_sidecar(cwd: &Path, spec: &str, wave: u64, ts: &str) {
+    let spec_dir = cwd.join(".claude").join("spec").join(spec);
+    if !spec_dir.is_dir() {
+        return;
+    }
+    let prefix = format!("wave-{wave}-");
+    let entries = match std::fs::read_dir(&spec_dir) {
+        Ok(it) => it,
+        Err(e) => {
+            eprintln!(
+                "emit-pipeline: WARN: could not read {} ({e}); wave meta.json may be stale",
+                spec_dir.display()
+            );
+            return;
+        }
+    };
+    let mut wave_dir: Option<std::path::PathBuf> = None;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with(&prefix) && entry.path().is_dir() {
+            wave_dir = Some(entry.path());
+            break;
+        }
+    }
+    let Some(wave_dir) = wave_dir else {
+        eprintln!(
+            "emit-pipeline: WARN: no `wave-{wave}-*` directory under {}; wave meta.json may be stale",
+            spec_dir.display()
+        );
+        return;
+    };
+    let path = wave_dir.join("meta.json");
+    let mut meta = read_meta(&path).unwrap_or_default();
+    meta.stage = Some(spec::stage_label(Stage::Close).to_string());
+    meta.outcome = Some(spec::outcome_label(Outcome::Completed).to_string());
+    meta.phase = Some("CLOSE".to_string());
+    meta.checkpoint = Some(ts.to_string());
+
+    if let Err(e) = write_meta(&path, &meta) {
+        eprintln!(
+            "emit-pipeline: WARN: could not write {} ({e}); wave meta.json may be stale",
+            path.display()
+        );
+    }
+}
+
+/// Tactical-fix 2026-05-26: bump parent `meta.json` progress fields on a
+/// `pipeline.wave.complete` event. Sets:
+///   - `raw.currentWave = wave`
+///   - `raw.completedWaves = [..., wave]` (deduplicated, sorted ascending)
+///   - `phase = "EXECUTE"` when `wave < total_waves` or `total_waves` is None
+///   - `phase = "CLOSE"` when `wave >= total_waves`
+///   - `checkpoint = ts`
+///
+/// Native `stage` / `outcome` are deliberately left untouched here — the
+/// parent's terminal transition is driven by `pipeline.status` /
+/// `pipeline.outcome`, not by an interior wave completion.
+///
+/// Fail-open: a missing spec dir, missing/unparseable sidecar, or write
+/// failure all warn on stderr and return without propagating.
+fn bump_parent_progress(cwd: &Path, spec: &str, wave: u64, ts: &str) {
+    let spec_dir = cwd.join(".claude").join("spec").join(spec);
+    if !spec_dir.is_dir() {
+        return;
+    }
+    let path = spec_dir.join("meta.json");
+    let mut meta = read_meta(&path).unwrap_or_default();
+
+    // Decide phase based on `total_waves` (native field).
+    let new_phase = match meta.total_waves {
+        Some(total) if wave >= u64::from(total) => "CLOSE",
+        _ => "EXECUTE",
+    };
+    meta.phase = Some(new_phase.to_string());
+    meta.checkpoint = Some(ts.to_string());
+
+    // Ensure `raw` is an object before mutating progress fields. A
+    // freshly-defaulted Meta carries `raw: Value::Null`.
+    if !meta.raw.is_object() {
+        meta.raw = json!({});
+    }
+    if let Some(obj) = meta.raw.as_object_mut() {
+        // currentWave — always overwrite with the latest wave number.
+        obj.insert("currentWave".to_string(), json!(wave));
+
+        // completedWaves — read existing array (if any), push, dedupe + sort.
+        let mut completed: Vec<u64> = obj
+            .get("completedWaves")
+            .and_then(Value::as_array)
+            .map(|arr| arr.iter().filter_map(Value::as_u64).collect())
+            .unwrap_or_default();
+        completed.push(wave);
+        completed.sort_unstable();
+        completed.dedup();
+        let completed_value: Vec<Value> = completed.into_iter().map(|n| json!(n)).collect();
+        obj.insert("completedWaves".to_string(), Value::Array(completed_value));
+    }
+
+    if let Err(e) = write_meta(&path, &meta) {
+        eprintln!(
+            "emit-pipeline: WARN: could not write {} ({e}); parent meta.json may be stale",
             path.display()
         );
     }
@@ -967,5 +1099,85 @@ mod tests {
             spec::parse_state(&after).map(|s| spec::status_word(&s).to_string()),
             Some("implementing".to_string())
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Tactical-fix 2026-05-26: pipeline.wave.complete drives meta-sync
+    // -----------------------------------------------------------------------
+
+    /// `sync_wave_meta_sidecar` rewrites `wave-N-*/meta.json` to
+    /// `Close / Completed / CLOSE` and stamps the checkpoint.
+    #[test]
+    fn wave_complete_updates_wave_meta() {
+        let dir = tempdir().unwrap();
+        let wave_dir = dir
+            .path()
+            .join(".claude")
+            .join("spec")
+            .join("foo")
+            .join("wave-1-rt");
+        std::fs::create_dir_all(&wave_dir).unwrap();
+        let meta_path = wave_dir.join("meta.json");
+        std::fs::write(
+            &meta_path,
+            br#"{"stage":"Plan","outcome":"Active","phase":"PLAN","scope":null,"lang":null,"checkpoint":null}"#,
+        )
+        .unwrap();
+
+        let ts = "2026-05-26T00:00:00Z";
+        super::sync_wave_meta_sidecar(dir.path(), "foo", 1, ts);
+
+        let body = std::fs::read_to_string(&meta_path).unwrap();
+        let v: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["stage"], json!("Close"));
+        assert_eq!(v["outcome"], json!("Completed"));
+        assert_eq!(v["phase"], json!("CLOSE"));
+        assert_eq!(v["checkpoint"], json!(ts));
+    }
+
+    /// `bump_parent_progress` sets `currentWave` + extends `completedWaves`
+    /// (dedupe + sort) and picks `EXECUTE` vs `CLOSE` based on `totalWaves`.
+    #[test]
+    fn wave_complete_bumps_parent_progress() {
+        let dir = tempdir().unwrap();
+        let spec_dir = dir.path().join(".claude").join("spec").join("foo");
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        let meta_path = spec_dir.join("meta.json");
+        // Parent meta with totalWaves=4, isWavePlan=true, no progress yet.
+        std::fs::write(
+            &meta_path,
+            br#"{"stage":"Execute","outcome":"Active","phase":"PLAN","scope":"full","lang":"pt-BR","checkpoint":null,"isWavePlan":true,"totalWaves":4}"#,
+        )
+        .unwrap();
+
+        let ts1 = "2026-05-26T00:00:00Z";
+        super::bump_parent_progress(dir.path(), "foo", 1, ts1);
+
+        let v: Value =
+            serde_json::from_str(&std::fs::read_to_string(&meta_path).unwrap()).unwrap();
+        assert_eq!(v["phase"], json!("EXECUTE"), "{v}");
+        assert_eq!(v["currentWave"], json!(1), "{v}");
+        assert_eq!(v["completedWaves"], json!([1]), "{v}");
+        assert_eq!(v["checkpoint"], json!(ts1), "{v}");
+
+        // Second call with the terminal wave (4 of 4). Expect:
+        //   phase = CLOSE
+        //   currentWave = 4
+        //   completedWaves = [1, 4] (dedup + sort preserved)
+        let ts2 = "2026-05-26T01:00:00Z";
+        super::bump_parent_progress(dir.path(), "foo", 4, ts2);
+
+        let v: Value =
+            serde_json::from_str(&std::fs::read_to_string(&meta_path).unwrap()).unwrap();
+        assert_eq!(v["phase"], json!("CLOSE"), "{v}");
+        assert_eq!(v["currentWave"], json!(4), "{v}");
+        assert_eq!(v["completedWaves"], json!([1, 4]), "{v}");
+        assert_eq!(v["checkpoint"], json!(ts2), "{v}");
+
+        // Third call with a repeat (wave=1) keeps completedWaves deduped.
+        super::bump_parent_progress(dir.path(), "foo", 1, "2026-05-26T02:00:00Z");
+        let v: Value =
+            serde_json::from_str(&std::fs::read_to_string(&meta_path).unwrap()).unwrap();
+        assert_eq!(v["completedWaves"], json!([1, 4]), "{v}");
     }
 }

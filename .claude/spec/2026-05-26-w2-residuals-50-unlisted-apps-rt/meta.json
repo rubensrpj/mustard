@@ -1,0 +1,16 @@
+{
+  "stage": "Analyze",
+  "outcome": "Active",
+  "phase": "ANALYZE",
+  "scope": "full",
+  "lang": "pt-BR",
+  "checkpoint": "2026-05-26T14:35:00.000Z",
+  "parent": "2026-05-26-claude-paths-single-source",
+  "parent_wave": 2,
+  "kind": "tactical-fix",
+  "origin": "W2 partial — wave-plan declared 33 files but enumerated 18 in T2.7. Global grep AC-W2.4 surfaced ~50 unlisted rt files. AC-W2.9 needs integration-test fixture wiring. AC-W2.6/W2.7 need one-shot legacy file cleanup.",
+  "blocks_on": [],
+  "ac_count": 3,
+  "estimated_loc": 200,
+  "estimated_files": 25
+}
