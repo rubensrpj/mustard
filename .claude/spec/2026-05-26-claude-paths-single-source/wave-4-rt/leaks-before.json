@@ -1,0 +1,52 @@
+{
+  "leaks": [
+    {
+      "leaked_entries": [
+        ".harness"
+      ],
+      "path": "C:\\Atiz\\mustard\\apps\\cli\\.claude",
+      "severity": "warn",
+      "suggested_cleanup": "rm -rf C:\\Atiz\\mustard\\apps\\cli\\.claude/.harness"
+    },
+    {
+      "leaked_entries": [
+        ".agent-state",
+        ".harness",
+        ".metrics"
+      ],
+      "path": "C:\\Atiz\\mustard\\apps\\cli\\templates\\.claude",
+      "severity": "warn",
+      "suggested_cleanup": "rm -rf C:\\Atiz\\mustard\\apps\\cli\\templates\\.claude/.agent-state C:\\Atiz\\mustard\\apps\\cli\\templates\\.claude/.harness C:\\Atiz\\mustard\\apps\\cli\\templates\\.claude/.metrics"
+    },
+    {
+      "leaked_entries": [
+        ".harness"
+      ],
+      "path": "C:\\Atiz\\mustard\\apps\\dashboard\\.claude",
+      "severity": "warn",
+      "suggested_cleanup": "rm -rf C:\\Atiz\\mustard\\apps\\dashboard\\.claude/.harness"
+    },
+    {
+      "leaked_entries": [
+        ".agent-state",
+        ".harness",
+        ".metrics",
+        ".pipeline-states",
+        "spec"
+      ],
+      "path": "C:\\Atiz\\mustard\\apps\\rt\\.claude",
+      "severity": "warn",
+      "suggested_cleanup": "rm -rf C:\\Atiz\\mustard\\apps\\rt\\.claude/.agent-state C:\\Atiz\\mustard\\apps\\rt\\.claude/.harness C:\\Atiz\\mustard\\apps\\rt\\.claude/.metrics C:\\Atiz\\mustard\\apps\\rt\\.claude/.pipeline-states C:\\Atiz\\mustard\\apps\\rt\\.claude/spec"
+    },
+    {
+      "leaked_entries": [
+        ".harness"
+      ],
+      "path": "C:\\Atiz\\mustard\\packages\\core\\.claude",
+      "severity": "warn",
+      "suggested_cleanup": "rm -rf C:\\Atiz\\mustard\\packages\\core\\.claude/.harness"
+    }
+  ],
+  "ok": false,
+  "root": "C:\\Atiz\\mustard"
+}

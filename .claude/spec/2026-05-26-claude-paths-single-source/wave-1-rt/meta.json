@@ -1,0 +1,10 @@
+{
+  "stage": "Plan",
+  "outcome": "Active",
+  "phase": "PLAN",
+  "scope": "medium",
+  "lang": "pt-BR",
+  "checkpoint": "2026-05-26T03:00:00Z",
+  "isWavePlan": false,
+  "parent": "2026-05-26-claude-paths-single-source"
+}
