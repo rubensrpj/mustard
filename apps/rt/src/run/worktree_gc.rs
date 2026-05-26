@@ -46,6 +46,7 @@
 use crate::run::env::{current_spec, session_id};
 use crate::util::now_iso8601;
 use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
+use mustard_core::ClaudePaths;
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
@@ -104,8 +105,15 @@ struct GcReport {
 
 /// Enumerate `<repo>/.claude/worktrees/agent-*` directories. Returns an empty
 /// vec when the parent path is missing (fail-open).
+///
+/// `worktrees/` has no typed accessor on `ClaudePaths` (it's a legacy direct
+/// child of `.claude/`); routing via `claude_dir()` keeps the boundary owned
+/// by the canonical handle without expanding W4 scope.
 fn list_agent_worktrees(repo: &Path) -> Vec<PathBuf> {
-    let root = repo.join(".claude").join("worktrees");
+    let Ok(paths) = ClaudePaths::for_project(repo) else {
+        return Vec::new();
+    };
+    let root = paths.claude_dir().join("worktrees");
     let Ok(read) = std::fs::read_dir(&root) else {
         return Vec::new();
     };

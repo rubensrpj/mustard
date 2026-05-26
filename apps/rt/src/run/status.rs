@@ -14,6 +14,7 @@
 //! always exits 0 — a status command must never block work.
 
 use mustard_core::fs;
+use mustard_core::ClaudePaths;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -76,7 +77,8 @@ fn hook_mode_env(name: &str) -> Option<&'static str> {
 
 /// Read `settings.json`, enumerate hooks, resolve modes from env section.
 fn collect_hook_entries(root: &Path) -> Vec<Value> {
-    let settings_path = root.join(".claude").join("settings.json");
+    let Ok(paths) = ClaudePaths::for_project(root) else { return Vec::new() };
+    let settings_path = paths.settings_json_path();
     let Ok(text) = fs::read_to_string(&settings_path) else { return Vec::new() };
     let settings: Value = match serde_json::from_str(&text) {
         Ok(v) => v,
@@ -268,7 +270,14 @@ struct RegistryMeta {
 }
 
 fn registry_meta(root: &Path) -> RegistryMeta {
-    let path = root.join(".claude").join("entity-registry.json");
+    let Ok(paths) = ClaudePaths::for_project(root) else {
+        return RegistryMeta {
+            version: "missing".to_string(),
+            generated_at: String::new(),
+            entity_count: 0,
+        };
+    };
+    let path = paths.entity_registry_json_path();
     let Ok(text) = fs::read_to_string(&path) else {
         return RegistryMeta {
             version: "missing".to_string(),
@@ -314,7 +323,11 @@ struct BuildResult {
 }
 
 fn last_build(root: &Path) -> Option<BuildResult> {
-    let path = root.join(".claude").join(".last-build.json");
+    let paths = ClaudePaths::for_project(root).ok()?;
+    // `.last-build.json` is a legacy direct child of `.claude/` with no typed
+    // accessor on `ClaudePaths` — using `claude_dir().join(...)` keeps it
+    // routed through the canonical handle without expanding W4 scope.
+    let path = paths.claude_dir().join(".last-build.json");
     let text = fs::read_to_string(&path).ok()?;
     let v: Value = serde_json::from_str(&text).ok()?;
     let at = v.get("at").and_then(Value::as_str)?.to_string();
@@ -330,7 +343,13 @@ struct PipelineSummary {
 fn pipeline_summary(root: &Path) -> PipelineSummary {
     // Read entity-registry just for the pipeline summary — re-use metrics
     // collect JSON if possible, but fall back to scanning spec directory.
-    let spec_root = root.join(".claude").join("spec");
+    let Ok(paths) = ClaudePaths::for_project(root) else {
+        return PipelineSummary {
+            active: Vec::new(),
+            orphaned: Vec::new(),
+        };
+    };
+    let spec_root = paths.spec_dir();
     let Ok(entries) = mustard_core::fs::read_dir(&spec_root) else {
         return PipelineSummary {
             active: Vec::new(),

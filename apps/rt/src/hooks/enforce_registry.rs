@@ -27,8 +27,8 @@
 
 use mustard_core::error::Error;
 use mustard_core::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
+use mustard_core::ClaudePaths;
 use serde_json::Value;
-use std::path::Path;
 
 use crate::util::format_gate_message;
 
@@ -112,8 +112,11 @@ fn registry_verdict(input: &HookInput, cwd: &str) -> Verdict {
         return Verdict::Allow;
     }
 
-    // Find `.claude/entity-registry.json` under cwd.
-    let registry_path = Path::new(cwd).join(".claude").join("entity-registry.json");
+    // Find `.claude/entity-registry.json` under cwd via ClaudePaths.
+    let registry_path = match ClaudePaths::for_project(cwd) {
+        Ok(cp) => cp.entity_registry_json_path(),
+        Err(_) => return Verdict::Allow,
+    };
     let Ok(text) = std::fs::read_to_string(&registry_path) else {
         return Verdict::Deny {
             reason: format_gate_message(
@@ -154,6 +157,7 @@ impl Check for EnforceRegistry {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::path::Path;
     use tempfile::tempdir;
 
     fn skill_input(skill: &str, cwd: &str) -> (HookInput, Ctx) {

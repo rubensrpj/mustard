@@ -16,6 +16,7 @@ use crate::util::now_iso8601;
 use mustard_core::fs::{read_to_string, write_atomic};
 use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use mustard_core::process::rtk_command;
+use mustard_core::ClaudePaths;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -165,7 +166,10 @@ fn github_install(spec: &str, target: &Path) -> std::io::Result<()> {
 
 /// Append (or update) the cache entry for `slug`.
 fn record_cache(cwd: &Path, slug: &str, kind: SourceKind, source: &str, target: &Path) {
-    let path = cwd.join(".claude").join(".skill-cache.json");
+    let Ok(paths) = ClaudePaths::for_project(cwd) else {
+        return;
+    };
+    let path = paths.skill_cache_path();
     let mut cache: SkillCacheFile = read_to_string(&path)
         .ok()
         .and_then(|t| serde_json::from_str(&t).ok())
@@ -189,7 +193,20 @@ pub fn run(opts: SkillFetchOpts) {
     let started = std::time::Instant::now();
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let source = parse_source(&opts.name);
-    let target = cwd.join(".claude").join("skills").join(&source.slug);
+    let Ok(paths) = ClaudePaths::for_project(&cwd) else {
+        let report = FetchReport {
+            source: source.clone(),
+            target: String::new(),
+            installed: false,
+            dry_run: opts.dry_run,
+            error: Some("invalid project root (claude-paths guard)".to_string()),
+        };
+        let body = serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".to_string());
+        println!("{body}");
+        emit_economy(started.elapsed().as_millis());
+        return;
+    };
+    let target = paths.skills_dir().join(&source.slug);
     let mut report = FetchReport {
         source: source.clone(),
         target: target.display().to_string(),

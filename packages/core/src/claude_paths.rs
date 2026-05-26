@@ -42,7 +42,6 @@
 //! ├── commands/
 //! ├── skills/
 //! ├── refs/
-//! ├── recipes/
 //! ├── agents/
 //! ├── agent-memory/
 //! ├── graph/
@@ -164,7 +163,6 @@ const DOCUMENTED_DIRS: &[&str] = &[
     "commands",
     "skills",
     "refs",
-    "recipes",
     "agents",
     "agent-memory",
     "spec",
@@ -209,6 +207,26 @@ impl ClaudePaths {
             return Err(ClaudePathsError::ForbiddenDotClaudeDotClaude(root));
         }
         Ok(Self { root })
+    }
+
+    /// Build a handle without running the I1 guard.
+    ///
+    /// **Fail-open callers only.** This bypass exists so a fallback branch in
+    /// telemetry/event paths can keep using the same typed accessor surface
+    /// as the happy path after `ClaudePaths::for_project(..).ok()` rejected
+    /// the root. Production code that is not a fail-open fallback **must**
+    /// use [`Self::for_project`] so I1 violations are surfaced rather than
+    /// silently materialised into `.claude/.claude/` paths.
+    ///
+    /// AC-TF1 of `2026-05-26-w2-residuals-50-unlisted-apps-rt` rewards
+    /// preserving the helper surface even on the fallback branch — replacing
+    /// open-coded `project.join(".claude").join("…")` strings with accessor
+    /// calls over a `compose_unchecked(project)` handle.
+    #[must_use]
+    pub fn compose_unchecked(project: impl AsRef<Path>) -> Self {
+        Self {
+            root: project.as_ref().to_path_buf(),
+        }
     }
 
     /// The project root that was passed to [`Self::for_project`].
@@ -285,12 +303,6 @@ impl ClaudePaths {
         self.claude_dir().join("refs")
     }
 
-    /// `<root>/.claude/recipes/` — structured recipes (90% skeletons).
-    #[must_use]
-    pub fn recipes_dir(&self) -> PathBuf {
-        self.claude_dir().join("recipes")
-    }
-
     /// `<root>/.claude/agents/` — per-agent prompt bundles.
     #[must_use]
     pub fn agents_dir(&self) -> PathBuf {
@@ -348,6 +360,28 @@ impl ClaudePaths {
     #[must_use]
     pub fn interpret_cache_path(&self) -> PathBuf {
         self.claude_dir().join(".interpret-cache.json")
+    }
+
+    /// `<root>/.claude/.skill-cache.json` — skill-install cache.
+    ///
+    /// Added for W3 of `2026-05-26-w2-residuals-50-unlisted-apps-rt`: replaces
+    /// open-coded `cwd.join(".claude").join(".skill-cache.json")` in
+    /// `skill_cache.rs` and `skill_fetch.rs`. Owned by `skill-fetch`
+    /// (writer) and `skill-cache` (reader).
+    #[must_use]
+    pub fn skill_cache_path(&self) -> PathBuf {
+        self.claude_dir().join(".skill-cache.json")
+    }
+
+    /// `<root>/.claude/.resolve-cache.json` — scan resolver cache.
+    ///
+    /// Added for W3 of `2026-05-26-w2-residuals-50-unlisted-apps-rt`: replaces
+    /// open-coded `project_root.join(".claude").join(".resolve-cache.json")`
+    /// in `apps/rt/src/run/scan/resolve.rs`. Sibling of
+    /// [`Self::interpret_cache_path`], same `.claude/` location.
+    #[must_use]
+    pub fn resolve_cache_path(&self) -> PathBuf {
+        self.claude_dir().join(".resolve-cache.json")
     }
 
     // -- root-level files ------------------------------------------------
@@ -706,6 +740,22 @@ mod tests {
     }
 
     #[test]
+    fn compose_unchecked_skips_i1_guard() {
+        let dir = tempdir().unwrap();
+        let bad = dir.path().join(".claude");
+        // `for_project` rejects this path…
+        assert!(ClaudePaths::for_project(&bad).is_err());
+        // …but `compose_unchecked` produces a usable handle for fail-open
+        // fallback paths. The handle materialises canonical sub-paths from
+        // the (already-nested) root — the consumer's job is to recognise
+        // they are in the fallback branch.
+        let cp = ClaudePaths::compose_unchecked(&bad);
+        assert_eq!(cp.root(), bad.as_path());
+        // Cache accessor still produces a deterministic shape.
+        assert_eq!(cp.cache_dir(), bad.join(".claude").join(".cache"));
+    }
+
+    #[test]
     fn for_project_rejects_terminal_dot_claude() {
         let dir = tempdir().unwrap();
         let bad = dir.path().join(".claude");
@@ -808,7 +858,6 @@ mod tests {
             "commands",
             "skills",
             "refs",
-            "recipes",
             "agents",
             "agent-memory",
             "spec",

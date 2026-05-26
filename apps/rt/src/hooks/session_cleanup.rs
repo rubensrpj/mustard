@@ -336,8 +336,12 @@ fn resolve_transcript_path(cwd: &str, session_id: Option<&str>) -> Option<PathBu
     let session = session_id.filter(|s| !s.is_empty())?;
     let home = home_dir()?;
     let encoded = encode_cwd(cwd);
+    // NOTE: `~/.claude/projects/` is the *global* (user-scope) Claude Code
+    // transcript directory — not a per-project `.claude/` tree. `ClaudePaths`
+    // is per-project by contract, so it does not own this path; keep the
+    // explicit `home.join(".claude")` here. // ClaudePaths-exempt
     Some(
-        home.join(".claude")
+        home.join(".claude") // ClaudePaths-exempt: user-global ~/.claude
             .join("projects")
             .join(encoded)
             .join(format!("{session}.jsonl")),

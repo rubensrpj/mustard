@@ -9,13 +9,14 @@
 //! to the wrong root.
 //!
 //! Legitimate nested `.claude/` content includes only scan-emitted artifacts
-//! (`commands/`, `skills/`, `agents/`, `services.json`, `refs/`, `recipes/`,
+//! (`commands/`, `skills/`, `agents/`, `services.json`, `refs/`,
 //! `CLAUDE.md`, `.cluster-cache.json`, `.interpret-cache.json`).
 //!
 //! Output: never deletes. Each leak gets a `suggested_cleanup` command the
 //! user can run if they confirm.
 
 use mustard_core::workspace::workspace_root;
+use mustard_core::ClaudePaths;
 use serde::Serialize;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -32,7 +33,6 @@ pub(crate) const LEGITIMATE_ENTRIES: &[&str] = &[
     "agents",
     "services.json",
     "refs",
-    "recipes",
     "CLAUDE.md",
     ".cluster-cache.json",
     ".interpret-cache.json",
@@ -76,8 +76,15 @@ pub fn run(start_dir: &Path) -> WorkspaceLeaksReport {
     let Ok(root) = workspace_root(start_dir) else {
         return WorkspaceLeaksReport { ok: true, root: None, leaks: Vec::new() };
     };
+    let Ok(paths) = ClaudePaths::for_project(&root) else {
+        return WorkspaceLeaksReport {
+            ok: true,
+            root: Some(root.to_string_lossy().into_owned()),
+            leaks: Vec::new(),
+        };
+    };
 
-    let root_claude = root.join(".claude");
+    let root_claude = paths.claude_dir();
     let root_claude_canon = canonicalize_or_self(&root_claude);
 
     let mut leaks: Vec<WorkspaceLeak> = Vec::new();

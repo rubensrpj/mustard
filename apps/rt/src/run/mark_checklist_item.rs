@@ -9,6 +9,7 @@
 //! Exit codes: 0 success/no-op, 1 not-found/no-section/not-located, 2 bad args.
 
 use mustard_core::fs;
+use mustard_core::ClaudePaths;
 use std::path::{Path, PathBuf};
 
 /// Print `error: <msg>` and exit with `code`.
@@ -23,13 +24,13 @@ fn resolve_spec_path(spec: &str, cwd: &Path) -> Option<PathBuf> {
     if p.is_absolute() && std::path::Path::new(spec).extension().is_some_and(|ext| ext.eq_ignore_ascii_case("md")) && p.exists() {
         return Some(p.to_path_buf());
     }
-    let flat = cwd
-        .join(".claude")
-        .join("spec")
-        .join(spec)
-        .join("spec.md");
-    if flat.exists() {
-        return Some(flat);
+    if let Ok(paths) = ClaudePaths::for_project(cwd) {
+        if let Ok(spec_paths) = paths.for_spec(spec) {
+            let flat = spec_paths.spec_md_path();
+            if flat.exists() {
+                return Some(flat);
+            }
+        }
     }
     let as_dir = Path::new(spec).join("spec.md");
     if as_dir.exists() {

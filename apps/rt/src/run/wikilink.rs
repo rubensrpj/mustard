@@ -29,6 +29,7 @@ use crate::run::env::project_dir;
 use mustard_core::fs;
 use mustard_core::store::sqlite_store::SqliteEventStore;
 use mustard_core::store::wikilinks::{self, Wikilink};
+use mustard_core::ClaudePaths;
 use rusqlite::Connection;
 use serde_json::json;
 use std::collections::BTreeSet;
@@ -150,7 +151,10 @@ fn derive_from(root: &Path, abs_path: &Path) -> String {
 /// advisory.
 fn known_specs(project: &Path) -> BTreeSet<String> {
     let mut out: BTreeSet<String> = BTreeSet::new();
-    let root = project.join(".claude").join("spec");
+    let Ok(paths) = ClaudePaths::for_project(project) else {
+        return out;
+    };
+    let root = paths.spec_dir();
     let Ok(entries) = fs::read_dir(&root) else {
         return out;
     };

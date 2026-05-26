@@ -9,8 +9,9 @@
 //! from `mustard_core::i18n` (W1.T1.0 — no hardcoded pt-BR strings).
 
 use crate::run::env::project_dir;
+use mustard_core::claude_paths::ClaudePaths;
 use mustard_core::fs as mfs;
-use mustard_core::i18n::{project_locale, translate, Locale};
+use mustard_core::i18n::{project_locale, translate, SupportedLocale as Locale};
 use serde_json::json;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -68,7 +69,15 @@ fn create_with_root(opts: SpecMemoryCreateOpts, project: &Path) {
         return;
     }
 
-    let spec_dir = project.join(".claude").join("spec").join(&opts.spec);
+    let spec_dir = match ClaudePaths::for_project(project)
+        .and_then(|p| p.for_spec(&opts.spec))
+    {
+        Ok(sp) => sp.dir().to_path_buf(),
+        Err(e) => {
+            emit_error("invalid spec path", &e.to_string());
+            return;
+        }
+    };
     if !spec_dir.exists() {
         emit_error("spec directory does not exist", &spec_dir.display().to_string());
         return;

@@ -19,6 +19,7 @@
 //! in `state: "error"` so the rest of the sweep still completes.
 
 use crate::util::now_iso8601;
+use mustard_core::ClaudePaths;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 
@@ -78,8 +79,15 @@ pub(crate) fn collect_claude_dirs(
 ) -> Vec<(PathBuf, ScopeKind)> {
     let mut dirs: Vec<(PathBuf, ScopeKind)> = Vec::new();
 
-    let repo_claude = repo.join(".claude");
-    dirs.push((repo_claude, ScopeKind::Repo));
+    // Every input — repo root, each subproject under `apps/*` / `packages/*`,
+    // and the user-global home — flows through `ClaudePaths::for_project` so
+    // the I1 `.claude/.claude/` guard fires at the boundary. An input that
+    // already nests is dropped from the sweep (the only failure mode of
+    // `for_project`), which is the right call: we never want to disable a
+    // settings file we built off a contaminated path.
+    if let Ok(paths) = ClaudePaths::for_project(repo) {
+        dirs.push((paths.claude_dir(), ScopeKind::Repo));
+    }
 
     if matches!(scope, "monorepo" | "all") {
         for parent in ["apps", "packages"] {
@@ -88,7 +96,12 @@ pub(crate) fn collect_claude_dirs(
             let mut subs: Vec<PathBuf> = read
                 .flatten()
                 .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
-                .map(|e| e.path().join(".claude"))
+                .filter_map(|e| {
+                    let sub_root = e.path();
+                    ClaudePaths::for_project(&sub_root)
+                        .ok()
+                        .map(|p| p.claude_dir())
+                })
                 .filter(|p| p.is_dir())
                 .collect();
             subs.sort();
@@ -100,11 +113,17 @@ pub(crate) fn collect_claude_dirs(
 
     if scope == "all" {
         if let Some(home) = home_dir() {
-            let global = home.join(".claude");
-            if confirm {
-                dirs.push((global, ScopeKind::Global));
-            } else {
-                dirs.push((global, ScopeKind::GlobalSkipped));
+            // `$HOME` is not a Mustard workspace anchor (no `mustard.json`),
+            // but `ClaudePaths::for_project` only rejects re-nested `.claude/`
+            // paths — a flat home directory is accepted and the guard still
+            // fires if `home` happens to terminate in `.claude`.
+            if let Ok(home_paths) = ClaudePaths::for_project(&home) {
+                let global = home_paths.claude_dir();
+                if confirm {
+                    dirs.push((global, ScopeKind::Global));
+                } else {
+                    dirs.push((global, ScopeKind::GlobalSkipped));
+                }
             }
         }
     }

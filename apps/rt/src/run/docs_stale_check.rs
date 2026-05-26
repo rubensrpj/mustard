@@ -38,6 +38,7 @@
 
 use crate::run::env::project_dir;
 use mustard_core::fs;
+use mustard_core::ClaudePaths;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
@@ -315,7 +316,13 @@ fn to_json(scanned: usize, errors: &[String], hits: &[Hit]) -> Value {
 /// Dispatch `mustard-rt run docs-stale-check [--from <spec>] [--strict] [--include-nested]`.
 pub fn run(from: Option<&str>, strict: bool, include_nested: bool) {
     let root = PathBuf::from(project_dir());
-    let audit_path = root.join(".claude").join(".docs-audit.json");
+    // `.docs-audit.json` is a legacy direct child of `.claude/`; route via
+    // `claude_dir()` to keep the boundary owned by `ClaudePaths`. An I1
+    // rejection collapses to an empty PathBuf — `load_audits` then reports a
+    // single scanned_errors entry and the run exits cleanly (fail-open).
+    let audit_path = ClaudePaths::for_project(&root)
+        .map(|p| p.claude_dir().join(".docs-audit.json"))
+        .unwrap_or_default();
 
     // CLI flag wins; env var is the documented equivalent.
     let include_nested = include_nested

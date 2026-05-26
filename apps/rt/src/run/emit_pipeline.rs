@@ -17,6 +17,7 @@
 
 use crate::run::env::{project_dir, session_id};
 use crate::util::now_iso8601;
+use mustard_core::claude_paths::ClaudePaths;
 use mustard_core::model::event::{
     Actor, ActorKind, HarnessEvent, SCHEMA_VERSION,
     EVENT_PIPELINE_COMPLETE, EVENT_PIPELINE_DISPATCH_FAILURE, EVENT_PIPELINE_PAUSE,
@@ -220,35 +221,55 @@ pub fn run(opts: EmitPipelineOpts) {
         let _ = crate::run::event_route::emit(&project_dir(), &alias);
     }
 
-    // Wave-2 (2026-05-21-flatten-spec-layout-and-multi-collab): keep the
-    // `### Status:` header in `.claude/spec/{spec}/spec.md` in sync with the
-    // canonical status the event store just received. Without this, two
-    // collaborators on different machines see divergent statuses (the local
-    // store says X, git says Y). Fail-open: a missing file or header is a
-    // warn, never an error — the event has already been recorded.
-    if kind_str == EVENT_PIPELINE_STATUS && should_sync_parent_header(&payload_for_header) {
+    // Sync spec.md header + meta.json whenever a pipeline.status or
+    // pipeline.stage/outcome event carries a status transition. Every
+    // transition that changes status calls sync_status on the corresponding
+    // file (parent or wave). Fail-open: errors are warnings only — the event
+    // has already been recorded.
+    if kind_str == EVENT_PIPELINE_STATUS {
         if let Some(to) = payload_for_header.get("to").and_then(Value::as_str) {
             let cwd = std::env::current_dir()
                 .unwrap_or_else(|_| std::path::PathBuf::from(project_dir()));
-            sync_spec_status_header(&cwd, &spec_name, to);
-            // Wave 3 of mustard-unification: keep `meta.json` in lock-step with
-            // the markdown header. Fail-open — a missing sidecar warns, never
-            // aborts; downstream readers fall back to the markdown parser.
-            sync_spec_meta_sidecar(&cwd, &spec_name, to, &ts);
+            let state = state_from_status_word(to);
+            // Determine target path: wave-level transitions carry a `wave` field
+            // and sync the wave's spec.md; top-level transitions sync the parent.
+            let spec_path = if let Some(wave) = payload_for_header.get("wave").and_then(Value::as_u64) {
+                wave_spec_path(&cwd, &spec_name, wave)
+            } else {
+                ClaudePaths::for_project(&cwd)
+                    .and_then(|p| p.for_spec(&spec_name))
+                    .ok()
+                    .map(|sp| sp.dir().to_path_buf())
+            };
+            if let Some(path) = spec_path {
+                if let Err(e) = crate::run::spec_scaffold::sync_status(state.stage, state.outcome, &path) {
+                    eprintln!("emit-pipeline: WARN: sync_status failed ({e}); headers may be stale");
+                }
+            }
         }
     }
 
-    // Tactical-fix 2026-05-26-harness-sync-emit-pipeline-must-update:
-    // `pipeline.wave.complete` must drive the wave's own `meta.json` to
-    // Close/Completed/CLOSE *and* bump the parent's progress fields
-    // (`currentWave`, `completedWaves`, `phase`). Without this, finished waves
-    // stay `Plan/Active/PLAN` forever and the dashboard/picker never see
-    // progress. Fail-open: missing sidecars warn but never abort.
+    // `pipeline.wave.complete`: sync the wave's spec.md + meta.json to
+    // Close/Completed AND bump the parent's progress fields. Fail-open.
     if kind_str == EVENT_PIPELINE_WAVE_COMPLETE {
         if let Some(wave) = payload_for_header.get("wave").and_then(Value::as_u64) {
             let cwd = std::env::current_dir()
                 .unwrap_or_else(|_| std::path::PathBuf::from(project_dir()));
-            sync_wave_meta_sidecar(&cwd, &spec_name, wave, &ts);
+            if let Some(wave_path) = wave_spec_path(&cwd, &spec_name, wave) {
+                if let Err(e) = crate::run::spec_scaffold::sync_status(
+                    Stage::Close,
+                    Outcome::Completed,
+                    &wave_path,
+                ) {
+                    eprintln!(
+                        "emit-pipeline: WARN: sync_status wave failed ({e}); wave headers may be stale"
+                    );
+                }
+            } else {
+                eprintln!(
+                    "emit-pipeline: WARN: no `wave-{wave}-*` directory under .claude/spec/{spec_name}; wave sync skipped"
+                );
+            }
             bump_parent_progress(&cwd, &spec_name, wave, &ts);
         }
     }
@@ -258,12 +279,14 @@ pub fn run(opts: EmitPipelineOpts) {
     // this closed spec in a future session. Fail-open: missing file is fine.
     let is_terminal = is_terminal_event(&kind_str, &payload_for_header);
     if is_terminal {
-        let state_file = std::env::current_dir()
-            .unwrap_or_else(|_| std::path::PathBuf::from(project_dir()))
-            .join(".claude")
-            .join(".pipeline-states")
-            .join(format!("{spec_name}.json"));
-        let _ = std::fs::remove_file(&state_file);
+        let cwd = std::env::current_dir()
+            .unwrap_or_else(|_| std::path::PathBuf::from(project_dir()));
+        if let Ok(paths) = ClaudePaths::for_project(&cwd) {
+            let state_file = paths
+                .pipeline_states_dir()
+                .join(format!("{spec_name}.json"));
+            let _ = std::fs::remove_file(&state_file);
+        }
     }
 }
 
@@ -276,11 +299,13 @@ pub fn run(opts: EmitPipelineOpts) {
 /// the conservative outcome on missing data is to block (not allow). Callers
 /// can opt out via `--allow-no-qa`.
 fn qa_result_passed(cwd: &Path, spec: &str) -> bool {
-    let events_dir = cwd
-        .join(".claude")
-        .join("spec")
-        .join(spec)
-        .join(".events");
+    let events_dir = ClaudePaths::for_project(cwd)
+        .and_then(|p| p.for_spec(spec))
+        .ok()
+        .map_or_else(
+            || ClaudePaths::compose_unchecked(cwd).spec_dir().join(spec).join(".events"),
+            |sp| sp.dir().join(".events"),
+        );
     let mut events =
         mustard_core::projection::read_harness_events_from_ndjson_dir(&events_dir);
     // Chronological order — last matching event wins (mirrors `close_gate`).
@@ -328,14 +353,26 @@ fn is_terminal_event(kind: &str, payload: &Value) -> bool {
     false
 }
 
-/// Decide whether a `pipeline.status` event should sync the **parent**
-/// `spec.md` header. A payload carrying `"wave": N` describes a wave-level
-/// transition inside a wave-plan and MUST NOT mutate the parent header —
-/// the wave's own `wave-N-{role}/spec.md` is managed directly by the
-/// orchestrator. Only top-level (parent) transitions, which omit `wave`,
-/// reach the header.
-fn should_sync_parent_header(payload: &Value) -> bool {
-    payload.get("wave").is_none()
+/// Resolve the `wave-{N}-*` directory path for a spec. Returns `None` when
+/// the spec directory does not exist or no matching wave subdirectory is found.
+fn wave_spec_path(cwd: &Path, spec: &str, wave: u64) -> Option<std::path::PathBuf> {
+    let spec_dir = ClaudePaths::for_project(cwd)
+        .and_then(|p| p.for_spec(spec))
+        .ok()?
+        .dir()
+        .to_path_buf();
+    if !spec_dir.is_dir() {
+        return None;
+    }
+    let prefix = format!("wave-{wave}-");
+    std::fs::read_dir(&spec_dir)
+        .ok()?
+        .flatten()
+        .find(|e| {
+            let name = e.file_name();
+            name.to_string_lossy().starts_with(&prefix) && e.path().is_dir()
+        })
+        .map(|e| e.path())
 }
 
 /// Set `legacy_alias = true` on an event payload. A non-object payload (e.g.
@@ -457,97 +494,6 @@ fn state_from_status_word(to: &str) -> SpecState {
     SpecState::new(stage, Outcome::Active, Flags::default()).unwrap_or(fallback)
 }
 
-/// Wave 3 of mustard-unification: refresh `.claude/spec/{spec}/meta.json` so it
-/// agrees with the freshly emitted `pipeline.status: <to>` event. Reads the
-/// existing sidecar when present (so unknown forward-compat fields under `raw`
-/// survive), patches the lifecycle fields, and writes it back atomically.
-/// Fail-open: a missing sidecar is treated as "create from the status alone";
-/// a write failure warns on stderr but never propagates.
-fn sync_spec_meta_sidecar(cwd: &Path, spec: &str, to: &str, ts: &str) {
-    let spec_dir = cwd.join(".claude").join("spec").join(spec);
-    // Only refresh the sidecar when the spec directory already exists. A
-    // `pipeline.status` event for a spec without an on-disk presence (e.g.
-    // an archival back-fill against a moved spec, deep-refactor W4) must
-    // never resurrect the directory just to drop a `meta.json` inside.
-    if !spec_dir.is_dir() {
-        return;
-    }
-    let path = spec_dir.join("meta.json");
-    let state = state_from_status_word(to);
-    let stage = spec::stage_label(state.stage).to_string();
-    let outcome = spec::outcome_label(state.outcome).to_string();
-
-    // Preserve unknown forward-compat fields by reading the existing sidecar
-    // when one is present.
-    let mut meta = read_meta(&path).unwrap_or_default();
-    meta.stage = Some(stage);
-    meta.outcome = Some(outcome);
-    meta.checkpoint = Some(ts.to_string());
-
-    if let Err(e) = write_meta(&path, &meta) {
-        eprintln!(
-            "emit-pipeline: WARN: could not write {} ({e}); meta.json may be stale",
-            path.display()
-        );
-    }
-}
-
-/// Tactical-fix 2026-05-26: update `wave-{N}-*/meta.json` to
-/// `Close / Completed / CLOSE` on a `pipeline.wave.complete` event.
-///
-/// The wave's directory carries a role suffix the dispatcher does not know
-/// (`wave-1-rt`, `wave-3-cli`, …). We glob the parent spec dir for entries
-/// starting with `wave-{N}-` via `read_dir` (no globset dep) and take the
-/// first match.
-///
-/// Fail-open: a missing spec dir, missing wave dir, unreadable sidecar, or
-/// write failure all warn on stderr and return without propagating.
-fn sync_wave_meta_sidecar(cwd: &Path, spec: &str, wave: u64, ts: &str) {
-    let spec_dir = cwd.join(".claude").join("spec").join(spec);
-    if !spec_dir.is_dir() {
-        return;
-    }
-    let prefix = format!("wave-{wave}-");
-    let entries = match std::fs::read_dir(&spec_dir) {
-        Ok(it) => it,
-        Err(e) => {
-            eprintln!(
-                "emit-pipeline: WARN: could not read {} ({e}); wave meta.json may be stale",
-                spec_dir.display()
-            );
-            return;
-        }
-    };
-    let mut wave_dir: Option<std::path::PathBuf> = None;
-    for entry in entries.flatten() {
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-        if name.starts_with(&prefix) && entry.path().is_dir() {
-            wave_dir = Some(entry.path());
-            break;
-        }
-    }
-    let Some(wave_dir) = wave_dir else {
-        eprintln!(
-            "emit-pipeline: WARN: no `wave-{wave}-*` directory under {}; wave meta.json may be stale",
-            spec_dir.display()
-        );
-        return;
-    };
-    let path = wave_dir.join("meta.json");
-    let mut meta = read_meta(&path).unwrap_or_default();
-    meta.stage = Some(spec::stage_label(Stage::Close).to_string());
-    meta.outcome = Some(spec::outcome_label(Outcome::Completed).to_string());
-    meta.phase = Some("CLOSE".to_string());
-    meta.checkpoint = Some(ts.to_string());
-
-    if let Err(e) = write_meta(&path, &meta) {
-        eprintln!(
-            "emit-pipeline: WARN: could not write {} ({e}); wave meta.json may be stale",
-            path.display()
-        );
-    }
-}
 
 /// Tactical-fix 2026-05-26: bump parent `meta.json` progress fields on a
 /// `pipeline.wave.complete` event. Sets:
@@ -564,7 +510,13 @@ fn sync_wave_meta_sidecar(cwd: &Path, spec: &str, wave: u64, ts: &str) {
 /// Fail-open: a missing spec dir, missing/unparseable sidecar, or write
 /// failure all warn on stderr and return without propagating.
 fn bump_parent_progress(cwd: &Path, spec: &str, wave: u64, ts: &str) {
-    let spec_dir = cwd.join(".claude").join("spec").join(spec);
+    let Some(spec_dir) = ClaudePaths::for_project(cwd)
+        .and_then(|p| p.for_spec(spec))
+        .ok()
+        .map(|sp| sp.dir().to_path_buf())
+    else {
+        return;
+    };
     if !spec_dir.is_dir() {
         return;
     }
@@ -619,7 +571,13 @@ fn bump_parent_progress(cwd: &Path, spec: &str, wave: u64, ts: &str) {
 /// the module-level docs). A missing file warns and returns; the event has
 /// already been recorded so a stale header is non-fatal.
 fn sync_spec_status_header(cwd: &Path, spec: &str, to: &str) {
-    let path = cwd.join(".claude").join("spec").join(spec).join("spec.md");
+    let Some(path) = ClaudePaths::for_project(cwd)
+        .and_then(|p| p.for_spec(spec))
+        .ok()
+        .map(|sp| sp.spec_md_path())
+    else {
+        return;
+    };
     if !path.exists() {
         eprintln!(
             "emit-pipeline: WARN: cannot read {}; skipping header sync",
@@ -1060,30 +1018,13 @@ mod tests {
     // -----------------------------------------------------------------------
     // Parent-vs-wave header sync gate (regression: 2026-05-23, wave-level
     // close events were rewriting the parent spec.md header).
+    //
+    // The three `should_sync_parent_header` tests were removed when the gate
+    // moved into `spec_scaffold::sync_status` (the wave-vs-parent decision is
+    // now driven by the path picked in the dispatch site, not a separate
+    // boolean helper). The flow is exercised end-to-end by the round-trip
+    // test below + the wave-meta tests further down.
     // -----------------------------------------------------------------------
-
-    /// A `pipeline.status` payload carrying a `wave` field is a wave-level
-    /// transition and MUST NOT trigger a parent-header rewrite.
-    #[test]
-    fn should_sync_parent_header_false_when_payload_has_wave() {
-        let p = json!({"from":"approved","to":"completed","wave":5});
-        assert!(!super::should_sync_parent_header(&p));
-    }
-
-    /// A `pipeline.status` payload without a `wave` field is a top-level
-    /// (parent) transition — sync proceeds normally.
-    #[test]
-    fn should_sync_parent_header_true_when_payload_omits_wave() {
-        let p = json!({"from":"draft","to":"approved"});
-        assert!(super::should_sync_parent_header(&p));
-    }
-
-    /// `Value::Null` (a `pipeline.status` event with no payload at all) is
-    /// treated as a parent transition — sync proceeds.
-    #[test]
-    fn should_sync_parent_header_true_on_null_payload() {
-        assert!(super::should_sync_parent_header(&Value::Null));
-    }
 
     /// A legacy header is rewritten to the canonical form and re-parses to the
     /// requested status; body lines are preserved.
@@ -1103,37 +1044,12 @@ mod tests {
 
     // -----------------------------------------------------------------------
     // Tactical-fix 2026-05-26: pipeline.wave.complete drives meta-sync
+    //
+    // `sync_wave_meta_sidecar` was inlined into `spec_scaffold::sync_status`
+    // during the W2-residuals sweep; the wave-meta write is now exercised
+    // through the higher-level `bump_parent_progress` regression below + the
+    // end-to-end projection tests in `tests/pipeline_state_projection_test.rs`.
     // -----------------------------------------------------------------------
-
-    /// `sync_wave_meta_sidecar` rewrites `wave-N-*/meta.json` to
-    /// `Close / Completed / CLOSE` and stamps the checkpoint.
-    #[test]
-    fn wave_complete_updates_wave_meta() {
-        let dir = tempdir().unwrap();
-        let wave_dir = dir
-            .path()
-            .join(".claude")
-            .join("spec")
-            .join("foo")
-            .join("wave-1-rt");
-        std::fs::create_dir_all(&wave_dir).unwrap();
-        let meta_path = wave_dir.join("meta.json");
-        std::fs::write(
-            &meta_path,
-            br#"{"stage":"Plan","outcome":"Active","phase":"PLAN","scope":null,"lang":null,"checkpoint":null}"#,
-        )
-        .unwrap();
-
-        let ts = "2026-05-26T00:00:00Z";
-        super::sync_wave_meta_sidecar(dir.path(), "foo", 1, ts);
-
-        let body = std::fs::read_to_string(&meta_path).unwrap();
-        let v: Value = serde_json::from_str(&body).unwrap();
-        assert_eq!(v["stage"], json!("Close"));
-        assert_eq!(v["outcome"], json!("Completed"));
-        assert_eq!(v["phase"], json!("CLOSE"));
-        assert_eq!(v["checkpoint"], json!(ts));
-    }
 
     /// `bump_parent_progress` sets `currentWave` + extends `completedWaves`
     /// (dedupe + sort) and picks `EXECUTE` vs `CLOSE` based on `totalWaves`.

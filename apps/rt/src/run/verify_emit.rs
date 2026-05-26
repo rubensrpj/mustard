@@ -12,6 +12,7 @@
 use crate::run::env;
 use mustard_core::store::sqlite_store::SqliteEventStore;
 use mustard_core::model::event::HarnessEvent;
+use mustard_core::ClaudePaths;
 use serde_json::Value;
 
 /// Parse a duration string (`30s`, `1m`, `500ms`, `2h`, or a bare ms integer)
@@ -142,7 +143,15 @@ pub fn run(
             std::process::exit(1);
         }
     };
-    let specs_root = std::path::Path::new(&project).join(".claude").join("spec");
+    let specs_root = match ClaudePaths::for_project(std::path::Path::new(&project)) {
+        Ok(paths) => paths.spec_dir(),
+        Err(_) => {
+            if !args.quiet {
+                eprintln!("[verify-emit] project path rejected by ClaudePaths guard");
+            }
+            std::process::exit(1);
+        }
+    };
     if let Some(spec) = args.spec.as_deref() {
         let dir = specs_root.join(spec).join(".events");
         events.extend(mustard_core::projection::read_harness_events_from_ndjson_dir(&dir));

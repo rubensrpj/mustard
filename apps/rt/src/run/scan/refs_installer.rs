@@ -23,6 +23,7 @@
 //! return an empty / partially-populated report — never a panic.
 
 use mustard_core::fs as mfs;
+use mustard_core::ClaudePaths;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
@@ -175,6 +176,12 @@ pub fn install_refs(stack: &DetectedStack, target_root: &Path) -> InstallReport 
         // No templates shipped (custom install layout) — fail open, empty report.
         return report;
     };
+    let Ok(target_paths) = ClaudePaths::for_project(target_root) else {
+        report
+            .errors
+            .push(format!("invalid target root {}", target_root.display()));
+        return report;
+    };
 
     let entries = match mfs::read_dir(&templates_dir) {
         Ok(e) => e,
@@ -219,7 +226,7 @@ pub fn install_refs(stack: &DetectedStack, target_root: &Path) -> InstallReport 
             .and_then(|s| s.to_str())
             .unwrap_or("ref");
         let cmd = target_subdir(stem);
-        let target_dir = target_root.join(".claude").join("refs").join(cmd);
+        let target_dir = target_paths.refs_dir().join(cmd);
         if let Err(e) = std::fs::create_dir_all(&target_dir) {
             report
                 .errors

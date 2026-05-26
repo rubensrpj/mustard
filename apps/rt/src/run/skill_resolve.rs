@@ -32,6 +32,7 @@
 use crate::run::env::project_dir;
 use mustard_core::fs as mfs;
 use mustard_core::skill::frontmatter::{parse as parse_fm, SkillFrontmatter, SkillScope, SkillTag};
+use mustard_core::ClaudePaths;
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::BTreeSet;
@@ -136,10 +137,14 @@ fn discover_skills(project: &Path, subproject: Option<&str>) -> Vec<(PathBuf, Sk
     // 1. Foundation skills shipped with the CLI templates.
     roots.push(project.join("apps").join("cli").join("templates").join("skills"));
     // Also the installed location (`.claude/skills/` at the repo root).
-    roots.push(project.join(".claude").join("skills"));
+    if let Ok(paths) = ClaudePaths::for_project(project) {
+        roots.push(paths.skills_dir());
+    }
     // 2. Subproject-specific skills.
     if let Some(sub) = subproject {
-        roots.push(project.join(sub).join(".claude").join("skills"));
+        if let Ok(sub_paths) = ClaudePaths::for_project(project.join(sub)) {
+            roots.push(sub_paths.skills_dir());
+        }
     }
 
     let mut seen: BTreeSet<String> = BTreeSet::new();
@@ -193,7 +198,10 @@ fn tokenise(intent: &str) -> Vec<String> {
 /// Cross intent tokens against `entity-registry.json` to surface entity
 /// hits the skill might target.
 fn entity_names_for_intent(project: &Path, tokens: &[String]) -> Vec<String> {
-    let registry_path = project.join(".claude").join("entity-registry.json");
+    let Ok(paths) = ClaudePaths::for_project(project) else {
+        return Vec::new();
+    };
+    let registry_path = paths.entity_registry_json_path();
     let Ok(text) = mfs::read_to_string(&registry_path) else {
         return Vec::new();
     };
@@ -219,7 +227,10 @@ fn entity_names_for_intent(project: &Path, tokens: &[String]) -> Vec<String> {
 /// Read cluster labels for the subproject from `entity-registry.json`. Empty
 /// when the registry is absent or the subproject has no clusters.
 fn cluster_labels_for_subproject(project: &Path, subproject: Option<&str>) -> Vec<String> {
-    let registry_path = project.join(".claude").join("entity-registry.json");
+    let Ok(paths) = ClaudePaths::for_project(project) else {
+        return Vec::new();
+    };
+    let registry_path = paths.entity_registry_json_path();
     let Ok(text) = mfs::read_to_string(&registry_path) else {
         return Vec::new();
     };

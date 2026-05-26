@@ -26,6 +26,7 @@
 
 use mustard_core::fs;
 use mustard_core::spec;
+use mustard_core::ClaudePaths;
 use mustard_core::{Meta, write_meta};
 use serde::Serialize;
 use serde_json::json;
@@ -235,9 +236,34 @@ fn strip_h3_key(line: &str, key: &str) -> Option<String> {
 /// only overwritten with `--force`.
 pub fn run(opts: MigrateToMetaOpts) {
     let cwd = env_project_dir();
-    let root = opts.root.clone().unwrap_or_else(|| {
-        Path::new(&cwd).join(".claude").join("spec")
-    });
+    let root = match opts.root.clone() {
+        Some(p) => p,
+        None => match ClaudePaths::for_project(Path::new(&cwd)) {
+            Ok(paths) => paths.spec_dir(),
+            Err(_) => {
+                // Invalid project root (I1 guard) — emit an empty report and bail.
+                let report = MigrationReport {
+                    ran_at: now_iso8601(),
+                    root: String::new(),
+                    total: 0,
+                    written: 0,
+                    already_present: 0,
+                    skipped_no_header: 0,
+                    errors: 1,
+                    headers_stripped: 0,
+                    files: vec![FileRecord {
+                        path: cwd.to_string(),
+                        action: "error",
+                        reason: Some("invalid project root (claude-paths guard)".to_string()),
+                    }],
+                };
+                let body = serde_json::to_string_pretty(&report)
+                    .unwrap_or_else(|_| json!({"error":"serialize failed"}).to_string());
+                println!("{body}");
+                return;
+            }
+        },
+    };
 
     let files = collect_md(&root);
 

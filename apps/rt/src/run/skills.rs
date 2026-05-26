@@ -87,10 +87,10 @@ fn collect_skills_at(skills_dir: &Path) -> Vec<PathBuf> {
 /// Unified skill discovery across `templates/skills`, `.claude/skills`, and
 /// one level of `<sub>/.claude/skills` (JS `discoverSkills`). Sorted by name.
 fn discover_skills(project_dir: &Path) -> Vec<Skill> {
-    let mut candidates = vec![
-        project_dir.join("templates").join("skills"),
-        project_dir.join(".claude").join("skills"),
-    ];
+    let mut candidates = vec![project_dir.join("templates").join("skills")];
+    if let Ok(paths) = ClaudePaths::for_project(project_dir) {
+        candidates.push(paths.skills_dir());
+    }
     if let Ok(entries) = fs::read_dir(project_dir) {
         for entry in entries {
             if !entry.is_dir {
@@ -100,7 +100,9 @@ fn discover_skills(project_dir: &Path) -> Vec<Skill> {
             if name.starts_with('.') || name == "node_modules" {
                 continue;
             }
-            candidates.push(entry.path.join(".claude").join("skills"));
+            if let Ok(sub_paths) = ClaudePaths::for_project(&entry.path) {
+                candidates.push(sub_paths.skills_dir());
+            }
         }
     }
     let mut found: BTreeMap<String, Skill> = BTreeMap::new();
@@ -674,7 +676,10 @@ fn extract_description(fm: &str) -> Option<String> {
 /// Glob `<root>/.claude/skills/*/SKILL.md`, parse each YAML frontmatter, and
 /// return a sorted list of [`SkillListEntry`].
 fn list_skills(root: &Path) -> Vec<SkillListEntry> {
-    let skills_dir = root.join(".claude").join("skills");
+    let Ok(paths) = ClaudePaths::for_project(root) else {
+        return Vec::new();
+    };
+    let skills_dir = paths.skills_dir();
     let mut entries: Vec<SkillListEntry> = Vec::new();
 
     let skill_paths = collect_skills_at(&skills_dir);

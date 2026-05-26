@@ -257,12 +257,25 @@ impl SqliteEventStore {
     /// The path is resolved as: the value of the `MUSTARD_DB_PATH` environment
     /// variable if set, otherwise `{project_dir}/.claude/.harness/mustard.db`.
     ///
+    /// **Self-crate guard:** when `CARGO_MANIFEST_DIR` is set (i.e. the binary
+    /// is running under `cargo test` / `cargo run` from within a workspace
+    /// crate) AND `project_dir` canonicalises to that same path, the store
+    /// open is refused with [`Error::NotFound`]. Without this guard, in-crate
+    /// test runs would leak `<crate>/.claude/.harness/mustard.db` on disk
+    /// (umbrella AC-G2). Production callers pass the real workspace root
+    /// from `MUSTARD_WORKSPACE_ROOT`, which never matches `CARGO_MANIFEST_DIR`
+    /// at installed-binary runtime.
+    ///
     /// # Errors
     ///
-    /// Same as [`SqliteEventStore::new`].
+    /// Same as [`SqliteEventStore::new`], plus the self-crate refusal above.
     pub fn for_project(project_dir: impl AsRef<Path>) -> Result<Self> {
+        let project = project_dir.as_ref();
+        if project_is_own_crate(project) {
+            return Err(Error::NotFound("self-crate store open refused".into()));
+        }
         let env_override = std::env::var(DB_PATH_ENV).ok();
-        Self::new(resolve_db_path(project_dir.as_ref(), env_override.as_deref()))
+        Self::new(resolve_db_path(project, env_override.as_deref()))
     }
 
     /// The path of the backing database file.
@@ -1048,6 +1061,20 @@ fn resolve_db_path(project_dir: &Path, env_override: Option<&str>) -> PathBuf {
             .join(HARNESS_DIR)
             .join(DB_FILE),
     }
+}
+
+/// Self-crate guard used by [`SqliteEventStore::for_project`]: returns `true`
+/// when `project_dir` canonicalises to `CARGO_MANIFEST_DIR`. That env var is
+/// set by `cargo` only during build/test of a workspace crate, so it is a
+/// reliable test-context fingerprint; at installed-binary runtime it is
+/// absent and the guard never fires. Fail-open: any env read or canonicalise
+/// failure returns `false` (the store opens as before).
+fn project_is_own_crate(project_dir: &Path) -> bool {
+    let Ok(manifest) = std::env::var("CARGO_MANIFEST_DIR") else { return false; };
+    let manifest_path = PathBuf::from(&manifest);
+    let canon_manifest = manifest_path.canonicalize().unwrap_or(manifest_path);
+    let canon_project = project_dir.canonicalize().unwrap_or_else(|_| project_dir.to_path_buf());
+    canon_project == canon_manifest
 }
 
 // `parse_actor_kind` was used by the legacy `events`-table reader (which

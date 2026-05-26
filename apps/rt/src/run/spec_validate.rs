@@ -5,12 +5,14 @@
 //! path, reconstructs a [`SpecInput`], and runs the contract validator.
 //! Emits a JSON report. Exit codes: `0` ok, `2` violations, `1` IO failure.
 
+use crate::run::env::project_dir;
 use crate::run::spec_sections::is_heading;
 use mustard_core::fs as mfs;
 use mustard_core::meta::read_meta_beside;
 use mustard_core::spec::contract::{
     self, AcceptanceCriterion, SectionBody, SpecInput, PLAN_SECTIONS, PRD_SECTIONS,
 };
+use mustard_core::ClaudePaths;
 use mustard_core::{model::view::Phase, Outcome, Scope, Stage};
 use serde_json::json;
 use std::path::{Path, PathBuf};
@@ -39,6 +41,14 @@ pub fn run(spec_path: &Path, json_out: bool) {
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_default();
 
+    // Soft-warning: compare spec.lang (from meta.json) with mustard.json#specLang.
+    // Fail-open per `core-fail-open-error`: missing/unreadable mustard.json is silent.
+    let spec_lang = meta.as_ref().and_then(|m| m.lang.as_deref());
+    let project_root = PathBuf::from(project_dir());
+    if let Some(warn) = check_spec_lang_against_mustard_json(spec_lang, &project_root) {
+        eprintln!("{warn}");
+    }
+
     let input = build_input_from_files(&slug, &spec_text, meta.as_ref());
     match contract::validate(&input) {
         Ok(()) => {
@@ -56,6 +66,38 @@ pub fn run(spec_path: &Path, json_out: bool) {
     }
 }
 
+/// Read `specLang` from `<project_root>/mustard.json`. Fail-open: missing file,
+/// IO error, malformed JSON, or absent key all yield `None`. Mirrors the
+/// `read_mustard_tone` reader in `spec_draft.rs`.
+fn read_mustard_spec_lang(project_root: &Path) -> Option<String> {
+    let path = project_root.join("mustard.json");
+    let text = std::fs::read_to_string(&path).ok()?;
+    let value: serde_json::Value = serde_json::from_str(&text).ok()?;
+    value
+        .get("specLang")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string)
+}
+
+/// Soft-warning helper. Returns `Some(line)` when both sides resolve and
+/// disagree; `None` otherwise (matching pair, missing `mustard.json`, missing
+/// `specLang`, or missing `spec.lang`). The returned string is meant to be
+/// written to stderr — it never blocks validation.
+fn check_spec_lang_against_mustard_json(
+    spec_lang: Option<&str>,
+    project_root: &Path,
+) -> Option<String> {
+    let spec = spec_lang?;
+    let mustard = read_mustard_spec_lang(project_root)?;
+    if spec.eq_ignore_ascii_case(&mustard) {
+        None
+    } else {
+        Some(format!(
+            "WARN: spec.lang={spec} differs from mustard.json#specLang={mustard}"
+        ))
+    }
+}
+
 /// Resolve `--spec PATH` to `(spec.md, spec_dir)`. Accepts a directory or a
 /// direct `spec.md` path.
 fn resolve_paths(spec_path: &Path) -> (PathBuf, PathBuf) {
@@ -68,8 +110,16 @@ fn resolve_paths(spec_path: &Path) -> (PathBuf, PathBuf) {
         (spec_path.to_path_buf(), dir)
     } else {
         // Treat as a slug under `.claude/spec/`.
+        // ClaudePaths::for_spec failure (empty slug / traversal / separator)
+        // degrades to an empty PathBuf — the downstream `read_to_string` will
+        // surface "could not read spec.md" with that empty target.
         let project = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        let dir = project.join(".claude").join("spec").join(spec_path);
+        let slug = spec_path.to_string_lossy();
+        let dir = ClaudePaths::for_project(&project)
+            .ok()
+            .and_then(|cp| cp.for_spec(slug.as_ref()).ok())
+            .map(|sp| sp.dir().to_path_buf())
+            .unwrap_or_default();
         (dir.join("spec.md"), dir)
     }
 }
@@ -254,6 +304,70 @@ mod tests {
         assert_eq!(acs.len(), 1);
         assert_eq!(acs[0].id, "AC-1");
         assert_eq!(acs[0].command, "rtk cargo build");
+    }
+
+    #[test]
+    fn spec_lang_match_emits_no_warning() {
+        let dir = tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("mustard.json"),
+            br#"{"specLang":"pt-BR"}"#,
+        )
+        .unwrap();
+        let warn = check_spec_lang_against_mustard_json(Some("pt-BR"), dir.path());
+        assert!(warn.is_none(), "matching lang should not warn, got {warn:?}");
+    }
+
+    #[test]
+    fn spec_lang_mismatch_emits_warning_with_both_values() {
+        let dir = tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("mustard.json"),
+            br#"{"specLang":"en-US"}"#,
+        )
+        .unwrap();
+        let warn = check_spec_lang_against_mustard_json(Some("pt-BR"), dir.path())
+            .expect("mismatch should produce warning");
+        assert!(warn.contains("pt-BR"), "warning missing spec value: {warn}");
+        assert!(warn.contains("en-US"), "warning missing mustard value: {warn}");
+        assert!(warn.starts_with("WARN:"), "warning prefix missing: {warn}");
+    }
+
+    #[test]
+    fn missing_mustard_json_is_silent() {
+        let dir = tempdir().unwrap();
+        // No mustard.json written at all.
+        let warn = check_spec_lang_against_mustard_json(Some("pt-BR"), dir.path());
+        assert!(warn.is_none(), "missing mustard.json must be silent, got {warn:?}");
+    }
+
+    #[test]
+    fn malformed_mustard_json_is_silent() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("mustard.json"), b"not json at all").unwrap();
+        let warn = check_spec_lang_against_mustard_json(Some("pt-BR"), dir.path());
+        assert!(warn.is_none(), "malformed mustard.json must be silent, got {warn:?}");
+    }
+
+    #[test]
+    fn missing_spec_lang_is_silent() {
+        let dir = tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("mustard.json"),
+            br#"{"specLang":"pt-BR"}"#,
+        )
+        .unwrap();
+        // spec.lang absent → no comparison performed.
+        let warn = check_spec_lang_against_mustard_json(None, dir.path());
+        assert!(warn.is_none(), "absent spec.lang must be silent, got {warn:?}");
+    }
+
+    #[test]
+    fn missing_spec_lang_key_in_mustard_json_is_silent() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("mustard.json"), br#"{"tone":"didactic"}"#).unwrap();
+        let warn = check_spec_lang_against_mustard_json(Some("pt-BR"), dir.path());
+        assert!(warn.is_none(), "missing specLang key must be silent, got {warn:?}");
     }
 
     #[test]

@@ -48,6 +48,7 @@ use mustard_core::telemetry::model::RunAttribution;
 use mustard_core::telemetry::{writer as telemetry_writer, TelemetryStore};
 use mustard_core::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
 use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
+use mustard_core::ClaudePaths;
 use serde_json::{Map, Value, json};
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -135,8 +136,18 @@ fn now_millis() -> u128 {
 /// Mirrors the JS `data.cwd || process.cwd()`.
 fn project_dir(input: &HookInput) -> String {
     match input.cwd.as_deref() {
-        Some(cwd) if !cwd.is_empty() => cwd.to_string(),
+        Some(cwd) if !cwd.is_empty() && cwd != "." => cwd.to_string(),
         _ => ".".to_string(),
+    }
+}
+
+/// Like [`project_dir`] but returns `None` when no valid harness cwd is
+/// supplied (avoids leaking state writes into the process cwd — the
+/// `cargo test -p mustard-rt` AC-W5.2 regression).
+fn project_dir_opt(input: &HookInput) -> Option<String> {
+    match input.cwd.as_deref() {
+        Some(cwd) if !cwd.is_empty() && cwd != "." => Some(cwd.to_string()),
+        _ => None,
     }
 }
 
@@ -332,7 +343,9 @@ fn parse_iso_millis(iso: &str) -> u128 {
 impl ToolUseCounter {
     /// The `.claude/.agent-state` directory for a project.
     fn state_dir(project_dir: &str) -> std::path::PathBuf {
-        Path::new(project_dir).join(".claude").join(".agent-state")
+        ClaudePaths::for_project(project_dir)
+            .map(|p| p.agent_state_dir())
+            .unwrap_or_default()
     }
 
     /// `SubagentStart`: create a counter file for an enforced agent type
@@ -592,10 +605,9 @@ pub struct MainContextCounter;
 impl MainContextCounter {
     /// The counter-file path.
     fn counter_path(project_dir: &str) -> std::path::PathBuf {
-        Path::new(project_dir)
-            .join(".claude")
-            .join(".agent-state")
-            .join(MAIN_COUNTER_FILE)
+        ClaudePaths::for_project(project_dir)
+            .map(|p| p.agent_state_dir().join(MAIN_COUNTER_FILE))
+            .unwrap_or_default()
     }
 
     /// Read the persisted state. Fail-open: any error → a zeroed state.
@@ -620,7 +632,10 @@ impl MainContextCounter {
 
     /// Persist the state. Fail-open.
     fn write_state(project_dir: &str, state: &MainState) {
-        let dir = Path::new(project_dir).join(".claude").join(".agent-state");
+        let Ok(paths) = ClaudePaths::for_project(Path::new(project_dir)) else {
+            return;
+        };
+        let dir = paths.agent_state_dir();
         let _ = fs::create_dir_all(&dir);
         let body = json!({
             "mainCount": state.main_count,
@@ -642,8 +657,16 @@ impl Check for MainContextCounter {
         if mode == MainBudgetMode::Off {
             return Ok(Verdict::Allow);
         }
+        // Resolve the project root that owns the counter state file.
+        // W5 AC-W5.2: when neither `ctx` nor `input.cwd` carries a valid
+        // root, skip the counter machinery entirely — otherwise we leak a
+        // `.claude/.agent-state/main-context.counter.json` tree into the
+        // process cwd (`apps/rt/` under `cargo test`).
         let project = if ctx.project_dir.is_empty() {
-            project_dir(input)
+            match project_dir_opt(input) {
+                Some(p) => p,
+                None => return Ok(Verdict::Allow),
+            }
         } else {
             ctx.project_dir.clone()
         };

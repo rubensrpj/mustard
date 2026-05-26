@@ -19,6 +19,7 @@
 use crate::run::env::{project_dir, session_id};
 use crate::run::event_projections::{pipeline_state_for_spec, PipelineStateView};
 use crate::util::now_iso8601;
+use mustard_core::claude_paths::ClaudePaths;
 use mustard_core::fs as mfs;
 use mustard_core::model::event::{
     Actor, ActorKind, HarnessEvent, PipelineDispatchFailurePayload, SCHEMA_VERSION,
@@ -110,7 +111,15 @@ pub struct ResumeBootstrap {
 /// always exits 0 and prints a JSON document on stdout.
 pub fn run(spec: &str, json_flag: bool) {
     let project = PathBuf::from(project_dir());
-    let spec_dir = project.join(".claude").join("spec").join(spec);
+    let spec_dir = ClaudePaths::for_project(&project)
+        .and_then(|p| p.for_spec(spec))
+        .map(|sp| sp.dir().to_path_buf())
+        .unwrap_or_else(|_| {
+            // Fail-open: I1 guard rejected the root, OR `spec` failed slug
+            // validation. Use `compose_unchecked` so the spec-dir path still
+            // flows through the canonical accessor surface.
+            ClaudePaths::compose_unchecked(&project).spec_dir().join(spec)
+        });
 
     // Emit a fresh `pipeline.scope` event so `current_spec` in subsequent
     // calls within the same session returns this spec (not a stale closed one).

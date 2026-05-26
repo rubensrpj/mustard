@@ -58,6 +58,7 @@
 
 use crate::run::blob_spill::{maybe_spill, BlobRef, SpillOutcome};
 use crate::util::now_iso8601;
+use mustard_core::claude_paths::ClaudePaths;
 use mustard_core::fs;
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -65,6 +66,19 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::Instant;
+
+/// Detect whether `project` resolves to the `mustard-rt` crate's own source
+/// directory — set by `cargo test` via `CARGO_MANIFEST_DIR`. Treating that
+/// as "no harness available" prevents in-crate test runs from leaking a
+/// `apps/rt/.claude/` tree (umbrella AC-G2). Fail-open: any env read failure
+/// returns `false`.
+fn project_is_own_crate(project: &Path) -> bool {
+    let Ok(manifest) = std::env::var("CARGO_MANIFEST_DIR") else { return false; };
+    let manifest_path = std::path::PathBuf::from(&manifest);
+    let canon_manifest = manifest_path.canonicalize().unwrap_or(manifest_path);
+    let canon_project = project.canonicalize().unwrap_or_else(|_| project.to_path_buf());
+    canon_project == canon_manifest
+}
 
 /// Resolve the per-spec event directory under `<project>/.claude/spec/{name}/[wave-N-{role}/].events/`.
 ///
@@ -76,14 +90,45 @@ use std::time::Instant;
 #[must_use]
 pub fn event_dir(project: &Path, spec: Option<&str>, wave_role: Option<&str>, session_slug: &str) -> PathBuf {
     if let Some(spec_name) = spec.filter(|s| !s.is_empty()) {
-        let mut base = project.join(".claude").join("spec").join(spec_name);
-        if let Some(wr) = wave_role.filter(|s| !s.is_empty()) {
-            base = base.join(wr);
-        }
+        // Prefer the typed ClaudePaths accessor for the canonical
+        // `<project>/.claude/spec/<name>/[<wave>/].events/` layout. On I1
+        // guard rejection (an upstream caller handed us a `.claude`-nested
+        // path) fall back to the manual composition so the writer remains
+        // fail-open — telemetry must never block a real event.
+        let base = ClaudePaths::for_project(project)
+            .and_then(|p| p.for_spec(spec_name))
+            .ok()
+            .map(|sp| {
+                if let Some(wr) = wave_role.filter(|s| !s.is_empty()) {
+                    if let Ok(wp) = sp.for_wave(wr) {
+                        return wp.dir().to_path_buf();
+                    }
+                    // Wave slug failed validation — degrade to spec root +
+                    // raw slug so the writer still produces a stable path.
+                    return sp.dir().join(wr);
+                }
+                sp.dir().to_path_buf()
+            })
+            .unwrap_or_else(|| {
+                // I1 guard rejected the project root — keep telemetry alive
+                // via the unchecked fallback handle so the canonical
+                // accessor surface still materialises the path.
+                let cp = ClaudePaths::compose_unchecked(project);
+                let mut p = cp.spec_dir().join(spec_name);
+                if let Some(wr) = wave_role.filter(|s| !s.is_empty()) {
+                    p = p.join(wr);
+                }
+                p
+            });
         base.join(".events")
     } else {
-        project
-            .join(".claude")
+        // Session fallback: `<project>/.claude/.session/<slug>/.events/`. The
+        // `.session/` directory is not exposed via `ClaudePaths` (it is the
+        // sole consumer here, not Mustard-owned), so we reach for
+        // `claude_dir()` and append manually.
+        ClaudePaths::for_project(project)
+            .map(|p| p.claude_dir())
+            .unwrap_or_else(|_| ClaudePaths::compose_unchecked(project).claude_dir())
             .join(".session")
             .join(session_slug)
             .join(".events")
@@ -172,6 +217,14 @@ fn write_event_inner(
     ts_override: Option<&str>,
 ) -> std::io::Result<WriteOutcome> {
     let start = Instant::now();
+    if project_is_own_crate(project) {
+        return Ok(WriteOutcome {
+            bytes_written: 0,
+            spilled_to_blob: false,
+            duration_ns: 0,
+            path: PathBuf::new(),
+        });
+    }
     let dir = event_dir(project, spec, wave_role, session_slug);
     fs::create_dir_all(&dir).map_err(std::io::Error::other)?;
     let path = dir.join(writer_filename());

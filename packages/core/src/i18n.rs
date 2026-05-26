@@ -246,6 +246,84 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
         ("prompt.continue", Locale::PtBr) => "Continuar?",
         ("prompt.continue", Locale::EnUs) => "Continue?",
 
+        // Spec narrative headings — canonical translation table mirrors
+        // `refs/feature/spec-language.md § Header Translation Table` and the
+        // section-key map in `apps/rt/src/run/spec_sections.rs::variants`.
+        ("heading.spec.context", Locale::PtBr) => "Contexto",
+        ("heading.spec.context", Locale::EnUs) => "Context",
+        ("heading.spec.users", Locale::PtBr) => "Usuários/Stakeholders",
+        ("heading.spec.users", Locale::EnUs) => "Users/Stakeholders",
+        ("heading.spec.metric", Locale::PtBr) => "Métrica de sucesso",
+        ("heading.spec.metric", Locale::EnUs) => "Success Metric",
+        ("heading.spec.non_goals", Locale::PtBr) => "Não-Objetivos",
+        ("heading.spec.non_goals", Locale::EnUs) => "Non-Goals",
+        ("heading.spec.ac", Locale::PtBr) => "Critérios de Aceitação",
+        ("heading.spec.ac", Locale::EnUs) => "Acceptance Criteria",
+        ("heading.spec.ac_list", Locale::PtBr) => "Critérios de Aceitação",
+        ("heading.spec.ac_list", Locale::EnUs) => "Acceptance Criteria",
+        ("heading.spec.tasks", Locale::PtBr) => "Tarefas",
+        ("heading.spec.tasks", Locale::EnUs) => "Tasks",
+        ("heading.spec.files", Locale::PtBr) => "Arquivos",
+        ("heading.spec.files", Locale::EnUs) => "Files",
+        ("heading.spec.limits", Locale::PtBr) => "Limites",
+        ("heading.spec.limits", Locale::EnUs) => "Boundaries",
+        ("heading.spec.summary", Locale::PtBr) => "Resumo",
+        ("heading.spec.summary", Locale::EnUs) => "Summary",
+
+        // Memory-note section headings (rendered by `spec_memory::render_template`).
+        ("heading.memory.origin", Locale::PtBr) => "Origem",
+        ("heading.memory.origin", Locale::EnUs) => "Origin",
+        ("heading.memory.applies_to", Locale::PtBr) => "Aplica-se a",
+        ("heading.memory.applies_to", Locale::EnUs) => "Applies to",
+        ("heading.memory.status", Locale::PtBr) => "Status",
+        ("heading.memory.status", Locale::EnUs) => "Status",
+        ("heading.memory.related", Locale::PtBr) => "Relacionado",
+        ("heading.memory.related", Locale::EnUs) => "Related",
+        ("heading.memory.principles", Locale::PtBr) => "Princípios",
+        ("heading.memory.principles", Locale::EnUs) => "Principles",
+
+        // Memory-note intro lines + index columns. The `{spec}` slot is
+        // already wikilink-wrapped here because the rendered note lives
+        // next to its parent spec; the `{wave}` slot is wrapped by the
+        // caller (it has to resolve "unknown wave" first).
+        ("memory.intro.born_during", Locale::PtBr) => "Nasceu durante [[{spec}]] na onda {wave}.",
+        ("memory.intro.born_during", Locale::EnUs) => "Born during [[{spec}]] in wave {wave}.",
+        ("memory.origin.wave_unknown", Locale::PtBr) => "wave desconhecida",
+        ("memory.origin.wave_unknown", Locale::EnUs) => "wave unknown",
+        ("memory.status.active", Locale::PtBr) => "Ativa.",
+        ("memory.status.active", Locale::EnUs) => "Active.",
+        ("memory.index.title", Locale::PtBr) => "Memória da spec {title}",
+        ("memory.index.title", Locale::EnUs) => "Spec memory — {title}",
+        ("memory.index.column.file", Locale::PtBr) => "Arquivo",
+        ("memory.index.column.file", Locale::EnUs) => "File",
+        ("memory.index.column.wave", Locale::PtBr) => "Onda",
+        ("memory.index.column.wave", Locale::EnUs) => "Wave",
+
+        // Spec-draft + section-body placeholders. EN strings use the
+        // canonical "fill in <X>." shape so a single `body.contains("fill
+        // in")` assertion can distinguish EN bodies from the PT catalogue
+        // ("Preencher …"). PT mirrors the imperative form.
+        ("placeholder.fill", Locale::PtBr) => "Preencher.",
+        ("placeholder.fill", Locale::EnUs) => "fill in.",
+        ("placeholder.fill_first_line", Locale::PtBr) => "Resuma o princípio em uma linha.",
+        ("placeholder.fill_first_line", Locale::EnUs) => "fill in the principle in one line.",
+        ("placeholder.fill_who_files", Locale::PtBr) => "Quem / quais arquivos.",
+        ("placeholder.fill_who_files", Locale::EnUs) => "fill in who / which files.",
+        ("placeholder.fill_wirelinks", Locale::PtBr) => "Wikilinks relacionados.",
+        ("placeholder.fill_wirelinks", Locale::EnUs) => "fill in related wikilinks.",
+        ("placeholder.fill_why_now", Locale::PtBr) => "Por que agora.",
+        ("placeholder.fill_why_now", Locale::EnUs) => "fill in why now.",
+        ("placeholder.fill_beneficiary", Locale::PtBr) => "Quem se beneficia.",
+        ("placeholder.fill_beneficiary", Locale::EnUs) => "fill in who benefits.",
+        ("placeholder.fill_metric", Locale::PtBr) => "Métrica de sucesso.",
+        ("placeholder.fill_metric", Locale::EnUs) => "fill in the success metric.",
+        ("placeholder.fill_excluded", Locale::PtBr) => "O que fica de fora.",
+        ("placeholder.fill_excluded", Locale::EnUs) => "fill in what stays out.",
+        ("placeholder.see_below", Locale::PtBr) => "Ver abaixo.",
+        ("placeholder.see_below", Locale::EnUs) => "See below.",
+        ("placeholder.fill_files", Locale::PtBr) => "Listar arquivos afetados.",
+        ("placeholder.fill_files", Locale::EnUs) => "fill in affected files.",
+
         // Fail-open: unknown key returns the key itself so callers always have
         // *something* to render. This is what `karpathy-guidelines` calls a
         // "safe default" — never panic on a typo in a hook.
@@ -391,6 +469,113 @@ fn strip_pt_accents(input: &str) -> String {
         out.push(replacement);
     }
     out
+}
+
+// ---------------------------------------------------------------------------
+// W7 type aliases — `SupportedLocale` (catalogue) + `UserLocale` (open BCP-47)
+// ---------------------------------------------------------------------------
+
+/// Catalogue-backed locale — the closed set Mustard ships translations for.
+///
+/// `SupportedLocale` is a type alias for the original [`Locale`] enum.  Wave 7
+/// of the deep-refactor renames the type at every callsite; this alias lets the
+/// migration land in a single wave without breaking every consumer at once.
+pub type SupportedLocale = Locale;
+
+/// User-declared BCP-47 locale from `mustard.json#specLang` or `### Lang:`.
+///
+/// Unlike [`SupportedLocale`] (closed, two variants), `UserLocale` accepts any
+/// syntactically valid BCP-47 code so users can write specs in `fr-FR`, `de-DE`,
+/// etc. Use [`UserLocale::to_supported`] to map to a [`SupportedLocale`] for
+/// banner rendering, falling back to the default when the locale is not in the
+/// catalogue.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UserLocale {
+    /// The raw BCP-47 tag as supplied by the user.
+    pub raw: String,
+}
+
+impl UserLocale {
+    /// Construct a `UserLocale` from a BCP-47 string.  No validation is
+    /// performed — any non-empty string is accepted so fail-open callers never
+    /// have to handle an error for syntactically arbitrary user input.
+    #[must_use]
+    pub fn new(raw: impl Into<String>) -> Self {
+        Self { raw: raw.into() }
+    }
+
+    /// Map to the nearest [`SupportedLocale`] catalogue entry, or
+    /// `None` when the locale is not in the Mustard catalogue.
+    #[must_use]
+    pub fn to_supported(&self) -> Option<SupportedLocale> {
+        self.raw.parse::<Locale>().ok()
+    }
+}
+
+impl fmt::Display for UserLocale {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.raw)
+    }
+}
+
+impl FromStr for UserLocale {
+    type Err = UserLocaleError;
+
+    /// Parse a BCP-47 string into a `UserLocale`.  Only rejects empty strings.
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let trimmed = s.trim();
+        if trimmed.is_empty() {
+            return Err(UserLocaleError::Empty);
+        }
+        Ok(Self { raw: trimmed.to_string() })
+    }
+}
+
+/// Errors returned by [`UserLocale::from_str`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UserLocaleError {
+    /// Empty or whitespace-only input.
+    Empty,
+}
+
+impl fmt::Display for UserLocaleError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Empty => f.write_str("locale string is empty"),
+        }
+    }
+}
+
+impl std::error::Error for UserLocaleError {}
+
+/// Resolve the project locale from `{project_dir}/.claude/mustard.json`.
+///
+/// Reads `mustard.json`, parses `lang` (or `specLang`) as a BCP-47 code, and
+/// maps it to a [`SupportedLocale`].  Fails open to [`Locale::PtBr`] on any
+/// IO, parse, or catalogue error so callers never have to handle this path.
+#[must_use]
+pub fn project_locale(project_dir: &std::path::Path) -> Locale {
+    let mustard_json = project_dir.join(".claude").join("mustard.json");
+    project_locale_from_file(&mustard_json)
+}
+
+/// Resolve the project locale from an explicit `mustard.json` path.
+///
+/// Same semantics as [`project_locale`] but lets callers supply a pre-resolved
+/// path (e.g. after a [`ClaudePaths`] walk) to avoid a second filesystem stat.
+///
+/// [`ClaudePaths`]: crate::ClaudePaths
+#[must_use]
+pub fn project_locale_from_file(path: &std::path::Path) -> Locale {
+    let text = std::fs::read_to_string(path).unwrap_or_default();
+    let v: serde_json::Value = serde_json::from_str(&text).unwrap_or(serde_json::Value::Null);
+    // Accept either `lang` or `specLang` — the deep-refactor wave standardised
+    // on `lang` but legacy `mustard.json` files may still carry `specLang`.
+    let raw = v.get("lang")
+        .or_else(|| v.get("specLang"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    raw.parse::<Locale>().unwrap_or_default()
 }
 
 /// Render a wave label given a locale + 1-based wave index.

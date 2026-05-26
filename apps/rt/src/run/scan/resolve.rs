@@ -1,8 +1,8 @@
 //! Concept-node graph resolver (Wave 4 — project-profiler).
 //!
-//! Unifies the four legacy context loaders (`skill-match`, `recipe-match`,
-//! `refs`, `context-slice`) behind a single deterministic BFS over the
-//! concept-node graph produced by Wave 3 ([`super::graph::build_index`]).
+//! Unifies the legacy context loaders (`skill-match`, `refs`, `context-slice`)
+//! behind a single deterministic BFS over the concept-node graph produced by
+//! Wave 3 ([`super::graph::build_index`]).
 //!
 //! Given a [`ResolveScope`] — `{entities, operation, layer, role}` — the
 //! resolver:
@@ -11,8 +11,7 @@
 //!    `<project>/.claude/graph/`.
 //! 2. Translates the scope into seed ids using the graph's `id → path` table:
 //!    each entity becomes a `*.entity.<slug>` seed; an explicit `[[id]]` token
-//!    in the scope is accepted verbatim; an operation slug becomes a
-//!    `*.recipe.<slug>` seed when one is in the graph.
+//!    in the scope is accepted verbatim.
 //! 3. Runs a deterministic breadth-first walk over the outbound `[[id]]` edges
 //!    from every seed, dedup'ing by id and keeping the **minimum** distance.
 //!    Distance-0 = the seeds themselves.
@@ -59,6 +58,7 @@ use crate::util::now_iso8601;
 use crate::util::sha256::Sha256;
 use mustard_core::fs as mfs;
 use mustard_core::metrics::{MetricLine, emit_metric};
+use mustard_core::ClaudePaths;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -77,8 +77,8 @@ pub struct ResolveScope {
     /// a `*.entity.<slug>` seed when a matching id is in the graph.
     #[serde(default)]
     pub entities: Vec<String>,
-    /// Operation slug (e.g. `"create"`, `"update"`); becomes a
-    /// `*.recipe.<slug>` seed when present.
+    /// Operation slug (e.g. `"create"`, `"update"`); reserved for future
+    /// seeding strategies — currently no-op.
     #[serde(default)]
     pub operation: Option<String>,
     /// Logical layer (e.g. `"backend"`, `"ui"`) — used as a soft tag in the
@@ -260,17 +260,9 @@ fn resolve_seeds(index: &GraphIndex, scope: &ResolveScope) -> Vec<String> {
         }
     }
 
-    // Operation → `*.recipe.<slug>` (when one exists).
-    if let Some(op) = scope.operation.as_deref() {
-        let slug = slugify(op);
-        for id in index.nodes.keys() {
-            if let Some(kind) = id.split('.').nth(1) {
-                if kind == "recipe" && id.ends_with(&format!(".recipe.{slug}")) {
-                    out.insert(id.clone());
-                }
-            }
-        }
-    }
+    // `scope.operation` is reserved for future seeding strategies — currently
+    // no-op. The recipe concept it used to seed has been removed.
+    let _ = scope.operation;
 
     out.into_iter().collect()
 }
@@ -315,7 +307,11 @@ fn materialise_nodes(
     walked: &BTreeMap<String, usize>,
     warnings: &mut Vec<String>,
 ) -> Vec<ResolvedNode> {
-    let graph_root = project_root.join(".claude").join("graph");
+    let Ok(paths) = ClaudePaths::for_project(project_root) else {
+        warnings.push("warning: invalid project root for graph resolution".to_string());
+        return Vec::new();
+    };
+    let graph_root = paths.graph_dir();
     let mut out: Vec<ResolvedNode> = Vec::with_capacity(walked.len());
     for (id, distance) in walked {
         let Some(rel) = index.nodes.get(id) else {
@@ -459,7 +455,9 @@ fn cache_disabled() -> bool {
 
 /// Cache file lives next to the interpret cache, namespaced by hash.
 fn cache_path(project_root: &Path) -> PathBuf {
-    project_root.join(".claude").join(".resolve-cache.json")
+    ClaudePaths::for_project(project_root)
+        .map(|p| p.resolve_cache_path())
+        .unwrap_or_default()
 }
 
 #[derive(Debug, Serialize, Deserialize)]

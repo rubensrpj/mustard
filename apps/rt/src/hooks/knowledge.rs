@@ -896,7 +896,10 @@ mod tests {
 
     /// Count `retry.attempt` rows across every per-spec NDJSON dir (W5).
     fn count_retry_events(project: &Path) -> usize {
-        let specs_root = project.join(".claude").join("spec");
+        let Ok(paths) = ClaudePaths::for_project(project) else {
+            return 0;
+        };
+        let specs_root = paths.spec_dir();
         let Ok(entries) = std::fs::read_dir(&specs_root) else {
             return 0;
         };

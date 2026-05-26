@@ -22,6 +22,7 @@
 
 use mustard_core::fs;
 use mustard_core::model::contract::{Ctx, HookInput, Observer};
+use mustard_core::ClaudePaths;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
@@ -51,10 +52,9 @@ fn project_dir(input: &HookInput, ctx: &Ctx) -> String {
 
 /// Path to the anti-spam marker file under the project's harness directory.
 fn marker_path(cwd: &str) -> PathBuf {
-    Path::new(cwd)
-        .join(".claude")
-        .join(".harness")
-        .join(".last-stop")
+    ClaudePaths::for_project(cwd)
+        .map(|p| p.harness_dir().join(".last-stop"))
+        .unwrap_or_default()
 }
 
 /// `true` when the previous Stop fired less than [`STOP_ANTISPAM_SECS`] ago.
@@ -87,7 +87,10 @@ fn touch_marker(marker: &Path) {
 /// adding a new file the post-edit module would have to maintain. Falls back
 /// to `false` when neither file exists (a brand-new project on first Stop).
 fn recent_edit(cwd: &str, now: SystemTime) -> bool {
-    let harness = Path::new(cwd).join(".claude").join(".harness");
+    let Ok(paths) = ClaudePaths::for_project(Path::new(cwd)) else {
+        return false;
+    };
+    let harness = paths.harness_dir();
     let candidates = [
         harness.join("mustard.db-wal"),
         harness.join("mustard.db"),
@@ -126,10 +129,10 @@ fn build_summary() -> String {
 fn persist_interrupted(cwd: &str, summary: &str, session_id: Option<&str>) {
     let db_path = match std::env::var("MUSTARD_DB_PATH") {
         Ok(p) if !p.trim().is_empty() => std::path::PathBuf::from(p),
-        _ => Path::new(cwd)
-            .join(".claude")
-            .join(".harness")
-            .join("mustard.db"),
+        _ => match ClaudePaths::for_project(Path::new(cwd)) {
+            Ok(paths) => paths.mustard_db_path(),
+            Err(_) => return,
+        },
     };
     // The SQLite store must already exist — the W9 hook is read-only on a
     // brand-new project that never wrote a row.

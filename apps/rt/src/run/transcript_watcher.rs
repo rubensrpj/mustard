@@ -34,6 +34,7 @@
 
 use mustard_core::economy::{self, sources::transcript, sources::IngestContext};
 use mustard_core::fs;
+use mustard_core::ClaudePaths;
 use notify::{Event, EventKind, RecursiveMode, Watcher};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -54,7 +55,13 @@ use crate::util::{encode_cwd, home_dir};
 /// Filesystem root the watcher recurses under. Returns `None` when the home
 /// directory cannot be resolved (the caller logs and exits cleanly).
 fn watch_root() -> Option<PathBuf> {
-    Some(home_dir()?.join(".claude").join("projects"))
+    // `~/.claude/projects/` is Claude Code's transcript store — not a Mustard
+    // workspace anchor — but routing through `ClaudePaths` still keeps the I1
+    // `.claude/.claude/` guard active at the boundary. A guard rejection
+    // collapses to `None` so the caller logs and exits cleanly.
+    let home = home_dir()?;
+    let paths = ClaudePaths::for_project(&home).ok()?;
+    Some(paths.claude_dir().join("projects"))
 }
 
 /// Decide whether `path` is a transcript file the ingest should run on.
@@ -295,8 +302,17 @@ fn run_once() {
         );
         return;
     };
-    let project_dir = home
-        .join(".claude")
+    // Mirror `watch_root()`'s routing for the one-shot backfill path. A guard
+    // rejection ($HOME terminates in `.claude` or already nests) is treated as
+    // "nothing to backfill" — log and exit cleanly.
+    let Ok(home_paths) = ClaudePaths::for_project(&home) else {
+        eprintln!(
+            "transcript-backfill: home path rejected by ClaudePaths guard; exiting"
+        );
+        return;
+    };
+    let project_dir = home_paths
+        .claude_dir()
         .join("projects")
         .join(encode_cwd(&cwd_str));
     if !project_dir.exists() {

@@ -26,6 +26,7 @@ use super::scan::interpret;
 use super::scan::project_conventions::compute_project_conventions;
 use super::scan::{load_scanner, EntityInfo, EnumInfo, ScanResult};
 use mustard_core::fs;
+use mustard_core::ClaudePaths;
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -66,7 +67,13 @@ struct Subproject {
 /// already populated. Fail-open — discovery / scan errors degrade to a smaller
 /// (or empty) registry rather than aborting.
 pub fn run(root: &Path, force: bool) {
-    let registry_path = root.join(".claude").join("entity-registry.json");
+    let Ok(paths) = ClaudePaths::for_project(root) else {
+        // I1 rejection — nothing to do. Emit an empty registry skeleton and
+        // exit cleanly (fail-open).
+        println!("{{}}");
+        return;
+    };
+    let registry_path = paths.entity_registry_json_path();
 
     // 1. Read the current registry (for the populated-check + version upgrade).
     let current: Option<Value> = fs::read_to_string(&registry_path)

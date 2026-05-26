@@ -14,8 +14,9 @@
 use crate::run::env::{current_spec, session_id};
 use crate::util::now_iso8601;
 use mustard_core::fs::read_to_string;
-use mustard_core::i18n::{slugify, Locale};
+use mustard_core::i18n::{slugify, SupportedLocale as Locale};
 use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
+use mustard_core::ClaudePaths;
 use serde::Serialize;
 use serde_json::{json, Map, Value};
 use std::path::PathBuf;
@@ -288,8 +289,10 @@ pub fn build(intent: &str, registry_body: &str) -> PrdReport {
 pub fn run(opts: PrdBuildOpts) {
     let started = std::time::Instant::now();
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let registry = read_to_string(cwd.join(".claude").join("entity-registry.json"))
+    let registry_path = ClaudePaths::for_project(&cwd)
+        .map(|p| p.entity_registry_json_path())
         .unwrap_or_default();
+    let registry = read_to_string(&registry_path).unwrap_or_default();
     let report = build(&opts.intent, &registry);
     // The SKILL spec demands raw camelCase JSON — pretty-print is fine because
     // serde keeps key order stable.

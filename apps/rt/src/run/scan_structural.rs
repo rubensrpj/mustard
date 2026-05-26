@@ -27,6 +27,7 @@
 //! | `pubspec.yaml` | compiled-strongly-typed |
 
 use mustard_core::fs as mfs;
+use mustard_core::ClaudePaths;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -486,7 +487,7 @@ fn write_stack_md(repo_root: &Path, report: &StructuralReport) -> Option<String>
     } else {
         repo_root.join(&report.subproject)
     };
-    let dir = abs.join(".claude").join("commands");
+    let dir = ClaudePaths::for_project(&abs).ok()?.commands_dir();
     if mfs::create_dir_all(&dir).is_err() {
         return None;
     }

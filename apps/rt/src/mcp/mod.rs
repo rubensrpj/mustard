@@ -44,6 +44,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use std::path::PathBuf;
 
+use mustard_core::ClaudePaths;
 use mustard_core::store::sqlite_store::{
     KnowledgeRow, MetricsRow, SpecRow, SqliteEventStore,
 };
@@ -457,7 +458,10 @@ impl MustardMemory {
         };
 
         // 2) NDJSON slice — per-spec dirs.
-        let specs_root = self.project_dir.join(".claude").join("spec");
+        let specs_root = match ClaudePaths::for_project(&self.project_dir) {
+            Ok(paths) => paths.spec_dir(),
+            Err(_) => return json_result(&Vec::<EventOut>::new()),
+        };
         if let Some(spec) = args.spec.as_deref() {
             let dir = specs_root.join(spec).join(".events");
             events.extend(

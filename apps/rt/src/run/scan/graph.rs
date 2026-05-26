@@ -21,6 +21,7 @@
 //! it never returns `Err`.
 
 use mustard_core::fs as mfs;
+use mustard_core::ClaudePaths;
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
@@ -257,8 +258,11 @@ fn detect_cycles(edges: &BTreeMap<String, Vec<String>>) -> Vec<String> {
 /// directory degrades to an empty [`GraphIndex`] (no warnings, no panic).
 #[must_use]
 pub fn build_index(project_root: &Path) -> GraphIndex {
-    let graph_dir = project_root.join(".claude").join("graph");
     let mut index = GraphIndex::default();
+    let Ok(paths) = ClaudePaths::for_project(project_root) else {
+        return index;
+    };
+    let graph_dir = paths.graph_dir();
     // Ensure the vault directory exists so the MOC is always materialised.
     // A missing directory is the cold-start case; subsequent runs over an
     // existing tree behave identically.
@@ -366,7 +370,10 @@ fn render_moc(nodes: &BTreeMap<String, String>, id_to_kind: &BTreeMap<String, St
 /// `slug = directory name`.
 fn inject_skill_aliases(project_root: &Path, nodes: &BTreeMap<String, String>) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
-    let skills_dir = project_root.join(".claude").join("skills");
+    let Ok(paths) = ClaudePaths::for_project(project_root) else {
+        return out;
+    };
+    let skills_dir = paths.skills_dir();
     let Ok(entries) = mfs::read_dir(&skills_dir) else {
         return out;
     };
@@ -661,7 +668,7 @@ pub fn merge_edges(existing: &[SpecBacklinkEdge], new_edges: &[SpecBacklinkEdge]
 /// - `1.0` when a file in the diff is the exact path the node describes
 ///   (rare — concept-nodes are usually folders/conventions, not single files).
 /// - `0.50` when a file in the diff lives under a folder path mentioned in
-///   the node's body (the common case for `conv`/`recipe` nodes describing
+///   the node's body (the common case for `conv` nodes describing
 ///   `apps/rt/src/run/scan/`).
 /// - `0.25` when only the path's basename appears in the node body
 ///   (weakest signal; included so leaves are surfaced for human review).
@@ -687,7 +694,10 @@ pub fn infer_applied_edges(
     }
     let index = build_index(project_root);
     let injected: BTreeSet<&str> = closure_ids.iter().map(String::as_str).collect();
-    let graph_root = project_root.join(".claude").join("graph");
+    let Ok(paths) = ClaudePaths::for_project(project_root) else {
+        return Vec::new();
+    };
+    let graph_root = paths.graph_dir();
 
     let mut out: Vec<SpecBacklinkEdge> = Vec::new();
     for (id, rel) in &index.nodes {
@@ -763,7 +773,10 @@ fn extract_paths(body: &str) -> Vec<String> {
 pub fn dead_node_ids(project_root: &Path) -> Vec<String> {
     let index = build_index(project_root);
     let mut linked: BTreeSet<String> = BTreeSet::new();
-    let spec_root = project_root.join(".claude").join("spec");
+    let Ok(paths) = ClaudePaths::for_project(project_root) else {
+        return Vec::new();
+    };
+    let spec_root = paths.spec_dir();
     let mut stack: Vec<PathBuf> = vec![spec_root.clone()];
     while let Some(dir) = stack.pop() {
         let Ok(entries) = mfs::read_dir(&dir) else {

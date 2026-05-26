@@ -26,6 +26,7 @@
 
 use mustard_core::fs;
 use mustard_core::spec;
+use mustard_core::ClaudePaths;
 use mustard_core::{SpecChild, SpecReader, SqliteSpecReader, WaveView};
 use serde::Serialize;
 use std::collections::HashMap;
@@ -137,7 +138,10 @@ fn read_header_window(path: &Path, cap: usize) -> Option<String> {
 /// Fail-open: missing `.claude/spec/` directory yields an empty result; per-
 /// file I/O errors are silently skipped.
 fn scan_filesystem(project: &Path, parent: &str) -> Vec<ChildEntry> {
-    let spec_root = project.join(".claude").join("spec");
+    let Ok(paths) = ClaudePaths::for_project(project) else {
+        return Vec::new();
+    };
+    let spec_root = paths.spec_dir();
     let Ok(entries) = fs::read_dir(&spec_root) else {
         return Vec::new();
     };

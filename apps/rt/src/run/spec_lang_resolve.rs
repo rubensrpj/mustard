@@ -14,8 +14,9 @@
 
 use crate::run::env::{current_spec, session_id};
 use crate::util::now_iso8601;
-use mustard_core::i18n::{project_locale_from_file, Locale};
+use mustard_core::i18n::{project_locale_from_file, SupportedLocale as Locale};
 use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
+use mustard_core::ClaudePaths;
 use mustard_core::{read_meta, spec as spec_io};
 use serde::Serialize;
 use serde_json::json;
@@ -57,7 +58,14 @@ fn spec_dir(cwd: &Path, slug_or_path: &str) -> PathBuf {
     if direct.is_dir() {
         return direct;
     }
-    cwd.join(".claude").join("spec").join(slug_or_path)
+    // Fall back to the canonical `<cwd>/.claude/spec/<slug>/` via ClaudePaths.
+    // An I1 guard violation or malformed slug returns an empty PathBuf, which
+    // the downstream readers in `run()` handle as "spec absent".
+    ClaudePaths::for_project(cwd)
+        .ok()
+        .and_then(|cp| cp.for_spec(slug_or_path).ok())
+        .map(|sp| sp.dir().to_path_buf())
+        .unwrap_or_default()
 }
 
 /// Read the `lang` field from `meta.json`. Returns `None` on any error

@@ -14,6 +14,7 @@
 //! Every IO step degrades to a no-op. Telemetry is not load-bearing.
 
 use mustard_core::model::contract::{Ctx, HookInput, Observer};
+use mustard_core::ClaudePaths;
 use std::path::Path;
 
 /// The W8 auto-capture hook.
@@ -128,10 +129,10 @@ fn persist(
     // Open a regular rusqlite connection to share the WAL DB.
     let db_path = match std::env::var("MUSTARD_DB_PATH") {
         Ok(p) if !p.trim().is_empty() => std::path::PathBuf::from(p),
-        _ => Path::new(cwd)
-            .join(".claude")
-            .join(".harness")
-            .join("mustard.db"),
+        _ => match ClaudePaths::for_project(Path::new(cwd)) {
+            Ok(paths) => paths.mustard_db_path(),
+            Err(_) => return,
+        },
     };
     let Ok(conn) = rusqlite::Connection::open(&db_path) else {
         return;

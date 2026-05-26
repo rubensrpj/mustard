@@ -21,6 +21,7 @@
 //! always `0` (fail-open) unless `--strict` is set and any hit is found.
 
 use mustard_core::fs as mfs;
+use mustard_core::ClaudePaths;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -80,14 +81,13 @@ fn wirelinks(body: &str) -> Vec<String> {
 }
 
 /// Canonical wirelink kinds — every `[[<sub>.<kind>.<slug>]]` reference
-/// found under `.claude/graph/` and `.claude/recipes/` must use one of
-/// these tokens for `<kind>`. Anything else is a violation.
+/// found under `.claude/graph/` must use one of these tokens for `<kind>`.
+/// Anything else is a violation.
 const CANONICAL_WIRELINK_KINDS: &[&str] = &[
     "spec",
     "skill",
     "command",
     "ref",
-    "recipe",
     "conv",
 ];
 
@@ -141,10 +141,9 @@ pub fn validate_wirelinks_canonical(body: &str) -> Vec<(String, String)> {
 }
 
 /// Walk `dir` recursively and collect every wirelink violation found in
-/// `.md` bodies. Used by [`validate`] to gate `.claude/graph/` and
-/// `.claude/recipes/` (the two directories where the canonical contract
-/// applies). Other directories are exempt — wikilinks elsewhere are
-/// free-form by design.
+/// `.md` bodies. Used by [`validate`] to gate `.claude/graph/` (the directory
+/// where the canonical contract applies). Other directories are exempt —
+/// wikilinks elsewhere are free-form by design.
 fn canonical_wirelink_hits(repo_root: &Path, dir: &Path) -> Vec<Value> {
     let mut paths: Vec<PathBuf> = Vec::new();
     collect_md(dir, &mut paths);
@@ -187,7 +186,10 @@ fn ref_paths(body: &str) -> Vec<String> {
 
 /// Load the `.claude/graph/index.md` id → path map when present.
 fn load_graph_ids(repo_root: &Path) -> BTreeSet<String> {
-    let path = repo_root.join(".claude").join("graph").join("index.md");
+    let Ok(paths) = ClaudePaths::for_project(repo_root) else {
+        return BTreeSet::new();
+    };
+    let path = paths.graph_dir().join("index.md");
     let Ok(body) = mfs::read_to_string(&path) else {
         return BTreeSet::new();
     };
@@ -239,10 +241,19 @@ fn cross_file_duplicates(files: &BTreeMap<PathBuf, String>) -> Vec<Value> {
 
 /// One validator pass. `from` narrows the scan to a single subproject path.
 pub fn validate(repo_root: &Path, from: Option<&str>, strict: bool) -> (Value, bool) {
-    let claude_dir = repo_root.join(".claude");
+    // Fail-open: an I1-rejecting `repo_root` returns an empty report rather
+    // than degrading to a hand-rolled `.claude` join (which would re-introduce
+    // the very violation this migration removes).
+    let Ok(root_paths) = ClaudePaths::for_project(repo_root) else {
+        return (json!({ "files": 0, "hits": [], "ok": true, "strict": strict }), false);
+    };
+    let claude_dir = root_paths.claude_dir();
     let mut scan_dirs: Vec<PathBuf> = Vec::new();
     if let Some(sub) = from {
-        scan_dirs.push(repo_root.join(sub).join(".claude"));
+        let sub_root = repo_root.join(sub);
+        if let Ok(sub_paths) = ClaudePaths::for_project(&sub_root) {
+            scan_dirs.push(sub_paths.claude_dir());
+        }
     } else {
         scan_dirs.push(claude_dir.clone());
         // Also walk known subproject `.claude/` trees when present.
@@ -251,9 +262,11 @@ pub fn validate(repo_root: &Path, from: Option<&str>, strict: bool) -> (Value, b
             if let Ok(entries) = mfs::read_dir(&parent) {
                 for entry in entries {
                     if entry.is_dir {
-                        let candidate = entry.path.join(".claude");
-                        if candidate.is_dir() {
-                            scan_dirs.push(candidate);
+                        if let Ok(sub_paths) = ClaudePaths::for_project(&entry.path) {
+                            let candidate = sub_paths.claude_dir();
+                            if candidate.is_dir() {
+                                scan_dirs.push(candidate);
+                            }
                         }
                     }
                 }
@@ -327,15 +340,11 @@ pub fn validate(repo_root: &Path, from: Option<&str>, strict: bool) -> (Value, b
 
     hits.extend(cross_file_duplicates(&bodies));
 
-    // Canonical wirelink audit — applies only to `.claude/graph/` and
-    // `.claude/recipes/`. Other directories carry free-form wikilinks.
-    let graph_dir = repo_root.join(".claude").join("graph");
+    // Canonical wirelink audit — applies only to `.claude/graph/`. Other
+    // directories carry free-form wikilinks.
+    let graph_dir = root_paths.graph_dir();
     if graph_dir.is_dir() {
         hits.extend(canonical_wirelink_hits(repo_root, &graph_dir));
-    }
-    let recipes_dir = repo_root.join(".claude").join("recipes");
-    if recipes_dir.is_dir() {
-        hits.extend(canonical_wirelink_hits(repo_root, &recipes_dir));
     }
 
     let ok = hits.is_empty();
@@ -427,7 +436,7 @@ mod tests {
     }
 
     #[test]
-    fn canonical_wirelink_hits_under_graph_and_recipes() {
+    fn canonical_wirelink_hits_under_graph() {
         let dir = tempdir().unwrap();
         let graph = dir.path().join(".claude").join("graph");
         std::fs::create_dir_all(&graph).unwrap();

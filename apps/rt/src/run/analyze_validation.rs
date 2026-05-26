@@ -7,6 +7,7 @@
 
 use crate::run::spec_sections::is_heading;
 use mustard_core::fs;
+use mustard_core::ClaudePaths;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
@@ -222,10 +223,10 @@ fn validate(abs_path: &Path, content: &str) -> Vec<Value> {
     if let Some(scope) = extract_kv(content, "scope") {
         if scope.eq_ignore_ascii_case("extended-light") {
             if let Some(entity) = extract_kv(content, "entity") {
-                let registry_path: PathBuf = std::env::current_dir()
-                    .unwrap_or_else(|_| PathBuf::from("."))
-                    .join(".claude")
-                    .join("entity-registry.json");
+                let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+                let registry_path: PathBuf = ClaudePaths::for_project(&cwd)
+                    .map(|p| p.entity_registry_json_path())
+                    .unwrap_or_default();
                 if let Ok(registry) = fs::read_to_string(&registry_path) {
                     if !registry.to_lowercase().contains(&entity.to_lowercase()) {
                         issues.push(json!({

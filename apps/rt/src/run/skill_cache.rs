@@ -10,6 +10,7 @@ use crate::util::now_iso8601;
 use crate::run::skill_fetch::SkillCacheFile;
 use mustard_core::fs::read_to_string;
 use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
+use mustard_core::ClaudePaths;
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
@@ -31,7 +32,9 @@ pub struct CacheCheckReport {
 }
 
 fn cache_path(cwd: &Path) -> PathBuf {
-    cwd.join(".claude").join(".skill-cache.json")
+    ClaudePaths::for_project(cwd)
+        .map(|p| p.skill_cache_path())
+        .unwrap_or_default()
 }
 
 /// Pure inspector — returns the (cached entry, on-disk presence).
@@ -49,7 +52,9 @@ pub fn inspect(cwd: &Path, slug: &str) -> CacheCheckReport {
     });
     let installed_on_disk = match target.as_deref() {
         Some(p) => Path::new(p).is_dir(),
-        None => cwd.join(".claude").join("skills").join(slug).is_dir(),
+        None => ClaudePaths::for_project(cwd)
+            .map(|p| p.skills_dir().join(slug).is_dir())
+            .unwrap_or(false),
     };
     CacheCheckReport {
         slug: slug.to_string(),

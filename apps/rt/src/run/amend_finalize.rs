@@ -20,6 +20,7 @@
 //! JSON. The subcommand always exits `0`.
 
 use crate::util::now_iso8601;
+use mustard_core::claude_paths::ClaudePaths;
 use mustard_core::error::Result;
 use mustard_core::fs;
 use mustard_core::store::event_store::EventSink;
@@ -148,10 +149,11 @@ fn decide_status(window: &AmendWindow) -> &'static str {
 /// their entire lifetime; the `### Status:` header and the event store are
 /// the canonical status record.
 fn locate_spec_dir(project_root: &Path, spec_id: &str) -> Option<PathBuf> {
-    let flat = project_root
-        .join(".claude")
-        .join("spec")
-        .join(spec_id);
+    let flat = ClaudePaths::for_project(project_root)
+        .and_then(|p| p.for_spec(spec_id))
+        .ok()?
+        .dir()
+        .to_path_buf();
     if flat.exists() {
         Some(flat)
     } else {

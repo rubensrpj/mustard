@@ -12,12 +12,14 @@
 //! in the JSON rather than overwriting work in flight.
 
 use crate::run::env::{current_spec, session_id};
+use crate::run::spec_scaffold;
 use crate::util::now_iso8601;
+use mustard_core::claude_paths::ClaudePaths;
 use mustard_core::fs::write_atomic;
 use mustard_core::i18n::{slugify, Locale};
 use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use mustard_core::process::rtk_command;
-use mustard_core::{read_meta, write_meta, Meta};
+use mustard_core::{read_meta, Meta};
 use serde::Serialize;
 use serde_json::json;
 use std::path::{Path, PathBuf};
@@ -63,7 +65,10 @@ fn build_slug(description: &str, lang: Locale, today: &str) -> String {
 
 /// Read the parent's locale to inherit the body headings. Falls back to PT-BR.
 fn parent_lang(cwd: &Path, parent: &str) -> Locale {
-    let dir = cwd.join(".claude").join("spec").join(parent);
+    let dir = ClaudePaths::for_project(cwd)
+        .and_then(|p| p.for_spec(parent))
+        .map(|sp| sp.dir().to_path_buf())
+        .unwrap_or_else(|_| ClaudePaths::compose_unchecked(cwd).spec_dir().join(parent));
     if let Some(meta) = read_meta(&dir.join("meta.json")) {
         if let Some(raw) = meta.lang {
             if let Ok(l) = raw.parse::<Locale>() {
@@ -114,7 +119,10 @@ fn create(cwd: &Path, opts: &TacticalFixOpts) -> TacticalFixReport {
     let lang = parent_lang(cwd, &opts.parent);
     let today = today_utc();
     let slug = build_slug(&opts.description, lang, &today);
-    let spec_dir = cwd.join(".claude").join("spec").join(&slug);
+    let spec_dir = ClaudePaths::for_project(cwd)
+        .and_then(|p| p.for_spec(&slug))
+        .map(|sp| sp.dir().to_path_buf())
+        .unwrap_or_else(|_| ClaudePaths::compose_unchecked(cwd).spec_dir().join(&slug));
     let mut report = TacticalFixReport {
         parent: opts.parent.clone(),
         slug: slug.clone(),
@@ -151,11 +159,17 @@ fn create(cwd: &Path, opts: &TacticalFixOpts) -> TacticalFixReport {
         total_waves: None,
         raw: serde_json::Value::Null,
     };
-    if let Err(e) = write_meta(&spec_dir.join("meta.json"), &meta) {
+    if let Err(e) = spec_scaffold::write_meta_json(&spec_dir, &meta) {
         report.error = Some(format!("write meta.json failed: {e}"));
         return report;
     }
     // Emit the spec.link event via our own subcommand. Best-effort.
+    //
+    // Pin the spawned child to the caller's `cwd` + `MUSTARD_WORKSPACE_ROOT`
+    // so it writes to the same workspace as the parent — without this,
+    // unit tests running under `cargo test -p mustard-rt` would inherit the
+    // crate's own `apps/rt/` cwd and leak `apps/rt/.claude/.pipeline-states/`
+    // (umbrella AC-G2 regression).
     let link_out = rtk_command(
         "mustard-rt",
         &[
@@ -169,6 +183,8 @@ fn create(cwd: &Path, opts: &TacticalFixOpts) -> TacticalFixReport {
             "tactical-fix",
         ],
     )
+    .current_dir(cwd)
+    .env("MUSTARD_WORKSPACE_ROOT", cwd)
     .output();
     report.link_emitted = matches!(link_out, Ok(ref o) if o.status.success());
     report

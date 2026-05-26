@@ -23,6 +23,7 @@
 //! `{ "ingested": { "knowledge": N, "decisions": M, "lessons": K, "agent_memory": Z }, "deleted": bool, "errors": [...] }`.
 
 use crate::run::env::project_dir as env_project_dir;
+use mustard_core::claude_paths::ClaudePaths;
 use crate::run::memory::{
     ensure_agent_memory_fts, insert_agent_memory, insert_decision, insert_lesson,
     upsert_knowledge_pattern,
@@ -288,7 +289,9 @@ fn ingest_agent_memory_dir(
 /// On full success the source directory is removed.
 pub fn run_with(opts: MemoryIngestOpts) {
     let cwd = env_project_dir();
-    let claude = Path::new(&cwd).join(".claude");
+    let claude = ClaudePaths::for_project(Path::new(&cwd))
+        .map(|p| p.claude_dir())
+        .unwrap_or_else(|_| ClaudePaths::compose_unchecked(Path::new(&cwd)).claude_dir());
 
     let store = match SqliteEventStore::for_project(&cwd) {
         Ok(s) => s,

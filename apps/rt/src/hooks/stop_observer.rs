@@ -8,6 +8,7 @@
 //! Pure [`Observer`] — never blocks.
 
 use mustard_core::model::contract::{Ctx, HookInput, Observer};
+use mustard_core::ClaudePaths;
 use std::path::Path;
 
 /// The W8 stop-observer hook.
@@ -49,10 +50,10 @@ fn final_output(input: &HookInput) -> String {
 fn bump_last_used(cwd: &str, text: &str) {
     let db_path = match std::env::var("MUSTARD_DB_PATH") {
         Ok(p) if !p.trim().is_empty() => std::path::PathBuf::from(p),
-        _ => Path::new(cwd)
-            .join(".claude")
-            .join(".harness")
-            .join("mustard.db"),
+        _ => match ClaudePaths::for_project(Path::new(cwd)) {
+            Ok(paths) => paths.mustard_db_path(),
+            Err(_) => return,
+        },
     };
     if !db_path.exists() {
         return;
@@ -168,10 +169,10 @@ fn classify(summary: &str) -> &'static str {
 fn promote_high_confidence(cwd: &str) -> usize {
     let db_path = match std::env::var("MUSTARD_DB_PATH") {
         Ok(p) if !p.trim().is_empty() => std::path::PathBuf::from(p),
-        _ => Path::new(cwd)
-            .join(".claude")
-            .join(".harness")
-            .join("mustard.db"),
+        _ => match ClaudePaths::for_project(Path::new(cwd)) {
+            Ok(paths) => paths.mustard_db_path(),
+            Err(_) => return 0,
+        },
     };
     if !db_path.exists() {
         return 0;
@@ -256,10 +257,10 @@ pub struct PreCompactMemorySnippet;
 fn recent_agent_memory(cwd: &str) -> Vec<String> {
     let db_path = match std::env::var("MUSTARD_DB_PATH") {
         Ok(p) if !p.trim().is_empty() => std::path::PathBuf::from(p),
-        _ => Path::new(cwd)
-            .join(".claude")
-            .join(".harness")
-            .join("mustard.db"),
+        _ => match ClaudePaths::for_project(Path::new(cwd)) {
+            Ok(paths) => paths.mustard_db_path(),
+            Err(_) => return Vec::new(),
+        },
     };
     if !db_path.exists() {
         return Vec::new();

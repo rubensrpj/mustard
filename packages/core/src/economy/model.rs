@@ -102,8 +102,10 @@ pub enum SavingsSource {
     /// Tokens saved by `budget` truncating a Task's return payload before it
     /// re-entered the parent context.
     BudgetOutputCut,
-    /// Tokens saved by injecting a recipe skeleton instead of relying on the
-    /// agent to derive the same scaffolding from scratch.
+    /// Tokens proxied by `recipe-match` handing the agent a 90%-complete
+    /// skeleton instead of forcing it to derive the same structure from
+    /// scratch. The skeleton character count is divided by 4 to estimate the
+    /// tokens the model did not have to emit.
     RecipeInjection,
 }
 
@@ -196,9 +198,6 @@ pub struct ContextCostFrame {
     /// Bytes of the per-task slice (the task-specific instructions).
     #[serde(default)]
     pub slice_bytes: Option<i64>,
-    /// Bytes injected from the recipe library.
-    #[serde(default)]
-    pub recipe_bytes: Option<i64>,
     /// Bytes of the wave-specific slice (the cross-task wave context).
     #[serde(default)]
     pub wave_slice_bytes: Option<i64>,
@@ -385,7 +384,6 @@ mod tests {
             SavingsSource::ModelRoutingDowngrade,
             SavingsSource::BashGuardBlock,
             SavingsSource::BudgetOutputCut,
-            SavingsSource::RecipeInjection,
         ] {
             let s = src.as_str();
             assert_eq!(SavingsSource::from_str_opt(s), Some(src));

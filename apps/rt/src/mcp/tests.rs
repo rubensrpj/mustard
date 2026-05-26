@@ -21,10 +21,9 @@ use tempfile::TempDir;
 
 /// Database path inside a temp project: `{dir}/.claude/.harness/mustard.db`.
 fn db_path(dir: &TempDir) -> std::path::PathBuf {
-    dir.path()
-        .join(".claude")
-        .join(".harness")
-        .join("mustard.db")
+    mustard_core::ClaudePaths::for_project(dir.path())
+        .expect("temp dir is not .claude-nested")
+        .mustard_db_path()
 }
 
 /// Open the harness store for a temp project (applies the schema).

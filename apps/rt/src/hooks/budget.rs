@@ -58,26 +58,26 @@ use mustard_core::error::Error;
 use mustard_core::metrics::{MetricLine, emit_metric};
 use mustard_core::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
 use mustard_core::store::sqlite_store::SqliteEventStore;
+use mustard_core::ClaudePaths;
 use rusqlite::Connection;
 use serde_json::{Map, json};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use crate::run::current_spec;
 use crate::util::{format_gate_message, now_iso8601};
 
 /// Resolve the harness `SQLite` path (mirrors `SqliteEventStore::for_project`'s
 /// private resolver). Env override `MUSTARD_DB_PATH` wins, else the standard
-/// `.claude/.harness/mustard.db` under the project root.
+/// `.claude/.harness/mustard.db` under the project root via [`ClaudePaths`].
 fn economy_db_path(project_dir: &str) -> PathBuf {
     if let Ok(value) = std::env::var("MUSTARD_DB_PATH") {
         if !value.trim().is_empty() {
             return PathBuf::from(value);
         }
     }
-    Path::new(project_dir)
-        .join(".claude")
-        .join(".harness")
-        .join("mustard.db")
+    ClaudePaths::for_project(project_dir)
+        .map(|p| p.mustard_db_path())
+        .unwrap_or_default()
 }
 
 /// Open a raw [`Connection`] to the harness DB, applying schema/migrations
@@ -367,7 +367,11 @@ fn context_budget(input: &HookInput) -> Verdict {
                     "category": if would_block { "prevention" } else { "routing-advisory" },
                 }));
             // Fail-silent — a metric write never affects the verdict.
-            let _ = emit_metric(std::path::Path::new(metric_cwd(input)), &line);
+            // Skip when no harness cwd is supplied (would leak under
+            // `cargo test`'s process cwd).
+            if let Some(cwd) = metric_cwd_opt(input) {
+                let _ = emit_metric(std::path::Path::new(cwd), &line);
+            }
         }
 
         match mode {
@@ -597,12 +601,20 @@ fn over_budget_tail(input: &HookInput) -> Option<String> {
 
 /// Resolve the cwd a metric write should be rooted at: the harness `cwd`,
 /// falling back to `.` (the JS uses `process.cwd()`).
-fn metric_cwd(input: &HookInput) -> &str {
+///
+/// W5 AC-W5.2: when no harness cwd is supplied, returning `"."` causes the
+/// metric writer to materialise a `.claude/.metrics/` tree under whatever
+/// the process cwd happens to be — under `cargo test -p mustard-rt` that is
+/// `apps/rt/`, producing the forbidden `apps/rt/.claude/` leak.
+/// `metric_cwd_opt` returns `None` in that case so the caller can skip the
+/// emit.
+fn metric_cwd_opt(input: &HookInput) -> Option<&str> {
     match input.cwd.as_deref() {
-        Some(cwd) if !cwd.is_empty() => cwd,
-        _ => ".",
+        Some(cwd) if !cwd.is_empty() && cwd != "." => Some(cwd),
+        _ => None,
     }
 }
+
 
 // ---------------------------------------------------------------------------
 // Contract impls
@@ -635,20 +647,29 @@ impl Check for BudgetGuard {
                 let Some(result) = evaluate_output_budget(input) else {
                     return Ok(Verdict::Allow);
                 };
-                // Emit the return-size metric (fail-silent).
-                let _ = emit_metric(std::path::Path::new(metric_cwd(input)), &result.metric);
+                // Emit the return-size metric (fail-silent). Skip when no
+                // harness cwd is supplied (would leak under `cargo test`).
+                if let Some(cwd) = metric_cwd_opt(input) {
+                    let _ = emit_metric(std::path::Path::new(cwd), &result.metric);
+                }
                 // Over budget → record the savings frame (typed writer) +
                 // surface the advisory through the Outcome. Never a raw
                 // stdout write.
                 if result.advisory.is_some() {
-                    let project_dir = if ctx.project_dir.is_empty() {
-                        metric_cwd(input).to_string()
+                    // Resolve the project dir to record the savings frame
+                    // against. Skip the write entirely when neither `ctx`
+                    // nor the harness `cwd` carries a valid root (would
+                    // leak under `cargo test`).
+                    let project_dir_opt = if ctx.project_dir.is_empty() {
+                        metric_cwd_opt(input).map(str::to_string)
                     } else {
-                        ctx.project_dir.clone()
+                        Some(ctx.project_dir.clone())
                     };
                     // Recompute the dropped tail and labels so the writer call
                     // stays a pure side-effect of an over-budget verdict.
-                    if let Some(tail) = over_budget_tail(input) {
+                    if let (Some(project_dir), Some(tail)) =
+                        (project_dir_opt, over_budget_tail(input))
+                    {
                         let subagent_type = input
                             .tool_input
                             .get("subagent_type")

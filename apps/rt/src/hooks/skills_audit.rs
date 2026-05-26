@@ -23,6 +23,7 @@
 use mustard_core::error::Error;
 use mustard_core::metrics::{MetricLine, emit_metric};
 use mustard_core::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
+use mustard_core::ClaudePaths;
 use serde_json::json;
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -196,11 +197,10 @@ fn resolve_skill_bytes(project_dir: &str, name: &str) -> Option<u64> {
     if safe.is_empty() {
         return None;
     }
-    let primary = Path::new(project_dir)
-        .join(".claude")
-        .join("skills")
-        .join(&safe)
-        .join("SKILL.md");
+    let primary = match ClaudePaths::for_project(project_dir) {
+        Ok(cp) => cp.skills_dir().join(&safe).join("SKILL.md"),
+        Err(_) => return None,
+    };
     if let Ok(meta) = std::fs::metadata(&primary) {
         return Some(meta.len());
     }
@@ -215,12 +215,10 @@ fn resolve_skill_bytes(project_dir: &str, name: &str) -> Option<u64> {
         if dname.starts_with('.') || dname == "node_modules" {
             continue;
         }
-        let cand = entry
-            .path()
-            .join(".claude")
-            .join("skills")
-            .join(&safe)
-            .join("SKILL.md");
+        let Ok(sub_cp) = ClaudePaths::for_project(entry.path()) else {
+            continue;
+        };
+        let cand = sub_cp.skills_dir().join(&safe).join("SKILL.md");
         if let Ok(meta) = std::fs::metadata(&cand) {
             return Some(meta.len());
         }
@@ -240,10 +238,16 @@ impl Check for SkillsAudit {
         if !matches!(input.tool_name.as_deref(), Some("Task" | "Agent")) {
             return Ok(Verdict::Allow);
         }
-        let project = if ctx.project_dir.is_empty() {
-            input.cwd.as_deref().unwrap_or(".")
+        // Resolve the project root, ignoring the `.` placeholder so we do
+        // not leak a `.claude/.metrics/` tree into the process cwd
+        // (`apps/rt/` under `cargo test`) — AC-W5.2 of W5.
+        let project_opt: Option<&str> = if !ctx.project_dir.is_empty() && ctx.project_dir != "." {
+            Some(ctx.project_dir.as_str())
         } else {
-            ctx.project_dir.as_str()
+            input
+                .cwd
+                .as_deref()
+                .filter(|cwd| !cwd.is_empty() && *cwd != ".")
         };
         let tool_input = &input.tool_input;
         let prompt = tool_input
@@ -259,23 +263,26 @@ impl Check for SkillsAudit {
         let skill_count = skills.len();
 
         // Emit the `recommended-skills` metric (fail-silent side effect).
-        let (total_bytes, resolved) = skills.iter().fold((0u64, 0usize), |(b, r), name| {
-            match resolve_skill_bytes(project, name) {
-                Some(size) => (b + size, r + 1),
-                None => (b, r),
-            }
-        });
-        let line = MetricLine::new(now_iso8601(), "recommended-skills")
-            .tokens_affected((total_bytes / 4) as i64)
-            .tokens_saved(0)
-            .note("pipeline dispatch")
-            .extras(json!({
-                "skill_count": skill_count,
-                "resolved_count": resolved,
-                "skills": skills.iter().take(20).cloned().collect::<Vec<_>>().join(","),
-                "subagent_type": subagent_type,
-            }));
-        let _ = emit_metric(Path::new(project), &line);
+        // Skip entirely when no harness cwd is available.
+        if let Some(project) = project_opt {
+            let (total_bytes, resolved) = skills.iter().fold((0u64, 0usize), |(b, r), name| {
+                match resolve_skill_bytes(project, name) {
+                    Some(size) => (b + size, r + 1),
+                    None => (b, r),
+                }
+            });
+            let line = MetricLine::new(now_iso8601(), "recommended-skills")
+                .tokens_affected((total_bytes / 4) as i64)
+                .tokens_saved(0)
+                .note("pipeline dispatch")
+                .extras(json!({
+                    "skill_count": skill_count,
+                    "resolved_count": resolved,
+                    "skills": skills.iter().take(20).cloned().collect::<Vec<_>>().join(","),
+                    "subagent_type": subagent_type,
+                }));
+            let _ = emit_metric(Path::new(project), &line);
+        }
 
         // Advisory: warn above the threshold, never block.
         if skill_count > WARN_THRESHOLD {

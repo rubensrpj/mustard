@@ -16,6 +16,7 @@
 
 use crate::run::env::{project_dir, session_id};
 use crate::util::now_iso8601;
+use mustard_core::claude_paths::ClaudePaths;
 use mustard_core::store::event_store::EventSink;
 use mustard_core::store::sqlite_store::SqliteEventStore;
 use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
@@ -120,11 +121,12 @@ pub fn run(spec: &str, to: &str, from: Option<&str>) {
 /// transition.
 fn write_back_after_execute(spec: &str) {
     let project_root = std::path::PathBuf::from(project_dir());
-    let spec_path = project_root
-        .join(".claude")
-        .join("spec")
-        .join(spec)
-        .join("spec.md");
+    let Ok(spec_path) = ClaudePaths::for_project(&project_root)
+        .and_then(|p| p.for_spec(spec))
+        .map(|sp| sp.spec_md_path())
+    else {
+        return;
+    };
     if !spec_path.exists() {
         return;
     }

@@ -19,6 +19,7 @@ use crate::run::env::{current_spec, session_id};
 use crate::util::now_iso8601;
 use mustard_core::fs::{read_to_string, write_atomic};
 use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
+use mustard_core::ClaudePaths;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -55,7 +56,13 @@ pub struct CacheReport {
 }
 
 fn cache_path(cwd: &Path) -> PathBuf {
-    cwd.join(".claude").join(".bugfix-cache.json")
+    // `.bugfix-cache.json` lives directly under `.claude/`; no typed accessor
+    // exists for this legacy file, so route via `claude_dir()` to keep the
+    // boundary owned by `ClaudePaths`. An I1 rejection collapses to an empty
+    // path which the caller treats as a cache miss (fail-open).
+    ClaudePaths::for_project(cwd)
+        .map(|p| p.claude_dir().join(".bugfix-cache.json"))
+        .unwrap_or_default()
 }
 
 fn load(cwd: &Path) -> BTreeMap<String, CacheEntry> {

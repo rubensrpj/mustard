@@ -93,11 +93,27 @@ impl DepKind {
     }
 }
 
-/// Walk up from `start_dir` to find the project root (a dir containing `.claude`).
+/// Walk up from `start_dir` to find the project root — a dir containing the
+/// Mustard config directory.
+///
+/// This is a *probe* — each ancestor `dir` is an arbitrary candidate, not a
+/// confirmed workspace root, so the canonical `ClaudePaths::for_project`
+/// constructor is not appropriate here (it would only catch the I1 guard, not
+/// detect the anchor). The literal probe join is therefore retained
+/// deliberately: it tests whether a sibling config dir exists relative to an
+/// ancestor we have not yet validated.
+///
+/// Callers that need the canonical workspace root (anchor = `mustard.json` +
+/// config dir) should use `mustard_core::workspace::workspace_root` instead;
+/// this probe predates that resolver and stays in place for back-compat with
+/// repos that carry the config dir but no `mustard.json`.
 fn find_project_root(start_dir: &Path) -> Option<PathBuf> {
     let mut dir = start_dir.to_path_buf();
     for _ in 0..10 {
-        if dir.join(".claude").exists() {
+        // Probe over an arbitrary candidate dir whose anchor has not yet
+        // been validated (see fn-level doc).
+        if dir.join(".claude").exists() { // ClaudePaths-exempt: ancestor probe
+
             return Some(dir);
         }
         match dir.parent() {

@@ -37,11 +37,12 @@
 //! reported but does not abort the rest of the layout).
 
 use crate::run::env::project_dir;
+use crate::run::spec_scaffold;
+use mustard_core::claude_paths::ClaudePaths;
 use mustard_core::fs as mfs;
-use mustard_core::meta::{write_meta, Meta};
+use mustard_core::meta::Meta;
 use mustard_core::spec::contract::{
-    AcceptanceCriterion, SectionBody, SpecInput, PLAN_DIVIDER, PLAN_SECTIONS, PRD_DIVIDER,
-    PRD_SECTIONS,
+    AcceptanceCriterion, SectionBody, SpecInput, PLAN_SECTIONS, PRD_SECTIONS,
 };
 use mustard_core::{
     i18n::{translate, Locale, Tone},
@@ -129,10 +130,15 @@ pub fn run(opts: SpecDraftOpts) {
     }
 
     let output = opts.output.unwrap_or_else(|| {
-        PathBuf::from(project_dir())
-            .join(".claude")
-            .join("spec")
-            .join(&slug)
+        let project = PathBuf::from(project_dir());
+        ClaudePaths::for_project(&project)
+            .and_then(|p| p.for_spec(&slug))
+            .map(|sp| sp.dir().to_path_buf())
+            .unwrap_or_else(|_| {
+                ClaudePaths::compose_unchecked(&project)
+                    .spec_dir()
+                    .join(&slug)
+            })
     });
 
     if output.exists() && !opts.force {
@@ -162,13 +168,14 @@ pub fn run(opts: SpecDraftOpts) {
 
     // ---- Materialise files. ----
     let mut written: Vec<String> = Vec::new();
-    if let Err(e) = write_spec_md(&output, &input, &opts.signals, lang_locale, tone) {
+    if let Err(e) = spec_scaffold::write_spec_md(&output, &input, &opts.signals, lang_locale, tone) {
         emit_error("write spec.md", &e);
         return;
     }
     written.push(output.join("spec.md").display().to_string());
 
-    if let Err(e) = write_meta_json(&output, &input) {
+    let meta = build_meta_from_input(&input);
+    if let Err(e) = spec_scaffold::write_meta_json(&output, &meta) {
         emit_error("write meta.json", &e);
         return;
     }
@@ -283,83 +290,10 @@ fn plan_section_default(name: &str, lang: Locale) -> String {
     }
 }
 
-/// Render `spec.md` with the canonical layout dividers + sections. Section
-/// headings rendered to disk use the locale-translated label (PT-BR sees the
-/// PT spelling, EN-US sees the EN spelling); the section *name* fed to the
-/// contract validator stays canonical (PT-BR), and the validator is
-/// case-insensitive across locales.
-fn write_spec_md(
-    output: &Path,
-    input: &SpecInput,
-    signals: &Option<String>,
-    lang: Locale,
-    tone: Tone,
-) -> Result<(), String> {
-    let mut body = String::new();
-    let _ = write!(body, "# {}\n\n", input.title);
-    // Drafter tone hint — picked up by the LLM that fleshes out section bodies.
-    // Hidden in an HTML comment so it never renders in rendered markdown.
-    let _ = writeln!(
-        body,
-        "<!-- drafter:tone={tone} — {instruction} -->",
-        tone = tone.as_str(),
-        instruction = tone_prompt_instruction(tone),
-    );
-    body.push_str("### Stage: Plan\n### Outcome: Active\n### Flags: \n\n");
-    body.push_str(PRD_DIVIDER);
-    body.push('\n');
-    for s in &input.prd_sections {
-        let heading = section_heading_for(&s.name, lang);
-        let _ = write!(body, "\n## {heading}\n\n{}\n", s.body);
-    }
-    let _ = write!(body, "\n## {}\n\n", translate("heading.spec.ac_list", lang));
-    for ac in &input.acceptance_criteria {
-        let _ = write!(
-            body,
-            "- **{id}** — {stmt}\n  Command: `{cmd}`\n",
-            id = ac.id,
-            stmt = ac.statement,
-            cmd = ac.command
-        );
-    }
-    if matches!(input.scope, Some(Scope::Full)) {
-        body.push('\n');
-        body.push_str(PLAN_DIVIDER);
-        body.push('\n');
-        for s in &input.plan_sections {
-            let heading = section_heading_for(&s.name, lang);
-            let _ = write!(body, "\n## {heading}\n\n{}\n", s.body);
-        }
-    }
-    if let Some(sigs) = signals {
-        if !sigs.trim().is_empty() {
-            let _ = write!(body, "\n<!-- signals: {} -->\n", sigs.trim());
-        }
-    }
-    let path = output.join("spec.md");
-    mfs::write_atomic(&path, body.as_bytes()).map_err(|e| e.to_string())
-}
-
-/// Translate a canonical (PT-BR) section name into the user-facing heading
-/// for the active locale.
-fn section_heading_for(canonical: &str, lang: Locale) -> String {
-    let key = match canonical {
-        "Contexto" => "heading.spec.context",
-        "Usuários" => "heading.spec.users",
-        "Métrica" => "heading.spec.metric",
-        "Não-Objetivos" => "heading.spec.non_goals",
-        "Critérios de Aceitação" => "heading.spec.ac",
-        "Arquivos" => "heading.spec.files",
-        "Tarefas" => "heading.spec.tasks",
-        "Limites" => "heading.spec.limits",
-        _ => return canonical.to_string(),
-    };
-    translate(key, lang).to_string()
-}
-
-/// Write `meta.json` next to `spec.md`.
-fn write_meta_json(output: &Path, input: &SpecInput) -> Result<(), String> {
-    let meta = Meta {
+/// Build a [`Meta`] from a [`SpecInput`]. Used by [`run`] before delegating
+/// to [`spec_scaffold::write_meta_json`].
+fn build_meta_from_input(input: &SpecInput) -> Meta {
+    Meta {
         stage: input.stage.map(|s| format!("{s:?}")),
         outcome: input.outcome.map(|o| format!("{o:?}")),
         phase: input.phase.map(|p| format!("{p:?}").to_uppercase()),
@@ -370,8 +304,7 @@ fn write_meta_json(output: &Path, input: &SpecInput) -> Result<(), String> {
         is_wave_plan: input.total_waves.map(|n| n > 0),
         total_waves: input.total_waves,
         raw: serde_json::Value::Null,
-    };
-    write_meta(&output.join("meta.json"), &meta).map_err(|e| e.to_string())
+    }
 }
 
 /// T1.9 — drop a tiny `memory/_index.md` stub so consumers can immediately
@@ -534,6 +467,7 @@ mod tests {
 
     #[test]
     fn section_heading_for_localises() {
+        use crate::run::spec_scaffold::section_heading_for;
         assert_eq!(section_heading_for("Contexto", Locale::EnUs), "Context");
         assert_eq!(section_heading_for("Contexto", Locale::PtBr), "Contexto");
         // Unknown section name passes through unchanged.

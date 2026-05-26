@@ -38,6 +38,7 @@
 //! or no captured memory rows for them. Exit 0 always (fail-open).
 
 use crate::run::env::project_dir;
+use mustard_core::claude_paths::ClaudePaths;
 use mustard_core::fs;
 use mustard_core::projection::read_harness_events_from_ndjson_dir;
 use serde_json::Value;
@@ -101,8 +102,23 @@ pub(crate) fn parse_wave_names(wave_plan_text: &str) -> Vec<String> {
 
 /// Resolve the per-spec NDJSON events directory:
 /// `<project>/.claude/spec/<spec>/.events`.
+///
+/// Fail-open: on I1 guard rejection or spec-name validation failure, falls
+/// back to the manual composition so cross-wave memory aggregation degrades
+/// silently rather than aborting.
 fn spec_events_dir(project: &Path, spec_slug: &str) -> PathBuf {
-    project.join(".claude").join("spec").join(spec_slug).join(".events")
+    ClaudePaths::for_project(project)
+        .and_then(|p| p.for_spec(spec_slug))
+        .map(|sp| sp.events_dir())
+        .unwrap_or_else(|_| {
+            // Fail-open: I1 guard rejected the root, OR the spec slug failed
+            // validation. Use `compose_unchecked` so the events-dir path
+            // still flows through the canonical accessor surface.
+            ClaudePaths::compose_unchecked(project)
+                .spec_dir()
+                .join(spec_slug)
+                .join(".events")
+        })
 }
 
 /// Parse the wave number `N` from a wave name like `wave-3-frontend`. Returns
@@ -263,8 +279,21 @@ pub fn run(spec: Option<&str>, wave: Option<u32>, cluster: Option<&str>) {
     }
 
     let project = PathBuf::from(project_dir());
-    let spec_dir = project.join(".claude").join("spec").join(spec);
-    let plan_path = spec_dir.join("wave-plan.md");
+    let (spec_dir, plan_path) = match ClaudePaths::for_project(&project)
+        .and_then(|p| p.for_spec(spec))
+    {
+        Ok(sp) => (sp.dir().to_path_buf(), sp.wave_plan_md_path()),
+        Err(_) => {
+            // Fail-open: I1 guard rejected the root, OR `spec` failed slug
+            // validation. Use `compose_unchecked` so the spec-dir + wave-plan
+            // paths still flow through canonical accessors.
+            let d = ClaudePaths::compose_unchecked(&project)
+                .spec_dir()
+                .join(spec);
+            let p = d.join("wave-plan.md");
+            (d, p)
+        }
+    };
 
     let plan_text = fs::read_to_string(&plan_path).unwrap_or_default();
     let mut all_names = parse_wave_names(&plan_text);

@@ -22,6 +22,7 @@
 
 use crate::util::sha256::Sha256;
 use mustard_core::fs;
+use mustard_core::ClaudePaths;
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -392,7 +393,10 @@ fn extract_between(content: &str, open: &str, close: &str) -> Option<String> {
 
 /// List the `.md` command files inside `<subproject>/.claude/commands/`.
 fn get_commands(abs_path: &Path) -> Vec<String> {
-    let dir = abs_path.join(".claude").join("commands");
+    let Ok(paths) = ClaudePaths::for_project(abs_path) else {
+        return Vec::new();
+    };
+    let dir = paths.commands_dir();
     let Ok(entries) = fs::read_dir(&dir) else {
         return Vec::new();
     };
@@ -408,7 +412,15 @@ fn get_commands(abs_path: &Path) -> Vec<String> {
 /// Build the agents list from `.claude/prompts/*.md` — a port of `getAgents()`.
 fn get_agents(root: &Path) -> Vec<String> {
     let mut agents = vec!["orchestrator".to_string()];
-    let dir = root.join(".claude").join("prompts");
+    // Legacy `.claude/prompts/` is not surfaced by `ClaudePaths`; route via
+    // `claude_dir()` so the canonical handle still owns the boundary without
+    // forcing a new accessor for a deprecated subdirectory.
+    let Ok(paths) = ClaudePaths::for_project(root) else {
+        agents.sort();
+        agents.dedup();
+        return agents;
+    };
+    let dir = paths.claude_dir().join("prompts");
     if let Ok(entries) = fs::read_dir(&dir) {
         for e in entries {
             if e.file_name.ends_with(".md") && !e.file_name.starts_with('_') {
@@ -444,7 +456,10 @@ fn has_build_manifest(dir: &Path) -> bool {
 fn read_overrides(root: &Path) -> (Vec<String>, Vec<String>) {
     let mut exclude = Vec::new();
     let mut include = Vec::new();
-    let content = read_safe(&root.join(".claude").join("mustard.json"));
+    let Ok(paths) = ClaudePaths::for_project(root) else {
+        return (exclude, include);
+    };
+    let content = read_safe(&paths.mustard_json_path());
     if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
         if let Some(sp) = json.get("subprojects") {
             for (field, out) in [("exclude", &mut exclude), ("include", &mut include)] {

@@ -14,6 +14,7 @@
 use mustard_core::fs;
 use mustard_core::telemetry::model::UsageMetric;
 use mustard_core::telemetry::{writer as telemetry_writer, TelemetryStore};
+use mustard_core::ClaudePaths;
 use std::path::{Path, PathBuf};
 
 /// One projected metric datapoint — the argument bundle for [`Store::upsert_metric`].
@@ -244,9 +245,15 @@ pub struct SampleRow {
 }
 
 /// Resolve `<project>/.claude/.harness/...`'s parent `.claude` dir.
+///
+/// Routed through `ClaudePaths` so the I1 guard fires at the boundary; a
+/// rejection collapses to an empty `PathBuf` (the caller's downstream IO will
+/// then degrade gracefully — every harness path is a fail-open read).
 #[must_use]
 pub fn claude_dir() -> PathBuf {
-    PathBuf::from(crate::run::env::project_dir()).join(".claude")
+    ClaudePaths::for_project(PathBuf::from(crate::run::env::project_dir()))
+        .map(|p| p.claude_dir())
+        .unwrap_or_default()
 }
 
 #[cfg(test)]

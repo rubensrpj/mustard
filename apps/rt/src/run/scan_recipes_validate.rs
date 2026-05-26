@@ -16,6 +16,7 @@
 //! Output is byte-stable pretty JSON: `{ recipes, hits, ok }`. Exit code is
 //! always `0` (fail-open) unless `--strict` is set and any hit is found.
 
+use mustard_core::claude_paths::ClaudePaths;
 use mustard_core::fs as mfs;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
@@ -36,7 +37,8 @@ const FORBIDDEN_PLACEHOLDERS: &[&str] = &[
 /// Collect every `*.json` recipe under `<repo>/.claude/recipes/`.
 fn collect_recipes(repo_root: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
-    let root = repo_root.join(".claude").join("recipes");
+    let Ok(paths) = ClaudePaths::for_project(repo_root) else { return out; };
+    let root = paths.claude_dir().join("recipes");
     walk(&root, &mut out);
     out.sort();
     out

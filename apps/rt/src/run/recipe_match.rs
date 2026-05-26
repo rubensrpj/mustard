@@ -29,6 +29,7 @@
 //! `eprintln!`, mirroring how [`super::rtk_gain::run`] handles its own
 //! best-effort writes.
 
+use mustard_core::claude_paths::ClaudePaths;
 use mustard_core::economy::{
     self,
     model::{SavingsRecord, SavingsSource},
@@ -49,7 +50,8 @@ pub fn run(entity: Option<&str>, operation: Option<&str>, subproject: Option<&st
         return; // exit 0 silently
     };
 
-    let recipes_dir = cwd.join(".claude").join("recipes");
+    let Ok(paths) = ClaudePaths::for_project(&cwd) else { return; };
+    let recipes_dir = paths.claude_dir().join("recipes");
     if !recipes_dir.exists() {
         return;
     }

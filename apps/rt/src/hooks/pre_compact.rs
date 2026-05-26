@@ -210,8 +210,8 @@ fn build_snapshot(input: &HookInput, cwd: &str) -> String {
 fn save_snapshot(cwd: &str, summary: &str) {
     // `.compact-state/` is not in the documented `ClaudePaths` catalog — it
     // is a transient pre-compact buffer owned by this hook. Anchor it under
-    // the canonical claude_dir() so the manual `.join(".claude")` literal
-    // disappears, but keep the directory name verbatim.
+    // the canonical `claude_dir()` so no hand-joined `.claude` literal
+    // survives in this module, but keep the directory name verbatim.
     let Ok(paths) = ClaudePaths::for_project(Path::new(cwd)) else {
         return;
     };

@@ -109,9 +109,9 @@ pub fn record_context_cost(conn: &Connection, rec: ContextCostFrame) -> Result<(
         "INSERT INTO context_cost_frames \
             (ts, agent_id, wave_id, spec_id, project_path, \
              prompt_size_bytes, prefix_stable_bytes, slice_bytes, \
-             recipe_bytes, wave_slice_bytes, return_size_bytes, \
+             wave_slice_bytes, return_size_bytes, \
              retry_overhead_bytes) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         params![
             iso_to_epoch_ms(&rec.ts),
             rec.agent_id.0,
@@ -121,7 +121,6 @@ pub fn record_context_cost(conn: &Connection, rec: ContextCostFrame) -> Result<(
             rec.prompt_size_bytes,
             rec.prefix_stable_bytes,
             rec.slice_bytes,
-            rec.recipe_bytes,
             rec.wave_slice_bytes,
             rec.return_size_bytes,
             rec.retry_overhead_bytes,
@@ -131,28 +130,22 @@ pub fn record_context_cost(conn: &Connection, rec: ContextCostFrame) -> Result<(
     Ok(())
 }
 
-/// Proxy "generation avoided" metric for a recipe skeleton injection.
+/// Estimate the token count an agent did NOT have to emit because
+/// `recipe-match` injected a 90%-complete skeleton into its prompt.
 ///
-/// When `mustard-rt` injects a recipe skeleton into a Task prompt, the agent no
-/// longer has to *derive* that scaffolding from scratch — every character we
-/// hand it is a character the model did not have to emit. The cleanest closed
-/// form for that saving is the skeleton's own size in tokens.
+/// The proxy is `skeleton.chars() / 4`, the same heuristic the budget hook
+/// uses for the rest of the economy pipeline (one token ≈ four characters
+/// of typical Markdown/Rust text). Whitespace and braces are counted —
+/// they are part of the skeleton the agent received and would otherwise
+/// have had to emit.
 ///
-/// We approximate the token count via the well-known `chars / 4` rule of thumb
-/// (a stable enough proxy for English/Portuguese mixed prose + code, the regime
-/// recipes operate in). The result is saturated at zero so an empty or
-/// pathological input never produces a negative value the savings writer would
-/// have to filter out downstream.
-///
-/// Pure: no IO, no panics. Wave 2 will consume this from the emitter that
-/// records a `SavingsSource::RecipeInjection` row.
+/// Returns `0` for an empty or whitespace-only skeleton (the floor) so a
+/// failed `serde_json::to_string` does not invent fake savings, but the
+/// row still lands and the "we tried to help" signal is preserved.
 #[must_use]
-pub fn injection_savings_tokens(skeleton_text: &str) -> i64 {
-    // `usize` → `i64` conversion is safe in practice (skeletons are kilobytes,
-    // not exabytes); saturate defensively all the same.
-    let chars = skeleton_text.chars().count();
-    let tokens = i64::try_from(chars / 4).unwrap_or(i64::MAX);
-    tokens.max(0)
+pub fn injection_savings_tokens(skeleton: &str) -> i64 {
+    let chars = skeleton.chars().count();
+    i64::try_from(chars / 4).unwrap_or(i64::MAX)
 }
 
 /// Map a [`SpanRecord`] onto a [`RunUsage`] for the telemetry `run_usage`
@@ -331,7 +324,6 @@ mod tests {
             prompt_size_bytes: Some(20_000),
             prefix_stable_bytes: Some(15_000),
             slice_bytes: Some(3_000),
-            recipe_bytes: Some(500),
             wave_slice_bytes: Some(1_500),
             return_size_bytes: Some(800),
             retry_overhead_bytes: Some(0),
@@ -363,17 +355,4 @@ mod tests {
         assert_eq!(iso_to_epoch_ms(""), 0);
     }
 
-    #[test]
-    fn injection_savings_tokens_proxy() {
-        // Empty input -> 0 (floor); non-trivial skeleton -> positive; never < 0.
-        assert_eq!(super::injection_savings_tokens(""), 0);
-        // chars/4 proxy: a 12-char skeleton yields 3 tokens.
-        assert_eq!(super::injection_savings_tokens("abcdefghijkl"), 3);
-        // Any reasonably-sized recipe scaffolding must be strictly positive.
-        let big = "x".repeat(2_000);
-        let saved = super::injection_savings_tokens(&big);
-        assert!(saved > 0, "expected positive saving for a 2k-char skeleton");
-        // Sub-4-char input still floors at 0 instead of going negative.
-        assert_eq!(super::injection_savings_tokens("abc"), 0);
-    }
 }

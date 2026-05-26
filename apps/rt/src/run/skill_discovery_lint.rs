@@ -9,6 +9,7 @@
 //! whether to migrate.
 
 use mustard_core::fs;
+use mustard_core::ClaudePaths;
 use std::path::{Path, PathBuf};
 
 // ---------------------------------------------------------------------------
@@ -205,8 +206,10 @@ pub fn check(root: &Path) -> LintReport {
     let mut scanned: usize = 0;
 
     // Base 1: installed .claude/
-    let claude_dir = root.join(".claude");
-    let installed_skills = find_skill_files(&claude_dir);
+    let installed_skills = match ClaudePaths::for_project(root) {
+        Ok(paths) => find_skill_files(&paths.claude_dir()),
+        Err(_) => Vec::new(),
+    };
     for path in &installed_skills {
         scan_file(path, &mut violations);
         scanned += 1;

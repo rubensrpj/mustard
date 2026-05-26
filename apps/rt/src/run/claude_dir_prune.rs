@@ -66,7 +66,6 @@ const KEEP_DIRS: &[&str] = &[
     "skills",
     "spec",
     "graph",
-    "recipes",
     "refs",
     "commands",
     "context",
@@ -83,7 +82,7 @@ const KEEP_DIRS: &[&str] = &[
 /// 1. **W2 canonical catalog** ([`ClaudePaths::documented_dirs`]) — every
 ///    top-level directory under `<root>/.claude/` that the path catalog
 ///    documents (`.cache`, `.harness`, `.metrics`, `.agent-state`, `.obsidian`,
-///    `commands`, `skills`, `refs`, `recipes`, `agents`, `agent-memory`,
+///    `commands`, `skills`, `refs`, `agents`, `agent-memory`,
 ///    `spec`, `graph`).
 /// 2. **Hold-over names** — directories the canonical catalog does not document
 ///    (yet) but which still legitimately appear under `.claude/` in the wild
@@ -274,9 +273,18 @@ fn audit_and_act(repo: &Path, apply: bool) -> Report {
 /// Build the audit report for `<repo>/.claude/` without mutating anything.
 /// Fail-open: a missing `.claude/` yields an empty report.
 fn audit(repo: &Path) -> Report {
-    let claude_root = repo.join(".claude");
     let mut entries: Vec<Entry> = Vec::new();
     let errors: Vec<ErrorEntry> = Vec::new();
+    let Ok(paths) = ClaudePaths::for_project(repo) else {
+        return Report {
+            scanned: 0,
+            entries,
+            removed: Vec::new(),
+            errors,
+            dry_run: true,
+        };
+    };
+    let claude_root = paths.claude_dir();
 
     let Ok(read) = std::fs::read_dir(&claude_root) else {
         return Report {
@@ -480,7 +488,7 @@ mod tests {
     #[test]
     fn known_keep_dirs_classified_keep() {
         let dir = tempdir().unwrap();
-        fake_dirs(dir.path(), &["skills", "spec", "graph", "recipes"]);
+        fake_dirs(dir.path(), &["skills", "spec", "graph"]);
         let report = audit(dir.path());
         for e in &report.entries {
             assert_eq!(e.classification, "KEEP", "{} should be KEEP", e.path);

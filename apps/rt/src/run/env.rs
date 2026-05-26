@@ -8,6 +8,7 @@
 use mustard_core::fs;
 use mustard_core::store::sqlite_store::SqliteEventStore;
 use mustard_core::workspace::{workspace_root, WorkspaceError};
+use mustard_core::ClaudePaths;
 use std::path::{Path, PathBuf};
 
 /// Resolve the Mustard workspace root by ancestor walk, **failing strictly**
@@ -129,9 +130,9 @@ pub fn current_spec(project_dir_path: &str) -> Option<String> {
     // 3. Newest pipeline-state file by mtime — legacy hint used when no
     //    `pipeline.scope` event exists yet (the moment between opening a
     //    spec on disk and emitting its first event).
-    let states = Path::new(project_dir_path)
-        .join(".claude")
-        .join(".pipeline-states");
+    let states = ClaudePaths::for_project(Path::new(project_dir_path))
+        .ok()?
+        .pipeline_states_dir();
     let entries = fs::read_dir(&states).ok()?;
     let mut best: Option<(std::time::SystemTime, String)> = None;
     for entry in entries {

@@ -11,6 +11,7 @@
 //! Process exits 0 in all paths.
 
 use mustard_core::fs;
+use mustard_core::ClaudePaths;
 use serde::Serialize;
 use serde_json::Value;
 use std::path::PathBuf;
@@ -46,7 +47,14 @@ pub struct GlossaryOutput {
 // ---------------------------------------------------------------------------
 
 fn load_entities(root: &std::path::Path, filter: Option<&str>) -> GlossaryOutput {
-    let path = root.join(".claude").join("entity-registry.json");
+    let Ok(paths) = ClaudePaths::for_project(root) else {
+        return GlossaryOutput {
+            entities: Vec::new(),
+            total_with_description: 0,
+            total_scanned: 0,
+        };
+    };
+    let path = paths.entity_registry_json_path();
     let Ok(text) = fs::read_to_string(&path) else {
         return GlossaryOutput {
             entities: Vec::new(),

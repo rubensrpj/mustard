@@ -17,6 +17,7 @@
 //! `{cwd}/.claude/.harness/telemetry.db`.
 
 use mustard_core::store::sqlite_store::SqliteEventStore;
+use mustard_core::ClaudePaths;
 use serde_json::{json, Value};
 use std::path::PathBuf;
 
@@ -84,13 +85,21 @@ impl DbMaintainOpts {
 }
 
 /// Resolve the project DB path — same logic as `SqliteEventStore::for_project`.
+///
+/// Returns the env-var override when set; otherwise the canonical
+/// `<root>/.claude/.harness/mustard.db` via `ClaudePaths`. An
+/// I1-rejecting `cwd` (path that already nests `.claude/.claude/`) yields an
+/// empty `PathBuf`, which the caller treats as "no DB" via the rusqlite open
+/// failure path — fail-open with no silent `.claude` literal in the fallback.
 fn resolve_db_path(cwd: &std::path::Path) -> PathBuf {
     if let Ok(p) = std::env::var("MUSTARD_DB_PATH") {
         if !p.is_empty() {
             return PathBuf::from(p);
         }
     }
-    cwd.join(".claude").join(".harness").join("mustard.db")
+    ClaudePaths::for_project(cwd)
+        .map(|p| p.mustard_db_path())
+        .unwrap_or_default()
 }
 
 /// Resolve the telemetry DB path. Mirrors `resolve_db_path` but targets
@@ -102,7 +111,13 @@ fn resolve_telemetry_db_path(cwd: &std::path::Path) -> PathBuf {
             return PathBuf::from(p);
         }
     }
-    cwd.join(".claude").join(".harness").join("telemetry.db")
+    // `telemetry.db` lives next to `mustard.db` under `.harness/`; no typed
+    // accessor exists yet, so route through `harness_dir()` and append the
+    // filename rather than re-deriving the prefix. Same fail-open shape as
+    // `resolve_db_path` — an I1-rejecting `cwd` returns an empty PathBuf.
+    ClaudePaths::for_project(cwd)
+        .map(|p| p.harness_dir().join("telemetry.db"))
+        .unwrap_or_default()
 }
 
 /// Read SQLite size PRAGMAs; return `(page_count, freelist_count, page_size)`.
