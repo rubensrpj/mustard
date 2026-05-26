@@ -17,6 +17,7 @@
 
 use crate::report::{table, Report};
 use mustard_core::fs;
+use mustard_core::ClaudePaths;
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -153,8 +154,15 @@ fn agg_to_json(agg: &BTreeMap<String, EventAgg>) -> Value {
 
 /// Read pipeline-state files into a list of `{ name, metrics }`.
 fn collect_specs(claude_dir: &Path) -> Vec<Value> {
-    let states_dir = claude_dir.join(".pipeline-states");
     let mut out = Vec::new();
+    let Some(paths) = claude_dir
+        .parent()
+        .filter(|_| claude_dir.file_name().and_then(|s| s.to_str()) == Some(".claude"))
+        .and_then(|root| ClaudePaths::for_project(root).ok())
+    else {
+        return out;
+    };
+    let states_dir = paths.pipeline_states_dir();
     let Ok(entries) = fs::read_dir(&states_dir) else {
         return out;
     };
@@ -184,8 +192,16 @@ fn collect_specs(claude_dir: &Path) -> Vec<Value> {
 
 /// Build the `collect` JSON document.
 fn build_collect(cwd: &Path, hooks_only: bool) -> Value {
-    let claude_dir = cwd.join(".claude");
-    let hook_events = aggregate_metrics(&claude_dir.join(".metrics"), None, None);
+    let paths = ClaudePaths::for_project(cwd).ok();
+    let claude_dir = paths
+        .as_ref()
+        .map(ClaudePaths::claude_dir)
+        .unwrap_or_else(|| cwd.to_path_buf());
+    let metrics_dir = paths
+        .as_ref()
+        .map(ClaudePaths::metrics_dir)
+        .unwrap_or_else(|| claude_dir.clone());
+    let hook_events = aggregate_metrics(&metrics_dir, None, None);
     let specs = if hooks_only { Vec::new() } else { collect_specs(&claude_dir) };
 
     let active: Vec<&Value> = specs.iter().filter(|s| s["isOrphaned"] == json!(false)).collect();
@@ -211,7 +227,9 @@ fn build_collect(cwd: &Path, hooks_only: bool) -> Value {
 
 /// Build the `report` JSON document.
 fn build_report(cwd: &Path, since: Option<&str>, event_filter: Option<&str>) -> Value {
-    let metrics_dir = cwd.join(".claude").join(".metrics");
+    let metrics_dir = ClaudePaths::for_project(cwd)
+        .map(|p| p.metrics_dir())
+        .unwrap_or_else(|_| cwd.to_path_buf());
     let agg = aggregate_metrics(&metrics_dir, since, event_filter);
     agg_to_json(&agg)
 }
@@ -357,7 +375,9 @@ fn build_compare(
     }
     let duration = to_ms - from_ms;
     let ref_start = from_ms - duration;
-    let metrics_dir = cwd.join(".claude").join(".metrics");
+    let metrics_dir = ClaudePaths::for_project(cwd)
+        .map(|p| p.metrics_dir())
+        .unwrap_or_else(|_| cwd.to_path_buf());
     let new_agg = aggregate_window(&metrics_dir, from_ms, to_ms, event_filter);
     let ref_agg = aggregate_window(&metrics_dir, ref_start, from_ms, event_filter);
 
@@ -393,8 +413,13 @@ fn build_compare(
 }
 
 /// Write a standalone HTML report wrapping the metrics document.
+///
+/// Metrics reports are not per-spec QA — they are workspace-wide diagnostic
+/// rollups, so the W2 cache reorg keeps them under
+/// `<root>/.claude/.metrics/reports/`.
 fn write_html_report(cwd: &Path, subcommand: &str, doc: &Value) -> Option<PathBuf> {
-    let dir = cwd.join(".claude").join(".qa-reports");
+    let paths = ClaudePaths::for_project(cwd).ok()?;
+    let dir = paths.metrics_dir().join("reports");
     fs::create_dir_all(&dir).ok()?;
     let mut report = Report::new(format!("Metrics — {subcommand}"), "pipeline + hook telemetry");
 
@@ -512,7 +537,7 @@ mod tests {
     use tempfile::tempdir;
 
     fn write_metric(dir: &Path, event: &str, line: &str) {
-        let m = dir.join(".claude").join(".metrics");
+        let m = ClaudePaths::for_project(dir).unwrap().metrics_dir();
         std::fs::create_dir_all(&m).unwrap();
         let path = m.join(format!("{event}.jsonl"));
         let existing = std::fs::read_to_string(&path).unwrap_or_default();

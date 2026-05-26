@@ -26,6 +26,7 @@
 use mustard_core::error::Error;
 use mustard_core::fs;
 use mustard_core::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
+use mustard_core::ClaudePaths;
 use rusqlite::params;
 use serde_json::Value;
 use std::path::Path;
@@ -66,7 +67,14 @@ fn git(cwd: &str, args: &[&str]) -> Option<String> {
 /// `true` if there is at least one `active` / `implementing` pipeline-state.
 /// Mirrors the JS "no active pipeline → exit silently" gate.
 fn has_active_pipeline(claude_dir: &Path) -> bool {
-    let pipeline_states_dir = claude_dir.join(".pipeline-states");
+    let pipeline_states_dir = claude_dir
+        .parent()
+        .filter(|_| claude_dir.file_name().and_then(|s| s.to_str()) == Some(".claude"))
+        .and_then(|root| ClaudePaths::for_project(root).ok())
+        .map(|p| p.pipeline_states_dir());
+    let Some(pipeline_states_dir) = pipeline_states_dir else {
+        return true;
+    };
     let Ok(entries) = fs::read_dir(&pipeline_states_dir) else {
         // No states dir → the JS validation block is skipped entirely (it
         // only early-exits when the dir *exists* with no active state), so a
@@ -102,10 +110,9 @@ fn has_active_pipeline(claude_dir: &Path) -> bool {
 fn count_memory_rows(cwd: &str, table: &str) -> usize {
     let db_path = match std::env::var("MUSTARD_DB_PATH") {
         Ok(p) if !p.trim().is_empty() => std::path::PathBuf::from(p),
-        _ => Path::new(cwd)
-            .join(".claude")
-            .join(".harness")
-            .join("mustard.db"),
+        _ => ClaudePaths::for_project(Path::new(cwd))
+            .map(|p| p.harness_dir().join("mustard.db"))
+            .unwrap_or_else(|_| std::path::PathBuf::from(cwd).join("mustard.db")),
     };
     if !db_path.exists() {
         return 0;
@@ -163,8 +170,11 @@ fn build_snapshot(input: &HookInput, cwd: &str) -> String {
     }
 
     // Active pipelines.
-    let claude = Path::new(cwd).join(".claude");
-    let states = claude.join(".pipeline-states");
+    let paths = ClaudePaths::for_project(Path::new(cwd)).ok();
+    let states = paths
+        .as_ref()
+        .map(ClaudePaths::pipeline_states_dir)
+        .unwrap_or_else(|| Path::new(cwd).to_path_buf());
     if let Ok(entries) = fs::read_dir(&states) {
         let names: Vec<String> = entries
             .into_iter()
@@ -198,7 +208,14 @@ fn build_snapshot(input: &HookInput, cwd: &str) -> String {
 
 /// Save the snapshot to `.claude/.compact-state/{timestamp}.txt`. Best-effort.
 fn save_snapshot(cwd: &str, summary: &str) {
-    let state_dir = Path::new(cwd).join(".claude").join(".compact-state");
+    // `.compact-state/` is not in the documented `ClaudePaths` catalog — it
+    // is a transient pre-compact buffer owned by this hook. Anchor it under
+    // the canonical claude_dir() so the manual `.join(".claude")` literal
+    // disappears, but keep the directory name verbatim.
+    let Ok(paths) = ClaudePaths::for_project(Path::new(cwd)) else {
+        return;
+    };
+    let state_dir = paths.claude_dir().join(".compact-state");
     if fs::create_dir_all(&state_dir).is_err() {
         return;
     }
@@ -216,7 +233,10 @@ impl Check for PreCompact {
             return Ok(Verdict::Allow);
         }
         let cwd = project_dir(input, ctx);
-        let claude = Path::new(&cwd).join(".claude");
+        let Ok(paths) = ClaudePaths::for_project(Path::new(&cwd)) else {
+            return Ok(Verdict::Allow);
+        };
+        let claude = paths.claude_dir();
         if !has_active_pipeline(&claude) {
             return Ok(Verdict::Allow);
         }
@@ -238,6 +258,7 @@ mod tests {
         Ctx {
             project_dir: dir.to_string(),
             trigger: Some(Trigger::PreCompact),
+            workspace_root: None,
         }
     }
 
@@ -253,6 +274,7 @@ mod tests {
         let other = Ctx {
             project_dir: ".".to_string(),
             trigger: Some(Trigger::PreToolUse),
+            workspace_root: None,
         };
         assert_eq!(
             PreCompact.evaluate(&pre_compact_input(), &other).unwrap(),
@@ -265,7 +287,7 @@ mod tests {
         // No .pipeline-states dir → the JS validation block is skipped → the
         // snapshot is still produced.
         let dir = tempdir().unwrap();
-        std::fs::create_dir_all(dir.path().join(".claude")).unwrap();
+        std::fs::create_dir_all(ClaudePaths::for_project(dir.path()).unwrap().claude_dir()).unwrap();
         let verdict = PreCompact
             .evaluate(&pre_compact_input(), &ctx(dir.path().to_str().unwrap()))
             .unwrap();
@@ -281,11 +303,12 @@ mod tests {
     #[test]
     fn no_active_pipeline_is_silent_allow() {
         let dir = tempdir().unwrap();
-        let states = dir.path().join(".claude/.pipeline-states");
+        let paths = ClaudePaths::for_project(dir.path()).unwrap();
+        let states = paths.pipeline_states_dir();
         std::fs::create_dir_all(&states).unwrap();
         // A states dir with only a terminal state → silent (Allow).
         std::fs::write(
-            states.join("done.json"),
+            paths.pipeline_state_file("done"),
             json!({ "status": "completed" }).to_string(),
         )
         .unwrap();
@@ -302,7 +325,8 @@ mod tests {
         // Dir exists but holds zero .json files → JS `stateFiles=[]` →
         // `activeStates.length===0` → `process.exit(0)`. Parity: no snapshot.
         let dir = tempdir().unwrap();
-        let states = dir.path().join(".claude/.pipeline-states");
+        let paths = ClaudePaths::for_project(dir.path()).unwrap();
+        let states = paths.pipeline_states_dir();
         std::fs::create_dir_all(&states).unwrap();
         assert_eq!(
             PreCompact
@@ -315,10 +339,11 @@ mod tests {
     #[test]
     fn active_pipeline_yields_snapshot() {
         let dir = tempdir().unwrap();
-        let states = dir.path().join(".claude/.pipeline-states");
+        let paths = ClaudePaths::for_project(dir.path()).unwrap();
+        let states = paths.pipeline_states_dir();
         std::fs::create_dir_all(&states).unwrap();
         std::fs::write(
-            states.join("live.json"),
+            paths.pipeline_state_file("live"),
             json!({ "status": "implementing" }).to_string(),
         )
         .unwrap();
@@ -332,7 +357,7 @@ mod tests {
             other => panic!("expected Inject, got {other:?}"),
         }
         // The snapshot is also persisted to .compact-state/.
-        let compact = dir.path().join(".claude/.compact-state");
+        let compact = paths.claude_dir().join(".compact-state");
         let saved = std::fs::read_dir(&compact).unwrap().count();
         assert_eq!(saved, 1, "snapshot file written");
     }
@@ -340,7 +365,7 @@ mod tests {
     #[test]
     fn compact_reason_is_carried_into_snapshot() {
         let dir = tempdir().unwrap();
-        std::fs::create_dir_all(dir.path().join(".claude")).unwrap();
+        std::fs::create_dir_all(ClaudePaths::for_project(dir.path()).unwrap().claude_dir()).unwrap();
         let input = HookInput {
             hook_event_name: Some("PreCompact".to_string()),
             raw: json!({ "compact_reason": "manual" }),

@@ -120,7 +120,20 @@ pub fn discover_clusters(
                     .filter(|e| e.get("hash").and_then(Value::as_str) == Some(&file_set_hash))
                 {
                     if let Some(clusters) = entry.get("clusters").and_then(Value::as_array) {
-                        return clusters.iter().take(max_clusters()).cloned().collect();
+                        let mut out: Vec<Value> =
+                            clusters.iter().take(max_clusters()).cloned().collect();
+                        // Re-apply subprojectName on cache hit: a cold-path
+                        // caller (no name) may have populated the cache first;
+                        // the warm caller (sync_registry) re-runs with the
+                        // real name and expects the tag in the output.
+                        if let Some(name) = subproject_name {
+                            for cluster in &mut out {
+                                if let Value::Object(map) = cluster {
+                                    map.insert("subprojectName".to_string(), json!(name));
+                                }
+                            }
+                        }
+                        return out;
                     }
                 }
             }
@@ -161,6 +174,44 @@ pub fn discover_clusters(
     merged.sort_by_key(|b| std::cmp::Reverse(file_count(b)));
 
     let mut kept: Vec<Value> = merged.into_iter().take(max_clusters()).collect();
+
+    // T3.2 fallback — when no cluster qualified but the subproject has ≥5
+    // source files, emit one coarse "folder" cluster per parent folder with
+    // ≥3 sibling files of the primary extension. Keeps the contract that
+    // every subproject with a meaningful surface area surfaces at least one
+    // cluster in `_patterns.{stack}.discovered[]`.
+    if kept.is_empty() && all_files.len() >= 5 {
+        let mut by_folder: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for f in &all_files {
+            let rel = relative_path(subproject_path, Path::new(f));
+            let folder = parent_dir(&rel);
+            by_folder.entry(folder).or_default().push(basename(&rel));
+        }
+        for (folder, files) in &by_folder {
+            if files.len() < 3 || folder == "." {
+                continue;
+            }
+            let label = folder
+                .rsplit('/')
+                .find(|seg| !seg.is_empty())
+                .unwrap_or(folder)
+                .to_string();
+            let samples: Vec<String> = files.iter().take(3).cloned().collect();
+            kept.push(json!({
+                "kind": "folder-fallback-cluster",
+                "label": label,
+                "suffix": label,
+                "ext": ext,
+                "fileCount": files.len(),
+                "folders": [folder.clone()],
+                "folderPattern": format!("{folder}/"),
+                "samples": samples,
+            }));
+            if kept.len() >= max_clusters() {
+                break;
+            }
+        }
+    }
 
     // Enrichment — universal metadata extracted from samples, once per cluster.
     for cluster in &mut kept {
@@ -1030,6 +1081,26 @@ fn enrich_cluster(cluster: &mut Value, subproject_path: &Path) {
     let members = extract_member_suffixes(&contents);
     if !members.is_empty() {
         map.insert("memberSuffixes".to_string(), json!(members));
+    }
+
+    // T3.3 — attach agnostic decl counts derived from the sampled file set.
+    // The extractor is syntax-aware (not framework-aware), so the counts
+    // describe "how many public/exported declarations live in the sample"
+    // without claiming to recognise the user's stack. Empty samples ⇒ skip.
+    use super::entity_extractor::extract_decls;
+    let mut decl_count: usize = 0;
+    let mut by_kind: BTreeMap<String, u64> = BTreeMap::new();
+    for (path, source) in &contents {
+        for decl in extract_decls(path, source) {
+            decl_count += 1;
+            *by_kind.entry(decl.kind).or_insert(0) += 1;
+        }
+    }
+    if decl_count > 0 {
+        map.insert("declCount".to_string(), json!(decl_count));
+        let kind_obj: serde_json::Map<String, Value> =
+            by_kind.into_iter().map(|(k, v)| (k, json!(v))).collect();
+        map.insert("declByKind".to_string(), Value::Object(kind_obj));
     }
 }
 

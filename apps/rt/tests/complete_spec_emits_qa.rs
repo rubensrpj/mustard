@@ -86,7 +86,7 @@ fn complete_spec_emits_qa_result_event() {
         .join(".claude")
         .join("spec")
         .join(spec_name)
-        .join("events");
+        .join(".events");
     let events = read_harness_events_from_ndjson_dir(&events_dir);
 
     let qa_events: Vec<&mustard_core::model::event::HarnessEvent> = events

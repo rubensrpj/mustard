@@ -64,6 +64,11 @@ notify = { workspace = true }
 # speedup on multi-core machines. Pinned via the workspace table.
 rayon = { workspace = true }
 
+# SHA-256 for the `backup-specs` MANIFEST.json digest. Same crate
+# `mustard-core::model::provenance` already pulls — pinning to the same minor
+# keeps the workspace on one `sha2` graph.
+sha2 = "0.10.9"
+
 [dev-dependencies]
 
 # Inherit the workspace lint table (pedantic = warn, unwrap_used = deny,

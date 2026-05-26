@@ -15,9 +15,13 @@
 //!     { "n": 2, "role": "general", "summary": "…", "depends_on": ["wave-1-general"] }
 //!   ],
 //!   "total_waves": 2,
-//!   "lang": "pt"
+//!   "lang": "pt-BR"
 //! }
 //! ```
+//!
+//! `lang` accepts BCP-47 (`pt-BR` / `en-US`); the legacy short forms
+//! (`pt` / `en`) are tolerated on read for back-compat with old plan JSON
+//! and normalised to BCP-47 in the rendered headings.
 //!
 //! Idempotent: each output file is only created when absent. The stdout JSON
 //! reports which were created vs skipped.
@@ -89,7 +93,9 @@ struct Headings<'a> {
 }
 
 fn headings_for(lang: &str) -> Headings<'static> {
-    if lang == "en" {
+    // Tolerant read: accept BCP-47 + legacy short codes.
+    let lc = lang.trim().to_ascii_lowercase();
+    if lc == "en" || lc == "en-us" {
         Headings {
             wave_plan_title: "# Wave Plan",
             table_header:
@@ -294,11 +300,41 @@ pub fn run(spec_dir_arg: Option<&str>, plan_arg: Option<&str>) {
         }
     };
 
+    // W10.T10.3 — hard gate: an empty plan is operator error, not "scaffold
+    // nothing". Print to stderr and exit non-zero so the orchestrator notices.
+    if plan.waves.is_empty() {
+        eprintln!(
+            "[wave-scaffold] ERROR: plan.waves is empty — nothing to scaffold ({})",
+            plan_path.display()
+        );
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "created_files": [],
+                "skipped": [],
+                "error": "plan.waves is empty",
+            }))
+            .unwrap_or_else(|_| "{}".to_string())
+        );
+        std::process::exit(2);
+    }
+    // W10.T10.3 — mismatch is operator typo, not fatal: warn and continue
+    // using the actual length so the table matches the directories on disk.
+    if let Some(declared) = plan.total_waves {
+        let actual = plan.waves.len() as u32;
+        if declared != actual {
+            eprintln!(
+                "[wave-scaffold] WARN: plan.total_waves={declared} but waves.length={actual}; \
+                 using {actual}",
+            );
+        }
+    }
+
     let parent_name = spec_dir
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_default();
-    let lang = plan.lang.as_deref().unwrap_or("pt");
+    let lang = plan.lang.as_deref().unwrap_or("pt-BR");
     let hd = headings_for(lang);
 
     let _ = fs::create_dir_all(&spec_dir);

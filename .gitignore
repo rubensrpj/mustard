@@ -46,8 +46,9 @@ coverage/
 # Agent memory (session-scoped, auto-cleaned)
 .claude/.agent-memory/
 
-# Pipeline states (ephemeral, modified by hooks)
-.claude/.pipeline-states/
+# Mustard runtime caches (W2 cache reorg: detect.json, scan-dispatch.json,
+# knowledge-seen.json, memory-seen.json all consolidated under .cache/)
+.claude/.cache/
 
 # Enforcement metrics (append-only, local telemetry)
 .claude/.metrics/
@@ -65,7 +66,7 @@ coverage/
 **/.claude/.harness/
 **/.claude/.metrics/
 **/.claude/.compact-state/
-**/.claude/.pipeline-states/
+**/.claude/.cache/
 
 # Timestamped backups created by mustard init/update
 .claude.backup.*/
@@ -81,3 +82,20 @@ dashboard-html.txt
 # CLI template fixtures (regenerable runtime state)
 packages/cli/templates/.claude/.harness/
 packages/cli/templates/.claude/.metrics/
+
+# Per-spec event log + blob spill (NDJSON, regenerable)
+**/.claude/spec/*/.events/
+**/.claude/spec/*/.blobs/
+
+# Per-spec QA reports (W2 path catalog: moved out of .claude/.qa-reports/)
+**/.claude/spec/*/qa-report.json
+**/.claude/spec/*/qa-report.html
+
+# Per-spec economy baselines (W2 path catalog: moved out of
+# .claude/.economy-baselines.json)
+**/.claude/spec/*/economy-baselines.json
+
+# Per-wave artefacts (W2 path catalog: moved out of .claude/.pipeline-states/)
+**/.claude/spec/*/wave-*/diff.md
+**/.claude/spec/*/wave-*/prompt.md
+**/.claude/spec/*/wave-*/warnings.txt

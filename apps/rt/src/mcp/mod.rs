@@ -437,7 +437,7 @@ impl MustardMemory {
     /// Tool 2 — filter events by spec / event / since.
     ///
     /// W5: events live in two stores — `pipeline_events` (SQLite lifecycle
-    /// index) and per-spec NDJSON files (`.claude/spec/<spec>/events/`). This
+    /// index) and per-spec NDJSON files (`.claude/spec/<spec>/.events/`). This
     /// folds both sources together so MCP consumers see a single timeline.
     /// When `spec` is given, only that spec's NDJSON dir is read; otherwise
     /// every spec dir under `.claude/spec/` contributes.
@@ -459,7 +459,7 @@ impl MustardMemory {
         // 2) NDJSON slice — per-spec dirs.
         let specs_root = self.project_dir.join(".claude").join("spec");
         if let Some(spec) = args.spec.as_deref() {
-            let dir = specs_root.join(spec).join("events");
+            let dir = specs_root.join(spec).join(".events");
             events.extend(
                 mustard_core::projection::read_harness_events_from_ndjson_dir(&dir),
             );
@@ -468,7 +468,7 @@ impl MustardMemory {
                 if !entry.path().is_dir() {
                     continue;
                 }
-                let dir = entry.path().join("events");
+                let dir = entry.path().join(".events");
                 events.extend(
                     mustard_core::projection::read_harness_events_from_ndjson_dir(&dir),
                 );

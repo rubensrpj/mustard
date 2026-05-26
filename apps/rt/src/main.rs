@@ -76,6 +76,7 @@ struct Cli {
 /// face (the b4 script port), and the `Mcp` face (the `mustard-memory` MCP
 /// server). `Run` and `Mcp` skip the harness stdin read.
 #[derive(Debug, Subcommand)]
+#[allow(clippy::large_enum_variant)] // CLI parser enum — single-use stack alloc, indirection adds no value
 enum Command {
     /// Run every module applicable to a whole harness lifecycle event.
     On {

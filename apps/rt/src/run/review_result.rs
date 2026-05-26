@@ -98,14 +98,14 @@ mod tests {
         assert_eq!(payload["subproject"], json!("api"));
 
         // W5: `review.result` is non-pipeline → per-spec NDJSON under
-        // `<project>/.claude/spec/demo/events/`.
+        // `<project>/.claude/spec/demo/.events/`.
         let events_dir = dir
             .path()
             .join(".claude")
             .join("spec")
             .join("demo")
-            .join("events");
-        assert!(events_dir.exists(), "events dir must exist");
+            .join(".events");
+        assert!(events_dir.exists(), ".events dir must exist");
         let mut found = false;
         for f in std::fs::read_dir(&events_dir).unwrap() {
             let body = std::fs::read_to_string(f.unwrap().path()).unwrap_or_default();

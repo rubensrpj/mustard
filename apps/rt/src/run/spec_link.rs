@@ -15,6 +15,7 @@ use crate::run::env::session_id;
 use crate::util::now_iso8601;
 use mustard_core::fs;
 use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
+use mustard_core::ClaudePaths;
 use serde_json::{json, Value};
 use std::path::Path;
 
@@ -26,6 +27,9 @@ fn read_state(path: &Path) -> Option<Value> {
 
 /// Write a pipeline-state file (pretty JSON + trailing newline). Fail-soft.
 fn write_state(path: &Path, value: &Value) -> bool {
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
     match serde_json::to_string_pretty(value) {
         Ok(text) => fs::write_atomic(path, format!("{text}\n").as_bytes()).is_ok(),
         Err(_) => false,
@@ -70,10 +74,9 @@ fn link_spec(cwd: &Path, parent: &str, child: &str, reason: &str) -> bool {
 
     emit_link_event(cwd, parent, child, reason);
 
-    let states_dir = cwd.join(".claude").join(".pipeline-states");
-
+    let Ok(paths) = ClaudePaths::for_project(cwd) else { return false };
     // Parent state — append the child to `children_specs` idempotently.
-    let parent_file = states_dir.join(format!("{parent}.json"));
+    let parent_file = paths.pipeline_state_file(parent);
     let mut parent_state = read_state(&parent_file).unwrap_or_else(|| {
         json!({ "spec": parent, "parent_spec": Value::Null, "children_specs": [] })
     });
@@ -97,7 +100,7 @@ fn link_spec(cwd: &Path, parent: &str, child: &str, reason: &str) -> bool {
     write_state(&parent_file, &parent_state);
 
     // Child state — set `parent_spec`.
-    let child_file = states_dir.join(format!("{child}.json"));
+    let child_file = paths.pipeline_state_file(child);
     let mut child_state = read_state(&child_file).unwrap_or_else(|| {
         json!({ "spec": child, "parent_spec": parent, "children_specs": [] })
     });
@@ -136,13 +139,13 @@ mod tests {
     fn link_creates_and_updates_states() {
         let dir = tempdir().unwrap();
         assert!(link_spec(dir.path(), "epic", "child-1", "split"));
-        let states = dir.path().join(".claude").join(".pipeline-states");
-        let parent = read_state(&states.join("epic.json")).unwrap();
+        let paths = ClaudePaths::for_project(dir.path()).unwrap();
+        let parent = read_state(&paths.pipeline_state_file("epic")).unwrap();
         assert_eq!(
             parent["children_specs"],
             json!(["child-1"])
         );
-        let child = read_state(&states.join("child-1.json")).unwrap();
+        let child = read_state(&paths.pipeline_state_file("child-1")).unwrap();
         assert_eq!(child["parent_spec"], json!("epic"));
     }
 
@@ -151,8 +154,8 @@ mod tests {
         let dir = tempdir().unwrap();
         link_spec(dir.path(), "epic", "child-1", "split");
         link_spec(dir.path(), "epic", "child-1", "split");
-        let states = dir.path().join(".claude").join(".pipeline-states");
-        let parent = read_state(&states.join("epic.json")).unwrap();
+        let paths = ClaudePaths::for_project(dir.path()).unwrap();
+        let parent = read_state(&paths.pipeline_state_file("epic")).unwrap();
         assert_eq!(parent["children_specs"].as_array().unwrap().len(), 1);
     }
 

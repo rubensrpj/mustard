@@ -13,11 +13,22 @@
 //! The JS ran the four in parallel — this port runs them sequentially, which
 //! is simpler and still fast since each is a short binary invocation.
 
+use crate::run::scan::refs_installer::{install_refs, DetectedStack};
 use mustard_core::fs;
+use mustard_core::ClaudePaths;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Instant;
+
+/// Resolve `<root>/.claude/.cache/scan-dispatch.json` (the W2 cache reorg
+/// location). Returns `None` when `root` violates the I1 guard — callers
+/// degrade to a no-op rather than mis-route the lookup.
+fn scan_dispatch_path_for(root: &Path) -> Option<PathBuf> {
+    ClaudePaths::for_project(root)
+        .ok()
+        .map(|p| p.scan_dispatch_path())
+}
 
 /// One sub-step's outcome.
 struct StepResult {
@@ -65,9 +76,9 @@ fn run_subcommand(root: &Path, args: &[&str]) -> StepResult {
 /// Verify each dispatched subproject produced skills or the no-patterns marker.
 fn verify_dispatch(root: &Path) -> (Value, Vec<String>) {
     let mut warnings = Vec::new();
-    let state_path = root.join(".claude").join(".scan-dispatch.json");
-    let state: Option<Value> = fs::read_to_string(&state_path)
-        .ok()
+    let state: Option<Value> = scan_dispatch_path_for(root)
+        .as_ref()
+        .and_then(|p| fs::read_to_string(p).ok())
         .and_then(|t| serde_json::from_str(&t).ok());
     let dispatch = state
         .as_ref()
@@ -85,7 +96,10 @@ fn verify_dispatch(root: &Path) -> (Value, Vec<String>) {
         let name = sub.get("name").and_then(Value::as_str).unwrap_or("");
         let abs = sub.get("absSubprojectPath").and_then(Value::as_str).unwrap_or("");
         // `absSubprojectPath` is recorded relative to root by the orchestrator.
-        let skills_dir = root.join(abs).join(".claude").join("skills");
+        let abs_sub = root.join(abs);
+        let skills_dir = ClaudePaths::for_project(&abs_sub)
+            .map(|p| p.skills_dir())
+            .unwrap_or_else(|_| abs_sub.clone());
         let mut skills: Vec<String> = Vec::new();
         let mut has_marker = false;
         let status: &str;
@@ -158,29 +172,66 @@ fn finalize(root: &Path, skip_security: bool) -> Value {
     }
 
     // Step 6 — validate skills (--factual), mode-gated.
+    //
+    // T3.12 — when the first validate pass fails, log a warning and
+    // re-dispatch validation ONE TIME. If the second pass still fails,
+    // fail-open with `attempts: 2` so the caller can see both attempts.
+    // Hard cap at 2 — no infinite retry loop.
     let mode = std::env::var("MUSTARD_SKILL_VALIDATE_MODE")
         .map_or_else(|_| "strict".to_string(), |m| m.to_lowercase());
     let skills_step;
     if mode == "off" {
-        skills_step = json!({ "ran": false, "ok": true, "mode": mode });
+        skills_step = json!({ "ran": false, "ok": true, "mode": mode, "attempts": 0 });
     } else {
-        let skills = run_subcommand(root, &["run", "skills", "validate", "--factual"]);
+        let first = run_subcommand(root, &["run", "skills", "validate", "--factual"]);
+        let (skills, attempts, retried) = if first.ok {
+            (first, 1u32, false)
+        } else {
+            warnings.push(format!(
+                "skill-validate first pass failed (exit {:?}); re-dispatching once",
+                first.status
+            ));
+            let second = run_subcommand(root, &["run", "skills", "validate", "--factual"]);
+            (second, 2u32, true)
+        };
         if mode == "warn" {
             if !skills.ok {
                 warnings.push(format!("skill-validate (warn mode): exit {:?}", skills.status));
             }
             skills_step = json!({
-                "ran": true, "ok": true, "mode": mode, "durationMs": skills.duration_ms,
+                "ran": true,
+                "ok": true,
+                "mode": mode,
+                "durationMs": skills.duration_ms,
+                "attempts": attempts,
+                "retried": retried,
+                "validated": skills.ok,
             });
         } else {
             if !skills.ok {
-                errors.push(format!("skill-validate (strict): exit {:?}", skills.status));
+                // Fail-open: surface as warning, not error, when the second
+                // attempt also failed — the contract is to report attempts,
+                // not to bubble an exit code that would block the scan.
+                if attempts == 2 {
+                    warnings.push(format!(
+                        "skill-validate (strict): both attempts failed (exit {:?})",
+                        skills.status
+                    ));
+                } else {
+                    errors.push(format!("skill-validate (strict): exit {:?}", skills.status));
+                }
                 if !skills.stdout.is_empty() {
                     errors.push(format!("skill-validate stdout: {}", truncate(&skills.stdout, 800)));
                 }
             }
             skills_step = json!({
-                "ran": true, "ok": skills.ok, "mode": mode, "durationMs": skills.duration_ms,
+                "ran": true,
+                "ok": skills.ok,
+                "mode": mode,
+                "durationMs": skills.duration_ms,
+                "attempts": attempts,
+                "retried": retried,
+                "validated": skills.ok,
             });
         }
     }
@@ -213,6 +264,12 @@ fn finalize(root: &Path, skip_security: bool) -> Value {
     let (dispatch_verify, dv_warnings) = verify_dispatch(root);
     warnings.extend(dv_warnings);
 
+    // T3.5 — install stack-matched refs per dispatched subproject. Fires
+    // after validate so refs land alongside freshly-validated skills.
+    // Fail-open: per-subproject errors are surfaced in `refsInstall` but
+    // never block the rest of finalize.
+    let refs_install = install_refs_step(root, &mut warnings);
+
     json!({
         "steps": {
             "registry": { "ran": true, "ok": registry.ok, "durationMs": registry.duration_ms },
@@ -220,11 +277,88 @@ fn finalize(root: &Path, skip_security: bool) -> Value {
             "skills": skills_step,
             "security": security_step,
             "dispatchVerify": dispatch_verify,
+            "refsInstall": refs_install,
         },
         "errors": errors,
         "warnings": warnings,
         "totalDurationMs": start.elapsed().as_millis(),
     })
+}
+
+/// For every dispatched subproject in `<root>/.claude/.cache/scan-dispatch.json`,
+/// install matching stack-templates refs.
+///
+/// Reads the dispatch state's `name`/`path`/`role`/`stackSummary` to build
+/// a [`DetectedStack`] per subproject — `stackSummary` is mined as a stack
+/// id when present, `role` becomes the `roles` entry. The result is a
+/// per-subproject JSON object with counts that the finalize report can
+/// surface.
+fn install_refs_step(root: &Path, warnings: &mut Vec<String>) -> Value {
+    let Some(state) = scan_dispatch_path_for(root)
+        .as_ref()
+        .and_then(|p| fs::read_to_string(p).ok())
+        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+    else {
+        return json!({ "ran": false, "subprojects": [] });
+    };
+    let dispatch = state
+        .get("dispatch")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if dispatch.is_empty() {
+        return json!({ "ran": false, "subprojects": [] });
+    }
+
+    let mut out: Vec<Value> = Vec::new();
+    for sub in &dispatch {
+        let name = sub.get("name").and_then(Value::as_str).unwrap_or("");
+        let path = sub
+            .get("absSubprojectPath")
+            .and_then(Value::as_str)
+            .or_else(|| sub.get("path").and_then(Value::as_str))
+            .unwrap_or("");
+        let role = sub.get("role").and_then(Value::as_str).unwrap_or("");
+        let stack_summary = sub
+            .get("stackSummary")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        // Mine a stack id from the summary — first whitespace-separated
+        // token, lowercased. Empty when no summary.
+        let stack_id = stack_summary
+            .split_whitespace()
+            .next()
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        let stack = DetectedStack {
+            id: stack_id,
+            roles: if role.is_empty() {
+                vec![]
+            } else {
+                vec![role.to_string()]
+            },
+            extras: vec![],
+        };
+        let target = if path.is_empty() {
+            root.to_path_buf()
+        } else {
+            root.join(path)
+        };
+        let report = install_refs(&stack, &target);
+        if !report.errors.is_empty() {
+            for err in &report.errors {
+                warnings.push(format!("refs-install [{name}]: {err}"));
+            }
+        }
+        out.push(json!({
+            "name": name,
+            "installed": report.installed.len(),
+            "skippedIdentical": report.skipped_identical.len(),
+            "skippedNoMatch": report.skipped_no_match.len(),
+            "errors": report.errors.len(),
+        }));
+    }
+    json!({ "ran": true, "subprojects": out })
 }
 
 /// Truncate a string to `n` chars.
@@ -250,10 +384,10 @@ mod tests {
     #[test]
     fn verify_dispatch_flags_empty_subproject() {
         let dir = tempdir().unwrap();
-        let claude = dir.path().join(".claude");
-        std::fs::create_dir_all(&claude).unwrap();
+        let cache = ClaudePaths::for_project(dir.path()).unwrap().cache_dir();
+        std::fs::create_dir_all(&cache).unwrap();
         std::fs::write(
-            claude.join(".scan-dispatch.json"),
+            cache.join("scan-dispatch.json"),
             r#"{"dispatch":[{"name":"api","path":"api","absSubprojectPath":"api"}]}"#,
         )
         .unwrap();
@@ -266,14 +400,16 @@ mod tests {
     #[test]
     fn verify_dispatch_passes_with_skill() {
         let dir = tempdir().unwrap();
-        let claude = dir.path().join(".claude");
-        std::fs::create_dir_all(&claude).unwrap();
+        let cache = ClaudePaths::for_project(dir.path()).unwrap().cache_dir();
+        std::fs::create_dir_all(&cache).unwrap();
         std::fs::write(
-            claude.join(".scan-dispatch.json"),
+            cache.join("scan-dispatch.json"),
             r#"{"dispatch":[{"name":"api","path":"api","absSubprojectPath":"api"}]}"#,
         )
         .unwrap();
-        let skill = dir.path().join("api").join(".claude").join("skills").join("s1");
+        let api_dir = dir.path().join("api");
+        std::fs::create_dir_all(&api_dir).unwrap();
+        let skill = ClaudePaths::for_project(&api_dir).unwrap().skills_dir().join("s1");
         std::fs::create_dir_all(&skill).unwrap();
         std::fs::write(skill.join("SKILL.md"), "x").unwrap();
         let (verdict, warnings) = verify_dispatch(dir.path());

@@ -1,6 +1,11 @@
 [workspace]
 resolver = "2"
 members = ["apps/cli", "apps/rt", "packages/core"]
+# Intentionally excluded: edition-2021 / rust-1.77 Tauri shell with its own
+# Cargo.lock and pinned deps. Keeping it out of the workspace means a normal
+# `cargo build --workspace` ignores it (the dashboard is built via
+# `pnpm dashboard:dev` / `pnpm dashboard:build`).
+exclude = ["apps/dashboard/src-tauri"]
 
 # Single source of dependency-version truth for every Mustard crate. A crate
 # opts in with `dep = { workspace = true }`; the dashboard crate keeps its own
@@ -126,6 +131,11 @@ bool_to_int_with_if = "allow"
 ref_option = "allow"
 needless_pass_by_value = "allow"  # sometimes required for trait obj / generics
 redundant_closure_for_method_calls = "allow"
+# W2 (claude-paths-single-source): the `ClaudePaths::for_project` fallback
+# pattern `.map(|p| accessor()).unwrap_or_else(|_| legacy_join)` is more
+# readable than `map_or_else(|_| legacy, |p| accessor())` because the
+# success path is the dominant case and naturally sits first.
+map_unwrap_or = "allow"
 #
 # File-extension comparisons — Mustard convention is lowercase-only extensions
 # (`.md`, `.json`, `.rs`, `.toml`). A case-insensitive match would over-match

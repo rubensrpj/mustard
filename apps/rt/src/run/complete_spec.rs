@@ -24,6 +24,7 @@ use crate::run::env::session_id;
 use mustard_core::fs;
 use mustard_core::store::event_store::EventSink;
 use mustard_core::store::sqlite_store::SqliteEventStore;
+use mustard_core::ClaudePaths;
 use mustard_core::model::event::{
     Actor, ActorKind, HarnessEvent, SCHEMA_VERSION,
     EVENT_PIPELINE_COMPLETE, EVENT_PIPELINE_STATUS,
@@ -96,12 +97,15 @@ fn parent_branch_for(cwd: &Path, current_branch: &str) -> String {
 /// truth instead of re-deriving the layout.
 #[allow(dead_code)]
 fn spec_dir(cwd: &Path, spec: &str) -> PathBuf {
-    cwd.join(".claude").join("spec").join(spec)
+    ClaudePaths::for_project(cwd)
+        .and_then(|p| p.for_spec(spec))
+        .map(|sp| sp.dir().to_path_buf())
+        .unwrap_or_else(|_| cwd.to_path_buf())
 }
 fn pipeline_state_path(cwd: &Path, spec: &str) -> PathBuf {
-    cwd.join(".claude")
-        .join(".pipeline-states")
-        .join(format!("{spec}.json"))
+    ClaudePaths::for_project(cwd)
+        .map(|p| p.pipeline_state_file(spec))
+        .unwrap_or_else(|_| cwd.join(format!("{spec}.json")))
 }
 
 /// Collect the files a spec touched: harness `target.file` payloads, the git
@@ -437,7 +441,9 @@ fn archive_followups(cwd: &Path, require_ttl: bool) -> (usize, usize) {
 /// Legacy fallback: scan `.pipeline-states/` JSON files for `closed-followup`.
 /// Used when the event store is unavailable.
 fn archive_followups_legacy_fs(cwd: &Path, require_ttl: bool) -> (usize, usize) {
-    let states_dir = cwd.join(".claude").join(".pipeline-states");
+    let states_dir = ClaudePaths::for_project(cwd)
+        .map(|p| p.pipeline_states_dir())
+        .unwrap_or_else(|_| cwd.to_path_buf());
     let Ok(entries) = fs::read_dir(&states_dir) else {
         return (0, 0);
     };

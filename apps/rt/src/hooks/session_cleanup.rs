@@ -39,6 +39,7 @@ use mustard_core::economy::{
 use mustard_core::fs;
 use mustard_core::spec;
 use mustard_core::store::sqlite_store::SqliteEventStore;
+use mustard_core::ClaudePaths;
 use mustard_core::model::contract::{Ctx, HookInput, Observer, Trigger};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -80,10 +81,10 @@ fn now_millis() -> u128 {
 /// Best-effort: a missing script or a spawn error is silently ignored — parity
 /// with the JS `if (fs.existsSync(...))` guard.
 fn archive_stale_followups(cwd: &str) {
-    let script = Path::new(cwd)
-        .join(".claude")
-        .join("scripts")
-        .join("complete-spec.js");
+    let Ok(paths) = ClaudePaths::for_project(Path::new(cwd)) else {
+        return;
+    };
+    let script = paths.claude_dir().join("scripts").join("complete-spec.js");
     if !script.exists() {
         return;
     }
@@ -162,7 +163,14 @@ fn header_marks_done(content: &str) -> bool {
 /// Remove terminal / orphaned pipeline-state files. Port of
 /// `cleanPipelineStates` (`closed-followup` is intentionally non-terminal).
 fn clean_pipeline_states(claude_dir: &Path) {
-    let states_dir = claude_dir.join(".pipeline-states");
+    let states_dir = claude_dir
+        .parent()
+        .filter(|_| claude_dir.file_name().and_then(|s| s.to_str()) == Some(".claude"))
+        .and_then(|root| ClaudePaths::for_project(root).ok())
+        .map(|p| p.pipeline_states_dir());
+    let Some(states_dir) = states_dir else {
+        return;
+    };
     if let Ok(entries) = fs::read_dir(&states_dir) {
         for entry in entries {
             if !std::path::Path::new(&entry.file_name)
@@ -245,7 +253,15 @@ fn clean_statusline_cache() {
 /// project. Fail-open: a kill failure (process already gone, no `taskkill`/
 /// `kill` on PATH) degrades to a warning and we still remove the PID file.
 fn clean_otel_pid(claude_dir: &Path) {
-    let pid_file = claude_dir.join(".harness").join(".otel-collector.pid");
+    let harness_dir = claude_dir
+        .parent()
+        .filter(|_| claude_dir.file_name().and_then(|s| s.to_str()) == Some(".claude"))
+        .and_then(|root| ClaudePaths::for_project(root).ok())
+        .map(|p| p.harness_dir());
+    let Some(harness_dir) = harness_dir else {
+        return;
+    };
+    let pid_file = harness_dir.join(".otel-collector.pid");
     if let Some(pid) = read_pid(&pid_file) {
         kill_pid(pid);
     }
@@ -440,7 +456,10 @@ impl Observer for SessionCleanup {
             return;
         }
         let cwd = project_dir(input, ctx);
-        let claude = Path::new(&cwd).join(".claude");
+        let Ok(paths) = ClaudePaths::for_project(Path::new(&cwd)) else {
+            return;
+        };
+        let claude = paths.claude_dir();
 
         // Finalize open amendment windows BEFORE other cleanup.
         if let Some(session_id) = input.session_id.as_deref().filter(|s| !s.is_empty()) {
@@ -485,6 +504,7 @@ mod tests {
         Ctx {
             project_dir: dir.to_string(),
             trigger: Some(Trigger::SessionEnd),
+            workspace_root: None,
         }
     }
 
@@ -497,9 +517,10 @@ mod tests {
 
     /// Write a pipeline-state file.
     fn write_state(dir: &Path, name: &str, state: &Value) {
-        let states = dir.join(".claude").join(".pipeline-states");
+        let paths = ClaudePaths::for_project(dir).unwrap();
+        let states = paths.pipeline_states_dir();
         std::fs::create_dir_all(&states).unwrap();
-        std::fs::write(states.join(format!("{name}.json")), state.to_string()).unwrap();
+        std::fs::write(paths.pipeline_state_file(name), state.to_string()).unwrap();
     }
 
     use serde_json::Value;
@@ -511,13 +532,11 @@ mod tests {
         let other = Ctx {
             project_dir: dir.path().to_string_lossy().into_owned(),
             trigger: Some(Trigger::PreToolUse),
+            workspace_root: None,
         };
         SessionCleanup.observe(&session_end_input(), &other);
         // PreToolUse → cleanup did not run, the terminal state survives.
-        assert!(dir
-            .path()
-            .join(".claude/.pipeline-states/done.json")
-            .exists());
+        assert!(ClaudePaths::for_project(dir.path()).unwrap().pipeline_state_file("done").exists());
     }
 
     #[test]
@@ -526,15 +545,10 @@ mod tests {
         write_state(dir.path(), "finished", &json!({ "status": "completed" }));
         write_state(dir.path(), "active-one", &json!({ "status": "implementing" }));
         SessionCleanup.observe(&session_end_input(), &ctx(dir.path().to_str().unwrap()));
-        assert!(!dir
-            .path()
-            .join(".claude/.pipeline-states/finished.json")
-            .exists());
+        let paths = ClaudePaths::for_project(dir.path()).unwrap();
+        assert!(!paths.pipeline_state_file("finished").exists());
         // Non-terminal state survives.
-        assert!(dir
-            .path()
-            .join(".claude/.pipeline-states/active-one.json")
-            .exists());
+        assert!(paths.pipeline_state_file("active-one").exists());
     }
 
     #[test]
@@ -548,24 +562,22 @@ mod tests {
         // Flat layout (wave-2): the spec dir is at .claude/spec/{name}/ with a
         // `### Status: completed` header. `is_spec_done` reads the header to
         // decide the state file is orphaned and removes it.
-        let spec_dir = dir.path().join(".claude/spec/old-spec");
-        std::fs::create_dir_all(&spec_dir).unwrap();
+        let paths = ClaudePaths::for_project(dir.path()).unwrap();
+        let sp = paths.for_spec("old-spec").unwrap();
+        std::fs::create_dir_all(sp.dir()).unwrap();
         std::fs::write(
-            spec_dir.join("spec.md"),
+            sp.spec_md_path(),
             "# old-spec\n### Status: completed\n",
         )
         .unwrap();
         SessionCleanup.observe(&session_end_input(), &ctx(dir.path().to_str().unwrap()));
-        assert!(!dir
-            .path()
-            .join(".claude/.pipeline-states/orphan.json")
-            .exists());
+        assert!(!paths.pipeline_state_file("orphan").exists());
     }
 
     #[test]
     fn old_compact_state_files_are_pruned() {
         let dir = tempdir().unwrap();
-        let compact = dir.path().join(".claude/.compact-state");
+        let compact = ClaudePaths::for_project(dir.path()).unwrap().claude_dir().join(".compact-state");
         std::fs::create_dir_all(&compact).unwrap();
         let old = compact.join("old.txt");
         std::fs::write(&old, "snapshot").unwrap();
@@ -579,7 +591,7 @@ mod tests {
     #[test]
     fn otel_pid_file_is_removed() {
         let dir = tempdir().unwrap();
-        let harness = dir.path().join(".claude/.harness");
+        let harness = ClaudePaths::for_project(dir.path()).unwrap().harness_dir();
         std::fs::create_dir_all(&harness).unwrap();
         let pid = harness.join(".otel-collector.pid");
         std::fs::write(&pid, "12345").unwrap();

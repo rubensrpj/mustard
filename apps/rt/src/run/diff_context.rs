@@ -4,7 +4,9 @@
 //! branch name, staged/unstaged/untracked changes, and the commits + diff stat
 //! since divergence from a parent branch. The stdout text must stay shape-
 //! compatible with the JS version — the pipeline saves it verbatim to
-//! `.claude/.pipeline-states/{spec}.diff.md`.
+//! `<root>/.claude/spec/{spec}/wave-N-{role}/diff.md` (per the W2 path catalog;
+//! the legacy `.claude/.pipeline-states/{spec}.{wave}.diff.md` location is
+//! retired).
 //!
 //! Fail-open: every git invocation degrades to an empty string on error, and a
 //! `--phase analyze` invocation is a deliberate silent no-op (the diff is

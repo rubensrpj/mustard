@@ -107,6 +107,10 @@ pub struct EmitPipelineOpts {
     pub spec: String,
     /// Optional JSON payload string. When `None`, the event payload is `null`.
     pub payload: Option<String>,
+    /// Bypass the QA gate on `pipeline.complete`. Used by trusted callers
+    /// (notably `qa-run` itself when it needs to chain `pipeline.complete`
+    /// inside its own flow, or an explicit user override).
+    pub allow_no_qa: bool,
 }
 
 /// Run `mustard-rt run emit-pipeline --kind <name> --spec <name> [--payload <json>]`.
@@ -114,6 +118,11 @@ pub struct EmitPipelineOpts {
 /// Validates `kind` and the optional JSON payload, then appends the event to
 /// the project store. Exits 1 on validation failure; fails open (exit 0) on
 /// store errors.
+///
+/// **REVIEW/QA gate (2026-05-25):** when `kind == pipeline.complete`, refuses
+/// the emission with exit code 2 unless either
+/// 1. a `qa.result` event with `overall == "pass"` exists for the spec, or
+/// 2. `--allow-no-qa` is set.
 pub fn run(opts: EmitPipelineOpts) {
     // --- Validate kind ---
     if !KNOWN_KINDS.contains(&opts.kind.as_str()) {
@@ -123,6 +132,26 @@ pub fn run(opts: EmitPipelineOpts) {
             KNOWN_KINDS.join(", ")
         );
         std::process::exit(1);
+    }
+
+    // --- REVIEW/QA gate: pipeline.complete requires qa.result(overall=pass). ---
+    //
+    // Without this gate the orchestrator can emit `pipeline.complete` after
+    // EXECUTE finishes the last wave, silently skipping REVIEW + QA. Fail-open
+    // applies only to *event-store unreachable*: if we cannot read the spec's
+    // events dir we take the conservative path (block emission), since allowing
+    // a complete on a missing store would erase the gate entirely.
+    if opts.kind == EVENT_PIPELINE_COMPLETE && !opts.allow_no_qa {
+        let cwd = std::env::current_dir()
+            .unwrap_or_else(|_| std::path::PathBuf::from(project_dir()));
+        if !qa_result_passed(&cwd, &opts.spec) {
+            eprintln!(
+                "BLOCKED: cannot emit pipeline.complete for {} — no qa.result event \
+                 with overall=pass exists. Run: rtk mustard-rt run qa-run --spec {}",
+                opts.spec, opts.spec
+            );
+            std::process::exit(2);
+        }
     }
 
     // --- Parse optional payload ---
@@ -208,6 +237,80 @@ pub fn run(opts: EmitPipelineOpts) {
             sync_spec_meta_sidecar(&cwd, &spec_name, to, &ts);
         }
     }
+
+    // Cleanup: remove the `.pipeline-states/{spec}.json` file when a terminal
+    // event is emitted so `current_spec` step-3 (FS fallback) doesn't return
+    // this closed spec in a future session. Fail-open: missing file is fine.
+    let is_terminal = is_terminal_event(&kind_str, &payload_for_header);
+    if is_terminal {
+        let state_file = std::env::current_dir()
+            .unwrap_or_else(|_| std::path::PathBuf::from(project_dir()))
+            .join(".claude")
+            .join(".pipeline-states")
+            .join(format!("{spec_name}.json"));
+        let _ = std::fs::remove_file(&state_file);
+    }
+}
+
+/// Returns `true` when the spec has a `qa.result` event with
+/// `overall == "pass"` in its per-spec NDJSON event log.
+///
+/// **Fail-open semantics:** a missing events dir, an unreadable file, or no
+/// matching event all return `false` — meaning the gate stays *closed*. This
+/// is the opposite of telemetry-style fail-open: we are guarding a verdict, so
+/// the conservative outcome on missing data is to block (not allow). Callers
+/// can opt out via `--allow-no-qa`.
+fn qa_result_passed(cwd: &Path, spec: &str) -> bool {
+    let events_dir = cwd
+        .join(".claude")
+        .join("spec")
+        .join(spec)
+        .join(".events");
+    let mut events =
+        mustard_core::projection::read_harness_events_from_ndjson_dir(&events_dir);
+    // Chronological order — last matching event wins (mirrors `close_gate`).
+    events.sort_by(|a, b| a.ts.cmp(&b.ts));
+    let mut last_overall: Option<String> = None;
+    for ev in events {
+        if ev.event != "qa.result" {
+            continue;
+        }
+        if let Some(ev_spec) = ev.payload.get("spec").and_then(Value::as_str) {
+            if ev_spec != spec {
+                continue;
+            }
+        }
+        last_overall = ev
+            .payload
+            .get("overall")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+    }
+    last_overall.as_deref() == Some("pass")
+}
+
+/// Returns `true` when the event kind + payload indicate a terminal pipeline
+/// transition (spec is closed / completed / cancelled / abandoned).
+fn is_terminal_event(kind: &str, payload: &Value) -> bool {
+    if kind == EVENT_PIPELINE_COMPLETE {
+        return true;
+    }
+    // `pipeline.status` or `pipeline.outcome` with a terminal `to`/`outcome`.
+    if kind == EVENT_PIPELINE_STATUS || kind == EVENT_PIPELINE_OUTCOME {
+        let to = payload
+            .get("to")
+            .or_else(|| payload.get("outcome"))
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let lower = to.trim().to_ascii_lowercase();
+        // Wave 4 of deep-refactor (2026-05-25) added `superseded`/`absorbed`
+        // as first-class terminal outcomes — both close the spec.
+        return matches!(
+            lower.as_str(),
+            "completed" | "cancelled" | "abandoned" | "superseded" | "absorbed"
+        );
+    }
+    false
 }
 
 /// Decide whether a `pipeline.status` event should sync the **parent**
@@ -346,7 +449,15 @@ fn state_from_status_word(to: &str) -> SpecState {
 /// Fail-open: a missing sidecar is treated as "create from the status alone";
 /// a write failure warns on stderr but never propagates.
 fn sync_spec_meta_sidecar(cwd: &Path, spec: &str, to: &str, ts: &str) {
-    let path = cwd.join(".claude").join("spec").join(spec).join("meta.json");
+    let spec_dir = cwd.join(".claude").join("spec").join(spec);
+    // Only refresh the sidecar when the spec directory already exists. A
+    // `pipeline.status` event for a spec without an on-disk presence (e.g.
+    // an archival back-fill against a moved spec, deep-refactor W4) must
+    // never resurrect the directory just to drop a `meta.json` inside.
+    if !spec_dir.is_dir() {
+        return;
+    }
+    let path = spec_dir.join("meta.json");
     let state = state_from_status_word(to);
     let stage = spec::stage_label(state.stage).to_string();
     let outcome = spec::outcome_label(state.outcome).to_string();
@@ -357,11 +468,6 @@ fn sync_spec_meta_sidecar(cwd: &Path, spec: &str, to: &str, ts: &str) {
     meta.stage = Some(stage);
     meta.outcome = Some(outcome);
     meta.checkpoint = Some(ts.to_string());
-
-    // Ensure the parent dir exists so a brand-new sidecar can be created.
-    if let Some(parent) = path.parent() {
-        let _ = mustard_core::fs::create_dir_all(parent);
-    }
 
     if let Err(e) = write_meta(&path, &meta) {
         eprintln!(
@@ -562,7 +668,7 @@ mod tests {
         let mut events = store.query(Some(spec)).unwrap();
         // Non-pipeline events (`hygiene.*`, `pipeline.economy.operation.invoked`)
         // land in the per-spec NDJSON sink.
-        let events_dir = project.join(".claude").join("spec").join(spec).join("events");
+        let events_dir = project.join(".claude").join("spec").join(spec).join(".events");
         let mut ndjson = mustard_core::projection::read_harness_events_from_ndjson_dir(
             &events_dir,
         );
@@ -643,6 +749,109 @@ mod tests {
         let decoded: PipelineStatusPayload = serde_json::from_str(raw).unwrap();
         assert_eq!(decoded.to, "active");
         assert!(decoded.from.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // REVIEW/QA gate on `pipeline.complete` (2026-05-25 deep-refactor follow-up)
+    // -----------------------------------------------------------------------
+
+    /// `qa_result_passed` returns `false` when the spec has no `.events/` dir
+    /// — the gate must stay closed (block emission).
+    #[test]
+    fn qa_result_passed_false_when_no_events_dir() {
+        let dir = tempdir().unwrap();
+        // Spec dir does not even exist.
+        assert!(!super::qa_result_passed(dir.path(), "ghost-spec"));
+    }
+
+    /// `qa_result_passed` returns `true` only when the most recent `qa.result`
+    /// for the spec has `overall == "pass"`.
+    #[test]
+    fn qa_result_passed_requires_overall_pass() {
+        let dir = tempdir().unwrap();
+        let spec = "qa-gate-spec";
+        // Emit a failing qa.result first, then a passing one.
+        emit_routed(
+            dir.path(),
+            "qa.result",
+            spec,
+            json!({ "spec": spec, "overall": "fail", "criteria": [] }),
+        );
+        emit_routed(
+            dir.path(),
+            "qa.result",
+            spec,
+            json!({ "spec": spec, "overall": "pass", "criteria": [] }),
+        );
+        assert!(super::qa_result_passed(dir.path(), spec));
+    }
+
+    /// A failing-only spec → gate stays closed.
+    #[test]
+    fn qa_result_passed_false_when_only_fail() {
+        let dir = tempdir().unwrap();
+        let spec = "qa-fail-only";
+        emit_routed(
+            dir.path(),
+            "qa.result",
+            spec,
+            json!({ "spec": spec, "overall": "fail", "criteria": [] }),
+        );
+        assert!(!super::qa_result_passed(dir.path(), spec));
+    }
+
+    /// A skip-only spec → gate stays closed (skip != pass).
+    #[test]
+    fn qa_result_passed_false_when_overall_skip() {
+        let dir = tempdir().unwrap();
+        let spec = "qa-skip-only";
+        emit_routed(
+            dir.path(),
+            "qa.result",
+            spec,
+            json!({ "spec": spec, "overall": "skip", "criteria": [] }),
+        );
+        assert!(!super::qa_result_passed(dir.path(), spec));
+    }
+
+    /// Last-write-wins: a passing event followed by a failing one means the
+    /// most recent verdict is FAIL → gate stays closed.
+    #[test]
+    fn qa_result_passed_uses_most_recent_event() {
+        let dir = tempdir().unwrap();
+        let spec = "qa-regression";
+        // First a pass with an early ts, then a fail with a later ts.
+        let ev_pass = HarnessEvent {
+            v: SCHEMA_VERSION,
+            ts: "2026-05-20T00:00:00.000Z".to_string(),
+            session_id: "test-session".to_string(),
+            wave: 0,
+            actor: Actor {
+                kind: ActorKind::Cli,
+                id: Some("qa-run".to_string()),
+                actor_type: None,
+            },
+            event: "qa.result".to_string(),
+            payload: json!({ "spec": spec, "overall": "pass", "criteria": [] }),
+            spec: Some(spec.to_string()),
+        };
+        let ev_fail = HarnessEvent {
+            v: SCHEMA_VERSION,
+            ts: "2026-05-21T00:00:00.000Z".to_string(),
+            session_id: "test-session".to_string(),
+            wave: 0,
+            actor: Actor {
+                kind: ActorKind::Cli,
+                id: Some("qa-run".to_string()),
+                actor_type: None,
+            },
+            event: "qa.result".to_string(),
+            payload: json!({ "spec": spec, "overall": "fail", "criteria": [] }),
+            spec: Some(spec.to_string()),
+        };
+        let _ = crate::run::event_route::emit(dir.path().to_str().unwrap(), &ev_pass);
+        let _ = crate::run::event_route::emit(dir.path().to_str().unwrap(), &ev_fail);
+        assert!(!super::qa_result_passed(dir.path(), spec));
     }
 
     #[test]

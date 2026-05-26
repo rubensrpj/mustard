@@ -167,6 +167,7 @@ mod tests {
         let ctx = Ctx {
             project_dir: cwd.to_string(),
             trigger: Some(Trigger::PreToolUse),
+            workspace_root: None,
         };
         (input, ctx)
     }
@@ -278,6 +279,7 @@ mod tests {
         let ctx = Ctx {
             project_dir: ".".to_string(),
             trigger: Some(Trigger::PreToolUse),
+            workspace_root: None,
         };
         assert_eq!(
             EnforceRegistry.evaluate(&input, &ctx).expect("no error"),
@@ -292,6 +294,7 @@ mod tests {
         let ctx = Ctx {
             project_dir: dir.path().to_string_lossy().into_owned(),
             trigger: Some(Trigger::PostToolUse),
+            workspace_root: None,
         };
         assert_eq!(
             EnforceRegistry.evaluate(&input, &ctx).expect("no error"),

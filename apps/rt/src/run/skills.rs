@@ -15,6 +15,7 @@
 use crate::run::env;
 use mustard_core::fs;
 use mustard_core::store::sqlite_store::SqliteEventStore;
+use mustard_core::ClaudePaths;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -128,8 +129,12 @@ fn validate_root() -> PathBuf {
 /// `validate`'s discovery: `<root>/.claude/skills` plus each subproject's
 /// `.claude/skills`, detect-cache-aware (JS `collectSkillDirs`).
 fn collect_skill_dirs(root: &Path) -> Vec<(PathBuf, String)> {
-    let mut dirs = vec![(root.join(".claude").join("skills"), "<root>".to_string())];
-    let cache_path = root.join(".claude").join(".detect-cache.json");
+    let Ok(paths) = ClaudePaths::for_project(root) else {
+        return Vec::new();
+    };
+    let skills_dir = paths.skills_dir();
+    let mut dirs = vec![(skills_dir, "<root>".to_string())];
+    let cache_path = paths.detect_cache_path();
     let cache: Option<Value> = fs::read_to_string(&cache_path)
         .ok()
         .and_then(|t| serde_json::from_str(&t).ok());
@@ -146,7 +151,10 @@ fn collect_skill_dirs(root: &Path) -> Vec<(PathBuf, String)> {
                 if !entry.is_dir || name.starts_with('.') {
                     continue;
                 }
-                let candidate = entry.path.join(".claude").join("skills");
+                let Ok(sub_paths) = ClaudePaths::for_project(&entry.path) else {
+                    continue;
+                };
+                let candidate = sub_paths.skills_dir();
                 if candidate.exists() {
                     dirs.push((candidate, name));
                 }
@@ -156,7 +164,11 @@ fn collect_skill_dirs(root: &Path) -> Vec<(PathBuf, String)> {
         for sub in subs {
             let path = sub.get("path").and_then(Value::as_str).unwrap_or("");
             let name = sub.get("name").and_then(Value::as_str).unwrap_or("").to_string();
-            dirs.push((root.join(path).join(".claude").join("skills"), name));
+            let sub_root = root.join(path);
+            let candidate = ClaudePaths::for_project(&sub_root)
+                .map(|p| p.skills_dir())
+                .unwrap_or_else(|_| sub_root.clone());
+            dirs.push((candidate, name));
         }
     }
     dirs
@@ -740,7 +752,9 @@ pub fn run(subcommand: Option<&str>, args: &[String]) {
         Some("validate") => {
             let root = validate_root();
             let json_out = has("--json");
-            if has("--factual") {
+            if has("--strict-frontmatter") {
+                run_validate_strict_frontmatter(&root, json_out);
+            } else if has("--factual") {
                 // `--factual` keeps the JS behaviour: WARN-by-default cluster
                 // audit. The full heuristic is mode-gated; honour `off`.
                 let mode = std::env::var("MUSTARD_SKILL_VALIDATE_MODE")
@@ -876,6 +890,116 @@ fn run_validate_factual(root: &Path, json_out: bool, mode: &str, exit_failures: 
     }
     let failed = !violations.is_empty();
     std::process::exit(if exit_failures && failed { 1 } else { 0 });
+}
+
+// ── strict-frontmatter validation (T1.7) ─────────────────────────────────────
+
+/// `validate --strict-frontmatter` — assert every **foundation** SKILL.md
+/// (under `apps/cli/templates/skills/` + the installed `.claude/skills/`)
+/// parses against [`mustard_core::skill::frontmatter`]'s strict schema. Emits
+/// JSON `{ ok: bool, total, failed, results: [...] }`. Exit `0` when ok, `1`
+/// otherwise. Used by AC-W1.6.
+///
+/// Scope: foundation skills only (W1.T1.6). Scan-generated skills under
+/// `{subproject}/.claude/skills/` are skipped here — they are W3 territory and
+/// have their own validator (`mustard-rt run skills validate --factual`).
+fn run_validate_strict_frontmatter(root: &Path, json_out: bool) -> ! {
+    use mustard_core::skill::frontmatter::{
+        missing_strict_keys, parse as parse_fm, validate as validate_fm,
+    };
+    let mut results: Vec<Value> = Vec::new();
+    let mut total = 0usize;
+    let mut failed = 0usize;
+    // Scope to the canonical foundation source: `apps/cli/templates/skills/`.
+    // The installed `<root>/.claude/skills/` copies are user-state refreshed
+    // by `mustard update`; `<sub>/.claude/skills/` is scan territory (W3).
+    // Both are validated by other faces — only templates are strict-gated.
+    let foundation_dirs: Vec<(PathBuf, String)> = vec![(
+        root.join("apps").join("cli").join("templates").join("skills"),
+        "templates".to_string(),
+    )];
+    for (dir, label) in foundation_dirs {
+        for file in collect_skills_at(&dir) {
+            total += 1;
+            let Ok(content) = fs::read_to_string(&file) else {
+                failed += 1;
+                results.push(json!({
+                    "location": label,
+                    "path": rel_posix(root, &file),
+                    "ok": false,
+                    "errors": ["unreadable"],
+                }));
+                continue;
+            };
+            // Strict validation: parse + structural strict pass + raw-keys check.
+            let (ok, errors) = match parse_fm(&content) {
+                Ok(fm) => {
+                    let mut errs: Vec<String> = match validate_fm(&fm, true) {
+                        Ok(()) => Vec::new(),
+                        Err(e) => e.iter().map(ToString::to_string).collect(),
+                    };
+                    // Verify the raw YAML actually carries the strict keys
+                    // (the parser folds missing → empty silently).
+                    if let Some(yaml) = extract_frontmatter_body(&content) {
+                        for missing in missing_strict_keys(&yaml) {
+                            errs.push(format!("missing top-level key: {missing}"));
+                        }
+                    }
+                    (errs.is_empty(), errs)
+                }
+                Err(e) => (false, vec![e.to_string()]),
+            };
+            if !ok {
+                failed += 1;
+            }
+            results.push(json!({
+                "location": label,
+                "path": rel_posix(root, &file),
+                "ok": ok,
+                "errors": errors,
+            }));
+        }
+    }
+    let summary = json!({
+        "ok": failed == 0,
+        "total": total,
+        "failed": failed,
+        "results": results,
+    });
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&summary).unwrap_or_default());
+    } else {
+        println!(
+            "skill-validate (strict-frontmatter): {ok}/{total} ok, {failed} failed.",
+            ok = total - failed
+        );
+        for r in &results {
+            if r["ok"] == json!(false) {
+                let path = r["path"].as_str().unwrap_or("");
+                let errs = r["errors"]
+                    .as_array()
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(Value::as_str)
+                            .collect::<Vec<_>>()
+                            .join("; ")
+                    })
+                    .unwrap_or_default();
+                println!("  [fail] {path} — {errs}");
+            }
+        }
+    }
+    std::process::exit(if failed > 0 { 1 } else { 0 });
+}
+
+/// Extract the YAML body between leading `---` fences. Used by the strict
+/// validator to assert top-level key presence (parser is lenient and folds
+/// missing keys to empty Vecs).
+fn extract_frontmatter_body(raw: &str) -> Option<String> {
+    let normalized = raw.replace("\r\n", "\n");
+    let rest = normalized.strip_prefix("---\n")?;
+    let end = rest.find("\n---")?;
+    Some(rest[..end].to_string())
 }
 
 #[cfg(test)]

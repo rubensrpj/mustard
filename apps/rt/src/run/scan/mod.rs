@@ -25,11 +25,13 @@
 //! before, so the registry JSON stays byte-stable across the rewrite.
 
 pub mod cluster_discovery;
+pub mod entity_extractor;
 pub mod file_utils;
 pub mod graph;
 pub mod interpret;
 pub mod pluralize;
 pub mod project_conventions;
+pub mod refs_installer;
 pub mod resolve;
 
 use mustard_core::fs as mfs;

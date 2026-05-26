@@ -37,6 +37,7 @@
 use mustard_core::error::Error;
 use mustard_core::fs;
 use mustard_core::projection::read_harness_events_from_ndjson_dir;
+use mustard_core::ClaudePaths;
 use mustard_core::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
 use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use serde_json::{Value, json};
@@ -166,11 +167,12 @@ fn find_debt_markers(cwd: &str, spec: Option<&str>) -> Vec<DebtMarker> {
     let Some(spec) = spec else {
         return Vec::new();
     };
-    let spec_path = Path::new(cwd)
-        .join(".claude")
-        .join("spec")
-        .join(spec)
-        .join("spec.md");
+    let spec_path = ClaudePaths::for_project(Path::new(cwd))
+        .and_then(|p| p.for_spec(spec))
+        .map(|sp| sp.spec_md_path());
+    let Ok(spec_path) = spec_path else {
+        return Vec::new();
+    };
     let Ok(raw) = fs::read_to_string(&spec_path) else {
         return Vec::new();
     };
@@ -413,11 +415,12 @@ fn find_unmarked_checklist(cwd: &str, spec: Option<&str>) -> (bool, Vec<String>)
     let Some(spec) = spec else {
         return (false, Vec::new());
     };
-    let spec_path = Path::new(cwd)
-        .join(".claude")
-        .join("spec")
-        .join(spec)
-        .join("spec.md");
+    let spec_path = ClaudePaths::for_project(Path::new(cwd))
+        .and_then(|p| p.for_spec(spec))
+        .map(|sp| sp.spec_md_path());
+    let Ok(spec_path) = spec_path else {
+        return (false, Vec::new());
+    };
     let Ok(raw) = fs::read_to_string(&spec_path) else {
         return (false, Vec::new());
     };
@@ -491,18 +494,26 @@ fn unchecked_item_text(line: &str) -> Option<String> {
 fn find_last_qa_result(cwd: &str, spec: Option<&str>) -> (bool, Option<String>, usize) {
     let project = Path::new(cwd);
     let mut events: Vec<HarnessEvent> = Vec::new();
+    let paths = ClaudePaths::for_project(project).ok();
     if let Some(spec_name) = spec.filter(|s| !s.is_empty()) {
-        let events_dir = project.join(".claude").join("spec").join(spec_name).join("events");
-        events.extend(read_harness_events_from_ndjson_dir(&events_dir));
+        if let Some(events_dir) = paths
+            .as_ref()
+            .and_then(|p| p.for_spec(spec_name).ok())
+            .map(|sp| sp.events_dir())
+        {
+            events.extend(read_harness_events_from_ndjson_dir(&events_dir));
+        }
     } else {
-        // No spec attribution — scan every per-spec events/ dir under .claude/spec/.
-        let specs_root = project.join(".claude").join("spec");
+        // No spec attribution — scan every per-spec .events/ dir under .claude/spec/.
+        let Some(specs_root) = paths.as_ref().map(ClaudePaths::spec_dir) else {
+            return (false, None, 0);
+        };
         if let Ok(entries) = fs::read_dir(&specs_root) {
             for entry in entries {
                 if !entry.is_dir {
                     continue;
                 }
-                let dir = specs_root.join(&entry.file_name).join("events");
+                let dir = specs_root.join(&entry.file_name).join(".events");
                 events.extend(read_harness_events_from_ndjson_dir(&dir));
             }
         }
@@ -1108,19 +1119,19 @@ mod tests {
     /// Build a project dir with the standard `.claude` subtree.
     fn make_project() -> tempfile::TempDir {
         let dir = tempdir().unwrap();
-        std::fs::create_dir_all(dir.path().join(".claude").join(".harness")).unwrap();
-        std::fs::create_dir_all(dir.path().join(".claude").join(".pipeline-states")).unwrap();
-        std::fs::create_dir_all(dir.path().join(".claude").join("spec"))
+        let paths = ClaudePaths::for_project(dir.path()).unwrap();
+        std::fs::create_dir_all(paths.harness_dir()).unwrap();
+        std::fs::create_dir_all(paths.pipeline_states_dir()).unwrap();
+        std::fs::create_dir_all(paths.spec_dir())
             .unwrap();
         dir
     }
 
     /// A `PreToolUse(Write)` close-state input for `spec_name`.
     fn close_input(cwd: &Path, spec_name: &str) -> HookInput {
-        let state_file = cwd
-            .join(".claude")
-            .join(".pipeline-states")
-            .join(format!("{spec_name}.json"));
+        let state_file = ClaudePaths::for_project(cwd)
+            .unwrap()
+            .pipeline_state_file(spec_name);
         HookInput {
             tool_name: Some("Write".to_string()),
             tool_input: json!({
@@ -1134,12 +1145,9 @@ mod tests {
     }
 
     fn write_spec(cwd: &Path, spec_name: &str, body: &str) {
-        let dir = cwd
-            .join(".claude")
-            .join("spec")
-            .join(spec_name);
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("spec.md"), body).unwrap();
+        let sp = ClaudePaths::for_project(cwd).unwrap().for_spec(spec_name).unwrap();
+        std::fs::create_dir_all(sp.dir()).unwrap();
+        std::fs::write(sp.spec_md_path(), body).unwrap();
     }
 
     fn write_mustard_json(cwd: &Path, fields: Value) {
@@ -1458,19 +1466,15 @@ mod tests {
         // dir is created by `write_active_spec` indirectly via close_gate's
         // path resolution; with no spec attribution the event falls back to
         // the session dir.
-        let spec_events = dir
-            .path()
-            .join(".claude")
-            .join("spec")
-            .join("spec-event")
-            .join("events");
-        let session_root = dir.path().join(".claude").join(".session");
+        let paths = ClaudePaths::for_project(dir.path()).unwrap();
+        let spec_events = paths.for_spec("spec-event").unwrap().events_dir();
+        let session_root = paths.claude_dir().join(".session");
         let candidate_dirs: Vec<std::path::PathBuf> = std::iter::once(spec_events)
             .chain(
                 std::fs::read_dir(&session_root)
                     .into_iter()
                     .flatten()
-                    .filter_map(|e| e.ok().map(|e| e.path().join("events"))),
+                    .filter_map(|e| e.ok().map(|e| e.path().join(".events"))),
             )
             .collect();
         let mut found = false;
@@ -1516,11 +1520,9 @@ mod tests {
         let dir = make_project();
         // Build an input that points at a pipeline-state file path but with
         // a non-CLOSE phase — gate must Allow without touching any state.
-        let state_file = dir
-            .path()
-            .join(".claude")
-            .join(".pipeline-states")
-            .join("ghost.json");
+        let state_file = ClaudePaths::for_project(dir.path())
+            .unwrap()
+            .pipeline_state_file("ghost");
         let input = HookInput {
             tool_name: Some("Write".to_string()),
             tool_input: json!({

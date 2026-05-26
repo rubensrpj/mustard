@@ -214,6 +214,7 @@ pub fn emit_default(event: &HarnessEvent) -> bool {
 mod tests {
     use super::*;
     use mustard_core::model::event::{Actor, ActorKind, SCHEMA_VERSION};
+    use mustard_core::ClaudePaths;
     use serde_json::json;
     use tempfile::tempdir;
 
@@ -260,7 +261,7 @@ mod tests {
     }
 
     /// Routing a non-pipeline event lands an NDJSON file under
-    /// `<project>/.claude/spec/<spec>/events/`, never touches SQLite.
+    /// `<project>/.claude/spec/<spec>/.events/`, never touches SQLite.
     #[test]
     fn routes_tool_event_to_ndjson_under_spec_dir() {
         let dir = tempdir().unwrap();
@@ -270,18 +271,14 @@ mod tests {
         );
         assert!(ok, "router should return true on success");
 
-        let events_dir = dir
-            .path()
-            .join(".claude")
-            .join("spec")
-            .join("router-spec")
-            .join("events");
-        assert!(events_dir.exists(), "NDJSON events dir must exist");
+        let paths = ClaudePaths::for_project(dir.path()).unwrap();
+        let events_dir = paths.for_spec("router-spec").unwrap().events_dir();
+        assert!(events_dir.exists(), "NDJSON .events dir must exist");
         let files: Vec<_> = std::fs::read_dir(&events_dir).unwrap().collect();
         assert!(!files.is_empty(), "expected at least one NDJSON file");
 
         // SQLite must NOT have received the non-pipeline event.
-        let db = dir.path().join(".claude").join(".harness").join("mustard.db");
+        let db = paths.harness_dir().join("mustard.db");
         // The store may not exist at all (router didn't open it for tool.use);
         // if it does exist, no row should be present for `tool.use` either.
         if db.exists() {
@@ -302,20 +299,16 @@ mod tests {
         );
         assert!(ok);
 
+        let paths = ClaudePaths::for_project(dir.path()).unwrap();
         // NDJSON dir must NOT have been created for a pipeline.* event.
-        let events_dir = dir
-            .path()
-            .join(".claude")
-            .join("spec")
-            .join("pipe-spec")
-            .join("events");
+        let events_dir = paths.for_spec("pipe-spec").unwrap().events_dir();
         assert!(
             !events_dir.exists(),
             "pipeline.* events should never land in NDJSON"
         );
 
         // SQLite must contain the event.
-        let db = dir.path().join(".claude").join(".harness").join("mustard.db");
+        let db = paths.harness_dir().join("mustard.db");
         assert!(db.exists(), "SQLite must have been opened");
         let store = SqliteEventStore::new(&db).unwrap();
         let events = store.replay().unwrap();

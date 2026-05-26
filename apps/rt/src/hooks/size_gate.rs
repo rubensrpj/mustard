@@ -866,6 +866,7 @@ mod tests {
         let ctx = Ctx {
             project_dir: String::new(),
             trigger: Some(Trigger::PreToolUse),
+            workspace_root: None,
         };
         (input, ctx)
     }
@@ -1076,6 +1077,7 @@ mod tests {
         let ctx = Ctx {
             project_dir: String::new(),
             trigger: Some(Trigger::PostToolUse),
+            workspace_root: None,
         };
         assert_eq!(
             SizeGate.evaluate(&input, &ctx).expect("no error"),
@@ -1093,6 +1095,7 @@ mod tests {
         let ctx = Ctx {
             project_dir: String::new(),
             trigger: Some(Trigger::PreToolUse),
+            workspace_root: None,
         };
         assert_eq!(
             SizeGate.evaluate(&input, &ctx).expect("no error"),

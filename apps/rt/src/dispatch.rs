@@ -16,6 +16,8 @@
 use crate::registry::{self, Module, Registry};
 use mustard_core::config::Mode;
 use mustard_core::model::contract::{Ctx, HookInput, Outcome, Trigger, Verdict};
+use mustard_core::workspace::workspace_root;
+use std::path::PathBuf;
 
 /// Run every module applicable to a whole harness event (`mustard-rt on`).
 ///
@@ -57,10 +59,41 @@ pub fn run_check(id: &str, input: &HookInput) -> Outcome {
 }
 
 /// Build the ambient [`Ctx`] for a check from the harness input.
+///
+/// Resolves the Mustard workspace root once per invocation via
+/// [`workspace_root`] and stashes it on [`Ctx`]. On resolver error the
+/// dispatcher fails open: the `Ctx` still gets a sane `project_dir`, but
+/// `workspace_root` is `None` and a structured warning is logged to stderr.
+/// Hooks must NOT block users on a resolution failure.
 fn build_ctx(trigger: Trigger, input: &HookInput) -> Ctx {
+    let project_dir = input.cwd.clone().unwrap_or_default();
+    let workspace_root = resolve_workspace_root_fail_open(&project_dir);
     Ctx {
-        project_dir: input.cwd.clone().unwrap_or_default(),
+        project_dir,
         trigger: Some(trigger),
+        workspace_root,
+    }
+}
+
+/// Best-effort wrapper around [`workspace_root`] that logs a single structured
+/// warning on failure and returns `None`. Never panics.
+fn resolve_workspace_root_fail_open(project_dir: &str) -> Option<PathBuf> {
+    let start = PathBuf::from(project_dir);
+    match workspace_root(&start) {
+        Ok(root) => Some(root),
+        Err(err) => {
+            // Structured single-line log; non-fatal — the dispatcher carries
+            // on with `workspace_root: None` so modules can degrade.
+            let _ = serde_json::to_string(&serde_json::json!({
+                "level": "warn",
+                "module": "dispatch",
+                "event": "workspace_root.unresolved",
+                "project_dir": project_dir,
+                "error": err.to_string(),
+            }))
+            .map(|s| eprintln!("{s}"));
+            None
+        }
     }
 }
 

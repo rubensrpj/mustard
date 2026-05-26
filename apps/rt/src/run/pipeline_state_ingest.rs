@@ -20,6 +20,7 @@ use crate::util::now_iso8601;
 use mustard_core::fs;
 use mustard_core::store::event_store::EventSink;
 use mustard_core::store::sqlite_store::SqliteEventStore;
+use mustard_core::ClaudePaths;
 // Wave 3 of mustard-unification: the sidecar `meta.json` is the canonical
 // source of `scope`/`lang`/`isWavePlan`/`totalWaves` going forward. The legacy
 // `.pipeline-states/*.json` ingest now consults `meta.json` first for fields
@@ -34,7 +35,7 @@ use mustard_core::model::event::{
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 // ---------------------------------------------------------------------------
 // Lenient pipeline-state deserialization
@@ -97,7 +98,9 @@ pub struct PipelineStateIngestOpts {
 /// and never aborts siblings.
 pub fn run(opts: PipelineStateIngestOpts) {
     let cwd = env_project_dir();
-    let states_dir = Path::new(&cwd).join(".claude").join(".pipeline-states");
+    let states_dir = ClaudePaths::for_project(Path::new(&cwd))
+        .map(|p| p.pipeline_states_dir())
+        .unwrap_or_else(|_| PathBuf::from(&cwd));
 
     // Open the store (creates + applies schema if absent).
     let store = match SqliteEventStore::for_project(&cwd) {
@@ -176,11 +179,10 @@ pub fn run(opts: PipelineStateIngestOpts) {
         // Read `.claude/spec/<spec>/meta.json` FIRST (Wave 3 mustard-unification):
         // the sidecar is canonical for `scope`/`lang`/`isWavePlan`/`totalWaves`.
         // The legacy JSON only fills the gap for fields the sidecar omits.
-        let meta_path = Path::new(&cwd)
-            .join(".claude")
-            .join("spec")
-            .join(&spec)
-            .join("meta.json");
+        let meta_path = ClaudePaths::for_project(Path::new(&cwd))
+            .and_then(|p| p.for_spec(&spec))
+            .map(|sp| sp.meta_json_path())
+            .unwrap_or_else(|_| PathBuf::from(&cwd).join("meta.json"));
         let meta_sidecar = read_meta(&meta_path);
 
         let scope_value = meta_sidecar

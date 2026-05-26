@@ -100,9 +100,9 @@ pub(crate) fn parse_wave_names(wave_plan_text: &str) -> Vec<String> {
 }
 
 /// Resolve the per-spec NDJSON events directory:
-/// `<project>/.claude/spec/<spec>/events`.
+/// `<project>/.claude/spec/<spec>/.events`.
 fn spec_events_dir(project: &Path, spec_slug: &str) -> PathBuf {
-    project.join(".claude").join("spec").join(spec_slug).join("events")
+    project.join(".claude").join("spec").join(spec_slug).join(".events")
 }
 
 /// Parse the wave number `N` from a wave name like `wave-3-frontend`. Returns
@@ -238,17 +238,23 @@ pub(crate) fn render(
     out
 }
 
-/// Run `mustard-rt run memory cross-wave --spec <name> --wave <N>`.
+/// Run `mustard-rt run memory cross-wave --spec <name> --wave <N> [--cluster <C>]`.
 ///
 /// Fail-open: a missing wave-plan, missing DB, or unparseable `--wave` all
 /// degrade to an empty stdout body.
-pub fn run(spec: Option<&str>, wave: Option<u32>) {
+///
+/// W7 (deep-refactor) adds `--cluster <C>`: when set, prior-wave names are
+/// filtered to those whose role suffix (`wave-N-<role>`) matches `<cluster>`
+/// (case-insensitive). This narrows the injected memory block to waves that
+/// share the current wave's cluster — e.g. an `rt` wave inherits only from
+/// prior `rt` waves rather than every wave in the spec.
+pub fn run(spec: Option<&str>, wave: Option<u32>, cluster: Option<&str>) {
     let Some(spec) = spec else {
-        eprintln!("Usage: memory cross-wave --spec <name> --wave <N>");
+        eprintln!("Usage: memory cross-wave --spec <name> --wave <N> [--cluster <C>]");
         return;
     };
     let Some(wave) = wave else {
-        eprintln!("Usage: memory cross-wave --spec <name> --wave <N>");
+        eprintln!("Usage: memory cross-wave --spec <name> --wave <N> [--cluster <C>]");
         return;
     };
     if wave <= 1 {
@@ -269,12 +275,38 @@ pub fn run(spec: Option<&str>, wave: Option<u32>) {
     }
     // Keep waves 1..N-1 (the first N-1 entries).
     let n_prior = (wave as usize).saturating_sub(1).min(all_names.len());
-    let prior: Vec<String> = all_names.into_iter().take(n_prior).collect();
+    let mut prior: Vec<String> = all_names.into_iter().take(n_prior).collect();
+
+    // W7 cluster filter — drop prior waves whose role suffix differs.
+    if let Some(c) = cluster {
+        let want = c.to_ascii_lowercase();
+        prior.retain(|name| wave_cluster_of(name).as_ref() == Some(&want));
+    }
 
     let rendered = render(&prior, &project, spec);
     if !rendered.is_empty() {
         print!("{rendered}");
     }
+}
+
+/// Extract the cluster/role token from a wave directory name like
+/// `wave-3-rt` → `Some("rt")`. Returns `None` when the name doesn't follow
+/// the `wave-N-<role>` shape.
+fn wave_cluster_of(wave_name: &str) -> Option<String> {
+    let rest = wave_name.strip_prefix("wave-")?;
+    let mut chars = rest.chars();
+    let _ = (&mut chars).take_while(char::is_ascii_digit).count();
+    // We need the actual byte index where digits end + the following `-`.
+    let after_digits = rest
+        .char_indices()
+        .find(|(_, c)| !c.is_ascii_digit())
+        .map(|(i, _)| i)?;
+    let tail = &rest[after_digits..];
+    let role = tail.strip_prefix('-')?;
+    if role.is_empty() {
+        return None;
+    }
+    Some(role.to_ascii_lowercase())
 }
 
 #[cfg(test)]
@@ -438,5 +470,17 @@ mod tests {
         let dir = tempdir().unwrap();
         let md = render(&["wave-1-rt-infra".to_string()], dir.path(), "foo");
         assert!(md.is_empty());
+    }
+
+    #[test]
+    fn wave_cluster_of_extracts_role_suffix() {
+        assert_eq!(super::wave_cluster_of("wave-1-rt"), Some("rt".to_string()));
+        assert_eq!(
+            super::wave_cluster_of("wave-12-Dashboard"),
+            Some("dashboard".to_string())
+        );
+        assert_eq!(super::wave_cluster_of("wave-1-"), None);
+        assert_eq!(super::wave_cluster_of("wave-foo"), None);
+        assert_eq!(super::wave_cluster_of("review"), None);
     }
 }

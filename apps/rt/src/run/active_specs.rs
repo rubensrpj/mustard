@@ -2,7 +2,7 @@
 //!
 //! Replaces the LLM-side glob/grep loop that `/mustard:spec` used to run: globs
 //! `.claude/spec/*/spec.md` + `.claude/spec/*/wave-plan.md`, parses the header
-//! of each, filters to `Outcome=Active` + `Stage ∈ {Plan, Execute}`, counts
+//! of each, filters to `Outcome=Active` + `Stage ∈ {Analyze, Plan, Execute}`, counts
 //! wave progress for wave-plans, extracts a one-line resumo, resolves short
 //! aliases for parent specs, and backfills SQLite events when absent (the
 //! multi-dev gap: after a `git pull`, a teammate's spec is on disk but has no
@@ -277,7 +277,11 @@ fn discover_root_specs(root: &Path) -> Vec<SpecCandidate> {
 // Filtering
 // ---------------------------------------------------------------------------
 
-/// Keep only specs with `Outcome=Active` and `Stage ∈ {Plan, Execute}`.
+/// Keep only specs with `Outcome=Active` and `Stage ∈ {Analyze, Plan, Execute}`.
+///
+/// `Analyze` is included so a spec parked pre-Plan (e.g. a tactical fix with AC
+/// drafted but not yet promoted) still shows up in the picker — otherwise it
+/// disappears from `/mustard:spec` despite being on-disk and `Outcome=Active`.
 fn filter_active(candidates: Vec<SpecCandidate>) -> Vec<SpecCandidate> {
     candidates
         .into_iter()
@@ -293,7 +297,7 @@ fn filter_active(candidates: Vec<SpecCandidate>) -> Vec<SpecCandidate> {
                 .as_deref()
                 .is_some_and(|s| {
                     let lower = s.to_ascii_lowercase();
-                    lower == "plan" || lower == "execute"
+                    lower == "analyze" || lower == "plan" || lower == "execute"
                 });
             outcome_ok && stage_ok
         })
@@ -818,6 +822,7 @@ fn scope_abbrev(scope: &Option<String>) -> String {
 
 fn stage_abbrev(stage: &str) -> String {
     match stage.to_ascii_lowercase().as_str() {
+        "analyze" => "ANLZ".to_string(),
         "plan" => "PLAN".to_string(),
         "execute" => "EXEC".to_string(),
         other => other.to_ascii_uppercase().chars().take(4).collect(),
@@ -1146,13 +1151,15 @@ mod tests {
     }
 
     #[test]
-    fn filter_active_keeps_plan_and_execute_with_active_outcome() {
+    fn filter_active_keeps_analyze_plan_and_execute_with_active_outcome() {
         let candidates = vec![
             make_candidate("a", "Plan", "Active"),
             make_candidate("b", "Execute", "Active"),
             make_candidate("c", "Close", "Completed"),
             make_candidate("d", "Plan", "Completed"),
             make_candidate("e", "Close", "Active"),
+            make_candidate("f", "Analyze", "Active"),
+            make_candidate("g", "Analyze", "Completed"),
         ];
         let active = filter_active(candidates);
         let names: Vec<&str> = active.iter().map(|c| c.name.as_str()).collect();
@@ -1161,6 +1168,8 @@ mod tests {
         assert!(!names.contains(&"c"), "Close+Completed should be filtered");
         assert!(!names.contains(&"d"), "Plan+Completed should be filtered");
         assert!(!names.contains(&"e"), "Close+Active should be filtered");
+        assert!(names.contains(&"f"), "Analyze+Active should pass");
+        assert!(!names.contains(&"g"), "Analyze+Completed should be filtered");
     }
 
     // -----------------------------------------------------------------------

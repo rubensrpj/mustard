@@ -41,7 +41,7 @@ fn hygiene_kinds_are_accepted_and_write_single_rows() {
     }
 
     // W5: hygiene.* events route to per-spec NDJSON, not SQLite.
-    let events_dir = project.join(".claude").join("spec").join(spec).join("events");
+    let events_dir = project.join(".claude").join("spec").join(spec).join(".events");
     let events = read_harness_events_from_ndjson_dir(&events_dir);
     for kind in ["hygiene.detected", "hygiene.autoclose", "hygiene.skipped"] {
         let n = events.iter().filter(|e| e.event == kind).count();

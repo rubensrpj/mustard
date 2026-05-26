@@ -311,6 +311,7 @@ mod tests {
         let ctx = Ctx {
             project_dir: ".".to_string(),
             trigger: Some(Trigger::PreToolUse),
+            workspace_root: None,
         };
         (input, ctx)
     }
@@ -418,6 +419,7 @@ mod tests {
         let ctx = Ctx {
             project_dir: ".".to_string(),
             trigger: Some(Trigger::PreToolUse),
+            workspace_root: None,
         };
         assert_eq!(
             SkillsAudit.evaluate(&input, &ctx).expect("no error"),
@@ -431,6 +433,7 @@ mod tests {
         let ctx = Ctx {
             project_dir: ".".to_string(),
             trigger: Some(Trigger::PostToolUse),
+            workspace_root: None,
         };
         assert_eq!(
             SkillsAudit.evaluate(&input, &ctx).expect("no error"),

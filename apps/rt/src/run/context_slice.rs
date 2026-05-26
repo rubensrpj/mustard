@@ -475,28 +475,59 @@ fn slice_context(
 /// Run `mustard-rt run context-slice`, writing the slice to stdout.
 ///
 /// Exit code is always `0` (fail-graceful).
-pub fn run(context: &[String], spec: Option<&str>, max_lines: Option<usize>) {
+///
+/// W8.T8.8 — `--context-claude-md <path>` accepts a CLAUDE.md path as an extra
+/// source. CLAUDE.md is not a term-block glossary, so it is sliced through a
+/// simpler heuristic: every `## Heading` / `### Heading` block whose body
+/// contains a spec-derived relevance term is kept. The output is appended
+/// after the CONTEXT.md slice (separated by a blank line) so callers parsing
+/// the legacy CONTEXT.md slice see byte-stable output when the new flag is
+/// omitted.
+pub fn run(
+    context: &[String],
+    spec: Option<&str>,
+    max_lines: Option<usize>,
+    context_claude_md: Option<&str>,
+) {
     let Some(spec) = spec else {
         eprintln!("[context-slice] --spec <path> is required");
         return;
     };
-    if context.is_empty() {
-        eprintln!("[context-slice] no --context given; emitting empty slice");
+    if context.is_empty() && context_claude_md.is_none() {
+        eprintln!(
+            "[context-slice] no --context / --context-claude-md given; emitting empty slice"
+        );
         return;
     }
 
-    let result = slice_context(context, spec, max_lines);
-    if result.truncated {
-        eprintln!(
-            "[context-slice] WARN: relevant glossary slice is {} blocks and exceeds the \
-             {}-line cap (MUSTARD_GLOSSARY_MAX_LINES). Truncated. Narrow the spec's scope \
-             or raise the cap if every block is needed.",
-            result.block_count,
-            resolve_max_lines()
-        );
+    let mut emitted_anything = false;
+
+    if !context.is_empty() {
+        let result = slice_context(context, spec, max_lines);
+        if result.truncated {
+            eprintln!(
+                "[context-slice] WARN: relevant glossary slice is {} blocks and exceeds the \
+                 {}-line cap (MUSTARD_GLOSSARY_MAX_LINES). Truncated. Narrow the spec's scope \
+                 or raise the cap if every block is needed.",
+                result.block_count,
+                resolve_max_lines()
+            );
+        }
+        if !result.slice.is_empty() {
+            println!("{}", result.slice);
+            emitted_anything = true;
+        }
     }
-    if !result.slice.is_empty() {
-        println!("{}", result.slice);
+
+    // T8.8: slice CLAUDE.md against the same spec-derived relevance terms.
+    if let Some(claude_md_path) = context_claude_md {
+        let slice = slice_claude_md(claude_md_path, spec, max_lines);
+        if !slice.is_empty() {
+            if emitted_anything {
+                println!();
+            }
+            println!("{slice}");
+        }
     }
 
     // Wave 4 (project-profiler): delegate to the unified `context-resolve`
@@ -505,6 +536,62 @@ pub fn run(context: &[String], spec: Option<&str>, max_lines: Option<usize>) {
     // one-line stderr summary of the closure. Stdout (the glossary slice)
     // stays byte-stable for the legacy parser. Fail-open everywhere.
     delegate_to_resolver(spec);
+}
+
+/// Slice a CLAUDE.md file against the spec-derived relevance terms.
+///
+/// Strategy: parse CLAUDE.md into heading-bounded sections (depth 2-3) and
+/// keep every section whose heading or body contains any relevance term.
+/// Fail-graceful: a missing CLAUDE.md or spec yields an empty string.
+fn slice_claude_md(claude_md_path: &str, spec_path: &str, max_lines: Option<usize>) -> String {
+    let cap = max_lines
+        .filter(|&n| n > 0)
+        .unwrap_or_else(resolve_max_lines);
+    let Some(spec_text) = read_file_safe(Path::new(spec_path)) else {
+        return String::new();
+    };
+    let Some(claude_text) = read_file_safe(Path::new(claude_md_path)) else {
+        return String::new();
+    };
+    let terms = extract_relevance_terms(&spec_text);
+    if terms.is_empty() {
+        return String::new();
+    }
+
+    // Parse into ## / ### sections.
+    let lines: Vec<&str> = claude_text.lines().collect();
+    let mut sections: Vec<Vec<&str>> = Vec::new();
+    let mut current: Vec<&str> = Vec::new();
+    for line in &lines {
+        if heading_term(line).is_some() && !current.is_empty() {
+            sections.push(std::mem::take(&mut current));
+        }
+        current.push(line);
+    }
+    if !current.is_empty() {
+        sections.push(current);
+    }
+
+    let mut kept: Vec<String> = Vec::new();
+    for sec in sections {
+        let body = sec.join("\n");
+        let body_lower = body.to_ascii_lowercase();
+        let matches = terms.iter().any(|t| bounded_contains(&body_lower, t));
+        if matches {
+            kept.push(body);
+        }
+    }
+    if kept.is_empty() {
+        return String::new();
+    }
+    let joined = kept.join("\n\n");
+    let all_lines: Vec<&str> = joined.split('\n').collect();
+    if all_lines.len() <= cap {
+        format!("## CLAUDE.md (slice)\n{joined}")
+    } else {
+        let trimmed = all_lines[..cap].join("\n");
+        format!("## CLAUDE.md (slice)\n{trimmed}{TRUNCATE_TAIL}")
+    }
 }
 
 /// Pull entity names from the spec's `## Entidades`/`## Entities` section

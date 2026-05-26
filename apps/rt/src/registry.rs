@@ -7,12 +7,14 @@
 //! to have it self-`Allow`.
 
 use crate::hooks::amend_capture::AmendCapture;
+use crate::hooks::auto_capture_summary::AutoCaptureSummary;
 use crate::hooks::bash_guard::BashGuard;
 use crate::hooks::budget::BudgetGuard;
 use crate::hooks::close_gate::CloseGate;
 use crate::hooks::enforce_registry::EnforceRegistry;
 use crate::hooks::knowledge::Knowledge;
 use crate::hooks::model_routing::ModelRoutingGate;
+use crate::hooks::notification::Notification;
 use crate::hooks::path_guard::PathGuard;
 use crate::hooks::post_edit::PostEdit;
 use crate::hooks::pre_compact::PreCompact;
@@ -22,6 +24,9 @@ use crate::hooks::session_start::SessionStart;
 use crate::hooks::size_gate::SizeGate;
 use crate::hooks::skills_audit::SkillsAudit;
 use crate::hooks::spec_hygiene::SpecHygiene;
+use crate::hooks::stop::Stop;
+use crate::hooks::stop_observer::{PreCompactMemorySnippet, SessionEndConsolidate, StopObserver};
+use crate::hooks::subagent_inject::SubagentInject;
 use crate::hooks::tool_result::ToolResult;
 use crate::hooks::tracker::{
     MainContextCounter, MetricsTracker, SkillUsageTracker, SubagentTracker, ToolUseCounter,
@@ -346,6 +351,73 @@ impl Registry {
                 applies_to: &[(Trigger::UserPromptSubmit, ToolMatch::Any)],
                 check: Some(Box::new(PromptGate)),
                 observer: None,
+            },
+            // ── W8 deep-refactor: context-injection optimisation ─────────────
+            Module {
+                id: "subagent_inject",
+                // T8.3 — for Task dispatches without a declared SKILL, inject a
+                // minimal CONTEXT.md + skills slice (resolved via W1's
+                // `skill-resolve`).
+                applies_to: &[
+                    (Trigger::PreToolUse, ToolMatch::Named("Task")),
+                    (Trigger::PreToolUse, ToolMatch::Named("Agent")),
+                ],
+                check: Some(Box::new(SubagentInject)),
+                observer: None,
+            },
+            Module {
+                id: "auto_capture_summary",
+                // T8.4 — on Task return, parse `<MEMORY>` or `Resumo:` and
+                // persist to `agent_memory`.
+                applies_to: &[
+                    (Trigger::PostToolUse, ToolMatch::Named("Task")),
+                    (Trigger::PostToolUse, ToolMatch::Named("Agent")),
+                ],
+                check: None,
+                observer: Some(Box::new(AutoCaptureSummary)),
+            },
+            Module {
+                id: "stop_observer",
+                // T8.5 — SubagentStop reinforcement: bump `last_used` on any
+                // agent_memory row whose summary appeared in the output.
+                applies_to: &[(Trigger::SubagentStop, ToolMatch::Any)],
+                check: None,
+                observer: Some(Box::new(StopObserver)),
+            },
+            Module {
+                id: "session_end_consolidate",
+                // T8.6 — SessionEnd promotion of high-confidence agent_memory
+                // rows to permanent memory_decisions / memory_lessons rows.
+                applies_to: &[(Trigger::SessionEnd, ToolMatch::Any)],
+                check: None,
+                observer: Some(Box::new(SessionEndConsolidate)),
+            },
+            Module {
+                id: "pre_compact_memory_snippet",
+                // T8.7 — add up to 3 recent agent_memory entries to the
+                // PreCompact snapshot (in addition to the pre_compact module).
+                applies_to: &[(Trigger::PreCompact, ToolMatch::Any)],
+                check: Some(Box::new(PreCompactMemorySnippet)),
+                observer: None,
+            },
+            // ── W9 deep-refactor: Stop + Notification triggers ───────────────
+            Module {
+                id: "stop",
+                // `Stop` lifecycle observer — persists an `interrupted at wave N`
+                // agent_memory row when there has been a recent edit, with a
+                // 5-minute anti-spam guard between consecutive Stops.
+                applies_to: &[(Trigger::Stop, ToolMatch::Any)],
+                check: None,
+                observer: Some(Box::new(Stop)),
+            },
+            Module {
+                id: "notification",
+                // `Notification` lifecycle observer — appends a single
+                // `notification.received` event to the per-spec NDJSON log;
+                // observe-only, no auto-resolution.
+                applies_to: &[(Trigger::Notification, ToolMatch::Any)],
+                check: None,
+                observer: Some(Box::new(Notification)),
             },
             // ── Wave 6: session-bound amendment window ───────────────────────
             Module {

@@ -298,6 +298,41 @@ impl ClaudePaths {
         self.claude_dir().join("graph")
     }
 
+    /// `<root>/.claude/.pipeline-states/` — legacy pipeline-state JSON
+    /// directory.
+    ///
+    /// **Note:** the per-wave / per-spec artefacts (`diff.md`, `prompt.md`,
+    /// `warnings.txt`, `qa-report.{json,html}`, `economy-baselines.json`) have
+    /// moved into the per-spec / per-wave directories under [`Self::spec_dir`].
+    /// This accessor remains for the *pipeline-state JSON files themselves*
+    /// (`{spec}.json` markers) and the legacy retroactive ingester
+    /// (`pipeline-state-ingest`) which scans the directory for back-compat.
+    /// Active pipeline-state tracking writes here today; future work may move
+    /// these to a per-spec destination, but that migration is out of scope
+    /// for W2 of `2026-05-26-claude-paths-single-source`.
+    #[must_use]
+    pub fn pipeline_states_dir(&self) -> PathBuf {
+        self.claude_dir().join(".pipeline-states")
+    }
+
+    /// `<root>/.claude/.pipeline-states/{spec}.json` — per-spec pipeline-state
+    /// marker file.
+    ///
+    /// See [`Self::pipeline_states_dir`] for the legacy-vs-future tradeoff.
+    #[must_use]
+    pub fn pipeline_state_file(&self, spec: &str) -> PathBuf {
+        self.pipeline_states_dir().join(format!("{spec}.json"))
+    }
+
+    /// `<root>/.claude/.interpret-cache.json` — scan interpreter cache.
+    ///
+    /// Owned by the scan subsystem; kept at the legacy root location to match
+    /// the existing reader/writer pair in `apps/rt/src/run/scan/interpret.rs`.
+    #[must_use]
+    pub fn interpret_cache_path(&self) -> PathBuf {
+        self.claude_dir().join(".interpret-cache.json")
+    }
+
     // -- root-level files ------------------------------------------------
 
     /// `<root>/.claude/CLAUDE.md` — orchestrator rules.

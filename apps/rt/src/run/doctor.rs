@@ -24,9 +24,14 @@
 //!   absent. Powerline statusline themes require this; without it the
 //!   transition glyphs render as tofu.
 
+use crate::run::env::{current_spec, session_id};
 use crate::run::skill_discovery_lint;
+use crate::util::now_iso8601;
 use crate::util::sha256::Sha256;
 use mustard_core::fs;
+use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
+use mustard_core::ClaudePaths;
+use serde_json::json;
 use std::path::{Path, PathBuf};
 
 // ---------------------------------------------------------------------------
@@ -135,6 +140,7 @@ const KNOWN_RUN_SUBCOMMANDS: &[&str] = &[
     "db-maintain",
     "unhook",
     "rehook",
+    "plan-from-spec",
 ];
 
 /// The Mustard-owned folders that `mustard-cli update` regenerates.
@@ -612,7 +618,12 @@ fn check_state_health(claude_dir: &Path) -> CheckResult {
     }
 
     // Inspect pipeline-states/.
-    let states_dir = claude_dir.join(".pipeline-states");
+    let states_dir = claude_dir
+        .parent()
+        .filter(|_| claude_dir.file_name().and_then(|s| s.to_str()) == Some(".claude"))
+        .and_then(|root| ClaudePaths::for_project(root).ok())
+        .map(|p| p.pipeline_states_dir())
+        .unwrap_or_else(|| claude_dir.to_path_buf());
     if !states_dir.exists() {
         // No states dir — clean install, nothing to warn about.
         if warnings.is_empty() {
@@ -744,6 +755,94 @@ fn approx_epoch_secs(year: u64, month: u64, day: u64, hour: u64, minute: u64, se
     // Days since 1970-01-01 (day 719_468 in the proleptic Gregorian calendar).
     let since_epoch = days.saturating_sub(719_468);
     since_epoch * 86_400 + hour * 3_600 + minute * 60 + second
+}
+
+// ---------------------------------------------------------------------------
+// Check: wave-integrity (W10.T10.5)
+// ---------------------------------------------------------------------------
+
+/// For each active spec under `.claude/spec/`, parse `wave-plan.md` for
+/// `[[wave-N-<role>]]` wikilinks and verify each referenced subdirectory
+/// exists. WARN per broken wikilink (an editor typo or partial scaffold);
+/// FAIL only on an empty result paired with a non-empty wave-plan body.
+/// Fail-open: a missing spec tree, unreadable file, or malformed wikilink is
+/// silently ignored — better to skip a check than crash the doctor.
+fn check_wave_integrity(claude_dir: &Path) -> CheckResult {
+    let spec_root = claude_dir.join("spec");
+    let Ok(entries) = fs::read_dir(&spec_root) else {
+        return CheckResult::skip("wave-integrity", "no .claude/spec/ directory");
+    };
+    let mut warnings: Vec<String> = Vec::new();
+    let mut scanned = 0usize;
+    for entry in entries {
+        if !entry.is_dir {
+            continue;
+        }
+        let plan_path = entry.path.join("wave-plan.md");
+        if !plan_path.is_file() {
+            continue;
+        }
+        scanned += 1;
+        let Ok(text) = fs::read_to_string(&plan_path) else {
+            continue;
+        };
+        for link in extract_wave_wikilinks(&text) {
+            let dir = entry.path.join(&link);
+            if !dir.is_dir() {
+                warnings.push(format!(
+                    "{spec}: [[{link}]] -> directory missing",
+                    spec = entry.file_name,
+                ));
+            }
+        }
+    }
+    if scanned == 0 {
+        return CheckResult::skip("wave-integrity", "no wave-plan.md files found");
+    }
+    if warnings.is_empty() {
+        let mut r = CheckResult::ok("wave-integrity");
+        r.details.push(format!("scanned {scanned} wave-plan(s) — no missing dirs"));
+        r
+    } else {
+        CheckResult::warn("wave-integrity", warnings)
+    }
+}
+
+/// Pull every `[[wave-N-<role>]]` wikilink from raw markdown. Matches the
+/// `wave-N-{role}` shape only; ignores generic `[[link]]` references so cross-
+/// links to non-wave concept nodes don't trigger spurious warnings.
+fn extract_wave_wikilinks(text: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let bytes = text.as_bytes();
+    let mut i = 0usize;
+    while i + 1 < bytes.len() {
+        if bytes[i] == b'[' && bytes[i + 1] == b'[' {
+            // Find the closing `]]` on the same line.
+            if let Some(end) = text[i + 2..].find("]]") {
+                let link = &text[i + 2..i + 2 + end];
+                // Cut piped text (e.g. `[[wave-1-rt|label]]`).
+                let core = link.split('|').next().unwrap_or(link).trim();
+                if is_wave_link(core) && !out.iter().any(|s| s == core) {
+                    out.push(core.to_string());
+                }
+                i += 2 + end + 2;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    out
+}
+
+/// Loose recogniser for `wave-{N}-{role}` — `N` numeric, role non-empty.
+fn is_wave_link(s: &str) -> bool {
+    let Some(rest) = s.strip_prefix("wave-") else {
+        return false;
+    };
+    let Some((n, role)) = rest.split_once('-') else {
+        return false;
+    };
+    !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()) && !role.is_empty()
 }
 
 // ---------------------------------------------------------------------------
@@ -899,39 +998,65 @@ fn run_skill_discovery_check(root: &Path) -> CheckResult {
 // JSON renderer
 // ---------------------------------------------------------------------------
 
-/// Serialize the report as compact JSON for `--format json`.
+/// Serialize the report as JSON. W10.T10.6 shape:
+///
+/// ```json
+/// {
+///   "checks": [{ "name": "...", "status": "ok|warn|fail|skip",
+///                "message": "...", "details": ["..."] }],
+///   "overall": "ok|warn|fail",
+///   "violations": [...]
+/// }
+/// ```
+///
+/// `status` is lowercased (the spec's `ok|warn|fail` contract);
+/// `message` is the first detail line, joined with `; ` when multiple exist.
+/// `details` is preserved for callers that want the full per-check list.
 fn render_report_json(results: &[CheckResult]) {
-    // Build a JSON object manually to avoid pulling in a derive macro.
-    let checks: Vec<String> = results
+    let checks: Vec<serde_json::Value> = results
         .iter()
         .map(|r| {
-            let details_json: Vec<String> = r
-                .details
-                .iter()
-                .map(|d| format!("\"{}\"", d.replace('\\', "\\\\").replace('"', "\\\"")))
-                .collect();
-            format!(
-                "{{\"name\":\"{}\",\"status\":\"{}\",\"details\":[{}]}}",
-                r.name,
-                r.status.label(),
-                details_json.join(",")
-            )
+            let status_str = r.status.label().to_ascii_lowercase();
+            let message = if r.details.is_empty() {
+                String::new()
+            } else if r.details.len() == 1 {
+                r.details[0].clone()
+            } else {
+                r.details.join("; ")
+            };
+            json!({
+                "name": r.name,
+                "status": status_str,
+                "message": message,
+                "details": r.details,
+            })
         })
         .collect();
 
-    // Collect all violations from skill-discovery checks for a flat list.
+    // Aggregate overall verdict (FAIL > WARN > OK; SKIP is neutral).
+    let any_fail = results.iter().any(|r| r.status == Status::Fail);
+    let any_warn = results.iter().any(|r| r.status == Status::Warn);
+    let overall = if any_fail {
+        "fail"
+    } else if any_warn {
+        "warn"
+    } else {
+        "ok"
+    };
+
     let violations: Vec<String> = results
         .iter()
         .filter(|r| r.name == "skill-discovery" && r.status == Status::Warn)
         .flat_map(|r| r.details.iter())
-        .map(|d| format!("\"{}\"", d.replace('\\', "\\\\").replace('"', "\\\"")))
+        .cloned()
         .collect();
 
-    println!(
-        "{{\"checks\":[{}],\"violations\":[{}]}}",
-        checks.join(","),
-        violations.join(",")
-    );
+    let body = json!({
+        "checks": checks,
+        "overall": overall,
+        "violations": violations,
+    });
+    println!("{}", serde_json::to_string_pretty(&body).unwrap_or_else(|_| "{}".to_string()));
 }
 
 // ---------------------------------------------------------------------------
@@ -948,27 +1073,33 @@ pub struct DoctorOpts {
     pub format: String,
 }
 
-/// Dispatch `mustard-rt run doctor [--residue] [--check <CHECK>] [--format json]`.
+/// Dispatch `mustard-rt run doctor [--residue] [--check <CHECK>] [--format json|--json]`.
 pub fn run(opts: DoctorOpts) {
-    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let claude_dir = cwd.join(".claude");
+    let started = std::time::Instant::now();
+    let cwd = crate::run::env::workspace_root_strict()
+        .unwrap_or_else(|_| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    let claude_dir = ClaudePaths::for_project(&cwd)
+        .map(|p| p.claude_dir())
+        .unwrap_or_else(|_| cwd.clone());
 
     // When a specific --check is requested, run only that check.
     if let Some(ref check_name) = opts.check {
-        match check_name.as_str() {
-            "skill-discovery" => {
-                let result = run_skill_discovery_check(&cwd);
-                if opts.format == "json" {
-                    render_report_json(&[result]);
-                } else {
-                    render_report(&[result]);
-                }
-            }
+        let result = match check_name.as_str() {
+            "skill-discovery" => run_skill_discovery_check(&cwd),
+            "wave-integrity" => check_wave_integrity(&claude_dir),
             other => {
-                eprintln!("doctor: unknown check '{other}'. Known: skill-discovery");
+                eprintln!(
+                    "doctor: unknown check '{other}'. Known: skill-discovery, wave-integrity"
+                );
                 std::process::exit(1);
             }
+        };
+        if opts.format == "json" {
+            render_report_json(&[result]);
+        } else {
+            render_report(&[result]);
         }
+        emit_economy(started.elapsed().as_millis(), 1, false);
         return;
     }
 
@@ -980,6 +1111,8 @@ pub fn run(opts: DoctorOpts) {
         check_claude_cli(),
         lsp_check(&cwd),
         check_nerd_font(),
+        // W10.T10.5 — new check, always in the full run.
+        check_wave_integrity(&claude_dir),
         // skill-discovery is always included in the full run (advisory).
         run_skill_discovery_check(&cwd),
     ];
@@ -995,9 +1128,42 @@ pub fn run(opts: DoctorOpts) {
     }
 
     let any_fail = results.iter().any(|r| r.status == Status::Fail);
+    emit_economy(started.elapsed().as_millis(), results.len(), any_fail);
     if any_fail {
         std::process::exit(1);
     }
+}
+
+/// Telemetry — `pipeline.economy.operation.invoked` for the doctor run.
+fn emit_economy(duration_ms: u128, check_count: usize, any_failure: bool) {
+    let cwd = std::env::current_dir()
+        .ok()
+        .and_then(|p| p.to_str().map(str::to_string))
+        .unwrap_or_else(|| ".".to_string());
+    let spec = current_spec(&cwd);
+    let duration_capped = i64::try_from(duration_ms).unwrap_or(i64::MAX);
+    let ev = HarnessEvent {
+        v: SCHEMA_VERSION,
+        ts: now_iso8601(),
+        session_id: session_id(),
+        wave: 0,
+        actor: Actor {
+            kind: ActorKind::Orchestrator,
+            id: Some("doctor".to_string()),
+            actor_type: None,
+        },
+        event: "pipeline.economy.operation.invoked".to_string(),
+        payload: json!({
+            "operation": "doctor",
+            "duration_ms": duration_capped,
+            "tokens_used": 0,
+            "was_rust_only": true,
+            "checks": check_count,
+            "ok": !any_failure,
+        }),
+        spec,
+    };
+    let _ = crate::run::event_route::emit(&cwd, &ev);
 }
 
 // ---------------------------------------------------------------------------

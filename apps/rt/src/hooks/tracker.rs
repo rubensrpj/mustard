@@ -1012,6 +1012,7 @@ mod tests {
         Ctx {
             project_dir: dir.to_string(),
             trigger: Some(trigger),
+            workspace_root: None,
         }
     }
 
@@ -1339,12 +1340,12 @@ mod tests {
 
         // W5: `skill.invoked` is non-pipeline → per-session NDJSON (no spec
         // resolves in this test). Scan every NDJSON file under
-        // `<project>/.claude/.session/*/events/`.
+        // `<project>/.claude/.session/*/.events/`.
         let session_root = dir.path().join(".claude").join(".session");
         let mut found = false;
         if session_root.exists() {
             for entry in std::fs::read_dir(&session_root).unwrap() {
-                let events_dir = entry.unwrap().path().join("events");
+                let events_dir = entry.unwrap().path().join(".events");
                 if !events_dir.exists() {
                     continue;
                 }

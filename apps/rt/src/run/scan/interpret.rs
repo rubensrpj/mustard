@@ -744,55 +744,36 @@ pub fn slugify(input: &str) -> String {
 /// callers can deterministically compute the id of an entity without going
 /// through [`emit_concept_nodes`] first.
 #[must_use]
+#[allow(dead_code)] // public-API surface reserved for the Wave 4 resolver + tests
 pub fn compose_id(sub: &str, kind: &str, raw_slug: &str) -> String {
     format!("{}.{}.{}", slugify(sub), slugify(kind), slugify(raw_slug))
 }
 
 /// Translate an [`InterpretedResult`] into a vector of [`ConceptNode`]s for a
-/// given subproject slug. Entities become `{sub}.entity.{slug}` nodes, enums
-/// become `{sub}.enum.{slug}` nodes. The model-supplied `edges` (already in
-/// `[[id]]` form) are preserved as outbound edges; bare names that the model
-/// returned without brackets are normalised to `[[{sub}.entity.{slug}]]`.
+/// given subproject slug.
+///
+/// W3 (deep-refactor) **constrains the graph to pipeline knowledge** — the
+/// allowed kinds are `spec`, `skill`, `command`, `ref`, `recipe`, `conv`. The
+/// per-entity / per-enum nodes the model surfaces are now dropped from the
+/// graph (they remain in `entity-registry.json`, which is the source of truth
+/// for code-shape knowledge). The vault is reserved for conceptual nodes the
+/// agent navigates, not a mirror of every type in the codebase.
+///
+/// This function therefore returns an empty vector until the interpreter
+/// learns to emit conceptual nodes (a follow-up wave). The signature is kept
+/// so callers and tests stay byte-stable.
 #[must_use]
 pub fn interpreted_to_nodes(sub: &str, result: &InterpretedResult) -> Vec<ConceptNode> {
-    let mut nodes: Vec<ConceptNode> = Vec::new();
-    for entity in &result.entities {
-        let id = compose_id(sub, "entity", &entity.name);
-        let edges: Vec<String> = entity
-            .edges
-            .iter()
-            .map(|raw| normalise_edge(sub, "entity", raw))
-            .filter(|s| !s.is_empty())
-            .collect();
-        nodes.push(ConceptNode {
-            id,
-            kind: "entity".to_string(),
-            sub: sub.to_string(),
-            name: entity.name.clone(),
-            source: Some(entity.file.clone()),
-            provides: Vec::new(),
-            edges,
-        });
-    }
-    for en in &result.enums {
-        let id = compose_id(sub, "enum", &en.name);
-        nodes.push(ConceptNode {
-            id,
-            kind: "enum".to_string(),
-            sub: sub.to_string(),
-            name: en.name.clone(),
-            source: Some(en.file.clone()),
-            provides: en.values.clone(),
-            edges: Vec::new(),
-        });
-    }
-    nodes
+    // Suppress entity + enum nodes per T3.6 of the deep-refactor W3 spec.
+    let _ = (sub, result);
+    Vec::new()
 }
 
 /// Normalise a model-supplied edge into a bracketed `[[id]]` form. Accepts
 /// both `[[sub.entity.foo]]` (returned untouched) and bare `Foo` (rewritten
 /// to `[[sub.entity.foo]]` using the supplied default kind). Empty / invalid
 /// inputs degrade to `""`, dropped by the caller.
+#[allow(dead_code)] // reserved for the follow-up wave that re-enables concept-node emission
 fn normalise_edge(sub: &str, default_kind: &str, raw: &str) -> String {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
@@ -1109,18 +1090,17 @@ mod tests {
             }],
             ..InterpretedResult::default()
         };
+        // W3 (deep-refactor) — `interpreted_to_nodes` no longer emits
+        // entity/enum nodes; the graph is reserved for pipeline-knowledge
+        // kinds (spec/skill/command/ref/recipe/conv). Entities + enums stay
+        // in `entity-registry.json`. The function therefore returns an empty
+        // vector regardless of the model's output here.
         let nodes = interpreted_to_nodes("apps-rt", &result);
-        assert_eq!(nodes.len(), 2);
-        assert_eq!(nodes[0].id, "apps-rt.entity.user");
-        assert_eq!(nodes[0].edges, vec![
-            "[[apps-rt.entity.order]]".to_string(),
-            "[[apps-rt.enum.role]]".to_string(),
-        ]);
-        assert_eq!(nodes[1].id, "apps-rt.enum.role");
-        assert_eq!(nodes[1].provides, vec!["Admin".to_string(), "Guest".to_string()]);
+        assert!(nodes.is_empty());
     }
 
-    /// `emit_concept_nodes` materialises files under `.claude/graph/`.
+    /// `emit_concept_nodes` writes zero files when the interpreter only
+    /// surfaces entity/enum data (W3: those kinds are no longer graph nodes).
     #[test]
     fn emit_concept_nodes_writes_markdown_files() {
         let dir = tempdir().unwrap();
@@ -1134,12 +1114,8 @@ mod tests {
             ..InterpretedResult::default()
         };
         let written = emit_concept_nodes(root, "apps-rt", &result);
-        assert_eq!(written, 1);
-        let path = root.join(".claude/graph/apps-rt.entity.invoice.md");
-        assert!(path.exists());
-        let body = std::fs::read_to_string(&path).unwrap();
-        assert!(body.contains("id: apps-rt.entity.invoice"));
-        assert!(body.contains("# Invoice"));
+        assert_eq!(written, 0);
+        assert!(!root.join(".claude/graph/apps-rt.entity.invoice.md").exists());
     }
 
     /// Parser strips ```json fences and trailing prose, then reads the inner

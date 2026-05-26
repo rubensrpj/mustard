@@ -705,6 +705,7 @@ mod tests {
         let ctx = Ctx {
             project_dir: String::new(),
             trigger: Some(Trigger::PreToolUse),
+            workspace_root: None,
         };
         (input, ctx)
     }
@@ -829,6 +830,7 @@ mod tests {
         let ctx = Ctx {
             project_dir: String::new(),
             trigger: Some(Trigger::PreToolUse),
+            workspace_root: None,
         };
         assert_eq!(
             BudgetGuard.evaluate(&input, &ctx).expect("no error"),
@@ -856,6 +858,7 @@ mod tests {
         let ctx = Ctx {
             project_dir: String::new(),
             trigger: Some(Trigger::PreToolUse),
+            workspace_root: None,
         };
         assert_eq!(
             BudgetGuard.evaluate(&input, &ctx).expect("no error"),
@@ -869,6 +872,7 @@ mod tests {
         let ctx = Ctx {
             project_dir: String::new(),
             trigger: Some(Trigger::PostToolUse),
+            workspace_root: None,
         };
         assert_eq!(
             BudgetGuard.evaluate(&input, &ctx).expect("no error"),
@@ -948,6 +952,7 @@ mod tests {
         let ctx = Ctx {
             project_dir: String::new(),
             trigger: Some(Trigger::PostToolUse),
+            workspace_root: None,
         };
         match BudgetGuard.evaluate(&input, &ctx).expect("no error") {
             Verdict::Inject { context } => {
@@ -971,6 +976,7 @@ mod tests {
         let ctx = Ctx {
             project_dir: String::new(),
             trigger: Some(Trigger::PostToolUse),
+            workspace_root: None,
         };
         assert_eq!(
             BudgetGuard.evaluate(&input, &ctx).expect("no error"),

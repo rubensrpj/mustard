@@ -1,9 +1,21 @@
-//! `mustard-rt run recipe-match` — a port of `scripts/recipe-match.js`.
+//! `mustard-rt run recipe-match` — match a recipe by entity + operation.
 //!
-//! Matches a recipe from `.claude/recipes/` by entity and operation, then
-//! resolves the recipe's file-path placeholders. Outputs the matched recipe as
-//! pretty JSON; emits nothing (exit 0) when there is no match or no recipes
-//! directory.
+//! Walks `.claude/recipes/` (flat or one-level nested under a subproject dir),
+//! matches recipes by `operation`, and emits the matched recipe as pretty JSON
+//! on stdout. Exits 0 silently when there is no match or no recipes directory.
+//!
+//! ## Path resolution
+//!
+//! Recipes today are **scan-derived** (project-profiler W3): every
+//! `files[].path` is a real on-disk path inside the recipe's subproject — no
+//! `{Entity}` / `{subproject}` placeholders to substitute. The legacy
+//! convention-name lookup (`backend`/`frontend`/`admin`) and the
+//! `to_pascal_case` placeholder rewriter were removed in the
+//! template-agnostic-audit (Wave 4): they baked CRUD/web archetype names into
+//! the runtime, which contradicts Mustard's agnostic principle. Resolution is
+//! now pass-through — the recipe's `path` is the resolved path. A `pattern`
+//! fallback is retained for one release in case any in-flight recipe still
+//! carries the legacy key; it is emitted verbatim (no substitution).
 //!
 //! ## Wave 2 — economia-didatica-e-economias-reais
 //!
@@ -29,62 +41,9 @@ use std::path::Path;
 
 use crate::run::env::current_spec;
 
-/// Uppercase the first letter (input is assumed PascalCase already).
-fn to_pascal_case(s: &str) -> String {
-    let mut chars = s.chars();
-    match chars.next() {
-        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
-        None => String::new(),
-    }
-}
-
-/// Look for a directory at `cwd` level matching a placeholder convention.
-fn find_dir_by_convention(cwd: &Path, placeholder: &str) -> Option<String> {
-    let candidates: &[&str] = match placeholder {
-        "backend" => &["backend", "Backend", "api", "Api", "server", "Server", "src"],
-        "frontend" => &[
-            "frontend", "Frontend", "web", "Web", "client", "Client", "app", "App",
-        ],
-        "admin" => &["admin", "Admin", "dashboard", "Dashboard"],
-        _ => &[],
-    };
-    let list: Vec<&str> = if candidates.is_empty() {
-        vec![placeholder]
-    } else {
-        candidates.to_vec()
-    };
-    for name in list {
-        let candidate = cwd.join(name);
-        if candidate.is_dir() {
-            return Some(name.to_string());
-        }
-    }
-    None
-}
-
-/// Resolve `{Entity}`, `{entity}`, `{subproject}`, `{backend}` etc. placeholders.
-fn resolve_pattern(pattern: &str, entity: &str, subproject: Option<&str>, cwd: &Path) -> String {
-    let entity_pascal = to_pascal_case(entity);
-    let entity_lower = entity.to_lowercase();
-    let mut resolved = pattern
-        .replace("{Entity}", &entity_pascal)
-        .replace("{entity}", &entity_lower);
-    if let Some(sub) = subproject {
-        resolved = resolved.replace("{subproject}", sub);
-    }
-    for placeholder in ["backend", "frontend", "admin"] {
-        let token = format!("{{{placeholder}}}");
-        if resolved.contains(&token) {
-            if let Some(found) = find_dir_by_convention(cwd, placeholder) {
-                resolved = resolved.replace(&token, &found);
-            }
-        }
-    }
-    resolved
-}
-
 /// Dispatch `mustard-rt run recipe-match`.
 pub fn run(entity: Option<&str>, operation: Option<&str>, subproject: Option<&str>) {
+    let _ = subproject; // kept for CLI compat; resolution is now pass-through
     let cwd = std::env::current_dir().unwrap_or_else(|_| Path::new(".").to_path_buf());
     let (Some(entity), Some(operation)) = (entity, operation) else {
         return; // exit 0 silently
@@ -157,9 +116,16 @@ pub fn run(entity: Option<&str>, operation: Option<&str>, subproject: Option<&st
         .map(|arr| {
             arr.iter()
                 .map(|f| {
-                    let pattern = f.get("pattern").and_then(Value::as_str).unwrap_or("");
+                    // Scan-derived recipes carry a real `path`; the legacy
+                    // `pattern` key is honoured verbatim as a one-release
+                    // fallback for in-flight recipes (no substitution).
+                    let path = f
+                        .get("path")
+                        .and_then(Value::as_str)
+                        .or_else(|| f.get("pattern").and_then(Value::as_str))
+                        .unwrap_or("");
                     json!({
-                        "resolved_path": resolve_pattern(pattern, entity, subproject, &cwd),
+                        "resolved_path": path,
                         "action": f.get("action").cloned().unwrap_or(Value::Null),
                         "hint": f.get("hint").cloned().unwrap_or(Value::Null),
                     })
@@ -253,24 +219,5 @@ fn delegate_to_resolver(entity: &str, operation: &str, cwd: &Path) {
             out.closure.iter().map(|n| n.distance).max().unwrap_or(0),
             out.truncated,
         );
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use tempfile::tempdir;
-
-    #[test]
-    fn pascal_case_uppercases_first() {
-        assert_eq!(to_pascal_case("user"), "User");
-        assert_eq!(to_pascal_case("Order"), "Order");
-    }
-
-    #[test]
-    fn resolve_pattern_substitutes_entity() {
-        let dir = tempdir().unwrap();
-        let out = resolve_pattern("src/{entity}/{Entity}.ts", "user", None, dir.path());
-        assert_eq!(out, "src/user/User.ts");
     }
 }

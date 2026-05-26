@@ -548,6 +548,7 @@ mod tests {
         Ctx {
             project_dir: cwd.to_string(),
             trigger: Some(trigger),
+            workspace_root: None,
         }
     }
 
@@ -752,6 +753,7 @@ mod tests {
         let pre_ctx = Ctx {
             project_dir: cwd.to_string(),
             trigger: Some(Trigger::PreToolUse),
+            workspace_root: None,
         };
         let pre_in = pre_write_input(session_chk, cwd, "docs/file3.md");
         let verdict = AmendCapture.evaluate(&pre_in, &pre_ctx).unwrap();

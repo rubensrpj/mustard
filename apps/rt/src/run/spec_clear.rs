@@ -361,7 +361,7 @@ mod tests {
     }
 
     fn write_event(repo: &Path, slug: &str, file: &str) {
-        let dir = repo.join(".claude").join("spec").join(slug).join("events");
+        let dir = repo.join(".claude").join("spec").join(slug).join(".events");
         fs::create_dir_all(&dir).unwrap();
         let mut f = File::create(dir.join(file)).unwrap();
         writeln!(f, r#"{{"event":"x"}}"#).unwrap();

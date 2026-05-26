@@ -94,15 +94,23 @@ pub fn project_root() -> PathBuf {
 }
 
 /// Derive `lang` from the latest `pipeline.scope` event for `spec_id`.
-/// Defaults to `"en"` when absent or unreadable.
+/// Defaults to `"en-US"` (BCP-47) when absent or unreadable. Legacy short
+/// codes (`pt` / `en`) are tolerated on read and normalised here so downstream
+/// comparisons can rely on BCP-47 spelling.
 fn resolve_lang(store: &SqliteEventStore, spec_id: &str) -> String {
-    let Ok(events) = store.query(Some(spec_id)) else { return "en".to_string() };
-    events
+    let Ok(events) = store.query(Some(spec_id)) else { return "en-US".to_string() };
+    let raw = events
         .into_iter()
         .rfind(|e| e.event == EVENT_PIPELINE_SCOPE)
         .and_then(|e| serde_json::from_value::<PipelineScopePayload>(e.payload).ok())
         .and_then(|p| p.lang)
-        .unwrap_or_else(|| "en".to_string())
+        .unwrap_or_else(|| "en-US".to_string());
+    let lc = raw.trim().to_ascii_lowercase();
+    if lc == "pt" || lc == "pt-br" {
+        "pt-BR".to_string()
+    } else {
+        "en-US".to_string()
+    }
 }
 
 /// Decide the final status string for a window.
@@ -177,7 +185,7 @@ fn build_amendments_block(
                     .get("prompt_text")
                     .and_then(Value::as_str)
                     .unwrap_or("");
-                if lang == "pt" {
+                if lang == "pt-BR" {
                     lines.push(format!("- {at} prompt do usuário: \"{prompt_text}\""));
                 } else {
                     lines.push(format!("- {at} user prompt: \"{prompt_text}\""));
@@ -202,7 +210,7 @@ fn build_amendments_block(
                     .get("unrelated_paths")
                     .and_then(Value::as_array)
                     .map_or(0, Vec::len);
-                if lang == "pt" {
+                if lang == "pt-BR" {
                     lines.push(format!("- {at} drift detectado: {n} arquivos fora do escopo"));
                 } else {
                     lines.push(format!("- {at} drift detected: {n} files outside scope"));
@@ -215,14 +223,14 @@ fn build_amendments_block(
 
     // Check for build verde indicator (build_verde_at stamped on window).
     if let Some(bv) = &window.build_verde_at {
-        if lang == "pt" {
+        if lang == "pt-BR" {
             lines.push(format!("- {bv} build verde"));
         } else {
             lines.push(format!("- {bv} build green"));
         }
     }
 
-    if lang == "pt" {
+    if lang == "pt-BR" {
         lines.push(format!("- resolução: {status}"));
     } else {
         lines.push(format!("- resolution: {status}"));

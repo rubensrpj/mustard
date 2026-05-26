@@ -22,6 +22,7 @@
 
 use mustard_core::economy::estimator;
 use mustard_core::economy::writer;
+use mustard_core::ClaudePaths;
 use mustard_core::economy::{
     AgentId, ProjectPath, SavingsRecord, SavingsSource, SpecId, WaveId,
 };
@@ -46,10 +47,9 @@ fn economy_db_path(project_dir: &str) -> PathBuf {
             return PathBuf::from(value);
         }
     }
-    Path::new(project_dir)
-        .join(".claude")
-        .join(".harness")
-        .join("mustard.db")
+    ClaudePaths::for_project(Path::new(project_dir))
+        .map(|p| p.harness_dir().join("mustard.db"))
+        .unwrap_or_else(|_| PathBuf::from(project_dir).join("mustard.db"))
 }
 
 /// Open a raw [`Connection`] to the harness DB, applying schema/migrations
@@ -198,9 +198,8 @@ impl PipelineState {
 /// (excluding `*.metrics.json`). Port of `loadNewestPipelineState`. Fail-open:
 /// any error → `None`.
 fn load_newest_pipeline_state(project_dir: &str) -> Option<PipelineState> {
-    let dir = Path::new(project_dir)
-        .join(".claude")
-        .join(".pipeline-states");
+    let paths = ClaudePaths::for_project(Path::new(project_dir)).ok()?;
+    let dir = paths.pipeline_states_dir();
     let entries = std::fs::read_dir(&dir).ok()?;
     let mut best: Option<(std::time::SystemTime, std::path::PathBuf)> = None;
     for entry in entries.filter_map(std::result::Result::ok) {
@@ -564,9 +563,10 @@ mod tests {
 
     /// Write a pipeline-state file under `project_dir`.
     fn write_state(project_dir: &Path, state: Value) {
-        let dir = project_dir.join(".claude").join(".pipeline-states");
+        let paths = ClaudePaths::for_project(project_dir).unwrap();
+        let dir = paths.pipeline_states_dir();
         fs::create_dir_all(&dir).unwrap();
-        fs::write(dir.join("test.json"), state.to_string()).unwrap();
+        fs::write(paths.pipeline_state_file("test"), state.to_string()).unwrap();
     }
 
     /// Run the gate core directly with an explicit mode — keeps tests free of
@@ -651,6 +651,7 @@ mod tests {
         let ctx = Ctx {
             project_dir: ".".to_string(),
             trigger: Some(Trigger::PreToolUse),
+            workspace_root: None,
         };
         assert_eq!(
             ModelRoutingGate.evaluate(&input, &ctx).expect("no error"),
@@ -664,6 +665,7 @@ mod tests {
         let ctx = Ctx {
             project_dir: String::new(),
             trigger: Some(Trigger::PostToolUse),
+            workspace_root: None,
         };
         assert_eq!(
             ModelRoutingGate.evaluate(&input, &ctx).expect("no error"),

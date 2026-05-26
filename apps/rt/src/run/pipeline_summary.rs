@@ -10,6 +10,7 @@
 use crate::run::spec_sections::is_heading;
 use mustard_core::fs;
 use mustard_core::spec;
+use mustard_core::ClaudePaths;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
@@ -29,14 +30,19 @@ fn parse_header(text: &str) -> Header {
     let status = spec::parse_state(text)
         .map(|s| spec::status_word(&s).to_string())
         .unwrap_or_default();
-    let mut lang = "en".to_string();
+    let mut lang = "en-US".to_string();
     let mut name = "spec".to_string();
     for line in text.split('\n') {
         let t = line.trim_end();
         if let Some(v) = t.strip_prefix("### Lang:") {
             let first = v.trim().to_lowercase();
-            let tok = first.split([' ', '|', '\t']).next().unwrap_or("en");
-            lang = if tok == "pt" { "pt" } else { "en" }.to_string();
+            let tok = first.split([' ', '|', '\t']).next().unwrap_or("en-US");
+            // Tolerant read: accept legacy short forms and BCP-47.
+            lang = if tok == "pt" || tok == "pt-br" {
+                "pt-BR".to_string()
+            } else {
+                "en-US".to_string()
+            };
         } else if name == "spec" {
             if let Some(v) = t.strip_prefix("# ") {
                 if !v.starts_with('#') {
@@ -239,7 +245,7 @@ fn format_state_item(item: &Value) -> String {
 
 /// Build the Done/Left/Next/Follow-ups model.
 fn build_model(header: &Header, text: &str, state: &Value) -> Model {
-    let pt = header.lang == "pt";
+    let pt = header.lang == "pt-BR";
     let ac_list = section_for(text, "acceptanceCriteria").map(|s| parse_ac(&s)).unwrap_or_default();
     let ac_done: Vec<&Ac> = ac_list.iter().filter(|a| a.done).collect();
     let ac_failed: Vec<&Ac> = ac_list.iter().filter(|a| !a.done).collect();
@@ -423,10 +429,9 @@ pub fn run(spec_dir: Option<&str>, format: &str) {
                 .unwrap_or_default()
         });
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let state_file = cwd
-        .join(".claude")
-        .join(".pipeline-states")
-        .join(format!("{spec_base}.json"));
+    let state_file = ClaudePaths::for_project(&cwd)
+        .map(|p| p.pipeline_state_file(&spec_base))
+        .unwrap_or_else(|_| cwd.join(format!("{spec_base}.json")));
     if let Ok(t) = fs::read_to_string(&state_file) {
         if let Ok(v) = serde_json::from_str::<Value>(&t) {
             state = v;
@@ -443,7 +448,7 @@ pub fn run(spec_dir: Option<&str>, format: &str) {
         });
         println!("{}", serde_json::to_string_pretty(&out).unwrap_or_else(|_| "{}".to_string()));
     } else {
-        print!("{}", render(&model, header.lang == "pt"));
+        print!("{}", render(&model, header.lang == "pt-BR"));
     }
 }
 
@@ -454,24 +459,26 @@ mod tests {
     #[test]
     fn parses_header_name_status_lang() {
         // New canonical header: status word is projected from the SpecState.
+        // Legacy short form `pt` is tolerated on read and normalised to BCP-47.
         let h = parse_header("# My Spec\n\n### Stage: Close\n### Outcome: Completed\n### Lang: pt\n");
         assert_eq!(h.name, "My Spec");
         assert_eq!(h.status, "completed");
-        assert_eq!(h.lang, "pt");
+        assert_eq!(h.lang, "pt-BR");
     }
 
     #[test]
     fn parses_legacy_status_phase_header() {
         // Legacy header still resolves (tolerant core parser); a terminal
         // `### Status: completed` projects to the `completed` word.
-        let h = parse_header("# My Spec\n\n### Status: completed | Phase: CLOSE\n### Lang: en\n");
+        let h = parse_header("# My Spec\n\n### Status: completed | Phase: CLOSE\n### Lang: en-US\n");
         assert_eq!(h.name, "My Spec");
         assert_eq!(h.status, "completed");
+        assert_eq!(h.lang, "en-US");
     }
 
     #[test]
     fn happy_path_yields_git_next_steps() {
-        let text = "# Spec\n\n### Status: Done\n### Lang: en\n\n## Acceptance Criteria\n- [x] AC-1: x — Command: `true`\n";
+        let text = "# Spec\n\n### Status: Done\n### Lang: en-US\n\n## Acceptance Criteria\n- [x] AC-1: x — Command: `true`\n";
         let header = parse_header(text);
         let model = build_model(&header, text, &json!({}));
         assert!(model.left.is_empty());
@@ -480,7 +487,7 @@ mod tests {
 
     #[test]
     fn failing_ac_lands_in_left() {
-        let text = "# Spec\n\n### Lang: en\n\n## Acceptance Criteria\n- [ ] AC-2: broken — Command: `false`\n";
+        let text = "# Spec\n\n### Lang: en-US\n\n## Acceptance Criteria\n- [ ] AC-2: broken — Command: `false`\n";
         let header = parse_header(text);
         let model = build_model(&header, text, &json!({}));
         assert!(model.left.iter().any(|l| l.contains("AC-2")));

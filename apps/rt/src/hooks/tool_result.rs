@@ -340,6 +340,7 @@ mod tests {
         Ctx {
             project_dir: dir.to_string(),
             trigger: Some(Trigger::PostToolUse),
+            workspace_root: None,
         }
     }
 
@@ -507,6 +508,7 @@ mod tests {
         let pre = Ctx {
             project_dir: project.to_string(),
             trigger: Some(Trigger::PreToolUse),
+            workspace_root: None,
         };
         ToolResult.observe(&input, &pre);
         // No event should land — open the store and check.
@@ -539,7 +541,7 @@ mod tests {
         let mut found_payload = None;
         'outer: for entry in std::fs::read_dir(&events_root).expect("session dir") {
             let sess = entry.unwrap().path();
-            let events_dir = sess.join("events");
+            let events_dir = sess.join(".events");
             if !events_dir.exists() {
                 continue;
             }

@@ -17,6 +17,7 @@
 
 use crate::report::Report;
 use mustard_core::fs;
+use mustard_core::ClaudePaths;
 use mustard_core::model::view::{Phase, Stage};
 use mustard_core::store::sqlite_store::SqliteEventStore;
 use mustard_core::model::event::{
@@ -261,7 +262,9 @@ fn phase_from_events(events: &[HarnessEvent], spec: &str) -> Option<String> {
 
 /// `buildEpicSummary` — derive a summary view for an epic and its children.
 fn build_epic_summary(events: &[HarnessEvent], cwd: &Path, epic: &str) -> Value {
-    let states_dir = cwd.join(".claude").join(".pipeline-states");
+    let states_dir = ClaudePaths::for_project(cwd)
+        .map(|p| p.pipeline_states_dir())
+        .unwrap_or_else(|_| cwd.to_path_buf());
     let read_state = |name: &str| -> Option<Value> {
         fs::read_to_string(states_dir.join(format!("{name}.json")))
             .ok()
@@ -359,7 +362,9 @@ const MAX_SPEC_TREE_DEPTH: u32 = 3;
 /// `limit` files under `.harness/sessions/`, newest first by mtime. Each
 /// summary is enriched with `epicInfo` for specs that have `children_specs`.
 fn build_cross_session_timeline(cwd: &Path, limit: usize) -> Value {
-    let sessions_dir = cwd.join(".claude").join(".harness").join("sessions");
+    let sessions_dir = ClaudePaths::for_project(cwd)
+        .map(|p| p.harness_dir().join("sessions"))
+        .unwrap_or_else(|_| cwd.to_path_buf());
     let Ok(entries) = fs::read_dir(&sessions_dir) else {
         return json!([]);
     };
@@ -374,7 +379,9 @@ fn build_cross_session_timeline(cwd: &Path, limit: usize) -> Value {
     files.sort_by_key(|b| std::cmp::Reverse(b.1));
     files.truncate(limit);
 
-    let states_dir = cwd.join(".claude").join(".pipeline-states");
+    let states_dir = ClaudePaths::for_project(cwd)
+        .map(|p| p.pipeline_states_dir())
+        .unwrap_or_else(|_| cwd.to_path_buf());
     let mut results: Vec<Value> = Vec::new();
     for (file, _) in files {
         let Ok(raw) = fs::read_to_string(&file) else {
@@ -437,7 +444,9 @@ fn read_state(states_dir: &Path, name: &str) -> Option<Value> {
 /// combining `spec.link` events with on-disk `.pipeline-states` files. Phase
 /// per node derives from `pipeline.phase` events, not the JSON.
 fn build_spec_tree(events: &[HarnessEvent], cwd: &Path, root_spec: &str) -> Value {
-    let states_dir = cwd.join(".claude").join(".pipeline-states");
+    let states_dir = ClaudePaths::for_project(cwd)
+        .map(|p| p.pipeline_states_dir())
+        .unwrap_or_else(|_| cwd.to_path_buf());
     // parent → children, child → parent — from spec.link events.
     let mut link_children: std::collections::BTreeMap<String, BTreeSet<String>> =
         std::collections::BTreeMap::new();
@@ -707,7 +716,9 @@ fn build_active_pipelines(events: &[HarnessEvent], cwd: &Path) -> Value {
     // brings a new spec from a teammate; no local event has been emitted yet"
     // case. Side-effect: a synthetic `pipeline.status` event is written to
     // the local SQLite store so subsequent reads are O(1).
-    let spec_root = cwd.join(".claude").join("spec");
+    let spec_root = ClaudePaths::for_project(cwd)
+        .map(|p| p.spec_dir())
+        .unwrap_or_else(|_| cwd.to_path_buf());
     if let Ok(rd) = std::fs::read_dir(&spec_root) {
         // Open the local SQLite store once for the synthetic emit sink.
         // Fail-open: if the store cannot be opened, the fallback still runs
@@ -862,8 +873,15 @@ fn project(cwd: &Path, view: &str, spec: Option<&str>, wave: Option<u32>) -> Val
 }
 
 /// Write the standalone HTML report wrapping the projection JSON.
+///
+/// Event-projection reports are *not* per-spec QA reports — they are
+/// workspace-wide diagnostic views. The W2 cache reorg keeps them under
+/// `<root>/.claude/.metrics/event-projections/` (rather than the legacy
+/// `.qa-reports/` directory, which is now reserved for the per-spec
+/// `spec/{name}/qa-report.{json,html}` pair).
 fn write_html_report(cwd: &Path, view: &str, json_text: &str) -> Option<PathBuf> {
-    let dir = cwd.join(".claude").join(".qa-reports");
+    let paths = ClaudePaths::for_project(cwd).ok()?;
+    let dir = paths.metrics_dir().join("event-projections");
     fs::create_dir_all(&dir).ok()?;
     let mut report = Report::new(format!("Event Projection — {view}"), "harness event log view");
     report.pre_section("Projection", json_text);

@@ -28,6 +28,7 @@
 use mustard_core::error::Error;
 use mustard_core::fs;
 use mustard_core::store::sqlite_store::SqliteEventStore;
+use mustard_core::ClaudePaths;
 use mustard_core::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
 use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use serde_json::json;
@@ -158,7 +159,8 @@ const STATE_FRESHNESS_MS: u128 = 10 * 60 * 1000;
 /// under `.claude` (excluding `*.metrics.json`), but only when its mtime is
 /// within the freshness window.
 fn read_newest_fresh_state(cwd: &str) -> Option<serde_json::Value> {
-    let dir = Path::new(cwd).join(".claude").join(".pipeline-states");
+    let paths = ClaudePaths::for_project(Path::new(cwd)).ok()?;
+    let dir = paths.pipeline_states_dir();
     let entries = fs::read_dir(&dir).ok()?;
     let mut best: Option<(SystemTime, std::path::PathBuf)> = None;
     for entry in entries {
@@ -199,10 +201,10 @@ fn resolve_spec_file(
     spec_name: &str,
     view: Option<&PipelineStateView>,
 ) -> Option<std::path::PathBuf> {
-    let base = Path::new(cwd)
-        .join(".claude")
-        .join("spec")
-        .join(spec_name);
+    let base = ClaudePaths::for_project(Path::new(cwd))
+        .and_then(|p| p.for_spec(spec_name))
+        .map(|sp| sp.dir().to_path_buf())
+        .ok()?;
     if !base.exists() {
         return None;
     }
@@ -574,11 +576,11 @@ fn boundary_gate(input: &HookInput, cwd: &str) -> Option<Verdict> {
     let view: Option<PipelineStateView> = SqliteEventStore::for_project(cwd)
         .ok()
         .and_then(|store| {
-            let spec_dir = Path::new(cwd)
-                .join(".claude")
-                .join("spec")
-                .join(spec_name);
-            let spec_dir_opt = if spec_dir.exists() { Some(spec_dir) } else { None };
+            let spec_dir = ClaudePaths::for_project(Path::new(cwd))
+                .and_then(|p| p.for_spec(spec_name))
+                .map(|sp| sp.dir().to_path_buf())
+                .ok();
+            let spec_dir_opt = spec_dir.filter(|d| d.exists());
             pipeline_state_for_spec(&store, spec_name, spec_dir_opt.as_deref())
         });
 
@@ -672,6 +674,7 @@ mod tests {
         let ctx = Ctx {
             project_dir: String::new(),
             trigger: Some(Trigger::PreToolUse),
+            workspace_root: None,
         };
         (input, ctx)
     }
@@ -756,6 +759,7 @@ mod tests {
         let ctx = Ctx {
             project_dir: dir.path().to_string_lossy().into_owned(),
             trigger: Some(Trigger::PreToolUse),
+            workspace_root: None,
         };
         assert_eq!(
             PathGuard.evaluate(&input, &ctx).expect("no error"),
@@ -791,21 +795,23 @@ mod tests {
         // one that sets MUSTARD_BOUNDARY_MODE, and it restores it.
         let dir = tempdir().unwrap();
         let cwd = dir.path();
+        let paths = ClaudePaths::for_project(cwd).unwrap();
         // pipeline-state pointing at spec "demo".
-        let states = cwd.join(".claude").join(".pipeline-states");
+        let states = paths.pipeline_states_dir();
         std::fs::create_dir_all(&states).unwrap();
         std::fs::write(
-            states.join("demo.json"),
+            paths.pipeline_state_file("demo"),
             // Phase derives from SQLite `pipeline.phase` events, not JSON;
             // no event seeded here → phase is empty → not CLOSE → gate runs.
             json!({ "specName": "demo" }).to_string(),
         )
         .unwrap();
         // spec.md with a Files section (flat layout — no active/ bucket).
-        let spec_dir = cwd.join(".claude").join("spec").join("demo");
-        std::fs::create_dir_all(&spec_dir).unwrap();
+        let sp = paths.for_spec("demo").unwrap();
+        let spec_dir = sp.dir();
+        std::fs::create_dir_all(spec_dir).unwrap();
         std::fs::write(
-            spec_dir.join("spec.md"),
+            sp.spec_md_path(),
             "# Spec\n\n## Files\n\n- `src/allowed.ts`\n",
         )
         .unwrap();
@@ -840,10 +846,11 @@ mod tests {
         // found anyway because the spec dir doesn't exist).
         let dir = tempdir().unwrap();
         let cwd = dir.path();
-        let states = cwd.join(".claude").join(".pipeline-states");
+        let paths = ClaudePaths::for_project(cwd).unwrap();
+        let states = paths.pipeline_states_dir();
         std::fs::create_dir_all(&states).unwrap();
         std::fs::write(
-            states.join("ghost.json"),
+            paths.pipeline_state_file("ghost"),
             r#"{"specName":"ghost"}"#,
         )
         .unwrap();
@@ -867,24 +874,25 @@ mod tests {
 
         let dir = tempdir().unwrap();
         let cwd = dir.path();
-        let states = cwd.join(".claude").join(".pipeline-states");
+        let paths = ClaudePaths::for_project(cwd).unwrap();
+        let states = paths.pipeline_states_dir();
         std::fs::create_dir_all(&states).unwrap();
         std::fs::write(
-            states.join("myspec.json"),
+            paths.pipeline_state_file("myspec"),
             r#"{"specName":"myspec"}"#,
         )
         .unwrap();
         // Spec with a Files section.
-        let spec_dir = cwd.join(".claude").join("spec").join("myspec");
-        std::fs::create_dir_all(&spec_dir).unwrap();
+        let sp = paths.for_spec("myspec").unwrap();
+        std::fs::create_dir_all(sp.dir()).unwrap();
         std::fs::write(
-            spec_dir.join("spec.md"),
+            sp.spec_md_path(),
             "# Spec\n\n## Files\n\n- `src/allowed.ts`\n",
         )
         .unwrap();
 
         // Seed a pipeline.status "completed" event via the SQLite store.
-        let db_path = cwd.join(".claude").join(".harness").join("mustard.db");
+        let db_path = paths.harness_dir().join("mustard.db");
         std::fs::create_dir_all(db_path.parent().unwrap()).unwrap();
         let store = SqliteEventStore::new(&db_path).unwrap();
         store
@@ -928,6 +936,7 @@ mod tests {
         let ctx = Ctx {
             project_dir: String::new(),
             trigger: Some(Trigger::PostToolUse),
+            workspace_root: None,
         };
         assert_eq!(
             PathGuard.evaluate(&input, &ctx).expect("no error"),

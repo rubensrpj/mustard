@@ -190,12 +190,12 @@ fn aggregate_wave(
         .flatten();
 
     // tokens_saved / retries / duration: walk the per-spec NDJSON dir for the
-    // wave name. Wave events are written under `<project>/.claude/spec/<wave_name>/events/`.
+    // wave name. Wave events are written under `<project>/.claude/spec/<wave_name>/.events/`.
     let dir = project
         .join(".claude")
         .join("spec")
         .join(wave_name)
-        .join("events");
+        .join(".events");
     let events = read_harness_events_from_ndjson_dir(&dir);
     let mut tokens_saved: i64 = 0;
     let mut retries: i64 = 0;

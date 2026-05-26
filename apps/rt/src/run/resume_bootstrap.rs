@@ -44,7 +44,13 @@ const SUMMARY_CAP: usize = 200;
 pub struct ResumeBootstrap {
     /// `continued` | `reanalyzed` | `ask`.
     pub mode: String,
-    /// Canonical `Stage` word: `Plan` | `Execute` | `Analyze` | `QaReview` | `Close`.
+    /// Canonical `Stage` word: `Plan` | `Execute` | `Analyze` | `QaReview` |
+    /// `ReviewPending` | `QaPending` | `Close`.
+    ///
+    /// `ReviewPending` / `QaPending` are post-execute states surfaced when all
+    /// waves are done but REVIEW or QA still has work — the orchestrator must
+    /// dispatch the matching agent before emitting `pipeline.complete`. See
+    /// `nextAction` for the explicit next step.
     pub stage: Option<String>,
     /// Operational spec path (root `spec.md` or `wave-N-{role}/spec.md`).
     #[serde(rename = "operationalSpecPath")]
@@ -80,6 +86,22 @@ pub struct ResumeBootstrap {
     /// Roles discovered for the current wave (e.g. `["ui"]`).
     #[serde(rename = "agentRoles")]
     pub agent_roles: Vec<String>,
+    /// **Explicit** next step the orchestrator must take. One of:
+    /// `dispatch-review`, `run-qa`, `emit-complete`, or `null` (mid-execute).
+    /// Pairs with [`Self::review_roles`] / [`Self::qa_command`] when relevant.
+    ///
+    /// This field is the canonical post-execute signal — when `nextAction` is
+    /// non-null, the orchestrator must NOT freelance: do exactly what it says.
+    #[serde(rename = "nextAction", skip_serializing_if = "Option::is_none")]
+    pub next_action: Option<String>,
+    /// Roles to dispatch REVIEW agents for. Populated when `nextAction ==
+    /// "dispatch-review"`. Derived from the spec's `review/spec.md` (if
+    /// present) or from the union of `wave-N-{role}` dirs.
+    #[serde(rename = "reviewRoles", skip_serializing_if = "Vec::is_empty")]
+    pub review_roles: Vec<String>,
+    /// Shell-ready command to run QA. Populated when `nextAction == "run-qa"`.
+    #[serde(rename = "qaCommand", skip_serializing_if = "Option::is_none")]
+    pub qa_command: Option<String>,
 }
 
 /// Run `mustard-rt run resume-bootstrap`.
@@ -89,6 +111,11 @@ pub struct ResumeBootstrap {
 pub fn run(spec: &str, json_flag: bool) {
     let project = PathBuf::from(project_dir());
     let spec_dir = project.join(".claude").join("spec").join(spec);
+
+    // Emit a fresh `pipeline.scope` event so `current_spec` in subsequent
+    // calls within the same session returns this spec (not a stale closed one).
+    // Idempotent: last-write-wins; fail-open — a DB error must not block output.
+    emit_scope_for_session(&project, spec);
 
     let mut out = ResumeBootstrap {
         mode: "ask".to_string(),
@@ -204,6 +231,15 @@ pub fn run(spec: &str, json_flag: bool) {
     // --- Mode decision. ---
     out.mode = decide_mode(view.as_ref(), dispatch_failure.as_ref());
 
+    // --- Post-execute REVIEW/QA gate (2026-05-25 deep-refactor follow-up). ---
+    //
+    // When all waves are done (currentWave >= totalWaves) — or, in non-wave
+    // mode, when stage is Close — the orchestrator must NOT freelance into
+    // `pipeline.complete`. Inspect REVIEW + QA event state and surface an
+    // explicit `nextAction` (with companion fields). Fail-open: if the events
+    // dir is unreadable, we take the conservative path → ReviewPending.
+    apply_post_execute_gate(&project, spec, &spec_dir, &mut out);
+
     // --- Emit `pipeline.resume_mode` (idempotent: skip if a fresh one exists). ---
     if last_resume_age_ms.unwrap_or(i64::MAX) > RESUME_MODE_DEBOUNCE_MS {
         emit_resume_mode(&project, spec, &out.mode);
@@ -216,6 +252,131 @@ pub fn run(spec: &str, json_flag: bool) {
     } else {
         print_table(&out);
     }
+}
+
+/// True when the spec has finished EXECUTE (all declared waves are done, or
+/// the non-wave spec reached `Close` stage).
+fn execute_complete(out: &ResumeBootstrap) -> bool {
+    if out.is_wave_plan {
+        out.total_waves > 0 && out.current_wave >= out.total_waves
+    } else {
+        out.stage.as_deref() == Some("Close")
+    }
+}
+
+/// Read the spec's per-spec NDJSON event log and return `(qa_pass, has_review,
+/// review_rejected)`.
+///
+/// - `qa_pass` — last `qa.result` has `overall == "pass"`.
+/// - `has_review` — at least one `review.result` event exists for the spec.
+/// - `review_rejected` — the most recent `review.result` has
+///   `verdict == "rejected"`.
+fn read_review_qa_state(spec_dir: &Path) -> (bool, bool, bool) {
+    let events_dir = spec_dir.join(".events");
+    let mut events =
+        mustard_core::projection::read_harness_events_from_ndjson_dir(&events_dir);
+    events.sort_by(|a, b| a.ts.cmp(&b.ts));
+
+    let mut last_qa_overall: Option<String> = None;
+    let mut has_review = false;
+    let mut last_review_verdict: Option<String> = None;
+    for ev in &events {
+        match ev.event.as_str() {
+            "qa.result" => {
+                last_qa_overall = ev
+                    .payload
+                    .get("overall")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string);
+            }
+            "review.result" => {
+                has_review = true;
+                last_review_verdict = ev
+                    .payload
+                    .get("verdict")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string);
+            }
+            _ => {}
+        }
+    }
+    let qa_pass = last_qa_overall.as_deref() == Some("pass");
+    let review_rejected = last_review_verdict.as_deref() == Some("rejected");
+    (qa_pass, has_review, review_rejected)
+}
+
+/// Roles to dispatch REVIEW agents for. Order of preference:
+/// 1. Roles declared in the spec's `review/spec.md` (if a `## Roles` section
+///    exists) — out of scope for this wave; reserved for a future enhancement.
+/// 2. The union of `wave-N-{role}` dir suffixes (deduplicated, sorted).
+/// 3. A fallback `["mixed"]` when no waves declare a role.
+fn derive_review_roles(spec_dir: &Path) -> Vec<String> {
+    let Ok(entries) = mfs::read_dir(spec_dir) else {
+        return vec!["mixed".to_string()];
+    };
+    let mut roles: Vec<String> = Vec::new();
+    for entry in entries {
+        if !entry.is_dir {
+            continue;
+        }
+        let name = &entry.file_name;
+        let Some(rest) = name.strip_prefix("wave-") else {
+            continue;
+        };
+        let digit_end = rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(0);
+        if digit_end == 0 {
+            continue;
+        }
+        let after = &rest[digit_end..];
+        let Some(role) = after.strip_prefix('-') else {
+            continue;
+        };
+        if role.is_empty() {
+            continue;
+        }
+        if !roles.iter().any(|r| r == role) {
+            roles.push(role.to_string());
+        }
+    }
+    if roles.is_empty() {
+        return vec!["mixed".to_string()];
+    }
+    roles.sort();
+    roles
+}
+
+/// Surface the post-execute next action on `out`. When `execute_complete` is
+/// false this is a no-op — the orchestrator is still mid-execute and no signal
+/// is needed.
+fn apply_post_execute_gate(
+    _project: &Path,
+    spec: &str,
+    spec_dir: &Path,
+    out: &mut ResumeBootstrap,
+) {
+    if !execute_complete(out) {
+        return;
+    }
+    // Read REVIEW + QA state from the per-spec NDJSON log.
+    let (qa_pass, has_review, review_rejected) = read_review_qa_state(spec_dir);
+
+    if qa_pass {
+        // Everything green — safe to close.
+        out.stage = Some("Close".to_string());
+        out.next_action = Some("emit-complete".to_string());
+        return;
+    }
+    if has_review && !review_rejected {
+        // REVIEW landed (and not rejected), but QA hasn't passed yet → run QA.
+        out.stage = Some("QaPending".to_string());
+        out.next_action = Some("run-qa".to_string());
+        out.qa_command = Some(format!("mustard-rt run qa-run --spec {spec}"));
+        return;
+    }
+    // No REVIEW yet, OR REVIEW was rejected → dispatch REVIEW agents.
+    out.stage = Some("ReviewPending".to_string());
+    out.next_action = Some("dispatch-review".to_string());
+    out.review_roles = derive_review_roles(spec_dir);
 }
 
 // ---------------------------------------------------------------------------
@@ -630,6 +791,16 @@ fn print_table(out: &ResumeBootstrap) {
     );
     println!("specSummary      : {}", out.spec_summary);
     println!("agentRoles       : {}", out.agent_roles.join(","));
+    println!(
+        "nextAction       : {}",
+        out.next_action.clone().unwrap_or_else(|| "—".into())
+    );
+    if !out.review_roles.is_empty() {
+        println!("reviewRoles      : {}", out.review_roles.join(","));
+    }
+    if let Some(q) = out.qa_command.as_deref() {
+        println!("qaCommand        : {q}");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -657,6 +828,28 @@ pub fn read_wave_model(spec_dir: &Path, wave: u32) -> Option<String> {
     let plan = spec_dir.join("wave-plan.md");
     let text = mfs::read_to_string(&plan).ok()?;
     extract_wave_model(&text, wave)
+}
+
+/// Emit a fresh `pipeline.scope` event for the resumed spec so
+/// `last_pipeline_scope_for_session` returns this spec in subsequent calls
+/// within the same Claude session (prevents stale closed-spec attribution).
+///
+/// Fail-open: any store error is silently discarded.
+fn emit_scope_for_session(project: &Path, spec: &str) {
+    let Ok(store) = SqliteEventStore::for_project(project) else {
+        return;
+    };
+    let ts = now_iso8601();
+    let sid = session_id();
+    let _ = store.append_pipeline_event(
+        &ts,
+        Some(&sid),
+        Some(spec),
+        None,
+        mustard_core::model::event::EVENT_PIPELINE_SCOPE,
+        None,
+        Some(r#"{"scope":"resumed"}"#),
+    );
 }
 
 /// Read the `model` field from a spec directory's `meta.json`. Returns `None`
@@ -741,5 +934,169 @@ mod tests {
         let q = resolve_operational_spec_path(dir.path(), None);
         assert!(q.ends_with("spec.md"));
         assert!(!q.to_string_lossy().contains("wave-5-ui"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Post-execute REVIEW/QA gate (2026-05-25 deep-refactor follow-up).
+    // -----------------------------------------------------------------------
+
+    /// Seed a `.events/<sid>.ndjson` line under the spec dir directly — bypasses
+    /// the writer so tests stay hermetic.
+    fn write_event_line(spec_dir: &Path, kind: &str, payload: &str, ts: &str) {
+        let events_dir = spec_dir.join(".events");
+        std::fs::create_dir_all(&events_dir).unwrap();
+        let line = format!(
+            "{{\"ts\":\"{ts}\",\"event\":\"{kind}\",\"kind\":\"qa\",\"spec\":\"demo\",\"payload\":{payload}}}\n"
+        );
+        let path = events_dir.join("test.ndjson");
+        let prev = std::fs::read_to_string(&path).unwrap_or_default();
+        std::fs::write(&path, prev + &line).unwrap();
+    }
+
+    /// `execute_complete` is `true` once `currentWave >= totalWaves` in a
+    /// wave-plan spec.
+    #[test]
+    fn execute_complete_true_when_all_waves_done() {
+        let mut out = ResumeBootstrap {
+            is_wave_plan: true,
+            current_wave: 13,
+            total_waves: 13,
+            ..Default::default()
+        };
+        assert!(execute_complete(&out));
+        out.current_wave = 12;
+        assert!(!execute_complete(&out));
+    }
+
+    /// All waves done + no events → `ReviewPending` + `dispatch-review` +
+    /// reviewRoles derived from wave subdirs.
+    #[test]
+    fn post_execute_gate_signals_review_pending_when_no_events() {
+        let dir = tempfile::tempdir().unwrap();
+        let spec_dir = dir.path();
+        // Two wave subdirs declaring `rt` and `cli` roles.
+        std::fs::create_dir_all(spec_dir.join("wave-0-rt")).unwrap();
+        std::fs::create_dir_all(spec_dir.join("wave-1-cli")).unwrap();
+
+        let mut out = ResumeBootstrap {
+            is_wave_plan: true,
+            current_wave: 2,
+            total_waves: 2,
+            ..Default::default()
+        };
+        apply_post_execute_gate(dir.path(), "demo", spec_dir, &mut out);
+
+        assert_eq!(out.stage.as_deref(), Some("ReviewPending"));
+        assert_eq!(out.next_action.as_deref(), Some("dispatch-review"));
+        assert_eq!(out.review_roles, vec!["cli".to_string(), "rt".to_string()]);
+        assert!(out.qa_command.is_none());
+    }
+
+    /// Approved REVIEW + no QA → `QaPending` + `run-qa` + qaCommand.
+    #[test]
+    fn post_execute_gate_signals_qa_pending_after_approved_review() {
+        let dir = tempfile::tempdir().unwrap();
+        let spec_dir = dir.path();
+        write_event_line(
+            spec_dir,
+            "review.result",
+            r#"{"verdict":"approved","spec":"demo"}"#,
+            "2026-05-25T10:00:00.000Z",
+        );
+
+        let mut out = ResumeBootstrap {
+            is_wave_plan: true,
+            current_wave: 5,
+            total_waves: 5,
+            ..Default::default()
+        };
+        apply_post_execute_gate(dir.path(), "demo", spec_dir, &mut out);
+
+        assert_eq!(out.stage.as_deref(), Some("QaPending"));
+        assert_eq!(out.next_action.as_deref(), Some("run-qa"));
+        assert_eq!(
+            out.qa_command.as_deref(),
+            Some("mustard-rt run qa-run --spec demo")
+        );
+        assert!(out.review_roles.is_empty());
+    }
+
+    /// Passing QA → `Close` + `emit-complete`.
+    #[test]
+    fn post_execute_gate_allows_close_when_qa_passed() {
+        let dir = tempfile::tempdir().unwrap();
+        let spec_dir = dir.path();
+        write_event_line(
+            spec_dir,
+            "review.result",
+            r#"{"verdict":"approved","spec":"demo"}"#,
+            "2026-05-25T10:00:00.000Z",
+        );
+        write_event_line(
+            spec_dir,
+            "qa.result",
+            r#"{"overall":"pass","spec":"demo","criteria":[]}"#,
+            "2026-05-25T10:05:00.000Z",
+        );
+
+        let mut out = ResumeBootstrap {
+            is_wave_plan: true,
+            current_wave: 5,
+            total_waves: 5,
+            ..Default::default()
+        };
+        apply_post_execute_gate(dir.path(), "demo", spec_dir, &mut out);
+
+        assert_eq!(out.stage.as_deref(), Some("Close"));
+        assert_eq!(out.next_action.as_deref(), Some("emit-complete"));
+    }
+
+    /// Rejected REVIEW (regardless of staleness) → `ReviewPending` again.
+    #[test]
+    fn post_execute_gate_returns_to_review_when_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let spec_dir = dir.path();
+        std::fs::create_dir_all(spec_dir.join("wave-0-mixed")).unwrap();
+        write_event_line(
+            spec_dir,
+            "review.result",
+            r#"{"verdict":"rejected","spec":"demo"}"#,
+            "2026-05-25T10:00:00.000Z",
+        );
+
+        let mut out = ResumeBootstrap {
+            is_wave_plan: true,
+            current_wave: 1,
+            total_waves: 1,
+            ..Default::default()
+        };
+        apply_post_execute_gate(dir.path(), "demo", spec_dir, &mut out);
+
+        assert_eq!(out.stage.as_deref(), Some("ReviewPending"));
+        assert_eq!(out.next_action.as_deref(), Some("dispatch-review"));
+        assert_eq!(out.review_roles, vec!["mixed".to_string()]);
+    }
+
+    /// Mid-execute (currentWave < totalWaves) → gate is a no-op; no nextAction.
+    #[test]
+    fn post_execute_gate_is_noop_mid_execute() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut out = ResumeBootstrap {
+            is_wave_plan: true,
+            current_wave: 3,
+            total_waves: 5,
+            stage: Some("Execute".to_string()),
+            ..Default::default()
+        };
+        apply_post_execute_gate(dir.path(), "demo", dir.path(), &mut out);
+        assert!(out.next_action.is_none());
+        assert_eq!(out.stage.as_deref(), Some("Execute"));
+    }
+
+    /// `derive_review_roles` falls back to `["mixed"]` when no wave dirs exist.
+    #[test]
+    fn derive_review_roles_falls_back_to_mixed() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(derive_review_roles(dir.path()), vec!["mixed".to_string()]);
     }
 }

@@ -10,7 +10,7 @@
 //! The W5 contract moves the hot path to **per-spec NDJSON files**:
 //!
 //! ```text
-//! .claude/spec/{name}/[wave-N-{role}/]events/{ts-ns}-{run-id}-{pid}.ndjson
+//! .claude/spec/{name}/[wave-N-{role}/].events/{ts-ns}-{run-id}-{pid}.ndjson
 //! ```
 //!
 //! Each writer process owns one file (the `{ts-ns}-{run-id}-{pid}` triple is
@@ -66,12 +66,12 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::Instant;
 
-/// Resolve the per-spec event directory under `<project>/.claude/spec/{name}/[wave-N-{role}/]events/`.
+/// Resolve the per-spec event directory under `<project>/.claude/spec/{name}/[wave-N-{role}/].events/`.
 ///
 /// `wave_role` is the optional `wave-N-{role}` segment (`Some("wave-5-mixed")`)
 /// for inside-wave writes; `None` for the parent spec dir.
 ///
-/// Falls back to `.claude/.session/{slug}/events/` when `spec` is empty — the
+/// Falls back to `.claude/.session/{slug}/.events/` when `spec` is empty — the
 /// W5.T5.4 sessions sidebar consumes that directory.
 #[must_use]
 pub fn event_dir(project: &Path, spec: Option<&str>, wave_role: Option<&str>, session_slug: &str) -> PathBuf {
@@ -80,13 +80,13 @@ pub fn event_dir(project: &Path, spec: Option<&str>, wave_role: Option<&str>, se
         if let Some(wr) = wave_role.filter(|s| !s.is_empty()) {
             base = base.join(wr);
         }
-        base.join("events")
+        base.join(".events")
     } else {
         project
             .join(".claude")
             .join(".session")
             .join(session_slug)
-            .join("events")
+            .join(".events")
     }
 }
 
@@ -407,7 +407,7 @@ mod tests {
     fn event_dir_resolves_under_spec() {
         let p = Path::new("/proj");
         let d = event_dir(p, Some("auth"), None, "s-1");
-        assert!(d.ends_with("auth/events") || d.ends_with("auth\\events"));
+        assert!(d.ends_with("auth/.events") || d.ends_with("auth\\.events"));
     }
 
     #[test]
@@ -415,7 +415,7 @@ mod tests {
         let p = Path::new("/proj");
         let d = event_dir(p, Some("auth"), Some("wave-2-rt"), "s-1");
         let s = d.display().to_string().replace('\\', "/");
-        assert!(s.contains("/spec/auth/wave-2-rt/events"));
+        assert!(s.contains("/spec/auth/wave-2-rt/.events"));
     }
 
     #[test]
@@ -423,7 +423,7 @@ mod tests {
         let p = Path::new("/proj");
         let d = event_dir(p, None, None, "s-42");
         let s = d.display().to_string().replace('\\', "/");
-        assert!(s.contains("/.session/s-42/events"));
+        assert!(s.contains("/.session/s-42/.events"));
     }
 
     #[test]
@@ -470,8 +470,8 @@ mod tests {
         let first: Value = serde_json::from_str(body.lines().next().unwrap()).unwrap();
         assert!(first["payload"]["$blob"].is_string(), "payload is a blob ref");
         // The blobs dir must contain the spilled content.
-        let blob_dir = dir.path().join(".claude").join("spec").join("big-spec").join("blobs");
-        assert!(blob_dir.exists(), "blobs/ dir exists");
+        let blob_dir = dir.path().join(".claude").join("spec").join("big-spec").join(".blobs");
+        assert!(blob_dir.exists(), ".blobs/ dir exists");
     }
 
     #[test]

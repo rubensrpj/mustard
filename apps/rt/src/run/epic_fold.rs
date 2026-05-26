@@ -22,6 +22,7 @@ use crate::util::now_iso8601;
 use mustard_core::fs;
 use mustard_core::store::sqlite_store::SqliteEventStore;
 use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
+use mustard_core::ClaudePaths;
 use serde_json::{json, Value};
 use std::path::Path;
 
@@ -90,7 +91,9 @@ fn emit_event(_store: &SqliteEventStore, project_dir: &str, event: &str, payload
 /// a root spec (`parent_spec == null`) with children, all children in `CLOSE`,
 /// and the root itself not yet `CLOSE`.
 fn detect_completed_epics(cwd: &Path) -> Vec<String> {
-    let states_dir = cwd.join(".claude").join(".pipeline-states");
+    let states_dir = ClaudePaths::for_project(cwd)
+        .map(|p| p.pipeline_states_dir())
+        .unwrap_or_else(|_| cwd.to_path_buf());
     let Ok(entries) = fs::read_dir(&states_dir) else {
         return Vec::new();
     };
@@ -166,8 +169,15 @@ fn fold_epic(cwd: &Path, epic: &str) -> bool {
         eprintln!("[epic-fold] warn: --epic is required");
         return false;
     }
-    let states_dir = cwd.join(".claude").join(".pipeline-states");
-    let epic_file = states_dir.join(format!("{epic}.json"));
+    let paths = ClaudePaths::for_project(cwd).ok();
+    let states_dir = paths
+        .as_ref()
+        .map(ClaudePaths::pipeline_states_dir)
+        .unwrap_or_else(|| cwd.to_path_buf());
+    let epic_file = paths
+        .as_ref()
+        .map(|p| p.pipeline_state_file(epic))
+        .unwrap_or_else(|| states_dir.join(format!("{epic}.json")));
     let Some(epic_state) = read_json(&epic_file) else {
         eprintln!("[epic-fold] warn: pipeline-state not found for epic \"{epic}\"");
         return false;

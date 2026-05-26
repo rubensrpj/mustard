@@ -144,12 +144,12 @@ pub fn run(
     };
     let specs_root = std::path::Path::new(&project).join(".claude").join("spec");
     if let Some(spec) = args.spec.as_deref() {
-        let dir = specs_root.join(spec).join("events");
+        let dir = specs_root.join(spec).join(".events");
         events.extend(mustard_core::projection::read_harness_events_from_ndjson_dir(&dir));
     } else if let Ok(entries) = std::fs::read_dir(&specs_root) {
         for entry in entries.flatten() {
             if entry.path().is_dir() {
-                let dir = entry.path().join("events");
+                let dir = entry.path().join(".events");
                 events.extend(mustard_core::projection::read_harness_events_from_ndjson_dir(&dir));
             }
         }

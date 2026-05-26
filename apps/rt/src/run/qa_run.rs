@@ -19,6 +19,7 @@
 use crate::report::{table, Report};
 use crate::run::env::{project_dir, session_id};
 use mustard_core::fs;
+use mustard_core::ClaudePaths;
 use crate::util::now_iso8601;
 use mustard_core::metrics::{emit_metric, MetricLine};
 use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
@@ -57,11 +58,13 @@ struct AcResult {
 /// path for its entire lifecycle and the canonical status is in the SQLite
 /// event store + the `### Status:` header.
 fn find_spec_file(cwd: &Path, spec: &str) -> Option<PathBuf> {
-    let candidates = [
-        cwd.join(".claude").join("specs").join(format!("{spec}.md")),
-        cwd.join(".claude").join("spec").join(spec).join("spec.md"),
-        cwd.join(".claude").join("spec").join(spec).join("wave-plan.md"),
-    ];
+    let paths = ClaudePaths::for_project(cwd).ok()?;
+    // `specs/<spec>.md` is the legacy pre-flat-layout fallback; that directory
+    // is not in the documented `ClaudePaths` catalog (post-flat-layout) so
+    // build it from the claude_dir root.
+    let legacy = paths.claude_dir().join("specs").join(format!("{spec}.md"));
+    let sp = paths.for_spec(spec).ok()?;
+    let candidates = [legacy, sp.spec_md_path(), sp.wave_plan_md_path()];
     candidates.into_iter().find(|c| c.exists())
 }
 
@@ -108,6 +111,13 @@ fn parse_ac_line(line: &str) -> Option<AcItem> {
         return None;
     }
     let rest = rest[mark.len_utf8()..].strip_prefix(']')?.trim_start();
+    // Tolerate a bold-wrapped ID prefix: `**AC-G1.**` (canonical form used in
+    // wave-plans + qa/review specs). Strip the leading `**` here; the matching
+    // trailing `**` is consumed below after the ID/separator.
+    let (rest, bold) = match rest.strip_prefix("**") {
+        Some(r) => (r.trim_start(), true),
+        None => (rest, false),
+    };
     // `AC-<id>` where id matches `[A-Za-z0-9]+(-[A-Za-z0-9]+)*`.
     let lower = rest.to_lowercase();
     if !lower.starts_with("ac-") {
@@ -143,15 +153,42 @@ fn parse_ac_line(line: &str) -> Option<AcItem> {
         id_end += 1 + seg_len; // consume `-` + segment
     }
     let id = format!("AC-{}", &after_ac[..id_end]);
-    let after_id = after_ac[id_end..].trim_start();
-    let after_colon = after_id.strip_prefix(':')?;
-    // Find a `Command:` segment after an em-dash / hyphen separator.
+    let after_id = &after_ac[id_end..];
+    // Accept `.` or `:` as the ID/description separator. The period form is
+    // canonical for the deep-refactor pipeline (`**AC-G1.** desc`); the colon
+    // form is the historical shape (`AC-G1: desc`). The separator may sit
+    // BEFORE the closing bold `**` (canonical: `**AC-G1.**`) or after it
+    // (defensive: `**AC-G1** : desc`).
+    let after_sep = if bold {
+        // Two valid bold shapes:
+        //   `**AC-G1.**` — separator inside the bold span; **after** "AC-G1"
+        //     comes "." then "**"; description follows.
+        //   `**AC-G1:**` — same with colon.
+        //   `**AC-G1**.` — separator outside the bold span (rare/defensive).
+        let stripped = after_id.trim_start();
+        if let Some(rest) = stripped.strip_prefix('.').or_else(|| stripped.strip_prefix(':')) {
+            // separator was inside the bold; expect `**` next, then description.
+            rest.trim_start().strip_prefix("**")?
+        } else if let Some(rest) = stripped.strip_prefix("**") {
+            // bold closed first, then separator.
+            let r = rest.trim_start();
+            r.strip_prefix('.').or_else(|| r.strip_prefix(':'))?
+        } else {
+            return None;
+        }
+    } else {
+        let stripped = after_id.trim_start();
+        stripped.strip_prefix('.').or_else(|| stripped.strip_prefix(':'))?
+    };
+    let after_colon = after_sep;
+    // Find the trailing ` Command: ` marker. Match `command:` (with the colon
+    // attached) so embedded words like "commands/mustard/*" in the description
+    // don't false-positive on a bare "command" substring. Use the LAST
+    // occurrence — defensive against descriptions that legitimately contain
+    // the literal string `command:` before the actual marker.
     let lower_seg = after_colon.to_lowercase();
-    let cmd_idx = lower_seg.find("command")?;
-    // The char just before `command` (after trimming `:` and ws) should be a
-    // separator — the JS pattern requires `—` / `-` / `--` before `Command`.
-    let cmd_tail = &after_colon[cmd_idx + "command".len()..];
-    let cmd_tail = cmd_tail.trim_start().strip_prefix(':')?.trim();
+    let cmd_idx = lower_seg.rfind("command:")?;
+    let cmd_tail = after_colon[cmd_idx + "command:".len()..].trim();
     let command = cmd_tail.trim_matches('`').trim().to_string();
     if command.is_empty() {
         return None;
@@ -388,21 +425,33 @@ fn criteria_json(criteria: &[AcResult]) -> Vec<Value> {
         .collect()
 }
 
-/// Write the JSON sidecar at `.claude/.qa-reports/{spec}.json`.
+/// Write the JSON sidecar at `<root>/.claude/spec/{spec}/qa-report.json` (the
+/// per-spec aggregate, per the W2 path catalog).
 fn write_sidecar(cwd: &Path, spec: &str, payload: &Value) {
-    let dir = cwd.join(".claude").join(".qa-reports");
-    if fs::create_dir_all(&dir).is_err() {
+    let Some(sp) = ClaudePaths::for_project(cwd)
+        .ok()
+        .and_then(|p| p.for_spec(spec).ok())
+    else {
         return;
+    };
+    let target = sp.qa_report_json_path();
+    if let Some(parent) = target.parent() {
+        if fs::create_dir_all(parent).is_err() {
+            return;
+        }
     }
     if let Ok(text) = serde_json::to_string_pretty(payload) {
-        let _ = fs::write_atomic(dir.join(format!("{spec}.json")), text.as_bytes());
+        let _ = fs::write_atomic(&target, text.as_bytes());
     }
 }
 
-/// Write the standalone HTML report at `.claude/.qa-reports/{spec}.html`.
+/// Write the standalone HTML report at `<root>/.claude/spec/{spec}/qa-report.html`.
 fn write_html_report(cwd: &Path, spec: &str, overall: &str, criteria: &[AcResult]) -> Option<PathBuf> {
-    let dir = cwd.join(".claude").join(".qa-reports");
-    fs::create_dir_all(&dir).ok()?;
+    let sp = ClaudePaths::for_project(cwd).ok()?.for_spec(spec).ok()?;
+    let path = sp.qa_report_html_path();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).ok()?;
+    }
     let mut report = Report::new(
         format!("QA Report — {spec}"),
         format!("overall: {overall} · {} criteria", criteria.len()),
@@ -423,7 +472,6 @@ fn write_html_report(cwd: &Path, spec: &str, overall: &str, criteria: &[AcResult
         "Acceptance Criteria",
         &table(&["ID", "Status", "Exit", "Duration", "stderr"], &rows),
     );
-    let path = dir.join(format!("{spec}.html"));
     fs::write_atomic(&path, report.render().as_bytes()).ok()?;
     Some(path)
 }
@@ -666,6 +714,38 @@ mod tests {
         assert_eq!(e.id, "AC-G1");
     }
 
+    /// Bold-wrapped ID with period separator — canonical form used by every
+    /// AC line in the `2026-05-25-mustard-deep-refactor` spec + every wave
+    /// spec (`- [ ] **AC-G1.** desc. Command: \`rtk x\``). Regression guard
+    /// for the parser fix made while closing that pipeline (qa-run was
+    /// returning zero items for an otherwise well-formed section).
+    #[test]
+    fn parses_ac_bold_period_form() {
+        let a = parse_ac_line("- [ ] **AC-G1.** descr. Command: `rtk x`").unwrap();
+        assert_eq!(a.id, "AC-G1");
+        assert_eq!(a.command, "rtk x");
+    }
+
+    /// Bold-wrapped ID with colon separator — defensive coverage for authors
+    /// who write `**AC-G2:**` (mixing the old colon convention with the new
+    /// bold wrapper). Same code path as the period form, different separator.
+    #[test]
+    fn parses_ac_bold_colon_form() {
+        let a = parse_ac_line("- [ ] **AC-G2:** descr. Command: `rtk y`").unwrap();
+        assert_eq!(a.id, "AC-G2");
+        assert_eq!(a.command, "rtk y");
+    }
+
+    /// Plain (non-bold) ID with period separator — the third shape that the
+    /// new code must accept: `AC-G3.` without bold wrapping. The historical
+    /// parser only accepted `:`, so this exercises the additive period branch.
+    #[test]
+    fn parses_ac_plain_period_form() {
+        let a = parse_ac_line("- [ ] AC-G3. descr. Command: `rtk z`").unwrap();
+        assert_eq!(a.id, "AC-G3");
+        assert_eq!(a.command, "rtk z");
+    }
+
     /// PT heading "Critérios de Aceitação globais" (suffix word after the
     /// canonical name) must still resolve — `is_heading` matches with a
     /// word-boundary tolerance after the variant. Regression guard for
@@ -699,7 +779,7 @@ mod tests {
     #[test]
     fn finds_wave_plan_md_when_spec_md_absent() {
         let dir = tempdir().unwrap();
-        let spec_dir = dir.path().join(".claude").join("spec").join("plan-a");
+        let spec_dir = ClaudePaths::for_project(dir.path()).unwrap().for_spec("plan-a").unwrap().dir().to_path_buf();
         std::fs::create_dir_all(&spec_dir).unwrap();
         let wp = spec_dir.join("wave-plan.md");
         std::fs::write(&wp, "# Plan A\n## Acceptance Criteria\n- [ ] AC-G1: ok — Command: `true`\n").unwrap();
@@ -713,7 +793,7 @@ mod tests {
     #[test]
     fn spec_md_wins_over_wave_plan_md_when_both_exist() {
         let dir = tempdir().unwrap();
-        let spec_dir = dir.path().join(".claude").join("spec").join("plan-b");
+        let spec_dir = ClaudePaths::for_project(dir.path()).unwrap().for_spec("plan-b").unwrap().dir().to_path_buf();
         std::fs::create_dir_all(&spec_dir).unwrap();
         let sp = spec_dir.join("spec.md");
         let wp = spec_dir.join("wave-plan.md");

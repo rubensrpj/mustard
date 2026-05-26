@@ -39,6 +39,7 @@ use mustard_core::fs;
 use mustard_core::projection::read_harness_events_from_ndjson_dir;
 use mustard_core::model::contract::{Ctx, HookInput, Observer, Trigger};
 use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
+use mustard_core::ClaudePaths;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -249,7 +250,17 @@ fn save_friction(entries: &[FrictionEntry], claude_dir: &Path) {
     if entries.is_empty() {
         return;
     }
-    let metrics_dir = claude_dir.join(".metrics");
+    // Reverse-derive the project root from the passed `claude_dir` so we can
+    // route through `ClaudePaths::metrics_dir`. Defensive: a malformed input
+    // falls back to a no-op rather than mis-route writes.
+    let metrics_dir = claude_dir
+        .parent()
+        .filter(|_| claude_dir.file_name().and_then(|s| s.to_str()) == Some(".claude"))
+        .and_then(|root| ClaudePaths::for_project(root).ok())
+        .map(|p| p.metrics_dir());
+    let Some(metrics_dir) = metrics_dir else {
+        return;
+    };
     let _ = fs::create_dir_all(&metrics_dir);
     let friction_path = metrics_dir.join("friction.json");
 
@@ -313,8 +324,8 @@ fn save_friction(entries: &[FrictionEntry], claude_dir: &Path) {
 }
 
 /// Read every `.pipeline-states/*.json` into [`StateObject`]s.
-fn read_state_objects(claude_dir: &Path) -> Vec<StateObject> {
-    let states_dir = claude_dir.join(".pipeline-states");
+fn read_state_objects(paths: &ClaudePaths) -> Vec<StateObject> {
+    let states_dir = paths.pipeline_states_dir();
     let Ok(entries) = fs::read_dir(&states_dir) else {
         return Vec::new();
     };
@@ -350,11 +361,13 @@ fn read_state_objects(claude_dir: &Path) -> Vec<StateObject> {
 /// W5: `retry.attempt` lives in the per-spec NDJSON sink, not in `pipeline_events`.
 /// Existence-only probe (a single line is enough), so this returns early.
 fn spec_has_retry_events(cwd: &str, spec: &str) -> bool {
-    let events_dir = Path::new(cwd)
-        .join(".claude")
-        .join("spec")
-        .join(spec)
-        .join("events");
+    let Ok(paths) = ClaudePaths::for_project(Path::new(cwd)) else {
+        return false;
+    };
+    let Ok(spec_paths) = paths.for_spec(spec) else {
+        return false;
+    };
+    let events_dir = spec_paths.events_dir();
     for ev in read_harness_events_from_ndjson_dir(&events_dir) {
         if ev.event == "retry.attempt" {
             return true;
@@ -405,12 +418,15 @@ fn emit_retry_attempts(state: &StateObject, input: &HookInput, cwd: &str) {
 /// `session-knowledge`: on `SessionEnd`, write friction telemetry and emit
 /// `retry.attempt` events. Pure side effect — fail-open throughout.
 fn run_session_knowledge(input: &HookInput, cwd: &str) {
-    let claude = Path::new(cwd).join(".claude");
+    let Ok(paths) = ClaudePaths::for_project(Path::new(cwd)) else {
+        return;
+    };
+    let claude = paths.claude_dir();
     // Bail if memory.js does not exist — parity with the JS bail.
     if !claude.join("scripts").join("memory.js").exists() {
         return;
     }
-    let states = read_state_objects(&claude);
+    let states = read_state_objects(&paths);
     if states.is_empty() {
         return;
     }
@@ -426,11 +442,14 @@ fn run_session_knowledge(input: &HookInput, cwd: &str) {
 /// `session-knowledge-inc`: on `PostToolUse(Task)`, write friction telemetry
 /// for the most recent pipeline-state, throttled. Pure side effect.
 fn run_session_knowledge_inc(cwd: &str) {
-    let claude = Path::new(cwd).join(".claude");
+    let Ok(paths) = ClaudePaths::for_project(Path::new(cwd)) else {
+        return;
+    };
+    let claude = paths.claude_dir();
     if !claude.join("scripts").join("memory.js").exists() {
         return;
     }
-    let seen_path = claude.join(".knowledge-seen.json");
+    let seen_path = paths.knowledge_seen_path();
     let mut seen: Value = fs::read_to_string(&seen_path)
         .ok()
         .and_then(|t| serde_json::from_str(&t).ok())
@@ -455,7 +474,7 @@ fn run_session_knowledge_inc(cwd: &str) {
     }
 
     // Most-recently modified pipeline-state.
-    let states_dir = claude.join(".pipeline-states");
+    let states_dir = paths.pipeline_states_dir();
     let Ok(entries) = fs::read_dir(&states_dir) else {
         return;
     };
@@ -620,7 +639,10 @@ fn content_hash(s: &str) -> String {
 /// Shell out to `.claude/scripts/memory.js decision` to persist one item.
 /// Port of `persist`. `memory.js` is a B4 script, intentionally still JS.
 fn persist_memory(item: &MemoryItem, cwd: &str, source: &str) -> bool {
-    let script = Path::new(cwd).join(".claude").join("scripts").join("memory.js");
+    let Ok(paths) = ClaudePaths::for_project(Path::new(cwd)) else {
+        return false;
+    };
+    let script = paths.claude_dir().join("scripts").join("memory.js");
     if !script.exists() {
         return false;
     }
@@ -662,14 +684,17 @@ fn persist_memory(item: &MemoryItem, cwd: &str, source: &str) -> bool {
 /// `memory-auto-extract`: on `SessionEnd`, scan active specs for Decisions /
 /// Lessons bullets and persist them via `memory.js`. Pure side effect.
 fn run_memory_auto_extract(cwd: &str) {
-    let claude = Path::new(cwd).join(".claude");
-    let active = claude.join("spec");
+    let Ok(paths) = ClaudePaths::for_project(Path::new(cwd)) else {
+        return;
+    };
+    let claude = paths.claude_dir();
+    let active = paths.spec_dir();
     if !active.exists() {
         return;
     }
     let _ = fs::create_dir_all(claude.join("memory"));
 
-    let seen_path = claude.join(".memory-seen.json");
+    let seen_path = paths.memory_seen_path();
     let mut seen_hashes: Vec<String> = fs::read_to_string(&seen_path)
         .ok()
         .and_then(|t| serde_json::from_str::<Value>(&t).ok())
@@ -778,6 +803,7 @@ mod tests {
         Ctx {
             project_dir: dir.to_string(),
             trigger: Some(trigger),
+            workspace_root: None,
         }
     }
 
@@ -876,7 +902,7 @@ mod tests {
         };
         let mut total = 0usize;
         for entry in entries.flatten() {
-            let dir = entry.path().join("events");
+            let dir = entry.path().join(".events");
             for ev in read_harness_events_from_ndjson_dir(&dir) {
                 if ev.event == "retry.attempt" {
                     total += 1;
@@ -978,9 +1004,9 @@ mod tests {
             hook_event_name: Some("SessionEnd".to_string()),
             ..HookInput::default()
         };
-        // Must not panic; .memory-seen.json is not written (nothing persisted).
+        // Must not panic; memory-seen.json is not written (nothing persisted).
         Knowledge.observe(&input, &ctx(Trigger::SessionEnd, dir.path().to_str().unwrap()));
-        assert!(!dir.path().join(".claude/.memory-seen.json").exists());
+        assert!(!dir.path().join(".claude/.cache/memory-seen.json").exists());
     }
 
     #[test]

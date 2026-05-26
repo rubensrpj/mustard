@@ -20,8 +20,9 @@ use crate::run::scan_precompute::{
 };
 use crate::util::now_iso8601;
 use mustard_core::fs;
+use mustard_core::ClaudePaths;
 use serde_json::{json, Value};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 
 /// Agent-prompt template embedded at build time. The orchestrator no longer
@@ -241,8 +242,9 @@ fn classify(detect: &Value, old_cache: Option<&Value>, force: bool, target: Opti
 /// Bootstrap foundational files when missing (fast-path skips when present).
 fn bootstrap(root: &Path, detect: &Value, force: bool, result: &mut ScanResult) {
     let root_claude = root.join("CLAUDE.md");
-    let orch_claude = root.join(".claude").join("CLAUDE.md");
-    let registry = root.join(".claude").join("entity-registry.json");
+    let (orch_claude, registry) = ClaudePaths::for_project(root)
+        .map(|p| (p.claude_md_path(), p.entity_registry_json_path()))
+        .unwrap_or_else(|_| (root.join("CLAUDE.md"), root.join("entity-registry.json")));
     let have_root = root_claude.exists();
     let have_registry = registry.exists();
 
@@ -337,8 +339,15 @@ fn precompute(
             continue;
         }
         let abs_sub = root.join(&path);
-        let commands_dir = abs_sub.join(".claude").join("commands");
-        let skills_dir = abs_sub.join(".claude").join("skills");
+        let sub_paths = ClaudePaths::for_project(&abs_sub).ok();
+        let commands_dir = sub_paths
+            .as_ref()
+            .map(ClaudePaths::commands_dir)
+            .unwrap_or_else(|| abs_sub.clone());
+        let skills_dir = sub_paths
+            .as_ref()
+            .map(ClaudePaths::skills_dir)
+            .unwrap_or_else(|| abs_sub.clone());
         if force {
             for n in purge_generated_skills(&skills_dir) {
                 result.cleanup.push(format!("{path}/.claude/skills/{n}"));
@@ -362,7 +371,9 @@ fn precompute(
 
 /// Generate per-subproject impl + explorer agent files.
 fn generate_agent_files(root: &Path, detect: &Value, force: bool, target: Option<&str>, result: &mut ScanResult) {
-    let agents_dir = root.join(".claude").join("agents");
+    let agents_dir = ClaudePaths::for_project(root)
+        .map(|p| p.agents_dir())
+        .unwrap_or_else(|_| root.to_path_buf());
     for sub in detect.get("subprojects").and_then(Value::as_array).cloned().unwrap_or_default() {
         let name = sub.get("name").and_then(Value::as_str).unwrap_or("");
         let path = sub.get("path").and_then(Value::as_str).unwrap_or(name);
@@ -419,7 +430,14 @@ fn build_explorer_agent(title: &str, name: &str, path: &str, role: &str) -> Stri
 fn force_refresh(root: &Path, detect: &Value, result: &mut ScanResult) {
     for sub in detect.get("subprojects").and_then(Value::as_array).cloned().unwrap_or_default() {
         let path = sub.get("path").and_then(Value::as_str).unwrap_or("");
-        let cache = root.join(path).join(".claude").join(".cluster-cache.json");
+        // `.cluster-cache.json` is owned by the agnostic scan cluster-discovery
+        // pass and lives inside each subproject's `.claude/`. Not part of the
+        // canonical `ClaudePaths` accessors — it is a per-subproject scan
+        // artefact, not a per-root catalog entry — so a stable child of the
+        // per-subproject `claude_dir()` is the right call.
+        let cache = ClaudePaths::for_project(root.join(path))
+            .map(|p| p.claude_dir().join(".cluster-cache.json"))
+            .unwrap_or_else(|_| root.join(path).join(".cluster-cache.json"));
         if fs::exists(&cache) && fs::remove_file(&cache).is_ok() {
             result.cleanup.push(rel_posix(root, &cache));
         }
@@ -485,8 +503,18 @@ fn orchestrate(root: &Path, force: bool, target: Option<&str>) -> ScanResult {
         target: target.map(str::to_string),
         ..ScanResult::default()
     };
-    let claude_dir = root.join(".claude");
-    let detect_cache = claude_dir.join(".detect-cache.json");
+    // Build a `ClaudePaths` handle once for every per-root cache lookup. If
+    // `for_project` rejects the input (I1 violation), bail with a structured
+    // error in the result rather than do any further IO.
+    let Ok(paths) = ClaudePaths::for_project(root) else {
+        result.errors.push(format!(
+            "orchestrate: ClaudePaths::for_project rejected {} (likely .claude/.claude/ I1 violation)",
+            root.display()
+        ));
+        return result;
+    };
+    let claude_dir = paths.claude_dir();
+    let detect_cache = paths.detect_cache_path();
     let old_cache = read_json(&detect_cache);
 
     let Some(detect) = run_detect(root, &mut result) else {
@@ -533,7 +561,8 @@ fn orchestrate(root: &Path, force: bool, target: Option<&str>) -> ScanResult {
     }
 
     // Persist dispatch state so finalize can verify each subproject.
-    let dispatch_state = claude_dir.join(".scan-dispatch.json");
+    // Migrated to `<root>/.claude/.cache/scan-dispatch.json` per the W2 cache reorg.
+    let dispatch_state = paths.scan_dispatch_path();
     let lite: Vec<Value> = dispatch
         .iter()
         .map(|s| {
@@ -579,7 +608,17 @@ fn orchestrate(root: &Path, force: bool, target: Option<&str>) -> ScanResult {
 
 /// Dispatch `mustard-rt run scan-orchestrate`.
 pub fn run(force: bool, target: Option<&str>) {
-    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    // W2: anchor every per-root cache write at the resolved workspace root
+    // (the directory containing `mustard.json + .claude/`) instead of the raw
+    // process cwd. Fail strict — a run subcommand cannot do useful work
+    // without an anchor.
+    let cwd = match crate::run::env::workspace_root_strict() {
+        Ok(root) => root,
+        Err(err) => {
+            eprintln!("scan-orchestrate: workspace_root resolution failed: {err}");
+            std::process::exit(1);
+        }
+    };
     let result = orchestrate(&cwd, force, target);
     println!(
         "{}",
@@ -649,7 +688,8 @@ mod tests {
         let dir = tempdir().unwrap();
         let mut result = ScanResult::default();
         bootstrap(dir.path(), &json!({ "subprojects": [] }), false, &mut result);
-        assert!(dir.path().join(".claude").join("CLAUDE.md").exists());
+        let cp = ClaudePaths::for_project(dir.path()).unwrap();
+        assert!(cp.claude_md_path().exists());
         assert!(result.generated.iter().any(|g| g == "CLAUDE.md"));
     }
 }

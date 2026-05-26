@@ -13,19 +13,40 @@
 
 pub mod scan;
 pub mod active_specs;
+pub mod adapt_cursor;
 pub mod agent_prompt_render;
 pub mod amend_finalize;
 mod analyze_validation;
+pub mod backup_specs;
 pub mod blob_spill;
+pub mod bugfix_cache;
+pub mod claude_dir_prune;
+pub mod close_orchestrate;
+pub mod context_budget;
+pub mod economy_capture_baseline;
+pub mod economy_reconcile;
+pub mod economy_report;
 pub mod event_route;
 pub mod event_writer_ndjson;
+pub mod i18n_translate;
+pub mod maint_deps;
+pub mod maint_validate;
+pub mod pipeline_prelude;
+pub mod prd_build;
+pub mod review_dispatch;
+pub mod skill_cache;
+pub mod skill_fetch;
+pub mod spec_lang_resolve;
 pub mod spec_clear;
+pub mod tactical_fix_create;
+pub mod task_checklist;
 mod artifact_update;
 mod knowledge;
 mod backfill_run_usage_cost;
 mod backfill_run_usage_spec;
 mod db_maintain;
 mod doctor;
+pub mod plan_from_spec;
 mod complete_spec;
 mod context_slice;
 mod dependency_precheck;
@@ -43,7 +64,7 @@ pub use event_projections::{pipeline_state_for_spec, PipelineStateView};
 pub use env::current_spec;
 mod exec_rewave_check;
 mod mark_checklist_item;
-mod memory;
+pub(crate) mod memory;
 mod memory_cross_wave;
 mod migrate_spec_headers;
 mod migrate_to_meta;
@@ -64,8 +85,11 @@ mod review_result;
 mod rtk_gain;
 mod status;
 mod scan_finalize;
+mod scan_md_validate;
 mod scan_orchestrate;
 mod scan_precompute;
+mod scan_recipes_validate;
+mod scan_structural;
 mod scope_decompose;
 mod security_scan;
 pub mod skill_discovery_lint;
@@ -80,6 +104,10 @@ mod spec_sections;
 // W4: lang-aware spec slug helper. Thin facade over `mustard_core::slugify`.
 // W6: subcommand entry point (`i18n translate-heading`, `spec-lang resolve`).
 pub mod spec_slug;
+mod spec_draft;
+mod spec_memory;
+mod spec_validate;
+pub(crate) mod skill_resolve;
 mod sync_detect;
 mod sync_registry;
 pub mod unhook;
@@ -99,6 +127,7 @@ use std::path::PathBuf;
 
 /// The `run` subcommands — one variant per ported script.
 #[derive(Debug, Subcommand)]
+#[allow(clippy::large_enum_variant)] // CLI parser enum — clap-Subcommand; boxing breaks derive
 pub enum RunCmd {
     /// Discover subprojects, detect roles, and emit the `sync-detect` JSON.
     SyncDetect {
@@ -156,6 +185,11 @@ pub enum RunCmd {
         from: Option<String>,
     },
     /// Append a typed pipeline event (`pipeline.scope`, `pipeline.status`, etc.).
+    ///
+    /// On `--kind pipeline.complete` the REVIEW/QA gate refuses emission with
+    /// exit 2 unless a `qa.result` event with `overall=pass` exists for the
+    /// spec, or `--allow-no-qa` is passed (escape hatch for trusted callers
+    /// like `qa-run` itself or an explicit user override).
     EmitPipeline {
         /// Pipeline event kind, e.g. `pipeline.scope`. Must be one of the 8 known kinds.
         #[arg(long)]
@@ -166,6 +200,11 @@ pub enum RunCmd {
         /// Optional JSON payload string.
         #[arg(long)]
         payload: Option<String>,
+        /// Bypass the REVIEW/QA gate on `pipeline.complete`. Without this flag,
+        /// `pipeline.complete` is refused (exit 2) unless a passing `qa.result`
+        /// event exists for the spec.
+        #[arg(long = "allow-no-qa")]
+        allow_no_qa: bool,
     },
     /// Rewrite legacy spec headers (`### Status:` + `### Phase:`) into the
     /// canonical `### Stage:` / `### Outcome:` / `### Flags:` triple
@@ -225,6 +264,11 @@ pub enum RunCmd {
         archive_followups: bool,
     },
     /// Cut the relevant term blocks from one or more `CONTEXT.md` glossaries.
+    ///
+    /// W8.T8.8 also accepts `--context-claude-md <path>`: a CLAUDE.md file
+    /// whose `## Heading` / `### Heading` sections are kept when their body
+    /// contains any spec-derived relevance term. The CLAUDE.md slice is
+    /// emitted after the CONTEXT.md slice (separated by a blank line).
     ContextSlice {
         /// A `CONTEXT.md` / `CONTEXT-MAP.md` path. Repeatable.
         #[arg(long)]
@@ -235,6 +279,10 @@ pub enum RunCmd {
         /// Override the line cap (`MUSTARD_GLOSSARY_MAX_LINES`).
         #[arg(long = "max-lines")]
         max_lines: Option<usize>,
+        /// W8.T8.8 — slice the given CLAUDE.md against the same relevance
+        /// terms. Optional; the CONTEXT.md path(s) remain primary.
+        #[arg(long = "context-claude-md")]
+        context_claude_md: Option<String>,
     },
     /// Resolve a scope into its minimum concept-node closure.
     ///
@@ -254,23 +302,30 @@ pub enum RunCmd {
     /// Persist agent memory, decisions/lessons, or knowledge entries.
     /// `cross-wave` is the read-side: emits markdown summarising prior waves.
     /// `list` emits all memory entries (knowledge_patterns + decisions + lessons).
+    ///
+    /// W7 (deep-refactor) adds three subcommands sharing this clap variant:
+    /// `write` (`agent_memory` insert + `--verify` round-trip), `search`
+    /// (FTS5 + scope filter on `agent_memory`), and `feedback`
+    /// (`memory_feedback` append for `deprecate|bump|supersede|use`).
+    /// `cross-wave` gains `--cluster <C>` to scope to a single role across
+    /// prior waves.
     Memory {
-        /// Subcommand: `agent`, `decision`, `knowledge`, `list`, or `cross-wave`.
+        /// Subcommand: `agent`, `decision`, `knowledge`, `list`, `cross-wave`,
+        /// `write`, `search`, or `feedback`.
         subcommand: String,
         /// Input JSON (Windows-friendly form; stdin is the POSIX fallback).
         #[arg(long)]
         json: Option<String>,
-        /// `agent` / `cross-wave` — spec name (pipeline attribution for
-        /// `agent`; parent spec for `cross-wave`).
+        /// `agent` / `cross-wave` / `write` / `search` — spec name.
         #[arg(long)]
         spec: Option<String>,
-        /// `agent` / `cross-wave` — wave number (1-based).
+        /// `agent` / `cross-wave` / `write` — wave number (1-based).
         #[arg(long)]
         wave: Option<u32>,
         /// `agent` only — agent identifier/role (becomes `agent_type`).
         #[arg(long)]
         agent: Option<String>,
-        /// `agent` only — one-line summary of what the agent produced.
+        /// `agent` / `write` — one-line summary of what the agent produced.
         #[arg(long)]
         summary: Option<String>,
         /// `agent` only — comma-separated list of files affected
@@ -283,17 +338,66 @@ pub enum RunCmd {
         /// `list` only — output format: `json` (default) or `table`.
         #[arg(long, default_value = "json")]
         format: String,
+        /// `cross-wave` / `search` — scope to a single cluster (role suffix
+        /// of `wave-N-<role>` for cross-wave; `agent_memory.role` for search).
+        #[arg(long)]
+        cluster: Option<String>,
+        /// `search` only — FTS5 query string.
+        #[arg(long)]
+        query: Option<String>,
+        /// `feedback` only — target `agent_memory.id`.
+        #[arg(long)]
+        id: Option<i64>,
+        /// `feedback` only — one of `deprecate|bump|supersede|use`.
+        #[arg(long)]
+        kind: Option<String>,
+        /// `write` only — role label (e.g. `rt`, `dashboard`).
+        #[arg(long)]
+        role: Option<String>,
+        /// `write` only — body text (free-form, may contain JSON).
+        #[arg(long)]
+        details: Option<String>,
+        /// `write` only — initial confidence (0.0–1.0, default 0.5).
+        #[arg(long)]
+        confidence: Option<f64>,
+        /// `write` only — round-trip the row after insert to confirm the
+        /// schema + FTS5 mirror are healthy.
+        #[arg(long)]
+        verify: bool,
+        /// `search` only — include rows whose effective confidence (after
+        /// lazy decay) sits below the default 0.3 threshold.
+        #[arg(long = "include-low")]
+        include_low: bool,
+        /// `search` only — result cap (default 20).
+        #[arg(long)]
+        limit: Option<usize>,
+        /// `feedback` only — attribution token for the agent supplying the signal.
+        #[arg(long = "by-role")]
+        by_role: Option<String>,
+        /// `feedback` only — free-form note recorded alongside the signal.
+        #[arg(long)]
+        note: Option<String>,
     },
     /// One-shot ingest of legacy JSON files into the SQLite Wave 6a tables.
     ///
-    /// Reads `.claude/knowledge.json`, `.claude/memory/decisions.json`, and
-    /// `.claude/memory/lessons.json` (if present) and inserts their entries
-    /// into `knowledge_patterns`, `memory_decisions`, `memory_lessons`.
+    /// Default: reads `.claude/knowledge.json`, `.claude/memory/decisions.json`,
+    /// and `.claude/memory/lessons.json` (if present) and inserts their
+    /// entries into `knowledge_patterns`, `memory_decisions`, `memory_lessons`.
+    ///
+    /// `--agent-memory` (W7 deep-refactor): walks `.claude/.agent-memory/`
+    /// (legacy rolling-cap-20 JSON sink) and forwards each entry into
+    /// `agent_memory`, then removes the directory on success. Fail-open per
+    /// entry.
+    ///
     /// Prints a JSON summary. Fail-open per file.
     MemoryIngest {
         /// Remove the source JSON files after a successful ingest.
         #[arg(long)]
         delete: bool,
+        /// Migrate `.claude/.agent-memory/` to the `agent_memory` SQLite
+        /// table and remove the directory.
+        #[arg(long = "agent-memory")]
+        agent_memory: bool,
     },
     /// One-shot ingest of `.pipeline-states/*.json` files into the SQLite event stream.
     ///
@@ -616,6 +720,39 @@ pub enum RunCmd {
         #[arg(long = "skip-security")]
         skip_security: bool,
     },
+    /// Agnostic Rust-only structural scan of one subproject (or every detected
+    /// subproject when `--subproject` is omitted). Parses manifests, counts
+    /// source extensions, and runs the agnostic cluster discovery; writes a
+    /// `stack.md` ≤60 lines under `<sub>/.claude/commands/` and prints a JSON
+    /// digest to stdout. Fail-open per parser.
+    ScanStructural {
+        /// Subproject path relative to the repo root (e.g. `apps/cli`).
+        /// Defaults to scanning the repo root + every `apps/*` + `packages/*`.
+        #[arg(long)]
+        subproject: Option<String>,
+    },
+    /// Validate `.md` artifacts generated by `/scan` against the W3 contract:
+    /// size caps per kind, `<!-- mustard:generated -->` fence presence under
+    /// `commands/` and `skills/`, wirelink resolution against
+    /// `.claude/graph/index.md`, `Ref:` path existence, and cross-file
+    /// paragraph duplication. Fail-open unless `--strict` is set.
+    ScanMdValidate {
+        /// Limit the scan to one subproject (path relative to repo root).
+        #[arg(long)]
+        from: Option<String>,
+        /// Exit `1` when any hit is found. Default is warn-only (exit `0`).
+        #[arg(long)]
+        strict: bool,
+    },
+    /// Validate `.claude/recipes/<sub>/*.json` shape: required keys, real
+    /// `files[].path` existence inside the recipe's subproject, and absence of
+    /// literal `{Entity}` / `{ClusterLabel}` placeholders. Fail-open unless
+    /// `--strict` is set.
+    ScanRecipesValidate {
+        /// Exit `1` when any hit is found. Default is warn-only (exit `0`).
+        #[arg(long)]
+        strict: bool,
+    },
     /// Run the local OTLP/JSON receiver for Claude Code native telemetry.
     ///
     /// Binds a loopback HTTP server on `MUSTARD_OTEL_PORT` (default 4318).
@@ -649,24 +786,32 @@ pub enum RunCmd {
         expect_rows_after: Option<String>,
     },
     /// Read-only installation health diagnostic: wiring, drift, state health,
-    /// and (optionally) residue. Prints a compact OK/WARN/FAIL report and
-    /// exits 1 if any category is FAIL, 0 otherwise.
+    /// wave-integrity, and (optionally) residue. Prints a compact
+    /// OK/WARN/FAIL report and exits 1 if any category is FAIL, 0 otherwise.
+    ///
+    /// Pass `--json` as a shortcut for `--format json` (W10.T10.6).
     Doctor {
         /// Also scan for dead file/script references (slower).
         #[arg(long)]
         residue: bool,
-        /// Run a specific named check in isolation (e.g. `skill-discovery`).
+        /// Run a specific named check in isolation (e.g. `skill-discovery`,
+        /// `wave-integrity`).
         #[arg(long)]
         check: Option<String>,
         /// Output format: `text` (default) or `json`.
         #[arg(long, default_value = "text")]
         format: String,
+        /// Shorthand for `--format json` (W10.T10.6).
+        #[arg(long)]
+        json: bool,
     },
     /// SQLite harness database maintenance.
     ///
     /// Default (no flags): emit a JSON size/space report (read-only).
     /// `--vacuum`: WAL checkpoint + VACUUM; print before/after byte counts.
     /// `--prune-keep <N>`: delete all but the N most-recent events by id.
+    /// `--prune-older-than <N>d` (W11.T11.2): delete events older than N days.
+    /// `--telemetry-only` (W11.T11.2): act on `telemetry.db` only.
     DbMaintain {
         /// Run `PRAGMA wal_checkpoint(TRUNCATE)` then `VACUUM`.
         #[arg(long)]
@@ -674,6 +819,13 @@ pub enum RunCmd {
         /// Keep only the N most-recent events; delete the rest.
         #[arg(long = "prune-keep")]
         prune_keep: Option<u32>,
+        /// Delete events older than N days (W11.T11.2). Accepts `30` or `30d`.
+        #[arg(long = "prune-older-than")]
+        prune_older_than: Option<String>,
+        /// Restrict every operation to `telemetry.db`; `mustard.db` is not
+        /// opened in this mode (W11.T11.2).
+        #[arg(long = "telemetry-only")]
+        telemetry_only: bool,
     },
     /// Finalize open amendment windows for a session (appends `## Amendments` to spec.md,
     /// moves archived specs, updates the DB, and emits `pipeline.amend_close`).
@@ -715,6 +867,23 @@ pub enum RunCmd {
         /// Path to the plan JSON file.
         #[arg(long)]
         plan: Option<String>,
+    },
+    /// W10.T10.4 — Emit a deterministic wave-plan JSON consumable by
+    /// `wave-scaffold`. Replaces the orchestrator-hand-rolled `plan.json` step.
+    #[command(name = "plan-from-spec")]
+    PlanFromSpec {
+        /// Total wave count (>= 1).
+        #[arg(long, default_value_t = 1)]
+        waves: u32,
+        /// Comma-separated role list (replicates the last role when waves > len).
+        #[arg(long, default_value = "mixed")]
+        roles: String,
+        /// BCP-47 narrative locale (`pt-BR` / `en-US`).
+        #[arg(long, default_value = "pt-BR")]
+        lang: String,
+        /// Optional summary applied to every wave.
+        #[arg(long)]
+        summary: Option<String>,
     },
     /// Scan markdown docs for obsolete terms declared in `.claude/.docs-audit.json`.
     ///
@@ -879,6 +1048,13 @@ pub enum RunCmd {
         /// `(a|b)` alternation. Omit to include all tasks.
         #[arg(long = "task-filter")]
         task_filter: Option<String>,
+        /// W8.T8.9 — soft token budget. When set, the renderer trims the
+        /// bulky placeholders (`task_steps`, `context_md`, `prior_wave_diff`,
+        /// `cross_wave_memory`, `recommended_skills`) to keep the prompt at
+        /// or below this many estimated model tokens. The estimator uses the
+        /// 4-chars-per-token heuristic; trimming is head-preserving.
+        #[arg(long = "budget-tokens")]
+        budget_tokens: Option<usize>,
     },
     /// Garbage-collect orphan Claude agent worktrees under
     /// `<repo>/.claude/worktrees/agent-*`.
@@ -937,6 +1113,96 @@ pub enum RunCmd {
         #[arg(long)]
         confirm: bool,
     },
+    /// Draft a new spec layout (`spec.md` + `meta.json` + optional wave plan)
+    /// conforming to `mustard_core::spec::contract`. Replaces the literal
+    /// ~80-line template block inside the `/mustard:feature` SKILL.md.
+    ///
+    /// `--scope full` materialises `wave-plan.md` + `wave-N-{role}/spec.md`
+    /// directories. `--lang` accepts BCP-47 only (`pt-BR` / `en-US`); short
+    /// codes are rejected. `--signals` is a free-form comma-separated list
+    /// embedded in `spec.md` as a comment for downstream tooling.
+    SpecDraft {
+        /// Free-text intent (becomes the spec title + slug seed).
+        #[arg(long)]
+        intent: String,
+        /// `light` (single-shot) or `full` (wave plan).
+        #[arg(long, default_value = "full")]
+        scope: String,
+        /// BCP-47 narrative locale (`pt-BR` / `en-US`).
+        #[arg(long, default_value = "pt-BR")]
+        lang: String,
+        /// Optional comma-separated signal list (`layers,files,registry`).
+        #[arg(long)]
+        signals: Option<String>,
+        /// Output directory (default `.claude/spec/{slug}/`).
+        #[arg(long)]
+        output: Option<PathBuf>,
+        /// Number of waves under Full scope (default 1).
+        #[arg(long, default_value_t = 1)]
+        waves: u32,
+        /// Role applied to each scaffolded wave (default `mixed`).
+        #[arg(long, default_value = "mixed")]
+        role: String,
+        /// Overwrite an existing output directory.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Validate a spec directory against the Wave 1 layout contract. Reads
+    /// `meta.json` + `spec.md` and runs `mustard_core::spec::contract::validate`.
+    /// Exit code 0 ⇒ ok, 2 ⇒ violations, 1 ⇒ IO failure.
+    SpecValidate {
+        /// Path to a spec directory or `spec.md` file. A bare slug resolves
+        /// to `.claude/spec/{slug}/`.
+        #[arg(long)]
+        spec: String,
+        /// Emit pretty JSON (default — kept for symmetry with siblings).
+        #[arg(long)]
+        json: bool,
+    },
+    /// Score every discoverable SKILL.md against a free-text intent +
+    /// subproject + phase. Pure Rust — no LLM. Emits the top-K skills with
+    /// a numeric score and reason list. Consumed in-process by
+    /// `agent-prompt-render` to fill `{recommended_skills}`.
+    SkillResolve {
+        /// Free-text intent (verb + nouns).
+        #[arg(long)]
+        intent: String,
+        /// Optional subproject path (e.g. `apps/dashboard`).
+        #[arg(long)]
+        subproject: Option<String>,
+        /// Pipeline phase: `ANALYZE` / `EXECUTE` / `REVIEW` / `PLAN` / `QA`.
+        #[arg(long)]
+        phase: Option<String>,
+        /// Top-K cap (default 5).
+        #[arg(long = "top-k", default_value_t = 5)]
+        top_k: usize,
+        /// Emit JSON instead of the table form.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Manage per-spec memory entries (`memory/<name>.md`). Currently
+    /// supports `create`. Generated files carry standardised frontmatter,
+    /// automatic wirelinks to the spec + wave of origin, and the canonical
+    /// sections `## Origem` / `## Aplica-se a` / `## Status` / `## Relacionado`.
+    SpecMemory {
+        /// Subcommand verb (`create`).
+        subcommand: Option<String>,
+        /// Spec slug under `.claude/spec/`.
+        #[arg(long)]
+        spec: String,
+        /// Memory entry name (kebab-case).
+        #[arg(long)]
+        name: String,
+        /// Entry kind: `principle` / `process` / `reference`.
+        #[arg(long, default_value = "principle")]
+        kind: String,
+        /// Origin wave label (e.g. `wave-1-mixed`).
+        #[arg(long = "origin-wave")]
+        origin_wave: Option<String>,
+        /// Optional one-line description.
+        #[arg(long)]
+        description: Option<String>,
+    },
     /// Sweep terminal, idle spec directories under `.claude/spec/` (W5.T5.5).
     ///
     /// Default is **dry-run**: enumerates every spec whose `meta.json` reports
@@ -965,6 +1231,218 @@ pub enum RunCmd {
         #[arg(long)]
         name: Option<String>,
     },
+    /// Audit (and optionally remove) drift in a project's `.claude/` directory.
+    ///
+    /// Enumerates every direct child of `.claude/`, classifies each against a
+    /// declared consumer list (KEEP / STALE / ORPHAN / LEGACY / CACHE), and
+    /// either reports candidates (default `--dry-run`) or removes the ORPHAN
+    /// / LEGACY ones (`--apply`). Emits byte-stable pretty JSON; fail-open at
+    /// every step — exit code is always 0.
+    #[command(name = "claude-dir-prune")]
+    ClaudeDirPrune {
+        /// Repo root override. Defaults to the current working directory.
+        #[arg(long)]
+        repo: Option<PathBuf>,
+        /// Preview only — emit the report, mutate nothing (the default).
+        #[arg(long, default_value_t = true, conflicts_with = "apply")]
+        dry_run: bool,
+        /// Apply the removals. Required to mutate the filesystem.
+        #[arg(long)]
+        apply: bool,
+        /// Reserved for parity with sibling subcommands — JSON is the only
+        /// format today, but the flag exists so callers can pass it.
+        #[arg(long)]
+        json: bool,
+    },
+    /// W5.T5.1 — Drive the CLOSE-phase gates (verify → qa → docs-stale → summary).
+    #[command(name = "close-orchestrate")]
+    CloseOrchestrate {
+        /// Spec slug under `.claude/spec/`.
+        #[arg(long)]
+        spec: String,
+        /// Skip the docs-stale-check gate.
+        #[arg(long = "skip-docs")]
+        skip_docs: bool,
+    },
+    /// W5.T5.2 — Orchestrate the REVIEW phase steps (prefetch + diff + DORA emits).
+    #[command(name = "review-dispatch")]
+    ReviewDispatch {
+        /// PR number.
+        #[arg(long)]
+        pr: u64,
+        /// Spec slug for event attribution.
+        #[arg(long)]
+        spec: Option<String>,
+        /// Subproject to scope the diff to.
+        #[arg(long)]
+        subproject: Option<String>,
+    },
+    /// W5.T5.3 — Create a sub-spec linked to a parent spec for a tactical fix.
+    #[command(name = "tactical-fix-create")]
+    TacticalFixCreate {
+        /// Parent spec slug (already created in `.claude/spec/`).
+        #[arg(long)]
+        parent: String,
+        /// Free-text description of the fix (becomes the title + slug seed).
+        #[arg(long)]
+        description: String,
+        /// Scope flag: `touch` / `light` (default) / `full`.
+        #[arg(long, default_value = "light")]
+        scope: String,
+    },
+    /// W5.T5.4 — Build a PRD JSON document from a free-text intent.
+    #[command(name = "prd-build")]
+    PrdBuild {
+        /// Free-text intent (verb + nouns).
+        #[arg(long)]
+        intent: String,
+        /// Output format: `json` (default) is the only supported value.
+        #[arg(long, default_value = "json")]
+        format: String,
+    },
+    /// W5.T5.5a — Fetch and install a skill from a local path or GitHub spec.
+    #[command(name = "skill-fetch")]
+    SkillFetch {
+        /// Source spec: `path:./local`, `github:owner/repo/path`, or a slug.
+        #[arg(long)]
+        name: String,
+        /// Skip writes (preview only).
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// W5.T5.5b — Inspect the skill install cache for one entry.
+    #[command(name = "skill-cache")]
+    SkillCache {
+        /// Skill slug to check.
+        #[arg(long = "check")]
+        check: String,
+    },
+    /// W5.T5.6 — Generate `.cursorrules` from the repo's `CLAUDE.md` tree.
+    #[command(name = "adapt-cursor")]
+    AdaptCursor {
+        /// Repo root override.
+        #[arg(long)]
+        repo: Option<PathBuf>,
+        /// Preview only — no filesystem mutation.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// W5.T5.7a — Install dependencies in every detected subproject.
+    #[command(name = "maint-deps")]
+    MaintDeps {
+        /// Preview only — print the resolved install commands without running.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// W5.T5.7b — Run build/type-check validation in every detected subproject.
+    #[command(name = "maint-validate")]
+    MaintValidate {
+        /// Preview only — print the resolved validate commands without running.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// W5.T5.8 — Return the canonical audit checklist for a domain.
+    #[command(name = "task-checklist")]
+    TaskChecklist {
+        /// Domain token (e.g. `copy`, `design`, `a11y`, `i18n`, `consistency`,
+        /// `api-contract`).
+        #[arg(long)]
+        domain: String,
+    },
+    /// W5.T5.9 — Read or write the bugfix root-cause cache for retry reuse.
+    #[command(name = "bugfix-cache")]
+    BugfixCache {
+        /// Cache signature hash.
+        #[arg(long)]
+        hash: String,
+        /// Write mode — record a new entry with the supplied summary.
+        #[arg(long)]
+        summary: Option<String>,
+        /// Files affected — comma-separated list (write mode only).
+        #[arg(long)]
+        files: Option<String>,
+    },
+    /// W5.T5.10 — Compute the recommended prompt budget for a role + wave.
+    #[command(name = "context-budget")]
+    ContextBudget {
+        /// Agent role token.
+        #[arg(long)]
+        role: String,
+        /// Spec slug (optional — only echoed in the report).
+        #[arg(long)]
+        spec: Option<String>,
+        /// Wave number (optional).
+        #[arg(long)]
+        wave: Option<u32>,
+    },
+    /// W5.T5.11 — Idempotent cross-platform copy of `.claude/spec/` into a backup tree.
+    #[command(name = "backup-specs")]
+    BackupSpecs {
+        /// Destination directory.
+        #[arg(long)]
+        target: Option<PathBuf>,
+        /// Filter: `all` (default) or `active`.
+        #[arg(long, default_value = "all")]
+        filter: String,
+        /// Preview only.
+        #[arg(long)]
+        dry_run: bool,
+        /// Suppress the `MANIFEST.json` (default: emit a SHA-256 manifest at the backup root).
+        #[arg(long)]
+        no_manifest: bool,
+    },
+    /// W5.T5.13 — Translate a markdown heading line into a target locale.
+    #[command(name = "i18n")]
+    I18n {
+        /// Subcommand: `translate-heading` is the only verb today.
+        subcommand: String,
+        /// Raw heading line, e.g. `## Tarefas`.
+        #[arg(long)]
+        from: Option<String>,
+        /// Target BCP-47 locale (`pt-BR` / `en-US`).
+        #[arg(long = "to-lang")]
+        to_lang: Option<String>,
+    },
+    /// W5.T5.14 — Resolve the narrative locale for a spec.
+    #[command(name = "spec-lang")]
+    SpecLang {
+        /// Subcommand: `resolve` is the only verb today.
+        subcommand: String,
+        /// Spec slug or directory path.
+        #[arg(long)]
+        spec: Option<String>,
+    },
+    /// W5.T5.15 — Auditable economy operations: capture-baseline / reconcile / report.
+    #[command(name = "economy")]
+    Economy {
+        /// Subcommand: `capture-baseline` / `reconcile` / `report`.
+        subcommand: String,
+        /// Operation name (capture-baseline).
+        #[arg(long)]
+        operation: Option<String>,
+        /// Wave number (capture-baseline, reconcile).
+        #[arg(long)]
+        wave: Option<u32>,
+        /// Use historical telemetry as the baseline source (capture-baseline).
+        #[arg(long = "from-history")]
+        from_history: bool,
+        /// Output format: `json` (default) or `table` (report only).
+        #[arg(long, default_value = "json")]
+        format: String,
+        /// Spec name (per-spec baseline file; W2 path catalog).
+        #[arg(long)]
+        spec: Option<String>,
+    },
+    /// W5.T5.16 — Consolidate per-phase prelude (sync-detect + diff-context).
+    #[command(name = "pipeline-prelude")]
+    PipelinePrelude {
+        /// Spec slug under `.claude/spec/`.
+        #[arg(long)]
+        spec: String,
+        /// Phase: `ANALYZE` / `PLAN` / `EXECUTE`.
+        #[arg(long)]
+        phase: String,
+    },
 }
 
 /// Dispatch a `run` subcommand.
@@ -990,8 +1468,13 @@ pub fn dispatch(cmd: RunCmd) {
         RunCmd::EmitPhase { spec, to, from } => {
             emit_phase::run(&spec, &to, from.as_deref());
         }
-        RunCmd::EmitPipeline { kind, spec, payload } => {
-            emit_pipeline::run(emit_pipeline::EmitPipelineOpts { kind, spec, payload });
+        RunCmd::EmitPipeline { kind, spec, payload, allow_no_qa } => {
+            emit_pipeline::run(emit_pipeline::EmitPipelineOpts {
+                kind,
+                spec,
+                payload,
+                allow_no_qa,
+            });
         }
         RunCmd::MigrateSpecHeaders {
             dry_run,
@@ -1027,7 +1510,13 @@ pub fn dispatch(cmd: RunCmd) {
             context,
             spec,
             max_lines,
-        } => context_slice::run(&context, spec.as_deref(), max_lines),
+            context_claude_md,
+        } => context_slice::run(
+            &context,
+            spec.as_deref(),
+            max_lines,
+            context_claude_md.as_deref(),
+        ),
         RunCmd::ContextResolve { scope, scope_file } => {
             scan::resolve::run(scope.as_deref(), scope_file.as_deref());
         }
@@ -1041,6 +1530,18 @@ pub fn dispatch(cmd: RunCmd) {
             files,
             grouped,
             format,
+            cluster,
+            query,
+            id,
+            kind,
+            role,
+            details,
+            confidence,
+            verify,
+            include_low,
+            limit,
+            by_role,
+            note,
         } => memory::dispatch(
             &subcommand,
             json.as_deref(),
@@ -1051,8 +1552,24 @@ pub fn dispatch(cmd: RunCmd) {
             files.as_deref(),
             grouped,
             &format,
+            memory::DispatchExtras {
+                cluster,
+                query,
+                id,
+                kind,
+                role,
+                details,
+                confidence,
+                verify,
+                include_low,
+                limit,
+                by_role,
+                note,
+            },
         ),
-        RunCmd::MemoryIngest { delete } => memory_ingest::run(delete),
+        RunCmd::MemoryIngest { delete, agent_memory } => {
+            memory_ingest::run_with(memory_ingest::MemoryIngestOpts { delete, agent_memory });
+        }
         RunCmd::PipelineStateIngest { delete } => {
             pipeline_state_ingest::run(pipeline_state_ingest::PipelineStateIngestOpts { delete });
         }
@@ -1148,25 +1665,46 @@ pub fn dispatch(cmd: RunCmd) {
             scan_orchestrate::run(force, target.as_deref());
         }
         RunCmd::ScanFinalize { skip_security } => scan_finalize::run(skip_security),
+        RunCmd::ScanStructural { subproject } => scan_structural::run(subproject.as_deref()),
+        RunCmd::ScanMdValidate { from, strict } => {
+            scan_md_validate::run(from.as_deref(), strict);
+        }
+        RunCmd::ScanRecipesValidate { strict } => scan_recipes_validate::run(strict),
         RunCmd::OtelCollector => otel::collector::run(),
         RunCmd::TranscriptWatcher { once } => transcript_watcher::run(once),
         RunCmd::DiagnoseOtel {
             json,
             expect_rows_after,
         } => otel::diagnose::run(json, expect_rows_after.as_deref()),
-        RunCmd::Doctor { residue, check, format } => doctor::run(doctor::DoctorOpts {
-            residue,
-            check,
-            format,
-        }),
-        RunCmd::DbMaintain { vacuum, prune_keep } => {
+        RunCmd::Doctor { residue, check, format, json } => {
+            // `--json` is a shorthand for `--format json` (W10.T10.6).
+            let effective_format = if json { "json".to_string() } else { format };
+            doctor::run(doctor::DoctorOpts {
+                residue,
+                check,
+                format: effective_format,
+            });
+        }
+        RunCmd::DbMaintain {
+            vacuum,
+            prune_keep,
+            prune_older_than,
+            telemetry_only,
+        } => {
             let mut args: Vec<String> = Vec::new();
             if vacuum {
                 args.push("--vacuum".to_string());
             }
+            if telemetry_only {
+                args.push("--telemetry-only".to_string());
+            }
             if let Some(n) = prune_keep {
                 args.push("--prune-keep".to_string());
                 args.push(n.to_string());
+            }
+            if let Some(v) = prune_older_than {
+                args.push("--prune-older-than".to_string());
+                args.push(v);
             }
             db_maintain::run(&args);
         }
@@ -1184,6 +1722,14 @@ pub fn dispatch(cmd: RunCmd) {
         RunCmd::WikilinkExtract { spec_dir } => wikilink::run(spec_dir.as_deref()),
         RunCmd::WaveScaffold { spec_dir, plan } => {
             wave_scaffold::run(spec_dir.as_deref(), plan.as_deref());
+        }
+        RunCmd::PlanFromSpec { waves, roles, lang, summary } => {
+            plan_from_spec::run(plan_from_spec::PlanFromSpecOpts {
+                waves,
+                roles,
+                lang,
+                summary,
+            });
         }
         RunCmd::ActiveSpecs { format, root, no_backfill } => {
             active_specs::run(active_specs::ActiveSpecsOpts {
@@ -1237,6 +1783,7 @@ pub fn dispatch(cmd: RunCmd) {
             mode,
             retry_context_file,
             task_filter,
+            budget_tokens,
         } => agent_prompt_render::run(
             &spec,
             wave,
@@ -1245,6 +1792,7 @@ pub fn dispatch(cmd: RunCmd) {
             agent_prompt_render::RenderMode::parse(&mode),
             retry_context_file.as_deref(),
             task_filter.as_deref(),
+            budget_tokens,
         ),
         RunCmd::WorktreeGc {
             repo,
@@ -1267,6 +1815,65 @@ pub fn dispatch(cmd: RunCmd) {
         RunCmd::Rehook { repo, scope, confirm } => {
             rehook::run(rehook::RehookOpts { repo, scope, confirm });
         }
+        RunCmd::SpecDraft {
+            intent,
+            scope,
+            lang,
+            signals,
+            output,
+            waves,
+            role,
+            force,
+        } => {
+            spec_draft::run(spec_draft::SpecDraftOpts {
+                intent,
+                scope,
+                lang,
+                signals,
+                output,
+                waves,
+                role,
+                force,
+            });
+        }
+        RunCmd::SpecValidate { spec, json } => {
+            let _ = json; // currently always emits JSON
+            spec_validate::run(std::path::Path::new(&spec), true);
+        }
+        RunCmd::SkillResolve {
+            intent,
+            subproject,
+            phase,
+            top_k,
+            json,
+        } => {
+            skill_resolve::run(skill_resolve::SkillResolveOpts {
+                intent,
+                subproject,
+                phase,
+                json,
+                top_k,
+            });
+        }
+        RunCmd::SpecMemory {
+            subcommand,
+            spec,
+            name,
+            kind,
+            origin_wave,
+            description,
+        } => {
+            spec_memory::dispatch(
+                subcommand.as_deref(),
+                spec_memory::SpecMemoryCreateOpts {
+                    spec,
+                    name,
+                    kind,
+                    origin_wave,
+                    description,
+                },
+            );
+        }
         RunCmd::SpecClear {
             repo,
             age_days,
@@ -1285,6 +1892,133 @@ pub fn dispatch(cmd: RunCmd) {
                 all,
                 name,
             });
+        }
+        RunCmd::ClaudeDirPrune {
+            repo,
+            dry_run,
+            apply,
+            json,
+        } => {
+            // `dry_run` defaults to `true`; clap's `conflicts_with` blocks
+            // both flags from coexisting. `--apply` is the authoritative
+            // mutator flag.
+            let _ = dry_run;
+            claude_dir_prune::run(claude_dir_prune::ClaudeDirPruneOpts {
+                repo,
+                apply,
+                json,
+            });
+        }
+        // --- W5 deep-refactor: T5.1–T5.16 -------------------------------------
+        RunCmd::CloseOrchestrate { spec, skip_docs } => {
+            close_orchestrate::run(close_orchestrate::CloseOrchestrateOpts { spec, skip_docs });
+        }
+        RunCmd::ReviewDispatch { pr, spec, subproject } => {
+            review_dispatch::run(review_dispatch::ReviewDispatchOpts { pr, spec, subproject });
+        }
+        RunCmd::TacticalFixCreate { parent, description, scope } => {
+            tactical_fix_create::run(tactical_fix_create::TacticalFixOpts {
+                parent,
+                description,
+                scope,
+            });
+        }
+        RunCmd::PrdBuild { intent, format } => {
+            prd_build::run(prd_build::PrdBuildOpts { intent, format });
+        }
+        RunCmd::SkillFetch { name, dry_run } => {
+            skill_fetch::run(skill_fetch::SkillFetchOpts { name, dry_run });
+        }
+        RunCmd::SkillCache { check } => {
+            skill_cache::run(skill_cache::SkillCacheOpts { check });
+        }
+        RunCmd::AdaptCursor { repo, dry_run } => {
+            adapt_cursor::run(adapt_cursor::AdaptCursorOpts { repo, dry_run });
+        }
+        RunCmd::MaintDeps { dry_run } => {
+            maint_deps::run(maint_deps::MaintDepsOpts { dry_run });
+        }
+        RunCmd::MaintValidate { dry_run } => {
+            maint_validate::run(maint_validate::MaintValidateOpts { dry_run });
+        }
+        RunCmd::TaskChecklist { domain } => {
+            task_checklist::run(task_checklist::TaskChecklistOpts { domain });
+        }
+        RunCmd::BugfixCache { hash, summary, files } => {
+            bugfix_cache::run(bugfix_cache::BugfixCacheOpts { hash, summary, files });
+        }
+        RunCmd::ContextBudget { role, spec, wave } => {
+            context_budget::run(context_budget::ContextBudgetOpts { role, spec, wave });
+        }
+        RunCmd::BackupSpecs {
+            target,
+            filter,
+            dry_run,
+            no_manifest,
+        } => {
+            backup_specs::run(backup_specs::BackupSpecsOpts {
+                target,
+                filter,
+                dry_run,
+                no_manifest,
+            });
+        }
+        RunCmd::I18n { subcommand, from, to_lang } => {
+            match subcommand.as_str() {
+                "translate-heading" => i18n_translate::run(i18n_translate::TranslateHeadingOpts {
+                    from: from.unwrap_or_default(),
+                    to_lang: to_lang.unwrap_or_default(),
+                }),
+                other => {
+                    eprintln!("i18n: unknown subcommand {other:?}. Try: translate-heading");
+                    std::process::exit(1);
+                }
+            }
+        }
+        RunCmd::SpecLang { subcommand, spec } => {
+            match subcommand.as_str() {
+                "resolve" => spec_lang_resolve::run(spec_lang_resolve::SpecLangResolveOpts {
+                    spec: spec.unwrap_or_default(),
+                }),
+                other => {
+                    eprintln!("spec-lang: unknown subcommand {other:?}. Try: resolve");
+                    std::process::exit(1);
+                }
+            }
+        }
+        RunCmd::Economy {
+            subcommand,
+            operation,
+            wave,
+            from_history,
+            format,
+            spec,
+        } => match subcommand.as_str() {
+            "capture-baseline" => economy_capture_baseline::run(
+                economy_capture_baseline::CaptureBaselineOpts {
+                    operation: operation.unwrap_or_default(),
+                    wave: wave.unwrap_or(0),
+                    from_history,
+                    spec: spec.clone(),
+                },
+            ),
+            "reconcile" => economy_reconcile::run(economy_reconcile::ReconcileOpts {
+                wave: wave.unwrap_or(0),
+                spec: spec.clone(),
+            }),
+            "report" => economy_report::run(economy_report::ReportOpts {
+                format,
+                spec: spec.clone(),
+            }),
+            other => {
+                eprintln!(
+                    "economy: unknown subcommand {other:?}. Try: capture-baseline / reconcile / report"
+                );
+                std::process::exit(1);
+            }
+        },
+        RunCmd::PipelinePrelude { spec, phase } => {
+            pipeline_prelude::run(pipeline_prelude::PreludeOpts { spec, phase });
         }
     }
 }

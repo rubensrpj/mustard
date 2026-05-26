@@ -19,6 +19,7 @@ use crate::run::wave_lib::{detect_role, parse_files_section};
 use crate::util::now_iso8601;
 use mustard_core::fs;
 use mustard_core::spec;
+use mustard_core::ClaudePaths;
 use mustard_core::{Flags, Outcome, SpecState, Stage};
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
@@ -44,19 +45,13 @@ fn parse_new_entity_count(spec_text: &str) -> i64 {
     0
 }
 
-/// Walk up from `start_dir` to find the project root (a dir containing `.claude`).
+/// Walk up from `start_dir` to find the project root.
+///
+/// W2: routes through `mustard_core::workspace::workspace_root` so the search
+/// uses the same `mustard.json + .claude/` anchor predicate as the rest of the
+/// harness. Returns `None` when no anchor is found in any ancestor.
 fn find_project_root(start_dir: &Path) -> Option<PathBuf> {
-    let mut dir = start_dir.to_path_buf();
-    for _ in 0..10 {
-        if dir.join(".claude").exists() {
-            return Some(dir);
-        }
-        match dir.parent() {
-            Some(parent) if parent != dir => dir = parent.to_path_buf(),
-            _ => break,
-        }
-    }
-    None
+    mustard_core::workspace::workspace_root(start_dir).ok()
 }
 
 /// Extract the `## Summary` section body.
@@ -215,8 +210,9 @@ pub fn run(spec_arg: Option<&str>) {
         }
 
         // 3. Skip per pipeline-state.
-        let states_dir = project_root.join(".claude").join(".pipeline-states");
-        let state_file = states_dir.join(format!("{spec_name}.json"));
+        let state_file = ClaudePaths::for_project(&project_root)
+            .map(|p| p.pipeline_state_file(&spec_name))
+            .unwrap_or_else(|_| project_root.join(format!("{spec_name}.json")));
         let state = read_json(&state_file);
         if let Some(ref s) = state {
             if s.get("isWavePlan").and_then(Value::as_bool) == Some(true) {
@@ -320,7 +316,9 @@ pub fn run(spec_arg: Option<&str>) {
             obj.insert("rewaveSource".to_string(), json!("exec-entry"));
             obj.insert("updatedAt".to_string(), json!(now_iso8601()));
         }
-        let _ = fs::create_dir_all(&states_dir);
+        if let Some(parent) = state_file.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
         if let Ok(text) = serde_json::to_string_pretty(&updated) {
             let _ = fs::write_atomic(&state_file, text.as_bytes());
         }
@@ -356,7 +354,10 @@ mod tests {
     #[test]
     fn find_project_root_locates_claude_dir() {
         let dir = tempdir().unwrap();
-        std::fs::create_dir_all(dir.path().join(".claude")).unwrap();
+        // The W2 anchor predicate requires BOTH `mustard.json` and `.claude/`
+        // in the same directory, so plant both.
+        std::fs::create_dir_all(ClaudePaths::for_project(dir.path()).unwrap().claude_dir()).unwrap();
+        std::fs::write(dir.path().join("mustard.json"), "{}").unwrap();
         let nested = dir.path().join("a").join("b");
         std::fs::create_dir_all(&nested).unwrap();
         assert_eq!(

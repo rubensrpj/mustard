@@ -43,6 +43,7 @@
 use mustard_core::error::Error;
 use mustard_core::fs;
 use mustard_core::model::contract::{Check, Ctx, HookInput, Observer, Trigger, Verdict};
+use mustard_core::ClaudePaths;
 use serde_json::Value;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -919,12 +920,13 @@ fn is_checklist_heading(line: &str) -> bool {
 /// `spec`/`specName`, else the newest `.claude/spec/{name}/spec.md` (flat layout).
 /// Port of `findActiveSpec`. Returns `(spec_path, spec_name)`.
 fn find_active_spec(cwd: &str) -> Option<(String, String)> {
-    let claude = Path::new(cwd).join(".claude");
+    let paths = ClaudePaths::for_project(Path::new(cwd)).ok()?;
+    let claude = paths.claude_dir();
     if !claude.exists() {
         return None;
     }
     // Strategy 1: newest pipeline-state.
-    let states = claude.join(".pipeline-states");
+    let states = paths.pipeline_states_dir();
     if let Ok(entries) = fs::read_dir(&states) {
         let mut best: Option<(SystemTime, std::path::PathBuf)> = None;
         for entry in entries {
@@ -948,10 +950,10 @@ fn find_active_spec(cwd: &str) -> Option<(String, String)> {
                         .or_else(|| obj.get("specName"))
                         .and_then(|v| v.as_str());
                     if let Some(name) = name {
-                        let candidate = claude
-                            .join("spec")
-                            .join(name)
-                            .join("spec.md");
+                        let candidate = paths
+                            .for_spec(name)
+                            .map(|sp| sp.spec_md_path())
+                            .ok()?;
                         if candidate.exists() {
                             return Some((
                                 candidate.to_string_lossy().into_owned(),
@@ -964,7 +966,7 @@ fn find_active_spec(cwd: &str) -> Option<(String, String)> {
         }
     }
     // Strategy 2: newest spec dir (flat layout — scan spec/ directly).
-    let active = claude.join("spec");
+    let active = paths.spec_dir();
     let entries = fs::read_dir(&active).ok()?;
     let mut best: Option<(SystemTime, String, String)> = None;
     for entry in entries.into_iter().filter(|e| e.is_dir) {
@@ -1059,6 +1061,7 @@ mod tests {
         Ctx {
             project_dir: dir.to_string(),
             trigger: Some(Trigger::PostToolUse),
+            workspace_root: None,
         }
     }
 
@@ -1142,6 +1145,7 @@ mod tests {
         let pre_ctx = Ctx {
             project_dir: "/proj".to_string(),
             trigger: Some(Trigger::PreToolUse),
+            workspace_root: None,
         };
         assert_eq!(
             PostEdit.evaluate(&input, &pre_ctx).expect("no error"),
@@ -1160,17 +1164,15 @@ mod tests {
 
     /// Write a spec + pipeline-state under `dir`, returning the spec.md path.
     fn setup_spec(dir: &Path, spec_name: &str, body: &str) -> std::path::PathBuf {
-        let spec_dir = dir
-            .join(".claude")
-            .join("spec")
-            .join(spec_name);
-        std::fs::create_dir_all(&spec_dir).unwrap();
-        let spec_file = spec_dir.join("spec.md");
+        let paths = ClaudePaths::for_project(dir).unwrap();
+        let sp = paths.for_spec(spec_name).unwrap();
+        std::fs::create_dir_all(sp.dir()).unwrap();
+        let spec_file = sp.spec_md_path();
         std::fs::write(&spec_file, body).unwrap();
-        let states = dir.join(".claude").join(".pipeline-states");
+        let states = paths.pipeline_states_dir();
         std::fs::create_dir_all(&states).unwrap();
         std::fs::write(
-            states.join(format!("{spec_name}.json")),
+            paths.pipeline_state_file(spec_name),
             json!({ "spec": spec_name, "phase": "EXECUTE" }).to_string(),
         )
         .unwrap();

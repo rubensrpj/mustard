@@ -19,9 +19,9 @@
 //!
 //! ```text
 //! .claude/spec/{name}/[wave-N-{role}/]
-//! ├── events/
+//! ├── .events/
 //! │   └── 1700000000000000-abc-12345.ndjson
-//! └── blobs/
+//! └── .blobs/
 //!     ├── ab/
 //!     │   └── abc123…ef.bin
 //!     └── cd/
@@ -101,7 +101,7 @@ pub fn maybe_spill(root: &Path, payload_bytes: &[u8]) -> SpillOutcome {
     }
     let digest = sha256_hex(payload_bytes);
     let (subdir, file) = split_address(&digest);
-    let dir = root.join("blobs").join(subdir);
+    let dir = root.join(".blobs").join(subdir);
     let path = dir.join(format!("{file}.bin"));
 
     // Idempotent: the address IS the content, so a hit means the bytes are
@@ -143,7 +143,7 @@ pub fn maybe_spill(root: &Path, payload_bytes: &[u8]) -> SpillOutcome {
 #[must_use]
 pub fn blob_path(root: &Path, reference: &BlobRef) -> PathBuf {
     let (subdir, file) = split_address(&reference.sha256);
-    root.join("blobs").join(subdir).join(format!("{file}.bin"))
+    root.join(".blobs").join(subdir).join(format!("{file}.bin"))
 }
 
 /// Split a hex digest into the first two characters (subdirectory) and the
@@ -175,7 +175,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let outcome = maybe_spill(dir.path(), b"tiny payload");
         assert!(matches!(outcome, SpillOutcome::Inline));
-        assert!(!dir.path().join("blobs").exists(), "no blobs dir for inline");
+        assert!(!dir.path().join(".blobs").exists(), "no .blobs dir for inline");
     }
 
     #[test]
@@ -189,14 +189,14 @@ mod tests {
         assert!(path.exists());
         assert_eq!(reference.len, big.len());
         assert_eq!(reference.sha256.len(), 64, "sha256 hex is 64 chars");
-        // Path shape: <root>/blobs/<2chars>/<62chars>.bin
+        // Path shape: <root>/.blobs/<2chars>/<62chars>.bin
         let components: Vec<_> = path
             .strip_prefix(dir.path())
             .unwrap()
             .components()
             .map(|c| c.as_os_str().to_string_lossy().into_owned())
             .collect();
-        assert_eq!(components[0], "blobs");
+        assert_eq!(components[0], ".blobs");
         assert_eq!(components[1].len(), 2);
         assert!(components[2].ends_with(".bin"));
     }

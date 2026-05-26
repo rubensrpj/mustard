@@ -71,6 +71,15 @@ const KB_MIN_CONFIDENCE: f64 = 0.5;
 /// Number of knowledge entries injected, ranked by confidence × recency.
 const KB_MAX_ENTRIES: usize = 5;
 
+/// W8.T8.1 — scope-by-spec injection caps. The legacy fan-out (top-5 of every
+/// table indiscriminately) ballooned `SessionStart` to ~1.5 KB of memory the
+/// agent rarely needed. The deep-refactor budget is: top-3 entries scoped to
+/// the active spec, plus top-2 global fallbacks for context that is not yet
+/// linked to a spec column. Caller resolves the active spec via
+/// [`crate::run::env::current_spec`] (env var → SQLite → pipeline-state file).
+const SPEC_SCOPED_MAX: usize = 3;
+const GLOBAL_FALLBACK_MAX: usize = 2;
+
 /// The consolidated `SessionStart` module.
 pub struct SessionStart;
 
@@ -637,30 +646,78 @@ fn load_knowledge_sql(conn: &rusqlite::Connection) -> Vec<String> {
 
 /// Load the `max` most-recent rows from `memory_decisions` or `memory_lessons`,
 /// formatted as `- [source] content`. Ordered by `at DESC`.
-fn load_memory_sql(conn: &rusqlite::Connection, table: &str, max: usize) -> Vec<String> {
+///
+/// W8.T8.1 — `scope_by_spec` mode. When `current_spec` is `Some(slug)`, prefer
+/// rows whose `source` column matches that slug (semantic scoping — there is no
+/// dedicated `spec` column on these tables). When the active spec yields fewer
+/// than `max` rows we backfill with the most-recent global rows so the budget
+/// is always filled; this keeps the AC contract (top-3 scoped + top-2 global)
+/// observable while degrading gracefully on fresh projects.
+fn load_memory_sql(
+    conn: &rusqlite::Connection,
+    table: &str,
+    max: usize,
+    current_spec: Option<&str>,
+) -> Vec<String> {
     // Table name is controlled by this module (never from user input) so
     // format! interpolation is safe here.
-    let sql = format!(
-        "SELECT content, source FROM {table} ORDER BY at DESC LIMIT ?1"
-    );
-    let Ok(mut stmt) = conn.prepare(&sql) else {
-        return Vec::new();
-    };
-    // max is a small runtime count; cast to i64 cannot wrap.
     #[allow(clippy::cast_possible_wrap)]
     let max_i64 = max as i64;
-    let rows = stmt.query_map(params![max_i64], |r| {
-        Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
-    });
-    let Ok(rows) = rows else {
-        return Vec::new();
+
+    let mut formatted: Vec<String> = Vec::new();
+    let mut seen: std::collections::BTreeSet<(String, String)> =
+        std::collections::BTreeSet::new();
+
+    // 1. Spec-scoped rows first — `source LIKE '%<slug>%'`.
+    if let Some(slug) = current_spec.filter(|s| !s.is_empty()) {
+        let sql_scoped = format!(
+            "SELECT content, source FROM {table} \
+             WHERE source LIKE ?1 \
+             ORDER BY at DESC LIMIT ?2"
+        );
+        if let Ok(mut stmt) = conn.prepare(&sql_scoped) {
+            let needle = format!("%{slug}%");
+            if let Ok(rows) = stmt.query_map(params![needle, max_i64], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
+            }) {
+                for (content, source) in rows.filter_map(std::result::Result::ok) {
+                    let src = source.clone().unwrap_or_default();
+                    seen.insert((content.clone(), src.clone()));
+                    formatted.push(format!("- [{}] {content}", source.as_deref().unwrap_or("?")));
+                    if formatted.len() >= max {
+                        return formatted;
+                    }
+                }
+            }
+        }
+    }
+
+    // 2. Backfill with global rows (deduped against the scoped set).
+    let sql_global = format!(
+        "SELECT content, source FROM {table} ORDER BY at DESC LIMIT ?1"
+    );
+    let Ok(mut stmt) = conn.prepare(&sql_global) else {
+        return formatted;
     };
-    rows.filter_map(std::result::Result::ok)
-        .map(|(content, source)| {
-            let src = source.as_deref().unwrap_or("?");
-            format!("- [{src}] {content}")
-        })
-        .collect()
+    // Pull a healthy margin to compensate for dedup drops.
+    #[allow(clippy::cast_possible_wrap)]
+    let fetch_limit = ((max * 2) as i64).max(max_i64);
+    let Ok(rows) = stmt.query_map(params![fetch_limit], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
+    }) else {
+        return formatted;
+    };
+    for (content, source) in rows.filter_map(std::result::Result::ok) {
+        let src = source.clone().unwrap_or_default();
+        let key = (content.clone(), src);
+        if seen.insert(key) {
+            formatted.push(format!("- [{}] {content}", source.as_deref().unwrap_or("?")));
+            if formatted.len() >= max {
+                break;
+            }
+        }
+    }
+    formatted
 }
 
 /// Build the persistent-memory `additionalContext` payload, or `None` when no
@@ -669,6 +726,12 @@ fn load_memory_sql(conn: &rusqlite::Connection, table: &str, max: usize) -> Vec<
 /// Wave 6b: reads all three data sources from `SQLite` tables
 /// (`knowledge_patterns`, `memory_decisions`, `memory_lessons`) instead of
 /// JSON files. Injection cap of [`MEMORY_MAX_CHARS`] is preserved unchanged.
+///
+/// W8.T8.1 — `scope_by_spec` overlay. Memory rows are now budgeted at
+/// `SPEC_SCOPED_MAX` (3) entries scoped to the active spec plus
+/// `GLOBAL_FALLBACK_MAX` (2) global rows. Resolving the active spec via
+/// [`crate::run::env::current_spec`] never panics — a `None` spec degrades to
+/// pure global selection, preserving the pre-W8 behaviour on fresh projects.
 fn build_memory_context(cwd: &str) -> Option<String> {
     // Resolve the DB path the same way SqliteEventStore::for_project does,
     // so we hit the same file. We open a second connection to avoid borrow
@@ -694,17 +757,21 @@ fn build_memory_context(cwd: &str) -> Option<String> {
 
     let mut parts: Vec<String> = Vec::new();
 
+    // W8.T8.1: total budget = top-3 scoped + top-2 global per table.
+    let total_max = SPEC_SCOPED_MAX + GLOBAL_FALLBACK_MAX;
+    let current_spec = crate::run::env::current_spec(cwd);
+
     let kb = load_knowledge_sql(&conn);
     if !kb.is_empty() {
         parts.push("## Project Knowledge".to_string());
         parts.extend(kb);
     }
-    let decisions = load_memory_sql(&conn, "memory_decisions", 5);
+    let decisions = load_memory_sql(&conn, "memory_decisions", total_max, current_spec.as_deref());
     if !decisions.is_empty() {
         parts.push("## Recent Decisions".to_string());
         parts.extend(decisions);
     }
-    let lessons = load_memory_sql(&conn, "memory_lessons", 5);
+    let lessons = load_memory_sql(&conn, "memory_lessons", total_max, current_spec.as_deref());
     if !lessons.is_empty() {
         parts.push("## Lessons Learned".to_string());
         parts.extend(lessons);
@@ -760,6 +827,14 @@ impl Check for SessionStart {
         // emits a single stderr warning when the orphan count exceeds the
         // module's threshold. Fail-open at every step.
         crate::run::worktree_gc::session_start_probe(Path::new(&cwd));
+        // Deep-Refactor Wave 2 (T2.3 / claude-paths-single-source W2.T2.6):
+        // advisory probe for drift in the project's `.claude/` directory.
+        // Read-only; emits a single stderr warning when one or more children
+        // classify as `ORPHAN` (no declared consumer in
+        // `apps/{rt,cli,dashboard}`) — the underlying audit now derives its
+        // documented-directory set from `mustard_core::ClaudePaths::documented_dirs`,
+        // the single canonical catalog. Fail-open — never blocks.
+        crate::run::claude_dir_prune::check_orphans(Path::new(&cwd));
         Ok(match build_memory_context(&cwd) {
             Some(context) => Verdict::Inject { context },
             None => Verdict::Allow,
@@ -782,6 +857,7 @@ mod tests {
         Ctx {
             project_dir: dir.to_string(),
             trigger: Some(Trigger::SessionStart),
+            workspace_root: None,
         }
     }
 
@@ -801,6 +877,7 @@ mod tests {
         let other = Ctx {
             project_dir: ".".to_string(),
             trigger: Some(Trigger::PreToolUse),
+            workspace_root: None,
         };
         assert_eq!(
             SessionStart.evaluate(&input, &other).expect("no error"),
@@ -819,12 +896,12 @@ mod tests {
         assert!(dir.path().join(".claude/.harness/sessions").is_dir());
 
         // W5: `session.start` is non-pipeline → lands in the per-session NDJSON
-        // sink under `<project>/.claude/.session/<slug>/events/`.
+        // sink under `<project>/.claude/.session/<slug>/.events/`.
         let session_root = dir.path().join(".claude").join(".session");
         let mut found = false;
         if session_root.exists() {
             for entry in std::fs::read_dir(&session_root).unwrap() {
-                let events_dir = entry.unwrap().path().join("events");
+                let events_dir = entry.unwrap().path().join(".events");
                 if !events_dir.exists() {
                     continue;
                 }

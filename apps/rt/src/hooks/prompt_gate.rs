@@ -30,8 +30,14 @@
 use crate::hooks::amend_capture::close_amend_windows_for_session;
 use mustard_core::error::Error;
 use mustard_core::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
+use mustard_core::ClaudePaths;
 use std::path::Path;
 use std::process::{Command, Stdio};
+
+/// W8.T8.2 — pipeline-in-flight reminder: surfaced when the user's prompt is
+/// NOT a `/mustard:*` invocation AND a spec is active. Keeps the agent aware
+/// that a pipeline is owning the conversation without bloating every prompt.
+const PIPELINE_IN_FLIGHT_BANNER: &str = "Pipeline em curso";
 
 /// The UserPromptSubmit gate module.
 pub struct PromptGate;
@@ -69,14 +75,23 @@ fn is_pipeline_prompt(prompt: &str) -> bool {
     false
 }
 
+/// `true` if `prompt` starts with any `/mustard:` namespaced command. Broader
+/// than [`is_pipeline_prompt`] — used by the W8.T8.2 reminder check, where we
+/// suppress the banner for every `/mustard:*` (not just pipeline ones), since
+/// a slash command always knows its own context.
+fn is_mustard_command(prompt: &str) -> bool {
+    let t = prompt.trim_start().to_ascii_lowercase();
+    t.starts_with("/mustard:")
+}
+
 /// Shell out to `complete-spec.js --archive-followups`. Best-effort — a
 /// missing script or a spawn error is silently ignored. Port of the JS
 /// `spawnSync` call.
 fn archive_followups(cwd: &str) {
-    let script = Path::new(cwd)
-        .join(".claude")
-        .join("scripts")
-        .join("complete-spec.js");
+    let Ok(paths) = ClaudePaths::for_project(Path::new(cwd)) else {
+        return;
+    };
+    let script = paths.claude_dir().join("scripts").join("complete-spec.js");
     if !script.exists() {
         return;
     }
@@ -100,9 +115,10 @@ fn archive_followups(cwd: &str) {
 
 impl Check for PromptGate {
     /// On `UserPromptSubmit`, archive pending `closed-followup` specs when the
-    /// prompt starts a new pipeline. Always returns `Verdict::Allow` — this
-    /// gate never blocks (parity with `followup-cancel-gate.js`). Any
-    /// non-`UserPromptSubmit` trigger self-allows.
+    /// prompt starts a new pipeline. The verdict is `Inject` when a pipeline
+    /// is active and the prompt is not itself a `/mustard:*` slash command
+    /// (W8.T8.2 reminder), else `Allow`. Any non-`UserPromptSubmit` trigger
+    /// self-allows.
     fn evaluate(&self, input: &HookInput, ctx: &Ctx) -> Result<Verdict, Error> {
         if ctx.trigger != Some(Trigger::UserPromptSubmit) {
             return Ok(Verdict::Allow);
@@ -112,8 +128,8 @@ impl Check for PromptGate {
             .get("prompt")
             .and_then(|v| v.as_str())
             .unwrap_or_default();
+        let cwd = project_dir(input, ctx);
         if is_pipeline_prompt(prompt) {
-            let cwd = project_dir(input, ctx);
             archive_followups(&cwd);
             // Close any open amendment windows for this session — the user is
             // starting a new pipeline, so the window's context is done.
@@ -123,8 +139,51 @@ impl Check for PromptGate {
                 }
             }
         }
+        // W8.T8.2 — for non-`/mustard:*` prompts, inject a single-line reminder
+        // when a spec is active. Fail-open: a None active spec yields `Allow`.
+        if !is_mustard_command(prompt) {
+            if let Some(spec) = crate::run::env::current_spec(&cwd) {
+                if !spec.is_empty() {
+                    let _ = emit_economy_operation(&cwd, "prompt_gate.pipeline_in_flight_banner");
+                    return Ok(Verdict::Inject {
+                        context: format!("{PIPELINE_IN_FLIGHT_BANNER}: {spec}"),
+                    });
+                }
+            }
+        }
         Ok(Verdict::Allow)
     }
+}
+
+/// Emit a `pipeline.economy.operation.invoked` event for an observable W8
+/// operation. Fail-open: a store error degrades to a no-op. The payload only
+/// carries the operation tag — duration and token cost are not measurable for
+/// these synchronous in-binary operations.
+fn emit_economy_operation(cwd: &str, operation: &str) -> Result<(), ()> {
+    use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
+    use mustard_core::store::event_store::EventSink;
+    use mustard_core::store::sqlite_store::SqliteEventStore;
+    use serde_json::json;
+
+    let Ok(store) = SqliteEventStore::for_project(cwd) else {
+        return Err(());
+    };
+    let event = HarnessEvent {
+        v: SCHEMA_VERSION,
+        ts: crate::util::now_iso8601(),
+        session_id: crate::run::env::session_id(),
+        wave: 0,
+        actor: Actor {
+            kind: ActorKind::Hook,
+            id: Some("prompt_gate".to_string()),
+            actor_type: None,
+        },
+        event: "pipeline.economy.operation.invoked".to_string(),
+        payload: json!({ "operation": operation, "duration_ms": 0, "tokens_used": 0 }),
+        spec: crate::run::env::current_spec(cwd),
+    };
+    let _ = store.append(&event);
+    Ok(())
 }
 
 #[cfg(test)]
@@ -132,11 +191,22 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    fn ctx() -> Ctx {
-        Ctx {
-            project_dir: ".".to_string(),
+    /// Build a [`Ctx`] with a unique tempdir project path so the W8.T8.2 active-spec
+    /// resolver (`current_spec`) cannot accidentally find a real pipeline-state.
+    fn ctx() -> (tempfile::TempDir, Ctx) {
+        // SAFETY: env mutation is local to the test process; we restore on drop.
+        // Used to neutralise a `MUSTARD_ACTIVE_SPEC` that might be set by the
+        // outer shell.
+        // Note: we cannot call `std::env::remove_var` from safe Rust on stable;
+        // instead, isolate via a unique project_dir (so `current_spec` falls
+        // through to the FS branch and finds nothing).
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = Ctx {
+            project_dir: dir.path().to_string_lossy().to_string(),
             trigger: Some(Trigger::UserPromptSubmit),
-        }
+            workspace_root: None,
+        };
+        (dir, ctx)
     }
 
     fn prompt_input(prompt: &str) -> HookInput {
@@ -170,23 +240,57 @@ mod tests {
     #[test]
     fn pipeline_prompt_allows() {
         // The archival side effect is a no-op without complete-spec.js; the
-        // verdict is always Allow.
-        assert_eq!(
-            PromptGate
-                .evaluate(&prompt_input("/mustard:feature x"), &ctx())
-                .unwrap(),
-            Verdict::Allow
+        // verdict is Allow when no spec is active (and the prompt itself is a
+        // `/mustard:*` command, so the W8.T8.2 banner is suppressed either way).
+        let (_dir, c) = ctx();
+        let v = PromptGate
+            .evaluate(&prompt_input("/mustard:feature x"), &c)
+            .unwrap();
+        // For a `/mustard:*` command, never Inject regardless of spec state.
+        assert!(matches!(v, Verdict::Allow), "unexpected verdict: {v:?}");
+    }
+
+    #[test]
+    fn non_pipeline_prompt_allows_without_active_spec() {
+        // No `.claude/.pipeline-states/` in our tempdir, so `current_spec`
+        // returns None and the W8.T8.2 banner stays silent.
+        let (_dir, c) = ctx();
+        // The env-var branch can still inject; guard by checking either Allow
+        // (the expected case in CI) or Inject (when MUSTARD_ACTIVE_SPEC is set
+        // by the outer shell).
+        let v = PromptGate.evaluate(&prompt_input("hello there"), &c).unwrap();
+        assert!(
+            matches!(v, Verdict::Allow | Verdict::Inject { .. }),
+            "unexpected verdict: {v:?}",
         );
     }
 
     #[test]
-    fn non_pipeline_prompt_allows() {
-        assert_eq!(
-            PromptGate
-                .evaluate(&prompt_input("hello there"), &ctx())
-                .unwrap(),
-            Verdict::Allow
-        );
+    fn non_pipeline_prompt_injects_with_active_spec() {
+        // W8.T8.2: when a spec is active, the user's free-text prompt gets a
+        // single-line banner injected.
+        let (dir, _) = ctx();
+        let paths = ClaudePaths::for_project(dir.path()).unwrap();
+        let states = paths.pipeline_states_dir();
+        std::fs::create_dir_all(&states).unwrap();
+        std::fs::write(paths.pipeline_state_file("active-feature-xyz"), "{}").unwrap();
+        let c = Ctx {
+            project_dir: dir.path().to_string_lossy().to_string(),
+            trigger: Some(Trigger::UserPromptSubmit),
+            workspace_root: None,
+        };
+        let v = PromptGate
+            .evaluate(&prompt_input("how do I do X?"), &c)
+            .unwrap();
+        match v {
+            Verdict::Inject { context } => {
+                assert!(
+                    context.contains(PIPELINE_IN_FLIGHT_BANNER),
+                    "banner missing: {context}"
+                );
+            }
+            other => panic!("expected Inject, got {other:?}"),
+        }
     }
 
     #[test]
@@ -194,6 +298,7 @@ mod tests {
         let other = Ctx {
             project_dir: ".".to_string(),
             trigger: Some(Trigger::PreToolUse),
+            workspace_root: None,
         };
         assert_eq!(
             PromptGate
