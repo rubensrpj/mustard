@@ -128,19 +128,29 @@ fn main() {
     // inside a module — it lives here, once.
     let input = read_stdin_input();
 
-    let outcome = match cli.command {
+    let (event_name, outcome) = match cli.command {
         Command::On { event } => {
             let trigger = Trigger::from_event_name(&event);
-            dispatch::run_event(trigger, &input)
+            // Echo the harness event name back unchanged so the
+            // response's `hookEventName` matches the dispatched event
+            // (e.g. `UserPromptSubmit`). Claude Code errors out when
+            // the value disagrees with the event it just dispatched.
+            (event, dispatch::run_event(trigger, &input))
         }
-        Command::Check { id } => dispatch::run_check(&id, &input),
+        Command::Check { id } => (
+            // `check <id>` is invoked outside the harness event loop;
+            // default to `PreToolUse` (the home event of every blocking
+            // module), matching the historical hardcoded value.
+            Trigger::PreToolUse.as_event_name().to_string(),
+            dispatch::run_check(&id, &input),
+        ),
         // `Run` / `Mcp` are handled above, before the stdin read.
         Command::Run { .. } | Command::Mcp => {
             unreachable!("Run/Mcp are dispatched before stdin read")
         }
     };
 
-    emit_outcome(&outcome);
+    emit_outcome(&event_name, &outcome);
 }
 
 /// Rewrite `mustard-rt run metrics wave-status [args...]` to
@@ -190,8 +200,8 @@ fn read_stdin_input() -> HookInput {
 /// stdout when the outcome carries a decision, nothing when it is a bare
 /// `Allow`, and exit code `0` regardless (fail-open — blocking is expressed in
 /// the JSON, never via a non-zero exit).
-fn emit_outcome(outcome: &Outcome) {
-    if let Some(json) = hook_specific_output(outcome) {
+fn emit_outcome(event_name: &str, outcome: &Outcome) {
+    if let Some(json) = hook_specific_output(event_name, outcome) {
         let mut stdout = std::io::stdout();
         // A write failure on stdout is non-fatal — fail open, exit clean.
         let _ = writeln!(stdout, "{json}");
@@ -202,11 +212,16 @@ fn emit_outcome(outcome: &Outcome) {
 
 /// Build the `hookSpecificOutput` JSON for an outcome, or `None` for a bare
 /// `Allow` with no warnings (the JS hooks stay silent in that case).
-fn hook_specific_output(outcome: &Outcome) -> Option<String> {
+///
+/// `event_name` is echoed back as `hookEventName` so the response matches
+/// the harness event that was dispatched (e.g. `UserPromptSubmit`,
+/// `PostToolUse`). Claude Code rejects the response when this disagrees
+/// with the dispatched event.
+fn hook_specific_output(event_name: &str, outcome: &Outcome) -> Option<String> {
     let mut hook_output = serde_json::Map::new();
     hook_output.insert(
         "hookEventName".to_string(),
-        serde_json::Value::String("PreToolUse".to_string()),
+        serde_json::Value::String(event_name.to_string()),
     );
 
     match &outcome.verdict {
