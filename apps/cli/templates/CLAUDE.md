@@ -66,10 +66,6 @@ Agents auto-load skills from `{subproject}/.claude/skills/` based on task descri
 
 Specs live under a **flat** directory: `.claude/spec/{name}/`. There are no `active/`, `completed/`, or `superseded/` bucket subdirectories — status comes from the `### Stage:` + `### Outcome:` headers inside `spec.md`, and archival is semantic-only (recorded as a `pipeline.status` event, not a filesystem move). Wave plans add a `wave-plan.md` plus `wave-N-{role}/spec.md` subdirs inside the same `{name}/` directory.
 
-## `.claude/` Paths
-
-Todos os paths sob `.claude/` são definidos em `mustard_core::ClaudePaths` (`packages/core/src/claude_paths.rs`). Para adicionar um novo subdir ou cache, adicione método na struct e teste. `mustard-rt run doctor --check claude-paths` valida o filesystem contra o catálogo.
-
 ## Full Reference
 
 Rules, pipeline, naming, role rules, hooks: `pipeline-config.md`.

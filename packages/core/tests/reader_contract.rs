@@ -113,7 +113,7 @@ fn build_sqlite_reader() -> (SqliteSpecReader, TempDir) {
     // NDJSON files written by `apps/rt/src/run/event_writer_ndjson.rs`. To
     // exercise both halves of the W5 split through the contract test, we
     // route lifecycle events through `EventSink::append` and the rest into a
-    // hand-rolled NDJSON file under `.claude/spec/{spec}/events/`. The
+    // hand-rolled NDJSON file under `.claude/spec/{spec}/.events/`. The
     // `SqliteSpecReader` then merges the two as its production code does.
     let mut ndjson_by_spec: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
@@ -139,7 +139,7 @@ fn build_sqlite_reader() -> (SqliteSpecReader, TempDir) {
             .join(".claude")
             .join("spec")
             .join(spec)
-            .join("events");
+            .join(".events");
         std::fs::create_dir_all(&events_dir).unwrap();
         std::fs::write(events_dir.join("0001.ndjson"), body).unwrap();
     }
@@ -424,7 +424,7 @@ fn build_sqlite_reader_with_links() -> (SqliteSpecReader, TempDir) {
             .join(".claude")
             .join("spec")
             .join(spec)
-            .join("events");
+            .join(".events");
         std::fs::create_dir_all(&events_dir).unwrap();
         std::fs::write(events_dir.join("0001.ndjson"), body).unwrap();
     }

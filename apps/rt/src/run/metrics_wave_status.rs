@@ -36,6 +36,7 @@ use crate::run::memory_cross_wave;
 use mustard_core::fs;
 use mustard_core::projection::read_harness_events_from_ndjson_dir;
 use mustard_core::store::sqlite_store::SqliteEventStore;
+use mustard_core::ClaudePaths;
 use rusqlite::{Connection, params};
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -191,11 +192,11 @@ fn aggregate_wave(
 
     // tokens_saved / retries / duration: walk the per-spec NDJSON dir for the
     // wave name. Wave events are written under `<project>/.claude/spec/<wave_name>/.events/`.
-    let dir = project
-        .join(".claude")
-        .join("spec")
-        .join(wave_name)
-        .join(".events");
+    let dir = ClaudePaths::for_project(project)
+        .ok()
+        .and_then(|p| p.for_spec(wave_name).ok())
+        .map(|sp| sp.events_dir())
+        .unwrap_or_default();
     let events = read_harness_events_from_ndjson_dir(&dir);
     let mut tokens_saved: i64 = 0;
     let mut retries: i64 = 0;
@@ -273,10 +274,13 @@ fn cross_wave_bytes_for(
 
 /// Build the full result JSON for `--spec <parent>`.
 fn build_result(project: &Path, parent: &str) -> Value {
-    let parent_dir = project
-        .join(".claude")
-        .join("spec")
-        .join(parent);
+    let Ok(cp) = ClaudePaths::for_project(project) else {
+        return json!({"error": "invalid_project_root"});
+    };
+    let Ok(sp) = cp.for_spec(parent) else {
+        return json!({"error": "invalid_spec_name"});
+    };
+    let parent_dir = sp.dir().to_path_buf();
 
     // Detect waves: wave-plan first, fallback to dir glob.
     let plan_text = fs::read_to_string(parent_dir.join("wave-plan.md")).unwrap_or_default();

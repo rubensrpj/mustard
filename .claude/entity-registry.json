@@ -1,25 +1,69 @@
 {
   "_meta": {
     "version": "4.0",
-    "generated": "2026-05-24",
+    "generated": "2026-05-25",
     "generator": "mustard-rt run sync-registry"
   },
   "_patterns": {
     "rust": {
       "clusterLabels": {
-        "mod": "Rust module re-export files"
+        "mod": "Rust module entry points (mod.rs files organizing submodules)"
       },
       "conventions": {
         "naming": {
           "distribution": {
-            "lowercase": 56,
+            "lowercase": 60,
             "snake_case": 12
           },
           "dominant": "lowercase",
-          "total": 68
+          "total": 72
         }
       },
       "discovered": [
+        {
+          "declarationKeywords": null,
+          "declarationSuffix": null,
+          "ext": ".rs",
+          "fileCount": 5,
+          "folderPattern": "src/",
+          "folders": [
+            "src"
+          ],
+          "kind": "folder-fallback-cluster",
+          "label": "src",
+          "memberSuffixes": null,
+          "namingPattern": null,
+          "samples": [
+            "cli.rs",
+            "fs_ops.rs",
+            "lib.rs"
+          ],
+          "subprojectName": "cli",
+          "suffix": "src",
+          "topOfFileLines": null
+        },
+        {
+          "declarationKeywords": null,
+          "declarationSuffix": null,
+          "ext": ".rs",
+          "fileCount": 8,
+          "folderPattern": "src/commands/",
+          "folders": [
+            "src/commands"
+          ],
+          "kind": "folder-fallback-cluster",
+          "label": "commands",
+          "memberSuffixes": null,
+          "namingPattern": null,
+          "samples": [
+            "add.rs",
+            "config.rs",
+            "git_flow.rs"
+          ],
+          "subprojectName": "cli",
+          "suffix": "commands",
+          "topOfFileLines": null
+        },
         {
           "declarationKeywords": null,
           "declarationSuffix": null,
@@ -45,6 +89,7 @@
             "src/mcp/mod.rs",
             "src/report/mod.rs"
           ],
+          "subprojectName": "rt",
           "suffix": "mod",
           "topOfFileLines": null
         },
@@ -52,7 +97,7 @@
           "declarationKeywords": null,
           "declarationSuffix": null,
           "ext": ".rs",
-          "fileCount": 11,
+          "fileCount": 12,
           "folderPattern": "**/src/mod.rs",
           "folders": [
             "src/economy",
@@ -63,6 +108,7 @@
             "src/process",
             "src/projection",
             "src/reader",
+            "src/skill",
             "src/spec",
             "src/store",
             "src/telemetry"
@@ -81,13 +127,8 @@
           "topOfFileLines": null
         }
       ],
-      "dominant": "hierarchical-modularization",
-      "edges": [
-        "[[mustard-core]]",
-        "[[Check]]",
-        "[[Observer]]",
-        "[[pipeline]]"
-      ],
+      "dominant": "mod",
+      "edges": [],
       "folderFrequency": {
         "segments": {
           "economy": 2,
@@ -96,28 +137,29 @@
           "process": 1,
           "projection": 1,
           "reader": 1,
+          "skill": 1,
           "sources": 1,
           "spec": 1,
-          "src": 12,
+          "src": 13,
           "store": 1,
           "telemetry": 1,
           "tests": 1,
           "view": 1
         },
-        "totalFolders": 13
+        "totalFolders": 14
       }
     },
     "typescript": {
       "clusterLabels": {
-        "tauri": "Tauri IPC Wrappers",
-        "use": "React Hooks (use* pattern)"
+        "tauri": "Tauri API bindings (decorator, 3 files)",
+        "use": "React hooks (function-prefix, 36 files)"
       },
       "conventions": {
         "naming": {
           "distribution": {
             "camelCase": 36,
-            "kebab-case": 9,
-            "lowercase": 31,
+            "kebab-case": 8,
+            "lowercase": 32,
             "mixed": 3
           },
           "dominant": null,
@@ -176,10 +218,7 @@
           ]
         }
       ],
-      "dominant": "use",
-      "edges": [
-        "[[use]] -> [[tauri]]"
-      ],
+      "dominant": "use-prefix-pattern",
       "folderFrequency": {
         "segments": {
           ".": 1,
@@ -209,12 +248,6 @@
     }
   },
   "_enums": {
-    "EconomyScope": {
-      "file": "src/economy/scope.rs",
-      "values": [
-        "AllProjects"
-      ]
-    },
     "SpecBucket": {
       "file": "src/lib/dashboard.ts",
       "values": [
@@ -228,22 +261,17 @@
     "ActivePipelineRow": {
       "file": "src/hooks/useAggregate.ts",
       "refs": [
-        "[[Project]]",
-        "[[SpecRow]]"
+        "[[dashboard.entity.spec-row]]"
       ]
     },
     "ActivityFeedResult": {
       "file": "src/hooks/useActivityFeed.ts",
       "refs": [
-        "ActivityFeedRow"
+        "[[dashboard.entity.activity-feed-row]]"
       ]
     },
     "ActivityFeedRow": {
-      "file": "src/hooks/useActivityFeed.ts",
-      "refs": [
-        "[[Project]]",
-        "[[RecentEvent]]"
-      ]
+      "file": "src/hooks/useActivityFeed.ts"
     },
     "AggregateCounters": {
       "file": "src/hooks/useAggregate.ts"
@@ -251,9 +279,9 @@
     "AggregateResult": {
       "file": "src/hooks/useAggregate.ts",
       "refs": [
-        "ActivePipelineRow",
-        "AggregateCounters",
-        "TimelineRow"
+        "[[dashboard.entity.active-pipeline-row]]",
+        "[[dashboard.entity.aggregate-counters]]",
+        "[[dashboard.entity.timeline-row]]"
       ]
     },
     "KnowledgeRow": {
@@ -268,128 +296,11 @@
     "PipelineSummary": {
       "file": "src/lib/dashboard.ts"
     },
-    "RecentEvent": {
-      "file": "src/lib/dashboard.ts",
-      "refs": [
-        "[[Project]]"
-      ]
-    },
     "SpecRow": {
-      "file": "src/lib/dashboard.ts",
-      "refs": [
-        "[[Project]]",
-        "[[SpecBucket]]"
-      ]
+      "file": "src/lib/dashboard.ts"
     },
     "TimelineRow": {
-      "file": "src/hooks/useAggregate.ts",
-      "refs": [
-        "[[Project]]",
-        "[[RecentEvent]]"
-      ]
-    },
-    "bash_guard": {
-      "file": "src/hooks/bash_guard.rs",
-      "refs": [
-        "[[Bash]]",
-        "[[Check]]",
-        "[[Observer]]"
-      ]
-    },
-    "budget": {
-      "file": "src/hooks/budget.rs",
-      "refs": [
-        "[[Check]]",
-        "[[Subagent]]",
-        "[[Task]]"
-      ]
-    },
-    "close_gate": {
-      "file": "src/hooks/close_gate.rs",
-      "refs": [
-        "[[CLOSE]]",
-        "[[Check]]",
-        "[[pipeline]]"
-      ]
-    },
-    "enforce_registry": {
-      "file": "src/hooks/enforce_registry.rs",
-      "refs": [
-        "[[Check]]",
-        "[[entity-registry]]",
-        "[[pipeline]]"
-      ]
-    },
-    "knowledge": {
-      "file": "src/hooks/knowledge.rs",
-      "refs": [
-        "[[Observer]]",
-        "[[SessionEnd]]",
-        "[[memory]]"
-      ]
-    },
-    "model_routing": {
-      "file": "src/hooks/model_routing.rs",
-      "refs": [
-        "[[Check]]",
-        "[[Task]]"
-      ]
-    },
-    "path_guard": {
-      "file": "src/hooks/path_guard.rs",
-      "refs": [
-        "[[Check]]",
-        "[[Edit]]",
-        "[[Write]]"
-      ]
-    },
-    "post_edit": {
-      "file": "src/hooks/post_edit.rs",
-      "refs": [
-        "[[Edit]]",
-        "[[Observer]]",
-        "[[Write]]",
-        "[[pipeline]]"
-      ]
-    },
-    "session_cleanup": {
-      "file": "src/hooks/session_cleanup.rs",
-      "refs": [
-        "[[Observer]]",
-        "[[SessionEnd]]",
-        "[[pipeline]]"
-      ]
-    },
-    "session_start": {
-      "file": "src/hooks/session_start.rs",
-      "refs": [
-        "[[Observer]]",
-        "[[SessionStart]]",
-        "[[memory]]"
-      ]
-    },
-    "size_gate": {
-      "file": "src/hooks/size_gate.rs",
-      "refs": [
-        "[[Check]]",
-        "[[Edit]]",
-        "[[Write]]"
-      ]
-    },
-    "skills_audit": {
-      "file": "src/hooks/skills_audit.rs",
-      "refs": [
-        "[[Observer]]",
-        "[[Skill]]"
-      ]
-    },
-    "tracker": {
-      "file": "src/hooks/tracker.rs",
-      "refs": [
-        "[[Observer]]",
-        "[[Task]]",
-        "[[telemetry]]"
-      ]
+      "file": "src/hooks/useAggregate.ts"
     }
   }
 }

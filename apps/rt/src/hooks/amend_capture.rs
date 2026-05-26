@@ -31,7 +31,7 @@ use mustard_core::model::event::{
     SCHEMA_VERSION, EVENT_PIPELINE_AMEND_ACTIVITY, EVENT_PIPELINE_AMEND_CLOSE,
     EVENT_PIPELINE_AMEND_DRIFT, EVENT_PIPELINE_AMEND_INTENT, EVENT_PIPELINE_AMEND_OPEN,
 };
-use std::path::Path;
+use mustard_core::ClaudePaths;
 
 // ---------------------------------------------------------------------------
 // Default drift threshold — may be overridden by mustard.json
@@ -43,9 +43,10 @@ const DEFAULT_DRIFT_THRESHOLD: u32 = 3;
 /// Read `amend.drift_threshold` from `{project_dir}/.claude/mustard.json`,
 /// falling back to [`DEFAULT_DRIFT_THRESHOLD`] on any error.
 fn drift_threshold(project_dir: &str) -> u32 {
-    let path = Path::new(project_dir)
-        .join(".claude")
-        .join("mustard.json");
+    let path = match ClaudePaths::for_project(project_dir) {
+        Ok(cp) => cp.mustard_json_path(),
+        Err(_) => return DEFAULT_DRIFT_THRESHOLD,
+    };
     let text = std::fs::read_to_string(&path).unwrap_or_default();
     let v: serde_json::Value = serde_json::from_str(&text).unwrap_or(serde_json::Value::Null);
     v.get("amend")
@@ -406,13 +407,13 @@ impl Check for AmendCapture {
         let n = forecast_len;
         let body = mustard_core::translate("banner.amend.drift", lang);
         let warning = match lang {
-            mustard_core::Locale::PtBr => format!(
+            mustard_core::SupportedLocale::PtBr => format!(
                 "Você está editando `{file_path}` em outro escopo da spec ativa \
                  `{spec_id}` (pós-CLOSE). Já são {n} arquivos fora do escopo declarado. \
                  {body}",
                 spec_id = window.spec_id,
             ),
-            mustard_core::Locale::EnUs => format!(
+            mustard_core::SupportedLocale::EnUs => format!(
                 "You're editing `{file_path}` outside the active spec `{spec_id}` scope \
                  (post-CLOSE). {n} files outside declared scope so far. {body}",
                 spec_id = window.spec_id,
@@ -436,23 +437,23 @@ fn derive_spec_lang(store: &SqliteEventStore, spec_id: &str) -> Option<String> {
 
 /// `derive_spec_lang` + BCP-47 normalisation. The raw store value can be the
 /// legacy short form (`pt` / `en`); we parse it leniently and fall back to
-/// the [`mustard_core::Locale`] default (`PtBr`) when absent. The `ShortForm`
+/// the [`mustard_core::SupportedLocale`] default (`PtBr`) when absent. The `ShortForm`
 /// branch is intentionally NOT treated as an error here — drift-banner
 /// emission must never break on a legacy spec.
-fn derive_spec_lang_locale(store: &SqliteEventStore, spec_id: &str) -> mustard_core::Locale {
+fn derive_spec_lang_locale(store: &SqliteEventStore, spec_id: &str) -> mustard_core::SupportedLocale {
     use std::str::FromStr;
     let raw = derive_spec_lang(store, spec_id).unwrap_or_default();
-    match mustard_core::Locale::from_str(&raw) {
+    match mustard_core::SupportedLocale::from_str(&raw) {
         Ok(loc) => loc,
         Err(mustard_core::LocaleError::ShortForm(s)) => {
             // Legacy `pt` / `en` → expand to BCP-47.
-            if s.eq_ignore_ascii_case("pt") {
-                mustard_core::Locale::PtBr
+            if s.eq_ignore_ascii_case("pt-br") || s.eq_ignore_ascii_case("pt") {
+                mustard_core::SupportedLocale::PtBr
             } else {
-                mustard_core::Locale::EnUs
+                mustard_core::SupportedLocale::EnUs
             }
         }
-        Err(_) => mustard_core::Locale::default(),
+        Err(_) => mustard_core::SupportedLocale::default(),
     }
 }
 

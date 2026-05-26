@@ -45,6 +45,17 @@ export function stateFromStatus(status: string): SpecState {
       stage = "close";
       outcome = "abandoned";
       break;
+    // Wave 4 of deep-refactor (2026-05-25) — terminal outcomes split out so
+    // each renders its own coloured badge instead of collapsing into
+    // "cancelled".
+    case "superseded":
+      stage = "close";
+      outcome = "superseded";
+      break;
+    case "absorbed":
+      stage = "close";
+      outcome = "absorbed";
+      break;
     case "blocked":
       // Qualifier wins over stage in the legacy projection; surface it on the
       // earliest meaningful stage so the pause badge shows.

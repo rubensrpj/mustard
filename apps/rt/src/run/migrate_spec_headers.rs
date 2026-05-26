@@ -1,3 +1,4 @@
+// SPEC LANG: pt-allowed — test fixtures use pt-BR spec content for round-trip assertions.
 //! `mustard-rt run migrate-spec-headers` — the terminal spec-header migration.
 //!
 //! ## Retirement note (Wave 3 of mustard-unification, 2026-05-24)

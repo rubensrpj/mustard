@@ -161,7 +161,7 @@ impl SqliteSpecReader {
 
     /// On-disk events directory the NDJSON writer uses for `spec`.
     ///
-    /// Path: `{project_dir}/.claude/spec/{spec}/events/`. The directory is
+    /// Path: `{project_dir}/.claude/spec/{spec}/.events/`. The directory is
     /// optional — a brand-new spec has no tool/agent events yet and the
     /// folder simply does not exist; [`read_harness_events_from_ndjson_dir`]
     /// returns an empty `Vec` in that case.
@@ -170,7 +170,7 @@ impl SqliteSpecReader {
             .join(".claude")
             .join("spec")
             .join(spec)
-            .join("events")
+            .join(".events")
     }
 
     /// Return the merged event slice for `spec`: lifecycle events from the

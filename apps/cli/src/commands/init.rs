@@ -145,7 +145,11 @@ pub fn init_with_templates(
     ensure_ripgrep();
 
     if options.cursor {
-        install_cursor_adapter(templates_dir, &project_path, &claude_path);
+        // The Cursor adapter shipped as `templates/adapters/cursor/adapter.js`
+        // in earlier releases; the deep-refactor W5 replaced it with the
+        // `mustard-rt run adapt-cursor` subcommand. Surface that to the user
+        // instead of copying a no-longer-bundled file.
+        println!("  --cursor flag is now served by `mustard-rt run adapt-cursor` (run it after init)");
     }
 
     // Persist runtime + version stamp into .claude/mustard.json (surgical).
@@ -637,34 +641,19 @@ fn install_ripgrep() -> bool {
     false
 }
 
-/// Install the experimental Cursor IDE adapter. Fail-open — a failure prints a
-/// warning but does not abort `init`.
-fn install_cursor_adapter(templates_dir: &Path, project_path: &Path, claude_path: &Path) {
-    let adapter_src = templates_dir.join("adapters").join("cursor");
-    let adapter_dest = claude_path.join("adapters").join("cursor");
-    let cursor_hooks = project_path.join(".cursor").join("hooks");
-
-    let result = (|| -> Result<()> {
-        copy_dir(&adapter_src, &adapter_dest, true, &[])?;
-        mfs::create_dir_all(&cursor_hooks)
-            .with_context(|| format!("creating {}", cursor_hooks.display()))?;
-        let adapter_bytes = mfs::read(adapter_src.join("adapter.js"))
-            .context("reading the Cursor adapter")?;
-        mfs::write_atomic(cursor_hooks.join("adapter.js"), &adapter_bytes)
-            .context("copying the Cursor adapter")?;
-        Ok(())
-    })();
-
-    match result {
-        Ok(()) => println!("  Cursor adapter installed at .cursor/hooks/adapter.js"),
-        Err(err) => eprintln!("[mustard] cursor adapter: {err}"),
-    }
-}
-
 /// Print the closing "next steps" block.
+///
+/// Lists the opt-in extras shipped under `templates-extras/skills/` (W6 deep
+/// refactor): foundation skills the user can install on demand via
+/// `mustard add skill:<name>` (routed through `mustard-rt run skill-fetch`).
 fn print_next_steps() {
     println!("\nDone!\n");
     println!("Next: open Claude Code and run /scan to analyze your codebase.\n");
+    println!("Optional extras (install with `mustard add skill:<name>`):");
+    println!("  hallmark             — anti-AI-slop landing pages / design audits");
+    println!("  design-craft         — broad design-system generation");
+    println!("  react-best-practices — React/Next.js performance + rendering rules");
+    println!("  grill-me             — relentless plan-grilling interview\n");
 }
 
 #[cfg(test)]

@@ -21,6 +21,7 @@ import {
 } from "@/lib/dashboard";
 import { useStore } from "@/lib/store";
 import { formatTokens, formatUsd, formatPct, formatNumber } from "@/lib/format";
+import { useT } from "@/lib/i18n";
 
 function specVariant(phase: string | null, status: string | null): StatusDotVariant {
   if (status === "blocked") return "blocked";
@@ -69,6 +70,7 @@ function AggregateSparkline({
   series: DailyPoint[];
   rtkSeries: { date: string; saved_tokens: number }[];
 }) {
+  const t = useT();
   // Align onto a 14-day window ending today.
   const days: string[] = (() => {
     const out: string[] = [];
@@ -114,10 +116,10 @@ function AggregateSparkline({
       </svg>
       <div className="flex gap-3 text-[11px] text-muted-foreground">
         <span className="flex items-center gap-1.5">
-          <span className="inline-block w-3 h-0.5 bg-primary" /> consumido
+          <span className="inline-block w-3 h-0.5 bg-primary" /> {t("aggregate.spark.consumed")}
         </span>
         <span className="flex items-center gap-1.5">
-          <span className="inline-block w-3 h-0.5 bg-success" /> RTK saved
+          <span className="inline-block w-3 h-0.5 bg-success" /> {t("aggregate.spark.rtkSaved")}
         </span>
       </div>
     </div>
@@ -167,6 +169,7 @@ function RoiScoreboard({
   globalCons: GlobalConsumption | undefined;
   loading: boolean;
 }) {
+  const t = useT();
   const rtk = globalCons?.rtk;
   const saved = rtk?.tokens_saved ?? 0;
   const consumed = globalCons?.tokens_total ?? 0;
@@ -179,12 +182,10 @@ function RoiScoreboard({
     <section className="flex flex-col gap-2">
       <div className="flex flex-col gap-0.5">
         <h2 className="text-xs uppercase tracking-wider font-medium text-foreground">
-          Compensa usar o Mustard?
+          {t("aggregate.roi.title")}
         </h2>
         <p className="text-[12px] text-muted-foreground/80 leading-snug">
-          Comparação contrafactual de tokens: o que de fato foi para o modelo COM
-          o Mustard, contra a estimativa SEM ele. Os tokens poupados são medidos
-          pelo RTK (compressão de saída de comandos) — não é estimativa de preço.
+          {t("aggregate.roi.intro")}
         </p>
       </div>
       {loading && !globalCons ? (
@@ -195,11 +196,10 @@ function RoiScoreboard({
         </div>
       ) : !hasData ? (
         <div className="rounded border border-border bg-card px-3 py-3 text-[12.5px] text-muted-foreground leading-relaxed">
-          Ainda sem dados de economia. O RTK precisa estar instalado e ter
-          comprimido pelo menos um comando.{" "}
+          {t("aggregate.roi.noData.before")}{" "}
           {rtk?.available === false && (
             <>
-              Rode <code className="font-mono text-foreground">rtk init -g</code> para ativar.
+              {t("aggregate.roi.noData.runBefore")}<code className="font-mono text-foreground">rtk init -g</code>{t("aggregate.roi.noData.runAfter")}
             </>
           )}
         </div>
@@ -207,25 +207,25 @@ function RoiScoreboard({
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
           <div className="flex flex-col gap-1 px-3 py-2.5 rounded border border-[--intent-success]/30 bg-[--intent-success]/5">
             <span className="text-[10px] uppercase tracking-wider text-[--intent-success]">
-              COM Mustard — foi ao modelo
+              {t("aggregate.roi.with.eyebrow")}
             </span>
             <span className="text-xl font-mono font-medium text-foreground tabular-nums">
               {formatTokens(consumed)}
             </span>
-            <span className="text-[11px] text-muted-foreground">tokens efetivamente enviados</span>
+            <span className="text-[11px] text-muted-foreground">{t("aggregate.roi.with.foot")}</span>
           </div>
           <div className="flex flex-col gap-1 px-3 py-2.5 rounded border border-border bg-card">
             <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
-              SEM Mustard — estimativa
+              {t("aggregate.roi.without.eyebrow")}
             </span>
             <span className="text-xl font-mono font-medium text-muted-foreground tabular-nums">
               {formatTokens(withoutMustard)}
             </span>
-            <span className="text-[11px] text-muted-foreground">consumido + poupado pelo RTK</span>
+            <span className="text-[11px] text-muted-foreground">{t("aggregate.roi.without.foot")}</span>
           </div>
           <div className="flex flex-col gap-1 px-3 py-2.5 rounded border border-primary/30 bg-primary/5">
             <span className="text-[10px] uppercase tracking-wider text-primary">
-              Diferença poupada
+              {t("aggregate.roi.saved.eyebrow")}
             </span>
             <span className="text-xl font-mono font-medium text-primary tabular-nums">
               {formatTokens(saved)}
@@ -234,21 +234,22 @@ function RoiScoreboard({
               )}
             </span>
             <span className="text-[11px] text-muted-foreground">
-              tokens que o Mustard evitou de enviar
+              {t("aggregate.roi.saved.foot")}
             </span>
           </div>
         </div>
       )}
       <p className="text-[11px] text-muted-foreground/60 leading-snug">
-        Custo em USD é medido pela Anthropic API por projeto — veja em{" "}
-        <span className="text-muted-foreground/80">Telemetria → Economia</span>.
-        O custo agregado da seção abaixo é estimado (tokens × tabela de preço), não cobrado.
+        {t("aggregate.roi.footnote.before")}
+        <span className="text-muted-foreground/80">{t("aggregate.roi.footnote.path")}</span>
+        {t("aggregate.roi.footnote.after")}
       </p>
     </section>
   );
 }
 
 export function AggregateOverview({ projects }: { projects: Project[] }) {
+  const t = useT();
   const navigate = useNavigate();
   const projectsRoot = useStore((s) => s.projectsRoot);
   const { counters, activePipelines, timeline, loading } = useAggregate(projects);
@@ -264,10 +265,10 @@ export function AggregateOverview({ projects }: { projects: Project[] }) {
     <div className="flex flex-col gap-6">
       <section>
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-          <Counter label="Specs ativas" value={counters.activeSpecs} icon={Layers} loading={loading} />
-          <Counter label="Em EXECUTE" value={counters.executing} icon={Play} loading={loading} />
-          <Counter label="Completed 7d" value={counters.completed7d} icon={CheckCircle2} loading={loading} />
-          <Counter label="Eventos hoje" value={counters.eventsToday} icon={Activity} loading={loading} />
+          <Counter label={t("aggregate.counter.activeSpecs")} value={counters.activeSpecs} icon={Layers} loading={loading} />
+          <Counter label={t("aggregate.counter.executing")} value={counters.executing} icon={Play} loading={loading} />
+          <Counter label={t("aggregate.counter.completed7d")} value={counters.completed7d} icon={CheckCircle2} loading={loading} />
+          <Counter label={t("aggregate.counter.eventsToday")} value={counters.eventsToday} icon={Activity} loading={loading} />
         </div>
       </section>
 
@@ -277,35 +278,35 @@ export function AggregateOverview({ projects }: { projects: Project[] }) {
       {/* ── Consumo & Economia agregado ──────────────────────────────────── */}
       <section className="flex flex-col gap-3">
         <h2 className="text-xs uppercase tracking-wider font-medium text-foreground">
-          Consumo &amp; Economia — todos os projetos
+          {t("aggregate.consumption.title")}
         </h2>
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
           <KpiCard
-            label="Tokens total"
+            label={t("aggregate.kpi.tokensTotal")}
             value={globalCons ? formatTokens(globalCons.tokens_total) : "—"}
-            sub={globalCons ? `hoje ${formatTokens(globalCons.tokens_today)}` : undefined}
+            sub={globalCons ? `${t("aggregate.kpi.tokensTodayLabel")} ${formatTokens(globalCons.tokens_today)}` : undefined}
             loading={consLoading}
           />
           <KpiCard
-            label="Custo USD (estimado)"
+            label={t("aggregate.kpi.costUsdEstimated")}
             value={globalCons ? formatUsd(globalCons.cost_total_usd) : "—"}
-            sub={globalCons ? `hoje ${formatUsd(globalCons.cost_today_usd)} · tokens × tabela` : undefined}
+            sub={globalCons ? `${t("aggregate.kpi.tokensTodayLabel")} ${formatUsd(globalCons.cost_today_usd)} ${t("aggregate.kpi.costTodaySuffix")}` : undefined}
             loading={consLoading}
           />
           <KpiCard
-            label="RTK saved"
+            label={t("aggregate.kpi.rtkSaved")}
             value={globalCons?.rtk.tokens_saved != null ? formatTokens(globalCons.rtk.tokens_saved) : "—"}
             sub={
               globalCons?.rtk.savings_pct != null
-                ? `${formatPct(globalCons.rtk.savings_pct)} efic. · global · vitalício`
-                : "global · todos os projetos"
+                ? t("aggregate.kpi.rtkSavedSubEfic").replace("{pct}", formatPct(globalCons.rtk.savings_pct))
+                : t("aggregate.kpi.rtkSavedSubGlobal")
             }
             loading={consLoading}
           />
           <KpiCard
-            label="RTK commands"
+            label={t("aggregate.kpi.rtkCommands")}
             value={globalCons?.rtk.total_commands != null ? formatNumber(globalCons.rtk.total_commands) : "—"}
-            sub={globalCons?.rtk.available === false ? "rtk não instalado" : "global · todos os projetos"}
+            sub={globalCons?.rtk.available === false ? t("aggregate.kpi.rtkNotInstalled") : t("aggregate.kpi.rtkSavedSubGlobal")}
             loading={consLoading}
           />
         </div>
@@ -319,7 +320,7 @@ export function AggregateOverview({ projects }: { projects: Project[] }) {
         {globalCons && globalCons.by_model.length > 0 && (
           <div className="flex flex-col gap-1">
             <h3 className="text-[11px] uppercase tracking-wider font-medium text-muted-foreground">
-              Por modelo (todos os projetos)
+              {t("aggregate.byModel.title")}
             </h3>
             <ul className="flex flex-col gap-0.5">
               {globalCons.by_model.map((m: ModelUsage) => (
@@ -344,16 +345,16 @@ export function AggregateOverview({ projects }: { projects: Project[] }) {
         {globalCons && globalCons.by_project.length > 0 && (
           <div className="flex flex-col gap-1">
             <h3 className="text-[11px] uppercase tracking-wider font-medium text-muted-foreground">
-              Por projeto (ordenado por custo)
+              {t("aggregate.byProject.title")}
             </h3>
             <table className="w-full text-[13px]">
               <thead>
                 <tr className="text-left text-[11px] uppercase text-muted-foreground">
-                  <th className="pb-1">Projeto</th>
-                  <th className="pb-1 text-right">Tokens</th>
-                  <th className="pb-1 text-right">Hoje</th>
-                  <th className="pb-1 text-right">Custo</th>
-                  <th className="pb-1 text-right">Última atividade</th>
+                  <th className="pb-1">{t("aggregate.byProject.col.project")}</th>
+                  <th className="pb-1 text-right">{t("aggregate.byProject.col.tokens")}</th>
+                  <th className="pb-1 text-right">{t("aggregate.byProject.col.today")}</th>
+                  <th className="pb-1 text-right">{t("aggregate.byProject.col.cost")}</th>
+                  <th className="pb-1 text-right">{t("aggregate.byProject.col.lastActivity")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -383,14 +384,14 @@ export function AggregateOverview({ projects }: { projects: Project[] }) {
       <section>
         <div className="flex items-baseline gap-2 mb-2">
           <h2 className="text-xs uppercase tracking-wider font-medium text-foreground">
-            Pipelines ativas
+            {t("aggregate.activePipelines.title")}
           </h2>
           <span className="text-[13px] text-muted-foreground/50 font-mono">
             {loading ? "…" : activePipelines.length}
           </span>
         </div>
         {!loading && activePipelines.length === 0 ? (
-          <p className="text-[13px] text-muted-foreground py-2">Sem pipelines ativas.</p>
+          <p className="text-[13px] text-muted-foreground py-2">{t("aggregate.activePipelines.empty")}</p>
         ) : (
           <ul className="flex flex-col gap-0.5 text-sm">
             {activePipelines.map((row: ActivePipelineRow) => {
@@ -429,14 +430,14 @@ export function AggregateOverview({ projects }: { projects: Project[] }) {
       <section>
         <div className="flex items-baseline gap-2 mb-2">
           <h2 className="text-xs uppercase tracking-wider font-medium text-foreground">
-            Atividade recente
+            {t("aggregate.recentActivity.title")}
           </h2>
           <span className="text-[13px] text-muted-foreground/50 font-mono">
             {loading ? "…" : timeline.length}
           </span>
         </div>
         {!loading && timeline.length === 0 ? (
-          <p className="text-[13px] text-muted-foreground py-2">Sem eventos recentes.</p>
+          <p className="text-[13px] text-muted-foreground py-2">{t("aggregate.recentActivity.empty")}</p>
         ) : (
           <ul className="flex flex-col gap-0.5 text-sm">
             {timeline.map((row: TimelineRow, i: number) => (

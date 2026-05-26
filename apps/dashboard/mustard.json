@@ -7,7 +7,8 @@
     "provider": "github",
     "submodules": false
   },
-  "specLang": "pt",
+  "specLang": "pt-BR",
+  "tone": "didactic",
   "testCommand": "pnpm test",
   "buildCommand": "pnpm build",
   "lintCommand": "pnpm lint",

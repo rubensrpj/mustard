@@ -11,6 +11,7 @@
 
 use crate::util::now_iso8601;
 use mustard_core::fs;
+use mustard_core::ClaudePaths;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
@@ -244,7 +245,10 @@ fn check_env_exposure(cwd: &Path, results: &mut Results) {
 
 /// Hook-permission check — dangerous patterns in `.claude/settings.json` allow.
 fn check_hook_permissions(cwd: &Path, results: &mut Results) {
-    let settings_path = cwd.join(".claude").join("settings.json");
+    let Ok(cp) = ClaudePaths::for_project(cwd) else {
+        return;
+    };
+    let settings_path = cp.settings_json_path();
     let Ok(text) = fs::read_to_string(&settings_path) else {
         return;
     };

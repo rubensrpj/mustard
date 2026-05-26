@@ -1,69 +1,66 @@
 <!-- mustard:generated -->
-# Ordem canônica do prompt — PREFIX-STABLE / VARIABLE
+# Canonical prompt order — PREFIX-STABLE / VARIABLE
 
-## Por que um prefixo estável importa
+## Why a stable prefix matters
 
-A API da Anthropic faz cache automático de prefixos de prompt que sejam **byte-idênticos** entre chamadas próximas no tempo. Quando o cache acerta, a parte cacheada é cobrada a **10% do custo normal** de input. O limiar mínimo é de **~1024 tokens** (na prática, 1024 caracteres é uma aproximação conservadora). Sem um bloco estável bem demarcado, cada dispatch é único em bytes — o cache nunca ativa e o pipeline paga input cheio em conteúdo que se repete (skills, recipe, role rules, pipeline-config snippet). A reordenação para `[PREFIX-STABLE] → [VARIABLE]` resolve isso colocando 100% do conteúdo dinâmico (spec slice, diff, retry context, TASK) **depois** do marcador, garantindo que o prefixo permaneça idêntico entre waves e entre dispatches do mesmo template.
+The Anthropic API automatically caches prompt prefixes that are **byte-identical** between calls close together in time. When the cache hits, the cached portion is billed at **10% of normal input cost**. The minimum threshold is around **1024 tokens** (in practice, 1024 characters is a conservative approximation). Without a well-marked stable block, every dispatch is unique at the byte level — the cache never engages and the pipeline pays full input cost for content that repeats (skills, role rules, pipeline-config snippet). Reordering to `[PREFIX-STABLE] → [VARIABLE]` solves this by placing 100% of dynamic content (spec slice, diff, retry context, TASK) **after** the marker, ensuring the prefix stays identical across waves and across dispatches of the same template.
 
-## Ordem canônica
+## Canonical order
 
-O template `agent-prompt.md` produz, após interpolação, um arquivo no formato:
+The `agent-prompt.md` template produces, after interpolation, a file in the following format:
 
 ```text
 <!-- PREFIX-STABLE -->
 
 ## CONTEXT
-...links para skills/recipes (apenas IDs/nomes, sem inline do conteúdo)...
+...skill links (only IDs/names, no inline content)...
 
 ## SHARED LANGUAGE
-...fatia do CONTEXT.md filtrada por relevância à spec ({context_md} — estável no pipeline)...
+...slice of CONTEXT.md filtered by relevance to the spec ({context_md} — stable across the pipeline)...
 
 ## REFERENCE
-...arquivos a serem lidos pelo agent (apenas paths)...
+...files for the agent to read (paths only)...
 
 ## SKILLS
-...lista de skills disponíveis (apenas nomes; o agent invoca Skill tool para carregar)...
-
-## RECIPE
-...nome do recipe a aplicar (não o conteúdo)...
+...list of available skills (names only; the agent invokes the Skill tool to load each)...
 
 ## ROLE
-...regras de papel (estáticas para o template)...
+...role rules (static for the template)...
 
 ## EFFICIENCY
-...regras de eficiência (estáticas)...
+...efficiency rules (static)...
 
 <!-- VARIABLE -->
 
 ## RETRY CONTEXT
-...só presente em re-dispatches; texto varia a cada chamada...
+...only present on re-dispatches; text varies on every call...
 
 ## TASK
-...spec slice, diff da wave anterior, lista de arquivos, AC inline...
+...spec slice, prior-wave diff, file list, inline AC...
 ```
 
-Tudo que vier **antes** de `<!-- VARIABLE -->` precisa ser textualmente idêntico entre dispatches do mesmo template para o cache acertar.
+Everything **before** `<!-- VARIABLE -->` must be textually identical between dispatches of the same template for the cache to hit.
 
-## Regras
+## Rules
 
-- **Interpolação dentro de PREFIX-STABLE só pode usar valores estáveis.** Skill IDs (`karpathy-guidelines`), nomes de recipe (`feature.entity-crud`), nomes de role (`Implementation Agent`) — nunca os corpos. O agent é responsável por carregar o corpo via Skill tool quando precisar.
-- **Os marcadores são comentários HTML, preservados verbatim.** `<!-- PREFIX-STABLE -->` e `<!-- VARIABLE -->` aparecem literais no prompt final. Não envolva em código, não traduza, não reformate.
-- **Qualquer interpolação de spec text, diff, ou retry context dentro do PREFIX-STABLE invalida o cache.** Se você precisa injetar conteúdo dinâmico, faça isso depois do `<!-- VARIABLE -->` marker. Se descobrir um caso onde isso parece impossível, abra issue antes de violar a regra — provavelmente é um sinal de que o template precisa ser dividido.
-- **`{context_md}` é a exceção que confirma a regra.** A fatia do glossário é *conteúdo*, não um ID — mas é **estável dentro de uma wave**: a spec operacional da wave não muda enquanto ela executa, então a fatia produzida por `context-slice.js` é byte-idêntica entre todos os dispatches da mesma wave. Em wave-plans, cada wave tem sua própria spec operacional — o orquestrador re-gera a fatia a cada transição de wave e cacheia em `.claude/.pipeline-states/{specName}.context-md.md`. Por isso ela pode ficar no PREFIX-STABLE sem invalidar o cache dentro da wave. Conteúdo que muda *por dispatch* (spec slice, diff, retry) continua proibido aqui.
-- **Tamanho mínimo do prefixo: 1024 caracteres** (aprox. 1024 tokens). Prefixos menores ainda são válidos textualmente, mas não ativam cache — o ganho fica em 0.
+- **Interpolation inside PREFIX-STABLE can only use stable values.** Skill IDs (`karpathy-guidelines`), role names (`Implementation Agent`) — never the bodies. The agent is responsible for loading the body via the Skill tool when needed.
+- **The markers are HTML comments and must be preserved verbatim.** `<!-- PREFIX-STABLE -->` and `<!-- VARIABLE -->` appear literally in the final prompt. Do not wrap them in code, do not translate, do not reformat.
+- **Any interpolation of spec text, diff, or retry context inside PREFIX-STABLE invalidates the cache.** If you need to inject dynamic content, do it after the `<!-- VARIABLE -->` marker. If you discover a case where this seems impossible, open an issue before violating the rule — it likely means the template needs to be split.
+- **`{context_md}` is the exception that proves the rule.** The glossary slice is *content*, not an ID — but it is **stable within a wave**: the wave's operational spec does not change while it executes, so the slice produced by `context-slice.js` is byte-identical across every dispatch of the same wave. In wave plans, each wave has its own operational spec — the orchestrator regenerates the slice on every wave transition and caches it at `.claude/.pipeline-states/{specName}.context-md.md`. That is why it can live inside PREFIX-STABLE without invalidating the cache during the wave. Content that changes *per dispatch* (spec slice, diff, retry) is still forbidden here.
+- **Minimum prefix size: 1024 characters** (≈ 1024 tokens). Smaller prefixes are still textually valid, but they do not activate the cache — the gain stays at 0.
 
-## Como verificar
+## How to verify
 
-Renderize um prompt do template para stdin do script abaixo:
+Pipe a rendered prompt from the template into stdin of the script below:
 
 ```bash
 node -e "const {analyzePrompt}=require('./templates/hooks/_lib/prompt-cache-detect.js'); console.log(analyzePrompt(require('fs').readFileSync(0,'utf8')))"
 ```
 
-Saída esperada:
+Expected output:
 
 ```json
 { "prefix_len": 2814, "prefix_hash": "a1b2c3...", "variable_len": 4120, "prefix_cacheable": true }
 ```
 
-Se `prefix_cacheable` vier `false`, ou o prefixo está abaixo de 1024 chars, ou o marcador `<!-- PREFIX-STABLE -->` está ausente. Se `prefix_hash` mudar entre dois dispatches do mesmo template, alguma interpolação dinâmica vazou para o bloco estável — revise as variáveis injetadas antes do `<!-- VARIABLE -->`.
+If `prefix_cacheable` comes back `false`, either the prefix is below 1024 chars or the `<!-- PREFIX-STABLE -->` marker is missing. If `prefix_hash` changes between two dispatches of the same template, some dynamic interpolation leaked into the stable block — review the variables injected before `<!-- VARIABLE -->`.

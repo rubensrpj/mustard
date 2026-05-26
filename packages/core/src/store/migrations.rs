@@ -238,7 +238,6 @@ fn migrate_v2_to_v3(conn: &Connection) -> Result<()> {
              prompt_size_bytes INTEGER,\
              prefix_stable_bytes INTEGER,\
              slice_bytes INTEGER,\
-             recipe_bytes INTEGER,\
              wave_slice_bytes INTEGER,\
              return_size_bytes INTEGER,\
              retry_overhead_bytes INTEGER\
@@ -626,7 +625,7 @@ fn migrate_v9_to_v10(conn: &Connection) -> Result<()> {
     // triggers first to silence any AFTER-DELETE noise during the drop.
     // `savings_records` + `context_cost_frames` are KEPT — they are written
     // on the hot path by every Mustard intervention (bash_guard rewrites,
-    // model_routing downgrades, recipe injections, …) and live in
+    // model_routing downgrades, …) and live in
     // `sqlite_schema.sql`. Only `api_cost_frames` is dropped (it consolidated
     // into `telemetry.db.run_usage` in Wave 2 of telemetry-separation).
     tx.execute_batch(

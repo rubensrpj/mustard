@@ -430,7 +430,7 @@ fn parse_module_using(line: &str) -> Option<(String, String)> {
 /// Advisory only — returns the warning message or `None`. Port of
 /// `checkBoundaries`. Flat layout: scans `.claude/spec/` directly.
 fn check_boundaries(file_path: &str, cwd: &str) -> Option<String> {
-    let spec_root = Path::new(cwd).join(".claude").join("spec");
+    let spec_root = ClaudePaths::for_project(cwd).ok()?.spec_dir();
     let entries = fs::read_dir(&spec_root).ok()?;
     let normalized_edit = file_path.replace('\\', "/");
 

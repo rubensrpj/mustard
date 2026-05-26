@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "artifacts": [
+    {
+      "id": "skill:react-best-practices",
+      "category": "skill",
+      "source": { "kind": "git", "repo": "https://github.com/vercel-labs/agent-skills", "subdir": "skills/react-best-practices", "ref": "7defe2d03c5fa8e39b63b12648c1fa10131b422a" },
+      "version": "7defe2d03c5fa8e39b63b12648c1fa10131b422a",
+      "vendoredAt": "2026-05-19",
+      "path": "skills/react-best-practices",
+      "checksum": null
+    }
+  ]
+}

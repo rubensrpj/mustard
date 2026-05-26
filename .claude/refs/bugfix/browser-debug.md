@@ -65,7 +65,6 @@
   - **Transient**: cache stale, race condition → fix synchronization, not the symptom
   - **Resolvable** (≤3-line patch): null deref, wrong selector → apply patch
   - **Structural**: wrong component layer, missing state machine → re-spec, do not patch
-- **Match recipe if possible**: `mustard-rt run recipe-match --operation null-guard` (etc.) gives a 90% skeleton.
 - **Avoid `setTimeout` band-aids**: if you find yourself adding `setTimeout(fn, 100)`, you're masking a race — find the real signal.
 - **One change at a time**: don't bundle the fix with refactoring — easier to bisect if it regresses.
 

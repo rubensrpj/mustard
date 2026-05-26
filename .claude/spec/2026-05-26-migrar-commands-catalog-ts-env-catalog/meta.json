@@ -1,0 +1,9 @@
+{
+  "stage": "Analyze",
+  "outcome": "Active",
+  "phase": null,
+  "scope": "full",
+  "lang": "pt-BR",
+  "checkpoint": "2026-05-26T15:42:02.294Z",
+  "parent": "2026-05-26-template-agnostic-audit"
+}

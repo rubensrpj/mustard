@@ -168,7 +168,6 @@ fn test_writer_roundtrip_context_cost() {
         prompt_size_bytes: Some(20_000),
         prefix_stable_bytes: Some(15_000),
         slice_bytes: Some(3_000),
-        recipe_bytes: Some(500),
         wave_slice_bytes: Some(1_500),
         return_size_bytes: Some(800),
         retry_overhead_bytes: Some(0),

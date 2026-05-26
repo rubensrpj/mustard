@@ -94,7 +94,6 @@ Task({
 // Orchestrator runs targeted Greps first (each ≤500 tokens output)
 const guards   = grep({path: `${sp}/.claude/commands/guards.md`,   pattern: keyword, output_mode: "content", "-C": 2, head_limit: 20});
 const patterns = grep({path: `${sp}/.claude/commands/patterns.md`, pattern: keyword, output_mode: "content", "-C": 2, head_limit: 20});
-const recipe   = grep({path: `${sp}/.claude/commands/recipes.md`,  pattern: keyword, output_mode: "content", "-C": 2, head_limit: 20});
 
 // Single dispatch with everything inlined
 Task({
@@ -110,9 +109,6 @@ Task({
 
     ## Patterns to follow
     ${patterns}
-
-    ## Recipe
-    ${recipe}
 
     ## Naming conventions
     - PascalCase for classes/components

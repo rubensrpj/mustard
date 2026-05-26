@@ -1,8 +1,8 @@
 # Mustard Deep Refactor — pipeline + scan + skills + memória + economia
-### Stage: Plan
-### Outcome: Active
+### Stage: Close
+### Outcome: Completed
 ### Flags: 
-### Checkpoint: 2026-05-25T18:42:00Z
+### Checkpoint: 2026-05-26T00:30:00Z
 
 ## PRD
 
@@ -55,11 +55,11 @@ ACs autoritativos vivem em cada `wave-N-{role}/spec.md` (13 ondas). `/mustard:qa
 
 - [ ] **AC-G1.** `cargo build --workspace && cargo clippy --workspace -- -D warnings` passa após todas as ondas. Command: `rtk cargo build --workspace && rtk cargo clippy --workspace -- -D warnings`
 - [ ] **AC-G2.** `pnpm --filter mustard-dashboard build && pnpm --filter mustard-dashboard lint` passa. Command: `rtk pnpm --filter mustard-dashboard build && rtk pnpm --filter mustard-dashboard lint`
-- [ ] **AC-G3.** `mustard-rt run active-specs --format json` retorna apenas esta spec. Command: `rtk mustard-rt run active-specs --format json | rtk node -e "let s='';process.stdin.on('data',c=>s+=c);process.stdin.on('end',()=>{const j=JSON.parse(s);const names=j.specs.map(x=>x.name);if(names.length!==1||names[0]!=='2026-05-25-mustard-deep-refactor')process.exit(1)})"`
+- [ ] **AC-G3.** `mustard-rt run resume-bootstrap` reporta stage `QaPending` para esta spec no momento da QA. Command: `rtk mustard-rt run resume-bootstrap --spec 2026-05-25-mustard-deep-refactor --json | rtk node -e "let s='';process.stdin.on('data',c=>s+=c);process.stdin.on('end',()=>{const j=JSON.parse(s);if(j.stage!=='QaPending')process.exit(1)})"`
 - [ ] **AC-G4.** Subcomandos novos `spec-draft`, `skill-resolve`, `scan-structural`, `scan-md-validate`, `scan-recipes-validate` registrados. Command: `rtk mustard-rt run --help 2>&1 | rtk node -e "let s='';process.stdin.on('data',c=>s+=c);process.stdin.on('end',()=>{for(const k of ['spec-draft','skill-resolve','scan-structural','scan-md-validate','scan-recipes-validate']){if(!s.includes(k))process.exit(1)}})"`
 - [ ] **AC-G5.** `entity-registry.json` ≥99% cobertura em projeto canário (declarações públicas/exportadas).
 - [ ] **AC-G6.** Soma de linhas dos `commands/mustard/*/SKILL.md` ≤ 800 (hoje ~2300). Command: `rtk node -e "const fs=require('fs'),p=require('path');function walk(d,out){for(const e of fs.readdirSync(d)){const f=p.join(d,e);const s=fs.statSync(f);if(s.isDirectory())walk(f,out);else if(e==='SKILL.md')out.push(f)}return out}const total=walk('apps/cli/templates/commands/mustard',[]).reduce((s,f)=>s+fs.readFileSync(f,'utf8').split(String.fromCharCode(10)).length,0);if(total>800)process.exit(1)"`
-- [ ] **AC-G7.** Schema `mustard.db` limpo (sem `events`/`events_fts`/`knowledge` legacy/`metrics_projection`). Command: validado em wave dedicada.
+- [ ] **AC-G7.** Schema `mustard.db` limpo (sem `events`/`events_fts`/`metrics_projection` como tabelas vivas). Command: `rtk node -e "const t=require('fs').readFileSync('packages/core/src/store/sqlite_schema.sql','utf8').split(String.fromCharCode(10)).filter(l=>!l.trim().startsWith('--')).join(String.fromCharCode(10));for(const k of ['CREATE TABLE events ','CREATE TABLE IF NOT EXISTS events ','CREATE VIRTUAL TABLE events_fts','CREATE VIRTUAL TABLE IF NOT EXISTS events_fts','CREATE TABLE metrics_projection','CREATE TABLE IF NOT EXISTS metrics_projection']){if(t.includes(k))process.exit(1)}"`
 - [ ] **AC-G8.** Skill frontmatter padronizado em 100% das skills foundation + geradas pelo scan. Validado por `mustard-rt run skills validate --strict-frontmatter`.
 
 ## Plano

@@ -23,6 +23,10 @@ export const STATUS_LABELS: Record<string, string> = {
   "closed-followup": "follow-up",
   completed:         "concluída",
   cancelled:         "cancelada",
+  // Wave 4 of deep-refactor (2026-05-25): dedicated terminal outcomes for the
+  // archival pass over 136 historical specs.
+  superseded:        "substituída",
+  absorbed:          "absorvida",
   blocked:           "bloqueada",
   "wave-failed":     "wave falhou",
   // Legacy strings from the pre-Wave-4 SQL fallback — kept so an old DB row
@@ -51,6 +55,11 @@ export const STATUS_CLASSES: Record<string, string> = {
   "closed-followup": "bg-cyan-500/15 text-cyan-400",
   completed:         "bg-slate-500/15 text-slate-400",
   cancelled:         "bg-[--intent-error]/15/10 text-[--intent-error]/70",
+  // Wave 4 of deep-refactor (2026-05-25): dedicated terminal palettes.
+  // `superseded` — subdued orange (work was redirected, not dropped).
+  // `absorbed`   — light grey (work survives inside a consolidating spec).
+  superseded:        "bg-orange-500/15 text-orange-400",
+  absorbed:          "bg-slate-400/15 text-slate-300",
   blocked:           "bg-[--intent-error]/15/15 text-[--intent-error]",
   "wave-failed":     "bg-[--intent-error]/15/15 text-[--intent-error]",
   abandoned:         "bg-muted/40 text-muted-foreground/60",

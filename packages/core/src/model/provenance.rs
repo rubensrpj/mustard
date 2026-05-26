@@ -1,7 +1,7 @@
 //! Artifact provenance — the shape of `apps/cli/templates/.artifacts.json`.
 //!
-//! Mustard vendors dozens of artifacts under `templates/` (skills, recipes,
-//! refs, commands, hooks) and pins external tools such as RTK. Several of
+//! Mustard vendors dozens of artifacts under `templates/` (skills, refs,
+//! commands, hooks) and pins external tools such as RTK. Several of
 //! those have an external upstream that keeps evolving; the manifest records
 //! where each artifact came from, at which version, and (for vendored trees)
 //! a checksum, so a maintainer-side `artifact-update --check` can flag drift
@@ -30,7 +30,7 @@ pub struct ArtifactManifest {
 
 /// One managed artifact: a vendored tree or a pinned external tool.
 ///
-/// For vendored artifacts (skill / recipe / ref / command / hook) `path` and
+/// For vendored artifacts (skill / ref / command / hook) `path` and
 /// `checksum` are populated; for a `tool` both are absent — the tool is not
 /// vendored, only tracked by version.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -63,8 +63,6 @@ pub struct ArtifactRecord {
 pub enum ArtifactCategory {
     /// A foundation skill under `templates/skills/`.
     Skill,
-    /// A structured recipe under `templates/recipes/`.
-    Recipe,
     /// A progressive-disclosure ref tree under `templates/refs/`.
     Ref,
     /// A namespaced slash command under `templates/commands/mustard/`.

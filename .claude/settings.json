@@ -1,10 +1,7 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-settings.json",
   "respectGitignore": true,
-  "plansDirectory": ".claude/plans",
   "cleanupPeriodDays": 30,
-  "attribution": { "commit": "assistant", "pr": "assistant" },
-
   "env": {
     "MUSTARD_SPEC_SIZE_MODE": "warn",
     "MUSTARD_SKILL_SIZE_MODE": "warn",
@@ -21,15 +18,10 @@
     "MUSTARD_HARNESS_DUAL_EMIT": "1",
     "MUSTARD_STATUSLINE_THEME": "tokyo-night"
   },
-
-  "mcpServers": {
-    "mustard-memory": {
-      "command": "mustard-rt",
-      "args": ["mcp"],
-      "env": { "MUSTARD_DB_PATH": ".claude/.harness/mustard.db" }
-    }
+  "attribution": {
+    "commit": "assistant",
+    "pr": "assistant"
   },
-
   "permissions": {
     "allow": [
       "Read",
@@ -51,7 +43,8 @@
       "WebSearch",
       "Bash",
       "Bash(mustard-rt run event-projections:*)",
-      "Bash(mustard-rt run qa-run:*)"
+      "Bash(mustard-rt run qa-run:*)",
+      "Edit(/.claude/skills/grill-with-docs/**)"
     ],
     "deny": [
       "Bash(rm -rf:*)",
@@ -94,7 +87,6 @@
       "Grep(**/Migrations/**)"
     ]
   },
-
   "hooks": {
     "PreToolUse": [
       {
@@ -108,7 +100,6 @@
         ]
       }
     ],
-
     "PostToolUse": [
       {
         "matcher": ".*",
@@ -121,7 +112,6 @@
         ]
       }
     ],
-
     "SessionStart": [
       {
         "matcher": "startup",
@@ -129,13 +119,12 @@
           {
             "type": "command",
             "command": "mustard-rt on SessionStart",
-            "statusMessage": "Initializing harness, memory, and budgets...",
-            "timeout": 15
+            "timeout": 15,
+            "statusMessage": "Initializing harness, memory, and budgets..."
           }
         ]
       }
     ],
-
     "PreCompact": [
       {
         "matcher": "auto|manual",
@@ -148,7 +137,6 @@
         ]
       }
     ],
-
     "SessionEnd": [
       {
         "matcher": "prompt_input_exit|clear|other",
@@ -156,39 +144,36 @@
           {
             "type": "command",
             "command": "mustard-rt on SessionEnd",
-            "statusMessage": "Extracting knowledge and cleaning state...",
-            "timeout": 15
+            "timeout": 15,
+            "statusMessage": "Extracting knowledge and cleaning state..."
           }
         ]
       }
     ],
-
     "SubagentStart": [
       {
         "hooks": [
           {
             "type": "command",
             "command": "mustard-rt on SubagentStart",
-            "statusMessage": "Registering agent...",
-            "timeout": 5
+            "timeout": 5,
+            "statusMessage": "Registering agent..."
           }
         ]
       }
     ],
-
     "SubagentStop": [
       {
         "hooks": [
           {
             "type": "command",
             "command": "mustard-rt on SubagentStop",
-            "statusMessage": "Agent completed",
-            "timeout": 5
+            "timeout": 5,
+            "statusMessage": "Agent completed"
           }
         ]
       }
     ],
-
     "UserPromptSubmit": [
       {
         "matcher": "*",
@@ -202,10 +187,21 @@
       }
     ]
   },
-
   "statusLine": {
     "type": "command",
     "command": "mustard-rt run statusline",
     "padding": 1
+  },
+  "plansDirectory": ".claude/plans",
+  "mcpServers": {
+    "mustard-memory": {
+      "command": "mustard-rt",
+      "args": [
+        "mcp"
+      ],
+      "env": {
+        "MUSTARD_DB_PATH": ".claude/.harness/mustard.db"
+      }
+    }
   }
 }

@@ -32,9 +32,6 @@ In doubt about API/version/pattern → search web for latest docs before impleme
 ## ROLE
 {role_block}
 
-## RECIPE
-{recipe_context}
-
 ## EFFICIENCY
 - Absolute paths, no cd
 - Read each file once

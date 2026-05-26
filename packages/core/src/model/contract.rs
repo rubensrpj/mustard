@@ -43,6 +43,10 @@ pub enum Trigger {
     SubagentStop,
     /// The user submitted a prompt.
     UserPromptSubmit,
+    /// The user interrupted the session (Ctrl+C or `/stop`).
+    Stop,
+    /// The harness emitted a Notification (idle prompt, completion ping).
+    Notification,
 }
 
 impl Trigger {
@@ -61,6 +65,8 @@ impl Trigger {
             "SubagentStart" => Some(Self::SubagentStart),
             "SubagentStop" => Some(Self::SubagentStop),
             "UserPromptSubmit" => Some(Self::UserPromptSubmit),
+            "Stop" => Some(Self::Stop),
+            "Notification" => Some(Self::Notification),
             _ => None,
         }
     }
@@ -78,6 +84,8 @@ impl Trigger {
             Self::SubagentStart => "SubagentStart",
             Self::SubagentStop => "SubagentStop",
             Self::UserPromptSubmit => "UserPromptSubmit",
+            Self::Stop => "Stop",
+            Self::Notification => "Notification",
         }
     }
 }
@@ -278,6 +286,13 @@ pub struct Ctx {
     pub project_dir: String,
     /// The lifecycle event that triggered the hook, if known.
     pub trigger: Option<Trigger>,
+    /// The resolved Mustard workspace root (the directory containing
+    /// `mustard.json` + `.claude/`). Populated once by the dispatcher via
+    /// [`crate::workspace::workspace_root`] — modules should prefer this over
+    /// re-resolving from [`Self::project_dir`] (which is the raw `cwd` and may
+    /// point at a monorepo subproject). `None` when resolution failed; the
+    /// dispatcher fails open in that case.
+    pub workspace_root: Option<std::path::PathBuf>,
 }
 
 // ---------------------------------------------------------------------------

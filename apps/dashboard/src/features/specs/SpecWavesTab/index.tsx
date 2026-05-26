@@ -8,6 +8,7 @@ import { useSpecWaveFiles } from "@/hooks/useSpecWaveFiles";
 import { useSpecWavesPlanned } from "@/hooks/useSpecWavesPlanned";
 import { WaveMarkdownDrawer } from "../WaveMarkdownDrawer";
 import { StatusPill } from "../_shared/spec-status";
+import { useT } from "@/lib/i18n";
 
 interface SpecWavesTabProps {
   waves: SpecWave[];
@@ -51,11 +52,11 @@ const STATUS_CLS: Record<string, string> = {
   queued:      "bg-muted text-muted-foreground",
 };
 
-const STATUS_LABEL: Record<string, string> = {
-  completed:   "concluída",
-  in_progress: "em execução",
-  failed:      "falhou",
-  queued:      "aguardando",
+const STATUS_LABEL_KEYS: Record<string, string> = {
+  completed:   "specWaves.status.completed",
+  in_progress: "specWaves.status.in_progress",
+  failed:      "specWaves.status.failed",
+  queued:      "specWaves.status.queued",
 };
 
 /**
@@ -71,10 +72,10 @@ const SOURCE_CLS: Record<string, string> = {
   both:   "bg-emerald-500/15 text-emerald-400",
 };
 
-const SOURCE_LABEL: Record<string, string> = {
-  event:  "evento",
-  header: "header",
-  both:   "ambos",
+const SOURCE_LABEL_KEYS: Record<string, string> = {
+  event:  "specWaves.source.event",
+  header: "specWaves.source.header",
+  both:   "specWaves.source.both",
 };
 
 /** Format milliseconds into a compact "1h 2m" / "12s" string. */
@@ -122,6 +123,7 @@ function childDurationMs(child: SpecChild): number | null {
  * duration), kept compact so a wave with several children stays scannable.
  */
 function ChildRow({ child }: { child: SpecChild }) {
+  const t = useT();
   const navigate = useNavigate();
   const duration = childDurationMs(child);
   return (
@@ -137,7 +139,7 @@ function ChildRow({ child }: { child: SpecChild }) {
           "hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2",
           "focus-visible:ring-[--primary] transition-colors",
         )}
-        title={`Abrir ${child.spec}`}
+        title={t("specWaves.child.openTitle").replace("{spec}", child.spec)}
       >
         <span
           className="font-mono text-[11px] truncate flex-1 min-w-0"
@@ -153,13 +155,13 @@ function ChildRow({ child }: { child: SpecChild }) {
             )}
             title={
               child.source === "event"
-                ? "Descoberto via evento SQLite spec.link"
+                ? t("specWaves.child.source.event")
                 : child.source === "header"
-                  ? "Descoberto via header `### Parent:` no markdown"
-                  : "Presente em evento E header"
+                  ? t("specWaves.child.source.header")
+                  : t("specWaves.child.source.both")
             }
           >
-            {SOURCE_LABEL[child.source]}
+            {t(SOURCE_LABEL_KEYS[child.source])}
           </span>
         )}
         <StatusPill status={child.status} />
@@ -167,7 +169,7 @@ function ChildRow({ child }: { child: SpecChild }) {
           <span
             className="text-[10px] text-muted-foreground tabular-nums"
             style={{ fontVariantNumeric: "tabular-nums" }}
-            title="Duração do filho"
+            title={t("specWaves.child.durationTitle")}
           >
             {formatDuration(duration)}
           </span>
@@ -219,6 +221,7 @@ function WaveLi({
   borderOverride,
   labelOverride,
 }: WaveLiProps) {
+  const t = useT();
   const filesQ = useSpecWaveFiles(repoPath ?? null, spec ?? "", wave.wave);
   const duration_ms = waveDurationMs(wave);
   const isFailed = wave.status === "failed";
@@ -234,8 +237,8 @@ function WaveLi({
   const displayCount = realCount ?? wave.files_changed;
   const countTitle =
     realCount != null
-      ? "arquivos declarados em `## Arquivos`"
-      : "arquivos tocados pela onda (eventos tool.use)";
+      ? t("specWaves.row.fileCountTitle.declared")
+      : t("specWaves.row.fileCountTitle.touched");
 
   const borderClass =
     borderOverride ??
@@ -269,7 +272,7 @@ function WaveLi({
       onKeyDown={clickable ? handleKeyDown : undefined}
       role={clickable ? "button" : undefined}
       tabIndex={clickable ? 0 : undefined}
-      aria-label={clickable ? `Abrir markdown da wave ${wave.wave}` : undefined}
+      aria-label={clickable ? t("specWaves.row.openWaveAria").replace("{n}", String(wave.wave)) : undefined}
     >
       <div className="flex items-start gap-3">
         {/* Chevron expand toggle — only when this wave has correlated children */}
@@ -280,12 +283,12 @@ function WaveLi({
               e.stopPropagation();
               setExpanded((v) => !v);
             }}
-            aria-label={expanded ? "Colapsar sub-specs" : "Expandir sub-specs"}
+            aria-label={expanded ? t("specWaves.row.collapseAria") : t("specWaves.row.expandAria")}
             aria-expanded={expanded}
             title={
               expanded
-                ? "Esconder sub-specs desta onda"
-                : `Mostrar ${childCount} sub-spec${childCount === 1 ? "" : "s"} desta onda`
+                ? t("specWaves.row.collapseTitle")
+                : t("specWaves.row.expandTitle").replace("{count}", String(childCount)).replace("{plural}", childCount === 1 ? "" : "s")
             }
             className="shrink-0 mt-0.5 h-5 w-5 flex items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[--primary] transition-colors"
           >
@@ -330,7 +333,7 @@ function WaveLi({
             {childCount > 0 && (
               <span
                 className="text-[10px] font-mono font-medium px-1.5 py-0.5 rounded uppercase tracking-wide bg-muted/60 text-muted-foreground"
-                title={`${childCount} sub-specs criadas dentro desta onda`}
+                title={t("specWaves.row.subSpecsTitle").replace("{count}", String(childCount))}
               >
                 +{childCount} sub-spec{childCount === 1 ? "" : "s"}
               </span>
@@ -342,19 +345,19 @@ function WaveLi({
             style={{ fontVariantNumeric: "tabular-nums" }}
           >
             {wave.started_at && (
-              <span>início: {relativeTime(wave.started_at)}</span>
+              <span>{t("specWaves.row.startedAt")} {relativeTime(wave.started_at)}</span>
             )}
             {wave.completed_at && (
-              <span>fim: {relativeTime(wave.completed_at)}</span>
+              <span>{t("specWaves.row.completedAt")} {relativeTime(wave.completed_at)}</span>
             )}
             {duration_ms != null && (
-              <span title="duração total da onda">
-                duração: {formatDuration(duration_ms)}
+              <span title={t("specWaves.row.durationTitle")}>
+                {t("specWaves.row.durationLabel")} {formatDuration(duration_ms)}
               </span>
             )}
             <span title={countTitle}>
               {displayCount}{" "}
-              {displayCount === 1 ? "arquivo" : "arquivos"}
+              {displayCount === 1 ? t("specWaves.row.fileSingular") : t("specWaves.row.filePlural")}
             </span>
           </div>
         </div>
@@ -366,7 +369,7 @@ function WaveLi({
             STATUS_CLS[wave.status] ?? "bg-muted text-muted-foreground",
           )}
         >
-          {STATUS_LABEL[wave.status] ?? wave.status}
+          {STATUS_LABEL_KEYS[wave.status] ? t(STATUS_LABEL_KEYS[wave.status]) : wave.status}
         </span>
       </div>
 
@@ -376,7 +379,7 @@ function WaveLi({
           where the actual stderr lives. */}
       {isFailed && (
         <p className="text-[11px] text-[--intent-error]/80 pl-7">
-          Onda falhou — ver Qualidade / markdown para detalhes do último erro.
+          {t("specWaves.row.waveFailed")}
         </p>
       )}
 
@@ -408,6 +411,7 @@ export function SpecWavesTab({
   openWave,
   onCloseDrawer,
 }: SpecWavesTabProps) {
+  const t = useT();
   // Bug 5 fix (spec `2026-05-21-dashboard-spec-tabs-polish` W1): during
   // EXECUTE the SQLite projection (`waves`) might be empty or partial
   // because the wave events have not landed yet. Union it with the wave
@@ -460,19 +464,19 @@ export function SpecWavesTab({
     if (!spec) return null;
     return {
       wave: 0,
-      role: "spec principal",
+      role: t("specWaves.row.specPrincipal"),
       status: "completed",
       started_at: null,
       completed_at: null,
       agent_type: null,
       files_changed: 0,
     };
-  }, [spec]);
+  }, [spec, t]);
 
   const openWaveRole =
     openWave != null
       ? openWave === 0
-        ? "spec principal"
+        ? t("specWaves.row.specPrincipal")
         : (merged.find((w) => w.wave === openWave)?.role ?? null)
       : null;
 
@@ -495,7 +499,7 @@ export function SpecWavesTab({
     }
     return (
       <p className="text-[13px] text-muted-foreground py-4 text-center">
-        Nenhuma onda registrada para esta spec.
+        {t("specWaves.empty")}
       </p>
     );
   }
@@ -518,7 +522,7 @@ export function SpecWavesTab({
           // numbered waves; orphans render in the bucket at the bottom).
           childrenOfWave={undefined}
           borderOverride="border-[--primary]/40 bg-[--primary]/5"
-          labelOverride="Spec principal"
+          labelOverride={t("specWaves.row.mainSpecLabel")}
         />
       )}
       {merged.map((wave) => (
@@ -534,10 +538,10 @@ export function SpecWavesTab({
       {orphans.length > 0 && (
         <li
           className="flex flex-col gap-2 px-3 py-2.5 rounded-md border border-dashed border-border/50 bg-card/5"
-          aria-label="Sub-specs sem onda correlacionada"
+          aria-label={t("specWaves.orphans.aria")}
         >
           <div className="flex items-center gap-2 text-[11px] text-muted-foreground uppercase tracking-wide">
-            <span>Sem onda correlacionada</span>
+            <span>{t("specWaves.orphans.label")}</span>
             <span
               className="tabular-nums"
               style={{ fontVariantNumeric: "tabular-nums" }}

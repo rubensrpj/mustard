@@ -1,6 +1,6 @@
 import { useEffect, useMemo } from "react";
 import { Link, useParams, useSearchParams } from "react-router";
-import { Layers, ChefHat, BookOpen, Activity, type LucideIcon } from "lucide-react";
+import { Layers, BookOpen, Activity, type LucideIcon } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { useProject } from "@/hooks/useProject";
 import { useStore } from "@/lib/store";
@@ -93,7 +93,7 @@ export function ProjectDetail() {
     if (id) setSelectedProjectId(id);
   }, [id, setSelectedProjectId]);
 
-  const { subprojects, recipes, skills, recentEvents, loading, error } = useProject(project);
+  const { subprojects, skills, recentEvents, loading, error } = useProject(project);
 
   // Wave 3 (2026-05-22): watcher-driven via "pipeline-state" — no poll needed.
   const { data: activePipelines } = useQuery({
@@ -229,36 +229,6 @@ export function ProjectDetail() {
                           {s.role}
                         </Badge>
                       )}
-                    </li>
-                  ))}
-                </ul>
-              </DataCard>
-            )}
-          </section>
-
-          <Separator className="my-4" />
-
-          <section>
-            <SectionHeading
-              title="Recipes"
-              count={recipes?.length ?? 0}
-              loading={loading}
-              icon={ChefHat}
-            />
-            {loading ? (
-              <p className="text-muted-foreground text-sm">Carregando…</p>
-            ) : (
-              <DataCard padded>
-                <ul className="flex flex-col gap-0.5 text-sm">
-                  {recipes?.map((r) => (
-                    <li
-                      key={r.name}
-                      className="flex items-baseline gap-2 px-2 py-1 rounded hover:bg-muted"
-                    >
-                      <span className="font-medium">{r.name}</span>
-                      <span className="text-muted-foreground text-[13px]">
-                        — {truncate(r.description, 120)}
-                      </span>
                     </li>
                   ))}
                 </ul>

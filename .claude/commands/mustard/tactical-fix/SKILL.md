@@ -76,7 +76,7 @@ Tactical fix derivado de [[<parent>]].
 <!-- Paths intentionally touched -->
 ```
 
-For `Lang=en` use the EN headings (`## Context`, `## Acceptance Criteria`, `## Files`).
+For `Lang=en-US` use the EN headings (`## Context`, `## Acceptance Criteria`, `## Files`).
 
 ### Step 4 — Emit `spec.link` event
 

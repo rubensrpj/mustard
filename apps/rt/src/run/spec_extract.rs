@@ -18,23 +18,23 @@ use mustard_core::economy::writer;
 use mustard_core::economy::{AgentId, ContextCostFrame, ProjectPath, SpecId, WaveId};
 use mustard_core::fs;
 use mustard_core::store::sqlite_store::SqliteEventStore;
+use mustard_core::ClaudePaths;
 use rusqlite::Connection;
 use serde_json::{Map, json};
 use std::path::{Path, PathBuf};
 
 /// Resolve the harness SQLite path (mirrors `SqliteEventStore::for_project`'s
 /// private resolver). Env override `MUSTARD_DB_PATH` wins, else the standard
-/// `.claude/.harness/mustard.db` under the project root.
+/// `.claude/.harness/mustard.db` under the project root via [`ClaudePaths`].
 fn economy_db_path(project_dir: &str) -> PathBuf {
     if let Ok(value) = std::env::var("MUSTARD_DB_PATH") {
         if !value.trim().is_empty() {
             return PathBuf::from(value);
         }
     }
-    Path::new(project_dir)
-        .join(".claude")
-        .join(".harness")
-        .join("mustard.db")
+    ClaudePaths::for_project(project_dir)
+        .map(|p| p.mustard_db_path())
+        .unwrap_or_default()
 }
 
 /// Open a raw [`Connection`] to the harness DB, applying schema/migrations
@@ -74,7 +74,6 @@ fn record_extract_frame(
         prompt_size_bytes: i64::try_from(full_bytes).ok(),
         prefix_stable_bytes: None,
         slice_bytes: i64::try_from(slice_bytes).ok(),
-        recipe_bytes: None,
         wave_slice_bytes: i64::try_from(slice_bytes).ok(),
         return_size_bytes: Some(0),
         retry_overhead_bytes: Some(0),

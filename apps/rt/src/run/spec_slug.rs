@@ -28,7 +28,7 @@
 // public API today keeps the surface stable across the wave gap.
 #![allow(dead_code)]
 
-use mustard_core::{slugify, Locale, LocaleError};
+use mustard_core::{slugify, LocaleError, SupportedLocale as Locale};
 use std::str::FromStr;
 
 /// Slugify `title` for `lang`. PT strips accents, EN does not.

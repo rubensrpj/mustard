@@ -18,13 +18,13 @@
 | `review` | general-purpose | opus | Code quality review (SOLID, security, perf) |
 | `docs` | general-purpose | sonnet | Documentation generation |
 | `refactor` | Plan → general-purpose | sonnet/opus | Plan + approve + implement refactoring |
-| `implement` | general-purpose | sonnet | Single-dispatch implementation with inline guards/patterns/recipes (low-cost, standardized) |
+| `implement` | general-purpose | sonnet | Single-dispatch implementation with inline guards/patterns (low-cost, standardized) |
 
 ## L0 Enforcement
 
 **CRITICAL**: Parent context does NOT read code, does NOT implement. ALL work happens in Task contexts.
 
-**Note on `implement`**: the orchestrator may run targeted Greps against `.md` context files (`guards.md`, `patterns.md`, `recipes.md`) to inject standardization slices into the dispatched prompt. Those files are configuration docs, not application code — reading them in the parent is allowed. Source code reads still happen only inside the dispatched Task.
+**Note on `implement`**: the orchestrator may run targeted Greps against `.md` context files (`guards.md`, `patterns.md`) to inject standardization slices into the dispatched prompt. Those files are configuration docs, not application code — reading them in the parent is allowed. Source code reads still happen only inside the dispatched Task.
 
 ## Flow
 
@@ -49,7 +49,7 @@
 
 ### refactor (updated)
 
-1. **ASSESS** — 3+ files or cross-layer → Plan mode first. Load `improve-codebase-architecture` skill: it surfaces deepening opportunities informed by `CONTEXT.md` and `docs/adr/` before the Plan agent commits to a strategy.
+1. **ASSESS** — 3+ files or cross-layer → Plan mode first. Load `improve-codebase-architecture` skill: it surfaces deepening opportunities informed by `CONTEXT.md` and ADRs (spec-scoped `.claude/spec/{name}/adr/` or repo-wide `docs/adr/`) before the Plan agent commits to a strategy.
 2. **PLAN** — Task(Plan) to analyze and propose strategy
 3. **APPROVE** — Print the ENTIRE plan returned by Task(Plan) verbatim inside a fenced markdown block (```` ```markdown ... ``` ````). Do NOT summarize or truncate — the user asked to read the complete plan before approving. Then `AskUserQuestion`: **"Approve and implement?"** / **"Adjust"** / **"Cancel"**.
 4. **IMPLEMENT** — Task(general-purpose) to execute approved plan
@@ -59,15 +59,15 @@
 
 ### implement
 
-1. **GREP SLICES** — Orchestrator runs targeted Greps against `{subproject}/.claude/commands/guards.md`, `patterns.md`, `recipes.md` for the scope keyword. Use `output_mode: content`, `-C 2`, `head_limit: 20` (cap ~500 tokens per file). Greps return small slices, not full files.
-2. **DISPATCH** — Single `Task(general-purpose, sonnet)` with guards/patterns/recipe injected inline in the prompt, naming conventions explicit, and return format capped at 30 lines.
+1. **GREP SLICES** — Orchestrator runs targeted Greps against `{subproject}/.claude/commands/guards.md`, `patterns.md` for the scope keyword. Use `output_mode: content`, `-C 2`, `head_limit: 20` (cap ~500 tokens per file). Greps return small slices, not full files.
+2. **DISPATCH** — Single `Task(general-purpose, sonnet)` with guards/patterns injected inline in the prompt, naming conventions explicit, and return format capped at 30 lines.
 3. **BUILD** — Agent runs build/type-check at the end and reports the result.
 4. **NO OVERHEAD** — No spec, no pipeline state, no review gate. Surgical.
 5. **ON CONCERN** — If the agent returns CONCERN, orchestrator shows it to the user and offers either `/feature` Light (more gates) or an adjusted `implement` prompt.
 
 ## Implementation
 
-Concrete prompt templates for each action (analyze, review, docs, refactor, audit, implement, compare) — including the `implement` Grep-inject pattern that runs guards/patterns/recipe Greps in the parent before single-dispatch.
+Concrete prompt templates for each action (analyze, review, docs, refactor, audit, implement, compare) — including the `implement` Grep-inject pattern that runs guards/patterns Greps in the parent before single-dispatch.
 
 → See `../../../refs/task/task-prompts.md`
 

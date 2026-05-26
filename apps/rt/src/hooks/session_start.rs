@@ -53,6 +53,7 @@ use mustard_core::error::Error;
 use mustard_core::fs;
 use mustard_core::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
 use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
+use mustard_core::ClaudePaths;
 use rusqlite::params;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -112,7 +113,9 @@ fn now_millis() -> u128 {
 
 /// The `.claude/.harness` directory for a project.
 fn harness_dir(cwd: &str) -> PathBuf {
-    Path::new(cwd).join(".claude").join(".harness")
+    ClaudePaths::for_project(cwd)
+        .map(|p| p.harness_dir())
+        .unwrap_or_default()
 }
 
 /// The `.claude/.harness/sessions` directory for a project.
@@ -738,10 +741,9 @@ fn build_memory_context(cwd: &str) -> Option<String> {
     // complications with SqliteEventStore (which holds a private Connection).
     let db_path = match std::env::var("MUSTARD_DB_PATH") {
         Ok(p) if !p.trim().is_empty() => std::path::PathBuf::from(p),
-        _ => Path::new(cwd)
-            .join(".claude")
-            .join(".harness")
-            .join("mustard.db"),
+        _ => ClaudePaths::for_project(cwd)
+            .map(|p| p.mustard_db_path())
+            .unwrap_or_default(),
     };
 
     // DB might not exist yet on a fresh project — fail-open to empty.

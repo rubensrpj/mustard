@@ -13,8 +13,9 @@
 //! and exit `0`.
 
 use mustard_core::fs;
+use mustard_core::ClaudePaths;
 use serde_json::json;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 /// Resolve the wave's spec.md path under
 /// `.claude/spec/{spec}/wave-{wave}-*/spec.md`. The role suffix is treated
@@ -28,10 +29,10 @@ use std::path::{Path, PathBuf};
 /// This lets the dashboard's "Onda #0" row in the Ondas tab open the parent
 /// markdown using the same drawer wiring as numbered waves.
 fn resolve_wave_spec_path(project_dir: &str, spec: &str, wave: u32) -> Option<PathBuf> {
-    let spec_dir = Path::new(project_dir)
-        .join(".claude")
-        .join("spec")
-        .join(spec);
+    let spec_dir = ClaudePaths::for_project(project_dir)
+        .ok()
+        .and_then(|p| p.for_spec(spec).ok())
+        .map(|sp| sp.dir().to_path_buf())?;
     if !spec_dir.is_dir() {
         return None;
     }

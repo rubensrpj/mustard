@@ -68,17 +68,31 @@ fn default_timeout() -> u64 {
     5
 }
 
-/// Run `mustard add <template_spec>` in `cwd`.
+/// Run `mustard add <spec>` in `cwd`.
 ///
-/// `template_spec` is `"template:<name>"` or just `"<name>"`.
+/// `spec` may be:
+///
+/// - `"template:<name>"` — fetch a community template from GitHub or npm and
+///   copy it into `.claude/` (the legacy behavior).
+/// - `"skill:<name>"` — install a skill. If the name matches one of the
+///   bundled extras under `templates-extras/skills/<name>/`, install from
+///   there. Otherwise delegate to `mustard-rt run skill-fetch <name>` (W5
+///   subcommand) which handles local paths, GitHub sparse-clone, and tarball
+///   fetch. Either path lands the skill in `.claude/skills/<name>/`.
+/// - `"<name>"` (no prefix) — treated as `template:<name>` for backwards
+///   compatibility.
 pub fn add(cwd: &Path, template_spec: &str, options: &AddOptions) -> Result<()> {
-    let name = template_spec.strip_prefix("template:").unwrap_or(template_spec);
-    validate_name(name)?;
-
     let claude_dir = cwd.join(".claude");
     if !claude_dir.is_dir() {
         bail!("no .claude/ directory found - run `mustard init` first");
     }
+
+    if let Some(name) = template_spec.strip_prefix("skill:") {
+        return install_skill(cwd, name, &claude_dir, options);
+    }
+
+    let name = template_spec.strip_prefix("template:").unwrap_or(template_spec);
+    validate_name(name)?;
 
     println!("Installing template: {name}");
 
@@ -97,6 +111,115 @@ pub fn add(cwd: &Path, template_spec: &str, options: &AddOptions) -> Result<()> 
     println!("\nTemplate installed: {copied} file(s) copied, {skipped} skipped.");
     if skipped > 0 {
         println!("Use --force to overwrite existing files.");
+    }
+    Ok(())
+}
+
+/// Install a skill from the bundled extras, or via `mustard-rt run skill-fetch`.
+///
+/// Resolution: (1) check `templates-extras/skills/<name>/` next to the bundled
+/// `templates/` payload — copy it into `.claude/skills/<name>/` and we are done;
+/// (2) otherwise shell out to `mustard-rt run skill-fetch <name>` (W5 subcommand)
+/// which understands local paths, GitHub sparse-clone, and tarball fetch.
+///
+/// Existing skills are preserved unless `--force`. Fail-open: if `mustard-rt` is
+/// not on PATH, surface that to the user with installation guidance.
+fn install_skill(
+    cwd: &Path,
+    name: &str,
+    claude_dir: &Path,
+    options: &AddOptions,
+) -> Result<()> {
+    validate_name(name)?;
+    println!("Installing skill: {name}");
+
+    let dest = claude_dir.join("skills").join(name);
+    if dest.exists() && !options.force {
+        bail!(
+            "skill already installed at {} — pass --force to overwrite",
+            dest.display(),
+        );
+    }
+
+    // Try bundled extras first — `templates-extras/skills/<name>/` lives next
+    // to the bundled `templates/` payload that `init` resolves.
+    if let Some(extras) = locate_bundled_extras() {
+        let src = extras.join("skills").join(name);
+        if src.is_dir() {
+            copy_dir_recursive(&src, &dest)?;
+            println!("  Installed from bundled extras: {}", dest.display());
+            return Ok(());
+        }
+    }
+
+    // Otherwise hand off to mustard-rt's skill-fetch subcommand.
+    let output = Command::new("mustard-rt")
+        .args(["run", "skill-fetch", name])
+        .current_dir(cwd)
+        .output();
+    match output {
+        Ok(out) if out.status.success() => {
+            print!("{}", String::from_utf8_lossy(&out.stdout));
+            Ok(())
+        }
+        Ok(out) => bail!(
+            "`mustard-rt run skill-fetch {name}` exited {}: {}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr).trim()
+        ),
+        Err(err) => bail!(
+            "could not invoke `mustard-rt run skill-fetch {name}` ({err}). \
+             Install mustard-rt or install the skill manually into {}.",
+            dest.display()
+        ),
+    }
+}
+
+/// Locate `templates-extras/` next to the bundled `templates/` payload.
+///
+/// Mirrors `init::resolve_templates_dir`'s resolution order: env override →
+/// next to the executable → in-repo Cargo manifest. Returns `None` when no
+/// extras directory is found (callers fall back to `mustard-rt run skill-fetch`).
+fn locate_bundled_extras() -> Option<PathBuf> {
+    if let Ok(dir) = std::env::var("MUSTARD_TEMPLATES_DIR") {
+        let extras = Path::new(&dir).with_file_name("templates-extras");
+        if extras.is_dir() {
+            return Some(extras);
+        }
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(exe_dir) = exe.parent() {
+            for candidate in [
+                exe_dir.join("templates-extras"),
+                exe_dir.join("../templates-extras"),
+            ] {
+                if candidate.is_dir() {
+                    return Some(candidate);
+                }
+            }
+        }
+    }
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates-extras");
+    manifest.is_dir().then_some(manifest)
+}
+
+/// Recursively copy `src` into `dest`, creating directories as needed.
+/// Overwrites existing files (the `install_skill` caller has already enforced
+/// the `--force` policy).
+fn copy_dir_recursive(src: &Path, dest: &Path) -> Result<()> {
+    mfs::create_dir_all(dest)
+        .with_context(|| format!("creating {}", dest.display()))?;
+    let Ok(entries) = mfs::read_dir(src) else {
+        return Ok(());
+    };
+    for entry in entries {
+        let from = entry.path;
+        let to = dest.join(&entry.file_name);
+        if entry.is_dir {
+            copy_dir_recursive(&from, &to)?;
+        } else {
+            copy_one(&from, &to)?;
+        }
     }
     Ok(())
 }

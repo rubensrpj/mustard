@@ -1,0 +1,9 @@
+{
+  "stage": "Analyze",
+  "outcome": "Active",
+  "phase": null,
+  "scope": "light",
+  "lang": "pt-BR",
+  "checkpoint": "2026-05-26T02:00:06.611Z",
+  "parent": "2026-05-25-mustard-deep-refactor"
+}

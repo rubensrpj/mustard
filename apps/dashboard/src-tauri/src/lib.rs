@@ -206,13 +206,6 @@ pub struct SubprojectInfo {
 
 #[derive(Serialize)]
 #[serde(rename_all = "snake_case")]
-pub struct RecipeMeta {
-    name: String,
-    description: String,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "snake_case")]
 pub struct SkillMeta {
     name: String,
     description: String,
@@ -319,35 +312,6 @@ fn dashboard_subprojects(repo_path: String) -> Result<Vec<SubprojectInfo>, Strin
             a.split('-').next().map(|s| s.to_string())
         });
         results.push(SubprojectInfo { name, role });
-    }
-    Ok(results)
-}
-
-#[tauri::command]
-fn dashboard_recipes(repo_path: String) -> Result<Vec<RecipeMeta>, String> {
-    let base = PathBuf::from(&repo_path);
-    let dir = base.join(".claude").join("recipes");
-    if !dir.exists() {
-        return Ok(vec![]);
-    }
-    let mut results = Vec::new();
-    for entry in fs::read_dir(&dir).map_err(|e| e.to_string())? {
-        let path = &entry.path;
-        if path.extension().and_then(|s| s.to_str()) != Some("json") {
-            continue;
-        }
-        let filename = path.file_stem().and_then(|s| s.to_str()).unwrap_or("").to_string();
-        let content = match fs::read_to_string(path) {
-            Ok(c) => c,
-            Err(_) => { eprintln!("recipes: failed to read {:?}", path); continue; }
-        };
-        let v: serde_json::Value = match serde_json::from_str(&content) {
-            Ok(v) => v,
-            Err(_) => { eprintln!("recipes: malformed JSON {:?}", path); continue; }
-        };
-        let name = v["name"].as_str().unwrap_or(&filename).to_string();
-        let description = v["description"].as_str().unwrap_or("").to_string();
-        results.push(RecipeMeta { name, description });
     }
     Ok(results)
 }
@@ -1697,7 +1661,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             dashboard_pipelines, dashboard_metrics, dashboard_knowledge,
-            dashboard_subprojects, dashboard_recipes, dashboard_skills, dashboard_recent_events,
+            dashboard_subprojects, dashboard_skills, dashboard_recent_events,
             dashboard_specs, dashboard_spec_markdown, commands::specs::read_spec_meta,
             commands::settings::set_language,
             commands::settings::set_tone,

@@ -56,8 +56,8 @@ export function Workspace() {
     return (
       <PageSurface>
         <EmptyState
-          title="Diretório de projetos não configurado"
-          description="Vá em Configurações e aponte para a pasta onde estão seus repos."
+          title={t("empty.noRoot.title")}
+          description={t("empty.noRoot.description")}
         />
       </PageSurface>
     );
@@ -67,8 +67,8 @@ export function Workspace() {
     return (
       <PageSurface>
         <EmptyState
-          title="Selecione um workspace"
-          description="Use o seletor na sidebar para escolher um projeto."
+          title={t("empty.noWorkspace.title")}
+          description={t("empty.noWorkspace.description")}
         />
       </PageSurface>
     );
@@ -108,7 +108,7 @@ export function Workspace() {
       <EditorialBand
         eyebrow="Workspace"
         title={activeProject.name}
-        subtitle={`Visão geral das pipelines ativas, saúde do projeto e atividade recente para ${activeProject.name}.`}
+        subtitle={t("workspace.editorialSubtitle").replace("{name}", activeProject.name)}
       />
 
       {/* Hero: multi-spec list (replaces single-pipeline StatusBar + Timeline). */}

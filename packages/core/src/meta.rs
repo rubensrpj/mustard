@@ -62,8 +62,14 @@ pub struct Meta {
     /// passes for every spec — these are the canonical six **machine-parseable**
     /// lifecycle fields and the dashboard relies on their key presence.
     pub stage: Option<String>,
-    /// Terminal outcome: `Active` / `Completed` / `Cancelled` / `Abandoned`.
-    /// Mirror of [`crate::Outcome`]. Always serialized (`null` when absent).
+    /// Terminal outcome: `Active` / `Completed` / `Cancelled` / `Abandoned` /
+    /// `Superseded` / `Absorbed`. Mirror of [`crate::Outcome`]. Always
+    /// serialized (`null` when absent).
+    ///
+    /// `Superseded` and `Absorbed` were added in Wave 4 of the deep-refactor
+    /// (2026-05-25): historic specs replaced by a newer one carry
+    /// `Superseded`; specs folded into a larger consolidating spec carry
+    /// `Absorbed`. The dashboard renders dedicated badges for both.
     pub outcome: Option<String>,
     /// Active pipeline phase token (`ANALYZE`/`PLAN`/`EXECUTE`/`QA`/`CLOSE`).
     /// Surfaced for dashboard cards; the canonical state machine is

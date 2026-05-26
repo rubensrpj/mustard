@@ -9,12 +9,20 @@
  * All color references use CSS custom properties defined in style.css
  * (--color-phase-*). This keeps AC-17 satisfied: zero Tailwind named-color
  * classes in source — only arbitrary CSS-var references like text-[--color-*].
+ *
+ * Localization
+ * ------------
+ * `label` / `detail` strings are RESOLVED THROUGH `t(key)` against the
+ * dictionary in `lib/i18n.ts`. Each entry below carries i18n keys so
+ * `phaseTheme()` returns translated strings every time it is called
+ * (`t()` reads the current language synchronously from the zustand store).
  */
+import { t } from "@/lib/i18n";
 
 export type PhaseTheme = {
-  /** Friendly Portuguese label */
+  /** Friendly localized label */
   label: string;
-  /** One-line description for tooltips and inline hints */
+  /** One-line localized description for tooltips and inline hints */
   detail: string;
   /** Tailwind arbitrary-value text class using CSS var */
   text: string;
@@ -27,59 +35,48 @@ export type PhaseTheme = {
 };
 
 /* Phase chips use CSS custom properties so AC-17 (no named Tailwind colors) holds.
-   The actual values are defined in style.css under :root and .dark. */
-export const PHASE_THEME: Record<string, PhaseTheme> = {
+   The actual values are defined in style.css under :root and .dark.
+   Static palette (colors only) — labels/details are pulled from i18n at read time. */
+type PhasePalette = Omit<PhaseTheme, "label" | "detail">;
+
+const PHASE_PALETTE: Record<string, PhasePalette> = {
   BACKLOG: {
-    label: "Backlog",
-    detail: "Pendente de priorização — fora do fluxo ativo",
     text: "text-[--color-phase-backlog]",
     bg: "bg-[--color-phase-backlog-bg]",
     border: "border-[--color-phase-backlog-border]",
     stripe: "bg-[--color-phase-backlog-stripe]",
   },
   ANALYZE: {
-    label: "Analisar",
-    detail: "Exploração inicial do problema — Grep/Read sem editar",
     text: "text-[--color-phase-analyze]",
     bg: "bg-[--color-phase-analyze-bg]",
     border: "border-[--color-phase-analyze-border]",
     stripe: "bg-[--color-phase-analyze-stripe]",
   },
   PLAN: {
-    label: "Planejar",
-    detail: "Desenhando a solução — spec/plan, sem tocar código",
     text: "text-[--color-phase-plan]",
     bg: "bg-[--color-phase-plan-bg]",
     border: "border-[--color-phase-plan-border]",
     stripe: "bg-[--color-phase-plan-stripe]",
   },
   EXECUTE: {
-    label: "Executar",
-    detail: "Implementando o código — waves rodam aqui",
     text: "text-[--color-phase-execute]",
     bg: "bg-[--color-phase-execute-bg]",
     border: "border-[--color-phase-execute-border]",
     stripe: "bg-[--color-phase-execute-stripe]",
   },
   QA: {
-    label: "QA",
-    detail: "Validando AC — script qa-run executando os critérios",
     text: "text-[--color-phase-qa]",
     bg: "bg-[--color-phase-qa-bg]",
     border: "border-[--color-phase-qa-border]",
     stripe: "bg-[--color-phase-qa-stripe]",
   },
   CLOSE: {
-    label: "Fechando",
-    detail: "Promovendo para completed e sincronizando registros",
     text: "text-[--color-phase-close]",
     bg: "bg-[--color-phase-close-bg]",
     border: "border-[--color-phase-close-border]",
     stripe: "bg-[--color-phase-close-stripe]",
   },
   "—": {
-    label: "Sem fase",
-    detail: "Sem fase definida ainda",
     text: "text-muted-foreground",
     bg: "bg-muted/50",
     border: "border-border",
@@ -87,11 +84,28 @@ export const PHASE_THEME: Record<string, PhaseTheme> = {
   },
 };
 
+/** i18n keys for phase label/detail per canonical phase. */
+const PHASE_I18N: Record<string, { label: string; detail: string }> = {
+  BACKLOG: { label: "phaseTheme.backlog.label", detail: "phaseTheme.backlog.detail" },
+  ANALYZE: { label: "phaseTheme.analyze.label", detail: "phaseTheme.analyze.detail" },
+  PLAN: { label: "phaseTheme.plan.label", detail: "phaseTheme.plan.detail" },
+  EXECUTE: { label: "phaseTheme.execute.label", detail: "phaseTheme.execute.detail" },
+  QA: { label: "phaseTheme.qa.label", detail: "phaseTheme.qa.detail" },
+  CLOSE: { label: "phaseTheme.close.label", detail: "phaseTheme.close.detail" },
+  "—": { label: "phaseTheme.none.label", detail: "phaseTheme.none.detail" },
+};
+
 export const PHASE_ORDER: string[] = ["BACKLOG", "ANALYZE", "PLAN", "EXECUTE", "QA", "CLOSE", "—"];
 
 export function phaseTheme(phase: string | null | undefined): PhaseTheme {
   const key = (phase ?? "").toUpperCase().trim() || "—";
-  return PHASE_THEME[key] ?? PHASE_THEME["—"];
+  const palette = PHASE_PALETTE[key] ?? PHASE_PALETTE["—"];
+  const i18n = PHASE_I18N[key] ?? PHASE_I18N["—"];
+  return {
+    ...palette,
+    label: t(i18n.label),
+    detail: t(i18n.detail),
+  };
 }
 
 /**
@@ -108,110 +122,125 @@ export type EventTheme = {
   border: string;
 };
 
-const EVENT_THEME: Record<string, EventTheme> = {
+type EventPalette = Omit<EventTheme, "label" | "detail"> & {
+  /** Glyph label kept as-is (locale-agnostic icon-style label). */
+  label: string;
+  /** i18n key for the `detail` description. */
+  detailKey: string;
+};
+
+const EVENT_THEME: Record<string, EventPalette> = {
   "tool.use": {
     label: "tool",
-    detail: "Agente usou uma ferramenta (Read, Edit, Bash, Grep, etc.)",
+    detailKey: "eventTheme.toolUse.detail",
     text: "text-[--color-phase-close]",
     bg: "bg-[--color-phase-close-bg]",
     border: "border-[--color-phase-close-border]",
   },
   "pipeline.phase": {
     label: "phase",
-    detail: "Transição de fase do pipeline (ex: PLAN → EXECUTE)",
+    detailKey: "eventTheme.pipelinePhase.detail",
     text: "text-[--color-phase-plan]",
     bg: "bg-[--color-phase-plan-bg]",
     border: "border-[--color-phase-plan-border]",
   },
   "qa.result": {
     label: "qa",
-    detail: "Resultado do QA — overall pass/fail/skip dos AC",
+    detailKey: "eventTheme.qaResult.detail",
     text: "text-[--color-phase-qa]",
     bg: "bg-[--color-phase-qa-bg]",
     border: "border-[--color-phase-qa-border]",
   },
   "agent.start": {
     label: "agent ▶",
-    detail: "Agente iniciado via Task dispatch",
+    detailKey: "eventTheme.agentStart.detail",
     text: "text-[--color-phase-execute]",
     bg: "bg-[--color-phase-execute-bg]",
     border: "border-[--color-phase-execute-border]",
   },
   "agent.stop": {
     label: "agent ■",
-    detail: "Agente encerrou e retornou resumo",
+    detailKey: "eventTheme.agentStop.detail",
     text: "text-[--color-phase-execute]",
     bg: "bg-[--color-phase-execute-bg]",
     border: "border-[--color-phase-execute-border]",
   },
   "session.start": {
     label: "session",
-    detail: "Sessão Claude Code iniciada",
+    detailKey: "eventTheme.sessionStart.detail",
     text: "text-[--color-phase-analyze]",
     bg: "bg-[--color-phase-analyze-bg]",
     border: "border-[--color-phase-analyze-border]",
   },
   "spec.start": {
     label: "spec ▶",
-    detail: "Pipeline de spec iniciada",
+    detailKey: "eventTheme.specStart.detail",
     text: "text-[--color-phase-analyze]",
     bg: "bg-[--color-phase-analyze-bg]",
     border: "border-[--color-phase-analyze-border]",
   },
   "spec.complete": {
     label: "spec ✓",
-    detail: "Pipeline de spec finalizada",
+    detailKey: "eventTheme.specComplete.detail",
     text: "text-[--color-phase-execute]",
     bg: "bg-[--color-phase-execute-bg]",
     border: "border-[--color-phase-execute-border]",
   },
   "dispatch.failure": {
     label: "fail",
-    detail: "Falha no dispatch — geralmente overload/rate-limit do modelo",
+    detailKey: "eventTheme.dispatchFailure.detail",
     text: "text-[--color-event-fail]",
     bg: "bg-[--color-event-fail-bg]",
     border: "border-[--color-event-fail-border]",
   },
   "retry.attempt": {
     label: "retry",
-    detail: "Tentativa de fix-loop após review/QA falhar",
+    detailKey: "eventTheme.retryAttempt.detail",
     text: "text-[--color-phase-plan]",
     bg: "bg-[--color-phase-plan-bg]",
     border: "border-[--color-phase-plan-border]",
   },
   decision: {
     label: "decision",
-    detail: "Decisão arquitetural registrada durante a pipeline",
+    detailKey: "eventTheme.decision.detail",
     text: "text-[--color-phase-qa]",
     bg: "bg-[--color-phase-qa-bg]",
     border: "border-[--color-phase-qa-border]",
   },
   finding: {
     label: "finding",
-    detail: "Achado/observação registrado pelo agente",
+    detailKey: "eventTheme.finding.detail",
     text: "text-[--color-phase-qa]",
     bg: "bg-[--color-phase-qa-bg]",
     border: "border-[--color-phase-qa-border]",
   },
   lesson: {
     label: "lesson",
-    detail: "Aprendizado capturado pra knowledge base",
+    detailKey: "eventTheme.lesson.detail",
     text: "text-[--color-phase-qa]",
     bg: "bg-[--color-phase-qa-bg]",
     border: "border-[--color-phase-qa-border]",
   },
 };
 
-const FALLBACK_EVENT_THEME: EventTheme = {
-  label: "evento",
-  detail: "Tipo de evento não rotulado pelo dashboard ainda",
+const FALLBACK_EVENT_PALETTE: EventPalette = {
+  label: "event",
+  detailKey: "eventTheme.fallback.detail",
   text: "text-muted-foreground",
   bg: "bg-muted/50",
   border: "border-border",
 };
 
 export function eventTheme(eventType: string): EventTheme {
-  return EVENT_THEME[eventType] ?? FALLBACK_EVENT_THEME;
+  const palette = EVENT_THEME[eventType] ?? FALLBACK_EVENT_PALETTE;
+  const label = palette === FALLBACK_EVENT_PALETTE ? t("eventTheme.fallback.label") : palette.label;
+  return {
+    label,
+    detail: t(palette.detailKey),
+    text: palette.text,
+    bg: palette.bg,
+    border: palette.border,
+  };
 }
 
 /** Strip the date prefix from a spec name for display (`2026-05-14-foo` → `foo`). */

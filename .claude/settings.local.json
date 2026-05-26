@@ -27,5 +27,8 @@
     "ask": [
       "!git checkout HEAD -- apps/dashboard/src/"
     ]
+  },
+  "worktree": {
+    "bgIsolation": "none"
   }
 }

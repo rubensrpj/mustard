@@ -60,7 +60,6 @@ export function kindFromType(type: string): KnowledgeKind {
     case "naming-pattern":
     case "entity-cluster":
     case "convention":
-    case "recipe":
       return "pattern";
     default:
       return "pattern";

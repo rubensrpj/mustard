@@ -1,0 +1,13 @@
+{
+  "stage": "Close",
+  "outcome": "Cancelled",
+  "phase": "CLOSE",
+  "scope": "single",
+  "lang": "pt-BR",
+  "checkpoint": "2026-05-26T00:00:00.000Z",
+  "closed_at": "2026-05-26T04:00:00.000Z",
+  "isWavePlan": false,
+  "flags": ["superseded"],
+  "model": "opus",
+  "superseded_by": "2026-05-26-claude-paths-single-source"
+}

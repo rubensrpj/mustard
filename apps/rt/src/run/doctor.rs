@@ -120,7 +120,6 @@ const KNOWN_RUN_SUBCOMMANDS: &[&str] = &[
     "scope-decompose",
     "exec-rewave-check",
     "wave-size-check",
-    "recipe-match",
     "qa-run",
     "metrics",
     "event-projections",

@@ -179,6 +179,8 @@ fn seed_db() -> (TempDir, std::path::PathBuf, std::path::PathBuf) {
     use mustard_core::store::sqlite_store::SqliteEventStore;
 
     let dir = TempDir::new().expect("temp dir");
+    // Workspace anchor required by ClaudePaths (deep-refactor W1/W2).
+    std::fs::write(dir.path().join("mustard.json"), b"{}").expect("workspace anchor");
     // The MCP server resolves `<project>/.claude/.harness/mustard.db` when
     // `MUSTARD_DB_PATH` is set. Put the DB exactly there so the per-spec
     // NDJSON dir resolution (under `<project>/.claude/spec/`) lines up.

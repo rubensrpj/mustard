@@ -1,3 +1,4 @@
+// SPEC LANG: pt-allowed — in-house i18n catalogue. pt-BR strings are data, not narrative.
 // Lightweight in-house i18n provider used across the dashboard.
 //
 // Background — two i18n surfaces coexist in this repo:
@@ -5,7 +6,7 @@
 //   1. `src/i18n.ts` — i18next instance, namespace `common`. Older pages
 //      (Sidebar projects/menu, Settings, Preferences, projects toasts) consume
 //      it via `useTranslation()` from `react-i18next`.
-//   2. THIS module — a flat `Map<string, Record<'pt'|'en', string>>` bound to
+//   2. THIS module — a flat `Map<string, Record<'pt-BR'|'en-US', string>>` bound to
 //      the same Preferences slice (`useStore((s) => s.language)`). It started
 //      life serving the Visão Geral revamp (Wave 8) and the W2 i18n-audit
 //      (spec `2026-05-21-dashboard-i18n-and-phase-unify`) generalized it: the
@@ -32,11 +33,22 @@
 
 import { useStore } from "@/lib/store";
 
-export type Lang = "pt" | "en";
+// BCP-47 only (see memory `project_locale_codes`). Legacy short codes
+// `pt`/`en` are NOT a valid public type — but the in-memory dictionary
+// rows below use the short keys for compactness. Resolution code maps
+// BCP-47 → short keys at the boundary.
+export type Lang = "pt-BR" | "en-US";
 
-/** A single translation row keyed by language. `fallback?` lets a caller
- *  override a missing entry without polluting the dictionary. */
-export type TranslationRow = Record<Lang, string>;
+/** Internal short keys used inside the DICTIONARY rows for compactness. */
+type DictKey = "pt" | "en";
+
+/** A single translation row keyed by the internal short codes. */
+export type TranslationRow = Record<DictKey, string>;
+
+/** Map a BCP-47 [`Lang`] onto the internal dictionary short key. */
+function dictKey(lang: Lang): DictKey {
+  return lang === "pt-BR" ? "pt" : "en";
+}
 
 /**
  * Flat dictionary. Entries are grouped by surface (`sidebar.*`, `route.*`,
@@ -110,6 +122,8 @@ const DICTIONARY = new Map<string, TranslationRow>([
   ["route.specs.groups.close", { pt: "Fechadas", en: "Closed" }],
   ["route.specs.groups.cancelled", { pt: "Canceladas", en: "Cancelled" }],
   ["route.specs.groups.abandoned", { pt: "Abandonadas", en: "Abandoned" }],
+  ["route.specs.groups.superseded", { pt: "Substituídas", en: "Superseded" }],
+  ["route.specs.groups.absorbed", { pt: "Absorvidas", en: "Absorbed" }],
   // Expandable-tree child kind tags + empty/error/filters.
   ["route.specs.child.wave", { pt: "onda", en: "wave" }],
   ["route.specs.child.ac", { pt: "AC", en: "AC" }],
@@ -171,6 +185,277 @@ const DICTIONARY = new Map<string, TranslationRow>([
 
   // Wave-6 — "Suspeitas" filter pill (populated by hygiene suspects).
   ["specs.filter.suspects", { pt: "Suspeitas", en: "Suspects" }],
+
+  // ── Shared empty-state copy (template-agnostic-audit) ───────────────────
+  // Reused by every page that gates on `projectsRoot` / `activeWorkspaceId`.
+  ["empty.noRoot.title", { pt: "Diretório de projetos não configurado", en: "Projects directory not configured" }],
+  ["empty.noRoot.description", { pt: "Vá em Configurações e aponte para a pasta onde estão seus repos.", en: "Go to Settings and point Mustard at the folder where your repos live." }],
+  ["empty.noRoot.descriptionSettings", { pt: "Vá em Settings e aponte para a pasta onde estão seus repos.", en: "Go to Settings and point Mustard at the folder where your repos live." }],
+  ["empty.noWorkspace.title", { pt: "Selecione um workspace", en: "Select a workspace" }],
+  ["empty.noWorkspace.description", { pt: "Use o seletor na sidebar para escolher um projeto.", en: "Use the sidebar picker to choose a project." }],
+  ["empty.noWorkspace.descriptionTop", { pt: "Use o seletor no topo da sidebar para escolher um projeto e ver o que ele aprendeu.", en: "Use the picker at the top of the sidebar to choose a project and see what it learned." }],
+  ["common.loadingDots", { pt: "Carregando…", en: "Loading…" }],
+
+  // ── Home page ─────────────────────────────────────────────────────────
+  ["home.configureRoot.title", { pt: "Configure o diretório de projetos", en: "Configure the projects directory" }],
+  ["home.configureRoot.body.before", { pt: "Vá em ", en: "Go to " }],
+  ["home.configureRoot.body.linkLabel", { pt: "Settings", en: "Settings" }],
+  ["home.configureRoot.body.after", { pt: " e aponte para a pasta onde estão seus repos.", en: " and point Mustard at the folder where your repos live." }],
+  ["home.discovering", { pt: "Descobrindo projetos…", en: "Discovering projects…" }],
+  ["home.noProjects.title", { pt: "Nenhum projeto encontrado", en: "No projects found" }],
+  ["home.noProjects.body.before", { pt: "Não encontramos projetos em ", en: "No projects were found in " }],
+  ["home.noProjects.body.after", { pt: ".", en: "." }],
+  ["home.workspace.noEvents.before", { pt: "Este workspace ainda não emitiu eventos. Rode um pipeline (", en: "This workspace has not emitted any events yet. Run a pipeline (" }],
+  ["home.workspace.noEvents.middle", { pt: ", ", en: ", " }],
+  ["home.workspace.noEvents.after", { pt: ") para popular os dados.", en: ") to populate the data." }],
+  ["home.activePipelines", { pt: "Pipelines ativos", en: "Active pipelines" }],
+  ["home.noActivePipeline", { pt: "Nenhum pipeline ativo.", en: "No active pipeline." }],
+  ["home.todayDigest", { pt: "Resumo de hoje", en: "Today's digest" }],
+  ["home.portfolio.title", { pt: "Portfólio", en: "Portfolio" }],
+  ["home.portfolio.subtitle", { pt: "Visão consolidada de todos os projetos descobertos no diretório raiz.", en: "Consolidated view of every project discovered under the root directory." }],
+  ["home.portfolio.noPipelines", { pt: "Nenhuma pipeline em execução.", en: "No pipelines currently running." }],
+  ["home.portfolio.projects", { pt: "Projetos", en: "Projects" }],
+
+  // ── Workspace page ────────────────────────────────────────────────────
+  ["workspace.editorialSubtitle", { pt: "Visão geral das pipelines ativas, saúde do projeto e atividade recente para {name}.", en: "Overview of active pipelines, project health and recent activity for {name}." }],
+
+  // ── Specs page ────────────────────────────────────────────────────────
+  ["specs.editorialTitle", { pt: "Pipelines e specs", en: "Pipelines and specs" }],
+  ["specs.editorialSubtitle", { pt: "Lista de specs do workspace agrupadas por estágio. Use os filtros abaixo para isolar por estado, janela de tempo ou nome.", en: "List of workspace specs grouped by stage. Use the filters below to isolate by state, time window or name." }],
+  ["specs.section.specs", { pt: "Specs", en: "Specs" }],
+  ["specs.empty.noneFound.title", { pt: "Nenhuma spec encontrada", en: "No specs found" }],
+  ["specs.empty.noneFound.description", { pt: "Ajuste os filtros ou rode uma pipeline com /mustard:feature.", en: "Adjust the filters or run a pipeline with /mustard:feature." }],
+  ["specs.quickOpen.title", { pt: "Abrir spec em nova aba", en: "Open spec in a new tab" }],
+  ["specs.quickOpen.placeholder", { pt: "Buscar por nome…", en: "Search by name…" }],
+  ["specs.quickOpen.searchAria", { pt: "Buscar specs", en: "Search specs" }],
+  ["specs.quickOpen.empty", { pt: "Nenhuma spec encontrada.", en: "No specs found." }],
+  ["specs.filterBar.searchAria", { pt: "Buscar specs por nome", en: "Search specs by name" }],
+  ["specs.filterBar.date.today", { pt: "Hoje", en: "Today" }],
+  ["specs.filterBar.date.all", { pt: "Todas", en: "All" }],
+
+  // ── Knowledge page ────────────────────────────────────────────────────
+  ["knowledge.editorialTitle", { pt: "Conhecimento e atrito", en: "Knowledge and friction" }],
+  ["knowledge.editorialSubtitle", { pt: "Padrões, decisões e lições reutilizáveis extraídos das pipelines, separados dos sinais de fricção medidos durante as execuções.", en: "Reusable patterns, decisions and lessons extracted from pipelines, separated from friction signals measured during executions." }],
+  ["knowledge.search.placeholder", { pt: "Buscar padrões, convenções, decisões, lições…", en: "Search patterns, conventions, decisions, lessons…" }],
+  ["knowledge.search.aria", { pt: "Buscar conhecimento", en: "Search knowledge" }],
+  ["knowledge.searchEmpty.title", { pt: "Nenhum resultado para \"{query}\"", en: "No results for \"{query}\"" }],
+  ["knowledge.searchEmpty.description", { pt: "Tente um termo mais curto, ou limpe a busca para ver tudo agrupado por tipo.", en: "Try a shorter term, or clear the search to view everything grouped by type." }],
+  ["knowledge.section.results", { pt: "Resultados", en: "Results" }],
+  ["knowledge.section.patterns.title", { pt: "Padrões e decisões", en: "Patterns and decisions" }],
+  ["knowledge.section.patterns.description", { pt: "Conhecimento reutilizável extraído das pipelines: convenções de código, decisões de arquitetura, padrões de nomenclatura e lições. O rótulo CONVENÇÃO aparece só para convenções de código de verdade. Telemetria de fricção é filtrada daqui e aparece na seção Atrito.", en: "Reusable knowledge extracted from pipelines: code conventions, architectural decisions, naming patterns and lessons. The CONVENTION label only shows for genuine code conventions. Friction telemetry is filtered out and appears in the Friction section." }],
+  ["knowledge.empty.noPatterns.title", { pt: "Nenhum padrão capturado ainda", en: "No patterns captured yet" }],
+  ["knowledge.empty.noPatterns.body.before", { pt: "O Mustard extrai padrões automaticamente ao final de cada pipeline. Rode um ", en: "Mustard extracts patterns automatically at the end of each pipeline. Run a " }],
+  ["knowledge.empty.noPatterns.body.or", { pt: " ou ", en: " or " }],
+  ["knowledge.empty.noPatterns.body.invoke", { pt: ", ou invoque ", en: ", or invoke " }],
+  ["knowledge.empty.noPatterns.body.after", { pt: " para forçar uma extração. Se este workspace tem instalação antiga do Mustard, é normal ver poucas entradas aqui — o resto era telemetria de fricção e foi movido para Atrito.", en: " to force an extraction. If this workspace has an old Mustard install, it is normal to see few entries here — the rest was friction telemetry and was moved to Friction." }],
+  ["knowledge.friction.title", { pt: "Atrito", en: "Friction" }],
+  ["knowledge.friction.description", { pt: "Sinais de fricção medidos durante as pipelines — não é conhecimento, é diagnóstico. Inclui também telemetria legada que um Mustard antigo gravou no lugar errado e foi filtrada de Padrões. É normal estar quase vazio: atrito medido é raro.", en: "Friction signals measured during pipelines — this is diagnosis, not knowledge. It also includes legacy telemetry an old Mustard wrote in the wrong place and which was filtered out of Patterns. It is normal to be nearly empty: measured friction is rare." }],
+  ["knowledge.friction.empty.title", { pt: "Nenhum atrito registrado", en: "No friction recorded" }],
+  ["knowledge.friction.empty.description", { pt: "As pipelines deste workspace rodaram sem fricção acima do limite (mais de 2 retries de hook ou mais de 50 chamadas de API por pipeline). Isso é bom — é o estado esperado.", en: "The pipelines in this workspace ran without friction above the threshold (more than 2 hook retries or more than 50 API calls per pipeline). That is good — it is the expected state." }],
+  ["knowledge.friction.legacy.label", { pt: "Atrito", en: "Friction" }],
+  ["knowledge.friction.legacy.tag", { pt: "Telemetria legada", en: "Legacy telemetry" }],
+  ["knowledge.friction.legacy.collapse", { pt: "Mostrar entradas", en: "Show entries" }],
+  ["knowledge.friction.legacy.hint", { pt: "Entradas de fricção (heavy-pipeline, high-hook-retry, .metrics) gravadas em knowledge.json por um extractor antigo, sem contadores medidos. Mantidas só para inspeção.", en: "Friction entries (heavy-pipeline, high-hook-retry, .metrics) written into knowledge.json by an old extractor, with no measured counters. Kept for inspection only." }],
+  ["knowledge.friction.retries", { pt: "retries", en: "retries" }],
+  ["knowledge.friction.retriesTitle", { pt: "Retries de hook medidos nesta pipeline (sandbox/stash/re-prompt — não redespacho de agente).", en: "Hook retries measured in this pipeline (sandbox/stash/re-prompt — not agent redispatch)." }],
+  ["knowledge.friction.calls", { pt: "chamadas", en: "calls" }],
+  ["knowledge.friction.callsTitle", { pt: "Total de chamadas de API medidas nesta pipeline.", en: "Total API calls measured in this pipeline." }],
+  ["knowledge.friction.suggestion", { pt: "Sugestão:", en: "Suggestion:" }],
+  ["knowledge.types.entityCluster", { pt: "Cluster de entidade", en: "Entity cluster" }],
+  ["knowledge.types.namingPattern", { pt: "Padrão de nomenclatura", en: "Naming pattern" }],
+  ["knowledge.types.decision", { pt: "Decisão", en: "Decision" }],
+  ["knowledge.types.lesson", { pt: "Lição", en: "Lesson" }],
+  ["knowledge.types.convention", { pt: "Convenção", en: "Convention" }],
+  ["knowledge.types.pattern", { pt: "Padrão", en: "Pattern" }],
+
+  // ── Commands page ─────────────────────────────────────────────────────
+  ["commands.editorialTitle", { pt: "Commands", en: "Commands" }],
+  ["commands.editorialSubtitle", { pt: "Catálogo de comandos slash disponíveis no Claude Code com Mustard. Use a busca ou os filtros de categoria para isolar o comando certo.", en: "Catalogue of slash commands available in Claude Code with Mustard. Use the search or category filters to find the right command." }],
+  ["commands.search.placeholder", { pt: "Buscar por nome, descrição, categoria…", en: "Search by name, description, category…" }],
+  ["commands.filter.all", { pt: "Todos", en: "All" }],
+  ["commands.empty.noCatalog.title", { pt: "Nenhum comando catalogado", en: "No commands catalogued" }],
+  ["commands.empty.noCatalog.description", { pt: "O catálogo de comandos está vazio.", en: "The command catalogue is empty." }],
+  ["commands.empty.noResults.title", { pt: "Sem resultados", en: "No results" }],
+  ["commands.empty.noResults.description", { pt: "Nenhum comando para \"{query}\". Ajuste a busca ou troque a categoria.", en: "No command for \"{query}\". Adjust the search or switch category." }],
+  ["commands.section.plainExplanation", { pt: "Explicação simples", en: "Plain explanation" }],
+  ["commands.section.technicalDetails", { pt: "Detalhes técnicos", en: "Technical details" }],
+  ["commands.section.whenToUse", { pt: "Quando usar", en: "When to use" }],
+  ["commands.section.whenNotToUse", { pt: "Quando NÃO usar", en: "When NOT to use" }],
+  ["commands.section.examples", { pt: "Exemplos", en: "Examples" }],
+  ["commands.section.seeAlso", { pt: "Ver também", en: "See also" }],
+  ["commands.copy", { pt: "Copiar", en: "Copy" }],
+
+  // ── PRD page ──────────────────────────────────────────────────────────
+  ["prd.editorialTitle", { pt: "PRD Builder", en: "PRD Builder" }],
+  ["prd.editorialSubtitle", { pt: "Gere specs no formato Mustard a partir de uma intenção livre, com lapidação automática contra o registry do projeto.", en: "Generate Mustard-format specs from a free-form intent, with automatic refinement against the project's registry." }],
+  ["prd.placeholder.preview", { pt: "_(preencha os campos obrigatórios)_", en: "_(fill in the required fields)_" }],
+  ["prd.toast.selectProject", { pt: "Selecione um projeto válido", en: "Select a valid project" }],
+  ["prd.toast.fillRequired", { pt: "Preencha os campos obrigatórios", en: "Fill in the required fields" }],
+  ["prd.toast.copied", { pt: "Copiado!", en: "Copied!" }],
+  ["prd.label.freeIntent", { pt: "Intenção livre", en: "Free intent" }],
+  ["prd.group.identity", { pt: "Identidade", en: "Identity" }],
+  ["prd.group.identityHint", { pt: "Tipo, título e projeto.", en: "Type, title and project." }],
+  ["prd.label.type", { pt: "Tipo", en: "Type" }],
+  ["prd.label.title", { pt: "Título", en: "Title" }],
+  ["prd.placeholder.title", { pt: "Ex: dashboard-prd-builder", en: "e.g.: dashboard-prd-builder" }],
+  ["prd.label.slugPrefix", { pt: "Slug:", en: "Slug:" }],
+  ["prd.label.project", { pt: "Projeto", en: "Project" }],
+  ["prd.label.projectNone", { pt: "— nenhum —", en: "— none —" }],
+  ["prd.label.scope", { pt: "Escopo", en: "Scope" }],
+  ["prd.label.scopeLightAuto", { pt: "Light (auto)", en: "Light (auto)" }],
+  ["prd.label.scopeFullAuto", { pt: "Full (auto)", en: "Full (auto)" }],
+  ["prd.label.adjust", { pt: "ajustar", en: "adjust" }],
+  ["prd.group.details", { pt: "Detalhes", en: "Details" }],
+  ["prd.group.detailsHint", { pt: "Resumo, motivação, layers afetados.", en: "Summary, motivation, affected layers." }],
+  ["prd.label.summary", { pt: "Resumo *", en: "Summary *" }],
+  ["prd.placeholder.summary", { pt: "O que será feito e por quê.", en: "What will be done and why." }],
+  ["prd.label.why", { pt: "Por quê? (opcional)", en: "Why? (optional)" }],
+  ["prd.placeholder.why", { pt: "Motivação de negócio ou técnica.", en: "Business or technical motivation." }],
+  ["prd.label.layers", { pt: "Layers", en: "Layers" }],
+  ["prd.group.scopeChange", { pt: "Escopo de Mudança", en: "Change Scope" }],
+  ["prd.group.scopeChangeHint", { pt: "Entidades e paths afetados.", en: "Affected entities and paths." }],
+  ["prd.label.entities", { pt: "Entidades", en: "Entities" }],
+  ["prd.label.boundaries", { pt: "Boundaries * (1 por linha)", en: "Boundaries * (1 per line)" }],
+  ["prd.error.boundaries", { pt: "Adicione pelo menos um boundary.", en: "Add at least one boundary." }],
+  ["prd.group.plan", { pt: "Plano", en: "Plan" }],
+  ["prd.group.planHint", { pt: "Checklist de execução.", en: "Execution checklist." }],
+  ["prd.label.checklist", { pt: "Checklist * (1 por linha)", en: "Checklist * (1 per line)" }],
+  ["prd.placeholder.checklist", { pt: "Criar função pura", en: "Create pure function" }],
+  ["prd.ariaPrefix.checklist", { pt: "Item do checklist", en: "Checklist item" }],
+  ["prd.error.checklist", { pt: "Adicione pelo menos um item.", en: "Add at least one item." }],
+  ["prd.group.criteria", { pt: "Critérios", en: "Criteria" }],
+  ["prd.group.criteriaHint", { pt: "Acceptance criteria runnable.", en: "Runnable acceptance criteria." }],
+  ["prd.placeholder.acTitle", { pt: "Título do critério", en: "Criterion title" }],
+  ["prd.aria.acRemove", { pt: "Remover AC-{n}", en: "Remove AC-{n}" }],
+  ["prd.aria.acTitle", { pt: "AC-{n} título", en: "AC-{n} title" }],
+  ["prd.aria.acCommand", { pt: "AC-{n} comando", en: "AC-{n} command" }],
+  ["prd.aria.addAc", { pt: "Adicionar critério de aceite", en: "Add acceptance criterion" }],
+  ["prd.action.addAc", { pt: "Adicionar AC", en: "Add AC" }],
+  ["prd.group.advanced", { pt: "Avançado", en: "Advanced" }],
+  ["prd.group.advancedHint", { pt: "Decisões não-óbvias e não-goals.", en: "Non-obvious decisions and non-goals." }],
+  ["prd.label.decisions", { pt: "Decisões não-óbvias (opcional)", en: "Non-obvious decisions (optional)" }],
+  ["prd.placeholder.decisions", { pt: "Uma decisão por linha.", en: "One decision per line." }],
+  ["prd.label.nonGoals", { pt: "Non-Goals (opcional)", en: "Non-Goals (optional)" }],
+  ["prd.placeholder.nonGoals", { pt: "Um por linha.", en: "One per line." }],
+  ["prd.preview", { pt: "Preview", en: "Preview" }],
+  ["prd.action.copyMarkdown", { pt: "Copiar markdown", en: "Copy markdown" }],
+  ["prd.action.copyWithPrefix", { pt: "Copiar com /mustard:", en: "Copy with /mustard:" }],
+  ["prd.action.clear", { pt: "Limpar", en: "Clear" }],
+
+  // ── Spec waves tab ────────────────────────────────────────────────────
+  ["specWaves.status.completed", { pt: "concluída", en: "completed" }],
+  ["specWaves.status.in_progress", { pt: "em execução", en: "in progress" }],
+  ["specWaves.status.failed", { pt: "falhou", en: "failed" }],
+  ["specWaves.status.queued", { pt: "aguardando", en: "queued" }],
+  ["specWaves.source.event", { pt: "evento", en: "event" }],
+  ["specWaves.source.header", { pt: "header", en: "header" }],
+  ["specWaves.source.both", { pt: "ambos", en: "both" }],
+  ["specWaves.empty", { pt: "Nenhuma onda registrada para esta spec.", en: "No waves recorded for this spec." }],
+  ["specWaves.child.openTitle", { pt: "Abrir {spec}", en: "Open {spec}" }],
+  ["specWaves.child.durationTitle", { pt: "Duração do filho", en: "Child duration" }],
+  ["specWaves.child.source.event", { pt: "Descoberto via evento SQLite spec.link", en: "Discovered via SQLite spec.link event" }],
+  ["specWaves.child.source.header", { pt: "Descoberto via header `### Parent:` no markdown", en: "Discovered via `### Parent:` header in markdown" }],
+  ["specWaves.child.source.both", { pt: "Presente em evento E header", en: "Present in both event AND header" }],
+  ["specWaves.row.openWaveAria", { pt: "Abrir markdown da wave {n}", en: "Open markdown for wave {n}" }],
+  ["specWaves.row.collapseAria", { pt: "Colapsar sub-specs", en: "Collapse sub-specs" }],
+  ["specWaves.row.expandAria", { pt: "Expandir sub-specs", en: "Expand sub-specs" }],
+  ["specWaves.row.collapseTitle", { pt: "Esconder sub-specs desta onda", en: "Hide sub-specs in this wave" }],
+  ["specWaves.row.expandTitle", { pt: "Mostrar {count} sub-spec{plural} desta onda", en: "Show {count} sub-spec{plural} in this wave" }],
+  ["specWaves.row.subSpecsTitle", { pt: "{count} sub-specs criadas dentro desta onda", en: "{count} sub-specs created in this wave" }],
+  ["specWaves.row.startedAt", { pt: "início:", en: "started:" }],
+  ["specWaves.row.completedAt", { pt: "fim:", en: "finished:" }],
+  ["specWaves.row.durationLabel", { pt: "duração:", en: "duration:" }],
+  ["specWaves.row.durationTitle", { pt: "duração total da onda", en: "total wave duration" }],
+  ["specWaves.row.fileCountTitle.declared", { pt: "arquivos declarados em `## Arquivos`", en: "files declared in `## Files`" }],
+  ["specWaves.row.fileCountTitle.touched", { pt: "arquivos tocados pela onda (eventos tool.use)", en: "files touched by the wave (tool.use events)" }],
+  ["specWaves.row.fileSingular", { pt: "arquivo", en: "file" }],
+  ["specWaves.row.filePlural", { pt: "arquivos", en: "files" }],
+  ["specWaves.row.waveFailed", { pt: "Onda falhou — ver Qualidade / markdown para detalhes do último erro.", en: "Wave failed — see Quality / markdown for details of the last error." }],
+  ["specWaves.row.specPrincipal", { pt: "spec principal", en: "main spec" }],
+  ["specWaves.row.mainSpecLabel", { pt: "Spec principal", en: "Main spec" }],
+  ["specWaves.orphans.label", { pt: "Sem onda correlacionada", en: "No correlated wave" }],
+  ["specWaves.orphans.aria", { pt: "Sub-specs sem onda correlacionada", en: "Sub-specs with no correlated wave" }],
+
+  // ── Spec track row (Workspace hero list) ──────────────────────────────
+  ["specTrack.inProgressAria", { pt: "Em execução", en: "In progress" }],
+  ["specTrack.phasesAria", { pt: "Fases da pipeline", en: "Pipeline phases" }],
+  ["specTrack.aria", { pt: "Spec {spec}, fase {phase}, status {status}. Clique para expandir.", en: "Spec {spec}, phase {phase}, status {status}. Click to expand." }],
+  ["specTrack.waveLabel", { pt: "onda {current}/{total}", en: "wave {current}/{total}" }],
+  ["specTrack.waveLabelOnly", { pt: "onda {current}", en: "wave {current}" }],
+
+  // ── Aggregate overview (Portfolio mode) ───────────────────────────────
+  ["aggregate.counter.activeSpecs", { pt: "Specs ativas", en: "Active specs" }],
+  ["aggregate.counter.executing", { pt: "Em EXECUTE", en: "In EXECUTE" }],
+  ["aggregate.counter.completed7d", { pt: "Completed 7d", en: "Completed 7d" }],
+  ["aggregate.counter.eventsToday", { pt: "Eventos hoje", en: "Events today" }],
+  ["aggregate.roi.title", { pt: "Compensa usar o Mustard?", en: "Is Mustard worth using?" }],
+  ["aggregate.roi.intro", { pt: "Comparação contrafactual de tokens: o que de fato foi para o modelo COM o Mustard, contra a estimativa SEM ele. Os tokens poupados são medidos pelo RTK (compressão de saída de comandos) — não é estimativa de preço.", en: "Counterfactual comparison in tokens: what actually went to the model WITH Mustard, against the estimate WITHOUT it. Saved tokens are measured by RTK (command output compression) — not a price estimate." }],
+  ["aggregate.roi.noData.before", { pt: "Ainda sem dados de economia. O RTK precisa estar instalado e ter comprimido pelo menos um comando.", en: "No savings data yet. RTK must be installed and must have compressed at least one command." }],
+  ["aggregate.roi.noData.runBefore", { pt: "Rode ", en: "Run " }],
+  ["aggregate.roi.noData.runAfter", { pt: " para ativar.", en: " to enable it." }],
+  ["aggregate.roi.with.eyebrow", { pt: "COM Mustard — foi ao modelo", en: "WITH Mustard — sent to the model" }],
+  ["aggregate.roi.with.foot", { pt: "tokens efetivamente enviados", en: "tokens effectively sent" }],
+  ["aggregate.roi.without.eyebrow", { pt: "SEM Mustard — estimativa", en: "WITHOUT Mustard — estimate" }],
+  ["aggregate.roi.without.foot", { pt: "consumido + poupado pelo RTK", en: "consumed + saved by RTK" }],
+  ["aggregate.roi.saved.eyebrow", { pt: "Diferença poupada", en: "Saved difference" }],
+  ["aggregate.roi.saved.foot", { pt: "tokens que o Mustard evitou de enviar", en: "tokens Mustard avoided sending" }],
+  ["aggregate.roi.footnote.before", { pt: "Custo em USD é medido pela Anthropic API por projeto — veja em ", en: "USD cost is measured by the Anthropic API per project — see " }],
+  ["aggregate.roi.footnote.path", { pt: "Telemetria → Economia", en: "Telemetry → Economy" }],
+  ["aggregate.roi.footnote.after", { pt: ". O custo agregado da seção abaixo é estimado (tokens × tabela de preço), não cobrado.", en: ". The aggregate cost in the section below is estimated (tokens × price table), not billed." }],
+  ["aggregate.consumption.title", { pt: "Consumo & Economia — todos os projetos", en: "Consumption & Savings — all projects" }],
+  ["aggregate.kpi.tokensTotal", { pt: "Tokens total", en: "Tokens total" }],
+  ["aggregate.kpi.tokensTodayLabel", { pt: "hoje", en: "today" }],
+  ["aggregate.kpi.costUsdEstimated", { pt: "Custo USD (estimado)", en: "USD cost (estimated)" }],
+  ["aggregate.kpi.costTodaySuffix", { pt: "· tokens × tabela", en: "· tokens × price table" }],
+  ["aggregate.kpi.rtkSaved", { pt: "RTK saved", en: "RTK saved" }],
+  ["aggregate.kpi.rtkSavedSubEfic", { pt: "{pct} efic. · global · vitalício", en: "{pct} efic. · global · lifetime" }],
+  ["aggregate.kpi.rtkSavedSubGlobal", { pt: "global · todos os projetos", en: "global · all projects" }],
+  ["aggregate.kpi.rtkCommands", { pt: "RTK commands", en: "RTK commands" }],
+  ["aggregate.kpi.rtkNotInstalled", { pt: "rtk não instalado", en: "rtk not installed" }],
+  ["aggregate.spark.consumed", { pt: "consumido", en: "consumed" }],
+  ["aggregate.spark.rtkSaved", { pt: "RTK saved", en: "RTK saved" }],
+  ["aggregate.byModel.title", { pt: "Por modelo (todos os projetos)", en: "By model (all projects)" }],
+  ["aggregate.byProject.title", { pt: "Por projeto (ordenado por custo)", en: "By project (ordered by cost)" }],
+  ["aggregate.byProject.col.project", { pt: "Projeto", en: "Project" }],
+  ["aggregate.byProject.col.tokens", { pt: "Tokens", en: "Tokens" }],
+  ["aggregate.byProject.col.today", { pt: "Hoje", en: "Today" }],
+  ["aggregate.byProject.col.cost", { pt: "Custo", en: "Cost" }],
+  ["aggregate.byProject.col.lastActivity", { pt: "Última atividade", en: "Last activity" }],
+  ["aggregate.activePipelines.title", { pt: "Pipelines ativas", en: "Active pipelines" }],
+  ["aggregate.activePipelines.empty", { pt: "Sem pipelines ativas.", en: "No active pipelines." }],
+  ["aggregate.recentActivity.title", { pt: "Atividade recente", en: "Recent activity" }],
+  ["aggregate.recentActivity.empty", { pt: "Sem eventos recentes.", en: "No recent events." }],
+
+  // ── Phase theme (chips/tooltips across Quality, Activity, Telemetry) ──
+  ["phaseTheme.backlog.label", { pt: "Backlog", en: "Backlog" }],
+  ["phaseTheme.backlog.detail", { pt: "Pendente de priorização — fora do fluxo ativo", en: "Awaiting prioritisation — outside the active flow" }],
+  ["phaseTheme.analyze.label", { pt: "Analisar", en: "Analyze" }],
+  ["phaseTheme.analyze.detail", { pt: "Exploração inicial do problema — Grep/Read sem editar", en: "Initial problem exploration — Grep/Read without editing" }],
+  ["phaseTheme.plan.label", { pt: "Planejar", en: "Plan" }],
+  ["phaseTheme.plan.detail", { pt: "Desenhando a solução — spec/plan, sem tocar código", en: "Designing the solution — spec/plan, without touching code" }],
+  ["phaseTheme.execute.label", { pt: "Executar", en: "Execute" }],
+  ["phaseTheme.execute.detail", { pt: "Implementando o código — waves rodam aqui", en: "Implementing the code — waves run here" }],
+  ["phaseTheme.qa.label", { pt: "QA", en: "QA" }],
+  ["phaseTheme.qa.detail", { pt: "Validando AC — script qa-run executando os critérios", en: "Validating AC — qa-run script executing the criteria" }],
+  ["phaseTheme.close.label", { pt: "Fechando", en: "Closing" }],
+  ["phaseTheme.close.detail", { pt: "Promovendo para completed e sincronizando registros", en: "Promoting to completed and synchronising records" }],
+  ["phaseTheme.none.label", { pt: "Sem fase", en: "No phase" }],
+  ["phaseTheme.none.detail", { pt: "Sem fase definida ainda", en: "No phase defined yet" }],
+  ["eventTheme.fallback.label", { pt: "evento", en: "event" }],
+  ["eventTheme.fallback.detail", { pt: "Tipo de evento não rotulado pelo dashboard ainda", en: "Event type not yet labelled by the dashboard" }],
+  ["eventTheme.toolUse.detail", { pt: "Agente usou uma ferramenta (Read, Edit, Bash, Grep, etc.)", en: "Agent used a tool (Read, Edit, Bash, Grep, etc.)" }],
+  ["eventTheme.pipelinePhase.detail", { pt: "Transição de fase do pipeline (ex: PLAN → EXECUTE)", en: "Pipeline phase transition (e.g. PLAN → EXECUTE)" }],
+  ["eventTheme.qaResult.detail", { pt: "Resultado do QA — overall pass/fail/skip dos AC", en: "QA result — overall pass/fail/skip of the AC" }],
+  ["eventTheme.agentStart.detail", { pt: "Agente iniciado via Task dispatch", en: "Agent started via Task dispatch" }],
+  ["eventTheme.agentStop.detail", { pt: "Agente encerrou e retornou resumo", en: "Agent finished and returned a summary" }],
+  ["eventTheme.sessionStart.detail", { pt: "Sessão Claude Code iniciada", en: "Claude Code session started" }],
+  ["eventTheme.specStart.detail", { pt: "Pipeline de spec iniciada", en: "Spec pipeline started" }],
+  ["eventTheme.specComplete.detail", { pt: "Pipeline de spec finalizada", en: "Spec pipeline completed" }],
+  ["eventTheme.dispatchFailure.detail", { pt: "Falha no dispatch — geralmente overload/rate-limit do modelo", en: "Dispatch failure — usually model overload/rate-limit" }],
+  ["eventTheme.retryAttempt.detail", { pt: "Tentativa de fix-loop após review/QA falhar", en: "Fix-loop attempt after review/QA failed" }],
+  ["eventTheme.decision.detail", { pt: "Decisão arquitetural registrada durante a pipeline", en: "Architectural decision recorded during the pipeline" }],
+  ["eventTheme.finding.detail", { pt: "Achado/observação registrado pelo agente", en: "Finding/observation recorded by the agent" }],
+  ["eventTheme.lesson.detail", { pt: "Aprendizado capturado pra knowledge base", en: "Lesson captured for the knowledge base" }],
 ]);
 
 /**
@@ -192,7 +477,8 @@ function useLang(): Lang {
 function resolve(key: string, lang: Lang, fallback?: string): string {
   const row = DICTIONARY.get(key);
   if (!row) return fallback ?? key;
-  return row[lang] ?? row.pt ?? row.en ?? fallback ?? key;
+  const k = dictKey(lang);
+  return row[k] ?? row.pt ?? row.en ?? fallback ?? key;
 }
 
 /**

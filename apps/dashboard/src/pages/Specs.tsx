@@ -46,7 +46,9 @@ type GroupKey =
   | "qa_review"
   | "close"
   | "cancelled"
-  | "abandoned";
+  | "abandoned"
+  | "superseded"
+  | "absorbed";
 
 // Render order — earliest active stage first, terminal buckets last.
 const GROUP_ORDER: GroupKey[] = [
@@ -57,16 +59,26 @@ const GROUP_ORDER: GroupKey[] = [
   "close",
   "cancelled",
   "abandoned",
+  "superseded",
+  "absorbed",
 ];
 
 // Terminal groups stay collapsed by default so current work isn't buried.
-const COLLAPSED_BY_DEFAULT = new Set<GroupKey>(["close", "cancelled", "abandoned"]);
+const COLLAPSED_BY_DEFAULT = new Set<GroupKey>([
+  "close",
+  "cancelled",
+  "abandoned",
+  "superseded",
+  "absorbed",
+]);
 
 function groupKeyForCard(card: SpecCard): GroupKey {
   const state = stateFromStatus(card.status);
   if (state.outcome === "completed") return "close";
   if (state.outcome === "cancelled") return "cancelled";
   if (state.outcome === "abandoned") return "abandoned";
+  if (state.outcome === "superseded") return "superseded";
+  if (state.outcome === "absorbed") return "absorbed";
   // Active — group by stage. `close` here means the follow-up window.
   switch (state.stage) {
     case "analyze":
@@ -98,6 +110,7 @@ function SpecQuickOpenDialog({
   cards,
   onPick,
 }: SpecQuickOpenDialogProps) {
+  const t = useT();
   const [query, setQuery] = useState("");
 
   // Reset query each time the dialog opens so the previous search does not
@@ -115,7 +128,7 @@ function SpecQuickOpenDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
-          <DialogTitle>Abrir spec em nova aba</DialogTitle>
+          <DialogTitle>{t("specs.quickOpen.title")}</DialogTitle>
         </DialogHeader>
         <div className="flex flex-col gap-2">
           <div className="relative">
@@ -127,15 +140,15 @@ function SpecQuickOpenDialog({
               autoFocus
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="Buscar por nome…"
-              aria-label="Buscar specs"
+              placeholder={t("specs.quickOpen.placeholder")}
+              aria-label={t("specs.quickOpen.searchAria")}
               className="w-full pl-7 pr-3 py-1.5 bg-card border border-border rounded-md text-[12px] outline-none placeholder:text-muted-foreground focus:border-primary focus-visible:ring-2 focus-visible:ring-[--color-accent-mustard] transition-colors"
             />
           </div>
           <div className="max-h-[360px] overflow-y-auto flex flex-col gap-0.5">
             {filtered.length === 0 ? (
               <p className="px-2 py-4 text-center text-[12px] text-muted-foreground">
-                Nenhuma spec encontrada.
+                {t("specs.quickOpen.empty")}
               </p>
             ) : (
               filtered.map((c) => (
@@ -212,7 +225,7 @@ function SpecsFilterBar({
       {/* Date filters */}
       <div className="flex items-center gap-1">
         {(["today", "7d", "30d", "all"] as DateFilter[]).map((v) => {
-          const label = v === "today" ? "Hoje" : v === "all" ? "Todas" : v;
+          const label = v === "today" ? t("specs.filterBar.date.today") : v === "all" ? t("specs.filterBar.date.all") : v;
           return (
             <button
               key={v}
@@ -236,8 +249,8 @@ function SpecsFilterBar({
         <input
           value={search}
           onChange={(e) => onSearch(e.target.value)}
-          placeholder="Buscar por nome…"
-          aria-label="Buscar specs por nome"
+          placeholder={t("specs.quickOpen.placeholder")}
+          aria-label={t("specs.filterBar.searchAria")}
           className="w-full pl-7 pr-3 py-1 bg-card border border-border rounded-md text-[12px] outline-none placeholder:text-muted-foreground focus:border-primary focus-visible:ring-2 focus-visible:ring-[--color-accent-mustard] transition-colors"
         />
       </div>
@@ -461,8 +474,8 @@ export function Specs() {
     return (
       <PageSurface>
         <EmptyState
-          title="Diretório de projetos não configurado"
-          description="Vá em Configurações e aponte para a pasta onde estão seus repos."
+          title={t("empty.noRoot.title")}
+          description={t("empty.noRoot.description")}
         />
       </PageSurface>
     );
@@ -472,8 +485,8 @@ export function Specs() {
     return (
       <PageSurface>
         <EmptyState
-          title="Selecione um workspace"
-          description="Use o seletor na sidebar para escolher um projeto."
+          title={t("empty.noWorkspace.title")}
+          description={t("empty.noWorkspace.description")}
         />
       </PageSurface>
     );
@@ -486,8 +499,8 @@ export function Specs() {
     <PageSurface>
       <EditorialBand
         eyebrow="Specs"
-        title="Pipelines e specs"
-        subtitle="Lista de specs do workspace agrupadas por estágio. Use os filtros abaixo para isolar por estado, janela de tempo ou nome."
+        title={t("specs.editorialTitle")}
+        subtitle={t("specs.editorialSubtitle")}
       />
       <SpecTabBar
         tabs={tabs}
@@ -518,7 +531,7 @@ export function Specs() {
 
           <section className="flex flex-col gap-2">
             <SectionHeader
-              title="Specs"
+              title={t("specs.section.specs")}
               right={specsLoading ? undefined : String(filteredSpecs.length)}
             />
 
@@ -530,8 +543,8 @@ export function Specs() {
               </ul>
             ) : filteredSpecs.length === 0 ? (
               <EmptyState
-                title="Nenhuma spec encontrada"
-                description="Ajuste os filtros ou rode uma pipeline com /mustard:feature."
+                title={t("specs.empty.noneFound.title")}
+                description={t("specs.empty.noneFound.description")}
               />
             ) : (
               <div className="flex flex-col gap-3">

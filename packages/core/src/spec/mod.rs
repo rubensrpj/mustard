@@ -1,3 +1,4 @@
+// SPEC LANG: pt-allowed — test fixtures cover pt-BR spec serialisation round-trips.
 //! `spec` — the single canonical owner of **spec-document file I/O**:
 //! reading, parsing, serializing and (atomically) rewriting the lifecycle
 //! header (`### Stage:` / `### Outcome:` / `### Flags:`) of a Mustard spec
@@ -56,6 +57,12 @@
 #[allow(deprecated)] // SpecStatus is the legacy projection target `status_word` delegates to.
 use crate::model::view::{Flags, Outcome, SpecState, SpecStatus, Stage};
 use std::path::Path;
+
+// Byte-stable spec layout contract — Wave 1, `2026-05-25-mustard-deep-refactor`.
+// Public API entry point: `validate(&SpecInput)`. Lives in its own submodule so
+// the historical header parser/serializer above stays the single owner of
+// header IO without bloating with the contract surface.
+pub mod contract;
 
 // ---------------------------------------------------------------------------
 // Header-region scoping (tolerant, CRLF-safe)
@@ -402,6 +409,8 @@ pub fn outcome_label(outcome: Outcome) -> &'static str {
         Outcome::Completed => "Completed",
         Outcome::Cancelled => "Cancelled",
         Outcome::Abandoned => "Abandoned",
+        Outcome::Superseded => "Superseded",
+        Outcome::Absorbed => "Absorbed",
     }
 }
 

@@ -10,8 +10,22 @@
 /** Lifecycle position — `Stage` in `mustard-core` (kebab-case). */
 export type Stage = "analyze" | "plan" | "execute" | "qa-review" | "close";
 
-/** Terminal disposition — `Outcome` in `mustard-core` (kebab-case). */
-export type Outcome = "active" | "completed" | "cancelled" | "abandoned";
+/** Terminal disposition — `Outcome` in `mustard-core` (kebab-case).
+ *
+ * Wave 4 of the deep-refactor (2026-05-25) split `superseded` and `absorbed`
+ * out of the legacy `cancelled` bucket so the Specs page can render dedicated
+ * badges:
+ *
+ * - `superseded` — replaced by a newer spec covering the same scope
+ * - `absorbed`   — folded into a larger consolidating spec
+ */
+export type Outcome =
+  | "active"
+  | "completed"
+  | "cancelled"
+  | "abandoned"
+  | "superseded"
+  | "absorbed";
 
 /** Orthogonal qualifiers — `Flags` in `mustard-core`. All default `false`. */
 export interface Flags {

@@ -16,6 +16,7 @@ use super::file_utils::{collect_files, read_file_safe, relative_path};
 use super::project_conventions::primary_ext_for_stack;
 use crate::util::sha256::Sha256;
 use mustard_core::fs as mfs;
+use mustard_core::ClaudePaths;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -260,9 +261,11 @@ pub fn compute_folder_frequency(subproject_path: &Path, stack_id: &str) -> Value
 // --- Cache helpers ----------------------------------------------------------
 
 fn cluster_cache_path(subproject_path: &Path) -> std::path::PathBuf {
-    subproject_path
-        .join(".claude")
-        .join(".cluster-cache.json")
+    // Each subproject has its own .claude/ dir; use ClaudePaths as the catalog
+    // anchor so the path stays consistent with the broader accessor contract.
+    ClaudePaths::for_project(subproject_path)
+        .map(|p| p.claude_dir().join(".cluster-cache.json"))
+        .unwrap_or_default()
 }
 
 fn compute_file_set_hash(stack_id: &str, files: &[String]) -> String {

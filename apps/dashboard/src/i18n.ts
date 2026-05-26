@@ -1,9 +1,11 @@
+// SPEC LANG: pt-allowed — i18next translation catalogue. pt-BR strings are data, not narrative.
 import i18n from "i18next";
 import { initReactI18next } from "react-i18next";
 
+// BCP-47 locale keys (see memory `project_locale_codes`).
 i18n.use(initReactI18next).init({
   resources: {
-    pt: {
+    "pt-BR": {
       common: {
         "nav.home": "Home",
         "nav.workspace": "Visão Geral",
@@ -168,7 +170,7 @@ i18n.use(initReactI18next).init({
         // Savings section.
         "economy.savings.title": "O que a ferramenta evitou de gastar",
         "economy.savings.caption":
-          "cada linha é uma estratégia que poupa tokens — a injeção de receita é estimada",
+          "cada linha é uma estratégia que poupa tokens",
         "economy.savings.total_one":
           "total: {{tokens}} tok · {{count}} ocorrência",
         "economy.savings.total_other":
@@ -189,9 +191,6 @@ i18n.use(initReactI18next).init({
           "Resposta cortada por orçamento",
         "economy.savings.source.budget_output_cut.hint":
           "cortou uma resposta muito longa antes de devolver ao pai",
-        "economy.savings.source.recipe_injection": "Esqueleto de receita",
-        "economy.savings.source.recipe_injection.hint":
-          "injetou um esqueleto pronto em vez de pedir um do zero",
         // Estimated per spec/wave table.
         "economy.estimated.title": "Custo estimado por spec / onda",
         "economy.estimated.badge": "estimado",
@@ -228,7 +227,7 @@ i18n.use(initReactI18next).init({
         "economy.scope.noProjects": "Nenhum projeto descoberto.",
       },
     },
-    en: {
+    "en-US": {
       common: {
         "nav.home": "Home",
         "nav.workspace": "Overview",
@@ -380,7 +379,7 @@ i18n.use(initReactI18next).init({
         "economy.summaryError.title": "Failed to read economy data",
         "economy.savings.title": "What the tool avoided spending",
         "economy.savings.caption":
-          "each row is a strategy that saves tokens — recipe injection is estimated",
+          "each row is a strategy that saves tokens",
         "economy.savings.total_one":
           "total: {{tokens}} tok · {{count}} occurrence",
         "economy.savings.total_other":
@@ -401,9 +400,6 @@ i18n.use(initReactI18next).init({
           "Response trimmed by budget",
         "economy.savings.source.budget_output_cut.hint":
           "trimmed an overly long response before returning to the parent",
-        "economy.savings.source.recipe_injection": "Recipe skeleton",
-        "economy.savings.source.recipe_injection.hint":
-          "injected a ready-made skeleton instead of asking for one from scratch",
         "economy.estimated.title": "Estimated cost per spec / wave",
         "economy.estimated.badge": "estimated",
         "economy.estimated.caption":
@@ -438,13 +434,13 @@ i18n.use(initReactI18next).init({
       },
     },
   },
-  lng: "pt",
-  fallbackLng: "pt",
+  lng: "pt-BR",
+  fallbackLng: "pt-BR",
   defaultNS: "common",
   interpolation: { escapeValue: false },
 });
 
-export function setLanguage(lng: "pt" | "en") {
+export function setLanguage(lng: "pt-BR" | "en-US") {
   i18n.changeLanguage(lng);
 }
 

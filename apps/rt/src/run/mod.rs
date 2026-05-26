@@ -112,6 +112,7 @@ mod spec_sections;
 // W6: subcommand entry point (`i18n translate-heading`, `spec-lang resolve`).
 pub mod spec_slug;
 mod spec_draft;
+pub mod spec_scaffold;
 mod spec_memory;
 mod spec_validate;
 pub(crate) mod skill_resolve;

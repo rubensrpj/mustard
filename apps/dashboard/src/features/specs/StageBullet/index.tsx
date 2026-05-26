@@ -1,4 +1,4 @@
-import { Check, Ban, X, Pause, AlertTriangle } from "lucide-react";
+import { Check, Ban, X, Pause, AlertTriangle, Replace, ArrowLeftRight } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { Stage, Outcome, Flags } from "@/lib/types/specs";
 
@@ -54,6 +54,11 @@ const OUTCOME_META: Record<
   completed: { color: "var(--intent-success, #22c55e)", Icon: Check },
   cancelled: { color: "var(--color-phase-plan, #f59e0b)", Icon: Ban },
   abandoned: { color: "var(--color-muted-foreground, #71717a)", Icon: X },
+  // Wave 4 of deep-refactor (2026-05-25): dedicated terminal palettes.
+  // Superseded — orange ring, "replaced-by" glyph (Replace icon).
+  // Absorbed   — light grey, "merged" glyph (ArrowLeftRight).
+  superseded: { color: "#fb923c", Icon: Replace },
+  absorbed: { color: "#cbd5e1", Icon: ArrowLeftRight },
 };
 
 export function StageBullet({

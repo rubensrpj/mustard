@@ -1,96 +1,96 @@
 # /mustard:spec — Approve-only flow
 
-Loaded on demand by `commands/mustard/spec/SKILL.md` Step 7 quando a spec selecionada estiver em estágio PLAN (planejar). Conteúdo movido **verbatim** da antiga `commands/mustard/approve/SKILL.md` (deletada na TF `2026-05-23-tf-unify-spec-command`), com ajustes mínimos de costura para o novo entry-point.
+Loaded on demand by `commands/mustard/spec/SKILL.md` Step 7 when the selected spec is in the PLAN stage. Content moved **verbatim** from the former `commands/mustard/approve/SKILL.md` (deleted in TF `2026-05-23-tf-unify-spec-command`), with minimal seam adjustments for the new entry-point.
 
 ## Description
 
-Aprova a spec ativa selecionada pelo picker e prepara a fase de implementação.
+Approves the active spec selected by the picker and prepares the implementation phase.
 
-Uma spec tem duas camadas nomeadas (ver `/feature` § Full Scope): `## PRD` — o *o quê & porquê* (intent) — e `## Plano` — o *como* (execução). Aprovar uma spec aprova **ambas as camadas de uma vez**: não há um portão separado para "aprovar PRD". A separação em duas camadas é uma ajuda de leitura, não um segundo checkpoint — mantenha assim.
+A spec has two named layers (see `/feature` § Full Scope): `## PRD` — the *what & why* (intent) — and `## Plan` — the *how* (execution). Approving a spec approves **both layers at once**: there is no separate gate to "approve PRD". The two-layer separation is a reading aid, not a second checkpoint — keep it that way.
 
-- **Sem sufixo `r`** (`/mustard:spec {letra}` com estágio PLAN): prepara o estado do pipeline e PARA, instruindo o usuário a abrir nova sessão e rodar `/mustard:spec {letra}` novamente para continuar com contexto limpo. Recomendado para specs Full-scope (escopo cheio) com 5+ arquivos.
-- **Com sufixo `r`** (`/mustard:spec {letra}r`): após a preparação, salta imediatamente para o fluxo `resume-flow.md` na mesma sessão (pula Step 0 e Step 1 do resume — sem check de falha de dispatch, sem handoff summary, sem reconfirmação). Use quando a spec acabou de ser aprovada e você quer evitar o hop de reiniciar sessão. Tradeoff: a fase EXECUTE herda o contexto ANALYZE+PLAN em vez de começar limpa — ok para specs pequenas/médias, menos eficiente para grandes.
+- **No `r` suffix** (`/mustard:spec {letter}` with PLAN stage): prepares the pipeline state and STOPS, instructing the user to open a new session and run `/mustard:spec {letter}` again to continue with clean context. Recommended for Full-scope specs with 5+ files.
+- **With `r` suffix** (`/mustard:spec {letter}r`): after preparation, immediately jumps to the `resume-flow.md` flow in the same session (skips Step 0 and Step 1 of resume — no dispatch failure check, no handoff summary, no reconfirmation). Use when the spec was just approved and you want to avoid the session restart hop. Tradeoff: the EXECUTE phase inherits the ANALYZE+PLAN context instead of starting clean — ok for small/medium specs, less efficient for large ones.
 
 ## Prerequisites
 
-- Spec ativa em `.claude/spec/{name}/` (layout flat — status lido do header da spec / projection do SQLite — banco de eventos)
-- Spec foi apresentada ao usuário e ele escolheu a letra correspondente no picker do `/mustard:spec`
+- Active spec in `.claude/spec/{name}/` (flat layout — status read from the spec header / SQLite projection — event database)
+- The spec has been shown to the user and they picked the corresponding letter in the `/mustard:spec` picker
 
 ## Action
 
-1. **Step 0: AUTO-SYNC (obrigatório)** — já rodado no Step 1 do `/mustard:spec`. Não re-executar.
-2. **Read** `.claude/pipeline-config.md` — agents, model selection (seleção de modelo).
-3. A spec já foi localizada pelo picker do `/mustard:spec` (filtrada por header Stage + Outcome — só Outcome `Active` AND Stage ∈ {Plan, Execute}).
+1. **Step 0: AUTO-SYNC (mandatory)** — already executed in Step 1 of `/mustard:spec`. Do not re-execute.
+2. **Read** `.claude/pipeline-config.md` — agents, model selection.
+3. The spec has already been located by the `/mustard:spec` picker (filtered by Stage + Outcome header — only Outcome `Active` AND Stage ∈ {Plan, Execute}).
 
-### Step 3b: Wave Plan Detection (detecção de plano de wave)
+### Step 3b: Wave Plan Detection
 
-Cheque se a spec localizada é um plano de wave: procure `.claude/spec/{specName}/wave-plan.md`.
+Check whether the located spec is a wave plan: look for `.claude/spec/{specName}/wave-plan.md`.
 
-**Se `wave-plan.md` existe:**
+**If `wave-plan.md` exists:**
 
-1. Carregue o estado do pipeline derivado do log de eventos SQLite (rode `mustard-rt run event-projections --view pipeline-state --spec {specName}` para obter o snapshot atual) — esperar `isWavePlan: true`, `totalWaves: N`, `currentWave: 1`, `completedWaves: []`.
-2. Leia `wave-plan.md` e imprima o conteúdo INTEIRO dentro de um bloco markdown fenced (```` ```markdown ... ``` ````). Liste cada caminho de arquivo de wave-spec abaixo do bloco (uma linha cada).
-2b. **Wave size audit (auditoria de tamanho da wave — apenas avisa):** rode `mustard-rt run wave-size-check --spec-dir .claude/spec/{specName}`.
-   - Se o resultado for `action: "audited"` e `oversizedCount > 0`, imprima um bloco de aviso listando cada wave grande demais:
-     `⚠ Wave {N} ({folder}) — {fileCount} arquivos, {layerCount} camada(s) — considere dividir ({reason})`
-   - Diga explicitamente que isso é **avisativo** — NÃO bloqueia aprovação. Informa a opção **"Stop — re-plan with guidance"** do próximo `AskUserQuestion`: uma wave grande demais pode ser dividida antes do EXECUTE.
-   - Se `oversizedCount === 0` ou `action: "skip"`, não imprima nada (silencioso).
+1. Load the pipeline state derived from the SQLite event log (run `mustard-rt run event-projections --view pipeline-state --spec {specName}` to get the current snapshot) — expect `isWavePlan: true`, `totalWaves: N`, `currentWave: 1`, `completedWaves: []`.
+2. Read `wave-plan.md` and print the ENTIRE content inside a fenced markdown block (```` ```markdown ... ``` ````). List each wave-spec file path below the block (one line each).
+2b. **Wave size audit (advisory only):** run `mustard-rt run wave-size-check --spec-dir .claude/spec/{specName}`.
+   - If the result is `action: "audited"` and `oversizedCount > 0`, print a warning block listing each oversized wave:
+     `⚠ Wave {N} ({folder}) — {fileCount} files, {layerCount} layer(s) — consider splitting ({reason})`
+   - State explicitly that this is **advisory** — does NOT block approval. It informs the **"Stop — re-plan with guidance"** option of the next `AskUserQuestion`: an oversized wave can be split before EXECUTE.
+   - If `oversizedCount === 0` or `action: "skip"`, print nothing (silent).
 3. `AskUserQuestion`:
-   - **"Approve wave plan — start with wave 1"** → seguir para step 4 (atualiza header + state para dispatch da wave 1)
-   - **"Reject decomposition — use single spec"** → unir todas as wave specs de volta em uma spec única em `.claude/spec/{specName}/spec.md` (concatenar `## Files`, `## Tasks`, `## Boundaries` de cada wave), deletar `wave-plan.md` e os subdirs `wave-N-*/`, setar `scopeOverride: "user-rejected-waves"` e `isWavePlan: false` no pipeline state, seguir para step 4 na spec única
-   - **"Stop — re-plan with guidance"** → parar. Instruir usuário: `Delete .claude/spec/{specName}/ and re-run /feature {name} with explicit guidance (e.g., "keep wave 2 and wave 3 together").`
-4. Se aprovou o wave plan, do step 4 em diante opere sobre a **wave 1 spec** (`.claude/spec/{specName}/wave-1-{role}/spec.md`) — atualize o header dela, não o do `wave-plan.md`.
+   - **"Approve wave plan — start with wave 1"** → proceed to step 4 (updates header + state for wave 1 dispatch)
+   - **"Reject decomposition — use single spec"** → merge all wave specs back into a single spec at `.claude/spec/{specName}/spec.md` (concatenate `## Files`, `## Tasks`, `## Boundaries` of each wave), delete `wave-plan.md` and the `wave-N-*/` subdirs, set `scopeOverride: "user-rejected-waves"` and `isWavePlan: false` in pipeline state, proceed to step 4 on the single spec
+   - **"Stop — re-plan with guidance"** → stop. Instruct user: `Delete .claude/spec/{specName}/ and re-run /feature {name} with explicit guidance (e.g., "keep wave 2 and wave 3 together").`
+4. If the wave plan was approved, from step 4 onwards operate on the **wave 1 spec** (`.claude/spec/{specName}/wave-1-{role}/spec.md`) — update its header, not the `wave-plan.md` header.
 
-**Se `wave-plan.md` NÃO existe:** seguir como spec única (comportamento abaixo).
+**If `wave-plan.md` does NOT exist:** proceed as single spec (behavior below).
 
-4. **Spec Checkpoint — atualizar header da spec**: setar Stage `Plan`, Outcome `Active`, Flags vazio, Checkpoint `{ISO timestamp now}`. Preservar linhas existentes de Scope, Lang e Parent (header).
-5. **Pipeline State — emitir transição de stage para Plan:**
-   - Extrair `spec-name` do diretório da spec (ex.: basename do path → `2026-02-26-linked-services-card`)
+4. **Spec Checkpoint — update spec header**: set Stage `Plan`, Outcome `Active`, Flags empty, Checkpoint `{ISO timestamp now}`. Preserve existing Scope, Lang and Parent (header) lines.
+5. **Pipeline State — emit stage transition to Plan:**
+   - Extract `spec-name` from the spec directory (e.g. basename of the path → `2026-02-26-linked-services-card`)
    ```bash
    mustard-rt run emit-pipeline --kind pipeline.stage --spec {spec-name} --payload "{\"stage\":\"Plan\"}"
    mustard-rt run emit-pipeline --kind pipeline.status --spec {spec-name} --payload "{\"from\":\"draft\",\"to\":\"approved\"}"
    ```
-   - Nenhum arquivo JSON é escrito aqui.
-5b. **Memory Persist — registrar decisões arquiteturais:**
-   - Para cada decisão significativa na spec (escolhas de tecnologia, padrões de design, trade-offs):
+   - No JSON file is written here.
+5b. **Memory Persist — record architectural decisions:**
+   - For each significant decision in the spec (technology choices, design patterns, trade-offs):
      ```bash
      echo '{"type":"decision","content":"<decision description>","source":"<spec-name>","context":"approved at PLAN phase"}' | mustard-rt run memory decision
      ```
-   - Focar em: por que um padrão foi escolhido em vez de alternativas, restrições que moldaram o design
-   - Pular decisões triviais ou óbvias (máx 3 entradas)
-6. **Model selection (seleção de modelo)** — ler `Model Selection` de `.claude/pipeline-config.md` e registrar campo `"model"` no state:
-   - Contar arquivos totais estimados na spec
-   - Aplicar regra: ≤5 arquivos/padrões conhecidos → `"model": "sonnet"`, 5+ arquivos/padrões novos → `"model": "opus"`
-7. **Task Tracking — criar TaskCreate para cada agente:**
-   - 1 TaskCreate por agente identificado na spec
+   - Focus on: why a pattern was chosen over alternatives, constraints that shaped the design
+   - Skip trivial or obvious decisions (max 3 entries)
+6. **Model selection** — read `Model Selection` from `.claude/pipeline-config.md` and record `"model"` field in state:
+   - Count estimated total files in the spec
+   - Apply rule: ≤5 files / known patterns → `"model": "sonnet"`, 5+ files / new patterns → `"model": "opus"`
+7. **Task Tracking — create TaskCreate for each agent:**
+   - 1 TaskCreate per agent identified in the spec
    - Subject: `"{Layer}: {brief description}"`
    - activeForm: `"Running {Layer} agent"`
-8. **Output — feedback visual:**
-   - Imprimir progress line: `[v] ANALYZE  [v] PLAN  [>] EXECUTE  [ ] CLOSE`
-   - Imprimir uma linha de sinal de camada para o usuário saber o que foi aprovado:
-     `Aprovado: camada PRD (o quê & porquê) + camada Plano (o como).` (Lang=en: `Approved: PRD layer (what & why) + Plano layer (how).`)
-9. **Branch por sufixo `r`:**
+8. **Output — visual feedback:**
+   - Print progress line: `[v] ANALYZE  [v] PLAN  [>] EXECUTE  [ ] CLOSE`
+   - Print a layer signal line so the user knows what was approved:
+     `Approved: PRD layer (what & why) + Plan layer (how).` (Lang=pt-BR: `Aprovado: camada PRD (o quê & porquê) + camada Plano (o como).`)
+9. **Branch by `r` suffix:**
 
-   **Sem `r` (default) — PARAR e instruir usuário a abrir nova sessão:**
-   - Não executar implementação nesta sessão (contexto já consumido por /feature + picker)
-   - Output final:
+   **No `r` (default) — STOP and instruct the user to open a new session:**
+   - Do not execute implementation in this session (context already consumed by /feature + picker)
+   - Final output:
 
      ```
      Spec approved and pipeline prepared.
      Open a new session and run /mustard:spec to start implementation with clean context.
      ```
 
-   - **CRÍTICO**: NÃO dispatch Task agent, NÃO implementar código — apenas PARAR
+   - **CRITICAL**: do NOT dispatch Task agent, do NOT implement code — just STOP
 
-   **Com `r` — salta para o fluxo de resume na mesma sessão:**
-   - Informar usuário: `Spec approved. Resuming inline (sufixo r). Dispatching EXECUTE directly.`
-   - Saltar para `resume-flow.md` **Step 2: Bootstrap**
-   - **PULAR** Step 0 (Dispatch Failure Pre-Check — não se aplica, state foi criado acima) e Step 1 (Detect & Confirm — spec já é conhecida, usuário acabou de aprovar)
-   - Do Step 2 em diante, seguir o fluxo completo do resume: AUTO-SYNC → Diff Context → Wave System → VALIDATE → REVIEW → QA → CLOSE
-   - Aplicar todas as INVIOLABLE RULES do resume (main context IS the Pipeline Runner, wave dispatch in single message, etc.)
+   **With `r` — jump to resume flow in the same session:**
+   - Inform user: `Spec approved. Resuming inline (r suffix). Dispatching EXECUTE directly.`
+   - Jump to `resume-flow.md` **Step 2: Bootstrap**
+   - **SKIP** Step 0 (Dispatch Failure Pre-Check — does not apply, state was created above) and Step 1 (Detect & Confirm — spec is already known, user just approved)
+   - From Step 2 onwards, follow the full resume flow: AUTO-SYNC → Diff Context → Wave System → VALIDATE → REVIEW → QA → CLOSE
+   - Apply all INVIOLABLE RULES of resume (main context IS the Pipeline Runner, wave dispatch in single message, etc.)
 
 ## Alternative Flow
 
-Se a spec não está satisfatória:
-- Forneça feedback textual para ajustes
-- Use /mustard:close para cancelar
+If the spec is not satisfactory:
+- Provide textual feedback for adjustments
+- Use /mustard:close to cancel

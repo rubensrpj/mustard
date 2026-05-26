@@ -1,8 +1,13 @@
 # ADR Format
 
-ADRs live in `docs/adr/` and use sequential numbering: `0001-slug.md`, `0002-slug.md`, etc.
+ADRs use sequential numbering: `0001-slug.md`, `0002-slug.md`, etc.
 
-Create the `docs/adr/` directory lazily — only when the first ADR is needed.
+## Where ADRs live
+
+- **If the decision originated inside a spec** (Mustard pipeline): put the ADR in `.claude/spec/{spec-name}/adr/NNNN-slug.md`. The ADR belongs to the spec that produced it — it travels with `spec.md`, `wave-plan.md`, `meta.json`, `memory/`.
+- **Otherwise** (decision spans the whole project, no owning spec): put it in `docs/adr/NNNN-slug.md` at the repo root.
+
+Create the `adr/` directory lazily — only when the first ADR is needed in that scope.
 
 ## Template
 
@@ -24,7 +29,7 @@ Only include these when they add genuine value. Most ADRs won't need them.
 
 ## Numbering
 
-Scan `docs/adr/` for the highest existing number and increment by one.
+Scan the relevant `adr/` directory (spec-scoped or repo-wide) for the highest existing number and increment by one. Numbering is local to each `adr/` folder — a spec's ADRs are independent of repo-wide ADRs.
 
 ## When to offer an ADR
 

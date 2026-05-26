@@ -1,7 +1,7 @@
 //! Artifact-drift surface for the sidebar (B6 Wave 3).
 //!
 //! The Mustard repo ships `apps/cli/templates/.artifacts.json` — a manifest of
-//! the artifacts vendored under `templates/` (skills, recipes, refs, commands,
+//! the artifacts vendored under `templates/` (skills, refs, commands,
 //! hooks, tools). `mustard-rt run artifact-update --check` walks that manifest,
 //! probes each upstream, and emits a JSON report with one entry per record
 //! (status: `up-to-date` | `stale` | `unknown` | `tracked`).
@@ -39,7 +39,7 @@ use serde::Serialize;
 pub struct ArtifactDrift {
     /// Stable identifier — e.g. `skill:react-best-practices`.
     pub artifact_id: String,
-    /// `skill` | `recipe` | `ref` | `command` | `hook` | `tool`.
+    /// `skill` | `ref` | `command` | `hook` | `tool`.
     pub category: String,
     /// `up-to-date` | `stale` | `unknown` | `tracked`.
     pub status: String,

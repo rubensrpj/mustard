@@ -1,6 +1,6 @@
 //! Consolidated connection helper for the economy module.
 //!
-//! W2 hooks each rebuilt the same recipe — "open the harness `mustard.db` for
+//! W2 hooks each rebuilt the same pattern — "open the harness `mustard.db` for
 //! a project, applying schema and migrations if absent". Five copies of the
 //! same `SqliteEventStore::for_project(...)` dance lived across `apps/rt`.
 //! This helper folds that pattern into a single entry point so the W3

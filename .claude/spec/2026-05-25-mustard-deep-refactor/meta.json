@@ -1,13 +1,14 @@
 {
-  "stage": "Plan",
-  "outcome": "Active",
-  "phase": "PLAN",
+  "stage": "Close",
+  "outcome": "Completed",
+  "phase": "CLOSE",
   "scope": "full (wave plan)",
   "lang": "pt-BR",
-  "checkpoint": "2026-05-25T18:48:29.640Z",
+  "checkpoint": "2026-05-26T00:30:00.000Z",
+  "closed_at": "2026-05-26T00:30:00.000Z",
   "isWavePlan": true,
   "totalWaves": 13,
-  "currentWave": 0,
+  "currentWave": 12,
   "flags": [],
   "model": "opus"
 }

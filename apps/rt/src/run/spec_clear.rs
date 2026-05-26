@@ -59,6 +59,7 @@ use crate::util::now_iso8601;
 use mustard_core::fs;
 use mustard_core::meta::read_meta_beside;
 use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
+use mustard_core::ClaudePaths;
 use serde::Serialize;
 use serde_json::json;
 use std::path::{Path, PathBuf};
@@ -138,7 +139,18 @@ pub fn run(opts: SpecClearOpts) {
 /// Walk `.claude/spec/*/spec.md`, classify each into a report bucket, and
 /// (optionally) remove the candidates.
 fn collect_and_act(repo: &Path, opts: &SpecClearOpts) -> Report {
-    let spec_root = repo.join(".claude").join("spec");
+    let Ok(cp) = ClaudePaths::for_project(repo) else {
+        return Report {
+            candidates: Vec::new(),
+            removed: Vec::new(),
+            kept: Vec::new(),
+            skipped: Vec::new(),
+            errors: Vec::new(),
+            dry_run: !opts.apply,
+            age_days: opts.age_days,
+        };
+    };
+    let spec_root = cp.spec_dir();
     let now_ms = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .map_or(0u128, |d| d.as_millis()) as i64;

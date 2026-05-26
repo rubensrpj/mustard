@@ -1,3 +1,4 @@
+// SPEC LANG: pt-allowed — catalog entries are pt-BR end-user copy; migration to i18n dict deferred to sub-spec 2026-05-26-dashboard-data-catalogs-i18n.
 export interface CommandEntry {
   cmd: string;
   syntax: string;
@@ -248,7 +249,7 @@ export const COMMANDS: CommandEntry[] = [
     simples: 'Cria novas skills para o projeto, melhora skills existentes e mede a qualidade do output delas.',
     tecnico: 'Interface para skill-validate.js + authoring workflow. Sub-operações: list (todas skills com status), validate (checa YAML frontmatter + marker mustard:generated), create (scaffolda nova skill com template), eval (roda evals de qualidade). Skills em .claude/skills/ ou {subprojeto}/skills/.',
     when: 'Adicionar comportamento especializado ao agente. Otimizar skill existente. Validar skills após /scan.',
-    notWhen: 'Mudanças em hooks (use /maint). Editar recipes (edição direta em .claude/recipes/).',
+    notWhen: 'Mudanças em hooks (use /maint).',
     examples: ['/mustard:skill'],
     seeAlso: ['scan', 'maint'],
   },

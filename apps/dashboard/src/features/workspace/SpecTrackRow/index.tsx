@@ -3,6 +3,7 @@ import { cn } from "@/lib/utils";
 import { PhaseStation } from "@/features/telemetry/PhaseStation";
 import type { SpecTrack } from "@/lib/types/specs";
 import type { PhaseStationProps } from "@/features/telemetry/PhaseStation";
+import { useT } from "@/lib/i18n";
 
 interface SpecTrackRowProps {
   track: SpecTrack;
@@ -42,6 +43,7 @@ function statusColor(status: string): string {
 
 /** Right indicator */
 function RightIndicator({ track }: { track: SpecTrack }) {
+  const t = useT();
   if (track.blocked_reason) {
     return (
       <span className="text-[11px] font-medium text-[--intent-error] shrink-0">
@@ -59,7 +61,7 @@ function RightIndicator({ track }: { track: SpecTrack }) {
   return (
     <span
       className="text-[12px] text-[--primary] shrink-0"
-      aria-label="Em execução"
+      aria-label={t("specTrack.inProgressAria")}
     >
       ▶
     </span>
@@ -74,6 +76,7 @@ function RightIndicator({ track }: { track: SpecTrack }) {
  * duration/event counts, no labels — handled by PhaseStation's defaults).
  */
 function PhaseTrack({ segments }: { segments: SpecTrack["segments"] }) {
+  const t = useT();
   const stateMap = new Map(
     segments.map((s) => [s.phase.toLowerCase(), s.state]),
   );
@@ -82,7 +85,7 @@ function PhaseTrack({ segments }: { segments: SpecTrack["segments"] }) {
     <div
       className="flex items-center gap-1"
       role="img"
-      aria-label="Fases da pipeline"
+      aria-label={t("specTrack.phasesAria")}
     >
       {PHASE_ORDER.map((phase) => {
         const raw = stateMap.get(phase) ?? "future";
@@ -102,13 +105,14 @@ function PhaseTrack({ segments }: { segments: SpecTrack["segments"] }) {
 }
 
 export function SpecTrackRow({ track, className }: SpecTrackRowProps) {
+  const t = useT();
   const navigate = useNavigate();
 
   const waveLabel =
     track.current_wave != null
       ? track.total_waves != null
-        ? `onda ${track.current_wave}/${track.total_waves}`
-        : `onda ${track.current_wave}`
+        ? t("specTrack.waveLabel").replace("{current}", String(track.current_wave)).replace("{total}", String(track.total_waves))
+        : t("specTrack.waveLabelOnly").replace("{current}", String(track.current_wave))
       : track.current_phase;
 
   function handleClick() {
@@ -127,7 +131,7 @@ export function SpecTrackRow({ track, className }: SpecTrackRowProps) {
     <div
       role="button"
       tabIndex={0}
-      aria-label={`Spec ${track.spec}, fase ${track.current_phase}, status ${track.status}. Clique para expandir.`}
+      aria-label={t("specTrack.aria").replace("{spec}", track.spec).replace("{phase}", track.current_phase).replace("{status}", track.status)}
       onClick={handleClick}
       onKeyDown={handleKeyDown}
       className={cn(

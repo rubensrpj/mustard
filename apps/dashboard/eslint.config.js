@@ -25,5 +25,9 @@ export default [
       'no-console': ['warn', { allow: ['warn', 'error'] }],
     },
   },
+  {
+    files: ['scripts/**/*.{js,mjs,cjs}'],
+    languageOptions: { globals: { ...globals.node, ...globals.es2022 } },
+  },
   { ignores: ['dist', 'src-tauri', 'public', '.tauri', 'node_modules', '*.config.{js,ts}', '.claude'] },
 ]

@@ -20,6 +20,7 @@ import { useLapidator } from '@/hooks/useLapidator';
 import type { LapidatedPrd } from '@/lib/types/prd';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { useT } from '@/lib/i18n';
 
 const DRAFT_KEY = 'mustard-prd-draft';
 
@@ -97,6 +98,7 @@ function mergeLineNonDestructive(existing: string, line: string): string {
 }
 
 export function Prd() {
+  const t = useT();
   const [form, setForm] = useState<PrdForm>(DEFAULT_FORM);
   const [errors, setErrors] = useState<Record<string, boolean>>({});
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -171,9 +173,9 @@ export function Prd() {
         project: deferredForm.projectId || undefined,
       });
     } catch {
-      return '_(preencha os campos obrigatórios)_';
+      return t('prd.placeholder.preview');
     }
-  }, [deferredForm, slugDerived]);
+  }, [deferredForm, slugDerived, t]);
 
   function setField<K extends keyof PrdForm>(key: K, value: PrdForm[K]) {
     setForm((f) => ({ ...f, [key]: value }));
@@ -215,7 +217,7 @@ export function Prd() {
     if (!form.projectId) return;
     const project = projects?.find((p) => p.id === form.projectId);
     if (!project?.path) {
-      toast.error('Selecione um projeto válido');
+      toast.error(t('prd.toast.selectProject'));
       return;
     }
     await lap.lapidate(project.path, (result: LapidatedPrd) => {
@@ -247,7 +249,7 @@ export function Prd() {
     if (!splitLines(form.checklist).length) newErrors.checklist = true;
     setErrors(newErrors);
     if (Object.keys(newErrors).length > 0) {
-      toast.error('Preencha os campos obrigatórios');
+      toast.error(t('prd.toast.fillRequired'));
       return false;
     }
     return true;
@@ -255,13 +257,13 @@ export function Prd() {
 
   function copyMarkdown() {
     if (!validate()) return;
-    navigator.clipboard.writeText(markdownPreview).then(() => toast.success('Copiado!'));
+    navigator.clipboard.writeText(markdownPreview).then(() => toast.success(t('prd.toast.copied')));
   }
 
   function copyWithPrefix() {
     if (!validate()) return;
     const prefixed = `/mustard:${form.type} ${slugDerived}\n\n${markdownPreview}`;
-    navigator.clipboard.writeText(prefixed).then(() => toast.success('Copiado!'));
+    navigator.clipboard.writeText(prefixed).then(() => toast.success(t('prd.toast.copied')));
   }
 
   function clearDraft() {
@@ -279,8 +281,8 @@ export function Prd() {
     <PageSurface>
       <EditorialBand
         eyebrow="Mustard / PRD"
-        title="PRD Builder"
-        subtitle="Gere specs no formato Mustard a partir de uma intenção livre, com lapidação automática contra o registry do projeto."
+        title={t('prd.editorialTitle')}
+        subtitle={t('prd.editorialSubtitle')}
       />
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
@@ -288,7 +290,7 @@ export function Prd() {
         <div className="flex flex-col gap-3">
           {/* Intent (always visible — the new entry point) */}
           <div className="flex flex-col gap-1">
-            <label className={labelClass}>Intenção livre</label>
+            <label className={labelClass}>{t('prd.label.freeIntent')}</label>
             <IntentHero
               intent={lap.intent}
               onIntentChange={lap.setIntent}
@@ -302,48 +304,48 @@ export function Prd() {
           </div>
 
           {/* Identity */}
-          <CollapsibleGroup label="Identidade" defaultOpen hint="Tipo, título e projeto.">
+          <CollapsibleGroup label={t('prd.group.identity')} defaultOpen hint={t('prd.group.identityHint')}>
             <div className="flex flex-col gap-3 pl-5">
               <div className="flex flex-col gap-1">
-                <label className={labelClass}>Tipo</label>
+                <label className={labelClass}>{t('prd.label.type')}</label>
                 <div className="flex gap-1">
-                  {(['feature', 'bugfix'] as const).map((t) => (
+                  {(['feature', 'bugfix'] as const).map((kind) => (
                     <button
-                      key={t}
+                      key={kind}
                       type="button"
-                      onClick={() => setField('type', t)}
-                      className={`px-3 py-1.5 rounded text-sm border transition-colors ${form.type === t ? 'bg-primary text-primary-foreground border-primary' : 'border-border text-muted-foreground hover:text-foreground'}`}
+                      onClick={() => setField('type', kind)}
+                      className={`px-3 py-1.5 rounded text-sm border transition-colors ${form.type === kind ? 'bg-primary text-primary-foreground border-primary' : 'border-border text-muted-foreground hover:text-foreground'}`}
                     >
-                      {t === 'feature' ? 'Feature' : 'Bugfix'}
+                      {kind === 'feature' ? 'Feature' : 'Bugfix'}
                     </button>
                   ))}
                 </div>
               </div>
               <div className="flex flex-col gap-1">
-                <label htmlFor="prd-title" className={labelClass}>Título</label>
+                <label htmlFor="prd-title" className={labelClass}>{t('prd.label.title')}</label>
                 <input
                   id="prd-title"
                   className={inputClass}
                   value={form.title}
-                  placeholder="Ex: dashboard-prd-builder"
+                  placeholder={t('prd.placeholder.title')}
                   onChange={(e) => setField('title', e.target.value)}
                 />
                 {slugDerived && (
                   <span className="text-[11px] text-muted-foreground">
-                    Slug: <code className="font-mono">{slugDerived}</code>
+                    {t('prd.label.slugPrefix')} <code className="font-mono">{slugDerived}</code>
                   </span>
                 )}
               </div>
               {projects && projects.length > 0 && (
                 <div className="flex flex-col gap-1">
-                  <label htmlFor="prd-project" className={labelClass}>Projeto</label>
+                  <label htmlFor="prd-project" className={labelClass}>{t('prd.label.project')}</label>
                   <select
                     id="prd-project"
                     className={inputClass}
                     value={form.projectId}
                     onChange={(e) => setField('projectId', e.target.value)}
                   >
-                    <option value="">— nenhum —</option>
+                    <option value="">{t('prd.label.projectNone')}</option>
                     {projects.map((p) => (
                       <option key={p.id} value={p.id}>{p.name}</option>
                     ))}
@@ -352,18 +354,18 @@ export function Prd() {
               )}
               {/* Scope: auto-from-AI chip, toggleable to manual buttons. */}
               <div className="flex flex-col gap-1">
-                <label className={labelClass}>Escopo</label>
+                <label className={labelClass}>{t('prd.label.scope')}</label>
                 {!showScopeButtons ? (
                   <div className="flex items-center gap-2">
                     <Badge variant="tag-purple">
-                      {form.scope === 'light' ? 'Light (auto)' : 'Full (auto)'}
+                      {form.scope === 'light' ? t('prd.label.scopeLightAuto') : t('prd.label.scopeFullAuto')}
                     </Badge>
                     <button
                       type="button"
                       onClick={() => setScopeOverride(true)}
                       className="text-[11px] text-muted-foreground hover:text-foreground underline-offset-2 hover:underline"
                     >
-                      ajustar
+                      {t('prd.label.adjust')}
                     </button>
                   </div>
                 ) : (
@@ -385,32 +387,32 @@ export function Prd() {
           </CollapsibleGroup>
 
           {/* Details */}
-          <CollapsibleGroup label="Detalhes" defaultOpen hint="Resumo, motivação, layers afetados.">
+          <CollapsibleGroup label={t('prd.group.details')} defaultOpen hint={t('prd.group.detailsHint')}>
             <div className="flex flex-col gap-3 pl-5">
               <div className="flex flex-col gap-1">
-                <label htmlFor="prd-summary" className={labelClass}>Resumo *</label>
+                <label htmlFor="prd-summary" className={labelClass}>{t('prd.label.summary')}</label>
                 <textarea
                   id="prd-summary"
                   rows={3}
                   className={errors.summary ? invalidInputClass : inputClass}
                   value={form.summary}
-                  placeholder="O que será feito e por quê."
+                  placeholder={t('prd.placeholder.summary')}
                   onChange={(e) => setField('summary', e.target.value)}
                 />
               </div>
               <div className="flex flex-col gap-1">
-                <label htmlFor="prd-why" className={labelClass}>Por quê? (opcional)</label>
+                <label htmlFor="prd-why" className={labelClass}>{t('prd.label.why')}</label>
                 <textarea
                   id="prd-why"
                   rows={2}
                   className={inputClass}
                   value={form.why}
-                  placeholder="Motivação de negócio ou técnica."
+                  placeholder={t('prd.placeholder.why')}
                   onChange={(e) => setField('why', e.target.value)}
                 />
               </div>
               <fieldset className="flex flex-col gap-1">
-                <legend className={`${labelClass} mb-1`}>Layers</legend>
+                <legend className={`${labelClass} mb-1`}>{t('prd.label.layers')}</legend>
                 <div className="flex flex-wrap gap-x-4 gap-y-1">
                   {(Object.keys(form.layers) as Array<keyof PrdForm['layers']>).map((layer) => (
                     <label key={layer} className="flex items-center gap-1.5 text-sm cursor-pointer">
@@ -429,10 +431,10 @@ export function Prd() {
           </CollapsibleGroup>
 
           {/* Scope of change */}
-          <CollapsibleGroup label="Escopo de Mudança" defaultOpen hint="Entidades e paths afetados.">
+          <CollapsibleGroup label={t('prd.group.scopeChange')} defaultOpen hint={t('prd.group.scopeChangeHint')}>
             <div className="flex flex-col gap-3 pl-5">
               <div className="flex flex-col gap-1">
-                <label className={labelClass}>Entidades</label>
+                <label className={labelClass}>{t('prd.label.entities')}</label>
                 <EntityPicker
                   entities={entities}
                   selected={lap.selectedEntities}
@@ -441,7 +443,7 @@ export function Prd() {
                 />
               </div>
               <div className="flex flex-col gap-1">
-                <label className={labelClass}>Boundaries * (1 por linha)</label>
+                <label className={labelClass}>{t('prd.label.boundaries')}</label>
                 <EditableList
                   items={splitLinesRaw(form.boundaries)}
                   onChange={(items) => setField('boundaries', items.join('\n'))}
@@ -449,30 +451,30 @@ export function Prd() {
                   itemAriaPrefix="Boundary"
                 />
                 {errors.boundaries && (
-                  <span className="text-[11px] text-destructive">Adicione pelo menos um boundary.</span>
+                  <span className="text-[11px] text-destructive">{t('prd.error.boundaries')}</span>
                 )}
               </div>
             </div>
           </CollapsibleGroup>
 
           {/* Plan */}
-          <CollapsibleGroup label="Plano" defaultOpen hint="Checklist de execução.">
+          <CollapsibleGroup label={t('prd.group.plan')} defaultOpen hint={t('prd.group.planHint')}>
             <div className="flex flex-col gap-1 pl-5">
-              <label className={labelClass}>Checklist * (1 por linha)</label>
+              <label className={labelClass}>{t('prd.label.checklist')}</label>
               <EditableList
                 items={splitLinesRaw(form.checklist)}
                 onChange={(items) => setField('checklist', items.join('\n'))}
-                placeholder="Criar função pura"
-                itemAriaPrefix="Item do checklist"
+                placeholder={t('prd.placeholder.checklist')}
+                itemAriaPrefix={t('prd.ariaPrefix.checklist')}
               />
               {errors.checklist && (
-                <span className="text-[11px] text-destructive">Adicione pelo menos um item.</span>
+                <span className="text-[11px] text-destructive">{t('prd.error.checklist')}</span>
               )}
             </div>
           </CollapsibleGroup>
 
           {/* Acceptance Criteria — unchanged structure */}
-          <CollapsibleGroup label="Critérios" defaultOpen hint="Acceptance criteria runnable.">
+          <CollapsibleGroup label={t('prd.group.criteria')} defaultOpen hint={t('prd.group.criteriaHint')}>
             <div className="flex flex-col gap-2 pl-5">
               {form.acceptanceCriteria.map((ac, i) => (
                 <div key={i} className="flex flex-col gap-1 border border-border rounded p-2 relative">
@@ -480,7 +482,7 @@ export function Prd() {
                     <span className="text-[11px] uppercase tracking-wider text-muted-foreground">AC-{i + 1}</span>
                     <button
                       type="button"
-                      aria-label={`Remover AC-${i + 1}`}
+                      aria-label={t('prd.aria.acRemove').replace('{n}', String(i + 1))}
                       onClick={() => removeAc(i)}
                       className="text-muted-foreground hover:text-foreground"
                     >
@@ -489,10 +491,10 @@ export function Prd() {
                   </div>
                   <input
                     className={inputClass}
-                    placeholder="Título do critério"
+                    placeholder={t('prd.placeholder.acTitle')}
                     value={ac.title}
                     onChange={(e) => updateAc(i, 'title', e.target.value)}
-                    aria-label={`AC-${i + 1} título`}
+                    aria-label={t('prd.aria.acTitle').replace('{n}', String(i + 1))}
                   />
                   <textarea
                     rows={2}
@@ -500,43 +502,43 @@ export function Prd() {
                     placeholder="npx tsc --noEmit"
                     value={ac.command}
                     onChange={(e) => updateAc(i, 'command', e.target.value)}
-                    aria-label={`AC-${i + 1} comando`}
+                    aria-label={t('prd.aria.acCommand').replace('{n}', String(i + 1))}
                   />
                 </div>
               ))}
               <button
                 type="button"
                 onClick={addAc}
-                aria-label="Adicionar critério de aceite"
+                aria-label={t('prd.aria.addAc')}
                 className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground border border-dashed border-border rounded px-3 py-1.5"
               >
-                <Plus className="h-3.5 w-3.5" /> Adicionar AC
+                <Plus className="h-3.5 w-3.5" /> {t('prd.action.addAc')}
               </button>
             </div>
           </CollapsibleGroup>
 
           {/* Advanced */}
-          <CollapsibleGroup label="Avançado" hint="Decisões não-óbvias e não-goals.">
+          <CollapsibleGroup label={t('prd.group.advanced')} hint={t('prd.group.advancedHint')}>
             <div className="flex flex-col gap-3 pl-5">
               <div className="flex flex-col gap-1">
-                <label htmlFor="prd-decisions" className={labelClass}>Decisões não-óbvias (opcional)</label>
+                <label htmlFor="prd-decisions" className={labelClass}>{t('prd.label.decisions')}</label>
                 <textarea
                   id="prd-decisions"
                   rows={2}
                   className={inputClass}
                   value={form.decisionsNotObvious}
-                  placeholder="Uma decisão por linha."
+                  placeholder={t('prd.placeholder.decisions')}
                   onChange={(e) => setField('decisionsNotObvious', e.target.value)}
                 />
               </div>
               <div className="flex flex-col gap-1">
-                <label htmlFor="prd-nongoals" className={labelClass}>Non-Goals (opcional)</label>
+                <label htmlFor="prd-nongoals" className={labelClass}>{t('prd.label.nonGoals')}</label>
                 <textarea
                   id="prd-nongoals"
                   rows={2}
                   className={inputClass}
                   value={form.nonGoals}
-                  placeholder="Um por linha."
+                  placeholder={t('prd.placeholder.nonGoals')}
                   onChange={(e) => setField('nonGoals', e.target.value)}
                 />
               </div>
@@ -546,7 +548,7 @@ export function Prd() {
 
         {/* Preview */}
         <div className="flex flex-col gap-2">
-          <div className="text-[11px] uppercase tracking-wider text-muted-foreground">Preview</div>
+          <div className="text-[11px] uppercase tracking-wider text-muted-foreground">{t('prd.preview')}</div>
           <DataCard
             padded
             className="overflow-y-auto"
@@ -561,10 +563,10 @@ export function Prd() {
       {/* Actions */}
       <div className="flex items-center gap-2 pt-2 border-t border-border">
         <Button type="button" onClick={copyMarkdown} size="sm">
-          Copiar markdown
+          {t('prd.action.copyMarkdown')}
         </Button>
         <Button type="button" onClick={copyWithPrefix} size="sm">
-          Copiar com /mustard:{form.type}
+          {t('prd.action.copyWithPrefix')}{form.type}
         </Button>
         <Button
           type="button"
@@ -573,7 +575,7 @@ export function Prd() {
           size="sm"
           className="ml-auto"
         >
-          Limpar
+          {t('prd.action.clear')}
         </Button>
       </div>
     </PageSurface>

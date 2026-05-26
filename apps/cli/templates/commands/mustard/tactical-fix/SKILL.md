@@ -24,7 +24,7 @@ Qualifies when ALL hold: ≤100 LOC, no public-contract change (schema, API, exp
 mustard-rt run tactical-fix-create --parent <parent> --description "<descrição>" --scope <scope>
 ```
 
-Binary handles slug derivation (`YYYY-MM-DD-<kebab>`), directory creation (aborts if exists), `spec.md` generation with a Parent header line (Lang inherited from parent, default `en`) + skeleton body (Contexto with `[[<parent>]]` link, Critérios de Aceitação placeholder, Arquivos placeholder), and `spec.link` event emission.
+Binary handles slug derivation (`YYYY-MM-DD-<kebab>`), directory creation (aborts if exists), `spec.md` generation with a Parent header line (Lang inherited from parent, default `en-US`) + skeleton body (Contexto with `[[<parent>]]` link, Critérios de Aceitação placeholder, Arquivos placeholder), and `spec.link` event emission.
 
 Then print:
 

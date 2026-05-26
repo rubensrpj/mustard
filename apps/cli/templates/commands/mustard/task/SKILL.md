@@ -22,7 +22,7 @@ source: manual
 
 ## L0 Enforcement
 
-Parent NEVER reads source, NEVER implements. All work inside Task contexts. Orchestrator MAY Grep `.md` config files (`guards.md`, `patterns.md`, `recipes.md`) to inject standardization slices.
+Parent NEVER reads source, NEVER implements. All work inside Task contexts. Orchestrator MAY Grep `.md` config files (`guards.md`, `patterns.md`) to inject standardization slices.
 
 ## Flow
 
@@ -30,7 +30,7 @@ Parent NEVER reads source, NEVER implements. All work inside Task contexts. Orch
 - **audit** — load `improve-codebase-architecture` → Task(general-purpose, sonnet) with checklist → severity-classified report.
 - **compare** — one explorer per subproject (PARALLEL, single message) → Task(Plan, sonnet) merges + surfaces discrepancies.
 - **refactor** — load `improve-codebase-architecture` → Task(Plan) → print plan verbatim → AskUserQuestion (Approve/Adjust/Cancel) → Task(general-purpose) → validate.
-- **implement** — Greps `{subproject}/.claude/commands/{guards,patterns,recipes}.md` (`-C 2`, `head_limit 20`) → single `Task(general-purpose, sonnet)` with slices inline, return cap 30 lines → agent runs build/type-check. ON CONCERN → surface + offer `/feature` Light.
+- **implement** — Greps `{subproject}/.claude/commands/{guards,patterns}.md` (`-C 2`, `head_limit 20`) → single `Task(general-purpose, sonnet)` with slices inline, return cap 30 lines → agent runs build/type-check. ON CONCERN → surface + offer `/feature` Light.
 
 → See `../../../refs/task/task-prompts.md` for prompt templates.
 

@@ -14,6 +14,7 @@ import { useStore } from "@/lib/store";
 import { discoverProjects } from "@/api/discovery";
 import type { Project as DiscoveryProject } from "@/api/discovery";
 import { relativeTime } from "@/lib/time";
+import { useT } from "@/lib/i18n";
 import { AggregateOverview } from "@/features/workspace/AggregateOverview";
 import { Separator } from "@/components/ui/separator";
 import { fetchActivePipelines } from "@/lib/dashboard";
@@ -21,6 +22,7 @@ import { LivePipelineCard } from "@/features/workspace/LivePipelineCard";
 import { WorkspaceDigest } from "@/features/workspace/WorkspaceDigest";
 
 export function Home() {
+  const t = useT();
   const navigate = useNavigate();
   const projectsRoot = useStore((s) => s.projectsRoot);
   const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
@@ -66,10 +68,10 @@ export function Home() {
     return (
       <PageSurface>
         <EmptyState
-          title="Configure o diretório de projetos"
+          title={t("home.configureRoot.title")}
           description={
             <>
-              Vá em <Link to="/settings" className="underline">Settings</Link> e aponte para a pasta onde estão seus repos.
+              {t("home.configureRoot.body.before")}<Link to="/settings" className="underline">{t("home.configureRoot.body.linkLabel")}</Link>{t("home.configureRoot.body.after")}
             </>
           }
         />
@@ -80,7 +82,7 @@ export function Home() {
   if (discovering && !discovered) {
     return (
       <PageSurface>
-        <p className="text-sm text-muted-foreground">Descobrindo projetos…</p>
+        <p className="text-sm text-muted-foreground">{t("home.discovering")}</p>
       </PageSurface>
     );
   }
@@ -89,10 +91,10 @@ export function Home() {
     return (
       <PageSurface>
         <EmptyState
-          title="Nenhum projeto encontrado"
+          title={t("home.noProjects.title")}
           description={
             <>
-              Não encontramos projetos em <code className="font-mono text-foreground">{projectsRoot}</code>.
+              {t("home.noProjects.body.before")}<code className="font-mono text-foreground">{projectsRoot}</code>{t("home.noProjects.body.after")}
             </>
           }
         />
@@ -113,7 +115,7 @@ export function Home() {
           />
           <DataCard padded>
             <p className="text-[13px] text-muted-foreground">
-              Este workspace ainda não emitiu eventos. Rode um pipeline (<code className="font-mono">/feature</code>, <code className="font-mono">/bugfix</code>) para popular os dados.
+              {t("home.workspace.noEvents.before")}<code className="font-mono">/feature</code>{t("home.workspace.noEvents.middle")}<code className="font-mono">/bugfix</code>{t("home.workspace.noEvents.after")}
             </p>
           </DataCard>
         </PageSurface>
@@ -130,9 +132,9 @@ export function Home() {
 
         {/* Active pipelines */}
         <section className="flex flex-col gap-2">
-          <SectionHeader title="Pipelines ativos" />
+          <SectionHeader title={t("home.activePipelines")} />
           {!livePipelines || livePipelines.length === 0 ? (
-            <p className="text-[13px] text-muted-foreground">Nenhum pipeline ativo.</p>
+            <p className="text-[13px] text-muted-foreground">{t("home.noActivePipeline")}</p>
           ) : (
             <ul className="flex flex-col gap-0.5">
               {livePipelines.map((pipeline) => (
@@ -149,7 +151,7 @@ export function Home() {
 
         {/* Resumo do dia */}
         <section className="flex flex-col gap-2">
-          <SectionHeader title="Resumo de hoje" />
+          <SectionHeader title={t("home.todayDigest")} />
           <WorkspaceDigest project={activeProject} />
         </section>
       </PageSurface>
@@ -161,16 +163,16 @@ export function Home() {
     <PageSurface>
       <EditorialBand
         eyebrow="Mustard"
-        title="Portfólio"
-        subtitle="Visão consolidada de todos os projetos descobertos no diretório raiz."
+        title={t("home.portfolio.title")}
+        subtitle={t("home.portfolio.subtitle")}
       />
 
       <AggregateOverview projects={discovered} />
 
       <section className="flex flex-col gap-2">
-        <SectionHeader title="Pipelines ativos" />
+        <SectionHeader title={t("home.activePipelines")} />
         {allLive.length === 0 ? (
-          <p className="text-[13px] text-muted-foreground">Nenhuma pipeline em execução.</p>
+          <p className="text-[13px] text-muted-foreground">{t("home.portfolio.noPipelines")}</p>
         ) : (
           <ul className="flex flex-col gap-0.5">
             {allLive.map(({ pipeline, project }) => (
@@ -188,7 +190,7 @@ export function Home() {
       <Separator />
 
       <section className="flex flex-col gap-2">
-        <SectionHeader title="Projetos" right={String(discovered.length)} />
+        <SectionHeader title={t("home.portfolio.projects")} right={String(discovered.length)} />
         <DataCard>
           {discovered.map((p) => (
             <DataRow

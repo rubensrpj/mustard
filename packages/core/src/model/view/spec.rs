@@ -75,12 +75,20 @@ pub enum Outcome {
     Active,
     /// Finished successfully and archived.
     Completed,
-    /// Deliberately aborted after a real pipeline ran (legacy `cancelled` /
-    /// `superseded`).
+    /// Deliberately aborted after a real pipeline ran.
     Cancelled,
     /// Abandoned without a real pipeline ever running — ghost noise (legacy
-    /// `abandoned` / `orphan`).
+    /// `orphan`).
     Abandoned,
+    /// Replaced by a newer spec that subsumes the same scope. Distinct from
+    /// `Cancelled`: the work was redirected, not dropped. Dashboard renders
+    /// this with the orange badge (deep-refactor W4, 2026-05-25).
+    Superseded,
+    /// Folded into a larger consolidating spec — the work survives there.
+    /// Distinct from `Superseded`: a Superseded spec was replaced; an Absorbed
+    /// spec was merged. Dashboard renders this with the light-grey badge
+    /// (deep-refactor W4, 2026-05-25).
+    Absorbed,
 }
 
 impl Outcome {
@@ -93,8 +101,10 @@ impl Outcome {
         match raw.trim().to_ascii_lowercase().as_str() {
             "active" => Some(Self::Active),
             "completed" | "closed" | "done" => Some(Self::Completed),
-            "cancelled" | "canceled" | "superseded" => Some(Self::Cancelled),
+            "cancelled" | "canceled" => Some(Self::Cancelled),
             "abandoned" | "orphan" => Some(Self::Abandoned),
+            "superseded" => Some(Self::Superseded),
+            "absorbed" => Some(Self::Absorbed),
             _ => None,
         }
     }
@@ -242,6 +252,8 @@ impl SpecState {
             Outcome::Completed => "completed",
             Outcome::Cancelled => "cancelled",
             Outcome::Abandoned => "abandoned",
+            Outcome::Superseded => "superseded",
+            Outcome::Absorbed => "absorbed",
             Outcome::Active => {
                 if self.flags.blocked {
                     "blocked"
@@ -311,6 +323,18 @@ impl TryFrom<SpecState> for SpecStatus {
             Outcome::Completed => Self::Completed,
             Outcome::Cancelled => Self::Cancelled,
             Outcome::Abandoned => Self::Abandoned,
+            // Legacy projections: the deprecated `SpecStatus` enum has no
+            // dedicated `Superseded` / `Absorbed` variants. Map both to the
+            // closest terminal sense (cancelled-ish vs. completed-ish) so the
+            // legacy bridge keeps emitting a coherent flat status during the
+            // W1→W7 migration window.
+            // Both map to `Completed`: superseded work is "work redirected,
+            // not dropped" (see `Outcome` doc-comment) and absorbed work was
+            // merged into another spec. The legacy `SpecStatus` enum has no
+            // dedicated variants for either, and both `status_word` helpers
+            // (this one + `meta.rs`) agree on "completed" for these outcomes.
+            Outcome::Superseded => Self::Completed,
+            Outcome::Absorbed => Self::Completed,
             Outcome::Active => {
                 if state.flags.blocked {
                     Self::Blocked
@@ -726,7 +750,11 @@ mod tests {
 
     #[test]
     fn outcome_and_flags_parse_legacy_forms() {
-        assert_eq!(Outcome::parse("superseded"), Some(Outcome::Cancelled));
+        // Wave 4 of deep-refactor (2026-05-25) split `superseded` and
+        // `absorbed` out of `Cancelled` so the dashboard can render their own
+        // badges. Both parse to their dedicated variants now.
+        assert_eq!(Outcome::parse("superseded"), Some(Outcome::Superseded));
+        assert_eq!(Outcome::parse("absorbed"), Some(Outcome::Absorbed));
         assert_eq!(Outcome::parse("orphan"), Some(Outcome::Abandoned));
         assert!(Flags::parse("blocked").blocked);
         assert!(Flags::parse("closed-followup").followup_open);

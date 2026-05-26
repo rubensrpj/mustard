@@ -7,13 +7,14 @@ type Store = {
   selectedProjectId: string | null;
   activeWorkspaceId: string | null;
   knowledgeQuery: string;
-  language: 'pt' | 'en';
+  // BCP-47 locale codes (see memory `project_locale_codes`).
+  language: 'pt-BR' | 'en-US';
   setProjectsRoot: (root: string | null) => void;
   setSelectedProjectId: (id: string | null) => void;
   setActiveWorkspaceId: (id: string | null) => void;
   clearActiveWorkspace: () => void;
   setKnowledgeQuery: (q: string) => void;
-  setLanguage: (l: 'pt' | 'en') => void;
+  setLanguage: (l: 'pt-BR' | 'en-US') => void;
 };
 
 export const useStore = create<Store>()(
@@ -23,7 +24,7 @@ export const useStore = create<Store>()(
       selectedProjectId: null,
       activeWorkspaceId: null,
       knowledgeQuery: '',
-      language: 'pt',
+      language: 'pt-BR',
       setProjectsRoot: (root) => set({ projectsRoot: root }),
       setSelectedProjectId: (id) => set({ selectedProjectId: id }),
       setActiveWorkspaceId: (id) => set({ activeWorkspaceId: id }),

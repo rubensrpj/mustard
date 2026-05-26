@@ -33,6 +33,7 @@ use crate::util::now_iso8601;
 use mustard_core::fs::{read_to_string, write_atomic};
 use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use mustard_core::{read_meta, spec as spec_io};
+use mustard_core::ClaudePaths;
 use serde::Serialize;
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -189,7 +190,19 @@ fn backup(cwd: &Path, opts: &BackupSpecsOpts) -> BackupReport {
         .target
         .clone()
         .unwrap_or_else(|| cwd.join(".claude-backup"));
-    let source_root = cwd.join(".claude").join("spec");
+    let Ok(cp) = ClaudePaths::for_project(cwd) else {
+        return BackupReport {
+            target: target.display().to_string(),
+            filter: opts.filter.clone(),
+            dry_run: opts.dry_run,
+            copied: 0,
+            skipped: 0,
+            files: Vec::new(),
+            errors: vec!["invalid project root (I1 guard)".to_string()],
+            manifest_path: None,
+        };
+    };
+    let source_root = cp.spec_dir();
 
     let mut report = BackupReport {
         target: target.display().to_string(),

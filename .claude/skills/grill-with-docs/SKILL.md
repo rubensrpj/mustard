@@ -52,6 +52,8 @@ If a `CONTEXT-MAP.md` exists at the root, the repo has multiple contexts. The ma
 
 Create files lazily — only when you have something to write. If no `CONTEXT.md` exists, create one when the first term is resolved. If no `docs/adr/` exists, create it when the first ADR is needed.
 
+**Mustard pipelines override the default location.** When a decision originates inside an active spec, the ADR goes in `.claude/spec/{spec-name}/adr/NNNN-slug.md` — not in `docs/adr/`. See `ADR-FORMAT.md`.
+
 ## During the session
 
 ### Challenge against the glossary

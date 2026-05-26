@@ -577,7 +577,6 @@ fn write_manifest(manifest: &ArtifactManifest, path: &Path) -> bool {
 fn category_str(category: ArtifactCategory) -> &'static str {
     match category {
         ArtifactCategory::Skill => "skill",
-        ArtifactCategory::Recipe => "recipe",
         ArtifactCategory::Ref => "ref",
         ArtifactCategory::Command => "command",
         ArtifactCategory::Hook => "hook",

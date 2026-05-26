@@ -66,6 +66,7 @@ import {
   type ArtifactDriftReport,
 } from "@/lib/projects";
 import { useIsMustardRepo } from "@/hooks/useArtifactDrift";
+import { DoctorBadge } from "@/components/DoctorBadge";
 
 // ---------------------------------------------------------------------------
 // Shared styling
@@ -588,6 +589,9 @@ export function Sidebar() {
 
         <div className="mt-auto" />
         <Separator className="my-3" />
+        {/* W10.T10.8 — installation health badge. Renders against the active
+            workspace path; falls back to silent null when none is selected. */}
+        <DoctorBadge projectPath={activeProjectsRoot ?? null} />
         <NavLink to="/preferences" className={toolNavItemClass}>
           <Cog className="h-3.5 w-3.5" /> {tLib("sidebar.preferences")}
         </NavLink>

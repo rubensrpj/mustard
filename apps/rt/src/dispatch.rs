@@ -65,9 +65,34 @@ pub fn run_check(id: &str, input: &HookInput) -> Outcome {
 /// dispatcher fails open: the `Ctx` still gets a sane `project_dir`, but
 /// `workspace_root` is `None` and a structured warning is logged to stderr.
 /// Hooks must NOT block users on a resolution failure.
+///
+/// AC-G2 guard: when `cwd` is `"."`, empty, or another relative placeholder,
+/// the dispatcher resolves it to an absolute path via `std::env::current_dir()`
+/// before walking for the workspace root. Without this step `walk_ancestors`
+/// only sees `"."` as its own parent (no absolute ancestor walk), so
+/// `workspace_root` returns "anchor not found" and the project_dir stays as
+/// the raw placeholder — causing downstream writers to materialise
+/// `apps/rt/.claude/` during `cargo test` (whose cwd is `apps/rt/`).
 fn build_ctx(trigger: Trigger, input: &HookInput) -> Ctx {
-    let project_dir = input.cwd.clone().unwrap_or_default();
-    let workspace_root = resolve_workspace_root_fail_open(&project_dir);
+    let raw_cwd = input.cwd.clone().unwrap_or_default();
+    // Resolve relative / empty cwd to an absolute path so workspace_root's
+    // ancestor walk starts from the real filesystem location.
+    let resolved_cwd = if raw_cwd.is_empty() || raw_cwd == "." {
+        std::env::current_dir()
+            .ok()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|| raw_cwd.clone())
+    } else {
+        raw_cwd.clone()
+    };
+    let workspace_root = resolve_workspace_root_fail_open(&resolved_cwd);
+    // Prefer the resolved workspace root over the raw cwd so downstream
+    // writers (tracker, amend_capture, …) target the monorepo root, not the
+    // crate directory the test binary happens to run in.
+    let project_dir = workspace_root
+        .as_ref()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or(resolved_cwd);
     Ctx {
         project_dir,
         trigger: Some(trigger),

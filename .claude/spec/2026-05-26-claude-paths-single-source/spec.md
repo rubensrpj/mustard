@@ -1,7 +1,7 @@
 # Single source of truth para paths de `.claude/`
 
-### Stage: Plan
-### Outcome: Active
+### Stage: Close
+### Outcome: Completed
 ### Flags: 
 ### Checkpoint: 2026-05-26T00:00:00Z
 

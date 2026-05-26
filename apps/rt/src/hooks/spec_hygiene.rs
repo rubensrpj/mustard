@@ -1,3 +1,4 @@
+// SPEC LANG: pt-allowed — test fixtures cover pt-BR spec parsing paths.
 //! `spec_hygiene` — SessionStart spec-lifecycle hygiene + gated auto-close.
 //!
 //! ## Scope (spec-lifecycle-unification Wave 5)
@@ -37,7 +38,7 @@ use mustard_core::store::sqlite_store::SqliteEventStore;
 use mustard_core::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
 use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use mustard_core::spec;
-use mustard_core::{Flags, Outcome as SpecOutcome, SpecState, Stage};
+use mustard_core::{ClaudePaths, Flags, Outcome as SpecOutcome, SpecState, Stage};
 use serde_json::{json, Value};
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -520,7 +521,10 @@ fn run_hygiene(cwd: &str) {
     if mode == HygieneMode::Off {
         return;
     }
-    let spec_root = Path::new(cwd).join(".claude").join("spec");
+    let Ok(cp) = ClaudePaths::for_project(cwd) else {
+        return;
+    };
+    let spec_root = cp.spec_dir();
     let Ok(entries) = std::fs::read_dir(&spec_root) else {
         return;
     };

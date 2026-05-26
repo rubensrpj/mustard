@@ -32,6 +32,7 @@ use crate::util::{now_iso8601, now_millis};
 use mustard_core::fs;
 use mustard_core::store::sqlite_store::SqliteEventStore;
 use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
+use mustard_core::ClaudePaths;
 use rusqlite::{params, Connection};
 use serde_json::{Value, json};
 use std::io::Read;
@@ -94,7 +95,10 @@ fn truncate_summary(text: &str, max_len: usize) -> String {
 /// Resolve the 8-char session prefix for an `agent` entry — the first
 /// `.agent-state/*.json` `session_id`, else the OS process id.
 fn resolve_session_prefix(project_dir: &Path) -> String {
-    let state_dir = project_dir.join(".claude").join(".agent-state");
+    let Ok(cp) = ClaudePaths::for_project(project_dir) else {
+        return std::process::id().to_string();
+    };
+    let state_dir = cp.agent_state_dir();
     if let Ok(entries) = fs::read_dir(&state_dir) {
         for entry in entries {
             let name = entry.file_name.clone();
@@ -122,7 +126,10 @@ fn resolve_session_prefix(project_dir: &Path) -> String {
 fn run_agent(input: &Value) {
     let project_dir = input_cwd(input);
     let project_dir = Path::new(&project_dir);
-    let mem_dir = project_dir.join(".claude").join(".agent-memory");
+    let Ok(cp) = ClaudePaths::for_project(project_dir) else {
+        return;
+    };
+    let mem_dir = cp.agent_memory_dir();
     if fs::create_dir_all(&mem_dir).is_err() {
         return;
     }
@@ -1399,6 +1406,9 @@ mod tests {
     #[test]
     fn agent_writes_entry_and_index() {
         let dir = tempdir().unwrap();
+        // Workspace anchor required by `ClaudePaths::for_project` (deep-refactor W1/W2).
+        std::fs::write(dir.path().join("mustard.json"), b"{}").unwrap();
+        std::fs::create_dir_all(dir.path().join(".claude")).unwrap();
         let input = json!({
             "cwd": dir.path().to_string_lossy(),
             "agent_type": "backend",
@@ -1407,7 +1417,7 @@ mod tests {
             "summary": "did the thing",
         });
         run_agent(&input);
-        let index = dir.path().join(".claude").join(".agent-memory").join("_index.json");
+        let index = dir.path().join(".claude").join("agent-memory").join("_index.json");
         let parsed: Vec<Value> =
             serde_json::from_str(&std::fs::read_to_string(index).unwrap()).unwrap();
         assert_eq!(parsed.len(), 1);

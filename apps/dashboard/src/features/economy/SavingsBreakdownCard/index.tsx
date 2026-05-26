@@ -18,17 +18,15 @@ const SOURCE_ORDER: readonly SavingsSource[] = [
   "model_routing_downgrade",
   "bash_guard_block",
   "budget_output_cut",
-  "recipe_injection",
 ] as const;
 
-// Recipe injection is the only currently-estimated source; we still drive the
-// flag through a map so adding a new estimated source is a one-line change.
+// No currently-estimated source; the map keeps the shape so adding a new
+// estimated source is a one-line change.
 const SOURCE_ESTIMATED: Record<SavingsSource, boolean> = {
   rtk_rewrite: false,
   model_routing_downgrade: false,
   bash_guard_block: false,
   budget_output_cut: false,
-  recipe_injection: true,
 };
 
 export interface SavingsBreakdownCardProps {

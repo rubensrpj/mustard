@@ -22,7 +22,7 @@ export function Preferences() {
           description={t('preferences.description')}
         />
         <div className="flex items-center gap-2 pt-3">
-          {(['pt', 'en'] as const).map((lng) => (
+          {(['pt-BR', 'en-US'] as const).map((lng) => (
             <button
               key={lng}
               onClick={() => setLanguage(lng)}
@@ -30,7 +30,7 @@ export function Preferences() {
                 ? "bg-primary text-primary-foreground px-3 py-1.5 rounded text-sm"
                 : "text-muted-foreground hover:text-foreground px-3 py-1.5 rounded text-sm border border-border"}
             >
-              {lng === 'pt' ? t('preferences.languagePt') : t('preferences.languageEn')}
+              {lng === 'pt-BR' ? t('preferences.languagePt') : t('preferences.languageEn')}
             </button>
           ))}
         </div>

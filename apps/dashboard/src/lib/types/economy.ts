@@ -85,8 +85,7 @@ export type SavingsSource =
   | "rtk_rewrite"
   | "model_routing_downgrade"
   | "bash_guard_block"
-  | "budget_output_cut"
-  | "recipe_injection";
+  | "budget_output_cut";
 
 /** One row of the savings breakdown, keyed by intervention. */
 export interface SavingsBySource {

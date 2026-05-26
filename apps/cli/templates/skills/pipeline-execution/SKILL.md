@@ -59,21 +59,19 @@ Create `.claude/.pipeline-states/{spec-name}.json`.
 
 ### EXECUTE Phase (collapses old IMPLEMENT+VALIDATE+REVIEW)
 
-**1. Read Recipes:** Match spec work to a recipe type. Grep `recipes.md` for title — do NOT read full file.
-
-**2. Skills Auto-Loading:**
+**1. Skills Auto-Loading:**
 
 Agents auto-load relevant skills from `{subproject}/.claude/skills/` based on task description.
 Orchestrator may hint specific skills via `{recommended_skills}` in the agent prompt.
 
-**3. Plan Waves:**
+**2. Plan Waves:**
 
 - **Wave 1:** 🟡 Database + 🔵 Backend + 🟣 Libs — independent, dispatched together
 - **Wave 2:** 🟢 Frontend + 🟠 Mobile — starts ONLY after ALL Wave 1 complete
 - ALL agents in same wave → SINGLE message (multiple `<invoke>` blocks)
 - NEVER nest dispatch — nesting breaks parallel execution
 
-**4. Dispatch Agent:**
+**3. Dispatch Agent:**
 
 IF `.claude/agents/{subproject}-impl.md` exists:
 Use `subagent_type: "{subproject}-impl"`. Compact prompt (~30-40 lines):
@@ -87,7 +85,7 @@ Use `subagent_type: "{subproject}-impl"`. Compact prompt (~30-40 lines):
 ELSE (fallback):
 Use `subagent_type: "general-purpose"` with full template (~80 lines).
 
-**5. Validate:**
+**4. Validate:**
 
 - Build passes (backend: `dotnet build`, frontend: `pnpm build`, mobile: `fvm flutter analyze`)
 - Zero critical guard violations

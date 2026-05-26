@@ -132,7 +132,6 @@ pub fn run(
         &task_steps,
     );
 
-    let recipe_context = String::new();
     let entity_info = String::new();
     let reference_files = String::new();
     let context_extras = String::new();
@@ -161,7 +160,6 @@ pub fn run(
                 &spec_lang,
                 &wave_model,
                 &retry_context,
-                &recipe_context,
                 &entity_info,
                 &reference_files,
                 &context_extras,
@@ -188,7 +186,6 @@ pub fn run(
         ("{prior_wave_diff}", &prior_wave_diff),
         ("{cross_wave_memory}", &cross_wave_memory),
         ("{recommended_skills}", &recommended_skills),
-        ("{recipe_context}", &recipe_context),
         ("{entity_info}", &entity_info),
         ("{reference_files}", &reference_files),
         ("{context_extras}", &context_extras),
@@ -221,11 +218,17 @@ fn extract_block(template: &str, name: &str) -> Option<String> {
     let start = template.find(&open)? + open.len();
     let end = template[start..].find(&close)? + start;
     let mut body = template[start..end].to_string();
-    // Trim a single leading/trailing newline added by the markers.
-    if body.starts_with('\n') {
+    // Trim a single leading/trailing newline added by the markers. CRLF-aware
+    // so the binary behaves identically on Windows and POSIX line endings.
+    if body.starts_with("\r\n") {
+        body.drain(0..2);
+    } else if body.starts_with('\n') {
         body.remove(0);
     }
-    if body.ends_with('\n') {
+    if body.ends_with("\r\n") {
+        body.pop();
+        body.pop();
+    } else if body.ends_with('\n') {
         body.pop();
     }
     Some(body)
@@ -278,7 +281,7 @@ fn build_role_block(subproject_dir: &Path, role: &str) -> String {
 
 /// Extract the `### Lang:` header value from a spec file. Defaults to
 /// `"en-US"` (BCP-47). Legacy short codes (`pt` / `en`) are tolerated on read
-/// and returned verbatim — `mustard_core::Locale::from_str` is the canonical
+/// and returned verbatim — `mustard_core::SupportedLocale::from_str` is the canonical
 /// parser for downstream consumers.
 fn read_spec_lang(spec_path: &Path) -> String {
     let text = mfs::read_to_string(spec_path).unwrap_or_default();
@@ -815,7 +818,7 @@ mod tests {
     fn read_spec_lang_tolerates_legacy_short_form() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("spec.md");
-        // Legacy short codes are returned verbatim — `Locale::from_str` rejects
+        // Legacy short codes are returned verbatim — `SupportedLocale::from_str` rejects
         // them so downstream code must normalise (e.g. via the tolerant path).
         std::fs::write(&path, "# Title\n### Lang: pt\n").unwrap();
         assert_eq!(read_spec_lang(&path), "pt");

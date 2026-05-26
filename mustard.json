@@ -7,6 +7,8 @@
     "provider": "github",
     "submodules": false
   },
-  "lang": "pt-BR",
-  "tone": "didactic"
+  "test_command": "npm test",
+  "build_command": "npm run build",
+  "lint_command": "npm run lint",
+  "type_check_command": "tsc --noEmit"
 }

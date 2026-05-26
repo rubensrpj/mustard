@@ -16,12 +16,12 @@ Specs live under a single flat directory: `.claude/spec/{name}/`. No `active/`/`
 
 ### Spec Artifact — Two Layers
 
-A spec is a single `spec.md` organized in two layers:
+A spec is a single `spec.md` organized in two layers, with body-heading names varying by `Lang`:
 
-- `## PRD` — the *what & why*: `## Contexto`, `## Usuários/Stakeholders`, `## Métrica de sucesso`, `## Não-Objetivos`, closing with `## Critérios de Aceitação` (the verifiable *what*).
-- `## Plano` — the *how*: `## Informações da Entidade`, `## Arquivos`, optional `## Component Contract`, `## Tarefas`, `## Dependências`, `## Limites`.
+- `## PRD` — the *what & why* (intent): when `Lang=en-US`, body headings are `## Context`, `## Users/Stakeholders`, `## Success metric`, `## Non-Goals`, closing with `## Acceptance Criteria`. When `Lang=pt-BR`, they become `## Contexto`, `## Usuários/Stakeholders`, `## Métrica de sucesso`, `## Não-Objetivos`, `## Critérios de Aceitação`.
+- `## Plano` (or `## Plan`) — the *how*: `## Entity Information`/`## Informações da Entidade`, `## Files`/`## Arquivos`, optional `## Component Contract`, `## Tasks`/`## Tarefas`, `## Dependencies`/`## Dependências`, `## Boundaries`/`## Limites`.
 
-Both `## PRD` and `## Plano` are `##`-level dividers; parsed subsections stay at `##` (`## Contexto`, `## Arquivos`, `## Tarefas`, `## Critérios de Aceitação`, `## Limites`). PLAN produces both layers; the approve flow approves them together (no separate PRD gate); EXECUTE consumes the Plano layer; QA runs the Critérios de Aceitação. Light scope keeps the same shape but lean. Templates: `/feature § Full/Light Scope` + `refs/feature/spec-language.md`.
+Both `## PRD` and `## Plan`/`## Plano` are `##`-level dividers; parsed subsections stay at `##`. PLAN produces both layers; the approve flow approves them together (no separate PRD gate); EXECUTE consumes the Plan layer; QA runs the Acceptance Criteria section. Light scope keeps the same shape but lean. Templates: `/feature § Full/Light Scope` + `refs/feature/spec-language.md`.
 
 ## Agents
 
@@ -39,23 +39,23 @@ Role rules are populated by `/scan` from the detected subprojects — there is n
 
 ## Skill Discovery Heuristic
 
-**Regra**: SKILL faz glob + parse + agregação de filesystem state e devolve tabela determinística → é trabalho de `mustard-rt`, não do LLM.
+**Rule**: When a SKILL does glob + parse + aggregation of filesystem state and returns a deterministic table, that is `mustard-rt` work, not LLM work.
 
-**Critério**: A operação muda com estado do disco/SQLite (→ subcomando `mustard-rt run <X>`) ou com decisão humana (→ LLM)?
+**Criterion**: Does the operation change with disk/SQLite state (→ `mustard-rt run <X>` subcommand) or with a human decision (→ LLM)?
 
-**Padrão correto**: (1) SKILL chama UM comando `rtk mustard-rt run <subcomando> --format table`; (2) imprime saída verbatim; (3) embute blocos ESTÁTICOS (siglas, modos, instruções fixas) como literais — sem regeneração dinâmica; (4) faz parsing da resposta do USUÁRIO e roteia ação.
+**Correct pattern**: (1) SKILL calls ONE `rtk mustard-rt run <subcommand> --format table`; (2) prints output verbatim; (3) embeds STATIC blocks (acronyms, modes, fixed instructions) as literals — no dynamic regeneration; (4) parses the USER reply and routes the action.
 
-**Enforcement**: `mustard-rt run doctor --check skill-discovery` reporta violações com severidade WARN. Roda em `/mustard:maint doctor`. Não bloqueia.
+**Enforcement**: `mustard-rt run doctor --check skill-discovery` reports violations at WARN severity. Runs in `/mustard:maint doctor`. Does not block.
 
 ## Tactical Fix Discovery
 
-Tactical fix descoberto em REVIEW/QA NÃO pode virar follow-up silencioso nem wave nova mid-EXECUTE — ambos quebram SDD purity. Regra Mustard: tactical fix vira sub-spec linkada via `### Parent:` header + `spec.link` evento. Parent spec congelada após approve.
+A tactical fix discovered during REVIEW/QA CANNOT become a silent follow-up or a brand-new wave mid-EXECUTE — both break SDD purity. Mustard rule: a tactical fix becomes a sub-spec linked via the `### Parent:` header + a `spec.link` event. The parent spec is frozen after approve.
 
-**Rule**: REVIEW e QA agents listam candidatos em `## Tactical Fix Candidates` / `## Candidatos a Tactical Fix`. O orquestrador sugere `/mustard:tactical-fix <parent> "<descrição>"` — **advisory only**, não bloqueia approve/close.
+**Rule**: REVIEW and QA agents list candidates under `## Tactical Fix Candidates` / `## Candidatos a Tactical Fix`. The orchestrator suggests `/mustard:tactical-fix <parent> "<description>"` — **advisory only**, never blocks approve/close.
 
-**Qualification** (ALL): ≤100 LOC; no public contract change (schema, API, exported types, CLI flags); no pending design decision; no new dependency. Fora dos bounds → legitimate follow-up OR fresh full-scope spec.
+**Qualification** (ALL): ≤100 LOC; no public contract change (schema, API, exported types, CLI flags); no pending design decision; no new dependency. Outside those bounds → legitimate follow-up OR a fresh full-scope spec.
 
-**Mechanics**: `/mustard:tactical-fix` cria `.claude/spec/<slug>/spec.md` com `### Parent: <slug>` header + emite `spec.link parent→child`. Fail-open se parent slug ausente. → See `commands/mustard/tactical-fix/SKILL.md`.
+**Mechanics**: `/mustard:tactical-fix` creates `.claude/spec/<slug>/spec.md` with the `### Parent: <slug>` header and emits `spec.link parent→child`. Fails open when the parent slug is missing. → See `commands/mustard/tactical-fix/SKILL.md`.
 
 ## Diff Context Interpolation
 
@@ -95,26 +95,11 @@ Default: **sonnet**.
 |-------------|--------|---------|
 | Guards | `{subproject}/CLAUDE.md` | Always loaded |
 | Patterns | `{subproject}/.claude/skills/` | Auto-triggered by task description |
-| Recipes (text) | `{subproject}/.claude/commands/recipes.md` | Orchestrator reads for decomposition |
-| Recipes (structured) | `.claude/recipes/*.json` | `mustard-rt run recipe-match` |
 | Stack/Modules | `{subproject}/.claude/commands/` | On-demand |
 | Entity registry | `.claude/entity-registry.json` | Grep by entity name |
 | Shared language | `CONTEXT.md` (built by `grill-with-docs`) | Relevance-sliced via `context-slice`, injected as `{context_md}` |
 
 `CONTEXT.md` is **never injected whole** — same anti-bloat rule as `entity-registry.json`. Sliced by entities/file names/key-tokens of the active spec; snapshotted once per wave transition to `.claude/.pipeline-states/{specName}.context-md.md`. Capped at `MUSTARD_GLOSSARY_MAX_LINES` (default 250). No `CONTEXT.md` → empty slice, `{context_md}` blank (dispatches never block).
-
-## Recipe Engine
-
-Structured recipes live in `.claude/recipes/{operation}.json`. Matched via `mustard-rt run recipe-match --entity <name> --operation <type> --subproject <path>`; injected as `{recipe_context}` to give the agent a 90%-complete skeleton.
-
-```json
-{ "name": "add-field", "description": "Add a field to an entity",
-  "operations": ["add-field", "add-column"], "requires_entity": true,
-  "files": [{ "pattern": "<subproject>/...", "action": "modify", "hint": "..." }],
-  "checklist": ["Add property", "Add DTO field", "Build"] }
-```
-
-Recipe placeholders are derived from each project's scan — there is no canonical list. Entity-level tokens (`{Entity}`, `{entity}`) and the active `{subproject}` are always resolved; any subproject-shaped placeholder must map to a subproject discovered by the scan. `mustard-rt run scan-recipes-validate` checks that recipes do not ship literal unresolved placeholders.
 
 ## Token Budget per Agent
 
@@ -129,9 +114,9 @@ Explorer rules: max 20 tool uses; prefer Grep over Read; max 3 full file reads; 
 
 ## Agent Return Format (Compact)
 
-- **Arquivos alterados:** `path:line` (one per line). Omit if no files touched.
-- **Decisões não-óbvias:** 1-3 bullets, or `nenhuma`.
-- **Bloqueios:** only if any.
+- **Files modified:** `path:line` (one per line). Omit if no files touched.
+- **Non-obvious decisions:** 1-3 bullets, or `none`.
+- **Blockers:** only if any.
 
 DO NOT include identity restatement, full checklist re-listing, list of files read, narrative of steps, confirmation of understanding. The parent has context — return only what is actionable.
 

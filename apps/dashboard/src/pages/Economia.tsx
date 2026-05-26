@@ -14,6 +14,7 @@
 
 import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { invoke } from "@tauri-apps/api/core";
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
 import dayjs from "dayjs";
@@ -104,6 +105,19 @@ export function Economia() {
     enabled: !!scope,
     staleTime: 15_000,
     refetchInterval: 30_000,
+  });
+
+  // W11.T11.5 — Deep Refactor Savings. Pulls real per-wave token savings from
+  // `telemetry.db.economy_savings` (W11.T11.3) via the Tauri command
+  // `economy_summary` (W11.T11.4). This is intentionally outside the scope
+  // logic above: deep-refactor savings are global per repo, not per-scope.
+  const deepRefactor = useQuery<DeepRefactorPayload>({
+    queryKey: ["economy-summary-deep-refactor", repoPath],
+    queryFn: () =>
+      invoke<DeepRefactorPayload>("economy_summary", { repoPath: repoPath as string }),
+    enabled: !!repoPath,
+    staleTime: 30_000,
+    refetchInterval: 60_000,
   });
 
   // Collector-health badge — tells the user the cost number is CURRENT, not a
@@ -337,6 +351,20 @@ export function Economia() {
           perSpec={perSpec.data ?? []}
           perWave={perWave.data ?? []}
           isLoading={perSpec.isLoading || perWave.isLoading}
+        />
+      </section>
+
+      {/* ── Deep Refactor Savings (W11.T11.5) ──────────────────────────── */}
+      <section className="flex flex-col gap-3">
+        <header className="flex flex-col gap-0.5">
+          <h2 className="text-sm font-medium">Deep Refactor Savings</h2>
+          <p className="text-[11px] text-[--ds-text-tertiary]">
+            Tokens economizados por onda (W0–W12) — fonte: economy_savings (telemetry.db).
+          </p>
+        </header>
+        <DeepRefactorSavings
+          data={deepRefactor.data}
+          isLoading={deepRefactor.isLoading}
         />
       </section>
     </PageSurface>
@@ -775,4 +803,178 @@ function scopeKey(scope: EconomyScope): string {
     case "all_projects":
       return `a:${[...scope.projects].sort().join(",")}`;
   }
+}
+
+// ── W11.T11.5: Deep Refactor Savings ────────────────────────────────────────
+//
+// Backed by the Tauri command `economy_summary` (apps/dashboard/src-tauri/src/
+// economy.rs). The command pulls per-wave savings from telemetry.db's
+// `economy_savings` (W11.T11.3) and operational baselines from the JSON file
+// the rt subcommand `economy report` exposes. Fail-open both sides — empty
+// rows / a `notes[]` entry rather than a hard error.
+
+interface WaveSavingsRow {
+  wave_id: string;
+  savings_tokens: number;
+  operations: number;
+}
+
+interface BaselineRow {
+  operation: string;
+  wave: number;
+  captured_at: string;
+  duration_ms: number;
+  from_history: boolean;
+}
+
+interface DeepRefactorPayload {
+  total_savings_tokens: number;
+  per_wave: WaveSavingsRow[];
+  baselines: BaselineRow[];
+  baseline_total: number;
+  notes: string[];
+}
+
+/**
+ * Render the W11.T11.5 panel: total card + per-wave table + sparkline. The
+ * panel always renders — an empty state appears when no wave has recorded
+ * savings yet so the user knows the wiring is live.
+ */
+function DeepRefactorSavings({
+  data,
+  isLoading,
+}: {
+  data: DeepRefactorPayload | undefined;
+  isLoading: boolean;
+}) {
+  if (isLoading) {
+    return (
+      <div className="rounded-[--ds-radius-md] border border-[--ds-surface-hover] bg-[--ds-surface-base] p-4 text-[12px] text-[--ds-text-tertiary]">
+        carregando dados…
+      </div>
+    );
+  }
+  const total = data?.total_savings_tokens ?? 0;
+  const rows = data?.per_wave ?? [];
+  const notes = data?.notes ?? [];
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+        <KPICard
+          label="Total acumulado"
+          value={`${formatTokens(total)} tok`}
+          hint={`${rows.length} onda${rows.length === 1 ? "" : "s"} registradas`}
+          accent={total > 0 ? "emerald" : "zinc"}
+          caption="Soma de savings_tokens em economy_savings."
+        />
+        <div className="rounded-[--ds-radius-md] border border-[--ds-surface-hover] bg-[--ds-surface-base] p-3 flex flex-col gap-1.5">
+          <span className="text-[10px] uppercase tracking-[0.14em] font-medium text-[--ds-text-tertiary]">
+            Tendência por onda
+          </span>
+          <Sparkline values={rows.map((r) => r.savings_tokens)} />
+          <span className="text-[10.5px] text-[--ds-text-tertiary]">
+            Cada coluna = uma onda da spec deep-refactor.
+          </span>
+        </div>
+        <KPICard
+          label="Baselines capturados"
+          value={(data?.baseline_total ?? 0).toLocaleString()}
+          hint="economy capture-baseline + reconcile"
+          accent="zinc"
+          caption="Baselines operacionais (W5.T5.15) usados para apurar economias."
+        />
+      </div>
+
+      <div className="rounded-[--ds-radius-md] border border-[--ds-surface-hover] bg-[--ds-surface-base] overflow-hidden">
+        <div className="grid grid-cols-[1fr_140px_140px] gap-3 px-3 py-2 text-[10px] uppercase tracking-[0.14em] font-medium text-[--ds-text-tertiary] border-b border-[--ds-surface-hover]">
+          <span>Onda</span>
+          <span className="text-right">Operações</span>
+          <span className="text-right">Tokens economizados</span>
+        </div>
+        {rows.length === 0 ? (
+          <div className="px-3 py-4 text-[12px] text-[--ds-text-tertiary]">
+            Nenhuma onda registrou economia ainda. Rode `mustard-rt run economy
+            reconcile --wave N` para popular a tabela.
+          </div>
+        ) : (
+          <div className="flex flex-col">
+            {rows.map((r, idx) => (
+              <div
+                key={`dr-${r.wave_id}`}
+                className={cn(
+                  "grid grid-cols-[1fr_140px_140px] gap-3 items-center px-3 py-2",
+                  idx !== rows.length - 1 && "border-b border-[--ds-surface-hover]/60",
+                )}
+              >
+                <span className="font-mono text-[12.5px] text-[--ds-text-primary]">
+                  {r.wave_id}
+                </span>
+                <span className="font-mono tabular-nums text-right text-[12px] text-[--ds-text-secondary]">
+                  {r.operations.toLocaleString()}
+                </span>
+                <span className="font-mono tabular-nums text-right text-[12.5px] text-[--ds-text-primary]">
+                  {formatTokens(r.savings_tokens)}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {notes.length > 0 && (
+        <p className="text-[10.5px] text-[--ds-text-tertiary]">
+          {notes.join(" · ")}
+        </p>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Tiny inline sparkline. Pure SVG, no chart lib. Renders bar columns scaled to
+ * the largest value so the user sees relative magnitude per wave. Zero rows ⇒
+ * a flat baseline rule.
+ */
+function Sparkline({ values }: { values: number[] }) {
+  const width = 140;
+  const height = 36;
+  if (values.length === 0) {
+    return (
+      <svg width={width} height={height} aria-hidden>
+        <line
+          x1={0}
+          y1={height - 1}
+          x2={width}
+          y2={height - 1}
+          stroke="var(--ds-text-tertiary)"
+          strokeOpacity={0.4}
+          strokeWidth={1}
+        />
+      </svg>
+    );
+  }
+  const max = Math.max(...values, 1);
+  const barW = Math.max(2, Math.floor(width / values.length) - 2);
+  return (
+    <svg width={width} height={height} aria-hidden>
+      {values.map((v, i) => {
+        const h = Math.max(1, Math.round((v / max) * (height - 2)));
+        const x = i * (barW + 2);
+        const y = height - h - 1;
+        return (
+          <rect
+            key={`spk-${i}`}
+            x={x}
+            y={y}
+            width={barW}
+            height={h}
+            fill="currentColor"
+            className="text-emerald-500"
+            opacity={0.85}
+          />
+        );
+      })}
+    </svg>
+  );
 }

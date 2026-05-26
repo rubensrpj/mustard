@@ -37,7 +37,12 @@ const BUSY_TIMEOUT_MS: u32 = 5_000;
 
 /// Schema version stamped into `PRAGMA user_version` once the DDL is applied.
 /// Bump only if the embedded `schema.sql` changes shape.
-const SCHEMA_VERSION: i64 = 1;
+// W11.T11.3 — bumped from 1 → 2 when the deep-refactor schema added the
+// `economy_baselines` / `economy_savings` tables and W11.T11.1 hot-path
+// indexes. The `IF NOT EXISTS` DDL is idempotent, but `user_version` gates
+// the apply path entirely so existing telemetry.db files skip the DDL — the
+// bump forces the new statements to run once on next open.
+const SCHEMA_VERSION: i64 = 2;
 
 /// The idempotent telemetry schema, embedded via `include_str!`. Every
 /// `CREATE` is `IF NOT EXISTS`, so applying it on every open is safe.

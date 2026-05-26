@@ -1,0 +1,76 @@
+[package]
+name = "mustard-dashboard"
+version = "0.1.0"
+description = "A Tauri App"
+authors = ["you"]
+edition = "2021"
+# Effective MSRV is 1.85: this crate depends on `mustard-cli` (edition 2024).
+# The crate's own edition stays 2021 — only the toolchain floor moved.
+rust-version = "1.85"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+# The `_lib` suffix may seem redundant but it is necessary
+# to make the lib name unique and wouldn't conflict with the bin name.
+# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
+name = "mustard_dashboard_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+tauri-plugin-store = "2"
+tauri-plugin-log = "2"
+tauri-plugin-window-state = "2"
+tauri-plugin-updater = "2"
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rusqlite = { version = "0.31", features = ["bundled"] }
+notify = "6"
+notify-debouncer-mini = "0.4"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+# Mustard CLI as a native library (B5 Wave 3): the dashboard installs/updates
+# Mustard into a selected folder by calling `mustard_cli::init`/`update`
+# directly — no sidecar process. This raises the dashboard's effective MSRV to
+# 1.85 (mustard-cli is edition 2024); the dashboard's own `edition`/`rust-version`
+# are intentionally unchanged.
+mustard-cli = { path = "../../cli" }
+mustard-core = { path = "../../../packages/core" }
+
+[[test]]
+name = "db_test"
+path = "tests/db_test.rs"
+
+[[test]]
+name = "telemetry_test"
+path = "tests/telemetry_test.rs"
+
+[[test]]
+name = "mustard_cli_test"
+path = "tests/mustard_cli_test.rs"
+
+[[test]]
+name = "specs_phase_from_events_test"
+path = "tests/specs_phase_from_events_test.rs"
+
+[[test]]
+name = "pipelines_from_db_test"
+path = "tests/pipelines_from_db_test.rs"
+
+[[test]]
+name = "telemetry_aggregations_test"
+path = "tests/telemetry_aggregations_test.rs"
+
+[[test]]
+name = "top_files_today_test"
+path = "tests/top_files_today_test.rs"
+
+# Test-only: temp dirs for the B5 Wave 3 mustard-cli integration smoke test.
+[dev-dependencies]
+tempfile = "3"
+

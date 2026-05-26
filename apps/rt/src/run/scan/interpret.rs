@@ -42,6 +42,7 @@
 use super::file_utils::VisitedFile;
 use crate::util::sha256::Sha256;
 use mustard_core::fs as mfs;
+use mustard_core::ClaudePaths;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -399,7 +400,9 @@ fn compute_file_set_hash(model: &str, visited: &[VisitedFile]) -> String {
 
 /// Cache file location for `root` — sibling to `.cluster-cache.json`.
 fn cache_path(root: &Path) -> PathBuf {
-    root.join(".claude").join(".interpret-cache.json")
+    ClaudePaths::for_project(root)
+        .map(|p| p.interpret_cache_path())
+        .unwrap_or_default()
 }
 
 /// Read the cached interpretation for `stack_id` when the stored hash matches
@@ -696,7 +699,7 @@ fn parse_response(text: &str) -> Option<InterpretedResult> {
 pub struct ConceptNode {
     /// Unique navigable id (`{sub}.{kind}.{slug}`, kebab-case).
     pub id: String,
-    /// Node category — `entity`, `enum`, `conv`, `skill`, `recipe`, …
+    /// Node category — `entity`, `enum`, `conv`, `skill`, …
     pub kind: String,
     /// Subproject slug — the `sub` component of the id.
     pub sub: String,
@@ -753,7 +756,7 @@ pub fn compose_id(sub: &str, kind: &str, raw_slug: &str) -> String {
 /// given subproject slug.
 ///
 /// W3 (deep-refactor) **constrains the graph to pipeline knowledge** — the
-/// allowed kinds are `spec`, `skill`, `command`, `ref`, `recipe`, `conv`. The
+/// allowed kinds are `spec`, `skill`, `command`, `ref`, `conv`. The
 /// per-entity / per-enum nodes the model surfaces are now dropped from the
 /// graph (they remain in `entity-registry.json`, which is the source of truth
 /// for code-shape knowledge). The vault is reserved for conceptual nodes the
@@ -835,7 +838,10 @@ pub fn emit_concept_nodes(project_root: &Path, sub: &str, result: &InterpretedRe
     if nodes.is_empty() {
         return 0;
     }
-    let dir = project_root.join(".claude").join("graph");
+    let Ok(cp) = ClaudePaths::for_project(project_root) else {
+        return 0;
+    };
+    let dir = cp.graph_dir();
     if mfs::create_dir_all(&dir).is_err() {
         return 0;
     }
@@ -1092,7 +1098,7 @@ mod tests {
         };
         // W3 (deep-refactor) — `interpreted_to_nodes` no longer emits
         // entity/enum nodes; the graph is reserved for pipeline-knowledge
-        // kinds (spec/skill/command/ref/recipe/conv). Entities + enums stay
+        // kinds (spec/skill/command/ref/conv). Entities + enums stay
         // in `entity-registry.json`. The function therefore returns an empty
         // vector regardless of the model's output here.
         let nodes = interpreted_to_nodes("apps-rt", &result);

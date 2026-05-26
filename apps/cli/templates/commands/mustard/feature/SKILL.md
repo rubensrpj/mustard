@@ -30,7 +30,7 @@ Emit `pipeline.scope` + `pipeline.stage: Plan`. Print spec verbatim + `wave-tree
 
 ### 3. Light/Extended-Light EXECUTE (inline)
 
-User chooses "Approve and implement now": emit `pipeline.stage: Execute` → `exec-rewave-check` (decomposed → use wave-1 spec) → `dependency-precheck` (block on missing externals) → `recipe-match` → dispatch agents via `agent-prompt-render` (NEVER hand-craft; all agents of a wave → one message) → per-wave validate + `memory agent` + `write-back --kind injected` → REVIEW per subproject (sonnet for re-reviews, `review-result` emit, max 2 fix loops) → QA (`qa-run`; pass → CLOSE; fail → return failing AC; skip → warn + allow CLOSE; max 3 QA iterations).
+User chooses "Approve and implement now": emit `pipeline.stage: Execute` → `exec-rewave-check` (decomposed → use wave-1 spec) → `dependency-precheck` (block on missing externals) → dispatch agents via `agent-prompt-render` (NEVER hand-craft; all agents of a wave → one message) → per-wave validate + `memory agent` + `write-back --kind injected` → REVIEW per subproject (sonnet for re-reviews, `review-result` emit, max 2 fix loops) → QA (`qa-run`; pass → CLOSE; fail → return failing AC; skip → warn + allow CLOSE; max 3 QA iterations).
 
 Escalations: `CONCERN` → `## Concerns`, continue. `BLOCKED` → STOP + AskUserQuestion. `PARTIAL` → granular retry (max 2). `DEFERRED` → note + confirm. → `../../../refs/feature/ac-cross-shell.md`.
 

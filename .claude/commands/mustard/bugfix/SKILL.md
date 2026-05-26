@@ -89,11 +89,11 @@ For Full Path, keep the root-cause cache in-memory during the session (the retry
 **Full Path:** Write brief spec in `.claude/spec/{date}-{name}/spec.md`.
 
 **Resolve spec language first** (cascade, stop at first hit):
-1. existing `### Lang: pt|en` in any spec.md being reused → use it;
+1. existing `### Lang: pt-BR|en-US` in any spec.md being reused → use it;
 2. `.claude/mustard.json#specLang` → use it;
-3. otherwise `AskUserQuestion` ÚNICA: `"Spec language: pt | en?"` → persist to `mustard.json#specLang`.
+3. otherwise `AskUserQuestion` ÚNICA: `"Spec language: pt-BR | en-US?"` → persist to `mustard.json#specLang`.
 
-**HARD RULE — Headers consistency:** when `Lang: pt`, **ALL** `## ` body headings MUST be in PT — translate every default: `## Boundaries → ## Limites`, `## Root cause → ## Causa raiz`, `## Plan → ## Plano`, `## Concerns → ## Preocupações`, `## Acceptance Criteria → ## Critérios de Aceitação`. Do NOT mix. When `Lang: en`, keep all EN. Exceptions (always EN): status/phase/scope values, commands, filenames, AC `Command:` field.
+**HARD RULE — Headers consistency:** when `Lang: pt-BR`, **ALL** `## ` body headings MUST be in PT — translate every default: `## Boundaries → ## Limites`, `## Root cause → ## Causa raiz`, `## Plan → ## Plano`, `## Concerns → ## Preocupações`, `## Acceptance Criteria → ## Critérios de Aceitação`. Do NOT mix. When `Lang: en-US`, keep all EN. Exceptions (always EN): status/phase/scope values, commands, filenames, AC `Command:` field.
 
 **HARD RULE — Source code language:** every file the agent writes or edits stays in English regardless of `Lang`. This covers identifiers, comments in every form (`//`, `#`, `/* */`, `///`, `'''`, `"""`, doc-comments, JSDoc, `<!-- -->`), log/error messages, AC `Command:` content. `Lang` applies to spec narrative only — never to code. Pre-existing comments are NOT translated (surgical changes — karpathy §3).
 
@@ -101,11 +101,11 @@ For Full Path, keep the root-cause cache in-memory during the session (the retry
 
 **Two-layer structure (lean):** a bugfix spec follows the same two-layer model as a feature spec (`## PRD` = the *what & why*, `## Plano` = the *how* — see `/feature` § Full Scope and `pipeline-config.md` § Spec Artifact). But a bugfix spec is small, so the layers stay **implicit, not bureaucratic**: `## Contexto` + `## Acceptance Criteria` are the PRD layer; `## Causa raiz` + `## Plano` + `## Boundaries` are the Plano layer. Do NOT add `## PRD`/`## Plano` divider headings or PRD subsections (`## Usuários/Stakeholders`, `## Não-Objetivos`) to a bugfix spec — that is the bureaucracy the layering is meant to avoid.
 
-The spec header MUST include `### Lang: {pt|en}`. The spec MUST include (Wave 10):
+The spec header MUST include `### Lang: {pt-BR|en-US}`. The spec MUST include (Wave 10):
    ```markdown
-   ## Contexto    ← exact heading if Lang=pt — PRD layer (the "what & why")
+   ## Contexto    ← exact heading if Lang=pt-BR — PRD layer (the "what & why")
    (or)
-   ## Context     ← exact heading if Lang=en
+   ## Context     ← exact heading if Lang=en-US
 
    {Narrative prose, 4-8 lines. Tell the story:
     - How the system should work (explain domain terms on first use)

@@ -7,7 +7,7 @@
 //!
 //! ## Layout
 //!
-//! - [`set_language`] — validate against [`mustard_core::Locale`], write
+//! - [`set_language`] — validate against [`mustard_core::SupportedLocale`], write
 //!   `mustard.json#lang`, emit `pipeline.economy.operation.invoked`.
 //! - [`set_tone`] — validate against [`mustard_core::Tone`], write
 //!   `mustard.json#tone`, emit telemetry.
@@ -23,7 +23,7 @@
 use crate::db;
 use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use mustard_core::store::event_store::EventSink;
-use mustard_core::{Locale, Tone};
+use mustard_core::{SupportedLocale, Tone};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -47,7 +47,7 @@ pub struct ProjectSettings {
 #[tauri::command]
 pub fn set_language(repo_path: String, lang: String) -> Result<(), String> {
     let started = Instant::now();
-    let locale = Locale::from_str(&lang).map_err(|e| e.to_string())?;
+    let locale = SupportedLocale::from_str(&lang).map_err(|e| e.to_string())?;
     write_field(&repo_path, "lang", serde_json::Value::String(locale.as_str().to_string()))?;
     emit_i18n_op(&repo_path, "i18n-set-language", started.elapsed().as_millis());
     Ok(())

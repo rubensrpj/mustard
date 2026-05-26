@@ -110,51 +110,6 @@
       "checksum": null
     },
     {
-      "id": "recipe:add-component",
-      "category": "recipe",
-      "source": { "kind": "first-party" },
-      "version": null,
-      "vendoredAt": "2026-05-19",
-      "path": "recipes/add-component.json",
-      "checksum": null
-    },
-    {
-      "id": "recipe:add-endpoint",
-      "category": "recipe",
-      "source": { "kind": "first-party" },
-      "version": null,
-      "vendoredAt": "2026-05-19",
-      "path": "recipes/add-endpoint.json",
-      "checksum": null
-    },
-    {
-      "id": "recipe:add-field",
-      "category": "recipe",
-      "source": { "kind": "first-party" },
-      "version": null,
-      "vendoredAt": "2026-05-19",
-      "path": "recipes/add-field.json",
-      "checksum": null
-    },
-    {
-      "id": "recipe:add-validation",
-      "category": "recipe",
-      "source": { "kind": "first-party" },
-      "version": null,
-      "vendoredAt": "2026-05-19",
-      "path": "recipes/add-validation.json",
-      "checksum": null
-    },
-    {
-      "id": "recipe:null-guard",
-      "category": "recipe",
-      "source": { "kind": "first-party" },
-      "version": null,
-      "vendoredAt": "2026-05-19",
-      "path": "recipes/null-guard.json",
-      "checksum": null
-    },
-    {
       "id": "ref:agent-prompt",
       "category": "ref",
       "source": { "kind": "first-party" },

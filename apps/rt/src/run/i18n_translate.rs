@@ -15,7 +15,7 @@
 
 use crate::run::env::session_id;
 use crate::util::now_iso8601;
-use mustard_core::i18n::{translate, Locale};
+use mustard_core::i18n::{translate, SupportedLocale as Locale};
 use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use serde::Serialize;
 use serde_json::json;

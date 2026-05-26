@@ -8,12 +8,14 @@ import {
   EmptyState,
 } from "@/components/page";
 import { COMMANDS, CATEGORIES } from "@/data/commands-catalog";
+import { useT } from "@/lib/i18n";
 
 function slug(cmd: string): string {
   return cmd.replace("/mustard:", "").replace(":", "-");
 }
 
 export function Commands() {
+  const t = useT();
   const [query, setQuery] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
@@ -80,8 +82,8 @@ export function Commands() {
     <PageSurface>
       <EditorialBand
         eyebrow="Mustard"
-        title="Commands"
-        subtitle="Catálogo de comandos slash disponíveis no Claude Code com Mustard. Use a busca ou os filtros de categoria para isolar o comando certo."
+        title={t("commands.editorialTitle")}
+        subtitle={t("commands.editorialSubtitle")}
       />
 
       <div className="relative">
@@ -93,7 +95,7 @@ export function Commands() {
           autoFocus
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          placeholder="Buscar por nome, descrição, categoria…"
+          placeholder={t("commands.search.placeholder")}
           className="w-full pl-9 pr-3 py-2 bg-card border border-border rounded text-sm outline-none placeholder:text-muted-foreground focus:border-primary"
         />
       </div>
@@ -104,7 +106,7 @@ export function Commands() {
           onClick={() => setSelectedCategory(null)}
           className={`px-2.5 py-0.5 rounded text-[12px] border transition-colors ${selectedCategory === null ? "bg-primary text-primary-foreground border-primary" : "border-border text-muted-foreground hover:text-foreground"}`}
         >
-          Todos
+          {t("commands.filter.all")}
         </button>
         {CATEGORIES.map((cat) => (
           <button
@@ -120,11 +122,11 @@ export function Commands() {
 
       {filtered.length === 0 ? (
         <EmptyState
-          title={COMMANDS.length === 0 ? "Nenhum comando catalogado" : "Sem resultados"}
+          title={COMMANDS.length === 0 ? t("commands.empty.noCatalog.title") : t("commands.empty.noResults.title")}
           description={
             COMMANDS.length === 0
-              ? "O catálogo de comandos está vazio."
-              : `Nenhum comando para "${trimmed || selectedCategory}". Ajuste a busca ou troque a categoria.`
+              ? t("commands.empty.noCatalog.description")
+              : t("commands.empty.noResults.description").replace("{query}", trimmed || selectedCategory || "")
           }
         />
       ) : (
@@ -154,29 +156,29 @@ export function Commands() {
                   <div className="px-4 pb-4 pt-1 flex flex-col gap-3">
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                       <div className="flex flex-col gap-1">
-                        <span className="text-[11px] uppercase tracking-wider text-muted-foreground">Explicação simples</span>
+                        <span className="text-[11px] uppercase tracking-wider text-muted-foreground">{t("commands.section.plainExplanation")}</span>
                         <p className="text-[13px]">{entry.simples}</p>
                       </div>
                       <div className="flex flex-col gap-1">
-                        <span className="text-[11px] uppercase tracking-wider text-muted-foreground">Detalhes técnicos</span>
+                        <span className="text-[11px] uppercase tracking-wider text-muted-foreground">{t("commands.section.technicalDetails")}</span>
                         <p className="text-[13px] text-muted-foreground">{entry.tecnico}</p>
                       </div>
                     </div>
 
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                       <div className="flex flex-col gap-1">
-                        <span className="text-[11px] uppercase tracking-wider text-muted-foreground">Quando usar</span>
+                        <span className="text-[11px] uppercase tracking-wider text-muted-foreground">{t("commands.section.whenToUse")}</span>
                         <p className="text-[13px]">{entry.when}</p>
                       </div>
                       <div className="flex flex-col gap-1">
-                        <span className="text-[11px] uppercase tracking-wider text-muted-foreground">Quando NÃO usar</span>
+                        <span className="text-[11px] uppercase tracking-wider text-muted-foreground">{t("commands.section.whenNotToUse")}</span>
                         <p className="text-[13px] text-muted-foreground">{entry.notWhen}</p>
                       </div>
                     </div>
 
                     {entry.examples.length > 0 && (
                       <div className="flex flex-col gap-1">
-                        <span className="text-[11px] uppercase tracking-wider text-muted-foreground">Exemplos</span>
+                        <span className="text-[11px] uppercase tracking-wider text-muted-foreground">{t("commands.section.examples")}</span>
                         <div className="flex flex-col gap-1">
                           {entry.examples.map((ex) => (
                             <div key={ex} className="flex items-center gap-2">
@@ -185,7 +187,7 @@ export function Commands() {
                                 type="button"
                                 onClick={() => navigator.clipboard.writeText(ex)}
                                 className="p-1 rounded text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
-                                title="Copiar"
+                                title={t("commands.copy")}
                               >
                                 <Copy className="h-3.5 w-3.5" />
                               </button>
@@ -197,7 +199,7 @@ export function Commands() {
 
                     {entry.seeAlso.length > 0 && (
                       <div className="flex flex-col gap-1">
-                        <span className="text-[11px] uppercase tracking-wider text-muted-foreground">Ver também</span>
+                        <span className="text-[11px] uppercase tracking-wider text-muted-foreground">{t("commands.section.seeAlso")}</span>
                         <div className="flex flex-wrap gap-1.5">
                           {entry.seeAlso.map((rel) => (
                             <button

@@ -29,6 +29,7 @@
 use mustard_core::error::Error;
 use mustard_core::fs;
 use mustard_core::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
+use mustard_core::ClaudePaths;
 use std::path::{Path, PathBuf};
 
 /// Char cap for the injected slice — keeps a high enough ceiling for a useful
@@ -95,11 +96,13 @@ fn read_context_md_slice(project: &Path) -> String {
 /// Mirrors the matching used by `agent_prompt_render::filtered_spec_memory`,
 /// but capped at [`SPEC_MEMORY_MAX`] and scoped to the active spec only.
 fn spec_memory_block(project: &Path, spec: &str, prompt: &str, role: &str) -> String {
-    let memory_dir = project
-        .join(".claude")
-        .join("spec")
-        .join(spec)
-        .join("memory");
+    let Some(memory_dir) = ClaudePaths::for_project(project)
+        .ok()
+        .and_then(|p| p.for_spec(spec).ok())
+        .map(|sp| sp.dir().join("memory"))
+    else {
+        return String::new();
+    };
     let Ok(entries) = fs::read_dir(&memory_dir) else {
         return String::new();
     };

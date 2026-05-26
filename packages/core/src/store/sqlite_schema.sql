@@ -153,14 +153,14 @@ CREATE INDEX IF NOT EXISTS idx_pipeline_amend_window_session_status
 -- Economy — savings_records + context_cost_frames.
 --
 -- These are written on the hot path by every Mustard intervention (bash_guard
--- rewrites, model_routing downgrades, recipe injections, …). They are NOT
+-- rewrites, model_routing downgrades, …). They are NOT
 -- run-cost telemetry (which lives in `telemetry.db.run_usage`) — they are
 -- side-channel measurements of the value the harness creates, with native
 -- spec/wave/agent scope columns so dashboards can drill down without a JOIN.
 -- ============================================================================
 
 -- savings_records: one row per intervention (rtk-rewrite, model-routing
--- downgrade, recipe injection, etc.). `payload` is a JSON object the adapter
+-- downgrade, etc.). `payload` is a JSON object the adapter
 -- fills in so per-source drill-downs do not lose context.
 CREATE TABLE IF NOT EXISTS savings_records (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -191,7 +191,6 @@ CREATE TABLE IF NOT EXISTS context_cost_frames (
     prompt_size_bytes INTEGER,
     prefix_stable_bytes INTEGER,
     slice_bytes INTEGER,
-    recipe_bytes INTEGER,
     wave_slice_bytes INTEGER,
     return_size_bytes INTEGER,
     retry_overhead_bytes INTEGER

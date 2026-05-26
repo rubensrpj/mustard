@@ -85,11 +85,23 @@ pub use economy::{EconomyScope, EconomySummary, SavingsSource};
 pub use meta::{normalise_lang, read_meta, write_meta, Meta};
 
 // i18n — central language + tone module for Mustard banners. See `i18n.rs`.
-// Locale is BCP-47 (`pt-BR`/`en-US`); short forms are rejected with
-// `LocaleError::ShortForm` per `project_locale_codes`.
+//
+// Two locale types live here, doing two different jobs:
+// - `SupportedLocale` — the closed catalogue Mustard ships translations for
+//   (`pt-BR` / `en-US`). Drives `translate` / `apply_tone` / `I18n`. Short
+//   forms (`pt` / `en`) are rejected with `LocaleError::ShortForm` per
+//   `project_locale_codes`.
+// - `UserLocale` — the open user-declared locale parsed out of
+//   `mustard.json#specLang` and `### Lang:` headers. Accepts any
+//   BCP-47-shaped code (`fr-FR`, `de-DE`, `en-GB`, ...). Bridges to
+//   `SupportedLocale` via `user.to_supported().unwrap_or_default()` when a
+//   banner needs to render.
+//
+// W7 — every callsite now uses `SupportedLocale` (catalogue) or `UserLocale`
+// (user-declared). The deprecated `Locale` alias was removed.
 pub use i18n::{
     apply_tone, project_locale, project_locale_from_file, slugify, translate, wave_label, I18n,
-    Locale, LocaleError, Tone,
+    LocaleError, SupportedLocale, Tone, UserLocale, UserLocaleError,
 };
 
 // Canonical `.claude/` path catalog — every consumer in `apps/rt` builds a

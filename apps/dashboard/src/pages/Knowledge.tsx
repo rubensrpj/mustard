@@ -27,25 +27,23 @@ import {
   EditorialBand,
 } from "@/components/page";
 import { relativeTime } from "@/lib/time";
+import { useT } from "@/lib/i18n";
 
 /**
- * Knowledge type labels. Only `convention` is rendered as "CONVENÇÃO" — and
- * only for rows whose backend type is literally `convention`. Friction signals
- * (hook-retry, heavy pipeline) are NOT knowledge: they come from a separate
- * source (friction.json) and render in their own section below.
+ * Knowledge type → i18n key map. Only `convention` is rendered as
+ * "CONVENTION" — and only for rows whose backend type is literally
+ * `convention`. Friction signals (hook-retry, heavy pipeline) are NOT
+ * knowledge: they come from a separate source (friction.json) and render in
+ * their own section below.
  */
-const TYPE_LABELS: Record<string, string> = {
-  "entity-cluster": "Cluster de entidade",
-  "naming-pattern": "Padrão de nomenclatura",
-  decision: "Decisão",
-  lesson: "Lição",
-  recipe: "Receita",
-  convention: "Convenção",
-  pattern: "Padrão",
+const TYPE_LABEL_KEYS: Record<string, string> = {
+  "entity-cluster": "knowledge.types.entityCluster",
+  "naming-pattern": "knowledge.types.namingPattern",
+  decision: "knowledge.types.decision",
+  lesson: "knowledge.types.lesson",
+  convention: "knowledge.types.convention",
+  pattern: "knowledge.types.pattern",
 };
-function labelType(t: string): string {
-  return TYPE_LABELS[t] ?? t;
-}
 
 /** Sort order so "real knowledge" types lead and noisier ones trail. */
 const TYPE_ORDER = [
@@ -54,7 +52,6 @@ const TYPE_ORDER = [
   "naming-pattern",
   "entity-cluster",
   "convention",
-  "recipe",
   "lesson",
 ];
 function typeRank(t: string): number {
@@ -101,6 +98,11 @@ function toFrictionEntry(row: KnowledgeBrowseRow): FrictionEntry {
 }
 
 export function Knowledge() {
+  const t = useT();
+  const labelType = (typ: string): string => {
+    const key = TYPE_LABEL_KEYS[typ];
+    return key ? t(key) : typ;
+  };
   const projectsRoot = useStore((s) => s.projectsRoot);
   const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
   const persistedQuery = useStore((s) => s.knowledgeQuery);
@@ -212,8 +214,8 @@ export function Knowledge() {
     <PageSurface>
       <EditorialBand
         eyebrow="Knowledge"
-        title="Conhecimento e atrito"
-        subtitle="Padrões, decisões e lições reutilizáveis extraídos das pipelines, separados dos sinais de fricção medidos durante as execuções."
+        title={t("knowledge.editorialTitle")}
+        subtitle={t("knowledge.editorialSubtitle")}
       />
 
       {/* Search */}
@@ -226,8 +228,8 @@ export function Knowledge() {
           id="knowledge-search"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          placeholder="Buscar padrões, convenções, decisões, lições…"
-          aria-label="Buscar conhecimento"
+          placeholder={t("knowledge.search.placeholder")}
+          aria-label={t("knowledge.search.aria")}
           className="w-full pl-9 pr-3 py-2 bg-card border border-border rounded-md text-sm outline-none placeholder:text-muted-foreground focus:border-primary transition-colors"
         />
       </div>
@@ -235,16 +237,16 @@ export function Knowledge() {
       {/* Gate states */}
       {!projectsRoot ? (
         <EmptyState
-          title="Diretório de projetos não configurado"
-          description="Vá em Settings e aponte para a pasta onde estão seus repos."
+          title={t("empty.noRoot.title")}
+          description={t("empty.noRoot.descriptionSettings")}
         />
       ) : !activeWorkspaceId ? (
         <EmptyState
-          title="Selecione um workspace"
-          description="Use o seletor no topo da sidebar para escolher um projeto e ver o que ele aprendeu."
+          title={t("empty.noWorkspace.title")}
+          description={t("empty.noWorkspace.descriptionTop")}
         />
       ) : !activeProject ? (
-        <p className="text-[13px] text-muted-foreground">Carregando…</p>
+        <p className="text-[13px] text-muted-foreground">{t("common.loadingDots")}</p>
       ) : hasQuery ? (
         // ── Search mode ─────────────────────────────────────────────────────
         searchLoading ? (
@@ -255,12 +257,12 @@ export function Knowledge() {
           </ul>
         ) : searchResults.length === 0 ? (
           <EmptyState
-            title={`Nenhum resultado para "${trimmed}"`}
-            description="Tente um termo mais curto, ou limpe a busca para ver tudo agrupado por tipo."
+            title={t("knowledge.searchEmpty.title").replace("{query}", trimmed)}
+            description={t("knowledge.searchEmpty.description")}
           />
         ) : (
           <section className="flex flex-col gap-2">
-            <SectionHeader title="Resultados" right={`${searchResults.length}`} />
+            <SectionHeader title={t("knowledge.section.results")} right={`${searchResults.length}`} />
             <DataCard padded>
               <ul className="flex flex-col gap-0.5 text-sm">
                 {searchResults.map((row) => (
@@ -290,8 +292,8 @@ export function Knowledge() {
           {/* Padrões & decisões */}
           <section className="flex flex-col gap-3">
             <SectionHeader
-              title="Padrões e decisões"
-              description="Conhecimento reutilizável extraído das pipelines: convenções de código, decisões de arquitetura, padrões de nomenclatura e lições. O rótulo CONVENÇÃO aparece só para convenções de código de verdade. Telemetria de fricção é filtrada daqui e aparece na seção Atrito."
+              title={t("knowledge.section.patterns.title")}
+              description={t("knowledge.section.patterns.description")}
               right={browseRows ? `${realRows.length}` : undefined}
             />
             {browseLoading ? (
@@ -302,16 +304,10 @@ export function Knowledge() {
               </ul>
             ) : realRows.length === 0 ? (
               <EmptyState
-                title="Nenhum padrão capturado ainda"
+                title={t("knowledge.empty.noPatterns.title")}
                 description={
                   <>
-                    O Mustard extrai padrões automaticamente ao final de cada
-                    pipeline. Rode um <code className="font-mono">/mustard:feature</code>{" "}
-                    ou <code className="font-mono">/mustard:bugfix</code>, ou
-                    invoque <code className="font-mono">/mustard:knowledge</code>{" "}
-                    para forçar uma extração. Se este workspace tem instalação
-                    antiga do Mustard, é normal ver poucas entradas aqui — o
-                    resto era telemetria de fricção e foi movido para Atrito.
+                    {t("knowledge.empty.noPatterns.body.before")}<code className="font-mono">/mustard:feature</code>{t("knowledge.empty.noPatterns.body.or")}<code className="font-mono">/mustard:bugfix</code>{t("knowledge.empty.noPatterns.body.invoke")}<code className="font-mono">/mustard:knowledge</code>{t("knowledge.empty.noPatterns.body.after")}
                   </>
                 }
               />
@@ -349,6 +345,7 @@ export function Knowledge() {
 
 /** One friction row — measured signal or legacy telemetry. */
 function FrictionRow({ f }: { f: FrictionEntry }) {
+  const t = useT();
   return (
     <li className="flex flex-col gap-1 py-2">
       <div className="flex items-baseline gap-2 flex-wrap">
@@ -362,18 +359,18 @@ function FrictionRow({ f }: { f: FrictionEntry }) {
           <Badge
             variant="outline"
             className="text-[10px] border-[--color-accent-mustard]/40 text-[--color-accent-mustard]"
-            title="Retries de hook medidos nesta pipeline (sandbox/stash/re-prompt — não redespacho de agente)."
+            title={t("knowledge.friction.retriesTitle")}
           >
-            {f.retry_count} retries
+            {f.retry_count} {t("knowledge.friction.retries")}
           </Badge>
         )}
         {f.api_calls != null && (
           <Badge
             variant="outline"
             className="text-[10px] border-[--color-accent-mustard]/40 text-[--color-accent-mustard]"
-            title="Total de chamadas de API medidas nesta pipeline."
+            title={t("knowledge.friction.callsTitle")}
           >
-            {f.api_calls} chamadas
+            {f.api_calls} {t("knowledge.friction.calls")}
           </Badge>
         )}
         {f.updated_at && (
@@ -389,7 +386,7 @@ function FrictionRow({ f }: { f: FrictionEntry }) {
       )}
       {f.prescription && (
         <p className="text-[12px] text-[--color-ok]/90 leading-relaxed pl-6">
-          Sugestão: {f.prescription}
+          {t("knowledge.friction.suggestion")} {f.prescription}
         </p>
       )}
     </li>
@@ -410,19 +407,20 @@ function FrictionSection({
   friction: FrictionEntry[] | undefined;
   legacyFriction: FrictionEntry[];
 }) {
+  const t = useT();
   const measured = friction ?? [];
   const total = measured.length + legacyFriction.length;
   return (
     <section className="flex flex-col gap-3">
       <SectionHeader
-        title="Atrito"
-        description="Sinais de fricção medidos durante as pipelines — não é conhecimento, é diagnóstico. Inclui também telemetria legada que um Mustard antigo gravou no lugar errado e foi filtrada de Padrões. É normal estar quase vazio: atrito medido é raro."
+        title={t("knowledge.friction.title")}
+        description={t("knowledge.friction.description")}
         right={`${total}`}
       />
       {total === 0 ? (
         <EmptyState
-          title="Nenhum atrito registrado"
-          description="As pipelines deste workspace rodaram sem fricção acima do limite (mais de 2 retries de hook ou mais de 50 chamadas de API por pipeline). Isso é bom — é o estado esperado."
+          title={t("knowledge.friction.empty.title")}
+          description={t("knowledge.friction.empty.description")}
         />
       ) : (
         <DataCard padded>
@@ -442,15 +440,15 @@ function FrictionSection({
               }
             >
               <div className="flex items-baseline gap-2 mb-2">
-                <KnowledgeBadge kind="friction" label="Atrito" />
+                <KnowledgeBadge kind="friction" label={t("knowledge.friction.legacy.label")} />
                 <span className="text-[11px] uppercase tracking-wider font-medium text-muted-foreground">
-                  Telemetria legada
+                  {t("knowledge.friction.legacy.tag")}
                 </span>
               </div>
               <CollapsibleGroup
-                label="Mostrar entradas"
+                label={t("knowledge.friction.legacy.collapse")}
                 count={legacyFriction.length}
-                hint="Entradas de fricção (heavy-pipeline, high-hook-retry, .metrics) gravadas em knowledge.json por um extractor antigo, sem contadores medidos. Mantidas só para inspeção."
+                hint={t("knowledge.friction.legacy.hint")}
               >
                 <ul className="flex flex-col divide-y divide-border mt-2">
                   {legacyFriction.map((f) => (

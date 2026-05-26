@@ -64,11 +64,6 @@ export interface SubprojectInfo {
   role: string | null;
 }
 
-export interface RecipeMeta {
-  name: string;
-  description: string;
-}
-
 export interface SkillMeta {
   name: string;
   description: string;
@@ -90,10 +85,6 @@ export interface RecentEvent {
 
 export function fetchSubprojects(repoPath: string): Promise<SubprojectInfo[]> {
   return invoke<SubprojectInfo[]>("dashboard_subprojects", { repoPath });
-}
-
-export function fetchRecipes(repoPath: string): Promise<RecipeMeta[]> {
-  return invoke<RecipeMeta[]>("dashboard_recipes", { repoPath });
 }
 
 export function fetchSkills(repoPath: string): Promise<SkillMeta[]> {

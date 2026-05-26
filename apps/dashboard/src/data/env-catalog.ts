@@ -1,3 +1,4 @@
+// SPEC LANG: pt-allowed — catalog entries are pt-BR end-user copy; migration to i18n dict deferred to sub-spec 2026-05-26-dashboard-data-catalogs-i18n.
 export interface EnvKey {
   /** Environment variable name — the technical identifier persisted to disk. */
   key: string;
