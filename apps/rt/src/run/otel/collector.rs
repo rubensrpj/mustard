@@ -29,7 +29,7 @@
 //! There is no SQLite store. Each accepted datapoint is serialised into the
 //! per-spec NDJSON event log via
 //! [`crate::run::event_writer_ndjson::write_event_with_ts`]. The ingestion
-//! filter (`mustard_core::telemetry::CONSUMED_METRICS`) still drops every
+//! filter ([`CONSUMED_METRICS`], a module-local constant) still drops every
 //! metric the dashboard does not read, so the NDJSON sink only carries the
 //! handful that matter.
 
@@ -53,6 +53,20 @@ const DEFAULT_PORT: u16 = 4318;
 /// NDJSON event kinds the collector emits.
 const KIND_METRIC: &str = "pipeline.telemetry.metric";
 const KIND_RUN: &str = "pipeline.telemetry.run";
+
+/// The only `usage_totals` metric names the dashboard ever reads.
+///
+/// Was a re-export from `mustard_core::telemetry::CONSUMED_METRICS`; moved
+/// here as a module-local constant in W8A-1 (no-sqlite Wave 8) when the
+/// SQLite telemetry crate-side module was deleted. The collector itself is
+/// the only consumer of this filter — colocating the list keeps it within
+/// the single responsibility that uses it.
+const CONSUMED_METRICS: &[&str] = &[
+    "claude_code.cost.usage",
+    "claude_code.session.count",
+    "claude_code.active_time.total",
+    "claude_code.token.usage",
+];
 
 /// Append one JSON record to `.claude/.harness/.canary.log`. Fail-silent: a
 /// logging failure must never affect request handling.
@@ -104,8 +118,8 @@ fn project_into_ndjson(harness_dir: &Path, route: &str, body: &Value, now_ms: i6
         return write_traces(harness_dir, body);
     }
     // /v1/logs and any other route: nothing to persist. Claude Code log bodies
-    // are not in `telemetry::CONSUMED_METRICS`, so they would never reach the
-    // dashboard; the collector accepts the payload (HTTP 200) but writes 0.
+    // are not in `CONSUMED_METRICS`, so they would never reach the dashboard;
+    // the collector accepts the payload (HTTP 200) but writes 0.
     0
 }
 
@@ -116,7 +130,7 @@ fn write_metrics(harness_dir: &Path, body: &Value, now_ms: i64) -> usize {
     let mut written = 0usize;
     for row in project_metrics(body, now_ms) {
         // Ingestion filter: only persist the metrics the dashboard reads.
-        if !mustard_core::telemetry::CONSUMED_METRICS.contains(&row.metric.as_str()) {
+        if !CONSUMED_METRICS.contains(&row.metric.as_str()) {
             continue;
         }
         let payload = metric_payload(&row);

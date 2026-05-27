@@ -13,8 +13,8 @@
 //! 3. Removes the statusline git cache from the temp dir.
 //! 4. Removes `.compact-state` files older than 24h.
 //! 5. Removes a stale OTEL collector PID file.
-//! 6. Prunes telemetry rows (`run_usage`/`usage_totals`) older than the
-//!    retention window from `.harness/telemetry.db`.
+//! 6. Prunes telemetry NDJSON files (`.claude/spec/*/.events/*.ndjson`,
+//!    `.claude/.session/*/.events/*.ndjson`) older than the retention window.
 //!
 //! ## Contract shape
 //!
@@ -446,20 +446,77 @@ fn ingest_rtk_savings(cwd: &str, session_id: Option<&str>) {
     }
 }
 
-/// Prune telemetry rows older than [`TELEMETRY_RETENTION_DAYS`] from the
-/// dedicated telemetry store (`.harness/telemetry.db`). Best-effort: a
-/// store-open failure or a prune error is dropped — telemetry retention must
+/// Prune telemetry NDJSON files older than [`TELEMETRY_RETENTION_DAYS`].
+///
+/// W8A-1 (no-sqlite): the dedicated `telemetry.db` is gone — telemetry now
+/// lives inline in the per-spec / per-session NDJSON event logs. Retention is
+/// expressed at the file granularity: any `<root>/.claude/spec/*/.events/*.ndjson`
+/// or `<root>/.claude/.session/*/.events/*.ndjson` whose `mtime` is older than
+/// the cutoff is removed.
+///
+/// Internally delegates to [`prune_telemetry_with_cutoff`], which is the
+/// testable form (the test passes an artificial cutoff so it does not need to
+/// stamp mtimes far in the past).
+///
+/// Best-effort: any IO error degrades to a no-op — telemetry retention must
 /// never abort session cleanup.
-fn prune_telemetry(cwd: &str) {
-    let Ok(store) = mustard_core::telemetry::TelemetryStore::for_project(cwd) else {
+pub(crate) fn prune_telemetry(cwd: &str) {
+    let now_ms = now_millis().min(i64::MAX as u128) as i64;
+    let cutoff_ms = now_ms.saturating_sub(TELEMETRY_RETENTION_DAYS.saturating_mul(86_400_000));
+    prune_telemetry_with_cutoff(cwd, cutoff_ms);
+}
+
+/// Inner form of [`prune_telemetry`]: delete every NDJSON file under the spec
+/// and session `.events/` subtrees whose `mtime` precedes `cutoff_ms`
+/// (Unix-epoch milliseconds).
+///
+/// `pub(crate)` for the integration test `session_cleanup_prune_ndjson`, which
+/// drives the function with a synthetic future cutoff so two real files
+/// (created milliseconds apart) split into "expired" and "kept".
+pub(crate) fn prune_telemetry_with_cutoff(cwd: &str, cutoff_ms: i64) {
+    let Ok(paths) = ClaudePaths::for_project(Path::new(cwd)) else {
         return;
     };
-    let now_ms = now_millis().min(i64::MAX as u128) as i64;
-    let _ = mustard_core::telemetry::writer::prune_older_than_days(
-        store.conn(),
-        TELEMETRY_RETENTION_DAYS,
-        now_ms,
-    );
+    let spec_root = paths.spec_dir();
+    let session_root = paths.claude_dir().join(".session");
+    for root in [spec_root, session_root] {
+        prune_ndjson_under(&root, cutoff_ms);
+    }
+}
+
+/// Walk every immediate child of `root`, dive into `<child>/.events/`, and
+/// remove every `*.ndjson` whose `mtime` is strictly older than `cutoff_ms`.
+/// Fail-open at every layer.
+fn prune_ndjson_under(root: &Path, cutoff_ms: i64) {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let events_dir = entry.path().join(".events");
+        let Ok(files) = std::fs::read_dir(&events_dir) else {
+            continue;
+        };
+        for file in files.flatten() {
+            let p = file.path();
+            if p.extension().and_then(|x| x.to_str()) != Some("ndjson") {
+                continue;
+            }
+            let Ok(meta) = file.metadata() else {
+                continue;
+            };
+            let Ok(mtime) = meta.modified() else {
+                continue;
+            };
+            let mtime_ms = mtime
+                .duration_since(UNIX_EPOCH)
+                .ok()
+                .map(|d| d.as_millis().min(i64::MAX as u128) as i64)
+                .unwrap_or(i64::MAX);
+            if mtime_ms < cutoff_ms {
+                let _ = std::fs::remove_file(&p);
+            }
+        }
+    }
 }
 
 impl Observer for SessionCleanup {
@@ -635,5 +692,89 @@ mod tests {
     fn filetime_set(path: &Path, when: SystemTime) -> std::io::Result<()> {
         let file = std::fs::OpenOptions::new().write(true).open(path)?;
         file.set_modified(when)
+    }
+
+    // ---------------------------------------------------------------------
+    // W8A-1 (no-sqlite) — AC-PRUNE tests for the NDJSON retention pruner.
+    // ---------------------------------------------------------------------
+
+    fn mtime_ms(path: &Path) -> i64 {
+        std::fs::metadata(path)
+            .expect("metadata")
+            .modified()
+            .expect("modified")
+            .duration_since(UNIX_EPOCH)
+            .expect("epoch")
+            .as_millis() as i64
+    }
+
+    #[test]
+    fn prune_telemetry_removes_old_ndjson_and_keeps_new() {
+        let dir = tempdir().unwrap();
+        let project = dir.path();
+        let events_dir = project
+            .join(".claude")
+            .join("spec")
+            .join("test-spec")
+            .join(".events");
+        std::fs::create_dir_all(&events_dir).unwrap();
+
+        let old_path = events_dir.join("old.ndjson");
+        let new_path = events_dir.join("new.ndjson");
+
+        // Write both, then backdate "old" by 60 seconds using the test helper
+        // `filetime_set` (already in this module).
+        std::fs::write(&old_path, b"{\"event\":\"old\"}\n").unwrap();
+        std::fs::write(&new_path, b"{\"event\":\"new\"}\n").unwrap();
+        filetime_set(
+            &old_path,
+            SystemTime::now() - std::time::Duration::from_secs(60),
+        )
+        .expect("backdate old mtime");
+
+        let old_mtime = mtime_ms(&old_path);
+        let new_mtime = mtime_ms(&new_path);
+        assert!(
+            new_mtime > old_mtime,
+            "backdating must produce older mtime: old={old_mtime} new={new_mtime}"
+        );
+
+        // Cutoff between the two mtimes — old must be pruned, new must survive.
+        let cutoff = (old_mtime + new_mtime) / 2;
+        prune_telemetry_with_cutoff(project.to_str().unwrap(), cutoff);
+
+        assert!(!old_path.exists(), "old.ndjson should have been pruned");
+        assert!(new_path.exists(), "new.ndjson should have survived");
+    }
+
+    #[test]
+    fn prune_telemetry_fail_open_on_missing_spec_root() {
+        let dir = tempdir().unwrap();
+        // No `.claude/spec/` tree at all — must not panic.
+        prune_telemetry_with_cutoff(dir.path().to_str().unwrap(), i64::MAX);
+    }
+
+    #[test]
+    fn prune_telemetry_walks_session_subtree_too() {
+        let dir = tempdir().unwrap();
+        let project = dir.path();
+        let session_events = project
+            .join(".claude")
+            .join(".session")
+            .join("otel-x")
+            .join(".events");
+        std::fs::create_dir_all(&session_events).unwrap();
+        let old = session_events.join("old.ndjson");
+        std::fs::write(&old, b"{\"event\":\"old\"}\n").unwrap();
+
+        let old_mtime = mtime_ms(&old);
+        // Cutoff in the future so the file qualifies as "old".
+        let cutoff = old_mtime + 1_000_000;
+        prune_telemetry_with_cutoff(project.to_str().unwrap(), cutoff);
+
+        assert!(
+            !old.exists(),
+            "session-tree NDJSON should have been pruned alongside the spec tree"
+        );
     }
 }

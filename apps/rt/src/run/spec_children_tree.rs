@@ -21,20 +21,22 @@
 //! ```
 //!
 //! All three sub-projections come straight from the canonical
-//! [`mustard_core`] reader layer ([`SpecReader::waves`], [`SpecReader::quality`])
-//! plus the cross-developer UNION used by [`crate::run::spec_children`] for
-//! sub-spec discovery (events + filesystem `### Parent:` headers). Reusing the
-//! reader keeps this byte-stable with every other dashboard surface — no SQL
-//! drift.
+//! [`mustard_core`] projection layer
+//! ([`mustard_core::projection::project_waves`],
+//! [`mustard_core::projection::project_quality`]) folded over the NDJSON
+//! workspace events, plus the cross-developer UNION used by
+//! [`crate::run::spec_children`] for sub-spec discovery (events + filesystem
+//! `### Parent:` headers). Reusing the projections keeps this byte-stable with
+//! every other dashboard surface — no SQL drift.
 //!
-//! Fail-open: a missing event store, missing parent dir, or unreadable spec all
+//! Fail-open: a missing events dir, missing parent dir, or unreadable spec all
 //! degrade to empty arrays — never a non-zero exit.
 
 use crate::run::env::project_dir;
+use crate::run::event_projections::read_workspace_events;
 use crate::run::spec_children::{list_children, ChildEntry};
-use mustard_core::{
-    AcStatus, Outcome, SpecReader, SpecState, SqliteSpecReader, Stage, WaveStatus, WaveView,
-};
+use mustard_core::projection::{project_quality, project_waves};
+use mustard_core::{AcStatus, Outcome, SpecState, Stage, WaveStatus, WaveView};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 
@@ -176,33 +178,26 @@ fn child_from_entry(entry: ChildEntry) -> Subspec {
 /// open contributes empty waves/acs, and sub-spec discovery degrades to `[]`.
 #[must_use]
 pub fn build_tree(project: &Path, spec: &str) -> ChildrenTree {
-    let (waves, acs) = match SqliteSpecReader::for_project(project) {
-        Ok(reader) => {
-            let waves: Vec<WaveChild> = reader
-                .waves(spec)
-                .unwrap_or_default()
-                .into_iter()
-                .map(WaveChild::from)
-                .collect();
-            let acs: Vec<AcChild> = reader
-                .quality(spec)
-                .map(|q| {
-                    q.criteria
-                        .into_iter()
-                        .map(|c| AcChild {
-                            id: c.id,
-                            label: c.label,
-                            status: c.status,
-                            last_run_at: c.last_run_at,
-                            evidence: c.fail_reason,
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
-            (waves, acs)
-        }
-        Err(_) => (Vec::new(), Vec::new()),
-    };
+    // W8A-1 (no-sqlite): SqliteSpecReader removed; both projections now fold
+    // directly over the NDJSON workspace events. Fail-open: an empty events
+    // walk returns empty `waves` / `acs`, same as the legacy DB-open failure.
+    let events = read_workspace_events(project);
+    let waves: Vec<WaveChild> = project_waves(spec, &events)
+        .into_iter()
+        .map(WaveChild::from)
+        .collect();
+    let rollup = project_quality(spec, &events);
+    let acs: Vec<AcChild> = rollup
+        .criteria
+        .into_iter()
+        .map(|c| AcChild {
+            id: c.id,
+            label: c.label,
+            status: c.status,
+            last_run_at: c.last_run_at,
+            evidence: c.fail_reason,
+        })
+        .collect();
 
     // Sub-specs: reuse the cross-developer UNION (events + `### Parent:`
     // headers) so a tactical-fix linked only via its filesystem header still

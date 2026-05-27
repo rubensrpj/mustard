@@ -16,9 +16,9 @@
 //! [`crate::run::event_writer_ndjson::write_event_with_ts`] directly, and the
 //! diagnose face reads the same channel back via [`mustard_core::EventReader`].
 //!
-//! Filtering remains: the collector still drops every metric outside
-//! [`mustard_core::telemetry::CONSUMED_METRICS`] before writing, so the NDJSON
-//! sink only carries the handful the dashboard actually reads.
+//! Filtering remains: the collector still drops every metric outside its
+//! local `CONSUMED_METRICS` list (see [`collector`]) before writing, so the
+//! NDJSON sink only carries the handful the dashboard actually reads.
 
 pub mod collector;
 pub mod diagnose;

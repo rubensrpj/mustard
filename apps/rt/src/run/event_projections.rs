@@ -46,7 +46,7 @@ const AGENT_EVENT_LIMIT: usize = 40;
 /// kind in the top-level `kind` field. All other harness fields (`ts`, `spec`,
 /// `wave`, `session_id`, `actor`) are present in `raw` via the flatten.
 /// Unknown / missing fields default safely (fail-open).
-fn ndjson_to_harness(e: Event) -> HarnessEvent {
+pub(crate) fn ndjson_to_harness(e: Event) -> HarnessEvent {
     let raw = &e.raw;
     let get_str = |key: &str| -> String {
         raw.get(key)
@@ -76,7 +76,11 @@ fn ndjson_to_harness(e: Event) -> HarnessEvent {
 /// each `.ndjson` file line-by-line. Converts to [`HarnessEvent`] for
 /// compatibility with existing projection folds. Fail-open: unreadable files
 /// and malformed lines are silently skipped.
-fn read_events(cwd: &Path) -> Vec<HarnessEvent> {
+///
+/// `pub(crate)` since W8A-1 (no-sqlite Wave 8): `resume_bootstrap` and
+/// `spec_children_tree` consume this in place of the deleted
+/// `SqliteEventStore::for_project(...).replay()`.
+pub(crate) fn read_workspace_events(cwd: &Path) -> Vec<HarnessEvent> {
     let Ok(paths) = ClaudePaths::for_project(cwd) else {
         return Vec::new();
     };
@@ -903,11 +907,11 @@ fn build_active_pipelines(events: &[HarnessEvent], cwd: &Path) -> Value {
 /// Compute the projection for a `--view`.
 fn project(cwd: &Path, view: &str, spec: Option<&str>, wave: Option<u32>) -> Value {
     match view {
-        "agent-visibility" => build_agent_visibility(&read_events(cwd), wave),
-        "pipeline-state" => build_pipeline_state(&read_events(cwd), spec),
-        "session-summary" => build_session_summary(&read_events(cwd)),
+        "agent-visibility" => build_agent_visibility(&read_workspace_events(cwd), wave),
+        "pipeline-state" => build_pipeline_state(&read_workspace_events(cwd), spec),
+        "session-summary" => build_session_summary(&read_workspace_events(cwd)),
         "epic-summary" => match spec {
-            Some(s) => build_epic_summary(&read_events(cwd), cwd, s),
+            Some(s) => build_epic_summary(&read_workspace_events(cwd), cwd, s),
             None => json!({ "error": "--spec is required for epic-summary view" }),
         },
         "cross-session-timeline" => {
@@ -916,15 +920,15 @@ fn project(cwd: &Path, view: &str, spec: Option<&str>, wave: Option<u32>) -> Val
             build_cross_session_timeline(cwd, limit)
         }
         "spec-tree" => match spec {
-            Some(s) => build_spec_tree(&read_events(cwd), cwd, s),
+            Some(s) => build_spec_tree(&read_workspace_events(cwd), cwd, s),
             None => json!({ "error": "--spec is required for spec-tree view" }),
         },
         "pr-metrics" => {
             // `--wave` doubles as the optional `--days` window for this view.
             let days = wave.map_or(30, i64::from);
-            build_pr_metrics(&read_events(cwd), cwd, days)
+            build_pr_metrics(&read_workspace_events(cwd), cwd, days)
         }
-        "active-pipelines" => build_active_pipelines(&read_events(cwd), cwd),
+        "active-pipelines" => build_active_pipelines(&read_workspace_events(cwd), cwd),
         other => json!({ "error": format!("Unknown view: {other}") }),
     }
 }

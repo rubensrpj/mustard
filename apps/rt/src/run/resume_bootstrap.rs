@@ -11,13 +11,15 @@
 //!
 //! ## Fail-open contract
 //!
-//! ANY IO error — missing spec dir, missing event store, unparseable header —
+//! ANY IO error — missing spec dir, missing events dir, unparseable header —
 //! degrades the affected field to `null`/`false`. The process never panics and
 //! always exits 0; the orchestrator gets a partial JSON document instead of
 //! an error.
 
 use crate::run::env::{project_dir, session_id};
-use crate::run::event_projections::{pipeline_state_from_events, PipelineStateView};
+use crate::run::event_projections::{
+    pipeline_state_from_events, read_workspace_events, PipelineStateView,
+};
 use crate::run::event_route;
 use crate::util::now_iso8601;
 use mustard_core::claude_paths::ClaudePaths;
@@ -26,7 +28,6 @@ use mustard_core::model::event::{
     Actor, ActorKind, HarnessEvent, PipelineDispatchFailurePayload, SCHEMA_VERSION,
     EVENT_PIPELINE_RESUME_MODE, EVENT_PIPELINE_SCOPE, EVENT_PIPELINE_WAVE_COMPLETE,
 };
-use mustard_core::store::sqlite_store::SqliteEventStore;
 use mustard_core::EventReader;
 use serde::Serialize;
 use serde_json::json;
@@ -131,11 +132,13 @@ pub fn run(spec: &str, json_flag: bool) {
         ..Default::default()
     };
 
-    // --- Load pipeline state (fail-open: missing store → defaults preserved). ---
-    let view: Option<PipelineStateView> = SqliteEventStore::for_project(&project)
-        .ok()
-        .and_then(|store| store.replay().ok())
-        .and_then(|events| pipeline_state_from_events(&events, spec, Some(&spec_dir)));
+    // --- Load pipeline state (fail-open: missing events dir → defaults preserved). ---
+    // W8A-1 (no-sqlite): the legacy event-store replay was replaced by the
+    // NDJSON workspace walker. `pipeline_state_from_events` is unchanged —
+    // same fold, different source.
+    let events = read_workspace_events(&project);
+    let view: Option<PipelineStateView> =
+        pipeline_state_from_events(&events, spec, Some(&spec_dir));
 
     // --- Detect wave-plan + total waves (event-first, FS fallback). ---
     let wave_plan_path = spec_dir.join("wave-plan.md");
