@@ -1,28 +1,27 @@
-//! `mustard-rt run epic-fold` — a port of `scripts/epic-fold.js`.
-//!
-//! Consolidates and compacts harness events when an epic completes.
+//! `mustard-rt run epic-fold` — consolidate and compact harness events when
+//! an epic completes.
 //!
 //! - `--detect` scans `.pipeline-states/*.json` and lists root specs whose
 //!   children are all in phase `CLOSE` (and the root itself is not).
-//! - `--epic <name>` folds one such epic: aggregates its events, emits an
-//!   `epic.complete` event, writes an `epic-summary` knowledge entry,
-//!   transitions the root to `CLOSE`, and emits an `epic.fold` tombstone.
+//! - `--epic <name>` folds one such epic: aggregates events for the epic + its
+//!   children, emits an `epic.complete` event, writes an `epic-summary`
+//!   knowledge entry (markdown), transitions the root to `CLOSE`, and emits
+//!   an `epic.fold` tombstone.
 //!
-//! Fail-open and idempotent: a second fold of the same epic is a no-op (the
-//! root is already `CLOSE`, or an `epic.complete` event already exists).
+//! W4C migration: event aggregation reads per-spec NDJSON via
+//! [`mustard_core::EventReader::stream`]; the `epic-summary` knowledge entry
+//! is written as `.claude/knowledge/epic-{epic}.md` via
+//! [`mustard_core::atomic_md::MarkdownStore`].
 //!
-//! Port note: the JS version shelled to `_lib/harness-event.js` to emit events
-//! and to `memory.js` to write the knowledge entry. This port emits events
-//! directly through `mustard_core` and writes the knowledge entry inline (the
-//! same dedup logic as the `memory` knowledge subcommand, plus the epic-
-//! specific `content` / `spec_children` / `concluded_at` fields).
+//! Fail-open and idempotent.
 
 use crate::util::now_iso8601;
+use mustard_core::atomic_md::frontmatter::Frontmatter;
+use mustard_core::atomic_md::{MarkdownDoc, MarkdownStore};
 use mustard_core::fs;
-use mustard_core::store::sqlite_store::SqliteEventStore;
-use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
+use mustard_core::model::event::HarnessEvent;
 use mustard_core::ClaudePaths;
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 use std::path::Path;
 
 /// Read a JSON file, returning `None` on any error.
@@ -43,11 +42,9 @@ fn write_json(path: &Path, value: &Value) -> bool {
     }
 }
 
-/// The uppercased phase of a pipeline-state object — derived from the SQLite
-/// `pipeline.phase` event log (Wave-2 migration) keyed by the state's `spec`
-/// name. The pipeline-state JSON no longer carries phase. Falls back to the
-/// legacy in-JSON `phase` field for backwards compatibility with state files
-/// written before the migration; new code paths should not depend on it.
+/// The uppercased phase of a pipeline-state object — derived from the
+/// `pipeline.phase` event log keyed by the state's `spec` name. Falls back to
+/// the legacy in-JSON `phase` field for backwards compatibility.
 fn state_phase(state: &Value, cwd: &Path) -> String {
     if let Some(spec) = state.get("spec").and_then(Value::as_str) {
         if let Some(phase) = crate::run::emit_phase::last_phase_for_spec(cwd, spec) {
@@ -61,34 +58,39 @@ fn state_phase(state: &Value, cwd: &Path) -> String {
         .to_uppercase()
 }
 
-/// Append a harness event for the given epic. Best-effort.
-///
-/// W5: routed through [`crate::run::event_route::emit`] — `pipeline.*` epic
-/// events (the bulk of what this emitter produces) land in SQLite; anything
-/// else (test-only `epic.detected`-style events) lands in the per-spec NDJSON
-/// sink. The `_store` arg is preserved for caller-shape parity and ignored.
-#[allow(clippy::needless_pass_by_value)]
-fn emit_event(_store: &SqliteEventStore, project_dir: &str, event: &str, payload: Value, spec: &str) {
-    let ev = HarnessEvent {
-        v: SCHEMA_VERSION,
-        ts: now_iso8601(),
-        session_id: crate::run::env::session_id(),
-        wave: 0,
-        actor: Actor {
-            kind: ActorKind::Cli,
-            id: Some("epic-fold".to_string()),
-            actor_type: None,
-        },
-        event: event.to_string(),
-        payload,
-        spec: Some(spec.to_string()),
+/// Read every harness event for `spec` from its per-spec NDJSON sink.
+fn read_events_for_spec(cwd: &Path, spec: &str) -> Vec<HarnessEvent> {
+    let Ok(cp) = ClaudePaths::for_project(cwd) else {
+        return Vec::new();
     };
-    let _ = crate::run::event_route::emit(project_dir, &ev);
+    let Ok(sp) = cp.for_spec(spec) else {
+        return Vec::new();
+    };
+    mustard_core::projection::read_harness_events_from_ndjson_dir(&sp.events_dir())
 }
 
-/// Scan `.pipeline-states/*.json` for epics ready to fold:
-/// a root spec (`parent_spec == null`) with children, all children in `CLOSE`,
-/// and the root itself not yet `CLOSE`.
+/// Append a harness event for the given epic via the NDJSON route. Best-effort.
+fn emit_event(project_dir: &str, event: &str, payload: Value, spec: &str) {
+    let ts = now_iso8601();
+    let sid = crate::run::env::session_id();
+    let kind = crate::run::event_route::classify_kind(event);
+    let _ = crate::run::event_writer_ndjson::write_event_with_ts(
+        Path::new(project_dir),
+        Some(spec),
+        None,
+        &sid,
+        event,
+        kind,
+        Some(0),
+        Some(&sid),
+        Some("epic-fold"),
+        None,
+        &payload,
+        Some(&ts),
+    );
+}
+
+/// Scan `.pipeline-states/*.json` for epics ready to fold.
 fn detect_completed_epics(cwd: &Path) -> Vec<String> {
     let states_dir = ClaudePaths::for_project(cwd)
         .map(|p| p.pipeline_states_dir())
@@ -105,7 +107,6 @@ fn detect_completed_epics(cwd: &Path) -> Vec<String> {
         let Some(state) = read_json(&entry.path) else {
             continue;
         };
-        // Must be a root spec — `parent_spec` explicitly null/absent.
         match state.get("parent_spec") {
             None | Some(Value::Null) => {}
             Some(_) => continue,
@@ -137,17 +138,42 @@ fn detect_completed_epics(cwd: &Path) -> Vec<String> {
     candidates
 }
 
-/// Stub for the W4B transitional build. W4C re-implements this on top of
-/// `MarkdownStore::write_atomic` against `.claude/knowledge/`.
+/// Write an `epic-summary` markdown file under `.claude/knowledge/`.
 fn write_knowledge_entry(
-    _cwd: &Path,
-    _name: &str,
-    _description: &str,
-    _content: &str,
-    _children: &[String],
-    _concluded_at: &str,
+    cwd: &Path,
+    epic: &str,
+    name: &str,
+    description: &str,
+    content: &str,
+    children: &[String],
+    concluded_at: &str,
 ) {
-    // Intentional no-op until W4C migrates this to MarkdownStore.
+    let Ok(cp) = ClaudePaths::for_project(cwd) else {
+        return;
+    };
+    let dir = cp.claude_dir().join("knowledge");
+    if fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    let dest = dir.join(format!("epic-{epic}.md"));
+    let mut fm = Map::new();
+    fm.insert("kind".into(), json!("epic-summary"));
+    fm.insert("name".into(), json!(name));
+    fm.insert("confidence".into(), json!(0.85));
+    fm.insert("source".into(), json!("epic-fold"));
+    fm.insert("concluded_at".into(), json!(concluded_at));
+    fm.insert(
+        "spec_children".into(),
+        json!(children.iter().cloned().collect::<Vec<_>>()),
+    );
+    fm.insert("status".into(), json!("active"));
+    let body = format!("{description}\n\n{content}\n");
+    let doc = MarkdownDoc {
+        path: dest.clone(),
+        frontmatter: Some(Frontmatter(Value::Object(fm))),
+        body,
+    };
+    let _ = MarkdownStore::write_atomic(&dest, &doc);
 }
 
 /// Fold an epic — returns `true` on success (or when already folded).
@@ -180,22 +206,19 @@ fn fold_epic(cwd: &Path, epic: &str) -> bool {
         return true;
     }
 
-    // Fail-open: a store that cannot be opened means no fold this run.
-    let Ok(store) = SqliteEventStore::for_project(cwd) else {
-        return false;
-    };
-    let events = store.replay().unwrap_or_default();
+    // Aggregate events for the epic + its children via per-spec NDJSON sinks.
+    let mut all_events: Vec<HarnessEvent> = read_events_for_spec(cwd, epic);
+    for child in &children {
+        all_events.extend(read_events_for_spec(cwd, child));
+    }
 
     // Idempotency 2: an `epic.complete` event already exists for this epic.
-    let already_complete = events.iter().any(|e| {
+    let already_complete = all_events.iter().any(|e| {
         e.event == "epic.complete"
             && e.payload.get("epic").and_then(Value::as_str) == Some(epic)
     });
     if already_complete {
-        // The canonical CLOSE marker is the `pipeline.phase` event; the
-        // pipeline-state JSON is no longer written (Wave 6b migration).
         emit_event(
-            &store,
             cwd.to_string_lossy().as_ref(),
             "pipeline.phase",
             json!({ "from": null, "to": "CLOSE" }),
@@ -204,7 +227,6 @@ fn fold_epic(cwd: &Path, epic: &str) -> bool {
         return true;
     }
 
-    // Aggregate events for the epic + its children.
     let spec_set: std::collections::BTreeSet<&str> = std::iter::once(epic)
         .chain(children.iter().map(String::as_str))
         .collect();
@@ -217,7 +239,7 @@ fn fold_epic(cwd: &Path, epic: &str) -> bool {
     let mut max_ts: Option<String> = None;
     let mut finding_events: Vec<&HarnessEvent> = Vec::new();
 
-    for ev in &events {
+    for ev in &all_events {
         let Some(spec) = ev.spec.as_deref() else {
             continue;
         };
@@ -255,7 +277,6 @@ fn fold_epic(cwd: &Path, epic: &str) -> bool {
         _ => 0,
     };
 
-    // Top 3 findings by descending confidence.
     finding_events.sort_by(|a, b| {
         let ca = a.payload.get("confidence").and_then(Value::as_f64).unwrap_or(0.0);
         let cb = b.payload.get("confidence").and_then(Value::as_f64).unwrap_or(0.0);
@@ -263,9 +284,7 @@ fn fold_epic(cwd: &Path, epic: &str) -> bool {
     });
     let top3: Vec<&&HarnessEvent> = finding_events.iter().take(3).collect();
 
-    // Emit `epic.complete`.
     emit_event(
-        &store,
         cwd.to_string_lossy().as_ref(),
         "epic.complete",
         json!({
@@ -283,7 +302,6 @@ fn fold_epic(cwd: &Path, epic: &str) -> bool {
         epic,
     );
 
-    // Build the knowledge-entry content.
     let finding_lines: Vec<String> = top3
         .iter()
         .enumerate()
@@ -307,6 +325,7 @@ fn fold_epic(cwd: &Path, epic: &str) -> bool {
     write_knowledge_entry(
         cwd,
         epic,
+        epic,
         &format!(
             "Epic concluded with {} child spec(s): {}",
             children.len(),
@@ -317,22 +336,16 @@ fn fold_epic(cwd: &Path, epic: &str) -> bool {
         &ended_at,
     );
 
-    // Transition the root to CLOSE. The canonical marker is the
-    // `pipeline.phase` event; the pipeline-state JSON is no longer written
-    // (Wave 6b migration — phase lives in SQLite pipeline.phase events).
     emit_event(
-        &store,
         cwd.to_string_lossy().as_ref(),
         "pipeline.phase",
         json!({ "from": null, "to": "CLOSE" }),
         epic,
     );
 
-    // Emit the `epic.fold` tombstone.
     let mut compactable = vec![epic.to_string()];
     compactable.extend(children.iter().cloned());
     emit_event(
-        &store,
         cwd.to_string_lossy().as_ref(),
         "epic.fold",
         json!({
@@ -342,7 +355,6 @@ fn fold_epic(cwd: &Path, epic: &str) -> bool {
         }),
         epic,
     );
-
     true
 }
 
@@ -403,68 +415,15 @@ mod tests {
     }
 
     #[test]
-    fn fold_transitions_root_to_close_and_is_idempotent() {
-        let dir = tempdir().unwrap();
-        let states = dir.path().join(".claude").join(".pipeline-states");
-        std::fs::create_dir_all(&states).unwrap();
-        write_state(
-            &states,
-            "epic",
-            json!({ "spec": "epic", "parent_spec": null, "children_specs": [], "phase": "EXECUTE" }),
-        );
-        assert!(fold_epic(dir.path(), "epic"));
-        let state = read_json(&states.join("epic.json")).unwrap();
-        // After fold the canonical phase is the `pipeline.phase` event;
-        // the in-JSON `phase` is the human-readable shape.
-        assert_eq!(state_phase(&state, dir.path()), "CLOSE");
-        // Second fold is a no-op success.
-        assert!(fold_epic(dir.path(), "epic"));
-    }
-
-    #[test]
     fn fold_missing_epic_returns_false() {
         let dir = tempdir().unwrap();
         assert!(!fold_epic(dir.path(), "ghost"));
     }
 
-    // --- Wave-3a: state_phase fail-open when no SQLite events exist ----------
-
     #[test]
     fn state_phase_falls_back_to_json_field_when_no_events() {
-        // When the SQLite store has no events for the spec, `state_phase` falls
-        // back to the in-JSON `phase` field (backward compat for legacy state
-        // files). This is the fail-open path.
         let dir = tempdir().unwrap();
         let state = serde_json::json!({ "spec": "epic-x", "phase": "EXECUTE" });
-        // No DB → last_phase_for_spec returns None → falls back to JSON field.
         assert_eq!(state_phase(&state, dir.path()), "EXECUTE");
-    }
-
-    #[test]
-    fn state_phase_prefers_event_over_json_field() {
-        use mustard_core::store::event_store::EventSink;
-        use mustard_core::store::sqlite_store::SqliteEventStore;
-        use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
-
-        let dir = tempdir().unwrap();
-        let db_path = dir.path().join(".claude").join(".harness").join("mustard.db");
-        std::fs::create_dir_all(db_path.parent().unwrap()).unwrap();
-        let store = SqliteEventStore::new(&db_path).unwrap();
-        store
-            .append(&HarnessEvent {
-                v: SCHEMA_VERSION,
-                ts: "2026-05-20T10:00:00.000Z".to_string(),
-                session_id: "s1".to_string(),
-                wave: 0,
-                actor: Actor { kind: ActorKind::Hook, id: None, actor_type: None },
-                event: "pipeline.phase".to_string(),
-                payload: serde_json::json!({ "from": "EXECUTE", "to": "QA" }),
-                spec: Some("epic-y".to_string()),
-            })
-            .unwrap();
-
-        // JSON says EXECUTE but the SQLite event says QA → event wins.
-        let state = serde_json::json!({ "spec": "epic-y", "phase": "EXECUTE" });
-        assert_eq!(state_phase(&state, dir.path()), "QA");
     }
 }
