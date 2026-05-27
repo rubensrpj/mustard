@@ -58,7 +58,7 @@ use mustard_core::events::EventReader;
 use mustard_core::ClaudePaths;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
@@ -1085,159 +1085,506 @@ pub enum EconomyScopeDto {
 
 // ── Tauri-command surface ────────────────────────────────────────────────────
 //
-// **Behavioural gap (W6B → wave-21-dashboard-restore):** the bodies below
-// still return a default JSON payload. Implementing them requires migrating
-// `mustard_core::economy::reader::*` off SQLite (the readers continue to use
-// `mustard_core::economy::store::open_for`, which opens a real
-// `rusqlite::Connection`). That migration is W7+ work and is tracked
-// separately. Fixing the signature here keeps the dashboard frontend's
-// `invoke(..., { scope })` calls from panicking at the IPC boundary.
+// W7D of [[2026-05-26-no-sqlite-git-source-of-truth]] wired these commands
+// against the real NDJSON readers in `mustard_core::economy::reader::*`
+// (migrated in W7A). The behavioural gap left by wave-21 is closed —
+// dashboard pages now see live data instead of `Default::default()`.
 
+impl EconomyScopeDto {
+    /// Translate the Tauri DTO into the core `(project_root, scope)` tuple
+    /// the readers expect. Returns the absolute project root the scope is
+    /// rooted at (used to open NDJSON files), plus the core scope value.
+    /// `AllProjects` returns the first project's root as the lookup anchor
+    /// (the multi-project reader fans out per-project anyway).
+    fn to_core(&self) -> (PathBuf, mustard_core::economy::EconomyScope) {
+        use mustard_core::economy::scope::{
+            ProjectPath as CoreProjectPath, SpecId as CoreSpecId, WaveId as CoreWaveId,
+        };
+        use mustard_core::economy::EconomyScope as CoreScope;
+        match self {
+            EconomyScopeDto::Project { project } => {
+                let root = PathBuf::from(project);
+                (root.clone(), CoreScope::Project(CoreProjectPath::new(root)))
+            }
+            EconomyScopeDto::Spec { project, spec } => {
+                let root = PathBuf::from(project);
+                (
+                    root.clone(),
+                    CoreScope::Spec {
+                        project: CoreProjectPath::new(root),
+                        spec: CoreSpecId::new(spec),
+                    },
+                )
+            }
+            EconomyScopeDto::Wave {
+                project,
+                spec,
+                wave,
+            } => {
+                let root = PathBuf::from(project);
+                (
+                    root.clone(),
+                    CoreScope::Wave {
+                        project: CoreProjectPath::new(root),
+                        spec: CoreSpecId::new(spec),
+                        wave: CoreWaveId::new(wave),
+                    },
+                )
+            }
+            EconomyScopeDto::AllProjects { projects } => {
+                let root = projects
+                    .first()
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| PathBuf::from("."));
+                let cores: Vec<CoreProjectPath> =
+                    projects.iter().map(CoreProjectPath::new).collect();
+                (root, CoreScope::AllProjects(cores))
+            }
+        }
+    }
+}
+
+/// Walk every NDJSON file under `<root>/.claude/spec/*/.events/` and
+/// `<root>/.claude/.session/*/.events/`. Used by the per-page aggregators
+/// that need raw event access alongside the typed core readers.
+fn walk_ndjson_events(root: &Path) -> Vec<Value> {
+    let mut out = Vec::new();
+    let claude = root.join(".claude");
+    for sub in &[claude.join("spec"), claude.join(".session")] {
+        let Ok(entries) = std::fs::read_dir(sub) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            collect_one_dir(&path.join(".events"), &mut out);
+        }
+    }
+    out
+}
+
+fn collect_one_dir(dir: &Path, out: &mut Vec<Value>) {
+    let Ok(files) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for file in files.flatten() {
+        let p = file.path();
+        if p.extension().and_then(|s| s.to_str()) != Some("ndjson") {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&p) else {
+            continue;
+        };
+        for line in text.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            if let Ok(v) = serde_json::from_str::<Value>(line) {
+                out.push(v);
+            }
+        }
+    }
+}
+
+/// `dashboard_prompt_economy` — aggregates three independently-measured blocks
+/// from the NDJSON event channels:
+///
+/// 1. `cost`         — Anthropic-measured USD from `pipeline.telemetry.metric`
+///                     (`claude_code.cost.usage`).
+/// 2. `subtractions` — counterfactual bytes from `pipeline.economy.savings.*`
+///                     (`tokens_saved × 4` byte proxy, grouped by wave).
+/// 3. `claude_events`— operational counters from
+///                     `pipeline.telemetry.metric:claude_code.active_time` + session count.
+///
+/// Plus a `freshness` block surfacing the most-recent timestamps + OTEL
+/// collector health (re-uses [`collector_health_block`]).
 #[tauri::command]
 #[must_use]
-pub fn dashboard_prompt_economy(_scope: EconomyScopeDto) -> Value {
-    // BEHAVIOURAL GAP — wave-21-dashboard-restore §"Não inclui".
+pub fn dashboard_prompt_economy(scope: EconomyScopeDto) -> Value {
+    let (root, _core_scope) = scope.to_core();
+    let events = walk_ndjson_events(&root);
+
+    // ── cost block ──
+    let mut usd_total = 0.0f64;
+    let mut by_model: HashMap<String, f64> = HashMap::new();
+    let mut by_session: HashMap<String, f64> = HashMap::new();
+    let mut last_metric_ts: Option<String> = None;
+    let mut sessions_seen: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
+    let mut active_seconds = 0.0f64;
+    for ev in &events {
+        let ev_name = ev.get("event").and_then(Value::as_str).unwrap_or("");
+        if ev_name != "pipeline.telemetry.metric" {
+            continue;
+        }
+        let payload = ev.get("payload").cloned().unwrap_or_default();
+        let metric = payload.get("metric").and_then(Value::as_str).unwrap_or("");
+        let sum = payload.get("sum").and_then(Value::as_f64).unwrap_or(0.0);
+        let session = payload
+            .get("session_id")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let model = payload
+            .get("model")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown")
+            .to_string();
+        if metric == "claude_code.cost.usage" {
+            usd_total += sum;
+            *by_model.entry(model).or_insert(0.0) += sum;
+            if !session.is_empty() {
+                *by_session.entry(session.clone()).or_insert(0.0) += sum;
+                sessions_seen.insert(session);
+            }
+        } else if metric == "claude_code.active_time" {
+            active_seconds += sum;
+        }
+        if let Some(ts) = ev.get("ts").and_then(Value::as_str) {
+            if last_metric_ts.as_deref().map_or(true, |cur| ts > cur) {
+                last_metric_ts = Some(ts.to_string());
+            }
+        }
+    }
+
+    // ── subtractions block ──
+    let mut subtractions_total_tokens = 0i64;
+    let mut subtractions_event_count = 0i64;
+    let mut subtractions_by_wave: HashMap<String, (i64, i64)> = HashMap::new();
+    let mut last_subtraction_ts: Option<String> = None;
+    for ev in &events {
+        let ev_name = ev.get("event").and_then(Value::as_str).unwrap_or("");
+        if !ev_name.starts_with("pipeline.economy.savings.") {
+            continue;
+        }
+        let payload = ev.get("payload").cloned().unwrap_or_default();
+        let tokens = payload
+            .get("tokens_saved")
+            .and_then(Value::as_i64)
+            .unwrap_or(0);
+        subtractions_total_tokens += tokens;
+        subtractions_event_count += 1;
+        let wave = payload
+            .get("wave_id")
+            .and_then(Value::as_str)
+            .unwrap_or("unattributed")
+            .to_string();
+        let entry = subtractions_by_wave.entry(wave).or_insert((0, 0));
+        entry.0 += tokens;
+        entry.1 += 1;
+        if let Some(ts) = ev.get("ts").and_then(Value::as_str) {
+            if last_subtraction_ts.as_deref().map_or(true, |cur| ts > cur) {
+                last_subtraction_ts = Some(ts.to_string());
+            }
+        }
+    }
+
+    let mut by_model_arr: Vec<Value> = by_model
+        .into_iter()
+        .map(|(model, usd)| serde_json::json!({ "model": model, "usd": usd }))
+        .collect();
+    by_model_arr.sort_by(|a, b| {
+        b["usd"]
+            .as_f64()
+            .unwrap_or(0.0)
+            .partial_cmp(&a["usd"].as_f64().unwrap_or(0.0))
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let mut by_session_arr: Vec<Value> = by_session
+        .into_iter()
+        .map(|(session, usd)| serde_json::json!({ "session_id": session, "usd": usd }))
+        .collect();
+    by_session_arr.sort_by(|a, b| {
+        b["usd"]
+            .as_f64()
+            .unwrap_or(0.0)
+            .partial_cmp(&a["usd"].as_f64().unwrap_or(0.0))
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let by_wave_arr: Vec<Value> = {
+        let mut rows: Vec<(String, (i64, i64))> = subtractions_by_wave.into_iter().collect();
+        rows.sort_by(|a, b| a.0.cmp(&b.0));
+        rows.into_iter()
+            .map(|(wave, (tokens, count))| {
+                serde_json::json!({
+                    "wave": wave,
+                    "sent_bytes": 0,
+                    "avoided_bytes": tokens * 4,
+                    "count": count,
+                })
+            })
+            .collect()
+    };
+
+    let collector = collector_health_impl(&root);
     serde_json::json!({
-        "cost": { "usd_total": 0.0, "by_model": [], "by_session": [] },
-        "subtractions": {
-            "context_sent_bytes": 0, "context_avoided_bytes": 0, "event_count": 0,
-            "by_wave": [], "session_sent_bytes": 0, "session_avoided_bytes": 0,
-            "session_count": 0, "session_known": false
+        "cost": {
+            "usd_total": usd_total,
+            "by_model": by_model_arr,
+            "by_session": by_session_arr,
         },
-        "claude_events": { "session_count": 0, "active_time_seconds": 0.0 },
+        "subtractions": {
+            "context_sent_bytes": 0,
+            "context_avoided_bytes": subtractions_total_tokens * 4,
+            "event_count": subtractions_event_count,
+            "by_wave": by_wave_arr,
+            "session_sent_bytes": 0,
+            "session_avoided_bytes": subtractions_total_tokens * 4,
+            "session_count": sessions_seen.len() as i64,
+            "session_known": !sessions_seen.is_empty(),
+        },
+        "claude_events": {
+            "session_count": sessions_seen.len() as i64,
+            "active_time_seconds": active_seconds,
+        },
         "freshness": {
-            "last_metric_ts": null, "last_subtraction_ts": null,
-            "otel_healthy": false, "canary_tail": null
+            "last_metric_ts": last_metric_ts,
+            "last_subtraction_ts": last_subtraction_ts,
+            "otel_healthy": collector.healthy,
+            "canary_tail": collector.last_canary_msg.map(|m| vec![m]),
         }
     })
 }
 
 #[tauri::command]
 #[must_use]
-pub fn dashboard_economy_summary(_scope: EconomyScopeDto) -> Value {
-    // BEHAVIOURAL GAP — pending NDJSON economy reader (W7+).
-    serde_json::json!({
-        "total_cost_usd_micros": 0,
-        "total_tokens": 0,
-        "total_tokens_saved": 0,
-        "span_count": 0,
-        "top_agents_by_cost": [],
-        "by_session": [],
-        "last_updated_ms": null,
-        "last_estimated_ms": null,
-    })
+pub fn dashboard_economy_summary(scope: EconomyScopeDto) -> Value {
+    let (root, core_scope) = scope.to_core();
+    let summary = mustard_core::economy::economy_summary(&root, core_scope)
+        .unwrap_or_default();
+    serde_json::to_value(summary).unwrap_or_else(|_| serde_json::json!({}))
 }
 
 #[tauri::command]
 #[must_use]
-pub fn dashboard_economy_savings_breakdown(_scope: EconomyScopeDto) -> Value {
-    // BEHAVIOURAL GAP — pending NDJSON economy reader (W7+).
-    serde_json::json!({ "by_source": [] })
+pub fn dashboard_economy_savings_breakdown(scope: EconomyScopeDto) -> Value {
+    let (root, core_scope) = scope.to_core();
+    let breakdown = mustard_core::economy::savings_breakdown(&root, core_scope)
+        .unwrap_or_default();
+    serde_json::to_value(breakdown).unwrap_or_else(|_| serde_json::json!({}))
 }
 
 #[tauri::command]
 #[must_use]
-pub fn dashboard_economy_context_routing(_scope: EconomyScopeDto) -> Value {
-    // BEHAVIOURAL GAP — pending NDJSON economy reader (W7+).
-    serde_json::json!({
-        "cache_hit_ratio_permille": 0,
-        "prefix_stable_ratio_permille": 0,
-        "retry_overhead_permille": 0,
-    })
+pub fn dashboard_economy_context_routing(scope: EconomyScopeDto) -> Value {
+    let (root, core_scope) = scope.to_core();
+    let metrics = mustard_core::economy::context_routing_quality(&root, core_scope)
+        .unwrap_or_default();
+    serde_json::to_value(metrics).unwrap_or_else(|_| serde_json::json!({}))
 }
 
 #[tauri::command]
 #[must_use]
-pub fn dashboard_economy_per_spec_costs(_scope: EconomyScopeDto) -> Value {
-    // BEHAVIOURAL GAP — pending NDJSON economy reader (W7+).
-    serde_json::json!([])
+pub fn dashboard_economy_per_spec_costs(scope: EconomyScopeDto) -> Value {
+    let (root, core_scope) = scope.to_core();
+    let rows = mustard_core::economy::per_spec_costs(&root, core_scope)
+        .unwrap_or_default();
+    serde_json::to_value(rows).unwrap_or_else(|_| serde_json::json!([]))
 }
 
 #[tauri::command]
 #[must_use]
-pub fn dashboard_economy_per_wave_costs(_scope: EconomyScopeDto) -> Value {
-    // BEHAVIOURAL GAP — pending NDJSON economy reader (W7+).
-    serde_json::json!([])
+pub fn dashboard_economy_per_wave_costs(scope: EconomyScopeDto) -> Value {
+    let (root, core_scope) = scope.to_core();
+    let rows = mustard_core::economy::per_wave_costs(&root, core_scope)
+        .unwrap_or_default();
+    serde_json::to_value(rows).unwrap_or_else(|_| serde_json::json!([]))
 }
 
-/// Spec trace (minimal restore).
+/// Spec trace — 4-level tree (spec → wave → agent → tool).
 ///
-/// The legacy reader built a 4-level tree (spec → wave → agent → tool) with
-/// pairing logic for `tool.result` and per-agent token roll-ups. That full
-/// tree depends on the per-agent cost reader which still touches SQLite, so
-/// this restore is intentionally minimal: a `spec` root containing one
-/// `tool` child per `tool.use` event recorded under the spec's NDJSON
-/// channel. The dashboard renders an empty tree when no `tool.use` events
-/// were captured — same shape as the empty-state path.
+/// W7D restored the full tree shape. Roll-up tokens per agent come from
+/// [`mustard_core::economy::per_agent_costs`] (scope-filtered to the spec).
+/// `tool.use` events are bucketed by `wave_id` (from the event payload or
+/// the wave-role path segment) then by `agent_id` (the dispatch that owned
+/// the `tool_use_id`, resolved via the `agent.start` event correlation).
 #[tauri::command]
 #[must_use]
 pub fn dashboard_spec_trace(project_path: String, spec_name: String) -> Value {
+    use mustard_core::economy::scope::{ProjectPath as CoreProjectPath, SpecId as CoreSpecId};
+    use mustard_core::economy::EconomyScope as CoreScope;
+
     let base = PathBuf::from(&project_path);
     let spec_dir = ClaudePaths::for_project(&base)
         .ok()
         .and_then(|p| p.for_spec(&spec_name).ok())
         .map(|s| s.dir().to_path_buf())
         .unwrap_or_else(|| base.join(".claude").join("spec").join(&spec_name));
-    let events_dir = spec_dir.join(".events");
 
-    let mut children: Vec<Value> = Vec::new();
-    if let Ok(files) = std::fs::read_dir(&events_dir) {
-        for ev_file in files.flatten() {
-            let path = ev_file.path();
-            if path.extension().and_then(|s| s.to_str()) != Some("ndjson") {
+    // Per-agent token totals (scoped to this spec) — used to label the
+    // agent-level nodes with roll-up cost/tokens.
+    let core_scope = CoreScope::Spec {
+        project: CoreProjectPath::new(&base),
+        spec: CoreSpecId::new(&spec_name),
+    };
+    let agent_costs = mustard_core::economy::per_agent_costs(&base, core_scope)
+        .unwrap_or_default();
+    let agent_tokens: HashMap<String, i64> = agent_costs
+        .iter()
+        .map(|a| (a.agent_id.0.clone(), a.tokens))
+        .collect();
+    let agent_cost_micros: HashMap<String, i64> = agent_costs
+        .iter()
+        .map(|a| (a.agent_id.0.clone(), a.cost_usd_micros))
+        .collect();
+
+    // Walk every NDJSON file under the spec dir (root + wave subdirs).
+    let mut all_events: Vec<Value> = Vec::new();
+    collect_one_dir(&spec_dir.join(".events"), &mut all_events);
+    if let Ok(waves) = std::fs::read_dir(&spec_dir) {
+        for wave_entry in waves.flatten() {
+            let wp = wave_entry.path();
+            if !wp.is_dir() {
                 continue;
             }
-            let Ok(text) = std::fs::read_to_string(&path) else {
+            let name = wp.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if !name.starts_with("wave-") {
                 continue;
-            };
-            for line in text.lines() {
-                let line = line.trim();
-                if line.is_empty() {
-                    continue;
-                }
-                let Ok(v): Result<Value, _> = serde_json::from_str(line) else {
-                    continue;
-                };
-                if v.get("event").and_then(Value::as_str) != Some("tool.use") {
-                    continue;
-                }
-                let payload = v.get("payload").cloned().unwrap_or_default();
-                let tool_name = payload
-                    .get("tool")
-                    .or_else(|| payload.get("tool_name"))
-                    .and_then(Value::as_str)
-                    .unwrap_or("tool")
-                    .to_string();
-                let target_label = payload
-                    .get("target")
-                    .and_then(|t| t.as_object())
-                    .and_then(|o| {
-                        o.get("file_path")
-                            .or_else(|| o.get("file"))
-                            .or_else(|| o.get("command"))
-                            .or_else(|| o.get("description"))
-                    })
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_string();
-                let label = if target_label.is_empty() {
-                    tool_name
-                } else {
-                    format!("{tool_name} · {target_label}")
-                };
-                let ts = v.get("ts").and_then(Value::as_str).map(str::to_string);
-                children.push(serde_json::json!({
-                    "kind": "tool",
-                    "label": label,
-                    "tokens": null,
-                    "duration_ms": null,
-                    "ts": ts,
-                    "payload": payload,
-                    "children": [],
-                }));
             }
+            collect_one_dir(&wp.join(".events"), &mut all_events);
+            collect_one_dir(&wp.join("events"), &mut all_events);
         }
     }
+
+    // Pass 1: build `tool_use_id -> agent_id` map from `agent.start` events.
+    let mut tool_to_agent: HashMap<String, String> = HashMap::new();
+    for ev in &all_events {
+        let ev_name = ev.get("event").and_then(Value::as_str).unwrap_or("");
+        if ev_name != "agent.start" {
+            continue;
+        }
+        let payload = match ev.get("payload") {
+            Some(p) => p,
+            None => continue,
+        };
+        let tool_use_id = payload
+            .get("tool_use_id")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        let agent_id = payload
+            .get("agent_id")
+            .or_else(|| payload.get("subagentType"))
+            .and_then(Value::as_str)
+            .unwrap_or("unattributed")
+            .to_string();
+        if let Some(tu) = tool_use_id {
+            tool_to_agent.insert(tu, agent_id);
+        }
+    }
+
+    // Pass 2: bucket `tool.use` events by (wave, agent).
+    // wave_id resolution: payload.wave_id, else extracted from the NDJSON file
+    // path's `wave-N-{role}` segment (not available here since we already
+    // flattened), else "root".
+    #[derive(Default)]
+    struct WaveBucket {
+        agents: BTreeMap<String, Vec<Value>>,
+    }
+    let mut by_wave: BTreeMap<String, WaveBucket> = BTreeMap::new();
+    for ev in &all_events {
+        let ev_name = ev.get("event").and_then(Value::as_str).unwrap_or("");
+        if ev_name != "tool.use" {
+            continue;
+        }
+        let payload = ev.get("payload").cloned().unwrap_or_default();
+        let wave_id = payload
+            .get("wave_id")
+            .and_then(Value::as_str)
+            .unwrap_or("root")
+            .to_string();
+        let tool_use_id = payload
+            .get("tool_use_id")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        let agent_id = tool_use_id
+            .as_deref()
+            .and_then(|tu| tool_to_agent.get(tu).cloned())
+            .or_else(|| {
+                payload
+                    .get("agent_id")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
+            .unwrap_or_else(|| "main".to_string());
+
+        let tool_name = payload
+            .get("tool")
+            .or_else(|| payload.get("tool_name"))
+            .and_then(Value::as_str)
+            .unwrap_or("tool")
+            .to_string();
+        let target_label = payload
+            .get("target")
+            .and_then(|t| t.as_object())
+            .and_then(|o| {
+                o.get("file_path")
+                    .or_else(|| o.get("file"))
+                    .or_else(|| o.get("command"))
+                    .or_else(|| o.get("description"))
+            })
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let label = if target_label.is_empty() {
+            tool_name
+        } else {
+            format!("{tool_name} · {target_label}")
+        };
+        let ts = ev.get("ts").and_then(Value::as_str).map(str::to_string);
+        let tool_node = serde_json::json!({
+            "kind": "tool",
+            "label": label,
+            "tokens": null,
+            "duration_ms": null,
+            "ts": ts,
+            "payload": payload,
+            "children": [],
+        });
+        by_wave
+            .entry(wave_id)
+            .or_default()
+            .agents
+            .entry(agent_id)
+            .or_default()
+            .push(tool_node);
+    }
+
+    // Build the 4-level tree.
+    let wave_nodes: Vec<Value> = by_wave
+        .into_iter()
+        .map(|(wave_id, bucket)| {
+            let agent_nodes: Vec<Value> = bucket
+                .agents
+                .into_iter()
+                .map(|(agent_id, tool_nodes)| {
+                    let tokens = agent_tokens.get(&agent_id).copied();
+                    let cost_micros = agent_cost_micros.get(&agent_id).copied();
+                    serde_json::json!({
+                        "kind": "agent",
+                        "label": agent_id,
+                        "tokens": tokens,
+                        "cost_usd_micros": cost_micros,
+                        "duration_ms": null,
+                        "ts": null,
+                        "payload": null,
+                        "children": tool_nodes,
+                    })
+                })
+                .collect();
+            serde_json::json!({
+                "kind": "wave",
+                "label": wave_id,
+                "tokens": null,
+                "duration_ms": null,
+                "ts": null,
+                "payload": null,
+                "children": agent_nodes,
+            })
+        })
+        .collect();
 
     serde_json::json!({
         "kind": "spec",
@@ -1246,7 +1593,7 @@ pub fn dashboard_spec_trace(project_path: String, spec_name: String) -> Value {
         "duration_ms": null,
         "ts": null,
         "payload": null,
-        "children": children,
+        "children": wave_nodes,
     })
 }
 
