@@ -134,12 +134,11 @@ fn persist_interrupted(cwd: &str, summary: &str, session_id: Option<&str>) {
             Err(_) => return,
         },
     };
-    // The SQLite store must already exist — the W9 hook is read-only on a
-    // brand-new project that never wrote a row.
-    use mustard_core::store::sqlite_store::SqliteEventStore;
-    let Ok(_store) = SqliteEventStore::for_project(cwd) else {
+    // Open the raw connection directly — no event-store dependency.
+    // The DB might not exist yet on a brand-new project; fail-open silently.
+    if !db_path.exists() {
         return;
-    };
+    }
     let Ok(conn) = rusqlite::Connection::open(&db_path) else {
         return;
     };
@@ -168,13 +167,8 @@ fn persist_interrupted(cwd: &str, summary: &str, session_id: Option<&str>) {
 /// Emit `pipeline.economy.operation.invoked` for the capture. Fail-open.
 fn emit_economy_operation(cwd: &str, operation: &str) {
     use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
-    use mustard_core::store::event_store::EventSink;
-    use mustard_core::store::sqlite_store::SqliteEventStore;
     use serde_json::json;
 
-    let Ok(store) = SqliteEventStore::for_project(cwd) else {
-        return;
-    };
     let event = HarnessEvent {
         v: SCHEMA_VERSION,
         ts: crate::util::now_iso8601(),
@@ -189,7 +183,7 @@ fn emit_economy_operation(cwd: &str, operation: &str) {
         payload: json!({ "operation": operation, "duration_ms": 0, "tokens_used": 0 }),
         spec: crate::run::env::current_spec(cwd),
     };
-    let _ = store.append(&event);
+    let _ = crate::run::event_route::emit(cwd, &event);
 }
 
 impl Observer for Stop {

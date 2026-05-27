@@ -32,13 +32,11 @@
 //! `unsafe`) and fail-open: a dead PID or a missing kill binary degrades to a
 //! warning and the PID file is still removed.
 
-use crate::run::amend_finalize;
 use mustard_core::economy::{
     self, sources::rtk as rtk_source, sources::transcript, sources::IngestContext,
 };
 use mustard_core::fs;
 use mustard_core::spec;
-use mustard_core::store::sqlite_store::SqliteEventStore;
 use mustard_core::ClaudePaths;
 use mustard_core::model::contract::{Ctx, HookInput, Observer, Trigger};
 use std::path::{Path, PathBuf};
@@ -464,13 +462,6 @@ impl Observer for SessionCleanup {
             return;
         };
         let claude = paths.claude_dir();
-
-        // Finalize open amendment windows BEFORE other cleanup.
-        if let Some(session_id) = input.session_id.as_deref().filter(|s| !s.is_empty()) {
-            if let Ok(store) = SqliteEventStore::for_project(&cwd) {
-                let _ = amend_finalize::run(session_id, &store);
-            }
-        }
 
         // Wave 2 (economia-didatica-e-economias-reais): drain the local
         // `rtk gain --json` ledger into `savings_records` once per session.

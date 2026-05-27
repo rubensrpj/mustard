@@ -23,11 +23,11 @@
 //! `Verdict::Allow` (the silent path) when no pipeline-state file is `active`
 //! / `implementing`.
 
+use mustard_core::atomic_md::MarkdownStore;
 use mustard_core::error::Error;
 use mustard_core::fs;
 use mustard_core::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
 use mustard_core::ClaudePaths;
-use rusqlite::params;
 use serde_json::Value;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -104,30 +104,17 @@ fn has_active_pipeline(claude_dir: &Path) -> bool {
     false
 }
 
-/// Count rows in a Wave 6a `SQLite` table (`memory_decisions` or
-/// `memory_lessons`). Resolves the DB path the same way
-/// `SqliteEventStore::for_project` does. Fail-open: returns 0 on any error.
-fn count_memory_rows(cwd: &str, table: &str) -> usize {
-    let db_path = match std::env::var("MUSTARD_DB_PATH") {
-        Ok(p) if !p.trim().is_empty() => std::path::PathBuf::from(p),
-        _ => ClaudePaths::for_project(Path::new(cwd))
-            .map(|p| p.harness_dir().join("mustard.db"))
-            .unwrap_or_else(|_| std::path::PathBuf::from(cwd).join("mustard.db")),
-    };
-    if !db_path.exists() {
-        return 0;
-    }
-    let Ok(conn) = rusqlite::Connection::open(&db_path) else {
+/// Count memory entries in a `.claude/{knowledge|memory}` directory by scanning
+/// `*.md` files via `MarkdownStore::scan_dir`.
+///
+/// W3B: replaces the `COUNT(*)` SQLite query against `memory_decisions` /
+/// `memory_lessons`. An empty or absent directory returns 0 (fail-open).
+fn count_memory_dir(cwd: &str, subdir: &str) -> usize {
+    let Ok(paths) = ClaudePaths::for_project(Path::new(cwd)) else {
         return 0;
     };
-    // Table name is an internal constant — no injection risk.
-    let sql = format!("SELECT COUNT(*) FROM {table}");
-    // Row count from SQLite fits usize; sign loss is safe (count is never negative).
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    let n = conn
-        .query_row(&sql, params![], |r| r.get::<_, i64>(0))
-        .map_or(0, |n: i64| n as usize);
-    n
+    let dir = paths.claude_dir().join(subdir);
+    MarkdownStore::scan_dir(&dir).len()
 }
 
 /// Build the snapshot text. Port of the `pre-compact.js` `parts` assembly.
@@ -185,12 +172,12 @@ fn build_snapshot(input: &HookInput, cwd: &str) -> String {
         }
     }
 
-    // Persistent memory — counts from Wave 6a SQLite tables.
-    let decisions = count_memory_rows(cwd, "memory_decisions");
-    let lessons = count_memory_rows(cwd, "memory_lessons");
-    if decisions > 0 || lessons > 0 {
+    // Persistent memory — counts from .claude/knowledge/ and .claude/memory/ dirs.
+    let knowledge = count_memory_dir(cwd, "knowledge");
+    let memory = count_memory_dir(cwd, "memory");
+    if knowledge > 0 || memory > 0 {
         parts.push(format!(
-            "Persistent memory: {decisions} decisions, {lessons} lessons"
+            "Persistent memory: {knowledge} knowledge entries, {memory} memory entries"
         ));
     }
 

@@ -49,12 +49,12 @@
 //! these now run where the JS auto-skipped. They are all fail-open side
 //! effects with no verdict impact, so the change is observably inert.
 
+use mustard_core::atomic_md::MarkdownStore;
 use mustard_core::error::Error;
 use mustard_core::fs;
 use mustard_core::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
 use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use mustard_core::ClaudePaths;
-use rusqlite::params;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -67,17 +67,12 @@ const RETENTION_MS: u128 = 30 * 24 * 60 * 60 * 1000;
 
 /// The advisory-context size cap for the injected persistent memory.
 const MEMORY_MAX_CHARS: usize = 2000;
-/// Knowledge entries below this confidence are not injected.
-const KB_MIN_CONFIDENCE: f64 = 0.5;
-/// Number of knowledge entries injected, ranked by confidence × recency.
+/// Number of knowledge entries injected from `.claude/knowledge/*.md`.
 const KB_MAX_ENTRIES: usize = 5;
 
-/// W8.T8.1 — scope-by-spec injection caps. The legacy fan-out (top-5 of every
-/// table indiscriminately) ballooned `SessionStart` to ~1.5 KB of memory the
-/// agent rarely needed. The deep-refactor budget is: top-3 entries scoped to
-/// the active spec, plus top-2 global fallbacks for context that is not yet
-/// linked to a spec column. Caller resolves the active spec via
-/// [`crate::run::env::current_spec`] (env var → SQLite → pipeline-state file).
+/// W3B injection caps — total budget per memory section.
+/// Top-3 entries from the active-spec context, plus top-2 global fallbacks.
+/// W4B will add frontmatter-based ranking; for now filesystem order is used.
 const SPEC_SCOPED_MAX: usize = 3;
 const GLOBAL_FALLBACK_MAX: usize = 2;
 
@@ -647,175 +642,110 @@ fn run_spec_hygiene(_cwd: &str) {
 }
 
 // ===========================================================================
-// session-memory — persistent-memory injection (Wave 6b: reads from SQLite)
+// session-memory — persistent-memory injection (W3B: reads from MarkdownStore)
 // ===========================================================================
 
-/// Load up to `KB_MAX_ENTRIES` knowledge patterns from `knowledge_patterns`,
-/// ordered by confidence DESC, `last_seen` DESC. Patterns below `KB_MIN_CONFIDENCE`
-/// are excluded at the SQL layer.
+/// Load knowledge entries from `.claude/knowledge/*.md` via `MarkdownStore::scan_dir`.
 ///
-/// Wave 6b: reads from the `knowledge_patterns` `SQLite` table instead of
-/// `knowledge.json`. The `verifiedAt` column does not exist in the new table
-/// (it was a legacy JSON field only); all SQL-backed entries are treated as
-/// unverified to preserve the AC-4 prefix logic until a future wave adds the
-/// column.
-fn load_knowledge_sql(conn: &rusqlite::Connection) -> Vec<String> {
-    let sql = "SELECT pattern, confidence FROM knowledge_patterns \
-               WHERE confidence >= ?1 \
-               ORDER BY confidence DESC, last_seen DESC \
-               LIMIT ?2";
-    let Ok(mut stmt) = conn.prepare(sql) else {
-        return Vec::new();
-    };
-    // KB_MAX_ENTRIES is a small compile-time constant; cast to i64 cannot wrap.
-    #[allow(clippy::cast_possible_wrap)]
-    let max_entries_i64 = KB_MAX_ENTRIES as i64;
-    let rows = stmt.query_map(
-        params![KB_MIN_CONFIDENCE, max_entries_i64],
-        |r| Ok((r.get::<_, String>(0)?, r.get::<_, f64>(1)?)),
-    );
-    let Ok(rows) = rows else {
-        return Vec::new();
-    };
-    // All SQL-backed entries are prefixed as unverified (verifiedAt not in schema yet).
-    rows.filter_map(std::result::Result::ok)
-        .map(|(pattern, _confidence)| {
-            format!("- [pattern] (unverified — verify before recommending) {pattern}")
+/// W3B: replaces the `knowledge_patterns` SQLite table. Each `.md` file in the
+/// knowledge dir is treated as one pattern entry. The file body is not read
+/// (scan_dir is lazy); the frontmatter `name` and `description` fields (when
+/// present) are used as the pattern text. Files without frontmatter use the
+/// filename stem as a fallback label. Accepts an empty or missing directory —
+/// returns an empty vec (top-N can be empty until W4B populates the content).
+fn load_knowledge_md(knowledge_dir: &Path) -> Vec<String> {
+    let docs = MarkdownStore::scan_dir(knowledge_dir);
+    docs.into_iter()
+        .take(KB_MAX_ENTRIES)
+        .map(|doc| {
+            let label = doc
+                .frontmatter
+                .as_ref()
+                .and_then(|fm| fm.get_str("name").or_else(|| fm.get_str("description")))
+                .map(str::to_string)
+                .unwrap_or_else(|| {
+                    doc.path
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("?")
+                        .to_string()
+                });
+            format!("- [pattern] (unverified — verify before recommending) {label}")
         })
         .collect()
 }
 
-/// Load the `max` most-recent rows from `memory_decisions` or `memory_lessons`,
-/// formatted as `- [source] content`. Ordered by `at DESC`.
+/// Load memory entries from a `.claude/{knowledge|memory}/*.md` directory.
 ///
-/// W8.T8.1 — `scope_by_spec` mode. When `current_spec` is `Some(slug)`, prefer
-/// rows whose `source` column matches that slug (semantic scoping — there is no
-/// dedicated `spec` column on these tables). When the active spec yields fewer
-/// than `max` rows we backfill with the most-recent global rows so the budget
-/// is always filled; this keeps the AC contract (top-3 scoped + top-2 global)
-/// observable while degrading gracefully on fresh projects.
-fn load_memory_sql(
-    conn: &rusqlite::Connection,
-    table: &str,
-    max: usize,
-    current_spec: Option<&str>,
-) -> Vec<String> {
-    // Table name is controlled by this module (never from user input) so
-    // format! interpolation is safe here.
-    #[allow(clippy::cast_possible_wrap)]
-    let max_i64 = max as i64;
-
-    let mut formatted: Vec<String> = Vec::new();
-    let mut seen: std::collections::BTreeSet<(String, String)> =
-        std::collections::BTreeSet::new();
-
-    // 1. Spec-scoped rows first — `source LIKE '%<slug>%'`.
-    if let Some(slug) = current_spec.filter(|s| !s.is_empty()) {
-        let sql_scoped = format!(
-            "SELECT content, source FROM {table} \
-             WHERE source LIKE ?1 \
-             ORDER BY at DESC LIMIT ?2"
-        );
-        if let Ok(mut stmt) = conn.prepare(&sql_scoped) {
-            let needle = format!("%{slug}%");
-            if let Ok(rows) = stmt.query_map(params![needle, max_i64], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
-            }) {
-                for (content, source) in rows.filter_map(std::result::Result::ok) {
-                    let src = source.clone().unwrap_or_default();
-                    seen.insert((content.clone(), src.clone()));
-                    formatted.push(format!("- [{}] {content}", source.as_deref().unwrap_or("?")));
-                    if formatted.len() >= max {
-                        return formatted;
-                    }
-                }
-            }
-        }
-    }
-
-    // 2. Backfill with global rows (deduped against the scoped set).
-    let sql_global = format!(
-        "SELECT content, source FROM {table} ORDER BY at DESC LIMIT ?1"
-    );
-    let Ok(mut stmt) = conn.prepare(&sql_global) else {
-        return formatted;
-    };
-    // Pull a healthy margin to compensate for dedup drops.
-    #[allow(clippy::cast_possible_wrap)]
-    let fetch_limit = ((max * 2) as i64).max(max_i64);
-    let Ok(rows) = stmt.query_map(params![fetch_limit], |r| {
-        Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
-    }) else {
-        return formatted;
-    };
-    for (content, source) in rows.filter_map(std::result::Result::ok) {
-        let src = source.clone().unwrap_or_default();
-        let key = (content.clone(), src);
-        if seen.insert(key) {
-            formatted.push(format!("- [{}] {content}", source.as_deref().unwrap_or("?")));
-            if formatted.len() >= max {
-                break;
-            }
-        }
-    }
-    formatted
+/// W3B: replaces the `memory_decisions` / `memory_lessons` SQLite tables.
+/// Each `.md` file is one memory entry. The frontmatter `name` field (or
+/// filename stem) becomes the label; the frontmatter `description` is the
+/// content snippet. Accepts an empty or missing directory — returns an empty
+/// vec. Top-N ordering is filesystem-order (deterministic); W4B will add
+/// frontmatter-based ranking when the files carry score metadata.
+fn load_memory_md(memory_dir: &Path, max: usize) -> Vec<String> {
+    let docs = MarkdownStore::scan_dir(memory_dir);
+    docs.into_iter()
+        .take(max)
+        .map(|doc| {
+            let name = doc
+                .frontmatter
+                .as_ref()
+                .and_then(|fm| fm.get_str("name"))
+                .map(str::to_string)
+                .unwrap_or_else(|| {
+                    doc.path
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("?")
+                        .to_string()
+                });
+            let description = doc
+                .frontmatter
+                .as_ref()
+                .and_then(|fm| fm.get_str("description"))
+                .unwrap_or(&name)
+                .to_string();
+            format!("- [memory] {description}")
+        })
+        .collect()
 }
 
 /// Build the persistent-memory `additionalContext` payload, or `None` when no
 /// source has any content.
 ///
-/// Wave 6b: reads all three data sources from `SQLite` tables
-/// (`knowledge_patterns`, `memory_decisions`, `memory_lessons`) instead of
-/// JSON files. Injection cap of [`MEMORY_MAX_CHARS`] is preserved unchanged.
+/// W3B: reads all memory sources from the filesystem via `MarkdownStore::scan_dir`
+/// instead of SQLite tables. Directories:
+/// - `.claude/knowledge/` → Project Knowledge (replaces `knowledge_patterns`)
+/// - `.claude/memory/` → Recent Decisions + Lessons Learned (replaces
+///   `memory_decisions` / `memory_lessons`)
 ///
-/// W8.T8.1 — `scope_by_spec` overlay. Memory rows are now budgeted at
-/// `SPEC_SCOPED_MAX` (3) entries scoped to the active spec plus
-/// `GLOBAL_FALLBACK_MAX` (2) global rows. Resolving the active spec via
-/// [`crate::run::env::current_spec`] never panics — a `None` spec degrades to
-/// pure global selection, preserving the pre-W8 behaviour on fresh projects.
+/// Empty or absent directories are treated as zero entries — fail-open throughout.
+/// The injection cap [`MEMORY_MAX_CHARS`] is preserved unchanged. Top-N budget
+/// is [`SPEC_SCOPED_MAX`] + [`GLOBAL_FALLBACK_MAX`] entries per section.
 fn build_memory_context(cwd: &str) -> Option<String> {
-    // Resolve the DB path the same way SqliteEventStore::for_project does,
-    // so we hit the same file. We open a second connection to avoid borrow
-    // complications with SqliteEventStore (which holds a private Connection).
-    let db_path = match std::env::var("MUSTARD_DB_PATH") {
-        Ok(p) if !p.trim().is_empty() => std::path::PathBuf::from(p),
-        _ => ClaudePaths::for_project(cwd)
-            .map(|p| p.mustard_db_path())
-            .unwrap_or_default(),
-    };
-
-    // DB might not exist yet on a fresh project — fail-open to empty.
-    if !db_path.exists() {
-        return None;
-    }
-
-    // Open the DB ONCE and run all three reads on it, instead of opening a
-    // fresh connection per query. Fail-open to empty on an open failure.
-    let Ok(conn) = rusqlite::Connection::open(&db_path) else {
+    let Ok(paths) = ClaudePaths::for_project(cwd) else {
         return None;
     };
+    let claude_dir = paths.claude_dir();
+    let knowledge_dir = claude_dir.join("knowledge");
+    let memory_dir = claude_dir.join("memory");
 
     let mut parts: Vec<String> = Vec::new();
 
-    // W8.T8.1: total budget = top-3 scoped + top-2 global per table.
-    let total_max = SPEC_SCOPED_MAX + GLOBAL_FALLBACK_MAX;
-    let current_spec = crate::run::env::current_spec(cwd);
-
-    let kb = load_knowledge_sql(&conn);
+    let kb = load_knowledge_md(&knowledge_dir);
     if !kb.is_empty() {
         parts.push("## Project Knowledge".to_string());
         parts.extend(kb);
     }
-    let decisions = load_memory_sql(&conn, "memory_decisions", total_max, current_spec.as_deref());
+
+    let total_max = SPEC_SCOPED_MAX + GLOBAL_FALLBACK_MAX;
+    let decisions = load_memory_md(&memory_dir, total_max);
     if !decisions.is_empty() {
         parts.push("## Recent Decisions".to_string());
         parts.extend(decisions);
     }
-    let lessons = load_memory_sql(&conn, "memory_lessons", total_max, current_spec.as_deref());
-    if !lessons.is_empty() {
-        parts.push("## Lessons Learned".to_string());
-        parts.extend(lessons);
-    }
+
     if parts.is_empty() {
         return None;
     }
@@ -885,12 +815,9 @@ impl Check for SessionStart {
 #[cfg(test)]
 mod tests {
     use super::*;
-    // `session.start` lands in the per-session NDJSON sink under W5; the
-    // `mustard.db` existence assertion uses raw path checks instead of opening
-    // the store. But several tests still seed `knowledge_patterns` directly,
-    // and the W5 harness-init path no longer opens the SQLite store — so we
-    // explicitly open it in the test helpers to apply the schema.
-    use mustard_core::store::sqlite_store::SqliteEventStore;
+    // `session.start` lands in the per-session NDJSON sink under W5.
+    // W3B: memory is sourced from `.claude/knowledge/` and `.claude/memory/`
+    // via `MarkdownStore::scan_dir`; no SQLite seeding required.
     use tempfile::tempdir;
 
     fn ctx(dir: &str) -> Ctx {
@@ -963,11 +890,11 @@ mod tests {
     }
 
     #[test]
-    fn harness_init_writes_session_start_to_sqlite_store() {
+    fn harness_init_creates_harness_dir_no_jsonl() {
         // W5: `session.start` is non-pipeline → it lands in the per-session
         // NDJSON sink, NOT in `mustard.db`. The harness directory still gets
-        // created so the SQLite store can land later pipeline.* events. The
-        // legacy `events.jsonl` log stays absent.
+        // created so later pipeline.* events can land there.
+        // W3B: no event-store seeding required.
         let dir = tempdir().unwrap();
         let project = dir.path().to_str().unwrap();
         SessionStart
@@ -1083,39 +1010,36 @@ mod tests {
         assert!(parse_lsof_pids("\n  \n").is_empty());
     }
 
-    // --- session-memory parity (Wave 6b: reads from SQLite) ---------------
+    // --- session-memory parity (W3B: reads from MarkdownStore) ---------------
 
-    /// Ensure the harness DB exists with the W5 schema applied. Returns the
-    /// path so callers can open a plain `rusqlite::Connection` to seed
-    /// projection rows. Necessary because the W5 SessionStart hook no longer
-    /// opens the SQLite store at all — session.start lands in NDJSON.
-    fn ensure_db(project: &std::path::Path) -> std::path::PathBuf {
-        let store = SqliteEventStore::for_project(project).expect("open store");
-        store.path().to_path_buf()
+    /// Write a `.md` knowledge file to `.claude/knowledge/` so
+    /// `build_memory_context` can load it via `MarkdownStore::scan_dir`.
+    fn seed_knowledge_md(project: &std::path::Path, name: &str, description: &str) {
+        let knowledge_dir = project.join(".claude").join("knowledge");
+        std::fs::create_dir_all(&knowledge_dir).unwrap();
+        let content = format!(
+            "---\nname: {name}\ndescription: {description}\n---\n"
+        );
+        std::fs::write(knowledge_dir.join(format!("{name}.md")), content).unwrap();
     }
 
-    /// Seed the `knowledge_patterns` table directly so `build_memory_context`
-    /// can load it without going through the `memory` run subcommand.
-    fn seed_knowledge(db_path: &std::path::Path, pattern: &str, confidence: f64) {
-        let conn = rusqlite::Connection::open(db_path).unwrap();
-        let now = now_iso8601();
-        conn.execute(
-            "INSERT INTO knowledge_patterns (pattern, confidence, count, last_seen, source, created_at) \
-             VALUES (?1, ?2, 1, ?3, NULL, ?3)",
-            rusqlite::params![pattern, confidence, now],
-        )
-        .unwrap();
+    /// Write a `.md` memory file to `.claude/memory/` so
+    /// `build_memory_context` can load it via `MarkdownStore::scan_dir`.
+    fn seed_memory_md(project: &std::path::Path, name: &str, description: &str) {
+        let memory_dir = project.join(".claude").join("memory");
+        std::fs::create_dir_all(&memory_dir).unwrap();
+        let content = format!(
+            "---\nname: {name}\ndescription: {description}\n---\n"
+        );
+        std::fs::write(memory_dir.join(format!("{name}.md")), content).unwrap();
     }
 
     #[test]
     fn memory_injection_surfaces_knowledge_as_inject() {
         let dir = tempdir().unwrap();
         let project = dir.path().to_str().unwrap();
-        // W5: SessionStart no longer opens SQLite (session.start → NDJSON).
-        // Open the store explicitly to apply the schema before seeding.
-        let db_path = ensure_db(dir.path());
         SessionStart.evaluate(&session_input("s-init"), &ctx(project)).unwrap();
-        seed_knowledge(&db_path, "Foo: use bar", 0.9);
+        seed_knowledge_md(dir.path(), "foo-use-bar", "Foo: use bar");
         let verdict = SessionStart
             .evaluate(&session_input("s"), &ctx(project))
             .unwrap();
@@ -1136,49 +1060,18 @@ mod tests {
         let verdict = SessionStart
             .evaluate(&session_input("s"), &ctx(dir.path().to_str().unwrap()))
             .unwrap();
-        // No DB yet → build_memory_context returns None → Allow.
+        // No knowledge/memory dirs → build_memory_context returns None → Allow.
         assert_eq!(verdict, Verdict::Allow);
     }
 
     #[test]
-    fn low_confidence_knowledge_is_filtered() {
-        let dir = tempdir().unwrap();
-        let project = dir.path().to_str().unwrap();
-        // W5: open the store explicitly to apply the schema; SessionStart no
-        // longer touches SQLite.
-        let db_path = ensure_db(dir.path());
-        SessionStart.evaluate(&session_input("s-init"), &ctx(project)).unwrap();
-        // confidence 0.2 < KB_MIN_CONFIDENCE 0.5 → must be excluded by SQL WHERE.
-        seed_knowledge(&db_path, "Weak: x", 0.2);
-        // Below KB_MIN_CONFIDENCE → no Project Knowledge section → Allow.
-        let verdict = SessionStart
-            .evaluate(&session_input("s"), &ctx(project))
-            .unwrap();
-        // May return Inject (session.start event already emitted) but must NOT
-        // surface "Weak" in context.
-        match &verdict {
-            Verdict::Inject { context } => {
-                assert!(
-                    !context.contains("Weak"),
-                    "low-confidence entry must not appear; context: {context}"
-                );
-            }
-            Verdict::Allow => {} // also acceptable — no knowledge injected
-            other => panic!("unexpected verdict: {other:?}"),
-        }
-    }
-
-    #[test]
     fn session_start_injection_marks_knowledge_as_unverified() {
-        // Wave 6b: all knowledge_patterns entries are unverified (no verifiedAt
-        // column in the schema). Both entries must carry the unverified prefix.
+        // W3B: knowledge entries loaded from .claude/knowledge/*.md carry the
+        // "unverified" prefix in the injected context.
         let dir = tempdir().unwrap();
         let project = dir.path().to_str().unwrap();
-        // W5: open the store explicitly to apply the schema; SessionStart no
-        // longer touches SQLite.
-        let db_path = ensure_db(dir.path());
         SessionStart.evaluate(&session_input("s-init"), &ctx(project)).unwrap();
-        seed_knowledge(&db_path, "alpha-entry: some description", 0.9);
+        seed_knowledge_md(dir.path(), "alpha-entry", "alpha-entry: some description");
         let verdict = SessionStart
             .evaluate(&session_input("s"), &ctx(project))
             .unwrap();
@@ -1188,7 +1081,7 @@ mod tests {
         };
         assert!(
             context.contains("(unverified — verify before recommending) alpha-entry"),
-            "SQL-backed knowledge must carry the unverified prefix; got: {context}"
+            "MarkdownStore-backed knowledge must carry the unverified prefix; got: {context}"
         );
     }
 }

@@ -94,13 +94,8 @@ fn bump_last_used(cwd: &str, text: &str) {
 /// Emit `pipeline.economy.operation.invoked`. Fail-open.
 fn emit_economy_operation(cwd: &str, operation: &str) {
     use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
-    use mustard_core::store::event_store::EventSink;
-    use mustard_core::store::sqlite_store::SqliteEventStore;
     use serde_json::json;
 
-    let Ok(store) = SqliteEventStore::for_project(cwd) else {
-        return;
-    };
     let event = HarnessEvent {
         v: SCHEMA_VERSION,
         ts: crate::util::now_iso8601(),
@@ -115,7 +110,7 @@ fn emit_economy_operation(cwd: &str, operation: &str) {
         payload: json!({ "operation": operation, "duration_ms": 0, "tokens_used": 0 }),
         spec: crate::run::env::current_spec(cwd),
     };
-    let _ = store.append(&event);
+    let _ = crate::run::event_route::emit(cwd, &event);
 }
 
 impl Observer for StopObserver {
@@ -316,9 +311,8 @@ mod tests {
     use tempfile::tempdir;
 
     fn seed_row(conn: &rusqlite::Connection, summary: &str) -> i64 {
-        // Apply the W0 DDL for agent_memory if not already present (the W5
-        // schema migration is applied by `SqliteEventStore::for_project`; in
-        // these unit tests we apply it inline).
+        // Apply the W0 DDL for agent_memory if not already present (in unit
+        // tests we apply the schema inline without opening the full store).
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS agent_memory ( \
                 id INTEGER PRIMARY KEY AUTOINCREMENT, \
