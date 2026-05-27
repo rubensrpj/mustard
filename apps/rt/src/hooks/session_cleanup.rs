@@ -486,6 +486,19 @@ impl Observer for SessionCleanup {
         clean_statusline_cache();
         clean_compact_state(&claude);
         clean_otel_pid(&claude);
+
+        // wave-18-rt-followups (W4#1): finalize the per-session amendment
+        // window before the session ends. The standalone CLI
+        // (`mustard-rt run amend-finalize --session-id <id>`) is still
+        // available; this re-wires the automatic SessionEnd hook that was
+        // dropped during the W3B migration. Fail-open: no session id, or any
+        // internal error inside `amend_finalize::run`, must never abort the
+        // rest of cleanup.
+        if let Some(sid) = input.session_id.as_deref() {
+            if !sid.is_empty() {
+                let _ = crate::run::amend_finalize::run(sid);
+            }
+        }
     }
 }
 

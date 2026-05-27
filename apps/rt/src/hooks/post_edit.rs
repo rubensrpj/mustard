@@ -43,7 +43,8 @@
 use mustard_core::error::Error;
 use mustard_core::fs;
 use mustard_core::model::contract::{Check, Ctx, HookInput, Observer, Trigger, Verdict};
-use mustard_core::ClaudePaths;
+use mustard_core::spec;
+use mustard_core::{ClaudePaths, Outcome as SpecOutcome, Stage as SpecStage};
 use serde_json::Value;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -429,6 +430,17 @@ fn parse_module_using(line: &str) -> Option<(String, String)> {
 /// Scan specs for a `## Boundaries` section the edited file violates.
 /// Advisory only — returns the warning message or `None`. Port of
 /// `checkBoundaries`. Flat layout: scans `.claude/spec/` directly.
+///
+/// wave-18-rt-followups (W4#7): the scan now filters out non-active specs —
+/// previously the first spec dir (alphabetically) with a `## Boundaries`
+/// section always won, so a stale `Close + Active + followup_open` spec
+/// (e.g. `dashboard-i18n-migration`) would warn on every unrelated edit. The
+/// fix consults the canonical `### Stage:` / `### Outcome:` header via
+/// `spec::parse_state`: only specs whose outcome is `Active` AND whose stage
+/// is one of {`Analyze`, `Plan`, `Execute`} participate. Specs without a
+/// parseable header (legacy) fall through to the prior behaviour — they
+/// still emit the boundary check — to keep the safety net for old specs
+/// while suppressing the closed-followup false positives.
 fn check_boundaries(file_path: &str, cwd: &str) -> Option<String> {
     let spec_root = ClaudePaths::for_project(cwd).ok()?.spec_dir();
     let entries = fs::read_dir(&spec_root).ok()?;
@@ -440,6 +452,18 @@ fn check_boundaries(file_path: &str, cwd: &str) -> Option<String> {
         let Ok(content) = fs::read_to_string(&spec_file) else {
             continue;
         };
+        // Active-spec filter (W4#7). A None return means the spec has no
+        // recognisable header — treat as legacy and keep scanning.
+        if let Some(state) = spec::parse_state(&content) {
+            let stage_ok = matches!(
+                state.stage,
+                SpecStage::Analyze | SpecStage::Plan | SpecStage::Execute
+            );
+            let active = state.outcome == SpecOutcome::Active;
+            if !active || !stage_ok {
+                continue;
+            }
+        }
         let Some(lines) = boundary_block_lines(&content) else {
             continue;
         };

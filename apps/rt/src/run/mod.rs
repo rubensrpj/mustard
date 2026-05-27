@@ -351,9 +351,16 @@ pub enum RunCmd {
         /// `search` only — FTS5 query string.
         #[arg(long)]
         query: Option<String>,
-        /// `feedback` only — target `agent_memory.id`.
+        /// `feedback` only — target memory file path
+        /// (e.g. `.claude/memory/decisions/2026-05-26-foo.md`).
+        ///
+        /// wave-18-rt-followups (W4#3): was `--id <i64>` while memory lived
+        /// in SQLite (`agent_memory.id`). After the W4B migration the memory
+        /// store is a flat `MarkdownStore`, so the addressable unit is the
+        /// file path; the integer id is meaningless. The dispatcher now
+        /// forwards this into `FeedbackOpts.path`.
         #[arg(long)]
-        id: Option<i64>,
+        path: Option<PathBuf>,
         /// `feedback` only — one of `deprecate|bump|supersede|use`.
         #[arg(long)]
         kind: Option<String>,
@@ -1533,7 +1540,7 @@ pub fn dispatch(cmd: RunCmd) {
             format,
             cluster,
             query,
-            id,
+            path,
             kind,
             role,
             details,
@@ -1556,7 +1563,12 @@ pub fn dispatch(cmd: RunCmd) {
             memory::DispatchExtras {
                 cluster,
                 query,
-                id,
+                // wave-18-rt-followups (W4#3): `id` removed from the clap
+                // surface (memory rows live in markdown now); keep the
+                // legacy SQLite-flavoured field as a permanent `None` so the
+                // older `DispatchExtras` shape stays compatible with any
+                // in-tree caller still constructing it positionally.
+                id: None,
                 kind,
                 role,
                 details,
@@ -1566,7 +1578,7 @@ pub fn dispatch(cmd: RunCmd) {
                 limit,
                 by_role,
                 note,
-                feedback_path: None,
+                feedback_path: path,
             },
         ),
         RunCmd::MemoryIngest { delete, agent_memory } => {
