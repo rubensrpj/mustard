@@ -1,7 +1,7 @@
 # Tactical Fix: Refresh stale .claude/ installs apos edicoes em apps/cli/templates/
 
-### Stage: Analyze
-### Outcome: Active
+### Stage: Close
+### Outcome: Completed
 ### Flags: 
 ### Scope: light
 ### Lang: pt-BR
