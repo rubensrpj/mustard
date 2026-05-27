@@ -14,8 +14,8 @@
 
 use crate::run::env;
 use mustard_core::fs;
-use mustard_core::store::sqlite_store::SqliteEventStore;
 use mustard_core::ClaudePaths;
+use mustard_core::EventReader;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -620,27 +620,65 @@ fn run_orphans(project_dir: &Path, days: i64, json_out: bool) -> ! {
     std::process::exit(0);
 }
 
-/// Replay the harness store for `skill.invoked` events; map skill → latest ts.
+/// Walk every per-spec NDJSON event log under `.claude/spec/*/.events/` and
+/// project the latest `skill.invoked` timestamp per skill name.
+///
+/// W4A migration: this replaced the SQLite `store.replay()` lookup. The ts
+/// projection lives in the NDJSON payload: each event carries `ts` and
+/// `payload.skill`. Events older than `since_ms` are dropped.
+///
+/// Fail-open: a missing spec tree or unreadable `.events/` dir contributes
+/// zero rows; the function never returns an error.
 fn scan_invocations(project_dir: &Path, since_ms: i64) -> BTreeMap<String, String> {
     let mut last: BTreeMap<String, String> = BTreeMap::new();
-    let events = SqliteEventStore::for_project(project_dir)
-        .and_then(|store| store.replay())
-        .unwrap_or_default();
-    for ev in &events {
-        if ev.event != "skill.invoked" || ev.ts.is_empty() {
+    let Ok(paths) = ClaudePaths::for_project(project_dir) else {
+        return last;
+    };
+    let specs_root = paths.spec_dir();
+    let Ok(entries) = fs::read_dir(&specs_root) else {
+        return last;
+    };
+    for entry in entries {
+        if !entry.is_dir {
             continue;
         }
-        if let Some(ts_ms) = crate::run::complete_spec::parse_iso_millis(&ev.ts) {
-            if ts_ms < since_ms {
-                continue;
-            }
-        }
-        let Some(skill) = ev.payload.get("skill").and_then(Value::as_str) else {
+        let events_dir = entry.path.join(".events");
+        let Ok(ndjson_files) = std::fs::read_dir(&events_dir) else {
             continue;
         };
-        let entry = last.entry(skill.to_string()).or_default();
-        if ev.ts.as_str() > entry.as_str() {
-            entry.clone_from(&ev.ts);
+        for ndjson in ndjson_files.flatten() {
+            let p = ndjson.path();
+            if p.extension().and_then(|e| e.to_str()) != Some("ndjson") {
+                continue;
+            }
+            let stream = EventReader::stream(&p);
+            for ev in EventReader::filter_kind(stream, "skill.invoked") {
+                // The NDJSON `Event` carries `ts` (numeric or string) inside
+                // its payload-or-envelope shape; older `harness` events store
+                // it in the envelope. Probe `payload.ts` (NDJSON style) then
+                // fall back to nothing.
+                let ts_str = ev
+                    .payload
+                    .get("ts")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+                    .unwrap_or_default();
+                if ts_str.is_empty() {
+                    continue;
+                }
+                if let Some(ts_ms) = crate::run::complete_spec::parse_iso_millis(&ts_str) {
+                    if ts_ms < since_ms {
+                        continue;
+                    }
+                }
+                let Some(skill) = ev.payload.get("skill").and_then(Value::as_str) else {
+                    continue;
+                };
+                let entry = last.entry(skill.to_string()).or_default();
+                if ts_str.as_str() > entry.as_str() {
+                    *entry = ts_str;
+                }
+            }
         }
     }
     last

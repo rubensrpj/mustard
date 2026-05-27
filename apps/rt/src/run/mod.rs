@@ -126,7 +126,6 @@ mod wave_lib;
 mod wave_scaffold;
 mod wave_size_check;
 mod wave_tree;
-mod wikilink;
 pub mod worktree_gc;
 
 use clap::Subcommand;
@@ -828,13 +827,6 @@ pub enum RunCmd {
     /// (`{ "dead": [...], "count": <usize> }`). Fail-open: a missing graph
     /// or spec tree degrades to `{ "dead": [], "count": 0 }`.
     GraphDead,
-    /// Extract `[[wikilink]]` occurrences from every `.md` under `--spec-dir`,
-    /// persist them into the `wikilinks` table, emit `{wikilinks,orphans}` JSON.
-    WikilinkExtract {
-        /// Spec directory to scan (recursive).
-        #[arg(long = "spec-dir")]
-        spec_dir: Option<String>,
-    },
     /// Materialise the canonical SDD wave layout (wave-plan + wave-N/spec.md
     /// + review/spec.md + qa/spec.md) from a declarative JSON plan. Idempotent.
     WaveScaffold {
@@ -1703,7 +1695,6 @@ pub fn dispatch(cmd: RunCmd) {
         RunCmd::AmendFinalize { session_id } => amend_finalize::run_cli(&session_id),
         RunCmd::GraphIndex => graph_index::run(),
         RunCmd::GraphDead => graph_dead::run(),
-        RunCmd::WikilinkExtract { spec_dir } => wikilink::run(spec_dir.as_deref()),
         RunCmd::WaveScaffold { spec_dir, plan } => {
             wave_scaffold::run(spec_dir.as_deref(), plan.as_deref());
         }
