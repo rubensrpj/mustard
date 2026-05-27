@@ -64,6 +64,17 @@ use std::path::Path;
 // header IO without bloating with the contract surface.
 pub mod contract;
 
+// `## Funções tocadas` canonical-format parser — Wave 0,
+// `2026-05-27-mustard-v4-foundation` (Spec A). Owns parsing, validation, and
+// the fallback resolver consumed by W2 (snapshot) and W4 (gate). Lives here so
+// the spec-document module is the single home of every parser that reads a
+// `spec.md`; the body parser stays free of regression-check concerns. The
+// module identifier is `touched_functions` (EN) to honour
+// [`feedback_rust_identifiers_en_only`]; the section heading the parser
+// matches against stays in PT-BR (`## Funções tocadas`) — that is content,
+// not identifier.
+pub mod touched_functions;
+
 // ---------------------------------------------------------------------------
 // Header-region scoping (tolerant, CRLF-safe)
 // ---------------------------------------------------------------------------
