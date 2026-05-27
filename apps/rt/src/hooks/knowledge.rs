@@ -27,22 +27,21 @@
 //!   `session-knowledge` hooks therefore persist *no* knowledge patterns; they
 //!   only write friction telemetry and emit `retry.attempt`. This port
 //!   reproduces exactly that: it writes `friction.json` and emits
-//!   `retry.attempt`, and does **not** shell out to `memory.js` for knowledge
-//!   entries (the JS `toSave` loop runs zero iterations).
-//! - `memory-auto-extract.js` shells out to `.claude/scripts/memory.js`
-//!   (a B4 script, out of bounds for b3 and still present). This port keeps
-//!   that boundary: it invokes `memory.js` exactly as the JS `persist()` does.
-//!   When `memory.js` is absent the extraction is a silent no-op — parity with
-//!   the JS `if (!fs.existsSync(persistScript)) return false`.
+//!   `retry.attempt`.
+//! - W3D: `memory-auto-extract` no longer shells out to `memory.js`. Decisions
+//!   and lessons extracted from spec bullets are written directly to
+//!   `.claude/knowledge/{slug}.md` via [`mustard_core::atomic_md::MarkdownStore`].
+//!   YAML frontmatter carries `kind`, `captured_at`, `source_event`, and `spec`.
 
+use mustard_core::atomic_md::{MarkdownDoc, MarkdownStore};
+use mustard_core::atomic_md::frontmatter::Frontmatter;
 use mustard_core::fs;
 use mustard_core::projection::read_harness_events_from_ndjson_dir;
 use mustard_core::model::contract::{Ctx, HookInput, Observer, Trigger};
 use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use mustard_core::ClaudePaths;
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::util::now_iso8601;
@@ -422,10 +421,6 @@ fn run_session_knowledge(input: &HookInput, cwd: &str) {
         return;
     };
     let claude = paths.claude_dir();
-    // Bail if memory.js does not exist — parity with the JS bail.
-    if !claude.join("scripts").join("memory.js").exists() {
-        return;
-    }
     let states = read_state_objects(&paths);
     if states.is_empty() {
         return;
@@ -445,10 +440,6 @@ fn run_session_knowledge_inc(cwd: &str) {
     let Ok(paths) = ClaudePaths::for_project(Path::new(cwd)) else {
         return;
     };
-    let claude = paths.claude_dir();
-    if !claude.join("scripts").join("memory.js").exists() {
-        return;
-    }
     let seen_path = paths.knowledge_seen_path();
     let mut seen: Value = fs::read_to_string(&seen_path)
         .ok()
@@ -510,6 +501,7 @@ fn run_session_knowledge_inc(cwd: &str) {
         .and_then(|v| v.as_str())
         .map_or(file_label, str::to_string);
     let state = StateObject { label, json };
+    let claude = paths.claude_dir();
 
     save_friction(&extract_friction(std::slice::from_ref(&state)), &claude);
 
@@ -636,63 +628,70 @@ fn content_hash(s: &str) -> String {
     format!("{h:016x}")
 }
 
-/// Shell out to `.claude/scripts/memory.js decision` to persist one item.
-/// Port of `persist`. `memory.js` is a B4 script, intentionally still JS.
+/// Slug strategy: `{captured_at_iso8601_compact}-{hash8}` where `hash8` is the
+/// first 8 hex chars of the FNV-1a 64-bit hash of the content string.
+/// Deterministic and collision-resistant within a session; no random/UUID used.
+fn knowledge_slug(captured_at: &str, content: &str) -> String {
+    // Compact the timestamp: strip non-alphanumeric so it is filename-safe.
+    let ts_compact: String = captured_at
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .collect();
+    let hash = &content_hash(content)[..8];
+    format!("{ts_compact}-{hash}")
+}
+
+/// Persist one extracted memory item to `.claude/knowledge/{slug}.md` via
+/// [`MarkdownStore::write_atomic`]. YAML frontmatter carries `kind`,
+/// `captured_at`, `source_event`, and `spec`. Body is the decision text.
+/// Returns `true` on success, `false` on any IO failure (fail-open).
 fn persist_memory(item: &MemoryItem, cwd: &str, source: &str) -> bool {
     let Ok(paths) = ClaudePaths::for_project(Path::new(cwd)) else {
         return false;
     };
-    let script = paths.claude_dir().join("scripts").join("memory.js");
-    if !script.exists() {
+    let knowledge_dir = paths.claude_dir().join("knowledge");
+    if fs::create_dir_all(&knowledge_dir).is_err() {
         return false;
     }
-    let payload = json!({
-        "type": item.item_type,
-        "content": item.content,
-        "source": source,
-        "context": "",
-        "cwd": cwd,
-    })
-    .to_string();
+    let captured_at = now_iso8601();
+    let slug = knowledge_slug(&captured_at, &item.content);
+    let dest = knowledge_dir.join(format!("{slug}.md"));
 
-    // The JS uses `process.execPath` (the node/bun runtime). The Rust port has
-    // no such handle, so it invokes the runtime by name — `bun` first, `node`
-    // as a fallback — matching the shebang the script ships with.
-    for runtime in ["bun", "node"] {
-        let result = Command::new(runtime)
-            .arg(&script)
-            .arg("decision")
-            .current_dir(cwd)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn();
-        let Ok(mut child) = result else {
-            continue;
-        };
-        if let Some(mut stdin) = child.stdin.take() {
-            use std::io::Write;
-            let _ = stdin.write_all(payload.as_bytes());
-        }
-        if let Ok(status) = child.wait() {
-            return status.success();
-        }
-    }
-    false
+    // Build YAML frontmatter: { kind, captured_at, source_event, spec }.
+    let mut fm_map = Map::new();
+    fm_map.insert("kind".into(), json!(item.item_type));
+    fm_map.insert("captured_at".into(), json!(captured_at));
+    fm_map.insert("source_event".into(), json!(source));
+    // `spec` comes from the source string format "spec:{name}".
+    let spec_val = source
+        .strip_prefix("spec:")
+        .unwrap_or(source)
+        .to_string();
+    fm_map.insert("spec".into(), json!(spec_val));
+
+    let body = format!("{}\n", item.content);
+    let doc = MarkdownDoc {
+        path: dest.clone(),
+        frontmatter: Some(Frontmatter(Value::Object(fm_map))),
+        body,
+    };
+    MarkdownStore::write_atomic(&dest, &doc).is_ok()
 }
 
 /// `memory-auto-extract`: on `SessionEnd`, scan active specs for Decisions /
-/// Lessons bullets and persist them via `memory.js`. Pure side effect.
+/// Lessons bullets and persist them as `.claude/knowledge/{slug}.md` via
+/// [`MarkdownStore::write_atomic`]. Pure side effect.
 fn run_memory_auto_extract(cwd: &str) {
     let Ok(paths) = ClaudePaths::for_project(Path::new(cwd)) else {
         return;
     };
-    let claude = paths.claude_dir();
     let active = paths.spec_dir();
     if !active.exists() {
         return;
     }
-    let _ = fs::create_dir_all(claude.join("memory"));
+    // knowledge/ is created on first write by persist_memory; ensure it exists
+    // here so the seen-path cache can also be written under .cache/.
+    let _ = fs::create_dir_all(paths.claude_dir().join("knowledge"));
 
     let seen_path = paths.memory_seen_path();
     let mut seen_hashes: Vec<String> = fs::read_to_string(&seen_path)
@@ -807,13 +806,6 @@ mod tests {
         }
     }
 
-    /// Write a `.claude/scripts/memory.js` stub so the bail guard passes.
-    fn write_memory_stub(dir: &Path) {
-        let scripts = dir.join(".claude").join("scripts");
-        std::fs::create_dir_all(&scripts).unwrap();
-        std::fs::write(scripts.join("memory.js"), "// stub").unwrap();
-    }
-
     /// Write a pipeline-state file.
     fn write_state(dir: &Path, name: &str, state: &Value) {
         let states = dir.join(".claude").join(".pipeline-states");
@@ -876,7 +868,6 @@ mod tests {
     #[test]
     fn session_knowledge_writes_friction_file() {
         let dir = tempdir().unwrap();
-        write_memory_stub(dir.path());
         write_state(
             dir.path(),
             "noisy",
@@ -919,7 +910,6 @@ mod tests {
     fn session_knowledge_emits_retry_attempt_events() {
         let dir = tempdir().unwrap();
         let project = dir.path().to_str().unwrap();
-        write_memory_stub(dir.path());
         write_state(
             dir.path(),
             "retried",
@@ -942,7 +932,6 @@ mod tests {
     fn retry_attempt_emission_is_idempotent() {
         let dir = tempdir().unwrap();
         let project = dir.path().to_str().unwrap();
-        write_memory_stub(dir.path());
         write_state(
             dir.path(),
             "once",
@@ -993,8 +982,9 @@ mod tests {
     }
 
     #[test]
-    fn memory_extract_is_noop_without_memory_script() {
-        // No memory.js stub → persist_memory returns false → nothing breaks.
+    fn memory_extract_writes_knowledge_md() {
+        // persist_memory now writes to .claude/knowledge/ via MarkdownStore —
+        // no memory.js required. A decision bullet must produce a .md file.
         let dir = tempdir().unwrap();
         let active = dir.path().join(".claude/spec/demo");
         std::fs::create_dir_all(&active).unwrap();
@@ -1007,9 +997,15 @@ mod tests {
             hook_event_name: Some("SessionEnd".to_string()),
             ..HookInput::default()
         };
-        // Must not panic; memory-seen.json is not written (nothing persisted).
         Knowledge.observe(&input, &ctx(Trigger::SessionEnd, dir.path().to_str().unwrap()));
-        assert!(!dir.path().join(".claude/.cache/memory-seen.json").exists());
+        // At least one .md file must have been written to .claude/knowledge/.
+        let knowledge_dir = dir.path().join(".claude").join("knowledge");
+        let md_count = std::fs::read_dir(&knowledge_dir)
+            .map(|rd| rd.flatten().filter(|e| {
+                e.path().extension().and_then(|x| x.to_str()) == Some("md")
+            }).count())
+            .unwrap_or(0);
+        assert!(md_count >= 1, "expected at least one knowledge .md written");
     }
 
     #[test]
@@ -1034,7 +1030,6 @@ mod tests {
     #[test]
     fn observe_inc_ignores_non_task_post_tool_use() {
         let dir = tempdir().unwrap();
-        write_memory_stub(dir.path());
         let input = HookInput {
             hook_event_name: Some("PostToolUse".to_string()),
             tool_name: Some("Bash".to_string()),
@@ -1047,7 +1042,6 @@ mod tests {
     #[test]
     fn knowledge_entry_carries_verification_metadata() {
         let dir = tempdir().unwrap();
-        write_memory_stub(dir.path());
         // Write a pipeline-state that produces a friction entry (retries > 2).
         write_state(
             dir.path(),

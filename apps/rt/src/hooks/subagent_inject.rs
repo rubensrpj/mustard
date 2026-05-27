@@ -26,6 +26,7 @@
 //! decisive verdict is always either `Inject` (when something was resolved)
 //! or `Allow` (when nothing was).
 
+use mustard_core::atomic_md::MarkdownStore;
 use mustard_core::error::Error;
 use mustard_core::fs;
 use mustard_core::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
@@ -156,6 +157,42 @@ fn spec_memory_block(project: &Path, spec: &str, prompt: &str, role: &str) -> St
     out
 }
 
+/// Build a knowledge-inject block by scanning `.claude/knowledge/` via
+/// [`MarkdownStore::scan_dir`]. Returns a `## KNOWLEDGE` section listing the
+/// top-K knowledge doc titles (frontmatter `title` or filename stem), capped at
+/// [`SPEC_MEMORY_MAX`] entries. Fail-open: missing dir → empty string.
+fn knowledge_block(project: &Path) -> String {
+    let Ok(claude) = ClaudePaths::for_project(project) else {
+        return String::new();
+    };
+    let knowledge_dir = claude.claude_dir().join("knowledge");
+    let docs = MarkdownStore::scan_dir(&knowledge_dir);
+    if docs.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from("## KNOWLEDGE\n");
+    for doc in docs.iter().take(SPEC_MEMORY_MAX) {
+        // Prefer frontmatter `title`; fall back to the filename stem.
+        let name = doc
+            .frontmatter
+            .as_ref()
+            .and_then(|fm| fm.get_str("title"))
+            .map(str::to_string)
+            .unwrap_or_else(|| {
+                doc.path
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_default()
+            });
+        if !name.is_empty() {
+            out.push_str("- [[");
+            out.push_str(&name);
+            out.push_str("]]\n");
+        }
+    }
+    out
+}
+
 /// Build the recommended-skills block via [`crate::run::skill_resolve::resolve`].
 fn recommended_skills_block(
     project: &Path,
@@ -223,6 +260,11 @@ impl Check for SubagentInject {
         if !ctx_md.is_empty() {
             sections.push(format!("## CONTEXT.md (slice)\n{ctx_md}"));
         }
+        // Inject relevant knowledge docs from .claude/knowledge/ via MarkdownStore.
+        let knowledge = knowledge_block(&project);
+        if !knowledge.is_empty() {
+            sections.push(knowledge);
+        }
         if let Some(spec) = crate::run::env::current_spec(&cwd) {
             if !spec.is_empty() {
                 let mem = spec_memory_block(&project, &spec, &prompt, &role);
@@ -249,9 +291,7 @@ impl Check for SubagentInject {
 }
 
 /// Emit `pipeline.economy.operation.invoked` for a W8 in-binary operation.
-/// Fail-open. Routes through `event_route::emit` for uniformity — every
-/// pipeline/economy event in the runtime crate goes through the documented
-/// router, never directly through `SqliteEventStore::append`.
+/// Fail-open. Routes through `event_route::emit` (NDJSON sink) for uniformity.
 fn emit_economy_operation(cwd: &str, operation: &str) {
     use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
     use serde_json::json;

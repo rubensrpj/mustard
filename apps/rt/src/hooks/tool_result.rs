@@ -263,8 +263,8 @@ fn build_payload(tool: &str, input: &HookInput) -> Option<ToolResultPayload> {
     Some(payload)
 }
 
-/// Emit one `tool.result` event, best-effort. Mirrors the `tracker::emit_event`
-/// pattern: open via [`SqliteEventStore::for_project`], append, discard error.
+/// Emit one `tool.result` event, best-effort. Routes through
+/// [`crate::run::event_route::emit`] (NDJSON sink) — fail-open, no SQLite.
 fn emit_event(project_dir: &str, payload: ToolResultPayload) {
     let value = match serde_json::to_value(&payload) {
         Ok(v) => v,
@@ -312,7 +312,7 @@ impl Observer for ToolResult {
         } else {
             ctx.project_dir.clone()
         };
-        // Project dir must exist for SqliteEventStore — fall back to "." if
+        // Project dir must exist for NDJSON routing — fall back to "." if
         // the harness reported a missing path.
         let project = if Path::new(&project).exists() {
             project
@@ -328,11 +328,6 @@ impl Observer for ToolResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    // SQLite store is reused for the legacy assertion shape "no tool.result
-    // row landed under PreToolUse". The W5 split sends `tool.result` to the
-    // NDJSON sink, so the positive `observe_emits_tool_result_for_bash` test
-    // reads the NDJSON file directly instead.
-    use mustard_core::store::sqlite_store::SqliteEventStore;
     use serde_json::json;
     use tempfile::tempdir;
 
@@ -342,6 +337,33 @@ mod tests {
             trigger: Some(Trigger::PostToolUse),
             workspace_root: None,
         }
+    }
+
+    /// Walk every NDJSON file under `<session_root>/<slug>/.events/` and return
+    /// `true` if any line carries `"event": "tool.result"`.
+    fn ndjson_has_tool_result(session_root: &std::path::Path) -> bool {
+        let Ok(sessions) = std::fs::read_dir(session_root) else {
+            return false;
+        };
+        for sess in sessions.flatten() {
+            let events_dir = sess.path().join(".events");
+            let Ok(files) = std::fs::read_dir(&events_dir) else {
+                continue;
+            };
+            for f in files.flatten() {
+                let body = std::fs::read_to_string(f.path()).unwrap_or_default();
+                for line in body.lines() {
+                    let v: serde_json::Value = match serde_json::from_str(line) {
+                        Ok(v) => v,
+                        Err(_) => continue,
+                    };
+                    if v["event"] == "tool.result" {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
     }
 
     #[test]
@@ -511,11 +533,10 @@ mod tests {
             workspace_root: None,
         };
         ToolResult.observe(&input, &pre);
-        // No event should land — open the store and check.
-        let events = SqliteEventStore::for_project(project)
-            .and_then(|s| s.replay())
-            .unwrap_or_default();
-        assert!(events.iter().all(|e| e.event != "tool.result"));
+        // No tool.result event should land in the NDJSON session dir.
+        let session_root = dir.path().join(".claude").join(".session");
+        let found = ndjson_has_tool_result(&session_root);
+        assert!(!found, "PreToolUse must not emit tool.result");
     }
 
     #[test]
@@ -583,9 +604,9 @@ mod tests {
             ..HookInput::default()
         };
         ToolResult.observe(&input, &ctx(project));
-        let events = SqliteEventStore::for_project(project)
-            .and_then(|s| s.replay())
-            .unwrap_or_default();
-        assert!(events.iter().all(|e| e.event != "tool.result"));
+        // Unmodelled tools must not emit tool.result to the NDJSON session dir.
+        let session_root = dir.path().join(".claude").join(".session");
+        let found = ndjson_has_tool_result(&session_root);
+        assert!(!found, "unmodelled tool must not emit tool.result");
     }
 }

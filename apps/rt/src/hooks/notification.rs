@@ -19,8 +19,6 @@
 
 use mustard_core::model::contract::{Ctx, HookInput, Observer};
 use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
-use mustard_core::store::event_store::EventSink;
-use mustard_core::store::sqlite_store::SqliteEventStore;
 use serde_json::{Value, json};
 
 /// The `Notification` lifecycle observer.
@@ -78,10 +76,8 @@ fn append_notification_event(cwd: &str, input: &HookInput) {
 }
 
 /// Emit `pipeline.economy.operation.invoked`. Fail-open.
+/// Routes through `event_route::emit` (NDJSON sink) — no SQLite dependency.
 fn emit_economy_operation(cwd: &str, operation: &str) {
-    let Ok(store) = SqliteEventStore::for_project(cwd) else {
-        return;
-    };
     let event = HarnessEvent {
         v: SCHEMA_VERSION,
         ts: crate::util::now_iso8601(),
@@ -96,7 +92,7 @@ fn emit_economy_operation(cwd: &str, operation: &str) {
         payload: json!({ "operation": operation, "duration_ms": 0, "tokens_used": 0 }),
         spec: crate::run::env::current_spec(cwd),
     };
-    let _ = store.append(&event);
+    let _ = crate::run::event_route::emit(cwd, &event);
 }
 
 impl Observer for Notification {
