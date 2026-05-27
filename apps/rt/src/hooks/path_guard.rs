@@ -35,7 +35,7 @@ use serde_json::json;
 use std::path::Path;
 use std::time::{Duration, SystemTime};
 
-use crate::run::{PipelineStateView, pipeline_state_for_spec};
+use crate::run::{PipelineStateView, pipeline_state_from_events};
 use crate::util::now_iso8601;
 
 /// The consolidated Write/Edit path-boundary module.
@@ -549,7 +549,7 @@ fn emit_boundary_event(
 ///
 /// Wave-3a migration: spec fields that are pipeline-state-style (`isWavePlan`,
 /// `currentWave`, `status`) are now derived from the `SQLite` projection via
-/// `pipeline_state_for_spec`. The JSON state file is still consulted for
+/// `pipeline_state_from_events`. The JSON state file is still consulted for
 /// `specName` (filesystem identity — not in the projection) and for the mtime
 /// freshness gate. Fail-open: projection `None` → treat status as empty and
 /// wave info as unknown.
@@ -581,7 +581,8 @@ fn boundary_gate(input: &HookInput, cwd: &str) -> Option<Verdict> {
                 .map(|sp| sp.dir().to_path_buf())
                 .ok();
             let spec_dir_opt = spec_dir.filter(|d| d.exists());
-            pipeline_state_for_spec(&store, spec_name, spec_dir_opt.as_deref())
+            let events = store.replay().unwrap_or_default();
+            pipeline_state_from_events(&events, spec_name, spec_dir_opt.as_deref())
         });
 
     // Skip when the pipeline is closing / completed. Phase derives from the

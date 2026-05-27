@@ -34,9 +34,9 @@
 //!   `close` flapping, no fsync, no lock acquisition.
 //! - Pre-serialised JSON: the caller passes the `payload` as a `serde_json::Value`
 //!   once; the writer formats one line and writes it.
-//! - No SQLite open for the per-tool event (the SQLite mini-table
-//!   `pipeline_events` is touched only for **lifecycle** kinds — `pipeline.*`
-//!   events — by [`SqliteEventStore::append_pipeline_event`]).
+//! - No secondary store open for the per-tool event — the lifecycle index
+//!   (`pipeline_events`) is a separate concern handled by the event router for
+//!   `pipeline.*` prefixed events only.
 //!
 //! ## Economy emission (T5.8)
 //!

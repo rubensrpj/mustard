@@ -43,9 +43,6 @@ pub mod tactical_fix_create;
 pub mod task_checklist;
 mod artifact_update;
 mod knowledge;
-mod backfill_run_usage_cost;
-mod backfill_run_usage_spec;
-mod db_maintain;
 mod doctor;
 // W3 of `2026-05-26-claude-paths-single-source` — three typed doctor checks
 // (claude-paths, workspace-leaks, i1) that emit native JSON shapes. They are
@@ -68,7 +65,7 @@ mod emit_pipeline;
 pub mod env;
 mod epic_fold;
 pub mod event_projections;
-pub use event_projections::{pipeline_state_for_spec, PipelineStateView};
+pub use event_projections::{pipeline_state_from_events, PipelineStateView};
 pub use env::current_spec;
 mod exec_rewave_check;
 mod mark_checklist_item;
@@ -706,23 +703,6 @@ pub enum RunCmd {
     },
     /// Normalise `rtk gain` analytics into the Mustard JSON shape.
     RtkGain,
-    /// Backfill `cost_usd_micros` on legacy `run_usage` rows.
-    ///
-    /// Default: only touch rows with NULL/0 cost (idempotent — applies the
-    /// shared `compute_cost_micros` helper to historical NULLs). With
-    /// `--force`, recomputes cost on every row carrying any non-zero token
-    /// bucket, overwriting prior values. Use `--force` after the pricing
-    /// formula changes (cache-aware buckets, new rate tiers).
-    BackfillRunUsageCost {
-        /// Recompute cost on ALL rows with non-zero tokens, overwriting any
-        /// existing `cost_usd_micros`. Without this flag, only NULL/0 cost
-        /// rows are touched.
-        #[arg(long)]
-        force: bool,
-    },
-    /// Backfill `spec` / `wave_id` / `agent_id` on legacy `run_usage` rows
-    /// that came in without attribution, by joining against `run_attribution`.
-    BackfillRunUsageSpec,
     /// Pre-dispatch orchestration for `/scan` — emits the dispatch plan JSON.
     ScanOrchestrate {
         /// Single subproject to scan (optional positional).
@@ -824,28 +804,6 @@ pub enum RunCmd {
         #[arg(long)]
         json: bool,
     },
-    /// SQLite harness database maintenance.
-    ///
-    /// Default (no flags): emit a JSON size/space report (read-only).
-    /// `--vacuum`: WAL checkpoint + VACUUM; print before/after byte counts.
-    /// `--prune-keep <N>`: delete all but the N most-recent events by id.
-    /// `--prune-older-than <N>d` (W11.T11.2): delete events older than N days.
-    /// `--telemetry-only` (W11.T11.2): act on `telemetry.db` only.
-    DbMaintain {
-        /// Run `PRAGMA wal_checkpoint(TRUNCATE)` then `VACUUM`.
-        #[arg(long)]
-        vacuum: bool,
-        /// Keep only the N most-recent events; delete the rest.
-        #[arg(long = "prune-keep")]
-        prune_keep: Option<u32>,
-        /// Delete events older than N days (W11.T11.2). Accepts `30` or `30d`.
-        #[arg(long = "prune-older-than")]
-        prune_older_than: Option<String>,
-        /// Restrict every operation to `telemetry.db`; `mustard.db` is not
-        /// opened in this mode (W11.T11.2).
-        #[arg(long = "telemetry-only")]
-        telemetry_only: bool,
-    },
     /// Finalize open amendment windows for a session (appends `## Amendments` to spec.md,
     /// moves archived specs, updates the DB, and emits `pipeline.amend_close`).
     AmendFinalize {
@@ -945,8 +903,7 @@ pub enum RunCmd {
     ///
     /// Replaces the LLM-side glob/grep loop in `/mustard:spec`: reads
     /// `.claude/spec/*/spec.md` directly, filters headers, counts wave
-    /// progress, extracts a one-line resumo, and backfills SQLite events for
-    /// specs that arrived via `git pull` without local pipeline events.
+    /// progress, extracts a one-line resumo.
     /// Output is either a markdown table (default) or a JSON document.
     ActiveSpecs {
         /// Output format: `table` (default) or `json`.
@@ -955,9 +912,6 @@ pub enum RunCmd {
         /// Project root directory (default: current working directory).
         #[arg(long, default_value = ".")]
         root: PathBuf,
-        /// Skip the SQLite backfill step (useful in tests / read-only contexts).
-        #[arg(long)]
-        no_backfill: bool,
     },
     /// Project + harness status snapshot.
     ///
@@ -1714,8 +1668,6 @@ pub fn dispatch(cmd: RunCmd) {
             quiet,
         ),
         RunCmd::RtkGain => rtk_gain::run(),
-        RunCmd::BackfillRunUsageCost { force } => backfill_run_usage_cost::run(force),
-        RunCmd::BackfillRunUsageSpec => backfill_run_usage_spec::run(),
         RunCmd::ScanOrchestrate { target, force } => {
             scan_orchestrate::run(force, target.as_deref());
         }
@@ -1740,29 +1692,6 @@ pub fn dispatch(cmd: RunCmd) {
                 format: effective_format,
             });
         }
-        RunCmd::DbMaintain {
-            vacuum,
-            prune_keep,
-            prune_older_than,
-            telemetry_only,
-        } => {
-            let mut args: Vec<String> = Vec::new();
-            if vacuum {
-                args.push("--vacuum".to_string());
-            }
-            if telemetry_only {
-                args.push("--telemetry-only".to_string());
-            }
-            if let Some(n) = prune_keep {
-                args.push("--prune-keep".to_string());
-                args.push(n.to_string());
-            }
-            if let Some(v) = prune_older_than {
-                args.push("--prune-older-than".to_string());
-                args.push(v);
-            }
-            db_maintain::run(&args);
-        }
         RunCmd::DocsStaleCheck { from, strict, include_nested } => {
             docs_stale_check::run(from.as_deref(), strict, include_nested);
         }
@@ -1786,12 +1715,8 @@ pub fn dispatch(cmd: RunCmd) {
                 summary,
             });
         }
-        RunCmd::ActiveSpecs { format, root, no_backfill } => {
-            active_specs::run(active_specs::ActiveSpecsOpts {
-                format,
-                root,
-                no_backfill,
-            });
+        RunCmd::ActiveSpecs { format, root } => {
+            active_specs::run(active_specs::ActiveSpecsOpts { format, root });
         }
         RunCmd::Status { harness, format, root } => {
             status::run(status::StatusOpts { harness, format, root });

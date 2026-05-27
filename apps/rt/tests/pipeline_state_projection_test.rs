@@ -8,11 +8,11 @@
     clippy::uninlined_format_args
 )]
 
-//! Integration tests for `pipeline_state_ingest` + `pipeline_state_for_spec` round-trip.
+//! Integration tests for `pipeline_state_ingest` + `pipeline_state_from_events` round-trip.
 //!
 //! AC-11 / AC-12 coverage:
 //! - Happy path: write a sample JSON, run the ingest, query the event store,
-//!   fold via `pipeline_state_for_spec`, assert the resulting `PipelineStateView`
+//!   fold via `pipeline_state_from_events`, assert the resulting `PipelineStateView`
 //!   matches what the original JSON described.
 //! - Missing-fields tolerance: a JSON with sparse fields ingests without panic.
 //! - Malformed JSON: a bad file is pushed into `errors` and siblings are not aborted.

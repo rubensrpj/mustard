@@ -1,17 +1,17 @@
 //! `mustard-rt run verify-emit` — a port of `scripts/verify-emit.js`.
 //!
-//! Confirms that a named event was emitted to the harness bus
-//! (`.claude/.harness/mustard.db`) within a recent time window. Used by the
-//! orchestrator after an "emit-and-continue" step to catch a silently-failed
-//! emit instead of trusting the emitter's fail-open semantics blindly.
+//! Confirms that a named event was emitted to the per-spec NDJSON `.events/`
+//! directory within a recent time window. Used by the orchestrator after an
+//! "emit-and-continue" step to catch a silently-failed emit instead of
+//! trusting the emitter's fail-open semantics blindly.
 //!
 //! Scans the replayed log backward — the most-recent match wins an early
 //! exit. Exit `0` on a match, `1` on no match within the window, `2` on bad
 //! arguments (the JS contract).
 
 use crate::run::env;
-use mustard_core::store::sqlite_store::SqliteEventStore;
 use mustard_core::model::event::HarnessEvent;
+use mustard_core::projection::read_harness_events_from_ndjson_dir;
 use mustard_core::ClaudePaths;
 use serde_json::Value;
 
@@ -129,20 +129,8 @@ pub fn run(
         quiet,
     };
 
-    // W5: fold both sources (pipeline_events SQLite + per-spec NDJSON) so
-    // verify-emit can see non-pipeline events (`hygiene.*`, `qa.*`, …) too.
+    // Read events exclusively from per-spec NDJSON `.events/` directories.
     let project = env::project_dir();
-    let mut events = match SqliteEventStore::for_project(&project)
-        .and_then(|store| store.replay())
-    {
-        Ok(events) => events,
-        Err(err) => {
-            if !args.quiet {
-                eprintln!("[verify-emit] could not read harness store: {err}");
-            }
-            std::process::exit(1);
-        }
-    };
     let specs_root = match ClaudePaths::for_project(std::path::Path::new(&project)) {
         Ok(paths) => paths.spec_dir(),
         Err(_) => {
@@ -152,14 +140,15 @@ pub fn run(
             std::process::exit(1);
         }
     };
+    let mut events: Vec<HarnessEvent> = Vec::new();
     if let Some(spec) = args.spec.as_deref() {
         let dir = specs_root.join(spec).join(".events");
-        events.extend(mustard_core::projection::read_harness_events_from_ndjson_dir(&dir));
+        events.extend(read_harness_events_from_ndjson_dir(&dir));
     } else if let Ok(entries) = std::fs::read_dir(&specs_root) {
         for entry in entries.flatten() {
             if entry.path().is_dir() {
                 let dir = entry.path().join(".events");
-                events.extend(mustard_core::projection::read_harness_events_from_ndjson_dir(&dir));
+                events.extend(read_harness_events_from_ndjson_dir(&dir));
             }
         }
     }

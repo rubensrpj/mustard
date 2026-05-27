@@ -15,7 +15,7 @@
 //!
 //! `--archive-stale` / `--archive-followups` sweep every `closed-followup`
 //! spec (the former only those older than 24 h). Both query the event
-//! store via `pipeline_state_for_spec` rather than reading the filesystem.
+//! store via `pipeline_state_from_events` rather than reading the filesystem.
 //!
 //! All I/O is fail-soft. The stdout JSON line stays shape-compatible with the
 //! JS version (the `/close` command parses it).
@@ -201,12 +201,11 @@ fn mark_followup(cwd: &Path, spec: &str) -> Value {
     match store_result {
         Ok(store) => {
             // Read current projection status so we can record `from`.
-            let current_status = crate::run::event_projections::pipeline_state_for_spec(
-                &store,
-                spec,
-                None,
-            )
-            .and_then(|v| v.status);
+            let current_status = store.replay().ok()
+                .and_then(|events| {
+                    crate::run::event_projections::pipeline_state_from_events(&events, spec, None)
+                })
+                .and_then(|v| v.status);
 
             let status_payload = serde_json::to_value(PipelineStatusPayload {
                 from: current_status,
@@ -225,8 +224,8 @@ fn mark_followup(cwd: &Path, spec: &str) -> Value {
             // pipeline get" signal; without this the spec ends up showing
             // `status=closed-followup, phase=execute` in the Encerradas /
             // Follow-up tabs, hiding the fact that it actually reached CLOSE.
-            // Idempotent via `emit_phase::last_phase_in_store`.
-            emit_phase_close(&store, spec);
+            // Idempotent via `emit_phase::last_phase_for_spec`.
+            emit_phase_close(cwd, spec);
 
             let _ = store.append(&pipeline_event(EVENT_PIPELINE_STATUS, spec, status_payload));
             let _ = store.append(&pipeline_event(EVENT_PIPELINE_COMPLETE, spec, complete_payload));
@@ -332,17 +331,18 @@ fn emit_completed_status(cwd: &Path, spec: &str) {
     let Ok(store) = SqliteEventStore::for_project(cwd) else {
         return;
     };
-    let current_status = crate::run::event_projections::pipeline_state_for_spec(
-        &store, spec, None,
-    )
-    .and_then(|v| v.status);
+    let current_status = store.replay().ok()
+        .and_then(|events| {
+            crate::run::event_projections::pipeline_state_from_events(&events, spec, None)
+        })
+        .and_then(|v| v.status);
     if matches!(current_status.as_deref(), Some("completed" | "cancelled")) {
         return;
     }
     // Emit phase=CLOSE alongside status. Mirrors `mark_followup` so the
     // projection sees a coherent (phase=close, status=completed) terminal
     // pair regardless of which path archived the spec.
-    emit_phase_close(&store, spec);
+    emit_phase_close(cwd, spec);
     let payload = serde_json::to_value(PipelineStatusPayload {
         from: current_status,
         to: "completed".to_string(),
@@ -354,31 +354,36 @@ fn emit_completed_status(cwd: &Path, spec: &str) {
 /// Idempotently emit `pipeline.phase: CLOSE` when the spec's latest phase is
 /// not already CLOSE. Skips the close-gate sub-gates (debt/checklist/qa/build)
 /// because this is called from the close path itself — the gates already ran.
-fn emit_phase_close(store: &SqliteEventStore, spec: &str) {
-    let last = crate::run::emit_phase::last_phase_in_store(store, spec);
+/// Writes the phase event directly to the NDJSON sink (W2C migration).
+fn emit_phase_close(cwd: &Path, spec: &str) {
+    let last = crate::run::emit_phase::last_phase_for_spec(cwd, spec);
     if last.as_deref() == Some("CLOSE") {
         return;
     }
-    let event = HarnessEvent {
-        v: SCHEMA_VERSION,
-        ts: crate::util::now_iso8601(),
-        session_id: session_id(),
-        wave: 0,
-        actor: Actor {
-            kind: ActorKind::Cli,
-            id: Some("complete-spec".to_string()),
-            actor_type: None,
-        },
-        event: "pipeline.phase".to_string(),
-        payload: json!({ "from": last, "to": "CLOSE" }),
-        spec: Some(spec.to_string()),
-    };
-    let _ = store.append(&event);
+    // Write via emit-phase run() without the close-gate (gates already ran).
+    let ts = crate::util::now_iso8601();
+    let sid = session_id();
+    let payload = json!({ "from": last, "to": "CLOSE" });
+    let kind = crate::run::event_route::classify_kind("pipeline.phase");
+    let _ = crate::run::event_writer_ndjson::write_event_with_ts(
+        cwd,
+        Some(spec),
+        None,
+        &sid,
+        "pipeline.phase",
+        kind,
+        Some(0),
+        Some(&sid),
+        Some("complete-spec"),
+        None,
+        &payload,
+        Some(&ts),
+    );
 }
 
 /// Sweep every `closed-followup` spec, archiving it (TTL-gated when asked).
 ///
-/// Queries the event store via `pipeline_state_for_spec` for all distinct
+/// Queries the event store via `pipeline_state_from_events` for all distinct
 /// spec names; does not scan the `.pipeline-states/` filesystem directory.
 /// Falls back to the legacy FS scan if the event store cannot be opened.
 fn archive_followups(cwd: &Path, require_ttl: bool) -> (usize, usize) {
@@ -405,10 +410,11 @@ fn archive_followups(cwd: &Path, require_ttl: bool) -> (usize, usize) {
         }
     };
 
+    let all_events = store.replay().unwrap_or_default();
     let (mut scanned, mut archived) = (0usize, 0usize);
     for spec_name in &specs {
-        let Some(view) = crate::run::event_projections::pipeline_state_for_spec(
-            &store,
+        let Some(view) = crate::run::event_projections::pipeline_state_from_events(
+            &all_events,
             spec_name,
             None,
         ) else {

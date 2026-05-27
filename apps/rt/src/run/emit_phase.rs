@@ -10,29 +10,41 @@
 //! every downstream consumer treats both sources uniformly.
 //!
 //! Idempotency: the most recent `pipeline.phase` event for the same spec is
-//! looked up; if its `to` already equals the requested phase the emit is
-//! skipped. The JS version shelled to `_lib/harness-event.js`; this port emits
-//! directly through `mustard_core` instead.
+//! looked up from the per-spec NDJSON `.events/` dir; if its `to` already
+//! equals the requested phase the emit is skipped. Events are written directly
+//! to the NDJSON sink — no SQLite involved.
 
 use crate::run::env::{project_dir, session_id};
+use crate::run::event_writer_ndjson;
 use crate::util::now_iso8601;
 use mustard_core::claude_paths::ClaudePaths;
-use mustard_core::store::event_store::EventSink;
-use mustard_core::store::sqlite_store::SqliteEventStore;
 use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
+use mustard_core::projection::read_harness_events_from_ndjson_dir;
 use serde_json::json;
 use std::path::Path;
 
-/// Return the `to` phase of the most recent `pipeline.phase` event for `spec`,
-/// reading from an already-open [`SqliteEventStore`]. Fail-open — any replay
-/// error yields `None` (the caller treats that as "phase unknown").
+/// Return the `to` phase of the most recent `pipeline.phase` event for `spec`
+/// by reading the per-spec NDJSON `.events/` directory. Fail-open — a missing
+/// events dir or any IO error yields `None` (the caller treats that as "phase
+/// unknown").
 ///
 /// This is the single source of truth for spec phase across the runtime; every
 /// consumer that previously read `phaseName` from a pipeline-state JSON now
 /// derives the phase through this helper instead.
 #[must_use]
-pub fn last_phase_in_store(store: &SqliteEventStore, spec: &str) -> Option<String> {
-    let events = store.replay().unwrap_or_default();
+pub fn last_phase_for_spec(cwd: impl AsRef<Path>, spec: &str) -> Option<String> {
+    let events_dir = ClaudePaths::for_project(cwd.as_ref())
+        .and_then(|p| p.for_spec(spec))
+        .ok()
+        .map(|sp| sp.events_dir())
+        .unwrap_or_else(|| {
+            ClaudePaths::compose_unchecked(cwd.as_ref())
+                .spec_dir()
+                .join(spec)
+                .join(".events")
+        });
+    let mut events = read_harness_events_from_ndjson_dir(&events_dir);
+    events.sort_by(|a, b| a.ts.cmp(&b.ts));
     events
         .iter()
         .rev()
@@ -45,30 +57,20 @@ pub fn last_phase_in_store(store: &SqliteEventStore, spec: &str) -> Option<Strin
         })
 }
 
-/// Convenience: open the project's SQLite store and look up the latest phase
-/// for `spec`. Fail-open — a store-open error yields `None`.
-#[must_use]
-pub fn last_phase_for_spec(cwd: impl AsRef<Path>, spec: &str) -> Option<String> {
-    let store = SqliteEventStore::for_project(cwd.as_ref()).ok()?;
-    last_phase_in_store(&store, spec)
-}
-
 /// Run `mustard-rt run emit-phase --spec <name> --to <PHASE> [--from <PHASE>]`.
 ///
-/// Fail-open for telemetry: any internal failure (db open, append) degrades to
-/// a silent no-op. The **exception** is `--to CLOSE`, which runs the
-/// close-gate sub-gates (debt/checklist/qa/build) inline before appending the
-/// event. A strict gate failure prints the gate reason on stderr, leaves the
-/// event un-appended, and exits the process with status `1` — same
-/// user-visible behavior as the legacy `close_gate` hook that fired on a
-/// pipeline-state Write/Edit (the trigger that no longer exists post-Wave 2).
+/// Fail-open for telemetry: any internal failure (NDJSON write) degrades to a
+/// silent no-op. The **exception** is `--to CLOSE`, which runs the close-gate
+/// sub-gates (debt/checklist/qa/build) inline before writing the event. A
+/// strict gate failure prints the gate reason on stderr, leaves the event
+/// un-written, and exits the process with status `1` — same user-visible
+/// behavior as the legacy `close_gate` hook that fired on a pipeline-state
+/// Write/Edit (the trigger that no longer exists post-Wave 2).
 pub fn run(spec: &str, to: &str, from: Option<&str>) {
-    let Ok(store) = SqliteEventStore::for_project(project_dir()) else {
-        return;
-    };
+    let cwd = project_dir();
 
     // Idempotency: skip when the spec's latest phase already lands on `to`.
-    let last = last_phase_in_store(&store, spec);
+    let last = last_phase_for_spec(&cwd, spec);
     if last.as_deref() == Some(to) {
         return;
     }
@@ -76,7 +78,7 @@ pub fn run(spec: &str, to: &str, from: Option<&str>) {
     // CLOSE transition: run the close-gate sub-gates inline. A strict failure
     // blocks the transition (exit 1); fail-open on any infrastructure error.
     if to.eq_ignore_ascii_case("CLOSE") {
-        if let Err(reason) = crate::hooks::close_gate::gate_close_for_spec(&project_dir(), spec) {
+        if let Err(reason) = crate::hooks::close_gate::gate_close_for_spec(&cwd, spec) {
             eprintln!("{reason}");
             std::process::exit(1);
         }
@@ -97,10 +99,13 @@ pub fn run(spec: &str, to: &str, from: Option<&str>) {
         write_back_after_execute(spec);
     }
 
+    let ts = now_iso8601();
+    let sid = session_id();
+
     let event = HarnessEvent {
         v: SCHEMA_VERSION,
-        ts: now_iso8601(),
-        session_id: session_id(),
+        ts: ts.clone(),
+        session_id: sid.clone(),
         wave: 0,
         actor: Actor {
             kind: ActorKind::Orchestrator,
@@ -111,7 +116,26 @@ pub fn run(spec: &str, to: &str, from: Option<&str>) {
         payload: json!({ "from": from_phase, "to": to }),
         spec: Some(spec.to_string()),
     };
-    let _ = store.append(&event);
+
+    // Write directly to the NDJSON sink. `pipeline.phase` was previously routed
+    // to SQLite via `event_route::emit` (the `pipeline.*` prefix match), but
+    // this sub-spec migrates all phase emission to the pure-NDJSON path.
+    let project = Path::new(&cwd);
+    let kind = crate::run::event_route::classify_kind(&event.event);
+    let _ = event_writer_ndjson::write_event_with_ts(
+        project,
+        Some(spec),
+        None,
+        &sid,
+        &event.event,
+        kind,
+        Some(event.wave),
+        Some(&sid),
+        Some("emit-phase"),
+        None,
+        &event.payload,
+        Some(&ts),
+    );
 }
 
 /// Resolve the spec.md path for `spec` under the active project, then write
@@ -140,36 +164,39 @@ fn write_back_after_execute(spec: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::run::event_writer_ndjson::write_event;
+    use serde_json::json;
     use tempfile::tempdir;
+
+    fn emit_phase_event(project: &std::path::Path, spec: &str, to: &str) {
+        let payload = json!({ "from": null, "to": to });
+        let _ = write_event(
+            project,
+            Some(spec),
+            None,
+            "s",
+            "pipeline.phase",
+            "pipeline",
+            Some(0),
+            Some("s"),
+            Some("emit-phase"),
+            None,
+            &payload,
+        );
+    }
 
     #[test]
     fn last_phase_reads_the_freshest_event() {
         let dir = tempdir().unwrap();
-        let store = SqliteEventStore::new(dir.path().join("mustard.db")).unwrap();
-        let mk = |to: &str| HarnessEvent {
-            v: SCHEMA_VERSION,
-            ts: now_iso8601(),
-            session_id: "s".to_string(),
-            wave: 0,
-            actor: Actor {
-                kind: ActorKind::Orchestrator,
-                id: None,
-                actor_type: None,
-            },
-            event: "pipeline.phase".to_string(),
-            payload: json!({ "from": null, "to": to }),
-            spec: Some("demo".to_string()),
-        };
-        store.append(&mk("ANALYZE")).unwrap();
-        store.append(&mk("PLAN")).unwrap();
-        assert_eq!(last_phase_in_store(&store, "demo").as_deref(), Some("PLAN"));
-        assert_eq!(last_phase_in_store(&store, "other"), None);
+        emit_phase_event(dir.path(), "demo", "ANALYZE");
+        emit_phase_event(dir.path(), "demo", "PLAN");
+        assert_eq!(last_phase_for_spec(dir.path(), "demo").as_deref(), Some("PLAN"));
+        assert_eq!(last_phase_for_spec(dir.path(), "other"), None);
     }
 
     #[test]
     fn last_phase_empty_log_is_none() {
         let dir = tempdir().unwrap();
-        let store = SqliteEventStore::new(dir.path().join("mustard.db")).unwrap();
-        assert_eq!(last_phase_in_store(&store, "demo"), None);
+        assert_eq!(last_phase_for_spec(dir.path(), "demo"), None);
     }
 }

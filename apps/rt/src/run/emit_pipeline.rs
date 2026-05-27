@@ -1,15 +1,16 @@
 //! `mustard-rt run emit-pipeline` — typed pipeline-event emitter.
 //!
-//! Records one of the eight `pipeline.*` events defined in
-//! [`mustard_core::model::event`] constants. Callers supply the event kind, the
-//! spec name, and an optional JSON payload string; this module validates both
-//! and appends the event to the project's [`SqliteEventStore`].
+//! Records one of the known `pipeline.*` / `hygiene.*` / `pipeline.economy.*`
+//! events defined in [`mustard_core::model::event`] constants. Callers supply
+//! the event kind, the spec name, and an optional JSON payload string; this
+//! module validates both and routes the event through
+//! [`crate::run::event_route::emit`] to the NDJSON sink.
 //!
 //! ## Fail-open contract
 //!
 //! - **Unknown kind** → prints an error on stderr and exits with code 1.
 //! - **Invalid JSON payload** → prints an error on stderr and exits with code 1.
-//! - **Store error** → prints a warning on stderr and exits with code 0 (fail-open).
+//! - **Write error** → prints a warning on stderr and exits with code 0 (fail-open).
 //!
 //! This matches the pattern used by `emit_phase` and every other harness
 //! emitter: telemetry is never load-bearing, so a write failure must never
@@ -564,19 +565,10 @@ fn bump_parent_progress(cwd: &Path, spec: &str, wave: u64, ts: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mustard_core::store::event_store::EventSink;
-    use mustard_core::store::sqlite_store::SqliteEventStore;
     use mustard_core::model::event::SCHEMA_VERSION;
     use serde_json::json;
     use std::path::Path;
     use tempfile::tempdir;
-
-    /// Build a store backed by a fresh temp DB.
-    fn temp_store() -> (tempfile::TempDir, SqliteEventStore) {
-        let dir = tempdir().unwrap();
-        let store = SqliteEventStore::new(dir.path().join("mustard.db")).unwrap();
-        (dir, store)
-    }
 
     // -----------------------------------------------------------------------
     // Validation + payload parsing (unit-level, no store I/O)
@@ -666,12 +658,11 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Store integration — use a real tempfile DB.
+    // NDJSON integration — all events land in per-spec `.events/` dirs.
     // -----------------------------------------------------------------------
 
-    /// Helper: route one event through the W5 event-router (the same path
-    /// `run()` takes). `pipeline.*` lands in SQLite; `hygiene.*` / others land
-    /// in per-spec NDJSON.
+    /// Route one event through the event-router (the same path `run()` takes).
+    /// All events land in the per-spec NDJSON `.events/` directory.
     fn emit_routed(project: &Path, kind: &str, spec: &str, payload: Value) {
         let event = HarnessEvent {
             v: SCHEMA_VERSION,
@@ -690,49 +681,22 @@ mod tests {
         crate::run::event_route::emit(project.to_str().unwrap(), &event);
     }
 
-    /// Legacy helper retained for the round-trip tests below which only emit
-    /// `pipeline.*` events and want to read them back through `store.replay`.
-    fn emit_direct(store: &SqliteEventStore, kind: &str, spec: &str, payload: Value) {
-        let event = HarnessEvent {
-            v: SCHEMA_VERSION,
-            ts: "2026-05-20T00:00:00.000Z".to_string(),
-            session_id: "test-session".to_string(),
-            wave: 0,
-            actor: Actor {
-                kind: ActorKind::Orchestrator,
-                id: Some("emit-pipeline".to_string()),
-                actor_type: None,
-            },
-            event: kind.to_string(),
-            payload,
-            spec: Some(spec.to_string()),
-        };
-        store.append(&event).unwrap();
-    }
-
     #[test]
     fn each_kind_appended_once_with_correct_event_name() {
         let dir = tempdir().unwrap();
         let project = dir.path();
-        let spec = "2026-05-20-pipeline-state-from-sqlite";
+        let spec = "2026-05-20-pipeline-state-ndjson";
 
         for &kind in KNOWN_KINDS {
             emit_routed(project, kind, spec, json!({"test": true}));
         }
 
-        // Pipeline events land in SQLite via append_pipeline_event.
-        let store = SqliteEventStore::for_project(project).unwrap();
-        let mut events = store.query(Some(spec)).unwrap();
-        // Non-pipeline events (`hygiene.*`, `pipeline.economy.operation.invoked`)
-        // land in the per-spec NDJSON sink.
+        // All events land in the per-spec NDJSON `.events/` directory.
         let events_dir = project.join(".claude").join("spec").join(spec).join(".events");
-        let mut ndjson = mustard_core::projection::read_harness_events_from_ndjson_dir(
-            &events_dir,
-        );
+        let mut events = mustard_core::projection::read_harness_events_from_ndjson_dir(&events_dir);
         // Filter the auto-emitted economy.event.written sidecars (T5.8) — they
         // are not first-class kinds, just per-write breadcrumbs.
-        ndjson.retain(|e| e.event != "pipeline.economy.event.written");
-        events.append(&mut ndjson);
+        events.retain(|e| e.event != "pipeline.economy.event.written");
 
         let counts: std::collections::BTreeMap<&str, usize> = KNOWN_KINDS
             .iter()
@@ -752,7 +716,8 @@ mod tests {
     fn pipeline_scope_payload_round_trips() {
         use mustard_core::model::event::PipelineScopePayload;
 
-        let (_dir, store) = temp_store();
+        let dir = tempdir().unwrap();
+        let spec = "demo-scope";
         let payload_struct = PipelineScopePayload {
             scope: "full".to_string(),
             lang: Some("en".to_string()),
@@ -761,9 +726,11 @@ mod tests {
             total_waves: Some(6),
         };
         let payload_value = serde_json::to_value(&payload_struct).unwrap();
-        emit_direct(&store, EVENT_PIPELINE_SCOPE, "demo", payload_value);
+        emit_routed(dir.path(), EVENT_PIPELINE_SCOPE, spec, payload_value);
 
-        let events = store.replay().unwrap();
+        let events_dir = dir.path().join(".claude").join("spec").join(spec).join(".events");
+        let mut events = mustard_core::projection::read_harness_events_from_ndjson_dir(&events_dir);
+        events.retain(|e| e.event == EVENT_PIPELINE_SCOPE);
         assert_eq!(events.len(), 1);
         let decoded: PipelineScopePayload =
             serde_json::from_value(events[0].payload.clone()).unwrap();
@@ -776,7 +743,8 @@ mod tests {
     fn pipeline_task_complete_payload_round_trips() {
         use mustard_core::model::event::PipelineTaskCompletePayload;
 
-        let (_dir, store) = temp_store();
+        let dir = tempdir().unwrap();
+        let spec = "demo-task";
         let payload_struct = PipelineTaskCompletePayload {
             wave: Some(3),
             name: "implement-store".to_string(),
@@ -787,9 +755,12 @@ mod tests {
             escalation: None,
         };
         let payload_value = serde_json::to_value(&payload_struct).unwrap();
-        emit_direct(&store, EVENT_PIPELINE_TASK_COMPLETE, "demo", payload_value);
+        emit_routed(dir.path(), EVENT_PIPELINE_TASK_COMPLETE, spec, payload_value);
 
-        let events = store.replay().unwrap();
+        let events_dir = dir.path().join(".claude").join("spec").join(spec).join(".events");
+        let mut events = mustard_core::projection::read_harness_events_from_ndjson_dir(&events_dir);
+        events.retain(|e| e.event == EVENT_PIPELINE_TASK_COMPLETE);
+        assert_eq!(events.len(), 1);
         let decoded: PipelineTaskCompletePayload =
             serde_json::from_value(events[0].payload.clone()).unwrap();
         assert_eq!(decoded.wave, Some(3));
@@ -912,14 +883,16 @@ mod tests {
     }
 
     #[test]
-    fn store_error_does_not_propagate_as_nonzero() {
-        // We cannot easily simulate a store write failure without unsafe tricks,
-        // but we can confirm the fail-open design by verifying `store.append`
-        // returns Err and the caller drops it with `let _`.
-        // Here we just ensure a legitimate append succeeds (regression guard).
-        let (_dir, store) = temp_store();
-        emit_direct(&store, EVENT_PIPELINE_PAUSE, "demo", json!({"reason": "user request"}));
-        assert_eq!(store.replay().unwrap().len(), 1);
+    fn write_error_does_not_propagate_as_nonzero() {
+        // Confirm the fail-open design: a legitimate emit writes one event to
+        // the NDJSON sink and the file is readable afterward (regression guard).
+        let dir = tempdir().unwrap();
+        let spec = "demo-failopen";
+        emit_routed(dir.path(), EVENT_PIPELINE_PAUSE, spec, json!({"reason": "user request"}));
+        let events_dir = dir.path().join(".claude").join("spec").join(spec).join(".events");
+        let mut events = mustard_core::projection::read_harness_events_from_ndjson_dir(&events_dir);
+        events.retain(|e| e.event == EVENT_PIPELINE_PAUSE);
+        assert_eq!(events.len(), 1);
     }
 
     // -----------------------------------------------------------------------
