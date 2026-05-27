@@ -225,6 +225,50 @@ fn amend_session_end_archived() {
     // Flat layout: spec dir stays at .claude/spec/{spec_id}/ — no move.
     let flat_dir = root.join(".claude").join("spec").join(spec_id);
     assert!(flat_dir.exists(), "spec dir must remain at flat path .claude/spec/{spec_id}/");
+
+    // AC-13 contract: either `.amend-window.json` is removed OR a
+    // `pipeline.amend_close` event lands in the per-spec NDJSON sink.
+    // W8A-3 keeps the window file (closed=true) for audit, so we assert the
+    // event-side branch of the OR — the close event is the durable signal.
+    let window_path = flat_dir.join(".amend-window.json");
+    let close_event_present = scan_close_event(root, spec_id, session_id);
+    assert!(
+        !window_path.exists() || close_event_present,
+        "AC-13: either `.amend-window.json` must be removed OR pipeline.amend_close event must be present in NDJSON"
+    );
+    assert!(
+        close_event_present,
+        "pipeline.amend_close event missing from .claude/spec/{spec_id}/.events/*.ndjson"
+    );
+}
+
+/// Scan `<root>/.claude/spec/<spec>/.events/*.ndjson` for a `pipeline.amend_close`
+/// event matching `session_id`. Returns `true` on first match.
+fn scan_close_event(root: &Path, spec_id: &str, session_id: &str) -> bool {
+    let events_dir = root.join(".claude").join("spec").join(spec_id).join(".events");
+    let Ok(entries) = std::fs::read_dir(&events_dir) else {
+        return false;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) != Some("ndjson") {
+            continue;
+        }
+        let Ok(body) = std::fs::read_to_string(&path) else { continue };
+        for line in body.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            let Ok(value): Result<Value, _> = serde_json::from_str(line) else { continue };
+            if value.get("event").and_then(Value::as_str) == Some("pipeline.amend_close")
+                && value.get("session_id").and_then(Value::as_str) == Some(session_id)
+            {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 // ---------------------------------------------------------------------------

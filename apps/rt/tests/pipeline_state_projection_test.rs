@@ -120,7 +120,9 @@ fn pipeline_state_projection_reads_ndjson_seeded_workspace() {
     let dir = tmp.path();
     let spec = "ndjson-spec";
 
-    // Seed the per-spec NDJSON log with a scope + status pair.
+    // Seed the per-spec NDJSON log with scope + status + task lifecycle + wave
+    // completion events. Mirrors the production shape the resume/active-spec
+    // readers consume from `.claude/spec/{spec}/.events/*.ndjson`.
     append_event(
         dir,
         spec,
@@ -141,6 +143,47 @@ fn pipeline_state_projection_reads_ndjson_seeded_workspace() {
         "2026-05-20T00:00:01.000Z",
         json!({ "to": "active" }),
     );
+    append_event(
+        dir,
+        spec,
+        "pipeline.task.dispatch",
+        "2026-05-20T00:00:02.000Z",
+        json!({
+            "name": "Wave 1: implement store",
+            "agent": "general-purpose",
+            "wave": 1,
+            "files": ["apps/rt/src/run/emit_pipeline.rs"],
+        }),
+    );
+    append_event(
+        dir,
+        spec,
+        "pipeline.task.dispatch",
+        "2026-05-20T00:00:03.000Z",
+        json!({
+            "name": "Wave 2: projections",
+            "agent": "general-purpose",
+            "wave": 2,
+            "files": [],
+        }),
+    );
+    append_event(
+        dir,
+        spec,
+        "pipeline.task.complete",
+        "2026-05-20T00:00:04.000Z",
+        json!({
+            "name": "Wave 1: implement store",
+            "wave": 1,
+        }),
+    );
+    append_event(
+        dir,
+        spec,
+        "pipeline.wave.complete",
+        "2026-05-20T00:00:05.000Z",
+        json!({ "wave": 1 }),
+    );
 
     // Read events back via the same canonical walker the production
     // resume/active-spec readers use and fold via the projection.
@@ -149,10 +192,39 @@ fn pipeline_state_projection_reads_ndjson_seeded_workspace() {
         events.iter().any(|e| e.event == "pipeline.scope"),
         "scope event must survive the round-trip: {events:?}"
     );
+    assert!(
+        events.iter().any(|e| e.event == "pipeline.task.dispatch"),
+        "dispatch event must survive the round-trip: {events:?}"
+    );
 
     let view = pipeline_state_from_events(&events, spec, None)
         .expect("pipeline_state_from_events must return a view when scope+status exist");
-    // The fold runs without panic and produces a non-empty view; the precise
-    // field shape is exercised by the core projection unit tests.
+
+    // Identity + status carry through the fold.
     assert_eq!(view.spec, spec);
+    assert_eq!(view.status.as_deref(), Some("active"), "status must reflect last pipeline.status: {view:?}");
+
+    // Scope payload fields hydrate every typed slot.
+    assert_eq!(view.scope.as_deref(), Some("full"), "scope must hydrate from pipeline.scope: {view:?}");
+    assert_eq!(view.lang.as_deref(), Some("en"), "lang must hydrate from pipeline.scope: {view:?}");
+    assert_eq!(view.model.as_deref(), Some("opus"), "model must hydrate from pipeline.scope: {view:?}");
+    assert_eq!(view.is_wave_plan, Some(true), "isWavePlan must hydrate from pipeline.scope: {view:?}");
+    assert_eq!(view.total_waves, Some(3), "totalWaves must hydrate from pipeline.scope: {view:?}");
+
+    // Wave completion folds into completed_waves + current_wave advances.
+    assert_eq!(view.completed_waves, vec![1], "completedWaves must record wave 1: {view:?}");
+    assert_eq!(view.current_wave, 2, "currentWave must advance to max(completed)+1: {view:?}");
+
+    // Task dispatch+complete pairs project into typed task views.
+    assert_eq!(view.tasks.len(), 2, "must project 2 tasks from 2 dispatch events: {view:?}");
+    let w1 = view.tasks.iter().find(|t| t.wave == Some(1)).expect("wave-1 task present");
+    let w2 = view.tasks.iter().find(|t| t.wave == Some(2)).expect("wave-2 task present");
+    assert_eq!(w1.name, "Wave 1: implement store");
+    assert_eq!(w1.status, "completed", "wave-1 task must reflect complete event: {w1:?}");
+    assert_eq!(w2.name, "Wave 2: projections");
+    assert_ne!(w2.status, "completed", "wave-2 task must NOT be completed: {w2:?}");
+
+    // Sanity: no spurious pause/dispatch failure fields without their events.
+    assert!(view.paused_at.is_none(), "no paused_at without pause event: {view:?}");
+    assert!(view.last_dispatch_failure.is_none(), "no dispatch failure without event: {view:?}");
 }
