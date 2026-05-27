@@ -1,5 +1,5 @@
 # Tactical Fix: rtk quiet hook warning
-### Stage: Analyze
+### Stage: Execute
 ### Outcome: Active
 ### Flags: 
 
@@ -21,8 +21,8 @@ Impacto concreto: cada chamada Bash polui (a) o stderr exibido ao agente (~95 ch
 
 ## Critérios de Aceitação
 
-- [ ] **AC-1** — Testes verdes. Command: `rtk cargo test -p mustard-rt`
-- [ ] **AC-2** — Linha "No hook installed" não aparece no stderr emitido por uma chamada Bash arbitrária via harness. Command: `rtk node -e "const{execSync}=require('child_process');const out=execSync('mustard-rt on PreToolUse',{input:JSON.stringify({tool_name:'Bash',tool_input:{command:'rtk ls'}}),encoding:'utf8',stdio:['pipe','pipe','pipe']});if(/No hook installed/.test(out))process.exit(1)"`
+- [x] **AC-1** — Testes verdes. Command: `rtk cargo test -p mustard-rt`
+- [x] **AC-2** — Linha "No hook installed" não aparece no stderr emitido por uma chamada Bash arbitrária via harness. Command: `rtk node -e "const{execSync}=require('child_process');const out=execSync('mustard-rt on PreToolUse',{input:JSON.stringify({tool_name:'Bash',tool_input:{command:'rtk ls'}}),encoding:'utf8',stdio:['pipe','pipe','pipe']});if(/No hook installed/.test(out))process.exit(1)"`
 
 ## Arquivos
 

@@ -748,6 +748,47 @@ fn bash_native_redirect(raw_cmd: &str) -> Option<Verdict> {
 /// process with no network I/O; 2 s is generous.
 const RTK_REWRITE_TIMEOUT: Duration = Duration::from_secs(2);
 
+/// The literal prefix of the rtk "no hook installed" advisory that rtk 0.34.1
+/// emits on every invocation when no Claude Code hook is registered.
+///
+/// Background: `rtk hook` only supports Gemini CLI and Copilot (`gemini` /
+/// `copilot` subcommands); it has no `claude` subcommand, so running `rtk init
+/// -g` would violate the Mustard install contract (no writes to
+/// `~/.claude/settings.json`). Mustard redirects all Bash through `bash_guard`,
+/// so the advisory is pure noise inside the harness. RTK exposes no env var to
+/// suppress it — the filter lives here, on the consumer side.
+const RTK_NOISE_PREFIX: &str = "[rtk] /!\\ No hook installed";
+
+/// Remove every line whose content starts with [`RTK_NOISE_PREFIX`] from `s`.
+///
+/// Lines are split on `\n`; a trailing newline produces a trailing empty token
+/// that is preserved unchanged. Only the exact advisory prefix is matched —
+/// all other output (including other `[rtk]` lines) is left intact.
+///
+/// # Example
+///
+/// ```text
+/// "[rtk] /!\\ No hook installed — run `rtk init -g`\nrtk ls\n"
+/// → "rtk ls\n"
+/// ```
+fn filter_rtk_noise(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut lines = s.split('\n').peekable();
+    while let Some(line) = lines.next() {
+        if line.starts_with(RTK_NOISE_PREFIX) {
+            // Drop this line; do not re-add a newline separator.
+            continue;
+        }
+        out.push_str(line);
+        // Re-add the separator between lines (not after the last token when the
+        // original string did not end with `\n`, to preserve trailing behaviour).
+        if lines.peek().is_some() {
+            out.push('\n');
+        }
+    }
+    out
+}
+
 /// Spawn `rtk rewrite <cmd>` in a worker thread and return its stdout on
 /// success.
 ///
@@ -800,6 +841,11 @@ fn run_rtk_rewrite_subprocess_with_bin(cmd: &str, binary: &str) -> Option<String
                 use std::io::Read;
                 let _ = out.read_to_string(&mut output);
             }
+            // Filter the rtk "no hook installed" advisory before trimming.
+            // Defense-in-depth: if a future rtk version emits the warning on
+            // stdout instead of stderr (already null'd), this prevents a valid
+            // rewritten command from being discarded as noise-only output.
+            let output = filter_rtk_noise(&output);
             let trimmed = output.trim();
             // Path 4: empty / whitespace stdout — fail open.
             if trimmed.is_empty() {
@@ -938,7 +984,13 @@ fn rtk_rewrite_with<F: FnOnce(&str) -> Option<String>>(
 
     // --- Warn mode: specific path ---
     if let Some(rewritten) = rewriter(cmd) {
-        let rewritten = rewritten.trim();
+        // Strip any rtk "no hook installed" advisory before evaluating the
+        // rewriter's output. rtk 0.34.1 emits this line on every invocation
+        // when no Claude Code hook is registered; Mustard uses bash_guard
+        // instead, so the advisory is pure noise. Filtering here covers both
+        // the real subprocess path and the injected-closure path used by tests.
+        let rewritten_clean = filter_rtk_noise(&rewritten);
+        let rewritten = rewritten_clean.trim();
         if !rewritten.is_empty() && rewritten != cmd.trim() {
             return Some((
                 Verdict::Rewrite {
@@ -2874,5 +2926,86 @@ mod rtk_rewrite_tests {
             result.is_none(),
             "expected None (Allow) in off mode; got {result:?}"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // filter_rtk_noise — spec 2026-05-26-rtk-quiet-hook-warning
+    //
+    // rtk 0.34.1 emits "[rtk] /!\ No hook installed — run `rtk init -g`…"
+    // on every invocation when no Claude Code hook is registered. Since
+    // Mustard uses bash_guard (not rtk hook) for redirection, the line is
+    // pure noise. The filter must strip it and leave all other output intact.
+    // -----------------------------------------------------------------------
+
+    /// Sole rtk-noise line → empty string after filtering.
+    #[test]
+    fn filter_rtk_noise_removes_advisory_line() {
+        let input = "[rtk] /!\\ No hook installed — run `rtk init -g` for automatic token savings\n";
+        let result = filter_rtk_noise(input);
+        assert!(
+            !result.contains("No hook installed"),
+            "advisory must be removed; got: {result:?}"
+        );
+    }
+
+    /// Mixed output: noise line + valid rewritten command → only command remains.
+    #[test]
+    fn filter_rtk_noise_keeps_other_lines() {
+        let input = "[rtk] /!\\ No hook installed — run `rtk init -g` for automatic token savings\nrtk cargo build\n";
+        let result = filter_rtk_noise(input);
+        assert!(
+            !result.contains("No hook installed"),
+            "advisory must be removed; got: {result:?}"
+        );
+        assert!(
+            result.contains("rtk cargo build"),
+            "command line must survive; got: {result:?}"
+        );
+    }
+
+    /// Output with no noise line → returned unchanged.
+    #[test]
+    fn filter_rtk_noise_passthrough_when_no_noise() {
+        let input = "rtk git status\n";
+        let result = filter_rtk_noise(input);
+        assert_eq!(result, input, "clean output must pass through unchanged");
+    }
+
+    /// Multiple lines including the noise prefix: only that line is dropped.
+    #[test]
+    fn filter_rtk_noise_drops_only_noise_line() {
+        let other = "[rtk] some other rtk annotation\n";
+        let noise = "[rtk] /!\\ No hook installed — run `rtk init -g` for automatic token savings\n";
+        let cmd   = "rtk cargo test\n";
+        let input = format!("{other}{noise}{cmd}");
+        let result = filter_rtk_noise(&input);
+        assert!(!result.contains("No hook installed"), "noise must be gone; got: {result:?}");
+        assert!(result.contains("[rtk] some other rtk annotation"), "other [rtk] line must survive; got: {result:?}");
+        assert!(result.contains("rtk cargo test"), "command must survive; got: {result:?}");
+    }
+
+    /// Subprocess path: when the rewriter returns only the noise advisory,
+    /// filtering leaves the output empty → specific path skipped → blanket
+    /// fires. The final rewritten command must not contain the noise text.
+    #[test]
+    fn filter_rtk_noise_noise_only_falls_through_to_blanket() {
+        let noise_only = "[rtk] /!\\ No hook installed — run `rtk init -g` for automatic token savings\n";
+        let result = rtk_rewrite_with(
+            "cargo build",
+            |_| Some(noise_only.to_string()),
+            Mode::Warn,
+        );
+        // After filtering the specific output is empty → blanket fires.
+        match result {
+            Some((Verdict::Rewrite { tool_input }, coverage)) => {
+                let cmd = tool_input["command"].as_str().unwrap_or("");
+                assert!(
+                    !cmd.contains("No hook installed"),
+                    "noise must not appear in the rewritten command; got: {cmd:?}"
+                );
+                assert_eq!(coverage, "blanket", "noise-only specific path must fall through to blanket");
+            }
+            other => panic!("expected Verdict::Rewrite (blanket fallback), got {other:?}"),
+        }
     }
 }
