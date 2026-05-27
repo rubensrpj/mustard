@@ -42,7 +42,6 @@ use mustard_core::model::event::{
 };
 use mustard_core::ClaudePaths;
 use serde::{Deserialize, Serialize};
-use std::path::Path;
 
 // ---------------------------------------------------------------------------
 // Default drift threshold — may be overridden by mustard.json

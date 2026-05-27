@@ -1594,68 +1594,6 @@ fn events_feed_impl(_conn: &Connection, _limit: u32) -> Result<Vec<FeedEvent>, S
     Ok(Vec::new())
 }
 
-/// Build a short (≤120 char) human-readable summary for a feed row. Kind-aware
-/// for the common pipeline events; otherwise falls back to the first useful
-/// field (`summary` / `description` / `msg`) or a trimmed payload preview.
-fn summarise_payload(kind: &str, payload: &str) -> String {
-    let truncated = |s: &str| -> String {
-        if s.chars().count() <= 120 {
-            s.to_string()
-        } else {
-            s.chars().take(117).collect::<String>() + "..."
-        }
-    };
-
-    let json: Option<serde_json::Value> = if payload.is_empty() {
-        None
-    } else {
-        serde_json::from_str(payload).ok()
-    };
-
-    if let Some(v) = &json {
-        match kind {
-            "pipeline.status" => {
-                let from = v.get("from").and_then(|x| x.as_str()).unwrap_or("");
-                let to = v
-                    .get("to")
-                    .or_else(|| v.get("status"))
-                    .and_then(|x| x.as_str())
-                    .unwrap_or("");
-                if !from.is_empty() && !to.is_empty() {
-                    return truncated(&format!("{from} → {to}"));
-                }
-                if !to.is_empty() {
-                    return truncated(to);
-                }
-            }
-            "pipeline.phase" => {
-                if let Some(phase) = v.get("phase").and_then(|x| x.as_str()) {
-                    return truncated(phase);
-                }
-            }
-            "token.saved" => {
-                if let Some(saved) = v.get("saved").and_then(|x| x.as_i64()) {
-                    return truncated(&format!("saved {saved} tokens"));
-                }
-            }
-            _ => {}
-        }
-
-        for key in ["summary", "description", "msg", "message", "label", "to", "status", "phase"] {
-            if let Some(s) = v.get(key).and_then(|x| x.as_str()) {
-                if !s.is_empty() {
-                    return truncated(s);
-                }
-            }
-        }
-    }
-
-    if payload.is_empty() {
-        return String::new();
-    }
-    truncated(payload)
-}
-
 /// Number of days in `month` for the given `year` (Gregorian).
 const fn days_in_month(year: i32, month: u32) -> u32 {
     match month {

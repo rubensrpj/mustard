@@ -961,12 +961,6 @@ mod tests {
     // Helpers
     // -----------------------------------------------------------------------
 
-    fn make_spec_dir(root: &Path, name: &str, body: &str) {
-        let dir = root.join(".claude").join("spec").join(name);
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("spec.md"), body).unwrap();
-    }
-
     fn make_wave_spec(root: &Path, parent: &str, wave: &str, stage: &str, outcome: &str) {
         let dir = root
             .join(".claude")

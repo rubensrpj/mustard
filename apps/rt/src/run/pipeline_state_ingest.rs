@@ -15,11 +15,9 @@ use serde_json::json;
 // Options
 // ---------------------------------------------------------------------------
 
-/// Options for `mustard-rt run pipeline-state-ingest`.
-pub struct PipelineStateIngestOpts {
-    /// Retained for CLI compatibility — ignored; no files are deleted.
-    pub delete: bool,
-}
+/// Options for `mustard-rt run pipeline-state-ingest`. No-op after W2A —
+/// retained as a unit struct so the CLI parser keeps a stable target.
+pub struct PipelineStateIngestOpts;
 
 // ---------------------------------------------------------------------------
 // Entry point

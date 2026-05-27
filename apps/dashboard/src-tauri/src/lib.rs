@@ -1137,49 +1137,6 @@ pub struct ActivePipeline {
     pub updated_at: Option<String>,
 }
 
-/// Parse ISO 8601 / RFC 3339 timestamp string into seconds since UNIX_EPOCH.
-/// Handles: `YYYY-MM-DDTHH:MM:SS(.fff)?Z` and `+00:00` offset.
-fn parse_iso_to_unix_secs(s: &str) -> Option<u64> {
-    // Trim trailing Z or +00:00 / -00:00
-    let s = s.trim();
-    let s = s.strip_suffix('Z').unwrap_or(s);
-    let s = if let Some(pos) = s.rfind('+') {
-        if pos > 10 { &s[..pos] } else { s }
-    } else if let Some(pos) = s[10..].rfind('-') {
-        &s[..10 + pos]
-    } else {
-        s
-    };
-    // Expected: YYYY-MM-DDTHH:MM:SS(.sss)?
-    let (date_part, time_part) = s.split_once('T')?;
-    let mut date_parts = date_part.splitn(3, '-');
-    let year: u64 = date_parts.next()?.parse().ok()?;
-    let month: u64 = date_parts.next()?.parse().ok()?;
-    let day: u64 = date_parts.next()?.parse().ok()?;
-    let time_no_frac = time_part.split('.').next()?;
-    let mut time_parts = time_no_frac.splitn(3, ':');
-    let hour: u64 = time_parts.next()?.parse().ok()?;
-    let minute: u64 = time_parts.next()?.parse().ok()?;
-    let second: u64 = time_parts.next()?.parse().ok()?;
-    // Days since epoch using a simplified calculation (ignores leap seconds)
-    let days = days_since_epoch(year, month, day)?;
-    Some(days * 86400 + hour * 3600 + minute * 60 + second)
-}
-
-fn days_since_epoch(year: u64, month: u64, day: u64) -> Option<u64> {
-    if year < 1970 { return None; }
-    let mut total: u64 = 0;
-    for y in 1970..year {
-        total += if is_leap(y) { 366 } else { 365 };
-    }
-    let days_in_month = [31u64, if is_leap(year) { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-    for m in 1..month {
-        total += days_in_month.get((m - 1) as usize)?;
-    }
-    total += day - 1;
-    Some(total)
-}
-
 fn is_leap(y: u64) -> bool {
     (y % 4 == 0 && y % 100 != 0) || y % 400 == 0
 }

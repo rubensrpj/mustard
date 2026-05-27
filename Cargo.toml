@@ -35,14 +35,6 @@ flate2 = "1.1.9"
 # GitHub releases ship the Windows binary as a `.zip`. Latest stable on
 # crates.io, May 2026.
 zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
-# SQLite-backed harness store (`SqliteEventStore`, mustard-core). The `bundled`
-# feature compiles SQLite from source so no system library is required on any
-# platform. Pinned to 0.31 to match the dashboard crate's inline `rusqlite`
-# dep: a Cargo workspace links exactly one `libsqlite3-sys` (it carries
-# `links = "sqlite3"`), so the two crates must agree on the major line. The
-# eliminate-bun Wave 4 global dep bump is where both crates move to latest
-# stable (0.39 at time of writing) together.
-rusqlite = { version = "0.31", features = ["bundled"] }
 # Official Rust SDK for the Model Context Protocol — backs the `mcp` face of
 # `mustard-rt` (the re-port of the `mustard-memory` TypeScript MCP server).
 # The `server` feature already pulls `macros` (in `default`) and `schemars`;
@@ -66,7 +58,7 @@ tiktoken-rs = "0.11"
 # (via `notify-debouncer-mini = "0.4"`), so reusing the same major keeps the
 # workspace on a single `notify` graph rather than splitting it. Latest stable
 # is 8.2 on crates.io (May 2026); a future workspace-wide bump can move both
-# crates together — see eliminate-bun Wave 4 for the prior `rusqlite` bump.
+# crates together.
 notify = "6"
 # Data-parallelism primitives — `mustard-rt run sync-registry` uses rayon to
 # parallelise the single-pass file visitor (`scan::file_utils::visit`) so each

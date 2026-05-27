@@ -20,7 +20,7 @@
 //!
 //! 1. **Every event** → [`crate::run::event_writer_ndjson::write_event_with_ts`]
 //!    with the resolved spec / wave / session triple.
-//! 2. **`pipeline.*`** is still recognised by [`is_pipeline_event`] so the
+//! 2. **`pipeline.*`** is still recognised by [`classify_kind`] so the
 //!    `kind` column carries `"pipeline"` — but the destination is the same
 //!    NDJSON sink as every other event. No SQLite append path remains.
 //!
@@ -41,16 +41,6 @@ use crate::run::env::{current_spec, project_dir, session_id};
 use crate::run::event_writer_ndjson;
 use mustard_core::model::event::HarnessEvent;
 use std::path::Path;
-
-/// `true` when `event.event` is a lifecycle event (the `pipeline.` prefix).
-///
-/// Lifecycle events all land in the same NDJSON sink as every other event;
-/// this classifier is only used to stamp the row's `kind` column so the
-/// dashboard timeline can colour pipeline rows without re-parsing the name.
-#[must_use]
-pub fn is_pipeline_event(event_name: &str) -> bool {
-    event_name.starts_with("pipeline.")
-}
 
 /// Classify an `event_name` into a [`event_writer_ndjson`] `kind` string.
 ///
@@ -128,7 +118,7 @@ fn current_wave_number() -> Option<u32> {
 /// is never load-bearing.
 pub fn emit(project_dir_path: &str, event: &HarnessEvent) -> bool {
     // All events (including `pipeline.*`) are now routed to NDJSON.
-    // The `is_pipeline_event` classifier is still used for `kind` tagging.
+    // The `classify_kind` classifier stamps the row's `kind` column.
     let project = Path::new(project_dir_path);
     let spec_owned = event.spec.clone().or_else(|| current_spec(project_dir_path));
     let spec = spec_owned.as_deref().filter(|s| !s.is_empty());
@@ -237,14 +227,6 @@ mod tests {
         assert_eq!(classify_kind("spec.link"), "scope");
         assert_eq!(classify_kind("worktree.gc.run"), "scope");
         assert_eq!(classify_kind("totally.unknown"), "other");
-    }
-
-    #[test]
-    fn is_pipeline_event_matches_only_pipeline_prefix() {
-        assert!(is_pipeline_event("pipeline.scope"));
-        assert!(is_pipeline_event("pipeline.amend_open"));
-        assert!(!is_pipeline_event("tool.use"));
-        assert!(!is_pipeline_event("agent.start"));
     }
 
     /// Routing a `tool.use` event lands an NDJSON file under

@@ -22,8 +22,6 @@
 //! Every IO step degrades to a no-op. Telemetry is not load-bearing.
 
 use mustard_core::model::contract::{Ctx, HookInput, Observer};
-use mustard_core::ClaudePaths;
-use std::path::Path;
 
 /// The W8 auto-capture hook.
 pub struct AutoCaptureSummary;

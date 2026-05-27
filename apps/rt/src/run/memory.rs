@@ -977,7 +977,6 @@ fn emit_memory_economy(operation: &str, duration_ms: u128) {
 pub struct DispatchExtras {
     pub cluster: Option<String>,
     pub query: Option<String>,
-    pub id: Option<i64>,
     pub kind: Option<String>,
     pub role: Option<String>,
     pub details: Option<String>,

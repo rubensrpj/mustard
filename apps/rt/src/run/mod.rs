@@ -1563,12 +1563,6 @@ pub fn dispatch(cmd: RunCmd) {
             memory::DispatchExtras {
                 cluster,
                 query,
-                // wave-18-rt-followups (W4#3): `id` removed from the clap
-                // surface (memory rows live in markdown now); keep the
-                // legacy SQLite-flavoured field as a permanent `None` so the
-                // older `DispatchExtras` shape stays compatible with any
-                // in-tree caller still constructing it positionally.
-                id: None,
                 kind,
                 role,
                 details,
@@ -1584,8 +1578,8 @@ pub fn dispatch(cmd: RunCmd) {
         RunCmd::MemoryIngest { delete, agent_memory } => {
             memory_ingest::run_with(memory_ingest::MemoryIngestOpts { delete, agent_memory });
         }
-        RunCmd::PipelineStateIngest { delete } => {
-            pipeline_state_ingest::run(pipeline_state_ingest::PipelineStateIngestOpts { delete });
+        RunCmd::PipelineStateIngest { delete: _ } => {
+            pipeline_state_ingest::run(pipeline_state_ingest::PipelineStateIngestOpts);
         }
         RunCmd::EpicFold { detect, epic } => epic_fold::run(detect, epic.as_deref()),
         RunCmd::SpecExtract {

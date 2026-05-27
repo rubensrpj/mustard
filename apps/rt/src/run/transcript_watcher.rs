@@ -383,10 +383,10 @@ mod tests {
     #[test]
     fn backfill_once_persists_frames_and_tolerates_malformed_lines() {
         // Layout: <tempdir>/project/{...code...} is the "project root" passed
-        // to the telemetry store; the telemetry DB lands at
-        // <project>/.claude/.harness/telemetry.db (Wave 2 — backfill writes
-        // `run_usage` there, not mustard.db's `spans`). The transcript dir is a
-        // sibling tempdir holding one .jsonl with 3 valid + 1 malformed line.
+        // to `backfill_once`; the W7B migration emits one NDJSON event per
+        // frame (no SQLite telemetry.db is created any more). The transcript
+        // dir is a sibling tempdir holding one .jsonl with 3 valid + 1
+        // malformed line.
         let tmp = tempdir().expect("tempdir");
         let project = tmp.path().join("project");
         std::fs::create_dir_all(&project).expect("mkdir project");
@@ -414,10 +414,6 @@ mod tests {
         let (files, frames) = backfill_once(&transcripts, &project_str);
         assert_eq!(files, 1, "one .jsonl file enumerated");
         assert_eq!(frames, 3, "3 valid frames persisted, malformed line skipped");
-
-        // Sanity: the telemetry DB was created under the project root.
-        let db = project.join(".claude").join(".harness").join("telemetry.db");
-        assert!(db.exists(), "telemetry DB created at {}", db.display());
     }
 
     #[test]

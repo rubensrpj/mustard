@@ -155,10 +155,17 @@ pub struct PipelineScopePayload {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     /// `true` when the spec uses a wave plan.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ///
+    /// Accepts both snake_case (`is_wave_plan`) and camelCase (`isWavePlan`)
+    /// JSON keys: events emitted by the harness use the snake form, while
+    /// historic NDJSON and the resume bootstrap layer write camelCase.
+    #[serde(default, skip_serializing_if = "Option::is_none", alias = "isWavePlan")]
     pub is_wave_plan: Option<bool>,
     /// Total wave count declared in the spec (when wave-plan).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ///
+    /// Accepts both `total_waves` and `totalWaves` for the same reason as
+    /// [`Self::is_wave_plan`].
+    #[serde(default, skip_serializing_if = "Option::is_none", alias = "totalWaves")]
     pub total_waves: Option<u32>,
 }
 

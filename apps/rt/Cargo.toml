@@ -25,16 +25,9 @@ serde_json = { workspace = true }
 clap = { workspace = true }
 
 # The `otel-collector` / `diagnose-otel` ports (Wave 6) need a local OTLP/JSON
-# receiver and a SQLite store. `tiny_http` is a minimal blocking HTTP server
-# with no tokio/async runtime; `rusqlite` with the `bundled` feature compiles
-# SQLite into the binary so `mustard-rt` stays a single self-contained file.
-#
-# `rusqlite` is pinned to `0.31` — the same version `apps/dashboard/src-tauri`
-# uses. `libsqlite3-sys` carries `links = "sqlite3"`, and Cargo permits only
-# one package linking a given native library per workspace; matching the
-# version lets Cargo unify both crates onto a single `libsqlite3-sys 0.28`.
+# receiver. `tiny_http` is a minimal blocking HTTP server with no tokio/async
+# runtime; events land in per-spec NDJSON via the W5 router (no SQLite).
 tiny_http = "0.12"
-rusqlite = { version = "0.31", features = ["bundled"] }
 
 # The `mcp` face re-ports the `mustard-memory` MCP server. `rmcp` is the
 # official Rust MCP SDK (server + stdio transport); `tokio` is the async

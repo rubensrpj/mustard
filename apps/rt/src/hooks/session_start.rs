@@ -1023,23 +1023,15 @@ mod tests {
         std::fs::write(knowledge_dir.join(format!("{name}.md")), content).unwrap();
     }
 
-    /// Write a `.md` memory file to `.claude/memory/` so
-    /// `build_memory_context` can load it via `MarkdownStore::scan_dir`.
-    fn seed_memory_md(project: &std::path::Path, name: &str, description: &str) {
-        let memory_dir = project.join(".claude").join("memory");
-        std::fs::create_dir_all(&memory_dir).unwrap();
-        let content = format!(
-            "---\nname: {name}\ndescription: {description}\n---\n"
-        );
-        std::fs::write(memory_dir.join(format!("{name}.md")), content).unwrap();
-    }
-
     #[test]
     fn memory_injection_surfaces_knowledge_as_inject() {
         let dir = tempdir().unwrap();
         let project = dir.path().to_str().unwrap();
         SessionStart.evaluate(&session_input("s-init"), &ctx(project)).unwrap();
-        seed_knowledge_md(dir.path(), "foo-use-bar", "Foo: use bar");
+        // Seed name uses capital `Foo` so the surfaced label (which loads
+        // `name` preferentially via `load_knowledge_md`) contains the
+        // assertion string. The description is informational only.
+        seed_knowledge_md(dir.path(), "Foo-use-bar", "Foo: use bar");
         let verdict = SessionStart
             .evaluate(&session_input("s"), &ctx(project))
             .unwrap();
