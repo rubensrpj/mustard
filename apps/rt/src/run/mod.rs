@@ -630,6 +630,10 @@ pub enum RunCmd {
         format: String,
     },
     /// Render a CLOSE-phase Done/Left/Next-Steps summary for a spec.
+    ///
+    /// With `--self-test`: instantiate a minimal [`mustard_core::SpecSummaryDoc`],
+    /// serialise it to pretty JSON, print to stdout, and exit 0. Used by
+    /// `cargo run -p mustard-rt -- run pipeline-summary --self-test` in AC-1A-1.
     PipelineSummary {
         /// Path to the spec directory (must contain `spec.md`).
         #[arg(long = "spec-dir")]
@@ -637,6 +641,9 @@ pub enum RunCmd {
         /// Output format: `markdown` (default) or `json`.
         #[arg(long, default_value = "markdown")]
         format: String,
+        /// Self-test mode: serialise a minimal SpecSummaryDoc and exit 0.
+        #[arg(long = "self-test")]
+        self_test: bool,
     },
     /// Record a REVIEW-phase verdict (emits a `review.result` event + metric).
     ReviewResult {
@@ -1679,8 +1686,8 @@ pub fn dispatch(cmd: RunCmd) {
             format,
         } => event_projections::run(view.as_deref(), spec.as_deref(), wave, &format),
         RunCmd::VerifyPipeline { format } => verify_pipeline::run(&format),
-        RunCmd::PipelineSummary { spec_dir, format } => {
-            pipeline_summary::run(spec_dir.as_deref(), &format);
+        RunCmd::PipelineSummary { spec_dir, format, self_test } => {
+            pipeline_summary::run(spec_dir.as_deref(), &format, self_test);
         }
         RunCmd::ReviewResult {
             spec,

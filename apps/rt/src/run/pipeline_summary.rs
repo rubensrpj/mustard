@@ -10,6 +10,7 @@
 use crate::run::spec_sections::is_heading;
 use mustard_core::fs;
 use mustard_core::spec;
+use mustard_core::summary::SpecSummaryDoc;
 use mustard_core::ClaudePaths;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
@@ -401,7 +402,25 @@ fn render(model: &Model, pt: bool) -> String {
 }
 
 /// Dispatch `mustard-rt run pipeline-summary`.
-pub fn run(spec_dir: Option<&str>, format: &str) {
+///
+/// When `self_test` is `true`, instantiates a minimal [`SpecSummaryDoc`],
+/// serialises it with `serde_json::to_string_pretty`, prints to stdout, and
+/// returns immediately (exit 0). Used by AC-1A-1 to verify the summary
+/// foundation compiles and the `version` field is numeric.
+pub fn run(spec_dir: Option<&str>, format: &str, self_test: bool) {
+    if self_test {
+        let doc = SpecSummaryDoc {
+            version: 1,
+            spec: "self-test".into(),
+            title: "Self-test".into(),
+            ..Default::default()
+        };
+        let json = serde_json::to_string_pretty(&doc)
+            .unwrap_or_else(|e| format!("{{\"error\":\"{e}\"}}"));
+        println!("{json}");
+        return;
+    }
+
     let Some(spec_dir) = spec_dir else {
         eprintln!("pipeline-summary: missing --spec-dir flag");
         std::process::exit(1);

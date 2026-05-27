@@ -2,9 +2,9 @@
 
 ### Stage: Plan
 ### Outcome: Active
-### Flags:
+### Flags: 
 ### Scope: full
-### Checkpoint: 2026-05-26T00:00:00Z
+### Checkpoint: 2026-05-27T09:00:00Z
 ### Lang: pt-BR
 
 ## PRD
