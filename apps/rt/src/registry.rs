@@ -477,15 +477,66 @@ impl Default for Registry {
     }
 }
 
+/// Module ids that are silenced during the v4 bootstrap refoundation.
+///
+/// When `MUSTARD_V4_BOOTSTRAP` is set to a non-empty string, these 12 v3
+/// enforcement hooks return [`Mode::Off`] so that bootstrap waves can work in
+/// a clean state without the v3 harness interfering. Every other module
+/// continues to return its normal mode.
+///
+/// The list is canonical — do not reorder or add ids without a matching spec
+/// update.
+const BOOTSTRAP_DISABLED_IDS: &[&str] = &[
+    "enforce_registry",
+    "close_gate",
+    "path_guard",
+    "size_gate",
+    "model_routing",
+    "prompt_gate",
+    "skills_audit",
+    "spec_hygiene",
+    "subagent_inject",
+    "amend_capture",
+    "auto_capture_summary",
+    "knowledge",
+];
+
+/// Pure helper: compute the [`Mode`] for `id` given the bootstrap env value.
+///
+/// Separating I/O (`std::env::var`) from logic keeps tests deterministic —
+/// the public `mode_for` wrapper reads the env and delegates here.
+///
+/// `bootstrap` mirrors what `std::env::var("MUSTARD_V4_BOOTSTRAP")` returns:
+/// - `None`  → env var is unset → normal mode
+/// - `Some("")` → set but empty → treated as unset (defensive: prevents
+///   `MUSTARD_V4_BOOTSTRAP=` from silencing all 12 hooks accidentally)
+/// - `Some(non-empty)` → bootstrap active; ids in [`BOOTSTRAP_DISABLED_IDS`]
+///   get [`Mode::Off`]
+#[must_use]
+fn mode_for_with_env(id: &str, bootstrap: Option<&str>) -> Mode {
+    match bootstrap {
+        Some(val) if !val.is_empty() && BOOTSTRAP_DISABLED_IDS.contains(&id) => Mode::Off,
+        _ => Mode::default(),
+    }
+}
+
 /// The enforcement [`Mode`] for a module id.
 ///
-/// Wave 1 keeps this minimal: every module defaults to [`Mode::Strict`], the
-/// same default the JS hooks use for an unset `MUSTARD_*_MODE` variable. A
-/// later wave wires the full `EnforcementConfig` resolution (`mustard.json` +
-/// env) through here; the dispatcher already honours whatever `Mode` it gets.
+/// Under normal conditions every module returns [`Mode::Strict`], matching the
+/// JS hooks' treatment of an unset `MUSTARD_*_MODE` variable.
+///
+/// **Bootstrap mode (`MUSTARD_V4_BOOTSTRAP`):** when this env var is set to a
+/// non-empty value, the 12 v3 hooks listed in [`BOOTSTRAP_DISABLED_IDS`]
+/// return [`Mode::Off`] so that v4 refoundation waves can work in a clean
+/// state. An empty string is treated as unset (defensive — prevents
+/// `MUSTARD_V4_BOOTSTRAP=` from silently disabling all 12 hooks).
+///
+/// The dispatcher already honours [`Mode::Off`] correctly (exits early before
+/// running the check); `dispatch.rs` does not need to be modified.
 #[must_use]
-pub fn mode_for(_id: &str) -> Mode {
-    Mode::default()
+pub fn mode_for(id: &str) -> Mode {
+    let bootstrap = std::env::var("MUSTARD_V4_BOOTSTRAP").ok();
+    mode_for_with_env(id, bootstrap.as_deref())
 }
 
 #[cfg(test)]
@@ -614,6 +665,65 @@ mod tests {
         assert!(applicable_ids(&registry, Trigger::PostToolUse, Some("Task"))
             .contains(&"knowledge"));
     }
+
+    // ── Bootstrap mode tests (S3-2.a … S3-2.c) ─────────────────────────────
+    //
+    // These tests drive `mode_for_with_env` directly so they are fully
+    // deterministic — no process-global env mutation needed (M9).
+
+    #[test]
+    fn mode_for_unset_bootstrap_defaults_to_strict() {
+        // env unset → None → all ids return Strict, including listed ones.
+        for id in super::BOOTSTRAP_DISABLED_IDS {
+            assert_eq!(
+                super::mode_for_with_env(id, None),
+                Mode::Strict,
+                "expected Strict for listed id {id} when bootstrap unset"
+            );
+        }
+        // An unlisted id also returns Strict.
+        assert_eq!(
+            super::mode_for_with_env("bash_guard", None),
+            Mode::Strict,
+            "expected Strict for unlisted id bash_guard when bootstrap unset"
+        );
+    }
+
+    #[test]
+    fn mode_for_set_bootstrap_returns_off_for_listed() {
+        // env = "1" (non-empty) → listed ids return Off; unlisted return Strict.
+        for id in super::BOOTSTRAP_DISABLED_IDS {
+            assert_eq!(
+                super::mode_for_with_env(id, Some("1")),
+                Mode::Off,
+                "expected Off for listed id {id} when bootstrap = \"1\""
+            );
+        }
+        assert_eq!(
+            super::mode_for_with_env("bash_guard", Some("1")),
+            Mode::Strict,
+            "expected Strict for unlisted id bash_guard when bootstrap = \"1\""
+        );
+    }
+
+    #[test]
+    fn mode_for_empty_string_bootstrap_defaults_to_strict() {
+        // env = "" (set but empty) → treated as unset → Strict for all ids.
+        for id in super::BOOTSTRAP_DISABLED_IDS {
+            assert_eq!(
+                super::mode_for_with_env(id, Some("")),
+                Mode::Strict,
+                "expected Strict for listed id {id} when bootstrap = \"\" (defensive)"
+            );
+        }
+        assert_eq!(
+            super::mode_for_with_env("bash_guard", Some("")),
+            Mode::Strict,
+            "expected Strict for bash_guard when bootstrap = \"\""
+        );
+    }
+
+    // ────────────────────────────────────────────────────────────────────────
 
     #[test]
     fn write_edit_family_applies_on_pre_tool_use() {

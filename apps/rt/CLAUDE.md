@@ -49,6 +49,30 @@ cargo run   -p mustard-rt -- run scan-orchestrate # /scan pre-dispatch
 | Dependencies | `mustard-core`, `serde_json`, `clap`, `tiny_http`, `rusqlite` (bundled 0.31), `rmcp`, `tokio` (current_thread, mcp only) |
 | Binary faces | `on <event>`, `check <id>`, `run <subcommand>`, `mcp` |
 
+## Bootstrap mode (`MUSTARD_V4_BOOTSTRAP`)
+
+When this env var is set to a **non-empty** string, the 12 v3 enforcement hooks
+listed below return `Mode::Off` via `registry::mode_for`, so that v4 refoundation
+waves can work in a clean state without the v3 harness interfering.
+
+Disabled hooks when bootstrap is active:
+
+```
+enforce_registry  close_gate        path_guard        size_gate
+model_routing     prompt_gate       skills_audit      spec_hygiene
+subagent_inject   amend_capture     auto_capture_summary  knowledge
+```
+
+**Defensive:** an empty string (`MUSTARD_V4_BOOTSTRAP=`) is treated as unset —
+`Mode::Strict` is returned. This prevents a forgotten assignment from silencing
+all 12 hooks silently.
+
+**Scope:** `dispatch.rs` already exits early when `mode == Mode::Off` (before
+running the check); no changes to the dispatcher are needed or allowed.
+
+**Current use:** v4 Spec A refoundation waves only. Remove or repurpose when
+the bootstrap cycle is complete.
+
 ## Statusline themes
 
 `mustard-rt run statusline` reads `MUSTARD_STATUSLINE_THEME` (defaults to `catppuccin`). Accepted values: `default`, `minimal`, `tokyo-night`, `catppuccin`, `pastel-powerline`, `gruvbox-rainbow`. Powerline themes require a Nerd Font; users without one should set `MUSTARD_STATUSLINE_THEME=default`. Preview all themes with `mustard-rt run statusline --preview`.
