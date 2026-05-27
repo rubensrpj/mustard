@@ -9,6 +9,15 @@
 //! `crate::run::memory::insert_agent_memory`. The hook never blocks — it is
 //! a pure [`Observer`].
 //!
+//! ## W3C migration
+//!
+//! `emit_economy_operation` routes economy events via
+//! `crate::run::event_route::emit` (NDJSON path) instead of the old SQLite
+//! event sink. The `persist` function still writes `agent_memory` via a direct
+//! `rusqlite::Connection` to the dedicated `mustard.db` — that write-path is
+//! not part of W3C's event-SQLite removal scope (agent_memory is not an event
+//! table).
+//!
 //! ## Fail-open
 //!
 //! Every IO step degrades to a no-op. Telemetry is not load-bearing.
@@ -114,6 +123,10 @@ fn task_output(input: &HookInput) -> String {
 
 /// Persist a single captured summary as an `agent_memory` row. Fail-open: a
 /// store/connect error degrades silently.
+///
+/// Note: this still uses a direct `rusqlite::Connection` to write to the
+/// `agent_memory` table in `mustard.db`. This is intentional — `agent_memory`
+/// is not an event table and is not in scope for W3C's event-SQLite removal.
 fn persist(
     cwd: &str,
     session_id: Option<&str>,
@@ -122,11 +135,6 @@ fn persist(
     summary: &str,
     details: Option<&str>,
 ) {
-    use mustard_core::store::sqlite_store::SqliteEventStore;
-    let Ok(_store) = SqliteEventStore::for_project(cwd) else {
-        return;
-    };
-    // Open a regular rusqlite connection to share the WAL DB.
     let db_path = match std::env::var("MUSTARD_DB_PATH") {
         Ok(p) if !p.trim().is_empty() => std::path::PathBuf::from(p),
         _ => match ClaudePaths::for_project(Path::new(cwd)) {
@@ -153,16 +161,12 @@ fn persist(
     );
 }
 
-/// Emit `pipeline.economy.operation.invoked` for the capture. Fail-open.
+/// Emit `pipeline.economy.operation.invoked` via the NDJSON event route.
+/// Fail-open: any error degrades to a no-op.
 fn emit_economy_operation(cwd: &str, operation: &str) {
     use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
-    use mustard_core::store::event_store::EventSink;
-    use mustard_core::store::sqlite_store::SqliteEventStore;
     use serde_json::json;
 
-    let Ok(store) = SqliteEventStore::for_project(cwd) else {
-        return;
-    };
     let event = HarnessEvent {
         v: SCHEMA_VERSION,
         ts: crate::util::now_iso8601(),
@@ -177,7 +181,7 @@ fn emit_economy_operation(cwd: &str, operation: &str) {
         payload: json!({ "operation": operation, "duration_ms": 0, "tokens_used": 0 }),
         spec: crate::run::env::current_spec(cwd),
     };
-    let _ = store.append(&event);
+    let _ = crate::run::event_route::emit(cwd, &event);
 }
 
 impl Observer for AutoCaptureSummary {

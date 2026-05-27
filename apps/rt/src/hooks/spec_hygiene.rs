@@ -1,7 +1,7 @@
 // SPEC LANG: pt-allowed — test fixtures cover pt-BR spec parsing paths.
 //! `spec_hygiene` — SessionStart spec-lifecycle hygiene + gated auto-close.
 //!
-//! ## Scope (spec-lifecycle-unification Wave 5)
+//! ## Scope (spec-lifecycle-unification Wave 5, W3C migration)
 //!
 //! Runs on `SessionStart`, **before** the [`session_start`](crate::hooks::session_start)
 //! memory injection (registration order in `registry.rs`). For each *active*
@@ -12,6 +12,14 @@
 //! - runs the close-gate and, **only if every check is green**, auto-closes the
 //!   spec — emitting `hygiene.autoclose` + `pipeline.outcome: completed` and
 //!   rewriting the spec header to `Outcome: Completed`.
+//!
+//! ## W3C migration
+//!
+//! The `last_event_at` for a spec is now resolved by scanning the per-spec
+//! NDJSON `.events/` directory (via
+//! `mustard_core::projection::read_harness_events_from_ndjson_dir`) instead of
+//! querying the `pipeline_events` table. The event-store import
+//! has been removed from this module.
 //!
 //! ## Safety (inviolable)
 //!
@@ -34,9 +42,9 @@
 //! - `auto`  — default; the full behavior described above.
 
 use mustard_core::error::Error;
-use mustard_core::store::sqlite_store::SqliteEventStore;
 use mustard_core::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
 use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
+use mustard_core::projection::read_harness_events_from_ndjson_dir;
 use mustard_core::spec;
 use mustard_core::{ClaudePaths, Flags, Outcome as SpecOutcome, SpecState, Stage};
 use serde_json::{json, Value};
@@ -387,12 +395,7 @@ fn last_commit_iso(cwd: &Path, spec_dir: &Path) -> Option<String> {
 
 /// Append a `hygiene.*` event to the per-spec NDJSON sink. Best-effort: a
 /// write failure is swallowed (telemetry is never load-bearing).
-///
-/// `_store` is kept in the signature to preserve the caller shape — the W5
-/// router opens its own store / file handle as needed. We accept the legacy
-/// arg rather than threading every callsite, since `spec_hygiene` is the
-/// single emitter for this family.
-fn emit(_store: &SqliteEventStore, project_dir: &str, kind: &str, spec: &str, payload: Value) {
+fn emit(project_dir: &str, kind: &str, spec: &str, payload: Value) {
     let event = HarnessEvent {
         v: SCHEMA_VERSION,
         ts: now_iso8601(),
@@ -514,6 +517,23 @@ fn project_dir(input: &HookInput, ctx: &Ctx) -> String {
     }
 }
 
+/// Resolve the ISO timestamp of the last harness event for `spec_name` by
+/// reading the per-spec NDJSON `.events/` directory.
+///
+/// Replaces the legacy `store.query(Some(spec_name))` SQLite call (W3C).
+/// Fail-open: returns `None` when the directory is absent or unreadable.
+fn last_event_at_from_ndjson(cwd: &str, spec_name: &str) -> Option<String> {
+    let Ok(cp) = ClaudePaths::for_project(cwd) else {
+        return None;
+    };
+    let Ok(sp) = cp.for_spec(spec_name) else {
+        return None;
+    };
+    let events_dir = sp.events_dir();
+    let events = read_harness_events_from_ndjson_dir(&events_dir);
+    events.iter().map(|e| e.ts.as_str()).max().map(str::to_string)
+}
+
 /// Run hygiene over every spec in `.claude/spec/`. Pure side effect — every
 /// error path is swallowed (fail-open).
 fn run_hygiene(cwd: &str) {
@@ -526,9 +546,6 @@ fn run_hygiene(cwd: &str) {
     };
     let spec_root = cp.spec_dir();
     let Ok(entries) = std::fs::read_dir(&spec_root) else {
-        return;
-    };
-    let Ok(store) = SqliteEventStore::for_project(cwd) else {
         return;
     };
 
@@ -548,13 +565,12 @@ fn run_hygiene(cwd: &str) {
         if !is_active_spec(&spec_md) {
             continue;
         }
-        process_spec(&store, cwd, spec_name, &path, &spec_md_path, &spec_md, mode);
+        process_spec(cwd, spec_name, &path, &spec_md_path, &spec_md, mode);
     }
 }
 
 /// Classify one active spec and act per [`HygieneMode`].
 fn process_spec(
-    store: &SqliteEventStore,
     cwd: &str,
     spec_name: &str,
     spec_dir: &Path,
@@ -565,9 +581,8 @@ fn process_spec(
     let now = now_millis();
     let (ac_pct, ac_complete, has_ac) = ac_evidence(spec_md);
 
-    // Last event of any kind for this spec.
-    let events = store.query(Some(spec_name)).unwrap_or_default();
-    let last_event_at = events.last().map(|e| e.ts.clone());
+    // Last event of any kind for this spec — resolved from NDJSON (W3C).
+    let last_event_at = last_event_at_from_ndjson(cwd, spec_name);
     let last_event_age_ms = last_event_at
         .as_deref()
         .and_then(iso_to_millis)
@@ -596,7 +611,6 @@ fn process_spec(
         Category::Healthy => {} // no action
         Category::Stale | Category::AbandonedSuspect => {
             emit(
-                store,
                 cwd,
                 "hygiene.detected",
                 spec_name,
@@ -611,7 +625,6 @@ fn process_spec(
             if mode == HygieneMode::Detect {
                 // detect mode never auto-closes — surface as detected.
                 emit(
-                    store,
                     cwd,
                     "hygiene.detected",
                     spec_name,
@@ -627,7 +640,6 @@ fn process_spec(
             match run_close_gate(Path::new(cwd), spec_name) {
                 Ok(()) => {
                     emit(
-                        store,
                         cwd,
                         "hygiene.autoclose",
                         spec_name,
@@ -639,7 +651,6 @@ fn process_spec(
                     );
                     // Record the canonical terminal outcome + rewrite header.
                     emit(
-                        store,
                         cwd,
                         "pipeline.outcome",
                         spec_name,
@@ -649,7 +660,6 @@ fn process_spec(
                 }
                 Err(blocker) => {
                     emit(
-                        store,
                         cwd,
                         "hygiene.skipped",
                         spec_name,

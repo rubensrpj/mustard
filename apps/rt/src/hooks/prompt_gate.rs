@@ -26,6 +26,12 @@
 //! shells out to it exactly as the JS hook's `spawnSync` did. When the script
 //! is absent the gate is a silent no-op — parity with the JS
 //! `if (!fs.existsSync(script)) process.exit(0)`.
+//!
+//! ## W3C migration
+//!
+//! `emit_economy_operation` routes economy events via
+//! `crate::run::event_route::emit` (NDJSON path) instead of the old SQLite
+//! event sink.
 
 use crate::hooks::amend_capture::close_amend_windows_for_session;
 use mustard_core::error::Error;
@@ -155,19 +161,15 @@ impl Check for PromptGate {
     }
 }
 
-/// Emit a `pipeline.economy.operation.invoked` event for an observable W8
-/// operation. Fail-open: a store error degrades to a no-op. The payload only
-/// carries the operation tag — duration and token cost are not measurable for
-/// these synchronous in-binary operations.
+/// Emit a `pipeline.economy.operation.invoked` event via the NDJSON route.
+/// Fail-open: any error degrades to a no-op.
+///
+/// W3C: routes via `crate::run::event_route::emit` (NDJSON for
+/// non-`pipeline.*` events, SQLite lifecycle index for `pipeline.*`).
 fn emit_economy_operation(cwd: &str, operation: &str) -> Result<(), ()> {
     use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
-    use mustard_core::store::event_store::EventSink;
-    use mustard_core::store::sqlite_store::SqliteEventStore;
     use serde_json::json;
 
-    let Ok(store) = SqliteEventStore::for_project(cwd) else {
-        return Err(());
-    };
     let event = HarnessEvent {
         v: SCHEMA_VERSION,
         ts: crate::util::now_iso8601(),
@@ -182,8 +184,7 @@ fn emit_economy_operation(cwd: &str, operation: &str) -> Result<(), ()> {
         payload: json!({ "operation": operation, "duration_ms": 0, "tokens_used": 0 }),
         spec: crate::run::env::current_spec(cwd),
     };
-    let _ = store.append(&event);
-    Ok(())
+    if crate::run::event_route::emit(cwd, &event) { Ok(()) } else { Err(()) }
 }
 
 #[cfg(test)]

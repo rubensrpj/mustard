@@ -24,13 +24,26 @@
 //! `Ctx` carries neither, so this port emits the event with `session_id`
 //! falling back to `input.session_id` (often absent → `"unknown"`) and `wave`
 //! as `0` — exactly the JS fallback. Recorded in the spec `## Concerns`.
+//!
+//! ## W3C migration
+//!
+//! `boundary_gate` previously used the SQLite event store to feed
+//! `pipeline_state_from_events`. The W3C migration replaces that with two
+//! filesystem reads:
+//!
+//! 1. `read_harness_events_from_ndjson_dir` — per-spec NDJSON event log.
+//! 2. Spec header (`### Stage:` / `### Outcome:`) — fallback to determine
+//!    whether the spec is already completed/closed when no `pipeline.status`
+//!    event exists in the NDJSON log.
+//!
+//! The SQLite store is fully removed from this module.
 
 use mustard_core::error::Error;
 use mustard_core::fs;
-use mustard_core::store::sqlite_store::SqliteEventStore;
 use mustard_core::ClaudePaths;
 use mustard_core::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
 use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
+use mustard_core::projection::read_harness_events_from_ndjson_dir;
 use serde_json::json;
 use std::path::Path;
 use std::time::{Duration, SystemTime};
@@ -540,6 +553,45 @@ fn emit_boundary_event(
     let _ = crate::run::event_route::emit(project_dir, &event);
 }
 
+/// Collect harness events for `spec_name` from the per-spec NDJSON event log.
+///
+/// W3C: replaces the broad `store.replay()` (all events from SQLite) with a
+/// targeted read of the per-spec `.events/` directory. Fail-open: an absent
+/// or unreadable directory returns an empty vec.
+fn read_spec_events(cwd: &str, spec_name: &str) -> Vec<HarnessEvent> {
+    let Ok(cp) = ClaudePaths::for_project(cwd) else {
+        return Vec::new();
+    };
+    let Ok(sp) = cp.for_spec(spec_name) else {
+        return Vec::new();
+    };
+    read_harness_events_from_ndjson_dir(&sp.events_dir())
+}
+
+/// Determine whether a spec is completed/closed by reading its `spec.md`
+/// header (`### Stage:` / `### Outcome:`). Used as a fallback when the NDJSON
+/// event log contains no `pipeline.status` event for the spec.
+///
+/// Returns `true` when the header declares a terminal state (Completed,
+/// Cancelled, Superseded). Returns `false` on any read/parse error (fail-open:
+/// the gate continues running rather than silently blocking all edits).
+fn spec_header_is_terminal(cwd: &str, spec_name: &str) -> bool {
+    use mustard_core::spec;
+    let Ok(cp) = ClaudePaths::for_project(cwd) else {
+        return false;
+    };
+    let Ok(sp) = cp.for_spec(spec_name) else {
+        return false;
+    };
+    let Ok(text) = std::fs::read_to_string(sp.spec_md_path()) else {
+        return false;
+    };
+    match spec::parse_state(&text) {
+        Some(state) => !state.is_active(),
+        None => false,
+    }
+}
+
 /// The `boundary-gate` gate: flag a Write/Edit outside the active spec's
 /// declared `## Files` / `## Boundaries`.
 ///
@@ -547,12 +599,14 @@ fn emit_boundary_event(
 /// `None` (pass through). A real mismatch → `Deny` in strict mode, `Warn` in
 /// warn mode.
 ///
-/// Wave-3a migration: spec fields that are pipeline-state-style (`isWavePlan`,
-/// `currentWave`, `status`) are now derived from the `SQLite` projection via
+/// W3C migration: spec pipeline-state fields (`isWavePlan`, `currentWave`,
+/// `status`) are derived from the NDJSON event log via
 /// `pipeline_state_from_events`. The JSON state file is still consulted for
-/// `specName` (filesystem identity — not in the projection) and for the mtime
-/// freshness gate. Fail-open: projection `None` → treat status as empty and
-/// wave info as unknown.
+/// `specName` (filesystem identity) and the mtime freshness gate. When the
+/// NDJSON log contains no `pipeline.status` event, the spec header
+/// (`### Stage:` / `### Outcome:`) is used as a fallback to detect terminal
+/// state. Fail-open: projection `None` → treat status as empty and wave info
+/// as unknown.
 fn boundary_gate(input: &HookInput, cwd: &str) -> Option<Verdict> {
     let mode = boundary_mode();
     if mode == BoundaryMode::Off {
@@ -565,37 +619,37 @@ fn boundary_gate(input: &HookInput, cwd: &str) -> Option<Verdict> {
         return None;
     }
     // The JSON state file is read only for `specName` (filesystem identity) and
-    // the mtime freshness gate. All pipeline-state-style fields come from the
-    // SQLite projection below.
+    // the mtime freshness gate.
     let state = read_newest_fresh_state(cwd)?;
     let spec_name = state.get("specName").and_then(|v| v.as_str())?;
 
-    // Derive the spec's pipeline state from the SQLite event log.
-    // Fail-open: if the store is unavailable or the spec has no events yet, the
-    // projection returns None and we treat status/wave fields as absent.
-    let view: Option<PipelineStateView> = SqliteEventStore::for_project(cwd)
-        .ok()
-        .and_then(|store| {
-            let spec_dir = ClaudePaths::for_project(Path::new(cwd))
-                .and_then(|p| p.for_spec(spec_name))
-                .map(|sp| sp.dir().to_path_buf())
-                .ok();
-            let spec_dir_opt = spec_dir.filter(|d| d.exists());
-            let events = store.replay().unwrap_or_default();
-            pipeline_state_from_events(&events, spec_name, spec_dir_opt.as_deref())
-        });
+    // Collect events from the NDJSON event log (W3C — no SQLite).
+    let events = read_spec_events(cwd, spec_name);
 
-    // Skip when the pipeline is closing / completed. Phase derives from the
-    // SQLite `pipeline.phase` event log (post-Wave 2); status derives from the
-    // projection (post-Wave 3a). Fail-open: missing projection → status unknown
-    // → gate runs (conservative).
+    // Derive the spec's pipeline state from the NDJSON event log.
+    // Fail-open: absent events dir or no events → projection is None.
+    let spec_dir = ClaudePaths::for_project(Path::new(cwd))
+        .and_then(|p| p.for_spec(spec_name))
+        .map(|sp| sp.dir().to_path_buf())
+        .ok();
+    let spec_dir_opt = spec_dir.filter(|d| d.exists());
+    let view: Option<PipelineStateView> =
+        pipeline_state_from_events(&events, spec_name, spec_dir_opt.as_deref());
+
+    // Skip when the pipeline is closing / completed.
+    // - Phase: from NDJSON `pipeline.phase` events via `emit_phase`.
+    // - Status: from the NDJSON projection; falls back to spec header when the
+    //   projection has no status (e.g. no pipeline.status event yet in NDJSON).
     let phase = crate::run::emit_phase::last_phase_for_spec(cwd, spec_name)
         .unwrap_or_default();
     let status = view
         .as_ref()
         .and_then(|v| v.status.as_deref())
         .unwrap_or("");
-    if phase == "CLOSE" || status == "completed" {
+    // Header fallback: if projection yields no status, check spec.md directly.
+    let is_terminal = status == "completed"
+        || (status.is_empty() && spec_header_is_terminal(cwd, spec_name));
+    if phase == "CLOSE" || is_terminal {
         return None;
     }
     let spec_file = resolve_spec_file(cwd, spec_name, view.as_ref())?;
@@ -802,7 +856,7 @@ mod tests {
         std::fs::create_dir_all(&states).unwrap();
         std::fs::write(
             paths.pipeline_state_file("demo"),
-            // Phase derives from SQLite `pipeline.phase` events, not JSON;
+            // Phase derives from NDJSON `pipeline.phase` events, not JSON;
             // no event seeded here → phase is empty → not CLOSE → gate runs.
             json!({ "specName": "demo" }).to_string(),
         )
@@ -839,12 +893,12 @@ mod tests {
         assert!(boundary_gate(&allowed, &cwd_str).is_none());
     }
 
-    // --- Wave-3a: projection None → fail-open in boundary_gate ---------------
+    // --- W3C: NDJSON+SQLite merged event source ----------------------------
 
     #[test]
-    fn boundary_gate_allows_when_projection_none_and_no_patterns() {
-        // No SQLite store → projection None → gate falls through (no spec file
-        // found anyway because the spec dir doesn't exist).
+    fn boundary_gate_allows_when_no_events_and_no_patterns() {
+        // No events at all → projection None → gate falls through (no spec
+        // file patterns found because the spec dir doesn't exist).
         let dir = tempdir().unwrap();
         let cwd = dir.path();
         let paths = ClaudePaths::for_project(cwd).unwrap();
@@ -863,16 +917,14 @@ mod tests {
             cwd: Some(cwd_str.clone()),
             ..HookInput::default()
         };
-        // Projection None and no spec file → boundary_gate returns None (Allow).
+        // No spec dir → no patterns → boundary_gate returns None (Allow).
         assert!(boundary_gate(&input, &cwd_str).is_none());
     }
 
     #[test]
-    fn boundary_gate_reads_status_from_projection() {
-        use mustard_core::store::event_store::EventSink;
-        use mustard_core::store::sqlite_store::SqliteEventStore;
-        use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
-
+    fn boundary_gate_reads_terminal_status_from_spec_header() {
+        // W3C: terminal state is detected via spec header fallback (no SQLite).
+        // A spec whose header says `### Outcome: Completed` must skip the gate.
         let dir = tempdir().unwrap();
         let cwd = dir.path();
         let paths = ClaudePaths::for_project(cwd).unwrap();
@@ -883,31 +935,16 @@ mod tests {
             r#"{"specName":"myspec"}"#,
         )
         .unwrap();
-        // Spec with a Files section.
+        // Spec with Completed header + Files section.
         let sp = paths.for_spec("myspec").unwrap();
         std::fs::create_dir_all(sp.dir()).unwrap();
         std::fs::write(
             sp.spec_md_path(),
-            "# Spec\n\n## Files\n\n- `src/allowed.ts`\n",
+            "# Spec\n### Stage: Close\n### Outcome: Completed\n\n\
+             ## Files\n\n- `src/allowed.ts`\n",
         )
         .unwrap();
-
-        // Seed a pipeline.status "completed" event via the SQLite store.
-        let db_path = paths.harness_dir().join("mustard.db");
-        std::fs::create_dir_all(db_path.parent().unwrap()).unwrap();
-        let store = SqliteEventStore::new(&db_path).unwrap();
-        store
-            .append(&HarnessEvent {
-                v: SCHEMA_VERSION,
-                ts: "2026-05-20T10:00:00.000Z".to_string(),
-                session_id: "s1".to_string(),
-                wave: 0,
-                actor: Actor { kind: ActorKind::Hook, id: None, actor_type: None },
-                event: "pipeline.status".to_string(),
-                payload: serde_json::json!({ "to": "completed" }),
-                spec: Some("myspec".to_string()),
-            })
-            .unwrap();
+        // No NDJSON events seeded → projection yields None; header fallback fires.
 
         let cwd_str = cwd.to_string_lossy().into_owned();
         let input = HookInput {
@@ -917,10 +954,10 @@ mod tests {
             cwd: Some(cwd_str.clone()),
             ..HookInput::default()
         };
-        // Status "completed" → skip (None), even though src/forbidden.ts is outside boundary.
+        // Terminal header → skip (None), even though src/forbidden.ts is outside boundary.
         assert!(
             boundary_gate(&input, &cwd_str).is_none(),
-            "completed status must skip the boundary gate"
+            "completed spec header must skip the boundary gate"
         );
     }
 
