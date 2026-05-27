@@ -5,8 +5,8 @@
 //! emits a `qa.result` harness event plus a `qa` metric.
 //!
 //! Port note: the JS version shelled to `_lib/harness-event.js` and
-//! `_lib/metrics-emit.js`. This port emits the event through `mustard_core`'s
-//! [`SqliteEventStore`] and the metric through `mustard_core::metrics`.
+//! `_lib/metrics-emit.js`. This port emits the event through the NDJSON router
+//! ([`crate::run::event_route::emit`]) and the metric through `mustard_core::metrics`.
 //!
 //! Fail-open: a missing spec or no AC section degrades to an `overall: skip`
 //! result and exit `0`; an AC failure exits `1` (the JS contract).

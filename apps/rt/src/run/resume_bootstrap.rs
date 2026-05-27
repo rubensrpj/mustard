@@ -17,17 +17,17 @@
 //! an error.
 
 use crate::run::env::{project_dir, session_id};
-use crate::run::event_projections::{pipeline_state_for_spec, PipelineStateView};
+use crate::run::event_projections::{pipeline_state_from_events, PipelineStateView};
+use crate::run::event_route;
 use crate::util::now_iso8601;
 use mustard_core::claude_paths::ClaudePaths;
 use mustard_core::fs as mfs;
 use mustard_core::model::event::{
     Actor, ActorKind, HarnessEvent, PipelineDispatchFailurePayload, SCHEMA_VERSION,
-    EVENT_PIPELINE_RESUME_MODE, EVENT_PIPELINE_WAVE_COMPLETE,
+    EVENT_PIPELINE_RESUME_MODE, EVENT_PIPELINE_SCOPE, EVENT_PIPELINE_WAVE_COMPLETE,
 };
-use mustard_core::store::event_store::EventSink;
 use mustard_core::store::sqlite_store::SqliteEventStore;
-use rusqlite::Connection;
+use mustard_core::EventReader;
 use serde::Serialize;
 use serde_json::json;
 use std::path::{Path, PathBuf};
@@ -134,7 +134,8 @@ pub fn run(spec: &str, json_flag: bool) {
     // --- Load pipeline state (fail-open: missing store → defaults preserved). ---
     let view: Option<PipelineStateView> = SqliteEventStore::for_project(&project)
         .ok()
-        .and_then(|store| pipeline_state_for_spec(&store, spec, Some(&spec_dir)));
+        .and_then(|store| store.replay().ok())
+        .and_then(|events| pipeline_state_from_events(&events, spec, Some(&spec_dir)));
 
     // --- Detect wave-plan + total waves (event-first, FS fallback). ---
     let wave_plan_path = spec_dir.join("wave-plan.md");
@@ -225,7 +226,7 @@ pub fn run(spec: &str, json_flag: bool) {
         }
     }
 
-    // --- lastDispatchFailure (already TTL-filtered by `pipeline_state_for_spec`). ---
+    // --- lastDispatchFailure (already TTL-filtered by `pipeline_state_from_events`). ---
     let dispatch_failure = view.as_ref().and_then(|v| v.last_dispatch_failure.clone());
     if let Some(fail) = dispatch_failure.as_ref() {
         out.last_dispatch_failure = Some(render_dispatch_failure(fail));
@@ -661,58 +662,70 @@ fn render_dispatch_failure(fail: &PipelineDispatchFailurePayload) -> serde_json:
 ///
 /// `needs_refresh` is `true` when at least one `pipeline.wave.complete` event
 /// landed since the most recent `pipeline.resume_mode` event for this spec.
+///
+/// Reads from the per-spec NDJSON events dir (`.claude/spec/{spec}/.events/`).
+/// Fail-open: an unreadable dir returns `(false, None)`.
 fn compute_needs_refresh(project: &Path, spec: &str) -> (bool, Option<i64>) {
-    let Some(conn) = open_conn(project) else {
-        return (false, None);
+    let events_dir = match ClaudePaths::for_project(project)
+        .ok()
+        .and_then(|p| p.for_spec(spec).ok())
+        .map(|sp| sp.events_dir())
+    {
+        Some(d) => d,
+        None => return (false, None),
     };
+
     let now_ms = i64::try_from(crate::util::now_millis()).unwrap_or(i64::MAX);
 
-    // Last `pipeline.resume_mode` ts (or NULL). W5: lifecycle rows live in
-    // `pipeline_events` (column `kind`).
-    let last_resume_ts: Option<String> = conn
-        .query_row(
-            "SELECT ts FROM pipeline_events \
-             WHERE kind = ?1 AND spec = ?2 \
-             ORDER BY id DESC LIMIT 1",
-            rusqlite::params![EVENT_PIPELINE_RESUME_MODE, spec],
-            |row| row.get(0),
-        )
-        .ok();
+    // Collect all NDJSON events from the dir.
+    let ndjson_files: Vec<PathBuf> = std::fs::read_dir(&events_dir)
+        .ok()
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("ndjson"))
+        .collect();
+
+    let mut last_resume_ts: Option<String> = None;
+    let mut last_wave_complete_ts: Option<String> = None;
+
+    for path in &ndjson_files {
+        for ev in EventReader::stream(path) {
+            let ts = ev
+                .raw
+                .get("ts")
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
+            match ev.kind.as_str() {
+                k if k == EVENT_PIPELINE_RESUME_MODE => {
+                    if ts.as_deref() > last_resume_ts.as_deref() {
+                        last_resume_ts = ts;
+                    }
+                }
+                k if k == EVENT_PIPELINE_WAVE_COMPLETE => {
+                    if ts.as_deref() > last_wave_complete_ts.as_deref() {
+                        last_wave_complete_ts = ts;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
     let last_resume_ms = last_resume_ts
         .as_deref()
         .and_then(crate::run::complete_spec::parse_iso_millis);
     let last_resume_age = last_resume_ms.map(|ms| now_ms - ms);
 
-    // Any wave-complete since the last resume_mode?
-    let needs = match last_resume_ts.as_deref() {
-        Some(ts) => conn
-            .query_row(
-                "SELECT 1 FROM pipeline_events \
-                 WHERE kind = ?1 AND spec = ?2 AND ts > ?3 LIMIT 1",
-                rusqlite::params![EVENT_PIPELINE_WAVE_COMPLETE, spec, ts],
-                |_| Ok(()),
-            )
-            .is_ok(),
-        None => conn
-            .query_row(
-                "SELECT 1 FROM pipeline_events \
-                 WHERE kind = ?1 AND spec = ?2 LIMIT 1",
-                rusqlite::params![EVENT_PIPELINE_WAVE_COMPLETE, spec],
-                |_| Ok(()),
-            )
-            .is_ok(),
+    // Needs refresh when there is a wave.complete that is newer than the last resume_mode.
+    let needs = match (last_resume_ts.as_deref(), last_wave_complete_ts.as_deref()) {
+        (Some(resume_ts), Some(wave_ts)) => wave_ts > resume_ts,
+        (None, Some(_)) => true,
+        _ => false,
     };
-    (needs, last_resume_age)
-}
 
-/// Open a raw rusqlite [`Connection`] to the project's harness DB. `None` on
-/// any failure (fail-open).
-fn open_conn(project: &Path) -> Option<Connection> {
-    let store = SqliteEventStore::for_project(project).ok()?;
-    let db_path = store.path().to_path_buf();
-    let conn = Connection::open(&db_path).ok()?;
-    let _ = conn.busy_timeout(std::time::Duration::from_secs(5));
-    Some(conn)
+    (needs, last_resume_age)
 }
 
 /// Decide the resume mode from the view + dispatch failure state.
@@ -749,11 +762,8 @@ fn decide_mode(
     }
 }
 
-/// Emit a `pipeline.resume_mode` event (fail-open).
+/// Emit a `pipeline.resume_mode` event via the NDJSON router (fail-open).
 fn emit_resume_mode(project: &Path, spec: &str, mode: &str) {
-    let Ok(store) = SqliteEventStore::for_project(project) else {
-        return;
-    };
     let event = HarnessEvent {
         v: SCHEMA_VERSION,
         ts: now_iso8601(),
@@ -768,7 +778,7 @@ fn emit_resume_mode(project: &Path, spec: &str, mode: &str) {
         payload: json!({ "mode": mode }),
         spec: Some(spec.to_string()),
     };
-    let _ = store.append(&event);
+    let _ = event_route::emit(project.to_string_lossy().as_ref(), &event);
 }
 
 /// Compact text-table fallback when `--json` is not requested.
@@ -839,26 +849,30 @@ pub fn read_wave_model(spec_dir: &Path, wave: u32) -> Option<String> {
     extract_wave_model(&text, wave)
 }
 
-/// Emit a fresh `pipeline.scope` event for the resumed spec so
+/// Emit a fresh `pipeline.scope` event for the resumed spec via the router so
 /// `last_pipeline_scope_for_session` returns this spec in subsequent calls
 /// within the same Claude session (prevents stale closed-spec attribution).
 ///
-/// Fail-open: any store error is silently discarded.
+/// `pipeline.*` events are routed to SQLite by [`event_route::emit`] — this
+/// preserves the existing session-lookup contract without a direct store call.
+///
+/// Fail-open: any emit error is silently discarded.
 fn emit_scope_for_session(project: &Path, spec: &str) {
-    let Ok(store) = SqliteEventStore::for_project(project) else {
-        return;
+    let event = HarnessEvent {
+        v: SCHEMA_VERSION,
+        ts: now_iso8601(),
+        session_id: session_id(),
+        wave: 0,
+        actor: Actor {
+            kind: ActorKind::Orchestrator,
+            id: Some("resume-bootstrap".to_string()),
+            actor_type: None,
+        },
+        event: EVENT_PIPELINE_SCOPE.to_string(),
+        payload: json!({ "scope": "resumed" }),
+        spec: Some(spec.to_string()),
     };
-    let ts = now_iso8601();
-    let sid = session_id();
-    let _ = store.append_pipeline_event(
-        &ts,
-        Some(&sid),
-        Some(spec),
-        None,
-        mustard_core::model::event::EVENT_PIPELINE_SCOPE,
-        None,
-        Some(r#"{"scope":"resumed"}"#),
-    );
+    let _ = event_route::emit(project.to_string_lossy().as_ref(), &event);
 }
 
 /// Read the `model` field from a spec directory's `meta.json`. Returns `None`
