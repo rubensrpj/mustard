@@ -23,7 +23,43 @@ use crate::run::spec_sections::is_heading;
 use mustard_core::fs;
 use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::fmt;
 use std::path::{Path, PathBuf};
+
+// ---------------------------------------------------------------------------
+// Wave number representation
+// ---------------------------------------------------------------------------
+
+/// A major.minor wave identifier that preserves fractional waves.
+///
+/// `wave-1-core`   → `WaveNumber { major: 1, minor: 0 }`
+/// `wave-1_5-core` → `WaveNumber { major: 1, minor: 5 }`
+/// `wave-1.5-core` → `WaveNumber { major: 1, minor: 5 }`
+///
+/// `Ord` is derived so that `(1,0) < (1,5) < (2,0)` holds naturally.
+/// Using integer major+minor avoids float `Ord` instability.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) struct WaveNumber {
+    pub major: u32,
+    pub minor: u32,
+}
+
+impl WaveNumber {
+    /// Construct from major and minor components.
+    pub(crate) const fn new(major: u32, minor: u32) -> Self {
+        Self { major, minor }
+    }
+}
+
+impl fmt::Display for WaveNumber {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.minor == 0 {
+            write!(f, "W{}", self.major)
+        } else {
+            write!(f, "W{}.{}", self.major, self.minor)
+        }
+    }
+}
 
 /// HTML and SVG primitive tag names that must never be flagged as missing.
 /// Lowercase JSX tags (`<div>`) are skipped by the extractor already; this
@@ -676,29 +712,56 @@ fn find_wave_plan(spec_path: &Path) -> Option<PathBuf> {
     }
 }
 
-/// Parse `wave-(\d+)-` from the spec's parent directory name.
-fn extract_wave_number_from_spec_path(spec_path: &Path) -> Option<u32> {
+/// Parse `wave-N[-role]` or `wave-N_M[-role]` from the spec's parent directory name.
+fn extract_wave_number_from_spec_path(spec_path: &Path) -> Option<WaveNumber> {
     let parent = spec_path.parent()?;
     let name = parent.file_name()?.to_str()?;
     parse_wave_number_from_token(name)
 }
 
-/// Parse `wave-N` or `wave-N-role` (or plain `N`) → `N`.
-fn parse_wave_number_from_token(token: &str) -> Option<u32> {
+/// Parse `wave-N[-role]`, `wave-N_M[-role]`, `wave-N.M[-role]`, or plain `N` → `WaveNumber`.
+///
+/// Fractional separator is `_` or `.` (both accepted for robustness).
+/// Plain integers (e.g. from wave-plan table cells like `[[1]]`) parse as
+/// `WaveNumber { major: N, minor: 0 }`.
+fn parse_wave_number_from_token(token: &str) -> Option<WaveNumber> {
     let lower = token.trim().to_lowercase();
     if let Some(rest) = lower.strip_prefix("wave-") {
-        let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
-        if digits.is_empty() {
-            return None;
-        }
-        return digits.parse().ok();
+        return parse_major_minor(rest);
     }
+    // Plain numeric token: bare `N` from wave-plan table cells.
     let digits: String = lower.chars().take_while(|c| c.is_ascii_digit()).collect();
     if digits.is_empty() {
         None
     } else {
-        digits.parse().ok()
+        digits.parse::<u32>().ok().map(|n| WaveNumber::new(n, 0))
     }
+}
+
+/// Parse `N`, `N-role`, `N_M-role`, or `N.M-role` → `WaveNumber`.
+fn parse_major_minor(rest: &str) -> Option<WaveNumber> {
+    let major_digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+    if major_digits.is_empty() {
+        return None;
+    }
+    let major: u32 = major_digits.parse().ok()?;
+    let after_major = &rest[major_digits.len()..];
+    // Separator is `_` or `.` for fractional; `-` (or end) means minor=0.
+    let minor: u32 = if after_major.starts_with('_') || after_major.starts_with('.') {
+        let minor_rest = &after_major[1..];
+        let minor_digits: String = minor_rest
+            .chars()
+            .take_while(|c| c.is_ascii_digit())
+            .collect();
+        if minor_digits.is_empty() {
+            0
+        } else {
+            minor_digits.parse().unwrap_or(0)
+        }
+    } else {
+        0
+    };
+    Some(WaveNumber::new(major, minor))
 }
 
 /// Split a markdown table row `| a | b | c |` into trimmed cells.
@@ -747,7 +810,7 @@ fn is_deps_header(header_cell: &str) -> bool {
 /// Tokens are separated by `,`, `;`, whitespace, or the wikilink wrappers.
 /// Returns an empty vec when no waves table is found, the current row is
 /// missing, or the deps cell is `—` / `-` / `none`.
-fn parse_wave_plan_deps(plan_text: &str, current_wave: u32) -> Vec<u32> {
+fn parse_wave_plan_deps(plan_text: &str, current_wave: WaveNumber) -> Vec<WaveNumber> {
     let lines: Vec<&str> = plan_text.split('\n').collect();
     let mut i = 0;
     while i < lines.len() {
@@ -785,13 +848,13 @@ fn parse_wave_plan_deps(plan_text: &str, current_wave: u32) -> Vec<u32> {
 }
 
 /// Tokenize the deps cell into wave numbers.
-fn parse_deps_cell(cell: &str) -> Vec<u32> {
+fn parse_deps_cell(cell: &str) -> Vec<WaveNumber> {
     let trimmed = cell.trim();
     let empty_markers = ["", "—", "-", "–", "none", "nenhuma", "n/a"];
     if empty_markers.iter().any(|m| trimmed.eq_ignore_ascii_case(m)) {
         return Vec::new();
     }
-    let mut out: Vec<u32> = Vec::new();
+    let mut out: Vec<WaveNumber> = Vec::new();
     let normalized: String = trimmed
         .chars()
         .map(|c| match c {
@@ -813,7 +876,7 @@ fn parse_deps_cell(cell: &str) -> Vec<u32> {
 /// `## Files` section, and accumulate a `symbol → "wave-N-role"` map.
 fn parent_wave_promises(
     spec_dir: &Path,
-    parent_wave_nums: &[u32],
+    parent_wave_nums: &[WaveNumber],
 ) -> HashMap<String, String> {
     let mut out: HashMap<String, String> = HashMap::new();
     let Ok(entries) = fs::read_dir(spec_dir) else {
@@ -850,16 +913,12 @@ fn parent_wave_promises(
     out
 }
 
-/// Parse `wave-N-role` directory name → `N`. Returns `None` for any other
-/// directory name.
-fn parse_wave_dir_number(dir_name: &str) -> Option<u32> {
+/// Parse `wave-N-role` or `wave-N_M-role` directory name → `WaveNumber`.
+/// Returns `None` for any other directory name.
+fn parse_wave_dir_number(dir_name: &str) -> Option<WaveNumber> {
     let lower = dir_name.to_lowercase();
     let rest = lower.strip_prefix("wave-")?;
-    let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
-    if digits.is_empty() {
-        return None;
-    }
-    digits.parse().ok()
+    parse_major_minor(rest)
 }
 
 /// Dispatch `mustard-rt run dependency-precheck`.
@@ -1221,9 +1280,12 @@ mod tests {
 | 2 | ui | [[1]] | primitives |
 | 3 | ui | [[wave-2-ui]], [[1]] | pages |
 ";
-        assert_eq!(parse_wave_plan_deps(plan, 1), Vec::<u32>::new());
-        assert_eq!(parse_wave_plan_deps(plan, 2), vec![1]);
-        assert_eq!(parse_wave_plan_deps(plan, 3), vec![2, 1]);
+        let w1 = WaveNumber::new(1, 0);
+        let w2 = WaveNumber::new(2, 0);
+        let w3 = WaveNumber::new(3, 0);
+        assert_eq!(parse_wave_plan_deps(plan, w1), Vec::<WaveNumber>::new());
+        assert_eq!(parse_wave_plan_deps(plan, w2), vec![w1]);
+        assert_eq!(parse_wave_plan_deps(plan, w3), vec![w2, w1]);
     }
 
     #[test]
@@ -1234,23 +1296,38 @@ mod tests {
 | 2 | ui | 1 | x |
 | 3 | ui | wave-2, 1 | y |
 ";
-        assert_eq!(parse_wave_plan_deps(plan, 2), vec![1]);
-        assert_eq!(parse_wave_plan_deps(plan, 3), vec![2, 1]);
+        let w1 = WaveNumber::new(1, 0);
+        let w2 = WaveNumber::new(2, 0);
+        let w3 = WaveNumber::new(3, 0);
+        assert_eq!(parse_wave_plan_deps(plan, w2), vec![w1]);
+        assert_eq!(parse_wave_plan_deps(plan, w3), vec![w2, w1]);
     }
 
     #[test]
     fn parse_wave_number_from_token_variants() {
         // Brackets are stripped at the `parse_deps_cell` layer; this helper
         // sees only the bare token.
-        assert_eq!(parse_wave_number_from_token("wave-3-ui"), Some(3));
-        assert_eq!(parse_wave_number_from_token("wave-7"), Some(7));
-        assert_eq!(parse_wave_number_from_token("5"), Some(5));
+        assert_eq!(
+            parse_wave_number_from_token("wave-3-ui"),
+            Some(WaveNumber::new(3, 0))
+        );
+        assert_eq!(
+            parse_wave_number_from_token("wave-7"),
+            Some(WaveNumber::new(7, 0))
+        );
+        assert_eq!(
+            parse_wave_number_from_token("5"),
+            Some(WaveNumber::new(5, 0))
+        );
         assert_eq!(parse_wave_number_from_token("—"), None);
         assert_eq!(parse_wave_number_from_token("foo"), None);
         // parse_deps_cell strips brackets first, then calls this helper.
-        assert_eq!(parse_deps_cell("[[2]]"), vec![2]);
-        assert_eq!(parse_deps_cell("[[wave-2-ui]], [[1]]"), vec![2, 1]);
-        assert_eq!(parse_deps_cell("—"), Vec::<u32>::new());
+        assert_eq!(parse_deps_cell("[[2]]"), vec![WaveNumber::new(2, 0)]);
+        assert_eq!(
+            parse_deps_cell("[[wave-2-ui]], [[1]]"),
+            vec![WaveNumber::new(2, 0), WaveNumber::new(1, 0)]
+        );
+        assert_eq!(parse_deps_cell("—"), Vec::<WaveNumber>::new());
     }
 
     #[test]
@@ -1273,7 +1350,9 @@ mod tests {
         )
         .unwrap();
 
-        let map = parent_wave_promises(&tmp, &[1, 2]);
+        let w1 = WaveNumber::new(1, 0);
+        let w2 = WaveNumber::new(2, 0);
+        let map = parent_wave_promises(&tmp, &[w1, w2]);
         assert_eq!(map.get("Foundation").map(String::as_str), Some("wave-1-general"));
         assert_eq!(
             map.get("PromisedButMissing").map(String::as_str),
@@ -1281,7 +1360,7 @@ mod tests {
         );
 
         // Restrict to just wave 2 → wave-1 symbols absent.
-        let map2 = parent_wave_promises(&tmp, &[2]);
+        let map2 = parent_wave_promises(&tmp, &[w2]);
         assert!(!map2.contains_key("Foundation"));
         assert!(map2.contains_key("PromisedButMissing"));
 
@@ -1302,6 +1381,79 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
+    // -----------------------------------------------------------------------
+    // WaveNumber parser tests (FIX: fractional wave collision)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn parses_simple_wave_dir() {
+        assert_eq!(
+            parse_wave_dir_number("wave-1-core"),
+            Some(WaveNumber::new(1, 0))
+        );
+    }
+
+    #[test]
+    fn parses_underscore_fraction() {
+        assert_eq!(
+            parse_wave_dir_number("wave-1_5-core"),
+            Some(WaveNumber::new(1, 5))
+        );
+    }
+
+    #[test]
+    fn parses_dot_fraction() {
+        assert_eq!(
+            parse_wave_dir_number("wave-1.5-core"),
+            Some(WaveNumber::new(1, 5))
+        );
+    }
+
+    #[test]
+    fn parses_two_digit_major() {
+        assert_eq!(
+            parse_wave_dir_number("wave-10-core"),
+            Some(WaveNumber::new(10, 0))
+        );
+    }
+
+    #[test]
+    fn parses_two_digit_minor() {
+        assert_eq!(
+            parse_wave_dir_number("wave-10_25-core"),
+            Some(WaveNumber::new(10, 25))
+        );
+    }
+
+    #[test]
+    fn no_collision_w1_vs_w1_5() {
+        // The core fix: wave-1_5-core must NOT equal wave-1-core.
+        assert_ne!(
+            parse_wave_dir_number("wave-1-core"),
+            parse_wave_dir_number("wave-1_5-core"),
+        );
+    }
+
+    #[test]
+    fn ord_natural() {
+        let w1 = WaveNumber::new(1, 0);
+        let w1_5 = WaveNumber::new(1, 5);
+        let w2 = WaveNumber::new(2, 0);
+        let mut nums = vec![w2, w1_5, w1];
+        nums.sort();
+        assert_eq!(nums, vec![w1, w1_5, w2]);
+    }
+
+    #[test]
+    fn rejects_non_wave_prefix() {
+        assert_eq!(parse_wave_dir_number("something-1-core"), None);
+    }
+
+    #[test]
+    fn rejects_no_digits() {
+        assert_eq!(parse_wave_dir_number("wave-abc-core"), None);
+    }
+
     #[test]
     fn promise_violations_classifies_correctly() {
         // End-to-end on the on-disk fixture: wave-3-ui references one
@@ -1315,9 +1467,9 @@ mod tests {
         let plan = find_wave_plan(&spec_path).expect("wave-plan.md not found");
         let plan_text = std::fs::read_to_string(&plan).unwrap();
         let current = extract_wave_number_from_spec_path(&spec_path).unwrap();
-        assert_eq!(current, 3);
+        assert_eq!(current, WaveNumber::new(3, 0));
         let parents = parse_wave_plan_deps(&plan_text, current);
-        assert_eq!(parents, vec![2]);
+        assert_eq!(parents, vec![WaveNumber::new(2, 0)]);
 
         let plan_dir = plan.parent().unwrap();
         let promises = parent_wave_promises(plan_dir, &parents);
