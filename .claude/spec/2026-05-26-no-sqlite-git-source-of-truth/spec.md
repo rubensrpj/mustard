@@ -1,10 +1,10 @@
 # Refactor de fundação Rust — eliminar SQLite + aplicar SOLID e reuso em todos os `.rs`
 
-### Stage: Plan
-### Outcome: Active
+### Stage: Close
+### Outcome: Completed
 ### Flags: 
 ### Scope: full
-### Checkpoint: 2026-05-27T09:00:00Z
+### Checkpoint: 2026-05-27T18:00:00Z
 ### Lang: pt-BR
 
 ## PRD
@@ -196,3 +196,12 @@ Os 7 testes de integração failing identificados durante a audit (`mcp`, `spec_
 | "Usar Rust onde IA não precisa" | Summary writer + readers do dashboard são código Rust determinístico, sem LLM |
 | "Sem nome `sqlite` em arquivo, módulo, tipo, struct, função ou comentário" | AC-5, AC-6, AC-7 (binários e verificáveis em qualquer shell) |
 | "Sem stubs preservando o nome" | Política de plano: callers migram **antes** de o módulo morrer; W8A só remove código já órfão |
+
+<!-- wikilinks-footer-start -->
+- [project_db_bloat_per_spec_events](?) ⚠ não resolvido
+- [feedback_no_attach_sqlite](?) ⚠ não resolvido
+- [feedback_no_migration_dev_phase](?) ⚠ não resolvido
+- [feedback_everything_measurable](?) ⚠ não resolvido
+- [feedback_clear_naming](?) ⚠ não resolvido
+- [project_dashboard_value_over_features](?) ⚠ não resolvido
+<!-- wikilinks-footer-end -->

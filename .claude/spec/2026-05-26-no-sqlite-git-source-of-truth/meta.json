@@ -1,10 +1,10 @@
 {
-  "stage": "Execute",
-  "outcome": "Active",
-  "phase": "EXECUTE",
+  "stage": "Close",
+  "outcome": "Completed",
+  "phase": "CLOSE",
   "scope": "full",
   "lang": "pt-BR",
-  "checkpoint": "2026-05-27T17:43:11.711Z",
+  "checkpoint": "2026-05-27T17:53:46.552Z",
   "completedWaves": [
     1,
     2,
