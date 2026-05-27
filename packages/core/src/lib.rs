@@ -51,6 +51,7 @@ pub mod projection;
 pub mod skill;
 pub mod spec;
 pub mod summary;
+pub mod vocabulary;
 pub mod workspace;
 
 // Root re-exports — consumers can write `use mustard_core::…` without
@@ -122,3 +123,12 @@ pub use summary::SpecSummaryDoc;
 // `Event` is the single row unit; `EventReader` provides streaming, cached,
 // and filtered access without loading full files into memory.
 pub use events::{Event, EventReader};
+
+// Vocabulary matcher — the four-layer term scanner used by the regression
+// gate (Spec A / Wave 1). Layers are EN identifiers per the wave-0 hard rule
+// (`Semantic`, `Pattern`, `Keyword`, `Noise`); the on-disk TOML keys are
+// lowercased copies of the same names.
+pub use vocabulary::{
+    check_layer_promotion, Layer, PromotionVerdict, ScanHit, VocabError, VocabLayer,
+    VocabularyDoc, VocabularyMatcher,
+};

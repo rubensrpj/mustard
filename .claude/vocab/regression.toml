@@ -1,0 +1,57 @@
+# Vocabulary seed for the regression gate (Spec A / Wave 1).
+#
+# Four layers, ordered from most severe (top) to least severe (bottom). The
+# matcher (`mustard_core::vocabulary::VocabularyMatcher`) reads this file at
+# runtime and rebuilds the automaton via `reload_if_changed` whenever the
+# mtime advances — no recompilation needed.
+#
+# Editing rules (enforced by the orchestrator via `check_layer_promotion`):
+# - Adding a new term to an existing layer is unattended.
+# - Moving a term between layers (promotion) ALWAYS prompts the user.
+# - Removing a term is unattended but should be paired with a knowledge note.
+#
+# Seed contents distilled from:
+# - feedback_no_stub_fail_open       (semantic + pattern)
+# - feedback_refactor_no_stub_deferral (semantic + keyword)
+# - karpathy-guidelines              (keyword)
+# - Common Rust placeholder patterns (pattern)
+
+[[layer]]
+kind = "semantic"
+terms = [
+    "fail-open",
+    "intent drift",
+    "stub fail-open",
+    "empurrar pra W",
+    "regressão silenciosa",
+]
+
+[[layer]]
+kind = "pattern"
+terms = [
+    "None",
+    "Vec::new()",
+    "Default::default()",
+    "unimplemented!",
+    "todo!",
+]
+
+[[layer]]
+kind = "keyword"
+terms = [
+    "refactor",
+    "deferred",
+    "stub",
+    "placeholder",
+    "TBD",
+]
+
+[[layer]]
+kind = "noise"
+terms = [
+    "test",
+    "comment",
+    "fixture",
+    "mock",
+    "scaffold",
+]

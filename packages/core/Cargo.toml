@@ -24,6 +24,18 @@ rayon = { workspace = true, optional = true }
 # token counts via cl100k_base — accuracy is ±5%, never bit-exact. Pulled
 # through the workspace table; see the rationale in the root Cargo.toml.
 tiktoken-rs = { workspace = true }
+# Multi-pattern string matching for `vocabulary::VocabularyMatcher`. The
+# automaton matches all needles in a single linear pass over the haystack
+# (O(n + m)), which is roughly an order of magnitude faster than running 100
+# independent `str::contains` calls or compiling a regex alternation. Pinned
+# to 1.1; the 1.x line has been API-stable since 2023 and the dep already
+# appears in the lock file transitively (via `tiktoken-rs`).
+aho-corasick = "1.1"
+# TOML deserializer for `.claude/vocab/regression.toml` — the runtime-editable
+# vocabulary file consumed by `VocabLayer::parse_from_toml`. The 0.8 line is
+# the current stable major on crates.io (May 2026); the dep is crate-local
+# because `vocabulary` is the only consumer today.
+toml = "0.8"
 
 [dev-dependencies]
 insta = { workspace = true }

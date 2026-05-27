@@ -1,7 +1,8 @@
 # Wave 0 — analyze-and-fixtures (papel: mixed)
 
-### Stage: Analyze
-### Outcome: Active
+### Stage: Close
+### Outcome: Completed
+### Flags: 
 ### Scope: light
 ### Lang: pt-BR
 ### Parent: 2026-05-27-mustard-v4-foundation
