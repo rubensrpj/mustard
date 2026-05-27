@@ -110,20 +110,6 @@ const GENERATED_BASENAMES: &[&str] = &[
     ".interpret-cache.json",
 ];
 
-/// Directory name prefixes under `.claude/` whose contents are volatile
-/// state and must not be touched.
-const VOLATILE_DIRS: &[&str] = &[
-    ".agent-state",
-    ".harness",
-    ".metrics",
-    ".session",
-    ".obsidian",
-    "agent-memory",
-    "spec",
-    "graph",
-    "plans",
-    "worktrees",
-];
 
 // ---------------------------------------------------------------------------
 // Entry point
@@ -203,12 +189,6 @@ fn walk_and_sync(
 
         // Skip generated files that must not be overwritten.
         if is_generated(&src_path) {
-            report.skipped.push(label_str);
-            continue;
-        }
-
-        // Skip files that live under volatile dirs.
-        if is_in_volatile_dir(&rel) {
             report.skipped.push(label_str);
             continue;
         }
@@ -335,16 +315,6 @@ fn is_generated(path: &Path) -> bool {
     GENERATED_BASENAMES.contains(&name)
 }
 
-/// Returns true if the relative path (from `src_base`) falls under a volatile
-/// directory name (first component matches one of the VOLATILE_DIRS).
-fn is_in_volatile_dir(rel: &Path) -> bool {
-    if let Some(first) = rel.components().next() {
-        if let Some(s) = first.as_os_str().to_str() {
-            return VOLATILE_DIRS.contains(&s);
-        }
-    }
-    false
-}
 
 /// Locate the `apps/cli/templates/` directory.
 ///
