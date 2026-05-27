@@ -12,6 +12,10 @@ build = "build.rs"
 name = "mustard-rt"
 path = "src/main.rs"
 
+[lib]
+name = "mustard_rt"
+path = "src/lib.rs"
+
 # Dependency versions live in the workspace `[workspace.dependencies]` table
 # (root Cargo.toml); each crate references them with `{ workspace = true }`.
 [dependencies]

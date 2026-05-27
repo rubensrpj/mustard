@@ -1,4 +1,7 @@
 # W4 — run/ misc tail sweep (37 violations / 22 files)
+### Stage: Close
+### Outcome: Completed
+### Flags: 
 
 ## Contexto
 

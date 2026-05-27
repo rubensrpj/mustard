@@ -1,4 +1,7 @@
 # W10 — Verify pipeline multi-stack + wave-integrity-doctor
+### Stage: Plan
+### Outcome: Active
+### Flags: 
 
 ## Contexto
 

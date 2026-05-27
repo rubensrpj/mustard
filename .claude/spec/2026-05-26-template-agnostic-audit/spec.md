@@ -1,7 +1,7 @@
 # Template Agnostic Audit
 
 ### Stage: Close
-### Outcome: ClosedDeferredVerify
+### Outcome: Cancelled
 ### Flags: 
 ### Scope: full
 ### Checkpoint: 2026-05-26T16:50:00Z

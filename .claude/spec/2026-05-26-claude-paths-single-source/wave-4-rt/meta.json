@@ -1,6 +1,6 @@
 {
-  "stage": "Close",
-  "outcome": "Completed",
+  "stage": "Execute",
+  "outcome": "Active",
   "phase": "CLOSE",
   "scope": "single",
   "lang": "pt-BR",

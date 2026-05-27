@@ -1,4 +1,7 @@
 # W9 — Stop e Notification triggers
+### Stage: Plan
+### Outcome: Active
+### Flags: 
 
 ## Contexto
 

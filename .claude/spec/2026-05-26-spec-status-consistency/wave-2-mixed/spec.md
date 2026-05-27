@@ -1,7 +1,7 @@
 # Wave 2 — doctor check `status-consistency`
 
-### Stage: Plan
-### Outcome: Active
+### Stage: Close
+### Outcome: Completed
 ### Flags: 
 
 ## Contexto
@@ -12,15 +12,15 @@ Premissa: rodar **após** W1 (porque sem `sync_status`, o check ia ficar gritand
 
 ## Tarefas
 
-- [ ] **T2.1** — Adicionar variant `StatusConsistency` ao enum de checks conhecidos em `doctor.rs:1097-1106`. Wire-up no `match`/`dispatch` que roda checks.
-- [ ] **T2.2** — Implementar `check_status_consistency(claude_paths: &ClaudePaths) -> CheckResult` que:
+- [x] **T2.1** — Adicionar variant `StatusConsistency` ao enum de checks conhecidos em `doctor.rs:1097-1106`. Wire-up no `match`/`dispatch` que roda checks.
+- [x] **T2.2** — Implementar `check_status_consistency(claude_paths: &ClaudePaths) -> CheckResult` que:
   - Itera `.claude/spec/*/spec.md`.
   - Para cada spec: parse cabeçalho buscando `### Stage:` e `### Outcome:`. Falha (FAIL) se ausente.
   - Lê o `meta.json` ao lado. Falha se `stage`/`outcome` ausentes ou diferentes do `spec.md`.
   - Compara o par `(stage, outcome)` com a tabela `state_from_status_word`. Falha se combinação não mapeada (ex: `(Analyze, Cancelled)` que não existe).
   - Recursa em `wave-N-*/spec.md` + `wave-N-*/meta.json` do mesmo modo.
-- [ ] **T2.3** — Incluir `status-consistency` no agregador default (`doctor --check all`) e no comando sem flag (`doctor` puro).
-- [ ] **T2.4** — Output formatado igual aos outros checks (linhas `OK`/`WARN`/`FAIL` com path da spec).
+- [x] **T2.3** — Incluir `status-consistency` no agregador default (`doctor --check all`) e no comando sem flag (`doctor` puro).
+- [x] **T2.4** — Output formatado igual aos outros checks (linhas `OK`/`WARN`/`FAIL` com path da spec).
 
 ## Critérios de Aceitação
 

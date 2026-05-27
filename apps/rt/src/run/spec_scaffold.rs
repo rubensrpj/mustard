@@ -289,6 +289,32 @@ mod tests {
         assert!(!ghost.exists());
     }
 
+    /// AC-W1.3 — a wave dir with Plan/Active headers; after sync_status(Close,
+    /// Completed), both spec.md and meta.json carry Close/Completed.
+    #[test]
+    fn sync_status_wave_complete() {
+        let dir = tempdir().unwrap();
+        // Seed wave spec.md with Plan/Active.
+        std::fs::write(
+            dir.path().join("spec.md"),
+            b"# Wave 1\n\n### Stage: Plan\n### Outcome: Active\n### Flags: \n\n## Body\nwork\n",
+        )
+        .unwrap();
+        write_meta_json(dir.path(), &make_meta("Plan", "Active")).unwrap();
+
+        sync_status(Stage::Close, Outcome::Completed, dir.path()).unwrap();
+
+        let spec_body = std::fs::read_to_string(dir.path().join("spec.md")).unwrap();
+        assert!(spec_body.contains("### Stage: Close"), "{spec_body}");
+        assert!(spec_body.contains("### Outcome: Completed"), "{spec_body}");
+
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.path().join("meta.json")).unwrap())
+                .unwrap();
+        assert_eq!(v["stage"], serde_json::json!("Close"));
+        assert_eq!(v["outcome"], serde_json::json!("Completed"));
+    }
+
     #[test]
     fn section_heading_for_localises() {
         assert_eq!(section_heading_for("Contexto", Locale::EnUs), "Context");

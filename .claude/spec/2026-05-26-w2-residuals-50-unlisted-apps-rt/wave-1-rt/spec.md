@@ -1,4 +1,7 @@
 # W1 — hooks + mcp sweep (12 violations / 9 files)
+### Stage: Close
+### Outcome: Completed
+### Flags: 
 
 ## Contexto
 

@@ -252,7 +252,7 @@ pub fn run(opts: MigrateToMetaOpts) {
                     errors: 1,
                     headers_stripped: 0,
                     files: vec![FileRecord {
-                        path: cwd.to_string(),
+                        path: cwd.clone(),
                         action: "error",
                         reason: Some("invalid project root (claude-paths guard)".to_string()),
                     }],

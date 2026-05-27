@@ -1,6 +1,6 @@
 {
-  "stage": "Execute",
-  "outcome": "Active",
+  "stage": "Close",
+  "outcome": "Cancelled",
   "phase": null,
   "scope": "full (wave plan)",
   "lang": "pt-BR",

@@ -1,4 +1,7 @@
 # W3 — `/scan` Rust-first agnóstico + cobertura completa do entity-registry
+### Stage: Plan
+### Outcome: Active
+### Flags: 
 
 ## Contexto
 

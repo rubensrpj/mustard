@@ -1,4 +1,7 @@
 # W11 — Telemetry perf + economy wiring + dashboard /economia
+### Stage: Plan
+### Outcome: Active
+### Flags: 
 
 ## Contexto
 

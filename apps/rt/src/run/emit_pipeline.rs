@@ -24,7 +24,6 @@ use mustard_core::model::event::{
     EVENT_PIPELINE_RESUME_MODE, EVENT_PIPELINE_SCOPE, EVENT_PIPELINE_STATUS,
     EVENT_PIPELINE_TASK_COMPLETE, EVENT_PIPELINE_TASK_DISPATCH, EVENT_PIPELINE_WAVE_COMPLETE,
 };
-use mustard_core::spec;
 use mustard_core::{Flags, Outcome, SpecState, Stage, read_meta, write_meta};
 use serde_json::{json, Value};
 use std::path::Path;
@@ -561,38 +560,6 @@ fn bump_parent_progress(cwd: &Path, spec: &str, wave: u64, ts: &str) {
     }
 }
 
-/// Rewrite the lifecycle header of `.claude/spec/{spec}/spec.md` so it matches
-/// the freshly emitted `pipeline.status: <to>` event, **always emitting the
-/// canonical new three-line header** regardless of the legacy shape it started
-/// in. Delegates the atomic, byte-stable rewrite (including header insertion
-/// when one is absent) to the canonical [`mustard_core::spec`] writer.
-///
-/// Pure side effect — every error path is a warn (the contract is fail-open per
-/// the module-level docs). A missing file warns and returns; the event has
-/// already been recorded so a stale header is non-fatal.
-fn sync_spec_status_header(cwd: &Path, spec: &str, to: &str) {
-    let Some(path) = ClaudePaths::for_project(cwd)
-        .and_then(|p| p.for_spec(spec))
-        .ok()
-        .map(|sp| sp.spec_md_path())
-    else {
-        return;
-    };
-    if !path.exists() {
-        eprintln!(
-            "emit-pipeline: WARN: cannot read {}; skipping header sync",
-            path.display()
-        );
-        return;
-    }
-    let state = state_from_status_word(to);
-    if let Err(e) = spec::write_state(&path, &state) {
-        eprintln!(
-            "emit-pipeline: WARN: could not write {} ({e}); status header may be stale",
-            path.display()
-        );
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -953,93 +920,6 @@ mod tests {
         let (_dir, store) = temp_store();
         emit_direct(&store, EVENT_PIPELINE_PAUSE, "demo", json!({"reason": "user request"}));
         assert_eq!(store.replay().unwrap().len(), 1);
-    }
-
-    // -----------------------------------------------------------------------
-    // Wave-2 header sync (2026-05-21-flatten-spec-layout-and-multi-collab)
-    // -----------------------------------------------------------------------
-
-    /// Helper: seed `.claude/spec/{spec}/spec.md` with the given body and
-    /// return the project root + path to spec.md.
-    fn seed_spec_md(spec: &str, body: &str) -> (tempfile::TempDir, std::path::PathBuf) {
-        let dir = tempdir().unwrap();
-        let spec_dir = dir.path().join(".claude").join("spec").join(spec);
-        std::fs::create_dir_all(&spec_dir).unwrap();
-        let path = spec_dir.join("spec.md");
-        std::fs::write(&path, body).unwrap();
-        (dir, path)
-    }
-
-    /// The header sync rewrites the legacy header into the canonical NEW
-    /// three-line form, dropping the legacy `### Status:`/`### Phase:` lines.
-    #[test]
-    fn sync_status_header_rewrites_existing_marker() {
-        let (dir, path) = seed_spec_md(
-            "demo",
-            "# Demo\n\n### Status: implementing\n### Phase: EXECUTE\n\n## Body\nx\n",
-        );
-        super::sync_spec_status_header(dir.path(), "demo", "completed");
-        let after = std::fs::read_to_string(&path).unwrap();
-        // New canonical header emitted; legacy lines removed.
-        assert!(after.contains("### Stage: Close"), "{after:?}");
-        assert!(after.contains("### Outcome: Completed"), "{after:?}");
-        assert!(!after.contains("### Status:"));
-        assert!(!after.contains("### Phase:"));
-        // Re-parsing yields the terminal completed state.
-        assert_eq!(
-            spec::parse_state(&after).map(|s| spec::status_word(&s).to_string()),
-            Some("completed".to_string())
-        );
-        // Body preserved.
-        assert!(after.contains("## Body"));
-    }
-
-    /// Fail-open contract: a missing spec.md is a no-op, never a panic.
-    #[test]
-    fn sync_status_header_missing_file_is_noop() {
-        let dir = tempdir().unwrap();
-        super::sync_spec_status_header(dir.path(), "ghost", "completed");
-        // No file created.
-        assert!(!dir.path().join(".claude/spec/ghost/spec.md").exists());
-    }
-
-    /// A spec.md without any lifecycle header gains a canonical header (the
-    /// core writer inserts one after the `# Title`).
-    #[test]
-    fn sync_status_header_inserts_when_absent() {
-        let (dir, path) = seed_spec_md("demo", "# Demo\n\n## Body\nno header\n");
-        super::sync_spec_status_header(dir.path(), "demo", "completed");
-        let after = std::fs::read_to_string(&path).unwrap();
-        assert!(after.contains("### Stage: Close"));
-        assert!(after.contains("### Outcome: Completed"));
-        assert!(after.contains("no header"));
-    }
-
-    // -----------------------------------------------------------------------
-    // Parent-vs-wave header sync gate (regression: 2026-05-23, wave-level
-    // close events were rewriting the parent spec.md header).
-    //
-    // The three `should_sync_parent_header` tests were removed when the gate
-    // moved into `spec_scaffold::sync_status` (the wave-vs-parent decision is
-    // now driven by the path picked in the dispatch site, not a separate
-    // boolean helper). The flow is exercised end-to-end by the round-trip
-    // test below + the wave-meta tests further down.
-    // -----------------------------------------------------------------------
-
-    /// A legacy header is rewritten to the canonical form and re-parses to the
-    /// requested status; body lines are preserved.
-    #[test]
-    fn sync_status_header_round_trips_new_value() {
-        let body = "# Spec\n\n### Status: planning\n\nbody line\n";
-        let (dir, path) = seed_spec_md("demo", body);
-        super::sync_spec_status_header(dir.path(), "demo", "implementing");
-        let after = std::fs::read_to_string(&path).unwrap();
-        assert!(after.contains("### Stage: Execute"));
-        assert!(after.contains("body line"));
-        assert_eq!(
-            spec::parse_state(&after).map(|s| spec::status_word(&s).to_string()),
-            Some("implementing".to_string())
-        );
     }
 
     // -----------------------------------------------------------------------

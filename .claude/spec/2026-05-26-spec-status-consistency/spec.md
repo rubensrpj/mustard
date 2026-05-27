@@ -1,10 +1,11 @@
 # spec-status-consistency — padronizar geração e atualização de status das specs
 
-### Stage: Plan
-### Outcome: Active
+### Stage: Close
+### Outcome: Completed
 ### Flags: 
 ### Scope: full
 ### Lang: pt-BR
+### Checkpoint: 2026-05-26T19:30:00Z
 
 <!-- PRD -->
 
@@ -51,8 +52,8 @@ Esta spec ataca os quatro pontos juntos. Sem isso, o problema repete na próxima
 
 - **AC-1** — `doctor --check status-consistency` falha (exit 1) se houver spec com cabeçalhos ausentes, divergência `spec.md` ↔ `meta.json`, ou combinação Stage+Outcome não mapeada; passa (exit 0) quando todas estão alinhadas.
   Command: `rtk mustard-rt run doctor --check status-consistency`
-- **AC-2** — `tactical-fix-create` produz `spec.md` com `### Stage: Plan`, `### Outcome: Active`, `### Flags:` (regressão do bug descoberto na `rtk-quiet-hook-warning`).
-  Command: `rtk node -e "const{execSync}=require('child_process');const out=execSync('mustard-rt run tactical-fix-create --intent test-ac2 --parent 2026-05-25-mustard-deep-refactor',{encoding:'utf8'});const fs=require('fs');const j=JSON.parse(out);const spec=fs.readFileSync(j.files[0],'utf8');if(!/### Stage: Plan/.test(spec)||!/### Outcome: Active/.test(spec))process.exit(1)"`
+- **AC-2** — `tactical-fix-create` produz `spec.md` com `### Stage: Analyze`, `### Outcome: Active`, `### Flags:` (regressão do bug descoberto na `rtk-quiet-hook-warning`).
+  Command: `rtk node -e "const{execSync}=require('child_process');const out=execSync('mustard-rt run tactical-fix-create --intent test-ac2 --parent 2026-05-25-mustard-deep-refactor',{encoding:'utf8'});const fs=require('fs');const j=JSON.parse(out);const spec=fs.readFileSync(j.files[0],'utf8');if(!/### Stage: Analyze/.test(spec)||!/### Outcome: Active/.test(spec))process.exit(1)"`
 - **AC-3** — Rodar pipeline wave-plan completa numa spec teste deixa `spec.md` (parent + cada wave) e `meta.json` (parent + cada wave) alinhados — mesmo `stage`/`outcome`.
   Command: `rtk cargo test -p mustard-rt --test status_sync_integration`
 - **AC-4** — `spec-status-backfill` aplicado sobre as 12 specs atuais resulta em `doctor --check status-consistency` passando com zero warnings depois.
@@ -77,13 +78,13 @@ Esta spec ataca os quatro pontos juntos. Sem isso, o problema repete na próxima
 
 ## Tarefas
 
-- [ ] **T1** (W1) — Extrair helper `spec_scaffold` (spec_draft.rs → módulo público).
-- [ ] **T2** (W1) — Função `sync_status(stage, outcome, spec_path, meta_path)` atômica.
-- [ ] **T3** (W1) — Remover gate `should_sync_parent_header`; sincronizar parent+wave juntos.
-- [ ] **T4** (W2) — Doctor check `status-consistency` + agregador default.
-- [ ] **T5** (W3) — Picker `active-specs` lista malformadas com flag `??`; exibe `closed-followup` como `CLR→fu`.
-- [ ] **T6** (W4) — Subcomando `spec-status-backfill --source spec|meta`.
-- [ ] **T7** (W5) — Teste de integração `status_sync_integration` + QA dos 6 ACs.
+- [x] **T1** (W1) — Extrair helper `spec_scaffold` (spec_draft.rs → módulo público).
+- [x] **T2** (W1) — Função `sync_status(stage, outcome, spec_path, meta_path)` atômica.
+- [x] **T3** (W1) — Remover gate `should_sync_parent_header`; sincronizar parent+wave juntos.
+- [x] **T4** (W2) — Doctor check `status-consistency` + agregador default.
+- [x] **T5** (W3) — Picker `active-specs` lista malformadas com flag `??`; exibe `closed-followup` como `CLR→fu`.
+- [x] **T6** (W4) — Subcomando `spec-status-backfill --source spec|meta`.
+- [x] **T7** (W5) — Teste de integração `status_sync_integration` + QA dos 6 ACs.
 
 ## Dependências
 

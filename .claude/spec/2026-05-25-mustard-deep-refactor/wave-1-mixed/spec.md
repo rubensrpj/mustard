@@ -1,4 +1,7 @@
 # W1 — Refatoração dos 3 pilares: spec creation + injeção entre agentes + montagem de skills
+### Stage: Plan
+### Outcome: Active
+### Flags: 
 
 ## Contexto
 

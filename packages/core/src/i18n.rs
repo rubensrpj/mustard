@@ -521,11 +521,23 @@ impl fmt::Display for UserLocale {
 impl FromStr for UserLocale {
     type Err = UserLocaleError;
 
-    /// Parse a BCP-47 string into a `UserLocale`.  Only rejects empty strings.
+    /// Parse a BCP-47 string into a `UserLocale`. Rejects empty strings and
+    /// shapes that are not `<lang>-<REGION>` (2-3 lowercase letters, hyphen,
+    /// 2 uppercase letters). Short forms like `pt`/`en` and unhyphenated
+    /// blobs like `ptbr` are rejected so callers can rely on a canonical tag.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let trimmed = s.trim();
         if trimmed.is_empty() {
             return Err(UserLocaleError::Empty);
+        }
+        let (lang, region) = trimmed
+            .split_once('-')
+            .ok_or_else(|| UserLocaleError::Malformed(trimmed.to_string()))?;
+        let lang_ok = (2..=3).contains(&lang.len())
+            && lang.chars().all(|c| c.is_ascii_lowercase());
+        let region_ok = region.len() == 2 && region.chars().all(|c| c.is_ascii_uppercase());
+        if !lang_ok || !region_ok {
+            return Err(UserLocaleError::Malformed(trimmed.to_string()));
         }
         Ok(Self { raw: trimmed.to_string() })
     }
@@ -536,12 +548,15 @@ impl FromStr for UserLocale {
 pub enum UserLocaleError {
     /// Empty or whitespace-only input.
     Empty,
+    /// Input does not match the `<lang>-<REGION>` shape.
+    Malformed(String),
 }
 
 impl fmt::Display for UserLocaleError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Empty => f.write_str("locale string is empty"),
+            Self::Malformed(raw) => write!(f, "locale `{raw}` is not BCP-47 `<lang>-<REGION>`"),
         }
     }
 }

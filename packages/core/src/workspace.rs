@@ -229,16 +229,22 @@ mod tests {
         std::fs::create_dir_all(at.join(".claude")).unwrap();
     }
 
-    /// Clear the memo cache so a test starts from a clean slate.
-    fn clear_cache() {
-        if let Ok(mut guard) = cache().lock() {
-            guard.clear();
+    /// Serialise tests that touch the process-wide memo cache and clear it
+    /// before the test body runs. The returned guard pins the lock for the
+    /// caller's scope, so sibling tests cannot race on the cache state mid-run.
+    #[must_use]
+    fn serialize_test() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let guard = LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Ok(mut cache_guard) = cache().lock() {
+            cache_guard.clear();
         }
+        guard
     }
 
     #[test]
     fn workspace_root_resolves_from_root_when_anchor_present() {
-        clear_cache();
+        let _guard = serialize_test();
         let dir = tempdir().unwrap();
         make_anchor(dir.path());
         let resolved = resolve_with_override(dir.path(), None).unwrap();
@@ -250,7 +256,7 @@ mod tests {
 
     #[test]
     fn workspace_root_resolves_from_subproject_ancestor_walk() {
-        clear_cache();
+        let _guard = serialize_test();
         let dir = tempdir().unwrap();
         make_anchor(dir.path());
         // 3 levels deep: <root>/apps/foo/src
@@ -265,7 +271,7 @@ mod tests {
 
     #[test]
     fn workspace_root_fails_without_anchor() {
-        clear_cache();
+        let _guard = serialize_test();
         let dir = tempdir().unwrap();
         // No mustard.json / .claude planted.
         let err = resolve_with_override(dir.path(), None).unwrap_err();
@@ -274,7 +280,7 @@ mod tests {
 
     #[test]
     fn workspace_root_fails_with_only_mustard_json() {
-        clear_cache();
+        let _guard = serialize_test();
         let dir = tempdir().unwrap();
         std::fs::write(dir.path().join("mustard.json"), b"{}").unwrap();
         let err = resolve_with_override(dir.path(), None).unwrap_err();
@@ -283,7 +289,7 @@ mod tests {
 
     #[test]
     fn workspace_root_fails_with_only_claude_dir() {
-        clear_cache();
+        let _guard = serialize_test();
         let dir = tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join(".claude")).unwrap();
         let err = resolve_with_override(dir.path(), None).unwrap_err();
@@ -292,7 +298,7 @@ mod tests {
 
     #[test]
     fn workspace_root_traverses_git_submodule() {
-        clear_cache();
+        let _guard = serialize_test();
         let dir = tempdir().unwrap();
         make_anchor(dir.path());
         // Plant an intermediate `.git/` (simulated submodule). The walker
@@ -308,7 +314,7 @@ mod tests {
 
     #[test]
     fn workspace_root_rejects_resolved_dot_claude_dot_claude() {
-        clear_cache();
+        let _guard = serialize_test();
         // Construct a contaminated start_dir: <root>/.claude/.claude. We
         // plant the anchor at <root>/.claude/ so the walker resolves to it
         // and the I1 guard fires.
@@ -327,7 +333,7 @@ mod tests {
 
     #[test]
     fn workspace_root_honors_env_override() {
-        clear_cache();
+        let _guard = serialize_test();
         let dir = tempdir().unwrap();
         make_anchor(dir.path());
         let other = tempdir().unwrap();
@@ -343,7 +349,7 @@ mod tests {
 
     #[test]
     fn workspace_root_rejects_invalid_env_override() {
-        clear_cache();
+        let _guard = serialize_test();
         let dir = tempdir().unwrap();
         // Override points at a directory that exists but has no anchor.
         let override_path = dir.path().to_string_lossy().into_owned();
@@ -354,7 +360,7 @@ mod tests {
 
     #[test]
     fn workspace_root_memoizes_same_input() {
-        clear_cache();
+        let _guard = serialize_test();
         let dir = tempdir().unwrap();
         make_anchor(dir.path());
         let first = resolve_with_override(dir.path(), None).unwrap();
@@ -373,7 +379,7 @@ mod tests {
         // the `unsafe_code` lint), so it only exercises the "var absent"
         // branch — the `Some(_)` branch is fully covered by
         // `workspace_root_honors_env_override` via the helper seam.
-        clear_cache();
+        let _guard = serialize_test();
         let dir = tempdir().unwrap();
         make_anchor(dir.path());
         if std::env::var(OVERRIDE_ENV).is_ok() {

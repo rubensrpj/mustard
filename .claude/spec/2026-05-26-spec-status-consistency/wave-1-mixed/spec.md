@@ -1,7 +1,7 @@
 # Wave 1 — sync único `spec.md` + `meta.json`
 
-### Stage: Plan
-### Outcome: Active
+### Stage: Close
+### Outcome: Completed
 ### Flags: 
 
 ## Contexto
@@ -12,10 +12,10 @@ Esta wave consolida tudo em **um helper único atômico** e remove o gate wave.
 
 ## Tarefas
 
-- [ ] **T1.1** — Extrair `write_spec_md` (linha ~318) e `write_meta_json` (linha ~181) de `spec_draft.rs` para um módulo público novo `apps/rt/src/run/spec_scaffold.rs`. Atualizar `spec_draft.rs` pra chamar via `use spec_scaffold::{write_spec_md, write_meta_json}`.
-- [ ] **T1.2** — Refatorar `tactical_fix_create.rs` pra usar `spec_scaffold::write_spec_md` e `write_meta_json`. Remover o scaffold inline atual. Garantir que o tactical-fix sempre escreve os três cabeçalhos canônicos.
-- [ ] **T1.3** — Criar função `sync_status(stage: Stage, outcome: Outcome, spec_path: &Path) -> Result<()>` em `spec_scaffold.rs` que reescreve **atomicamente** o cabeçalho do `spec.md` E o `meta.json` ao lado (mesma transação semântica). Substituir as duas funções separadas em `emit_pipeline.rs`.
-- [ ] **T1.4** — Remover o gate `should_sync_parent_header` (linha ~340 de `emit_pipeline.rs`). Toda transição que afeta status — incluindo as wave-level — chama `sync_status` pro arquivo correspondente (parent OU wave). Eventos `pipeline.wave.complete` chamam `sync_status` pra wave + `bump_parent_progress` pro parent.
+- [x] **T1.1** — Extrair `write_spec_md` (linha ~318) e `write_meta_json` (linha ~181) de `spec_draft.rs` para um módulo público novo `apps/rt/src/run/spec_scaffold.rs`. Atualizar `spec_draft.rs` pra chamar via `use spec_scaffold::{write_spec_md, write_meta_json}`.
+- [x] **T1.2** — Refatorar `tactical_fix_create.rs` pra usar `spec_scaffold::write_spec_md` e `write_meta_json`. Remover o scaffold inline atual. Garantir que o tactical-fix sempre escreve os três cabeçalhos canônicos.
+- [x] **T1.3** — Criar função `sync_status(stage: Stage, outcome: Outcome, spec_path: &Path) -> Result<()>` em `spec_scaffold.rs` que reescreve **atomicamente** o cabeçalho do `spec.md` E o `meta.json` ao lado (mesma transação semântica). Substituir as duas funções separadas em `emit_pipeline.rs`.
+- [x] **T1.4** — Remover o gate `should_sync_parent_header` (linha ~340 de `emit_pipeline.rs`). Toda transição que afeta status — incluindo as wave-level — chama `sync_status` pro arquivo correspondente (parent OU wave). Eventos `pipeline.wave.complete` chamam `sync_status` pra wave + `bump_parent_progress` pro parent.
 
 ## Critérios de Aceitação
 

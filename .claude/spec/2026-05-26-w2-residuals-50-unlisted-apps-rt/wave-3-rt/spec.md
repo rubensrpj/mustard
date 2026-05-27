@@ -1,4 +1,7 @@
 # W3 — run/ skills + spec helpers + scan/ sweep (24 violations / 13 files)
+### Stage: Close
+### Outcome: Completed
+### Flags: 
 
 ## Contexto
 

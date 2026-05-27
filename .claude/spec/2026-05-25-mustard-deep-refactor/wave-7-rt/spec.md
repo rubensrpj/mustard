@@ -1,4 +1,7 @@
 # W7 — Shared memory hardening (cross-session, scope-by-cluster)
+### Stage: Plan
+### Outcome: Active
+### Flags: 
 
 ## Contexto
 

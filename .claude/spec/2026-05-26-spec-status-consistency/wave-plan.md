@@ -1,7 +1,7 @@
 # Plano de ondas — spec-status-consistency
 
-### Stage: Plan
-### Outcome: Active
+### Stage: Close
+### Outcome: Completed
 ### Flags: 
 
 ## Tabela de ondas

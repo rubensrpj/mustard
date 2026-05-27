@@ -1,4 +1,7 @@
 # W12 — Close and archive
+### Stage: Plan
+### Outcome: Active
+### Flags: 
 
 ## Contexto
 

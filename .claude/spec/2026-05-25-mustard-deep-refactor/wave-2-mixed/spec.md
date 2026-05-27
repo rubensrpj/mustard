@@ -1,4 +1,7 @@
 # W2 — Limpeza profunda da `.claude/` raiz do Mustard
+### Stage: Plan
+### Outcome: Active
+### Flags: 
 
 ## Contexto
 

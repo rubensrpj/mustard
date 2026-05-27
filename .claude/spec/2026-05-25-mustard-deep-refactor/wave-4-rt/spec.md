@@ -1,4 +1,7 @@
 # W4 — Arquivamento das 136 specs históricas
+### Stage: Plan
+### Outcome: Active
+### Flags: 
 
 ## Contexto
 

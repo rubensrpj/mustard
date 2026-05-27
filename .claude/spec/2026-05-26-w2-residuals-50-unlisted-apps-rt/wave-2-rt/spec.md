@@ -1,4 +1,7 @@
 # W2 — run/ emit + memory + amend sweep (16 violations / 8 files)
+### Stage: Close
+### Outcome: Completed
+### Flags: 
 
 ## Contexto
 

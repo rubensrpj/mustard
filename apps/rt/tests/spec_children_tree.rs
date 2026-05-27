@@ -58,10 +58,10 @@ fn seed(store: &SqliteEventStore, spec: &str, ts: &str, kind: &str, payload: Val
 }
 
 /// Seed a non-pipeline event by writing a one-line NDJSON file directly under
-/// `<project>/.claude/spec/<spec>/events/`. Matches the W5 writer shape so the
+/// `<project>/.claude/spec/<spec>/.events/`. Matches the W5 writer shape so the
 /// timeline reader picks it up.
 fn seed_ndjson(project: &Path, spec: &str, ts: &str, kind: &str, payload: Value) {
-    let dir = project.join(".claude").join("spec").join(spec).join("events");
+    let dir = project.join(".claude").join("spec").join(spec).join(".events");
     std::fs::create_dir_all(&dir).expect("events dir");
     let path = dir.join("seed.ndjson");
     let line = serde_json::to_string(&json!({

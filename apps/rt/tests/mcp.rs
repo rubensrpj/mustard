@@ -207,7 +207,7 @@ fn seed_db() -> (TempDir, std::path::PathBuf, std::path::PathBuf) {
         .join(".claude")
         .join("spec")
         .join("demo-spec")
-        .join("events");
+        .join(".events");
     std::fs::create_dir_all(&events_dir).expect("events dir");
     let body = format!(
         "{}\n{}\n",

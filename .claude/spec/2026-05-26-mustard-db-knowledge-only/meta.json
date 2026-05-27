@@ -1,0 +1,10 @@
+{
+  "stage": "Close",
+  "outcome": "Cancelled",
+  "phase": null,
+  "scope": "full",
+  "lang": "pt-BR",
+  "checkpoint": "2026-05-26T00:00:00Z",
+  "parent": "2026-05-26-no-sqlite-git-source-of-truth",
+  "cancelled_reason": "Absorved by no-sqlite-git-source-of-truth (deletes DB entirely instead of shrinking to 5 tables)"
+}

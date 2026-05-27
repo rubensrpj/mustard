@@ -226,12 +226,24 @@ const TRANSCRIPT_WATCH_ENV: &str = "MUSTARD_TRANSCRIPT_WATCH";
 fn spawn_otel_collector(cwd: &str) {
     let pid_path = harness_dir(cwd).join(OTEL_PID_FILE);
 
-    // Idempotence: if a previous SessionStart spawned the collector and the
-    // process is still alive, do nothing — this project already owns the port.
-    // A stale PID file (process gone) is overwritten by the fresh spawn below.
+    // Idempotence + rebuild detection: if a previous SessionStart spawned the
+    // collector and the process is still alive, normally we skip. BUT a stale
+    // daemon from an older `mustard-rt.exe` build keeps an exclusive file lock
+    // on the binary that traps any subsequent `cargo test`/`cargo build`. So
+    // compare the running exe's mtime with the PID-file's mtime: if the exe is
+    // newer than the PID file, a rebuild has happened since the spawn — kill
+    // the stale daemon and respawn fresh. Otherwise the existing daemon is
+    // current; honour the idempotence contract and skip.
     if let Some(existing) = read_pid(&pid_path) {
         if is_process_alive(existing) {
-            return;
+            if exe_rebuilt_since_pid_file(&pid_path) {
+                eprintln!(
+                    "session_start: OTEL collector PID {existing} predates current exe; killing stale daemon and respawning"
+                );
+                kill_pid(existing);
+            } else {
+                return;
+            }
         }
     }
 
@@ -305,6 +317,32 @@ fn spawn_transcript_watcher() {
 /// Read a PID from `path`. Returns `None` for any IO/parse failure.
 fn read_pid(path: &Path) -> Option<u32> {
     fs::read_to_string(path).ok()?.trim().parse().ok()
+}
+
+/// `true` when the running `mustard-rt` executable is more recent than the
+/// PID file at `pid_path`. Used to detect a rebuild after the last spawn so
+/// the daemon (which holds an exclusive lock on `target/debug/mustard-rt.exe`
+/// on Windows) does not strand subsequent `cargo test`/`cargo build` runs.
+/// Fail-open: any IO error degrades to `false`, preserving prior idempotent
+/// behaviour for callers.
+#[must_use]
+fn exe_rebuilt_since_pid_file(pid_path: &Path) -> bool {
+    let Ok(exe) = std::env::current_exe() else {
+        return false;
+    };
+    let Ok(exe_meta) = std::fs::metadata(&exe) else {
+        return false;
+    };
+    let Ok(pid_meta) = std::fs::metadata(pid_path) else {
+        return false;
+    };
+    let Ok(exe_mtime) = exe_meta.modified() else {
+        return false;
+    };
+    let Ok(pid_mtime) = pid_meta.modified() else {
+        return false;
+    };
+    exe_mtime > pid_mtime
 }
 
 /// Free the OTLP port so THIS project's collector can bind it. Finds whatever

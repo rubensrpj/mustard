@@ -143,7 +143,7 @@ fn count_events(project: &Path, spec: &str, kind: &str) -> usize {
         .iter()
         .filter(|e| e.event == kind)
         .count();
-    let events_dir = project.join(".claude").join("spec").join(spec).join("events");
+    let events_dir = project.join(".claude").join("spec").join(spec).join(".events");
     let ndjson_count = mustard_core::projection::read_harness_events_from_ndjson_dir(
         &events_dir,
     )
@@ -279,7 +279,7 @@ fn scenario_2_build_red_skips() {
     // W5/W6: `hygiene.*` is a non-pipeline family routed to per-spec NDJSON
     // (see `event_route::classify_kind`); read it from the NDJSON sink, not
     // from `SqliteEventStore::query` (which only sees `pipeline_events`).
-    let events_dir = project.join(".claude").join("spec").join(spec).join("events");
+    let events_dir = project.join(".claude").join("spec").join(spec).join(".events");
     let skipped: Vec<_> = mustard_core::projection::read_harness_events_from_ndjson_dir(
         &events_dir,
     )
@@ -318,7 +318,7 @@ fn scenario_3_abandoned_suspect_detect() {
 
     // W5/W6: `hygiene.*` is non-pipeline → per-spec NDJSON. Reading via
     // `SqliteEventStore::query` would always return 0 for this family.
-    let events_dir = project.join(".claude").join("spec").join(spec).join("events");
+    let events_dir = project.join(".claude").join("spec").join(spec).join(".events");
     let detected: Vec<_> = mustard_core::projection::read_harness_events_from_ndjson_dir(
         &events_dir,
     )

@@ -1,4 +1,7 @@
 # W8 — Context injection optimization (scope-by-spec + auto-capture + skill-resolve signal)
+### Stage: Plan
+### Outcome: Active
+### Flags: 
 
 ## Contexto
 

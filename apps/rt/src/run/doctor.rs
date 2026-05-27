@@ -140,6 +140,7 @@ const KNOWN_RUN_SUBCOMMANDS: &[&str] = &[
     "unhook",
     "rehook",
     "plan-from-spec",
+    "spec-status-backfill",
 ];
 
 /// The Mustard-owned folders that `mustard-cli update` regenerates.
@@ -1059,6 +1060,189 @@ fn render_report_json(results: &[CheckResult]) {
 }
 
 // ---------------------------------------------------------------------------
+// Check: status-consistency (W2 — spec-status-consistency)
+// ---------------------------------------------------------------------------
+
+/// Check every spec directory under `.claude/spec/` for:
+/// - Missing `### Stage:` / `### Outcome:` headers in `spec.md`.
+/// - Divergence between `spec.md` headers and `meta.json` fields.
+/// - Invalid `(Stage, Outcome)` combinations.
+///
+/// Recurses into `wave-N-*/` subdirectories within each spec.
+/// Returns a single FAIL result listing every problematic path, or OK when
+/// all specs are consistent.
+fn check_status_consistency(claude_dir: &Path) -> CheckResult {
+    use mustard_core::{header_field, read_meta};
+
+    /// Valid `(stage_label, outcome_label)` pairs.
+    fn is_valid_combo(stage: &str, outcome: &str) -> bool {
+        matches!(
+            (stage, outcome),
+            ("Plan" | "Analyze" | "Execute" | "QaReview" | "Close", "Active")
+                | ("Close", "Completed" | "Cancelled" | "Abandoned" | "Superseded" | "Absorbed")
+        )
+    }
+
+    /// Check one (spec.md, meta.json) pair. Returns a list of FAIL strings.
+    fn check_pair(spec_md_path: &std::path::Path) -> Vec<String> {
+        let Some(spec_dir) = spec_md_path.parent() else {
+            return vec![format!("{}: no parent dir", spec_md_path.display())];
+        };
+        let label = spec_md_path.display().to_string();
+
+        let content = match std::fs::read_to_string(spec_md_path) {
+            Ok(c) => c,
+            Err(e) => return vec![format!("{label}: cannot read spec.md: {e}")],
+        };
+
+        let stage_in_spec = header_field(&content, "Stage");
+        let outcome_in_spec = header_field(&content, "Outcome");
+
+        // Missing headers.
+        let (Some(stage_spec), Some(outcome_spec)) = (stage_in_spec, outcome_in_spec) else {
+            return vec![format!("{label}: missing headers in spec.md")];
+        };
+
+        // Invalid combo.
+        if !is_valid_combo(&stage_spec, &outcome_spec) {
+            return vec![format!("{label}: invalid combo stage={stage_spec:?} outcome={outcome_spec:?}")];
+        }
+
+        // meta.json divergence.
+        let meta_path = spec_dir.join("meta.json");
+        if !meta_path.exists() {
+            return vec![format!("{label}: meta.json missing")];
+        }
+        let meta = read_meta(&meta_path).unwrap_or_default();
+        let stage_meta = meta.stage.as_deref().unwrap_or("").to_string();
+        let outcome_meta = meta.outcome.as_deref().unwrap_or("").to_string();
+
+        if stage_meta.is_empty() || outcome_meta.is_empty() {
+            return vec![format!("{label}: meta.json missing stage/outcome fields \
+                (stage={stage_meta:?}, outcome={outcome_meta:?})")];
+        }
+
+        if !stage_spec.eq_ignore_ascii_case(&stage_meta)
+            || !outcome_spec.eq_ignore_ascii_case(&outcome_meta)
+        {
+            return vec![format!("{label}: stage divergence: spec.md={stage_spec:?}/{outcome_spec:?}, \
+                meta.json={stage_meta:?}/{outcome_meta:?}")];
+        }
+
+        vec![]
+    }
+
+    let spec_root = claude_dir.join("spec");
+    let Ok(entries) = fs::read_dir(&spec_root) else {
+        return CheckResult::skip("status-consistency", "no .claude/spec/ directory");
+    };
+
+    let mut fails: Vec<String> = Vec::new();
+    let mut scanned = 0usize;
+
+    for entry in entries {
+        if !entry.is_dir {
+            continue;
+        }
+        // Check parent spec.md.
+        let parent_spec_md = entry.path.join("spec.md");
+        if parent_spec_md.exists() {
+            scanned += 1;
+            fails.extend(check_pair(&parent_spec_md));
+        }
+        // Recurse into wave-N-* subdirectories.
+        if let Ok(sub_entries) = fs::read_dir(&entry.path) {
+            for sub in sub_entries {
+                if !sub.is_dir {
+                    continue;
+                }
+                // Only wave subdirs: name starts with "wave-" followed by a digit.
+                let name = &sub.file_name;
+                let is_wave = name.starts_with("wave-")
+                    && name.chars().nth(5).is_some_and(|c| c.is_ascii_digit());
+                if !is_wave {
+                    continue;
+                }
+                let wave_spec_md = sub.path.join("spec.md");
+                if wave_spec_md.exists() {
+                    scanned += 1;
+                    fails.extend(check_pair(&wave_spec_md));
+                }
+            }
+        }
+    }
+
+    if scanned == 0 {
+        return CheckResult::skip("status-consistency", "no spec.md files found");
+    }
+    if fails.is_empty() {
+        let mut r = CheckResult::ok("status-consistency");
+        r.details.push(format!("scanned {scanned} spec(s) — all consistent"));
+        r
+    } else {
+        CheckResult::fail("status-consistency", fails)
+    }
+}
+
+#[cfg(test)]
+mod status_consistency_tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    fn make_spec_dir(
+        root: &std::path::Path,
+        name: &str,
+        spec_stage: &str,
+        spec_outcome: &str,
+        meta_stage: &str,
+        meta_outcome: &str,
+    ) {
+        let spec_dir = root.join(".claude").join("spec").join(name);
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        std::fs::write(
+            spec_dir.join("spec.md"),
+            format!("# {name}\n\n### Stage: {spec_stage}\n### Outcome: {spec_outcome}\n### Flags: \n\n## Body\n"),
+        )
+        .unwrap();
+        std::fs::write(
+            spec_dir.join("meta.json"),
+            format!(r#"{{"stage":"{meta_stage}","outcome":"{meta_outcome}"}}"#),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn doctor_status_consistency_closed_followup_ok() {
+        let dir = tempdir().unwrap();
+        make_spec_dir(dir.path(), "fu-spec", "Close", "Active", "Close", "Active");
+        let claude_dir = dir.path().join(".claude");
+        let result = check_status_consistency(&claude_dir);
+        assert_eq!(result.status, Status::Ok, "{:?}", result.details);
+    }
+
+    #[test]
+    fn doctor_status_consistency_invalid_combo_fail() {
+        let dir = tempdir().unwrap();
+        make_spec_dir(dir.path(), "bad-spec", "Analyze", "Cancelled", "Analyze", "Cancelled");
+        let claude_dir = dir.path().join(".claude");
+        let result = check_status_consistency(&claude_dir);
+        assert_eq!(result.status, Status::Fail, "{:?}", result.details);
+        assert!(result.details.iter().any(|d| d.contains("invalid combo")), "{:?}", result.details);
+    }
+
+    #[test]
+    fn doctor_status_consistency_divergence_fail() {
+        let dir = tempdir().unwrap();
+        make_spec_dir(dir.path(), "div-spec", "Execute", "Active", "Plan", "Active");
+        let claude_dir = dir.path().join(".claude");
+        let result = check_status_consistency(&claude_dir);
+        assert_eq!(result.status, Status::Fail, "{:?}", result.details);
+        let msg = result.details.join(" ");
+        assert!(msg.contains("Execute") && msg.contains("Plan"), "{msg}");
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
 
@@ -1097,10 +1281,11 @@ pub fn run(opts: DoctorOpts) {
         let result = match check_name.as_str() {
             "skill-discovery" => run_skill_discovery_check(&cwd),
             "wave-integrity" => check_wave_integrity(&claude_dir),
+            "status-consistency" => check_status_consistency(&claude_dir),
             other => {
                 eprintln!(
                     "doctor: unknown check '{other}'. Known: skill-discovery, \
-                     wave-integrity, claude-paths, workspace-leaks, i1"
+                     wave-integrity, claude-paths, workspace-leaks, i1, status-consistency"
                 );
                 std::process::exit(1);
             }
@@ -1126,6 +1311,8 @@ pub fn run(opts: DoctorOpts) {
         check_wave_integrity(&claude_dir),
         // skill-discovery is always included in the full run (advisory).
         run_skill_discovery_check(&cwd),
+        // W2 spec-status-consistency — always in the full run.
+        check_status_consistency(&claude_dir),
     ];
 
     if opts.residue {

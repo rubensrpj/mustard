@@ -1,12 +1,14 @@
 # mustard.db apenas knowledge + memory
 
-### Stage: Plan
-### Outcome: Active
+### Stage: Close
+### Outcome: Cancelled
 ### Flags:
-### Phase: PLAN
 ### Scope: full
 ### Checkpoint: 2026-05-26T00:00:00Z
 ### Lang: pt-BR
+### Parent: [[2026-05-26-no-sqlite-git-source-of-truth]]
+
+> **CANCELLED 2026-05-26** — Absorvida por `[[2026-05-26-no-sqlite-git-source-of-truth]]`. Esta spec propunha shrink do `mustard.db` mantendo 5 tabelas (knowledge_patterns + memory_*); a spec sucessora **elimina o DB por completo** e move knowledge/memory para markdown atomic versionado em git. Reescrever os emitters duas vezes (uma para shrink, outra para delete) duplicaria trabalho — daí a absorção. Sem migração de dados (dev phase, sem usuários em prod).
 
 ## PRD
 

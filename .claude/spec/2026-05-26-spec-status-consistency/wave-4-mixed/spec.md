@@ -1,7 +1,7 @@
 # Wave 4 — backfill one-shot `spec-status-backfill`
 
-### Stage: Plan
-### Outcome: Active
+### Stage: Close
+### Outcome: Completed
 ### Flags: 
 
 ## Contexto
@@ -12,16 +12,16 @@ Resultado esperado: as 4 specs problemáticas (rtk-quiet, dashboard-i18n, templa
 
 ## Tarefas
 
-- [ ] **T4.1** — Criar `apps/rt/src/run/spec_status_backfill.rs` com função `run(claude_paths: &ClaudePaths, source: BackfillSource) -> Result<BackfillReport>`. `BackfillSource` é enum `Spec | Meta` indicando qual lado é a fonte de verdade.
-- [ ] **T4.2** — Algoritmo: itera `.claude/spec/*/`. Para cada spec:
+- [x] **T4.1** — Criar `apps/rt/src/run/spec_status_backfill.rs` com função `run(claude_paths: &ClaudePaths, source: BackfillSource) -> Result<BackfillReport>`. `BackfillSource` é enum `Spec | Meta` indicando qual lado é a fonte de verdade.
+- [x] **T4.2** — Algoritmo: itera `.claude/spec/*/`. Para cada spec:
   - Se `source=Spec`: lê `spec.md`, extrai (stage, outcome), reescreve `meta.json` com esses valores (preserva outros campos).
   - Se `source=Meta`: lê `meta.json`, reescreve `spec.md` header com (stage, outcome) preservando o resto do corpo.
   - Recursa em `wave-N-*/spec.md` + `wave-N-*/meta.json`.
   - Casos `closed-followup` (Close+Active) ficam preservados (não "normaliza" pra Close+Completed).
-- [ ] **T4.3** — CLI: `mustard-rt run spec-status-backfill [--source spec|meta] [--dry-run] [--spec <name>]`. `--dry-run` imprime as mudanças sem aplicar. `--spec` restringe a uma spec só.
-- [ ] **T4.4** — Output JSON com `{ specs_scanned: N, specs_changed: M, files_written: [...], conflicts: [...] }`. Conflitos = casos em que `spec.md` E `meta.json` discordam (precisa do `--source` explícito para resolver).
-- [ ] **T4.5** — Registrar subcomando em `apps/rt/src/run/mod.rs` + dispatch em `apps/rt/src/main.rs`.
-- [ ] **T4.6** — Rodar `spec-status-backfill --source spec` uma vez sobre as 12 specs atuais. Verificar que o `doctor --check status-consistency` passa depois.
+- [x] **T4.3** — CLI: `mustard-rt run spec-status-backfill [--source spec|meta] [--dry-run] [--spec <name>]`. `--dry-run` imprime as mudanças sem aplicar. `--spec` restringe a uma spec só.
+- [x] **T4.4** — Output JSON com `{ specs_scanned: N, specs_changed: M, files_written: [...], conflicts: [...] }`. Conflitos = casos em que `spec.md` E `meta.json` discordam (precisa do `--source` explícito para resolver).
+- [x] **T4.5** — Registrar subcomando em `apps/rt/src/run/mod.rs` + dispatch em `apps/rt/src/main.rs`.
+- [x] **T4.6** — Rodar `spec-status-backfill --source spec` uma vez sobre as 12 specs atuais. Verificar que o `doctor --check status-consistency` passa depois.
 
 ## Critérios de Aceitação
 

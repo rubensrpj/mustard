@@ -1,7 +1,7 @@
 # Wave 5 — QA + teste de integração end-to-end
 
-### Stage: Plan
-### Outcome: Active
+### Stage: Close
+### Outcome: Completed
 ### Flags: 
 
 ## Contexto
@@ -10,15 +10,15 @@ Validar que as quatro waves anteriores fecham os 6 critérios de aceitação (AC
 
 ## Tarefas
 
-- [ ] **T5.1** — Escrever `apps/rt/tests/status_sync_integration.rs` que:
+- [x] **T5.1** — Escrever `apps/rt/tests/status_sync_integration.rs` que:
   - Cria spec teste via `spec_draft` (5 waves, mixed).
   - Emite `pipeline.stage: Execute` no parent.
   - Para cada wave 1..5: emite `pipeline.wave.complete`.
   - Emite `pipeline.status: closed` no parent.
   - Verifica que: (a) parent `spec.md` + parent `meta.json` ambos com `stage=Close, outcome=Completed`; (b) cada `wave-N-*/spec.md` + `wave-N-*/meta.json` ambos com `stage=Close, outcome=Completed`.
-- [ ] **T5.2** — Rodar os 6 ACs declarados na spec-raiz, em ordem. Reportar pass/fail por AC.
-- [ ] **T5.3** — Rodar `cargo clippy -p mustard-rt -- -D warnings` e garantir zero warnings.
-- [ ] **T5.4** — Atualizar `templates/refs/feature/spec-language.md` (se existir e descrever o fluxo de status) — registrar que toda transição agora sincroniza spec.md+meta.json juntos. Surgical change.
+- [x] **T5.2** — Rodar os 6 ACs declarados na spec-raiz, em ordem. Reportar pass/fail por AC.
+- [x] **T5.3** — Rodar `cargo clippy -p mustard-rt -- -D warnings` e garantir zero warnings.
+- [x] **T5.4** — Atualizar `templates/refs/feature/spec-language.md` (se existir e descrever o fluxo de status) — registrar que toda transição agora sincroniza spec.md+meta.json juntos. Surgical change.
 
 ## Critérios de Aceitação
 

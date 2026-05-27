@@ -1,4 +1,7 @@
 # W6 — Templates cuts (após W1 enxugou os commands)
+### Stage: Plan
+### Outcome: Active
+### Flags: 
 
 ## Contexto
 

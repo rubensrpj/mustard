@@ -1,7 +1,7 @@
 # Wave 3 — picker honesto (`active-specs`)
 
-### Stage: Plan
-### Outcome: Active
+### Stage: Close
+### Outcome: Completed
 ### Flags: 
 
 ## Contexto
@@ -12,10 +12,10 @@ Esta wave torna o picker honesto: lista **todas** as specs com Stage∈{Plan,Exe
 
 ## Tarefas
 
-- [ ] **T3.1** — Em `active_specs.rs:136-138`, substituir o filtro que descarta specs sem `stage`/`outcome` por inclusão com sigla `??` na coluna Estágio e flag `⚠ malformed` no Status. Spec aparece na lista — usuário decide o que fazer.
-- [ ] **T3.2** — Detectar combinação `Stage=Close + Outcome=Active` (que é `closed-followup` por mapping) e renderizar como sigla **`CLR→fu`** na coluna Estágio + texto `closed-followup` na coluna Status. Não excluir do listing.
-- [ ] **T3.3** — Atualizar a legenda das siglas (impressa no rodapé do picker) pra incluir `??` (malformed) e `CLR→fu` (closed-followup) — seguindo a memória [[feedback_siglas_always_with_legend]].
-- [ ] **T3.4** — Teste unitário: passar um diretório com 3 specs (uma válida em Plan, uma `closed-followup`, uma malformed) e verificar que as três aparecem na saída JSON, cada uma com sigla correta.
+- [x] **T3.1** — Em `active_specs.rs:136-138`, substituir o filtro que descarta specs sem `stage`/`outcome` por inclusão com sigla `??` na coluna Estágio e flag `⚠ malformed` no Status. Spec aparece na lista — usuário decide o que fazer.
+- [x] **T3.2** — Detectar combinação `Stage=Close + Outcome=Active` (que é `closed-followup` por mapping) e renderizar como sigla **`CLR→fu`** na coluna Estágio + texto `closed-followup` na coluna Status. Não excluir do listing.
+- [x] **T3.3** — Atualizar a legenda das siglas (impressa no rodapé do picker) pra incluir `??` (malformed) e `CLR→fu` (closed-followup) — seguindo a memória [[feedback_siglas_always_with_legend]].
+- [x] **T3.4** — Teste unitário: passar um diretório com 3 specs (uma válida em Plan, uma `closed-followup`, uma malformed) e verificar que as três aparecem na saída JSON, cada uma com sigla correta.
 
 ## Critérios de Aceitação
 

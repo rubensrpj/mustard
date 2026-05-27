@@ -1,4 +1,7 @@
 # W5 — rt-new-subcommands (após W1)
+### Stage: Plan
+### Outcome: Active
+### Flags: 
 
 ## Contexto
 

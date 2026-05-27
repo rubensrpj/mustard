@@ -1,4 +1,7 @@
 # W5 — Tests migration + one-shot cleanup + doctor verify
+### Stage: Close
+### Outcome: Completed
+### Flags: 
 
 ## Contexto
 

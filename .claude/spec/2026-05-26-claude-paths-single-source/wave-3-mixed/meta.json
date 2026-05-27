@@ -1,14 +1,14 @@
 {
-  "stage": "Close",
-  "outcome": "Completed",
+  "stage": "Execute",
+  "outcome": "Active",
   "phase": "CLOSE",
   "scope": "medium",
   "lang": "pt-BR",
   "checkpoint": "2026-05-26T13:00:00.000Z",
-  "isWavePlan": false,
   "parent": "2026-05-26-claude-paths-single-source",
-  "wave": 3,
-  "role": "mixed",
+  "isWavePlan": false,
   "ac_pass": 9,
-  "ac_total": 9
+  "ac_total": 9,
+  "role": "mixed",
+  "wave": 3
 }

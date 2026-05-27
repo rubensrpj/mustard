@@ -113,6 +113,7 @@ mod spec_sections;
 pub mod spec_slug;
 mod spec_draft;
 pub mod spec_scaffold;
+pub mod spec_status_backfill;
 mod spec_memory;
 mod spec_validate;
 pub(crate) mod skill_resolve;
@@ -1443,6 +1444,22 @@ pub enum RunCmd {
         #[arg(long)]
         spec: Option<String>,
     },
+    /// W4 spec-status-consistency — one-shot alignment of spec.md ↔ meta.json
+    /// headers across all specs. Default source is `spec` (spec.md is
+    /// authoritative; meta.json is rewritten to match). With `--source meta`
+    /// the direction reverses. `--dry-run` previews without writing.
+    #[command(name = "spec-status-backfill")]
+    SpecStatusBackfill {
+        /// Authoritative source: `spec` (default) or `meta`.
+        #[arg(long, default_value = "spec")]
+        source: String,
+        /// Preview changes without writing any files.
+        #[arg(long)]
+        dry_run: bool,
+        /// Restrict the run to a single spec slug.
+        #[arg(long)]
+        spec: Option<String>,
+    },
     /// W5.T5.16 — Consolidate per-phase prelude (sync-detect + diff-context).
     #[command(name = "pipeline-prelude")]
     PipelinePrelude {
@@ -2030,5 +2047,14 @@ pub fn dispatch(cmd: RunCmd) {
         RunCmd::PipelinePrelude { spec, phase } => {
             pipeline_prelude::run(pipeline_prelude::PreludeOpts { spec, phase });
         }
+        RunCmd::SpecStatusBackfill { source, dry_run, spec } => {
+            spec_status_backfill::run_cli(spec_status_backfill::BackfillOpts {
+                source,
+                dry_run,
+                spec,
+                cwd: None,
+            });
+        }
+
     }
 }
