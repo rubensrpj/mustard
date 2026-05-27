@@ -1,7 +1,7 @@
 # Hooks de amend + spec hygiene + auto-capture para filesystem
 
-### Stage: Plan
-### Outcome: Active
+### Stage: Close
+### Outcome: Completed
 ### Flags:
 ### Scope: light
 ### Checkpoint: 2026-05-27T10:00:00Z
@@ -20,8 +20,8 @@ Sub-spec de [[2026-05-26-no-sqlite-git-source-of-truth]] — wave 3C (renumbered
 
 ## Critérios de Aceitação
 
-- [ ] AC-3C-1: `cargo build -p mustard-rt` passa após migração. Command: `cargo build -p mustard-rt`
-- [ ] AC-3C-2: Nenhum dos 5 arquivos referencia `SqliteEventStore` / `sqlite_store` / `memory_sqlite`. Command: `bash -c "! git grep -nE 'SqliteEventStore|sqlite_store|memory_sqlite' -- apps/rt/src/hooks/amend_capture.rs apps/rt/src/hooks/spec_hygiene.rs apps/rt/src/hooks/auto_capture_summary.rs apps/rt/src/hooks/prompt_gate.rs apps/rt/src/hooks/path_guard.rs"`
+- [x] AC-3C-1: `cargo build -p mustard-rt` passa após migração. Command: `cargo build -p mustard-rt`
+- [x] AC-3C-2: Nenhum dos 5 arquivos referencia `SqliteEventStore` / `sqlite_store` / `memory_sqlite`. Command: `bash -c "! git grep -nE 'SqliteEventStore|sqlite_store|memory_sqlite' -- apps/rt/src/hooks/amend_capture.rs apps/rt/src/hooks/spec_hygiene.rs apps/rt/src/hooks/auto_capture_summary.rs apps/rt/src/hooks/prompt_gate.rs apps/rt/src/hooks/path_guard.rs"`
 
 ## Plano
 
@@ -52,3 +52,7 @@ Depende de W1A+W1B+W1C e do batch W2 (já comitado em `dev_rubens`). `summary::w
 - Invariante decrescente: após commit `git grep -lE "SqliteEventStore|sqlite_store|memory_sqlite"` DEVE decrescer
 - `.amend-window.json` versionado? Sim — vive ao lado do spec.md, viaja em git; é estado da spec
 - Commit message sugerido: `feat(wave-3/rt): W3C — amend+spec-hygiene+auto-capture hooks via filesystem+NDJSON`
+
+<!-- wikilinks-footer-start -->
+- [2026-05-26-no-sqlite-git-source-of-truth](?) ⚠ não resolvido
+<!-- wikilinks-footer-end -->
