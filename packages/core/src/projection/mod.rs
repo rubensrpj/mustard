@@ -6,8 +6,9 @@
 //! event store, and never panic.
 //!
 //! This is what makes the crate testable without IO: a test seeds a `Vec`,
-//! calls the projection, asserts the view. The [`reader`](crate::reader)
-//! layer is a thin shim that just supplies the slice from `SQLite`.
+//! calls the projection, asserts the view. Production callers in `apps/rt`
+//! and `apps/dashboard` supply the slice via
+//! [`read_workspace_events`] (NDJSON walker) before invoking the projection.
 
 mod card;
 mod quality;
@@ -74,11 +75,10 @@ pub fn ndjson_to_harness(e: Event) -> HarnessEvent {
 /// unreadable files and malformed lines are silently skipped — telemetry is
 /// never load-bearing, the projection callers always render *something*.
 ///
-/// W8A-2 (no-sqlite Wave 8): the single canonical replacement for
-/// `SqliteEventStore::for_project(...).replay()`. Both `apps/rt` and the
-/// dashboard Tauri layer consume this — keeping it in `mustard-core` keeps
-/// the projection inputs identical across the two consumers (the regression
-/// W6 caught when the dashboard had its own copy).
+/// W8A-2 (no-sqlite Wave 8): the single canonical event-slice loader for the
+/// crate. Both `apps/rt` and the dashboard Tauri layer consume this — keeping
+/// it in `mustard-core` keeps the projection inputs identical across the two
+/// consumers (the regression W6 caught when the dashboard had its own copy).
 #[must_use]
 pub fn read_workspace_events(project_root: &Path) -> Vec<HarnessEvent> {
     let Ok(paths) = ClaudePaths::for_project(project_root) else {

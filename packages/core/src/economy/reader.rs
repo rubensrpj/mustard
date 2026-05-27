@@ -1,9 +1,9 @@
 //! NDJSON-backed economy readers.
 //!
 //! W7A of [[2026-05-26-no-sqlite-git-source-of-truth]] migrated every reader
-//! off `rusqlite::Connection`. Each function now takes the project root
-//! [`Path`] + an [`EconomyScope`] and walks the per-spec NDJSON event log
-//! under `<project_root>/.claude/spec/*/.events/*.ndjson` (plus the
+//! off the legacy SQLite connection. Each function now takes the project
+//! root [`Path`] + an [`EconomyScope`] and walks the per-spec NDJSON event
+//! log under `<project_root>/.claude/spec/*/.events/*.ndjson` (plus the
 //! cross-spec session sink at `<project_root>/.claude/.session/*/.events/*.ndjson`).
 //!
 //! Event kinds consumed by each function:

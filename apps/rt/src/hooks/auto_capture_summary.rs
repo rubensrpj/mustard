@@ -9,14 +9,13 @@
 //! `crate::run::memory::insert_agent_memory`. The hook never blocks — it is
 //! a pure [`Observer`].
 //!
-//! ## W3C migration
+//! ## W3C → W4B migration
 //!
 //! `emit_economy_operation` routes economy events via
-//! `crate::run::event_route::emit` (NDJSON path) instead of the old SQLite
-//! event sink. The `persist` function still writes `agent_memory` via a direct
-//! `rusqlite::Connection` to the dedicated `mustard.db` — that write-path is
-//! not part of W3C's event-SQLite removal scope (agent_memory is not an event
-//! table).
+//! `crate::run::event_route::emit` (NDJSON path). W4B then moved the
+//! `agent_memory` write-path off SQLite onto markdown rows under
+//! `.claude/memory/agent/` via `crate::run::memory::persist_agent_memory_md`,
+//! so no `rusqlite` connection is opened from this module.
 //!
 //! ## Fail-open
 //!

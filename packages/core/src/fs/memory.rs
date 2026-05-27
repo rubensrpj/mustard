@@ -1,8 +1,7 @@
 //! [`FakeFs`] — an in-memory [`Fs`](super::Fs) for filesystem-free unit tests.
 //!
-//! Mirrors the [`InMemorySpecReader`](crate::reader::memory::InMemorySpecReader)
-//! style: state lives behind an [`RwLock`] so the trait's `&self` methods can
-//! mutate, and the type is `Send + Sync`. A test injects a `FakeFs` wherever a
+//! State lives behind an [`RwLock`] so the trait's `&self` methods can mutate
+//! and the type is `Send + Sync`. A test injects a `FakeFs` wherever a
 //! `&dyn Fs` is taken, asserting on filesystem effects without a `tempdir`.
 //!
 //! It is intentionally a *flat* path → bytes map with a synthetic directory

@@ -586,11 +586,11 @@ pub struct SpecSummary {
     pub ac_total: u32,
     /// Number of sub-specs linked to this spec via `spec.link` events.
     ///
-    /// Populated by [`SpecReader::children_of`](crate::reader::SpecReader::children_of).
-    /// Defaults to `0` so older clients (and rows produced before this field
-    /// existed) deserialize cleanly.
-    ///
-    /// [`SpecReader::children_of`]: crate::reader::SpecReader::children_of
+    /// Populated by re-folding the workspace event slice on `spec.link`
+    /// payloads whose `parent` matches this spec — see the dashboard adapter
+    /// in `apps/dashboard/src-tauri/src/spec_views.rs`. Defaults to `0` so
+    /// older clients (and rows produced before this field existed) deserialize
+    /// cleanly.
     #[serde(default)]
     pub children_count: u32,
 }
@@ -600,8 +600,8 @@ impl From<&SpecView> for SpecSummary {
     /// projection has already paid the cost of computing the rich view.
     ///
     /// `children_count` defaults to `0` — the rich view does not carry that
-    /// information; callers that want it must populate it explicitly via
-    /// [`SpecReader::children_of`](crate::reader::SpecReader::children_of).
+    /// information; callers that want it must populate it explicitly by
+    /// folding the workspace event slice on `spec.link` payloads.
     #[allow(deprecated)] // copies the derived legacy `status` field.
     fn from(view: &SpecView) -> Self {
         Self {
@@ -623,10 +623,9 @@ impl From<&SpecView> for SpecSummary {
 
 /// One child spec linked to a parent via the `spec.link` event.
 ///
-/// Produced by [`SpecReader::children_of`](crate::reader::SpecReader::children_of)
-/// — the reader folds every `spec.link` event whose payload `parent` matches
-/// the requested spec, deduplicates by child name, and resolves the child's
-/// status by re-reading its own event stream.
+/// Produced by folding every `spec.link` event whose payload `parent` matches
+/// the requested spec, deduplicating by child name, and resolving the child's
+/// status by re-reading its own per-spec NDJSON stream.
 ///
 /// Designed for the dashboard's "Sub-specs" tab: enough metadata to render a
 /// row (name, status, started/completed timestamps, free-form reason) without

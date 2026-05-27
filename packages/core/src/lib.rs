@@ -20,15 +20,13 @@
 //!   [`fs::real::RealFs`], an in-memory [`fs::memory::FakeFs`], and module-level
 //!   free functions that are the drop-in replacement for `std::fs`. Every other
 //!   `std::fs` call in the workspace migrates onto this.
-//! - [`store`] — side-effecting infrastructure behind traits: the event log,
-//!   `pipeline-state` read/write, layered on [`fs`].
+//! - [`events`] — NDJSON event primitives ([`Event`] / [`EventReader`]) plus
+//!   the per-spec workspace walker; the canonical event store for the
+//!   no-sqlite migration (W2-W8). Layered on [`fs`].
 //! - [`projection`] — pure folds over `&[HarnessEvent]`: one function per
 //!   `ViewModel`. No IO, no side effects — deterministic and testable in
-//!   isolation.
-//! - [`reader`] — the [`reader::SpecReader`] trait + two adapters:
-//!   [`reader::SqliteSpecReader`] (production) and
-//!   [`reader::InMemorySpecReader`] (tests). Thin wrappers that supply the
-//!   event slice from the store and delegate to `projection`.
+//!   isolation. Production callers in `apps/rt` and `apps/dashboard` feed the
+//!   slice from [`projection::read_workspace_events`] (NDJSON walker).
 //! - [`error`] — the crate's typed error plus fail-open helpers.
 //! - cross-cutting foundation — [`config`] (enforcement modes), [`env`] (the
 //!   `hook-env.js` port), [`metrics`] (the `metrics-emit.js` port), and
@@ -44,18 +42,15 @@ pub mod env;
 pub mod error;
 pub mod fs;
 pub mod i18n;
-pub mod store;
 pub mod knowledge;
 pub mod meta;
 pub mod metrics;
 pub mod model;
 pub mod process;
 pub mod projection;
-pub mod reader;
 pub mod skill;
 pub mod spec;
 pub mod summary;
-pub mod telemetry;
 pub mod workspace;
 
 // Root re-exports — consumers can write `use mustard_core::…` without
@@ -68,8 +63,6 @@ pub use model::view::{
     SpecTrack, SpecView, Stage, StateError, TimeWindow, TimelineKind, TimelineNode, WaveStatus,
     WaveView, WorkspaceAlert, WorkspaceAlertKind, WorkspaceSummary,
 };
-pub use reader::{InMemorySpecReader, ReadError, SpecReader, SqliteSpecReader};
-
 // Spec-document I/O — the single canonical owner of parsing / serializing /
 // rewriting the lifecycle header of a spec `.md` file. See `spec/mod.rs`.
 // Layered on top of the canonical filesystem seam `crate::fs`.

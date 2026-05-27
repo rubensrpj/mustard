@@ -38,10 +38,8 @@
 use crate::model::view::SpecStatus;
 use crate::model::view::{Flags, Outcome, Phase, Scope, SpecState, SpecView, Stage};
 use crate::model::event::{
-    Actor, ActorKind, HarnessEvent, PipelineScopePayload, PipelineTaskCompletePayload,
-    PipelineWaveCompletePayload, SCHEMA_VERSION,
+    HarnessEvent, PipelineScopePayload, PipelineTaskCompletePayload, PipelineWaveCompletePayload,
 };
-use crate::store::event_store::EventSink;
 use std::collections::BTreeSet;
 use std::path::Path;
 
@@ -54,7 +52,7 @@ use super::{extract_to_phase, iso_diff_ms};
 /// no `spec.md` path to resolve and never want the synthetic-emit side effect.
 #[must_use]
 pub fn project_spec_view(spec_name: &str, events: &[HarnessEvent]) -> SpecView {
-    project_spec_view_with_header(spec_name, events, None, None)
+    project_spec_view_with_header(spec_name, events, None)
 }
 
 /// Fold `events` into a [`SpecView`] for `spec_name`, with an optional
@@ -66,20 +64,18 @@ pub fn project_spec_view(spec_name: &str, events: &[HarnessEvent]) -> SpecView {
 /// the view from them. `started_at` and `last_event_at` stay `None` — the
 /// header alone is not evidence of *when* work happened.
 ///
-/// `emit_sink`, when supplied, receives a single synthetic
-/// `pipeline.status` event when the header fallback fires with a parseable
-/// status. This is the Wave 5 backfill hook: the next read becomes O(1)
-/// because the event log no longer needs a re-parse. The emit is fail-open;
-/// a sink error is swallowed so the projection still returns a usable view.
+/// When `events` is non-empty the path is ignored — the event log is
+/// authoritative.
 ///
-/// When `events` is non-empty the path and sink are ignored — the event log
-/// is authoritative.
+/// W8A-4 drop: the optional `emit_sink` parameter (a Wave 5 SQLite backfill
+/// hook for the legacy `EventSink`) is gone. With the NDJSON-only store,
+/// header-derived state is computed on demand by every reader and there is
+/// no second log to seed.
 #[must_use]
 pub fn project_spec_view_with_header(
     spec_name: &str,
     events: &[HarnessEvent],
     spec_md_path: Option<&Path>,
-    emit_sink: Option<&dyn EventSink>,
 ) -> SpecView {
     // Event stream wins whenever it has anything for this spec. Filter first
     // so a stream full of other-spec noise still triggers the fallback.
@@ -89,7 +85,7 @@ pub fn project_spec_view_with_header(
         .count();
     if scoped_count == 0 {
         if let Some(path) = spec_md_path {
-            if let Some(view) = view_from_header(spec_name, path, emit_sink) {
+            if let Some(view) = view_from_header(spec_name, path) {
                 return view;
             }
         }
@@ -322,16 +318,8 @@ fn apply_qa_result(view: &mut SpecView, ev: &HarnessEvent) {
 /// lines after the leading `# Title`) and build a [`SpecView`] from whatever
 /// values are recognised. Returns `None` when the file is missing or every
 /// header field is unrecognised — the caller falls back to [`SpecView::empty`].
-///
-/// When a status is parsed and `emit_sink` is provided, a single synthetic
-/// `pipeline.status` event is appended. Failures are swallowed: telemetry is
-/// never load-bearing.
 #[allow(deprecated)] // seeds the legacy `status` field from the header; `state` derived after.
-fn view_from_header(
-    spec_name: &str,
-    path: &Path,
-    emit_sink: Option<&dyn EventSink>,
-) -> Option<SpecView> {
+fn view_from_header(spec_name: &str, path: &Path) -> Option<SpecView> {
     let raw = crate::fs::read_to_string(path).ok()?;
     let header = parse_header_fields(&raw);
     if header.is_empty() {
@@ -363,27 +351,6 @@ fn view_from_header(
     if let Some(status_raw) = header.get("status") {
         if let Some(status) = SpecStatus::parse(status_raw) {
             view.status = status;
-            // Opt-in synthetic emit. Backfills the local SQLite log so the
-            // next read is O(1) — see Wave 5 in
-            // 2026-05-21-flatten-spec-layout-and-multi-collab.
-            if let Some(sink) = emit_sink {
-                let synthetic = HarnessEvent {
-                    v: SCHEMA_VERSION,
-                    ts: header_emit_timestamp(),
-                    session_id: "header-fallback".to_string(),
-                    wave: 0,
-                    actor: Actor {
-                        kind: ActorKind::Hook,
-                        id: Some("card-projection".to_string()),
-                        actor_type: None,
-                    },
-                    event: "pipeline.status".to_string(),
-                    payload: serde_json::json!({ "from": null, "to": status_raw }),
-                    spec: Some(spec_name.to_string()),
-                };
-                // Fail-open: a failing sink must not break the projection.
-                let _ = sink.append(&synthetic);
-            }
         }
     }
     if let Some(phase_raw) = header.get("phase") {
@@ -485,52 +452,12 @@ fn parse_header_fields(raw: &str) -> std::collections::BTreeMap<String, String> 
     out
 }
 
-/// Wall-clock now in ISO-8601 second precision for the synthetic emit.
-///
-/// Falls back to the Unix epoch (`1970-01-01T00:00:00Z`) on the rare
-/// clock-error case so the emit still passes the store's schema validation.
-/// Mirrors the formatting helper in `economy::sources::time::now_iso` — kept
-/// inline because that helper is `pub(super)` to its module.
-#[allow(
-    clippy::cast_possible_truncation, // i64 → u32: day/month/hour/min/sec fit safely in u32
-    clippy::cast_sign_loss,           // i64 → u32: calendar fields are always non-negative
-    clippy::cast_possible_wrap,       // u64 → i64: seconds-since-epoch fits in i64 for millennia
-    clippy::many_single_char_names    // Howard Hinnant's civil-to-date algorithm uses its canonical variable names
-)]
-fn header_emit_timestamp() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs() as i64);
-    // Howard Hinnant's days-from-civil, inverted. Same algorithm used in
-    // `economy::sources::time` — duplicated rather than re-exported because
-    // the only other consumer keeps the helper module-private.
-    let days = secs.div_euclid(86_400);
-    let tod = secs.rem_euclid(86_400);
-    let z = days + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
-    let y = if m <= 2 { y + 1 } else { y };
-    let h = (tod / 3600) as u32;
-    let mi = ((tod % 3600) / 60) as u32;
-    let s = (tod % 60) as u32;
-    format!("{y:04}-{m:02}-{d:02}T{h:02}:{mi:02}:{s:02}Z")
-}
-
 #[cfg(test)]
 #[allow(deprecated)] // these tests intentionally assert against the legacy SpecStatus path.
 mod tests {
     use super::*;
+    use crate::model::event::{Actor, ActorKind, SCHEMA_VERSION};
     use crate::model::view::Phase;
-    use crate::store::event_store::EventSink;
-    use crate::error::Result as CoreResult;
-    use std::cell::RefCell;
     use serde_json::json;
 
     /// Build a minimal event with given kind and payload, scoped to `spec`.
@@ -817,27 +744,13 @@ mod tests {
 
     // ---------------------------------------------------------------------------
     // Header fallback (Wave 1 of 2026-05-21-flatten-spec-layout-and-multi-collab)
+    //
+    // W8A-4 (no-sqlite Wave 8) deleted the `EventSink`-backed synthetic-emit
+    // hook plus its `CapturingSink` test double. Header fallback is now a
+    // pure read: caller passes `Some(&path)` to opt in, gets back a typed
+    // view derived from the spec.md header. No second store, nothing to
+    // backfill.
     // ---------------------------------------------------------------------------
-
-    /// In-memory [`EventSink`] for the synthetic-emit assertions.
-    struct CapturingSink {
-        collected: RefCell<Vec<HarnessEvent>>,
-    }
-
-    impl CapturingSink {
-        fn new() -> Self {
-            Self {
-                collected: RefCell::new(Vec::new()),
-            }
-        }
-    }
-
-    impl EventSink for CapturingSink {
-        fn append(&self, ev: &HarnessEvent) -> CoreResult<()> {
-            self.collected.borrow_mut().push(ev.clone());
-            Ok(())
-        }
-    }
 
     /// Write `body` to `path.join(file_name)` and return the full path.
     fn write_spec_md(dir: &std::path::Path, body: &str) -> std::path::PathBuf {
@@ -854,7 +767,7 @@ mod tests {
             tmp.path(),
             "# Achatamento\n\n### Status: completed\n### Phase: close\n### Scope: full\n### Lang: pt\n\n## Resumo\n…",
         );
-        let view = project_spec_view_with_header("flatten", &[], Some(path.as_path()), None);
+        let view = project_spec_view_with_header("flatten", &[], Some(path.as_path()));
         assert_eq!(view.spec, "flatten");
         assert_eq!(view.status, SpecStatus::Completed);
         assert_eq!(view.phase, Some(Phase::Close));
@@ -880,7 +793,7 @@ mod tests {
             "pipeline.status",
             json!({ "to": "implementing" }),
         )];
-        let view = project_spec_view_with_header("auth", &events, Some(path.as_path()), None);
+        let view = project_spec_view_with_header("auth", &events, Some(path.as_path()));
         assert_eq!(view.status, SpecStatus::Implementing);
         // Timestamps come from the event row, not the header.
         assert_eq!(view.started_at.as_deref(), Some("2026-05-20T10:00:00Z"));
@@ -893,60 +806,16 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let missing = tmp.path().join("does-not-exist").join("spec.md");
         let view =
-            project_spec_view_with_header("ghost", &[], Some(missing.as_path()), None);
+            project_spec_view_with_header("ghost", &[], Some(missing.as_path()));
         assert_eq!(view.spec, "ghost");
         assert_eq!(view.status, SpecStatus::NoEvents);
         assert!(view.phase.is_none());
     }
 
     #[test]
-    fn header_fallback_emits_synthetic_pipeline_status_when_sink_supplied() {
-        // Wave 5 backfill hook: the optional sink receives one synthetic
-        // event so the next read can fold from SQLite directly.
-        let tmp = tempfile::tempdir().unwrap();
-        let path = write_spec_md(
-            tmp.path(),
-            "# X\n\n### Status: completed\n",
-        );
-        let sink = CapturingSink::new();
-        let view =
-            project_spec_view_with_header("x", &[], Some(path.as_path()), Some(&sink));
-        assert_eq!(view.status, SpecStatus::Completed);
-        let captured = sink.collected.borrow();
-        assert_eq!(captured.len(), 1);
-        assert_eq!(captured[0].event, "pipeline.status");
-        assert_eq!(captured[0].spec.as_deref(), Some("x"));
-        assert_eq!(
-            captured[0]
-                .payload
-                .get("to")
-                .and_then(serde_json::Value::as_str),
-            Some("completed")
-        );
-    }
-
-    #[test]
-    fn header_fallback_skips_synthetic_emit_when_events_present() {
-        // The sink must NOT be called when the event log already wins — only
-        // the fallback path may emit.
-        let tmp = tempfile::tempdir().unwrap();
-        let path = write_spec_md(tmp.path(), "# X\n\n### Status: completed\n");
-        let sink = CapturingSink::new();
-        let events = vec![event(
-            "x",
-            "2026-05-20T10:00:00Z",
-            "pipeline.status",
-            json!({ "to": "implementing" }),
-        )];
-        let view = project_spec_view_with_header("x", &events, Some(path.as_path()), Some(&sink));
-        assert_eq!(view.status, SpecStatus::Implementing);
-        assert!(sink.collected.borrow().is_empty(), "no synthetic emit on event-log win");
-    }
-
-    #[test]
     fn header_fallback_returns_empty_when_path_is_none() {
         // The opt-in shape: without a path the fallback is fully disabled.
-        let view = project_spec_view_with_header("nobody", &[], None, None);
+        let view = project_spec_view_with_header("nobody", &[], None);
         assert_eq!(view.status, SpecStatus::NoEvents);
     }
 }

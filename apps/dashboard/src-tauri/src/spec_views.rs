@@ -547,7 +547,6 @@ pub fn spec_card_v2(repo_path: &str, spec: &str) -> Result<Option<SpecCard>, Str
         spec,
         &events,
         Some(&spec_md),
-        None,
     );
     if view.is_empty() {
         return Ok(None);

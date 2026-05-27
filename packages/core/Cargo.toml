@@ -13,9 +13,6 @@ publish = false
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
-# Backs `io::sqlite_store::SqliteEventStore`. `bundled` (declared in the
-# workspace table) ships SQLite itself — no system dependency.
-rusqlite = { workspace = true }
 # SHA-256 for `model::provenance::tree_checksum` — the artifact-update engine
 # fingerprints vendored template trees. Not a workspace dep: `mustard-core` is
 # the only consumer. Latest stable on crates.io, May 2026.

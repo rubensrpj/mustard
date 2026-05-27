@@ -754,7 +754,6 @@ fn build_active_pipelines(events: &[HarnessEvent], cwd: &Path) -> Value {
                 &spec_name,
                 events,
                 Some(spec_md_path.as_path()),
-                None,
             );
 
             // Extract the stage string. Use Debug formatting to match the
