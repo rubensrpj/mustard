@@ -35,6 +35,7 @@
 //!   [`knowledge`] (knowledge extraction + the inter-agent context-selection
 //!   API).
 
+pub mod atomic_md;
 pub mod claude_paths;
 pub mod config;
 pub mod events;
@@ -114,6 +115,10 @@ pub use claude_paths::{ClaudePaths, ClaudePathsError, SpecPaths, WavePaths};
 // Canonical workspace-root resolver — single source of truth for "the
 // directory that contains `mustard.json` + `.claude/`". See `workspace.rs`.
 pub use workspace::{workspace_root, WorkspaceError};
+
+// Atomic markdown layer — shared by memory/knowledge/spec readers and the
+// wikilink footer hook. See `atomic_md/mod.rs`.
+pub use atomic_md::{MarkdownDoc, MarkdownStore};
 
 // Summary document — the versionable `.summary.json` artefact committed to
 // git alongside each spec. Re-exported at root so consumers can write
