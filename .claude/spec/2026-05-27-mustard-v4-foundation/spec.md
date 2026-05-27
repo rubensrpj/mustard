@@ -2,10 +2,12 @@
 
 ### Stage: Analyze
 ### Outcome: Active
-### Flags: 
+### Flags: paused-redesign
 ### Scope: full
 ### Lang: pt-BR
 ### Checkpoint: 2026-05-27T17:56:09.926Z
+
+> **⏸ PAUSADA em 2026-05-27 após W1 verde.** Motivo: o módulo `ast::*` definido nas waves W1.5 (subset mínimo tree-sitter com 3 grammars hardcoded), W2 (snapshot via `extract_function_signatures`) e W4 (gate Camada 2) conflita com a primícia [`feedback_mustard_agnostic`] reforçada pelo user em 2026-05-27 ("mustard é agnóstico, isso é primícia"). A doc original (`05-design/context7-extraction.md:188-196` + `06-specs/spec-A-foundation.md:197-204`) autoriza o hardcode como "mínimo viável" mas isso é DÉBITO agnóstico. **Próximo passo: redesign phase** — revisar fronteira A/C, repensar Camada 2 do gate, atualizar `context7-extraction.md` + `gate-regression.md` + `spec-A-foundation.md`. Entregues e committed (preservar): W0 (`packages/core/src/spec/touched_functions.rs` + fixtures) + W1 (`packages/core/src/vocabulary/` + `.claude/vocab/regression.toml`). Reabrir com `/mustard:spec` quando o design estiver alinhado.
 
 ## PRD
 
