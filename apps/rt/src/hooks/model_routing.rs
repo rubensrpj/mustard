@@ -301,10 +301,16 @@ fn determine_expected(subagent_type: &str, state: Option<&PipelineState>) -> Exp
             };
         }
     }
-    // Default: sonnet.
+    // Default: opus. User directive 2026-05-27 — every spec starts on the
+    // best model available. Downgrades (sonnet/haiku) require an explicit
+    // `model:` field on the Task dispatch, which the gate already permits as
+    // a conscious choice. The gate must NEVER silently downgrade an
+    // unspecified dispatch to sonnet — that broke Plan/general-purpose
+    // dispatches during spec planning and is recorded as
+    // [[feedback_spec_starts_opus_judgment_downgrade]] in user memory.
     Expected {
-        model: "sonnet",
-        reason: "Default model (analysis/review/planning)",
+        model: "opus",
+        reason: "Default model — quality first (spec sempre Opus; downgrade só por julgamento explícito)",
     }
 }
 
@@ -362,6 +368,10 @@ fn model_routing_gate(input: &HookInput, project_dir: &str, mode: GateMode) -> V
         }
 
         // Non-explorer, expected sonnet, strict mode → deny.
+        // (Note 2026-05-27: with default flipped to opus, this branch now
+        // only fires if Rule 1/2/3 above explicitly chose sonnet — currently
+        // none do for non-Explore agents. Branch kept for forward compat
+        // when future routing rules might select sonnet for a specific case.)
         if expected.model == "sonnet" && mode == GateMode::Strict {
             emit_routing_metric(
                 project_dir,
@@ -627,8 +637,10 @@ mod tests {
     }
 
     #[test]
-    fn terminal_pipeline_state_does_not_route_to_opus() {
-        // A terminal status is inactive — routing falls through to the default.
+    fn terminal_pipeline_state_falls_through_to_default_opus() {
+        // A terminal status is inactive — routing falls through to the
+        // default, which is opus per user directive 2026-05-27 (every spec
+        // starts on the best model; downgrades require explicit signal).
         let state = PipelineState {
             type_lower: None,
             type_raw: "unknown".to_string(),
@@ -636,7 +648,7 @@ mod tests {
             status: Some("completed".to_string()),
         };
         let e = determine_expected("general-purpose", Some(&state));
-        assert_eq!(e.model, "sonnet");
+        assert_eq!(e.model, "opus");
     }
 
     // --- gate routing ------------------------------------------------------
@@ -754,14 +766,16 @@ mod tests {
     }
 
     #[test]
-    fn no_model_sonnet_expected_denies_in_strict() {
-        // No pipeline-state → expected sonnet → strict (default) denies.
+    fn no_model_general_purpose_defaults_to_opus_and_allows() {
+        // No pipeline-state, no explicit model → expected opus (per user
+        // directive 2026-05-27, every spec starts on the best model).
+        // Inherited model is presumed to match → silent allow. The gate
+        // MUST NOT downgrade to sonnet on unspecified dispatches; doing so
+        // blocked Plan/general-purpose Opus dispatches during planning of
+        // [[2026-05-26-no-sqlite-git-source-of-truth]].
         let dir = tempdir().unwrap();
         let input = task_input("general-purpose", None, "do work");
-        match run(&input, dir.path().to_str().unwrap()) {
-            Verdict::Deny { reason } => assert!(reason.contains("sonnet")),
-            other => panic!("expected Deny, got {other:?}"),
-        }
+        assert_eq!(run(&input, dir.path().to_str().unwrap()), Verdict::Allow);
     }
 
     #[test]
@@ -789,14 +803,16 @@ mod tests {
     }
 
     #[test]
-    fn warn_mode_no_model_sonnet_advises_not_denies() {
-        // No model + expected sonnet, warn mode → advisory, never deny.
+    fn warn_mode_no_model_general_purpose_still_allows_via_opus_default() {
+        // Warn mode mirrors strict mode for the new opus-default policy:
+        // unspecified dispatches are allowed silently because expected=opus
+        // and the inherited model is presumed to match.
         let dir = tempdir().unwrap();
         let input = task_input("general-purpose", None, "do work");
-        match run_mode(&input, dir.path().to_str().unwrap(), GateMode::Warn) {
-            Verdict::Inject { .. } => {}
-            other => panic!("expected Inject advisory, got {other:?}"),
-        }
+        assert_eq!(
+            run_mode(&input, dir.path().to_str().unwrap(), GateMode::Warn),
+            Verdict::Allow
+        );
     }
 
 }
