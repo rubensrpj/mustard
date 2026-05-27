@@ -31,6 +31,7 @@ use crate::hooks::tool_result::ToolResult;
 use crate::hooks::tracker::{
     MainContextCounter, MetricsTracker, SkillUsageTracker, SubagentTracker, ToolUseCounter,
 };
+use crate::hooks::wikilink_footer::WikilinkFooter;
 use mustard_core::config::Mode;
 use mustard_core::model::contract::{Check, Observer, Trigger};
 
@@ -418,6 +419,19 @@ impl Registry {
                 applies_to: &[(Trigger::Notification, ToolMatch::Any)],
                 check: None,
                 observer: Some(Box::new(Notification)),
+            },
+            // ── W3E (no-sqlite git source of truth) — wikilink footer ────────
+            Module {
+                id: "wikilink_footer",
+                // PostToolUse(Write|Edit) auto-footer renderer for
+                // `.claude/{memory,knowledge,spec}/**/*.md`. Pure Observer —
+                // the render logic lives in `mustard_core::atomic_md::wikilink`.
+                applies_to: &[
+                    (Trigger::PostToolUse, ToolMatch::Named("Write")),
+                    (Trigger::PostToolUse, ToolMatch::Named("Edit")),
+                ],
+                check: None,
+                observer: Some(Box::new(WikilinkFooter)),
             },
             // ── Wave 6: session-bound amendment window ───────────────────────
             Module {

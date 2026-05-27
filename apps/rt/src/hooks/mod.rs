@@ -44,3 +44,4 @@ pub mod stop_observer;
 pub mod subagent_inject;
 pub mod tool_result;
 pub mod tracker;
+pub mod wikilink_footer;
