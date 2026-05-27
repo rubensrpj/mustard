@@ -5,7 +5,7 @@
 //! attribute flattening and datapoint-value extraction are unit-testable
 //! without binding a socket.
 
-use super::store::MetricRow;
+use super::MetricRow;
 use serde_json::Value;
 
 /// Floor `time_unix_nano` (a protobuf-JSON number-or-string) to the start of

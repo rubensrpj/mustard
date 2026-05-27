@@ -1417,9 +1417,9 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // pipeline_state_from_events tests — Wave 2 of 2026-05-19-pipeline-state-from-sqlite
-    // (W2-rename adapted to &[HarnessEvent] signature; W15-tactical dropped
-    //  SqliteEventStore plumbing — tests build event vectors directly.)
+    // pipeline_state_from_events tests — Wave 2 of 2026-05-19-pipeline-state-from-events
+    // (W2-rename adapted to &[HarnessEvent] signature; W15-tactical dropped the
+    //  in-test event-store plumbing — tests build event vectors directly.)
     // -----------------------------------------------------------------------
 
     fn pipeline_ev(event: &str, spec: &str, payload: Value) -> HarnessEvent {

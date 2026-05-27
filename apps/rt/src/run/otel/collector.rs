@@ -2,46 +2,57 @@
 //!
 //! A local OTLP/JSON receiver for Claude Code native telemetry. Binds a
 //! `tiny_http` server to `127.0.0.1` (loopback only — never the network) on
-//! `MUSTARD_OTEL_PORT` (default 4318). Metrics and logs project into the
-//! `claude_code_otel` table of `.claude/.harness/mustard.db`; traces land
-//! span-level token usage as `run_usage` rows in `.harness/telemetry.db` via
-//! the telemetry writer (each row stamped with attribution at write time).
+//! `MUSTARD_OTEL_PORT` (default 4318). Metrics and logs are appended to the
+//! per-spec NDJSON event log as `pipeline.telemetry.metric` records; traces
+//! land span-level token usage as `pipeline.telemetry.run` records keyed off
+//! the request attribution stamped at write time.
 //!
 //! Routes:
 //!   - `POST /v1/metrics` — OTLP MetricsService (`resourceMetrics[]`).
 //!   - `POST /v1/logs`    — OTLP LogsService    (`resourceLogs[]`).
-//!   - `POST /v1/traces`  — OTLP TracesService  (`resourceSpans[]`) → `run_usage`.
+//!   - `POST /v1/traces`  — OTLP TracesService  (`resourceSpans[]`).
 //!   - `GET  /healthz`    — liveness probe.
 //!
 //! Lifecycle: the harness spawns the collector as a long-lived child and
 //! stops it with `SIGTERM` (Unix) or process termination (Windows). No
 //! portable std API installs a `SIGTERM` handler without `unsafe` — forbidden
-//! crate-wide — so the collector relies on the OS default action (terminate),
-//! which closes the `rusqlite` connection on `Drop` and exits non-zero only
-//! when killed. The accept loop additionally honours an in-process shutdown
-//! flag, which is the seam the inline tests drive to drain cleanly.
+//! crate-wide — so the collector relies on the OS default action (terminate).
+//! The accept loop additionally honours an in-process shutdown flag, which is
+//! the seam the inline tests drive to drain cleanly.
 //!
 //! Fail-open contract: a parse error returns `400` but never crashes the
 //! server — losing a few datapoints beats taking down the harness pipeline.
 //! A canary log line (`.canary.log`) records each request and each error.
+//!
+//! ## Persistence (post-W5A)
+//!
+//! There is no SQLite store. Each accepted datapoint is serialised into the
+//! per-spec NDJSON event log via
+//! [`crate::run::event_writer_ndjson::write_event_with_ts`]. The ingestion
+//! filter (`mustard_core::telemetry::CONSUMED_METRICS`) still drops every
+//! metric the dashboard does not read, so the NDJSON sink only carries the
+//! handful that matter.
 
 use super::project::project_metrics;
-use super::store::{claude_dir, Store};
-use mustard_core::economy::{sources::otel as otel_source, sources::IngestContext, SpanRecord};
+use super::{claude_dir, MetricRow};
+use mustard_core::economy::{sources::otel as otel_source, sources::IngestContext};
 use mustard_core::fs;
-use mustard_core::telemetry::model::RunUsage;
-use mustard_core::telemetry::{writer as telemetry_writer, TelemetryStore};
-use serde_json::Value;
-use std::path::Path;
+use serde_json::{json, Value};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tiny_http::{Method, Response, Server};
 
 use crate::run::env::{project_dir, session_id};
+use crate::run::event_writer_ndjson;
 
 /// Default OTLP/HTTP port — the OpenTelemetry convention, and the value the
 /// generated `settings.json` points `OTEL_EXPORTER_OTLP_ENDPOINT` at.
 const DEFAULT_PORT: u16 = 4318;
+
+/// NDJSON event kinds the collector emits.
+const KIND_METRIC: &str = "pipeline.telemetry.metric";
+const KIND_RUN: &str = "pipeline.telemetry.run";
 
 /// Append one JSON record to `.claude/.harness/.canary.log`. Fail-silent: a
 /// logging failure must never affect request handling.
@@ -57,49 +68,99 @@ pub(crate) fn resolve_port() -> u16 {
         .unwrap_or(DEFAULT_PORT)
 }
 
-/// Project a parsed OTLP body for `route` into the store. Returns the number
-/// of rows upserted. A per-row store error is logged to canary but does not
-/// abort the batch (fail-open, matching the JS per-datapoint `try/catch`).
-fn project_into_store(store: &Store, harness_dir: &Path, route: &str, body: &Value, now_ms: i64) -> usize {
-    let mut written = 0;
+/// Resolve the session slug for the event-writer's `session_slug` argument.
+/// `env::session_id` returns `"unknown"` for the unattached case; the
+/// event-writer needs a non-empty slug to compose its output path.
+fn session_slug() -> String {
+    let sid = session_id();
+    if sid.is_empty() || sid == "unknown" {
+        "otel-unattached".to_string()
+    } else {
+        sid
+    }
+}
+
+/// Serialize a `MetricRow` to the `pipeline.telemetry.metric` payload shape.
+fn metric_payload(row: &MetricRow) -> Value {
+    json!({
+        "ts_bucket": row.ts_bucket,
+        "metric": row.metric,
+        "session_id": row.session_id,
+        "model": row.model,
+        "token_type": row.token_type,
+        "sum": row.sum,
+        "attrs": row.attrs,
+    })
+}
+
+/// Project a parsed OTLP body for `route` into the NDJSON sink. Returns the
+/// number of records written. A per-row write failure is logged to canary but
+/// does not abort the batch (fail-open).
+fn project_into_ndjson(harness_dir: &Path, route: &str, body: &Value, now_ms: i64) -> usize {
     if route == "/v1/metrics" {
-        for row in project_metrics(body, now_ms) {
-            match store.upsert_metric(&row) {
-                Ok(()) => written += 1,
-                Err(e) => canary(
-                    harness_dir,
-                    &serde_json::json!({
-                        "ts": crate::util::now_iso8601(),
-                        "level": "warn", "route": route,
-                        "msg": "datapoint failed", "err": e.to_string(),
-                    }),
-                ),
-            }
-        }
-    } else if route == "/v1/traces" {
-        written = project_traces_into_economy(harness_dir, body);
+        return write_metrics(harness_dir, body, now_ms);
+    }
+    if route == "/v1/traces" {
+        return write_traces(harness_dir, body);
     }
     // /v1/logs and any other route: nothing to persist. Claude Code log bodies
-    // are not in `telemetry::CONSUMED_METRICS`, so they never reach the dashboard;
-    // the collector accepts the payload (HTTP 200) but `written` stays 0.
+    // are not in `telemetry::CONSUMED_METRICS`, so they would never reach the
+    // dashboard; the collector accepts the payload (HTTP 200) but writes 0.
+    0
+}
+
+/// Write one NDJSON record per consumed metric datapoint.
+fn write_metrics(harness_dir: &Path, body: &Value, now_ms: i64) -> usize {
+    let project = PathBuf::from(project_dir());
+    let slug = session_slug();
+    let mut written = 0usize;
+    for row in project_metrics(body, now_ms) {
+        // Ingestion filter: only persist the metrics the dashboard reads.
+        if !mustard_core::telemetry::CONSUMED_METRICS.contains(&row.metric.as_str()) {
+            continue;
+        }
+        let payload = metric_payload(&row);
+        // ts_override is the row's bucket so cross-session aggregation can
+        // re-bucket without re-clocking.
+        let ts = ms_to_iso(row.ts_bucket);
+        let outcome = event_writer_ndjson::write_event_with_ts(
+            &project,
+            None,           // spec — collector is cross-spec
+            None,           // wave_role
+            &slug,
+            KIND_METRIC,
+            KIND_METRIC,
+            None,           // wave
+            row.session_id.as_deref(),
+            Some("otel-collector"),
+            None,           // parent_id
+            &payload,
+            Some(&ts),
+        );
+        if outcome.is_some() {
+            written += 1;
+        } else {
+            canary(harness_dir, &json!({
+                "ts": crate::util::now_iso8601(),
+                "level": "warn",
+                "route": "/v1/metrics",
+                "msg": "ndjson write failed",
+                "metric": row.metric,
+            }));
+        }
+    }
     written
 }
 
-/// Translate OTLP/JSON `traces` into [`SpanRecord`]s via the W1 ingest adapter,
-/// stamp each with its write-time attribution, then persist as `run_usage`.
+/// Translate OTLP/JSON `traces` into [`mustard_core::economy::SpanRecord`]s via
+/// the W1 ingest adapter, then write one `pipeline.telemetry.run` record per
+/// span to the NDJSON sink.
 ///
-/// Wave 2 (telemetry-separation): the trace route lands span-level token usage
-/// into `telemetry.db`'s `run_usage` table. Each run is
-/// born attributed — before writing, the collector looks up the attribution the
-/// `agent.start` hook stamped for `(session_id, tool_use_id)` and copies
-/// `spec` / `wave_id` / `agent_id` onto the run. No match → the run is written
-/// unattributed (the same behaviour as the legacy no-match read-time JOIN).
-///
-/// Returns the number of `run_usage` rows persisted. Every failure path is
-/// logged to canary and degraded — a malformed payload returns `0`, a store
-/// failure returns `0`, a per-row insert failure is logged and the loop
-/// continues.
-fn project_traces_into_economy(harness_dir: &Path, body: &Value) -> usize {
+/// Attribution is carried within the SpanRecord (`spec`, `session_id`,
+/// `tool_use_id` via `extra`); the dashboard reads NDJSON cross-spec and
+/// reconciles attribution off those fields directly — there is no separate
+/// `lookup_attribution` step now that the SQLite attribution map is gone.
+fn write_traces(harness_dir: &Path, body: &Value) -> usize {
     let cwd = project_dir();
     let session = session_id();
     let session_opt = if session == "unknown" || session.is_empty() {
@@ -109,238 +170,132 @@ fn project_traces_into_economy(harness_dir: &Path, body: &Value) -> usize {
     };
     let ctx = IngestContext {
         project_path: cwd.clone(),
-        session_id: session_opt,
+        session_id: session_opt.clone(),
     };
 
     // `sources::otel::ingest` takes the OTLP JSON as a string; re-stringify the
-    // already-parsed `Value` to keep the adapter API surface narrow (and stay
-    // tolerant if a future shape change wants a different representation).
+    // already-parsed `Value` to keep the adapter API surface narrow.
     let payload = match serde_json::to_string(body) {
         Ok(s) => s,
         Err(e) => {
-            canary(
-                harness_dir,
-                &serde_json::json!({
-                    "ts": crate::util::now_iso8601(),
-                    "level": "warn", "route": "/v1/traces",
-                    "msg": "reserialize failed", "err": e.to_string(),
-                }),
-            );
+            canary(harness_dir, &json!({
+                "ts": crate::util::now_iso8601(),
+                "level": "warn", "route": "/v1/traces",
+                "msg": "reserialize failed", "err": e.to_string(),
+            }));
             return 0;
         }
     };
     let records = match otel_source::ingest(&payload, &ctx) {
         Ok(v) => v,
         Err(e) => {
-            canary(
-                harness_dir,
-                &serde_json::json!({
-                    "ts": crate::util::now_iso8601(),
-                    "level": "warn", "route": "/v1/traces",
-                    "msg": "sources::otel::ingest failed", "err": e.to_string(),
-                }),
-            );
+            canary(harness_dir, &json!({
+                "ts": crate::util::now_iso8601(),
+                "level": "warn", "route": "/v1/traces",
+                "msg": "sources::otel::ingest failed", "err": e.to_string(),
+            }));
             return 0;
         }
     };
     if records.is_empty() {
         return 0;
     }
-    let store = match TelemetryStore::for_project(&cwd) {
-        Ok(s) => s,
-        Err(e) => {
-            canary(
-                harness_dir,
-                &serde_json::json!({
-                    "ts": crate::util::now_iso8601(),
-                    "level": "warn", "route": "/v1/traces",
-                    "msg": "TelemetryStore::for_project failed", "err": e.to_string(),
-                }),
-            );
-            return 0;
-        }
-    };
-    let mut written = 0;
+
+    let project = PathBuf::from(cwd);
+    let slug = session_slug();
+    let mut written = 0usize;
     for rec in records {
-        let run = stamp_attribution(&store, span_to_run(rec));
-        match telemetry_writer::record_run(store.conn(), &run) {
-            Ok(()) => written += 1,
-            Err(e) => canary(
-                harness_dir,
-                &serde_json::json!({
-                    "ts": crate::util::now_iso8601(),
-                    "level": "warn", "route": "/v1/traces",
-                    "msg": "record_run failed", "err": e.to_string(),
-                }),
-            ),
+        // SpanRecord is serde-serializable; encode the entire record as the
+        // payload so downstream readers (dashboard, MCP) get the full shape.
+        let payload = match serde_json::to_value(&rec) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let ts = rec.ts.clone();
+        let outcome = event_writer_ndjson::write_event_with_ts(
+            &project,
+            rec.spec.as_deref(),
+            None,
+            &slug,
+            KIND_RUN,
+            KIND_RUN,
+            None,
+            rec.session_id.as_deref(),
+            Some("otel-collector"),
+            None,
+            &payload,
+            Some(&ts),
+        );
+        if outcome.is_some() {
+            written += 1;
+        } else {
+            canary(harness_dir, &json!({
+                "ts": crate::util::now_iso8601(),
+                "level": "warn", "route": "/v1/traces",
+                "msg": "ndjson write failed",
+                "span_id": rec.span_id,
+            }));
         }
     }
     written
 }
 
-/// Map an ingested [`SpanRecord`] onto a [`RunUsage`], pulling the W4
-/// `tool_use_id` attribution key out of the lenient `extra` map.
-fn span_to_run(rec: SpanRecord) -> RunUsage {
-    let tool_use_id = rec
-        .extra
-        .get("tool_use_id")
-        .and_then(|v| v.as_str())
-        .map(str::to_owned);
-    RunUsage {
-        trace_id: None,
-        span_id: rec.span_id,
-        parent_span_id: None,
-        name: None,
-        started_at: None,
-        ended_at: None,
-        duration_ms: None,
-        attributes: None,
-        spec: rec.spec,
-        phase: rec.phase,
-        model: rec.model,
-        input_tokens: rec.input_tokens,
-        output_tokens: rec.output_tokens,
-        cache_read_input_tokens: rec.cache_read_input_tokens,
-        cache_creation_input_tokens: rec.cache_creation_input_tokens,
-        cost_usd_micros: rec.cost_usd_micros,
-        is_error: rec.is_error,
-        project_path: None,
-        ts_iso: Some(rec.ts),
-        session_id: rec.session_id,
-        wave_id: None,
-        tool_use_id,
-        agent_id: None,
-    }
+/// Format an ms-epoch instant as an ISO-8601 UTC string. Mirrors the small
+/// civil-date helper in `diagnose.rs` so the collector and the diagnose face
+/// agree on the timestamp shape they emit/read.
+fn ms_to_iso(ms: i64) -> String {
+    super::diagnose::iso_from_ms(ms)
 }
 
-/// Stamp `spec` / `wave_id` / `agent_id` onto `run` from the write-time
-/// attribution map.
-///
-/// Two-tier lookup, both keyed on the run's `session_id` (a run without a
-/// session can never be attributed and is returned unchanged):
-///
-/// 1. **Primary** — `(session_id, tool_use_id)`, when the run carries a
-///    `tool_use_id`. This is the exact stamp the `agent.start` hook recorded.
-/// 2. **Session-only fallback** — when the run has no `tool_use_id`, or the
-///    primary lookup found no row. Picks the most-recent stamp for the session
-///    at or before the run's timestamp, restoring the read-time CTE's
-///    session-level fallback (a span without a `tool_use_id` used to match the
-///    most-recent `agent.start` for the same session with `ts <= span.ts`).
-///    Without this, any span that arrives without a `tool_use_id` would be left
-///    permanently unattributed — the regression this repairs.
-///
-/// `before_ts` is derived from the run's `ts_iso` (ms-epoch); an unparseable /
-/// absent timestamp drops the time bound so the fallback still recovers the
-/// session's most-recent stamp. Fail-open: a lookup error leaves the run
-/// unstamped.
-fn stamp_attribution(store: &TelemetryStore, mut run: RunUsage) -> RunUsage {
-    let Some(session) = run.session_id.clone() else {
-        return run;
-    };
-
-    // Tier 1: exact (session, tool_use_id) stamp.
-    if let Some(tool_use_id) = run.tool_use_id.as_deref() {
-        if let Ok(Some(attr)) =
-            telemetry_writer::lookup_attribution(store.conn(), &session, tool_use_id)
-        {
-            run.spec = attr.spec;
-            run.wave_id = attr.wave_id;
-            run.agent_id = attr.agent_id;
-            return run;
-        }
-    }
-
-    // Tier 2: session-only fallback (most-recent stamp at or before the span).
-    let before_ts = run
-        .ts_iso
-        .as_deref()
-        .and_then(mustard_core::projection::parse_iso_millis);
-    if let Ok(Some(attr)) =
-        telemetry_writer::lookup_attribution_by_session(store.conn(), &session, before_ts)
-    {
-        run.spec = attr.spec;
-        run.wave_id = attr.wave_id;
-        run.agent_id = attr.agent_id;
-    }
-    run
-}
-
-/// Dispatch `mustard-rt run otel-collector`. Runs until a shutdown signal or a
-/// fatal bind/store failure; this function does not return on the happy path
+/// Dispatch `mustard-rt run otel-collector`. Runs until a shutdown signal or
+/// a fatal bind failure; this function does not return on the happy path
 /// (it `exit`s).
 pub fn run() {
     let claude = claude_dir();
     let harness_dir = claude.join(".harness");
+    // Ensure `.harness/` exists for the canary log; fail-silent if not.
+    let _ = fs::create_dir_all(&harness_dir);
     let port = resolve_port();
-
-    // Open the store FIRST — a store failure is fatal (the parent respawns).
-    let store = match Store::open(&claude) {
-        Ok(s) => s,
-        Err(e) => {
-            canary(
-                &harness_dir,
-                &serde_json::json!({
-                    "ts": crate::util::now_iso8601(),
-                    "level": "fatal", "msg": "store init failed", "err": e.to_string(),
-                }),
-            );
-            std::process::exit(1);
-        }
-    };
 
     let addr = format!("127.0.0.1:{port}");
     let server = match Server::http(&addr) {
         Ok(s) => s,
         Err(e) => {
             // EADDRINUSE (another collector bound) or any bind failure.
-            canary(
-                &harness_dir,
-                &serde_json::json!({
-                    "ts": crate::util::now_iso8601(),
-                    "level": "fatal", "msg": "bind failed",
-                    "port": port, "err": e.to_string(),
-                }),
-            );
+            canary(&harness_dir, &json!({
+                "ts": crate::util::now_iso8601(),
+                "level": "fatal", "msg": "bind failed",
+                "port": port, "err": e.to_string(),
+            }));
             std::process::exit(1);
         }
     };
 
-    // One-time cleanup: purge the dead `usage_totals` rows written before the
-    // ingestion filter existed (every metric outside `CONSUMED_METRICS`).
-    // Fail-open and idempotent — once the filter is in place this deletes
-    // nothing on subsequent startups.
-    let _ = store.purge_unconsumed_metrics();
-
-    // The flag is the test seam (see module docs); in production the process
-    // is terminated by the OS, so it stays `false` for the binary's lifetime.
     let shutdown = Arc::new(AtomicBool::new(false));
-    canary(
-        &harness_dir,
-        &serde_json::json!({
-            "ts": crate::util::now_iso8601(),
-            "level": "info", "msg": "collector listening",
-            "host": "127.0.0.1", "port": port, "pid": std::process::id(),
-        }),
-    );
+    canary(&harness_dir, &json!({
+        "ts": crate::util::now_iso8601(),
+        "level": "info", "msg": "collector listening",
+        "host": "127.0.0.1", "port": port, "pid": std::process::id(),
+    }));
 
-    serve_loop(&server, &store, &harness_dir, &shutdown);
+    serve_loop(&server, &harness_dir, &shutdown);
     std::process::exit(0);
 }
 
 /// The accept loop. Extracted so a test can drive it against a real bound
 /// `tiny_http` server on an ephemeral port.
-fn serve_loop(server: &Server, store: &Store, harness_dir: &Path, shutdown: &Arc<AtomicBool>) {
+fn serve_loop(server: &Server, harness_dir: &Path, shutdown: &Arc<AtomicBool>) {
     while !shutdown.load(Ordering::SeqCst) {
         // `recv` blocks; the harness terminates the process on SIGTERM, so a
         // graceful drain only matters for the test seam, which flips the flag
         // and then issues one final request to unblock this `recv`.
         let Ok(request) = server.recv() else { break };
-        handle_one(request, store, harness_dir);
+        handle_one(request, harness_dir);
     }
 }
 
 /// Handle a single request: route, parse, project, respond.
-fn handle_one(mut request: tiny_http::Request, store: &Store, harness_dir: &Path) {
+fn handle_one(mut request: tiny_http::Request, harness_dir: &Path) {
     let method = request.method().clone();
     let route = request.url().split('?').next().unwrap_or("").to_string();
 
@@ -350,8 +305,6 @@ fn handle_one(mut request: tiny_http::Request, store: &Store, harness_dir: &Path
         return;
     }
     // Only the three POST routes are projected; everything else is 404.
-    // `/v1/traces` lands span-level token usage as `run_usage` rows in
-    // telemetry.db via the telemetry writer (Wave 2 — telemetry-separation).
     if method != Method::Post
         || (route != "/v1/metrics" && route != "/v1/logs" && route != "/v1/traces")
     {
@@ -362,13 +315,10 @@ fn handle_one(mut request: tiny_http::Request, store: &Store, harness_dir: &Path
     let t0 = crate::util::now_millis();
     let mut buf = String::new();
     if request.as_reader().read_to_string(&mut buf).is_err() {
-        canary(
-            harness_dir,
-            &serde_json::json!({
-                "ts": crate::util::now_iso8601(),
-                "level": "error", "route": route, "msg": "body read failed",
-            }),
-        );
+        canary(harness_dir, &json!({
+            "ts": crate::util::now_iso8601(),
+            "level": "error", "route": route, "msg": "body read failed",
+        }));
         let _ = request.respond(Response::from_string("bad request").with_status_code(400));
         return;
     }
@@ -376,30 +326,24 @@ fn handle_one(mut request: tiny_http::Request, store: &Store, harness_dir: &Path
     let body: Value = match serde_json::from_str(&buf) {
         Ok(v) => v,
         Err(e) => {
-            canary(
-                harness_dir,
-                &serde_json::json!({
-                    "ts": crate::util::now_iso8601(),
-                    "level": "error", "route": route,
-                    "msg": "parse failed",
-                    "err": e.to_string().chars().take(200).collect::<String>(),
-                }),
-            );
+            canary(harness_dir, &json!({
+                "ts": crate::util::now_iso8601(),
+                "level": "error", "route": route,
+                "msg": "parse failed",
+                "err": e.to_string().chars().take(200).collect::<String>(),
+            }));
             let _ = request.respond(Response::from_string("bad request").with_status_code(400));
             return;
         }
     };
 
     let now_ms = i64::try_from(crate::util::now_millis()).unwrap_or(i64::MAX);
-    let count = project_into_store(store, harness_dir, &route, &body, now_ms);
+    let count = project_into_ndjson(harness_dir, &route, &body, now_ms);
     let latency = crate::util::now_millis().saturating_sub(t0);
-    canary(
-        harness_dir,
-        &serde_json::json!({
-            "ts": crate::util::now_iso8601(),
-            "route": route, "count": count, "latency_ms": latency,
-        }),
-    );
+    canary(harness_dir, &json!({
+        "ts": crate::util::now_iso8601(),
+        "route": route, "count": count, "latency_ms": latency,
+    }));
 
     // OTLP success envelope — an empty `partialSuccess` means "all accepted".
     let resp = Response::from_string(r#"{"partialSuccess":{}}"#)
@@ -410,7 +354,7 @@ fn handle_one(mut request: tiny_http::Request, store: &Store, harness_dir: &Path
                     // An unparseable static header is impossible; degrade to a
                     // bare 200 rather than panic.
                     tiny_http::Header::from_bytes(&b"X"[..], &b"Y"[..])
-                        .unwrap_or_else(|()|  unreachable!("static header"))
+                        .unwrap_or_else(|()| unreachable!("static header"))
                 }),
         );
     let _ = request.respond(resp);
@@ -427,13 +371,13 @@ mod tests {
     fn spawn_server(tmp: &Path) -> (u16, Arc<AtomicBool>, std::thread::JoinHandle<()>) {
         let server = Server::http("127.0.0.1:0").unwrap();
         let port = server.server_addr().to_ip().unwrap().port();
-        let harness = tmp.join(".harness");
+        let harness = tmp.join(".claude").join(".harness");
         std::fs::create_dir_all(&harness).unwrap();
-        let store = Store::open_at(&harness.join("mustard.db")).unwrap();
         let shutdown = Arc::new(AtomicBool::new(false));
         let flag = Arc::clone(&shutdown);
+        let harness_clone = harness.clone();
         let handle = std::thread::spawn(move || {
-            serve_loop(&server, &store, &harness, &flag);
+            serve_loop(&server, &harness_clone, &flag);
         });
         (port, shutdown, handle)
     }
@@ -479,25 +423,6 @@ mod tests {
         shutdown.store(true, Ordering::SeqCst);
         let _ = http(port, "GET", "/healthz", "");
         handle.join().unwrap();
-    }
-
-    #[test]
-    fn metrics_post_projects_rows() {
-        let tmp = tempfile::tempdir().unwrap();
-        let (port, shutdown, handle) = spawn_server(tmp.path());
-        let payload = r#"{"resourceMetrics":[{"scopeMetrics":[{"metrics":[
-            {"name":"claude_code.token.usage","sum":{"dataPoints":[
-              {"timeUnixNano":"90000000000","asInt":"50","attributes":[
-                {"key":"session.id","value":{"stringValue":"s1"}}]}]}}]}]}]}"#;
-        let (status, body) = http(port, "POST", "/v1/metrics", payload);
-        assert_eq!(status, 200);
-        assert!(body.contains("partialSuccess"));
-        shutdown.store(true, Ordering::SeqCst);
-        let _ = http(port, "GET", "/healthz", "");
-        handle.join().unwrap();
-        // The row landed in the store.
-        let store = Store::open_at(&tmp.path().join(".harness").join("mustard.db")).unwrap();
-        assert_eq!(store.otel_row_count().unwrap(), 1);
     }
 
     #[test]

@@ -7,21 +7,31 @@
 //! it is a diagnose tool, not a gate. Only `--expect-rows-after` can fail
 //! (exit `1`); every other path exits `0`.
 //!
-//! ## `subtractions` and the SQLite `events` table
+//! ## Persistence (post-W5A)
 //!
-//! The JS `checkSubtractions` queried a SQLite `events` table
-//! (`event = 'mustard.subtraction.applied'`). This OTEL-diagnose port keeps
-//! that query against its own OTEL SQLite store; the harness event bus itself
-//! is a separate WAL-mode SQLite store (`mustard.db`). When the table is empty
-//! or absent the section simply reports `0` / a reason, fail-open. See the
-//! agent return note.
+//! The diagnose face reads NDJSON. Two event kinds drive the report:
+//!
+//! - `pipeline.telemetry.metric` — one record per accepted OTLP metric
+//!   datapoint, written by [`super::collector`].
+//! - `pipeline.telemetry.subtraction` — emitted by `mustard.subtraction.applied`
+//!   producers. `check_subtractions` walks the per-spec NDJSON sink to count
+//!   matches in the last 24 h.
+//!
+//! Cross-spec walking is done by [`mustard_core::EventReader::stream`] over
+//! every `.events/*.ndjson` file under `<project>/.claude/spec/`.
 
-use super::store::{claude_dir, SampleRow, Store};
+use super::{claude_dir, SampleRow};
 use mustard_core::fs;
+use mustard_core::{Event, EventReader};
 use serde_json::{json, Value};
 use std::fmt::Write as _;
 use std::net::TcpStream;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
+
+/// NDJSON event kinds the diagnose face reads back.
+const KIND_METRIC: &str = "pipeline.telemetry.metric";
+const KIND_SUBTRACTION: &str = "pipeline.telemetry.subtraction";
 
 /// Parsed `diagnose-otel` arguments.
 struct Opts {
@@ -155,17 +165,77 @@ fn check_health(port: u16) -> Value {
     json!({ "ok": status == Some(200), "status": status })
 }
 
-/// `[data]` — `claude_code_otel` row count, last bucket and a 5-row sample.
-fn check_data(store: Option<&Store>) -> Value {
-    let Some(store) = store else {
-        return json!({ "ok": false, "reason": "event-store unavailable", "rows": 0, "sample": [] });
+/// Walk every `.events/*.ndjson` under `<project>/.claude/spec/` and the
+/// cross-spec `.claude/.session/` channel, returning the concatenation of the
+/// streams. Fail-open: an unreadable file is silently skipped.
+fn read_all_events(claude_root: &Path) -> Vec<Event> {
+    let mut out = Vec::new();
+    let candidate_roots = [
+        claude_root.join("spec"),
+        claude_root.join(".session"),
+    ];
+    for root in candidate_roots {
+        if !root.exists() {
+            continue;
+        }
+        collect_ndjson_under(&root, &mut out);
+    }
+    out
+}
+
+/// Recursively collect `.ndjson` files under `dir` and append their parsed
+/// events to `out`. Bounded depth: we only descend into directories that
+/// can plausibly contain `.events/` subdirs (skip large irrelevant trees).
+fn collect_ndjson_under(dir: &Path, out: &mut Vec<Event>) {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return;
     };
-    let count = match store.otel_row_count() {
-        Ok(n) => n,
-        Err(e) => return json!({ "ok": false, "reason": e.to_string(), "rows": 0, "sample": [] }),
-    };
-    let last = store.otel_last_bucket().unwrap_or(None);
-    let sample = store.otel_sample().unwrap_or_default();
+    for entry in rd.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_ndjson_under(&path, out);
+        } else if path.extension().and_then(|e| e.to_str()) == Some("ndjson") {
+            out.extend(EventReader::stream(&path));
+        }
+    }
+}
+
+/// Project the metric events into the diagnose `[data]` section: row count,
+/// last bucket and a 5-row sample.
+fn build_metric_view(events: &[Event]) -> (i64, Option<i64>, Vec<SampleRow>) {
+    let metrics: Vec<&Event> = events.iter().filter(|e| e.kind == KIND_METRIC).collect();
+    let count = metrics.len() as i64;
+    let last = metrics
+        .iter()
+        .filter_map(|e| e.payload.get("ts_bucket").and_then(Value::as_i64))
+        .max();
+    let mut by_ts: Vec<&Event> = metrics.clone();
+    // Sort newest-first by ts_bucket; fall back to insertion order when absent.
+    by_ts.sort_by(|a, b| {
+        let ta = a.payload.get("ts_bucket").and_then(Value::as_i64).unwrap_or(0);
+        let tb = b.payload.get("ts_bucket").and_then(Value::as_i64).unwrap_or(0);
+        tb.cmp(&ta)
+    });
+    let sample: Vec<SampleRow> = by_ts.into_iter().take(5).map(|e| {
+        let p = &e.payload;
+        SampleRow {
+            metric: p.get("metric").and_then(Value::as_str).unwrap_or("").to_string(),
+            session_id: p.get("session_id").and_then(Value::as_str).map(str::to_string),
+            model: p.get("model").and_then(Value::as_str).map(str::to_string),
+            sum: p.get("sum").and_then(Value::as_f64).unwrap_or(0.0),
+            updated_at: p.get("ts_bucket").and_then(Value::as_i64),
+        }
+    }).collect();
+    (count, last, sample)
+}
+
+/// `[data]` — `pipeline.telemetry.metric` row count, last bucket and a 5-row
+/// sample. Replaces the legacy `usage_totals` SQLite query with an NDJSON
+/// walk; the section is fail-open (returns `ok: true` with zero rows when no
+/// events are present).
+fn check_data(claude_root: &Path) -> Value {
+    let events = read_all_events(claude_root);
+    let (count, last, sample) = build_metric_view(&events);
     json!({
         "ok": true,
         "rows": count,
@@ -174,7 +244,7 @@ fn check_data(store: Option<&Store>) -> Value {
     })
 }
 
-/// Serialise one [`SampleRow`] to the diagnose sample shape (reduced schema).
+/// Serialise one [`SampleRow`] to the diagnose sample shape.
 fn sample_json(r: &SampleRow) -> Value {
     json!({
         "metric": r.metric,
@@ -185,20 +255,30 @@ fn sample_json(r: &SampleRow) -> Value {
     })
 }
 
-/// `[subtractions]` — `mustard.subtraction.applied` events in the last 24 h.
-fn check_subtractions(store: Option<&Store>) -> Value {
-    let Some(store) = store else {
-        return json!({ "ok": false, "reason": "event-store unavailable", "count": 0 });
-    };
-    // 24 h ago, ISO-8601 — the `events.ts` column is a text timestamp.
-    let since_ms = i64::try_from(crate::util::now_millis())
-        .unwrap_or(i64::MAX)
-        .saturating_sub(24 * 60 * 60 * 1000);
-    let since_iso = iso_from_ms(since_ms);
-    match store.subtractions_since(&since_iso) {
-        Ok(n) => json!({ "ok": true, "count": n }),
-        Err(e) => json!({ "ok": false, "reason": e.to_string(), "count": 0 }),
+/// `[subtractions]` — `pipeline.telemetry.subtraction` events in the last 24 h.
+/// Fail-open: missing channel returns `ok: true, count: 0`.
+fn check_subtractions(claude_root: &Path) -> Value {
+    let now_ms = i64::try_from(crate::util::now_millis()).unwrap_or(i64::MAX);
+    let since_ms = now_ms.saturating_sub(24 * 60 * 60 * 1000);
+    let events = read_all_events(claude_root);
+    let count = events
+        .iter()
+        .filter(|e| e.kind == KIND_SUBTRACTION)
+        .filter(|e| event_ts_ms(e).map_or(true, |ts| ts >= since_ms))
+        .count() as i64;
+    json!({ "ok": true, "count": count })
+}
+
+/// Pull an ms-epoch timestamp off an event, looking first at a top-level `ts`
+/// (ISO-8601) and then at `payload.ts_bucket`. Returns `None` when neither is
+/// usable.
+fn event_ts_ms(e: &Event) -> Option<i64> {
+    if let Some(iso) = e.raw.get("ts").and_then(Value::as_str) {
+        if let Some(ms) = mustard_core::projection::parse_iso_millis(iso) {
+            return Some(ms);
+        }
     }
+    e.payload.get("ts_bucket").and_then(Value::as_i64)
 }
 
 /// Format an ms-epoch instant as an ISO-8601 UTC string (the `events.ts`
@@ -256,14 +336,12 @@ fn render_human(report: &Value) -> String {
             if !sample.is_empty() {
                 out.push_str("  sample (latest 5):\n");
                 for r in sample {
-                    let _ = writeln!(out, "    - {} {} session={} model={} type={} sum={} count={}",
-                        iso_from_ms(r["ts_bucket"].as_i64().unwrap_or(0)),
+                    let _ = writeln!(out, "    - {} {} session={} model={} sum={}",
+                        r["updated_at"].as_i64().map_or_else(|| "(none)".to_string(), iso_from_ms),
                         r["metric"].as_str().unwrap_or("-"),
                         r["session_id"].as_str().unwrap_or("-"),
                         r["model"].as_str().unwrap_or("-"),
-                        r["token_type"].as_str().unwrap_or("-"),
-                        r["sum"].as_f64().unwrap_or(0.0),
-                        r["count"].as_i64().unwrap_or(0));
+                        r["sum"].as_f64().unwrap_or(0.0));
                 }
             }
         }
@@ -280,6 +358,13 @@ fn render_human(report: &Value) -> String {
     out
 }
 
+/// Resolve the `.claude` directory for the running process. Mirrors
+/// `super::claude_dir` but stays addressable for testing via a path override
+/// when a future caller wants to inject a tempdir.
+fn claude_root() -> PathBuf {
+    claude_dir()
+}
+
 /// Dispatch `mustard-rt run diagnose-otel`.
 pub fn run(json_flag: bool, expect_rows_after: Option<&str>) {
     let opts = Opts {
@@ -291,9 +376,12 @@ pub fn run(json_flag: bool, expect_rows_after: Option<&str>) {
         .and_then(|s| s.parse::<u16>().ok())
         .unwrap_or(4318);
 
-    // The store may be absent (no harness db yet) — every check tolerates that.
-    let store = Store::open(&claude_dir()).ok();
-    let rows_before = store.as_ref().and_then(|s| s.otel_row_count().ok());
+    let root = claude_root();
+    let rows_before = {
+        let events = read_all_events(&root);
+        let (count, _, _) = build_metric_view(&events);
+        Some(count)
+    };
 
     if let Some(ms) = opts.expect_rows_after_ms {
         if ms > 0 {
@@ -301,13 +389,13 @@ pub fn run(json_flag: bool, expect_rows_after: Option<&str>) {
         }
     }
 
-    let data = check_data(store.as_ref());
+    let data = check_data(&root);
     let mut report = json!({
         "env": check_env(),
         "collector": check_collector(),
         "health": check_health(port),
         "data": data.clone(),
-        "subtractions": check_subtractions(store.as_ref()),
+        "subtractions": check_subtractions(&root),
     });
 
     // `--expect-rows-after` assertion — the only non-zero exit path.
@@ -368,47 +456,44 @@ mod tests {
     }
 
     #[test]
-    fn check_data_without_store_is_fail_open() {
-        let v = check_data(None);
-        assert_eq!(v["ok"].as_bool(), Some(false));
+    fn check_data_empty_root_is_ok_with_zero_rows() {
+        let tmp = tempfile::tempdir().unwrap();
+        let v = check_data(tmp.path());
+        assert_eq!(v["ok"].as_bool(), Some(true));
         assert_eq!(v["rows"].as_i64(), Some(0));
     }
 
     #[test]
-    fn check_data_with_store_counts_rows() {
-        let conn = rusqlite::Connection::open_in_memory().unwrap();
-        // Bring up the schema via a throwaway file store, then reuse the path.
+    fn check_data_with_ndjson_counts_rows() {
         let tmp = tempfile::tempdir().unwrap();
-        let store = Store::open_at(&tmp.path().join("mustard.db")).unwrap();
-        store
-            .upsert_metric(&super::super::store::MetricRow {
-                ts_bucket: 60_000,
-                // A consumed metric so it survives the ingestion filter.
-                metric: "claude_code.token.usage".to_string(),
-                session_id: None,
-                model: None,
-                token_type: None,
-                sum: 1.0,
-                attrs: "{}".to_string(),
-            })
-            .unwrap();
-        let v = check_data(Some(&store));
+        let claude = tmp.path();
+        let events_dir = claude.join("spec").join("demo").join(".events");
+        std::fs::create_dir_all(&events_dir).unwrap();
+        let line = json!({
+            "kind": KIND_METRIC,
+            "ts": "2026-05-27T10:00:00.000Z",
+            "payload": {
+                "ts_bucket": 1_779_148_800_000i64,
+                "metric": "claude_code.token.usage",
+                "session_id": "s1",
+                "model": "claude-opus-4-7",
+                "sum": 50.0
+            }
+        }).to_string();
+        std::fs::write(events_dir.join("test.ndjson"), format!("{line}\n")).unwrap();
+
+        let v = check_data(claude);
         assert_eq!(v["ok"].as_bool(), Some(true));
         assert_eq!(v["rows"].as_i64(), Some(1));
-        drop(conn);
+        let sample = v["sample"].as_array().unwrap();
+        assert_eq!(sample.len(), 1);
+        assert_eq!(sample[0]["metric"].as_str(), Some("claude_code.token.usage"));
     }
 
     #[test]
-    fn check_subtractions_is_w5_stub_returning_zero() {
-        // W5: the `events` table is retired permanently, and
-        // `subtractions_since` is a deliberate stub that always returns
-        // `Ok(0)`. `check_subtractions` now reports `ok: true, count: 0` —
-        // the field stays in the JSON shape for stability, but the count
-        // will always read zero until a future probe walks the per-spec
-        // NDJSON sink (see `otel::store::subtractions_since` doc comment).
+    fn check_subtractions_empty_root_is_zero() {
         let tmp = tempfile::tempdir().unwrap();
-        let store = Store::open_at(&tmp.path().join("mustard.db")).unwrap();
-        let v = check_subtractions(Some(&store));
+        let v = check_subtractions(tmp.path());
         assert_eq!(v["ok"].as_bool(), Some(true));
         assert_eq!(v["count"].as_i64(), Some(0));
     }
