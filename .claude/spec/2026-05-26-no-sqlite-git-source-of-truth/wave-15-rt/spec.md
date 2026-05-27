@@ -1,8 +1,8 @@
 # Tactical-fix: apps/rt/tests/ migration after W2 rename
 
-### Stage: Plan
-### Outcome: Active
-### Flags:
+### Stage: Close
+### Outcome: Completed
+### Flags: 
 ### Scope: light
 ### Checkpoint: 2026-05-27T10:00:00Z
 ### Lang: pt-BR
@@ -20,7 +20,7 @@ Goal binário: `cargo test -p mustard-rt --no-run` compila limpo (0 errors). Nã
 
 ## Critérios de Aceitação
 
-- [ ] AC-15-1: `cargo test -p mustard-rt --no-run` compila com 0 erros (warnings permitidos). Command: `cargo test -p mustard-rt --no-run`
+- [x] AC-15-1: `cargo test -p mustard-rt --no-run` compila com 0 erros (warnings permitidos). Command: `cargo test -p mustard-rt --no-run`
 
 ## Plano
 

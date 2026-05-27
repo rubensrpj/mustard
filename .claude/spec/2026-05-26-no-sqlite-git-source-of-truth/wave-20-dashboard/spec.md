@@ -1,8 +1,8 @@
 # Dashboard telemetry + amend + tests → filesystem/NDJSON (+ W5#8 attribution two-tier)
 
-### Stage: Plan
-### Outcome: Active
-### Flags:
+### Stage: Close
+### Outcome: Completed
+### Flags: 
 ### Scope: light
 ### Checkpoint: 2026-05-27T12:00:00Z
 ### Lang: pt-BR
@@ -31,10 +31,10 @@ Continua a degradação fail-open de W6A (wave-19-dashboard): preserva assinatur
 
 ## Critérios de Aceitação
 
-- [ ] AC-6B-1: `cargo build -p mustard-dashboard` passa. Command: `cargo build -p mustard-dashboard`
-- [ ] AC-6B-2: `cargo test -p mustard-dashboard --no-run` compila com 0 erros. Command: `cargo test -p mustard-dashboard --no-run`
-- [ ] AC-6B-3: Zero referências SQLite em `apps/dashboard/src-tauri/src/{telemetry,telemetry_agg,amend_queries}.rs` e em `apps/dashboard/src-tauri/tests/*.rs`. Command: `bash -c "! git grep -nE 'SqliteEventStore|sqlite_store|TelemetryStore|TelemetryReader|memory_sqlite|rusqlite::' -- apps/dashboard/src-tauri/src/telemetry.rs apps/dashboard/src-tauri/src/telemetry_agg.rs apps/dashboard/src-tauri/src/amend_queries.rs apps/dashboard/src-tauri/tests"`
-- [ ] AC-6B-4 (W5#8 absorvida): `telemetry.rs` define função `lookup_attribution*` que consulta campo `extra` de span e implementa fallback two-tier (primary por `tool_use_id`, secondary por `session_id` + before-ts). Command: `bash -c "grep -nE 'fn lookup_attribution|two-tier|extra.get\\(.tool_use_id|extra.get\\(.session_id' apps/dashboard/src-tauri/src/telemetry.rs"` retorna ≥2 hits
+- [x] AC-6B-1: `cargo build -p mustard-dashboard` passa. Command: `cargo build -p mustard-dashboard`
+- [x] AC-6B-2: `cargo test -p mustard-dashboard --no-run` compila com 0 erros. Command: `cargo test -p mustard-dashboard --no-run`
+- [x] AC-6B-3: Zero referências SQLite em `apps/dashboard/src-tauri/src/{telemetry,telemetry_agg,amend_queries}.rs` e em `apps/dashboard/src-tauri/tests/*.rs`. Command: `bash -c "! git grep -nE 'SqliteEventStore|sqlite_store|TelemetryStore|TelemetryReader|memory_sqlite|rusqlite::' -- apps/dashboard/src-tauri/src/telemetry.rs apps/dashboard/src-tauri/src/telemetry_agg.rs apps/dashboard/src-tauri/src/amend_queries.rs apps/dashboard/src-tauri/tests"`
+- [x] AC-6B-4 (W5#8 absorvida): `telemetry.rs` define função `lookup_attribution*` que consulta campo `extra` de span e implementa fallback two-tier (primary por `tool_use_id`, secondary por `session_id` + before-ts). Command: `bash -c "grep -nE 'fn lookup_attribution|two-tier|extra.get\\(.tool_use_id|extra.get\\(.session_id' apps/dashboard/src-tauri/src/telemetry.rs"` retorna ≥2 hits
 
 ## Plano
 
@@ -96,3 +96,7 @@ Depende de wave-19-dashboard (db.rs façade reescrito); W4A-C (NDJSON readers); 
 - Behavior change documentado: alguns aggregations (FTS counts, recursive CTE) retornam aproximações em vez de números SQL exatos — frontend continua funcional.
 - `lib.rs` é OUT-OF-SCOPE (já tocado por wave-19-dashboard).
 - Commit message: `feat(wave-6/dashboard): W6B — telemetry+amend+tests via NDJSON+attribution two-tier (W5#8)`
+
+<!-- wikilinks-footer-start -->
+- [2026-05-26-no-sqlite-git-source-of-truth](?) ⚠ não resolvido
+<!-- wikilinks-footer-end -->

@@ -1,8 +1,8 @@
 # Hooks de savings + budget para NDJSON
 
-### Stage: Plan
-### Outcome: Active
-### Flags:
+### Stage: Close
+### Outcome: Completed
+### Flags: 
 ### Scope: light
 ### Checkpoint: 2026-05-27T10:00:00Z
 ### Lang: pt-BR
@@ -20,8 +20,8 @@ Sub-spec de [[2026-05-26-no-sqlite-git-source-of-truth]] — wave 3A (renumbered
 
 ## Critérios de Aceitação
 
-- [ ] AC-3A-1: `cargo build -p mustard-rt` passa e o count de `git grep -lE "SqliteEventStore|sqlite_store|memory_sqlite" -- 'packages/**/*.rs' 'apps/**/*.rs'` decresce. Command: `cargo build -p mustard-rt`
-- [ ] AC-3A-2: Nenhum dos 4 arquivos importa `mustard_core::store::SqliteEventStore` nem chama `for_project` em SqliteEventStore. Command: `bash -c "! git grep -nE 'SqliteEventStore|sqlite_store' -- apps/rt/src/hooks/tracker.rs apps/rt/src/hooks/budget.rs apps/rt/src/hooks/bash_guard.rs apps/rt/src/hooks/model_routing.rs"`
+- [x] AC-3A-1: `cargo build -p mustard-rt` passa e o count de `git grep -lE "SqliteEventStore|sqlite_store|memory_sqlite" -- 'packages/**/*.rs' 'apps/**/*.rs'` decresce. Command: `cargo build -p mustard-rt`
+- [x] AC-3A-2: Nenhum dos 4 arquivos importa `mustard_core::store::SqliteEventStore` nem chama `for_project` em SqliteEventStore. Command: `bash -c "! git grep -nE 'SqliteEventStore|sqlite_store' -- apps/rt/src/hooks/tracker.rs apps/rt/src/hooks/budget.rs apps/rt/src/hooks/bash_guard.rs apps/rt/src/hooks/model_routing.rs"`
 
 ## Plano
 

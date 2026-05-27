@@ -1,8 +1,8 @@
 # Run: complete_spec + amend_finalize + epic_fold
 
-### Stage: Plan
-### Outcome: Active
-### Flags:
+### Stage: Close
+### Outcome: Completed
+### Flags: 
 ### Scope: light
 ### Checkpoint: 2026-05-27T10:00:00Z
 ### Lang: pt-BR
@@ -37,9 +37,9 @@ Sub-spec de [[2026-05-26-no-sqlite-git-source-of-truth]] — wave 4C (renumbered
 
 ## Critérios de Aceitação
 
-- [ ] AC-4C-1: `cargo build -p mustard-rt` passa após migração. Command: `cargo build -p mustard-rt`
-- [ ] AC-4C-2: Nenhum dos 3 arquivos `.rs` referencia `SqliteEventStore` / `sqlite_store` / `memory_sqlite` / `rusqlite::`. Command: `bash -c "! git grep -nE 'SqliteEventStore|sqlite_store|memory_sqlite|rusqlite::' -- apps/rt/src/run/complete_spec.rs apps/rt/src/run/amend_finalize.rs apps/rt/src/run/epic_fold.rs"`
-- [ ] AC-4C-3: `amend_finalize::run` existe e tem assinatura compatível com `session_cleanup` re-wire (reimplementa pendência W3B). Command: `bash -c "git grep -nE 'pub fn run\\(' -- apps/rt/src/run/amend_finalize.rs | grep -q '.'"`
+- [x] AC-4C-1: `cargo build -p mustard-rt` passa após migração. Command: `cargo build -p mustard-rt`
+- [x] AC-4C-2: Nenhum dos 3 arquivos `.rs` referencia `SqliteEventStore` / `sqlite_store` / `memory_sqlite` / `rusqlite::`. Command: `bash -c "! git grep -nE 'SqliteEventStore|sqlite_store|memory_sqlite|rusqlite::' -- apps/rt/src/run/complete_spec.rs apps/rt/src/run/amend_finalize.rs apps/rt/src/run/epic_fold.rs"`
+- [x] AC-4C-3: `amend_finalize::run` existe e tem assinatura compatível com `session_cleanup` re-wire (reimplementa pendência W3B). Command: `bash -c "git grep -nE 'pub fn run\\(' -- apps/rt/src/run/amend_finalize.rs | grep -q '.'"`
 
 ## Plano
 
@@ -67,3 +67,7 @@ Depende de W1B (`EventReader`), W1C (`MarkdownStore`), W3 batch (já comitado). 
 - Reimplementação de `amend_finalize::run` (resolve pendência W3B onde foi removido de `session_cleanup`) — re-wire em `session_cleanup` é follow-up (out-of-scope)
 - `summary::writer` integration no close (W1 entrega) é follow-up — não escala em cap aqui; só migra a camada de leitura SQLite, não adiciona summary write
 - Commit message sugerido: `feat(wave-4/rt): W4C — complete_spec+amend_finalize+epic_fold via NDJSON+MarkdownStore`
+
+<!-- wikilinks-footer-start -->
+- [2026-05-26-no-sqlite-git-source-of-truth](?) ⚠ não resolvido
+<!-- wikilinks-footer-end -->

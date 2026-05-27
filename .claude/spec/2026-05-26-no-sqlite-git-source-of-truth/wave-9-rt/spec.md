@@ -2,7 +2,7 @@
 
 ### Stage: Close
 ### Outcome: Completed
-### Flags:
+### Flags: 
 ### Scope: light
 ### Checkpoint: 2026-05-27T10:00:00Z
 ### Lang: pt-BR

@@ -1,8 +1,8 @@
 # Migrate residual rt economy caller + core tests to NDJSON (W7C — capture_baseline + core tests)
 
-### Stage: Plan
-### Outcome: Active
-### Flags:
+### Stage: Close
+### Outcome: Completed
+### Flags: 
 ### Scope: mixed
 ### Checkpoint: 2026-05-27T20:00:00Z
 ### Lang: pt-BR
@@ -24,13 +24,13 @@ Esta sub-spec fecha esses 3 arquivos.
 
 ## Critérios de Aceitação
 
-- [ ] AC-W7C-1: `cargo build -p mustard-rt` verde. Command: `cargo build -p mustard-rt`
-- [ ] AC-W7C-2: `cargo build -p mustard-core` verde. Command: `cargo build -p mustard-core`
-- [ ] AC-W7C-3: `cargo test -p mustard-core --no-run` compila com 0 erros (tests integration migrados). Command: `cargo test -p mustard-core --no-run`
-- [ ] AC-W7C-4: `economy_capture_baseline.rs` não importa mais `SqliteEventStore`. Command: `node -e "const s=require('fs').readFileSync('apps/rt/src/run/economy_capture_baseline.rs','utf8'); if(/SqliteEventStore/.test(s)){process.exit(1)}"`
-- [ ] AC-W7C-5: `tests/economy_basic.rs` não importa mais rusqlite/SqliteEventStore. Command: `node -e "const s=require('fs').readFileSync('packages/core/tests/economy_basic.rs','utf8'); if(/SqliteEventStore|rusqlite/.test(s)){process.exit(1)}"`
-- [ ] AC-W7C-6: `tests/economy_attribution.rs` não importa mais rusqlite/SqliteEventStore. Command: `node -e "const s=require('fs').readFileSync('packages/core/tests/economy_attribution.rs','utf8'); if(/SqliteEventStore|rusqlite/.test(s)){process.exit(1)}"`
-- [ ] AC-W7C-7: invariante decrescente após commit. Command: `bash -c 'count=$(git grep -lE "SqliteEventStore|sqlite_store|memory_sqlite|TelemetryStore|TelemetryReader|rusqlite::" -- "*.rs" | wc -l); echo "$count"; test "$count" -lt 38'`
+- [x] AC-W7C-1: `cargo build -p mustard-rt` verde. Command: `cargo build -p mustard-rt`
+- [x] AC-W7C-2: `cargo build -p mustard-core` verde. Command: `cargo build -p mustard-core`
+- [x] AC-W7C-3: `cargo test -p mustard-core --no-run` compila com 0 erros (tests integration migrados). Command: `cargo test -p mustard-core --no-run`
+- [x] AC-W7C-4: `economy_capture_baseline.rs` não importa mais `SqliteEventStore`. Command: `bash -c "! git grep -nE 'SqliteEventStore|sqlite_store|memory_sqlite' -- apps/rt/src/run/economy_capture_baseline.rs | grep -vE '^[^:]+:[0-9]+:\s*(///|//|/\*|\*)'"`
+- [x] AC-W7C-5: `tests/economy_basic.rs` não importa mais rusqlite/SqliteEventStore. Command: `node -e "const s=require('fs').readFileSync('packages/core/tests/economy_basic.rs','utf8'); if(/SqliteEventStore|rusqlite/.test(s)){process.exit(1)}"`
+- [x] AC-W7C-6: `tests/economy_attribution.rs` não importa mais rusqlite/SqliteEventStore. Command: `node -e "const s=require('fs').readFileSync('packages/core/tests/economy_attribution.rs','utf8'); if(/SqliteEventStore|rusqlite/.test(s)){process.exit(1)}"`
+- [x] AC-W7C-7: invariante decrescente após commit. Command: `bash -c 'count=$(git grep -lE "SqliteEventStore|sqlite_store|memory_sqlite|TelemetryStore|TelemetryReader|rusqlite::" -- "*.rs" | wc -l); echo "$count"; test "$count" -lt 38'`
 
 ## Plano
 
@@ -65,3 +65,7 @@ Esta sub-spec fecha esses 3 arquivos.
 - 3 arquivos (1 rt + 2 testes core).
 - Modelo: opus.
 - Commit message: `feat(wave-7/rt): W7C — migrate economy_capture_baseline + core integration tests to NDJSON`
+
+<!-- wikilinks-footer-start -->
+- [2026-05-26-no-sqlite-git-source-of-truth](?) ⚠ não resolvido
+<!-- wikilinks-footer-end -->

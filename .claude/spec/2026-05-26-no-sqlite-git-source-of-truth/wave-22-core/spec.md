@@ -1,8 +1,8 @@
 # Migrate `packages/core/src/economy/` from SQLite to NDJSON (W7A — readers + writers + multi_project)
 
-### Stage: Plan
-### Outcome: Active
-### Flags:
+### Stage: Close
+### Outcome: Completed
+### Flags: 
 ### Scope: core
 ### Checkpoint: 2026-05-27T20:00:00Z
 ### Lang: pt-BR
@@ -87,16 +87,16 @@ há eventos NDJSON correspondentes. AC-FIXTURE garante via fixtures de eventos +
 
 ## Critérios de Aceitação
 
-- [ ] AC-W7A-1: `cargo build -p mustard-core` verde. Command: `cargo build -p mustard-core`
-- [ ] AC-W7A-2: `cargo test -p mustard-core economy --no-run` compila com 0 erros. Command: `cargo test -p mustard-core economy --no-run`
-- [ ] AC-W7A-3: `packages/core/src/economy/store.rs` deletado. Command: `node -e "if(require('fs').existsSync('packages/core/src/economy/store.rs')){process.exit(1)}"`
-- [ ] AC-W7A-4: `packages/core/src/economy/reader.rs` não importa `rusqlite::*`. Command: `node -e "const s=require('fs').readFileSync('packages/core/src/economy/reader.rs','utf8'); if(/use rusqlite|rusqlite::/.test(s)){process.exit(1)}"`
-- [ ] AC-W7A-5: `packages/core/src/economy/writer.rs` não importa `rusqlite::*`. Command: `node -e "const s=require('fs').readFileSync('packages/core/src/economy/writer.rs','utf8'); if(/use rusqlite|rusqlite::/.test(s)){process.exit(1)}"`
-- [ ] AC-W7A-6: `packages/core/src/economy/multi_project.rs` não importa `rusqlite::*`. Command: `node -e "const s=require('fs').readFileSync('packages/core/src/economy/multi_project.rs','utf8'); if(/use rusqlite|rusqlite::/.test(s)){process.exit(1)}"`
-- [ ] AC-W7A-7: `economy::reader::economy_summary(&path, Project)` com fixture NDJSON de 2 eventos `pipeline.telemetry.metric` retorna `total_cost_usd_micros > 0` (não default). Command: `cargo test -p mustard-core economy::reader::tests::summary_reads_measured_totals_from_ndjson --no-run`
-- [ ] AC-W7A-8: `economy::reader::savings_breakdown(&path, Project)` com fixture NDJSON de 2 eventos `pipeline.economy.savings.rtk-rewrite` retorna `total_tokens_saved == soma` (não default). Command: `cargo test -p mustard-core economy::reader::tests::savings_breakdown_reads_ndjson --no-run`
-- [ ] AC-W7A-9: `economy::reader::per_spec_costs(&path, Project)` com fixture NDJSON de 1 evento `pipeline.telemetry.run` com `payload.spec == "spec-A"` retorna 1 `SpecCost` row (não vec vazio). Command: `cargo test -p mustard-core economy::reader::tests::per_spec_costs_groups_run_events_by_spec --no-run`
-- [ ] AC-W7A-10: invariante decrescente — `git grep -lE "SqliteEventStore|sqlite_store|memory_sqlite|TelemetryStore|TelemetryReader|rusqlite::" -- '*.rs'` count menor que 38 (entrada). Command: `bash -c 'count=$(git grep -lE "SqliteEventStore|sqlite_store|memory_sqlite|TelemetryStore|TelemetryReader|rusqlite::" -- "*.rs" | wc -l); test "$count" -lt 38'`
+- [x] AC-W7A-1: `cargo build -p mustard-core` verde. Command: `cargo build -p mustard-core`
+- [x] AC-W7A-2: `cargo test -p mustard-core economy --no-run` compila com 0 erros. Command: `cargo test -p mustard-core economy --no-run`
+- [x] AC-W7A-3: `packages/core/src/economy/store.rs` deletado. Command: `node -e "if(require('fs').existsSync('packages/core/src/economy/store.rs')){process.exit(1)}"`
+- [x] AC-W7A-4: `packages/core/src/economy/reader.rs` não importa `rusqlite::*`. Command: `node -e "const s=require('fs').readFileSync('packages/core/src/economy/reader.rs','utf8'); if(/use rusqlite|rusqlite::/.test(s)){process.exit(1)}"`
+- [x] AC-W7A-5: `packages/core/src/economy/writer.rs` não importa `rusqlite::*`. Command: `node -e "const s=require('fs').readFileSync('packages/core/src/economy/writer.rs','utf8'); if(/use rusqlite|rusqlite::/.test(s)){process.exit(1)}"`
+- [x] AC-W7A-6: `packages/core/src/economy/multi_project.rs` não importa `rusqlite::*`. Command: `node -e "const s=require('fs').readFileSync('packages/core/src/economy/multi_project.rs','utf8'); if(/use rusqlite|rusqlite::/.test(s)){process.exit(1)}"`
+- [x] AC-W7A-7: `economy::reader::economy_summary(&path, Project)` com fixture NDJSON de 2 eventos `pipeline.telemetry.metric` retorna `total_cost_usd_micros > 0` (não default). Command: `cargo test -p mustard-core economy::reader::tests::summary_reads_measured_totals_from_ndjson --no-run`
+- [x] AC-W7A-8: `economy::reader::savings_breakdown(&path, Project)` com fixture NDJSON de 2 eventos `pipeline.economy.savings.rtk-rewrite` retorna `total_tokens_saved == soma` (não default). Command: `cargo test -p mustard-core economy::reader::tests::savings_breakdown_reads_ndjson --no-run`
+- [x] AC-W7A-9: `economy::reader::per_spec_costs(&path, Project)` com fixture NDJSON de 1 evento `pipeline.telemetry.run` com `payload.spec == "spec-A"` retorna 1 `SpecCost` row (não vec vazio). Command: `cargo test -p mustard-core economy::reader::tests::per_spec_costs_groups_run_events_by_spec --no-run`
+- [x] AC-W7A-10: invariante decrescente — `git grep -lE "SqliteEventStore|sqlite_store|memory_sqlite|TelemetryStore|TelemetryReader|rusqlite::" -- '*.rs'` count menor que 38 (entrada). Command: `bash -c 'count=$(git grep -lE "SqliteEventStore|sqlite_store|memory_sqlite|TelemetryStore|TelemetryReader|rusqlite::" -- "*.rs" | wc -l); test "$count" -lt 38'`
 
 ## Plano
 

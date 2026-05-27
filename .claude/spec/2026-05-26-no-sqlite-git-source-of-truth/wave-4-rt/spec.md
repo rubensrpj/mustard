@@ -1,8 +1,8 @@
 # Migrar readers de specs ativas e projections para NDJSON
 
-### Stage: Execute
-### Outcome: Active
-### Flags:
+### Stage: Close
+### Outcome: Completed
+### Flags: 
 ### Scope: light
 ### Checkpoint: 2026-05-27T10:00:00Z
 ### Lang: pt-BR
@@ -16,7 +16,7 @@ Sub-spec de [[2026-05-26-no-sqlite-git-source-of-truth]] — wave 2A (renumbered
 
 ## Critérios de Aceitação
 
-- [ ] AC-2A-1: `cargo build -p mustard-rt` passa e o count de `git grep -lE "SqliteEventStore|sqlite_store|memory_sqlite" -- 'packages/**/*.rs' 'apps/**/*.rs'` é menor que antes do commit. Command: `cargo build -p mustard-rt`
+- [x] AC-2A-1: `cargo build -p mustard-rt` passa e o count de `git grep -lE "SqliteEventStore|sqlite_store|memory_sqlite" -- 'packages/**/*.rs' 'apps/**/*.rs'` é menor que antes do commit. Command: `cargo build -p mustard-rt`
 
 ## Plano
 

@@ -1,8 +1,8 @@
 {
-  "stage": "Plan",
-  "outcome": "Active",
+  "stage": "Close",
+  "outcome": "Completed",
   "phase": null,
   "scope": "light",
   "lang": "pt-BR",
-  "checkpoint": "2026-05-27T11:00:00Z"
+  "checkpoint": "2026-05-27T17:43:10.815Z"
 }

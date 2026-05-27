@@ -1,8 +1,8 @@
 # NDJSON EventReader primitivo — compartilhado por todas as sub-specs downstream
 
-### Stage: Execute
-### Outcome: Active
-### Flags:
+### Stage: Close
+### Outcome: Completed
+### Flags: 
 ### Scope: light
 ### Checkpoint: 2026-05-27T09:00:00Z
 ### Lang: pt-BR
@@ -16,7 +16,7 @@ Sub-spec de [[2026-05-26-no-sqlite-git-source-of-truth]] — wave 1B. **NDJSON E
 
 ## Critérios de Aceitação
 
-- [ ] AC-1B-1: benchmark embutido de stream 10k linhas reporta p95 <50ms. Command: `cargo test -p mustard-core events::reader::bench`
+- [x] AC-1B-1: benchmark embutido de stream 10k linhas reporta p95 <50ms. Command: `cargo test -p mustard-core events::reader::bench`
 
 ## Plano
 

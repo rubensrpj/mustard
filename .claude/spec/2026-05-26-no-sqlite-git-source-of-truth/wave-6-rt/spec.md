@@ -1,8 +1,8 @@
 # Migrar emitters de pipeline para NDJSON puro
 
-### Stage: Execute
-### Outcome: Active
-### Flags:
+### Stage: Close
+### Outcome: Completed
+### Flags: 
 ### Scope: light
 ### Checkpoint: 2026-05-27T10:00:00Z
 ### Lang: pt-BR
@@ -16,7 +16,7 @@ Sub-spec de [[2026-05-26-no-sqlite-git-source-of-truth]] — wave 2C (renumbered
 
 ## Critérios de Aceitação
 
-- [ ] AC-2C-1: `cargo build -p mustard-rt` passa após deleção dos 3 módulos órfãos e remoção dos branches SQLite nos emitters. Command: `cargo build -p mustard-rt`
+- [x] AC-2C-1: `cargo build -p mustard-rt` passa após deleção dos 3 módulos órfãos e remoção dos branches SQLite nos emitters. Command: `cargo build -p mustard-rt`
 
 ## Plano
 

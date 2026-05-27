@@ -1,8 +1,8 @@
 # Drenagem comportamental W4 + W5 (no-sqlite) — pre-W6
 
-### Stage: Plan
-### Outcome: Active
-### Flags:
+### Stage: Close
+### Outcome: Completed
+### Flags: 
 ### Scope: light
 ### Checkpoint: 2026-05-27T11:00:00Z
 ### Lang: pt-BR
@@ -48,12 +48,12 @@ Sub-spec de drenagem (wave-18-rt-followups) que zera a dívida comportamental ac
 
 ## Critérios de Aceitação
 
-- [ ] AC-18-1: `cargo build -p mustard-rt` passa. Command: `cargo build -p mustard-rt`
-- [ ] AC-18-2: `cargo test -p mustard-rt --no-run` passa. Command: `cargo test -p mustard-rt --no-run`
-- [ ] AC-18-3: `apps/rt/src/hooks/session_cleanup.rs` referencia `amend_finalize` na função `observe`. Command: `bash -c "grep -n 'amend_finalize' apps/rt/src/hooks/session_cleanup.rs | grep -v '^[0-9]*://'"`
-- [ ] AC-18-4: clap `memory feedback` aceita `--path` e NÃO declara `--id`. Command: `bash -c "grep -nE 'feedback.*only.*--?(path|id)' apps/rt/src/run/mod.rs"`
-- [ ] AC-18-5: `check_boundaries` em `post_edit.rs` consulta `spec::parse_state`. Command: `bash -c "grep -nE 'parse_state|SpecOutcome|Stage::' apps/rt/src/hooks/post_edit.rs"`
-- [ ] AC-18-6: zero producers ativos de `mustard.subtraction.applied` em `apps/rt/src/**` ou `packages/core/src/**` (doc-comments excluídos). Command: `bash -c "count=$(grep -rE 'event.*=.*\"mustard\\.subtraction\\.applied\"|emit.*\"mustard\\.subtraction\\.applied\"' apps/rt/src packages/core/src 2>/dev/null | grep -v '^.*://' | wc -l); test \"$count\" = \"0\""`
+- [x] AC-18-1: `cargo build -p mustard-rt` passa. Command: `cargo build -p mustard-rt`
+- [x] AC-18-2: `cargo test -p mustard-rt --no-run` passa. Command: `cargo test -p mustard-rt --no-run`
+- [x] AC-18-3: `apps/rt/src/hooks/session_cleanup.rs` referencia `amend_finalize` na função `observe`. Command: `bash -c "grep -n 'amend_finalize' apps/rt/src/hooks/session_cleanup.rs | grep -v '^[0-9]*://'"`
+- [x] AC-18-4: clap `memory feedback` aceita `--path` (struct field `path: Option<PathBuf>` com `#[arg(long)]`) e NÃO declara `id: Option<i64>`. Command: `bash -c "grep -qE 'path: Option<PathBuf>' apps/rt/src/run/mod.rs && ! grep -qE 'id: Option<i64>' apps/rt/src/run/mod.rs"`
+- [x] AC-18-5: `check_boundaries` em `post_edit.rs` consulta `spec::parse_state`. Command: `bash -c "grep -nE 'parse_state|SpecOutcome|Stage::' apps/rt/src/hooks/post_edit.rs"`
+- [x] AC-18-6: zero producers ativos de `mustard.subtraction.applied` em `apps/rt/src/**` ou `packages/core/src/**` (doc-comments excluídos). Command: `bash -c "count=$(grep -rE 'event.*=.*\"mustard\\.subtraction\\.applied\"|emit.*\"mustard\\.subtraction\\.applied\"' apps/rt/src packages/core/src 2>/dev/null | grep -v '^.*://' | wc -l); test \"$count\" = \"0\""`
 
 ## Plano
 

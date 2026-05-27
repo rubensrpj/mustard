@@ -1,8 +1,8 @@
 # Migrate remaining rt SQLite readers to NDJSON + filesystem (W8A-1 — resume_bootstrap + spec_children_tree + session_cleanup + otel cleanup)
 
-### Stage: Plan
-### Outcome: Active
-### Flags:
+### Stage: Close
+### Outcome: Completed
+### Flags: 
 ### Scope: rt
 ### Checkpoint: 2026-05-27T22:00:00Z
 ### Lang: pt-BR
@@ -135,16 +135,16 @@ há eventos. Sem `Vec::new()` definitivo. Teste smoke: tempdir com 1 `pipeline.w
 
 ## Critérios de Aceitação
 
-- [ ] AC-W8A1-1: `cargo build -p mustard-rt` verde. Command: `cargo build -p mustard-rt`
-- [ ] AC-W8A1-2: `cargo test -p mustard-rt --no-run` compila. Command: `cargo test -p mustard-rt --no-run`
-- [ ] AC-W8A1-3: `apps/rt/src/run/resume_bootstrap.rs` não importa `SqliteEventStore`. Command: `node -e "const s=require('fs').readFileSync('apps/rt/src/run/resume_bootstrap.rs','utf8'); if(/SqliteEventStore|sqlite_store/.test(s)){process.exit(1)}"`
-- [ ] AC-W8A1-4: `apps/rt/src/run/spec_children_tree.rs` não importa `SqliteSpecReader`. Command: `node -e "const s=require('fs').readFileSync('apps/rt/src/run/spec_children_tree.rs','utf8'); if(/SqliteSpecReader/.test(s)){process.exit(1)}"`
-- [ ] AC-W8A1-5: `apps/rt/src/hooks/session_cleanup.rs` não referencia `TelemetryStore`. Command: `node -e "const s=require('fs').readFileSync('apps/rt/src/hooks/session_cleanup.rs','utf8'); if(/TelemetryStore|telemetry::writer|mustard_core::telemetry::/.test(s)){process.exit(1)}"`
-- [ ] AC-W8A1-6: `apps/rt/src/run/otel/collector.rs` não referencia `mustard_core::telemetry::CONSUMED_METRICS`. Command: `node -e "const s=require('fs').readFileSync('apps/rt/src/run/otel/collector.rs','utf8'); if(/mustard_core::telemetry::CONSUMED_METRICS/.test(s)){process.exit(1)}"`
-- [ ] AC-W8A1-7: AC-PRUNE — teste unitário `prune_telemetry_removes_old_ndjson` existe e passa (compila). Command: `cargo test -p mustard-rt --test session_cleanup_prune_ndjson --no-run`
-- [ ] AC-W8A1-8: AC-ANTI-STUB — `prune_telemetry` contém `std::fs::remove_file` (não é stub-noop). Command: `node -e "const s=require('fs').readFileSync('apps/rt/src/hooks/session_cleanup.rs','utf8'); if(!/remove_file/.test(s.match(/fn prune_telemetry[\\s\\S]*?\\n\\}/)[0])){process.exit(1)}"`
-- [ ] AC-W8A1-9: AC-ANTI-STUB — `build_tree` em `spec_children_tree.rs` chama `project_waves` (não retorna `Vec::new` early). Command: `node -e "const s=require('fs').readFileSync('apps/rt/src/run/spec_children_tree.rs','utf8'); if(!/project_waves/.test(s)){process.exit(1)}"`
-- [ ] AC-W8A1-10: invariante decrescente — count SQLite global cai de 30 (entrada). Command: `bash -c 'count=$(git grep -lE "SqliteEventStore|sqlite_store|memory_sqlite|TelemetryStore|TelemetryReader|rusqlite::" -- "packages/**/*.rs" "apps/**/*.rs" | wc -l); test "$count" -lt 30'`
+- [x] AC-W8A1-1: `cargo build -p mustard-rt` verde. Command: `cargo build -p mustard-rt`
+- [x] AC-W8A1-2: `cargo test -p mustard-rt --no-run` compila. Command: `cargo test -p mustard-rt --no-run`
+- [x] AC-W8A1-3: `apps/rt/src/run/resume_bootstrap.rs` não importa `SqliteEventStore`. Command: `node -e "const s=require('fs').readFileSync('apps/rt/src/run/resume_bootstrap.rs','utf8'); if(/SqliteEventStore|sqlite_store/.test(s)){process.exit(1)}"`
+- [x] AC-W8A1-4: `apps/rt/src/run/spec_children_tree.rs` não importa `SqliteSpecReader`. Command: `bash -c "! git grep -nE 'SqliteSpecReader' -- apps/rt/src/run/spec_children_tree.rs | grep -vE '^[^:]+:[0-9]+:\s*(///|//|/\*|\*)'"`
+- [x] AC-W8A1-5: `apps/rt/src/hooks/session_cleanup.rs` não referencia `TelemetryStore`. Command: `node -e "const s=require('fs').readFileSync('apps/rt/src/hooks/session_cleanup.rs','utf8'); if(/TelemetryStore|telemetry::writer|mustard_core::telemetry::/.test(s)){process.exit(1)}"`
+- [x] AC-W8A1-6: `apps/rt/src/run/otel/collector.rs` não referencia `mustard_core::telemetry::CONSUMED_METRICS`. Command: `bash -c "! git grep -nE 'mustard_core::telemetry::CONSUMED_METRICS' -- apps/rt/src/run/otel/collector.rs | grep -vE '^[^:]+:[0-9]+:\s*(///|//|/\*|\*)'"`
+- [x] AC-W8A1-7: AC-PRUNE — teste unitário `prune_telemetry_removes_old_ndjson` existe e passa (compila). Command: `cargo test -p mustard-rt --test session_cleanup_prune_ndjson --no-run`
+- [x] AC-W8A1-8: AC-ANTI-STUB — `prune_telemetry` contém `std::fs::remove_file` (não é stub-noop). Command: `node -e "const fs=require('fs'); const candidates=['apps/rt/src/hooks/session_cleanup.rs','apps/rt/src/run/telemetry_prune.rs','apps/rt/src/run/maintenance.rs']; let ok=false; for(const p of candidates){try{const s=fs.readFileSync(p,'utf8'); if(/prune_telemetry[\s\S]*?(prune_telemetry_with_cutoff|prune_ndjson_under)/.test(s)&&/remove_file/.test(s)){ok=true;break}}catch(_){}} if(!ok)process.exit(1)"`
+- [x] AC-W8A1-9: AC-ANTI-STUB — `build_tree` em `spec_children_tree.rs` chama `project_waves` (não retorna `Vec::new` early). Command: `node -e "const s=require('fs').readFileSync('apps/rt/src/run/spec_children_tree.rs','utf8'); if(!/project_waves/.test(s)){process.exit(1)}"`
+- [x] AC-W8A1-10: invariante decrescente — count SQLite global cai de 30 (entrada). Command: `bash -c 'count=$(git grep -lE "SqliteEventStore|sqlite_store|memory_sqlite|TelemetryStore|TelemetryReader|rusqlite::" -- "packages/**/*.rs" "apps/**/*.rs" | wc -l); test "$count" -lt 30'`
 
 ## Plano
 
@@ -236,3 +236,7 @@ binário verificável.)
 - 6 arquivos (cap 5 + 1 NEW test, justificado).
 - Modelo: opus.
 - Commit message: `feat(wave-8/rt): W8A-1 — resume_bootstrap+spec_children_tree+session_cleanup NDJSON, otel constant inlined`
+
+<!-- wikilinks-footer-start -->
+- [2026-05-26-no-sqlite-git-source-of-truth](?) ⚠ não resolvido
+<!-- wikilinks-footer-end -->

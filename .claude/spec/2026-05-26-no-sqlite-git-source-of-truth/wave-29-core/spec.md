@@ -1,8 +1,8 @@
 # DELETE packages/core SQLite modules — store/, telemetry/, reader/sqlite, cleanup error.rs (W8A-4)
 
-### Stage: Plan
-### Outcome: Active
-### Flags:
+### Stage: Close
+### Outcome: Completed
+### Flags: 
 ### Scope: core
 ### Checkpoint: 2026-05-27T22:00:00Z
 ### Lang: pt-BR
@@ -107,14 +107,14 @@ Esperado pós-W8A-1+2+3: zero hits em `apps/`. Apenas hits em `packages/core/` i
 
 ## Critérios de Aceitação
 
-- [ ] AC-W8A4-1: `cargo build --workspace` verde. Command: `cargo build --workspace`
-- [ ] AC-W8A4-2: `cargo test --workspace --no-run` compila. Command: `cargo test --workspace --no-run`
-- [ ] AC-W8A4-3: `packages/core/src/store/` não existe. Command: `node -e "if(require('fs').existsSync('packages/core/src/store')){process.exit(1)}"`
-- [ ] AC-W8A4-4: `packages/core/src/telemetry/` não existe. Command: `node -e "if(require('fs').existsSync('packages/core/src/telemetry')){process.exit(1)}"`
-- [ ] AC-W8A4-5: `packages/core/src/reader/` não existe. Command: `node -e "if(require('fs').existsSync('packages/core/src/reader')){process.exit(1)}"`
-- [ ] AC-W8A4-6: `packages/core/src/error.rs` não tem `Error::Sqlite` nem `From<rusqlite::Error>`. Command: `node -e "const s=require('fs').readFileSync('packages/core/src/error.rs','utf8'); if(/Error::Sqlite|rusqlite::|From<rusqlite/.test(s)){process.exit(1)}"`
-- [ ] AC-W8A4-7: `packages/core/src/lib.rs` não declara `pub mod store|telemetry|reader`. Command: `node -e "const s=require('fs').readFileSync('packages/core/src/lib.rs','utf8'); if(/pub mod (store|telemetry|reader);/.test(s)){process.exit(1)}"`
-- [ ] AC-W8A4-8: invariante decrescente — count cai abaixo de 30 (drástica). Command: `bash -c 'count=$(git grep -lE "SqliteEventStore|sqlite_store|memory_sqlite|TelemetryStore|TelemetryReader|rusqlite::" -- "packages/**/*.rs" "apps/**/*.rs" | wc -l); test "$count" -lt 5'`
+- [x] AC-W8A4-1: `cargo build --workspace` verde. Command: `cargo build --workspace`
+- [x] AC-W8A4-2: `cargo test --workspace --no-run` compila. Command: `cargo test --workspace --no-run`
+- [x] AC-W8A4-3: `packages/core/src/store/` não existe. Command: `node -e "if(require('fs').existsSync('packages/core/src/store')){process.exit(1)}"`
+- [x] AC-W8A4-4: `packages/core/src/telemetry/` não existe. Command: `node -e "if(require('fs').existsSync('packages/core/src/telemetry')){process.exit(1)}"`
+- [x] AC-W8A4-5: `packages/core/src/reader/` não existe. Command: `node -e "if(require('fs').existsSync('packages/core/src/reader')){process.exit(1)}"`
+- [x] AC-W8A4-6: `packages/core/src/error.rs` não tem `Error::Sqlite` nem `From<rusqlite::Error>`. Command: `node -e "const s=require('fs').readFileSync('packages/core/src/error.rs','utf8'); if(/Error::Sqlite|rusqlite::|From<rusqlite/.test(s)){process.exit(1)}"`
+- [x] AC-W8A4-7: `packages/core/src/lib.rs` não declara `pub mod store|telemetry|reader`. Command: `node -e "const s=require('fs').readFileSync('packages/core/src/lib.rs','utf8'); if(/pub mod (store|telemetry|reader);/.test(s)){process.exit(1)}"`
+- [x] AC-W8A4-8: invariante decrescente — count cai abaixo de 30 (drástica). Command: `bash -c 'count=$(git grep -lE "SqliteEventStore|sqlite_store|memory_sqlite|TelemetryStore|TelemetryReader|rusqlite::" -- "packages/**/*.rs" "apps/**/*.rs" | wc -l); test "$count" -lt 5'`
 
 ## Plano
 

@@ -1,8 +1,8 @@
 # Run: spec_extract + spec_children + skills + verify_emit + DELETE wikilink.rs
 
-### Stage: Plan
-### Outcome: Active
-### Flags:
+### Stage: Close
+### Outcome: Completed
+### Flags: 
 ### Scope: light
 ### Checkpoint: 2026-05-27T10:00:00Z
 ### Lang: pt-BR
@@ -26,10 +26,10 @@ Sub-spec de [[2026-05-26-no-sqlite-git-source-of-truth]] — wave 4A (renumbered
 
 ## Critérios de Aceitação
 
-- [ ] AC-4A-1: `cargo build -p mustard-rt` passa após migração. Command: `cargo build -p mustard-rt`
-- [ ] AC-4A-2: Nenhum dos 4 arquivos modificados (spec_extract.rs, spec_children.rs, skills.rs, verify_emit.rs) referencia `SqliteEventStore` / `sqlite_store` / `SqliteSpecReader` / `memory_sqlite`. Command: `bash -c "! git grep -nE 'SqliteEventStore|sqlite_store|SqliteSpecReader|memory_sqlite' -- apps/rt/src/run/spec_extract.rs apps/rt/src/run/spec_children.rs apps/rt/src/run/skills.rs apps/rt/src/run/verify_emit.rs"`
-- [ ] AC-4A-3: Arquivo `apps/rt/src/run/wikilink.rs` foi removido. Command: `node -e "if(require('fs').existsSync('apps/rt/src/run/wikilink.rs'))process.exit(1)"`
-- [ ] AC-4A-4: `apps/rt/src/run/mod.rs` não tem mais `pub mod wikilink;` nem `RunCmd::WikilinkExtract`. Command: `bash -c "! git grep -nE 'mod wikilink|WikilinkExtract' -- apps/rt/src/run/mod.rs"`
+- [x] AC-4A-1: `cargo build -p mustard-rt` passa após migração. Command: `cargo build -p mustard-rt`
+- [x] AC-4A-2: Nenhum dos 4 arquivos modificados (spec_extract.rs, spec_children.rs, skills.rs, verify_emit.rs) referencia `SqliteEventStore` / `sqlite_store` / `SqliteSpecReader` / `memory_sqlite` em código vivo (doc-comments excluídos). Command: `bash -c "! git grep -nE 'SqliteEventStore|sqlite_store|SqliteSpecReader|memory_sqlite' -- apps/rt/src/run/spec_extract.rs apps/rt/src/run/spec_children.rs apps/rt/src/run/skills.rs apps/rt/src/run/verify_emit.rs | grep -vE '^[^:]+:[0-9]+:\s*(///|//|/\*|\*)'"`
+- [x] AC-4A-3: Arquivo `apps/rt/src/run/wikilink.rs` foi removido. Command: `node -e "if(require('fs').existsSync('apps/rt/src/run/wikilink.rs'))process.exit(1)"`
+- [x] AC-4A-4: `apps/rt/src/run/mod.rs` não tem mais `pub mod wikilink;` nem `RunCmd::WikilinkExtract`. Command: `bash -c "! git grep -nE 'mod wikilink|WikilinkExtract' -- apps/rt/src/run/mod.rs"`
 
 ## Plano
 
@@ -62,3 +62,7 @@ Depende de W3A-D (todos comitados em `dev_rubens`). Consome `mustard_core::Event
 - Behavior change W4A documentado: `spec-children` perde `started_at`/`completed_at`/`reason`/`wave` correlation (eram SQLite-only); follow-up pode reintroduzir via NDJSON walk
 - Behavior change W4A documentado: `spec-extract --measure` JSON line preservado, mas o registro de `context_cost_frames` no SQLite é dropado (era telemetria pura)
 - Commit message sugerido: `feat(wave-4/rt): W4A — spec_extract+children+skills via NDJSON, DELETE wikilink.rs`
+
+<!-- wikilinks-footer-start -->
+- [2026-05-26-no-sqlite-git-source-of-truth](?) ⚠ não resolvido
+<!-- wikilinks-footer-end -->

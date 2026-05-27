@@ -1,8 +1,8 @@
 # MCP face + orphan tests do rt → filesystem readers
 
-### Stage: Plan
-### Outcome: Active
-### Flags:
+### Stage: Close
+### Outcome: Completed
+### Flags: 
 ### Scope: light
 ### Checkpoint: 2026-05-27T11:00:00Z
 ### Lang: pt-BR
@@ -33,9 +33,9 @@ Sub-spec de [[2026-05-26-no-sqlite-git-source-of-truth]] — wave 5B (renumbered
 
 ## Critérios de Aceitação
 
-- [ ] AC-5B-1: `cargo build -p mustard-rt` passa após migração. Command: `cargo build -p mustard-rt`
-- [ ] AC-5B-2: `cargo test -p mustard-rt --no-run` compila com 0 erros (warnings permitidos). Command: `cargo test -p mustard-rt --no-run`
-- [ ] AC-5B-3: Nenhum dos 5 arquivos modificados referencia `SqliteEventStore` / `sqlite_store` / `TelemetryStore` / `TelemetryReader` / `rusqlite::`. Command: `bash -c "! git grep -nE 'SqliteEventStore|sqlite_store|TelemetryStore|TelemetryReader|rusqlite::' -- apps/rt/src/mcp/mod.rs apps/rt/src/mcp/tests.rs apps/rt/tests/mcp.rs apps/rt/tests/spec_children_tree.rs apps/rt/tests/spec_hygiene.rs"`
+- [x] AC-5B-1: `cargo build -p mustard-rt` passa após migração. Command: `cargo build -p mustard-rt`
+- [x] AC-5B-2: `cargo test -p mustard-rt --no-run` compila com 0 erros (warnings permitidos). Command: `cargo test -p mustard-rt --no-run`
+- [x] AC-5B-3: Nenhum dos 5 arquivos modificados referencia `SqliteEventStore` / `sqlite_store` / `TelemetryStore` / `TelemetryReader` / `rusqlite::`. Command: `bash -c "! git grep -nE 'SqliteEventStore|sqlite_store|TelemetryStore|TelemetryReader|rusqlite::' -- apps/rt/src/mcp/mod.rs apps/rt/src/mcp/tests.rs apps/rt/tests/mcp.rs apps/rt/tests/spec_children_tree.rs apps/rt/tests/spec_hygiene.rs"`
 
 ## Plano
 
@@ -73,3 +73,7 @@ Depende de W1B (`EventReader`, `EventReader::cached_for_session`), W1C (`Markdow
 - `apps/rt/src/run/otel/` é OUT-OF-SCOPE (sub-spec irmã wave-16-rt em paralelo)
 - Run completo dos integration tests (não só compilar) fora do escopo do commit — W8C valida AC-1..AC-18 completos
 - Commit message sugerido: `feat(wave-5/rt): W5B — mcp face + 3 orphan tests via NDJSON+MarkdownStore`
+
+<!-- wikilinks-footer-start -->
+- [2026-05-26-no-sqlite-git-source-of-truth](?) ⚠ não resolvido
+<!-- wikilinks-footer-end -->

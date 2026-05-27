@@ -1,8 +1,8 @@
 # Drenagem residual antes do CLOSE — no-sqlite (W1-W8 fechadas)
 
-### Stage: Plan
-### Outcome: Active
-### Flags:
+### Stage: Close
+### Outcome: Completed
+### Flags: 
 ### Scope: light
 ### Checkpoint: 2026-05-27T15:30:00Z
 ### Lang: pt-BR
@@ -65,12 +65,12 @@ Maintainer único (Rubens). Indireto: próxima sessão Mustard, que herda o repo
 
 ## Critérios de Aceitação
 
-- [ ] AC-1: Build workspace sem warnings — Command: `bash -c "cd /c/Atiz/mustard && cargo build --workspace 2>&1 | grep -E 'warning:' | wc -l | tr -d ' '"` espera `0`
-- [ ] AC-2: Zero `rusqlite` em todos Cargo.toml — Command: `node -e "const cp=require('child_process');const r=cp.execSync('git grep -lE \"rusqlite\" -- Cargo.toml apps/**/Cargo.toml packages/**/Cargo.toml || true',{encoding:'utf8'}).trim();process.exit(r===''?0:1)"`
-- [ ] AC-3: Cargo test workspace --no-run verde — Command: `cargo test --workspace --no-run`
-- [ ] AC-4: Cargo test workspace runtime verde — Command: `cargo test --workspace`
-- [ ] AC-5: `waves-orchestrator-design.md` não está mais na raiz — Command: `node -e "process.exit(require('fs').existsSync('C:/Atiz/mustard/waves-orchestrator-design.md')?1:0)"`
-- [ ] AC-6: zero `use rusqlite` ou `rusqlite::` em código vivo (matches em doc-comments narrativos de migração são aceitos) — Command: `node -e "const cp=require('child_process');const out=cp.execSync('git grep -nE \"^[^/]*\\\\b(use rusqlite|rusqlite::)\" -- \"apps/*/src/**/*.rs\" \"packages/*/src/**/*.rs\" || true',{encoding:'utf8'});const lines=out.split(/\\n/).filter(Boolean);process.exit(lines.length===0?0:1)"`
+- [x] AC-1: Build workspace sem warnings — Command: `bash -c "cd /c/Atiz/mustard && cargo build --workspace 2>&1 | grep -E 'warning:' | wc -l | tr -d ' '"` espera `0`
+- [x] AC-2: Zero `rusqlite` em todos Cargo.toml — Command: `node -e "const cp=require('child_process');const r=cp.execSync('git grep -lE \"rusqlite\" -- Cargo.toml apps/**/Cargo.toml packages/**/Cargo.toml || true',{encoding:'utf8'}).trim();process.exit(r===''?0:1)"`
+- [x] AC-3: Cargo test workspace --no-run verde — Command: `cargo test --workspace --no-run`
+- [x] AC-4: Cargo test workspace runtime verde — Command: `cargo test --workspace`
+- [x] AC-5: `waves-orchestrator-design.md` não está mais na raiz — Command: `node -e "process.exit(require('fs').existsSync('C:/Atiz/mustard/waves-orchestrator-design.md')?1:0)"`
+- [x] AC-6: zero `use rusqlite` ou `rusqlite::` em código vivo (matches em doc-comments narrativos de migração são aceitos) — Command: `node -e "const cp=require('child_process');const out=cp.execSync('git grep -nE \"^[^/]*\\\\b(use rusqlite|rusqlite::)\" -- \"apps/*/src/**/*.rs\" \"packages/*/src/**/*.rs\" || true',{encoding:'utf8'});const lines=out.split(/\\n/).filter(Boolean);process.exit(lines.length===0?0:1)"`
 
 ## Arquivos
 

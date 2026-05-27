@@ -1,8 +1,8 @@
 # Dashboard readers: spec_views + economy + db → filesystem/NDJSON
 
-### Stage: Plan
-### Outcome: Active
-### Flags:
+### Stage: Close
+### Outcome: Completed
+### Flags: 
 ### Scope: light
 ### Checkpoint: 2026-05-27T12:00:00Z
 ### Lang: pt-BR
@@ -27,9 +27,9 @@ Estratégia: o dashboard hoje tem ~7900 LOC tocando SQLite via `SqliteEventStore
 
 ## Critérios de Aceitação
 
-- [ ] AC-6A-1: `cargo build -p mustard-dashboard` passa após migração. Command: `cargo build -p mustard-dashboard`
-- [ ] AC-6A-2: Nenhum dos 4 arquivos modificados referencia `SqliteEventStore` / `sqlite_store` / `TelemetryStore` / `TelemetryReader` / `rusqlite::` / `DbCache` / `with_db` / `with_store` / `init_db_cache`. Command: `bash -c "! git grep -nE 'SqliteEventStore|sqlite_store|TelemetryStore|TelemetryReader|memory_sqlite|rusqlite::|store::db_cache|DbCache|init_db_cache' -- apps/dashboard/src-tauri/src/db.rs apps/dashboard/src-tauri/src/spec_views.rs apps/dashboard/src-tauri/src/economy.rs apps/dashboard/src-tauri/src/lib.rs"`
-- [ ] AC-6A-3: `tauri::generate_handler![...]` em `lib.rs` continua listando todos os 50+ comandos (zero remoções para preservar contrato com frontend TS). Command: `bash -c "grep -c 'dashboard_\|amend_queries\|economy::\|spec_views::\|telemetry::\|prd_lapidator::\|artifact_update::\|doctor::\|projects::\|commands::' apps/dashboard/src-tauri/src/lib.rs"` retorna ≥50
+- [x] AC-6A-1: `cargo build -p mustard-dashboard` passa após migração. Command: `cargo build -p mustard-dashboard`
+- [x] AC-6A-2: Nenhum dos 4 arquivos modificados referencia `SqliteEventStore` / `sqlite_store` / `TelemetryStore` / `TelemetryReader` / `rusqlite::` / `DbCache` / `with_db` / `with_store` / `init_db_cache`. Command: `bash -c "! git grep -nE 'SqliteEventStore|sqlite_store|TelemetryStore|TelemetryReader|memory_sqlite|rusqlite::|store::db_cache|DbCache|init_db_cache' -- apps/dashboard/src-tauri/src/db.rs apps/dashboard/src-tauri/src/spec_views.rs apps/dashboard/src-tauri/src/economy.rs apps/dashboard/src-tauri/src/lib.rs"`
+- [x] AC-6A-3: `tauri::generate_handler![...]` em `lib.rs` continua listando todos os 50+ comandos (zero remoções para preservar contrato com frontend TS). Command: `bash -c "grep -c 'dashboard_\|amend_queries\|economy::\|spec_views::\|telemetry::\|prd_lapidator::\|artifact_update::\|doctor::\|projects::\|commands::' apps/dashboard/src-tauri/src/lib.rs"` retorna ≥50
 
 ## Plano
 
@@ -74,3 +74,7 @@ Depende de W4A-C (NDJSON readers no rt — comitados), W3A (`pipeline.economy.sa
 - Frontend TS é OUT-OF-SCOPE — se algum command vier removido por engano, frontend quebra; AC-6A-3 protege.
 - `apps/dashboard/src-tauri/tests/*.rs` é OUT-OF-SCOPE (sub-spec irmã wave-20-dashboard).
 - Commit message: `feat(wave-6/dashboard): W6A — spec_views+economy+db+lib via NDJSON+MarkdownStore`
+
+<!-- wikilinks-footer-start -->
+- [2026-05-26-no-sqlite-git-source-of-truth](?) ⚠ não resolvido
+<!-- wikilinks-footer-end -->

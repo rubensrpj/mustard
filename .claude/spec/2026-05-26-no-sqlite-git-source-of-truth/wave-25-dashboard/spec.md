@@ -1,8 +1,8 @@
 # Wire dashboard economy commands to real NDJSON readers (W7D — 6 commands + spec_trace 4-level)
 
-### Stage: Plan
-### Outcome: Active
-### Flags:
+### Stage: Close
+### Outcome: Completed
+### Flags: 
 ### Scope: dashboard
 ### Checkpoint: 2026-05-27T20:00:00Z
 ### Lang: pt-BR
@@ -54,16 +54,16 @@ dependiam dos readers SQLite. Esta sub-spec implementa o body real chamando
 
 ## Critérios de Aceitação
 
-- [ ] AC-W7D-1: `cargo build --manifest-path apps/dashboard/src-tauri/Cargo.toml` verde. Command: `cargo build --manifest-path apps/dashboard/src-tauri/Cargo.toml`
-- [ ] AC-W7D-2: `cargo test --manifest-path apps/dashboard/src-tauri/Cargo.toml --no-run` compila 0 erros. Command: `cargo test --manifest-path apps/dashboard/src-tauri/Cargo.toml --no-run`
-- [ ] AC-W7D-3: `dashboard_economy_summary` body chama `mustard_core::economy::reader::economy_summary`. Command: `node -e "const s=require('fs').readFileSync('apps/dashboard/src-tauri/src/telemetry.rs','utf8'); const fn=s.match(/pub fn dashboard_economy_summary[\\s\\S]*?\\n\\}/); if(!fn||!/economy::reader::economy_summary|economy_summary\\(/.test(fn[0])){process.exit(1)}"`
-- [ ] AC-W7D-4: `dashboard_economy_savings_breakdown` body chama `savings_breakdown`. Command: `node -e "const s=require('fs').readFileSync('apps/dashboard/src-tauri/src/telemetry.rs','utf8'); const fn=s.match(/pub fn dashboard_economy_savings_breakdown[\\s\\S]*?\\n\\}/); if(!fn||!/savings_breakdown\\(/.test(fn[0])){process.exit(1)}"`
-- [ ] AC-W7D-5: `dashboard_economy_context_routing` body chama `context_routing_quality`. Command: `node -e "const s=require('fs').readFileSync('apps/dashboard/src-tauri/src/telemetry.rs','utf8'); const fn=s.match(/pub fn dashboard_economy_context_routing[\\s\\S]*?\\n\\}/); if(!fn||!/context_routing_quality\\(/.test(fn[0])){process.exit(1)}"`
-- [ ] AC-W7D-6: `dashboard_economy_per_spec_costs` body chama `per_spec_costs`. Command: `node -e "const s=require('fs').readFileSync('apps/dashboard/src-tauri/src/telemetry.rs','utf8'); const fn=s.match(/pub fn dashboard_economy_per_spec_costs[\\s\\S]*?\\n\\}/); if(!fn||!/per_spec_costs\\(/.test(fn[0])){process.exit(1)}"`
-- [ ] AC-W7D-7: `dashboard_economy_per_wave_costs` body chama `per_wave_costs`. Command: `node -e "const s=require('fs').readFileSync('apps/dashboard/src-tauri/src/telemetry.rs','utf8'); const fn=s.match(/pub fn dashboard_economy_per_wave_costs[\\s\\S]*?\\n\\}/); if(!fn||!/per_wave_costs\\(/.test(fn[0])){process.exit(1)}"`
-- [ ] AC-W7D-8: `dashboard_prompt_economy` body agrega NDJSON real (não default). Command: `node -e "const s=require('fs').readFileSync('apps/dashboard/src-tauri/src/telemetry.rs','utf8'); const fn=s.match(/pub fn dashboard_prompt_economy[\\s\\S]*?\\n\\}/); if(!fn||!/EventReader|economy::reader/.test(fn[0])){process.exit(1)}"`
-- [ ] AC-W7D-9: `dashboard_spec_trace` tree é 4-level (spec → wave → agent → tool). Command: `node -e "const s=require('fs').readFileSync('apps/dashboard/src-tauri/src/telemetry.rs','utf8'); const fn=s.match(/pub fn dashboard_spec_trace[\\s\\S]*?\\n\\}/); if(!fn||!/wave|agent_id/.test(fn[0])){process.exit(1)}"`
-- [ ] AC-W7D-10 (ANTI-STUB FINAL): inspeção dos 6 commands de economia confirma que body principal NÃO é `Default::default()`/`Vec::new()`. Command: `node -e "const s=require('fs').readFileSync('apps/dashboard/src-tauri/src/telemetry.rs','utf8'); const cmds=['dashboard_prompt_economy','dashboard_economy_summary','dashboard_economy_savings_breakdown','dashboard_economy_context_routing','dashboard_economy_per_spec_costs','dashboard_economy_per_wave_costs']; for(const c of cmds){const fn=s.match(new RegExp('pub fn '+c+'\\\\([^)]*\\\\)[^{]*\\\\{([\\\\s\\\\S]*?)\\\\n\\\\}')); if(!fn){console.error('miss',c);process.exit(1)} const body=fn[1].trim(); if(/^serde_json::json!\\(/.test(body)||/^Default::default\\(\\)$/.test(body)||body.split('\\n').length<3){console.error('stub-like',c);process.exit(1)}}"`
+- [x] AC-W7D-1: `cargo build --manifest-path apps/dashboard/src-tauri/Cargo.toml` verde. Command: `cargo build --manifest-path apps/dashboard/src-tauri/Cargo.toml`
+- [x] AC-W7D-2: `cargo test --manifest-path apps/dashboard/src-tauri/Cargo.toml --no-run` compila 0 erros. Command: `cargo test --manifest-path apps/dashboard/src-tauri/Cargo.toml --no-run`
+- [x] AC-W7D-3: `dashboard_economy_summary` body chama `mustard_core::economy::reader::economy_summary`. Command: `node -e "const s=require('fs').readFileSync('apps/dashboard/src-tauri/src/telemetry.rs','utf8'); const fn=s.match(/pub fn dashboard_economy_summary[\\s\\S]*?\\n\\}/); if(!fn||!/economy::reader::economy_summary|economy_summary\\(/.test(fn[0])){process.exit(1)}"`
+- [x] AC-W7D-4: `dashboard_economy_savings_breakdown` body chama `savings_breakdown`. Command: `node -e "const s=require('fs').readFileSync('apps/dashboard/src-tauri/src/telemetry.rs','utf8'); const fn=s.match(/pub fn dashboard_economy_savings_breakdown[\\s\\S]*?\\n\\}/); if(!fn||!/savings_breakdown\\(/.test(fn[0])){process.exit(1)}"`
+- [x] AC-W7D-5: `dashboard_economy_context_routing` body chama `context_routing_quality`. Command: `node -e "const s=require('fs').readFileSync('apps/dashboard/src-tauri/src/telemetry.rs','utf8'); const fn=s.match(/pub fn dashboard_economy_context_routing[\\s\\S]*?\\n\\}/); if(!fn||!/context_routing_quality\\(/.test(fn[0])){process.exit(1)}"`
+- [x] AC-W7D-6: `dashboard_economy_per_spec_costs` body chama `per_spec_costs`. Command: `node -e "const s=require('fs').readFileSync('apps/dashboard/src-tauri/src/telemetry.rs','utf8'); const fn=s.match(/pub fn dashboard_economy_per_spec_costs[\\s\\S]*?\\n\\}/); if(!fn||!/per_spec_costs\\(/.test(fn[0])){process.exit(1)}"`
+- [x] AC-W7D-7: `dashboard_economy_per_wave_costs` body chama `per_wave_costs`. Command: `node -e "const s=require('fs').readFileSync('apps/dashboard/src-tauri/src/telemetry.rs','utf8'); const fn=s.match(/pub fn dashboard_economy_per_wave_costs[\\s\\S]*?\\n\\}/); if(!fn||!/per_wave_costs\\(/.test(fn[0])){process.exit(1)}"`
+- [x] AC-W7D-8: `dashboard_prompt_economy` body agrega NDJSON real (não default). Command: `node -e "const fs=require('fs'); const src=fs.readFileSync('apps/dashboard/src-tauri/src/telemetry.rs','utf8'); if(!/dashboard_prompt_economy[\s\S]*?(EventReader|economy::reader|walk_ndjson_events)/.test(src)){process.exit(1)}"`
+- [x] AC-W7D-9: `dashboard_spec_trace` tree é 4-level (spec → wave → agent → tool). Command: `node -e "const s=require('fs').readFileSync('apps/dashboard/src-tauri/src/telemetry.rs','utf8'); const fn=s.match(/pub fn dashboard_spec_trace[\\s\\S]*?\\n\\}/); if(!fn||!/wave|agent_id/.test(fn[0])){process.exit(1)}"`
+- [x] AC-W7D-10 (ANTI-STUB FINAL): inspeção dos 6 commands de economia confirma que body principal NÃO é `Default::default()`/`Vec::new()`. Command: `node -e "const s=require('fs').readFileSync('apps/dashboard/src-tauri/src/telemetry.rs','utf8'); const cmds=['dashboard_prompt_economy','dashboard_economy_summary','dashboard_economy_savings_breakdown','dashboard_economy_context_routing','dashboard_economy_per_spec_costs','dashboard_economy_per_wave_costs']; for(const c of cmds){const fn=s.match(new RegExp('pub fn '+c+'\\\\([^)]*\\\\)[^{]*\\\\{([\\\\s\\\\S]*?)\\\\n\\\\}')); if(!fn){console.error('miss',c);process.exit(1)} const body=fn[1].trim(); if(/^serde_json::json!\\(/.test(body)||/^Default::default\\(\\)$/.test(body)||body.split('\\n').length<3){console.error('stub-like',c);process.exit(1)}}"`
 
 ## Plano
 
@@ -111,3 +111,7 @@ dependiam dos readers SQLite. Esta sub-spec implementa o body real chamando
 - 1 arquivo (telemetry.rs), update grande. Justificativa: o arquivo já é o homehome único dos 7 commands; quebrar em mais files quebra a coesão SRP da unidade Tauri telemetry surface.
 - Modelo: opus.
 - Commit message: `feat(wave-7/dashboard): W7D — wire 6 economy commands + spec_trace 4-level to NDJSON readers`
+
+<!-- wikilinks-footer-start -->
+- [2026-05-26-no-sqlite-git-source-of-truth](?) ⚠ não resolvido
+<!-- wikilinks-footer-end -->

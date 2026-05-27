@@ -16,7 +16,7 @@ Sub-spec de [[2026-05-26-no-sqlite-git-source-of-truth]] — wave 1A. **Summary 
 
 ## Critérios de Aceitação
 
-- [ ] AC-1A-1: `cargo test -p mustard-core summary` passa + `mustard-rt run pipeline-summary --self-test` produz JSON com campo `version` numérico. Command: `cargo test -p mustard-core summary && cargo run -q -p mustard-rt -- run pipeline-summary --self-test`
+- [x] AC-1A-1: `cargo test -p mustard-core summary` passa + `mustard-rt run pipeline-summary --self-test` produz JSON com campo `version` numérico. Command: `cargo test -p mustard-core summary && cargo run -q -p mustard-rt -- run pipeline-summary --self-test`
 
 ## Plano
 

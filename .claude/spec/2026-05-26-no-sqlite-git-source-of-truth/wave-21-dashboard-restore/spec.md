@@ -1,8 +1,8 @@
 # Restore dashboard telemetry behavior — replace W6B stubs with real NDJSON readers
 
-### Stage: Plan
-### Outcome: Active
-### Flags:
+### Stage: Close
+### Outcome: Completed
+### Flags: 
 ### Scope: light
 ### Checkpoint: 2026-05-27T15:00:00Z
 ### Lang: pt-BR
@@ -54,17 +54,17 @@ está escrevendo desde W5/W2/W3.
 
 ## Critérios de Aceitação
 
-- [ ] AC-21-1: `cargo build -p mustard-dashboard` passa. Command: `cargo build -p mustard-dashboard`
-- [ ] AC-21-2: `cargo test -p mustard-dashboard --no-run` compila com 0 erros. Command: `cargo test -p mustard-dashboard --no-run`
-- [ ] AC-21-3: `rtk_summary(repo)` invoca `rtk gain -f json --daily -p` (cwd=repo) e retorna `RtkBlock` com `available=true` quando RTK responde. Command: `node -e "const fs=require('fs'); const src=fs.readFileSync('apps/dashboard/src-tauri/src/telemetry.rs','utf8'); if(!/rtk_summary\\s*\\([^)]*\\)\\s*->\\s*RtkBlock\\s*\\{[\\s\\S]*?Command::new[\\s\\S]*?\\\"rtk\\\"/.test(src)){process.exit(1)}"`
-- [ ] AC-21-4: `hook_fire_counts` lê `.claude/.metrics/*.jsonl` e retorna `Vec<HookFireCount>` agregado por hook. Command: `node -e "const s=require('fs').readFileSync('apps/dashboard/src-tauri/src/telemetry.rs','utf8'); if(!/hook_fire_counts[\\s\\S]*?\\.metrics[\\s\\S]*?\\.jsonl/.test(s))process.exit(1)"`
-- [ ] AC-21-5: `routing_breakdown` lê `.claude/.metrics/model-routing-gate.jsonl` e agrupa por subagent_type. Command: `node -e "const s=require('fs').readFileSync('apps/dashboard/src-tauri/src/telemetry.rs','utf8'); if(!/routing_breakdown[\\s\\S]*?model-routing-gate\\.jsonl/.test(s))process.exit(1)"`
-- [ ] AC-21-6: `workflow_by_phase` lê NDJSON `pipeline.phase` events cross-spec. Command: `node -e "const s=require('fs').readFileSync('apps/dashboard/src-tauri/src/telemetry.rs','utf8'); if(!/workflow_by_phase[\\s\\S]*?pipeline\\.phase/.test(s))process.exit(1)"`
-- [ ] AC-21-7: `tool_breakdown` lê NDJSON `tool.use` events cross-spec. Command: `node -e "const s=require('fs').readFileSync('apps/dashboard/src-tauri/src/telemetry.rs','utf8'); if(!/tool_breakdown[\\s\\S]*?tool\\.use/.test(s))process.exit(1)"`
-- [ ] AC-21-8: `agent_activity` lê NDJSON `agent.start`/`agent.stop` events cross-spec. Command: `node -e "const s=require('fs').readFileSync('apps/dashboard/src-tauri/src/telemetry.rs','utf8'); if(!/agent_activity[\\s\\S]*?agent\\.start[\\s\\S]*?agent\\.stop/.test(s))process.exit(1)"`
-- [ ] AC-21-9: `measured` lê NDJSON `pipeline.telemetry.run` events e soma tokens. Command: `node -e "const s=require('fs').readFileSync('apps/dashboard/src-tauri/src/telemetry.rs','utf8'); if(!/pub fn measured[\\s\\S]*?pipeline\\.telemetry\\.run/.test(s))process.exit(1)"`
-- [ ] AC-21-10: `dashboard_spec_trace` assinatura aceita `(project_path, spec_name)` em vez de `(session_id, tool_use_id, started_at_ms)`. Command: `node -e "const s=require('fs').readFileSync('apps/dashboard/src-tauri/src/telemetry.rs','utf8'); if(!/pub fn dashboard_spec_trace[\\s\\S]*?project_path:\\s*String[\\s\\S]*?spec_name:\\s*String/.test(s))process.exit(1)"`
-- [ ] AC-21-11: `dashboard_economy_*` (5 cmds) + `dashboard_prompt_economy` aceitam `EconomyScopeDto` (não `String repo_path`), evitando panic na chamada frontend. O nome do parâmetro pode ser `scope` ou `_scope` (Rust convention para param não-lido). Command: `node -e "const s=require('fs').readFileSync('apps/dashboard/src-tauri/src/telemetry.rs','utf8'); const fns=['dashboard_economy_summary','dashboard_economy_savings_breakdown','dashboard_economy_context_routing','dashboard_economy_per_spec_costs','dashboard_economy_per_wave_costs','dashboard_prompt_economy']; for(const f of fns){const re=new RegExp('pub fn '+f+'\\\\(_?scope:\\\\s*EconomyScopeDto');if(!re.test(s)){console.error('miss',f);process.exit(1)}}"`
+- [x] AC-21-1: `cargo build -p mustard-dashboard` passa. Command: `cargo build -p mustard-dashboard`
+- [x] AC-21-2: `cargo test -p mustard-dashboard --no-run` compila com 0 erros. Command: `cargo test -p mustard-dashboard --no-run`
+- [x] AC-21-3: `rtk_summary(repo)` invoca `rtk gain -f json --daily -p` (cwd=repo) e retorna `RtkBlock` com `available=true` quando RTK responde. Command: `node -e "const fs=require('fs'); const src=fs.readFileSync('apps/dashboard/src-tauri/src/telemetry.rs','utf8'); if(!/pub fn rtk_summary\s*\([^)]*\)\s*->\s*RtkBlock/.test(src)||!/(Command::new|no_window_command)\s*\(\s*\"rtk\"/.test(src)){process.exit(1)}"`
+- [x] AC-21-4: `hook_fire_counts` lê `.claude/.metrics/*.jsonl` e retorna `Vec<HookFireCount>` agregado por hook. Command: `node -e "const s=require('fs').readFileSync('apps/dashboard/src-tauri/src/telemetry.rs','utf8'); if(!/hook_fire_counts[\\s\\S]*?\\.metrics[\\s\\S]*?\\.jsonl/.test(s))process.exit(1)"`
+- [x] AC-21-5: `routing_breakdown` lê `.claude/.metrics/model-routing-gate.jsonl` e agrupa por subagent_type. Command: `node -e "const s=require('fs').readFileSync('apps/dashboard/src-tauri/src/telemetry.rs','utf8'); if(!/routing_breakdown[\\s\\S]*?model-routing-gate\\.jsonl/.test(s))process.exit(1)"`
+- [x] AC-21-6: `workflow_by_phase` lê NDJSON `pipeline.phase` events cross-spec. Command: `node -e "const s=require('fs').readFileSync('apps/dashboard/src-tauri/src/telemetry.rs','utf8'); if(!/workflow_by_phase[\\s\\S]*?pipeline\\.phase/.test(s))process.exit(1)"`
+- [x] AC-21-7: `tool_breakdown` lê NDJSON `tool.use` events cross-spec. Command: `node -e "const s=require('fs').readFileSync('apps/dashboard/src-tauri/src/telemetry.rs','utf8'); if(!/tool_breakdown[\\s\\S]*?tool\\.use/.test(s))process.exit(1)"`
+- [x] AC-21-8: `agent_activity` lê NDJSON `agent.start`/`agent.stop` events cross-spec. Command: `node -e "const s=require('fs').readFileSync('apps/dashboard/src-tauri/src/telemetry.rs','utf8'); if(!/agent_activity[\\s\\S]*?agent\\.start[\\s\\S]*?agent\\.stop/.test(s))process.exit(1)"`
+- [x] AC-21-9: `measured` lê NDJSON `pipeline.telemetry.run` events e soma tokens. Command: `node -e "const s=require('fs').readFileSync('apps/dashboard/src-tauri/src/telemetry.rs','utf8'); if(!/pub fn measured[\\s\\S]*?pipeline\\.telemetry\\.run/.test(s))process.exit(1)"`
+- [x] AC-21-10: `dashboard_spec_trace` assinatura aceita `(project_path, spec_name)` em vez de `(session_id, tool_use_id, started_at_ms)`. Command: `node -e "const s=require('fs').readFileSync('apps/dashboard/src-tauri/src/telemetry.rs','utf8'); if(!/pub fn dashboard_spec_trace[\\s\\S]*?project_path:\\s*String[\\s\\S]*?spec_name:\\s*String/.test(s))process.exit(1)"`
+- [x] AC-21-11: `dashboard_economy_*` (5 cmds) + `dashboard_prompt_economy` aceitam `EconomyScopeDto` (não `String repo_path`), evitando panic na chamada frontend. O nome do parâmetro pode ser `scope` ou `_scope` (Rust convention para param não-lido). Command: `node -e "const s=require('fs').readFileSync('apps/dashboard/src-tauri/src/telemetry.rs','utf8'); const fns=['dashboard_economy_summary','dashboard_economy_savings_breakdown','dashboard_economy_context_routing','dashboard_economy_per_spec_costs','dashboard_economy_per_wave_costs','dashboard_prompt_economy']; for(const f of fns){const re=new RegExp('pub fn '+f+'\\\\(_?scope:\\\\s*EconomyScopeDto');if(!re.test(s)){console.error('miss',f);process.exit(1)}}"`
 
 ## Plano
 
@@ -95,3 +95,7 @@ Depende de W2 (NDJSON event writer escrevendo `tool.use`, `agent.start/stop`, `p
 - `dashboard_spec_trace`: tree minimal (spec + tool list), não 4-level (spec → wave → agent → tool). Restauração full fica para correção subsequente.
 - Sem novos tests (W6B já tem cobertura de fixture-driven shape).
 - Commit message: `fix(wave-21/dashboard): restore telemetry behavior — replace W6B stubs with real NDJSON readers`
+
+<!-- wikilinks-footer-start -->
+- [2026-05-26-no-sqlite-git-source-of-truth](?) ⚠ não resolvido
+<!-- wikilinks-footer-end -->

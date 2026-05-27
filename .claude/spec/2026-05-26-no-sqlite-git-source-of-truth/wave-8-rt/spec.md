@@ -1,8 +1,8 @@
 # Hooks de session + stop para filesystem
 
-### Stage: Plan
-### Outcome: Active
-### Flags:
+### Stage: Close
+### Outcome: Completed
+### Flags: 
 ### Scope: light
 ### Checkpoint: 2026-05-27T10:00:00Z
 ### Lang: pt-BR
@@ -20,8 +20,8 @@ Sub-spec de [[2026-05-26-no-sqlite-git-source-of-truth]] — wave 3B (renumbered
 
 ## Critérios de Aceitação
 
-- [ ] AC-3B-1: `cargo build -p mustard-rt` passa após migração. Command: `cargo build -p mustard-rt`
-- [ ] AC-3B-2: Nenhum dos 5 arquivos referencia `SqliteEventStore` / `sqlite_store` / `memory_sqlite`. Command: `bash -c "! git grep -nE 'SqliteEventStore|sqlite_store|memory_sqlite' -- apps/rt/src/hooks/session_start.rs apps/rt/src/hooks/session_cleanup.rs apps/rt/src/hooks/stop.rs apps/rt/src/hooks/stop_observer.rs apps/rt/src/hooks/pre_compact.rs"`
+- [x] AC-3B-1: `cargo build -p mustard-rt` passa após migração. Command: `cargo build -p mustard-rt`
+- [x] AC-3B-2: Nenhum dos 5 arquivos referencia `SqliteEventStore` / `sqlite_store` / `memory_sqlite`. Command: `bash -c "! git grep -nE 'SqliteEventStore|sqlite_store|memory_sqlite' -- apps/rt/src/hooks/session_start.rs apps/rt/src/hooks/session_cleanup.rs apps/rt/src/hooks/stop.rs apps/rt/src/hooks/stop_observer.rs apps/rt/src/hooks/pre_compact.rs"`
 
 ## Plano
 

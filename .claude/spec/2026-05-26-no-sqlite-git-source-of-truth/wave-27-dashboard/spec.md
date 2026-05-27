@@ -1,8 +1,8 @@
 # Migrate dashboard spec_views.rs from SqliteSpecReader to direct projections (W8A-2)
 
-### Stage: Plan
-### Outcome: Active
-### Flags:
+### Stage: Close
+### Outcome: Completed
+### Flags: 
 ### Scope: dashboard
 ### Checkpoint: 2026-05-27T22:00:00Z
 ### Lang: pt-BR
@@ -84,14 +84,14 @@ ou `project_*(spec, &events)` no corpo.
 
 ## Critérios de Aceitação
 
-- [ ] AC-W8A2-1: `cargo build --manifest-path apps/dashboard/src-tauri/Cargo.toml` verde. Command: `cargo build --manifest-path apps/dashboard/src-tauri/Cargo.toml`
-- [ ] AC-W8A2-2: `cargo test --manifest-path apps/dashboard/src-tauri/Cargo.toml --no-run` compila. Command: `cargo test --manifest-path apps/dashboard/src-tauri/Cargo.toml --no-run`
-- [ ] AC-W8A2-3: `spec_views.rs` não importa `SqliteSpecReader` nem `SpecReader`. Command: `node -e "const s=require('fs').readFileSync('apps/dashboard/src-tauri/src/spec_views.rs','utf8'); if(/SqliteSpecReader|use mustard_core::SpecReader/.test(s)){process.exit(1)}"`
-- [ ] AC-W8A2-4: `mustard_core::projection::read_workspace_events` é `pub fn`. Command: `node -e "const s=require('fs').readFileSync('packages/core/src/projection/mod.rs','utf8'); if(!/pub fn read_workspace_events/.test(s)){process.exit(1)}"`
-- [ ] AC-W8A2-5: AC-ANTI-STUB — `spec_card_v2` chama `project_spec_view_with_header`. Command: `node -e "const s=require('fs').readFileSync('apps/dashboard/src-tauri/src/spec_views.rs','utf8'); const m=s.match(/fn spec_card_v2[\\s\\S]*?\\n\\}/); if(!m || !/project_spec_view_with_header/.test(m[0])){process.exit(1)}"`
-- [ ] AC-W8A2-6: AC-ANTI-STUB — `spec_waves_v2` chama `project_waves`. Command: `node -e "const s=require('fs').readFileSync('apps/dashboard/src-tauri/src/spec_views.rs','utf8'); const m=s.match(/fn spec_waves_v2[\\s\\S]*?\\n\\}/); if(!m || !/project_waves/.test(m[0])){process.exit(1)}"`
-- [ ] AC-W8A2-7: AC-ANTI-STUB — `workspace_summary_v2` chama `project_workspace`. Command: `node -e "const s=require('fs').readFileSync('apps/dashboard/src-tauri/src/spec_views.rs','utf8'); const m=s.match(/fn workspace_summary_v2[\\s\\S]*?\\n\\}/); if(!m || !/project_workspace/.test(m[0])){process.exit(1)}"`
-- [ ] AC-W8A2-8: invariante decrescente — count cai. Command: `bash -c 'count=$(git grep -lE "SqliteEventStore|sqlite_store|memory_sqlite|TelemetryStore|TelemetryReader|rusqlite::" -- "packages/**/*.rs" "apps/**/*.rs" | wc -l); test "$count" -lt 30'`
+- [x] AC-W8A2-1: `cargo build --manifest-path apps/dashboard/src-tauri/Cargo.toml` verde. Command: `cargo build --manifest-path apps/dashboard/src-tauri/Cargo.toml`
+- [x] AC-W8A2-2: `cargo test --manifest-path apps/dashboard/src-tauri/Cargo.toml --no-run` compila. Command: `cargo test --manifest-path apps/dashboard/src-tauri/Cargo.toml --no-run`
+- [x] AC-W8A2-3: `spec_views.rs` não importa `SqliteSpecReader` nem `SpecReader`. Command: `node -e "const s=require('fs').readFileSync('apps/dashboard/src-tauri/src/spec_views.rs','utf8'); if(/SqliteSpecReader|use mustard_core::SpecReader/.test(s)){process.exit(1)}"`
+- [x] AC-W8A2-4: `mustard_core::projection::read_workspace_events` é `pub fn`. Command: `node -e "const s=require('fs').readFileSync('packages/core/src/projection/mod.rs','utf8'); if(!/pub fn read_workspace_events/.test(s)){process.exit(1)}"`
+- [x] AC-W8A2-5: AC-ANTI-STUB — `spec_card_v2` chama `project_spec_view_with_header`. Command: `node -e "const s=require('fs').readFileSync('apps/dashboard/src-tauri/src/spec_views.rs','utf8'); const m=s.match(/fn spec_card_v2[\\s\\S]*?\\n\\}/); if(!m || !/project_spec_view_with_header/.test(m[0])){process.exit(1)}"`
+- [x] AC-W8A2-6: AC-ANTI-STUB — `spec_waves_v2` chama `project_waves`. Command: `node -e "const s=require('fs').readFileSync('apps/dashboard/src-tauri/src/spec_views.rs','utf8'); const m=s.match(/fn spec_waves_v2[\\s\\S]*?\\n\\}/); if(!m || !/project_waves/.test(m[0])){process.exit(1)}"`
+- [x] AC-W8A2-7: AC-ANTI-STUB — `workspace_summary_v2` chama `project_workspace`. Command: `node -e "const s=require('fs').readFileSync('apps/dashboard/src-tauri/src/spec_views.rs','utf8'); const m=s.match(/fn workspace_summary_v2[\\s\\S]*?\\n\\}/); if(!m || !/project_workspace/.test(m[0])){process.exit(1)}"`
+- [x] AC-W8A2-8: invariante decrescente — count cai. Command: `bash -c 'count=$(git grep -lE "SqliteEventStore|sqlite_store|memory_sqlite|TelemetryStore|TelemetryReader|rusqlite::" -- "packages/**/*.rs" "apps/**/*.rs" | wc -l); test "$count" -lt 30'`
 
 ## Plano
 

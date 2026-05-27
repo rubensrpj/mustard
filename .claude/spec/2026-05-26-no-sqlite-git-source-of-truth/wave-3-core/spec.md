@@ -1,8 +1,8 @@
 # MarkdownStore primitivo — compartilhado por memory/knowledge/spec readers e footer hook
 
-### Stage: Execute
-### Outcome: Active
-### Flags:
+### Stage: Close
+### Outcome: Completed
+### Flags: 
 ### Scope: light
 ### Checkpoint: 2026-05-27T09:00:00Z
 ### Lang: pt-BR
@@ -16,7 +16,7 @@ Sub-spec de [[2026-05-26-no-sqlite-git-source-of-truth]] — wave 1C. **Markdown
 
 ## Critérios de Aceitação
 
-- [ ] AC-1C-1: benchmarks de scan, find_backlinks e render_footer passam nos thresholds + casos: link resolvido, link órfão, body sem links (footer vazio), regen idempotente. Command: `cargo test -p mustard-core atomic_md::store::bench atomic_md::wikilink::bench atomic_md::wikilink::test_render_footer`
+- [x] AC-1C-1: benchmarks de scan, find_backlinks e render_footer passam nos thresholds + casos: link resolvido, link órfão, body sem links (footer vazio), regen idempotente. Command: `cargo test -p mustard-core atomic_md::store::bench atomic_md::wikilink::bench atomic_md::wikilink::test_render_footer`
 
 ## Plano
 

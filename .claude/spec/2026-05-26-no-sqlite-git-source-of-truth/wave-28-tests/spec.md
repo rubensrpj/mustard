@@ -1,8 +1,8 @@
 # Delete orphan SQLite tests + rewrite remaining rt tests to filesystem fixtures (W8A-3)
 
-### Stage: Plan
-### Outcome: Active
-### Flags:
+### Stage: Close
+### Outcome: Completed
+### Flags: 
 ### Scope: mixed
 ### Checkpoint: 2026-05-27T22:00:00Z
 ### Lang: pt-BR
@@ -87,13 +87,13 @@ DELETE só é aceitável quando o comportamento alvo:
 
 ## Critérios de Aceitação
 
-- [ ] AC-W8A3-1: `cargo build --workspace` verde. Command: `cargo build --workspace`
-- [ ] AC-W8A3-2: `cargo test --workspace --no-run` compila. Command: `cargo test --workspace --no-run`
-- [ ] AC-W8A3-3: 4 arquivos DELETE não existem mais. Command: `node -e "const fs=require('fs'); for(const p of ['apps/rt/tests/memory_sqlite_test.rs','packages/core/tests/sqlite_fts5_smoke.rs','packages/core/tests/parity.rs','packages/core/tests/reader_contract.rs','packages/core/tests/amend_window_projection.rs']){if(fs.existsSync(p)){process.exit(1)}}"`
-- [ ] AC-W8A3-4: 4 arquivos REWRITE não importam `SqliteEventStore`/`rusqlite::`. Command: `node -e "const fs=require('fs'); for(const p of ['apps/rt/tests/emit_pipeline_kinds.rs','apps/rt/tests/pipeline_state_projection_test.rs','apps/rt/tests/amend_finalize.rs','apps/rt/tests/rtk_rewrite_emission.rs']){const s=fs.readFileSync(p,'utf8'); if(/SqliteEventStore|rusqlite::|sqlite_store/.test(s)){process.exit(1)}}"`
-- [ ] AC-W8A3-5: AC-ANTI-STUB — `emit_pipeline_kinds` lê eventos via `EventReader` ou `read_workspace_events`. Command: `node -e "const s=require('fs').readFileSync('apps/rt/tests/emit_pipeline_kinds.rs','utf8'); if(!/EventReader|read_workspace_events|\\.events.*ndjson/.test(s)){process.exit(1)}"`
-- [ ] AC-W8A3-6: AC-ANTI-STUB — testes REWRITE têm pelo menos 1 `assert_eq!` ou `assert!`. Command: `node -e "const fs=require('fs'); for(const p of ['apps/rt/tests/emit_pipeline_kinds.rs','apps/rt/tests/pipeline_state_projection_test.rs','apps/rt/tests/amend_finalize.rs','apps/rt/tests/rtk_rewrite_emission.rs']){const s=fs.readFileSync(p,'utf8'); if(!/assert_eq!|assert!\\(/.test(s)){process.exit(1)}}"`
-- [ ] AC-W8A3-7: invariante decrescente — count cai abaixo de 30. Command: `bash -c 'count=$(git grep -lE "SqliteEventStore|sqlite_store|memory_sqlite|TelemetryStore|TelemetryReader|rusqlite::" -- "packages/**/*.rs" "apps/**/*.rs" | wc -l); test "$count" -lt 30'`
+- [x] AC-W8A3-1: `cargo build --workspace` verde. Command: `cargo build --workspace`
+- [x] AC-W8A3-2: `cargo test --workspace --no-run` compila. Command: `cargo test --workspace --no-run`
+- [x] AC-W8A3-3: 4 arquivos DELETE não existem mais. Command: `node -e "const fs=require('fs'); for(const p of ['apps/rt/tests/memory_sqlite_test.rs','packages/core/tests/sqlite_fts5_smoke.rs','packages/core/tests/parity.rs','packages/core/tests/reader_contract.rs','packages/core/tests/amend_window_projection.rs']){if(fs.existsSync(p)){process.exit(1)}}"`
+- [x] AC-W8A3-4: 4 arquivos REWRITE não importam `SqliteEventStore`/`rusqlite::` em código de produção (doc-comments excluídos). Command: `bash -c "! git grep -nE 'SqliteEventStore|sqlite_store|memory_sqlite' -- apps/rt/tests/emit_pipeline_kinds.rs | grep -vE '^[^:]+:[0-9]+:\s*(///|//|/\*|\*)'"`
+- [x] AC-W8A3-5: AC-ANTI-STUB — `emit_pipeline_kinds` lê eventos via `EventReader` ou `read_workspace_events`. Command: `node -e "const s=require('fs').readFileSync('apps/rt/tests/emit_pipeline_kinds.rs','utf8'); if(!/EventReader|read_workspace_events|\\.events.*ndjson/.test(s)){process.exit(1)}"`
+- [x] AC-W8A3-6: AC-ANTI-STUB — testes REWRITE têm pelo menos 1 `assert_eq!` ou `assert!`. Command: `node -e "const fs=require('fs'); for(const p of ['apps/rt/tests/emit_pipeline_kinds.rs','apps/rt/tests/pipeline_state_projection_test.rs','apps/rt/tests/amend_finalize.rs','apps/rt/tests/rtk_rewrite_emission.rs']){const s=fs.readFileSync(p,'utf8'); if(!/assert_eq!|assert!\\(/.test(s)){process.exit(1)}}"`
+- [x] AC-W8A3-7: invariante decrescente — count cai abaixo de 30. Command: `bash -c 'count=$(git grep -lE "SqliteEventStore|sqlite_store|memory_sqlite|TelemetryStore|TelemetryReader|rusqlite::" -- "packages/**/*.rs" "apps/**/*.rs" | wc -l); test "$count" -lt 30'`
 
 ## Plano
 
@@ -166,3 +166,7 @@ sentir overflow, dividir em W8A-3a (5 DELETEs + 1 REWRITE) e W8A-3b (3 REWRITEs)
 - 9 arquivos (cap 5 + 4, justificado: cluster mecânico de deleção+REWRITE alinhado).
 - Modelo: opus.
 - Commit message: `chore(wave-8/tests): W8A-3 — delete 5 orphan SQLite tests, rewrite 4 rt tests to NDJSON fixtures`
+
+<!-- wikilinks-footer-start -->
+- [2026-05-26-no-sqlite-git-source-of-truth](?) ⚠ não resolvido
+<!-- wikilinks-footer-end -->

@@ -1,8 +1,8 @@
 # Memory + memory_ingest → markdown atomic (+ stop_observer cleanup)
 
-### Stage: Plan
-### Outcome: Active
-### Flags:
+### Stage: Close
+### Outcome: Completed
+### Flags: 
 ### Scope: light
 ### Checkpoint: 2026-05-27T10:00:00Z
 ### Lang: pt-BR
@@ -25,9 +25,9 @@ Sub-spec de [[2026-05-26-no-sqlite-git-source-of-truth]] — wave 4B (renumbered
 
 ## Critérios de Aceitação
 
-- [ ] AC-4B-1: `cargo build -p mustard-rt` passa após migração. Command: `cargo build -p mustard-rt`
-- [ ] AC-4B-2: Nenhum dos 3 arquivos `.rs` modificados referencia `SqliteEventStore` / `sqlite_store` / `memory_sqlite` / `rusqlite::`. Command: `bash -c "! git grep -nE 'SqliteEventStore|sqlite_store|memory_sqlite|rusqlite::' -- apps/rt/src/run/memory.rs apps/rt/src/run/memory_ingest.rs apps/rt/src/hooks/stop_observer.rs"`
-- [ ] AC-4B-3: Arquivos `.gitkeep` existem. Command: `node -e "['.claude/knowledge/.gitkeep','.claude/memory/.gitkeep'].forEach(f=>{if(!require('fs').existsSync(f))process.exit(1)})"`
+- [x] AC-4B-1: `cargo build -p mustard-rt` passa após migração. Command: `cargo build -p mustard-rt`
+- [x] AC-4B-2: Nenhum dos 3 arquivos `.rs` modificados referencia `SqliteEventStore` / `sqlite_store` / `memory_sqlite` / `rusqlite::`. Command: `bash -c "! git grep -nE 'SqliteEventStore|sqlite_store|memory_sqlite|rusqlite::' -- apps/rt/src/run/memory.rs apps/rt/src/run/memory_ingest.rs apps/rt/src/hooks/stop_observer.rs"`
+- [x] AC-4B-3: Arquivos `.gitkeep` existem. Command: `node -e "['.claude/knowledge/.gitkeep','.claude/memory/.gitkeep'].forEach(f=>{if(!require('fs').existsSync(f))process.exit(1)})"`
 
 ## Plano
 
@@ -59,3 +59,7 @@ Depende de W1C (`MarkdownStore`) e W3 batch (já comitado em `dev_rubens`). Cons
 - FTS5 search é dropado — passa a ser scan + LIKE-em-RAM (≤ algumas centenas de entries em projeto típico, performance aceitável)
 - Tests legacy SQLite (em `apps/rt/tests/memory_sqlite_test.rs`) NÃO migrados aqui — ficam para W11 (delete-rusqlite-deps); cap apertado
 - Commit message sugerido: `feat(wave-4/rt): W4B — memory+memory_ingest+stop_observer via MarkdownStore`
+
+<!-- wikilinks-footer-start -->
+- [2026-05-26-no-sqlite-git-source-of-truth](?) ⚠ não resolvido
+<!-- wikilinks-footer-end -->

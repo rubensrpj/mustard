@@ -1,8 +1,8 @@
 # OTEL — rewrite para NDJSON (preservar telemetria, deletar SQLite)
 
-### Stage: Plan
-### Outcome: Active
-### Flags:
+### Stage: Close
+### Outcome: Completed
+### Flags: 
 ### Scope: light
 ### Checkpoint: 2026-05-27T11:00:00Z
 ### Lang: pt-BR
@@ -36,10 +36,10 @@ Decisão do usuário 2026-05-26: telemetria de uso (claude_code.token.usage, cla
 
 ## Critérios de Aceitação
 
-- [ ] AC-5A-1: `cargo build -p mustard-rt` passa após migração. Command: `cargo build -p mustard-rt`
-- [ ] AC-5A-2: Arquivo `apps/rt/src/run/otel/store.rs` foi removido. Command: `node -e "if(require('fs').existsSync('apps/rt/src/run/otel/store.rs'))process.exit(1)"`
-- [ ] AC-5A-3: Nenhum dos arquivos `otel/mod.rs`, `otel/collector.rs`, `otel/diagnose.rs` referencia `SqliteEventStore` / `sqlite_store` / `TelemetryStore` / `rusqlite::`. Command: `bash -c "! git grep -nE 'SqliteEventStore|sqlite_store|TelemetryStore|rusqlite::' -- apps/rt/src/run/otel/mod.rs apps/rt/src/run/otel/collector.rs apps/rt/src/run/otel/diagnose.rs"`
-- [ ] AC-5A-4: `apps/rt/src/run/otel/mod.rs` não tem mais `pub mod store;`. Command: `bash -c "! git grep -nE 'pub mod store' -- apps/rt/src/run/otel/mod.rs"`
+- [x] AC-5A-1: `cargo build -p mustard-rt` passa após migração. Command: `cargo build -p mustard-rt`
+- [x] AC-5A-2: Arquivo `apps/rt/src/run/otel/store.rs` foi removido. Command: `node -e "if(require('fs').existsSync('apps/rt/src/run/otel/store.rs'))process.exit(1)"`
+- [x] AC-5A-3: Nenhum dos arquivos `otel/mod.rs`, `otel/collector.rs`, `otel/diagnose.rs` referencia `SqliteEventStore` / `sqlite_store` / `TelemetryStore` / `rusqlite::`. Command: `bash -c "! git grep -nE 'SqliteEventStore|sqlite_store|TelemetryStore|rusqlite::' -- apps/rt/src/run/otel/mod.rs apps/rt/src/run/otel/collector.rs apps/rt/src/run/otel/diagnose.rs"`
+- [x] AC-5A-4: `apps/rt/src/run/otel/mod.rs` não tem mais `pub mod store;`. Command: `bash -c "! git grep -nE 'pub mod store' -- apps/rt/src/run/otel/mod.rs"`
 
 ## Plano
 
@@ -71,3 +71,7 @@ Depende de W2C `event_writer_ndjson::write_event_with_ts` (já comitado em `dev_
 - `apps/rt/src/mcp/` é OUT-OF-SCOPE (sub-spec irmã wave-17-rt em paralelo)
 - Tests inline (`#[cfg(test)] mod tests` em collector/diagnose, se houver) reescritos para usar NDJSON fixtures via `std::fs::write` em tempdir + `EventReader` ao invés de `Store::open`
 - Commit message sugerido: `feat(wave-5/rt): W5A — otel via NDJSON, DELETE otel/store.rs`
+
+<!-- wikilinks-footer-start -->
+- [2026-05-26-no-sqlite-git-source-of-truth](?) ⚠ não resolvido
+<!-- wikilinks-footer-end -->

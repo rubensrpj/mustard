@@ -1,8 +1,8 @@
 # Migrar readers de resume + metrics + rebuild para NDJSON
 
-### Stage: Execute
-### Outcome: Active
-### Flags:
+### Stage: Close
+### Outcome: Completed
+### Flags: 
 ### Scope: light
 ### Checkpoint: 2026-05-27T10:00:00Z
 ### Lang: pt-BR
@@ -16,7 +16,7 @@ Sub-spec de [[2026-05-26-no-sqlite-git-source-of-truth]] — wave 2B (renumbered
 
 ## Critérios de Aceitação
 
-- [ ] AC-2B-1: `cargo build -p mustard-rt` passa e `cargo run -q -p mustard-rt -- run active-specs` executa sem erro. Command: `cargo build -p mustard-rt && cargo run -q -p mustard-rt -- run active-specs`
+- [x] AC-2B-1: `cargo build -p mustard-rt` passa e `cargo run -q -p mustard-rt -- run active-specs` executa sem erro. Command: `cargo build -p mustard-rt && cargo run -q -p mustard-rt -- run active-specs`
 
 ## Plano
 

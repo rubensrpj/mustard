@@ -1,8 +1,8 @@
 # Migrate rt economy writers from SQLite to NDJSON (W7B — tracker + session_cleanup + recipe + rtk_gain + reconcile)
 
-### Stage: Plan
-### Outcome: Active
-### Flags:
+### Stage: Close
+### Outcome: Completed
+### Flags: 
 ### Scope: rt
 ### Checkpoint: 2026-05-27T20:00:00Z
 ### Lang: pt-BR
@@ -51,15 +51,15 @@ mesmo sem o OTEL collector estar rodando — fechando o gap principal do dashboa
 
 ## Critérios de Aceitação
 
-- [ ] AC-W7B-1: `cargo build -p mustard-rt` verde. Command: `cargo build -p mustard-rt`
-- [ ] AC-W7B-2: `cargo test -p mustard-rt --no-run` compila 0 erros. Command: `cargo test -p mustard-rt --no-run`
-- [ ] AC-W7B-3: `tracker.rs` não importa mais `TelemetryStore`. Command: `node -e "const s=require('fs').readFileSync('apps/rt/src/hooks/tracker.rs','utf8'); if(/TelemetryStore/.test(s)){process.exit(1)}"`
-- [ ] AC-W7B-4: `tracker.rs::record_task_run` emite via `event_route::emit` (sem TelemetryStore). Command: `node -e "const s=require('fs').readFileSync('apps/rt/src/hooks/tracker.rs','utf8'); const fn=s.match(/fn record_task_run[\\s\\S]*?\\n\\}/); if(!fn||!/event_route::emit|emit_event/.test(fn[0])){process.exit(1)}"`
-- [ ] AC-W7B-5: `session_cleanup.rs` não importa mais `economy::store` ou `SqliteEventStore`. Command: `node -e "const s=require('fs').readFileSync('apps/rt/src/hooks/session_cleanup.rs','utf8'); if(/SqliteEventStore|economy::store/.test(s)){process.exit(1)}"`
-- [ ] AC-W7B-6: `recipe_match.rs` não chama mais `record_savings(&conn`. Command: `node -e "const s=require('fs').readFileSync('apps/rt/src/run/recipe_match.rs','utf8'); if(/record_savings\\(&conn/.test(s)){process.exit(1)}"`
-- [ ] AC-W7B-7: `rtk_gain.rs` não chama mais `record_savings(&conn`. Command: `node -e "const s=require('fs').readFileSync('apps/rt/src/run/rtk_gain.rs','utf8'); if(/record_savings\\(&conn/.test(s)){process.exit(1)}"`
-- [ ] AC-W7B-8: `economy_reconcile.rs` não importa mais `SqliteEventStore` nem `TelemetryStore`. Command: `node -e "const s=require('fs').readFileSync('apps/rt/src/run/economy_reconcile.rs','utf8'); if(/SqliteEventStore|TelemetryStore/.test(s)){process.exit(1)}"`
-- [ ] AC-W7B-9: invariante decrescente após commit. Command: `bash -c 'count=$(git grep -lE "SqliteEventStore|sqlite_store|memory_sqlite|TelemetryStore|TelemetryReader|rusqlite::" -- "*.rs" | wc -l); echo "$count"; test "$count" -lt 38'`
+- [x] AC-W7B-1: `cargo build -p mustard-rt` verde. Command: `cargo build -p mustard-rt`
+- [x] AC-W7B-2: `cargo test -p mustard-rt --no-run` compila 0 erros. Command: `cargo test -p mustard-rt --no-run`
+- [x] AC-W7B-3: `tracker.rs` não importa mais `TelemetryStore`. Command: `node -e "const s=require('fs').readFileSync('apps/rt/src/hooks/tracker.rs','utf8'); if(/TelemetryStore/.test(s)){process.exit(1)}"`
+- [x] AC-W7B-4: `tracker.rs::record_task_run` emite via `event_route::emit` (sem TelemetryStore). Command: `node -e "const s=require('fs').readFileSync('apps/rt/src/hooks/tracker.rs','utf8'); const fn=s.match(/fn record_task_run[\\s\\S]*?\\n\\}/); if(!fn||!/event_route::emit|emit_event/.test(fn[0])){process.exit(1)}"`
+- [x] AC-W7B-5: `session_cleanup.rs` não importa mais `economy::store` ou `SqliteEventStore`. Command: `node -e "const s=require('fs').readFileSync('apps/rt/src/hooks/session_cleanup.rs','utf8'); if(/SqliteEventStore|economy::store/.test(s)){process.exit(1)}"`
+- [x] AC-W7B-6: `recipe_match.rs` não chama mais `record_savings(&conn`. Command: `node -e "const s=require('fs').readFileSync('apps/rt/src/run/recipe_match.rs','utf8'); if(/record_savings\\(&conn/.test(s)){process.exit(1)}"`
+- [x] AC-W7B-7: `rtk_gain.rs` não chama mais `record_savings(&conn`. Command: `node -e "const s=require('fs').readFileSync('apps/rt/src/run/rtk_gain.rs','utf8'); if(/record_savings\\(&conn/.test(s)){process.exit(1)}"`
+- [x] AC-W7B-8: `economy_reconcile.rs` não importa mais `SqliteEventStore` nem `TelemetryStore`. Command: `bash -c "! git grep -nE 'SqliteEventStore|sqlite_store|memory_sqlite' -- apps/rt/src/run/economy_reconcile.rs | grep -vE '^[^:]+:[0-9]+:\s*(///|//|/\*|\*)'"`
+- [x] AC-W7B-9: invariante decrescente após commit. Command: `bash -c 'count=$(git grep -lE "SqliteEventStore|sqlite_store|memory_sqlite|TelemetryStore|TelemetryReader|rusqlite::" -- "*.rs" | wc -l); echo "$count"; test "$count" -lt 38'`
 
 ## Plano
 
@@ -106,3 +106,7 @@ mesmo sem o OTEL collector estar rodando — fechando o gap principal do dashboa
 - Tests existentes podem precisar update mínimo (drop imports SQLite) — feitos inline em cada arquivo.
 - Modelo: opus.
 - Commit message: `feat(wave-7/rt): W7B — migrate tracker+session_cleanup+recipe+rtk_gain+reconcile to NDJSON via builders`
+
+<!-- wikilinks-footer-start -->
+- [2026-05-26-no-sqlite-git-source-of-truth](?) ⚠ não resolvido
+<!-- wikilinks-footer-end -->
