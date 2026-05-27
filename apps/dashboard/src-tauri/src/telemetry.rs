@@ -90,7 +90,7 @@ pub struct PhaseCount {
     pub count: u64,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub struct WorkflowBlock {
     pub by_phase: Vec<PhaseCount>,
@@ -122,7 +122,7 @@ pub struct AgentActivity {
     pub last_ts: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub struct AgentActivityBlock {
     pub total_dispatches: u64,

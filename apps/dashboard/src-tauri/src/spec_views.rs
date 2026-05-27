@@ -15,8 +15,14 @@
 //! `2026-05-20-sdd-domain-finalization`; the Tauri commands in `lib.rs`
 //! already delegated to the `*_v2` adapters since Wave 4 of the audit.
 
+// Wave 6A of [[2026-05-26-no-sqlite-git-source-of-truth]]: the SQLite reader
+// was retired and `crate::db` now exposes only an opaque [`Connection`]
+// placeholder. Functions in this module preserve their `&Connection` signature
+// so call sites in `lib.rs` compile unchanged, but the bodies of the
+// SQL-backed aggregations have been stubbed to fail-open defaults — the
+// closures are never actually invoked since `db::with_db` returns `None`.
+use crate::db::Connection;
 use mustard_core::fs;
-use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 
 // ── Shapes ───────────────────────────────────────────────────────────────────
@@ -288,271 +294,23 @@ pub struct WorkspaceHealth {
 /// Opens via `db::with_db` (the same helper used by all other aggregation
 /// commands in this file). Fail-open: returns an all-zeros `WorkspaceHealth`
 /// when the DB is absent, unreadable, or its schema is unexpected.
-pub fn workspace_health_impl(conn: &Connection) -> Result<WorkspaceHealth, String> {
-    // ── suspects: distinct specs with hygiene.detected in last 7 days ───────
-    let suspects_sql = "SELECT DISTINCT spec FROM events \
-                        WHERE event = 'hygiene.detected' \
-                          AND spec IS NOT NULL \
-                          AND ts >= datetime('now', '-7 days')";
-    let suspect_specs: Vec<String> = {
-        let mut stmt = conn.prepare(suspects_sql).unwrap_or_else(|_| {
-            conn.prepare("SELECT 1 WHERE 0").unwrap()
-        });
-        stmt.query_map([], |row| row.get::<_, String>(0))
-            .map(|rows| rows.flatten().collect())
-            .unwrap_or_default()
-    };
-
-    // Filter suspects to only those still active (outcome == 'active' in their
-    // latest pipeline.status event). We use a subquery approach for simplicity:
-    // for each suspect candidate, check if its last pipeline.status payload
-    // contains "active" as the `to` field.
-    let suspects_active: Vec<String> = suspect_specs
-        .iter()
-        .filter(|spec_name| {
-            let sql = "SELECT json_extract(payload, '$.to') FROM events \
-                       WHERE event = 'pipeline.status' AND spec = ?1 \
-                       ORDER BY id DESC LIMIT 1";
-            let mut stmt = match conn.prepare(sql) {
-                Ok(s) => s,
-                Err(_) => return false,
-            };
-            stmt.query_row(params![spec_name.as_str()], |row| {
-                row.get::<_, Option<String>>(0)
-            })
-            .map(|outcome| {
-                matches!(
-                    outcome.as_deref(),
-                    Some("active") | Some("implementing") | Some("planning") | Some("reviewing") | Some("qa") | None
-                )
-            })
-            .unwrap_or(true) // fail-open: assume active when unknown
-        })
-        .cloned()
-        .collect();
-
-    // ── autoclose_today: hygiene.autoclose events in last 24h ────────────────
-    let autoclose_today: i64 = {
-        let sql = "SELECT COUNT(*) FROM events \
-                   WHERE event = 'hygiene.autoclose' \
-                     AND ts >= datetime('now', '-1 day')";
-        conn.query_row(sql, [], |row| row.get(0)).unwrap_or(0)
-    };
-
-    // ── last_hygiene_run_at: max ts of any hygiene.* event ───────────────────
-    let last_hygiene_run_at: Option<String> = {
-        let sql = "SELECT MAX(ts) FROM events \
-                   WHERE event LIKE 'hygiene.%'";
-        conn.query_row(sql, [], |row| row.get(0)).unwrap_or(None)
-    };
-
-    // ── flag-bearing specs: scan last pipeline.status per spec for flags ─────
-    // Strategy: get all distinct specs, then for each, check for flag-emitting
-    // event kinds (`hygiene.detected`/pipeline events don't carry flags directly).
-    // Flags (`blocked`, `wave_failed`, `followup_open`) come from the `SpecState`
-    // model. We approximate via event kinds: `pipeline.status` with `to=blocked`
-    // → blocked, `to=wave-failed` → wave_failed, `to=closed-followup` → followup_open.
-    let mut blocked: i64 = 0;
-    let mut wave_failed: i64 = 0;
-    let mut followup_open: i64 = 0;
-
-    let all_specs_sql = "SELECT DISTINCT spec FROM events WHERE spec IS NOT NULL";
-    let all_specs: Vec<String> = {
-        let mut stmt = match conn.prepare(all_specs_sql) {
-            Ok(s) => s,
-            Err(_) => {
-                return Ok(WorkspaceHealth {
-                    active: 0,
-                    suspects: i64::try_from(suspects_active.len()).unwrap_or(0),
-                    autoclose_today,
-                    blocked,
-                    wave_failed,
-                    followup_open,
-                    last_hygiene_run_at,
-                    suspect_specs: suspects_active,
-                });
-            }
-        };
-        stmt.query_map([], |row| row.get::<_, String>(0))
-            .map(|rows| rows.flatten().collect())
-            .unwrap_or_default()
-    };
-
-    let status_sql = "SELECT json_extract(payload, '$.to') FROM events \
-                      WHERE event = 'pipeline.status' AND spec = ?1 \
-                      ORDER BY id DESC LIMIT 1";
-    let mut active: i64 = 0;
-    for spec_name in &all_specs {
-        let mut stmt = match conn.prepare(status_sql) {
-            Ok(s) => s,
-            Err(_) => continue,
-        };
-        let last_status: Option<String> = stmt
-            .query_row(params![spec_name.as_str()], |row| row.get(0))
-            .unwrap_or(None);
-        match last_status.as_deref() {
-            Some("blocked") => {
-                blocked += 1;
-                active += 1;
-            }
-            Some("wave-failed") => {
-                wave_failed += 1;
-                active += 1;
-            }
-            Some("closed-followup") => {
-                followup_open += 1;
-                // closed-followup is still active in the sense of needing attention
-                active += 1;
-            }
-            Some("implementing") | Some("planning") | Some("reviewing") | Some("qa") | Some("active") | None => {
-                active += 1;
-            }
-            Some("completed") | Some("cancelled") | Some("abandoned") => {
-                // terminal — do not count
-            }
-            Some(_) => {
-                // unknown status — count as active (fail-open)
-                active += 1;
-            }
-        }
-    }
-
-    Ok(WorkspaceHealth {
-        active,
-        suspects: i64::try_from(suspects_active.len()).unwrap_or(0),
-        autoclose_today,
-        blocked,
-        wave_failed,
-        followup_open,
-        last_hygiene_run_at,
-        suspect_specs: suspects_active,
-    })
+pub fn workspace_health_impl(_conn: &Connection) -> Result<WorkspaceHealth, String> {
+    // Wave 6A no-sqlite stub: the SQLite event store was retired and
+    // `db::with_db` never invokes this closure. Returns the fail-open
+    // all-zeros struct the legacy aggregation produced on a missing DB.
+    Ok(WorkspaceHealth::default())
 }
 
 // ── spec_events ───────────────────────────────────────────────────────────────
 
 pub fn spec_events(
-    conn: &Connection,
-    spec: &str,
-    filter: Option<EventFilter>,
+    _conn: &Connection,
+    _spec: &str,
+    _filter: Option<EventFilter>,
 ) -> Result<Vec<TimelineEvent>, String> {
-    let filter = filter.unwrap_or_default();
-
-    // Build event kind filter fragment
-    let kinds_clause = match &filter.kinds {
-        Some(kinds) if !kinds.is_empty() => {
-            let placeholders: Vec<String> =
-                kinds.iter().enumerate().map(|(i, _)| format!("?{}", i + 2)).collect();
-            format!("AND event IN ({})", placeholders.join(","))
-        }
-        _ => String::new(),
-    };
-
-    let sql = format!(
-        "SELECT CAST(id AS TEXT), COALESCE(ts,''), \
-                json_extract(payload,'$.phase'), \
-                spec, \
-                COALESCE(json_extract(payload,'$.subagent_type'), \
-                         json_extract(payload,'$.agent_type'), \
-                         actor_id), \
-                COALESCE(json_extract(payload,'$.summary'), \
-                         json_extract(payload,'$.description'), \
-                         json_extract(payload,'$.msg'), \
-                         event, '') \
-         FROM events \
-         WHERE spec=?1 {} \
-         ORDER BY id DESC \
-         LIMIT 500",
-        kinds_clause
-    );
-
-    let mut stmt = match conn.prepare(&sql) {
-        Ok(s) => s,
-        Err(_) => return Ok(vec![]),
-    };
-
-    // Bind spec as first param; bind kinds in order if present
-    let rows_result = if let Some(kinds) = &filter.kinds {
-        if !kinds.is_empty() {
-            // rusqlite doesn't support heterogeneous params! directly — use
-            // a helper that constructs the query with literal placeholders
-            // but we need to pass them one by one. Build params as a Vec<&dyn ToSql>.
-            let mut all_params: Vec<Box<dyn rusqlite::types::ToSql>> =
-                vec![Box::new(spec.to_string())];
-            for k in kinds {
-                all_params.push(Box::new(k.clone()));
-            }
-            let refs: Vec<&dyn rusqlite::types::ToSql> =
-                all_params.iter().map(|b| b.as_ref()).collect();
-            stmt.query_map(refs.as_slice(), map_timeline_row)
-        } else {
-            stmt.query_map(params![spec], map_timeline_row)
-        }
-    } else {
-        stmt.query_map(params![spec], map_timeline_row)
-    };
-
-    let rows = match rows_result {
-        Ok(r) => r,
-        Err(_) => return Ok(vec![]),
-    };
-
-    let mut out: Vec<TimelineEvent> = rows.flatten().collect();
-
-    // Apply optional in-process filters (wave, agent, q substring)
-    if let Some(wave_num) = filter.wave {
-        // We need the wave column — re-query with wave if filter is set.
-        // For simplicity, do a second targeted query.
-        let wave_sql = format!(
-            "SELECT CAST(id AS TEXT), COALESCE(ts,''), \
-                    json_extract(payload,'$.phase'), \
-                    spec, \
-                    COALESCE(json_extract(payload,'$.subagent_type'), \
-                             json_extract(payload,'$.agent_type'), actor_id), \
-                    COALESCE(json_extract(payload,'$.summary'), \
-                             json_extract(payload,'$.description'), \
-                             json_extract(payload,'$.msg'), event, '') \
-             FROM events \
-             WHERE spec=?1 AND wave=?2 {} \
-             ORDER BY id DESC LIMIT 500",
-            kinds_clause
-        );
-        let mut wstmt = match conn.prepare(&wave_sql) {
-            Ok(s) => s,
-            Err(_) => return Ok(out),
-        };
-        let wave_rows = wstmt.query_map(params![spec, wave_num], map_timeline_row);
-        if let Ok(wr) = wave_rows {
-            out = wr.flatten().collect();
-        }
-    }
-
-    if let Some(agent_str) = &filter.agent {
-        let a = agent_str.clone();
-        out.retain(|e| e.agent.as_deref().is_some_and(|ag| ag.contains(a.as_str())));
-    }
-    if let Some(q) = &filter.q {
-        let q = q.to_lowercase();
-        out.retain(|e| {
-            e.summary.to_lowercase().contains(&q)
-                || e.phase.as_deref().is_some_and(|p| p.to_lowercase().contains(&q))
-        });
-    }
-
-    Ok(out)
-}
-
-fn map_timeline_row(
-    row: &rusqlite::Row<'_>,
-) -> rusqlite::Result<TimelineEvent> {
-    Ok(TimelineEvent {
-        id:      row.get::<_, Option<String>>(0)?.unwrap_or_default(),
-        ts:      row.get::<_, Option<String>>(1)?.unwrap_or_default(),
-        phase:   row.get::<_, Option<String>>(2)?,
-        spec:    row.get::<_, Option<String>>(3)?,
-        agent:   row.get::<_, Option<String>>(4)?,
-        summary: row.get::<_, Option<String>>(5)?.unwrap_or_default(),
-    })
+    // Wave 6A no-sqlite stub: the SQLite-backed timeline join was retired;
+    // closure never fires. Returns empty list per the fail-open contract.
+    Ok(Vec::new())
 }
 
 // ── 6. spec_action ───────────────────────────────────────────────────────────
@@ -647,116 +405,56 @@ pub fn spec_action(
 /// and emit `planning`. Fail-open: a missing/unwritable store falls back to
 /// `implementing` (the historically expected value).
 fn reopen_target_status(repo_path: &str, spec: &str) -> &'static str {
-    use mustard_core::store::sqlite_store::SqliteEventStore;
-    let Ok(store) = SqliteEventStore::for_project(repo_path) else {
-        return "implementing";
-    };
-    match store.query(Some(spec)) {
-        Ok(events) if !events.is_empty() => "implementing",
-        Ok(_) => "planning",
+    // Wave 6A no-sqlite: the SQLite event log was retired. Fall back to the
+    // filesystem signal — a spec dir with any prior NDJSON event under
+    // `.claude/spec/{name}/.events/` means the pipeline already executed at
+    // least one wave; reopen as `implementing`. An empty events directory
+    // (or no spec dir at all) reopens as `planning`. Fail-open: any IO error
+    // collapses to `implementing` (the historically expected default).
+    let events_dir = std::path::Path::new(repo_path)
+        .join(".claude")
+        .join("spec")
+        .join(spec)
+        .join(".events");
+    match std::fs::read_dir(&events_dir) {
+        Ok(mut it) => {
+            if it.next().is_some() {
+                "implementing"
+            } else {
+                "planning"
+            }
+        }
         Err(_) => "implementing",
     }
 }
 
 // ── spec_action helpers ───────────────────────────────────────────────────────
 //
-// Wave-3 of `2026-05-21-flatten-spec-layout-and-multi-collab` collapsed
-// these helpers down to the bare minimum: one direct `SqliteEventStore::append`
-// for `pipeline.status` / `pipeline.removed`, and a small fail-open header
-// rewriter that mirrors `apps/rt/src/run/emit_pipeline.rs::sync_spec_status_header`
-// so the canonical `### Status:` line in `spec.md` stays consistent with the
-// event store even when the dashboard does the writing (e.g. when the user
-// reopens a spec from the desktop UI on a machine where `mustard-rt` on PATH
-// is stale — the helper is duplicated rather than re-imported because pulling
-// `mustard-rt` as a build dep here would create a workspace cycle).
+// Wave 6A of `2026-05-26-no-sqlite-git-source-of-truth` retired the SQLite
+// event store. `pipeline.status` / `pipeline.removed` are now emitted to the
+// per-spec NDJSON sink via `crate::lib_emit_ndjson` (defined in `lib.rs`).
+// A small fail-open header rewriter still mirrors
+// `apps/rt/src/run/emit_pipeline.rs::sync_spec_status_header` so the
+// canonical `### Status:` line in `spec.md` stays consistent with the event
+// stream even when the dashboard does the writing.
 
 /// Emit `pipeline.status: <to>` via the SQLite event store. Fail-open: any
 /// error during store open / append is logged to stderr and swallowed —
 /// telemetry is never load-bearing per the harness contract.
 fn emit_pipeline_status(repo_path: &str, spec: &str, to: &str) {
-    use mustard_core::model::event::{
-        Actor, ActorKind, EVENT_PIPELINE_STATUS, HarnessEvent, PipelineStatusPayload,
-        SCHEMA_VERSION,
-    };
-    use mustard_core::store::event_store::EventSink;
-    use mustard_core::store::sqlite_store::SqliteEventStore;
-
-    let payload = serde_json::to_value(PipelineStatusPayload {
-        from: None,
-        to: to.to_string(),
-    })
-    .unwrap_or(serde_json::Value::Null);
-
-    let event = HarnessEvent {
-        v: SCHEMA_VERSION,
-        ts: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
-        session_id: String::new(),
-        wave: 0,
-        actor: Actor {
-            kind: ActorKind::Cli,
-            id: Some("dashboard-spec-action".to_string()),
-            actor_type: None,
-        },
-        event: EVENT_PIPELINE_STATUS.to_string(),
-        payload,
-        spec: Some(spec.to_string()),
-    };
-
-    // Wave 3 (db-access-repository): append through the shared, managed store
-    // keyed by repo path instead of opening a fresh `SqliteEventStore` per call,
-    // preserving the single-shared-store invariant the rest of the dashboard
-    // relies on. Mirrors `lib::lib_emit_pipeline_status`. `with_store` returns
-    // `None` only when the DB file does not yet exist; in that single case fall
-    // back to `for_project`, which creates it on open (fail-open).
-    let base = std::path::Path::new(repo_path);
-    let appended = crate::db::with_store(base, |store| store.append(&event).map_err(|e| e.to_string()));
-    match appended {
-        Some(Ok(())) => {}
-        Some(Err(e)) => eprintln!("emit_pipeline_status: append: {e}"),
-        None => match SqliteEventStore::for_project(repo_path) {
-            Ok(store) => {
-                if let Err(e) = store.append(&event) {
-                    eprintln!("emit_pipeline_status: append (fresh): {e}");
-                }
-            }
-            Err(e) => eprintln!("emit_pipeline_status: open store: {e}"),
-        },
-    }
+    let payload = serde_json::json!({ "from": serde_json::Value::Null, "to": to });
+    crate::lib_emit_ndjson(repo_path, spec, "pipeline.status", payload);
 }
 
-/// Emit `pipeline.removed` via the SQLite event store. Fail-open like
+/// Emit `pipeline.removed` via the per-spec NDJSON sink. Fail-open mirror of
 /// [`emit_pipeline_status`].
 fn emit_pipeline_removed(repo_path: &str, spec: &str) {
-    use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
-    use mustard_core::store::event_store::EventSink;
-    use mustard_core::store::sqlite_store::SqliteEventStore;
-
-    let store = match SqliteEventStore::for_project(repo_path) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("emit_pipeline_removed: open store: {e}");
-            return;
-        }
-    };
-
-    let event = HarnessEvent {
-        v: SCHEMA_VERSION,
-        ts: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
-        session_id: String::new(),
-        wave: 0,
-        actor: Actor {
-            kind: ActorKind::Cli,
-            id: Some("dashboard-spec-action".to_string()),
-            actor_type: None,
-        },
-        event: "pipeline.removed".to_string(),
-        payload: serde_json::json!({ "removed": true }),
-        spec: Some(spec.to_string()),
-    };
-
-    if let Err(e) = store.append(&event) {
-        eprintln!("emit_pipeline_removed: append: {e}");
-    }
+    crate::lib_emit_ndjson(
+        repo_path,
+        spec,
+        "pipeline.removed",
+        serde_json::json!({ "removed": true }),
+    );
 }
 
 /// Rewrite the `### Status:` line of `.claude/spec/{spec}/spec.md` to match
@@ -1110,38 +808,9 @@ pub const TOP_FILES_CAP: usize = 10;
 /// modern payload shape (`$.file_path` / `$.tool_input.file_path`) plus the
 /// legacy `$.target.file` to stay aligned with the projection in
 /// `mustard-core::project_workspace`.
-pub fn top_files_today_impl(conn: &Connection) -> Result<Vec<FileCount>, String> {
-    // `date('now')` evaluates to today's UTC midnight as a `YYYY-MM-DD` string;
-    // comparing against `events.ts` (also ISO-8601 UTC) keeps the window in the
-    // same time zone as the previous in-memory projection.
-    let sql = "SELECT path, COUNT(*) AS c FROM ( \
-                  SELECT COALESCE( \
-                            json_extract(payload, '$.file_path'), \
-                            json_extract(payload, '$.tool_input.file_path'), \
-                            json_extract(payload, '$.target.file') \
-                         ) AS path \
-                  FROM events \
-                  WHERE event = 'tool.use' \
-                    AND ts >= date('now') \
-               ) \
-               WHERE path IS NOT NULL AND path != '' \
-               GROUP BY path \
-               ORDER BY c DESC, path ASC \
-               LIMIT ?1";
-    let mut stmt = match conn.prepare(sql) {
-        Ok(s) => s,
-        Err(_) => return Ok(vec![]),
-    };
-    let rows = stmt
-        .query_map(params![i64::try_from(TOP_FILES_CAP).unwrap_or(10)], |row| {
-            Ok(FileCount {
-                path: row.get::<_, String>(0)?,
-                count: row.get::<_, i64>(1)?,
-            })
-        })
-        .map(|r| r.flatten().collect::<Vec<_>>())
-        .unwrap_or_default();
-    Ok(rows)
+pub fn top_files_today_impl(_conn: &Connection) -> Result<Vec<FileCount>, String> {
+    // Wave 6A no-sqlite stub: closure unreachable post-SQLite-removal.
+    Ok(Vec::new())
 }
 
 // ── View → legacy JSON shape mappers ─────────────────────────────────────────
@@ -1841,49 +1510,10 @@ pub fn dashboard_token_summary(project_path: String) -> Result<TokenSummary, Str
     }
 }
 
-fn token_summary_impl(conn: &Connection) -> Result<TokenSummary, String> {
-    // Total saved across every token.saved event.
-    let total_saved: i64 = conn
-        .query_row(
-            "SELECT COALESCE(SUM(CAST(json_extract(payload, '$.saved') AS INTEGER)), 0) \
-             FROM events WHERE event = 'token.saved'",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap_or(0);
-
-    // Top 5 pipelines by sum(payload.saved). Skip rows without a spec so the
-    // bar list doesn't show a blank label.
-    let mut stmt = match conn.prepare(
-        "SELECT spec, COALESCE(SUM(CAST(json_extract(payload, '$.saved') AS INTEGER)), 0) AS s \
-         FROM events \
-         WHERE event = 'token.saved' AND spec IS NOT NULL AND spec != '' \
-         GROUP BY spec \
-         ORDER BY s DESC \
-         LIMIT 5",
-    ) {
-        Ok(s) => s,
-        Err(_) => {
-            return Ok(TokenSummary {
-                total_saved,
-                top_pipelines: vec![],
-            });
-        }
-    };
-    let rows = stmt
-        .query_map([], |row| {
-            Ok(TopPipeline {
-                spec: row.get::<_, String>(0)?,
-                saved: row.get::<_, i64>(1)?,
-            })
-        })
-        .map(|r| r.flatten().collect::<Vec<_>>())
-        .unwrap_or_default();
-
-    Ok(TokenSummary {
-        total_saved,
-        top_pipelines: rows,
-    })
+fn token_summary_impl(_conn: &Connection) -> Result<TokenSummary, String> {
+    // Wave 6A no-sqlite stub: closure unreachable; token savings are read
+    // from NDJSON `pipeline.economy.savings.*` directly by other commands.
+    Ok(TokenSummary::default())
 }
 
 /// `dashboard_month_activity` — emit one entry per day of the given month
@@ -1915,64 +1545,14 @@ pub fn dashboard_month_activity(
 }
 
 fn month_activity_impl(
-    conn: &Connection,
-    year: i32,
-    month: u32,
-    mut out: Vec<DayActivity>,
+    _conn: &Connection,
+    _year: i32,
+    _month: u32,
+    out: Vec<DayActivity>,
 ) -> Result<Vec<DayActivity>, String> {
-    // Month bounds in ISO-8601 text. ts strings are lexicographically
-    // comparable for the canonical YYYY-MM-DDTHH:MM:SS format we emit.
-    let start = format!("{:04}-{:02}-01", year, month);
-    let end_excl = if month == 12 {
-        format!("{:04}-01-01", year + 1)
-    } else {
-        format!("{:04}-{:02}-01", year, month + 1)
-    };
-
-    // Event counts per day.
-    if let Ok(mut stmt) = conn.prepare(
-        "SELECT substr(ts, 1, 10) AS d, COUNT(*) \
-         FROM events \
-         WHERE ts >= ?1 AND ts < ?2 \
-         GROUP BY d",
-    ) {
-        if let Ok(rows) = stmt.query_map(params![start, end_excl], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
-        }) {
-            for (date, count) in rows.flatten() {
-                if let Some(slot) = out.iter_mut().find(|d| d.date == date) {
-                    slot.event_count = i32::try_from(count).unwrap_or(i32::MAX);
-                }
-            }
-        }
-    }
-
-    // Top phase per day — phase derived from pipeline.phase events.
-    if let Ok(mut stmt) = conn.prepare(
-        "SELECT d, phase FROM ( \
-             SELECT substr(ts, 1, 10) AS d, \
-                    json_extract(payload, '$.phase') AS phase, \
-                    COUNT(*) AS c, \
-                    ROW_NUMBER() OVER (PARTITION BY substr(ts, 1, 10) ORDER BY COUNT(*) DESC) AS rn \
-             FROM events \
-             WHERE ts >= ?1 AND ts < ?2 \
-               AND event = 'pipeline.phase' \
-               AND json_extract(payload, '$.phase') IS NOT NULL \
-             GROUP BY d, phase \
-         ) \
-         WHERE rn = 1",
-    ) {
-        if let Ok(rows) = stmt.query_map(params![start, end_excl], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
-        }) {
-            for (date, phase) in rows.flatten() {
-                if let Some(slot) = out.iter_mut().find(|d| d.date == date) {
-                    slot.top_phase = phase;
-                }
-            }
-        }
-    }
-
+    // Wave 6A no-sqlite stub: returns the pre-built day scaffold with zero
+    // counts. Closure unreachable post-SQLite-removal; callers should rebuild
+    // this projection from NDJSON `pipeline.phase` events when needed.
     Ok(out)
 }
 
@@ -1993,45 +1573,10 @@ pub fn dashboard_events_feed(
     }
 }
 
-fn events_feed_impl(conn: &Connection, limit: u32) -> Result<Vec<FeedEvent>, String> {
-    let mut stmt = match conn.prepare(
-        "SELECT CAST(id AS TEXT), COALESCE(ts, ''), event, spec, \
-                COALESCE(payload, '') \
-         FROM events \
-         ORDER BY ts DESC \
-         LIMIT ?1",
-    ) {
-        Ok(s) => s,
-        Err(_) => return Ok(vec![]),
-    };
-
-    let rows = stmt
-        .query_map(params![limit as i64], |row| {
-            Ok((
-                row.get::<_, Option<String>>(0)?.unwrap_or_default(),
-                row.get::<_, Option<String>>(1)?.unwrap_or_default(),
-                row.get::<_, Option<String>>(2)?.unwrap_or_default(),
-                row.get::<_, Option<String>>(3)?,
-                row.get::<_, Option<String>>(4)?.unwrap_or_default(),
-            ))
-        })
-        .map(|r| r.flatten().collect::<Vec<_>>())
-        .unwrap_or_default();
-
-    let out = rows
-        .into_iter()
-        .map(|(id, ts, kind, spec, payload)| {
-            let summary = summarise_payload(&kind, &payload);
-            FeedEvent {
-                id,
-                ts,
-                kind,
-                spec,
-                payload_summary: summary,
-            }
-        })
-        .collect();
-    Ok(out)
+fn events_feed_impl(_conn: &Connection, _limit: u32) -> Result<Vec<FeedEvent>, String> {
+    // Wave 6A no-sqlite stub: closure unreachable; the events feed should be
+    // derived from NDJSON in a follow-up sub-spec.
+    Ok(Vec::new())
 }
 
 /// Build a short (≤120 char) human-readable summary for a feed row. Kind-aware

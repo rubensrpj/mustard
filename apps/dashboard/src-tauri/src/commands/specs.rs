@@ -16,12 +16,10 @@
 //! - Path traversal is rejected up front (the spec name must be a single
 //!   directory component).
 
-use crate::db;
 use crate::fs;
 use mustard_core::Meta;
 use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
-use mustard_core::store::event_store::EventSink;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Instant;
 
 /// Read the `meta.json` sidecar next to a spec's `spec.md` and return its
@@ -72,7 +70,13 @@ pub fn read_spec_meta(repo_path: String, spec_name: String) -> Result<Meta, Stri
 }
 
 /// Append `pipeline.economy.operation.invoked` for one `read_spec_meta` call.
-/// Fail-open: any store error is silently swallowed.
+/// Fail-open: any sink error is silently swallowed.
+///
+/// Wave 6A migration: the legacy `db::with_store(...).store.append(...)` path
+/// died with the SQLite event store. We now write the event to the NDJSON
+/// spec channel at `.claude/spec/{spec_name}/.events/dashboard.ndjson` via
+/// best-effort append. A missing parent directory is created on demand; any
+/// IO failure is swallowed so the read path stays uninterrupted.
 fn emit_meta_sidecar_read(repo_path: &str, spec_name: &str, duration_ms: u128) {
     let event = HarnessEvent {
         v: SCHEMA_VERSION,
@@ -93,7 +97,23 @@ fn emit_meta_sidecar_read(repo_path: &str, spec_name: &str, duration_ms: u128) {
         }),
         spec: Some(spec_name.to_string()),
     };
-    let repo = Path::new(repo_path);
-    // Fail-open: a telemetry write failure must never break the read path.
-    let _ = db::with_store(repo, |store| store.append(&event).map_err(|e| e.to_string()));
+    let events_dir = PathBuf::from(repo_path)
+        .join(".claude")
+        .join("spec")
+        .join(spec_name)
+        .join(".events");
+    if std::fs::create_dir_all(&events_dir).is_err() {
+        return;
+    }
+    let path = events_dir.join("dashboard.ndjson");
+    if let Ok(line) = serde_json::to_string(&event) {
+        use std::io::Write as _;
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+        {
+            let _ = writeln!(f, "{}", line);
+        }
+    }
 }

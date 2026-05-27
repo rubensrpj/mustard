@@ -20,9 +20,7 @@
 //! - Telemetry emission is best-effort; a store failure never propagates.
 //! - Path traversal is rejected up front (`repo_path` must be a real dir).
 
-use crate::db;
 use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
-use mustard_core::store::event_store::EventSink;
 use mustard_core::{SupportedLocale, Tone};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
@@ -129,6 +127,13 @@ fn write_field(repo_path: &str, field: &str, value: serde_json::Value) -> Result
 
 /// Emit one `pipeline.economy.operation.invoked` event for an i18n write.
 /// Fail-open: a telemetry write failure must never block the settings write.
+///
+/// Wave 6A migration: the legacy `db::with_store(...).store.append(...)` route
+/// retired with the SQLite event store. Settings events now land in a
+/// project-scoped NDJSON channel at
+/// `.claude/.events/dashboard-settings.ndjson` — same atomic-append shape used
+/// by every other dashboard emitter post-W6A. Any IO failure is swallowed so
+/// the settings write itself never gets blocked.
 fn emit_i18n_op(repo_path: &str, operation: &str, duration_ms: u128) {
     let event = HarnessEvent {
         v: SCHEMA_VERSION,
@@ -148,6 +153,19 @@ fn emit_i18n_op(repo_path: &str, operation: &str, duration_ms: u128) {
         }),
         spec: None,
     };
-    let repo = Path::new(repo_path);
-    let _ = db::with_store(repo, |store| store.append(&event).map_err(|e| e.to_string()));
+    let events_dir = Path::new(repo_path).join(".claude").join(".events");
+    if std::fs::create_dir_all(&events_dir).is_err() {
+        return;
+    }
+    let path = events_dir.join("dashboard-settings.ndjson");
+    if let Ok(line) = serde_json::to_string(&event) {
+        use std::io::Write as _;
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+        {
+            let _ = writeln!(f, "{}", line);
+        }
+    }
 }

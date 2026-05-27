@@ -1,28 +1,25 @@
-//! W11.T11.4 — Tauri command `economy_summary` for the `/economia` page.
+//! Tauri command `economy_summary` for the `/economia` page.
 //!
-//! Wires three sources into one frontend payload:
+//! Wave 6A of [[2026-05-26-no-sqlite-git-source-of-truth]] retired the
+//! SQLite-backed `economy_savings` and `economy_baselines` tables. Per-wave
+//! savings are now derived from NDJSON `pipeline.economy.savings.wave`
+//! events emitted by the hook layer (W3A wave-13-rt); baselines remain
+//! sourced from `mustard-rt run economy report --format json` (which does
+//! not itself touch SQLite).
 //!
-//! 1. The W5 baseline JSON file (read indirectly via
-//!    `mustard-rt run economy report --format json`) — gives the operational
-//!    baselines captured during pipeline runs.
-//! 2. The W11 `economy_savings` table in `telemetry.db` — gives per-wave token
-//!    savings the dashboard renders as a sparkline + per-wave table on the
-//!    "Deep Refactor Savings" tab.
-//! 3. The W11 `economy_baselines` table — optional context if a baseline was
-//!    materialised into SQLite (the reconcile path may upgrade JSON entries
-//!    here in a future wave; today the JSON file is the source of truth).
-//!
-//! Fail-open at every step: a missing `telemetry.db`, a missing binary on
-//! `PATH`, malformed JSON — each degrade to a default field rather than an
-//! error, so the dashboard never displays a hard failure for a feature the
-//! user can ignore.
+//! Fail-open at every step: a missing `.events/` directory, a missing
+//! binary on `PATH`, malformed JSON — each degrade to a default field
+//! rather than an error.
 
-use rusqlite::{Connection, OpenFlags};
+use mustard_core::events::reader::EventReader;
+use mustard_core::ClaudePaths;
 use serde::Serialize;
 use serde_json::Value;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-/// Per-wave token savings row sourced from `telemetry.db.economy_savings`.
+/// Per-wave token savings row sourced from
+/// `pipeline.economy.savings.wave` NDJSON events.
 #[derive(Serialize, Default, Clone, Debug)]
 #[serde(rename_all = "snake_case")]
 pub struct WaveSavings {
@@ -52,7 +49,7 @@ pub struct BaselineEntry {
 #[derive(Serialize, Default, Debug)]
 #[serde(rename_all = "snake_case")]
 pub struct EconomySummary {
-    /// Sum of `savings_tokens` across every wave (W11.T11.5 headline card).
+    /// Sum of `savings_tokens` across every wave.
     pub total_savings_tokens: i64,
     /// Per-wave breakdown, sorted ascending by `wave_id` for the table + the
     /// sparkline. An empty vec is the empty-state signal for the UI.
@@ -62,52 +59,84 @@ pub struct EconomySummary {
     /// Total number of baseline entries (mirrors the report.total field).
     pub baseline_total: usize,
     /// Best-effort diagnostic — non-empty when the rt CLI couldn't be reached
-    /// or the telemetry DB couldn't be opened. The frontend can surface this
-    /// in a subtle subtitle without failing the page.
+    /// or the NDJSON walk surfaced an issue. The frontend can surface this in
+    /// a subtle subtitle without failing the page.
     pub notes: Vec<String>,
 }
 
-/// Resolve the telemetry DB path. Mirrors the rt helper so the two stay in
-/// lockstep; environment override matches the runtime contract.
-fn telemetry_db_path(repo: &Path) -> PathBuf {
-    if let Ok(p) = std::env::var("MUSTARD_TELEMETRY_DB_PATH") {
-        if !p.is_empty() {
-            return PathBuf::from(p);
+/// Walk every `.claude/spec/*/.events/*.ndjson` file under `repo`, filtering
+/// for `pipeline.economy.savings.wave` events (emitted by `tracker.rs` in
+/// W3A wave-13-rt). Aggregates by `payload.wave_id`. Returns an empty vec +
+/// optional note when the spec directory is absent.
+fn per_wave_from_events(repo: &Path) -> (Vec<WaveSavings>, Option<String>) {
+    let Ok(paths) = ClaudePaths::for_project(repo) else {
+        return (
+            Vec::new(),
+            Some(format!("claude_paths resolution failed for {}", repo.display())),
+        );
+    };
+    let spec_root = paths.spec_dir();
+    let Ok(entries) = std::fs::read_dir(&spec_root) else {
+        return (
+            Vec::new(),
+            Some(format!("no spec dir at {}", spec_root.display())),
+        );
+    };
+
+    // Aggregate (wave_id, distinct ops, sum tokens). Streams every
+    // `.events/*.ndjson` file under each spec dir rather than loading them
+    // up-front — keeps memory bounded even on long-lived repos.
+    let mut by_wave: BTreeMap<String, (i64, std::collections::BTreeSet<String>)> = BTreeMap::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let events_dir = path.join(".events");
+        let Ok(files) = std::fs::read_dir(&events_dir) else {
+            continue;
+        };
+        for file in files.flatten() {
+            let fp = file.path();
+            if fp.extension().and_then(|s| s.to_str()) != Some("ndjson") {
+                continue;
+            }
+            for event in EventReader::stream(&fp) {
+                if event.kind != "pipeline.economy.savings.wave" {
+                    continue;
+                }
+                let payload = &event.payload;
+                let wave_id = match payload.get("wave_id").and_then(Value::as_str) {
+                    Some(w) => w.to_string(),
+                    None => continue,
+                };
+                let saved = payload
+                    .get("savings_tokens")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0);
+                let operation = payload
+                    .get("operation")
+                    .and_then(Value::as_str)
+                    .unwrap_or("default")
+                    .to_string();
+
+                let bucket = by_wave.entry(wave_id).or_default();
+                bucket.0 += saved;
+                bucket.1.insert(operation);
+            }
         }
     }
-    repo.join(".claude").join(".harness").join("telemetry.db")
-}
 
-/// Query `economy_savings` grouped by `wave_id`. Returns an empty vec when
-/// the DB is missing, the table is missing, or the query fails — every error
-/// path is fail-open.
-fn per_wave_from_db(repo: &Path) -> (Vec<WaveSavings>, Option<String>) {
-    let path = telemetry_db_path(repo);
-    if !path.exists() {
-        return (Vec::new(), Some(format!("telemetry.db not found at {}", path.display())));
-    }
-    let Ok(conn) = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY)
-    else {
-        return (Vec::new(), Some(format!("cannot open telemetry.db at {}", path.display())));
-    };
-    let sql = "SELECT wave_id, \
-                      COALESCE(SUM(savings_tokens), 0), \
-                      COUNT(DISTINCT operation) \
-               FROM economy_savings GROUP BY wave_id ORDER BY wave_id ASC";
-    let Ok(mut stmt) = conn.prepare(sql) else {
-        return (Vec::new(), Some("economy_savings query failed".to_string()));
-    };
-    let rows = stmt.query_map([], |r| {
-        Ok(WaveSavings {
-            wave_id: r.get::<_, String>(0)?,
-            savings_tokens: r.get::<_, i64>(1)?,
-            operations: r.get::<_, i64>(2)?,
+    let rows: Vec<WaveSavings> = by_wave
+        .into_iter()
+        .map(|(wave_id, (savings_tokens, ops))| WaveSavings {
+            wave_id,
+            savings_tokens,
+            operations: i64::try_from(ops.len()).unwrap_or(0),
         })
-    });
-    match rows {
-        Ok(it) => (it.filter_map(std::result::Result::ok).collect(), None),
-        Err(_) => (Vec::new(), Some("economy_savings rows failed".to_string())),
-    }
+        .collect();
+
+    (rows, None)
 }
 
 /// Shell to `mustard-rt run economy report --format json` and parse stdout.
@@ -154,7 +183,7 @@ fn baselines_from_rt(repo: &Path) -> (Vec<BaselineEntry>, usize, Option<String>)
     (entries, total, None)
 }
 
-/// `economy_summary` — Tauri command. Returns the merged W11 payload.
+/// `economy_summary` — Tauri command. Returns the merged payload.
 ///
 /// Fail-open: the function never returns `Err` for missing data; it surfaces
 /// degradation through `EconomySummary::notes` so the dashboard can render a
@@ -164,7 +193,7 @@ pub fn economy_summary(repo_path: String) -> Result<EconomySummary, String> {
     let repo = PathBuf::from(&repo_path);
     let mut notes: Vec<String> = Vec::new();
 
-    let (per_wave, note_db) = per_wave_from_db(&repo);
+    let (per_wave, note_db) = per_wave_from_events(&repo);
     if let Some(n) = note_db {
         notes.push(n);
     }
@@ -220,48 +249,37 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
-    fn missing_db_returns_empty_per_wave_with_note() {
+    fn missing_spec_dir_returns_empty_per_wave_with_note() {
         let dir = tempdir().unwrap();
-        let (rows, note) = per_wave_from_db(dir.path());
+        let (rows, note) = per_wave_from_events(dir.path());
         assert!(rows.is_empty());
-        assert!(note.is_some(), "expected a note when telemetry.db is absent");
+        assert!(
+            note.is_some(),
+            "expected a note when no spec dir exists"
+        );
     }
 
     #[test]
-    fn per_wave_aggregates_savings_and_operations() {
+    fn per_wave_aggregates_savings_from_ndjson() {
         let dir = tempdir().unwrap();
-        // Materialise a minimal telemetry.db at the expected path.
-        let harness = dir.path().join(".claude").join(".harness");
-        std::fs::create_dir_all(&harness).unwrap();
-        let db_path = harness.join("telemetry.db");
-        let conn = Connection::open(&db_path).unwrap();
-        conn.execute_batch(
-            "CREATE TABLE economy_savings (\
-               wave_id TEXT NOT NULL, \
-               operation TEXT NOT NULL, \
-               savings_tokens INTEGER NOT NULL DEFAULT 0, \
-               measured_at INTEGER NOT NULL, \
-               PRIMARY KEY (wave_id, operation, measured_at)\
-             );",
-        )
-        .unwrap();
-        let now: i64 = 1_700_000_000_000;
-        for (w, op, sav) in [
-            ("W0", "scan-rust-first", 1000_i64),
-            ("W0", "templates-md-moat", 500),
-            ("W1", "sub-spec-link", 2000),
-        ] {
-            conn.execute(
-                "INSERT INTO economy_savings (wave_id, operation, savings_tokens, measured_at) \
-                 VALUES (?1, ?2, ?3, ?4)",
-                rusqlite::params![w, op, sav, now],
-            )
-            .unwrap();
-        }
-        drop(conn);
+        let spec_a = dir
+            .path()
+            .join(".claude")
+            .join("spec")
+            .join("alpha")
+            .join(".events");
+        std::fs::create_dir_all(&spec_a).unwrap();
+        // Two wave-W0 entries with two distinct operations + one wave-W1
+        // entry. Reader should collapse by wave_id and count distinct ops.
+        let lines = vec![
+            r#"{"kind":"pipeline.economy.savings.wave","payload":{"wave_id":"W0","savings_tokens":1000,"operation":"scan-rust-first"}}"#,
+            r#"{"kind":"pipeline.economy.savings.wave","payload":{"wave_id":"W0","savings_tokens":500,"operation":"templates-md-moat"}}"#,
+            r#"{"kind":"pipeline.economy.savings.wave","payload":{"wave_id":"W1","savings_tokens":2000,"operation":"sub-spec-link"}}"#,
+        ];
+        std::fs::write(spec_a.join("seed.ndjson"), lines.join("\n")).unwrap();
 
-        let (rows, note) = per_wave_from_db(dir.path());
-        assert!(note.is_none(), "no note expected on a healthy DB");
+        let (rows, note) = per_wave_from_events(dir.path());
+        assert!(note.is_none(), "no note expected on a healthy spec tree");
         assert_eq!(rows.len(), 2);
         let w0 = rows.iter().find(|r| r.wave_id == "W0").unwrap();
         assert_eq!(w0.savings_tokens, 1500);

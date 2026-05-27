@@ -15,7 +15,6 @@ mod watcher;
 
 use mustard_core::fs;
 use serde::Serialize;
-use tauri::Manager;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::path::PathBuf;
@@ -806,47 +805,71 @@ fn dashboard_spec_markdown(repo_path: String, spec_name: String) -> Result<Strin
 // `spec_views.rs` — duplicated rather than re-exported to avoid splitting the
 // module's privacy boundary.
 
-/// Emit `pipeline.status: <to>` via the SQLite event store. Fail-open.
+/// Emit `pipeline.status: <to>` via the per-spec NDJSON sink. Wave 6A of
+/// [[2026-05-26-no-sqlite-git-source-of-truth]] retired the SQLite event
+/// store; per-spec `.events/*.ndjson` files are now the canonical hot path.
+/// Fail-open.
 fn lib_emit_pipeline_status(repo_path: &str, spec: &str, to: &str) {
-    use mustard_core::model::event::{
-        Actor, ActorKind, EVENT_PIPELINE_STATUS, HarnessEvent, PipelineStatusPayload,
-        SCHEMA_VERSION,
-    };
-    use mustard_core::store::event_store::EventSink;
-    use mustard_core::store::sqlite_store::SqliteEventStore;
+    let payload = serde_json::json!({ "from": serde_json::Value::Null, "to": to });
+    lib_emit_ndjson(repo_path, spec, "pipeline.status", payload);
+}
 
-    let payload = serde_json::to_value(PipelineStatusPayload {
-        from: None,
-        to: to.to_string(),
-    }).unwrap_or(serde_json::Value::Null);
-    let event = HarnessEvent {
-        v: SCHEMA_VERSION,
-        ts: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
-        session_id: String::new(),
-        wave: 0,
-        actor: Actor { kind: ActorKind::Cli, id: Some("dashboard-spec-status".to_string()), actor_type: None },
-        event: EVENT_PIPELINE_STATUS.to_string(),
-        payload,
-        spec: Some(spec.to_string()),
+/// Append one event line to `.claude/spec/{spec}/.events/dashboard.ndjson`.
+/// Reused by [`lib_emit_pipeline_status`], `spec_views::emit_pipeline_status`,
+/// and `spec_views::emit_pipeline_removed`. Each line is a self-contained
+/// JSON object — schema mirrors the `EventReader` lenient model
+/// (`kind`, `payload`, optional metadata).
+///
+/// Fail-open: every IO error degrades to an `eprintln!` + return — emitting
+/// telemetry must never block a user-facing Tauri command.
+pub(crate) fn lib_emit_ndjson(
+    repo_path: &str,
+    spec: &str,
+    kind: &str,
+    payload: serde_json::Value,
+) {
+    use std::io::Write;
+    let events_dir = std::path::Path::new(repo_path)
+        .join(".claude")
+        .join("spec")
+        .join(spec)
+        .join(".events");
+    if let Err(e) = std::fs::create_dir_all(&events_dir) {
+        eprintln!(
+            "lib_emit_ndjson: create_dir {} failed: {e}",
+            events_dir.display()
+        );
+        return;
+    }
+    let ts = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    let line = serde_json::json!({
+        "ts": ts,
+        "kind": kind,
+        "spec": spec,
+        "actor": { "kind": "cli", "id": "dashboard" },
+        "payload": payload,
+    });
+    let serialized = match serde_json::to_string(&line) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("lib_emit_ndjson: serialize failed: {e}");
+            return;
+        }
     };
-
-    // Wave 3: append through the shared, managed store keyed by repo path
-    // instead of opening a fresh `SqliteEventStore` per call. `with_store`
-    // returns `None` only when the DB file does not yet exist; in that single
-    // case fall back to `for_project`, which creates it on open.
-    let base = std::path::Path::new(repo_path);
-    let appended = db::with_store(base, |store| store.append(&event).map_err(|e| e.to_string()));
-    match appended {
-        Some(Ok(())) => {}
-        Some(Err(e)) => eprintln!("lib_emit_pipeline_status: append: {e}"),
-        None => match SqliteEventStore::for_project(repo_path) {
-            Ok(store) => {
-                if let Err(e) = store.append(&event) {
-                    eprintln!("lib_emit_pipeline_status: append (fresh): {e}");
-                }
+    let path = events_dir.join("dashboard.ndjson");
+    match std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        Ok(mut file) => {
+            if let Err(e) = writeln!(file, "{serialized}") {
+                eprintln!("lib_emit_ndjson: write {} failed: {e}", path.display());
             }
-            Err(e) => eprintln!("lib_emit_pipeline_status: open store: {e}"),
-        },
+        }
+        Err(e) => {
+            eprintln!("lib_emit_ndjson: open {} failed: {e}", path.display());
+        }
     }
 }
 
@@ -1640,23 +1663,13 @@ pub fn run() {
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .plugin(tauri_plugin_dialog::init())
         .manage(Arc::new(Mutex::new(watcher::WatcherState::default())))
-        // Shared DB handle (Wave 3): one `SqliteEventStore` per repo path, opened
-        // once and reused, instead of a fresh connection per command. Registered
-        // in managed state so it lives for the app's lifetime; the same cache is
-        // also handed to `db::init_db_cache` so the free `db::with_db` helpers
-        // reach it without threading `State<DbCache>` through every command.
-        .manage(mustard_core::store::db_cache::DbCache::new())
+        // Wave 6A of `2026-05-26-no-sqlite-git-source-of-truth` retired the
+        // shared relational handle. The dashboard now reads from per-spec
+        // NDJSON / spec.md filesystem walks — no process-wide cache remains.
+        // The setup hook only installs the updater plugin.
         .setup(|app| {
             #[cfg(desktop)]
             app.handle().plugin(tauri_plugin_updater::Builder::new().build())?;
-            // Hand the managed cache to the db module's process-global handle.
-            // `DbCache` is `Clone` (its map lives behind an `Arc`), so the
-            // managed copy and the `db` module's copy share the same open stores.
-            let cache = app
-                .state::<mustard_core::store::db_cache::DbCache>()
-                .inner()
-                .clone();
-            db::init_db_cache(cache);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

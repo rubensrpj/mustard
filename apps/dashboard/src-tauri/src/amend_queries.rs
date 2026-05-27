@@ -1,239 +1,209 @@
-//! Amend-window metric queries for Wave 4 of spec 2026-05-20-session-bound-amendments.
+//! Amend-window metric readers.
 //!
-//! All functions are fail-open: DB errors return Ok(zero-value) + eprintln.
-//! No panics propagate to the Tauri frontend.
+//! Wave 6A of [[2026-05-26-no-sqlite-git-source-of-truth]]: the legacy
+//! `pipeline_amend_window` SQLite table and the cross-join against `events`
+//! are gone. The amend-window state now lives in
+//! `.claude/spec/{spec}/.amend-window.json`, written atomically by
+//! `apps/rt/src/hooks/amend_capture.rs` (W3C). Each file holds the
+//! latest snapshot for one spec:
+//!
+//! ```json
+//! {
+//!   "spec":           "2026-05-26-some-spec",
+//!   "session_id":     "abc123",
+//!   "status":         "archived" | "closed-amend-drift" | "closed-amend-pending" | "open" | "amending" | ...,
+//!   "opened_at":      "2026-05-26T12:00:00.000Z",
+//!   "closed_at":      "2026-05-26T12:05:00.000Z",
+//!   "last_amend_close_ts": "2026-05-26T12:04:55.000Z"
+//! }
+//! ```
+//!
+//! Readers walk `.claude/spec/*/.amend-window.json` cross-spec, compute the
+//! aggregate, and return. Every entry-point is fail-open: a missing repo,
+//! unreadable directory, or malformed JSON yields the type's zero value.
 
-use rusqlite::{Connection, params};
+use serde::Deserialize;
+use std::path::{Path, PathBuf};
 
-use crate::db;
+/// Snapshot loaded from a single `.amend-window.json` file. Every field is
+/// optional so missing keys do not break the walk.
+#[derive(Debug, Default, Deserialize)]
+struct AmendWindow {
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    closed_at: Option<String>,
+    #[serde(default)]
+    last_amend_close_ts: Option<String>,
+}
 
-// ── helpers ─────────────────────────────────────────────────────────────────
-
-/// Parse ISO-8601 UTC string to milliseconds since epoch.
-/// Returns None on any parse failure.
+/// Parse an ISO-8601 UTC timestamp into milliseconds since epoch.
+/// Returns `None` on any parse failure. Uses `chrono` for correctness with
+/// timezones, leap days and fractional seconds.
 fn iso_to_ms(s: &str) -> Option<i64> {
-    let s = s.trim().strip_suffix('Z').unwrap_or(s.trim());
-    let s = if let Some(pos) = s.rfind('+') {
-        if pos > 10 { &s[..pos] } else { s }
-    } else { s };
-    let (date_part, time_part) = s.split_once('T')?;
-    let mut dp = date_part.splitn(3, '-');
-    let year:  i64 = dp.next()?.parse().ok()?;
-    let month: i64 = dp.next()?.parse().ok()?;
-    let day:   i64 = dp.next()?.parse().ok()?;
-    let (time_no_frac, frac) = match time_part.split_once('.') {
-        Some((t, f)) => (t, f),
-        None => (time_part, ""),
-    };
-    let mut tp = time_no_frac.splitn(3, ':');
-    let hour:   i64 = tp.next()?.parse().ok()?;
-    let minute: i64 = tp.next()?.parse().ok()?;
-    let second: i64 = tp.next()?.parse().ok()?;
-    let ms_frac: i64 = if frac.is_empty() {
-        0
-    } else {
-        let padded = format!("{:0<3}", &frac[..frac.len().min(3)]);
-        padded.parse().ok()?
-    };
-    let days = days_since_epoch(year, month, day)?;
-    Some((days * 86400 + hour * 3600 + minute * 60 + second) * 1000 + ms_frac)
+    let s = s.trim();
+    if s.is_empty() {
+        return None;
+    }
+    chrono::DateTime::parse_from_rfc3339(s)
+        .ok()
+        .map(|dt| dt.timestamp_millis())
 }
 
-fn days_since_epoch(year: i64, month: i64, day: i64) -> Option<i64> {
-    if year < 1970 { return None; }
-    let mut total: i64 = 0;
-    for y in 1970..year {
-        total += if is_leap(y) { 366 } else { 365 };
+/// Walk `.claude/spec/*/.amend-window.json` under `repo_path`. Returns the
+/// successfully-deserialized windows; missing or malformed entries are
+/// silently skipped.
+fn load_windows(repo_path: &Path) -> Vec<AmendWindow> {
+    let base = repo_path.join(".claude").join("spec");
+    let Ok(entries) = std::fs::read_dir(&base) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for entry in entries.flatten() {
+        let path: PathBuf = entry.path().join(".amend-window.json");
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        if let Ok(win) = serde_json::from_str::<AmendWindow>(&text) {
+            out.push(win);
+        }
     }
-    let dim: [i64; 12] = [31, if is_leap(year) { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-    for m in 1..month {
-        total += *dim.get((m - 1) as usize)?;
-    }
-    total += day - 1;
-    Some(total)
+    out
 }
 
-fn is_leap(y: i64) -> bool {
-    (y % 4 == 0 && y % 100 != 0) || y % 400 == 0
+/// True when the snapshot represents a closed window (not still being
+/// negotiated). Mirrors the legacy SQL filter `status NOT IN ('open','amending')`.
+fn is_closed(win: &AmendWindow) -> bool {
+    match win.status.as_deref() {
+        Some("open") | Some("amending") | None => false,
+        _ => true,
+    }
 }
 
 // ── 1. amend_resolution_rate ────────────────────────────────────────────────
 
-/// Percentage of `pipeline_amend_window` rows that ended with status='archived'
-/// out of all closed windows (excludes open/amending rows).
-/// Returns 0.0 when there are no closed windows.
-pub fn amend_resolution_rate_query(conn: &Connection) -> Result<f64, String> {
-    let sql = "SELECT \
-                   CAST(SUM(CASE WHEN status='archived' THEN 1 ELSE 0 END) AS REAL), \
-                   CAST(COUNT(*) AS REAL) \
-               FROM pipeline_amend_window \
-               WHERE status NOT IN ('open', 'amending')";
-    let mut stmt = conn.prepare(sql).map_err(|_| String::new())?;
-    let row = stmt.query_row([], |r| {
-        Ok((r.get::<_, f64>(0)?, r.get::<_, f64>(1)?))
-    });
-    match row {
-        Ok((archived, total)) if total > 0.0 => Ok(archived / total),
-        _ => Ok(0.0),
+fn resolution_rate(windows: &[AmendWindow]) -> f64 {
+    let closed: Vec<&AmendWindow> = windows.iter().filter(|w| is_closed(w)).collect();
+    let total = closed.len() as f64;
+    if total <= 0.0 {
+        return 0.0;
     }
+    let archived = closed
+        .iter()
+        .filter(|w| w.status.as_deref() == Some("archived"))
+        .count() as f64;
+    archived / total
 }
 
 // ── 2. amend_drift_rate ─────────────────────────────────────────────────────
 
-/// Percentage of closed windows with status='closed-amend-drift'.
-/// Returns 0.0 when there are no closed windows.
-pub fn amend_drift_rate_query(conn: &Connection) -> Result<f64, String> {
-    let sql = "SELECT \
-                   CAST(SUM(CASE WHEN status='closed-amend-drift' THEN 1 ELSE 0 END) AS REAL), \
-                   CAST(COUNT(*) AS REAL) \
-               FROM pipeline_amend_window \
-               WHERE status NOT IN ('open', 'amending')";
-    let mut stmt = conn.prepare(sql).map_err(|_| String::new())?;
-    let row = stmt.query_row([], |r| {
-        Ok((r.get::<_, f64>(0)?, r.get::<_, f64>(1)?))
-    });
-    match row {
-        Ok((drift, total)) if total > 0.0 => Ok(drift / total),
-        _ => Ok(0.0),
+fn drift_rate(windows: &[AmendWindow]) -> f64 {
+    let closed: Vec<&AmendWindow> = windows.iter().filter(|w| is_closed(w)).collect();
+    let total = closed.len() as f64;
+    if total <= 0.0 {
+        return 0.0;
     }
+    let drift = closed
+        .iter()
+        .filter(|w| w.status.as_deref() == Some("closed-amend-drift"))
+        .count() as f64;
+    drift / total
 }
 
 // ── 3. cross_session_amend_count ─────────────────────────────────────────────
 
-/// Count of windows carrying over to the next session (status='closed-amend-pending').
-pub fn cross_session_amend_count_query(conn: &Connection) -> Result<u64, String> {
-    let sql = "SELECT COUNT(*) FROM pipeline_amend_window WHERE status='closed-amend-pending'";
-    let mut stmt = conn.prepare(sql).map_err(|_| String::new())?;
-    let n: i64 = stmt.query_row([], |r| r.get(0)).unwrap_or(0);
-    Ok(n.max(0) as u64)
+fn carry_over_count(windows: &[AmendWindow]) -> u64 {
+    windows
+        .iter()
+        .filter(|w| w.status.as_deref() == Some("closed-amend-pending"))
+        .count() as u64
 }
 
 // ── 4. amend_window_duration ────────────────────────────────────────────────
 
-/// For each non-open/amending window, compute duration in milliseconds between
-/// `closed_at` and the latest `pipeline.amend_close` event timestamp for the
-/// same (spec_id, session_id). Returns a Vec of durations; empty if no data.
-pub fn amend_window_duration_query(conn: &Connection) -> Result<Vec<i64>, String> {
-    // Step 1: load closed windows that have both spec_id, session_id, closed_at.
-    let win_sql = "SELECT spec_id, session_id, closed_at \
-                   FROM pipeline_amend_window \
-                   WHERE status NOT IN ('open','amending') \
-                     AND closed_at IS NOT NULL \
-                     AND spec_id IS NOT NULL \
-                     AND session_id IS NOT NULL";
-
-    let mut stmt = match conn.prepare(win_sql) {
-        Ok(s) => s,
-        Err(_) => return Ok(vec![]),
-    };
-
-    struct WinRow { spec_id: String, session_id: String, closed_at: String }
-
-    let windows: Vec<WinRow> = match stmt.query_map([], |r| {
-        Ok(WinRow {
-            spec_id:    r.get::<_, String>(0)?,
-            session_id: r.get::<_, String>(1)?,
-            closed_at:  r.get::<_, String>(2)?,
-        })
-    }) {
-        Ok(rows) => rows.flatten().collect(),
-        Err(_) => return Ok(vec![]),
-    };
-
-    if windows.is_empty() {
-        return Ok(vec![]);
-    }
-
-    // Step 2: for each window, query max ts of pipeline.amend_close event for same (spec, session).
-    let mut durations = Vec::with_capacity(windows.len());
-
-    for win in &windows {
-        let ev_sql = "SELECT MAX(ts) FROM events \
-                      WHERE event='pipeline.amend_close' \
-                        AND spec = ?1 \
-                        AND session_id = ?2";
-        let max_ts: Option<String> = match conn.prepare(ev_sql) {
-            Ok(mut s) => s.query_row(params![win.spec_id, win.session_id], |r| r.get(0)).ok().flatten(),
-            Err(_) => None,
+fn window_durations(windows: &[AmendWindow]) -> Vec<i64> {
+    let mut out = Vec::new();
+    for win in windows.iter().filter(|w| is_closed(w)) {
+        let (Some(closed_at), Some(last)) = (win.closed_at.as_deref(), win.last_amend_close_ts.as_deref()) else {
+            continue;
         };
-
-        if let (Some(event_ts), Some(closed_ms)) = (max_ts, iso_to_ms(&win.closed_at)) {
-            if let Some(event_ms) = iso_to_ms(&event_ts) {
-                let diff = (closed_ms - event_ms).abs();
-                durations.push(diff);
-            }
+        if let (Some(closed_ms), Some(event_ms)) = (iso_to_ms(closed_at), iso_to_ms(last)) {
+            out.push((closed_ms - event_ms).abs());
         }
     }
-
-    Ok(durations)
+    out
 }
 
 // ── Tauri command wrappers ───────────────────────────────────────────────────
 
 #[tauri::command]
-pub fn amend_resolution_rate(
-    repo_path: String,
-) -> Result<f64, String> {
-    let base = std::path::PathBuf::from(&repo_path);
-    match db::with_db(&base, amend_resolution_rate_query) {
-        Some(Ok(v)) => Ok(v),
-        Some(Err(e)) => {
-            if !e.is_empty() {
-                eprintln!("[amend_queries] amend_resolution_rate error: {e}");
-            }
-            Ok(0.0)
-        }
-        None => Ok(0.0),
-    }
+pub fn amend_resolution_rate(repo_path: String) -> Result<f64, String> {
+    let base = PathBuf::from(&repo_path);
+    Ok(resolution_rate(&load_windows(&base)))
 }
 
 #[tauri::command]
-pub fn amend_drift_rate(
-    repo_path: String,
-) -> Result<f64, String> {
-    let base = std::path::PathBuf::from(&repo_path);
-    match db::with_db(&base, amend_drift_rate_query) {
-        Some(Ok(v)) => Ok(v),
-        Some(Err(e)) => {
-            if !e.is_empty() {
-                eprintln!("[amend_queries] amend_drift_rate error: {e}");
-            }
-            Ok(0.0)
-        }
-        None => Ok(0.0),
-    }
+pub fn amend_drift_rate(repo_path: String) -> Result<f64, String> {
+    let base = PathBuf::from(&repo_path);
+    Ok(drift_rate(&load_windows(&base)))
 }
 
 #[tauri::command]
-pub fn cross_session_amend_count(
-    repo_path: String,
-) -> Result<u64, String> {
-    let base = std::path::PathBuf::from(&repo_path);
-    match db::with_db(&base, cross_session_amend_count_query) {
-        Some(Ok(v)) => Ok(v),
-        Some(Err(e)) => {
-            if !e.is_empty() {
-                eprintln!("[amend_queries] cross_session_amend_count error: {e}");
-            }
-            Ok(0)
-        }
-        None => Ok(0),
-    }
+pub fn cross_session_amend_count(repo_path: String) -> Result<u64, String> {
+    let base = PathBuf::from(&repo_path);
+    Ok(carry_over_count(&load_windows(&base)))
 }
 
 #[tauri::command]
-pub fn amend_window_duration(
-    repo_path: String,
-) -> Result<Vec<i64>, String> {
-    let base = std::path::PathBuf::from(&repo_path);
-    match db::with_db(&base, amend_window_duration_query) {
-        Some(Ok(v)) => Ok(v),
-        Some(Err(e)) => {
-            if !e.is_empty() {
-                eprintln!("[amend_queries] amend_window_duration error: {e}");
-            }
-            Ok(vec![])
-        }
-        None => Ok(vec![]),
+pub fn amend_window_duration(repo_path: String) -> Result<Vec<i64>, String> {
+    let base = PathBuf::from(&repo_path);
+    Ok(window_durations(&load_windows(&base)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn write_window(dir: &Path, spec: &str, body: &str) {
+        let spec_dir = dir.join(".claude").join("spec").join(spec);
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        std::fs::write(spec_dir.join(".amend-window.json"), body).unwrap();
+    }
+
+    #[test]
+    fn resolution_and_drift_zero_when_empty() {
+        let tmp = TempDir::new().unwrap();
+        assert_eq!(resolution_rate(&load_windows(tmp.path())), 0.0);
+        assert_eq!(drift_rate(&load_windows(tmp.path())), 0.0);
+        assert_eq!(carry_over_count(&load_windows(tmp.path())), 0);
+        assert!(window_durations(&load_windows(tmp.path())).is_empty());
+    }
+
+    #[test]
+    fn rates_compute_over_closed_windows() {
+        let tmp = TempDir::new().unwrap();
+        write_window(tmp.path(), "spec-a", r#"{"status":"archived"}"#);
+        write_window(tmp.path(), "spec-b", r#"{"status":"closed-amend-drift"}"#);
+        write_window(tmp.path(), "spec-c", r#"{"status":"open"}"#);
+        write_window(tmp.path(), "spec-d", r#"{"status":"closed-amend-pending"}"#);
+        let windows = load_windows(tmp.path());
+        // 3 closed total: 1 archived → 33.3%; 1 drift → 33.3%; 1 pending carries over.
+        assert!((resolution_rate(&windows) - 1.0 / 3.0).abs() < 1e-9);
+        assert!((drift_rate(&windows) - 1.0 / 3.0).abs() < 1e-9);
+        assert_eq!(carry_over_count(&windows), 1);
+    }
+
+    #[test]
+    fn duration_diffs_closed_vs_last_event() {
+        let tmp = TempDir::new().unwrap();
+        write_window(
+            tmp.path(),
+            "spec-z",
+            r#"{"status":"archived","closed_at":"2026-05-26T12:05:00.000Z","last_amend_close_ts":"2026-05-26T12:04:55.000Z"}"#,
+        );
+        let windows = load_windows(tmp.path());
+        let durations = window_durations(&windows);
+        assert_eq!(durations, vec![5_000_i64]);
     }
 }
