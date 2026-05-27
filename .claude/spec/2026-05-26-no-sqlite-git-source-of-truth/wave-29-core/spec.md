@@ -1,6 +1,6 @@
 # DELETE packages/core SQLite modules — store/, telemetry/, reader/sqlite, cleanup error.rs (W8A-4)
 
-### Stage: planned
+### Stage: Plan
 ### Outcome: Active
 ### Flags:
 ### Scope: core

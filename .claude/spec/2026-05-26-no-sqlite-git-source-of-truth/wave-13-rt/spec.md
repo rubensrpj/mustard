@@ -1,6 +1,6 @@
 # Memory + memory_ingest → markdown atomic (+ stop_observer cleanup)
 
-### Stage: planned
+### Stage: Plan
 ### Outcome: Active
 ### Flags:
 ### Scope: light

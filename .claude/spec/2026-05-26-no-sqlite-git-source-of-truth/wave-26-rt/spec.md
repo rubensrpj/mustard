@@ -1,6 +1,6 @@
 # Migrate remaining rt SQLite readers to NDJSON + filesystem (W8A-1 — resume_bootstrap + spec_children_tree + session_cleanup + otel cleanup)
 
-### Stage: planned
+### Stage: Plan
 ### Outcome: Active
 ### Flags:
 ### Scope: rt

@@ -1,6 +1,6 @@
 # Wire dashboard economy commands to real NDJSON readers (W7D — 6 commands + spec_trace 4-level)
 
-### Stage: planned
+### Stage: Plan
 ### Outcome: Active
 ### Flags:
 ### Scope: dashboard

@@ -1,6 +1,6 @@
 # Dashboard telemetry + amend + tests → filesystem/NDJSON (+ W5#8 attribution two-tier)
 
-### Stage: planned
+### Stage: Plan
 ### Outcome: Active
 ### Flags:
 ### Scope: light

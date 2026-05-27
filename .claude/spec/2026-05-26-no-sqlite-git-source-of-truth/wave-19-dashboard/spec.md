@@ -1,6 +1,6 @@
 # Dashboard readers: spec_views + economy + db → filesystem/NDJSON
 
-### Stage: planned
+### Stage: Plan
 ### Outcome: Active
 ### Flags:
 ### Scope: light

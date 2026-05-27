@@ -1,6 +1,6 @@
 # Migrate `packages/core/src/economy/` from SQLite to NDJSON (W7A — readers + writers + multi_project)
 
-### Stage: planned
+### Stage: Plan
 ### Outcome: Active
 ### Flags:
 ### Scope: core

@@ -1,6 +1,6 @@
 # Migrate dashboard spec_views.rs from SqliteSpecReader to direct projections (W8A-2)
 
-### Stage: planned
+### Stage: Plan
 ### Outcome: Active
 ### Flags:
 ### Scope: dashboard

@@ -1,6 +1,6 @@
 # Delete orphan SQLite tests + rewrite remaining rt tests to filesystem fixtures (W8A-3)
 
-### Stage: planned
+### Stage: Plan
 ### Outcome: Active
 ### Flags:
 ### Scope: mixed

@@ -1,6 +1,6 @@
 # Tactical-fix: apps/rt/tests/ migration after W2 rename
 
-### Stage: planned
+### Stage: Plan
 ### Outcome: Active
 ### Flags:
 ### Scope: light

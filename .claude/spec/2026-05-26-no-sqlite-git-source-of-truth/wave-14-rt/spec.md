@@ -1,6 +1,6 @@
 # Run: complete_spec + amend_finalize + epic_fold
 
-### Stage: planned
+### Stage: Plan
 ### Outcome: Active
 ### Flags:
 ### Scope: light

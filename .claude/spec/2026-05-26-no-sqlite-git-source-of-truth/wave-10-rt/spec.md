@@ -1,6 +1,6 @@
 # Hooks restantes: tool_result, notification, subagent_inject, knowledge-hook
 
-### Stage: planned
+### Stage: Plan
 ### Outcome: Active
 ### Flags:
 ### Scope: light

@@ -1,6 +1,6 @@
 # Restore dashboard telemetry behavior — replace W6B stubs with real NDJSON readers
 
-### Stage: planned
+### Stage: Plan
 ### Outcome: Active
 ### Flags:
 ### Scope: light

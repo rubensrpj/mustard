@@ -1,6 +1,6 @@
 # Hooks de amend + spec hygiene + auto-capture para filesystem
 
-### Stage: planned
+### Stage: Plan
 ### Outcome: Active
 ### Flags:
 ### Scope: light

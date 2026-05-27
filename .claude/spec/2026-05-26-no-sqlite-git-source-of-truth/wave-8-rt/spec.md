@@ -1,6 +1,6 @@
 # Hooks de session + stop para filesystem
 
-### Stage: planned
+### Stage: Plan
 ### Outcome: Active
 ### Flags:
 ### Scope: light

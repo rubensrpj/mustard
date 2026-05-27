@@ -1,6 +1,6 @@
 # Hooks de savings + budget para NDJSON
 
-### Stage: planned
+### Stage: Plan
 ### Outcome: Active
 ### Flags:
 ### Scope: light

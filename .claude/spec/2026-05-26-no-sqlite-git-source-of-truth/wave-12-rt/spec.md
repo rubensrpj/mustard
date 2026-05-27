@@ -1,6 +1,6 @@
 # Run: spec_extract + spec_children + skills + verify_emit + DELETE wikilink.rs
 
-### Stage: planned
+### Stage: Plan
 ### Outcome: Active
 ### Flags:
 ### Scope: light

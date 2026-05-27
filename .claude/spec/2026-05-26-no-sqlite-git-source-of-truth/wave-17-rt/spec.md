@@ -1,6 +1,6 @@
 # MCP face + orphan tests do rt → filesystem readers
 
-### Stage: planned
+### Stage: Plan
 ### Outcome: Active
 ### Flags:
 ### Scope: light

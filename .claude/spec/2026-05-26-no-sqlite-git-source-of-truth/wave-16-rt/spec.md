@@ -1,6 +1,6 @@
 # OTEL — rewrite para NDJSON (preservar telemetria, deletar SQLite)
 
-### Stage: planned
+### Stage: Plan
 ### Outcome: Active
 ### Flags:
 ### Scope: light

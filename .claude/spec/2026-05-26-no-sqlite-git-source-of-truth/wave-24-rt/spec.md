@@ -1,6 +1,6 @@
 # Migrate residual rt economy caller + core tests to NDJSON (W7C — capture_baseline + core tests)
 
-### Stage: planned
+### Stage: Plan
 ### Outcome: Active
 ### Flags:
 ### Scope: mixed

@@ -1,6 +1,6 @@
 # Migrate rt economy writers from SQLite to NDJSON (W7B — tracker + session_cleanup + recipe + rtk_gain + reconcile)
 
-### Stage: planned
+### Stage: Plan
 ### Outcome: Active
 ### Flags:
 ### Scope: rt

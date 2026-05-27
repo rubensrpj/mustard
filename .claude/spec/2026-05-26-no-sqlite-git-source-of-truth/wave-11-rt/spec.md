@@ -1,6 +1,6 @@
 # Wikilink footer hook (auto-rodapé clicável)
 
-### Stage: planned
+### Stage: Plan
 ### Outcome: Active
 ### Flags:
 ### Scope: light
