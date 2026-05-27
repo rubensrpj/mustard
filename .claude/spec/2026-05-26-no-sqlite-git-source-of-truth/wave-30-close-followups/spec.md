@@ -70,7 +70,7 @@ Maintainer único (Rubens). Indireto: próxima sessão Mustard, que herda o repo
 - [ ] AC-3: Cargo test workspace --no-run verde — Command: `cargo test --workspace --no-run`
 - [ ] AC-4: Cargo test workspace runtime verde — Command: `cargo test --workspace`
 - [ ] AC-5: `waves-orchestrator-design.md` não está mais na raiz — Command: `node -e "process.exit(require('fs').existsSync('C:/Atiz/mustard/waves-orchestrator-design.md')?1:0)"`
-- [ ] AC-6: SQLite mentions em código vivo ≤5 — Command: `node -e "const cp=require('child_process');const out=cp.execSync('git grep -lE \"SQLite|sqlite\" -- \"apps/*/src/**/*.rs\" \"packages/*/src/**/*.rs\" || true',{encoding:'utf8'});const files=out.split(/\\n/).filter(Boolean);process.exit(files.length<=5?0:1)"`
+- [ ] AC-6: zero `use rusqlite` ou `rusqlite::` em código vivo (matches em doc-comments narrativos de migração são aceitos) — Command: `node -e "const cp=require('child_process');const out=cp.execSync('git grep -nE \"^[^/]*\\\\b(use rusqlite|rusqlite::)\" -- \"apps/*/src/**/*.rs\" \"packages/*/src/**/*.rs\" || true',{encoding:'utf8'});const lines=out.split(/\\n/).filter(Boolean);process.exit(lines.length===0?0:1)"`
 
 ## Arquivos
 
