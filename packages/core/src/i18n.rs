@@ -324,6 +324,67 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
         ("placeholder.fill_files", Locale::PtBr) => "Listar arquivos afetados.",
         ("placeholder.fill_files", Locale::EnUs) => "fill in affected files.",
 
+        // Spec A v4 / W3 — wave _summary.md section headings.
+        ("heading.summary.objective", Locale::PtBr) => "Objetivo",
+        ("heading.summary.objective", Locale::EnUs) => "Objective",
+        ("heading.summary.inheritance", Locale::PtBr) => "Herança",
+        ("heading.summary.inheritance", Locale::EnUs) => "Inheritance",
+        ("heading.summary.decisions", Locale::PtBr) => "Decisões",
+        ("heading.summary.decisions", Locale::EnUs) => "Decisions",
+        ("heading.summary.code", Locale::PtBr) => "Código",
+        ("heading.summary.code", Locale::EnUs) => "Code",
+        ("heading.summary.ac", Locale::PtBr) => "Critérios de Aceitação",
+        ("heading.summary.ac", Locale::EnUs) => "Acceptance Criteria",
+        ("heading.summary.verdict", Locale::PtBr) => "Verdict",
+        ("heading.summary.verdict", Locale::EnUs) => "Verdict",
+        ("heading.summary.next_steps", Locale::PtBr) => "Próximos passos",
+        ("heading.summary.next_steps", Locale::EnUs) => "Next steps",
+
+        // Spec A v4 / W3 — wave _context.md section headings.
+        ("heading.context.objective", Locale::PtBr) => "Objetivo",
+        ("heading.context.objective", Locale::EnUs) => "Objective",
+        ("heading.context.inheritance", Locale::PtBr) => "Herança",
+        ("heading.context.inheritance", Locale::EnUs) => "Inheritance",
+        ("heading.context.memory", Locale::PtBr) => "Memória",
+        ("heading.context.memory", Locale::EnUs) => "Memory",
+        ("heading.context.position", Locale::PtBr) => "Posição no mapa",
+        ("heading.context.position", Locale::EnUs) => "Position in map",
+        ("heading.context.next_steps_suggestion", Locale::PtBr) => "Sugestão de próximos passos",
+        ("heading.context.next_steps_suggestion", Locale::EnUs) => "Next-steps suggestion",
+
+        // Spec A v4 / W4 — regression gate verdict labels + messages.
+        ("gate.verdict.green.label", Locale::PtBr) => "Verde",
+        ("gate.verdict.green.label", Locale::EnUs) => "Green",
+        ("gate.verdict.amber.label", Locale::PtBr) => "Amarelo",
+        ("gate.verdict.amber.label", Locale::EnUs) => "Amber",
+        ("gate.verdict.red.label", Locale::PtBr) => "Vermelho",
+        ("gate.verdict.red.label", Locale::EnUs) => "Red",
+        ("gate.verdict.green.message", Locale::PtBr) => "Sem sinais de regressão.",
+        ("gate.verdict.green.message", Locale::EnUs) => "No regression signals.",
+        ("gate.verdict.amber.message", Locale::PtBr) => "Sinais ambíguos detectados. Confirmação necessária.",
+        ("gate.verdict.amber.message", Locale::EnUs) => "Ambiguous signals detected. Confirmation required.",
+        ("gate.verdict.red.message", Locale::PtBr) => "Regressão detectada. Consolidação bloqueada.",
+        ("gate.verdict.red.message", Locale::EnUs) => "Regression detected. Consolidation blocked.",
+
+        // Spec A v4 / W4 — gate signal layer labels. Use the `{slot}` placeholders
+        // to let callers interpolate the matched term, function name, etc.
+        ("gate.signal.vocabulary", Locale::PtBr) => "Vocabulário casou: {term} (camada {layer})",
+        ("gate.signal.vocabulary", Locale::EnUs) => "Vocabulary matched: {term} (layer {layer})",
+        ("gate.signal.stub", Locale::PtBr) => "Padrão de stub: {pattern} em {function}",
+        ("gate.signal.stub", Locale::EnUs) => "Stub pattern: {pattern} in {function}",
+        ("gate.signal.snapshot", Locale::PtBr) => "Função {function} esvaziou ({before_lines} → {after_lines} linhas)",
+        ("gate.signal.snapshot", Locale::EnUs) => "Function {function} emptied ({before_lines} → {after_lines} lines)",
+
+        // Spec A v4 / W4 — Amber AskUserQuestion (printed as JSON, consumed by orchestrator).
+        ("gate.askuser.amber.question", Locale::PtBr) => "O gate detectou sinais ambíguos. Autorizar a consolidação?",
+        ("gate.askuser.amber.question", Locale::EnUs) => "The gate detected ambiguous signals. Authorize consolidation?",
+        ("gate.askuser.amber.option_authorize", Locale::PtBr) => "Autorizar",
+        ("gate.askuser.amber.option_authorize", Locale::EnUs) => "Authorize",
+        ("gate.askuser.amber.option_block", Locale::PtBr) => "Bloquear",
+        ("gate.askuser.amber.option_block", Locale::EnUs) => "Block",
+        ("gate.askuser.amber.option_block_desc", Locale::PtBr) => "Bloqueia a consolidação até resolução.",
+        ("gate.askuser.amber.option_block_desc", Locale::EnUs) => "Block consolidation until resolved.",
+
         // Fail-open: unknown key returns the key itself so callers always have
         // *something* to render. This is what `karpathy-guidelines` calls a
         // "safe default" — never panic on a typo in a hook.
