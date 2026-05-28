@@ -7,7 +7,7 @@
 
 use crate::shared::context::session_id;
 use crate::util::now_iso8601;
-use crate::run::skill_fetch::SkillCacheFile;
+use crate::run::skill::skill_fetch::SkillCacheFile;
 use mustard_core::fs::read_to_string;
 use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use mustard_core::ClaudePaths;

@@ -25,7 +25,7 @@
 //!   transition glyphs render as tofu.
 
 use crate::shared::context::{current_spec, session_id};
-use crate::run::skill_discovery_lint;
+use crate::run::skill::skill_discovery_lint;
 use crate::util::now_iso8601;
 use crate::util::sha256::Sha256;
 use mustard_core::fs;

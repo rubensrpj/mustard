@@ -11,6 +11,7 @@
 //! (subproject discovery + SHA-256 change detection) and the scanner subsystem
 //! it shares with the still-JS `sync-registry.js`.
 
+pub mod skill;
 pub mod knowledge;
 pub mod economy;
 pub mod pipeline;
@@ -25,8 +26,6 @@ mod analyze_validation;
 pub mod bugfix_cache;
 pub mod i18n_translate;
 pub mod review_dispatch;
-pub mod skill_cache;
-pub mod skill_fetch;
 pub mod task_checklist;
 mod doctor;
 // W3 of `2026-05-26-claude-paths-single-source` — three typed doctor checks
@@ -60,12 +59,9 @@ mod scan_precompute;
 mod scan_recipes_validate;
 mod scan_structural;
 mod security_scan;
-pub mod skill_discovery_lint;
-mod skills;
 mod statusline;
 // W4: lang-aware spec slug helper. Thin facade over `mustard_core::slugify`.
 // W6: subcommand entry point (`i18n translate-heading`, `spec-lang resolve`).
-pub(crate) mod skill_resolve;
 mod sync_detect;
 mod sync_registry;
 // Spec A v4 / W6 — token-budget primitive used by `resume_bootstrap`.
@@ -1658,7 +1654,7 @@ pub fn dispatch(cmd: RunCmd) {
             subproject,
         } => review_result::run(spec.as_deref(), verdict.as_deref(), critical, subproject.as_deref()),
         RunCmd::Statusline { preview } => statusline::run(preview),
-        RunCmd::Skills { subcommand, args } => skills::run(subcommand.as_deref(), &args),
+        RunCmd::Skills { subcommand, args } => skill::skills::run(subcommand.as_deref(), &args),
         RunCmd::SecurityScan { dir, json } => security_scan::run(dir.as_deref(), json),
         RunCmd::VerifyEmit {
             event,
@@ -1729,7 +1725,7 @@ pub fn dispatch(cmd: RunCmd) {
             pipeline::status::run(pipeline::status::StatusOpts { harness, format, root });
         }
         RunCmd::SkillsList { format, root } => {
-            // Delegate to the existing skills::run with the "list" subcommand,
+            // Delegate to the existing skill::skills::run with the "list" subcommand,
             // passing --format and --root via the args slice.
             let args: Vec<String> = vec![
                 "--format".to_string(),
@@ -1737,7 +1733,7 @@ pub fn dispatch(cmd: RunCmd) {
                 "--root".to_string(),
                 root.display().to_string(),
             ];
-            skills::run(Some("list"), &args);
+            skill::skills::run(Some("list"), &args);
         }
         RunCmd::Knowledge { subcommand, filter, format, root } => {
             match subcommand.as_deref() {
@@ -1834,7 +1830,7 @@ pub fn dispatch(cmd: RunCmd) {
             top_k,
             json,
         } => {
-            skill_resolve::run(skill_resolve::SkillResolveOpts {
+            skill::skill_resolve::run(skill::skill_resolve::SkillResolveOpts {
                 intent,
                 subproject,
                 phase,
@@ -1914,10 +1910,10 @@ pub fn dispatch(cmd: RunCmd) {
             spec::prd_build::run(spec::prd_build::PrdBuildOpts { intent, format });
         }
         RunCmd::SkillFetch { name, dry_run } => {
-            skill_fetch::run(skill_fetch::SkillFetchOpts { name, dry_run });
+            skill::skill_fetch::run(skill::skill_fetch::SkillFetchOpts { name, dry_run });
         }
         RunCmd::SkillCache { check } => {
-            skill_cache::run(skill_cache::SkillCacheOpts { check });
+            skill::skill_cache::run(skill::skill_cache::SkillCacheOpts { check });
         }
         RunCmd::AdaptCursor { repo, dry_run } => {
             maint::adapt_cursor::run(maint::adapt_cursor::AdaptCursorOpts { repo, dry_run });

@@ -5,7 +5,7 @@
 //!
 //! - the project's `CONTEXT.md` (when present), keyed against the spec slug
 //!   the dispatch carries via env (`MUSTARD_ACTIVE_SPEC`), and
-//! - the top-K skills returned by [`crate::run::skill_resolve::resolve`] for
+//! - the top-K skills returned by [`crate::run::skill::skill_resolve::resolve`] for
 //!   the prompt + role + active-phase.
 //!
 //! The slice is surfaced as a [`Verdict::Inject`]. The orchestrator-side
@@ -426,7 +426,7 @@ fn span_level_eval_and_append_in(
     Some(verdict_label)
 }
 
-/// Build the recommended-skills block via [`crate::run::skill_resolve::resolve`].
+/// Build the recommended-skills block via [`crate::run::skill::skill_resolve::resolve`].
 fn recommended_skills_block(
     project: &Path,
     intent: &str,
@@ -442,7 +442,7 @@ fn recommended_skills_block(
         _ => "EXECUTE",
     };
     let resolved =
-        crate::run::skill_resolve::resolve(project, intent, subproject, Some(phase), TOP_K_SKILLS);
+        crate::run::skill::skill_resolve::resolve(project, intent, subproject, Some(phase), TOP_K_SKILLS);
     if resolved.is_empty() {
         return String::new();
     }
