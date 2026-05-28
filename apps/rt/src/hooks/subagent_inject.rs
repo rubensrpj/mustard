@@ -34,10 +34,10 @@ use mustard_core::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
 use mustard_core::ClaudePaths;
 use std::path::{Path, PathBuf};
 
-use crate::run::gate_regression_check::{
+use crate::run::review::gate_regression_check::{
     self, check_after_child_return, GateError, GateInput, RegressionVerdict,
 };
-use crate::run::review_spans::{self, VerdictEntry, VERDICT_AMBER, VERDICT_GREEN, VERDICT_RED};
+use crate::run::review::review_spans::{self, VerdictEntry, VERDICT_AMBER, VERDICT_GREEN, VERDICT_RED};
 
 /// Char cap for the injected slice — keeps a high enough ceiling for a useful
 /// snippet without ballooning the parent context budget.

@@ -14,7 +14,7 @@
 //! (see [`gate_regression_check::emit_red_blocked_json`]) — the dispatcher
 //! merely wraps the result.
 
-use crate::run::gate_regression_check::{self, GateInput, Moment, RegressionVerdict};
+use crate::run::review::gate_regression_check::{self, GateInput, Moment, RegressionVerdict};
 use mustard_core::error::Error;
 use mustard_core::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
 use std::path::PathBuf;

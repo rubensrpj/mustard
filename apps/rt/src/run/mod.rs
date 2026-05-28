@@ -11,6 +11,7 @@
 //! (subproject discovery + SHA-256 change detection) and the scanner subsystem
 //! it shares with the still-JS `sync-registry.js`.
 
+pub mod review;
 pub mod skill;
 pub mod knowledge;
 pub mod economy;
@@ -22,10 +23,7 @@ pub mod maint;
 pub mod scan;
 pub mod agent_prompt_render;
 pub mod amend_finalize;
-mod analyze_validation;
-pub mod bugfix_cache;
 pub mod i18n_translate;
-pub mod review_dispatch;
 pub mod task_checklist;
 mod doctor;
 // W3 of `2026-05-26-claude-paths-single-source` — three typed doctor checks
@@ -35,30 +33,22 @@ mod doctor;
 pub mod doctor_claude_paths;
 pub mod doctor_workspace_leaks;
 pub mod doctor_i1;
-mod dependency_precheck;
 mod diff_context;
 mod docs_stale_check;
 pub use event::event_projections::{pipeline_state_from_events, PipelineStateView};
 // Spec A v4 / W4 — behavior-regression gate connecting W1 (vocabulary),
 // W1.5 (AST agnostic) and W2 (snapshot) primitives.
-pub mod gate_regression_check;
 mod mark_checklist_item;
 mod migrate_spec_headers;
 mod migrate_to_meta;
-mod qa_run;
-mod qa_run_all;
 mod recipe_match;
-mod review_prefetch;
-mod review_result;
 // Spec A v4 / W5 — span-level verdict ledger (`_review-spans.md`).
-pub mod review_spans;
 mod scan_finalize;
 mod scan_md_validate;
 mod scan_orchestrate;
 mod scan_precompute;
 mod scan_recipes_validate;
 mod scan_structural;
-mod security_scan;
 mod statusline;
 // W4: lang-aware spec slug helper. Thin facade over `mustard_core::slugify`.
 // W6: subcommand entry point (`i18n translate-heading`, `spec-lang resolve`).
@@ -494,7 +484,7 @@ pub enum RunCmd {
     /// Spec A v4 / W4 — run the behavior-regression gate at the requested moment.
     ///
     /// Reads the spec's `plan.txt` (or `spec.md` body) as the Moment-1 plan
-    /// text and dispatches to `gate_regression_check::run`. Moments 2 and 3
+    /// text and dispatches to `review::gate_regression_check::run`. Moments 2 and 3
     /// require external `diff` + snapshots that the bare CLI does not
     /// collect today — those moments are exercised via the
     /// `pre_edit_intent_check` hook and the W5 span-level integration.
@@ -510,7 +500,7 @@ pub enum RunCmd {
         /// W5#3 — wave directory (e.g. `.claude/spec/<spec>/wave-5-rt`) used
         /// only with `--moment 3`. When set, the subcommand inspects that
         /// wave's `_review-spans.md` ledger via
-        /// `review_spans::check_consolidation` and exits non-zero (2) when any
+        /// `review::review_spans::check_consolidation` and exits non-zero (2) when any
         /// row registered a red verdict. Lets close-gate scripts invoke the
         /// span-level decision without going through the `SubagentStop` hook.
         #[arg(long = "wave-dir")]
@@ -1558,7 +1548,7 @@ pub fn dispatch(cmd: RunCmd) {
         } => spec::spec_link::run(parent.as_deref(), child.as_deref(), reason.as_deref()),
         RunCmd::SpecChildren { parent } => spec::spec_children::run(parent.as_deref()),
         RunCmd::SpecChildrenTree { spec } => spec::spec_children_tree::run(spec.as_deref()),
-        RunCmd::AnalyzeValidation { spec } => analyze_validation::run(spec.as_deref()),
+        RunCmd::AnalyzeValidation { spec } => review::analyze_validation::run(spec.as_deref()),
         RunCmd::MarkChecklistItem {
             spec,
             item,
@@ -1571,7 +1561,7 @@ pub fn dispatch(cmd: RunCmd) {
         RunCmd::ScopeDecompose => spec::scope_decompose::run(),
         RunCmd::ExecRewaveCheck { spec } => wave::exec_rewave_check::run(spec.as_deref()),
         RunCmd::DependencyPrecheck { spec, subproject } => {
-            dependency_precheck::run(spec.as_deref(), subproject.as_deref());
+            review::dependency_precheck::run(spec.as_deref(), subproject.as_deref());
         }
         RunCmd::WaveSizeCheck { spec_dir } => wave::wave_size_check::run(spec_dir.as_deref()),
         RunCmd::GateRegressionCheck {
@@ -1579,15 +1569,15 @@ pub fn dispatch(cmd: RunCmd) {
             moment,
             wave_dir,
         } => {
-            use crate::run::gate_regression_check::{self, GateInput, Moment};
+            use crate::run::review::gate_regression_check::{self, GateInput, Moment};
             // W5#3: Moment-3 + --wave-dir path consults the on-disk
-            // `_review-spans.md` ledger via `review_spans::check_consolidation`.
+            // `_review-spans.md` ledger via `review::review_spans::check_consolidation`.
             // Exits 0 when consolidation is allowed (no red rows) and 2 when
             // blocked. This is the close-gate path; ledger lives on disk so
             // we don't need diff + snapshots in argv.
             if moment == 3 {
                 if let Some(wd) = wave_dir {
-                    use crate::run::review_spans::{check_consolidation, ConsolidationCheck};
+                    use crate::run::review::review_spans::{check_consolidation, ConsolidationCheck};
                     let path = std::path::PathBuf::from(wd);
                     match check_consolidation(&path) {
                         ConsolidationCheck::Allowed => std::process::exit(0),
@@ -1611,7 +1601,7 @@ pub fn dispatch(cmd: RunCmd) {
                 before_snapshot: None,
                 after_snapshot: None,
             };
-            match gate_regression_check::run(input, moment_enum) {
+            match review::gate_regression_check::run(input, moment_enum) {
                 Ok(_) => std::process::exit(0),
                 Err(_) => std::process::exit(2),
             }
@@ -1621,8 +1611,8 @@ pub fn dispatch(cmd: RunCmd) {
             operation,
             subproject,
         } => recipe_match::run(entity.as_deref(), operation.as_deref(), subproject.as_deref()),
-        RunCmd::QaRun { spec, format } => qa_run::run(&spec, &format),
-        RunCmd::QaRunAll => qa_run_all::run(),
+        RunCmd::QaRun { spec, format } => review::qa_run::run(&spec, &format),
+        RunCmd::QaRunAll => review::qa_run_all::run(),
         RunCmd::RebuildSpecs => spec::rebuild_specs::run(),
         RunCmd::Metrics {
             subcommand,
@@ -1652,10 +1642,10 @@ pub fn dispatch(cmd: RunCmd) {
             verdict,
             critical,
             subproject,
-        } => review_result::run(spec.as_deref(), verdict.as_deref(), critical, subproject.as_deref()),
+        } => review::review_result::run(spec.as_deref(), verdict.as_deref(), critical, subproject.as_deref()),
         RunCmd::Statusline { preview } => statusline::run(preview),
         RunCmd::Skills { subcommand, args } => skill::skills::run(subcommand.as_deref(), &args),
-        RunCmd::SecurityScan { dir, json } => security_scan::run(dir.as_deref(), json),
+        RunCmd::SecurityScan { dir, json } => review::security_scan::run(dir.as_deref(), json),
         RunCmd::VerifyEmit {
             event,
             since,
@@ -1754,7 +1744,7 @@ pub fn dispatch(cmd: RunCmd) {
                         .unwrap_or_default()
                 );
             } else {
-                review_prefetch::run(review_prefetch::ReviewPrefetchOpts { pr_ref, format, root });
+                review::review_prefetch::run(review::review_prefetch::ReviewPrefetchOpts { pr_ref, format, root });
             }
         }
         RunCmd::ResumeBootstrap { spec, json } => pipeline::resume_bootstrap::run(&spec, json),
@@ -1897,7 +1887,7 @@ pub fn dispatch(cmd: RunCmd) {
             pipeline::close_orchestrate::run(pipeline::close_orchestrate::CloseOrchestrateOpts { spec, skip_docs });
         }
         RunCmd::ReviewDispatch { pr, spec, subproject } => {
-            review_dispatch::run(review_dispatch::ReviewDispatchOpts { pr, spec, subproject });
+            review::review_dispatch::run(review::review_dispatch::ReviewDispatchOpts { pr, spec, subproject });
         }
         RunCmd::TacticalFixCreate { parent, description, scope } => {
             spec::tactical_fix_create::run(spec::tactical_fix_create::TacticalFixOpts {
@@ -1935,7 +1925,7 @@ pub fn dispatch(cmd: RunCmd) {
             task_checklist::run(task_checklist::TaskChecklistOpts { domain });
         }
         RunCmd::BugfixCache { hash, summary, files } => {
-            bugfix_cache::run(bugfix_cache::BugfixCacheOpts { hash, summary, files });
+            review::bugfix_cache::run(review::bugfix_cache::BugfixCacheOpts { hash, summary, files });
         }
         RunCmd::ContextBudget { role, spec, wave } => {
             economy::context_budget::run(economy::context_budget::ContextBudgetOpts { role, spec, wave });

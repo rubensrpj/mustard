@@ -393,9 +393,9 @@ fn rebuild_one_fail_open(cwd: &Path, spec: &str) {
 }
 
 fn run_qa_fail_open(_cwd: &Path, spec: &str) {
-    let outcome = crate::run::qa_run::run_for_spec_with_options(
+    let outcome = crate::run::review::qa_run::run_for_spec_with_options(
         spec,
-        crate::run::qa_run::QaRunOptions { self_invoked: true },
+        crate::run::review::qa_run::QaRunOptions { self_invoked: true },
     );
     eprintln!(
         "[complete-spec] QA: spec={} overall={} passed={}/{}",

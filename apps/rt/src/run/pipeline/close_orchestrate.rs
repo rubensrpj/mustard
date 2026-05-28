@@ -30,7 +30,7 @@
 //! ```
 
 use crate::shared::context::{current_spec, session_id};
-use crate::run::review_spans::{check_consolidation, ConsolidationCheck};
+use crate::run::review::review_spans::{check_consolidation, ConsolidationCheck};
 use crate::util::now_iso8601;
 use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use mustard_core::process::rtk_command;

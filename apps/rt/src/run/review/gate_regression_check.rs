@@ -1272,7 +1272,7 @@ mod tests {
         // The span-level check (W5) appends one VerdictEntry per child stop
         // via `review_spans::append_verdict`, then `check_consolidation` is
         // expected to block on the first red.
-        use crate::run::review_spans::{
+        use crate::run::review::review_spans::{
             append_verdict, check_consolidation, ConsolidationCheck, VerdictEntry,
         };
         let wave_dir = project.path().join("wave-6-rt");
