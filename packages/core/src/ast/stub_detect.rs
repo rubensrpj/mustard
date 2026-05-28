@@ -52,11 +52,13 @@ pub type FunctionName = String;
 ///
 /// Algorithm (per file):
 ///
-/// 1. Resolve `lang_id` via `loader.language_id_for_path(file.path)`. When
-///    `None`, skip the file — we have no language for it.
-/// 2. If `loader.language(lang_id).is_some()` AND a compiled
-///    `stub_detect.scm` exists for that language, run the AST path.
-/// 3. Otherwise run the textual fallback path, returning hits with
+/// 1. Resolve `lang_id` via `loader.language_id_for_path(file.path)`. The
+///    result is **optional**: a missing id only disables the AST path; the
+///    textual fallback still runs because its regex sweep is agnostic.
+/// 2. When `lang_id` resolves AND `loader.language(lang_id).is_some()` AND a
+///    compiled `stub_detect.scm` exists for that language, run the AST path.
+/// 3. Otherwise (no grammar installed, no query shipped, or AST mid-flight
+///    failure) run the textual fallback. Hits are reported with
 ///    [`DetectionMode::Textual`].
 ///
 /// Both paths emit [`StubMatch`] entries whose `function_name` matches one
@@ -76,32 +78,39 @@ pub fn detect_stub_patterns(
     let textual_matcher = load_pattern_matcher(project_root);
 
     for file in diff {
-        // Resolve language id. No id ⇒ no language, no detection.
-        let Some(lang_id) = loader.language_id_for_path(&file.path) else {
-            continue;
-        };
+        // Resolve language id. None ⇒ no AST path, but the textual
+        // fallback below still runs (regex sweep + agnostic signature
+        // extractor — neither needs a language id semantically).
+        let lang_id_opt = loader.language_id_for_path(&file.path);
 
-        // Decide path: AST when grammar + stub_detect.scm present.
-        if let Some(language) = loader.language(&lang_id) {
-            let set = QuerySet::load_for(&lang_id, loader.project_root(), Some(&language));
-            if let Some(query) = set.stub_detect() {
-                match detect_via_ast(loader, &lang_id, &file.source, declared_fns, query) {
-                    Ok(mut got) => {
-                        hits.append(&mut got);
-                        continue;
-                    }
-                    Err(_) => {
-                        // AST path failed mid-flight — fall through to
-                        // textual fallback for this file rather than
-                        // dropping it.
+        // AST path: needs a resolved id AND a registered grammar AND a
+        // shipped query. Any missing piece falls through to textual.
+        if let Some(ref lang_id) = lang_id_opt {
+            if let Some(language) = loader.language(lang_id) {
+                let set = QuerySet::load_for(lang_id, loader.project_root(), Some(&language));
+                if let Some(query) = set.stub_detect() {
+                    match detect_via_ast(loader, lang_id, &file.source, declared_fns, query) {
+                        Ok(mut got) => {
+                            hits.append(&mut got);
+                            continue;
+                        }
+                        Err(_) => {
+                            // AST path failed mid-flight — fall through to
+                            // textual fallback for this file rather than
+                            // dropping it.
+                        }
                     }
                 }
             }
         }
 
+        // Textual fallback. Empty `lang_id` string degrades the inner
+        // `extract_function_signatures` straight to its agnostic regex —
+        // see `signature::extract_via_fallback_regex`.
+        let lang_id_for_textual = lang_id_opt.as_deref().unwrap_or("");
         let mut got = detect_via_textual_fallback(
             loader,
-            &lang_id,
+            lang_id_for_textual,
             &file.source,
             declared_fns,
             textual_matcher.as_ref(),
