@@ -47,7 +47,7 @@ fn write_json(path: &Path, value: &Value) -> bool {
 /// the legacy in-JSON `phase` field for backwards compatibility.
 fn state_phase(state: &Value, cwd: &Path) -> String {
     if let Some(spec) = state.get("spec").and_then(Value::as_str) {
-        if let Some(phase) = crate::run::emit_phase::last_phase_for_spec(cwd, spec) {
+        if let Some(phase) = crate::run::event::emit_phase::last_phase_for_spec(cwd, spec) {
             return phase.to_uppercase();
         }
     }

@@ -11,6 +11,7 @@
 //! (subproject discovery + SHA-256 change detection) and the scanner subsystem
 //! it shares with the still-JS `sync-registry.js`.
 
+pub mod event;
 pub mod wave;
 pub mod spec;
 pub mod maint;
@@ -43,13 +44,9 @@ mod context_slice;
 mod dependency_precheck;
 mod diff_context;
 mod docs_stale_check;
-mod emit_event;
 mod graph_dead;
 mod graph_index;
-pub mod emit_phase;
-mod emit_pipeline;
-pub mod event_projections;
-pub use event_projections::{pipeline_state_from_events, PipelineStateView};
+pub use event::event_projections::{pipeline_state_from_events, PipelineStateView};
 // Spec A v4 / W4 — behavior-regression gate connecting W1 (vocabulary),
 // W1.5 (AST agnostic) and W2 (snapshot) primitives.
 pub mod gate_regression_check;
@@ -84,7 +81,6 @@ mod security_scan;
 pub mod skill_discovery_lint;
 mod skills;
 mod statusline;
-mod verify_emit;
 // W4: lang-aware spec slug helper. Thin facade over `mustard_core::slugify`.
 // W6: subcommand entry point (`i18n translate-heading`, `spec-lang resolve`).
 pub(crate) mod skill_resolve;
@@ -1464,12 +1460,12 @@ pub fn dispatch(cmd: RunCmd) {
             payload,
             spec,
             wave,
-        } => emit_event::run(event.as_deref(), &payload, spec.as_deref(), wave),
+        } => event::emit_event::run(event.as_deref(), &payload, spec.as_deref(), wave),
         RunCmd::EmitPhase { spec, to, from } => {
-            emit_phase::run(&spec, &to, from.as_deref());
+            event::emit_phase::run(&spec, &to, from.as_deref());
         }
         RunCmd::EmitPipeline { kind, spec, payload, allow_no_qa } => {
-            emit_pipeline::run(emit_pipeline::EmitPipelineOpts {
+            event::emit_pipeline::run(event::emit_pipeline::EmitPipelineOpts {
                 kind,
                 spec,
                 payload,
@@ -1671,7 +1667,7 @@ pub fn dispatch(cmd: RunCmd) {
             spec,
             wave,
             format,
-        } => event_projections::run(view.as_deref(), spec.as_deref(), wave, &format),
+        } => event::event_projections::run(view.as_deref(), spec.as_deref(), wave, &format),
         RunCmd::VerifyPipeline { format } => verify_pipeline::run(&format),
         RunCmd::PipelineSummary { spec_dir, format, self_test } => {
             pipeline_summary::run(spec_dir.as_deref(), &format, self_test);
@@ -1692,7 +1688,7 @@ pub fn dispatch(cmd: RunCmd) {
             payload_value,
             spec,
             quiet,
-        } => verify_emit::run(
+        } => event::verify_emit::run(
             event.as_deref(),
             since.as_deref(),
             payload_key.as_deref(),

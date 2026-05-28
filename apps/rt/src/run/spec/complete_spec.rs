@@ -167,7 +167,7 @@ fn mark_followup(cwd: &Path, spec: &str) -> Value {
 
     // Read current projection status so we can record `from`.
     let events = read_events_for_spec(cwd, spec);
-    let current_status = crate::run::event_projections::pipeline_state_from_events(&events, spec, None)
+    let current_status = crate::run::event::event_projections::pipeline_state_from_events(&events, spec, None)
         .and_then(|v| v.status);
 
     let status_payload = serde_json::to_value(PipelineStatusPayload {
@@ -240,7 +240,7 @@ fn archive(cwd: &Path, spec: &str) -> (bool, bool) {
 /// `cancelled`.
 fn emit_completed_status(cwd: &Path, spec: &str) {
     let events = read_events_for_spec(cwd, spec);
-    let current_status = crate::run::event_projections::pipeline_state_from_events(&events, spec, None)
+    let current_status = crate::run::event::event_projections::pipeline_state_from_events(&events, spec, None)
         .and_then(|v| v.status);
     if matches!(current_status.as_deref(), Some("completed" | "cancelled")) {
         return;
@@ -257,7 +257,7 @@ fn emit_completed_status(cwd: &Path, spec: &str) {
 /// Idempotently emit `pipeline.phase: CLOSE` when the spec's latest phase is
 /// not already CLOSE.
 fn emit_phase_close(cwd: &Path, spec: &str) {
-    let last = crate::run::emit_phase::last_phase_for_spec(cwd, spec);
+    let last = crate::run::event::emit_phase::last_phase_for_spec(cwd, spec);
     if last.as_deref() == Some("CLOSE") {
         return;
     }
@@ -311,7 +311,7 @@ fn archive_followups(cwd: &Path, require_ttl: bool) -> (usize, usize) {
     let (mut scanned, mut archived) = (0usize, 0usize);
     for spec_name in &specs {
         let events = read_events_for_spec(cwd, spec_name);
-        let Some(view) = crate::run::event_projections::pipeline_state_from_events(
+        let Some(view) = crate::run::event::event_projections::pipeline_state_from_events(
             &events,
             spec_name,
             None,

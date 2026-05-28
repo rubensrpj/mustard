@@ -17,7 +17,7 @@
 //! an error.
 
 use crate::shared::context::{project_dir, session_id};
-use crate::run::event_projections::{pipeline_state_from_events, PipelineStateView};
+use crate::run::event::event_projections::{pipeline_state_from_events, PipelineStateView};
 use crate::shared::events::route;
 use crate::run::token_budget::{prune_to_budget, PrioritizedItem};
 use crate::run::wave::wave_context::{self, WaveContextInput, WaveMapEntry};
