@@ -8,6 +8,7 @@
 //! Severity: WARN only — never blocks. The lint is advisory; humans decide
 //! whether to migrate.
 
+use mustard_core::domain::skill::discover::collect_skill_md;
 use mustard_core::io::fs;
 use mustard_core::ClaudePaths;
 use std::path::{Path, PathBuf};
@@ -169,22 +170,9 @@ fn scan_file(path: &Path, violations: &mut Vec<Violation>) {
 /// Glob `{root}/commands/mustard/*/SKILL.md` and return matching paths.
 fn find_skill_files(root: &Path) -> Vec<PathBuf> {
     let commands_dir = root.join("commands").join("mustard");
-    let mut skills: Vec<PathBuf> = Vec::new();
-
-    let Ok(entries) = fs::read_dir(&commands_dir) else {
-        return skills;
-    };
-
-    for entry in entries {
-        if !entry.is_dir {
-            continue;
-        }
-        let skill_path = entry.path.join("SKILL.md");
-        if skill_path.exists() {
-            skills.push(skill_path);
-        }
-    }
-
+    // Canonical SKILL.md walk (one level under `commands/mustard/`); sort for
+    // a stable scan order across the installed + template bases.
+    let mut skills = collect_skill_md(&commands_dir);
     skills.sort();
     skills
 }

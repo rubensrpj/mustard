@@ -14,6 +14,8 @@
 
 use crate::shared::context;
 use mustard_core::io::fs;
+use mustard_core::domain::skill::discover::collect_skill_md;
+use mustard_core::domain::skill::frontmatter::extract_frontmatter;
 use mustard_core::ClaudePaths;
 use mustard_core::EventReader;
 use serde_json::{json, Value};
@@ -38,20 +40,13 @@ fn read_safe(p: &Path) -> String {
 /// Parse `name:` from YAML frontmatter, tolerating CRLF (JS `extractSkillName`).
 fn extract_skill_name(content: &str) -> Option<String> {
     let normalized = content.replace("\r\n", "\n");
-    let fm = frontmatter(&normalized)?;
+    let fm = extract_frontmatter(&normalized)?;
     for line in fm.lines() {
         if let Some(rest) = line.strip_prefix("name:") {
             return Some(rest.trim().to_string());
         }
     }
     None
-}
-
-/// Return the YAML frontmatter body (between the leading `---` fences).
-fn frontmatter(normalized: &str) -> Option<String> {
-    let rest = normalized.strip_prefix("---\n")?;
-    let end = rest.find("\n---")?;
-    Some(rest[..end].to_string())
 }
 
 /// Strip the frontmatter block (JS `stripFrontmatter`).
@@ -64,24 +59,6 @@ fn strip_frontmatter(content: &str) -> String {
         }
     }
     normalized
-}
-
-/// Collect `SKILL.md` paths one level under `skills_dir` (JS `collectSkillsAt`).
-fn collect_skills_at(skills_dir: &Path) -> Vec<PathBuf> {
-    let mut out = Vec::new();
-    let Ok(entries) = fs::read_dir(skills_dir) else {
-        return out;
-    };
-    for entry in entries {
-        if !entry.is_dir {
-            continue;
-        }
-        let candidate = entry.path.join("SKILL.md");
-        if candidate.exists() {
-            out.push(candidate);
-        }
-    }
-    out
 }
 
 /// Unified skill discovery across `templates/skills`, `.claude/skills`, and
@@ -107,7 +84,7 @@ fn discover_skills(project_dir: &Path) -> Vec<Skill> {
     }
     let mut found: BTreeMap<String, Skill> = BTreeMap::new();
     for dir in candidates {
-        for md in collect_skills_at(&dir) {
+        for md in collect_skill_md(&dir) {
             let Ok(content) = fs::read_to_string(&md) else {
                 continue;
             };
@@ -182,7 +159,7 @@ fn collect_skill_dirs(root: &Path) -> Vec<(PathBuf, String)> {
 fn validate_skill(content: &str) -> (bool, Vec<String>, Option<String>) {
     let mut errors = Vec::new();
     let normalized = content.replace("\r\n", "\n");
-    let Some(body) = frontmatter(&normalized) else {
+    let Some(body) = extract_frontmatter(&normalized) else {
         errors.push("missing YAML frontmatter".to_string());
         return (false, errors, None);
     };
@@ -272,7 +249,7 @@ fn run_validate_structural(root: &Path, json_out: bool, quiet: bool, only: Optio
     let mut results: Vec<Value> = Vec::new();
     let (mut total, mut failed) = (0usize, 0usize);
     for (dir, label) in collect_skill_dirs(root) {
-        for file in collect_skills_at(&dir) {
+        for file in collect_skill_md(&dir) {
             let content = fs::read_to_string(&file);
             let rel = rel_posix(root, &file);
             match content {
@@ -369,7 +346,7 @@ fn run_validate_lines(root: &Path, json_out: bool) -> ! {
     let mut results: Vec<Value> = Vec::new();
     let mut has_block = false;
     for (dir, label) in collect_skill_dirs(root) {
-        for file in collect_skills_at(&dir) {
+        for file in collect_skill_md(&dir) {
             let content = read_safe(&file);
             let count = if content.is_empty() { 0 } else { content.split('\n').count() };
             let t = tier(count);
@@ -720,7 +697,7 @@ fn list_skills(root: &Path) -> Vec<SkillListEntry> {
     let skills_dir = paths.skills_dir();
     let mut entries: Vec<SkillListEntry> = Vec::new();
 
-    let skill_paths = collect_skills_at(&skills_dir);
+    let skill_paths = collect_skill_md(&skills_dir);
     for path in &skill_paths {
         let Ok(content) = fs::read_to_string(path) else {
             continue;
@@ -732,7 +709,7 @@ fn list_skills(root: &Path) -> Vec<SkillListEntry> {
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_default()
         });
-        let (source, description) = if let Some(fm) = frontmatter(&normalized) {
+        let (source, description) = if let Some(fm) = extract_frontmatter(&normalized) {
             let src = field(&fm, "source:")
                 .filter(|s| !s.is_empty())
                 .unwrap_or_else(|| "manual".to_string());
@@ -889,7 +866,7 @@ fn run_validate_factual(root: &Path, json_out: bool, mode: &str, exit_failures: 
     let mut violations: Vec<Value> = Vec::new();
     let mut total = 0usize;
     for (dir, label) in collect_skill_dirs(root) {
-        for file in collect_skills_at(&dir) {
+        for file in collect_skill_md(&dir) {
             total += 1;
             let content = read_safe(&file);
             if !content.contains("<!-- mustard:generated") {
@@ -962,7 +939,7 @@ fn run_validate_strict_frontmatter(root: &Path, json_out: bool) -> ! {
         "templates".to_string(),
     )];
     for (dir, label) in foundation_dirs {
-        for file in collect_skills_at(&dir) {
+        for file in collect_skill_md(&dir) {
             total += 1;
             let Ok(content) = fs::read_to_string(&file) else {
                 failed += 1;
@@ -983,7 +960,7 @@ fn run_validate_strict_frontmatter(root: &Path, json_out: bool) -> ! {
                     };
                     // Verify the raw YAML actually carries the strict keys
                     // (the parser folds missing → empty silently).
-                    if let Some(yaml) = extract_frontmatter_body(&content) {
+                    if let Some(yaml) = extract_frontmatter(&content) {
                         for missing in missing_strict_keys(&yaml) {
                             errs.push(format!("missing top-level key: {missing}"));
                         }
@@ -1033,16 +1010,6 @@ fn run_validate_strict_frontmatter(root: &Path, json_out: bool) -> ! {
         }
     }
     std::process::exit(if failed > 0 { 1 } else { 0 });
-}
-
-/// Extract the YAML body between leading `---` fences. Used by the strict
-/// validator to assert top-level key presence (parser is lenient and folds
-/// missing keys to empty Vecs).
-fn extract_frontmatter_body(raw: &str) -> Option<String> {
-    let normalized = raw.replace("\r\n", "\n");
-    let rest = normalized.strip_prefix("---\n")?;
-    let end = rest.find("\n---")?;
-    Some(rest[..end].to_string())
 }
 
 #[cfg(test)]

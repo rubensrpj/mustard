@@ -5,9 +5,11 @@
 //! consumed by `mustard-rt run skill-resolve`, `mustard-rt run skills validate
 //! --strict-frontmatter`, and the agent-prompt skill-injection layer.
 
+pub mod discover;
 pub mod frontmatter;
 
+pub use discover::collect_skill_md;
 pub use frontmatter::{
-    parse, validate, ClusterMeta, SkillFrontmatter, SkillFrontmatterError, SkillMetadata,
-    SkillScope, SkillSource, SkillTag,
+    extract_frontmatter, parse, validate, ClusterMeta, SkillFrontmatter, SkillFrontmatterError,
+    SkillMetadata, SkillScope, SkillSource, SkillTag,
 };
