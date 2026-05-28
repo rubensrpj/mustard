@@ -558,6 +558,23 @@ pub enum RunCmd {
         #[arg(long = "spec-dir")]
         spec_dir: Option<String>,
     },
+    /// Spec A v4 / W4 — run the behavior-regression gate at the requested moment.
+    ///
+    /// Reads the spec's `plan.txt` (or `spec.md` body) as the Moment-1 plan
+    /// text and dispatches to `gate_regression_check::run`. Moments 2 and 3
+    /// require external `diff` + snapshots that the bare CLI does not
+    /// collect today — those moments are exercised via the
+    /// `pre_edit_intent_check` hook and the W5 span-level integration.
+    /// Exit code mirrors the verdict: Green/Amber ⇒ 0, Red ⇒ 2.
+    #[command(name = "gate-regression-check")]
+    GateRegressionCheck {
+        /// Spec slug under `.claude/spec/`.
+        #[arg(long)]
+        spec: String,
+        /// Moment to evaluate: 1 (pre-edit), 2 (during diff), 3 (after child return).
+        #[arg(long, default_value_t = 1)]
+        moment: u8,
+    },
     /// Match an entity + operation to a code recipe skeleton.
     RecipeMatch {
         /// Entity name.
@@ -1616,6 +1633,29 @@ pub fn dispatch(cmd: RunCmd) {
             dependency_precheck::run(spec.as_deref(), subproject.as_deref());
         }
         RunCmd::WaveSizeCheck { spec_dir } => wave_size_check::run(spec_dir.as_deref()),
+        RunCmd::GateRegressionCheck { spec, moment } => {
+            use crate::run::gate_regression_check::{self, GateInput, Moment};
+            let spec_path = std::path::PathBuf::from(".claude/spec").join(&spec).join("spec.md");
+            let plan_text = std::fs::read_to_string(&spec_path).unwrap_or_default();
+            let moment_enum = match moment {
+                1 => Moment::One,
+                2 => Moment::Two,
+                3 => Moment::Three,
+                _ => Moment::One,
+            };
+            let input = GateInput {
+                spec_path,
+                plan_text,
+                diff: Vec::new(),
+                declared_fns: Vec::new(),
+                before_snapshot: None,
+                after_snapshot: None,
+            };
+            match gate_regression_check::run(input, moment_enum) {
+                Ok(_) => std::process::exit(0),
+                Err(_) => std::process::exit(2),
+            }
+        }
         RunCmd::RecipeMatch {
             entity,
             operation,

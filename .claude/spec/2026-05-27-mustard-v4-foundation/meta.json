@@ -8,7 +8,10 @@
   "completedWaves": [
     0,
     1,
-    1.5
+    1.5,
+    2,
+    3,
+    4
   ],
-  "currentWave": 2
+  "currentWave": 5
 }
