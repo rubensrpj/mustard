@@ -4,7 +4,7 @@
 //! catalog) and emits the entries either as JSON (default) or a small ASCII
 //! table. Pure read — no mutation, no event store touches.
 
-use crate::run::economy_capture_baseline::{file_path_for, BaselineEntry, BaselineFile};
+use crate::run::economy::economy_capture_baseline::{file_path_for, BaselineEntry, BaselineFile};
 use crate::shared::context::{current_spec, session_id};
 use crate::util::now_iso8601;
 use mustard_core::fs::read_to_string;

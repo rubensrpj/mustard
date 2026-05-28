@@ -7,7 +7,7 @@
 //! the theme default. Theme renderers honor it.
 
 use super::theme::Color;
-use crate::run::rtk_gain::get_rtk_gain;
+use crate::run::economy::rtk_gain::get_rtk_gain;
 use serde_json::Value;
 use std::fmt::Write as _;
 use std::path::Path;

@@ -459,7 +459,7 @@ pub fn run(subcommand: Option<&str>, args: &[String], format: &str) {
     // spec; delegate to its module rather than threading it through the
     // collect/report data path.
     if subcommand == Some("wave-status") {
-        crate::run::metrics_wave_status::run(args);
+        crate::run::economy::metrics_wave_status::run(args);
         return;
     }
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));

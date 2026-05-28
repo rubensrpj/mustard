@@ -19,7 +19,7 @@
 use crate::shared::context::{project_dir, session_id};
 use crate::run::event::event_projections::{pipeline_state_from_events, PipelineStateView};
 use crate::shared::events::route;
-use crate::run::token_budget::{prune_to_budget, PrioritizedItem};
+use crate::run::economy::token_budget::{prune_to_budget, PrioritizedItem};
 use crate::run::wave::wave_context::{self, WaveContextInput, WaveMapEntry};
 use crate::util::now_iso8601;
 use mustard_core::atomic_md::find_outgoing_links;
@@ -1070,7 +1070,7 @@ fn load_pruned_prior_summaries(
     let kept = prune_to_budget(&candidates, budget);
     let used_tokens: usize = kept
         .iter()
-        .map(|item| crate::run::token_budget::estimate_tokens(&item.text))
+        .map(|item| crate::run::economy::token_budget::estimate_tokens(&item.text))
         .sum();
     let texts: Vec<String> = kept.iter().map(|item| item.text.clone()).collect();
     let count = texts.len();

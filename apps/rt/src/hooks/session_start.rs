@@ -351,7 +351,7 @@ fn exe_rebuilt_since_pid_file(pid_path: &Path) -> bool {
 /// project's own healthy collector owns the port, so this only ever reaps a
 /// foreign or dead listener.
 fn free_otel_port() {
-    let port = crate::run::otel::collector::resolve_port();
+    let port = crate::run::economy::otel::collector::resolve_port();
     for pid in listening_pids(port) {
         kill_pid(pid);
     }

@@ -7,7 +7,7 @@
 //! transient spikes). Idempotent — running twice with the same event store
 //! yields the same baselines.
 
-use crate::run::economy_capture_baseline::{file_path_for, BaselineEntry, BaselineFile};
+use crate::run::economy::economy_capture_baseline::{file_path_for, BaselineEntry, BaselineFile};
 use crate::shared::context::{current_spec, session_id};
 use crate::shared::events::route;
 use crate::util::now_iso8601;

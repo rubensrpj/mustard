@@ -11,6 +11,7 @@
 //! (subproject discovery + SHA-256 change detection) and the scanner subsystem
 //! it shares with the still-JS `sync-registry.js`.
 
+pub mod economy;
 pub mod pipeline;
 pub mod event;
 pub mod wave;
@@ -21,10 +22,6 @@ pub mod agent_prompt_render;
 pub mod amend_finalize;
 mod analyze_validation;
 pub mod bugfix_cache;
-pub mod context_budget;
-pub mod economy_capture_baseline;
-pub mod economy_reconcile;
-pub mod economy_report;
 pub mod i18n_translate;
 pub mod review_dispatch;
 pub mod skill_cache;
@@ -39,7 +36,6 @@ mod doctor;
 pub mod doctor_claude_paths;
 pub mod doctor_workspace_leaks;
 pub mod doctor_i1;
-mod context_slice;
 mod dependency_precheck;
 mod diff_context;
 mod docs_stale_check;
@@ -55,9 +51,6 @@ mod memory_cross_wave;
 mod migrate_spec_headers;
 mod migrate_to_meta;
 mod memory_ingest;
-mod metrics;
-mod metrics_wave_status;
-pub(crate) mod otel;
 mod qa_run;
 mod qa_run_all;
 mod recipe_match;
@@ -65,7 +58,6 @@ mod review_prefetch;
 mod review_result;
 // Spec A v4 / W5 — span-level verdict ledger (`_review-spans.md`).
 pub mod review_spans;
-mod rtk_gain;
 mod scan_finalize;
 mod scan_md_validate;
 mod scan_orchestrate;
@@ -82,8 +74,6 @@ pub(crate) mod skill_resolve;
 mod sync_detect;
 mod sync_registry;
 // Spec A v4 / W6 — token-budget primitive used by `resume_bootstrap`.
-pub mod token_budget;
-mod transcript_watcher;
 
 use clap::Subcommand;
 use std::path::PathBuf;
@@ -1501,7 +1491,7 @@ pub fn dispatch(cmd: RunCmd) {
             spec,
             max_lines,
             context_claude_md,
-        } => context_slice::run(
+        } => economy::context_slice::run(
             &context,
             spec.as_deref(),
             max_lines,
@@ -1647,14 +1637,14 @@ pub fn dispatch(cmd: RunCmd) {
             subcommand,
             args,
             format,
-        } => metrics::run(subcommand.as_deref(), &args, &format),
+        } => economy::metrics::run(subcommand.as_deref(), &args, &format),
         RunCmd::MetricsWaveStatus { spec } => {
             let mut argv: Vec<String> = Vec::new();
             if let Some(s) = spec {
                 argv.push("--spec".to_string());
                 argv.push(s);
             }
-            metrics_wave_status::run(&argv);
+            economy::metrics_wave_status::run(&argv);
         }
         RunCmd::EventProjections {
             view,
@@ -1690,7 +1680,7 @@ pub fn dispatch(cmd: RunCmd) {
             spec.as_deref(),
             quiet,
         ),
-        RunCmd::RtkGain => rtk_gain::run(),
+        RunCmd::RtkGain => economy::rtk_gain::run(),
         RunCmd::ScanOrchestrate { target, force } => {
             scan_orchestrate::run(force, target.as_deref());
         }
@@ -1700,12 +1690,12 @@ pub fn dispatch(cmd: RunCmd) {
             scan_md_validate::run(from.as_deref(), strict);
         }
         RunCmd::ScanRecipesValidate { strict } => scan_recipes_validate::run(strict),
-        RunCmd::OtelCollector => otel::collector::run(),
-        RunCmd::TranscriptWatcher { once } => transcript_watcher::run(once),
+        RunCmd::OtelCollector => economy::otel::collector::run(),
+        RunCmd::TranscriptWatcher { once } => economy::transcript_watcher::run(once),
         RunCmd::DiagnoseOtel {
             json,
             expect_rows_after,
-        } => otel::diagnose::run(json, expect_rows_after.as_deref()),
+        } => economy::otel::diagnose::run(json, expect_rows_after.as_deref()),
         RunCmd::Doctor { residue, check, format, json } => {
             // `--json` is a shorthand for `--format json` (W10.T10.6).
             let effective_format = if json { "json".to_string() } else { format };
@@ -1957,7 +1947,7 @@ pub fn dispatch(cmd: RunCmd) {
             bugfix_cache::run(bugfix_cache::BugfixCacheOpts { hash, summary, files });
         }
         RunCmd::ContextBudget { role, spec, wave } => {
-            context_budget::run(context_budget::ContextBudgetOpts { role, spec, wave });
+            economy::context_budget::run(economy::context_budget::ContextBudgetOpts { role, spec, wave });
         }
         RunCmd::BackupSpecs {
             target,
@@ -2003,19 +1993,19 @@ pub fn dispatch(cmd: RunCmd) {
             format,
             spec,
         } => match subcommand.as_str() {
-            "capture-baseline" => economy_capture_baseline::run(
-                economy_capture_baseline::CaptureBaselineOpts {
+            "capture-baseline" => economy::economy_capture_baseline::run(
+                economy::economy_capture_baseline::CaptureBaselineOpts {
                     operation: operation.unwrap_or_default(),
                     wave: wave.unwrap_or(0),
                     from_history,
                     spec: spec.clone(),
                 },
             ),
-            "reconcile" => economy_reconcile::run(economy_reconcile::ReconcileOpts {
+            "reconcile" => economy::economy_reconcile::run(economy::economy_reconcile::ReconcileOpts {
                 wave: wave.unwrap_or(0),
                 spec: spec.clone(),
             }),
-            "report" => economy_report::run(economy_report::ReportOpts {
+            "report" => economy::economy_report::run(economy::economy_report::ReportOpts {
                 format,
                 spec: spec.clone(),
             }),
