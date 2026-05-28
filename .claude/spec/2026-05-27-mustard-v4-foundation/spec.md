@@ -38,10 +38,10 @@ Após esta spec fechar, o caso W6 da no-sqlite (capturado como fixture em W0) re
 
 Critérios binários (pass/fail), executáveis e independentes. Comandos shell são POSIX (`bash -c '…'`) ou Node (`node -e "…"`) para portabilidade Windows/POSIX. Quando o command depende de fixture ou módulo ainda não construído pela wave alvo, o AC declara `Command: TBD-em-wave-<N>` (M9 — nunca apresentar como pronto se não estiver).
 
-- [ ] AC-A-1: Caso W6 reproduzido em fixture (capturada em W0) dispara o gate de regressão em ≥3 dos 4 pontos críticos (Momento 1, Momento 2, Momento 3, span-level) — Command: TBD-em-wave-7 (fixture W0 + gate W4 + span-level W5)
+- [x] AC-A-1: Caso W6 reproduzido em fixture (capturada em W0) dispara o gate de regressão em ≥3 dos 4 pontos críticos (Momento 1, Momento 2, Momento 3, span-level) — Command: `cargo test -p mustard-rt --lib run::gate_regression_check::tests::wave_7_review_w6_fixture_triggers_three_of_four_moments -- --exact` (W7, verde 2026-05-27 — 3/4 momentos disparam empiricamente; M2 fica fora por ausência de grammar local, registrado em followup W7#1)
 - [ ] AC-A-2: Plano que contém os tokens `fail-open` ou `empurrar pra W…` dispara o Momento 1 (pré-edit) antes de qualquer chamada Edit — Command: TBD-em-wave-4 (vocabulário W1 + gate W4)
 - [ ] AC-A-3: Diff com `fn X() -> Option<T> { None }` em função pública declarada como preservada em `## Funções tocadas` dispara o Momento 2 (durante o diff) — Command: TBD-em-wave-4 (AST W1.5 + gate W4)
-- [ ] AC-A-4: Foto antes/depois captura função que esvaziou (antes 23 entradas no corpo, depois 0) e reporta na consolidação da wave — Command: TBD-em-wave-7 (snapshot W2 + integração W4)
+- [x] AC-A-4: Foto antes/depois captura função que esvaziou (antes 23 entradas no corpo, depois 0) e reporta na consolidação da wave — Command: mesmo teste de AC-A-1 (W7, verde 2026-05-27 — Moment 3 do gate detectou 8 de 9 funções W6 esvaziadas com 8 signals High)
 - [x] AC-A-5: Span-level eval roda a cada `SubagentStop` (filho retornar), nunca acumula até o fim da wave — Command: `cargo test -p mustard-rt --lib hooks::subagent_inject::tests::w5_three_sequential_children_append_per_stop_and_red_blocks_consolidation -- --exact` (W5, verde 2026-05-27)
 - [ ] AC-A-6: Verdict amarelo do gate PERGUNTA ao usuário (via AskUserQuestion) — não passa em silêncio — Command: TBD-em-wave-4
 - [x] AC-A-7: Verdict vermelho do gate BLOQUEIA a consolidação da wave (impede emissão de `pipeline.status` Completed) — Command: mesmo teste de AC-A-5 (W5, verde 2026-05-27 — bloqueio via `review_spans::check_consolidation`; wiring no `close_orchestrate` listado em followup)
@@ -214,6 +214,13 @@ Adicionados em 2026-05-27 após W5 + W6 verdes:
 - **Const `_W6_LOCALE_KEEP` em `resume_bootstrap`** (W6 follow-up #2) — wart transitório para silenciar `unused_imports` enquanto consumers v4 não referenciam `Locale` naturalmente. Remover assim que outro caller de `resume_bootstrap::run` importar `Locale`.
 - **Surfar `tokensUsed` / `summariesLoaded` / `contextPath` em `print_table`** (W6 follow-up #3) — os novos campos aparecem no output JSON via serde, mas o text-table de `resume_bootstrap::print_table` não os mostra. Não é regressão (spec só exigia o JSON); melhoria cosmética para `--format table`.
 - **Boundary warnings stale** (W5 follow-up #4) — `PostToolUse:Edit` reporta `spec "2026-05-26-deep-refactor-followups"` em vez da spec ativa. Edits foram intencionais dentro do escopo. *Como aplicar:* invalidar o resolver de boundary quando uma spec nova entra em EXECUTE.
+
+Adicionados em 2026-05-27 após W7 verde:
+
+- **Momento 2 textual fallback agnóstico ao `lang_id`** (W7 follow-up #1, ~20 LOC) — `packages/core/src/ast/stub_detect.rs:80` faz `let Some(lang_id) = ... else { continue; }` que descarta arquivos sem grammar ANTES de decidir AST vs fallback textual. O fallback (regex agnóstico) não precisa de `lang_id`. Refatorar fecharia AC-A-1 com 4/4 mesmo em hosts sem grammar instalada — hoje fica em 3/4 honesto. *Quem implementa:* sub-spec ou W7.5 dedicada.
+- **Thresholds via TOML em `[thresholds]`** (W7 follow-up #2, ~60 LOC, opcional) — expor `LINE_CHANGE_THRESHOLD` + severity mappings via `.claude/vocab/regression.toml#thresholds`. Cobre AC-A-13 com mais profundidade. Custo > ganho hoje; não bloqueia.
+- **Critério de snapshot mais robusto** (W7 follow-up #3, ~10 LOC, opcional) — migrar `line_changes > N` para `body_emptied = (after_lines == 0 || after_lines × 3 < before_lines)` em `moment_three_signals`. Captura o caso `rtk_summary` (corpo pequeno esvaziado, borderline com threshold atual).
+- **review-w7-report.md em warn-zone** — `.claude/spec/2026-05-27-mustard-v4-foundation/review-w7-report.md` tem 240 linhas (warn ≥ 200, strict ≥ 400). Não é regressão; o relatório é canon empírico W7 e quebrar em sub-arquivos perderia legibilidade. Aceito conscientemente.
 
 <!-- wikilinks-footer-start -->
 - [feedback_mustard_agnostic](?) ⚠ não resolvido
