@@ -889,6 +889,13 @@ fn print_table(out: &ResumeBootstrap) {
     if let Some(q) = out.qa_command.as_deref() {
         println!("qaCommand        : {q}");
     }
+    // W6#3: surface the W6 budget metrics in the text-table form so callers
+    // who don't pass `--json` still see how the budget was spent.
+    println!("tokensUsed       : {}", out.tokens_used);
+    println!("summariesLoaded  : {}", out.summaries_loaded);
+    if let Some(p) = out.context_path.as_deref() {
+        println!("contextPath      : {p}");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1086,7 +1093,21 @@ fn generate_context_on_resume(
     op_body: &str,
 ) -> Option<PathBuf> {
     let wave_id = find_wave_dir_name(spec_dir, current_wave)?;
-    let locale = project_locale(project);
+    // W6#1: prefer the spec's `### Lang:` header when present — falls back to
+    // `mustard.json#lang` via `spec_lang_resolve::resolve` when the spec has
+    // no header, then to PtBr as the catalogue default. Honest priority so a
+    // spec authored in en-US inside a pt-BR project still renders its
+    // `_context.md` in en-US.
+    let slug = spec_dir
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("");
+    let locale = if slug.is_empty() {
+        project_locale(project)
+    } else {
+        let (resolved, _src) = crate::run::spec_lang_resolve::resolve(project, slug);
+        resolved
+    };
 
     // Inheritance: render one wikilink per kept summary (we know they fit the
     // budget; the renderer cap is words, not tokens, so listing the addresses
@@ -1263,12 +1284,6 @@ fn extract_objective(body: &str) -> String {
     }
     String::new()
 }
-
-// Silence the unused-import warning when the file is built without the test
-// module: `Locale` is consumed via `project_locale` already, but the W6 test
-// constructs a literal locale value, so we keep the import re-exported.
-#[allow(dead_code)]
-const _W6_LOCALE_KEEP: Option<Locale> = None;
 
 #[cfg(test)]
 mod tests {

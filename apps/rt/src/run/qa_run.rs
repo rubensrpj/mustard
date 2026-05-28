@@ -189,7 +189,16 @@ fn parse_ac_line(line: &str) -> Option<AcItem> {
     let lower_seg = after_colon.to_lowercase();
     let cmd_idx = lower_seg.rfind("command:")?;
     let cmd_tail = after_colon[cmd_idx + "command:".len()..].trim();
-    let command = cmd_tail.trim_matches('`').trim().to_string();
+    // W8#3: tolerate `Command: `<cmd>` (annotation)` — when the command is
+    // backtick-quoted, take only the text between the first pair of backticks
+    // and ignore any trailing parenthetical (e.g. "(entregue em W1)"). The
+    // historical bare form (`Command: cargo test`) keeps the old behaviour.
+    let command = if let Some(rest) = cmd_tail.strip_prefix('`') {
+        let close = rest.find('`').unwrap_or(rest.len());
+        rest[..close].trim().to_string()
+    } else {
+        cmd_tail.trim().to_string()
+    };
     if command.is_empty() {
         return None;
     }

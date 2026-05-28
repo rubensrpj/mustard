@@ -393,8 +393,19 @@ fn moment_three_signals(before: &Snapshot, after: &Snapshot, locale: Locale) -> 
     let mut signals: Vec<Signal> = Vec::new();
     for delta in diff.deltas {
         match delta.change {
-            ChangeKind::Modified { line_changes } if line_changes > LINE_CHANGE_THRESHOLD => {
-                signals.push(snapshot_signal(template, &delta, line_changes));
+            ChangeKind::Modified { line_changes } => {
+                // W7#3: signal fires when either (a) line_changes exceeds the
+                // raw threshold, OR (b) the function's body emptied — i.e. the
+                // post body is <= 1/3 of the pre body (or zero). Pattern (b)
+                // catches small bodies that shrink past 100% but stay under the
+                // raw 5-line threshold (the `rtk_summary` case surfaced in W7).
+                let before_lines = line_count(delta.before.as_ref());
+                let after_lines = line_count(delta.after.as_ref());
+                let body_emptied =
+                    after_lines == 0 || after_lines.saturating_mul(3) < before_lines;
+                if line_changes > LINE_CHANGE_THRESHOLD || body_emptied {
+                    signals.push(snapshot_signal(template, &delta, line_changes));
+                }
             }
             ChangeKind::Removed => {
                 // Treat removal as the maximum-impact shrinkage.

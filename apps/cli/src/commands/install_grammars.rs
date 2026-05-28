@@ -98,18 +98,34 @@ impl GrammarsCatalog {
             .expect("apps/cli/templates/grammars-suggestions.json is malformed at build time")
     }
 
-    /// Try to load `<project>/.claude/grammars-suggestions.json`; fall back
-    /// to the embedded catalogue when the override is missing or malformed.
+    /// Load the catalogue. Always starts from the embedded source of truth and
+    /// **merges** entries from `<project>/.claude/grammars-suggestions.json`
+    /// on top when present (W8.5#1): an override entry whose `lang_id` matches
+    /// an embedded one replaces only that row; new `lang_id`s are appended;
+    /// embedded entries the override doesn't mention are kept. This lets users
+    /// add ONE language or tweak ONE repo without re-stating the other nine.
+    ///
+    /// A malformed override file degrades silently to the embedded catalogue
+    /// — never panic, never empty (per `feedback_no_stub_fail_open`).
     fn load(project_root: &Path) -> Self {
+        let mut merged = Self::from_embedded();
         let override_path = project_root.join(".claude").join(OVERRIDE_FILENAME);
         if let Ok(text) = std::fs::read_to_string(&override_path) {
-            if let Ok(catalog) = serde_json::from_str::<Self>(&text) {
-                return catalog;
+            if let Ok(over) = serde_json::from_str::<Self>(&text) {
+                for entry in over.grammars {
+                    if let Some(slot) = merged
+                        .grammars
+                        .iter_mut()
+                        .find(|g| g.lang_id == entry.lang_id)
+                    {
+                        *slot = entry;
+                    } else {
+                        merged.grammars.push(entry);
+                    }
+                }
             }
-            // Malformed override degrades to the embedded catalogue — never
-            // panic, never empty (per `feedback_no_stub_fail_open`).
         }
-        Self::from_embedded()
+        merged
     }
 
     fn lookup(&self, lang_id: &str) -> Option<&GrammarEntry> {
@@ -473,15 +489,17 @@ mod tests {
         );
     }
 
-    /// A per-project override at `.claude/grammars-suggestions.json` wins
-    /// over the embedded catalogue.
+    /// A per-project override at `.claude/grammars-suggestions.json` merges
+    /// on top of the embedded catalogue: matching `lang_id`s are replaced,
+    /// new `lang_id`s are appended, and embedded entries the override doesn't
+    /// mention are kept (W8.5#1 — merge, not wholesale replace).
     #[test]
-    fn per_project_override_supersedes_embedded() {
+    fn per_project_override_merges_with_embedded() {
         let tmp = tempdir().unwrap();
         let claude_dir = tmp.path().join(".claude");
         fs::create_dir_all(&claude_dir).unwrap();
-        // Override the rust entry with a fake repo to prove the override
-        // path is honoured.
+        // Override the rust entry with a fake repo + add a brand-new lang
+        // (`brainfuck`) to prove both branches of the merge logic.
         let override_json = r#"{
             "version": 1,
             "grammars": [
@@ -492,18 +510,31 @@ mod tests {
                     "install_cmd": "echo override && tree-sitter generate",
                     "manifest_signals": ["Cargo.toml"],
                     "implies": []
+                },
+                {
+                    "lang_id": "brainfuck",
+                    "label": "Brainfuck",
+                    "repo_url": "https://example.test/tree-sitter-brainfuck",
+                    "install_cmd": "git clone https://example.test/tree-sitter-brainfuck && tree-sitter generate",
+                    "manifest_signals": ["*.bf"],
+                    "implies": []
                 }
             ]
         }"#;
         fs::write(claude_dir.join("grammars-suggestions.json"), override_json).unwrap();
         let catalog = GrammarsCatalog::load(tmp.path());
-        let entry = catalog.lookup("rust").expect("rust entry from override");
-        assert_eq!(entry.label, "Rust (override)");
-        assert_eq!(entry.repo_url, "https://example.test/fake-rust");
-        // Unknown entry from the embedded catalogue is GONE under the override.
+        // Replaced entry — fields come from the override.
+        let rust = catalog.lookup("rust").expect("rust entry from override");
+        assert_eq!(rust.label, "Rust (override)");
+        assert_eq!(rust.repo_url, "https://example.test/fake-rust");
+        // Appended entry — brand-new lang_id surfaces.
+        let bf = catalog.lookup("brainfuck").expect("brainfuck appended");
+        assert_eq!(bf.label, "Brainfuck");
+        // Untouched embedded entry — Python is kept verbatim from the
+        // embedded catalogue (this is the regression W8.5#1 guards).
         assert!(
-            catalog.lookup("python").is_none(),
-            "override replaces the catalogue wholesale (no merge)"
+            catalog.lookup("python").is_some(),
+            "embedded entries the override doesn't mention must be preserved"
         );
     }
 

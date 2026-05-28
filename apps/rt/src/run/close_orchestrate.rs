@@ -30,11 +30,13 @@
 //! ```
 
 use crate::run::env::{current_spec, session_id};
+use crate::run::review_spans::{check_consolidation, ConsolidationCheck};
 use crate::util::now_iso8601;
 use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use mustard_core::process::rtk_command;
 use serde::Serialize;
 use serde_json::{json, Value};
+use std::path::Path;
 
 /// Options for `mustard-rt run close-orchestrate`.
 #[derive(Debug, Clone)]
@@ -115,7 +117,19 @@ pub fn run(opts: CloseOrchestrateOpts) {
         summary: qa_summary,
     });
 
-    // 3. docs-stale-check (optional).
+    // 3. review-spans — block close when any wave's `_review-spans.md` has a
+    // red verdict (W5#1: wires `check_consolidation` into close so AC-A-7's
+    // span-level block actually fires through close_orchestrate, not only at
+    // the hook layer).
+    let (rs_ok, rs_dur, rs_summary) = run_review_spans_gate(&opts.spec);
+    gates.push(GateReport {
+        name: "review-spans".to_string(),
+        ok: rs_ok,
+        duration_ms: rs_dur,
+        summary: rs_summary,
+    });
+
+    // 4. docs-stale-check (optional).
     if !opts.skip_docs {
         let (ok, dur, _) = run_subcmd(&["docs-stale-check"]);
         gates.push(GateReport {
@@ -126,7 +140,7 @@ pub fn run(opts: CloseOrchestrateOpts) {
         });
     }
 
-    // 4. pipeline-summary (advisory — always passes).
+    // 5. pipeline-summary (advisory — always passes).
     let spec_dir = format!(".claude/spec/{}", opts.spec);
     let (sum_ok, sum_dur, _) = run_subcmd(&["pipeline-summary", "--spec-dir", &spec_dir]);
     gates.push(GateReport {
@@ -147,6 +161,39 @@ pub fn run(opts: CloseOrchestrateOpts) {
     let body = serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".to_string());
     println!("{body}");
     emit_economy(total, &opts.spec);
+}
+
+/// Walk `.claude/spec/<spec>/wave-*-*/` and run `review_spans::check_consolidation`
+/// on each wave directory. Reports `ok=false` and a `summary` listing the
+/// blocked wave names when any ledger registers a red verdict. Missing
+/// directories are skipped silently — the helper is advisory and fail-open
+/// for waves that never produced a ledger (no span-level eval ever ran).
+fn run_review_spans_gate(spec: &str) -> (bool, u64, Option<String>) {
+    let started = std::time::Instant::now();
+    let spec_dir = Path::new(".claude").join("spec").join(spec);
+    let mut blocked_waves: Vec<String> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&spec_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().to_string();
+            if !name.starts_with("wave-") {
+                continue;
+            }
+            if let ConsolidationCheck::Blocked { .. } = check_consolidation(&path) {
+                blocked_waves.push(name);
+            }
+        }
+    }
+    let dur = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    if blocked_waves.is_empty() {
+        (true, dur, None)
+    } else {
+        blocked_waves.sort();
+        (false, dur, Some(format!("blocked: {}", blocked_waves.join(","))))
+    }
 }
 
 fn emit_economy(duration_ms: u64, spec: &str) {
