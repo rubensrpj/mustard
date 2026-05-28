@@ -7,14 +7,14 @@
 //! 1. Resolve the applicable modules from the [`Registry`].
 //! 2. Run each `Observer` fire-and-forget (telemetry never blocks, never
 //!    fails the run).
-//! 3. Run each `Check`; map its `Verdict` through the module's enforcement
-//!    [`Mode`] (off/warn/strict); fold the result into one [`Outcome`].
+//! 3. Run each `Check`; fold its `Verdict` into one [`Outcome`]. Per-concern
+//!    off/warn/strict lives inside the individual checks (each reads its own
+//!    `MUSTARD_*_MODE` env), not in the dispatcher.
 //!
 //! A `Check` that returns `Err` is treated as `Allow` — the dispatcher
 //! degrades, it never panics.
 
-use crate::registry::{self, Module, Registry};
-use mustard_core::platform::config::Mode;
+use crate::registry::{Module, Registry};
 use mustard_core::domain::model::contract::{Ctx, HookInput, Outcome, Trigger, Verdict};
 use mustard_core::io::workspace::workspace_root;
 use std::path::PathBuf;
@@ -122,8 +122,8 @@ fn resolve_workspace_root_fail_open(project_dir: &str) -> Option<PathBuf> {
     }
 }
 
-/// Run one module: its observer (fire-and-forget), then its check (folded
-/// through the module's enforcement mode).
+/// Run one module: its observer (fire-and-forget), then its check (folded into
+/// the outcome).
 fn run_module(module: &Module, input: &HookInput, ctx: &Ctx, outcome: &mut Outcome) {
     // Observers are pure telemetry: they cannot fail (the trait returns `()`)
     // and cannot affect the outcome. Run unconditionally.
@@ -135,29 +135,12 @@ fn run_module(module: &Module, input: &HookInput, ctx: &Ctx, outcome: &mut Outco
         return;
     };
 
-    let mode = registry::mode_for(module.id);
-    if mode == Mode::Off {
-        return;
-    }
-
     // A `Check` that errors is degraded to `Allow` — fail-open lives here, not
-    // in the module.
+    // in the module. Per-concern off/warn/strict is decided inside each check
+    // (it reads its own `MUSTARD_*_MODE`); the dispatcher just folds the
+    // verdict the check returns.
     let verdict = check.evaluate(input, ctx).unwrap_or(Verdict::Allow);
-    outcome.fold(apply_mode(verdict, mode));
-}
-
-/// Map a raw [`Verdict`] through the module's enforcement [`Mode`].
-///
-/// In `Warn` mode a blocking `Deny` is downgraded to a non-blocking `Warn`
-/// carrying the same reason — the JS gates do exactly this (`review-gate.js`
-/// emits `permissionDecision: 'allow'` with the reason as advisory text when
-/// not in strict mode). `Strict` passes the verdict through unchanged. `Off`
-/// is handled by the caller (the module never runs).
-fn apply_mode(verdict: Verdict, mode: Mode) -> Verdict {
-    match (mode, verdict) {
-        (Mode::Warn, Verdict::Deny { reason }) => Verdict::Warn { message: reason },
-        (_, verdict) => verdict,
-    }
+    outcome.fold(verdict);
 }
 
 #[cfg(test)]
@@ -202,22 +185,6 @@ mod tests {
             "expected blocking outcome for bare ls; got {:?}, warnings {:?}",
             outcome.verdict,
             outcome.warnings
-        );
-    }
-
-    #[test]
-    fn warn_mode_downgrades_deny_to_warn() {
-        let downgraded = apply_mode(
-            Verdict::Deny {
-                reason: "blocked".into(),
-            },
-            Mode::Warn,
-        );
-        assert_eq!(
-            downgraded,
-            Verdict::Warn {
-                message: "blocked".into()
-            }
         );
     }
 }
