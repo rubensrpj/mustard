@@ -2,7 +2,7 @@
 //! that spec.md + meta.json stay aligned after every sync_status call.
 
 use mustard_core::{Outcome, Stage};
-use mustard_rt::run::spec_scaffold::sync_status;
+use mustard_rt::commands::spec_scaffold::sync_status;
 
 /// Helper: write a minimal spec.md with canonical headers.
 fn seed_spec_md(path: &std::path::Path, stage: &str, outcome: &str) {

@@ -37,7 +37,7 @@
 //! what used to be a standalone `bun` script under `templates/scripts/`.
 //! Wave 3 (economia-moat-unification) adds long-lived ingestion daemons under
 //! this face: `otel-collector` and the opt-in `transcript-watcher` (the
-//! `transcript_watcher` module is dispatched via [`run::RunCmd::TranscriptWatcher`]).
+//! `transcript_watcher` module is dispatched via [`commands::RunCmd::TranscriptWatcher`]).
 //!
 //! A fourth face — `mustard-rt mcp` — serves the `mustard-memory` Model
 //! Context Protocol server over stdio (the re-port of the former TypeScript
@@ -57,7 +57,7 @@ mod mcp;
 mod registry;
 mod hooks;
 mod report;
-mod run;
+mod commands;
 mod shared;
 mod util;
 
@@ -92,7 +92,7 @@ enum Command {
     /// Run a ported utility script (the b4 face). Takes `clap` args, not stdin.
     Run {
         #[command(subcommand)]
-        command: run::RunCmd,
+        command: commands::RunCmd,
     },
     /// Serve the `mustard-memory` MCP server (JSON-RPC over stdio).
     Mcp,
@@ -113,7 +113,7 @@ fn main() {
     // speaks JSON-RPC there — so dispatching it early is mandatory.
     match cli.command {
         Command::Run { command } => {
-            run::dispatch(command);
+            commands::dispatch(command);
             return;
         }
         Command::Mcp => {

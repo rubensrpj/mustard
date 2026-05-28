@@ -28,7 +28,7 @@
 //!       the resume/active-spec readers consume.
 
 use mustard_core::model::event::HarnessEvent;
-use mustard_rt::run::event_projections::pipeline_state_from_events;
+use mustard_rt::commands::event_projections::pipeline_state_from_events;
 use serde_json::{json, Value};
 use std::path::Path;
 use std::process::Command;

@@ -21,7 +21,7 @@
     )
 )]
 
-pub mod run;
+pub mod commands;
 pub mod shared;
 pub mod util;
 mod dispatch;

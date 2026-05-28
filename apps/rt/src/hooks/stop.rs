@@ -136,7 +136,7 @@ fn persist_interrupted(cwd: &str, summary: &str, session_id: Option<&str>) {
     let role = std::env::var("MUSTARD_ACTIVE_WAVE_ROLE")
         .ok()
         .filter(|s| !s.is_empty());
-    let _ = crate::run::knowledge::memory::persist_agent_memory_md(
+    let _ = crate::commands::knowledge::memory::persist_agent_memory_md(
         cwd,
         session_id,
         spec.as_deref(),

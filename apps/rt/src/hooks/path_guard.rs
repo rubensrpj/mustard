@@ -48,7 +48,7 @@ use serde_json::json;
 use std::path::Path;
 use std::time::{Duration, SystemTime};
 
-use crate::run::{PipelineStateView, pipeline_state_from_events};
+use crate::commands::{PipelineStateView, pipeline_state_from_events};
 use crate::util::now_iso8601;
 
 /// The consolidated Write/Edit path-boundary module.
@@ -640,7 +640,7 @@ fn boundary_gate(input: &HookInput, cwd: &str) -> Option<Verdict> {
     // - Phase: from NDJSON `pipeline.phase` events via `emit_phase`.
     // - Status: from the NDJSON projection; falls back to spec header when the
     //   projection has no status (e.g. no pipeline.status event yet in NDJSON).
-    let phase = crate::run::event::emit_phase::last_phase_for_spec(cwd, spec_name)
+    let phase = crate::commands::event::emit_phase::last_phase_for_spec(cwd, spec_name)
         .unwrap_or_default();
     let status = view
         .as_ref()

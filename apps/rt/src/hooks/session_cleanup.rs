@@ -411,7 +411,7 @@ fn ingest_session_transcript(cwd: &str, session_id: Option<&str>) {
 /// Pull every `rtk gain --json` rewrite into the W1 `savings_records` table
 /// once per session.
 ///
-/// Mirrors [`crate::run::economy::rtk_gain`]'s own `persist_savings()` — same
+/// Mirrors [`crate::commands::economy::rtk_gain`]'s own `persist_savings()` — same
 /// [`IngestContext`], same fail-open `eprintln!` blocks, same write loop via
 /// [`economy::writer::record_savings`]. We re-use the shared `rtk_source`
 /// adapter rather than duplicating the JSON-parsing logic.
@@ -565,7 +565,7 @@ impl Observer for SessionCleanup {
         // rest of cleanup.
         if let Some(sid) = input.session_id.as_deref() {
             if !sid.is_empty() {
-                let _ = crate::run::agent::amend_finalize::run(sid);
+                let _ = crate::commands::agent::amend_finalize::run(sid);
             }
         }
     }

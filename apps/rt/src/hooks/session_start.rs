@@ -351,7 +351,7 @@ fn exe_rebuilt_since_pid_file(pid_path: &Path) -> bool {
 /// project's own healthy collector owns the port, so this only ever reaps a
 /// foreign or dead listener.
 fn free_otel_port() {
-    let port = crate::run::economy::otel::collector::resolve_port();
+    let port = crate::commands::economy::otel::collector::resolve_port();
     for pid in listening_pids(port) {
         kill_pid(pid);
     }
@@ -780,8 +780,8 @@ impl Check for SessionStart {
         // `MUSTARD_COLD_PATH_INVOKED=1` on every subprocess it spawns; we
         // self-allow here so the sub-session is effectively hook-less while
         // OAuth/keychain auth still works (which `claude --bare` would have
-        // broken — see `crate::run::scan::interpret::call_model` rationale).
-        if std::env::var_os(crate::run::scan::interpret::COLD_PATH_INVOKED_ENV).is_some() {
+        // broken — see `crate::commands::scan::interpret::call_model` rationale).
+        if std::env::var_os(crate::commands::scan::interpret::COLD_PATH_INVOKED_ENV).is_some() {
             return Ok(Verdict::Allow);
         }
         let cwd = project_dir(input, ctx);
@@ -796,7 +796,7 @@ impl Check for SessionStart {
         // worktrees under `<repo>/.claude/worktrees/agent-*`. Read-only;
         // emits a single stderr warning when the orphan count exceeds the
         // module's threshold. Fail-open at every step.
-        crate::run::maint::worktree_gc::session_start_probe(Path::new(&cwd));
+        crate::commands::maint::worktree_gc::session_start_probe(Path::new(&cwd));
         // Deep-Refactor Wave 2 (T2.3 / claude-paths-single-source W2.T2.6):
         // advisory probe for drift in the project's `.claude/` directory.
         // Read-only; emits a single stderr warning when one or more children
@@ -804,7 +804,7 @@ impl Check for SessionStart {
         // `apps/{rt,cli,dashboard}`) — the underlying audit now derives its
         // documented-directory set from `mustard_core::ClaudePaths::documented_dirs`,
         // the single canonical catalog. Fail-open — never blocks.
-        crate::run::maint::claude_dir_prune::check_orphans(Path::new(&cwd));
+        crate::commands::maint::claude_dir_prune::check_orphans(Path::new(&cwd));
         Ok(match build_memory_context(&cwd) {
             Some(context) => Verdict::Inject { context },
             None => Verdict::Allow,
