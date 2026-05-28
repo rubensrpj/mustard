@@ -11,24 +11,20 @@
 //! (subproject discovery + SHA-256 change detection) and the scanner subsystem
 //! it shares with the still-JS `sync-registry.js`.
 
+pub mod maint;
 pub mod scan;
 pub mod active_specs;
-pub mod adapt_cursor;
 pub mod agent_prompt_render;
 pub mod amend_finalize;
 mod analyze_validation;
 pub mod backup_specs;
 pub mod bugfix_cache;
-pub mod claude_dir_prune;
-pub mod refresh_claude;
 pub mod close_orchestrate;
 pub mod context_budget;
 pub mod economy_capture_baseline;
 pub mod economy_reconcile;
 pub mod economy_report;
 pub mod i18n_translate;
-pub mod maint_deps;
-pub mod maint_validate;
 pub mod pipeline_prelude;
 pub mod prd_build;
 pub mod review_dispatch;
@@ -38,7 +34,6 @@ pub mod spec_lang_resolve;
 pub mod spec_clear;
 pub mod tactical_fix_create;
 pub mod task_checklist;
-mod artifact_update;
 mod knowledge;
 mod doctor;
 // W3 of `2026-05-26-claude-paths-single-source` — three typed doctor checks
@@ -72,7 +67,6 @@ mod memory_cross_wave;
 mod migrate_spec_headers;
 mod migrate_to_meta;
 mod memory_ingest;
-mod rehook;
 mod metrics;
 mod metrics_wave_status;
 pub(crate) mod otel;
@@ -119,7 +113,6 @@ mod sync_detect;
 mod sync_registry;
 // Spec A v4 / W6 — token-budget primitive used by `resume_bootstrap`.
 pub mod token_budget;
-pub mod unhook;
 mod transcript_watcher;
 mod verify_pipeline;
 pub mod wave_context;
@@ -130,7 +123,6 @@ mod wave_scaffold;
 mod wave_size_check;
 pub mod wave_summary;
 mod wave_tree;
-pub mod worktree_gc;
 
 use clap::Subcommand;
 use std::path::PathBuf;
@@ -1072,7 +1064,7 @@ pub enum RunCmd {
         repo: Option<PathBuf>,
         /// Age threshold in whole days. Worktrees older than this are
         /// eligible for removal.
-        #[arg(long = "age-days", default_value_t = worktree_gc::DEFAULT_AGE_DAYS)]
+        #[arg(long = "age-days", default_value_t = maint::worktree_gc::DEFAULT_AGE_DAYS)]
         age_days: u32,
         /// Preview only — no filesystem mutation (the default).
         #[arg(long, default_value_t = true, conflicts_with = "apply")]
@@ -1769,7 +1761,7 @@ pub fn dispatch(cmd: RunCmd) {
             check,
             apply,
             manifest,
-        } => artifact_update::run(check, apply, manifest.as_deref()),
+        } => maint::artifact_update::run(check, apply, manifest.as_deref()),
         RunCmd::AmendFinalize { session_id } => amend_finalize::run_cli(&session_id),
         RunCmd::GraphIndex => graph_index::run(),
         RunCmd::GraphDead => graph_dead::run(),
@@ -1852,17 +1844,17 @@ pub fn dispatch(cmd: RunCmd) {
             // `dry_run` defaults to `true`; clap's `conflicts_with` blocks
             // passing both. `--apply` is the authoritative mutator flag.
             let _ = dry_run;
-            worktree_gc::run(worktree_gc::WorktreeGcOpts {
+            maint::worktree_gc::run(maint::worktree_gc::WorktreeGcOpts {
                 repo,
                 age_days,
                 apply,
             });
         }
         RunCmd::Unhook { repo, scope, confirm } => {
-            unhook::run(unhook::UnhookOpts { repo, scope, confirm });
+            maint::unhook::run(maint::unhook::UnhookOpts { repo, scope, confirm });
         }
         RunCmd::Rehook { repo, scope, confirm } => {
-            rehook::run(rehook::RehookOpts { repo, scope, confirm });
+            maint::rehook::run(maint::rehook::RehookOpts { repo, scope, confirm });
         }
         RunCmd::SpecDraft {
             intent,
@@ -1952,7 +1944,7 @@ pub fn dispatch(cmd: RunCmd) {
             // both flags from coexisting. `--apply` is the authoritative
             // mutator flag.
             let _ = dry_run;
-            claude_dir_prune::run(claude_dir_prune::ClaudeDirPruneOpts {
+            maint::claude_dir_prune::run(maint::claude_dir_prune::ClaudeDirPruneOpts {
                 repo,
                 apply,
                 json,
@@ -1982,20 +1974,20 @@ pub fn dispatch(cmd: RunCmd) {
             skill_cache::run(skill_cache::SkillCacheOpts { check });
         }
         RunCmd::AdaptCursor { repo, dry_run } => {
-            adapt_cursor::run(adapt_cursor::AdaptCursorOpts { repo, dry_run });
+            maint::adapt_cursor::run(maint::adapt_cursor::AdaptCursorOpts { repo, dry_run });
         }
         RunCmd::RefreshClaude { target, dry_run, templates_dir } => {
-            refresh_claude::run(refresh_claude::RefreshClaudeOpts {
+            maint::refresh_claude::run(maint::refresh_claude::RefreshClaudeOpts {
                 target,
                 dry_run,
                 templates_dir,
             });
         }
         RunCmd::MaintDeps { dry_run } => {
-            maint_deps::run(maint_deps::MaintDepsOpts { dry_run });
+            maint::maint_deps::run(maint::maint_deps::MaintDepsOpts { dry_run });
         }
         RunCmd::MaintValidate { dry_run } => {
-            maint_validate::run(maint_validate::MaintValidateOpts { dry_run });
+            maint::maint_validate::run(maint::maint_validate::MaintValidateOpts { dry_run });
         }
         RunCmd::TaskChecklist { domain } => {
             task_checklist::run(task_checklist::TaskChecklistOpts { domain });

@@ -796,7 +796,7 @@ impl Check for SessionStart {
         // worktrees under `<repo>/.claude/worktrees/agent-*`. Read-only;
         // emits a single stderr warning when the orphan count exceeds the
         // module's threshold. Fail-open at every step.
-        crate::run::worktree_gc::session_start_probe(Path::new(&cwd));
+        crate::run::maint::worktree_gc::session_start_probe(Path::new(&cwd));
         // Deep-Refactor Wave 2 (T2.3 / claude-paths-single-source W2.T2.6):
         // advisory probe for drift in the project's `.claude/` directory.
         // Read-only; emits a single stderr warning when one or more children
@@ -804,7 +804,7 @@ impl Check for SessionStart {
         // `apps/{rt,cli,dashboard}`) — the underlying audit now derives its
         // documented-directory set from `mustard_core::ClaudePaths::documented_dirs`,
         // the single canonical catalog. Fail-open — never blocks.
-        crate::run::claude_dir_prune::check_orphans(Path::new(&cwd));
+        crate::run::maint::claude_dir_prune::check_orphans(Path::new(&cwd));
         Ok(match build_memory_context(&cwd) {
             Some(context) => Verdict::Inject { context },
             None => Verdict::Allow,

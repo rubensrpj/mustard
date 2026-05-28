@@ -1,4 +1,4 @@
-//! `mustard-rt run rehook` — restore the harness after [`crate::run::unhook`].
+//! `mustard-rt run rehook` — restore the harness after [`crate::run::maint::unhook`].
 //!
 //! For each `.claude/` directory in scope (`this` / `monorepo` / `all` — same
 //! resolution as `unhook`), finds the most recent `settings.json.disabled-*`
@@ -10,7 +10,7 @@
 //! live `settings.json` already in place each surface as their own `state`
 //! string rather than erroring.
 
-use crate::run::unhook::{collect_claude_dirs, ScopeKind};
+use crate::run::maint::unhook::{collect_claude_dirs, ScopeKind};
 use crate::util::now_iso8601;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
