@@ -55,16 +55,6 @@ const SPEC_MEMORY_MAX: usize = 3;
 /// The W8 subagent-inject hook.
 pub struct SubagentInject;
 
-/// Resolve the project dir for an invocation.
-fn project_dir(input: &HookInput, ctx: &Ctx) -> String {
-    if !ctx.project_dir.is_empty() {
-        return ctx.project_dir.clone();
-    }
-    match input.cwd.as_deref() {
-        Some(c) if !c.is_empty() => c.to_string(),
-        _ => ".".to_string(),
-    }
-}
 
 /// `true` when the dispatch prompt already declares a SKILL block, in which
 /// case we trust the caller (typically `agent-prompt-render`) and stay out.
@@ -473,7 +463,7 @@ impl Check for SubagentInject {
         // never accumulating until end-of-wave (AC-A-5). Fail-open: any IO
         // or gate error degrades to a no-op so the orchestrator continues.
         if ctx.trigger == Some(Trigger::SubagentStop) {
-            let cwd = project_dir(input, ctx);
+            let cwd = ctx.project_dir_or_cwd(input);
             let project = PathBuf::from(&cwd);
             let _ = span_level_eval_and_append(&project, input, &cwd);
             return Ok(Verdict::Allow);
@@ -492,7 +482,7 @@ impl Check for SubagentInject {
             // Trust agent-prompt-render — do nothing.
             return Ok(Verdict::Allow);
         }
-        let cwd = project_dir(input, ctx);
+        let cwd = ctx.project_dir_or_cwd(input);
         let project = PathBuf::from(&cwd);
         let role = role_from_input(input);
 

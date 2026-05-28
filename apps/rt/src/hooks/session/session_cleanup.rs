@@ -61,16 +61,6 @@ const TERMINAL_STATUSES: &[&str] = &["implemented", "completed", "validated", "c
 /// The `SessionEnd` state-cleanup module.
 pub struct SessionCleanup;
 
-/// Resolve the project dir for an invocation: the harness `cwd`, else `.`.
-fn project_dir(input: &HookInput, ctx: &Ctx) -> String {
-    if !ctx.project_dir.is_empty() {
-        return ctx.project_dir.clone();
-    }
-    match input.cwd.as_deref() {
-        Some(c) if !c.is_empty() => c.to_string(),
-        _ => ".".to_string(),
-    }
-}
 
 /// Current time as milliseconds since the Unix epoch.
 
@@ -499,7 +489,7 @@ impl Observer for SessionCleanup {
         if ctx.trigger != Some(Trigger::SessionEnd) {
             return;
         }
-        let cwd = project_dir(input, ctx);
+        let cwd = ctx.project_dir_or_cwd(input);
         let Ok(paths) = ClaudePaths::for_project(Path::new(&cwd)) else {
             return;
         };

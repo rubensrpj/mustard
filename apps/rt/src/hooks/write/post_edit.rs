@@ -66,17 +66,6 @@ fn file_path_of(input: &HookInput) -> Option<String> {
         .map(str::to_string)
 }
 
-/// The cwd for an invocation — the harness `cwd`, else `.`.
-fn project_dir(input: &HookInput, ctx: &Ctx) -> String {
-    if !ctx.project_dir.is_empty() {
-        return ctx.project_dir.clone();
-    }
-    match input.cwd.as_deref() {
-        Some(c) if !c.is_empty() => c.to_string(),
-        _ => ".".to_string(),
-    }
-}
-
 /// `true` if this is a `Write` or `Edit` tool invocation.
 fn is_write_or_edit(input: &HookInput) -> bool {
     matches!(input.tool_name.as_deref(), Some("Write" | "Edit"))
@@ -1075,7 +1064,7 @@ impl Check for PostEdit {
         if !is_write_or_edit(input) {
             return Ok(Verdict::Allow);
         }
-        let cwd = project_dir(input, ctx);
+        let cwd = ctx.project_dir_or_cwd(input);
         Ok(guard_verify(input, &cwd))
     }
 }
@@ -1094,7 +1083,7 @@ impl Observer for PostEdit {
         if !is_write_or_edit(input) {
             return;
         }
-        let cwd = project_dir(input, ctx);
+        let cwd = ctx.project_dir_or_cwd(input);
         run_auto_format(input, &cwd);
         run_checklist_auto_mark(input, &cwd);
     }

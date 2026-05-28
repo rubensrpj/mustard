@@ -43,16 +43,6 @@ fn file_path_of(input: &HookInput) -> Option<String> {
         .map(str::to_string)
 }
 
-/// Resolve the project root the rewrite should be anchored at.
-fn project_dir(input: &HookInput, ctx: &Ctx) -> String {
-    if !ctx.project_dir.is_empty() {
-        return ctx.project_dir.clone();
-    }
-    match input.cwd.as_deref() {
-        Some(c) if !c.is_empty() => c.to_string(),
-        _ => ".".to_string(),
-    }
-}
 
 /// Detect whether `path` lives under one of `.claude/{memory,knowledge,spec}/`
 /// **and** ends in `.md`. Works with forward- or back-slash separators.
@@ -120,7 +110,7 @@ impl Observer for WikilinkFooter {
         if !is_atomic_md_path(&path) {
             return;
         }
-        let project = project_dir(input, ctx);
+        let project = ctx.project_dir_or_cwd(input);
         rewrite_if_changed(&path, &project);
     }
 }

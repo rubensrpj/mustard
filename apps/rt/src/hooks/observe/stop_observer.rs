@@ -18,15 +18,6 @@ use std::path::{Path, PathBuf};
 
 pub struct StopObserver;
 
-fn project_dir(input: &HookInput, ctx: &Ctx) -> String {
-    if !ctx.project_dir.is_empty() {
-        return ctx.project_dir.clone();
-    }
-    match input.cwd.as_deref() {
-        Some(c) if !c.is_empty() => c.to_string(),
-        _ => ".".to_string(),
-    }
-}
 
 fn final_output(input: &HookInput) -> String {
     for key in ["result", "final_output", "output", "tool_response", "tool_result"] {
@@ -89,7 +80,7 @@ impl Observer for StopObserver {
         if output.is_empty() {
             return;
         }
-        let cwd = project_dir(input, ctx);
+        let cwd = ctx.project_dir_or_cwd(input);
         bump_last_used(&cwd, &output);
         economy::emit(&cwd, ActorKind::Hook, "stop_observer", "pipeline.economy.operation.invoked", None, json!({"operation": "stop_observer.bump_last_used", "duration_ms": 0, "tokens_used": 0}));
     }
@@ -263,7 +254,7 @@ impl mustard_core::domain::model::contract::Check for PreCompactMemorySnippet {
         if ctx.trigger != Some(Trigger::PreCompact) {
             return Ok(Verdict::Allow);
         }
-        let cwd = project_dir(input, ctx);
+        let cwd = ctx.project_dir_or_cwd(input);
         let entries = recent_agent_memory(&cwd);
         if entries.is_empty() {
             return Ok(Verdict::Allow);

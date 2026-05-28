@@ -61,16 +61,6 @@ pub struct Knowledge;
 // Shared helpers
 // ===========================================================================
 
-/// Resolve the project dir for an invocation: the harness `cwd`, else `.`.
-fn project_dir(input: &HookInput, ctx: &Ctx) -> String {
-    if !ctx.project_dir.is_empty() {
-        return ctx.project_dir.clone();
-    }
-    match input.cwd.as_deref() {
-        Some(c) if !c.is_empty() => c.to_string(),
-        _ => ".".to_string(),
-    }
-}
 
 /// The current session id — the `session_id` field, else `"unknown"`.
 fn session_id(input: &HookInput) -> String {
@@ -738,7 +728,7 @@ impl Observer for Knowledge {
     /// `memory-auto-extract`; `PostToolUse(Task)` runs `session-knowledge-inc`.
     /// Any other invocation is a no-op. Pure side effect — never panics.
     fn observe(&self, input: &HookInput, ctx: &Ctx) {
-        let cwd = project_dir(input, ctx);
+        let cwd = ctx.project_dir_or_cwd(input);
         match ctx.trigger {
             Some(Trigger::SessionEnd) => {
                 run_session_knowledge(input, &cwd);

@@ -470,16 +470,6 @@ fn mark_completed(spec_md_path: &Path) {
 // The hook body
 // ---------------------------------------------------------------------------
 
-/// Resolve the project dir for an invocation: the harness `cwd`, else `.`.
-fn project_dir(input: &HookInput, ctx: &Ctx) -> String {
-    if !ctx.project_dir.is_empty() {
-        return ctx.project_dir.clone();
-    }
-    match input.cwd.as_deref() {
-        Some(c) if !c.is_empty() => c.to_string(),
-        _ => ".".to_string(),
-    }
-}
 
 /// Resolve the ISO timestamp of the last harness event for `spec_name` by
 /// reading the per-spec NDJSON `.events/` directory.
@@ -648,7 +638,7 @@ impl Check for SpecHygiene {
         if ctx.trigger != Some(Trigger::SessionStart) {
             return Ok(Verdict::Allow);
         }
-        let cwd = project_dir(input, ctx);
+        let cwd = ctx.project_dir_or_cwd(input);
         run_hygiene(&cwd);
         Ok(Verdict::Allow)
     }

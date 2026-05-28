@@ -83,16 +83,6 @@ pub struct SessionStart;
 // Shared helpers
 // ===========================================================================
 
-/// Resolve the project dir for an invocation: the harness `cwd`, else `.`.
-fn project_dir(input: &HookInput, ctx: &Ctx) -> String {
-    if !ctx.project_dir.is_empty() {
-        return ctx.project_dir.clone();
-    }
-    match input.cwd.as_deref() {
-        Some(c) if !c.is_empty() => c.to_string(),
-        _ => ".".to_string(),
-    }
-}
 
 /// Current time as milliseconds since the Unix epoch.
 
@@ -778,7 +768,7 @@ impl Check for SessionStart {
         if std::env::var_os(crate::commands::scan::interpret::COLD_PATH_INVOKED_ENV).is_some() {
             return Ok(Verdict::Allow);
         }
-        let cwd = project_dir(input, ctx);
+        let cwd = ctx.project_dir_or_cwd(input);
         run_harness_init(input, &cwd);
         // Wave 3 (economia-moat-unification): the OTEL collector is no longer
         // an "out-of-scope spawn" — fire it detached and let `session_cleanup`

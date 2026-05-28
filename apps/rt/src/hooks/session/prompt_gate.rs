@@ -50,16 +50,6 @@ const PIPELINE_IN_FLIGHT_BANNER: &str = "Pipeline em curso";
 /// The UserPromptSubmit gate module.
 pub struct PromptGate;
 
-/// Resolve the project dir for an invocation: the harness `cwd`, else `.`.
-fn project_dir(input: &HookInput, ctx: &Ctx) -> String {
-    if !ctx.project_dir.is_empty() {
-        return ctx.project_dir.clone();
-    }
-    match input.cwd.as_deref() {
-        Some(c) if !c.is_empty() => c.to_string(),
-        _ => ".".to_string(),
-    }
-}
 
 /// `true` if `prompt` invokes a pipeline command. Mirrors the JS regex
 /// `^\s*\/mustard:(feature|bugfix|task)\b` (case-insensitive).
@@ -136,7 +126,7 @@ impl Check for PromptGate {
             .get("prompt")
             .and_then(|v| v.as_str())
             .unwrap_or_default();
-        let cwd = project_dir(input, ctx);
+        let cwd = ctx.project_dir_or_cwd(input);
         if is_pipeline_prompt(prompt) {
             archive_followups(&cwd);
             // Close any open amendment windows for this session — the user is

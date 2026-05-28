@@ -295,6 +295,30 @@ pub struct Ctx {
     pub workspace_root: Option<std::path::PathBuf>,
 }
 
+impl Ctx {
+    /// The project directory for this invocation: the dispatcher-resolved
+    /// [`Ctx::project_dir`] when populated, else the harness-provided
+    /// [`HookInput::cwd`], else `"."`.
+    ///
+    /// This is the hook-face *reader* of an already-resolved directory — the
+    /// dispatcher resolves the workspace root once (via
+    /// [`crate::io::workspace::workspace_root`]) and stashes it in
+    /// `self.project_dir`. It is deliberately distinct from the `run`-face
+    /// `context::project_dir()`, which re-resolves from the environment on
+    /// every call. Before this method the same body was copy-pasted
+    /// byte-identically into 15 hook modules.
+    #[must_use]
+    pub fn project_dir_or_cwd(&self, input: &HookInput) -> String {
+        if !self.project_dir.is_empty() {
+            return self.project_dir.clone();
+        }
+        match input.cwd.as_deref() {
+            Some(c) if !c.is_empty() => c.to_string(),
+            _ => ".".to_string(),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Traits
 // ---------------------------------------------------------------------------

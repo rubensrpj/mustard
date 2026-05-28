@@ -37,16 +37,6 @@ use mustard_core::time::now_iso8601;
 /// The `PreCompact` context-snapshot module.
 pub struct PreCompact;
 
-/// Resolve the project dir for an invocation: the harness `cwd`, else `.`.
-fn project_dir(input: &HookInput, ctx: &Ctx) -> String {
-    if !ctx.project_dir.is_empty() {
-        return ctx.project_dir.clone();
-    }
-    match input.cwd.as_deref() {
-        Some(c) if !c.is_empty() => c.to_string(),
-        _ => ".".to_string(),
-    }
-}
 
 /// Run a git command in `cwd`, returning trimmed stdout, or `None` on failure.
 fn git(cwd: &str, args: &[&str]) -> Option<String> {
@@ -219,7 +209,7 @@ impl Check for PreCompact {
         if ctx.trigger != Some(Trigger::PreCompact) {
             return Ok(Verdict::Allow);
         }
-        let cwd = project_dir(input, ctx);
+        let cwd = ctx.project_dir_or_cwd(input);
         let Ok(paths) = ClaudePaths::for_project(Path::new(&cwd)) else {
             return Ok(Verdict::Allow);
         };

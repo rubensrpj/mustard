@@ -29,16 +29,6 @@ use mustard_core::domain::model::contract::{Ctx, HookInput, Observer};
 /// The W8 auto-capture hook.
 pub struct AutoCaptureSummary;
 
-/// Resolve the project dir for an invocation.
-fn project_dir(input: &HookInput, ctx: &Ctx) -> String {
-    if !ctx.project_dir.is_empty() {
-        return ctx.project_dir.clone();
-    }
-    match input.cwd.as_deref() {
-        Some(c) if !c.is_empty() => c.to_string(),
-        _ => ".".to_string(),
-    }
-}
 
 /// Extract a `<MEMORY>...</MEMORY>` block body, trimmed. `None` when absent or
 /// empty.
@@ -162,7 +152,7 @@ impl Observer for AutoCaptureSummary {
         if output.is_empty() {
             return;
         }
-        let cwd = project_dir(input, ctx);
+        let cwd = ctx.project_dir_or_cwd(input);
 
         let memory_body = extract_memory_block(&output);
         let resumo = extract_resumo(&output);

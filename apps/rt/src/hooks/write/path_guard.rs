@@ -468,16 +468,6 @@ fn file_path_of(input: &HookInput) -> Option<String> {
         .map(str::to_string)
 }
 
-/// The cwd for an invocation — the harness `cwd`, else `.`.
-fn project_dir(input: &HookInput, ctx: &Ctx) -> String {
-    if !ctx.project_dir.is_empty() {
-        return ctx.project_dir.clone();
-    }
-    match input.cwd.as_deref() {
-        Some(c) if !c.is_empty() => c.to_string(),
-        _ => ".".to_string(),
-    }
-}
 
 /// Compute the path of `file_path` relative to `cwd`, forward-slash
 /// normalised. Returns `None` when `file_path` escapes `cwd` (`../`) — the
@@ -704,7 +694,7 @@ impl Check for PathGuard {
         // `boundary-gate` — Write/Edit only.
         let tool = input.tool_name.as_deref().unwrap_or_default();
         if tool == "Write" || tool == "Edit" {
-            let cwd = project_dir(input, ctx);
+            let cwd = ctx.project_dir_or_cwd(input);
             if let Some(verdict) = boundary_gate(input, &cwd) {
                 return Ok(verdict);
             }

@@ -42,16 +42,6 @@ const EDIT_RECENCY_SECS: u64 = 15 * 60;
 /// The `Stop` lifecycle observer.
 pub struct Stop;
 
-/// Resolve the project dir for an invocation.
-fn project_dir(input: &HookInput, ctx: &Ctx) -> String {
-    if !ctx.project_dir.is_empty() {
-        return ctx.project_dir.clone();
-    }
-    match input.cwd.as_deref() {
-        Some(c) if !c.is_empty() => c.to_string(),
-        _ => ".".to_string(),
-    }
-}
 
 /// Path to the anti-spam marker file under the project's harness directory.
 fn marker_path(cwd: &str) -> PathBuf {
@@ -156,7 +146,7 @@ fn persist_interrupted(cwd: &str, summary: &str, session_id: Option<&str>) {
 
 impl Observer for Stop {
     fn observe(&self, input: &HookInput, ctx: &Ctx) {
-        let cwd = project_dir(input, ctx);
+        let cwd = ctx.project_dir_or_cwd(input);
         let now = SystemTime::now();
 
         // Anti-spam — bail if the previous Stop fired inside the window.

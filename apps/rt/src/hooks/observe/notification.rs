@@ -25,16 +25,6 @@ use serde_json::{Value, json};
 /// The `Notification` lifecycle observer.
 pub struct Notification;
 
-/// Resolve the project dir for an invocation.
-fn project_dir(input: &HookInput, ctx: &Ctx) -> String {
-    if !ctx.project_dir.is_empty() {
-        return ctx.project_dir.clone();
-    }
-    match input.cwd.as_deref() {
-        Some(c) if !c.is_empty() => c.to_string(),
-        _ => ".".to_string(),
-    }
-}
 
 /// Pull a human-facing reason / message out of the harness payload. The
 /// harness shape varies — probe common keys and fall back to a stringified
@@ -81,7 +71,7 @@ fn append_notification_event(cwd: &str, input: &HookInput) {
 
 impl Observer for Notification {
     fn observe(&self, input: &HookInput, ctx: &Ctx) {
-        let cwd = project_dir(input, ctx);
+        let cwd = ctx.project_dir_or_cwd(input);
         append_notification_event(&cwd, input);
         economy::emit(&cwd, ActorKind::Hook, "notification", "pipeline.economy.operation.invoked", None, json!({"operation": "notification.received", "duration_ms": 0, "tokens_used": 0}));
     }

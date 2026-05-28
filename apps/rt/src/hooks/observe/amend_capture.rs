@@ -164,16 +164,6 @@ fn write_window(project_dir: &str, spec_id: &str, state: &WindowState) -> Result
 // Shared helpers
 // ---------------------------------------------------------------------------
 
-/// Resolve the project directory from context, falling back to `.`.
-fn project_dir(input: &HookInput, ctx: &Ctx) -> String {
-    if !ctx.project_dir.is_empty() {
-        return ctx.project_dir.clone();
-    }
-    match input.cwd.as_deref() {
-        Some(c) if !c.is_empty() => c.to_string(),
-        _ => ".".to_string(),
-    }
-}
 
 /// Extract `file_path` from a Write/Edit `tool_input`.
 fn tool_file_path(input: &HookInput) -> Option<String> {
@@ -304,7 +294,7 @@ impl Observer for AmendCapture {
         let Some(trigger) = ctx.trigger else {
             return;
         };
-        let pdir = project_dir(input, ctx);
+        let pdir = ctx.project_dir_or_cwd(input);
         let session_id = match input.session_id.as_deref() {
             Some(s) if !s.is_empty() => s.to_string(),
             _ => return,
@@ -518,7 +508,7 @@ impl Check for AmendCapture {
         let Some(file_path) = tool_file_path(input) else {
             return Ok(Verdict::Allow);
         };
-        let pdir = project_dir(input, ctx);
+        let pdir = ctx.project_dir_or_cwd(input);
         let Some((spec_id, window)) = active_window(&pdir) else {
             return Ok(Verdict::Allow);
         };
