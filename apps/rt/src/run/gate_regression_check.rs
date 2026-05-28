@@ -267,7 +267,11 @@ fn severity_for_layer(layer: VocabLayerKind) -> Option<Severity> {
 /// Build a vocabulary matcher rooted at `project_root`. Falls back to a small
 /// default set when no `.claude/vocab/regression.toml` is installed so the
 /// gate never returns zero hits on a fresh project.
-fn build_vocab_matcher(project_root: &Path) -> Option<VocabularyMatcher> {
+///
+/// W5 (`subagent_inject` + `agent_prompt_render`) consumes the same matcher to
+/// pre-arm child agents with the wave's vocabulary — exposing this helper
+/// avoids duplicating the file-lookup + fallback contract across modules.
+pub fn build_vocab_matcher(project_root: &Path) -> Option<VocabularyMatcher> {
     let path = project_root
         .join(".claude")
         .join("vocab")

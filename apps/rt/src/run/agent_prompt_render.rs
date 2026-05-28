@@ -19,11 +19,13 @@
 //!   `--retry-context-file` when provided, else `""`.
 
 use crate::run::env::project_dir;
+use crate::run::gate_regression_check;
 use crate::run::memory_cross_wave;
 use crate::run::resume_bootstrap::{read_wave_model, resolve_operational_spec_path};
 use crate::run::skill_resolve;
 use crate::run::spec_sections::is_heading;
 use mustard_core::fs as mfs;
+use mustard_core::i18n;
 use mustard_core::ClaudePaths;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -122,6 +124,17 @@ pub fn run(
             cross_wave_memory.push_str("\n\n");
         }
         cross_wave_memory.push_str(&spec_memory_block);
+    }
+    // W5.T5.3 — inject the regression vocabulary so the child agent sees
+    // the same Semantic/Pattern term lists the gate will check at Moment 1.
+    // Locale resolved per-project; fail-open to PtBr.
+    let locale = i18n::project_locale(&project);
+    let vocab_block = vocabulary_inject_block(&project, locale);
+    if !vocab_block.is_empty() {
+        if !cross_wave_memory.is_empty() {
+            cross_wave_memory.push_str("\n\n");
+        }
+        cross_wave_memory.push_str(&vocab_block);
     }
     let mut recommended_skills = recommended_skills_via_resolve(
         &project,
@@ -626,6 +639,96 @@ fn extract_memory_summary(text: &str) -> String {
         return cap;
     }
     String::new()
+}
+
+/// W5.T5.3 — Render the regression-vocabulary block for injection into the
+/// rendered prompt. Reuses [`gate_regression_check::build_vocab_matcher`] so
+/// the inject path agrees with the gate's Moment-1 scan on which terms get
+/// surfaced. Empty when the project has no resolvable vocabulary
+/// (fail-open).
+fn vocabulary_inject_block(project: &Path, locale: i18n::Locale) -> String {
+    let Some(_matcher) = gate_regression_check::build_vocab_matcher(project) else {
+        return String::new();
+    };
+    let (semantic, pattern) = read_vocab_layers_for_inject(project);
+    if semantic.is_empty() && pattern.is_empty() {
+        return String::new();
+    }
+    let heading = i18n::translate("gate.vocabulary.inject.heading", locale);
+    let lead = i18n::translate("gate.vocabulary.inject.lead", locale);
+    let semantic_label = i18n::translate("gate.vocabulary.inject.semantic", locale);
+    let pattern_label = i18n::translate("gate.vocabulary.inject.pattern", locale);
+
+    let mut out = String::with_capacity(256);
+    out.push_str("## ");
+    out.push_str(heading);
+    out.push('\n');
+    out.push_str(lead);
+    out.push_str("\n\n");
+    if !semantic.is_empty() {
+        out.push_str("- ");
+        out.push_str(semantic_label);
+        out.push_str(": ");
+        out.push_str(&semantic.join(", "));
+        out.push('\n');
+    }
+    if !pattern.is_empty() {
+        out.push_str("- ");
+        out.push_str(pattern_label);
+        out.push_str(": ");
+        out.push_str(&pattern.join(", "));
+        out.push('\n');
+    }
+    out
+}
+
+/// Resolve the (semantic, pattern) layer term lists for the project. Reads
+/// `.claude/vocab/regression.toml` and falls back to the gate's in-memory
+/// defaults when the file is absent. Best-effort TOML walk — full parsing is
+/// covered by [`gate_regression_check::build_vocab_matcher`] on the scan
+/// side; this helper only needs the term names for display.
+fn read_vocab_layers_for_inject(project: &Path) -> (Vec<String>, Vec<String>) {
+    let toml_path = project
+        .join(".claude")
+        .join("vocab")
+        .join("regression.toml");
+    let mut semantic: Vec<String> = Vec::new();
+    let mut pattern: Vec<String> = Vec::new();
+    if let Ok(text) = std::fs::read_to_string(&toml_path) {
+        let mut current: Option<&'static str> = None;
+        for raw in text.lines() {
+            let line = raw.trim();
+            if let Some(rest) = line.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
+                current = match rest.trim() {
+                    "semantic" => Some("semantic"),
+                    "pattern" => Some("pattern"),
+                    _ => None,
+                };
+                continue;
+            }
+            if let Some(layer) = current {
+                let trimmed = line.trim().trim_end_matches(',').trim();
+                if trimmed.starts_with('"') && trimmed.ends_with('"') && trimmed.len() >= 2 {
+                    let term = trimmed[1..trimmed.len() - 1].to_string();
+                    match layer {
+                        "semantic" => semantic.push(term),
+                        "pattern" => pattern.push(term),
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+    if semantic.is_empty() && pattern.is_empty() {
+        semantic = vec![
+            "fail-open".into(),
+            "intent drift".into(),
+            "stub fail-open".into(),
+            "empurrar pra W".into(),
+        ];
+        pattern = vec!["None".into(), "Vec::new()".into(), "Default::default()".into()];
+    }
+    (semantic, pattern)
 }
 
 /// Conventional 4-chars-per-token heuristic. Used by [`apply_budget`].

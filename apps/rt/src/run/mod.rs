@@ -90,6 +90,8 @@ mod recipe_match;
 pub mod resume_bootstrap;
 mod review_prefetch;
 mod review_result;
+// Spec A v4 / W5 — span-level verdict ledger (`_review-spans.md`).
+pub mod review_spans;
 mod rtk_gain;
 mod status;
 mod scan_finalize;
@@ -120,6 +122,8 @@ mod spec_validate;
 pub(crate) mod skill_resolve;
 mod sync_detect;
 mod sync_registry;
+// Spec A v4 / W6 — token-budget primitive used by `resume_bootstrap`.
+pub mod token_budget;
 pub mod unhook;
 mod transcript_watcher;
 mod verify_pipeline;

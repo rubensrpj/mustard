@@ -372,9 +372,17 @@ impl Registry {
                 // T8.3 — for Task dispatches without a declared SKILL, inject a
                 // minimal CONTEXT.md + skills slice (resolved via W1's
                 // `skill-resolve`).
+                //
+                // Spec A v4 / W5.T5.2 adds `SubagentStop` so the same module
+                // can run the span-level regression eval per returning child
+                // (AC-A-5). The `SubagentStop` branch is fail-open and never
+                // emits a blocking verdict — the per-child verdict lands in
+                // `_review-spans.md` and AC-A-7's consolidation gate reads
+                // the ledger at wave close.
                 applies_to: &[
                     (Trigger::PreToolUse, ToolMatch::Named("Task")),
                     (Trigger::PreToolUse, ToolMatch::Named("Agent")),
+                    (Trigger::SubagentStop, ToolMatch::Any),
                 ],
                 check: Some(Box::new(SubagentInject)),
                 observer: None,

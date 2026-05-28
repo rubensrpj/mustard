@@ -385,6 +385,29 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
         ("gate.askuser.amber.option_block_desc", Locale::PtBr) => "Bloqueia a consolidação até resolução.",
         ("gate.askuser.amber.option_block_desc", Locale::EnUs) => "Block consolidation until resolved.",
 
+        // W5 — span-level review (subagent_inject + agent_prompt_render).
+        // Vocabulary inject block surfaced in the child agent's prompt so the
+        // child knows which terms the gate's Moment 1 scan flags.
+        ("gate.vocabulary.inject.heading", Locale::PtBr) => "Vocabulário de regressão",
+        ("gate.vocabulary.inject.heading", Locale::EnUs) => "Regression vocabulary",
+        ("gate.vocabulary.inject.lead", Locale::PtBr) => {
+            "Termos que o gate vai checar no seu plano e diff. Evite usar como justificativa."
+        }
+        ("gate.vocabulary.inject.lead", Locale::EnUs) => {
+            "Terms the gate checks in your plan and diff. Avoid using them as justification."
+        }
+        ("gate.vocabulary.inject.semantic", Locale::PtBr) => "Semântico (alto)",
+        ("gate.vocabulary.inject.semantic", Locale::EnUs) => "Semantic (high)",
+        ("gate.vocabulary.inject.pattern", Locale::PtBr) => "Padrão (médio)",
+        ("gate.vocabulary.inject.pattern", Locale::EnUs) => "Pattern (medium)",
+        // Consolidation block message surfaced when a red verdict closes the wave.
+        ("gate.consolidation.blocked", Locale::PtBr) => {
+            "Consolidação bloqueada: filho {child} retornou verdict vermelho — {message}"
+        }
+        ("gate.consolidation.blocked", Locale::EnUs) => {
+            "Consolidation blocked: child {child} returned a red verdict — {message}"
+        }
+
         // Fail-open: unknown key returns the key itself so callers always have
         // *something* to render. This is what `karpathy-guidelines` calls a
         // "safe default" — never panic on a typo in a hook.
