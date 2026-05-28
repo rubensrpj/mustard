@@ -197,8 +197,17 @@ bash -c 'test -n "$MUSTARD_V4_BOOTSTRAP" && cargo run -q -p mustard-rt -- check 
 
 Esperado: output `mode=Off` (não `mode=Strict`). Wiring de `MUSTARD_V4_BOOTSTRAP` no `registry::mode_for` foi entregue em commit `3b6bb9f` durante S3 do roadmap v4 (pré-spec). Defensiva: string vazia (`MUSTARD_V4_BOOTSTRAP=`) é tratada como não-definida — `Mode::Strict` retorna e o gate v3 reativa. Isso evita silenciamento acidental por variável esquecida.
 
+## Followups
+
+Itens identificados durante a execução de W3 e W4 (commits `f39c410` + `c28212b`) que ficam **diferidos** para waves posteriores ou sub-specs futuras:
+
+- **CLI subcommands `wave-summary` e `wave-context`** — wiring deixado de fora intencionalmente no commit `c28212b`. As funções `wave_summary::build` / `write` e `wave_context::build` / `write` estão expostas como API pública do crate `mustard-rt` e podem ser chamadas por outros módulos, mas **não há subcomando CLI exposto**. *Motivo:* a camada de coleta de dados (mapear `spec.md` + `meta.json` + `_summary.md` das waves anteriores → `WaveSummaryInput` / `WaveContextInput`) é não-trivial e compartilhada com a W5 (close-orchestrate / span-level). Adicionar um shim com `exit 2` violaria [[feedback_no_stub_fail_open]]. *Quem implementa:* W5 ou sub-spec subsequente que precise de `wave_summary` no fluxo de close.
+- **Momentos 2 e 3 do `mustard-rt run gate-regression-check`** — o subcomando CLI hoje suporta plenamente apenas o **Momento 1** (vocabulário sobre o `plan.txt` / `spec.md`). Para Momentos 2 e 3, o caller precisa popular `GateInput.diff` + `GateInput.declared_fns` + `before_snapshot` + `after_snapshot` — dados que tipicamente vêm do hook `pre_edit_intent_check` (entregue na W4) ou da integração span-level da W5. *Quem implementa:* W5 (span-level via `SubagentStop`) + W7 (review-cobertura roda a spec inteira contra a fixture).
+- **`apps/rt/src/run/wave_summary.rs` dead-code warnings** — `cargo check -p mustard-rt` emite avisos `struct FunctionEntry is never constructed` (e similares para `WaveSummaryInput`, `VerdictDisplay`, etc.). São types públicos aguardando os 2 itens acima — somem assim que o consumer real for ligado. Não é regressão.
+
 <!-- wikilinks-footer-start -->
 - [feedback_mustard_agnostic](?) ⚠ não resolvido
 - [feedback_refactor_no_stub_deferral](?) ⚠ não resolvido
 - [feedback_no_stub_fail_open.md](?) ⚠ não resolvido
+- [feedback_no_stub_fail_open](?) ⚠ não resolvido
 <!-- wikilinks-footer-end -->
