@@ -1,0 +1,11 @@
+{
+  "stage": "Plan",
+  "outcome": "Active",
+  "phase": "PLAN",
+  "scope": "light",
+  "lang": "pt-BR",
+  "checkpoint": "2026-05-28T00:00:00.000Z",
+  "completedWaves": [],
+  "currentWave": 0,
+  "parent": "2026-05-27-mustard-v4-foundation"
+}
