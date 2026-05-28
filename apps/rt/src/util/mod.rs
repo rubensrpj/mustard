@@ -11,6 +11,7 @@
 //! touch `mustard-core`.
 
 pub mod sha256;
+pub mod slug;
 
 use std::fmt::Write as _;
 use std::path::PathBuf;

@@ -19,6 +19,7 @@
 //! (POSIX fallback). Exit is always `0` (fail-open).
 
 use crate::shared::context::{current_spec, project_dir, session_id};
+use crate::util::slug::slug_for;
 use mustard_core::time::now_iso8601;
 use mustard_core::io::atomic_md::frontmatter::Frontmatter;
 use mustard_core::io::atomic_md::{MarkdownDoc, MarkdownStore};
@@ -112,26 +113,6 @@ fn resolve_session_prefix(project_dir: &Path) -> String {
     std::process::id().to_string()
 }
 
-/// Compute a short FNV-1a hash of `s` (8 hex chars). Slug suffix only — not
-/// security-relevant.
-fn fnv1a8(s: &str) -> String {
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for b in s.bytes() {
-        h ^= u64::from(b);
-        h = h.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    format!("{:016x}", h).chars().take(8).collect()
-}
-
-/// Slug shape: `{compact_ts}-{hash8}` — filename-safe, deterministic per
-/// `(timestamp, content)` pair.
-fn slug_for(captured_at: &str, content: &str) -> String {
-    let ts_compact: String = captured_at
-        .chars()
-        .filter(|c| c.is_ascii_alphanumeric())
-        .collect();
-    format!("{ts_compact}-{}", fnv1a8(content))
-}
 
 /// Build a `MarkdownDoc` with a JSON-object frontmatter and a UTF-8 body.
 fn doc_with_frontmatter(path: PathBuf, fm: Map<String, Value>, body: String) -> MarkdownDoc {

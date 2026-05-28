@@ -18,6 +18,7 @@
 //! `{ "ingested": { "knowledge": N, "decisions": M, "lessons": K, "agent_memory": Z }, "deleted": bool, "errors": [...] }`.
 
 use crate::shared::context::project_dir as env_project_dir;
+use crate::util::slug::slug_for;
 use mustard_core::io::atomic_md::frontmatter::Frontmatter;
 use mustard_core::io::atomic_md::{MarkdownDoc, MarkdownStore};
 use mustard_core::io::claude_paths::ClaudePaths;
@@ -26,25 +27,8 @@ use serde_json::{json, Map, Value};
 use std::path::{Path, PathBuf};
 
 // ---------------------------------------------------------------------------
-// Slug + doc helpers (kept local to keep memory_ingest self-contained)
+// Doc helpers (the slug helper now lives in `crate::util::slug`)
 // ---------------------------------------------------------------------------
-
-fn fnv1a8(s: &str) -> String {
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for b in s.bytes() {
-        h ^= u64::from(b);
-        h = h.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    format!("{:016x}", h).chars().take(8).collect()
-}
-
-fn slug_for(captured_at: &str, content: &str) -> String {
-    let ts_compact: String = captured_at
-        .chars()
-        .filter(|c| c.is_ascii_alphanumeric())
-        .collect();
-    format!("{ts_compact}-{}", fnv1a8(content))
-}
 
 fn write_md(dir: &Path, slug: &str, fm: Map<String, Value>, body: String) -> std::io::Result<()> {
     fs::create_dir_all(dir).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;

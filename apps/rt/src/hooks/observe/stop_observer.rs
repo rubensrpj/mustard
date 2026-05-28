@@ -9,6 +9,7 @@
 
 use mustard_core::domain::model::event::ActorKind;
 use crate::shared::events::economy;
+use crate::util::slug::slug_for;
 use mustard_core::io::atomic_md::{MarkdownDoc, MarkdownStore};
 use mustard_core::domain::model::contract::{Ctx, HookInput, Observer};
 use mustard_core::ClaudePaths;
@@ -124,23 +125,6 @@ fn classify(summary: &str) -> &'static str {
     } else {
         "lessons"
     }
-}
-
-fn fnv1a8(s: &str) -> String {
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for b in s.bytes() {
-        h ^= u64::from(b);
-        h = h.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    format!("{:016x}", h).chars().take(8).collect()
-}
-
-fn slug_for(captured_at: &str, content: &str) -> String {
-    let ts_compact: String = captured_at
-        .chars()
-        .filter(|c| c.is_ascii_alphanumeric())
-        .collect();
-    format!("{ts_compact}-{}", fnv1a8(content))
 }
 
 fn promote_high_confidence(cwd: &str) -> usize {
