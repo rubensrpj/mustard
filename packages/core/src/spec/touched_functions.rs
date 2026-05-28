@@ -917,6 +917,51 @@ body
         }
     }
 
+    /// AC-A-15 (E2E against the committed fixture) — the legacy-no-funcoes
+    /// fixture intentionally omits `## Funções tocadas` and mentions the
+    /// canonical heading INSIDE a fenced block (so the parser must respect
+    /// fences). The resolver should call the fallback exactly once and never
+    /// panic. The fenced `### Em` line must NOT be confused with a real
+    /// touched-functions section.
+    #[test]
+    fn ac_a_15_legacy_no_funcoes_fixture_falls_back_via_real_file() {
+        let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let workspace_root = manifest_dir
+            .ancestors()
+            .find(|p| p.join(".claude").is_dir())
+            .expect("walk back to workspace root with .claude/");
+        let fixture = workspace_root
+            .join(".claude")
+            .join("spec")
+            .join("2026-05-27-mustard-v4-foundation")
+            .join("fixtures")
+            .join("legacy-no-funcoes")
+            .join("spec.md");
+        // Skip diagnostically when the fixture is absent (partial checkouts).
+        let Ok(content) = std::fs::read_to_string(&fixture) else {
+            eprintln!("ac_a_15: fixture missing at {} — skipping", fixture.display());
+            return;
+        };
+        // Parser must NOT match the fenced `## Funções tocadas` mention.
+        assert!(
+            parse(&content).is_none(),
+            "fixture must parse as None — the only mention of the heading lives in a fence"
+        );
+        let mut call_count = 0;
+        let resolution = functions_in_scope_with_fallback(&content, || {
+            call_count += 1;
+            vec!["public_fn_from_diff_a".into(), "public_fn_from_diff_b".into()]
+        });
+        assert_eq!(call_count, 1, "fallback closure must be called exactly once");
+        match resolution {
+            Resolution::Fallback(names) => {
+                assert_eq!(names.len(), 2);
+                assert!(names.iter().all(|n| n.starts_with("public_fn_from_diff_")));
+            }
+            Resolution::Declared(_) => panic!("fallback path expected for legacy fixture"),
+        }
+    }
+
     // --- AC-FT-6 — self-validation against Spec A spec.md --------------
     //
     // Loads `.claude/spec/2026-05-27-mustard-v4-foundation/spec.md` at test

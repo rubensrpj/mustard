@@ -573,9 +573,12 @@ pub fn classify_verdict(signals: &[Signal]) -> RegressionVerdict {
     RegressionVerdict::Green
 }
 
-/// Print the Amber-verdict JSON payload to stdout. The orchestrator consumes
-/// it to render an `AskUserQuestion` prompt.
-pub fn emit_amber_askuser_json(signals: &[Signal], locale: Locale) {
+/// Build the Amber-verdict JSON payload. Pulled out of [`emit_amber_askuser_json`]
+/// so tests can assert the contract (`verdict: "amber"` + `askUserQuestion`
+/// with `authorize` / `block` options + the localised labels) without
+/// capturing stdout.
+#[must_use]
+pub fn amber_askuser_json(signals: &[Signal], locale: Locale) -> String {
     let question = i18n::translate("gate.askuser.amber.question", locale);
     let opt_authorize = i18n::translate("gate.askuser.amber.option_authorize", locale);
     let opt_block = i18n::translate("gate.askuser.amber.option_block", locale);
@@ -594,7 +597,13 @@ pub fn emit_amber_askuser_json(signals: &[Signal], locale: Locale) {
             .map(signal_to_json)
             .collect::<Vec<_>>(),
     });
-    let _ = writeln!(std::io::stdout(), "{payload}");
+    payload.to_string()
+}
+
+/// Print the Amber-verdict JSON payload to stdout. The orchestrator consumes
+/// it to render an `AskUserQuestion` prompt.
+pub fn emit_amber_askuser_json(signals: &[Signal], locale: Locale) {
+    let _ = writeln!(std::io::stdout(), "{}", amber_askuser_json(signals, locale));
 }
 
 /// Print the Red-verdict JSON payload to stdout. The CLI dispatcher maps the
@@ -901,28 +910,40 @@ mod tests {
             "Medium-only single-layer ⇒ Amber, got {verdict:?}"
         );
 
-        // Build the AskUserQuestion JSON in memory and validate shape +
-        // localised labels.
+        // AC-A-6 — call the real `amber_askuser_json` builder and validate
+        // the contract surface that the orchestrator interprets.
         let locale = Locale::PtBr;
-        let question = i18n::translate("gate.askuser.amber.question", locale);
-        let opt_authorize = i18n::translate("gate.askuser.amber.option_authorize", locale);
-        let opt_block = i18n::translate("gate.askuser.amber.option_block", locale);
-        let opt_block_desc = i18n::translate("gate.askuser.amber.option_block_desc", locale);
-        let payload = serde_json::json!({
-            "verdict": "amber",
-            "askUserQuestion": {
-                "question": question,
-                "options": [
-                    { "id": "authorize", "label": opt_authorize },
-                    { "id": "block", "label": opt_block, "description": opt_block_desc },
-                ],
-            },
-        });
-        let serialised = payload.to_string();
-        assert!(serialised.contains("\"verdict\":\"amber\""));
-        assert!(serialised.contains("\"askUserQuestion\""));
-        assert!(serialised.contains("Autorizar"));
-        assert!(serialised.contains("Bloquear"));
+        let serialised = amber_askuser_json(&signals, locale);
+        assert!(
+            serialised.contains("\"verdict\":\"amber\""),
+            "payload missing verdict tag: {serialised}"
+        );
+        assert!(
+            serialised.contains("\"askUserQuestion\""),
+            "payload missing askUserQuestion key: {serialised}"
+        );
+        assert!(
+            serialised.contains("\"id\":\"authorize\""),
+            "authorize option missing: {serialised}"
+        );
+        assert!(
+            serialised.contains("\"id\":\"block\""),
+            "block option missing: {serialised}"
+        );
+        assert!(
+            serialised.contains("Autorizar"),
+            "pt-BR authorise label missing: {serialised}"
+        );
+        assert!(
+            serialised.contains("Bloquear"),
+            "pt-BR block label missing: {serialised}"
+        );
+        // en-US locale renders the English labels through the same builder.
+        let serialised_en = amber_askuser_json(&signals, Locale::EnUs);
+        assert!(
+            serialised_en.contains("Authorize") && serialised_en.contains("Block"),
+            "en-US labels missing: {serialised_en}"
+        );
     }
 
     /// AC-A-7 — Red verdict produces the blocked JSON shape and `run` returns
