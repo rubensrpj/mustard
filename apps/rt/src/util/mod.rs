@@ -10,6 +10,7 @@
 //! crate, shared by every hook module. It is `mustard-rt`-local — it does not
 //! touch `mustard-core`.
 
+pub mod json_io;
 pub mod sha256;
 pub mod slug;
 

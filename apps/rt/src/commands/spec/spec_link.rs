@@ -12,29 +12,12 @@
 //! event. This port appends the event directly through `mustard_core`.
 
 use crate::shared::context::session_id;
+use crate::util::json_io;
 use mustard_core::time::now_iso8601;
-use mustard_core::io::fs;
 use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use mustard_core::ClaudePaths;
 use serde_json::{json, Value};
 use std::path::Path;
-
-/// Read a pipeline-state file, returning `None` on any error.
-fn read_state(path: &Path) -> Option<Value> {
-    let text = fs::read_to_string(path).ok()?;
-    serde_json::from_str(&text).ok()
-}
-
-/// Write a pipeline-state file (pretty JSON + trailing newline). Fail-soft.
-fn write_state(path: &Path, value: &Value) -> bool {
-    if let Some(parent) = path.parent() {
-        let _ = fs::create_dir_all(parent);
-    }
-    match serde_json::to_string_pretty(value) {
-        Ok(text) => fs::write_atomic(path, format!("{text}\n").as_bytes()).is_ok(),
-        Err(_) => false,
-    }
-}
 
 /// Emit a `spec.link` harness event. Best-effort.
 ///
@@ -77,7 +60,7 @@ fn link_spec(cwd: &Path, parent: &str, child: &str, reason: &str) -> bool {
     let Ok(paths) = ClaudePaths::for_project(cwd) else { return false };
     // Parent state — append the child to `children_specs` idempotently.
     let parent_file = paths.pipeline_state_file(parent);
-    let mut parent_state = read_state(&parent_file).unwrap_or_else(|| {
+    let mut parent_state = json_io::read_json(&parent_file).unwrap_or_else(|| {
         json!({ "spec": parent, "parent_spec": Value::Null, "children_specs": [] })
     });
     if let Some(obj) = parent_state.as_object_mut() {
@@ -97,11 +80,11 @@ fn link_spec(cwd: &Path, parent: &str, child: &str, reason: &str) -> bool {
             }
         }
     }
-    write_state(&parent_file, &parent_state);
+    json_io::write_json(&parent_file, &parent_state);
 
     // Child state — set `parent_spec`.
     let child_file = paths.pipeline_state_file(child);
-    let mut child_state = read_state(&child_file).unwrap_or_else(|| {
+    let mut child_state = json_io::read_json(&child_file).unwrap_or_else(|| {
         json!({ "spec": child, "parent_spec": parent, "children_specs": [] })
     });
     if let Some(obj) = child_state.as_object_mut() {
@@ -110,7 +93,7 @@ fn link_spec(cwd: &Path, parent: &str, child: &str, reason: &str) -> bool {
         }
         obj.insert("parent_spec".to_string(), json!(parent));
     }
-    write_state(&child_file, &child_state);
+    json_io::write_json(&child_file, &child_state);
 
     true
 }
@@ -140,12 +123,12 @@ mod tests {
         let dir = tempdir().unwrap();
         assert!(link_spec(dir.path(), "epic", "child-1", "split"));
         let paths = ClaudePaths::for_project(dir.path()).unwrap();
-        let parent = read_state(&paths.pipeline_state_file("epic")).unwrap();
+        let parent = json_io::read_json(&paths.pipeline_state_file("epic")).unwrap();
         assert_eq!(
             parent["children_specs"],
             json!(["child-1"])
         );
-        let child = read_state(&paths.pipeline_state_file("child-1")).unwrap();
+        let child = json_io::read_json(&paths.pipeline_state_file("child-1")).unwrap();
         assert_eq!(child["parent_spec"], json!("epic"));
     }
 
@@ -155,7 +138,7 @@ mod tests {
         link_spec(dir.path(), "epic", "child-1", "split");
         link_spec(dir.path(), "epic", "child-1", "split");
         let paths = ClaudePaths::for_project(dir.path()).unwrap();
-        let parent = read_state(&paths.pipeline_state_file("epic")).unwrap();
+        let parent = json_io::read_json(&paths.pipeline_state_file("epic")).unwrap();
         assert_eq!(parent["children_specs"].as_array().unwrap().len(), 1);
     }
 

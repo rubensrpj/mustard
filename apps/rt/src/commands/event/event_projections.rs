@@ -16,6 +16,7 @@
 //! same JSON in a standalone HTML page and prints its path on stderr.
 
 use crate::report::Report;
+use crate::util::json_io;
 use mustard_core::io::fs;
 use mustard_core::ClaudePaths;
 use mustard_core::domain::model::view::{Phase, Stage};
@@ -442,7 +443,7 @@ fn build_cross_session_timeline(cwd: &Path, limit: usize) -> Value {
 
 /// Read a `.pipeline-states/<name>.json` file, `None` on any error.
 fn read_state(states_dir: &Path, name: &str) -> Option<Value> {
-    serde_json::from_str(&fs::read_to_string(states_dir.join(format!("{name}.json"))).ok()?).ok()
+    json_io::read_json(&states_dir.join(format!("{name}.json")))
 }
 
 /// `buildSpecTree` — the recursive parent/child spec hierarchy (max depth 3),

@@ -16,6 +16,7 @@
 use crate::commands::spec::scope_decompose::decide;
 use crate::commands::wave::wave_dependency::compute_waves;
 use crate::commands::wave::wave_lib::{detect_role, parse_files_section};
+use crate::util::json_io;
 use mustard_core::time::now_iso8601;
 use mustard_core::io::fs;
 use mustard_core::domain::spec;
@@ -24,11 +25,6 @@ use mustard_core::{Flags, Outcome, SpecState, Stage};
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
-
-/// Read a JSON file, returning `None` on any error.
-fn read_json(path: &Path) -> Option<Value> {
-    serde_json::from_str(&fs::read_to_string(path).ok()?).ok()
-}
 
 /// Extract an optional `new entities: N` count from spec text.
 fn parse_new_entity_count(spec_text: &str) -> i64 {
@@ -213,7 +209,7 @@ pub fn run(spec_arg: Option<&str>) {
         let state_file = ClaudePaths::for_project(&project_root)
             .map(|p| p.pipeline_state_file(&spec_name))
             .unwrap_or_else(|_| project_root.join(format!("{spec_name}.json")));
-        let state = read_json(&state_file);
+        let state = json_io::read_json(&state_file);
         if let Some(ref s) = state {
             if s.get("isWavePlan").and_then(Value::as_bool) == Some(true) {
                 return json!({ "action": "skip", "reason": "already-decomposed" });

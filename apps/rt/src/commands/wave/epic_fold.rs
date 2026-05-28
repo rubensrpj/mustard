@@ -21,26 +21,9 @@ use mustard_core::io::atomic_md::{MarkdownDoc, MarkdownStore};
 use mustard_core::io::fs;
 use mustard_core::domain::model::event::HarnessEvent;
 use mustard_core::ClaudePaths;
+use crate::util::json_io;
 use serde_json::{json, Map, Value};
 use std::path::Path;
-
-/// Read a JSON file, returning `None` on any error.
-fn read_json(path: &Path) -> Option<Value> {
-    let text = fs::read_to_string(path).ok()?;
-    serde_json::from_str(&text).ok()
-}
-
-/// Write a JSON value pretty-printed with a trailing newline. Fail-soft.
-#[cfg(test)]
-fn write_json(path: &Path, value: &Value) -> bool {
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    match serde_json::to_string_pretty(value) {
-        Ok(text) => std::fs::write(path, format!("{text}\n")).is_ok(),
-        Err(_) => false,
-    }
-}
 
 /// The uppercased phase of a pipeline-state object — derived from the
 /// `pipeline.phase` event log keyed by the state's `spec` name. Falls back to
@@ -104,7 +87,7 @@ fn detect_completed_epics(cwd: &Path) -> Vec<String> {
         if !name.ends_with(".json") {
             continue;
         }
-        let Some(state) = read_json(&entry.path) else {
+        let Some(state) = json_io::read_json(&entry.path) else {
             continue;
         };
         match state.get("parent_spec") {
@@ -124,7 +107,7 @@ fn detect_completed_epics(cwd: &Path) -> Vec<String> {
         }
         let all_closed = children.iter().all(|child| {
             let child_file = states_dir.join(format!("{child}.json"));
-            read_json(&child_file)
+            json_io::read_json(&child_file)
                 .is_some_and(|cs| state_phase(&cs, cwd) == "CLOSE")
         });
         if all_closed {
@@ -191,7 +174,7 @@ fn fold_epic(cwd: &Path, epic: &str) -> bool {
         .as_ref()
         .map(|p| p.pipeline_state_file(epic))
         .unwrap_or_else(|| states_dir.join(format!("{epic}.json")));
-    let Some(epic_state) = read_json(&epic_file) else {
+    let Some(epic_state) = json_io::read_json(&epic_file) else {
         eprintln!("[epic-fold] warn: pipeline-state not found for epic \"{epic}\"");
         return false;
     };
@@ -383,7 +366,7 @@ mod tests {
     use tempfile::tempdir;
 
     fn write_state(states: &Path, name: &str, value: Value) {
-        write_json(&states.join(format!("{name}.json")), &value);
+        json_io::write_json(&states.join(format!("{name}.json")), &value);
     }
 
     #[test]

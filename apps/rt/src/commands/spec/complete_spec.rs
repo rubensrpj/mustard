@@ -21,6 +21,7 @@
 //! [`mustard_core::view::projection::read_harness_events_from_ndjson_dir`].
 
 use crate::shared::context::session_id;
+use crate::util::json_io;
 use mustard_core::io::fs;
 use mustard_core::view::projection::read_harness_events_from_ndjson_dir;
 use mustard_core::ClaudePaths;
@@ -36,11 +37,6 @@ use std::process::Command;
 /// Time-to-live for `closed-followup` states swept by `--archive-stale` (24 h).
 const FOLLOWUP_TTL_MS: i64 = 24 * 60 * 60 * 1000;
 
-/// Read a JSON file, returning `None` on any error.
-fn read_json(path: &Path) -> Option<Value> {
-    let text = fs::read_to_string(path).ok()?;
-    serde_json::from_str(&text).ok()
-}
 
 /// Run a git command in `cwd`, returning trimmed stdout or `""` on any error.
 fn git(cwd: &Path, args: &[&str]) -> String {
@@ -57,7 +53,7 @@ fn git(cwd: &Path, args: &[&str]) -> String {
 
 /// Resolve the parent branch for `current_branch` via `mustard.json` gitFlow.
 fn parent_branch_for(cwd: &Path, current_branch: &str) -> String {
-    let m = read_json(&cwd.join("mustard.json")).unwrap_or(Value::Null);
+    let m = json_io::read_json(&cwd.join("mustard.json")).unwrap_or(Value::Null);
     if let Some(flow) = m.get("gitFlow") {
         if let Some(p) = flow
             .get("parentOf")
