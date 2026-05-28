@@ -1,4 +1,4 @@
-//! `session_start` — the consolidated `SessionStart` lifecycle module.
+//! `session_start_inject` — the consolidated `SessionStart` lifecycle module.
 //!
 //! ## Scope (b3 Wave 5, session family)
 //!
@@ -22,7 +22,7 @@
 //! `session-memory` produces an `additionalContext` payload — under the JS
 //! hooks that was a `console.log` of a `hookSpecificOutput`; under the
 //! consolidated binary it is surfaced as a [`Verdict::Inject`] so the single
-//! `emit_outcome` owns the only stdout write. `SessionStart` is a `Check`.
+//! `emit_outcome` owns the only stdout write. `SessionStartInject` is a `Check`.
 //!
 //! ## OTEL collector spawn (Wave 3 — economia-moat-unification)
 //!
@@ -77,7 +77,7 @@ const SPEC_SCOPED_MAX: usize = 3;
 const GLOBAL_FALLBACK_MAX: usize = 2;
 
 /// The consolidated `SessionStart` module.
-pub struct SessionStart;
+pub struct SessionStartInject;
 
 // ===========================================================================
 // Shared helpers
@@ -744,7 +744,7 @@ fn build_memory_context(cwd: &str) -> Option<String> {
 // Contract impls
 // ===========================================================================
 
-impl Check for SessionStart {
+impl Check for SessionStartInject {
     /// On `SessionStart`: bootstrap the event bus, run spec hygiene, and inject
     /// persistent memory. The first two are side effects; the memory payload
     /// is the verdict — `Inject` when there is memory to surface, else `Allow`.
@@ -831,7 +831,7 @@ mod tests {
             workspace_root: None,
         };
         assert_eq!(
-            SessionStart.evaluate(&input, &other).expect("no error"),
+            SessionStartInject.evaluate(&input, &other).expect("no error"),
             Verdict::Allow
         );
     }
@@ -843,7 +843,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let project = dir.path().to_str().unwrap();
         let input = session_input("s-new");
-        SessionStart.evaluate(&input, &ctx(project)).unwrap();
+        SessionStartInject.evaluate(&input, &ctx(project)).unwrap();
         assert!(dir.path().join(".claude/.harness/sessions").is_dir());
 
         // W5: `session.start` is non-pipeline → lands in the per-session NDJSON
@@ -881,7 +881,7 @@ mod tests {
         // W3B: no event-store seeding required.
         let dir = tempdir().unwrap();
         let project = dir.path().to_str().unwrap();
-        SessionStart
+        SessionStartInject
             .evaluate(&session_input("new-session"), &ctx(project))
             .unwrap();
         assert!(dir.path().join(".claude/.harness").is_dir());
@@ -906,7 +906,7 @@ mod tests {
             "done-spec",
             "# Spec\n### Status: completed | Phase: CLOSE\n\n## Checklist\n- [x] One\n- [x] Two\n",
         );
-        SessionStart
+        SessionStartInject
             .evaluate(&session_input("s"), &ctx(dir.path().to_str().unwrap()))
             .unwrap();
         assert!(dir.path().join(".claude/spec/done-spec").exists());
@@ -920,7 +920,7 @@ mod tests {
             "wip-spec",
             "# Spec\n### Status: implementing\n\n## Checklist\n- [x] One\n- [ ] Two\n",
         );
-        SessionStart
+        SessionStartInject
             .evaluate(&session_input("s"), &ctx(dir.path().to_str().unwrap()))
             .unwrap();
         assert!(dir.path().join(".claude/spec/wip-spec").exists());
@@ -934,7 +934,7 @@ mod tests {
             "blocked-spec",
             "# Spec\n### Status: completed\n\n## Concerns\n- BLOCKED on infra\n\n## Checklist\n- [x] One\n",
         );
-        SessionStart
+        SessionStartInject
             .evaluate(&session_input("s"), &ctx(dir.path().to_str().unwrap()))
             .unwrap();
         assert!(dir.path().join(".claude/spec/blocked-spec").exists());
@@ -1011,12 +1011,12 @@ mod tests {
     fn memory_injection_surfaces_knowledge_as_inject() {
         let dir = tempdir().unwrap();
         let project = dir.path().to_str().unwrap();
-        SessionStart.evaluate(&session_input("s-init"), &ctx(project)).unwrap();
+        SessionStartInject.evaluate(&session_input("s-init"), &ctx(project)).unwrap();
         // Seed name uses capital `Foo` so the surfaced label (which loads
         // `name` preferentially via `load_knowledge_md`) contains the
         // assertion string. The description is informational only.
         seed_knowledge_md(dir.path(), "Foo-use-bar", "Foo: use bar");
-        let verdict = SessionStart
+        let verdict = SessionStartInject
             .evaluate(&session_input("s"), &ctx(project))
             .unwrap();
         match verdict {
@@ -1033,7 +1033,7 @@ mod tests {
     fn memory_injection_allows_when_no_sources() {
         let dir = tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join(".claude")).unwrap();
-        let verdict = SessionStart
+        let verdict = SessionStartInject
             .evaluate(&session_input("s"), &ctx(dir.path().to_str().unwrap()))
             .unwrap();
         // No knowledge/memory dirs → build_memory_context returns None → Allow.
@@ -1046,9 +1046,9 @@ mod tests {
         // "unverified" prefix in the injected context.
         let dir = tempdir().unwrap();
         let project = dir.path().to_str().unwrap();
-        SessionStart.evaluate(&session_input("s-init"), &ctx(project)).unwrap();
+        SessionStartInject.evaluate(&session_input("s-init"), &ctx(project)).unwrap();
         seed_knowledge_md(dir.path(), "alpha-entry", "alpha-entry: some description");
-        let verdict = SessionStart
+        let verdict = SessionStartInject
             .evaluate(&session_input("s"), &ctx(project))
             .unwrap();
         let context = match verdict {

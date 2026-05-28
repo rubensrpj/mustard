@@ -1,4 +1,4 @@
-//! `session_cleanup` — the `SessionEnd` state-cleanup module.
+//! `session_cleanup_observer` — the `SessionEnd` state-cleanup module.
 //!
 //! ## Scope (b3 Wave 5, session family)
 //!
@@ -18,12 +18,12 @@
 //!
 //! ## Contract shape
 //!
-//! Pure side effect — no verdict. `SessionCleanup` is an [`Observer`] only.
+//! Pure side effect — no verdict. `SessionCleanupObserver` is an [`Observer`] only.
 //!
 //! ## OTEL collector note
 //!
-//! `session_start` spawns the OTEL collector (in
-//! [`crate::hooks::session::session_start`]); this module tears it down on `SessionEnd`.
+//! `session_start_inject` spawns the OTEL collector (in
+//! [`crate::hooks::session::session_start_inject`]); this module tears it down on `SessionEnd`.
 //! Because there is one collector per machine on the OTLP port, [`clean_otel_pid`]
 //! now **kills** the process whose PID is in `.otel-collector.pid` before
 //! removing the file — leaving it alive would let the next project's telemetry
@@ -59,7 +59,7 @@ const TELEMETRY_RETENTION_DAYS: i64 = 90;
 const TERMINAL_STATUSES: &[&str] = &["implemented", "completed", "validated", "cancelled"];
 
 /// The `SessionEnd` state-cleanup module.
-pub struct SessionCleanup;
+pub struct SessionCleanupObserver;
 
 
 /// Current time as milliseconds since the Unix epoch.
@@ -482,7 +482,7 @@ fn prune_ndjson_under(root: &Path, cutoff_ms: i64) {
     }
 }
 
-impl Observer for SessionCleanup {
+impl Observer for SessionCleanupObserver {
     /// On `SessionEnd`, clean stale state. Any other trigger is a no-op. Pure
     /// side effect — never panics, never affects a verdict.
     fn observe(&self, input: &HookInput, ctx: &Ctx) {
@@ -575,7 +575,7 @@ mod tests {
             trigger: Some(Trigger::PreToolUse),
             workspace_root: None,
         };
-        SessionCleanup.observe(&session_end_input(), &other);
+        SessionCleanupObserver.observe(&session_end_input(), &other);
         // PreToolUse → cleanup did not run, the terminal state survives.
         assert!(ClaudePaths::for_project(dir.path()).unwrap().pipeline_state_file("done").exists());
     }
@@ -585,7 +585,7 @@ mod tests {
         let dir = tempdir().unwrap();
         write_state(dir.path(), "finished", &json!({ "status": "completed" }));
         write_state(dir.path(), "active-one", &json!({ "status": "implementing" }));
-        SessionCleanup.observe(&session_end_input(), &ctx(dir.path().to_str().unwrap()));
+        SessionCleanupObserver.observe(&session_end_input(), &ctx(dir.path().to_str().unwrap()));
         let paths = ClaudePaths::for_project(dir.path()).unwrap();
         assert!(!paths.pipeline_state_file("finished").exists());
         // Non-terminal state survives.
@@ -611,7 +611,7 @@ mod tests {
             "# old-spec\n### Status: completed\n",
         )
         .unwrap();
-        SessionCleanup.observe(&session_end_input(), &ctx(dir.path().to_str().unwrap()));
+        SessionCleanupObserver.observe(&session_end_input(), &ctx(dir.path().to_str().unwrap()));
         assert!(!paths.pipeline_state_file("orphan").exists());
     }
 
@@ -625,7 +625,7 @@ mod tests {
         // Backdate the file well past the 24h window.
         let two_days_ago = SystemTime::now() - Duration::from_secs(2 * 24 * 60 * 60);
         let _ = filetime_set(&old, two_days_ago);
-        SessionCleanup.observe(&session_end_input(), &ctx(dir.path().to_str().unwrap()));
+        SessionCleanupObserver.observe(&session_end_input(), &ctx(dir.path().to_str().unwrap()));
         assert!(!old.exists());
     }
 
@@ -636,7 +636,7 @@ mod tests {
         std::fs::create_dir_all(&harness).unwrap();
         let pid = harness.join(".otel-collector.pid");
         std::fs::write(&pid, "12345").unwrap();
-        SessionCleanup.observe(&session_end_input(), &ctx(dir.path().to_str().unwrap()));
+        SessionCleanupObserver.observe(&session_end_input(), &ctx(dir.path().to_str().unwrap()));
         assert!(!pid.exists());
     }
 
@@ -644,7 +644,7 @@ mod tests {
     fn observe_is_infallible_on_empty_project() {
         let dir = tempdir().unwrap();
         // No .claude dir at all — observe must not panic.
-        SessionCleanup.observe(&session_end_input(), &ctx(dir.path().to_str().unwrap()));
+        SessionCleanupObserver.observe(&session_end_input(), &ctx(dir.path().to_str().unwrap()));
     }
 
     /// Best-effort mtime backdating for the compact-state test. Uses

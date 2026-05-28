@@ -11,7 +11,7 @@
 //!
 //! ## Lifecycle
 //!
-//! Spawned detached by [`crate::hooks::session::session_start`] when the env var
+//! Spawned detached by [`crate::hooks::session::session_start_inject`] when the env var
 //! `MUSTARD_TRANSCRIPT_WATCH=1` is set. Runs until process termination.
 //! Cross-platform signal handling without `unsafe` is limited; the watcher
 //! relies on the OS default action (terminate) and an in-process `Atomic`
@@ -272,7 +272,7 @@ fn backfill_once(project_dir: &Path, project_path: &str) -> (usize, usize) {
 ///
 /// `once = false` (default): runs the long-lived notify-based daemon until
 /// process termination — the original behaviour, invoked by
-/// [`crate::hooks::session::session_start`] when `MUSTARD_TRANSCRIPT_WATCH=1`.
+/// [`crate::hooks::session::session_start_inject`] when `MUSTARD_TRANSCRIPT_WATCH=1`.
 ///
 /// `once = true`: resolves `~/.claude/projects/<encoded(current_dir)>/` and
 /// ingests every `*.jsonl` file under it exactly once, then exits. Useful as

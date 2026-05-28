@@ -699,13 +699,13 @@ pub enum RunCmd {
     /// span-level token usage as `run_usage` rows in telemetry.db via the
     /// telemetry writer (rows stamped with attribution at write time). Runs
     /// until a shutdown signal — the harness spawns it as a long-lived child
-    /// via [`crate::hooks::session::session_start`].
+    /// via [`crate::hooks::session::session_start_inject`].
     OtelCollector,
     /// Watch `~/.claude/projects/**/*.jsonl` and re-ingest each session
     /// transcript into telemetry.db's `run_usage` table on every change.
     ///
     /// Opt-in daemon (Wave 3 — economia-moat-unification) spawned by
-    /// [`crate::hooks::session::session_start`] when `MUSTARD_TRANSCRIPT_WATCH=1`.
+    /// [`crate::hooks::session::session_start_inject`] when `MUSTARD_TRANSCRIPT_WATCH=1`.
     /// Runs until process termination. With `--once`, performs a single
     /// backfill sweep of the current cwd's transcript directory and exits.
     TranscriptWatcher {

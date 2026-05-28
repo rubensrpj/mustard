@@ -17,11 +17,12 @@
 //!   [`post_edit`] (auto-format / checklist-auto-mark / guard-verify /
 //!   pipeline-phase), [`close_gate`] (the pipeline-CLOSE sensor), and
 //!   [`entity_registry_gate`] (the entity-registry pre-pipeline gate).
-//! - Wave 5: the session-lifecycle families — [`session_start`] (harness-init
-//!   / session-memory / spec-hygiene), [`knowledge`] (session-knowledge /
-//!   -inc / memory-auto-extract), [`session_cleanup`] (`SessionEnd` cleanup),
-//!   [`pre_compact`] (the `PreCompact` snapshot), and [`prompt_gate`] (the
-//!   `UserPromptSubmit` follow-up archival gate).
+//! - Wave 5: the session-lifecycle families — `session_start_inject`
+//!   (harness-init / session-memory / spec-hygiene), `session_knowledge_observer`
+//!   (session-knowledge / -inc / memory-auto-extract), `session_cleanup_observer`
+//!   (`SessionEnd` cleanup), `pre_compact_inject` (the `PreCompact` snapshot),
+//!   `prompt_submit_inject` (the `UserPromptSubmit` follow-up archival gate),
+//!   and `spec_hygiene_observer` (the gated SessionStart auto-close).
 
 pub mod observe;
 pub mod session;

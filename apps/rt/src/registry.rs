@@ -12,19 +12,19 @@ use crate::hooks::bash::bash_guard::BashGuard;
 use crate::hooks::task::context_budget_gate::ContextBudgetGate;
 use crate::hooks::write::close_gate::CloseGate;
 use crate::hooks::write::entity_registry_gate::EntityRegistryGate;
-use crate::hooks::session::knowledge::Knowledge;
+use crate::hooks::session::session_knowledge_observer::SessionKnowledgeObserver;
 use crate::hooks::task::model_routing_gate::ModelRoutingGate;
 use crate::hooks::observe::notification::Notification;
 use crate::hooks::write::path_guard::PathGuard;
 use crate::hooks::write::post_edit::PostEdit;
-use crate::hooks::session::pre_compact::PreCompact;
+use crate::hooks::session::pre_compact_inject::PreCompactInject;
 use crate::hooks::write::pre_edit_intent_check::PreEditIntentCheck;
-use crate::hooks::session::prompt_gate::PromptGate;
-use crate::hooks::session::session_cleanup::SessionCleanup;
-use crate::hooks::session::session_start::SessionStart;
+use crate::hooks::session::prompt_submit_inject::PromptSubmitInject;
+use crate::hooks::session::session_cleanup_observer::SessionCleanupObserver;
+use crate::hooks::session::session_start_inject::SessionStartInject;
 use crate::hooks::write::size_gate::SizeGate;
 use crate::hooks::task::skills_advisory::SkillsAdvisory;
-use crate::hooks::session::spec_hygiene::SpecHygiene;
+use crate::hooks::session::spec_hygiene_observer::SpecHygieneObserver;
 use crate::hooks::observe::stop::Stop;
 use crate::hooks::observe::stop_observer::{PreCompactMemorySnippet, SessionEndConsolidate, StopObserver};
 use crate::hooks::task::subagent_inject::SubagentInject;
@@ -309,29 +309,32 @@ impl Registry {
                 observer: Some(Box::new(PostEdit)),
             },
             // ── Wave 5: session-lifecycle families ───────────────────────────
-            // `spec_hygiene` is registered *before* `session_start` so its
-            // gated auto-close (and the spec-header rewrite it performs) runs
-            // ahead of the SessionStart memory injection — the order the
-            // dispatcher iterates modules in (spec-lifecycle-unification W5).
+            // `spec_hygiene_observer` is registered *before* `session_start_inject`
+            // so its gated auto-close (and the spec-header rewrite it performs)
+            // runs ahead of the SessionStart memory injection. It is a pure
+            // side effect (an `Observer`), and the dispatcher runs a module's
+            // observer before its check, so registering it first preserves the
+            // ordering (spec-lifecycle-unification W5).
             Module {
-                id: "spec_hygiene",
+                id: "spec_hygiene_observer",
                 // SessionStart-only side effect — emits `hygiene.*` events and,
-                // for a green close-gate, auto-closes a candidate spec.
+                // for a green close-gate, auto-closes a candidate spec. No
+                // verdict (its output is the event stream) → an `Observer`.
                 applies_to: &[(Trigger::SessionStart, ToolMatch::Any)],
-                check: Some(Box::new(SpecHygiene)),
-                observer: None,
+                check: None,
+                observer: Some(Box::new(SpecHygieneObserver)),
             },
             Module {
-                id: "session_start",
+                id: "session_start_inject",
                 // `harness-init` + `session-memory` + `spec-hygiene` — the
                 // SessionStart bootstrap. A `Check` (the memory-injection
                 // payload is its `Inject` verdict).
                 applies_to: &[(Trigger::SessionStart, ToolMatch::Any)],
-                check: Some(Box::new(SessionStart)),
+                check: Some(Box::new(SessionStartInject)),
                 observer: None,
             },
             Module {
-                id: "knowledge",
+                id: "session_knowledge_observer",
                 // `session-knowledge` + `memory-auto-extract` on SessionEnd,
                 // `session-knowledge-inc` on PostToolUse(Task). Pure telemetry
                 // — an `Observer`.
@@ -341,30 +344,30 @@ impl Registry {
                     (Trigger::PostToolUse, ToolMatch::Named("Agent")),
                 ],
                 check: None,
-                observer: Some(Box::new(Knowledge)),
+                observer: Some(Box::new(SessionKnowledgeObserver)),
             },
             Module {
-                id: "session_cleanup",
+                id: "session_cleanup_observer",
                 // `session-cleanup` — SessionEnd stale-state cleanup. An
                 // `Observer` (pure side effect, no verdict).
                 applies_to: &[(Trigger::SessionEnd, ToolMatch::Any)],
                 check: None,
-                observer: Some(Box::new(SessionCleanup)),
+                observer: Some(Box::new(SessionCleanupObserver)),
             },
             Module {
-                id: "pre_compact",
+                id: "pre_compact_inject",
                 // `pre-compact` — the PreCompact snapshot. A `Check` (the
                 // snapshot is its `Inject` verdict).
                 applies_to: &[(Trigger::PreCompact, ToolMatch::Any)],
-                check: Some(Box::new(PreCompact)),
+                check: Some(Box::new(PreCompactInject)),
                 observer: None,
             },
             Module {
-                id: "prompt_gate",
+                id: "prompt_submit_inject",
                 // `followup-cancel-gate` — UserPromptSubmit follow-up archival.
                 // A `Check` (always allows; the archival is its side effect).
                 applies_to: &[(Trigger::UserPromptSubmit, ToolMatch::Any)],
-                check: Some(Box::new(PromptGate)),
+                check: Some(Box::new(PromptSubmitInject)),
                 observer: None,
             },
             // ── W8 deep-refactor: context-injection optimisation ─────────────
@@ -418,7 +421,7 @@ impl Registry {
             Module {
                 id: "pre_compact_memory_snippet",
                 // T8.7 — add up to 3 recent agent_memory entries to the
-                // PreCompact snapshot (in addition to the pre_compact module).
+                // PreCompact snapshot (in addition to the pre_compact_inject module).
                 applies_to: &[(Trigger::PreCompact, ToolMatch::Any)],
                 check: Some(Box::new(PreCompactMemorySnippet)),
                 observer: None,
@@ -586,12 +589,12 @@ mod tests {
             "close_gate",
             "entity_registry_gate",
             "post_edit",
-            "spec_hygiene",
-            "session_start",
-            "knowledge",
-            "session_cleanup",
-            "pre_compact",
-            "prompt_gate",
+            "spec_hygiene_observer",
+            "session_start_inject",
+            "session_knowledge_observer",
+            "session_cleanup_observer",
+            "pre_compact_inject",
+            "prompt_submit_inject",
             "amend_capture",
         ] {
             assert!(registry.by_id(id).is_some(), "by_id missing {id}");
@@ -602,28 +605,28 @@ mod tests {
     #[test]
     fn wave5_session_families_apply_to_their_events() {
         let registry = Registry::new();
-        // `session_start` on SessionStart.
+        // `session_start_inject` on SessionStart.
         assert!(applicable_ids(&registry, Trigger::SessionStart, None)
-            .contains(&"session_start"));
-        // `spec_hygiene` also runs on SessionStart, *before* `session_start`.
+            .contains(&"session_start_inject"));
+        // `spec_hygiene_observer` also runs on SessionStart, *before* `session_start_inject`.
         let start = applicable_ids(&registry, Trigger::SessionStart, None);
-        assert!(start.contains(&"spec_hygiene"));
-        let hyg_idx = start.iter().position(|id| *id == "spec_hygiene");
-        let ss_idx = start.iter().position(|id| *id == "session_start");
-        assert!(hyg_idx < ss_idx, "spec_hygiene must precede session_start");
-        // `session_cleanup` + `knowledge` on SessionEnd.
+        assert!(start.contains(&"spec_hygiene_observer"));
+        let hyg_idx = start.iter().position(|id| *id == "spec_hygiene_observer");
+        let ss_idx = start.iter().position(|id| *id == "session_start_inject");
+        assert!(hyg_idx < ss_idx, "spec_hygiene_observer must precede session_start_inject");
+        // `session_cleanup_observer` + `session_knowledge_observer` on SessionEnd.
         let end = applicable_ids(&registry, Trigger::SessionEnd, None);
-        assert!(end.contains(&"session_cleanup"));
-        assert!(end.contains(&"knowledge"));
-        // `pre_compact` on PreCompact.
+        assert!(end.contains(&"session_cleanup_observer"));
+        assert!(end.contains(&"session_knowledge_observer"));
+        // `pre_compact_inject` on PreCompact.
         assert!(applicable_ids(&registry, Trigger::PreCompact, None)
-            .contains(&"pre_compact"));
-        // `prompt_gate` on UserPromptSubmit.
+            .contains(&"pre_compact_inject"));
+        // `prompt_submit_inject` on UserPromptSubmit.
         assert!(applicable_ids(&registry, Trigger::UserPromptSubmit, None)
-            .contains(&"prompt_gate"));
-        // `knowledge` also covers PostToolUse(Task).
+            .contains(&"prompt_submit_inject"));
+        // `session_knowledge_observer` also covers PostToolUse(Task).
         assert!(applicable_ids(&registry, Trigger::PostToolUse, Some("Task"))
-            .contains(&"knowledge"));
+            .contains(&"session_knowledge_observer"));
     }
 
     #[test]

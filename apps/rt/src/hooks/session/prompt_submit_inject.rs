@@ -1,4 +1,4 @@
-//! `prompt_gate` — the UserPromptSubmit gate module.
+//! `prompt_submit_inject` — the UserPromptSubmit gate module.
 //!
 //! ## Scope (b3 Wave 5, prompt family)
 //!
@@ -48,7 +48,7 @@ use std::process::{Command, Stdio};
 const PIPELINE_IN_FLIGHT_BANNER: &str = "Pipeline em curso";
 
 /// The UserPromptSubmit gate module.
-pub struct PromptGate;
+pub struct PromptSubmitInject;
 
 
 /// `true` if `prompt` invokes a pipeline command. Mirrors the JS regex
@@ -111,7 +111,7 @@ fn archive_followups(cwd: &str) {
     }
 }
 
-impl Check for PromptGate {
+impl Check for PromptSubmitInject {
     /// On `UserPromptSubmit`, archive pending `closed-followup` specs when the
     /// prompt starts a new pipeline. The verdict is `Inject` when a pipeline
     /// is active and the prompt is not itself a `/mustard:*` slash command
@@ -216,7 +216,7 @@ mod tests {
         // verdict is Allow when no spec is active (and the prompt itself is a
         // `/mustard:*` command, so the W8.T8.2 banner is suppressed either way).
         let (_dir, c) = ctx();
-        let v = PromptGate
+        let v = PromptSubmitInject
             .evaluate(&prompt_input("/mustard:feature x"), &c)
             .unwrap();
         // For a `/mustard:*` command, never Inject regardless of spec state.
@@ -231,7 +231,7 @@ mod tests {
         // The env-var branch can still inject; guard by checking either Allow
         // (the expected case in CI) or Inject (when MUSTARD_ACTIVE_SPEC is set
         // by the outer shell).
-        let v = PromptGate.evaluate(&prompt_input("hello there"), &c).unwrap();
+        let v = PromptSubmitInject.evaluate(&prompt_input("hello there"), &c).unwrap();
         assert!(
             matches!(v, Verdict::Allow | Verdict::Inject { .. }),
             "unexpected verdict: {v:?}",
@@ -252,7 +252,7 @@ mod tests {
             trigger: Some(Trigger::UserPromptSubmit),
             workspace_root: None,
         };
-        let v = PromptGate
+        let v = PromptSubmitInject
             .evaluate(&prompt_input("how do I do X?"), &c)
             .unwrap();
         match v {
@@ -274,7 +274,7 @@ mod tests {
             workspace_root: None,
         };
         assert_eq!(
-            PromptGate
+            PromptSubmitInject
                 .evaluate(&prompt_input("/mustard:feature x"), &other)
                 .unwrap(),
             Verdict::Allow

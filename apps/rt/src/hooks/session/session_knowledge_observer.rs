@@ -1,4 +1,4 @@
-//! `knowledge` — the consolidated knowledge-extraction module.
+//! `session_knowledge_observer` — the consolidated knowledge-extraction module.
 //!
 //! ## Scope (b3 Wave 5, knowledge family)
 //!
@@ -17,8 +17,8 @@
 //!
 //! ## Contract shape
 //!
-//! All three are pure side effects — no verdict. `Knowledge` is an
-//! [`Observer`] only.
+//! All three are pure side effects — no verdict. `SessionKnowledgeObserver` is
+//! an [`Observer`] only.
 //!
 //! ## Parity notes
 //!
@@ -55,7 +55,7 @@ const THROTTLE_MAX: usize = 3;
 const FRICTION_MAX_ENTRIES: usize = 100;
 
 /// The consolidated knowledge-extraction module.
-pub struct Knowledge;
+pub struct SessionKnowledgeObserver;
 
 // ===========================================================================
 // Shared helpers
@@ -723,7 +723,7 @@ fn collect_spec_files(dir: &Path) -> Vec<PathBuf> {
 // Contract impl
 // ===========================================================================
 
-impl Observer for Knowledge {
+impl Observer for SessionKnowledgeObserver {
     /// Dispatch by trigger: `SessionEnd` runs `session-knowledge` +
     /// `memory-auto-extract`; `PostToolUse(Task)` runs `session-knowledge-inc`.
     /// Any other invocation is a no-op. Pure side effect — never panics.
@@ -829,7 +829,7 @@ mod tests {
             hook_event_name: Some("SessionEnd".to_string()),
             ..HookInput::default()
         };
-        Knowledge.observe(&input, &ctx(Trigger::SessionEnd, dir.path().to_str().unwrap()));
+        SessionKnowledgeObserver.observe(&input, &ctx(Trigger::SessionEnd, dir.path().to_str().unwrap()));
         let friction = dir.path().join(".claude/.metrics/friction.json");
         assert!(friction.exists());
         let parsed: Value =
@@ -872,7 +872,7 @@ mod tests {
             session_id: Some("s-1".to_string()),
             ..HookInput::default()
         };
-        Knowledge.observe(&input, &ctx(Trigger::SessionEnd, project));
+        SessionKnowledgeObserver.observe(&input, &ctx(Trigger::SessionEnd, project));
         assert_eq!(
             count_retry_events(dir.path()),
             3,
@@ -894,8 +894,8 @@ mod tests {
             ..HookInput::default()
         };
         // Run twice — the second run must not double-count.
-        Knowledge.observe(&input, &ctx(Trigger::SessionEnd, project));
-        Knowledge.observe(&input, &ctx(Trigger::SessionEnd, project));
+        SessionKnowledgeObserver.observe(&input, &ctx(Trigger::SessionEnd, project));
+        SessionKnowledgeObserver.observe(&input, &ctx(Trigger::SessionEnd, project));
         assert_eq!(
             count_retry_events(dir.path()),
             2,
@@ -949,7 +949,7 @@ mod tests {
             hook_event_name: Some("SessionEnd".to_string()),
             ..HookInput::default()
         };
-        Knowledge.observe(&input, &ctx(Trigger::SessionEnd, dir.path().to_str().unwrap()));
+        SessionKnowledgeObserver.observe(&input, &ctx(Trigger::SessionEnd, dir.path().to_str().unwrap()));
         // At least one .md file must have been written to .claude/knowledge/.
         let knowledge_dir = dir.path().join(".claude").join("knowledge");
         let md_count = std::fs::read_dir(&knowledge_dir)
@@ -976,7 +976,7 @@ mod tests {
             ..HookInput::default()
         };
         // PreToolUse → no-op, must not panic.
-        Knowledge.observe(&input, &ctx(Trigger::PreToolUse, dir.path().to_str().unwrap()));
+        SessionKnowledgeObserver.observe(&input, &ctx(Trigger::PreToolUse, dir.path().to_str().unwrap()));
     }
 
     #[test]
@@ -988,7 +988,7 @@ mod tests {
             ..HookInput::default()
         };
         // PostToolUse(Bash) → session-knowledge-inc must not run.
-        Knowledge.observe(&input, &ctx(Trigger::PostToolUse, dir.path().to_str().unwrap()));
+        SessionKnowledgeObserver.observe(&input, &ctx(Trigger::PostToolUse, dir.path().to_str().unwrap()));
     }
 
     #[test]
@@ -1007,7 +1007,7 @@ mod tests {
             hook_event_name: Some("SessionEnd".to_string()),
             ..HookInput::default()
         };
-        Knowledge.observe(&input, &ctx(Trigger::SessionEnd, dir.path().to_str().unwrap()));
+        SessionKnowledgeObserver.observe(&input, &ctx(Trigger::SessionEnd, dir.path().to_str().unwrap()));
 
         let friction_path = dir.path().join(".claude/.metrics/friction.json");
         assert!(friction_path.exists(), "friction.json must be written");

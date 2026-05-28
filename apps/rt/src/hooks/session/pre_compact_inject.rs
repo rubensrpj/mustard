@@ -1,4 +1,4 @@
-//! `pre_compact` — the `PreCompact` context-snapshot module.
+//! `pre_compact_inject` — the `PreCompact` context-snapshot module.
 //!
 //! ## Scope (b3 Wave 5, session family)
 //!
@@ -35,7 +35,7 @@ use std::process::{Command, Stdio};
 use mustard_core::time::now_iso8601;
 
 /// The `PreCompact` context-snapshot module.
-pub struct PreCompact;
+pub struct PreCompactInject;
 
 
 /// Run a git command in `cwd`, returning trimmed stdout, or `None` on failure.
@@ -201,7 +201,7 @@ fn save_snapshot(cwd: &str, summary: &str) {
     let _ = fs::write_atomic(state_dir.join(format!("{timestamp}.txt")), summary.as_bytes());
 }
 
-impl Check for PreCompact {
+impl Check for PreCompactInject {
     /// On `PreCompact`, build and persist a working-state snapshot and inject
     /// it as advisory context. Returns `Verdict::Allow` (the JS silent path)
     /// when no active pipeline exists; any non-`PreCompact` trigger self-allows.
@@ -254,7 +254,7 @@ mod tests {
             workspace_root: None,
         };
         assert_eq!(
-            PreCompact.evaluate(&pre_compact_input(), &other).unwrap(),
+            PreCompactInject.evaluate(&pre_compact_input(), &other).unwrap(),
             Verdict::Allow
         );
     }
@@ -265,7 +265,7 @@ mod tests {
         // snapshot is still produced.
         let dir = tempdir().unwrap();
         std::fs::create_dir_all(ClaudePaths::for_project(dir.path()).unwrap().claude_dir()).unwrap();
-        let verdict = PreCompact
+        let verdict = PreCompactInject
             .evaluate(&pre_compact_input(), &ctx(dir.path().to_str().unwrap()))
             .unwrap();
         match verdict {
@@ -290,7 +290,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            PreCompact
+            PreCompactInject
                 .evaluate(&pre_compact_input(), &ctx(dir.path().to_str().unwrap()))
                 .unwrap(),
             Verdict::Allow
@@ -306,7 +306,7 @@ mod tests {
         let states = paths.pipeline_states_dir();
         std::fs::create_dir_all(&states).unwrap();
         assert_eq!(
-            PreCompact
+            PreCompactInject
                 .evaluate(&pre_compact_input(), &ctx(dir.path().to_str().unwrap()))
                 .unwrap(),
             Verdict::Allow
@@ -324,7 +324,7 @@ mod tests {
             json!({ "status": "implementing" }).to_string(),
         )
         .unwrap();
-        let verdict = PreCompact
+        let verdict = PreCompactInject
             .evaluate(&pre_compact_input(), &ctx(dir.path().to_str().unwrap()))
             .unwrap();
         match verdict {
@@ -348,7 +348,7 @@ mod tests {
             raw: json!({ "compact_reason": "manual" }),
             ..HookInput::default()
         };
-        match PreCompact
+        match PreCompactInject
             .evaluate(&input, &ctx(dir.path().to_str().unwrap()))
             .unwrap()
         {

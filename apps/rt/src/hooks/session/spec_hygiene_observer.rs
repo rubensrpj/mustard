@@ -1,9 +1,9 @@
 // SPEC LANG: pt-allowed — test fixtures cover pt-BR spec parsing paths.
-//! `spec_hygiene` — SessionStart spec-lifecycle hygiene + gated auto-close.
+//! `spec_hygiene_observer` — SessionStart spec-lifecycle hygiene + gated auto-close.
 //!
 //! ## Scope (spec-lifecycle-unification Wave 5, W3C migration)
 //!
-//! Runs on `SessionStart`, **before** the [`session_start`](crate::hooks::session::session_start)
+//! Runs on `SessionStart`, **before** the [`session_start_inject`](crate::hooks::session::session_start_inject)
 //! memory injection (registration order in `registry.rs`). For each *active*
 //! spec (header `Outcome: Active`, or a legacy `### Status:` that is not a
 //! terminal one) it classifies the spec and either:
@@ -41,8 +41,7 @@
 //!   `candidate`); auto-close never runs.
 //! - `auto`  — default; the full behavior described above.
 
-use mustard_core::platform::error::Error;
-use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
+use mustard_core::domain::model::contract::{Ctx, HookInput, Observer, Trigger};
 use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use mustard_core::view::projection::read_harness_events_from_ndjson_dir;
 use mustard_core::domain::spec;
@@ -63,7 +62,7 @@ const STALE_MS: u128 = 72 * 60 * 60 * 1000;
 const ABANDONED_MS: u128 = 30 * 24 * 60 * 60 * 1000;
 
 /// The SessionStart spec-hygiene module.
-pub struct SpecHygiene;
+pub struct SpecHygieneObserver;
 
 // ---------------------------------------------------------------------------
 // Mode
@@ -629,18 +628,17 @@ fn process_spec(
     }
 }
 
-impl Check for SpecHygiene {
-    /// On `SessionStart`, run spec hygiene as a pure side effect, then self-
-    /// allow. Any non-`SessionStart` trigger self-allows immediately. The hook
-    /// never produces a verdict (its output is the `hygiene.*` event stream),
-    /// so it always returns [`Verdict::Allow`].
-    fn evaluate(&self, input: &HookInput, ctx: &Ctx) -> Result<Verdict, Error> {
+impl Observer for SpecHygieneObserver {
+    /// On `SessionStart`, run spec hygiene as a pure side effect. Any
+    /// non-`SessionStart` trigger is a no-op. The hook never produces a verdict
+    /// (its output is the `hygiene.*` event stream) — so it is an `Observer`,
+    /// not a `Check`.
+    fn observe(&self, input: &HookInput, ctx: &Ctx) {
         if ctx.trigger != Some(Trigger::SessionStart) {
-            return Ok(Verdict::Allow);
+            return;
         }
         let cwd = ctx.project_dir_or_cwd(input);
         run_hygiene(&cwd);
-        Ok(Verdict::Allow)
     }
 }
 
