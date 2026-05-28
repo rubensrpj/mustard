@@ -30,7 +30,6 @@ pub mod scan;
 // (claude-paths, workspace-leaks, i1) that emit native JSON shapes. They are
 // dispatched by `doctor.rs` but live in dedicated modules so the legacy
 // `CheckResult` envelope stays out of their way.
-mod diff_context;
 pub use event::event_projections::{pipeline_state_from_events, PipelineStateView};
 // Spec A v4 / W4 — behavior-regression gate connecting W1 (vocabulary),
 // W1.5 (AST agnostic) and W2 (snapshot) primitives.
@@ -1403,7 +1402,7 @@ pub fn dispatch(cmd: RunCmd) {
             parent,
             subproject,
             phase,
-        } => diff_context::run(parent.as_deref(), subproject.as_deref(), phase.as_deref()),
+        } => pipeline::diff_context::run(parent.as_deref(), subproject.as_deref(), phase.as_deref()),
         RunCmd::EmitEvent {
             event,
             payload,
