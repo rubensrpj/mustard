@@ -125,15 +125,6 @@ pub(crate) fn extract_to_phase(ev: &HarnessEvent) -> Option<Phase> {
         .and_then(Phase::parse)
 }
 
-/// Difference between two ISO-8601 timestamps in milliseconds. Returns `None`
-/// if either side fails to parse — used to compute durations without a
-/// dedicated date library in this crate. Pre-1970 timestamps clamp to zero.
-#[must_use]
-pub fn iso_diff_ms(start_iso: &str, end_iso: &str) -> Option<i64> {
-    let start = parse_iso_millis(start_iso)?;
-    let end = parse_iso_millis(end_iso)?;
-    Some(end.saturating_sub(start))
-}
 
 // Parsing ISO-8601 → epoch millis now lives in the single canonical home
 // `crate::platform::time`. Re-exported here so existing
@@ -144,6 +135,7 @@ pub use crate::platform::time::parse_iso_millis;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::platform::time::iso_diff_ms;
 
     #[test]
     fn iso_diff_handles_zero_and_one_second() {

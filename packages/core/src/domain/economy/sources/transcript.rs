@@ -41,7 +41,7 @@ use crate::domain::economy::model::ApiCostFrame;
 use crate::platform::error::Result;
 
 use super::IngestContext;
-use super::time::now_iso;
+use crate::platform::time::now_iso8601;
 
 /// Parse `transcript_path` as JSONL and return one [`ApiCostFrame`] per
 /// assistant turn that carries a `message.usage` block.
@@ -128,7 +128,7 @@ fn translate_line(value: &Value, ctx: &IngestContext) -> Option<ApiCostFrame> {
     let ts = value
         .get("timestamp")
         .and_then(Value::as_str)
-        .map_or_else(now_iso, str::to_owned);
+        .map_or_else(now_iso8601, str::to_owned);
 
     let session_id = value
         .get("sessionId")

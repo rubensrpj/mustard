@@ -37,11 +37,40 @@ pub fn now_iso8601() -> String {
     millis_to_iso(now_unix_millis())
 }
 
+/// Days since the Unix epoch (1970-01-01) for a proleptic-Gregorian date —
+/// Howard Hinnant's `days_from_civil`. The single primitive every ISO parser
+/// in the workspace builds on (use this instead of re-deriving the constants
+/// `719_468` / `146_097` inline).
+#[must_use]
+pub fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let mp = if month > 2 { month - 3 } else { month + 9 };
+    let doy = (153 * mp + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
+/// `(year, month, day)` for a days-since-epoch count — Howard Hinnant's
+/// `civil_from_days` (inverse of [`days_from_civil`]).
+#[must_use]
+pub fn civil_from_days(days: i64) -> (i64, u32, u32) {
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = (if mp < 10 { mp + 3 } else { mp - 9 }) as u32;
+    let year = if m <= 2 { y + 1 } else { y };
+    (year, m, d)
+}
+
 /// Render Unix milliseconds as an ISO-8601 UTC string
-/// (`YYYY-MM-DDTHH:MM:SS.mmmZ`).
-///
-/// Uses Howard Hinnant's `civil_from_days` algorithm — no calendar crate.
-/// Negative inputs (before the epoch) are clamped to `0`.
+/// (`YYYY-MM-DDTHH:MM:SS.mmmZ`). Negative inputs (before the epoch) clamp to `0`.
 #[must_use]
 pub fn millis_to_iso(ms: i64) -> String {
     let ms = ms.max(0);
@@ -50,16 +79,7 @@ pub fn millis_to_iso(ms: i64) -> String {
     let days = secs / 86_400;
     let rem = secs % 86_400;
     let (hh, mm, ss) = (rem / 3600, (rem % 3600) / 60, rem % 60);
-    let z = days + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let year = if m <= 2 { y + 1 } else { y };
+    let (year, m, d) = civil_from_days(days);
     format!("{year:04}-{m:02}-{d:02}T{hh:02}:{mm:02}:{ss:02}.{millis:03}Z")
 }
 
@@ -67,7 +87,6 @@ pub fn millis_to_iso(ms: i64) -> String {
 ///
 /// Tolerant: only the leading `YYYY-MM-DDTHH:MM:SS` is required (any fractional
 /// seconds / zone suffix is ignored). Returns `None` on malformed input.
-/// Uses Howard Hinnant's `days_from_civil` — no calendar crate.
 #[must_use]
 pub fn parse_iso_millis(iso: &str) -> Option<i64> {
     let bytes = iso.as_bytes();
@@ -82,14 +101,7 @@ pub fn parse_iso_millis(iso: &str) -> Option<i64> {
     let mm = num(iso.get(14..16)?)?;
     let ss = num(iso.get(17..19)?)?;
 
-    let y = if month <= 2 { year - 1 } else { year };
-    let era = if y >= 0 { y } else { y - 399 } / 400;
-    let yoe = y - era * 400;
-    let mp = if month > 2 { month - 3 } else { month + 9 };
-    let doy = (153 * mp + 2) / 5 + day - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    let days = era * 146_097 + doe - 719_468;
-    let secs = days * 86_400 + hh * 3600 + mm * 60 + ss;
+    let secs = days_from_civil(year, month, day) * 86_400 + hh * 3600 + mm * 60 + ss;
     if secs < 0 {
         return Some(0);
     }
@@ -102,6 +114,36 @@ pub fn parse_iso_millis(iso: &str) -> Option<i64> {
         0
     };
     Some(secs.saturating_mul(1000) + millis)
+}
+
+/// Difference `end - start` in milliseconds between two ISO-8601 timestamps,
+/// or `None` if either side fails to parse.
+#[must_use]
+pub fn iso_diff_ms(start_iso: &str, end_iso: &str) -> Option<i64> {
+    let start = parse_iso_millis(start_iso)?;
+    let end = parse_iso_millis(end_iso)?;
+    Some(end.saturating_sub(start))
+}
+
+/// `(year, month, day, hour, minute, second)` in UTC for a Unix-seconds count.
+/// The single decomposition primitive (replaces the per-crate
+/// `epoch_to_ymd_hms` / `epoch_secs_to_ymdhms` copies).
+#[must_use]
+pub fn unix_secs_to_ymdhms(secs: i64) -> (i64, u32, u32, u32, u32, u32) {
+    let tod = secs.rem_euclid(86_400);
+    let (y, m, d) = civil_from_days(secs.div_euclid(86_400));
+    #[allow(clippy::cast_sign_loss)]
+    (y, m, d, (tod / 3600) as u32, ((tod % 3600) / 60) as u32, (tod % 60) as u32)
+}
+
+/// A filename-safe stamp of `now` — date + time to second precision with the
+/// `:` separators replaced by `-` (so it can name a file on every platform).
+/// Shape: `YYYY-MM-DDTHH-MM-SS`. The single home for what used to be
+/// `cli::timestamp_slug` and `unhook::filename_safe_timestamp`.
+#[must_use]
+pub fn filename_safe_now() -> String {
+    let (y, m, d, h, mi, s) = unix_secs_to_ymdhms(now_unix_millis() / 1000);
+    format!("{y:04}-{m:02}-{d:02}T{h:02}-{mi:02}-{s:02}")
 }
 
 #[cfg(test)]

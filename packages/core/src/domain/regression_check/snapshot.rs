@@ -113,7 +113,7 @@ impl Snapshot {
         codebase_root: &Path,
         spec_path: PathBuf,
     ) -> Result<CaptureReport, RegressionError> {
-        let now = current_iso_ts();
+        let now = crate::platform::time::now_iso8601();
         let mut snapshot = Snapshot::empty(spec_path, now);
         let mut warnings: Vec<CaptureWarning> = Vec::new();
 
@@ -147,7 +147,7 @@ pub fn capture_for_parsed(
     codebase_root: &Path,
     spec_path: PathBuf,
 ) -> Result<CaptureReport, RegressionError> {
-    let now = current_iso_ts();
+    let now = crate::platform::time::now_iso8601();
     let mut snapshot = Snapshot::empty(spec_path, now);
     let mut warnings: Vec<CaptureWarning> = Vec::new();
 
@@ -666,50 +666,8 @@ fn read_source(path: &Path) -> std::io::Result<String> {
     std::fs::read_to_string(path)
 }
 
-/// Best-effort ISO-8601 UTC timestamp without pulling chrono in.
-/// Mirrors the parse_iso_ms approach used in dashboard telemetry: builds
-/// `YYYY-MM-DDTHH:MM:SS.fffZ` from a Unix epoch ms value. For the regression
-/// gate, second-level precision is enough — the timestamp is used to order
-/// snapshots, not to compute durations.
-fn current_iso_ts() -> String {
-    let ms = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0);
-    let secs = ms / 1000;
-    let frac = ms % 1000;
-    // Convert epoch seconds to a UTC calendar date by the same approximate
-    // algorithm telemetry.rs uses — exact day rollover does not matter for
-    // our ordering purposes. We still produce a parseable ISO-8601 string.
-    let (year, month, day, hour, minute, second) = epoch_to_ymd_hms(secs);
-    format!(
-        "{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}.{frac:03}Z"
-    )
-}
-
-/// Convert epoch seconds into a `(year, month, day, hour, minute, second)`
-/// tuple. Civil-from-days algorithm by Howard Hinnant (public domain). Avoids
-/// pulling chrono just for one timestamp.
-fn epoch_to_ymd_hms(secs: u64) -> (i32, u32, u32, u32, u32, u32) {
-    let days = (secs / 86_400) as i64;
-    let rem = (secs % 86_400) as u32;
-    let hour = rem / 3600;
-    let minute = (rem % 3600) / 60;
-    let second = rem % 60;
-
-    // Hinnant's civil_from_days: epoch = 1970-01-01.
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z.rem_euclid(146_097) as u32;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = yoe as i64 + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let year = y + i64::from(m <= 2);
-    (year as i32, m, d, hour, minute, second)
-}
+// ISO-8601 timestamps + calendar math now live in `crate::platform::time`
+// (`now_iso8601`, `unix_secs_to_ymdhms`). This module just calls them.
 
 // ---------------------------------------------------------------------------
 // Tests — exercised at module scope; integration tests live in
@@ -837,15 +795,15 @@ mod tests {
     fn epoch_to_ymd_known_value() {
         // 1970-01-01T00:00:00Z — the anchor point. Tests the Hinnant
         // civil_from_days conversion at the epoch.
-        let (y, m, d, h, mi, s) = epoch_to_ymd_hms(0);
+        let (y, m, d, h, mi, s) = crate::platform::time::unix_secs_to_ymdhms(0);
         assert_eq!((y, m, d, h, mi, s), (1970, 1, 1, 0, 0, 0));
 
         // 2000-01-01T00:00:00Z = 946_684_800 — well-known constant.
-        let (y, m, d, h, mi, s) = epoch_to_ymd_hms(946_684_800);
+        let (y, m, d, h, mi, s) = crate::platform::time::unix_secs_to_ymdhms(946_684_800);
         assert_eq!((y, m, d, h, mi, s), (2000, 1, 1, 0, 0, 0));
 
         // Add 12h35m45s to the millennium anchor; verifies hh:mm:ss split.
-        let (_, _, _, h, mi, s) = epoch_to_ymd_hms(946_684_800 + 12 * 3600 + 35 * 60 + 45);
+        let (_, _, _, h, mi, s) = crate::platform::time::unix_secs_to_ymdhms(946_684_800 + 12 * 3600 + 35 * 60 + 45);
         assert_eq!((h, mi, s), (12, 35, 45));
     }
 

@@ -32,7 +32,6 @@
 
 pub mod otel;
 pub mod rtk;
-pub mod time;
 pub mod transcript;
 
 /// Per-call context every adapter needs to attribute its records.

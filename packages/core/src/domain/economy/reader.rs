@@ -442,7 +442,7 @@ fn run_event_started_at_ms(ev: &Event) -> Option<i64> {
         return Some(v);
     }
     let ts = ev.payload.get("ts").and_then(Value::as_str)?;
-    let ms = super::writer::iso_to_epoch_ms(ts);
+    let ms = crate::platform::time::parse_iso_millis(ts).unwrap_or(0);
     if ms == 0 {
         None
     } else {

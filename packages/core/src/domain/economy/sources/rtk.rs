@@ -64,7 +64,7 @@ use crate::domain::economy::scope::ProjectPath;
 use crate::platform::error::{Error, Result};
 
 use super::IngestContext;
-use super::time::now_iso;
+use crate::platform::time::now_iso8601;
 
 /// Pluggable runner for `rtk gain` so tests can inject a fake without
 /// spawning a process. The runner is responsible for fetching the raw
@@ -154,7 +154,7 @@ pub fn ingest_with(ctx: &IngestContext, runner: &dyn RtkCommand) -> Result<Vec<S
     // ── Shape 1: legacy array of per-rewrite entries ─────────────────────
     // Kept for compatibility with older rtk builds (or a future one that
     // re-exposes per-rewrite detail). Each entry gets its own
-    // `SavingsRecord` stamped with `now_iso()` because the legacy shape
+    // `SavingsRecord` stamped with `now_iso8601()` because the legacy shape
     // carries no per-row timestamp.
     if let Some(entries) = parsed.as_array() {
         return Ok(map_legacy_array(entries.clone(), &project));
@@ -175,14 +175,14 @@ pub fn ingest_with(ctx: &IngestContext, runner: &dyn RtkCommand) -> Result<Vec<S
 
 /// Map a legacy `rtk gain --json` array (per-rewrite shape) to records.
 ///
-/// One record per entry whose `saved_tokens > 0`. Timestamp is `now_iso`
+/// One record per entry whose `saved_tokens > 0`. Timestamp is `now_iso8601`
 /// because the legacy shape carries no per-row date. The full RTK entry
 /// survives in `extra` so the dashboard can render command/before/after.
 fn map_legacy_array(
     entries: Vec<Value>,
     project: &ProjectPath,
 ) -> Vec<SavingsRecord> {
-    let ts = now_iso();
+    let ts = now_iso8601();
     let mut out: Vec<SavingsRecord> = Vec::new();
     for entry in entries {
         let saved = entry
@@ -237,7 +237,7 @@ fn map_daily_array(daily: Vec<Value>, project: &ProjectPath) -> Vec<SavingsRecor
         let ts = entry
             .get("date")
             .and_then(Value::as_str)
-            .map_or_else(now_iso, |d| format!("{d}T12:00:00Z"));
+            .map_or_else(now_iso8601, |d| format!("{d}T12:00:00Z"));
         let extra = match entry {
             Value::Object(map) => map,
             _ => serde_json::Map::new(),

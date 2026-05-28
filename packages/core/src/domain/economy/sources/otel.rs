@@ -32,7 +32,7 @@ use crate::domain::economy::model::SpanRecord;
 use crate::platform::error::{Error, Result};
 
 use super::IngestContext;
-use super::time::{epoch_secs_to_ymdhms, now_iso};
+use crate::platform::time::{now_iso8601, unix_secs_to_ymdhms};
 
 /// Translate an OTLP/JSON `traces` payload into a list of [`SpanRecord`]s.
 ///
@@ -124,7 +124,7 @@ fn translate_span(span: &Value, ctx: &IngestContext) -> Option<SpanRecord> {
         .get("startTimeUnixNano")
         .and_then(Value::as_str)
         .and_then(unix_nanos_to_iso)
-        .unwrap_or_else(now_iso);
+        .unwrap_or_else(now_iso8601);
 
     let is_error = span
         .get("status")
@@ -257,7 +257,7 @@ fn unix_nanos_to_iso(s: &str) -> Option<String> {
     // cast_sign_loss: ms_total is derived from a parsed u128 via i64::try_from, so it is non-negative.
     #[allow(clippy::cast_sign_loss)]
     let millis = (ms_total % 1_000) as u32;
-    let (y, mo, d, h, mi, s) = epoch_secs_to_ymdhms(secs);
+    let (y, mo, d, h, mi, s) = unix_secs_to_ymdhms(secs);
     Some(format!(
         "{y:04}-{mo:02}-{d:02}T{h:02}:{mi:02}:{s:02}.{millis:03}Z"
     ))

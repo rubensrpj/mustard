@@ -20,7 +20,7 @@ use crate::domain::model::event::{
 };
 use std::collections::BTreeMap;
 
-use super::iso_diff_ms;
+use crate::platform::time::iso_diff_ms;
 
 /// Fold events for `spec_name` into a sorted list of [`WaveView`].
 ///

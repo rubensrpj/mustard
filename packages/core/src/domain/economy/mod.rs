@@ -39,5 +39,5 @@ pub use reader::{
 };
 pub use scope::{AgentId, EconomyScope, ProjectPath, SpecId, WaveId};
 pub use writer::{
-    context_frame_event, injection_savings_tokens, iso_to_epoch_ms, run_event, savings_event,
+    context_frame_event, injection_savings_tokens, run_event, savings_event,
 };

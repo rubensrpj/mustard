@@ -43,7 +43,8 @@ use crate::domain::model::event::{
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use super::{extract_to_phase, iso_diff_ms};
+use super::extract_to_phase;
+use crate::platform::time::iso_diff_ms;
 
 /// Fold `events` into a [`SpecView`] for `spec_name`.
 ///
