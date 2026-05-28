@@ -6,7 +6,7 @@
 //! - a `Resumo:` / `Summary:` line/section (fallback — informal returns)
 //!
 //! and persist what we find as an `agent_memory` row via the W7 helper
-//! `crate::run::memory::insert_agent_memory`. The hook never blocks — it is
+//! `crate::run::knowledge::memory::insert_agent_memory`. The hook never blocks — it is
 //! a pure [`Observer`].
 //!
 //! ## W3C → W4B migration
@@ -14,7 +14,7 @@
 //! `emit_economy_operation` routes economy events via
 //! `crate::shared::events::route::emit` (NDJSON path). W4B then moved the
 //! `agent_memory` write-path off SQLite onto markdown rows under
-//! `.claude/memory/agent/` via `crate::run::memory::persist_agent_memory_md`,
+//! `.claude/memory/agent/` via `crate::run::knowledge::memory::persist_agent_memory_md`,
 //! so no `rusqlite` connection is opened from this module.
 //!
 //! ## Fail-open
@@ -123,7 +123,7 @@ fn task_output(input: &HookInput) -> String {
 ///
 /// W4B migration: persistence moved off SQLite entirely. The summary lands as
 /// a markdown file under `.claude/memory/agent/` via
-/// [`crate::run::memory::persist_agent_memory_md`]. No `rusqlite::Connection`
+/// [`crate::run::knowledge::memory::persist_agent_memory_md`]. No `rusqlite::Connection`
 /// is opened from this path.
 fn persist(
     cwd: &str,
@@ -135,7 +135,7 @@ fn persist(
 ) {
     // W4B migration: persistence moved off SQLite — write a markdown row in
     // `.claude/memory/agent/` via the shared helper.
-    let _ = crate::run::memory::persist_agent_memory_md(
+    let _ = crate::run::knowledge::memory::persist_agent_memory_md(
         cwd,
         session_id,
         spec,

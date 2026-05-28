@@ -20,7 +20,7 @@
 
 use crate::shared::context::project_dir;
 use crate::run::gate_regression_check;
-use crate::run::memory_cross_wave;
+use crate::run::knowledge::memory_cross_wave;
 use crate::run::pipeline::resume_bootstrap::{read_wave_model, resolve_operational_spec_path};
 use crate::run::skill_resolve;
 use crate::run::spec::spec_sections::is_heading;

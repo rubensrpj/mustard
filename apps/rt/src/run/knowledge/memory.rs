@@ -1003,7 +1003,7 @@ pub fn dispatch(
     extras: DispatchExtras,
 ) {
     if subcommand == "cross-wave" || subcommand == "cross_wave" {
-        crate::run::memory_cross_wave::run(spec, wave, extras.cluster.as_deref());
+        crate::run::knowledge::memory_cross_wave::run(spec, wave, extras.cluster.as_deref());
         return;
     }
     if subcommand == "list" {

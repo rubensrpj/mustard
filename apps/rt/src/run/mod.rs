@@ -11,6 +11,7 @@
 //! (subproject discovery + SHA-256 change detection) and the scanner subsystem
 //! it shares with the still-JS `sync-registry.js`.
 
+pub mod knowledge;
 pub mod economy;
 pub mod pipeline;
 pub mod event;
@@ -27,7 +28,6 @@ pub mod review_dispatch;
 pub mod skill_cache;
 pub mod skill_fetch;
 pub mod task_checklist;
-mod knowledge;
 mod doctor;
 // W3 of `2026-05-26-claude-paths-single-source` — three typed doctor checks
 // (claude-paths, workspace-leaks, i1) that emit native JSON shapes. They are
@@ -39,18 +39,13 @@ pub mod doctor_i1;
 mod dependency_precheck;
 mod diff_context;
 mod docs_stale_check;
-mod graph_dead;
-mod graph_index;
 pub use event::event_projections::{pipeline_state_from_events, PipelineStateView};
 // Spec A v4 / W4 — behavior-regression gate connecting W1 (vocabulary),
 // W1.5 (AST agnostic) and W2 (snapshot) primitives.
 pub mod gate_regression_check;
 mod mark_checklist_item;
-pub(crate) mod memory;
-mod memory_cross_wave;
 mod migrate_spec_headers;
 mod migrate_to_meta;
-mod memory_ingest;
 mod qa_run;
 mod qa_run_all;
 mod recipe_match;
@@ -1522,7 +1517,7 @@ pub fn dispatch(cmd: RunCmd) {
             limit,
             by_role,
             note,
-        } => memory::dispatch(
+        } => knowledge::memory::dispatch(
             &subcommand,
             json.as_deref(),
             spec.as_deref(),
@@ -1532,7 +1527,7 @@ pub fn dispatch(cmd: RunCmd) {
             files.as_deref(),
             grouped,
             &format,
-            memory::DispatchExtras {
+            knowledge::memory::DispatchExtras {
                 cluster,
                 query,
                 kind,
@@ -1548,7 +1543,7 @@ pub fn dispatch(cmd: RunCmd) {
             },
         ),
         RunCmd::MemoryIngest { delete, agent_memory } => {
-            memory_ingest::run_with(memory_ingest::MemoryIngestOpts { delete, agent_memory });
+            knowledge::memory_ingest::run_with(knowledge::memory_ingest::MemoryIngestOpts { delete, agent_memory });
         }
         RunCmd::PipelineStateIngest { delete: _ } => {
             pipeline::pipeline_state_ingest::run(pipeline::pipeline_state_ingest::PipelineStateIngestOpts);
@@ -1714,8 +1709,8 @@ pub fn dispatch(cmd: RunCmd) {
             manifest,
         } => maint::artifact_update::run(check, apply, manifest.as_deref()),
         RunCmd::AmendFinalize { session_id } => amend_finalize::run_cli(&session_id),
-        RunCmd::GraphIndex => graph_index::run(),
-        RunCmd::GraphDead => graph_dead::run(),
+        RunCmd::GraphIndex => knowledge::graph_index::run(),
+        RunCmd::GraphDead => knowledge::graph_dead::run(),
         RunCmd::WaveScaffold { spec_dir, plan } => {
             wave::wave_scaffold::run(spec_dir.as_deref(), plan.as_deref());
         }
@@ -1747,7 +1742,7 @@ pub fn dispatch(cmd: RunCmd) {
         RunCmd::Knowledge { subcommand, filter, format, root } => {
             match subcommand.as_deref() {
                 Some("glossary") | None => {
-                    knowledge::run(knowledge::GlossaryOpts { filter, format, root });
+                    knowledge::knowledge::run(knowledge::knowledge::GlossaryOpts { filter, format, root });
                 }
                 Some(other) => {
                     eprintln!("knowledge: unknown subcommand '{other}'. Try: glossary");
