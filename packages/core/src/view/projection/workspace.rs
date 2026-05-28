@@ -16,7 +16,7 @@ use crate::view::projection::card::project_spec_view;
 use crate::domain::model::event::HarnessEvent;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use super::parse_iso_millis;
+use crate::platform::time::parse_iso_millis;
 
 /// Maximum number of `top_files_today` entries in the result.
 const TOP_FILES_CAP: usize = 10;

@@ -29,7 +29,7 @@
 //! on `--dry-run` so verification scripts can preview it.
 
 use crate::shared::context::session_id;
-use crate::util::now_iso8601;
+use mustard_core::time::now_iso8601;
 use mustard_core::io::fs::{read_to_string, write_atomic};
 use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use mustard_core::{read_meta, domain::spec as spec_io};

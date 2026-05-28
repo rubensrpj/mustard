@@ -247,7 +247,7 @@ fn extract_attributes(span: &Value) -> AttributeView<'_> {
 ///
 /// Returns `None` for an unparseable input; the caller falls back to the
 /// wall clock. The conversion is a simple proleptic Gregorian (the same
-/// algorithm `writer::iso_to_epoch_ms` uses in reverse).
+/// algorithm `mustard_core::time::parse_iso_millis` uses in reverse).
 fn unix_nanos_to_iso(s: &str) -> Option<String> {
     let nanos: u128 = s.parse().ok()?;
     // Cast to i64 millis with saturating semantics; nanoseconds beyond i64::MAX

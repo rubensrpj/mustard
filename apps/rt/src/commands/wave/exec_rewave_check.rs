@@ -16,7 +16,7 @@
 use crate::commands::spec::scope_decompose::decide;
 use crate::commands::wave::wave_dependency::compute_waves;
 use crate::commands::wave::wave_lib::{detect_role, parse_files_section};
-use crate::util::now_iso8601;
+use mustard_core::time::now_iso8601;
 use mustard_core::io::fs;
 use mustard_core::domain::spec;
 use mustard_core::ClaudePaths;

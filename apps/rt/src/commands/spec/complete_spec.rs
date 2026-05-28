@@ -163,7 +163,7 @@ fn emit_ndjson(cwd: &Path, spec: &str, event_name: &str, payload: &Value, ts: &s
 ///   2. `pipeline.complete` with `{ closedAt, affectedFiles: [...] }`
 fn mark_followup(cwd: &Path, spec: &str) -> Value {
     let affected = collect_affected_files(cwd, spec);
-    let now = crate::util::now_iso8601();
+    let now = mustard_core::time::now_iso8601();
 
     // Read current projection status so we can record `from`.
     let events = read_events_for_spec(cwd, spec);
@@ -194,10 +194,6 @@ fn mark_followup(cwd: &Path, spec: &str) -> Value {
     })
 }
 
-/// Parse an ISO-8601 timestamp into epoch millis (UTC). `None` on any failure.
-pub(crate) fn parse_iso_millis(ts: &str) -> Option<i64> {
-    mustard_core::time::parse_iso_millis(ts)
-}
 
 /// Stage 2 — finalize archival. Idempotent terminal emit; no filesystem move.
 fn archive(cwd: &Path, spec: &str) -> (bool, bool) {
@@ -228,7 +224,7 @@ fn emit_completed_status(cwd: &Path, spec: &str) {
         to: "completed".to_string(),
     })
     .unwrap_or(Value::Null);
-    emit_ndjson(cwd, spec, EVENT_PIPELINE_STATUS, &payload, &crate::util::now_iso8601());
+    emit_ndjson(cwd, spec, EVENT_PIPELINE_STATUS, &payload, &mustard_core::time::now_iso8601());
 }
 
 /// Idempotently emit `pipeline.phase: CLOSE` when the spec's latest phase is
@@ -238,7 +234,7 @@ fn emit_phase_close(cwd: &Path, spec: &str) {
     if last.as_deref() == Some("CLOSE") {
         return;
     }
-    let ts = crate::util::now_iso8601();
+    let ts = mustard_core::time::now_iso8601();
     let sid = session_id();
     let payload = json!({ "from": last, "to": "CLOSE" });
     let kind = crate::shared::events::route::classify_kind("pipeline.phase");
@@ -300,10 +296,10 @@ fn archive_followups(cwd: &Path, require_ttl: bool) -> (usize, usize) {
         }
         scanned += 1;
         if require_ttl {
-            let closed_ms = view.closed_at.as_deref().and_then(parse_iso_millis);
+            let closed_ms = view.closed_at.as_deref().and_then(mustard_core::time::parse_iso_millis);
             match closed_ms {
                 Some(c) => {
-                    let now = i64::try_from(crate::util::now_millis()).unwrap_or(i64::MAX);
+                    let now = i64::try_from(mustard_core::time::now_unix_millis() as u128).unwrap_or(i64::MAX);
                     if now - c < FOLLOWUP_TTL_MS {
                         continue;
                     }
@@ -386,13 +382,13 @@ mod tests {
 
     #[test]
     fn parse_iso_millis_round_trips() {
-        let ms = parse_iso_millis("2026-05-19T00:00:00.000Z").unwrap();
+        let ms = mustard_core::time::parse_iso_millis("2026-05-19T00:00:00.000Z").unwrap();
         assert_eq!(ms, 1_779_148_800_000);
     }
 
     #[test]
     fn parse_iso_millis_without_fraction() {
-        assert!(parse_iso_millis("2026-05-19T12:30:45Z").is_some());
-        assert!(parse_iso_millis("garbage").is_none());
+        assert!(mustard_core::time::parse_iso_millis("2026-05-19T12:30:45Z").is_some());
+        assert!(mustard_core::time::parse_iso_millis("garbage").is_none());
     }
 }

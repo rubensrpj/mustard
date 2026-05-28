@@ -19,7 +19,7 @@
 use crate::domain::model::view::{Phase, TimelineKind, TimelineNode, TimeWindow};
 use crate::domain::model::event::HarnessEvent;
 
-use super::parse_iso_millis;
+use crate::platform::time::parse_iso_millis;
 
 use serde::Deserialize;
 use std::path::Path;

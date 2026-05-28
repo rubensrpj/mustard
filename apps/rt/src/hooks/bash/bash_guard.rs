@@ -37,7 +37,8 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
-use crate::util::{format_gate_message, now_iso8601};
+use crate::util::format_gate_message;
+use mustard_core::time::now_iso8601;
 
 /// The consolidated Bash-tool enforcement module.
 pub struct BashGuard;

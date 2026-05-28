@@ -13,7 +13,7 @@
 //! source instead of erroring.
 
 use crate::shared::context::{current_spec, session_id};
-use crate::util::now_iso8601;
+use mustard_core::time::now_iso8601;
 use mustard_core::platform::i18n::{project_locale_from_file, SupportedLocale as Locale};
 use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use mustard_core::ClaudePaths;

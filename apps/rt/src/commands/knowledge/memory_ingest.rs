@@ -114,7 +114,7 @@ fn ingest_knowledge(claude_dir: &Path, errors: &mut Vec<Value>) -> usize {
             .or_else(|| entry.get("updatedAt"))
             .and_then(Value::as_str)
             .map(str::to_string)
-            .unwrap_or_else(crate::util::now_iso8601);
+            .unwrap_or_else(mustard_core::time::now_iso8601);
 
         let mut fm = Map::new();
         fm.insert("kind".into(), json!("pattern"));
@@ -188,7 +188,7 @@ fn ingest_memory_file(
             .or_else(|| entry.get("timestamp"))
             .and_then(Value::as_str)
             .map(str::to_string)
-            .unwrap_or_else(crate::util::now_iso8601);
+            .unwrap_or_else(mustard_core::time::now_iso8601);
 
         let mut fm = Map::new();
         fm.insert("kind".into(), json!(kind));
@@ -261,7 +261,7 @@ fn ingest_agent_memory_dir(agent_dir: &Path, dest_dir: &Path, errors: &mut Vec<V
             .get("timestamp")
             .and_then(Value::as_str)
             .map(str::to_string)
-            .unwrap_or_else(crate::util::now_iso8601);
+            .unwrap_or_else(mustard_core::time::now_iso8601);
         let mut fm = Map::new();
         if let Some(s) = v.get("session").and_then(Value::as_str) {
             fm.insert("session_id".into(), json!(s));

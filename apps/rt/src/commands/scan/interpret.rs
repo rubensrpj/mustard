@@ -610,7 +610,7 @@ fn emit_economy_event(root: &Path, duration_ms: u128) {
         .unwrap_or_else(|| "unknown".to_string());
     let event = HarnessEvent {
         v: SCHEMA_VERSION,
-        ts: crate::util::now_iso8601(),
+        ts: mustard_core::time::now_iso8601(),
         session_id,
         wave: 0,
         actor: Actor { kind: ActorKind::Hook, id: Some("scan-cold-path".to_string()), actor_type: None },

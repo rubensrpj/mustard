@@ -578,7 +578,7 @@ fn find_cycles(adj: &BTreeMap<String, Vec<String>>) -> Vec<Vec<String>> {
 
 /// `orphans` — list skills not invoked within the lookback window.
 fn run_orphans(project_dir: &Path, days: i64, json_out: bool) -> ! {
-    let since_ms = (crate::util::now_millis() as i64) - days * 86_400_000;
+    let since_ms = (mustard_core::time::now_unix_millis() as u128 as i64) - days * 86_400_000;
     let skills = discover_skills(project_dir);
     let invocations = scan_invocations(project_dir, since_ms);
 
@@ -666,7 +666,7 @@ fn scan_invocations(project_dir: &Path, since_ms: i64) -> BTreeMap<String, Strin
                 if ts_str.is_empty() {
                     continue;
                 }
-                if let Some(ts_ms) = crate::commands::spec::complete_spec::parse_iso_millis(&ts_str) {
+                if let Some(ts_ms) = mustard_core::time::parse_iso_millis(&ts_str) {
                     if ts_ms < since_ms {
                         continue;
                     }

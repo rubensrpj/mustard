@@ -18,7 +18,7 @@
 //! Any per-window error is collected into the [`RunReport`] and reported as
 //! JSON. The subcommand always exits `0`.
 
-use crate::util::now_iso8601;
+use mustard_core::time::now_iso8601;
 use mustard_core::io::claude_paths::ClaudePaths;
 use mustard_core::platform::error::Result;
 use mustard_core::io::fs;

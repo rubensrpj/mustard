@@ -6,7 +6,7 @@
 //! re-install when the user already has the same skill.
 
 use crate::shared::context::session_id;
-use crate::util::now_iso8601;
+use mustard_core::time::now_iso8601;
 use crate::commands::skill::skill_fetch::SkillCacheFile;
 use mustard_core::io::fs::read_to_string;
 use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};

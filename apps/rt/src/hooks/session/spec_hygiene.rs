@@ -51,7 +51,7 @@ use serde_json::{json, Value};
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-use crate::util::{now_iso8601, now_millis};
+use mustard_core::time::now_iso8601;
 
 /// Recency window: a commit within this window (in ms) counts as "recent".
 const RECENT_COMMIT_MS: u128 = 72 * 60 * 60 * 1000;
@@ -324,12 +324,6 @@ mod ac_section_tests {
 // Timestamps + git
 // ---------------------------------------------------------------------------
 
-/// Parse an ISO-8601 `YYYY-MM-DDThh:mm:ss(.sss)?Z` string to epoch
-/// milliseconds. Returns `None` for any malformed input — the inverse of
-/// [`now_iso8601`]; no calendar crate dependency.
-fn iso_to_millis(ts: &str) -> Option<u128> {
-    mustard_core::time::parse_iso_millis(ts.trim()).map(|v| v as u128)
-}
 
 /// The ISO timestamp of the last git commit that touched `spec_dir`, via
 /// `git log --pretty=%cI -1 -- <spec_dir>`. Returns `None` on any failure
@@ -548,21 +542,21 @@ fn process_spec(
     spec_md: &str,
     mode: HygieneMode,
 ) {
-    let now = now_millis();
+    let now = mustard_core::time::now_unix_millis() as u128;
     let (ac_pct, ac_complete, has_ac) = ac_evidence(spec_md);
 
     // Last event of any kind for this spec — resolved from NDJSON (W3C).
     let last_event_at = last_event_at_from_ndjson(cwd, spec_name);
     let last_event_age_ms = last_event_at
         .as_deref()
-        .and_then(iso_to_millis)
+        .and_then(|s| mustard_core::time::parse_iso_millis(s).map(|v| v as u128))
         .map(|t| now.saturating_sub(t));
 
     // Last commit that touched the spec dir.
     let last_commit_at = last_commit_iso(Path::new(cwd), spec_dir);
     let last_commit_age_ms = last_commit_at
         .as_deref()
-        .and_then(iso_to_millis)
+        .and_then(|s| mustard_core::time::parse_iso_millis(s).map(|v| v as u128))
         .map(|t| now.saturating_sub(t));
 
     let evidence = Evidence {
@@ -754,9 +748,9 @@ mod tests {
 
     #[test]
     fn iso_round_trips_through_now() {
-        let now = now_millis();
+        let now = mustard_core::time::now_unix_millis() as u128;
         let iso = now_iso8601();
-        let parsed = iso_to_millis(&iso).expect("parse");
+        let parsed = mustard_core::time::parse_iso_millis(&iso).map(|v| v as u128).expect("parse");
         // Within one second of now (sub-ms rounding aside).
         assert!(now.abs_diff(parsed) < 2_000, "now={now} parsed={parsed}");
     }
@@ -764,6 +758,6 @@ mod tests {
     #[test]
     fn iso_parses_offset_form() {
         // git %cI form with a +00:00 offset — leading 19 chars are read.
-        assert!(iso_to_millis("2026-05-21T12:00:00+00:00").is_some());
+        assert!(mustard_core::time::parse_iso_millis("2026-05-21T12:00:00+00:00").is_some());
     }
 }

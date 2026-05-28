@@ -35,7 +35,7 @@
 //! duration_ms, tokens_used: 0, was_rust_only: true }` once per invocation.
 
 use crate::shared::context::{current_spec, session_id};
-use crate::util::now_iso8601;
+use mustard_core::time::now_iso8601;
 use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use mustard_core::platform::process::rtk_command;
 use serde::Serialize;

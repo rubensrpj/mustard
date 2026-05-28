@@ -30,7 +30,7 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use tempfile::TempDir;
 
-use crate::util::now_iso8601;
+use mustard_core::time::now_iso8601;
 
 /// Default manifest location, relative to the current directory (repo root).
 const DEFAULT_MANIFEST: &str = "apps/cli/templates/.artifacts.json";

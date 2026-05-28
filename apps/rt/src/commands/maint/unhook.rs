@@ -18,7 +18,7 @@
 //! `state: "missing"` instead of erroring; per-entry IO failures are captured
 //! in `state: "error"` so the rest of the sweep still completes.
 
-use crate::util::now_iso8601;
+use mustard_core::time::now_iso8601;
 use mustard_core::ClaudePaths;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
@@ -228,13 +228,6 @@ fn wipe_volatile_state(claude_dir: &Path) -> Vec<String> {
 
 /// Filename-safe variant of [`now_iso8601`] — `:` is illegal on NTFS, so
 /// `2026-05-24T12:34:56.789Z` becomes `2026-05-24T12-34-56`.
-pub(crate) fn filename_safe_timestamp() -> String {
-    let iso = now_iso8601();
-    iso.split('.')
-        .next()
-        .unwrap_or(&iso)
-        .replace(':', "-")
-}
 
 // ---------------------------------------------------------------------------
 // Entry point
@@ -252,7 +245,7 @@ pub fn run(opts: UnhookOpts) {
         std::process::exit(1);
     }
 
-    let timestamp_tag = filename_safe_timestamp();
+    let timestamp_tag = mustard_core::time::filename_safe_now();
     let dirs = collect_claude_dirs(&repo, scope, opts.confirm);
 
     let entries: Vec<DisabledEntry> = dirs
@@ -291,7 +284,7 @@ mod tests {
 
     #[test]
     fn filename_safe_timestamp_has_no_colons() {
-        let ts = filename_safe_timestamp();
+        let ts = mustard_core::time::filename_safe_now();
         assert!(!ts.contains(':'), "got {ts}");
         assert!(ts.contains('T'), "got {ts}");
     }

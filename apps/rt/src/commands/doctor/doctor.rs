@@ -26,7 +26,7 @@
 
 use crate::shared::context::{current_spec, session_id};
 use crate::commands::skill::skill_discovery_lint;
-use crate::util::now_iso8601;
+use mustard_core::time::now_iso8601;
 use crate::util::sha256::Sha256;
 use mustard_core::io::fs;
 use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
@@ -642,7 +642,7 @@ fn check_state_health(claude_dir: &Path) -> CheckResult {
 
     // 24 hours in milliseconds for closed-followup expiry.
     const FOLLOWUP_EXPIRY_MS: u128 = 24 * 60 * 60 * 1_000;
-    let now_ms = crate::util::now_millis();
+    let now_ms = mustard_core::time::now_unix_millis() as u128;
 
     for entry in entries {
         let path = entry.path.clone();
@@ -711,50 +711,12 @@ fn collect_active_spec_names(claude_dir: &Path) -> Vec<String> {
 /// Return true if `ts` (ISO-8601 string) is older than `expiry_ms` milliseconds
 /// relative to `now_ms`. Returns false on parse failure (fail-open).
 fn is_timestamp_expired(ts: &str, now_ms: u128, expiry_ms: u128) -> bool {
-    if ts.is_empty() {
+    // Fail-open: a malformed / empty timestamp is treated as not-expired.
+    let Some(ts_ms) = mustard_core::time::parse_iso_millis(ts) else {
         return false;
-    }
-    // Parse `YYYY-MM-DDThh:mm:ss` prefix — enough for expiry comparison.
-    let ts_bytes = ts.as_bytes();
-    if ts_bytes.len() < 19 {
-        return false;
-    }
-    let year: u64 = parse_digits(&ts[0..4]).unwrap_or(0);
-    let month: u64 = parse_digits(&ts[5..7]).unwrap_or(0);
-    let day: u64 = parse_digits(&ts[8..10]).unwrap_or(0);
-    let hour: u64 = parse_digits(&ts[11..13]).unwrap_or(0);
-    let minute: u64 = parse_digits(&ts[14..16]).unwrap_or(0);
-    let second: u64 = parse_digits(&ts[17..19]).unwrap_or(0);
-
-    if year == 0 || month == 0 || day == 0 {
-        return false;
-    }
-
-    // Approximate epoch seconds using a Julian Day Number calculation.
-    let ts_secs = approx_epoch_secs(year, month, day, hour, minute, second);
-    let ts_ms = (ts_secs as u128) * 1_000;
+    };
+    let ts_ms = ts_ms.max(0) as u128;
     now_ms.saturating_sub(ts_ms) > expiry_ms
-}
-
-/// Parse an ASCII decimal string slice, returning `None` on failure.
-fn parse_digits(s: &str) -> Option<u64> {
-    s.parse().ok()
-}
-
-/// Approximate Unix epoch seconds for a UTC date/time.
-/// Uses the proleptic Gregorian calendar (no daylight saving, no leap seconds).
-fn approx_epoch_secs(year: u64, month: u64, day: u64, hour: u64, minute: u64, second: u64) -> u64 {
-    // Days from epoch (1970-01-01) to the given date.
-    let y = if month <= 2 { year - 1 } else { year };
-    let m = if month <= 2 { month + 9 } else { month - 3 };
-    let era = y / 400;
-    let yoe = y - era * 400;
-    let doy = (153 * m + 2) / 5 + day - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    let days = era * 146_097 + doe;
-    // Days since 1970-01-01 (day 719_468 in the proleptic Gregorian calendar).
-    let since_epoch = days.saturating_sub(719_468);
-    since_epoch * 86_400 + hour * 3_600 + minute * 60 + second
 }
 
 // ---------------------------------------------------------------------------
@@ -947,7 +909,7 @@ fn scan_for_any_nerd_font(dir: &Path) -> bool {
 
 /// Print the compact OK/WARN/FAIL/SKIP report to stdout.
 fn render_report(results: &[CheckResult]) {
-    let timestamp = crate::util::now_iso8601();
+    let timestamp = mustard_core::time::now_iso8601();
     println!("mustard doctor — {timestamp}");
     println!("{}", "─".repeat(40));
     for r in results {

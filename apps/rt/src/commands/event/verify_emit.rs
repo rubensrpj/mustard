@@ -80,7 +80,7 @@ fn scan(events: &[HarnessEvent], args: &Args, now_ms: i64) -> VerifyOutcome {
         if ev.ts.is_empty() {
             continue;
         }
-        let Some(ts_ms) = crate::commands::spec::complete_spec::parse_iso_millis(&ev.ts) else {
+        let Some(ts_ms) = mustard_core::time::parse_iso_millis(&ev.ts) else {
             continue;
         };
         if ts_ms < cutoff {
@@ -154,7 +154,7 @@ pub fn run(
     }
     events.sort_by(|a, b| a.ts.cmp(&b.ts));
 
-    let now_ms = crate::util::now_millis() as i64;
+    let now_ms = mustard_core::time::now_unix_millis() as u128 as i64;
     match scan(&events, &args, now_ms) {
         VerifyOutcome::Found { age_secs } => {
             if !args.quiet {
@@ -230,7 +230,7 @@ mod tests {
     #[test]
     fn scan_finds_recent_event() {
         let events = vec![ev("close-gate.check", "2026-05-19T00:00:00.000Z", json!({}))];
-        let now = crate::commands::spec::complete_spec::parse_iso_millis("2026-05-19T00:00:05.000Z").unwrap();
+        let now = mustard_core::time::parse_iso_millis("2026-05-19T00:00:05.000Z").unwrap();
         let r = scan(&events, &args("close-gate.check"), now);
         assert_eq!(r, VerifyOutcome::Found { age_secs: 5 });
     }
@@ -239,7 +239,7 @@ mod tests {
     fn scan_misses_old_event() {
         let events = vec![ev("close-gate.check", "2026-05-19T00:00:00.000Z", json!({}))];
         // 10 minutes later, default 30s window.
-        let now = crate::commands::spec::complete_spec::parse_iso_millis("2026-05-19T00:10:00.000Z").unwrap();
+        let now = mustard_core::time::parse_iso_millis("2026-05-19T00:10:00.000Z").unwrap();
         assert_eq!(scan(&events, &args("close-gate.check"), now), VerifyOutcome::Miss);
     }
 
@@ -249,7 +249,7 @@ mod tests {
             ev("qa", "2026-05-19T00:00:00.000Z", json!({ "result": "fail" })),
             ev("qa", "2026-05-19T00:00:01.000Z", json!({ "result": "pass" })),
         ];
-        let now = crate::commands::spec::complete_spec::parse_iso_millis("2026-05-19T00:00:02.000Z").unwrap();
+        let now = mustard_core::time::parse_iso_millis("2026-05-19T00:00:02.000Z").unwrap();
         let mut a = args("qa");
         a.payload_key = Some("result".to_string());
         a.payload_value = Some("pass".to_string());

@@ -54,7 +54,7 @@
 
 use crate::shared::context::project_dir;
 use crate::commands::scan::graph::{self, GraphIndex};
-use crate::util::now_iso8601;
+use mustard_core::time::now_iso8601;
 use crate::util::sha256::Sha256;
 use mustard_core::io::fs as mfs;
 use mustard_core::platform::metrics::{MetricLine, emit_metric};

@@ -10,7 +10,7 @@
 use crate::commands::economy::economy_capture_baseline::{file_path_for, BaselineEntry, BaselineFile};
 use crate::shared::context::{current_spec, session_id};
 use crate::shared::events::route;
-use crate::util::now_iso8601;
+use mustard_core::time::now_iso8601;
 use mustard_core::io::events::reader::EventReader;
 use mustard_core::io::fs::{read_to_string, write_atomic};
 use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};

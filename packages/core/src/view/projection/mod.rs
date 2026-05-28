@@ -127,10 +127,6 @@ pub(crate) fn extract_to_phase(ev: &HarnessEvent) -> Option<Phase> {
 
 
 // Parsing ISO-8601 → epoch millis now lives in the single canonical home
-// `crate::platform::time`. Re-exported here so existing
-// `projection::parse_iso_millis` callers keep resolving while the impl is
-// shared with every other consumer.
-pub use crate::platform::time::parse_iso_millis;
 
 #[cfg(test)]
 mod tests {

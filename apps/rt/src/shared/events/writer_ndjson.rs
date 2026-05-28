@@ -57,7 +57,7 @@
 // path-resolver used by tests and the dashboard reader contract.
 
 use crate::shared::events::blob_spill::{maybe_spill, BlobRef, SpillOutcome};
-use crate::util::now_iso8601;
+use mustard_core::time::now_iso8601;
 use mustard_core::io::claude_paths::ClaudePaths;
 use mustard_core::io::fs;
 use serde::Serialize;
@@ -242,7 +242,7 @@ fn write_event_inner(
     let ts: String = ts_override
         .filter(|s| !s.is_empty())
         .map_or_else(now_iso8601, ToString::to_string);
-    let ts_ms = epoch_ms_from_iso(&ts);
+    let ts_ms = mustard_core::time::parse_iso_millis(&ts).unwrap_or(0);
 
     // Pre-extract render hints from the payload — tokens + duration are the
     // dashboard's three most-read fields per row.
@@ -399,18 +399,6 @@ fn blob_ref_to_value(r: &BlobRef) -> Value {
     })
 }
 
-/// Parse an ISO-8601 timestamp (`YYYY-MM-DDThh:mm:ss.sssZ`) into epoch
-/// milliseconds. Returns 0 on parse failure so the line still writes.
-///
-/// Avoids pulling in `chrono` — the harness emits a fixed-width shape from
-/// [`now_iso8601`] so a hand-rolled parse stays cheap. Implementation: count
-/// whole years from 1970, sum their day counts (Gregorian leap rule), then add
-/// the running month / day / hh / mm / ss / ms. Faster than the Hinnant
-/// algorithm at the cost of a 30-cycle linear year sum — fine for the ~25
-/// year range Mustard ever sees.
-fn epoch_ms_from_iso(ts: &str) -> i64 {
-    mustard_core::time::parse_iso_millis(ts).unwrap_or(0)
-}
 
 /// of 400 (1900 not leap, 2000 leap).
 
@@ -517,7 +505,7 @@ mod tests {
     fn epoch_ms_round_trips_a_known_timestamp() {
         // 2026-05-24T00:00:00.000Z. Verified externally:
         //   echo $(( ( $(date -d '2026-05-24' +%s) ) * 1000 ))  → 1779580800000
-        let ms = epoch_ms_from_iso("2026-05-24T00:00:00.000Z");
+        let ms = mustard_core::time::parse_iso_millis("2026-05-24T00:00:00.000Z").unwrap_or(0);
         assert_eq!(ms, 1_779_580_800_000);
     }
 
@@ -525,8 +513,8 @@ mod tests {
     fn epoch_ms_handles_leap_year_in_march() {
         // 2024 is a leap year → 2024-03-01 sits one day later than non-leap.
         // Non-leap (2025-03-01): 20148 days * 86_400_000.
-        let leap = epoch_ms_from_iso("2024-03-01T00:00:00.000Z");
-        let non = epoch_ms_from_iso("2023-03-01T00:00:00.000Z");
+        let leap = mustard_core::time::parse_iso_millis("2024-03-01T00:00:00.000Z").unwrap_or(0);
+        let non = mustard_core::time::parse_iso_millis("2023-03-01T00:00:00.000Z").unwrap_or(0);
         // 366 days between the two.
         assert_eq!(leap - non, 366 * 86_400_000);
     }

@@ -30,7 +30,7 @@ use serde_json::{Value, json};
 use std::path::Path;
 
 use crate::shared::context::current_spec;
-use crate::util::now_iso8601;
+use mustard_core::time::now_iso8601;
 
 /// Emit a `pipeline.economy.savings.model-routing-downgrade` NDJSON event for
 /// a Task dispatch rerouted from a more expensive model to a cheaper one.

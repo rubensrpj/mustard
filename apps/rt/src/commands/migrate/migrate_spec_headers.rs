@@ -53,7 +53,7 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
-use crate::util::now_iso8601;
+use mustard_core::time::now_iso8601;
 
 /// Options for `mustard-rt run migrate-spec-headers`.
 pub struct MigrateOpts {

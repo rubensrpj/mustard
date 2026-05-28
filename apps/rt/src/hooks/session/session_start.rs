@@ -60,7 +60,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::UNIX_EPOCH;
 
-use crate::util::now_iso8601;
+use mustard_core::time::now_iso8601;
 
 /// Archived sessions older than this are pruned on `SessionStart` (30 days).
 const RETENTION_MS: u128 = 30 * 24 * 60 * 60 * 1000;
@@ -174,7 +174,7 @@ fn prune_old_sessions(sessions_dir: &Path) {
     let Ok(entries) = fs::read_dir(sessions_dir) else {
         return;
     };
-    let now = crate::util::now_millis();
+    let now = mustard_core::time::now_unix_millis() as u128;
     for entry in entries {
         if !std::path::Path::new(&entry.file_name)
             .extension()

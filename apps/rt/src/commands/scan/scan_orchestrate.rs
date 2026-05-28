@@ -18,7 +18,7 @@ use crate::commands::scan::scan_precompute::{
     backup_generated_mds, build_structure_block, build_tooling_block, ensure_notes_md,
     purge_generated_skills,
 };
-use crate::util::now_iso8601;
+use mustard_core::time::now_iso8601;
 use mustard_core::io::fs;
 use mustard_core::ClaudePaths;
 use serde_json::{json, Value};

@@ -44,7 +44,7 @@ use serde_json::{Map, Value, json};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use crate::util::now_iso8601;
+use mustard_core::time::now_iso8601;
 
 /// Max memory entries persisted per session — `MAX_ENTRIES_PER_SESSION`.
 const MAX_ENTRIES_PER_SESSION: usize = 5;
@@ -82,11 +82,6 @@ fn session_id(input: &HookInput) -> String {
 
 /// Current time as milliseconds since the Unix epoch.
 
-/// Parse the `YYYY-MM-DDThh:mm:ss` prefix of an ISO-8601 string into epoch
-/// millis; `0` on failure.
-fn parse_iso_millis(iso: &str) -> u128 {
-    mustard_core::time::parse_iso_millis(iso).unwrap_or(0) as u128
-}
 
 // ===========================================================================
 // Friction extraction — port of _lib/knowledge-extract.js
@@ -414,7 +409,7 @@ fn run_session_knowledge_inc(cwd: &str) {
         .unwrap_or_else(|| json!({ "_meta": { "recentExtractions": [] } }));
 
     // Throttle: prune the rolling window, bail when full.
-    let now = crate::util::now_millis();
+    let now = mustard_core::time::now_unix_millis() as u128;
     let mut recent: Vec<String> = seen
         .get("_meta")
         .and_then(|m| m.get("recentExtractions"))
@@ -422,7 +417,7 @@ fn run_session_knowledge_inc(cwd: &str) {
         .map(|a| {
             a.iter()
                 .filter_map(|v| v.as_str())
-                .filter(|ts| now.saturating_sub(parse_iso_millis(ts)) < THROTTLE_WINDOW_MS)
+                .filter(|ts| now.saturating_sub(mustard_core::time::parse_iso_millis(ts).unwrap_or(0) as u128) < THROTTLE_WINDOW_MS)
                 .map(str::to_string)
                 .collect()
         })

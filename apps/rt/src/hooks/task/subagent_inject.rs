@@ -417,7 +417,7 @@ fn span_level_eval_and_append_in(
     let entry = VerdictEntry {
         verdict: verdict_label.to_string(),
         child_id: child_id_from_input(input),
-        iso_ts: crate::util::now_iso8601(),
+        iso_ts: mustard_core::time::now_iso8601(),
         signal_count,
         first_message,
     };
@@ -549,7 +549,7 @@ fn emit_economy_operation(cwd: &str, operation: &str) {
 
     let event = HarnessEvent {
         v: SCHEMA_VERSION,
-        ts: crate::util::now_iso8601(),
+        ts: mustard_core::time::now_iso8601(),
         session_id: crate::shared::context::session_id(),
         wave: 0,
         actor: Actor {
@@ -726,7 +726,7 @@ mod tests {
                 &VerdictEntry {
                     verdict: VERDICT_RED.to_string(),
                     child_id: "synthetic-red".to_string(),
-                    iso_ts: crate::util::now_iso8601(),
+                    iso_ts: mustard_core::time::now_iso8601(),
                     signal_count: 1,
                     first_message: "synthetic Red to exercise AC-A-7".to_string(),
                 },

@@ -151,7 +151,7 @@ pub fn sync_status(stage: Stage, outcome: Outcome, spec_path: &Path) -> Result<(
     meta.stage = Some(spec::stage_label(stage).to_string());
     meta.outcome = Some(spec::outcome_label(outcome).to_string());
     // Checkpoint is updated to "now" so collaborators can detect drift by ts.
-    meta.checkpoint = Some(crate::util::now_iso8601());
+    meta.checkpoint = Some(mustard_core::time::now_iso8601());
     write_meta(&meta_path, &meta)
         .map_err(|e| format!("sync_status: write meta.json ({}): {e}", meta_path.display()))?;
 

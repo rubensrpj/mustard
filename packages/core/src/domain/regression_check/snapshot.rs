@@ -37,7 +37,6 @@ use crate::domain::ast::{AstError, GrammarLoader, TreeSitterParser, extract_func
 use crate::domain::spec::touched_functions::{self, Qualifier, TouchedFunction, TouchedFunctions};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Typed error surface for the snapshot capture path.
 ///

@@ -34,7 +34,6 @@ use mustard_core::domain::economy::{
     self,
     model::{SavingsRecord, SavingsSource},
     scope::{ProjectPath, SpecId},
-    sources::time::now_iso,
 };
 use mustard_core::io::fs;
 use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
@@ -43,7 +42,7 @@ use std::path::Path;
 
 use crate::shared::context::current_spec;
 use crate::shared::events::route;
-use crate::util::now_iso8601;
+use mustard_core::time::now_iso8601;
 
 /// Dispatch `mustard-rt run recipe-match`.
 pub fn run(entity: Option<&str>, operation: Option<&str>, subproject: Option<&str>) {
@@ -182,7 +181,7 @@ fn persist_injection_savings(matched: &Value, cwd: &Path) {
     let spec_id = current_spec(&cwd_str).map(SpecId::new);
 
     let record = SavingsRecord {
-        ts: now_iso(),
+        ts: now_iso8601(),
         source: SavingsSource::RecipeInjection,
         tokens_saved: tokens,
         model_target: None,

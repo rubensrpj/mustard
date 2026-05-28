@@ -27,7 +27,7 @@ use std::process::{Command, Stdio};
 
 use crate::shared::context::{current_spec, project_dir, session_id};
 use crate::shared::events::route;
-use crate::util::now_iso8601;
+use mustard_core::time::now_iso8601;
 
 /// Normalised `rtk gain` summary — the fields `metrics.js` consumed.
 #[derive(Debug, Clone)]

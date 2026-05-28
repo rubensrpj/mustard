@@ -14,7 +14,7 @@
 //! unchanged (fail-open).
 
 use crate::shared::context::session_id;
-use crate::util::now_iso8601;
+use mustard_core::time::now_iso8601;
 use mustard_core::platform::i18n::{translate, SupportedLocale as Locale};
 use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use serde::Serialize;

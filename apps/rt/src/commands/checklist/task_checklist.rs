@@ -19,7 +19,7 @@
 //! Unknown domains return the `consistency` list (the documented fallback).
 
 use crate::shared::context::session_id;
-use crate::util::now_iso8601;
+use mustard_core::time::now_iso8601;
 use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use serde::Serialize;
 use serde_json::json;

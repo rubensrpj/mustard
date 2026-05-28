@@ -49,7 +49,7 @@ use std::path::Path;
 use std::time::{Duration, SystemTime};
 
 use crate::commands::{PipelineStateView, pipeline_state_from_events};
-use crate::util::now_iso8601;
+use mustard_core::time::now_iso8601;
 
 /// The consolidated Write/Edit path-boundary module.
 pub struct PathGuard;

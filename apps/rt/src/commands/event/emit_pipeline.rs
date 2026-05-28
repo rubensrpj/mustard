@@ -17,7 +17,7 @@
 //! break the pipeline.
 
 use crate::shared::context::{project_dir, session_id};
-use crate::util::now_iso8601;
+use mustard_core::time::now_iso8601;
 use mustard_core::io::claude_paths::ClaudePaths;
 use mustard_core::domain::model::event::{
     Actor, ActorKind, HarnessEvent, SCHEMA_VERSION,

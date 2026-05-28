@@ -136,7 +136,7 @@ fn write_metrics(harness_dir: &Path, body: &Value, now_ms: i64) -> usize {
         let payload = metric_payload(&row);
         // ts_override is the row's bucket so cross-session aggregation can
         // re-bucket without re-clocking.
-        let ts = ms_to_iso(row.ts_bucket);
+        let ts = mustard_core::time::millis_to_iso(row.ts_bucket);
         let outcome = writer_ndjson::write_event_with_ts(
             &project,
             None,           // spec — collector is cross-spec
@@ -155,7 +155,7 @@ fn write_metrics(harness_dir: &Path, body: &Value, now_ms: i64) -> usize {
             written += 1;
         } else {
             canary(harness_dir, &json!({
-                "ts": crate::util::now_iso8601(),
+                "ts": mustard_core::time::now_iso8601(),
                 "level": "warn",
                 "route": "/v1/metrics",
                 "msg": "ndjson write failed",
@@ -193,7 +193,7 @@ fn write_traces(harness_dir: &Path, body: &Value) -> usize {
         Ok(s) => s,
         Err(e) => {
             canary(harness_dir, &json!({
-                "ts": crate::util::now_iso8601(),
+                "ts": mustard_core::time::now_iso8601(),
                 "level": "warn", "route": "/v1/traces",
                 "msg": "reserialize failed", "err": e.to_string(),
             }));
@@ -204,7 +204,7 @@ fn write_traces(harness_dir: &Path, body: &Value) -> usize {
         Ok(v) => v,
         Err(e) => {
             canary(harness_dir, &json!({
-                "ts": crate::util::now_iso8601(),
+                "ts": mustard_core::time::now_iso8601(),
                 "level": "warn", "route": "/v1/traces",
                 "msg": "sources::otel::ingest failed", "err": e.to_string(),
             }));
@@ -244,7 +244,7 @@ fn write_traces(harness_dir: &Path, body: &Value) -> usize {
             written += 1;
         } else {
             canary(harness_dir, &json!({
-                "ts": crate::util::now_iso8601(),
+                "ts": mustard_core::time::now_iso8601(),
                 "level": "warn", "route": "/v1/traces",
                 "msg": "ndjson write failed",
                 "span_id": rec.span_id,
@@ -254,12 +254,6 @@ fn write_traces(harness_dir: &Path, body: &Value) -> usize {
     written
 }
 
-/// Format an ms-epoch instant as an ISO-8601 UTC string. Mirrors the small
-/// civil-date helper in `diagnose.rs` so the collector and the diagnose face
-/// agree on the timestamp shape they emit/read.
-fn ms_to_iso(ms: i64) -> String {
-    super::diagnose::iso_from_ms(ms)
-}
 
 /// Dispatch `mustard-rt run otel-collector`. Runs until a shutdown signal or
 /// a fatal bind failure; this function does not return on the happy path
@@ -277,7 +271,7 @@ pub fn run() {
         Err(e) => {
             // EADDRINUSE (another collector bound) or any bind failure.
             canary(&harness_dir, &json!({
-                "ts": crate::util::now_iso8601(),
+                "ts": mustard_core::time::now_iso8601(),
                 "level": "fatal", "msg": "bind failed",
                 "port": port, "err": e.to_string(),
             }));
@@ -287,7 +281,7 @@ pub fn run() {
 
     let shutdown = Arc::new(AtomicBool::new(false));
     canary(&harness_dir, &json!({
-        "ts": crate::util::now_iso8601(),
+        "ts": mustard_core::time::now_iso8601(),
         "level": "info", "msg": "collector listening",
         "host": "127.0.0.1", "port": port, "pid": std::process::id(),
     }));
@@ -326,11 +320,11 @@ fn handle_one(mut request: tiny_http::Request, harness_dir: &Path) {
         return;
     }
 
-    let t0 = crate::util::now_millis();
+    let t0 = mustard_core::time::now_unix_millis() as u128;
     let mut buf = String::new();
     if request.as_reader().read_to_string(&mut buf).is_err() {
         canary(harness_dir, &json!({
-            "ts": crate::util::now_iso8601(),
+            "ts": mustard_core::time::now_iso8601(),
             "level": "error", "route": route, "msg": "body read failed",
         }));
         let _ = request.respond(Response::from_string("bad request").with_status_code(400));
@@ -341,7 +335,7 @@ fn handle_one(mut request: tiny_http::Request, harness_dir: &Path) {
         Ok(v) => v,
         Err(e) => {
             canary(harness_dir, &json!({
-                "ts": crate::util::now_iso8601(),
+                "ts": mustard_core::time::now_iso8601(),
                 "level": "error", "route": route,
                 "msg": "parse failed",
                 "err": e.to_string().chars().take(200).collect::<String>(),
@@ -351,11 +345,11 @@ fn handle_one(mut request: tiny_http::Request, harness_dir: &Path) {
         }
     };
 
-    let now_ms = i64::try_from(crate::util::now_millis()).unwrap_or(i64::MAX);
+    let now_ms = i64::try_from(mustard_core::time::now_unix_millis() as u128).unwrap_or(i64::MAX);
     let count = project_into_ndjson(harness_dir, &route, &body, now_ms);
-    let latency = crate::util::now_millis().saturating_sub(t0);
+    let latency = (mustard_core::time::now_unix_millis() as u128).saturating_sub(t0);
     canary(harness_dir, &json!({
-        "ts": crate::util::now_iso8601(),
+        "ts": mustard_core::time::now_iso8601(),
         "route": route, "count": count, "latency_ms": latency,
     }));
 

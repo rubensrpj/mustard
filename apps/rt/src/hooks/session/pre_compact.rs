@@ -32,7 +32,7 @@ use serde_json::Value;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-use crate::util::now_iso8601;
+use mustard_core::time::now_iso8601;
 
 /// The `PreCompact` context-snapshot module.
 pub struct PreCompact;

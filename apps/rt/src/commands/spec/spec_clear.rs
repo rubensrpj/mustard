@@ -55,7 +55,7 @@
 //! continues.
 
 use crate::shared::context::project_dir;
-use crate::util::now_iso8601;
+use mustard_core::time::now_iso8601;
 use mustard_core::io::fs;
 use mustard_core::domain::meta::read_meta_beside;
 use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
@@ -238,7 +238,7 @@ fn collect_and_act(repo: &Path, opts: &SpecClearOpts) -> Report {
             continue;
         }
 
-        let last_event_at = last_mtime_ms.map(iso_from_epoch_ms);
+        let last_event_at = last_mtime_ms.map(mustard_core::time::millis_to_iso);
         candidates.push(Candidate {
             spec: slug.clone(),
             age_days,
@@ -304,11 +304,6 @@ fn walk_inner(dir: &Path, inside_events: bool, latest: &mut Option<i64>) {
     }
 }
 
-/// Render epoch ms to ISO-8601 (`YYYY-MM-DDThh:mm:ss.sssZ`). Hand-rolled to
-/// stay dependency-free (matches `util::now_iso8601`).
-fn iso_from_epoch_ms(ms: i64) -> String {
-    mustard_core::time::millis_to_iso(ms)
-}
 
 /// Best-effort emit a `spec.clear.run` summary event into the harness store.
 /// Fail-open — the report is the user-facing artifact.

@@ -335,8 +335,8 @@ fn build_epic_summary(events: &[HarnessEvent], cwd: &Path, epic: &str) -> Value 
         }
     }
     let duration_ms = match (
-        min_ts.as_deref().and_then(crate::commands::spec::complete_spec::parse_iso_millis),
-        max_ts.as_deref().and_then(crate::commands::spec::complete_spec::parse_iso_millis),
+        min_ts.as_deref().and_then(mustard_core::time::parse_iso_millis),
+        max_ts.as_deref().and_then(mustard_core::time::parse_iso_millis),
     ) {
         (Some(a), Some(b)) => (b - a).max(0),
         _ => 0,
@@ -536,10 +536,10 @@ fn build_spec_node(
 /// `review.start` / `review.complete` events within the last `days`.
 fn build_pr_metrics(events: &[HarnessEvent], cwd: &Path, days: i64) -> Value {
     let _ = cwd;
-    let now_ms = crate::util::now_millis() as i64;
+    let now_ms = mustard_core::time::now_unix_millis() as u128 as i64;
     let from_ms = now_ms - days * 86_400_000;
     let in_window = |ts: &str| -> bool {
-        crate::commands::spec::complete_spec::parse_iso_millis(ts)
+        mustard_core::time::parse_iso_millis(ts)
             .is_some_and(|t| t >= from_ms && t <= now_ms)
     };
     let pair_key = |ev: &HarnessEvent| -> Option<String> {
@@ -578,14 +578,14 @@ fn build_pr_metrics(events: &[HarnessEvent], cwd: &Path, days: i64) -> Value {
         let mut durations = Vec::new();
         for s in starts.iter() {
             let Some(key) = pair_key(s) else { continue };
-            let Some(s_ms) = crate::commands::spec::complete_spec::parse_iso_millis(&s.ts) else {
+            let Some(s_ms) = mustard_core::time::parse_iso_millis(&s.ts) else {
                 continue;
             };
             for (i, e) in sorted_ends.iter().enumerate() {
                 if used[i] {
                     continue;
                 }
-                let Some(e_ms) = crate::commands::spec::complete_spec::parse_iso_millis(&e.ts) else {
+                let Some(e_ms) = mustard_core::time::parse_iso_millis(&e.ts) else {
                     continue;
                 };
                 if e_ms < s_ms || pair_key(e) != Some(key.clone()) {
@@ -672,7 +672,7 @@ fn build_pr_metrics(events: &[HarnessEvent], cwd: &Path, days: i64) -> Value {
 fn build_active_pipelines(events: &[HarnessEvent], cwd: &Path) -> Value {
     use std::collections::BTreeMap;
 
-    let now_ms = crate::util::now_millis() as i64;
+    let now_ms = mustard_core::time::now_unix_millis() as u128 as i64;
     // 30-day window in milliseconds.
     let cutoff_ms = now_ms - 30 * 86_400_000;
 
@@ -776,28 +776,16 @@ fn build_active_pipelines(events: &[HarnessEvent], cwd: &Path) -> Value {
                 // Use spec.md mtime as a proxy for "when the spec was written".
                 std::fs::metadata(&spec_md_path)
                     .and_then(|m| m.modified())
-                    .map_or_else(|_| crate::util::now_iso8601(), |mtime| {
+                    .map_or_else(|_| mustard_core::time::now_iso8601(), |mtime| {
                         use std::time::UNIX_EPOCH;
                         let secs = mtime
                             .duration_since(UNIX_EPOCH)
                             .map_or(0, |d| d.as_secs() as i64);
-                        // Format as ISO-8601 seconds precision (same algorithm as
-                        // `header_emit_timestamp` in mustard-core/projection/card.rs).
-                        let days = secs.div_euclid(86_400);
-                        let tod  = secs.rem_euclid(86_400);
-                        let z = days + 719_468;
-                        let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-                        let doe = z - era * 146_097;
-                        let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
-                        let y_raw = yoe + era * 400;
-                        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-                        let mp  = (5 * doy + 2) / 153;
-                        let d   = (doy - (153 * mp + 2) / 5 + 1) as u32;
-                        let m   = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
-                        let y   = if m <= 2 { y_raw + 1 } else { y_raw };
-                        let h   = (tod / 3_600) as u32;
-                        let mi  = ((tod % 3_600) / 60) as u32;
-                        let s   = (tod % 60) as u32;
+                        // Seconds-precision ISO sentinel (no `.mmm`); the
+                        // calendar math lives in `mustard_core::time`.
+                        let tod = secs.rem_euclid(86_400);
+                        let (y, m, d) = mustard_core::time::civil_from_days(secs.div_euclid(86_400));
+                        let (h, mi, s) = (tod / 3_600, (tod % 3_600) / 60, tod % 60);
                         format!("{y:04}-{m:02}-{d:02}T{h:02}:{mi:02}:{s:02}Z")
                     })
             });
@@ -818,7 +806,7 @@ fn build_active_pipelines(events: &[HarnessEvent], cwd: &Path) -> Value {
                 return false;
             }
             // Exclude specs with no activity in the last 30 days.
-            let ts_ms = crate::commands::spec::complete_spec::parse_iso_millis(last_ts).unwrap_or(0);
+            let ts_ms = mustard_core::time::parse_iso_millis(last_ts).unwrap_or(0);
             ts_ms >= cutoff_ms
         })
         .map(|(spec, (last_event_at, last_stage))| {
@@ -1216,8 +1204,8 @@ pub fn pipeline_state_from_events(
     view.last_dispatch_failure = match raw_failure {
         None => None,
         Some((payload, Some(at_str))) => {
-            let now_ms = i64::try_from(crate::util::now_millis()).unwrap_or(i64::MAX);
-            let age_ms = crate::commands::spec::complete_spec::parse_iso_millis(&at_str)
+            let now_ms = i64::try_from(mustard_core::time::now_unix_millis() as u128).unwrap_or(i64::MAX);
+            let age_ms = mustard_core::time::parse_iso_millis(&at_str)
                 .map_or(0, |at_ms| now_ms - at_ms);
             if age_ms > DISPATCH_FAILURE_TTL_MS {
                 None // stale — cleared per /resume Step 0 contract
@@ -1487,7 +1475,7 @@ mod tests {
     #[test]
     fn ps_fresh_dispatch_failure_kept() {
         // Use the current time as the failure timestamp — guarantees freshness.
-        let recent_ts = crate::util::now_iso8601();
+        let recent_ts = mustard_core::time::now_iso8601();
 
         let events = vec![pipeline_ev(
             EVENT_PIPELINE_DISPATCH_FAILURE, "spec-f",

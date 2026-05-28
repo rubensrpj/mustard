@@ -33,7 +33,7 @@ use serde_json::json;
 use std::path::{Path, PathBuf};
 
 use crate::shared::context::project_dir as env_project_dir;
-use crate::util::now_iso8601;
+use mustard_core::time::now_iso8601;
 
 /// Options for `mustard-rt run migrate-to-meta`.
 pub struct MigrateToMetaOpts {

@@ -12,7 +12,7 @@
 //! present?" without re-walking the filesystem.
 
 use crate::shared::context::{current_spec, session_id};
-use crate::util::now_iso8601;
+use mustard_core::time::now_iso8601;
 use mustard_core::io::fs::{read_to_string, write_atomic};
 use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use mustard_core::platform::process::rtk_command;

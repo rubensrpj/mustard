@@ -37,7 +37,7 @@ use serde_json::json;
 
 use crate::commands::git_flow;
 use crate::commands::init::{
-    ensure_global_permissions, ensure_ripgrep, ensure_rtk, resolve_templates_dir, timestamp_slug,
+    ensure_global_permissions, ensure_ripgrep, ensure_rtk, resolve_templates_dir,
 };
 use crate::fs_ops::{copy_dir, merge_json};
 
@@ -170,7 +170,7 @@ fn copy_settings(templates_dir: &Path, claude_path: &Path) -> Result<usize> {
 
 /// Copy `.claude/` to a timestamped `.backup.` sibling and return its path.
 fn backup_claude_dir(claude_path: &Path) -> Result<std::path::PathBuf> {
-    let stamp = timestamp_slug();
+    let stamp = mustard_core::time::filename_safe_now();
     let name = claude_path
         .file_name()
         .map_or_else(|| ".claude".to_string(), |n| n.to_string_lossy().into_owned());

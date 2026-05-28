@@ -28,7 +28,7 @@ use serde_json::json;
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use crate::util::now_iso8601;
+use mustard_core::time::now_iso8601;
 
 /// Skill count above which the audit warns. Port of `WARN_THRESHOLD`.
 const WARN_THRESHOLD: usize = 10;

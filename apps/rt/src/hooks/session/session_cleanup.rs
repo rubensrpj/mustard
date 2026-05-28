@@ -47,7 +47,7 @@ use std::time::UNIX_EPOCH;
 
 use crate::shared::context::current_spec;
 use crate::shared::events::route;
-use crate::util::now_iso8601;
+use mustard_core::time::now_iso8601;
 
 /// Build + route a `HarnessEvent` from `(event_name, payload)` produced by an
 /// `economy::writer::*_event` builder. Fail-open per the router's contract.
@@ -232,7 +232,7 @@ fn clean_compact_state(claude_dir: &Path) {
     let Ok(entries) = fs::read_dir(&dir) else {
         return;
     };
-    let now = crate::util::now_millis();
+    let now = mustard_core::time::now_unix_millis() as u128;
     let mut remaining = 0;
     for entry in entries {
         let Ok(modified) = fs::modified(&entry.path) else {
@@ -455,7 +455,7 @@ fn ingest_rtk_savings(cwd: &str, session_id: Option<&str>) {
 /// Best-effort: any IO error degrades to a no-op — telemetry retention must
 /// never abort session cleanup.
 pub(crate) fn prune_telemetry(cwd: &str) {
-    let now_ms = crate::util::now_millis().min(i64::MAX as u128) as i64;
+    let now_ms = (mustard_core::time::now_unix_millis() as u128).min(i64::MAX as u128) as i64;
     let cutoff_ms = now_ms.saturating_sub(TELEMETRY_RETENTION_DAYS.saturating_mul(86_400_000));
     prune_telemetry_with_cutoff(cwd, cutoff_ms);
 }

@@ -13,7 +13,7 @@
 
 use crate::shared::context::{current_spec, session_id};
 use crate::commands::spec::spec_scaffold;
-use crate::util::now_iso8601;
+use mustard_core::time::now_iso8601;
 use mustard_core::io::claude_paths::ClaudePaths;
 use mustard_core::io::fs::write_atomic;
 use mustard_core::platform::i18n::{slugify, Locale};

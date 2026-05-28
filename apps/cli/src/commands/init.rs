@@ -239,7 +239,7 @@ fn decide_existing_action(claude_path: &Path, options: &InitOptions) -> Result<E
 
 /// Copy `.claude/` to a timestamped `.backup.` sibling.
 fn backup_claude_dir(claude_path: &Path) -> Result<()> {
-    let stamp = timestamp_slug();
+    let stamp = mustard_core::time::filename_safe_now();
     let backup = claude_path.with_file_name(format!(
         "{}.backup.{stamp}",
         claude_path
@@ -258,29 +258,6 @@ fn backup_claude_dir(claude_path: &Path) -> Result<()> {
 /// monotonic uniqueness — not calendar exactness — is what matters.
 ///
 /// Shared with `update`, which names its backup the same way.
-pub(crate) fn timestamp_slug() -> String {
-    let secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs());
-    let days = secs / 86_400;
-    let tod = secs % 86_400;
-    let (hh, mm, ss) = (tod / 3600, (tod % 3600) / 60, tod % 60);
-
-    // Civil-date conversion (Howard Hinnant's algorithm), epoch shifted to
-    // 0000-03-01 so leap days fall at the end of the cycle.
-    let z = days as i64 + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = doy - (153 * mp + 2) / 5 + 1;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 };
-    let year = if month <= 2 { y + 1 } else { y };
-
-    format!("{year:04}-{month:02}-{day:02}T{hh:02}-{mm:02}-{ss:02}")
-}
 
 /// Print the post-copy summary line.
 fn report_copy(count: usize, github_count: usize, fresh: bool) {
@@ -675,7 +652,7 @@ mod tests {
 
     #[test]
     fn timestamp_slug_has_expected_shape() {
-        let slug = timestamp_slug();
+        let slug = mustard_core::time::filename_safe_now();
         // YYYY-MM-DDTHH-MM-SS
         assert_eq!(slug.len(), 19);
         assert_eq!(&slug[4..5], "-");

@@ -11,7 +11,7 @@
 //! string rather than erroring.
 
 use crate::commands::maint::unhook::{collect_claude_dirs, ScopeKind};
-use crate::util::now_iso8601;
+use mustard_core::time::now_iso8601;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 

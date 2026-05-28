@@ -45,24 +45,8 @@ pub fn encode_cwd(cwd: &str) -> String {
         .collect()
 }
 
-/// An RFC-3339 / ISO-8601 UTC timestamp string (`YYYY-MM-DDThh:mm:ss.sssZ`),
-/// matching JavaScript `new Date().toISOString()`.
-///
-/// Thin `mustard-rt`-side alias for [`mustard_core::time::now_iso8601`] — the
-/// single canonical home for the calendar arithmetic.
-#[must_use]
-pub fn now_iso8601() -> String {
-    mustard_core::time::now_iso8601()
-}
-
-/// Current time as milliseconds since the Unix epoch.
-///
-/// Thin alias for [`mustard_core::time::now_unix_millis`] (cast to `u128` for
-/// the hook call-sites that compare against `Duration::as_millis`).
-#[must_use]
-pub fn now_millis() -> u128 {
-    mustard_core::time::now_unix_millis() as u128
-}
+// Timestamp helpers (`now_iso8601`, `now_unix_millis`) live in the single
+// canonical home `mustard_core::time` — call them directly, no rt-side alias.
 
 /// Assemble a gate message in the `formatGateMessage` shape:
 /// `[gate] what. why. Saída: exit.`
@@ -99,16 +83,6 @@ pub fn format_gate_message(gate: &str, what: &str, why: &str, exit: &str) -> Str
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn iso8601_has_the_expected_shape() {
-        let ts = now_iso8601();
-        // `YYYY-MM-DDThh:mm:ss.sssZ` — 24 chars.
-        assert_eq!(ts.len(), 24, "{ts}");
-        assert!(ts.ends_with('Z'));
-        assert_eq!(&ts[4..5], "-");
-        assert_eq!(&ts[10..11], "T");
-    }
 
     #[test]
     fn gate_message_assembles_all_parts() {

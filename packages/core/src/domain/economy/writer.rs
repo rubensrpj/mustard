@@ -170,15 +170,6 @@ fn savings_source_string(source: SavingsSource) -> &'static str {
     source.as_str()
 }
 
-/// Best-effort ISO-8601 → epoch-millis converter — kept as a public helper
-/// so callers translating legacy timestamps into the new NDJSON payloads
-/// can use a single canonical implementation.
-///
-/// Returns `0` on a malformed timestamp.
-#[must_use]
-pub fn iso_to_epoch_ms(ts: &str) -> i64 {
-    crate::platform::time::parse_iso_millis(ts).unwrap_or(0)
-}
 
 // Avoid the `unused` lint when callers pull only some of the helpers.
 #[allow(dead_code)]
@@ -312,19 +303,4 @@ mod tests {
         assert_eq!(injection_savings_tokens(&"x".repeat(100)), 25);
     }
 
-    #[test]
-    fn iso_to_epoch_ms_known_value() {
-        assert_eq!(iso_to_epoch_ms("1970-01-01T00:00:00Z"), 0);
-        assert_eq!(iso_to_epoch_ms("2026-05-21T00:00:00Z"), 1_779_321_600_000);
-        assert_eq!(
-            iso_to_epoch_ms("2026-05-21T00:00:00.123Z"),
-            1_779_321_600_123
-        );
-    }
-
-    #[test]
-    fn iso_to_epoch_ms_malformed_is_zero() {
-        assert_eq!(iso_to_epoch_ms("not-a-date"), 0);
-        assert_eq!(iso_to_epoch_ms(""), 0);
-    }
 }

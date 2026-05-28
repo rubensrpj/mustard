@@ -37,7 +37,7 @@
 //! wires each to its own `(event, tool)` pairs.
 
 use crate::shared::context::current_spec;
-use crate::util::now_iso8601;
+use mustard_core::time::now_iso8601;
 use mustard_core::domain::economy::estimator;
 use mustard_core::domain::economy::writer as economy_writer;
 use mustard_core::domain::economy::SpanRecord;
@@ -265,14 +265,6 @@ impl Counter {
     }
 }
 
-/// Parse an ISO-8601 timestamp into epoch millis. Returns `0` on any failure —
-/// matching the JS `new Date(... || 0).getTime()` fallback (where an absent
-/// `createdAt` yields the epoch). Conservative: only the `YYYY-MM-DDThh:mm:ss`
-/// prefix is parsed; sub-second precision is ignored (does not affect the
-/// 10-minute staleness window).
-fn parse_iso_millis(iso: &str) -> u128 {
-    mustard_core::time::parse_iso_millis(iso).unwrap_or(0) as u128
-}
 
 impl ToolUseCounter {
     /// The `.claude/.agent-state` directory for a project.
@@ -303,7 +295,7 @@ impl ToolUseCounter {
         }
         let agent_id = if agent_id.is_empty() {
             // The JS uses `unknown-${Date.now()}`; a deterministic-enough id.
-            &format!("unknown-{}", crate::util::now_millis())
+            &format!("unknown-{}", mustard_core::time::now_unix_millis() as u128)
         } else {
             agent_id
         };
@@ -381,7 +373,7 @@ impl ToolUseCounter {
             return Verdict::Allow;
         }
 
-        let now = crate::util::now_millis();
+        let now = mustard_core::time::now_unix_millis() as u128;
         let mut deny: Option<Verdict> = None;
         let mut warn: Option<Verdict> = None;
 
@@ -396,7 +388,7 @@ impl ToolUseCounter {
                 .get("createdAt")
                 .and_then(|v| v.as_str())
                 .unwrap_or_default();
-            let created_at_ms = parse_iso_millis(created_at_iso);
+            let created_at_ms = mustard_core::time::parse_iso_millis(created_at_iso).unwrap_or(0) as u128;
 
             // Staleness: delete and skip.
             if now.saturating_sub(created_at_ms) > COUNTER_STALE_MS {
@@ -968,16 +960,6 @@ mod tests {
 
     // --- parse_iso_millis --------------------------------------------------
 
-    #[test]
-    fn parse_iso_millis_round_trips_a_known_timestamp() {
-        // 2026-05-19T00:00:00Z → ms since epoch.
-        let ms = parse_iso_millis("2026-05-19T00:00:00.000Z");
-        assert!(ms > 0);
-        // The 1970 epoch parses to 0.
-        assert_eq!(parse_iso_millis("1970-01-01T00:00:00.000Z"), 0);
-        // Garbage → 0 (fail-open).
-        assert_eq!(parse_iso_millis("not a date"), 0);
-    }
 
     // --- tool-use-counter parity (hooks.test.js "tool-use-counter.js") -----
 

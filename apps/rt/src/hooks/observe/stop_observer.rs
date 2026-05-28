@@ -57,7 +57,7 @@ fn bump_last_used(cwd: &str, text: &str) {
     if !dir.exists() {
         return;
     }
-    let now = crate::util::now_iso8601();
+    let now = mustard_core::time::now_iso8601();
     for doc in MarkdownStore::scan_dir(&dir) {
         let Some(fm) = &doc.frontmatter else { continue };
         let Some(summary) = fm.get_str("summary") else { continue };
@@ -83,7 +83,7 @@ fn emit_economy_operation(cwd: &str, operation: &str) {
     use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
     let event = HarnessEvent {
         v: SCHEMA_VERSION,
-        ts: crate::util::now_iso8601(),
+        ts: mustard_core::time::now_iso8601(),
         session_id: crate::shared::context::session_id(),
         wave: 0,
         actor: Actor {
@@ -168,7 +168,7 @@ fn promote_high_confidence(cwd: &str) -> usize {
         return 0;
     };
     let memory_root = cp.claude_dir().join("memory");
-    let now = crate::util::now_iso8601();
+    let now = mustard_core::time::now_iso8601();
     let mut promoted = 0usize;
 
     for doc in MarkdownStore::scan_dir(&dir) {

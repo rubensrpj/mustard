@@ -19,7 +19,7 @@
 //! (POSIX fallback). Exit is always `0` (fail-open).
 
 use crate::shared::context::{current_spec, project_dir, session_id};
-use crate::util::{now_iso8601, now_millis};
+use mustard_core::time::now_iso8601;
 use mustard_core::io::atomic_md::frontmatter::Frontmatter;
 use mustard_core::io::atomic_md::{MarkdownDoc, MarkdownStore};
 use mustard_core::io::fs;
@@ -191,7 +191,7 @@ fn run_agent(input: &Value) {
         .and_then(Value::as_str)
         .unwrap_or("unknown")
         .to_string();
-    let id = format!("{session8}-{agent_type}-{}", now_millis());
+    let id = format!("{session8}-{agent_type}-{}", mustard_core::time::now_unix_millis() as u128);
     let filename = format!("{id}.json");
     let timestamp = now_iso8601();
     let raw_summary = input
@@ -614,27 +614,6 @@ fn truncate_col(s: &str, max: usize) -> String {
 // `write` / `search` / `feedback` — agent_memory under .claude/memory/agent/
 // ---------------------------------------------------------------------------
 
-/// Decay applied lazily over `last_used`.
-fn parse_iso8601_secs(ts: &str) -> Option<i64> {
-    let s = ts.trim().trim_end_matches('Z');
-    let (date_part, time_part) = s.split_once('T')?;
-    let mut date_iter = date_part.split('-');
-    let year: i64 = date_iter.next()?.parse().ok()?;
-    let month: i64 = date_iter.next()?.parse().ok()?;
-    let day: i64 = date_iter.next()?.parse().ok()?;
-    let time_main = time_part.split('.').next()?;
-    let mut time_iter = time_main.split(':');
-    let hour: i64 = time_iter.next()?.parse().ok()?;
-    let minute: i64 = time_iter.next()?.parse().ok()?;
-    let second: i64 = time_iter.next().unwrap_or("0").parse().ok()?;
-    let y = if month <= 2 { year - 1 } else { year };
-    let era = y.div_euclid(400);
-    let yoe = y - era * 400;
-    let doy = (153 * (if month > 2 { month - 3 } else { month + 9 }) + 2) / 5 + day - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    let days = era * 146_097 + doe - 719_468;
-    Some(days * 86_400 + hour * 3_600 + minute * 60 + second)
-}
 
 #[must_use]
 pub(crate) fn effective_confidence(
@@ -642,10 +621,10 @@ pub(crate) fn effective_confidence(
     last_used: Option<&str>,
     now_iso: &str,
 ) -> f64 {
-    let Some(last) = last_used.and_then(parse_iso8601_secs) else {
+    let Some(last) = last_used.and_then(|s| mustard_core::time::parse_iso_millis(s).map(|ms| ms / 1000)) else {
         return confidence.clamp(0.0, 1.0);
     };
-    let Some(now) = parse_iso8601_secs(now_iso) else {
+    let Some(now) = mustard_core::time::parse_iso_millis(now_iso).map(|ms| ms / 1000) else {
         return confidence.clamp(0.0, 1.0);
     };
     let days = ((now - last) as f64) / 86_400.0;
@@ -1203,9 +1182,4 @@ mod tests {
         assert!(!FEEDBACK_KINDS.contains(&"nuke"));
     }
 
-    #[test]
-    fn parse_iso8601_secs_round_trips_known_timestamp() {
-        let s = parse_iso8601_secs("2026-05-25T00:00:00Z").unwrap();
-        assert!(s > 1_735_689_600);
-    }
 }

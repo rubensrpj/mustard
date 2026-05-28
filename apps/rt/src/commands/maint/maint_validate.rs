@@ -7,7 +7,7 @@
 //! report; the overall verdict is the conjunction.
 
 use crate::shared::context::session_id;
-use crate::util::now_iso8601;
+use mustard_core::time::now_iso8601;
 use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use mustard_core::platform::process::rtk_command;
 use serde::Serialize;

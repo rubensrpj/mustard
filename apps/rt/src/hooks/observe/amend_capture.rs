@@ -31,7 +31,7 @@
 //! `Ok(Verdict::Allow)` on any failure to load the window.
 
 use crate::shared::context::current_spec;
-use crate::util::now_iso8601;
+use mustard_core::time::now_iso8601;
 use mustard_core::platform::error::Error;
 use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Observer, Trigger, Verdict};
 use mustard_core::domain::model::event::{
@@ -371,7 +371,7 @@ fn observe_pipeline_complete(project_dir: &str, session_id: &str, spec_id: &str)
             .as_secs()
             .saturating_add(WINDOW_EXPIRY_SECS);
         // Use the same civil-from-days logic as now_iso8601.
-        epoch_secs_to_iso(secs)
+        mustard_core::time::millis_to_iso(secs as i64 * 1000)
     };
     let state = WindowState {
         opened_at: now.clone(),
@@ -428,32 +428,6 @@ fn gather_pipeline_file_set(project_dir: &str, spec_id: &str) -> Vec<String> {
     file_set
 }
 
-/// Format epoch seconds as `YYYY-MM-DDThh:mm:ss.000Z`.
-fn epoch_secs_to_iso(secs: u64) -> String {
-    let days = (secs / 86_400) as i64;
-    let rem = secs % 86_400;
-    let (hh, mm, ss) = (rem / 3_600, (rem % 3_600) / 60, rem % 60);
-    // civil_from_days (Howard Hinnant).
-    let z = days + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = if m <= 2 { y + 1 } else { y };
-    format!(
-        "{y:04}-{m:02}-{d:02}T{hh:02}:{mm:02}:{ss:02}.000Z",
-        y = y,
-        m = m,
-        d = d,
-        hh = hh,
-        mm = mm,
-        ss = ss
-    )
-}
 
 /// Handle PostToolUse(Write|Edit) — record activity or accumulate drift.
 fn observe_write_edit(project_dir: &str, session_id: &str, tool: &str, file_path: &str) {

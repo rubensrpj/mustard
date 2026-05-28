@@ -21,7 +21,7 @@ use crate::commands::event::event_projections::{pipeline_state_from_events, Pipe
 use crate::shared::events::route;
 use crate::commands::economy::token_budget::{prune_to_budget, PrioritizedItem};
 use crate::commands::wave::wave_context::{self, WaveContextInput, WaveMapEntry};
-use crate::util::now_iso8601;
+use mustard_core::time::now_iso8601;
 use mustard_core::io::atomic_md::find_outgoing_links;
 use mustard_core::io::claude_paths::ClaudePaths;
 use mustard_core::io::fs as mfs;
@@ -712,11 +712,11 @@ fn derive_role_from_wave_path(spec_path: &Path) -> Option<String> {
 
 /// Render the dispatch failure payload as JSON, including `ageMs`.
 fn render_dispatch_failure(fail: &PipelineDispatchFailurePayload) -> serde_json::Value {
-    let now_ms = i64::try_from(crate::util::now_millis()).unwrap_or(i64::MAX);
+    let now_ms = i64::try_from(mustard_core::time::now_unix_millis() as u128).unwrap_or(i64::MAX);
     let age_ms = fail
         .at
         .as_deref()
-        .and_then(crate::commands::spec::complete_spec::parse_iso_millis)
+        .and_then(mustard_core::time::parse_iso_millis)
         .map_or(0, |at_ms| now_ms - at_ms);
     json!({
         "at": fail.at.clone().unwrap_or_default(),
@@ -744,7 +744,7 @@ fn compute_needs_refresh(project: &Path, spec: &str) -> (bool, Option<i64>) {
         None => return (false, None),
     };
 
-    let now_ms = i64::try_from(crate::util::now_millis()).unwrap_or(i64::MAX);
+    let now_ms = i64::try_from(mustard_core::time::now_unix_millis() as u128).unwrap_or(i64::MAX);
 
     // Collect all NDJSON events from the dir.
     let ndjson_files: Vec<PathBuf> = std::fs::read_dir(&events_dir)
@@ -784,7 +784,7 @@ fn compute_needs_refresh(project: &Path, spec: &str) -> (bool, Option<i64>) {
 
     let last_resume_ms = last_resume_ts
         .as_deref()
-        .and_then(crate::commands::spec::complete_spec::parse_iso_millis);
+        .and_then(mustard_core::time::parse_iso_millis);
     let last_resume_age = last_resume_ms.map(|ms| now_ms - ms);
 
     // Needs refresh when there is a wave.complete that is newer than the last resume_mode.
@@ -818,10 +818,10 @@ fn decide_mode(
         .iter()
         .filter_map(|t| t.dispatched_at.clone())
         .max();
-    let now_ms = i64::try_from(crate::util::now_millis()).unwrap_or(i64::MAX);
+    let now_ms = i64::try_from(mustard_core::time::now_unix_millis() as u128).unwrap_or(i64::MAX);
     let age_ms = last_ts
         .as_deref()
-        .and_then(crate::commands::spec::complete_spec::parse_iso_millis)
+        .and_then(mustard_core::time::parse_iso_millis)
         .map(|at| now_ms - at);
     match age_ms {
         Some(ms) if ms <= AUTO_CONTINUE_TTL_MS => "continued".to_string(),

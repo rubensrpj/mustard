@@ -56,7 +56,7 @@ fn append_notification_event(cwd: &str, input: &HookInput) {
     let message = extract_message(input);
     let event = HarnessEvent {
         v: SCHEMA_VERSION,
-        ts: crate::util::now_iso8601(),
+        ts: mustard_core::time::now_iso8601(),
         session_id: input
             .session_id
             .clone()
@@ -80,7 +80,7 @@ fn append_notification_event(cwd: &str, input: &HookInput) {
 fn emit_economy_operation(cwd: &str, operation: &str) {
     let event = HarnessEvent {
         v: SCHEMA_VERSION,
-        ts: crate::util::now_iso8601(),
+        ts: mustard_core::time::now_iso8601(),
         session_id: crate::shared::context::session_id(),
         wave: 0,
         actor: Actor {

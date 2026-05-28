@@ -45,7 +45,7 @@ use std::time::Duration;
 
 use crate::shared::context::current_spec;
 use crate::shared::events::route;
-use crate::util::now_iso8601;
+use mustard_core::time::now_iso8601;
 
 /// Emit one `pipeline.economy.run` NDJSON event for `payload`, routed by
 /// `route::emit` under `project_dir`. Fail-open per the router.

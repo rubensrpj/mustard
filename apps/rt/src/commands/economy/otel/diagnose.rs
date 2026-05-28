@@ -258,7 +258,7 @@ fn sample_json(r: &SampleRow) -> Value {
 /// `[subtractions]` — `pipeline.telemetry.subtraction` events in the last 24 h.
 /// Fail-open: missing channel returns `ok: true, count: 0`.
 fn check_subtractions(claude_root: &Path) -> Value {
-    let now_ms = i64::try_from(crate::util::now_millis()).unwrap_or(i64::MAX);
+    let now_ms = i64::try_from(mustard_core::time::now_unix_millis() as u128).unwrap_or(i64::MAX);
     let since_ms = now_ms.saturating_sub(24 * 60 * 60 * 1000);
     let events = read_all_events(claude_root);
     let count = events
@@ -274,18 +274,13 @@ fn check_subtractions(claude_root: &Path) -> Value {
 /// usable.
 fn event_ts_ms(e: &Event) -> Option<i64> {
     if let Some(iso) = e.raw.get("ts").and_then(Value::as_str) {
-        if let Some(ms) = mustard_core::view::projection::parse_iso_millis(iso) {
+        if let Some(ms) = mustard_core::time::parse_iso_millis(iso) {
             return Some(ms);
         }
     }
     e.payload.get("ts_bucket").and_then(Value::as_i64)
 }
 
-/// Format an ms-epoch instant as an ISO-8601 UTC string (the `events.ts`
-/// shape). Reuses the civil-date math already proven in `util::now_iso8601`.
-pub(crate) fn iso_from_ms(ms: i64) -> String {
-    mustard_core::time::millis_to_iso(ms)
-}
 
 /// Render the human-readable report (everything but `--json`).
 fn render_human(report: &Value) -> String {
@@ -315,14 +310,14 @@ fn render_human(report: &Value) -> String {
         let _ = writeln!(out, "  rows: {}", report["data"]["rows"].as_i64().unwrap_or(0));
         let last = report["data"]["lastBucketMs"]
             .as_i64()
-            .map_or_else(|| "(none)".to_string(), iso_from_ms);
+            .map_or_else(|| "(none)".to_string(), mustard_core::time::millis_to_iso);
         let _ = writeln!(out, "  last bucket: {last}");
         if let Some(sample) = report["data"]["sample"].as_array() {
             if !sample.is_empty() {
                 out.push_str("  sample (latest 5):\n");
                 for r in sample {
                     let _ = writeln!(out, "    - {} {} session={} model={} sum={}",
-                        r["updated_at"].as_i64().map_or_else(|| "(none)".to_string(), iso_from_ms),
+                        r["updated_at"].as_i64().map_or_else(|| "(none)".to_string(), mustard_core::time::millis_to_iso),
                         r["metric"].as_str().unwrap_or("-"),
                         r["session_id"].as_str().unwrap_or("-"),
                         r["model"].as_str().unwrap_or("-"),
@@ -425,10 +420,10 @@ mod tests {
 
     #[test]
     fn iso_from_ms_matches_epoch() {
-        assert_eq!(iso_from_ms(0), "1970-01-01T00:00:00.000Z");
+        assert_eq!(mustard_core::time::millis_to_iso(0), "1970-01-01T00:00:00.000Z");
         // 2026-05-19T00:00:00.000Z — a fixed reference instant.
         let ms = 1_779_148_800_000;
-        assert_eq!(iso_from_ms(ms), "2026-05-19T00:00:00.000Z");
+        assert_eq!(mustard_core::time::millis_to_iso(ms), "2026-05-19T00:00:00.000Z");
     }
 
     #[test]

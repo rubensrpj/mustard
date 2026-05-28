@@ -57,7 +57,8 @@ use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_
 use serde_json::{json};
 
 use crate::shared::context::current_spec;
-use crate::util::{format_gate_message, now_iso8601};
+use crate::util::format_gate_message;
+use mustard_core::time::now_iso8601;
 
 /// Emit a `pipeline.economy.savings.budget-output-cut` NDJSON event for an
 /// over-budget agent return. The `tokens_saved` field carries the estimated
