@@ -6,7 +6,7 @@
 //! Emits a JSON report. Exit codes: `0` ok, `2` violations, `1` IO failure.
 
 use crate::shared::context::project_dir;
-use crate::run::spec_sections::is_heading;
+use crate::run::spec::spec_sections::is_heading;
 use mustard_core::fs as mfs;
 use mustard_core::meta::read_meta_beside;
 use mustard_core::spec::contract::{

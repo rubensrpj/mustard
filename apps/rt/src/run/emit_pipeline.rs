@@ -242,7 +242,7 @@ pub fn run(opts: EmitPipelineOpts) {
                     .map(|sp| sp.dir().to_path_buf())
             };
             if let Some(path) = spec_path {
-                if let Err(e) = crate::run::spec_scaffold::sync_status(state.stage, state.outcome, &path) {
+                if let Err(e) = crate::run::spec::spec_scaffold::sync_status(state.stage, state.outcome, &path) {
                     eprintln!("emit-pipeline: WARN: sync_status failed ({e}); headers may be stale");
                 }
             }
@@ -256,7 +256,7 @@ pub fn run(opts: EmitPipelineOpts) {
             let cwd = std::env::current_dir()
                 .unwrap_or_else(|_| std::path::PathBuf::from(project_dir()));
             if let Some(wave_path) = wave_spec_path(&cwd, &spec_name, wave) {
-                if let Err(e) = crate::run::spec_scaffold::sync_status(
+                if let Err(e) = crate::run::spec::spec_scaffold::sync_status(
                     Stage::Close,
                     Outcome::Completed,
                     &wave_path,

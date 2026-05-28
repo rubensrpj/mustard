@@ -716,7 +716,7 @@ fn render_dispatch_failure(fail: &PipelineDispatchFailurePayload) -> serde_json:
     let age_ms = fail
         .at
         .as_deref()
-        .and_then(crate::run::complete_spec::parse_iso_millis)
+        .and_then(crate::run::spec::complete_spec::parse_iso_millis)
         .map_or(0, |at_ms| now_ms - at_ms);
     json!({
         "at": fail.at.clone().unwrap_or_default(),
@@ -784,7 +784,7 @@ fn compute_needs_refresh(project: &Path, spec: &str) -> (bool, Option<i64>) {
 
     let last_resume_ms = last_resume_ts
         .as_deref()
-        .and_then(crate::run::complete_spec::parse_iso_millis);
+        .and_then(crate::run::spec::complete_spec::parse_iso_millis);
     let last_resume_age = last_resume_ms.map(|ms| now_ms - ms);
 
     // Needs refresh when there is a wave.complete that is newer than the last resume_mode.
@@ -821,7 +821,7 @@ fn decide_mode(
     let now_ms = i64::try_from(crate::util::now_millis()).unwrap_or(i64::MAX);
     let age_ms = last_ts
         .as_deref()
-        .and_then(crate::run::complete_spec::parse_iso_millis)
+        .and_then(crate::run::spec::complete_spec::parse_iso_millis)
         .map(|at| now_ms - at);
     match age_ms {
         Some(ms) if ms <= AUTO_CONTINUE_TTL_MS => "continued".to_string(),
@@ -1105,7 +1105,7 @@ fn generate_context_on_resume(
     let locale = if slug.is_empty() {
         project_locale(project)
     } else {
-        let (resolved, _src) = crate::run::spec_lang_resolve::resolve(project, slug);
+        let (resolved, _src) = crate::run::spec::spec_lang_resolve::resolve(project, slug);
         resolved
     };
 

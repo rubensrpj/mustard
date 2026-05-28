@@ -3,7 +3,7 @@
 //! `detect_role` and `parse_files_section` are used by `wave-dependency`,
 //! `exec-rewave-check` and `wave-size-check`.
 
-use crate::run::spec_sections::is_heading;
+use crate::run::spec::spec_sections::is_heading;
 
 /// Classify a file path into a coarse architectural role.
 ///

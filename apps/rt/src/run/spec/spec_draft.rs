@@ -37,7 +37,7 @@
 //! reported but does not abort the rest of the layout).
 
 use crate::shared::context::project_dir;
-use crate::run::spec_scaffold;
+use crate::run::spec::spec_scaffold;
 use mustard_core::claude_paths::ClaudePaths;
 use mustard_core::fs as mfs;
 use mustard_core::meta::Meta;
@@ -467,7 +467,7 @@ mod tests {
 
     #[test]
     fn section_heading_for_localises() {
-        use crate::run::spec_scaffold::section_heading_for;
+        use crate::run::spec::spec_scaffold::section_heading_for;
         assert_eq!(section_heading_for("Contexto", Locale::EnUs), "Context");
         assert_eq!(section_heading_for("Contexto", Locale::PtBr), "Contexto");
         // Unknown section name passes through unchanged.

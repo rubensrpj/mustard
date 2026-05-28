@@ -10,7 +10,7 @@
 //! Port note: the JS version shelled to `wave-tree.js` and `scope-decompose.js`.
 //! Both are now in this binary — this port calls the Rust logic directly.
 
-use crate::run::scope_decompose::decide;
+use crate::run::spec::scope_decompose::decide;
 use crate::run::wave_lib::{detect_role, parse_files_section};
 use mustard_core::fs;
 use serde_json::{json, Value};

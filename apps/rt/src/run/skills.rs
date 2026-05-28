@@ -666,7 +666,7 @@ fn scan_invocations(project_dir: &Path, since_ms: i64) -> BTreeMap<String, Strin
                 if ts_str.is_empty() {
                     continue;
                 }
-                if let Some(ts_ms) = crate::run::complete_spec::parse_iso_millis(&ts_str) {
+                if let Some(ts_ms) = crate::run::spec::complete_spec::parse_iso_millis(&ts_str) {
                     if ts_ms < since_ms {
                         continue;
                     }

@@ -11,13 +11,12 @@
 //! (subproject discovery + SHA-256 change detection) and the scanner subsystem
 //! it shares with the still-JS `sync-registry.js`.
 
+pub mod spec;
 pub mod maint;
 pub mod scan;
-pub mod active_specs;
 pub mod agent_prompt_render;
 pub mod amend_finalize;
 mod analyze_validation;
-pub mod backup_specs;
 pub mod bugfix_cache;
 pub mod close_orchestrate;
 pub mod context_budget;
@@ -26,13 +25,9 @@ pub mod economy_reconcile;
 pub mod economy_report;
 pub mod i18n_translate;
 pub mod pipeline_prelude;
-pub mod prd_build;
 pub mod review_dispatch;
 pub mod skill_cache;
 pub mod skill_fetch;
-pub mod spec_lang_resolve;
-pub mod spec_clear;
-pub mod tactical_fix_create;
 pub mod task_checklist;
 mod knowledge;
 mod doctor;
@@ -43,8 +38,6 @@ mod doctor;
 pub mod doctor_claude_paths;
 pub mod doctor_workspace_leaks;
 pub mod doctor_i1;
-pub mod plan_from_spec;
-mod complete_spec;
 mod context_slice;
 mod dependency_precheck;
 mod diff_context;
@@ -74,7 +67,6 @@ mod pipeline_state_ingest;
 mod pipeline_summary;
 mod qa_run;
 mod qa_run_all;
-mod rebuild_specs;
 mod recipe_match;
 pub mod resume_bootstrap;
 mod review_prefetch;
@@ -89,25 +81,13 @@ mod scan_orchestrate;
 mod scan_precompute;
 mod scan_recipes_validate;
 mod scan_structural;
-mod scope_decompose;
 mod security_scan;
 pub mod skill_discovery_lint;
 mod skills;
 mod statusline;
 mod verify_emit;
-mod spec_children;
-mod spec_children_tree;
-mod spec_extract;
-mod spec_link;
-mod spec_sections;
 // W4: lang-aware spec slug helper. Thin facade over `mustard_core::slugify`.
 // W6: subcommand entry point (`i18n translate-heading`, `spec-lang resolve`).
-pub mod spec_slug;
-mod spec_draft;
-pub mod spec_scaffold;
-pub mod spec_status_backfill;
-mod spec_memory;
-mod spec_validate;
 pub(crate) mod skill_resolve;
 mod sync_detect;
 mod sync_registry;
@@ -1209,7 +1189,7 @@ pub enum RunCmd {
         repo: Option<PathBuf>,
         /// Age threshold in whole days. Specs whose newest event is older than
         /// this become candidates.
-        #[arg(long = "age-days", default_value_t = spec_clear::DEFAULT_AGE_DAYS)]
+        #[arg(long = "age-days", default_value_t = spec::spec_clear::DEFAULT_AGE_DAYS)]
         age_days: u32,
         /// Preview only — emit the report, mutate nothing (the default).
         #[arg(long, default_value_t = true, conflicts_with = "apply")]
@@ -1534,7 +1514,7 @@ pub fn dispatch(cmd: RunCmd) {
             archive,
             archive_stale,
             archive_followups,
-        } => complete_spec::run(spec.as_deref(), archive, archive_stale, archive_followups),
+        } => spec::complete_spec::run(spec.as_deref(), archive, archive_stale, archive_followups),
         RunCmd::ContextSlice {
             context,
             spec,
@@ -1608,14 +1588,14 @@ pub fn dispatch(cmd: RunCmd) {
             wave,
             ac,
             measure,
-        } => spec_extract::run(&spec, wave, ac, measure),
+        } => spec::spec_extract::run(&spec, wave, ac, measure),
         RunCmd::SpecLink {
             parent,
             child,
             reason,
-        } => spec_link::run(parent.as_deref(), child.as_deref(), reason.as_deref()),
-        RunCmd::SpecChildren { parent } => spec_children::run(parent.as_deref()),
-        RunCmd::SpecChildrenTree { spec } => spec_children_tree::run(spec.as_deref()),
+        } => spec::spec_link::run(parent.as_deref(), child.as_deref(), reason.as_deref()),
+        RunCmd::SpecChildren { parent } => spec::spec_children::run(parent.as_deref()),
+        RunCmd::SpecChildrenTree { spec } => spec::spec_children_tree::run(spec.as_deref()),
         RunCmd::AnalyzeValidation { spec } => analyze_validation::run(spec.as_deref()),
         RunCmd::MarkChecklistItem {
             spec,
@@ -1626,7 +1606,7 @@ pub fn dispatch(cmd: RunCmd) {
         RunCmd::WaveTree { spec_dir, format } => wave_tree::run(&spec_dir, &format),
         RunCmd::WaveDependency => wave_dependency::run(),
         RunCmd::WaveFiles { spec, wave } => wave_files::run(spec.as_deref(), wave),
-        RunCmd::ScopeDecompose => scope_decompose::run(),
+        RunCmd::ScopeDecompose => spec::scope_decompose::run(),
         RunCmd::ExecRewaveCheck { spec } => exec_rewave_check::run(spec.as_deref()),
         RunCmd::DependencyPrecheck { spec, subproject } => {
             dependency_precheck::run(spec.as_deref(), subproject.as_deref());
@@ -1681,7 +1661,7 @@ pub fn dispatch(cmd: RunCmd) {
         } => recipe_match::run(entity.as_deref(), operation.as_deref(), subproject.as_deref()),
         RunCmd::QaRun { spec, format } => qa_run::run(&spec, &format),
         RunCmd::QaRunAll => qa_run_all::run(),
-        RunCmd::RebuildSpecs => rebuild_specs::run(),
+        RunCmd::RebuildSpecs => spec::rebuild_specs::run(),
         RunCmd::Metrics {
             subcommand,
             args,
@@ -1769,7 +1749,7 @@ pub fn dispatch(cmd: RunCmd) {
             wave_scaffold::run(spec_dir.as_deref(), plan.as_deref());
         }
         RunCmd::PlanFromSpec { waves, roles, lang, summary } => {
-            plan_from_spec::run(plan_from_spec::PlanFromSpecOpts {
+            spec::plan_from_spec::run(spec::plan_from_spec::PlanFromSpecOpts {
                 waves,
                 roles,
                 lang,
@@ -1777,7 +1757,7 @@ pub fn dispatch(cmd: RunCmd) {
             });
         }
         RunCmd::ActiveSpecs { format, root } => {
-            active_specs::run(active_specs::ActiveSpecsOpts { format, root });
+            spec::active_specs::run(spec::active_specs::ActiveSpecsOpts { format, root });
         }
         RunCmd::Status { harness, format, root } => {
             status::run(status::StatusOpts { harness, format, root });
@@ -1866,7 +1846,7 @@ pub fn dispatch(cmd: RunCmd) {
             role,
             force,
         } => {
-            spec_draft::run(spec_draft::SpecDraftOpts {
+            spec::spec_draft::run(spec::spec_draft::SpecDraftOpts {
                 intent,
                 scope,
                 lang,
@@ -1879,7 +1859,7 @@ pub fn dispatch(cmd: RunCmd) {
         }
         RunCmd::SpecValidate { spec, json } => {
             let _ = json; // currently always emits JSON
-            spec_validate::run(std::path::Path::new(&spec), true);
+            spec::spec_validate::run(std::path::Path::new(&spec), true);
         }
         RunCmd::SkillResolve {
             intent,
@@ -1904,9 +1884,9 @@ pub fn dispatch(cmd: RunCmd) {
             origin_wave,
             description,
         } => {
-            spec_memory::dispatch(
+            spec::spec_memory::dispatch(
                 subcommand.as_deref(),
-                spec_memory::SpecMemoryCreateOpts {
+                spec::spec_memory::SpecMemoryCreateOpts {
                     spec,
                     name,
                     kind,
@@ -1926,7 +1906,7 @@ pub fn dispatch(cmd: RunCmd) {
             // `dry_run` defaults to `true`; clap's `conflicts_with` ensures the
             // two flags don't co-exist. `--apply` is the authoritative mutator.
             let _ = dry_run;
-            spec_clear::run(spec_clear::SpecClearOpts {
+            spec::spec_clear::run(spec::spec_clear::SpecClearOpts {
                 repo,
                 age_days,
                 apply,
@@ -1958,14 +1938,14 @@ pub fn dispatch(cmd: RunCmd) {
             review_dispatch::run(review_dispatch::ReviewDispatchOpts { pr, spec, subproject });
         }
         RunCmd::TacticalFixCreate { parent, description, scope } => {
-            tactical_fix_create::run(tactical_fix_create::TacticalFixOpts {
+            spec::tactical_fix_create::run(spec::tactical_fix_create::TacticalFixOpts {
                 parent,
                 description,
                 scope,
             });
         }
         RunCmd::PrdBuild { intent, format } => {
-            prd_build::run(prd_build::PrdBuildOpts { intent, format });
+            spec::prd_build::run(spec::prd_build::PrdBuildOpts { intent, format });
         }
         RunCmd::SkillFetch { name, dry_run } => {
             skill_fetch::run(skill_fetch::SkillFetchOpts { name, dry_run });
@@ -2004,7 +1984,7 @@ pub fn dispatch(cmd: RunCmd) {
             dry_run,
             no_manifest,
         } => {
-            backup_specs::run(backup_specs::BackupSpecsOpts {
+            spec::backup_specs::run(spec::backup_specs::BackupSpecsOpts {
                 target,
                 filter,
                 dry_run,
@@ -2025,7 +2005,7 @@ pub fn dispatch(cmd: RunCmd) {
         }
         RunCmd::SpecLang { subcommand, spec } => {
             match subcommand.as_str() {
-                "resolve" => spec_lang_resolve::run(spec_lang_resolve::SpecLangResolveOpts {
+                "resolve" => spec::spec_lang_resolve::run(spec::spec_lang_resolve::SpecLangResolveOpts {
                     spec: spec.unwrap_or_default(),
                 }),
                 other => {
@@ -2069,7 +2049,7 @@ pub fn dispatch(cmd: RunCmd) {
             pipeline_prelude::run(pipeline_prelude::PreludeOpts { spec, phase });
         }
         RunCmd::SpecStatusBackfill { source, dry_run, spec } => {
-            spec_status_backfill::run_cli(spec_status_backfill::BackfillOpts {
+            spec::spec_status_backfill::run_cli(spec::spec_status_backfill::BackfillOpts {
                 source,
                 dry_run,
                 spec,

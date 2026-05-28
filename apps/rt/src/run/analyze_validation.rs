@@ -5,7 +5,7 @@
 //! extended-light scope ↔ registry constraint. Emits one JSON line:
 //! `{ "ok": bool, "issues": [{ severity, type, message, file? }] }`.
 
-use crate::run::spec_sections::is_heading;
+use crate::run::spec::spec_sections::is_heading;
 use mustard_core::fs;
 use mustard_core::ClaudePaths;
 use serde_json::{json, Value};

@@ -19,7 +19,7 @@
 //! consistent with the rest of the `run` face and the workspace's "no new
 //! deps" guard.
 
-use crate::run::spec_sections::is_heading;
+use crate::run::spec::spec_sections::is_heading;
 use mustard_core::fs;
 use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};

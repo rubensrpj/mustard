@@ -269,12 +269,12 @@ fn resolve_endpoint(value: &str) -> Result<Endpoint, String> {
             ));
         }
         let iso = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if crate::run::complete_spec::parse_iso_millis(&iso).is_none() {
+        if crate::run::spec::complete_spec::parse_iso_millis(&iso).is_none() {
             return Err(format!("git returned unparseable date for \"{value}\": {iso}"));
         }
         return Ok(Endpoint { iso, source: "tag", raw: value.to_string() });
     }
-    if crate::run::complete_spec::parse_iso_millis(value).is_none() {
+    if crate::run::spec::complete_spec::parse_iso_millis(value).is_none() {
         return Err(format!(
             "\"{value}\" is not a valid git tag (expected vX.Y.Z) or ISO date"
         ));
@@ -327,7 +327,7 @@ fn aggregate_window(
             let Some(ts) = v.get("ts").and_then(Value::as_str) else {
                 continue;
             };
-            let Some(ts_ms) = crate::run::complete_spec::parse_iso_millis(ts) else {
+            let Some(ts_ms) = crate::run::spec::complete_spec::parse_iso_millis(ts) else {
                 continue;
             };
             if ts_ms < start_ms || ts_ms >= end_ms {
@@ -362,8 +362,8 @@ fn build_compare(
     let from_ep = resolve_endpoint(from)?;
     let to_ep = resolve_endpoint(to)?;
     let (Some(from_ms), Some(to_ms)) = (
-        crate::run::complete_spec::parse_iso_millis(&from_ep.iso),
-        crate::run::complete_spec::parse_iso_millis(&to_ep.iso),
+        crate::run::spec::complete_spec::parse_iso_millis(&from_ep.iso),
+        crate::run::spec::complete_spec::parse_iso_millis(&to_ep.iso),
     ) else {
         return Err("could not parse resolved endpoints".to_string());
     };

@@ -46,7 +46,7 @@ pub fn write_spec_md(
         body,
         "<!-- drafter:tone={tone} — {instruction} -->",
         tone = tone.as_str(),
-        instruction = crate::run::spec_draft::tone_prompt_instruction(tone),
+        instruction = crate::run::spec::spec_draft::tone_prompt_instruction(tone),
     );
     body.push_str("### Stage: Plan\n### Outcome: Active\n### Flags: \n\n");
     body.push_str(PRD_DIVIDER);

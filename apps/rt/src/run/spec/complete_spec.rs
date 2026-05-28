@@ -389,7 +389,7 @@ pub fn run(spec: Option<&str>, archive_flag: bool, archive_stale: bool, archive_
 
 fn rebuild_one_fail_open(cwd: &Path, spec: &str) {
     let project_dir = cwd.to_string_lossy();
-    let _ = crate::run::rebuild_specs::rebuild_one(&project_dir, spec);
+    let _ = crate::run::spec::rebuild_specs::rebuild_one(&project_dir, spec);
 }
 
 fn run_qa_fail_open(_cwd: &Path, spec: &str) {

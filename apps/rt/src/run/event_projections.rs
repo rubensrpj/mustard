@@ -335,8 +335,8 @@ fn build_epic_summary(events: &[HarnessEvent], cwd: &Path, epic: &str) -> Value 
         }
     }
     let duration_ms = match (
-        min_ts.as_deref().and_then(crate::run::complete_spec::parse_iso_millis),
-        max_ts.as_deref().and_then(crate::run::complete_spec::parse_iso_millis),
+        min_ts.as_deref().and_then(crate::run::spec::complete_spec::parse_iso_millis),
+        max_ts.as_deref().and_then(crate::run::spec::complete_spec::parse_iso_millis),
     ) {
         (Some(a), Some(b)) => (b - a).max(0),
         _ => 0,
@@ -539,7 +539,7 @@ fn build_pr_metrics(events: &[HarnessEvent], cwd: &Path, days: i64) -> Value {
     let now_ms = crate::util::now_millis() as i64;
     let from_ms = now_ms - days * 86_400_000;
     let in_window = |ts: &str| -> bool {
-        crate::run::complete_spec::parse_iso_millis(ts)
+        crate::run::spec::complete_spec::parse_iso_millis(ts)
             .is_some_and(|t| t >= from_ms && t <= now_ms)
     };
     let pair_key = |ev: &HarnessEvent| -> Option<String> {
@@ -578,14 +578,14 @@ fn build_pr_metrics(events: &[HarnessEvent], cwd: &Path, days: i64) -> Value {
         let mut durations = Vec::new();
         for s in starts.iter() {
             let Some(key) = pair_key(s) else { continue };
-            let Some(s_ms) = crate::run::complete_spec::parse_iso_millis(&s.ts) else {
+            let Some(s_ms) = crate::run::spec::complete_spec::parse_iso_millis(&s.ts) else {
                 continue;
             };
             for (i, e) in sorted_ends.iter().enumerate() {
                 if used[i] {
                     continue;
                 }
-                let Some(e_ms) = crate::run::complete_spec::parse_iso_millis(&e.ts) else {
+                let Some(e_ms) = crate::run::spec::complete_spec::parse_iso_millis(&e.ts) else {
                     continue;
                 };
                 if e_ms < s_ms || pair_key(e) != Some(key.clone()) {
@@ -818,7 +818,7 @@ fn build_active_pipelines(events: &[HarnessEvent], cwd: &Path) -> Value {
                 return false;
             }
             // Exclude specs with no activity in the last 30 days.
-            let ts_ms = crate::run::complete_spec::parse_iso_millis(last_ts).unwrap_or(0);
+            let ts_ms = crate::run::spec::complete_spec::parse_iso_millis(last_ts).unwrap_or(0);
             ts_ms >= cutoff_ms
         })
         .map(|(spec, (last_event_at, last_stage))| {
@@ -1217,7 +1217,7 @@ pub fn pipeline_state_from_events(
         None => None,
         Some((payload, Some(at_str))) => {
             let now_ms = i64::try_from(crate::util::now_millis()).unwrap_or(i64::MAX);
-            let age_ms = crate::run::complete_spec::parse_iso_millis(&at_str)
+            let age_ms = crate::run::spec::complete_spec::parse_iso_millis(&at_str)
                 .map_or(0, |at_ms| now_ms - at_ms);
             if age_ms > DISPATCH_FAILURE_TTL_MS {
                 None // stale — cleared per /resume Step 0 contract

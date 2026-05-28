@@ -7,7 +7,7 @@
 //! `--format markdown` (default) prints the rendered summary; `--format json`
 //! prints `{ done, left, nextSteps, followUps }`. No `--format html`.
 
-use crate::run::spec_sections::is_heading;
+use crate::run::spec::spec_sections::is_heading;
 use mustard_core::fs;
 use mustard_core::spec;
 use mustard_core::summary::SpecSummaryDoc;

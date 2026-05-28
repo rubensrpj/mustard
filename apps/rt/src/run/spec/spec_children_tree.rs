@@ -25,7 +25,7 @@
 //! ([`mustard_core::projection::project_waves`],
 //! [`mustard_core::projection::project_quality`]) folded over the NDJSON
 //! workspace events, plus the cross-developer UNION used by
-//! [`crate::run::spec_children`] for sub-spec discovery (events + filesystem
+//! [`crate::run::spec::spec_children`] for sub-spec discovery (events + filesystem
 //! `### Parent:` headers). Reusing the projections keeps this byte-stable with
 //! every other dashboard surface — no SQL drift.
 //!
@@ -33,7 +33,7 @@
 //! degrade to empty arrays — never a non-zero exit.
 
 use crate::shared::context::project_dir;
-use crate::run::spec_children::{list_children, ChildEntry};
+use crate::run::spec::spec_children::{list_children, ChildEntry};
 use mustard_core::projection::{project_quality, project_waves, read_workspace_events};
 use mustard_core::{AcStatus, Outcome, SpecState, Stage, WaveStatus, WaveView};
 use serde::Serialize;

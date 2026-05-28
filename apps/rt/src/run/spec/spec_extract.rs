@@ -16,7 +16,7 @@
 //! emits no cost frames. The stdout JSON `measure` line is the canonical
 //! contract a script consumer reads.
 
-use crate::run::spec_sections::is_heading;
+use crate::run::spec::spec_sections::is_heading;
 use mustard_core::fs;
 use serde_json::{Value, json};
 use std::path::Path;

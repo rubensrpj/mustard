@@ -12,7 +12,7 @@
 //! in the JSON rather than overwriting work in flight.
 
 use crate::shared::context::{current_spec, session_id};
-use crate::run::spec_scaffold;
+use crate::run::spec::spec_scaffold;
 use crate::util::now_iso8601;
 use mustard_core::claude_paths::ClaudePaths;
 use mustard_core::fs::write_atomic;

@@ -270,8 +270,8 @@ fn fold_epic(cwd: &Path, epic: &str) -> bool {
     let started_at = min_ts.clone().unwrap_or_else(now_iso8601);
     let ended_at = max_ts.clone().unwrap_or_else(now_iso8601);
     let duration_ms = match (
-        min_ts.as_deref().and_then(crate::run::complete_spec::parse_iso_millis),
-        max_ts.as_deref().and_then(crate::run::complete_spec::parse_iso_millis),
+        min_ts.as_deref().and_then(crate::run::spec::complete_spec::parse_iso_millis),
+        max_ts.as_deref().and_then(crate::run::spec::complete_spec::parse_iso_millis),
     ) {
         (Some(a), Some(b)) => (b - a).max(0),
         _ => 0,

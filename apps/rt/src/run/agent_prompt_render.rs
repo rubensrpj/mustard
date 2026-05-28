@@ -23,7 +23,7 @@ use crate::run::gate_regression_check;
 use crate::run::memory_cross_wave;
 use crate::run::resume_bootstrap::{read_wave_model, resolve_operational_spec_path};
 use crate::run::skill_resolve;
-use crate::run::spec_sections::is_heading;
+use crate::run::spec::spec_sections::is_heading;
 use mustard_core::fs as mfs;
 use mustard_core::i18n;
 use mustard_core::ClaudePaths;

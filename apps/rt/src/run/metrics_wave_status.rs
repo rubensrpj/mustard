@@ -30,7 +30,7 @@
 //! Fail-open: a missing parent dir, missing DB, or missing wave-plan all
 //! degrade to an empty `waves` array — never a non-zero exit.
 
-use crate::run::complete_spec::parse_iso_millis;
+use crate::run::spec::complete_spec::parse_iso_millis;
 use crate::shared::context::project_dir;
 use crate::run::memory_cross_wave;
 use mustard_core::fs;

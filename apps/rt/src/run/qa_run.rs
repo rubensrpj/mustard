@@ -69,12 +69,12 @@ fn find_spec_file(cwd: &Path, spec: &str) -> Option<PathBuf> {
 }
 
 /// Extract the `## Acceptance Criteria` section body (heading line stripped),
-/// recognizing the EN and PT headings via [`crate::run::spec_sections`].
+/// recognizing the EN and PT headings via [`crate::run::spec::spec_sections`].
 fn extract_ac_section(markdown: &str) -> Option<String> {
     let lines: Vec<&str> = markdown.split('\n').collect();
     let start = lines
         .iter()
-        .position(|l| crate::run::spec_sections::is_heading(l, "acceptanceCriteria"))?;
+        .position(|l| crate::run::spec::spec_sections::is_heading(l, "acceptanceCriteria"))?;
     let mut end = lines.len();
     for (i, l) in lines.iter().enumerate().skip(start + 1) {
         if l.starts_with("## ") {

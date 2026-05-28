@@ -6,7 +6,7 @@
 //! en-US path does not. Stopword lists differ per locale.
 //!
 //! This is a thin facade over [`mustard_core::slugify`] kept here so any rt
-//! caller can `crate::run::spec_slug::for_lang` without having to think about
+//! caller can `crate::run::spec::spec_slug::for_lang` without having to think about
 //! the BCP-47 parse / fail-open dance every time.
 //!
 //! ## Fail-open
