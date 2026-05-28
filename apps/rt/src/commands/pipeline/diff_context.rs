@@ -14,7 +14,7 @@
 
 use std::path::Path;
 
-use mustard_core::process::rtk_command;
+use mustard_core::platform::process::rtk_command;
 
 /// Output cap — mirrors `MAX_CHARS` in `diff-context.js`.
 const MAX_CHARS: usize = 3000;

@@ -6,7 +6,7 @@
 //! (the crate has no `lib.rs`), then query the SQLite event store and assert
 //! that a `qa.result` event with `overall = "pass"` was emitted.
 
-use mustard_core::projection::read_harness_events_from_ndjson_dir;
+use mustard_core::view::projection::read_harness_events_from_ndjson_dir;
 use serde_json::Value;
 use std::path::Path;
 use tempfile::TempDir;
@@ -89,7 +89,7 @@ fn complete_spec_emits_qa_result_event() {
         .join(".events");
     let events = read_harness_events_from_ndjson_dir(&events_dir);
 
-    let qa_events: Vec<&mustard_core::model::event::HarnessEvent> = events
+    let qa_events: Vec<&mustard_core::domain::model::event::HarnessEvent> = events
         .iter()
         .filter(|e| e.event == "qa.result")
         .collect();

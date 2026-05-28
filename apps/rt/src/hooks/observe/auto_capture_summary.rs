@@ -21,7 +21,7 @@
 //!
 //! Every IO step degrades to a no-op. Telemetry is not load-bearing.
 
-use mustard_core::model::contract::{Ctx, HookInput, Observer};
+use mustard_core::domain::model::contract::{Ctx, HookInput, Observer};
 
 /// The W8 auto-capture hook.
 pub struct AutoCaptureSummary;
@@ -151,7 +151,7 @@ fn persist(
 /// Emit `pipeline.economy.operation.invoked` via the NDJSON event route.
 /// Fail-open: any error degrades to a no-op.
 fn emit_economy_operation(cwd: &str, operation: &str) {
-    use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
+    use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
     use serde_json::json;
 
     let event = HarnessEvent {

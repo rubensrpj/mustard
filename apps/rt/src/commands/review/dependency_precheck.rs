@@ -20,7 +20,7 @@
 //! deps" guard.
 
 use crate::commands::spec::spec_sections::is_heading;
-use mustard_core::fs;
+use mustard_core::io::fs;
 use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt;
@@ -140,7 +140,7 @@ impl DepKind {
 /// ancestor we have not yet validated.
 ///
 /// Callers that need the canonical workspace root (anchor = `mustard.json` +
-/// config dir) should use `mustard_core::workspace::workspace_root` instead;
+/// config dir) should use `mustard_core::io::workspace::workspace_root` instead;
 /// this probe predates that resolver and stays in place for back-compat with
 /// repos that carry the config dir but no `mustard.json`.
 fn find_project_root(start_dir: &Path) -> Option<PathBuf> {

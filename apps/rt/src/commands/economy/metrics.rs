@@ -16,7 +16,7 @@
 //! contract for the Rust port (markdown is a human concern, JSON is consumable).
 
 use crate::report::{table, Report};
-use mustard_core::fs;
+use mustard_core::io::fs;
 use mustard_core::ClaudePaths;
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, BTreeSet};

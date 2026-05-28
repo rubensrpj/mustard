@@ -20,7 +20,7 @@
 //! warning rather than aborting the build. The validator records warnings;
 //! it never returns `Err`.
 
-use mustard_core::fs as mfs;
+use mustard_core::io::fs as mfs;
 use mustard_core::ClaudePaths;
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};

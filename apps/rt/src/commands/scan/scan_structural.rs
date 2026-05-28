@@ -26,7 +26,7 @@
 //! | `*.csproj` | compiled-strongly-typed |
 //! | `pubspec.yaml` | compiled-strongly-typed |
 
-use mustard_core::fs as mfs;
+use mustard_core::io::fs as mfs;
 use mustard_core::ClaudePaths;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;

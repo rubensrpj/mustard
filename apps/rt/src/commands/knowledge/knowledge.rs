@@ -10,7 +10,7 @@
 //! Missing or unparseable registry → `{"entities":[],"totalWithDescription":0,"totalScanned":0}`.
 //! Process exits 0 in all paths.
 
-use mustard_core::fs;
+use mustard_core::io::fs;
 use mustard_core::ClaudePaths;
 use serde::Serialize;
 use serde_json::Value;

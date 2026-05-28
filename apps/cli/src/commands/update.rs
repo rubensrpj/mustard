@@ -32,7 +32,7 @@ use std::path::Path;
 use anyhow::{Context, Result, bail};
 use dialoguer::Confirm;
 use dialoguer::theme::ColorfulTheme;
-use mustard_core::fs as mfs;
+use mustard_core::io::fs as mfs;
 use serde_json::json;
 
 use crate::commands::git_flow;

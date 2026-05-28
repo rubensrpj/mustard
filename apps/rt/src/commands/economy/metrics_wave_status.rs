@@ -33,7 +33,7 @@
 use crate::commands::spec::complete_spec::parse_iso_millis;
 use crate::shared::context::project_dir;
 use crate::commands::knowledge::memory_cross_wave;
-use mustard_core::fs;
+use mustard_core::io::fs;
 use mustard_core::ClaudePaths;
 use mustard_core::EventReader;
 use serde::Serialize;

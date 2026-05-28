@@ -15,7 +15,7 @@
 //! 1. Creating a `tempfile::TempDir` and planting the workspace anchor
 //!    (`mustard.json` + `.claude/`) inside it.
 //! 2. Setting `MUSTARD_WORKSPACE_ROOT` to the tempdir path so
-//!    [`mustard_core::workspace::workspace_root`] short-circuits there.
+//!    [`mustard_core::io::workspace::workspace_root`] short-circuits there.
 //! 3. Returning a [`TestWorkspace`] RAII guard that restores the previous
 //!    value of `MUSTARD_WORKSPACE_ROOT` (or unsets it) when dropped.
 //!
@@ -35,7 +35,7 @@ use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 use tempfile::TempDir;
 
-/// Name of the env var consumed by `mustard_core::workspace::workspace_root`.
+/// Name of the env var consumed by `mustard_core::io::workspace::workspace_root`.
 const OVERRIDE_ENV: &str = "MUSTARD_WORKSPACE_ROOT";
 
 /// Process-wide mutex serialising env-var swaps.

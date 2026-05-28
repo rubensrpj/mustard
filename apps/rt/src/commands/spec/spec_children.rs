@@ -18,8 +18,8 @@
 //! Fail-open: any I/O failure silently degrades to an empty result. The
 //! subcommand always emits valid JSON.
 
-use mustard_core::fs;
-use mustard_core::spec;
+use mustard_core::io::fs;
+use mustard_core::domain::spec;
 use mustard_core::ClaudePaths;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
@@ -73,7 +73,7 @@ fn strip_wikilink(raw: &str) -> String {
 ///
 /// The parent slug is normalised (surrounding `[[wikilink]]` brackets are
 /// stripped). The status is resolved through the canonical
-/// [`mustard_core::spec`] parser — so the new `### Stage:`/`### Outcome:`
+/// [`mustard_core::domain::spec`] parser — so the new `### Stage:`/`### Outcome:`
 /// header *and* every legacy `### Status:` shape are understood — and projected
 /// to the kebab-case status word the dashboard's sub-spec rows expect. A spec
 /// with a `### Parent:` but no lifecycle header surfaces `status = None`

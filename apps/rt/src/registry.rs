@@ -33,8 +33,8 @@ use crate::hooks::task::tracker::{
     MainContextCounter, MetricsTracker, SkillUsageTracker, SubagentTracker, ToolUseCounter,
 };
 use crate::hooks::observe::wikilink_footer::WikilinkFooter;
-use mustard_core::config::Mode;
-use mustard_core::model::contract::{Check, Observer, Trigger};
+use mustard_core::platform::config::Mode;
+use mustard_core::domain::model::contract::{Check, Observer, Trigger};
 
 /// Which tool an `(event, tool)` registration entry applies to.
 ///
@@ -446,7 +446,7 @@ impl Registry {
                 id: "wikilink_footer",
                 // PostToolUse(Write|Edit) auto-footer renderer for
                 // `.claude/{memory,knowledge,spec}/**/*.md`. Pure Observer —
-                // the render logic lives in `mustard_core::atomic_md::wikilink`.
+                // the render logic lives in `mustard_core::io::atomic_md::wikilink`.
                 applies_to: &[
                     (Trigger::PostToolUse, ToolMatch::Named("Write")),
                     (Trigger::PostToolUse, ToolMatch::Named("Edit")),

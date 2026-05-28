@@ -14,9 +14,9 @@
 //! `0` regardless. Missing directories, unparseable headers, and SQLite failures
 //! all degrade to partial results, never to a panic or non-zero exit.
 
-use mustard_core::claude_paths::ClaudePaths;
-use mustard_core::fs;
-use mustard_core::meta;
+use mustard_core::io::claude_paths::ClaudePaths;
+use mustard_core::io::fs;
+use mustard_core::domain::meta;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::io::Read;
@@ -116,7 +116,7 @@ fn read_header_bytes(path: &Path) -> Option<String> {
 /// authoritative (the sidecar won over `.md`); the caller will detect the
 /// missing fields and mark the spec as malformed (`??`).
 ///
-/// Delegates the IO + lenient parse to [`mustard_core::meta`] — this is
+/// Delegates the IO + lenient parse to [`mustard_core::domain::meta`] — this is
 /// just the type-shape conversion from [`meta::Meta`] to the local
 /// [`SpecHeader`] (picker uses a narrower projection — `phase` /
 /// `isWavePlan` / `totalWaves` are not needed here).

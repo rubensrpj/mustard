@@ -22,7 +22,7 @@
 //! Fail-open. Missing templates dir, unreadable frontmatter, or IO errors
 //! return an empty / partially-populated report — never a panic.
 
-use mustard_core::fs as mfs;
+use mustard_core::io::fs as mfs;
 use mustard_core::ClaudePaths;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};

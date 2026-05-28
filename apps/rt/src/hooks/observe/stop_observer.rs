@@ -7,8 +7,8 @@
 //!
 //! Pure [`Observer`] — never blocks.
 
-use mustard_core::atomic_md::{MarkdownDoc, MarkdownStore};
-use mustard_core::model::contract::{Ctx, HookInput, Observer};
+use mustard_core::io::atomic_md::{MarkdownDoc, MarkdownStore};
+use mustard_core::domain::model::contract::{Ctx, HookInput, Observer};
 use mustard_core::ClaudePaths;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
@@ -80,7 +80,7 @@ fn bump_last_used(cwd: &str, text: &str) {
 }
 
 fn emit_economy_operation(cwd: &str, operation: &str) {
-    use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
+    use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
     let event = HarnessEvent {
         v: SCHEMA_VERSION,
         ts: crate::util::now_iso8601(),
@@ -215,7 +215,7 @@ fn promote_high_confidence(cwd: &str) -> usize {
         new_fm.insert("status".into(), json!("active"));
         let new_doc = MarkdownDoc {
             path: dest_path.clone(),
-            frontmatter: Some(mustard_core::atomic_md::frontmatter::Frontmatter(
+            frontmatter: Some(mustard_core::io::atomic_md::frontmatter::Frontmatter(
                 Value::Object(new_fm),
             )),
             body: format!("{content}\n"),
@@ -285,13 +285,13 @@ fn recent_agent_memory(cwd: &str) -> Vec<String> {
     rows.into_iter().take(3).map(|(_, s)| s).collect()
 }
 
-impl mustard_core::model::contract::Check for PreCompactMemorySnippet {
+impl mustard_core::domain::model::contract::Check for PreCompactMemorySnippet {
     fn evaluate(
         &self,
         input: &HookInput,
         ctx: &Ctx,
-    ) -> Result<mustard_core::model::contract::Verdict, mustard_core::error::Error> {
-        use mustard_core::model::contract::{Trigger, Verdict};
+    ) -> Result<mustard_core::domain::model::contract::Verdict, mustard_core::platform::error::Error> {
+        use mustard_core::domain::model::contract::{Trigger, Verdict};
         if ctx.trigger != Some(Trigger::PreCompact) {
             return Ok(Verdict::Allow);
         }
@@ -329,7 +329,7 @@ mod tests {
         fm.insert("last_used".into(), json!(last_used));
         let doc = MarkdownDoc {
             path: path.clone(),
-            frontmatter: Some(mustard_core::atomic_md::frontmatter::Frontmatter(
+            frontmatter: Some(mustard_core::io::atomic_md::frontmatter::Frontmatter(
                 Value::Object(fm),
             )),
             body: String::new(),

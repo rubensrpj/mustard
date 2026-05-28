@@ -13,7 +13,7 @@
 //! kept (`python quick_validate.py`); the cluster heuristic is ported intact.
 
 use crate::shared::context;
-use mustard_core::fs;
+use mustard_core::io::fs;
 use mustard_core::ClaudePaths;
 use mustard_core::EventReader;
 use serde_json::{json, Value};
@@ -939,7 +939,7 @@ fn run_validate_factual(root: &Path, json_out: bool, mode: &str, exit_failures: 
 
 /// `validate --strict-frontmatter` — assert every **foundation** SKILL.md
 /// (under `apps/cli/templates/skills/` + the installed `.claude/skills/`)
-/// parses against [`mustard_core::skill::frontmatter`]'s strict schema. Emits
+/// parses against [`mustard_core::domain::skill::frontmatter`]'s strict schema. Emits
 /// JSON `{ ok: bool, total, failed, results: [...] }`. Exit `0` when ok, `1`
 /// otherwise. Used by AC-W1.6.
 ///
@@ -947,7 +947,7 @@ fn run_validate_factual(root: &Path, json_out: bool, mode: &str, exit_failures: 
 /// `{subproject}/.claude/skills/` are skipped here — they are W3 territory and
 /// have their own validator (`mustard-rt run skills validate --factual`).
 fn run_validate_strict_frontmatter(root: &Path, json_out: bool) -> ! {
-    use mustard_core::skill::frontmatter::{
+    use mustard_core::domain::skill::frontmatter::{
         missing_strict_keys, parse as parse_fm, validate as validate_fm,
     };
     let mut results: Vec<Value> = Vec::new();

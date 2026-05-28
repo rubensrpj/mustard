@@ -8,7 +8,7 @@
 //!
 //! Each `*_v2` function is a thin adapter — it walks
 //! `<project>/.claude/spec/*/.events/*.ndjson` via
-//! [`mustard_core::projection::read_workspace_events`], folds the resulting
+//! [`mustard_core::view::projection::read_workspace_events`], folds the resulting
 //! slice with the matching projection function (`project_spec_view_with_header`,
 //! `project_waves`, `project_quality`, `project_timeline`, `project_workspace`)
 //! and maps the typed ViewModel into the JSON shape the frontend already
@@ -25,7 +25,7 @@
 // SQL-backed aggregations have been stubbed to fail-open defaults — the
 // closures are never actually invoked since `db::with_db` returns `None`.
 use crate::db::Connection;
-use mustard_core::fs;
+use mustard_core::io::fs;
 use serde::{Deserialize, Serialize};
 
 // ── Shapes ───────────────────────────────────────────────────────────────────
@@ -541,9 +541,9 @@ fn sync_spec_status_header(repo_path: &str, spec: &str, to: &str) {
 /// JSON payload.
 pub fn spec_card_v2(repo_path: &str, spec: &str) -> Result<Option<SpecCard>, String> {
     let project = std::path::PathBuf::from(repo_path);
-    let events = mustard_core::projection::read_workspace_events(&project);
+    let events = mustard_core::view::projection::read_workspace_events(&project);
     let spec_md = project.join(".claude").join("spec").join(spec).join("spec.md");
-    let view = mustard_core::projection::project_spec_view_with_header(
+    let view = mustard_core::view::projection::project_spec_view_with_header(
         spec,
         &events,
         Some(&spec_md),
@@ -570,16 +570,16 @@ pub fn spec_card_v2(repo_path: &str, spec: &str) -> Result<Option<SpecCard>, Str
 /// Empty `Vec` when the spec has no wave events.
 pub fn spec_waves_v2(repo_path: &str, spec: &str) -> Result<Vec<SpecWave>, String> {
     let project = std::path::PathBuf::from(repo_path);
-    let events = mustard_core::projection::read_workspace_events(&project);
-    let waves = mustard_core::projection::project_waves(spec, &events);
+    let events = mustard_core::view::projection::read_workspace_events(&project);
+    let waves = mustard_core::view::projection::project_waves(spec, &events);
     Ok(waves.iter().map(spec_wave_from_view).collect())
 }
 
 /// W8A-2 adapter: AC roll-up via `mustard-core` projections.
 pub fn spec_quality_v2(repo_path: &str, spec: &str) -> Result<Vec<SpecQualityItem>, String> {
     let project = std::path::PathBuf::from(repo_path);
-    let events = mustard_core::projection::read_workspace_events(&project);
-    let rollup = mustard_core::projection::project_quality(spec, &events);
+    let events = mustard_core::view::projection::read_workspace_events(&project);
+    let rollup = mustard_core::view::projection::project_quality(spec, &events);
     Ok(rollup.criteria.iter().map(quality_item_from_view).collect())
 }
 
@@ -588,8 +588,8 @@ pub fn spec_quality_v2(repo_path: &str, spec: &str) -> Result<Vec<SpecQualityIte
 /// needs a narrower view.
 pub fn spec_timeline_v2(repo_path: &str, spec: &str) -> Result<Vec<SpecTimelineNode>, String> {
     let project = std::path::PathBuf::from(repo_path);
-    let events = mustard_core::projection::read_workspace_events(&project);
-    let nodes = mustard_core::projection::project_timeline(
+    let events = mustard_core::view::projection::read_workspace_events(&project);
+    let nodes = mustard_core::view::projection::project_timeline(
         spec,
         &events,
         mustard_core::TimeWindow::All,
@@ -774,12 +774,12 @@ pub fn dashboard_metrics_wave_status_run(
 /// when the override fails-soft (DB missing / schema mismatch).
 pub fn workspace_summary_v2(repo_path: &str) -> Result<WorkspaceSummary, String> {
     let project = std::path::PathBuf::from(repo_path);
-    let events = mustard_core::projection::read_workspace_events(&project);
+    let events = mustard_core::view::projection::read_workspace_events(&project);
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .ok()
         .map_or(0_i64, |d| d.as_millis().min(i64::MAX as u128) as i64);
-    let summary = mustard_core::projection::project_workspace(&events, now_ms);
+    let summary = mustard_core::view::projection::project_workspace(&events, now_ms);
     let mut out = workspace_summary_from_view(&summary);
 
     // Followup-fix (2026-05-21, spec `2026-05-21-economia-moat-followup-fixes`):
@@ -841,7 +841,7 @@ pub fn top_files_today_impl(_conn: &Connection) -> Result<Vec<FileCount>, String
 fn spec_card_from_view(view: &mustard_core::SpecView, children_count: u32) -> SpecCard {
     SpecCard {
         spec: view.spec.clone(),
-        status: mustard_core::spec::status_word(&view.state).into(),
+        status: mustard_core::domain::spec::status_word(&view.state).into(),
         phase: view
             .phase
             .map_or_else(String::new, |p| phase_string(p).to_string()),
@@ -928,7 +928,7 @@ fn workspace_summary_from_view(view: &mustard_core::WorkspaceSummary) -> Workspa
 fn spec_track_from_view(view: &mustard_core::SpecTrack) -> SpecTrack {
     SpecTrack {
         spec: view.spec.clone(),
-        status: mustard_core::spec::status_word(&view.state).into(),
+        status: mustard_core::domain::spec::status_word(&view.state).into(),
         current_phase: view
             .current_phase
             .map_or_else(String::new, |p| phase_string(p).to_string()),

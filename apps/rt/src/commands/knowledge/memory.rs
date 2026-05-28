@@ -1,7 +1,7 @@
 //! `mustard-rt run memory` — filesystem-backed memory CLI (W4B migration).
 //!
 //! A unified persistence CLI. All persistence is markdown-atomic via
-//! [`mustard_core::atomic_md::MarkdownStore`] — no SQLite.
+//! [`mustard_core::io::atomic_md::MarkdownStore`] — no SQLite.
 //!
 //! Subcommands:
 //!
@@ -20,10 +20,10 @@
 
 use crate::shared::context::{current_spec, project_dir, session_id};
 use crate::util::{now_iso8601, now_millis};
-use mustard_core::atomic_md::frontmatter::Frontmatter;
-use mustard_core::atomic_md::{MarkdownDoc, MarkdownStore};
-use mustard_core::fs;
-use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
+use mustard_core::io::atomic_md::frontmatter::Frontmatter;
+use mustard_core::io::atomic_md::{MarkdownDoc, MarkdownStore};
+use mustard_core::io::fs;
+use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use mustard_core::ClaudePaths;
 use serde_json::{json, Map, Value};
 use std::io::Read;

@@ -21,7 +21,7 @@
 //! every `.events/*.ndjson` file under `<project>/.claude/spec/`.
 
 use super::{claude_dir, SampleRow};
-use mustard_core::fs;
+use mustard_core::io::fs;
 use mustard_core::{Event, EventReader};
 use serde_json::{json, Value};
 use std::fmt::Write as _;
@@ -274,7 +274,7 @@ fn check_subtractions(claude_root: &Path) -> Value {
 /// usable.
 fn event_ts_ms(e: &Event) -> Option<i64> {
     if let Some(iso) = e.raw.get("ts").and_then(Value::as_str) {
-        if let Some(ms) = mustard_core::projection::parse_iso_millis(iso) {
+        if let Some(ms) = mustard_core::view::projection::parse_iso_millis(iso) {
             return Some(ms);
         }
     }

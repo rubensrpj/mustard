@@ -5,8 +5,8 @@
 //! process environment, mirroring how the JS scripts did (`CLAUDE_PROJECT_DIR`,
 //! `MUSTARD_SESSION_ID` / `CLAUDE_SESSION_ID`).
 
-use mustard_core::fs;
-use mustard_core::workspace::{workspace_root, WorkspaceError};
+use mustard_core::io::fs;
+use mustard_core::io::workspace::{workspace_root, WorkspaceError};
 use mustard_core::ClaudePaths;
 use std::path::{Path, PathBuf};
 

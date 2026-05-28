@@ -23,21 +23,21 @@
 //! [`SavingsSource::RecipeInjection`] row into the W1 `savings_records` table:
 //! every character of skeleton we hand the agent is a character the model did
 //! not have to derive, so we book the proxy via
-//! [`mustard_core::economy::writer::injection_savings_tokens`] (the public
+//! [`mustard_core::domain::economy::writer::injection_savings_tokens`] (the public
 //! `chars / 4` helper merged in W1). Persistence is a strict side-effect — the
 //! stdout JSON shape is unchanged and any DB failure degrades to an
 //! `eprintln!`, mirroring how [`super::rtk_gain::run`] handles its own
 //! best-effort writes.
 
-use mustard_core::claude_paths::ClaudePaths;
-use mustard_core::economy::{
+use mustard_core::io::claude_paths::ClaudePaths;
+use mustard_core::domain::economy::{
     self,
     model::{SavingsRecord, SavingsSource},
     scope::{ProjectPath, SpecId},
     sources::time::now_iso,
 };
-use mustard_core::fs;
-use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
+use mustard_core::io::fs;
+use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use serde_json::{json, Map, Value};
 use std::path::Path;
 

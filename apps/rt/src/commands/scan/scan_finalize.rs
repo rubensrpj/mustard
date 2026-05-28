@@ -14,7 +14,7 @@
 //! is simpler and still fast since each is a short binary invocation.
 
 use crate::commands::scan::refs_installer::{install_refs, DetectedStack};
-use mustard_core::fs;
+use mustard_core::io::fs;
 use mustard_core::ClaudePaths;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};

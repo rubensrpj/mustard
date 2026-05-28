@@ -16,9 +16,9 @@
 //! - Path traversal is rejected up front (the spec name must be a single
 //!   directory component).
 
-use crate::fs;
+use crate::io::fs;
 use mustard_core::Meta;
-use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
+use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use std::path::PathBuf;
 use std::time::Instant;
 

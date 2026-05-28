@@ -25,7 +25,7 @@ use super::file_utils;
 use super::interpret;
 use super::project_conventions::compute_project_conventions;
 use super::{load_scanner, EntityInfo, EnumInfo, ScanResult};
-use mustard_core::fs;
+use mustard_core::io::fs;
 use mustard_core::ClaudePaths;
 use serde::Serialize;
 use serde_json::{json, Value};

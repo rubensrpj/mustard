@@ -14,10 +14,10 @@
 
 use crate::shared::context::{current_spec, session_id};
 use crate::util::now_iso8601;
-use mustard_core::i18n::{project_locale_from_file, SupportedLocale as Locale};
-use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
+use mustard_core::platform::i18n::{project_locale_from_file, SupportedLocale as Locale};
+use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use mustard_core::ClaudePaths;
-use mustard_core::{read_meta, spec as spec_io};
+use mustard_core::{read_meta, domain::spec as spec_io};
 use serde::Serialize;
 use serde_json::json;
 use std::path::{Path, PathBuf};

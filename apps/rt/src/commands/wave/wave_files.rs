@@ -12,7 +12,7 @@
 //! Fail-open: any I/O error degrades to `{"count":0,"markdown":"","path":null}`
 //! and exit `0`.
 
-use mustard_core::fs;
+use mustard_core::io::fs;
 use mustard_core::ClaudePaths;
 use serde_json::json;
 use std::path::PathBuf;

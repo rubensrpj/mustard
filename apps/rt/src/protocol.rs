@@ -6,7 +6,7 @@
 //! `0`. This module owns the *encoding* of that contract; the *decisions* live
 //! in [`mustard_core`] (`Verdict` / `Outcome`) and the enforcement modules.
 
-use mustard_core::model::contract::{HookInput, Outcome, Trigger, Verdict};
+use mustard_core::domain::model::contract::{HookInput, Outcome, Trigger, Verdict};
 use serde_json::{Value, json};
 use std::io::Read;
 

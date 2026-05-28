@@ -7,10 +7,10 @@
 //! path-based readers (`per_agent_costs`, `per_spec_costs`,
 //! `per_wave_costs`) group them as the dashboard expects.
 
-use mustard_core::economy::{
+use mustard_core::domain::economy::{
     per_agent_costs, per_spec_costs, per_wave_costs, EconomyScope,
 };
-use mustard_core::economy::scope::{ProjectPath, SpecId, WaveId};
+use mustard_core::domain::economy::scope::{ProjectPath, SpecId, WaveId};
 use serde_json::json;
 use std::fs;
 use std::path::Path;

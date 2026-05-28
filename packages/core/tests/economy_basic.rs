@@ -6,12 +6,12 @@
 //! NDJSON files in a `tempdir` and assert the new path-based readers
 //! aggregate them with the same shape the dashboard expects.
 
-use mustard_core::economy::{
+use mustard_core::domain::economy::{
     economy_summary, estimate_input_tokens, per_spec_costs, EconomyScope,
     MultiProjectReader, SavingsBreakdown, SavingsSource,
 };
-use mustard_core::economy::scope::ProjectPath;
-use mustard_core::economy::scope::SpecId;
+use mustard_core::domain::economy::scope::ProjectPath;
+use mustard_core::domain::economy::scope::SpecId;
 use serde_json::json;
 use std::fs;
 use std::path::Path;
@@ -168,7 +168,7 @@ fn savings_breakdown_groups_by_source() {
 
     let scope = EconomyScope::Project(ProjectPath::new(root));
     let b: SavingsBreakdown =
-        mustard_core::economy::savings_breakdown(root, scope).unwrap();
+        mustard_core::domain::economy::savings_breakdown(root, scope).unwrap();
     assert_eq!(b.total_tokens_saved, 350);
     assert_eq!(b.per_source.len(), 2);
     assert_eq!(b.per_source[0].source, SavingsSource::RtkRewrite);
@@ -190,7 +190,7 @@ fn multi_project_reader_fanout_walks_each_root() {
     let projects = vec![ProjectPath::new(&path_a), ProjectPath::new(&path_b)];
     let per_project = reader.fan_out(&projects, |root, _proj| {
         let s = economy_summary(root, EconomyScope::Project(ProjectPath::new(root))).unwrap();
-        Ok::<_, mustard_core::error::Error>(s.total_cost_usd_micros)
+        Ok::<_, mustard_core::platform::error::Error>(s.total_cost_usd_micros)
     });
     assert_eq!(per_project.len(), 2);
     // Spec scope so estimated cost is reported (no measured planted).

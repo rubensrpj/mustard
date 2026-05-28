@@ -1,7 +1,7 @@
 //! `mustard-rt run i18n translate-heading` — translate a markdown heading line.
 //!
 //! Maps a `## Heading` (or `### Heading`) string into the user's target locale
-//! using the canonical heading map in [`mustard_core::i18n`]. The intent is to
+//! using the canonical heading map in [`mustard_core::platform::i18n`]. The intent is to
 //! keep tooling that rewrites spec sections (close-summary, wave scaffolding,
 //! resume bootstrap) idiom-agnostic — they call this one subcommand instead of
 //! carrying their own bilingual lookup tables.
@@ -9,14 +9,14 @@
 //! ## Heading recognition
 //!
 //! Strips a leading `#` run + spaces and looks the bare label up against the
-//! `heading.spec.*` and `heading.memory.*` keys exposed by [`mustard_core::i18n::translate`].
+//! `heading.spec.*` and `heading.memory.*` keys exposed by [`mustard_core::platform::i18n::translate`].
 //! Recognises both directions (PT→EN and EN→PT). Unknown labels round-trip
 //! unchanged (fail-open).
 
 use crate::shared::context::session_id;
 use crate::util::now_iso8601;
-use mustard_core::i18n::{translate, SupportedLocale as Locale};
-use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
+use mustard_core::platform::i18n::{translate, SupportedLocale as Locale};
+use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use serde::Serialize;
 use serde_json::json;
 use std::str::FromStr;

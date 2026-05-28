@@ -22,8 +22,8 @@
 //!
 //! All three sub-projections come straight from the canonical
 //! [`mustard_core`] projection layer
-//! ([`mustard_core::projection::project_waves`],
-//! [`mustard_core::projection::project_quality`]) folded over the NDJSON
+//! ([`mustard_core::view::projection::project_waves`],
+//! [`mustard_core::view::projection::project_quality`]) folded over the NDJSON
 //! workspace events, plus the cross-developer UNION used by
 //! [`crate::commands::spec::spec_children`] for sub-spec discovery (events + filesystem
 //! `### Parent:` headers). Reusing the projections keeps this byte-stable with
@@ -34,7 +34,7 @@
 
 use crate::shared::context::project_dir;
 use crate::commands::spec::spec_children::{list_children, ChildEntry};
-use mustard_core::projection::{project_quality, project_waves, read_workspace_events};
+use mustard_core::view::projection::{project_quality, project_waves, read_workspace_events};
 use mustard_core::{AcStatus, Outcome, SpecState, Stage, WaveStatus, WaveView};
 use serde::Serialize;
 use std::path::{Path, PathBuf};

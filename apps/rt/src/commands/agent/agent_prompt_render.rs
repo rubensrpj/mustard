@@ -24,8 +24,8 @@ use crate::commands::knowledge::memory_cross_wave;
 use crate::commands::pipeline::resume_bootstrap::{read_wave_model, resolve_operational_spec_path};
 use crate::commands::skill::skill_resolve;
 use crate::commands::spec::spec_sections::is_heading;
-use mustard_core::fs as mfs;
-use mustard_core::i18n;
+use mustard_core::io::fs as mfs;
+use mustard_core::platform::i18n;
 use mustard_core::ClaudePaths;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -695,13 +695,13 @@ fn read_vocab_layers_for_inject(project: &Path) -> (Vec<String>, Vec<String>) {
         .join("vocab")
         .join("regression.toml");
     let (mut semantic, mut pattern) =
-        match mustard_core::vocabulary::VocabularyDoc::load_from_file(&toml_path) {
+        match mustard_core::domain::vocabulary::VocabularyDoc::load_from_file(&toml_path) {
             Ok(doc) => (
-                doc.layer_terms(mustard_core::vocabulary::Layer::Semantic)
+                doc.layer_terms(mustard_core::domain::vocabulary::Layer::Semantic)
                     .iter()
                     .map(|s| (*s).to_string())
                     .collect::<Vec<String>>(),
-                doc.layer_terms(mustard_core::vocabulary::Layer::Pattern)
+                doc.layer_terms(mustard_core::domain::vocabulary::Layer::Pattern)
                     .iter()
                     .map(|s| (*s).to_string())
                     .collect::<Vec<String>>(),

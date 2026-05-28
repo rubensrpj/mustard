@@ -12,12 +12,12 @@
 //! | `write_meta_json` | Write `meta.json` from a pre-built [`Meta`]. |
 //! | `sync_status` | Atomically rewrite lifecycle headers in both files. |
 
-use mustard_core::fs as mfs;
-use mustard_core::meta::{write_meta, Meta};
-use mustard_core::spec::contract::{SpecInput, PLAN_DIVIDER, PRD_DIVIDER};
-use mustard_core::spec;
+use mustard_core::io::fs as mfs;
+use mustard_core::domain::meta::{write_meta, Meta};
+use mustard_core::domain::spec::contract::{SpecInput, PLAN_DIVIDER, PRD_DIVIDER};
+use mustard_core::domain::spec;
 use mustard_core::{read_meta, Outcome, Scope, SpecState, Stage};
-use mustard_core::i18n::{translate, Locale, Tone};
+use mustard_core::platform::i18n::{translate, Locale, Tone};
 use std::fmt::Write as _;
 use std::path::Path;
 
@@ -101,7 +101,7 @@ pub fn write_meta_json(output: &Path, meta: &Meta) -> Result<(), String> {
 /// `meta.json` to the given `stage` + `outcome`.
 ///
 /// Behaviour:
-/// - `spec.md` is rewritten via [`mustard_core::spec::write_state`], which
+/// - `spec.md` is rewritten via [`mustard_core::domain::spec::write_state`], which
 ///   normalises any legacy `### Status:` / `### Phase:` lines to the canonical
 ///   `### Stage:` / `### Outcome:` / `### Flags:` triple.
 /// - `meta.json` is read (fail-open to a zero-value [`Meta`] when absent),
@@ -183,7 +183,7 @@ pub fn section_heading_for(canonical: &str, lang: Locale) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mustard_core::meta::Meta;
+    use mustard_core::domain::meta::Meta;
     use tempfile::tempdir;
 
     fn make_meta(stage: &str, outcome: &str) -> Meta {

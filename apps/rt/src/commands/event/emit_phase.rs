@@ -17,9 +17,9 @@
 use crate::shared::context::{project_dir, session_id};
 use crate::shared::events::writer_ndjson;
 use crate::util::now_iso8601;
-use mustard_core::claude_paths::ClaudePaths;
-use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
-use mustard_core::projection::read_harness_events_from_ndjson_dir;
+use mustard_core::io::claude_paths::ClaudePaths;
+use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
+use mustard_core::view::projection::read_harness_events_from_ndjson_dir;
 use serde_json::json;
 use std::path::Path;
 

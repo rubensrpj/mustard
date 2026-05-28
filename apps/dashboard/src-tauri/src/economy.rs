@@ -11,7 +11,7 @@
 //! binary on `PATH`, malformed JSON — each degrade to a default field
 //! rather than an error.
 
-use mustard_core::events::reader::EventReader;
+use mustard_core::io::events::reader::EventReader;
 use mustard_core::ClaudePaths;
 use serde::Serialize;
 use serde_json::Value;

@@ -13,9 +13,9 @@
 
 use crate::shared::context::{current_spec, session_id};
 use crate::util::now_iso8601;
-use mustard_core::fs::read_to_string;
-use mustard_core::i18n::{slugify, SupportedLocale as Locale};
-use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
+use mustard_core::io::fs::read_to_string;
+use mustard_core::platform::i18n::{slugify, SupportedLocale as Locale};
+use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use mustard_core::ClaudePaths;
 use serde::Serialize;
 use serde_json::{json, Map, Value};

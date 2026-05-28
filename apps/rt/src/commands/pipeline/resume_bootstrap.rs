@@ -22,15 +22,15 @@ use crate::shared::events::route;
 use crate::commands::economy::token_budget::{prune_to_budget, PrioritizedItem};
 use crate::commands::wave::wave_context::{self, WaveContextInput, WaveMapEntry};
 use crate::util::now_iso8601;
-use mustard_core::atomic_md::find_outgoing_links;
-use mustard_core::claude_paths::ClaudePaths;
-use mustard_core::fs as mfs;
-use mustard_core::i18n::{project_locale, SupportedLocale as Locale};
-use mustard_core::model::event::{
+use mustard_core::io::atomic_md::find_outgoing_links;
+use mustard_core::io::claude_paths::ClaudePaths;
+use mustard_core::io::fs as mfs;
+use mustard_core::platform::i18n::{project_locale, SupportedLocale as Locale};
+use mustard_core::domain::model::event::{
     Actor, ActorKind, HarnessEvent, PipelineDispatchFailurePayload, SCHEMA_VERSION,
     EVENT_PIPELINE_RESUME_MODE, EVENT_PIPELINE_SCOPE, EVENT_PIPELINE_WAVE_COMPLETE,
 };
-use mustard_core::projection::read_workspace_events;
+use mustard_core::view::projection::read_workspace_events;
 use mustard_core::EventReader;
 use crate::commands::wave::wave_summary::WikiLink;
 use serde::Serialize;
@@ -353,7 +353,7 @@ fn execute_complete(out: &ResumeBootstrap) -> bool {
 fn read_review_qa_state(spec_dir: &Path) -> (bool, bool, bool) {
     let events_dir = spec_dir.join(".events");
     let mut events =
-        mustard_core::projection::read_harness_events_from_ndjson_dir(&events_dir);
+        mustard_core::view::projection::read_harness_events_from_ndjson_dir(&events_dir);
     events.sort_by(|a, b| a.ts.cmp(&b.ts));
 
     let mut last_qa_overall: Option<String> = None;

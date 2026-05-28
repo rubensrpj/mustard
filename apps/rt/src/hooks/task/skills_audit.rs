@@ -20,9 +20,9 @@
 //! or `Warn`, never `Deny`. It is a `Check` (not an `Observer`) because the
 //! warn surfaces in the agent's context, which only a `Verdict` can carry.
 
-use mustard_core::error::Error;
-use mustard_core::metrics::{MetricLine, emit_metric};
-use mustard_core::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
+use mustard_core::platform::error::Error;
+use mustard_core::platform::metrics::{MetricLine, emit_metric};
+use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
 use mustard_core::ClaudePaths;
 use serde_json::json;
 use std::collections::BTreeSet;

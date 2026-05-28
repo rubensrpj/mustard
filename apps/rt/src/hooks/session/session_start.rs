@@ -49,11 +49,11 @@
 //! these now run where the JS auto-skipped. They are all fail-open side
 //! effects with no verdict impact, so the change is observably inert.
 
-use mustard_core::atomic_md::MarkdownStore;
-use mustard_core::error::Error;
-use mustard_core::fs;
-use mustard_core::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
-use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
+use mustard_core::io::atomic_md::MarkdownStore;
+use mustard_core::platform::error::Error;
+use mustard_core::io::fs;
+use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
+use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use mustard_core::ClaudePaths;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};

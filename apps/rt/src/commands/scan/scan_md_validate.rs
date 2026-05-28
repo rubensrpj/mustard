@@ -20,7 +20,7 @@
 //! Output is byte-stable pretty JSON: `{ files, hits, ok }`. Exit code is
 //! always `0` (fail-open) unless `--strict` is set and any hit is found.
 
-use mustard_core::fs as mfs;
+use mustard_core::io::fs as mfs;
 use mustard_core::ClaudePaths;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};

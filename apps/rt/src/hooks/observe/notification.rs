@@ -17,8 +17,8 @@
 //!
 //! Pure [`Observer`] — never blocks. Every IO step degrades to a no-op.
 
-use mustard_core::model::contract::{Ctx, HookInput, Observer};
-use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
+use mustard_core::domain::model::contract::{Ctx, HookInput, Observer};
+use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use serde_json::{Value, json};
 
 /// The `Notification` lifecycle observer.
@@ -106,7 +106,7 @@ impl Observer for Notification {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mustard_core::model::contract::Trigger;
+    use mustard_core::domain::model::contract::Trigger;
     use tempfile::tempdir;
 
     fn input_with(payload_key: &str, payload_val: &str) -> HookInput {

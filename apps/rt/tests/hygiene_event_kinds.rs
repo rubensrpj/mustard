@@ -5,7 +5,7 @@
 //! --kind hygiene.*` writes exactly one row and exits 0. An unknown kind still
 //! exits 1 (the validation contract is unchanged).
 
-use mustard_core::projection::read_harness_events_from_ndjson_dir;
+use mustard_core::view::projection::read_harness_events_from_ndjson_dir;
 use std::path::Path;
 use tempfile::TempDir;
 

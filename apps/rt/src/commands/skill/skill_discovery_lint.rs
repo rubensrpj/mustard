@@ -8,7 +8,7 @@
 //! Severity: WARN only — never blocks. The lint is advisory; humans decide
 //! whether to migrate.
 
-use mustard_core::fs;
+use mustard_core::io::fs;
 use mustard_core::ClaudePaths;
 use std::path::{Path, PathBuf};
 

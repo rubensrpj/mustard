@@ -49,11 +49,11 @@
 //! dispatcher's module-level mode. The dispatcher repasses the verdict without
 //! downgrade.
 
-use mustard_core::economy::estimator;
-use mustard_core::error::Error;
-use mustard_core::metrics::{MetricLine, emit_metric};
-use mustard_core::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
-use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
+use mustard_core::domain::economy::estimator;
+use mustard_core::platform::error::Error;
+use mustard_core::platform::metrics::{MetricLine, emit_metric};
+use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
+use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use serde_json::{json};
 
 use crate::shared::context::current_spec;

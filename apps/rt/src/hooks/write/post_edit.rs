@@ -40,10 +40,10 @@
 //! the wire encoding normalises. A boundary mismatch — advisory in the JS — is
 //! an [`Verdict::Inject`].
 
-use mustard_core::error::Error;
-use mustard_core::fs;
-use mustard_core::model::contract::{Check, Ctx, HookInput, Observer, Trigger, Verdict};
-use mustard_core::spec;
+use mustard_core::platform::error::Error;
+use mustard_core::io::fs;
+use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Observer, Trigger, Verdict};
+use mustard_core::domain::spec;
 use mustard_core::{ClaudePaths, Outcome as SpecOutcome, Stage as SpecStage};
 use serde_json::Value;
 use std::path::Path;

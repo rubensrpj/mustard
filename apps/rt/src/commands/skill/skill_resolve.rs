@@ -25,13 +25,13 @@
 //! ## Zero LLM, fail-open
 //!
 //! Pure Rust: tokenises the intent (alphanumeric runs, lowercased), reads
-//! every SKILL.md frontmatter via [`mustard_core::skill::frontmatter::parse`],
+//! every SKILL.md frontmatter via [`mustard_core::domain::skill::frontmatter::parse`],
 //! and walks the skills directories. Missing registry / unparseable
 //! frontmatter degrade gracefully — they are skipped, not fatal.
 
 use crate::shared::context::project_dir;
-use mustard_core::fs as mfs;
-use mustard_core::skill::frontmatter::{parse as parse_fm, SkillFrontmatter, SkillScope, SkillTag};
+use mustard_core::io::fs as mfs;
+use mustard_core::domain::skill::frontmatter::{parse as parse_fm, SkillFrontmatter, SkillScope, SkillTag};
 use mustard_core::ClaudePaths;
 use serde::Serialize;
 use serde_json::Value;
@@ -342,7 +342,7 @@ fn score_skill(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mustard_core::skill::frontmatter::{SkillMetadata, SkillSource};
+    use mustard_core::domain::skill::frontmatter::{SkillMetadata, SkillSource};
     use tempfile::tempdir;
 
     fn fm(name: &str, tags: Vec<SkillTag>, applies: Vec<&str>, scope: Vec<SkillScope>) -> SkillFrontmatter {

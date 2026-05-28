@@ -11,7 +11,7 @@
 //!
 //! The amendment window state is no longer stored in SQLite. It is persisted to
 //! `.claude/spec/{spec_id}/.amend-window.json` via atomic write (tmpfile +
-//! rename) using [`mustard_core::fs::write_atomic`]. Reading is idempotent: a
+//! rename) using [`mustard_core::io::fs::write_atomic`]. Reading is idempotent: a
 //! missing file returns a default closed window.
 //!
 //! Schema: `{ "opened_at": iso, "expires_at": iso, "files": [..],
@@ -32,9 +32,9 @@
 
 use crate::shared::context::current_spec;
 use crate::util::now_iso8601;
-use mustard_core::error::Error;
-use mustard_core::model::contract::{Check, Ctx, HookInput, Observer, Trigger, Verdict};
-use mustard_core::model::event::{
+use mustard_core::platform::error::Error;
+use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Observer, Trigger, Verdict};
+use mustard_core::domain::model::event::{
     Actor, ActorKind, HarnessEvent, PipelineAmendActivityPayload, PipelineAmendClosePayload,
     PipelineAmendDriftPayload, PipelineAmendIntentPayload, PipelineAmendOpenPayload,
     SCHEMA_VERSION, EVENT_PIPELINE_AMEND_ACTIVITY, EVENT_PIPELINE_AMEND_CLOSE,
@@ -156,7 +156,7 @@ fn write_window(project_dir: &str, spec_id: &str, state: &WindowState) -> Result
         std::fs::create_dir_all(parent).map_err(|_| ())?;
     }
     let json = serde_json::to_vec_pretty(state).map_err(|_| ())?;
-    mustard_core::fs::write_atomic(&path, &json).map_err(|_| ())?;
+    mustard_core::io::fs::write_atomic(&path, &json).map_err(|_| ())?;
     Ok(())
 }
 

@@ -14,11 +14,11 @@
 use crate::shared::context::{current_spec, session_id};
 use crate::commands::spec::spec_scaffold;
 use crate::util::now_iso8601;
-use mustard_core::claude_paths::ClaudePaths;
-use mustard_core::fs::write_atomic;
-use mustard_core::i18n::{slugify, Locale};
-use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
-use mustard_core::process::rtk_command;
+use mustard_core::io::claude_paths::ClaudePaths;
+use mustard_core::io::fs::write_atomic;
+use mustard_core::platform::i18n::{slugify, Locale};
+use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
+use mustard_core::platform::process::rtk_command;
 use mustard_core::{read_meta, Meta};
 use serde::Serialize;
 use serde_json::json;

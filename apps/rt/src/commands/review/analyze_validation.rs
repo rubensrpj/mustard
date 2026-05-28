@@ -6,7 +6,7 @@
 //! `{ "ok": bool, "issues": [{ severity, type, message, file? }] }`.
 
 use crate::commands::spec::spec_sections::is_heading;
-use mustard_core::fs;
+use mustard_core::io::fs;
 use mustard_core::ClaudePaths;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};

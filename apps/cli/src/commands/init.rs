@@ -26,7 +26,7 @@ use std::process::Command;
 use anyhow::{Context, Result};
 use dialoguer::Select;
 use dialoguer::theme::ColorfulTheme;
-use mustard_core::fs as mfs;
+use mustard_core::io::fs as mfs;
 use serde_json::json;
 
 use crate::commands::git_flow;
@@ -528,7 +528,7 @@ fn probe_rtk() {
 fn rtk_pinned_rev() -> Option<String> {
     let manifest_path = resolve_templates_dir().ok()?.join(".artifacts.json");
     let raw = mfs::read_to_string(&manifest_path).ok()?;
-    let manifest: mustard_core::model::provenance::ArtifactManifest =
+    let manifest: mustard_core::domain::model::provenance::ArtifactManifest =
         serde_json::from_str(&raw).ok()?;
     let version = manifest
         .artifacts

@@ -6,7 +6,7 @@
 //! `Vec::new()`. This file restores real readers for each, sourced from the
 //! NDJSON per-spec event channels (`.claude/spec/*/.events/*.ndjson`) and the
 //! legacy hook-metric JSONL shards (`.claude/.metrics/*.jsonl`) that
-//! `mustard_core::metrics::emit_metric` continues to write.
+//! `mustard_core::platform::metrics::emit_metric` continues to write.
 //!
 //! ## Sources by reader
 //!
@@ -29,7 +29,7 @@
 //!
 //! The NDJSON record on disk carries both `"event"` (the harness event name,
 //! e.g. `"tool.use"`) and `"kind"` (the dashboard's logical classification,
-//! e.g. `"tool"`). [`mustard_core::events::reader::EventReader`] deserialises
+//! e.g. `"tool"`). [`mustard_core::io::events::reader::EventReader`] deserialises
 //! the `"kind"` JSON field into `Event.kind`, so when filtering by event
 //! **name** you must read `event.raw["event"]`, not `event.kind`. The one
 //! exception is the OTEL collector, which writes `event_name == kind` (both
@@ -39,7 +39,7 @@
 //! ## W5#8 — attribution two-tier
 //!
 //! The OTEL collector (W5A) writes `pipeline.telemetry.run` records carrying
-//! the full [`mustard_core::economy::SpanRecord`] shape. Attribution lives
+//! the full [`mustard_core::domain::economy::SpanRecord`] shape. Attribution lives
 //! inside `SpanRecord.extra` as the JSON keys `tool_use_id`, `session_id`,
 //! `spec`. Resolution follows two tiers — `Tier 1` is exact
 //! `(session_id, tool_use_id)`, `Tier 2` is the last span in the same
@@ -50,11 +50,11 @@
 //! The 6 `dashboard_economy_*` + `dashboard_prompt_economy` commands accept a
 //! `EconomyScopeDto` argument (so the frontend's `invoke(..., { scope })` call
 //! no longer panics on signature mismatch) but still return a default body.
-//! Implementing them requires migrating `mustard_core::economy::reader` off
+//! Implementing them requires migrating `mustard_core::domain::economy::reader` off
 //! SQLite, which is outside this restoration's scope. The doc-comments below
 //! tag each one as a behavioural gap.
 
-use mustard_core::events::EventReader;
+use mustard_core::io::events::EventReader;
 use mustard_core::ClaudePaths;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -1072,7 +1072,7 @@ pub fn parse_iso_ms_pub(s: &str) -> Option<i64> {
 // though the body is still a default placeholder (see the "behavioural gap"
 // note on each command).
 
-/// JS-friendly mirror of `mustard_core::economy::EconomyScope`. Internally
+/// JS-friendly mirror of `mustard_core::domain::economy::EconomyScope`. Internally
 /// tagged on `kind` so the TS side can model it as a clean discriminated union.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -1086,7 +1086,7 @@ pub enum EconomyScopeDto {
 // ── Tauri-command surface ────────────────────────────────────────────────────
 //
 // W7D of [[2026-05-26-no-sqlite-git-source-of-truth]] wired these commands
-// against the real NDJSON readers in `mustard_core::economy::reader::*`
+// against the real NDJSON readers in `mustard_core::domain::economy::reader::*`
 // (migrated in W7A). The behavioural gap left by wave-21 is closed —
 // dashboard pages now see live data instead of `Default::default()`.
 
@@ -1096,11 +1096,11 @@ impl EconomyScopeDto {
     /// rooted at (used to open NDJSON files), plus the core scope value.
     /// `AllProjects` returns the first project's root as the lookup anchor
     /// (the multi-project reader fans out per-project anyway).
-    fn to_core(&self) -> (PathBuf, mustard_core::economy::EconomyScope) {
-        use mustard_core::economy::scope::{
+    fn to_core(&self) -> (PathBuf, mustard_core::domain::economy::EconomyScope) {
+        use mustard_core::domain::economy::scope::{
             ProjectPath as CoreProjectPath, SpecId as CoreSpecId, WaveId as CoreWaveId,
         };
-        use mustard_core::economy::EconomyScope as CoreScope;
+        use mustard_core::domain::economy::EconomyScope as CoreScope;
         match self {
             EconomyScopeDto::Project { project } => {
                 let root = PathBuf::from(project);
@@ -1353,7 +1353,7 @@ pub fn dashboard_prompt_economy(scope: EconomyScopeDto) -> Value {
 #[must_use]
 pub fn dashboard_economy_summary(scope: EconomyScopeDto) -> Value {
     let (root, core_scope) = scope.to_core();
-    let summary = mustard_core::economy::economy_summary(&root, core_scope)
+    let summary = mustard_core::domain::economy::economy_summary(&root, core_scope)
         .unwrap_or_default();
     serde_json::to_value(summary).unwrap_or_else(|_| serde_json::json!({}))
 }
@@ -1362,7 +1362,7 @@ pub fn dashboard_economy_summary(scope: EconomyScopeDto) -> Value {
 #[must_use]
 pub fn dashboard_economy_savings_breakdown(scope: EconomyScopeDto) -> Value {
     let (root, core_scope) = scope.to_core();
-    let breakdown = mustard_core::economy::savings_breakdown(&root, core_scope)
+    let breakdown = mustard_core::domain::economy::savings_breakdown(&root, core_scope)
         .unwrap_or_default();
     serde_json::to_value(breakdown).unwrap_or_else(|_| serde_json::json!({}))
 }
@@ -1371,7 +1371,7 @@ pub fn dashboard_economy_savings_breakdown(scope: EconomyScopeDto) -> Value {
 #[must_use]
 pub fn dashboard_economy_context_routing(scope: EconomyScopeDto) -> Value {
     let (root, core_scope) = scope.to_core();
-    let metrics = mustard_core::economy::context_routing_quality(&root, core_scope)
+    let metrics = mustard_core::domain::economy::context_routing_quality(&root, core_scope)
         .unwrap_or_default();
     serde_json::to_value(metrics).unwrap_or_else(|_| serde_json::json!({}))
 }
@@ -1380,7 +1380,7 @@ pub fn dashboard_economy_context_routing(scope: EconomyScopeDto) -> Value {
 #[must_use]
 pub fn dashboard_economy_per_spec_costs(scope: EconomyScopeDto) -> Value {
     let (root, core_scope) = scope.to_core();
-    let rows = mustard_core::economy::per_spec_costs(&root, core_scope)
+    let rows = mustard_core::domain::economy::per_spec_costs(&root, core_scope)
         .unwrap_or_default();
     serde_json::to_value(rows).unwrap_or_else(|_| serde_json::json!([]))
 }
@@ -1389,7 +1389,7 @@ pub fn dashboard_economy_per_spec_costs(scope: EconomyScopeDto) -> Value {
 #[must_use]
 pub fn dashboard_economy_per_wave_costs(scope: EconomyScopeDto) -> Value {
     let (root, core_scope) = scope.to_core();
-    let rows = mustard_core::economy::per_wave_costs(&root, core_scope)
+    let rows = mustard_core::domain::economy::per_wave_costs(&root, core_scope)
         .unwrap_or_default();
     serde_json::to_value(rows).unwrap_or_else(|_| serde_json::json!([]))
 }
@@ -1397,15 +1397,15 @@ pub fn dashboard_economy_per_wave_costs(scope: EconomyScopeDto) -> Value {
 /// Spec trace — 4-level tree (spec → wave → agent → tool).
 ///
 /// W7D restored the full tree shape. Roll-up tokens per agent come from
-/// [`mustard_core::economy::per_agent_costs`] (scope-filtered to the spec).
+/// [`mustard_core::domain::economy::per_agent_costs`] (scope-filtered to the spec).
 /// `tool.use` events are bucketed by `wave_id` (from the event payload or
 /// the wave-role path segment) then by `agent_id` (the dispatch that owned
 /// the `tool_use_id`, resolved via the `agent.start` event correlation).
 #[tauri::command]
 #[must_use]
 pub fn dashboard_spec_trace(project_path: String, spec_name: String) -> Value {
-    use mustard_core::economy::scope::{ProjectPath as CoreProjectPath, SpecId as CoreSpecId};
-    use mustard_core::economy::EconomyScope as CoreScope;
+    use mustard_core::domain::economy::scope::{ProjectPath as CoreProjectPath, SpecId as CoreSpecId};
+    use mustard_core::domain::economy::EconomyScope as CoreScope;
 
     let base = PathBuf::from(&project_path);
     let spec_dir = ClaudePaths::for_project(&base)
@@ -1420,7 +1420,7 @@ pub fn dashboard_spec_trace(project_path: String, spec_name: String) -> Value {
         project: CoreProjectPath::new(&base),
         spec: CoreSpecId::new(&spec_name),
     };
-    let agent_costs = mustard_core::economy::per_agent_costs(&base, core_scope)
+    let agent_costs = mustard_core::domain::economy::per_agent_costs(&base, core_scope)
         .unwrap_or_default();
     let agent_tokens: HashMap<String, i64> = agent_costs
         .iter()

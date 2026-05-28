@@ -35,9 +35,9 @@
 use crate::report::{table, Report};
 use crate::shared::context::{current_spec, session_id};
 use crate::util::now_iso8601;
-use mustard_core::fs;
+use mustard_core::io::fs;
 use mustard_core::ClaudePaths;
-use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
+use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use rayon::prelude::*;
 use serde_json::{json, Value};
 use std::fmt::Write as _;

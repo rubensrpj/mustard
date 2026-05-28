@@ -18,13 +18,13 @@
 //!
 //! W4C migration: every SQLite reader/writer was removed. Events are written
 //! via [`crate::shared::events::writer_ndjson::write_event_with_ts`] and read via
-//! [`mustard_core::projection::read_harness_events_from_ndjson_dir`].
+//! [`mustard_core::view::projection::read_harness_events_from_ndjson_dir`].
 
 use crate::shared::context::session_id;
-use mustard_core::fs;
-use mustard_core::projection::read_harness_events_from_ndjson_dir;
+use mustard_core::io::fs;
+use mustard_core::view::projection::read_harness_events_from_ndjson_dir;
 use mustard_core::ClaudePaths;
-use mustard_core::model::event::{
+use mustard_core::domain::model::event::{
     EVENT_PIPELINE_COMPLETE, EVENT_PIPELINE_STATUS, PipelineCompletePayload,
     PipelineStatusPayload,
 };
@@ -92,7 +92,7 @@ fn spec_events_dir(cwd: &Path, spec: &str) -> Option<PathBuf> {
 
 /// Read every harness event ever written for `spec` from its per-spec NDJSON
 /// `.events/` directory.
-fn read_events_for_spec(cwd: &Path, spec: &str) -> Vec<mustard_core::model::event::HarnessEvent> {
+fn read_events_for_spec(cwd: &Path, spec: &str) -> Vec<mustard_core::domain::model::event::HarnessEvent> {
     let Some(dir) = spec_events_dir(cwd, spec) else {
         return Vec::new();
     };

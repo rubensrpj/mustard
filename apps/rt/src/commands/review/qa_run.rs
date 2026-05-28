@@ -6,7 +6,7 @@
 //!
 //! Port note: the JS version shelled to `_lib/harness-event.js` and
 //! `_lib/metrics-emit.js`. This port emits the event through the NDJSON router
-//! ([`crate::shared::events::route::emit`]) and the metric through `mustard_core::metrics`.
+//! ([`crate::shared::events::route::emit`]) and the metric through `mustard_core::platform::metrics`.
 //!
 //! Fail-open: a missing spec or no AC section degrades to an `overall: skip`
 //! result and exit `0`; an AC failure exits `1` (the JS contract).
@@ -18,11 +18,11 @@
 
 use crate::report::{table, Report};
 use crate::shared::context::{project_dir, session_id};
-use mustard_core::fs;
+use mustard_core::io::fs;
 use mustard_core::ClaudePaths;
 use crate::util::now_iso8601;
-use mustard_core::metrics::{emit_metric, MetricLine};
-use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
+use mustard_core::platform::metrics::{emit_metric, MetricLine};
+use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::process::Command;

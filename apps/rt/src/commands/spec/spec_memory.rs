@@ -6,12 +6,12 @@
 //! `origin_spec`, `origin_wave`) plus automatic `[[ ]]` wirelinks back to
 //! the spec and the wave of origin, and the canonical
 //! Origin / Applies-to / Status / Related sections — whose spelling comes
-//! from `mustard_core::i18n` (W1.T1.0 — no hardcoded pt-BR strings).
+//! from `mustard_core::platform::i18n` (W1.T1.0 — no hardcoded pt-BR strings).
 
 use crate::shared::context::project_dir;
-use mustard_core::claude_paths::ClaudePaths;
-use mustard_core::fs as mfs;
-use mustard_core::i18n::{project_locale, translate, SupportedLocale as Locale};
+use mustard_core::io::claude_paths::ClaudePaths;
+use mustard_core::io::fs as mfs;
+use mustard_core::platform::i18n::{project_locale, translate, SupportedLocale as Locale};
 use serde_json::json;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};

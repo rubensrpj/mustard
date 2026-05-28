@@ -23,10 +23,10 @@
 //! `Verdict::Allow` (the silent path) when no pipeline-state file is `active`
 //! / `implementing`.
 
-use mustard_core::atomic_md::MarkdownStore;
-use mustard_core::error::Error;
-use mustard_core::fs;
-use mustard_core::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
+use mustard_core::io::atomic_md::MarkdownStore;
+use mustard_core::platform::error::Error;
+use mustard_core::io::fs;
+use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
 use mustard_core::ClaudePaths;
 use serde_json::Value;
 use std::path::Path;

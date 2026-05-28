@@ -34,7 +34,7 @@ pub mod project_conventions;
 pub mod refs_installer;
 pub mod resolve;
 
-use mustard_core::fs as mfs;
+use mustard_core::io::fs as mfs;
 use std::collections::BTreeMap;
 use std::path::Path;
 

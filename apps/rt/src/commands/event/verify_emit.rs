@@ -10,8 +10,8 @@
 //! arguments (the JS contract).
 
 use crate::shared::context;
-use mustard_core::model::event::HarnessEvent;
-use mustard_core::projection::read_harness_events_from_ndjson_dir;
+use mustard_core::domain::model::event::HarnessEvent;
+use mustard_core::view::projection::read_harness_events_from_ndjson_dir;
 use mustard_core::ClaudePaths;
 use serde_json::Value;
 
@@ -188,7 +188,7 @@ pub fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mustard_core::model::event::{Actor, ActorKind, SCHEMA_VERSION};
+    use mustard_core::domain::model::event::{Actor, ActorKind, SCHEMA_VERSION};
     use serde_json::json;
 
     fn args(event: &str) -> Args {

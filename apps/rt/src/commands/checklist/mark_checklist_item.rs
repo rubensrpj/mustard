@@ -8,7 +8,7 @@
 //! Output (stdout): one line — `marked` | `already-marked` | `error: <reason>`.
 //! Exit codes: 0 success/no-op, 1 not-found/no-section/not-located, 2 bad args.
 
-use mustard_core::fs;
+use mustard_core::io::fs;
 use mustard_core::ClaudePaths;
 use std::path::{Path, PathBuf};
 

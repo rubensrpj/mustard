@@ -8,9 +8,9 @@
 //! prints `{ done, left, nextSteps, followUps }`. No `--format html`.
 
 use crate::commands::spec::spec_sections::is_heading;
-use mustard_core::fs;
-use mustard_core::spec;
-use mustard_core::summary::SpecSummaryDoc;
+use mustard_core::io::fs;
+use mustard_core::domain::spec;
+use mustard_core::view::summary::SpecSummaryDoc;
 use mustard_core::ClaudePaths;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
@@ -23,7 +23,7 @@ struct Header {
 }
 
 /// Parse the spec header. The lifecycle status is resolved through the
-/// canonical [`mustard_core::spec`] parser (so the new `### Stage:` header
+/// canonical [`mustard_core::domain::spec`] parser (so the new `### Stage:` header
 /// and every legacy shape both work); `Lang` and the `# Title` are read inline
 /// since they are not part of the lifecycle header domain. An absent lifecycle
 /// header yields an empty status (rendered as `unknown` downstream, unchanged).

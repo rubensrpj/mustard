@@ -16,7 +16,7 @@
 //! `find_mustard_root()` is intentionally NOT used — the user-selected `path`
 //! is the target, not the dashboard's own scaffold root.
 
-use mustard_core::fs;
+use mustard_core::io::fs;
 use serde::Serialize;
 use std::path::Path;
 
@@ -69,7 +69,7 @@ pub async fn uninstall_mustard(path: String) -> Result<(), String> {
 
     // fs::remove_file returns Error::NotFound when absent — treat that as success.
     match fs::remove_file(base.join("mustard.json")) {
-        Ok(()) | Err(mustard_core::error::Error::NotFound(_)) => {}
+        Ok(()) | Err(mustard_core::platform::error::Error::NotFound(_)) => {}
         Err(e) => return Err(format!("Failed to remove mustard.json: {e}")),
     }
 

@@ -56,9 +56,9 @@
 
 use crate::shared::context::project_dir;
 use crate::util::now_iso8601;
-use mustard_core::fs;
-use mustard_core::meta::read_meta_beside;
-use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
+use mustard_core::io::fs;
+use mustard_core::domain::meta::read_meta_beside;
+use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use mustard_core::ClaudePaths;
 use serde::Serialize;
 use serde_json::json;
@@ -358,7 +358,7 @@ fn emit_summary(repo: &Path, report: &Report) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mustard_core::meta::{write_meta, Meta};
+    use mustard_core::domain::meta::{write_meta, Meta};
     use std::fs::File;
     use std::io::Write;
     use tempfile::tempdir;

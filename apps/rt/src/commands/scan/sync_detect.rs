@@ -21,7 +21,7 @@
 //! does — a later wave can add fine-grained module hashing).
 
 use crate::util::sha256::Sha256;
-use mustard_core::fs;
+use mustard_core::io::fs;
 use mustard_core::ClaudePaths;
 use serde::Serialize;
 use std::collections::BTreeMap;

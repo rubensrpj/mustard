@@ -19,11 +19,11 @@
 //! JSON. The subcommand always exits `0`.
 
 use crate::util::now_iso8601;
-use mustard_core::claude_paths::ClaudePaths;
-use mustard_core::error::Result;
-use mustard_core::fs;
-use mustard_core::projection::read_harness_events_from_ndjson_dir;
-use mustard_core::model::event::{
+use mustard_core::io::claude_paths::ClaudePaths;
+use mustard_core::platform::error::Result;
+use mustard_core::io::fs;
+use mustard_core::view::projection::read_harness_events_from_ndjson_dir;
+use mustard_core::domain::model::event::{
     HarnessEvent, PipelineAmendClosePayload, EVENT_PIPELINE_AMEND_ACTIVITY,
     EVENT_PIPELINE_AMEND_CLOSE, EVENT_PIPELINE_AMEND_DRIFT, EVENT_PIPELINE_AMEND_INTENT,
     EVENT_PIPELINE_AMEND_OPEN,

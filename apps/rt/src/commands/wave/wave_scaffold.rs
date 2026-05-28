@@ -26,8 +26,8 @@
 //! Idempotent: each output file is only created when absent. The stdout JSON
 //! reports which were created vs skipped.
 
-use mustard_core::fs;
-use mustard_core::spec;
+use mustard_core::io::fs;
+use mustard_core::domain::spec;
 use mustard_core::{Flags, Meta, Outcome, SpecState, Stage, write_meta};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -38,7 +38,7 @@ use std::path::{Path, PathBuf};
 /// `stage` (always `Outcome::Active`, no flags), terminated by `\n` per line.
 /// Wave plans / sub-plan / review / qa scaffolds all start active — a `queued`
 /// or `draft` sub-plan is a not-yet-started Plan item, so its canonical stage
-/// stays `Plan`. Delegates the spelling to [`mustard_core::spec`].
+/// stays `Plan`. Delegates the spelling to [`mustard_core::domain::spec`].
 fn header_block(stage: Stage) -> String {
     let state = SpecState::new(stage, Outcome::Active, Flags::default()).unwrap_or(SpecState {
         stage: Stage::Plan,

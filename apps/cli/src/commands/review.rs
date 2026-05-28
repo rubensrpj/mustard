@@ -21,7 +21,7 @@ use std::path::Path;
 use std::process::Command;
 
 use anyhow::{Context, Result, bail};
-use mustard_core::fs as mfs;
+use mustard_core::io::fs as mfs;
 use serde_json::{Value, json};
 
 /// The Claude Messages API endpoint.

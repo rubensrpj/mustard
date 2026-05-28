@@ -1022,7 +1022,7 @@ pub enum RunCmd {
         confirm: bool,
     },
     /// Draft a new spec layout (`spec.md` + `meta.json` + optional wave plan)
-    /// conforming to `mustard_core::spec::contract`. Replaces the literal
+    /// conforming to `mustard_core::domain::spec::contract`. Replaces the literal
     /// ~80-line template block inside the `/mustard:feature` SKILL.md.
     ///
     /// `--scope full` materialises `wave-plan.md` + `wave-N-{role}/spec.md`
@@ -1056,7 +1056,7 @@ pub enum RunCmd {
         force: bool,
     },
     /// Validate a spec directory against the Wave 1 layout contract. Reads
-    /// `meta.json` + `spec.md` and runs `mustard_core::spec::contract::validate`.
+    /// `meta.json` + `spec.md` and runs `mustard_core::domain::spec::contract::validate`.
     /// Exit code 0 ⇒ ok, 2 ⇒ violations, 1 ⇒ IO failure.
     SpecValidate {
         /// Path to a spec directory or `spec.md` file. A bare slug resolves
@@ -1392,7 +1392,7 @@ pub enum RunCmd {
 /// Dispatch a `run` subcommand.
 ///
 /// Unlike the enforcement dispatcher this never touches stdin and never
-/// produces an [`Outcome`](mustard_core::model::contract::Outcome) — a `run`
+/// produces an [`Outcome`](mustard_core::domain::model::contract::Outcome) — a `run`
 /// script writes its own output and the process exits cleanly afterwards.
 pub fn dispatch(cmd: RunCmd) {
     match cmd {

@@ -92,7 +92,7 @@ enum Commands {
     ///
     /// Mustard never downloads or compiles grammars — it only prints the
     /// canonical repository and a shell-ready install command for each
-    /// detected language. See `mustard_core::ast::GrammarLoader` for how the
+    /// detected language. See `mustard_core::domain::ast::GrammarLoader` for how the
     /// regression gate consumes the grammars once they are installed.
     #[command(name = "install-grammars")]
     InstallGrammars {

@@ -14,9 +14,9 @@
 //! degrades, it never panics.
 
 use crate::registry::{self, Module, Registry};
-use mustard_core::config::Mode;
-use mustard_core::model::contract::{Ctx, HookInput, Outcome, Trigger, Verdict};
-use mustard_core::workspace::workspace_root;
+use mustard_core::platform::config::Mode;
+use mustard_core::domain::model::contract::{Ctx, HookInput, Outcome, Trigger, Verdict};
+use mustard_core::io::workspace::workspace_root;
 use std::path::PathBuf;
 
 /// Run every module applicable to a whole harness event (`mustard-rt on`).

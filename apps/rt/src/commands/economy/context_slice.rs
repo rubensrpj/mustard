@@ -9,7 +9,7 @@
 //! an error. The relevance heuristic (entity/file extraction + frequency-
 //! derived significant tokens) and the line cap mirror the JS version exactly.
 
-use mustard_core::fs;
+use mustard_core::io::fs;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 

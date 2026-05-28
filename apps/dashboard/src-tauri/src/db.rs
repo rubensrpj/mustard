@@ -14,8 +14,8 @@
 //!    always return `None`, so the closures are never invoked.
 //! 2. Filesystem readers that derive their answer from `.claude/spec/*/spec.md`
 //!    and `.claude/spec/*/.events/*.ndjson` via
-//!    [`mustard_core::events::EventReader`] and
-//!    [`mustard_core::atomic_md::MarkdownStore`]. Every reader is **fail-open**:
+//!    [`mustard_core::io::events::EventReader`] and
+//!    [`mustard_core::io::atomic_md::MarkdownStore`]. Every reader is **fail-open**:
 //!    a missing directory returns the type's `Default`, never an error.
 //!
 //! Behaviour parity is reduced on purpose: queries that depended on FTS5 or

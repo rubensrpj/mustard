@@ -25,13 +25,13 @@
 //! repasses the verdict without downgrade.
 
 use crate::shared::context::current_spec;
-use mustard_core::config::Mode;
-use mustard_core::economy::estimator;
+use mustard_core::platform::config::Mode;
+use mustard_core::domain::economy::estimator;
 use mustard_core::ClaudePaths;
-use mustard_core::error::Error;
-use mustard_core::process::rtk_command;
-use mustard_core::model::contract::{Check, Ctx, HookInput, Observer, Trigger, Verdict};
-use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
+use mustard_core::platform::error::Error;
+use mustard_core::platform::process::rtk_command;
+use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Observer, Trigger, Verdict};
+use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use serde_json::json;
 use std::path::Path;
 use std::process::{Command, Stdio};

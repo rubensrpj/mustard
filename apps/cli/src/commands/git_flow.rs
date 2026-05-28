@@ -21,7 +21,7 @@ use std::path::Path;
 use std::process::Command;
 
 use anyhow::{Context, Result};
-use mustard_core::fs as mfs;
+use mustard_core::io::fs as mfs;
 use dialoguer::theme::ColorfulTheme;
 use dialoguer::{Confirm, Input, Select};
 use serde::{Deserialize, Serialize};

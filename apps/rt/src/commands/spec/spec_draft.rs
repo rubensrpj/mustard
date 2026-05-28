@@ -1,5 +1,5 @@
 //! `mustard-rt run spec-draft` — generate a spec.md + meta.json (+ wave-plan)
-//! conforming to [`mustard_core::spec::contract`].
+//! conforming to [`mustard_core::domain::spec::contract`].
 //!
 //! Replaces the ~80 lines of literal-template boilerplate that lived inline in
 //! `apps/cli/templates/commands/mustard/feature/SKILL.md` (W6 will remove the
@@ -38,15 +38,15 @@
 
 use crate::shared::context::project_dir;
 use crate::commands::spec::spec_scaffold;
-use mustard_core::claude_paths::ClaudePaths;
-use mustard_core::fs as mfs;
-use mustard_core::meta::Meta;
-use mustard_core::spec::contract::{
+use mustard_core::io::claude_paths::ClaudePaths;
+use mustard_core::io::fs as mfs;
+use mustard_core::domain::meta::Meta;
+use mustard_core::domain::spec::contract::{
     AcceptanceCriterion, SectionBody, SpecInput, PLAN_SECTIONS, PRD_SECTIONS,
 };
 use mustard_core::{
-    i18n::{translate, Locale, Tone},
-    model::view::Phase,
+    domain::model::view::Phase,
+    platform::i18n::{translate, Locale, Tone},
     Outcome, Scope, Stage,
 };
 use serde_json::json;
@@ -74,7 +74,7 @@ fn read_mustard_tone(project_root: &Path) -> Tone {
 }
 
 /// Human-readable instruction inserted into the drafter prompt for `tone`.
-/// Mirrors the Tone semantics in `mustard_core::i18n::apply_tone`.
+/// Mirrors the Tone semantics in `mustard_core::platform::i18n::apply_tone`.
 #[must_use]
 pub fn tone_prompt_instruction(tone: Tone) -> &'static str {
     match tone {
@@ -152,7 +152,7 @@ pub fn run(opts: SpecDraftOpts) {
 
     // ---- Build the canonical input + validate before writing. ----
     let input = build_input(&slug, &opts.intent, scope, &opts.lang, opts.waves, lang_locale);
-    if let Err(violations) = mustard_core::spec::contract::validate(&input) {
+    if let Err(violations) = mustard_core::domain::spec::contract::validate(&input) {
         let detail = violations
             .iter()
             .map(ToString::to_string)
@@ -391,7 +391,7 @@ fn write_wave_plan(
 // ---------------------------------------------------------------------------
 
 /// Derive a kebab-case slug from a free-text intent. Mirrors
-/// [`mustard_core::i18n::slugify`] tolerances but stays local: no datestamp,
+/// [`mustard_core::platform::i18n::slugify`] tolerances but stays local: no datestamp,
 /// no truncation beyond 60 chars.
 fn slug_from_intent(intent: &str) -> String {
     let mut s: String = intent
@@ -448,14 +448,14 @@ mod tests {
     #[test]
     fn build_input_validates() {
         let input = build_input("demo", "Demo", Scope::Full, "pt-BR", 2, Locale::PtBr);
-        assert!(mustard_core::spec::contract::validate(&input).is_ok());
+        assert!(mustard_core::domain::spec::contract::validate(&input).is_ok());
     }
 
     #[test]
     fn build_input_validates_in_en_us() {
         // Section *names* stay PT-BR (canonical contract keys); bodies are EN.
         let input = build_input("demo", "Demo", Scope::Full, "en-US", 2, Locale::EnUs);
-        assert!(mustard_core::spec::contract::validate(&input).is_ok());
+        assert!(mustard_core::domain::spec::contract::validate(&input).is_ok());
         // Body strings should be EN, not PT.
         let users = input
             .prd_sections

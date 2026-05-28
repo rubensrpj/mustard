@@ -20,8 +20,8 @@
 //! Pure [`Observer`] — never blocks. Every IO step (marker read/write, DB
 //! open, insert) degrades to a no-op on error.
 
-use mustard_core::fs;
-use mustard_core::model::contract::{Ctx, HookInput, Observer};
+use mustard_core::io::fs;
+use mustard_core::domain::model::contract::{Ctx, HookInput, Observer};
 use mustard_core::ClaudePaths;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
@@ -151,7 +151,7 @@ fn persist_interrupted(cwd: &str, summary: &str, session_id: Option<&str>) {
 
 /// Emit `pipeline.economy.operation.invoked` for the capture. Fail-open.
 fn emit_economy_operation(cwd: &str, operation: &str) {
-    use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
+    use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
     use serde_json::json;
 
     let event = HarnessEvent {
@@ -207,7 +207,7 @@ impl Observer for Stop {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mustard_core::model::contract::Trigger;
+    use mustard_core::domain::model::contract::Trigger;
     use tempfile::tempdir;
 
     fn input() -> HookInput {

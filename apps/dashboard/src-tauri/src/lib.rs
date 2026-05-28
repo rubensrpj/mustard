@@ -13,7 +13,7 @@ pub mod telemetry;
 pub mod telemetry_agg;
 mod watcher;
 
-use mustard_core::fs;
+use mustard_core::io::fs;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};

@@ -21,7 +21,7 @@
 //! themselves keep their existing signatures and bodies, but every file is read
 //! exactly once per `Scanner::scan()` invocation.
 
-use mustard_core::fs as mfs;
+use mustard_core::io::fs as mfs;
 use rayon::prelude::*;
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};

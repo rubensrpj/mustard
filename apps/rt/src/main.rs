@@ -62,7 +62,7 @@ mod shared;
 mod util;
 
 use clap::{Parser, Subcommand};
-use mustard_core::model::contract::{HookInput, Outcome, Trigger, Verdict};
+use mustard_core::domain::model::contract::{HookInput, Outcome, Trigger, Verdict};
 use std::io::{Read, Write};
 
 /// The `mustard-rt` command line.

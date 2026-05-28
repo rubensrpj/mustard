@@ -1,7 +1,7 @@
 //! `mustard-rt run emit-pipeline` — typed pipeline-event emitter.
 //!
 //! Records one of the known `pipeline.*` / `hygiene.*` / `pipeline.economy.*`
-//! events defined in [`mustard_core::model::event`] constants. Callers supply
+//! events defined in [`mustard_core::domain::model::event`] constants. Callers supply
 //! the event kind, the spec name, and an optional JSON payload string; this
 //! module validates both and routes the event through
 //! [`crate::shared::events::route::emit`] to the NDJSON sink.
@@ -18,8 +18,8 @@
 
 use crate::shared::context::{project_dir, session_id};
 use crate::util::now_iso8601;
-use mustard_core::claude_paths::ClaudePaths;
-use mustard_core::model::event::{
+use mustard_core::io::claude_paths::ClaudePaths;
+use mustard_core::domain::model::event::{
     Actor, ActorKind, HarnessEvent, SCHEMA_VERSION,
     EVENT_PIPELINE_COMPLETE, EVENT_PIPELINE_DISPATCH_FAILURE, EVENT_PIPELINE_PAUSE,
     EVENT_PIPELINE_RESUME_MODE, EVENT_PIPELINE_SCOPE, EVENT_PIPELINE_STATUS,
@@ -307,7 +307,7 @@ fn qa_result_passed(cwd: &Path, spec: &str) -> bool {
             |sp| sp.dir().join(".events"),
         );
     let mut events =
-        mustard_core::projection::read_harness_events_from_ndjson_dir(&events_dir);
+        mustard_core::view::projection::read_harness_events_from_ndjson_dir(&events_dir);
     // Chronological order — last matching event wins (mirrors `close_gate`).
     events.sort_by(|a, b| a.ts.cmp(&b.ts));
     let mut last_overall: Option<String> = None;
@@ -565,7 +565,7 @@ fn bump_parent_progress(cwd: &Path, spec: &str, wave: u64, ts: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mustard_core::model::event::SCHEMA_VERSION;
+    use mustard_core::domain::model::event::SCHEMA_VERSION;
     use serde_json::json;
     use std::path::Path;
     use tempfile::tempdir;
@@ -693,7 +693,7 @@ mod tests {
 
         // All events land in the per-spec NDJSON `.events/` directory.
         let events_dir = project.join(".claude").join("spec").join(spec).join(".events");
-        let mut events = mustard_core::projection::read_harness_events_from_ndjson_dir(&events_dir);
+        let mut events = mustard_core::view::projection::read_harness_events_from_ndjson_dir(&events_dir);
         // Filter the auto-emitted economy.event.written sidecars (T5.8) — they
         // are not first-class kinds, just per-write breadcrumbs.
         events.retain(|e| e.event != "pipeline.economy.event.written");
@@ -714,7 +714,7 @@ mod tests {
 
     #[test]
     fn pipeline_scope_payload_round_trips() {
-        use mustard_core::model::event::PipelineScopePayload;
+        use mustard_core::domain::model::event::PipelineScopePayload;
 
         let dir = tempdir().unwrap();
         let spec = "demo-scope";
@@ -729,7 +729,7 @@ mod tests {
         emit_routed(dir.path(), EVENT_PIPELINE_SCOPE, spec, payload_value);
 
         let events_dir = dir.path().join(".claude").join("spec").join(spec).join(".events");
-        let mut events = mustard_core::projection::read_harness_events_from_ndjson_dir(&events_dir);
+        let mut events = mustard_core::view::projection::read_harness_events_from_ndjson_dir(&events_dir);
         events.retain(|e| e.event == EVENT_PIPELINE_SCOPE);
         assert_eq!(events.len(), 1);
         let decoded: PipelineScopePayload =
@@ -741,7 +741,7 @@ mod tests {
 
     #[test]
     fn pipeline_task_complete_payload_round_trips() {
-        use mustard_core::model::event::PipelineTaskCompletePayload;
+        use mustard_core::domain::model::event::PipelineTaskCompletePayload;
 
         let dir = tempdir().unwrap();
         let spec = "demo-task";
@@ -758,7 +758,7 @@ mod tests {
         emit_routed(dir.path(), EVENT_PIPELINE_TASK_COMPLETE, spec, payload_value);
 
         let events_dir = dir.path().join(".claude").join("spec").join(spec).join(".events");
-        let mut events = mustard_core::projection::read_harness_events_from_ndjson_dir(&events_dir);
+        let mut events = mustard_core::view::projection::read_harness_events_from_ndjson_dir(&events_dir);
         events.retain(|e| e.event == EVENT_PIPELINE_TASK_COMPLETE);
         assert_eq!(events.len(), 1);
         let decoded: PipelineTaskCompletePayload =
@@ -770,7 +770,7 @@ mod tests {
 
     #[test]
     fn optional_fields_absent_in_minimal_payload() {
-        use mustard_core::model::event::PipelineStatusPayload;
+        use mustard_core::domain::model::event::PipelineStatusPayload;
 
         // Only required fields: `to`. `from` is absent in JSON.
         let raw = r#"{"to":"active"}"#;
@@ -890,7 +890,7 @@ mod tests {
         let spec = "demo-failopen";
         emit_routed(dir.path(), EVENT_PIPELINE_PAUSE, spec, json!({"reason": "user request"}));
         let events_dir = dir.path().join(".claude").join("spec").join(spec).join(".events");
-        let mut events = mustard_core::projection::read_harness_events_from_ndjson_dir(&events_dir);
+        let mut events = mustard_core::view::projection::read_harness_events_from_ndjson_dir(&events_dir);
         events.retain(|e| e.event == EVENT_PIPELINE_PAUSE);
         assert_eq!(events.len(), 1);
     }

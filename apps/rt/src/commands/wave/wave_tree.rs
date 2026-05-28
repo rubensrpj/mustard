@@ -9,8 +9,8 @@
 //! The `--format json` shape is parsed by `wave-size-check`, so it is preserved
 //! exactly: `{ kind, root, waves: [{ label, folder, status, icon }] }`.
 
-use mustard_core::fs;
-use mustard_core::{meta, spec};
+use mustard_core::io::fs;
+use mustard_core::domain::{meta, spec};
 use serde_json::json;
 use std::path::Path;
 
@@ -40,10 +40,10 @@ struct Wave {
 /// 1. `meta.json` sidecar in the same directory — the authoritative source
 ///    after the W3 `meta-sidecar` migration removed `### Stage:` /
 ///    `### Outcome:` headers from the markdown. Delegates the read +
-///    `stage`+`outcome` → label mapping to [`mustard_core::meta`] (single
+///    `stage`+`outcome` → label mapping to [`mustard_core::domain::meta`] (single
 ///    source of truth — never re-implement the table here).
 /// 2. Legacy `### Stage:` / `### Outcome:` headers via
-///    [`mustard_core::spec::read_state`] — kept for forward-compat with
+///    [`mustard_core::domain::spec::read_state`] — kept for forward-compat with
 ///    specs that arrive un-migrated (e.g. from a teammate's branch).
 ///
 /// A missing file / unparseable header / unreadable meta.json → `"queued"`.

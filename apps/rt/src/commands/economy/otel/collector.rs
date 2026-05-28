@@ -35,8 +35,8 @@
 
 use super::project::project_metrics;
 use super::{claude_dir, MetricRow};
-use mustard_core::economy::{sources::otel as otel_source, sources::IngestContext};
-use mustard_core::fs;
+use mustard_core::domain::economy::{sources::otel as otel_source, sources::IngestContext};
+use mustard_core::io::fs;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -166,7 +166,7 @@ fn write_metrics(harness_dir: &Path, body: &Value, now_ms: i64) -> usize {
     written
 }
 
-/// Translate OTLP/JSON `traces` into [`mustard_core::economy::SpanRecord`]s via
+/// Translate OTLP/JSON `traces` into [`mustard_core::domain::economy::SpanRecord`]s via
 /// the W1 ingest adapter, then write one `pipeline.telemetry.run` record per
 /// span to the NDJSON sink.
 ///

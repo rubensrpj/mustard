@@ -13,8 +13,8 @@
 
 use crate::shared::context::session_id;
 use crate::util::now_iso8601;
-use mustard_core::fs;
-use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
+use mustard_core::io::fs;
+use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use mustard_core::ClaudePaths;
 use serde_json::{json, Value};
 use std::path::Path;

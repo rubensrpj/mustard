@@ -20,14 +20,14 @@
 //! - W8A-3 (no-sqlite Wave 8): the production-shape projection assertions
 //!   were preserved by feeding NDJSON events directly into
 //!   `pipeline_state_from_events` via
-//!   [`mustard_core::projection::read_workspace_events`]. Two contract
+//!   [`mustard_core::view::projection::read_workspace_events`]. Two contract
 //!   assertions stay in this file:
 //!     - the ingest subcommand emits the canonical empty-run JSON shape;
 //!     - `pipeline_state_from_events` over an NDJSON-seeded workspace
 //!       returns `Some(view)` for a known spec, exercising the same fold
 //!       the resume/active-spec readers consume.
 
-use mustard_core::model::event::HarnessEvent;
+use mustard_core::domain::model::event::HarnessEvent;
 use mustard_rt::commands::event::event_projections::pipeline_state_from_events;
 use serde_json::{json, Value};
 use std::path::Path;
@@ -187,7 +187,7 @@ fn pipeline_state_projection_reads_ndjson_seeded_workspace() {
 
     // Read events back via the same canonical walker the production
     // resume/active-spec readers use and fold via the projection.
-    let events: Vec<HarnessEvent> = mustard_core::projection::read_workspace_events(dir);
+    let events: Vec<HarnessEvent> = mustard_core::view::projection::read_workspace_events(dir);
     assert!(
         events.iter().any(|e| e.event == "pipeline.scope"),
         "scope event must survive the round-trip: {events:?}"

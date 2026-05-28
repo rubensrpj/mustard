@@ -31,7 +31,7 @@
 //!
 //! ## i18n contract
 //!
-//! Every user-facing string flows through `mustard_core::i18n::translate`.
+//! Every user-facing string flows through `mustard_core::platform::i18n::translate`.
 //! The locale is resolved once per `run` invocation via
 //! `i18n::project_locale(project_root)` so the same locale value threads
 //! through every helper. The interpolation helper `interpolate` substitutes
@@ -39,13 +39,13 @@
 
 #![allow(clippy::too_many_lines)] // gate orchestration is intentionally linear
 
-use mustard_core::ast::{detect_stub_patterns, DetectionMode, GrammarLoader, StubPattern};
-use mustard_core::ast::stub_detect::DiffFile;
-use mustard_core::i18n::{self, Locale};
-use mustard_core::regression_check::{
+use mustard_core::domain::ast::{detect_stub_patterns, DetectionMode, GrammarLoader, StubPattern};
+use mustard_core::domain::ast::stub_detect::DiffFile;
+use mustard_core::platform::i18n::{self, Locale};
+use mustard_core::domain::regression_check::{
     compare_snapshots, ChangeKind, FunctionDelta, Snapshot, TextSpan,
 };
-use mustard_core::vocabulary::{Layer as VocabLayerKind, ScanHit, VocabularyMatcher};
+use mustard_core::domain::vocabulary::{Layer as VocabLayerKind, ScanHit, VocabularyMatcher};
 use std::collections::HashSet;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -281,7 +281,7 @@ pub fn build_vocab_matcher(project_root: &Path) -> Option<VocabularyMatcher> {
     }
     // Default matcher — small, deterministic, language-agnostic. Each layer
     // exists so [`severity_for_layer`] has something to match against.
-    use mustard_core::vocabulary::VocabLayer;
+    use mustard_core::domain::vocabulary::VocabLayer;
     VocabularyMatcher::from_layers(vec![
         VocabLayer {
             kind: VocabLayerKind::Semantic,
@@ -446,7 +446,7 @@ fn load_line_change_threshold(project_root: &Path) -> usize {
         .join(".claude")
         .join("vocab")
         .join("regression.toml");
-    mustard_core::vocabulary::VocabularyDoc::load_from_file(&path)
+    mustard_core::domain::vocabulary::VocabularyDoc::load_from_file(&path)
         .ok()
         .and_then(|doc| doc.thresholds.line_change_threshold)
         .unwrap_or(LINE_CHANGE_THRESHOLD)
@@ -538,7 +538,7 @@ fn snapshot_signal_explicit(
     }
 }
 
-fn line_count(cap: Option<&mustard_core::regression_check::FunctionCapture>) -> usize {
+fn line_count(cap: Option<&mustard_core::domain::regression_check::FunctionCapture>) -> usize {
     cap.map(|c| c.body.lines().filter(|l| !l.trim().is_empty()).count())
         .unwrap_or(0)
 }
@@ -703,7 +703,7 @@ pub fn check_after_child_return(input: GateInput) -> Result<RegressionVerdict, G
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mustard_core::regression_check::{CaptureMode, FunctionCapture};
+    use mustard_core::domain::regression_check::{CaptureMode, FunctionCapture};
     use std::path::PathBuf;
 
     fn tmp_project() -> tempfile::TempDir {

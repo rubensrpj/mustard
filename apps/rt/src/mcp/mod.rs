@@ -24,7 +24,7 @@
 //!
 //! No SQLite. Every read is filesystem-backed:
 //!
-//! - knowledge → `.claude/knowledge/*.md` via [`mustard_core::atomic_md::MarkdownStore`].
+//! - knowledge → `.claude/knowledge/*.md` via [`mustard_core::io::atomic_md::MarkdownStore`].
 //! - events    → `.claude/spec/<spec>/.events/*.ndjson` via [`mustard_core::EventReader`].
 //! - specs     → `.claude/spec/<spec>/spec.md` header walk (name + body).
 //! - metrics   → projected from events via the same NDJSON channel.
@@ -55,7 +55,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use std::path::{Path, PathBuf};
 
-use mustard_core::atomic_md::{MarkdownDoc, MarkdownStore};
+use mustard_core::io::atomic_md::{MarkdownDoc, MarkdownStore};
 use mustard_core::ClaudePaths;
 use mustard_core::{Event, EventReader};
 

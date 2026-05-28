@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result, bail};
-use mustard_core::fs as mfs;
+use mustard_core::io::fs as mfs;
 use serde::Deserialize;
 use serde_json::{Value, json};
 

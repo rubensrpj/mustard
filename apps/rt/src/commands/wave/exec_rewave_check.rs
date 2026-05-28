@@ -17,8 +17,8 @@ use crate::commands::spec::scope_decompose::decide;
 use crate::commands::wave::wave_dependency::compute_waves;
 use crate::commands::wave::wave_lib::{detect_role, parse_files_section};
 use crate::util::now_iso8601;
-use mustard_core::fs;
-use mustard_core::spec;
+use mustard_core::io::fs;
+use mustard_core::domain::spec;
 use mustard_core::ClaudePaths;
 use mustard_core::{Flags, Outcome, SpecState, Stage};
 use serde_json::{json, Value};
@@ -47,11 +47,11 @@ fn parse_new_entity_count(spec_text: &str) -> i64 {
 
 /// Walk up from `start_dir` to find the project root.
 ///
-/// W2: routes through `mustard_core::workspace::workspace_root` so the search
+/// W2: routes through `mustard_core::io::workspace::workspace_root` so the search
 /// uses the same `mustard.json + .claude/` anchor predicate as the rest of the
 /// harness. Returns `None` when no anchor is found in any ancestor.
 fn find_project_root(start_dir: &Path) -> Option<PathBuf> {
-    mustard_core::workspace::workspace_root(start_dir).ok()
+    mustard_core::io::workspace::workspace_root(start_dir).ok()
 }
 
 /// Extract the `## Summary` section body.

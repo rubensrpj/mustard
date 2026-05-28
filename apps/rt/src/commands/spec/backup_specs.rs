@@ -13,7 +13,7 @@
 //!
 //! ## Safety
 //!
-//! - **Atomic per file**: writes go through `mustard_core::fs::write_atomic`
+//! - **Atomic per file**: writes go through `mustard_core::io::fs::write_atomic`
 //!   (tempfile + rename), so a crash never leaves a half-written backup.
 //! - **Idempotent**: re-running with the same target overwrites only the files
 //!   that changed (mtime comparison + content equality fallback).
@@ -30,9 +30,9 @@
 
 use crate::shared::context::session_id;
 use crate::util::now_iso8601;
-use mustard_core::fs::{read_to_string, write_atomic};
-use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
-use mustard_core::{read_meta, spec as spec_io};
+use mustard_core::io::fs::{read_to_string, write_atomic};
+use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
+use mustard_core::{read_meta, domain::spec as spec_io};
 use mustard_core::ClaudePaths;
 use serde::Serialize;
 use serde_json::json;

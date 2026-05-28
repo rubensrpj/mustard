@@ -8,7 +8,7 @@
 //! `{ "error": "error-fallback" }`.
 
 use crate::commands::wave::wave_lib::detect_role;
-use mustard_core::fs;
+use mustard_core::io::fs;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;

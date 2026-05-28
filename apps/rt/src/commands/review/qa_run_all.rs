@@ -11,7 +11,7 @@
 
 use crate::shared::context::project_dir;
 use mustard_core::ClaudePaths;
-use mustard_core::fs as mfs;
+use mustard_core::io::fs as mfs;
 use serde_json::json;
 use std::path::PathBuf;
 

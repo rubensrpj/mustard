@@ -9,10 +9,10 @@
 //!
 //! W8A-3 (no-sqlite Wave 8): the assertion path moved from
 //! `SqliteEventStore::query` to a workspace NDJSON walk
-//! ([`mustard_core::projection::read_workspace_events`]). The fold over the
+//! ([`mustard_core::view::projection::read_workspace_events`]). The fold over the
 //! emitted events stays byte-identical.
 
-use mustard_core::model::event::HarnessEvent;
+use mustard_core::domain::model::event::HarnessEvent;
 use serde_json::Value;
 use std::path::Path;
 use tempfile::TempDir;
@@ -47,7 +47,7 @@ fn emit(project: &Path, kind: &str, spec: &str, payload: &str) -> std::process::
 ///
 /// Equivalent to the legacy `SqliteEventStore::query(Some(spec))`.
 fn events_for_spec(project: &Path, spec: &str) -> Vec<HarnessEvent> {
-    mustard_core::projection::read_workspace_events(project)
+    mustard_core::view::projection::read_workspace_events(project)
         .into_iter()
         .filter(|e| e.spec.as_deref() == Some(spec))
         .collect()

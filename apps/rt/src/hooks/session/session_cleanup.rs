@@ -32,14 +32,14 @@
 //! `unsafe`) and fail-open: a dead PID or a missing kill binary degrades to a
 //! warning and the PID file is still removed.
 
-use mustard_core::economy::{
+use mustard_core::domain::economy::{
     self, sources::rtk as rtk_source, sources::transcript, sources::IngestContext,
 };
-use mustard_core::fs;
-use mustard_core::spec;
+use mustard_core::io::fs;
+use mustard_core::domain::spec;
 use mustard_core::ClaudePaths;
-use mustard_core::model::contract::{Ctx, HookInput, Observer, Trigger};
-use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
+use mustard_core::domain::model::contract::{Ctx, HookInput, Observer, Trigger};
+use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -174,7 +174,7 @@ fn is_spec_done(claude_dir: &Path, spec_name: &str) -> bool {
 }
 
 /// `true` when a spec's lifecycle header resolves to the terminal `Completed`
-/// outcome. Delegates to the canonical [`mustard_core::spec`] parser, so
+/// outcome. Delegates to the canonical [`mustard_core::domain::spec`] parser, so
 /// the new `### Stage:`/`### Outcome:` header and every legacy `### Status:`
 /// shape (`completed`/`done`/`closed`) are recognised. Fail-open: an
 /// unparseable header is treated as not-done (the spec stays, its state file is

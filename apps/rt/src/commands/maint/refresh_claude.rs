@@ -375,7 +375,7 @@ fn resolve_templates_dir(override_: Option<&Path>, cwd: &Path) -> PathBuf {
 fn emit_economy(cwd: &Path, copied_count: usize) -> Option<()> {
     use crate::shared::events::route;
     use crate::util::now_iso8601;
-    use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
+    use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
     use crate::shared::context::session_id;
 
     let cwd_str = cwd.to_str()?.to_string();

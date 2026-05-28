@@ -39,7 +39,7 @@
 
 use crate::shared::context::{current_spec, project_dir, session_id};
 use crate::shared::events::writer_ndjson;
-use mustard_core::model::event::HarnessEvent;
+use mustard_core::domain::model::event::HarnessEvent;
 use std::path::Path;
 
 /// Classify an `event_name` into a [`event_writer_ndjson`] `kind` string.
@@ -190,7 +190,7 @@ pub fn emit_default(event: &HarnessEvent) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mustard_core::model::event::{Actor, ActorKind, SCHEMA_VERSION};
+    use mustard_core::domain::model::event::{Actor, ActorKind, SCHEMA_VERSION};
     use mustard_core::ClaudePaths;
     use serde_json::json;
     use tempfile::tempdir;

@@ -13,7 +13,7 @@
 //! Every IO/parse failure produces a graceful fallback value. The process
 //! always exits 0 — a status command must never block work.
 
-use mustard_core::fs;
+use mustard_core::io::fs;
 use mustard_core::ClaudePaths;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
@@ -350,7 +350,7 @@ fn pipeline_summary(root: &Path) -> PipelineSummary {
         };
     };
     let spec_root = paths.spec_dir();
-    let Ok(entries) = mustard_core::fs::read_dir(&spec_root) else {
+    let Ok(entries) = mustard_core::io::fs::read_dir(&spec_root) else {
         return PipelineSummary {
             active: Vec::new(),
             orphaned: Vec::new(),

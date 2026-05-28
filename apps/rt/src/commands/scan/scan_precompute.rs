@@ -5,7 +5,7 @@
 //! Task agents: backup generated `*.md`, purge generated skills, ensure the
 //! `notes.md` skeleton, and build the tooling / structure prompt blocks.
 
-use mustard_core::fs;
+use mustard_core::io::fs;
 use std::path::Path;
 
 /// Directories never descended into — mirrors the JS `DEFAULT_IGNORE`.
@@ -144,7 +144,7 @@ pub fn build_structure_block(subproject_path: &Path) -> String {
     let Ok(entries) = fs::read_dir(subproject_path) else {
         return String::new();
     };
-    let dirs: Vec<mustard_core::fs::DirEntry> = entries
+    let dirs: Vec<mustard_core::io::fs::DirEntry> = entries
         .into_iter()
         .filter(|e| e.is_dir)
         .filter(|e| !DEFAULT_IGNORE.contains(&e.file_name.as_str()))

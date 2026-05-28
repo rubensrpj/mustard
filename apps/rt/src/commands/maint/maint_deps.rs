@@ -8,8 +8,8 @@
 
 use crate::shared::context::session_id;
 use crate::util::now_iso8601;
-use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
-use mustard_core::process::rtk_command;
+use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
+use mustard_core::platform::process::rtk_command;
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};

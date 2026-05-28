@@ -2,7 +2,7 @@
 //!
 //! Spec A v4 / Wave 3 — `_context.md` is the input handed to the agent that
 //! will execute the upcoming wave. The schema has **5 required sections**;
-//! every heading flows through [`mustard_core::i18n::translate`] so the
+//! every heading flows through [`mustard_core::platform::i18n::translate`] so the
 //! output follows the project locale. AC-A-9 caps the rendered body at
 //! **8 000 words** — over the cap, [`build`] returns an explicit
 //! [`WaveSummaryError::ContextTooLong`] rather than silently truncating.
@@ -27,8 +27,8 @@
 //!   [`crate::commands::wave::wave_summary`] — no hardcoded user-facing strings.
 //! - **Idempotent.** Pure on `(input, locale)`. No clock, no env.
 
-use mustard_core::fs as mfs;
-use mustard_core::i18n::{translate, SupportedLocale as Locale};
+use mustard_core::io::fs as mfs;
+use mustard_core::platform::i18n::{translate, SupportedLocale as Locale};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 

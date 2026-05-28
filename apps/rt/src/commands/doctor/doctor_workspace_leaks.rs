@@ -15,7 +15,7 @@
 //! Output: never deletes. Each leak gets a `suggested_cleanup` command the
 //! user can run if they confirm.
 
-use mustard_core::workspace::workspace_root;
+use mustard_core::io::workspace::workspace_root;
 use mustard_core::ClaudePaths;
 use serde::Serialize;
 use std::collections::HashSet;

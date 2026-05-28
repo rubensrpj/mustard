@@ -2,7 +2,7 @@
 //!
 //! Spec A v4 / Wave 3 introduces the canonical schema of the `_summary.md` file
 //! written at the end of each wave. The schema has **7 required sections** —
-//! every heading flows through [`mustard_core::i18n::translate`] so the output
+//! every heading flows through [`mustard_core::platform::i18n::translate`] so the output
 //! follows the project locale declared in `.claude/mustard.json#lang`. No
 //! user-facing string is hardcoded in this module; only structural separators
 //! (`##`, `|`, `---`) are literal.
@@ -47,8 +47,8 @@
 //!   [`WaveSummaryError::Io`] but never panics; callers can decide whether the
 //!   wave-close pipeline degrades or halts on a failed write.
 
-use mustard_core::fs as mfs;
-use mustard_core::i18n::{translate, SupportedLocale as Locale};
+use mustard_core::io::fs as mfs;
+use mustard_core::platform::i18n::{translate, SupportedLocale as Locale};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
@@ -98,7 +98,7 @@ pub struct FunctionEntry {
     /// (R3 — module, path-hint or pure form). Verbatim.
     pub qualifier: String,
     /// On-disk status label written verbatim — typically the output of
-    /// [`mustard_core::spec::touched_functions::FunctionStatus::label`]
+    /// [`mustard_core::domain::spec::touched_functions::FunctionStatus::label`]
     /// (`NOVO` / `ESTENDIDO` / `MODIFICADO`).
     pub status: String,
     /// Path hint where the function lives, as declared in the spec.
@@ -166,7 +166,7 @@ pub enum WaveSummaryError {
     Io {
         /// The path the writer attempted to materialise.
         path: PathBuf,
-        /// Wrapped IO error from `mustard_core::fs::write_atomic`.
+        /// Wrapped IO error from `mustard_core::io::fs::write_atomic`.
         source: std::io::Error,
     },
     /// `_context.md` exceeded the 8 000-word cap (W3.T3.2 / AC-A-9). Reused

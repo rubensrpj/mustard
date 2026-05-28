@@ -145,7 +145,7 @@ fn parses_legacy_approved_as_plan_active() {
 
     // Empty event slice + path → projection falls back to header parse.
     let view =
-        mustard_core::projection::project_spec_view_with_header("feat", &[], Some(path.as_path()));
+        mustard_core::view::projection::project_spec_view_with_header("feat", &[], Some(path.as_path()));
     assert_eq!(view.state.stage, Stage::Plan);
     assert_eq!(view.state.outcome, Outcome::Active);
     assert!(!view.state.flags.blocked);
@@ -164,7 +164,7 @@ fn parses_new_format() {
     );
 
     let view =
-        mustard_core::projection::project_spec_view_with_header("feat", &[], Some(path.as_path()));
+        mustard_core::view::projection::project_spec_view_with_header("feat", &[], Some(path.as_path()));
     assert_eq!(view.state.stage, Stage::Execute);
     assert_eq!(view.state.outcome, Outcome::Active);
     assert!(view.state.flags.blocked);
@@ -183,7 +183,7 @@ fn parses_new_format_terminal() {
     );
 
     let view =
-        mustard_core::projection::project_spec_view_with_header("done", &[], Some(path.as_path()));
+        mustard_core::view::projection::project_spec_view_with_header("done", &[], Some(path.as_path()));
     assert_eq!(view.state.stage, Stage::Close);
     assert_eq!(view.state.outcome, Outcome::Completed);
     assert!(view.state.is_terminal());

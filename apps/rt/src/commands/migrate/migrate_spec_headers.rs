@@ -44,8 +44,8 @@
 //!   preserved. The rewrite never indexes a string with `&s[a..b]` (which
 //!   panics off a char boundary) — it operates on whole lines.
 
-use mustard_core::fs;
-use mustard_core::spec::{
+use mustard_core::io::fs;
+use mustard_core::domain::spec::{
     self, flags_label, header_field, outcome_label, stage_label,
 };
 use mustard_core::{Flags, Outcome, Stage};
@@ -242,7 +242,7 @@ fn resolve(status: Option<&str>, phase: Option<&str>) -> Option<Resolved> {
 }
 
 // ---------------------------------------------------------------------------
-// Header extraction (tolerant, CRLF-safe) — delegated to `mustard_core::spec`
+// Header extraction (tolerant, CRLF-safe) — delegated to `mustard_core::domain::spec`
 //
 // The header-region scoping + the `### Key:` / `- **Key**:` tolerant extraction
 // + the byte-stable rewrite all live in the canonical core module now; this
@@ -286,7 +286,7 @@ enum Plan {
 /// Classify + (when migratable) compute the rewritten content for `content`.
 ///
 /// Detection, header-region scoping, the tolerant legacy parse and the
-/// byte-stable rewrite are all delegated to [`mustard_core::spec`] — this
+/// byte-stable rewrite are all delegated to [`mustard_core::domain::spec`] — this
 /// function only adds the audit-specific bits (the `inferred_stage_override`
 /// note and combined-line `Scope:`-style extras preservation).
 fn plan_for(content: &str) -> Plan {

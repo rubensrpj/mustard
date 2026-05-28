@@ -1,4 +1,4 @@
-use mustard_core::fs;
+use mustard_core::io::fs;
 use serde::Serialize;
 use std::collections::VecDeque;
 use std::ffi::OsStr;

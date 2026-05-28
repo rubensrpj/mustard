@@ -10,7 +10,7 @@
 //! `SECRET_PATTERNS` / `FP_FILE_PATTERNS` in the JS one-for-one.
 
 use crate::util::now_iso8601;
-use mustard_core::fs;
+use mustard_core::io::fs;
 use mustard_core::ClaudePaths;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};

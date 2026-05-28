@@ -5,7 +5,7 @@
 //!
 //! After a Write/Edit lands on a markdown file under one of the three canonical
 //! atomic-md trees, this `Observer` reads the file, recomputes the auto-footer
-//! via [`mustard_core::atomic_md::wikilink::render_footer`], and rewrites the
+//! via [`mustard_core::io::atomic_md::wikilink::render_footer`], and rewrites the
 //! file atomically when the rendered output differs from the on-disk content.
 //!
 //! The footer block lives between
@@ -18,16 +18,16 @@
 //! - **Pure `Observer`** — never blocks, never injects. Outcome equivalence in
 //!   the dispatcher is `Allow` (no `Check` is registered, so no verdict is
 //!   produced).
-//! - **All parser/render logic lives in `mustard_core::atomic_md::wikilink`.**
+//! - **All parser/render logic lives in `mustard_core::io::atomic_md::wikilink`.**
 //!   This module owns only the "when to run" decision and the post-write
 //!   rewrite. It does not duplicate the `[[ ]]` scanner or the sentinel
 //!   handling — the W3E AC checks for that explicitly.
 //! - **Fail-open.** A missing file, a non-markdown path, or a write error all
 //!   resolve to no-op.
 
-use mustard_core::atomic_md::wikilink::render_footer;
-use mustard_core::fs as core_fs;
-use mustard_core::model::contract::{Ctx, HookInput, Observer, Trigger};
+use mustard_core::io::atomic_md::wikilink::render_footer;
+use mustard_core::io::fs as core_fs;
+use mustard_core::domain::model::contract::{Ctx, HookInput, Observer, Trigger};
 use mustard_core::ClaudePaths;
 use std::path::{Path, PathBuf};
 
@@ -128,7 +128,7 @@ impl Observer for WikilinkFooter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mustard_core::model::contract::Trigger;
+    use mustard_core::domain::model::contract::Trigger;
     use serde_json::json;
     use std::fs;
     use tempfile::tempdir;

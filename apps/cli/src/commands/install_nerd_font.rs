@@ -21,7 +21,7 @@
 //! skips the probe.
 
 use anyhow::{Context, Result, bail};
-use mustard_core::fs as mfs;
+use mustard_core::io::fs as mfs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 

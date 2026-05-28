@@ -15,8 +15,8 @@
 //! merely wraps the result.
 
 use crate::commands::review::gate_regression_check::{self, GateInput, Moment, RegressionVerdict};
-use mustard_core::error::Error;
-use mustard_core::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
+use mustard_core::platform::error::Error;
+use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
 use std::path::PathBuf;
 
 /// The pre-edit Moment-1 gate module. Stateless — every invocation rebuilds

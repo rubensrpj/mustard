@@ -13,7 +13,7 @@
 
 use crate::shared::context::{current_spec, project_dir, session_id};
 use crate::util::now_iso8601;
-use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
+use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use serde_json::{Map, Value};
 
 /// Parse a `key=value` payload argument into a `(key, Value)` pair.

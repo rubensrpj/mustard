@@ -20,7 +20,7 @@
 //! - Telemetry emission is best-effort; a store failure never propagates.
 //! - Path traversal is rejected up front (`repo_path` must be a real dir).
 
-use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
+use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use mustard_core::{SupportedLocale, Tone};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
@@ -122,7 +122,7 @@ fn write_field(repo_path: &str, field: &str, value: serde_json::Value) -> Result
     let body = serde_json::to_string_pretty(&root).map_err(|e| e.to_string())?;
     let mut bytes = body.into_bytes();
     bytes.push(b'\n');
-    mustard_core::fs::write_atomic(&path, &bytes).map_err(|e| e.to_string())
+    mustard_core::io::fs::write_atomic(&path, &bytes).map_err(|e| e.to_string())
 }
 
 /// Emit one `pipeline.economy.operation.invoked` event for an i18n write.

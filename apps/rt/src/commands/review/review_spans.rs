@@ -14,14 +14,14 @@
 //! ```
 //!
 //! - `verdict` is the lowercase classifier (`green` / `amber` / `red`) — the
-//!   exact strings emitted by [`mustard_core::ast`] / `gate_regression_check`'s
+//!   exact strings emitted by [`mustard_core::domain::ast`] / `gate_regression_check`'s
 //!   JSON payloads (stable across locales).
 //! - `child_id` is a short identifier supplied by the caller (typically the
 //!   `subagent_type` from `tool_input` plus a counter).
 //! - `iso_ts` is the wall-clock timestamp at append time.
 //! - `signals` is the count of regression signals the verdict carried.
 //! - `first_message` is the localised body of the first signal (rendered by
-//!   `mustard_core::i18n::translate` in the gate module), trimmed and inlined
+//!   `mustard_core::platform::i18n::translate` in the gate module), trimmed and inlined
 //!   so the ledger can be scanned by a human without re-running the gate.
 //!
 //! ## Atomicity

@@ -33,38 +33,21 @@
 //!   [`knowledge`] (knowledge extraction + the inter-agent context-selection
 //!   API).
 
-pub mod ast;
-pub mod atomic_md;
-pub mod claude_paths;
-pub mod config;
-pub mod events;
-pub mod economy;
-pub mod env;
-pub mod error;
-pub mod fs;
-pub mod i18n;
-pub mod knowledge;
-pub mod meta;
-pub mod metrics;
-pub mod model;
-pub mod process;
-pub mod projection;
 // Snapshot-and-compare primitive consumed by the Wave 4 regression gate.
 // Reuses `ast::GrammarLoader` / `ast::TreeSitterParser` for the precise path
 // and falls back to a textual diff (via `similar = "2"`) when no grammar is
 // installed for the file's language.
-pub mod regression_check;
-pub mod skill;
-pub mod spec;
-pub mod summary;
-pub mod vocabulary;
-pub mod workspace;
 
 // Root re-exports — consumers can write `use mustard_core::…` without
 // remembering which sub-module owns each name.
+pub mod io;
+pub mod domain;
+pub mod view;
+pub mod platform;
+
 #[allow(deprecated)] // SpecStatus is re-exported during the W1→W7 migration window.
-pub use model::view::SpecStatus;
-pub use model::view::{
+pub use domain::model::view::SpecStatus;
+pub use domain::model::view::{
     AcStatus, AcceptanceCriterion, FileCount, Flags, Outcome, Phase, PhaseSegment, QualityRollup,
     Scope, SegmentState, SpecChild, SpecFilter, SpecState, SpecStatusFilter, SpecSummary,
     SpecTrack, SpecView, Stage, StateError, TimeWindow, TimelineKind, TimelineNode, WaveStatus,
@@ -72,20 +55,20 @@ pub use model::view::{
 };
 // Spec-document I/O — the single canonical owner of parsing / serializing /
 // rewriting the lifecycle header of a spec `.md` file. See `spec/mod.rs`.
-// Layered on top of the canonical filesystem seam `crate::fs`.
-pub use spec::{
+// Layered on top of the canonical filesystem seam `crate::io::fs`.
+pub use domain::spec::{
     flags_label, header_field, header_region_lines, outcome_label, parse_state, read_state,
     rewrite_header, serialize_header, stage_label, status_word, write_state,
 };
 
 // Economy domain re-exports — see `economy/mod.rs` for the full surface.
-pub use economy::{EconomyScope, EconomySummary, SavingsSource};
+pub use domain::economy::{EconomyScope, EconomySummary, SavingsSource};
 
 // Meta sidecar — single canonical owner of `meta.json` schema + IO. See
 // `meta.rs`. Sidecar replaces the legacy `### Stage:` / `### Outcome:` /
 // `### Phase:` / `### Scope:` / `### Lang:` / `### Checkpoint:` / `### Parent:`
 // headers under `.claude/spec/**`.
-pub use meta::{normalise_lang, read_meta, write_meta, Meta};
+pub use domain::meta::{normalise_lang, read_meta, write_meta, Meta};
 
 // i18n — central language + tone module for Mustard banners. See `i18n.rs`.
 //
@@ -102,7 +85,7 @@ pub use meta::{normalise_lang, read_meta, write_meta, Meta};
 //
 // W7 — every callsite now uses `SupportedLocale` (catalogue) or `UserLocale`
 // (user-declared). The deprecated `Locale` alias was removed.
-pub use i18n::{
+pub use platform::i18n::{
     apply_tone, project_locale, project_locale_from_file, slugify, translate, wave_label, I18n,
     LocaleError, SupportedLocale, Tone, UserLocale, UserLocaleError,
 };
@@ -110,31 +93,31 @@ pub use i18n::{
 // Canonical `.claude/` path catalog — every consumer in `apps/rt` builds a
 // `ClaudePaths` once and then asks for a typed accessor instead of joining
 // strings inline. See `claude_paths.rs`.
-pub use claude_paths::{ClaudePaths, ClaudePathsError, SpecPaths, WavePaths};
+pub use io::claude_paths::{ClaudePaths, ClaudePathsError, SpecPaths, WavePaths};
 
 // Canonical workspace-root resolver — single source of truth for "the
 // directory that contains `mustard.json` + `.claude/`". See `workspace.rs`.
-pub use workspace::{workspace_root, WorkspaceError};
+pub use io::workspace::{workspace_root, WorkspaceError};
 
 // Atomic markdown layer — shared by memory/knowledge/spec readers and the
 // wikilink footer hook. See `atomic_md/mod.rs`.
-pub use atomic_md::{MarkdownDoc, MarkdownStore};
+pub use io::atomic_md::{MarkdownDoc, MarkdownStore};
 
 // Summary document — the versionable `.summary.json` artefact committed to
 // git alongside each spec. Re-exported at root so consumers can write
 // `mustard_core::SpecSummaryDoc` without knowing the sub-module path.
-pub use summary::SpecSummaryDoc;
+pub use view::summary::SpecSummaryDoc;
 
 // NDJSON event primitives — shared by all no-sqlite sub-specs (W2-W7).
 // `Event` is the single row unit; `EventReader` provides streaming, cached,
 // and filtered access without loading full files into memory.
-pub use events::{Event, EventReader};
+pub use io::events::{Event, EventReader};
 
 // Vocabulary matcher — the four-layer term scanner used by the regression
 // gate (Spec A / Wave 1). Layers are EN identifiers per the wave-0 hard rule
 // (`Semantic`, `Pattern`, `Keyword`, `Noise`); the on-disk TOML keys are
 // lowercased copies of the same names.
-pub use vocabulary::{
+pub use domain::vocabulary::{
     check_layer_promotion, Layer, PromotionVerdict, ScanHit, VocabError, VocabLayer,
     VocabularyDoc, VocabularyMatcher,
 };

@@ -45,7 +45,7 @@
 // so it is annotated locally rather than under a module-wide allow.
 
 use crate::util::sha256::Sha256;
-use mustard_core::fs;
+use mustard_core::io::fs;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 

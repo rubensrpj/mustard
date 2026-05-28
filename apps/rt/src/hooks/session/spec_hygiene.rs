@@ -17,7 +17,7 @@
 //!
 //! The `last_event_at` for a spec is now resolved by scanning the per-spec
 //! NDJSON `.events/` directory (via
-//! `mustard_core::projection::read_harness_events_from_ndjson_dir`) instead of
+//! `mustard_core::view::projection::read_harness_events_from_ndjson_dir`) instead of
 //! querying the `pipeline_events` table. The event-store import
 //! has been removed from this module.
 //!
@@ -41,11 +41,11 @@
 //!   `candidate`); auto-close never runs.
 //! - `auto`  — default; the full behavior described above.
 
-use mustard_core::error::Error;
-use mustard_core::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
-use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
-use mustard_core::projection::read_harness_events_from_ndjson_dir;
-use mustard_core::spec;
+use mustard_core::platform::error::Error;
+use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
+use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
+use mustard_core::view::projection::read_harness_events_from_ndjson_dir;
+use mustard_core::domain::spec;
 use mustard_core::{ClaudePaths, Flags, Outcome as SpecOutcome, SpecState, Stage};
 use serde_json::{json, Value};
 use std::path::Path;
@@ -196,7 +196,7 @@ impl Evidence {
 /// `true` when a spec's `spec.md` header marks it as still active — i.e. its
 /// canonical [`SpecOutcome`] is `Active` (or no terminal status is declared).
 ///
-/// Delegates to the canonical [`mustard_core::spec`] parser, which is
+/// Delegates to the canonical [`mustard_core::domain::spec`] parser, which is
 /// tolerant of the new `### Stage:`/`### Outcome:` header *and* every legacy
 /// `### Status:`/`### Phase:` shape. A spec with no recognisable lifecycle
 /// header is treated as active (a fresh spec).
@@ -490,7 +490,7 @@ fn run_close_gate(cwd: &Path, spec: &str) -> Result<(), Blocker> {
 /// Rewrite the spec header so it reads the terminal `Close` + `Completed`
 /// canonical state, emitting the NEW three-line header format regardless of the
 /// legacy shape it started in. Delegates the atomic, byte-stable rewrite to the
-/// canonical [`mustard_core::spec`] writer. Fail-open: a missing file or a
+/// canonical [`mustard_core::domain::spec`] writer. Fail-open: a missing file or a
 /// write error is a silent no-op (the `pipeline.outcome` event the caller also
 /// emits remains the durable record).
 fn mark_completed(spec_md_path: &Path) {

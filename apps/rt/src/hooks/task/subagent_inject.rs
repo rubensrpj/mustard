@@ -26,11 +26,11 @@
 //! decisive verdict is always either `Inject` (when something was resolved)
 //! or `Allow` (when nothing was).
 
-use mustard_core::atomic_md::MarkdownStore;
-use mustard_core::error::Error;
-use mustard_core::fs;
-use mustard_core::i18n::{self, Locale};
-use mustard_core::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
+use mustard_core::io::atomic_md::MarkdownStore;
+use mustard_core::platform::error::Error;
+use mustard_core::io::fs;
+use mustard_core::platform::i18n::{self, Locale};
+use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
 use mustard_core::ClaudePaths;
 use std::path::{Path, PathBuf};
 
@@ -251,7 +251,7 @@ fn vocabulary_inject_block(project: &Path, locale: Locale) -> String {
 /// fallback contract).
 fn read_vocab_layers(project: &Path) -> (Vec<String>, Vec<String>) {
     // W5#2: dedup'd via `VocabularyDoc::layer_terms`. The inline TOML walk
-    // this function used to ship lives in `mustard_core::vocabulary` now —
+    // this function used to ship lives in `mustard_core::domain::vocabulary` now —
     // both `subagent_inject` and `agent_prompt_render` flow through the
     // same accessor.
     let toml_path = project
@@ -259,13 +259,13 @@ fn read_vocab_layers(project: &Path) -> (Vec<String>, Vec<String>) {
         .join("vocab")
         .join("regression.toml");
     let (mut semantic, mut pattern) =
-        match mustard_core::vocabulary::VocabularyDoc::load_from_file(&toml_path) {
+        match mustard_core::domain::vocabulary::VocabularyDoc::load_from_file(&toml_path) {
             Ok(doc) => (
-                doc.layer_terms(mustard_core::vocabulary::Layer::Semantic)
+                doc.layer_terms(mustard_core::domain::vocabulary::Layer::Semantic)
                     .iter()
                     .map(|s| (*s).to_string())
                     .collect::<Vec<String>>(),
-                doc.layer_terms(mustard_core::vocabulary::Layer::Pattern)
+                doc.layer_terms(mustard_core::domain::vocabulary::Layer::Pattern)
                     .iter()
                     .map(|s| (*s).to_string())
                     .collect::<Vec<String>>(),
@@ -544,7 +544,7 @@ impl Check for SubagentInject {
 /// Emit `pipeline.economy.operation.invoked` for a W8 in-binary operation.
 /// Fail-open. Routes through `route::emit` (NDJSON sink) for uniformity.
 fn emit_economy_operation(cwd: &str, operation: &str) {
-    use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
+    use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
     use serde_json::json;
 
     let event = HarnessEvent {

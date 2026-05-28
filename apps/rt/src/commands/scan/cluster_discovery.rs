@@ -15,7 +15,7 @@
 use super::file_utils::{collect_files, read_file_safe, relative_path};
 use super::project_conventions::primary_ext_for_stack;
 use crate::util::sha256::Sha256;
-use mustard_core::fs as mfs;
+use mustard_core::io::fs as mfs;
 use mustard_core::ClaudePaths;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;

@@ -3,7 +3,7 @@
 //! W4B: SQLite sinks removed. Reads the three legacy JSON files (when they
 //! exist) and the legacy `.claude/.agent-memory/` rolling JSON dir, and emits
 //! one markdown file per entry under `.claude/{memory,knowledge}/` via
-//! [`mustard_core::atomic_md::MarkdownStore`].
+//! [`mustard_core::io::atomic_md::MarkdownStore`].
 //!
 //! | Source JSON                     | Destination dir                          |
 //! |---------------------------------|------------------------------------------|
@@ -18,10 +18,10 @@
 //! `{ "ingested": { "knowledge": N, "decisions": M, "lessons": K, "agent_memory": Z }, "deleted": bool, "errors": [...] }`.
 
 use crate::shared::context::project_dir as env_project_dir;
-use mustard_core::atomic_md::frontmatter::Frontmatter;
-use mustard_core::atomic_md::{MarkdownDoc, MarkdownStore};
-use mustard_core::claude_paths::ClaudePaths;
-use mustard_core::fs;
+use mustard_core::io::atomic_md::frontmatter::Frontmatter;
+use mustard_core::io::atomic_md::{MarkdownDoc, MarkdownStore};
+use mustard_core::io::claude_paths::ClaudePaths;
+use mustard_core::io::fs;
 use serde_json::{json, Map, Value};
 use std::path::{Path, PathBuf};
 

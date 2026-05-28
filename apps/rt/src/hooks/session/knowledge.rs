@@ -30,15 +30,15 @@
 //!   `retry.attempt`.
 //! - W3D: `memory-auto-extract` no longer shells out to `memory.js`. Decisions
 //!   and lessons extracted from spec bullets are written directly to
-//!   `.claude/knowledge/{slug}.md` via [`mustard_core::atomic_md::MarkdownStore`].
+//!   `.claude/knowledge/{slug}.md` via [`mustard_core::io::atomic_md::MarkdownStore`].
 //!   YAML frontmatter carries `kind`, `captured_at`, `source_event`, and `spec`.
 
-use mustard_core::atomic_md::{MarkdownDoc, MarkdownStore};
-use mustard_core::atomic_md::frontmatter::Frontmatter;
-use mustard_core::fs;
-use mustard_core::projection::read_harness_events_from_ndjson_dir;
-use mustard_core::model::contract::{Ctx, HookInput, Observer, Trigger};
-use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
+use mustard_core::io::atomic_md::{MarkdownDoc, MarkdownStore};
+use mustard_core::io::atomic_md::frontmatter::Frontmatter;
+use mustard_core::io::fs;
+use mustard_core::view::projection::read_harness_events_from_ndjson_dir;
+use mustard_core::domain::model::contract::{Ctx, HookInput, Observer, Trigger};
+use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use mustard_core::ClaudePaths;
 use serde_json::{Map, Value, json};
 use std::path::{Path, PathBuf};

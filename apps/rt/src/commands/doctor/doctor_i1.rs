@@ -2,7 +2,7 @@
 //! `.claude/.claude/` sequence anywhere in the workspace.
 //!
 //! W3.T3.9 of `2026-05-26-claude-paths-single-source`. The I1 guard in
-//! [`mustard_core::claude_paths`] is supposed to make the forbidden sequence
+//! [`mustard_core::io::claude_paths`] is supposed to make the forbidden sequence
 //! impossible to construct programmatically — but if one physically exists on
 //! disk, it means an older version of Mustard left it behind, or some external
 //! tool re-applied `.claude` over a path that was already inside `.claude/`.
@@ -78,7 +78,7 @@ fn walk(dir: &Path, out: &mut Vec<String>, depth: usize, max_depth: usize) {
 
 /// True iff `path` ends in `.claude/.claude` OR contains `.claude/.claude/`
 /// as a sub-sequence (matches the canonical guard in
-/// [`mustard_core::claude_paths`]).
+/// [`mustard_core::io::claude_paths`]).
 fn is_dot_claude_in_dot_claude(path: &Path) -> bool {
     let s = path.to_string_lossy().replace('\\', "/");
     s.contains(".claude/.claude/") || s.ends_with(".claude/.claude")

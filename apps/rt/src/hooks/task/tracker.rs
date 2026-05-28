@@ -38,13 +38,13 @@
 
 use crate::shared::context::current_spec;
 use crate::util::now_iso8601;
-use mustard_core::economy::estimator;
-use mustard_core::economy::writer as economy_writer;
-use mustard_core::economy::SpanRecord;
-use mustard_core::error::Error;
-use mustard_core::fs;
-use mustard_core::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
-use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
+use mustard_core::domain::economy::estimator;
+use mustard_core::domain::economy::writer as economy_writer;
+use mustard_core::domain::economy::SpanRecord;
+use mustard_core::platform::error::Error;
+use mustard_core::io::fs;
+use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
+use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use mustard_core::ClaudePaths;
 use serde_json::{Map, Value, json};
 use std::path::Path;
@@ -53,7 +53,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 /// Finalise an agent's Task dispatch as one `pipeline.economy.run` NDJSON
 /// event. The companion channel to the OTEL collector's
 /// `pipeline.telemetry.run` — same payload shape so the dashboard reader
-/// (`mustard_core::economy::reader::*`) aggregates both transparently.
+/// (`mustard_core::domain::economy::reader::*`) aggregates both transparently.
 ///
 /// W7B of [[2026-05-26-no-sqlite-git-source-of-truth]] replaced the previous
 /// SQLite `telemetry.db` write with this NDJSON emit. `model` is the model
@@ -727,7 +727,7 @@ impl Check for MainContextCounter {
 /// the dominant behaviour and never affects a verdict.
 pub struct SubagentTracker;
 
-impl mustard_core::model::contract::Observer for SubagentTracker {
+impl mustard_core::domain::model::contract::Observer for SubagentTracker {
     fn observe(&self, input: &HookInput, ctx: &Ctx) {
         let project = if ctx.project_dir.is_empty() {
             project_dir(input)
@@ -879,7 +879,7 @@ impl mustard_core::model::contract::Observer for SubagentTracker {
 /// `spec` tags are left `null`, exactly as the JS does when no state is found.
 pub struct MetricsTracker;
 
-impl mustard_core::model::contract::Observer for MetricsTracker {
+impl mustard_core::domain::model::contract::Observer for MetricsTracker {
     fn observe(&self, input: &HookInput, ctx: &Ctx) {
         if ctx.trigger != Some(Trigger::PostToolUse) {
             return;
@@ -939,7 +939,7 @@ fn cap(s: &str, max: usize) -> String {
 /// event.
 pub struct SkillUsageTracker;
 
-impl mustard_core::model::contract::Observer for SkillUsageTracker {
+impl mustard_core::domain::model::contract::Observer for SkillUsageTracker {
     fn observe(&self, input: &HookInput, ctx: &Ctx) {
         if ctx.trigger != Some(Trigger::PostToolUse) {
             return;
@@ -1293,7 +1293,7 @@ mod tests {
             hook_event_name: Some("PreToolUse".to_string()),
             ..HookInput::default()
         };
-        use mustard_core::model::contract::Observer;
+        use mustard_core::domain::model::contract::Observer;
         SubagentTracker.observe(&input, &ctx(Trigger::PreToolUse, project));
     }
 
@@ -1307,7 +1307,7 @@ mod tests {
             hook_event_name: Some("PostToolUse".to_string()),
             ..HookInput::default()
         };
-        use mustard_core::model::contract::Observer;
+        use mustard_core::domain::model::contract::Observer;
         MetricsTracker.observe(&input, &ctx(Trigger::PostToolUse, project));
     }
 
@@ -1321,7 +1321,7 @@ mod tests {
             hook_event_name: Some("PostToolUse".to_string()),
             ..HookInput::default()
         };
-        use mustard_core::model::contract::Observer;
+        use mustard_core::domain::model::contract::Observer;
         SkillUsageTracker.observe(&input, &ctx(Trigger::PostToolUse, project));
 
         // W5: `skill.invoked` is non-pipeline → per-session NDJSON (no spec
@@ -1355,7 +1355,7 @@ mod tests {
             hook_event_name: Some("PostToolUse".to_string()),
             ..HookInput::default()
         };
-        use mustard_core::model::contract::Observer;
+        use mustard_core::domain::model::contract::Observer;
         SkillUsageTracker.observe(&input, &ctx(Trigger::PostToolUse, project));
         // Non-Skill tool → no `skill.invoked` event emitted; the .events dir is
         // either absent or contains zero `skill.invoked` NDJSON lines.

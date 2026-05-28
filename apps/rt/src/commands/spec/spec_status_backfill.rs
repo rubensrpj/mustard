@@ -19,7 +19,7 @@
 //! - `--dry-run`: prints the proposed changes without writing.
 //! - `--spec <name>`: restricts the run to a single spec.
 
-use mustard_core::spec;
+use mustard_core::domain::spec;
 use mustard_core::{header_field, read_meta, write_meta};
 use mustard_core::{Outcome, Stage};
 use serde::Serialize;

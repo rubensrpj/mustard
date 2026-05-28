@@ -1,5 +1,5 @@
 //! `mustard-rt run spec-validate` — validate a spec directory against the
-//! [`mustard_core::spec::contract`] layout.
+//! [`mustard_core::domain::spec::contract`] layout.
 //!
 //! Reads `meta.json` + `spec.md` (+ optional `wave-plan.md`) at the given
 //! path, reconstructs a [`SpecInput`], and runs the contract validator.
@@ -7,13 +7,13 @@
 
 use crate::shared::context::project_dir;
 use crate::commands::spec::spec_sections::is_heading;
-use mustard_core::fs as mfs;
-use mustard_core::meta::read_meta_beside;
-use mustard_core::spec::contract::{
+use mustard_core::io::fs as mfs;
+use mustard_core::domain::meta::read_meta_beside;
+use mustard_core::domain::spec::contract::{
     self, AcceptanceCriterion, SectionBody, SpecInput, PLAN_SECTIONS, PRD_SECTIONS,
 };
 use mustard_core::ClaudePaths;
-use mustard_core::{model::view::Phase, Outcome, Scope, Stage};
+use mustard_core::{domain::model::view::Phase, Outcome, Scope, Stage};
 use serde_json::json;
 use std::path::{Path, PathBuf};
 
@@ -125,7 +125,7 @@ fn resolve_paths(spec_path: &Path) -> (PathBuf, PathBuf) {
 }
 
 /// Reconstruct a [`SpecInput`] from the on-disk files.
-fn build_input_from_files(slug: &str, spec_text: &str, meta: Option<&mustard_core::meta::Meta>) -> SpecInput {
+fn build_input_from_files(slug: &str, spec_text: &str, meta: Option<&mustard_core::domain::meta::Meta>) -> SpecInput {
     let title = extract_title(spec_text);
     let prd = collect_sections(spec_text, PRD_SECTIONS);
     let plan = collect_sections(spec_text, PLAN_SECTIONS);
@@ -384,8 +384,8 @@ mod tests {
         .unwrap();
         // Re-create the `input` to verify it would validate via contract.
         let spec_text = std::fs::read_to_string(spec_dir.join("spec.md")).unwrap();
-        let meta = mustard_core::meta::read_meta_beside(&spec_dir.join("spec.md"));
+        let meta = mustard_core::domain::meta::read_meta_beside(&spec_dir.join("spec.md"));
         let input = build_input_from_files("demo", &spec_text, meta.as_ref());
-        assert!(mustard_core::spec::contract::validate(&input).is_ok());
+        assert!(mustard_core::domain::spec::contract::validate(&input).is_ok());
     }
 }

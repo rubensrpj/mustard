@@ -24,8 +24,8 @@
 //!   `review/spec.md` + `qa/spec.md`) produces a `meta.json` next to each
 //!   `.md` carrying a lifecycle header.
 
-use mustard_core::fs;
-use mustard_core::spec;
+use mustard_core::io::fs;
+use mustard_core::domain::spec;
 use mustard_core::ClaudePaths;
 use mustard_core::{Meta, write_meta};
 use serde::Serialize;
@@ -116,7 +116,7 @@ fn collect_md_into(dir: &Path, out: &mut Vec<PathBuf>) {
 }
 
 /// Extract a `Meta` from one spec markdown body using the canonical
-/// [`mustard_core::spec::header_field`] + [`parse_state`] readers, plus a
+/// [`mustard_core::domain::spec::header_field`] + [`parse_state`] readers, plus a
 /// few sidecar-only fields (`Phase`, `Scope`, `Lang`, `Checkpoint`, `Parent`,
 /// `Total waves`).
 ///

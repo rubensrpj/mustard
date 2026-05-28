@@ -34,8 +34,8 @@
 //! event sink.
 
 use crate::hooks::observe::amend_capture::close_amend_windows_for_session;
-use mustard_core::error::Error;
-use mustard_core::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
+use mustard_core::platform::error::Error;
+use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
 use mustard_core::ClaudePaths;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -167,7 +167,7 @@ impl Check for PromptGate {
 /// W3C: routes via `crate::shared::events::route::emit` (NDJSON for
 /// non-`pipeline.*` events, SQLite lifecycle index for `pipeline.*`).
 fn emit_economy_operation(cwd: &str, operation: &str) -> Result<(), ()> {
-    use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
+    use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
     use serde_json::json;
 
     let event = HarnessEvent {

@@ -15,7 +15,7 @@
 //!   (`2026-05-27-mustard-v4-foundation` § Não-Objetivos — "Linkar grammars
 //!   individuais no binário Mustard — proibido sempre").
 //! - **Never feeds the suggestion catalogue back into the regression gate.** The
-//!   catalogue here is a *UX bookmark*; `mustard_core::ast::GrammarLoader`
+//!   catalogue here is a *UX bookmark*; `mustard_core::domain::ast::GrammarLoader`
 //!   discovers grammars from `~/.config/tree-sitter/config.json` at runtime,
 //!   never from anything declared here.
 //!
@@ -33,8 +33,8 @@
 //! one-line edit to the JSON.
 
 use anyhow::Result;
-use mustard_core::ast::GrammarLoader;
-use mustard_core::i18n::{self, Locale};
+use mustard_core::domain::ast::GrammarLoader;
+use mustard_core::platform::i18n::{self, Locale};
 use serde::Deserialize;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};

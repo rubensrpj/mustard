@@ -8,8 +8,8 @@
 use crate::shared::context::session_id;
 use crate::util::now_iso8601;
 use crate::commands::skill::skill_fetch::SkillCacheFile;
-use mustard_core::fs::read_to_string;
-use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
+use mustard_core::io::fs::read_to_string;
+use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use mustard_core::ClaudePaths;
 use serde::Serialize;
 use serde_json::{json, Value};

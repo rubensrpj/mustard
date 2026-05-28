@@ -16,7 +16,7 @@
 //!
 //! - **Source of truth:** `spec.md` header (`### Stage:`, `### Outcome:`, `### Lang:`,
 //!   `### Scope:`) + NDJSON event log (timeline, AC results, waves).
-//! - **Output:** `{spec_dir}/.summary.json` via [`mustard_core::summary::writer`].
+//! - **Output:** `{spec_dir}/.summary.json` via [`mustard_core::view::summary::writer`].
 //! - **Failure model:** fail-open per spec. A spec that fails to project is
 //!   recorded in `errors[]` and skipped; the rest still materialise.
 //!
@@ -31,9 +31,9 @@
 //! ```
 
 use crate::shared::context::project_dir;
-use mustard_core::claude_paths::ClaudePaths;
-use mustard_core::fs as mfs;
-use mustard_core::summary::{writer, AcResult, SpecSummaryDoc, SummaryTimeline, WaveSummary};
+use mustard_core::io::claude_paths::ClaudePaths;
+use mustard_core::io::fs as mfs;
+use mustard_core::view::summary::{writer, AcResult, SpecSummaryDoc, SummaryTimeline, WaveSummary};
 use mustard_core::EventReader;
 use serde_json::json;
 use std::path::{Path, PathBuf};
@@ -67,7 +67,7 @@ pub fn run() {
 /// Returns an error only when `ClaudePaths` rejects the project root (I1
 /// guard violation). In practice this is always the caller's problem, not
 /// the spec's.
-pub fn rebuild_one(project_dir_str: &str, spec: &str) -> mustard_core::error::Result<()> {
+pub fn rebuild_one(project_dir_str: &str, spec: &str) -> mustard_core::platform::error::Result<()> {
     if spec.is_empty() {
         return Ok(());
     }

@@ -11,15 +11,15 @@
 //! W4C migration: event aggregation reads per-spec NDJSON via
 //! [`mustard_core::EventReader::stream`]; the `epic-summary` knowledge entry
 //! is written as `.claude/knowledge/epic-{epic}.md` via
-//! [`mustard_core::atomic_md::MarkdownStore`].
+//! [`mustard_core::io::atomic_md::MarkdownStore`].
 //!
 //! Fail-open and idempotent.
 
 use crate::util::now_iso8601;
-use mustard_core::atomic_md::frontmatter::Frontmatter;
-use mustard_core::atomic_md::{MarkdownDoc, MarkdownStore};
-use mustard_core::fs;
-use mustard_core::model::event::HarnessEvent;
+use mustard_core::io::atomic_md::frontmatter::Frontmatter;
+use mustard_core::io::atomic_md::{MarkdownDoc, MarkdownStore};
+use mustard_core::io::fs;
+use mustard_core::domain::model::event::HarnessEvent;
 use mustard_core::ClaudePaths;
 use serde_json::{json, Map, Value};
 use std::path::Path;
@@ -66,7 +66,7 @@ fn read_events_for_spec(cwd: &Path, spec: &str) -> Vec<HarnessEvent> {
     let Ok(sp) = cp.for_spec(spec) else {
         return Vec::new();
     };
-    mustard_core::projection::read_harness_events_from_ndjson_dir(&sp.events_dir())
+    mustard_core::view::projection::read_harness_events_from_ndjson_dir(&sp.events_dir())
 }
 
 /// Append a harness event for the given epic via the NDJSON route. Best-effort.

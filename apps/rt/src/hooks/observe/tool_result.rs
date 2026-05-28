@@ -25,8 +25,8 @@
 
 use crate::shared::context::current_spec;
 use crate::util::now_iso8601;
-use mustard_core::model::contract::{Ctx, HookInput, Observer, Trigger};
-use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
+use mustard_core::domain::model::contract::{Ctx, HookInput, Observer, Trigger};
+use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::fmt::Write as _;

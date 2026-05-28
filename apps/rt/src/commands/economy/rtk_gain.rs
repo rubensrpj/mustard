@@ -14,14 +14,14 @@
 //! The CLI face (`mustard-rt run rtk-gain`) now *additionally* persists each
 //! rewrite into the W1 `savings_records` table before printing the legacy JSON
 //! summary to stdout. Translation is delegated to
-//! [`mustard_core::economy::sources::rtk::ingest`]; the printed JSON is
+//! [`mustard_core::domain::economy::sources::rtk::ingest`]; the printed JSON is
 //! unchanged so existing consumers (`run metrics`, `run statusline`, the
 //! dashboard's RTK panel) keep parsing the same shape they did before. The
 //! [`get_rtk_gain`] helper used by `run metrics` keeps its ad-hoc spawn — it
 //! has a different output shape (`--all --format json`) and is read-only.
 
-use mustard_core::economy::{self, sources::rtk as rtk_source, sources::IngestContext};
-use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
+use mustard_core::domain::economy::{self, sources::rtk as rtk_source, sources::IngestContext};
+use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use serde_json::{json, Value};
 use std::process::{Command, Stdio};
 
@@ -127,7 +127,7 @@ pub fn run() {
     // Wave 3 (economia-moat-unification): persist savings before printing the
     // legacy summary so downstream telemetry sees the same rewrites the JSON
     // summary represents. Translation is delegated to
-    // `mustard_core::economy::sources::rtk::ingest` — see the rtk adapter for
+    // `mustard_core::domain::economy::sources::rtk::ingest` — see the rtk adapter for
     // the fail-open contract on a missing `rtk` binary.
     persist_savings();
 

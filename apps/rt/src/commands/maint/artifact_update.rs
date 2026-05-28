@@ -19,11 +19,11 @@
 //! and never exits non-zero because of an upstream problem — exactly like the
 //! enforcement hooks' fail-open contract.
 
-use mustard_core::fs;
+use mustard_core::io::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use mustard_core::model::provenance::{
+use mustard_core::domain::model::provenance::{
     ArtifactCategory, ArtifactManifest, ArtifactRecord, ArtifactSource, tree_checksum,
 };
 use serde::Serialize;

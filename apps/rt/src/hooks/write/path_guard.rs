@@ -38,12 +38,12 @@
 //!
 //! The SQLite store is fully removed from this module.
 
-use mustard_core::error::Error;
-use mustard_core::fs;
+use mustard_core::platform::error::Error;
+use mustard_core::io::fs;
 use mustard_core::ClaudePaths;
-use mustard_core::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
-use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
-use mustard_core::projection::read_harness_events_from_ndjson_dir;
+use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
+use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
+use mustard_core::view::projection::read_harness_events_from_ndjson_dir;
 use serde_json::json;
 use std::path::Path;
 use std::time::{Duration, SystemTime};
@@ -576,7 +576,7 @@ fn read_spec_events(cwd: &str, spec_name: &str) -> Vec<HarnessEvent> {
 /// Cancelled, Superseded). Returns `false` on any read/parse error (fail-open:
 /// the gate continues running rather than silently blocking all edits).
 fn spec_header_is_terminal(cwd: &str, spec_name: &str) -> bool {
-    use mustard_core::spec;
+    use mustard_core::domain::spec;
     let Ok(cp) = ClaudePaths::for_project(cwd) else {
         return false;
     };

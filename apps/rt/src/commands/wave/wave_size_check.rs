@@ -12,7 +12,7 @@
 
 use crate::commands::spec::scope_decompose::decide;
 use crate::commands::wave::wave_lib::{detect_role, parse_files_section};
-use mustard_core::fs;
+use mustard_core::io::fs;
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
 use std::path::Path;

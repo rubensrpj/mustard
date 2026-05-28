@@ -12,8 +12,8 @@
 
 use crate::shared::context::{project_dir, session_id};
 use crate::util::now_iso8601;
-use mustard_core::metrics::{emit_metric, MetricLine};
-use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
+use mustard_core::platform::metrics::{emit_metric, MetricLine};
+use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use serde_json::json;
 use std::path::{Path, PathBuf};
 

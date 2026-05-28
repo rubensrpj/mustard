@@ -41,7 +41,7 @@
 
 use super::file_utils::VisitedFile;
 use crate::util::sha256::Sha256;
-use mustard_core::fs as mfs;
+use mustard_core::io::fs as mfs;
 use mustard_core::ClaudePaths;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -601,7 +601,7 @@ fn wait_with_timeout(
 /// subscription via the `claude` CLI, not to any Mustard API key.
 /// Fail-open: any store error is silently swallowed.
 fn emit_economy_event(root: &Path, duration_ms: u128) {
-    use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
+    use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 
     let session_id = std::env::var("MUSTARD_SESSION_ID")
         .ok()

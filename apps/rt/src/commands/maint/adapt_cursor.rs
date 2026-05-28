@@ -23,8 +23,8 @@
 
 use crate::shared::context::session_id;
 use crate::util::now_iso8601;
-use mustard_core::fs::{read_to_string, write_atomic};
-use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
+use mustard_core::io::fs::{read_to_string, write_atomic};
+use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use serde::Serialize;
 use serde_json::json;
 use std::path::{Path, PathBuf};

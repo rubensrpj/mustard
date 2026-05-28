@@ -58,8 +58,8 @@
 
 use crate::shared::events::blob_spill::{maybe_spill, BlobRef, SpillOutcome};
 use crate::util::now_iso8601;
-use mustard_core::claude_paths::ClaudePaths;
-use mustard_core::fs;
+use mustard_core::io::claude_paths::ClaudePaths;
+use mustard_core::io::fs;
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::io::Write;

@@ -32,9 +32,9 @@
 //! ingest failure is logged via `eprintln!` and the loop continues. The
 //! watcher never propagates an error to the parent.
 
-use mustard_core::economy::{self, sources::transcript, sources::IngestContext};
-use mustard_core::fs;
-use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
+use mustard_core::domain::economy::{self, sources::transcript, sources::IngestContext};
+use mustard_core::io::fs;
+use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use mustard_core::ClaudePaths;
 use notify::{Event, EventKind, RecursiveMode, Watcher};
 use serde_json::Value;

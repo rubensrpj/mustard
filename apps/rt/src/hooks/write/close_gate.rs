@@ -34,12 +34,12 @@
 //! timeout-leak Concern); this module ports `runCommand` faithfully rather
 //! than reuse it, so the env-error/real-failure distinction stays exact.
 
-use mustard_core::error::Error;
-use mustard_core::fs;
-use mustard_core::projection::read_harness_events_from_ndjson_dir;
+use mustard_core::platform::error::Error;
+use mustard_core::io::fs;
+use mustard_core::view::projection::read_harness_events_from_ndjson_dir;
 use mustard_core::ClaudePaths;
-use mustard_core::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
-use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
+use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
+use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use serde_json::{Value, json};
 use std::path::Path;
 use std::process::{Command, Stdio};

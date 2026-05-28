@@ -16,16 +16,16 @@
 //! same JSON in a standalone HTML page and prints its path on stderr.
 
 use crate::report::Report;
-use mustard_core::fs;
+use mustard_core::io::fs;
 use mustard_core::ClaudePaths;
-use mustard_core::model::view::{Phase, Stage};
-use mustard_core::model::event::{
+use mustard_core::domain::model::view::{Phase, Stage};
+use mustard_core::domain::model::event::{
     HarnessEvent, EVENT_PIPELINE_COMPLETE, EVENT_PIPELINE_DISPATCH_FAILURE,
     EVENT_PIPELINE_PAUSE, EVENT_PIPELINE_RESUME_MODE, EVENT_PIPELINE_SCOPE,
     EVENT_PIPELINE_STATUS, EVENT_PIPELINE_TASK_COMPLETE, EVENT_PIPELINE_TASK_DISPATCH,
     EVENT_PIPELINE_WAVE_COMPLETE, PipelineCompletePayload, PipelineDispatchFailurePayload,
 };
-use mustard_core::projection::{
+use mustard_core::view::projection::{
     project_spec_view_with_header, read_workspace_events as core_read_workspace_events,
 };
 use serde::{Deserialize, Serialize};
@@ -40,7 +40,7 @@ const FINDING_CONFIDENCE: f64 = 0.7;
 /// Per-wave event cap, matching `DEFAULT_AGENT_EVENT_LIMIT`.
 const AGENT_EVENT_LIMIT: usize = 40;
 
-/// Re-export of [`mustard_core::projection::read_workspace_events`] under the
+/// Re-export of [`mustard_core::view::projection::read_workspace_events`] under the
 /// crate path so existing rt callers (`resume_bootstrap`, `spec_children_tree`,
 /// the projection `project` dispatcher below) continue to use the short name.
 ///
@@ -665,7 +665,7 @@ fn build_pr_metrics(events: &[HarnessEvent], cwd: &Path, days: i64) -> Value {
 /// 1. Fold the event stream exactly as before, populating `per_spec`.
 /// 2. Glob `.claude/spec/*/spec.md` (+ `wave-plan.md` fallback). For every
 ///    spec present on disk but absent from the event-stream map, delegate to
-///    `mustard_core::projection::project_spec_view_with_header` which parses
+///    `mustard_core::view::projection::project_spec_view_with_header` which parses
 ///    the `### Stage:` / `### Outcome:` header and emits a synthetic
 ///    `pipeline.status` event into the local SQLite store. The resulting
 ///    `SpecView` is merged into `per_spec` before the filter+sort step.
@@ -1041,7 +1041,7 @@ pub fn pipeline_state_from_events(
         match ev.event.as_str() {
             EVENT_PIPELINE_SCOPE => {
                 // Lenient: missing fields default via #[serde(default)].
-                match serde_json::from_value::<mustard_core::model::event::PipelineScopePayload>(
+                match serde_json::from_value::<mustard_core::domain::model::event::PipelineScopePayload>(
                     ev.payload.clone(),
                 ) {
                     Ok(p) => {
@@ -1057,7 +1057,7 @@ pub fn pipeline_state_from_events(
                 }
             }
             EVENT_PIPELINE_STATUS => {
-                match serde_json::from_value::<mustard_core::model::event::PipelineStatusPayload>(
+                match serde_json::from_value::<mustard_core::domain::model::event::PipelineStatusPayload>(
                     ev.payload.clone(),
                 ) {
                     Ok(p) => {
@@ -1083,7 +1083,7 @@ pub fn pipeline_state_from_events(
                 }
             }
             EVENT_PIPELINE_TASK_DISPATCH => {
-                match serde_json::from_value::<mustard_core::model::event::PipelineTaskDispatchPayload>(
+                match serde_json::from_value::<mustard_core::domain::model::event::PipelineTaskDispatchPayload>(
                     ev.payload.clone(),
                 ) {
                     Ok(p) => {
@@ -1107,7 +1107,7 @@ pub fn pipeline_state_from_events(
                 }
             }
             EVENT_PIPELINE_TASK_COMPLETE => {
-                match serde_json::from_value::<mustard_core::model::event::PipelineTaskCompletePayload>(
+                match serde_json::from_value::<mustard_core::domain::model::event::PipelineTaskCompletePayload>(
                     ev.payload.clone(),
                 ) {
                     Ok(p) => {
@@ -1129,7 +1129,7 @@ pub fn pipeline_state_from_events(
                 }
             }
             EVENT_PIPELINE_WAVE_COMPLETE => {
-                match serde_json::from_value::<mustard_core::model::event::PipelineWaveCompletePayload>(
+                match serde_json::from_value::<mustard_core::domain::model::event::PipelineWaveCompletePayload>(
                     ev.payload.clone(),
                 ) {
                     Ok(p) => {
@@ -1156,7 +1156,7 @@ pub fn pipeline_state_from_events(
                 }
             }
             EVENT_PIPELINE_PAUSE => {
-                match serde_json::from_value::<mustard_core::model::event::PipelinePausePayload>(
+                match serde_json::from_value::<mustard_core::domain::model::event::PipelinePausePayload>(
                     ev.payload.clone(),
                 ) {
                     Ok(p) => {
@@ -1170,7 +1170,7 @@ pub fn pipeline_state_from_events(
                 }
             }
             EVENT_PIPELINE_RESUME_MODE => {
-                match serde_json::from_value::<mustard_core::model::event::PipelineResumeModePayload>(
+                match serde_json::from_value::<mustard_core::domain::model::event::PipelineResumeModePayload>(
                     ev.payload.clone(),
                 ) {
                     Ok(p) => view.resume_mode = Some(p.mode),
@@ -1248,7 +1248,7 @@ fn find_or_insert_task<'a>(tasks: &'a mut Vec<PipelineTaskView>, name: &str) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mustard_core::model::event::{Actor, ActorKind, SCHEMA_VERSION};
+    use mustard_core::domain::model::event::{Actor, ActorKind, SCHEMA_VERSION};
 
     fn ev(event: &str, spec: Option<&str>, payload: Value) -> HarnessEvent {
         HarnessEvent {

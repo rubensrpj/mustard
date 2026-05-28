@@ -17,7 +17,7 @@
 //! contract a script consumer reads.
 
 use crate::commands::spec::spec_sections::is_heading;
-use mustard_core::fs;
+use mustard_core::io::fs;
 use serde_json::{Value, json};
 use std::path::Path;
 
