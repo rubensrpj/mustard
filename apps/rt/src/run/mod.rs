@@ -11,6 +11,7 @@
 //! (subproject discovery + SHA-256 change detection) and the scanner subsystem
 //! it shares with the still-JS `sync-registry.js`.
 
+pub mod wave;
 pub mod spec;
 pub mod maint;
 pub mod scan;
@@ -47,13 +48,11 @@ mod graph_dead;
 mod graph_index;
 pub mod emit_phase;
 mod emit_pipeline;
-mod epic_fold;
 pub mod event_projections;
 pub use event_projections::{pipeline_state_from_events, PipelineStateView};
 // Spec A v4 / W4 — behavior-regression gate connecting W1 (vocabulary),
 // W1.5 (AST agnostic) and W2 (snapshot) primitives.
 pub mod gate_regression_check;
-mod exec_rewave_check;
 mod mark_checklist_item;
 pub(crate) mod memory;
 mod memory_cross_wave;
@@ -95,14 +94,6 @@ mod sync_registry;
 pub mod token_budget;
 mod transcript_watcher;
 mod verify_pipeline;
-pub mod wave_context;
-mod wave_dependency;
-mod wave_files;
-mod wave_lib;
-mod wave_scaffold;
-mod wave_size_check;
-pub mod wave_summary;
-mod wave_tree;
 
 use clap::Subcommand;
 use std::path::PathBuf;
@@ -1582,7 +1573,7 @@ pub fn dispatch(cmd: RunCmd) {
         RunCmd::PipelineStateIngest { delete: _ } => {
             pipeline_state_ingest::run(pipeline_state_ingest::PipelineStateIngestOpts);
         }
-        RunCmd::EpicFold { detect, epic } => epic_fold::run(detect, epic.as_deref()),
+        RunCmd::EpicFold { detect, epic } => wave::epic_fold::run(detect, epic.as_deref()),
         RunCmd::SpecExtract {
             spec,
             wave,
@@ -1603,15 +1594,15 @@ pub fn dispatch(cmd: RunCmd) {
             line,
             cwd,
         } => mark_checklist_item::run(spec.as_deref(), item.as_deref(), line, cwd.as_deref()),
-        RunCmd::WaveTree { spec_dir, format } => wave_tree::run(&spec_dir, &format),
-        RunCmd::WaveDependency => wave_dependency::run(),
-        RunCmd::WaveFiles { spec, wave } => wave_files::run(spec.as_deref(), wave),
+        RunCmd::WaveTree { spec_dir, format } => wave::wave_tree::run(&spec_dir, &format),
+        RunCmd::WaveDependency => wave::wave_dependency::run(),
+        RunCmd::WaveFiles { spec, wave } => wave::wave_files::run(spec.as_deref(), wave),
         RunCmd::ScopeDecompose => spec::scope_decompose::run(),
-        RunCmd::ExecRewaveCheck { spec } => exec_rewave_check::run(spec.as_deref()),
+        RunCmd::ExecRewaveCheck { spec } => wave::exec_rewave_check::run(spec.as_deref()),
         RunCmd::DependencyPrecheck { spec, subproject } => {
             dependency_precheck::run(spec.as_deref(), subproject.as_deref());
         }
-        RunCmd::WaveSizeCheck { spec_dir } => wave_size_check::run(spec_dir.as_deref()),
+        RunCmd::WaveSizeCheck { spec_dir } => wave::wave_size_check::run(spec_dir.as_deref()),
         RunCmd::GateRegressionCheck {
             spec,
             moment,
@@ -1746,7 +1737,7 @@ pub fn dispatch(cmd: RunCmd) {
         RunCmd::GraphIndex => graph_index::run(),
         RunCmd::GraphDead => graph_dead::run(),
         RunCmd::WaveScaffold { spec_dir, plan } => {
-            wave_scaffold::run(spec_dir.as_deref(), plan.as_deref());
+            wave::wave_scaffold::run(spec_dir.as_deref(), plan.as_deref());
         }
         RunCmd::PlanFromSpec { waves, roles, lang, summary } => {
             spec::plan_from_spec::run(spec::plan_from_spec::PlanFromSpecOpts {

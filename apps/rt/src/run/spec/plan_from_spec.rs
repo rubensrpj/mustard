@@ -2,7 +2,7 @@
 //!
 //! Part of the deep-refactor W10. Replaces the previous "orchestrator
 //! hand-rolls plan.json" step: Rust now owns the canonical shape that
-//! [`crate::run::wave_scaffold`] later materialises into spec files.
+//! [`crate::run::wave::wave_scaffold`] later materialises into spec files.
 //!
 //! Inputs (all positional flags):
 //!   - `--waves N`         — total wave count (must be >= 1).

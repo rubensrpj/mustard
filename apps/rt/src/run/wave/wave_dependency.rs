@@ -7,7 +7,7 @@
 //! JSON object on stdout. Fail-open: an unrecoverable error emits
 //! `{ "error": "error-fallback" }`.
 
-use crate::run::wave_lib::detect_role;
+use crate::run::wave::wave_lib::detect_role;
 use mustard_core::fs;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};

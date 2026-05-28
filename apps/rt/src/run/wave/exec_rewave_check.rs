@@ -14,8 +14,8 @@
 //! Rust logic directly.
 
 use crate::run::spec::scope_decompose::decide;
-use crate::run::wave_dependency::compute_waves;
-use crate::run::wave_lib::{detect_role, parse_files_section};
+use crate::run::wave::wave_dependency::compute_waves;
+use crate::run::wave::wave_lib::{detect_role, parse_files_section};
 use crate::util::now_iso8601;
 use mustard_core::fs;
 use mustard_core::spec;

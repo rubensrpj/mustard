@@ -20,7 +20,7 @@ use crate::shared::context::{project_dir, session_id};
 use crate::run::event_projections::{pipeline_state_from_events, PipelineStateView};
 use crate::shared::events::route;
 use crate::run::token_budget::{prune_to_budget, PrioritizedItem};
-use crate::run::wave_context::{self, WaveContextInput, WaveMapEntry};
+use crate::run::wave::wave_context::{self, WaveContextInput, WaveMapEntry};
 use crate::util::now_iso8601;
 use mustard_core::atomic_md::find_outgoing_links;
 use mustard_core::claude_paths::ClaudePaths;
@@ -32,7 +32,7 @@ use mustard_core::model::event::{
 };
 use mustard_core::projection::read_workspace_events;
 use mustard_core::EventReader;
-use crate::run::wave_summary::WikiLink;
+use crate::run::wave::wave_summary::WikiLink;
 use serde::Serialize;
 use serde_json::json;
 use std::path::{Path, PathBuf};

@@ -24,7 +24,7 @@
 //!   typed error. Callers decide how to react (trim inheritance, drop memory,
 //!   surface to the user).
 //! - **i18n-pure.** Same contract as
-//!   [`crate::run::wave_summary`] — no hardcoded user-facing strings.
+//!   [`crate::run::wave::wave_summary`] — no hardcoded user-facing strings.
 //! - **Idempotent.** Pure on `(input, locale)`. No clock, no env.
 
 use mustard_core::fs as mfs;
@@ -32,7 +32,7 @@ use mustard_core::i18n::{translate, SupportedLocale as Locale};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
-use crate::run::wave_summary::{WaveSummaryError, WikiLink};
+use crate::run::wave::wave_summary::{WaveSummaryError, WikiLink};
 
 /// Hard cap on the rendered `_context.md` word count — AC-A-9.
 pub const CONTEXT_WORD_CAP: usize = 8_000;

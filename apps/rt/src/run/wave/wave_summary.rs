@@ -170,7 +170,7 @@ pub enum WaveSummaryError {
         source: std::io::Error,
     },
     /// `_context.md` exceeded the 8 000-word cap (W3.T3.2 / AC-A-9). Reused
-    /// here so [`crate::run::wave_context`] can share the error type without
+    /// here so [`crate::run::wave::wave_context`] can share the error type without
     /// pulling another module.
     ContextTooLong {
         /// Actual word count of the rendered context body.

@@ -11,7 +11,7 @@
 //! Both are now in this binary — this port calls the Rust logic directly.
 
 use crate::run::spec::scope_decompose::decide;
-use crate::run::wave_lib::{detect_role, parse_files_section};
+use crate::run::wave::wave_lib::{detect_role, parse_files_section};
 use mustard_core::fs;
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
