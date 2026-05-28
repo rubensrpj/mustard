@@ -1,7 +1,8 @@
 # Wave 1 — mustard-core-vocabulary (papel: core)
 
-### Stage: Analyze
-### Outcome: Active
+### Stage: Close
+### Outcome: Completed
+### Flags: 
 ### Scope: light
 ### Lang: pt-BR
 ### Parent: 2026-05-27-mustard-v4-foundation

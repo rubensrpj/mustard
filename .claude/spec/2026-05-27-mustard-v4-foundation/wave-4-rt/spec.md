@@ -9,7 +9,7 @@
 
 ## Contexto
 
-Wave central da Spec A. Conecta as 3 primitivas de `mustard-core` (vocabulário W1, AST W1.5, snapshot W2) num gate único com 3 momentos × 3 camadas. Momento 1 (pré-edit) lê o plano do agente + casa contra vocabulário; Momento 2 (durante o diff) roda `ast::detect_stub_patterns` em funções declaradas como preservadas; Momento 3 (fechamento) compara `Snapshot::capture_for_spec` antes e depois. Veredict verde/amarelo/vermelho: verde passa, amarelo dispara AskUserQuestion (AC-A-6), vermelho bloqueia consolidação (AC-A-7). Inclui hook opcional `pre_edit_intent_check` como alternativa run-based — registro em `apps/rt/src/hooks/registry.rs`.
+Wave central da Spec A. Conecta as 3 primitivas de `mustard-core` (vocabulário W1, AST agnóstico W1.5, snapshot W2) num gate único com 3 momentos × 3 camadas. Momento 1 (pré-edit) lê o plano do agente + casa contra `vocabulary::scan` (W1) sobre o texto livre; Momento 2 (durante o diff) constrói `GrammarLoader::from_project` (W1.5) e chama `ast::detect_stub_patterns(&loader, diff, declared_fns)` — AST exato quando a grammar da linguagem está instalada, fallback `vocabulary::scan` da camada `pattern` sobre o escopo do diff quando não; Momento 3 (fechamento) chama `Snapshot::capture_for_spec(&loader, …)` + `compare_snapshots` antes e depois — diff AST estrutural ou diff textual via `similar` conforme o modo da captura. Veredict verde/amarelo/vermelho: verde passa, amarelo dispara AskUserQuestion (AC-A-6), vermelho bloqueia consolidação (AC-A-7). Grammar ausente nunca causa panic — sempre fail-open com warning na telemetria. Inclui hook opcional `pre_edit_intent_check` como alternativa run-based — registro em `apps/rt/src/hooks/registry.rs`.
 
 ## Arquivos tocados
 
@@ -41,14 +41,14 @@ Subset relevante desta wave:
 
 - [ ] T4.1: Criar `apps/rt/src/run/gate_regression_check.rs` com types verdict (verde/amarelo/vermelho) e a função `run` orquestrando os 3 momentos × 3 camadas
 - [ ] T4.2: Implementar Momento 1 em `gate_regression_check::run` — lê plano do agente e casa contra `vocabulary::scan` (W1) (AC-A-2)
-- [ ] T4.3: Implementar Momento 2 em `gate_regression_check::run` — roda `ast::detect_stub_patterns` (W1.5) sobre funções declaradas como preservadas no diff (AC-A-3)
-- [ ] T4.4: Implementar `gate_regression_check::check_after_child_return` — Momento 3 chamando `Snapshot::capture_for_spec` + `compare_snapshots` (W2) no fechamento (AC-A-1)
+- [ ] T4.3: Implementar Momento 2 em `gate_regression_check::run` — constrói `GrammarLoader::from_project(spec.project_root())` (W1.5) e chama `ast::detect_stub_patterns(&loader, diff, declared_fns)` sobre funções declaradas como preservadas. Quando grammar disponível: detecção AST exata via queries `.scm`. Quando grammar não instalada: fallback automático `vocabulary::scan` da camada `pattern` (W1) sobre o escopo do diff. Fail-open sempre, nunca panic (AC-A-3)
+- [ ] T4.4: Implementar `gate_regression_check::check_after_child_return` — Momento 3 chamando `Snapshot::capture_for_spec(&loader, …)` + `compare_snapshots` (W2) no fechamento, usando o mesmo `GrammarLoader` da T4.3. Resultado por função traz `mode: CaptureMode { Ast, Textual }` para o relatório no `_summary.md` (AC-A-1)
 - [ ] T4.5: Implementar a classificação verdict — amarelo dispara `AskUserQuestion`, vermelho retorna erro bloqueante (AC-A-6, AC-A-7)
 - [ ] T4.6: Criar `apps/rt/src/hooks/pre_edit_intent_check.rs` (opcional run-based) com `dispatch` cobrindo o Momento 1 e registrar em `apps/rt/src/hooks/registry.rs` gated por `MUSTARD_V4_BOOTSTRAP=0`
 - [ ] T4.7: Estender `apps/rt/src/run/mod.rs` re-exportando `gate_regression_check` e `apps/rt/src/main.rs` com `mustard-rt run gate-regression-check --spec <name> --moment <1|2|3>`
 
 ## Dependências (waves anteriores)
 
-- W1 (vocabulário)
-- W1.5 (AST mínimo)
-- W2 (snapshot)
+- W1 (`vocabulary::scan` — usado no Momento 1 e como fallback no Momento 2)
+- W1.5 (`GrammarLoader` agnóstico + `detect_stub_patterns` com fallback embutido)
+- W2 (`Snapshot::capture_for_spec` recebendo o mesmo Loader)

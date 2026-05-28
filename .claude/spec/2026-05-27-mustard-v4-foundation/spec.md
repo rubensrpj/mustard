@@ -2,12 +2,11 @@
 
 ### Stage: Analyze
 ### Outcome: Active
-### Flags: paused-redesign
 ### Scope: full
 ### Lang: pt-BR
 ### Checkpoint: 2026-05-27T17:56:09.926Z
 
-> **⏸ PAUSADA em 2026-05-27 após W1 verde.** Motivo: o módulo `ast::*` definido nas waves W1.5 (subset mínimo tree-sitter com 3 grammars hardcoded), W2 (snapshot via `extract_function_signatures`) e W4 (gate Camada 2) conflita com a primícia [`feedback_mustard_agnostic`] reforçada pelo user em 2026-05-27 ("mustard é agnóstico, isso é primícia"). A doc original (`05-design/context7-extraction.md:188-196` + `06-specs/spec-A-foundation.md:197-204`) autoriza o hardcode como "mínimo viável" mas isso é DÉBITO agnóstico. **Próximo passo: redesign phase** — revisar fronteira A/C, repensar Camada 2 do gate, atualizar `context7-extraction.md` + `gate-regression.md` + `spec-A-foundation.md`. Entregues e committed (preservar): W0 (`packages/core/src/spec/touched_functions.rs` + fixtures) + W1 (`packages/core/src/vocabulary/` + `.claude/vocab/regression.toml`). Reabrir com `/mustard:spec` quando o design estiver alinhado.
+> **♻ REDESIGN v2 aplicado em 2026-05-27 após W1 verde.** A versão original definia o módulo `ast::*` nas waves W1.5/W2/W4 com `match lang { "rust" => …, "typescript" => …, "javascript" => …, }` (três grammars enumeradas no binário Mustard) — débito agnóstico que conflitava com a primícia [[feedback_mustard_agnostic]] (reforçada pelo usuário em 2026-05-27). A primeira tentativa de revisão (v1) reagiu adiando o `ast::*` inteiro para a Spec C e usando Camadas 2/3 text-based — regressão desnecessária. **Esta v2** mantém o espírito original (M8 — "tree-sitter cobre N linguagens") e elimina apenas o hardcode: o `mustard_core::ast` continua a nascer na Spec A, agora via `tree_sitter::Loader` (lib oficial) que descobre as grammars instaladas pelo usuário em runtime (`~/.config/tree-sitter/config.json`). As Camadas 2 e 3 continuam **AST** quando a grammar da linguagem está disponível; fallback **text-based** (`vocabulary::scan` da W1 + `similar` diff textual) apenas quando a grammar não foi instalada localmente — sempre fail-open, nunca panic. **Entregues e committed (preservados pelo redesign):** W0 (`packages/core/src/spec/touched_functions.rs` + fixtures, commit `cbcfc8c`) e W1 (`packages/core/src/vocabulary/` + `.claude/vocab/regression.toml`, commit `721515a`). **Próximas:** W1.5 (`ast` agnóstico via Loader, 6 arquivos), W2 (snapshot com Loader como parâmetro), W4 (gate 3 momentos × 3 camadas), W8.5 (CLI helper `mustard install-grammars`). Design canônico em [`05-design/gate-regression.md`](../../plans/mustard-v4/05-design/gate-regression.md), [`05-design/context7-extraction.md`](../../plans/mustard-v4/05-design/context7-extraction.md) e [`06-specs/spec-A-foundation.md`](../../plans/mustard-v4/06-specs/spec-A-foundation.md).
 
 ## PRD
 
@@ -32,7 +31,7 @@ Após esta spec fechar, o caso W6 da no-sqlite (capturado como fixture em W0) re
 - **Context7 / extração de docs externos** — diferido para Spec C (Fase C)
 - **`/mustard:new-project`** (bootstrap de projeto fresh com v4 default) — diferido para Spec C
 - **Migrar dados v3** (knowledge antigo, telemetria antiga) — sem usuários em prod (`feedback_no_migration_dev_phase`)
-- **Grammars tree-sitter para Python/Go/C#/Java** — W1.5 entrega só Rust + TypeScript + JavaScript (mínimo viável); resto vai pra Spec C
+- **Linkar grammars individuais no binário Mustard** — proibido sempre. Grammars (Rust/TypeScript/JavaScript/Python/Go/C#/Java/etc.) vivem no `~/.config/tree-sitter/config.json` do usuário e são descobertas pelo `tree_sitter::Loader` em runtime ([[feedback_mustard_agnostic]]). W8.5 (CLI helper `mustard install-grammars`) sugere repos canônicos mas Mustard não baixa nem compila.
 - **Reescrita do `subagent_inject` ou `agent_prompt_render`** — apenas extensão herdada da no-sqlite
 
 ## Critérios de Aceitação
@@ -54,12 +53,13 @@ Critérios binários (pass/fail), executáveis e independentes. Comandos shell s
 - [ ] AC-A-13: Vocabulário em 4 camadas (`semantic`, `pattern`, `keyword`, `noise`) é editável via `.claude/vocab/regression.toml` sem recompilar o binário — Command: TBD-em-wave-1 (load runtime via `VocabularyMatcher::from_layers`)
 - [ ] AC-A-14: Promoção de termo entre camadas SEMPRE pergunta ao usuário (AskUserQuestion); nunca silencioso — Command: TBD-em-wave-1
 - [ ] AC-A-15: Spec sem `## Funções tocadas` → fallback usa funções públicas tocadas pelo diff; gate funciona sem panic em fixture de spec legada — Command: TBD-em-wave-0 (fixture + W4 integração)
-- [ ] AC-A-16: `mustard_core::ast::detect_stub_patterns` detecta corpo `None`, `vec![]`, `Default::default()`, `unimplemented!()`, `todo!()` em função pública declarada como preservada — Command: `bash -c 'cd /c/Atiz/mustard && cargo test -p mustard-core ast::stub_detect::test_detect_all_patterns'` (entregue em W1.5)
-- [ ] AC-A-17: `mustard_core::ast::TreeSitterParser::for_language` aceita `rust`, `typescript`, `javascript` sem panic; linguagem desconhecida retorna `Err` sem panic — Command: `bash -c 'cd /c/Atiz/mustard && cargo test -p mustard-core ast::parser::test_supported_languages_and_unknown_errors'` (entregue em W1.5)
+- [ ] AC-A-16: `mustard_core::ast::detect_stub_patterns` detecta `None`, `vec![]`, `Default::default()`, `unimplemented!()`, `todo!()` em função pública declarada como preservada — via queries `.scm` resolvidas pelo `GrammarLoader` para a linguagem do arquivo. Quando grammar não instalada localmente, fallback usa `vocabulary::scan` (W1, camada `pattern`) sobre o escopo do diff; fail-open, nunca panic — Command: `bash -c 'cd /c/Atiz/mustard && cargo test -p mustard-core ast::stub_detect::test_detect_all_patterns_with_fallback'` (entregue em W1.5)
+- [ ] AC-A-17: `mustard_core::ast::GrammarLoader::from_project(root)` resolve dinamicamente grammars instaladas pelo usuário (`~/.config/tree-sitter/config.json` via `tree_sitter_loader::Loader::find_all_languages`), filtradas pelo stack detectado em `detect_libs`. Linguagem detectada mas sem grammar instalada → warning na telemetria + fail-open. **Zero match hardcoded de linguagem no código** ([[feedback_mustard_agnostic]]) — Command: `bash -c 'cd /c/Atiz/mustard && cargo test -p mustard-core ast::loader::test_agnostic_discovery_and_missing_grammar_fail_open'` (entregue em W1.5)
+- [ ] AC-A-18: `mustard install-grammars` (CLI helper opcional) lê o stack detectado em `detect_libs` e guia o usuário a clonar+compilar grammars das linguagens detectadas via `tree-sitter init` + `tree-sitter generate`. Mustard **não** baixa nem compila grammars — apenas sugere os repos canônicos e o comando shell — Command: TBD-em-wave-8_5 (`apps/cli/src/commands/install_grammars.rs`)
 
 ## Plano
 
-Decomposição em **10 waves** (W0, W1, W1.5, W2, W3, W4, W5, W6, W7, W8) com cap rígido de ≤5 arquivos por wave (compat com a régua estabelecida na no-sqlite). W0 captura a fixture do caso W6 e o formato canônico de `## Funções tocadas`. W1, W1.5, W2 entregam os 3 primitivos de `mustard-core` (vocabulário, AST mínimo, snapshot). W3 escreve o formato canônico de `_summary.md` e `_context.md` por wave. W4 conecta os 3 primitivos no gate run-based (3 momentos × 3 camadas). W5 estende `subagent_inject` para span-level eval por filho. W6 estende `resume_bootstrap` com pruning de orçamento. W7 roda a spec inteira contra a fixture do W0 e ajusta thresholds. W8 fecha com QA-functional cobrindo todos os AC binários e quality-ledger inaugural. Detalhe completo em [`wave-plan.md`](./wave-plan.md).
+Decomposição em **11 waves** (W0, W1, W1.5, W2, W3, W4, W5, W6, W7, W8 + W8.5 opcional) com cap rígido de ≤5 arquivos por wave (compat com a régua estabelecida na no-sqlite). W0 captura a fixture do caso W6 e o formato canônico de `## Funções tocadas`. W1, W1.5, W2 entregam os 3 primitivos de `mustard-core` (vocabulário, AST agnóstico via `tree_sitter::Loader`, snapshot). W3 escreve o formato canônico de `_summary.md` e `_context.md` por wave. W4 conecta os 3 primitivos no gate run-based (3 momentos × 3 camadas, AST quando grammar disponível e fallback text-based quando não). W5 estende `subagent_inject` para span-level eval por filho. W6 estende `resume_bootstrap` com pruning de orçamento. W7 roda a spec inteira contra a fixture do W0 e ajusta thresholds. W8 fecha com QA-functional cobrindo todos os AC binários e quality-ledger inaugural. W8.5 (opcional) entrega `mustard install-grammars` — CLI helper que sugere ao usuário como instalar localmente as grammars das linguagens detectadas. Detalhe completo em [`wave-plan.md`](./wave-plan.md).
 
 ## Funções tocadas
 
@@ -70,11 +70,14 @@ Decomposição em **10 waves** (W0, W1, W1.5, W2, W3, W4, W5, W6, W7, W8) com ca
 - `vocabulary::VocabularyMatcher::scan`
 - `vocabulary::VocabLayer::parse_from_toml`
 
-### Em `packages/core/src/ast/` (NOVO — W1.5 subset mínimo)
+### Em `packages/core/src/ast/` (NOVO — W1.5 agnóstico via Loader)
+- `ast::GrammarLoader::from_project`
+- `ast::GrammarLoader::language`
 - `ast::TreeSitterParser::for_language`
 - `ast::TreeSitterParser::parse`
-- `ast::extract_function_signatures`
+- `ast::QuerySet::load_for`
 - `ast::detect_stub_patterns`
+- `ast::extract_function_signatures`
 
 ### Em `packages/core/src/regression_check/` (NOVO)
 - `regression_check::Snapshot::capture_for_spec`
@@ -102,19 +105,20 @@ Decomposição em **10 waves** (W0, W1, W1.5, W2, W3, W4, W5, W6, W7, W8) com ca
 - `subagent_inject::dispatch` — adiciona vocabulário + span-level check stub
 - `pre_edit_intent_check::dispatch` — NOVO opcional (W4), alternativa run-based ao gate
 
+### Em `apps/cli/src/commands/` (NOVO — W8.5 CLI helper opcional)
+- `install_grammars::run` — lê stack via `detect_libs`, sugere repos canônicos e o comando `tree-sitter init` + `tree-sitter generate` para cada linguagem detectada. Não baixa nem compila grammars.
+
 ## Dependências externas
 
 Crates Rust adicionados ao workspace `Cargo.toml`:
 
-- `aho-corasick = "1.1"` — vocabulário (W1)
-- `tree-sitter = "0.22"` — AST multi-linguagem (W1.5, subset mínimo)
-- `tree-sitter-rust = "0.21"` — grammar Rust (W1.5)
-- `tree-sitter-typescript = "0.21"` — grammar TS (W1.5)
-- `tree-sitter-javascript = "0.21"` — grammar JS (W1.5)
-- `similar = "2"` — diff para `regression_check` (W2)
+- `aho-corasick = "1.1"` — vocabulário (W1, **já entregue**)
+- `tree-sitter = "0.26"` — runtime AST agnóstico (W1.5)
+- `tree-sitter-loader = "0.26"` — descobre grammars instaladas pelo usuário em `~/.config/tree-sitter/config.json` (W1.5)
+- `similar = "2"` — diff textual para `regression_check` (W2, fallback quando grammar indisponível)
 - `serde_json` — serialização canônica de snapshots (já presente)
 
-Grammars adicionais (Python, Go, C#, Java) ficam para Spec C (Fase C — `context7-extraction.md`).
+**Não-deps (deliberado):** `tree-sitter-rust`, `tree-sitter-typescript`, `tree-sitter-javascript`, `tree-sitter-python`, `tree-sitter-go`, `tree-sitter-c-sharp`, `tree-sitter-java` e qualquer grammar nativo individual. Mustard **não** linka grammars no binário — elas vivem no `~/.config/tree-sitter/` do usuário e são descobertas pelo `Loader` em runtime ([[feedback_mustard_agnostic]]).
 
 ## Limites
 
@@ -122,12 +126,13 @@ Grammars adicionais (Python, Go, C#, Java) ficam para Spec C (Fase C — `contex
 - **REWRITE:** nenhum arquivo existente do v3 (apenas ESTENDE módulos herdados).
 - **MODIFY:** `subagent_inject`, `agent_prompt_render`, `resume_bootstrap` (heranças diretas da no-sqlite).
 - **CREATE:**
-  - `packages/core/src/vocabulary/` (2 arquivos — W1)
-  - `packages/core/src/ast/` (4 arquivos — W1.5 subset mínimo)
+  - `packages/core/src/vocabulary/` (2 arquivos — W1, **já entregue**)
+  - `packages/core/src/ast/` (6 arquivos — W1.5: `mod.rs`, `loader.rs`, `parser.rs`, `queries.rs`, `stub_detect.rs`, `signature.rs`)
   - `packages/core/src/regression_check/` (3 arquivos — W2)
-  - `packages/core/src/spec/touched_functions.rs` (1 arquivo — W0)
+  - `packages/core/src/spec/touched_functions.rs` (1 arquivo — W0, **já entregue**)
   - `apps/rt/src/run/{gate_regression_check, wave_summary, wave_context}.rs` (3 arquivos — W3, W4)
   - `apps/rt/src/hooks/pre_edit_intent_check.rs` (1 arquivo opcional — W4, alternativa run-based)
+  - `apps/cli/src/commands/install_grammars.rs` (1 arquivo opcional — W8.5, CLI helper que sugere instalação de grammars)
 - **COBERTURA:**
   - Spec A vale como **auto-fixture** do gate: a própria `spec.md` cumpre todos os critérios de `funcoes-tocadas.md` (AC-FT-6 — auto-validação).
 
@@ -193,6 +198,7 @@ bash -c 'test -n "$MUSTARD_V4_BOOTSTRAP" && cargo run -q -p mustard-rt -- check 
 Esperado: output `mode=Off` (não `mode=Strict`). Wiring de `MUSTARD_V4_BOOTSTRAP` no `registry::mode_for` foi entregue em commit `3b6bb9f` durante S3 do roadmap v4 (pré-spec). Defensiva: string vazia (`MUSTARD_V4_BOOTSTRAP=`) é tratada como não-definida — `Mode::Strict` retorna e o gate v3 reativa. Isso evita silenciamento acidental por variável esquecida.
 
 <!-- wikilinks-footer-start -->
+- [feedback_mustard_agnostic](?) ⚠ não resolvido
 - [feedback_refactor_no_stub_deferral](?) ⚠ não resolvido
 - [feedback_no_stub_fail_open.md](?) ⚠ não resolvido
 <!-- wikilinks-footer-end -->

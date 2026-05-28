@@ -23,12 +23,15 @@ Seção espelha o que aparece em `spec.md → ## Funções tocadas`, conforme re
 - `vocabulary::VocabularyMatcher::scan` — varre um texto e retorna matches com camada + peso
 - `vocabulary::VocabLayer::parse_from_toml` — deserializa uma camada do TOML
 
-## Em `packages/core/src/ast/` (NOVO — W1.5, subset mínimo)
+## Em `packages/core/src/ast/` (NOVO — W1.5, agnóstico via Loader)
 
-- `ast::TreeSitterParser::for_language` — fábrica do parser por linguagem; aceita `rust`, `typescript`, `javascript`; desconhecida retorna `Err` sem panic
+- `ast::GrammarLoader::from_project` — descobre grammars instaladas pelo usuário em `~/.config/tree-sitter/config.json` via `tree_sitter_loader::Loader::find_all_languages`, filtradas pelo stack detectado em `detect_libs`. Zero match hardcoded de linguagem
+- `ast::GrammarLoader::language` — `Option<Language>` por id; `None` quando grammar não instalada (fail-open, nunca panic)
+- `ast::TreeSitterParser::for_language` — fábrica do parser delegando a resolução de `Language` ao Loader; sem `match` interno
 - `ast::TreeSitterParser::parse` — gera `Tree` a partir de string-fonte
-- `ast::extract_function_signatures` — extrai `FunctionSig` (nome, parâmetros, return type) do `Tree`
-- `ast::detect_stub_patterns` — detecta corpo `None`, `vec![]`, `Default::default()`, `unimplemented!()`, `todo!()` em funções públicas declaradas como preservadas
+- `ast::QuerySet::load_for` — carrega queries `.scm` de `.claude/grammars/{lang_id}/queries/*.scm`; ausência do diretório → `QuerySet::default()` vazio
+- `ast::detect_stub_patterns` — detecta corpo `None`, `vec![]`, `Default::default()`, `unimplemented!()`, `todo!()` em funções públicas declaradas como preservadas; AST quando grammar disponível, fallback `vocabulary::scan` da camada `pattern` (W1) sobre o escopo do diff quando não
+- `ast::extract_function_signatures` — extrai `FunctionSig` via query `.scm` quando grammar disponível, fallback regex agnóstico
 
 ## Em `packages/core/src/regression_check/` (NOVO — W2)
 
@@ -65,7 +68,7 @@ Seção espelha o que aparece em `spec.md → ## Funções tocadas`, conforme re
 
 - **R5 enforçado:** todas as funções listadas acima são `pub fn` no Rust gerado (módulo `mod.rs` re-exporta). Helpers internos (`fn parse_inner`, `fn build_section`) não entram no escopo.
 - **R6 — distinção crítica:** `subagent_inject::dispatch` aparece como ESTENDIDO porque a função já existe na no-sqlite (apenas ganha lógica adicional de span-level), enquanto `gate_regression_check::run` é NOVO (módulo inexistente).
-- **R4 — comentários em-dash:** usados acima para justificar entradas complexas (ex.: `for_language` declarando linguagens aceitas).
+- **R4 — comentários em-dash:** usados acima para justificar entradas complexas (ex.: `GrammarLoader::from_project` documentando a descoberta agnóstica de grammars em runtime).
 - **Cruzamento futuro com AC tipado (Fase B):** cada função listada aqui em estado NOVO ou MODIFICADO **exigirá** ≥1 AC positivo + ≥1 AC negativo; ESTENDIDO exige ≥1 AC positivo + ≥1 AC não-regressão; função em diff fora desta seção → P0 de cobertura. Definido em `ac-typed.md` (Fase B), implementado em `qa_coverage` (Fase D).
 
 ## Auto-validação (AC-FT-6)

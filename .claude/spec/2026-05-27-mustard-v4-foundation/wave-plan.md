@@ -29,14 +29,15 @@ Refundação parcial pós-no-sqlite. A base Rust ficou saudável (primitivos `ev
 |---|---|---|---|---|
 | 0 | analyze-and-fixtures | mixed | — | 📋 |
 | 1 | mustard-core-vocabulary | core | W0 | 📋 |
-| 1.5 | mustard-core-ast-minimal | core | W0 | 📋 |
-| 2 | mustard-core-regression-check | core | W0, W1.5 | 📋 |
+| 1.5 | mustard-core-ast-loader-dynamic | core | W0 | 📋 — agnóstica via `tree_sitter::Loader`; zero grammars hardcoded |
+| 2 | mustard-core-regression-check | core | W0, W1.5 | 📋 — AST quando grammar disponível, fallback `similar` text diff |
 | 3 | wave-summary-context-format | rt | W0 | 📋 |
 | 4 | gate-regression-check-run | rt | W1, W1.5, W2 | 📋 |
 | 5 | span-level-integration | rt | W4 | 📋 |
 | 6 | resume-bootstrap-disciplined | rt | W3 | 📋 |
 | 7 | review-cobertura-w6 | mixed | W4, W5 | 📋 |
 | 8 | qa-and-close-followups | mixed | W1-7 | 📋 |
+| 8.5 | mustard-install-grammars (cli helper opcional) | cli | W1.5 | 📋 — opcional; orienta usuário a instalar grammars locais |
 
 ### W0 — analyze-and-fixtures (mixed)
 
@@ -46,13 +47,13 @@ Captura snapshot do PICKUP da no-sqlite como fixture (reprodução do caso W6 em
 
 Arquivos: `packages/core/src/vocabulary/mod.rs` (NOVO), `packages/core/src/vocabulary/aho.rs` (NOVO). Wrapper SOLID sobre `aho-corasick`. Estruturas: `VocabularyMatcher::from_layers`, `VocabularyMatcher::scan`, `VocabLayer::parse_from_toml`. Suporte às 4 camadas (`semantic`, `pattern`, `keyword`, `noise`) com pesos editáveis. Carrega `.claude/vocab/regression.toml` em runtime (hot-reload via mtime). Benchmark `vocabulary::bench::scan_10k_chars_100_terms` (<5ms — AC-A-11). ACs binários: AC-A-11, AC-A-13.
 
-### W1.5 — mustard-core-ast-minimal (core)
+### W1.5 — mustard-core-ast-loader-dynamic (core)
 
-Arquivos: `packages/core/src/ast/mod.rs`, `packages/core/src/ast/parser.rs`, `packages/core/src/ast/signature.rs`, `packages/core/src/ast/stub_detect.rs` (todos NOVO). Subset mínimo do `mustard_core::ast` para a Spec A. Estruturas: `TreeSitterParser::for_language` aceitando apenas `rust`, `typescript`, `javascript` (linguagem desconhecida retorna `Err` sem panic); `parse(source: &str) -> Result<Tree>`; `extract_function_signatures(tree: &Tree) -> Vec<FunctionSig>`; `detect_stub_patterns(tree: &Tree, functions: &[FunctionName]) -> Vec<StubMatch>` (detecta corpo `None`, `vec![]`, `Default::default()`, `unimplemented!()`, `todo!()`). Benchmark `ast::bench` (parse + extract <50ms para arquivo médio). Crates adicionados: `tree-sitter = "0.22"`, `tree-sitter-rust`, `tree-sitter-typescript`, `tree-sitter-javascript`. **Justificativa de existência da wave:** sem este subset, Camada 2 do gate (detecção de stub no diff) fica stubbed — quebra M9 e M14. Spec C completa o módulo com grammars Python/Go/C#/Java. ACs binários: AC-A-2, AC-A-3 (via Camada 2 do gate W4), AC-A-16, AC-A-17.
+Arquivos: `packages/core/src/ast/mod.rs`, `packages/core/src/ast/loader.rs`, `packages/core/src/ast/parser.rs`, `packages/core/src/ast/queries.rs`, `packages/core/src/ast/stub_detect.rs`, `packages/core/src/ast/signature.rs` (todos NOVO). Módulo `mustard_core::ast` agnóstico desde o nascimento — **zero match hardcoded de linguagem**. Estruturas: `GrammarLoader::from_project(root)` usa `tree_sitter_loader::Loader::find_all_languages` para descobrir grammars instaladas pelo usuário em `~/.config/tree-sitter/config.json`, filtradas pelo stack detectado em `detect_libs` (lê manifests do projeto-alvo); `GrammarLoader::language(lang_id) -> Option<Language>` (`None` quando grammar não instalada — fail-open, não panic); `TreeSitterParser::for_language(loader, lang_id)` delega ao Loader sem `match` interno; `TreeSitterParser::parse(source) -> Result<Tree>`; `QuerySet::load_for(lang_id)` carrega queries `.scm` de `.claude/grammars/{lang_id}/queries/*.scm` (alimentadas por context7 na Spec C ou pelo helper W8.5); `detect_stub_patterns(loader, diff, declared_fns)` usa AST quando grammar disponível, fallback `vocabulary::scan` (camada `pattern` da W1) sobre o escopo do diff quando não — fail-open sempre; `extract_function_signatures(loader, source, lang_id)` extrai via query `.scm` ou regex agnóstico de fallback. Crates adicionados: `tree-sitter = "0.26"` e `tree-sitter-loader = "0.26"` apenas. **Nenhum** `tree-sitter-rust`/`tree-sitter-typescript`/`tree-sitter-javascript` — grammars individuais são instaladas pelo usuário. Benchmark `ast::bench` (parse + extract <50ms em arquivo médio quando grammar disponível). **Justificativa de existência da wave:** sem este módulo agnóstico, Camada 2 do gate (detecção de stub no diff) precisaria ou hardcodar grammars (violando [[feedback_mustard_agnostic]]) ou virar text-only (regressão desnecessária — perde precisão AST). Spec C estende o módulo com `extract_api_calls` + queries SOLID + queries por linguagem detectada. ACs binários: AC-A-2, AC-A-3 (via Camada 2 do gate W4), AC-A-16, AC-A-17.
 
 ### W2 — mustard-core-regression-check (core)
 
-Arquivos: `packages/core/src/regression_check/mod.rs`, `packages/core/src/regression_check/snapshot.rs`, `packages/core/src/regression_check/compare.rs` (todos NOVO). Foto antes/depois primitive. Estruturas: `Snapshot::capture_for_spec(spec_md, codebase) -> Snapshot`, `Snapshot::compare_to(other: &Snapshot) -> Diff`, `compare_snapshots(a, b) -> Vec<FunctionDelta>`. Serialização canônica JSON via `serde_json` (campos ordenados, bytes estáveis). Usa `similar = "2"` pra diff de corpo de função. Benchmark `regression_check::bench::compare_100_functions` (<50ms — AC-A-12). ACs binários: AC-A-4, AC-A-12.
+Arquivos: `packages/core/src/regression_check/mod.rs`, `packages/core/src/regression_check/snapshot.rs`, `packages/core/src/regression_check/compare.rs` (todos NOVO). Foto antes/depois primitive. Estruturas: `Snapshot::capture_for_spec(loader, spec_md, codebase) -> Snapshot` (recebe `GrammarLoader` da W1.5 — AST estrutural quando grammar disponível, bloco textual via regex+boundary matching quando não), `Snapshot::compare_to(other: &Snapshot) -> Diff` (diff AST estrutural ou `similar` text diff conforme fallback), `compare_snapshots(a, b) -> Vec<FunctionDelta>`. Serialização canônica JSON via `serde_json` (campos ordenados, bytes estáveis). Usa `similar = "2"` pra diff textual de corpo de função quando AST indisponível. Benchmark `regression_check::bench::compare_100_functions` (<50ms — AC-A-12). ACs binários: AC-A-4, AC-A-12.
 
 ### W3 — wave-summary-context-format (rt)
 
@@ -60,7 +61,7 @@ Arquivos: `apps/rt/src/run/wave_summary.rs`, `apps/rt/src/run/wave_context.rs`, 
 
 ### W4 — gate-regression-check-run (rt)
 
-Arquivos: `apps/rt/src/run/gate_regression_check.rs` (NOVO), `apps/rt/src/hooks/pre_edit_intent_check.rs` (NOVO opcional — alternativa run-based). Implementa os 3 momentos × 3 camadas: Momento 1 (pré-edit) lê o plano do agente + casa contra vocabulário W1; Momento 2 (durante o diff) roda `ast::detect_stub_patterns` em funções declaradas como preservadas; Momento 3 (fechamento) compara `Snapshot::capture_for_spec` antes e depois. Veredict verde/amarelo/vermelho: verde passa, amarelo dispara AskUserQuestion (AC-A-6), vermelho bloqueia consolidação (AC-A-7). ACs binários: AC-A-1, AC-A-2, AC-A-3, AC-A-6, AC-A-7.
+Arquivos: `apps/rt/src/run/gate_regression_check.rs` (NOVO), `apps/rt/src/hooks/pre_edit_intent_check.rs` (NOVO opcional — alternativa run-based). Implementa os 3 momentos × 3 camadas: Momento 1 (pré-edit) lê o plano do agente + casa contra `vocabulary::scan` (W1); Momento 2 (durante o diff) constrói `GrammarLoader::from_project` e chama `ast::detect_stub_patterns(&loader, diff, declared_fns)` — AST exato quando a grammar da linguagem está instalada localmente, fallback `vocabulary::scan` da camada `pattern` (W1) sobre o escopo do diff quando não; Momento 3 (fechamento) chama `Snapshot::capture_for_spec(&loader, …)` + `compare_snapshots` antes e depois — diff estrutural via AST ou diff textual via `similar` conforme fallback. Veredict verde/amarelo/vermelho: verde passa, amarelo dispara AskUserQuestion (AC-A-6), vermelho bloqueia consolidação (AC-A-7). Grammar ausente localmente nunca causa panic — sempre fail-open com warning na telemetria. ACs binários: AC-A-1, AC-A-2, AC-A-3, AC-A-6, AC-A-7.
 
 ### W5 — span-level-integration (rt)
 
@@ -76,7 +77,11 @@ Roda a spec inteira contra a fixture do W6 (capturada em W0); mede quantos ponto
 
 ### W8 — qa-and-close-followups (mixed)
 
-QA-functional roda todos os AC binários (AC-A-1 a AC-A-17) via `mustard-rt run qa-run`; quality-ledger ganha entrada inaugural com snapshot de métricas de baseline; emissão de `pipeline.status` Completed; CLOSE da spec A. Sem arquivos novos — só validação e fechamento.
+QA-functional roda todos os AC binários (AC-A-1 a AC-A-18) via `mustard-rt run qa-run`; quality-ledger ganha entrada inaugural com snapshot de métricas de baseline; emissão de `pipeline.status` Completed; CLOSE da spec A. Sem arquivos novos — só validação e fechamento.
+
+### W8.5 — mustard-install-grammars (cli helper opcional)
+
+Arquivos: `apps/cli/src/commands/install_grammars.rs` (NOVO). Subcomando opcional `mustard install-grammars` que lê o stack detectado em `detect_libs` (manifests do projeto-alvo) e imprime, para cada linguagem detectada, os repos canônicos do grammar tree-sitter (ex. `github.com/tree-sitter/tree-sitter-rust`) e o comando shell exato a rodar (`tree-sitter init && cd <grammar> && tree-sitter generate`). **Mustard não baixa, não clona, não compila** — só sugere. Output sempre fail-open; linguagem sem grammar canônico conhecido imprime "grammar não catalogado — buscar em tree-sitter.github.io". Sem dependências novas. ACs binários: AC-A-18.
 
 ## Surpresa de naming W1.5
 
@@ -94,4 +99,5 @@ Fix de parser fica como follow-up: aceitar `\d+(_\d+)?` para suportar sub-waves 
 - [feedback_refactor_no_stub_deferral](?) ⚠ não resolvido
 - [feedback_spec_uniform_language](?) ⚠ não resolvido
 - [project_code_language_policy](?) ⚠ não resolvido
+- [feedback_mustard_agnostic](?) ⚠ não resolvido
 <!-- wikilinks-footer-end -->
