@@ -21,7 +21,7 @@
 //!    extraction (cached cold-path; fail-open when no model is available).
 //!
 //! The contract data types ([`EntityInfo`], [`EnumInfo`], …) are unchanged —
-//! callers in [`crate::run::sync_registry`] consume the same shapes as
+//! callers in [`crate::run::scan::sync_registry`] consume the same shapes as
 //! before, so the registry JSON stays byte-stable across the rewrite.
 
 pub mod cluster_discovery;
@@ -548,3 +548,12 @@ mod tests {
         );
     }
 }
+pub mod scan_finalize;
+pub mod scan_md_validate;
+pub mod scan_orchestrate;
+pub mod scan_precompute;
+pub mod scan_recipes_validate;
+pub mod scan_structural;
+pub mod sync_detect;
+pub mod sync_registry;
+pub mod recipe_match;

@@ -34,19 +34,10 @@ mod diff_context;
 pub use event::event_projections::{pipeline_state_from_events, PipelineStateView};
 // Spec A v4 / W4 — behavior-regression gate connecting W1 (vocabulary),
 // W1.5 (AST agnostic) and W2 (snapshot) primitives.
-mod recipe_match;
 // Spec A v4 / W5 — span-level verdict ledger (`_review-spans.md`).
-mod scan_finalize;
-mod scan_md_validate;
-mod scan_orchestrate;
-mod scan_precompute;
-mod scan_recipes_validate;
-mod scan_structural;
 mod statusline;
 // W4: lang-aware spec slug helper. Thin facade over `mustard_core::slugify`.
 // W6: subcommand entry point (`i18n translate-heading`, `spec-lang resolve`).
-mod sync_detect;
-mod sync_registry;
 // Spec A v4 / W6 — token-budget primitive used by `resume_bootstrap`.
 
 use clap::Subcommand;
@@ -1406,8 +1397,8 @@ pub enum RunCmd {
 /// script writes its own output and the process exits cleanly afterwards.
 pub fn dispatch(cmd: RunCmd) {
     match cmd {
-        RunCmd::SyncDetect { root } => sync_detect::run(&root),
-        RunCmd::SyncRegistry { root, force } => sync_registry::run(&root, force),
+        RunCmd::SyncDetect { root } => scan::sync_detect::run(&root),
+        RunCmd::SyncRegistry { root, force } => scan::sync_registry::run(&root, force),
         RunCmd::DiffContext {
             parent,
             subproject,
@@ -1603,7 +1594,7 @@ pub fn dispatch(cmd: RunCmd) {
             entity,
             operation,
             subproject,
-        } => recipe_match::run(entity.as_deref(), operation.as_deref(), subproject.as_deref()),
+        } => scan::recipe_match::run(entity.as_deref(), operation.as_deref(), subproject.as_deref()),
         RunCmd::QaRun { spec, format } => review::qa_run::run(&spec, &format),
         RunCmd::QaRunAll => review::qa_run_all::run(),
         RunCmd::RebuildSpecs => spec::rebuild_specs::run(),
@@ -1656,14 +1647,14 @@ pub fn dispatch(cmd: RunCmd) {
         ),
         RunCmd::RtkGain => economy::rtk_gain::run(),
         RunCmd::ScanOrchestrate { target, force } => {
-            scan_orchestrate::run(force, target.as_deref());
+            scan::scan_orchestrate::run(force, target.as_deref());
         }
-        RunCmd::ScanFinalize { skip_security } => scan_finalize::run(skip_security),
-        RunCmd::ScanStructural { subproject } => scan_structural::run(subproject.as_deref()),
+        RunCmd::ScanFinalize { skip_security } => scan::scan_finalize::run(skip_security),
+        RunCmd::ScanStructural { subproject } => scan::scan_structural::run(subproject.as_deref()),
         RunCmd::ScanMdValidate { from, strict } => {
-            scan_md_validate::run(from.as_deref(), strict);
+            scan::scan_md_validate::run(from.as_deref(), strict);
         }
-        RunCmd::ScanRecipesValidate { strict } => scan_recipes_validate::run(strict),
+        RunCmd::ScanRecipesValidate { strict } => scan::scan_recipes_validate::run(strict),
         RunCmd::OtelCollector => economy::otel::collector::run(),
         RunCmd::TranscriptWatcher { once } => economy::transcript_watcher::run(once),
         RunCmd::DiagnoseOtel {

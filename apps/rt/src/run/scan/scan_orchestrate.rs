@@ -14,7 +14,7 @@
 //! `include_str!`; an on-disk `.claude/scripts/scan/agent-prompt.template.md`
 //! (present in projects built by `mustard init`) acts as an optional override.
 
-use crate::run::scan_precompute::{
+use crate::run::scan::scan_precompute::{
     backup_generated_mds, build_structure_block, build_tooling_block, ensure_notes_md,
     purge_generated_skills,
 };
@@ -29,7 +29,7 @@ use std::process::Command;
 /// depends on an on-disk copy: a `.claude/scripts/scan/agent-prompt.template.md`
 /// file, when present, overrides this; otherwise this baked-in copy is used.
 const EMBEDDED_PROMPT_TEMPLATE: &str =
-    include_str!("../../../cli/templates/scripts/scan/agent-prompt.template.md");
+    include_str!("../../../../cli/templates/scripts/scan/agent-prompt.template.md");
 
 /// The orchestration result accumulator — JSON-shaped exactly as the JS.
 #[derive(Default)]

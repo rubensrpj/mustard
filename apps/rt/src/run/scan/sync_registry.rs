@@ -20,11 +20,11 @@
 //! not affect `sync-registry` correctness — `sync-detect` is only consulted for
 //! the subproject list, which is cheap and must always be fresh.
 
-use super::scan::cluster_discovery::{compute_folder_frequency, discover_clusters};
-use super::scan::file_utils;
-use super::scan::interpret;
-use super::scan::project_conventions::compute_project_conventions;
-use super::scan::{load_scanner, EntityInfo, EnumInfo, ScanResult};
+use super::cluster_discovery::{compute_folder_frequency, discover_clusters};
+use super::file_utils;
+use super::interpret;
+use super::project_conventions::compute_project_conventions;
+use super::{load_scanner, EntityInfo, EnumInfo, ScanResult};
 use mustard_core::fs;
 use mustard_core::ClaudePaths;
 use serde::Serialize;
@@ -146,7 +146,7 @@ pub fn run(root: &Path, force: bool) {
         // interpreter (with `stack_id = "unknown"` when no manifest signal
         // matched). The pre-Wave-2 `None` arm could never trigger.
         let scanner = load_scanner(&abs, None);
-        let stack_id = match super::scan::detect_stack(&abs) {
+        let stack_id = match super::detect_stack(&abs) {
             Some(s) => s.to_string(),
             None => "unknown".to_string(),
         };
@@ -186,7 +186,7 @@ pub fn run(root: &Path, force: bool) {
         // plain Rust structs, Go types without gorm tags, generic TS objects).
         for i_entity in &interpreted.entities {
             if !i_entity.name.is_empty() && !entry.entities.contains_key(&i_entity.name) {
-                use super::scan::EntityInfo;
+                use super::EntityInfo;
                 // Translate wikilink edges (e.g. "[[sub.entity.foo]]") into
                 // plain ref names by stripping the bracket decoration.
                 let refs: Vec<String> = i_entity
