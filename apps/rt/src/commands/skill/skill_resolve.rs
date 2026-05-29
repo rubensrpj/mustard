@@ -243,9 +243,15 @@ fn score_skill(
         score += 0.25;
         reasons.push("applies:any".into());
     } else {
+        // Case-insensitive on BOTH sides. The bug this fixes: the registry's
+        // `cluster_labels()` lower-cases its labels, but the skill's `appliesTo`
+        // was compared verbatim — a skill written `appliesTo: [Service]`
+        // (mixed-case, as the scan generator emits, matching the raw cluster
+        // `label`) never matched the lower-cased `service`. `eq_ignore_ascii_case`
+        // normalises both sides so the match no longer depends on either side's
+        // casing.
         for cluster in &fm.applies_to {
-            let target = cluster.to_ascii_lowercase();
-            if cluster_labels.iter().any(|c| c == &target) {
+            if cluster_labels.iter().any(|c| c.eq_ignore_ascii_case(cluster)) {
                 score += 1.0;
                 reasons.push(format!("applies:{cluster}"));
                 break;
@@ -320,6 +326,36 @@ mod tests {
         );
         // tag(1) + applies:any(0.25) + scope(1) = 2.25
         assert!((score - 2.25).abs() < 0.01, "got {score}, reasons {reasons:?}");
+    }
+
+    #[test]
+    fn applies_match_is_case_insensitive_regression() {
+        // Regression for the case bug: a skill targeting a mixed-case cluster
+        // label must match a mixed-case label in the registry. Neither side is
+        // pre-lower-cased here, so the only way this scores is `eq_ignore_ascii_case`.
+        let skill = fm("svc", vec![], vec!["Service"], vec![]);
+        let (score, reasons) = score_skill(
+            &skill,
+            &[],
+            &[],
+            &["Service".to_string()],
+            None,
+        );
+        assert!(
+            reasons.iter().any(|r| r == "applies:Service"),
+            "mixed-case appliesTo must match mixed-case cluster label; reasons {reasons:?}"
+        );
+        assert!(score >= 1.0, "applies match worth +1.0, got {score}");
+        // And the lower-cased registry form (what `cluster_labels()` returns
+        // today) must match an upper-cased skill `appliesTo` just the same.
+        let (_, reasons_lc) = score_skill(
+            &fm("svc", vec![], vec!["SERVICE"], vec![]),
+            &[],
+            &[],
+            &["service".to_string()],
+            None,
+        );
+        assert!(reasons_lc.iter().any(|r| r == "applies:SERVICE"));
     }
 
     #[test]

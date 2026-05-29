@@ -119,6 +119,14 @@ impl EntityRegistry {
         })
     }
 
+    /// The `_patterns` map (v4) — `{stack}` → `{ discovered[], folderFrequency,
+    /// conventions, architecture, ... }`. `None` when the key is absent or not
+    /// an object.
+    #[must_use]
+    pub fn patterns(&self) -> Option<&Map<String, Value>> {
+        self.doc.get("_patterns").and_then(Value::as_object)
+    }
+
     /// Whether `_patterns` is a present, non-empty object.
     #[must_use]
     pub fn has_patterns(&self) -> bool {
@@ -295,6 +303,17 @@ mod tests {
     fn has_patterns_true_when_non_empty() {
         assert!(v4().has_patterns());
         assert!(!EntityRegistry::from_value(json!({ "_patterns": {} })).has_patterns());
+    }
+
+    #[test]
+    fn patterns_exposes_stack_map() {
+        let r = v4();
+        let patterns = r.patterns().expect("_patterns object");
+        assert!(patterns.contains_key("drizzle"));
+        let discovered = patterns["drizzle"]["discovered"].as_array().unwrap();
+        assert_eq!(discovered.len(), 3);
+        // Absent / non-object `_patterns` ⇒ None.
+        assert!(EntityRegistry::from_value(Value::Null).patterns().is_none());
     }
 
     #[test]

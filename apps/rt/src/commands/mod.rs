@@ -683,6 +683,18 @@ pub enum RunCmd {
         #[arg(long)]
         strict: bool,
     },
+    /// Deterministically render per-cluster SKILL.md files (+ `references/
+    /// examples.md`) from the entity-registry `_patterns.{stack}.discovered[]`
+    /// clusters. No LLM on the main path. Each qualified cluster (≥3 files,
+    /// non-noise suffix; top-8 per subproject by file count) gets a skill with
+    /// `appliesTo` populated, `metadata.generated_by: scan`, and the generated
+    /// fence. Idempotent (byte-stable regeneration; stale generated skills
+    /// reaped); hand-authored skills are never touched. Fail-open.
+    ScanSkillRender {
+        /// Limit rendering to one subproject (registry name or `apps/<name>`).
+        #[arg(long)]
+        subproject: Option<String>,
+    },
     /// Validate `.claude/recipes/<sub>/*.json` shape: required keys, real
     /// `files[].path` existence inside the recipe's subproject, and absence of
     /// literal `{Entity}` / `{ClusterLabel}` placeholders. Fail-open unless
@@ -1662,6 +1674,9 @@ pub fn dispatch(cmd: RunCmd) {
         RunCmd::ScanStructural { subproject } => scan::scan_structural::run(subproject.as_deref()),
         RunCmd::ScanMdValidate { from, strict } => {
             scan::scan_md_validate::run(from.as_deref(), strict);
+        }
+        RunCmd::ScanSkillRender { subproject } => {
+            scan::scan_skill_render::run(subproject.as_deref());
         }
         RunCmd::ScanRecipesValidate { strict } => scan::scan_recipes_validate::run(strict),
         RunCmd::OtelCollector => economy::otel::collector::run(),

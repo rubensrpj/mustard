@@ -606,6 +606,7 @@ mod tests {
 pub mod scan_finalize;
 pub mod scan_md_validate;
 pub mod scan_orchestrate;
+pub mod scan_skill_render;
 pub mod scan_precompute;
 pub mod scan_recipes_validate;
 pub mod scan_structural;
