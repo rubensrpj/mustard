@@ -374,6 +374,17 @@ fn split_pascal_case(s: &str) -> Vec<String> {
     let mut cur = String::new();
     for i in 0..chars.len() {
         let c = chars[i];
+        // Separators (`_`, `-`) split words and are dropped — this makes the
+        // splitter agnostic to snake_case / kebab-case, not just PascalCase, so
+        // `user_repository` → ["user", "repository"]. Without this, every
+        // snake_case basename collapses to a single word and is dropped by the
+        // `words.len() < 2` gate, blinding the suffix pass to Rust/Python/Ruby.
+        if c == '_' || c == '-' {
+            if !cur.is_empty() {
+                words.push(std::mem::take(&mut cur));
+            }
+            continue;
+        }
         let boundary = if i == 0 {
             false
         } else {
@@ -1031,6 +1042,19 @@ fn discover_filename_clusters(
         if folders.len() < min_folders {
             continue;
         }
+        // Sibling rule: a shared basename is a *pattern* only when the folders
+        // are siblings — they share the same immediate parent directory. A
+        // merely shared *ancestor* (`src/`) spanning different depths is
+        // homonymy, not a convention: `src/io/workspace.rs` and
+        // `src/domain/model/view/workspace.rs` name the same concept across
+        // different layers; `features/auth/repo.ts` + `features/billing/repo.ts`
+        // are the real pattern (same parent `features`, one level apart).
+        let parents: std::collections::BTreeSet<String> =
+            folders.iter().map(|f| parent_dir(f)).collect();
+        if parents.len() != 1 {
+            continue;
+        }
+        let parent = parents.into_iter().next().unwrap_or_default();
         let mut ext_counts: BTreeMap<String, usize> = BTreeMap::new();
         for (_, _, e) in occ {
             *ext_counts.entry(e.clone()).or_insert(0) += 1;
@@ -1040,9 +1064,10 @@ fn discover_filename_clusters(
             .max_by_key(|(_, c)| *c)
             .map(|(e, _)| e)
             .unwrap_or_default();
-        let pattern = match common_folder_segment(&folders) {
-            Some(seg) => format!("**/{seg}/{basename_key}{dominant_ext}"),
-            None => format!("**/{basename_key}{dominant_ext}"),
+        let pattern = if parent == "." || parent.is_empty() {
+            format!("**/{basename_key}{dominant_ext}")
+        } else {
+            format!("**/{parent}/*/{basename_key}{dominant_ext}")
         };
         let samples: Vec<String> = occ
             .iter()
@@ -1276,6 +1301,16 @@ fn extract_member_suffixes(contents: &[(std::path::PathBuf, String)]) -> Vec<Str
             if !trimmed[ident.len()..].trim_start().starts_with('(') {
                 continue;
             }
+            // Only a mixed-case identifier (camelCase / PascalCase) carries a
+            // meaningful member *suffix*. An all-lowercase snake_case name like
+            // `non_blank` is a plain function call, not a typed member, so its
+            // trailing word ("blank") is noise. `split_pascal_case` now also
+            // splits on `_`, so without this case guard snake_case calls would
+            // leak their last word here. Compare to the lower-cased form: equal
+            // ⇒ no upper-case anywhere ⇒ skip.
+            if ident == ident.to_ascii_lowercase() {
+                continue;
+            }
             let words = split_pascal_case(&ident);
             if words.len() < 2 {
                 continue;
@@ -1314,6 +1349,17 @@ mod tests {
             split_pascal_case("ApikeyQueryResolver"),
             vec!["Apikey", "Query", "Resolver"]
         );
+        // snake_case / kebab-case split on separators (which are dropped), so
+        // non-Pascal naming (Rust/Python/Ruby) is no longer collapsed to one
+        // word and the suffix pass can finally see it.
+        assert_eq!(split_pascal_case("user_repository"), vec!["user", "repository"]);
+        assert_eq!(
+            split_pascal_case("graph_wirelink_gate"),
+            vec!["graph", "wirelink", "gate"]
+        );
+        assert_eq!(split_pascal_case("api-client"), vec!["api", "client"]);
+        // A single word stays a single word (correctly yields no suffix).
+        assert_eq!(split_pascal_case("workspace"), vec!["workspace"]);
     }
 
     #[test]
@@ -1385,6 +1431,48 @@ mod tests {
                     && c.get("ext").and_then(Value::as_str) == Some(".foo")
             }),
             "expected a Service suffix-cluster on .foo, got {clusters:?}"
+        );
+    }
+
+    #[test]
+    fn filename_cluster_requires_shared_folder_segment() {
+        // Drive the pass directly with RELATIVE paths and an empty base: the
+        // pass reads paths only (no disk I/O), and `relative_path` returns the
+        // input verbatim against an empty base, so this targets the segment rule
+        // without cache / primary-ext / platform path normalisation in the way.
+        // Homonymy: same basename across DIFFERENT layers that merely share the
+        // `src` ancestor at different depths — the real `core` case that must
+        // NOT cluster (folders are not siblings).
+        let homonym_files = vec![
+            "src/domain/model/view/workspace.rs".to_string(),
+            "src/io/workspace.rs".to_string(),
+            "src/view/projection/workspace.rs".to_string(),
+        ];
+        let homonym = discover_filename_clusters(Path::new(""), &homonym_files, &[]);
+        assert!(
+            !homonym
+                .iter()
+                .any(|c| c.get("label").and_then(Value::as_str) == Some("workspace")),
+            "homonymous basename across non-sibling layers must NOT cluster, got {homonym:?}"
+        );
+
+        // Real pattern: same basename in SIBLING folders (shared immediate
+        // parent `features`). (`repository` is a domain convention, not a
+        // framework structural basename like `route`/`page`, so it survives.)
+        let pattern_files = vec![
+            "features/auth/repository.ts".to_string(),
+            "features/billing/repository.ts".to_string(),
+            "features/users/repository.ts".to_string(),
+        ];
+        let pattern = discover_filename_clusters(Path::new(""), &pattern_files, &[]);
+        assert!(
+            pattern.iter().any(|c| {
+                c.get("kind").and_then(Value::as_str) == Some("filename-cluster")
+                    && c.get("label").and_then(Value::as_str) == Some("repository")
+                    && c.get("folderPattern").and_then(Value::as_str)
+                        == Some("**/features/*/repository.ts")
+            }),
+            "sibling folders must yield a filename-cluster, got {pattern:?}"
         );
     }
 }

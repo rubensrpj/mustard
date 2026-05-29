@@ -63,6 +63,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
+use super::enrich_block;
 use super::interpret::slugify;
 
 /// Minimum `fileCount` for a cluster to count as a reusable convention. Below
@@ -123,6 +124,19 @@ struct SkillPlan {
     /// Candidate folders the samples may live under (relative to the subproject
     /// root) — used to resolve a bare-basename sample to a real path.
     folders: Vec<String>,
+    /// Non-comment lines shared by every sampled file's top (imports, `use` /
+    /// `derive` headers, …) — the cluster's real skeleton. From the enrich
+    /// pass's `topOfFileLines`; empty when the cluster was not enriched.
+    shape: Vec<String>,
+    /// Trailing words the type's members tend to end in (e.g. `Handler`). From
+    /// `memberSuffixes`; empty when not enriched.
+    members: Vec<String>,
+    /// Declaration kinds present in the samples as `(kind, count)`, sorted by
+    /// count desc then kind asc for byte-stable rendering. From `declByKind`.
+    decls: Vec<(String, u64)>,
+    /// Deterministic "how to add one more" guidance, derived purely from the
+    /// cluster kind + naming relation + folder — no LLM.
+    how_to: Option<String>,
 }
 
 /// CLI entry point — render skills for one subproject or every detected one.
@@ -339,18 +353,42 @@ fn plan_for_cluster(sub: &str, cluster: &Value) -> Option<SkillPlan> {
     let label_slug = slugify(&label);
     let name = format!("{sub_slug}-{label_slug}-pattern");
 
-    // --- Convention bullets — only fields actually present on the cluster. ---
-    let mut convention: Vec<String> = Vec::new();
-    if let Some(folder) = cluster
+    // Cluster kind + naming + folder drive both the convention label and the
+    // deterministic How-to-apply guidance below.
+    let kind = cluster.get("kind").and_then(Value::as_str).unwrap_or("").to_string();
+    let ext = cluster
+        .get("ext")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .unwrap_or_default()
+        .to_string();
+    let naming = cluster
+        .get("namingPattern")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    let folder_pattern = cluster
         .get("folderPattern")
         .or_else(|| cluster.get("folder"))
         .and_then(Value::as_str)
         .filter(|s| !s.is_empty())
-    {
-        convention.push(format!("Folder: `{folder}`"));
+        .unwrap_or_default()
+        .to_string();
+
+    // --- Convention bullets — only fields actually present on the cluster. ---
+    let mut convention: Vec<String> = Vec::new();
+    if !folder_pattern.is_empty() {
+        convention.push(format!("Folder: `{folder_pattern}`"));
     }
-    convention.push(format!("Suffix: `{label}`"));
-    if let Some(ext) = cluster.get("ext").and_then(Value::as_str).filter(|s| !s.is_empty()) {
+    // The label means different things per kind: a filename suffix, a repeated
+    // filename, or — for the coarse folder fallback — just a directory name
+    // (NOT a suffix), so the fallback omits the misleading `Suffix:` bullet.
+    match kind.as_str() {
+        "filename-cluster" => convention.push(format!("Filename: `{label}`")),
+        "folder-fallback-cluster" => {}
+        _ => convention.push(format!("Suffix: `{label}`")),
+    }
+    if !ext.is_empty() {
         convention.push(format!("Extension: `{ext}`"));
     }
     if let Some(base) = cluster
@@ -370,12 +408,8 @@ fn plan_for_cluster(sub: &str, cluster: &Value) -> Option<SkillPlan> {
             convention.push(format!("Interfaces: `{}`", names.join("`, `")));
         }
     }
-    if let Some(naming) = cluster
-        .get("namingPattern")
-        .and_then(Value::as_str)
-        .filter(|s| !s.is_empty())
-    {
-        convention.push(format!("Naming: `{naming}`"));
+    if let Some(n) = &naming {
+        convention.push(format!("Naming: `{n}`"));
     }
     convention.push(format!("Files: {}", file_count(cluster)));
 
@@ -403,6 +437,15 @@ fn plan_for_cluster(sub: &str, cluster: &Value) -> Option<SkillPlan> {
             .unwrap_or_default(),
     };
 
+    // Enrichment fields the discovery pass already computed from file contents
+    // (shared top-of-file lines, member suffixes, declaration kinds). Surfaced
+    // here so the skill carries the cluster's real shape, not just path metadata.
+    let shape = string_array(cluster, "topOfFileLines");
+    let members = string_array(cluster, "memberSuffixes");
+    let decls = decls_by_kind(cluster);
+
+    let how_to = how_to_apply(&kind, &label, &ext, naming.as_deref(), &folder_pattern);
+
     Some(SkillPlan {
         name,
         subproject: sub.to_string(),
@@ -411,6 +454,10 @@ fn plan_for_cluster(sub: &str, cluster: &Value) -> Option<SkillPlan> {
         convention,
         samples,
         folders,
+        shape,
+        members,
+        decls,
+        how_to,
         label,
     })
 }
@@ -448,6 +495,74 @@ fn describe_cluster(label: &str, files: u64) -> String {
     )
 }
 
+/// Read a `[String]` field off a cluster Value (empty when absent/wrong-type).
+fn string_array(cluster: &Value, key: &str) -> Vec<String> {
+    cluster
+        .get(key)
+        .and_then(Value::as_array)
+        .map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect())
+        .unwrap_or_default()
+}
+
+/// Read `declByKind` (`{kind: count}`) into `(kind, count)` pairs, sorted by
+/// count desc then kind asc so the rendered `Declares:` line is byte-stable.
+fn decls_by_kind(cluster: &Value) -> Vec<(String, u64)> {
+    let Some(obj) = cluster.get("declByKind").and_then(Value::as_object) else {
+        return Vec::new();
+    };
+    let mut pairs: Vec<(String, u64)> = obj
+        .iter()
+        .filter_map(|(k, v)| v.as_u64().map(|n| (k.clone(), n)))
+        .collect();
+    pairs.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    pairs
+}
+
+/// Collapse a string to a single line and neutralise backticks so it can sit
+/// inside an inline-code span without breaking the surrounding Markdown.
+fn one_line(s: &str) -> String {
+    s.replace(['\n', '\r'], " ").replace('`', "'").trim().to_string()
+}
+
+/// Deterministic "how to add one more" guidance for a cluster, derived purely
+/// from its kind, naming relation and folder — no LLM. The wording differs by
+/// kind so a filename cluster, a suffix cluster and the coarse folder fallback
+/// each get advice that matches how their members are actually organised.
+fn how_to_apply(kind: &str, label: &str, ext: &str, naming: Option<&str>, folder: &str) -> Option<String> {
+    let under = if folder.is_empty() {
+        String::new()
+    } else {
+        format!(" under `{folder}`")
+    };
+    let file = if ext.is_empty() {
+        "file".to_string()
+    } else {
+        format!("`{ext}` file")
+    };
+    let text = match kind {
+        "filename-cluster" => format!(
+            "To add one more, create a `{label}{ext}` in a new sibling folder{under}, \
+             matching the existing layout."
+        ),
+        "folder-fallback-cluster" => format!(
+            "These files are grouped by location{under}. Add another {file} in the \
+             same folder."
+        ),
+        _ => {
+            // suffix / folder cluster — the name relation comes from `naming`.
+            let rel = if naming == Some("suffix-before") {
+                "starts with"
+            } else {
+                "ends with"
+            };
+            format!(
+                "To add a new `{label}`, create a {file}{under} whose name {rel} `{label}`."
+            )
+        }
+    };
+    Some(text)
+}
+
 // ---------------------------------------------------------------------------
 // Rendering (pure)
 // ---------------------------------------------------------------------------
@@ -482,6 +597,10 @@ fn render_skill_md(plan: &SkillPlan, refs: &[String]) -> String {
         let _ = writeln!(out, "- {line}");
     }
     out.push('\n');
+    if let Some(how_to) = &plan.how_to {
+        out.push_str("## How to apply\n\n");
+        let _ = writeln!(out, "{how_to}\n");
+    }
     if !refs.is_empty() {
         out.push_str("## Examples\n\n");
         for r in refs {
@@ -489,8 +608,35 @@ fn render_skill_md(plan: &SkillPlan, refs: &[String]) -> String {
         }
         out.push('\n');
     }
+    // `## Shape` — the cluster's real skeleton, surfaced from the enrich pass.
+    // Emitted only when there is something to say, and bounded so the SKILL.md
+    // stays under the validator's 60-line cap.
+    if !plan.shape.is_empty() || !plan.members.is_empty() || !plan.decls.is_empty() {
+        out.push_str("## Shape\n\n");
+        if !plan.shape.is_empty() {
+            out.push_str("Common top-of-file (shared by all samples):\n");
+            for line in plan.shape.iter().take(5) {
+                let _ = writeln!(out, "- `{}`", one_line(line));
+            }
+            out.push('\n');
+        }
+        if !plan.members.is_empty() {
+            let _ = writeln!(out, "Members commonly end in: `{}`.\n", plan.members.join("`, `"));
+        }
+        if !plan.decls.is_empty() {
+            let parts: Vec<String> = plan
+                .decls
+                .iter()
+                .map(|(kind, n)| format!("{n} {kind}"))
+                .collect();
+            let _ = writeln!(out, "Declares: {}.\n", parts.join(", "));
+        }
+    }
     out.push_str("## References\n\n");
     out.push_str("See `references/examples.md`.\n");
+
+    // Pure deterministic skeleton; the enrich block is inserted at write time by
+    // `enrich_block::write_enrichable` so every `.md` generator shares one path.
     out
 }
 
@@ -590,13 +736,14 @@ fn write_subproject_skills(project_root: &Path, sub: &str, plans: &[SkillPlan]) 
             continue;
         }
         let refs = resolve_refs(project_root, &sub_root, plan);
+        let skill_path = dir.join("SKILL.md");
         let skill_md = render_skill_md(plan, &refs);
         let examples_md = render_examples_md(plan, &refs);
-        let wrote_skill = mfs::write_atomic(&dir.join("SKILL.md"), skill_md.as_bytes()).is_ok();
+        let wrote_skill = enrich_block::write_enrichable(&skill_path, &skill_md);
         let _ = mfs::create_dir_all(&dir.join("references"));
-        let _ = mfs::write_atomic(
+        let _ = enrich_block::write_enrichable(
             &dir.join("references").join("examples.md"),
-            examples_md.as_bytes(),
+            &examples_md,
         );
         if wrote_skill {
             report.written += 1;
@@ -724,6 +871,120 @@ mod tests {
         assert_eq!(api.len(), 1, "got {api:?}");
         assert_eq!(api[0].name, "api-service-pattern");
         assert_eq!(api[0].label, "Service");
+    }
+
+    #[test]
+    fn shape_section_emitted_from_enrichment_and_omitted_without() {
+        // A cluster carrying the enrich pass's fields renders `## Shape`.
+        let doc = json!({
+            "_meta": { "version": "4.0" },
+            "_patterns": { "rust": { "discovered": [{
+                "label": "Gate", "suffix": "Gate", "ext": ".rs", "fileCount": 4,
+                "folderPattern": "src/hooks/",
+                "samples": ["src/hooks/a_gate.rs"],
+                "subprojectName": "api",
+                "topOfFileLines": ["use crate::Hook;", "use serde_json::Value;"],
+                "memberSuffixes": ["Gate", "Check"],
+                "declByKind": { "struct_item": 3, "enum_item": 1 }
+            }] } },
+            "_enums": {}, "e": {}
+        });
+        let registry = EntityRegistry::from_value(doc);
+        let plans = build_plans(&registry);
+        let plan = &plans["api"][0];
+        let body = render_skill_md(plan, &[]);
+        assert!(body.contains("## Shape"), "shape section expected:\n{body}");
+        assert!(body.contains("use crate::Hook;"));
+        assert!(body.contains("Members commonly end in: `Gate`, `Check`."));
+        // count desc, then kind asc → struct_item(3) before enum_item(1).
+        assert!(body.contains("Declares: 3 struct_item, 1 enum_item."));
+        assert!(body.lines().count() <= 60, "must stay under the size cap:\n{body}");
+
+        // Without enrichment the section is omitted entirely.
+        let plain_reg = EntityRegistry::from_value(fixture_doc());
+        let plain_plans = build_plans(&plain_reg);
+        let plain = &plain_plans["api"][0];
+        let body2 = render_skill_md(plain, &[]);
+        assert!(!body2.contains("## Shape"), "no shape without enrichment:\n{body2}");
+    }
+
+    #[test]
+    fn label_and_howto_vary_by_kind() {
+        // Folder-fallback cluster: the label is a directory name, NOT a suffix —
+        // it must not be mislabelled `Suffix:`, and How-to-apply talks location.
+        let doc = json!({
+            "_meta": { "version": "4.0" },
+            "_patterns": { "rust": { "discovered": [{
+                "kind": "folder-fallback-cluster",
+                "label": "domain", "suffix": "domain", "ext": ".rs", "fileCount": 6,
+                "folder": "src/domain", "folderPattern": "src/domain/",
+                "samples": ["src/domain/config.rs"], "subprojectName": "api"
+            }] } },
+            "_enums": {}, "e": {}
+        });
+        let reg = EntityRegistry::from_value(doc);
+        let plans = build_plans(&reg);
+        let body = render_skill_md(&plans["api"][0], &[]);
+        assert!(!body.contains("Suffix: `domain`"), "fallback mislabelled a suffix:\n{body}");
+        assert!(body.contains("## How to apply"));
+        assert!(body.contains("grouped by location"), "{body}");
+
+        // Filename cluster: labelled `Filename:`, How-to mentions a sibling folder.
+        let doc2 = json!({
+            "_meta": { "version": "4.0" },
+            "_patterns": { "typescript": { "discovered": [{
+                "kind": "filename-cluster",
+                "label": "repository", "suffix": "repository", "ext": ".ts", "fileCount": 3,
+                "folderPattern": "**/features/*/repository.ts",
+                "samples": ["features/auth/repository.ts"], "subprojectName": "web"
+            }] } },
+            "_enums": {}, "e": {}
+        });
+        let reg2 = EntityRegistry::from_value(doc2);
+        let plans2 = build_plans(&reg2);
+        let body2 = render_skill_md(&plans2["web"][0], &[]);
+        assert!(body2.contains("Filename: `repository`"), "{body2}");
+        assert!(body2.contains("sibling folder"), "{body2}");
+    }
+
+    #[test]
+    fn enrichable_skill_has_pending_block_before_convention() {
+        let plans = build_plans(&EntityRegistry::from_value(fixture_doc()));
+        // The render is a pure skeleton; the write layer inserts the block.
+        let skeleton = render_skill_md(&plans["api"][0], &[]);
+        assert!(enrich_block::extract(&skeleton).is_none(), "render is block-free");
+        let body = enrich_block::insert(&skeleton);
+        let (_, inner) = enrich_block::extract(&body).expect("enrich block present");
+        assert!(enrich_block::is_pending(&inner), "block starts pending:\n{body}");
+        assert!(
+            body.find("mustard:enrich") < body.find("## Convention"),
+            "enrich block must precede Convention:\n{body}"
+        );
+    }
+
+    #[test]
+    fn write_preserves_enriched_block_across_rescans() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        seed_registry(root, fixture_doc());
+        plant_api_samples(root);
+
+        // First render → pending block on disk.
+        let _ = render(root, None);
+        let skill = root
+            .join("apps").join("api").join(".claude").join("skills")
+            .join("api-service-pattern").join("SKILL.md");
+        let v1 = read(&skill);
+        assert!(enrich_block::extract(&v1).is_some(), "block present:\n{v1}");
+
+        // Simulate the enrich step filling the pending block with prose.
+        let enriched = v1.replace(enrich_block::PENDING, "## Purpose\n\nWraps a service.");
+        std::fs::write(&skill, &enriched).unwrap();
+
+        // Re-scan (same skeleton) must PRESERVE the AI prose.
+        let _ = render(root, None);
+        let v2 = read(&skill);
+        assert!(v2.contains("Wraps a service."), "enriched prose must survive re-scan:\n{v2}");
     }
 
     #[test]

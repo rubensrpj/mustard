@@ -28,6 +28,7 @@
 
 pub mod architecture;
 pub mod cluster_discovery;
+pub mod enrich_block;
 pub mod file_utils;
 pub mod graph;
 pub mod interpret;

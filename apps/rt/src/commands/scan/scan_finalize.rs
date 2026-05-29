@@ -180,6 +180,26 @@ fn finalize(root: &Path, skip_security: bool) -> Value {
         }
     }
 
+    // Step 4.8 — regenerate the concept-graph nodes (the `[[id]]` wirelinks)
+    // and the MOC index from the just-refreshed registry. Both are in-process
+    // and fail-open — a graph that cannot be materialised never blocks the scan.
+    // This is what was missing: node_gen existed but no scan step ever called it,
+    // so `.claude/graph/` was only ever written by an explicit command.
+    let graph_start = Instant::now();
+    let graph_report = crate::commands::scan::node_gen::generate_graph_nodes(root);
+    let graph_index = crate::commands::scan::graph::materialise_index(root);
+    let wirelinks: usize = graph_index.edges.values().map(Vec::len).sum();
+    let graph_step = json!({
+        "ran": true,
+        "ok": true,
+        "written": graph_report.written,
+        "removed": graph_report.removed,
+        "preserved": graph_report.preserved,
+        "nodes": graph_index.nodes.len(),
+        "wirelinks": wirelinks,
+        "durationMs": graph_start.elapsed().as_millis(),
+    });
+
     // Step 5 — update detect cache.
     let cache = run_subcommand(root, &["run", "sync-detect"]);
     if !cache.ok {
@@ -288,6 +308,7 @@ fn finalize(root: &Path, skip_security: bool) -> Value {
     json!({
         "steps": {
             "registry": { "ran": true, "ok": registry.ok, "durationMs": registry.duration_ms },
+            "graph": graph_step,
             "cache": { "ran": true, "ok": cache.ok, "durationMs": cache.duration_ms },
             "skills": skills_step,
             "security": security_step,
