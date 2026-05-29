@@ -180,7 +180,7 @@ fn collect_specs(claude_dir: &Path) -> Vec<Value> {
         let metrics = state.get("metrics").cloned();
         let Some(metrics) = metrics else { continue };
         let spec_name = name.trim_end_matches(".json").to_string();
-        let spec_dir = claude_dir.join("spec").join(&spec_name);
+        let spec_dir = paths.spec_dir().join(&spec_name);
         out.push(json!({
             "name": spec_name,
             "metrics": metrics,

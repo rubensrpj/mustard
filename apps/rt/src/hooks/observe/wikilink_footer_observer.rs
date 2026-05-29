@@ -76,7 +76,7 @@ fn search_dirs(project: &str) -> Vec<PathBuf> {
     vec![
         claude_dir.join("memory"),
         claude_dir.join("knowledge"),
-        claude_dir.join("spec"),
+        claude.spec_dir(),
     ]
 }
 
