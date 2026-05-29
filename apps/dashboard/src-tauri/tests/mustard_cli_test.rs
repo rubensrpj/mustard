@@ -42,7 +42,8 @@ fn install_then_update_runs_non_interactively() {
 
     let claude = project.join(".claude");
     assert!(claude.join("CLAUDE.md").exists(), ".claude/ scaffolded");
-    assert!(claude.join("mustard.json").exists(), "version stamp written");
+    assert!(project.join("mustard.json").exists(), "version stamp written at project root");
+    assert!(!claude.join("mustard.json").exists(), "no .claude/mustard.json");
 
     // What `mustard_update` does under the hood: forced, non-interactive update.
     update_with_templates(&project, &templates, &UpdateOptions { force: true })

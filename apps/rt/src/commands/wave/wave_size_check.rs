@@ -12,7 +12,7 @@
 
 use crate::commands::spec::scope_decompose::decide;
 use crate::commands::wave::wave_lib::{detect_role_with, load_role_patterns, parse_files_section};
-use crate::util::mustard_config::RolePattern;
+use mustard_core::RolePattern;
 use mustard_core::io::fs;
 use serde_json::{json, Value};
 use std::collections::BTreeSet;

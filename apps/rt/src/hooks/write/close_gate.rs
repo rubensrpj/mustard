@@ -70,14 +70,16 @@ enum GateMode {
     Strict,
 }
 
-/// Resolve a `MUSTARD_*_MODE` env var, defaulting to `strict` — the close-gate
-/// family default. An unrecognised value also falls back to `strict`.
-fn resolve_mode(env_var: &str) -> GateMode {
-    match std::env::var(env_var)
-        .unwrap_or_default()
-        .to_ascii_lowercase()
-        .as_str()
-    {
+/// Resolve a `MUSTARD_*_MODE` mode in cascade: env var → `mustard.json`
+/// (`gates.<field>`, supplied as `config_override`) → built-in `strict` — the
+/// close-gate family default. An env var set to a non-empty value wins; an
+/// absent string OR an unrecognised value falls back to `strict`.
+fn resolve_mode(env_var: &str, config_override: Option<&str>) -> GateMode {
+    let s = std::env::var(env_var)
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .or_else(|| config_override.map(str::to_string));
+    match s.unwrap_or_default().to_ascii_lowercase().as_str() {
         "off" => GateMode::Off,
         "warn" => GateMode::Warn,
         _ => GateMode::Strict,
@@ -560,33 +562,6 @@ fn find_last_qa_result(cwd: &str, spec: Option<&str>) -> (bool, Option<String>, 
 // Build/test gate
 // ---------------------------------------------------------------------------
 
-/// The build/test/lint/type commands from `mustard.json`.
-struct MustardCommands {
-    build: Option<String>,
-    type_check: Option<String>,
-    lint: Option<String>,
-    test: Option<String>,
-}
-
-/// Read the command fields from `mustard.json`. `None` when the file is absent
-/// or unreadable (the JS `readMustardCommands` returns `null`).
-fn read_mustard_commands(cwd: &str) -> Option<MustardCommands> {
-    let text = fs::read_to_string(Path::new(cwd).join("mustard.json")).ok()?;
-    let cfg: Value = serde_json::from_str(&text).ok()?;
-    let field = |k: &str| {
-        cfg.get(k)
-            .and_then(|v| v.as_str())
-            .filter(|s| !s.is_empty())
-            .map(str::to_string)
-    };
-    Some(MustardCommands {
-        build: field("buildCommand"),
-        type_check: field("typeCheckCommand"),
-        lint: field("lintCommand"),
-        test: field("testCommand"),
-    })
-}
-
 /// The outcome of a single stage command.
 struct CommandResult {
     ok: bool,
@@ -736,13 +711,18 @@ struct CloseGateModes {
 }
 
 impl CloseGateModes {
-    /// Resolve every sub-gate mode from the environment — the production path.
-    fn from_env() -> Self {
+    /// Resolve every sub-gate mode in cascade (env var → `mustard.json`
+    /// `gates.<field>` → built-in `strict`) — the production path.
+    ///
+    /// The project config is loaded once here; only `checklist` carries a
+    /// `gates.*` override field today, so the other three resolve env-only.
+    fn resolve(cwd: &str) -> Self {
+        let gates = mustard_core::ProjectConfig::load(Path::new(cwd)).gates;
         Self {
-            close: resolve_mode("MUSTARD_CLOSE_GATE_MODE"),
-            debt: resolve_mode("MUSTARD_DEBT_GATE_MODE"),
-            checklist: resolve_mode("MUSTARD_CHECKLIST_GATE_MODE"),
-            qa: resolve_mode("MUSTARD_QA_GATE_MODE"),
+            close: resolve_mode("MUSTARD_CLOSE_GATE_MODE", None),
+            debt: resolve_mode("MUSTARD_DEBT_GATE_MODE", None),
+            checklist: resolve_mode("MUSTARD_CHECKLIST_GATE_MODE", gates.checklist.as_deref()),
+            qa: resolve_mode("MUSTARD_QA_GATE_MODE", None),
         }
     }
 }
@@ -753,7 +733,7 @@ impl CloseGateModes {
 /// Returns the verdict — 1:1 with `close-gate.js`. Every JS `process.exit(0)`
 /// with no stdout maps to `Allow`; a `permissionDecision: deny` maps to `Deny`.
 fn close_gate(input: &HookInput, cwd: &str) -> Verdict {
-    close_gate_with_modes(input, cwd, CloseGateModes::from_env())
+    close_gate_with_modes(input, cwd, CloseGateModes::resolve(cwd))
 }
 
 /// The pure close-gate body — every `MUSTARD_*_MODE` is supplied via `modes`
@@ -978,10 +958,11 @@ fn run_close_gates(cwd: &str, spec_ref: Option<&str>, modes: CloseGateModes) -> 
     }
 
     // ── Build/test gate (Wave 9) ──────────────────────────────────────────
-    let Some(cmds) = read_mustard_commands(cwd) else {
-        // mustard.json absent/unreadable → fail-open skip.
-        return Verdict::Allow;
-    };
+    // `commands()` always returns (fields `None` when the key is absent or the
+    // file is missing/unreadable). Each stage already skips on an absent command,
+    // and the `stages.is_empty()` check below fail-open skips when none are set —
+    // preserving the old "no mustard.json → Allow" semantics.
+    let cmds = mustard_core::ProjectConfig::load(Path::new(cwd)).commands();
     let stages: Vec<(&str, String)> = [
         ("build", cmds.build),
         ("type", cmds.type_check),
@@ -1078,7 +1059,7 @@ fn mode_str(mode: GateMode) -> &'static str {
 /// This is the entry point used by `mustard-rt run emit-phase --to CLOSE` to
 /// run the same checks the legacy Write/Edit hook used to perform.
 pub fn gate_close_for_spec(cwd: &str, spec: &str) -> Result<(), String> {
-    let modes = CloseGateModes::from_env();
+    let modes = CloseGateModes::resolve(cwd);
     match run_close_gates(cwd, Some(spec), modes) {
         Verdict::Deny { reason } => Err(reason),
         // Warn → advisory only (CLOSE proceeds). Allow / others → ok.

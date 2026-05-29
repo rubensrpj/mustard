@@ -1,4 +1,6 @@
 pub mod regression_check;
+pub mod config;
+pub mod command_detect;
 pub mod meta;
 pub mod entity_registry;
 pub mod knowledge;

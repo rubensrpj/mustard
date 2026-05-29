@@ -8,9 +8,9 @@
 //! ## Layout
 //!
 //! - [`set_language`] — validate against [`mustard_core::SupportedLocale`], write
-//!   `mustard.json#lang`, emit `pipeline.economy.operation.invoked`.
+//!   `mustard.json#specLang` via [`ProjectConfig`], emit telemetry.
 //! - [`set_tone`] — validate against [`mustard_core::Tone`], write
-//!   `mustard.json#tone`, emit telemetry.
+//!   `mustard.json#tone` via [`ProjectConfig`], emit telemetry.
 //! - [`read_settings`] — read both fields back for the form initial state.
 //!
 //! ## Fail-open contract
@@ -21,7 +21,7 @@
 //! - Path traversal is rejected up front (`repo_path` must be a real dir).
 
 use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
-use mustard_core::{SupportedLocale, Tone};
+use mustard_core::{ProjectConfig, SupportedLocale, Tone};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -36,7 +36,8 @@ pub struct ProjectSettings {
     pub tone: Option<String>,
 }
 
-/// Write `mustard.json#lang` after validating against [`Locale::from_str`].
+/// Write `mustard.json#specLang` after validating against
+/// [`SupportedLocale::from_str`].
 ///
 /// Rejects the legacy short forms (`pt`/`en`) with a typed error so the
 /// dashboard can surface "use pt-BR or en-US" without inferring intent.
@@ -46,7 +47,10 @@ pub struct ProjectSettings {
 pub fn set_language(repo_path: String, lang: String) -> Result<(), String> {
     let started = Instant::now();
     let locale = SupportedLocale::from_str(&lang).map_err(|e| e.to_string())?;
-    write_field(&repo_path, "lang", serde_json::Value::String(locale.as_str().to_string()))?;
+    let root = repo_root(&repo_path)?;
+    let mut config = ProjectConfig::load(&root);
+    config.spec_lang = Some(locale.as_str().to_string());
+    config.write(&root).map_err(|e| e.to_string())?;
     emit_i18n_op(&repo_path, "i18n-set-language", started.elapsed().as_millis());
     Ok(())
 }
@@ -58,11 +62,10 @@ pub fn set_tone(repo_path: String, tone: String) -> Result<(), String> {
     let parsed = Tone::parse(&tone).ok_or_else(|| {
         format!("unknown tone {tone:?}; expected didactic / technical / concise")
     })?;
-    write_field(
-        &repo_path,
-        "tone",
-        serde_json::Value::String(parsed.as_str().to_string()),
-    )?;
+    let root = repo_root(&repo_path)?;
+    let mut config = ProjectConfig::load(&root);
+    config.tone = Some(parsed.as_str().to_string());
+    config.write(&root).map_err(|e| e.to_string())?;
     emit_i18n_op(&repo_path, "i18n-set-tone", started.elapsed().as_millis());
     Ok(())
 }
@@ -72,57 +75,23 @@ pub fn set_tone(repo_path: String, tone: String) -> Result<(), String> {
 /// fields as `None` rather than an error.
 #[tauri::command]
 pub fn read_settings(repo_path: String) -> Result<ProjectSettings, String> {
-    let path = mustard_json_path(&repo_path)?;
-    let value = read_or_empty_object(&path);
+    let root = repo_root(&repo_path)?;
+    let config = ProjectConfig::load(&root);
     Ok(ProjectSettings {
-        lang: value
-            .get("lang")
-            .and_then(|v| v.as_str())
-            .map(str::to_string),
-        tone: value
-            .get("tone")
-            .and_then(|v| v.as_str())
-            .map(str::to_string),
+        // `specLang` is canonical; fall back to the legacy `lang` key on read.
+        lang: config.spec_lang.clone().or_else(|| config.lang.clone()),
+        tone: config.tone.clone(),
     })
 }
 
-/// Resolve the project `mustard.json` path. Rejects empty / traversal-y inputs.
-fn mustard_json_path(repo_path: &str) -> Result<PathBuf, String> {
+/// Resolve the project root from a dashboard `repo_path`. Rejects empty inputs.
+/// The config IO itself is owned by [`ProjectConfig`]; this only guards the
+/// argument.
+fn repo_root(repo_path: &str) -> Result<PathBuf, String> {
     if repo_path.is_empty() {
         return Err("repo_path is empty".to_string());
     }
-    Ok(PathBuf::from(repo_path).join("mustard.json"))
-}
-
-/// Read `mustard.json` (or yield `{}` when absent / malformed). Used by both
-/// the read side and the write side so a malformed file does not surface as a
-/// permanent error — the next write rewrites it cleanly.
-fn read_or_empty_object(path: &Path) -> serde_json::Value {
-    let text = match std::fs::read_to_string(path) {
-        Ok(t) => t,
-        Err(_) => return serde_json::json!({}),
-    };
-    serde_json::from_str(&text).unwrap_or_else(|_| serde_json::json!({}))
-}
-
-/// Atomically write `field = value` into `mustard.json`, preserving every
-/// other field on the existing object. Uses the same `fs::write_atomic`
-/// sibling-tempfile-rename routine as `meta.json` writers.
-fn write_field(repo_path: &str, field: &str, value: serde_json::Value) -> Result<(), String> {
-    let path = mustard_json_path(repo_path)?;
-    let mut root = read_or_empty_object(&path);
-    // The W4 spec assumes a JSON object at the root; coerce non-object roots
-    // (e.g. an accidental array) into a fresh object rather than fail-closed.
-    if !root.is_object() {
-        root = serde_json::json!({});
-    }
-    if let Some(obj) = root.as_object_mut() {
-        obj.insert(field.to_string(), value);
-    }
-    let body = serde_json::to_string_pretty(&root).map_err(|e| e.to_string())?;
-    let mut bytes = body.into_bytes();
-    bytes.push(b'\n');
-    mustard_core::io::fs::write_atomic(&path, &bytes).map_err(|e| e.to_string())
+    Ok(PathBuf::from(repo_path))
 }
 
 /// Emit one `pipeline.economy.operation.invoked` event for an i18n write.

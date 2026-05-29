@@ -35,7 +35,6 @@
 //! override pass, and one single-root fallback.
 
 use mustard_core::io::fs;
-use mustard_core::ClaudePaths;
 use std::path::Path;
 
 /// One discovered subproject: its leaf name and its repo-root-relative path
@@ -134,34 +133,10 @@ pub fn has_build_manifest(dir: &Path) -> bool {
     cargo.is_file() && read_safe(&cargo).contains("[package]")
 }
 
-/// Read `subprojects.exclude` / `.include` from `.claude/mustard.json`.
-/// Entries are repo-root-relative paths; returned normalised (forward slash,
-/// no surrounding slashes).
-fn read_overrides(root: &Path) -> (Vec<String>, Vec<String>) {
-    let mut exclude = Vec::new();
-    let mut include = Vec::new();
-    let Ok(paths) = ClaudePaths::for_project(root) else {
-        return (exclude, include);
-    };
-    let content = read_safe(&paths.mustard_json_path());
-    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
-        if let Some(sp) = json.get("subprojects") {
-            for (field, out) in [("exclude", &mut exclude), ("include", &mut include)] {
-                if let Some(arr) = sp.get(field).and_then(serde_json::Value::as_array) {
-                    for v in arr.iter().filter_map(serde_json::Value::as_str) {
-                        out.push(v.replace('\\', "/").trim_matches('/').to_string());
-                    }
-                }
-            }
-        }
-    }
-    (exclude, include)
-}
-
 /// Apply the `mustard.json` override to a detected path list: drop excluded
 /// entries, append included ones not already present.
 fn apply_overrides(root: &Path, paths: &mut Vec<String>) {
-    let (exclude, include) = read_overrides(root);
+    let (exclude, include) = mustard_core::ProjectConfig::load(root).subproject_overrides();
     paths.retain(|p| !exclude.contains(p));
     for inc in include {
         if !inc.is_empty() && !paths.contains(&inc) {
@@ -233,8 +208,7 @@ fn derive_name(root: &Path, rel_path: &str) -> String {
 ///
 /// 1. BFS (max depth 3) for directories carrying a build manifest, honouring
 ///    [`DiscoveryOptions::require_claude_md`].
-/// 2. Apply the `.claude/mustard.json` `subprojects.exclude` / `.include`
-///    override.
+/// 2. Apply the `mustard.json` `subprojects.exclude` / `.include` override.
 /// 3. Single-root fallback: if nothing was found but the root itself carries a
 ///    build manifest (or a `CLAUDE.md`), treat the root as the one subproject
 ///    `.`.
@@ -380,10 +354,9 @@ mod tests {
         }
         let edge = dir.path().join("infra").join("edge");
         std::fs::create_dir_all(&edge).unwrap();
-        let claude = dir.path().join(".claude");
-        std::fs::create_dir_all(&claude).unwrap();
+        // mustard.json lives at the project root (not `.claude/`).
         std::fs::write(
-            claude.join("mustard.json"),
+            dir.path().join("mustard.json"),
             r#"{"subprojects":{"exclude":["apps/drop"],"include":["infra/edge"]}}"#,
         )
         .unwrap();
@@ -414,11 +387,10 @@ mod tests {
     fn drops_nonexistent_override_include() {
         let dir = tempdir().unwrap();
         std::fs::write(dir.path().join("Cargo.toml"), "[package]\nname = \"x\"").unwrap();
-        let claude = dir.path().join(".claude");
-        std::fs::create_dir_all(&claude).unwrap();
-        // `include` points at a path that does not exist on disk.
+        // `include` points at a path that does not exist on disk. mustard.json
+        // lives at the project root (not `.claude/`).
         std::fs::write(
-            claude.join("mustard.json"),
+            dir.path().join("mustard.json"),
             r#"{"subprojects":{"include":["ghost/dir"]}}"#,
         )
         .unwrap();

@@ -1,21 +1,15 @@
-//! Filesystem primitives shared by `init` and (Wave 2) `update`.
-//!
-//! Two operations, both ported from `init.ts`:
+//! Filesystem primitives for `init`/`update`.
 //!
 //! - [`copy_dir`] — recursive directory copy, the engine behind
 //!   `templates/` → `.claude/`. It honours an *overwrite* flag (a fresh
 //!   install overwrites; a merge skips existing files so user edits survive)
 //!   and a *top-level skip* list (`.github` lives at project root, not under
 //!   `.claude/`).
-//! - [`merge_json`] — surgical merge of a key set into an existing JSON
-//!   object: read what's there, set only the provided keys, write it back.
-//!   `init` uses it for `mustard.json`; `update` will reuse it to re-stamp the
-//!   `version`.
+//! - [`read_json_object`] — fail-open read of a JSON object, behind the
+//!   `settings.json` mergers in `init`/`add`.
 //!
-//! The API is deliberately shaped for both callers: `copy_dir` takes the
-//! overwrite policy as a parameter rather than baking in a fresh-vs-merge
-//! split, and `merge_json` takes an arbitrary `(key, value)` set so any field
-//! can be carried forward without a bespoke function per call site.
+//! The project config (`mustard.json`) is no longer merged here — it has a
+//! single typed owner, [`mustard_core::ProjectConfig`].
 
 use std::fs;
 use std::path::Path;
@@ -74,40 +68,10 @@ pub fn copy_dir(
     Ok(count)
 }
 
-/// Read the JSON object at `path` (treating an absent or malformed file as an
-/// empty object), apply `updates` over it, and write it back pretty-printed
-/// with a trailing newline.
-///
-/// "Surgical" means non-destructive: every key already present and not in
-/// `updates` is preserved verbatim. The parent directory is created if needed.
-///
-/// A malformed existing file is intentionally *not* an error — it is treated
-/// as empty and recreated, matching the fail-open behaviour of the JS port
-/// (`try { JSON.parse } catch { existing = {} }`).
-pub fn merge_json(path: &Path, updates: &[(&str, Value)]) -> Result<()> {
-    let mut object = read_json_object(path);
-
-    for (key, value) in updates {
-        object.insert((*key).to_string(), value.clone());
-    }
-
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("creating directory {}", parent.display()))?;
-    }
-
-    let mut serialized = serde_json::to_string_pretty(&Value::Object(object))
-        .context("serializing JSON")?;
-    serialized.push('\n');
-    fs::write(path, serialized)
-        .with_context(|| format!("writing {}", path.display()))?;
-    Ok(())
-}
-
 /// Read `path` as a JSON object. An absent file, an I/O failure, malformed
 /// JSON, or a non-object top-level value all collapse to an empty map — the
-/// caller never has to distinguish them. This is the fail-open read used by
-/// both [`merge_json`] and the `mustard.json` config flow.
+/// caller never has to distinguish them. The fail-open read behind the
+/// `settings.json` mergers in `init`/`add`.
 pub fn read_json_object(path: &Path) -> Map<String, Value> {
     fs::read_to_string(path)
         .ok()
@@ -122,7 +86,6 @@ pub fn read_json_object(path: &Path) -> Map<String, Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
     use std::fs;
     use tempfile::tempdir;
 
@@ -174,31 +137,6 @@ mod tests {
 
         assert!(!dest.join(".github").exists());
         assert!(dest.join("inner/.github/ci.yml").exists());
-    }
-
-    #[test]
-    fn merge_json_preserves_unrelated_keys() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("mustard.json");
-        write(&path, r#"{"git":{"provider":"github"},"keep":1}"#);
-
-        merge_json(&path, &[("version", json!("9.9.9"))]).unwrap();
-
-        let result = read_json_object(&path);
-        assert_eq!(result.get("version"), Some(&json!("9.9.9")));
-        assert_eq!(result.get("keep"), Some(&json!(1)));
-        assert!(result.contains_key("git"));
-    }
-
-    #[test]
-    fn merge_json_treats_missing_file_as_empty() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("new.json");
-
-        merge_json(&path, &[("version", json!("1.0.0"))]).unwrap();
-
-        let result = read_json_object(&path);
-        assert_eq!(result.get("version"), Some(&json!("1.0.0")));
     }
 
     #[test]

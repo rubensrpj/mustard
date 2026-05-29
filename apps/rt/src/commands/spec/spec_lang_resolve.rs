@@ -16,7 +16,8 @@ use serde_json::json;
 use mustard_core::domain::model::event::ActorKind;
 use crate::shared::context;
 use crate::shared::events::economy;
-use mustard_core::platform::i18n::{project_locale_from_file, SupportedLocale as Locale};
+use mustard_core::platform::i18n::SupportedLocale as Locale;
+use mustard_core::ProjectConfig;
 use mustard_core::ClaudePaths;
 use mustard_core::{read_meta, domain::spec as spec_io};
 use serde::Serialize;
@@ -94,19 +95,13 @@ pub fn resolve(cwd: &Path, slug_or_path: &str) -> (Locale, LangSource) {
     if let Some(l) = lang_from_header(&dir) {
         return (l, LangSource::Header);
     }
-    let mustard_json = cwd.join("mustard.json");
-    if mustard_json.exists() {
-        let l = project_locale_from_file(&mustard_json);
-        // `project_locale_from_file` already fails open to the default. We can't
-        // distinguish "found en-US" from "default to pt-BR" without re-reading,
-        // so peek manually for the field presence.
-        if let Ok(text) = std::fs::read_to_string(&mustard_json) {
-            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
-                if v.get("lang").and_then(|v| v.as_str()).is_some() {
-                    return (l, LangSource::MustardJson);
-                }
-            }
-        }
+    // The mustard.json level contributes only when it actually carries a
+    // language key. `ProjectConfig` exposes `spec_lang`/`lang` directly, so we
+    // claim the `MustardJson` source exactly when one is present (the cascade's
+    // contract) — no second manual read.
+    let config = ProjectConfig::load(cwd);
+    if config.spec_lang.is_some() || config.lang.is_some() {
+        return (config.i18n().lang, LangSource::MustardJson);
     }
     (Locale::default(), LangSource::Default)
 }

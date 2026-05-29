@@ -30,7 +30,6 @@
 
 use super::file_utils::VisitedFile;
 use super::{EntityInfo, EnumInfo};
-use crate::util::mustard_config;
 use mustard_core::domain::vocabulary::architecture::{
     detect_architecture, ArchitectureVocabulary, LayerEdge, LayerRole, DEFAULT_ARCHITECTURE_NAME,
 };
@@ -194,9 +193,7 @@ pub fn detect_subproject_architecture(
     enums: &BTreeMap<String, EnumInfo>,
 ) -> String {
     // 1. Explicit override.
-    if let Some(pin) =
-        mustard_config::load(sub_root).and_then(|cfg| mustard_config::architecture(&cfg))
-    {
+    if let Some(pin) = mustard_core::ProjectConfig::load(sub_root).architecture() {
         return pin;
     }
 

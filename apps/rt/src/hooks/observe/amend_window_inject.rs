@@ -53,21 +53,12 @@ const DEFAULT_DRIFT_THRESHOLD: u32 = 3;
 /// Amendment window expiry: 72 h after the pipeline was closed.
 const WINDOW_EXPIRY_SECS: u64 = 72 * 60 * 60;
 
-/// Read `amend.drift_threshold` from `{project_dir}/.claude/mustard.json`,
+/// Read `amend.drift_threshold` from `{project_dir}/mustard.json`,
 /// falling back to [`DEFAULT_DRIFT_THRESHOLD`] on any error.
 fn drift_threshold(project_dir: &str) -> u32 {
-    let path = match ClaudePaths::for_project(project_dir) {
-        Ok(cp) => cp.mustard_json_path(),
-        Err(_) => return DEFAULT_DRIFT_THRESHOLD,
-    };
-    let text = std::fs::read_to_string(&path).unwrap_or_default();
-    let v: serde_json::Value = serde_json::from_str(&text).unwrap_or(serde_json::Value::Null);
-    v.get("amend")
-        .and_then(|a| a.get("drift_threshold"))
-        .and_then(serde_json::Value::as_u64)
-        .map_or(DEFAULT_DRIFT_THRESHOLD, |n| {
-            u32::try_from(n).unwrap_or(DEFAULT_DRIFT_THRESHOLD)
-        })
+    mustard_core::ProjectConfig::load(std::path::Path::new(project_dir))
+        .drift_threshold()
+        .unwrap_or(DEFAULT_DRIFT_THRESHOLD)
 }
 
 // ---------------------------------------------------------------------------
@@ -538,21 +529,28 @@ impl Check for AmendWindowInject {
             return Ok(Verdict::Allow);
         }
 
-        // Derive lang from spec header (best-effort).
+        // Derive lang from spec header (best-effort); tone from project config.
+        // The locale is spec-scoped (the spec may differ from the project lang),
+        // but the tone is a project-wide preference — combine them so the banner
+        // both speaks the spec's language and honours the user's tone.
         let lang = derive_spec_lang_from_fs(&pdir, &spec_id);
+        let tone = mustard_core::ProjectConfig::load(std::path::Path::new(&pdir))
+            .i18n()
+            .tone;
+        let i18n = mustard_core::I18n::new(lang, tone);
         let n = forecast_len;
-        let body = mustard_core::translate("banner.amend.drift", lang);
-        let warning = match lang {
+        let body = i18n.render("banner.amend.drift");
+        let lead = match lang {
             mustard_core::SupportedLocale::PtBr => format!(
                 "Você está editando `{file_path}` em outro escopo da spec ativa \
-                 `{spec_id}` (pós-CLOSE). Já são {n} arquivos fora do escopo declarado. \
-                 {body}",
+                 `{spec_id}` (pós-CLOSE). Já são {n} arquivos fora do escopo declarado. ",
             ),
             mustard_core::SupportedLocale::EnUs => format!(
                 "You're editing `{file_path}` outside the active spec `{spec_id}` scope \
-                 (post-CLOSE). {n} files outside declared scope so far. {body}",
+                 (post-CLOSE). {n} files outside declared scope so far. ",
             ),
         };
+        let warning = format!("{}{body}", mustard_core::apply_tone(&lead, tone));
         Ok(Verdict::Inject { context: warning })
     }
 }
@@ -803,8 +801,8 @@ mod tests {
         let cwd = project.path().to_str().unwrap();
         let spec_id = "spec-ac9-chk";
 
-        // Write mustard.json with threshold=3.
-        let mustard_json = project.path().join(".claude").join("mustard.json");
+        // Write mustard.json with threshold=3 (at the project root, not `.claude/`).
+        let mustard_json = project.path().join("mustard.json");
         std::fs::write(&mustard_json, r#"{"amend":{"drift_threshold":3}}"#).unwrap();
 
         set_active_spec(project.path(), spec_id);

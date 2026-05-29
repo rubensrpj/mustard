@@ -34,7 +34,7 @@
 
 use anyhow::Result;
 use mustard_core::domain::ast::GrammarLoader;
-use mustard_core::platform::i18n::{self, Locale};
+use mustard_core::platform::i18n::I18n;
 use serde::Deserialize;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -237,12 +237,12 @@ fn label_for(entry: &GrammarEntry) -> &str {
 }
 
 /// Render a single suggestion block as shell-ready markdown.
-fn render_suggestion_block(entry: &GrammarEntry, locale: Locale, is_installed: bool) -> String {
+fn render_suggestion_block(entry: &GrammarEntry, i18n: &I18n, is_installed: bool) -> String {
     let mut block = String::new();
     let marker = if is_installed {
         format!(
             " — ✓ {}",
-            i18n::translate("cli.install_grammars.already_installed", locale)
+            i18n.render("cli.install_grammars.already_installed")
         )
     } else {
         String::new()
@@ -250,12 +250,12 @@ fn render_suggestion_block(entry: &GrammarEntry, locale: Locale, is_installed: b
     block.push_str(&format!("### {}{marker}\n", label_for(entry)));
     block.push_str(&format!(
         "- {}: <{}>\n",
-        i18n::translate("cli.install_grammars.repo_label", locale),
+        i18n.render("cli.install_grammars.repo_label"),
         entry.repo_url
     ));
     block.push_str(&format!(
         "- {}:\n",
-        i18n::translate("cli.install_grammars.install_cmd_label", locale)
+        i18n.render("cli.install_grammars.install_cmd_label")
     ));
     block.push_str("```sh\n");
     block.push_str(&entry.install_cmd);
@@ -266,8 +266,8 @@ fn render_suggestion_block(entry: &GrammarEntry, locale: Locale, is_installed: b
 
 /// Render an unknown-language fallback block — explicit fail-open per
 /// `feedback_no_stub_fail_open`.
-fn render_unknown_block(lang_id: &str, locale: Locale) -> String {
-    let template = i18n::translate("cli.install_grammars.unknown_lang_fallback", locale);
+fn render_unknown_block(lang_id: &str, i18n: &I18n) -> String {
+    let template = i18n.render("cli.install_grammars.unknown_lang_fallback");
     let line = template.replace("{lang}", lang_id);
     format!("### {lang_id}\n- {line}\n")
 }
@@ -279,18 +279,18 @@ fn render_output(
     langs: &[String],
     installed: &BTreeSet<String>,
     catalog: &GrammarsCatalog,
-    locale: Locale,
+    i18n: &I18n,
 ) -> String {
     let mut out = String::new();
     out.push_str(&format!(
         "# {}\n\n",
-        i18n::translate("cli.install_grammars.title", locale)
+        i18n.render("cli.install_grammars.title")
     ));
-    out.push_str(i18n::translate("cli.install_grammars.lead", locale));
+    out.push_str(&i18n.render("cli.install_grammars.lead"));
     out.push_str("\n\n");
 
     if langs.is_empty() {
-        out.push_str(i18n::translate("cli.install_grammars.no_stack", locale));
+        out.push_str(&i18n.render("cli.install_grammars.no_stack"));
         out.push('\n');
         return out;
     }
@@ -299,15 +299,15 @@ fn render_output(
         let is_installed = installed.contains(lang_id);
         match catalog.lookup(lang_id) {
             Some(entry) => {
-                out.push_str(&render_suggestion_block(entry, locale, is_installed));
+                out.push_str(&render_suggestion_block(entry, i18n, is_installed));
             }
             None => {
-                out.push_str(&render_unknown_block(lang_id, locale));
+                out.push_str(&render_unknown_block(lang_id, i18n));
             }
         }
         out.push('\n');
     }
-    out.push_str(i18n::translate("cli.install_grammars.footer", locale));
+    out.push_str(&i18n.render("cli.install_grammars.footer"));
     out.push('\n');
     out
 }
@@ -325,10 +325,11 @@ pub fn run(args: InstallGrammarsArgs) -> Result<()> {
         None => std::env::current_dir()?,
     };
     let catalog = GrammarsCatalog::load(&project_root);
-    let locale = i18n::project_locale(&project_root);
+    // Resolve locale + tone once; `render_output` applies both via `I18n::render`.
+    let i18n = mustard_core::ProjectConfig::load(&project_root).i18n();
     let langs = detect_languages(&project_root, &catalog);
     let installed = installed_languages(&project_root);
-    let rendered = render_output(&langs, &installed, &catalog, locale);
+    let rendered = render_output(&langs, &installed, &catalog, &i18n);
     print!("{rendered}");
     Ok(())
 }
@@ -336,6 +337,7 @@ pub fn run(args: InstallGrammarsArgs) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mustard_core::platform::i18n::{self, Locale};
     use std::fs;
     use tempfile::tempdir;
 
@@ -352,7 +354,12 @@ mod tests {
         let empty: BTreeSet<String> = BTreeSet::new();
 
         // 1. Catalogued language (`rust`) — output carries repo_url + install_cmd.
-        let rendered = render_output(&["rust".to_string()], &empty, &catalog, Locale::EnUs);
+        let rendered = render_output(
+            &["rust".to_string()],
+            &empty,
+            &catalog,
+            &I18n::new(Locale::EnUs, i18n::Tone::default()),
+        );
         assert!(
             rendered.contains("https://github.com/tree-sitter/tree-sitter-rust"),
             "expected rust repo URL in output, got:\n{rendered}"
@@ -371,8 +378,12 @@ mod tests {
         );
 
         // 2. Unknown language (`brainfuck`) — fallback message, no panic.
-        let rendered_unknown =
-            render_output(&["brainfuck".to_string()], &empty, &catalog, Locale::EnUs);
+        let rendered_unknown = render_output(
+            &["brainfuck".to_string()],
+            &empty,
+            &catalog,
+            &I18n::new(Locale::EnUs, i18n::Tone::default()),
+        );
         assert!(
             rendered_unknown.contains("not catalogued"),
             "expected unknown-language fallback, got:\n{rendered_unknown}"
@@ -385,8 +396,12 @@ mod tests {
         // 3. Catalogued + installed — `✓ already installed` marker appears.
         let mut installed = BTreeSet::new();
         installed.insert("rust".to_string());
-        let rendered_installed =
-            render_output(&["rust".to_string()], &installed, &catalog, Locale::EnUs);
+        let rendered_installed = render_output(
+            &["rust".to_string()],
+            &installed,
+            &catalog,
+            &I18n::new(Locale::EnUs, i18n::Tone::default()),
+        );
         assert!(
             rendered_installed.contains("already installed"),
             "expected installed marker, got:\n{rendered_installed}"
@@ -397,15 +412,24 @@ mod tests {
         );
 
         // 4. pt-BR locale renders the localised marker.
-        let rendered_pt =
-            render_output(&["rust".to_string()], &installed, &catalog, Locale::PtBr);
+        let rendered_pt = render_output(
+            &["rust".to_string()],
+            &installed,
+            &catalog,
+            &I18n::new(Locale::PtBr, i18n::Tone::default()),
+        );
         assert!(
             rendered_pt.contains("já instalada"),
             "expected pt-BR installed marker, got:\n{rendered_pt}"
         );
 
         // 5. Empty stack — explicit `no_stack` message, no panic.
-        let rendered_empty = render_output(&[], &empty, &catalog, Locale::EnUs);
+        let rendered_empty = render_output(
+            &[],
+            &empty,
+            &catalog,
+            &I18n::new(Locale::EnUs, i18n::Tone::default()),
+        );
         assert!(
             rendered_empty.contains("No language detected"),
             "expected no-stack fallback, got:\n{rendered_empty}"

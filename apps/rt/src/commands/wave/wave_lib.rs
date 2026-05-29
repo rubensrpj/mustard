@@ -4,7 +4,7 @@
 //! `exec-rewave-check` and `wave-size-check`.
 
 use crate::commands::spec::spec_sections::is_heading;
-use crate::util::mustard_config::{self, glob_matches, RolePattern};
+use mustard_core::{glob_matches, ProjectConfig, RolePattern};
 use std::path::Path;
 
 /// Built-in keyword categories — the pre-F0-e classifier, kept byte-identical so
@@ -96,9 +96,7 @@ fn structural_role(lower_path: &str) -> String {
 /// applied to every [`detect_role_with`] call.
 #[must_use]
 pub fn load_role_patterns(project_root: &Path) -> Vec<RolePattern> {
-    mustard_config::load(project_root)
-        .map(|cfg| mustard_config::role_patterns(&cfg))
-        .unwrap_or_default()
+    ProjectConfig::load(project_root).role_patterns()
 }
 
 /// Whether a trimmed line starts a new `## ` section (any heading).

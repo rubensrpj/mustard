@@ -10,21 +10,17 @@
 //!    `scripts`, `refs`);
 //! 5. re-copy those folders plus `settings.json` from `templates/`;
 //! 6. re-run the RTK and global-permissions guarantees;
-//! 7. re-stamp the `version` field in `.claude/mustard.json`;
-//! 8. re-run the project-root git-flow `mustard.json` generation.
+//! 7. re-stamp the `version` field in the project-root `mustard.json`.
 //!
 //! **What is preserved.** Only the Mustard-owned folders are deleted, so
 //! everything else under `.claude/` survives untouched: `CLAUDE.md`,
-//! `pipeline-config.md`, `entity-registry.json`, `.claude/mustard.json`,
-//! `docs/`, `spec/`, `memory/`, and any user-authored command outside
-//! `commands/mustard/`.
+//! `pipeline-config.md`, `entity-registry.json`, `docs/`, `spec/`, `memory/`,
+//! and any user-authored command outside `commands/mustard/`. The project-root
+//! `mustard.json` is loaded and rewritten with only `version` bumped — git
+//! flow, commands, language/tone, `runtime` and any user keys are preserved.
 //!
-//! **The `version` re-stamp** is the Rust port's job (spec b5): `update`
-//! rewrites `version` in `.claude/mustard.json` so the dashboard (B6) sees the
-//! freshly installed version. The JS port re-stamped a `mustardHome` path
-//! instead — a concept the native binary does not have (it resolves its own
-//! `templates/`), so it is dropped. `runtime` is left untouched: `init` owns
-//! it, and an `update` does not change the host.
+//! **The `version` re-stamp** lets the dashboard (B6) see the freshly installed
+//! version; the rest of the config is left as `init`/the user set it.
 
 use std::io::IsTerminal;
 use std::path::Path;
@@ -33,13 +29,12 @@ use anyhow::{Context, Result, bail};
 use dialoguer::Confirm;
 use dialoguer::theme::ColorfulTheme;
 use mustard_core::io::fs as mfs;
-use serde_json::json;
+use mustard_core::ProjectConfig;
 
-use crate::commands::git_flow;
 use crate::commands::init::{
-    ensure_global_permissions, ensure_ripgrep, ensure_rtk, resolve_templates_dir,
+    ensure_global_permissions, ensure_ripgrep, ensure_rtk, install_mcp_json, resolve_templates_dir,
 };
-use crate::fs_ops::{copy_dir, merge_json};
+use crate::fs_ops::copy_dir;
 
 /// Flags accepted by `mustard update`.
 #[derive(Debug, Default, Clone)]
@@ -131,13 +126,16 @@ pub fn update_with_templates(
     ensure_rtk();
     ensure_ripgrep();
 
-    // Re-stamp the version into .claude/mustard.json (surgical — `runtime` and
-    // any other keys are preserved).
-    restamp_version(&claude_path)?;
+    // Re-stamp the version into the project-root mustard.json: load the existing
+    // config and rewrite only `version`, preserving git flow, commands,
+    // language/tone, runtime and any user keys.
+    let mut config = ProjectConfig::load(&project_path);
+    config.version = Some(crate::VERSION.to_string());
+    config.write(&project_path)?;
 
-    // Re-run the project-root git-flow config (preserves an existing file when
-    // non-interactive — see `git_flow::generate_mustard_json`).
-    git_flow::generate_mustard_json(&project_path, false)?;
+    // Ensure the project-root .mcp.json carries the mustard-memory server (a
+    // project predating the settings.json → .mcp.json split picks it up here).
+    install_mcp_json(&project_path)?;
 
     println!("\nUpdate complete!\n");
     Ok(())
@@ -179,16 +177,6 @@ fn backup_claude_dir(claude_path: &Path) -> Result<std::path::PathBuf> {
     Ok(backup)
 }
 
-/// Surgically re-stamp the `version` field in `.claude/mustard.json`.
-///
-/// Uses [`crate::fs_ops::merge_json`], so `runtime` and every other key are
-/// preserved verbatim — only `version` is rewritten to this build's
-/// [`crate::VERSION`].
-fn restamp_version(claude_path: &Path) -> Result<()> {
-    let path = claude_path.join("mustard.json");
-    merge_json(&path, &[("version", json!(crate::VERSION))])
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -224,7 +212,7 @@ mod tests {
         fs::write(claude.join("docs/notes.md"), "USER NOTES").unwrap();
         fs::write(claude.join("spec/feat.md"), "USER SPEC").unwrap();
         fs::write(
-            claude.join("mustard.json"),
+            project.join("mustard.json"),
             r#"{"version":"0.0.1","runtime":{"kind":"native"}}"#,
         )
         .unwrap();
@@ -279,7 +267,7 @@ mod tests {
 
         update_with_templates(&project, &templates, &UpdateOptions { force: true }).unwrap();
 
-        let cfg = crate::fs_ops::read_json_object(&project.join(".claude/mustard.json"));
+        let cfg = crate::fs_ops::read_json_object(&project.join("mustard.json"));
         // version is re-stamped to this build.
         assert_eq!(cfg.get("version").and_then(|v| v.as_str()), Some(crate::VERSION));
         // runtime is preserved verbatim — update does not own it.

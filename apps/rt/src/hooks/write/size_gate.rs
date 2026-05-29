@@ -50,15 +50,18 @@ enum GateMode {
     Strict,
 }
 
-/// Resolve a `MUSTARD_*_MODE` env var into a [`GateMode`]. `default` is the
-/// fallback both for an absent variable and for an unrecognised value —
-/// matching `resolveMode` / `getMode` in the JS hooks.
-fn resolve_mode(env_var: &str, default: GateMode) -> GateMode {
-    match std::env::var(env_var)
-        .unwrap_or_default()
-        .to_ascii_lowercase()
-        .as_str()
-    {
+/// Resolve a `MUSTARD_*_MODE` mode in cascade: env var → `mustard.json`
+/// (`gates.<field>`, supplied as `config_override`) → built-in `default`.
+///
+/// An env var set to a non-empty value wins; otherwise the config override is
+/// tried; an absent string OR an unrecognised value falls through to `default`
+/// — matching `resolveMode` / `getMode` in the JS hooks.
+fn resolve_mode(env_var: &str, config_override: Option<&str>, default: GateMode) -> GateMode {
+    let s = std::env::var(env_var)
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .or_else(|| config_override.map(str::to_string));
+    match s.unwrap_or_default().to_ascii_lowercase().as_str() {
         "off" => GateMode::Off,
         "warn" => GateMode::Warn,
         "strict" => GateMode::Strict,
@@ -791,12 +794,22 @@ impl Check for SizeGate {
             return Ok(Verdict::Allow);
         };
 
+        // Cascade overrides: load the project config once per gate invocation
+        // and read `gates.<field>` for the modes that support a mustard.json
+        // override (spec_size, skill_size).
+        let cwd = ctx.project_dir_or_cwd(input);
+        let gates = mustard_core::ProjectConfig::load(std::path::Path::new(&cwd)).gates;
+
         let mut warnings: Vec<String> = Vec::new();
 
         // ── spec-size-gate (+ AC quality audit) ───────────────────────────
         if is_spec_path(&file_path) {
-            let spec_mode = resolve_mode("MUSTARD_SPEC_SIZE_MODE", GateMode::Warn);
-            let ac_mode = resolve_mode("MUSTARD_AC_QUALITY_MODE", GateMode::Warn);
+            let spec_mode = resolve_mode(
+                "MUSTARD_SPEC_SIZE_MODE",
+                gates.spec_size.as_deref(),
+                GateMode::Warn,
+            );
+            let ac_mode = resolve_mode("MUSTARD_AC_QUALITY_MODE", None, GateMode::Warn);
             if spec_mode != GateMode::Off || ac_mode != GateMode::Off {
                 if let Some(content) = resolve_content(input) {
                     // AC audit first (advisory only — never a Deny).
@@ -818,9 +831,13 @@ impl Check for SizeGate {
 
         // ── skill-size-gate + skill-validate-gate ─────────────────────────
         if is_skill_path(&file_path) {
-            let size_mode = resolve_mode("MUSTARD_SKILL_SIZE_MODE", GateMode::Warn);
+            let size_mode = resolve_mode(
+                "MUSTARD_SKILL_SIZE_MODE",
+                gates.skill_size.as_deref(),
+                GateMode::Warn,
+            );
             let validate_mode =
-                resolve_mode("MUSTARD_SKILL_VALIDATE_GATE_MODE", GateMode::Warn);
+                resolve_mode("MUSTARD_SKILL_VALIDATE_GATE_MODE", None, GateMode::Warn);
             if size_mode != GateMode::Off || validate_mode != GateMode::Off {
                 if let Some(content) = resolve_content(input) {
                     if size_mode != GateMode::Off {
@@ -1043,9 +1060,23 @@ mod tests {
 
     #[test]
     fn resolve_mode_defaults_and_parses() {
-        // Unset env var → default.
+        // Unset env var + no config override → default.
         assert_eq!(
-            resolve_mode("MUSTARD_SIZE_GATE_TEST_UNSET_VAR", GateMode::Warn),
+            resolve_mode("MUSTARD_SIZE_GATE_TEST_UNSET_VAR", None, GateMode::Warn),
+            GateMode::Warn
+        );
+    }
+
+    #[test]
+    fn resolve_mode_config_override_used_when_env_absent() {
+        // Env var absent + config override present → uses the config value.
+        assert_eq!(
+            resolve_mode("MUSTARD_SIZE_GATE_TEST_UNSET_VAR", Some("strict"), GateMode::Warn),
+            GateMode::Strict
+        );
+        // Unrecognised config value → default built-in.
+        assert_eq!(
+            resolve_mode("MUSTARD_SIZE_GATE_TEST_UNSET_VAR", Some("bogus"), GateMode::Warn),
             GateMode::Warn
         );
     }

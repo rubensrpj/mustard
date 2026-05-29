@@ -31,7 +31,6 @@ use crate::shared::events::economy;
 use mustard_core::io::atomic_md::MarkdownStore;
 use mustard_core::platform::error::Error;
 use mustard_core::io::fs;
-use mustard_core::platform::i18n;
 use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
 use mustard_core::ClaudePaths;
 use std::path::{Path, PathBuf};
@@ -372,8 +371,11 @@ impl Check for SubagentInject {
             }
         }
         // W5.T5.1 — Pre-arm the child with the regression vocabulary the
-        // gate will check. Locale resolved per-project, fail-open to PtBr.
-        let locale = i18n::project_locale(&project);
+        // gate will check. This is an INTERNAL subagent prompt, so the
+        // vocabulary is rendered in EN/technical regardless of the project's
+        // user-facing locale — agent/subagent prompts stay EN by policy; only
+        // user output, specs and waves honour the project locale.
+        let locale = mustard_core::SupportedLocale::EnUs;
         let vocab = context_inject::vocabulary_inject_block(&project, locale);
         if !vocab.is_empty() {
             sections.push(vocab);
@@ -468,7 +470,11 @@ mod tests {
     fn setup_wave_project(spec_name: &str, wave_slug: &str, locale: &str) -> (tempfile::TempDir, PathBuf) {
         let dir = tempdir().unwrap();
         let project = dir.path().to_path_buf();
-        // mustard.json under .claude/ to satisfy `i18n::project_locale`.
+        // Create the `.claude/` skeleton so `resolve_project_root` anchors the
+        // tempdir as the project root. The injected regression vocabulary is now
+        // always EN (internal subagent prompt), so the declared `locale` no
+        // longer drives locale resolution — it is kept only to stamp a
+        // representative mustard.json into the fixture.
         let claude = project.join(".claude");
         std::fs::create_dir_all(&claude).unwrap();
         std::fs::write(claude.join("mustard.json"), format!("{{\"lang\":\"{locale}\"}}")).unwrap();
@@ -580,10 +586,14 @@ mod tests {
     }
 
     /// T5.1 — PreToolUse Task dispatch surfaces the vocabulary inject block.
+    ///
+    /// The injected vocabulary is an INTERNAL subagent prompt, so it is always
+    /// EN/technical regardless of the project's user-facing locale — even though
+    /// this fixture declares `pt-BR` in mustard.json, the heading stays EN.
     #[test]
     fn w5_pretooluse_dispatch_injects_vocabulary_block() {
         let dir = tempdir().unwrap();
-        // Locale must be resolvable for the i18n call to pick pt-BR.
+        // A pt-BR mustard.json still must NOT localise the internal prompt.
         let claude = dir.path().join(".claude");
         std::fs::create_dir_all(&claude).unwrap();
         std::fs::write(claude.join("mustard.json"), "{\"lang\":\"pt-BR\"}").unwrap();
@@ -592,10 +602,10 @@ mod tests {
         let v = SubagentInject.evaluate(&input, &ctx_for(dir.path())).unwrap();
         match v {
             Verdict::Inject { context } => {
-                // pt-BR heading + at least one of the default Semantic terms.
+                // EN heading (internal prompt) + at least one default Semantic term.
                 assert!(
-                    context.contains("Vocabulário de regressão"),
-                    "expected vocabulary heading, got: {context}"
+                    context.contains("Regression vocabulary"),
+                    "expected EN vocabulary heading, got: {context}"
                 );
                 assert!(
                     context.contains("fail-open"),

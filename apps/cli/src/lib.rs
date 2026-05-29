@@ -22,12 +22,10 @@
 //!   `add`, `review` — all ported as of Wave 2).
 //! - [`fs_ops`] — recursive directory copy and surgical JSON merge, shared by
 //!   `init` and `update`.
-//! - [`runtime`] — host runtime metadata recorded into `mustard.json`.
 
 pub mod cli;
 pub mod commands;
 pub mod fs_ops;
-pub mod runtime;
 
 pub use commands::init::{InitOptions, init};
 pub use commands::update::{UpdateOptions, update};

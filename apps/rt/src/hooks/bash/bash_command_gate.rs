@@ -1209,15 +1209,10 @@ fn is_generated_path(path: &str) -> bool {
         .any(|prefix| normalized.starts_with(prefix))
 }
 
-/// Read `buildCommand` from `mustard.json` at `project_dir`. Mirrors
-/// `readBuildCommand` — fail-open to `None` on any error.
+/// Read `buildCommand` from the project-root `mustard.json` through the single
+/// config owner. Fail-open to `None` when the file is absent or the key unset.
 fn read_build_command(project_dir: &str) -> Option<String> {
-    let path = Path::new(project_dir).join("mustard.json");
-    let text = std::fs::read_to_string(path).ok()?;
-    let cfg: serde_json::Value = serde_json::from_str(&text).ok()?;
-    cfg.get("buildCommand")
-        .and_then(|v| v.as_str())
-        .map(str::to_string)
+    mustard_core::ProjectConfig::load(Path::new(project_dir)).build_command()
 }
 
 /// The outcome of a build run. `env_error` marks a fail-open condition

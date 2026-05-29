@@ -11,7 +11,6 @@
 //! touch `mustard-core`.
 
 pub mod json_io;
-pub mod mustard_config;
 pub mod platform;
 pub mod sha256;
 pub mod slug;

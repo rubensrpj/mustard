@@ -54,25 +54,6 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
-/// Read `tone` from `<project_root>/mustard.json` (fail-open to
-/// [`Tone::default`] / `Didactic`). The drafter wires this into the spec
-/// narrative prompt so generated specs respect the user's tone preference —
-/// see `feedback_didactic_responses` + `feedback_templates_derive_from_mustard_json`.
-fn read_mustard_tone(project_root: &Path) -> Tone {
-    let path = project_root.join("mustard.json");
-    let Ok(text) = std::fs::read_to_string(&path) else {
-        return Tone::default();
-    };
-    let Ok(value): Result<serde_json::Value, _> = serde_json::from_str(&text) else {
-        return Tone::default();
-    };
-    value
-        .get("tone")
-        .and_then(serde_json::Value::as_str)
-        .and_then(Tone::parse)
-        .unwrap_or_default()
-}
-
 /// Human-readable instruction inserted into the drafter prompt for `tone`.
 /// Mirrors the Tone semantics in `mustard_core::platform::i18n::apply_tone`.
 #[must_use]
@@ -154,7 +135,8 @@ pub fn run(opts: SpecDraftOpts) {
     // No hardcoded `rtk cargo build`: the AC runs the project's own build, or a
     // neutral placeholder the user fills in when no `buildCommand` is set.
     let project_root = PathBuf::from(project_dir());
-    let build_command = crate::util::mustard_config::build_command_or_fallback(&project_root);
+    let build_command =
+        mustard_core::ProjectConfig::load(&project_root).build_command_or_fallback();
 
     // ---- Build the canonical input + validate before writing. ----
     let input = build_input(
@@ -177,7 +159,7 @@ pub fn run(opts: SpecDraftOpts) {
     }
 
     // ---- Resolve tone from mustard.json (wired into the drafter prompt). ----
-    let tone = read_mustard_tone(&project_root);
+    let tone = mustard_core::ProjectConfig::load(&project_root).i18n().tone;
 
     // ---- Materialise files. ----
     let mut written: Vec<String> = Vec::new();
@@ -529,11 +511,11 @@ mod tests {
             "en-US",
             0,
             Locale::EnUs,
-            crate::util::mustard_config::BUILD_COMMAND_FALLBACK,
+            mustard_core::BUILD_COMMAND_FALLBACK,
         );
         assert_eq!(
             input2.acceptance_criteria[0].command,
-            crate::util::mustard_config::BUILD_COMMAND_FALLBACK
+            mustard_core::BUILD_COMMAND_FALLBACK
         );
     }
 

@@ -41,7 +41,7 @@
 
 use mustard_core::domain::ast::{detect_stub_patterns, DetectionMode, GrammarLoader, StubPattern};
 use mustard_core::domain::ast::stub_detect::DiffFile;
-use mustard_core::platform::i18n::{self, Locale};
+use mustard_core::platform::i18n::I18n;
 use mustard_core::domain::regression_check::{
     compare_snapshots, ChangeKind, FunctionDelta, Snapshot, TextSpan,
 };
@@ -304,21 +304,21 @@ pub fn build_vocab_matcher(project_root: &Path) -> Option<VocabularyMatcher> {
     .ok()
 }
 
-fn moment_one_signals(plan_text: &str, project_root: &Path, locale: Locale) -> Vec<Signal> {
+fn moment_one_signals(plan_text: &str, project_root: &Path, i18n: &I18n) -> Vec<Signal> {
     if plan_text.is_empty() {
         return Vec::new();
     }
     let Some(matcher) = build_vocab_matcher(project_root) else {
         return Vec::new();
     };
-    let template = i18n::translate("gate.signal.vocabulary", locale);
+    let template = i18n.render("gate.signal.vocabulary");
     let mut signals: Vec<Signal> = Vec::new();
     for hit in matcher.scan(plan_text) {
         let Some(severity) = severity_for_layer(hit.layer) else {
             continue;
         };
         let layer_name = hit.layer.as_str();
-        let message = interpolate(template, &[("term", &hit.term), ("layer", layer_name)]);
+        let message = interpolate(&template, &[("term", &hit.term), ("layer", layer_name)]);
         let span = Some(TextSpan {
             start: hit.start,
             end: hit.end,
@@ -346,18 +346,18 @@ fn moment_two_signals(
     diff: &[DiffFile],
     declared_fns: &[String],
     project_root: &Path,
-    locale: Locale,
+    i18n: &I18n,
 ) -> Vec<Signal> {
     if diff.is_empty() || declared_fns.is_empty() {
         return Vec::new();
     }
     let hits = detect_stub_patterns(loader, diff, declared_fns, project_root);
-    let template = i18n::translate("gate.signal.stub", locale);
+    let template = i18n.render("gate.signal.stub");
     let mut signals: Vec<Signal> = Vec::with_capacity(hits.len());
     for hit in hits {
         let pattern_name = pattern_label(hit.pattern);
         let message = interpolate(
-            template,
+            &template,
             &[("pattern", pattern_name), ("function", &hit.function_name)],
         );
         let severity = match hit.mode {
@@ -390,11 +390,11 @@ fn pattern_label(p: StubPattern) -> &'static str {
 fn moment_three_signals(
     before: &Snapshot,
     after: &Snapshot,
-    locale: Locale,
+    i18n: &I18n,
     threshold: usize,
 ) -> Vec<Signal> {
     let diff = compare_snapshots(before, after);
-    let template = i18n::translate("gate.signal.snapshot", locale);
+    let template = i18n.render("gate.signal.snapshot");
     let mut signals: Vec<Signal> = Vec::new();
     for delta in diff.deltas {
         match delta.change {
@@ -414,7 +414,7 @@ fn moment_three_signals(
                     after_lines == 0 || after_lines.saturating_mul(3) < before_lines;
                 if line_changes > threshold || body_emptied {
                     signals.push(snapshot_signal_with_threshold(
-                        template,
+                        &template,
                         &delta,
                         line_changes,
                         threshold,
@@ -425,7 +425,7 @@ fn moment_three_signals(
                 // Treat removal as the maximum-impact shrinkage.
                 let before_lines = line_count(delta.before.as_ref());
                 signals.push(snapshot_signal_explicit(
-                    template,
+                    &template,
                     &delta.qualifier,
                     before_lines,
                     0,
@@ -550,11 +550,11 @@ pub fn classify_verdict(signals: &[Signal]) -> RegressionVerdict {
 /// with `authorize` / `block` options + the localised labels) without
 /// capturing stdout.
 #[must_use]
-pub fn amber_askuser_json(signals: &[Signal], locale: Locale) -> String {
-    let question = i18n::translate("gate.askuser.amber.question", locale);
-    let opt_authorize = i18n::translate("gate.askuser.amber.option_authorize", locale);
-    let opt_block = i18n::translate("gate.askuser.amber.option_block", locale);
-    let opt_block_desc = i18n::translate("gate.askuser.amber.option_block_desc", locale);
+pub fn amber_askuser_json(signals: &[Signal], i18n: &I18n) -> String {
+    let question = i18n.render("gate.askuser.amber.question");
+    let opt_authorize = i18n.render("gate.askuser.amber.option_authorize");
+    let opt_block = i18n.render("gate.askuser.amber.option_block");
+    let opt_block_desc = i18n.render("gate.askuser.amber.option_block_desc");
     let payload = serde_json::json!({
         "verdict": "amber",
         "askUserQuestion": {
@@ -574,15 +574,15 @@ pub fn amber_askuser_json(signals: &[Signal], locale: Locale) -> String {
 
 /// Print the Amber-verdict JSON payload to stdout. The orchestrator consumes
 /// it to render an `AskUserQuestion` prompt.
-pub fn emit_amber_askuser_json(signals: &[Signal], locale: Locale) {
-    let _ = writeln!(std::io::stdout(), "{}", amber_askuser_json(signals, locale));
+pub fn emit_amber_askuser_json(signals: &[Signal], i18n: &I18n) {
+    let _ = writeln!(std::io::stdout(), "{}", amber_askuser_json(signals, i18n));
 }
 
 /// Print the Red-verdict JSON payload to stdout. The CLI dispatcher maps the
 /// returned [`GateError::Blocked`] to exit code 2.
-pub fn emit_red_blocked_json(signals: &[Signal], locale: Locale) {
-    let label = i18n::translate("gate.verdict.red.label", locale);
-    let message = i18n::translate("gate.verdict.red.message", locale);
+pub fn emit_red_blocked_json(signals: &[Signal], i18n: &I18n) {
+    let label = i18n.render("gate.verdict.red.label");
+    let message = i18n.render("gate.verdict.red.message");
     let payload = serde_json::json!({
         "verdict": "red",
         "blocked": true,
@@ -621,26 +621,28 @@ fn signal_to_json(s: &Signal) -> serde_json::Value {
 /// return `Ok(...)` so the orchestrator can decide downstream behaviour.
 pub fn run(input: GateInput, moment: Moment) -> Result<RegressionVerdict, GateError> {
     let project_root = resolve_project_root(&input.spec_path);
-    let locale = i18n::project_locale(&project_root);
+    // Resolve locale + tone once; thread the whole `I18n` so user-facing prose
+    // (signal templates, AskUser labels, verdict messages) honours both.
+    let i18n = mustard_core::ProjectConfig::load(&project_root).i18n();
     // Build the grammar loader once — passed by reference to every layer.
     let loader = GrammarLoader::from_project(&project_root)
         .unwrap_or_else(|_| GrammarLoader::empty(&project_root));
 
     let mut signals: Vec<Signal> = Vec::new();
-    signals.extend(moment_one_signals(&input.plan_text, &project_root, locale));
+    signals.extend(moment_one_signals(&input.plan_text, &project_root, &i18n));
     if matches!(moment, Moment::Two | Moment::Three) {
         signals.extend(moment_two_signals(
             &loader,
             &input.diff,
             &input.declared_fns,
             &project_root,
-            locale,
+            &i18n,
         ));
     }
     if matches!(moment, Moment::Three) {
         if let (Some(before), Some(after)) = (&input.before_snapshot, &input.after_snapshot) {
             let threshold = load_line_change_threshold(&project_root);
-            signals.extend(moment_three_signals(before, after, locale, threshold));
+            signals.extend(moment_three_signals(before, after, &i18n, threshold));
         }
     }
 
@@ -648,10 +650,10 @@ pub fn run(input: GateInput, moment: Moment) -> Result<RegressionVerdict, GateEr
     match &verdict {
         RegressionVerdict::Green => {}
         RegressionVerdict::Amber { signals } => {
-            emit_amber_askuser_json(signals, locale);
+            emit_amber_askuser_json(signals, &i18n);
         }
         RegressionVerdict::Red { signals } => {
-            emit_red_blocked_json(signals, locale);
+            emit_red_blocked_json(signals, &i18n);
             return Err(GateError::Blocked);
         }
     }
@@ -676,6 +678,7 @@ pub fn check_after_child_return(input: GateInput) -> Result<RegressionVerdict, G
 mod tests {
     use super::*;
     use mustard_core::domain::regression_check::{CaptureMode, FunctionCapture};
+    use mustard_core::platform::i18n::{self, Locale};
     use std::path::PathBuf;
 
     fn tmp_project() -> tempfile::TempDir {
@@ -739,8 +742,11 @@ mod tests {
 
         // Signal-level: the translated pt-BR template must surface.
         let project_root = resolve_project_root(&spec_path);
-        let signals =
-            moment_one_signals("vou fazer fail-open dessa wave", &project_root, Locale::PtBr);
+        let signals = moment_one_signals(
+            "vou fazer fail-open dessa wave",
+            &project_root,
+            &I18n::new(Locale::PtBr, i18n::Tone::default()),
+        );
         assert!(
             !signals.is_empty(),
             "Moment 1 must emit signals for 'fail-open'"
@@ -773,8 +779,8 @@ mod tests {
                 // Red path — but we want the signals; rebuild the verdict
                 // through classify_verdict on a fresh scan to inspect them.
                 let project_root = resolve_project_root(spec_path_for_test(project.path()));
-                let locale = Locale::EnUs;
-                moment_one_signals("we will fail-open this wave", &project_root, locale)
+                let i18n = I18n::new(Locale::EnUs, i18n::Tone::default());
+                moment_one_signals("we will fail-open this wave", &project_root, &i18n)
             }
             other => panic!("expected verdict with signals, got {other:?}"),
         };
@@ -816,7 +822,13 @@ mod tests {
         let project_root = resolve_project_root(&spec_path);
         let loader = GrammarLoader::from_project(&project_root)
             .unwrap_or_else(|_| GrammarLoader::empty(&project_root));
-        let signals = moment_two_signals(&loader, &diff, &declared, &project_root, Locale::PtBr);
+        let signals = moment_two_signals(
+            &loader,
+            &diff,
+            &declared,
+            &project_root,
+            &I18n::new(Locale::PtBr, i18n::Tone::default()),
+        );
 
         if signals.is_empty() {
             // Host has no Rust grammar discoverable — exercise the contract
@@ -884,8 +896,8 @@ mod tests {
 
         // AC-A-6 — call the real `amber_askuser_json` builder and validate
         // the contract surface that the orchestrator interprets.
-        let locale = Locale::PtBr;
-        let serialised = amber_askuser_json(&signals, locale);
+        let i18n = I18n::new(Locale::PtBr, i18n::Tone::default());
+        let serialised = amber_askuser_json(&signals, &i18n);
         assert!(
             serialised.contains("\"verdict\":\"amber\""),
             "payload missing verdict tag: {serialised}"
@@ -911,7 +923,8 @@ mod tests {
             "pt-BR block label missing: {serialised}"
         );
         // en-US locale renders the English labels through the same builder.
-        let serialised_en = amber_askuser_json(&signals, Locale::EnUs);
+        let serialised_en =
+            amber_askuser_json(&signals, &I18n::new(Locale::EnUs, i18n::Tone::default()));
         assert!(
             serialised_en.contains("Authorize") && serialised_en.contains("Block"),
             "en-US labels missing: {serialised_en}"
@@ -989,7 +1002,12 @@ mod tests {
         let mut after = Snapshot::empty(PathBuf::from("spec.md"), "1".into());
         after.insert(mk(&post_body));
 
-        let signals = moment_three_signals(&before, &after, Locale::PtBr, LINE_CHANGE_THRESHOLD);
+        let signals = moment_three_signals(
+            &before,
+            &after,
+            &I18n::new(Locale::PtBr, i18n::Tone::default()),
+            LINE_CHANGE_THRESHOLD,
+        );
         assert!(
             !signals.is_empty(),
             "expected ≥1 snapshot signal on 30→1 line shrink"
@@ -1047,35 +1065,31 @@ mod tests {
     // **host-dependent gap** rather than a gate bug.
 
     /// Locate the spec fixture directory rooted at the workspace.
-    /// `CARGO_MANIFEST_DIR` points at `apps/rt`; walk up to the workspace root
-    /// then into `.claude/spec/.../fixtures`.
+    /// Versioned regression fixtures, beside the crate at
+    /// `apps/rt/tests/fixtures/regression-w6`. They previously lived under the
+    /// untracked `.claude/spec/.../fixtures` workspace state and were lost when
+    /// that spec dir was pruned; versioning them with the test keeps this
+    /// regression check reproducible on a clean clone.
     fn w6_fixture_dir() -> PathBuf {
-        let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        // apps/rt -> apps -> repo root
-        let workspace = manifest
-            .parent()
-            .and_then(Path::parent)
-            .expect("workspace root from CARGO_MANIFEST_DIR")
-            .to_path_buf();
-        workspace
-            .join(".claude")
-            .join("spec")
-            .join("2026-05-27-mustard-v4-foundation")
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
             .join("fixtures")
+            .join("regression-w6")
     }
 
     /// Copy the real `.claude/vocab/regression.toml` into `dest_root/.claude/vocab/`
     /// so Moment 1 runs against the canonical vocabulary (not the in-code default).
     fn copy_real_vocab(dest_root: &Path) {
-        let workspace_vocab = w6_fixture_dir()
-            .parent() // /spec/foundation
-            .and_then(Path::parent) // /spec
-            .and_then(Path::parent) // /.claude
-            .and_then(Path::parent) // workspace root
-            .expect("walk back to workspace root")
-            .join(".claude")
-            .join("vocab")
-            .join("regression.toml");
+        // The canonical vocab lives at <workspace>/.claude/vocab/regression.toml.
+        // apps/rt -> apps -> workspace root.
+        let Some(workspace) = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(Path::parent)
+            .map(Path::to_path_buf)
+        else {
+            return;
+        };
+        let workspace_vocab = workspace.join(".claude").join("vocab").join("regression.toml");
         if !workspace_vocab.is_file() {
             return; // Fail-open: missing vocab uses build_vocab_matcher's default set.
         }
@@ -1175,7 +1189,7 @@ mod tests {
         copy_real_vocab(project.path());
         let spec_path = project.path().join("spec.md");
         let project_root = resolve_project_root(&spec_path);
-        let locale = i18n::project_locale(&project_root);
+        let i18n = mustard_core::ProjectConfig::load(&project_root).i18n();
 
         // --- Moment 1: vocabulary over W6-style plan text ------------------
         //
@@ -1188,7 +1202,7 @@ mod tests {
                             (Vec::new() / Default::default()) — placeholder até a próxima wave \
                             entregar o NDJSON reader.";
 
-        let m1_signals = moment_one_signals(w6_plan_text, &project_root, locale);
+        let m1_signals = moment_one_signals(w6_plan_text, &project_root, &i18n);
         let m1_fired = !m1_signals.is_empty();
         let m1_severities: Vec<Severity> = m1_signals.iter().map(|s| s.severity).collect();
         let m1_evidence: Vec<String> = m1_signals.iter().map(|s| s.evidence.clone()).collect();
@@ -1208,7 +1222,7 @@ mod tests {
         let loader = GrammarLoader::from_project(&project_root)
             .unwrap_or_else(|_| GrammarLoader::empty(&project_root));
         let m2_signals =
-            moment_two_signals(&loader, &diff, &declared_fns, &project_root, locale);
+            moment_two_signals(&loader, &diff, &declared_fns, &project_root, &i18n);
         let m2_fired = !m2_signals.is_empty();
         let m2_evidence: Vec<String> = m2_signals.iter().map(|s| s.evidence.clone()).collect();
         let m2_grammar_available = loader.language_id_for_path(Path::new("x.rs")).is_some();
@@ -1235,7 +1249,7 @@ mod tests {
             "fixture-slice helper must capture at least one declared function"
         );
         let m3_signals =
-            moment_three_signals(&before, &after, locale, LINE_CHANGE_THRESHOLD);
+            moment_three_signals(&before, &after, &i18n, LINE_CHANGE_THRESHOLD);
         let m3_fired = !m3_signals.is_empty();
         let m3_evidence: Vec<String> = m3_signals.iter().map(|s| s.evidence.clone()).collect();
 

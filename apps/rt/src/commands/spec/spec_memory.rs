@@ -11,7 +11,7 @@
 use crate::shared::context::project_dir;
 use mustard_core::io::claude_paths::ClaudePaths;
 use mustard_core::io::fs as mfs;
-use mustard_core::platform::i18n::{project_locale, translate, SupportedLocale as Locale};
+use mustard_core::platform::i18n::{translate, SupportedLocale as Locale};
 use serde_json::json;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -95,7 +95,7 @@ fn create_with_root(opts: SpecMemoryCreateOpts, project: &Path) {
         );
         return;
     }
-    let lang = project_locale(project);
+    let lang = mustard_core::ProjectConfig::load(project).i18n().lang;
     let body = render_template(&opts, &kind, lang);
     if let Err(e) = mfs::write_atomic(&target, body.as_bytes()) {
         emit_error("write failed", &e.to_string());

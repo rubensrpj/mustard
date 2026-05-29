@@ -6,7 +6,6 @@
 //! extension's basenames.
 
 use super::file_utils::{collect_files, dominant_source_extension};
-use crate::util::mustard_config;
 use serde_json::json;
 use std::path::Path;
 
@@ -56,7 +55,7 @@ pub fn primary_ext_for_stack(stack_id: &str) -> Option<&'static str> {
 /// there is genuinely nothing to cluster) — that is the one legitimate empty.
 #[must_use]
 pub fn resolve_primary_ext(subproject_path: &Path, stack_id: &str) -> Option<String> {
-    if let Some(ext) = mustard_config::load(subproject_path).and_then(|c| mustard_config::primary_ext(&c)) {
+    if let Some(ext) = mustard_core::ProjectConfig::load(subproject_path).primary_ext() {
         return Some(ext);
     }
     if let Some(ext) = primary_ext_for_stack(stack_id) {

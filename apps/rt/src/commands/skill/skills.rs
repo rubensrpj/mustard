@@ -311,9 +311,14 @@ fn run_validate_structural(root: &Path, json_out: bool, quiet: bool, only: Optio
 
 /// `validate --lines` — line-count tiering (JS `runLinesMode`).
 fn run_validate_lines(root: &Path, json_out: bool) -> ! {
-    let mode = std::env::var("MUSTARD_SKILL_VALIDATE_LINES_MODE")
-        .map(|m| m.to_lowercase())
+    // Cascade: env var → mustard.json (gates.skill_validate_lines) → "warn".
+    let env_mode = std::env::var("MUSTARD_SKILL_VALIDATE_LINES_MODE")
         .ok()
+        .filter(|v| !v.trim().is_empty());
+    let config_mode = mustard_core::ProjectConfig::load(root).gates.skill_validate_lines;
+    let mode = env_mode
+        .or(config_mode)
+        .map(|m| m.to_lowercase())
         .filter(|m| m == "warn" || m == "off" || m == "strict")
         .unwrap_or_else(|| "warn".to_string());
     if mode == "off" {

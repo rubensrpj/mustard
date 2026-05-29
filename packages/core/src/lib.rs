@@ -65,6 +65,18 @@ pub use domain::spec::{
 // Economy domain re-exports — see `economy/mod.rs` for the full surface.
 pub use domain::economy::{EconomyScope, EconomySummary, SavingsSource};
 
+// Project config — the single source of truth for `<root>/mustard.json`
+// (schema + IO + accessors). Replaces the scattered ad-hoc parsers
+// (`mustard_config`, `git_flow::MustardConfig`, `read_mustard_tone`, …). See
+// `domain/config.rs`.
+pub use domain::config::{
+    glob_matches, Amend, Commands, GateModes, GitConfig, ProjectConfig, RolePattern, Runtime,
+    Subprojects, BUILD_COMMAND_FALLBACK,
+};
+// Agnostic build/test/lint/type-check command detection (used by `init` and
+// `scan`). See `domain/command_detect.rs`.
+pub use domain::command_detect::detect_commands;
+
 // Meta sidecar — single canonical owner of `meta.json` schema + IO. See
 // `meta.rs`. Sidecar replaces the legacy `### Stage:` / `### Outcome:` /
 // `### Phase:` / `### Scope:` / `### Lang:` / `### Checkpoint:` / `### Parent:`
@@ -87,8 +99,8 @@ pub use domain::meta::{normalise_lang, read_meta, write_meta, Meta, MetaFlags};
 // W7 — every callsite now uses `SupportedLocale` (catalogue) or `UserLocale`
 // (user-declared). The deprecated `Locale` alias was removed.
 pub use platform::i18n::{
-    apply_tone, project_locale, project_locale_from_file, slugify, translate, wave_label, I18n,
-    LocaleError, SupportedLocale, Tone, UserLocale, UserLocaleError,
+    apply_tone, slugify, translate, wave_label, I18n, LocaleError, SupportedLocale, Tone,
+    UserLocale, UserLocaleError,
 };
 
 // Canonical `.claude/` path catalog — every consumer in `apps/rt` builds a

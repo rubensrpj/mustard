@@ -2,9 +2,9 @@
 //!
 //! Ported from `commands/config.ts`, which was a 13-line wrapper that called
 //! `generateMustardJson`. The Rust port is just as thin: it delegates to
-//! [`crate::commands::git_flow::generate_mustard_json`], the same routine
-//! `init` runs for its git-flow step. No logic lives here — keeping it a
-//! wrapper means the flow rules have a single home (`git_flow`).
+//! [`crate::commands::git_flow::configure`], the same routine `init` runs for
+//! its git-flow step. No logic lives here — keeping it a wrapper means the flow
+//! rules have a single home (`git_flow`).
 
 use std::path::Path;
 
@@ -26,5 +26,5 @@ pub struct ConfigOptions {
 /// stdin is not a TTY, so a scripted run never blocks.
 pub fn config(project_path: &Path, options: &ConfigOptions) -> Result<()> {
     println!("\nMustard - Git Flow Configuration\n");
-    git_flow::generate_mustard_json(project_path, !options.yes)
+    git_flow::configure(project_path, !options.yes)
 }

@@ -1,64 +1,29 @@
-//! Git-flow configuration — the project-root `mustard.json`.
+//! Git-flow + locale configuration for the project-root `mustard.json`.
 //!
-//! Ported from `generateMustardJson` in `init.ts`. The routine inspects the
-//! repository (default branch, current branch, remote branches, submodules)
-//! and writes a `mustard.json` describing the branch promotion flow plus the
-//! optional build/test/lint/type-check commands the close-gate reads.
+//! Probes the repository (default branch, current branch, remote branches,
+//! submodules), collects the user's choices (production / dev branch, provider,
+//! **spec language**, **tone**), detects the build/test/lint/type-check command
+//! set agnostically (no hardcoded `npm`), and folds all of it into the single
+//! [`ProjectConfig`] written at the project root. There is no private config
+//! struct here any more — the one schema lives in `mustard_core`.
 //!
-//! Two modes:
-//!
-//! - **non-interactive** (`yes`): derive a sensible config and write it,
-//!   preserving an existing file untouched;
-//! - **interactive**: show what was detected, prompt for the production and
-//!   development branches and the git provider (pre-filled from any existing
-//!   config), then write.
-//!
-//! Git facts are gathered by shelling out to `git` (the JS port used
-//! `execSync`); every probe fails open to a default when `git` is absent or
-//! the directory is not a repository.
+//! Two entry points:
+//! - [`configure`] — the `mustard config` command: load → (preserve | collect)
+//!   → write.
+//! - [`collect_choices`] + [`apply_choices`] — the building blocks `init` uses
+//!   so it can fold the same git-flow/locale data into the config it stamps with
+//!   `runtime`/`version`, keeping a single write.
 
 use std::path::Path;
 use std::process::Command;
 
 use anyhow::{Context, Result};
-use mustard_core::io::fs as mfs;
 use dialoguer::theme::ColorfulTheme;
 use dialoguer::{Confirm, Input, Select};
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
-
-use crate::fs_ops::read_json_object;
-
-/// The `git` block of `mustard.json`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GitConfig {
-    /// Branch promotion map: `"*" → dev`, `dev → production`.
-    pub flow: std::collections::BTreeMap<String, String>,
-    /// Hosting provider — `github`, `gitlab`, or `bitbucket`.
-    pub provider: String,
-    /// Whether the repository uses git submodules.
-    pub submodules: bool,
-}
-
-/// The full `mustard.json` document written at the project root.
-///
-/// The four `*_command` fields feed the Wave 9 close-gate strict gates. They
-/// are optional — an absent command means "skip that stage".
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MustardConfig {
-    pub git: GitConfig,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub test_command: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub build_command: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub lint_command: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub type_check_command: Option<String>,
-}
+use mustard_core::{detect_commands, GitConfig, ProjectConfig, SupportedLocale, Tone};
 
 /// Facts probed from the repository, all fail-open.
-struct GitFacts {
+pub struct GitFacts {
     default_branch: String,
     current_branch: Option<String>,
     has_submodules: bool,
@@ -78,10 +43,18 @@ impl GitFacts {
     }
 }
 
+/// The user's git-flow + locale choices, resolved either from prompts or from
+/// sensible defaults (`--yes` / non-TTY).
+pub struct Choices {
+    production: String,
+    dev_branch: String,
+    provider: String,
+    spec_lang: String,
+    tone: String,
+}
+
 /// Run a `git` subcommand in `cwd`, returning trimmed stdout on success.
-///
-/// Any failure — `git` missing, non-zero exit, not a repository — yields
-/// `None`. This is the fail-open `try { execSync } catch {}` of the JS port.
+/// Any failure — `git` missing, non-zero exit, not a repository — yields `None`.
 fn git(cwd: &Path, args: &[&str]) -> Option<String> {
     let output = Command::new("git").args(args).current_dir(cwd).output().ok()?;
     if !output.status.success() {
@@ -90,11 +63,9 @@ fn git(cwd: &Path, args: &[&str]) -> Option<String> {
     Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-/// Probe the repository at `project_path`. Mirrors the four `detect*`
-/// helpers in `init.ts`.
-fn probe_git(project_path: &Path) -> GitFacts {
-    // Default branch: the remote HEAD symbolic ref, else main/master if either
-    // remote branch exists, else "main".
+/// Probe the repository at `project_path`.
+#[must_use]
+pub fn probe_git(project_path: &Path) -> GitFacts {
     let default_branch = git(project_path, &["symbolic-ref", "refs/remotes/origin/HEAD"])
         .map(|r| r.replace("refs/remotes/origin/", ""))
         .or_else(|| {
@@ -109,8 +80,8 @@ fn probe_git(project_path: &Path) -> GitFacts {
         })
         .unwrap_or_else(|| "main".to_string());
 
-    let current_branch = git(project_path, &["rev-parse", "--abbrev-ref", "HEAD"])
-        .filter(|s| !s.is_empty());
+    let current_branch =
+        git(project_path, &["rev-parse", "--abbrev-ref", "HEAD"]).filter(|s| !s.is_empty());
 
     let has_submodules = project_path.join(".gitmodules").exists();
 
@@ -123,20 +94,11 @@ fn probe_git(project_path: &Path) -> GitFacts {
         })
         .unwrap_or_default();
 
-    GitFacts {
-        default_branch,
-        current_branch,
-        has_submodules,
-        remote_branches,
-    }
+    GitFacts { default_branch, current_branch, has_submodules, remote_branches }
 }
 
-/// Build the flow map from a dev branch and production branch. An empty dev
-/// branch yields an empty map (no shared dev branch).
-fn build_flow(
-    dev_branch: &str,
-    production: &str,
-) -> std::collections::BTreeMap<String, String> {
+/// Build the branch-promotion flow map. An empty dev branch yields an empty map.
+fn build_flow(dev_branch: &str, production: &str) -> std::collections::BTreeMap<String, String> {
     let mut flow = std::collections::BTreeMap::new();
     if !dev_branch.is_empty() {
         flow.insert("*".to_string(), dev_branch.to_string());
@@ -145,90 +107,45 @@ fn build_flow(
     flow
 }
 
-/// The default close-gate command set written into every fresh `mustard.json`.
-fn default_commands() -> MustardConfig {
-    MustardConfig {
-        git: GitConfig {
-            flow: std::collections::BTreeMap::new(),
-            provider: "github".to_string(),
-            submodules: false,
-        },
-        test_command: Some("npm test".to_string()),
-        build_command: Some("npm run build".to_string()),
-        lint_command: Some("npm run lint".to_string()),
-        type_check_command: Some("tsc --noEmit".to_string()),
-    }
-}
-
-/// Generate (or reconfigure) the project-root `mustard.json`.
-///
-/// `interactive` mirrors the JS `!options.yes` path. When `false`, an existing
-/// file is preserved verbatim and a missing one is derived from `git` probes.
-/// When `true`, the user is prompted (defaults pre-filled from any existing
-/// config) — unless stdin is not a TTY, in which case it falls back to the
-/// non-interactive derivation so scripted/test runs never block.
-pub fn generate_mustard_json(project_path: &Path, interactive: bool) -> Result<()> {
-    let config_path = project_path.join("mustard.json");
-    let existing = load_existing(&config_path);
-
-    // Non-interactive with an existing file: preserve it untouched.
-    if !interactive && existing.is_some() {
-        println!("  mustard.json already exists - preserved");
-        return Ok(());
-    }
-
-    let facts = probe_git(project_path);
-
-    let config = if interactive && console_is_tty() {
-        prompt_config(&facts, existing.as_ref())?
-    } else {
-        derive_config(&facts)
-    };
-
-    let mut serialized = serde_json::to_string_pretty(&config).context("serializing mustard.json")?;
-    serialized.push('\n');
-    mfs::write_atomic(&config_path, serialized.as_bytes())
-        .with_context(|| format!("writing {}", config_path.display()))?;
-    println!("  created mustard.json");
-    Ok(())
-}
-
-/// Load and parse an existing `mustard.json`; `None` if absent or malformed.
-fn load_existing(path: &Path) -> Option<MustardConfig> {
-    let map = read_json_object(path);
-    if map.is_empty() {
-        return None;
-    }
-    serde_json::from_value(Value::Object(map)).ok()
-}
-
-/// Whether stdin is an interactive terminal. Prompts are skipped when it is
-/// not so non-interactive runs (CI, tests, the Tauri backend) never hang.
+/// Whether stdin is an interactive terminal.
 fn console_is_tty() -> bool {
     std::io::IsTerminal::is_terminal(&std::io::stdin())
 }
 
-/// Derive a config from git facts with no prompting (the `yes` path).
-fn derive_config(facts: &GitFacts) -> MustardConfig {
-    let mut config = default_commands();
-    config.git.submodules = facts.has_submodules;
-    if let Some(dev) = facts.dev_branch() {
-        config.git.flow = build_flow(dev, &facts.default_branch);
+/// Collect the git-flow + locale choices, pre-filling defaults from `existing`.
+///
+/// Interactive (and a real TTY) prompts the user; otherwise it derives sensible
+/// defaults — preserving any values already present in `existing`.
+///
+/// # Errors
+/// Propagates a prompt read failure.
+pub fn collect_choices(
+    facts: &GitFacts,
+    existing: &ProjectConfig,
+    interactive: bool,
+) -> Result<Choices> {
+    let i18n = existing.i18n();
+    let existing_lang = i18n.lang.as_str().to_string();
+    let existing_tone = i18n.tone.as_str().to_string();
+    let existing_provider =
+        if existing.git.provider.is_empty() { "github".to_string() } else { existing.git.provider.clone() };
+    let existing_dev = existing.git.flow.get("*").cloned();
+    let existing_prod =
+        existing_dev.as_ref().and_then(|d| existing.git.flow.get(d).cloned());
+
+    if !(interactive && console_is_tty()) {
+        return Ok(Choices {
+            production: existing_prod.unwrap_or_else(|| facts.default_branch.clone()),
+            dev_branch: existing_dev
+                .or_else(|| facts.dev_branch().map(String::from))
+                .unwrap_or_default(),
+            provider: existing_provider,
+            spec_lang: existing_lang,
+            tone: existing_tone,
+        });
     }
-    config
-}
 
-/// Prompt the user for the git flow, pre-filling defaults from `existing`.
-fn prompt_config(facts: &GitFacts, existing: Option<&MustardConfig>) -> Result<MustardConfig> {
     let theme = ColorfulTheme::default();
-
-    let existing_dev = existing.and_then(|c| c.git.flow.get("*").cloned());
-    let existing_prod = existing_dev
-        .as_ref()
-        .and_then(|dev| existing.and_then(|c| c.git.flow.get(dev).cloned()));
-    let existing_provider = existing
-        .map_or_else(|| "github".to_string(), |c| c.git.provider.clone());
-
     println!("\nGit Flow Configuration\n");
     if let Some(branch) = &facts.current_branch {
         println!(
@@ -254,29 +171,102 @@ fn prompt_config(facts: &GitFacts, existing: Option<&MustardConfig>) -> Result<M
         .context("reading development branch")?;
 
     let providers = ["github", "gitlab", "bitbucket"];
-    let provider_default = providers
-        .iter()
-        .position(|p| *p == existing_provider)
-        .unwrap_or(0);
     let provider_idx = Select::with_theme(&theme)
         .with_prompt("Git provider")
         .items(providers)
-        .default(provider_default)
+        .default(providers.iter().position(|p| *p == existing_provider).unwrap_or(0))
         .interact()
         .context("reading git provider")?;
 
-    let mut config = default_commands();
-    config.git.submodules = facts.has_submodules;
-    config.git.provider = providers[provider_idx].to_string();
-    config.git.flow = build_flow(dev_branch.trim(), production.trim());
-    Ok(config)
+    let langs = ["pt-BR", "en-US"];
+    let lang_idx = Select::with_theme(&theme)
+        .with_prompt("Spec language (user-facing specs, waves and banners)")
+        .items(langs)
+        .default(langs.iter().position(|l| *l == existing_lang).unwrap_or(0))
+        .interact()
+        .context("reading spec language")?;
+
+    let tones = ["didactic", "technical", "concise"];
+    let tone_idx = Select::with_theme(&theme)
+        .with_prompt("Tone (user-facing output)")
+        .items(tones)
+        .default(tones.iter().position(|t| *t == existing_tone).unwrap_or(0))
+        .interact()
+        .context("reading tone")?;
+
+    Ok(Choices {
+        production,
+        dev_branch,
+        provider: providers[provider_idx].to_string(),
+        spec_lang: langs[lang_idx].to_string(),
+        tone: tones[tone_idx].to_string(),
+    })
 }
 
-/// Interactively review and optionally reconfigure an existing config — the
-/// JS "Reconfigure git flow?" confirm. Returns `true` when the user opted to
-/// reconfigure. Used by the Wave 2 `config` subcommand; kept here next to the
-/// flow logic it gates.
-pub fn confirm_reconfigure(existing: &MustardConfig) -> Result<bool> {
+/// Fold `choices` + detected commands into `config`.
+///
+/// Git flow, provider, language and tone come from `choices` (a prompt or a
+/// default). The command set is detected agnostically from the project's
+/// manifests, but **never overwrites** a command the user already set — only
+/// absent fields are filled.
+pub fn apply_choices(config: &mut ProjectConfig, facts: &GitFacts, choices: &Choices, root: &Path) {
+    config.git = GitConfig {
+        flow: build_flow(choices.dev_branch.trim(), choices.production.trim()),
+        provider: choices.provider.clone(),
+        submodules: facts.has_submodules,
+    };
+
+    let cmds = detect_commands(root);
+    if config.build_command.is_none() {
+        config.build_command = cmds.build;
+    }
+    if config.test_command.is_none() {
+        config.test_command = cmds.test;
+    }
+    if config.lint_command.is_none() {
+        config.lint_command = cmds.lint;
+    }
+    if config.type_check_command.is_none() {
+        config.type_check_command = cmds.type_check;
+    }
+
+    // Canonicalise language/tone to the catalogue spelling.
+    config.spec_lang = Some(
+        choices.spec_lang.parse::<SupportedLocale>().unwrap_or_default().as_str().to_string(),
+    );
+    config.tone = Some(Tone::parse(&choices.tone).unwrap_or_default().as_str().to_string());
+}
+
+/// Run `mustard config` against `project_path`: (re)configure git flow + locale
+/// in `<root>/mustard.json`.
+///
+/// Non-interactive over an existing file preserves it verbatim; otherwise the
+/// choices are collected (prompt or default) and folded in.
+///
+/// # Errors
+/// Propagates prompt-read and write failures.
+pub fn configure(project_path: &Path, interactive: bool) -> Result<()> {
+    let mut config = ProjectConfig::load(project_path);
+
+    if !interactive && ProjectConfig::exists(project_path) {
+        println!("  mustard.json already exists - preserved");
+        return Ok(());
+    }
+
+    let facts = probe_git(project_path);
+    let choices = collect_choices(&facts, &config, interactive)?;
+    apply_choices(&mut config, &facts, &choices, project_path);
+    config.write(project_path)?;
+    println!("  created mustard.json");
+    Ok(())
+}
+
+/// Interactively review + optionally reconfigure an existing config — the
+/// `Reconfigure git flow?` confirm used by the `config` subcommand.
+///
+/// # Errors
+/// Propagates the confirmation read failure.
+pub fn confirm_reconfigure(existing: &ProjectConfig) -> Result<bool> {
     println!("\n  Current git flow:");
     if existing.git.flow.is_empty() {
         println!("    (no flow configured)");
@@ -303,6 +293,15 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
+    fn facts(dev: Option<&str>, submodules: bool) -> GitFacts {
+        GitFacts {
+            default_branch: "main".to_string(),
+            current_branch: None,
+            has_submodules: submodules,
+            remote_branches: dev.map(|d| vec![d.to_string()]).unwrap_or_default(),
+        }
+    }
+
     #[test]
     fn build_flow_empty_dev_yields_empty_map() {
         assert!(build_flow("", "main").is_empty());
@@ -316,38 +315,71 @@ mod tests {
     }
 
     #[test]
-    fn derive_config_carries_submodule_flag() {
-        let facts = GitFacts {
-            default_branch: "main".to_string(),
-            current_branch: None,
-            has_submodules: true,
-            remote_branches: vec!["dev".to_string()],
+    fn apply_choices_fills_git_lang_tone_and_detects_commands() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("Cargo.toml"), "[package]").unwrap();
+        let mut config = ProjectConfig::default();
+        let f = facts(Some("dev"), true);
+        let choices = Choices {
+            production: "main".into(),
+            dev_branch: "dev".into(),
+            provider: "gitlab".into(),
+            spec_lang: "en-US".into(),
+            tone: "technical".into(),
         };
-        let config = derive_config(&facts);
+        apply_choices(&mut config, &f, &choices, dir.path());
+
+        assert_eq!(config.git.provider, "gitlab");
         assert!(config.git.submodules);
         assert_eq!(config.git.flow.get("*"), Some(&"dev".to_string()));
+        // Cargo project → cargo build, never npm.
+        assert_eq!(config.build_command.as_deref(), Some("cargo build"));
+        assert_eq!(config.spec_lang.as_deref(), Some("en-US"));
+        assert_eq!(config.tone.as_deref(), Some("technical"));
     }
 
     #[test]
-    fn generate_writes_default_config_in_clean_dir() {
+    fn apply_choices_preserves_existing_commands() {
         let dir = tempdir().unwrap();
-        // Non-interactive: clean dir, no git -> derived defaults.
-        generate_mustard_json(dir.path(), false).unwrap();
-        let written = std::fs::read_to_string(dir.path().join("mustard.json")).unwrap();
-        let parsed: MustardConfig = serde_json::from_str(&written).unwrap();
-        assert_eq!(parsed.git.provider, "github");
-        assert_eq!(parsed.build_command.as_deref(), Some("npm run build"));
+        std::fs::write(dir.path().join("Cargo.toml"), "[package]").unwrap();
+        let mut config = ProjectConfig::default();
+        config.build_command = Some("custom build".into());
+        let f = facts(None, false);
+        let choices = Choices {
+            production: "main".into(),
+            dev_branch: String::new(),
+            provider: "github".into(),
+            spec_lang: "pt-BR".into(),
+            tone: "didactic".into(),
+        };
+        apply_choices(&mut config, &f, &choices, dir.path());
+        // User's command survives; detection does not clobber it.
+        assert_eq!(config.build_command.as_deref(), Some("custom build"));
     }
 
     #[test]
-    fn generate_preserves_existing_file_when_non_interactive() {
+    fn configure_writes_default_config_in_clean_dir() {
         let dir = tempdir().unwrap();
-        let path = dir.path().join("mustard.json");
-        std::fs::write(&path, r#"{"git":{"flow":{},"provider":"gitlab","submodules":false}}"#)
-            .unwrap();
-        generate_mustard_json(dir.path(), false).unwrap();
-        let parsed: MustardConfig =
-            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(parsed.git.provider, "gitlab");
+        std::fs::write(dir.path().join("Cargo.toml"), "[package]").unwrap();
+        // Non-interactive, fresh dir → derived defaults written.
+        configure(dir.path(), false).unwrap();
+        let cfg = ProjectConfig::load(dir.path());
+        assert_eq!(cfg.git.provider, "github");
+        assert_eq!(cfg.build_command.as_deref(), Some("cargo build"));
+        assert_eq!(cfg.spec_lang.as_deref(), Some("pt-BR"));
+        assert_eq!(cfg.tone.as_deref(), Some("didactic"));
+    }
+
+    #[test]
+    fn configure_preserves_existing_file_when_non_interactive() {
+        let dir = tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("mustard.json"),
+            r#"{"git":{"flow":{},"provider":"gitlab","submodules":false}}"#,
+        )
+        .unwrap();
+        configure(dir.path(), false).unwrap();
+        let cfg = ProjectConfig::load(dir.path());
+        assert_eq!(cfg.git.provider, "gitlab");
     }
 }

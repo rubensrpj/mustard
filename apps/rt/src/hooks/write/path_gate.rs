@@ -151,12 +151,16 @@ enum BoundaryMode {
     Strict,
 }
 
-fn boundary_mode() -> BoundaryMode {
-    match std::env::var("MUSTARD_BOUNDARY_MODE")
-        .unwrap_or_default()
-        .to_ascii_lowercase()
-        .as_str()
-    {
+/// Resolve `MUSTARD_BOUNDARY_MODE` in cascade: env var → `mustard.json`
+/// (`gates.boundary`, supplied as `config_override`) → built-in `warn`. An env
+/// var set to a non-empty value wins; an absent string OR an unrecognised value
+/// falls back to `warn`.
+fn boundary_mode(config_override: Option<&str>) -> BoundaryMode {
+    let s = std::env::var("MUSTARD_BOUNDARY_MODE")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .or_else(|| config_override.map(str::to_string));
+    match s.unwrap_or_default().to_ascii_lowercase().as_str() {
         "off" => BoundaryMode::Off,
         "strict" => BoundaryMode::Strict,
         _ => BoundaryMode::Warn,
@@ -611,7 +615,9 @@ fn spec_header_is_terminal(cwd: &str, spec_name: &str) -> bool {
 /// state. Fail-open: projection `None` → treat status as empty and wave info
 /// as unknown.
 fn boundary_gate(input: &HookInput, cwd: &str) -> Option<Verdict> {
-    let mode = boundary_mode();
+    // Cascade override: load the project config once and read gates.boundary.
+    let gates = mustard_core::ProjectConfig::load(Path::new(cwd)).gates;
+    let mode = boundary_mode(gates.boundary.as_deref());
     if mode == BoundaryMode::Off {
         return None;
     }

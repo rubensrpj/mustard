@@ -398,11 +398,18 @@ impl ClaudePaths {
         self.claude_dir().join("settings.json")
     }
 
-    /// `<root>/.claude/mustard.json` — Mustard project config (git flow,
-    /// locale).
+    /// `<root>/mustard.json` — Mustard project config (git flow, build/test
+    /// commands, `specLang`, `tone`, runtime/version stamp).
+    ///
+    /// Lives at the **project root**, not under `.claude/`: it is the workspace
+    /// anchor [`crate::io::workspace::workspace_root`] keys on, and it is
+    /// user-facing, version-controlled config — the opposite of the ephemeral
+    /// (often gitignored) state that fills `.claude/`. This is the single
+    /// source of truth for the file's location; callers must not open-code
+    /// `root.join("mustard.json")`.
     #[must_use]
     pub fn mustard_json_path(&self) -> PathBuf {
-        self.claude_dir().join("mustard.json")
+        self.root.join("mustard.json")
     }
 
     /// `<root>/.claude/entity-registry.json` — scan-driven entity registry.

@@ -153,9 +153,7 @@ fn walk(current: &Path, extension: &str, skip: &BTreeSet<String>, results: &mut 
 /// lexicographically-smallest extension for determinism.
 #[must_use]
 pub fn dominant_source_extension(dir: &Path) -> Option<String> {
-    let extra_exts = crate::util::mustard_config::load(dir)
-        .map(|cfg| crate::util::mustard_config::source_extensions(&cfg))
-        .unwrap_or_default();
+    let extra_exts = mustard_core::ProjectConfig::load(dir).source_extensions();
     let paths = source_files_under(dir, &extra_exts);
     let mut counts: BTreeMap<String, usize> = BTreeMap::new();
     for p in &paths {
@@ -486,9 +484,7 @@ fn is_source_file(name: &str, extra_exts: &[String]) -> bool {
 #[must_use]
 pub fn visit(root: &Path, ignore: &[&str]) -> Vec<VisitedFile> {
     let skip = ignore_set(root, ignore);
-    let extra_exts = crate::util::mustard_config::load(root)
-        .map(|cfg| crate::util::mustard_config::source_extensions(&cfg))
-        .unwrap_or_default();
+    let extra_exts = mustard_core::ProjectConfig::load(root).source_extensions();
     let mut paths = Vec::new();
     walk_all(root, &skip, &mut paths);
     // Filter out only binaries / generated assets — keeps the parallel read

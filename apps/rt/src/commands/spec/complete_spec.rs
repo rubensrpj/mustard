@@ -21,7 +21,6 @@
 //! [`mustard_core::view::projection::read_harness_events_from_ndjson_dir`].
 
 use crate::shared::context::session_id;
-use crate::util::json_io;
 use mustard_core::io::fs;
 use mustard_core::view::projection::read_harness_events_from_ndjson_dir;
 use mustard_core::ClaudePaths;
@@ -40,7 +39,7 @@ const FOLLOWUP_TTL_MS: i64 = 24 * 60 * 60 * 1000;
 
 /// Run the project VCS binary in `cwd`, returning trimmed stdout or `""` on any
 /// error. The binary is read from `mustard.json#vcs` (default `git`); callers
-/// resolve it once via [`crate::util::mustard_config::vcs_binary`] and thread it
+/// resolve it once via [`mustard_core::ProjectConfig::vcs`] and thread it
 /// here so the spec affected-files diff/log is not hardcoded to `git`.
 fn vcs_run(vcs_bin: &str, cwd: &Path, args: &[&str]) -> String {
     Command::new(vcs_bin)
@@ -54,22 +53,17 @@ fn vcs_run(vcs_bin: &str, cwd: &Path, args: &[&str]) -> String {
         .unwrap_or_default()
 }
 
-/// Resolve the parent branch for `current_branch` via `mustard.json` gitFlow.
-fn parent_branch_for(cwd: &Path, current_branch: &str) -> String {
-    let m = json_io::read_json(&cwd.join("mustard.json")).unwrap_or(Value::Null);
-    if let Some(flow) = m.get("gitFlow") {
-        if let Some(p) = flow
-            .get("parentOf")
-            .and_then(|po| po.get(current_branch))
-            .and_then(Value::as_str)
-        {
-            return p.to_string();
-        }
-        if let Some(main) = flow.get("mainBranch").and_then(Value::as_str) {
-            return main.to_string();
-        }
-    }
-    "main".to_string()
+/// Resolve the parent (merge-base) branch for `current_branch` from the
+/// project's `mustard.json#git.flow` promotion map: the branch's own promotion
+/// target, else the wildcard `*` default, else `main`.
+fn parent_branch_for(config: &mustard_core::ProjectConfig, current_branch: &str) -> String {
+    config
+        .git
+        .flow
+        .get(current_branch)
+        .or_else(|| config.git.flow.get("*"))
+        .cloned()
+        .unwrap_or_else(|| "main".to_string())
 }
 
 /// Resolve the canonical spec directory under `.claude/spec/{name}/`.
@@ -133,10 +127,11 @@ pub fn collect_affected_files(cwd: &Path, spec: &str) -> Vec<String> {
 
     // 2. VCS diff against the parent branch — only when a VCS is configured
     //    (default git; `vcs: ""` is an explicit opt-out → skip this source).
-    if let Some(vcs_bin) = crate::util::mustard_config::vcs_binary(cwd) {
+    let config = mustard_core::ProjectConfig::load(cwd);
+    if let Some(vcs_bin) = config.vcs() {
         let branch = vcs_run(&vcs_bin, cwd, &["rev-parse", "--abbrev-ref", "HEAD"]);
         if !branch.is_empty() {
-            let parent = parent_branch_for(cwd, &branch);
+            let parent = parent_branch_for(&config, &branch);
             if !parent.is_empty() && branch != parent {
                 let range = format!("{parent}...HEAD");
                 let diff = vcs_run(&vcs_bin, cwd, &["diff", "--name-only", &range]);

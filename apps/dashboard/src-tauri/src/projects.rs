@@ -5,8 +5,8 @@
 //! command needed to inspect an arbitrary folder:
 //!
 //! - [`detect_project_mustard`] — does `<path>/.claude/CLAUDE.md` exist? if so,
-//!   read `<path>/.claude/mustard.json` and surface the `version` stamp written
-//!   by `mustard-cli init` (see `apps/cli/src/commands/init.rs:333`).
+//!   read `<path>/mustard.json` (the project-root config) and surface the
+//!   `version` stamp written by `mustard-cli init`.
 //!
 //! Install / update are NOT defined here. The native commands
 //! `mustard_install` / `mustard_update` (see `lib.rs`) already wrap
@@ -17,6 +17,7 @@
 //! is the target, not the dashboard's own scaffold root.
 
 use mustard_core::io::fs;
+use mustard_core::ProjectConfig;
 use serde::Serialize;
 use std::path::Path;
 
@@ -26,7 +27,7 @@ use std::path::Path;
 pub struct ProjectDetection {
     /// `true` when `<path>/.claude/CLAUDE.md` exists.
     pub installed: bool,
-    /// The `version` field from `<path>/.claude/mustard.json`, when readable.
+    /// The `version` field from `<path>/mustard.json`, when readable.
     /// `None` when the file is missing, malformed, or has no `version` key.
     pub version: Option<String>,
 }
@@ -35,7 +36,7 @@ pub struct ProjectDetection {
 ///
 /// Detection rule mirrors `discovery::discover`: a folder counts as installed
 /// when its `.claude/CLAUDE.md` exists. The version is best-effort — a missing
-/// or malformed `.claude/mustard.json` yields `version: None` rather than an
+/// or malformed `mustard.json` yields `version: None` rather than an
 /// error, so the UI can still show "installed, version unknown".
 #[tauri::command]
 pub async fn detect_project_mustard(path: String) -> Result<ProjectDetection, String> {
@@ -46,7 +47,9 @@ pub async fn detect_project_mustard(path: String) -> Result<ProjectDetection, St
         return Ok(ProjectDetection { installed: false, version: None });
     }
 
-    let version = read_mustard_json_version(&claude_dir);
+    // Version lives in the project-root mustard.json (the workspace anchor),
+    // not under `.claude/`. `installed` is still keyed on `.claude/CLAUDE.md`.
+    let version = ProjectConfig::load(base).version;
     Ok(ProjectDetection { installed: true, version })
 }
 
@@ -74,15 +77,4 @@ pub async fn uninstall_mustard(path: String) -> Result<(), String> {
     }
 
     Ok(())
-}
-
-/// Best-effort read of `.claude/mustard.json`'s `version` field. Any I/O or
-/// parse failure collapses to `None` — callers treat that as "unknown".
-fn read_mustard_json_version(claude_dir: &Path) -> Option<String> {
-    let path = claude_dir.join("mustard.json");
-    let content = fs::read_to_string(&path).ok()?;
-    let v: serde_json::Value = serde_json::from_str(&content).ok()?;
-    v.get("version")
-        .and_then(|x| x.as_str())
-        .map(|s| s.to_string())
 }

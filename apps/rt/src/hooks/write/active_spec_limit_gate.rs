@@ -22,7 +22,7 @@
 //! ## Cap — `mustard.json#maxActiveSpecs`, default 10
 //!
 //! The cap is read from `mustard.json#maxActiveSpecs`
-//! ([`crate::util::mustard_config::max_active_specs`]); when unset it defaults
+//! ([`mustard_core::ProjectConfig::max_active_specs`]); when unset it defaults
 //! to [`DEFAULT_MAX_ACTIVE_SPECS`] (`10`). The gate fires when **opening the new
 //! pipeline would push the count past the cap** — i.e. when
 //! `active_count >= cap` (the new one would be the `cap + 1`-th).
@@ -45,7 +45,7 @@
 //! can never spuriously trip the cap.
 
 use crate::commands::spec::active_specs::count_active;
-use crate::util::{format_gate_message, mustard_config};
+use crate::util::format_gate_message;
 use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
 use mustard_core::platform::error::Error;
 use std::path::Path;
@@ -101,9 +101,8 @@ fn skill_name(input: &HookInput) -> &str {
 /// else [`DEFAULT_MAX_ACTIVE_SPECS`]. Fail-open — an unreadable / malformed
 /// `mustard.json` reads as "no override" → the default.
 fn cap_for(cwd: &Path) -> usize {
-    mustard_config::load(cwd)
-        .as_ref()
-        .and_then(mustard_config::max_active_specs)
+    mustard_core::ProjectConfig::load(cwd)
+        .max_active_specs()
         .unwrap_or(DEFAULT_MAX_ACTIVE_SPECS)
 }
 

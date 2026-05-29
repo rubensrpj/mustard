@@ -66,17 +66,12 @@ pub fn run(spec_path: &Path, json_out: bool) {
     }
 }
 
-/// Read `specLang` from `<project_root>/mustard.json`. Fail-open: missing file,
-/// IO error, malformed JSON, or absent key all yield `None`. Mirrors the
-/// `read_mustard_tone` reader in `spec_draft.rs`.
+/// Read the project's spec language from `<project_root>/mustard.json` through
+/// the single config owner. Prefers `specLang`, falls back to the legacy `lang`
+/// key; fail-open to `None` when neither is set.
 fn read_mustard_spec_lang(project_root: &Path) -> Option<String> {
-    let path = project_root.join("mustard.json");
-    let text = std::fs::read_to_string(&path).ok()?;
-    let value: serde_json::Value = serde_json::from_str(&text).ok()?;
-    value
-        .get("specLang")
-        .and_then(serde_json::Value::as_str)
-        .map(str::to_string)
+    let config = mustard_core::ProjectConfig::load(project_root);
+    config.spec_lang.or(config.lang)
 }
 
 /// Soft-warning helper. Returns `Some(line)` when both sides resolve and

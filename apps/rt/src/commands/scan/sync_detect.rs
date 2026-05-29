@@ -3,7 +3,7 @@
 //! Discovers subprojects in a monorepo by scanning for **build manifests**
 //! (`Cargo.toml` with `[package]`, `package.json`, `*.csproj`, `go.mod`,
 //! `pyproject.toml`, `pubspec.yaml`) — the language-agnostic signal that a
-//! directory is an independent buildable unit. `.claude/mustard.json` may
+//! directory is an independent buildable unit. The root `mustard.json` may
 //! override the result via `subprojects.exclude` / `.include` (paths relative
 //! to the repo root). It then detects each subproject's role via file-based
 //! scoring, maps role → agent, lists commands, and computes a SHA-256 source

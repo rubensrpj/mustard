@@ -33,16 +33,17 @@ enum MainBudgetMode {
     Strict,
 }
 
-/// Resolve the main-budget mode. Port of `getMode`: lowercased,
-/// **default `warn`** (not strict — this gate is advisory by default, see
-/// `settings.json`'s `MUSTARD_MAIN_BUDGET_MODE: "warn"`). An unrecognised
-/// value also resolves to `warn`.
-fn main_budget_mode() -> MainBudgetMode {
-    match std::env::var("MUSTARD_MAIN_BUDGET_MODE")
-        .unwrap_or_default()
-        .to_ascii_lowercase()
-        .as_str()
-    {
+/// Resolve the main-budget mode in cascade: env var → `mustard.json`
+/// (`gates.main_budget`, supplied as `config_override`) → built-in `warn`
+/// (this gate is advisory by default, see `settings.json`'s
+/// `MUSTARD_MAIN_BUDGET_MODE: "warn"`). An env var set to a non-empty value
+/// wins; an absent string OR an unrecognised value resolves to `warn`.
+fn main_budget_mode(config_override: Option<&str>) -> MainBudgetMode {
+    let s = std::env::var("MUSTARD_MAIN_BUDGET_MODE")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .or_else(|| config_override.map(str::to_string));
+    match s.unwrap_or_default().to_ascii_lowercase().as_str() {
         "off" => MainBudgetMode::Off,
         "strict" => MainBudgetMode::Strict,
         _ => MainBudgetMode::Warn,
@@ -114,15 +115,14 @@ impl Check for MainContextCounter {
     /// `Off` short-circuits. Lifecycle events keep the `subagentDepth` gauge
     /// honest; a `Task`/`Agent` dispatch resets `mainCount` (work delegated).
     fn evaluate(&self, input: &HookInput, ctx: &Ctx) -> Result<Verdict, Error> {
-        let mode = main_budget_mode();
-        if mode == MainBudgetMode::Off {
-            return Ok(Verdict::Allow);
-        }
         // Resolve the project root that owns the counter state file.
         // W5 AC-W5.2: when neither `ctx` nor `input.cwd` carries a valid
         // root, skip the counter machinery entirely — otherwise we leak a
         // `.claude/.agent-state/main-context.counter.json` tree into the
         // process cwd (`apps/rt/` under `cargo test`).
+        //
+        // Resolved before the mode so the cascade can read the project's
+        // `mustard.json` (`gates.main_budget`) override.
         let project = if ctx.project_dir.is_empty() {
             match common::project_dir_opt(input) {
                 Some(p) => p,
@@ -131,6 +131,12 @@ impl Check for MainContextCounter {
         } else {
             ctx.project_dir.clone()
         };
+        // Cascade: env var → mustard.json (gates.main_budget) → warn.
+        let gates = mustard_core::ProjectConfig::load(Path::new(&project)).gates;
+        let mode = main_budget_mode(gates.main_budget.as_deref());
+        if mode == MainBudgetMode::Off {
+            return Ok(Verdict::Allow);
+        }
         let mut state = Self::read_state(&project);
 
         match ctx.trigger {

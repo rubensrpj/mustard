@@ -11,13 +11,13 @@
 //! 5. seed an empty `entity-registry.json` on a fresh install;
 //! 6. ensure global Claude Code permissions in `~/.claude/settings.json`;
 //! 7. install RTK (token economy) if missing — fail-open;
-//! 8. write the `runtime` block **and the `version` stamp** into
-//!    `.claude/mustard.json`;
-//! 9. generate the project-root `mustard.json` git-flow config.
+//! 8. write the single project-root `mustard.json`: git-flow + agnostically
+//!    detected build/test/lint/type-check commands + spec language + tone +
+//!    the `runtime`/`version` stamp.
 //!
-//! The **`version` stamp** (step 8) is new in the Rust port: `init` records
-//! `env!("CARGO_PKG_VERSION")` so the dashboard (B6) can read the installed
-//! Mustard version. It is merged surgically via [`crate::fs_ops::merge_json`].
+//! There is **one** config file, at the **project root** (the workspace anchor
+//! `workspace_root` keys on) — never `.claude/mustard.json`. The `version`
+//! stamp lets the dashboard (B6) read the installed Mustard version.
 
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
@@ -30,8 +30,8 @@ use mustard_core::io::fs as mfs;
 use serde_json::json;
 
 use crate::commands::git_flow;
-use crate::fs_ops::{copy_dir, merge_json};
-use crate::runtime::RuntimeInfo;
+use crate::fs_ops::copy_dir;
+use mustard_core::{ProjectConfig, Runtime};
 
 /// Flags accepted by `mustard init`.
 #[derive(Debug, Default, Clone)]
@@ -96,14 +96,14 @@ pub fn init_with_templates(
 
     println!("\nMustard\n");
 
-    let runtime = RuntimeInfo::detect();
+    let runtime = Runtime::detect();
     println!("[mustard] runtime: {} {}/{}", runtime.kind, runtime.os, runtime.arch);
 
     if options.dry_run {
         println!("  (dry-run) would copy templates -> {}", claude_path.display());
         println!(
-            "  (dry-run) would write runtime + version to {}",
-            claude_path.join("mustard.json").display()
+            "  (dry-run) would write git-flow + commands + runtime/version to {}",
+            project_path.join("mustard.json").display()
         );
         return Ok(());
     }
@@ -152,11 +152,13 @@ pub fn init_with_templates(
         println!("  --cursor flag is now served by `mustard-rt run adapt-cursor` (run it after init)");
     }
 
-    // Persist runtime + version stamp into .claude/mustard.json (surgical).
-    write_claude_mustard_json(&claude_path, &runtime)?;
+    // Write the single project-root mustard.json: git-flow + detected commands
+    // + language/tone + runtime/version stamp. One file, one write.
+    write_project_config(&project_path, &runtime, !options.yes)?;
 
-    // Project-root git-flow mustard.json.
-    git_flow::generate_mustard_json(&project_path, !options.yes)?;
+    // MCP servers live in <root>/.mcp.json — Claude Code does not read
+    // `mcpServers` from settings.json. Merge-in the mustard-memory server.
+    install_mcp_json(&project_path)?;
 
     print_next_steps();
     Ok(())
@@ -309,21 +311,60 @@ fn seed_entity_registry(claude_path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Surgically merge the `runtime` block and the `version` stamp into
-/// `.claude/mustard.json`. Reuses [`crate::fs_ops::merge_json`], so any other
-/// keys already in the file are preserved.
+/// Build and write the single project-root `mustard.json`.
 ///
-/// Shared with `update`, which re-stamps the `version` (but not `runtime` —
-/// see [`crate::commands::update`]).
-pub(crate) fn write_claude_mustard_json(claude_path: &Path, runtime: &RuntimeInfo) -> Result<()> {
-    let path = claude_path.join("mustard.json");
-    merge_json(
-        &path,
-        &[
-            ("runtime", serde_json::to_value(runtime)?),
-            ("version", json!(crate::VERSION)),
-        ],
-    )
+/// Loads any existing config (so a re-run preserves user edits), folds in the
+/// git-flow + locale choices and agnostically-detected commands — only when
+/// interactive or on a fresh project; otherwise the existing git-flow is left
+/// untouched — then stamps `runtime` + `version` and writes **once**. There is
+/// no `.claude/mustard.json`: the file lives at the project root (the workspace
+/// anchor), the single source of truth.
+fn write_project_config(project_path: &Path, runtime: &Runtime, interactive: bool) -> Result<()> {
+    let mut config = ProjectConfig::load(project_path);
+    let fresh = !ProjectConfig::exists(project_path);
+
+    if interactive || fresh {
+        let facts = git_flow::probe_git(project_path);
+        let choices = git_flow::collect_choices(&facts, &config, interactive)?;
+        git_flow::apply_choices(&mut config, &facts, &choices, project_path);
+    } else {
+        println!("  mustard.json already exists - git flow preserved");
+    }
+
+    config.runtime = Some(runtime.clone());
+    config.version = Some(crate::VERSION.to_string());
+    config.write(project_path)?;
+    println!("  wrote mustard.json");
+    Ok(())
+}
+
+/// Ensure `<project>/.mcp.json` declares the `mustard-memory` MCP server.
+///
+/// MCP servers belong in `.mcp.json` at the project root — Claude Code does not
+/// read `mcpServers` from `settings.json`. The entry is **merged in** (an
+/// existing `.mcp.json` and any user-declared servers are preserved), and only
+/// added when absent so a hand-edited `mustard-memory` is left untouched. The
+/// server carries no env: the `mcp` subcommand reads NDJSON from the filesystem
+/// (no SQLite, no `MUSTARD_DB_PATH`).
+///
+/// Shared with `update`, which re-asserts it so an existing project that
+/// predates the `.mcp.json` split picks it up.
+pub(crate) fn install_mcp_json(project_path: &Path) -> Result<()> {
+    let path = project_path.join(".mcp.json");
+    let mut root = crate::fs_ops::read_json_object(&path);
+    let servers = root.entry("mcpServers").or_insert_with(|| json!({}));
+    if let Some(servers) = servers.as_object_mut() {
+        servers
+            .entry("mustard-memory")
+            .or_insert_with(|| json!({ "command": "mustard-rt", "args": ["mcp"] }));
+    }
+    let mut serialized = serde_json::to_string_pretty(&serde_json::Value::Object(root))
+        .context("serializing .mcp.json")?;
+    serialized.push('\n');
+    mfs::write_atomic(&path, serialized.as_bytes())
+        .with_context(|| format!("writing {}", path.display()))?;
+    println!("  wrote .mcp.json (mustard-memory)");
+    Ok(())
 }
 
 /// Ensure `~/.claude/settings.json` grants `Read`/`Write`/`Edit` and sets the
@@ -677,16 +718,32 @@ mod tests {
         assert!(claude.join("CLAUDE.md").exists(), ".claude/CLAUDE.md copied");
         assert!(claude.join("commands/feature.md").exists(), "nested file copied");
 
-        // mustard.json carries the version stamp from CARGO_PKG_VERSION.
-        let cfg = crate::fs_ops::read_json_object(&claude.join("mustard.json"));
+        // The SINGLE project-root mustard.json carries git-flow, the version
+        // stamp, runtime, and the language/tone defaults — and there is NO
+        // .claude/mustard.json (one file, at the root, the workspace anchor).
+        let cfg = crate::fs_ops::read_json_object(&project.join("mustard.json"));
         assert_eq!(cfg.get("version").and_then(|v| v.as_str()), Some(crate::VERSION));
         assert!(cfg.get("runtime").is_some(), "runtime block written");
+        assert!(cfg.get("git").is_some(), "git-flow block written");
+        assert_eq!(cfg.get("specLang").and_then(|v| v.as_str()), Some("pt-BR"));
+        assert_eq!(cfg.get("tone").and_then(|v| v.as_str()), Some("didactic"));
+        assert!(
+            !claude.join("mustard.json").exists(),
+            "no .claude/mustard.json — config lives only at the project root"
+        );
+
+        // MCP servers live in <root>/.mcp.json (Claude Code does not read
+        // mcpServers from settings.json) — and never carry MUSTARD_DB_PATH.
+        let mcp = crate::fs_ops::read_json_object(&project.join(".mcp.json"));
+        let memory = mcp
+            .get("mcpServers")
+            .and_then(|s| s.get("mustard-memory"))
+            .expect(".mcp.json declares the mustard-memory server");
+        assert_eq!(memory.get("command").and_then(|c| c.as_str()), Some("mustard-rt"));
+        assert!(memory.get("env").is_none(), "no MUSTARD_DB_PATH / SQLite env");
 
         // Fresh install seeds the entity registry.
         assert!(claude.join("entity-registry.json").exists());
-
-        // Project-root git-flow config exists.
-        assert!(project.join("mustard.json").exists());
     }
 
     #[test]

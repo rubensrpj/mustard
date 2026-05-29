@@ -36,7 +36,7 @@ pub fn discover(root: &Path) -> Result<Vec<Project>, String> {
 
     while let Some((dir, depth)) = queue.pop_front() {
         let db_path = dir.join(".claude").join(".harness").join("mustard.db");
-        let json_path = dir.join(".claude").join("mustard.json");
+        let json_path = dir.join("mustard.json");
         let has_db = db_path.is_file();
         let has_json = json_path.is_file();
         if has_db || has_json {

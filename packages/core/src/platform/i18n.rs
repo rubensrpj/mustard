@@ -693,36 +693,6 @@ impl fmt::Display for UserLocaleError {
 
 impl std::error::Error for UserLocaleError {}
 
-/// Resolve the project locale from `{project_dir}/.claude/mustard.json`.
-///
-/// Reads `mustard.json`, parses `lang` (or `specLang`) as a BCP-47 code, and
-/// maps it to a [`SupportedLocale`].  Fails open to [`Locale::PtBr`] on any
-/// IO, parse, or catalogue error so callers never have to handle this path.
-#[must_use]
-pub fn project_locale(project_dir: &std::path::Path) -> Locale {
-    let mustard_json = project_dir.join(".claude").join("mustard.json");
-    project_locale_from_file(&mustard_json)
-}
-
-/// Resolve the project locale from an explicit `mustard.json` path.
-///
-/// Same semantics as [`project_locale`] but lets callers supply a pre-resolved
-/// path (e.g. after a [`ClaudePaths`] walk) to avoid a second filesystem stat.
-///
-/// [`ClaudePaths`]: crate::ClaudePaths
-#[must_use]
-pub fn project_locale_from_file(path: &std::path::Path) -> Locale {
-    let text = std::fs::read_to_string(path).unwrap_or_default();
-    let v: serde_json::Value = serde_json::from_str(&text).unwrap_or(serde_json::Value::Null);
-    // Accept either `lang` or `specLang` — the deep-refactor wave standardised
-    // on `lang` but legacy `mustard.json` files may still carry `specLang`.
-    let raw = v.get("lang")
-        .or_else(|| v.get("specLang"))
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or_default();
-    raw.parse::<Locale>().unwrap_or_default()
-}
-
 /// Render a wave label given a locale + 1-based wave index.
 ///
 /// `Locale::PtBr` → `"Onda 3"`, `Locale::EnUs` → `"W3"`. Reused by the rt
