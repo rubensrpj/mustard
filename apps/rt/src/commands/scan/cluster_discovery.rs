@@ -13,7 +13,7 @@
 //! including the tunable-aware cache key.
 
 use super::file_utils::{collect_files, read_file_safe, relative_path};
-use super::project_conventions::primary_ext_for_stack;
+use super::project_conventions::{primary_ext_for_stack, resolve_primary_ext};
 use crate::util::sha256::Sha256;
 use mustard_core::io::fs as mfs;
 use mustard_core::ClaudePaths;
@@ -100,9 +100,13 @@ pub fn discover_clusters(
     stack_id: &str,
     subproject_name: Option<&str>,
 ) -> Vec<Value> {
-    let Some(ext) = primary_ext_for_stack(stack_id) else {
+    // F0-e: an unknown stack must not early-return empty. Derive the project's
+    // dominant source extension (or honour a `mustard.json#primaryExt` pin) so
+    // suffix / folder / co-occurrence clustering still runs agnostically.
+    let Some(ext) = resolve_primary_ext(subproject_path, stack_id) else {
         return Vec::new();
     };
+    let ext = ext.as_str();
     let all_files = collect_files(subproject_path, ext, &[]);
     let all_files: Vec<String> = all_files
         .iter()
@@ -235,9 +239,11 @@ pub fn discover_clusters(
 /// Compute folder-segment frequency — a port of `computeFolderFrequency()`.
 #[must_use]
 pub fn compute_folder_frequency(subproject_path: &Path, stack_id: &str) -> Value {
-    let Some(ext) = primary_ext_for_stack(stack_id) else {
+    // F0-e: agnostic fallback so an unknown stack still reports its folders.
+    let Some(ext) = resolve_primary_ext(subproject_path, stack_id) else {
         return json!({ "totalFolders": 0, "segments": {} });
     };
+    let ext = ext.as_str();
     let files = collect_files(subproject_path, ext, &[]);
     let mut folder_set: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     for f in &files {
@@ -1314,5 +1320,32 @@ mod tests {
         let freq = compute_folder_frequency(dir.path(), "typescript");
         assert_eq!(freq["segments"]["src"], 2);
         assert_eq!(freq["totalFolders"], 2);
+    }
+
+    /// F0-e: an unknown stack (no manifest, exotic `.foo` extension) must still
+    /// discover suffix clusters using the dominant derived extension instead of
+    /// early-returning empty.
+    #[test]
+    fn unknown_stack_discovers_clusters_via_dominant_ext() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        for n in [
+            "FooService",
+            "BarService",
+            "BazService",
+            "QuxService",
+            "ZapService",
+        ] {
+            std::fs::write(src.join(format!("{n}.foo")), "fn x() {}").unwrap();
+        }
+        let clusters = discover_clusters(dir.path(), "unknown", Some("app"));
+        assert!(
+            clusters.iter().any(|c| {
+                c.get("suffix").and_then(Value::as_str) == Some("Service")
+                    && c.get("ext").and_then(Value::as_str) == Some(".foo")
+            }),
+            "expected a Service suffix-cluster on .foo, got {clusters:?}"
+        );
     }
 }

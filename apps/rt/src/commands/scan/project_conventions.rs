@@ -5,7 +5,8 @@
 //! convention computed today is the dominant naming style of the primary
 //! extension's basenames.
 
-use super::file_utils::collect_files;
+use super::file_utils::{collect_files, dominant_source_extension};
+use crate::util::mustard_config;
 use serde_json::json;
 use std::path::Path;
 
@@ -19,7 +20,11 @@ fn dominance_threshold() -> f64 {
     raw.clamp(0.5, 0.95)
 }
 
-/// Primary file extension for a stack — mirrors `_primaryExtForStack`.
+/// Primary file extension for a known stack — mirrors `_primaryExtForStack`.
+///
+/// Returns `None` for an unknown stack id. Callers that must never zero on an
+/// unknown stack should use [`resolve_primary_ext`], which derives the
+/// project's dominant extension as an agnostic fallback.
 #[must_use]
 pub fn primary_ext_for_stack(stack_id: &str) -> Option<&'static str> {
     match stack_id {
@@ -34,6 +39,30 @@ pub fn primary_ext_for_stack(stack_id: &str) -> Option<&'static str> {
         "php" => Some(".php"),
         _ => None,
     }
+}
+
+/// Resolve the primary extension the cluster / convention gates operate on,
+/// **never zeroing on an unknown stack** (F0-e).
+///
+/// Resolution order, first hit wins:
+/// 1. `mustard.json#primaryExt` (explicit user pin — wins over everything).
+/// 2. [`primary_ext_for_stack`] for a known stack id (known stacks are
+///    byte-identical to pre-F0-e — no regression).
+/// 3. [`dominant_source_extension`] of the subproject — the most frequent
+///    source extension actually present, so an unknown stack discovers its own
+///    dominant language instead of returning `None`.
+///
+/// Returns `None` only when the subproject has literally no source file (so
+/// there is genuinely nothing to cluster) — that is the one legitimate empty.
+#[must_use]
+pub fn resolve_primary_ext(subproject_path: &Path, stack_id: &str) -> Option<String> {
+    if let Some(ext) = mustard_config::load(subproject_path).and_then(|c| mustard_config::primary_ext(&c)) {
+        return Some(ext);
+    }
+    if let Some(ext) = primary_ext_for_stack(stack_id) {
+        return Some(ext.to_string());
+    }
+    dominant_source_extension(subproject_path)
 }
 
 /// Classify a basename into a naming bucket — a port of `classifyName()`.
@@ -92,9 +121,12 @@ pub fn classify_name(base: &str) -> &'static str {
 #[must_use]
 pub fn compute_project_conventions(subproject_path: &Path, stack_id: &str) -> serde_json::Value {
     let empty = json!({ "naming": { "dominant": serde_json::Value::Null, "distribution": {}, "total": 0 } });
-    let Some(ext) = primary_ext_for_stack(stack_id) else {
+    // F0-e: never zero on an unknown stack — fall back to the project's own
+    // dominant source extension instead of returning `None` here.
+    let Some(ext) = resolve_primary_ext(subproject_path, stack_id) else {
         return empty;
     };
+    let ext = ext.as_str();
     let files = collect_files(subproject_path, ext, &[]);
     if files.is_empty() {
         return empty;

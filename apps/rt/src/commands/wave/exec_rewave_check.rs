@@ -15,7 +15,7 @@
 
 use crate::commands::spec::scope_decompose::decide;
 use crate::commands::wave::wave_dependency::compute_waves;
-use crate::commands::wave::wave_lib::{detect_role, parse_files_section};
+use crate::commands::wave::wave_lib::{detect_role_with, load_role_patterns, parse_files_section};
 use crate::util::json_io;
 use mustard_core::time::now_iso8601;
 use mustard_core::io::fs;
@@ -188,6 +188,8 @@ pub fn run(spec_arg: Option<&str>) {
     };
     let spec_dir = spec_file.parent().map_or_else(|| cwd.clone(), Path::to_path_buf);
     let project_root = find_project_root(&spec_dir).unwrap_or_else(|| cwd.clone());
+    // F0-e: role-classification overrides from `mustard.json#rolePatterns`.
+    let role_patterns = load_role_patterns(&project_root);
 
     let result = (|| -> Value {
         // 1. Read spec.
@@ -228,7 +230,7 @@ pub fn run(spec_arg: Option<&str>) {
         }
 
         // 5. Compute layerCount.
-        let roles: BTreeSet<&str> = file_paths.iter().map(|f| detect_role(f)).collect();
+        let roles: BTreeSet<String> = file_paths.iter().map(|f| detect_role_with(f, &role_patterns)).collect();
         let layer_count = if roles.len() == 1 && roles.contains("lib") {
             1
         } else {

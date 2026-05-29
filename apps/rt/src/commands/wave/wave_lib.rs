@@ -4,26 +4,101 @@
 //! `exec-rewave-check` and `wave-size-check`.
 
 use crate::commands::spec::spec_sections::is_heading;
+use crate::util::mustard_config::{self, glob_matches, RolePattern};
+use std::path::Path;
 
-/// Classify a file path into a coarse architectural role.
+/// Built-in keyword categories — the pre-F0-e classifier, kept byte-identical so
+/// known stacks do not regress. The first matching category wins, in order
+/// schema → api → ui → test.
+const BUILTIN_ROLES: &[(&str, &[&str])] = &[
+    ("schema", &["schema", "migration", "entity", "model", "drizzle", "prisma"]),
+    ("api", &["api", "controller", "route", "endpoint", "handler", "service"]),
+    ("ui", &["ui", "component", "view", "page", "screen", "widget"]),
+    ("test", &["test", "spec", "__tests__"]),
+];
+
+/// Generic folder segments that carry no architectural signal — a file whose
+/// only differentiating segment is one of these falls through to `"lib"` so the
+/// agnostic structural fallback matches the historical `lib` bucket rather than
+/// inventing a noisy role. Language-neutral structural names only.
+const GENERIC_SEGMENTS: &[&str] = &[
+    "lib", "libs", "util", "utils", "helper", "helpers", "common", "shared",
+    "core", "internal", "src", "app", "pkg",
+];
+
+/// Classify `file_path` into a coarse architectural role.
 ///
-/// Mirrors the JS substring-alternation regexes (`detectRole`): the first
-/// matching category wins, in order schema → api → ui → test → lib.
+/// Resolution order, first match wins:
+/// 1. `patterns` (`mustard.json#rolePatterns`) — user overrides take priority,
+///    so a non-English project can name its own layers.
+/// 2. The built-in keyword categories ([`BUILTIN_ROLES`]) — known stacks stay
+///    byte-identical.
+/// 3. **Agnostic structural fallback** (F0-e): instead of dumping everything not
+///    matched by an English keyword into `"lib"` (which collapses `layerCount`
+///    to 1 for any non-JS project), derive the role from the file's most
+///    significant directory segment. A file under `handlers/` becomes role
+///    `"handlers"`, under `models/` becomes `"models"`, so structurally-layered
+///    projects surface `layerCount >= 2` even when no keyword matches. Files
+///    with only a generic segment (`util`, `lib`, `src`, …) or no directory
+///    keep the historical `"lib"` bucket.
 #[must_use]
-pub fn detect_role(file_path: &str) -> &'static str {
+pub fn detect_role_with(file_path: &str, patterns: &[RolePattern]) -> String {
     let lower = file_path.to_lowercase();
-    let any = |needles: &[&str]| needles.iter().any(|n| lower.contains(n));
-    if any(&["schema", "migration", "entity", "model", "drizzle", "prisma"]) {
-        "schema"
-    } else if any(&["api", "controller", "route", "endpoint", "handler", "service"]) {
-        "api"
-    } else if any(&["ui", "component", "view", "page", "screen", "widget"]) {
-        "ui"
-    } else if any(&["test", "spec", "__tests__"]) {
-        "test"
-    } else {
-        "lib"
+
+    // 1. mustard.json overrides (first listed match wins).
+    for rp in patterns {
+        if glob_matches(&rp.pattern, &lower) {
+            return rp.role.clone();
+        }
     }
+
+    // 2. Built-in keyword categories (unchanged behaviour for known stacks).
+    for (role, needles) in BUILTIN_ROLES {
+        if needles.iter().any(|n| lower.contains(n)) {
+            return (*role).to_string();
+        }
+    }
+
+    // 3. Agnostic structural fallback — derive a role from the directory
+    //    structure so distinct folders yield distinct roles.
+    structural_role(&lower)
+}
+
+/// Derive a role from a path's directory segments when no keyword matched.
+///
+/// Picks the deepest non-generic directory segment (the folder immediately
+/// holding the file, walking up past generic wrappers like `src`/`util`). Falls
+/// back to `"lib"` when every segment is generic or the path is a bare
+/// filename — matching the historical bucket for genuinely unstructured files.
+fn structural_role(lower_path: &str) -> String {
+    let norm = lower_path.replace('\\', "/");
+    let segments: Vec<&str> = norm.split('/').collect();
+    // Drop the filename (last segment); consider only directory segments.
+    let dir_segments = match segments.split_last() {
+        Some((_file, dirs)) => dirs,
+        None => return "lib".to_string(),
+    };
+    // Deepest meaningful (non-generic, non-empty) directory segment.
+    for seg in dir_segments.iter().rev() {
+        let seg = seg.trim();
+        if seg.is_empty() || GENERIC_SEGMENTS.contains(&seg) {
+            continue;
+        }
+        return seg.to_string();
+    }
+    "lib".to_string()
+}
+
+/// Load `mustard.json#rolePatterns` from `project_root`, fail-open to empty.
+///
+/// Convenience for the wave gates (`wave-size-check`, `exec-rewave-check`,
+/// `wave-dependency`) that have a project root in hand and want the override
+/// applied to every [`detect_role_with`] call.
+#[must_use]
+pub fn load_role_patterns(project_root: &Path) -> Vec<RolePattern> {
+    mustard_config::load(project_root)
+        .map(|cfg| mustard_config::role_patterns(&cfg))
+        .unwrap_or_default()
 }
 
 /// Whether a trimmed line starts a new `## ` section (any heading).
@@ -86,11 +161,36 @@ mod tests {
 
     #[test]
     fn detect_role_classifies_paths() {
-        assert_eq!(detect_role("src/schema/user.ts"), "schema");
-        assert_eq!(detect_role("src/api/users.ts"), "api");
-        assert_eq!(detect_role("src/components/Btn.tsx"), "ui");
-        assert_eq!(detect_role("src/foo.test.ts"), "test");
-        assert_eq!(detect_role("src/util/helpers.ts"), "lib");
+        // Known-keyword categories stay byte-identical (no regression).
+        assert_eq!(detect_role_with("src/schema/user.ts", &[]), "schema");
+        assert_eq!(detect_role_with("src/api/users.ts", &[]), "api");
+        assert_eq!(detect_role_with("src/components/Btn.tsx", &[]), "ui");
+        assert_eq!(detect_role_with("src/foo.test.ts", &[]), "test");
+        // Generic-only directory → historical `lib` bucket.
+        assert_eq!(detect_role_with("src/util/helpers.ts", &[]), "lib");
+        assert_eq!(detect_role_with("main.rs", &[]), "lib");
+    }
+
+    #[test]
+    fn detect_role_structural_fallback_differentiates_non_keyword_dirs() {
+        // A non-JS project whose folders carry no English keyword must NOT
+        // collapse every file into `lib` — distinct folders ⇒ distinct roles.
+        assert_eq!(detect_role_with("src/repositorios/usuario.rb", &[]), "repositorios");
+        assert_eq!(detect_role_with("src/dominio/pedido.rb", &[]), "dominio");
+        // The deepest non-generic segment wins, skipping generic wrappers.
+        assert_eq!(detect_role_with("src/util/dominio/x.rb", &[]), "dominio");
+    }
+
+    #[test]
+    fn detect_role_with_respects_role_patterns() {
+        let patterns = vec![
+            RolePattern { pattern: "repositorios".to_string(), role: "schema".to_string() },
+            RolePattern { pattern: "controladores".to_string(), role: "api".to_string() },
+        ];
+        assert_eq!(detect_role_with("src/repositorios/usuario.rb", &patterns), "schema");
+        assert_eq!(detect_role_with("src/controladores/x.rb", &patterns), "api");
+        // Unmatched by override → structural fallback still applies.
+        assert_eq!(detect_role_with("src/vistas/y.rb", &patterns), "vistas");
     }
 
     #[test]

@@ -7,7 +7,7 @@
 //! JSON object on stdout. Fail-open: an unrecoverable error emits
 //! `{ "error": "error-fallback" }`.
 
-use crate::commands::wave::wave_lib::detect_role;
+use crate::commands::wave::wave_lib::{detect_role_with, load_role_patterns};
 use mustard_core::io::fs;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -255,6 +255,8 @@ pub fn compute_waves(files: &[String], project_root: &Path) -> Value {
         return json!({ "error": "empty-input" });
     }
     let graph = build_graph(files, project_root);
+    // F0-e: role-classification overrides from `mustard.json#rolePatterns`.
+    let role_patterns = load_role_patterns(project_root);
     match topological_waves(&graph) {
         TopoResult::Cycle(stuck) => {
             let cycle: Vec<String> = stuck.iter().map(|f| to_relative(f, project_root)).collect();
@@ -270,8 +272,7 @@ pub fn compute_waves(files: &[String], project_root: &Path) -> Value {
                         files.iter().map(|f| to_relative(f, project_root)).collect();
                     widest = widest.max(rel.len());
                     let mut roles: Vec<String> = Vec::new();
-                    for r in rel.iter().map(|f| detect_role(f)) {
-                        let r = r.to_string();
+                    for r in rel.iter().map(|f| detect_role_with(f, &role_patterns)) {
                         if !roles.contains(&r) {
                             roles.push(r);
                         }

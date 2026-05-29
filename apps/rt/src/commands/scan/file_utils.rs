@@ -140,6 +140,56 @@ fn walk(current: &Path, extension: &str, skip: &BTreeSet<String>, results: &mut 
     }
 }
 
+/// Most frequent source-file extension under `dir`, including the leading dot
+/// (e.g. `.rb`), or `None` when no source file is present.
+///
+/// This is the agnostic fallback the cluster / convention gates use when the
+/// stack is unknown and [`super::project_conventions::primary_ext_for_stack`]
+/// returns `None`: instead of zeroing, they discover the project's own dominant
+/// extension and operate on it. Cache-aware — when a [`with_cache`] scope covers
+/// `dir` the tally is served from the visited file list (no second disk walk);
+/// otherwise a fresh source-file walk is performed (sharing [`is_source_file`]
+/// with [`visit`], so the same files are considered). Ties break to the
+/// lexicographically-smallest extension for determinism.
+#[must_use]
+pub fn dominant_source_extension(dir: &Path) -> Option<String> {
+    let extra_exts = crate::util::mustard_config::load(dir)
+        .map(|cfg| crate::util::mustard_config::source_extensions(&cfg))
+        .unwrap_or_default();
+    let paths = source_files_under(dir, &extra_exts);
+    let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+    for p in &paths {
+        if let Some(ext) = p.file_name().and_then(|n| n.to_str()).and_then(extension_of) {
+            *counts.entry(ext).or_insert(0) += 1;
+        }
+    }
+    // `max_by_key` over a BTreeMap yields the *last* of equal-count keys; we
+    // want the smallest extension on a tie, so fold manually.
+    counts.into_iter().fold(None, |best, (ext, count)| match best {
+        Some((_, bc)) if bc >= count => best,
+        _ => Some((ext, count)),
+    })
+    .map(|(ext, _)| ext)
+}
+
+/// List every source file under `dir`, cache-aware. Used by
+/// [`dominant_source_extension`]; shares the visitor's [`is_source_file`]
+/// predicate so the extension tally reflects exactly what [`visit`] would open.
+fn source_files_under(dir: &Path, extra_exts: &[String]) -> Vec<PathBuf> {
+    if let Some(cached) = cache_source_files(dir, extra_exts) {
+        return cached;
+    }
+    let skip = ignore_set(dir, &[]);
+    let mut all = Vec::new();
+    walk_all(dir, &skip, &mut all);
+    all.retain(|p| {
+        p.file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| is_source_file(n, extra_exts))
+    });
+    all
+}
+
 /// Collect every regular file under `dir` (no extension filter) along with the
 /// directory entries themselves. Internal helper for [`visit`] — keeps a single
 /// directory walk that downstream code splits by extension in memory.
@@ -311,18 +361,47 @@ pub fn reset_disk_read_count() {
     DISK_HIT_COUNTER.with(|c| c.set(0));
 }
 
-/// Source-file extensions the scanner family reads. Everything else under the
-/// subproject root is skipped by [`visit`] so binaries and large generated
-/// assets are not opened just to be discarded as non-UTF-8.
+/// Known-stack source extensions — a fast-path allow-list, **not** a gate.
 ///
-/// The list mirrors the union of extensions any [`Scanner`](super::Scanner)
-/// implementation passes to [`collect_files`], plus a handful of manifest
-/// files the scanners load by name (`package.json`, `Cargo.toml`, etc.). It is
-/// intentionally a literal allow-list — adding a stack is a one-line change
-/// here that the cache then serves automatically.
-const SOURCE_EXTENSIONS: &[&str] = &[
+/// Wave 2 of project-profiler treated this as a closed allow-list: a file whose
+/// extension was absent was silently dropped, so a `.c`/`.swift`/`.rb`/`.zig`
+/// project produced zero visited files and every downstream gate (clusters,
+/// conventions, roles) zeroed. F0-e makes the visitor agnostic: this list is
+/// retained only so the well-known stacks keep their exact behaviour, while
+/// [`is_source_file`] now *defaults to including* any unknown extension that is
+/// not on the [`NON_SOURCE_EXTENSIONS`] deny-list.
+const KNOWN_SOURCE_EXTENSIONS: &[&str] = &[
     ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".cs", ".rs", ".go", ".java",
     ".kt", ".dart", ".py", ".php", ".prisma",
+];
+
+/// Binary / generated-asset / lockfile extensions the visitor refuses to open.
+///
+/// This is the *only* hard gate left in the visitor: an extension here is
+/// skipped so the parallel read pool never opens a PNG, archive, or compiled
+/// artefact just to discard it as non-UTF-8. Everything **not** on this list is
+/// treated as plausible source code (the agnostic default), which is what lets
+/// an exotic language (`.zig`, `.rb`, `.swift`, `.c`, `.h`, …) be visited
+/// without a per-language allow-list entry.
+///
+/// Conservative on purpose: when in doubt an extension is *kept* (visited), not
+/// dropped — a stray text file costs one cheap read, a dropped source file
+/// zeroes a whole gate.
+const NON_SOURCE_EXTENSIONS: &[&str] = &[
+    // Images / media.
+    ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".ico", ".svg", ".webp", ".avif",
+    ".mp3", ".mp4", ".wav", ".ogg", ".webm", ".mov", ".avi", ".mkv",
+    ".woff", ".woff2", ".ttf", ".otf", ".eot",
+    // Archives / compressed.
+    ".zip", ".gz", ".tgz", ".tar", ".rar", ".7z", ".bz2", ".xz", ".zst",
+    // Compiled / binary artefacts.
+    ".exe", ".dll", ".so", ".dylib", ".o", ".obj", ".a", ".lib", ".class",
+    ".pdb", ".bin", ".wasm", ".node", ".pyc", ".pyo", ".rlib",
+    // Documents / data blobs.
+    ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
+    ".db", ".sqlite", ".sqlite3", ".dat", ".pack",
+    // Lockfiles (large, generated, never source for scanning purposes).
+    ".lock",
 ];
 
 /// Manifest / configuration files the scanners load by full name. Treated as
@@ -345,14 +424,47 @@ const SOURCE_FILENAMES: &[&str] = &[
     ".gitignore",
 ];
 
-fn is_source_file(name: &str) -> bool {
+/// Lowercased extension of `name` including the leading dot (`Foo.ZIG` →
+/// `.zig`), or `None` when the name has no extension or is dotfile-only.
+fn extension_of(name: &str) -> Option<String> {
+    let dot = name.rfind('.')?;
+    // A leading-dot file like `.gitignore` is handled by SOURCE_FILENAMES, not
+    // here; treat `name` with the dot at index 0 as "no extension".
+    if dot == 0 {
+        return None;
+    }
+    Some(name[dot..].to_ascii_lowercase())
+}
+
+/// Decide whether [`visit`] should open `name` as plausible source.
+///
+/// Agnostic by default (F0-e): a file is **kept** unless its extension is on the
+/// [`NON_SOURCE_EXTENSIONS`] binary/asset deny-list. The known-stack allow-list
+/// and the manifest filenames are fast accepts; `extra_exts`
+/// (`mustard.json#sourceExtensions`) force-includes user-named extensions even
+/// if they would otherwise be denied. Extensionless files (e.g. `Makefile`,
+/// `Dockerfile`) are kept — they are plausible source/manifest and cheap to
+/// read.
+fn is_source_file(name: &str, extra_exts: &[String]) -> bool {
     if SOURCE_FILENAMES.contains(&name) {
         return true;
     }
     if name.ends_with(".csproj") || name.ends_with(".sln") {
         return true;
     }
-    SOURCE_EXTENSIONS.iter().any(|ext| name.ends_with(ext))
+    let Some(ext) = extension_of(name) else {
+        // No extension ⇒ keep (build scripts, Dockerfile, Makefile, …).
+        return true;
+    };
+    // User-pinned extensions win over the deny-list.
+    if extra_exts.iter().any(|e| e.eq_ignore_ascii_case(&ext)) {
+        return true;
+    }
+    if KNOWN_SOURCE_EXTENSIONS.contains(&ext.as_str()) {
+        return true;
+    }
+    // Agnostic default: everything not explicitly a binary/asset is source.
+    !NON_SOURCE_EXTENSIONS.contains(&ext.as_str())
 }
 
 /// Walk `root` once and read every relevant source file in parallel.
@@ -363,23 +475,29 @@ fn is_source_file(name: &str) -> bool {
 /// path so downstream consumers (entity / enum scanners, cluster discovery)
 /// see a deterministic order regardless of OS or filesystem reporting order.
 ///
-/// Only files matching the [`SOURCE_EXTENSIONS`] / [`SOURCE_FILENAMES`]
-/// allow-list are opened — binaries and generated assets are skipped, matching
-/// the union of extensions the per-stack scanners actually consume.
+/// Agnostic by default (F0-e): every file is opened as plausible source unless
+/// its extension is on the [`NON_SOURCE_EXTENSIONS`] binary/asset deny-list, so
+/// an exotic-language project (`.zig`, `.rb`, `.swift`, …) is visited without a
+/// per-stack allow-list entry. `mustard.json#sourceExtensions` (read from
+/// `root`) force-includes user-named extensions on top of that.
 ///
 /// Fail-open: unreadable files yield `VisitedFile { content: None, .. }` and
 /// missing directories are silently skipped.
 #[must_use]
 pub fn visit(root: &Path, ignore: &[&str]) -> Vec<VisitedFile> {
     let skip = ignore_set(root, ignore);
+    let extra_exts = crate::util::mustard_config::load(root)
+        .map(|cfg| crate::util::mustard_config::source_extensions(&cfg))
+        .unwrap_or_default();
     let mut paths = Vec::new();
     walk_all(root, &skip, &mut paths);
-    // Filter to source-like files only — keeps the parallel read pool from
-    // opening every PNG and lockfile under the subproject root.
+    // Filter out only binaries / generated assets — keeps the parallel read
+    // pool from opening every PNG and lockfile while never dropping a plausible
+    // source file just because its language is unknown.
     paths.retain(|p| {
         p.file_name()
             .and_then(|n| n.to_str())
-            .is_some_and(is_source_file)
+            .is_some_and(|n| is_source_file(n, &extra_exts))
     });
     // Sort by absolute path; the relative form is stably derived from it.
     paths.sort();
@@ -550,6 +668,44 @@ fn cache_collect_files(dir: &Path, extension: &str) -> Option<Vec<PathBuf>> {
     })
 }
 
+/// List the cached source files under `dir`, when a cache covers it. The
+/// cache's flat file list is exactly the set [`visit`] kept (binaries / assets
+/// already filtered out before [`with_cache`] stored it), so this only narrows
+/// by directory coverage — no per-extension filter. Returns `None` when no
+/// active cache contains `dir`, so [`source_files_under`] falls back to a walk.
+/// `_extra_exts` is accepted for signature symmetry with the walk fallback but
+/// is unused: the cache was already built with the visit-time override applied.
+fn cache_source_files(dir: &Path, _extra_exts: &[String]) -> Option<Vec<PathBuf>> {
+    CACHE_STACK.with(|stack| {
+        let stack = stack.borrow();
+        if stack.is_empty() {
+            return None;
+        }
+        let dir_canon = mfs::canonicalize(dir).ok();
+        for entry in stack.iter().rev() {
+            let covers_original = dir == entry.root.as_path() || dir.starts_with(&entry.root);
+            let covers_canon = match (&dir_canon, &entry.root_canon) {
+                (Some(d), Some(r)) => d == r || d.starts_with(r),
+                _ => false,
+            };
+            if !(covers_original || covers_canon) {
+                continue;
+            }
+            let mut out: Vec<PathBuf> = entry
+                .files
+                .iter()
+                .filter(|p| {
+                    p.starts_with(dir) || dir_canon.as_ref().is_some_and(|d| p.starts_with(d))
+                })
+                .cloned()
+                .collect();
+            out.sort();
+            return Some(out);
+        }
+        None
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -594,5 +750,56 @@ mod tests {
     #[test]
     fn infer_common_folder_empty_is_none() {
         assert_eq!(infer_common_folder(&[]), None);
+    }
+
+    // --- F0-e: agnostic visitor / dominant-extension fallback --------------
+
+    #[test]
+    fn visit_includes_exotic_extensions() {
+        // A project in a language with no per-stack allow-list entry must still
+        // be visited — the pre-F0-e closed allow-list zeroed these.
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("main.zig"), "pub fn main() void {}").unwrap();
+        std::fs::write(dir.path().join("user_service.rb"), "class UserService; end").unwrap();
+        std::fs::write(dir.path().join("net.c"), "int main(){return 0;}").unwrap();
+        std::fs::write(dir.path().join("net.h"), "#pragma once").unwrap();
+        // A binary asset must still be skipped.
+        std::fs::write(dir.path().join("logo.png"), [0u8, 1, 2, 3]).unwrap();
+
+        let visited = visit(dir.path(), &[]);
+        let names: BTreeSet<String> = visited.iter().map(|v| v.rel.clone()).collect();
+        assert!(names.contains("main.zig"), "expected .zig visited, got {names:?}");
+        assert!(names.contains("user_service.rb"), "expected .rb visited");
+        assert!(names.contains("net.c"), "expected .c visited");
+        assert!(names.contains("net.h"), "expected .h visited");
+        assert!(!names.contains("logo.png"), "binary asset must be skipped");
+        assert!(!visited.is_empty());
+    }
+
+    #[test]
+    fn dominant_source_extension_picks_most_frequent() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("a.rb"), "").unwrap();
+        std::fs::write(dir.path().join("b.rb"), "").unwrap();
+        std::fs::write(dir.path().join("c.rb"), "").unwrap();
+        std::fs::write(dir.path().join("d.zig"), "").unwrap();
+        assert_eq!(dominant_source_extension(dir.path()), Some(".rb".to_string()));
+    }
+
+    #[test]
+    fn dominant_source_extension_empty_is_none() {
+        let dir = tempdir().unwrap();
+        assert_eq!(dominant_source_extension(dir.path()), None);
+    }
+
+    #[test]
+    fn source_extensions_override_force_includes() {
+        // `.weirdbin` would normally be visited anyway (not on the deny-list),
+        // so prove the override force-includes a deny-listed extension instead.
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("mustard.json"), r#"{"sourceExtensions":["bin"]}"#).unwrap();
+        std::fs::write(dir.path().join("blob.bin"), "actually source here").unwrap();
+        let visited = visit(dir.path(), &[]);
+        assert!(visited.iter().any(|v| v.rel == "blob.bin"));
     }
 }

@@ -11,7 +11,8 @@
 //! Both are now in this binary — this port calls the Rust logic directly.
 
 use crate::commands::spec::scope_decompose::decide;
-use crate::commands::wave::wave_lib::{detect_role, parse_files_section};
+use crate::commands::wave::wave_lib::{detect_role_with, load_role_patterns, parse_files_section};
+use crate::util::mustard_config::RolePattern;
 use mustard_core::io::fs;
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
@@ -174,7 +175,7 @@ fn is_table_row_for_wave(line: &str, wave_num: u32) -> bool {
 }
 
 /// Audit a single wave.
-fn audit_wave(wave: &WaveFolder, spec_dir: &Path, limit: usize) -> Value {
+fn audit_wave(wave: &WaveFolder, spec_dir: &Path, limit: usize, role_patterns: &[RolePattern]) -> Value {
     let folder = &wave.folder;
     let wave_num = wave_number_of(folder);
 
@@ -211,7 +212,7 @@ fn audit_wave(wave: &WaveFolder, spec_dir: &Path, limit: usize) -> Value {
     };
 
     let file_count = files.len();
-    let roles: BTreeSet<&str> = files.iter().map(|f| detect_role(f)).collect();
+    let roles: BTreeSet<String> = files.iter().map(|f| detect_role_with(f, role_patterns)).collect();
     let layer_count = if roles.len() == 1 && roles.contains("lib") {
         1
     } else {
@@ -275,7 +276,14 @@ pub fn run(spec_dir_arg: Option<&str>) {
     };
 
     let limit = resolve_limit();
-    let audited: Vec<Value> = waves.iter().map(|w| audit_wave(w, &spec_dir, limit)).collect();
+    // F0-e: honour `mustard.json#rolePatterns` so non-English / non-JS layers
+    // classify correctly. Resolve from the workspace anchor, fail-open to cwd.
+    let project_root = crate::shared::context::workspace_root_strict().unwrap_or_else(|_| cwd.clone());
+    let role_patterns = load_role_patterns(&project_root);
+    let audited: Vec<Value> = waves
+        .iter()
+        .map(|w| audit_wave(w, &spec_dir, limit, &role_patterns))
+        .collect();
     let oversized_count = audited
         .iter()
         .filter(|w| w.get("oversized").and_then(Value::as_bool) == Some(true))
@@ -320,7 +328,7 @@ mod tests {
         }
         std::fs::write(wave_dir.join("spec.md"), files).unwrap();
         let waves = enumerate_waves(spec_dir).unwrap();
-        let audited = audit_wave(&waves[0], spec_dir, 10);
+        let audited = audit_wave(&waves[0], spec_dir, 10, &[]);
         assert_eq!(audited["oversized"], json!(true));
         assert_eq!(audited["fileCount"], json!(14));
     }
