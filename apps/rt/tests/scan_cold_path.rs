@@ -281,3 +281,150 @@ fn scan_gate_on_absent_binary_exits_zero() {
         String::from_utf8_lossy(&output.stderr),
     );
 }
+
+// ---------------------------------------------------------------------------
+// F1-b — deterministic architecture detection in the registry
+// ---------------------------------------------------------------------------
+
+/// Run `sync-registry --force` against `project`, no `claude` on PATH (default
+/// OFF), and return the written `entity-registry.json` text.
+fn run_sync_registry(project: &Path) -> String {
+    std::fs::create_dir_all(project.join(".claude")).expect("create .claude");
+    std::fs::write(
+        project.join("Cargo.toml"),
+        "[package]\nname = \"arch-fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .expect("write Cargo.toml");
+
+    let bin = env!("CARGO_BIN_EXE_mustard-rt");
+    let empty_bin_dir = tempfile::tempdir().expect("empty bin dir");
+    let isolated_path = empty_bin_dir.path().to_string_lossy().into_owned();
+
+    let output = Command::new(bin)
+        .args(["run", "sync-registry", "--force"])
+        .current_dir(project)
+        .env("PATH", &isolated_path)
+        .env("CLAUDE_PROJECT_DIR", project.to_string_lossy().as_ref())
+        .env("MUSTARD_INTERPRET_CACHE", "off")
+        .env_remove("MUSTARD_SCAN_LLM")
+        .output()
+        .expect("run mustard-rt");
+    assert!(
+        output.status.success(),
+        "sync-registry exited {:?}\nstdout: {}\nstderr: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let registry_path = project.join(".claude").join("entity-registry.json");
+    assert!(registry_path.exists(), "entity-registry.json not written");
+    std::fs::read_to_string(&registry_path).expect("read registry")
+}
+
+/// A Clean / layered layout (`src/domain`, `src/application`,
+/// `src/infrastructure`) must surface a non-`unknown` `architecture` tag in the
+/// registry — no `claude`, no LLM.
+#[test]
+fn architecture_clean_layout_in_registry() {
+    let project = tempfile::tempdir().expect("project tempdir");
+    let root = project.path();
+    for (dir, file, body) in [
+        ("src/domain", "user.rs", "pub struct User { pub id: i64 }\n"),
+        (
+            "src/application",
+            "create_user.rs",
+            "use crate::domain::User;\npub struct CreateUser { pub user_id: i64 }\n",
+        ),
+        (
+            "src/infrastructure",
+            "pg_user_repo.rs",
+            "use crate::domain::User;\npub struct PgUserRepo { pub pool: i64 }\n",
+        ),
+    ] {
+        std::fs::create_dir_all(root.join(dir)).expect("create layer dir");
+        std::fs::write(root.join(dir).join(file), body).expect("write source");
+    }
+
+    let raw = run_sync_registry(root);
+    assert!(
+        raw.contains("\"architecture\""),
+        "registry missing architecture key:\n{raw}"
+    );
+    // Either clean (inward edges confirmed) or ddd/layered — never unknown.
+    let arch_line = raw
+        .lines()
+        .find(|l| l.contains("\"architecture\""))
+        .unwrap_or("");
+    assert!(
+        !arch_line.contains("\"unknown\""),
+        "clean layout must not be unknown: {arch_line}"
+    );
+    assert!(
+        arch_line.contains("\"clean\"")
+            || arch_line.contains("\"layered\"")
+            || arch_line.contains("\"ddd\""),
+        "unexpected architecture tag: {arch_line}"
+    );
+}
+
+/// A Hexagonal layout (`ports` + `adapters` present) must be tagged
+/// `hexagonal`.
+#[test]
+fn architecture_hexagonal_layout_in_registry() {
+    let project = tempfile::tempdir().expect("project tempdir");
+    let root = project.path();
+    for (dir, file, body) in [
+        ("src/domain", "order.rs", "pub struct Order { pub id: i64 }\n"),
+        (
+            "src/ports",
+            "order_repository.rs",
+            "pub struct OrderPort { pub n: i64 }\n",
+        ),
+        (
+            "src/adapters",
+            "pg_order_repository.rs",
+            "pub struct PgOrderAdapter { pub n: i64 }\n",
+        ),
+    ] {
+        std::fs::create_dir_all(root.join(dir)).expect("create layer dir");
+        std::fs::write(root.join(dir).join(file), body).expect("write source");
+    }
+
+    let raw = run_sync_registry(root);
+    let arch_line = raw
+        .lines()
+        .find(|l| l.contains("\"architecture\""))
+        .unwrap_or("");
+    assert!(
+        arch_line.contains("\"hexagonal\""),
+        "ports+adapters layout must be hexagonal, got: {arch_line}\nfull:\n{raw}"
+    );
+}
+
+/// `mustard.json#architecture` overrides the inference even for a flat layout.
+#[test]
+fn architecture_override_respected_in_registry() {
+    let project = tempfile::tempdir().expect("project tempdir");
+    let root = project.path();
+    std::fs::create_dir_all(root.join("src")).expect("create src");
+    std::fs::write(
+        root.join("src/lib.rs"),
+        "pub struct Widget { pub id: i64 }\n",
+    )
+    .expect("write source");
+    std::fs::write(
+        root.join("mustard.json"),
+        "{ \"architecture\": \"Onion\" }",
+    )
+    .expect("write mustard.json");
+
+    let raw = run_sync_registry(root);
+    let arch_line = raw
+        .lines()
+        .find(|l| l.contains("\"architecture\""))
+        .unwrap_or("");
+    assert!(
+        arch_line.contains("\"onion\""),
+        "override must win (lowercased), got: {arch_line}\nfull:\n{raw}"
+    );
+}

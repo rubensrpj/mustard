@@ -26,6 +26,7 @@
 //! callers in [`crate::commands::scan::sync_entity_registry`] consume the same shapes as
 //! before, so the registry JSON stays byte-stable across the rewrite.
 
+pub mod architecture;
 pub mod cluster_discovery;
 pub mod file_utils;
 pub mod graph;
@@ -153,9 +154,10 @@ pub struct ScanResult {
     /// Services keyed by service class name.
     #[allow(dead_code)]
     pub services: BTreeMap<String, ServiceInfo>,
-    /// The detected architecture pattern (`unknown` until a future wave
-    /// reintroduces architecture inference on top of the interpreter).
-    #[allow(dead_code)]
+    /// The detected architectural style (`clean` / `hexagonal` / `layered` /
+    /// `ddd` / `unknown`). Populated deterministically (F1-b) by
+    /// [`architecture::detect_subproject_architecture`] from folder-role signals
+    /// + import-graph direction; `unknown` only when no role signal surfaced.
     pub architecture: String,
     /// Inferred `_patterns.{stack}` object — a `serde_json::Value::Object`.
     pub patterns: serde_json::Value,
@@ -280,11 +282,27 @@ impl Scanner for InterpretedScanner {
             );
         }
 
-        // The patterns overlay carries `clusterLabels`, `dominant`, `edges`
-        // (any subset). The outer caller layers in the cluster discovery
-        // output / folder frequency / conventions, so we only return the
-        // overlay here — `sync_entity_registry` does the merge.
-        let patterns = interpreted.patterns_overlay;
+        // F1-b — the `patternsOverlay` (`clusterLabels` / `dominant` / `edges`)
+        // is now built DETERMINISTICALLY here instead of coming from the LLM:
+        //   * clusterLabels ← `label` of every discovered cluster,
+        //   * dominant      ← the dominant naming convention,
+        //   * edges         ← the type/import join across the structural
+        //                     entities.
+        // The outer caller (`sync_entity_registry`) still layers in the raw
+        // `discovered[]` / `folderFrequency` / `conventions`; this overlay is
+        // the same `{clusterLabels,dominant,edges}` shape the model used to
+        // emit, so `_patterns.{stack}` stays byte-stable. The (default-OFF)
+        // LLM `interpreted.patterns_overlay` is intentionally dropped — the
+        // model no longer owns the overlay.
+        let conventions =
+            project_conventions::compute_project_conventions(root, &self.stack_id);
+        let patterns = architecture::build_patterns_overlay(&clusters, &conventions, &entities);
+
+        // F1-b — populate the architecture tag deterministically (was always
+        // `"unknown"`). Honours a `mustard.json#architecture` pin; otherwise
+        // infers the style from folder-role signals + import-graph direction.
+        let architecture =
+            architecture::detect_subproject_architecture(root, visited, &entities, &enums);
 
         ScanResult {
             entities,
@@ -292,7 +310,7 @@ impl Scanner for InterpretedScanner {
             routes: BTreeMap::new(),
             dtos: BTreeMap::new(),
             services: BTreeMap::new(),
-            architecture: "unknown".to_string(),
+            architecture,
             patterns,
         }
     }

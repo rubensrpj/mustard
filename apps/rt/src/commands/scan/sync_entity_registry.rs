@@ -285,6 +285,10 @@ struct MergedStack {
     /// Last-seen folder frequency / conventions (they describe the stack).
     folder_frequency: Value,
     conventions: Value,
+    /// The deterministically-detected architectural style for the stack (F1-b).
+    /// First non-`unknown` subproject wins so a flat sibling does not overwrite
+    /// a detected layout.
+    architecture: String,
 }
 
 impl MergedStack {
@@ -305,6 +309,15 @@ impl MergedStack {
             for (k, v) in map {
                 self.patterns.insert(k, v);
             }
+        }
+        // F1-b — keep the first non-`unknown` architecture detected for the
+        // stack (a flat sibling subproject must not clobber a real layout).
+        if (self.architecture.is_empty() || self.architecture == "unknown")
+            && result.architecture != "unknown"
+        {
+            self.architecture = result.architecture;
+        } else if self.architecture.is_empty() {
+            self.architecture = result.architecture;
         }
         self.discovered.extend(discovered);
         if folder_frequency
@@ -347,6 +360,16 @@ fn build_registry(scan_results: &BTreeMap<String, MergedStack>) -> RegistryDoc {
         }
         if stack.conventions.is_object() {
             stack_patterns.insert("conventions".to_string(), stack.conventions.clone());
+        }
+        // F1-b — the deterministically-detected architectural style. Only
+        // written when a real layout was inferred so an unknown stack keeps the
+        // legacy shape (no `architecture` key) and byte-stability holds for
+        // projects with no architectural-role folders.
+        if !stack.architecture.is_empty() && stack.architecture != "unknown" {
+            stack_patterns.insert(
+                "architecture".to_string(),
+                Value::String(stack.architecture.clone()),
+            );
         }
         if !stack_patterns.is_empty() {
             patterns.insert(stack_id.clone(), Value::Object(stack_patterns));

@@ -63,6 +63,7 @@
 //! occurrence and surfaces a `LayerCollision` warning to the caller.
 
 pub mod aho;
+pub mod architecture;
 pub mod frameworks;
 
 use crate::platform::error::Error as CoreError;

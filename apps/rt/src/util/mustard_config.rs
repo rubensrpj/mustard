@@ -77,6 +77,23 @@ pub fn primary_ext(config: &Value) -> Option<String> {
         .and_then(normalize_ext)
 }
 
+/// Explicit architecture-style override from `mustard.json#architecture`.
+///
+/// Lets a user pin the architectural style the scan reports (`clean`,
+/// `hexagonal`, `layered`, `ddd`, …), overriding the deterministic folder /
+/// import-graph inference. The value is trimmed and lowercased so the registry
+/// tag is normalised. A missing key, a non-string value, or an empty / blank
+/// string yields `None` (fall back to detection).
+#[must_use]
+pub fn architecture(config: &Value) -> Option<String> {
+    let raw = config.get("architecture").and_then(Value::as_str)?.trim();
+    if raw.is_empty() {
+        None
+    } else {
+        Some(raw.to_ascii_lowercase())
+    }
+}
+
 /// One `{ pattern, role }` mapping from `mustard.json#rolePatterns`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RolePattern {
@@ -184,6 +201,16 @@ mod tests {
         assert_eq!(primary_ext(&json!({ "primaryExt": ".bar" })), Some(".bar".to_string()));
         assert_eq!(primary_ext(&json!({})), None);
         assert_eq!(primary_ext(&json!({ "primaryExt": 7 })), None);
+    }
+
+    #[test]
+    fn architecture_override_normalises_and_skips_blank() {
+        assert_eq!(architecture(&json!({ "architecture": "Clean" })), Some("clean".to_string()));
+        assert_eq!(architecture(&json!({ "architecture": "  Hexagonal " })), Some("hexagonal".to_string()));
+        assert_eq!(architecture(&json!({ "architecture": "" })), None);
+        assert_eq!(architecture(&json!({ "architecture": "   " })), None);
+        assert_eq!(architecture(&json!({})), None);
+        assert_eq!(architecture(&json!({ "architecture": 7 })), None);
     }
 
     #[test]
