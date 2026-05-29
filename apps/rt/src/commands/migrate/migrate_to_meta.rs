@@ -126,6 +126,11 @@ fn extract_meta(content: &str) -> Option<Meta> {
     let state = spec::parse_state(content);
     let stage = state.as_ref().map(|s| spec::stage_label(s.stage).to_string());
     let outcome = state.as_ref().map(|s| spec::outcome_label(s.outcome).to_string());
+    // Carry the qualifier flags (`### Flags:` legacy header → `meta.json#flags`).
+    let flags = state
+        .as_ref()
+        .map(|s| mustard_core::MetaFlags(s.flags.clone()))
+        .unwrap_or_default();
 
     let phase = spec::header_field(content, "Phase");
     let scope = spec::header_field(content, "Scope");
@@ -163,6 +168,7 @@ fn extract_meta(content: &str) -> Option<Meta> {
         parent,
         is_wave_plan,
         total_waves,
+        flags,
         raw: serde_json::Value::Null,
     })
 }

@@ -323,10 +323,11 @@ fn apply_qa_result(view: &mut SpecView, ev: &HarnessEvent) {
 /// values are recognised. Returns `None` when the file is missing or every
 /// header field is unrecognised — the caller falls back to [`SpecView::empty`].
 /// Seed a [`SpecView`] from the `meta.json` sidecar beside `path` — the single
-/// source of truth for lifecycle metadata. Returns `None` when the sidecar is
-/// absent / unparseable or carries no usable `stage` (so the caller falls back
-/// to the legacy `.md` header). `started_at` / `last_event_at` stay `None` —
-/// the sidecar is not evidence of *when* work happened.
+/// source of truth for lifecycle metadata, including the qualifier
+/// [`Flags`](crate::Flags) carried in `meta.json#flags`. Returns `None` when the
+/// sidecar is absent / unparseable or carries no usable `stage` (so the caller
+/// falls back to the legacy `.md` header). `started_at` / `last_event_at` stay
+/// `None` — the sidecar is not evidence of *when* work happened.
 #[allow(deprecated)] // seeds the legacy `status` field; `state` is canonical.
 fn view_from_meta(spec_name: &str, path: &Path) -> Option<SpecView> {
     let meta = crate::domain::meta::read_meta_beside(path)?;
@@ -336,8 +337,15 @@ fn view_from_meta(spec_name: &str, path: &Path) -> Option<SpecView> {
         .as_deref()
         .and_then(Outcome::parse)
         .unwrap_or(Outcome::Active);
-    // The sidecar schema carries no qualifier flags — default empty.
-    let state = SpecState::new(stage, outcome, Flags::default()).ok()?;
+    // Qualifier flags come from `meta.json#flags` (the canonical home since the
+    // sidecar gained a `flags` field). If the resulting `(stage, outcome,
+    // flags)` triple is illegal — e.g. a stale sidecar pairs `wave_failed` with
+    // a non-Execute stage — fall back to the all-false flags so the read still
+    // yields a legal state rather than dropping the spec.
+    let flags: Flags = meta.flags.clone().into();
+    let state = SpecState::new(stage, outcome, flags)
+        .or_else(|_| SpecState::new(stage, outcome, Flags::default()))
+        .ok()?;
 
     let mut view = SpecView::empty(spec_name);
     view.state = state.clone();

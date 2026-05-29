@@ -8,7 +8,7 @@ Canonical: `ANALYZE → PLAN → EXECUTE → REVIEW → QA → CLOSE` (+ `COORDI
 
 ### Spec Layout — Flat `spec/{name}/`
 
-Specs live under a single flat directory: `.claude/spec/{name}/`. No `active/`/`completed/`/`superseded/` bucket subdirectories. Status is read from the spec header + SQLite projection; archival is semantic (event-only — `/close` emits `pipeline.status: completed`; the directory never moves). Wave plans add `wave-plan.md` + `wave-N-{role}/spec.md` subdirectories in the same `{name}/`.
+Specs live under a single flat directory: `.claude/spec/{name}/`. No `active/`/`completed/`/`superseded/` bucket subdirectories. Lifecycle state (`stage` + `outcome` + `flags`) is read from the `meta.json` sidecar beside each `spec.md` (the single source of truth) + the event-log projection; archival is semantic (event-only — `/close` emits `pipeline.status: completed`; the directory never moves). The `spec.md` is pure narrative — no `### Stage:` / `### Outcome:` / `### Flags:` / `### Phase:` / `### Scope:` / `### Lang:` / `### Checkpoint:` / `### Parent:` / `### Total waves:` header lines. Wave plans add `wave-plan.md` + `wave-N-{role}/spec.md` subdirectories (each with its own `meta.json`) in the same `{name}/`.
 
 ### Two-Stage Close — Emit-Only
 
@@ -49,13 +49,13 @@ Role rules are populated by `/scan` from the detected subprojects — there is n
 
 ## Tactical Fix Discovery
 
-A tactical fix discovered during REVIEW/QA CANNOT become a silent follow-up or a brand-new wave mid-EXECUTE — both break SDD purity. Mustard rule: a tactical fix becomes a sub-spec linked via the `### Parent:` header + a `spec.link` event. The parent spec is frozen after approve.
+A tactical fix discovered during REVIEW/QA CANNOT become a silent follow-up or a brand-new wave mid-EXECUTE — both break SDD purity. Mustard rule: a tactical fix becomes a sub-spec linked via the `meta.json#parent` field + a `spec.link` event. The parent spec is frozen after approve.
 
 **Rule**: REVIEW and QA agents list candidates under `## Tactical Fix Candidates` / `## Candidatos a Tactical Fix`. The orchestrator suggests `/mustard:tactical-fix <parent> "<description>"` — **advisory only**, never blocks approve/close.
 
 **Qualification** (ALL): ≤100 LOC; no public contract change (schema, API, exported types, CLI flags); no pending design decision; no new dependency. Outside those bounds → legitimate follow-up OR a fresh full-scope spec.
 
-**Mechanics**: `/mustard:tactical-fix` creates `.claude/spec/<slug>/spec.md` with the `### Parent: <slug>` header and emits `spec.link parent→child`. Fails open when the parent slug is missing. → See `commands/mustard/tactical-fix/SKILL.md`.
+**Mechanics**: `/mustard:tactical-fix` creates `.claude/spec/<slug>/spec.md` (pure narrative — the parent is surfaced as a `[[<parent>]]` wikilink in the context note) plus a `meta.json` sidecar carrying `parent: <slug>`, and emits `spec.link parent→child`. Fails open when the parent slug is missing. → See `commands/mustard/tactical-fix/SKILL.md`.
 
 ## Diff Context Interpolation
 

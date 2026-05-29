@@ -45,7 +45,7 @@ Before writing the single spec in Full scope, check whether the work should be d
      └── wave-N-{role}/spec.md
    ```
 
-   `wave-plan.md` carries the standard spec header (title + Stage `Plan`, Outcome `Active`, Scope `full`, Decomposed `yes`, Checkpoint, Reason) followed by `## Summary` (1-2 lines what + why), `## Waves` (per-wave H3 with Depends on + Files list), and `## Rationale` (knowledge entry matched / threshold triggered / signals from scope-decompose).
+   `wave-plan.md` is pure narrative — a title followed by `## Summary` (1-2 lines what + why), `## Waves` (per-wave H3 with Depends on + Files list), and `## Rationale` (knowledge entry matched / threshold triggered / signals from scope-decompose). Its lifecycle metadata (`stage: Plan`, `outcome: Active`, `scope: full (wave plan)`, `isWavePlan: true`, `totalWaves`, `checkpoint`) lives in the `meta.json` sidecar, written by `mustard-rt run wave-scaffold` — never as `### Key:` headers in the markdown.
 
    Each `wave-N-{role}/spec.md` is a **complete atomic spec** scoped to just that wave's files. Use the same template as Full scope single spec (Summary, Entity Info, Files, Tasks, Dependencies, Boundaries). Reference `../wave-plan.md` at the top as context.
 

@@ -321,6 +321,8 @@ fn build_meta_from_input(input: &SpecInput) -> Meta {
         parent: None,
         is_wave_plan: input.total_waves.map(|n| n > 0),
         total_waves: input.total_waves,
+        // A freshly drafted spec carries no qualifier flag (Plan/Active).
+        flags: mustard_core::MetaFlags::default(),
         raw: serde_json::Value::Null,
     }
 }
@@ -423,6 +425,7 @@ fn write_wave_plan(
             parent: Some(parent_name.clone()),
             is_wave_plan: None,
             total_waves: None,
+            flags: mustard_core::MetaFlags::default(),
             raw: serde_json::Value::Null,
         };
         if let Err(e) = spec_scaffold::write_meta_json(&wave_dir, &wave_meta) {

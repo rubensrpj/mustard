@@ -7,7 +7,7 @@
 | Placeholder | Source | Notes |
 |---|---|---|
 | `{subproject}` | flag `--subproject` | Absolute path or path relative to the repo. |
-| `{spec_lang}` | spec Lang header | Defaults to `en` when absent. Affects only the spec narrative — code stays EN. |
+| `{spec_lang}` | spec `meta.json#lang` | Defaults to `en` when absent. Affects only the spec narrative — code stays EN. |
 | `{guards_summary}` | `## Guards` section of `{subproject}/CLAUDE.md` | Extracted via regex. |
 | `{context_md}` | `mustard-rt run context-slice` cached at `.claude/.pipeline-states/{spec}.context-md.md` | PREFIX-STABLE — the slice is stable across the whole pipeline, refreshed only on a wave transition. Empty when there is no `CONTEXT.md` (graceful degrade). |
 | `{reference_files}` | scan-derived neighbour files | 2-3 file references. |

@@ -139,9 +139,9 @@ fn no_metadata_headers_remain_and_meta_json_is_valid() {
                 .as_deref()
                 .and_then(Outcome::parse)
                 .unwrap_or(Outcome::Active);
-            // meta.json has no flags field — default empty (the canonical model
-            // keeps qualifier flags out of the sidecar schema).
-            let flags = Flags::default();
+            // Qualifier flags now live in `meta.json#flags` — read them so the
+            // legality check covers the persisted triple.
+            let flags: Flags = meta.flags.clone().into();
             if let Err(e) = SpecState::new(stage, outcome, flags) {
                 violations.push(format!("{}: illegal SpecState from meta.json: {e}", path.display()));
             }

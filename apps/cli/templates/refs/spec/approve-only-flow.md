@@ -13,14 +13,14 @@ A spec has two named layers (see `/feature` § Full Scope): `## PRD` — the *wh
 
 ## Prerequisites
 
-- Active spec in `.claude/spec/{name}/` (flat layout — status read from the spec header / SQLite projection — event database)
+- Active spec in `.claude/spec/{name}/` (flat layout — lifecycle state read from the `meta.json` sidecar / the event-log projection; `spec.md` is pure narrative)
 - The spec has been shown to the user and they picked the corresponding letter in the `/mustard:spec` picker
 
 ## Action
 
 1. **Step 0: AUTO-SYNC (mandatory)** — already executed in Step 1 of `/mustard:spec`. Do not re-execute.
 2. **Read** `.claude/pipeline-config.md` — agents, model selection.
-3. The spec has already been located by the `/mustard:spec` picker (filtered by Stage + Outcome header — only Outcome `Active` AND Stage ∈ {Plan, Execute}).
+3. The spec has already been located by the `/mustard:spec` picker (filtered by the `meta.json` `stage` + `outcome` — only Outcome `Active` AND Stage ∈ {Plan, Execute}).
 
 ### Step 3b: Wave Plan Detection
 
@@ -36,14 +36,14 @@ Check whether the located spec is a wave plan: look for `.claude/spec/{specName}
    - State explicitly that this is **advisory** — does NOT block approval. It informs the **"Stop — re-plan with guidance"** option of the next `AskUserQuestion`: an oversized wave can be split before EXECUTE.
    - If `oversizedCount === 0` or `action: "skip"`, print nothing (silent).
 3. `AskUserQuestion`:
-   - **"Approve wave plan — start with wave 1"** → proceed to step 4 (updates header + state for wave 1 dispatch)
+   - **"Approve wave plan — start with wave 1"** → proceed to step 4 (updates the wave-1 `meta.json` + pipeline state for wave 1 dispatch)
    - **"Reject decomposition — use single spec"** → merge all wave specs back into a single spec at `.claude/spec/{specName}/spec.md` (concatenate `## Files`, `## Tasks`, `## Boundaries` of each wave), delete `wave-plan.md` and the `wave-N-*/` subdirs, set `scopeOverride: "user-rejected-waves"` and `isWavePlan: false` in pipeline state, proceed to step 4 on the single spec
    - **"Stop — re-plan with guidance"** → stop. Instruct user: `Delete .claude/spec/{specName}/ and re-run /feature {name} with explicit guidance (e.g., "keep wave 2 and wave 3 together").`
-4. If the wave plan was approved, from step 4 onwards operate on the **wave 1 spec** (`.claude/spec/{specName}/wave-1-{role}/spec.md`) — update its header, not the `wave-plan.md` header.
+4. If the wave plan was approved, from step 4 onwards operate on the **wave 1 spec** (`.claude/spec/{specName}/wave-1-{role}/spec.md`) — update its `meta.json`, not the `wave-plan.md` sidecar.
 
 **If `wave-plan.md` does NOT exist:** proceed as single spec (behavior below).
 
-4. **Spec Checkpoint — update spec header**: set Stage `Plan`, Outcome `Active`, Flags empty, Checkpoint `{ISO timestamp now}`. Preserve existing Scope, Lang and Parent (header) lines.
+4. **Spec Checkpoint — `meta.json`**: the lifecycle state (`stage: Plan`, `outcome: Active`, empty `flags`, `checkpoint: {ISO now}`) is written to the `meta.json` sidecar by the `emit-pipeline` events in step 5 (`mustard-rt` patches the sidecar — never hand-edit `spec.md`). Existing `scope` / `lang` / `parent` fields in `meta.json` are preserved.
 5. **Pipeline State — emit stage transition to Plan:**
    - Extract `spec-name` from the spec directory (e.g. basename of the path → `2026-02-26-linked-services-card`)
    ```bash

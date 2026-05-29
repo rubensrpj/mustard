@@ -22,7 +22,7 @@ End: `rtk mustard-rt run analyze-validation --spec .claude/spec/{spec}/spec.md` 
 
 → `../../../refs/feature/spec-language.md` (header translation, narrative rules, Component Contract). → `../../../refs/feature/wave-decomposition.md`.
 
-Resolve Lang header via cascade (spec header → `mustard.json#specLang` → AskUserQuestion once → persist). **Concern Coverage Audit**: every concrete user critique from the conversation must map to covered by wave/task | non-goal justified | surfaced for decision. Orphaned items block the AskUserQuestion. Full scope: wave decomposition when `file_count ≥ 6 OR layer_count ≥ 3 OR independent_subbehaviors ≥ 3` — `mustard-rt run wave-scaffold --spec-dir <dir> --plan <plan.json>`.
+Resolve Lang via cascade (`meta.json#lang` → `mustard.json#specLang` → AskUserQuestion once → persist to `meta.json`). **Concern Coverage Audit**: every concrete user critique from the conversation must map to covered by wave/task | non-goal justified | surfaced for decision. Orphaned items block the AskUserQuestion. Full scope: wave decomposition when `file_count ≥ 6 OR layer_count ≥ 3 OR independent_subbehaviors ≥ 3` — `mustard-rt run wave-scaffold --spec-dir <dir> --plan <plan.json>`.
 
 Write `.claude/spec/{date}-{name}/spec.md` two-layer: `## PRD` → `## Contexto`, `## Usuários/Stakeholders`, `## Métrica de sucesso`, `## Não-Objetivos`, `## Critérios de Aceitação`; `## Plano` → `## Informações da Entidade`, `## Arquivos`, optional `## Component Contract` (UI only), `## Tarefas`, `## Dependências`, `## Limites`.
 

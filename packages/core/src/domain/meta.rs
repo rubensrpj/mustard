@@ -40,6 +40,7 @@
 //!   migration helpers tolerate the legacy short forms (`pt` / `en`) and emit a
 //!   `eprintln!` warning, but writers produced after Wave 3 only emit BCP-47.
 
+use crate::domain::model::view::Flags;
 use crate::io::fs;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -95,6 +96,21 @@ pub struct Meta {
     /// Number of waves under this spec (only set when `isWavePlan = true`).
     #[serde(rename = "totalWaves", skip_serializing_if = "Option::is_none")]
     pub total_waves: Option<u32>,
+    /// Orthogonal qualifier flags (`blocked` / `wave_failed` / `followup_open`)
+    /// — the canonical home of the [`Flags`] that the legacy `### Flags:`
+    /// header used to carry.
+    ///
+    /// Serialized as a deduplicated, declaration-ordered **array of tokens**
+    /// (`["blocked", "wave_failed", "followup_open"]`), matching the token
+    /// vocabulary [`Flags::parse`] reads and the `after.flags` array
+    /// `migrate-spec-headers` already emits in its audit log. The array shape
+    /// (rather than an object of bools) keeps the on-disk JSON compact for the
+    /// common all-false case and stays byte-stable under serde declaration
+    /// order. Elided entirely (`skip_serializing_if`) when no flag is set, so a
+    /// spec with no qualifier produces no `flags` key — preserving the empty
+    /// `meta.json` byte shape that pre-dated this field.
+    #[serde(default, skip_serializing_if = "MetaFlags::is_empty")]
+    pub flags: MetaFlags,
     /// Forward-compatible catch-all. Any field a future Mustard adds lands here
     /// and is preserved on round-trip writes. Per the
     /// [`core-lenient-serde-model`] skill, this is the boundary type's contract.
@@ -125,8 +141,78 @@ impl Meta {
             parent: parent.map(str::to_string),
             is_wave_plan: None,
             total_waves: None,
+            flags: MetaFlags::default(),
             raw: Value::Null,
         }
+    }
+}
+
+/// The `meta.json` representation of the qualifier [`Flags`] —
+/// `blocked` / `wave_failed` / `followup_open`.
+///
+/// Serialized as a deduplicated, declaration-ordered array of canonical tokens
+/// (`["blocked", "wave_failed", "followup_open"]`). Deserialized leniently via
+/// [`Flags::parse`]-equivalent token matching, so any historical / future
+/// spelling (`wave-failed`, `closed-followup`, …) still round-trips into the
+/// canonical [`Flags`]; unknown tokens are ignored (fail-open). The default is
+/// the all-false [`Flags`], serializing to an empty array (which the `Meta`
+/// field's `skip_serializing_if` then elides entirely).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MetaFlags(pub Flags);
+
+impl MetaFlags {
+    /// `true` when no qualifier flag is set (the all-false default).
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0 == Flags::default()
+    }
+
+    /// The canonical tokens this flag set emits, in declaration order. Empty
+    /// when no flag is set.
+    #[must_use]
+    fn tokens(&self) -> Vec<&'static str> {
+        let mut out = Vec::new();
+        if self.0.blocked {
+            out.push("blocked");
+        }
+        if self.0.wave_failed {
+            out.push("wave_failed");
+        }
+        if self.0.followup_open {
+            out.push("followup_open");
+        }
+        out
+    }
+}
+
+impl From<Flags> for MetaFlags {
+    fn from(flags: Flags) -> Self {
+        Self(flags)
+    }
+}
+
+impl From<MetaFlags> for Flags {
+    fn from(meta_flags: MetaFlags) -> Self {
+        meta_flags.0
+    }
+}
+
+impl Serialize for MetaFlags {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.tokens().serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for MetaFlags {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        // Lenient: accept an array of tokens. Each token is matched against the
+        // canonical vocabulary via the shared `Flags::parse` so legacy /
+        // alternate spellings (`wave-failed`, `closed-followup`) still resolve;
+        // unknown tokens are ignored. We fold the whole array through one
+        // `Flags::parse` call by joining on spaces — its splitter handles
+        // commas/whitespace and de-dupes for free.
+        let tokens = Vec::<String>::deserialize(deserializer)?;
+        Ok(Self(Flags::parse(&tokens.join(" "))))
     }
 }
 
@@ -192,17 +278,33 @@ pub fn read_meta_beside(spec_file: &Path) -> Option<Meta> {
 /// dashboard) must call this rather than re-implementing the table.
 ///
 /// Mapping precedence (highest first):
-/// 1. `outcome == Blocked` → `"blocked"` (any stage).
-/// 2. `outcome == Rejected` → `"rejected"`.
-/// 3. `outcome == ClosedFollowup` / `closed-followup` / `closed_followup` → `"closed-followup"`.
-/// 4. `outcome == Superseded` → `"completed"` (TF's are visually done).
-/// 5. `stage == Close && outcome == Completed` → `"completed"`.
-/// 6. `stage == Execute` → `"implementing"`.
-/// 7. anything else (incl. `Plan` / `Active`, empty fields) → `""` (queued).
+/// 1. `flags.blocked` (any stage) → `"blocked"`; `flags.wave_failed` →
+///    `"wave-failed"`; `flags.followup_open` → `"closed-followup"`. The
+///    qualifier flags (now carried in `meta.json#flags`) win over the bare
+///    `stage` word so the dashboard / wave-tree keep the `blocked` /
+///    `wave-failed` / `closed-followup` signal — mirroring
+///    [`crate::SpecState::status_kebab`].
+/// 2. `outcome == Blocked` → `"blocked"` (legacy outcome spelling, any stage).
+/// 3. `outcome == Rejected` → `"rejected"`.
+/// 4. `outcome == ClosedFollowup` / `closed-followup` / `closed_followup` → `"closed-followup"`.
+/// 5. `outcome == Superseded` → `"completed"` (TF's are visually done).
+/// 6. `stage == Close && outcome == Completed` → `"completed"`.
+/// 7. `stage == Execute` → `"implementing"`.
+/// 8. anything else (incl. `Plan` / `Active`, empty fields) → `""` (queued).
 ///
 /// Match is case-insensitive on both sides.
 #[must_use]
 pub fn status_word(meta: &Meta) -> &'static str {
+    // Qualifier flags (from `meta.json#flags`) win over the bare stage word.
+    if meta.flags.0.blocked {
+        return "blocked";
+    }
+    if meta.flags.0.wave_failed {
+        return "wave-failed";
+    }
+    if meta.flags.0.followup_open {
+        return "closed-followup";
+    }
     let stage = meta.stage.as_deref().unwrap_or("").to_ascii_lowercase();
     let outcome = meta.outcome.as_deref().unwrap_or("").to_ascii_lowercase();
     match (stage.as_str(), outcome.as_str()) {
@@ -251,6 +353,7 @@ mod tests {
             parent: None,
             is_wave_plan: Some(false),
             total_waves: None,
+            flags: MetaFlags::default(),
             raw: Value::Null,
         };
         write_meta(&path, &meta).unwrap();
@@ -258,6 +361,80 @@ mod tests {
         assert_eq!(back.stage.as_deref(), Some("Execute"));
         assert_eq!(back.lang.as_deref(), Some("pt-BR"));
         assert_eq!(back.is_wave_plan, Some(false));
+        assert!(back.flags.is_empty());
+    }
+
+    #[test]
+    fn flags_round_trip_as_token_array() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("meta.json");
+        let mut meta = Meta {
+            stage: Some("Close".into()),
+            outcome: Some("Active".into()),
+            ..Meta::default()
+        };
+        meta.flags = MetaFlags(Flags {
+            followup_open: true,
+            ..Flags::default()
+        });
+        write_meta(&path, &meta).unwrap();
+        // Serialized as a token array.
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("\"flags\""), "{text}");
+        assert!(text.contains("\"followup_open\""), "{text}");
+        // Round-trips back to the same Flags.
+        let back = read_meta(&path).expect("reads");
+        assert!(back.flags.0.followup_open);
+        assert!(!back.flags.0.blocked);
+    }
+
+    #[test]
+    fn flags_empty_elides_key() {
+        // A spec with no qualifier flag emits no `flags` key — preserving the
+        // pre-flags empty `meta.json` byte shape.
+        let m = Meta::default();
+        let text = serde_json::to_string(&m).unwrap();
+        assert!(!text.contains("\"flags\""), "{text}");
+    }
+
+    #[test]
+    fn flags_legacy_token_spellings_parse() {
+        // Forward/back-compat: alternate token spellings still resolve.
+        let meta: Meta = serde_json::from_str(
+            r#"{"stage":"Execute","outcome":"Active","flags":["wave-failed"]}"#,
+        )
+        .unwrap();
+        assert!(meta.flags.0.wave_failed);
+        let meta2: Meta = serde_json::from_str(
+            r#"{"stage":"Close","outcome":"Active","flags":["closed-followup"]}"#,
+        )
+        .unwrap();
+        assert!(meta2.flags.0.followup_open);
+    }
+
+    #[test]
+    fn status_word_honors_flags() {
+        let blocked = Meta {
+            stage: Some("Execute".into()),
+            outcome: Some("Active".into()),
+            flags: MetaFlags(Flags { blocked: true, ..Flags::default() }),
+            ..Meta::default()
+        };
+        assert_eq!(status_word(&blocked), "blocked");
+        let wf = Meta {
+            stage: Some("Execute".into()),
+            outcome: Some("Active".into()),
+            flags: MetaFlags(Flags { wave_failed: true, ..Flags::default() }),
+            ..Meta::default()
+        };
+        assert_eq!(status_word(&wf), "wave-failed");
+        let fu = Meta {
+            stage: Some("Close".into()),
+            outcome: Some("Active".into()),
+            flags: MetaFlags(Flags { followup_open: true, ..Flags::default() }),
+            ..Meta::default()
+        };
+        assert_eq!(status_word(&fu), "closed-followup");
     }
 
     #[test]
@@ -338,5 +515,6 @@ mod tests {
         assert!(!text.contains("\"parent\""));
         assert!(!text.contains("\"isWavePlan\""));
         assert!(!text.contains("\"totalWaves\""));
+        assert!(!text.contains("\"flags\""));
     }
 }

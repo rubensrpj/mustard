@@ -3,8 +3,13 @@
 //! `sync_status` call, while `spec.md` is left as pure narrative (no lifecycle
 //! header is ever injected or rewritten).
 
-use mustard_core::{Outcome, Stage};
+use mustard_core::{Flags, Outcome, SpecState, Stage};
 use mustard_rt::commands::spec::spec_scaffold::sync_status;
+
+/// Build a validated `SpecState` for the integration fixture.
+fn st(stage: Stage, outcome: Outcome) -> SpecState {
+    SpecState::new(stage, outcome, Flags::default()).expect("legal state")
+}
 
 /// Helper: write a minimal, header-less `spec.md` (pure narrative).
 fn seed_spec_md(path: &std::path::Path) {
@@ -66,7 +71,7 @@ fn status_sync_full_pipeline_aligns_meta_and_leaves_spec_md_narrative() {
     // Close each wave.
     for n in 1..=5usize {
         let wave_dir = spec_dir.join(format!("wave-{n}-mixed"));
-        sync_status(Stage::Close, Outcome::Completed, &wave_dir).unwrap();
+        sync_status(st(Stage::Close, Outcome::Completed), &wave_dir).unwrap();
 
         // Each wave's meta.json is immediately aligned; spec.md stays narrative.
         assert_eq!(read_meta_stage(&wave_dir), "Close");
@@ -75,7 +80,7 @@ fn status_sync_full_pipeline_aligns_meta_and_leaves_spec_md_narrative() {
     }
 
     // Close the parent spec.
-    sync_status(Stage::Close, Outcome::Completed, &spec_dir).unwrap();
+    sync_status(st(Stage::Close, Outcome::Completed), &spec_dir).unwrap();
 
     // Parent meta.json fields aligned; spec.md untouched.
     assert_eq!(read_meta_stage(&spec_dir), "Close");

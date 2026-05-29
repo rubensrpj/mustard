@@ -40,10 +40,10 @@ Started:  {timestamp} | Elapsed: {duration}
 
 ## Pipeline State Integrity Validation
 
-- Missing or unparseable JSON → rebuild from spec (phase from header, tasks from `[x]`/`[ ]` checkboxes, status inferred)
-- Phase mismatch between spec header and JSON → trust spec header (it's the source of truth)
+- Missing or unparseable JSON → rebuild from the spec dir (stage/outcome/phase from the `meta.json` sidecar, tasks from `[x]`/`[ ]` checkboxes in `spec.md`, status inferred)
+- Stage/phase mismatch between `meta.json` and the pipeline-state JSON → trust `meta.json` (it's the source of truth)
 - Tasks in JSON marked `completed` but spec has `[ ]` → trust spec, reset task to `pending`
-- If rebuilt → warn user: "Pipeline state was recovered from spec"
+- If rebuilt → warn user: "Pipeline state was recovered from the spec dir"
 
 ## Harness View Enrichment (Wave 3 — fail-open)
 

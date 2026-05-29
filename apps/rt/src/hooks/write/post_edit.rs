@@ -525,7 +525,14 @@ fn spec_state_meta_first(spec_file: &Path, content: &str) -> Option<mustard_core
                 .as_deref()
                 .and_then(mustard_core::Outcome::parse)
                 .unwrap_or(mustard_core::Outcome::Active);
-            return mustard_core::SpecState::new(stage, outcome, mustard_core::Flags::default()).ok();
+            // Qualifier flags now live in `meta.json#flags`; fall back to
+            // all-false when the persisted triple is illegal (stale sidecar).
+            let flags: mustard_core::Flags = m.flags.into();
+            return mustard_core::SpecState::new(stage, outcome, flags)
+                .or_else(|_| {
+                    mustard_core::SpecState::new(stage, outcome, mustard_core::Flags::default())
+                })
+                .ok();
         }
     }
     spec::parse_state(content)

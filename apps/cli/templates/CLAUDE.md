@@ -64,7 +64,7 @@ Agents auto-load skills from `{subproject}/.claude/skills/` based on task descri
 
 ## Spec Layout
 
-Specs live under a **flat** directory: `.claude/spec/{name}/`. There are no `active/`, `completed/`, or `superseded/` bucket subdirectories — status comes from the `### Stage:` + `### Outcome:` headers inside `spec.md`, and archival is semantic-only (recorded as a `pipeline.status` event, not a filesystem move). Wave plans add a `wave-plan.md` plus `wave-N-{role}/spec.md` subdirs inside the same `{name}/` directory.
+Specs live under a **flat** directory: `.claude/spec/{name}/`. There are no `active/`, `completed/`, or `superseded/` bucket subdirectories — lifecycle state (`stage` + `outcome` + `flags`) lives in the `meta.json` sidecar beside each `spec.md` (the single source of truth), and archival is semantic-only (recorded as a `pipeline.status` event, not a filesystem move). The `spec.md` is **pure narrative** — it carries no `### Stage:` / `### Outcome:` / `### Flags:` / `### Phase:` / `### Scope:` / `### Lang:` / `### Checkpoint:` / `### Parent:` / `### Total waves:` header lines; never read or write lifecycle metadata from the markdown. Wave plans add a `wave-plan.md` plus `wave-N-{role}/spec.md` subdirs (each with its own `meta.json`) inside the same `{name}/` directory.
 
 ## Full Reference
 

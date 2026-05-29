@@ -20,8 +20,8 @@ Concerns/Checklist still block: unresolved `BLOCKED` → block; `CONCERN`/`DEFER
 
 ## Action
 
-1. Locate spec at `.claude/spec/{name}/`. Status from header + event projection.
-2. Update header: Stage `Close`, Outcome `Completed`, Checkpoint `{ISO now}`.
+1. Locate spec at `.claude/spec/{name}/`. Lifecycle state from the `meta.json` sidecar + the event projection (`spec.md` is pure narrative).
+2. Lifecycle state (`stage: Close`, `outcome: Completed`, `checkpoint: {ISO now}`) is written to the `meta.json` sidecar by the close pipeline events below — `mustard-rt` patches the sidecar; never hand-edit `spec.md`.
 3. `mustard-rt run sync-registry` if `## Files` touched schemas.
 4. Run the gate + auto-finalize (one command — relay its JSON; do **not** call `complete-spec` yourself):
 

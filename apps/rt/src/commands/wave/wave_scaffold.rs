@@ -27,7 +27,7 @@
 //! reports which were created vs skipped.
 
 use mustard_core::io::fs;
-use mustard_core::{Meta, write_meta};
+use mustard_core::{Meta, MetaFlags, write_meta};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::fmt::Write as _;
@@ -378,6 +378,7 @@ pub fn run(spec_dir_arg: Option<&str>, plan_arg: Option<&str>) {
             parent: None,
             is_wave_plan: Some(true),
             total_waves: Some(total_waves),
+            flags: MetaFlags::default(),
             raw: Value::Null,
         },
     );
@@ -395,6 +396,7 @@ pub fn run(spec_dir_arg: Option<&str>, plan_arg: Option<&str>) {
                 parent: Some(parent_name.clone()),
                 is_wave_plan: None,
                 total_waves: None,
+                flags: MetaFlags::default(),
                 raw: Value::Null,
             },
         );
@@ -411,6 +413,7 @@ pub fn run(spec_dir_arg: Option<&str>, plan_arg: Option<&str>) {
             parent: Some(parent_name.clone()),
             is_wave_plan: None,
             total_waves: None,
+            flags: MetaFlags::default(),
             raw: Value::Null,
         },
     );
@@ -426,6 +429,7 @@ pub fn run(spec_dir_arg: Option<&str>, plan_arg: Option<&str>) {
             parent: Some(parent_name.clone()),
             is_wave_plan: None,
             total_waves: None,
+            flags: MetaFlags::default(),
             raw: Value::Null,
         },
     );

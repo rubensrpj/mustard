@@ -34,7 +34,7 @@ Code, comments, doc-comments, templates, refs, ADRs, CONTEXT.md, JSONs, commit m
 
 Once per pipeline, in order — stop at first hit:
 
-1. **Spec header** — `### Lang:` line in `spec.md` (re-runs, manual edits).
+1. **`meta.json` sidecar** — the `lang` field in the spec's `meta.json` (re-runs, manual edits). This is the single source of truth; the legacy `### Lang:` header in `spec.md` is no longer written or read.
 2. **Project preference** — `specLang` field in `.claude/mustard.json` (BCP-47).
 3. **Ask once** — `AskUserQuestion`: *"Spec language: pt-BR | en-US?"*. Persist to `mustard.json#specLang` so future runs skip this step.
 
@@ -42,11 +42,11 @@ No textual heuristic. The user is always either explicit (steps 1-2) or asked on
 
 ## Persistence
 
-Once resolved, write the chosen value as a header line in `spec.md` (`### Lang: pt-BR` or `### Lang: en-US`). Subsequent phases read it directly. The matching `meta.json` sidecar carries the same value.
+Once resolved, the chosen value lives in the spec's `meta.json` sidecar (`lang` field — `pt-BR` / `en-US`), written by `mustard-rt run spec-draft` / `wave-scaffold`. Subsequent phases read it from `meta.json`. The `spec.md` carries **no** `### Lang:` header — lifecycle/metadata fields live only in the sidecar; the markdown is pure narrative.
 
 ## Header Translation Table
 
-> **Hard rule**: when language is `pt-BR`, **all** `## ` body headings must come from the PT column. Do **not** mix EN defaults with PT body. When `en-US`, all headings stay EN. The `### Lang:` line itself is literal — never translated.
+> **Hard rule**: when language is `pt-BR`, **all** `## ` body headings must come from the PT column. Do **not** mix EN defaults with PT body. When `en-US`, all headings stay EN. The `lang` value (in `meta.json`) is a literal locale code — never translated.
 
 | EN (`en-US`) | PT (`pt-BR`) |
 |---|---|
@@ -91,7 +91,7 @@ These stay in English regardless of `specLang`:
 
 ## Dispatch Propagation
 
-The agent-prompt template receives `{spec_lang}`. The orchestrator reads the spec header and fills it. The CONTEXT block instructs: *"Spec language is `{spec_lang}`. Use it for spec prose, labels, and Concerns you append. Source code (identifiers, comments every form, paths, commands, log messages) stays English regardless. Don't translate pre-existing comments."* Agents appending `## Concerns` or marking `[x]` inherit `{spec_lang}` automatically. Code they write does not.
+The agent-prompt template receives `{spec_lang}`. The orchestrator reads the spec's `meta.json#lang` and fills it. The CONTEXT block instructs: *"Spec language is `{spec_lang}`. Use it for spec prose, labels, and Concerns you append. Source code (identifiers, comments every form, paths, commands, log messages) stays English regardless. Don't translate pre-existing comments."* Agents appending `## Concerns` or marking `[x]` inherit `{spec_lang}` automatically. Code they write does not.
 
 ## Contexto Narrative Rules
 

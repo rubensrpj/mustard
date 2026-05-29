@@ -24,7 +24,7 @@ source: manual
 
 ### 3. Full Path Spec
 
-Resolve Lang header via cascade. Lean — `## Contexto` + `## Acceptance Criteria` = PRD layer; `## Causa raiz` + `## Plano` + `## Limites` = Plano layer. NO divider headings, NO PRD subsections. MUST include ≥1 AC: reproduction command (exits non-zero before fix, exit 0 after). → `../../../refs/feature/spec-language.md`.
+Resolve Lang via cascade (`meta.json#lang` → `mustard.json#specLang` → ask once → persist to `meta.json`). Lean — `## Contexto` + `## Acceptance Criteria` = PRD layer; `## Causa raiz` + `## Plano` + `## Limites` = Plano layer. NO divider headings, NO PRD subsections. MUST include ≥1 AC: reproduction command (exits non-zero before fix, exit 0 after). → `../../../refs/feature/spec-language.md`.
 
 Print spec verbatim, then *"Run `/mustard:spec` to approve and proceed to EXECUTE."*
 

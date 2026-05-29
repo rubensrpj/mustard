@@ -69,7 +69,7 @@ pub use domain::economy::{EconomyScope, EconomySummary, SavingsSource};
 // `meta.rs`. Sidecar replaces the legacy `### Stage:` / `### Outcome:` /
 // `### Phase:` / `### Scope:` / `### Lang:` / `### Checkpoint:` / `### Parent:`
 // headers under `.claude/spec/**`.
-pub use domain::meta::{normalise_lang, read_meta, write_meta, Meta};
+pub use domain::meta::{normalise_lang, read_meta, write_meta, Meta, MetaFlags};
 
 // i18n — central language + tone module for Mustard banners. See `i18n.rs`.
 //

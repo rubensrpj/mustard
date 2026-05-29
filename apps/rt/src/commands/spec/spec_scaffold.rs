@@ -13,10 +13,10 @@
 //! | `sync_status` | Atomically rewrite lifecycle headers in both files. |
 
 use mustard_core::io::fs as mfs;
-use mustard_core::domain::meta::{write_meta, Meta};
+use mustard_core::domain::meta::{write_meta, Meta, MetaFlags};
 use mustard_core::domain::spec::contract::{SpecInput, PLAN_DIVIDER, PRD_DIVIDER};
 use mustard_core::domain::spec;
-use mustard_core::{read_meta, Outcome, Scope, Stage};
+use mustard_core::{read_meta, Scope, SpecState};
 use mustard_core::platform::i18n::{translate, Locale, Tone};
 use std::fmt::Write as _;
 use std::path::Path;
@@ -100,14 +100,19 @@ pub fn write_meta_json(output: &Path, meta: &Meta) -> Result<(), String> {
 // sync_status — atomic two-file header sync
 // ---------------------------------------------------------------------------
 
-/// Atomically synchronise the lifecycle metadata to the given `stage` +
-/// `outcome` by patching **`meta.json`** — the single source of truth. The
-/// `spec.md` narrative is never touched: it carries no lifecycle header.
+/// Atomically synchronise the lifecycle metadata to the given [`SpecState`]
+/// (`stage` + `outcome` + `flags`) by patching **`meta.json`** — the single
+/// source of truth. The `spec.md` narrative is never touched: it carries no
+/// lifecycle header.
 ///
 /// Behaviour:
 /// - `meta.json` is read (fail-open to a zero-value [`Meta`] when absent),
-///   `stage`/`outcome`/`checkpoint` are updated, and the document is written
-///   back atomically — all other fields are preserved.
+///   `stage`/`outcome`/`flags`/`checkpoint` are updated, and the document is
+///   written back atomically — all other fields are preserved.
+/// - `flags` are mapped from the validated [`SpecState`] (its `SpecState::new`
+///   invariants — terminal outcome ⇒ Close, `followup_open` ⇒ Close+Active —
+///   already hold by construction), so the `meta.json#flags` token array stays
+///   the canonical mirror of `SpecState.flags`.
 ///
 /// A missing spec directory is treated as a no-op (the directory is never
 /// created; the caller is responsible for directory setup).
@@ -115,7 +120,7 @@ pub fn write_meta_json(output: &Path, meta: &Meta) -> Result<(), String> {
 /// # Errors
 ///
 /// Returns the I/O error encountered, annotated with the offending path.
-pub fn sync_status(stage: Stage, outcome: Outcome, spec_path: &Path) -> Result<(), String> {
+pub fn sync_status(state: SpecState, spec_path: &Path) -> Result<(), String> {
     // `spec_path` is the path to `spec.md` (or the spec directory — resolve).
     let spec_dir = if spec_path.is_dir() {
         spec_path.to_path_buf()
@@ -133,8 +138,9 @@ pub fn sync_status(stage: Stage, outcome: Outcome, spec_path: &Path) -> Result<(
     // pure narrative.
     let meta_path = spec_dir.join("meta.json");
     let mut meta = read_meta(&meta_path).unwrap_or_default();
-    meta.stage = Some(spec::stage_label(stage).to_string());
-    meta.outcome = Some(spec::outcome_label(outcome).to_string());
+    meta.stage = Some(spec::stage_label(state.stage).to_string());
+    meta.outcome = Some(spec::outcome_label(state.outcome).to_string());
+    meta.flags = MetaFlags(state.flags);
     // Checkpoint is updated to "now" so collaborators can detect drift by ts.
     meta.checkpoint = Some(mustard_core::time::now_iso8601());
     write_meta(&meta_path, &meta)
@@ -178,6 +184,8 @@ mod tests {
     use mustard_core::domain::meta::Meta;
     use tempfile::tempdir;
 
+    use mustard_core::{Flags, Outcome, Stage};
+
     fn make_meta(stage: &str, outcome: &str) -> Meta {
         Meta {
             stage: Some(stage.to_string()),
@@ -189,8 +197,14 @@ mod tests {
             parent: None,
             is_wave_plan: None,
             total_waves: None,
+            flags: MetaFlags::default(),
             raw: serde_json::Value::Null,
         }
+    }
+
+    /// Build a validated `SpecState` for the scaffold tests.
+    fn st(stage: Stage, outcome: Outcome) -> SpecState {
+        SpecState::new(stage, outcome, Flags::default()).expect("legal state")
     }
 
     #[test]
@@ -211,7 +225,7 @@ mod tests {
         // spec.md does not exist — sync_status must not create spec.md
         // (guard: only patches when spec_md exists).
         let spec_md_path = dir.path().join("spec.md");
-        sync_status(Stage::Execute, Outcome::Active, dir.path()).unwrap();
+        sync_status(st(Stage::Execute, Outcome::Active), dir.path()).unwrap();
         // meta.json was created.
         let meta_path = dir.path().join("meta.json");
         assert!(meta_path.exists());
@@ -233,7 +247,7 @@ mod tests {
         // Seed meta.json with Plan/Active.
         write_meta_json(dir.path(), &make_meta("Plan", "Active")).unwrap();
 
-        sync_status(Stage::Close, Outcome::Completed, dir.path()).unwrap();
+        sync_status(st(Stage::Close, Outcome::Completed), dir.path()).unwrap();
 
         // spec.md is byte-for-byte unchanged — no header was injected.
         let spec_body = std::fs::read(dir.path().join("spec.md")).unwrap();
@@ -256,7 +270,7 @@ mod tests {
         meta.total_waves = Some(3);
         write_meta_json(dir.path(), &meta).unwrap();
 
-        sync_status(Stage::Execute, Outcome::Active, dir.path()).unwrap();
+        sync_status(st(Stage::Execute, Outcome::Active), dir.path()).unwrap();
 
         let v: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(dir.path().join("meta.json")).unwrap())
@@ -272,7 +286,7 @@ mod tests {
         let dir = tempdir().unwrap();
         // Passing a non-existent subdirectory must not panic or create anything.
         let ghost = dir.path().join("ghost");
-        let result = sync_status(Stage::Plan, Outcome::Active, &ghost);
+        let result = sync_status(st(Stage::Plan, Outcome::Active), &ghost);
         assert!(result.is_ok());
         assert!(!ghost.exists());
     }
@@ -290,13 +304,33 @@ mod tests {
         .unwrap();
         write_meta_json(dir.path(), &make_meta("Plan", "Active")).unwrap();
 
-        sync_status(Stage::Close, Outcome::Completed, dir.path()).unwrap();
+        sync_status(st(Stage::Close, Outcome::Completed), dir.path()).unwrap();
 
         let v: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(dir.path().join("meta.json")).unwrap())
                 .unwrap();
         assert_eq!(v["stage"], serde_json::json!("Close"));
         assert_eq!(v["outcome"], serde_json::json!("Completed"));
+    }
+
+    /// A followup state (Close + Active + followup_open) flows into the
+    /// `meta.json#flags` token array via `sync_status`.
+    #[test]
+    fn sync_status_writes_followup_flag_to_meta() {
+        let dir = tempdir().unwrap();
+        write_meta_json(dir.path(), &make_meta("Execute", "Active")).unwrap();
+        let followup = SpecState::new(
+            Stage::Close,
+            Outcome::Active,
+            Flags { followup_open: true, ..Flags::default() },
+        )
+        .unwrap();
+        sync_status(followup, dir.path()).unwrap();
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.path().join("meta.json")).unwrap())
+                .unwrap();
+        assert_eq!(v["stage"], serde_json::json!("Close"));
+        assert_eq!(v["flags"], serde_json::json!(["followup_open"]));
     }
 
     #[test]
