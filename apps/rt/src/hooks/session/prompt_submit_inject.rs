@@ -162,7 +162,6 @@ impl Check for PromptSubmitInject {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
 
     /// Build a [`Ctx`] with a unique tempdir project path so the W8.T8.2 active-spec
     /// resolver (`current_spec`) cannot accidentally find a real pipeline-state.

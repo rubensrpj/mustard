@@ -539,7 +539,6 @@ impl Check for SubagentInject {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
     use tempfile::tempdir;
 
     fn ctx_for(dir: &Path) -> Ctx {

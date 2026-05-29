@@ -374,8 +374,6 @@ fn run_qa_fail_open(_cwd: &Path, spec: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn parse_iso_millis_round_trips() {
         let ms = mustard_core::time::parse_iso_millis("2026-05-19T00:00:00.000Z").unwrap();
