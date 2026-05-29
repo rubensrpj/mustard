@@ -274,6 +274,44 @@ mod tests {
         assert_eq!(read_status(&path), "completed");
     }
 
+    /// Legacy-read contract (F4-f item 1): a spec ALREADY ON DISK that carries
+    /// only the new canonical `### Stage:` / `### Outcome:` header and **no
+    /// `meta.json` sidecar** must still resolve its status via the markdown
+    /// fallback. This protects specs written before meta.json became the single
+    /// source of lifecycle state.
+    #[test]
+    fn read_status_falls_back_to_canonical_header_when_no_meta() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("spec.md");
+        std::fs::write(
+            &path,
+            "# Spec\n### Stage: Close\n### Outcome: Completed\n### Flags: \n",
+        )
+        .unwrap();
+        // No meta.json beside it.
+        assert!(!dir.path().join("meta.json").exists());
+        assert_eq!(read_status(&path), "completed");
+    }
+
+    /// When BOTH a `meta.json` sidecar and a (divergent) `.md` header are
+    /// present, `meta.json` is authoritative — the sidecar wins. The header is
+    /// only ever a *fallback* for un-migrated specs.
+    #[test]
+    fn read_status_prefers_meta_over_divergent_header() {
+        use mustard_core::domain::meta::{write_meta, Meta};
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("spec.md");
+        // `.md` header says Execute; meta.json says Close/Completed → meta wins.
+        std::fs::write(&path, "# Spec\n### Stage: Execute\n### Outcome: Active\n").unwrap();
+        let meta = Meta {
+            stage: Some("Close".into()),
+            outcome: Some("Completed".into()),
+            ..Meta::default()
+        };
+        write_meta(&dir.path().join("meta.json"), &meta).unwrap();
+        assert_eq!(read_status(&path), "completed");
+    }
+
     #[test]
     fn parse_wave_plan_reads_table_rows() {
         let dir = tempdir().unwrap();

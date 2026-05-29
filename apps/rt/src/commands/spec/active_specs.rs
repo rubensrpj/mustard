@@ -1234,6 +1234,67 @@ mod tests {
         // Deliberately no meta.json
     }
 
+    /// Helper: create a spec dir with NO meta.json but WITH a canonical
+    /// `### Stage:` / `### Outcome:` header in spec.md — i.e. a spec written
+    /// before the meta.json sidecar existed.
+    fn make_spec_header_only(root: &Path, name: &str, stage: &str, outcome: &str) {
+        let dir = root.join(".claude").join("spec").join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("spec.md"),
+            format!("# {name}\n\n### Stage: {stage}\n### Outcome: {outcome}\n### Flags: \n\n## Resumo\n\nLegacy spec.\n"),
+        )
+        .unwrap();
+        // Deliberately no meta.json — the .md header is the only source.
+    }
+
+    /// Legacy-read contract (F4-f item 1): a spec ALREADY ON DISK that has its
+    /// lifecycle header in `spec.md` and **no `meta.json`** must still be read
+    /// correctly via the markdown fallback — classified Active (not Malformed)
+    /// and surfacing its real stage. This protects specs written before
+    /// meta.json became the single source of lifecycle state.
+    #[test]
+    fn active_specs_reads_header_only_legacy_spec_via_fallback() {
+        let td = tempdir().unwrap();
+        make_spec_header_only(td.path(), "2026-01-01-legacy-header", "Execute", "Active");
+        // No meta.json sidecar exists for this spec.
+        assert!(!td
+            .path()
+            .join(".claude")
+            .join("spec")
+            .join("2026-01-01-legacy-header")
+            .join("meta.json")
+            .exists());
+
+        let candidates = discover_root_specs(td.path());
+        let filtered = filter_active(candidates);
+
+        let legacy = filtered
+            .iter()
+            .find(|c| c.name == "2026-01-01-legacy-header")
+            .expect("legacy header-only spec must be discovered via .md fallback");
+        // Read straight from the .md header — Execute/Active.
+        assert_eq!(legacy.header.stage.as_deref(), Some("Execute"));
+        assert_eq!(legacy.header.outcome.as_deref(), Some("Active"));
+        // And it classifies as a normal Active spec, NOT malformed.
+        assert_eq!(classify_spec(&legacy.header), Some(SpecKind::Active));
+    }
+
+    /// A header-only spec whose terminal state is Close/Completed must be
+    /// filtered OUT of the active set (proving the fallback parse drives the
+    /// same filtering meta.json would).
+    #[test]
+    fn active_specs_filters_terminal_header_only_legacy_spec() {
+        let td = tempdir().unwrap();
+        make_spec_header_only(td.path(), "2026-01-01-done-legacy", "Close", "Completed");
+        let candidates = discover_root_specs(td.path());
+        let filtered = filter_active(candidates);
+        assert!(
+            !filtered.iter().any(|c| c.name == "2026-01-01-done-legacy"),
+            "terminal header-only spec must be filtered out via .md fallback"
+        );
+    }
+
     #[test]
     fn active_specs_includes_malformed_with_question_marks() {
         let td = tempdir().unwrap();

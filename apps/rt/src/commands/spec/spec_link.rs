@@ -1,22 +1,21 @@
-//! `mustard-rt run spec-link` — a port of `scripts/spec-link.js`.
+//! `mustard-rt run spec-link` — link a child spec to a parent spec
+//! (parent/child epic hierarchy).
 //!
-//! Links a child spec to a parent spec (parent/child epic hierarchy):
+//! Emits a `spec.link` harness event (`{ parent, child, reason }`) attributed
+//! to the child spec. That NDJSON event — together with the child's
+//! `### Parent:` spec-md header — is the **single source of truth** for the
+//! parent→child edge: `epic-fold`, `spec-children`, `spec-tree` and
+//! `epic-summary` all reconstruct lineage from `spec.link` events.
 //!
-//! 1. Emits a `spec.link` harness event.
-//! 2. Updates `.pipeline-states/{parent}.json`: adds the child to
-//!    `children_specs` (idempotent).
-//! 3. Updates `.pipeline-states/{child}.json`: sets `parent_spec` (creating a
-//!    placeholder when absent).
-//!
-//! Port note: the JS version shelled to `_lib/harness-event.js` to emit the
-//! event. This port appends the event directly through `mustard_core`.
+//! F4-f: the legacy `.pipeline-states/{parent,child}.json` sidecar writes
+//! (`children_specs` / `parent_spec`) were removed. Nothing in the runtime
+//! reads them post-W4C — every consumer now derives the edge from the event
+//! stream — so writing them was dead duplication of state.
 
 use crate::shared::context::session_id;
-use crate::util::json_io;
 use mustard_core::time::now_iso8601;
 use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
-use mustard_core::ClaudePaths;
-use serde_json::{json, Value};
+use serde_json::json;
 use std::path::Path;
 
 /// Emit a `spec.link` harness event. Best-effort.
@@ -47,6 +46,10 @@ fn emit_link_event(cwd: &Path, parent: &str, child: &str, reason: &str) {
 }
 
 /// Core link logic. Returns `true` when the link was applied (fail-open).
+///
+/// The link is recorded **only** as a `spec.link` NDJSON event — the parent→
+/// child edge is reconstructed from the event stream by every consumer. No
+/// `.pipeline-states` sidecar is written (F4-f: that was dead duplicate state).
 fn link_spec(cwd: &Path, parent: &str, child: &str, reason: &str) -> bool {
     let parent = parent.trim();
     let child = child.trim();
@@ -56,45 +59,6 @@ fn link_spec(cwd: &Path, parent: &str, child: &str, reason: &str) -> bool {
     }
 
     emit_link_event(cwd, parent, child, reason);
-
-    let Ok(paths) = ClaudePaths::for_project(cwd) else { return false };
-    // Parent state — append the child to `children_specs` idempotently.
-    let parent_file = paths.pipeline_state_file(parent);
-    let mut parent_state = json_io::read_json(&parent_file).unwrap_or_else(|| {
-        json!({ "spec": parent, "parent_spec": Value::Null, "children_specs": [] })
-    });
-    if let Some(obj) = parent_state.as_object_mut() {
-        if !obj.contains_key("parent_spec") {
-            obj.insert("parent_spec".to_string(), Value::Null);
-        }
-        let children = obj
-            .entry("children_specs")
-            .or_insert_with(|| json!([]));
-        if !children.is_array() {
-            *children = json!([]);
-        }
-        if let Some(arr) = children.as_array_mut() {
-            let present = arr.iter().any(|v| v.as_str() == Some(child));
-            if !present {
-                arr.push(json!(child));
-            }
-        }
-    }
-    json_io::write_json(&parent_file, &parent_state);
-
-    // Child state — set `parent_spec`.
-    let child_file = paths.pipeline_state_file(child);
-    let mut child_state = json_io::read_json(&child_file).unwrap_or_else(|| {
-        json!({ "spec": child, "parent_spec": parent, "children_specs": [] })
-    });
-    if let Some(obj) = child_state.as_object_mut() {
-        if !obj.get("children_specs").is_some_and(Value::is_array) {
-            obj.insert("children_specs".to_string(), json!([]));
-        }
-        obj.insert("parent_spec".to_string(), json!(parent));
-    }
-    json_io::write_json(&child_file, &child_state);
-
     true
 }
 
@@ -116,30 +80,35 @@ pub fn run(parent: Option<&str>, child: Option<&str>, reason: Option<&str>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mustard_core::ClaudePaths;
+    use mustard_core::view::projection::read_workspace_events;
     use tempfile::tempdir;
 
     #[test]
-    fn link_creates_and_updates_states() {
+    fn link_emits_event_and_writes_no_sidecar() {
         let dir = tempdir().unwrap();
         assert!(link_spec(dir.path(), "epic", "child-1", "split"));
-        let paths = ClaudePaths::for_project(dir.path()).unwrap();
-        let parent = json_io::read_json(&paths.pipeline_state_file("epic")).unwrap();
-        assert_eq!(
-            parent["children_specs"],
-            json!(["child-1"])
-        );
-        let child = json_io::read_json(&paths.pipeline_state_file("child-1")).unwrap();
-        assert_eq!(child["parent_spec"], json!("epic"));
-    }
 
-    #[test]
-    fn link_is_idempotent() {
-        let dir = tempdir().unwrap();
-        link_spec(dir.path(), "epic", "child-1", "split");
-        link_spec(dir.path(), "epic", "child-1", "split");
+        // The edge lives ONLY as a `spec.link` event — no pipeline-state sidecar.
         let paths = ClaudePaths::for_project(dir.path()).unwrap();
-        let parent = json_io::read_json(&paths.pipeline_state_file("epic")).unwrap();
-        assert_eq!(parent["children_specs"].as_array().unwrap().len(), 1);
+        assert!(
+            !paths.pipeline_state_file("epic").exists(),
+            "parent sidecar must not be written"
+        );
+        assert!(
+            !paths.pipeline_state_file("child-1").exists(),
+            "child sidecar must not be written"
+        );
+
+        let events = read_workspace_events(dir.path());
+        let link = events
+            .iter()
+            .find(|e| e.event == "spec.link")
+            .expect("a spec.link event must be emitted");
+        assert_eq!(link.payload.get("parent").and_then(|v| v.as_str()), Some("epic"));
+        assert_eq!(link.payload.get("child").and_then(|v| v.as_str()), Some("child-1"));
+        // Attributed to the child spec (see `emit_link_event`).
+        assert_eq!(link.spec.as_deref(), Some("child-1"));
     }
 
     #[test]

@@ -267,22 +267,27 @@ fn phase_from_events(events: &[HarnessEvent], spec: &str) -> Option<String> {
 }
 
 /// `buildEpicSummary` — derive a summary view for an epic and its children.
+///
+/// Children are reconstructed from `spec.link` events (`{ parent, child }`) —
+/// the single source of truth post-W4C. The legacy
+/// `.pipeline-states/{epic}.json` `children_specs` array is no longer written
+/// ([`crate::commands::spec::spec_link`] emits only the NDJSON event), so this
+/// derives the edge from the stream like [`build_spec_tree`] does.
 fn build_epic_summary(events: &[HarnessEvent], cwd: &Path, epic: &str) -> Value {
-    let states_dir = ClaudePaths::for_project(cwd)
-        .map(|p| p.pipeline_states_dir())
-        .unwrap_or_else(|_| cwd.to_path_buf());
-    let read_state = |name: &str| -> Option<Value> {
-        fs::read_to_string(states_dir.join(format!("{name}.json")))
-            .ok()
-            .and_then(|t| serde_json::from_str(&t).ok())
-    };
-    let root_state = read_state(epic);
-    let children: Vec<String> = root_state
-        .as_ref()
-        .and_then(|s| s.get("children_specs"))
-        .and_then(Value::as_array)
-        .map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect())
-        .unwrap_or_default();
+    let _ = cwd;
+    let mut children_set: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for ev in events {
+        if ev.event != "spec.link" {
+            continue;
+        }
+        if ev.payload.get("parent").and_then(Value::as_str) != Some(epic) {
+            continue;
+        }
+        if let Some(child) = ev.payload.get("child").and_then(Value::as_str) {
+            children_set.insert(child.to_string());
+        }
+    }
+    let children: Vec<String> = children_set.into_iter().collect();
 
     let children_info: Vec<Value> = children
         .iter()
@@ -385,9 +390,6 @@ fn build_cross_session_timeline(cwd: &Path, limit: usize) -> Value {
     files.sort_by_key(|b| std::cmp::Reverse(b.1));
     files.truncate(limit);
 
-    let states_dir = ClaudePaths::for_project(cwd)
-        .map(|p| p.pipeline_states_dir())
-        .unwrap_or_else(|_| cwd.to_path_buf());
     let mut results: Vec<Value> = Vec::new();
     for (file, _) in files {
         let Ok(raw) = fs::read_to_string(&file) else {
@@ -399,18 +401,27 @@ fn build_cross_session_timeline(cwd: &Path, limit: usize) -> Value {
             .filter_map(|l| serde_json::from_str(l).ok())
             .collect();
         let mut summary = build_session_summary(&events);
-        // Enrich each spec that has children with epic metadata.
+        // Enrich each spec that has children with epic metadata. Children come
+        // from this session's `spec.link` events (the single source post-W4C),
+        // not the `.pipeline-states/{spec}.json` sidecar, which is no longer
+        // written.
         let mut epic_info = serde_json::Map::new();
         if let Some(specs) = summary.get("specs").and_then(Value::as_array).cloned() {
             for spec in specs.iter().filter_map(Value::as_str) {
-                let Some(state) = read_state(&states_dir, spec) else {
-                    continue;
-                };
-                let children: Vec<String> = state
-                    .get("children_specs")
-                    .and_then(Value::as_array)
-                    .map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect())
-                    .unwrap_or_default();
+                let mut child_set: std::collections::BTreeSet<String> =
+                    std::collections::BTreeSet::new();
+                for ev in &events {
+                    if ev.event != "spec.link" {
+                        continue;
+                    }
+                    if ev.payload.get("parent").and_then(Value::as_str) != Some(spec) {
+                        continue;
+                    }
+                    if let Some(child) = ev.payload.get("child").and_then(Value::as_str) {
+                        child_set.insert(child.to_string());
+                    }
+                }
+                let children: Vec<String> = child_set.into_iter().collect();
                 if children.is_empty() {
                     continue;
                 }

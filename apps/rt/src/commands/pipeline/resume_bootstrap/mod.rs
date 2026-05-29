@@ -249,7 +249,7 @@ pub fn run(spec: &str, json_flag: bool) {
         .then(|| read_first_lines(&op_path, 30))
         .flatten()
         .unwrap_or_default();
-    out.stage = detect_stage(&head, view.as_ref());
+    out.stage = detect_stage(&op_path, &head, view.as_ref());
     out.is_stub = detect_stub(&head);
 
     // --- specSummary: first non-empty line of `## Resumo` / `## Summary`. ---

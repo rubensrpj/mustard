@@ -26,25 +26,8 @@ use mustard_core::io::atomic_md::{MarkdownDoc, MarkdownStore};
 use mustard_core::io::fs;
 use mustard_core::domain::model::event::HarnessEvent;
 use mustard_core::ClaudePaths;
-use crate::util::json_io;
 use serde_json::{json, Map, Value};
 use std::path::Path;
-
-/// The uppercased phase of a pipeline-state object — derived from the
-/// `pipeline.phase` event log keyed by the state's `spec` name. Falls back to
-/// the legacy in-JSON `phase` field for backwards compatibility.
-fn state_phase(state: &Value, cwd: &Path) -> String {
-    if let Some(spec) = state.get("spec").and_then(Value::as_str) {
-        if let Some(phase) = crate::commands::event::emit_phase::last_phase_for_spec(cwd, spec) {
-            return phase.to_uppercase();
-        }
-    }
-    state
-        .get("phase")
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .to_uppercase()
-}
 
 /// Read every harness event for `spec` from its per-spec NDJSON sink.
 fn read_events_for_spec(cwd: &Path, spec: &str) -> Vec<HarnessEvent> {
@@ -79,9 +62,8 @@ fn emit_event(project_dir: &str, event: &str, payload: Value, spec: &str) {
 }
 
 /// Latest `pipeline.phase` for `spec` from a pre-folded event slice (UPPERCASE),
-/// or empty when the spec never transitioned. Pure over the slice — the
-/// NDJSON-stream analogue of [`state_phase`]'s event lookup, without per-spec
-/// disk reads.
+/// or empty when the spec never transitioned. Pure over the slice — derived
+/// from the `pipeline.phase` event log without per-spec disk reads.
 fn phase_from_events(events: &[HarnessEvent], spec: &str) -> String {
     events
         .iter()
@@ -90,6 +72,28 @@ fn phase_from_events(events: &[HarnessEvent], spec: &str) -> String {
         .and_then(|e| e.payload.get("to").and_then(Value::as_str))
         .unwrap_or("")
         .to_uppercase()
+}
+
+/// The children of `epic`, reconstructed from `spec.link` events in `events`
+/// (`{ parent, child }` payloads), deduplicated and sorted ascending. This is
+/// the **single source of truth** for parent→child edges post-W4C: the
+/// `.pipeline-states/{epic}.json` `children_specs` array is no longer written
+/// ([`crate::commands::spec::spec_link`] emits only the NDJSON event + the
+/// `### Parent:` header), so every consumer derives the edge from the stream.
+fn children_from_events(events: &[HarnessEvent], epic: &str) -> Vec<String> {
+    let mut set: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for ev in events {
+        if ev.event != "spec.link" {
+            continue;
+        }
+        if ev.payload.get("parent").and_then(Value::as_str) != Some(epic) {
+            continue;
+        }
+        if let Some(child) = ev.payload.get("child").and_then(Value::as_str) {
+            set.insert(child.to_string());
+        }
+    }
+    set.into_iter().collect()
 }
 
 /// Detect epics ready to fold by folding the **per-spec NDJSON event stream**.
@@ -198,34 +202,27 @@ pub fn fold_epic(cwd: &Path, epic: &str) -> bool {
         eprintln!("[epic-fold] warn: --epic is required");
         return false;
     }
-    let paths = ClaudePaths::for_project(cwd).ok();
-    let states_dir = paths
-        .as_ref()
-        .map(ClaudePaths::pipeline_states_dir)
-        .unwrap_or_else(|| cwd.to_path_buf());
-    let epic_file = paths
-        .as_ref()
-        .map(|p| p.pipeline_state_file(epic))
-        .unwrap_or_else(|| states_dir.join(format!("{epic}.json")));
-    let Some(epic_state) = json_io::read_json(&epic_file) else {
-        eprintln!("[epic-fold] warn: pipeline-state not found for epic \"{epic}\"");
+    // Children come from the `spec.link` event stream (the single source of
+    // truth post-W4C) — not the `.pipeline-states/{epic}.json` sidecar, which
+    // is no longer written. `spec.link` is attributed to the *child* (so it
+    // lands in the child's NDJSON sink), so the edge set must be reconstructed
+    // from the **workspace-wide** event walk — the same source
+    // [`detect_completed_epics`] uses — not the epic's own per-spec sink.
+    let workspace_events = mustard_core::view::projection::read_workspace_events(cwd);
+    let children: Vec<String> = children_from_events(&workspace_events, epic);
+    if children.is_empty() {
+        eprintln!("[epic-fold] warn: no spec.link children found for epic \"{epic}\"");
         return false;
-    };
-    let children: Vec<String> = epic_state
-        .get("children_specs")
-        .and_then(Value::as_array)
-        .map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect())
-        .unwrap_or_default();
-
-    // Idempotency 1: root already CLOSE.
-    if state_phase(&epic_state, cwd) == "CLOSE" {
-        return true;
     }
-
-    // Aggregate events for the epic + its children via per-spec NDJSON sinks.
+    // Aggregate the epic's + each child's per-spec events for the summary fold.
     let mut all_events: Vec<HarnessEvent> = read_events_for_spec(cwd, epic);
     for child in &children {
         all_events.extend(read_events_for_spec(cwd, child));
+    }
+
+    // Idempotency 1: root already CLOSE.
+    if phase_from_events(&all_events, epic) == "CLOSE" {
+        return true;
     }
 
     // Idempotency 2: an `epic.complete` event already exists for this epic.
@@ -399,11 +396,12 @@ mod tests {
     use crate::shared::events::writer_ndjson::write_event;
     use tempfile::tempdir;
 
-    /// Emit a `spec.link` event (parent→child) into the parent's NDJSON sink.
+    /// Emit a `spec.link` event (parent→child) into the **child's** NDJSON sink
+    /// — matching production attribution in `spec_link::emit_link_event`.
     fn link(project: &Path, parent: &str, child: &str) {
         let payload = json!({ "parent": parent, "child": child, "reason": "test" });
         let _ = write_event(
-            project, Some(parent), None, "s", "spec.link", "spec",
+            project, Some(child), None, "s", "spec.link", "spec",
             Some(0), Some("s"), Some("test"), None, &payload,
         );
     }
@@ -462,10 +460,32 @@ mod tests {
         assert!(!fold_epic(dir.path(), "ghost"));
     }
 
+    /// An epic with `spec.link` children but never linked → no children derived
+    /// from events → fold is a no-op (`false`). Confirms children now come from
+    /// the event stream, not a `.pipeline-states` sidecar.
     #[test]
-    fn state_phase_falls_back_to_json_field_when_no_events() {
+    fn fold_returns_false_when_no_link_children() {
         let dir = tempdir().unwrap();
-        let state = serde_json::json!({ "spec": "epic-x", "phase": "EXECUTE" });
-        assert_eq!(state_phase(&state, dir.path()), "EXECUTE");
+        // Epic has a phase event but no spec.link → no children.
+        phase(dir.path(), "epic", "EXECUTE");
+        assert!(!fold_epic(dir.path(), "epic"));
+    }
+
+    /// End-to-end (event-sourced children): link a child, transition both, then
+    /// fold. The fold succeeds and emits `epic.complete` + the CLOSE phase — all
+    /// driven by the NDJSON stream with NO pipeline-state sidecar present.
+    #[test]
+    fn fold_succeeds_with_event_sourced_children() {
+        let dir = tempdir().unwrap();
+        link(dir.path(), "epic", "c1");
+        phase(dir.path(), "epic", "EXECUTE");
+        phase(dir.path(), "c1", "CLOSE");
+        // No `.pipeline-states/epic.json` exists.
+        if let Ok(cp) = ClaudePaths::for_project(dir.path()) {
+            assert!(!cp.pipeline_state_file("epic").exists());
+        }
+        assert!(fold_epic(dir.path(), "epic"));
+        // Idempotent: a second fold is a no-op success (epic now CLOSE).
+        assert!(fold_epic(dir.path(), "epic"));
     }
 }

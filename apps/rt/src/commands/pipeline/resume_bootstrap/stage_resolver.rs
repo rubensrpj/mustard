@@ -50,9 +50,26 @@ pub(super) fn parse_header_value(text: &str, key_lower: &str) -> Option<String> 
     None
 }
 
-/// Detect the canonical stage word from the spec head, falling back to the
-/// pipeline state view's `status`.
-pub(super) fn detect_stage(head: &str, view: Option<&PipelineStateView>) -> Option<String> {
+/// Detect the canonical stage word for the operational spec.
+///
+/// Resolution order (F4-f — meta.json is the single source of lifecycle state):
+/// 1. The `stage` field of the `meta.json` sidecar beside `op_path` — the
+///    authoritative source. Every writer keeps it current.
+/// 2. The `### Stage:` header in the spec-md `head` — the **legacy fallback**
+///    for specs already on disk that predate meta.json (or arrived un-migrated
+///    from a teammate's branch).
+/// 3. The pipeline state view's `status` (event-derived) — last resort.
+pub(super) fn detect_stage(
+    op_path: &Path,
+    head: &str,
+    view: Option<&PipelineStateView>,
+) -> Option<String> {
+    if let Some(stage) = mustard_core::domain::meta::read_meta_beside(op_path)
+        .and_then(|m| m.stage)
+        .filter(|s| !s.trim().is_empty())
+    {
+        return Some(normalise_stage(&stage));
+    }
     if let Some(stage) = parse_header_value(head, "stage") {
         return Some(normalise_stage(&stage));
     }
@@ -135,6 +152,44 @@ pub(super) fn extract_summary(body: &str) -> String {
         return snippet;
     }
     String::new()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mustard_core::domain::meta::{write_meta, Meta};
+    use tempfile::tempdir;
+
+    /// F4-f item 3: `detect_stage` prefers the `meta.json` sidecar over the
+    /// spec-md `### Stage:` header. Here meta says Execute while the header
+    /// says Plan → Execute wins.
+    #[test]
+    fn detect_stage_prefers_meta_over_header() {
+        let dir = tempdir().unwrap();
+        let op_path = dir.path().join("spec.md");
+        std::fs::write(&op_path, "### Stage: Plan\n### Outcome: Active\n").unwrap();
+        let meta = Meta {
+            stage: Some("Execute".into()),
+            outcome: Some("Active".into()),
+            ..Meta::default()
+        };
+        write_meta(&dir.path().join("meta.json"), &meta).unwrap();
+        assert_eq!(detect_stage(&op_path, "### Stage: Plan\n", None).as_deref(), Some("Execute"));
+    }
+
+    /// Legacy fallback: with no `meta.json`, the `### Stage:` header drives the
+    /// result — protecting specs already on disk that predate the sidecar.
+    #[test]
+    fn detect_stage_falls_back_to_header_without_meta() {
+        let dir = tempdir().unwrap();
+        let op_path = dir.path().join("spec.md");
+        std::fs::write(&op_path, "### Stage: QaReview\n").unwrap();
+        assert!(!dir.path().join("meta.json").exists());
+        assert_eq!(
+            detect_stage(&op_path, "### Stage: QaReview\n", None).as_deref(),
+            Some("QaReview")
+        );
+    }
 }
 
 /// Pick the first non-empty body line under `## Contexto` / `## Context`
