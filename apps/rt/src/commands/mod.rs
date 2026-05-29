@@ -435,8 +435,18 @@ pub enum RunCmd {
         #[arg(long)]
         wave: Option<u32>,
     },
-    /// Suggest wave decomposition by file/entity count (reads JSON from stdin).
-    ScopeDecompose,
+    /// Suggest wave decomposition by file/entity count.
+    ///
+    /// With `--from-spec <path>`, computes `fileCount` / `layerCount` /
+    /// `newEntityCount` deterministically in Rust from the spec's `## Files`
+    /// section + an entity-registry diff (no LLM). Without it, reads a
+    /// pre-computed signals JSON from stdin (legacy / override).
+    ScopeDecompose {
+        /// Compute the signals deterministically from this spec file instead of
+        /// reading them from stdin.
+        #[arg(long = "from-spec")]
+        from_spec: Option<String>,
+    },
     /// Check whether a spec should be decomposed at EXECUTE entry.
     ExecRewaveCheck {
         /// Path to the spec file.
@@ -1328,15 +1338,26 @@ pub enum RunCmd {
         domain: String,
     },
     /// W5.T5.9 — Read or write the bugfix root-cause cache for retry reuse.
+    ///
+    /// The cache key (`rootCauseHash`) is computed **deterministically in Rust**
+    /// from the affected files + the error message (`--files` + `--error`); the
+    /// `/bugfix` ANALYZE step no longer has to hand a hash to the binary. An
+    /// explicit `--hash` still works (override / legacy-key compat) and takes
+    /// priority when supplied.
     #[command(name = "bugfix-cache")]
     BugfixCache {
-        /// Cache signature hash.
+        /// Cache signature hash — explicit override. When omitted, the hash is
+        /// computed deterministically from `--error` + `--files`.
         #[arg(long)]
-        hash: String,
+        hash: Option<String>,
+        /// Error message / failure signature — drives the deterministic hash
+        /// when `--hash` is not supplied.
+        #[arg(long)]
+        error: Option<String>,
         /// Write mode — record a new entry with the supplied summary.
         #[arg(long)]
         summary: Option<String>,
-        /// Files affected — comma-separated list (write mode only).
+        /// Files affected — comma-separated list (write mode AND hash input).
         #[arg(long)]
         files: Option<String>,
     },
@@ -1591,7 +1612,7 @@ pub fn dispatch(cmd: RunCmd) {
         RunCmd::WaveTree { spec_dir, format } => wave::wave_tree::run(&spec_dir, &format),
         RunCmd::WaveDependency => wave::wave_dependency::run(),
         RunCmd::WaveFiles { spec, wave } => wave::wave_files::run(spec.as_deref(), wave),
-        RunCmd::ScopeDecompose => spec::scope_decompose::run(),
+        RunCmd::ScopeDecompose { from_spec } => spec::scope_decompose::run(from_spec.as_deref()),
         RunCmd::ExecRewaveCheck { spec } => wave::exec_rewave_check::run(spec.as_deref()),
         RunCmd::DependencyPrecheck { spec, subproject } => {
             review::dependency_precheck::run(spec.as_deref(), subproject.as_deref());
@@ -1967,8 +1988,8 @@ pub fn dispatch(cmd: RunCmd) {
         RunCmd::TaskChecklist { domain } => {
             checklist::task_checklist::run(checklist::task_checklist::TaskChecklistOpts { domain });
         }
-        RunCmd::BugfixCache { hash, summary, files } => {
-            review::bugfix_cache::run(review::bugfix_cache::BugfixCacheOpts { hash, summary, files });
+        RunCmd::BugfixCache { hash, error, summary, files } => {
+            review::bugfix_cache::run(review::bugfix_cache::BugfixCacheOpts { hash, error, summary, files });
         }
         RunCmd::ContextBudget { role, spec, wave } => {
             economy::context_budget::run(economy::context_budget::ContextBudgetOpts { role, spec, wave });
