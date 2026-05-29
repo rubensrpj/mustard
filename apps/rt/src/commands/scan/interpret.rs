@@ -40,7 +40,13 @@
 //! covers the cost; `mustard-rt` requires no API key in the environment.
 
 use mustard_core::domain::model::event::ActorKind;
-use crate::shared::events::economy;
+use mustard_core::domain::economy::{
+    self,
+    estimator::{estimate_input_tokens, estimate_output_tokens},
+    model::{SavingsRecord, SavingsSource},
+    scope::{ProjectPath, SpecId},
+};
+use crate::shared::events::economy as economy_events;
 use super::file_utils::VisitedFile;
 use crate::util::sha256::Sha256;
 use mustard_core::io::fs as mfs;
@@ -103,7 +109,26 @@ const INTERPRET_CACHE_VERSION: u64 = 1;
 const MODEL_ENV: &str = "MUSTARD_SCAN_MODEL";
 /// Cache toggle env var — `off` bypasses both read and write paths.
 const CACHE_TOGGLE_ENV: &str = "MUSTARD_INTERPRET_CACHE";
-/// Economy event kind emitted after each cold-path model call.
+
+/// Opt-in gate for the cold-path LLM round-trip (F1-c). **Default OFF**: the
+/// scan never spawns `claude` unless this env names a truthy value
+/// (`1` / `on` / `true` / `yes`, case-insensitive). When OFF, [`interpret_with`]
+/// serves the cache if present (free, no network) but otherwise returns the
+/// empty floor without probing or spawning the binary — the deterministic
+/// structural extractor in [`super::structural_extract`] is the source of
+/// truth. When ON, the model still only runs as a COMPLEMENT for subprojects
+/// the structural pass left empty (gated by the caller in [`super`]).
+const LLM_GATE_ENV: &str = "MUSTARD_SCAN_LLM";
+
+/// `true` when `raw` names a truthy opt-in value for [`LLM_GATE_ENV`].
+/// Empty / `0` / `off` / `false` / `no` / anything-else ⇒ `false` (default OFF).
+#[must_use]
+pub fn llm_gate_enabled_for(raw: &str) -> bool {
+    matches!(
+        raw.trim().to_ascii_lowercase().as_str(),
+        "1" | "on" | "true" | "yes"
+    )
+}
 
 /// Recursion guard: set on the `claude` CLI subprocess we spawn so the parent
 /// `mustard-rt` `SessionStart` hook (inherited by the sub-session) detects the
@@ -275,6 +300,11 @@ pub struct InterpretEnv {
     pub claude_bin: String,
     /// `true` mirrors `MUSTARD_INTERPRET_CACHE=off` — bypass read + write.
     pub cache_disabled: bool,
+    /// F1-c opt-in gate (mirrors [`LLM_GATE_ENV`]). **Default `false`**: when
+    /// `false`, [`interpret_with`] never probes or spawns `claude` — it serves
+    /// the cache if present and otherwise returns the empty floor. Tests set
+    /// this explicitly so they exercise the spawn path without mutating env.
+    pub llm_enabled: bool,
 }
 
 impl InterpretEnv {
@@ -286,19 +316,12 @@ impl InterpretEnv {
             claude_bin: String::new(), // use PATH lookup
             cache_disabled: std::env::var(CACHE_TOGGLE_ENV)
                 .is_ok_and(|v| v.eq_ignore_ascii_case("off")),
+            // F1-c — default OFF: only opt in when MUSTARD_SCAN_LLM is truthy.
+            llm_enabled: llm_gate_enabled_for(
+                &std::env::var(LLM_GATE_ENV).unwrap_or_default(),
+            ),
         }
     }
-}
-
-/// Run the interpretation pass for one subproject — env-driven wrapper.
-#[must_use]
-pub fn interpret(
-    root: &Path,
-    stack_id: &str,
-    visited: &[VisitedFile],
-    clusters: &[Value],
-) -> InterpretedResult {
-    interpret_with(root, stack_id, visited, clusters, &InterpretEnv::from_process())
 }
 
 /// Run the interpretation pass with explicit env overrides.
@@ -328,13 +351,23 @@ pub fn interpret_with(
         }
     }
 
-    // 2. Compose the compact profile + prompt. Bail out fast if there is
+    // 2. F1-c opt-in gate. **Default OFF**: with the LLM gate disabled the scan
+    //    never probes or spawns `claude` — the deterministic structural
+    //    extractor is the source of truth and the cache (checked in step 1) is
+    //    the only LLM-derived data we will serve. Return the empty floor here so
+    //    the default path costs zero subprocesses. The cache write path below is
+    //    therefore only reachable when the gate is ON.
+    if !env.llm_enabled {
+        return InterpretedResult::default();
+    }
+
+    // 3. Compose the compact profile + prompt. Bail out fast if there is
     //    nothing meaningful to interpret (no clusters AND no files).
     if clusters.is_empty() && visited.is_empty() {
         return InterpretedResult::default();
     }
 
-    // 3. Probe for the claude CLI binary — without it the layer is a
+    // 4. Probe for the claude CLI binary — without it the layer is a
     //    deliberate no-op (fail-open). Tests inject `claude_bin` directly;
     //    production uses `"claude"` resolved from PATH.
     let bin = if env.claude_bin.is_empty() {
@@ -353,7 +386,7 @@ pub fn interpret_with(
     };
     let prompt = format!("{PROMPT_TEMPLATE}{prompt_json}");
 
-    // 4. Call the model via the claude CLI subprocess. Measure wall-clock for
+    // 5. Call the model via the claude CLI subprocess. Measure wall-clock for
     //    the economy event. Fail-open on any error.
     let t0 = std::time::Instant::now();
     let Some(response_text) = call_model(&bin, model, &prompt) else {
@@ -361,21 +394,161 @@ pub fn interpret_with(
     };
     let duration_ms = t0.elapsed().as_millis();
 
-    // 5. Parse + validate the response. Reject anything that does not look
+    // 6. Parse + validate the response. Reject anything that does not look
     //    like the expected shape; fall back to empty rather than corrupt.
     let Some(parsed) = parse_response(&response_text) else {
         return InterpretedResult::default();
     };
 
-    // 6. Write the cache (best-effort).
+    // 7. Write the cache (best-effort).
     if !env.cache_disabled {
         write_cache(root, stack_id, &file_set_hash, &parsed);
     }
 
-    // 7. Emit economy telemetry (fail-open — never load-bearing).
-    economy::emit(&root.to_string_lossy(), ActorKind::Hook, "scan-cold-path", "pipeline.economy.operation.invoked", None, json!({"operation": "scan-cold-path", "duration_ms": duration_ms as i64, "tokens_used": 0}));
+    // 8. Emit economy telemetry (fail-open — never load-bearing).
+    economy_events::emit(&root.to_string_lossy(), ActorKind::Hook, "scan-cold-path", "pipeline.economy.operation.invoked", None, json!({"operation": "scan-cold-path", "duration_ms": duration_ms as i64, "tokens_used": 0}));
 
     parsed
+}
+
+/// Estimate the LLM token cost the default-OFF path **avoided** for one
+/// subproject (F1-c savings baseline).
+///
+/// The avoided cost has two halves, both measured with the economy estimator
+/// against the resolved model id:
+///
+/// 1. **Prompt** — the exact compact-profile prompt [`interpret_with`] would
+///    have shipped (`PROMPT_TEMPLATE` + the serialised [`CompactProfile`]).
+///    Estimated as input tokens.
+/// 2. **Response** — the JSON object the model would have emitted. We do not
+///    have the real reply (we never called it), so we build a faithful proxy
+///    from the structural extractor's output: the same `entities` / `enums`
+///    arrays, in the same `{name,file,...}` shape the prompt asks the model
+///    for. Estimated as output tokens.
+///
+/// The sum is the `tokens_saved` baseline; the Rust replacement cost is ~0, so
+/// `savings = baseline − 0 = baseline`. When there is nothing to interpret
+/// (no clusters and no files) the baseline is `0` and the caller skips the
+/// emit — a zero-token savings row carries no signal.
+#[must_use]
+pub fn scan_savings_baseline_tokens(
+    model: &str,
+    stack_id: &str,
+    visited: &[VisitedFile],
+    clusters: &[Value],
+    entities: &BTreeMap<String, super::EntityInfo>,
+    enums: &BTreeMap<String, super::EnumInfo>,
+) -> i64 {
+    if clusters.is_empty() && visited.is_empty() {
+        return 0;
+    }
+
+    // Half 1 — the prompt we did not ship. Build the identical compact profile
+    // + template `interpret_with` would have sent so the baseline reflects the
+    // real input the model would have priced.
+    let profile = build_profile(stack_id, clusters, visited);
+    let prompt_json = serde_json::to_string(&profile).unwrap_or_default();
+    let prompt = format!("{PROMPT_TEMPLATE}{prompt_json}");
+    let input_tokens = i64::from(estimate_input_tokens(&prompt, model));
+
+    // Half 2 — the response the model would have emitted, proxied from the
+    // structural output (the very data the LLM would have had to produce).
+    let response_proxy = synthetic_response_json(entities, enums);
+    let output_tokens = i64::from(estimate_output_tokens(&response_proxy, model));
+
+    input_tokens.saturating_add(output_tokens)
+}
+
+/// Build the JSON object the model *would* have returned, from the structural
+/// entities/enums. Mirrors the `{"entities":[…],"enums":[…]}` shape the prompt
+/// asks for so the output-token estimate is a faithful proxy of the reply we
+/// never paid for.
+fn synthetic_response_json(
+    entities: &BTreeMap<String, super::EntityInfo>,
+    enums: &BTreeMap<String, super::EnumInfo>,
+) -> String {
+    let entity_arr: Vec<Value> = entities
+        .iter()
+        .map(|(name, info)| {
+            json!({ "name": name, "file": info.file, "edges": info.refs })
+        })
+        .collect();
+    let enum_arr: Vec<Value> = enums
+        .iter()
+        .map(|(name, info)| {
+            json!({ "name": name, "file": info.file, "values": info.values })
+        })
+        .collect();
+    serde_json::to_string(&json!({
+        "entities": entity_arr,
+        "enums": enum_arr,
+        "patternsOverlay": {},
+    }))
+    .unwrap_or_default()
+}
+
+/// Emit one `pipeline.economy.savings.scan-structural-extract` NDJSON event for
+/// a subproject whose entities/enums came from the deterministic structural
+/// extractor instead of the cold-path model (F1-c, default-OFF path).
+///
+/// `tokens_saved` is the baseline from [`scan_savings_baseline_tokens`]. The
+/// event rides the same `.events` sink the other economy events use (via
+/// [`crate::shared::events::economy::emit`]), so the dashboard's savings
+/// breakdown and headline total both pick it up. Fail-open: a zero baseline
+/// emits nothing, and the underlying route emit never blocks the scan.
+pub fn emit_scan_savings(
+    project_root: &Path,
+    sub_root: &Path,
+    model: &str,
+    stack_id: &str,
+    visited: &[VisitedFile],
+    clusters: &[Value],
+    entities: &BTreeMap<String, super::EntityInfo>,
+    enums: &BTreeMap<String, super::EnumInfo>,
+) {
+    let tokens_saved = scan_savings_baseline_tokens(
+        model, stack_id, visited, clusters, entities, enums,
+    );
+    if tokens_saved <= 0 {
+        return;
+    }
+    let cwd = project_root.to_string_lossy().into_owned();
+    let record = SavingsRecord {
+        ts: mustard_core::time::now_iso8601(),
+        source: SavingsSource::ScanStructuralExtract,
+        tokens_saved,
+        model_target: Some(model.to_string()),
+        project_path: ProjectPath::new(project_root),
+        spec_id: crate::shared::context::current_spec(&cwd).map(SpecId::new),
+        wave_id: None,
+        agent_id: None,
+        extra: {
+            let mut m = serde_json::Map::new();
+            m.insert(
+                "subproject".to_string(),
+                Value::String(sub_root.to_string_lossy().into_owned()),
+            );
+            m.insert("stack_id".to_string(), Value::String(stack_id.to_string()));
+            m.insert(
+                "entity_count".to_string(),
+                Value::Number((entities.len() as u64).into()),
+            );
+            m.insert(
+                "enum_count".to_string(),
+                Value::Number((enums.len() as u64).into()),
+            );
+            m
+        },
+    };
+    let (event_name, payload) = economy::writer::savings_event(&record);
+    economy_events::emit(
+        &cwd,
+        ActorKind::Hook,
+        "scan-structural-extract",
+        &event_name,
+        record.spec_id.as_ref().map(|s| s.0.as_str()),
+        payload,
+    );
 }
 
 /// Hash the (model, visited file paths, visited file sizes) tuple into a hex
@@ -595,12 +768,6 @@ fn wait_with_timeout(
         .ok()
         .and_then(|r| r.ok())
 }
-
-/// Emit a `pipeline.economy.operation.invoked` event to the project store.
-///
-/// Tokens are reported as `0` — the cost is charged to the user's Claude
-/// subscription via the `claude` CLI, not to any Mustard API key.
-/// Fail-open: any store error is silently swallowed.
 
 /// Parse the model's reply into an [`InterpretedResult`].
 ///
@@ -880,16 +1047,19 @@ mod tests {
         assert_eq!(resolve_model_for("claude-opus-4-7"), "claude-opus-4-7");
     }
 
-    /// Build a no-op env: no claude binary override (binary probe will fail in
-    /// CI / unit tests since no real claude is present), cache enabled (so
-    /// cache hits still register), Sonnet model. The cold path falls back to
-    /// the agnostic empty floor when the binary is absent — which is the
-    /// desired behaviour for these unit tests.
+    /// Build a no-op env with the F1-c LLM gate **ON**: no claude binary
+    /// override (the binary probe fails in CI / unit tests since no real claude
+    /// is present), cache enabled (so cache hits still register), Sonnet model.
+    /// With the gate on, a cache miss reaches the probe and then falls back to
+    /// the agnostic empty floor when the binary is absent — the behaviour these
+    /// unit tests assert. Cache hits short-circuit before the gate, so the
+    /// frozen-cache tests pass regardless of the gate value.
     fn empty_env() -> InterpretEnv {
         InterpretEnv {
             model_env: String::new(),
             claude_bin: String::new(),
             cache_disabled: false,
+            llm_enabled: true,
         }
     }
 
@@ -1142,6 +1312,9 @@ mod tests {
             model_env: String::new(),
             claude_bin: bin_path,
             cache_disabled: true,
+            // F1-c — opt in so the spawn path runs; this test asserts the
+            // fake-binary round-trip end to end.
+            llm_enabled: true,
         };
         let result = interpret_with(root, "rust", &visited, &[], &env);
         assert!(
@@ -1150,5 +1323,115 @@ mod tests {
         );
         assert_eq!(result.entities.len(), 1, "fake binary output must be parsed");
         assert_eq!(result.entities[0].name, "Widget");
+    }
+
+    /// F1-c gate parser: only the explicit truthy tokens opt in; everything
+    /// else (incl. empty / `off` / `0`) keeps the default OFF.
+    #[test]
+    fn llm_gate_default_off() {
+        for on in ["1", "on", "true", "yes", "ON", "True", " yes "] {
+            assert!(llm_gate_enabled_for(on), "{on:?} should enable");
+        }
+        for off in ["", "0", "off", "false", "no", "sonnet", "nonsense"] {
+            assert!(!llm_gate_enabled_for(off), "{off:?} should stay OFF");
+        }
+    }
+
+    /// F1-c gate: with `llm_enabled = false` (default), a cache MISS returns the
+    /// empty floor WITHOUT probing/spawning — even with a real fake binary on
+    /// the `claude_bin` path. The fake binary's entity must NOT appear.
+    #[test]
+    fn interpret_default_off_does_not_spawn() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join(".claude")).unwrap();
+        let visited = vec![make_visited("src/lib.rs", "pub struct Widget { pub id: i64 }")];
+
+        // Point claude_bin at a path that DOES exist (this test binary), so a
+        // probe — if it ran — would pass. The gate being OFF is the only thing
+        // keeping the spawn from happening.
+        let env = InterpretEnv {
+            model_env: String::new(),
+            claude_bin: std::env::current_exe()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            cache_disabled: true,
+            llm_enabled: false,
+        };
+        let result = interpret_with(root, "rust", &visited, &[], &env);
+        assert!(!result.from_cache);
+        assert!(
+            result.entities.is_empty(),
+            "default-OFF must return the empty floor (no spawn)"
+        );
+    }
+
+    /// F1-c savings baseline: the estimate is strictly positive when there is a
+    /// profile to interpret, and grows when the structural output (the proxy
+    /// for the model's reply) is larger — both halves (prompt + response) are
+    /// counted.
+    #[test]
+    fn scan_savings_baseline_counts_prompt_and_response() {
+        let visited = vec![make_visited(
+            "src/user.rs",
+            "pub struct User { pub id: i32, pub name: String }",
+        )];
+        let clusters: Vec<Value> = vec![json!({ "samples": ["src/user.rs"] })];
+
+        let mut small = BTreeMap::new();
+        small.insert(
+            "User".to_string(),
+            super::super::EntityInfo {
+                file: "src/user.rs".to_string(),
+                ..super::super::EntityInfo::default()
+            },
+        );
+        let enums = BTreeMap::new();
+        let base_small = scan_savings_baseline_tokens(
+            "claude-sonnet-4-5",
+            "rust",
+            &visited,
+            &clusters,
+            &small,
+            &enums,
+        );
+        assert!(base_small > 0, "baseline must be positive, got {base_small}");
+
+        // A larger structural output (more entities) ⇒ larger response proxy ⇒
+        // strictly larger baseline.
+        let mut big = small.clone();
+        for i in 0..20 {
+            big.insert(
+                format!("Entity{i}"),
+                super::super::EntityInfo {
+                    file: format!("src/e{i}.rs"),
+                    refs: vec!["Other".to_string()],
+                    ..super::super::EntityInfo::default()
+                },
+            );
+        }
+        let base_big = scan_savings_baseline_tokens(
+            "claude-sonnet-4-5",
+            "rust",
+            &visited,
+            &clusters,
+            &big,
+            &enums,
+        );
+        assert!(
+            base_big > base_small,
+            "more entities must raise the baseline ({base_big} !> {base_small})"
+        );
+
+        // Nothing to interpret ⇒ zero baseline (caller skips the emit).
+        let zero = scan_savings_baseline_tokens(
+            "claude-sonnet-4-5",
+            "rust",
+            &[],
+            &[],
+            &BTreeMap::new(),
+            &enums,
+        );
+        assert_eq!(zero, 0);
     }
 }

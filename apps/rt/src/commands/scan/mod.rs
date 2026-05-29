@@ -16,9 +16,11 @@
 //! whose [`Scanner::scan`] implementation:
 //!
 //! 1. Visits the subproject once (Wave 1 [`file_utils::visit`]).
-//! 2. Runs the agnostic [`cluster_discovery`] pass.
-//! 3. Calls [`interpret::interpret`] for model-assisted entity/enum/edge
-//!    extraction (cached cold-path; fail-open when no model is available).
+//! 2. Runs the deterministic [`structural_extract`] pass (primary source).
+//! 3. Optionally calls [`interpret::interpret_with`] for model-assisted
+//!    entity/enum/edge extraction — an **opt-in, default-OFF** fallback gated
+//!    on `MUSTARD_SCAN_LLM` (cached cold-path; fail-open when no model). On the
+//!    default path no `claude` subprocess is spawned.
 //!
 //! The contract data types ([`EntityInfo`], [`EnumInfo`], …) are unchanged —
 //! callers in [`crate::commands::scan::sync_entity_registry`] consume the same shapes as
@@ -201,8 +203,8 @@ pub struct InterpretedScanner {
     /// Stack id resolved by [`detect_stack`] (or supplied as a hint by the
     /// caller); flows into the cluster cache + interpret cache keys.
     pub stack_id: String,
-    /// Test-only env override. Production code leaves it `None` and
-    /// `interpret::interpret` reads `InterpretEnv::from_process()`.
+    /// Test-only env override. Production code leaves it `None` and the
+    /// scanner reads [`interpret::InterpretEnv::from_process`].
     pub env_override: Option<interpret::InterpretEnv>,
 }
 
@@ -228,14 +230,26 @@ impl Scanner for InterpretedScanner {
             }
         }
 
-        // Step 3 — model interpretation (fail-open). It runs only as a
-        // COMPLEMENT: an empty result (no `claude`, offline, parse error) leaves
-        // the structural floor untouched; a non-empty result may only ADD names
-        // the structural pass never saw — it NEVER overwrites a structural
-        // entity/enum. This is the cut line F1-c later flips to opt-in/default-OFF.
-        let interpreted = match &self.env_override {
-            Some(env) => interpret::interpret_with(root, &self.stack_id, visited, &clusters, env),
-            None => interpret::interpret(root, &self.stack_id, visited, &clusters),
+        // Step 3 — model interpretation, now an OPT-IN, DEFAULT-OFF fallback
+        // (F1-c). Resolve the env first so we know whether the LLM gate is on.
+        let env = self
+            .env_override
+            .clone()
+            .unwrap_or_else(interpret::InterpretEnv::from_process);
+
+        // The model only runs as a COMPLEMENT when the gate is ON *and* the
+        // structural floor came back empty (an exotic stack with no grammar and
+        // an empty textual floor). On the default path the gate is OFF, so
+        // `interpret_with` short-circuits before probing/spawning `claude` and
+        // returns the empty floor — zero subprocesses. The savings telemetry is
+        // emitted one layer up in `sync_entity_registry`, which owns the
+        // monorepo project root the `.events` sink is keyed on (the scanner only
+        // sees the subproject root).
+        let run_llm = env.llm_enabled && entities.is_empty();
+        let interpreted = if run_llm {
+            interpret::interpret_with(root, &self.stack_id, visited, &clusters, &env)
+        } else {
+            interpret::InterpretedResult::default()
         };
 
         // LLM entities only fill gaps the structural pass left (additive).

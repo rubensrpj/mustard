@@ -160,6 +160,7 @@ fn savings_suffix(source: SavingsSource) -> &'static str {
         SavingsSource::BashGuardBlock => "bash-guard-block",
         SavingsSource::BudgetOutputCut => "budget-output-cut",
         SavingsSource::RecipeInjection => "recipe-injection",
+        SavingsSource::ScanStructuralExtract => "scan-structural-extract",
     }
 }
 

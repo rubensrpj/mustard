@@ -139,13 +139,47 @@ pub fn run(root: &Path, force: bool) {
                 (result, discovered, folder_frequency, conventions)
             });
 
+        // F1-c — the cold-path LLM is now an opt-in (`MUSTARD_SCAN_LLM`),
+        // default-OFF fallback. Resolve the env once so we can decide whether to
+        // spawn `claude` at all and so the savings baseline uses the same model
+        // id the round-trip would have.
+        let env = interpret::InterpretEnv::from_process();
+        let model = interpret::resolve_model_for(&env.model_env);
+
+        // F1-c savings telemetry — on the DEFAULT path (LLM gate OFF, or the
+        // structural pass already recovered entities) we did NOT spawn the model.
+        // Emit one `pipeline.economy.savings.scan-structural-extract` event
+        // recording the prompt+response tokens that round-trip would have cost
+        // (baseline) against the ~0 Rust cost, attributed to the monorepo `root`
+        // the `.events` sink is keyed on. Fail-open: a zero baseline emits
+        // nothing and the route emit never blocks the scan.
+        let llm_would_run = env.llm_enabled && result.entities.is_empty();
+        if !llm_would_run {
+            interpret::emit_scan_savings(
+                root,
+                &abs,
+                model,
+                &stack_id,
+                &visited,
+                &discovered,
+                &result.entities,
+                &result.enums,
+            );
+        }
+
         // Wave 3 (project-profiler) — emit concept-nodes into the vault under
         // `<root>/.claude/graph/` BEFORE merging into the registry, while the
-        // `discovered` vector is still in scope. `interpret::interpret` is
-        // cached per-subproject so this is a hash lookup, not a second model
-        // round-trip. Fail-open — the registry is the source of truth, the
-        // vault is enrichment.
-        let interpreted = interpret::interpret(&abs, &stack_id, &visited, &discovered);
+        // `discovered` vector is still in scope. F1-c: the model only runs as a
+        // COMPLEMENT (gate ON *and* structural floor empty). Otherwise the
+        // interpret call is skipped entirely — `interpret_with` would itself
+        // short-circuit on the OFF gate, but skipping here also avoids the
+        // structural-non-empty case where the gate is ON. Fail-open — the
+        // registry is the source of truth, the vault is enrichment.
+        let interpreted = if llm_would_run {
+            interpret::interpret_with(&abs, &stack_id, &visited, &discovered, &env)
+        } else {
+            interpret::InterpretedResult::default()
+        };
         let _ = interpret::emit_concept_nodes(root, &sub.name, &interpreted);
 
         let entry = scan_results.entry(stack_id.clone()).or_default();

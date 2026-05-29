@@ -107,6 +107,12 @@ pub enum SavingsSource {
     /// scratch. The skeleton character count is divided by 4 to estimate the
     /// tokens the model did not have to emit.
     RecipeInjection,
+    /// Tokens NOT spent on the `scan` cold-path model round-trip because the
+    /// deterministic structural extractor (tree-sitter + Aho-Corasick floor)
+    /// recovered the subproject's entities/enums offline. The baseline is the
+    /// estimated prompt + response token cost of the `interpret` call that the
+    /// default-OFF path never made; the Rust cost is ~0.
+    ScanStructuralExtract,
 }
 
 impl SavingsSource {
@@ -119,6 +125,7 @@ impl SavingsSource {
             Self::BashGuardBlock => "bash_guard_block",
             Self::BudgetOutputCut => "budget_output_cut",
             Self::RecipeInjection => "recipe_injection",
+            Self::ScanStructuralExtract => "scan_structural_extract",
         }
     }
 
@@ -134,6 +141,7 @@ impl SavingsSource {
             "bash_guard_block" => Self::BashGuardBlock,
             "budget_output_cut" => Self::BudgetOutputCut,
             "recipe_injection" => Self::RecipeInjection,
+            "scan_structural_extract" => Self::ScanStructuralExtract,
             _ => return None,
         })
     }

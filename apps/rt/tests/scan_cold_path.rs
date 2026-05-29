@@ -8,12 +8,17 @@
     clippy::uninlined_format_args
 )]
 
-//! Regression test: scan cold-path (W2 — mustard-unification).
+//! Regression test: scan cold-path opt-in gate (F1-c — functional-refactor).
 //!
-//! Injects a fake `claude` CLI binary onto PATH, drives
-//! `mustard-rt run sync-registry` against a minimal project, and asserts that
-//! the binary's stdout is consumed and produces non-empty entities in
-//! `entity-registry.json`.
+//! F1-c flips the cold-path LLM (`scan/interpret`) to an **opt-in, default-OFF**
+//! fallback behind `MUSTARD_SCAN_LLM`:
+//!
+//! - **Default path** (gate unset): `sync-registry` spawns **no** `claude`
+//!   subprocess. Entities come from the deterministic structural extractor, and
+//!   a `pipeline.economy.savings.scan-structural-extract` event is emitted into
+//!   the `.events` sink recording the round-trip that was avoided.
+//! - **Gate ON + zero-structural subproject**: the model runs only as a
+//!   COMPLEMENT. With no `claude` on PATH it fails open (exit 0, no crash).
 //!
 //! Cross-platform: on Windows the fake binary is a `.cmd` file; on Unix a
 //! shell script with a shebang. Both echo a canned JSON interpretation and
@@ -33,7 +38,7 @@ use std::process::Command;
 /// it surfaced in `entity-registry.json`.
 fn write_fake_claude(bin_dir: &Path) -> PathBuf {
     // The canned response — a minimal interpretation JSON.
-    let json = r#"{"entities":[{"name":"FakeEntity","file":"src/lib.rs","edges":[]}],"enums":[],"patternsOverlay":{}}"#;
+    let json = r#"{"entities":[{"name":"ColdPathEntity","file":"src/lib.rs","edges":[]}],"enums":[],"patternsOverlay":{}}"#;
 
     #[cfg(windows)]
     {
@@ -64,13 +69,17 @@ fn write_fake_claude(bin_dir: &Path) -> PathBuf {
     }
 }
 
-/// Build a minimal project layout that `sync-registry` can scan:
-/// a tiny Rust-looking source file so the scanner finds at least one file.
+/// Build a minimal project layout that `sync-registry` can scan with a Rust
+/// source file declaring a struct — the deterministic structural extractor
+/// recovers it offline, no `claude` required.
 fn setup_project(project: &Path) {
     std::fs::create_dir_all(project.join(".claude")).expect("create .claude");
     std::fs::create_dir_all(project.join("src")).expect("create src");
-    std::fs::write(project.join("src/lib.rs"), "pub struct FakeEntity { pub id: i64 }\n")
-        .expect("write src/lib.rs");
+    std::fs::write(
+        project.join("src/lib.rs"),
+        "pub struct StructEntity { pub id: i64 }\n",
+    )
+    .expect("write src/lib.rs");
     std::fs::write(
         project.join("Cargo.toml"),
         "[package]\nname = \"fake-project\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
@@ -85,18 +94,45 @@ fn prepend_path(dir: &Path) -> String {
     format!("{}{sep}{existing}", dir.display())
 }
 
+/// Recursively collect every `.ndjson` line under `<project>/.claude`.
+fn collect_ndjson_lines(project: &Path) -> Vec<String> {
+    let mut out = Vec::new();
+    let root = project.join(".claude");
+    let mut stack = vec![root];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().and_then(|e| e.to_str()) == Some("ndjson") {
+                if let Ok(content) = std::fs::read_to_string(&path) {
+                    out.extend(content.lines().map(str::to_string));
+                }
+            }
+        }
+    }
+    out
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
-/// AC-W2-4: the fake `claude` binary is invoked during `sync-registry` and
-/// its output surfaces as non-empty `entities[]` in `entity-registry.json`.
+/// F1-c default path: with `MUSTARD_SCAN_LLM` UNSET, `sync-registry` must
 ///
-/// Note: `sync-registry` only calls `interpret` on a cache miss (i.e., when
-/// the cluster cache is absent or stale). The temp project has no
-/// `.cluster-cache.json`, so it always hits the cold path on the first run.
+///   1. exit 0,
+///   2. recover entities from the structural extractor (`StructEntity`),
+///   3. NOT invoke the fake `claude` (its `ColdPathEntity` must be ABSENT —
+///      proving no subprocess ran), and
+///   4. emit a `pipeline.economy.savings.scan-structural-extract` event into
+///      the `.events` sink.
+///
+/// The fake binary IS on PATH; the gate being OFF is what keeps it unspawned.
 #[test]
-fn scan_cold_path_uses_fake_binary() {
+fn scan_default_off_emits_savings_and_skips_claude() {
     let bin_dir = tempfile::tempdir().expect("bin tempdir");
     let project_dir = tempfile::tempdir().expect("project tempdir");
 
@@ -111,12 +147,12 @@ fn scan_cold_path_uses_fake_binary() {
         .current_dir(project_dir.path())
         .env("PATH", &new_path)
         .env("CLAUDE_PROJECT_DIR", project_dir.path().to_string_lossy().as_ref())
-        // Disable interpret cache so every run hits the cold path.
         .env("MUSTARD_INTERPRET_CACHE", "off")
+        // MUSTARD_SCAN_LLM intentionally UNSET → default-OFF.
+        .env_remove("MUSTARD_SCAN_LLM")
         .output()
         .expect("run mustard-rt");
 
-    // sync-registry must exit 0 (fail-open contract).
     assert!(
         output.status.success(),
         "mustard-rt run sync-registry exited {:?}\nstdout: {}\nstderr: {}",
@@ -125,32 +161,106 @@ fn scan_cold_path_uses_fake_binary() {
         String::from_utf8_lossy(&output.stderr),
     );
 
-    // entity-registry.json must exist and contain the FakeEntity from the
-    // fake claude binary's response.
     let registry_path = project_dir.path().join(".claude").join("entity-registry.json");
-    assert!(
-        registry_path.exists(),
-        "entity-registry.json not written"
-    );
+    assert!(registry_path.exists(), "entity-registry.json not written");
     let raw = std::fs::read_to_string(&registry_path).expect("read registry");
+
+    // Structural extraction recovered the struct without any `claude` call.
     assert!(
-        raw.contains("FakeEntity"),
-        "FakeEntity from fake claude response not found in registry:\n{raw}"
+        raw.contains("StructEntity"),
+        "structural entity missing from registry:\n{raw}"
+    );
+    // The fake binary's entity must be ABSENT — proof no subprocess ran.
+    assert!(
+        !raw.contains("ColdPathEntity"),
+        "default-OFF path must NOT spawn claude — found cold-path entity:\n{raw}"
+    );
+
+    // A savings event must have landed in the `.events` sink.
+    let lines = collect_ndjson_lines(project_dir.path());
+    let has_savings = lines.iter().any(|l| {
+        l.contains("pipeline.economy.savings.scan-structural-extract")
+            && l.contains("\"tokens_saved\"")
+    });
+    assert!(
+        has_savings,
+        "expected a scan-structural-extract savings event in .events; lines:\n{}",
+        lines.join("\n")
     );
 }
 
-/// When the fake binary is NOT on PATH (no `claude` anywhere), interpret fails
-/// open — `sync-registry` still exits 0 and writes a registry (possibly with
-/// empty entities[], but no crash).
+/// F1-c complement path: with `MUSTARD_SCAN_LLM=1` AND a subproject the
+/// structural extractor leaves EMPTY (no source declarations), `sync-registry`
+/// attempts the model complement. With the fake binary on PATH it surfaces the
+/// cold-path entity; either way the run must exit 0 (fail-open).
 #[test]
-fn scan_cold_path_absent_binary_exits_zero() {
+fn scan_gate_on_zero_structural_runs_complement() {
+    let bin_dir = tempfile::tempdir().expect("bin tempdir");
     let project_dir = tempfile::tempdir().expect("project tempdir");
-    setup_project(project_dir.path());
+
+    write_fake_claude(bin_dir.path());
+    // Empty-structural fixture: a manifest + a non-declaration file so the
+    // visitor finds a file but the extractor recovers ZERO entities.
+    std::fs::create_dir_all(project_dir.path().join(".claude")).expect("create .claude");
+    std::fs::create_dir_all(project_dir.path().join("src")).expect("create src");
+    std::fs::write(
+        project_dir.path().join("Cargo.toml"),
+        "[package]\nname = \"empty-proj\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .expect("write Cargo.toml");
+    // A file with no struct/enum/class declaration → structural floor is empty.
+    std::fs::write(
+        project_dir.path().join("src/lib.rs"),
+        "pub fn add(a: i64, b: i64) -> i64 { a + b }\n",
+    )
+    .expect("write src/lib.rs");
+
+    let bin = env!("CARGO_BIN_EXE_mustard-rt");
+    let new_path = prepend_path(bin_dir.path());
+
+    let output = Command::new(bin)
+        .args(["run", "sync-registry", "--force"])
+        .current_dir(project_dir.path())
+        .env("PATH", &new_path)
+        .env("CLAUDE_PROJECT_DIR", project_dir.path().to_string_lossy().as_ref())
+        .env("MUSTARD_INTERPRET_CACHE", "off")
+        .env("MUSTARD_SCAN_LLM", "1")
+        .output()
+        .expect("run mustard-rt");
+
+    assert!(
+        output.status.success(),
+        "mustard-rt must exit 0 (fail-open)\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+
+    let registry_path = project_dir.path().join(".claude").join("entity-registry.json");
+    assert!(registry_path.exists(), "entity-registry.json not written");
+}
+
+/// Fail-open: gate ON, zero-structural subproject, but NO `claude` on PATH.
+/// `sync-registry` must still exit 0 and write a registry — the absent binary
+/// degrades to the empty floor, never a crash.
+#[test]
+fn scan_gate_on_absent_binary_exits_zero() {
+    let project_dir = tempfile::tempdir().expect("project tempdir");
+    std::fs::create_dir_all(project_dir.path().join(".claude")).expect("create .claude");
+    std::fs::create_dir_all(project_dir.path().join("src")).expect("create src");
+    std::fs::write(
+        project_dir.path().join("Cargo.toml"),
+        "[package]\nname = \"empty-proj\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .expect("write Cargo.toml");
+    std::fs::write(
+        project_dir.path().join("src/lib.rs"),
+        "pub fn noop() {}\n",
+    )
+    .expect("write src/lib.rs");
 
     let bin = env!("CARGO_BIN_EXE_mustard-rt");
 
-    // Override PATH to a temp dir that has no `claude` binary — ensures the
-    // probe fails cleanly even when a real `claude` is installed on the host.
+    // Isolate PATH so no real `claude` is found even on a dev host.
     let empty_bin_dir = tempfile::tempdir().expect("empty bin dir");
     let isolated_path = empty_bin_dir.path().to_string_lossy().into_owned();
 
@@ -160,6 +270,7 @@ fn scan_cold_path_absent_binary_exits_zero() {
         .env("PATH", &isolated_path)
         .env("CLAUDE_PROJECT_DIR", project_dir.path().to_string_lossy().as_ref())
         .env("MUSTARD_INTERPRET_CACHE", "off")
+        .env("MUSTARD_SCAN_LLM", "1")
         .output()
         .expect("run mustard-rt");
 
