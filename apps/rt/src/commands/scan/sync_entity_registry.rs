@@ -24,6 +24,7 @@ use super::cluster_discovery::{compute_folder_frequency, discover_clusters};
 use super::file_utils;
 use super::interpret;
 use super::project_conventions::compute_project_conventions;
+use super::subproject_discovery::{self, DiscoveryOptions};
 use super::{load_scanner, EntityInfo, EnumInfo, ScanResult};
 use mustard_core::domain::entity_registry::{EntityRegistry, RegistryDoc};
 use mustard_core::io::fs;
@@ -37,12 +38,9 @@ use std::path::Path;
 // ([`RegistryDoc`]). This module only assembles the three payload objects from
 // its scan results.
 
-/// One subproject as discovered for the registry scan.
-struct Subproject {
-    name: String,
-    /// Relative path from the monorepo root (forward slashes).
-    rel_path: String,
-}
+// Subproject discovery is shared with `sync-detect` via
+// [`subproject_discovery`]; the registry consumes the same `{ name, rel_path }`
+// shape its [`subproject_discovery::Subproject`] returns.
 
 /// Run `mustard-rt run sync-registry` rooted at `root`.
 ///
@@ -89,8 +87,13 @@ pub fn run(root: &Path, force: bool) {
         }
     }
 
-    // 3. Discover subprojects (same CLAUDE.md scan `sync-detect` uses).
-    let subprojects = discover_subprojects(root);
+    // 3. Discover subprojects via the canonical build-manifest BFS — the SAME
+    //    source of truth `sync-detect` uses. The default strategy does NOT
+    //    require a `CLAUDE.md`, so a manifest-bearing subproject is scanned even
+    //    when it has not been `mustard init`-ed; this is the fix for the old
+    //    divergence where the registry silently dropped such subprojects.
+    let subprojects =
+        subproject_discovery::discover_subprojects(root, &DiscoveryOptions::default());
     let names: Vec<&str> = subprojects.iter().map(|s| s.name.as_str()).collect();
     println!(
         "Detected {} subproject(s): {}",
@@ -758,125 +761,14 @@ fn clean_doc_block(text: &str, kind: DocKind) -> Option<String> {
     Some(normalized)
 }
 
-// --- subproject discovery (CLAUDE.md scan) ---------------------------------
-
-/// Discover subprojects via the `CLAUDE.md` BFS scan — the same discovery
-/// `sync-detect` uses. Single-root projects fall back to `.`.
-///
-/// Fallback chain (in order):
-/// 1. BFS walk finds directories that contain `CLAUDE.md`.
-/// 2. If none found but root has `CLAUDE.md`, use root.
-/// 3. If none found but root looks like a project (has any recognised
-///    manifest), use root without requiring `CLAUDE.md`. This lets
-///    `sync-registry` scan bare projects (e.g. integration test fixtures)
-///    that have not yet been initialised with `mustard init`.
-fn discover_subprojects(root: &Path) -> Vec<Subproject> {
-    const IGNORE: &[&str] = &[
-        "node_modules",
-        "bin",
-        "obj",
-        "dist",
-        ".next",
-        "_backup",
-        "migrations",
-        ".claude",
-        ".git",
-    ];
-    /// Manifest files that indicate a project root (used for the bare-project
-    /// fallback only; CLAUDE.md always takes precedence).
-    const MANIFESTS: &[&str] = &[
-        "Cargo.toml",
-        "package.json",
-        "go.mod",
-        "pyproject.toml",
-        "requirements.txt",
-        "pom.xml",
-        "build.gradle",
-        "pubspec.yaml",
-        "composer.json",
-    ];
-
-    let mut rel_paths: Vec<String> = Vec::new();
-    walk_for_claude_md(root, "", 0, IGNORE, &mut rel_paths);
-    if rel_paths.is_empty() && root.join("CLAUDE.md").exists() {
-        rel_paths.push(".".to_string());
-    }
-    // Bare-project fallback: no CLAUDE.md anywhere, but the root directory
-    // has a recognised project manifest. Treat root as the single subproject
-    // so the scanner can still run and the registry can be populated.
-    if rel_paths.is_empty() {
-        let has_manifest = MANIFESTS.iter().any(|m| root.join(m).exists());
-        if has_manifest {
-            let name = root
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("project")
-                .to_string();
-            return vec![Subproject { name, rel_path: ".".to_string() }];
-        }
-    }
-    rel_paths
-        .into_iter()
-        .filter_map(|rel| {
-            let abs = if rel == "." {
-                root.to_path_buf()
-            } else {
-                root.join(&rel)
-            };
-            if !abs.join("CLAUDE.md").exists() {
-                return None;
-            }
-            let name = if rel == "." {
-                root.file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("project")
-                    .to_string()
-            } else {
-                rel.rsplit('/').next().unwrap_or(&rel).to_string()
-            };
-            Some(Subproject { name, rel_path: rel })
-        })
-        .collect()
-}
-
-fn walk_for_claude_md(
-    abs_dir: &Path,
-    rel_dir: &str,
-    depth: usize,
-    ignore: &[&str],
-    out: &mut Vec<String>,
-) {
-    if depth > 3 {
-        return;
-    }
-    if depth > 0 && abs_dir.join("CLAUDE.md").exists() {
-        out.push(rel_dir.replace('\\', "/"));
-        return;
-    }
-    let Ok(entries) = fs::read_dir(abs_dir) else {
-        return;
-    };
-    for e in entries {
-        if !e.is_dir {
-            continue;
-        }
-        let name = e.file_name.clone();
-        if name.starts_with('.') || ignore.contains(&name.as_str()) {
-            continue;
-        }
-        let next_rel = if rel_dir.is_empty() {
-            name.clone()
-        } else {
-            format!("{rel_dir}/{name}")
-        };
-        walk_for_claude_md(&e.path, &next_rel, depth + 1, ignore, out);
-    }
-}
+// Subproject discovery moved to `super::subproject_discovery` — the single
+// canonical build-manifest BFS shared with `sync-detect`. See that module for
+// the decision record (why the manifest BFS is the source of truth and the
+// `CLAUDE.md` filter is now an opt-in `require_claude_md` strategy).
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::tempdir;
 
     #[test]
     fn compress_values_summarizes_large_lists() {
@@ -928,12 +820,6 @@ mod tests {
         assert!(meta < patterns && patterns < enums && enums < e);
     }
 
-    #[test]
-    fn discover_subprojects_falls_back_to_root() {
-        let dir = tempdir().unwrap();
-        std::fs::write(dir.path().join("CLAUDE.md"), "# root").unwrap();
-        let subs = discover_subprojects(dir.path());
-        assert_eq!(subs.len(), 1);
-        assert_eq!(subs[0].rel_path, ".");
-    }
+    // Subproject discovery (including the single-root fallback) is now tested
+    // in `super::subproject_discovery`.
 }

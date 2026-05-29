@@ -36,6 +36,7 @@ pub mod project_conventions;
 pub mod refs_installer;
 pub mod resolve;
 pub mod structural_extract;
+pub mod subproject_discovery;
 
 use mustard_core::io::fs as mfs;
 use std::collections::BTreeMap;

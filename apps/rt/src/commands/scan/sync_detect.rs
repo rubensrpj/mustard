@@ -20,6 +20,7 @@
 //! emits `{}` for it on the common single-root project, which this port always
 //! does — a later wave can add fine-grained module hashing).
 
+use super::subproject_discovery::{self, DiscoveryOptions};
 use crate::util::sha256::Sha256;
 use mustard_core::io::fs;
 use mustard_core::ClaudePaths;
@@ -433,110 +434,6 @@ fn get_agents(root: &Path) -> Vec<String> {
     agents
 }
 
-/// `true` if `dir` directly contains a recognised build manifest — the
-/// language-agnostic signal that the directory is an independent subproject.
-/// A `Cargo.toml` counts only when it declares a `[package]`: a virtual
-/// workspace root (`[workspace]` only) is not itself a subproject.
-fn has_build_manifest(dir: &Path) -> bool {
-    if dir.join("package.json").is_file()
-        || dir.join("go.mod").is_file()
-        || dir.join("pyproject.toml").is_file()
-        || dir.join("pubspec.yaml").is_file()
-        || file_exists(dir, "*.csproj")
-    {
-        return true;
-    }
-    let cargo = dir.join("Cargo.toml");
-    cargo.is_file() && read_safe(&cargo).contains("[package]")
-}
-
-/// Read `subprojects.exclude` / `.include` from `.claude/mustard.json`.
-/// Entries are repo-root-relative paths; returned normalised (forward slash,
-/// no surrounding slashes).
-fn read_overrides(root: &Path) -> (Vec<String>, Vec<String>) {
-    let mut exclude = Vec::new();
-    let mut include = Vec::new();
-    let Ok(paths) = ClaudePaths::for_project(root) else {
-        return (exclude, include);
-    };
-    let content = read_safe(&paths.mustard_json_path());
-    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
-        if let Some(sp) = json.get("subprojects") {
-            for (field, out) in [("exclude", &mut exclude), ("include", &mut include)] {
-                if let Some(arr) = sp.get(field).and_then(serde_json::Value::as_array) {
-                    for v in arr.iter().filter_map(serde_json::Value::as_str) {
-                        out.push(v.replace('\\', "/").trim_matches('/').to_string());
-                    }
-                }
-            }
-        }
-    }
-    (exclude, include)
-}
-
-/// Apply the `mustard.json` override to a detected path list: drop excluded
-/// entries, append included ones not already present.
-fn apply_overrides(root: &Path, paths: &mut Vec<String>) {
-    let (exclude, include) = read_overrides(root);
-    paths.retain(|p| !exclude.contains(p));
-    for inc in include {
-        if !inc.is_empty() && !paths.contains(&inc) {
-            paths.push(inc);
-        }
-    }
-}
-
-/// Discover subprojects by scanning for directories carrying a build manifest
-/// (BFS, max depth 3) — the agnostic successor to `scanForSubprojects()`.
-fn scan_for_subprojects(root: &Path) -> Vec<String> {
-    const IGNORE: &[&str] = &[
-        "node_modules",
-        "bin",
-        "obj",
-        "dist",
-        ".next",
-        "_backup",
-        "migrations",
-        ".claude",
-        ".git",
-    ];
-    let mut results = Vec::new();
-    fn walk(
-        abs_dir: &Path,
-        rel_dir: &str,
-        depth: usize,
-        ignore: &[&str],
-        out: &mut Vec<String>,
-    ) {
-        if depth > 3 {
-            return;
-        }
-        if depth > 0 && has_build_manifest(abs_dir) {
-            out.push(rel_dir.replace('\\', "/"));
-            return;
-        }
-        let Ok(entries) = fs::read_dir(abs_dir) else {
-            return;
-        };
-        for e in entries {
-            if !e.is_dir {
-                continue;
-            }
-            if e.file_name.starts_with('.') || ignore.contains(&e.file_name.as_str()) {
-                continue;
-            }
-            let next_rel = if rel_dir.is_empty() {
-                e.file_name.clone()
-            } else {
-                format!("{rel_dir}/{}", e.file_name)
-            };
-            walk(&e.path, &next_rel, depth + 1, ignore, out);
-        }
-    }
-    walk(root, "", 0, IGNORE, &mut results);
-    results
-}
-
 /// Recursively collect source + manifest files under `dir`, returned as paths
 /// relative to `root` with forward slashes — a port of `collectSourceFiles()`.
 fn collect_source_files(root: &Path, dir: &Path, out: &mut Vec<String>) {
@@ -597,48 +494,33 @@ fn compute_source_hash(root: &Path, subproject_rel: &str) -> String {
 ///
 /// Fail-open: discovery errors degrade to empty results rather than aborting.
 pub fn run(root: &Path) {
-    // 1. Discover subprojects via the build-manifest scan, apply the
-    //    `mustard.json` override, then fall back to the repo root for a
-    //    single-root project (no nested subprojects).
-    let mut subproject_paths = scan_for_subprojects(root);
-    apply_overrides(root, &mut subproject_paths);
-    if subproject_paths.is_empty()
-        && (root.join("CLAUDE.md").exists() || has_build_manifest(root))
-    {
-        subproject_paths.push(".".to_string());
-    }
+    // 1. Discover subprojects via the canonical build-manifest BFS (the same
+    //    source of truth `sync-registry` uses). It applies the `mustard.json`
+    //    override, performs the single-root fallback, and drops bogus paths
+    //    (e.g. a stale `mustard.json` `include`) internally. Detection keys off
+    //    the build manifest, not a `CLAUDE.md` — a subproject need not carry one.
+    let discovered =
+        subproject_discovery::discover_subprojects(root, &DiscoveryOptions::default());
 
     // 2. Build subproject entries.
     let mut subprojects = Vec::new();
     let mut detected_agents: Vec<String> = Vec::new();
     let mut source_hashes: BTreeMap<String, String> = BTreeMap::new();
 
-    for rel_path in &subproject_paths {
-        let abs = if rel_path == "." {
+    for sub in &discovered {
+        let abs = if sub.rel_path == "." {
             root.to_path_buf()
         } else {
-            root.join(rel_path)
+            root.join(&sub.rel_path)
         };
-        // Detection keys off the build manifest, not a `CLAUDE.md` — a
-        // subproject need not carry one. Only guard against a bogus path
-        // (e.g. a stale `mustard.json` `include` entry).
-        if !abs.is_dir() {
-            continue;
-        }
-        let name = if rel_path == "." {
-            root.file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("project")
-                .to_string()
-        } else {
-            rel_path.rsplit('/').next().unwrap_or(rel_path).to_string()
-        };
+        let name = sub.name.clone();
         let role = detect_role(&abs);
         let agent = role_to_agent(&role).to_string();
         if agent != "general" && !detected_agents.contains(&agent) {
             detected_agents.push(agent.clone());
         }
-        let normalized = rel_path.replace('\\', "/");
+        // `rel_path` is already forward-slash normalised by discovery.
+        let normalized = sub.rel_path.clone();
         let hash = compute_source_hash(root, &normalized);
         // Keyed by `path`, not `name`: two subprojects can share a folder
         // name (`apps/a/core` vs `packages/core`) but never a path.
@@ -725,51 +607,7 @@ mod tests {
         );
     }
 
-    #[test]
-    fn scan_for_subprojects_finds_manifest_dirs() {
-        let dir = tempdir().unwrap();
-        let app = dir.path().join("apps").join("web");
-        std::fs::create_dir_all(&app).unwrap();
-        std::fs::write(app.join("package.json"), "{}").unwrap();
-        let found = scan_for_subprojects(dir.path());
-        assert_eq!(found, vec!["apps/web".to_string()]);
-    }
-
-    #[test]
-    fn scan_ignores_manifestless_dir_even_with_claude_md() {
-        // A payload dir (e.g. `templates/`) carries a `CLAUDE.md` but no build
-        // manifest — it must not be mistaken for a subproject.
-        let dir = tempdir().unwrap();
-        let payload = dir.path().join("apps").join("cli").join("templates");
-        std::fs::create_dir_all(&payload).unwrap();
-        std::fs::write(payload.join("CLAUDE.md"), "# template").unwrap();
-        let crate_dir = dir.path().join("apps").join("cli");
-        std::fs::write(crate_dir.join("Cargo.toml"), "[package]\nname = \"cli\"").unwrap();
-        let found = scan_for_subprojects(dir.path());
-        assert_eq!(found, vec!["apps/cli".to_string()]);
-    }
-
-    #[test]
-    fn has_build_manifest_rejects_virtual_workspace_root() {
-        let dir = tempdir().unwrap();
-        std::fs::write(dir.path().join("Cargo.toml"), "[workspace]\nmembers = []").unwrap();
-        assert!(!has_build_manifest(dir.path()));
-        std::fs::write(dir.path().join("Cargo.toml"), "[package]\nname = \"x\"").unwrap();
-        assert!(has_build_manifest(dir.path()));
-    }
-
-    #[test]
-    fn apply_overrides_excludes_and_includes_by_path() {
-        let dir = tempdir().unwrap();
-        let claude = dir.path().join(".claude");
-        std::fs::create_dir_all(&claude).unwrap();
-        std::fs::write(
-            claude.join("mustard.json"),
-            r#"{"subprojects":{"exclude":["apps/drop"],"include":["infra/edge"]}}"#,
-        )
-        .unwrap();
-        let mut paths = vec!["apps/keep".to_string(), "apps/drop".to_string()];
-        apply_overrides(dir.path(), &mut paths);
-        assert_eq!(paths, vec!["apps/keep".to_string(), "infra/edge".to_string()]);
-    }
+    // Subproject discovery (build-manifest BFS, `mustard.json` overrides,
+    // single-root fallback) now lives in `super::subproject_discovery` and is
+    // tested there — this module keeps only the role-scoring + source-hash tests.
 }
