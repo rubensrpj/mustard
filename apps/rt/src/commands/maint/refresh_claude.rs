@@ -54,6 +54,7 @@
 
 use serde_json::json;
 use mustard_core::domain::model::event::ActorKind;
+use mustard_core::ClaudePaths;
 use crate::shared::events::economy;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -126,7 +127,12 @@ pub fn run(opts: RefreshClaudeOpts) {
         .unwrap_or_else(|| PathBuf::from("."));
 
     let templates_root = resolve_templates_dir(opts.templates_dir.as_deref(), &cwd);
-    let claude_dir = cwd.join(".claude");
+    // Route the `.claude` derivation through the single seam (ClaudePaths' I1
+    // guard); fail-open to the previous inline join so behaviour is unchanged
+    // on any error (`cwd` is the project root, never `.claude`, so I1 stays mute).
+    let claude_dir = ClaudePaths::for_project(&cwd)
+        .map(|p| p.claude_dir())
+        .unwrap_or_else(|_| cwd.join(".claude"));
 
     let mut report = RefreshReport::default();
     do_refresh(&templates_root, &claude_dir, opts.dry_run, &mut report);

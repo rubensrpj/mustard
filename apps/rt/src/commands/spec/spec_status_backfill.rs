@@ -22,6 +22,7 @@
 use mustard_core::domain::spec;
 use mustard_core::{header_field, read_meta, write_meta};
 use mustard_core::{Outcome, Stage};
+use mustard_core::ClaudePaths;
 use serde::Serialize;
 use serde_json::json;
 use std::path::{Path, PathBuf};
@@ -161,13 +162,15 @@ pub struct BackfillOpts {
 }
 
 pub fn run_cli(opts: BackfillOpts) {
-    // Resolve spec root.
-    let spec_root = if let Some(cwd) = opts.cwd {
-        cwd.join(".claude").join("spec")
-    } else {
-        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        cwd.join(".claude").join("spec")
-    };
+    // Resolve spec root. Route the `.claude/spec` derivation through the single
+    // seam (ClaudePaths' I1 guard); fail-open to the previous inline join so
+    // behaviour is unchanged on any error.
+    let cwd = opts
+        .cwd
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    let spec_root = ClaudePaths::for_project(&cwd)
+        .map(|p| p.spec_dir())
+        .unwrap_or_else(|_| cwd.join(".claude").join("spec"));
 
     if !spec_root.exists() {
         let report = BackfillReport {
