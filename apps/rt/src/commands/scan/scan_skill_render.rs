@@ -586,6 +586,10 @@ fn render_skill_md(plan: &SkillPlan, refs: &[String]) -> String {
     // appliesTo POPULATED — this unlocks the scorer's applies_match arm.
     let _ = writeln!(out, "appliesTo: [{}]", plan.label);
     out.push_str("scope: [code-editing]\n");
+    // `source` top-level mirrors `metadata.generated_by` — the skill-frontmatter
+    // edit hook requires it, so emitting it here keeps the enrich agent from
+    // having to touch the frontmatter (it edits only inside the enrich block).
+    let _ = writeln!(out, "source: {}", SkillSource::Scan.as_str());
     out.push_str("metadata:\n");
     let _ = writeln!(out, "  generated_by: {}", SkillSource::Scan.as_str());
     let _ = writeln!(out, "  cluster:\n    label: {}", plan.label);
