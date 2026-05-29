@@ -42,9 +42,13 @@
 //! - [`detect_stub_patterns`] — Camera 2 of the regression gate.
 //! - [`extract_function_signatures`] — public-fn signatures from a source
 //!   blob, AST or fallback.
-//! - [`Tree`], [`FunctionSig`], [`StubMatch`], [`StubPattern`],
-//!   [`DetectionMode`], [`AstError`].
+//! - [`extract_entities`] — named type declarations (struct/class/enum/…)
+//!   from a source blob, AST (via the built-in `entity_definitions` query)
+//!   or agnostic textual floor.
+//! - [`Tree`], [`FunctionSig`], [`ExtractedEntity`], [`StubMatch`],
+//!   [`StubPattern`], [`DetectionMode`], [`AstError`].
 
+pub mod entity;
 pub mod loader;
 pub mod parser;
 pub mod queries;
@@ -58,6 +62,7 @@ use std::ops::Range;
 use std::path::PathBuf;
 
 // Re-exports for the canonical W1.5 public surface.
+pub use entity::{extract_entities, ExtractedEntity};
 pub use loader::GrammarLoader;
 pub use parser::TreeSitterParser;
 pub use queries::QuerySet;
