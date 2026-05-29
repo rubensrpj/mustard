@@ -91,6 +91,88 @@ impl GrammarLoader {
     /// is **not** an error — the loader returns successfully with an empty
     /// `available_languages()` list.
     pub fn from_project(project_root: &Path) -> Result<Self, AstError> {
+        let mut languages: HashMap<String, Language> = HashMap::new();
+        let mut extensions: HashMap<String, String> = HashMap::new();
+        Self::discover_external(&mut languages, &mut extensions)?;
+        Ok(Self {
+            languages,
+            extensions,
+            project_root: project_root.to_path_buf(),
+        })
+    }
+
+    /// Build a grammar loader seeded with the in-crate built-in grammars and
+    /// then complemented by external discovery.
+    ///
+    /// This is the constructor the runtime should use: it guarantees a common
+    /// set of languages (Rust, TypeScript/TSX, Python, Go, Java, C#) is
+    /// resolvable even on a machine with no `~/.config/tree-sitter/config.json`
+    /// and no installed grammars, while still picking up any user-installed
+    /// grammar on top.
+    ///
+    /// ## Layering
+    ///
+    /// 1. The built-in grammars are registered first — they are the
+    ///    *guaranteed base*.
+    /// 2. External discovery (the same logic as [`from_project`]) runs on top.
+    ///    Discovered grammars **complement** the built-ins: an external grammar
+    ///    only fills a key the built-ins did not already occupy (`HashMap`
+    ///    `entry(..).or_insert`), so a stale or broken user grammar can never
+    ///    shadow the in-crate one.
+    ///
+    /// ## Fail-open
+    ///
+    /// External discovery is wrapped fail-open: any [`AstError`] from walking
+    /// `parser_directories` degrades to a built-in-only loader rather than
+    /// propagating. The built-in set is infallible (the grammars are linked
+    /// into the binary), so this constructor never returns `Err` in practice;
+    /// it returns `Self` directly.
+    #[must_use]
+    pub fn with_builtins(project_root: &Path) -> Self {
+        let mut languages: HashMap<String, Language> = HashMap::new();
+        let mut extensions: HashMap<String, String> = HashMap::new();
+
+        // (1) Built-ins first — the guaranteed base. These never fail.
+        for (lang_id, exts, language) in builtin_grammars() {
+            languages
+                .entry(lang_id.to_string())
+                .or_insert_with(|| language.clone());
+            for ext in exts {
+                extensions
+                    .entry((*ext).to_ascii_lowercase())
+                    .or_insert_with(|| lang_id.to_string());
+            }
+        }
+
+        // (2) External discovery on top, fail-open. A failure here leaves the
+        // built-in set intact — the whole point of compiling grammars in.
+        // `or_insert` semantics inside `discover_external` guarantee externals
+        // never overwrite a built-in key.
+        let _ = Self::discover_external(&mut languages, &mut extensions);
+
+        Self {
+            languages,
+            extensions,
+            project_root: project_root.to_path_buf(),
+        }
+    }
+
+    /// Run external grammar discovery, inserting any resolved language into
+    /// `languages` / `extensions` **without overwriting existing keys** (so a
+    /// pre-seeded built-in always wins).
+    ///
+    /// Shared by [`from_project`] (empty maps) and [`with_builtins`]
+    /// (pre-seeded maps).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AstError::LoaderConfigFailed`] when the underlying
+    /// `tree_sitter_loader::Loader` cannot be constructed or cannot walk its
+    /// `parser_directories`. A missing `config.json` is **not** an error.
+    fn discover_external(
+        languages: &mut HashMap<String, Language>,
+        extensions: &mut HashMap<String, String>,
+    ) -> Result<(), AstError> {
         let config = Self::load_config();
         let mut loader = Loader::new()
             .map_err(|e| AstError::LoaderConfigFailed(format!("Loader::new: {e}")))?;
@@ -102,9 +184,6 @@ impl GrammarLoader {
         loader
             .find_all_languages(&config)
             .map_err(|e| AstError::LoaderConfigFailed(format!("find_all_languages: {e}")))?;
-
-        let mut languages: HashMap<String, Language> = HashMap::new();
-        let mut extensions: HashMap<String, String> = HashMap::new();
 
         // Pair each `LanguageConfiguration` with the resolved `Language`.
         // `get_all_language_configurations` is read-only; the borrow lives
@@ -133,7 +212,11 @@ impl GrammarLoader {
                 continue;
             };
 
-            languages.insert(name.clone(), language.clone());
+            // `or_insert` (not `insert`): an external grammar complements the
+            // built-in set, it never overwrites a key a built-in already owns.
+            languages
+                .entry(name.clone())
+                .or_insert_with(|| language.clone());
 
             if let Some(scope) = scope {
                 // `source.rust` → `rust`; `source.cpp.embedded.macro` → `macro`.
@@ -157,11 +240,7 @@ impl GrammarLoader {
             }
         }
 
-        Ok(Self {
-            languages,
-            extensions,
-            project_root: project_root.to_path_buf(),
-        })
+        Ok(())
     }
 
     /// Build an empty loader — used by tests and by the textual-only
@@ -260,6 +339,50 @@ impl GrammarLoader {
     }
 }
 
+/// The common grammars compiled directly into the binary.
+///
+/// Each entry is `(canonical lang id, &[file extensions], Language)`. These
+/// form the *guaranteed base* of [`GrammarLoader::with_builtins`]: they resolve
+/// on any machine, with no `~/.config/tree-sitter/config.json` and no installed
+/// grammars, because the parser code is linked into `mustard-core` itself.
+///
+/// ## Const names (verified against each crate's `bindings/rust/lib.rs`)
+///
+/// The exported `LanguageFn` const differs per crate — they were read from the
+/// downloaded source, not guessed:
+///
+/// - `tree_sitter_rust::LANGUAGE`
+/// - `tree_sitter_typescript::LANGUAGE_TYPESCRIPT` and `::LANGUAGE_TSX`
+///   (TypeScript and TSX are two distinct grammars in one crate)
+/// - `tree_sitter_python::LANGUAGE`
+/// - `tree_sitter_go::LANGUAGE`
+/// - `tree_sitter_java::LANGUAGE`
+/// - `tree_sitter_c_sharp::LANGUAGE`
+///
+/// Each `LanguageFn` is promoted to a `tree_sitter::Language` via the
+/// `From<LanguageFn>` impl (`.into()`). The crate versions are pinned in
+/// `Cargo.toml` to a line whose ABI is `<=` tree-sitter 0.26.
+///
+/// ## Extension mapping
+///
+/// `rs→rust`, `ts/mts/cts→typescript`, `tsx→tsx`, `py→python`, `go→go`,
+/// `java→java`, `cs→c-sharp`.
+fn builtin_grammars() -> Vec<(&'static str, &'static [&'static str], Language)> {
+    vec![
+        ("rust", &["rs"], tree_sitter_rust::LANGUAGE.into()),
+        (
+            "typescript",
+            &["ts", "mts", "cts"],
+            tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
+        ),
+        ("tsx", &["tsx"], tree_sitter_typescript::LANGUAGE_TSX.into()),
+        ("python", &["py"], tree_sitter_python::LANGUAGE.into()),
+        ("go", &["go"], tree_sitter_go::LANGUAGE.into()),
+        ("java", &["java"], tree_sitter_java::LANGUAGE.into()),
+        ("c-sharp", &["cs"], tree_sitter_c_sharp::LANGUAGE.into()),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -317,5 +440,90 @@ mod tests {
         let loader = GrammarLoader::empty(tmp.path());
         assert!(loader.language_id_for_path(Path::new("foo.rs")).is_none());
         assert!(loader.language_id_for_path(Path::new("foo")).is_none());
+    }
+
+    /// `with_builtins` must resolve every in-crate grammar regardless of host
+    /// `~/.config/tree-sitter/config.json` state — the whole point of
+    /// compiling them in.
+    #[test]
+    fn with_builtins_resolves_every_builtin_language() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let loader = GrammarLoader::with_builtins(tmp.path());
+        for id in ["rust", "typescript", "tsx", "python", "go", "java", "c-sharp"] {
+            assert!(
+                loader.language(id).is_some(),
+                "built-in grammar `{id}` must resolve via with_builtins"
+            );
+        }
+    }
+
+    /// Extension → language id mapping for the built-in set.
+    #[test]
+    fn with_builtins_maps_extensions_to_languages() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let loader = GrammarLoader::with_builtins(tmp.path());
+        let cases = [
+            ("foo.rs", "rust"),
+            ("a.cs", "c-sharp"),
+            ("b.py", "python"),
+            ("c.go", "go"),
+            ("d.java", "java"),
+            ("e.ts", "typescript"),
+            ("f.tsx", "tsx"),
+            ("g.mts", "typescript"),
+        ];
+        for (path, expected) in cases {
+            assert_eq!(
+                loader.language_id_for_path(Path::new(path)).as_deref(),
+                Some(expected),
+                "`{path}` should map to `{expected}`"
+            );
+        }
+    }
+
+    /// A real parse through the built-in Rust grammar: the root node must not
+    /// be an error, and the AST/fallback signature extractor must find `foo`.
+    #[test]
+    fn with_builtins_parses_rust_for_real() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let loader = GrammarLoader::with_builtins(tmp.path());
+
+        let mut parser = crate::domain::ast::TreeSitterParser::for_language(&loader, "rust")
+            .expect("rust parser builds from built-in grammar");
+        let tree = parser.parse("pub fn foo() {}").expect("rust source parses");
+        let root = tree.as_tree_sitter().root_node();
+        assert!(
+            !root.is_error(),
+            "rust root node should not be an error: {}",
+            root.to_sexp()
+        );
+
+        let sigs = crate::domain::ast::extract_function_signatures(
+            &loader,
+            "pub fn foo() {}",
+            "rust",
+        );
+        assert!(
+            sigs.iter().any(|s| s.name == "foo"),
+            "expected signature `foo`, got {sigs:?}"
+        );
+    }
+
+    /// Smoke test the built-in C# grammar: a trivial class must parse without
+    /// an error at the root.
+    #[test]
+    fn with_builtins_parses_csharp_for_real() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let loader = GrammarLoader::with_builtins(tmp.path());
+
+        let mut parser = crate::domain::ast::TreeSitterParser::for_language(&loader, "c-sharp")
+            .expect("c-sharp parser builds from built-in grammar");
+        let tree = parser.parse("class A {}").expect("c-sharp source parses");
+        let root = tree.as_tree_sitter().root_node();
+        assert!(
+            !root.is_error(),
+            "c-sharp root node should not be an error: {}",
+            root.to_sexp()
+        );
     }
 }

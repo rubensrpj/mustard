@@ -36,15 +36,26 @@ aho-corasick = "1.1"
 # the current stable major on crates.io (May 2026); the dep is crate-local
 # because `vocabulary` is the only consumer today.
 toml = "0.8"
-# Tree-sitter bindings and the agnostic grammar loader — backs the `ast`
-# module (Spec A Wave 1.5). `tree-sitter` provides `Parser`, `Tree`, `Query`,
-# `Language`. `tree-sitter-loader` discovers grammars installed by the user
-# in `~/.config/tree-sitter/config.json` at runtime via `Loader::find_all_languages`,
-# so `mustard-core` carries zero hardcoded language enumeration. No individual
-# grammar crate (tree-sitter-rust / -typescript / etc.) is pulled in — that
-# would re-introduce the agnostic violation the W1.5 redesign exists to fix.
+# Tree-sitter: agnostic AST extraction. Three-tier grammar acquisition
+# (functional refactor 2026-05): (1) common grammars compiled IN-CRATE below
+# (offline, no `cc`); (2) WASM grammars acquired on demand via `WasmStore` for
+# any other language (added with the `wasm` feature in a later step); (3) the
+# textual floor (Aho-Corasick) when neither is available — so the layer stays
+# agnostic without ever failing on an unknown stack. `tree-sitter-loader` still
+# discovers user-installed grammars from `~/.config/tree-sitter/` for
+# extensibility. Pinning a closed in-crate set is NOT an agnostic violation:
+# it is a precision optimisation; the textual floor remains the universal path.
 tree-sitter = "0.26"
 tree-sitter-loader = "0.26"
+# Common grammars compiled in-crate (resolved via `LANGUAGE.into()`), pinned to
+# versions whose ABI is <= tree-sitter 0.26. Languages outside this set fall to
+# WASM-on-demand or the textual floor.
+tree-sitter-rust = "0.24.2"
+tree-sitter-typescript = "0.23.2"
+tree-sitter-python = "0.25.0"
+tree-sitter-go = "0.25.0"
+tree-sitter-java = "0.23.5"
+tree-sitter-c-sharp = "0.23.5"
 # Line-based textual diff for `regression_check` — used as fallback when no
 # tree-sitter grammar is installed for the file's language. The 2.x line is
 # stable since 2023; resolves to 2.7.0 on crates.io (May 2026). Spec A Wave 2
