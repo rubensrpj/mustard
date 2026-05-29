@@ -65,6 +65,7 @@
 pub mod aho;
 pub mod architecture;
 pub mod frameworks;
+pub mod language_caps;
 
 use crate::platform::error::Error as CoreError;
 use serde::Deserialize;

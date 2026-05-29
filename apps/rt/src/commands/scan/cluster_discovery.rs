@@ -15,6 +15,7 @@
 use super::file_utils::{collect_files, read_file_safe, relative_path};
 use super::project_conventions::{primary_ext_for_stack, resolve_primary_ext};
 use crate::util::sha256::Sha256;
+use mustard_core::domain::vocabulary::language_caps::{self, LanguageCapabilities};
 use mustard_core::io::fs as mfs;
 use mustard_core::ClaudePaths;
 use serde_json::{json, Value};
@@ -107,6 +108,13 @@ pub fn discover_clusters(
         return Vec::new();
     };
     let ext = ext.as_str();
+    // Language capabilities drive every per-language gate below (decorators,
+    // fn-prefix, base-class syntax) from DATA rather than a hard-coded
+    // `matches!(stack_id, "...")`. Fail-open: a missing/malformed override
+    // degrades to the built-in base, so the gates keep today's values.
+    let caps =
+        LanguageCapabilities::load(language_caps::DEFAULT_LANGUAGE_CAPS_NAME, subproject_path)
+            .unwrap_or_else(|_| LanguageCapabilities::builtin().unwrap_or_default());
     let all_files = collect_files(subproject_path, ext, &[]);
     let all_files: Vec<String> = all_files
         .iter()
@@ -150,21 +158,27 @@ pub fn discover_clusters(
     let folder = discover_folder_clusters(subproject_path, &all_files, ext);
     let (consolidated, remaining) = consolidate_clusters(folder);
     // Step 3 — base-class clusters; Step 5 — decorator; Step 6 — fn-prefix.
-    let base_class = match stack_id {
-        "typescript" => discover_base_class_clusters_typescript(subproject_path, &all_files),
-        _ => Vec::new(),
+    // GATE is driven by capabilities: base-class clustering runs only for a
+    // stack that declares a `(class_kw, extends_kw)` pair, using those keywords
+    // instead of literal "class "/"extends ".
+    let base_class = match caps.base_class_syntax(stack_id) {
+        Some((class_kw, extends_kw)) => {
+            discover_base_class_clusters(subproject_path, &all_files, ext, class_kw, extends_kw)
+        }
+        None => Vec::new(),
     };
-    let decorator = discover_decorator_clusters(subproject_path, &all_files, stack_id);
-    let fn_prefix = discover_function_prefix_clusters(subproject_path, &all_files, stack_id);
-    // Step 7 — filename clusters (typescript also scans .tsx).
-    let extra: Vec<String> = if stack_id == "typescript" {
-        collect_files(subproject_path, ".tsx", &[])
-            .iter()
-            .map(|p| p.to_string_lossy().replace('\\', "/"))
-            .collect()
-    } else {
-        Vec::new()
-    };
+    let decorator = discover_decorator_clusters(subproject_path, &all_files, stack_id, &caps);
+    let fn_prefix =
+        discover_function_prefix_clusters(subproject_path, &all_files, stack_id, &caps);
+    // Step 7 — filename clusters. Some stacks have a secondary source extension
+    // the pass should also scan (e.g. typescript's `.tsx`); driven by the
+    // language-capabilities vocab (DATA), not a hard-coded stack literal.
+    let extra: Vec<String> = caps
+        .secondary_exts(stack_id)
+        .iter()
+        .flat_map(|ext| collect_files(subproject_path, ext, &[]))
+        .map(|p| p.to_string_lossy().replace('\\', "/"))
+        .collect();
     let filename = discover_filename_clusters(subproject_path, &all_files, &extra);
 
     let mut all: Vec<Value> = Vec::new();
@@ -666,11 +680,19 @@ fn consolidate_clusters(folder_clusters: Vec<Value>) -> (Vec<Value>, Vec<Value>)
     (consolidated, remaining)
 }
 
-// --- Step 3b: TypeScript base-class clusters --------------------------------
+// --- Step 3b: base-class clusters -------------------------------------------
 
-fn discover_base_class_clusters_typescript(
+/// Discover base-class clusters for any stack whose capabilities declare a
+/// `(class_kw, extends_kw)` pair. The GATE (whether this runs at all) and the
+/// keyword pair both come from [`LanguageCapabilities::base_class_syntax`] —
+/// nothing here is language-named. The extraction itself (scan for
+/// `<class_kw>Name <extends_kw>Base`) is generic over the keyword pair.
+fn discover_base_class_clusters(
     subproject_path: &Path,
     all_files: &[String],
+    ext: &str,
+    class_kw: &str,
+    extends_kw: &str,
 ) -> Vec<Value> {
     // base -> Vec<(folder, file)>
     let mut inheritors: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
@@ -680,12 +702,12 @@ fn discover_base_class_clusters_typescript(
         };
         let rel = relative_path(subproject_path, Path::new(f));
         let folder = parent_dir(&rel);
-        // Match `(export)? (abstract)? class Name extends Base`.
+        // Match `(export)? (abstract)? <class_kw>Name <extends_kw>Base`.
         let mut search = 0;
-        while let Some(rel_idx) = content[search..].find("class ") {
+        while let Some(rel_idx) = content[search..].find(class_kw) {
             let idx = search + rel_idx;
-            search = idx + "class ".len();
-            let after = &content[idx + "class ".len()..];
+            search = idx + class_kw.len();
+            let after = &content[idx + class_kw.len()..];
             let cls: String = after
                 .chars()
                 .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
@@ -694,7 +716,7 @@ fn discover_base_class_clusters_typescript(
                 continue;
             }
             let rest = after[cls.len()..].trim_start();
-            let Some(rest) = rest.strip_prefix("extends ") else {
+            let Some(rest) = rest.strip_prefix(extends_kw) else {
                 continue;
             };
             let base: String = rest
@@ -712,7 +734,7 @@ fn discover_base_class_clusters_typescript(
                 .push((folder.clone(), basename(&rel)));
         }
     }
-    materialize_base_class_clusters(inheritors, ".ts")
+    materialize_base_class_clusters(inheritors, ext)
 }
 
 fn materialize_base_class_clusters(
@@ -750,14 +772,15 @@ fn discover_decorator_clusters(
     subproject_path: &Path,
     all_files: &[String],
     stack_id: &str,
+    caps: &LanguageCapabilities,
 ) -> Vec<Value> {
-    // Only TS/Python/Java/Kotlin/.NET have decorator syntax; here the cluster
-    // driver only ever runs the TS scanner for this repo, but the scan stays
-    // faithful for the languages whose decorator marker is a leading `@Name`.
-    let supports = matches!(stack_id, "typescript" | "python" | "java" | "kotlin");
-    if !supports {
+    // GATE driven by DATA: only stacks whose capabilities declare decorator
+    // syntax (a leading `@Name` prefixing a declaration) are scanned. The
+    // declaration keywords a decorator may prefix come from the same caps entry.
+    if !caps.has_decorators(stack_id) {
         return Vec::new();
     }
+    let decl_keywords = caps.decl_keywords(stack_id);
     let min = min_decorator_usage();
     // decorator -> Set<relFile>
     let mut usage: BTreeMap<String, std::collections::BTreeSet<String>> = BTreeMap::new();
@@ -786,13 +809,11 @@ fn discover_decorator_clusters(
                     rest = rest[close + 1..].trim_start();
                 }
             }
-            let declares = ["class", "function", "def", "interface", "fun"]
-                .iter()
-                .any(|kw| {
-                    rest.split_whitespace()
-                        .take(4)
-                        .any(|tok| tok == *kw)
-                });
+            let declares = decl_keywords.iter().any(|kw| {
+                rest.split_whitespace()
+                    .take(4)
+                    .any(|tok| tok == kw.as_str())
+            });
             if declares {
                 let bare = name.rsplit('.').next().unwrap_or(&name).to_string();
                 usage.entry(bare).or_default().insert(rel.clone());
@@ -859,9 +880,13 @@ fn discover_function_prefix_clusters(
     subproject_path: &Path,
     all_files: &[String],
     stack_id: &str,
+    caps: &LanguageCapabilities,
 ) -> Vec<Value> {
-    // TS / Python only — a port of `_functionRegexesFor`.
-    if !matches!(stack_id, "typescript" | "python") {
+    // GATE driven by DATA: only stacks whose capabilities declare fn-prefix
+    // detection are scanned. The per-language declaration PARSING below
+    // (`top_level_function_names`) still switches on the literal stack id; that
+    // inner switch is acceptable for now — only the GATE moved to caps.
+    if !caps.has_fn_prefix(stack_id) {
         return Vec::new();
     }
     let min = min_function_prefix_usage();

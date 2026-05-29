@@ -1,0 +1,66 @@
+# Built-in language-capabilities vocabulary.
+#
+# Embedded into `mustard-core` via `include_str!` (see
+# `vocabulary::language_caps::BUILTIN_LANGUAGE_CAPS_TOML`). It is the
+# *guaranteed base* for `LanguageCapabilities`: capability lookup works offline
+# with no project-local file present.
+#
+# An on-disk `.claude/vocab/language_caps.toml` (or any named vocab) overrides
+# this base wholesale — see `LanguageCapabilities::load`.
+#
+# Schema: one `[[lang]]` table-array entry per stack-id, each carrying:
+#   id                     — the stack-id key (e.g. "typescript", "python").
+#   has_decorators         — whether the language has `@Name`-style decorator
+#                            syntax that prefixes a declaration (default false).
+#   decl_keywords          — the declaration keywords a decorator may prefix
+#                            (e.g. "class", "function", "def", "interface",
+#                            "fun"). Shared across every stack that has
+#                            decorators, but carried per-stack so an override
+#                            can tune one language without touching others.
+#   has_fn_prefix          — whether function-prefix clustering applies to this
+#                            stack (default false).
+#   base_class_class_kw    — the class-declaration keyword used by base-class
+#                            clustering (e.g. "class "). Absent ⇒ no base-class
+#                            syntax for this stack.
+#   base_class_extends_kw  — the inheritance keyword that follows the class name
+#                            (e.g. "extends "). Both keys must be present for
+#                            `base_class_syntax` to return a pair.
+#   secondary_exts         — extra source extensions the filename-cluster pass
+#                            scans in addition to the primary one (e.g. ".tsx"
+#                            for typescript). Empty ⇒ only the primary extension.
+#
+# These values carry EXACTLY the capability gates that
+# `apps/rt/src/commands/scan/cluster_discovery.rs` currently hard-codes:
+#   * decorator syntax: typescript, python, java, kotlin
+#     (decl keywords: class, function, def, interface, fun)
+#   * function-prefix detection: typescript, python
+#   * base-class syntax: typescript only (class "class ", extends "extends ")
+#
+# Logic stays generic — these are DATA. An unknown stack-id (one with no
+# `[[lang]]` entry) reports no capabilities: false / empty / None (the agnostic
+# floor).
+
+[[lang]]
+id = "typescript"
+has_decorators = true
+decl_keywords = ["class", "function", "def", "interface", "fun"]
+has_fn_prefix = true
+base_class_class_kw = "class "
+base_class_extends_kw = "extends "
+secondary_exts = [".tsx"]
+
+[[lang]]
+id = "python"
+has_decorators = true
+decl_keywords = ["class", "function", "def", "interface", "fun"]
+has_fn_prefix = true
+
+[[lang]]
+id = "java"
+has_decorators = true
+decl_keywords = ["class", "function", "def", "interface", "fun"]
+
+[[lang]]
+id = "kotlin"
+has_decorators = true
+decl_keywords = ["class", "function", "def", "interface", "fun"]

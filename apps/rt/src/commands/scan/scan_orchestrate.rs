@@ -18,13 +18,20 @@ use crate::commands::scan::scan_precompute::{
     backup_generated_mds, build_structure_block, build_tooling_block, ensure_notes_md,
 };
 use crate::commands::skill::skill_resolve;
+use crate::shared::events::economy as economy_events;
+use mustard_core::domain::economy::{
+    self,
+    model::{SavingsRecord, SavingsSource},
+    scope::{ProjectPath, SpecId},
+};
 use mustard_core::domain::entity_registry::EntityRegistry;
+use mustard_core::domain::model::event::ActorKind;
 use mustard_core::time::now_iso8601;
 use mustard_core::io::fs;
 use mustard_core::ClaudePaths;
 use serde_json::{json, Value};
 use std::fmt::Write as _;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// Agent-prompt template embedded at build time. The orchestrator no longer
@@ -763,6 +770,108 @@ fn render_prompt(
         .replace("{{structureBlock}}", &structure)
 }
 
+/// Enumerate every `SKILL.md` the deterministic skill render produced for the
+/// given changed subprojects (the `{sub}/.claude/skills/*/SKILL.md` files plus
+/// any `_no-patterns.md` marker). Used to size the `ScanSkillRender` savings
+/// baseline. Fail-open: an unreadable skills directory contributes nothing.
+fn collect_skill_mds(root: &Path, subprojects: &[&str]) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    for sub in subprojects {
+        let sub_root = if *sub == "." {
+            root.to_path_buf()
+        } else {
+            // Mirror `scan_skill_render::resolve_sub_root`: try apps/ and
+            // packages/ prefixes, then the bare path, falling back to root.
+            ["apps", "packages"]
+                .iter()
+                .map(|top| root.join(top).join(sub))
+                .find(|p| p.is_dir())
+                .or_else(|| {
+                    let direct = root.join(sub);
+                    direct.is_dir().then_some(direct)
+                })
+                .unwrap_or_else(|| root.to_path_buf())
+        };
+        let Ok(paths) = ClaudePaths::for_project(&sub_root) else {
+            continue;
+        };
+        let skills_dir = paths.skills_dir();
+        // The `_no-patterns.md` marker (also a generated artefact).
+        let marker = skills_dir.join("_no-patterns.md");
+        if fs::exists(&marker) {
+            out.push(marker);
+        }
+        // One `SKILL.md` per skill directory.
+        let Ok(entries) = fs::read_dir(&skills_dir) else {
+            continue;
+        };
+        for entry in entries {
+            if !entry.is_dir {
+                continue;
+            }
+            let skill_md = entry.path.join("SKILL.md");
+            if fs::exists(&skill_md) {
+                out.push(skill_md);
+            }
+        }
+    }
+    out
+}
+
+/// Sum the UTF-8 byte size of every generated document, divide by 4 (the
+/// chars-per-token heuristic), and emit ONE [`SavingsSource::ScanSkillRender`]
+/// savings event recording the LLM output the deterministic generator avoided.
+///
+/// Mirrors [`crate::commands::scan::interpret::emit_scan_savings`] for the
+/// economy API + [`ActorKind`] + fail-open behaviour: a zero byte total emits
+/// nothing, and the underlying route emit never blocks the scan.
+fn emit_skill_render_savings(root: &Path, generated_docs: &[PathBuf]) {
+    let total_bytes: usize = generated_docs
+        .iter()
+        .filter_map(|p| fs::read(p).ok())
+        .map(|b| b.len())
+        .sum();
+    if total_bytes == 0 {
+        return;
+    }
+    let tokens_saved = i64::try_from(total_bytes / 4).unwrap_or(i64::MAX);
+    if tokens_saved <= 0 {
+        return;
+    }
+    let cwd = root.to_string_lossy().into_owned();
+    let record = SavingsRecord {
+        ts: now_iso8601(),
+        source: SavingsSource::ScanSkillRender,
+        tokens_saved,
+        model_target: None,
+        project_path: ProjectPath::new(root),
+        spec_id: crate::shared::context::current_spec(&cwd).map(SpecId::new),
+        wave_id: None,
+        agent_id: None,
+        extra: {
+            let mut m = serde_json::Map::new();
+            m.insert(
+                "doc_count".to_string(),
+                Value::Number((generated_docs.len() as u64).into()),
+            );
+            m.insert(
+                "total_bytes".to_string(),
+                Value::Number((total_bytes as u64).into()),
+            );
+            m
+        },
+    };
+    let (event_name, payload) = economy::writer::savings_event(&record);
+    economy_events::emit(
+        &cwd,
+        ActorKind::Hook,
+        "scan-skill-render",
+        &event_name,
+        record.spec_id.as_ref().map(|s| s.0.as_str()),
+        payload,
+    );
+}
+
 /// Run the orchestration. Separate from [`run`] so tests can drive it.
 fn orchestrate(root: &Path, force: bool, enrich: bool, target: Option<&str>) -> ScanResult {
     let mut result = ScanResult {
@@ -822,6 +931,11 @@ fn orchestrate(root: &Path, force: bool, enrich: bool, target: Option<&str>) -> 
     }
     run_sync_registry(root, force, &mut result);
 
+    // Absolute paths of every deterministic document generated below
+    // (SKILL.md + stack.md + guards.md). Their total byte size is the
+    // avoided-LLM-output proxy emitted as a `ScanSkillRender` savings event.
+    let mut generated_docs: Vec<PathBuf> = Vec::new();
+
     // SKILL.md per qualified cluster (+ `_no-patterns.md` where none qualifies,
     // satisfying the HARD CONTRACT without an agent).
     let skill_report =
@@ -834,10 +948,15 @@ fn orchestrate(root: &Path, force: bool, enrich: bool, target: Option<&str>) -> 
             .generated
             .push(format!("skills: {} _no-patterns.md", skill_report.no_patterns_markers));
     }
+    // Collect the SKILL.md files the deterministic pass just (re)wrote, per
+    // changed subproject, so their bytes feed the savings baseline.
+    generated_docs.extend(collect_skill_mds(root, &changed_refs));
+
     // stack.md per changed subproject.
     for path in &changed_refs {
         for entry in crate::commands::scan::scan_structural::render_stack(root, Some(path)) {
             if let Some(p) = entry.get("stackMd").and_then(Value::as_str) {
+                generated_docs.push(PathBuf::from(p));
                 result.generated.push(rel_posix(root, Path::new(p)));
             }
         }
@@ -863,9 +982,19 @@ fn orchestrate(root: &Path, force: bool, enrich: bool, target: Option<&str>) -> 
         if let Some(rel) =
             crate::commands::scan::guards_seed::render_guards_seed(root, sub, &registry, force)
         {
+            // `rel` is a posix path relative to the workspace root.
+            generated_docs.push(root.join(&rel));
             result.generated.push(rel);
         }
     }
+
+    // Savings telemetry: the deterministic generator just rendered the
+    // per-subproject SKILL.md + stack.md + guards.md in Rust instead of
+    // dispatching an LLM to write them. Emit ONE `ScanSkillRender` savings
+    // event whose `tokens_saved` proxies the model output we never paid for —
+    // total generated bytes / 4 (chars-per-token). Fail-open: a zero total
+    // emits nothing and the emit never blocks the scan.
+    emit_skill_render_savings(root, &generated_docs);
 
     // --- Dispatch plan — ONLY in `--enrich` mode ----------------------------
     // Default mode leaves `dispatch[]` empty: the deterministic pass above

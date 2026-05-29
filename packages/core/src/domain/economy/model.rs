@@ -113,6 +113,12 @@ pub enum SavingsSource {
     /// estimated prompt + response token cost of the `interpret` call that the
     /// default-OFF path never made; the Rust cost is ~0.
     ScanStructuralExtract,
+    /// Tokens NOT emitted by a model because the deterministic scan generator
+    /// rendered the per-subproject `SKILL.md` + `stack.md` + `guards.md`
+    /// documents in Rust instead of dispatching an LLM to write them. The
+    /// baseline is a chars-per-token (`/4`) proxy over the total bytes of the
+    /// generated documents; the Rust cost is ~0.
+    ScanSkillRender,
 }
 
 impl SavingsSource {
@@ -126,6 +132,7 @@ impl SavingsSource {
             Self::BudgetOutputCut => "budget_output_cut",
             Self::RecipeInjection => "recipe_injection",
             Self::ScanStructuralExtract => "scan_structural_extract",
+            Self::ScanSkillRender => "scan_skill_render",
         }
     }
 
@@ -142,6 +149,7 @@ impl SavingsSource {
             "budget_output_cut" => Self::BudgetOutputCut,
             "recipe_injection" => Self::RecipeInjection,
             "scan_structural_extract" => Self::ScanStructuralExtract,
+            "scan_skill_render" => Self::ScanSkillRender,
             _ => return None,
         })
     }
@@ -392,6 +400,9 @@ mod tests {
             SavingsSource::ModelRoutingDowngrade,
             SavingsSource::BashGuardBlock,
             SavingsSource::BudgetOutputCut,
+            SavingsSource::RecipeInjection,
+            SavingsSource::ScanStructuralExtract,
+            SavingsSource::ScanSkillRender,
         ] {
             let s = src.as_str();
             assert_eq!(SavingsSource::from_str_opt(s), Some(src));

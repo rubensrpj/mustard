@@ -161,6 +161,7 @@ fn savings_suffix(source: SavingsSource) -> &'static str {
         SavingsSource::BudgetOutputCut => "budget-output-cut",
         SavingsSource::RecipeInjection => "recipe-injection",
         SavingsSource::ScanStructuralExtract => "scan-structural-extract",
+        SavingsSource::ScanSkillRender => "scan-skill-render",
     }
 }
 
@@ -225,6 +226,14 @@ mod tests {
             (
                 SavingsSource::RecipeInjection,
                 "pipeline.economy.savings.recipe-injection",
+            ),
+            (
+                SavingsSource::ScanStructuralExtract,
+                "pipeline.economy.savings.scan-structural-extract",
+            ),
+            (
+                SavingsSource::ScanSkillRender,
+                "pipeline.economy.savings.scan-skill-render",
             ),
         ];
         for (src, expected_event) in cases {
