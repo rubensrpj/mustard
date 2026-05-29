@@ -6,15 +6,15 @@
 //! to, so an unrelated invocation skips it entirely instead of running it just
 //! to have it self-`Allow`.
 
-use crate::hooks::observe::amend_capture::AmendCapture;
-use crate::hooks::observe::auto_capture_summary::AutoCaptureSummary;
+use crate::hooks::observe::amend_window_inject::AmendWindowInject;
+use crate::hooks::observe::agent_summary_observer::AgentSummaryObserver;
 use crate::hooks::bash::bash_guard::BashGuard;
 use crate::hooks::task::context_budget_gate::ContextBudgetGate;
 use crate::hooks::write::close_gate::CloseGate;
 use crate::hooks::write::entity_registry_gate::EntityRegistryGate;
 use crate::hooks::session::session_knowledge_observer::SessionKnowledgeObserver;
 use crate::hooks::task::model_routing_gate::ModelRoutingGate;
-use crate::hooks::observe::notification::Notification;
+use crate::hooks::observe::notification_observer::NotificationObserver;
 use crate::hooks::write::path_guard::PathGuard;
 use crate::hooks::write::post_edit::PostEdit;
 use crate::hooks::session::pre_compact_inject::PreCompactInject;
@@ -25,16 +25,18 @@ use crate::hooks::session::session_start_inject::SessionStartInject;
 use crate::hooks::write::size_gate::SizeGate;
 use crate::hooks::task::skills_advisory::SkillsAdvisory;
 use crate::hooks::session::spec_hygiene_observer::SpecHygieneObserver;
-use crate::hooks::observe::stop::Stop;
-use crate::hooks::observe::stop_observer::{PreCompactMemorySnippet, SessionEndConsolidate, StopObserver};
+use crate::hooks::observe::session_stop_observer::SessionStopObserver;
+use crate::hooks::observe::subagent_stop_observer::SubagentStopObserver;
+use crate::hooks::observe::memory_promote_observer::MemoryPromoteObserver;
+use crate::hooks::observe::pre_compact_memory_inject::PreCompactMemoryInject;
 use crate::hooks::task::subagent_inject::SubagentInject;
-use crate::hooks::observe::tool_result::ToolResult;
+use crate::hooks::observe::tool_result_observer::ToolResultObserver;
 use crate::hooks::task::main_context_counter::MainContextCounter;
 use crate::hooks::task::metrics_observer::MetricsObserver;
 use crate::hooks::task::skill_usage_observer::SkillUsageObserver;
 use crate::hooks::task::subagent_observer::SubagentObserver;
 use crate::hooks::task::tool_use_counter::ToolUseCounter;
-use crate::hooks::observe::wikilink_footer::WikilinkFooter;
+use crate::hooks::observe::wikilink_footer_observer::WikilinkFooterObserver;
 use mustard_core::domain::model::contract::{Check, Observer, Trigger};
 
 /// Which tool an `(event, tool)` registration entry applies to.
@@ -216,7 +218,7 @@ impl Registry {
                 observer: Some(Box::new(SkillUsageObserver)),
             },
             Module {
-                id: "tool_result",
+                id: "tool_result_observer",
                 // `tool-result` — PostToolUse capture of rich tool output
                 // (Bash stdout/stderr/exit, Edit/MultiEdit before/after, Write
                 // content, Read content excerpt). Emits a `tool.result` event
@@ -230,7 +232,7 @@ impl Registry {
                     (Trigger::PostToolUse, ToolMatch::Named("Read")),
                 ],
                 check: None,
-                observer: Some(Box::new(ToolResult)),
+                observer: Some(Box::new(ToolResultObserver)),
             },
             Module {
                 id: "skills_advisory",
@@ -392,7 +394,7 @@ impl Registry {
                 observer: None,
             },
             Module {
-                id: "auto_capture_summary",
+                id: "agent_summary_observer",
                 // T8.4 — on Task return, parse `<MEMORY>` or `Resumo:` and
                 // persist to `agent_memory`.
                 applies_to: &[
@@ -400,54 +402,54 @@ impl Registry {
                     (Trigger::PostToolUse, ToolMatch::Named("Agent")),
                 ],
                 check: None,
-                observer: Some(Box::new(AutoCaptureSummary)),
+                observer: Some(Box::new(AgentSummaryObserver)),
             },
             Module {
-                id: "stop_observer",
+                id: "subagent_stop_observer",
                 // T8.5 — SubagentStop reinforcement: bump `last_used` on any
                 // agent_memory row whose summary appeared in the output.
                 applies_to: &[(Trigger::SubagentStop, ToolMatch::Any)],
                 check: None,
-                observer: Some(Box::new(StopObserver)),
+                observer: Some(Box::new(SubagentStopObserver)),
             },
             Module {
-                id: "session_end_consolidate",
+                id: "memory_promote_observer",
                 // T8.6 — SessionEnd promotion of high-confidence agent_memory
                 // rows to permanent memory_decisions / memory_lessons rows.
                 applies_to: &[(Trigger::SessionEnd, ToolMatch::Any)],
                 check: None,
-                observer: Some(Box::new(SessionEndConsolidate)),
+                observer: Some(Box::new(MemoryPromoteObserver)),
             },
             Module {
-                id: "pre_compact_memory_snippet",
+                id: "pre_compact_memory_inject",
                 // T8.7 — add up to 3 recent agent_memory entries to the
                 // PreCompact snapshot (in addition to the pre_compact_inject module).
                 applies_to: &[(Trigger::PreCompact, ToolMatch::Any)],
-                check: Some(Box::new(PreCompactMemorySnippet)),
+                check: Some(Box::new(PreCompactMemoryInject)),
                 observer: None,
             },
             // ── W9 deep-refactor: Stop + Notification triggers ───────────────
             Module {
-                id: "stop",
+                id: "session_stop_observer",
                 // `Stop` lifecycle observer — persists an `interrupted at wave N`
                 // agent_memory row when there has been a recent edit, with a
                 // 5-minute anti-spam guard between consecutive Stops.
                 applies_to: &[(Trigger::Stop, ToolMatch::Any)],
                 check: None,
-                observer: Some(Box::new(Stop)),
+                observer: Some(Box::new(SessionStopObserver)),
             },
             Module {
-                id: "notification",
+                id: "notification_observer",
                 // `Notification` lifecycle observer — appends a single
                 // `notification.received` event to the per-spec NDJSON log;
                 // observe-only, no auto-resolution.
                 applies_to: &[(Trigger::Notification, ToolMatch::Any)],
                 check: None,
-                observer: Some(Box::new(Notification)),
+                observer: Some(Box::new(NotificationObserver)),
             },
             // ── W3E (no-sqlite git source of truth) — wikilink footer ────────
             Module {
-                id: "wikilink_footer",
+                id: "wikilink_footer_observer",
                 // PostToolUse(Write|Edit) auto-footer renderer for
                 // `.claude/{memory,knowledge,spec}/**/*.md`. Pure Observer —
                 // the render logic lives in `mustard_core::io::atomic_md::wikilink`.
@@ -456,11 +458,11 @@ impl Registry {
                     (Trigger::PostToolUse, ToolMatch::Named("Edit")),
                 ],
                 check: None,
-                observer: Some(Box::new(WikilinkFooter)),
+                observer: Some(Box::new(WikilinkFooterObserver)),
             },
             // ── Wave 6: session-bound amendment window ───────────────────────
             Module {
-                id: "amend_capture",
+                id: "amend_window_inject",
                 // Tracks in-session edits after pipeline close.
                 // Observer: PostToolUse(Bash|Write|Edit) + UserPromptSubmit.
                 // Check: PreToolUse(Write|Edit) for look-ahead drift injection.
@@ -472,8 +474,8 @@ impl Registry {
                     (Trigger::PostToolUse, ToolMatch::Named("Edit")),
                     (Trigger::UserPromptSubmit, ToolMatch::Any),
                 ],
-                check: Some(Box::new(AmendCapture)),
-                observer: Some(Box::new(AmendCapture)),
+                check: Some(Box::new(AmendWindowInject)),
+                observer: Some(Box::new(AmendWindowInject)),
             },
         ];
         Self { modules }
@@ -582,7 +584,7 @@ mod tests {
             "subagent_observer",
             "metrics_observer",
             "skill_usage_observer",
-            "tool_result",
+            "tool_result_observer",
             "skills_advisory",
             "size_gate",
             "path_guard",
@@ -595,7 +597,7 @@ mod tests {
             "session_cleanup_observer",
             "pre_compact_inject",
             "prompt_submit_inject",
-            "amend_capture",
+            "amend_window_inject",
         ] {
             assert!(registry.by_id(id).is_some(), "by_id missing {id}");
         }

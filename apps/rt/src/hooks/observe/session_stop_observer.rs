@@ -1,4 +1,4 @@
-//! `stop` — `Stop` lifecycle observer (W9.T9.2).
+//! `session_stop_observer` — `Stop` lifecycle observer (W9.T9.2).
 //!
 //! The harness fires `Stop` when the user interrupts the session (Ctrl+C or an
 //! explicit `/stop`). We treat that as a soft signal: if there has been a
@@ -40,7 +40,7 @@ const STOP_ANTISPAM_SECS: u64 = 5 * 60;
 const EDIT_RECENCY_SECS: u64 = 15 * 60;
 
 /// The `Stop` lifecycle observer.
-pub struct Stop;
+pub struct SessionStopObserver;
 
 
 /// Path to the anti-spam marker file under the project's harness directory.
@@ -144,7 +144,7 @@ fn persist_interrupted(cwd: &str, summary: &str, session_id: Option<&str>) {
 
 /// Emit `pipeline.economy.operation.invoked` for the capture. Fail-open.
 
-impl Observer for Stop {
+impl Observer for SessionStopObserver {
     fn observe(&self, input: &HookInput, ctx: &Ctx) {
         let cwd = ctx.project_dir_or_cwd(input);
         let now = SystemTime::now();
@@ -204,7 +204,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let project = dir.path().to_str().unwrap();
         std::fs::create_dir_all(dir.path().join(".claude/.harness")).unwrap();
-        Stop.observe(&input(), &ctx(project));
+        SessionStopObserver.observe(&input(), &ctx(project));
         assert!(marker_path(project).exists(), "marker should be touched");
         // No DB created (no row written).
         assert!(!dir.path().join(".claude/.harness/mustard.db").exists());
@@ -219,10 +219,10 @@ mod tests {
         // anti-spam branch on the *second* invocation skips.
         let edit = dir.path().join(".claude/.harness/mustard.db-wal");
         fs::write_atomic(&edit, b"").unwrap();
-        Stop.observe(&input(), &ctx(project));
+        SessionStopObserver.observe(&input(), &ctx(project));
         let first_modified = fs::modified(&marker_path(project)).unwrap();
         // Second invocation — must be a no-op (marker mtime unchanged).
-        Stop.observe(&input(), &ctx(project));
+        SessionStopObserver.observe(&input(), &ctx(project));
         let second_modified = fs::modified(&marker_path(project)).unwrap();
         assert_eq!(first_modified, second_modified);
     }

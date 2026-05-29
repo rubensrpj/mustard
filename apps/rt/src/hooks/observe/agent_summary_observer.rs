@@ -1,4 +1,4 @@
-//! `auto_capture_summary` — PostToolUse(Task) memory writer (W8.T8.4).
+//! `agent_summary_observer` — PostToolUse(Task) memory writer (W8.T8.4).
 //!
 //! Every time a `Task` (subagent) returns, we scan its output for either:
 //!
@@ -27,7 +27,7 @@ use crate::shared::events::economy;
 use mustard_core::domain::model::contract::{Ctx, HookInput, Observer};
 
 /// The W8 auto-capture hook.
-pub struct AutoCaptureSummary;
+pub struct AgentSummaryObserver;
 
 
 /// Extract a `<MEMORY>...</MEMORY>` block body, trimmed. `None` when absent or
@@ -144,7 +144,7 @@ fn persist(
 /// Emit `pipeline.economy.operation.invoked` via the NDJSON event route.
 /// Fail-open: any error degrades to a no-op.
 
-impl Observer for AutoCaptureSummary {
+impl Observer for AgentSummaryObserver {
     fn observe(&self, input: &HookInput, ctx: &Ctx) {
         // Only Task PostToolUse — the registry already constrains us, but
         // belt-and-braces.

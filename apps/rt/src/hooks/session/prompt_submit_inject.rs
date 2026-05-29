@@ -35,7 +35,7 @@
 
 use mustard_core::domain::model::event::ActorKind;
 use crate::shared::events::economy;
-use crate::hooks::observe::amend_capture::close_amend_windows_for_session;
+use crate::hooks::observe::amend_window_inject::close_amend_windows_for_session;
 use mustard_core::platform::error::Error;
 use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
 use mustard_core::ClaudePaths;

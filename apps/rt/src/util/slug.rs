@@ -2,7 +2,7 @@
 //!
 //! Before this module, `fnv1a8` + `slug_for` were copy-pasted verbatim into
 //! three modules (`commands::knowledge::memory`,
-//! `commands::knowledge::memory_ingest`, and the `hooks::observe::stop_observer`
+//! `commands::knowledge::memory_ingest`, and the `hooks::observe::memory_promote_observer`
 //! observer). This is the single home; every call site uses [`slug_for`]
 //! directly. `fnv1a8` stays private — it is only ever the hash suffix of a slug.
 

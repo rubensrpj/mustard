@@ -1,4 +1,4 @@
-//! `amend_capture` — session-bound amendment window enforcement module.
+//! `amend_window_inject` — session-bound amendment window enforcement module.
 //!
 //! ## Scope (Wave 2 — 2026-05-20-session-bound-amendments, W3C migration)
 //!
@@ -287,9 +287,9 @@ fn emit(project_dir: &str, session_id: &str, event_name: &str, payload: serde_js
 // ---------------------------------------------------------------------------
 
 /// The amendment capture module — both an [`Observer`] and a [`Check`].
-pub struct AmendCapture;
+pub struct AmendWindowInject;
 
-impl Observer for AmendCapture {
+impl Observer for AmendWindowInject {
     fn observe(&self, input: &HookInput, ctx: &Ctx) {
         let Some(trigger) = ctx.trigger else {
             return;
@@ -493,7 +493,7 @@ fn observe_user_prompt(input: &HookInput, _ctx: &Ctx, project_dir: &str, session
 // Check — look-ahead drift injection, no state writes
 // ---------------------------------------------------------------------------
 
-impl Check for AmendCapture {
+impl Check for AmendWindowInject {
     /// `PreToolUse(Write|Edit)`: when the file would push drift past the
     /// threshold, inject a warning into the agent's context. No side effects.
     ///
@@ -706,7 +706,7 @@ mod tests {
 
         let input = post_write_input("session-ac3", cwd, in_scope_file);
         let ctx = post_ctx(Trigger::PostToolUse, cwd);
-        AmendCapture.observe(&input, &ctx);
+        AmendWindowInject.observe(&input, &ctx);
 
         let win = read_window(cwd, spec_id);
         assert!(win.last_activity_at.is_some(), "activity should be recorded");
@@ -730,7 +730,7 @@ mod tests {
 
         let input = post_bash_input("session-ac4", cwd, "cargo test", 0);
         let ctx = post_ctx(Trigger::PostToolUse, cwd);
-        AmendCapture.observe(&input, &ctx);
+        AmendWindowInject.observe(&input, &ctx);
 
         let win = read_window(cwd, spec_id);
         assert!(win.build_verde_at.is_some());
@@ -755,7 +755,7 @@ mod tests {
         let input = prompt_input("session-ac5", cwd, "ajuste o follow-up");
         let ctx = post_ctx(Trigger::UserPromptSubmit, cwd);
         // Must not panic — fail-open.
-        AmendCapture.observe(&input, &ctx);
+        AmendWindowInject.observe(&input, &ctx);
     }
 
     // ---- AC-8: 1 drift file → under threshold, no event ------------------
@@ -776,7 +776,7 @@ mod tests {
 
         let input = post_write_input("session-ac8", cwd, "docs/unrelated.md");
         let ctx = post_ctx(Trigger::PostToolUse, cwd);
-        AmendCapture.observe(&input, &ctx);
+        AmendWindowInject.observe(&input, &ctx);
 
         let win = read_window(cwd, spec_id);
         assert_eq!(win.drift.len(), 1);
@@ -816,7 +816,7 @@ mod tests {
             workspace_root: None,
         };
         let pre_in = pre_write_input("session-ac9-chk", cwd, "docs/file3.md");
-        let verdict = AmendCapture.evaluate(&pre_in, &pre_ctx).unwrap();
+        let verdict = AmendWindowInject.evaluate(&pre_in, &pre_ctx).unwrap();
         assert!(
             matches!(verdict, Verdict::Inject { .. }),
             "expected Inject, got {verdict:?}"
@@ -842,7 +842,7 @@ mod tests {
         // File NOT in files but within "apps/rt/" subproject.
         let ctx = post_ctx(Trigger::PostToolUse, cwd);
         let input = post_write_input("session-ac10", cwd, "apps/rt/src/hooks/new_hook.rs");
-        AmendCapture.observe(&input, &ctx);
+        AmendWindowInject.observe(&input, &ctx);
 
         let win = read_window(cwd, spec_id);
         assert_eq!(win.drift.len(), 0, "subproject file must not drift");

@@ -1,4 +1,4 @@
-//! `wikilink_footer` — PostToolUse(Write|Edit) auto-footer renderer for
+//! `wikilink_footer_observer` — PostToolUse(Write|Edit) auto-footer renderer for
 //! `.claude/{memory,knowledge,spec}/**/*.md` files.
 //!
 //! ## Scope (W3E, wave-11-rt of `2026-05-26-no-sqlite-git-source-of-truth`)
@@ -32,7 +32,7 @@ use mustard_core::ClaudePaths;
 use std::path::{Path, PathBuf};
 
 /// The auto-footer renderer.
-pub struct WikilinkFooter;
+pub struct WikilinkFooterObserver;
 
 /// The `file_path` of a Write/Edit invocation, mirrors `post_edit::file_path_of`.
 fn file_path_of(input: &HookInput) -> Option<String> {
@@ -95,7 +95,7 @@ fn rewrite_if_changed(path: &Path, project: &str) {
     let _ = core_fs::write_atomic(path, rendered.as_bytes());
 }
 
-impl Observer for WikilinkFooter {
+impl Observer for WikilinkFooterObserver {
     fn observe(&self, input: &HookInput, ctx: &Ctx) {
         if ctx.trigger != Some(Trigger::PostToolUse) {
             return;
@@ -179,7 +179,7 @@ mod tests {
         let body = "# foo\n\nLinks to [[bar]] and [[ghost]].\n";
         fs::write(&foo, body).unwrap();
 
-        WikilinkFooter.observe(
+        WikilinkFooterObserver.observe(
             &write_input(foo.to_str().unwrap()),
             &ctx(project.to_str().unwrap()),
         );
@@ -215,14 +215,14 @@ mod tests {
         fs::write(&foo, "Body with [[bar]].\n").unwrap();
 
         // First fire — footer is appended.
-        WikilinkFooter.observe(
+        WikilinkFooterObserver.observe(
             &write_input(foo.to_str().unwrap()),
             &ctx(project.to_str().unwrap()),
         );
         let first = fs::read_to_string(&foo).unwrap();
 
         // Second fire on the now-stamped file must produce identical content.
-        WikilinkFooter.observe(
+        WikilinkFooterObserver.observe(
             &write_input(foo.to_str().unwrap()),
             &ctx(project.to_str().unwrap()),
         );
@@ -243,7 +243,7 @@ mod tests {
         fs::write(&foo, "Body with [[bar]].\n").unwrap();
 
         // Render the footer once.
-        WikilinkFooter.observe(
+        WikilinkFooterObserver.observe(
             &write_input(foo.to_str().unwrap()),
             &ctx(project.to_str().unwrap()),
         );
@@ -252,7 +252,7 @@ mod tests {
 
         // Now strip every wikilink and re-fire.
         fs::write(&foo, "Body without any wikilinks at all.\n").unwrap();
-        WikilinkFooter.observe(
+        WikilinkFooterObserver.observe(
             &write_input(foo.to_str().unwrap()),
             &ctx(project.to_str().unwrap()),
         );
@@ -273,7 +273,7 @@ mod tests {
         let body = "References [[ghost]].";
         fs::write(&target, body).unwrap();
 
-        WikilinkFooter.observe(
+        WikilinkFooterObserver.observe(
             &write_input(target.to_str().unwrap()),
             &ctx(project.to_str().unwrap()),
         );
@@ -299,7 +299,7 @@ mod tests {
             hook_event_name: Some("PostToolUse".to_string()),
             ..HookInput::default()
         };
-        WikilinkFooter.observe(&input, &ctx(project.to_str().unwrap()));
+        WikilinkFooterObserver.observe(&input, &ctx(project.to_str().unwrap()));
 
         // Unchanged — wrong tool.
         let after = fs::read_to_string(&foo).unwrap();

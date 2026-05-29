@@ -1,4 +1,4 @@
-//! `notification` — `Notification` lifecycle observer (W9.T9.3).
+//! `notification_observer` — `Notification` lifecycle observer (W9.T9.3).
 //!
 //! The harness fires `Notification` when Claude Code surfaces an idle prompt,
 //! a completion ping, or a permission ask. This module is observe-only: it
@@ -23,7 +23,7 @@ use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_
 use serde_json::{Value, json};
 
 /// The `Notification` lifecycle observer.
-pub struct Notification;
+pub struct NotificationObserver;
 
 
 /// Pull a human-facing reason / message out of the harness payload. The
@@ -69,7 +69,7 @@ fn append_notification_event(cwd: &str, input: &HookInput) {
 /// Emit `pipeline.economy.operation.invoked`. Fail-open.
 /// Routes through `route::emit` (NDJSON sink) — no SQLite dependency.
 
-impl Observer for Notification {
+impl Observer for NotificationObserver {
     fn observe(&self, input: &HookInput, ctx: &Ctx) {
         let cwd = ctx.project_dir_or_cwd(input);
         append_notification_event(&cwd, input);
@@ -121,7 +121,7 @@ mod tests {
         // No `.claude/` dir at all — observe must not panic / propagate.
         let dir = tempdir().unwrap();
         let project = dir.path().to_str().unwrap();
-        Notification.observe(&input_with("message", "hi"), &ctx(project));
+        NotificationObserver.observe(&input_with("message", "hi"), &ctx(project));
         // No assertion needed — survival is the contract.
     }
 }

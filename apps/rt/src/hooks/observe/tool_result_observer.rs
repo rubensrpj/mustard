@@ -1,4 +1,4 @@
-//! `tool_result` — PostToolUse `Observer` that captures the rich tool output
+//! `tool_result_observer` — PostToolUse `Observer` that captures the rich tool output
 //! (stdout, stderr, file diffs, content excerpts) into a `tool.result` event.
 //!
 //! ## Why this exists (followup-2 § Trace rico)
@@ -289,9 +289,9 @@ fn emit_event(project_dir: &str, payload: ToolResultPayload) {
 }
 
 /// The PostToolUse `Observer` family member that emits `tool.result` events.
-pub struct ToolResult;
+pub struct ToolResultObserver;
 
-impl Observer for ToolResult {
+impl Observer for ToolResultObserver {
     fn observe(&self, input: &HookInput, ctx: &Ctx) {
         if ctx.trigger != Some(Trigger::PostToolUse) {
             return;
@@ -532,7 +532,7 @@ mod tests {
             trigger: Some(Trigger::PreToolUse),
             workspace_root: None,
         };
-        ToolResult.observe(&input, &pre);
+        ToolResultObserver.observe(&input, &pre);
         // No tool.result event should land in the NDJSON session dir.
         let session_root = dir.path().join(".claude").join(".session");
         let found = ndjson_has_tool_result(&session_root);
@@ -552,7 +552,7 @@ mod tests {
             }),
             ..HookInput::default()
         };
-        ToolResult.observe(&input, &ctx(project));
+        ToolResultObserver.observe(&input, &ctx(project));
 
         // W5: `tool.result` is non-pipeline → lives in the NDJSON sink under
         // `<project>/.claude/.session/<slug>/events/` (no spec resolves in
@@ -603,7 +603,7 @@ mod tests {
             hook_event_name: Some("PostToolUse".to_string()),
             ..HookInput::default()
         };
-        ToolResult.observe(&input, &ctx(project));
+        ToolResultObserver.observe(&input, &ctx(project));
         // Unmodelled tools must not emit tool.result to the NDJSON session dir.
         let session_root = dir.path().join(".claude").join(".session");
         let found = ndjson_has_tool_result(&session_root);
