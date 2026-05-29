@@ -9,7 +9,7 @@
 //! caller decides whether to use the textual fallback or propagate.
 
 use super::{AstError, GrammarLoader, Tree};
-use tree_sitter::{Language, Parser};
+use tree_sitter::Parser;
 
 /// Per-language tree-sitter parser.
 pub struct TreeSitterParser {
@@ -30,27 +30,62 @@ impl std::fmt::Debug for TreeSitterParser {
 impl TreeSitterParser {
     /// Build a parser for `lang_id` using the grammar resolved by `loader`.
     ///
+    /// Resolution order:
+    ///
+    /// 1. **Native** — a `Language` registered with the loader (in-crate
+    ///    built-in or `tree_sitter_loader`-discovered). This is the only path
+    ///    when the `wasm-grammars` feature is off, and it is unchanged from the
+    ///    pre-feature behaviour.
+    /// 2. **WASM on demand** (only under `wasm-grammars`) — when the native
+    ///    lookup misses, ask the loader to acquire a WASM grammar. A WASM
+    ///    `Language` needs a `WasmStore` on the parser, built from the loader's
+    ///    shared engine; we install it before `set_language`.
+    ///
     /// # Errors
     ///
-    /// - [`AstError::GrammarNotInstalled`] when the loader has no grammar
-    ///   registered under `lang_id`.
+    /// - [`AstError::GrammarNotInstalled`] when neither path resolves a grammar
+    ///   for `lang_id` (the caller then falls back to the textual floor).
     /// - [`AstError::LoaderConfigFailed`] when `tree_sitter::Parser::set_language`
-    ///   rejects the language (typically an ABI mismatch between the
-    ///   `tree-sitter` crate and the loaded grammar shared library).
+    ///   (or, on the WASM path, `set_wasm_store`) rejects the language —
+    ///   typically an ABI mismatch.
     pub fn for_language(loader: &GrammarLoader, lang_id: &str) -> Result<Self, AstError> {
-        let language: Language = loader
-            .language(lang_id)
-            .ok_or_else(|| AstError::GrammarNotInstalled(lang_id.to_string()))?;
+        // (1) Native grammar — unchanged when the feature is off.
+        if let Some(language) = loader.language(lang_id) {
+            let mut parser = Parser::new();
+            parser.set_language(&language).map_err(|e| {
+                AstError::LoaderConfigFailed(format!("set_language({lang_id}): {e}"))
+            })?;
+            return Ok(Self {
+                parser,
+                lang_id: lang_id.to_string(),
+            });
+        }
 
-        let mut parser = Parser::new();
-        parser
-            .set_language(&language)
-            .map_err(|e| AstError::LoaderConfigFailed(format!("set_language({lang_id}): {e}")))?;
+        // (2) WASM on demand — feature-gated; a no-op (the `?` below errors)
+        // when the feature is off because `acquire_wasm_language` is absent.
+        #[cfg(feature = "wasm-grammars")]
+        if let Some(language) = loader.acquire_wasm_language(lang_id) {
+            let mut parser = Parser::new();
+            // A WASM `Language` is only usable on a parser carrying a
+            // `WasmStore` built from the same engine the language was loaded
+            // through. `set_wasm_store` consumes the store, so build a fresh
+            // one from the loader's shared engine for this parser.
+            let store = tree_sitter::WasmStore::new(loader.wasm_engine()).map_err(|e| {
+                AstError::LoaderConfigFailed(format!("WasmStore::new({lang_id}): {e}"))
+            })?;
+            parser.set_wasm_store(store).map_err(|e| {
+                AstError::LoaderConfigFailed(format!("set_wasm_store({lang_id}): {e}"))
+            })?;
+            parser.set_language(&language).map_err(|e| {
+                AstError::LoaderConfigFailed(format!("set_language(wasm {lang_id}): {e}"))
+            })?;
+            return Ok(Self {
+                parser,
+                lang_id: lang_id.to_string(),
+            });
+        }
 
-        Ok(Self {
-            parser,
-            lang_id: lang_id.to_string(),
-        })
+        Err(AstError::GrammarNotInstalled(lang_id.to_string()))
     }
 
     /// Parse `source` and return the resulting [`Tree`].

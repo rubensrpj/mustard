@@ -61,6 +61,22 @@ tree-sitter-c-sharp = "0.23.5"
 # stable since 2023; resolves to 2.7.0 on crates.io (May 2026). Spec A Wave 2
 # pins this version explicitly.
 similar = "2"
+# HTTP client for the OPTIONAL `wasm-grammars` feature only: it downloads
+# pinned `tree-sitter-<lang>.wasm` blobs on demand into `~/.mustard/grammars/`.
+# `optional = true` + `dep:ureq` in the feature means the DEFAULT build never
+# compiles it; the WASM-acquisition path is the sole consumer. Pulled through
+# the workspace table (same `3.3` the CLI/rt faces already use).
+ureq = { workspace = true, optional = true }
+
+# Optional, OFF by default. `wasm-grammars` turns on `tree-sitter/wasm`, which
+# pulls `wasmtime` (heavy build, needs a C/LLVM toolchain on some hosts), plus
+# the `ureq` HTTP client used to fetch pinned grammar blobs. The default gate
+# (build/test) never pays this cost; with the feature off, the native
+# (in-crate + tree-sitter-loader) path is byte-for-byte identical and the
+# textual floor still covers every other language. See
+# `domain::ast::wasm_acquire`.
+[features]
+wasm-grammars = ["tree-sitter/wasm", "dep:ureq"]
 
 [dev-dependencies]
 insta = { workspace = true }
