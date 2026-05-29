@@ -35,9 +35,15 @@ Parse: `stage`, `mode`, `operationalSpecPath`, `currentWave`, `waveModel`, `last
 
 `Plan` + no suffix → `../../../refs/spec/approve-only-flow.md`. `Plan` + `r` → `approve-only-flow.md § Branch --resume`. `Execute`/`Analyze`/`QaReview`/`Close` → `../../../refs/spec/resume-flow.md`; EXEC ignores `r`.
 
-#### EXEC branch — `agent-prompt-render`
+#### EXEC branch — `dispatch-plan` relay
 
-NEVER hand-craft. For each agent: `rtk mustard-rt run agent-prompt-render --spec {specName} --wave {N} --role {role} --subproject {sub} [--mode first|granular|fix-loop]`. Pass stdout verbatim as Task `prompt`. All agents of one wave → **one** message. Post-dispatch → `../../../refs/spec/resume-flow.md`.
+Routing/order is decided by Rust, not the LLM. Get the ordered dispatch array:
+
+```bash
+rtk mustard-rt run dispatch-plan --spec {specName}
+```
+
+For each item `{wave, role, subproject, depends_on, level, prompt_cmd}`: run `prompt_cmd` (a ready `agent-prompt-render` call) and pass its **stdout** verbatim as the Task `prompt`. Items sharing a `level` are independent → dispatch them in **one** message. `subagent_type` = `{subproject-name}-impl` when that rich agent exists, else `general-purpose`. NEVER hand-craft prompts or interpret `wave-plan.md` by hand. Post-dispatch → `../../../refs/spec/resume-flow.md`.
 
 ### 4. Edge cases
 
@@ -46,5 +52,6 @@ NEVER hand-craft. For each agent: `rtk mustard-rt run agent-prompt-render --spec
 ## INVIOLABLE RULES
 
 - Table + Siglas + Modo blocks are mandatory + literal every invocation.
-- NEVER hand-craft agent prompts — always `agent-prompt-render`.
+- NEVER hand-craft agent prompts — always `agent-prompt-render` (delivered as each `dispatch-plan` item's `prompt_cmd`).
+- NEVER read `wave-plan.md` or decide wave order by hand — `dispatch-plan` owns routing; the LLM only relays.
 - NEVER reimplement `continued` vs `reanalyzed` — `resume-bootstrap` is the source of truth.

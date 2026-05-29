@@ -342,7 +342,11 @@ fn parse_self_created(text: &str) -> HashSet<String> {
 /// the first one shared by every path wins. Falls back to `None` when paths
 /// disagree or none match the convention — the caller then defaults to the
 /// repo root.
-fn detect_subproject(files: &[String], repo_root: &Path) -> Option<PathBuf> {
+///
+/// Also consumed by `pipeline::dispatch_plan` to derive a wave's `--subproject`
+/// from its `## Files` section (single subproject discovery — no
+/// reimplementation).
+pub fn detect_subproject(files: &[String], repo_root: &Path) -> Option<PathBuf> {
     let mut chosen: Option<(String, String)> = None;
     for raw in files {
         let normalized = raw.replace('\\', "/");

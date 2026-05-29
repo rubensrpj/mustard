@@ -64,16 +64,23 @@ Create `.claude/.pipeline-states/{spec-name}.json`.
 Agents auto-load relevant skills from `{subproject}/.claude/skills/` based on task description.
 Orchestrator may hint specific skills via `{recommended_skills}` in the agent prompt.
 
-**2. Plan Waves:**
+**2. Plan Waves — routed by Rust, the LLM relays:**
 
-- **Wave 1:** 🟡 Database + 🔵 Backend + 🟣 Libs — independent, dispatched together
-- **Wave 2:** 🟢 Frontend + 🟠 Mobile — starts ONLY after ALL Wave 1 complete
-- ALL agents in same wave → SINGLE message (multiple `<invoke>` blocks)
-- NEVER nest dispatch — nesting breaks parallel execution
+Do NOT read `wave-plan.md` or decide the wave order by hand. Run:
+
+```bash
+mustard-rt run dispatch-plan --spec {specName}
+```
+
+It returns a deterministic JSON array ordered by dependency level. Each item is `{wave, role, subproject, depends_on, level, prompt_cmd}`:
+
+- **`level`** = dispatch round. Items sharing a `level` have no dependency between them → dispatch them together in ONE message (multiple `<invoke>` blocks). A higher `level` starts ONLY after every lower-level wave completes.
+- NEVER nest dispatch — nesting breaks parallel execution.
+- `resume-bootstrap` decides the **stage**; `dispatch-plan` decides the **wave routing**. The orchestrator is a relay over the array, not a planner.
 
 **3. Dispatch Agent:**
 
-The prompt body is rendered by `mustard-rt run agent-prompt-render` (never hand-assembled). The `subagent_type` is chosen by presence of the scan-generated rich agent (keyed by subproject **name**, at the root `.claude/agents/` catalog):
+For each item, run its `prompt_cmd` (a ready `mustard-rt run agent-prompt-render` invocation — never hand-assembled) and pass the **stdout** to the Task `prompt`. The `subagent_type` is chosen by presence of the scan-generated rich agent (keyed by subproject **name**, at the root `.claude/agents/` catalog):
 
 IF `.claude/agents/{subproject-name}-impl.md` exists:
 Use `subagent_type: "{subproject-name}-impl"`. The agent's system prompt already carries guards + recommended skills + pre-mined clusters + role/boundary/return, so `agent-prompt-render` suppresses `{role_block}` and the parent sends only the task-specific prompt (REFERENCE / ENTITY / TASK). This is the token-economy path — the rich context is applied natively, not re-sent per dispatch.

@@ -950,6 +950,24 @@ pub enum RunCmd {
         #[arg(long)]
         json: bool,
     },
+    /// Wave-routing face of the orchestrator. Reads the spec's `wave-plan.md`,
+    /// builds the wave dependency DAG, and emits a deterministic JSON array
+    /// ordered by dependency level — one item per agent, each carrying
+    /// `{wave, role, subproject, depends_on, level, prompt_cmd}`. `prompt_cmd`
+    /// is a ready `agent-prompt-render` invocation: the orchestrator runs it
+    /// and relays the stdout to `Task`. Determines the dispatch order in Rust
+    /// so the LLM stops interpreting the wave-plan by hand. Fail-open: a
+    /// non-wave / unparseable spec degrades to `[]`; exit 0 always.
+    #[command(name = "dispatch-plan")]
+    DispatchPlan {
+        /// Spec slug under `.claude/spec/`.
+        #[arg(long)]
+        spec: String,
+        /// Restrict the emitted array to a single wave (still carrying its real
+        /// `depends_on` / `level`). Omit to emit the whole plan.
+        #[arg(long)]
+        wave: Option<u32>,
+    },
     /// Render the agent dispatch prompt server-side from the embedded
     /// template. Substitutes every `{placeholder}` it can resolve; warns on
     /// stderr for any left unfilled. Stdout = raw prompt string ready for
@@ -1759,6 +1777,7 @@ pub fn dispatch(cmd: RunCmd) {
             }
         }
         RunCmd::ResumeBootstrap { spec, json } => pipeline::resume_bootstrap::run(&spec, json),
+        RunCmd::DispatchPlan { spec, wave } => pipeline::dispatch_plan::run(&spec, wave),
         RunCmd::AgentPromptRender {
             spec,
             wave,
