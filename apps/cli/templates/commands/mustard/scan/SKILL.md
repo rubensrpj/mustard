@@ -20,7 +20,9 @@ Parse JSON. Binary handles discovery, hash comparison, stale cleanup, bootstrap 
 
 ### 2. Dispatch
 
-For each `dispatch[]` item, fire one `Task(general-purpose)` in a single message (parallel). Pass `agentPrompt` literally — it already carries EVIDENCE RULE + step instructions. Never `run_in_background: true`. Empty `dispatch[]` → skip to step 3.
+For each `dispatch[]` item, fire one Task in a single message (parallel). Pass `agentPrompt` literally — it already carries EVIDENCE RULE + step instructions. Never `run_in_background: true`. Empty `dispatch[]` → skip to step 3.
+
+**`subagent_type` selection (token economy):** `scan-orchestrate` writes a rich, deterministic agent at `.claude/agents/{name}-impl.md` (and `{name}-explorer.md`) for every subproject — frontmatter with a routing-grade `description` + a body carrying that subproject's guards, recommended skills, and pre-mined clusters. When `.claude/agents/{name}-impl.md` exists (it is listed in `generated[]` after the first scan), dispatch with `subagent_type: "{name}-impl"` so Claude Code applies that agent's system prompt **natively** — the parent does not re-send guards/skills/clusters, saving prompt tokens. When the rich agent is absent (very first scan before generation, or a manual agent was preserved without one), fall back to `subagent_type: "general-purpose"`. The `agentPrompt` is passed verbatim in both cases; only the `subagent_type` differs.
 
 ### 3. Post-dispatch + verification
 

@@ -18,6 +18,7 @@ use crate::commands::scan::scan_precompute::{
     backup_generated_mds, build_structure_block, build_tooling_block, ensure_notes_md,
     purge_generated_skills,
 };
+use crate::commands::skill::skill_resolve;
 use mustard_core::domain::entity_registry::EntityRegistry;
 use mustard_core::time::now_iso8601;
 use mustard_core::io::fs;
@@ -372,7 +373,27 @@ fn precompute(
 }
 
 /// Generate per-subproject impl + explorer agent files.
-fn generate_agent_files(root: &Path, detect: &Value, force: bool, target: Option<&str>, result: &mut ScanResult) {
+///
+/// The agents are written **rich**: their `description` is derived from the
+/// subproject's stack/role/architecture and its discovered clusters (so the
+/// native `subagent_type` router can pick them by signal, not by a generic
+/// "role implementation for X" line), and their body carries the subproject's
+/// guards, the deterministically-resolved recommended skills, and the
+/// pre-mined entity clusters. All of that comes from the same Rust helpers the
+/// dispatch renderer uses (`skill_resolve`, `EntityRegistry`/clusters) — no
+/// LLM, no facade.
+///
+/// Idempotent: a non-force run only writes an agent that is absent; a force run
+/// regenerates it. Manual (non-`mustard:generated`) agents are never
+/// overwritten, even under `--force`.
+fn generate_agent_files(
+    root: &Path,
+    detect: &Value,
+    patterns: Option<&Map<String, Value>>,
+    force: bool,
+    target: Option<&str>,
+    result: &mut ScanResult,
+) {
     let agents_dir = ClaudePaths::for_project(root)
         .map(|p| p.agents_dir())
         .unwrap_or_else(|_| root.to_path_buf());
@@ -387,44 +408,212 @@ fn generate_agent_files(root: &Path, detect: &Value, force: bool, target: Option
         let role = sub.get("role").and_then(Value::as_str).unwrap_or("general");
         let stack = sub.get("stackSummary").and_then(Value::as_str).unwrap_or("auto-detected");
         let title = title_case(name);
+        let clusters = patterns
+            .map(|p| clusters_for_subproject(p, path))
+            .unwrap_or_default();
+        let guards = read_guards_section(&root.join(path));
         let impl_path = agents_dir.join(format!("{name}-impl.md"));
         let explorer_path = agents_dir.join(format!("{name}-explorer.md"));
-        if (force || !impl_path.exists())
-            && write_safe(result, root, &impl_path, &build_impl_agent(&title, name, path, role, stack))
+        if agent_writable(&impl_path, force)
+            && write_safe(
+                result,
+                root,
+                &impl_path,
+                &build_impl_agent(root, &title, name, path, role, stack, &clusters, &guards),
+            )
         {
             result.generated.push(format!(".claude/agents/{name}-impl.md"));
         }
-        if (force || !explorer_path.exists())
-            && write_safe(result, root, &explorer_path, &build_explorer_agent(&title, name, path, role))
+        if agent_writable(&explorer_path, force)
+            && write_safe(
+                result,
+                root,
+                &explorer_path,
+                &build_explorer_agent(root, &title, name, path, role, stack, &clusters),
+            )
         {
             result.generated.push(format!(".claude/agents/{name}-explorer.md"));
         }
     }
 }
 
-/// The `<name>-impl.md` agent template.
-fn build_impl_agent(title: &str, name: &str, path: &str, role: &str, stack: &str) -> String {
+/// Whether an agent file may be (re)written: a missing file is always written;
+/// an existing file is overwritten only under `--force` AND only when it is a
+/// `mustard:generated` artefact (a hand-authored agent is preserved verbatim).
+fn agent_writable(agent_path: &Path, force: bool) -> bool {
+    if !agent_path.exists() {
+        return true;
+    }
+    if !force {
+        return false;
+    }
+    // Force only regenerates files we own — preserve manual agents.
+    read_safe(agent_path).is_some_and(|c| c.contains("<!-- mustard:generated"))
+}
+
+/// Read the `## Guards` section body from a subproject's `CLAUDE.md`, capped to
+/// a handful of lines so the agent description/body stays compact. Empty when
+/// the file or section is absent (fail-open). Mirrors the heading-scan shape of
+/// [`crate::commands::agent::agent_prompt_render`]'s `read_guards_block`.
+fn read_guards_section(subproject_dir: &Path) -> Vec<String> {
+    let Some(text) = read_safe(&subproject_dir.join("CLAUDE.md")) else {
+        return Vec::new();
+    };
+    let mut in_section = false;
+    let mut out: Vec<String> = Vec::new();
+    for line in text.lines() {
+        if line.trim_start().starts_with("## ") {
+            if in_section {
+                break;
+            }
+            let after = line.trim_start().trim_start_matches('#').trim();
+            if after.eq_ignore_ascii_case("Guards") {
+                in_section = true;
+            }
+            continue;
+        }
+        if in_section {
+            let t = line.trim();
+            if !t.is_empty() {
+                out.push(t.to_string());
+            }
+            if out.len() >= 8 {
+                break;
+            }
+        }
+    }
+    out
+}
+
+/// Comma-separated cluster labels for the subproject (deduped, capped) — the
+/// routing signal that goes into the agent `description`. Empty when no cluster
+/// is tagged.
+fn cluster_label_summary(clusters: &[&Value]) -> String {
+    let mut labels: Vec<&str> = clusters
+        .iter()
+        .filter_map(|c| c.get("label").and_then(Value::as_str))
+        .filter(|s| !s.is_empty())
+        .collect();
+    labels.dedup();
+    labels.truncate(6);
+    labels.join(", ")
+}
+
+/// Resolve the top recommended skills for an agent role+subproject via
+/// [`skill_resolve::resolve`] (same deterministic resolver the dispatch
+/// renderer uses). The intent is the role label plus the cluster labels and
+/// stack, so a fresh registry surfaces the subproject's own conventions.
+/// Returns the skill names (capped). Empty when nothing scores.
+fn resolve_agent_skills(root: &Path, role: &str, path: &str, stack: &str, clusters: &[&Value]) -> Vec<String> {
+    let intent = format!("{role} {stack} {}", cluster_label_summary(clusters));
+    let phase = crate::commands::agent::context_inject::role_to_phase(role);
+    skill_resolve::resolve(root, &intent, Some(path), Some(phase), 4)
+        .into_iter()
+        .map(|r| r.name)
+        .collect()
+}
+
+/// Render the shared `## Pre-mined clusters` + recommended-skills body chunk so
+/// both agent templates surface the same deterministic facts.
+fn agent_context_body(skills: &[String], clusters: &[&Value], guards: &[String]) -> String {
+    let mut out = String::new();
+    if !guards.is_empty() {
+        out.push_str("## Guards (from CLAUDE.md)\n");
+        for g in guards {
+            let _ = writeln!(out, "{g}");
+        }
+        out.push('\n');
+    }
+    if !skills.is_empty() {
+        let _ = writeln!(out, "## Recommended Skills\n{}\n", skills.join(", "));
+    }
+    let clusters_block = build_clusters_block(clusters);
+    if !clusters_block.is_empty() {
+        out.push_str(&clusters_block);
+        out.push('\n');
+    }
+    out
+}
+
+/// The `<name>-impl.md` agent — written rich and deterministic.
+///
+/// The `description` is a routing-grade signal (stack + role + clusters) so the
+/// native `subagent_type` selector picks this agent for the right subproject,
+/// not a generic "role implementation for X". The body carries the subproject's
+/// guards, the resolved recommended skills, and the pre-mined entity clusters.
+fn build_impl_agent(
+    root: &Path,
+    title: &str,
+    name: &str,
+    path: &str,
+    role: &str,
+    stack: &str,
+    clusters: &[&Value],
+    guards: &[String],
+) -> String {
     let tools = "Read, Write, Edit, Bash, Grep, Glob";
+    let cluster_summary = cluster_label_summary(clusters);
+    let skills = resolve_agent_skills(root, role, path, stack, clusters);
+    let description = build_impl_description(name, role, stack, &cluster_summary);
+    let context_body = agent_context_body(&skills, clusters, guards);
     format!(
-        "---\nname: {name}-impl\ndescription: {role} implementation for {name}. Reads {name}/CLAUDE.md for guards.\nmodel: sonnet\ntools: [{tools}]\nmemory: project\n---\n<!-- mustard:generated -->\n\n\
+        "---\nname: {name}-impl\ndescription: {description}\nmodel: sonnet\ntools: [{tools}]\nmemory: project\n---\n<!-- mustard:generated at:{ts} role:{role} -->\n\n\
          # {title} Implementation Agent\n\n\
+         > Implements changes in `{path}/` ({stack}). Guards, skills and pre-mined clusters below are authoritative — trust them before re-walking the tree.\n\n\
          ## Mandatory Reads\n1. `{path}/CLAUDE.md` — guards, stack, key paths\n2. `{path}/.claude/commands/guards.md` — DO/DON'T rules\n3. `{path}/.claude/commands/notes.md` — project-specific notes\n\n\
-         ## Boundary\nRole: {role}. Stack: {stack}.\n\n\
-         ## Validation\nRun the build/type-check command listed in `{path}/CLAUDE.md` → Commands.\n\n\
-         ## Return Format\n### Files Modified/Created\n| File | Action |\n|------|--------|\n\n### Build / Type-check\n{{output}}\n\n### Guards Verified\nTotal: {{n}}/{{total}} | Violations: {{v}}\n"
+         {context_body}\
+         ## Boundary\nRole: {role}. Stack: {stack}. Scope: `{path}/` only.\n\n\
+         ## Validation\nRun the build/type-check command listed in `{path}/CLAUDE.md` → Commands. Max 3 attempts, then STOP + report.\n\n\
+         ## Return Format\n### Files Modified/Created\n| File | Action |\n|------|--------|\n\n### Build / Type-check\n(paste exact command + result)\n\n### Guards Verified\nTotal: N/total | Violations: V\n",
+        ts = now_iso8601()
     )
 }
 
-/// The `<name>-explorer.md` agent template.
-fn build_explorer_agent(title: &str, name: &str, path: &str, role: &str) -> String {
+/// Build the routing-grade `description` for the impl agent. Names the
+/// subproject, role, stack and (when present) the discovered clusters so the
+/// native `subagent_type` selector routes work here by signal.
+fn build_impl_description(name: &str, role: &str, stack: &str, cluster_summary: &str) -> String {
+    let mut desc = format!(
+        "Implementation agent for the {name} subproject ({stack}, {role}). \
+         Use when editing or building code under {name}/."
+    );
+    if !cluster_summary.is_empty() {
+        let _ = write!(desc, " Owns these conventions: {cluster_summary}.");
+    }
+    desc
+}
+
+/// The `<name>-explorer.md` agent — written rich and read-only.
+fn build_explorer_agent(
+    root: &Path,
+    title: &str,
+    name: &str,
+    path: &str,
+    role: &str,
+    stack: &str,
+    clusters: &[&Value],
+) -> String {
+    let cluster_summary = cluster_label_summary(clusters);
+    let skills = resolve_agent_skills(root, "explore", path, stack, clusters);
+    let mut description = format!(
+        "Read-only exploration agent for the {name} subproject ({stack}). \
+         Use when analyzing, auditing, or investigating code under {name}/ without modifying it."
+    );
+    if !cluster_summary.is_empty() {
+        let _ = write!(description, " Knows these conventions: {cluster_summary}.");
+    }
+    // Explorer body lists clusters + skills but never the guards-as-rules block
+    // (it does not write), so only the cluster/skill context is injected.
+    let context_body = agent_context_body(&skills, clusters, &[]);
     format!(
-        "---\nname: {name}-explorer\ndescription: Read-only exploration agent for {name} codebase analysis and investigation.\nmodel: sonnet\ntools: [Read, Grep, Glob]\nmemory: project\n---\n<!-- mustard:generated at:{} role:{role} -->\n\n\
+        "---\nname: {name}-explorer\ndescription: {description}\nmodel: sonnet\ntools: [Read, Grep, Glob]\nmemory: project\n---\n<!-- mustard:generated at:{ts} role:{role} -->\n\n\
          # {title} Explorer Agent\n\n\
-         > Read-only analysis of {name} codebase. Patterns, dependencies, architecture, quality evaluation.\n\n\
+         > Read-only analysis of `{path}/` ({stack}). Patterns, dependencies, architecture, quality evaluation.\n\n\
          ## Mandatory Reads\n1. `{path}/CLAUDE.md` — project rules, guards, stack\n2. `{path}/.claude/commands/guards.md` — DO/DON'T rules\n\n\
+         {context_body}\
          ## Boundary\n- **Read-only** — NEVER write, edit, or execute commands\n- Scope: `{path}/` directory only\n- **Budget: ≤20 tool uses total, ≤3 full file reads** — prefer Grep over Read\n\n\
          ## Return Format\n### Findings\n| Severity | File:Line | Detail |\n|----------|-----------|--------|\n",
-        now_iso8601()
+        ts = now_iso8601()
     )
 }
 
@@ -624,10 +813,22 @@ fn orchestrate(root: &Path, force: bool, target: Option<&str>) -> ScanResult {
     }
 
     bootstrap(root, &detect, force, &mut result);
-    generate_agent_files(root, &detect, force, target, &mut result);
     if force {
         force_refresh(root, &detect, &mut result);
     }
+
+    // Load the entity-registry once — after a force refresh so the rich agents
+    // and the dispatch prompt both see the freshest `_patterns.{stack}` clusters.
+    // Fail-open: a missing / empty registry yields no patterns and every
+    // cluster-driven block stays empty.
+    let registry = EntityRegistry::load(root);
+    let patterns = registry.patterns();
+
+    // Generate the rich `.claude/agents/{name}-impl|-explorer.md` files. They
+    // reuse the same cluster facts as the dispatch prompt so the native
+    // `subagent_type` router gets a routing-grade description + a body carrying
+    // guards/skills/clusters. Idempotent; preserves manual agents.
+    generate_agent_files(root, &detect, patterns, force, target, &mut result);
 
     let (dispatch, skipped) = classify(&detect, old_cache.as_ref(), force, target);
     result.skipped = skipped;
@@ -643,13 +844,9 @@ fn orchestrate(root: &Path, force: bool, target: Option<&str>) -> ScanResult {
     let blocks = precompute(root, &detect, &dispatched_paths, force, &mut result);
 
     // Render the agent prompt for each dispatch target. The template is baked
-    // into the binary; an on-disk copy overrides it when present.
-    // Load the entity-registry once so `{{clustersBlock}}` / `{{samplesBlock}}`
-    // render the pre-mined `_patterns.{stack}.discovered[]` facts instead of
-    // the empty strings the regression left behind. Fail-open: a missing /
-    // empty registry yields no patterns, and the blocks stay empty.
-    let registry = EntityRegistry::load(root);
-    let patterns = registry.patterns();
+    // into the binary; an on-disk copy overrides it when present. The registry
+    // (loaded above) feeds `{{clustersBlock}}` / `{{samplesBlock}}` with the
+    // pre-mined `_patterns.{stack}.discovered[]` facts.
     let template_path = claude_dir.join("scripts").join("scan").join("agent-prompt.template.md");
     let template = read_safe(&template_path).unwrap_or_else(|| EMBEDDED_PROMPT_TEMPLATE.to_string());
     for sub in &dispatch {
@@ -846,5 +1043,140 @@ mod tests {
         let cp = ClaudePaths::for_project(dir.path()).unwrap();
         assert!(cp.claude_md_path().exists());
         assert!(result.generated.iter().any(|g| g == "CLAUDE.md"));
+    }
+
+    // -----------------------------------------------------------------------
+    // F3-c — rich `.claude/agents/{name}-impl|-explorer.md` generation
+    // -----------------------------------------------------------------------
+
+    /// Plant a workspace anchor + a subproject CLAUDE.md with a `## Guards`
+    /// section so the rich agent body has something to inject.
+    fn anchor_with_guards(dir: &Path, sub: &str) {
+        std::fs::create_dir_all(dir.join(".claude")).unwrap();
+        std::fs::write(dir.join("mustard.json"), b"{}").unwrap();
+        std::fs::create_dir_all(dir.join(sub)).unwrap();
+        std::fs::write(
+            dir.join(sub).join("CLAUDE.md"),
+            "# Api\n\n## Guards\n- DO validate inputs\n- DON'T leak secrets\n\n## Stack\nrust\n",
+        )
+        .unwrap();
+    }
+
+    /// A `_patterns.{stack}.discovered[]` map with one api-scoped cluster.
+    fn api_patterns() -> Map<String, Value> {
+        serde_json::from_value(json!({
+            "rust": {
+                "discovered": [
+                    {
+                        "label": "Service",
+                        "suffix": "Service",
+                        "folderPattern": "**/services/",
+                        "fileCount": 5,
+                        "subprojectName": "api"
+                    }
+                ]
+            }
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn build_impl_agent_is_rich_not_generic() {
+        let dir = tempdir().unwrap();
+        anchor_with_guards(dir.path(), "api");
+        let patterns = api_patterns();
+        let clusters = clusters_for_subproject(&patterns, "api");
+        let guards = read_guards_section(&dir.path().join("api"));
+        let agent = build_impl_agent(
+            dir.path(),
+            "Api",
+            "api",
+            "api",
+            "backend",
+            "Rust",
+            &clusters,
+            &guards,
+        );
+        // Frontmatter: routing-grade description, NOT the old generic line.
+        assert!(agent.contains("name: api-impl"));
+        assert!(
+            !agent.contains("role implementation for"),
+            "description must not be the old generic stub"
+        );
+        assert!(agent.contains("Implementation agent for the api subproject"));
+        // The cluster label surfaces in the description (routing signal).
+        assert!(agent.contains("Service"), "cluster label missing from description/body");
+        // Body carries guards + a pre-mined cluster block.
+        assert!(agent.contains("## Guards (from CLAUDE.md)"));
+        assert!(agent.contains("DO validate inputs"));
+        assert!(agent.contains("## Pre-mined clusters"));
+        // Generated-marker is AFTER the closing `---` (never breaks YAML).
+        let marker = agent.find("<!-- mustard:generated").unwrap();
+        let fm_close = agent.find("\n---\n").unwrap();
+        assert!(marker > fm_close, "generated marker must follow frontmatter");
+    }
+
+    #[test]
+    fn build_explorer_agent_is_read_only_and_rich() {
+        let dir = tempdir().unwrap();
+        anchor_with_guards(dir.path(), "api");
+        let patterns = api_patterns();
+        let clusters = clusters_for_subproject(&patterns, "api");
+        let agent = build_explorer_agent(dir.path(), "Api", "api", "api", "general", "Rust", &clusters);
+        assert!(agent.contains("name: api-explorer"));
+        assert!(agent.contains("tools: [Read, Grep, Glob]"), "explorer must stay read-only");
+        assert!(
+            !agent.contains("## Guards (from CLAUDE.md)"),
+            "explorer does not write — no guards-as-rules block"
+        );
+        // Still carries the pre-mined cluster facts.
+        assert!(agent.contains("## Pre-mined clusters"));
+        assert!(agent.contains("Read-only exploration agent for the api subproject"));
+    }
+
+    #[test]
+    fn generate_agent_files_is_idempotent_and_preserves_manual_agents() {
+        let dir = tempdir().unwrap();
+        anchor_with_guards(dir.path(), "api");
+        let detect = json!({
+            "subprojects": [{ "name": "api", "path": "api", "role": "backend", "stackSummary": "Rust" }]
+        });
+        let patterns = api_patterns();
+
+        // First run (non-force): writes both agents.
+        let mut r1 = ScanResult::default();
+        generate_agent_files(dir.path(), &detect, Some(&patterns), false, None, &mut r1);
+        let agents_dir = ClaudePaths::for_project(dir.path()).unwrap().agents_dir();
+        let impl_path = agents_dir.join("api-impl.md");
+        assert!(impl_path.exists());
+        assert!(r1.generated.iter().any(|g| g == ".claude/agents/api-impl.md"));
+
+        // Second run (non-force): the file exists → no rewrite, nothing generated.
+        let mut r2 = ScanResult::default();
+        generate_agent_files(dir.path(), &detect, Some(&patterns), false, None, &mut r2);
+        assert!(
+            r2.generated.is_empty(),
+            "non-force run must not rewrite an existing agent (idempotent)"
+        );
+
+        // A hand-authored agent (no generated marker) is preserved under --force.
+        std::fs::write(&impl_path, "---\nname: api-impl\n---\nMANUAL — keep me\n").unwrap();
+        let mut r3 = ScanResult::default();
+        generate_agent_files(dir.path(), &detect, Some(&patterns), true, None, &mut r3);
+        let after = std::fs::read_to_string(&impl_path).unwrap();
+        assert!(after.contains("MANUAL — keep me"), "manual agent must survive --force");
+        assert!(
+            !r3.generated.iter().any(|g| g == ".claude/agents/api-impl.md"),
+            "force must not report regenerating a preserved manual agent"
+        );
+
+        // A generated agent IS regenerated under --force (idempotent overwrite).
+        let mut r4 = ScanResult::default();
+        // Restore a generated-marker file first.
+        std::fs::write(&impl_path, "<!-- mustard:generated -->\nold body\n").unwrap();
+        generate_agent_files(dir.path(), &detect, Some(&patterns), true, None, &mut r4);
+        let regen = std::fs::read_to_string(&impl_path).unwrap();
+        assert!(regen.contains("Implementation agent"), "generated agent must be refreshed under --force");
+        assert!(r4.generated.iter().any(|g| g == ".claude/agents/api-impl.md"));
     }
 }

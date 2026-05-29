@@ -30,11 +30,15 @@ Orchestrator uses hierarchy for: implementation ORDER, task SPLIT boundaries, CR
 
 ## 9. Agent Generation
 
-Generate `.claude/agents/{subproject.name}-impl.md` per detected subproject (named by subproject name, NOT role):
-- YAML frontmatter: name (`{subproject.name}-impl`), description, model (sonnet default), tools, memory (project)
-- Body: mandatory reads, boundary, validation, return format
-- Mark `<!-- mustard:generated -->` AFTER closing `---` (NEVER before opening `---` — breaks YAML frontmatter parsing)
-- Explorer agent always generated (`{subproject.name}-explorer.md`, model: sonnet, read-only tools, with skill refs — see `scan.md` §4.5 for full template)
+`mustard-rt run scan-orchestrate` generates these **deterministically** (no LLM) — this section documents the contract, not a manual step. One `.claude/agents/{subproject.name}-impl.md` + `{subproject.name}-explorer.md` per detected subproject (named by subproject name, NOT role), written to the **root** `.claude/agents/` catalog:
+- YAML frontmatter: name (`{subproject.name}-impl`), **routing-grade description** (derived from subproject name + stack + role + discovered cluster labels — e.g. "Implementation agent for the api subproject (Rust, backend). Use when editing or building code under api/. Owns these conventions: Service, Repository." — NOT a generic "role implementation for X"), model (sonnet default), tools, memory (project)
+- Body: a `> trust these facts` lead, mandatory reads, the subproject's **Guards** (extracted from `{path}/CLAUDE.md`), **Recommended Skills** (resolved deterministically via `skill-resolve` for the role+subproject), **Pre-mined clusters** table (from the entity-registry `_patterns`), boundary, validation, return format. The explorer variant omits the writable Guards block but keeps clusters + skills, and is read-only (`tools: [Read, Grep, Glob]`).
+- Mark `<!-- mustard:generated at:{ISO} role:{role} -->` AFTER closing `---` (NEVER before opening `---` — breaks YAML frontmatter parsing)
+- **Idempotent:** a non-force scan only writes a missing agent; `--force` regenerates a `mustard:generated` agent but **preserves a hand-authored one** (no generated marker).
+
+### Dispatch via native `subagent_type`
+
+Because the rich agent carries guards/skills/clusters in its own system prompt, EXECUTE/explore dispatch should pass `subagent_type: "{subproject.name}-impl"` (or `-explorer`) when the file exists — Claude Code applies that prompt natively, so the parent does not re-send the same context (token economy). When no rich agent exists (first scan, or a preserved manual agent without one), fall back to `subagent_type: "general-purpose"` with the full rendered prompt. `agent-prompt-render` mirrors this: it suppresses `{role_block}` when the rich agent is present (see `refs/agent-prompt/agent-prompt.md`).
 
 | Role | Tools | Boundary |
 |------|-------|----------|

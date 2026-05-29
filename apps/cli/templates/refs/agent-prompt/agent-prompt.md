@@ -12,7 +12,7 @@
 | `{context_md}` | `mustard-rt run context-slice` cached at `.claude/.pipeline-states/{spec}.context-md.md` | PREFIX-STABLE — the slice is stable across the whole pipeline, refreshed only on a wave transition. Empty when there is no `CONTEXT.md` (graceful degrade). |
 | `{reference_files}` | scan-derived neighbour files | 2-3 file references. |
 | `{entity_info}` | `entity-registry.json` keyed by entity name | `_patterns` type + refs + subs. |
-| `{role_block}` | flag `--role` + presence check of `{subproject}/.claude/agents/{role}-impl.md` | Empty when a custom agent exists (it already defines role/boundary/validate/return). |
+| `{role_block}` | flag `--role` + presence check of `{root}/.claude/agents/{subproject-name}-impl.md` | Empty when the scan-generated rich agent exists (it already defines role/boundary/validate/return — dispatch via `subagent_type: {subproject-name}-impl` and the agent's system prompt applies natively). Synthesises a `ROLE: {role}` line only when no such agent exists (fallback `general-purpose` dispatch). The agent is keyed by **subproject name** (last path component, so `apps/api` → `api-impl.md`), at the **root** `.claude/agents/` catalog — NOT by role, NOT under the subproject dir. |
 | `{recommended_skills}` | rules in `pipeline-config.md § Skill Recommendations` | Code-editing agents get `karpathy-guidelines` prepended; review/explore do not. |
 | `{task_steps}` | `## Tasks` of the current wave (`mustard-rt` internal) | VARIABLE — changes per wave. |
 | `{cross_wave_memory}` | `mustard-rt run memory cross-wave --spec X --wave N` | VARIABLE — empty for wave 1 or single-spec runs. |

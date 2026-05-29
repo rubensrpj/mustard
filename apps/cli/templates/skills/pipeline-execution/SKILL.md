@@ -73,17 +73,13 @@ Orchestrator may hint specific skills via `{recommended_skills}` in the agent pr
 
 **3. Dispatch Agent:**
 
-IF `.claude/agents/{subproject}-impl.md` exists:
-Use `subagent_type: "{subproject}-impl"`. Compact prompt (~30-40 lines):
+The prompt body is rendered by `mustard-rt run agent-prompt-render` (never hand-assembled). The `subagent_type` is chosen by presence of the scan-generated rich agent (keyed by subproject **name**, at the root `.claude/agents/` catalog):
 
-- REFERENCE: pattern file §sections + reference module
-- ENTITY: registry info
-- SKILLS: recommended skills for this task
-- EFFICIENCY: absolute paths, max 3 builds, chain commands
-- TASK: checkboxed steps
+IF `.claude/agents/{subproject-name}-impl.md` exists:
+Use `subagent_type: "{subproject-name}-impl"`. The agent's system prompt already carries guards + recommended skills + pre-mined clusters + role/boundary/return, so `agent-prompt-render` suppresses `{role_block}` and the parent sends only the task-specific prompt (REFERENCE / ENTITY / TASK). This is the token-economy path — the rich context is applied natively, not re-sent per dispatch.
 
 ELSE (fallback):
-Use `subagent_type: "general-purpose"` with full template (~80 lines).
+Use `subagent_type: "general-purpose"` with the full rendered template (role/boundary/return included inline).
 
 **4. Validate:**
 

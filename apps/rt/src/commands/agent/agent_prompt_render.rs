@@ -102,7 +102,7 @@ pub fn run(
 
     let subproject_str = subproject.to_string_lossy().to_string();
     let guards_summary = read_guards_block(&project.join(&subproject_str));
-    let role_block = build_role_block(&project.join(&subproject_str), role);
+    let role_block = build_role_block(&project, &subproject_str, role);
     let spec_lang = read_spec_lang(&op_spec_path);
     let task_steps = {
         let raw = read_task_steps(&op_spec_path);
@@ -293,21 +293,44 @@ fn read_guards_block(subproject_dir: &Path) -> String {
     collected.trim().to_string()
 }
 
-/// Decide `{role_block}` content based on whether the subproject ships a
-/// custom `{role}-impl.md` agent definition.
+/// Decide `{role_block}` content based on whether `/scan` generated a rich
+/// per-subproject agent at the **root** `.claude/agents/` catalog.
 ///
-/// When `{subproject}/.claude/agents/{role}-impl.md` exists, the file already
-/// declares role/boundary/validate/return — so the orchestrator passes an
-/// empty block (per the legacy ref's contract).
-fn build_role_block(subproject_dir: &Path, role: &str) -> String {
-    let custom = ClaudePaths::for_project(subproject_dir)
-        .map(|p| p.agents_dir().join(format!("{role}-impl.md")))
-        .unwrap_or_else(|_| subproject_dir.join(format!("{role}-impl.md")));
-    if custom.exists() {
+/// The scan orchestrator writes its agents to
+/// `{root}/.claude/agents/{subproject-name}-impl.md` — keyed by the *subproject
+/// name* (the last path component), not by the agent role, and rooted at the
+/// project, not at the subproject directory. The previous implementation looked
+/// for `{subproject_dir}/.claude/agents/{role}-impl.md`, which was wrong on both
+/// counts, so the check never fired and the orchestrator always emitted a
+/// `ROLE: {role}` synthetic line even when a rich agent existed.
+///
+/// When the rich agent exists, the dispatch should set `subagent_type:
+/// {subproject-name}-impl` so Claude Code applies that agent's system prompt
+/// natively — the agent already declares role/boundary/validate/return. So we
+/// suppress `{role_block}` (empty) to avoid duplicating that contract in the
+/// parent-rendered prompt. Otherwise we synthesise a minimal `ROLE:` line.
+fn build_role_block(project: &Path, subproject: &str, role: &str) -> String {
+    if scan_agent_path(project, subproject).is_some_and(|p| p.exists()) {
         return String::new();
     }
     // Fallback: synthesise a minimal role line so the section is not empty.
     format!("ROLE: {role}")
+}
+
+/// Resolve the root-catalog path of the rich impl agent for `subproject`:
+/// `{root}/.claude/agents/{subproject-name}-impl.md`. The name is the last
+/// component of the (possibly nested) subproject path (`apps/api` → `api`).
+fn scan_agent_path(project: &Path, subproject: &str) -> Option<PathBuf> {
+    let name = subproject
+        .trim_end_matches(['/', '\\'])
+        .rsplit(['/', '\\'])
+        .find(|s| !s.is_empty())?;
+    if name.is_empty() {
+        return None;
+    }
+    ClaudePaths::for_project(project)
+        .ok()
+        .map(|p| p.agents_dir().join(format!("{name}-impl.md")))
 }
 
 /// Extract the `### Lang:` header value from a spec file. Defaults to
@@ -971,15 +994,27 @@ mod tests {
     }
 
     #[test]
-    fn build_role_block_empty_when_custom_agent_exists() {
+    fn build_role_block_empty_when_scan_agent_exists_at_root_catalog() {
+        // The scan orchestrator writes `{root}/.claude/agents/{subproject-name}-impl.md`
+        // (keyed by SUBPROJECT NAME, rooted at the PROJECT). The old code looked
+        // in `{subproject}/.claude/agents/{role}-impl.md` and never matched.
         let dir = tempdir().unwrap();
+        anchor(dir.path());
         let agents = ClaudePaths::for_project(dir.path()).unwrap().agents_dir();
         std::fs::create_dir_all(&agents).unwrap();
-        std::fs::write(agents.join("ui-impl.md"), "x").unwrap();
-        assert!(build_role_block(dir.path(), "ui").is_empty());
-        // Without the file, a synthesised ROLE: line is returned.
+        // Nested subproject path `apps/api` → agent keyed by `api`.
+        std::fs::write(agents.join("api-impl.md"), "---\nname: api-impl\n---\nx").unwrap();
+        assert!(
+            build_role_block(dir.path(), "apps/api", "impl").is_empty(),
+            "rich agent at root catalog must suppress role_block"
+        );
+        // The role does NOT key the agent: an `impl` role with no matching
+        // subproject-name agent still falls back.
+        assert_eq!(build_role_block(dir.path(), "web", "impl"), "ROLE: impl");
+        // Without any agent file, a synthesised ROLE: line is returned.
         let other = tempdir().unwrap();
-        assert_eq!(build_role_block(other.path(), "ui"), "ROLE: ui");
+        anchor(other.path());
+        assert_eq!(build_role_block(other.path(), "api", "impl"), "ROLE: impl");
     }
 
     #[test]
