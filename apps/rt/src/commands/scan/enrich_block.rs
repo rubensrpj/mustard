@@ -121,7 +121,41 @@ pub fn write_preserving(path: &Path, content: &str) -> bool {
     let hash = extract(content).map_or_else(String::new, |(h, _)| h);
     let previous = mfs::read_to_string(path).ok();
     let merged = merge(content, previous.as_deref(), &hash);
-    mfs::write_atomic(path, merged.as_bytes()).is_ok()
+    let promoted = promote_description(&merged);
+    mfs::write_atomic(path, promoted.as_bytes()).is_ok()
+}
+
+/// Open/close of the optional `<!--desc: … -->` trigger line a SKILL.md enrich
+/// block may carry — lifted into the frontmatter `description:` by
+/// [`promote_description`] so the resolver matches on a real, per-skill trigger.
+const DESC_OPEN: &str = "<!--desc:";
+const DESC_CLOSE: &str = "-->";
+
+/// Extract the `<!--desc: … -->` trigger phrase from inside the enrich block,
+/// if the prose carries one.
+#[must_use]
+pub fn extract_desc(content: &str) -> Option<String> {
+    let (_, inner) = extract(content)?;
+    let start = inner.find(DESC_OPEN)? + DESC_OPEN.len();
+    let end = inner[start..].find(DESC_CLOSE)? + start;
+    let desc = inner[start..end].trim().to_string();
+    (!desc.is_empty()).then_some(desc)
+}
+
+/// Promote an enriched `<!--desc:-->` trigger line into the frontmatter
+/// `description:`. No-op when the block has no desc, the desc is under the
+/// validator's 50-char floor, or the artifact has no `description:` line (e.g.
+/// examples.md / stack.md). Runs AFTER [`merge`], so the promoted description
+/// rides on the preserved block and survives every re-scan.
+fn promote_description(content: &str) -> String {
+    let Some(desc) = extract_desc(content).filter(|d| d.len() >= 50) else {
+        return content.to_string();
+    };
+    let Some(start) = content.find("\ndescription: ").map(|i| i + 1) else {
+        return content.to_string();
+    };
+    let line_end = content[start..].find('\n').map_or(content.len(), |i| start + i);
+    format!("{}description: {desc}{}", &content[..start], &content[line_end..])
 }
 
 /// Generate-and-write a scan artifact so it carries a preserved enrich block:
@@ -197,5 +231,27 @@ mod tests {
         assert_eq!(fingerprint("abc"), fingerprint("abc"));
         assert_ne!(fingerprint("abc"), fingerprint("abd"));
         assert_eq!(fingerprint("abc").len(), 12);
+    }
+
+    #[test]
+    fn promote_description_lifts_desc_into_frontmatter() {
+        let block = enriched_block(
+            "h1",
+            "<!--desc: Use when adding an observer that reacts to a harness event with fail-open side effects.-->\n## Purpose\n\nObservers react to events.",
+        );
+        let content = format!(
+            "---\nname: x\ndescription: TEMPLATE line long enough to clear the fifty-char floor here ok.\ntags: [add]\n---\n\n# x\n\n{block}\n\n## Convention\n"
+        );
+        let promoted = promote_description(&content);
+        assert!(promoted.contains("description: Use when adding an observer"), "promoted:\n{promoted}");
+        assert!(!promoted.contains("TEMPLATE line"), "template must be replaced:\n{promoted}");
+        assert!(promoted.contains("Observers react to events."), "block prose must be intact");
+    }
+
+    #[test]
+    fn promote_description_noop_without_desc() {
+        let block = enriched_block("h1", "## Purpose\n\nNo trigger line here.");
+        let c = format!("---\ndescription: KEEP this template line that is sufficiently long to pass.\n---\n\n# x\n\n{block}\n");
+        assert_eq!(promote_description(&c), c, "no <!--desc--> ⇒ frontmatter untouched");
     }
 }

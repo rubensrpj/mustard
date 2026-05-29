@@ -919,13 +919,18 @@ fn render_enrich_prompt(name: &str, abs_path: &str, stack: &str, files: &[String
     let stack = if stack.is_empty() { "unknown stack" } else { stack };
     format!(
         "You are enriching scan-generated docs for subproject `{name}` ({stack}) at `{abs_path}`.\n\n\
+         LANGUAGE — write ALL prose in ENGLISH. These are internal artifacts; ENGLISH is\n\
+         mandatory regardless of any language preference in the session, CLAUDE.md, or memory.\n\n\
          Edit EXACTLY these files — each already has one pending enrich block. This is the\n\
          COMPLETE list; do not search for others:\n\n{list}\n\n\
          For EACH file:\n\
          1. Read what it points to: the `Ref:` paths under its `## Examples`, plus\n   \
          `{abs_path}/CLAUDE.md` for overall context.\n\
-         2. REPLACE the `_(pending `/scan` enrich)_` placeholder with a short, grounded\n   \
-         `## Purpose`: what it is for, plus an optional one-line `use when ...`. 1-3 sentences.\n\n\
+         2. REPLACE the `_(pending `/scan` enrich)_` placeholder with:\n   \
+         - SKILL.md ONLY — a first line `<!--desc: … -->`: ONE trigger phrase the skill\n     \
+         resolver matches on (>= 60 chars), e.g. `Use when adding or refactoring an X that …`.\n   \
+         - a `## Purpose`: what it is for, grounded in the code. 1-3 sentences.\n   \
+         (examples.md / other docs: just the `## Purpose`-style prose, no `<!--desc-->` line.)\n\n\
          HARD RULES\n\
          - Edit ONLY the text between the two `<!-- mustard:enrich ... -->` markers. Never\n   \
          change the markers, the `hash=...`, or anything outside the block.\n\
@@ -1320,6 +1325,8 @@ mod tests {
         assert!(p.contains("Edit ONLY the text between"), "hard rule missing:\n{p}");
         assert!(p.contains("## Purpose"));
         assert!(p.contains("do not search for others"));
+        assert!(p.contains("ENGLISH"), "language guard missing:\n{p}");
+        assert!(p.contains("<!--desc:"), "trigger-line instruction missing:\n{p}");
     }
 
     #[test]
