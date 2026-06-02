@@ -1,6 +1,17 @@
 //! `mustard-rt run scope-decompose` — a port of `scripts/scope-decompose.js`.
 //!
-//! Decides whether a feature spec should be decomposed into multiple waves.
+//! Decides whether a feature spec should be decomposed into **multiple** waves.
+//!
+//! ## Semantics: 1-vs-N, never 0-vs-≥1
+//!
+//! For a **Full**-scope spec the [`decide`] verdict means "MULTI-wave (N) vs
+//! SINGLE-wave (1)" — it is **not** "wave vs no-wave". The invariant (encoded in
+//! [`mustard_core::domain::spec::contract::ContractViolation::FullScopeNoWaves`])
+//! is that every Full spec has ≥1 wave: the parent spec is the *orchestrator*,
+//! the wave is the executing *subagent*. So `decompose: false` for a Full spec
+//! means **one** wave, never zero. Callers map the verdict to a wave count via
+//! [`wave_floor_for_full`], which floors a Full spec at 1. (Light is unchanged
+//! — a single spec with an inline checklist, no waves.)
 //!
 //! ## Two input paths
 //!
@@ -209,6 +220,30 @@ pub fn decide(input: &Value) -> Value {
     })
 }
 
+/// Wave-count floor for a **Full**-scope spec given a [`decide`] verdict.
+///
+/// Translates the 1-vs-N verdict into the minimum number of waves a Full spec
+/// must carry, enforcing the invariant *Full scope ⇒ ≥1 wave* (parent =
+/// orchestrator, wave = subagent):
+///
+/// - `decompose == false` (single-layer / no multi-wave signal) ⇒ **1** wave —
+///   NOT zero. A Full spec is never wave-less; "reject decomposition" collapses
+///   to a single wave, not to a wave-less parent.
+/// - `decompose == true` (multi-layer / roadmap / history / wide-and-new) ⇒ the
+///   floor is still ≥ 1; the caller picks the actual N (≥ 2 in practice) from
+///   the plan it builds. This helper only guarantees the spec never floors
+///   below 1.
+///
+/// Light scope does not call this — Light is a single spec with an inline
+/// checklist and no waves.
+#[must_use]
+pub fn wave_floor_for_full(decompose: bool) -> u32 {
+    // Either way a Full spec floors at 1 wave; a multi-wave decision lets the
+    // caller raise N above this floor. The floor is the load-bearing invariant.
+    let _ = decompose;
+    1
+}
+
 /// Compute the deterministic signals JSON for `spec_text`, resolving overrides
 /// and the entity registry under `project_root`.
 ///
@@ -318,6 +353,111 @@ fn count_new_entities(spec_text: &str, known: &BTreeSet<String>) -> i64 {
         .count() as i64
 }
 
+/// Deterministic scope label (`light` / `extended-light` / `full`) from the
+/// structural signals — encodes the `/feature` SKILL's prose thresholds in code
+/// so the LLM relays the verdict instead of eyeballing it.
+///
+/// The three scopes (and the prose phrase each numeric condition encodes):
+///
+/// - **full** when ANY of:
+///   - `layerCount >= 3` — the SKILL's "3+ layers";
+///   - `newEntityCount >= 1` — "net-new" (an entity referenced in the spec but
+///     not yet in the repo model is net-new work, not a clone of a precedent);
+///   - `sliceMatchCount >= 2` — "spans multiple slices";
+///   - `fileCount > 8` — beyond the extended-light file ceiling.
+/// - **extended-light** when NOT full AND ALL of:
+///   - `fileCount > 5 && fileCount <= 8` — "≤8 files" above the light ceiling;
+///   - `newEntityCount == 0` — "modifies existing" (no net-new entity);
+///   - `sliceMatchCount >= 1` — "matched slice" (mirrors a precedent).
+/// - **light** otherwise — `fileCount <= 5`, `layerCount <= 2`, "mirrors a
+///   matched slice".
+///
+/// `slice_match_count` comes from the `feature` digest's `sliceMatchCount`
+/// (count of matched recurring slices); the spec-derived signals never carry it,
+/// so it is threaded in separately (defaults to 0 when the digest is absent —
+/// the conservative read for the slice-spanning conditions).
+#[must_use]
+pub fn classify(signals: &Value, slice_match_count: i64) -> &'static str {
+    let file_count = signals.get("fileCount").and_then(Value::as_i64).unwrap_or(0);
+    let layer_count = signals.get("layerCount").and_then(Value::as_i64).unwrap_or(0);
+    let new_entity_count = signals
+        .get("newEntityCount")
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
+
+    // full: 3+ layers OR net-new entity OR spans multiple slices OR wide.
+    if layer_count >= 3
+        || new_entity_count >= 1
+        || slice_match_count >= 2
+        || file_count > 8
+    {
+        return "full";
+    }
+
+    // extended-light: matched slice + modifies existing + 6..=8 files.
+    if file_count > 5
+        && file_count <= 8
+        && new_entity_count == 0
+        && slice_match_count >= 1
+    {
+        return "extended-light";
+    }
+
+    // light: mirrors a matched slice (<=5 files, <=2 layers).
+    "light"
+}
+
+/// Classify a spec file's scope deterministically: compute the structural
+/// signals via [`compute_signals_from_spec`] (no duplicate computation), then
+/// [`classify`]. Returns `{ "scope": ..., "signals": { ... } }`.
+///
+/// Fail-open: an unreadable spec yields `{ "scope": "full", ... }` — the
+/// conservative default, since `full` gets the most pipeline rigor (PLAN +
+/// /spec approval + per-wave gates).
+#[must_use]
+pub fn classify_from_spec(spec_file: &Path, slice_match_count: i64) -> Value {
+    let Ok(spec_text) = mustard_core::io::fs::read_to_string(spec_file) else {
+        return json!({
+            "scope": "full",
+            "reason": "error-fallback",
+            "signals": signals_obj(0, 0, 0, 0, 0),
+        });
+    };
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let spec_dir = spec_file.parent().map_or_else(|| cwd.clone(), Path::to_path_buf);
+    let project_root =
+        mustard_core::io::workspace::workspace_root(&spec_dir).unwrap_or_else(|_| cwd.clone());
+    let signals = compute_signals_from_spec(&spec_text, &project_root);
+    let scope = classify(&signals, slice_match_count);
+    // Reuse `compute_signals_from_spec` verbatim (single signal source), but the
+    // classifier never reads `text` (only `decide`'s roadmap detection does), so
+    // drop it from the emitted view to keep the relay output lean.
+    json!({
+        "scope": scope,
+        "sliceMatchCount": slice_match_count,
+        "signals": {
+            "fileCount": signals.get("fileCount").cloned().unwrap_or(json!(0)),
+            "layerCount": signals.get("layerCount").cloned().unwrap_or(json!(0)),
+            "newEntityCount": signals.get("newEntityCount").cloned().unwrap_or(json!(0)),
+        },
+    })
+}
+
+/// Dispatch `mustard-rt run scope-classify --from-spec <path>
+/// [--slice-match-count N]`.
+///
+/// Mirrors [`run`]'s `--from-spec` path: resolves the spec path against the cwd,
+/// then prints the [`classify_from_spec`] verdict. Fail-open by construction.
+pub fn run_classify(from_spec: &str, slice_match_count: i64) {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let spec_file = if Path::new(from_spec).is_absolute() {
+        PathBuf::from(from_spec)
+    } else {
+        cwd.join(from_spec)
+    };
+    println!("{}", classify_from_spec(&spec_file, slice_match_count));
+}
+
 /// Decide directly from a spec file: compute the deterministic signals, then
 /// [`decide`]. Fail-open — an unreadable spec yields the `error-fallback`
 /// verdict.
@@ -381,6 +521,16 @@ mod tests {
         let d = decide(&json!({ "layerCount": 1, "fileCount": 3 }));
         assert_eq!(d["decompose"], json!(false));
         assert_eq!(d["reason"], json!("single-layer"));
+    }
+
+    /// Invariant: a Full spec floors at 1 wave even when `decompose == false`.
+    /// `false` for Full means "single wave", never "no wave".
+    #[test]
+    fn full_wave_floor_is_one_when_not_decomposed() {
+        // decompose:false ⇒ exactly 1 wave (single-wave, not wave-less).
+        assert_eq!(wave_floor_for_full(false), 1, "Full + single-layer ⇒ 1 wave");
+        // decompose:true ⇒ still floors at ≥ 1 (caller raises N).
+        assert!(wave_floor_for_full(true) >= 1, "Full + multi-wave ⇒ floor ≥ 1");
     }
 
     #[test]
@@ -482,5 +632,120 @@ mod tests {
         let d = decide_from_spec(std::path::Path::new("/no/such/spec.md"));
         assert_eq!(d["decompose"], json!(false));
         assert_eq!(d["reason"], json!("error-fallback"));
+    }
+
+    // --- scope-classify ---------------------------------------------------
+
+    /// Helper: build a signals object for the classifier (independent of the
+    /// `## Files`-section parse, so the threshold logic is tested in isolation).
+    fn sig(file_count: i64, layer_count: i64, new_entity_count: i64) -> Value {
+        json!({
+            "fileCount": file_count,
+            "layerCount": layer_count,
+            "newEntityCount": new_entity_count,
+        })
+    }
+
+    #[test]
+    fn scope_classify_light_when_small_and_mirrors_slice() {
+        // <=5 files, <=2 layers, no net-new, mirrors one slice ⇒ light.
+        assert_eq!(classify(&sig(3, 1, 0), 1), "light");
+        assert_eq!(classify(&sig(5, 2, 0), 1), "light");
+        // Even with zero matched slices, a small modify-existing change is light.
+        assert_eq!(classify(&sig(2, 1, 0), 0), "light");
+    }
+
+    #[test]
+    fn scope_classify_extended_light_band() {
+        // 6..=8 files, modifies existing (newEntityCount==0), exactly 1 matched
+        // slice (>=2 would be "spans multiple slices" ⇒ full).
+        assert_eq!(classify(&sig(6, 2, 0), 1), "extended-light");
+        assert_eq!(classify(&sig(8, 2, 0), 1), "extended-light");
+        assert_eq!(classify(&sig(7, 1, 0), 1), "extended-light");
+    }
+
+    #[test]
+    fn scope_classify_extended_light_falls_back_to_light_without_slice() {
+        // 6..=8 files but NO matched slice ⇒ not extended-light; not full
+        // either (layers<3, no net-new, <=8 files) ⇒ light.
+        assert_eq!(classify(&sig(7, 2, 0), 0), "light");
+    }
+
+    #[test]
+    fn scope_classify_full_on_layers() {
+        // 3+ layers ⇒ full ("3+ layers"), regardless of file/slice counts.
+        assert_eq!(classify(&sig(2, 3, 0), 1), "full");
+    }
+
+    #[test]
+    fn scope_classify_full_on_net_new_entity() {
+        // newEntityCount>=1 ⇒ full ("net-new"), even for a tiny change.
+        assert_eq!(classify(&sig(2, 1, 1), 1), "full");
+    }
+
+    #[test]
+    fn scope_classify_full_on_spanning_multiple_slices() {
+        // sliceMatchCount>=2 ⇒ full ("spans multiple slices").
+        assert_eq!(classify(&sig(4, 2, 0), 2), "full");
+    }
+
+    #[test]
+    fn scope_classify_full_on_wide_file_count() {
+        // fileCount>8 ⇒ full (beyond the extended-light ceiling).
+        assert_eq!(classify(&sig(9, 1, 0), 1), "full");
+    }
+
+    /// Boundary: file count at the light ceiling (5) vs the extended-light
+    /// floor (6), and the extended-light ceiling (8) vs the full floor (9).
+    #[test]
+    fn scope_classify_file_count_boundaries() {
+        assert_eq!(classify(&sig(5, 2, 0), 1), "light"); // <=5 ⇒ light
+        assert_eq!(classify(&sig(6, 2, 0), 1), "extended-light"); // 6 ⇒ ext-light
+        assert_eq!(classify(&sig(8, 2, 0), 1), "extended-light"); // 8 ⇒ ext-light
+        assert_eq!(classify(&sig(9, 2, 0), 1), "full"); // >8 ⇒ full
+    }
+
+    /// Boundary: layer count at 2 (light/ext) vs 3 (full).
+    #[test]
+    fn scope_classify_layer_count_boundaries() {
+        assert_eq!(classify(&sig(4, 2, 0), 1), "light"); // 2 layers
+        assert_eq!(classify(&sig(4, 3, 0), 1), "full"); // 3 layers ⇒ full
+    }
+
+    /// Boundary: slice match count at 1 (mirrors) vs 2 (spans).
+    #[test]
+    fn scope_classify_slice_match_boundaries() {
+        // 1 matched slice in the ext-light band ⇒ extended-light.
+        assert_eq!(classify(&sig(7, 2, 0), 1), "extended-light");
+        // 2 matched slices ⇒ full (spans multiple slices) even in that band.
+        assert_eq!(classify(&sig(7, 2, 0), 2), "full");
+    }
+
+    #[test]
+    fn classify_from_spec_unreadable_is_fail_open_to_full() {
+        let d = classify_from_spec(std::path::Path::new("/no/such/spec.md"), 0);
+        assert_eq!(d["scope"], json!("full"), "unreadable spec ⇒ conservative full");
+        assert_eq!(d["reason"], json!("error-fallback"));
+    }
+
+    #[test]
+    fn classify_from_spec_reuses_compute_signals() {
+        let dir = tempfile::tempdir().unwrap();
+        plant_project(dir.path());
+        // Two distinct roles (schema + api) ⇒ layerCount 2; no model ⇒ entities
+        // referenced count as new, but this spec has no entity prose ⇒ 0 new.
+        let spec = "# Spec\n\n## Files\n- src/schema/user.ts\n- src/api/users.ts\n";
+        let spec_path = dir.path().join("spec.md");
+        std::fs::write(&spec_path, spec).unwrap();
+        let d = classify_from_spec(&spec_path, 1);
+        // layerCount 2, fileCount 2, newEntityCount 0, 1 slice ⇒ light.
+        assert_eq!(d["signals"]["fileCount"], json!(2));
+        assert_eq!(d["signals"]["layerCount"], json!(2));
+        assert_eq!(d["scope"], json!("light"));
+        // The signals object is exactly what compute_signals_from_spec emits —
+        // no duplicate computation path.
+        let direct = compute_signals_from_spec(spec, dir.path());
+        assert_eq!(d["signals"]["fileCount"], direct["fileCount"]);
+        assert_eq!(d["signals"]["layerCount"], direct["layerCount"]);
     }
 }

@@ -667,6 +667,10 @@ mod tests {
         fs::write(templates.join("CLAUDE.md"), "# rules").unwrap();
         fs::write(templates.join("settings.json"), "{}").unwrap();
         fs::write(templates.join("commands/feature.md"), "feature").unwrap();
+        // A top-level dotfile must ride along into `.claude/` — `copy_dir`
+        // skips only the `skip_top_level` names, never hidden files. This
+        // mirrors the real `templates/.gitignore` (Frente 5 / D7).
+        fs::write(templates.join(".gitignore"), ".events/\n").unwrap();
         templates
     }
 
@@ -696,6 +700,16 @@ mod tests {
         let claude = project.join(".claude");
         assert!(claude.join("CLAUDE.md").exists(), ".claude/CLAUDE.md copied");
         assert!(claude.join("commands/feature.md").exists(), "nested file copied");
+
+        // The template `.gitignore` rides along into `.claude/.gitignore`,
+        // covering the ephemeral harness state (`.events/` et al.) so a fresh
+        // project never versions it (Frente 5 / D7).
+        let gitignore = claude.join(".gitignore");
+        assert!(gitignore.exists(), ".claude/.gitignore provisioned by init");
+        assert!(
+            fs::read_to_string(&gitignore).unwrap().contains(".events/"),
+            ".gitignore covers the ephemeral .events/ dir"
+        );
 
         // The SINGLE project-root mustard.json carries git-flow, the version
         // stamp, runtime, and the language/tone defaults — and there is NO

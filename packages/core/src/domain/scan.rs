@@ -133,6 +133,16 @@ pub struct Project {
     pub kind: String,
     #[serde(default)]
     pub code_files: usize,
+    /// Frameworks/deps recurring across this unit's manifests (mined by `scan`,
+    /// frequency-ranked, top-12). Empty when none mined / older model.
+    #[serde(default)]
+    pub frameworks: Vec<String>,
+    /// Distinct dependencies declared by this unit's manifests (sorted, deduped).
+    #[serde(default)]
+    pub dependencies: Vec<String>,
+    /// Build/codegen scripts declared by this unit's manifests (sorted, deduped).
+    #[serde(default)]
+    pub scripts: Vec<String>,
 }
 
 /// The small, stable FACTS the orchestrator consumes from a grain model — the

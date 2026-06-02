@@ -570,7 +570,12 @@ fn meta_path_for(cwd: &Path, spec: &str, payload: &Value) -> Option<std::path::P
 ///
 /// `checkpoint` is always bumped to `ts`. Fail-open: a missing spec dir,
 /// unparseable sidecar, or write failure all warn on stderr and return.
-fn patch_meta_for_transition(cwd: &Path, spec: &str, kind: &str, payload: &Value, ts: &str) {
+///
+/// `pub(crate)` so sibling commands (notably `approve_spec`) can assert the
+/// wave-aware sidecar patch in their own tests without going through the
+/// process-global `run()` entry — it is the same routine `run()` calls after
+/// writing a `pipeline.stage` / `pipeline.outcome` event.
+pub(crate) fn patch_meta_for_transition(cwd: &Path, spec: &str, kind: &str, payload: &Value, ts: &str) {
     let Some(path) = meta_path_for(cwd, spec, payload) else {
         return;
     };
@@ -615,11 +620,16 @@ fn patch_meta_for_transition(cwd: &Path, spec: &str, kind: &str, payload: &Value
     }
 }
 
-/// Patch a spec's `meta.json` for a `pipeline.complete` event: the spec is done,
-/// so `outcome = Completed`, `stage = Close`, `phase = CLOSE`. Reuses the
-/// canonical [`Meta`](mustard_core::domain::meta::Meta) read-modify-write
+/// Patch a spec's **root** `meta.json` for a `pipeline.complete` event: the spec
+/// is done, so `outcome = Completed`, `stage = Close`, `phase = CLOSE`. Reuses
+/// the canonical [`Meta`](mustard_core::domain::meta::Meta) read-modify-write
 /// (atomic), preserving every other field. Fail-open.
-fn patch_meta_complete(cwd: &Path, spec: &str, ts: &str) {
+///
+/// `pub(crate)` so the close flow (`complete_spec::emit_completed_status`) can
+/// re-use the same sidecar-sync after it emits the terminal event directly via
+/// `writer_ndjson` (that path bypasses `emit-pipeline run`, which is the bug
+/// that left finished specs stuck at `Plan/Active`).
+pub(crate) fn patch_meta_complete(cwd: &Path, spec: &str, ts: &str) {
     let Some(path) = meta_path_for(cwd, spec, &Value::Null) else {
         return;
     };

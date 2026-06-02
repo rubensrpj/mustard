@@ -53,7 +53,7 @@ use mustard_core::{
 };
 use serde_json::json;
 use std::fmt::Write as _;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::str::FromStr;
 
 /// Human-readable instruction inserted into the drafter prompt for `tone`.
@@ -189,11 +189,11 @@ pub fn run(opts: SpecDraftOpts) {
     }
     written.push(output.join("meta.json").display().to_string());
 
-    if let Err(e) = write_memory_stub(&output, &input, lang_locale) {
-        eprintln!("spec-draft: WARN: memory/_index.md write failed — {e}");
-    } else {
-        written.push(output.join("memory").join("_index.md").display().to_string());
-    }
+    // D6: the `memory/_index.md` is NOT born at draft time. A fresh spec used to
+    // ship an empty stub (and, before the i18n keys existed, a `<missing-key>`
+    // line). The index is now born on the FIRST knowledge capture via
+    // `spec-memory create` (see `spec_memory::ensure_index`), so an unused spec
+    // carries no orphan index file.
 
     // Full-scope wave decomposition is owned by `wave-scaffold` (plan-driven:
     // per-wave roles/summaries/deps + review/qa scaffolds). `spec-draft` only
@@ -243,8 +243,14 @@ fn build_input(
         phase: Some(Phase::Plan),
         scope: Some(scope),
         lang: Some(lang.to_string()),
+        // Invariant (2026-06-02-full-sempre-uma-wave): a Full spec floors at ≥1
+        // wave. The floor is named by [`scope_decompose::wave_floor_for_full`]
+        // (single source of the "Full ⇒ ≥1 wave" rule); a caller asking for >1
+        // wave signals a multi-wave decomposition and raises N above the floor.
+        // Light carries no waves at all.
         total_waves: if matches!(scope, Scope::Full) {
-            Some(waves.max(1))
+            let floor = crate::commands::spec::scope_decompose::wave_floor_for_full(waves > 1);
+            Some(waves.max(floor))
         } else {
             None
         },
@@ -343,7 +349,10 @@ fn prd_section_default(
 fn plan_section_default(name: &str, lang: Locale) -> String {
     match name {
         "files" => translate("placeholder.fill_files", lang).to_string(),
-        "tasks" => "- [ ] T1 — ...".to_string(),
+        // D2: `## Tarefas` is the agent's roadmap, a plain list — NOT a tracked
+        // checklist. Only `## Checklist` carries `[ ]` (with auto-mark on
+        // `→ <path>`). A checkbox here was a false gate target nothing marks.
+        "tasks" => "- T1 — ...".to_string(),
         "boundaries" => "IN: ...\nOUT: ...".to_string(),
         _ => translate("placeholder.fill", lang).to_string(),
     }
@@ -422,23 +431,10 @@ fn build_meta_from_input(input: &SpecInput) -> Meta {
     }
 }
 
-/// T1.9 — drop a tiny `memory/_index.md` stub so consumers can immediately
-/// add principles via `spec-memory create`. Every user-facing string flows
-/// through `translate` so PT-BR / EN-US specs each get their own heading set.
-fn write_memory_stub(output: &Path, input: &SpecInput, lang: Locale) -> Result<(), String> {
-    let dir = output.join("memory");
-    mfs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let title_template = translate("memory.index.title", lang);
-    let title = title_template.replace("{title}", &input.title);
-    let intro = translate("memory.index.intro", lang);
-    let principles_heading = translate("heading.memory.principles", lang);
-    let empty_line = translate("memory.index.empty", lang);
-    let body = format!(
-        "# {title}\n\n{intro}\n\n## {principles_heading} (0)\n\n{empty_line}\n\n```\nmustard-rt run spec-memory create --spec {slug} --name <kebab> --kind principle --origin-wave wave-N-<role>\n```\n",
-        slug = input.slug,
-    );
-    mfs::write_atomic(dir.join("_index.md"), body.as_bytes()).map_err(|e| e.to_string())
-}
+// D6: the `memory/_index.md` is no longer materialised at draft time (the old
+// `write_memory_stub` shipped an empty stub on every spec). The index is now
+// created/updated on the first `spec-memory create`, in
+// `spec_memory::ensure_index`, using the `memory.index.intro` / `.empty` keys.
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -547,6 +543,50 @@ mod tests {
         assert!(mustard_core::domain::spec::contract::validate(&input).is_ok());
     }
 
+    /// Invariant lock (2026-06-02-full-sempre-uma-wave): a Full draft NEVER
+    /// yields `total_waves == 0`, and the meta it produces NEVER has
+    /// `isWavePlan == Some(false)`. Probed at the most adversarial input —
+    /// `waves: 0` from the caller — which `total_waves: Some(waves.max(1))`
+    /// (~L246) must floor to 1. Light is unaffected: it carries no waves at all
+    /// (`total_waves == None`, `isWavePlan == None`).
+    #[test]
+    fn full_draft_never_zero_waves_or_non_wave_plan() {
+        for waves in [0u32, 1, 2, 7] {
+            let input = build_input(
+                "demo", "Demo", Scope::Full, "pt-BR", waves, Locale::PtBr,
+                "rtk cargo build", None, &[],
+            );
+            // total_waves is floored to ≥ 1 for Full.
+            assert_eq!(
+                input.total_waves,
+                Some(waves.max(1)),
+                "Full draft floors total_waves to ≥ 1 (caller waves={waves})"
+            );
+            assert!(input.total_waves.unwrap_or(0) >= 1, "Full total_waves ≥ 1");
+            // The contract agrees the floored input is valid (FullScopeNoWaves
+            // would fire on total_waves==0).
+            assert!(mustard_core::domain::spec::contract::validate(&input).is_ok());
+            // The derived meta marks it as a wave plan — never Some(false).
+            let meta = build_meta_from_input(&input);
+            assert_eq!(meta.total_waves, Some(waves.max(1)));
+            assert_eq!(
+                meta.is_wave_plan,
+                Some(true),
+                "Full meta isWavePlan must be Some(true), never Some(false)"
+            );
+            assert_ne!(meta.is_wave_plan, Some(false));
+        }
+        // Light: no waves, no wave-plan flag (invariant is Full-only).
+        let light = build_input(
+            "demo", "Demo", Scope::Light, "en-US", 0, Locale::EnUs,
+            "rtk cargo build", None, &[],
+        );
+        assert_eq!(light.total_waves, None, "Light carries no waves");
+        let light_meta = build_meta_from_input(&light);
+        assert_eq!(light_meta.is_wave_plan, None);
+        assert_eq!(light_meta.total_waves, None);
+    }
+
     #[test]
     fn build_input_validates_in_en_us() {
         // Section *keys* are canonical EN identifiers; bodies are localised.
@@ -610,37 +650,76 @@ mod tests {
         assert_eq!(full.len(), 1);
     }
 
+    /// D1/D2: a Light spec OWNS its execution → it keeps a parseable
+    /// `## Checklist` so the close-gate has something to enforce. (A Full draft
+    /// is always a wave-plan parent — `total_waves` is forced to ≥ 1 — so its
+    /// checklist lives in the waves; that suppression is covered below.)
     #[test]
-    fn drafted_spec_md_has_parseable_checklist_both_scopes() {
+    fn drafted_light_spec_has_parseable_checklist() {
         use mustard_core::domain::spec::contract::CHECKLIST_HEADING;
-        for (scope_str, scope) in [("light", Scope::Light), ("full", Scope::Full)] {
-            let dir = tempdir().unwrap();
-            let out = dir.path().join("specs").join(scope_str);
-            let opts = SpecDraftOpts {
-                intent: "Demo intent".into(),
-                scope: scope_str.into(),
-                lang: "pt-BR".into(),
-                signals: None,
-                output: Some(out.clone()),
-                waves: if matches!(scope, Scope::Full) { 2 } else { 0 },
-                force: false,
-            };
-            run(opts);
-            let body = std::fs::read_to_string(out.join("spec.md")).unwrap();
-            // The `## Checklist` H2 is present, EN-only (language-agnostic).
-            let heading = format!("## {CHECKLIST_HEADING}");
-            assert!(
-                body.contains(&heading),
-                "{scope_str}: spec.md missing `{heading}`:\n{body}"
-            );
-            // At least one parseable `- [ ]` item lives under that heading.
-            let after = body.split_once(&heading).expect("checklist heading split").1;
-            let section = after.split("\n## ").next().unwrap_or(after);
-            assert!(
-                section.lines().any(|l| l.trim_start().starts_with("- [ ] ")),
-                "{scope_str}: no parseable `- [ ]` item in Checklist:\n{section}"
-            );
-        }
+        let dir = tempdir().unwrap();
+        let out = dir.path().join("specs").join("light");
+        run(SpecDraftOpts {
+            intent: "Demo intent".into(),
+            scope: "light".into(),
+            lang: "pt-BR".into(),
+            signals: None,
+            output: Some(out.clone()),
+            waves: 0,
+            force: false,
+        });
+        let body = std::fs::read_to_string(out.join("spec.md")).unwrap();
+        let heading = format!("## {CHECKLIST_HEADING}");
+        assert!(body.contains(&heading), "light spec.md missing `{heading}`:\n{body}");
+        let after = body.split_once(&heading).expect("checklist heading split").1;
+        let section = after.split("\n## ").next().unwrap_or(after);
+        assert!(
+            section.lines().any(|l| l.trim_start().starts_with("- [ ] ")),
+            "light: no parseable `- [ ]` item in Checklist:\n{section}"
+        );
+    }
+
+    /// D2: the `## Tarefas` placeholder is a PLAIN list — no `- [ ]` checkbox.
+    /// Only `## Checklist` carries the tracked box. Asserted at the placeholder
+    /// source so it holds regardless of which scope renders the section.
+    #[test]
+    fn tasks_placeholder_is_plain_list_no_checkbox() {
+        let tasks = plan_section_default("tasks", Locale::PtBr);
+        assert!(tasks.starts_with("- T1"), "Tarefas is a plain list item: {tasks:?}");
+        assert!(!tasks.contains("[ ]"), "Tarefas must carry no checkbox: {tasks:?}");
+    }
+
+    /// D1: a wave-plan parent (every Full draft — `total_waves` forced ≥ 1)
+    /// emits NEITHER `## Tarefas` nor `## Checklist` — both belong to the waves.
+    #[test]
+    fn wave_plan_parent_suppresses_tasks_and_checklist() {
+        use mustard_core::domain::spec::contract::CHECKLIST_HEADING;
+        let dir = tempdir().unwrap();
+        let out = dir.path().join("specs").join("epic");
+        run(SpecDraftOpts {
+            intent: "Demo intent".into(),
+            scope: "full".into(),
+            lang: "pt-BR".into(),
+            signals: None,
+            output: Some(out.clone()),
+            waves: 3,
+            force: false,
+        });
+        let body = std::fs::read_to_string(out.join("spec.md")).unwrap();
+        let checklist_heading = format!("## {CHECKLIST_HEADING}");
+        assert!(
+            !body.contains(&checklist_heading),
+            "wave-plan parent must NOT emit `{checklist_heading}`:\n{body}"
+        );
+        // The Tarefas heading (PT-BR) must also be absent on the parent.
+        assert!(
+            !body.contains("## Tarefas"),
+            "wave-plan parent must NOT emit `## Tarefas`:\n{body}"
+        );
+        // It still carries its other plan sections (Arquivos / Limites) — only
+        // the actionable Tarefas/Checklist are suppressed.
+        assert!(body.contains("## Arquivos"), "parent keeps Arquivos:\n{body}");
+        assert!(body.contains("## Limites"), "parent keeps Limites:\n{body}");
     }
 
     #[test]
@@ -669,7 +748,9 @@ mod tests {
         let root = dir.path().join("specs").join("demo");
         assert!(root.join("spec.md").exists());
         assert!(root.join("meta.json").exists());
-        assert!(root.join("memory").join("_index.md").exists());
+        // D6: a fresh draft no longer ships a `memory/_index.md` stub — the
+        // index is born on the first `spec-memory create`.
+        assert!(!root.join("memory").join("_index.md").exists());
         // Wave dirs are NOT created by spec-draft — that is wave-scaffold's job.
         assert!(!root.join("wave-plan.md").exists());
         assert!(!root.join("wave-1-mixed").exists());

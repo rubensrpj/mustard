@@ -281,7 +281,7 @@ fn build_projects(manifests: &[model::Manifest], modules: &[Module]) -> Vec<mode
     };
     let mut projects: Vec<ProjectUnit> = manifests
         .iter()
-        .map(|m| ProjectUnit { name: name_of(m), dir: dir_of(&m.path), kind: m.kind.clone(), code_files: 0 })
+        .map(|m| ProjectUnit { name: name_of(m), dir: dir_of(&m.path), kind: m.kind.clone(), code_files: 0, ..Default::default() })
         .collect();
     // longest-prefix attribution
     for md in modules {

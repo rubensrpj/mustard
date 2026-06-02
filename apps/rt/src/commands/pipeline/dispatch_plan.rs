@@ -24,10 +24,9 @@
 //! ## Parsers reused (no reimplementation)
 //!
 //! - The wave-plan table reader recognises the same row shapes that
-//!   [`crate::commands::pipeline::resume_bootstrap::extract_wave_model`] and
-//!   [`crate::commands::wave::wave_scaffold`] produce (with or without a `Spec`
-//!   / `Modelo` column) — column roles are resolved from the header row, not by
-//!   fixed index.
+//!   [`crate::commands::wave::wave_scaffold`] produces (with or without a `Spec`
+//!   column) — column roles are resolved from the header row, not by fixed
+//!   index, so an extra legacy column is tolerated.
 //! - Dependency cells are parsed with the single workspace `[[…]]` scanner
 //!   ([`mustard_core::io::atomic_md::find_outgoing_links`]).
 //! - The per-wave subproject is derived from the wave's `spec.md`
@@ -186,13 +185,12 @@ fn read_wave_rows(spec_dir: &Path) -> Vec<WaveRow> {
 
 /// Parse the wave-plan markdown table into `WaveRow`s.
 ///
-/// The table column order varies across the two renderers (`wave_scaffold`
-/// emits `Spec` + no `Modelo`; older plans add a `Modelo` column; the
-/// fixture form drops `Spec`). Rather than index by position we read the
-/// header row to find which data cell holds the wave number, the role, and the
-/// dependency list. Rows whose first cell parses as a wave number drive the
-/// result; the `depends_on` cell is parsed via the shared `[[…]]` scanner and
-/// normalised to wave numbers.
+/// The table column order varies across renderers (`wave_scaffold` emits
+/// `Spec`; legacy plans add extra columns; the fixture form drops `Spec`).
+/// Rather than index by position we read the header row to find which data cell
+/// holds the wave number, the role, and the dependency list. Rows whose first
+/// cell parses as a wave number drive the result; the `depends_on` cell is
+/// parsed via the shared `[[…]]` scanner and normalised to wave numbers.
 fn parse_wave_plan_table(text: &str) -> Vec<WaveRow> {
     let mut header: Option<Vec<String>> = None;
     let mut rows: Vec<WaveRow> = Vec::new();
@@ -548,13 +546,14 @@ mod tests {
     }
 
     #[test]
-    fn parse_table_with_modelo_column() {
-        // Legacy form carrying a `Modelo` column (what extract_wave_model reads).
+    fn parse_table_with_extra_column() {
+        // Legacy form carrying an extra column — column roles resolve from the
+        // header row, so the extra column is tolerated, not mis-parsed.
         let plan = "\
-| Wave | Spec | Role | Modelo | Depende de | Resumo |
-|------|------|------|--------|------------|--------|
-| 1 | [[wave-1-general]] | general | opus | — | foo |
-| 2 | [[wave-2-ui]] | ui | sonnet | [[1]] | bar |
+| Wave | Spec | Role | Notes | Depende de | Resumo |
+|------|------|------|-------|------------|--------|
+| 1 | [[wave-1-general]] | general | n/a | — | foo |
+| 2 | [[wave-2-ui]] | ui | n/a | [[1]] | bar |
 ";
         let rows = parse_wave_plan_table(plan);
         assert_eq!(rows.len(), 2);

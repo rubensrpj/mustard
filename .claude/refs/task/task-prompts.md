@@ -21,15 +21,15 @@ The slice is cached at `.claude/.pipeline-states/{scope}.context-md.md`; `agent-
 
 `--mode first` is the dispatch (non-retry) render; swap to `--mode granular` / `--mode fix-loop` on a retry. `--budget-tokens N` trims bulky placeholders so the rendered prompt stays under ≈N model tokens (use it on `implement` to keep the single-dispatch cheap).
 
-| Action | `--role` | `subagent_type` | Model | Render invocation |
-|--------|----------|-----------------|-------|-------------------|
-| `analyze` | `explore` | `Explore` | sonnet | `mustard-rt run agent-prompt-render --spec {scope} --role explore --subproject {subproject} --mode first` |
-| `review` | `review` | `general-purpose` | opus | `mustard-rt run agent-prompt-render --spec {scope} --role review --subproject {subproject} --mode first` |
-| `docs` | `docs` | `general-purpose` | sonnet | `mustard-rt run agent-prompt-render --spec {scope} --role docs --subproject {subproject} --mode first` |
-| `audit` | `audit` | `general-purpose` | sonnet | `mustard-rt run agent-prompt-render --spec {scope} --role audit --subproject {subproject} --mode first` |
-| `refactor` (plan) | `plan` | `Plan` | sonnet | `mustard-rt run agent-prompt-render --spec {scope} --role plan --subproject {subproject} --mode first` |
-| `refactor` (execute) | `implement` | `general-purpose` | opus | `mustard-rt run agent-prompt-render --spec {scope} --role implement --subproject {subproject} --mode first` |
-| `implement` | `implement` | `general-purpose` | sonnet | `mustard-rt run agent-prompt-render --spec {scope} --role implement --subproject {subproject} --mode first --budget-tokens 4000` |
+| Action | `--role` | `subagent_type` | Render invocation |
+|--------|----------|-----------------|-------------------|
+| `analyze` | `explore` | `Explore` | `mustard-rt run agent-prompt-render --spec {scope} --role explore --subproject {subproject} --mode first` |
+| `review` | `review` | `general-purpose` | `mustard-rt run agent-prompt-render --spec {scope} --role review --subproject {subproject} --mode first` |
+| `docs` | `docs` | `general-purpose` | `mustard-rt run agent-prompt-render --spec {scope} --role docs --subproject {subproject} --mode first` |
+| `audit` | `audit` | `general-purpose` | `mustard-rt run agent-prompt-render --spec {scope} --role audit --subproject {subproject} --mode first` |
+| `refactor` (plan) | `plan` | `Plan` | `mustard-rt run agent-prompt-render --spec {scope} --role plan --subproject {subproject} --mode first` |
+| `refactor` (execute) | `implement` | `general-purpose` | `mustard-rt run agent-prompt-render --spec {scope} --role implement --subproject {subproject} --mode first` |
+| `implement` | `implement` | `general-purpose` | `mustard-rt run agent-prompt-render --spec {scope} --role implement --subproject {subproject} --mode first --budget-tokens 4000` |
 
 ### Dispatch shape
 
@@ -38,11 +38,12 @@ For each rendered prompt:
 ```text
 Task({
   subagent_type: <from table>,   // "{subproject-name}-impl" when that rich agent exists
-  model: <from table>,
   description: `{action}: {scope}`,
   prompt: <stdout of agent-prompt-render, verbatim>
 })
 ```
+
+No `model` field — dispatched agents inherit the session model (`pipeline-config.md § Model`).
 
 `subagent_type` = `general-purpose` — there are no generated per-project agents; the render carries role/boundary inline.
 

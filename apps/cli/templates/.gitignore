@@ -1,0 +1,10 @@
+# Mustard harness scratch — runtime state, not versioned.
+.cache/
+.harness/
+.metrics/
+.agent-state/
+.pipeline-states/
+
+# Per-spec event log + blob spill.
+spec/*/.events/
+spec/*/.blobs/

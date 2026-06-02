@@ -414,19 +414,61 @@ fn is_word_byte(b: u8) -> bool {
 /// The unmarked `## Checklist` items of the active spec. Returns `(found,
 /// unmarked)` — `found=false` means the spec or section is absent (skip).
 /// Port of `findUnmarkedChecklistItems`.
+///
+/// **Wave-plan parent (D1/D2):** a decomposed Full spec is a coordination doc —
+/// it carries NO `## Checklist`; the actionable checklists live in each
+/// `wave-N-*/spec.md`. If the parent has no checklist section AND it is a
+/// wave-plan parent (its `meta.json#isWavePlan`/`totalWaves` says so, or wave
+/// subdirs exist), this CONSOLIDATES the wave checklists instead of skipping —
+/// otherwise CLOSE would pass having checked nothing (an orphaned gate).
 fn find_unmarked_checklist(cwd: &str, spec: Option<&str>) -> (bool, Vec<String>) {
     let Some(spec) = spec else {
         return (false, Vec::new());
     };
-    let spec_path = ClaudePaths::for_project(Path::new(cwd))
-        .and_then(|p| p.for_spec(spec))
-        .map(|sp| sp.spec_md_path());
-    let Ok(spec_path) = spec_path else {
+    let Ok(sp) = ClaudePaths::for_project(Path::new(cwd)).and_then(|p| p.for_spec(spec)) else {
         return (false, Vec::new());
     };
-    let Ok(raw) = fs::read_to_string(&spec_path) else {
+    let spec_path = sp.spec_md_path();
+
+    // First, the parent's own checklist (owning Light / non-decomposed Full).
+    if let Ok(raw) = fs::read_to_string(&spec_path) {
+        if let Some(unmarked) = checklist_unmarked_in(&raw) {
+            return (true, unmarked);
+        }
+    }
+
+    // No parent checklist. If this is a wave-plan parent, consolidate the wave
+    // checklists so the gate has something to enforce (the orphan-gate fix).
+    let spec_dir = sp.dir().to_path_buf();
+    if !is_wave_plan_parent(&spec_dir) {
         return (false, Vec::new());
-    };
+    }
+    let mut found_any = false;
+    let mut unmarked: Vec<String> = Vec::new();
+    for wave_md in wave_spec_md_paths(&spec_dir) {
+        let Ok(raw) = fs::read_to_string(&wave_md) else {
+            continue;
+        };
+        if let Some(items) = checklist_unmarked_in(&raw) {
+            found_any = true;
+            let wave_label = wave_md
+                .parent()
+                .and_then(|p| p.file_name())
+                .and_then(|n| n.to_str())
+                .unwrap_or("wave")
+                .to_string();
+            for text in items {
+                unmarked.push(format!("[{wave_label}] {text}"));
+            }
+        }
+    }
+    (found_any, unmarked)
+}
+
+/// Extract the unmarked `- [ ] <text>` items from the `## Checklist` section of
+/// `raw`. Returns `None` when there is no `## Checklist` heading at all (the
+/// "section absent" signal), or `Some(items)` (possibly empty) when present.
+fn checklist_unmarked_in(raw: &str) -> Option<Vec<String>> {
     let lines: Vec<&str> = raw.split('\n').collect();
     let mut start = None;
     for (i, line) in lines.iter().enumerate() {
@@ -435,9 +477,7 @@ fn find_unmarked_checklist(cwd: &str, spec: Option<&str>) -> (bool, Vec<String>)
             break;
         }
     }
-    let Some(start) = start else {
-        return (false, Vec::new());
-    };
+    let start = start?;
     let mut end = lines.len();
     for (i, line) in lines.iter().enumerate().skip(start) {
         if line.starts_with("## ") || *line == "##" {
@@ -451,7 +491,39 @@ fn find_unmarked_checklist(cwd: &str, spec: Option<&str>) -> (bool, Vec<String>)
             unmarked.push(text);
         }
     }
-    (true, unmarked)
+    Some(unmarked)
+}
+
+/// `true` when `spec_dir` is a wave-plan PARENT — its `meta.json` declares
+/// `isWavePlan: true` or `totalWaves ≥ 1`, or (defensive fallback) at least one
+/// `wave-N-*` subdir exists. Fail-open: an unreadable sidecar falls back to the
+/// directory probe.
+fn is_wave_plan_parent(spec_dir: &Path) -> bool {
+    if let Some(meta) = mustard_core::read_meta(&spec_dir.join("meta.json")) {
+        if meta.is_wave_plan == Some(true) || meta.total_waves.unwrap_or(0) >= 1 {
+            return true;
+        }
+    }
+    !wave_spec_md_paths(spec_dir).is_empty()
+}
+
+/// The `spec.md` paths of every `wave-N-*` subdir under `spec_dir`, sorted for
+/// stable consolidation order. Empty when the spec has no waves.
+fn wave_spec_md_paths(spec_dir: &Path) -> Vec<std::path::PathBuf> {
+    let Ok(entries) = fs::read_dir(spec_dir) else {
+        return Vec::new();
+    };
+    let mut out: Vec<std::path::PathBuf> = entries
+        .into_iter()
+        .filter(|e| {
+            e.path.is_dir()
+                && e.file_name.starts_with("wave-")
+                && e.path.join("spec.md").is_file()
+        })
+        .map(|e| e.path.join("spec.md"))
+        .collect();
+    out.sort();
+    out
 }
 
 /// `true` if `line` is the `## Checklist` heading.
@@ -1375,6 +1447,79 @@ mod tests {
             Verdict::Deny { reason } => assert!(reason.contains("2 unmarked")),
             other => panic!("expected Deny for unmarked checklist, got {other:?}"),
         }
+    }
+
+    /// D1 orphan-gate fix: a wave-plan PARENT has no `## Checklist`, so the gate
+    /// must consolidate the WAVE checklists. An unmarked wave item → Deny.
+    #[test]
+    fn close_gate_consolidates_wave_checklists_when_parent_has_none() {
+        let dir = make_project();
+        // Parent: coordination doc — no `## Checklist`, but a wave-plan meta.
+        let sp = ClaudePaths::for_project(dir.path()).unwrap().for_spec("epic").unwrap();
+        std::fs::create_dir_all(sp.dir()).unwrap();
+        std::fs::write(sp.spec_md_path(), "# Epic\n\n## Network\n- coordination only\n").unwrap();
+        std::fs::write(
+            sp.dir().join("meta.json"),
+            r#"{"stage":"Execute","outcome":"Active","isWavePlan":true,"totalWaves":2}"#,
+        )
+        .unwrap();
+        // Wave 1: fully marked. Wave 2: one unmarked item.
+        std::fs::create_dir_all(sp.dir().join("wave-1-general")).unwrap();
+        std::fs::write(
+            sp.dir().join("wave-1-general").join("spec.md"),
+            "# Wave 1\n\n## Checklist\n- [x] done\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(sp.dir().join("wave-2-frontend")).unwrap();
+        std::fs::write(
+            sp.dir().join("wave-2-frontend").join("spec.md"),
+            "# Wave 2\n\n## Checklist\n- [x] one\n- [ ] still open\n",
+        )
+        .unwrap();
+
+        let (found, unmarked) = find_unmarked_checklist(dir.path().to_str().unwrap(), Some("epic"));
+        assert!(found, "wave-plan parent must consolidate wave checklists");
+        assert_eq!(unmarked.len(), 1, "exactly one unmarked wave item: {unmarked:?}");
+        assert!(unmarked[0].contains("still open"));
+        assert!(unmarked[0].contains("wave-2-frontend"), "wave label prefix: {unmarked:?}");
+
+        // End-to-end through the gate: an unmarked wave item denies CLOSE.
+        let input = close_input(dir.path(), "epic");
+        match close_gate_with_modes(&input, dir.path().to_str().unwrap(), no_qa()) {
+            Verdict::Deny { reason } => assert!(reason.contains("unmarked")),
+            other => panic!("expected Deny for unmarked wave checklist, got {other:?}"),
+        }
+    }
+
+    /// A wave-plan parent whose waves are all fully marked → the consolidated
+    /// gate finds nothing unmarked and CLOSE proceeds (no orphan, no false deny).
+    #[test]
+    fn close_gate_allows_wave_plan_when_all_waves_marked() {
+        let dir = make_project();
+        let sp = ClaudePaths::for_project(dir.path()).unwrap().for_spec("epic2").unwrap();
+        std::fs::create_dir_all(sp.dir()).unwrap();
+        std::fs::write(sp.spec_md_path(), "# Epic2\n\n## Network\n- coord\n").unwrap();
+        std::fs::write(
+            sp.dir().join("meta.json"),
+            r#"{"stage":"Execute","outcome":"Active","isWavePlan":true,"totalWaves":1}"#,
+        )
+        .unwrap();
+        std::fs::create_dir_all(sp.dir().join("wave-1-general")).unwrap();
+        std::fs::write(
+            sp.dir().join("wave-1-general").join("spec.md"),
+            "# Wave 1\n\n## Checklist\n- [x] done\n",
+        )
+        .unwrap();
+
+        let (found, unmarked) =
+            find_unmarked_checklist(dir.path().to_str().unwrap(), Some("epic2"));
+        assert!(found);
+        assert!(unmarked.is_empty(), "all waves marked → no unmarked items: {unmarked:?}");
+        let input = close_input(dir.path(), "epic2");
+        assert_eq!(
+            close_gate_with_modes(&input, dir.path().to_str().unwrap(), no_qa()),
+            Verdict::Allow
+        );
     }
 
     #[test]

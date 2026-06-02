@@ -43,6 +43,19 @@ pub struct ProjectUnit {
     pub dir: String,
     pub kind: String,
     pub code_files: usize,
+    /// Frameworks/deps that recur across this unit's own manifests — the same
+    /// frequency-ranked projection [`crate::ingest`] applies repo-wide, restricted
+    /// to the manifests under `dir`. No catalog; agnostic to language/framework.
+    #[serde(default)]
+    pub frameworks: Vec<String>,
+    /// Distinct dependencies declared by this unit's manifests — aggregated,
+    /// deduped, sorted (deterministic output).
+    #[serde(default)]
+    pub dependencies: Vec<String>,
+    /// Build/codegen scripts declared by this unit's manifests, verbatim —
+    /// aggregated, deduped, sorted.
+    #[serde(default)]
+    pub scripts: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]

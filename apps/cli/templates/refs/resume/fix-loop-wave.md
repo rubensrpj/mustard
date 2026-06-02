@@ -25,7 +25,7 @@ When REVIEW returns REJECTED (any CRITICAL):
    {findings_verbatim}
    ```
 5. Render the **Minimal Retry Template** from `.claude/refs/agent-prompt/agent-prompt.md § Retry Modes` (skips CONTEXT/REFERENCE/ENTITY/SKILLS/WEB VALIDATION/ROLE).
-6. Dispatch the same `subagent_type` + `model` as the original impl agent (do NOT change the role or model).
+6. Dispatch the same `subagent_type` as the original impl agent (do NOT change the role). Agents inherit the session model — there is no model to pick.
 7. On return, re-dispatch REVIEW agent (normal dispatch, not retry — review is read-only).
 8. If review still REJECTED after 2 fix-loops: STOP + report exhausted retries.
 

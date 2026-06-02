@@ -229,6 +229,15 @@ pub enum ContractViolation {
     #[error("checklist item missing label")]
     ChecklistMissingLabel,
     /// Full scope requires a `total_waves` ≥ 1.
+    ///
+    /// This variant encodes the invariant **Full scope ⇒ ≥1 wave** — every
+    /// independent (Full-scope) spec decomposes into a parent *orchestrator* doc
+    /// plus at least one executing *wave* subagent. There is no "Full with zero
+    /// waves": the parent spec coordinates, the wave executes. `scope_decompose`
+    /// decides MULTI-wave (N) vs SINGLE-wave (1), never wave-vs-no-wave, so a
+    /// Full spec's wave floor is 1. Light is unaffected (single spec + inline
+    /// checklist, no waves). Raised by [`validate`] whenever
+    /// `scope == Full && total_waves < 1`.
     #[error("Full scope requires total_waves ≥ 1")]
     FullScopeNoWaves,
 }
@@ -277,6 +286,8 @@ pub fn validate(input: &SpecInput) -> Result<(), Vec<ContractViolation>> {
     }
 
     // --- Scope / wave-plan ------------------------------------------------
+    // Invariant: Full scope ⇒ ≥1 wave (parent = orchestrator, wave = subagent).
+    // A Full spec without a wave is the "limbo" state this contract forbids.
     if matches!(input.scope, Some(Scope::Full)) && input.total_waves.unwrap_or(0) == 0 {
         violations.push(ContractViolation::FullScopeNoWaves);
     }
@@ -309,7 +320,14 @@ pub fn validate(input: &SpecInput) -> Result<(), Vec<ContractViolation>> {
     // keep it from being orphaned, drafting MUST materialise at least one
     // trackable item — otherwise the gate has nothing to enforce against and
     // the drafter could ship a spec the gate silently ignores.
-    if input.checklist.is_empty() {
+    //
+    // Exception: a wave-plan *parent* spec is a coordination doc whose
+    // actionable checklist lives in its waves, not in the parent. We detect it
+    // purely from the existing `total_waves` field — a parent declares N ≥ 1
+    // waves. A non-decomposed Full spec (`total_waves` 0/None) and any Light
+    // spec still require their own checklist.
+    let is_wave_plan_parent = input.total_waves.unwrap_or(0) >= 1;
+    if input.checklist.is_empty() && !is_wave_plan_parent {
         violations.push(ContractViolation::ChecklistEmpty);
     }
     for item in &input.checklist {
@@ -509,8 +527,11 @@ mod tests {
     fn rejects_empty_checklist() {
         // The checklist gate (close-gate) blocks on unmarked `[ ]`; the
         // contract requires drafting to materialise at least one item so the
-        // gate is never orphaned.
+        // gate is never orphaned. A *non-decomposed* Full spec (no waves) still
+        // owns its checklist — only a wave-plan parent (`total_waves` ≥ 1) is
+        // exempt, asserted separately in `wave_plan_parent_allows_empty_checklist`.
         let mut input = fixture(Scope::Full);
+        input.total_waves = Some(0);
         input.checklist.clear();
         let err = validate(&input).unwrap_err();
         assert!(err.contains(&ContractViolation::ChecklistEmpty));
@@ -531,6 +552,18 @@ mod tests {
         input.checklist.clear();
         let err = validate(&input).unwrap_err();
         assert!(err.contains(&ContractViolation::ChecklistEmpty));
+    }
+
+    #[test]
+    fn wave_plan_parent_allows_empty_checklist() {
+        // A decomposed Full spec (wave-plan parent, `total_waves` ≥ 1) is a
+        // coordination doc — its actionable checklist lives in the waves, not
+        // the parent. Clearing the parent checklist must NOT raise
+        // `ChecklistEmpty`.
+        let mut input = fixture(Scope::Full);
+        input.total_waves = Some(3);
+        input.checklist.clear();
+        assert!(validate(&input).is_ok());
     }
 
     #[test]

@@ -21,21 +21,19 @@ Concerns/Checklist still block: unresolved `BLOCKED` → block; `CONCERN`/`DEFER
 ## Action
 
 1. Locate spec at `.claude/spec/{name}/`. Lifecycle state from the `meta.json` sidecar + the event projection (`spec.md` is pure narrative).
-2. Lifecycle state (`stage: Close`, `outcome: Completed`, `checkpoint: {ISO now}`) is written to the `meta.json` sidecar by the close pipeline events below — `mustard-rt` patches the sidecar; never hand-edit `spec.md`.
+2. Lifecycle state (`stage: Close`, `outcome: Completed`, `phase: CLOSE`, `checkpoint: {ISO now}`) is stamped into the `meta.json` sidecar **by the `close-orchestrate` chain itself** when `overall == pass` (its in-process `complete-spec` finalize patches the sidecar). Do NOT hand-stamp it — never hand-edit `spec.md`, and never emit `pipeline.stage`/`pipeline.outcome` yourself (a hand-emit after a *failing* orchestrate would falsely mark the spec Completed).
 3. `mustard-rt run scan` if `## Files` touched the codebase materially (refresh `grain.model.json`).
-4. Run the gate + auto-finalize (one command — relay its JSON; do **not** call `complete-spec` yourself):
+4. Run the gate + auto-finalize (one command — relay its JSON; do **not** call `complete-spec` and do **not** hand-emit the Close/Completed stage+outcome — the chain owns both):
 
 ```bash
 mustard-rt run close-orchestrate --spec {spec}
-# overall == pass → already chained: spec is closed-followup, pipeline.complete emitted + verified.
-# overall == fail → report-only; fix the failing gate and re-run.
+# overall == pass → already chained: spec is closed-followup, meta.json stamped Close/Completed/CLOSE, pipeline.complete emitted + verified.
+# overall == fail → report-only; fix the failing gate and re-run (nothing was stamped).
 ```
 
-   Then stamp Stage/Outcome (these are header/flag emits, not the finalize):
+   Only when `overall == pass`, raise the follow-up flag the chain does not set (idempotent):
 
 ```bash
-mustard-rt run emit-pipeline --kind pipeline.stage --spec {spec} --payload "{\"stage\":\"Close\"}"
-mustard-rt run emit-pipeline --kind pipeline.outcome --spec {spec} --payload "{\"outcome\":\"Completed\"}"
 mustard-rt run emit-pipeline --kind pipeline.flag.set --spec {spec} --payload "{\"flag\":\"followup_open\"}"
 ```
 
@@ -53,4 +51,3 @@ Stage `Close`, Outcome `Cancelled`. Emit `pipeline.stage: Close` + `pipeline.out
 - NEVER bypass the verification gate, and NEVER hand-call `complete-spec` to finalize — the finalize is chained automatically by `close-orchestrate` only when every gate passes. Calling `complete-spec` to force a close past a red gate is forbidden (the `emit-pipeline` QA-gate would reject it anyway).
 - NEVER move the spec directory — archival is event-only.
 - NEVER batch-mark Checklist items on behalf of agents.
-- Re-reviews always dispatch with `model: "sonnet"`.

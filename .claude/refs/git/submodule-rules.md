@@ -90,7 +90,7 @@ Run in **one parallel batch**:
 
 ### Commit dirty submodules (monorepo only)
 
-Launch **ONE parallel Task agent per dirty submodule** (`model: "sonnet"`). Each agent runs ONE chained Bash command:
+Launch **ONE parallel Task agent per dirty submodule** (agents inherit the session model — no model selection). Each agent runs ONE chained Bash command:
 
 ```bash
 cd <SUBMODULE_ABSOLUTE_PATH> && rtk git add $SCOPE_EXPR && rtk git diff --cached --stat && rtk git commit -m "<message>"

@@ -25,6 +25,7 @@ use mustard_core::time::now_iso8601;
 use mustard_core::platform::metrics::{emit_metric, MetricLine};
 use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use serde_json::{json, Value};
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -86,34 +87,108 @@ fn extract_ac_section(markdown: &str) -> Option<String> {
     Some(lines[start + 1..end].join("\n"))
 }
 
-/// Parse `- [ ] AC-N: description — Command: `cmd`` lines.
+/// Parse the `## Acceptance Criteria` body into `AcItem`s.
 ///
-/// JS regex (case-insensitive):
-/// `^\s*-\s*\[[ xX]\]\s*(AC-\d+)\s*:\s*(.+?)\s*(?:—|-{1,2})\s*Command\s*:\s*`?([^`\n]+)`?\s*$`
+/// Two AC shapes are supported, both off the same header parser:
+///
+/// 1. **Historical one-line** — `- [ ] AC-N: desc — Command: `cmd``. The
+///    `Command:` marker sits on the AC line itself; the item is complete in a
+///    single line.
+/// 2. **Drafter multi-line** — the canonical shape the spec drafter emits:
+///    ```text
+///    - **AC-1** — desc.
+///      Command: `cmd`
+///    ```
+///    no checkbox, an em-dash (`—`) id→desc separator, and `Command:` on the
+///    next indented line.
+///
+/// So this is an indexed loop with **lookahead**: a line that parses as an AC
+/// header but carries no same-line `Command:` marker triggers a scan of the
+/// following lines for the first `Command:`. The scan stops at the next AC
+/// header (`- **AC-` / `- [ ] AC-` …), a blank-line gap, or a `## ` heading —
+/// so a header with no command anywhere yields no item (and never bleeds into
+/// the next AC's command). Fail-open: a malformed block produces no item.
 fn parse_ac_items(section: &str) -> Vec<AcItem> {
+    let lines: Vec<&str> = section.split('\n').collect();
     let mut items = Vec::new();
-    for line in section.split('\n') {
-        if let Some(item) = parse_ac_line(line) {
-            items.push(item);
+    let mut i = 0;
+    while i < lines.len() {
+        let Some((id, after_sep)) = parse_ac_header(lines[i]) else {
+            i += 1;
+            continue;
+        };
+        // Prefer a same-line `Command:` marker (historical one-line form).
+        if let Some(command) = extract_command(after_sep) {
+            items.push(AcItem { id, command });
+            i += 1;
+            continue;
         }
+        // Lookahead: scan following lines for the first `Command:` marker,
+        // stopping at the next AC header, a blank-line gap, or a `## ` heading.
+        let mut j = i + 1;
+        let mut command = None;
+        while j < lines.len() {
+            let line = lines[j];
+            if parse_ac_header(line).is_some() || line.trim().is_empty() || line.starts_with("## ")
+            {
+                break;
+            }
+            if let Some(cmd) = extract_command(line) {
+                command = Some(cmd);
+                break;
+            }
+            j += 1;
+        }
+        if let Some(command) = command {
+            items.push(AcItem { id, command });
+        }
+        // Resume after the header line; the next header (if any) is re-parsed
+        // on its own iteration regardless of where the lookahead landed.
+        i += 1;
     }
     items
 }
 
-/// Parse one AC line with plain string scanning (no regex crate available).
+/// Parse one AC line in the historical one-line form
+/// (`- [ ] AC-N: desc — Command: `cmd``) into a complete [`AcItem`].
+///
+/// Thin wrapper over [`parse_ac_header`] + [`extract_command`]; the multi-line
+/// drafter form is handled by [`parse_ac_items`]'s lookahead, not here. Kept as
+/// the unit-test surface for the single-line shapes (production parses through
+/// [`parse_ac_items`], hence `#[cfg(test)]`).
+#[cfg(test)]
 fn parse_ac_line(line: &str) -> Option<AcItem> {
+    let (id, after_sep) = parse_ac_header(line)?;
+    let command = extract_command(after_sep)?;
+    Some(AcItem { id, command })
+}
+
+/// Parse the AC **header** part of a line: the bullet, an OPTIONAL `[ ]`/`[x]`
+/// checkbox, the (optionally bold-wrapped) `AC-<id>`, and the id→description
+/// separator. Returns the uppercased id plus the text **after** the separator
+/// (which may or may not hold a `Command:` marker — that is the caller's job).
+///
+/// Plain string scanning, no regex crate. Returns `None` for any non-AC line.
+fn parse_ac_header(line: &str) -> Option<(String, &str)> {
     let t = line.trim_start();
     let rest = t.strip_prefix('-')?.trim_start();
-    // `[ ]`, `[x]`, `[X]`.
-    let rest = rest.strip_prefix('[')?;
-    let mark = rest.chars().next()?;
-    if !matches!(mark, ' ' | 'x' | 'X') {
-        return None;
-    }
-    let rest = rest[mark.len_utf8()..].strip_prefix(']')?.trim_start();
+    // The `[ ]` / `[x]` / `[X]` checkbox is OPTIONAL: the historical checklist
+    // form has it (`- [ ] AC-1 …`), the drafter's `## Critérios de Aceitação`
+    // section does NOT (`- **AC-1** …`). Consume it only when present.
+    let rest = match rest.strip_prefix('[') {
+        Some(after_open) => {
+            let mark = after_open.chars().next()?;
+            if !matches!(mark, ' ' | 'x' | 'X') {
+                return None;
+            }
+            after_open[mark.len_utf8()..].strip_prefix(']')?.trim_start()
+        }
+        None => rest,
+    };
     // Tolerate a bold-wrapped ID prefix: `**AC-G1.**` (canonical form used in
-    // wave-plans + qa/review specs). Strip the leading `**` here; the matching
-    // trailing `**` is consumed below after the ID/separator.
+    // wave-plans + qa/review specs, and the drafter's `- **AC-1**`). Strip the
+    // leading `**` here; the matching trailing `**` is consumed below after the
+    // ID/separator.
     let (rest, bold) = match rest.strip_prefix("**") {
         Some(r) => (r.trim_start(), true),
         None => (rest, false),
@@ -154,45 +229,64 @@ fn parse_ac_line(line: &str) -> Option<AcItem> {
     }
     let id = format!("AC-{}", &after_ac[..id_end]);
     let after_id = &after_ac[id_end..];
-    // Accept `.` or `:` as the ID/description separator. The period form is
-    // canonical for the deep-refactor pipeline (`**AC-G1.** desc`); the colon
-    // form is the historical shape (`AC-G1: desc`). The separator may sit
-    // BEFORE the closing bold `**` (canonical: `**AC-G1.**`) or after it
-    // (defensive: `**AC-G1** : desc`).
+    // Accept `.`, `:`, the em-dash `—` (U+2014), or a plain `-`/`--` as the
+    // ID/description separator. The period form is canonical for the
+    // deep-refactor pipeline (`**AC-G1.** desc`); the colon form is the
+    // historical shape (`AC-G1: desc`); the dash forms are what the spec
+    // drafter emits (`- **AC-1** — desc`). The separator may sit BEFORE the
+    // closing bold `**` (canonical: `**AC-G1.**`) or after it (`**AC-1** —`).
     let after_sep = if bold {
-        // Two valid bold shapes:
-        //   `**AC-G1.**` — separator inside the bold span; **after** "AC-G1"
-        //     comes "." then "**"; description follows.
-        //   `**AC-G1:**` — same with colon.
-        //   `**AC-G1**.` — separator outside the bold span (rare/defensive).
+        // Bold shapes:
+        //   `**AC-G1.**` / `**AC-G1:**` — separator inside the bold span.
+        //   `**AC-1**` then `—`/`-`/`.`/`:` — separator after the closing bold.
         let stripped = after_id.trim_start();
-        if let Some(rest) = stripped.strip_prefix('.').or_else(|| stripped.strip_prefix(':')) {
+        if let Some(rest) = strip_separator(stripped) {
             // separator was inside the bold; expect `**` next, then description.
             rest.trim_start().strip_prefix("**")?
         } else if let Some(rest) = stripped.strip_prefix("**") {
             // bold closed first, then separator.
-            let r = rest.trim_start();
-            r.strip_prefix('.').or_else(|| r.strip_prefix(':'))?
+            strip_separator(rest.trim_start())?
         } else {
             return None;
         }
     } else {
-        let stripped = after_id.trim_start();
-        stripped.strip_prefix('.').or_else(|| stripped.strip_prefix(':'))?
+        strip_separator(after_id.trim_start())?
     };
-    let after_colon = after_sep;
-    // Find the trailing ` Command: ` marker. Match `command:` (with the colon
-    // attached) so embedded words like "commands/mustard/*" in the description
-    // don't false-positive on a bare "command" substring. Use the LAST
-    // occurrence — defensive against descriptions that legitimately contain
-    // the literal string `command:` before the actual marker.
-    let lower_seg = after_colon.to_lowercase();
+    Some((id.to_uppercase(), after_sep))
+}
+
+/// Strip the ID→description separator from the front of `s`, returning the
+/// remainder. Accepts `.`, `:`, the em-dash `—` (U+2014), `--`, or a single
+/// `-`. Returns `None` if `s` does not begin with a recognised separator.
+fn strip_separator(s: &str) -> Option<&str> {
+    if let Some(rest) = s.strip_prefix('.').or_else(|| s.strip_prefix(':')) {
+        return Some(rest);
+    }
+    if let Some(rest) = s.strip_prefix('—') {
+        return Some(rest);
+    }
+    // `--` before a single `-` so `--` is consumed whole.
+    if let Some(rest) = s.strip_prefix("--").or_else(|| s.strip_prefix('-')) {
+        return Some(rest);
+    }
+    None
+}
+
+/// Extract the command from a fragment that may contain a `Command:` marker.
+///
+/// Matches `command:` (colon attached) so embedded words like
+/// `commands/mustard/*` in a description don't false-positive on a bare
+/// "command" substring. Uses the LAST occurrence — defensive against
+/// descriptions that legitimately contain the literal `command:` before the
+/// real marker. When the command is backtick-quoted, takes only the text
+/// between the first pair of backticks and ignores any trailing parenthetical
+/// (e.g. "(entregue em W1)"); the bare form (`Command: cargo test`) keeps the
+/// historical behaviour. Returns `None` when no marker is present or the
+/// command is empty.
+fn extract_command(fragment: &str) -> Option<String> {
+    let lower_seg = fragment.to_lowercase();
     let cmd_idx = lower_seg.rfind("command:")?;
-    let cmd_tail = after_colon[cmd_idx + "command:".len()..].trim();
-    // W8#3: tolerate `Command: `<cmd>` (annotation)` — when the command is
-    // backtick-quoted, take only the text between the first pair of backticks
-    // and ignore any trailing parenthetical (e.g. "(entregue em W1)"). The
-    // historical bare form (`Command: cargo test`) keeps the old behaviour.
+    let cmd_tail = fragment[cmd_idx + "command:".len()..].trim();
     let command = if let Some(rest) = cmd_tail.strip_prefix('`') {
         let close = rest.find('`').unwrap_or(rest.len());
         rest[..close].trim().to_string()
@@ -202,7 +296,7 @@ fn parse_ac_line(line: &str) -> Option<AcItem> {
     if command.is_empty() {
         return None;
     }
-    Some(AcItem { id: id.to_uppercase(), command })
+    Some(command)
 }
 
 /// Rewrite a `cargo build/test --workspace` command to skip the crate(s) in
@@ -423,6 +517,58 @@ fn write_sidecar(cwd: &Path, spec: &str, payload: &Value) {
     }
 }
 
+/// Write the consolidated Markdown report at `.claude/spec/{spec}/qa/report.md`
+/// (D4). The QA phase materialises its verdict by code so the result is durable
+/// and visible in the dashboard, instead of depending on an agent remembering to
+/// fill in a template. Atomic via [`fs::write_atomic`]. Fail-open: a missing
+/// project root or write error is a silent no-op (the `qa.result` event is the
+/// load-bearing record; this file is the human-readable mirror).
+fn write_qa_report_md(cwd: &Path, spec: &str, overall: &str, criteria: &[AcResult]) {
+    let Some(sp) = ClaudePaths::for_project(cwd)
+        .ok()
+        .and_then(|p| p.for_spec(spec).ok())
+    else {
+        return;
+    };
+    let qa_dir = sp.dir().join("qa");
+    if fs::create_dir_all(&qa_dir).is_err() {
+        return;
+    }
+
+    let mut body = String::new();
+    body.push_str("# QA Report\n\n");
+    let _ = writeln!(body, "- Spec: `{spec}`");
+    let _ = writeln!(body, "- Overall: **{}**", overall.to_uppercase());
+    let _ = writeln!(body, "- Criteria: {}\n", criteria.len());
+    body.push_str("## Acceptance Criteria\n\n");
+    body.push_str("| ID | Status | Exit | Duration | Detail |\n");
+    body.push_str("|----|--------|------|----------|--------|\n");
+    for c in criteria {
+        let exit = c.exit.map_or_else(|| "n/a".to_string(), |e| e.to_string());
+        let duration = format!("{:.1}s", c.duration_ms as f64 / 1000.0);
+        // Keep the detail cell on one line and pipe-safe so the table stays valid.
+        let detail: String = c
+            .stderr_excerpt
+            .replace('|', "\\|")
+            .replace('\n', " ")
+            .chars()
+            .take(80)
+            .collect();
+        let _ = writeln!(
+            body,
+            "| {} | {} | {} | {} | {} |",
+            c.id,
+            c.status.to_uppercase(),
+            exit,
+            duration,
+            detail,
+        );
+    }
+    body.push('\n');
+
+    let _ = fs::write_atomic(qa_dir.join("report.md"), body.as_bytes());
+}
+
 /// Write the standalone HTML report at `<root>/.claude/spec/{spec}/qa-report.html`.
 fn write_html_report(cwd: &Path, spec: &str, overall: &str, criteria: &[AcResult]) -> Option<PathBuf> {
     let sp = ClaudePaths::for_project(cwd).ok()?.for_spec(spec).ok()?;
@@ -601,6 +747,8 @@ fn run_qa(cwd: &Path, spec: &str) -> QaResult {
     emit_qa_event(cwd, spec, overall, &cjson);
     emit_qa_metric(cwd, spec, overall, &criteria);
     write_sidecar(cwd, spec, &payload);
+    // D4: materialise the human-readable report beside the phase dir.
+    write_qa_report_md(cwd, spec, overall, &criteria);
 
     QaResult { overall: overall.to_string(), criteria }
 }
@@ -724,6 +872,82 @@ mod tests {
         assert_eq!(a.command, "rtk z");
     }
 
+    /// The canonical drafter format: NO checkbox, em-dash (`—`) separator, and
+    /// `Command:` on the next indented line. Multiple ACs, one command
+    /// containing `&&`. This is the exact shape that produced `overall: skip`
+    /// (zero parseable items) before this fix — the regression that motivated
+    /// the tactical-fix. All ids + commands must come through intact.
+    #[test]
+    fn parses_drafter_multiline_format() {
+        let section = "\
+- **AC-1** — Workspace compila, testa e linta verde.
+  Command: `cargo test && cargo clippy --all-targets`
+- **AC-2** — Após complete-spec, o meta da raiz fica Close/Completed.
+  Command: `cargo test -p mustard-rt status_sync_integration`
+";
+        let items = parse_ac_items(section);
+        assert_eq!(items.len(), 2, "both ACs must parse");
+        assert_eq!(items[0].id, "AC-1");
+        assert_eq!(items[0].command, "cargo test && cargo clippy --all-targets");
+        assert_eq!(items[1].id, "AC-2");
+        assert_eq!(items[1].command, "cargo test -p mustard-rt status_sync_integration");
+    }
+
+    /// Regression lock: the historical one-line forms must keep parsing
+    /// identically through `parse_ac_items` (not just `parse_ac_line`). Covers
+    /// the checkbox + `:`/`—` separator + same-line `Command:` shapes.
+    #[test]
+    fn parses_historical_oneline_format_via_items() {
+        let section = "\
+- [ ] AC-1: builds clean — Command: `cargo build`
+- [x] AC-2: tests pass - Command: cargo test
+- [ ] **AC-G1.** descr. Command: `rtk x`
+";
+        let items = parse_ac_items(section);
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[0].id, "AC-1");
+        assert_eq!(items[0].command, "cargo build");
+        assert_eq!(items[1].id, "AC-2");
+        assert_eq!(items[1].command, "cargo test");
+        assert_eq!(items[2].id, "AC-G1");
+        assert_eq!(items[2].command, "rtk x");
+    }
+
+    /// Drafter header with NO `Command:` anywhere (neither same-line nor on a
+    /// following line) must yield NO item — not a panic, and crucially not a
+    /// false item that bleeds the NEXT AC's command into this one. The
+    /// lookahead stops at the next AC header.
+    #[test]
+    fn drafter_header_without_command_yields_no_item() {
+        let section = "\
+- **AC-1** — Description with no command at all.
+- **AC-2** — This one has a command.
+  Command: `cargo test`
+";
+        let items = parse_ac_items(section);
+        // AC-1 has no command → dropped; AC-2 keeps its own command.
+        assert_eq!(items.len(), 1, "only AC-2 has a command");
+        assert_eq!(items[0].id, "AC-2");
+        assert_eq!(items[0].command, "cargo test");
+    }
+
+    /// A trailing AC header with no command and no following AC (end of
+    /// section) yields no item — the lookahead runs off the end safely.
+    #[test]
+    fn trailing_header_without_command_is_dropped() {
+        let section = "- **AC-1** — Dangling header, no command.\n";
+        assert!(parse_ac_items(section).is_empty());
+    }
+
+    /// Em-dash separator on a plain (non-bold, non-checkbox) header parses via
+    /// `parse_ac_line` too — the dash-family separators are additive to `.`/`:`.
+    #[test]
+    fn parses_emdash_separator_single_line() {
+        let a = parse_ac_line("- AC-1 — desc — Command: `cargo build`").unwrap();
+        assert_eq!(a.id, "AC-1");
+        assert_eq!(a.command, "cargo build");
+    }
+
     /// PT heading "Critérios de Aceitação globais" (suffix word after the
     /// canonical name) must still resolve — `is_heading` matches with a
     /// word-boundary tolerance after the variant. Regression guard for
@@ -812,6 +1036,45 @@ mod tests {
         let res = run_ac_command(cmd, dir.path());
         assert_eq!(res.status, "pass", "stderr: {}", res.stderr_excerpt);
         assert_eq!(res.exit, Some(0));
+    }
+
+    /// D4: `write_qa_report_md` materialises `.claude/spec/{spec}/qa/report.md`
+    /// with the overall verdict + a per-AC table.
+    #[test]
+    fn qa_report_md_is_materialized() {
+        let dir = tempdir().unwrap();
+        let criteria = vec![
+            AcResult {
+                id: "AC-1".into(),
+                status: "pass".into(),
+                exit: Some(0),
+                duration_ms: 120,
+                stderr_excerpt: String::new(),
+            },
+            AcResult {
+                id: "AC-2".into(),
+                status: "fail".into(),
+                exit: Some(1),
+                duration_ms: 50,
+                stderr_excerpt: "boom | pipe".into(),
+            },
+        ];
+        write_qa_report_md(dir.path(), "demo", "fail", &criteria);
+
+        let report_path = ClaudePaths::for_project(dir.path())
+            .unwrap()
+            .for_spec("demo")
+            .unwrap()
+            .dir()
+            .join("qa")
+            .join("report.md");
+        let md = std::fs::read_to_string(&report_path).unwrap();
+        assert!(md.starts_with("# QA Report"));
+        assert!(md.contains("Overall: **FAIL**"));
+        assert!(md.contains("AC-1"));
+        assert!(md.contains("AC-2"));
+        // Pipe in the detail cell is escaped so the table stays valid.
+        assert!(md.contains("boom \\| pipe"));
     }
 
     #[test]

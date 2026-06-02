@@ -14,8 +14,8 @@ use crate::hooks::task::delegation_advisory::DelegationAdvisory;
 use crate::hooks::write::active_spec_limit_gate::ActiveSpecLimitGate;
 use crate::hooks::write::close_gate::CloseGate;
 use crate::hooks::write::scan_gate::ScanGate;
+use crate::hooks::write::scope_guard::ScopeGuard;
 use crate::hooks::session::session_knowledge_observer::SessionKnowledgeObserver;
-use crate::hooks::task::model_routing_gate::ModelRoutingGate;
 use crate::hooks::observe::notification_observer::NotificationObserver;
 use crate::hooks::observe::rewave_observer::RewaveObserver;
 use crate::hooks::observe::wave_complete_observer::WaveCompleteObserver;
@@ -150,16 +150,6 @@ impl Registry {
                     (Trigger::PostToolUse, ToolMatch::Named("Agent")),
                 ],
                 check: Some(Box::new(ContextBudgetGate)),
-                observer: None,
-            },
-            Module {
-                id: "model_routing_gate",
-                // `model-routing-gate` — PreToolUse(Task) model-selection gate.
-                applies_to: &[
-                    (Trigger::PreToolUse, ToolMatch::Named("Task")),
-                    (Trigger::PreToolUse, ToolMatch::Named("Agent")),
-                ],
-                check: Some(Box::new(ModelRoutingGate)),
                 observer: None,
             },
             Module {
@@ -313,6 +303,25 @@ impl Registry {
                     (Trigger::PreToolUse, ToolMatch::Named("Edit")),
                 ],
                 check: Some(Box::new(PreEditIntentGate)),
+                observer: None,
+            },
+            // Full-scope approval hard-gate (D5 — spec-scaffold-lifecycle-gate).
+            // Denies a PreToolUse(Write|Edit) of a PRODUCTION file when the
+            // active spec is `scope=full`, `stage=Plan`, and has no `/spec`
+            // approval event. Registered on Task|Agent too (the prompt's "covers
+            // Task dispatch") — the module itself passes Task through so the
+            // legitimate Full-scope PLAN dispatch is never trapped; the
+            // production-file protection re-fires on the subagent's own
+            // Write/Edit calls. Fail-open inside the module.
+            Module {
+                id: "scope_guard",
+                applies_to: &[
+                    (Trigger::PreToolUse, ToolMatch::Named("Write")),
+                    (Trigger::PreToolUse, ToolMatch::Named("Edit")),
+                    (Trigger::PreToolUse, ToolMatch::Named("Task")),
+                    (Trigger::PreToolUse, ToolMatch::Named("Agent")),
+                ],
+                check: Some(Box::new(ScopeGuard)),
                 observer: None,
             },
             Module {
@@ -607,7 +616,7 @@ mod tests {
     fn task_family_applies_on_pre_tool_use_task() {
         let registry = Registry::new();
         let ids = applicable_ids(&registry, Trigger::PreToolUse, Some("Task"));
-        for want in ["context_budget_gate", "model_routing_gate", "subagent_observer", "skills_advisory"] {
+        for want in ["context_budget_gate", "subagent_observer", "skills_advisory"] {
             assert!(ids.contains(&want), "missing {want}");
         }
     }
@@ -635,7 +644,6 @@ mod tests {
         for id in [
             "bash_command_gate",
             "context_budget_gate",
-            "model_routing_gate",
             "tool_use_counter",
             "main_context_counter",
             "subagent_observer",
@@ -647,6 +655,7 @@ mod tests {
             "path_gate",
             "close_gate",
             "scan_gate",
+            "scope_guard",
             "active_spec_limit_gate",
             "delegation_advisory",
             "post_edit",
@@ -720,9 +729,16 @@ mod tests {
         // Wave-4 Write/Edit gates fire on PreToolUse(Write) and (Edit).
         for tool in ["Write", "Edit"] {
             let ids = applicable_ids(&registry, Trigger::PreToolUse, Some(tool));
-            for want in ["size_gate", "path_gate", "close_gate"] {
+            for want in ["size_gate", "path_gate", "close_gate", "scope_guard"] {
                 assert!(ids.contains(&want), "missing {want} for {tool}");
             }
+        }
+        // `scope_guard` also rides PreToolUse(Task|Agent) (covers dispatch).
+        for tool in ["Task", "Agent"] {
+            assert!(
+                applicable_ids(&registry, Trigger::PreToolUse, Some(tool)).contains(&"scope_guard"),
+                "scope_guard missing for {tool}"
+            );
         }
         // `path_gate` (file-guard) also covers Read.
         assert!(

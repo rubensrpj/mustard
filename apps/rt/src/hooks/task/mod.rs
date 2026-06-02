@@ -4,7 +4,6 @@ pub mod context_budget_gate;
 pub mod delegation_advisory;
 pub mod main_context_counter;
 pub mod metrics_observer;
-pub mod model_routing_gate;
 pub mod skill_usage_observer;
 pub mod skills_advisory;
 pub mod subagent_inject;

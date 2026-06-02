@@ -30,7 +30,7 @@ Print stdout verbatim, then the **Siglas + Modo de seleção** block below liter
 rtk mustard-rt run resume-bootstrap --spec {specName} --json
 ```
 
-Parse: `stage`, `mode`, `operationalSpecPath`, `currentWave`, `waveModel`, `lastDispatchFailure`, `needsDiff`, `needsContextSlice`.
+Parse: `stage`, `mode`, `operationalSpecPath`, `currentWave`, `lastDispatchFailure`, `needsDiff`, `needsContextSlice`.
 
 `Plan` + no suffix → `../../../refs/spec/approve-only-flow.md`. `Plan` + `r` → `approve-only-flow.md § Branch --resume`. `Execute`/`Analyze`/`QaReview`/`Close` → `../../../refs/spec/resume-flow.md`; EXEC ignores `r`.
 

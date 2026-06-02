@@ -1,0 +1,9 @@
+{
+  "stage": "Close",
+  "outcome": "Completed",
+  "phase": "CLOSE",
+  "scope": "light",
+  "lang": "pt-BR",
+  "checkpoint": "2026-06-02T13:09:38.938Z",
+  "parent": "2026-06-02-spec-scaffold-lifecycle-gate"
+}

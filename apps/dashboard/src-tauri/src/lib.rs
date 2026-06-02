@@ -691,6 +691,35 @@ fn dashboard_spec_markdown(repo_path: String, spec_name: String) -> Result<Strin
         || spec_name.contains('\\')
         || spec_name.contains("..")
     {
+        // Phase artifacts materialized by `apps/rt` live one level under the
+        // spec dir at a fixed relative path: `{spec}/qa/report.md` and
+        // `{spec}/review/verdict.md`. The viewer requests them with a composite
+        // token (`{spec}/qa/report.md`); accept exactly those two suffixes after
+        // an otherwise-valid spec segment, resolving relative to the spec dir
+        // just like `spec.md`/`wave-plan.md` (cases 1/3). Anything else stays
+        // rejected. Fail-open: a missing artifact returns `Err`, which the
+        // viewer maps to its "not available" state — never an error toast.
+        if let Some(rel) = ["qa/report.md", "review/verdict.md"]
+            .into_iter()
+            .find(|suffix| spec_name.ends_with(suffix))
+        {
+            let parent = &spec_name[..spec_name.len() - rel.len()];
+            let parent = parent.strip_suffix('/').unwrap_or(parent);
+            if !parent.is_empty()
+                && !parent.contains('/')
+                && !parent.contains('\\')
+                && !parent.contains("..")
+            {
+                let mut artifact = base.join(parent);
+                for seg in rel.split('/') {
+                    artifact = artifact.join(seg);
+                }
+                if artifact.exists() {
+                    return fs::read_to_string(&artifact).map_err(|e| e.to_string());
+                }
+                return Err(format!("spec markdown not found: {}", spec_name));
+            }
+        }
         return Err(format!("invalid spec name: {}", spec_name));
     }
     // 1. Standalone spec — flat layout: .claude/spec/{spec_name}/spec.md

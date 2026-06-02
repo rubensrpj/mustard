@@ -184,18 +184,12 @@ pub fn ingest(root: &Path) -> Result<Ingested> {
 
 /// Map dependency names to framework labels. A framework strongly implies the
 /// architecture the project is *expected* to follow.
+///
+/// Surface the dependencies the project declares — verbatim from its manifests,
+/// most-common first, ties broken by first-appearance order. No curated catalog:
+/// whatever the repo lists is what we report, so this stays agnostic to language
+/// and framework. The ranking itself is the shared projection owned by
+/// `crate::facts::rank_by_frequency`; this just feeds it the repo-wide deps.
 fn infer_frameworks(manifests: &[Manifest]) -> Vec<String> {
-    use std::collections::HashMap;
-    // Surface the dependencies the project declares — verbatim from its
-    // manifests, most-common first. No curated catalog: whatever the repo lists
-    // is what we report, so this stays agnostic to language and framework.
-    let mut freq: HashMap<String, usize> = HashMap::new();
-    for m in manifests {
-        for d in &m.dependencies {
-            *freq.entry(d.clone()).or_default() += 1;
-        }
-    }
-    let mut deps: Vec<(String, usize)> = freq.into_iter().collect();
-    deps.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-    deps.into_iter().map(|(d, _)| d).take(12).collect()
+    crate::facts::rank_by_frequency(manifests.iter().flat_map(|m| m.dependencies.iter()))
 }

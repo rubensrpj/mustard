@@ -20,9 +20,12 @@
 //! - **Fail-open per file.** A read/parse failure on one spec increments
 //!   `errors` and never aborts the batch.
 //! - **Recursive coverage.** The walk descends into sub-wave directories so a
-//!   wave-plan epic (`spec.md` + `wave-N-{role}/spec.md` + `wave-plan.md` +
-//!   `review/spec.md` + `qa/spec.md`) produces a `meta.json` next to each
-//!   `.md` carrying a lifecycle header.
+//!   wave-plan epic (`spec.md` + `wave-N-{role}/spec.md` + `wave-plan.md`)
+//!   produces a `meta.json` next to each `.md` carrying a lifecycle header.
+//!   The `qa/` and `review/` phase dirs are an exception: their `*.md` are
+//!   still walked (and counted in `total`), but no `meta.json` is written
+//!   beside them — they are pipeline phases, not specs, and carry no
+//!   lifecycle (see [`is_phase_dir`]).
 
 use mustard_core::io::fs;
 use mustard_core::domain::spec;
@@ -91,6 +94,18 @@ fn is_ignored(name: &str) -> bool {
     matches!(
         name,
         "node_modules" | "target" | ".git" | "dist" | "build" | ".next" | ".worktrees"
+    )
+}
+
+/// D3: `qa/` and `review/` are pipeline *phases*, not specs — they carry no
+/// lifecycle, so no `meta.json` sidecar is ever written beside their `*.md`.
+/// Returns `true` when `dir`'s own name is `qa` or `review`. The walk still
+/// descends into them (their `*.md` are still counted as `total`), but the
+/// sidecar write is skipped.
+fn is_phase_dir(dir: &Path) -> bool {
+    matches!(
+        dir.file_name().and_then(|n| n.to_str()),
+        Some("qa" | "review")
     )
 }
 
@@ -285,6 +300,16 @@ pub fn run(opts: MigrateToMetaOpts) {
 
         // The sidecar always lands as `meta.json` beside the source `.md`.
         let sidecar = match md_path.parent() {
+            // D3: never write a sidecar inside a `qa/` or `review/` phase dir.
+            Some(parent) if is_phase_dir(parent) => {
+                skipped_no_header += 1;
+                records.push(FileRecord {
+                    path: rel,
+                    action: "skipped",
+                    reason: Some("phase directory (qa/review) carries no lifecycle".to_string()),
+                });
+                continue;
+            }
             Some(parent) => parent.join("meta.json"),
             None => {
                 errors += 1;
@@ -554,6 +579,37 @@ mod tests {
         // file in alphabetical order is `spec.md` (s after w in collation:
         // wait — 's' before 'w'). So spec.md writes the sidecar.
         assert!(parsed.stage.is_some());
+    }
+
+    #[test]
+    fn skips_phase_dirs_qa_and_review() {
+        // D3: a `qa/spec.md` / `review/spec.md` carrying a (legacy) lifecycle
+        // header must NOT get a `meta.json` sidecar — they are phases, not specs.
+        let dir = tempdir().unwrap();
+        let parent = dir.path().join("epic-x");
+        write(
+            &parent.join("spec.md"),
+            "# Epic X\n### Stage: Execute\n### Outcome: Active\n### Flags: \n",
+        );
+        write(
+            &parent.join("qa").join("spec.md"),
+            "# QA\n### Stage: Plan\n### Outcome: Active\n### Flags: \n",
+        );
+        write(
+            &parent.join("review").join("spec.md"),
+            "# Review\n### Stage: Plan\n### Outcome: Active\n### Flags: \n",
+        );
+
+        run(MigrateToMetaOpts {
+            root: Some(dir.path().to_path_buf()),
+            force: false,
+            strip_headers: false,
+        });
+
+        // Root spec gets a sidecar; the two phase dirs do NOT.
+        assert!(parent.join("meta.json").exists());
+        assert!(!parent.join("qa").join("meta.json").exists());
+        assert!(!parent.join("review").join("meta.json").exists());
     }
 
     #[test]

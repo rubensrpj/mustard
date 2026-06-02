@@ -1,4 +1,5 @@
 pub mod active_specs;
+pub mod approve_spec;
 pub mod complete_spec;
 pub mod spec_children;
 pub mod spec_children_tree;

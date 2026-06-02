@@ -2,18 +2,35 @@
 
 > Parent: [../CLAUDE.md](../CLAUDE.md) | Orchestrator: [../.claude/CLAUDE.md](../.claude/CLAUDE.md)
 
-<!-- mustard:generated at:2026-05-29T00:00:00Z role:general -->
+<!-- mustard:scan-map -->
+Tipo: cargo · 24 arquivos
+Pesquise via `mustard-rt run feature` (digest) — não leia o repo direto.
+<!-- /mustard:scan-map -->
+
+## Stack
+
+Tipo: cargo
+
+- anyhow
+- clap
+- dialoguer
+- flate2
+- mustard-core
+- serde
+- serde_json
+- tar
+- tempfile
+- ureq
+- zip
 
 ## Commands
 
 | Task | Command |
 |------|---------|
-| Build | `rtk cargo build -p mustard-cli` |
-| Check | `rtk cargo check -p mustard-cli` |
-| Test | `rtk cargo test -p mustard-cli` |
-| Lint | `rtk cargo clippy -p mustard-cli` |
-| Docs/type-check | `rtk cargo doc -p mustard-cli --no-deps` |
-| Run | `rtk cargo run -p mustard-cli -- <subcommand>` |
+| Build | `cargo build` |
+| Test | `cargo test` |
+| Lint | `cargo clippy` |
+| Type-check | `cargo check` |
 
 ## Guards
 

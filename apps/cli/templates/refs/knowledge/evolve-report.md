@@ -8,7 +8,7 @@ Analyzes knowledge entries to find clusters and generate recommendations.
 
 ### Procedure
 
-1. Query `mustard-rt run event-projections --view knowledge-list` to get all knowledge entries
+1. Query `mustard-rt run memory list --grouped` to get all knowledge entries
 2. Group entries by type, then by overlapping tags
 3. Identify **high-confidence patterns** (confidence >= 0.7)
 4. Identify **emerging patterns** (occurrences >= 3, confidence < 0.7)
@@ -80,7 +80,7 @@ Export knowledge base for sharing with team members.
 
 ### Procedure
 
-1. Query `mustard-rt run event-projections --view knowledge-list` to get all knowledge entries
+1. Query `mustard-rt run memory list` to get all knowledge entries
 2. Generate export file: `.claude/knowledge-export-{YYYY-MM-DD}.json`
 3. Write the full knowledge base to the export file
 4. Output: "Exported {n} entries to {filepath}"

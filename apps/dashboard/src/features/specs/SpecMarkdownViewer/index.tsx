@@ -19,8 +19,10 @@ import { cn } from "@/lib/utils";
  *
  *   - "spec"   → `{spec}/spec.md` (or wave-plan.md fallback handled by Rust)
  *   - "wave"   → `{spec}/wave-{N}*` child resolved by name match (Rust case 2)
- *   - "qa"     → `{spec}/qa-report` or `{spec}/qa` child
- *   - "review" → `{spec}/review-report` or `{spec}/review` child
+ *   - "qa"     → `{spec}/qa/report.md` materialized by qa-run (older specs:
+ *               `{spec}/qa-report` or `{spec}/qa` child)
+ *   - "review" → `{spec}/review/verdict.md` materialized by review-result
+ *               (older specs: `{spec}/review-report` or `{spec}/review` child)
  *
  * For "wave"/"qa"/"review" the actual on-disk layout varies — we attempt the
  * most common names in order and surface a clear "indisponível" state when
@@ -66,8 +68,17 @@ function buildTabs(spec: string, waves: number[]): TabSpec[] {
     });
   }
   tabs.push(
-    { id: "qa", label: "QA", kind: "qa", candidates: ["qa-report", "qa"] },
-    { id: "review", label: "Review", kind: "review", candidates: ["review-report", "review"] },
+    // qa-run / review-result now materialize a fixed artifact under the spec
+    // dir (`{spec}/qa/report.md`, `{spec}/review/verdict.md`), resolved by Rust
+    // via the parent-scoped composite token. Older specs fall back to the bare
+    // child-dir names. First hit wins (resolveMarkdown stops on success).
+    { id: "qa", label: "QA", kind: "qa", candidates: [`${spec}/qa/report.md`, "qa-report", "qa"] },
+    {
+      id: "review",
+      label: "Review",
+      kind: "review",
+      candidates: [`${spec}/review/verdict.md`, "review-report", "review"],
+    },
   );
   return tabs;
 }

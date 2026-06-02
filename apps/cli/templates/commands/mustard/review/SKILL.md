@@ -25,7 +25,7 @@ Prefetch returns `title`/`body`/`author`/`base`/`head`/`additions`/`deletions`/`
 
 ### 2. Emit + invoke
 
-`mustard-rt run emit-event --event review.start --spec "$MUSTARD_SPEC" --payload "spec=$MUSTARD_SPEC" --payload "target=$PR_TARGET"` → paste diff as `## DIFF` block → `Skill({ skill: "code-review", args: "<pr-ref>" })`. Fallback (skill unavailable): `Task(general-purpose, opus)` with DIFF as source of truth (agent reads source only when ambiguous; records each Read). Checklist: SOLID, Security, Performance, Patterns, Integration.
+`mustard-rt run emit-event --event review.start --spec "$MUSTARD_SPEC" --payload "spec=$MUSTARD_SPEC" --payload "target=$PR_TARGET"` → paste diff as `## DIFF` block → `Skill({ skill: "code-review", args: "<pr-ref>" })`. Fallback (skill unavailable): `Task(general-purpose)` with DIFF as source of truth (agent reads source only when ambiguous; records each Read). Checklist: SOLID, Security, Performance, Patterns, Integration.
 
 ### 3. Emit complete + report
 
@@ -48,10 +48,6 @@ Scan return for `## Tactical Fix Candidates` / `## Candidatos a Tactical Fix`. P
 ```
 
 `tactical-fix-detect` emits one `tactical_fix.proposed` event per new candidate (idempotent — keyed by `sha256(parent|description|scope)[..16]`) and **never** scaffolds a sub-spec. Creation stays a one-confirmation step (decision 6 — "não auto-aprovar"): the orchestrator/user confirms, then `/mustard:tactical-fix` → `tactical-fix-create` runs.
-
-## Model
-
-Initial reviews: per `pipeline-config.md § Models`. **Re-reviews always `model: "sonnet"`**.
 
 ## INVIOLABLE RULES
 

@@ -26,10 +26,10 @@ fn default_model_path(root: &Path) -> PathBuf {
 /// a spawn/exit error is reported, never panics (matches the other handlers).
 ///
 /// When `full` is `true`, (re)generates a lean CLAUDE.md per subproject after
-/// the model is written, preserving any existing `## Guards` section. In the
-/// default mode, oversized CLAUDE.md files (> [`scan_claude::CLAUDE_MD_WARN_BYTES`])
-/// are reported in the JSON output and a human-readable warning is printed to
-/// stderr.
+/// the model is written, regenerating only the machine-owned scan-map block and
+/// preserving every curated section verbatim. In the default mode, oversized
+/// CLAUDE.md files (> [`scan_claude::CLAUDE_MD_WARN_BYTES`]) are reported in the
+/// JSON output and a human-readable warning is printed to stderr.
 pub fn run(root: &Path, out: Option<&Path>, full: bool) {
     let model_path = out.map_or_else(|| default_model_path(root), Path::to_path_buf);
     let scan_result = Scan::locate().scan(root, &model_path);

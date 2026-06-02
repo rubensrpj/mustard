@@ -37,7 +37,6 @@ pub struct StatusOpts {
 fn hook_description(name: &str) -> &'static str {
     match name {
         "bash_command_gate" => "Blocks dangerous Bash; redirects grep/ls/cat to native tools; rewrites via rtk; commit gate",
-        "model_routing_gate" => "Blocks model upgrades vs routing table; downgrades allowed opt-in",
         "tool_use_counter" => "Blocks Explore agents at 15 tool uses (warn at 12)",
         "main_context_counter" => "Enforces L0 delegation; warns/denies un-delegated main-context tool calls",
         "context_budget_gate" => "Blocks Task prompts over per-role budget; advisory over 40% model window",
@@ -59,7 +58,6 @@ fn hook_description(name: &str) -> &'static str {
 fn hook_mode_env(name: &str) -> Option<&'static str> {
     match name {
         "bash_command_gate" => Some("MUSTARD_COMMIT_GATE_MODE"),
-        "model_routing_gate" => Some("MUSTARD_MODEL_GATE_MODE"),
         "main_context_counter" => Some("MUSTARD_MAIN_BUDGET_MODE"),
         "context_budget_gate" => Some("CONTEXT_BUDGET_MODE"),
         "close_gate" => Some("MUSTARD_CHECKLIST_GATE_MODE"),
@@ -154,7 +152,7 @@ fn collect_hook_entries(root: &Path) -> Vec<Value> {
 /// Map an event name to the primary enforcement module name it dispatches.
 fn event_to_module(event: &str) -> &'static str {
     match event {
-        "PreToolUse" => "bash_command_gate + model_routing_gate + tool_use_counter + main_context_counter + context_budget_gate + close_gate + path_gate",
+        "PreToolUse" => "bash_command_gate + tool_use_counter + main_context_counter + context_budget_gate + close_gate + path_gate",
         "PostToolUse" => "post_edit + session_knowledge_observer",
         "SessionStart" => "spec_hygiene_observer + session_start_inject",
         "SessionEnd" => "session_cleanup_observer + session_knowledge_observer",

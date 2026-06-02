@@ -115,6 +115,7 @@ const KNOWN_RUN_SUBCOMMANDS: &[&str] = &[
     "wave-tree",
     "wave-dependency",
     "scope-decompose",
+    "scope-classify",
     "exec-rewave-check",
     "wave-size-check",
     "qa-run",

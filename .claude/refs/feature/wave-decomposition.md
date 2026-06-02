@@ -6,7 +6,9 @@
 
 **Skip for Light/Extended Light** — decomposition only makes sense when scope is genuinely large.
 
-Before writing the single spec in Full scope, check whether the work should be decomposed into waves:
+**Invariant — Full ⇒ ≥1 wave** (parent = orchestrator, wave = subagent). This pre-check decides **1-vs-N** waves, never whether to have a wave at all. `decompose: false` still yields a wave plan with a **single** wave (`totalWaves: 1`); it never collapses to a non-wave spec. `scope-decompose` owns the 1-vs-N signal — do not hard-code thresholds here.
+
+Before building the wave plan in Full scope, check whether the work warrants more than one wave:
 
 1. **Compute signals from ANALYZE output:**
    - `fileCount` — files that will go into `## Files`
@@ -24,17 +26,17 @@ Before writing the single spec in Full scope, check whether the work should be d
    ```
    Output JSON: `{decompose: bool, reason: string, signals: {...}}`
 
-4. **If `decompose: false`** → proceed to `#### Full Scope` below as usual (single spec).
+4. **If `decompose: false`** → build a **single-wave** plan (`totalWaves: 1`) — the parent spec stays the orchestration doc, wave-1 is the executing subagent. NEVER a non-wave Full spec (Full ⇒ ≥1 wave).
 
-5. **If `decompose: true`** → build wave plan:
+5. **If `decompose: true`** → build a **multi-wave** plan:
    ```bash
    echo '{"files":[...all paths from ANALYZE...],"projectRoot":"."}' | mustard-rt run wave-dependency
    ```
    Output cases:
-   - `{error: "cyclic-dependency", cycle: [...]}` → warn user about cyclic imports (pre-existing architecture issue), fall back to single spec with note in `## Concerns`. Proceed to `#### Full Scope`.
-   - `{error: ...}` → fail-open: fall back to single spec.
-   - `{waves: [...]}` with only 1 wave → no real DAG depth, fall back to single spec.
-   - `{waves: [...]}` with 2+ waves → write **Wave Plan** (step 6).
+   - `{error: "cyclic-dependency", cycle: [...]}` → warn user about cyclic imports (pre-existing architecture issue), fall back to a single-wave plan with note in `## Concerns`.
+   - `{error: ...}` → fail-open: fall back to a single-wave plan.
+   - `{waves: [...]}` with only 1 wave → no real DAG depth, single-wave plan.
+   - `{waves: [...]}` with 2+ waves → write a multi-wave **Wave Plan** (step 6).
 
 6. **Write Wave Plan structure:**
    ```
@@ -49,32 +51,17 @@ Before writing the single spec in Full scope, check whether the work should be d
 
    Each `wave-N-{role}/spec.md` is a **complete atomic spec** scoped to just that wave's files. Use the same template as Full scope single spec (Summary, Entity Info, Files, Tasks, Dependencies, Boundaries). Reference `../wave-plan.md` at the top as context.
 
-7. **Write pipeline state for wave plan:**
-   ```json
-   {
-     "specName": "{date}-{name}",
-     "status": "draft",
-     "phase": 2,
-     "phaseName": "PLAN",
-     "scope": "full",
-     "isWavePlan": true,
-     "currentWave": 1,
-     "totalWaves": N,
-     "completedWaves": [],
-     "failedWaves": []
-   }
-   ```
+7. **Pipeline state lives in the `meta.json` sidecar, not a JSON state file.** `mustard-rt run wave-scaffold` writes the per-wave `meta.json` (`stage: Plan`, `outcome: Active`, `isWavePlan: true`, `totalWaves: N`, `currentWave: 1`); the `completedWaves`/`currentWave` progression is derived from `pipeline.wave.complete` events. Do NOT hand-write a `pipeline-state.json`.
 
 8. **Present wave plan to user:**
    - Read `wave-plan.md` and print its ENTIRE contents verbatim inside a fenced markdown block.
    - Also list each wave's spec file paths (one line each) so the user can open individual wave specs if desired.
-   - Then `AskUserQuestion`:
-     - **"Approve wave plan and implement now"** → goes to EXECUTE wave 1 inline (same rules as Light inline)
-     - **"Approve wave plan for later"** → stop, user runs `/approve` + `/resume`
+   - Then `AskUserQuestion` — Full scope STOPS at PLAN, so the only forward path is approval via `/spec` (`/feature` never executes a Full spec inline):
+     - **"Approve wave plan for later"** → stop, user runs `/mustard:spec {letter}` to approve (new session) or `/mustard:spec {letter}r` to approve + resume inline.
      - **"Edit decomposition (hint PLAN)"** → user provides hint (e.g., "merge waves 2 and 3"), PLAN reexecutes with the hint appended to `estimatedTouchPoints`/manual grouping. Re-decompose once.
-     - **"Reject decomposition — use single spec"** → discard wave plan files, set `scopeOverride: "user-rejected-waves"` in pipeline state, proceed to `#### Full Scope` as if `decompose: false`.
+     - **"Reject decomposition"** → collapse to a **single wave** via `mustard-rt run wave-collapse --spec {specName} --mode full` (the approve-flow's reject path — see `refs/spec/approve-only-flow.md`). NEVER a non-wave Full spec — Full ⇒ ≥1 wave.
 
-9. **If user approves the wave plan**, the single-spec `#### Full Scope` flow below is **skipped** — wave-1 becomes the first thing to execute (via `/approve --resume` or `/resume`).
+9. The wave plan is the spec — there is no separate single-spec Full flow to skip. Approval (via `/mustard:spec`) makes wave-1 the first thing to execute.
 
 #### COORDINATE phase (parent specs)
 

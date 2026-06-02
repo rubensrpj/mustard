@@ -1,6 +1,6 @@
 # /mustard:spec — Resume flow (continue pipeline)
 
-Loaded on demand by SKILL Step 5 when `stage=Execute` (or `Analyze`/`QaReview`/`ReviewPending`/`QaPending`/`Close`). All mode decisions (`continued` vs `reanalyzed`), operational spec resolution, stub detection, `needsDiff`/`needsContextSlice`, `waveModel` lookup, `lastDispatchFailure` parsing, **and the post-execute REVIEW/QA decision**, have been moved to `mustard-rt run resume-bootstrap --spec X --json`. Literal agent prompt construction was moved to `mustard-rt run agent-prompt-render`. This ref only keeps what the binary cannot decide on its own.
+Loaded on demand by SKILL Step 5 when `stage=Execute` (or `Analyze`/`QaReview`/`ReviewPending`/`QaPending`/`Close`). All mode decisions (`continued` vs `reanalyzed`), operational spec resolution, stub detection, `needsDiff`/`needsContextSlice`, `lastDispatchFailure` parsing, **and the post-execute REVIEW/QA decision**, have been moved to `mustard-rt run resume-bootstrap --spec X --json`. Literal agent prompt construction was moved to `mustard-rt run agent-prompt-render`. This ref only keeps what the binary cannot decide on its own.
 
 ## Stage values post-execute (never freelance)
 
@@ -41,7 +41,7 @@ It reads `wave-plan.md`, builds the dependency DAG, and returns a deterministic 
 - **`prompt_cmd`** is a ready `agent-prompt-render` invocation — NOT the prompt. Run it; pass its **stdout** as the Task `prompt`.
 - **`subagent_type`**: always `subagent_type: "general-purpose"` — there are no generated per-project agents.
 
-To dispatch just the current wave, slice with `--wave {currentWave}`. The orchestrator does NOT decide the order, group rounds, or assemble the loop by hand — `dispatch-plan` owns that ("free section" determinised). `resume-bootstrap` stays the **stage** decision (mode / stage / current wave / model); `dispatch-plan` is the **wave-routing** decision.
+To dispatch just the current wave, slice with `--wave {currentWave}`. The orchestrator does NOT decide the order, group rounds, or assemble the loop by hand — `dispatch-plan` owns that ("free section" determinised). `resume-bootstrap` stays the **stage** decision (mode / stage / current wave); `dispatch-plan` is the **wave-routing** decision.
 
 ### Per-wave loop
 

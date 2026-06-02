@@ -49,6 +49,11 @@ pub fn run(intent: &str, root: &Path) {
             "miss": q.miss,
             "matchedTerms": q.matched_terms.iter().map(|t| json!({ "term": t.term, "count": t.count })).collect::<Vec<_>>(),
             "slices": q.slices.iter().map(|s| json!({ "label": s.label, "recurrence": s.recurrence, "entities": s.entities })).collect::<Vec<_>>(),
+            // Count of matched recurring slices — the deterministic signal the
+            // scope classifier consumes: 1 = "mirrors a matched slice"
+            // (light/extended-light); >=2 = "spans multiple slices" (full).
+            // Additive: the `slices` array is unchanged for existing consumers.
+            "sliceMatchCount": q.slices.len(),
             "contracts": q.contracts.iter().map(|c| json!({ "name": c.name, "implementors": c.implementors })).collect::<Vec<_>>(),
             "hubs": q.hubs.iter().map(|h| json!({ "module": h.module, "degree": h.degree })).collect::<Vec<_>>(),
             "anchors": q.files,
@@ -66,6 +71,7 @@ pub fn run(intent: &str, root: &Path) {
                 "miss": true,
                 "matchedTerms": [],
                 "slices": [],
+                "sliceMatchCount": 0,
                 "contracts": [],
                 "hubs": [],
                 "anchors": [],

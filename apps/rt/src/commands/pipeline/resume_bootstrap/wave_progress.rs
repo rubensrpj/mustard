@@ -1,5 +1,5 @@
 //! Wave-plan filesystem reconnaissance: progress counting, operational-spec
-//! path resolution, per-wave model lookup, and role derivation.
+//! path resolution, and role derivation.
 //!
 //! All readers fail-open: an unreadable `spec_dir` degrades to `(0, 0)` /
 //! `None` / empty so [`super::run`] never panics. Wave directories are 0-based
@@ -66,50 +66,6 @@ pub(super) fn count_wave_progress_from_fs(spec_dir: &Path) -> (u32, u32) {
     (current, total)
 }
 
-/// Pull the `Modelo` column for the given wave from a wave-plan table row.
-///
-/// The table shape (per the canonical wave-plan template) is:
-///
-/// `| Wave | Spec | Role | Modelo | Depende de | Resumo |`
-///
-/// We scan rows whose first cell parses as `<digits>` and match the wave
-/// number. The model cell is the 4th data cell (index 3 after the empty
-/// pre-`|` split entry).
-pub(super) fn extract_wave_model(plan_text: &str, wave: u32) -> Option<String> {
-    for line in plan_text.lines() {
-        let trimmed = line.trim();
-        if !trimmed.starts_with('|') {
-            continue;
-        }
-        let cells: Vec<&str> = trimmed
-            .trim_start_matches('|')
-            .trim_end_matches('|')
-            .split('|')
-            .map(str::trim)
-            .collect();
-        if cells.len() < 4 {
-            continue;
-        }
-        // First cell must be wave number.
-        let label = cells[0]
-            .trim_start_matches(['W', 'w'])
-            .trim()
-            .to_string();
-        let Ok(n) = label.parse::<u32>() else {
-            continue;
-        };
-        if n != wave {
-            continue;
-        }
-        let model = cells[3].trim();
-        if model.is_empty() || model == "—" || model == "-" {
-            return None;
-        }
-        return Some(model.to_string());
-    }
-    None
-}
-
 /// Derive the role token from a wave spec path like
 /// `.claude/spec/{name}/wave-{N}-{role}/spec.md`.
 pub(super) fn derive_role_from_wave_path(spec_path: &Path) -> Option<String> {
@@ -127,18 +83,6 @@ pub(super) fn derive_role_from_wave_path(spec_path: &Path) -> Option<String> {
         return None;
     }
     Some(role.to_string())
-}
-
-/// Read the `model` field from a spec directory's `meta.json`. Returns `None`
-/// when the file is absent or the field is missing/empty.
-pub(super) fn read_meta_model(spec_dir: &Path) -> Option<String> {
-    let text = mfs::read_to_string(spec_dir.join("meta.json")).ok()?;
-    let v: serde_json::Value = serde_json::from_str(&text).ok()?;
-    let model = v.get("model")?.as_str()?;
-    if model.is_empty() {
-        return None;
-    }
-    Some(model.to_string())
 }
 
 /// Resolve the wave directory name for `current_wave` from `spec_dir`. Returns

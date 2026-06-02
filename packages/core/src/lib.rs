@@ -73,9 +73,10 @@ pub use domain::config::{
     glob_matches, Amend, Commands, GateModes, GitConfig, ProjectConfig, RolePattern, Runtime,
     Subprojects, BUILD_COMMAND_FALLBACK,
 };
-// Agnostic build/test/lint/type-check command detection (used by `init` and
-// `scan`). See `domain/command_detect.rs`.
-pub use domain::command_detect::detect_commands;
+// Agnostic build/test/lint/type-check command detection (`detect_commands` for
+// `init`, `detect_commands_for_unit` for the per-subproject `scan` pass). See
+// `domain/command_detect.rs`.
+pub use domain::command_detect::{detect_commands, detect_commands_for_unit};
 
 // scan tool client — the single boundary to the external `scan` miner (scan /
 // digest / facts / spec / verify). Replaces the deleted in-tree scan engine;

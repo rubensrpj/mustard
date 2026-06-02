@@ -74,18 +74,9 @@ Routing: Internal → re-dispatch SEQUENTIALLY (not parallel), same prompt (retr
 
 Wave order emerges from dependency analysis (`depends_on` in `plan.json`) — there is no rigid default. Schema/data layers typically precede layers that consume them, but that is a deduction from the scan, not a fixed rule. **Parallel override** when a downstream task can run in parallel with its declared upstream: the downstream consumes no generated types/contracts from the upstream and the spec marks the task `(parallel-safe)`. Dispatch parallel-safe tasks in the SAME Task message; if a downstream task fails on missing artifacts, demote it to the next wave and retry. Review parallelism: all review agents dispatch in a SINGLE message; independent + read-only, so parallel is always safe.
 
-## Model Selection
+## Model
 
-| Scope | Model |
-|-------|-------|
-| Bugfix (any) | sonnet |
-| Feature ≤5 files, known patterns | sonnet |
-| Feature 5+ files, new patterns | opus |
-| Exploration (structural) | sonnet (haiku allowed as opt-in downgrade) |
-| Audit (quality evaluation) | sonnet |
-| Compare (cross-subproject) | sonnet |
-
-Default: **sonnet**.
+Mustard does not select a model. Dispatched agents always inherit the main session's model — there is no routing table, no per-scope sonnet/opus split, and no model-routing gate.
 
 ## Context Loading
 
@@ -130,7 +121,7 @@ Accumulation: ≥2 agents in same wave return `CONCERN` → surface all together
 
 ## Enforcement Hooks
 
-Enforcement runs as the single Rust binary `mustard-rt` (modules `bash_command_gate`, `model_routing_gate`, `tool_use_counter`, `skills_advisory`, `close_gate`, ...). `settings.json` wires one `mustard-rt on <event>` entry per lifecycle event.
+Enforcement runs as the single Rust binary `mustard-rt` (modules `bash_command_gate`, `tool_use_counter`, `skills_advisory`, `close_gate`, ...). `settings.json` wires one `mustard-rt on <event>` entry per lifecycle event.
 
 | Module | Matcher | Mode env | Blocks on |
 |--------|---------|----------|-----------|
@@ -138,7 +129,6 @@ Enforcement runs as the single Rust binary `mustard-rt` (modules `bash_command_g
 | `close_gate` (QA) | same | `MUSTARD_QA_GATE_MODE` (default strict) | no `qa.result` or `qa.result=fail` |
 | `bash_command_gate` (commit gate) | Bash `git commit` | `MUSTARD_COMMIT_GATE_MODE` (default warn) | secrets staged / build broken |
 | `bash_command_gate` (native-redirect) | Bash | `MUSTARD_BASH_REDIRECT_MODE` (default strict) | grep/ls/cat/head/tail/find → suggests Grep/Glob/Read |
-| `model_routing_gate` | Task | `MUSTARD_MODEL_GATE_MODE` (default strict) | model upgrades vs routing table |
 | `tool_use_counter` | `.*` + SubagentStart/Stop | hard | Explore agents at 15 tool uses (warn at 12) |
 | `skills_advisory` | Task | advisory | skills count >10 |
 

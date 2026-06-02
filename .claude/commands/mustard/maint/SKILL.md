@@ -17,9 +17,23 @@ source: manual
 | `sync` | `mustard-rt run scan` — refresh `grain.model.json` |
 | `doctor` | Installation health check — wiring, drift, state + OTEL diagnostics |
 
-## deps / validate
+## deps
 
-Read `.claude/pipeline-config.md § Agents` for subproject paths + commands (from `{subproject}/CLAUDE.md § Commands`). Run all in parallel. Single repo: read root `CLAUDE.md § Commands`.
+```bash
+rtk mustard-rt run maint-deps           # install deps in every detected subproject
+rtk mustard-rt run maint-deps --dry-run # preview the resolved install commands only
+```
+
+Print stdout verbatim. The binary auto-discovers subprojects from `grain.model.json` and picks the install command per project kind (`pnpm install`, `cargo fetch`, `dotnet restore`, …) — never read the Agents table or `{subproject}/CLAUDE.md` by hand. Output is a JSON `{ dry_run, installs[] }` report; on failure (`ok: false`) surface which subproject's install command failed.
+
+## validate
+
+```bash
+rtk mustard-rt run maint-validate           # build/type-check every detected subproject
+rtk mustard-rt run maint-validate --dry-run # preview the resolved validate commands only
+```
+
+Print stdout verbatim. The binary enumerates subprojects from `grain.model.json` and picks the canonical validate command per project kind (`pnpm typecheck`, `cargo check`, `dotnet build`, …) — never read the Agents table or `{subproject}/CLAUDE.md` by hand. Output is a JSON `{ dry_run, overall, validates[] }` report; on `overall: fail` surface which subproject's validate command failed.
 
 ## sync
 

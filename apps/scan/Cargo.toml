@@ -13,7 +13,10 @@ path = "src/main.rs"
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# preserve_order keeps JSON object keys in document order (IndexMap, not the
+# default alphabetizing BTreeMap), so json_deps reports dependencies as the
+# manifest wrote them — the honest input rank_by_frequency ties break on.
+serde_json = { version = "1", features = ["preserve_order"] }
 ignore = "0.4"
 petgraph = "0.8"
 regex = "1"

@@ -25,7 +25,7 @@ Print stdout **verbatim** — it is already pure JSON (camelCase, valid for `JSO
 ## Example
 
 ```bash
-claude -p "/mustard:prd add refresh token to login" --output-format json --model claude-sonnet-4-6
+claude -p "/mustard:prd add refresh token to login" --output-format json
 ```
 
 ## INVIOLABLE RULES

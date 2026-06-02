@@ -4,8 +4,8 @@
 //! `resume-flow.md` ref. One process call resolves: mode (`continued` |
 //! `reanalyzed` | `ask`), spec stage, the operational spec path (root
 //! `spec.md` or `wave-N-{role}/spec.md`), wave progress, stub flag, dispatch
-//! failure replay, whether to refresh `diff` / `context-slice`, the wave's
-//! model, a `## Resumo` one-liner, and the discovered agent roles. Emits a
+//! failure replay, whether to refresh `diff` / `context-slice`,
+//! a `## Resumo` one-liner, and the discovered agent roles. Emits a
 //! `pipeline.resume_mode` event before returning (idempotent — skips if a
 //! recent one already exists for the spec).
 //!
@@ -51,13 +51,12 @@ use context_loader::{generate_context_on_resume, load_pruned_prior_summaries, wi
 use dispatch_failure::render_dispatch_failure;
 use event_emission::{emit_resume_mode, emit_scope_for_session};
 use mode_decision::{compute_needs_refresh, decide_mode};
-use post_execute_gate::apply_post_execute_gate;
+use post_execute_gate::{apply_post_execute_gate, block_full_without_wave, block_unapproved_execute};
 use stage_resolver::{
     detect_stage, detect_stub, extract_summary, read_first_lines, relativize,
 };
 use wave_progress::{
-    count_wave_progress_from_fs, derive_role_from_wave_path, extract_wave_model,
-    find_wave_spec_path, read_meta_model,
+    count_wave_progress_from_fs, derive_role_from_wave_path, find_wave_spec_path,
 };
 
 /// Window inside which auto-continue applies (10 minutes since last event).
@@ -118,9 +117,6 @@ pub struct ResumeBootstrap {
     /// Whether the agent prompt should refresh the `context-slice`.
     #[serde(rename = "needsContextSlice")]
     pub needs_context_slice: bool,
-    /// Model declared for the current wave (e.g. `"opus"` / `"sonnet"`).
-    #[serde(rename = "waveModel", skip_serializing_if = "Option::is_none")]
-    pub wave_model: Option<String>,
     /// First non-empty line of the `## Resumo` / `## Summary` section, capped.
     #[serde(rename = "specSummary")]
     pub spec_summary: String,
@@ -260,20 +256,6 @@ pub fn run(spec: &str, json_flag: bool) {
         .unwrap_or_default();
     out.spec_summary = extract_summary(&body);
 
-    // --- waveModel: wave-plan.md Modelo column → meta.json model → feature default. ---
-    if out.is_wave_plan {
-        // Try the wave-plan table first (when a "Modelo" column exists).
-        let plan_model = wave_plan_path
-            .exists()
-            .then(|| mfs::read_to_string(&wave_plan_path).ok())
-            .flatten()
-            .and_then(|t| extract_wave_model(&t, out.current_wave));
-        // Fall back to the parent spec's meta.json `model` field.
-        let meta_model = plan_model.or_else(|| read_meta_model(&spec_dir));
-        // Last resort: feature intent → opus.
-        out.wave_model = Some(meta_model.unwrap_or_else(|| "opus".to_string()));
-    }
-
     // --- agentRoles: derive from the wave subdir name (`wave-N-{role}`) when
     //     wave-plan; otherwise empty. ---
     if out.is_wave_plan {
@@ -296,6 +278,27 @@ pub fn run(spec: &str, json_flag: bool) {
 
     // --- Mode decision. ---
     out.mode = decide_mode(view.as_ref(), dispatch_failure.as_ref());
+
+    // --- D5: entry-into-Execute approval hard-gate. ---
+    //
+    // A Full-scope spec must NOT begin EXECUTE without an explicit `/spec`
+    // approval event. Runs BEFORE the post-execute gate so an unapproved Full
+    // spec is reset to `Plan` / `await-approval` rather than being routed into
+    // REVIEW/QA. Fail-open inside the helper. This is the resume-engine
+    // complement to the `scope_guard` write hook (which blocks production
+    // edits at PreToolUse).
+    block_unapproved_execute(&spec_dir, &mut out);
+
+    // --- Invariant safety-net: Full scope ⇒ ≥1 wave. ---
+    //
+    // A Full-scope spec must NOT begin EXECUTE without ≥1 wave (a wave-plan /
+    // `total_waves >= 1` / a `wave-N-*` dir). `spec-draft` floors `total_waves`
+    // to 1 and `wave-scaffold` materialises the waves, so a wave-less Full
+    // reaching Execute is a defect (hand-edited / legacy "limbo"). This BLOCKS
+    // (does NOT auto-scaffold) and resets toward Plan with an actionable
+    // message, exercising `contract::FullScopeNoWaves` at runtime. Fail-open
+    // inside the helper; independent of the approval gate above.
+    block_full_without_wave(&spec_dir, &mut out);
 
     // --- Post-execute REVIEW/QA gate (2026-05-25 deep-refactor follow-up). ---
     //
@@ -378,10 +381,6 @@ fn print_table(out: &ResumeBootstrap) {
     println!("lastDispatchFail : {failure_str}");
     println!("needsDiff        : {}", out.needs_diff);
     println!("needsContextSlice: {}", out.needs_context_slice);
-    println!(
-        "waveModel        : {}",
-        out.wave_model.clone().unwrap_or_else(|| "—".into())
-    );
     println!("specSummary      : {}", out.spec_summary);
     println!("agentRoles       : {}", out.agent_roles.join(","));
     println!(
@@ -419,15 +418,6 @@ pub fn resolve_operational_spec_path(spec_dir: &Path, wave: Option<u32>) -> Path
         }
     }
     spec_dir.join("spec.md")
-}
-
-/// Read `Modelo` from the wave-plan for the given wave (exported for the
-/// renderer). Returns `None` when not a wave plan or no row matches.
-#[must_use]
-pub fn read_wave_model(spec_dir: &Path, wave: u32) -> Option<String> {
-    let plan = spec_dir.join("wave-plan.md");
-    let text = mfs::read_to_string(&plan).ok()?;
-    extract_wave_model(&text, wave)
 }
 
 #[cfg(test)]
@@ -469,19 +459,6 @@ mod tests {
         let en = "## Summary\nen line\n";
         assert_eq!(extract_summary(pt), "linha pt");
         assert_eq!(extract_summary(en), "en line");
-    }
-
-    #[test]
-    fn extract_wave_model_parses_canonical_table() {
-        let plan = "\
-| Wave | Spec | Role | Modelo | Depende de | Resumo |
-|------|------|------|--------|------------|--------|
-| 1 | [[wave-1-general]] | general | opus | — | foo |
-| 2 | [[wave-2-ui]] | ui | sonnet | [[1]] | bar |
-";
-        assert_eq!(extract_wave_model(plan, 1).as_deref(), Some("opus"));
-        assert_eq!(extract_wave_model(plan, 2).as_deref(), Some("sonnet"));
-        assert_eq!(extract_wave_model(plan, 9), None);
     }
 
     #[test]

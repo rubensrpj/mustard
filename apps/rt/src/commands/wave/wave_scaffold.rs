@@ -190,37 +190,38 @@ pub(crate) fn render_wave_spec(parent: &str, w: &WavePlanEntry, hd: &Headings<'_
     out
 }
 
-/// Render `review/spec.md`. Lifecycle metadata (stage / parent) lives only in
-/// the `meta.json` sidecar.
+/// Render the `review/` index (`spec.md`) — a thin pointer at the materialised
+/// result.
+///
+/// D4: the review phase no longer ships a template checklist that an agent must
+/// remember to fill in. The verdict is written by code to `review/verdict.md`
+/// (see [`crate::commands::review::review_result`]); this index just points the
+/// reader there until that file exists.
 fn render_review(_parent: &str, hd: &Headings<'_>) -> String {
     let mut out = String::new();
     out.push_str(hd.review_title);
     out.push_str("\n\n");
     out.push_str(hd.review_intro);
     out.push_str("\n\n");
-    out.push_str("## Checklist\n\n");
-    out.push_str("- [ ] SOLID\n");
-    out.push_str("- [ ] Design System\n");
-    out.push_str("- [ ] Patterns\n");
-    out.push_str("- [ ] i18n\n");
-    out.push_str("- [ ] Integration\n");
-    out.push_str("- [ ] Build\n");
-    out.push_str("- [ ] Elegance\n\n");
-    out.push_str("<!-- verdict → review/verdict.md -->\n");
+    out.push_str("The verdict is materialised at [verdict.md](./verdict.md) when ");
+    out.push_str("`review-result` runs.\n");
     out
 }
 
-/// Render `qa/spec.md`. Lifecycle metadata (stage / parent) lives only in the
-/// `meta.json` sidecar.
+/// Render the `qa/` index (`spec.md`) — a thin pointer at the materialised
+/// result.
+///
+/// D4: the QA phase no longer ships a template AC list. The pass/fail report is
+/// written by code to `qa/report.md` (see [`crate::commands::review::qa_run`]);
+/// this index just points the reader there until that file exists.
 fn render_qa(_parent: &str, hd: &Headings<'_>) -> String {
     let mut out = String::new();
     out.push_str(hd.qa_title);
     out.push_str("\n\n");
     out.push_str(hd.qa_intro);
     out.push_str("\n\n");
-    out.push_str("## Acceptance Criteria (consolidated)\n\n");
-    out.push_str("_(populated from each wave's AC at QA time)_\n\n");
-    out.push_str("<!-- report → qa/report.md -->\n");
+    out.push_str("The pass/fail report is materialised at [report.md](./report.md) when ");
+    out.push_str("`qa-run` runs.\n");
     out
 }
 
@@ -401,38 +402,11 @@ pub fn run(spec_dir_arg: Option<&str>, plan_arg: Option<&str>) {
             },
         );
     }
-    write_scaffold_meta(
-        &spec_dir.join("review"),
-        Meta {
-            stage: Some("Plan".into()),
-            outcome: Some("Active".into()),
-            phase: None,
-            scope: None,
-            lang: Some(mustard_core::normalise_lang(lang)),
-            checkpoint: None,
-            parent: Some(parent_name.clone()),
-            is_wave_plan: None,
-            total_waves: None,
-            flags: MetaFlags::default(),
-            raw: Value::Null,
-        },
-    );
-    write_scaffold_meta(
-        &spec_dir.join("qa"),
-        Meta {
-            stage: Some("Plan".into()),
-            outcome: Some("Active".into()),
-            phase: None,
-            scope: None,
-            lang: Some(mustard_core::normalise_lang(lang)),
-            checkpoint: None,
-            parent: Some(parent_name.clone()),
-            is_wave_plan: None,
-            total_waves: None,
-            flags: MetaFlags::default(),
-            raw: Value::Null,
-        },
-    );
+    // D3: `qa/` and `review/` are pipeline *phases*, not specs — they carry no
+    // lifecycle, so no `meta.json` sidecar is written for them. Only the root
+    // and each `wave-N` directory get a sidecar (above). The result of each
+    // phase is materialised by code into `qa/report.md` / `review/verdict.md`
+    // (D4), not tracked through a dead sidecar.
 
     let out: Value = json!({
         "created_files": created,
@@ -566,6 +540,26 @@ mod tests {
         assert!(s1.contains("## Network"));
         // meta.json carries the lifecycle metadata instead.
         assert!(spec_dir.join("wave-1-general").join("meta.json").exists());
+        // D3: root + each wave carry a sidecar; `qa/` and `review/` do NOT
+        // (they are phases, not specs).
+        assert!(spec_dir.join("meta.json").exists());
+        assert!(
+            !spec_dir.join("review").join("meta.json").exists(),
+            "review/ must not carry a meta.json sidecar"
+        );
+        assert!(
+            !spec_dir.join("qa").join("meta.json").exists(),
+            "qa/ must not carry a meta.json sidecar"
+        );
+        // D4: the phase indexes point at the materialised result files.
+        let qa_index = std::fs::read_to_string(spec_dir.join("qa").join("spec.md")).unwrap();
+        assert!(qa_index.contains("report.md"), "qa index points at report.md");
+        let review_index =
+            std::fs::read_to_string(spec_dir.join("review").join("spec.md")).unwrap();
+        assert!(
+            review_index.contains("verdict.md"),
+            "review index points at verdict.md"
+        );
 
         // Second run is idempotent — no overwrites, no errors.
         run(
@@ -576,5 +570,63 @@ mod tests {
         let s1_again =
             std::fs::read_to_string(spec_dir.join("wave-1-general").join("spec.md")).unwrap();
         assert_eq!(s1, s1_again);
+    }
+
+    /// Invariant (2026-06-02-full-sempre-uma-wave): a **single-wave** Full plan
+    /// scaffolds cleanly — parent orchestrator (`wave-plan.md` + root
+    /// `meta.json` with `totalWaves: 1` / `isWavePlan: true`) plus exactly one
+    /// `wave-1-{role}/`. No N≥2 assumption: a Full "reject decomposition"
+    /// collapses to one wave, never to a wave-less parent.
+    #[test]
+    fn scaffolds_single_wave_plan() {
+        let dir = tempdir().unwrap();
+        let spec_dir = dir.path().join("solo-epic");
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        let plan_path = dir.path().join("plan.json");
+        std::fs::write(
+            &plan_path,
+            serde_json::to_string(&json!({
+                "waves": [
+                    { "n": 1, "role": "general", "summary": "the only wave", "depends_on": [] }
+                ],
+                "total_waves": 1,
+                "lang": "pt-BR"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        run(
+            Some(spec_dir.to_str().unwrap()),
+            Some(plan_path.to_str().unwrap()),
+        );
+
+        // Parent orchestrator artefacts.
+        assert!(spec_dir.join("wave-plan.md").exists());
+        assert!(spec_dir.join("meta.json").exists());
+        // Exactly one wave dir, with its own spec + meta.
+        assert!(spec_dir.join("wave-1-general").join("spec.md").exists());
+        assert!(spec_dir.join("wave-1-general").join("meta.json").exists());
+        // No phantom second wave.
+        assert!(!spec_dir.join("wave-2-general").exists());
+        // review/qa scaffolds still emitted.
+        assert!(spec_dir.join("review").join("spec.md").exists());
+        assert!(spec_dir.join("qa").join("spec.md").exists());
+
+        // Root meta records the wave-plan parent invariant: 1 wave, isWavePlan.
+        let root_meta = mustard_core::read_meta(&spec_dir.join("meta.json")).unwrap();
+        assert_eq!(root_meta.total_waves, Some(1));
+        assert_eq!(root_meta.is_wave_plan, Some(true));
+
+        // Idempotent.
+        run(
+            Some(spec_dir.to_str().unwrap()),
+            Some(plan_path.to_str().unwrap()),
+        );
+        let again =
+            std::fs::read_to_string(spec_dir.join("wave-1-general").join("spec.md")).unwrap();
+        let first =
+            std::fs::read_to_string(spec_dir.join("wave-1-general").join("spec.md")).unwrap();
+        assert_eq!(again, first);
     }
 }

@@ -21,7 +21,7 @@
 use crate::shared::context::project_dir;
 use crate::commands::agent::context_inject;
 use crate::commands::knowledge::memory_cross_wave;
-use crate::commands::pipeline::resume_bootstrap::{read_wave_model, resolve_operational_spec_path};
+use crate::commands::pipeline::resume_bootstrap::resolve_operational_spec_path;
 use crate::commands::spec::spec_sections::is_heading;
 use mustard_core::domain::ast::{extract_entities, extract_function_signatures, GrammarLoader};
 use mustard_core::io::fs as mfs;
@@ -157,9 +157,6 @@ pub fn run(
     //   {context_extras}   the per-role slice of `.claude/pipeline-config.md`
     let reference_files = build_reference_files(&project, &subproject_str, &op_spec_path);
     let context_extras = build_context_extras(&project, role);
-    let wave_model = wave
-        .and_then(|w| read_wave_model(&spec_dir, w))
-        .unwrap_or_default();
     let retry_context = match (mode, retry_context_file) {
         (RenderMode::First, _) => String::new(),
         (_, Some(path)) => mfs::read_to_string(path).unwrap_or_default(),
@@ -180,7 +177,6 @@ pub fn run(
                 &guards_summary,
                 &role_block,
                 &spec_lang,
-                &wave_model,
                 &retry_context,
                 &entity_info,
                 &reference_files,
@@ -211,7 +207,6 @@ pub fn run(
         ("{entity_info}", &entity_info),
         ("{reference_files}", &reference_files),
         ("{context_extras}", &context_extras),
-        ("{wave_model}", &wave_model),
         ("{retry_context}", &retry_context),
     ];
     for (key, value) in substitutions {
@@ -1082,13 +1077,13 @@ mod tests {
         std::fs::create_dir_all(cfg.parent().unwrap()).unwrap();
         std::fs::write(
             &cfg,
-            "# Pipeline\n## Review Rules\n- stay skeptical\n- run tests\n## Model Selection\n- sonnet\n",
+            "# Pipeline\n## Review Rules\n- stay skeptical\n- run tests\n## Parallel Rules\n- single message\n",
         )
         .unwrap();
         let extras = build_context_extras(dir.path(), "review");
         assert!(extras.contains("Review Rules"));
         assert!(extras.contains("stay skeptical"));
-        assert!(!extras.contains("Model Selection"), "slice bled into next heading");
+        assert!(!extras.contains("Parallel Rules"), "slice bled into next heading");
         // Unknown role → empty.
         assert!(build_context_extras(dir.path(), "nonexistent-role").is_empty());
     }
@@ -1134,7 +1129,6 @@ mod tests {
             ("{entity_info}", &entity_info),
             ("{reference_files}", &reference_files),
             ("{context_extras}", &context_extras),
-            ("{wave_model}", ""),
             ("{retry_context}", ""),
         ];
         for (k, v) in subs {

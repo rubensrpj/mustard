@@ -70,24 +70,40 @@ pub fn write_spec_md(
             cmd = ac.command
         );
     }
+    // A wave-plan *parent* (`total_waves` ≥ 1) is a coordination document: its
+    // actionable `## Tarefas` (the agent roadmap) and `## Checklist` (the
+    // close-gate's auto-mark target) live in the WAVES, not in the parent. We
+    // detect it from the same signal core uses to exempt it from the
+    // `ChecklistEmpty` contract rule (`contract.rs::validate`). A non-decomposed
+    // Full spec and every Light spec keep BOTH blocks.
+    let is_wave_plan = input.total_waves.unwrap_or(0) >= 1;
     if matches!(input.scope, Some(Scope::Full)) {
         body.push('\n');
         body.push_str(PLAN_DIVIDER);
         body.push('\n');
         for s in &input.plan_sections {
+            // D1: the wave-plan parent carries no `## Tarefas` — the roadmap
+            // belongs to each wave's own spec.md.
+            if is_wave_plan && s.name.trim().eq_ignore_ascii_case("tasks") {
+                continue;
+            }
             let heading = section_heading_for(&s.name, lang);
             let _ = write!(body, "\n## {heading}\n\n{}\n", s.body);
         }
     }
-    // Trackable `## Checklist` — emitted for BOTH scopes so the close-gate
-    // checklist gate is never orphaned. The heading is the EN-only
-    // `CHECKLIST_HEADING` (language-agnostic) so the auto-mark hook,
+    // Trackable `## Checklist` — emitted for every scope EXCEPT a wave-plan
+    // parent, so the close-gate checklist gate is never orphaned. The heading is
+    // the EN-only `CHECKLIST_HEADING` (language-agnostic) so the auto-mark hook,
     // `mark-checklist-item`, and close-gate all key off the exact same literal;
     // each line is rendered via `render_checklist_item` into the canonical
-    // `- [ ] <label> → <path>` shape those consumers parse.
-    let _ = write!(body, "\n## {CHECKLIST_HEADING}\n\n");
-    for item in &input.checklist {
-        let _ = writeln!(body, "{}", render_checklist_item(item));
+    // `- [ ] <label> → <path>` shape those consumers parse. The wave-plan parent
+    // is suppressed because its checklist lives in the waves (the close-gate's
+    // `find_unmarked_checklist` consolidates the wave checklists in that case).
+    if !is_wave_plan {
+        let _ = write!(body, "\n## {CHECKLIST_HEADING}\n\n");
+        for item in &input.checklist {
+            let _ = writeln!(body, "{}", render_checklist_item(item));
+        }
     }
     if let Some(sigs) = signals {
         if !sigs.trim().is_empty() {

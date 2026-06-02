@@ -19,7 +19,7 @@ A spec has two named layers (see `/feature` § Full Scope): `## PRD` — the *wh
 ## Action
 
 1. **Step 0: AUTO-SYNC (mandatory)** — already executed in Step 1 of `/mustard:spec`. Do not re-execute.
-2. **Read** `.claude/pipeline-config.md` — agents, model selection.
+2. **Read** `.claude/pipeline-config.md` — agents, routing rules.
 3. The spec has already been located by the `/mustard:spec` picker (filtered by the `meta.json` `stage` + `outcome` — only Outcome `Active` AND Stage ∈ {Plan, Execute}).
 
 ### Step 3b: Wave Plan Detection
@@ -37,18 +37,22 @@ Check whether the located spec is a wave plan: look for `.claude/spec/{specName}
    - If `oversizedCount === 0` or `action: "skip"`, print nothing (silent).
 3. `AskUserQuestion`:
    - **"Approve wave plan — start with wave 1"** → proceed to step 4 (updates the wave-1 `meta.json` + pipeline state for wave 1 dispatch)
-   - **"Reject decomposition — use single spec"** → merge all wave specs back into a single spec at `.claude/spec/{specName}/spec.md` (concatenate `## Files`, `## Tasks`, `## Boundaries` of each wave), delete `wave-plan.md` and the `wave-N-*/` subdirs, set `scopeOverride: "user-rejected-waves"` and `isWavePlan: false` in pipeline state, proceed to step 4 on the single spec
+   - **"Reject decomposition"** → **scope-dependent**, performed **deterministically** by a single relay (do NOT concatenate sections / delete dirs / patch sidecars by hand). Run the command below with `--mode` set from the spec's scope, then act on its JSON (`{"ok":true,"mode":"...","waves_merged":N,"removed_dirs":[...]}`; on `{"ok":false,"reason":"no-wave-plan"}` the spec is not a wave plan — fall through to the single-spec path). The command merges the actionable sections (`## Files`/`## Arquivos`, `## Tasks`/`## Tarefas`, `## Boundaries`/`## Limites`) in wave order, de-dups file lines, writes the merged spec **before** deleting anything, and patches the sidecars:
+     ```bash
+     mustard-rt run wave-collapse --spec {specName} --mode {full|light}
+     ```
+     - **Full scope** (`--mode full`) → *colapsa* o wave-plan para uma **single wave** (uma wave): the parent spec stays an **orchestration/coordination doc** (no own `## Tarefas`/`## Checklist`), the N wave-specs are collapsed into a single `wave-1-{role}/`, the surplus `wave-N-*/` subdirs are deleted, `wave-plan.md` is kept with `isWavePlan: true` / `totalWaves: 1`, and `scopeOverride: "user-rejected-waves"` is set. Then proceed to step 4 on the wave-1 spec. **NEVER** collapses a Full spec to `isWavePlan: false` / zero waves — the invariant is **Full ⇒ ≥1 wave** (parent=orchestrator, wave=subagent); the command enforces it. The runtime gate `block_full_without_wave` (`post_execute_gate.rs`) backs this up: it refuses a Full spec from reaching Execute without ≥1 wave, so the prose and the safety net agree.
+     - **Light scope** (`--mode light`) → merges all wave specs back into a single spec at `.claude/spec/{specName}/spec.md`, deletes `wave-plan.md` and every `wave-N-*/` subdir, and sets `scopeOverride: "user-rejected-waves"` + `isWavePlan: false`. Then proceed to step 4 on the single spec. (Single-spec / `isWavePlan: false` / zero waves is valid **only** for Light.)
    - **"Stop — re-plan with guidance"** → stop. Instruct user: `Delete .claude/spec/{specName}/ and re-run /feature {name} with explicit guidance (e.g., "keep wave 2 and wave 3 together").`
-4. If the wave plan was approved, from step 4 onwards operate on the **wave 1 spec** (`.claude/spec/{specName}/wave-1-{role}/spec.md`) — update its `meta.json`, not the `wave-plan.md` sidecar.
+4. If the wave plan was approved, the approval in step 5 operates on the **wave 1 spec** — pass `--wave-plan` so `mustard-rt` patches `.claude/spec/{specName}/wave-1-{role}/meta.json` for dispatch (not the `wave-plan.md` sidecar).
 
 **If `wave-plan.md` does NOT exist:** proceed as single spec (behavior below).
 
-4. **Spec Checkpoint — `meta.json`**: the lifecycle state (`stage: Plan`, `outcome: Active`, empty `flags`, `checkpoint: {ISO now}`) is written to the `meta.json` sidecar by the `emit-pipeline` events in step 5 (`mustard-rt` patches the sidecar — never hand-edit `spec.md`). Existing `scope` / `lang` / `parent` fields in `meta.json` are preserved.
-5. **Pipeline State — emit stage transition to Plan:**
-   - Extract `spec-name` from the spec directory (e.g. basename of the path → `2026-02-26-linked-services-card`)
+5. **Approve — emit the deterministic approval sequence (single relay):**
+   - Extract `spec-name` from the spec directory (basename of the path → e.g. `2026-02-26-linked-services-card`).
+   - Run the one command below and act on its JSON (`{"ok":true,"spec":"...","approved":true,"resumed":<bool>}`); on `{"ok":false,"error":"..."}`, surface the error and stop. It emits — deterministically, in order — `pipeline.stage {stage:"Plan"}` then `pipeline.status {from:"draft",to:"approved"}`, patches the spec's `meta.json` sidecar (`stage: Plan`, `outcome: Active`, `checkpoint: {ISO now}`; `scope`/`lang`/`parent` preserved — never hand-edit `spec.md`), and — when the user used the `r` suffix (the With-`r` branch of step 8) — `--resume` makes it also emit `pipeline.stage {stage:"Execute"}`. The `r` suffix is part of the invocation, so you know it here: pass `--resume` whenever the user typed `/mustard:spec {letter}r`. Append `--wave-plan` when step 4 detected a wave plan.
    ```bash
-   mustard-rt run emit-pipeline --kind pipeline.stage --spec {spec-name} --payload "{\"stage\":\"Plan\"}"
-   mustard-rt run emit-pipeline --kind pipeline.status --spec {spec-name} --payload "{\"from\":\"draft\",\"to\":\"approved\"}"
+   mustard-rt run approve-spec --spec {spec-name} [--wave-plan] [--resume]
    ```
    - No JSON file is written here.
 5b. **Memory Persist — record architectural decisions:**
@@ -58,18 +62,15 @@ Check whether the located spec is a wave plan: look for `.claude/spec/{specName}
      ```
    - Focus on: why a pattern was chosen over alternatives, constraints that shaped the design
    - Skip trivial or obvious decisions (max 3 entries)
-6. **Model selection** — read `Model Selection` from `.claude/pipeline-config.md` and record `"model"` field in state:
-   - Count estimated total files in the spec
-   - Apply rule: ≤5 files / known patterns → `"model": "sonnet"`, 5+ files / new patterns → `"model": "opus"`
-7. **Task Tracking — create TaskCreate for each agent:**
+6. **Task Tracking — create TaskCreate for each agent:**
    - 1 TaskCreate per agent identified in the spec
    - Subject: `"{Layer}: {brief description}"`
    - activeForm: `"Running {Layer} agent"`
-8. **Output — visual feedback:**
+7. **Output — visual feedback:**
    - Print progress line: `[v] ANALYZE  [v] PLAN  [>] EXECUTE  [ ] CLOSE`
    - Print a layer signal line so the user knows what was approved:
      `Approved: PRD layer (what & why) + Plan layer (how).` (Lang=pt-BR: `Aprovado: camada PRD (o quê & porquê) + camada Plano (o como).`)
-9. **Branch by `r` suffix:**
+8. **Branch by `r` suffix:**
 
    **No `r` (default) — STOP and instruct the user to open a new session:**
    - Do not execute implementation in this session (context already consumed by /feature + picker)
@@ -83,6 +84,7 @@ Check whether the located spec is a wave plan: look for `.claude/spec/{specName}
    - **CRITICAL**: do NOT dispatch Task agent, do NOT implement code — just STOP
 
    **With `r` — jump to resume flow in the same session:**
+   - `approve-spec --resume` (step 5) already emitted the `pipeline.stage {stage:"Execute"}` transition — do NOT re-emit it.
    - Inform user: `Spec approved. Resuming inline (r suffix). Dispatching EXECUTE directly.`
    - Jump to `resume-flow.md` **Step 2: Bootstrap**
    - **SKIP** Step 0 (Dispatch Failure Pre-Check — does not apply, state was created above) and Step 1 (Detect & Confirm — spec is already known, user just approved)

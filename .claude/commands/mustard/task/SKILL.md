@@ -10,15 +10,15 @@ source: manual
 
 `/task <action> <scope>`
 
-| Action | Agent | Model | Description |
-|--------|-------|-------|-------------|
-| `analyze` | Explore | sonnet | Code exploration / pattern analysis |
-| `audit` | general-purpose | sonnet | Quality audit with domain checklist |
-| `compare` | parallel explorers → Plan | sonnet | Cross-subproject alignment |
-| `review` | general-purpose | opus | SOLID / security / perf |
-| `docs` | general-purpose | sonnet | Documentation generation |
-| `refactor` | Plan → general-purpose | sonnet/opus | Plan + approve + implement |
-| `implement` | general-purpose | sonnet | Single-dispatch with inline slices |
+| Action | Agent | Description |
+|--------|-------|-------------|
+| `analyze` | Explore | Code exploration / pattern analysis |
+| `audit` | general-purpose | Quality audit with domain checklist |
+| `compare` | parallel explorers → Plan | Cross-subproject alignment |
+| `review` | general-purpose | SOLID / security / perf |
+| `docs` | general-purpose | Documentation generation |
+| `refactor` | Plan → general-purpose | Plan + approve + implement |
+| `implement` | general-purpose | Single-dispatch with inline slices |
 
 ## L0 Enforcement
 
@@ -44,15 +44,15 @@ Pass the `agent-prompt-render` **stdout verbatim** as the Task `prompt`. `{guard
 
 ## Flow
 
-Each action picks `--role` + `subagent_type` + model, renders via `agent-prompt-render`, then dispatches:
+Each action picks `--role` + `subagent_type`, renders via `agent-prompt-render`, then dispatches (agents inherit the session model — no model selection):
 
-- **analyze** — `--role explore`, `subagent_type: Explore`, sonnet → report.
-- **review** — `--role review`, `subagent_type: general-purpose`, opus → report.
-- **docs** — `--role docs`, `subagent_type: general-purpose`, sonnet → report.
-- **audit** — load `improve-codebase-architecture` → `--role audit`, `subagent_type: general-purpose`, sonnet → append the domain checklist to the task block via `--task-filter` is N/A (no spec); inline the checklist as the task description fed alongside the rendered prompt → severity-classified report.
-- **compare** — one explorer per subproject in PARALLEL (single message), each rendered with its own `--subproject` (`--role explore`) → Task(Plan, sonnet) merges + surfaces discrepancies.
-- **refactor** — load `improve-codebase-architecture` → render `--role plan` (Plan, sonnet) → print plan verbatim → AskUserQuestion (Approve/Adjust/Cancel) → render `--role implement` (general-purpose, opus) → validate.
-- **implement** — render `--role implement` (general-purpose, sonnet) with `--budget-tokens 4000`, return cap 30 lines → agent runs build/type-check. ON CONCERN → surface + offer `/feature` Light.
+- **analyze** — `--role explore`, `subagent_type: Explore` → report.
+- **review** — `--role review`, `subagent_type: general-purpose` → report.
+- **docs** — `--role docs`, `subagent_type: general-purpose` → report.
+- **audit** — load `improve-codebase-architecture` → `--role audit`, `subagent_type: general-purpose` → append the domain checklist to the task block via `--task-filter` is N/A (no spec); inline the checklist as the task description fed alongside the rendered prompt → severity-classified report.
+- **compare** — one explorer per subproject in PARALLEL (single message), each rendered with its own `--subproject` (`--role explore`) → Task(Plan) merges + surfaces discrepancies.
+- **refactor** — load `improve-codebase-architecture` → render `--role plan` (Plan) → print plan verbatim → AskUserQuestion (Approve/Adjust/Cancel) → render `--role implement` (general-purpose) → validate.
+- **implement** — render `--role implement` (general-purpose) with `--budget-tokens 4000`, return cap 30 lines → agent runs build/type-check. ON CONCERN → surface + offer `/feature` Light.
 
 → See `../../../refs/task/task-prompts.md` for the per-action render invocations.
 

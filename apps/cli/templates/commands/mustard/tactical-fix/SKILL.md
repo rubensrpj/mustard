@@ -37,7 +37,7 @@ Edit the spec (Contexto, Critérios de Aceitação, Arquivos) and run /mustard:s
 ## INVIOLABLE RULES
 
 - Fail-open on parent existence — sub-spec still created if `<parent>` missing; only dashboard navigation degrades.
-- Never mutate the parent spec — link is one-way (parent ← child via header + `spec.link` event).
+- Never mutate the parent spec — link is one-way (child → parent via `meta.json#parent` + `spec.link` event; never a `### Parent:` header in the markdown).
 - One call = one sub-spec.
 - No "light mode" pipeline — sub-spec passes through normal pipeline (same gates, same QA, same CLOSE).
 - Do NOT auto-approve — user reviews seed and runs `/mustard:spec`.

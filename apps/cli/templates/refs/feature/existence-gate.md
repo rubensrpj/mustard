@@ -6,7 +6,7 @@
 
 **Skip conditions**: Light scope OR `## Files` section lists more than 8 files (cost-benefit inverts — the explorer's self-cap of ≤10 tool uses will not cover).
 
-Before dispatching implementation agents, run 1 Sonnet explorer to verify the work is still needed.
+Before dispatching implementation agents, run 1 explorer to verify the work is still needed.
 
 **Pre-check (free, zero LLM tokens)**: Before dispatching the explorer, run:
 
@@ -24,7 +24,6 @@ Skip rules based on pre-check output:
 ```javascript
 Task({
   subagent_type: "Explore",
-  model: "sonnet",
   description: "Pre-EXECUTE existence check",
   prompt: `# EXISTENCE CHECK
 Read .claude/spec/{specName}/spec.md sections: "## Files" and "## Checklist".

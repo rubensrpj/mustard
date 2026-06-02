@@ -102,10 +102,11 @@ fn create_with_root(opts: SpecMemoryCreateOpts, project: &Path) {
         return;
     }
 
-    // Append a row to the `memory/_index.md` index when present, so the
-    // newly-added file shows up alongside the existing entries. Best-effort:
-    // failure to append is logged but never fatal.
-    if let Err(e) = append_index_row(&memory_dir, &opts, &kind, lang) {
+    // D6: the `memory/_index.md` is born HERE — on the first knowledge capture —
+    // not as an empty stub at draft time. `ensure_index` creates it (with the
+    // localised intro) when absent, then appends a row for this entry. Best-
+    // effort: a failure is logged but never fatal.
+    if let Err(e) = ensure_index(&memory_dir, &opts, lang) {
         eprintln!("spec-memory: WARN: could not update _index.md — {e}");
     }
 
@@ -161,22 +162,27 @@ fn render_template(opts: &SpecMemoryCreateOpts, kind: &str, lang: Locale) -> Str
     body
 }
 
-fn append_index_row(
+/// Create `memory/_index.md` when absent (D6 — born on first capture, never an
+/// empty draft stub) and append a row for the new entry. The header carries the
+/// localised `memory.index.intro` line so PT-BR / EN-US specs each read in their
+/// own language; the body is a `[[file]] | [[wave]]` table the dashboard renders.
+/// Format-tolerant: an existing index is appended to verbatim.
+fn ensure_index(
     memory_dir: &Path,
     opts: &SpecMemoryCreateOpts,
-    _kind: &str,
     lang: Locale,
 ) -> Result<(), String> {
     let index_path = memory_dir.join("_index.md");
     let existing = mfs::read_to_string(&index_path).unwrap_or_default();
-    // Update the principle count if present (best-effort; format-tolerant).
     let title = translate("memory.index.title", lang).replace("{title}", &opts.spec);
+    let intro = translate("memory.index.intro", lang);
     let principles_heading = translate("heading.memory.principles", lang);
     let file_col = translate("memory.index.column.file", lang);
     let wave_col = translate("memory.index.column.wave", lang);
-    let mut new_body = if existing.is_empty() {
+    let mut new_body = if existing.trim().is_empty() {
+        // Born on first capture: title + localised intro + the table header.
         format!(
-            "# {title}\n\n## {principles_heading}\n\n| {file_col} | {wave_col} |\n|---------|------|\n"
+            "# {title}\n\n{intro}\n\n## {principles_heading}\n\n| {file_col} | {wave_col} |\n|---------|------|\n"
         )
     } else {
         existing
@@ -260,5 +266,35 @@ mod tests {
         create_with_root(opts, dir.path());
         let target = spec_dir.join("memory").join("alpha.md");
         assert!(target.exists());
+    }
+
+    /// D6: the first `spec-memory create` is what BIRTHS `_index.md` — a fresh
+    /// spec ships none. The index carries the localised intro + a row for the
+    /// new entry, and never a `<missing-key>` (the i18n keys now exist).
+    #[test]
+    fn create_births_index_on_first_capture() {
+        let dir = tempdir().unwrap();
+        let spec_dir = dir.path().join(".claude").join("spec").join("demo");
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        let index = spec_dir.join("memory").join("_index.md");
+        // No index before any capture.
+        assert!(!index.exists());
+
+        create_with_root(
+            SpecMemoryCreateOpts {
+                spec: "demo".into(),
+                name: "scan-rust-first".into(),
+                kind: "principle".into(),
+                origin_wave: Some("wave-1-mixed".into()),
+                description: None,
+            },
+            dir.path(),
+        );
+
+        let body = std::fs::read_to_string(&index).expect("_index.md born on first capture");
+        assert!(!body.contains("<missing-key>"), "no missing i18n key:\n{body}");
+        // The new entry is listed.
+        assert!(body.contains("[[scan-rust-first]]"), "entry row present:\n{body}");
+        assert!(body.contains("[[wave-1-mixed]]"));
     }
 }

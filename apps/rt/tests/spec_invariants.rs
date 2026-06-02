@@ -123,9 +123,17 @@ fn no_metadata_headers_remain_and_meta_json_is_valid() {
         }
 
         // Every `spec.md` / `wave-plan.md` must have a `meta.json` beside it with
-        // a legal lifecycle triple.
+        // a legal lifecycle triple — EXCEPT inside a `qa/` or `review/` phase
+        // directory (D3): those are pipeline phases, not specs, so they carry no
+        // lifecycle sidecar (their result lives in `report.md` / `verdict.md`).
         let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-        if name == "spec.md" || name == "wave-plan.md" {
+        let parent_name = path
+            .parent()
+            .and_then(|p| p.file_name())
+            .and_then(|n| n.to_str())
+            .unwrap_or("");
+        let is_phase_dir = matches!(parent_name, "qa" | "review");
+        if (name == "spec.md" || name == "wave-plan.md") && !is_phase_dir {
             let Some(dir) = path.parent() else { continue };
             let meta_path = dir.join("meta.json");
             let Some(meta) = read_meta(&meta_path) else {

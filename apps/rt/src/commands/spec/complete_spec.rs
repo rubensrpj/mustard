@@ -230,12 +230,21 @@ fn emit_completed_status(cwd: &Path, spec: &str) {
         return;
     }
     emit_phase_close(cwd, spec);
+    let now = mustard_core::time::now_iso8601();
     let payload = serde_json::to_value(PipelineStatusPayload {
         from: current_status,
         to: "completed".to_string(),
     })
     .unwrap_or(Value::Null);
-    emit_ndjson(cwd, spec, EVENT_PIPELINE_STATUS, &payload, &mustard_core::time::now_iso8601());
+    emit_ndjson(cwd, spec, EVENT_PIPELINE_STATUS, &payload, &now);
+
+    // Sync the **root** `meta.json` to `stage=Close, outcome=Completed`. This
+    // path emits the terminal status straight through `writer_ndjson` (it does
+    // not go through `emit-pipeline run`, which is where the sidecar-sync lives),
+    // so without this call a completed spec stays stuck at `Plan/Active` in its
+    // sidecar even though its events log says it is done. Fail-open: a missing
+    // spec dir or write error is a silent no-op.
+    crate::commands::event::emit_pipeline::patch_meta_complete(cwd, spec, &now);
 }
 
 /// Idempotently emit `pipeline.phase: CLOSE` when the spec's latest phase is
@@ -466,5 +475,47 @@ mod tests {
         )
         .expect("projection still exists");
         assert_eq!(view2.status.as_deref(), Some("closed-followup"));
+    }
+
+    /// FRONT 3 (D-lifecycle): `emit_completed_status` emits the terminal event
+    /// AND syncs the root `meta.json` to `Close/Completed`. Before the fix the
+    /// status flowed straight through `writer_ndjson`, leaving a finished spec
+    /// stuck at its last `Plan/Active` sidecar value.
+    #[test]
+    fn emit_completed_status_syncs_root_meta() {
+        let dir = tempdir().unwrap();
+        let cwd = dir.path();
+        let spec = "demo-complete";
+
+        // Seed a spec dir with a meta.json still in Plan/Active.
+        let spec_dir = cwd.join(".claude").join("spec").join(spec);
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        std::fs::write(
+            spec_dir.join("meta.json"),
+            r#"{"stage":"Plan","outcome":"Active","phase":"PLAN","scope":"full","lang":"pt-BR"}"#,
+        )
+        .unwrap();
+
+        super::emit_completed_status(cwd, spec);
+
+        // The terminal status event landed.
+        let events = read_events_for_spec(cwd, spec);
+        let view = crate::commands::event::event_projections::pipeline_state_from_events(
+            &events, spec, None,
+        )
+        .expect("projection exists after emit_completed_status");
+        assert_eq!(view.status.as_deref(), Some("completed"));
+
+        // The ROOT meta.json sidecar is now Close/Completed (the bug fix).
+        let meta: Value = serde_json::from_str(
+            &std::fs::read_to_string(spec_dir.join("meta.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(meta["stage"], json!("Close"), "{meta}");
+        assert_eq!(meta["outcome"], json!("Completed"), "{meta}");
+        assert_eq!(meta["phase"], json!("CLOSE"), "{meta}");
+        // Other fields preserved.
+        assert_eq!(meta["scope"], json!("full"), "{meta}");
+        assert_eq!(meta["lang"], json!("pt-BR"), "{meta}");
     }
 }

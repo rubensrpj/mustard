@@ -58,9 +58,10 @@ pub enum RunCmd {
         #[arg(long)]
         out: Option<PathBuf>,
         /// (Re)generate a lean CLAUDE.md for every subproject found in the
-        /// grain model. Guards sections are preserved verbatim. Without this
-        /// flag the command only warns about CLAUDE.md files that exceed
-        /// the size threshold.
+        /// grain model. Only the machine-owned scan-map block is regenerated;
+        /// curated sections (Guards, Architecture, …) are preserved verbatim.
+        /// Without this flag the command only warns about CLAUDE.md files that
+        /// exceed the size threshold.
         #[arg(long)]
         full: bool,
     },
@@ -446,6 +447,22 @@ pub enum RunCmd {
         #[arg(long = "from-spec")]
         from_spec: Option<String>,
     },
+    /// Classify a spec's scope (light / extended-light / full) deterministically.
+    ///
+    /// Reuses the same structural signals as `scope-decompose --from-spec`
+    /// (fileCount / layerCount / newEntityCount), plus `--slice-match-count`
+    /// from the `feature` digest's `sliceMatchCount`, and encodes the `/feature`
+    /// SKILL's prose thresholds in code. Fail-open: an unreadable spec yields
+    /// `{"scope":"full",...}` (the conservative default).
+    ScopeClassify {
+        /// Compute the signals deterministically from this spec file.
+        #[arg(long = "from-spec")]
+        from_spec: String,
+        /// Count of matched recurring slices from the `feature` digest's
+        /// `sliceMatchCount` (>=2 ⇒ spans multiple slices ⇒ full). Defaults to 0.
+        #[arg(long = "slice-match-count", default_value_t = 0)]
+        slice_match_count: i64,
+    },
     /// Check whether a spec should be decomposed at EXECUTE entry.
     ExecRewaveCheck {
         /// Path to the spec file.
@@ -704,6 +721,29 @@ pub enum RunCmd {
         /// Path to the plan JSON file.
         #[arg(long)]
         plan: Option<String>,
+    },
+    /// Deterministically merge a wave-plan's decomposition back down — the
+    /// "reject decomposition" branch of `approve-only-flow.md`.
+    ///
+    /// `--mode full`: collapse N waves into a single `wave-1-{role}/spec.md`
+    /// (parent root spec stays the orchestration doc), delete `wave-2..N`,
+    /// patch `wave-plan.md` + parent `meta.json` to `totalWaves:1` /
+    /// `isWavePlan:true` (NEVER zero waves for Full — the invariant).
+    /// `--mode light`: merge every wave's sections into the root `spec.md`,
+    /// delete all wave dirs + `wave-plan.md`, patch root `meta.json` to
+    /// `isWavePlan:false`. Both set `scopeOverride:"user-rejected-waves"`.
+    /// Atomic + idempotent + fail-open: a missing `wave-plan.md` →
+    /// `{"ok":false,"reason":"no-wave-plan"}` (exit 0). Merged spec is written
+    /// BEFORE any dir is deleted. Reuses `is_heading` / `write_atomic` /
+    /// the wave-scaffold renderers.
+    #[command(name = "wave-collapse")]
+    WaveCollapse {
+        /// Spec slug under `.claude/spec/`.
+        #[arg(long)]
+        spec: String,
+        /// Collapse mode: `full` (→ single wave-1) or `light` (→ single root spec).
+        #[arg(long)]
+        mode: String,
     },
     /// W10.T10.4 — Emit a deterministic wave-plan JSON consumable by
     /// `wave-scaffold`. Replaces the orchestrator-hand-rolled `plan.json` step.
@@ -1106,6 +1146,28 @@ pub enum RunCmd {
         #[arg(long)]
         subproject: Option<String>,
     },
+    /// Emit the deterministic spec-approval event sequence (replaces the
+    /// hand-assembled `emit-pipeline` steps in `approve-only-flow.md`).
+    ///
+    /// Emits, in order: `pipeline.stage {stage:"Plan"}` → `pipeline.status
+    /// {from:"draft",to:"approved"}`, and — only with `--resume` — a trailing
+    /// `pipeline.stage {stage:"Execute"}` (the `r`-suffix inline-resume case).
+    /// With `--wave-plan`, the stage payloads carry `wave:1` so the wave-1
+    /// `meta.json` sidecar is patched for dispatch. Reuses the canonical
+    /// `emit-pipeline` internals (no subprocess). Prints a JSON report; exit 0.
+    #[command(name = "approve-spec")]
+    ApproveSpec {
+        /// Spec slug under `.claude/spec/` to approve.
+        #[arg(long)]
+        spec: String,
+        /// The spec is a wave plan — patch the wave-1 `meta.json` for dispatch.
+        #[arg(long = "wave-plan")]
+        wave_plan: bool,
+        /// Inline-resume: also emit `pipeline.stage Execute` (the `r`-suffix
+        /// branch). Without it, the flow stops at `approved` for a fresh session.
+        #[arg(long)]
+        resume: bool,
+    },
     /// W5.T5.3 — Create a sub-spec linked to a parent spec for a tactical fix.
     #[command(name = "tactical-fix-create")]
     TacticalFixCreate {
@@ -1464,6 +1526,10 @@ pub fn dispatch(cmd: RunCmd) {
         RunCmd::WaveDependency => wave::wave_dependency::run(),
         RunCmd::WaveFiles { spec, wave } => wave::wave_files::run(spec.as_deref(), wave),
         RunCmd::ScopeDecompose { from_spec } => spec::scope_decompose::run(from_spec.as_deref()),
+        RunCmd::ScopeClassify {
+            from_spec,
+            slice_match_count,
+        } => spec::scope_decompose::run_classify(&from_spec, slice_match_count),
         RunCmd::ExecRewaveCheck { spec } => wave::exec_rewave_check::run(spec.as_deref()),
         RunCmd::DependencyPrecheck { spec, subproject } => {
             review::dependency_precheck::run(spec.as_deref(), subproject.as_deref());
@@ -1590,6 +1656,9 @@ pub fn dispatch(cmd: RunCmd) {
         RunCmd::AmendFinalize { session_id } => agent::amend_finalize::run_cli(&session_id),
         RunCmd::WaveScaffold { spec_dir, plan } => {
             wave::wave_scaffold::run(spec_dir.as_deref(), plan.as_deref());
+        }
+        RunCmd::WaveCollapse { spec, mode } => {
+            wave::wave_collapse::run(wave::wave_collapse::WaveCollapseOpts { spec, mode });
         }
         RunCmd::PlanFromSpec { waves, roles, lang, summary } => {
             spec::plan_from_spec::run(spec::plan_from_spec::PlanFromSpecOpts {
@@ -1750,6 +1819,13 @@ pub fn dispatch(cmd: RunCmd) {
         }
         RunCmd::ReviewDispatch { pr, spec, subproject } => {
             review::review_dispatch::run(review::review_dispatch::ReviewDispatchOpts { pr, spec, subproject });
+        }
+        RunCmd::ApproveSpec { spec, wave_plan, resume } => {
+            spec::approve_spec::run(spec::approve_spec::ApproveSpecOpts {
+                spec,
+                wave_plan,
+                resume,
+            });
         }
         RunCmd::TacticalFixCreate { parent, description, scope } => {
             spec::tactical_fix_create::run(spec::tactical_fix_create::TacticalFixOpts {
