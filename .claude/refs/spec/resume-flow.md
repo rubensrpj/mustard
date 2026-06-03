@@ -39,7 +39,7 @@ It reads `wave-plan.md`, builds the dependency DAG, and returns a deterministic 
 
 - **`level`** is the dispatch round. Items sharing a `level` have no dependency between them → dispatch them **together in one message** (several `<invoke>` blocks). Never dispatch a higher `level` before every lower-level wave has completed.
 - **`prompt_cmd`** is a ready `agent-prompt-render` invocation — NOT the prompt. Run it; pass its **stdout** as the Task `prompt`.
-- **`subagent_type`**: always `subagent_type: "general-purpose"` — there are no generated per-project agents.
+- **`subagent_type`**: each item carries its own — the tool picks the agent per role (read-only roles run tool-restricted: `explore`→`Explore`, `review`/`qa`→`mustard-review`, `guards`→`mustard-guards`; writing roles → `general-purpose`). Pass it through; never pick by hand.
 
 To dispatch just the current wave, slice with `--wave {currentWave}`. The orchestrator does NOT decide the order, group rounds, or assemble the loop by hand — `dispatch-plan` owns that ("free section" determinised). `resume-bootstrap` stays the **stage** decision (mode / stage / current wave); `dispatch-plan` is the **wave-routing** decision.
 

@@ -42,7 +42,7 @@ Routing/order is decided by Rust, not the LLM. Get the ordered dispatch array:
 rtk mustard-rt run dispatch-plan --spec {specName}
 ```
 
-For each item `{wave, role, subproject, depends_on, level, prompt_cmd}`: run `prompt_cmd` (a ready `agent-prompt-render` call) and pass its **stdout** verbatim as the Task `prompt`. Items sharing a `level` are independent → dispatch them in **one** message. `subagent_type` = `{subproject-name}-impl` when that rich agent exists, else `general-purpose`. NEVER hand-craft prompts or interpret `wave-plan.md` by hand. Post-dispatch → `../../../refs/spec/resume-flow.md`.
+For each item `{wave, role, subproject, depends_on, level, prompt_cmd}`: run `prompt_cmd` (a ready `agent-prompt-render` call) and pass its **stdout** verbatim as the Task `prompt`. Items sharing a `level` are independent → dispatch them in **one** message. `subagent_type` = each item's `subagent_type` field — the tool picks the agent per role (read-only roles run tool-restricted: `explore`→`Explore`, `review`/`qa`→`mustard-review`, `guards`→`mustard-guards`; writing roles → `general-purpose`). NEVER hand-craft prompts, pick the agent by hand, or interpret `wave-plan.md` by hand. Post-dispatch → `../../../refs/spec/resume-flow.md`.
 
 ### 4. Edge cases
 

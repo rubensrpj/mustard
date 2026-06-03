@@ -30,7 +30,7 @@ Print spec verbatim, then *"Run `/mustard:spec` to approve and proceed to EXECUT
 
 ### 4. EXECUTE
 
-All agent prompts via `mustard-rt run agent-prompt-render` (NEVER hand-craft; the subagent's context is the spec section + anchors — there are no generated skills). `role=ui` → append `Read .claude/refs/stack-templates/browser-debug.md before instrumenting.` to `{context_extras}`.
+All agent prompts via `mustard-rt run agent-prompt-render` (NEVER hand-craft; the subagent's context is the spec section + anchors). Dispatch each with its role's `subagent_type` (`impl`→`general-purpose`, `review`→`mustard-review`); the DIAGNOSE Explore already runs read-only. `role=ui` → append `Read .claude/refs/stack-templates/browser-debug.md before instrumenting.` to `{context_extras}`.
 
 Validate: build/type-check passes, no regression (max 3 iterations).
 

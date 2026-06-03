@@ -20,7 +20,6 @@
 
 use crate::shared::context::project_dir;
 use crate::commands::agent::context_inject;
-use crate::commands::knowledge::memory_cross_wave;
 use crate::commands::pipeline::resume_bootstrap::resolve_operational_spec_path;
 use crate::commands::spec::spec_sections::is_heading;
 use mustard_core::domain::ast::{extract_entities, extract_function_signatures, GrammarLoader};
@@ -60,27 +59,36 @@ const TEMPLATE: &str = include_str!("agent_prompt_template.md");
 ///
 /// W8.T8.9 — `--budget-tokens <N>` truncates *content* placeholders (the bulky
 /// ones: `{task_steps}`, `{context_md}`, `{prior_wave_diff}`,
-/// `{cross_wave_memory}`, `{recommended_skills}`) to keep the final rendered
-/// prompt under roughly `N` model tokens. The estimator is the conventional
-/// 4-chars-per-token heuristic; placeholders are ranked by relevance (the
-/// skill-resolve signal already orders skills) so the most useful content
-/// stays intact while the long tail gets trimmed first. A `None` budget is the
-/// historical full-render path.
+/// `{cross_wave_memory}`) to keep the final rendered prompt under roughly `N`
+/// model tokens. The estimator is the conventional 4-chars-per-token heuristic;
+/// placeholders are trimmed least-relevant-first (head-preserving) so the most
+/// useful content stays intact while the long tail gets trimmed first. A `None`
+/// budget is the historical full-render path.
 pub fn run(
-    spec: &str,
+    spec: Option<&str>,
     wave: Option<u32>,
     role: &str,
     subproject: &Path,
     mode: RenderMode,
     retry_context_file: Option<&Path>,
     task_filter: Option<&str>,
+    task_text: Option<&str>,
     budget_tokens: Option<usize>,
 ) {
     let project = PathBuf::from(project_dir());
-    let spec_dir = ClaudePaths::for_project(&project)
-        .and_then(|p| p.for_spec(spec))
-        .map(|sp| sp.dir().to_path_buf())
-        .unwrap_or_else(|_| project.clone());
+    // Spec-less paths (the `/scan` guards enrich, `/task` with no scope) pass no
+    // `--spec`. They carry no spec directory, no spec memory, and no spec-derived
+    // locale — every spec-keyed step below degrades to a project-root fallback.
+    // A blank `--spec ""` is treated the same as absent.
+    let spec = spec.map(str::trim).filter(|s| !s.is_empty());
+    let spec_dir = spec
+        .and_then(|s| {
+            ClaudePaths::for_project(&project)
+                .and_then(|p| p.for_spec(s))
+                .map(|sp| sp.dir().to_path_buf())
+                .ok()
+        })
+        .unwrap_or_else(|| project.clone());
     let op_spec_path = resolve_operational_spec_path(&spec_dir, wave);
 
     // Pick the right template block by mode.
@@ -97,30 +105,59 @@ pub fn run(
 
     let subproject_str = subproject.to_string_lossy().to_string();
     let guards_summary = read_guards_block(&project.join(&subproject_str));
-    let role_block = build_role_block(role);
-    let spec_lang = read_spec_lang(&op_spec_path);
+    // With a spec, `meta.json`/`### Lang:` is the source of truth. Without one,
+    // there is no spec to read — derive the narrative locale from the canonical
+    // `mustard.json#specLang` accessor (`ProjectConfig::load(..).i18n()`), the
+    // same accessor `build_role_block` already uses for tone. No ad-hoc parse.
+    let spec_lang = match spec {
+        Some(_) => read_spec_lang(&op_spec_path),
+        None => mustard_core::ProjectConfig::load(&project)
+            .i18n()
+            .lang
+            .as_str()
+            .to_string(),
+    };
+    let role_block = build_role_block(role, &project, &subproject_str, &spec_lang);
     let task_steps = {
         let raw = read_task_steps(&op_spec_path);
-        match task_filter {
+        let raw = match task_filter {
             Some(pat) => filter_task_lines(&raw, pat),
             None => raw,
+        };
+        // Spec-less callers (`/scan` guards enrich, `/task` with no scope) have
+        // no spec `## Tasks` to read — `--task-text` carries the ad-hoc work so
+        // the prompt stays self-contained and verbatim, instead of the
+        // orchestrator hand-appending the task after the render.
+        if raw.trim().is_empty() {
+            task_text.unwrap_or_default().to_string()
+        } else {
+            raw
         }
     };
-    let context_md = read_cached(&project, spec, "context-md");
+    // Spec-keyed scratch lookups. With no spec there is nothing cached; pass an
+    // empty key so each helper resolves to a missing path and fail-opens to "".
+    let spec_key = spec.unwrap_or("");
+    let context_md = read_cached(&project, spec_key, "context-md");
     let prior_wave_diff = wave
         .filter(|&w| w > 1)
-        .map(|w| read_prior_wave_diff(&project, spec, w - 1))
+        .map(|w| read_prior_wave_diff(&project, spec_key, w - 1))
         .unwrap_or_default();
-    let mut cross_wave_memory = render_cross_wave(&project, spec, wave);
+    let mut cross_wave_memory = cross_wave_pull_pointer(spec_key, wave);
     // Append per-spec memory principles filtered by relevance. T1.5 requires
     // irrelevant principles to NOT enter the prompt — the shared matcher runs
     // an Aho-Corasick scan over the memory-name stems so morphological variants
     // (prompt "routing" → `tabs-routing.md`) are caught. The intent is the
     // role label plus the task block.
-    let memory_dir = ClaudePaths::for_project(&project)
-        .and_then(|p| p.for_spec(spec))
-        .map(|sp| sp.dir().join("memory"))
-        .unwrap_or_else(|_| project.clone());
+    // Spec memory dir; spec-less paths point at the project root so the matcher
+    // simply finds no per-spec memory and skips the block (fail-open).
+    let memory_dir = spec
+        .and_then(|s| {
+            ClaudePaths::for_project(&project)
+                .and_then(|p| p.for_spec(s))
+                .map(|sp| sp.dir().join("memory"))
+                .ok()
+        })
+        .unwrap_or_else(|| project.clone());
     let mem_intent = format!("{role} {task_steps}");
     let spec_memory_block = context_inject::render_spec_memory_block(
         &context_inject::match_spec_memory(&memory_dir, &mem_intent, usize::MAX, true),
@@ -145,11 +182,10 @@ pub fn run(
         }
         cross_wave_memory.push_str(&vocab_block);
     }
-    // Skills were removed from Mustard: no recommended-skills block. The
-    // subagent's domain context now comes from the grain spec section + its
-    // anchors, not from a resolved skill/entity list.
-    let mut recommended_skills = String::new();
-    let entity_info = String::new();
+    // Skills and the entity list were removed from Mustard: the dispatch
+    // template no longer carries `## SKILLS` / `## ENTITY`. The subagent's
+    // domain context comes from the inline `## GUARDS` block + the grain spec
+    // section + its anchors, not from a resolved skill/entity list.
 
     // Remaining deterministic placeholders the dispatch template carries:
     //   {reference_files}  the spec's `## Files`/`## Arquivos` list + public
@@ -178,13 +214,11 @@ pub fn run(
                 &role_block,
                 &spec_lang,
                 &retry_context,
-                &entity_info,
                 &reference_files,
                 &context_extras,
                 &rendered,
             ],
             &mut [
-                ("recommended_skills", &mut recommended_skills),
                 ("prior_wave_diff", &mut prior_wave_diff),
                 ("cross_wave_memory", &mut cross_wave_memory),
                 ("context_md", &mut context_md),
@@ -203,8 +237,6 @@ pub fn run(
         ("{context_md}", &context_md),
         ("{prior_wave_diff}", &prior_wave_diff),
         ("{cross_wave_memory}", &cross_wave_memory),
-        ("{recommended_skills}", &recommended_skills),
-        ("{entity_info}", &entity_info),
         ("{reference_files}", &reference_files),
         ("{context_extras}", &context_extras),
         ("{retry_context}", &retry_context),
@@ -212,6 +244,12 @@ pub fn run(
     for (key, value) in substitutions {
         rendered = rendered.replace(key, value);
     }
+
+    // ---- Drop headings whose fail-open body resolved to empty. ----
+    // `## GUARDS`, `## SHARED LANGUAGE`, `## REFERENCE`, `## CROSS-WAVE MEMORY`
+    // and `## PRIOR WAVE DIFF` all degrade to "" on the spec-less / wave-1 /
+    // no-Files paths; a dangling empty heading is negative signal, so collapse it.
+    rendered = collapse_empty_sections(&rendered);
 
     // ---- Warn about any remaining `{placeholder}` tokens. ----
     for token in scan_unfilled(&rendered) {
@@ -279,11 +317,87 @@ fn read_guards_block(subproject_dir: &Path) -> String {
     collected.trim().to_string()
 }
 
-/// Build the `{role_block}` — the minimal `ROLE: {role}` marker. Always emitted:
-/// dispatch is always `general-purpose` (there are no generated per-project
-/// agents), so the rendered prompt carries the role cue inline.
-fn build_role_block(role: &str) -> String {
-    format!("ROLE: {role}")
+/// Build the `{role_block}` — the role cue **plus a per-role delivery contract**.
+/// Each known role (`guards`, `explore`, `review`, `qa`, and the `impl` default)
+/// gets an explicit contract: what to produce and how to deliver it (return text
+/// vs. edit, the return-line cap, read-only vs. write). This is what makes the
+/// rendered prompt self-restricting — the orchestrator no longer hand-appends the
+/// contract, and a read-only role is told (and, via its `subagent_type`, unable)
+/// to write. See [`recommended_subagent_type`] for the matching tool-restricted
+/// agent per role.
+fn build_role_block(role: &str, project: &Path, subproject: &str, spec_lang: &str) -> String {
+    match role.trim().to_ascii_lowercase().as_str() {
+        "guards" => build_guards_role_block(project, subproject, spec_lang),
+        "explore" => format!(
+            "ROLE: explore\n\
+             You map a slice of {subproject} read-only and return a compact briefing. You \
+             write NOTHING — if the task implies a change, report it, do not do it. Read only \
+             the anchors you were given (+ ≤5 more) via offset/limit; never bulk-read. Deliver: \
+             your final message is a ≤30-line briefing — the pattern to mirror, files to touch, \
+             contract wiring. No file dumps."
+        ),
+        "review" => format!(
+            "ROLE: review\n\
+             You adversarially verify the implementer's work in {subproject}. You are NOT the \
+             implementer. Read-only: report findings, never fix. Stay skeptical — the implementer \
+             is not authoritative; if you cannot independently confirm a claim, reject it. Run \
+             tests with the feature enabled (code presence is not effectiveness). Deliver: your \
+             final message is a ≤60-line verdict — pass/fail per claim, each backed by the command \
+             you ran and its real output."
+        ),
+        "qa" => format!(
+            "ROLE: qa\n\
+             You run each Acceptance Criterion command in the spec and report pass/fail. You do \
+             NOT fix anything. Run the exact `Command:` from each AC and capture its real output. \
+             Deliver: per-AC pass/fail + the proving output; overall=pass only if every AC passes."
+        ),
+        _ => format!(
+            "ROLE: {role}\n\
+             You implement inside {subproject} ONLY — never touch another subproject, the spec, or \
+             .claude/. Before the first Edit/Write, read ONE sibling file to match conventions. \
+             Source code stays English; only spec prose follows the project locale. Max 3 build \
+             attempts, then STOP and report. Deliver: your final message is a ≤40-line report — \
+             files changed + non-obvious decisions + blockers. Do NOT paste file contents."
+        ),
+    }
+}
+
+/// Build the `guards` role block — the Wave-2 enrich instruction. Carries the
+/// grounded 3-6 line cap, the project locale + tone (from `mustard.json` via the
+/// canonical [`mustard_core::ProjectConfig`] accessor — no ad-hoc parse), the
+/// pending block's deterministic facts, and the delivery contract (return the
+/// lines as text; never write a file — the caller pipes to `scan-guards-apply`).
+fn build_guards_role_block(project: &Path, subproject: &str, spec_lang: &str) -> String {
+    let tone = mustard_core::ProjectConfig::load(project).i18n().tone.as_str().to_string();
+    let facts = read_guards_facts(&project.join(subproject));
+    let facts_line = if facts.is_empty() {
+        String::new()
+    } else {
+        format!("\nFacts (deterministic, from scan): {facts}.")
+    };
+    format!(
+        "ROLE: guards\n\
+         Write 3-6 lines of Guards (do/don't) GROUNDED in the deterministic facts \
+         and the subproject's real code; include ONLY what is NOT auto-inferable \
+         from the manifest/tree. Write in the project locale ({spec_lang}) and tone \
+         ({tone}). Be concise; never generic prose. Deliver ONLY the lines as your \
+         final message; do NOT write any file — the caller pipes your text to \
+         scan-guards-apply.{facts_line}"
+    )
+}
+
+/// Read the `<!-- facts: ... -->` payload from a subproject's pending `## Guards`
+/// block (Wave 1's grounding context: `kind=...; frameworks=...`). Empty when
+/// the file or the facts line is absent. Shape-mirrors [`read_guards_block`].
+fn read_guards_facts(subproject_dir: &Path) -> String {
+    let text = mfs::read_to_string(subproject_dir.join("CLAUDE.md")).unwrap_or_default();
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("<!-- facts:") {
+            return rest.trim_end_matches("-->").trim().to_string();
+        }
+    }
+    String::new()
 }
 
 /// Resolve the spec's narrative locale. Defaults to `"en-US"` (BCP-47).
@@ -560,27 +674,26 @@ fn read_prior_wave_diff(project: &Path, spec: &str, wave_num: u32) -> String {
     String::new()
 }
 
-/// Render the prior-wave memory block via `memory_cross_wave::render`. Empty
-/// when the wave is 1 / the DB is absent / no memory rows match.
-fn render_cross_wave(project: &Path, spec: &str, wave: Option<u32>) -> String {
+/// On-demand POINTER to prior-wave memory — replaces inlining the full summary
+/// dump. The agent pulls earlier-wave context ONLY when its task needs it (via
+/// `mustard-rt run memory cross-wave`), so a wave-N+1 dispatch pays ~zero tokens
+/// for memory it never reads instead of carrying every prior summary. Empty for
+/// wave 1 / spec-less (no prior waves to pull). The full summaries still exist in
+/// `<spec>/.events`; this just stops force-feeding them into every prompt.
+fn cross_wave_pull_pointer(spec: &str, wave: Option<u32>) -> String {
     let Some(w) = wave else {
         return String::new();
     };
-    if w <= 1 {
+    if spec.is_empty() || w <= 1 {
         return String::new();
     }
-    let spec_dir = ClaudePaths::for_project(project)
-        .and_then(|p| p.for_spec(spec))
-        .map(|sp| sp.dir().to_path_buf())
-        .unwrap_or_else(|_| project.to_path_buf());
-    let plan_text = mfs::read_to_string(spec_dir.join("wave-plan.md")).unwrap_or_default();
-    let mut names = memory_cross_wave::parse_wave_names(&plan_text);
-    if names.is_empty() {
-        names = memory_cross_wave::parse_wave_dirs_from_fs(&spec_dir);
-    }
-    let n_prior = (w as usize).saturating_sub(1).min(names.len());
-    let prior: Vec<String> = names.into_iter().take(n_prior).collect();
-    memory_cross_wave::render(&prior, project, spec)
+    format!(
+        "Earlier waves (1..{prev}) of `{spec}` captured per-agent summaries. They are NOT \
+         inlined here — pull ONLY what you need, on demand:\n\
+         `mustard-rt run memory cross-wave --spec {spec} --wave {w}`\n\
+         Skip that call unless your task depends on what an earlier wave did.",
+        prev = w - 1
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -856,6 +969,55 @@ fn scan_unfilled(text: &str) -> Vec<String> {
     out
 }
 
+/// Map a pipeline role to the `subagent_type` the orchestrator should dispatch.
+///
+/// Read-only roles resolve to **tool-restricted** agents so they physically
+/// cannot write: `explore` → the built-in `Explore` (no Edit/Write), `plan` →
+/// the built-in `Plan` (no Edit/Write), `review`/`qa` → `mustard-review`
+/// (Read/Grep/Glob/Bash — Bash for tests only), `guards` → `mustard-guards`
+/// (Read/Grep/Glob only). Writing roles (`impl` and any other) stay
+/// `general-purpose`: they need Edit/Write and rely on the per-role contract +
+/// the `scope_guard` hook instead. Emitted by `dispatch-plan` so the
+/// orchestrator never picks the agent by hand.
+#[must_use]
+pub fn recommended_subagent_type(role: &str) -> &'static str {
+    match role.trim().to_ascii_lowercase().as_str() {
+        "explore" => "Explore",
+        "plan" => "Plan",
+        "review" | "qa" => "mustard-review",
+        "guards" => "mustard-guards",
+        _ => "general-purpose",
+    }
+}
+
+/// Remove any `## ` heading whose body — every line until the next `## ` heading
+/// or end of text — is entirely whitespace. Keeps the dispatched prompt clean
+/// when a fail-open placeholder (`{guards_summary}`, `{context_md}`,
+/// `{reference_files}`, `{cross_wave_memory}`, `{prior_wave_diff}`) resolves to
+/// "". Only `## `-level headings are considered, so the `<!-- PREFIX-STABLE -->`
+/// marker and inline prose are never touched. The `## TASK` section always
+/// survives: its trailing "Guards carregados …" line is non-blank body.
+fn collapse_empty_sections(text: &str) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    let mut out: Vec<&str> = Vec::new();
+    let mut i = 0;
+    while i < lines.len() {
+        if lines[i].starts_with("## ") {
+            let mut j = i + 1;
+            while j < lines.len() && !lines[j].starts_with("## ") {
+                j += 1;
+            }
+            if lines[i + 1..j].iter().all(|l| l.trim().is_empty()) {
+                i = j; // Drop the heading and its blank body.
+                continue;
+            }
+        }
+        out.push(lines[i]);
+        i += 1;
+    }
+    out.join("\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -909,13 +1071,166 @@ mod tests {
     }
 
     #[test]
-    fn build_role_block_always_emits_the_role_marker() {
-        // The role_block is always `ROLE: {role}` — never suppressed by a rich
-        // agent file on disk. A file existing does not mean the `{name}-impl`
-        // subagent_type is registered this session; on a general-purpose
-        // fallback the agent would otherwise lose its only role cue.
-        assert_eq!(build_role_block("impl"), "ROLE: impl");
-        assert_eq!(build_role_block("review"), "ROLE: review");
+    fn build_role_block_emits_role_cue_and_contract() {
+        // Every role block starts with its `ROLE:` cue and now carries a
+        // delivery contract (no longer a bare marker). The read-only roles state
+        // their write-restriction in prose; their subagent_type enforces it.
+        let dir = tempdir().unwrap();
+        let impl_block = build_role_block("impl", dir.path(), "api", "en-US");
+        assert!(impl_block.starts_with("ROLE: impl"), "cue missing: {impl_block}");
+        assert!(impl_block.contains("implement inside api ONLY"), "scope missing: {impl_block}");
+        let review_block = build_role_block("review", dir.path(), "api", "en-US");
+        assert!(review_block.starts_with("ROLE: review"));
+        assert!(review_block.contains("never fix"), "review write-restriction missing");
+        let explore_block = build_role_block("explore", dir.path(), "api", "en-US");
+        assert!(explore_block.starts_with("ROLE: explore"));
+        assert!(explore_block.contains("write NOTHING"), "explore write-restriction missing");
+    }
+
+    #[test]
+    fn guards_role_block_carries_delivery_contract() {
+        // The guards block must tell the agent to return the lines as text and
+        // never write a file — the missing rule that let an agent self-write.
+        let dir = tempdir().unwrap();
+        anchor(dir.path());
+        let block = build_role_block("guards", dir.path(), "apps/rt", "pt-BR");
+        assert!(block.contains("scan-guards-apply"), "delivery contract missing: {block}");
+        assert!(block.contains("do NOT write any file"), "write-restriction missing: {block}");
+    }
+
+    #[test]
+    fn recommended_subagent_type_locks_read_only_roles() {
+        // Read-only roles map to tool-restricted agents; writing roles stay
+        // general-purpose. Case/whitespace-insensitive.
+        assert_eq!(recommended_subagent_type("explore"), "Explore");
+        assert_eq!(recommended_subagent_type("plan"), "Plan");
+        assert_eq!(recommended_subagent_type("review"), "mustard-review");
+        assert_eq!(recommended_subagent_type("qa"), "mustard-review");
+        assert_eq!(recommended_subagent_type(" Guards "), "mustard-guards");
+        assert_eq!(recommended_subagent_type("impl"), "general-purpose");
+        assert_eq!(recommended_subagent_type("backend"), "general-purpose");
+    }
+
+    #[test]
+    fn collapse_empty_sections_drops_blank_keeps_filled() {
+        let text = "## A\n\n## B\nbody\n\n## C\n   \n## D\nx";
+        let out = collapse_empty_sections(text);
+        assert!(!out.contains("## A"), "empty heading A survived: {out}");
+        assert!(out.contains("## B\nbody"), "filled heading B dropped: {out}");
+        assert!(!out.contains("## C"), "whitespace-only heading C survived: {out}");
+        assert!(out.contains("## D\nx"), "filled heading D dropped: {out}");
+    }
+
+    #[test]
+    fn cross_wave_pull_pointer_is_a_pull_not_a_dump() {
+        // Wave 1 / spec-less → no pointer (nothing prior to pull).
+        assert!(cross_wave_pull_pointer("", Some(1)).is_empty());
+        assert!(cross_wave_pull_pointer("demo", Some(1)).is_empty());
+        assert!(cross_wave_pull_pointer("demo", None).is_empty());
+        // Wave > 1 with a spec → a one-line pointer to the pull command, NOT the
+        // inlined summaries (those stay in `<spec>/.events`, fetched on demand).
+        let p = cross_wave_pull_pointer("demo-spec", Some(3));
+        assert!(
+            p.contains("mustard-rt run memory cross-wave --spec demo-spec --wave 3"),
+            "pointer must carry the pull command: {p}"
+        );
+        assert!(p.contains("on demand"), "must instruct pull-on-demand: {p}");
+        assert!(p.contains("1..2"), "must name the prior-wave range: {p}");
+    }
+
+    #[test]
+    fn guards_prompt_lang_carries_locale_tone_and_facts() {
+        // The `guards` role drives the Wave-2 enrich step: its block must name
+        // the project locale + tone (from mustard.json) and surface the pending
+        // block's deterministic facts so the agent stays grounded.
+        let dir = tempdir().unwrap();
+        anchor(dir.path());
+        // mustard.json declares a non-default tone — the block must echo it.
+        std::fs::write(
+            dir.path().join("mustard.json"),
+            br#"{"specLang":"pt-BR","tone":"technical"}"#,
+        )
+        .unwrap();
+        // A subproject CLAUDE.md with a pending Guards block carrying facts.
+        let sub = dir.path().join("apps").join("rt");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(
+            sub.join("CLAUDE.md"),
+            "# Rt\n\n## Guards\n\n<!-- mustard:guards pending -->\n\
+             <!-- facts: kind=rust; frameworks=serde, clap -->\n<!-- /mustard:guards -->\n",
+        )
+        .unwrap();
+
+        let block = build_role_block("guards", dir.path(), "apps/rt", "pt-BR");
+        assert!(block.starts_with("ROLE: guards"), "role marker missing: {block}");
+        // Locale + tone from mustard.json are surfaced.
+        assert!(block.contains("pt-BR"), "locale missing: {block}");
+        assert!(block.contains("technical"), "tone missing: {block}");
+        // Grounding facts from the pending block are surfaced.
+        assert!(block.contains("kind=rust"), "kind fact missing: {block}");
+        assert!(block.contains("serde, clap"), "framework facts missing: {block}");
+        // The cap (3-6 lines) is named so the agent stays concise.
+        assert!(block.contains("3-6"), "line cap not stated: {block}");
+
+        // A non-guards role gets its own contract (no longer a bare marker).
+        let backend = build_role_block("backend", dir.path(), "apps/rt", "pt-BR");
+        assert!(backend.starts_with("ROLE: backend"), "role marker missing: {backend}");
+        assert!(backend.contains("apps/rt"), "subproject scope missing: {backend}");
+    }
+
+    #[test]
+    fn guards_prompt_lang_specless_derives_locale_from_mustard_json() {
+        // The `/scan` enrich path runs spec-less: `run` is invoked with no
+        // `--spec`, so there is no spec.md to read `### Lang:` from. The locale
+        // must instead come from `mustard.json#specLang` via the canonical
+        // `ProjectConfig::load(..).i18n()` accessor — the SAME accessor the
+        // guards role already uses for tone — never an ad-hoc parse. This test
+        // pins the spec-less branch's locale source feeding into the guards
+        // block (locale + tone + the grounded 3-6 line instruction).
+        let dir = tempdir().unwrap();
+        anchor(dir.path());
+        std::fs::write(
+            dir.path().join("mustard.json"),
+            br#"{"specLang":"pt-BR","tone":"technical"}"#,
+        )
+        .unwrap();
+        let sub = dir.path().join("apps").join("rt");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(
+            sub.join("CLAUDE.md"),
+            "# Rt\n\n## Guards\n\n<!-- mustard:guards pending -->\n\
+             <!-- facts: kind=rust; frameworks=serde, clap -->\n<!-- /mustard:guards -->\n",
+        )
+        .unwrap();
+
+        // Mirror the spec-less locale derivation in `run`: with `spec == None`
+        // the narrative locale is `ProjectConfig::load(..).i18n().lang`.
+        let spec_lang = mustard_core::ProjectConfig::load(dir.path())
+            .i18n()
+            .lang
+            .as_str()
+            .to_string();
+        assert_eq!(spec_lang, "pt-BR", "spec-less locale must come from mustard.json#specLang");
+
+        // That derived locale flows into the guards block exactly as the spec
+        // path would: locale + tone + the capped, grounded instruction.
+        let block = build_role_block("guards", dir.path(), "apps/rt", &spec_lang);
+        assert!(block.starts_with("ROLE: guards"), "role marker missing: {block}");
+        assert!(block.contains("pt-BR"), "locale missing: {block}");
+        assert!(block.contains("technical"), "tone missing: {block}");
+        assert!(block.contains("kind=rust"), "kind fact missing: {block}");
+        assert!(block.contains("3-6"), "line cap not stated: {block}");
+
+        // A project with no specLang declared falls back to the i18n default
+        // locale (never a panic / parse error on the spec-less path).
+        let bare = tempdir().unwrap();
+        anchor(bare.path()); // anchor writes `{}` mustard.json.
+        let default_lang = mustard_core::ProjectConfig::load(bare.path())
+            .i18n()
+            .lang
+            .as_str()
+            .to_string();
+        assert!(!default_lang.is_empty(), "default locale must be non-empty");
     }
 
     #[test]
@@ -1109,13 +1424,14 @@ mod tests {
         std::fs::write(&cfg, "# P\n## Review Rules\n- skeptical\n## Next\n- x\n").unwrap();
 
         let task_steps = read_task_steps(&spec);
-        let entity_info = String::new();
         let reference_files = build_reference_files(dir.path(), "api", &spec);
         let context_extras = build_context_extras(dir.path(), "review");
         assert!(!reference_files.is_empty(), "reference_files empty");
         assert!(!context_extras.is_empty(), "context_extras empty");
 
         let mut rendered = extract_block(TEMPLATE, "dispatch").expect("dispatch block");
+        // The removed `{entity_info}` / `{recommended_skills}` placeholders are no
+        // longer in the template, so they are not substituted here either.
         let subs: &[(&str, &str)] = &[
             ("{subproject}", "api"),
             ("{guards_summary}", "g"),
@@ -1125,8 +1441,6 @@ mod tests {
             ("{context_md}", ""),
             ("{prior_wave_diff}", ""),
             ("{cross_wave_memory}", ""),
-            ("{recommended_skills}", "karpathy-guidelines"),
-            ("{entity_info}", &entity_info),
             ("{reference_files}", &reference_files),
             ("{context_extras}", &context_extras),
             ("{retry_context}", ""),
@@ -1134,6 +1448,9 @@ mod tests {
         for (k, v) in subs {
             rendered = rendered.replace(k, v);
         }
+        // Mirror run(): collapse the now-empty sections (SHARED LANGUAGE, CROSS-WAVE
+        // MEMORY, PRIOR WAVE DIFF) before the unfilled-placeholder check.
+        let rendered = collapse_empty_sections(&rendered);
         assert!(rendered.contains("widget.rs"), "reference_files not rendered");
         assert!(rendered.contains("Review Rules"), "context_extras not rendered");
         assert!(

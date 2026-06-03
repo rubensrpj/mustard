@@ -1,6 +1,6 @@
 # Agent Prompt Template — Reference
 
-> **The literal template no longer lives here.** It is embedded in the binary at `apps/rt/src/run/agent_prompt_template.md` and rendered by `mustard-rt run agent-prompt-render`. This reference only documents the contract: placeholders, retry modes, and the caching rule. The orchestrator (SKILL `/mustard:spec`) NEVER assembles the prompt by hand.
+> **The literal template no longer lives here.** It is embedded in the binary at `apps/rt/src/commands/agent/agent_prompt_template.md` and rendered by `mustard-rt run agent-prompt-render`. This reference only documents the contract: placeholders, retry modes, and the caching rule. The orchestrator (SKILL `/mustard:spec`) NEVER assembles the prompt by hand.
 
 ## Placeholders (filled by the binary)
 
@@ -9,11 +9,10 @@
 | `{subproject}` | flag `--subproject` | Absolute path or path relative to the repo. |
 | `{spec_lang}` | spec `meta.json#lang` | Defaults to `en` when absent. Affects only the spec narrative — code stays EN. |
 | `{guards_summary}` | `## Guards` section of `{subproject}/CLAUDE.md` | Extracted via regex. |
-| `{context_md}` | `mustard-rt run context-slice` cached at `.claude/.pipeline-states/{spec}.context-md.md` | PREFIX-STABLE — the slice is stable across the whole pipeline, refreshed only on a wave transition. Empty when there is no `CONTEXT.md` (graceful degrade). |
+| `{context_md}` | `mustard-rt run context-slice` cached at `.claude/.pipeline-states/{spec}.context-md.md` | PREFIX-STABLE — the slice is stable across the whole pipeline, refreshed only on a wave transition. Empty when no `CONTEXT.md` domain glossary has been authored (opt-in via `grill-with-docs`) — blank by design, not a failure. |
 | `{reference_files}` | scan-derived neighbour files | 2-3 file references. |
-| `{entity_info}` | (removed) | Always empty — the placeholder remains only for historical compatibility after the entity-registry was removed. The subagent's domain context comes from the spec's project section + its anchors (the underlying repo model now lives in `.claude/grain.model.json`, read via the scan tool). |
-| `{role_block}` | flag `--role` | A `ROLE: {role}` line. Dispatch is always `subagent_type: "general-purpose"` (there are no generated per-project agents); the rendered template carries role/boundary/return inline. |
-| `{recommended_skills}` | (removed) | Always empty — generated skills were removed; no skill block is injected. |
+| `{role_block}` | flag `--role` | The role cue **plus a per-role delivery contract** (what to produce + how to deliver: return text vs. edit, return-cap, read-only vs. write). The `subagent_type` is picked per role by `dispatch-plan` (`recommended_subagent_type`): read-only roles run tool-restricted (`explore`→`Explore`, `review`/`qa`→`mustard-review`, `guards`→`mustard-guards`); writing roles → `general-purpose`. The `## ENTITY` / `## SKILLS` sections (and the dead `{entity_info}` / `{recommended_skills}` placeholders) were removed from the template. |
+| `{task_steps}` (spec-less) | flag `--task-text` | When there is no spec `## Tasks` to read (`/scan` guards, `/task`), `--task-text` fills `## TASK` so the prompt stays self-contained — the orchestrator never hand-appends the task. |
 | `{task_steps}` | `## Tasks` of the current wave (`mustard-rt` internal) | VARIABLE — changes per wave. |
 | `{cross_wave_memory}` | `mustard-rt run memory cross-wave --spec X --wave N` | VARIABLE — empty for wave 1 or single-spec runs. |
 | `{retry_context}` | flag `--mode` + optional `--retry-context-file` | Empty in `first`; filled in `granular`/`fix-loop` (see Retry Modes). |
@@ -32,4 +31,4 @@
 
 ## Prompt Cache Hit (Anthropic API) — why PREFIX-STABLE comes first
 
-The embedded template has `<!-- PREFIX-STABLE -->` and `<!-- VARIABLE -->` markers. The Anthropic API automatically caches the prefix when two prompts share ≥1024 byte-identical tokens at the start, charging 10% on subsequent hits. For the cache to engage, every `{placeholder}` inside PREFIX-STABLE must resolve to values stable across dispatches of the same wave (skill IDs, role, subproject path, the wave's `{context_md}`). Dynamic content (`{task_steps}`, `{cross_wave_memory}`, `{retry_context}`) goes below `<!-- VARIABLE -->`. The Minimal Retry Template is fully VARIABLE (no cacheable prefix). Details in `prefix-order.md` in this same directory.
+The embedded template has `<!-- PREFIX-STABLE -->` and `<!-- VARIABLE -->` markers. The Anthropic API automatically caches the prefix when two prompts share ≥1024 byte-identical tokens at the start, charging 10% on subsequent hits. For the cache to engage, every `{placeholder}` inside PREFIX-STABLE must resolve to values stable across dispatches of the same wave (role, subproject path, the wave's `{context_md}`). Dynamic content (`{task_steps}`, `{cross_wave_memory}`, `{retry_context}`) goes below `<!-- VARIABLE -->`. The Minimal Retry Template is fully VARIABLE (no cacheable prefix). Details in `prefix-order.md` in this same directory.

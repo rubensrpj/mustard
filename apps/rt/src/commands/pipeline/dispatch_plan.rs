@@ -74,6 +74,13 @@ pub struct DispatchItem {
     /// NOT treat this string as the prompt itself.
     #[serde(rename = "prompt_cmd")]
     pub prompt_cmd: String,
+    /// The `subagent_type` the orchestrator must pass to `Task` for this role.
+    /// Read-only roles resolve to tool-restricted agents (`explore` → `Explore`,
+    /// `review`/`qa` → `mustard-review`, `guards` → `mustard-guards`); writing
+    /// roles stay `general-purpose`. Picked by the tool — never by hand. See
+    /// [`crate::commands::agent::agent_prompt_render::recommended_subagent_type`].
+    #[serde(rename = "subagent_type")]
+    pub subagent_type: String,
 }
 
 /// A wave row parsed out of `wave-plan.md` (pre-ordering).
@@ -142,6 +149,10 @@ fn build_plan(
                 depends_on: row.depends_on.clone(),
                 level,
                 prompt_cmd: render_prompt_cmd(spec, row.wave, &row.role, &subproject),
+                subagent_type: crate::commands::agent::agent_prompt_render::recommended_subagent_type(
+                    &row.role,
+                )
+                .to_string(),
             }
         })
         .collect();

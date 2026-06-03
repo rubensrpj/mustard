@@ -168,13 +168,17 @@ pub fn run(opts: CloseOrchestrateOpts) {
     let spec_dir = format!(".claude/spec/{}", opts.spec);
     let (sum_ok, sum_dur, _) = run_subcmd(&["pipeline-summary", "--spec-dir", &spec_dir]);
     gates.push(GateReport {
-        name: "pipeline-summary".to_string(),
+        name: ADVISORY_GATE.to_string(),
         ok: sum_ok,
         duration_ms: sum_dur,
         summary: None,
     });
 
-    let overall_pass = gates.iter().all(|g| g.ok);
+    // `pipeline-summary` is advisory — it only renders the Done/Left/Next
+    // report, so a transient failure (e.g. a concurrent atomic write of
+    // `spec.md` while a sibling gate runs) must never block the close. Only the
+    // real quality gates count toward `overall`.
+    let overall_pass = close_overall(&gates);
 
     // Deterministic chaining: when every gate passes, finalize the spec in
     // process (no LLM judgement, no subprocess) and auto-verify the
@@ -197,6 +201,18 @@ pub fn run(opts: CloseOrchestrateOpts) {
     let body = serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".to_string());
     println!("{body}");
     economy::emit_operation(&context::cwd(), ActorKind::Orchestrator, "close-orchestrate", total as u64, Some(opts.spec.as_str()), json!({ "chained": chained, "verified": verified }));
+}
+
+/// Gate name of the advisory summary step — excluded from the close verdict by
+/// [`close_overall`].
+const ADVISORY_GATE: &str = "pipeline-summary";
+
+/// Derive the close verdict from the gate vector. The advisory [`ADVISORY_GATE`]
+/// (`pipeline-summary`) is excluded: it only renders the Done/Left/Next report,
+/// so a transient failure there must never block the close. Every blocking gate
+/// (verify-pipeline / qa-run / review-spans / docs-stale-check) must pass.
+fn close_overall(gates: &[GateReport]) -> bool {
+    gates.iter().filter(|g| g.name != ADVISORY_GATE).all(|g| g.ok)
 }
 
 /// Finalize the spec in-process and confirm the close landed.
@@ -350,5 +366,26 @@ mod tests {
         ];
         gates.sort();
         assert!(!gates.contains(&"docs-stale-check".to_string()));
+    }
+
+    #[test]
+    fn advisory_summary_failure_does_not_block_close() {
+        // The advisory `pipeline-summary` gate is informational; a failure there
+        // (transient or otherwise) must NOT fail the close when every blocking
+        // gate passed. Regression for the close that failed only because the
+        // summary subprocess exited non-zero once.
+        let gates = vec![
+            GateReport { name: "verify-pipeline".to_string(), ok: true, duration_ms: 1, summary: None },
+            GateReport { name: "qa-run".to_string(), ok: true, duration_ms: 1, summary: Some("pass".to_string()) },
+            GateReport { name: ADVISORY_GATE.to_string(), ok: false, duration_ms: 1, summary: None },
+        ];
+        assert!(close_overall(&gates), "advisory summary failure must not block close");
+
+        // A real blocking-gate failure still fails the close.
+        let blocked = vec![
+            GateReport { name: "verify-pipeline".to_string(), ok: false, duration_ms: 1, summary: None },
+            GateReport { name: ADVISORY_GATE.to_string(), ok: true, duration_ms: 1, summary: None },
+        ];
+        assert!(!close_overall(&blocked), "a failing blocking gate must fail the close");
     }
 }

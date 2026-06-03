@@ -4,18 +4,17 @@
 
 `/task` is spec-less: there is no `wave-plan.md` and no `dispatch-plan`. The render is driven directly by the action (`--role`) and the scope (`--spec` / `--subproject`). Every placeholder fail-opens, so a spec-less invocation is safe — empty slots simply render blank.
 
-## Step 1 — slice guards + patterns (once per scope)
+## Step 1 — slice the subproject CLAUDE.md + glossary (once per scope)
 
-`context-slice` produces the `{context_md}` slice that `agent-prompt-render` injects. It is relevance-filtered and capped (`MUSTARD_GLOSSARY_MAX_LINES`, default 250) — the full guards/patterns files are **never** pasted into the prompt.
+`context-slice` produces the `{context_md}` slice that `agent-prompt-render` injects. It is relevance-filtered and capped (`MUSTARD_GLOSSARY_MAX_LINES`, default 250) — the subproject `CLAUDE.md` (and a `CONTEXT.md` glossary, when one exists) is **never** pasted whole into the prompt. The subproject `## Guards` ride in separately as `{guards_summary}` — they are *not* a `--context` source here.
 
 ```bash
+# If a domain glossary exists for the scope, append: --context {subproject}/CONTEXT.md
 mustard-rt run context-slice --spec {scope} \
-  --context-claude-md {subproject}/CLAUDE.md \
-  --context {subproject}/.claude/commands/guards.md \
-  --context {subproject}/.claude/commands/patterns.md
+  --context-claude-md {subproject}/CLAUDE.md
 ```
 
-The slice is cached at `.claude/.pipeline-states/{scope}.context-md.md`; `agent-prompt-render` reads it back as `{context_md}`. No `CONTEXT.md` / guards files → empty slice → `{context_md}` blank (dispatch never blocks).
+The slice is cached at `.claude/.pipeline-states/{scope}.context-md.md`; `agent-prompt-render` reads it back as `{context_md}`. No `CONTEXT.md` glossary authored → empty slice → `{context_md}` blank (dispatch never blocks). A `--context` path that is named but missing is reported on stderr (caller misconfiguration), distinct from the blank-by-design case.
 
 ## Step 2 — render the dispatch prompt per action
 
@@ -24,7 +23,7 @@ The slice is cached at `.claude/.pipeline-states/{scope}.context-md.md`; `agent-
 | Action | `--role` | `subagent_type` | Render invocation |
 |--------|----------|-----------------|-------------------|
 | `analyze` | `explore` | `Explore` | `mustard-rt run agent-prompt-render --spec {scope} --role explore --subproject {subproject} --mode first` |
-| `review` | `review` | `general-purpose` | `mustard-rt run agent-prompt-render --spec {scope} --role review --subproject {subproject} --mode first` |
+| `review` | `review` | `mustard-review` | `mustard-rt run agent-prompt-render --spec {scope} --role review --subproject {subproject} --mode first` |
 | `docs` | `docs` | `general-purpose` | `mustard-rt run agent-prompt-render --spec {scope} --role docs --subproject {subproject} --mode first` |
 | `audit` | `audit` | `general-purpose` | `mustard-rt run agent-prompt-render --spec {scope} --role audit --subproject {subproject} --mode first` |
 | `refactor` (plan) | `plan` | `Plan` | `mustard-rt run agent-prompt-render --spec {scope} --role plan --subproject {subproject} --mode first` |
@@ -37,7 +36,7 @@ For each rendered prompt:
 
 ```text
 Task({
-  subagent_type: <from table>,   // "{subproject-name}-impl" when that rich agent exists
+  subagent_type: <from table>,   // per role: read-only roles run tool-restricted
   description: `{action}: {scope}`,
   prompt: <stdout of agent-prompt-render, verbatim>
 })
@@ -45,7 +44,9 @@ Task({
 
 No `model` field — dispatched agents inherit the session model (`pipeline-config.md § Model`).
 
-`subagent_type` = `general-purpose` — there are no generated per-project agents; the render carries role/boundary inline.
+Every render also passes `--task-text "<the action's work>"` — `/task` is spec-less, so the action's task rides in via that flag (the renderer folds it into `## TASK`); never hand-append the task after the render.
+
+`subagent_type` is picked per role: `explore`→`Explore`, `review`→`mustard-review` (both read-only — no Edit/Write); writing roles (`audit` / `docs` / `implement`) → `general-purpose`. The render carries the role contract inline.
 
 ## Per-action notes
 
