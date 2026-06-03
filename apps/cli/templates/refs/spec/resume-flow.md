@@ -50,7 +50,7 @@ To dispatch just the current wave, slice with `--wave {currentWave}`. The orches
    - Commit `/mustard:git commit` style with message `feat(wave-{N}/{role}): {summary}`. Fallback: `git add {files} && git commit -m "..."`.
    - Emit wave completion: `mustard-rt run emit-pipeline --kind pipeline.wave.complete --spec {specName} --payload "{\"wave\":{N},\"duration_ms\":{elapsed}}"`. The projection derives `completedWaves` + `currentWave` from these events — no JSON state file.
    - Run `mustard-rt run wave-tree --spec-dir .claude/spec/{specName}` to show progress.
-   - Cache this wave's diff: `git diff HEAD~1 HEAD > .claude/.pipeline-states/{specName}.wave-{N-1}.diff.md`. The next wave's `agent-prompt-render` injects this file; the orchestrator does not pass anything explicitly.
+   - Cache this wave's diff for the next wave: `rtk git diff HEAD~1 HEAD --stat > .claude/spec/{specName}/wave-{N}-{role}/diff.md` — keep the redirect target **relative** (never an absolute `C:\...` path; the bash gate rejects Windows-style redirect targets). The next wave's `agent-prompt-render` injects this file; the orchestrator does not pass anything explicitly.
 3. If `currentWave >= totalWaves` → do **NOT** emit `pipeline.complete`. Re-run `resume-bootstrap` and follow `nextAction` (REVIEW → QA → CLOSE, in that order).
 4. If a wave fails (REJECTED after 2 fix-loops, or BLOCKED) → see Escalation Statuses + `../resume/fix-loop-wave.md`.
 

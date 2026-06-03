@@ -93,10 +93,12 @@ Run in **one parallel batch**:
 Launch **ONE parallel Task agent per dirty submodule** (agents inherit the session model — no model selection). Each agent runs ONE chained Bash command:
 
 ```bash
-cd <SUBMODULE_ABSOLUTE_PATH> && rtk git add $SCOPE_EXPR && rtk git diff --cached --stat && rtk git commit -m "<message>"
+rtk git -C "<SUBMODULE_ABS_PATH>" add $SCOPE_EXPR && rtk git -C "<SUBMODULE_ABS_PATH>" diff --cached --stat && rtk git -C "<SUBMODULE_ABS_PATH>" commit -m "<message>"
 ```
 
 For `staged` scope: skip the `rtk git add` step.
+
+`<SUBMODULE_ABS_PATH>` MUST be **absolute** and is passed via `git -C` (never `cd`), per the "Absolute paths, no cd" rule. `.gitmodules` / `rtk git submodule status` report paths **relative** to the superproject root, so resolve the absolute form first — `<superproject-root>/<relative-submodule-path>`, where `<superproject-root>` = `rtk git rev-parse --show-toplevel`. A bare relative path or `cd <relative>` fails whenever the shell cwd is not the superproject root.
 
 ## Rules Summary
 

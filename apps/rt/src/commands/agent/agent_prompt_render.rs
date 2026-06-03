@@ -690,7 +690,7 @@ fn cross_wave_pull_pointer(spec: &str, wave: Option<u32>) -> String {
     format!(
         "Earlier waves (1..{prev}) of `{spec}` captured per-agent summaries. They are NOT \
          inlined here — pull ONLY what you need, on demand:\n\
-         `mustard-rt run memory cross-wave --spec {spec} --wave {w}`\n\
+         `rtk mustard-rt run memory cross-wave --spec {spec} --wave {w}`\n\
          Skip that call unless your task depends on what an earlier wave did.",
         prev = w - 1
     )
