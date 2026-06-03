@@ -46,8 +46,10 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 /// At most this many memory rows per prior wave land in the rendered block —
-/// keeps the embedded context bounded.
-const MAX_MEMORIES_PER_WAVE: usize = 5;
+/// keeps the embedded context bounded. Raised 5→20: a multi-agent wave emits
+/// one `agent.memory` per agent, so the old cap of 5 dropped most of a wide
+/// wave's context before the next wave could inherit it.
+const MAX_MEMORIES_PER_WAVE: usize = 20;
 
 /// Strip surrounding `[[`/`]]` (and whitespace) from a wikilink token. Returns
 /// `None` when the token does not look like a wikilink.
@@ -231,18 +233,22 @@ pub(crate) fn render(
         }
         let mut block = String::new();
         let _ = writeln!(block, "### [[{name}]]");
+        // Dedup identical summaries within a wave: the explicit `memory agent`
+        // CLI and the automatic PostToolUse(Task) observer can both emit the same
+        // agent's summary, so the same line must not render twice.
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
         for m in mems {
             // Prefer `summary`, fall back to a compact JSON line.
-            if let Some(s) = m.get("summary").and_then(Value::as_str) {
-                if !s.is_empty() {
-                    let _ = writeln!(block, "- {s}");
-                    continue;
-                }
+            let line = m
+                .get("summary")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .unwrap_or_else(|| serde_json::to_string(&m).unwrap_or_default());
+            if line.is_empty() || !seen.insert(line.clone()) {
+                continue;
             }
-            let compact = serde_json::to_string(&m).unwrap_or_default();
-            if !compact.is_empty() {
-                let _ = writeln!(block, "- {compact}");
-            }
+            let _ = writeln!(block, "- {line}");
         }
         sections.push(block);
     }
@@ -460,6 +466,22 @@ mod tests {
             mems[0].get("summary").and_then(Value::as_str),
             Some("bar")
         );
+    }
+
+    #[test]
+    fn render_dedups_identical_summaries_within_a_wave() {
+        // The explicit `memory agent` CLI and the automatic observer can both
+        // emit the SAME agent summary for a wave — the rendered block must show
+        // it once, not twice. A distinct summary still appears.
+        let dir = tempdir().unwrap();
+        let project = dir.path();
+        let cwd = project.to_str().unwrap();
+        route::emit(cwd, &mem_event("foo", 1, "same summary"));
+        route::emit(cwd, &mem_event("foo", 1, "same summary"));
+        route::emit(cwd, &mem_event("foo", 1, "distinct summary"));
+        let md = render(&["wave-1-rt".to_string()], project, "foo");
+        assert_eq!(md.matches("- same summary").count(), 1, "identical summary not deduped: {md}");
+        assert!(md.contains("- distinct summary"), "distinct summary dropped: {md}");
     }
 
     #[test]

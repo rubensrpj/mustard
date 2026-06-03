@@ -70,36 +70,63 @@ fn touch_marker(marker: &Path) {
     let _ = fs::write_atomic(marker, b"");
 }
 
-/// `true` when there is evidence of recent harness activity (a `tool.use` /
-/// Edit / Write fingerprint inside the edit-recency window).
+/// `true` when there is evidence of recent harness activity — a harness event
+/// written inside the edit-recency window.
 ///
-/// We do not maintain a dedicated marker file: the SQLite write-ahead log
-/// (`mustard.db-wal`) is touched on every event append, and the SQLite store
-/// file itself is touched on every checkpoint. Probing the newest of those
-/// gives us a coarse "the harness wrote something recently" signal without
-/// adding a new file the post-edit module would have to maintain. Falls back
-/// to `false` when neither file exists (a brand-new project on first Stop).
+/// Every harness event now appends to a per-spec or per-session
+/// `.events/*.ndjson` file (the SQLite-WAL probe was retired with `mustard.db`).
+/// We take the newest mtime among those files as a coarse "the harness wrote
+/// something recently" signal without maintaining a dedicated marker. Falls back
+/// to `false` when there are no event files (a brand-new project on first Stop).
 fn recent_edit(cwd: &str, now: SystemTime) -> bool {
     let Ok(paths) = ClaudePaths::for_project(Path::new(cwd)) else {
         return false;
     };
-    let harness = paths.harness_dir();
-    let candidates = [
-        harness.join("mustard.db-wal"),
-        harness.join("mustard.db"),
-    ];
-    for c in &candidates {
-        let Ok(modified) = fs::modified(c) else {
+    let Some(modified) = newest_event_write(&paths) else {
+        return false;
+    };
+    match now.duration_since(modified) {
+        Ok(elapsed) => elapsed < Duration::from_secs(EDIT_RECENCY_SECS),
+        // Clock skew → treat as recent (fail closed, like `recently_stopped`).
+        Err(_) => true,
+    }
+}
+
+/// Newest mtime among the harness's NDJSON event files, or `None` when there are
+/// none. Scans the per-spec (`<root>/.claude/spec/*/.events/`) and per-session
+/// (`<root>/.claude/.session/*/.events/`) sinks — the two places `route::emit`
+/// lands events after the SQLite retirement.
+fn newest_event_write(paths: &ClaudePaths) -> Option<SystemTime> {
+    let mut newest: Option<SystemTime> = None;
+    let roots = [paths.spec_dir(), paths.claude_dir().join(".session")];
+    for root in roots {
+        let Ok(dirs) = fs::read_dir(&root) else {
             continue;
         };
-        let Ok(elapsed) = now.duration_since(modified) else {
-            continue;
-        };
-        if elapsed < Duration::from_secs(EDIT_RECENCY_SECS) {
-            return true;
+        for d in dirs {
+            if !d.is_dir {
+                continue;
+            }
+            let events_dir = d.path.join(".events");
+            let Ok(entries) = fs::read_dir(&events_dir) else {
+                continue;
+            };
+            for e in entries {
+                let is_ndjson = Path::new(&e.file_name)
+                    .extension()
+                    .is_some_and(|x| x.eq_ignore_ascii_case("ndjson"));
+                if !is_ndjson {
+                    continue;
+                }
+                if let Ok(m) = fs::modified(&e.path) {
+                    if newest.map_or(true, |n| m > n) {
+                        newest = Some(m);
+                    }
+                }
+            }
         }
     }
-    false
+    newest
 }
 
 /// Build the `interrupted at wave N` summary line for a given wave token.
@@ -206,19 +233,19 @@ mod tests {
         std::fs::create_dir_all(dir.path().join(".claude/.harness")).unwrap();
         SessionStopObserver.observe(&input(), &ctx(project));
         assert!(marker_path(project).exists(), "marker should be touched");
-        // No DB created (no row written).
-        assert!(!dir.path().join(".claude/.harness/mustard.db").exists());
+        // No event files → no recent edit → no interrupted-memory row was written.
+        assert!(!dir.path().join(".claude/memory/agent").exists(), "no memory row");
     }
 
     #[test]
     fn antispam_skips_second_stop_inside_window() {
         let dir = tempdir().unwrap();
         let project = dir.path().to_str().unwrap();
-        std::fs::create_dir_all(dir.path().join(".claude/.harness")).unwrap();
-        // Pre-touch the harness DB so the recent-edit branch fires and the
-        // anti-spam branch on the *second* invocation skips.
-        let edit = dir.path().join(".claude/.harness/mustard.db-wal");
-        fs::write_atomic(&edit, b"").unwrap();
+        // Plant a fresh NDJSON event so the recent-edit probe fires (the SQLite
+        // WAL probe was retired — recency now reads the `.events/*.ndjson` sink).
+        let events = dir.path().join(".claude/.session/s-1/.events");
+        std::fs::create_dir_all(&events).unwrap();
+        fs::write_atomic(&events.join("now.ndjson"), b"{}\n").unwrap();
         SessionStopObserver.observe(&input(), &ctx(project));
         let first_modified = fs::modified(&marker_path(project)).unwrap();
         // Second invocation — must be a no-op (marker mtime unchanged).

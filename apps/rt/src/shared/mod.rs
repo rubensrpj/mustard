@@ -8,9 +8,12 @@
 //!
 //! - [`context`] — run-context resolution (cwd / session-id / current-spec),
 //!   the port of `hook-env.js`'s runtime probing.
-//! - [`events`] — the NDJSON event bus: classification/routing ([`events::route`]),
-//!   the append-only writer ([`events::writer_ndjson`]) and content-addressed
-//!   blob spill ([`events::blob_spill`]).
+//! - [`events`] — the NDJSON event bus: classification/routing ([`events::route`])
+//!   and the append-only writer ([`events::writer_ndjson`]).
+//! - [`proc`] — signal-free, cross-platform process/port primitives (kill by
+//!   port, liveness probe) shared by the collector-spawning hook and the
+//!   collector-stopping `run` command.
 
 pub mod context;
 pub mod events;
+pub mod proc;

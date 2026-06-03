@@ -228,6 +228,49 @@ fn run_agent(input: &Value) {
     if let Ok(text) = serde_json::to_string_pretty(&index) {
         let _ = fs::write_atomic(&index_path, text.as_bytes());
     }
+
+    // Religar a memória cross-wave: além do sink-arquivo legado acima, o resumo
+    // também vira um evento `agent.memory` no stream per-spec `<spec>/.events` —
+    // a MESMA fonte que `memory_cross_wave` (onda N+1) e o dashboard já leem.
+    // Emissor ÚNICO, compartilhado com o observer automático. Fail-open.
+    let cwd = project_dir.to_string_lossy();
+    emit_agent_memory_event(&cwd, &pipeline, wave, &summary, &agent_type, &session8);
+}
+
+/// Emit an `agent.memory` event into the per-spec `<spec>/.events` NDJSON sink —
+/// the single source `memory_cross_wave` (the next wave's prompt) and the
+/// dashboard consume. THE one emit point, shared by the explicit `memory agent`
+/// CLI ([`run_agent`]) and the automatic PostToolUse(Task) observer
+/// (`agent_summary_observer`), so cross-wave memory works whether or not the
+/// orchestrator remembers to call `memory agent`. No-op when `spec`/`summary` is
+/// empty; fail-open (a routing error degrades to a no-op — telemetry is not
+/// load-bearing).
+pub(crate) fn emit_agent_memory_event(
+    cwd: &str,
+    spec: &str,
+    wave: Option<i64>,
+    summary: &str,
+    agent_type: &str,
+    session_id: &str,
+) {
+    if spec.is_empty() || summary.is_empty() {
+        return;
+    }
+    let ev = HarnessEvent {
+        v: SCHEMA_VERSION,
+        ts: now_iso8601(),
+        session_id: session_id.to_string(),
+        wave: wave.and_then(|w| u32::try_from(w).ok()).unwrap_or(0),
+        actor: Actor {
+            kind: ActorKind::Agent,
+            id: Some(agent_type.to_string()),
+            actor_type: None,
+        },
+        event: "agent.memory".to_string(),
+        payload: json!({ "spec": spec, "wave": wave, "summary": summary }),
+        spec: Some(spec.to_string()),
+    };
+    let _ = crate::shared::events::route::emit(cwd, &ev);
 }
 
 /// Emit a `decision` / `lesson` event into the per-spec NDJSON sink.
@@ -1078,6 +1121,32 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(index).unwrap()).unwrap();
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0]["agent_type"], json!("backend"));
+    }
+
+    #[test]
+    fn agent_emits_cross_wave_memory_event() {
+        // AC3: run_agent now ALSO emits an `agent.memory` event into the per-spec
+        // `<spec>/.events` stream, and the cross-wave reader (wave N+1) finds it by
+        // (spec, wave). Before this the wire was cut — the reader filtered an event
+        // type no producer emitted, so prior-wave memory was always empty.
+        use crate::commands::knowledge::memory_cross_wave::memories_for_spec_wave;
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("mustard.json"), b"{}").unwrap();
+        std::fs::create_dir_all(dir.path().join(".claude")).unwrap();
+        let input = json!({
+            "cwd": dir.path().to_string_lossy(),
+            "agent_type": "backend",
+            "wave": 1,
+            "pipeline": "demo-spec",
+            "summary": "wave 1 delivered the scan-guards subcommands",
+        });
+        run_agent(&input);
+        let mems = memories_for_spec_wave(dir.path(), "demo-spec", 1);
+        assert_eq!(mems.len(), 1, "agent.memory event not emitted to spec .events");
+        assert_eq!(
+            mems[0].get("summary").and_then(Value::as_str),
+            Some("wave 1 delivered the scan-guards subcommands"),
+        );
     }
 
     #[test]

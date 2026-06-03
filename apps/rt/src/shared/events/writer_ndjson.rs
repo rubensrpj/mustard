@@ -18,13 +18,6 @@
 //! line. The file name doubles as the chronological cursor for the dashboard
 //! tailer (`notify-rs` watcher in `src-tauri`).
 //!
-//! ## Blob spill
-//!
-//! Payloads strictly larger than [`blob_spill::SPILL_THRESHOLD_BYTES`] (4 KB)
-//! are spilled to a content-addressed blob under `blobs/{ab}/{sha256}.bin`
-//! and the NDJSON line keeps only the `{ "$blob": "<sha256>", "len": N }`
-//! reference. See [`crate::shared::events::blob_spill`].
-//!
 //! ## Hot-path target
 //!
 //! The benchmark target is **< 50 µs per write** for an inline-sized event
@@ -41,8 +34,8 @@
 //! ## Economy emission (T5.8)
 //!
 //! After every successful write the sink emits a
-//! `pipeline.economy.event.written { duration_ns, bytes_written,
-//! spilled_to_blob }` event into the same NDJSON file, so the dashboard
+//! `pipeline.economy.event.written { duration_ns, bytes_written }` event into
+//! the same NDJSON file, so the dashboard
 //! `/economia` page can prove the new hot path beats the SQLite baseline in
 //! real numbers (~30k ns measured vs ~100k-500k ns).
 //!
@@ -56,7 +49,6 @@
 // everything else → this NDJSON sink). `event_dir` is still the canonical
 // path-resolver used by tests and the dashboard reader contract.
 
-use crate::shared::events::blob_spill::{maybe_spill, BlobRef, SpillOutcome};
 use mustard_core::time::now_iso8601;
 use mustard_core::io::claude_paths::ClaudePaths;
 use mustard_core::io::fs;
@@ -220,7 +212,6 @@ fn write_event_inner(
     if project_is_own_crate(project) {
         return Ok(WriteOutcome {
             bytes_written: 0,
-            spilled_to_blob: false,
             duration_ns: 0,
             path: PathBuf::new(),
         });
@@ -229,15 +220,12 @@ fn write_event_inner(
     fs::create_dir_all(&dir).map_err(std::io::Error::other)?;
     let path = dir.join(writer_filename());
 
-    // Serialize payload first so we can measure its size for spill.
-    let payload_bytes = serde_json::to_vec(payload)?;
-
-    // Spill root is the spec dir (or session dir) — one level above `events/`.
-    let spill_root = dir.parent().unwrap_or(&dir).to_path_buf();
-    let (payload_for_line, spilled) = match maybe_spill(&spill_root, &payload_bytes) {
-        SpillOutcome::Inline => (payload.clone(), None),
-        SpillOutcome::Spilled { reference, .. } => (blob_ref_to_value(&reference), Some(reference)),
-    };
+    // Payload is always embedded inline. The `.blobs/` spill (payloads >4 KB
+    // moved to a content-addressed blob) was a write-only layer — nothing in rt
+    // or the dashboard ever read a blob back, so a spilled payload was silently
+    // unreadable. Events are kept small by design; a large artifact belongs in a
+    // file referenced by path, not spilled here.
+    let payload_for_line = payload.clone();
 
     let ts: String = ts_override
         .filter(|s| !s.is_empty())
@@ -281,7 +269,6 @@ fn write_event_inner(
     let duration_ns = start.elapsed().as_nanos() as u64;
     Ok(WriteOutcome {
         bytes_written,
-        spilled_to_blob: spilled.is_some(),
         duration_ns,
         path,
     })
@@ -293,8 +280,6 @@ fn write_event_inner(
 pub struct WriteOutcome {
     /// Bytes appended to the NDJSON file (including the trailing `\n`).
     pub bytes_written: usize,
-    /// `true` if the payload was content-addressed into a blob (≥ 4 KB).
-    pub spilled_to_blob: bool,
     /// Wall-clock duration of the write, in nanoseconds. The economy event
     /// reports this for the `/economia` baseline-vs-post chart.
     pub duration_ns: u64,
@@ -375,7 +360,6 @@ pub fn write_event_with_ts(
         let economy_payload = json!({
             "duration_ns": outcome.duration_ns,
             "bytes_written": outcome.bytes_written,
-            "spilled_to_blob": outcome.spilled_to_blob,
             "for_event": event_name,
         });
         let _ = write_event_inner(
@@ -386,17 +370,6 @@ pub fn write_event_with_ts(
     }
 
     Some(outcome)
-}
-
-/// Convert a [`BlobRef`] back into the JSON shape that lives on the NDJSON
-/// line. Mirrors [`BlobRef`]'s own serde shape via `to_value` to keep one
-/// source of truth.
-fn blob_ref_to_value(r: &BlobRef) -> Value {
-    serde_json::to_value(r).unwrap_or_else(|_| {
-        // Defensive fallback: the BlobRef's serde shape can't fail in practice;
-        // keep an inline shape so the reader still recognises the reference.
-        json!({ "$blob": r.sha256, "len": r.len })
-    })
 }
 
 
@@ -458,7 +431,10 @@ mod tests {
     }
 
     #[test]
-    fn write_event_spills_large_payload_to_blob() {
+    fn write_event_keeps_large_payload_inline() {
+        // The `.blobs/` spill was removed — a large payload now stays inline on
+        // the NDJSON line (readable by every consumer) instead of being moved to
+        // a blob nobody read.
         let dir = tempdir().unwrap();
         let big = "x".repeat(5_000);
         let payload = json!({"text": big});
@@ -466,16 +442,15 @@ mod tests {
             dir.path(), Some("big-spec"), None, "s-1",
             "tool.use", "tool", None, Some("s-1"), None, None, &payload,
         );
-
-        // First line's payload should now be a blob reference, not the literal.
         let events_dir = event_dir(dir.path(), Some("big-spec"), None, "s-1");
         let first_file = std::fs::read_dir(&events_dir).unwrap().next().unwrap().unwrap().path();
         let body = std::fs::read_to_string(&first_file).unwrap();
         let first: Value = serde_json::from_str(body.lines().next().unwrap()).unwrap();
-        assert!(first["payload"]["$blob"].is_string(), "payload is a blob ref");
-        // The blobs dir must contain the spilled content.
+        assert!(first["payload"]["$blob"].is_null(), "payload must NOT be a blob ref");
+        assert_eq!(first["payload"]["text"].as_str().map(str::len), Some(5_000), "full payload inline");
+        // No `.blobs/` directory is created any more.
         let blob_dir = dir.path().join(".claude").join("spec").join("big-spec").join(".blobs");
-        assert!(blob_dir.exists(), ".blobs/ dir exists");
+        assert!(!blob_dir.exists(), ".blobs/ must not be created");
     }
 
     #[test]

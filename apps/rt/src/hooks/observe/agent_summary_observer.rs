@@ -197,6 +197,24 @@ impl Observer for AgentSummaryObserver {
             &summary,
             details.as_deref(),
         );
+        // Automatic cross-wave memory: when this Task ran AS a wave agent (a spec
+        // AND an active wave both resolve), emit the same `agent.memory` event the
+        // explicit `memory agent` CLI emits — so the next wave inherits this
+        // agent's summary WITHOUT the orchestrator having to remember to call
+        // `memory agent`. Non-wave Tasks (Explore, `/task`) carry no
+        // MUSTARD_ACTIVE_WAVE → resolve to `None` → skipped.
+        if let (Some(spec_slug), Some(wave)) =
+            (spec.as_deref(), crate::shared::context::current_wave())
+        {
+            crate::commands::knowledge::memory::emit_agent_memory_event(
+                &cwd,
+                spec_slug,
+                Some(wave),
+                &summary,
+                role.as_deref().unwrap_or("agent"),
+                session_id.as_deref().unwrap_or(""),
+            );
+        }
         economy::emit(&cwd, ActorKind::Hook, "auto_capture_summary", "pipeline.economy.operation.invoked", None, json!({"operation": "auto_capture_summary.persist", "duration_ms": 0, "tokens_used": 0}));
     }
 }
