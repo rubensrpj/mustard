@@ -673,7 +673,18 @@ fn dashboard_specs(repo_path: String) -> Result<Vec<SpecRow>, String> {
         by_name.insert(row.name.clone(), row);
     }
 
-    let mut rows: Vec<SpecRow> = by_name.into_values().collect();
+    // Top-level specs only. `specs_from_fs` walks wave-plan children and emits
+    // them with `parent` set from the FS nesting (a `wave-N-{role}/` subdir), so
+    // dropping `parent.is_some()` rows removes the wave subdirectories that were
+    // leaking into the page as if they were standalone specs. The 8 real
+    // top-level specs — including epic-children like `payable` whose
+    // meta.json#parent points at a sibling epic — all carry `parent == None`
+    // here (FS nesting, not meta.json), so they are kept. The inline tree pulls
+    // waves from the per-spec `spec_children_tree` command, not from this list.
+    let mut rows: Vec<SpecRow> = by_name
+        .into_values()
+        .filter(|r| r.parent.is_none())
+        .collect();
     // Stable order: children right after their parent, then standalone.
     rows.sort_by(|a, b| {
         let ka = a.parent.as_deref().unwrap_or(&a.name);
@@ -2740,6 +2751,41 @@ mod onda2_tests {
         assert_eq!(m.total_events, 2);
         assert_eq!(m.tokens_total, 1500);
         assert_eq!(m.last_event_at.as_deref(), Some("2026-05-27T09:01:00.000Z"));
+    }
+
+    #[test]
+    fn dashboard_specs_returns_parent_but_not_wave_children() {
+        let tmp = TempDir::new().unwrap();
+        let spec_root = tmp.path().join(".claude").join("spec");
+        // A wave-plan parent: has wave-plan.md + a wave-1-x/spec.md child.
+        let parent = spec_root.join("epic");
+        std::fs::create_dir_all(&parent).unwrap();
+        std::fs::write(parent.join("wave-plan.md"), "# epic plan\n").unwrap();
+        let child = parent.join("wave-1-frontend");
+        std::fs::create_dir_all(&child).unwrap();
+        std::fs::write(child.join("spec.md"), "# wave 1\n### Phase: EXECUTE\n").unwrap();
+        // A standalone top-level spec for good measure.
+        let solo = spec_root.join("solo");
+        std::fs::create_dir_all(&solo).unwrap();
+        std::fs::write(solo.join("spec.md"), "# solo\n").unwrap();
+
+        // specs_from_fs still walks the wave child (used elsewhere).
+        let fs_rows = specs_from_fs(tmp.path());
+        assert!(
+            fs_rows.iter().any(|r| r.name == "wave-1-frontend"),
+            "specs_from_fs should still surface wave children"
+        );
+
+        // dashboard_specs filters to top-level only.
+        let rows = dashboard_specs(tmp.path().to_string_lossy().into_owned()).unwrap();
+        let names: Vec<&str> = rows.iter().map(|r| r.name.as_str()).collect();
+        assert!(names.contains(&"epic"), "parent spec must be kept");
+        assert!(names.contains(&"solo"), "standalone spec must be kept");
+        assert!(
+            !names.contains(&"wave-1-frontend"),
+            "wave subdirectory must be dropped"
+        );
+        assert!(rows.iter().all(|r| r.parent.is_none()));
     }
 
     #[test]

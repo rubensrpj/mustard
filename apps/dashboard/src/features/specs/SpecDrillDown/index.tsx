@@ -1,8 +1,11 @@
 import { useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { useSpecWaves } from "@/hooks/useSpecWaves";
 import { useSpecQuality } from "@/hooks/useSpecQuality";
 import { useSpecChildren } from "@/hooks/useSpecChildren";
+import { fetchSpecMarkdown } from "@/lib/dashboard";
+import { Markdown } from "@/components/page";
 import { SpecWavesTab } from "../SpecWavesTab";
 import { SpecQualityTab } from "../SpecQualityTab";
 import { ExecutionTrace } from "@/features/trace/ExecutionTrace";
@@ -45,7 +48,10 @@ interface SpecDrillDownProps {
 // REMOVED with its internal force-graph implementation. Cross-spec relations
 // are now navigated externally via Obsidian (wikilinks `[[X]]` resolve to
 // `obsidian://open?vault=…&file=…` inside the markdown renderer).
-const TABS = ["Ondas", "Trace", "Qualidade"] as const;
+// "Spec" leads — it is the narrative overview (spec.md) the other tabs drill
+// into. Backed by the long-existing `dashboard_spec_markdown` command +
+// `fetchSpecMarkdown` client, rendered with the shared `Markdown` component.
+const TABS = ["Spec", "Ondas", "Trace", "Qualidade"] as const;
 type Tab = (typeof TABS)[number];
 
 function LoadingRows() {
@@ -76,7 +82,7 @@ export function SpecDrillDown({
   openWave,
   onCloseDrawer,
 }: SpecDrillDownProps) {
-  const [activeTab, setActiveTab] = useState<Tab>("Ondas");
+  const [activeTab, setActiveTab] = useState<Tab>("Spec");
 
   // All queries are always mounted so switching tabs is instant. The
   // sub-specs query also gets consumed by `SpecWavesTab` (same queryKey =
@@ -84,6 +90,14 @@ export function SpecDrillDown({
   const wavesQ = useSpecWaves(repoPath, spec);
   const qualityQ = useSpecQuality(repoPath, spec);
   const childrenQ = useSpecChildren(repoPath, spec);
+  // spec.md narrative — same query key the standalone SpecDetail page uses so
+  // React Query dedupes when both are mounted.
+  const markdownQ = useQuery({
+    queryKey: ["spec-markdown", repoPath, spec],
+    queryFn: () => fetchSpecMarkdown(repoPath as string, spec),
+    enabled: !!repoPath && !!spec,
+    staleTime: 10_000,
+  });
 
   return (
     <Tabs
@@ -98,6 +112,25 @@ export function SpecDrillDown({
           </TabsTrigger>
         ))}
       </TabsList>
+
+      {/* Spec (spec.md narrative) */}
+      <TabsContent value="Spec" className="pt-3">
+        {markdownQ.isLoading ? (
+          <LoadingRows />
+        ) : markdownQ.error ? (
+          <p className="text-[13px] text-muted-foreground py-4 text-center">
+            spec.md indisponível para esta spec.
+          </p>
+        ) : markdownQ.data ? (
+          <div className="max-h-[60vh] overflow-auto pr-1">
+            <Markdown content={markdownQ.data} />
+          </div>
+        ) : (
+          <p className="text-[13px] text-muted-foreground py-4 text-center">
+            spec.md ainda não foi gerado para esta spec.
+          </p>
+        )}
+      </TabsContent>
 
       {/* Ondas */}
       <TabsContent value="Ondas" className="pt-3">

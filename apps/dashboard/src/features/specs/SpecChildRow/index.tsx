@@ -1,5 +1,6 @@
 import { cn } from "@/lib/utils";
 import { StageBullet } from "../StageBullet";
+import { StatusPill } from "../_shared/spec-status";
 import { useT } from "@/lib/i18n";
 import type { Stage, SpecState } from "@/lib/types/specs";
 
@@ -106,6 +107,15 @@ export function SpecChildRow({
       ) : (
         <span className="flex-1" aria-hidden />
       )}
+      {/* Per-row status indicator the detail tabs' columns expect: pass/fail
+          for ACs, completed/in-progress/queued/failed for waves. Sub-specs
+          already carry their lifecycle in the StageBullet, so the pill is
+          skipped for them to keep the row uncluttered. */}
+      {kind !== "sub-spec" && status ? (
+        <span className="shrink-0">
+          <StatusPill status={status} />
+        </span>
+      ) : null}
     </div>
   );
 }
