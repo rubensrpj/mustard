@@ -114,8 +114,9 @@ pub enum SavingsSource {
     /// default-OFF path never made; the Rust cost is ~0.
     ScanStructuralExtract,
     /// Tokens NOT emitted by a model because the deterministic scan generator
-    /// rendered the per-subproject `SKILL.md` + `stack.md` + `guards.md`
-    /// documents in Rust instead of dispatching an LLM to write them. The
+    /// rendered the per-subproject scaffold documents (`SKILL.md`, `stack.md`,
+    /// and the CLAUDE.md `## Guards` section) in Rust instead of dispatching an
+    /// LLM to write them. The
     /// baseline is a chars-per-token (`/4`) proxy over the total bytes of the
     /// generated documents; the Rust cost is ~0.
     ScanSkillRender,

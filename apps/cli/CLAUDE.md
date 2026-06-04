@@ -18,5 +18,3 @@ Pesquise via `mustard-rt run feature` (digest) — não leia o repo direto.
 - No language/framework identifier in `.rs` source — language data lives in `templates/grammars-suggestions.json`; commands come from `detect_commands`.
 - Validate template/skill names (`[A-Za-z0-9_-]`, reject `..`) before FS/network use.
 - No `unwrap`/`expect` outside `#[cfg(test)]`. Keep `main.rs` thin; all logic in the library.
-
-Full DO/DON'T list: `.claude/commands/guards.md`.

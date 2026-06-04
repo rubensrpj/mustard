@@ -12,7 +12,7 @@
 //! 2. fetch PR metadata (`gh pr view --json`) and the unified diff
 //!    (`gh pr diff`), truncating the diff to keep the request bounded;
 //! 3. assemble a review prompt that folds in the project's `CLAUDE.md` rules
-//!    and `commands/guards.md` when present;
+//!    (the `## Guards` section carries the DO/DON'T rules);
 //! 4. POST it to `https://api.anthropic.com/v1/messages`;
 //! 5. print the review; in `--ci` mode, post it as a PR comment and exit
 //!    non-zero when the review flags a `CRITICAL` issue.
@@ -187,15 +187,13 @@ fn build_review_prompt(pr: &Value, diff: &str, cwd: &Path) -> String {
         parts.push(String::new());
     }
 
-    if let Some(rules) = read_capped(&cwd.join("CLAUDE.md"), 2000) {
-        parts.push("## Project Rules".into());
+    // The project's DO/DON'T rules live in the `## Guards` section of `CLAUDE.md`
+    // (the legacy standalone `.claude/commands/guards.md` is no longer generated —
+    // `scan` writes guards into the CLAUDE.md sentinel block). Folding CLAUDE.md
+    // therefore already carries them.
+    if let Some(rules) = read_capped(&cwd.join("CLAUDE.md"), 3000) {
+        parts.push("## Project Rules (incl. `## Guards`)".into());
         parts.push(rules);
-        parts.push(String::new());
-    }
-
-    if let Some(guards) = read_capped(&cwd.join(".claude/commands/guards.md"), 3000) {
-        parts.push("## Guards (DO/DON'T rules)".into());
-        parts.push(guards);
         parts.push(String::new());
     }
 

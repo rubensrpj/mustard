@@ -703,6 +703,58 @@ mod tests {
         templates
     }
 
+    /// Regression guard (2026-06-03): the legacy per-subproject guards file
+    /// `.claude/commands/guards.md` (and its `patterns.md` companion) is
+    /// OBSOLETE — `scan` now writes guards into the CLAUDE.md `## Guards`
+    /// sentinel block, and no generator emits a standalone `guards.md`. No
+    /// shipped template may point an agent at those non-existent paths: doing so
+    /// makes every scanned project emit a "File does not exist" read error
+    /// during REVIEW. Walks the REAL bundled `templates/` payload and fails if
+    /// the obsolete path is reintroduced.
+    #[test]
+    fn templates_never_reference_obsolete_guards_file() {
+        let templates = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates");
+        assert!(
+            templates.is_dir(),
+            "templates payload missing at {}",
+            templates.display()
+        );
+
+        const FORBIDDEN: [&str; 2] = ["commands/guards.md", "commands/patterns.md"];
+        let mut offenders: Vec<String> = Vec::new();
+
+        // Iterative directory walk — no external crate.
+        let mut stack = vec![templates.clone()];
+        while let Some(dir) = stack.pop() {
+            let Ok(entries) = fs::read_dir(&dir) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                let Ok(bytes) = fs::read(&path) else {
+                    continue;
+                };
+                let text = String::from_utf8_lossy(&bytes);
+                for needle in FORBIDDEN {
+                    if text.contains(needle) {
+                        offenders.push(format!("{} → {needle}", path.display()));
+                    }
+                }
+            }
+        }
+
+        assert!(
+            offenders.is_empty(),
+            "templates must not reference the obsolete standalone guards file \
+             (guards now live in the CLAUDE.md `## Guards` section):\n{}",
+            offenders.join("\n")
+        );
+    }
+
     #[test]
     fn timestamp_slug_has_expected_shape() {
         let slug = mustard_core::time::filename_safe_now();

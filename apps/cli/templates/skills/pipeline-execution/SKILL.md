@@ -90,11 +90,11 @@ For each item, run its `prompt_cmd` (a ready `mustard-rt run agent-prompt-render
 - Any failure → retry (max 2/agent), then STOP + replan
 
 **6. Review (MANDATORY — NEVER skip):**
-Dispatch review agent for EACH affected subproject. The review agent reads `{subproject}/CLAUDE.md` + `{subproject}/.claude/commands/guards.md` and runs the full 7-category checklist:
+Dispatch review agent for EACH affected subproject. The review agent reads `{subproject}/CLAUDE.md` — the `## Guards` section carries the subproject's DO/DON'T rules — and runs the full 7-category checklist:
 
 1. **SOLID** — SRP, OCP, LSP, ISP, DIP
 2. **Design System** — tokens, typography, spacing, components, icons, theme
-3. **Patterns** — project conventions from guards.md
+3. **Patterns** — project conventions from the subproject's `## Guards`
 4. **i18n** — all strings localized, all locale files updated
 5. **Integration** — types synced, no orphans, no circular deps
 6. **Build** — compiles/analyzes clean
