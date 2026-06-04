@@ -96,6 +96,12 @@ pub struct SpecWave {
     pub completed_at: Option<String>,
     pub agent_type: Option<String>,
     pub files_changed: i64,
+    /// Short one-line summary of the wave, parsed from the `wave-plan.md`
+    /// `Summary` column. The `project_waves` event projection never reads the
+    /// markdown, so this is filled in by `spec_waves_v2` from disk. Optional +
+    /// serde default keeps older payloads compatible.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -368,8 +374,38 @@ pub(crate) fn spec_card_v2_with_counts(
         .try_into()
         .unwrap_or(u32::MAX);
     let mut card = spec_card_from_view(&view, children_count);
+    // Prefer the meta.json lifecycle status (the project's canonical lifecycle
+    // source) over the event-derived one. The event stream can lag the terminal
+    // transition — a spec whose `meta.json` reads `stage=Close, outcome=Completed`
+    // may have an event log that only reached `closed-followup` (no terminal
+    // `pipeline.status: completed` was emitted). `meta_status_word` honours
+    // stage+outcome+flags via `mustard_core::domain::meta::status_word`. Falls
+    // back to the event-based `status` already on the card when meta.json is
+    // absent/unreadable.
+    if let Some(meta_status) = meta_status_word(&spec_md) {
+        card.status = meta_status;
+    }
     merge_attributed_counts(&mut card, counts.get(spec));
     Ok(Some(card))
+}
+
+/// Derive the lifecycle status word for the spec whose `spec.md` is `spec_md`
+/// from its sidecar `meta.json` — the project's canonical lifecycle source
+/// (`stage` + `outcome` + `flags`). Delegates to
+/// `mustard_core::domain::meta::status_word`, which maps e.g.
+/// `(Close, Completed) → "completed"` and `followup_open → "closed-followup"`.
+///
+/// Returns `None` (so the caller keeps the event-derived status) when the
+/// sidecar is absent/unreadable, OR when `status_word` yields the empty string
+/// (its `_ => ""` arm, i.e. a non-terminal Plan/Active meta with no qualifier):
+/// in that case the event stream is the better signal for the in-flight phase.
+fn meta_status_word(spec_md: &std::path::Path) -> Option<String> {
+    let meta = mustard_core::domain::meta::read_meta_beside(spec_md)?;
+    let word = mustard_core::domain::meta::status_word(&meta);
+    if word.is_empty() {
+        return None;
+    }
+    Some(word.to_string())
 }
 
 /// Merge the attributed per-spec activity counts into a [`SpecCard`] built from
@@ -410,19 +446,321 @@ fn merge_attributed_counts(
 
 /// W8A-2 adapter: build the wave list via `mustard-core` projections.
 /// Empty `Vec` when the spec has no wave events.
+///
+/// Enrichment (dashboard layer): the event projection (`project_waves`) is
+/// event-only and never reads the markdown, so the wave `role`/`summary` are
+/// absent when no `pipeline.task.*` event carries them — the UI shows a bare
+/// "ONDA N". We merge the `role` + `summary` parsed from the spec's
+/// `wave-plan.md` table (and the `wave-N-{role}` dir name as a role fallback)
+/// keyed by wave number, never overwriting a non-empty event-derived role.
 pub fn spec_waves_v2(repo_path: &str, spec: &str) -> Result<Vec<SpecWave>, String> {
     let project = std::path::PathBuf::from(repo_path);
     let events = mustard_core::view::projection::read_workspace_events(&project);
     let waves = mustard_core::view::projection::project_waves(spec, &events);
-    Ok(waves.iter().map(spec_wave_from_view).collect())
+    let meta = wave_plan_meta(&project, spec);
+    Ok(waves
+        .iter()
+        .map(|w| {
+            let mut row = spec_wave_from_view(w);
+            if let Some(info) = meta.get(&row.wave) {
+                if row.role.as_deref().map_or(true, str::is_empty) {
+                    row.role = info.role.clone();
+                }
+                if row.summary.is_none() {
+                    row.summary = info.summary.clone();
+                }
+            }
+            row
+        })
+        .collect())
 }
 
 /// W8A-2 adapter: AC roll-up via `mustard-core` projections.
+///
+/// Enrichment (dashboard layer): `project_quality` reads each AC's `label` from
+/// the `qa.result` event, falling back to the bare id when the event carries no
+/// label (the common case — the QA writer does not embed the criterion text).
+/// That is why the UI shows "AC-1 AC-1". We parse the criterion descriptions
+/// out of the spec's `spec.md` `## Acceptance Criteria` / `## Critérios de
+/// Aceitação` section and override the label when the projection only had the
+/// id. The pass/fail status and command are untouched.
 pub fn spec_quality_v2(repo_path: &str, spec: &str) -> Result<Vec<SpecQualityItem>, String> {
     let project = std::path::PathBuf::from(repo_path);
     let events = mustard_core::view::projection::read_workspace_events(&project);
     let rollup = mustard_core::view::projection::project_quality(spec, &events);
-    Ok(rollup.criteria.iter().map(quality_item_from_view).collect())
+    let descriptions = ac_descriptions(&project, spec);
+    Ok(rollup
+        .criteria
+        .iter()
+        .map(|c| {
+            let mut item = quality_item_from_view(c);
+            // Replace the label only when the projection fell back to the bare
+            // id (`label == id`, surfaced here as `ac_label == Some(ac_id)`):
+            // an event-supplied label always wins.
+            let is_bare_id = item.ac_label.as_deref() == Some(item.ac_id.as_str())
+                || item.ac_label.is_none();
+            if is_bare_id {
+                if let Some(text) = descriptions.get(&item.ac_id) {
+                    item.ac_label = Some(text.clone());
+                }
+            }
+            item
+        })
+        .collect())
+}
+
+/// Parse the spec's `## Acceptance Criteria` / `## Critérios de Aceitação`
+/// section out of `spec.md` into an `id → description` map. Mirrors the rt-side
+/// AC parser (`apps/rt/src/commands/review/qa_run.rs`) but extracts the
+/// **description** (text between the id→desc separator and any inline
+/// `Command:` marker) rather than the command. Duplicated rather than imported
+/// because `mustard-rt` is a binary crate (a workspace dep cycle otherwise).
+///
+/// Fail-open: a missing/unreadable `spec.md` or an absent section yields an
+/// empty map, so the caller keeps the bare-id labels.
+fn ac_descriptions(
+    project: &std::path::Path,
+    spec: &str,
+) -> std::collections::HashMap<String, String> {
+    let mut out = std::collections::HashMap::new();
+    let spec_md = project.join(".claude").join("spec").join(spec).join("spec.md");
+    let Ok(text) = fs::read_to_string(&spec_md) else {
+        return out;
+    };
+    let Some(section) = ac_section_body(&text) else {
+        return out;
+    };
+    for line in section.lines() {
+        if let Some((id, desc)) = parse_ac_description(line) {
+            // First occurrence wins (the canonical block lists each id once).
+            out.entry(id).or_insert(desc);
+        }
+    }
+    out
+}
+
+/// Extract the body of the `## Acceptance Criteria` (EN) / `## Critérios de
+/// Aceitação` (PT) section — every line from the heading (exclusive) up to the
+/// next `## ` heading or EOF. Heading match mirrors `spec_sections::is_heading`
+/// for the `acceptance-criteria` key.
+fn ac_section_body(markdown: &str) -> Option<String> {
+    const HEADINGS: [&str; 2] = ["acceptance criteria", "critérios de aceitação"];
+    let lines: Vec<&str> = markdown.split('\n').collect();
+    let start = lines.iter().position(|l| {
+        let Some(rest) = l.strip_prefix("##") else { return false };
+        let after_ws = rest.trim_start_matches([' ', '\t']);
+        if after_ws.len() == rest.len() {
+            return false; // `##` with no following whitespace is not a heading
+        }
+        let lower = after_ws.to_lowercase();
+        HEADINGS.iter().any(|h| {
+            lower.strip_prefix(h).is_some_and(|tail| {
+                // Word boundary after the heading name.
+                tail.chars()
+                    .next()
+                    .is_none_or(|c| !(c.is_ascii_alphanumeric() || c == '_'))
+            })
+        })
+    })?;
+    let mut end = lines.len();
+    for (i, l) in lines.iter().enumerate().skip(start + 1) {
+        if l.starts_with("## ") {
+            end = i;
+            break;
+        }
+    }
+    Some(lines[start + 1..end].join("\n"))
+}
+
+/// Parse one AC line into `(id, description)`. Recognises the drafter's
+/// canonical `- **AC-1** — desc.` shape and the historical `- [ ] AC-1: desc …`
+/// shape. The description is the text after the id→desc separator, with any
+/// inline `Command:` marker (and everything after it) trimmed off, and any
+/// trailing `**` bold close stripped. Returns `None` for non-AC lines.
+fn parse_ac_description(line: &str) -> Option<(String, String)> {
+    let t = line.trim_start();
+    let rest = t.strip_prefix('-')?.trim_start();
+    // Optional `[ ]` / `[x]` / `[X]` checkbox.
+    let rest = match rest.strip_prefix('[') {
+        Some(after_open) => {
+            let mark = after_open.chars().next()?;
+            if !matches!(mark, ' ' | 'x' | 'X') {
+                return None;
+            }
+            after_open[mark.len_utf8()..].strip_prefix(']')?.trim_start()
+        }
+        None => rest,
+    };
+    // Optional leading bold `**`.
+    let (rest, bold) = match rest.strip_prefix("**") {
+        Some(r) => (r.trim_start(), true),
+        None => (rest, false),
+    };
+    if !rest.to_lowercase().starts_with("ac-") {
+        return None;
+    }
+    let after_ac = &rest[3..];
+    // ID = `[A-Za-z0-9]+(-[A-Za-z0-9]+)*`.
+    let first_end = after_ac
+        .find(|c: char| !c.is_ascii_alphanumeric())
+        .unwrap_or(after_ac.len());
+    if first_end == 0 {
+        return None;
+    }
+    let mut id_end = first_end;
+    loop {
+        let tail = &after_ac[id_end..];
+        if !tail.starts_with('-') {
+            break;
+        }
+        let seg_len = tail[1..]
+            .find(|c: char| !c.is_ascii_alphanumeric())
+            .unwrap_or(tail[1..].len());
+        if seg_len == 0 {
+            break;
+        }
+        id_end += 1 + seg_len;
+    }
+    let id = format!("AC-{}", &after_ac[..id_end]).to_uppercase();
+    let after_id = &after_ac[id_end..];
+    // Strip the id→desc separator (`.`/`:`/`—`/`--`/`-`), handling the bold
+    // shapes where `**` may close before or after the separator.
+    let after_sep: &str = if bold {
+        let stripped = after_id.trim_start();
+        if let Some(r) = strip_ac_separator(stripped) {
+            r.trim_start().strip_prefix("**").unwrap_or(r)
+        } else if let Some(r) = stripped.strip_prefix("**") {
+            strip_ac_separator(r.trim_start())?
+        } else {
+            return None;
+        }
+    } else {
+        strip_ac_separator(after_id.trim_start())?
+    };
+    // Trim any inline `Command:` marker (and the rest of the line) and any
+    // dangling bold close, then normalise whitespace.
+    let mut desc = after_sep;
+    if let Some(idx) = desc.to_lowercase().find("command:") {
+        desc = &desc[..idx];
+    }
+    let desc = desc.trim().trim_end_matches("**").trim();
+    if desc.is_empty() {
+        return None;
+    }
+    Some((id, desc.to_string()))
+}
+
+/// Strip the AC id→description separator from the front of `s`. Accepts `.`,
+/// `:`, the em-dash `—`, `--`, or a single `-`. Mirrors `strip_separator` in
+/// the rt-side qa_run parser.
+fn strip_ac_separator(s: &str) -> Option<&str> {
+    if let Some(rest) = s.strip_prefix('.').or_else(|| s.strip_prefix(':')) {
+        return Some(rest);
+    }
+    if let Some(rest) = s.strip_prefix('—') {
+        return Some(rest);
+    }
+    s.strip_prefix("--").or_else(|| s.strip_prefix('-'))
+}
+
+/// Role + summary for one wave, parsed from `wave-plan.md`.
+struct WavePlanInfo {
+    role: Option<String>,
+    summary: Option<String>,
+}
+
+/// Parse the spec's `wave-plan.md` table into a `wave-number → (role, summary)`
+/// map. The table row shape is `| N | [[wave-N-role]] | role | deps | summary |`
+/// (see `apps/rt/src/commands/wave/wave_scaffold.rs::render_wave_plan`). The
+/// `role` column is column 3 and `summary` is the last column; an escaped `\|`
+/// inside a summary is unescaped. The `wave-N-{role}` dir name is also scanned
+/// as a role fallback for waves whose table row is missing a role.
+///
+/// Fail-open: a missing/unreadable `wave-plan.md` yields an empty map.
+fn wave_plan_meta(
+    project: &std::path::Path,
+    spec: &str,
+) -> std::collections::HashMap<i64, WavePlanInfo> {
+    let mut out: std::collections::HashMap<i64, WavePlanInfo> = std::collections::HashMap::new();
+    let spec_dir = project.join(".claude").join("spec").join(spec);
+
+    // Role fallback from the on-disk `wave-N-{role}/` directory names.
+    if let Ok(rd) = fs::read_dir(&spec_dir) {
+        for entry in rd {
+            if !entry.is_dir {
+                continue;
+            }
+            if let Some((n, role)) = parse_wave_dir_name(&entry.file_name) {
+                out.entry(n).or_insert(WavePlanInfo {
+                    role: Some(role),
+                    summary: None,
+                });
+            }
+        }
+    }
+
+    // Table rows from `wave-plan.md` — authoritative for role + the summary.
+    if let Ok(text) = fs::read_to_string(&spec_dir.join("wave-plan.md")) {
+        for line in text.lines() {
+            let Some((n, role, summary)) = parse_wave_plan_row(line) else {
+                continue;
+            };
+            let info = out.entry(n).or_insert(WavePlanInfo {
+                role: None,
+                summary: None,
+            });
+            if role.is_some() {
+                info.role = role;
+            }
+            if summary.is_some() {
+                info.summary = summary;
+            }
+        }
+    }
+
+    out
+}
+
+/// Parse a `wave-{N}-{role}` directory name into `(N, role)`. Mirrors the
+/// matching logic in `dashboard_spec_waves_planned_run`.
+fn parse_wave_dir_name(name: &str) -> Option<(i64, String)> {
+    let rest = name.strip_prefix("wave-")?;
+    let dash_idx = rest.find('-').filter(|&i| i > 0)?;
+    let (num_str, role_with_dash) = rest.split_at(dash_idx);
+    let role = &role_with_dash[1..];
+    if role.is_empty() {
+        return None;
+    }
+    let n: i64 = num_str.parse().ok()?;
+    Some((n, role.to_string()))
+}
+
+/// Parse one `| N | [[link]] | role | deps | summary |` markdown table row into
+/// `(wave_number, role, summary)`. Returns `None` for the header/separator rows
+/// and any non-data line (a row whose first cell is not a bare integer).
+fn parse_wave_plan_row(line: &str) -> Option<(i64, Option<String>, Option<String>)> {
+    let trimmed = line.trim();
+    if !trimmed.starts_with('|') {
+        return None;
+    }
+    // Split on unescaped `|`. Cells are the pieces between the outer pipes.
+    let cells: Vec<&str> = trimmed.trim_matches('|').split('|').map(str::trim).collect();
+    // Expect at least: wave | spec | role | deps | summary.
+    if cells.len() < 5 {
+        return None;
+    }
+    // Column 0 must be a bare wave number (skips the header `Wave` + the
+    // `---|---` separator row).
+    let n: i64 = cells[0].parse().ok()?;
+    let role = Some(cells[2])
+        .map(str::to_string)
+        .filter(|r| !r.is_empty() && r != "—" && r != "-");
+    let summary = cells
+        .last()
+        .map(|s| s.replace("\\|", "|"))
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty() && s != "—" && s != "-");
+    Some((n, role, summary))
 }
 
 /// W8A-2 adapter: timeline projection via `mustard-core` projections.
@@ -693,6 +1031,9 @@ fn spec_wave_from_view(view: &mustard_core::WaveView) -> SpecWave {
         completed_at: view.completed_at.clone(),
         agent_type: view.agent_type.clone(),
         files_changed: i64::try_from(view.files_changed.len()).unwrap_or(i64::MAX),
+        // Enriched from `wave-plan.md` by `spec_waves_v2` after this mapper runs;
+        // the event projection carries no summary.
+        summary: None,
     }
 }
 

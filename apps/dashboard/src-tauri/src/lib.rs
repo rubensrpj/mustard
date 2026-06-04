@@ -2872,4 +2872,154 @@ mod onda2_tests {
             .expect("alpha must be an active pipeline");
         assert_eq!(alpha.updated_at.as_deref(), Some("2026-05-27T09:31:00.000Z"));
     }
+
+    /// Write a spec's `meta.json` sidecar beside its `spec.md`.
+    fn write_meta_json(dir: &std::path::Path, spec: &str, meta: &mustard_core::Meta) {
+        let spec_dir = dir.join(".claude").join("spec").join(spec);
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        mustard_core::write_meta(&spec_dir.join("meta.json"), meta).unwrap();
+    }
+
+    // ── Fix A: lifecycle status sourced from meta.json ───────────────────────
+    #[test]
+    fn meta_completed_overrides_event_status_to_completed() {
+        // The events only reach `closed-followup` (no terminal `completed`
+        // event), but `meta.json` says (Close, Completed). The card status must
+        // reflect meta → `completed` so the frontend classifies it as Encerradas
+        // (both the group and the filter bucket), not Ativas with a follow-up.
+        let tmp = TempDir::new().unwrap();
+        write_event(
+            tmp.path(),
+            "payable",
+            "events.ndjson",
+            concat!(
+                r#"{"event":"pipeline.status","kind":"pipeline","ts":"2026-05-27T08:00:00.000Z","spec":"payable","payload":{"to":"approved"}}"#, "\n",
+                r#"{"event":"pipeline.status","kind":"pipeline","ts":"2026-05-27T08:01:00.000Z","spec":"payable","payload":{"to":"closed-followup"}}"#, "\n",
+            ),
+        );
+        std::fs::write(
+            tmp.path().join(".claude").join("spec").join("payable").join("spec.md"),
+            "# payable\n",
+        )
+        .unwrap();
+        let mut meta = mustard_core::Meta::new(
+            Some("Close"), Some("Completed"), Some("CLOSE"), None, None, None, None,
+        );
+        meta.is_wave_plan = Some(true);
+        meta.total_waves = Some(2);
+        write_meta_json(tmp.path(), "payable", &meta);
+
+        let card = dashboard_spec_card(
+            tmp.path().to_string_lossy().into_owned(),
+            "payable".to_string(),
+        )
+        .unwrap();
+        assert_eq!(card.status, "completed", "meta.json (Close, Completed) must win over event-derived status");
+
+        // And the active-pipelines list (which mirrors the Ativas taxonomy on
+        // the backend) must drop it as terminal.
+        let actives =
+            dashboard_active_pipelines(tmp.path().to_string_lossy().into_owned()).unwrap();
+        assert!(
+            !actives.iter().any(|p| p.spec_name == "payable"),
+            "a meta-Completed spec must not appear as an active pipeline",
+        );
+    }
+
+    #[test]
+    fn meta_absent_falls_back_to_event_status() {
+        // No meta.json → keep the event-derived status (here `closed-followup`).
+        let tmp = TempDir::new().unwrap();
+        write_event(
+            tmp.path(),
+            "nometa",
+            "events.ndjson",
+            concat!(
+                r#"{"event":"pipeline.status","kind":"pipeline","ts":"2026-05-27T08:01:00.000Z","spec":"nometa","payload":{"to":"closed-followup"}}"#, "\n",
+            ),
+        );
+        std::fs::write(
+            tmp.path().join(".claude").join("spec").join("nometa").join("spec.md"),
+            "# nometa\n",
+        )
+        .unwrap();
+        let card = dashboard_spec_card(
+            tmp.path().to_string_lossy().into_owned(),
+            "nometa".to_string(),
+        )
+        .unwrap();
+        assert_eq!(card.status, "closed-followup", "no meta.json → event status preserved");
+    }
+
+    // ── Fix B: AC list carries the parsed description ────────────────────────
+    #[test]
+    fn quality_ac_label_carries_parsed_spec_description() {
+        let tmp = TempDir::new().unwrap();
+        // qa.result event with NO label → projection falls back to bare id.
+        write_event(
+            tmp.path(),
+            "acme",
+            "events.ndjson",
+            concat!(
+                r#"{"event":"qa.result","kind":"qa","ts":"2026-05-27T09:00:00.000Z","spec":"acme","payload":{"criteria":[{"id":"AC-1","status":"pass"},{"id":"AC-2","status":"fail"}]}}"#, "\n",
+            ),
+        );
+        std::fs::write(
+            tmp.path().join(".claude").join("spec").join("acme").join("spec.md"),
+            "# acme\n\n## Critérios de Aceitação\n\n- **AC-1** — Build passes on Windows.\n  Command: `rtk cargo build`\n- **AC-2** — Lint is clean.\n  Command: `rtk lint`\n",
+        )
+        .unwrap();
+        let items = dashboard_spec_quality(
+            tmp.path().to_string_lossy().into_owned(),
+            "acme".to_string(),
+        )
+        .unwrap();
+        let ac1 = items.iter().find(|i| i.ac_id == "AC-1").expect("AC-1");
+        let ac2 = items.iter().find(|i| i.ac_id == "AC-2").expect("AC-2");
+        assert_eq!(ac1.ac_label.as_deref(), Some("Build passes on Windows."));
+        assert_eq!(ac2.ac_label.as_deref(), Some("Lint is clean."));
+        // Status is not dropped by the enrichment.
+        assert_eq!(ac1.status, "pass");
+        assert_eq!(ac2.status, "fail");
+    }
+
+    // ── Fix C: wave list carries the role (+ summary) ────────────────────────
+    #[test]
+    fn waves_carry_role_and_summary_from_wave_plan() {
+        let tmp = TempDir::new().unwrap();
+        // Dispatch with no `role` in payload → projection role is None, so the
+        // dashboard must enrich it from wave-plan.md / the wave dir name.
+        write_event(
+            tmp.path(),
+            "epic",
+            "events.ndjson",
+            concat!(
+                r#"{"event":"pipeline.task.dispatch","kind":"pipeline","ts":"2026-05-27T09:00:00.000Z","spec":"epic","payload":{"wave":1,"name":"Wave 1"}}"#, "\n",
+                r#"{"event":"pipeline.task.complete","kind":"pipeline","ts":"2026-05-27T09:05:00.000Z","spec":"epic","payload":{"wave":1,"name":"Wave 1"}}"#, "\n",
+            ),
+        );
+        let spec_dir = tmp.path().join(".claude").join("spec").join("epic");
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        std::fs::write(spec_dir.join("spec.md"), "# epic\n").unwrap();
+        // wave-N-{role} dir (role fallback) + wave-plan.md table (role + summary).
+        std::fs::create_dir_all(spec_dir.join("wave-1-impl")).unwrap();
+        std::fs::write(
+            spec_dir.join("wave-plan.md"),
+            "# epic\n\n| Wave | Spec | Role | Depends on | Summary |\n| --- | --- | --- | --- | --- |\n| 1 | [[wave-1-impl]] | impl | — | Implement the backend reader |\n",
+        )
+        .unwrap();
+
+        let waves = dashboard_spec_waves(
+            tmp.path().to_string_lossy().into_owned(),
+            "epic".to_string(),
+        )
+        .unwrap();
+        let w1 = waves.iter().find(|w| w.wave == 1).expect("wave 1");
+        assert_eq!(w1.role.as_deref(), Some("impl"), "role from wave-plan.md");
+        assert_eq!(
+            w1.summary.as_deref(),
+            Some("Implement the backend reader"),
+            "summary from wave-plan.md",
+        );
+    }
 }

@@ -171,6 +171,8 @@ export interface SpecWave {
   completed_at: string | null;
   agent_type: string | null;
   files_changed: number;
+  /** Short one-line summary parsed from `wave-plan.md` (optional). */
+  summary?: string | null;
 }
 
 export interface SpecQualityItem {

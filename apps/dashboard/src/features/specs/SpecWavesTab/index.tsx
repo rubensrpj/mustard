@@ -340,6 +340,15 @@ function WaveLi({
             )}
           </div>
 
+          {wave.summary && (
+            <p
+              className="text-[11px] text-muted-foreground/80 truncate"
+              title={wave.summary}
+            >
+              {wave.summary}
+            </p>
+          )}
+
           <div
             className="flex items-center gap-3 text-[11px] text-muted-foreground flex-wrap tabular-nums"
             style={{ fontVariantNumeric: "tabular-nums" }}
