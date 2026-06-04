@@ -58,6 +58,7 @@ impl Observer for SkillUsageObserver {
             "skill-usage-tracker",
             "skill.invoked",
             Value::Object(payload),
+            input.session_id.as_deref(),
         );
     }
 }

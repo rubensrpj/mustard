@@ -60,7 +60,13 @@ impl Observer for MetricsObserver {
             "phase": Value::Null,
             "target": if target.is_empty() { Value::Null } else { Value::Object(target) },
         });
-        common::emit_event(&project, "metrics-tracker", "tool.use", payload);
+        common::emit_event(
+            &project,
+            "metrics-tracker",
+            "tool.use",
+            payload,
+            input.session_id.as_deref(),
+        );
     }
 }
 
@@ -89,5 +95,45 @@ mod tests {
             ..HookInput::default()
         };
         MetricsObserver.observe(&input, &ctx(Trigger::PostToolUse, project));
+    }
+
+    /// AC-1 regression: a PostToolUse observer receiving `HookInput.session_id`
+    /// must write its event under `.session/<id>/`, not `.session/unknown/`.
+    /// Fails before the chokepoint fix (event was born `"unknown"`), passes
+    /// after. Uses a real id (`"s-x"`) so `route::emit` never falls through to
+    /// the env-based resolution path — this proves the threading, not a leak.
+    #[test]
+    fn session_id_threaded_from_hook_input() {
+        let dir = tempdir().unwrap();
+        let project = dir.path().to_str().unwrap();
+        let input = HookInput {
+            tool_name: Some("Bash".to_string()),
+            tool_input: json!({ "command": "git status" }),
+            hook_event_name: Some("PostToolUse".to_string()),
+            session_id: Some("s-x".to_string()),
+            ..HookInput::default()
+        };
+        MetricsObserver.observe(&input, &ctx(Trigger::PostToolUse, project));
+
+        let session_root = dir.path().join(".claude").join(".session");
+        // The threaded id wins the session bucket; the `unknown` bucket must
+        // never be created.
+        let events_dir = session_root.join("s-x").join(".events");
+        assert!(
+            events_dir.exists(),
+            "event must land under .session/s-x/.events/"
+        );
+        assert!(
+            !session_root.join("unknown").exists(),
+            "no event may fall into the .session/unknown/ bucket"
+        );
+        let mut found = false;
+        for f in std::fs::read_dir(&events_dir).unwrap() {
+            let body = std::fs::read_to_string(f.unwrap().path()).unwrap_or_default();
+            if body.lines().any(|l| l.contains("\"event\":\"tool.use\"")) {
+                found = true;
+            }
+        }
+        assert!(found, "tool.use NDJSON line must live under .session/s-x/");
     }
 }

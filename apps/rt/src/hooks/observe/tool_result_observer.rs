@@ -265,7 +265,9 @@ fn build_payload(tool: &str, input: &HookInput) -> Option<ToolResultPayload> {
 
 /// Emit one `tool.result` event, best-effort. Routes through
 /// [`crate::shared::events::route::emit`] (NDJSON sink) — fail-open, no SQLite.
-fn emit_event(project_dir: &str, payload: ToolResultPayload) {
+/// `session_id` is the id the harness threaded onto the `HookInput`; `None`
+/// falls back to `"unknown"` so `route::emit` resolves it via the environment.
+fn emit_event(project_dir: &str, payload: ToolResultPayload, session_id: Option<&str>) {
     let value = match serde_json::to_value(&payload) {
         Ok(v) => v,
         Err(_) => json!({}),
@@ -273,7 +275,10 @@ fn emit_event(project_dir: &str, payload: ToolResultPayload) {
     let harness_event = HarnessEvent {
         v: SCHEMA_VERSION,
         ts: now_iso8601(),
-        session_id: "unknown".to_string(),
+        session_id: session_id
+            .filter(|s| !s.is_empty())
+            .unwrap_or("unknown")
+            .to_string(),
         wave: 0,
         actor: Actor {
             kind: ActorKind::Hook,
@@ -320,7 +325,7 @@ impl Observer for ToolResultObserver {
             ".".to_string()
         };
         if let Some(payload) = build_payload(tool, input) {
-            emit_event(&project, payload);
+            emit_event(&project, payload, input.session_id.as_deref());
         }
     }
 }

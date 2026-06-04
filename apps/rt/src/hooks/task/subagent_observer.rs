@@ -73,7 +73,13 @@ impl Observer for SubagentObserver {
                 if let Some(tu) = &tool_use_id {
                     payload["tool_use_id"] = json!(tu);
                 }
-                common::emit_event(&project, "subagent-tracker", "agent.start", payload);
+                common::emit_event(
+                    &project,
+                    "subagent-tracker",
+                    "agent.start",
+                    payload,
+                    input.session_id.as_deref(),
+                );
                 // W7B: legacy SQLite `run_attribution` UPSERT removed.
                 // Attribution travels inline on each run event (see
                 // `record_task_run` in PostToolUse below).
@@ -93,6 +99,7 @@ impl Observer for SubagentObserver {
                     "subagent-tracker",
                     "agent.stop",
                     json!({ "summary": summary }),
+                    input.session_id.as_deref(),
                 );
                 // Finalise the dispatch as one `pipeline.economy.run` NDJSON event
                 // (W7B). Token counts come from the Anthropic `usage` payload when

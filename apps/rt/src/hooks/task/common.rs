@@ -87,7 +87,7 @@ pub(crate) fn record_task_run(
         extra,
     };
     let (event_name, payload) = economy_writer::run_event(&rec);
-    emit_event(project_dir, "tracker", &event_name, payload);
+    emit_event(project_dir, "tracker", &event_name, payload, session_id);
 }
 
 /// Resolve the project dir for an invocation: the harness `cwd`, else `.`.
@@ -109,17 +109,23 @@ pub(crate) fn project_dir_opt(input: &HookInput) -> Option<String> {
     }
 }
 
-/// Build one harness event from the hook context.
+/// Build one harness event from the hook context. `session_id` is the id the
+/// harness threaded onto the `HookInput`; `None` falls back to `"unknown"` so
+/// `route::emit` resolves it via the environment, exactly as before.
 fn build_harness_event(
     project_dir: &str,
     hook_id: &str,
     event: &str,
     payload: Value,
+    session_id: Option<&str>,
 ) -> HarnessEvent {
     HarnessEvent {
         v: SCHEMA_VERSION,
         ts: now_iso8601(),
-        session_id: "unknown".to_string(),
+        session_id: session_id
+            .filter(|s| !s.is_empty())
+            .unwrap_or("unknown")
+            .to_string(),
         wave: 0,
         actor: Actor {
             kind: ActorKind::Hook,
@@ -138,8 +144,14 @@ fn build_harness_event(
 /// `pipeline.*` lands in SQLite, everything else (the vast majority of
 /// these telemetry events — `tool.use`, `agent.start`, `agent.stop`,
 /// `subagent.*`, etc.) lands in the per-spec NDJSON sink.
-pub(crate) fn emit_event(project_dir: &str, hook_id: &str, event: &str, payload: Value) {
-    let harness_event = build_harness_event(project_dir, hook_id, event, payload);
+pub(crate) fn emit_event(
+    project_dir: &str,
+    hook_id: &str,
+    event: &str,
+    payload: Value,
+    session_id: Option<&str>,
+) {
+    let harness_event = build_harness_event(project_dir, hook_id, event, payload, session_id);
     let _ = crate::shared::events::route::emit(project_dir, &harness_event);
 }
 
