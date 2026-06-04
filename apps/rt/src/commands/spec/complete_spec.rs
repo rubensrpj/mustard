@@ -1,20 +1,20 @@
-//! `mustard-rt run complete-spec` — pipeline close + archival.
+//! `mustard-rt run complete-spec` — single-stage pipeline close to `completed`.
 //!
-//! Two stages:
+//! A spec that closes goes **straight to `completed`** — there is no
+//! intermediate `closed-followup` grace window. Follow-up work is handled by a
+//! separate linked sub-spec (or a future "reopen" action), not a TTL sweep.
 //!
-//! - **followup** (default): snapshot `affectedFiles` from harness events
-//!   (NDJSON) and `git diff`, emit `pipeline.status → closed-followup` +
-//!   `pipeline.complete` events into the per-spec NDJSON sink.
-//! - **archive** (`--archive`): emit the terminal `pipeline.status: completed`
-//!   event for the spec (idempotent).
-//!
-//! `--archive-stale` / `--archive-followups` sweep every `closed-followup`
-//! spec (the former only those older than 24 h). Both query the per-spec
-//! NDJSON logs via `pipeline_state_from_events` rather than reading the
-//! filesystem-state JSON sidecars.
+//! - **complete** (default): snapshot `affectedFiles` from harness events
+//!   (NDJSON) and `git diff`, then emit — all coupled —
+//!   `pipeline.status → completed` + `pipeline.complete { closedAt,
+//!   affectedFiles }` into the per-spec NDJSON sink AND patch the root
+//!   `meta.json` to `Close/Completed`. Idempotent: a second call is a no-op flip
+//!   (skipped when the projection already shows `completed`/`cancelled`).
+//! - **archive** (`--archive`): an idempotent alias of the single complete —
+//!   re-emits `completed` + meta sync, safe to call twice. No filesystem move.
 //!
 //! All I/O is fail-soft. The stdout JSON line stays shape-compatible with the
-//! JS version (the `/close` command parses it).
+//! `/close` command that parses it (the `{ ok, mode, spec, ... }` line).
 //!
 //! W4C migration: every SQLite reader/writer was removed. Events are written
 //! via [`crate::shared::events::writer_ndjson::write_event_with_ts`] and read via
@@ -32,10 +32,6 @@ use serde_json::{json, Value};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-
-/// Time-to-live for `closed-followup` states swept by `--archive-stale` (24 h).
-const FOLLOWUP_TTL_MS: i64 = 24 * 60 * 60 * 1000;
-
 
 /// Run the project VCS binary in `cwd`, returning trimmed stdout or `""` on any
 /// error. The binary is read from `mustard.json#vcs` (default `git`); callers
@@ -168,22 +164,40 @@ fn emit_ndjson(cwd: &Path, spec: &str, event_name: &str, payload: &Value, ts: &s
     );
 }
 
-/// Stage 1 — mark the spec `closed-followup` by emitting two pipeline events
-/// into the per-spec NDJSON sink:
-///   1. `pipeline.status` with `{ from: <current>, to: "closed-followup" }`
-///   2. `pipeline.complete` with `{ closedAt, affectedFiles: [...] }`
-fn mark_followup(cwd: &Path, spec: &str) -> Value {
+/// Terminal complete — mark the spec `completed` by emitting the coupled
+/// close transition into the per-spec NDJSON sink AND syncing the root
+/// `meta.json`, all in one stage:
+///   1. `pipeline.phase: CLOSE` (idempotent)
+///   2. `pipeline.status` with `{ from: <current>, to: "completed" }`
+///   3. `pipeline.complete` with `{ closedAt, affectedFiles: [...] }`
+///   4. `meta.json` → `Close/Completed/CLOSE` (via `patch_meta_complete`)
+///
+/// Idempotent: skips the whole flip when the projection already shows
+/// `completed` or `cancelled` (mirrors the guard the legacy archive stage used),
+/// so a second call — or `--archive` after the auto-finalize — is a no-op. This
+/// guarantees the event projection and the sidecar never diverge: both end on
+/// `completed`.
+fn mark_complete(cwd: &Path, spec: &str) -> Value {
     let affected = collect_affected_files(cwd, spec);
-    let now = mustard_core::time::now_iso8601();
 
-    // Read current projection status so we can record `from`.
+    // Read current projection status so we can record `from` and short-circuit
+    // an already-terminal spec.
     let events = read_events_for_spec(cwd, spec);
     let current_status = crate::commands::event::event_projections::pipeline_state_from_events(&events, spec, None)
         .and_then(|v| v.status);
+    if matches!(current_status.as_deref(), Some("completed" | "cancelled")) {
+        return json!({
+            "ok": true,
+            "mode": "complete",
+            "spec": spec,
+            "affectedFiles": affected.len(),
+        });
+    }
 
+    let now = mustard_core::time::now_iso8601();
     let status_payload = serde_json::to_value(PipelineStatusPayload {
         from: current_status,
-        to: "closed-followup".to_string(),
+        to: "completed".to_string(),
     })
     .unwrap_or(Value::Null);
     let complete_payload = serde_json::to_value(PipelineCompletePayload {
@@ -197,18 +211,29 @@ fn mark_followup(cwd: &Path, spec: &str) -> Value {
     emit_ndjson(cwd, spec, EVENT_PIPELINE_STATUS, &status_payload, &now);
     emit_ndjson(cwd, spec, EVENT_PIPELINE_COMPLETE, &complete_payload, &now);
 
+    // Sync the **root** `meta.json` to `stage=Close, outcome=Completed`. These
+    // events go straight through `writer_ndjson` (not through `emit-pipeline
+    // run`, which is where the sidecar-sync otherwise lives), so without this
+    // call a completed spec would stay stuck at `Plan/Active` in its sidecar
+    // while its event log says it is done. Coupling the meta patch here is what
+    // keeps `status_word(&Meta)` and `status_word(&SpecState)` consistent.
+    // Fail-open: a missing spec dir or write error is a silent no-op.
+    crate::commands::event::emit_pipeline::patch_meta_complete(cwd, spec, &now);
+
     json!({
         "ok": true,
-        "mode": "followup",
+        "mode": "complete",
         "spec": spec,
         "affectedFiles": affected.len(),
     })
 }
 
 
-/// Stage 2 — finalize archival. Idempotent terminal emit; no filesystem move.
+/// `--archive` — idempotent alias of the single complete. Re-runs
+/// [`mark_complete`] (a no-op flip when the spec is already terminal) and drops
+/// any legacy `.pipeline-states/{spec}.json` sidecar. No filesystem move.
 fn archive(cwd: &Path, spec: &str) -> (bool, bool) {
-    emit_completed_status(cwd, spec);
+    let _ = mark_complete(cwd, spec);
     let states_path = ClaudePaths::for_project(cwd)
         .map(|p| p.pipeline_state_file(spec))
         .unwrap_or_else(|_| cwd.join(format!("{spec}.json")));
@@ -217,34 +242,6 @@ fn archive(cwd: &Path, spec: &str) -> (bool, bool) {
         let _ = fs::remove_file(&states_path);
     }
     (true, had_legacy_state)
-}
-
-/// Emit `pipeline.status: completed` so projections see the terminal state.
-/// Idempotent: skips when the projection already shows `completed` or
-/// `cancelled`.
-fn emit_completed_status(cwd: &Path, spec: &str) {
-    let events = read_events_for_spec(cwd, spec);
-    let current_status = crate::commands::event::event_projections::pipeline_state_from_events(&events, spec, None)
-        .and_then(|v| v.status);
-    if matches!(current_status.as_deref(), Some("completed" | "cancelled")) {
-        return;
-    }
-    emit_phase_close(cwd, spec);
-    let now = mustard_core::time::now_iso8601();
-    let payload = serde_json::to_value(PipelineStatusPayload {
-        from: current_status,
-        to: "completed".to_string(),
-    })
-    .unwrap_or(Value::Null);
-    emit_ndjson(cwd, spec, EVENT_PIPELINE_STATUS, &payload, &now);
-
-    // Sync the **root** `meta.json` to `stage=Close, outcome=Completed`. This
-    // path emits the terminal status straight through `writer_ndjson` (it does
-    // not go through `emit-pipeline run`, which is where the sidecar-sync lives),
-    // so without this call a completed spec stays stuck at `Plan/Active` in its
-    // sidecar even though its events log says it is done. Fail-open: a missing
-    // spec dir or write error is a silent no-op.
-    crate::commands::event::emit_pipeline::patch_meta_complete(cwd, spec, &now);
 }
 
 /// Idempotently emit `pipeline.phase: CLOSE` when the spec's latest phase is
@@ -274,102 +271,45 @@ fn emit_phase_close(cwd: &Path, spec: &str) {
     );
 }
 
-/// Distinct spec names known under `.claude/spec/`.
-fn distinct_specs(cwd: &Path) -> Vec<String> {
-    let Ok(paths) = ClaudePaths::for_project(cwd) else {
-        return Vec::new();
-    };
-    let root = paths.spec_dir();
-    let Ok(entries) = std::fs::read_dir(&root) else {
-        return Vec::new();
-    };
-    let mut out = Vec::new();
-    for entry in entries.flatten() {
-        if entry.path().is_dir() {
-            if let Some(n) = entry.file_name().to_str() {
-                out.push(n.to_string());
-            }
-        }
-    }
-    out.sort();
-    out
-}
-
-/// Sweep every `closed-followup` spec, archiving it (TTL-gated when asked).
+/// Terminal close for `spec` (→ `completed` + `pipeline.complete` + meta sync)
+/// as a reusable, non-printing Rust entry point.
 ///
-/// Queries per-spec NDJSON via `pipeline_state_from_events` for every distinct
-/// spec name under `.claude/spec/`.
-fn archive_followups(cwd: &Path, require_ttl: bool) -> (usize, usize) {
-    let specs = distinct_specs(cwd);
-    let (mut scanned, mut archived) = (0usize, 0usize);
-    for spec_name in &specs {
-        let events = read_events_for_spec(cwd, spec_name);
-        let Some(view) = crate::commands::event::event_projections::pipeline_state_from_events(
-            &events,
-            spec_name,
-            None,
-        ) else {
-            continue;
-        };
-        if view.status.as_deref() != Some("closed-followup") {
-            continue;
-        }
-        scanned += 1;
-        if require_ttl {
-            let closed_ms = view.closed_at.as_deref().and_then(mustard_core::time::parse_iso_millis);
-            match closed_ms {
-                Some(c) => {
-                    let now = i64::try_from(mustard_core::time::now_unix_millis() as u128).unwrap_or(i64::MAX);
-                    if now - c < FOLLOWUP_TTL_MS {
-                        continue;
-                    }
-                }
-                None => continue,
-            }
-        }
-        let (moved, had_state) = archive(cwd, spec_name);
-        if moved || had_state {
-            archived += 1;
-        }
-    }
-    (scanned, archived)
-}
-
-/// Stage-1 close for `spec` (closed-followup → `pipeline.complete`) as a
-/// reusable, non-printing Rust entry point.
-///
-/// Mirrors the default `run(...)` path: a fail-open QA pass, the two-event
-/// followup mark via [`mark_followup`], then a fail-open registry rebuild.
-/// Returns the followup JSON value (`{ ok, mode: "followup", spec,
+/// Mirrors the default `run(...)` path: a fail-open QA pass, the coupled
+/// terminal complete via [`mark_complete`], then a fail-open registry rebuild.
+/// Returns the complete JSON value (`{ ok, mode: "complete", spec,
 /// affectedFiles }`) so callers — e.g.
 /// [`crate::commands::pipeline::close_orchestrate`] auto-chaining after every
 /// gate passes — can fold it into their own report without spawning a
 /// subprocess. Deterministic and idempotent (the underlying emits are
-/// idempotent on phase/status).
-pub fn run_followup(cwd: &Path, spec: &str) -> Value {
+/// idempotent on phase/status and short-circuit an already-terminal spec).
+pub fn run_complete(cwd: &Path, spec: &str) -> Value {
     run_qa_fail_open(cwd, spec);
-    let followup_value = mark_followup(cwd, spec);
+    let complete_value = mark_complete(cwd, spec);
     rebuild_one_fail_open(cwd, spec);
-    followup_value
+    complete_value
 }
 
 /// Dispatch `mustard-rt run complete-spec`, writing one JSON line to stdout.
+///
+/// `--archive-stale` / `--archive-followups` are retained as harmless no-ops:
+/// the single-stage close no longer produces `closed-followup` specs, so there
+/// is nothing for the old TTL sweep to find. Each prints
+/// `{ scanned: 0, archived: 0 }` so any caller still passing the flag keeps a
+/// shape-compatible JSON line.
 pub fn run(spec: Option<&str>, archive_flag: bool, archive_stale: bool, archive_followups_flag: bool) {
     let cwd = std::env::current_dir().unwrap_or_else(|_| Path::new(".").to_path_buf());
 
     if archive_stale {
-        let (scanned, archived) = archive_followups(&cwd, true);
         println!(
             "{}",
-            json!({ "ok": true, "mode": "archive-stale", "scanned": scanned, "archived": archived })
+            json!({ "ok": true, "mode": "archive-stale", "scanned": 0, "archived": 0 })
         );
         return;
     }
     if archive_followups_flag {
-        let (scanned, archived) = archive_followups(&cwd, false);
         println!(
             "{}",
-            json!({ "ok": true, "mode": "archive-followups", "scanned": scanned, "archived": archived })
+            json!({ "ok": true, "mode": "archive-followups", "scanned": 0, "archived": 0 })
         );
         return;
     }
@@ -392,8 +332,8 @@ pub fn run(spec: Option<&str>, archive_flag: bool, archive_stale: bool, archive_
         return;
     }
 
-    let followup_value = run_followup(&cwd, spec);
-    println!("{followup_value}");
+    let complete_value = run_complete(&cwd, spec);
+    println!("{complete_value}");
 }
 
 fn rebuild_one_fail_open(cwd: &Path, spec: &str) {
@@ -429,28 +369,29 @@ mod tests {
         assert!(mustard_core::time::parse_iso_millis("garbage").is_none());
     }
 
-    /// The deterministic finalize step (the body of `run_followup`, minus the
+    /// The deterministic finalize step (the body of `run_complete`, minus the
     /// fail-open QA / registry side-effects that resolve against the live cwd):
-    /// `mark_followup` flips the spec to `closed-followup` and emits
+    /// `mark_complete` flips the spec straight to `completed` and emits
     /// `pipeline.complete` + `pipeline.phase: CLOSE` into the per-spec NDJSON.
     /// This is what `close_orchestrate` auto-chains in-process when all gates
     /// pass. Idempotent: a second call leaves the projection on the same status.
     #[test]
-    fn mark_followup_emits_close_and_complete_to_ndjson() {
+    fn mark_complete_emits_close_and_complete_to_ndjson() {
         let dir = tempdir().unwrap();
         let cwd = dir.path();
 
-        let out = mark_followup(cwd, "demo");
+        let out = mark_complete(cwd, "demo");
         assert_eq!(out.get("ok").and_then(Value::as_bool), Some(true));
-        assert_eq!(out.get("mode").and_then(Value::as_str), Some("followup"));
+        assert_eq!(out.get("mode").and_then(Value::as_str), Some("complete"));
 
-        // Projection reflects the closed-followup status.
+        // Projection reflects the terminal `completed` status — no
+        // `closed-followup` intermediate.
         let events = read_events_for_spec(cwd, "demo");
         let view = crate::commands::event::event_projections::pipeline_state_from_events(
             &events, "demo", None,
         )
-        .expect("projection exists after mark_followup");
-        assert_eq!(view.status.as_deref(), Some("closed-followup"));
+        .expect("projection exists after mark_complete");
+        assert_eq!(view.status.as_deref(), Some("completed"));
 
         // The pipeline.complete event landed and is verifiable via the same
         // reusable helper close_orchestrate uses for its auto-verify step.
@@ -467,22 +408,75 @@ mod tests {
             Some("CLOSE"),
         );
 
-        // Idempotency: a second flip keeps the same terminal-ish status.
-        let _ = mark_followup(cwd, "demo");
+        // Idempotency: a second flip keeps the same terminal status.
+        let _ = mark_complete(cwd, "demo");
         let events2 = read_events_for_spec(cwd, "demo");
         let view2 = crate::commands::event::event_projections::pipeline_state_from_events(
             &events2, "demo", None,
         )
         .expect("projection still exists");
-        assert_eq!(view2.status.as_deref(), Some("closed-followup"));
+        assert_eq!(view2.status.as_deref(), Some("completed"));
     }
 
-    /// FRONT 3 (D-lifecycle): `emit_completed_status` emits the terminal event
+    /// No-divergence guarantee: after the auto-finalize, BOTH the event
+    /// projection AND `meta.json` say `completed`. This is the bug the
+    /// single-stage close fixes — the old `closed-followup` mark left the
+    /// projection on `closed-followup` while the (separate) archive stage put
+    /// the sidecar on `Completed`, so the two sources disagreed.
+    #[test]
+    fn mark_complete_keeps_projection_and_meta_consistent() {
+        let dir = tempdir().unwrap();
+        let cwd = dir.path();
+        let spec = "demo-consistent";
+
+        // Seed a spec dir whose meta.json is still mid-pipeline (Execute/Active).
+        let spec_dir = cwd.join(".claude").join("spec").join(spec);
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        std::fs::write(
+            spec_dir.join("meta.json"),
+            r#"{"stage":"Execute","outcome":"Active","phase":"EXECUTE","scope":"full","lang":"pt-BR"}"#,
+        )
+        .unwrap();
+
+        mark_complete(cwd, spec);
+
+        // Event projection → completed.
+        let events = read_events_for_spec(cwd, spec);
+        let view = crate::commands::event::event_projections::pipeline_state_from_events(
+            &events, spec, None,
+        )
+        .expect("projection exists after mark_complete");
+        assert_eq!(view.status.as_deref(), Some("completed"));
+
+        // meta.json sidecar → Close/Completed/CLOSE (same verdict, no divergence).
+        let meta: Value = serde_json::from_str(
+            &std::fs::read_to_string(spec_dir.join("meta.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(meta["stage"], json!("Close"), "{meta}");
+        assert_eq!(meta["outcome"], json!("Completed"), "{meta}");
+        assert_eq!(meta["phase"], json!("CLOSE"), "{meta}");
+        // Other fields preserved.
+        assert_eq!(meta["scope"], json!("full"), "{meta}");
+        assert_eq!(meta["lang"], json!("pt-BR"), "{meta}");
+
+        // The status word derived from the projection and from the meta agree.
+        let meta_outcome = meta["outcome"].as_str().unwrap_or_default();
+        assert_eq!(
+            view.status.as_deref(),
+            Some("completed"),
+            "projection status must equal the meta outcome ({meta_outcome})",
+        );
+        assert_eq!(meta_outcome, "Completed");
+    }
+
+    /// FRONT 3 (D-lifecycle): the terminal complete emits the `completed` event
     /// AND syncs the root `meta.json` to `Close/Completed`. Before the fix the
     /// status flowed straight through `writer_ndjson`, leaving a finished spec
-    /// stuck at its last `Plan/Active` sidecar value.
+    /// stuck at its last `Plan/Active` sidecar value. The meta-sync now lives in
+    /// `mark_complete` (the single close stage).
     #[test]
-    fn emit_completed_status_syncs_root_meta() {
+    fn complete_syncs_root_meta() {
         let dir = tempdir().unwrap();
         let cwd = dir.path();
         let spec = "demo-complete";
@@ -496,14 +490,14 @@ mod tests {
         )
         .unwrap();
 
-        super::emit_completed_status(cwd, spec);
+        super::mark_complete(cwd, spec);
 
         // The terminal status event landed.
         let events = read_events_for_spec(cwd, spec);
         let view = crate::commands::event::event_projections::pipeline_state_from_events(
             &events, spec, None,
         )
-        .expect("projection exists after emit_completed_status");
+        .expect("projection exists after mark_complete");
         assert_eq!(view.status.as_deref(), Some("completed"));
 
         // The ROOT meta.json sidecar is now Close/Completed (the bug fix).

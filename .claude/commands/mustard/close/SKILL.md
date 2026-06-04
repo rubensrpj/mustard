@@ -14,7 +14,7 @@ source: manual
 
 The CLOSE gates run via **`mustard-rt run close-orchestrate --spec {spec}`** (one machine-readable JSON report). It runs each gate — (1) **Build + tests** `verify-pipeline`; (2) **QA** `qa-run` (fail → block; skip → pass); (3) **review-spans** (any red span verdict → block); (4) **Docs audit** `docs-stale-check` (`--skip-docs` for non-architectural specs); (5) **pipeline-summary** (advisory) — and derives `overall`.
 
-**The finalize is automatic. The orchestrator does not decide whether to call `complete-spec`.** When `overall == "pass"`, `close-orchestrate` itself chains the close **in-process** (calls the `complete-spec` finalize directly, no extra command): the spec flips to `closed-followup` and `pipeline.complete` is emitted, then the event is auto-verified. The report carries `"chained": true` and `"verified": true/false`. When `overall == "fail"` it is **report-only** (`"chained": false`, no finalize) — fix the failing gate(s) and re-run; never hand-call `complete-spec` to bypass a red gate. The `emit-pipeline` QA-gate (refuses `pipeline.complete` without `qa.result=pass`) remains the strict safety net.
+**The finalize is automatic. The orchestrator does not decide whether to call `complete-spec`.** When `overall == "pass"`, `close-orchestrate` itself chains the close **in-process** (calls the `complete-spec` finalize directly, no extra command): the spec flips straight to `completed` and `pipeline.complete` is emitted, then the event is auto-verified. The report carries `"chained": true` and `"verified": true/false`. When `overall == "fail"` it is **report-only** (`"chained": false`, no finalize) — fix the failing gate(s) and re-run; never hand-call `complete-spec` to bypass a red gate. The `emit-pipeline` QA-gate (refuses `pipeline.complete` without `qa.result=pass`) remains the strict safety net.
 
 Concerns/Checklist still block: unresolved `BLOCKED` → block; `CONCERN`/`DEFERRED` → surface + proceed; any `- [ ]` left in the Checklist → ABORT + report unmarked items (these are inputs to the gates above).
 
@@ -27,15 +27,11 @@ Concerns/Checklist still block: unresolved `BLOCKED` → block; `CONCERN`/`DEFER
 
 ```bash
 mustard-rt run close-orchestrate --spec {spec}
-# overall == pass → already chained: spec is closed-followup, meta.json stamped Close/Completed/CLOSE, pipeline.complete emitted + verified.
+# overall == pass → already chained: spec is completed, meta.json stamped Close/Completed/CLOSE, pipeline.complete emitted + verified.
 # overall == fail → report-only; fix the failing gate and re-run (nothing was stamped).
 ```
 
-   Only when `overall == pass`, raise the follow-up flag the chain does not set (idempotent):
-
-```bash
-mustard-rt run emit-pipeline --kind pipeline.flag.set --spec {spec} --payload "{\"flag\":\"followup_open\"}"
-```
+   A close lands straight on `completed` — there is no follow-up grace window. Any follow-up work goes into a separate linked sub-spec (`/mustard:tactical-fix`), not a flag on this spec.
 
 5. Knowledge: one `mustard-rt run memory knowledge` per significant pattern; one `mustard-rt run memory decision` per lesson (max 3 each, skip trivial).
 6. Metrics archive: read pipeline-state projection → save to `.claude/metrics/{spec}.json` (omit missing fields).

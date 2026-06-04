@@ -9,9 +9,9 @@
 //! ## Deterministic chaining (no LLM judgement)
 //!
 //! When **every** gate passes, the orchestrator auto-chains the close itself —
-//! it calls [`crate::commands::spec::complete_spec::run_followup`] **directly**
+//! it calls [`crate::commands::spec::complete_spec::run_complete`] **directly**
 //! (module-qualified, in-process — no subprocess), marking the spec
-//! `closed-followup` and emitting `pipeline.complete`. It then auto-verifies
+//! `completed` and emitting `pipeline.complete`. It then auto-verifies
 //! that the `pipeline.complete` event landed in the per-spec NDJSON window via
 //! [`crate::commands::event::verify_emit::verify_event_landed`] and folds the
 //! boolean into the report (`verified`). The LLM no longer decides whether to
@@ -217,16 +217,16 @@ fn close_overall(gates: &[GateReport]) -> bool {
 
 /// Finalize the spec in-process and confirm the close landed.
 ///
-/// Calls [`crate::commands::spec::complete_spec::run_followup`] directly
-/// (module-qualified — no subprocess) to mark `closed-followup` and emit
-/// `pipeline.complete`, then reuses
+/// Calls [`crate::commands::spec::complete_spec::run_complete`] directly
+/// (module-qualified — no subprocess) to mark the spec `completed` and emit
+/// `pipeline.complete` (coupled with the root `meta.json` sync), then reuses
 /// [`crate::commands::event::verify_emit::verify_event_landed`] to confirm the
 /// `pipeline.complete` event landed in the per-spec NDJSON window. Both steps
 /// are deterministic; `complete_spec`'s emits are idempotent, so a re-run after
 /// an already-closed spec is a no-op flip. Returns `(chained, Some(verified))`.
 fn finalize_and_verify(spec: &str) -> (bool, Option<bool>) {
     let cwd = std::env::current_dir().unwrap_or_else(|_| Path::new(".").to_path_buf());
-    let _ = crate::commands::spec::complete_spec::run_followup(&cwd, spec);
+    let _ = crate::commands::spec::complete_spec::run_complete(&cwd, spec);
     let verified = crate::commands::event::verify_emit::verify_event_landed(
         &cwd,
         "pipeline.complete",

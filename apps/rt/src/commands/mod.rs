@@ -202,17 +202,19 @@ pub enum RunCmd {
         #[arg(long = "strip-headers")]
         strip_headers: bool,
     },
-    /// Finalize a pipeline spec (followup mark, archive, or stale sweep).
+    /// Finalize a pipeline spec — single-stage close straight to `completed`.
     CompleteSpec {
         /// Spec name (required unless `--archive-stale`/`--archive-followups`).
         spec: Option<String>,
-        /// Finalize archival: move the spec to `completed/` and drop state.
+        /// Idempotent alias of the single complete: re-emit `completed` + meta
+        /// sync and drop any legacy state file. No filesystem move.
         #[arg(long)]
         archive: bool,
-        /// Archive every `closed-followup` state older than 24 h.
+        /// No-op (retained for compatibility): the single-stage close no longer
+        /// produces `closed-followup` specs, so there is nothing to sweep.
         #[arg(long = "archive-stale")]
         archive_stale: bool,
-        /// Archive every `closed-followup` state regardless of age.
+        /// No-op (retained for compatibility): see `--archive-stale`.
         #[arg(long = "archive-followups")]
         archive_followups: bool,
     },

@@ -301,12 +301,17 @@ pub fn run(opts: EmitPipelineOpts) {
 
     // `pipeline.complete`: the spec is done. Set `outcome = Completed` +
     // `stage = Close` (+ `phase = CLOSE`) in `meta.json` so `active-specs` no
-    // longer lists it. The QA gate above already guaranteed this transition is
-    // legitimate. Fail-open.
+    // longer lists it, AND emit the terminal `pipeline.status: completed` event
+    // so the event projection agrees with the sidecar (no divergence). Without
+    // the status emit a run-face `pipeline.complete` patched meta to Completed
+    // while the event log's last status stayed mid-pipeline (or, for the legacy
+    // close path, `closed-followup`). The QA gate above already guaranteed this
+    // transition is legitimate. Fail-open.
     if kind_str == EVENT_PIPELINE_COMPLETE {
         let cwd = std::env::current_dir()
             .unwrap_or_else(|_| std::path::PathBuf::from(project_dir()));
         patch_meta_complete(&cwd, &spec_name, &ts);
+        emit_completed_status_if_needed(&cwd, &spec_name, &ts, &sid);
     }
 
     // Cleanup: remove the `.pipeline-states/{spec}.json` file when a terminal
@@ -625,8 +630,8 @@ pub(crate) fn patch_meta_for_transition(cwd: &Path, spec: &str, kind: &str, payl
 /// the canonical [`Meta`](mustard_core::domain::meta::Meta) read-modify-write
 /// (atomic), preserving every other field. Fail-open.
 ///
-/// `pub(crate)` so the close flow (`complete_spec::emit_completed_status`) can
-/// re-use the same sidecar-sync after it emits the terminal event directly via
+/// `pub(crate)` so the close flow (`complete_spec::mark_complete`) can re-use
+/// the same sidecar-sync after it emits the terminal events directly via
 /// `writer_ndjson` (that path bypasses `emit-pipeline run`, which is the bug
 /// that left finished specs stuck at `Plan/Active`).
 pub(crate) fn patch_meta_complete(cwd: &Path, spec: &str, ts: &str) {
@@ -644,6 +649,53 @@ pub(crate) fn patch_meta_complete(cwd: &Path, spec: &str, ts: &str) {
             path.display()
         );
     }
+}
+
+/// Emit a terminal `pipeline.status: completed` event for `spec` so the event
+/// projection lands on `completed` alongside the `pipeline.complete` audit
+/// marker (whose payload only carries `closedAt` + `affectedFiles` and never
+/// changes the projected status). Reuses the `ts`/`session_id` of the
+/// triggering `pipeline.complete` so the pair correlates as one transition.
+///
+/// Idempotent — skips the emit when the projection already shows `completed`
+/// or `cancelled` (mirrors `complete_spec::mark_complete`'s short-circuit), so
+/// a second `pipeline.complete` (or the `complete_spec` path, which already
+/// emitted its own `completed`) does not append a duplicate status flip.
+///
+/// Fail-open: a missing/unreadable events dir degrades to "emit" (the
+/// conservative default — record the terminal status), and the route write is
+/// itself best-effort.
+fn emit_completed_status_if_needed(cwd: &Path, spec: &str, ts: &str, session_id: &str) {
+    let events_dir = ClaudePaths::for_project(cwd)
+        .and_then(|p| p.for_spec(spec))
+        .ok()
+        .map(|sp| sp.events_dir());
+    if let Some(dir) = events_dir {
+        let events =
+            mustard_core::view::projection::read_harness_events_from_ndjson_dir(&dir);
+        let current_status =
+            crate::commands::event::event_projections::pipeline_state_from_events(&events, spec, None)
+                .and_then(|v| v.status);
+        if matches!(current_status.as_deref(), Some("completed" | "cancelled")) {
+            return;
+        }
+    }
+
+    let event = HarnessEvent {
+        v: SCHEMA_VERSION,
+        ts: ts.to_string(),
+        session_id: session_id.to_string(),
+        wave: 0,
+        actor: Actor {
+            kind: ActorKind::Orchestrator,
+            id: Some("emit-pipeline".to_string()),
+            actor_type: None,
+        },
+        event: EVENT_PIPELINE_STATUS.to_string(),
+        payload: json!({ "to": "completed" }),
+        spec: Some(spec.to_string()),
+    };
+    let _ = crate::shared::events::route::emit(&cwd.to_string_lossy(), &event);
 }
 
 /// Tactical-fix 2026-05-26: bump parent `meta.json` progress fields on a
@@ -1200,5 +1252,63 @@ mod tests {
         let dir = tempdir().unwrap();
         super::patch_meta_complete(dir.path(), "ghost", "2026-06-01T12:00:00Z");
         assert!(!dir.path().join(".claude").join("spec").join("ghost").exists());
+    }
+
+    /// Helper: project status for `spec` from its per-spec NDJSON window.
+    fn projected_status(project: &Path, spec: &str) -> Option<String> {
+        let events_dir = project.join(".claude").join("spec").join(spec).join(".events");
+        let events =
+            mustard_core::view::projection::read_harness_events_from_ndjson_dir(&events_dir);
+        crate::commands::event::event_projections::pipeline_state_from_events(&events, spec, None)
+            .and_then(|v| v.status)
+    }
+
+    /// Run-face consistency (the `emit_pipeline.rs:306` fix): when
+    /// `pipeline.complete` is handled it ALSO emits `pipeline.status: completed`
+    /// so the event projection agrees with the meta sidecar. Here the spec is
+    /// mid-pipeline (status `implementing`), so the terminal status is emitted
+    /// and the projection ends on `completed`.
+    #[test]
+    fn complete_also_emits_completed_status_when_not_terminal() {
+        let dir = tempdir().unwrap();
+        let project = dir.path();
+        let spec = "demo-runface";
+        // Seed a non-terminal status so the projection starts mid-pipeline.
+        emit_routed(project, EVENT_PIPELINE_STATUS, spec, json!({ "to": "implementing" }));
+        assert_eq!(projected_status(project, spec).as_deref(), Some("implementing"));
+
+        super::emit_completed_status_if_needed(project, spec, "2026-06-04T00:00:00Z", "sid");
+        assert_eq!(
+            projected_status(project, spec).as_deref(),
+            Some("completed"),
+            "run-face pipeline.complete must drive the projection to completed",
+        );
+    }
+
+    /// Idempotent: a spec already projected `completed` does not get a duplicate
+    /// terminal status flip (mirrors the `mark_complete` short-circuit).
+    #[test]
+    fn complete_status_emit_is_idempotent_when_already_completed() {
+        let dir = tempdir().unwrap();
+        let project = dir.path();
+        let spec = "demo-runface-idem";
+        emit_routed(project, EVENT_PIPELINE_STATUS, spec, json!({ "to": "completed" }));
+
+        let before = {
+            let events_dir = project.join(".claude").join("spec").join(spec).join(".events");
+            mustard_core::view::projection::read_harness_events_from_ndjson_dir(&events_dir)
+                .iter()
+                .filter(|e| e.event == EVENT_PIPELINE_STATUS)
+                .count()
+        };
+        super::emit_completed_status_if_needed(project, spec, "2026-06-04T00:00:00Z", "sid");
+        let after = {
+            let events_dir = project.join(".claude").join("spec").join(spec).join(".events");
+            mustard_core::view::projection::read_harness_events_from_ndjson_dir(&events_dir)
+                .iter()
+                .filter(|e| e.event == EVENT_PIPELINE_STATUS)
+                .count()
+        };
+        assert_eq!(before, after, "no duplicate pipeline.status when already completed");
     }
 }

@@ -106,7 +106,7 @@ APPROVED (zero CRITICAL) → CLOSE. REJECTED (any CRITICAL) → fix agent dispat
 
 1. `mustard-rt run scan` (refresh `grain.model.json` if the codebase changed)
 2. Update spec: `Status: completed`, `Phase: CLOSE`. Checklist must already be fully `[x]` from EXECUTE — `close-gate.js` blocks CLOSE if any `[ ]` remains in the Checklist section.
-3. Run `mustard-rt run close-orchestrate --spec {name}`. When `overall == pass` it **auto-chains the finalize in-process** (flips the spec to `closed-followup`, emits + verifies `pipeline.complete`); the LLM does not call `complete-spec` itself. When `overall == fail` it is report-only — fix the failing gate and re-run. (Terminal archival of long-stale follow-ups is a separate hygiene sweep: `complete-spec --archive-stale`; no filesystem move — spec dir stays at `.claude/spec/{name}/`.)
+3. Run `mustard-rt run close-orchestrate --spec {name}`. When `overall == pass` it **auto-chains the finalize in-process** (flips the spec straight to `completed`, emits + verifies `pipeline.complete`, syncs `meta.json` to Close/Completed); the LLM does not call `complete-spec` itself. When `overall == fail` it is report-only — fix the failing gate and re-run. (A close lands straight on `completed` — there is no follow-up grace window; follow-up work goes into a separate linked sub-spec. No filesystem move — spec dir stays at `.claude/spec/{name}/`.)
 4. Output with agent colors: `═══ PIPELINE COMPLETE — {name} | Agents: {n} ok | Files: {c} created, {m} modified ═══`
 
 ### Replan Protocol

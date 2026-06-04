@@ -1,5 +1,5 @@
 //! Integration test: `complete-spec` emits a `qa.result` event via
-//! `qa_run::run_for_spec` before marking the spec as `closed-followup`.
+//! `qa_run::run_for_spec` before marking the spec `completed`.
 //!
 //! Approach: seed a tempdir with a minimal `spec.md` containing one always-
 //! passing AC, invoke `mustard-rt run complete-spec <spec>` as a subprocess
