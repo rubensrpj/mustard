@@ -249,6 +249,23 @@ pub fn bind_session_spec(project_dir_path: &str, session_id: &str, spec: &str) {
     let _ = fs::write_atomic(&marker, spec.as_bytes());
 }
 
+/// Remove the session→spec binding, best-effort.
+///
+/// Called on the terminal close of a spec so events in the gap after the close
+/// no longer inherit the just-finished spec via [`spec_for_session`]. Resolves
+/// the same `active-spec` marker [`bind_session_spec`] writes and deletes it.
+/// A missing marker is a no-op, and any IO error is swallowed — telemetry
+/// teardown must never block the close.
+pub fn unbind_session_spec(project_dir: &str, session_id: &str) {
+    if session_id.is_empty() || session_id == "unknown" {
+        return;
+    }
+    let Some(marker) = session_spec_marker(project_dir, session_id) else {
+        return;
+    };
+    let _ = fs::remove_file(&marker);
+}
+
 /// Compose the `active-spec` marker path:
 /// `<project>/.claude/.session/<session_id>/active-spec`.
 ///
@@ -341,5 +358,28 @@ mod tests {
     fn newest_session_dir_returns_none_on_missing_dir() {
         // Fail-open: a nonexistent `.session/` base degrades to None.
         assert!(newest_session_dir(Path::new("/nonexistent-mustard-session-xyzzy")).is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // session→spec binding lifecycle (bind → resolve → unbind)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn unbind_session_spec_clears_the_binding() {
+        let dir = tempdir().unwrap();
+        let project = dir.path().to_str().unwrap();
+        bind_session_spec(project, "sess-X", "my-spec");
+        assert_eq!(
+            spec_for_session(project, "sess-X").as_deref(),
+            Some("my-spec"),
+            "bind then resolve should round-trip",
+        );
+        unbind_session_spec(project, "sess-X");
+        assert!(
+            spec_for_session(project, "sess-X").is_none(),
+            "unbind should clear the marker",
+        );
+        // A second unbind on a missing marker is a no-op (must not panic).
+        unbind_session_spec(project, "sess-X");
     }
 }

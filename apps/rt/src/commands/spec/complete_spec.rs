@@ -220,6 +220,13 @@ fn mark_complete(cwd: &Path, spec: &str) -> Value {
     // Fail-open: a missing spec dir or write error is a silent no-op.
     crate::commands::event::emit_pipeline::patch_meta_complete(cwd, spec, &now);
 
+    // Drop the session→spec binding now that the spec is terminal: events in
+    // the gap after the close must not inherit this just-finished spec. Only on
+    // the completed close, and only when a real session is resolvable (a
+    // `"unknown"` id is skipped inside `unbind_session_spec`).
+    let sid = session_id();
+    crate::shared::context::unbind_session_spec(&cwd.to_string_lossy(), &sid);
+
     json!({
         "ok": true,
         "mode": "complete",
