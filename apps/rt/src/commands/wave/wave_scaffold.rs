@@ -29,7 +29,7 @@
 //! reports which were created vs skipped.
 
 use mustard_core::io::fs;
-use mustard_core::{Meta, MetaFlags, write_meta};
+use mustard_core::{Meta, MetaFlags, read_meta, write_meta};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::fmt::Write as _;
@@ -330,8 +330,13 @@ pub fn run(spec_dir_arg: Option<&str>, plan_arg: Option<&str>) {
     // Wave 3 of mustard-unification: emit `meta.json` alongside every spec.md
     // we just wrote so consumers can read lifecycle metadata as structured
     // JSON instead of regexing the markdown. Fail-open per file.
-    let total_waves = plan.total_waves.unwrap_or(plan.waves.len() as u32);
-    write_scaffold_meta(
+    // `total_waves` is the count we ACTUALLY scaffold — one wave dir + one
+    // `wave-plan.md` row per `plan.waves` entry. Derive it from `plan.waves.len()`,
+    // NOT the declared `plan.total_waves` (only cross-checked / WARNed above): a
+    // plan that declares a stale total must not poison the sidecar the dashboard
+    // and `status` render the wave count from.
+    let total_waves = plan.waves.len() as u32;
+    write_parent_meta(
         &spec_dir,
         Meta {
             stage: Some("Plan".into()),
@@ -382,13 +387,53 @@ pub fn run(spec_dir_arg: Option<&str>, plan_arg: Option<&str>) {
     );
 }
 
-/// Write `meta.json` beside a scaffolded spec.md, only when one is absent.
-/// Fail-open: a write failure warns on stderr and never panics.
+/// Write a per-wave `meta.json` beside a scaffolded wave `spec.md`, only when
+/// one is absent. Skip-if-absent so a hand/agent edit to a wave's lifecycle
+/// survives a re-scaffold. (The PARENT root is reconciled instead — see
+/// [`write_parent_meta`].) Fail-open: a write failure warns on stderr and never
+/// panics.
 fn write_scaffold_meta(dir: &Path, meta: Meta) {
     let path = dir.join("meta.json");
     if fs::exists(&path) {
         return;
     }
+    let _ = fs::create_dir_all(dir);
+    if let Err(e) = write_meta(&path, &meta) {
+        eprintln!(
+            "[wave-scaffold] WARN: could not write {} ({e})",
+            path.display()
+        );
+    }
+}
+
+/// Write / reconcile the wave-plan PARENT `meta.json` (the wave-plan root).
+///
+/// Unlike the per-wave sidecars ([`write_scaffold_meta`], skip-if-absent), the
+/// parent typically already exists: `spec-draft` creates it at PLAN time with an
+/// *estimated* `total_waves` (the Full floor of ≥1, before the real plan is
+/// known). `wave-scaffold` is the authoritative source of the real wave count,
+/// so it must reconcile `total_waves` + `isWavePlan` onto whatever the pipeline
+/// has advanced the file to — preserving every lifecycle field
+/// (`stage` / `outcome` / `phase` / `scope` / `lang` / `checkpoint` / `flags` /
+/// `raw`). Skipping (the old behaviour, inherited from `write_scaffold_meta`)
+/// left a stale `totalWaves: 1` on multi-wave epics, mis-rendering the
+/// dashboard / `status` wave count.
+///
+/// Fail-open: a write failure warns on stderr and never panics.
+fn write_parent_meta(dir: &Path, fresh: Meta) {
+    let path = dir.join("meta.json");
+    let meta = match read_meta(&path) {
+        // Reconcile ONLY the structural wave-plan fields; the lifecycle the
+        // pipeline owns (and may have advanced past Plan) is preserved as-is.
+        Some(mut existing) => {
+            existing.is_wave_plan = fresh.is_wave_plan;
+            existing.total_waves = fresh.total_waves;
+            existing
+        }
+        // No draft pre-created it (standalone scaffold / migration) → write the
+        // fresh wave-plan root verbatim.
+        None => fresh,
+    };
     let _ = fs::create_dir_all(dir);
     if let Err(e) = write_meta(&path, &meta) {
         eprintln!(
@@ -633,5 +678,94 @@ mod tests {
         let first =
             std::fs::read_to_string(spec_dir.join("wave-1-general").join("spec.md")).unwrap();
         assert_eq!(again, first);
+    }
+
+    /// Regression (Cause 1 — stale draft estimate): `spec-draft` pre-creates the
+    /// parent `meta.json` at PLAN time with an ESTIMATED `total_waves` (the Full
+    /// floor of 1, before the real plan is known). `wave-scaffold` must overwrite
+    /// that estimate with the REAL wave count — NOT skip the file (the old
+    /// behaviour left `totalWaves: 1` on a 4-wave epic, mis-rendering the
+    /// dashboard / `status`). Lifecycle fields the pipeline already advanced
+    /// (stage / outcome / phase / checkpoint / flags) MUST survive the reconcile.
+    #[test]
+    fn reconciles_stale_parent_total_waves_preserving_lifecycle() {
+        let dir = tempdir().unwrap();
+        let spec_dir = dir.path().join("epic-stale");
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        // Simulate a draft-time parent meta whose lifecycle has since advanced to
+        // Execute and picked up a `blocked` qualifier — with the stale estimate.
+        std::fs::write(
+            spec_dir.join("meta.json"),
+            r#"{"stage":"Execute","outcome":"Active","phase":"EXECUTE","scope":"full","lang":"pt-BR","checkpoint":"2026-06-03T00:00:00Z","isWavePlan":true,"totalWaves":1,"flags":["blocked"]}"#,
+        )
+        .unwrap();
+        let plan_path = dir.path().join("plan.json");
+        std::fs::write(
+            &plan_path,
+            serde_json::to_string(&json!({
+                "waves": [
+                    { "n": 1, "role": "backend", "summary": "a", "depends_on": [] },
+                    { "n": 2, "role": "backend", "summary": "b", "depends_on": ["wave-1-backend"] },
+                    { "n": 3, "role": "core", "summary": "c", "depends_on": ["wave-2-backend"] },
+                    { "n": 4, "role": "client", "summary": "d", "depends_on": ["wave-3-core"] }
+                ],
+                "total_waves": 4,
+                "lang": "pt-BR"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        run(
+            Some(spec_dir.to_str().unwrap()),
+            Some(plan_path.to_str().unwrap()),
+        );
+
+        let root = mustard_core::read_meta(&spec_dir.join("meta.json")).unwrap();
+        // The stale estimate is corrected to the real wave count.
+        assert_eq!(root.total_waves, Some(4), "parent totalWaves reconciled to real count");
+        assert_eq!(root.is_wave_plan, Some(true));
+        // Advanced lifecycle + qualifier flag preserved (NOT reset to Plan/Active).
+        assert_eq!(root.stage.as_deref(), Some("Execute"));
+        assert_eq!(root.outcome.as_deref(), Some("Active"));
+        assert_eq!(root.phase.as_deref(), Some("EXECUTE"));
+        assert_eq!(root.checkpoint.as_deref(), Some("2026-06-03T00:00:00Z"));
+        assert!(root.flags.0.blocked, "qualifier flag survives reconciliation");
+    }
+
+    /// Regression (Cause 2 — declared total ignored): a plan that DECLARES
+    /// `total_waves: 1` but carries 4 entries scaffolds 4 table rows + 4 wave
+    /// dirs, so the parent sidecar MUST record 4 (the actual count) — honouring
+    /// the WARN's own stated "using {actual}" policy, never the contradictory
+    /// declared value. Exercises the absent-parent (fresh-write) path.
+    #[test]
+    fn parent_total_waves_follows_actual_entries_not_declared() {
+        let dir = tempdir().unwrap();
+        let spec_dir = dir.path().join("epic-mismatch");
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        let plan_path = dir.path().join("plan.json");
+        std::fs::write(
+            &plan_path,
+            serde_json::to_string(&json!({
+                "waves": [
+                    { "n": 1, "role": "a", "depends_on": [] },
+                    { "n": 2, "role": "b", "depends_on": [] },
+                    { "n": 3, "role": "c", "depends_on": [] },
+                    { "n": 4, "role": "d", "depends_on": [] }
+                ],
+                "total_waves": 1
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        run(
+            Some(spec_dir.to_str().unwrap()),
+            Some(plan_path.to_str().unwrap()),
+        );
+
+        let root = mustard_core::read_meta(&spec_dir.join("meta.json")).unwrap();
+        assert_eq!(root.total_waves, Some(4), "actual entry count wins over declared");
+        assert_eq!(root.is_wave_plan, Some(true));
     }
 }
