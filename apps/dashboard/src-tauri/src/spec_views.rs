@@ -296,11 +296,16 @@ pub struct WorkspaceHealth {
 // family (`spec_action` + `reopen_target_status` + `emit_pipeline_status` +
 // `emit_pipeline_removed` + `sync_spec_status_header`) were reachable only
 // through the deleted SQLite `with_db` gate, which always short-circuited.
-// They are removed here; the corresponding Tauri commands in `lib.rs` resolve
-// to their fail-open empty/error payloads directly. The live status writes the
-// dashboard still performs go through `lib.rs::dashboard_spec_complete` /
-// `_cancel` / `_reactivate`, which call `crate::lib_emit_ndjson`. Rebuilding
-// the spec-event timeline + reopen/close/remove over NDJSON is Onda 2.
+// They are removed here.
+//
+// Onda 2 rebuilt these in `lib.rs` over the NDJSON sink:
+//   * `dashboard_spec_events`   → reshapes `spec_timeline_v2` per spec.
+//   * `dashboard_spec_action`   → reopen/close/remove now emit `pipeline.status`
+//                                 via `lib_emit_pipeline_status` (no longer the
+//                                 "banco de dados indisponível" error fallback).
+//   * `workspace_health`        → honest FS-walk + `hygiene.*` rollup.
+// The live status writes also still go through `dashboard_spec_complete` /
+// `_cancel` / `_reactivate`, which call `crate::lib_emit_ndjson`.
 
 // ===========================================================================
 // Wave 4 adapters (2026-05-20) — `*_v2` family backed by `mustard-core`.
@@ -1278,49 +1283,199 @@ pub struct FeedEvent {
     pub payload_summary: String,
 }
 
-/// `dashboard_token_summary` — Onda 1: the SQLite `events` aggregation is gone.
-/// Token savings are tracked via NDJSON `pipeline.economy.savings.*`; an
-/// NDJSON-backed rollup here is Onda 2. Returns the empty default for now.
+/// `dashboard_token_summary` — Onda 2: total tokens saved + top pipelines by
+/// savings, folded from the NDJSON savings channel. `total_saved` comes from
+/// the core `savings_breakdown` (project scope); the per-spec ranking is folded
+/// directly from `pipeline.economy.savings.*` events grouped by `spec`.
 #[tauri::command]
-pub fn dashboard_token_summary(_project_path: String) -> Result<TokenSummary, String> {
-    Ok(TokenSummary::default())
+pub fn dashboard_token_summary(project_path: String) -> Result<TokenSummary, String> {
+    use mustard_core::domain::economy::scope::ProjectPath as CoreProjectPath;
+    use mustard_core::domain::economy::EconomyScope as CoreScope;
+
+    let root = std::path::PathBuf::from(&project_path);
+    let breakdown = mustard_core::domain::economy::savings_breakdown(
+        &root,
+        CoreScope::Project(CoreProjectPath::new(&root)),
+    )
+    .unwrap_or_default();
+    let total_saved = breakdown.total_tokens_saved;
+
+    // Per-spec savings ranking from the raw savings events (the core breakdown
+    // carries no spec dimension at project scope).
+    let events = crate::telemetry::walk_ndjson_events(&root);
+    let mut by_spec: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+    for v in &events {
+        if !crate::telemetry::event_name_of(v).starts_with("pipeline.economy.savings.") {
+            continue;
+        }
+        let payload = v.get("payload");
+        let tokens = payload
+            .and_then(|p| p.get("tokens_saved"))
+            .and_then(serde_json::Value::as_i64)
+            .unwrap_or(0);
+        let spec = v
+            .get("spec")
+            .or_else(|| payload.and_then(|p| p.get("spec_id")))
+            .and_then(|s| s.as_str())
+            .filter(|s| !s.is_empty())
+            .unwrap_or("unattributed")
+            .to_string();
+        *by_spec.entry(spec).or_insert(0) += tokens;
+    }
+    let mut top_pipelines: Vec<TopPipeline> = by_spec
+        .into_iter()
+        .map(|(spec, saved)| TopPipeline { spec, saved })
+        .collect();
+    top_pipelines.sort_by(|a, b| b.saved.cmp(&a.saved));
+    top_pipelines.truncate(10);
+
+    Ok(TokenSummary {
+        total_saved,
+        top_pipelines,
+    })
 }
 
-/// `dashboard_month_activity` — emit one entry per day of the given month
-/// (1..N) with 0 events. Onda 1: the SQLite per-day aggregation was retired;
-/// the per-day `event_count` / `top_phase` rebuild over NDJSON `pipeline.phase`
-/// events is Onda 2. The zero-count day scaffold matches the prior "missing
-/// DB → scaffold" fallback exactly.
+/// `dashboard_month_activity` — Onda 2: one entry per day of the given month
+/// with the real event count + the day's top pipeline phase, folded from the
+/// complete NDJSON walker. Days with no events keep `event_count: 0` /
+/// `top_phase: None`, so the scaffold shape is preserved exactly.
 #[tauri::command]
 pub fn dashboard_month_activity(
-    _project_path: String,
+    project_path: String,
     year: i32,
     month: u32,
 ) -> Result<Vec<DayActivity>, String> {
     if !(1..=12).contains(&month) {
         return Err(format!("invalid month: {month}"));
     }
+    let root = std::path::PathBuf::from(&project_path);
+    let month_prefix = format!("{year:04}-{month:02}-");
+    let events = crate::telemetry::walk_ndjson_events(&root);
+
+    // date -> (event_count, phase -> count)
+    let mut per_day: std::collections::HashMap<String, (i32, std::collections::HashMap<String, i32>)> =
+        std::collections::HashMap::new();
+    for v in &events {
+        let ts = v.get("ts").and_then(|t| t.as_str()).unwrap_or("");
+        if !ts.starts_with(&month_prefix) || ts.len() < 10 {
+            continue;
+        }
+        let date = ts[..10].to_string();
+        let entry = per_day.entry(date).or_insert((0, std::collections::HashMap::new()));
+        entry.0 += 1;
+        if crate::telemetry::event_name_of(v) == "pipeline.phase" {
+            if let Some(p) = v
+                .get("payload")
+                .and_then(|p| p.get("to").or_else(|| p.get("phase")))
+                .and_then(|x| x.as_str())
+                .filter(|s| !s.is_empty())
+            {
+                *entry.1.entry(p.to_string()).or_insert(0) += 1;
+            }
+        }
+    }
+
     let days_in_month = days_in_month(year, month);
-    let scaffold: Vec<DayActivity> = (1..=days_in_month)
-        .map(|d| DayActivity {
-            date: format!("{:04}-{:02}-{:02}", year, month, d),
-            event_count: 0,
-            top_phase: None,
+    let out: Vec<DayActivity> = (1..=days_in_month)
+        .map(|d| {
+            let date = format!("{year:04}-{month:02}-{d:02}");
+            match per_day.get(&date) {
+                Some((count, phases)) => DayActivity {
+                    date,
+                    event_count: *count,
+                    top_phase: phases
+                        .iter()
+                        .max_by(|a, b| a.1.cmp(b.1).then(b.0.cmp(a.0)))
+                        .map(|(p, _)| p.clone()),
+                },
+                None => DayActivity {
+                    date,
+                    event_count: 0,
+                    top_phase: None,
+                },
+            }
         })
         .collect();
-    Ok(scaffold)
+    Ok(out)
 }
 
-/// `dashboard_events_feed` — Onda 1: the SQLite `events` feed is gone; the
-/// NDJSON-backed chronological feed is Onda 2. Returns an empty list (the prior
-/// "missing DB → empty" fallback). `limit` is validated for shape parity.
+/// `dashboard_events_feed` — Onda 2: chronological cross-spec feed (newest
+/// first) folded from the complete NDJSON walker, in the `FeedEvent` shape.
 #[tauri::command]
 pub fn dashboard_events_feed(
-    _project_path: String,
+    project_path: String,
     limit: u32,
 ) -> Result<Vec<FeedEvent>, String> {
-    let _ = limit.clamp(1, 1000); // defensive cap retained for contract parity
-    Ok(vec![])
+    let cap = limit.clamp(1, 1000) as usize;
+    let root = std::path::PathBuf::from(&project_path);
+    let mut events = crate::telemetry::walk_ndjson_events(&root);
+    events.sort_by(|a, b| {
+        let ta = a.get("ts").and_then(|t| t.as_str()).unwrap_or("");
+        let tb = b.get("ts").and_then(|t| t.as_str()).unwrap_or("");
+        tb.cmp(ta)
+    });
+    let rows: Vec<FeedEvent> = events
+        .iter()
+        .filter(|v| v.get("ts").and_then(|t| t.as_str()).is_some())
+        .take(cap)
+        .enumerate()
+        .map(|(i, v)| {
+            let kind = crate::telemetry::event_name_of(v).to_string();
+            let ts = v.get("ts").and_then(|t| t.as_str()).unwrap_or("").to_string();
+            let payload = v.get("payload");
+            let spec = v
+                .get("spec")
+                .or_else(|| payload.and_then(|p| p.get("spec")))
+                .and_then(|s| s.as_str())
+                .filter(|s| !s.is_empty())
+                .map(str::to_string);
+            let payload_summary = feed_payload_summary(&kind, payload);
+            FeedEvent {
+                id: format!("feed-{i}"),
+                ts,
+                kind,
+                spec,
+                payload_summary,
+            }
+        })
+        .collect();
+    Ok(rows)
+}
+
+/// ≤120-char human summary for a feed event, derived per event family from the
+/// payload. Kept local to `spec_views` (the `lib.rs` `event_summary` covers the
+/// `RecentEvent`-shaped feeds; this mirrors it for the `FeedEvent` shape).
+fn feed_payload_summary(kind: &str, payload: Option<&serde_json::Value>) -> String {
+    let s = match kind {
+        "tool.use" => {
+            let tool = payload
+                .and_then(|p| p.get("tool").or_else(|| p.get("tool_name")))
+                .and_then(|x| x.as_str())
+                .unwrap_or("tool");
+            let target = payload
+                .and_then(|p| p.get("target"))
+                .and_then(|t| t.as_object())
+                .and_then(|o| {
+                    o.get("file_path")
+                        .or_else(|| o.get("file"))
+                        .or_else(|| o.get("command"))
+                        .or_else(|| o.get("description"))
+                })
+                .and_then(|x| x.as_str())
+                .unwrap_or("");
+            if target.is_empty() { tool.to_string() } else { format!("{tool} · {target}") }
+        }
+        "pipeline.phase" => {
+            let to = payload.and_then(|p| p.get("to")).and_then(|x| x.as_str()).unwrap_or("");
+            format!("→ {to}")
+        }
+        "pipeline.status" => {
+            let to = payload.and_then(|p| p.get("to")).and_then(|x| x.as_str()).unwrap_or("");
+            format!("status → {to}")
+        }
+        other => other.to_string(),
+    };
+    s.chars().take(120).collect()
 }
 
 /// Number of days in `month` for the given `year` (Gregorian).

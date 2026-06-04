@@ -54,7 +54,6 @@
 //! SQLite, which is outside this restoration's scope. The doc-comments below
 //! tag each one as a behavioural gap.
 
-use mustard_core::io::events::EventReader;
 use mustard_core::ClaudePaths;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -225,6 +224,45 @@ pub struct Attribution {
     pub tool_use_id: Option<String>,
 }
 
+/// One Claude Code session, aggregated from `.claude/.session/{id}/.events/`.
+///
+/// Mirrors the frontend `SessionRow` (`lib/dashboard.ts`); field names are
+/// `snake_case` so the serde shape matches the TypeScript interface verbatim.
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub struct SessionRow {
+    /// The session directory name (a UUID, or the literal `unknown` bucket).
+    pub id: String,
+    /// Human handle. No slug source exists yet, so the frontend falls back to
+    /// `id`; kept for forward-compat with the schema.
+    pub slug: String,
+    /// Earliest event `ts` seen in the session (ISO-8601).
+    pub started_at: String,
+    /// Latest event `ts` seen (ISO-8601). `None` when the session has no
+    /// timestamped events.
+    pub last_activity_at: Option<String>,
+    /// `spec` of the most-recent event that carried one. `None` when every
+    /// event was spec-less (root-orchestrator turns).
+    pub last_spec: Option<String>,
+    /// Working directory from the `session.start` payload (or any event that
+    /// carried one). `None` when unknown.
+    pub cwd: Option<String>,
+    /// `"open"` when the last activity is within [`SESSION_OPEN_WINDOW_MS`] of
+    /// now, else `"closed"`. There is no session-end event, so recency is the
+    /// only honest liveness signal.
+    pub status: String,
+    /// Number of parseable NDJSON event lines aggregated for this session.
+    pub event_count: u64,
+    /// `true` for the `unknown` attribution-leak bucket (events that landed in
+    /// `.session/unknown/` because their `session_id` couldn't be resolved at
+    /// emit time). Surfaced honestly rather than hidden so the leak stays
+    /// visible; the row is labelled, not dropped.
+    pub is_unknown_bucket: bool,
+}
+
+/// A session counts as `open` when its last activity is no older than this.
+const SESSION_OPEN_WINDOW_MS: i64 = 15 * 60 * 1000;
+
 /// Two-tier attribution lookup against the per-spec NDJSON `.events/*.ndjson`
 /// channels (W5#8).
 #[must_use]
@@ -241,77 +279,119 @@ pub fn lookup_attribution_extra(
 
     let mut tier2_candidate: Option<(i64, Attribution)> = None;
 
+    let mut records: Vec<Value> = Vec::new();
     for spec_dir in spec_dirs.flatten() {
-        let events_dir = spec_dir.path().join(".events");
-        let Ok(files) = std::fs::read_dir(&events_dir) else {
+        // Reads raw `Value` lines — the typed `Event` reader can't be used here
+        // because real span records (and the test fixtures) may omit the
+        // required `payload` field, which makes serde drop the whole line.
+        collect_one_dir(&spec_dir.path().join(".events"), &mut records);
+    }
+
+    for record in &records {
+        // Match on the harness event NAME, not the logical `kind` class. On
+        // disk a span carries `event == "pipeline.telemetry.run"` but
+        // `kind == "pipeline"`; only the OTEL collector sets the two equal.
+        // `event_name` reads `"event"` and falls back to `"kind"` for older
+        // payloads (mirrors core/economy/reader.rs:82).
+        if event_name(record) != "pipeline.telemetry.run" {
             continue;
-        };
-        for ev_file in files.flatten() {
-            let path = ev_file.path();
-            if path.extension().and_then(|s| s.to_str()) != Some("ndjson") {
-                continue;
-            }
-            for event in EventReader::stream(&path) {
-                // OTEL collector writes `event_name == kind`, so the legacy
-                // `event.kind` filter still works for this subset.
-                if event.kind != "pipeline.telemetry.run" {
-                    continue;
-                }
-                let payload = &event.payload;
-                let span_session = payload
-                    .get("session_id")
-                    .and_then(|v| v.as_str())
-                    .or_else(|| payload.get("extra").and_then(|e| e.get("session_id")).and_then(|v| v.as_str()))
-                    .unwrap_or("");
-                if span_session != session_id_filter {
-                    continue;
-                }
-                let extra_tool = payload
-                    .get("extra")
-                    .and_then(|e| e.get("tool_use_id"))
-                    .and_then(|v| v.as_str());
+        }
+        // Real records carry `session_id`/`spec`/`extra` at the RECORD level,
+        // not under `payload`; fall back to `payload` (and `payload.extra`)
+        // for legacy / OTEL span shapes.
+        let span_session = first_str(
+            record,
+            &[&["session_id"], &["extra", "session_id"], &["payload", "session_id"], &["payload", "extra", "session_id"]],
+        )
+        .unwrap_or("");
+        if span_session != session_id_filter {
+            continue;
+        }
+        let extra_tool = first_str(
+            record,
+            &[&["extra", "tool_use_id"], &["tool_use_id"], &["payload", "tool_use_id"], &["payload", "extra", "tool_use_id"]],
+        );
 
-                // Tier 1: exact (session_id, tool_use_id) match.
-                if let (Some(needle), Some(haystack)) = (tool_use_id, extra_tool) {
-                    if needle == haystack {
-                        return Some(extract_attribution(payload, span_session));
-                    }
-                }
-
-                // Tier 2: last span in session strictly before started_at_ms.
-                let span_started = payload
-                    .get("started_at")
-                    .and_then(|v| v.as_i64())
-                    .or_else(|| payload.get("ts").and_then(|v| iso_to_ms(v.as_str().unwrap_or(""))))
-                    .unwrap_or(0);
-                if span_started < started_at_ms {
-                    if tier2_candidate.as_ref().map_or(true, |(prev, _)| span_started > *prev) {
-                        tier2_candidate = Some((span_started, extract_attribution(payload, span_session)));
-                    }
-                }
+        // Tier 1: exact (session_id, tool_use_id) match.
+        if let (Some(needle), Some(haystack)) = (tool_use_id, extra_tool) {
+            if needle == haystack {
+                return Some(extract_attribution(record, span_session));
             }
+        }
+
+        // Tier 2: last span in session strictly before started_at_ms.
+        let span_started = first_i64(record, &[&["started_at"], &["payload", "started_at"]])
+            .or_else(|| first_str(record, &[&["ts"], &["payload", "ts"]]).and_then(iso_to_ms))
+            .unwrap_or(0);
+        if span_started < started_at_ms
+            && tier2_candidate.as_ref().map_or(true, |(prev, _)| span_started > *prev)
+        {
+            tier2_candidate = Some((span_started, extract_attribution(record, span_session)));
         }
     }
 
     tier2_candidate.map(|(_, attr)| attr)
 }
 
-fn extract_attribution(payload: &serde_json::Value, session_id: &str) -> Attribution {
-    let extra = payload.get("extra");
-    let spec = payload
-        .get("spec")
-        .and_then(|v| v.as_str())
-        .or_else(|| extra.and_then(|e| e.get("spec")).and_then(|v| v.as_str()))
-        .map(str::to_string);
-    let tool_use_id = extra
-        .and_then(|e| e.get("tool_use_id"))
-        .and_then(|v| v.as_str())
-        .map(str::to_string);
+fn extract_attribution(record: &Value, session_id: &str) -> Attribution {
+    // `spec`/`tool_use_id` live at the record level on real spans, inside
+    // `extra` on OTEL `SpanRecord`s, or under `payload` on legacy shapes —
+    // probe all three, record-level first.
+    let spec = first_str(
+        record,
+        &[&["spec"], &["extra", "spec"], &["payload", "spec"], &["payload", "extra", "spec"]],
+    )
+    .map(str::to_string);
+    let tool_use_id = first_str(
+        record,
+        &[&["extra", "tool_use_id"], &["tool_use_id"], &["payload", "tool_use_id"], &["payload", "extra", "tool_use_id"]],
+    )
+    .map(str::to_string);
     Attribution {
         spec,
         session_id: Some(session_id.to_string()),
         tool_use_id,
     }
+}
+
+/// Canonical harness event NAME for a raw NDJSON record. The writers emit a
+/// top-level `"event"` field (e.g. `"tool.use"`, `"pipeline.telemetry.run"`)
+/// distinct from the `"kind"` CLASS (`"tool"`, `"pipeline"`); when `"event"`
+/// is absent (older payloads, OTEL collector) the `"kind"` discriminator holds
+/// the same value. Mirrors `mustard_core::domain::economy::reader::event_name`.
+fn event_name(record: &Value) -> &str {
+    record
+        .get("event")
+        .and_then(Value::as_str)
+        .or_else(|| record.get("kind").and_then(Value::as_str))
+        .unwrap_or("")
+}
+
+/// First non-empty string found by probing `record` along each JSON path in
+/// order. A path is a slice of keys; `["payload", "session_id"]` reads
+/// `record["payload"]["session_id"]`, `["session_id"]` reads the record-level
+/// field. Lets one call straddle the record level and the nested `payload`.
+fn first_str<'r>(record: &'r Value, paths: &[&[&str]]) -> Option<&'r str> {
+    paths
+        .iter()
+        .find_map(|path| dig(record, path).and_then(Value::as_str))
+        .filter(|s| !s.is_empty())
+}
+
+/// `i64` counterpart of [`first_str`] — first integer found along the paths.
+fn first_i64(record: &Value, paths: &[&[&str]]) -> Option<i64> {
+    paths
+        .iter()
+        .find_map(|path| dig(record, path).and_then(Value::as_i64))
+}
+
+/// Resolve a key path against a raw record `Value`.
+fn dig<'r>(record: &'r Value, path: &[&str]) -> Option<&'r Value> {
+    let mut cur = record;
+    for key in path {
+        cur = cur.get(key)?;
+    }
+    Some(cur)
 }
 
 fn iso_to_ms(s: &str) -> Option<i64> {
@@ -1000,6 +1080,125 @@ pub fn live_activity(repo_path: &Path) -> LiveActivity {
     }
 }
 
+// ── Sessions ─────────────────────────────────────────────────────────────────
+
+/// `dashboard_sessions` — list Claude Code sessions for the active workspace.
+///
+/// Aggregates one [`SessionRow`] per `.claude/.session/{id}/.events/` directory:
+/// earliest/latest event `ts`, the last-seen `spec`, the `cwd` from
+/// `session.start`, an event count, and an open/closed flag (recency, since no
+/// session-end event exists). The `unknown` directory — a known
+/// attribution-leak bucket for events whose `session_id` couldn't be resolved
+/// at emit time — is labelled (`is_unknown_bucket`) rather than hidden.
+///
+/// Fail-open: a missing `.session` root yields an empty list. Rows are sorted
+/// open-first, then most-recent activity first. `limit` (when `Some`) caps the
+/// returned rows after sorting.
+#[tauri::command]
+#[must_use]
+pub fn dashboard_sessions(repo_path: String, limit: Option<usize>) -> Vec<SessionRow> {
+    let session_root = PathBuf::from(&repo_path)
+        .join(".claude")
+        .join(".session");
+    let Ok(entries) = std::fs::read_dir(&session_root) else {
+        return Vec::new();
+    };
+
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let mut rows: Vec<SessionRow> = Vec::new();
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let id = match path.file_name().and_then(|n| n.to_str()) {
+            Some(n) => n.to_string(),
+            None => continue,
+        };
+
+        let mut records: Vec<Value> = Vec::new();
+        collect_one_dir(&path.join(".events"), &mut records);
+
+        let mut earliest: Option<String> = None;
+        let mut latest: Option<String> = None;
+        let mut last_spec: Option<(String, String)> = None; // (ts, spec)
+        let mut cwd: Option<String> = None;
+        let mut event_count: u64 = 0;
+
+        for record in &records {
+            event_count += 1;
+            let ts = record.get("ts").and_then(Value::as_str).unwrap_or("");
+            if !ts.is_empty() {
+                if earliest.as_deref().map_or(true, |e| ts < e) {
+                    earliest = Some(ts.to_string());
+                }
+                if latest.as_deref().map_or(true, |l| ts > l) {
+                    latest = Some(ts.to_string());
+                }
+                // Track the spec of the latest event that carried one.
+                if let Some(spec) = record.get("spec").and_then(Value::as_str) {
+                    if !spec.is_empty()
+                        && last_spec.as_ref().map_or(true, |(prev, _)| ts >= prev.as_str())
+                    {
+                        last_spec = Some((ts.to_string(), spec.to_string()));
+                    }
+                }
+            }
+            // `cwd` lives in the `session.start` payload; take the first seen.
+            if cwd.is_none() {
+                if let Some(c) = record
+                    .get("payload")
+                    .and_then(|p| p.get("cwd"))
+                    .and_then(Value::as_str)
+                {
+                    if !c.is_empty() {
+                        cwd = Some(c.to_string());
+                    }
+                }
+            }
+        }
+
+        // Skip directories with no parseable events entirely — an empty dir is
+        // not a session worth listing.
+        if event_count == 0 {
+            continue;
+        }
+
+        let status = match latest.as_deref().and_then(iso_to_ms) {
+            Some(ms) if now_ms - ms <= SESSION_OPEN_WINDOW_MS => "open",
+            _ => "closed",
+        }
+        .to_string();
+
+        rows.push(SessionRow {
+            id: id.clone(),
+            slug: String::new(),
+            started_at: earliest.unwrap_or_default(),
+            last_activity_at: latest,
+            last_spec: last_spec.map(|(_, spec)| spec),
+            cwd,
+            status,
+            event_count,
+            is_unknown_bucket: id == "unknown",
+        });
+    }
+
+    // Open sessions first, then most-recent activity first.
+    rows.sort_by(|a, b| {
+        let a_open = a.status == "open";
+        let b_open = b.status == "open";
+        b_open
+            .cmp(&a_open)
+            .then_with(|| b.last_activity_at.cmp(&a.last_activity_at))
+    });
+
+    if let Some(n) = limit {
+        rows.truncate(n);
+    }
+    rows
+}
+
 // ── Friction + collector health ──────────────────────────────────────────────
 
 /// Friction entries — read from `.claude/.metrics/friction.json`. Empty vec
@@ -1144,17 +1343,47 @@ impl EconomyScopeDto {
     }
 }
 
-/// Walk every NDJSON file under `<root>/.claude/spec/*/.events/` and
-/// `<root>/.claude/.session/*/.events/`. Used by the per-page aggregators
-/// that need raw event access alongside the typed core readers.
-fn walk_ndjson_events(root: &Path) -> Vec<Value> {
+/// Walk every NDJSON file under the three canonical event sinks:
+/// `<root>/.claude/spec/*/.events/`, `<root>/.claude/spec/*/wave-*/events/`
+/// (and `wave-*/.events/`), and `<root>/.claude/.session/*/.events/`. Mirrors
+/// the coverage of `mustard_core::domain::economy::reader::ndjson_paths` so the
+/// per-page aggregators see the same complete event slice the core readers do.
+///
+/// `pub(crate)` so the Onda-2 aggregators in `lib.rs` and `spec_views.rs` reuse
+/// the same walker (the directive's "complete walker" requirement — never the
+/// spec-only `for_each_ndjson_line`, which misses `.session/` and wave subdirs).
+pub(crate) fn walk_ndjson_events(root: &Path) -> Vec<Value> {
     let mut out = Vec::new();
     let claude = root.join(".claude");
-    for sub in &[claude.join("spec"), claude.join(".session")] {
-        let Ok(entries) = std::fs::read_dir(sub) else {
-            continue;
-        };
-        for entry in entries.flatten() {
+
+    // Per-spec channel + wave subdirs.
+    if let Ok(specs) = std::fs::read_dir(claude.join("spec")) {
+        for spec_entry in specs.flatten() {
+            let spec_path = spec_entry.path();
+            if !spec_path.is_dir() {
+                continue;
+            }
+            collect_one_dir(&spec_path.join(".events"), &mut out);
+            if let Ok(waves) = std::fs::read_dir(&spec_path) {
+                for wave_entry in waves.flatten() {
+                    let wp = wave_entry.path();
+                    if !wp.is_dir() {
+                        continue;
+                    }
+                    let name = wp.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                    if !name.starts_with("wave-") {
+                        continue;
+                    }
+                    collect_one_dir(&wp.join("events"), &mut out);
+                    collect_one_dir(&wp.join(".events"), &mut out);
+                }
+            }
+        }
+    }
+
+    // Cross-spec session sink.
+    if let Ok(sessions) = std::fs::read_dir(claude.join(".session")) {
+        for entry in sessions.flatten() {
             let path = entry.path();
             if !path.is_dir() {
                 continue;
@@ -1162,7 +1391,24 @@ fn walk_ndjson_events(root: &Path) -> Vec<Value> {
             collect_one_dir(&path.join(".events"), &mut out);
         }
     }
+
     out
+}
+
+/// Canonical harness event NAME for a raw record (`"event"` ?? `"kind"`).
+/// Re-exported `pub(crate)` for the Onda-2 aggregators in `lib.rs` /
+/// `spec_views.rs` so every cross-spec fold matches the harness NAME, never the
+/// logical `kind` class.
+#[must_use]
+pub(crate) fn event_name_of(record: &Value) -> &str {
+    event_name(record)
+}
+
+/// `pub(crate)` ISO-8601 → epoch-ms for the Onda-2 aggregators (weekday × hour
+/// heatmap, duration math). Same parser the attribution + session readers use.
+#[must_use]
+pub(crate) fn iso_to_ms_crate(s: &str) -> Option<i64> {
+    iso_to_ms(s)
 }
 
 fn collect_one_dir(dir: &Path, out: &mut Vec<Value>) {
@@ -1394,13 +1640,16 @@ pub fn dashboard_economy_per_wave_costs(scope: EconomyScopeDto) -> Value {
     serde_json::to_value(rows).unwrap_or_else(|_| serde_json::json!([]))
 }
 
-/// Spec trace — 4-level tree (spec → wave → agent → tool).
+/// Spec trace — up to a 4-level tree (spec → wave → agent → tool).
 ///
 /// W7D restored the full tree shape. Roll-up tokens per agent come from
 /// [`mustard_core::domain::economy::per_agent_costs`] (scope-filtered to the spec).
-/// `tool.use` events are bucketed by `wave_id` (from the event payload or
-/// the wave-role path segment) then by `agent_id` (the dispatch that owned
-/// the `tool_use_id`, resolved via the `agent.start` event correlation).
+/// `tool.use` events are bucketed by `wave` (record-level int/string, legacy
+/// `payload.wave_id` fallback) then by `agent` (the dispatch that owned the
+/// `tool_use_id`, resolved via the `agent.start` correlation; else the
+/// record-level `actor`). Real `tool.use` records carry neither `wave_id` nor
+/// `tool_use_id`, so a tool with no wave AND no agent attaches directly under
+/// the spec root instead of collapsing into synthetic `root`/`main` branches.
 #[tauri::command]
 #[must_use]
 pub fn dashboard_spec_trace(project_path: String, spec_name: String) -> Value {
@@ -1476,25 +1725,45 @@ pub fn dashboard_spec_trace(project_path: String, spec_name: String) -> Value {
     }
 
     // Pass 2: bucket `tool.use` events by (wave, agent).
-    // wave_id resolution: payload.wave_id, else extracted from the NDJSON file
-    // path's `wave-N-{role}` segment (not available here since we already
-    // flattened), else "root".
+    //
+    // wave: record-level `wave` (real harness shape — int or string), falling
+    //       back to legacy `payload.wave_id`. `None` when neither is present.
+    // agent: the dispatch that owned the event's `tool_use_id` (resolved via the
+    //        `agent.start` correlation in pass 1), else the record-level `actor`,
+    //        else legacy `payload.agent_id`. `None` when unattributable.
+    //
+    // When BOTH are `None`, the tool attaches directly under the spec root
+    // rather than under synthetic `wave="root"`/`agent="main"` nodes (real
+    // `tool.use` records carry neither `wave_id` nor `tool_use_id`, so the old
+    // synthetic buckets collapsed every tool into one fake branch). Tools that
+    // DO carry attribution still nest spec → wave → agent → tool.
     #[derive(Default)]
     struct WaveBucket {
         agents: BTreeMap<String, Vec<Value>>,
     }
     let mut by_wave: BTreeMap<String, WaveBucket> = BTreeMap::new();
+    let mut loose_tools: Vec<Value> = Vec::new();
     for ev in &all_events {
         let ev_name = ev.get("event").and_then(Value::as_str).unwrap_or("");
         if ev_name != "tool.use" {
             continue;
         }
         let payload = ev.get("payload").cloned().unwrap_or_default();
-        let wave_id = payload
-            .get("wave_id")
-            .and_then(Value::as_str)
-            .unwrap_or("root")
-            .to_string();
+        // Record-level `wave` may be an int or a string; normalise to a label.
+        let wave_id = ev
+            .get("wave")
+            .and_then(|w| match w {
+                Value::Number(n) => Some(format!("wave-{n}")),
+                Value::String(s) if !s.is_empty() => Some(s.clone()),
+                _ => None,
+            })
+            .or_else(|| {
+                payload
+                    .get("wave_id")
+                    .and_then(Value::as_str)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string)
+            });
         let tool_use_id = payload
             .get("tool_use_id")
             .and_then(Value::as_str)
@@ -1503,12 +1772,18 @@ pub fn dashboard_spec_trace(project_path: String, spec_name: String) -> Value {
             .as_deref()
             .and_then(|tu| tool_to_agent.get(tu).cloned())
             .or_else(|| {
+                ev.get("actor")
+                    .and_then(Value::as_str)
+                    .filter(|a| !a.is_empty())
+                    .map(str::to_string)
+            })
+            .or_else(|| {
                 payload
                     .get("agent_id")
                     .and_then(Value::as_str)
+                    .filter(|a| !a.is_empty())
                     .map(str::to_string)
-            })
-            .unwrap_or_else(|| "main".to_string());
+            });
 
         let tool_name = payload
             .get("tool")
@@ -1543,17 +1818,25 @@ pub fn dashboard_spec_trace(project_path: String, spec_name: String) -> Value {
             "payload": payload,
             "children": [],
         });
-        by_wave
-            .entry(wave_id)
-            .or_default()
-            .agents
-            .entry(agent_id)
-            .or_default()
-            .push(tool_node);
+        match (wave_id, agent_id) {
+            (None, None) => loose_tools.push(tool_node),
+            (wave, agent) => {
+                by_wave
+                    .entry(wave.unwrap_or_else(|| "root".to_string()))
+                    .or_default()
+                    .agents
+                    .entry(agent.unwrap_or_else(|| "main".to_string()))
+                    .or_default()
+                    .push(tool_node);
+            }
+        }
     }
 
-    // Build the 4-level tree.
-    let wave_nodes: Vec<Value> = by_wave
+    // Build the tree. Attributed tools nest spec → wave → agent → tool;
+    // unattributed tools (`loose_tools`) attach as direct children of the spec,
+    // after the wave branches. The frontend `<ExecutionTrace>` recurses over
+    // `children` regardless of depth, so a spec → tool leaf renders correctly.
+    let mut children: Vec<Value> = by_wave
         .into_iter()
         .map(|(wave_id, bucket)| {
             let agent_nodes: Vec<Value> = bucket
@@ -1585,6 +1868,7 @@ pub fn dashboard_spec_trace(project_path: String, spec_name: String) -> Value {
             })
         })
         .collect();
+    children.extend(loose_tools);
 
     serde_json::json!({
         "kind": "spec",
@@ -1593,7 +1877,7 @@ pub fn dashboard_spec_trace(project_path: String, spec_name: String) -> Value {
         "duration_ms": null,
         "ts": null,
         "payload": null,
-        "children": wave_nodes,
+        "children": children,
     })
 }
 
@@ -1783,5 +2067,58 @@ mod tests {
         assert_eq!(children.len(), 2);
         assert!(children.iter().any(|c| c["label"].as_str().unwrap_or("").contains("Read")));
         assert!(children.iter().any(|c| c["label"].as_str().unwrap_or("").contains("Edit")));
+    }
+
+    fn write_session_event(dir: &Path, session: &str, name: &str, body: &str) {
+        let events_dir = dir
+            .join(".claude")
+            .join(".session")
+            .join(session)
+            .join(".events");
+        std::fs::create_dir_all(&events_dir).unwrap();
+        std::fs::write(events_dir.join(name), body).unwrap();
+    }
+
+    #[test]
+    fn sessions_aggregate_per_dir_with_unknown_bucket_labelled() {
+        let tmp = TempDir::new().unwrap();
+        // A real session: session.start (carries cwd) + a later tool.use.
+        let sess_lines = concat!(
+            r#"{"event":"session.start","kind":"session","ts":"2026-05-27T08:00:00.000Z","session_id":"sess-1","spec":null,"payload":{"cwd":"C:\\repo","source":"startup"}}"#, "\n",
+            r#"{"event":"tool.use","kind":"tool","ts":"2026-05-27T08:05:00.000Z","session_id":"sess-1","spec":"alpha","payload":{"tool":"Read"}}"#, "\n",
+        );
+        write_session_event(tmp.path(), "sess-1", "events.ndjson", sess_lines);
+        // The unknown attribution-leak bucket.
+        let unknown_lines = concat!(
+            r#"{"event":"tool.use","kind":"tool","ts":"2026-05-27T07:00:00.000Z","session_id":null,"spec":null,"payload":{"tool":"Bash"}}"#, "\n",
+        );
+        write_session_event(tmp.path(), "unknown", "events.ndjson", unknown_lines);
+
+        let rows = dashboard_sessions(tmp.path().to_string_lossy().into_owned(), None);
+        assert_eq!(rows.len(), 2, "two session dirs aggregated");
+
+        let s1 = rows.iter().find(|r| r.id == "sess-1").expect("sess-1 row");
+        assert_eq!(s1.started_at, "2026-05-27T08:00:00.000Z");
+        assert_eq!(s1.last_activity_at.as_deref(), Some("2026-05-27T08:05:00.000Z"));
+        assert_eq!(s1.last_spec.as_deref(), Some("alpha"));
+        assert_eq!(s1.cwd.as_deref(), Some("C:\\repo"));
+        assert_eq!(s1.event_count, 2);
+        assert_eq!(s1.status, "closed"); // 2026 timestamps are far in the past
+        assert!(!s1.is_unknown_bucket);
+
+        let unk = rows.iter().find(|r| r.id == "unknown").expect("unknown row");
+        assert!(unk.is_unknown_bucket, "unknown bucket must be labelled, not hidden");
+        assert_eq!(unk.event_count, 1);
+
+        // `limit` caps after sorting.
+        let one = dashboard_sessions(tmp.path().to_string_lossy().into_owned(), Some(1));
+        assert_eq!(one.len(), 1);
+    }
+
+    #[test]
+    fn sessions_empty_when_no_session_dir() {
+        let tmp = TempDir::new().unwrap();
+        let rows = dashboard_sessions(tmp.path().to_string_lossy().into_owned(), None);
+        assert!(rows.is_empty());
     }
 }
