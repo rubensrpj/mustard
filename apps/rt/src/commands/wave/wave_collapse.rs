@@ -434,18 +434,26 @@ fn set_scope_override(meta: &mut Meta) {
 /// markdown is regenerated from the canonical scaffold renderers so the table
 /// shape stays identical to what `wave-scaffold` produces. Fail-open.
 fn patch_wave_plan_single(spec_dir: &Path, wave1: &WaveDir) {
-    use crate::commands::wave::wave_scaffold::{headings, render_wave_plan, Plan, WavePlanEntry};
+    use crate::commands::wave::wave_scaffold::{
+        effective_locale, headings, render_wave_plan, Plan, WavePlanEntry,
+    };
     let plan = Plan {
         waves: vec![WavePlanEntry {
             n: wave1.n,
             role: wave1.role.clone(),
             summary: String::new(),
             depends_on: Vec::new(),
+            tasks: Vec::new(),
+            files: Vec::new(),
+            acceptance: Vec::new(),
         }],
         total_waves: Some(1),
         lang: None,
     };
-    let md = render_wave_plan(&plan, &headings(), None);
+    // The collapsed `wave-plan.md` follows the project's configured language
+    // (root-wins); no plan-carried `lang` here, so the workspace config decides.
+    let locale = effective_locale(spec_dir, None);
+    let md = render_wave_plan(&plan, &headings(locale), None);
     let path = spec_dir.join("wave-plan.md");
     if let Err(e) = fs::write_atomic(&path, md.as_bytes()) {
         eprintln!(

@@ -446,7 +446,7 @@ fn read_spec_lang(spec_path: &Path) -> String {
 /// receives a non-empty TASK block (root cause + plan + a read-the-spec cue)
 /// instead of a blank one. Full specs are unaffected: a present, non-empty
 /// `## Tasks` section is always preferred.
-fn read_task_steps(spec_path: &Path) -> String {
+pub(crate) fn read_task_steps(spec_path: &Path) -> String {
     let text = mfs::read_to_string(spec_path).unwrap_or_default();
     if text.is_empty() {
         return String::new();
@@ -774,7 +774,7 @@ fn structural_summary(loader: &GrammarLoader, source: &str, lang_id: &str) -> St
 /// Extract the file paths listed under a spec's `## Files` / `## Arquivos`
 /// section. Each line's first backtick-quoted token (or, failing that, the
 /// first path-ish token) is taken as the path. Stops at the next `## ` heading.
-fn files_section_paths(spec_text: &str) -> Vec<String> {
+pub(crate) fn files_section_paths(spec_text: &str) -> Vec<String> {
     let lines: Vec<&str> = spec_text.lines().collect();
     let Some(start) = lines.iter().position(|l| is_heading(l, "files")) else {
         return Vec::new();

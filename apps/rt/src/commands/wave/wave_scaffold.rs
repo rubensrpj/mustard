@@ -13,7 +13,15 @@
 //! ```json
 //! {
 //!   "waves": [
-//!     { "n": 1, "role": "general", "summary": "…", "depends_on": [] },
+//!     {
+//!       "n": 1,
+//!       "role": "general",
+//!       "summary": "…",
+//!       "depends_on": [],
+//!       "tasks": ["wire the contract", "add the handler"],
+//!       "files": ["src/api/handler.rs", "src/api/mod.rs"],
+//!       "acceptance": ["**AC-1** — handler returns 200. Command: `curl -sf …`"]
+//!     },
 //!     { "n": 2, "role": "general", "summary": "…", "depends_on": ["wave-1-general"] }
 //!   ],
 //!   "total_waves": 2,
@@ -21,15 +29,39 @@
 //! }
 //! ```
 //!
+//! ### Per-wave body fields (the materialised work, authored by the Plan agent)
+//!
+//! - `tasks` — checklist lines for this wave. Materialised as
+//!   `## Tasks`/`## Tarefas` with `- [ ] {task}` items in the wave's `spec.md`.
+//!   `agent-prompt-render --spec <wave-dir>` reads this section back as the
+//!   dispatched agent's `## TASK` block — so the body is no longer hand-authored
+//!   after the scaffold.
+//! - `files` — the file census for this wave. Materialised as
+//!   `## Files`/`## Arquivos` with `` - `{path}` `` items; `agent-prompt-render`
+//!   reads it back into `{reference_files}`.
+//! - `acceptance` — Acceptance Criteria lines. NOT written into the per-wave
+//!   `spec.md` (the renderer does not read AC from a wave spec); instead the
+//!   union across waves is carried into `wave-plan.md` under
+//!   `## Acceptance Criteria`/`## Critérios de Aceitação`, where the QA gate
+//!   reads it via `spec_sections::section_block(_, "acceptanceCriteria")`.
+//!
+//! Each is `#[serde(default)]`: a plan that predates these fields (summary-only)
+//! still deserialises, and a wave that omits them materialises with no task /
+//! file block (the empty-tasks case emits a visible stderr WARN — see [`run`]).
+//!
 //! `lang` accepts BCP-47 (`pt-BR` / `en-US`); the legacy short forms
 //! (`pt` / `en`) are tolerated on read for back-compat with old plan JSON
-//! and normalised to BCP-47 in the rendered headings.
+//! and normalised to BCP-47 in the rendered headings. The *effective* heading
+//! language follows the project's `mustard.json#specLang` (root wins) when the
+//! scaffold runs inside a workspace; the plan's `lang` is the fallback for a
+//! standalone scaffold. Every generated artefact (headings, placeholders) is
+//! rendered in that effective language per the i18n rule.
 //!
 //! Idempotent: each output file is only created when absent. The stdout JSON
 //! reports which were created vs skipped.
 
 use mustard_core::io::fs;
-use mustard_core::{Meta, MetaFlags, read_meta, write_meta};
+use mustard_core::{Meta, MetaFlags, SupportedLocale, read_meta, write_meta};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::fmt::Write as _;
@@ -60,6 +92,26 @@ pub(crate) struct WavePlanEntry {
     /// silently drop it to an empty list (→ a "—" deps column).
     #[serde(default, alias = "dependsOn")]
     pub(crate) depends_on: Vec<String>,
+    /// Checklist of work items for this wave, authored by the Plan agent.
+    /// Materialised as a `## Tasks`/`## Tarefas` section of `- [ ] {task}`
+    /// lines in the wave's `spec.md` (read back by `agent-prompt-render`).
+    /// `#[serde(default)]` is an explicit retrocompat affordance: a
+    /// summary-only plan (pre-dating this field) still deserialises, and the
+    /// empty case is surfaced by a visible stderr WARN in [`run`] rather than a
+    /// silent empty heading.
+    #[serde(default)]
+    pub(crate) tasks: Vec<String>,
+    /// File census for this wave. Materialised as a `## Files`/`## Arquivos`
+    /// section of `` - `{path}` `` lines (read back into `{reference_files}`).
+    /// `#[serde(default)]` for the same retrocompat reason as `tasks`.
+    #[serde(default)]
+    pub(crate) files: Vec<String>,
+    /// Acceptance Criteria lines for this wave. NOT written into the per-wave
+    /// `spec.md` (the renderer never reads AC from a wave spec); the union of
+    /// every wave's `acceptance` is carried into `wave-plan.md` so the QA gate
+    /// finds it. `#[serde(default)]` for the same retrocompat reason as `tasks`.
+    #[serde(default)]
+    pub(crate) acceptance: Vec<String>,
 }
 
 /// Top-level plan shape.
@@ -76,13 +128,14 @@ pub(crate) struct Plan {
     pub(crate) lang: Option<String>,
 }
 
-/// Heading strings for the wave layout.
+/// Heading strings for the wave layout, resolved for one [`SupportedLocale`].
 ///
-/// These render **internal artefacts** — the operational `wave-plan.md` index,
-/// the per-wave `spec.md` skeletons, the review/qa scaffolds. Per the i18n
-/// rule (`feedback-mustard-i18n-agnostic`) every internal artefact is **EN by
-/// default**, independent of the user's natural `language`: the `language`
-/// only colours the user-facing `spec.md` PRD. The struct is retained (rather
+/// These render generated artefacts — the operational `wave-plan.md` index and
+/// the per-wave `spec.md` skeletons (with their materialised `## Tasks` /
+/// `## Files` / `## Acceptance Criteria` bodies). Per the i18n rule (every file
+/// the tool generates follows the project's `language`), the heading set is
+/// **lang-aware**: it is built from the effective locale (`mustard.json`
+/// root-wins; the plan's `lang` as fallback). The struct is retained (rather
 /// than inlining the literals) so the re-wave path renders through the same
 /// canonical renderers (F4-d item 2).
 ///
@@ -95,29 +148,80 @@ pub(crate) struct Headings<'a> {
     network: &'a str,
     parent: &'a str,
     wave_table_caption: &'a str,
-    /// `## Summary` heading for the per-wave spec skeleton.
+    /// `## Summary`/`## Resumo` heading for the per-wave spec skeleton.
     summary: &'a str,
-    /// Placeholder body when a wave has no summary yet.
+    /// Placeholder body when a wave has no summary yet, in the effective locale.
     summary_placeholder: &'a str,
-    /// `Depends on` label for the wave spec's Network section.
+    /// `Depends on`/`Depende de` label for the wave spec's Network section.
     depends_on: &'a str,
+    /// `## Tasks`/`## Tarefas` heading for the per-wave materialised checklist.
+    tasks: &'a str,
+    /// `## Files`/`## Arquivos` heading for the per-wave file census.
+    files: &'a str,
+    /// `## Acceptance Criteria`/`## Critérios de Aceitação` heading for the
+    /// AC union carried into `wave-plan.md`.
+    acceptance: &'a str,
 }
 
-/// The canonical EN heading set for the (internal) wave layout. The `lang`
-/// the plan JSON carries is recorded in `meta.json#lang` (it describes the
-/// spec-facing locale) but never localises these internal artefacts.
-pub(crate) fn headings() -> Headings<'static> {
-    Headings {
-        wave_plan_title: "# Wave Plan",
-        table_header: "| Wave | Spec | Role | Depends on | Summary |",
-        table_sep: "|------|------|------|------------|---------|",
-        network: "## Network",
-        parent: "Parent",
-        wave_table_caption: "## Wave Table",
-        summary: "## Summary",
-        summary_placeholder: "_(fill in)_",
-        depends_on: "Depends on",
+/// Build the heading set for `locale`. The display names reuse the EN/PT
+/// variants `spec_sections::is_heading` already recognises (`Tasks`/`Tarefas`,
+/// `Files`/`Arquivos`, `Summary`/`Resumo`, `Acceptance Criteria`/`Critérios de
+/// Aceitação`) so `agent-prompt-render` and the QA gate keep consuming the
+/// materialised body regardless of which language was rendered. `Network` /
+/// `Wave Plan` / `Wave Table` / `Depends on` are wave-navigation labels (no
+/// `spec_sections` key) and are localised in parallel so the whole file follows
+/// the configured language.
+pub(crate) fn headings(locale: SupportedLocale) -> Headings<'static> {
+    match locale {
+        SupportedLocale::PtBr => Headings {
+            wave_plan_title: "# Plano de Waves",
+            table_header: "| Wave | Spec | Papel | Depende de | Resumo |",
+            table_sep: "|------|------|-------|------------|--------|",
+            network: "## Rede",
+            parent: "Pai",
+            wave_table_caption: "## Tabela de Waves",
+            summary: "## Resumo",
+            summary_placeholder: "_(preencher)_",
+            depends_on: "Depende de",
+            tasks: "## Tarefas",
+            files: "## Arquivos",
+            acceptance: "## Critérios de Aceitação",
+        },
+        SupportedLocale::EnUs => Headings {
+            wave_plan_title: "# Wave Plan",
+            table_header: "| Wave | Spec | Role | Depends on | Summary |",
+            table_sep: "|------|------|------|------------|---------|",
+            network: "## Network",
+            parent: "Parent",
+            wave_table_caption: "## Wave Table",
+            summary: "## Summary",
+            summary_placeholder: "_(fill in)_",
+            depends_on: "Depends on",
+            tasks: "## Tasks",
+            files: "## Files",
+            acceptance: "## Acceptance Criteria",
+        },
     }
+}
+
+/// Resolve the effective heading locale: the project's `mustard.json#specLang`
+/// wins (root-wins per the i18n rule, via the canonical [`ProjectConfig`]
+/// accessor — no ad-hoc parse), falling back to the plan's own `lang` when the
+/// scaffold runs outside a workspace (standalone / tempdir). A plan `lang` that
+/// is absent or not in the catalogue degrades to [`SupportedLocale::default`].
+///
+/// `pub(crate)` so the EXECUTE-entry re-wave path resolves the heading locale
+/// the same way (root-wins, then the parent spec's recorded `lang`), keeping a
+/// single source of truth for the i18n resolution.
+///
+/// [`ProjectConfig`]: mustard_core::ProjectConfig
+pub(crate) fn effective_locale(spec_dir: &Path, plan_lang: Option<&str>) -> SupportedLocale {
+    if let Ok(root) = mustard_core::io::workspace::workspace_root(spec_dir) {
+        return mustard_core::ProjectConfig::load(&root).i18n().lang;
+    }
+    plan_lang
+        .and_then(|s| s.trim().parse::<SupportedLocale>().ok())
+        .unwrap_or_default()
 }
 
 /// Render the wave-plan markdown index. Lifecycle metadata (stage / scope /
@@ -172,7 +276,14 @@ pub(crate) fn wave_name(w: &WavePlanEntry) -> String {
     format!("wave-{n}-{role}", n = w.n, role = w.role)
 }
 
-/// Render an individual wave's `spec.md` skeleton.
+/// Render an individual wave's `spec.md` — `## Summary` + `## Network`, then
+/// the materialised `## Tasks` / `## Files` work body from the plan entry.
+///
+/// Pure: returns the rendered String, no IO. The empty-`tasks` signal (a wave
+/// the Plan agent left without a checklist) is surfaced by the caller in
+/// [`run`] via a stderr WARN, not here — an empty task block emits **no**
+/// `## Tasks` heading (a bare heading is noise; `agent-prompt-render` falls
+/// back to an empty TASK block, which the WARN makes visible).
 pub(crate) fn render_wave_spec(parent: &str, w: &WavePlanEntry, hd: &Headings<'_>) -> String {
     let name = wave_name(w);
     let mut out = String::new();
@@ -196,7 +307,58 @@ pub(crate) fn render_wave_spec(parent: &str, w: &WavePlanEntry, hd: &Headings<'_
             .collect();
         let _ = writeln!(out, "- {dep}: {}", deps.join(", "), dep = hd.depends_on);
     }
+    // Materialise the work body the Plan agent authored, so it no longer has to
+    // be hand-written after the scaffold. `agent-prompt-render --spec <wave-dir>`
+    // reads these sections back (`## Tasks`/`## Tarefas` → `{task_steps}`,
+    // `## Files`/`## Arquivos` → `{reference_files}`). Emit a heading only when
+    // there is content under it — a bare heading is noise.
+    if !w.tasks.is_empty() {
+        let _ = write!(out, "\n{}\n\n", hd.tasks);
+        for task in &w.tasks {
+            let _ = writeln!(out, "- [ ] {task}", task = task.trim());
+        }
+    }
+    if !w.files.is_empty() {
+        let _ = write!(out, "\n{}\n\n", hd.files);
+        for file in &w.files {
+            let _ = writeln!(out, "- `{file}`", file = file.trim());
+        }
+    }
     out
+}
+
+/// Synthesize the global `## Acceptance Criteria` block carried into
+/// `wave-plan.md` from the per-wave `acceptance` arrays.
+///
+/// Returns `Some(block)` when at least one wave carries an AC line — the block
+/// is the localised heading followed by the union of every wave's AC lines, in
+/// wave order, de-duplicated. Returns `None` when no wave carries AC, so a
+/// summary-only (pre-body) plan renders a byte-stable `wave-plan.md` (no AC
+/// section appended). The QA gate reads the block back via
+/// `spec_sections::section_block(md, "acceptanceCriteria")`, which the
+/// localised heading resolves against.
+fn build_ac_block(plan: &Plan, hd: &Headings<'_>) -> Option<String> {
+    let mut lines: Vec<String> = Vec::new();
+    for w in &plan.waves {
+        for ac in &w.acceptance {
+            let trimmed = ac.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let bullet = if trimmed.starts_with('-') {
+                trimmed.to_string()
+            } else {
+                format!("- {trimmed}")
+            };
+            if !lines.contains(&bullet) {
+                lines.push(bullet);
+            }
+        }
+    }
+    if lines.is_empty() {
+        return None;
+    }
+    Some(format!("{}\n{}", hd.acceptance, lines.join("\n")))
 }
 
 /// Write `content` to `path` only when the file does not already exist.
@@ -294,10 +456,14 @@ pub fn run(spec_dir_arg: Option<&str>, plan_arg: Option<&str>) {
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_default();
-    // `lang` is recorded in meta.json (it is the spec-facing locale) but the
-    // wave layout itself is an internal artefact rendered in EN.
+    // `lang` is recorded verbatim in meta.json (the spec-facing locale the plan
+    // declared). The headings, by contrast, render in the *effective* locale —
+    // `mustard.json#specLang` wins (root-wins per the i18n rule), with the
+    // plan's `lang` as the standalone fallback. Every generated artefact follows
+    // that effective language.
     let lang = plan.lang.as_deref().unwrap_or("pt-BR");
-    let hd = headings();
+    let locale = effective_locale(&spec_dir, plan.lang.as_deref());
+    let hd = headings(locale);
 
     let _ = fs::create_dir_all(&spec_dir);
 
@@ -317,12 +483,30 @@ pub fn run(spec_dir_arg: Option<&str>, plan_arg: Option<&str>) {
         }
     };
 
+    // Synthesize the global Acceptance Criteria block from the per-wave
+    // `acceptance` arrays. When any wave carries AC, their union is written into
+    // `wave-plan.md` under the localised `## Acceptance Criteria` heading, so the
+    // QA gate still reads them via `section_block(_, "acceptanceCriteria")`. When
+    // NO wave carries AC, `None` is passed and the wave-plan output stays
+    // byte-stable for summary-only (pre-body) plans.
+    let ac_block = build_ac_block(&plan, &hd);
+
     // wave-plan.md.
-    let wave_plan_md = render_wave_plan(&plan, &hd, None);
+    let wave_plan_md = render_wave_plan(&plan, &hd, ac_block.as_deref());
     emit(&spec_dir.join("wave-plan.md"), wave_plan_md);
 
-    // Per-wave spec.
+    // Per-wave spec. A wave the Plan agent left with no `tasks` is a visible
+    // signal — emit a stderr WARN so the operator notices the gap instead of it
+    // silently materialising an empty TASK block downstream.
     for w in &plan.waves {
+        if w.tasks.is_empty() {
+            eprintln!(
+                "[wave-scaffold] WARN: wave-{n}-{role} materialised with no tasks — \
+                 agent-prompt-render will fall back to an empty task block",
+                n = w.n,
+                role = w.role,
+            );
+        }
         let dir = spec_dir.join(wave_name(w));
         emit(&dir.join("spec.md"), render_wave_spec(&parent_name, w, &hd));
     }
@@ -456,12 +640,18 @@ mod tests {
                     role: "general".to_string(),
                     summary: "foundations".to_string(),
                     depends_on: vec![],
+                    tasks: vec![],
+                    files: vec![],
+                    acceptance: vec![],
                 },
                 WavePlanEntry {
                     n: 2,
                     role: "frontend".to_string(),
                     summary: "ui pieces".to_string(),
                     depends_on: vec!["wave-1-general".to_string()],
+                    tasks: vec![],
+                    files: vec![],
+                    acceptance: vec![],
                 },
             ],
             total_waves: Some(2),
@@ -472,7 +662,10 @@ mod tests {
     #[test]
     fn wave_plan_carries_acceptance_criteria_for_qa() {
         use crate::commands::spec::spec_sections;
-        let hd = headings();
+        // EN locale for this AC-passthrough test — the AC heading is matched by
+        // the i18n-aware `section_block`, so the carried section is found in
+        // either language; EN keeps the literal block here readable.
+        let hd = headings(SupportedLocale::EnUs);
         let ac = "## Acceptance Criteria\n- **AC-1** — works.\n  Command: `true`";
         let md = render_wave_plan(&sample_plan(), &hd, Some(ac));
         // The QA gate reads global ACs back from `wave-plan.md` via the shared
@@ -491,39 +684,48 @@ mod tests {
 
     #[test]
     fn renders_wave_plan_table_with_wikilinks() {
-        let hd = headings();
+        // `sample_plan` declares `lang: "pt"`; the rendered artefact follows the
+        // effective language, so a PT locale yields PT headings (per the i18n
+        // rule — every generated file follows the configured language).
+        let hd = headings(SupportedLocale::PtBr);
         let md = render_wave_plan(&sample_plan(), &hd, None);
         assert!(md.contains("[[wave-1-general]]"));
         assert!(md.contains("[[wave-2-frontend]]"));
         assert!(md.contains("foundations"));
         assert!(md.contains("[[wave-1-general]]"));
-        // Internal artefact → EN headings regardless of the plan's `lang`.
-        assert!(md.contains("# Wave Plan"));
-        assert!(md.contains("Depends on"));
-        assert!(!md.contains("Plano de Waves"));
-        assert!(!md.contains("Depende de"));
+        // PT locale → PT headings.
+        assert!(md.contains("# Plano de Waves"));
+        assert!(md.contains("Depende de"));
+        assert!(!md.contains("# Wave Plan"));
+
+        // The EN locale renders the EN headings for the same plan.
+        let en = render_wave_plan(&sample_plan(), &headings(SupportedLocale::EnUs), None);
+        assert!(en.contains("# Wave Plan"));
+        assert!(en.contains("Depends on"));
+        assert!(!en.contains("Plano de Waves"));
     }
 
     #[test]
     fn renders_wave_spec_with_parent_link_and_no_header() {
-        let hd = headings();
+        // PT locale → PT headings (sample_plan declares `lang: "pt"`).
+        let hd = headings(SupportedLocale::PtBr);
         let plan = sample_plan();
         let s1 = render_wave_spec("epic-x", &plan.waves[0], &hd);
         // Lifecycle metadata is NOT in the markdown — no `### Stage:`/`### Parent:`
-        // header lines. The parent is surfaced only as a body link in `## Network`.
+        // header lines. The parent is surfaced only as a body link in `## Rede`.
         assert!(!s1.contains("### Stage:"));
         assert!(!s1.contains("### Outcome:"));
         assert!(!s1.contains("### Parent:"));
-        assert!(s1.contains("## Network"));
+        assert!(s1.contains("## Rede"));
         assert!(s1.contains("[[epic-x]]"));
-        // Internal artefact → EN summary heading, never PT.
-        assert!(s1.contains("## Summary"));
-        assert!(!s1.contains("## Resumo"));
+        // PT locale → PT summary heading, never the EN form.
+        assert!(s1.contains("## Resumo"));
+        assert!(!s1.contains("## Summary"));
         let s2 = render_wave_spec("epic-x", &plan.waves[1], &hd);
         assert!(!s2.contains("### Stage:"));
         assert!(s2.contains("[[wave-1-general]]"));
-        assert!(s2.contains("## Network"));
-        assert!(s2.contains("Depends on"));
+        assert!(s2.contains("## Rede"));
+        assert!(s2.contains("Depende de"));
     }
 
     #[test]
@@ -561,13 +763,15 @@ mod tests {
         assert!(!spec_dir.join("qa").join("spec.md").exists(), "qa scaffold removed");
 
         // Validate wave-1 spec content has the expected headings & wikilinks,
-        // and that no lifecycle header leaked into the markdown.
+        // and that no lifecycle header leaked into the markdown. No workspace
+        // anchor here, so the effective locale falls back to the plan's
+        // `lang: "pt"` → PT headings.
         let s1 =
             std::fs::read_to_string(spec_dir.join("wave-1-general").join("spec.md")).unwrap();
         assert!(!s1.contains("### Stage:"));
         assert!(!s1.contains("### Parent:"));
         assert!(s1.contains("[[epic-x]]"));
-        assert!(s1.contains("## Network"));
+        assert!(s1.contains("## Rede"));
         // meta.json carries the lifecycle metadata instead.
         assert!(spec_dir.join("wave-1-general").join("meta.json").exists());
         // Root + each wave carry a meta.json sidecar.
@@ -767,5 +971,168 @@ mod tests {
         let root = mustard_core::read_meta(&spec_dir.join("meta.json")).unwrap();
         assert_eq!(root.total_waves, Some(4), "actual entry count wins over declared");
         assert_eq!(root.is_wave_plan, Some(true));
+    }
+
+    /// A summary-only plan (predating the per-wave body fields) still
+    /// deserialises — the explicit retrocompat affordance (`#[serde(default)]`).
+    /// The 3 body fields default to empty and the rendered spec carries no Tasks
+    /// / Files block (only `## Summary` + `## Network`, the historical output).
+    #[test]
+    fn summary_only_plan_still_deserialises_and_renders() {
+        let raw = serde_json::to_string(&json!({
+            "waves": [
+                { "n": 1, "role": "general", "summary": "foundations", "depends_on": [] }
+            ],
+            "total_waves": 1,
+            "lang": "en-US"
+        }))
+        .unwrap();
+        let plan: Plan = serde_json::from_str(&raw).expect("summary-only plan deserialises");
+        assert!(plan.waves[0].tasks.is_empty());
+        assert!(plan.waves[0].files.is_empty());
+        assert!(plan.waves[0].acceptance.is_empty());
+        let hd = headings(SupportedLocale::EnUs);
+        let spec = render_wave_spec("epic", &plan.waves[0], &hd);
+        assert!(spec.contains("## Summary"));
+        assert!(spec.contains("## Network"));
+        // No materialised body → no Tasks / Files heading.
+        assert!(!spec.contains("## Tasks"), "no bare Tasks heading: {spec}");
+        assert!(!spec.contains("## Files"), "no bare Files heading: {spec}");
+    }
+
+    /// Validation 3: `tasks` / `files` materialise into the wave spec as the
+    /// localised `## Tasks` / `## Files` sections, and the body is consumable by
+    /// `agent_prompt_render` — its `read_task_steps` / `files_section_paths`
+    /// read the sections back as non-empty.
+    #[test]
+    fn render_wave_spec_materialises_tasks_and_files_consumable_by_agent_render() {
+        use crate::commands::agent::agent_prompt_render as apr;
+        let w = WavePlanEntry {
+            n: 1,
+            role: "backend".to_string(),
+            summary: "the contract".to_string(),
+            depends_on: vec![],
+            tasks: vec!["wire the handler".to_string(), "add the route".to_string()],
+            files: vec!["src/api/handler.rs".to_string(), "src/api/mod.rs".to_string()],
+            acceptance: vec![],
+        };
+        let hd = headings(SupportedLocale::EnUs);
+        let spec = render_wave_spec("epic", &w, &hd);
+        assert!(spec.contains("## Tasks"), "{spec}");
+        assert!(spec.contains("- [ ] wire the handler"), "{spec}");
+        assert!(spec.contains("- [ ] add the route"), "{spec}");
+        assert!(spec.contains("## Files"), "{spec}");
+        assert!(spec.contains("- `src/api/handler.rs`"), "{spec}");
+
+        // Write the spec to disk and read it back through the agent-prompt-render
+        // consumers to prove the materialised body is what the dispatch reads.
+        let dir = tempdir().unwrap();
+        let spec_path = dir.path().join("spec.md");
+        std::fs::write(&spec_path, &spec).unwrap();
+        let steps = apr::read_task_steps(&spec_path);
+        assert!(!steps.trim().is_empty(), "task steps must be non-empty: {steps}");
+        assert!(steps.contains("wire the handler"), "task body missing: {steps}");
+        let files = apr::files_section_paths(&spec);
+        assert!(
+            files.contains(&"src/api/handler.rs".to_string()),
+            "files section must be parsed back: {files:?}"
+        );
+    }
+
+    /// Validation 4: per-wave `acceptance` reaches `wave-plan.md` and is found by
+    /// `section_block(_, "acceptanceCriteria")`; a plan with no AC → no section.
+    #[test]
+    fn per_wave_acceptance_reaches_wave_plan_and_is_findable() {
+        use crate::commands::spec::spec_sections;
+        let plan = Plan {
+            waves: vec![
+                WavePlanEntry {
+                    n: 1,
+                    role: "backend".to_string(),
+                    summary: "a".to_string(),
+                    depends_on: vec![],
+                    tasks: vec!["t1".to_string()],
+                    files: vec![],
+                    acceptance: vec!["**AC-1** — builds. Command: `true`".to_string()],
+                },
+                WavePlanEntry {
+                    n: 2,
+                    role: "frontend".to_string(),
+                    summary: "b".to_string(),
+                    depends_on: vec!["wave-1-backend".to_string()],
+                    tasks: vec!["t2".to_string()],
+                    files: vec![],
+                    acceptance: vec!["**AC-2** — renders. Command: `true`".to_string()],
+                },
+            ],
+            total_waves: Some(2),
+            lang: Some("en-US".to_string()),
+        };
+        let hd = headings(SupportedLocale::EnUs);
+        let ac_block = build_ac_block(&plan, &hd);
+        let md = render_wave_plan(&plan, &hd, ac_block.as_deref());
+        let block = spec_sections::section_block(&md, "acceptanceCriteria")
+            .expect("AC union must be carried into wave-plan.md");
+        assert!(block.contains("AC-1"), "{block}");
+        assert!(block.contains("AC-2"), "{block}");
+
+        // No-AC plan → no section (byte-stable output for summary-only plans).
+        let mut no_ac = plan.clone();
+        for w in &mut no_ac.waves {
+            w.acceptance.clear();
+        }
+        let no_ac_block = build_ac_block(&no_ac, &hd);
+        assert!(no_ac_block.is_none(), "no AC → no block synthesized");
+        let bare = render_wave_plan(&no_ac, &hd, no_ac_block.as_deref());
+        assert!(spec_sections::section_block(&bare, "acceptanceCriteria").is_none());
+    }
+
+    /// Validation 5: the effective language drives the headings. A pt-BR plan
+    /// renders `## Tarefas`; an en-US plan renders `## Tasks`. Exercised through
+    /// the pure renderer with the locale resolved from the plan's `lang` (no
+    /// workspace anchor → plan.lang is the fallback source).
+    #[test]
+    fn effective_language_drives_task_heading() {
+        let entry = |tasks: Vec<String>| WavePlanEntry {
+            n: 1,
+            role: "general".to_string(),
+            summary: "s".to_string(),
+            depends_on: vec![],
+            tasks,
+            files: vec![],
+            acceptance: vec![],
+        };
+        let pt = render_wave_spec(
+            "epic",
+            &entry(vec!["fazer X".to_string()]),
+            &headings(SupportedLocale::PtBr),
+        );
+        assert!(pt.contains("## Tarefas"), "pt-BR → ## Tarefas: {pt}");
+        assert!(!pt.contains("## Tasks"), "pt-BR must not emit EN heading: {pt}");
+
+        let en = render_wave_spec(
+            "epic",
+            &entry(vec!["do X".to_string()]),
+            &headings(SupportedLocale::EnUs),
+        );
+        assert!(en.contains("## Tasks"), "en-US → ## Tasks: {en}");
+        assert!(!en.contains("## Tarefas"), "en-US must not emit PT heading: {en}");
+    }
+
+    /// The empty-`tasks` retrocompat path: a wave with no checklist materialises
+    /// no `## Tasks` heading (the WARN is the visible signal, emitted in `run`).
+    #[test]
+    fn empty_tasks_emits_no_bare_heading() {
+        let w = WavePlanEntry {
+            n: 1,
+            role: "general".to_string(),
+            summary: "s".to_string(),
+            depends_on: vec![],
+            tasks: vec![],
+            files: vec![],
+            acceptance: vec![],
+        };
+        let spec = render_wave_spec("epic", &w, &headings(SupportedLocale::EnUs));
+        assert!(!spec.contains("## Tasks"), "bare empty Tasks heading is noise: {spec}");
     }
 }

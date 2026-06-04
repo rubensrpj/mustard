@@ -742,8 +742,24 @@ pub enum RunCmd {
         #[arg(long = "session-id")]
         session_id: String,
     },
-    /// Materialise the canonical SDD wave layout (wave-plan + wave-N/spec.md
-    /// + review/spec.md + qa/spec.md) from a declarative JSON plan. Idempotent.
+    /// Materialise the canonical SDD wave layout (`wave-plan.md` + each
+    /// `wave-N-{role}/spec.md`) from a declarative JSON plan. Idempotent.
+    ///
+    /// Each `--plan` wave entry carries an optional materialised body, all
+    /// `#[serde(default)]` (a summary-only plan still deserialises):
+    ///   - `tasks: [String]`      → `## Tasks`/`## Tarefas` (`- [ ] {task}`) in
+    ///                              the wave spec, read back by
+    ///                              `agent-prompt-render` as `{task_steps}`.
+    ///   - `files: [String]`      → `## Files`/`## Arquivos` (`` - `{path}` ``),
+    ///                              read back as `{reference_files}`.
+    ///   - `acceptance: [String]` → NOT in the wave spec; the union across waves
+    ///                              is carried into `wave-plan.md` under
+    ///                              `## Acceptance Criteria`/`## Critérios de
+    ///                              Aceitação`, where the QA gate reads it.
+    /// The Plan agent authors these arrays; the body is never hand-written after
+    /// the scaffold. Headings render in the effective language
+    /// (`mustard.json#specLang` root-wins, plan `lang` as fallback). A wave with
+    /// no `tasks` emits a stderr WARN (visible signal), not a bare heading.
     WaveScaffold {
         /// Target spec directory.
         #[arg(long = "spec-dir")]
@@ -777,6 +793,12 @@ pub enum RunCmd {
     },
     /// W10.T10.4 — Emit a deterministic wave-plan JSON consumable by
     /// `wave-scaffold`. Replaces the orchestrator-hand-rolled `plan.json` step.
+    ///
+    /// Emits the per-wave body fields (`tasks` / `files` / `acceptance`) always,
+    /// even empty, so the JSON is a self-documenting skeleton: the deterministic
+    /// role/dependency scaffold the Plan agent then folds the real body lines
+    /// into before handing the plan to `wave-scaffold` (which materialises them
+    /// — see [`WaveScaffold`]).
     #[command(name = "plan-from-spec")]
     PlanFromSpec {
         /// Total wave count (>= 1).

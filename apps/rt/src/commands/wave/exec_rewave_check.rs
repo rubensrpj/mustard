@@ -33,7 +33,7 @@ use crate::commands::spec::scope_decompose::decide;
 use crate::commands::wave::wave_dependency::compute_waves;
 use crate::commands::wave::wave_lib::{detect_role_with, load_role_patterns, parse_files_section};
 use crate::commands::wave::wave_scaffold::{
-    Plan, WavePlanEntry, headings, render_wave_plan, render_wave_spec, wave_name,
+    Plan, WavePlanEntry, effective_locale, headings, render_wave_plan, render_wave_spec, wave_name,
 };
 use crate::util::json_io;
 use mustard_core::time::now_iso8601;
@@ -79,6 +79,11 @@ fn find_project_root(start_dir: &Path) -> Option<PathBuf> {
 ///   without an LLM.
 /// - `depends_on` = the canonical `wave-{m}-{role(m)}` names resolved from the
 ///   numeric `dependsOn`, so the dependency wikilinks point at real wave specs.
+/// - `files` = the DAG wave's own file list, materialised into the wave spec's
+///   `## Files`/`## Arquivos` section so `agent-prompt-render` reads it back as
+///   `{reference_files}`. `tasks` / `acceptance` are empty on the auto-decompose
+///   path: this is a deterministic re-wave at EXECUTE entry, not a Plan-agent
+///   authoring step — the file census is the body it can produce without an LLM.
 fn dag_wave_to_entry(w: &Value, primary_role_for: &dyn Fn(i64) -> String) -> WavePlanEntry {
     let n = w.get("wave").and_then(Value::as_i64).unwrap_or(0);
     let roles: Vec<String> = w
@@ -110,6 +115,11 @@ fn dag_wave_to_entry(w: &Value, primary_role_for: &dyn Fn(i64) -> String) -> Wav
         role: primary_role,
         summary,
         depends_on,
+        // Materialise the DAG wave's own file census; tasks/acceptance are not
+        // produced on the deterministic re-wave path (no Plan-agent authoring).
+        tasks: Vec::new(),
+        files,
+        acceptance: Vec::new(),
     }
 }
 
@@ -265,7 +275,12 @@ pub fn decompose_if_signaled(spec_file: &Path) -> Value {
         //    renderer here — the output is byte-identical in form.
         let lang = parent_lang(spec_file);
         let plan = dag_to_plan(&waves, &lang);
-        let hd = headings();
+        // Resolve the heading locale the same way the PLAN-time scaffold does:
+        // `mustard.json#specLang` wins, the parent spec's recorded `lang` is the
+        // fallback — so a decomposed-at-EXECUTE spec stays form-identical to a
+        // scaffolded-at-PLAN one.
+        let locale = effective_locale(&spec_dir, Some(&lang));
+        let hd = headings(locale);
 
         // Carry the parent spec's `## Acceptance Criteria` into the wave-plan so
         // the QA gate (which reads global ACs from `wave-plan.md` once `spec.md`
@@ -390,9 +405,12 @@ mod tests {
             json!({ "wave": 2, "files": ["src/b.ts"], "roles": ["frontend"], "dependsOn": [1] }),
         ];
         let lang = "pt-BR";
+        // Both paths render through the SAME locale-resolved heading set, so the
+        // byte-equality holds; the pt-BR plan yields PT headings (per the i18n
+        // rule — the artefact follows the configured language).
+        let hd = headings(mustard_core::SupportedLocale::PtBr);
         // Path A: the re-wave converter + canonical renderer.
         let plan_a = dag_to_plan(&waves, lang);
-        let hd = headings();
         let rendered_a = render_wave_plan(&plan_a, &hd, None);
         // Path B: a Plan built directly with the same canonical fields (what a
         // PLAN-time scaffold of the same shape would feed the renderer).
@@ -403,12 +421,18 @@ mod tests {
                     role: "general".to_string(),
                     summary: "general · 1 file(s): src/a.ts".to_string(),
                     depends_on: vec![],
+                    tasks: vec![],
+                    files: vec!["src/a.ts".to_string()],
+                    acceptance: vec![],
                 },
                 WavePlanEntry {
                     n: 2,
                     role: "frontend".to_string(),
                     summary: "frontend · 1 file(s): src/b.ts".to_string(),
                     depends_on: vec!["wave-1-general".to_string()],
+                    tasks: vec![],
+                    files: vec!["src/b.ts".to_string()],
+                    acceptance: vec![],
                 },
             ],
             total_waves: Some(2),
@@ -416,10 +440,10 @@ mod tests {
         };
         let rendered_b = render_wave_plan(&plan_b, &hd, None);
         assert_eq!(rendered_a, rendered_b, "re-wave must render the canonical wave-plan.md byte-for-byte");
-        // The wave-plan.md is an internal artefact → EN heading regardless of
-        // the spec's `lang`, plus the wikilinks.
-        assert!(rendered_a.contains("# Wave Plan"));
-        assert!(!rendered_a.contains("Plano de Waves"));
+        // The wave-plan.md follows the spec's `lang` (pt-BR here) → PT heading,
+        // plus the wikilinks.
+        assert!(rendered_a.contains("# Plano de Waves"));
+        assert!(!rendered_a.contains("# Wave Plan"));
         assert!(rendered_a.contains("[[wave-1-general]]"));
         assert!(rendered_a.contains("[[wave-2-frontend]]"));
     }

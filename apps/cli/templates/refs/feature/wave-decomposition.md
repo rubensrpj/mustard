@@ -36,20 +36,57 @@ Before building the wave plan in Full scope, check whether the work warrants mor
    - `{error: "cyclic-dependency", cycle: [...]}` → warn user about cyclic imports (pre-existing architecture issue), fall back to a single-wave plan with note in `## Concerns`.
    - `{error: ...}` → fail-open: fall back to a single-wave plan.
    - `{waves: [...]}` with only 1 wave → a genuine single layer (or a lone generic `lib` bucket). Net-new features with no import edges yet are auto-split by architectural role (scheduled via `mustard.json#waveLayerOrder` — a documented, overridable default), so a real multi-layer feature no longer collapses to one wave here.
-   - `{waves: [...]}` with 2+ waves → write a multi-wave **Wave Plan** (step 6).
+   - `{waves: [...]}` with 2+ waves → emit a **rich `--plan` JSON** (step 6) and scaffold it.
 
-6. **Write Wave Plan structure:**
+6. **Emit a rich `--plan` JSON and scaffold it — never hand-author the wave bodies.**
+
+   The decomposition you lapidated becomes the per-wave **body** of the plan JSON: each wave carries `tasks` (checklist), `files` (census), and `acceptance` (AC) arrays. `mustard-rt run wave-scaffold` then **materialises** that body into the on-disk layout — you do NOT write any `wave-N-{role}/spec.md` body by hand after the scaffold.
+
+   Plan JSON schema (consumed by `wave-scaffold --plan`):
+   ```json
+   {
+     "waves": [
+       {
+         "n": 1,
+         "role": "backend",
+         "summary": "one line — what + why",
+         "depends_on": [],
+         "tasks": ["wire the contract", "add the handler"],
+         "files": ["src/api/handler.rs", "src/api/mod.rs"],
+         "acceptance": ["**AC-1** — handler returns 200. Command: `curl -sf …`"]
+       },
+       {
+         "n": 2,
+         "role": "frontend",
+         "summary": "…",
+         "depends_on": ["wave-1-backend"],
+         "tasks": ["render the page"],
+         "files": ["src/ui/page.tsx"],
+         "acceptance": ["**AC-2** — page renders. Command: `…`"]
+       }
+     ],
+     "total_waves": 2,
+     "lang": "pt-BR"
+   }
+   ```
+   `tasks` / `files` / `acceptance` are optional per wave (a summary-only entry still scaffolds); a wave with no `tasks` emits a stderr WARN so the gap is visible.
+
+   Scaffold it:
+   ```bash
+   mustard-rt run wave-scaffold --spec-dir .claude/spec/{date}-{name} --plan plan.json
+   ```
+   This writes:
    ```
    .claude/spec/{date}-{name}/
-     ├── wave-plan.md
-     ├── wave-1-{role}/spec.md
+     ├── wave-plan.md            (table + the AC union, in the project language)
+     ├── wave-1-{role}/spec.md   (## Summary + ## Network + materialised ## Tasks + ## Files)
      ├── wave-2-{role}/spec.md
      └── wave-N-{role}/spec.md
    ```
 
-   `wave-plan.md` is pure narrative — a title followed by `## Summary` (1-2 lines what + why), `## Waves` (per-wave H3 with Depends on + Files list), and `## Rationale` (knowledge entry matched / threshold triggered / signals from scope-decompose). Its lifecycle metadata (`stage: Plan`, `outcome: Active`, `scope: full (wave plan)`, `isWavePlan: true`, `totalWaves`, `checkpoint`) lives in the `meta.json` sidecar, written by `mustard-rt run wave-scaffold` — never as `### Key:` headers in the markdown.
-
-   Each `wave-N-{role}/spec.md` is a **complete atomic spec** scoped to just that wave's files. Use the same template as Full scope single spec (Summary, Entity Info, Files, Tasks, Dependencies, Boundaries). Reference `../wave-plan.md` at the top as context.
+   - `wave-plan.md` is the table index plus the **union of every wave's `acceptance`** under `## Acceptance Criteria` (localised), where the QA gate reads it. Its lifecycle metadata (`stage`, `outcome`, `scope`, `isWavePlan`, `totalWaves`, `checkpoint`) lives in the `meta.json` sidecar, written by `wave-scaffold` — never as `### Key:` headers in the markdown.
+   - Each `wave-N-{role}/spec.md` carries the materialised `## Tasks`/`## Tarefas` + `## Files`/`## Arquivos` for that wave; `agent-prompt-render --spec <wave-dir>` reads them back as the dispatched agent's `## TASK` block and `{reference_files}`.
+   - Headings render in the project language (`mustard.json#specLang` root-wins, the plan's `lang` as fallback) — do not hand-localise.
 
 7. **Pipeline state lives in the `meta.json` sidecar, not a JSON state file.** `mustard-rt run wave-scaffold` writes the per-wave `meta.json` (`stage: Plan`, `outcome: Active`, `isWavePlan: true`, `totalWaves: N`, `currentWave: 1`); the `completedWaves`/`currentWave` progression is derived from `pipeline.wave.complete` events. Do NOT hand-write a `pipeline-state.json`.
 

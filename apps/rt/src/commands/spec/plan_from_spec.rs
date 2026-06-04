@@ -13,8 +13,39 @@
 //!     are normalised via `mustard_core::normalise_lang`).
 //!   - `--summary "..."`   — optional per-wave summary template; empty by default.
 //!
-//! Output: pretty JSON `{ "waves": [...], "total_waves": N, "lang": "pt-BR" }`
-//! consumable directly by `wave-scaffold --plan <stdin-or-file>`.
+//! Output: pretty JSON consumable directly by
+//! `wave-scaffold --plan <stdin-or-file>`. The full schema this command emits:
+//!
+//! ```json
+//! {
+//!   "waves": [
+//!     {
+//!       "n": 1,
+//!       "role": "backend",
+//!       "summary": "…",
+//!       "depends_on": ["wave-0-…"],
+//!       "tasks": [],
+//!       "files": [],
+//!       "acceptance": []
+//!     }
+//!   ],
+//!   "total_waves": 1,
+//!   "lang": "pt-BR"
+//! }
+//! ```
+//!
+//! ### Per-wave body fields
+//!
+//! `tasks` / `files` / `acceptance` are the materialised work body for each
+//! wave. This command emits them **always — even empty** — so the JSON is a
+//! self-documenting skeleton: it is the deterministic role/dependency scaffold,
+//! and the Plan agent folds the real `tasks` (checklist), `files` (census), and
+//! `acceptance` (AC) lines into each entry before handing the plan to
+//! `wave-scaffold`. `wave-scaffold` then materialises `## Tasks`/`## Tarefas` +
+//! `## Files`/`## Arquivos` into each `wave-N/spec.md` and the AC union into
+//! `wave-plan.md` (see [`crate::commands::wave::wave_scaffold`] for the
+//! consumer-side contract). The body is therefore never hand-authored after the
+//! scaffold — it lives in the plan JSON's per-wave body.
 //!
 //! Fail-open: invalid args print a usage line on stderr and exit non-zero so
 //! the parent pipeline does not silently scaffold an empty plan.
@@ -26,12 +57,21 @@ use crate::shared::events::economy;
 use serde::Serialize;
 
 /// One wave entry rendered into the plan JSON.
+///
+/// `tasks` / `files` / `acceptance` are emitted always (even empty) so the
+/// schema is self-documenting: the producer ships the deterministic skeleton
+/// and the Plan agent folds the real body lines in before `wave-scaffold`
+/// materialises them. The field names match `wave_scaffold::WavePlanEntry`'s
+/// `#[serde(default)]` reader exactly.
 #[derive(Debug, Serialize)]
 struct WaveEntry {
     n: u32,
     role: String,
     summary: String,
     depends_on: Vec<String>,
+    tasks: Vec<String>,
+    files: Vec<String>,
+    acceptance: Vec<String>,
 }
 
 /// Plan document. Mirrors the `Plan` struct read by `wave_scaffold` (lenient —
@@ -92,6 +132,11 @@ fn build_plan(opts: &PlanFromSpecOpts) -> Result<PlanDoc, String> {
             role,
             summary: summary.clone(),
             depends_on,
+            // Skeleton body — the Plan agent folds the real checklist / file
+            // census / AC into each entry before `wave-scaffold` consumes it.
+            tasks: Vec::new(),
+            files: Vec::new(),
+            acceptance: Vec::new(),
         });
     }
     let lang = mustard_core::normalise_lang(&opts.lang);
@@ -166,6 +211,23 @@ mod tests {
         })
         .unwrap_err();
         assert!(err.contains(">= 1"));
+    }
+
+    #[test]
+    fn plan_json_emits_empty_body_fields_as_self_documenting_skeleton() {
+        let plan = build_plan(&PlanFromSpecOpts {
+            waves: 1,
+            roles: "backend".to_string(),
+            lang: "pt-BR".to_string(),
+            summary: None,
+        })
+        .unwrap();
+        let json = serde_json::to_string(&plan).unwrap();
+        // The body fields are present (even empty) so the schema is
+        // self-documenting and `wave-scaffold`'s reader sees the exact keys.
+        assert!(json.contains("\"tasks\":[]"), "tasks key emitted: {json}");
+        assert!(json.contains("\"files\":[]"), "files key emitted: {json}");
+        assert!(json.contains("\"acceptance\":[]"), "acceptance key emitted: {json}");
     }
 
     #[test]
