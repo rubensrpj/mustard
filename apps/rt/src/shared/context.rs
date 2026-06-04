@@ -151,8 +151,11 @@ fn newest_session_dir(session_dir: &Path) -> Option<String> {
 /// 1. `MUSTARD_ACTIVE_SPEC` env var — explicit override set by
 ///    `/mustard:feature` and `/mustard:resume` before dispatching hooks.
 /// 2. The most recently modified `.claude/.pipeline-states/*.json` file under
-///    `project_dir` — fallback for sessions that have not yet emitted a
-///    `pipeline.scope` event (e.g. very early in a fresh pipeline).
+///    `project_dir` — a **legacy** fallback. The pipeline-states sink is no
+///    longer written (see `scripts/cleanup-legacy-claude.ps1`), so in practice
+///    this branch yields nothing on a live run. The real session→spec binding
+///    is carried by [`spec_for_session`], which the event router consults
+///    before falling back here.
 ///
 /// Returns `None` when no spec is active — never panics. Every step fails
 /// open: a missing env var or an absent state directory degrades to the
@@ -187,6 +190,81 @@ pub fn current_spec(project_dir_path: &str) -> Option<String> {
         }
     }
     best.map(|(_, spec)| spec)
+}
+
+/// Resolve the spec a session is currently bound to, fail-open `None`.
+///
+/// Hook-emitted events (`tool.use`, `agent.*`, …) are born with no spec — the
+/// PostToolUse hook context never sets `MUSTARD_ACTIVE_SPEC`, and the legacy
+/// `.pipeline-states/` sink [`current_spec`] reads is no longer written. The
+/// only reliable binding is the `pipeline.scope` event the CLI run-face emits,
+/// which carries BOTH `session_id` and `spec`. Rather than scan the NDJSON log
+/// on every tool call, the router persists that binding as a small marker file
+/// (see [`bind_session_spec`]); this reads it back in O(1).
+///
+/// Marker location: `.claude/.session/<session_id>/active-spec` — beside the
+/// session's own `.events/` directory.
+///
+/// Returns `None` when the session has no recorded binding (no marker yet, an
+/// empty/`"unknown"` session id, or any IO error) — never panics.
+#[must_use]
+pub fn spec_for_session(project_dir_path: &str, session_id: &str) -> Option<String> {
+    if session_id.is_empty() || session_id == "unknown" {
+        return None;
+    }
+    let marker = session_spec_marker(project_dir_path, session_id)?;
+    let spec = fs::read_to_string(&marker).ok()?;
+    let spec = spec.trim();
+    if spec.is_empty() {
+        None
+    } else {
+        Some(spec.to_string())
+    }
+}
+
+/// Persist the session→spec binding as the `active-spec` marker, best-effort.
+///
+/// Called from the event router whenever an event already carries both a
+/// non-empty `spec` and a resolved `session_id` (the `pipeline.scope` /
+/// `pipeline.stage` / `pipeline.status` events the run-face emits). Later
+/// spec-less hook events for the same session then inherit the spec via
+/// [`spec_for_session`]. Fail-open: any IO error is swallowed — telemetry must
+/// never block tool execution.
+pub fn bind_session_spec(project_dir_path: &str, session_id: &str, spec: &str) {
+    if session_id.is_empty() || session_id == "unknown" || spec.is_empty() {
+        return;
+    }
+    let Some(marker) = session_spec_marker(project_dir_path, session_id) else {
+        return;
+    };
+    // Skip a redundant rewrite when the marker already names this spec — keeps
+    // the hot-path write a no-op once the session is bound.
+    if fs::read_to_string(&marker).ok().as_deref().map(str::trim) == Some(spec) {
+        return;
+    }
+    let Some(parent) = marker.parent() else {
+        return;
+    };
+    let _ = fs::create_dir_all(parent);
+    let _ = fs::write_atomic(&marker, spec.as_bytes());
+}
+
+/// Compose the `active-spec` marker path:
+/// `<project>/.claude/.session/<session_id>/active-spec`.
+///
+/// The `.session/` base is not exposed via [`ClaudePaths`] (it is the events
+/// writer's consumer, not Mustard-owned), so compose it from `claude_dir()` the
+/// same way [`session_id`]'s fallback and the NDJSON writer do. `None` on an I1
+/// guard rejection of the project root.
+fn session_spec_marker(project_dir_path: &str, session_id: &str) -> Option<PathBuf> {
+    Some(
+        ClaudePaths::for_project(Path::new(project_dir_path))
+            .ok()?
+            .claude_dir()
+            .join(".session")
+            .join(session_id)
+            .join("active-spec"),
+    )
 }
 
 /// Resolve the active wave number from `MUSTARD_ACTIVE_WAVE` — the convention the

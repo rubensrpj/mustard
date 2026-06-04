@@ -29,15 +29,25 @@
 //!
 //! ## Resolving spec + wave context
 //!
-//! The router resolves spec / wave / session like every other run-face
-//! emitter: env vars first (`MUSTARD_ACTIVE_SPEC`, `MUSTARD_ACTIVE_WAVE`,
-//! `MUSTARD_ACTIVE_WAVE_ROLE`, `MUSTARD_SESSION_ID` / `CLAUDE_SESSION_ID`),
-//! then the per-spec NDJSON walker's last-known `pipeline.scope` for the
-//! session, then a filesystem fallback — see [`crate::shared::context::current_spec`].
-//! The `HarnessEvent`'s own `spec` / `session_id` / `wave` fields, when
-//! populated, are honoured first.
+//! The router resolves the session id first, then the spec, because a
+//! spec-less event inherits the spec its session is bound to:
+//!
+//! - **session**: `HarnessEvent.session_id` → env (`MUSTARD_SESSION_ID` /
+//!   `CLAUDE_SESSION_ID`) → newest `.claude/.session/<id>/` by mtime
+//!   ([`crate::shared::context::session_id`]).
+//! - **spec**: `HarnessEvent.spec` → env / legacy `.pipeline-states`
+//!   ([`crate::shared::context::current_spec`]) → the session→spec marker
+//!   ([`crate::shared::context::spec_for_session`]). The marker is written
+//!   HERE whenever an event arrives carrying BOTH a spec and a session (the
+//!   `pipeline.scope` / `pipeline.stage` / `pipeline.status` events the
+//!   run-face emits), so subsequent spec-less hook heartbeats
+//!   (`tool.use`, `agent.*`) attribute to the running spec instead of
+//!   landing unattributed under `.session/<id>/`.
+//! - **wave**: `HarnessEvent.wave` → `MUSTARD_ACTIVE_WAVE`.
 
-use crate::shared::context::{current_spec, project_dir, session_id};
+use crate::shared::context::{
+    bind_session_spec, current_spec, project_dir, session_id, spec_for_session,
+};
 use crate::shared::events::writer_ndjson;
 use mustard_core::domain::model::event::HarnessEvent;
 use std::path::Path;
@@ -120,12 +130,10 @@ pub fn emit(project_dir_path: &str, event: &HarnessEvent) -> bool {
     // All events (including `pipeline.*`) are now routed to NDJSON.
     // The `classify_kind` classifier stamps the row's `kind` column.
     let project = Path::new(project_dir_path);
-    let spec_owned = event.spec.clone().or_else(|| current_spec(project_dir_path));
-    let spec = spec_owned.as_deref().filter(|s| !s.is_empty());
 
-    let wave_role_owned = current_wave_role();
-    let wave_role = wave_role_owned.as_deref();
-
+    // Resolve the session id BEFORE the spec: an event that lacks a spec
+    // inherits it from the session's recorded `pipeline.scope` binding, so we
+    // need the session id in hand first.
     let session_id_owned = if event.session_id.is_empty() || event.session_id == "unknown" {
         let resolved = session_id();
         if resolved == "unknown" {
@@ -138,6 +146,30 @@ pub fn emit(project_dir_path: &str, event: &HarnessEvent) -> bool {
     };
     let session_slug = session_id_owned.clone().unwrap_or_else(|| "unknown".to_string());
     let session_id_ref = session_id_owned.as_deref();
+
+    // Spec resolution chain:
+    //   event.spec → current_spec (env / legacy pipeline-states) →
+    //   the session→spec marker the run-face's `pipeline.scope` events leave.
+    // The marker step is what lets a spec-less `tool.use` heartbeat inherit the
+    // spec its session is executing under.
+    let spec_owned = event
+        .spec
+        .clone()
+        .filter(|s| !s.is_empty())
+        .or_else(|| current_spec(project_dir_path))
+        .or_else(|| session_id_ref.and_then(|sid| spec_for_session(project_dir_path, sid)));
+    let spec = spec_owned.as_deref().filter(|s| !s.is_empty());
+
+    // When THIS event already carries both a spec and a session id (the
+    // `pipeline.scope` / `pipeline.stage` / `pipeline.status` events the
+    // run-face emits), persist the binding so later spec-less hook events for
+    // the same session can inherit it via the chain above. Fail-open.
+    if let (Some(s), Some(sid)) = (spec, session_id_ref) {
+        bind_session_spec(project_dir_path, sid, s);
+    }
+
+    let wave_role_owned = current_wave_role();
+    let wave_role = wave_role_owned.as_deref();
 
     let wave_num = if event.wave > 0 {
         Some(event.wave)
@@ -196,10 +228,14 @@ mod tests {
     use tempfile::tempdir;
 
     fn event(name: &str, spec: Option<&str>) -> HarnessEvent {
+        event_for_session(name, spec, "s-route-test")
+    }
+
+    fn event_for_session(name: &str, spec: Option<&str>, session: &str) -> HarnessEvent {
         HarnessEvent {
             v: SCHEMA_VERSION,
             ts: "2026-05-24T00:00:00.000Z".to_string(),
-            session_id: "s-route-test".to_string(),
+            session_id: session.to_string(),
             wave: 0,
             actor: Actor {
                 kind: ActorKind::Hook,
@@ -262,6 +298,66 @@ mod tests {
         assert!(events_dir.exists(), "NDJSON .events dir must exist for pipeline.* too");
         let files: Vec<_> = std::fs::read_dir(&events_dir).unwrap().collect();
         assert!(!files.is_empty(), "expected at least one NDJSON file for pipeline.scope");
+    }
+
+    /// The session→spec binding fix: a `pipeline.scope` carrying (session=S,
+    /// spec=X) leaves a marker so a later spec-LESS `tool.use` carrying only
+    /// session=S inherits `spec=X` — it attributes to the running spec instead
+    /// of falling through unattributed under `.session/<id>/`.
+    #[test]
+    fn tool_use_inherits_spec_from_session_pipeline_scope() {
+        // Skip the spec-attribution assertion if the ambient env pins a spec —
+        // `current_spec` would win the chain before the marker step and the
+        // crate forbids `unsafe`, so a test cannot clear the env var. The
+        // marker-write + read is still exercised below regardless.
+        let env_spec = std::env::var("MUSTARD_ACTIVE_SPEC").ok().filter(|s| !s.is_empty());
+
+        let dir = tempdir().unwrap();
+        let project = dir.path().to_str().unwrap();
+        let session = "s-bind-test";
+        let spec = "binding-spec-xyzzy";
+
+        // 1. run-face emits `pipeline.scope` carrying BOTH session + spec.
+        assert!(emit(project, &event_for_session("pipeline.scope", Some(spec), session)));
+
+        // The router persisted the binding marker.
+        assert_eq!(
+            crate::shared::context::spec_for_session(project, session).as_deref(),
+            Some(spec),
+            "pipeline.scope must persist the session→spec marker"
+        );
+
+        // 2. a spec-LESS `tool.use` for the same session.
+        assert!(emit(project, &event_for_session("tool.use", None, session)));
+
+        let paths = ClaudePaths::for_project(dir.path()).unwrap();
+        let spec_events = paths.for_spec(spec).unwrap().events_dir();
+
+        if env_spec.is_some() {
+            // Ambient MUSTARD_ACTIVE_SPEC pre-empts the marker — only assert the
+            // marker round-trip (done above), not where the tool.use landed.
+            return;
+        }
+
+        // The spec-less tool.use inherited spec=X via the session marker: it
+        // landed under the spec's `.events/` with `spec=X` in the record.
+        assert!(spec_events.exists(), "tool.use must land under the bound spec's .events/");
+        let mut found_spec = false;
+        for f in std::fs::read_dir(&spec_events).unwrap() {
+            let body = std::fs::read_to_string(f.unwrap().path()).unwrap_or_default();
+            for line in body.lines() {
+                let rec: serde_json::Value = match serde_json::from_str(line) {
+                    Ok(v) => v,
+                    Err(_) => continue,
+                };
+                if rec["event"] == "tool.use" {
+                    assert_eq!(rec["spec"], spec, "routed tool.use must carry spec=X");
+                    assert_eq!(rec["session_id"], session);
+                    found_spec = true;
+                }
+            }
+        }
+        assert!(found_spec, "tool.use NDJSON line must exist under the bound spec");
     }
 
     /// `classify_kind` covers session/scope/etc — kept as a pure-classifier

@@ -119,6 +119,13 @@ fn build_harness_event(
     payload: Value,
     session_id: Option<&str>,
 ) -> HarnessEvent {
+    // Best-effort wave attribution from `MUSTARD_ACTIVE_WAVE`. A session spans
+    // multiple waves and the PostToolUse hook context carries no per-event wave
+    // signal, so this env var is the only reliable source; leave 0 when unset
+    // (the router treats 0 as "no wave" and falls back to its own env read).
+    let wave = current_wave_id()
+        .and_then(|w| w.parse::<u32>().ok())
+        .unwrap_or(0);
     HarnessEvent {
         v: SCHEMA_VERSION,
         ts: now_iso8601(),
@@ -126,7 +133,7 @@ fn build_harness_event(
             .filter(|s| !s.is_empty())
             .unwrap_or("unknown")
             .to_string(),
-        wave: 0,
+        wave,
         actor: Actor {
             kind: ActorKind::Hook,
             id: Some(hook_id.to_string()),
