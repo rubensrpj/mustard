@@ -471,6 +471,104 @@ pub fn build_session_spec_timeline_from(records: &[Value]) -> SessionSpecTimelin
     SessionSpecTimeline { by_session }
 }
 
+// ── Attributed per-spec activity counts (card gap closure) ───────────────────
+
+/// Per-spec activity counts folded over the **attributed** event stream — i.e.
+/// each event is bucketed under [`SessionSpecTimeline::attributed_spec`], which
+/// folds spec-less session work (`tool.use` / `agent.*` written under
+/// `.claude/.session/{id}/.events/` with `spec == null`) onto the spec its
+/// session was bound to at the event's timestamp.
+///
+/// The `mustard_core` `project_*` folds key strictly on `event.spec`, so they
+/// miss those session events and a live spec's card reads "sem eventos" with
+/// `tools 0 / arquivos 0`. These counts let the dashboard layer merge the
+/// attributed totals back into the card without touching core.
+#[derive(Debug, Default, Clone)]
+pub(crate) struct AttributedSpecCounts {
+    /// Total events attributed to the spec (explicit-spec + session-attributed).
+    pub events: u32,
+    /// `event == "tool.use"` count attributed to the spec.
+    pub tools_used: u32,
+    /// Distinct file paths touched by attributed `tool.use` events (from
+    /// `payload.target.{file_path,file}`).
+    pub files_touched: u32,
+    /// Latest attributed event timestamp (ISO-8601, lexicographically max).
+    pub last_event_at: Option<String>,
+}
+
+/// Fold the complete workspace event log into per-spec [`AttributedSpecCounts`],
+/// keyed by spec name. Walks the events once (spec `.events/` + wave + session
+/// sink via [`walk_ndjson_events`]) and builds the [`SessionSpecTimeline`] once,
+/// so a caller that lists many specs (e.g. `dashboard_active_pipelines`) pays a
+/// single pass instead of one per row.
+///
+/// Honours an explicit `event.spec` (never re-attributed), so an event already
+/// counted by the core fold under its own spec lands in the same bucket here —
+/// the caller merges by taking the larger of (core, attributed) so explicit
+/// events are never double-counted.
+///
+/// Fail-open: a missing / unreadable log yields an empty map (callers fall back
+/// to the core projection values untouched).
+#[must_use]
+pub(crate) fn attributed_spec_counts(
+    repo_path: &Path,
+) -> HashMap<String, AttributedSpecCounts> {
+    let events = walk_ndjson_events(repo_path);
+    attributed_spec_counts_from(&events)
+}
+
+/// [`attributed_spec_counts`] over a pre-collected event slice — split out so a
+/// caller already holding the workspace vec (and tests) can reuse it without a
+/// second filesystem walk.
+#[must_use]
+pub(crate) fn attributed_spec_counts_from(
+    records: &[Value],
+) -> HashMap<String, AttributedSpecCounts> {
+    let timeline = build_session_spec_timeline_from(records);
+    // Per spec: counts plus the distinct-file set (collapsed to a count at the end).
+    let mut by_spec: HashMap<String, (AttributedSpecCounts, std::collections::BTreeSet<String>)> =
+        HashMap::new();
+    for record in records {
+        let Some(spec) = timeline.attributed_spec(record) else {
+            continue;
+        };
+        let spec = spec.to_string();
+        let entry = by_spec.entry(spec).or_default();
+        let counts = &mut entry.0;
+        counts.events = counts.events.saturating_add(1);
+        // Latest timestamp wins (ISO-8601 sorts lexicographically).
+        if let Some(ts) = record.get("ts").and_then(Value::as_str) {
+            if counts
+                .last_event_at
+                .as_deref()
+                .is_none_or(|cur| ts > cur)
+            {
+                counts.last_event_at = Some(ts.to_string());
+            }
+        }
+        if event_name(record) == "tool.use" {
+            counts.tools_used = counts.tools_used.saturating_add(1);
+            if let Some(file) = record
+                .get("payload")
+                .and_then(|p| p.get("target"))
+                .and_then(Value::as_object)
+                .and_then(|o| o.get("file_path").or_else(|| o.get("file")))
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+            {
+                entry.1.insert(file.to_string());
+            }
+        }
+    }
+    by_spec
+        .into_iter()
+        .map(|(spec, (mut counts, files))| {
+            counts.files_touched = u32::try_from(files.len()).unwrap_or(u32::MAX);
+            (spec, counts)
+        })
+        .collect()
+}
+
 /// Canonical harness event NAME for a raw NDJSON record. The writers emit a
 /// top-level `"event"` field (e.g. `"tool.use"`, `"pipeline.telemetry.run"`)
 /// distinct from the `"kind"` CLASS (`"tool"`, `"pipeline"`); when `"event"`
@@ -2352,5 +2450,42 @@ mod tests {
             flat.contains("src/live.rs"),
             "attributed session tool.use must appear in spec alpha's trace; got: {flat}"
         );
+    }
+
+    #[test]
+    fn attributed_counts_fold_specless_session_work_onto_bound_spec() {
+        // Binding pins sess-1 → alpha at 09:00; two spec-less session tool.use
+        // events (distinct files) after the binding attribute to alpha, plus one
+        // explicit-spec tool.use also under alpha. Counts must aggregate all
+        // three tools and two distinct session files without double-counting.
+        let records: Vec<Value> = [
+            r#"{"event":"pipeline.scope","kind":"pipeline","ts":"2026-05-27T09:00:00.000Z","session_id":"sess-1","spec":"alpha","payload":{"scope":"full"}}"#,
+            r#"{"event":"tool.use","kind":"tool","ts":"2026-05-27T09:30:00.000Z","session_id":"sess-1","spec":null,"payload":{"tool":"Edit","target":{"file_path":"src/live.rs"}}}"#,
+            r#"{"event":"tool.use","kind":"tool","ts":"2026-05-27T09:31:00.000Z","session_id":"sess-1","spec":null,"payload":{"tool":"Read","target":{"file_path":"src/other.rs"}}}"#,
+            r#"{"event":"tool.use","kind":"tool","ts":"2026-05-27T09:32:00.000Z","session_id":"sess-1","spec":"alpha","payload":{"tool":"Edit","target":{"file_path":"src/live.rs"}}}"#,
+        ]
+        .iter()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+
+        let counts = attributed_spec_counts_from(&records);
+        let alpha = counts.get("alpha").expect("alpha bucket");
+        assert_eq!(alpha.tools_used, 3, "all attributed tool.use events");
+        assert_eq!(alpha.files_touched, 2, "src/live.rs + src/other.rs distinct");
+        assert_eq!(alpha.events, 4, "scope binding + three tool.use");
+        assert_eq!(alpha.last_event_at.as_deref(), Some("2026-05-27T09:32:00.000Z"));
+
+        // A session event BEFORE its first binding stays unattributed.
+        let pre: Vec<Value> = [
+            r#"{"event":"pipeline.scope","kind":"pipeline","ts":"2026-05-27T09:00:00.000Z","session_id":"sess-2","spec":"beta","payload":{}}"#,
+            r#"{"event":"tool.use","kind":"tool","ts":"2026-05-27T08:00:00.000Z","session_id":"sess-2","spec":null,"payload":{"tool":"Read"}}"#,
+        ]
+        .iter()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+        let pre_counts = attributed_spec_counts_from(&pre);
+        // beta only sees its own binding event; the pre-binding tool.use is dropped.
+        assert_eq!(pre_counts.get("beta").map(|c| c.tools_used), Some(0));
+        assert_eq!(pre_counts.get("beta").map(|c| c.events), Some(1));
     }
 }

@@ -1676,9 +1676,17 @@ fn dashboard_active_pipelines(repo_path: String) -> Result<Vec<ActivePipeline>, 
     names.sort();
     names.dedup();
 
+    // Build the attributed per-spec activity counts ONCE for the whole
+    // workspace (folds spec-less session `tool.use`/`agent.*` onto the spec
+    // their session was bound to) and thread it into every `spec_card_v2`
+    // below — otherwise each row would re-walk the event log. Closes the card
+    // gap where a live spec's session work lands in `.session/*/.events/` with
+    // `spec == null` and the core fold counted it as zero.
+    let counts = telemetry::attributed_spec_counts(&base);
+
     let mut out: Vec<ActivePipeline> = Vec::new();
     for spec in names {
-        let card = match spec_views::spec_card_v2(&repo_path, &spec) {
+        let card = match spec_views::spec_card_v2_with_counts(&repo_path, &spec, &counts) {
             Ok(Some(c)) => c,
             _ => continue, // no event evidence → not an active pipeline
         };
@@ -2802,5 +2810,66 @@ mod onda2_tests {
         let names: Vec<&str> = actives.iter().map(|p| p.spec_name.as_str()).collect();
         assert!(names.contains(&"live"), "live spec should be active: {names:?}");
         assert!(!names.contains(&"done"), "completed spec must be excluded");
+    }
+
+    /// Write a spec-less session work event under `.claude/.session/{id}/.events/`,
+    /// mirroring the on-disk shape the harness writes when the emitter sets
+    /// `spec == null`.
+    fn write_session_event(dir: &std::path::Path, session: &str, name: &str, body: &str) {
+        let events_dir = dir
+            .join(".claude")
+            .join(".session")
+            .join(session)
+            .join(".events");
+        std::fs::create_dir_all(&events_dir).unwrap();
+        std::fs::write(events_dir.join(name), body).unwrap();
+    }
+
+    #[test]
+    fn card_attributes_specless_session_tool_use_to_bound_spec() {
+        // The reported card gap: the only work events for a live spec are
+        // spec-less `tool.use` rows under `.session/{id}/.events/`. A
+        // `pipeline.scope` binding (session=sess-1 → spec=alpha at an EARLIER ts)
+        // lives under the spec's own `.events/`. The core fold keys on
+        // `event.spec` and so reports tools 0 / arquivos 0; the dashboard layer
+        // must re-attribute and surface non-zero tool + file counts.
+        let tmp = TempDir::new().unwrap();
+        // Binding event under the spec dir (carries explicit spec + session_id).
+        let binding = r#"{"event":"pipeline.scope","kind":"pipeline","ts":"2026-05-27T09:00:00.000Z","session_id":"sess-1","spec":"alpha","payload":{"scope":"full"}}"#;
+        write_event(tmp.path(), "alpha", "scope.ndjson", &format!("{binding}\n"));
+        std::fs::write(
+            tmp.path().join(".claude").join("spec").join("alpha").join("spec.md"),
+            "# alpha\n",
+        )
+        .unwrap();
+        // Two spec-less session tool.use events touching two distinct files,
+        // both after the binding ts → attribute to alpha.
+        let work = concat!(
+            r#"{"event":"tool.use","kind":"tool","ts":"2026-05-27T09:30:00.000Z","session_id":"sess-1","spec":null,"payload":{"tool":"Edit","target":{"file_path":"src/live.rs"}}}"#, "\n",
+            r#"{"event":"tool.use","kind":"tool","ts":"2026-05-27T09:31:00.000Z","session_id":"sess-1","spec":null,"payload":{"tool":"Read","target":{"file_path":"src/other.rs"}}}"#, "\n",
+        );
+        write_session_event(tmp.path(), "sess-1", "work.ndjson", work);
+
+        // Spec card: tools/files counts must include the attributed session work.
+        let card =
+            dashboard_spec_card(tmp.path().to_string_lossy().into_owned(), "alpha".to_string())
+                .unwrap();
+        assert_eq!(card.tools_used, 2, "two attributed session tool.use events");
+        assert_eq!(card.files_touched, 2, "two distinct attributed file targets");
+        assert_eq!(
+            card.last_event_at.as_deref(),
+            Some("2026-05-27T09:31:00.000Z"),
+            "last activity must reflect the attributed session event"
+        );
+
+        // Active-pipelines: the spec stays listed and its updated_at advances to
+        // the attributed session activity.
+        let actives =
+            dashboard_active_pipelines(tmp.path().to_string_lossy().into_owned()).unwrap();
+        let alpha = actives
+            .iter()
+            .find(|p| p.spec_name == "alpha")
+            .expect("alpha must be an active pipeline");
+        assert_eq!(alpha.updated_at.as_deref(), Some("2026-05-27T09:31:00.000Z"));
     }
 }

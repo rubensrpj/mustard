@@ -328,6 +328,22 @@ pub struct WorkspaceHealth {
 /// usable header). The `lib.rs` command converts that to the empty-state
 /// JSON payload.
 pub fn spec_card_v2(repo_path: &str, spec: &str) -> Result<Option<SpecCard>, String> {
+    // Build the attributed per-spec counts (folds spec-less session events) for
+    // just this spec and delegate. `dashboard_active_pipelines` lists many specs
+    // and builds the map ONCE, then calls `spec_card_v2_with_counts` per row.
+    let counts = crate::telemetry::attributed_spec_counts(&std::path::PathBuf::from(repo_path));
+    spec_card_v2_with_counts(repo_path, spec, &counts)
+}
+
+/// `spec_card_v2` over a pre-built attributed-counts map (see
+/// [`crate::telemetry::attributed_spec_counts`]). Callers that render many
+/// cards build the map once and pass it in so the workspace event log is walked
+/// a single time rather than per row.
+pub(crate) fn spec_card_v2_with_counts(
+    repo_path: &str,
+    spec: &str,
+    counts: &std::collections::HashMap<String, crate::telemetry::AttributedSpecCounts>,
+) -> Result<Option<SpecCard>, String> {
     let project = std::path::PathBuf::from(repo_path);
     let events = mustard_core::view::projection::read_workspace_events(&project);
     let spec_md = project.join(".claude").join("spec").join(spec).join("spec.md");
@@ -351,7 +367,45 @@ pub fn spec_card_v2(repo_path: &str, spec: &str) -> Result<Option<SpecCard>, Str
         .count()
         .try_into()
         .unwrap_or(u32::MAX);
-    Ok(Some(spec_card_from_view(&view, children_count)))
+    let mut card = spec_card_from_view(&view, children_count);
+    merge_attributed_counts(&mut card, counts.get(spec));
+    Ok(Some(card))
+}
+
+/// Merge the attributed per-spec activity counts into a [`SpecCard`] built from
+/// the `mustard_core` projection. The core fold keys on `event.spec` and so
+/// misses spec-less session work (`tool.use` / `agent.*` under
+/// `.claude/.session/{id}/.events/`); these counts include it.
+///
+/// We never *lower* a field — every attributed total is a superset of, or an
+/// independent source for, the matching core value, so taking the larger keeps
+/// explicit-spec events from being double-counted while surfacing the session
+/// events the core fold dropped:
+///   * `tools_used`     — attributed `tool.use` ⊇ explicit-spec `tool.use`.
+///   * `files_touched`  — core counts `pipeline.task.complete.files_modified`;
+///                        attributed counts distinct `tool.use` file targets.
+///                        Different sources → max keeps the richer signal.
+///   * `last_event_at`  — later of the two ISO timestamps.
+///
+/// `ac_passed`/`ac_total` (from `qa.result` — bound, explicit-spec events),
+/// `status`/`phase`/`scope`/`current_wave`/`total_waves` (from attributed
+/// `pipeline.*` lifecycle events) and `children_count` are left untouched: they
+/// do not lose session events. No counts for this spec → card unchanged.
+fn merge_attributed_counts(
+    card: &mut SpecCard,
+    counts: Option<&crate::telemetry::AttributedSpecCounts>,
+) {
+    let Some(c) = counts else { return };
+    card.tools_used = card.tools_used.max(i64::from(c.tools_used));
+    card.files_touched = card.files_touched.max(i64::from(c.files_touched));
+    // Prefer the later non-empty timestamp; never blank an existing one.
+    match (card.last_event_at.as_deref(), c.last_event_at.as_deref()) {
+        (Some(cur), Some(attr)) if attr > cur => {
+            card.last_event_at = Some(attr.to_string());
+        }
+        (None, Some(attr)) => card.last_event_at = Some(attr.to_string()),
+        _ => {}
+    }
 }
 
 /// W8A-2 adapter: build the wave list via `mustard-core` projections.
