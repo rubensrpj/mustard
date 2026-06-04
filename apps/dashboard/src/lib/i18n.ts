@@ -186,6 +186,13 @@ const DICTIONARY = new Map<string, TranslationRow>([
   // Wave-6 — "Suspeitas" filter pill (populated by hygiene suspects).
   ["specs.filter.suspects", { pt: "Suspeitas", en: "Suspects" }],
 
+  // ── Spec kebab action menu (SpecActionMenu) ──────────────────────────────
+  // "Reabrir" shows only for terminal/closed specs (inverse of "Fechar");
+  // "Fechar" + "Remover" for active ones.
+  ["specs.action.reopen", { pt: "Reabrir", en: "Reopen" }],
+  ["specs.action.close", { pt: "Fechar", en: "Close" }],
+  ["specs.action.remove", { pt: "Remover", en: "Remove" }],
+
   // ── Shared empty-state copy (template-agnostic-audit) ───────────────────
   // Reused by every page that gates on `projectsRoot` / `activeWorkspaceId`.
   ["empty.noRoot.title", { pt: "Diretório de projetos não configurado", en: "Projects directory not configured" }],

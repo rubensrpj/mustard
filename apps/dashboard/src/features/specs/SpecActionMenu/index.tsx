@@ -7,6 +7,8 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useSpecAction } from "@/hooks/useSpecAction";
+import { useT } from "@/lib/i18n";
+import { stateFromStatus } from "../_shared/stage-from-status";
 import { SpecActionConfirm } from "../SpecActionConfirm";
 
 interface SpecActionMenuProps {
@@ -17,10 +19,16 @@ interface SpecActionMenuProps {
 }
 
 export function SpecActionMenu({ repoPath, spec, status }: SpecActionMenuProps) {
+  const t = useT();
   const [confirmOpen, setConfirmOpen] = useState(false);
   const mutation = useSpecAction(repoPath);
 
-  const isClosed = ["completed", "closed", "cancelled"].includes(status);
+  // "Reabrir" is the inverse of "Fechar": it only makes sense for a spec that
+  // already reached a terminal outcome (completed / cancelled / abandoned /
+  // superseded / absorbed). Derive that from the canonical `stateFromStatus`
+  // projection (the same one the page uses to bucket "Encerradas") instead of
+  // a hand-kept status allow-list, so every terminal outcome is covered.
+  const isClosed = stateFromStatus(status).outcome !== "active";
 
   function handleReopen() {
     mutation.mutate({ spec, action: "reopen" });
@@ -44,11 +52,11 @@ export function SpecActionMenu({ repoPath, spec, status }: SpecActionMenuProps) 
         <DropdownMenuContent align="end" className="w-40">
           {isClosed ? (
             <DropdownMenuItem onClick={handleReopen} disabled={mutation.isPending}>
-              Reabrir
+              {t("specs.action.reopen")}
             </DropdownMenuItem>
           ) : (
             <DropdownMenuItem onClick={handleClose} disabled={mutation.isPending}>
-              Fechar
+              {t("specs.action.close")}
             </DropdownMenuItem>
           )}
           <DropdownMenuSeparator />
@@ -57,7 +65,7 @@ export function SpecActionMenu({ repoPath, spec, status }: SpecActionMenuProps) 
             className="text-[--intent-error] focus:text-[--intent-error]"
             disabled={mutation.isPending}
           >
-            Remover
+            {t("specs.action.remove")}
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
