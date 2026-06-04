@@ -122,13 +122,13 @@ export const ENV_CATALOG: EnvGroup[] = [
       },
       {
         key: 'MUSTARD_HARNESS_DUAL_EMIT',
-        label: 'Espelhar eventos no SQLite (queries rápidas)',
+        label: 'Entrega de telemetria via collector OTEL local',
         default: '1',
         options: ['1', '0'],
-        desc: 'Dual-emit no harness-event: cada evento vai para JSONL (source of truth) E SQLite mustard.db (para queries do dashboard).',
+        desc: 'Marca que o caminho de entrega de telemetria via collector OTEL local está ativo: o collector anexa as métricas de token/custo (pipeline.telemetry.metric) ao log NDJSON por sessão/spec. Hoje só é lido pelo diagnose-otel — quando =1 e o collector está saudável, as variáveis OTEL_* de exporter viram opcionais (env.ok=true mesmo sem elas, pois o dado já flui pelo collector).',
         valueDocs: {
-          '1': 'Dual-emit ativo — JSONL + SQLite (queries rápidas).',
-          '0': 'Apenas JSONL — dashboard precisa varrer arquivo linha-a-linha.',
+          '1': 'Caminho do collector ativo — OTEL_* de exporter tratados como opcionais no diagnose-otel.',
+          '0': 'Diagnose-otel exige as OTEL_* de exporter setadas para considerar env.ok.',
         },
       },
       {
