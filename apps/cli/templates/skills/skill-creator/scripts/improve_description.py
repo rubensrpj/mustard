@@ -23,7 +23,9 @@ def _call_claude(prompt: str, model: str | None, timeout: int = 300) -> str:
     Prompt goes over stdin (not argv) because it embeds the full SKILL.md
     body and can easily exceed comfortable argv length.
     """
-    cmd = ["claude", "-p", "--output-format", "text"]
+    # `--no-session-persistence`: headless one-shot, don't leave a lingering
+    # session in the desktop "Recents" / cloud.
+    cmd = ["claude", "-p", "--no-session-persistence", "--output-format", "text"]
     if model:
         cmd.extend(["--model", model])
 

@@ -144,6 +144,11 @@ impl PrdProvider for ClaudeCliProvider {
         let output = crate::process_util::no_window_command("claude")
             .arg("-p")
             .arg(&prompt)
+            // Headless one-shot: do not persist this run as a session. Without
+            // it, every lapidate spawns a `<hostname>-<codename>` session that
+            // lingers in the desktop "Recents" (and the cloud) with no activity.
+            // `--no-session-persistence` only works in `--print`/`-p` mode.
+            .arg("--no-session-persistence")
             .arg("--output-format")
             .arg("json")
             .arg("--model")

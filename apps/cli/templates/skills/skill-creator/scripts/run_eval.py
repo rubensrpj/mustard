@@ -70,6 +70,8 @@ def run_single_query(
         cmd = [
             "claude",
             "-p", query,
+            # Headless one-shot: don't leave a lingering session in Recents/cloud.
+            "--no-session-persistence",
             "--output-format", "stream-json",
             "--verbose",
             "--include-partial-messages",
