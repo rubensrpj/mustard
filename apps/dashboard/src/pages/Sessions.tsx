@@ -15,6 +15,7 @@
 // `mustard.db` write, so a new SessionStart row appears without the page
 // polling.
 
+import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ChevronRight } from "lucide-react";
 import { useStore } from "@/lib/store";
@@ -46,8 +47,11 @@ function StatusBadge({ status }: { status: string }) {
 
 function SessionRowItem({ session }: { session: SessionRow }) {
   // The slug is a human handle (e.g. `dev-rubens-2026-05-24-12-30`); fall
-  // back to the id for older sessions that may not have one populated.
-  const handle = session.slug || session.id;
+  // back to the id for older sessions that may not have one populated. The
+  // `unknown` attribution-leak bucket has no real handle, so name it plainly.
+  const handle = session.is_unknown_bucket
+    ? "(sessão não atribuída)"
+    : session.slug || session.id;
   const startedRel = relativeTime(session.started_at);
   const activeRel = session.last_activity_at
     ? relativeTime(session.last_activity_at)
@@ -57,6 +61,9 @@ function SessionRowItem({ session }: { session: SessionRow }) {
       className={cn(
         "flex items-center gap-3 px-3 py-2.5 border-b border-border/40",
         "last:border-b-0 hover:bg-muted/30 transition-colors",
+        // The unknown bucket is an attribution leak, not a real session —
+        // dim it so live sessions stay visually dominant without hiding it.
+        session.is_unknown_bucket && "opacity-70",
       )}
     >
       <StatusBadge status={session.status} />
@@ -65,6 +72,15 @@ function SessionRowItem({ session }: { session: SessionRow }) {
           <span className="font-mono text-[12px] truncate text-foreground">
             {handle}
           </span>
+          {session.is_unknown_bucket && (
+            <Badge
+              variant="outline"
+              className="text-[10px] py-0 border-amber-500/50 text-amber-500"
+              title="Eventos cujo session_id não pôde ser resolvido na emissão — agrupados no balde 'unknown'."
+            >
+              não atribuída
+            </Badge>
+          )}
           {session.last_spec && (
             <Badge variant="outline" className="text-[10px] py-0">
               {session.last_spec}
@@ -81,6 +97,10 @@ function SessionRowItem({ session }: { session: SessionRow }) {
               </span>
             </>
           )}
+          <span aria-hidden>·</span>
+          <span className="font-mono">
+            {session.event_count} {session.event_count === 1 ? "evento" : "eventos"}
+          </span>
           {session.cwd && (
             <>
               <span aria-hidden>·</span>
@@ -110,6 +130,18 @@ export function Sessions() {
     // mustard.db write), so a long staleTime is safe. The page never polls.
     staleTime: 30_000,
   });
+
+  // Keep the `unknown` attribution bucket from dominating the list: real
+  // sessions first (preserving backend order), the leak bucket last.
+  const sessions = useMemo(
+    () =>
+      data
+        ? [...data].sort(
+            (a, b) => Number(a.is_unknown_bucket) - Number(b.is_unknown_bucket),
+          )
+        : data,
+    [data],
+  );
 
   if (!projectsRoot) {
     return (
@@ -141,16 +173,16 @@ export function Sessions() {
       {error && (
         <p className="text-destructive text-sm">{(error as Error).message}</p>
       )}
-      {data && data.length === 0 && (
+      {sessions && sessions.length === 0 && (
         <EmptyState
           title="Sem sessões registradas"
           description="Nenhuma sessão do Claude Code foi registrada neste projeto ainda. Inicie uma para vê-la aqui."
         />
       )}
-      {data && data.length > 0 && (
+      {sessions && sessions.length > 0 && (
         <DataCard>
           <ul className="flex flex-col">
-            {data.map((s) => (
+            {sessions.map((s) => (
               <SessionRowItem key={s.id} session={s} />
             ))}
           </ul>

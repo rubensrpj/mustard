@@ -108,6 +108,12 @@ export interface SessionRow {
   cwd: string | null;
   /** `"open" | "closed"` (per the W5 schema default). */
   status: string;
+  /** Number of parseable NDJSON event lines aggregated for this session. */
+  event_count: number;
+  /** `true` for the `unknown` attribution-leak bucket (events whose
+   *  `session_id` couldn't be resolved at emit time). Surfaced honestly —
+   *  labelled, not dropped — so the leak stays visible. */
+  is_unknown_bucket: boolean;
 }
 
 export function fetchSessions(repoPath: string, limit?: number): Promise<SessionRow[]> {

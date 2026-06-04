@@ -332,13 +332,29 @@ export function AggregateOverview({ projects }: { projects: Project[] }) {
                   <span className="text-muted-foreground text-xs w-16 text-right font-mono">
                     {formatTokens(m.total_tokens)}
                   </span>
-                  <span className="text-xs w-16 text-right font-mono">
+                  {/* Per-model cost is apportioned by token share (the metric
+                      channel carries a single total cost), so flag it as an
+                      estimate; `pct_tokens` / the tokens column are exact. */}
+                  <span
+                    className="text-xs w-20 text-right font-mono"
+                    title={t("aggregate.byModel.costEstTooltip")}
+                  >
                     {formatUsd(m.cost_usd)}
+                    <span className="ml-1 text-[9px] uppercase text-muted-foreground/70">
+                      {t("aggregate.byModel.costEst")}
+                    </span>
                   </span>
                 </li>
               ))}
             </ul>
           </div>
+        )}
+        {/* Honest empty-state when global consumption loaded but no model has
+            recorded tokens yet (fresh workspace). */}
+        {globalCons && globalCons.by_model.length === 0 && (
+          <p className="text-[12px] text-muted-foreground">
+            {t("aggregate.byModel.empty")}
+          </p>
         )}
 
         {/* Por projeto */}
