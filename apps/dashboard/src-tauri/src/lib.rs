@@ -508,6 +508,10 @@ fn dashboard_recent_events(repo_path: String, limit: Option<usize>) -> Result<Ve
     // (spec `.events/` + wave subdirs + `.session/`). Newest first.
     let base = PathBuf::from(&repo_path);
     let mut events = telemetry::walk_ndjson_events(&base);
+    // Read-time attribution: resolve spec-less session events to their
+    // time-ordered session→spec binding so per-spec slices of this feed surface
+    // them. Built once over the full slice.
+    let timeline = telemetry::build_session_spec_timeline_from(&events);
     // Sort by ts desc (ISO-8601 is lexically chronological); ts-less rows sink.
     events.sort_by(|a, b| {
         let ta = a.get("ts").and_then(|t| t.as_str()).unwrap_or("");
@@ -515,14 +519,28 @@ fn dashboard_recent_events(repo_path: String, limit: Option<usize>) -> Result<Ve
         tb.cmp(ta)
     });
     let cap = limit.unwrap_or(100).min(2000);
-    Ok(events.iter().take(cap).map(recent_event_from_value).collect())
+    Ok(events
+        .iter()
+        .take(cap)
+        .map(|v| recent_event_from_value_attributed(v, Some(&timeline)))
+        .collect())
 }
 
 /// Map a raw NDJSON record into the [`RecentEvent`] shape the dashboard's
 /// activity feeds consume. Reuses the harness event NAME (`event` ?? `kind`)
 /// and pulls the common attribution + tool/target fields out of the record /
 /// payload. The `summary` is a compact human label derived per event family.
-fn recent_event_from_value(v: &serde_json::Value) -> RecentEvent {
+///
+/// When the record carries no explicit `spec` and a `timeline` is supplied, the
+/// `spec` field is resolved through the time-ordered session→spec binding. This
+/// surfaces spec-less session events (`tool.use` / `agent.*` written under
+/// `.claude/.session/{id}/`) in the per-spec slices the dashboard derives from
+/// these feeds. An explicit non-empty `spec` is always honoured (never
+/// overridden); pass `None` to skip attribution entirely.
+fn recent_event_from_value_attributed(
+    v: &serde_json::Value,
+    timeline: Option<&telemetry::SessionSpecTimeline>,
+) -> RecentEvent {
     let event_type = telemetry::event_name_of(v).to_string();
     let ts = v.get("ts").and_then(|t| t.as_str()).map(str::to_string);
     let payload = v.get("payload");
@@ -531,7 +549,12 @@ fn recent_event_from_value(v: &serde_json::Value) -> RecentEvent {
         .or_else(|| payload.and_then(|p| p.get("spec")))
         .and_then(|s| s.as_str())
         .filter(|s| !s.is_empty())
-        .map(str::to_string);
+        .map(str::to_string)
+        .or_else(|| {
+            timeline
+                .and_then(|t| t.attributed_spec(v))
+                .map(str::to_string)
+        });
     let wave = v
         .get("wave")
         .and_then(serde_json::Value::as_i64)
@@ -1110,6 +1133,7 @@ fn dashboard_search_events(repo_path: String, query: String, limit: Option<usize
     let base = PathBuf::from(&repo_path);
     let needle = query.trim().to_lowercase();
     let mut events = telemetry::walk_ndjson_events(&base);
+    let timeline = telemetry::build_session_spec_timeline_from(&events);
     events.sort_by(|a, b| {
         let ta = a.get("ts").and_then(|t| t.as_str()).unwrap_or("");
         let tb = b.get("ts").and_then(|t| t.as_str()).unwrap_or("");
@@ -1118,7 +1142,7 @@ fn dashboard_search_events(repo_path: String, query: String, limit: Option<usize
     let cap = limit.unwrap_or(100).min(2000);
     let rows: Vec<RecentEvent> = events
         .iter()
-        .map(recent_event_from_value)
+        .map(|v| recent_event_from_value_attributed(v, Some(&timeline)))
         .filter(|r| {
             if needle.is_empty() {
                 return true;
@@ -1166,6 +1190,9 @@ fn dashboard_activity_aggregated(repo_path: String, limit: Option<usize>) -> Res
     // distinct-file count (from `tool.use` target.file_path).
     let base = PathBuf::from(&repo_path);
     let events = telemetry::walk_ndjson_events(&base);
+    // Read-time attribution so spec-less session `tool.use` / `agent.*` events
+    // group under the spec their session was bound to at the time.
+    let timeline = telemetry::build_session_spec_timeline_from(&events);
 
     struct Acc {
         spec: Option<String>,
@@ -1194,11 +1221,7 @@ fn dashboard_activity_aggregated(repo_path: String, limit: Option<usize>) -> Res
                 .or_else(|| Some(n.to_string())),
             _ => continue,
         };
-        let spec = v
-            .get("spec")
-            .and_then(|s| s.as_str())
-            .filter(|s| !s.is_empty())
-            .map(str::to_string);
+        let spec = timeline.attributed_spec(v).map(str::to_string);
         let wave = v.get("wave").and_then(serde_json::Value::as_i64);
         let ts = v.get("ts").and_then(|t| t.as_str()).map(str::to_string);
         let tokens = v
@@ -2163,6 +2186,7 @@ fn dashboard_telemetry_timeline(
     let base = PathBuf::from(&repo_path);
     let floor = time_range_floor_ms(&time_range);
     let mut events = telemetry::walk_ndjson_events(&base);
+    let timeline = telemetry::build_session_spec_timeline_from(&events);
     events.sort_by(|a, b| {
         let ta = a.get("ts").and_then(|t| t.as_str()).unwrap_or("");
         let tb = b.get("ts").and_then(|t| t.as_str()).unwrap_or("");
@@ -2180,7 +2204,7 @@ fn dashboard_telemetry_timeline(
         .take(cap)
         .enumerate()
         .map(|(i, v)| {
-            let re = recent_event_from_value(v);
+            let re = recent_event_from_value_attributed(v, Some(&timeline));
             telemetry_agg::TimelineEvent {
                 id: format!("ev-{i}"),
                 ts: re.ts.unwrap_or_default(),
@@ -2611,7 +2635,7 @@ mod onda2_tests {
             "spec": "alpha", "wave": 2, "actor": {"kind": "agent", "id": "explore-1"},
             "payload": {"tool": "Read", "target": {"file_path": "src/foo.rs"}}
         });
-        let re = recent_event_from_value(&v);
+        let re = recent_event_from_value_attributed(&v, None);
         assert_eq!(re.event_type, "tool.use");
         assert_eq!(re.spec.as_deref(), Some("alpha"));
         assert_eq!(re.wave, Some(2));

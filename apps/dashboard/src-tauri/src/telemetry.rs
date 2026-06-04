@@ -354,6 +354,123 @@ fn extract_attribution(record: &Value, session_id: &str) -> Attribution {
     }
 }
 
+// ── Session → spec read-time attribution (time-ordered binding) ──────────────
+
+/// Time-ordered session→spec binding table, built once from the workspace event
+/// log so spec-less work events (`tool.use` / `agent.*` written under
+/// `.claude/.session/{id}/.events/` with `spec == null`) can be attributed to
+/// the spec their session was bound to *at the time the work happened*.
+///
+/// The binding source is the set of pipeline lifecycle events
+/// (`pipeline.scope` / `pipeline.stage` / `pipeline.status`) — each carries
+/// BOTH `session_id` and `spec`, so they pin "session S was working spec X from
+/// time T". A session can move between specs over its lifetime, so per session
+/// we keep the full list of `(ts_ms, spec)` bindings sorted ascending and
+/// resolve any spec-less event to the most-recent binding with `ts <= event.ts`.
+///
+/// Events whose `ts` precedes the session's first binding — or whose session was
+/// never bound to any spec — stay unattributed (`None`); we never blanket-assign
+/// a whole session to one spec.
+#[derive(Debug, Default, Clone)]
+pub struct SessionSpecTimeline {
+    /// `session_id` → ascending `(ts_ms, spec)` bindings.
+    by_session: HashMap<String, Vec<(i64, String)>>,
+}
+
+impl SessionSpecTimeline {
+    /// The spec bound to `session_id` at `ts_ms` — the most-recent binding whose
+    /// timestamp is `<= ts_ms`. `None` when the session has no binding at or
+    /// before that instant (or is unknown).
+    #[must_use]
+    pub fn spec_at(&self, session_id: &str, ts_ms: i64) -> Option<&str> {
+        let bindings = self.by_session.get(session_id)?;
+        // `bindings` is sorted ascending by ts_ms (see `build_*`); take the last
+        // one that started at or before `ts_ms`.
+        bindings
+            .iter()
+            .rev()
+            .find(|(b_ts, _)| *b_ts <= ts_ms)
+            .map(|(_, spec)| spec.as_str())
+    }
+
+    /// Effective spec for a raw NDJSON `record`: its own non-empty `spec` when
+    /// present (never overridden), else the time-ordered session binding for
+    /// `(record.session_id, record.ts)`. `None` when neither resolves.
+    #[must_use]
+    pub fn attributed_spec<'r>(&'r self, record: &'r Value) -> Option<&'r str> {
+        // 1. Honour an explicit, non-empty spec on the record.
+        if let Some(spec) = record.get("spec").and_then(Value::as_str) {
+            if !spec.is_empty() {
+                return Some(spec);
+            }
+        }
+        // 2. Fall back to the time-ordered session binding.
+        let session = record.get("session_id").and_then(Value::as_str)?;
+        if session.is_empty() {
+            return None;
+        }
+        let ts_ms = record
+            .get("ts_ms")
+            .and_then(Value::as_i64)
+            .or_else(|| record.get("ts").and_then(Value::as_str).and_then(iso_to_ms))?;
+        self.spec_at(session, ts_ms)
+    }
+}
+
+/// Build the [`SessionSpecTimeline`] for `repo_path` from the complete workspace
+/// event log. Fail-open: a missing log / unreadable shards yield an empty table,
+/// so attribution simply degrades to "honour the record's own spec".
+#[must_use]
+pub fn build_session_spec_timeline(repo_path: &Path) -> SessionSpecTimeline {
+    build_session_spec_timeline_from(&walk_ndjson_events(repo_path))
+}
+
+/// Binding-source event names — the lifecycle events that carry both
+/// `session_id` and `spec`.
+const BINDING_EVENTS: &[&str] = &["pipeline.scope", "pipeline.stage", "pipeline.status"];
+
+/// Fold a pre-collected event slice into the session→spec timeline. Split out so
+/// callers that already hold the workspace event vec (e.g. `dashboard_spec_trace`)
+/// can reuse it without re-walking the filesystem.
+#[must_use]
+pub fn build_session_spec_timeline_from(records: &[Value]) -> SessionSpecTimeline {
+    let mut by_session: HashMap<String, Vec<(i64, String)>> = HashMap::new();
+    for record in records {
+        if !BINDING_EVENTS.contains(&event_name(record)) {
+            continue;
+        }
+        let Some(session) = record.get("session_id").and_then(Value::as_str) else {
+            continue;
+        };
+        if session.is_empty() {
+            continue;
+        }
+        let Some(spec) = record.get("spec").and_then(Value::as_str) else {
+            continue;
+        };
+        if spec.is_empty() {
+            continue;
+        }
+        let Some(ts_ms) = record
+            .get("ts_ms")
+            .and_then(Value::as_i64)
+            .or_else(|| record.get("ts").and_then(Value::as_str).and_then(iso_to_ms))
+        else {
+            continue;
+        };
+        by_session
+            .entry(session.to_string())
+            .or_default()
+            .push((ts_ms, spec.to_string()));
+    }
+    // Sort each session's bindings ascending by ts so `spec_at` can binary-walk
+    // from the end for the last binding at-or-before a query timestamp.
+    for bindings in by_session.values_mut() {
+        bindings.sort_by_key(|(ts, _)| *ts);
+    }
+    SessionSpecTimeline { by_session }
+}
+
 /// Canonical harness event NAME for a raw NDJSON record. The writers emit a
 /// top-level `"event"` field (e.g. `"tool.use"`, `"pipeline.telemetry.run"`)
 /// distinct from the `"kind"` CLASS (`"tool"`, `"pipeline"`); when `"event"`
@@ -1698,6 +1815,41 @@ pub fn dashboard_spec_trace(project_path: String, spec_name: String) -> Value {
         }
     }
 
+    // Read-time session→spec attribution: a session's work events (`tool.use`,
+    // `agent.*`) are written under `.claude/.session/{id}/.events/` with
+    // `spec == null`, so the spec-dir walk above misses them and the trace looks
+    // idle while work is in flight. Build the time-ordered binding from the whole
+    // workspace log and pull in every session event that attributes to THIS spec
+    // (its session was bound here at the event's ts). Fail-open: an empty
+    // workspace log leaves `all_events` as the spec-dir-only set (today's behavior).
+    let workspace = walk_ndjson_events(&base);
+    let timeline = build_session_spec_timeline_from(&workspace);
+    let session_root = base.join(".claude").join(".session");
+    if let Ok(session_dirs) = std::fs::read_dir(&session_root) {
+        for entry in session_dirs.flatten() {
+            let p = entry.path();
+            if !p.is_dir() {
+                continue;
+            }
+            let mut session_events: Vec<Value> = Vec::new();
+            collect_one_dir(&p.join(".events"), &mut session_events);
+            for ev in session_events {
+                // Only attribute spec-less events (an explicit non-empty spec is
+                // already honoured by the spec-dir walk and must not be double-counted).
+                let already_specced = ev
+                    .get("spec")
+                    .and_then(Value::as_str)
+                    .map_or(false, |s| !s.is_empty());
+                if already_specced {
+                    continue;
+                }
+                if timeline.attributed_spec(&ev) == Some(spec_name.as_str()) {
+                    all_events.push(ev);
+                }
+            }
+        }
+    }
+
     // Pass 1: build `tool_use_id -> agent_id` map from `agent.start` events.
     let mut tool_to_agent: HashMap<String, String> = HashMap::new();
     for ev in &all_events {
@@ -2120,5 +2272,85 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let rows = dashboard_sessions(tmp.path().to_string_lossy().into_owned(), None);
         assert!(rows.is_empty());
+    }
+
+    // ── Read-time session→spec attribution ───────────────────────────────────
+
+    #[test]
+    fn timeline_attributes_specless_event_to_time_ordered_binding() {
+        // session sess-1 bound to spec-X at 09:00 (via pipeline.scope), then to
+        // spec-Y at 10:00 (via pipeline.stage). A spec-less tool.use at 09:30
+        // must attribute to spec-X; one at 10:30 to spec-Y; one at 08:30 (before
+        // any binding) stays unattributed.
+        let scope = r#"{"event":"pipeline.scope","kind":"pipeline","ts":"2026-05-27T09:00:00.000Z","session_id":"sess-1","spec":"spec-X","payload":{"scope":"full"}}"#;
+        let stage = r#"{"event":"pipeline.stage","kind":"pipeline","ts":"2026-05-27T10:00:00.000Z","session_id":"sess-1","spec":"spec-Y","payload":{"to":"EXECUTE"}}"#;
+        let records: Vec<Value> = [scope, stage]
+            .iter()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        let timeline = build_session_spec_timeline_from(&records);
+
+        let mk = |ts: &str| -> Value {
+            serde_json::from_str(&format!(
+                r#"{{"event":"tool.use","kind":"tool","ts":"{ts}","session_id":"sess-1","spec":null,"payload":{{"tool":"Read"}}}}"#
+            ))
+            .unwrap()
+        };
+        assert_eq!(
+            timeline.attributed_spec(&mk("2026-05-27T09:30:00.000Z")),
+            Some("spec-X")
+        );
+        assert_eq!(
+            timeline.attributed_spec(&mk("2026-05-27T10:30:00.000Z")),
+            Some("spec-Y")
+        );
+        // Before the first binding → unattributed.
+        assert_eq!(timeline.attributed_spec(&mk("2026-05-27T08:30:00.000Z")), None);
+        // Unknown session → unattributed.
+        let other = serde_json::from_str::<Value>(
+            r#"{"event":"tool.use","kind":"tool","ts":"2026-05-27T09:30:00.000Z","session_id":"sess-other","spec":null,"payload":{}}"#,
+        )
+        .unwrap();
+        assert_eq!(timeline.attributed_spec(&other), None);
+    }
+
+    #[test]
+    fn timeline_honours_explicit_spec_without_override() {
+        // An event that already carries a non-empty spec is returned verbatim,
+        // even if a binding for its session points elsewhere.
+        let scope = r#"{"event":"pipeline.scope","kind":"pipeline","ts":"2026-05-27T09:00:00.000Z","session_id":"sess-1","spec":"spec-X","payload":{}}"#;
+        let records: Vec<Value> = vec![serde_json::from_str(scope).unwrap()];
+        let timeline = build_session_spec_timeline_from(&records);
+        let ev = serde_json::from_str::<Value>(
+            r#"{"event":"tool.use","kind":"tool","ts":"2026-05-27T09:30:00.000Z","session_id":"sess-1","spec":"spec-explicit","payload":{}}"#,
+        )
+        .unwrap();
+        assert_eq!(timeline.attributed_spec(&ev), Some("spec-explicit"));
+    }
+
+    #[test]
+    fn spec_trace_includes_attributed_session_tool_event() {
+        // The reported bug: a spec under active EXECUTE shows empty because its
+        // session's work events live in `.session/{id}/.events/` with spec=null.
+        // With a `pipeline.scope` binding (session=sess-1 → spec=alpha at an
+        // EARLIER ts) under the spec's own `.events/`, the spec trace must surface
+        // the spec-less session `tool.use`.
+        let tmp = TempDir::new().unwrap();
+        // Binding event lives under the spec dir (as on disk).
+        let binding = r#"{"event":"pipeline.scope","kind":"pipeline","ts":"2026-05-27T09:00:00.000Z","session_id":"sess-1","spec":"alpha","payload":{"scope":"full"}}"#;
+        write_event(tmp.path(), "alpha", "scope.ndjson", &format!("{binding}\n"));
+        // The spec-less work event lives under the session sink (as on disk).
+        let tool = r#"{"event":"tool.use","kind":"tool","ts":"2026-05-27T09:30:00.000Z","session_id":"sess-1","spec":null,"payload":{"tool":"Edit","target":{"file_path":"src/live.rs"}}}"#;
+        write_session_event(tmp.path(), "sess-1", "work.ndjson", &format!("{tool}\n"));
+
+        let trace = dashboard_spec_trace(
+            tmp.path().to_string_lossy().into_owned(),
+            "alpha".to_string(),
+        );
+        let flat = trace.to_string();
+        assert!(
+            flat.contains("src/live.rs"),
+            "attributed session tool.use must appear in spec alpha's trace; got: {flat}"
+        );
     }
 }
