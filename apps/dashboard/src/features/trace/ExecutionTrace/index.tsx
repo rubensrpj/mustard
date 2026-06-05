@@ -23,11 +23,18 @@ import {
   ChevronRight,
   ChevronsDownUp,
   ChevronsUpDown,
+  AlertCircle,
 } from "lucide-react";
 import { useSpecTrace } from "@/hooks/useSpecTrace";
-import type { TraceKind, TraceNode, TokenBreakdown } from "@/lib/types/trace";
+import type {
+  TraceKind,
+  TraceNode,
+  TokenBreakdown,
+  ToolResultPayload,
+} from "@/lib/types/trace";
 import { StatPill } from "@/components/page";
 import { formatTokens } from "@/lib/types/economy";
+import { useT } from "@/lib/i18n";
 import { ToolEventRow } from "../ToolEventRow";
 import { toolIconColorClass } from "../tool-palette";
 import { cn } from "@/lib/utils";
@@ -217,6 +224,20 @@ function iconColorFor(node: TraceNode): string {
   );
 }
 
+/** A tool node carries an error when its paired `tool.result` reports a
+ *  non-zero exit code or a non-empty stderr excerpt (Bash failures). The
+ *  `result` is spliced onto the `tool.use` payload by the Rust pairing step —
+ *  same access path `ToolEventRow` uses. */
+function hasError(node: TraceNode): boolean {
+  if (node.kind !== "tool") return false;
+  const result = (node.payload as Record<string, unknown> | null)?.["result"] as
+    | ToolResultPayload
+    | undefined;
+  if (!result) return false;
+  if (result.exit_code != null && result.exit_code !== 0) return true;
+  return !!result.stderr_excerpt && result.stderr_excerpt.length > 0;
+}
+
 const KIND_LABEL: Record<TraceKind, string> = {
   spec: "SPEC",
   wave: "WAVE",
@@ -233,10 +254,13 @@ const TraceNodeRow = memo(function TraceNodeRow({
   toggleById,
   setExpanded,
 }: TraceNodeRowProps) {
+  const t = useT();
   const Icon = KIND_ICON[node.kind];
   // Tool nodes colour by tool TYPE (Bash/Read/Edit/…); everything else keeps
   // the per-kind colour. Falls back to the kind colour for unknown tools.
   const iconColor = iconColorFor(node);
+  // Surface failed commands in the collapsed tree without expanding.
+  const nodeHasError = hasError(node);
   const hasChildren = node.children.length > 0;
   // Specs and waves stay open by default; agents/tools collapse so the
   // initial view doesn't drown the reader.
@@ -289,6 +313,13 @@ const TraceNodeRow = memo(function TraceNodeRow({
       <span className="font-medium text-[13px] text-[--ds-text-primary] truncate flex-1 min-w-0">
         {node.label}
       </span>
+      {nodeHasError ? (
+        <AlertCircle
+          size={14}
+          className="shrink-0 text-[--ds-intent-error]"
+          aria-label={t("trace.tool.error")}
+        />
+      ) : null}
       <span
         className={cn(
           "shrink-0 px-1.5 py-0.5 rounded-[--ds-radius-sm]",

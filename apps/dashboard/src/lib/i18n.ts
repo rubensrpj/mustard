@@ -471,6 +471,12 @@ const DICTIONARY = new Map<string, TranslationRow>([
   ["eventTheme.decision.detail", { pt: "Decisão arquitetural registrada durante a pipeline", en: "Architectural decision recorded during the pipeline" }],
   ["eventTheme.finding.detail", { pt: "Achado/observação registrado pelo agente", en: "Finding/observation recorded by the agent" }],
   ["eventTheme.lesson.detail", { pt: "Aprendizado capturado pra knowledge base", en: "Lesson captured for the knowledge base" }],
+
+  // ── Execution trace (tool event rows) ─────────────────────────────────
+  // Write/create has `file_after` but no `file_before` snapshot, so we show
+  // the written content as a code view instead of a diff.
+  ["trace.tool.writtenContent", { pt: "Conteúdo escrito", en: "Written content" }],
+  ["trace.tool.error", { pt: "Comando falhou", en: "Command failed" }],
 ]);
 
 /**

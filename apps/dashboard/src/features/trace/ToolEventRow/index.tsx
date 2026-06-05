@@ -31,6 +31,7 @@ import { DiffViewer, CodeBlock, type CodeLang } from "@/components/page";
 import { toolPillColorClass } from "../tool-palette";
 import { cn } from "@/lib/utils";
 import { relativeTime } from "@/lib/time";
+import { useT } from "@/lib/i18n";
 import type {
   TraceNode,
   ToolUsePayload,
@@ -55,6 +56,7 @@ interface ToolEventRowProps {
 }
 
 export const ToolEventRow = memo(function ToolEventRow({ node }: ToolEventRowProps) {
+  const t = useT();
   // Cast to the real shape — legacy fields land in `payload` as extras
   // (we treat anything missing as `undefined`, never throw).
   const payload = (node.payload ?? {}) as ToolUsePayload & Record<string, unknown>;
@@ -100,6 +102,23 @@ export const ToolEventRow = memo(function ToolEventRow({ node }: ToolEventRowPro
             after={result.file_after}
             mode="split"
             maxLines={200}
+          />
+        </PayloadCard>
+      );
+    }
+    // Write/create captures `file_after` but has no "before" snapshot — there's
+    // nothing to diff against, so show the written content as a code view
+    // instead of the "diff não capturado" fallback.
+    if (result?.file_after != null) {
+      return (
+        <PayloadCard toolName={toolName} subheader={filePath} payload={payload} meta={meta}>
+          <p className="mb-1 text-[11px] text-[--ds-text-tertiary]">
+            {t("trace.tool.writtenContent")}
+          </p>
+          <CodeBlock
+            code={truncate(result.file_after, 200)}
+            lang={detectLang(filePath)}
+            showLineNumbers
           />
         </PayloadCard>
       );
