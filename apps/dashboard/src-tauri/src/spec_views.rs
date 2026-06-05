@@ -385,6 +385,15 @@ pub(crate) fn spec_card_v2_with_counts(
     if let Some(meta_status) = meta_status_word(&spec_md) {
         card.status = meta_status;
     }
+    // Reconcile the card's stepper *phase* against `meta.json` the same way the
+    // status word is. The event-fold `view.phase` stalls at `plan` because the
+    // rt never emits a parent `pipeline.phase = EXECUTE` once a spec starts
+    // executing, while `meta.json` already reads `phase = EXECUTE`. Without this
+    // the card lights "Planejar" while the LIST shows "Executando". Forward-only
+    // — a card already at QA/Close is never regressed. No meta.json → unchanged.
+    if let Some(meta) = mustard_core::domain::meta::read_meta_beside(&spec_md) {
+        card.phase = reconcile_phase_with_meta(&meta, &card.phase);
+    }
     merge_attributed_counts(&mut card, counts.get(spec));
     Ok(Some(card))
 }
@@ -455,6 +464,55 @@ fn reconcile_status_with_phase(
     match phase_rank {
         r if r >= EXECUTE_RANK => "implementing".to_string(),
         _ => word.to_string(),
+    }
+}
+
+/// Forward-only reconciliation of the card's *displayed phase* string against
+/// `meta.json` (DEFECT 1 relief, card side).
+///
+/// The card's `phase` is mapped straight from `view.phase`, the event-fold
+/// projection. That projection stalls at `plan` because the rt never emits a
+/// parent `pipeline.phase = EXECUTE` once a Light/Full spec starts executing —
+/// only `meta.json` advances (`stage=Plan`, `phase=EXECUTE`). The LIST status
+/// already reconciles via [`reconcile_status_with_phase`]; this brings the
+/// card's stepper node in line so it lights "Executar", not "Planejar".
+///
+/// `card_phase` is the lowercase phase string already on the card (`""` when
+/// the view carried no phase). We promote it to the more-advanced of
+/// {`meta.phase`, `meta.stage`, `card_phase`} — strictly forward-only, so a
+/// card already at QA/Close is never regressed by a stale earlier token.
+/// Returns the (possibly promoted) lowercase phase string.
+fn reconcile_phase_with_meta(
+    meta: &mustard_core::domain::meta::Meta,
+    card_phase: &str,
+) -> String {
+    // Highest pipeline rank seen across the card's current phase, the meta
+    // stage, and the meta phase — each contributes only when it parses.
+    let card_rank = phase_rank(card_phase).unwrap_or(0);
+    let stage_r = meta.stage.as_deref().and_then(stage_rank).unwrap_or(0);
+    let phase_r = meta.phase.as_deref().and_then(phase_rank).unwrap_or(0);
+    let best = card_rank.max(stage_r).max(phase_r);
+    // Nothing ranked, or the card is already at/ahead of every signal → keep it.
+    if best == 0 || best <= card_rank {
+        return card_phase.to_string();
+    }
+    // Render the canonical phase word for the winning rank. Falls back to the
+    // card's own phase if the rank has no phase spelling (it always does for
+    // 1..=5, so this is a defensive no-op).
+    phase_word_for_rank(best).unwrap_or(card_phase).to_string()
+}
+
+/// Inverse of [`phase_rank`]: the canonical lowercase phase token for a pipeline
+/// rank, matching the spellings [`phase_string`] emits so the card and the
+/// stepper agree. `None` for ranks outside the known 1..=5 range.
+const fn phase_word_for_rank(rank: u8) -> Option<&'static str> {
+    match rank {
+        1 => Some("analyze"),
+        2 => Some("plan"),
+        3 => Some("execute"),
+        4 => Some("qa"),
+        5 => Some("close"),
+        _ => None,
     }
 }
 
@@ -2102,6 +2160,33 @@ mod tests {
         let m = meta(Some("Execute"), Some("EXECUTE"), Some("Active"));
         let word = mustard_core::domain::meta::status_word(&m); // "implementing"
         assert_eq!(reconcile_status_with_phase(&m, word), "implementing");
+    }
+
+    #[test]
+    fn card_phase_promoted_to_execute_when_meta_phase_ahead() {
+        // The card defect: view.phase folds to "plan" (rt never emits parent
+        // pipeline.phase=EXECUTE) but meta reads {stage:Plan, phase:EXECUTE}.
+        // The card phase must resolve to "execute" so the stepper lights
+        // "Executar", matching the LIST status "Executando".
+        let m = meta(Some("Plan"), Some("EXECUTE"), Some("Active"));
+        assert_eq!(reconcile_phase_with_meta(&m, "plan"), "execute");
+    }
+
+    #[test]
+    fn card_phase_never_regressed_below_its_view() {
+        // Card already at QA/Close from the event stream — a stale earlier meta
+        // token must never pull the stepper back.
+        let m = meta(Some("Plan"), Some("PLAN"), Some("Active"));
+        assert_eq!(reconcile_phase_with_meta(&m, "qa"), "qa");
+        assert_eq!(reconcile_phase_with_meta(&m, "close"), "close");
+    }
+
+    #[test]
+    fn card_phase_unchanged_when_meta_blank() {
+        // No parseable stage/phase in meta → keep whatever the view carried.
+        let m = meta(None, None, None);
+        assert_eq!(reconcile_phase_with_meta(&m, "plan"), "plan");
+        assert_eq!(reconcile_phase_with_meta(&m, ""), "");
     }
 
     // ── DEFECT 2: in-progress wave derivation ────────────────────────────────

@@ -3,7 +3,11 @@ import { cn } from "@/lib/utils";
 import { PipelineTimeline } from "@/features/telemetry/PipelineTimeline";
 import { SpecActionMenu } from "../SpecActionMenu";
 import { StatusPill } from "../_shared/spec-status";
-import type { SpecCard as SpecCardData } from "@/lib/types/specs";
+import { useT } from "@/lib/i18n";
+import type { SpecCard as SpecCardData, SpecWave } from "@/lib/types/specs";
+
+/** Lifecycle status words that mean "executing right now". */
+const EXECUTING_STATUSES = new Set(["implementing", "active", "in_progress"]);
 
 interface SpecCardProps {
   data: SpecCardData;
@@ -32,6 +36,15 @@ interface SpecCardProps {
    * Network drill-down preview) keep rendering without the action.
    */
   onOpenSpec?: (slug: string) => void;
+  /**
+   * Optional wave list (already fetched by the caller via `useSpecWaves`).
+   * When a wave is `in_progress` the footer points at the live wave + role
+   * ("Onda N — role em execução") instead of the misleading "ondas N/total"
+   * (whose `current_wave` is the LAST COMPLETED wave). Absent in the list view
+   * (one waves query per card would be an N+1 fan-out); there the footer falls
+   * back to the card-data heuristic.
+   */
+  waves?: SpecWave[];
   className?: string;
 }
 
@@ -94,8 +107,33 @@ export function SpecCard({
   networkHref,
   subSpecsHref,
   onOpenSpec,
+  waves,
   className,
 }: SpecCardProps) {
+  const t = useT();
+
+  // Which wave (if any) is executing right now. Prefer the `in_progress` wave
+  // over `data.current_wave` (which is the LAST COMPLETED wave — misleading as
+  // a "what's running" target).
+  const runningWave = waves?.find((w) => w.status === "in_progress") ?? null;
+  const isExecuting = EXECUTING_STATUSES.has(data.status);
+
+  // The footer's "ondas" cell becomes a target: the live wave + role when one
+  // is running; "Executando" for a Light spec executing with no waves; else
+  // the plain N/total counter.
+  let wavesTarget: string | null = null;
+  if (runningWave) {
+    wavesTarget = runningWave.role
+      ? t("specCard.target.waveRunning")
+          .replace("{n}", String(runningWave.wave))
+          .replace("{role}", runningWave.role)
+      : t("specCard.target.waveRunningNoRole").replace(
+          "{n}",
+          String(runningWave.wave),
+        );
+  } else if (isExecuting && (data.total_waves == null || data.total_waves <= 0)) {
+    wavesTarget = t("specCard.target.executing");
+  }
   // Wave-4: a spec is a "parent" when it has any child waves. Render the
   // `+N waves` badge that takes the user to the Network tab of the drill-
   // down. We use an anchor (not router) so callers without a Router context
@@ -216,12 +254,25 @@ export function SpecCard({
       <div className="flex items-center gap-4 flex-wrap text-[11px] text-muted-foreground tabular-nums"
         style={{ fontVariantNumeric: "tabular-nums" }}
       >
-        <span title="Ondas">
-          <span className="text-muted-foreground/60">ondas</span>{" "}
-          <span className="text-foreground/70 font-medium">
-            {data.current_wave ?? "—"}/{data.total_waves ?? "—"}
+        {wavesTarget ? (
+          <span
+            title={wavesTarget}
+            className="inline-flex items-center gap-1 text-[--primary] font-medium"
+          >
+            <span
+              className="h-1.5 w-1.5 rounded-full bg-[--primary] animate-pulse"
+              aria-hidden
+            />
+            {wavesTarget}
           </span>
-        </span>
+        ) : (
+          <span title="Ondas">
+            <span className="text-muted-foreground/60">ondas</span>{" "}
+            <span className="text-foreground/70 font-medium">
+              {data.current_wave ?? "—"}/{data.total_waves ?? "—"}
+            </span>
+          </span>
+        )}
         <span title="Critérios de aceitação">
           <span className="text-muted-foreground/60">ACs</span>{" "}
           <span className="text-foreground/70 font-medium">

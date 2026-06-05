@@ -372,6 +372,18 @@ function WaveLi({
           </div>
         </div>
 
+        {/* Running marker — the prominent "EXECUTANDO" badge on the live wave,
+            so the user can tell at a glance WHICH wave is executing. Uses the
+            mustard/warning accent so it pops next to the neutral status pill. */}
+        {wave.status === "in_progress" && (
+          <span
+            className="text-[10px] font-semibold px-1.5 py-0.5 rounded uppercase tracking-wide shrink-0 bg-[--primary] text-[--primary-foreground] animate-pulse"
+            title={t("specWaves.row.runningBadgeTitle")}
+          >
+            {t("specWaves.row.runningBadge")}
+          </span>
+        )}
+
         {/* Status pill — driven by wave.status */}
         <span
           className={cn(

@@ -63,12 +63,24 @@ pub fn classify_kind(path: &Path) -> Option<&'static str> {
 }
 
 /// Recognise the per-spec / per-session NDJSON event-log writes that back every
-/// rebuilt dashboard view. Matches any path whose normalized form contains the
-/// `.events` segment and ends with `.ndjson` — covering
+/// rebuilt dashboard view. Matches any path whose normalized form contains an
+/// `events`-log directory segment and ends with `.ndjson` — covering the dotted
 /// `.claude/spec/{name}/.events/`, `wave-N-*/.events/`, and
-/// `.claude/.session/{id}/.events/` on both `/` and `\` separators.
+/// `.claude/.session/{id}/.events/` AND the non-dotted `wave-N-*/events/` that
+/// the events walker also reads (`telemetry::walk_ndjson_events` →
+/// `wp.join("events")`). Without the non-dotted case a write to a wave's
+/// `events/` dir would refresh the cached view set but never invalidate the
+/// parsed-events cache. Handles both `/` and `\` separators.
 fn is_events_log(s: &str) -> bool {
-    s.contains(".events") && s.ends_with(".ndjson")
+    if !s.ends_with(".ndjson") {
+        return false;
+    }
+    // Dotted `.events/` (spec, wave, session) OR non-dotted `events/` directory
+    // segment (wave-level walker). The leading separator boundary keeps this
+    // from matching an unrelated basename like `myevents.ndjson`.
+    s.contains(".events")
+        || s.contains("/events/")
+        || s.contains("\\events\\")
 }
 
 /// Recognise file paths that back the knowledge base (file-based variants).
@@ -201,6 +213,22 @@ mod tests {
         );
         assert_eq!(
             kind("/repo/.claude/spec/my-feature/wave-1-impl/.events/x.ndjson"),
+            Some("events"),
+        );
+    }
+
+    #[test]
+    fn non_dotted_wave_events_dir_classifies_as_events() {
+        // FIX 3: the events walker also reads non-dotted `wave-N-*/events/`
+        // (telemetry::walk_ndjson_events → `wp.join("events")`). A write there
+        // must invalidate the events cache, so it has to classify as `events`,
+        // not fall through to the `spec` branch.
+        assert_eq!(
+            kind(r"C:\repo\.claude\spec\my-feature\wave-1-impl\events\x.ndjson"),
+            Some("events"),
+        );
+        assert_eq!(
+            kind("/repo/.claude/spec/my-feature/wave-1-impl/events/x.ndjson"),
             Some("events"),
         );
     }

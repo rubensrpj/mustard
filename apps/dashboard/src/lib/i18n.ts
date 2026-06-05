@@ -382,6 +382,11 @@ const DICTIONARY = new Map<string, TranslationRow>([
   ["specWaves.row.mainSpecLabel", { pt: "Spec principal", en: "Main spec" }],
   ["specWaves.orphans.label", { pt: "Sem onda correlacionada", en: "No correlated wave" }],
   ["specWaves.orphans.aria", { pt: "Sub-specs sem onda correlacionada", en: "Sub-specs with no correlated wave" }],
+  ["specWaves.row.runningBadge", { pt: "EXECUTANDO", en: "RUNNING" }],
+  ["specWaves.row.runningBadgeTitle", { pt: "Esta onda está em execução agora", en: "This wave is running right now" }],
+  ["specCard.target.waveRunning", { pt: "Onda {n} — {role} em execução", en: "Wave {n} — {role} running" }],
+  ["specCard.target.waveRunningNoRole", { pt: "Onda {n} em execução", en: "Wave {n} running" }],
+  ["specCard.target.executing", { pt: "Executando", en: "Running" }],
 
   // ── Spec track row (Workspace hero list) ──────────────────────────────
   ["specTrack.inProgressAria", { pt: "Em execução", en: "In progress" }],

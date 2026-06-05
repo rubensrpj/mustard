@@ -107,6 +107,17 @@ export function SpecChildRow({
       ) : (
         <span className="flex-1" aria-hidden />
       )}
+      {/* Running marker for the live wave — makes the executing wave obvious
+          in the inline list expand, mirroring the Ondas tab badge. Uses the
+          mustard accent so it stands out from the neutral status pill. */}
+      {kind === "wave" && (status === "in_progress" || status === "in-progress") ? (
+        <span
+          className="shrink-0 text-[9px] font-semibold px-1 py-0.5 rounded uppercase tracking-wide bg-[--primary] text-[--primary-foreground] animate-pulse"
+          title={t("specWaves.row.runningBadgeTitle")}
+        >
+          {t("specWaves.row.runningBadge")}
+        </span>
+      ) : null}
       {/* Per-row status indicator the detail tabs' columns expect: pass/fail
           for ACs, completed/in-progress/queued/failed for waves. Sub-specs
           already carry their lifecycle in the StageBullet, so the pill is

@@ -61,7 +61,7 @@ export function SpecDetailDashboard({
           itself (we're already inside the detail view). */}
       <div className="mb-4">
         {cardQ.data ? (
-          <SpecCard data={cardQ.data} repoPath={repoPath} />
+          <SpecCard data={cardQ.data} repoPath={repoPath} waves={wavesQ.data} />
         ) : (
           <div className="h-32 bg-muted/40 rounded-lg animate-pulse" />
         )}
