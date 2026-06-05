@@ -204,10 +204,14 @@ pub fn run(spec: &str, json_flag: bool) {
             0
         };
         if out.is_wave_plan {
-            // Re-derive current wave 0-based from completed_waves instead of
-            // trusting `v.current_wave` which defaults to 1 (1-based legacy).
-            // 0 completed waves → wave 0 is current; N completed waves → wave N.
-            out.current_wave = v.completed_waves.iter().max().map_or(0, |&m| m + 1);
+            // Wave directories are 1-based (`wave-1-*` is the first wave; there
+            // is no `wave-0-*`), matching `plan-from-spec` / `wave-scaffold`. So
+            // the first wave to dispatch is 1, not 0: 0 completed → wave 1; last
+            // completed wave M → wave M+1. This mirrors the projection's own
+            // `current_wave` (max+1, default 1). The earlier 0-based re-derivation
+            // pointed `operationalSpecPath` at `wave-0-*` (missing) on the very
+            // first dispatch, silently falling back to the parent `spec.md`.
+            out.current_wave = v.completed_waves.iter().max().map_or(1, |&m| m + 1);
         }
     } else if out.is_wave_plan {
         // No events yet, but a plan exists on disk — fall back to FS scan.
@@ -225,8 +229,9 @@ pub fn run(spec: &str, json_flag: bool) {
             out.total_waves = fs_total;
         }
     }
-    // Note: wave directories are 0-based in Mustard (wave-0-*, wave-1-*, …).
-    // When no events exist yet, current_wave stays 0 — do NOT bump to 1.
+    // Note: wave directories are 1-based in Mustard (wave-1-*, wave-2-*, …);
+    // there is no wave-0. When no events exist yet, current_wave is the first
+    // wave: 1.
 
     // --- Resolve operational spec path. ---
     let op_path = if out.is_wave_plan {

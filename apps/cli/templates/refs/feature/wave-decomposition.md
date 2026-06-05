@@ -71,6 +71,8 @@ Before building the wave plan in Full scope, check whether the work warrants mor
    ```
    `tasks` / `files` / `acceptance` are optional per wave (a summary-only entry still scaffolds); a wave with no `tasks` emits a stderr WARN so the gap is visible.
 
+   **`depends_on` must use the `wave-N-role` form** (identical to the wave's own `Spec` wikilink — e.g. `["wave-1-backend"]`), NOT the bare role name (`["backend"]`). Dependencies are resolved by **wave number**, and the `wave-N-role` link is unambiguous even when two waves share a role. (`dispatch-plan` also accepts a bare role as a best-effort fallback, but it resolves to the *first* wave carrying that role — wrong when a role repeats — so do not rely on it.) An unresolved dependency is dropped silently, which flattens the wave DAG to a single parallel level (every wave dispatched at once, ordering lost).
+
    Scaffold it:
    ```bash
    mustard-rt run wave-scaffold --spec-dir .claude/spec/{date}-{name} --plan plan.json

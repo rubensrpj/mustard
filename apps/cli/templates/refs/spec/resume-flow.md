@@ -20,7 +20,7 @@ As of 2026-05-25 the binary refuses to emit `pipeline.complete` without a `qa.re
 
 ## Step 12c — Wave Plan Scope (conditional, only if `isWavePlan === true`)
 
-When the bootstrap JSON indicates a wave plan, the orchestrator dispatches only the **current wave**, never the entire spec.
+When the bootstrap JSON indicates a wave plan, the orchestrator dispatches the current **dispatch level** — every wave that shares the lowest not-yet-completed `level` — in one message, never the entire spec and never a single wave when several waves share that level.
 
 ### Routing is decided by Rust — the orchestrator is a relay
 
@@ -41,25 +41,27 @@ It reads `wave-plan.md`, builds the dependency DAG, and returns a deterministic 
 - **`prompt_cmd`** is a ready `agent-prompt-render` invocation — NOT the prompt. Run it; pass its **stdout** as the Task `prompt`.
 - **`subagent_type`**: each item carries its own — the tool picks the agent per role (read-only roles run tool-restricted: `explore`→`Explore`, `review`/`qa`→`mustard-review`, `guards`→`mustard-guards`; writing roles → `general-purpose`). Pass it through; never pick by hand.
 
-To dispatch just the current wave, slice with `--wave {currentWave}`. The orchestrator does NOT decide the order, group rounds, or assemble the loop by hand — `dispatch-plan` owns that ("free section" determinised). `resume-bootstrap` stays the **stage** decision (mode / stage / current wave); `dispatch-plan` is the **wave-routing** decision.
+The orchestrator does NOT decide the order, group rounds, or assemble the loop by hand — `dispatch-plan` owns that ("free section" determinised). `resume-bootstrap` stays the **stage** decision (mode / stage / progress); `dispatch-plan` is the **wave-routing** decision. (`--wave {N}` slices the array to a single item — a utility for re-rendering one wave's dispatch, NOT the normal per-round path. Do NOT drive the loop off the bootstrap's scalar `currentWave`: it names one wave, but a round can hold several independent waves of the same `level`.)
 
-### Per-wave loop
+### Per-level loop
 
-1. The spec for this invocation is `operationalSpecPath` returned by bootstrap (already resolved to `wave-{currentWave}-*/spec.md`); the matching `dispatch-plan` item gives its `role` + `subproject` + `prompt_cmd`.
-2. **Between waves** (post-dispatch of wave N):
+The **round** is every `dispatch-plan` item whose `level` equals the lowest level among items whose `wave` is NOT in `completedWaves` (from `resume-bootstrap` / `wave-tree`). Process one round at a time — never one wave at a time when the round holds several.
+
+1. **Dispatch the whole round in ONE message.** For each item in the round: run Step 12d (dependency-precheck) on that wave's spec, then run its `prompt_cmd` and dispatch a Task with the stdout as `prompt` and the item's `subagent_type`. ALL `<invoke>` blocks go in a single message so the agents run concurrently.
+2. **After each wave N in the round returns:**
    - Commit `/mustard:git commit` style with message `feat(wave-{N}/{role}): {summary}`. Fallback: `git add {files} && git commit -m "..."`.
-   - Emit wave completion: `mustard-rt run emit-pipeline --kind pipeline.wave.complete --spec {specName} --payload "{\"wave\":{N},\"duration_ms\":{elapsed}}"`. The projection derives `completedWaves` + `currentWave` from these events — no JSON state file.
-   - Run `mustard-rt run wave-tree --spec-dir .claude/spec/{specName}` to show progress.
-   - Cache this wave's diff for the next wave: `rtk git diff HEAD~1 HEAD --stat > .claude/spec/{specName}/wave-{N}-{role}/diff.md` — keep the redirect target **relative** (never an absolute `C:\...` path; the bash gate rejects Windows-style redirect targets). The next wave's `agent-prompt-render` injects this file; the orchestrator does not pass anything explicitly.
-3. If `currentWave >= totalWaves` → do **NOT** emit `pipeline.complete`. Re-run `resume-bootstrap` and follow `nextAction` (REVIEW → QA → CLOSE, in that order).
-4. If a wave fails (REJECTED after 2 fix-loops, or BLOCKED) → see Escalation Statuses + `../resume/fix-loop-wave.md`.
+   - Emit wave completion: `mustard-rt run emit-pipeline --kind pipeline.wave.complete --spec {specName} --payload "{\"wave\":{N},\"duration_ms\":{elapsed}}"`. The projection derives `completedWaves` from these events — no JSON state file.
+   - Cache this wave's diff for dependent waves: `rtk git diff HEAD~1 HEAD --stat > .claude/spec/{specName}/wave-{N}-{role}/diff.md` — keep the redirect target **relative** (never an absolute `C:\...` path; the bash gate rejects Windows-style redirect targets). The next level's `agent-prompt-render` injects this file; the orchestrator does not pass anything explicitly.
+3. **After the round completes**, run `mustard-rt run wave-tree --spec-dir .claude/spec/{specName}` to show progress, then advance to the next-lowest pending `level`.
+4. When no pending wave remains → do **NOT** emit `pipeline.complete`. Re-run `resume-bootstrap` and follow `nextAction` (REVIEW → QA → CLOSE, in that order).
+5. If a wave fails (REJECTED after 2 fix-loops, or BLOCKED) → see Escalation Statuses + `../resume/fix-loop-wave.md`. A failed wave blocks the higher levels that depend on it; independent waves in the same round still complete.
 
 ## Step 12d — Dependency Precheck (factual gate)
 
-Before dispatching the wave, run:
+Before dispatching each wave in the round, run it on that wave's spec:
 
 ```bash
-mustard-rt run dependency-precheck --spec {operationalSpecPath}
+mustard-rt run dependency-precheck --spec .claude/spec/{specName}/wave-{N}-{role}/spec.md
 ```
 
 Parse the JSON. If `ok: false`:
@@ -97,4 +99,4 @@ See `.claude/pipeline-config.md § Escalation Statuses` and `../resume/fix-loop-
 - ALWAYS use `mustard-rt run resume-bootstrap` to decide mode/path/diff/slice/`nextAction` — NEVER reimplement those rules in the SKILL.
 - ALWAYS run REVIEW + QA before CLOSE — `pipeline.complete` is refused (exit 2) without `qa.result`(overall=pass). Follow `nextAction` blindly.
 - ALWAYS run dependency-precheck (Step 12d) before dispatch.
-- Wave plan CLOSE only when `currentWave === totalWaves` AND `nextAction === "emit-complete"`.
+- Wave plan CLOSE only when every wave is in `completedWaves` (count === `totalWaves`) AND `nextAction === "emit-complete"`. Do not gate CLOSE on the scalar `currentWave`.

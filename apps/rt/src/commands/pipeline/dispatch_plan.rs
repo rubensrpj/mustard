@@ -204,7 +204,10 @@ fn read_wave_rows(spec_dir: &Path) -> Vec<WaveRow> {
 /// parsed via the shared `[[…]]` scanner and normalised to wave numbers.
 fn parse_wave_plan_table(text: &str) -> Vec<WaveRow> {
     let mut header: Option<Vec<String>> = None;
-    let mut rows: Vec<WaveRow> = Vec::new();
+    // Phase 1: collect `(wave, role, raw deps cell)`. A dependency cell can name
+    // a wave by role (`[[backend]]`), and resolving that needs the full
+    // role→wave map — which is not known until every row has been read.
+    let mut raw: Vec<(u32, String, String)> = Vec::new();
 
     for line in text.lines() {
         let trimmed = line.trim();
@@ -238,20 +241,31 @@ fn parse_wave_plan_table(text: &str) -> Vec<WaveRow> {
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| "mixed".to_string());
-        let depends_on = cols
+        let deps_cell = cols
             .depends_on
             .and_then(|i| cells.get(i))
-            .map(|cell| parse_depends_cell(cell, wave))
+            .cloned()
             .unwrap_or_default();
-        rows.push(WaveRow {
-            wave,
-            role,
-            depends_on,
-        });
+        raw.push((wave, role, deps_cell));
     }
-    rows.sort_by_key(|r| r.wave);
-    rows.dedup_by_key(|r| r.wave);
-    rows
+    raw.sort_by_key(|r| r.0);
+    raw.dedup_by_key(|r| r.0);
+
+    // Map each role to the wave that introduces it (lowest wave wins for a
+    // repeated role), so a role-named dependency cell resolves to a wave number.
+    let mut role_to_wave: BTreeMap<String, u32> = BTreeMap::new();
+    for (wave, role, _) in &raw {
+        role_to_wave.entry(role.clone()).or_insert(*wave);
+    }
+
+    // Phase 2: resolve each deps cell now that the role→wave map is complete.
+    raw.into_iter()
+        .map(|(wave, role, cell)| WaveRow {
+            wave,
+            depends_on: parse_depends_cell(&cell, wave, &role_to_wave),
+            role,
+        })
+        .collect()
 }
 
 /// Resolved data-cell indices for the columns we care about.
@@ -276,7 +290,10 @@ impl ColumnMap {
         let mut depends_on = None;
         for (i, h) in header.iter().enumerate() {
             let h = h.trim();
-            if role.is_none() && h == "role" {
+            // EN "role" / PT "papel" — without the PT alias a pt-BR wave-plan
+            // (header `Papel`) drops every role to the `mixed` fallback, which
+            // also breaks role-named dependency resolution below.
+            if role.is_none() && (h == "role" || h == "papel") {
                 role = Some(i);
             }
             // EN "depends on" / PT "depende de" — match the stem so spacing /
@@ -319,14 +336,14 @@ fn parse_wave_label(cell: &str) -> Option<u32> {
 /// the shared scanner; an em-dash / hyphen / empty cell means "no deps". A
 /// self-reference (a wave depending on itself, which the topo pass cannot use)
 /// is dropped.
-fn parse_depends_cell(cell: &str, self_wave: u32) -> Vec<u32> {
+fn parse_depends_cell(cell: &str, self_wave: u32, role_to_wave: &BTreeMap<String, u32>) -> Vec<u32> {
     let trimmed = cell.trim();
     if trimmed.is_empty() || trimmed == "—" || trimmed == "-" {
         return Vec::new();
     }
     let mut out: Vec<u32> = Vec::new();
     for link in find_outgoing_links(trimmed) {
-        if let Some(n) = wave_number_from_link(&link) {
+        if let Some(n) = wave_number_from_link(&link, role_to_wave) {
             if n != self_wave && !out.contains(&n) {
                 out.push(n);
             }
@@ -337,15 +354,27 @@ fn parse_depends_cell(cell: &str, self_wave: u32) -> Vec<u32> {
 }
 
 /// Resolve a dependency `[[…]]` token to a wave number. `[[1]]` → 1;
-/// `[[wave-1-general]]` → 1; anything else → `None`.
-fn wave_number_from_link(link: &str) -> Option<u32> {
+/// `[[wave-1-general]]` → 1; a bare role token `[[backend]]` → the wave that
+/// carries that role (via `role_to_wave`); anything else → `None`.
+///
+/// The role fallback exists because the Plan agent sometimes authors deps as
+/// bare role names instead of the `wave-N-role` dir form `plan-from-spec`
+/// emits. Without it, `find_outgoing_links` yields `backend`, this returns
+/// `None`, the edge is silently dropped, and the whole DAG flattens to level 0
+/// (every wave "dispatch-parallel") — losing real ordering AND the genuine
+/// parallelism between truly independent waves.
+fn wave_number_from_link(link: &str, role_to_wave: &BTreeMap<String, u32>) -> Option<u32> {
     let inner = link.trim();
     if let Ok(n) = inner.parse::<u32>() {
         return Some(n);
     }
-    let rest = inner.strip_prefix("wave-")?;
-    let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
-    digits.parse::<u32>().ok()
+    if let Some(rest) = inner.strip_prefix("wave-") {
+        let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+        if let Ok(n) = digits.parse::<u32>() {
+            return Some(n);
+        }
+    }
+    role_to_wave.get(inner).copied()
 }
 
 /// Fallback: derive wave rows from the `wave-N-{role}/` directories on disk.
@@ -614,11 +643,48 @@ mod tests {
     }
 
     #[test]
-    fn wave_number_from_link_handles_both_forms() {
-        assert_eq!(wave_number_from_link("1"), Some(1));
-        assert_eq!(wave_number_from_link("wave-2-general"), Some(2));
-        assert_eq!(wave_number_from_link("wave-12-rt"), Some(12));
-        assert_eq!(wave_number_from_link("memory/foo"), None);
+    fn wave_number_from_link_handles_number_wave_and_role_forms() {
+        let roles: BTreeMap<String, u32> =
+            [("backend".to_string(), 1u32), ("core".to_string(), 2u32)]
+                .into_iter()
+                .collect();
+        assert_eq!(wave_number_from_link("1", &roles), Some(1));
+        assert_eq!(wave_number_from_link("wave-2-general", &roles), Some(2));
+        assert_eq!(wave_number_from_link("wave-12-rt", &roles), Some(12));
+        // Bare role token resolves via the role→wave map.
+        assert_eq!(wave_number_from_link("backend", &roles), Some(1));
+        assert_eq!(wave_number_from_link("core", &roles), Some(2));
+        // Unknown token (not a number, not wave-N, not a known role) → None.
+        assert_eq!(wave_number_from_link("memory/foo", &roles), None);
+    }
+
+    /// Regression for the sialia wave-plan: the Plan agent authored deps as bare
+    /// role names (`[[backend]]`/`[[core]]`) instead of the `wave-N-role` form.
+    /// They must resolve to wave numbers so the level DAG keeps its real depth —
+    /// otherwise every wave flattens to level 0 (all dispatch-parallel).
+    #[test]
+    fn parse_table_role_named_deps_resolve_to_waves() {
+        let plan = "\
+| Wave | Spec | Papel | Depende de | Resumo |
+|------|------|-------|------------|--------|
+| 1 | [[wave-1-backend]] | backend | — | base |
+| 2 | [[wave-2-core]] | core | [[backend]] | uses backend |
+| 3 | [[wave-3-app-form]] | app-form | [[core]] | uses core |
+| 4 | [[wave-4-app-table]] | app-table | — | independent |
+";
+        let rows = parse_wave_plan_table(plan);
+        assert_eq!(rows.len(), 4);
+        assert!(rows[0].depends_on.is_empty());
+        assert_eq!(rows[1].depends_on, vec![1]); // core ← backend (wave 1)
+        assert_eq!(rows[2].depends_on, vec![2]); // app-form ← core (wave 2)
+        assert!(rows[3].depends_on.is_empty()); // app-table independent
+        // The reconstructed DAG: waves 1 and 4 share level 0 (parallel round 1),
+        // wave 2 is level 1, wave 3 is level 2 — exactly the sialia plan's intent.
+        let levels = assign_levels(&rows);
+        assert_eq!(levels[&1], 0);
+        assert_eq!(levels[&4], 0);
+        assert_eq!(levels[&2], 1);
+        assert_eq!(levels[&3], 2);
     }
 
     #[test]

@@ -60,9 +60,11 @@ pub(super) fn count_wave_progress_from_fs(spec_dir: &Path) -> (u32, u32) {
             }
         }
     }
-    // Wave directories are 0-based: `current` is the first incomplete wave.
-    // When nothing is done yet, current = 0; after N waves complete, current = N.
-    let current = done.min(total.saturating_sub(1));
+    // Wave directories are 1-based (`wave-1-*` first): `current` is the first
+    // incomplete wave = done + 1. 0 done → wave 1; after N complete → wave N+1
+    // (past the last wave, where the post-execute gate takes over). No wave
+    // dirs at all → 0.
+    let current = if total == 0 { 0 } else { done + 1 };
     (current, total)
 }
 
