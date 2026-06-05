@@ -9,4 +9,5 @@ pub mod session_stop_observer;
 pub mod subagent_stop_observer;
 pub mod tool_result_observer;
 pub mod wave_complete_observer;
+pub mod wave_start_observer;
 pub mod wikilink_footer_observer;

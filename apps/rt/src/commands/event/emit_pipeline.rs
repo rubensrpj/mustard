@@ -25,6 +25,7 @@ use mustard_core::domain::model::event::{
     EVENT_PIPELINE_COMPLETE, EVENT_PIPELINE_DISPATCH_FAILURE, EVENT_PIPELINE_PAUSE,
     EVENT_PIPELINE_RESUME_MODE, EVENT_PIPELINE_SCOPE, EVENT_PIPELINE_STATUS,
     EVENT_PIPELINE_TASK_COMPLETE, EVENT_PIPELINE_TASK_DISPATCH, EVENT_PIPELINE_WAVE_COMPLETE,
+    EVENT_PIPELINE_WAVE_START,
 };
 use mustard_core::{
     Flags, Outcome, SpecState, Stage, outcome_label, read_meta, stage_label, write_meta,
@@ -77,16 +78,17 @@ const EVENT_HYGIENE_SKIPPED: &str = "hygiene.skipped";
 /// key). Feeds the `/economia` dashboard (W12).
 const EVENT_ECONOMY_OPERATION_INVOKED: &str = "pipeline.economy.operation.invoked";
 
-/// The 18 valid pipeline event kind strings: the 9 legacy `pipeline.*` kinds,
-/// plus the legacy `pipeline.phase` (alias-only), plus the 4 new canonical
-/// state-model kinds, plus the 3 W5 `hygiene.*` kinds, plus the 1 W2
-/// `pipeline.economy.*` kind. A literal list — no magic alias resolution
-/// (cf. memory `project_emit_pipeline_kind_full_prefix`).
+/// The 19 valid pipeline event kind strings: the 9 legacy `pipeline.*` kinds,
+/// plus the legacy `pipeline.phase` (alias-only), plus the `pipeline.wave.start`
+/// signal, plus the 4 new canonical state-model kinds, plus the 3 W5
+/// `hygiene.*` kinds, plus the 1 W2 `pipeline.economy.*` kind. A literal list —
+/// no magic alias resolution (cf. memory `project_emit_pipeline_kind_full_prefix`).
 const KNOWN_KINDS: &[&str] = &[
     EVENT_PIPELINE_SCOPE,
     EVENT_PIPELINE_STATUS,
     EVENT_PIPELINE_TASK_DISPATCH,
     EVENT_PIPELINE_TASK_COMPLETE,
+    EVENT_PIPELINE_WAVE_START,
     EVENT_PIPELINE_WAVE_COMPLETE,
     EVENT_PIPELINE_DISPATCH_FAILURE,
     EVENT_PIPELINE_PAUSE,
@@ -549,6 +551,23 @@ const fn phase_token_for_stage(stage: Stage) -> &'static str {
     }
 }
 
+/// Canonical pipeline position of a [`Stage`] (0..=4), in
+/// `ANALYZE → PLAN → EXECUTE → QA/REVIEW → CLOSE` order. Used for forward-only
+/// stage comparisons (e.g. `bump_parent_progress` never regresses a parent that
+/// has already advanced past EXECUTE). `Stage` is `#[non_exhaustive]`; an
+/// unknown future variant ranks at the terminal end so it is treated as "at
+/// least as far along as Close" and never regressed.
+const fn stage_rank(stage: Stage) -> u8 {
+    match stage {
+        Stage::Analyze => 0,
+        Stage::Plan => 1,
+        Stage::Execute => 2,
+        Stage::QaReview => 3,
+        Stage::Close => 4,
+        _ => 4,
+    }
+}
+
 /// Resolve the `meta.json` path for a spec — the wave's sidecar when the payload
 /// carries a `wave` field, the top-level spec's sidecar otherwise. Returns
 /// `None` when the spec (or wave) directory does not exist.
@@ -706,9 +725,18 @@ fn emit_completed_status_if_needed(cwd: &Path, spec: &str, ts: &str, session_id:
 ///   - `phase = "CLOSE"` when `wave >= total_waves`
 ///   - `checkpoint = ts`
 ///
-/// Native `stage` / `outcome` are deliberately left untouched here — the
-/// parent's terminal transition is driven by `pipeline.status` /
-/// `pipeline.outcome`, not by an interior wave completion.
+/// 2026-06-05 fix: on the EXECUTE branch, advance the native `stage` to
+/// `Execute` too — **forward-only**. A wave-plan parent was left
+/// `{stage:"Plan", phase:"EXECUTE"}` because the docstring's old promise to
+/// "leave `stage` untouched" meant the dashboard (which reads `stage` via
+/// `detect_stage`/`status_word`) showed PLANEJANDO all through execution. We
+/// only ever push `stage` *forward*: if it is already `Execute` or a later
+/// stage (`QaReview`/`Close`) we leave it be, never regressing it. The CLOSE
+/// branch still never touches `stage` — that terminal transition stays driven
+/// by `pipeline.status` / `pipeline.outcome`, not by an interior wave.
+///
+/// `outcome` is still left untouched here (a wave completing does not make the
+/// parent terminal).
 ///
 /// Fail-open: a missing spec dir, missing/unparseable sidecar, or write
 /// failure all warn on stderr and return without propagating.
@@ -733,6 +761,28 @@ fn bump_parent_progress(cwd: &Path, spec: &str, wave: u64, ts: &str) {
     };
     meta.phase = Some(new_phase.to_string());
     meta.checkpoint = Some(ts.to_string());
+
+    // Advance the native `stage` to `Execute` on the EXECUTE branch — but
+    // forward-only. The dashboard reads `stage` (not `phase`) as the lifecycle
+    // source of truth, so a wave-plan parent stuck at `stage:"Plan"` rendered as
+    // PLANEJANDO during execution. We only push forward: if the current stage
+    // already ranks at `Execute` or later (`QaReview`/`Close`) we leave it
+    // untouched, never regressing. The CLOSE branch never touches `stage` — that
+    // terminal move stays driven by `pipeline.status`/`pipeline.outcome`.
+    if new_phase == "EXECUTE" {
+        let current = meta
+            .stage
+            .as_deref()
+            .and_then(Stage::parse);
+        let advance = match current {
+            // No parseable stage yet, or an earlier stage than Execute: advance.
+            None => true,
+            Some(stage) => stage_rank(stage) < stage_rank(Stage::Execute),
+        };
+        if advance {
+            meta.stage = Some(stage_label(Stage::Execute).to_string());
+        }
+    }
 
     // Ensure `raw` is an object before mutating progress fields. A
     // freshly-defaulted Meta carries `raw: Value::Null`.
@@ -779,14 +829,15 @@ mod tests {
 
     #[test]
     fn known_kinds_list_covers_legacy_and_new_kinds() {
-        // 9 legacy + 1 legacy phase (alias-only) + 4 new canonical + 3 hygiene
-        // + 1 economy (W2 mustard-unification).
-        assert_eq!(KNOWN_KINDS.len(), 18);
+        // 9 legacy + 1 legacy phase (alias-only) + 1 wave.start + 4 new
+        // canonical + 3 hygiene + 1 economy (W2 mustard-unification).
+        assert_eq!(KNOWN_KINDS.len(), 19);
         // Legacy nine.
         assert!(KNOWN_KINDS.contains(&EVENT_PIPELINE_SCOPE));
         assert!(KNOWN_KINDS.contains(&EVENT_PIPELINE_STATUS));
         assert!(KNOWN_KINDS.contains(&EVENT_PIPELINE_TASK_DISPATCH));
         assert!(KNOWN_KINDS.contains(&EVENT_PIPELINE_TASK_COMPLETE));
+        assert!(KNOWN_KINDS.contains(&EVENT_PIPELINE_WAVE_START));
         assert!(KNOWN_KINDS.contains(&EVENT_PIPELINE_WAVE_COMPLETE));
         assert!(KNOWN_KINDS.contains(&EVENT_PIPELINE_DISPATCH_FAILURE));
         assert!(KNOWN_KINDS.contains(&EVENT_PIPELINE_PAUSE));
@@ -1151,6 +1202,57 @@ mod tests {
         let v: Value =
             serde_json::from_str(&std::fs::read_to_string(&meta_path).unwrap()).unwrap();
         assert_eq!(v["completedWaves"], json!([1, 4]), "{v}");
+    }
+
+    /// DEFECT 1 (2026-06-05): an EXECUTE-branch `bump_parent_progress` advances
+    /// the native `stage` from `Plan` to `Execute` (forward-only) so the
+    /// dashboard stops rendering PLANEJANDO during wave execution.
+    #[test]
+    fn wave_complete_advances_parent_stage_to_execute() {
+        let dir = tempdir().unwrap();
+        let spec_dir = dir.path().join(".claude").join("spec").join("foo");
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        let meta_path = spec_dir.join("meta.json");
+        // Parent stuck at stage=Plan with an interior wave (totalWaves=3) — the
+        // exact live-confirmed bad state: phase advances, stage does not.
+        std::fs::write(
+            &meta_path,
+            br#"{"stage":"Plan","outcome":"Active","phase":"PLAN","scope":"full","lang":"pt-BR","checkpoint":null,"isWavePlan":true,"totalWaves":3}"#,
+        )
+        .unwrap();
+
+        super::bump_parent_progress(dir.path(), "foo", 1, "2026-06-05T00:00:00Z");
+
+        let v: Value =
+            serde_json::from_str(&std::fs::read_to_string(&meta_path).unwrap()).unwrap();
+        assert_eq!(v["phase"], json!("EXECUTE"), "{v}");
+        assert_eq!(v["stage"], json!("Execute"), "phase+stage agree: {v}");
+        assert_eq!(v["outcome"], json!("Active"), "outcome untouched: {v}");
+    }
+
+    /// DEFECT 1: a stage already at `QaReview` is NOT regressed to `Execute` by
+    /// an interior wave.complete (forward-only guard).
+    #[test]
+    fn wave_complete_does_not_regress_later_stage() {
+        let dir = tempdir().unwrap();
+        let spec_dir = dir.path().join(".claude").join("spec").join("bar");
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        let meta_path = spec_dir.join("meta.json");
+        // A later wave already drove the parent to QaReview; a straggling
+        // wave.complete must not pull it back to Execute.
+        std::fs::write(
+            &meta_path,
+            br#"{"stage":"QaReview","outcome":"Active","phase":"QA","scope":"full","lang":"pt-BR","checkpoint":null,"isWavePlan":true,"totalWaves":5}"#,
+        )
+        .unwrap();
+
+        super::bump_parent_progress(dir.path(), "bar", 2, "2026-06-05T01:00:00Z");
+
+        let v: Value =
+            serde_json::from_str(&std::fs::read_to_string(&meta_path).unwrap()).unwrap();
+        // phase still tracks the interior wave (advisory), but stage stays QaReview.
+        assert_eq!(v["phase"], json!("EXECUTE"), "{v}");
+        assert_eq!(v["stage"], json!("QaReview"), "stage not regressed: {v}");
     }
 
     // -----------------------------------------------------------------------

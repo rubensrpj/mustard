@@ -19,6 +19,7 @@ use crate::hooks::session::session_knowledge_observer::SessionKnowledgeObserver;
 use crate::hooks::observe::notification_observer::NotificationObserver;
 use crate::hooks::observe::rewave_observer::RewaveObserver;
 use crate::hooks::observe::wave_complete_observer::WaveCompleteObserver;
+use crate::hooks::observe::wave_start_observer::WaveStartObserver;
 use crate::hooks::write::path_gate::PathGate;
 use crate::hooks::write::post_edit::PostEdit;
 use crate::hooks::session::pre_compact_inject::PreCompactInject;
@@ -525,6 +526,19 @@ impl Registry {
                 observer: Some(Box::new(RewaveObserver)),
             },
             Module {
+                id: "wave_start_observer",
+                // DEFECT 2 (2026-06-05) — on SubagentStart, when an active wave
+                // is resolvable (MUSTARD_ACTIVE_SPEC/WAVE), auto-emit
+                // `pipeline.wave.start` once (idempotent via the NDJSON event
+                // check; suppressed if the wave already completed). The
+                // counterpart to `wave_complete_observer`: it lets the dashboard
+                // mark a wave InProgress from an explicit signal. SubagentStart,
+                // fail-open, never denies.
+                applies_to: &[(Trigger::SubagentStart, ToolMatch::Any)],
+                check: None,
+                observer: Some(Box::new(WaveStartObserver)),
+            },
+            Module {
                 id: "wave_complete_observer",
                 // F4-c item 2 — on SubagentStop, when the active wave's
                 // `_review-spans.md` ledger is clean (≥1 child returned, no red),
@@ -658,6 +672,7 @@ mod tests {
             "prompt_submit_inject",
             "amend_window_inject",
             "rewave_observer",
+            "wave_start_observer",
             "wave_complete_observer",
         ] {
             assert!(registry.by_id(id).is_some(), "by_id missing {id}");
@@ -685,6 +700,12 @@ mod tests {
         // It does not fire on a plain PreToolUse(Write).
         assert!(!applicable_ids(&registry, Trigger::PreToolUse, Some("Write"))
             .contains(&"wave_complete_observer"));
+        // `wave_start_observer` is the symmetric counterpart: it fires on
+        // SubagentStart (any tool / none), not on SubagentStop.
+        assert!(applicable_ids(&registry, Trigger::SubagentStart, None)
+            .contains(&"wave_start_observer"));
+        assert!(!applicable_ids(&registry, Trigger::SubagentStop, None)
+            .contains(&"wave_start_observer"));
     }
 
     #[test]

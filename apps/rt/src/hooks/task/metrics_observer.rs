@@ -55,8 +55,20 @@ impl Observer for MetricsObserver {
             target.insert("url".into(), json!(common::cap(url, 120)));
         }
 
+        // Propagate the harness `tool_use_id` (root or nested under
+        // `tool_response`, mirroring `tool_result_observer`) onto the heartbeat
+        // so the dashboard can pair this `tool.use` to its `tool.result` by
+        // exact id. Without it the pairing falls back to a fragile chronological
+        // match that misattributes results when parallel wave agents interleave.
+        // `null` when the harness did not forward an id (older events / harness
+        // versions) — the dashboard keeps the chronological fallback for those.
+        let tool_use_id = match common::extract_tool_use_id(input) {
+            Some(id) => Value::String(id),
+            None => Value::Null,
+        };
         let payload = json!({
             "tool": tool_name,
+            "tool_use_id": tool_use_id,
             "phase": Value::Null,
             "target": if target.is_empty() { Value::Null } else { Value::Object(target) },
         });
@@ -135,5 +147,94 @@ mod tests {
             }
         }
         assert!(found, "tool.use NDJSON line must live under .session/s-x/");
+    }
+
+    /// The heartbeat must propagate the harness `tool_use_id` onto the
+    /// `tool.use` payload so the dashboard can pair it to its `tool.result`
+    /// by exact id (the chronological fallback misattributes results when
+    /// parallel wave agents interleave). The id is read from the same place
+    /// `tool_result_observer` reads it — root `tool_use_id` or nested under
+    /// `tool_response`.
+    #[test]
+    fn heartbeat_payload_carries_tool_use_id() {
+        let dir = tempdir().unwrap();
+        let project = dir.path().to_str().unwrap();
+        let input = HookInput {
+            tool_name: Some("Bash".to_string()),
+            tool_input: json!({ "command": "git status" }),
+            hook_event_name: Some("PostToolUse".to_string()),
+            session_id: Some("s-id".to_string()),
+            raw: json!({ "tool_use_id": "tu_42" }),
+            ..HookInput::default()
+        };
+        MetricsObserver.observe(&input, &ctx(Trigger::PostToolUse, project));
+
+        let events_dir = dir
+            .path()
+            .join(".claude")
+            .join(".session")
+            .join("s-id")
+            .join(".events");
+        let mut payload = None;
+        for f in std::fs::read_dir(&events_dir).unwrap() {
+            let body = std::fs::read_to_string(f.unwrap().path()).unwrap_or_default();
+            for line in body.lines() {
+                let v: serde_json::Value = match serde_json::from_str(line) {
+                    Ok(v) => v,
+                    Err(_) => continue,
+                };
+                if v["event"] == "tool.use" {
+                    payload = Some(v["payload"].clone());
+                }
+            }
+        }
+        let payload = payload.expect("tool.use NDJSON line present");
+        assert_eq!(
+            payload.get("tool_use_id").and_then(|v| v.as_str()),
+            Some("tu_42"),
+            "heartbeat payload must echo the harness tool_use_id"
+        );
+    }
+
+    /// When the harness forwards no `tool_use_id`, the heartbeat still emits a
+    /// `tool.use` (id is `null`) so the dashboard's chronological fallback can
+    /// take over — never a fabricated id.
+    #[test]
+    fn heartbeat_tool_use_id_is_null_when_absent() {
+        let dir = tempdir().unwrap();
+        let project = dir.path().to_str().unwrap();
+        let input = HookInput {
+            tool_name: Some("Bash".to_string()),
+            tool_input: json!({ "command": "git status" }),
+            hook_event_name: Some("PostToolUse".to_string()),
+            session_id: Some("s-noid".to_string()),
+            ..HookInput::default()
+        };
+        MetricsObserver.observe(&input, &ctx(Trigger::PostToolUse, project));
+
+        let events_dir = dir
+            .path()
+            .join(".claude")
+            .join(".session")
+            .join("s-noid")
+            .join(".events");
+        let mut payload = None;
+        for f in std::fs::read_dir(&events_dir).unwrap() {
+            let body = std::fs::read_to_string(f.unwrap().path()).unwrap_or_default();
+            for line in body.lines() {
+                let v: serde_json::Value = match serde_json::from_str(line) {
+                    Ok(v) => v,
+                    Err(_) => continue,
+                };
+                if v["event"] == "tool.use" {
+                    payload = Some(v["payload"].clone());
+                }
+            }
+        }
+        let payload = payload.expect("tool.use NDJSON line present");
+        assert!(
+            payload.get("tool_use_id").is_some_and(serde_json::Value::is_null),
+            "tool_use_id must be present-and-null when the harness omits it"
+        );
     }
 }

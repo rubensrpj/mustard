@@ -3,6 +3,11 @@
 //! Reconstructs the lifecycle of every wave inside a pipeline. Three event
 //! kinds drive it:
 //!
+//! - `pipeline.wave.start` opens a wave row at `InProgress` (or creates it if
+//!   absent) and records `started_at` — the explicit "wave began executing"
+//!   signal (emitted by the `wave_start_observer` on the first child's
+//!   `SubagentStart`). It makes `in_progress = started-without-complete` precise
+//!   instead of inferring the start from a `pipeline.task.dispatch`.
 //! - `pipeline.task.dispatch` opens a wave row at `InProgress` (or creates it
 //!   if absent) and records `started_at`, `role`, `agent_type`.
 //! - `pipeline.task.complete` adds `files_modified` to the wave's file list.
@@ -32,6 +37,7 @@ pub fn project_waves(spec_name: &str, events: &[HarnessEvent]) -> Vec<WaveView> 
 
     for ev in events.iter().filter(|e| e.spec.as_deref() == Some(spec_name)) {
         match ev.event.as_str() {
+            "pipeline.wave.start" => apply_wave_start(&mut by_wave, ev),
             "pipeline.task.dispatch" => apply_dispatch(&mut by_wave, ev),
             "pipeline.task.complete" => apply_complete(&mut by_wave, ev),
             "pipeline.wave.complete" => apply_wave_complete(&mut by_wave, ev),
@@ -45,6 +51,29 @@ pub fn project_waves(spec_name: &str, events: &[HarnessEvent]) -> Vec<WaveView> 
 
 fn ensure_wave(by_wave: &mut BTreeMap<u32, WaveView>, wave: u32) -> &mut WaveView {
     by_wave.entry(wave).or_insert_with(|| WaveView::queued(wave))
+}
+
+/// `pipeline.wave.start` — the explicit "wave began" signal. Opens the row at
+/// `InProgress` and records `started_at`. Forward-only: a row already
+/// `Completed` / `Failed` is not regressed (a late, out-of-order start event
+/// must never resurrect a finished wave). The payload is the bare `{wave: <n>}`
+/// shape (same correlation as `pipeline.wave.complete`).
+fn apply_wave_start(by_wave: &mut BTreeMap<u32, WaveView>, ev: &HarnessEvent) {
+    let Some(wave) = ev
+        .payload
+        .get("wave")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|w| u32::try_from(w).ok())
+    else {
+        return;
+    };
+    let row = ensure_wave(by_wave, wave);
+    if row.status == WaveStatus::Queued {
+        row.status = WaveStatus::InProgress;
+    }
+    if row.started_at.is_none() {
+        row.started_at = Some(ev.ts.clone());
+    }
 }
 
 fn apply_dispatch(by_wave: &mut BTreeMap<u32, WaveView>, ev: &HarnessEvent) {
@@ -196,6 +225,53 @@ mod tests {
         let waves = project_waves("auth", &events);
         assert_eq!(waves.len(), 1);
         assert_eq!(waves[0].status, WaveStatus::InProgress);
+    }
+
+    #[test]
+    fn wave_start_opens_in_progress_row() {
+        // An explicit `pipeline.wave.start` with no later dispatch still yields
+        // an InProgress row carrying the start timestamp — the "started without
+        // complete" signal the dashboard derives `in_progress` from.
+        let events = vec![ev(
+            "auth",
+            "2026-05-20T09:59:00Z",
+            "pipeline.wave.start",
+            json!({ "wave": 1 }),
+        )];
+        let waves = project_waves("auth", &events);
+        assert_eq!(waves.len(), 1);
+        assert_eq!(waves[0].status, WaveStatus::InProgress);
+        assert_eq!(waves[0].started_at.as_deref(), Some("2026-05-20T09:59:00Z"));
+        assert!(waves[0].completed_at.is_none());
+    }
+
+    #[test]
+    fn wave_start_then_complete_yields_completed_with_duration() {
+        // start → complete: the row closes as Completed and `duration_ms` is
+        // computed off the start event's timestamp.
+        let events = vec![
+            ev("auth", "2026-05-20T10:00:00Z", "pipeline.wave.start", json!({ "wave": 1 })),
+            ev("auth", "2026-05-20T10:05:00Z", "pipeline.wave.complete", json!({ "wave": 1 })),
+        ];
+        let waves = project_waves("auth", &events);
+        assert_eq!(waves.len(), 1);
+        assert_eq!(waves[0].status, WaveStatus::Completed);
+        assert_eq!(waves[0].started_at.as_deref(), Some("2026-05-20T10:00:00Z"));
+        assert_eq!(waves[0].duration_ms, Some(300_000));
+    }
+
+    #[test]
+    fn wave_start_does_not_regress_completed_row() {
+        // A late, out-of-order start must not resurrect a finished wave.
+        let events = vec![
+            ev("auth", "2026-05-20T10:00:00Z", "pipeline.wave.start", json!({ "wave": 1 })),
+            ev("auth", "2026-05-20T10:05:00Z", "pipeline.wave.complete", json!({ "wave": 1 })),
+            ev("auth", "2026-05-20T10:06:00Z", "pipeline.wave.start", json!({ "wave": 1 })),
+        ];
+        let waves = project_waves("auth", &events);
+        assert_eq!(waves[0].status, WaveStatus::Completed);
+        // started_at keeps the first start's timestamp, not the stray one.
+        assert_eq!(waves[0].started_at.as_deref(), Some("2026-05-20T10:00:00Z"));
     }
 
     #[test]

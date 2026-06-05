@@ -112,6 +112,12 @@ pub const EVENT_PIPELINE_STATUS: &str = "pipeline.status";
 pub const EVENT_PIPELINE_TASK_DISPATCH: &str = "pipeline.task.dispatch";
 /// Records that a dispatched agent task completed.
 pub const EVENT_PIPELINE_TASK_COMPLETE: &str = "pipeline.task.complete";
+/// Records that a wave began executing (its first subagent started). The
+/// counterpart to [`EVENT_PIPELINE_WAVE_COMPLETE`]: it lets a projection mark a
+/// wave `InProgress` from an explicit signal rather than inferring it from a
+/// `pipeline.task.dispatch`. Carries the same `{wave: <n>}` correlation as the
+/// completion event.
+pub const EVENT_PIPELINE_WAVE_START: &str = "pipeline.wave.start";
 /// Records that an entire wave finished.
 pub const EVENT_PIPELINE_WAVE_COMPLETE: &str = "pipeline.wave.complete";
 /// Records a task-dispatch failure (the agent could not be started).
