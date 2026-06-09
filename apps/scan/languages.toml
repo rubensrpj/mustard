@@ -12,11 +12,16 @@
 # embeds the queries; the engine stays generic.
 #
 # Fields:
-#   name        display id, stored on each module (e.g. shown in the JSON model)
-#   extensions  file extensions that select this language (no leading dot)
-#   dir         subdirectory under queries/ holding this language's .scm files
-#   grammar     Rust expression yielding the grammar's tree-sitter LanguageFn;
-#               build.rs emits it verbatim, so the crate symbol never appears in src/.
+#   name          display id, stored on each module (e.g. shown in the JSON model)
+#   extensions    file extensions that select this language (no leading dot)
+#   dir           subdirectory under queries/ holding this language's .scm files
+#   grammar       Rust expression yielding the grammar's tree-sitter LanguageFn;
+#                 build.rs emits it verbatim, so the crate symbol never appears in src/.
+#   root_aliases  OPTIONAL — leading import segments that alias the package root
+#                 in qualified import paths. Only imports starting with one of
+#                 these earn the graph's root-alias resolution probe; languages
+#                 that declare none never take that branch, so a fully external
+#                 import can never be mistaken for an internal module.
 
 [[language]]
 name = "csharp"
@@ -47,9 +52,16 @@ name = "rust"
 extensions = ["rs"]
 dir = "rust"
 grammar = "grammar_rs::LANGUAGE"
+root_aliases = ["crate", "self", "super"]
 
 [[language]]
 name = "go"
 extensions = ["go"]
 dir = "go"
 grammar = "grammar_go::LANGUAGE"
+
+[[language]]
+name = "php"
+extensions = ["php"]
+dir = "php"
+grammar = "grammar_php::LANGUAGE_PHP"

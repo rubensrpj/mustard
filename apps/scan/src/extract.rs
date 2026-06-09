@@ -61,6 +61,18 @@ pub fn detect_language(path: &Path) -> Option<String> {
         .map(|(name, _)| (*name).to_string())
 }
 
+/// Root-alias segments a language uses to alias the package root in qualified
+/// import paths — pure registry data (`root_aliases` in languages.toml). A
+/// language that declares none gets an empty slice, which disables the graph's
+/// root-alias resolution branch for its modules.
+pub fn root_aliases(lang: &str) -> &'static [&'static str] {
+    LANG_ROOT_ALIASES
+        .iter()
+        .find(|(name, _)| *name == lang)
+        .map(|(_, aliases)| *aliases)
+        .unwrap_or(&[])
+}
+
 /// Build one [`Analyzer`] per language declared in the registry. A language
 /// whose grammar/queries fail to compile is skipped with a warning rather than
 /// aborting the whole run.

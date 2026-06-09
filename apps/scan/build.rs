@@ -39,6 +39,14 @@ fn main() {
     let mut ext_table = String::new();
     ext_table.push_str("pub(crate) static LANG_EXTENSIONS: &[(&str, &[&str])] = &[\n");
 
+    // (name, root_aliases) table — the OPTIONAL per-language import segments
+    // that alias the package root (e.g. Rust's `crate`/`self`/`super`). The
+    // graph's root-alias resolution branch only runs for imports whose first
+    // segment is declared here; a language without the field gets an empty
+    // slice and never takes that branch.
+    let mut alias_table = String::new();
+    alias_table.push_str("pub(crate) static LANG_ROOT_ALIASES: &[(&str, &[&str])] = &[\n");
+
     for lang in languages {
         let tbl = lang.as_table().expect("each [[language]] must be a table");
         let name = str_field(tbl, "name");
@@ -51,6 +59,16 @@ fn main() {
             .iter()
             .map(|e| e.as_str().expect("extension must be a string").to_string())
             .collect();
+        let root_aliases: Vec<String> = tbl
+            .get("root_aliases")
+            .map(|v| {
+                v.as_array()
+                    .expect("language.root_aliases must be an array")
+                    .iter()
+                    .map(|e| e.as_str().expect("root alias must be a string").to_string())
+                    .collect()
+            })
+            .unwrap_or_default();
 
         // Concatenate every .scm under queries/<dir>/, in stable filename order.
         let query = read_queries(&queries_root, &dir);
@@ -60,6 +78,11 @@ fn main() {
             .map(|e| format!("{e:?}"))
             .collect::<Vec<_>>()
             .join(", ");
+        let aliases = root_aliases
+            .iter()
+            .map(|a| format!("{a:?}"))
+            .collect::<Vec<_>>()
+            .join(", ");
 
         writeln!(
             body,
@@ -67,11 +90,14 @@ fn main() {
         )
         .unwrap();
         writeln!(ext_table, "    ({name:?}, &[{exts}]),").unwrap();
+        writeln!(alias_table, "    ({name:?}, &[{aliases}]),").unwrap();
     }
 
     body.push_str("    ]\n}\n");
     ext_table.push_str("];\n");
     body.push_str(&ext_table);
+    alias_table.push_str("];\n");
+    body.push_str(&alias_table);
 
     let out_path = Path::new(&out_dir).join("langs_generated.rs");
     fs::write(&out_path, body).expect("write langs_generated.rs");

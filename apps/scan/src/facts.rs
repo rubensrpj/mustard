@@ -69,7 +69,7 @@ pub(crate) fn enrich_projects(projects: &mut [ProjectUnit], all: &[ProjectUnit],
 /// but NOT under a more-specific sibling unit. A manifest belongs to the unit
 /// with the longest matching `dir` prefix, so a nested subproject's manifests
 /// never leak up into its parent (and an empty/root `dir` does not swallow all).
-fn owned_manifests<'a>(
+pub(crate) fn owned_manifests<'a>(
     project: &ProjectUnit,
     all: &[ProjectUnit],
     manifests: &'a [Manifest],
@@ -91,7 +91,7 @@ fn owned_manifests<'a>(
 /// True when `path` lives under directory `dir` (paths are `/`-normalized and
 /// relative, per `ingest`). An empty `dir` is the workspace root and contains
 /// everything; otherwise the path must equal `dir` or start with `dir/`.
-fn dir_contains(dir: &str, path: &str) -> bool {
+pub(crate) fn dir_contains(dir: &str, path: &str) -> bool {
     if dir.is_empty() {
         return true;
     }

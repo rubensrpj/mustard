@@ -17,8 +17,8 @@ use regex::Regex;
 use std::collections::{HashMap, HashSet};
 
 pub fn compile(model: &ProjectModel, entity: &str, like: &str, ops: &[String], invariants: &[String]) -> String {
-    let conv = match pick_slice(model, like) {
-        Some(c) => c,
+    let (conv, like_matched) = match pick_slice(model, like) {
+        Some(p) => p,
         None => return "# (no vertical slice in the model -- nothing to compile)\n".to_string(),
     };
     let module_paths: HashSet<&str> = model.modules.iter().map(|m| m.path.as_str()).collect();
@@ -35,7 +35,10 @@ pub fn compile(model: &ProjectModel, entity: &str, like: &str, ops: &[String], i
             token_seq_in(&crate::digest::tokenize(&m.path), &etok)
                 || m.declarations.iter().any(|d| token_seq_in(&crate::digest::tokenize(&d.name), &etok))
         });
-    let novel = like.is_empty() && !has_precedent;
+    // A `--like` that matched nothing in the model counts as not passed at all:
+    // the fallback pattern is unverified, so novelty is judged as if `--like`
+    // were absent.
+    let novel = !like_matched && !has_precedent;
 
     // Operations select extra (optional) roles by name prefix. The base vertical
     // (core roles) is ALWAYS included, so no operation keyword is special-cased.
@@ -73,7 +76,7 @@ pub fn compile(model: &ProjectModel, entity: &str, like: &str, ops: &[String], i
         merge_into(&mut lines, SpecLine { roles: vec![p.role], target, mirror, real, collaborators: collabs, optional: p.optional, kind, project, dir, folder });
     }
 
-    render(model, conv, entity, like, &lines, &wanted_ops, &roles_meta, invariants, novel)
+    render(model, conv, entity, like, like_matched, &lines, &wanted_ops, &roles_meta, invariants, novel)
 }
 
 /// One acceptance criterion: the role(s) and the target folder (entity already
@@ -87,7 +90,7 @@ pub struct Accept {
 
 pub fn acceptance(model: &ProjectModel, entity: &str, like: &str, ops: &[String]) -> Vec<Accept> {
     let conv = match pick_slice(model, like) {
-        Some(c) => c,
+        Some((c, _)) => c,
         None => return Vec::new(),
     };
     let roles_meta: HashMap<&str, &RoleStat> = model.roles.iter().map(|r| (r.affix.as_str(), r)).collect();
@@ -164,6 +167,7 @@ fn render(
     conv: &Convention,
     entity: &str,
     like: &str,
+    like_matched: bool,
     lines: &[SpecLine],
     ops: &[String],
     roles_meta: &HashMap<&str, &RoleStat>,
@@ -206,7 +210,13 @@ fn render(
         o.push_str("> If your case is a different pattern, re-run with `--like <an example of it>` (point at an existing sibling; scan infers the pattern from where it lives).\n");
     }
     if !like.is_empty() {
-        o.push_str(&format!("> Mirrored on the REAL files of **{like}** (verified in the model). `{entity}` follows the same shape.\n"));
+        if like_matched {
+            o.push_str(&format!("> Mirrored on the REAL files of **{like}** (verified in the model). `{entity}` follows the same shape.\n"));
+        } else {
+            // The sibling was NOT found among the mined slice entities: the
+            // pattern below is the best fallback, never a verified mirror.
+            o.push_str(&format!("> **like \"{like}\" not found in the model -- fallback pattern below, treat as UNVERIFIED.**\n"));
+        }
     }
     o.push_str(&format!("> Operations: {}.\n", ops.join(", ")));
     o.push_str("> **ATTENTION — HYPOTHETICAL plan, NOT verified against the code.** Read the anchors and resolve the fork BEFORE creating any file. The per-project sections are hypotheses until then.\n");
@@ -501,22 +511,34 @@ fn render_block(o: &mut String, project_key: &str, lines: &[SpecLine], roles_met
 
 // --- selection -------------------------------------------------------------
 
-fn pick_slice<'a>(model: &'a ProjectModel, like: &str) -> Option<&'a Convention> {
-    // Name is the final tie-break so the choice is deterministic even when two
-    // slices are equally rich (the model's Vec order isn't guaranteed stable).
-    let richness = |c: &Convention| (c.roles.len() + c.optional_roles.len(), c.recurrence, c.name.clone());
+/// Pick the slice convention to compile against. Returns the convention plus
+/// whether the `--like` filter actually matched it — `false` means the caller
+/// fell back to the best overall slice and must NOT claim a verified mirror.
+fn pick_slice<'a>(model: &'a ProjectModel, like: &str) -> Option<(&'a Convention, bool)> {
+    // Recurrence and confidence outrank role count: a convention proven across
+    // many entities (e.g. 11x at conf 0.94) beats a wide pseudo-convention of a
+    // couple of wrapper families (7 roles at conf 0.82). Name is the final
+    // tie-break so the choice is deterministic even when two slices are equally
+    // rich (the model's Vec order isn't guaranteed stable).
+    let richer = |a: &&Convention, b: &&Convention| {
+        a.recurrence
+            .cmp(&b.recurrence)
+            .then(a.confidence.total_cmp(&b.confidence))
+            .then((a.roles.len() + a.optional_roles.len()).cmp(&(b.roles.len() + b.optional_roles.len())))
+            .then(a.name.cmp(&b.name))
+    };
     if !like.is_empty() {
         let likel = like.to_lowercase();
         if let Some(c) = model
             .conventions
             .iter()
             .filter(|c| c.is_slice && c.entities.iter().any(|e| e.to_lowercase().contains(&likel)))
-            .max_by_key(|c| richness(c))
+            .max_by(richer)
         {
-            return Some(c);
+            return Some((c, true));
         }
     }
-    model.conventions.iter().filter(|c| c.is_slice).max_by_key(|c| richness(c))
+    model.conventions.iter().filter(|c| c.is_slice).max_by(richer).map(|c| (c, false))
 }
 
 fn file_name(path: &str) -> &str {

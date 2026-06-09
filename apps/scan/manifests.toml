@@ -28,6 +28,14 @@ deps = ["dependencies", "devDependencies", "peerDependencies"]
 scripts = "scripts"
 
 [[manifest]]
+kind = "composer"
+filename = "composer.json"
+format = "json"
+name = "dir"
+deps = ["require", "require-dev"]
+scripts = "scripts"
+
+[[manifest]]
 kind = "dotnet"
 ext = ["csproj", "fsproj"]
 format = "xml-attr"

@@ -24,6 +24,11 @@ anyhow = "1"
 # Reads the external manifest registry (manifests.toml) at runtime — build-system
 # detection is data, not a hardcoded list of filenames.
 toml = "0.8"
+# Stack inference engine + the StackDetection contract live in mustard-core
+# (registry-driven: stacks are DATA in core's stacks.toml, never logic here).
+# Same apps→packages direction as rt/cli; tree-sitter pins are coordinated
+# (both crates sit on the 0.26 core), so `links=tree-sitter` stays unified.
+mustard-core = { path = "../../packages/core" }
 
 # Language parsing is done by tree-sitter. The core runtime is generic; every
 # grammar is wired as DATA (a row in languages.toml + a neutral grammar handle),
@@ -39,6 +44,7 @@ grammar_ts = { package = "tree-sitter-typescript", version = "0.23" }
 grammar_py = { package = "tree-sitter-python", version = "0.25" }
 grammar_rs = { package = "tree-sitter-rust", version = "0.24" }
 grammar_go = { package = "tree-sitter-go", version = "0.25" }
+grammar_php = { package = "tree-sitter-php", version = "0.24" }
 
 [build-dependencies]
 # Used only at build time to read the external language registry and embed the

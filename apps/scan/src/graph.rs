@@ -11,14 +11,25 @@
 //! innermost). The only direction-violation topology can prove without a
 //! hardcoded layer vocabulary is a dependency cycle, so that is what we count.
 //!
-//! Resolution is heuristic and language-agnostic: every import is tried against
-//! a union of resolution shapes and the ones that don't apply return nothing.
+//! Resolution is heuristic and language-agnostic: imports and declared
+//! namespaces are first normalized to one canonical segment form (`\`, `::`
+//! and the dots of a dotted namespace all become `/`), then every import is
+//! tried against a union of resolution shapes and the ones that don't apply
+//! return nothing.
 //!   * namespace/package match — an import that names a declared namespace
-//!     (the shape used by C#, Java, Kotlin, ...);
+//!     (the shape used by C#, Java, Kotlin, ...), retried with the final
+//!     segment dropped when the import names a TYPE inside a namespace
+//!     (the fully-qualified-name shape used by PHP);
 //!   * module-prefixed path — strip a declared module prefix, match a directory
 //!     (the shape used by Go);
 //!   * file path — resolve a relative/path-ish import to a module file (the
-//!     shape used by TS/JS, Dart, Python, ...).
+//!     shape used by TS/JS, Dart, Python, ...);
+//!   * root-alias path — only for imports whose first segment is one of the
+//!     importer language's declared `root_aliases` (registry data, e.g. Rust's
+//!     `crate`/`self`/`super`): drop the alias segment and probe the tail
+//!     against the importer's ancestor dirs. Languages that declare no aliases
+//!     never take this branch, so an external package path (`std::...`) can
+//!     never be mistaken for an internal module.
 //! Nothing here switches on a language name, so a new language needs no change.
 //! Imports that resolve to nothing internal are treated as external deps.
 
@@ -55,7 +66,9 @@ pub fn build(modules: &[Module], go_module: &Option<String>) -> (GraphStats, Has
     let mut dir_index: HashMap<String, Vec<String>> = HashMap::new(); // dir -> module paths
     for m in modules {
         for ns in &m.namespaces {
-            ns_index.entry(ns.clone()).or_default().push(m.path.clone());
+            // Index namespaces in canonical segment form so a lookup never
+            // depends on which separator the language writes (`\`, `.`, `::`).
+            ns_index.entry(canon_segments(ns)).or_default().push(m.path.clone());
         }
         let dir = parent_dir(&m.path);
         dir_index.entry(dir).or_default().push(m.path.clone());
@@ -67,8 +80,9 @@ pub fn build(modules: &[Module], go_module: &Option<String>) -> (GraphStats, Has
 
     for m in modules {
         let src = idx[&m.path];
+        let root_aliases = crate::extract::root_aliases(&m.language);
         for imp in &m.imports {
-            let targets = resolve(imp, &m.path, &ns_index, &stem_index, &dir_index, &module_paths, go_module);
+            let targets = resolve(imp, &m.path, root_aliases, &ns_index, &stem_index, &dir_index, &module_paths, go_module);
             for t in targets {
                 if let Some(&dst) = idx.get(&t) {
                     if dst != src {
@@ -191,6 +205,7 @@ fn build_stem_index(modules: &[Module]) -> HashMap<String, Vec<String>> {
 fn resolve(
     imp: &str,
     from: &str,
+    root_aliases: &[&str],
     ns_index: &HashMap<String, Vec<String>>,
     stem_index: &HashMap<String, Vec<String>>,
     dir_index: &HashMap<String, Vec<String>>,
@@ -198,13 +213,31 @@ fn resolve(
     go_module: &Option<String>,
 ) -> Vec<String> {
     // Try every resolution shape; whichever applies wins. No language switch.
+    // Lookups run on the canonical segment form so no shape ever cares which
+    // separator the import was written with.
+    let canon = canon_segments(imp);
     // 1) Namespace/package match: the import names a declared namespace (the
     //    common case for namespace languages — a using shared by many files).
-    if let Some(v) = ns_index.get(imp) {
+    if let Some(v) = ns_index.get(&canon) {
         return v.clone();
     }
+    // 1b) Fully-qualified-name match: the import names a TYPE inside a
+    //     declared namespace — retry with the final segment dropped, narrowed
+    //     to the file named after the type (the file-per-type convention) so
+    //     one FQCN doesn't edge to every file in the namespace. When no file
+    //     carries the type's name, keep the whole bucket: coupling at
+    //     namespace granularity, the same evidence shape (1) accepts.
+    if let Some((ns, type_name)) = canon.rsplit_once('/') {
+        if let Some(v) = ns_index.get(ns) {
+            let named: Vec<String> = v.iter().filter(|p| file_stem(p) == type_name).cloned().collect();
+            return if named.is_empty() { v.clone() } else { named };
+        }
+    }
     // 2) Module-prefixed path: strip a declared module prefix and match the
-    //    directory it points at (the import-as-package-path shape).
+    //    directory it points at (the import-as-package-path shape). Raw on
+    //    both sides: these imports and the declared prefix are already
+    //    slash-separated, and canonicalizing a dotted module domain would
+    //    corrupt it.
     if let Some(modpath) = go_module {
         if let Some(rest) = imp.strip_prefix(modpath.as_str()) {
             let rest = rest.trim_start_matches('/');
@@ -214,15 +247,50 @@ fn resolve(
         }
     }
     // 3) File path: a relative or path-ish import resolved to a module file.
-    let cleaned = imp.strip_prefix("package:").unwrap_or(imp);
+    //    The canonical form means dotted / `::` module paths take this branch
+    //    too — they are paths spelled with another separator.
+    let cleaned = canon.strip_prefix("package:").unwrap_or(&canon);
     if cleaned.starts_with('.') {
         let joined = join_relative(from, cleaned);
-        resolve_path_candidate(&joined, stem_index, dir_index, module_paths)
-    } else if cleaned.starts_with('/') || cleaned.contains('/') {
-        resolve_path_candidate(cleaned, stem_index, dir_index, module_paths)
-    } else {
-        Vec::new()
+        return resolve_path_candidate(&joined, stem_index, dir_index, module_paths);
     }
+    if cleaned.contains('/') {
+        let hits = resolve_path_candidate(cleaned, stem_index, dir_index, module_paths);
+        if !hits.is_empty() {
+            return hits;
+        }
+    }
+    // 4) Root-alias path: only for imports whose FIRST segment is one of the
+    //    importer language's declared root aliases (registry data — e.g. Rust's
+    //    `crate`/`self`/`super`); any other first segment names an external
+    //    package, never the project root. Drop the alias and probe the tail
+    //    (and, because the final segment may name an ITEM inside the module,
+    //    the tail minus its last segment) against the importer's ancestor
+    //    directories, nearest first. The fixed probe order keeps resolution
+    //    deterministic. No aliases declared -> this branch never runs.
+    if let Some((alias, tail)) = canon.split_once('/') {
+        if root_aliases.contains(&alias) {
+            let mut tails = vec![tail.to_string()];
+            if let Some((head, _)) = tail.rsplit_once('/') {
+                tails.push(head.to_string());
+            }
+            for t in &tails {
+                let mut dir = parent_dir(from);
+                loop {
+                    let cand = if dir.is_empty() { t.clone() } else { format!("{dir}/{t}") };
+                    let hits = resolve_path_candidate(&cand, stem_index, dir_index, module_paths);
+                    if !hits.is_empty() {
+                        return hits;
+                    }
+                    if dir.is_empty() {
+                        break;
+                    }
+                    dir = parent_dir(&dir);
+                }
+            }
+        }
+    }
+    Vec::new()
 }
 
 fn resolve_path_candidate(
@@ -247,12 +315,13 @@ fn resolve_path_candidate(
         }
     }
     // dart package suffix: match any module whose path ends with the candidate
-    let suffix_matches: Vec<String> = stem_index
+    let mut suffix_matches: Vec<String> = stem_index
         .iter()
         .filter(|(k, _)| k.ends_with(&stem))
         .flat_map(|(_, v)| v.clone())
         .collect();
     if !suffix_matches.is_empty() {
+        suffix_matches.sort(); // stable output: HashMap iteration order varies per run
         return suffix_matches;
     }
     let _ = dir_index;
@@ -280,6 +349,28 @@ fn strip_ext(path: &str) -> String {
     match path.rfind('.') {
         Some(i) if !path[i..].contains('/') => path[..i].to_string(),
         _ => path.to_string(),
+    }
+}
+
+/// Normalize qualified-name separators to one canonical segment form: `\` and
+/// `::` always become `/`; dots become `/` only when the string is not already
+/// path-ish (no `/` present, no leading `.` — a dotted namespace never starts
+/// with a dot, while a relative import always does).
+fn canon_segments(s: &str) -> String {
+    let flat = s.replace('\\', "/").replace("::", "/");
+    if !flat.contains('/') && !flat.starts_with('.') && flat.contains('.') {
+        flat.replace('.', "/")
+    } else {
+        flat
+    }
+}
+
+/// Final path segment without its extension: `app/Models/User.php` -> `User`.
+fn file_stem(path: &str) -> String {
+    let stem = strip_ext(path);
+    match stem.rfind('/') {
+        Some(i) => stem[i + 1..].to_string(),
+        None => stem,
     }
 }
 

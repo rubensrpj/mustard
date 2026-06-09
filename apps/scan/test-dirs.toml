@@ -1,0 +1,42 @@
+# Test/fixture directory segments — the ONLY place a test-dir name is declared.
+#
+# Stack-inference evidence (manifest deps + walk paths + source contents) must
+# discount anything living under a conventional test or fixture tree: a
+# committed fixture of ANOTHER stack (e.g. a composer.json inside
+# tests/fixtures/) is evidence of what the project TESTS, never of what the
+# project IS. Without this discount, scanning a repo that ships fixtures
+# reports the fixtures' stacks at repo level.
+#
+# Scope rule (what this list does and does not affect):
+#   * it filters ONLY the evidence handed to the stack-inference engine —
+#     repo-level in `ingest` and per-unit in `infer_unit_stacks`;
+#   * convention mining (roles, slices, terms), manifests, modules, coverage
+#     and the graph are untouched: test code stays fully visible to the miner;
+#   * the match is per PATH COMPONENT relative to the scanned root — a segment
+#     must equal a whole directory name (`src/contest/` never matches `test`),
+#     and the filename itself is not a directory segment;
+#   * components are compared ASCII-lowercased against this list (declare
+#     segments in lowercase), so `Tests/` and `tests/` discount alike;
+#   * because paths are relative to the scanned root, scanning a fixture
+#     DIRECTLY as the root is not suppressed — its own paths carry no test
+#     segment.
+#
+# Inclusion rule (why exactly these segments): widespread cross-ecosystem
+# conventions whose name announces "not production code" — test roots, spec
+# roots, fixture/data trees, and mock trees. Application-domain words that
+# merely contain "test" (e.g. `contest`) can never match, by the
+# component-boundary rule above.
+#
+# Like stopwords.toml, this is DATA embedded at compile time (include_str!):
+# tuning the list is a data change, never a logic change in src/.
+
+segments = [
+  "__mocks__",
+  "__tests__",
+  "fixtures",
+  "spec",
+  "specs",
+  "test",
+  "testdata",
+  "tests",
+]

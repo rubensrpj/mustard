@@ -1,0 +1,18 @@
+{
+    "name": "acme/blog",
+    "type": "project",
+    "description": "Minimal Laravel fixture for grain's deterministic extraction tests.",
+    "require": {
+        "php": "^8.2",
+        "laravel/framework": "^11.0",
+        "guzzlehttp/guzzle": "^7.8"
+    },
+    "require-dev": {
+        "phpunit/phpunit": "^11.0",
+        "mockery/mockery": "^1.6"
+    },
+    "scripts": {
+        "post-autoload-dump": "@php artisan package:discover --ansi",
+        "test": "phpunit"
+    }
+}

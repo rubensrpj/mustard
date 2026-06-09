@@ -5,6 +5,7 @@
 //! *recurs* in the repo, named by the repo's own vocabulary offline and
 //! (optionally) given a semantic name by the LLM stage.
 
+use mustard_core::domain::vocabulary::stacks::StackDetection;
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
@@ -30,6 +31,12 @@ pub struct ProjectModel {
     /// Base types/interfaces many entities build on — the shared foundation.
     #[serde(default)]
     pub shared_contracts: Vec<SharedContract>,
+    /// Stacks inferred by evidence convergence (manifest deps + path markers +
+    /// code signatures). The engine and the registry live in `mustard-core` —
+    /// stacks are DATA there, never names in this crate. Additive: older
+    /// models without the field keep deserialising.
+    #[serde(default)]
+    pub detected_stacks: Vec<StackDetection>,
 }
 
 /// What the scan actually visited — so "did you read everything?" is verifiable.
@@ -56,6 +63,12 @@ pub struct ProjectUnit {
     /// aggregated, deduped, sorted.
     #[serde(default)]
     pub scripts: Vec<String>,
+    /// Stacks inferred for this unit (same engine/contract as
+    /// [`ProjectModel::detected_stacks`]). Additive — defaults to empty so
+    /// older payloads keep deserialising; population is per-unit evidence,
+    /// owned by the consumer-side projection.
+    #[serde(default)]
+    pub detected_stacks: Vec<StackDetection>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]

@@ -12,10 +12,14 @@
 //! deterministic too. Nothing here is language- or framework-specific.
 
 use crate::model::ProjectModel;
+use mustard_core::domain::vocabulary::stacks::StackDetection;
 use serde::Serialize;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::OnceLock;
 
-/// Caps keep the digest bounded regardless of repo size.
+/// Caps keep the digest bounded regardless of repo size. `MAX_TERMS` bounds the
+/// PUBLISHED full digest only — `query` searches the uncapped term index, so a
+/// rare discriminative term that falls off this tail stays findable per lookup.
 const MAX_ROLES: usize = 30;
 const MAX_TOUCHPOINTS: usize = 20;
 const MAX_FAN_IN: usize = 15;
@@ -32,6 +36,9 @@ pub struct CapabilityDigest {
     pub root: String,
     pub languages: Vec<LangD>,
     pub frameworks: Vec<String>,
+    /// Stacks the model carries (evidence-converged, already deterministically
+    /// ordered by the engine) — copied verbatim, never re-inferred here.
+    pub detected_stacks: Vec<StackDetection>,
     pub projects: Vec<ProjD>,
     /// Top role affixes by frequency; `roles_omitted` is the truncated tail.
     pub roles: Vec<RoleD>,
@@ -41,8 +48,10 @@ pub struct CapabilityDigest {
     /// Base types many entities inherit/implement (mined supertypes).
     pub shared_contracts: Vec<ContractD>,
     pub graph: GraphD,
-    /// Domain-term index: token -> frequency + sample files. The search surface
-    /// for mapping a free-text request onto where it lives in the repo.
+    /// Domain-term index: token -> frequency + sample files (density-ranked).
+    /// The search surface for mapping a free-text request onto where it lives
+    /// in the repo. Stopword-filtered (stopwords.toml) and capped at MAX_TERMS
+    /// in this published view — `query` searches the uncapped index.
     pub terms: Vec<TermD>,
 }
 
@@ -134,8 +143,15 @@ pub struct TermD {
 #[derive(Serialize)]
 pub struct QueryResult {
     pub query: Vec<String>,
+    /// Stacks the model carries (same shape as the full digest) — copied
+    /// verbatim from the model, so a per-query consumer never has to fetch the
+    /// full catalog (or re-infer) to know what the repo runs on.
+    pub detected_stacks: Vec<StackDetection>,
+    /// Matching terms, rarest first (count asc): rarity ≈ discriminative power,
+    /// so the per-query cap trims the frequent matches, never the rare ones.
     pub matched_terms: Vec<TermD>,
-    /// Terms that matched but were trimmed by the per-query cap (no silent loss).
+    /// Terms that matched but were trimmed by the per-query cap (no silent
+    /// loss) — given the rarity ranking, these are the most frequent matches.
     pub terms_omitted: usize,
     pub slices: Vec<SliceD>,
     pub contracts: Vec<ContractD>,
@@ -164,15 +180,24 @@ fn token_match(tk: &str, q: &str) -> bool {
 /// interaction. Query terms shorter than 3 chars are ignored (mirrors the
 /// mined-token floor). Deterministic.
 pub fn query(model: &ProjectModel, terms: &[String]) -> QueryResult {
-    let dig = build(model);
-    let ql: Vec<String> = terms.iter().map(|s| s.trim().to_lowercase()).filter(|s| s.len() >= 3).collect();
+    let dig = catalog(model);
+    let stop = stopwords();
+    // Query tokens: trimmed, lowercased, length-floored AND stopword-filtered —
+    // a glue token like "and" must never act as a discriminator, neither
+    // against the term index nor against paths/labels via `hit`.
+    let ql: Vec<String> =
+        terms.iter().map(|s| s.trim().to_lowercase()).filter(|s| s.len() >= 3 && !stop.contains(s)).collect();
     // A name/path "hits" when any of its tokens matches any query token.
     let hit = |hay: &str| {
         let toks = tokenize(hay);
         ql.iter().any(|q| toks.iter().any(|tk| token_match(tk, q)))
     };
 
+    // Matched terms ranked by RARITY (count asc, stable tie-break on the term):
+    // the rare term is the discriminative one, so under the per-query cap it
+    // must survive while the frequent matches are the ones trimmed.
     let mut matched_terms: Vec<TermD> = dig.terms.into_iter().filter(|t| ql.iter().any(|q| token_match(&t.term, q))).collect();
+    matched_terms.sort_by(|a, b| a.count.cmp(&b.count).then(a.term.cmp(&b.term)));
     let terms_omitted = matched_terms.len().saturating_sub(Q_MAX_TERMS);
     matched_terms.truncate(Q_MAX_TERMS);
 
@@ -185,13 +210,27 @@ pub fn query(model: &ProjectModel, terms: &[String]) -> QueryResult {
     touchpoints.truncate(Q_MAX_TOUCHPOINTS);
 
     // Anchor candidates in priority order (never empty when something matched):
-    // hubs (injected contracts) -> matched-term samples -> touchpoints. Order-
+    // hubs (injected contracts) -> matched-term samples -> touchpoints. Sample
+    // files are ranked by CO-OCCURRENCE: a file present in the samples of >=2
+    // matched query terms is where the queried concepts meet, so it outranks
+    // single-term samples. Ties break on the first (rarest) matched term that
+    // carries the file, then on the path — fully deterministic. Order-
     // preserving dedup keeps the priority; capped to ~a dozen.
+    let mut occ: BTreeMap<&String, (usize, usize)> = BTreeMap::new();
+    for (i, t) in matched_terms.iter().enumerate() {
+        for s in &t.samples {
+            let e = occ.entry(s).or_insert((0, i));
+            e.0 += 1;
+        }
+    }
+    let mut ranked: Vec<(&String, usize, usize)> = occ.into_iter().map(|(p, (n, i))| (p, n, i)).collect();
+    ranked.sort_by(|a, b| b.1.cmp(&a.1).then(a.2.cmp(&b.2)).then(a.0.cmp(b.0)));
+
     let mut files: Vec<String> = Vec::new();
     let src = hubs
         .iter()
         .map(|h| h.module.clone())
-        .chain(matched_terms.iter().flat_map(|t| t.samples.iter().cloned()))
+        .chain(ranked.iter().map(|(p, _, _)| (*p).clone()))
         .chain(touchpoints.iter().map(|t| t.module.clone()));
     for m in src {
         if !files.contains(&m) {
@@ -201,13 +240,38 @@ pub fn query(model: &ProjectModel, terms: &[String]) -> QueryResult {
     files.truncate(12);
 
     let miss = matched_terms.is_empty() && slices.is_empty() && contracts.is_empty() && hubs.is_empty() && touchpoints.is_empty();
-    QueryResult { query: ql, matched_terms, terms_omitted, slices, contracts, hubs, touchpoints, files, miss }
+    QueryResult {
+        query: ql,
+        detected_stacks: dig.detected_stacks,
+        matched_terms,
+        terms_omitted,
+        slices,
+        contracts,
+        hubs,
+        touchpoints,
+        files,
+        miss,
+    }
 }
 
 /// Project the full model down to the bounded capability digest.
 pub fn build(model: &ProjectModel) -> CapabilityDigest {
+    let mut dig = catalog(model);
+    // The published catalog stays bounded: cap the (count-desc-sorted) term
+    // index here ONLY. `query` searches the uncapped index from `catalog`, so
+    // capping the answer (not the index) is what keeps rare domain terms
+    // findable without unbounding this view.
+    dig.terms.truncate(MAX_TERMS);
+    dig
+}
+
+/// The digest with the UNCAPPED term index — shared by [`build`] (which caps
+/// the terms for the published catalog) and [`query`] (which must search every
+/// term). Rebuilt per call; nothing here persists in the model.
+fn catalog(model: &ProjectModel) -> CapabilityDigest {
     let languages = model.languages.iter().map(|l| LangD { language: l.language.clone(), files: l.files, loc: l.loc }).collect();
     let frameworks = model.frameworks.clone();
+    let detected_stacks = model.detected_stacks.clone();
     let projects = model.projects.iter().map(|p| ProjD { name: p.name.clone(), dir: p.dir.clone(), kind: p.kind.clone(), code_files: p.code_files }).collect();
 
     // Roles: top by count (stable tie-break by affix), tail counted not dropped silently.
@@ -256,27 +320,59 @@ pub fn build(model: &ProjectModel) -> CapabilityDigest {
 
     let terms = build_terms(model);
 
-    CapabilityDigest { root: model.root.clone(), languages, frameworks, projects, roles, roles_omitted, slices, shared_contracts, graph, terms }
+    CapabilityDigest { root: model.root.clone(), languages, frameworks, detected_stacks, projects, roles, roles_omitted, slices, shared_contracts, graph, terms }
 }
 
-/// Build the domain-term index from declaration names (the repo's own vocabulary).
+/// English glue words that occur inside identifiers without carrying domain
+/// meaning. DATA, not logic: the list lives in `stopwords.toml` next to
+/// `languages.toml` (embedded at compile time, justified in its header) —
+/// tuning the vocabulary is a data change, never a code change. Parsed once
+/// per process; a malformed embedded file is a programmer error caught by any
+/// test run, same contract as build.rs over languages.toml.
+fn stopwords() -> &'static BTreeSet<String> {
+    static SET: OnceLock<BTreeSet<String>> = OnceLock::new();
+    SET.get_or_init(|| {
+        let raw: toml::Value = include_str!("../stopwords.toml").parse().expect("stopwords.toml is not valid TOML");
+        raw.get("stopwords")
+            .and_then(|v| v.as_array())
+            .expect("stopwords.toml must contain a `stopwords` array")
+            .iter()
+            .map(|w| w.as_str().expect("each stopword must be a string").to_lowercase())
+            .collect()
+    })
+}
+
+/// Build the domain-term index from declaration names (the repo's own
+/// vocabulary). Stopwords are never indexed. The index is UNCAPPED here — see
+/// [`build`] vs [`query`] for who caps what. Samples are the top modules by
+/// the term's count IN that module (density), tie-broken by path asc, so a
+/// module that uses the term heavily outranks one that merely comes first in
+/// the walk order.
 fn build_terms(model: &ProjectModel) -> Vec<TermD> {
-    // term -> (count, sample module paths). BTreeMap for deterministic iteration.
-    let mut index: BTreeMap<String, (usize, Vec<String>)> = BTreeMap::new();
+    let stop = stopwords();
+    // term -> module path -> occurrences. BTreeMaps for deterministic iteration.
+    let mut index: BTreeMap<String, BTreeMap<&str, usize>> = BTreeMap::new();
     for m in &model.modules {
         for d in &m.declarations {
             for tok in tokenize(&d.name) {
-                let e = index.entry(tok).or_insert((0, Vec::new()));
-                e.0 += 1;
-                if e.1.len() < MAX_TERM_SAMPLES && !e.1.contains(&m.path) {
-                    e.1.push(m.path.clone());
+                if stop.contains(&tok) {
+                    continue;
                 }
+                *index.entry(tok).or_default().entry(m.path.as_str()).or_insert(0) += 1;
             }
         }
     }
-    let mut terms: Vec<TermD> = index.into_iter().map(|(term, (count, samples))| TermD { term, count, samples }).collect();
+    let mut terms: Vec<TermD> = index
+        .into_iter()
+        .map(|(term, per_module)| {
+            let count = per_module.values().sum();
+            let mut mods: Vec<(&str, usize)> = per_module.into_iter().collect();
+            mods.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
+            let samples = mods.into_iter().take(MAX_TERM_SAMPLES).map(|(p, _)| p.to_string()).collect();
+            TermD { term, count, samples }
+        })
+        .collect();
     terms.sort_by(|a, b| b.count.cmp(&a.count).then(a.term.cmp(&b.term)));
-    terms.truncate(MAX_TERMS);
     terms
 }
 

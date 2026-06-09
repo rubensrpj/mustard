@@ -241,13 +241,15 @@ fn analyze(root: &Path) -> Result<ProjectModel> {
     let mined = mine::mine(&modules, &degrees, &content);
     let skeleton = condense::build_skeleton(&modules, &depth_by_path);
 
-    let projects = build_projects(&ing.manifests, &modules);
+    let mut projects = build_projects(&ing.manifests, &modules);
+    infer_unit_stacks(&mut projects, &ing.manifests, &ing.walk_paths, &ing.source_files);
 
     Ok(ProjectModel {
         root: ing.root.to_string_lossy().to_string(),
         languages: ing.languages,
         manifests: ing.manifests,
         frameworks: ing.frameworks,
+        detected_stacks: ing.detected_stacks,
         skeleton,
         modules,
         graph: graph_stats,
@@ -308,6 +310,50 @@ fn build_projects(manifests: &[model::Manifest], modules: &[Module]) -> Vec<mode
     let snapshot = projects.clone();
     facts::enrich_projects(&mut projects, &snapshot, manifests);
     projects
+}
+
+/// Populate each unit's `detected_stacks` from the unit's OWN evidence slice:
+/// the dependencies of the manifests it owns (the same longest-prefix crossing
+/// `facts::enrich_projects` applies to frameworks/deps/scripts), the walk paths
+/// under its dir, and the source contents under its dir. Same engine, same
+/// generic call as the repo-wide inference in `ingest` — which stacks exist is
+/// DATA in mustard-core's registry, never logic here. Deterministic: the walk
+/// paths arrive sorted from `ingest` and prefix-filtering preserves that order;
+/// for a single-unit repo the result coincides with the model-level field by
+/// construction.
+fn infer_unit_stacks(
+    projects: &mut [model::ProjectUnit],
+    manifests: &[model::Manifest],
+    walk_paths: &[String],
+    source_files: &[ingest::SourceFile],
+) {
+    use mustard_core::domain::vocabulary::stacks::infer_stacks;
+    // Immutable snapshot for the longest-prefix ownership test while mutating.
+    let snapshot: Vec<model::ProjectUnit> = projects.to_vec();
+    for project in projects.iter_mut() {
+        // Same test-tree discount as the repo-wide inference in `ingest`:
+        // evidence whose path (relative to the SCANNED ROOT, not the unit dir)
+        // sits under a conventional test/fixture segment is excluded from all
+        // three classes — a unit that ships fixtures of another stack must not
+        // report that stack as its own.
+        let owned = facts::owned_manifests(project, &snapshot, manifests);
+        let deps: Vec<String> = owned
+            .iter()
+            .filter(|m| !ingest::under_test_dir(&m.path))
+            .flat_map(|m| m.dependencies.iter().cloned())
+            .collect();
+        let paths: Vec<String> = walk_paths
+            .iter()
+            .filter(|p| facts::dir_contains(&project.dir, p) && !ingest::under_test_dir(p))
+            .cloned()
+            .collect();
+        let contents: Vec<String> = source_files
+            .iter()
+            .filter(|s| facts::dir_contains(&project.dir, &s.rel_path) && !ingest::under_test_dir(&s.rel_path))
+            .map(|s| s.content.clone())
+            .collect();
+        project.detected_stacks = infer_stacks(&deps, &paths, &contents);
+    }
 }
 
 /// Collapse units that resolve to the same directory into one, keeping the entry
