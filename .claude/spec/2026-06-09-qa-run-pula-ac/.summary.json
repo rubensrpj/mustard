@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "spec": "2026-06-09-qa-run-pula-ac",
+  "title": "Tactical Fix: qa-run pula AC de cargo silenciosamente: timeout 120s curto para suites e auto-invocacao -p nao tratada",
+  "timeline": {},
+  "economy": {
+    "totalSavingsTokens": 0,
+    "bySource": {}
+  },
+  "telemetry": {
+    "totalTokens": 0,
+    "totalCostUsdMicros": 0,
+    "byModel": {},
+    "byAgent": {}
+  }
+}

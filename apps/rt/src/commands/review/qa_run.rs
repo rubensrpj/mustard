@@ -29,8 +29,48 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-/// Per-AC timeout (2 min), matching `AC_TIMEOUT_MS` in `qa-run.js`.
+/// Default per-AC timeout (2 min) for non-cargo commands, matching
+/// `AC_TIMEOUT_MS` in `qa-run.js`.
 const AC_TIMEOUT_SECS: u64 = 120;
+
+/// Per-AC timeout ceiling (10 min) for commands invoking `cargo `: a
+/// `cargo build`/`cargo test` AC that runs right after an edit must recompile,
+/// and a cold compile routinely exceeds the 120 s default (real case:
+/// `cargo test -p mustard-rt` hit 120 s mid-recompile and degraded to a
+/// silent `skip`). Mirrors `TIMEOUT_RUST_SECS` in `verify-pipeline`.
+const AC_TIMEOUT_CARGO_SECS: u64 = 600;
+
+/// Crates whose binaries can be the very process running qa-run. A
+/// self-invoked qa-run must never let an AC rebuild them — see
+/// [`rewrite_self_invoked_cargo`] (the `--workspace` form, rewritten) and
+/// [`targets_running_crate`] (the direct `-p`/`--package` form, skipped).
+const SELF_CRATES: [&str; 2] = ["mustard-rt", "mustard-dashboard"];
+
+/// Per-AC timeout for `command`, env-aware.
+///
+/// `MUSTARD_QA_AC_TIMEOUT_SECS` (whole seconds, `u64`) overrides BOTH defaults
+/// when set to a parseable value; an invalid value is ignored. Without the
+/// override, commands containing `cargo ` get [`AC_TIMEOUT_CARGO_SECS`]
+/// (compilation-bound) and everything else keeps [`AC_TIMEOUT_SECS`].
+fn ac_timeout_secs(command: &str) -> u64 {
+    let env = std::env::var("MUSTARD_QA_AC_TIMEOUT_SECS").ok();
+    ac_timeout_secs_with_override(command, env.as_deref())
+}
+
+/// Deterministic core of [`ac_timeout_secs`]: the env value is injected as a
+/// parameter so the decision is a pure function of its inputs (no wall-clock,
+/// no globals) and unit-testable without mutating process env (which would
+/// need `unsafe` under Rust 2024 — forbidden in this crate).
+fn ac_timeout_secs_with_override(command: &str, env_override: Option<&str>) -> u64 {
+    if let Some(secs) = env_override.and_then(|s| s.trim().parse::<u64>().ok()) {
+        return secs;
+    }
+    if command.to_ascii_lowercase().contains("cargo ") {
+        AC_TIMEOUT_CARGO_SECS
+    } else {
+        AC_TIMEOUT_SECS
+    }
+}
 
 /// A parsed AC item: `- [ ] AC-N: description — Command: `cmd``.
 ///
@@ -325,6 +365,11 @@ fn extract_command(fragment: &str) -> Option<String> {
 /// When `true`, every `cargo (build|test) ... --workspace ...` token sequence
 /// gets `--exclude mustard-rt --exclude mustard-dashboard` appended.
 /// Idempotent: won't double-add if the AC already excluded them.
+///
+/// This rewrite only covers the `--workspace` form. The DIRECT form
+/// (`-p mustard-rt` / `--package mustard-rt`) has no salvaging rewrite — the
+/// command's entire point is rebuilding the running binary — so
+/// [`run_ac_command`] skips it outright via [`targets_running_crate`].
 fn rewrite_self_invoked_cargo(command: &str) -> String {
     let opts = QA_OPTIONS.with(std::cell::Cell::get);
     if !opts.self_invoked {
@@ -339,7 +384,7 @@ fn rewrite_self_invoked_cargo(command: &str) -> String {
         return command.to_string();
     }
     let mut out = command.to_string();
-    for crate_name in ["mustard-rt", "mustard-dashboard"] {
+    for crate_name in SELF_CRATES {
         let needle_explicit = format!("--exclude {crate_name}");
         let needle_eq = format!("--exclude={crate_name}");
         if out.contains(&needle_explicit) || out.contains(&needle_eq) {
@@ -354,10 +399,56 @@ fn rewrite_self_invoked_cargo(command: &str) -> String {
     out
 }
 
+/// `true` when `command` is a `cargo build`/`cargo test` invocation that
+/// targets one of [`SELF_CRATES`] DIRECTLY via `-p`/`--package` — both the
+/// split (`-p mustard-rt`) and glued (`-p=mustard-rt`) spellings, matched on
+/// token boundaries so `-p mustard-rt-extras` does NOT match.
+///
+/// Companion to [`rewrite_self_invoked_cargo`]: the `--workspace` form can be
+/// salvaged by appending `--exclude`, but the direct form cannot — executed
+/// from inside the very binary it rebuilds, the link step hits
+/// `Acesso negado. (os error 5)` on Windows. [`run_ac_command`] uses this to
+/// skip such ACs immediately (when [`QaRunOptions::self_invoked`] is set)
+/// instead of burning the whole timeout on a doomed compile.
+fn targets_running_crate(command: &str) -> bool {
+    let lower = command.to_ascii_lowercase();
+    if !(lower.contains("cargo build") || lower.contains("cargo test")) {
+        return false;
+    }
+    let tokens: Vec<&str> = lower.split_whitespace().collect();
+    tokens.iter().enumerate().any(|(i, tok)| {
+        SELF_CRATES.iter().any(|crate_name| {
+            let split_form = (*tok == "-p" || *tok == "--package")
+                && tokens.get(i + 1).is_some_and(|next| next == crate_name);
+            let glued_form = tok
+                .strip_prefix("-p=")
+                .or_else(|| tok.strip_prefix("--package="))
+                .is_some_and(|value| value == *crate_name);
+            split_form || glued_form
+        })
+    })
+}
+
 /// Run one AC command. Mirrors the JS classification: `pass` (exit 0), `fail`
 /// (non-zero exit), `skip` (timeout or spawn failure).
 fn run_ac_command(command: &str, cwd: &Path) -> AcResult {
     let t0 = Instant::now();
+    // Self-invocation guard for the DIRECT `-p`/`--package` form: no rewrite
+    // can save this command (unlike `--workspace`, which gets `--exclude`d in
+    // `rewrite_self_invoked_cargo`) — skip immediately instead of burning the
+    // timeout on a compile that dies relinking the running exe (os error 5).
+    let opts = QA_OPTIONS.with(std::cell::Cell::get);
+    if opts.self_invoked && targets_running_crate(command) {
+        return AcResult {
+            id: String::new(),
+            status: "skip".to_string(),
+            exit: None,
+            duration_ms: t0.elapsed().as_millis(),
+            stderr_excerpt:
+                "self-invocation: cannot rebuild the running binary; run this AC externally"
+                    .to_string(),
+        };
+    }
     // POSIX-style AC commands assume a shell; use the platform shell. Windows
     // AC are documented to be cross-shell-safe (`node -e`, `bash -c`).
     // Self-invoked rewrite first — see `rewrite_self_invoked_cargo` for why.
@@ -381,7 +472,8 @@ fn run_ac_command(command: &str, cwd: &Path) -> AcResult {
         };
     };
 
-    let deadline = Instant::now() + std::time::Duration::from_secs(AC_TIMEOUT_SECS);
+    let timeout_secs = ac_timeout_secs(command);
+    let deadline = Instant::now() + std::time::Duration::from_secs(timeout_secs);
     loop {
         match child.try_wait() {
             Ok(Some(status)) => {
@@ -429,7 +521,7 @@ fn run_ac_command(command: &str, cwd: &Path) -> AcResult {
                         status: "skip".to_string(),
                         exit: None,
                         duration_ms: t0.elapsed().as_millis(),
-                        stderr_excerpt: format!("timeout after {}ms", AC_TIMEOUT_SECS * 1000),
+                        stderr_excerpt: format!("timeout after {}ms", timeout_secs * 1000),
                     };
                 }
                 std::thread::sleep(std::time::Duration::from_millis(50));
@@ -641,6 +733,10 @@ pub struct QaRunOptions {
     /// `cargo build|test ... --workspace ...` command, so the AC does not
     /// fail with `failed to remove file mustard-rt.exe` (Windows os error 5)
     /// just because the very process running qa-run is holding the exe.
+    /// It also makes [`run_ac_command`] skip outright (with an explicit
+    /// reason) any `cargo build|test` that targets a [`SELF_CRATES`] member
+    /// DIRECTLY via `-p`/`--package` — that form cannot be rewritten, only
+    /// run externally. See [`targets_running_crate`].
     ///
     /// `complete_spec::run_qa_fail_open` sets this. External callers
     /// (`mustard-rt run qa-run --spec X` from a CI shell) leave it `false`.
@@ -1108,5 +1204,139 @@ mod tests {
         assert!(html.contains("<style>"));
         assert!(!html.contains("href=") && !html.contains("src="));
         assert!(html.contains("AC-1"));
+    }
+
+    /// Commands invoking `cargo ` get the compile-aware ceiling (600 s): a
+    /// build/test AC may need a full recompile, and the 120 s default turned
+    /// such ACs into silent skips (the regression behind this fix).
+    #[test]
+    fn qa_timeout_cargo_command_gets_big_ceiling() {
+        assert_eq!(
+            ac_timeout_secs_with_override("cargo test -p mustard-rt", None),
+            AC_TIMEOUT_CARGO_SECS
+        );
+        assert_eq!(
+            ac_timeout_secs_with_override("cargo build --workspace", None),
+            AC_TIMEOUT_CARGO_SECS
+        );
+        // Wrapped/chained invocations still contain `cargo ` → big ceiling.
+        assert_eq!(
+            ac_timeout_secs_with_override("rtk cargo test && echo ok", None),
+            AC_TIMEOUT_CARGO_SECS
+        );
+    }
+
+    /// Non-cargo commands keep the historical 120 s default.
+    #[test]
+    fn qa_timeout_non_cargo_keeps_default() {
+        assert_eq!(
+            ac_timeout_secs_with_override(r#"node -e "process.exit(0)""#, None),
+            AC_TIMEOUT_SECS
+        );
+        assert_eq!(
+            ac_timeout_secs_with_override("grep -q Modelo SKILL.md", None),
+            AC_TIMEOUT_SECS
+        );
+    }
+
+    /// `MUSTARD_QA_AC_TIMEOUT_SECS` overrides BOTH defaults when it parses as
+    /// `u64`; an invalid value is ignored and the command-sensitive default
+    /// applies. Exercised through the injected-override core (env mutation
+    /// needs `unsafe` under Rust 2024, forbidden in this crate).
+    #[test]
+    fn qa_timeout_env_override_wins() {
+        assert_eq!(
+            ac_timeout_secs_with_override("cargo test -p mustard-rt", Some("300")),
+            300
+        );
+        assert_eq!(ac_timeout_secs_with_override("echo ok", Some("300")), 300);
+        // Surrounding whitespace is tolerated.
+        assert_eq!(ac_timeout_secs_with_override("cargo build", Some(" 42 ")), 42);
+        // Invalid values fall back to the command-sensitive defaults.
+        assert_eq!(
+            ac_timeout_secs_with_override("cargo build", Some("not-a-number")),
+            AC_TIMEOUT_CARGO_SECS
+        );
+        assert_eq!(ac_timeout_secs_with_override("echo ok", Some("")), AC_TIMEOUT_SECS);
+    }
+
+    /// With `self_invoked=true`, a direct `-p` cargo test on a self crate is
+    /// an IMMEDIATE skip with the explicit reason — it never spawns. (A
+    /// pass-through in this empty tempdir would have spawned cargo and come
+    /// back as `fail`, not `skip`: there is no Cargo.toml here.)
+    #[test]
+    fn qa_self_invoked_direct_p_self_crate_skips_immediately() {
+        let dir = tempdir().unwrap();
+        QA_OPTIONS.with(|cell| cell.set(QaRunOptions { self_invoked: true }));
+        let res = run_ac_command("cargo test -p mustard-rt qa_run", dir.path());
+        QA_OPTIONS.with(|cell| cell.set(QaRunOptions::default()));
+        assert_eq!(res.status, "skip");
+        assert_eq!(res.exit, None);
+        assert_eq!(
+            res.stderr_excerpt,
+            "self-invocation: cannot rebuild the running binary; run this AC externally"
+        );
+    }
+
+    /// Token-boundary detection across the accepted spellings, plus the
+    /// negatives that must NOT match: other crates, prefix-sharing crate
+    /// names, non-build/test cargo subcommands, non-cargo commands.
+    #[test]
+    fn qa_self_invoked_detection_token_boundaries() {
+        // Split and glued spellings, both self crates.
+        assert!(targets_running_crate("cargo test -p mustard-rt"));
+        assert!(targets_running_crate("cargo test -p=mustard-rt -- --nocapture"));
+        assert!(targets_running_crate("cargo build --package mustard-dashboard"));
+        assert!(targets_running_crate("cargo build --package=mustard-dashboard --release"));
+        // Token boundary: prefix-sharing names must not match.
+        assert!(!targets_running_crate("cargo test -p mustard-rt-extras"));
+        assert!(!targets_running_crate("cargo test -p=mustard-rt-extras"));
+        // Other crates / no -p at all.
+        assert!(!targets_running_crate("cargo test -p mustard-core"));
+        assert!(!targets_running_crate("cargo test --workspace"));
+        // Only build/test relink the binary's crate via -p here.
+        assert!(!targets_running_crate("cargo fmt -p mustard-rt"));
+        assert!(!targets_running_crate("echo -p mustard-rt"));
+    }
+
+    /// With `self_invoked=false` (external invocation) the command runs
+    /// untouched: cargo actually spawns and fails fast in the empty tempdir
+    /// ("could not find Cargo.toml") → `fail`, proving no skip short-circuit
+    /// and no rewrite fired.
+    #[test]
+    fn qa_self_invoked_false_runs_command_untouched() {
+        let dir = tempdir().unwrap();
+        // Thread-local default: self_invoked = false.
+        let res = run_ac_command("cargo test -p mustard-rt --offline", dir.path());
+        assert_eq!(res.status, "fail", "stderr: {}", res.stderr_excerpt);
+        assert!(
+            res.stderr_excerpt.contains("Cargo.toml"),
+            "cargo must have actually run: {}",
+            res.stderr_excerpt
+        );
+    }
+
+    /// The `--workspace` rewrite path is unchanged by the direct-form guard:
+    /// self-invoked workspace tests still get the `--exclude` pair appended,
+    /// non-workspace forms pass through the rewrite verbatim, and with
+    /// `self_invoked=false` everything is verbatim.
+    #[test]
+    fn qa_self_invoked_workspace_rewrite_unchanged() {
+        QA_OPTIONS.with(|cell| cell.set(QaRunOptions { self_invoked: true }));
+        let workspace = rewrite_self_invoked_cargo("cargo test --workspace");
+        let direct_other = rewrite_self_invoked_cargo("cargo test -p mustard-core");
+        QA_OPTIONS.with(|cell| cell.set(QaRunOptions::default()));
+        assert_eq!(
+            workspace,
+            "cargo test --workspace --exclude mustard-rt --exclude mustard-dashboard"
+        );
+        // The rewrite never touches non-workspace forms (the direct SELF form
+        // is handled upstream by the immediate skip, not by rewriting).
+        assert_eq!(direct_other, "cargo test -p mustard-core");
+        // External invocation: verbatim.
+        assert_eq!(
+            rewrite_self_invoked_cargo("cargo test --workspace"),
+            "cargo test --workspace"
+        );
     }
 }
