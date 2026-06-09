@@ -13,6 +13,8 @@
 use std::fmt::Write as _;
 use std::path::Path;
 
+use mustard_core::domain::vocabulary::stacks::StackDetection;
+
 /// Files larger than this threshold trigger a warning in default (non-full) mode.
 pub const CLAUDE_MD_WARN_BYTES: usize = 2048;
 
@@ -149,18 +151,41 @@ fn render_commands(commands: &mustard_core::domain::config::Commands) -> String 
 
 /// Build the enrichable `## Guards` section for a SUBPROJECT: a `pending`
 /// sentinel block ([`GUARDS_PENDING_OPEN`] … [`GUARDS_CLOSE`]) whose body carries
-/// the deterministic facts (kind, frameworks) the Wave-2 enrich agent needs as
-/// context, tucked inside an HTML comment so they never render as prose. The
-/// returned string is a complete section (`## Guards\n\n` + block) ending in a
-/// newline. The block stays empty of guards on purpose — Wave 2 fills it; the
-/// `pending` marker is the contract that it has not been enriched yet.
-fn build_guards_block(kind: &str, frameworks: &[String]) -> String {
+/// the deterministic facts (kind, frameworks, detected stacks) the Wave-2 enrich
+/// agent needs as context, tucked inside an HTML comment so they never render as
+/// prose. The returned string is a complete section (`## Guards\n\n` + block)
+/// ending in a newline. The block stays empty of guards on purpose — Wave 2
+/// fills it; the `pending` marker is the contract that it has not been enriched
+/// yet.
+///
+/// The `stacks=` segment (`stacks=laravel(0.95),nextjs(0.65)`) is emitted only
+/// when `stacks` is non-empty, so a unit without detections renders the legacy
+/// line byte-for-byte. `frameworks=` stays regardless — it is the raw
+/// frequency-ranked dep list, a different signal than the inferred stacks.
+/// `pub(crate)` so `scan_guards::list` can round-trip the real generator output
+/// through its `parse_facts` in tests (generator/parser never drift).
+pub(crate) fn build_guards_block(
+    kind: &str,
+    frameworks: &[String],
+    stacks: &[StackDetection],
+) -> String {
     let fw = if frameworks.is_empty() { "(none)".to_string() } else { frameworks.join(", ") };
+    let mut facts = format!("kind={kind}; frameworks={fw}");
+    if !stacks.is_empty() {
+        let joined = stacks
+            .iter()
+            // `{:.2}` keeps the segment byte-stable (engine confidences are
+            // two-decimal by construction) and round-trip-safe for the parser.
+            .map(|s| format!("{}({:.2})", s.name, s.confidence))
+            .collect::<Vec<_>>()
+            .join(",");
+        let _ = write!(facts, "; stacks={joined}");
+    }
     let mut out = String::from("## Guards\n\n");
     let _ = writeln!(out, "{GUARDS_PENDING_OPEN}");
     // Facts for the enrich agent — kept in a comment so they are context, not
     // content. Wave 2 (`scan-guards-apply`) reads these to ground the guards.
-    let _ = writeln!(out, "<!-- facts: kind={kind}; frameworks={fw} -->");
+    let _ = writeln!(out, "<!-- facts: {facts} -->");
     out.push_str(GUARDS_CLOSE);
     out.push('\n');
     out
@@ -172,6 +197,8 @@ fn build_guards_block(kind: &str, frameworks: &[String]) -> String {
 /// - `kind`: grain project kind (e.g. `rust`, `typescript`, …)
 /// - `code_files`: number of code files grain counted
 /// - `frameworks`: frequency-ranked frameworks/deps mined for this unit
+/// - `stacks`: registry-inferred stack detections for this unit (additive next
+///   to `frameworks`; empty when nothing was inferred / older model)
 /// - `commands`: build/test/lint/type-check set detected for this unit
 /// - `existing`: current content of the CLAUDE.md (if the file exists)
 /// - `is_root`: the workspace-root unit (empty `dir`). The root is EXCLUDED from
@@ -192,6 +219,7 @@ pub fn render(
     kind: &str,
     code_files: usize,
     frameworks: &[String],
+    stacks: &[StackDetection],
     commands: &mustard_core::domain::config::Commands,
     existing: Option<&str>,
     is_root: bool,
@@ -214,11 +242,12 @@ pub fn render(
             // already pending/done block survive untouched; root is never reseeded.
             // Reseed BEFORE re-appending the managed block, so the block (now at the
             // tail) never bleeds into the `## Guards` body detection.
-            let reseeded = reseed_guards_if_placeholder(&without_block, kind, frameworks, is_root);
+            let reseeded =
+                reseed_guards_if_placeholder(&without_block, kind, frameworks, stacks, is_root);
             append_managed_block(&reseeded, &block)
         }
         // No file yet — emit a fresh scaffold.
-        None => scaffold(name, &block, kind, frameworks, is_root),
+        None => scaffold(name, &block, kind, frameworks, stacks, is_root),
     }
 }
 
@@ -226,12 +255,19 @@ pub fn render(
 /// `## Guards` section. Subprojects get the enrichable `pending` Guards block
 /// (Wave 2 fills it); the root gets the inert human seed (root is excluded from
 /// enrich).
-fn scaffold(name: &str, block: &str, kind: &str, frameworks: &[String], is_root: bool) -> String {
+fn scaffold(
+    name: &str,
+    block: &str,
+    kind: &str,
+    frameworks: &[String],
+    stacks: &[StackDetection],
+    is_root: bool,
+) -> String {
     let title = title_case(name);
     let guards = if is_root {
         String::from("## Guards\n\n<!-- seed DO/DON'T aqui -->\n")
     } else {
-        build_guards_block(kind, frameworks)
+        build_guards_block(kind, frameworks, stacks)
     };
     // The managed block lives at the END — identifiable and replaceable, with the
     // human-owned `## Guards` (and any curated prose) above it.
@@ -287,7 +323,13 @@ fn collapse_blanks(lines: &[String]) -> String {
 /// pick the subproject up. Curated human guards (any real line) and an already
 /// `pending`/`done` block are left byte-for-byte untouched; the workspace root
 /// is never reseeded (it is excluded from enrich).
-fn reseed_guards_if_placeholder(text: &str, kind: &str, frameworks: &[String], is_root: bool) -> String {
+fn reseed_guards_if_placeholder(
+    text: &str,
+    kind: &str,
+    frameworks: &[String],
+    stacks: &[StackDetection],
+    is_root: bool,
+) -> String {
     const PLACEHOLDERS: [&str; 2] = ["(populated by /scan)", "<!-- seed DO/DON'T aqui -->"];
     if is_root {
         return text.to_string();
@@ -317,7 +359,7 @@ fn reseed_guards_if_placeholder(text: &str, kind: &str, frameworks: &[String], i
     }
     // Swap the whole placeholder section for a fresh `pending` block.
     let mut out: Vec<String> = lines[..g].iter().map(|s| (*s).to_string()).collect();
-    out.extend(build_guards_block(kind, frameworks).lines().map(str::to_string));
+    out.extend(build_guards_block(kind, frameworks, stacks).lines().map(str::to_string));
     out.extend(lines[body_end..].iter().map(|s| (*s).to_string()));
     collapse_blanks(&out)
 }
@@ -416,6 +458,7 @@ fn run_full(
             &project.kind,
             project.code_files,
             &project.frameworks,
+            &project.detected_stacks,
             &commands,
             existing.as_deref(),
             is_root,
@@ -522,7 +565,7 @@ mod tests {
         // (d) existing=None on the ROOT (is_root=true) → scaffold: H1 + sentinel
         // block + inert human `## Guards` seed (the root is excluded from enrich,
         // so no `pending` marker here).
-        let out = render("dashboard", "typescript", 42, &[], &no_commands(), None, true);
+        let out = render("dashboard", "typescript", 42, &[], &[], &no_commands(), None, true);
         assert!(out.contains("# Dashboard"), "header missing: {out}");
         assert!(out.contains("Tipo: typescript · 42 arquivos"), "map missing: {out}");
         assert!(out.contains(SENTINEL_OPEN), "scan-map open missing: {out}");
@@ -546,7 +589,7 @@ mod tests {
         // frameworks) in a comment for the Wave-2 enrich agent, OUTSIDE the
         // scan-map block.
         let frameworks = vec!["serde".to_string(), "clap".to_string()];
-        let out = render("rt", "rust", 12, &frameworks, &no_commands(), None, false);
+        let out = render("rt", "rust", 12, &frameworks, &[], &no_commands(), None, false);
         assert!(out.contains(GUARDS_PENDING_OPEN), "pending open marker missing: {out}");
         assert!(out.contains(GUARDS_CLOSE), "guards close marker missing: {out}");
         // Facts live in a comment inside the block — context, not content.
@@ -558,11 +601,44 @@ mod tests {
         let pending = out.find(GUARDS_PENDING_OPEN).unwrap();
         assert!(pending < open, "guards block must sit above the managed block: {out}");
         // No frameworks → facts still render with an explicit (none).
-        let bare = render("lib", "rust", 1, &[], &no_commands(), None, false);
+        let bare = render("lib", "rust", 1, &[], &[], &no_commands(), None, false);
         assert!(bare.contains("<!-- facts: kind=rust; frameworks=(none) -->"), "empty frameworks facts: {bare}");
         // Idempotence: re-rendering the scaffold preserves the pending block.
-        let again = render("rt", "rust", 12, &frameworks, &no_commands(), Some(&out), false);
+        let again = render("rt", "rust", 12, &frameworks, &[], &no_commands(), Some(&out), false);
         assert!(again.contains(GUARDS_PENDING_OPEN), "pending marker lost on re-render: {again}");
+    }
+
+    #[test]
+    fn stacks_facts_guards_block_emits_segment() {
+        let frameworks = vec!["serde".to_string()];
+        let stacks = vec![
+            StackDetection {
+                name: "laravel".into(),
+                confidence: 0.95,
+                signals: vec!["dep:laravel/framework".into()],
+            },
+            StackDetection { name: "nextjs".into(), confidence: 0.65, signals: vec!["dep:next".into()] },
+        ];
+        // With detections the facts line gains the `stacks=` segment —
+        // name(confidence) tokens, comma-joined; signals stay off the line so
+        // the comment stays terse. `frameworks=` survives beside it.
+        let with = build_guards_block("rust", &frameworks, &stacks);
+        assert!(
+            with.contains("<!-- facts: kind=rust; frameworks=serde; stacks=laravel(0.95),nextjs(0.65) -->"),
+            "stacks segment missing or malformed: {with}"
+        );
+        // Without detections the whole block is byte-identical to the legacy form.
+        let without = build_guards_block("rust", &frameworks, &[]);
+        assert_eq!(
+            without,
+            format!(
+                "## Guards\n\n{GUARDS_PENDING_OPEN}\n<!-- facts: kind=rust; frameworks=serde -->\n{GUARDS_CLOSE}\n"
+            ),
+            "empty stacks must reproduce the legacy block exactly"
+        );
+        // End-to-end through render: a scaffolded subproject carries the segment.
+        let out = render("rt", "rust", 12, &frameworks, &stacks, &no_commands(), None, false);
+        assert!(out.contains("stacks=laravel(0.95),nextjs(0.65)"), "render did not thread stacks: {out}");
     }
 
     #[test]
@@ -605,7 +681,7 @@ Layered: ui → domain → io.
             lint: None,
             type_check: None,
         };
-        let out = render("dashboard", "rust", 99, &[], &commands, Some(existing), false);
+        let out = render("dashboard", "rust", 99, &[], &[], &commands, Some(existing), false);
         // Exactly one managed block, appended at the END.
         assert_eq!(out.matches(SENTINEL_OPEN).count(), 1, "expected one block: {out}");
         assert!(out.trim_end().ends_with(SENTINEL_CLOSE), "block must be at the end: {out}");
@@ -619,7 +695,7 @@ Layered: ui → domain → io.
         assert!(out.contains("Never import from"), "guard line 1 lost: {out}");
         assert!(out.contains("Always use `Result<T, anyhow::Error>`"), "guard line 2 lost: {out}");
         // Idempotent: re-rendering relocates/changes nothing further.
-        let again = render("dashboard", "rust", 99, &[], &commands, Some(&out), false);
+        let again = render("dashboard", "rust", 99, &[], &[], &commands, Some(&out), false);
         assert_eq!(out, again, "render must be idempotent");
     }
 
@@ -649,7 +725,7 @@ Hand-written prose that must NOT move.
 
 - keep me
 ";
-        let out = render("dashboard", "rust", 77, &[], &no_commands(), Some(existing), false);
+        let out = render("dashboard", "rust", 77, &[], &[], &no_commands(), Some(existing), false);
         assert_eq!(out.matches(SENTINEL_OPEN).count(), 1, "duplicate block: {out}");
         assert!(out.trim_end().ends_with(SENTINEL_CLOSE), "block must be at the end: {out}");
         assert!(out.starts_with("# Dashboard"), "header moved: {out}");
@@ -657,7 +733,7 @@ Hand-written prose that must NOT move.
         assert!(out.contains("Hand-written prose that must NOT move."), "prose lost: {out}");
         assert!(out.contains("- keep me"), "guard lost: {out}");
         // Idempotent.
-        let again = render("dashboard", "rust", 77, &[], &no_commands(), Some(&out), false);
+        let again = render("dashboard", "rust", 77, &[], &[], &no_commands(), Some(&out), false);
         assert_eq!(out, again, "render not idempotent");
     }
 
@@ -700,7 +776,7 @@ Tipo: cargo
             lint: None,
             type_check: None,
         };
-        let out = render("root", "npm", 11, &["serde".into()], &commands, Some(existing), true);
+        let out = render("root", "npm", 11, &["serde".into()], &[], &commands, Some(existing), true);
         assert_eq!(out.matches(SENTINEL_OPEN).count(), 1, "duplicate sentinel: {out}");
         assert!(out.trim_end().ends_with(SENTINEL_CLOSE), "block must be relocated to the end: {out}");
         assert!(out.contains("Tipo: npm · 11 arquivos"), "block not refreshed: {out}");
@@ -709,7 +785,7 @@ Tipo: cargo
         assert!(out.contains("- anyhow"), "outside Stack body wrongly purged: {out}");
         assert!(out.contains("- keep me"), "guard lost: {out}");
         // Idempotent.
-        let again = render("root", "npm", 11, &["serde".into()], &commands, Some(&out), true);
+        let again = render("root", "npm", 11, &["serde".into()], &[], &commands, Some(&out), true);
         assert_eq!(out, again, "render not idempotent");
     }
 
@@ -730,11 +806,11 @@ Tipo: npm · 1 arquivos
 
 (populated by /scan)
 ";
-        let out = render("dashboard", "npm", 1, &["react".into()], &no_commands(), Some(stub), false);
+        let out = render("dashboard", "npm", 1, &["react".into()], &[], &no_commands(), Some(stub), false);
         assert!(out.contains(GUARDS_PENDING_OPEN), "stub not reseeded to pending: {out}");
         assert!(!out.contains("(populated by /scan)"), "stub survived: {out}");
         // Idempotent: a re-render keeps the pending block (does not re-reseed).
-        let again = render("dashboard", "npm", 1, &["react".into()], &no_commands(), Some(&out), false);
+        let again = render("dashboard", "npm", 1, &["react".into()], &[], &no_commands(), Some(&out), false);
         assert_eq!(out, again, "reseed must be idempotent");
 
         // Curated human guards are preserved, never reseeded.
@@ -751,7 +827,7 @@ Tipo: cargo · 1 arquivos
 
 - Real human rule that must stay.
 ";
-        let out2 = render("cli", "cargo", 1, &[], &no_commands(), Some(curated), false);
+        let out2 = render("cli", "cargo", 1, &[], &[], &no_commands(), Some(curated), false);
         assert!(out2.contains("- Real human rule that must stay."), "curated guard lost: {out2}");
         assert!(!out2.contains(GUARDS_PENDING_OPEN), "curated guards wrongly reseeded: {out2}");
 
@@ -767,7 +843,7 @@ Tipo: npm · 1 arquivos
 
 <!-- seed DO/DON'T aqui -->
 ";
-        let out3 = render("(root)", "npm", 1, &[], &no_commands(), Some(root), true);
+        let out3 = render("(root)", "npm", 1, &[], &[], &no_commands(), Some(root), true);
         assert!(out3.contains("<!-- seed DO/DON'T aqui -->"), "root seed wrongly reseeded: {out3}");
         assert!(!out3.contains(GUARDS_PENDING_OPEN), "root must not get pending: {out3}");
     }
@@ -829,8 +905,8 @@ Keep me.
             lint: None,
             type_check: None,
         };
-        let first = render("dashboard", "rust", 5, &[], &commands, Some(existing), false);
-        let second = render("dashboard", "rust", 5, &[], &commands, Some(&first), false);
+        let first = render("dashboard", "rust", 5, &[], &[], &commands, Some(existing), false);
+        let second = render("dashboard", "rust", 5, &[], &[], &commands, Some(&first), false);
         assert_eq!(first, second, "render must be idempotent over migration");
     }
 
@@ -843,7 +919,7 @@ Keep me.
             lint: None,
             type_check: Some("cargo check".into()),
         };
-        let out = render("rt", "rust", 12, &frameworks, &commands, None, false);
+        let out = render("rt", "rust", 12, &frameworks, &[], &commands, None, false);
         // Commands table has only the Some rows, in fixed order, no Lint row.
         assert!(out.contains("## Commands"), "commands heading missing: {out}");
         assert!(out.contains("| Build | `cargo build` |"), "build row missing: {out}");
@@ -854,7 +930,7 @@ Keep me.
 
     #[test]
     fn render_omits_commands_table_when_all_none() {
-        let out = render("lib", "rust", 1, &[], &no_commands(), None, false);
+        let out = render("lib", "rust", 1, &[], &[], &no_commands(), None, false);
         assert!(!out.contains("## Commands"), "commands section must be absent: {out}");
         // After the Stack cut there is no `## Stack` section at all.
         assert!(!out.contains("## Stack"), "stack section must be dropped: {out}");
@@ -869,11 +945,11 @@ Keep me.
             lint: Some("pnpm run lint".into()),
             type_check: Some("tsc --noEmit".into()),
         };
-        let first = render("dashboard", "typescript", 30, &frameworks, &commands, None, false);
+        let first = render("dashboard", "typescript", 30, &frameworks, &[], &commands, None, false);
         // Feeding the previous render back in must reproduce it byte-for-byte:
         // the scaffold's sentinel block round-trips through the splice path
         // unchanged, and the `pending` Guards block is preserved outside it.
-        let second = render("dashboard", "typescript", 30, &frameworks, &commands, Some(&first), false);
+        let second = render("dashboard", "typescript", 30, &frameworks, &[], &commands, Some(&first), false);
         assert_eq!(first, second, "render must be idempotent");
     }
 
@@ -909,6 +985,7 @@ Keep me.
                 frameworks: Vec::new(),
                 dependencies: Vec::new(),
                 scripts: Vec::new(),
+                detected_stacks: Vec::new(),
             },
             mustard_core::domain::scan::Project {
                 name: "small".into(),
@@ -918,6 +995,7 @@ Keep me.
                 frameworks: Vec::new(),
                 dependencies: Vec::new(),
                 scripts: Vec::new(),
+                detected_stacks: Vec::new(),
             },
         ];
 
@@ -938,6 +1016,7 @@ Keep me.
             frameworks: Vec::new(),
             dependencies: Vec::new(),
             scripts: Vec::new(),
+            detected_stacks: Vec::new(),
         }
     }
 

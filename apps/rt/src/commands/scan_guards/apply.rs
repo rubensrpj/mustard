@@ -232,6 +232,24 @@ mod tests {
     }
 
     #[test]
+    fn stacks_facts_apply_preserves_segment() {
+        // The facts line is preserved VERBATIM through the splice — including
+        // the `stacks=` segment Wave 1 now emits. If apply ever rebuilt the
+        // line field-by-field instead of copying it, the segment (and the
+        // grounding it carries for re-enrich passes) would silently degrade.
+        let doc = format!(
+            "# Web\n\n## Guards\n\n{GUARDS_PENDING_OPEN}\n<!-- facts: kind=php; frameworks=laravel/framework; stacks=laravel(0.95),nextjs(0.65) -->\n{GUARDS_CLOSE}\n"
+        );
+        let out = splice(&doc, "- DO use Eloquent scopes").expect("pending block present");
+        assert!(
+            out.contains("<!-- facts: kind=php; frameworks=laravel/framework; stacks=laravel(0.95),nextjs(0.65) -->"),
+            "facts line degraded by apply: {out}"
+        );
+        assert!(out.contains(GUARDS_DONE_OPEN), "done marker missing: {out}");
+        assert!(out.contains("- DO use Eloquent scopes"), "guard body missing: {out}");
+    }
+
+    #[test]
     fn scan_guards_apply_is_idempotent() {
         // After the first apply the block carries the DONE marker, so a second
         // apply finds no pending block and leaves the file untouched.
