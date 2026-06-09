@@ -69,18 +69,18 @@ The subproject's curated Guards are injected inline by the renderer (`## GUARDS`
 Do NOT read `wave-plan.md` or decide the wave order by hand. Run:
 
 ```bash
-mustard-rt run dispatch-plan --spec {specName}
+mustard-rt run wave-advance --spec {specName}
 ```
 
-It returns a deterministic JSON array ordered by dependency level. Each item is `{wave, role, subproject, depends_on, level, prompt_cmd, subagent_type}`:
+It returns the **current dispatch round** as a deterministic JSON array — every wave of the first dependency level whose waves lack `pipeline.wave.complete`; `[]` when all waves are done. Each item is `{wave, role, subproject, subagent_type, prompt}` with the `prompt` **already rendered**:
 
-- **`level`** = dispatch round. Items sharing a `level` have no dependency between them → dispatch them together in ONE message (multiple `<invoke>` blocks). A higher `level` starts ONLY after every lower-level wave completes.
+- Items returned together have no dependency between them → dispatch them together in ONE message (multiple `<invoke>` blocks). Re-run `wave-advance` after the round completes — a higher level starts ONLY after every lower-level wave completes.
 - NEVER nest dispatch — nesting breaks parallel execution.
-- `resume-bootstrap` decides the **stage**; `dispatch-plan` decides the **wave routing**. The orchestrator is a relay over the array, not a planner.
+- `resume-bootstrap` decides the **stage**; `wave-advance` decides the **wave routing + render** (`dispatch-plan` remains as an inspection view of the full DAG/levels). The orchestrator is a relay over the array, not a planner.
 
 **3. Dispatch Agent:**
 
-For each item, run its `prompt_cmd` (a ready `mustard-rt run agent-prompt-render` invocation — never hand-assembled) and pass the **stdout** to the Task `prompt` with the item's **`subagent_type`** (the tool picks it per role: read-only roles run tool-restricted — `explore`→`Explore`, `review`/`qa`→`mustard-review`, `guards`→`mustard-guards`, so they physically cannot write; writing roles → `general-purpose`). Never pick the agent by hand. The rendered template carries the role contract + boundary + return cap inline, plus the spec's project section + its anchors.
+For each item, pass its `prompt` **verbatim** to the Task `prompt` (it was already rendered by `agent-prompt-render` inside `wave-advance` — never hand-assembled) with the item's **`subagent_type`** (the tool picks it per role: read-only roles run tool-restricted — `explore`→`Explore`, `review`/`qa`→`mustard-review`, `guards`→`mustard-guards`, so they physically cannot write; writing roles → `general-purpose`). Never pick the agent by hand. The rendered template carries the role contract + boundary + return cap inline, plus the spec's project section + its anchors.
 
 **4. Validate:**
 

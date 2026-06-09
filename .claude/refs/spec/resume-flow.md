@@ -1,6 +1,6 @@
 # /mustard:spec — Resume flow (continue pipeline)
 
-Loaded on demand by SKILL Step 5 when `stage=Execute` (or `Analyze`/`QaReview`/`ReviewPending`/`QaPending`/`Close`). All mode decisions (`continued` vs `reanalyzed`), operational spec resolution, stub detection, `needsDiff`/`needsContextSlice`, `lastDispatchFailure` parsing, **and the post-execute REVIEW/QA decision**, have been moved to `mustard-rt run resume-bootstrap --spec X --json`. Literal agent prompt construction was moved to `mustard-rt run agent-prompt-render`. This ref only keeps what the binary cannot decide on its own.
+Loaded on demand by SKILL Step 5 when `stage=Execute` (or `Analyze`/`QaReview`/`ReviewPending`/`QaPending`/`Close`). All mode decisions (`continued` vs `reanalyzed`), operational spec resolution, stub detection, `needsDiff`/`needsContextSlice`, `lastDispatchFailure` parsing, **and the post-execute REVIEW/QA decision**, have been moved to `mustard-rt run resume-bootstrap --spec X --json`. Literal agent prompt construction was moved to `mustard-rt run agent-prompt-render`; wave routing + prompts arrive **already rendered** via `mustard-rt run wave-advance`. This ref only keeps what the binary cannot decide on its own.
 
 ## Stage values post-execute (never freelance)
 
@@ -9,10 +9,12 @@ The binary can return three extra `stage` values when all waves complete. The or
 | `stage` | `nextAction` | Companion field | What to do |
 |---------|--------------|-----------------|------------|
 | `ReviewPending` | `dispatch-review` | `reviewRoles: [...]` | Dispatch one REVIEW Task per role |
-| `QaPending` | `run-qa` | `qaCommand: "..."` | Run the command literally |
-| `Close` | `emit-complete` | — | Only now is `emit-pipeline --kind pipeline.complete` allowed |
+| `QaPending` | `run-qa` | `qaCommand: "..."` | Run `mustard-rt run close-pipeline --spec {specName}` (it chains `qa-run`) — not the manual sequence |
+| `Close` | `emit-complete` | — | Run `mustard-rt run close-pipeline --spec {specName}` — the close happens only when it returns `completed: true` |
 
 When `nextAction` is `null`, there is still a wave to run — follow the normal wave-dispatch flow below.
+
+`close-pipeline` composes the whole CLOSE tail in **one call**: review.result verdicts (advisory) + `qa-run` + — only on QA pass — `complete-spec` + `pipeline-summary`, returning `{reviews, qa, completed, summary}`. On QA fail/skip it returns `completed: false` and does NOT close — report the failing AC instead of retrying the close or calling `complete-spec`/`pipeline-summary` by hand.
 
 ## Hard gate on `emit-pipeline --kind pipeline.complete`
 
@@ -24,36 +26,36 @@ When the bootstrap JSON indicates a wave plan, the orchestrator dispatches the c
 
 ### Routing is decided by Rust — the orchestrator is a relay
 
-The wave **order and routing** are not interpreted by the LLM. Run:
+The wave **order, routing and prompts** are not interpreted by the LLM. Run:
 
 ```bash
-mustard-rt run dispatch-plan --spec {specName}
+mustard-rt run wave-advance --spec {specName}
 ```
 
-It reads `wave-plan.md`, builds the dependency DAG, and returns a deterministic JSON array ordered by dependency level. Each item is:
+It reads the wave DAG and returns the **current round only** — every wave of the first dependency level whose waves lack `pipeline.wave.complete` — as a deterministic JSON array; `[]` when all waves are done. Each item is:
 
 ```json
-{ "wave": 2, "role": "cli", "subproject": "apps/cli", "depends_on": [1], "level": 1,
-  "prompt_cmd": "mustard-rt run agent-prompt-render --spec … --wave 2 --role cli --subproject apps/cli --mode first" }
+{ "wave": 2, "role": "cli", "subproject": "apps/cli", "subagent_type": "general-purpose",
+  "prompt": "…the FULL Task prompt, ALREADY RENDERED…" }
 ```
 
-- **`level`** is the dispatch round. Items sharing a `level` have no dependency between them → dispatch them **together in one message** (several `<invoke>` blocks). Never dispatch a higher `level` before every lower-level wave has completed.
-- **`prompt_cmd`** is a ready `agent-prompt-render` invocation — NOT the prompt. Run it; pass its **stdout** as the Task `prompt`.
+- Items returned together share one dependency level → dispatch them **together in one message** (several `<invoke>` blocks). Never reach for a later level by hand — re-run `wave-advance` after the round completes and it advances on its own.
+- **`prompt`** IS the final Task prompt — already rendered by `agent-prompt-render` inside the binary. There is no `prompt_cmd` round-trip and nothing to assemble; pass it **verbatim** as the Task `prompt`.
 - **`subagent_type`**: each item carries its own — the tool picks the agent per role (read-only roles run tool-restricted: `explore`→`Explore`, `review`/`qa`→`mustard-review`, `guards`→`mustard-guards`; writing roles → `general-purpose`). Pass it through; never pick by hand.
 
-The orchestrator does NOT decide the order, group rounds, or assemble the loop by hand — `dispatch-plan` owns that ("free section" determinised). `resume-bootstrap` stays the **stage** decision (mode / stage / progress); `dispatch-plan` is the **wave-routing** decision. (`--wave {N}` slices the array to a single item — a utility for re-rendering one wave's dispatch, NOT the normal per-round path. Do NOT drive the loop off the bootstrap's scalar `currentWave`: it names one wave, but a round can hold several independent waves of the same `level`.)
+The orchestrator does NOT decide the order, group rounds, or assemble the loop by hand — `wave-advance` owns that ("free section" determinised). `resume-bootstrap` stays the **stage** decision (mode / stage / progress); `wave-advance` is the **wave-routing + render** decision. (`dispatch-plan` still exists — use it only to **inspect** the full DAG/levels, e.g. when debugging routing; it is not the dispatch path. Do NOT drive the loop off the bootstrap's scalar `currentWave`: it names one wave, but a round can hold several independent waves of the same level.)
 
 ### Per-level loop
 
-The **round** is every `dispatch-plan` item whose `level` equals the lowest level among items whose `wave` is NOT in `completedWaves` (from `resume-bootstrap` / `wave-tree`). Process one round at a time — never one wave at a time when the round holds several.
+The **round** is exactly the array one `wave-advance` call returns. Process one round at a time — never one wave at a time when the round holds several.
 
-1. **Dispatch the whole round in ONE message.** For each item in the round: run Step 12d (dependency-precheck) on that wave's spec, then run its `prompt_cmd` and dispatch a Task with the stdout as `prompt` and the item's `subagent_type`. ALL `<invoke>` blocks go in a single message so the agents run concurrently.
+1. **Dispatch the whole round in ONE message.** For each item in the round: run Step 12d (dependency-precheck) on that wave's spec, then dispatch a Task with the item's `prompt` (verbatim) and the item's `subagent_type`. ALL `<invoke>` blocks go in a single message so the agents run concurrently.
 2. **After each wave N in the round returns:**
    - Commit `/mustard:git commit` style with message `feat(wave-{N}/{role}): {summary}`. Fallback: `git add {files} && git commit -m "..."`.
    - Emit wave completion: `mustard-rt run emit-pipeline --kind pipeline.wave.complete --spec {specName} --payload "{\"wave\":{N},\"duration_ms\":{elapsed}}"`. The projection derives `completedWaves` from these events — no JSON state file.
-   - Cache this wave's diff for dependent waves: `rtk git diff HEAD~1 HEAD --stat > .claude/spec/{specName}/wave-{N}-{role}/diff.md` — keep the redirect target **relative** (never an absolute `C:\...` path; the bash gate rejects Windows-style redirect targets). The next level's `agent-prompt-render` injects this file; the orchestrator does not pass anything explicitly.
-3. **After the round completes**, run `mustard-rt run wave-tree --spec-dir .claude/spec/{specName}` to show progress, then advance to the next-lowest pending `level`.
-4. When no pending wave remains → do **NOT** emit `pipeline.complete`. Re-run `resume-bootstrap` and follow `nextAction` (REVIEW → QA → CLOSE, in that order).
+   - Cache this wave's diff for dependent waves: `rtk git diff HEAD~1 HEAD --stat > .claude/spec/{specName}/wave-{N}-{role}/diff.md` — keep the redirect target **relative** (never an absolute `C:\...` path; the bash gate rejects Windows-style redirect targets). The next round's render (inside `wave-advance`) injects this file; the orchestrator does not pass anything explicitly.
+3. **After the round completes**, run `mustard-rt run wave-tree --spec-dir .claude/spec/{specName}` to show progress, then re-run `wave-advance` — it returns the next round.
+4. When `wave-advance` returns `[]` (no pending wave) → do **NOT** emit `pipeline.complete`. Re-run `resume-bootstrap` and follow `nextAction` (REVIEW, then `close-pipeline` for QA + CLOSE, in that order).
 5. If a wave fails (REJECTED after 2 fix-loops, or BLOCKED) → see Escalation Statuses + `../resume/fix-loop-wave.md`. A failed wave blocks the higher levels that depend on it; independent waves in the same round still complete.
 
 ## Step 12d — Dependency Precheck (factual gate)
@@ -92,11 +94,11 @@ See `.claude/pipeline-config.md § Escalation Statuses` and `../resume/fix-loop-
 
 - Main context **IS** the Pipeline Runner — NEVER wrap it in a single Task agent.
 - NEVER implement code directly — ALL via Task agents (1 per subproject per wave).
-- Wave dispatch: ALL agents of the same `dispatch-plan` `level` in ONE SINGLE message.
+- Wave dispatch: ALL items of one `wave-advance` round (the same dependency level) in ONE SINGLE message.
 - Each sub-agent reads its own `{subproject}/CLAUDE.md` + auto-loads relevant skills.
-- ALWAYS use `mustard-rt run dispatch-plan` to decide wave order/routing — NEVER read `wave-plan.md` and assemble the dispatch loop by hand. The LLM is a relay: iterate the array, run each `prompt_cmd`, pass its stdout to Task.
-- ALWAYS use `mustard-rt run agent-prompt-render` to build the prompt — NEVER from scratch. (You get the exact invocation as each item's `prompt_cmd`.)
+- ALWAYS use `mustard-rt run wave-advance` to decide wave order/routing — NEVER read `wave-plan.md` and assemble the dispatch loop by hand. The LLM is a relay: iterate the returned array, pass each item's `prompt` to Task. (`dispatch-plan` is an inspection fallback for the full DAG — not the dispatch path.)
+- NEVER hand-craft prompts — `wave-advance` IS the render: each item's `prompt` arrives already rendered by `agent-prompt-render`. Never build one from scratch.
 - ALWAYS use `mustard-rt run resume-bootstrap` to decide mode/path/diff/slice/`nextAction` — NEVER reimplement those rules in the SKILL.
-- ALWAYS run REVIEW + QA before CLOSE — `pipeline.complete` is refused (exit 2) without `qa.result`(overall=pass). Follow `nextAction` blindly.
+- ALWAYS run REVIEW + QA before CLOSE — `pipeline.complete` is refused (exit 2) without `qa.result`(overall=pass). Follow `nextAction` blindly. `close-pipeline` enforces this: QA fail/skip → `completed: false`, no close.
 - ALWAYS run dependency-precheck (Step 12d) before dispatch.
-- Wave plan CLOSE only when every wave is in `completedWaves` (count === `totalWaves`) AND `nextAction === "emit-complete"`. Do not gate CLOSE on the scalar `currentWave`.
+- Wave plan CLOSE only when every wave is in `completedWaves` (count === `totalWaves`, i.e. `wave-advance` returns `[]`) AND `nextAction === "emit-complete"` — then close via `close-pipeline`, never the manual `qa-run` → `complete-spec` → `pipeline-summary` sequence. Do not gate CLOSE on the scalar `currentWave`.

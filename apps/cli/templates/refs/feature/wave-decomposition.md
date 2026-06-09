@@ -32,6 +32,8 @@ Before building the wave plan in Full scope, check whether the work warrants mor
    ```bash
    echo '{"files":[...all paths from ANALYZE...],"projectRoot":"."}' | mustard-rt run wave-dependency
    ```
+   `wave-dependency` reads its JSON from **stdin** — stdin does not survive the `rtk` wrapper, so invoke it plain (as above) or via file-based shell redirection (`mustard-rt run wave-dependency < plan.json`), never through an `rtk`-wrapped pipe. The same `< plan.json` form validates/derives a plan's `depends_on` before materialising (step 6).
+
    Output cases:
    - `{error: "cyclic-dependency", cycle: [...]}` → warn user about cyclic imports (pre-existing architecture issue), fall back to a single-wave plan with note in `## Concerns`.
    - `{error: ...}` → fail-open: fall back to a single-wave plan.
@@ -40,9 +42,9 @@ Before building the wave plan in Full scope, check whether the work warrants mor
 
 6. **Emit a rich `--plan` JSON and scaffold it — never hand-author the wave bodies.**
 
-   The decomposition you lapidated becomes the per-wave **body** of the plan JSON: each wave carries `tasks` (checklist), `files` (census), and `acceptance` (AC) arrays. `mustard-rt run wave-scaffold` then **materialises** that body into the on-disk layout — you do NOT write any `wave-N-{role}/spec.md` body by hand after the scaffold.
+   The decomposition you lapidated becomes the per-wave **body** of the plan JSON: each wave carries `tasks` (checklist), `files` (census), and `acceptance` (AC) arrays. `mustard-rt run plan-materialize` (one call — it runs `wave-scaffold` + `analyze-validation` + the PLAN emits) then **materialises** that body into the on-disk layout — you do NOT write any `wave-N-{role}/spec.md` body by hand after the scaffold.
 
-   Plan JSON schema (consumed by `wave-scaffold --plan`):
+   Plan JSON schema (consumed by `plan-materialize --plan`, which feeds `wave-scaffold`):
    ```json
    {
      "waves": [
@@ -73,9 +75,9 @@ Before building the wave plan in Full scope, check whether the work warrants mor
 
    **`depends_on` must use the `wave-N-role` form** (identical to the wave's own `Spec` wikilink — e.g. `["wave-1-backend"]`), NOT the bare role name (`["backend"]`). Dependencies are resolved by **wave number**, and the `wave-N-role` link is unambiguous even when two waves share a role. (`dispatch-plan` also accepts a bare role as a best-effort fallback, but it resolves to the *first* wave carrying that role — wrong when a role repeats — so do not rely on it.) An unresolved dependency is dropped silently, which flattens the wave DAG to a single parallel level (every wave dispatched at once, ordering lost).
 
-   Scaffold it:
+   Materialise it — ONE call that composes `wave-scaffold` + `analyze-validation` (incl. the AC-format WARN) + the `pipeline.scope` emit + emit-phase PLAN, returning `{events, scaffold, validation}`; do not run those as separate manual steps:
    ```bash
-   mustard-rt run wave-scaffold --spec-dir .claude/spec/{date}-{name} --plan plan.json
+   mustard-rt run plan-materialize --spec-dir .claude/spec/{date}-{name} --plan plan.json
    ```
    This writes:
    ```
