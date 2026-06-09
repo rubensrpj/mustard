@@ -38,7 +38,11 @@ patterns = [
     # Sequelize / generic active-record base classes. Aho-Corasick matches
     # literal substrings (no regex), so the signal is the literal
     # `extends Model` — it fires on `class User extends Model { ... }`.
+    # Also covers Laravel Eloquent's `class User extends Model`.
     "extends Model",
+    # Laravel Eloquent — the qualified base-class import that a model file
+    # carries even when its subclass line is reformatted.
+    "Illuminate\\Database\\Eloquent\\Model",
     # SQLAlchemy (Python)
     "SQLAlchemy",
     "declarative_base",
@@ -64,6 +68,15 @@ patterns = [
     # Go web frameworks
     "gin.",
     "fiber.",
+    # Laravel (PHP). The `Illuminate\` root namespace appears in framework
+    # imports; `Route::` is the routing facade; `extends Controller` is the
+    # base-controller subclass line; `artisan` is the console entry-point that
+    # ships in source (the repo-root `artisan` file and Console kernel), not
+    # only in composer.json — so it fires on real code content.
+    "Illuminate\\",
+    "Route::",
+    "extends Controller",
+    "artisan",
 ]
 
 [[signal]]

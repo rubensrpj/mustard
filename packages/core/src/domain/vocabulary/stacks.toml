@@ -1,0 +1,40 @@
+# Built-in stack registry — DATA, not logic.
+#
+# Embedded into `mustard-core` via `include_str!` (see
+# `vocabulary::stacks::BUILTIN_STACKS_TOML`). It is the *guaranteed base* for
+# stack inference: detection works offline with no project-local file present.
+# An on-disk `.claude/vocab/stacks.toml` overrides this base wholesale — see
+# `StackRegistry::load`.
+#
+# Schema: one `[[stack]]` table-array entry per stack, carrying:
+#   - `name`            — canonical stack identifier (lowercase).
+#   - `language`        — optional host language hint (lowercase).
+#   - `manifest_deps`   — dependency names as they appear in build manifests.
+#   - `path_markers`    — directory/file path fragments characteristic of the
+#                         stack's conventional layout.
+#   - `code_signatures` — literal source substrings (Aho-Corasick signals, not
+#                         grammars — deliberately short).
+#
+# No stack name is hardcoded in the inference logic: adding a stack here (or in
+# the on-disk override) is sufficient.
+
+[[stack]]
+name = "laravel"
+language = "php"
+manifest_deps = ["laravel/framework", "laravel/tinker"]
+path_markers = ["app/Http/Controllers", "routes/web.php", "artisan", "database/migrations"]
+code_signatures = ["Illuminate\\Support\\Facades", "extends Controller", "Schema::create("]
+
+[[stack]]
+name = "django"
+language = "python"
+manifest_deps = ["django", "djangorestframework"]
+path_markers = ["manage.py", "settings.py", "urls.py", "wsgi.py"]
+code_signatures = ["from django.db import models", "models.Model", "INSTALLED_APPS"]
+
+[[stack]]
+name = "nextjs"
+language = "javascript"
+manifest_deps = ["next"]
+path_markers = ["next.config.js", "next.config.mjs", "next.config.ts"]
+code_signatures = ["next/router", "next/navigation", "next/link", "next/server"]

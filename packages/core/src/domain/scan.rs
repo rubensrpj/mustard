@@ -25,6 +25,7 @@ use std::process::Command;
 
 use serde::Deserialize;
 
+use crate::domain::vocabulary::stacks::StackDetection;
 use crate::platform::error::{Error, Result};
 
 /// Default tool name — resolved on `PATH`. A project can point at a pinned
@@ -65,6 +66,12 @@ pub struct SpecRequest {
 pub struct DigestQuery {
     #[serde(default)]
     pub query: Vec<String>,
+    /// Stacks the scanned model carries (inferred at scan time, copied verbatim
+    /// into every `digest --query` payload — hit or miss). Same contract type
+    /// as [`Project::detected_stacks`]; defaulted so payloads from an older
+    /// scan binary (without the field) keep deserialising.
+    #[serde(default)]
+    pub detected_stacks: Vec<StackDetection>,
     #[serde(default)]
     pub matched_terms: Vec<TermHit>,
     #[serde(default)]
@@ -143,6 +150,12 @@ pub struct Project {
     /// Build/codegen scripts declared by this unit's manifests (sorted, deduped).
     #[serde(default)]
     pub scripts: Vec<String>,
+    /// Stacks inferred for this unit (registry-driven, see
+    /// `domain::vocabulary::stacks`). Additive next to [`Self::frameworks`]
+    /// (which stays the raw frequency-ranked dep list); empty when the model
+    /// predates the field or nothing was inferred.
+    #[serde(default)]
+    pub detected_stacks: Vec<StackDetection>,
 }
 
 /// The small, stable FACTS the orchestrator consumes from a grain model — the
@@ -330,6 +343,24 @@ mod tests {
     }
 
     #[test]
+    fn detected_stacks_serde_compat() {
+        // An old payload without `detected_stacks` still deserialises, and
+        // `frameworks` is untouched by the new field.
+        let old = r#"{"name":"api","dir":"apps/api","kind":"node","code_files":3,"frameworks":["express"]}"#;
+        let p: Project = serde_json::from_str(old).expect("old payload without detected_stacks");
+        assert!(p.detected_stacks.is_empty());
+        assert_eq!(p.frameworks, vec!["express"]);
+
+        // A new payload carrying the field round-trips into the contract type.
+        let new = r#"{"name":"web","frameworks":["laravel/framework"],"detected_stacks":[{"name":"laravel","confidence":0.9,"signals":["dep:laravel/framework"]}]}"#;
+        let p: Project = serde_json::from_str(new).expect("payload with detected_stacks");
+        assert_eq!(p.detected_stacks.len(), 1);
+        assert_eq!(p.detected_stacks[0].name, "laravel");
+        assert_eq!(p.detected_stacks[0].signals, vec!["dep:laravel/framework"]);
+        assert_eq!(p.frameworks, vec!["laravel/framework"]);
+    }
+
+    #[test]
     fn model_facts_defaults_missing_fields() {
         let f: ModelFacts = serde_json::from_str("{}").expect("empty object ok");
         assert!(f.projects.is_empty());
@@ -359,6 +390,23 @@ mod tests {
                 "--like", "CancelCharge", "--invariant", "ICurrentTenant",
             ]
         );
+    }
+
+    #[test]
+    fn digest_query_detected_stacks_serde_compat() {
+        // An old payload without `detected_stacks` still deserialises (default).
+        let old = r#"{"query":["tenant"],"matched_terms":[],"terms_omitted":0,"miss":true}"#;
+        let q: DigestQuery = serde_json::from_str(old).expect("old payload without detected_stacks");
+        assert!(q.detected_stacks.is_empty());
+        assert!(q.miss);
+
+        // A new payload carrying the field round-trips into the contract type.
+        let new = r#"{"query":["page"],"detected_stacks":[{"name":"nextjs","confidence":0.65,"signals":["dep:next","path:next.config.js"]}],"files":["pages/index.tsx"],"miss":false}"#;
+        let q: DigestQuery = serde_json::from_str(new).expect("payload with detected_stacks");
+        assert_eq!(q.detected_stacks.len(), 1);
+        assert_eq!(q.detected_stacks[0].name, "nextjs");
+        assert_eq!(q.detected_stacks[0].signals, vec!["dep:next", "path:next.config.js"]);
+        assert_eq!(q.files, vec!["pages/index.tsx"]);
     }
 
     #[test]
