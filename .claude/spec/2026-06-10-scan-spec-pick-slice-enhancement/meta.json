@@ -1,0 +1,9 @@
+{
+  "stage": "Execute",
+  "outcome": "Active",
+  "phase": "EXECUTE",
+  "scope": "light",
+  "lang": "pt-BR",
+  "checkpoint": "2026-06-10T12:14:14.000Z",
+  "parent": "robustez-ancoras-cobertura-idf"
+}

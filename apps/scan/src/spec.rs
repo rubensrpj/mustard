@@ -511,24 +511,52 @@ fn render_block(o: &mut String, project_key: &str, lines: &[SpecLine], roles_met
 
 // --- selection -------------------------------------------------------------
 
+/// Minimum role count (core + optional) for a slice to rank as a real vertical
+/// in `pick_slice`. Below it sits the degenerate class: 2-role pairs (the
+/// miner's own floor), typically a wrapper family minted once per OPERATION
+/// rather than once per entity, whose recurrence therefore dwarfs every true
+/// vertical's without describing how an entity is actually built.
+const MIN_VERTICAL_ROLES: usize = 3;
+
 /// Pick the slice convention to compile against. Returns the convention plus
 /// whether the `--like` filter actually matched it — `false` means the caller
 /// fell back to the best overall slice and must NOT claim a verified mirror.
 fn pick_slice<'a>(model: &'a ProjectModel, like: &str) -> Option<(&'a Convention, bool)> {
-    // Recurrence and confidence outrank role count: a convention proven across
-    // many entities (e.g. 11x at conf 0.94) beats a wide pseudo-convention of a
-    // couple of wrapper families (7 roles at conf 0.82). Name is the final
-    // tie-break so the choice is deterministic even when two slices are equally
-    // rich (the model's Vec order isn't guaranteed stable).
+    // CLASS precedence first: a real vertical (>= MIN_VERTICAL_ROLES roles)
+    // always outranks a degenerate 2-role pair, because recurrence cannot be
+    // compared across classes — a per-operation wrapper pair out-recurs every
+    // per-entity vertical by an order of magnitude. The pair stays a legitimate
+    // fallback when it is the only slice shape the repo has.
+    // WITHIN a class, recurrence and confidence outrank role count: a
+    // convention proven across many entities (e.g. 11x at conf 0.94) beats a
+    // wide pseudo-convention of a couple of wrapper families (7 roles at conf
+    // 0.82). Name is the final tie-break so the choice is deterministic even
+    // when two slices are equally rich (the model's Vec order isn't guaranteed
+    // stable).
+    let role_count = |c: &Convention| c.roles.len() + c.optional_roles.len();
     let richer = |a: &&Convention, b: &&Convention| {
-        a.recurrence
-            .cmp(&b.recurrence)
+        (role_count(a) >= MIN_VERTICAL_ROLES)
+            .cmp(&(role_count(b) >= MIN_VERTICAL_ROLES))
+            .then(a.recurrence.cmp(&b.recurrence))
             .then(a.confidence.total_cmp(&b.confidence))
-            .then((a.roles.len() + a.optional_roles.len()).cmp(&(b.roles.len() + b.optional_roles.len())))
+            .then(role_count(a).cmp(&role_count(b)))
             .then(a.name.cmp(&b.name))
     };
     if !like.is_empty() {
         let likel = like.to_lowercase();
+        // Exact entity equality first: `--like Foo` must land on the slice that
+        // MINED Foo itself. Substring alone would also match wrapper entities
+        // that merely carry the name (a pair whose members embed "foo") and let
+        // their recurrence steal the pick. Substring remains the fallback for
+        // partial pointers when no slice owns the entity verbatim.
+        if let Some(c) = model
+            .conventions
+            .iter()
+            .filter(|c| c.is_slice && c.entities.iter().any(|e| e.to_lowercase() == likel))
+            .max_by(richer)
+        {
+            return Some((c, true));
+        }
         if let Some(c) = model
             .conventions
             .iter()
