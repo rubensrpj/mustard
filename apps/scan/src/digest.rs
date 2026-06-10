@@ -165,6 +165,12 @@ pub struct QueryResult {
     /// truth instead of the repo.
     pub files: Vec<String>,
     pub miss: bool,
+    /// Why a non-miss answer still carries no anchorable surface.
+    /// `generated_only`: every match lives in machine-written modules
+    /// (generated/vendored — their samples are filtered out), so the caller
+    /// should regenerate/extend the generator's input, never edit the matches.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 /// Whole-token match between a repo token `tk` and a query token `q`, with a
@@ -240,6 +246,18 @@ pub fn query(model: &ProjectModel, terms: &[String]) -> QueryResult {
     files.truncate(12);
 
     let miss = matched_terms.is_empty() && slices.is_empty() && contracts.is_empty() && hubs.is_empty() && touchpoints.is_empty();
+    // A non-miss answer with NO anchorable surface: every matched term lives
+    // only in machine-written modules (their samples were filtered down to
+    // nothing) and no slice/contract/hub/touchpoint matched. Say WHY instead
+    // of handing back an empty `files` the caller would misread as "no
+    // precedent".
+    let generated_only = !matched_terms.is_empty()
+        && matched_terms.iter().all(|t| t.samples.is_empty())
+        && slices.is_empty()
+        && contracts.is_empty()
+        && hubs.is_empty()
+        && touchpoints.is_empty();
+    let reason = generated_only.then(|| "generated_only".to_string());
     QueryResult {
         query: ql,
         detected_stacks: dig.detected_stacks,
@@ -251,6 +269,7 @@ pub fn query(model: &ProjectModel, terms: &[String]) -> QueryResult {
         touchpoints,
         files,
         miss,
+        reason,
     }
 }
 
@@ -301,11 +320,30 @@ fn catalog(model: &ProjectModel) -> CapabilityDigest {
 
     let shared_contracts = model.shared_contracts.iter().map(|s| ContractD { name: s.name.clone(), implementors: s.implementors }).collect();
 
-    let mut top_fan_in: Vec<HubD> = model.graph.top_fan_in.iter().map(|n| HubD { module: n.module.clone(), degree: n.degree }).collect();
+    // Machine-written modules (generated/vendored/…) are never the file a
+    // caller should read or edit: drop them from hubs and touchpoints — and
+    // therefore from the anchor candidates `query` derives from these. Policy
+    // is owned by `classify` (module-qualified call, no local wrapper).
+    let class_of: BTreeMap<&str, &str> = model
+        .modules
+        .iter()
+        .filter(|m| !m.file_class.is_empty())
+        .map(|m| (m.path.as_str(), m.file_class.as_str()))
+        .collect();
+    let eligible = |path: &str| crate::classify::anchor_eligible(class_of.get(path).copied().unwrap_or(""));
+
+    let mut top_fan_in: Vec<HubD> =
+        model.graph.top_fan_in.iter().filter(|n| eligible(&n.module)).map(|n| HubD { module: n.module.clone(), degree: n.degree }).collect();
     top_fan_in.sort_by(|a, b| b.degree.cmp(&a.degree).then(a.module.cmp(&b.module)));
     top_fan_in.truncate(MAX_FAN_IN);
 
-    let mut touchpoints: Vec<TouchD> = model.graph.touchpoints.iter().map(|t| TouchD { module: t.module.clone(), fan_out: t.fan_out, breadth: t.breadth }).collect();
+    let mut touchpoints: Vec<TouchD> = model
+        .graph
+        .touchpoints
+        .iter()
+        .filter(|t| eligible(&t.module))
+        .map(|t| TouchD { module: t.module.clone(), fan_out: t.fan_out, breadth: t.breadth })
+        .collect();
     touchpoints.sort_by(|a, b| b.fan_out.cmp(&a.fan_out).then(a.module.cmp(&b.module)));
     touchpoints.truncate(MAX_TOUCHPOINTS);
 
@@ -332,7 +370,7 @@ fn catalog(model: &ProjectModel) -> CapabilityDigest {
 fn stopwords() -> &'static BTreeSet<String> {
     static SET: OnceLock<BTreeSet<String>> = OnceLock::new();
     SET.get_or_init(|| {
-        let raw: toml::Value = include_str!("../stopwords.toml").parse().expect("stopwords.toml is not valid TOML");
+        let raw: toml::Value = toml::from_str(include_str!("../stopwords.toml")).expect("stopwords.toml is not valid TOML");
         raw.get("stopwords")
             .and_then(|v| v.as_array())
             .expect("stopwords.toml must contain a `stopwords` array")
@@ -350,9 +388,21 @@ fn stopwords() -> &'static BTreeSet<String> {
 /// the walk order.
 fn build_terms(model: &ProjectModel) -> Vec<TermD> {
     let stop = stopwords();
+    // Module path -> machine-written class (hand-written modules are absent).
+    let class_of: BTreeMap<&str, &str> = model
+        .modules
+        .iter()
+        .filter(|m| !m.file_class.is_empty())
+        .map(|m| (m.path.as_str(), m.file_class.as_str()))
+        .collect();
     // term -> module path -> occurrences. BTreeMaps for deterministic iteration.
     let mut index: BTreeMap<String, BTreeMap<&str, usize>> = BTreeMap::new();
     for m in &model.modules {
+        // Lockfiles and minified output never enter the index; generated and
+        // vendored modules stay (demoted below) so a query still lands.
+        if !crate::classify::index_eligible(&m.file_class) {
+            continue;
+        }
         for d in &m.declarations {
             for tok in tokenize(&d.name) {
                 if stop.contains(&tok) {
@@ -365,8 +415,14 @@ fn build_terms(model: &ProjectModel) -> Vec<TermD> {
     let mut terms: Vec<TermD> = index
         .into_iter()
         .map(|(term, per_module)| {
-            let count = per_module.values().sum();
-            let mut mods: Vec<(&str, usize)> = per_module.into_iter().collect();
+            let class = |p: &str| class_of.get(p).copied().unwrap_or("");
+            // Machine-written occurrences are demoted by the catalog
+            // multiplier (classify::index_weight) — present, never dominant.
+            let count = per_module.iter().map(|(p, n)| crate::classify::index_weight(*n, class(p))).sum();
+            // Samples (the files a caller reads next) come ONLY from
+            // hand-written modules: a generated file is never the anchor.
+            let mut mods: Vec<(&str, usize)> =
+                per_module.into_iter().filter(|(p, _)| crate::classify::anchor_eligible(class(p))).collect();
             mods.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
             let samples = mods.into_iter().take(MAX_TERM_SAMPLES).map(|(p, _)| p.to_string()).collect();
             TermD { term, count, samples }

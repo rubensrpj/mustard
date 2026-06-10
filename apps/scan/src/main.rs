@@ -5,6 +5,7 @@
 //! and blind to any framework/language. `scan` writes the model; `spec` compiles
 //! a per-task implementation draft from it.
 
+mod classify;
 mod condense;
 mod digest;
 mod facts;
@@ -220,12 +221,20 @@ fn main() -> Result<()> {
 fn analyze(root: &Path) -> Result<ProjectModel> {
     let ing = ingest::ingest(root)?;
     let analyzers = extract::registry();
+    // Repo classification overrides (.gitattributes / .editorconfig) — loaded
+    // once; they beat the marker catalog in both directions.
+    let overrides = classify::Overrides::load(&ing.root);
 
     let mut modules: Vec<Module> = Vec::new();
     let mut content: HashMap<String, String> = HashMap::new();
 
     for sf in &ing.source_files {
         let extracted = analyzers.get(sf.language.as_str()).map(|a| a.extract(&sf.content)).unwrap_or_default();
+        // Machine-written class (generated/vendored/lockfile/minified) —
+        // additive provenance on the module. The model keeps the module fully
+        // visible to the miner; only the digest projection demotes by class.
+        let (file_class, marker) =
+            classify::classify(&sf.rel_path, &sf.content, &overrides).map(|c| (c.class, c.marker)).unwrap_or_default();
         content.insert(sf.rel_path.clone(), sf.content.clone());
         modules.push(Module {
             path: sf.rel_path.clone(),
@@ -234,6 +243,8 @@ fn analyze(root: &Path) -> Result<ProjectModel> {
             imports: extracted.imports,
             namespaces: extracted.namespaces,
             declarations: extracted.declarations,
+            file_class,
+            marker,
         });
     }
 

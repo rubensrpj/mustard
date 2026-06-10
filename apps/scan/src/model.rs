@@ -133,6 +133,17 @@ pub struct Module {
     pub imports: Vec<String>,
     pub namespaces: Vec<String>,
     pub declarations: Vec<Decl>,
+    /// Machine-written class, when one applies: "generated" | "vendored" |
+    /// "lockfile" | "minified" (empty = hand-written). Decided by the generic
+    /// engine in `classify` from catalog DATA (generated-markers.toml) plus
+    /// the repo's own overrides (.gitattributes / .editorconfig). Additive:
+    /// older models keep deserialising; hand-written modules don't serialise it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub file_class: String,
+    /// Which marker decided `file_class` (catalog literal/regex/glob or the
+    /// override attribute) — provenance, so a classification is explainable.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub marker: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
