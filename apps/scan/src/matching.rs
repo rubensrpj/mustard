@@ -27,7 +27,8 @@
 //! alone (the spec's documented trade: a missed true cognate over a false
 //! one).
 //!
-//! Languages are DECLARED, never detected: `dedup([request language, "en"])`
+//! Languages are DECLARED, never detected: `dedup([request language,
+//! stemmers::FALLBACK_LANG])`
 //! where the request language comes from the root project config (or the
 //! CLI flag). Which languages have a stemmer/stoplist/lexicon is data
 //! mirrored in `stemmers.rs` (the approved natural-language carve-out);
@@ -117,12 +118,12 @@ pub struct Ladder {
 impl Ladder {
     /// Build the ladder for a declared request language (a BCP-47-ish code;
     /// only its primary subtag is used). The active set is
-    /// `dedup([request, "en"])` — zero language detection, and an unknown
+    /// `dedup([request, stemmers::FALLBACK_LANG])` — zero language detection, and an unknown
     /// code simply has no stemmer/stoplist rows (degraded, never an error).
     pub fn new(request_lang: &str) -> Self {
         let primary = primary_subtag(request_lang);
         let mut langs: Vec<String> = Vec::new();
-        for l in [primary.as_str(), "en"] {
+        for l in [primary.as_str(), crate::stemmers::FALLBACK_LANG] {
             if !l.is_empty() && !langs.iter().any(|x| x == l) {
                 langs.push(l.to_string());
             }

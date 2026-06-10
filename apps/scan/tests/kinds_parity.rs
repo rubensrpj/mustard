@@ -13,6 +13,8 @@
 //!     by omission.
 //! Adding a language = a languages.toml row + tags.scm + a graph_<dir>
 //! fixture + a manifest entry; a gap in any of the four surfaces here.
+//! A second test cross-checks languages.toml against the manifest, so a
+//! declared `dir` with no manifest entry cannot pass in silence.
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -52,6 +54,41 @@ fn produced_kinds(v: &serde_json::Value) -> BTreeSet<String> {
         .flat_map(|m| m["declarations"].as_array().cloned().unwrap_or_default())
         .map(|d| d["kind"].as_str().expect("declaration.kind").to_string())
         .collect()
+}
+
+#[test]
+fn every_declared_query_dir_has_a_manifest_entry() {
+    let crate_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let raw = std::fs::read_to_string(crate_dir.join("languages.toml")).expect("read languages.toml");
+    let languages: toml::Value = toml::from_str(&raw).expect("languages.toml is valid TOML");
+    let dirs: BTreeSet<String> = languages
+        .get("language")
+        .and_then(|v| v.as_array())
+        .expect("languages.toml declares [[language]] entries")
+        .iter()
+        .map(|l| {
+            l.get("dir")
+                .and_then(|d| d.as_str())
+                .expect("each [[language]] entry carries a `dir`")
+                .to_string()
+        })
+        .collect();
+    assert!(!dirs.is_empty(), "languages.toml declares at least one query dir");
+
+    let raw = std::fs::read_to_string(crate_dir.join("queries").join("kinds-manifest.toml"))
+        .expect("read kinds-manifest.toml");
+    let manifest: toml::Value = toml::from_str(&raw).expect("kinds-manifest.toml is valid TOML");
+    let declared: BTreeSet<String> =
+        manifest.as_table().expect("kinds-manifest.toml is a table of query sets").keys().cloned().collect();
+
+    for dir in &dirs {
+        assert!(
+            declared.contains(dir),
+            "languages.toml declares query dir `{dir}` but queries/kinds-manifest.toml has no \
+             `[{dir}]` entry — declare its kinds (and commit a graph_{dir} fixture) so the \
+             parity test covers it"
+        );
+    }
 }
 
 #[test]

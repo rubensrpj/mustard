@@ -18,6 +18,10 @@
 
 use rust_stemmers::{Algorithm, Stemmer};
 
+/// Pivot language of the identifier vocabulary — the always-on fallback code
+/// the match ladder activates alongside the declared request language.
+pub const FALLBACK_LANG: &str = "en";
+
 /// Snowball stemmer for a natural-language code (primary BCP-47 subtag,
 /// lowercased). `None` = no stemmer vendored: tier-3 simply has no row for
 /// that language — degraded, never an error.
