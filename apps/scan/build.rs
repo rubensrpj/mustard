@@ -21,8 +21,9 @@ fn main() {
 
     let registry_src = fs::read_to_string(&registry_path)
         .unwrap_or_else(|e| panic!("cannot read {}: {e}", registry_path.display()));
-    let registry: toml::Value = registry_src
-        .parse()
+    // toml 1.x: `str::parse::<Value>` parses a lone TOML *value*, not a
+    // document — document parsing goes through the serde path (`from_str`).
+    let registry: toml::Value = toml::from_str(&registry_src)
         .unwrap_or_else(|e| panic!("languages.toml is not valid TOML: {e}"));
 
     let languages = registry

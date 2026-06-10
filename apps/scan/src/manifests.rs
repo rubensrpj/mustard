@@ -195,7 +195,7 @@ fn first_capture(txt: &str, pattern: &str) -> Option<String> {
 // --- registry parsing -------------------------------------------------------
 
 fn parse_registry(src: &str) -> Registry {
-    let v: toml::Value = src.parse().unwrap_or_else(|e| panic!("manifests.toml invalid: {e}"));
+    let v: toml::Value = toml::from_str(src).unwrap_or_else(|e| panic!("manifests.toml invalid: {e}"));
     let strs = |val: Option<&toml::Value>| -> Vec<String> {
         val.and_then(|x| x.as_array())
             .map(|a| a.iter().filter_map(|e| e.as_str().map(String::from)).collect())

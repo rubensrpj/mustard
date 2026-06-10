@@ -49,9 +49,10 @@ rmcp = { version = "1.7", features = ["server", "transport-io"] }
 tokio = { version = "1.52.3", features = ["rt", "io-std", "macros"] }
 # BPE tokenizer used by `core::economy::estimator` as a Claude-token
 # approximation (cl100k_base ≈ Anthropic models within ~5%). Latest stable
-# verified on crates.io (0.11.0, 2026-04-08); the 0.10+ line renamed
-# `get_completion_max_tokens` and added the o200k_harmony singleton.
-tiktoken-rs = "0.11"
+# verified on crates.io (0.12.0, 2026-06); the 0.12 line made the low-level
+# `CoreBPE::encode`/`count` fallible (`Result<_, EncodeError>`) — the
+# estimator only calls `encode_with_special_tokens`, which stays infallible.
+tiktoken-rs = "0.12"
 # Cross-platform filesystem notification — used by `mustard-rt` for the
 # transcript-watcher daemon (Wave 3). Updated to notify 8.2 (May 2026); the
 # dashboard maintains its own Cargo.lock and is decoupled from the workspace via

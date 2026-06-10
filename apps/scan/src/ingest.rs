@@ -234,7 +234,7 @@ pub fn ingest(root: &Path) -> Result<Ingested> {
 fn test_dir_segments() -> &'static BTreeSet<String> {
     static SET: OnceLock<BTreeSet<String>> = OnceLock::new();
     SET.get_or_init(|| {
-        let raw: toml::Value = include_str!("../test-dirs.toml").parse().expect("test-dirs.toml is not valid TOML");
+        let raw: toml::Value = toml::from_str(include_str!("../test-dirs.toml")).expect("test-dirs.toml is not valid TOML");
         raw.get("segments")
             .and_then(|v| v.as_array())
             .expect("test-dirs.toml must contain a `segments` array")
