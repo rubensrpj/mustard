@@ -12,6 +12,12 @@
 #     domain concept on their own;
 #   * plus the bare accessor prefixes `get`/`set`, which name an access
 #     pattern, never a concept;
+#   * plus member-name glue that arrives with member-kind extraction (methods,
+#     properties, fields, enum members feed the term index): the
+#     execution-mode suffix `async` (C#/TS suffix it on every async member, so
+#     it would flood by sheer recurrence) and the syntax-mandated member names
+#     `constructor` (every TS class), `construct` (PHP `__construct`) and
+#     `init` (Python `__init__`) — they name a mechanism, never a concept;
 #   * open-class verbs/nouns (new, add, list, create, build, ...) are NOT
 #     listed: they can be genuine domain vocabulary ("AddOn", "BuildPlan"),
 #     and the rarity-ranked query already demotes them when they act as glue;
@@ -26,6 +32,7 @@ stopwords = [
   "and",
   "any",
   "are",
+  "async",
   "because",
   "been",
   "before",
@@ -33,6 +40,8 @@ stopwords = [
   "but",
   "can",
   "cannot",
+  "construct",
+  "constructor",
   "could",
   "did",
   "does",
@@ -52,6 +61,7 @@ stopwords = [
   "him",
   "his",
   "how",
+  "init",
   "into",
   "its",
   "itself",

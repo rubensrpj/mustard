@@ -15,3 +15,12 @@
 (record_declaration name: (identifier) @name) @definition.record
 (struct_declaration name: (identifier) @name) @definition.struct
 (enum_declaration name: (identifier) @name) @definition.enum
+
+; Members — methods, properties, fields, enum members. Member kinds feed the
+; digest's domain-term index only: the miner's significance gate (mine.rs)
+; is kind-based and never sees them. Derived from the upstream
+; tree-sitter-c-sharp tags.scm (MIT) — see queries/README.md.
+(method_declaration name: (identifier) @name) @definition.method
+(property_declaration name: (identifier) @name) @definition.property
+(field_declaration (variable_declaration (variable_declarator name: (identifier) @name))) @definition.field
+(enum_member_declaration name: (identifier) @name) @definition.enum_member

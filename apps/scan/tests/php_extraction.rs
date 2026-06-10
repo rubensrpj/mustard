@@ -60,14 +60,14 @@ fn php_extraction_pulls_imports_namespaces_and_declarations() {
     assert_eq!(namespaces, vec!["App\\Domain"], "namespaces: {namespaces:?}");
 
     // Declarations: the class (kind copied from `@definition.class`) with its
-    // base/interface supertypes, plus the method as a function.
+    // base/interface supertypes, plus the method with its member kind.
     let decls = module["declarations"].as_array().unwrap();
     let class = decls.iter().find(|d| d["name"] == "Account").expect("Account declaration");
     assert_eq!(class["kind"], "class", "class kind copied verbatim from the capture suffix");
     let supers: Vec<&str> = class["supertypes"].as_array().unwrap().iter().map(|s| s.as_str().unwrap()).collect();
     assert!(supers.contains(&"Model"), "extends base captured: {supers:?}");
     assert!(supers.contains(&"Auditable"), "implements interface captured: {supers:?}");
-    assert!(decls.iter().any(|d| d["name"] == "balance" && d["kind"] == "function"), "method captured: {decls:?}");
+    assert!(decls.iter().any(|d| d["name"] == "balance" && d["kind"] == "method"), "method captured: {decls:?}");
 
     let _ = std::fs::remove_dir_all(&dir);
 }

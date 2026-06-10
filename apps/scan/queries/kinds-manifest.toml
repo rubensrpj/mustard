@@ -1,0 +1,87 @@
+# Kind manifest — the declared `@definition.<kind>` inventory of each query set.
+#
+# DATA, never logic: each table key is a `dir` from languages.toml (one query
+# set under queries/<dir>/ — a dir shared by several languages, like the
+# typescript/tsx pair, is declared once). `kinds` lists every kind the dir's
+# tags.scm can emit.
+#
+# Contract (enforced by tests/kinds_parity.rs against the committed fixture
+# tests/fixtures/graph_<dir>/, in both directions):
+#   * every declared kind yields >= 1 declaration when the fixture is scanned
+#     (a pattern that stopped compiling against the grammar is caught here —
+#     the engine drops bad patterns silently by design);
+#   * every kind the fixture produces is declared (the manifest never lies by
+#     omission).
+# Adding a language = a languages.toml row + queries/<dir>/tags.scm + a
+# graph_<dir> fixture + an entry here; the parity test flags any gap by itself.
+#
+# Member kinds (method, property, field, enum_member) feed the digest's
+# domain-term index only — the miner's significance allowlist (mine.rs) is
+# kind-based and never includes them, so role mining stays member-blind.
+
+[csharp]
+kinds = [
+  "class",
+  "interface",
+  "record",
+  "struct",
+  "enum",
+  "method",
+  "property",
+  "field",
+  "enum_member",
+]
+
+[typescript]
+kinds = [
+  "class",
+  "interface",
+  "enum",
+  "type",
+  "function",
+  "const",
+  "method",
+  "property",
+  "field",
+  "enum_member",
+]
+
+[go]
+kinds = [
+  "struct",
+  "interface",
+  "type",
+  "function",
+  "method",
+  "field",
+]
+
+[python]
+kinds = [
+  "class",
+  "function",
+  "field",
+]
+
+[rust]
+kinds = [
+  "struct",
+  "enum",
+  "trait",
+  "function",
+  "type",
+  "field",
+  "enum_member",
+]
+
+[php]
+kinds = [
+  "class",
+  "interface",
+  "trait",
+  "enum",
+  "function",
+  "method",
+  "property",
+  "enum_member",
+]

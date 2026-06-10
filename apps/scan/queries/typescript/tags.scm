@@ -14,3 +14,17 @@
 (export_statement
   declaration: (lexical_declaration
     (variable_declarator name: (identifier) @name) @definition.const))
+
+; Members — methods (class + interface), class fields, interface properties,
+; enum members. Member kinds feed the digest's domain-term index only: the
+; miner's significance gate (mine.rs) is kind-based and never sees them.
+; Derived from the upstream tree-sitter-typescript tags.scm (MIT) — see
+; queries/README.md. A plain enum member is the enum_body's own `name` field;
+; an initialized one is an enum_assignment.
+(method_definition name: (_) @name) @definition.method
+(method_signature name: (_) @name) @definition.method
+(abstract_method_signature name: (_) @name) @definition.method
+(public_field_definition name: (_) @name) @definition.field
+(property_signature name: (_) @name) @definition.property
+(enum_body name: (property_identifier) @name @definition.enum_member)
+(enum_assignment name: (_) @name) @definition.enum_member
