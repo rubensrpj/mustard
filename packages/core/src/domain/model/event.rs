@@ -141,6 +141,16 @@ pub const EVENT_PIPELINE_AMEND_DRIFT: &str = "pipeline.amend_drift";
 pub const EVENT_PIPELINE_AMEND_CLOSE: &str = "pipeline.amend_close";
 
 // ---------------------------------------------------------------------------
+// Checklist event name constants
+// ---------------------------------------------------------------------------
+
+/// Records that one trackable checklist item was marked done (`- [ ]` →
+/// `- [x]`). Follows the `qa.result` pattern: the name constant + typed
+/// payload ([`ChecklistItemMarkedPayload`]) live here; emission is wired by
+/// the rt-side auto-mark hook / `mark-checklist-item` (Wave 2).
+pub const EVENT_CHECKLIST_ITEM_MARKED: &str = "checklist.item.marked";
+
+// ---------------------------------------------------------------------------
 // Typed payload structs — typed views over `HarnessEvent::payload: Value`.
 //
 // Each struct mirrors one of the pipeline event constants above. All optional
@@ -411,6 +421,28 @@ pub struct PipelineAmendClosePayload {
     pub drift_emitted: Option<bool>,
 }
 
+/// Payload for [`EVENT_CHECKLIST_ITEM_MARKED`].
+///
+/// Correlates one marked checklist item back to its spec + wave so a
+/// projection can fold per-wave progress (N done / M total) without re-reading
+/// `meta.json`. `spec` and `wave` repeat the envelope's correlation fields on
+/// purpose — payloads stay self-contained for consumers that index by payload
+/// only (mirroring `qa.result`, whose payload also carries the verdict in
+/// full).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ChecklistItemMarkedPayload {
+    /// Spec slug that owns the checklist.
+    pub spec: String,
+    /// Wave number the item belongs to (`0` outside a wave plan).
+    #[serde(default)]
+    pub wave: u32,
+    /// Checklist item label, exactly as it appears in the spec's checklist.
+    pub item: String,
+    /// Auto-mark anchor path (the ` → <path>` target), when the item has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -469,5 +501,44 @@ mod tests {
     fn pipeline_complete_payload_lenient_rejects_wrong_type() {
         let v = serde_json::json!({ "affectedFiles": "not-an-array" });
         assert!(PipelineCompletePayload::from_value_lenient(v).is_err());
+    }
+
+    /// A `checklist.item.marked` payload round-trips through the typed lens,
+    /// and the optional `path` is elided when absent.
+    #[test]
+    fn checklist_item_marked_payload_round_trips() {
+        let p = ChecklistItemMarkedPayload {
+            spec: "checklist-progresso-por-onda".into(),
+            wave: 2,
+            item: "wire the handler".into(),
+            path: Some("src/handler.rs".into()),
+        };
+        let text = serde_json::to_string(&p).expect("serializes");
+        let back: ChecklistItemMarkedPayload = serde_json::from_str(&text).expect("parses");
+        assert_eq!(back.spec, "checklist-progresso-por-onda");
+        assert_eq!(back.wave, 2);
+        assert_eq!(back.item, "wire the handler");
+        assert_eq!(back.path.as_deref(), Some("src/handler.rs"));
+        // No-path form: the key is elided, and a payload missing `wave` /
+        // `path` still deserialises (defaults: wave 0, no anchor).
+        let plain = ChecklistItemMarkedPayload { path: None, ..p };
+        assert!(!serde_json::to_string(&plain).expect("serializes").contains("\"path\""));
+        let sparse: ChecklistItemMarkedPayload =
+            serde_json::from_str(r#"{"spec":"s","item":"t"}"#).expect("parses");
+        assert_eq!(sparse.wave, 0);
+        assert!(sparse.path.is_none());
+    }
+
+    /// The full event envelope carries the new name + payload like any other
+    /// harness event — `event` stays a free-form string, so no schema bump.
+    #[test]
+    fn checklist_item_marked_event_parses_in_envelope() {
+        let raw = r#"{"v":1,"ts":"2026-06-10T12:00:00.000Z","sessionId":"s-1","wave":2,"actor":{"kind":"hook","id":"checklist-auto-mark"},"event":"checklist.item.marked","payload":{"spec":"demo","wave":2,"item":"T1","path":"src/lib.rs"},"spec":"demo"}"#;
+        let ev: HarnessEvent = serde_json::from_str(raw).expect("parse checklist.item.marked");
+        assert_eq!(ev.event, EVENT_CHECKLIST_ITEM_MARKED);
+        let p: ChecklistItemMarkedPayload =
+            serde_json::from_value(ev.payload).expect("typed payload");
+        assert_eq!(p.item, "T1");
+        assert_eq!(p.wave, 2);
     }
 }

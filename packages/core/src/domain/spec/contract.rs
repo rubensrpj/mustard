@@ -112,6 +112,12 @@ pub struct ChecklistItem {
     /// rendered after an ` → ` arrow so the auto-mark hook keys off it.
     #[serde(default)]
     pub path: Option<String>,
+    /// Completion state. `false` on a fresh draft; flipped to `true` by the
+    /// auto-mark hook / `mark-checklist-item` when the task lands. Additive +
+    /// serde-compatible: historical JSON without the field deserialises to
+    /// `false`, and [`render_checklist_item`] emits `- [x]` when set.
+    #[serde(default)]
+    pub done: bool,
 }
 
 /// Strip any pre-existing markdown checkbox/bullet prefix (`- [ ]`, `- [x]`,
@@ -144,17 +150,21 @@ pub fn normalize_task_label(raw: &str) -> String {
     label.to_string()
 }
 
-/// Render one [`ChecklistItem`] as a canonical `- [ ]` markdown line. The shape
-/// is exactly what the three consumers parse: dash, space, `[ ]`, space, label,
-/// then (when a path is set) ` → <path>` so the auto-mark hook can flip it.
+/// Render one [`ChecklistItem`] as a canonical checkbox markdown line. The
+/// shape is exactly what the three consumers parse: dash, space, `[ ]` (or
+/// `[x]` when [`ChecklistItem::done`] is set), space, label, then (when a path
+/// is set) ` → <path>` so the auto-mark hook can flip it.
 /// The label is routed through [`normalize_task_label`] so an input that
-/// already carries a checkbox/bullet prefix never renders doubled.
+/// already carries a checkbox/bullet prefix never renders doubled — the
+/// rendered checked state comes from the typed `done` field only, never from
+/// a leftover `- [x]` prefix in the label text.
 #[must_use]
 pub fn render_checklist_item(item: &ChecklistItem) -> String {
     let label = normalize_task_label(&item.label);
+    let mark = if item.done { "x" } else { " " };
     match item.path.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
-        Some(path) => format!("- [ ] {label} → {path}"),
-        None => format!("- [ ] {label}"),
+        Some(path) => format!("- [{mark}] {label} → {path}"),
+        None => format!("- [{mark}] {label}"),
     }
 }
 
@@ -457,6 +467,7 @@ mod tests {
             checklist: vec![ChecklistItem {
                 label: "T1".into(),
                 path: Some("src/lib.rs".into()),
+                done: false,
             }],
         }
     }
@@ -606,16 +617,17 @@ mod tests {
         let item = ChecklistItem {
             label: "Add list view".into(),
             path: Some("src/list.rs".into()),
+            done: false,
         };
         assert_eq!(render_checklist_item(&item), "- [ ] Add list view → src/list.rs");
     }
 
     #[test]
     fn render_checklist_item_without_path_is_plain() {
-        let item = ChecklistItem { label: "Write docs".into(), path: None };
+        let item = ChecklistItem { label: "Write docs".into(), path: None, done: false };
         assert_eq!(render_checklist_item(&item), "- [ ] Write docs");
         // An empty/whitespace path degrades to the plain form (no dangling arrow).
-        let item2 = ChecklistItem { label: "X".into(), path: Some("  ".into()) };
+        let item2 = ChecklistItem { label: "X".into(), path: Some("  ".into()), done: false };
         assert_eq!(render_checklist_item(&item2), "- [ ] X");
     }
 
@@ -646,7 +658,7 @@ mod tests {
         // the auto-mark hook / mark-checklist-item on the materialised spec.
         assert_eq!(normalize_task_label("- [x] add the route"), "add the route");
         assert_eq!(normalize_task_label("- [X] add the route"), "add the route");
-        let item = ChecklistItem { label: "- [x] add the route".into(), path: None };
+        let item = ChecklistItem { label: "- [x] add the route".into(), path: None, done: false };
         assert_eq!(render_checklist_item(&item), "- [ ] add the route");
     }
 
@@ -667,13 +679,46 @@ mod tests {
         let pre = ChecklistItem {
             label: "- [ ] wire the handler".into(),
             path: Some("src/handler.rs".into()),
+            done: false,
         };
         assert_eq!(
             render_checklist_item(&pre),
             "- [ ] wire the handler → src/handler.rs"
         );
         // ...and a bare label still gains exactly one.
-        let bare = ChecklistItem { label: "wire the handler".into(), path: None };
+        let bare = ChecklistItem { label: "wire the handler".into(), path: None, done: false };
         assert_eq!(render_checklist_item(&bare), "- [ ] wire the handler");
+    }
+
+    #[test]
+    fn render_checklist_item_done_emits_checked_box() {
+        // `done == true` renders the auto-mark "flipped" shape, with and
+        // without the arrow anchor.
+        let with_path = ChecklistItem {
+            label: "Add list view".into(),
+            path: Some("src/list.rs".into()),
+            done: true,
+        };
+        assert_eq!(
+            render_checklist_item(&with_path),
+            "- [x] Add list view → src/list.rs"
+        );
+        let plain = ChecklistItem { label: "Write docs".into(), path: None, done: true };
+        assert_eq!(render_checklist_item(&plain), "- [x] Write docs");
+    }
+
+    #[test]
+    fn checklist_item_done_defaults_false_on_legacy_json() {
+        // Additive serde compat: JSON written before the `done` field existed
+        // still deserialises, with `done` defaulting to unchecked.
+        let item: ChecklistItem =
+            serde_json::from_str(r#"{"label":"T1","path":"src/lib.rs"}"#).expect("parses");
+        assert!(!item.done);
+        assert_eq!(item.label, "T1");
+        // And the field round-trips once set.
+        let marked = ChecklistItem { label: "T1".into(), path: None, done: true };
+        let text = serde_json::to_string(&marked).expect("serializes");
+        let back: ChecklistItem = serde_json::from_str(&text).expect("round-trips");
+        assert!(back.done);
     }
 }

@@ -41,6 +41,7 @@
 //!   `eprintln!` warning, but writers produced after Wave 3 only emit BCP-47.
 
 use crate::domain::model::view::Flags;
+use crate::domain::spec::contract::ChecklistItem;
 use crate::io::fs;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -111,6 +112,15 @@ pub struct Meta {
     /// `meta.json` byte shape that pre-dated this field.
     #[serde(default, skip_serializing_if = "MetaFlags::is_empty")]
     pub flags: MetaFlags,
+    /// Trackable checklist items for this spec / wave — the events-first home
+    /// of per-wave progress (`done` flips via the auto-mark hook /
+    /// `mark-checklist-item`, mirrored by a `checklist.item.marked` event).
+    /// Additive + serde-compatible: a `meta.json` written before this field
+    /// deserialises to an empty list, and an empty list elides the key
+    /// entirely (`skip_serializing_if`) so the pre-existing byte shape of
+    /// checklist-less sidecars is preserved on round-trip.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub checklist: Vec<ChecklistItem>,
     /// Forward-compatible catch-all. Any field a future Mustard adds lands here
     /// and is preserved on round-trip writes. Per the
     /// [`core-lenient-serde-model`] skill, this is the boundary type's contract.
@@ -142,6 +152,7 @@ impl Meta {
             is_wave_plan: None,
             total_waves: None,
             flags: MetaFlags::default(),
+            checklist: Vec::new(),
             raw: Value::Null,
         }
     }
@@ -354,6 +365,7 @@ mod tests {
             is_wave_plan: Some(false),
             total_waves: None,
             flags: MetaFlags::default(),
+            checklist: Vec::new(),
             raw: Value::Null,
         };
         write_meta(&path, &meta).unwrap();
@@ -438,6 +450,49 @@ mod tests {
     }
 
     #[test]
+    fn legacy_meta_without_checklist_reads_empty() {
+        // Round-trip a `meta.json` written before the `checklist` field
+        // existed: it deserialises to an empty list, and writing it back does
+        // not invent a `checklist` key (shape preserved for rt / dashboard).
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("meta.json");
+        std::fs::write(&path, br#"{"stage":"Execute","outcome":"Active"}"#).unwrap();
+        let meta = read_meta(&path).expect("reads");
+        assert!(meta.checklist.is_empty());
+        write_meta(&path, &meta).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(!text.contains("\"checklist\""), "{text}");
+    }
+
+    #[test]
+    fn checklist_round_trips_with_done_state() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("meta.json");
+        let mut meta = Meta::new(
+            Some("Execute"),
+            Some("Active"),
+            Some("EXECUTE"),
+            Some("full"),
+            Some("pt-BR"),
+            None,
+            None,
+        );
+        meta.checklist = vec![
+            ChecklistItem { label: "T1".into(), path: Some("src/lib.rs".into()), done: true },
+            ChecklistItem { label: "T2".into(), path: None, done: false },
+        ];
+        write_meta(&path, &meta).unwrap();
+        let back = read_meta(&path).expect("reads");
+        assert_eq!(back.checklist.len(), 2);
+        assert!(back.checklist[0].done);
+        assert_eq!(back.checklist[0].path.as_deref(), Some("src/lib.rs"));
+        assert!(!back.checklist[1].done);
+        // The typed field owns the key — it must not leak into the `raw`
+        // flatten catch-all.
+        assert!(back.raw.get("checklist").is_none());
+    }
+
+    #[test]
     fn missing_file_is_none() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("does-not-exist.json");
@@ -516,5 +571,6 @@ mod tests {
         assert!(!text.contains("\"isWavePlan\""));
         assert!(!text.contains("\"totalWaves\""));
         assert!(!text.contains("\"flags\""));
+        assert!(!text.contains("\"checklist\""));
     }
 }
