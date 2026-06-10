@@ -98,8 +98,10 @@ pub enum RunCmd {
         #[arg(long, default_value = ".")]
         root: PathBuf,
     },
-    /// Correlate consecutive `feature.query` events of the active
-    /// session/spec — a `none`-tier term in one query followed by a NEW
+    /// Correlate consecutive `feature.query` events of the WHOLE workspace
+    /// telemetry (every session + spec scope, windowed to the most recent
+    /// rounds; correlation grouped per emitting origin so contexts never
+    /// cross-pair) — a `none`-tier term in one query followed by a NEW
     /// exact/fold/stem term in the next is a confirmed vocabulary bridge —
     /// into project-lexicon candidates `{missed, bridged, files}`, deduped
     /// (folded keys) against the lexicon in force (seed + project overlay).

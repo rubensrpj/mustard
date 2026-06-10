@@ -9,10 +9,21 @@
 //! orchestrator re-queries in the code's own vocabulary (the documented
 //! weak/none flow), that successful re-query IS empirical evidence of a
 //! missing lexicon entry. This command folds the `feature.query` events of
-//! the same session/spec (emitted by [`crate::commands::feature`]) in order
-//! and, for each consecutive pair (q1, q2), turns every `none`-tier term of
-//! q1 crossed with every NEW exact/fold/stem term of q2 into a candidate
+//! the WHOLE workspace telemetry — every `.claude/.session/<id>/.events/`
+//! and `.claude/spec/<name>/.events/` scope (emitted by
+//! [`crate::commands::feature`]) — windowed to the [`QUERY_WINDOW`] most
+//! recent rounds by `ts`, so the suggestion run does not have to share a
+//! session with the research that produced the evidence (the typical flow:
+//! the user asks for suggestions in a LATER session). Correlation stays
+//! consecutive PER ORIGIN — the emitting session when the event carries one,
+//! the telemetry directory otherwise — and, for each consecutive pair
+//! (q1, q2) of one origin, turns every `none`-tier term of q1 crossed with
+//! every NEW exact/fold/stem term of q2 into a candidate
 //! `{missed, bridged, files}` — the files being the re-query's evidence.
+//! Rounds of different origins never pair: two sessions researching the same
+//! spec (or two unrelated specs) cannot mint a false bridge, while one
+//! session's rounds still correlate across its own session scope and the
+//! spec it later bound.
 //!
 //! ## Never auto-apply
 //!
@@ -56,6 +67,16 @@ const OVERLAY_TEMPLATE_PT_EN: &str = include_str!("../../../cli/templates/lexico
 
 /// The event `feature::run` records per answered digest query.
 const EVENT_FEATURE_QUERY: &str = "feature.query";
+
+/// Correlation window: only the most recent `QUERY_WINDOW` `feature.query`
+/// events of the whole workspace telemetry — ordered by `ts`, across every
+/// session and spec scope — are folded per run. The constant bounds cost and
+/// drift deterministically (a fixed telemetry tree always folds the same
+/// rows): stale research rounds age out as new ones land, with no wall-clock
+/// cutoff that would make the listing time-dependent. 64 comfortably covers
+/// several days of research (production showed ~5 rounds/day) while keeping
+/// the fold cheap.
+const QUERY_WINDOW: usize = 64;
 
 /// Tiers that count as a CONFIRMED bridge in the re-query: real vocabulary
 /// hits. `lexicon` is excluded on purpose — a lexicon-carried match means the
@@ -277,49 +298,96 @@ fn dedup(candidates: Vec<Candidate>, lexicon: &BTreeMap<String, Vec<String>>) ->
         .collect()
 }
 
-/// Collect the `feature.query` records of the same session/spec, in order.
-///
-/// Both scopes are read: the session's own `.events/` (where ANALYZE-time
-/// queries land before any spec is bound) and the bound spec's `.events/`
-/// (post-PLAN queries). A resolvable session id filters the rows so two
-/// sessions researching the same spec never cross-correlate.
-fn collect_queries(root: &Path, spec: Option<&str>, session: &str) -> Vec<QueryRecord> {
-    let mut events = Vec::new();
+/// Every telemetry `.events/` directory of the workspace, labelled by scope:
+/// the per-session ones (`.claude/.session/<id>/.events`) and the per-spec
+/// ones (`.claude/spec/<name>/.events`). Enumerated in sorted name order so
+/// the fold stays byte-stable regardless of OS readdir order. Fail-open: a
+/// missing base directory contributes nothing.
+fn telemetry_event_dirs(claude_dir: &Path) -> Vec<(String, PathBuf)> {
+    let mut out = Vec::new();
+    for (label, base) in
+        [("session", claude_dir.join(".session")), ("spec", claude_dir.join("spec"))]
+    {
+        let Ok(mut entries) = fs::read_dir(&base) else {
+            continue;
+        };
+        entries.sort_by(|a, b| a.file_name.cmp(&b.file_name));
+        for e in entries.into_iter().filter(|e| e.is_dir) {
+            out.push((format!("{label}:{}", e.file_name), e.path.join(".events")));
+        }
+    }
+    out
+}
+
+/// Collect the `feature.query` rounds of the WHOLE workspace telemetry —
+/// every session and spec scope — windowed to the [`QUERY_WINDOW`] most
+/// recent by `ts`, each labelled with the ORIGIN that groups it for
+/// correlation: the emitting `session_id` when the event carries one, the
+/// telemetry directory it was read from otherwise. No "active session/spec"
+/// filter: the suggestion run is typically a LATER session than the research
+/// that produced the evidence, and a strict filter made it see zero rounds
+/// (the confirmed "filtro de sessão tolerante" review concern).
+fn collect_queries(root: &Path) -> Vec<(String, QueryRecord)> {
     let claude_dir = ClaudePaths::for_project(root)
         .map(|p| p.claude_dir().clone())
         .unwrap_or_else(|_| ClaudePaths::compose_unchecked(root).claude_dir().clone());
-    if !session.is_empty() && session != "unknown" {
-        let dir = claude_dir.join(".session").join(session).join(".events");
-        events.extend(read_harness_events_from_ndjson_dir(&dir));
+    // (ts, origin, record) rows from every scope, then ONE global ts sort
+    // (origin as tiebreak) and the trailing window. Sorted dir enumeration +
+    // the explicit tiebreak keep the result deterministic.
+    let mut rows: Vec<(String, String, QueryRecord)> = Vec::new();
+    for (dir_origin, dir) in telemetry_event_dirs(&claude_dir) {
+        for e in read_harness_events_from_ndjson_dir(&dir) {
+            if e.event != EVENT_FEATURE_QUERY {
+                continue;
+            }
+            let Some(rec) = query_record(&e.payload) else {
+                continue;
+            };
+            let origin = if e.session_id.is_empty() || e.session_id == "unknown" {
+                dir_origin.clone()
+            } else {
+                // Keyed by the emitting session, NOT the directory: one
+                // session's ANALYZE-time rounds (session scope) and its
+                // post-PLAN rounds (bound-spec scope) stay one origin.
+                format!("session:{}", e.session_id)
+            };
+            rows.push((e.ts, origin, rec));
+        }
     }
-    if let Some(s) = spec.filter(|s| !s.is_empty()) {
-        let dir = ClaudePaths::for_project(root)
-            .and_then(|p| p.for_spec(s))
-            .ok()
-            .map(|sp| sp.events_dir())
-            .unwrap_or_else(|| ClaudePaths::compose_unchecked(root).spec_dir().join(s).join(".events"));
-        events.extend(read_harness_events_from_ndjson_dir(&dir));
+    rows.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    let cut = rows.len().saturating_sub(QUERY_WINDOW);
+    rows.drain(..cut);
+    rows.into_iter().map(|(_, origin, rec)| (origin, rec)).collect()
+}
+
+/// Correlate the windowed rounds origin by origin: group by origin label
+/// (`BTreeMap` — deterministic order), then run the consecutive-pair fold
+/// within each group. Rounds of different origins never pair, so contexts
+/// cannot mint a bridge across each other.
+fn correlate_by_origin(rows: &[(String, QueryRecord)]) -> Vec<Candidate> {
+    let mut groups: BTreeMap<&str, Vec<QueryRecord>> = BTreeMap::new();
+    for (origin, rec) in rows {
+        groups.entry(origin.as_str()).or_default().push(rec.clone());
     }
-    events.retain(|e| {
-        e.event == EVENT_FEATURE_QUERY
-            && (session.is_empty() || session == "unknown" || e.session_id == session)
-    });
-    events.sort_by(|a, b| a.ts.cmp(&b.ts));
-    events.iter().filter_map(|e| query_record(&e.payload)).collect()
+    groups.values().flat_map(|qs| correlate(qs)).collect()
 }
 
 // --- reports ------------------------------------------------------------------
 
 /// List mode: candidates only, NEVER a write — even with candidates pending
 /// (the tactical-fix-detect "suggest, do not apply" contract).
-fn list_report(root: &Path, spec: Option<&str>, session: &str) -> Value {
+fn list_report(root: &Path) -> Value {
     let pair = pair_for_root(root);
     let lexicon = effective_lexicon(root, pair.as_ref());
-    let queries = collect_queries(root, spec, session);
-    let candidates = dedup(correlate(&queries), &lexicon);
+    let rows = collect_queries(root);
+    let candidates = dedup(correlate_by_origin(&rows), &lexicon);
     json!({
         "pair": pair.as_ref().map(|p| p.label),
-        "queries": queries.len(),
+        // Rounds actually folded (workspace-wide, already windowed).
+        "queries": rows.len(),
+        // The documented determinism bound: at most this many of the
+        // workspace's most recent feature.query events are eligible per run.
+        "window": QUERY_WINDOW,
         "candidates": candidates.iter().map(|c| json!({
             "missed": c.missed, "bridged": c.bridged, "files": c.files,
         })).collect::<Vec<_>>(),
@@ -440,13 +508,10 @@ pub fn run(accept: Option<&str>, root: &Path) {
     };
     let report = match accept {
         Some(arg) => accept_report(&root, arg),
-        None => {
-            let session = crate::shared::context::session_id();
-            let root_str = root.to_string_lossy();
-            let spec = crate::shared::context::current_spec(&root_str)
-                .or_else(|| crate::shared::context::spec_for_session(&root_str, &session));
-            list_report(&root, spec.as_deref(), &session)
-        }
+        // No session/spec resolution: the listing folds the whole workspace
+        // telemetry (windowed), so it works from ANY session — including
+        // none at all (the typical "suggest later" invocation).
+        None => list_report(&root),
     };
     println!("{}", serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".into()));
 }
@@ -454,7 +519,7 @@ pub fn run(accept: Option<&str>, root: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::shared::events::writer_ndjson::write_event;
+    use crate::shared::events::writer_ndjson::{write_event, write_event_with_ts};
     use tempfile::tempdir;
 
     /// Build a `feature.query` payload the way `feature::query_event_payload`
@@ -649,7 +714,7 @@ mod tests {
             );
         }
 
-        let report = list_report(dir.path(), Some(spec), "s");
+        let report = list_report(dir.path());
         assert_eq!(report["applied"], false);
         assert_eq!(report["queries"], 2);
         let candidates = report["candidates"].as_array().expect("candidates array");
@@ -667,30 +732,165 @@ mod tests {
 
         // Byte-stable across runs.
         let a = serde_json::to_string(&report).unwrap();
-        let b = serde_json::to_string(&list_report(dir.path(), Some(spec), "s")).unwrap();
+        let b = serde_json::to_string(&list_report(dir.path())).unwrap();
         assert_eq!(a, b);
     }
 
     #[test]
-    fn lexicon_correlation_filters_other_sessions() {
-        // Events from another session in the same spec scope never pair with
-        // this session's rounds.
+    fn lexicon_suggest_never_cross_correlates_distinct_origins() {
+        // Two DIFFERENT sessions researching the same spec: both rounds are
+        // visible to the workspace-wide fold (queries=2 — no strict session
+        // filter), but they are distinct origins, so the none-tier round of
+        // s1 never pairs with s2's exact hit — no false bridge.
         let dir = tempdir().unwrap();
         write_root_config(dir.path());
         let spec = "lex-cross";
         let q1 = query_payload(&["hierarquia"], &[("hierarquia", "none", &[])]);
         let q2 = query_payload(&["parent"], &[("parent", "exact", &["src/tree.cs"])]);
-        let _ = write_event(
+        let _ = write_event_with_ts(
             dir.path(), Some(spec), None, "s1", EVENT_FEATURE_QUERY, "other",
             Some(0), Some("s1"), Some("feature"), None, &q1,
+            Some("2026-06-10T10:00:00.000Z"),
         );
-        let _ = write_event(
+        let _ = write_event_with_ts(
             dir.path(), Some(spec), None, "s2", EVENT_FEATURE_QUERY, "other",
             Some(0), Some("s2"), Some("feature"), None, &q2,
+            Some("2026-06-10T10:01:00.000Z"),
         );
-        let report = list_report(dir.path(), Some(spec), "s1");
-        assert_eq!(report["queries"], 1, "only s1's round is folded: {report}");
-        assert_eq!(report["candidates"], json!([]));
+        let report = list_report(dir.path());
+        assert_eq!(report["queries"], 2, "both origins' rounds are folded: {report}");
+        assert_eq!(report["candidates"], json!([]), "origins never cross-pair: {report}");
+    }
+
+    #[test]
+    fn lexicon_suggest_correlates_rounds_from_other_sessions_and_specs() {
+        // The production regression: the research happened in OTHER sessions
+        // — one pair in a session scope (`.session/sA/.events`, ANALYZE-time)
+        // and one pair in a spec scope from a different session — and the
+        // listing runs with NO session/spec context of its own. The
+        // workspace-wide fold must surface BOTH bridges (the old
+        // active-session filter saw zero).
+        let dir = tempdir().unwrap();
+        write_root_config(dir.path());
+        // Session-scope pair from sA: apolice → policy.
+        let a1 = query_payload(&["apolice"], &[("apolice", "none", &[])]);
+        let a2 = query_payload(&["policy"], &[("policy", "exact", &["src/policy.cs"])]);
+        let _ = write_event_with_ts(
+            dir.path(), None, None, "sA", EVENT_FEATURE_QUERY, "other",
+            Some(0), Some("sA"), Some("feature"), None, &a1,
+            Some("2026-06-10T08:00:00.000Z"),
+        );
+        let _ = write_event_with_ts(
+            dir.path(), None, None, "sA", EVENT_FEATURE_QUERY, "other",
+            Some(0), Some("sA"), Some("feature"), None, &a2,
+            Some("2026-06-10T08:05:00.000Z"),
+        );
+        // Spec-scope pair from sB: sinistro → claim.
+        let b1 = query_payload(&["sinistro"], &[("sinistro", "none", &[])]);
+        let b2 = query_payload(&["claim"], &[("claim", "exact", &["src/claim.cs"])]);
+        let _ = write_event_with_ts(
+            dir.path(), Some("lex-other-spec"), None, "sB", EVENT_FEATURE_QUERY, "other",
+            Some(0), Some("sB"), Some("feature"), None, &b1,
+            Some("2026-06-10T09:00:00.000Z"),
+        );
+        let _ = write_event_with_ts(
+            dir.path(), Some("lex-other-spec"), None, "sB", EVENT_FEATURE_QUERY, "other",
+            Some(0), Some("sB"), Some("feature"), None, &b2,
+            Some("2026-06-10T09:05:00.000Z"),
+        );
+
+        let report = list_report(dir.path());
+        assert_eq!(report["queries"], 4, "all four workspace rounds folded: {report}");
+        let candidates = report["candidates"].as_array().expect("candidates array");
+        assert_eq!(candidates.len(), 2, "one bridge per origin: {report}");
+        // Deterministic origin order (BTreeMap: session:sA < session:sB).
+        assert_eq!(candidates[0]["missed"], "apolice");
+        assert_eq!(candidates[0]["bridged"], "policy");
+        assert_eq!(candidates[1]["missed"], "sinistro");
+        assert_eq!(candidates[1]["bridged"], "claim");
+        assert_eq!(candidates[1]["files"], json!(["src/claim.cs"]), "evidence carried");
+        // Byte-stable across runs.
+        let a = serde_json::to_string(&report).unwrap();
+        let b = serde_json::to_string(&list_report(dir.path())).unwrap();
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn lexicon_suggest_same_session_still_correlates_across_scopes() {
+        // One session's ANALYZE-time miss (session scope, no spec bound yet)
+        // followed by its post-PLAN re-query (bound-spec scope) is ONE origin
+        // — keyed by the emitting session, not the directory — so the bridge
+        // is still confirmed across the scope move.
+        let dir = tempdir().unwrap();
+        write_root_config(dir.path());
+        let q1 = query_payload(&["apolice"], &[("apolice", "none", &[])]);
+        let q2 = query_payload(&["policy"], &[("policy", "exact", &["src/policy.cs"])]);
+        let _ = write_event_with_ts(
+            dir.path(), None, None, "sC", EVENT_FEATURE_QUERY, "other",
+            Some(0), Some("sC"), Some("feature"), None, &q1,
+            Some("2026-06-10T11:00:00.000Z"),
+        );
+        let _ = write_event_with_ts(
+            dir.path(), Some("lex-bind"), None, "sC", EVENT_FEATURE_QUERY, "other",
+            Some(0), Some("sC"), Some("feature"), None, &q2,
+            Some("2026-06-10T11:10:00.000Z"),
+        );
+        let report = list_report(dir.path());
+        assert_eq!(report["queries"], 2, "{report}");
+        let candidates = report["candidates"].as_array().expect("candidates array");
+        assert_eq!(candidates.len(), 1, "scope move does not break the origin: {report}");
+        assert_eq!(candidates[0]["missed"], "apolice");
+        assert_eq!(candidates[0]["bridged"], "policy");
+    }
+
+    #[test]
+    fn lexicon_suggest_window_caps_the_fold_to_recent_events() {
+        // An old confirmed pair is a candidate while inside the window…
+        let dir = tempdir().unwrap();
+        write_root_config(dir.path());
+        let q1 = query_payload(&["apolice"], &[("apolice", "none", &[])]);
+        let q2 = query_payload(&["policy"], &[("policy", "exact", &["src/policy.cs"])]);
+        let _ = write_event_with_ts(
+            dir.path(), None, None, "sOld", EVENT_FEATURE_QUERY, "other",
+            Some(0), Some("sOld"), Some("feature"), None, &q1,
+            Some("2026-06-01T00:00:00.000Z"),
+        );
+        let _ = write_event_with_ts(
+            dir.path(), None, None, "sOld", EVENT_FEATURE_QUERY, "other",
+            Some(0), Some("sOld"), Some("feature"), None, &q2,
+            Some("2026-06-01T00:01:00.000Z"),
+        );
+        let before = list_report(dir.path());
+        assert_eq!(before["queries"], 2);
+        assert_eq!(before["window"], QUERY_WINDOW as u64);
+        assert_eq!(
+            before["candidates"].as_array().map(Vec::len),
+            Some(1),
+            "inside the window the old pair is a candidate: {before}"
+        );
+
+        // …and ages out once QUERY_WINDOW newer rounds land: only the most
+        // recent QUERY_WINDOW events stay eligible, deterministically by ts.
+        let filler = query_payload(&["titulo"], &[("titulo", "exact", &["src/title.cs"])]);
+        for i in 0..QUERY_WINDOW {
+            let ts = format!("2026-06-02T01:{:02}:{:02}.000Z", i / 60, i % 60);
+            let _ = write_event_with_ts(
+                dir.path(), None, None, "sNew", EVENT_FEATURE_QUERY, "other",
+                Some(0), Some("sNew"), Some("feature"), None, &filler,
+                Some(&ts),
+            );
+        }
+        let after = list_report(dir.path());
+        assert_eq!(
+            after["queries"],
+            QUERY_WINDOW as u64,
+            "the fold is capped at the window: {after}"
+        );
+        assert_eq!(
+            after["candidates"],
+            json!([]),
+            "the aged-out pair stops producing candidates: {after}"
+        );
     }
 
     // -- upsert mechanics ----------------------------------------------------------

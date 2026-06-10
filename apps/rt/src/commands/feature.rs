@@ -9,7 +9,9 @@
 //!
 //! Output (stdout, pretty JSON): the intent, the domain terms queried, the
 //! digest findings (matched terms, recurring slices, shared contracts, hubs),
-//! the anchor files to read, and a `miss` flag + note. `miss=true` means no repo
+//! the anchor files to read (plus the per-anchor `anchorsDetail` audit —
+//! score/terms — and the `report.reason` strength, so the orchestrator never
+//! opens the scan JSON), and a `miss` flag + note. `miss=true` means no repo
 //! precedent matched — the AI must treat it as net-new (do NOT conclude "absent"
 //! blindly: the term index has false negatives and no synonyms; confirm by
 //! reading). Fail-open: a missing model / unavailable tool yields a miss result.
@@ -68,12 +70,26 @@ fn payload(intent: &str, terms: &[String], q: &DigestQuery) -> serde_json::Value
         "slices": q.slices.iter().map(|s| json!({ "label": s.label, "recurrence": s.recurrence, "entities": s.entities })).collect::<Vec<_>>(),
         // Count of matched recurring slices — the deterministic signal the
         // scope classifier consumes: 1 = "mirrors a matched slice"
-        // (light/extended-light); >=2 = "spans multiple slices" (full).
+        // (light/extended-light); >=2 = multi-slice vocabulary overlap, which
+        // counts toward "full" only alongside layer spread (layerCount >= 2 in
+        // scope-classify) — alone it is precedent, not layer spanning.
         // Additive: the `slices` array is unchanged for existing consumers.
         "sliceMatchCount": q.slices.len(),
+        // Slices the per-query cap trimmed (additive; 0 from an older scan
+        // binary) — honest "there was more" signal next to the count above.
+        "slicesOmitted": q.slices_omitted,
         "contracts": q.contracts.iter().map(|c| json!({ "name": c.name, "implementors": c.implementors })).collect::<Vec<_>>(),
         "hubs": q.hubs.iter().map(|h| json!({ "module": h.module, "degree": h.degree })).collect::<Vec<_>>(),
         "anchors": q.files,
+        // Audit trail per anchor (additive, same order as `anchors`): the
+        // fixed-point selection score + the matched terms that carried the
+        // file — the orchestrator sees WHY each anchor ranked (score/terms)
+        // without ever opening the scan JSON. Scores stay on scan's integer
+        // x1024 scale (byte-stable; no float formatting). Empty rows for
+        // payloads from an older scan binary.
+        "anchorsDetail": q.files_detail.iter().map(|d| json!({
+            "file": d.file, "scoreX1024": d.score_x1024, "terms": d.terms,
+        })).collect::<Vec<_>>(),
         // The honest per-term match report (scan's tier ladder) — the truth
         // about what matched. Per term: the tier that carried it (exact |
         // fold | stem | lexicon | none), the natural-language evidence and
@@ -90,13 +106,18 @@ fn payload(intent: &str, terms: &[String], q: &DigestQuery) -> serde_json::Value
     })
 }
 
-/// Compact `feature.query` event payload: the queried terms + the honest
-/// match report (matched/total/reason + per-term term/tier/lang). The per-term
-/// `files` ride along — they are the evidence `lexicon-suggest` cites when a
-/// later re-query confirms a vocabulary bridge. Pure + deterministic; the
-/// payload carries no timestamp of its own (the event channel stamps `ts`).
-fn query_event_payload(terms: &[String], q: &DigestQuery) -> serde_json::Value {
+/// Compact `feature.query` event payload: the RAW `--intent` text + the
+/// queried terms + the honest match report (matched/total/reason + per-term
+/// term/tier/lang). `intent` is additive and deliberately untokenized — the
+/// user's own vocabulary (e.g. PT) stays visible and auditable even after
+/// `domain_terms` tokenization, so a later `lexicon-suggest` reviewer can see
+/// the demand exactly as it was phrased. The per-term `files` ride along —
+/// they are the evidence `lexicon-suggest` cites when a later re-query
+/// confirms a vocabulary bridge. Pure + deterministic; the payload carries no
+/// timestamp of its own (the event channel stamps `ts`).
+fn query_event_payload(intent: &str, terms: &[String], q: &DigestQuery) -> serde_json::Value {
     json!({
+        "intent": intent,
         "queryTerms": terms,
         "report": {
             "matched": q.report.matched,
@@ -212,7 +233,7 @@ pub fn run(intent: &str, root: &Path) {
             // is recorded — a spawn failure has no honest report to fold.
             // Both events are emitted BEFORE the println below so the stdout
             // contract stays byte-stable (telemetry never interleaves output).
-            emit_query_event(query_event_payload(&terms, &q));
+            emit_query_event(query_event_payload(intent, &terms, &q));
             emit_digest_used_event(digest_used_payload(&terms, &q));
             payload(intent, &terms, &q)
         }
@@ -226,9 +247,11 @@ pub fn run(intent: &str, root: &Path) {
                 "matchedTerms": [],
                 "slices": [],
                 "sliceMatchCount": 0,
+                "slicesOmitted": 0,
                 "contracts": [],
                 "hubs": [],
                 "anchors": [],
+                "anchorsDetail": [],
                 "report": { "matched": 0, "total": 0, "reason": "none", "terms": [] },
                 "note": "scan model unavailable — run `mustard-rt run scan` first; treat as net-new until then",
             })
@@ -301,16 +324,17 @@ mod tests {
 
     #[test]
     fn feature_query_event_payload_is_compact_and_deterministic() {
-        // The recorded event carries ONLY {queryTerms, report} — none of the
-        // bulky insumos fields (anchors/slices/hubs/stacks) and no timestamp
-        // of its own (the event channel stamps `ts`). Per-term entries keep
-        // term/tier/lang + the evidence files lexicon-suggest cites.
+        // The recorded event carries ONLY {intent, queryTerms, report} — none
+        // of the bulky insumos fields (anchors/slices/hubs/stacks) and no
+        // timestamp of its own (the event channel stamps `ts`). Per-term
+        // entries keep term/tier/lang + the evidence files lexicon-suggest
+        // cites.
         let q: DigestQuery = serde_json::from_str(
             r#"{"query":["hierarquia"],"miss":true,"report":{"matched":0,"total":1,"reason":"none","terms":[{"term":"hierarquia","tier":"none","lang":"","files":[]}]}}"#,
         )
         .expect("digest payload with report");
         let terms = vec!["hierarquia".to_string()];
-        let v = query_event_payload(&terms, &q);
+        let v = query_event_payload("hierarquia de títulos", &terms, &q);
         assert_eq!(v["queryTerms"], json!(["hierarquia"]));
         assert_eq!(v["report"]["matched"], 0);
         assert_eq!(v["report"]["total"], 1);
@@ -320,12 +344,63 @@ mod tests {
         assert_eq!(v["report"]["terms"][0]["lang"], "");
         assert_eq!(v["report"]["terms"][0]["files"], json!([]));
         let obj = v.as_object().expect("object payload");
-        assert_eq!(obj.len(), 2, "exactly queryTerms + report: {v}");
+        assert_eq!(obj.len(), 3, "exactly intent + queryTerms + report: {v}");
         assert!(obj.get("ts").is_none(), "no own timestamp in the payload");
         // Byte-stable: the same inputs serialize to the same bytes.
-        let a = serde_json::to_string(&query_event_payload(&terms, &q)).expect("serializes");
-        let b = serde_json::to_string(&query_event_payload(&terms, &q)).expect("serializes");
+        let a = serde_json::to_string(&query_event_payload("hierarquia de títulos", &terms, &q))
+            .expect("serializes");
+        let b = serde_json::to_string(&query_event_payload("hierarquia de títulos", &terms, &q))
+            .expect("serializes");
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn lexicon_suggest_feature_query_event_payload_carries_raw_intent() {
+        // The demand stays visible PRE-tokenization: the recorded event keeps
+        // the `--intent` text verbatim (accents, casing, function words — the
+        // user's vocabulary), next to the tokenized queryTerms. This is what
+        // makes a PT miss auditable by a later `lexicon-suggest` run instead
+        // of being washed away by `domain_terms`.
+        let q: DigestQuery = serde_json::from_str(
+            r#"{"query":["previsao"],"miss":true,"report":{"matched":0,"total":1,"reason":"none","terms":[{"term":"previsao","tier":"none","lang":"","files":[]}]}}"#,
+        )
+        .expect("digest payload");
+        let intent = "Adicionar PREVISÃO de lançamento à conta financeira";
+        let terms = domain_terms(intent);
+        let v = query_event_payload(intent, &terms, &q);
+        assert_eq!(v["intent"], json!(intent), "raw intent verbatim: {v}");
+        // The tokenized terms are lossy (lowercased, folded by the caller's
+        // shell, deduped) — the payload must carry BOTH representations.
+        assert_ne!(v["intent"], v["queryTerms"], "intent is not the token list");
+    }
+
+    #[test]
+    fn feature_payload_exposes_anchors_detail_audit() {
+        // `files_detail` (lote 1 of the anchor-robustness track) passes
+        // through as `anchorsDetail` — per anchor, the integer x1024 score +
+        // the carrying terms — so the orchestrator can rank-check anchors
+        // without opening the scan JSON. Same order as `anchors`; a
+        // touchpoint-tail anchor honestly shows score 0 / no terms.
+        let q: DigestQuery = serde_json::from_str(
+            r#"{"query":["refund"],"files":["src/refund.cs","src/tail.cs"],"files_detail":[{"file":"src/refund.cs","score_x1024":2048,"terms":["refund"]},{"file":"src/tail.cs","score_x1024":0,"terms":[]}],"miss":false,"report":{"matched":1,"total":1,"reason":"strong","terms":[]}}"#,
+        )
+        .expect("digest payload with files_detail");
+        let v = payload("refund", &["refund".to_string()], &q);
+        let detail = v["anchorsDetail"].as_array().expect("anchorsDetail array");
+        assert_eq!(detail.len(), 2, "one audit row per anchor: {v}");
+        assert_eq!(detail[0]["file"], "src/refund.cs");
+        assert_eq!(detail[0]["scoreX1024"], 2048);
+        assert_eq!(detail[0]["terms"], json!(["refund"]));
+        assert_eq!(detail[1]["scoreX1024"], 0, "tail anchor shows honest zero: {v}");
+        // The reason rides in the same payload — score/terms + strong/weak
+        // are both visible without the scan JSON.
+        assert_eq!(v["report"]["reason"], "strong");
+
+        // Old scan binary (no files_detail): the field degrades to an empty
+        // array, mirroring the miss-fallback payload's shape.
+        let old: DigestQuery = serde_json::from_str(r#"{"miss":true}"#).expect("old digest");
+        let v = payload("anything", &[], &old);
+        assert_eq!(v["anchorsDetail"], json!([]), "older payloads keep the shape: {v}");
     }
 
     #[test]
