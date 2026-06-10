@@ -417,10 +417,16 @@ fn is_word_byte(b: u8) -> bool {
 ///
 /// **Wave-plan parent (D1/D2):** a decomposed Full spec is a coordination doc —
 /// it carries NO `## Checklist`; the actionable checklists live in each
-/// `wave-N-*/spec.md`. If the parent has no checklist section AND it is a
+/// `wave-N-*/` sidecar. If the parent has no checklist section AND it is a
 /// wave-plan parent (its `meta.json#isWavePlan`/`totalWaves` says so, or wave
 /// subdirs exist), this CONSOLIDATES the wave checklists instead of skipping —
 /// otherwise CLOSE would pass having checked nothing (an orphaned gate).
+///
+/// **Meta-first (checklist-progresso-por-onda W2):** each wave is read from
+/// its `meta.json#checklist` (the canonical home seeded by `wave-scaffold` and
+/// flipped by the auto-mark hook / `mark-checklist-item`); the wave's markdown
+/// `## Checklist` section is the legacy fallback. The parent root meta carries
+/// no checklist by design (explicit OUT), so the parent side stays markdown.
 fn find_unmarked_checklist(cwd: &str, spec: Option<&str>) -> (bool, Vec<String>) {
     let Some(spec) = spec else {
         return (false, Vec::new());
@@ -445,24 +451,55 @@ fn find_unmarked_checklist(cwd: &str, spec: Option<&str>) -> (bool, Vec<String>)
     }
     let mut found_any = false;
     let mut unmarked: Vec<String> = Vec::new();
-    for wave_md in wave_spec_md_paths(&spec_dir) {
-        let Ok(raw) = fs::read_to_string(&wave_md) else {
-            continue;
-        };
-        if let Some(items) = checklist_unmarked_in(&raw) {
+    for wave_dir in wave_dirs(&spec_dir) {
+        let wave_label = wave_dir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("wave")
+            .to_string();
+        // Meta-first; markdown `## Checklist` as the legacy fallback.
+        let items = meta_checklist_unmarked(&wave_dir).or_else(|| {
+            fs::read_to_string(wave_dir.join("spec.md"))
+                .ok()
+                .and_then(|raw| checklist_unmarked_in(&raw))
+        });
+        if let Some(items) = items {
             found_any = true;
-            let wave_label = wave_md
-                .parent()
-                .and_then(|p| p.file_name())
-                .and_then(|n| n.to_str())
-                .unwrap_or("wave")
-                .to_string();
             for text in items {
                 unmarked.push(format!("[{wave_label}] {text}"));
             }
         }
     }
     (found_any, unmarked)
+}
+
+/// The un-done items of a dir's `meta.json#checklist`, rendered as
+/// `label → path` (the path elided when absent or equal to the label — the
+/// scaffold seeds label = path). `None` when the sidecar is absent /
+/// unreadable / carries no checklist — the "section absent" signal mirroring
+/// [`checklist_unmarked_in`], so the caller falls back to the markdown pass.
+fn meta_checklist_unmarked(dir: &Path) -> Option<Vec<String>> {
+    let meta = mustard_core::read_meta(&dir.join("meta.json"))?;
+    if meta.checklist.is_empty() {
+        return None;
+    }
+    Some(
+        meta.checklist
+            .iter()
+            .filter(|i| !i.done)
+            .map(|i| {
+                match i
+                    .path
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|p| !p.is_empty() && *p != i.label)
+                {
+                    Some(p) => format!("{} → {p}", i.label),
+                    None => i.label.clone(),
+                }
+            })
+            .collect(),
+    )
 }
 
 /// Extract the unmarked `- [ ] <text>` items from the `## Checklist` section of
@@ -504,12 +541,13 @@ fn is_wave_plan_parent(spec_dir: &Path) -> bool {
             return true;
         }
     }
-    !wave_spec_md_paths(spec_dir).is_empty()
+    !wave_dirs(spec_dir).is_empty()
 }
 
-/// The `spec.md` paths of every `wave-N-*` subdir under `spec_dir`, sorted for
-/// stable consolidation order. Empty when the spec has no waves.
-fn wave_spec_md_paths(spec_dir: &Path) -> Vec<std::path::PathBuf> {
+/// Every `wave-N-*` subdir under `spec_dir` carrying a wave artefact
+/// (`spec.md` or `meta.json`), sorted for stable consolidation order. Empty
+/// when the spec has no waves.
+fn wave_dirs(spec_dir: &Path) -> Vec<std::path::PathBuf> {
     let Ok(entries) = fs::read_dir(spec_dir) else {
         return Vec::new();
     };
@@ -518,9 +556,9 @@ fn wave_spec_md_paths(spec_dir: &Path) -> Vec<std::path::PathBuf> {
         .filter(|e| {
             e.path.is_dir()
                 && e.file_name.starts_with("wave-")
-                && e.path.join("spec.md").is_file()
+                && (e.path.join("spec.md").is_file() || e.path.join("meta.json").is_file())
         })
-        .map(|e| e.path.join("spec.md"))
+        .map(|e| e.path)
         .collect();
     out.sort();
     out
@@ -1489,6 +1527,66 @@ mod tests {
             Verdict::Deny { reason } => assert!(reason.contains("unmarked")),
             other => panic!("expected Deny for unmarked wave checklist, got {other:?}"),
         }
+    }
+
+    /// Meta-first consolidation (checklist-progresso-por-onda W2): the wave's
+    /// `meta.json#checklist` is the source the gate reads — a `done:false`
+    /// item blocks CLOSE even when the wave's markdown carries a stale
+    /// all-marked `## Checklist`; flipping every `done` to `true` releases it.
+    #[test]
+    fn close_gate_blocks_on_wave_meta_checklist_and_releases_when_done() {
+        let dir = make_project();
+        let sp = ClaudePaths::for_project(dir.path()).unwrap().for_spec("epic-meta").unwrap();
+        std::fs::create_dir_all(sp.dir()).unwrap();
+        std::fs::write(sp.spec_md_path(), "# Epic\n\n## Network\n- coord\n").unwrap();
+        std::fs::write(
+            sp.dir().join("meta.json"),
+            r#"{"stage":"Execute","outcome":"Active","isWavePlan":true,"totalWaves":1}"#,
+        )
+        .unwrap();
+        let wave_dir = sp.dir().join("wave-1-rt");
+        std::fs::create_dir_all(&wave_dir).unwrap();
+        // Stale markdown says everything is done — the sidecar must win.
+        std::fs::write(
+            wave_dir.join("spec.md"),
+            "# Wave 1\n\n## Checklist\n- [x] stale markdown item\n",
+        )
+        .unwrap();
+        std::fs::write(
+            wave_dir.join("meta.json"),
+            r#"{"stage":"Execute","outcome":"Active","parent":"epic-meta","checklist":[{"label":"src/a.rs","path":"src/a.rs","done":true},{"label":"src/b.rs","path":"src/b.rs","done":false}]}"#,
+        )
+        .unwrap();
+
+        let (found, unmarked) =
+            find_unmarked_checklist(dir.path().to_str().unwrap(), Some("epic-meta"));
+        assert!(found, "wave meta checklist must be consolidated");
+        assert_eq!(unmarked.len(), 1, "one done:false item: {unmarked:?}");
+        assert!(unmarked[0].contains("src/b.rs"), "{unmarked:?}");
+        assert!(unmarked[0].contains("wave-1-rt"), "wave label prefix: {unmarked:?}");
+
+        // End-to-end: the gate denies CLOSE on the open meta item.
+        let input = close_input(dir.path(), "epic-meta");
+        match close_gate_with_modes(&input, dir.path().to_str().unwrap(), no_qa()) {
+            Verdict::Deny { reason } => assert!(reason.contains("unmarked")),
+            other => panic!("expected Deny for done:false wave meta item, got {other:?}"),
+        }
+
+        // Flip the open item → the gate releases (anti-gate-órfão preserved:
+        // found stays true, the unmarked list empties).
+        std::fs::write(
+            wave_dir.join("meta.json"),
+            r#"{"stage":"Execute","outcome":"Active","parent":"epic-meta","checklist":[{"label":"src/a.rs","path":"src/a.rs","done":true},{"label":"src/b.rs","path":"src/b.rs","done":true}]}"#,
+        )
+        .unwrap();
+        let (found, unmarked) =
+            find_unmarked_checklist(dir.path().to_str().unwrap(), Some("epic-meta"));
+        assert!(found);
+        assert!(unmarked.is_empty(), "all done:true → release: {unmarked:?}");
+        assert_eq!(
+            close_gate_with_modes(&input, dir.path().to_str().unwrap(), no_qa()),
+            Verdict::Allow
+        );
     }
 
     /// A wave-plan parent whose waves are all fully marked → the consolidated

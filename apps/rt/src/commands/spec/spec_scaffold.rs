@@ -226,6 +226,7 @@ mod tests {
             is_wave_plan: None,
             total_waves: None,
             flags: MetaFlags::default(),
+            checklist: Vec::new(),
             raw: serde_json::Value::Null,
         }
     }

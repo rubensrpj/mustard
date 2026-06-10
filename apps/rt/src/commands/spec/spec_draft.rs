@@ -304,6 +304,7 @@ fn build_checklist(scope: Scope, anchors: &[String], lang: Locale) -> Vec<Checkl
         .map(|path| ChecklistItem {
             label: translate("checklist.touch_file", lang).to_string(),
             path: Some(path.clone()),
+            done: false,
         })
         .collect();
     if items.is_empty() {
@@ -313,6 +314,7 @@ fn build_checklist(scope: Scope, anchors: &[String], lang: Locale) -> Vec<Checkl
         vec![ChecklistItem {
             label: translate("checklist.first_task", lang).to_string(),
             path: None,
+            done: false,
         }]
     } else {
         items
@@ -427,6 +429,10 @@ fn build_meta_from_input(input: &SpecInput) -> Meta {
         total_waves: input.total_waves,
         // A freshly drafted spec carries no qualifier flag (Plan/Active).
         flags: mustard_core::MetaFlags::default(),
+        // The trackable checklist lives in the spec markdown at draft time and
+        // in each WAVE's sidecar after the scaffold — never in the root meta
+        // (explicit OUT of the checklist-progresso spec).
+        checklist: Vec::new(),
         raw: serde_json::Value::Null,
     }
 }

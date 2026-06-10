@@ -60,6 +60,7 @@
 //! Idempotent: each output file is only created when absent. The stdout JSON
 //! reports which were created vs skipped.
 
+use mustard_core::domain::spec::contract::ChecklistItem;
 use mustard_core::io::fs;
 use mustard_core::{Meta, MetaFlags, SupportedLocale, read_meta, write_meta};
 use serde::Deserialize;
@@ -369,6 +370,25 @@ fn build_ac_block(plan: &Plan, hd: &Headings<'_>) -> Option<String> {
     Some(format!("{}\n{}", hd.acceptance, lines.join("\n")))
 }
 
+/// Seed the per-wave trackable checklist from the wave's file census — one
+/// item per target file (`{label, path, done: false}`), reusing the core
+/// [`ChecklistItem`]. The path doubles as the label (deterministic, no
+/// narrative to localise) and as the auto-mark anchor the
+/// `checklist-auto-mark` hook / `mark-checklist-item` key off. Blank entries
+/// are dropped; order follows the plan (byte-stable output).
+fn checklist_from_files(files: &[String]) -> Vec<ChecklistItem> {
+    files
+        .iter()
+        .map(|f| f.trim())
+        .filter(|f| !f.is_empty())
+        .map(|f| ChecklistItem {
+            label: f.to_string(),
+            path: Some(f.to_string()),
+            done: false,
+        })
+        .collect()
+}
+
 /// Write `content` to `path` only when the file does not already exist.
 /// Returns `true` when the file was created, `false` when it was skipped.
 fn write_if_absent(path: &Path, content: &str) -> bool {
@@ -580,6 +600,10 @@ pub(crate) fn scaffold(spec_dir: &Path, plan_path: &Path) -> ScaffoldOutcome {
             is_wave_plan: Some(true),
             total_waves: Some(total_waves),
             flags: MetaFlags::default(),
+            // The PARENT is a coordination doc — its actionable checklist
+            // lives in each wave's sidecar (seeded below), never in the root
+            // meta (explicit OUT of the checklist-progresso spec).
+            checklist: Vec::new(),
             raw: Value::Null,
         },
     );
@@ -598,6 +622,11 @@ pub(crate) fn scaffold(spec_dir: &Path, plan_path: &Path) -> ScaffoldOutcome {
                 is_wave_plan: None,
                 total_waves: None,
                 flags: MetaFlags::default(),
+                // Events-first per-wave progress: one trackable item per
+                // target file. `write_scaffold_meta` is skip-if-absent, so a
+                // re-scaffold never resets `done` flags already flipped by
+                // the auto-mark hook / `mark-checklist-item`.
+                checklist: checklist_from_files(&w.files),
                 raw: Value::Null,
             },
         );
@@ -1222,6 +1251,62 @@ mod tests {
         assert!(!s1.contains("- [ ] - [ ]"), "doubled checkbox on disk: {s1}");
         assert!(s1.contains("- [ ] do the thing"), "{s1}");
         assert!(s1.contains("- [ ] clean label"), "{s1}");
+    }
+
+    /// Task 1 (checklist-progresso-por-onda W2): the scaffold seeds each
+    /// wave's `meta.json#checklist` with one `{label, path, done:false}` item
+    /// per target file; the PARENT root meta carries NO checklist (explicit
+    /// OUT). Skip-if-absent keeps an already-marked wave sidecar intact on
+    /// re-scaffold.
+    #[test]
+    fn scaffold_seeds_wave_meta_checklist_from_files() {
+        let dir = tempdir().unwrap();
+        let spec_dir = dir.path().join("epic-checklist");
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        let plan_path = dir.path().join("plan.json");
+        std::fs::write(
+            &plan_path,
+            serde_json::to_string(&json!({
+                "waves": [
+                    { "n": 1, "role": "rt", "summary": "s", "depends_on": [],
+                      "tasks": ["wire it"],
+                      "files": ["src/api/handler.rs", "  ", "src/api/mod.rs"] }
+                ],
+                "total_waves": 1,
+                "lang": "en-US"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        run(
+            Some(spec_dir.to_str().unwrap()),
+            Some(plan_path.to_str().unwrap()),
+        );
+
+        let wave_meta =
+            mustard_core::read_meta(&spec_dir.join("wave-1-rt").join("meta.json")).unwrap();
+        assert_eq!(wave_meta.checklist.len(), 2, "one item per non-blank file");
+        assert_eq!(wave_meta.checklist[0].path.as_deref(), Some("src/api/handler.rs"));
+        assert_eq!(wave_meta.checklist[0].label, "src/api/handler.rs");
+        assert!(!wave_meta.checklist[0].done, "seeded unchecked");
+        assert_eq!(wave_meta.checklist[1].path.as_deref(), Some("src/api/mod.rs"));
+
+        // Parent root meta carries no checklist key (OUT of scope).
+        let root_text = std::fs::read_to_string(spec_dir.join("meta.json")).unwrap();
+        assert!(!root_text.contains("\"checklist\""), "{root_text}");
+
+        // Re-scaffold must not reset a flipped `done` (skip-if-absent).
+        let wave_meta_path = spec_dir.join("wave-1-rt").join("meta.json");
+        let mut marked = wave_meta.clone();
+        marked.checklist[0].done = true;
+        mustard_core::write_meta(&wave_meta_path, &marked).unwrap();
+        run(
+            Some(spec_dir.to_str().unwrap()),
+            Some(plan_path.to_str().unwrap()),
+        );
+        let again = mustard_core::read_meta(&wave_meta_path).unwrap();
+        assert!(again.checklist[0].done, "re-scaffold must preserve done state");
     }
 
     /// The empty-`tasks` retrocompat path: a wave with no checklist materialises

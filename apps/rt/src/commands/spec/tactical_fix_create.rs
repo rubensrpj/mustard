@@ -158,6 +158,8 @@ fn create(cwd: &Path, opts: &TacticalFixOpts) -> TacticalFixReport {
         total_waves: None,
         // A freshly created tactical-fix spec carries no qualifier flag.
         flags: mustard_core::MetaFlags::default(),
+        // TF checklists stay in the spec markdown (root meta carries none).
+        checklist: Vec::new(),
         raw: serde_json::Value::Null,
     };
     if let Err(e) = spec_scaffold::write_meta_json(&spec_dir, &meta) {

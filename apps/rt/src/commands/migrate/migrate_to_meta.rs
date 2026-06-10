@@ -184,6 +184,9 @@ fn extract_meta(content: &str) -> Option<Meta> {
         is_wave_plan,
         total_waves,
         flags,
+        // Legacy `### Key:` headers never carried a checklist; the seeded
+        // per-wave checklist is born in `wave-scaffold`, not in migration.
+        checklist: Vec::new(),
         raw: serde_json::Value::Null,
     })
 }

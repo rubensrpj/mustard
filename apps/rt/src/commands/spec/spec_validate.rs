@@ -126,7 +126,13 @@ fn build_input_from_files(slug: &str, spec_text: &str, meta: Option<&mustard_cor
     let prd = collect_sections(spec_text, PRD_SECTIONS);
     let plan = collect_sections(spec_text, PLAN_SECTIONS);
     let acs = collect_acceptance_criteria(spec_text);
-    let checklist = collect_checklist(spec_text);
+    // Meta-first: the `meta.json#checklist` sidecar is the canonical home of
+    // the trackable items (seeded per wave by `wave-scaffold`). The markdown
+    // `## Checklist` section is the legacy fallback for un-migrated specs.
+    let checklist = meta
+        .map(|m| m.checklist.clone())
+        .filter(|c| !c.is_empty())
+        .unwrap_or_else(|| collect_checklist(spec_text));
 
     let stage = meta
         .and_then(|m| m.stage.as_deref())
@@ -183,19 +189,25 @@ fn collect_checklist(text: &str) -> Vec<ChecklistItem> {
         let Some(rest) = t.strip_prefix("- ") else {
             continue;
         };
-        // `[ ]` (unchecked) or `[x]`/`[X]` (checked) — strip whichever leads.
-        let body = rest
-            .strip_prefix("[ ]")
-            .or_else(|| rest.strip_prefix("[x]"))
-            .or_else(|| rest.strip_prefix("[X]"));
-        let Some(body) = body else { continue };
+        // `[ ]` (unchecked) or `[x]`/`[X]` (checked) — strip whichever leads,
+        // carrying the checked state into the typed `done` field.
+        let (body, done) = if let Some(b) = rest.strip_prefix("[ ]") {
+            (b, false)
+        } else if let Some(b) = rest
+            .strip_prefix("[x]")
+            .or_else(|| rest.strip_prefix("[X]"))
+        {
+            (b, true)
+        } else {
+            continue;
+        };
         let body = body.trim();
         // Split a trailing ` → <path>` arrow back into label + path.
         let (label, path) = match body.rsplit_once('→') {
             Some((l, p)) => (l.trim().to_string(), Some(p.trim().to_string())),
             None => (body.to_string(), None),
         };
-        out.push(ChecklistItem { label, path });
+        out.push(ChecklistItem { label, path, done });
     }
     out
 }
@@ -367,6 +379,31 @@ mod tests {
         let items = collect_checklist(body);
         assert_eq!(items.len(), 2);
         assert_eq!(items[0].path.as_deref(), Some("a.rs"));
+        // The checked state round-trips into the typed `done` field.
+        assert!(items[0].done);
+        assert!(!items[1].done);
+    }
+
+    /// Task 4 (checklist-progresso-por-onda W2): when the sidecar carries a
+    /// non-empty `checklist`, validation reads it from the meta — NOT from the
+    /// markdown section. Markdown remains the fallback for legacy specs.
+    #[test]
+    fn checklist_validates_from_meta_when_present() {
+        let mut meta = mustard_core::domain::meta::Meta::default();
+        meta.checklist = vec![ChecklistItem {
+            label: "src/a.rs".to_string(),
+            path: Some("src/a.rs".to_string()),
+            done: false,
+        }];
+        // Markdown carries a DIFFERENT (two-item) section — meta must win.
+        let body = "# X\n\n## Checklist\n\n- [ ] md-one\n- [ ] md-two\n";
+        let input = build_input_from_files("demo", body, Some(&meta));
+        assert_eq!(input.checklist.len(), 1, "meta checklist wins over markdown");
+        assert_eq!(input.checklist[0].path.as_deref(), Some("src/a.rs"));
+        // Empty meta checklist → markdown fallback.
+        let empty = mustard_core::domain::meta::Meta::default();
+        let fallback = build_input_from_files("demo", body, Some(&empty));
+        assert_eq!(fallback.checklist.len(), 2, "empty meta falls back to markdown");
     }
 
     #[test]

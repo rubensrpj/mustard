@@ -866,13 +866,18 @@ fn run_checklist_auto_mark(input: &HookInput, cwd: &str) {
     if file_path.is_empty() {
         return;
     }
-    let Some((spec_path, _spec_name)) = find_active_spec(cwd) else {
+    let Some((spec_path, spec_name)) = find_active_spec(cwd) else {
         return;
     };
     // Don't auto-mark when the edited file IS the spec itself (avoid loops).
     if same_path(&file_path, &spec_path) {
         return;
     }
+    // Meta-first: flip matching `meta.json#checklist` items (the events-first
+    // home of per-wave progress, seeded by `wave-scaffold`) and emit one
+    // `checklist.item.marked` per flip. Fail-open side effect; the legacy
+    // markdown `## Checklist` pass below still runs for un-migrated specs.
+    mark_meta_checklists(cwd, &spec_path, &spec_name, &file_path);
     let Ok(raw) = fs::read_to_string(Path::new(&spec_path)) else {
         return;
     };
@@ -919,6 +924,99 @@ fn run_checklist_auto_mark(input: &HookInput, cwd: &str) {
     if dirty {
         let _ = fs::write_atomic(Path::new(&spec_path), lines.join("\n").as_bytes());
     }
+}
+
+/// Flip every matching un-done `meta.json#checklist` item across the active
+/// spec's dir + its `wave-N-*` subdirs, emitting one `checklist.item.marked`
+/// event per flip (via the shared
+/// [`crate::commands::checklist::mark_checklist_item::emit_item_marked`]).
+///
+/// Pure side effect — fail-open throughout: unreadable / checklist-less
+/// sidecars are skipped, a failed atomic write skips that dir's emits, and
+/// already-done items never flip twice (idempotent — no duplicate events).
+fn mark_meta_checklists(cwd: &str, spec_path: &str, spec_name: &str, edited: &str) {
+    use crate::commands::checklist::mark_checklist_item::{emit_item_marked, wave_number_of};
+    use mustard_core::domain::model::event::ActorKind;
+
+    let Some(spec_dir) = Path::new(spec_path).parent() else {
+        return;
+    };
+    let edited_base = basename(edited).to_ascii_lowercase();
+    let norm_edited = edited.replace('\\', "/").to_ascii_lowercase();
+
+    let mut dirs = vec![spec_dir.to_path_buf()];
+    if let Ok(entries) = fs::read_dir(spec_dir) {
+        let mut waves: Vec<std::path::PathBuf> = entries
+            .into_iter()
+            .filter(|e| e.path.is_dir() && e.file_name.starts_with("wave-"))
+            .map(|e| e.path)
+            .collect();
+        waves.sort();
+        dirs.extend(waves);
+    }
+
+    for dir in dirs {
+        let meta_path = dir.join("meta.json");
+        let Some(mut meta) = mustard_core::read_meta(&meta_path) else {
+            continue;
+        };
+        if meta.checklist.is_empty() {
+            continue;
+        }
+        let wave = dir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .and_then(wave_number_of)
+            .unwrap_or(0);
+        let mut flipped: Vec<usize> = Vec::new();
+        for (i, item) in meta.checklist.iter_mut().enumerate() {
+            if item.done || !meta_item_matches_edit(item, &norm_edited, &edited_base) {
+                continue;
+            }
+            item.done = true;
+            flipped.push(i);
+        }
+        if flipped.is_empty() {
+            continue;
+        }
+        if mustard_core::domain::meta::write_meta(&meta_path, &meta).is_err() {
+            continue;
+        }
+        for i in flipped {
+            emit_item_marked(
+                cwd,
+                ActorKind::Hook,
+                "checklist-auto-mark",
+                spec_name,
+                wave,
+                &meta.checklist[i],
+            );
+        }
+    }
+}
+
+/// `true` when a typed checklist item matches the just-edited file — the same
+/// two strategies the markdown pass uses: the path anchor (exact / suffix /
+/// `/`-segment contains / basename), then the edited basename inside the label.
+fn meta_item_matches_edit(
+    item: &mustard_core::domain::spec::contract::ChecklistItem,
+    norm_edited: &str,
+    edited_base: &str,
+) -> bool {
+    // Strategy 1: the item's path anchor.
+    if let Some(p) = item.path.as_deref() {
+        let target = p.trim().replace('\\', "/").to_ascii_lowercase();
+        if !target.is_empty()
+            && (norm_edited.ends_with(&target)
+                || norm_edited.contains(&format!("/{target}"))
+                || norm_edited == target
+                || basename(&target) == edited_base)
+        {
+            return true;
+        }
+    }
+    // Strategy 2: the edited basename anywhere in the label.
+    !edited_base.is_empty() && item.label.to_ascii_lowercase().contains(edited_base)
 }
 
 /// Parse a `- [ ] <text>` unchecked-item line into `(prefix, gap, text)`.
@@ -1328,6 +1426,70 @@ mod tests {
         PostEdit.observe(&input, &ctx(dir.path().to_str().unwrap()));
         let updated = std::fs::read_to_string(&spec_file).unwrap();
         assert!(updated.contains("- [ ] Edit spec.md notes"));
+    }
+
+    /// Meta-first auto-mark (checklist-progresso-por-onda W2): a Write of a
+    /// checklist target file flips the matching item in the WAVE's
+    /// `meta.json#checklist` (idempotently) and emits `checklist.item.marked`.
+    #[test]
+    fn checklist_marks_wave_meta_item_and_emits_event() {
+        let dir = tempdir().unwrap();
+        setup_spec(dir.path(), "demo", "# Spec\n\n## Notes\n");
+        let paths = ClaudePaths::for_project(dir.path()).unwrap();
+        let sp = paths.for_spec("demo").unwrap();
+        let wave_dir = sp.dir().join("wave-1-rt");
+        std::fs::create_dir_all(&wave_dir).unwrap();
+        std::fs::write(wave_dir.join("spec.md"), "# wave-1-rt\n").unwrap();
+        std::fs::write(
+            wave_dir.join("meta.json"),
+            r#"{"stage":"Execute","outcome":"Active","parent":"demo","checklist":[{"label":"src/Services/UserService.cs","path":"src/Services/UserService.cs","done":false},{"label":"docs/notes.md","path":"docs/notes.md","done":false}]}"#,
+        )
+        .unwrap();
+
+        let edited = dir
+            .path()
+            .join("src")
+            .join("Services")
+            .join("UserService.cs");
+        let input = edit_input(&edited.to_string_lossy(), "whatever");
+        PostEdit.observe(&input, &ctx(dir.path().to_str().unwrap()));
+
+        let meta = mustard_core::read_meta(&wave_dir.join("meta.json")).unwrap();
+        assert!(meta.checklist[0].done, "matching item flipped");
+        assert!(!meta.checklist[1].done, "unrelated item untouched");
+
+        // The NDJSON event landed under the spec's events sink.
+        let events_dir = sp.events_dir();
+        assert!(events_dir.exists(), "events dir must exist after the emit");
+        let mut found = false;
+        for f in std::fs::read_dir(&events_dir).unwrap() {
+            let body = std::fs::read_to_string(f.unwrap().path()).unwrap_or_default();
+            found = found
+                || body
+                    .lines()
+                    .any(|l| l.contains("\"event\":\"checklist.item.marked\""));
+        }
+        assert!(found, "checklist.item.marked NDJSON line must be present");
+
+        // Idempotent: a second observe flips nothing and emits no second event.
+        let count_lines = |d: &std::path::Path| -> usize {
+            std::fs::read_dir(d)
+                .map(|it| {
+                    it.flatten()
+                        .map(|f| {
+                            std::fs::read_to_string(f.path())
+                                .unwrap_or_default()
+                                .lines()
+                                .filter(|l| l.contains("\"event\":\"checklist.item.marked\""))
+                                .count()
+                        })
+                        .sum()
+                })
+                .unwrap_or(0)
+        };
+        let before = count_lines(&events_dir);
+        PostEdit.observe(&input, &ctx(dir.path().to_str().unwrap()));
+        assert_eq!(count_lines(&events_dir), before, "no duplicate event on re-edit");
     }
 
     #[test]
