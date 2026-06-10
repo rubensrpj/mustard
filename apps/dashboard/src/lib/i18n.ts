@@ -390,6 +390,11 @@ const DICTIONARY = new Map<string, TranslationRow>([
   ["specCard.target.waveRunning", { pt: "Onda {n} — {role} em execução", en: "Wave {n} — {role} running" }],
   ["specCard.target.waveRunningNoRole", { pt: "Onda {n} em execução", en: "Wave {n} running" }],
   ["specCard.target.executing", { pt: "Executando", en: "Running" }],
+  ["specCard.digest.used", { pt: "digest ✓ · {n} reads antes", en: "digest ✓ · {n} reads before" }],
+  ["specCard.digest.notUsed", { pt: "digest ✗ · {n} reads diretos", en: "digest ✗ · {n} direct reads" }],
+  ["specCard.digest.usedTitle", { pt: "Adesão ao digest: o agente consultou o digest no ANALYZE; {n} leituras diretas de código antes da primeira consulta", en: "Digest adherence: the agent queried the digest during ANALYZE; {n} direct source reads before the first query" }],
+  ["specCard.digest.notUsedTitle", { pt: "Adesão ao digest: nenhuma consulta ao digest registrada; {n} leituras diretas de código na sessão", en: "Digest adherence: no digest query recorded; {n} direct source reads in the session" }],
+  ["specCard.digest.absentTitle", { pt: "Sem telemetria de adesão ao digest para esta spec ainda", en: "No digest-adherence telemetry for this spec yet" }],
 
   // ── Spec track row (Workspace hero list) ──────────────────────────────
   ["specTrack.inProgressAria", { pt: "Em execução", en: "In progress" }],
@@ -471,6 +476,8 @@ const DICTIONARY = new Map<string, TranslationRow>([
   ["eventTheme.specComplete.detail", { pt: "Pipeline de spec finalizada", en: "Spec pipeline completed" }],
   ["eventTheme.dispatchFailure.detail", { pt: "Falha no dispatch — geralmente overload/rate-limit do modelo", en: "Dispatch failure — usually model overload/rate-limit" }],
   ["eventTheme.retryAttempt.detail", { pt: "Tentativa de fix-loop após review/QA falhar", en: "Fix-loop attempt after review/QA failed" }],
+  ["eventTheme.analyzeDigestUsed.detail", { pt: "Digest do scan consultado durante a pesquisa (marcador de adesão)", en: "Scan digest queried during research (adherence marker)" }],
+  ["eventTheme.analyzeDigestSummary.detail", { pt: "Resumo de adesão ao digest — usou digest? quantos reads diretos antes?", en: "Digest adherence summary — was the digest used? how many direct reads before?" }],
   ["eventTheme.decision.detail", { pt: "Decisão arquitetural registrada durante a pipeline", en: "Architectural decision recorded during the pipeline" }],
   ["eventTheme.finding.detail", { pt: "Achado/observação registrado pelo agente", en: "Finding/observation recorded by the agent" }],
   ["eventTheme.lesson.detail", { pt: "Aprendizado capturado pra knowledge base", en: "Lesson captured for the knowledge base" }],

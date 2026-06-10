@@ -150,6 +150,14 @@ export function SpecCard({
   const subSpecCount = data.children_count ?? 0;
   const hasSubSpecs = subSpecCount > 0;
 
+  // Digest adherence (spec `instrumentar-adesao-ao-digest-no`): the card
+  // payload carries `digest_used` + `source_reads_before_digest` folded from
+  // the latest `analyze.digest.summary` event. Both fields are optional —
+  // payloads from older backends omit them, and the footer renders the same
+  // "—" empty state as the other metrics instead of fabricating a `✗`.
+  const hasDigestTelemetry = data.digest_used != null;
+  const digestReads = data.source_reads_before_digest ?? 0;
+
   return (
     <div
       className={cn(
@@ -287,6 +295,30 @@ export function SpecCard({
           <span className="text-muted-foreground/60">tools</span>{" "}
           <span className="text-foreground/70 font-medium">{data.tools_used}</span>
         </span>
+        {hasDigestTelemetry ? (
+          <span
+            title={t(
+              data.digest_used
+                ? "specCard.digest.usedTitle"
+                : "specCard.digest.notUsedTitle",
+            ).replace("{n}", String(digestReads))}
+            className={cn(
+              "inline-flex items-center px-1.5 py-0.5 rounded border text-[10px] font-mono font-medium",
+              data.digest_used
+                ? "bg-[--color-phase-analyze-bg] text-[--color-phase-analyze] border-[--color-phase-analyze-border]"
+                : "bg-muted/50 text-muted-foreground border-border",
+            )}
+          >
+            {t(
+              data.digest_used ? "specCard.digest.used" : "specCard.digest.notUsed",
+            ).replace("{n}", String(digestReads))}
+          </span>
+        ) : (
+          <span title={t("specCard.digest.absentTitle")}>
+            <span className="text-muted-foreground/60">digest</span>{" "}
+            <span className="text-foreground/70 font-medium">—</span>
+          </span>
+        )}
         <span title="Modelo" className="truncate max-w-[140px]">
           <span className="text-muted-foreground/60">modelo</span>{" "}
           <span className="text-foreground/70 font-medium font-mono">

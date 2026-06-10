@@ -54,6 +54,17 @@ pub struct SpecCard {
     /// older clients/payloads compatible.
     #[serde(default)]
     pub children_count: u32,
+    /// Digest adherence (spec `instrumentar-adesao-ao-digest-no`): whether the
+    /// latest spec-scoped `analyze.digest.summary` event recorded any digest
+    /// usage during ANALYZE. Folded by `spec_card_v2_with_counts`; serde
+    /// default (`false`) keeps older payloads compatible.
+    #[serde(default)]
+    pub digest_used: bool,
+    /// Companion to `digest_used`: source-file `Read`/`Grep`/`Glob` heartbeats
+    /// that landed BEFORE the first digest query (all of them when the digest
+    /// was never used). Serde default (`0`) keeps older payloads compatible.
+    #[serde(default)]
+    pub source_reads_before_digest: i64,
 }
 
 /// Wave-3 (2026-05-20, spec `2026-05-20-tactical-fix-via-sub-spec`) — one
@@ -395,6 +406,27 @@ pub(crate) fn spec_card_v2_with_counts(
         card.phase = reconcile_phase_with_meta(&meta, &card.phase);
     }
     merge_attributed_counts(&mut card, counts.get(spec));
+    // Digest adherence (spec `instrumentar-adesao-ao-digest-no`): fold the
+    // latest `analyze.digest.summary` event for this spec. The payload keys
+    // are camelCase (`digestUsed`, `sourceReadsBeforeDigest`) — emitted by
+    // `mustard-rt run digest-adherence-finalize`. No event → the struct
+    // defaults (digest_used=false, 0 reads) already on the card stand.
+    if let Some(payload) = events
+        .iter()
+        .filter(|e| e.event == "analyze.digest.summary")
+        .filter(|e| e.spec.as_deref() == Some(spec))
+        .max_by(|a, b| a.ts.cmp(&b.ts))
+        .map(|e| &e.payload)
+    {
+        card.digest_used = payload
+            .get("digestUsed")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        card.source_reads_before_digest = payload
+            .get("sourceReadsBeforeDigest")
+            .and_then(serde_json::Value::as_i64)
+            .unwrap_or(0);
+    }
     Ok(Some(card))
 }
 
@@ -1349,6 +1381,11 @@ fn spec_card_from_view(view: &mustard_core::SpecView, children_count: u32) -> Sp
         tools_used: i64::from(view.tools_used),
         model: view.model.clone(),
         children_count,
+        // Folded from the latest `analyze.digest.summary` event by
+        // `spec_card_v2_with_counts` after this mapper runs; the core
+        // projection carries no digest-adherence signal.
+        digest_used: false,
+        source_reads_before_digest: 0,
     }
 }
 
@@ -2200,6 +2237,40 @@ fn feed_payload_summary(kind: &str, payload: Option<&serde_json::Value>) -> Stri
             let to = payload.and_then(|p| p.get("to")).and_then(|x| x.as_str()).unwrap_or("");
             format!("status → {to}")
         }
+        // Digest adherence (spec `instrumentar-adesao-ao-digest-no`). Payload
+        // keys are camelCase — see `digest-adherence-finalize` in rt.
+        "analyze.digest.summary" => {
+            let used = payload
+                .and_then(|p| p.get("digestUsed"))
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
+            let before = payload
+                .and_then(|p| p.get("sourceReadsBeforeDigest"))
+                .and_then(serde_json::Value::as_i64)
+                .unwrap_or(0);
+            if used {
+                format!("digest usado · {before} reads antes")
+            } else {
+                format!("digest não usado · {before} reads diretos")
+            }
+        }
+        "analyze.digest.used" => {
+            let terms = payload
+                .and_then(|p| p.get("queryTerms"))
+                .and_then(serde_json::Value::as_array)
+                .map(|a| {
+                    a.iter()
+                        .filter_map(serde_json::Value::as_str)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                })
+                .unwrap_or_default();
+            if terms.is_empty() {
+                "digest consultado".to_string()
+            } else {
+                format!("digest consultado · {terms}")
+            }
+        }
         other => other.to_string(),
     };
     s.chars().take(120).collect()
@@ -2471,5 +2542,68 @@ mod tests {
         assert!(spec_checklist_progress_v2(".", "../evil").is_err());
         assert!(spec_checklist_progress_v2(".", "a/b").is_err());
         assert!(spec_checklist_progress_v2(".", "").is_err());
+    }
+
+    // ── Digest adherence fold (spec `instrumentar-adesao-ao-digest-no`) ──────
+
+    #[test]
+    fn spec_card_folds_latest_digest_summary_for_the_spec() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        // Older summary says unused — the NEWEST one must win. A summary for
+        // ANOTHER spec must be ignored even though it is newer still.
+        // `kind` is mandatory for the typed NDJSON reader (`io::events::Event`);
+        // real writer lines carry both `event` and `kind`.
+        let old = r#"{"kind":"analyze","event":"analyze.digest.summary","ts":"2026-06-10T10:00:00Z","spec":"alpha","wave":0,"payload":{"spec":"alpha","digestUsed":false,"sourceReadsBeforeDigest":7,"sourceReadsTotal":7}}"#;
+        let new = r#"{"kind":"analyze","event":"analyze.digest.summary","ts":"2026-06-10T11:00:00Z","spec":"alpha","wave":0,"payload":{"spec":"alpha","digestUsed":true,"sourceReadsBeforeDigest":2,"sourceReadsTotal":9}}"#;
+        let other = r#"{"kind":"analyze","event":"analyze.digest.summary","ts":"2026-06-10T12:00:00Z","spec":"beta","wave":0,"payload":{"spec":"beta","digestUsed":false,"sourceReadsBeforeDigest":99,"sourceReadsTotal":99}}"#;
+        write_file(
+            tmp.path(),
+            ".claude/spec/alpha/.events/events.ndjson",
+            &format!("{old}\n{new}\n{other}\n"),
+        );
+        let repo = tmp.path().to_string_lossy().into_owned();
+        crate::telemetry::invalidate_events_cache(&repo);
+        let card = spec_card_v2(&repo, "alpha").unwrap().expect("card");
+        assert!(card.digest_used, "latest summary for the spec wins");
+        assert_eq!(card.source_reads_before_digest, 2);
+    }
+
+    #[test]
+    fn spec_card_defaults_digest_fields_when_no_summary_event() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let line = r#"{"kind":"pipeline","event":"pipeline.phase","ts":"2026-06-10T10:00:00Z","spec":"alpha","wave":0,"payload":{"to":"ANALYZE"}}"#;
+        write_file(
+            tmp.path(),
+            ".claude/spec/alpha/.events/events.ndjson",
+            &format!("{line}\n"),
+        );
+        let repo = tmp.path().to_string_lossy().into_owned();
+        crate::telemetry::invalidate_events_cache(&repo);
+        let card = spec_card_v2(&repo, "alpha").unwrap().expect("card");
+        assert!(!card.digest_used, "absent summary → default false");
+        assert_eq!(card.source_reads_before_digest, 0);
+    }
+
+    #[test]
+    fn feed_summary_renders_digest_events() {
+        let used = json!({"digestUsed": true, "sourceReadsBeforeDigest": 3});
+        assert_eq!(
+            feed_payload_summary("analyze.digest.summary", Some(&used)),
+            "digest usado · 3 reads antes"
+        );
+        let unused = json!({"digestUsed": false, "sourceReadsBeforeDigest": 5});
+        assert_eq!(
+            feed_payload_summary("analyze.digest.summary", Some(&unused)),
+            "digest não usado · 5 reads diretos"
+        );
+        let query = json!({"queryTerms": ["auth", "token"], "miss": false});
+        assert_eq!(
+            feed_payload_summary("analyze.digest.used", Some(&query)),
+            "digest consultado · auth, token"
+        );
+        assert_eq!(
+            feed_payload_summary("analyze.digest.used", None),
+            "digest consultado"
+        );
     }
 }

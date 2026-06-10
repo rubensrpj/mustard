@@ -186,6 +186,20 @@ const EVENT_THEME: Record<string, EventPalette> = {
     bg: "bg-[--color-phase-execute-bg]",
     border: "border-[--color-phase-execute-border]",
   },
+  "analyze.digest.used": {
+    label: "digest",
+    detailKey: "eventTheme.analyzeDigestUsed.detail",
+    text: "text-[--color-phase-analyze]",
+    bg: "bg-[--color-phase-analyze-bg]",
+    border: "border-[--color-phase-analyze-border]",
+  },
+  "analyze.digest.summary": {
+    label: "digest Σ",
+    detailKey: "eventTheme.analyzeDigestSummary.detail",
+    text: "text-[--color-phase-analyze]",
+    bg: "bg-[--color-phase-analyze-bg]",
+    border: "border-[--color-phase-analyze-border]",
+  },
   "dispatch.failure": {
     label: "fail",
     detailKey: "eventTheme.dispatchFailure.detail",

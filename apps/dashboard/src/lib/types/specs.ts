@@ -114,6 +114,19 @@ export interface SpecCard {
    * field existed.
    */
   children_count?: number;
+  /**
+   * Digest adherence (spec `instrumentar-adesao-ao-digest-no`): whether the
+   * latest spec-scoped `analyze.digest.summary` event recorded any digest
+   * usage during ANALYZE. Optional for backwards compatibility — payloads
+   * from older backends omit the field, and the card renders an empty state.
+   */
+  digest_used?: boolean;
+  /**
+   * Companion to `digest_used`: source-file `Read`/`Grep`/`Glob` heartbeats
+   * that landed BEFORE the first digest query (all of them when the digest
+   * was never used). Optional for backwards compatibility.
+   */
+  source_reads_before_digest?: number;
 }
 
 /**

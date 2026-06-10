@@ -1908,6 +1908,8 @@ fn dashboard_spec_card(repo_path: String, spec: String) -> Result<spec_views::Sp
             tools_used: 0,
             model: None,
             children_count: 0,
+            digest_used: false,
+            source_reads_before_digest: 0,
         }),
     }
 }
