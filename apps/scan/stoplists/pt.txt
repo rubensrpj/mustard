@@ -205,3 +205,11 @@ terão
 teria
 teríamos
 teriam
+
+# Local additions (not in the upstream Snowball list): feminine quantifier
+# forms are pure prose glue and their pt stem ("tod") collides with the common
+# TODO code domain. The masculine forms (todo/todos) are deliberately NOT
+# listed — they name that domain in code and the per-term report keeps any
+# ambiguity visible.
+toda
+todas
