@@ -772,11 +772,43 @@ pub enum RunCmd {
         #[arg(long = "session-id")]
         session_id: String,
     },
-    /// Materialise the canonical SDD wave layout (`wave-plan.md` + each
-    /// `wave-N-{role}/spec.md`) from a declarative JSON plan. Idempotent.
+    /// Fold the active session's events into an `analyze.digest.summary`
+    /// adherence report: did the scan digest answer (`analyze.digest.used`)
+    /// and how many Read/Grep/Glob heartbeats targeted source files directly
+    /// (before the first digest use / in total). Emits the event spec-scoped
+    /// and prints the same JSON. Fire-and-forget telemetry: fail-open, no
+    /// events means zero counts, always exits 0.
+    #[command(name = "digest-adherence-finalize")]
+    DigestAdherenceFinalize {
+        /// Spec slug the summary event attributes to.
+        #[arg(long)]
+        spec: String,
+    },
+    /// Materialise the canonical SDD wave layout from a declarative JSON plan.
     ///
-    /// Each `--plan` wave entry carries an optional materialised body, all
-    /// `#[serde(default)]` (a summary-only plan still deserialises):
+    /// Renders `wave-plan.md` + each `wave-{n}-{role}/spec.md` (+ `meta.json`
+    /// sidecars). Idempotent: existing files are never overwritten.
+    ///
+    /// Every entry in `waves` REQUIRES two fields (no serde default — omitting
+    /// either is a parse error: stdout gains `error` + `hint`, exit 2):
+    ///   - `n: u32`       — 1-based wave number, drives the folder name
+    ///                      `wave-{n}-{role}`.
+    ///   - `role: String` — role label (`general`, `backend`, …), the other
+    ///                      half of the folder name.
+    ///
+    /// Minimal valid plan JSON:
+    ///   {
+    ///     "waves": [
+    ///       { "n": 1, "role": "general", "summary": "…", "depends_on": [] },
+    ///       { "n": 2, "role": "general", "summary": "…",
+    ///         "depends_on": ["wave-1-general"] }
+    ///     ],
+    ///     "total_waves": 2,
+    ///     "lang": "pt-BR"
+    ///   }
+    ///
+    /// Only the per-wave BODY fields are optional (`#[serde(default)]` — a
+    /// summary-only plan still deserialises):
     ///   - `tasks: [String]`      → `## Tasks`/`## Tarefas` (`- [ ] {task}`) in
     ///                              the wave spec, read back by
     ///                              `agent-prompt-render` as `{task_steps}`.
@@ -790,6 +822,12 @@ pub enum RunCmd {
     /// the scaffold. Headings render in the effective language
     /// (`mustard.json#specLang` root-wins, plan `lang` as fallback). A wave with
     /// no `tasks` emits a stderr WARN (visible signal), not a bare heading.
+    ///
+    /// `plan-from-spec` is the canonical producer of the plan skeleton (it
+    /// emits every required + body field); inside the pipeline prefer
+    /// `plan-materialize`, which composes this scaffold with validation and
+    /// the PLAN-phase events.
+    #[command(verbatim_doc_comment)]
     WaveScaffold {
         /// Target spec directory.
         #[arg(long = "spec-dir")]
@@ -1823,6 +1861,7 @@ pub fn dispatch(cmd: RunCmd) {
             manifest,
         } => maint::artifact_update::run(check, apply, manifest.as_deref()),
         RunCmd::AmendFinalize { session_id } => agent::amend_finalize::run_cli(&session_id),
+        RunCmd::DigestAdherenceFinalize { spec } => agent::digest_adherence_finalize::run(&spec),
         RunCmd::WaveScaffold { spec_dir, plan } => {
             wave::wave_scaffold::run(spec_dir.as_deref(), plan.as_deref());
         }

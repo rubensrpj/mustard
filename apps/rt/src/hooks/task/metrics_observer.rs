@@ -45,6 +45,13 @@ impl Observer for MetricsObserver {
         if let Some(pat) = tool_input.get("pattern").and_then(|v| v.as_str()) {
             target.insert("pattern".into(), json!(common::cap(pat, 80)));
         }
+        // Grep's `path` filter / Glob's search directory — recorded as
+        // `target.path` so `digest-adherence-finalize` can classify Grep/Glob
+        // heartbeats by the path they touched (Read already lands as
+        // `target.file` via `file_path` above).
+        if let Some(path) = tool_input.get("path").and_then(|v| v.as_str()) {
+            target.insert("path".into(), json!(path));
+        }
         if let Some(desc) = tool_input.get("description").and_then(|v| v.as_str()) {
             target.insert("description".into(), json!(common::cap(desc, 100)));
         }
@@ -194,6 +201,57 @@ mod tests {
             Some("tu_42"),
             "heartbeat payload must echo the harness tool_use_id"
         );
+    }
+
+    /// Grep/Glob heartbeats must record the tool's `path` input as
+    /// `target.path` — the field `digest-adherence-finalize` classifies by
+    /// (Read keeps `target.file`). Without it every Grep/Glob heartbeat is
+    /// pathless and silently drops out of the adherence counts.
+    #[test]
+    fn heartbeat_payload_carries_target_path_for_grep_and_glob() {
+        let dir = tempdir().unwrap();
+        let project = dir.path().to_str().unwrap();
+        for (tool, session) in [("Grep", "s-grep"), ("Glob", "s-glob")] {
+            let input = HookInput {
+                tool_name: Some(tool.to_string()),
+                tool_input: json!({ "pattern": "foo", "path": "apps/rt/src/main.rs" }),
+                hook_event_name: Some("PostToolUse".to_string()),
+                session_id: Some(session.to_string()),
+                ..HookInput::default()
+            };
+            MetricsObserver.observe(&input, &ctx(Trigger::PostToolUse, project));
+
+            let events_dir = dir
+                .path()
+                .join(".claude")
+                .join(".session")
+                .join(session)
+                .join(".events");
+            let mut payload = None;
+            for f in std::fs::read_dir(&events_dir).unwrap() {
+                let body = std::fs::read_to_string(f.unwrap().path()).unwrap_or_default();
+                for line in body.lines() {
+                    let v: serde_json::Value = match serde_json::from_str(line) {
+                        Ok(v) => v,
+                        Err(_) => continue,
+                    };
+                    if v["event"] == "tool.use" {
+                        payload = Some(v["payload"].clone());
+                    }
+                }
+            }
+            let payload = payload.expect("tool.use NDJSON line present");
+            assert_eq!(
+                payload["target"]["path"].as_str(),
+                Some("apps/rt/src/main.rs"),
+                "{tool} heartbeat must record target.path"
+            );
+            assert_eq!(
+                payload["target"]["pattern"].as_str(),
+                Some("foo"),
+                "{tool} heartbeat keeps the existing pattern field"
+            );
+        }
     }
 
     /// When the harness forwards no `tool_use_id`, the heartbeat still emits a

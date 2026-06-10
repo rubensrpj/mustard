@@ -414,7 +414,10 @@ pub(crate) enum ScaffoldOutcome {
 
 /// Run `mustard-rt run wave-scaffold --spec-dir <dir> --plan <json-file>`.
 ///
-/// Idempotent and fail-open. Stdout is `{"created_files":[...],"skipped":[...]}`.
+/// Idempotent. Stdout is `{"created_files":[...],"skipped":[...]}`; operator
+/// errors (empty plan, unreadable/unparseable plan) add an `error` field —
+/// plus an actionable `hint` for the missing-`n`/`role` case — and exit 2 so
+/// the orchestrator notices.
 pub fn run(spec_dir_arg: Option<&str>, plan_arg: Option<&str>) {
     let Some(spec_dir_arg) = spec_dir_arg else {
         eprintln!("Usage: wave-scaffold --spec-dir <dir> --plan <json-file>");

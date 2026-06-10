@@ -65,6 +65,8 @@ pub fn classify_kind(event_name: &str) -> &'static str {
         "tool"
     } else if event_name.starts_with("agent.") {
         "agent"
+    } else if event_name.starts_with("analyze.") {
+        "analyze"
     } else if event_name.starts_with("qa.") {
         "qa"
     } else if event_name.starts_with("knowledge.")
@@ -370,5 +372,15 @@ mod tests {
     fn classify_covers_remaining_families() {
         assert_eq!(classify_kind("subagent.start"), "other");
         assert_eq!(classify_kind("notification.echo"), "notification");
+    }
+
+    /// The digest-adherence events (`analyze.digest.used` marker emitted by
+    /// `feature::run`, `analyze.digest.summary` emitted by
+    /// `digest-adherence-finalize`) classify under the `analyze` kind — never
+    /// `other`, so the dashboard can bucket them without name-parsing.
+    #[test]
+    fn classify_analyze_family_as_analyze() {
+        assert_eq!(classify_kind("analyze.digest.used"), "analyze");
+        assert_eq!(classify_kind("analyze.digest.summary"), "analyze");
     }
 }

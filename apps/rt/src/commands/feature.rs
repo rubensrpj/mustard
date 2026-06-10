@@ -136,6 +136,43 @@ fn emit_query_event(payload: serde_json::Value) {
     let _ = crate::shared::events::route::emit(&dir, &ev);
 }
 
+/// Minimal `analyze.digest.used` payload: the queried terms + the legacy
+/// hit/miss flag. This is the adherence MARKER `digest-adherence-finalize`
+/// looks for ("the digest was consulted at this instant") — deliberately
+/// smaller than the `feature.query` payload, whose report serves
+/// `lexicon-suggest` instead.
+fn digest_used_payload(terms: &[String], q: &DigestQuery) -> serde_json::Value {
+    json!({
+        "queryTerms": terms,
+        "miss": q.miss,
+    })
+}
+
+/// Record that the scan digest answered a research round, as an
+/// `analyze.digest.used` harness event. Unlike [`emit_query_event`] the spec
+/// is resolved HERE via [`crate::shared::context::current_spec`] (may be
+/// `None`) so the marker carries the active spec when one is already bound.
+/// Fail-open: a failed write never blocks the research output on stdout.
+fn emit_digest_used_event(payload: serde_json::Value) {
+    use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
+    let dir = crate::shared::context::project_dir();
+    let ev = HarnessEvent {
+        v: SCHEMA_VERSION,
+        ts: mustard_core::time::now_iso8601(),
+        session_id: crate::shared::context::session_id(),
+        wave: 0,
+        actor: Actor {
+            kind: ActorKind::Cli,
+            id: Some("feature".to_string()),
+            actor_type: None,
+        },
+        event: "analyze.digest.used".to_string(),
+        payload,
+        spec: crate::shared::context::current_spec(&dir),
+    };
+    let _ = crate::shared::events::route::emit(&dir, &ev);
+}
+
 /// The guidance note for the AI consuming the payload, keyed on the report's
 /// reason (the truth); an empty reason means the payload came from an older
 /// scan binary, so it falls back to the legacy `miss` flag.
@@ -173,7 +210,10 @@ pub fn run(intent: &str, root: &Path) {
             // `lexicon-suggest` can later correlate a `none`-tier query with
             // the successful re-query that bridged it. Only an answered query
             // is recorded — a spawn failure has no honest report to fold.
+            // Both events are emitted BEFORE the println below so the stdout
+            // contract stays byte-stable (telemetry never interleaves output).
             emit_query_event(query_event_payload(&terms, &q));
+            emit_digest_used_event(digest_used_payload(&terms, &q));
             payload(intent, &terms, &q)
         }
         Err(err) => {
@@ -286,6 +326,26 @@ mod tests {
         let a = serde_json::to_string(&query_event_payload(&terms, &q)).expect("serializes");
         let b = serde_json::to_string(&query_event_payload(&terms, &q)).expect("serializes");
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn analyze_digest_used_payload_is_minimal_marker() {
+        // The adherence marker carries ONLY {queryTerms, miss} — it records
+        // THAT the digest answered, not the full report (which lives on the
+        // sibling `feature.query` event). Deterministic for the same inputs.
+        let q: DigestQuery = serde_json::from_str(
+            r#"{"query":["refund"],"miss":false,"report":{"matched":1,"total":1,"reason":"strong","terms":[]}}"#,
+        )
+        .expect("digest payload");
+        let terms = vec!["refund".to_string()];
+        let v = digest_used_payload(&terms, &q);
+        assert_eq!(v["queryTerms"], json!(["refund"]));
+        assert_eq!(v["miss"], json!(false));
+        let obj = v.as_object().expect("object payload");
+        assert_eq!(obj.len(), 2, "exactly queryTerms + miss: {v}");
+        let a = serde_json::to_string(&digest_used_payload(&terms, &q)).expect("serializes");
+        let b = serde_json::to_string(&digest_used_payload(&terms, &q)).expect("serializes");
+        assert_eq!(a, b, "byte-stable for the same inputs");
     }
 
     #[test]

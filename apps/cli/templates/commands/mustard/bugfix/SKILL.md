@@ -26,6 +26,8 @@ source: manual
 
 Resolve Lang via cascade (`meta.json#lang` → `mustard.json#specLang` → ask once → persist to `meta.json`). Lean — `## Contexto` + `## Acceptance Criteria` = PRD layer; `## Causa raiz` + `## Plano` + `## Limites` = Plano layer. NO divider headings, NO PRD subsections. MUST include ≥1 AC: reproduction command (exits non-zero before fix, exit 0 after). → `../../../refs/feature/spec-language.md`.
 
+Once the spec exists and has a slug, run `mustard-rt run digest-adherence-finalize --spec {slug}`. Fire-and-forget telemetry: it folds the session's events into one `analyze.digest.summary` attributed to the spec; it never blocks — continue immediately. The Fast Path has no spec, so it never emits this summary.
+
 Print spec verbatim, then *"Run `/mustard:spec` to approve and proceed to EXECUTE."*
 
 ### 4. EXECUTE
