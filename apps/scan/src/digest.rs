@@ -310,7 +310,7 @@ pub fn query(model: &ProjectModel, terms: &[String], request_lang: &str) -> Quer
     let mut cand: BTreeMap<&str, (u64, usize)> = BTreeMap::new();
     for (i, t) in matched_terms.iter().enumerate() {
         let Some(per_module) = c.postings.get(&t.term) else { continue };
-        for (path, tf) in per_module {
+        for (path, (tf, _)) in per_module {
             // Same anchor discipline as the term samples: hand-written
             // modules only, and never a structural stop-file.
             if !anchorable(path) {
@@ -520,14 +520,25 @@ fn stopwords() -> &'static BTreeSet<String> {
 /// ([`query`]), so the two can never disagree. The scoring arithmetic itself
 /// lives in [`crate::rank`]. BTreeMaps throughout: deterministic iteration.
 struct Corpus<'a> {
-    /// term -> module path -> occurrences in that module's declarations.
-    postings: BTreeMap<String, BTreeMap<&'a str, usize>>,
+    /// term -> module path -> (occurrences, Σ kind-class weights ×1024) in
+    /// that module's declarations. The raw count feeds BM25; the weighted sum
+    /// feeds the published-catalog rank (rank::kind_weight_x1024 — values and
+    /// the type-kind list are DATA in ranking.toml).
+    postings: BTreeMap<String, BTreeMap<&'a str, (usize, u64)>>,
     /// Module path -> machine-written class (hand-written modules absent).
     class_of: BTreeMap<&'a str, &'a str>,
     /// Module path -> declaration count — the BM25 document length.
     doc_len: BTreeMap<&'a str, usize>,
     /// Module path -> import-graph fan-in, persisted on the model by scan.
     fan_in: BTreeMap<&'a str, usize>,
+    /// Module path -> the project stratum it lives under: the longest
+    /// `projects[].dir` prefixing the path (same rule as the spec compiler's
+    /// project attribution), "" when no project claims it.
+    stratum: BTreeMap<&'a str, &'a str>,
+    /// Module path -> lowercased path subtokens — the MMR Jaccard surface.
+    path_tokens: BTreeMap<&'a str, BTreeSet<String>>,
+    /// Module path -> verbatim import strings — the MMR neighborhood surface.
+    imports: BTreeMap<&'a str, BTreeSet<&'a str>>,
     /// Average document length ×1024 over the indexed modules.
     avgdl_x1024: u64,
     /// Total modules in the model — the base of the stop-file percent.
@@ -544,9 +555,15 @@ fn corpus(model: &ProjectModel) -> Corpus<'_> {
         .filter(|m| !m.file_class.is_empty())
         .map(|m| (m.path.as_str(), m.file_class.as_str()))
         .collect();
-    let mut postings: BTreeMap<String, BTreeMap<&str, usize>> = BTreeMap::new();
+    let mut postings: BTreeMap<String, BTreeMap<&str, (usize, u64)>> = BTreeMap::new();
     let mut doc_len: BTreeMap<&str, usize> = BTreeMap::new();
     let mut fan_in: BTreeMap<&str, usize> = BTreeMap::new();
+    let mut stratum: BTreeMap<&str, &str> = BTreeMap::new();
+    let mut path_tokens: BTreeMap<&str, BTreeSet<String>> = BTreeMap::new();
+    let mut imports: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+    // Longest-prefix project attribution (the spec compiler's `project_of`
+    // rule): `dir` itself or anything under `dir/`.
+    let under = |path: &str, dir: &str| path == dir || (path.len() > dir.len() && path.starts_with(dir) && path.as_bytes()[dir.len()] == b'/');
     let (mut len_sum, mut docs) = (0usize, 0usize);
     for m in &model.modules {
         fan_in.insert(m.path.as_str(), m.fan_in);
@@ -559,8 +576,25 @@ fn corpus(model: &ProjectModel) -> Corpus<'_> {
         doc_len.insert(m.path.as_str(), m.declarations.len());
         len_sum += m.declarations.len();
         docs += 1;
+        let strat = model
+            .projects
+            .iter()
+            .filter(|p| !p.dir.is_empty() && under(&m.path, &p.dir))
+            .max_by_key(|p| p.dir.len())
+            .map_or("", |p| p.dir.as_str());
+        stratum.insert(m.path.as_str(), strat);
+        path_tokens.insert(m.path.as_str(), tokenize(&m.path).into_iter().collect());
+        imports.insert(m.path.as_str(), m.imports.iter().map(|s| s.as_str()).collect());
         for d in &m.declarations {
             let toks = tokenize(&d.name);
+            // Each occurrence carries its declaration's kind-class weight for
+            // the published rank, alongside the raw count BM25 consumes.
+            let kw = crate::rank::kind_weight_x1024(&d.kind);
+            let mut bump = |term: String| {
+                let e = postings.entry(term).or_default().entry(m.path.as_str()).or_insert((0, 0));
+                e.0 += 1;
+                e.1 += kw;
+            };
             // ONE extra entry per declaration: the whole identifier, lowercased
             // and stripped of separators ("SplitAsync" -> "splitasync",
             // "parent_id" -> "parentid"). Tier-1 of the match ladder accepts
@@ -573,13 +607,13 @@ fn corpus(model: &ProjectModel) -> Corpus<'_> {
                 && !(toks.len() == 1 && toks[0] == ident)
                 && !stop.contains(&ident)
             {
-                *postings.entry(ident).or_default().entry(m.path.as_str()).or_insert(0) += 1;
+                bump(ident);
             }
             for tok in toks {
                 if stop.contains(&tok) {
                     continue;
                 }
-                *postings.entry(tok).or_default().entry(m.path.as_str()).or_insert(0) += 1;
+                bump(tok);
             }
         }
     }
@@ -588,41 +622,57 @@ fn corpus(model: &ProjectModel) -> Corpus<'_> {
         class_of,
         doc_len,
         fan_in,
+        stratum,
+        path_tokens,
+        imports,
         avgdl_x1024: crate::rank::avgdl_x1024(len_sum, docs),
         total_modules: model.modules.len(),
     }
 }
 
 /// Project the corpus into the domain-term index. The index is UNCAPPED here
-/// — see [`build`] vs [`query`] for who caps what. Samples are the top
-/// hand-written modules by BM25 (rank::bm25_x1024, fixed-point integer): tf
-/// saturation + document-length normalization replace the old raw per-module
-/// count, so a focused module outranks a sprawling one that merely repeats
-/// the term, and walk order never decides. Ties break by path asc —
-/// byte-stable output.
+/// — see [`build`] vs [`query`] for who caps what. Samples come ONLY from
+/// hand-written modules, scored by BM25 (rank::bm25_x1024, fixed-point
+/// integer) and picked by rank::select_samples: each matched project stratum
+/// keeps ≥1 slot when ≥2 strata match, the rest go to greedy MMR diversity —
+/// every tie breaks on path asc, byte-stable output. The published ORDER (and
+/// therefore who survives the MAX_TERMS cap) follows the kind-class-weighted
+/// rank — type-name vocabulary outranks a member flood — while `count` stays
+/// the demoted occurrence count.
 fn build_terms(c: &Corpus) -> Vec<TermD> {
     let class = |p: &str| c.class_of.get(p).copied().unwrap_or("");
-    let mut terms: Vec<TermD> = c
+    let (no_tokens, no_imports) = (BTreeSet::new(), BTreeSet::new());
+    let mut terms: Vec<(u64, TermD)> = c
         .postings
         .iter()
         .map(|(term, per_module)| {
             // Machine-written occurrences are demoted by the catalog
             // multiplier (classify::index_weight) — present, never dominant.
-            let count = per_module.iter().map(|(p, n)| crate::classify::index_weight(*n, class(p))).sum();
-            // Samples (the files a caller reads next) come ONLY from
-            // hand-written modules: a generated file is never the anchor.
-            let mut mods: Vec<(&str, u64)> = per_module
+            let count = per_module.iter().map(|(p, (n, _))| crate::classify::index_weight(*n, class(p))).sum();
+            // The catalog rank key: per module, the kind-weighted occurrence
+            // sum (rank::weighted_count) under the SAME machine-class
+            // demotion as `count`. Not serialized — ranking only.
+            let rank_key: u64 = per_module
+                .iter()
+                .map(|(p, (_, w))| crate::classify::index_weight(crate::rank::weighted_count(*w), class(p)) as u64)
+                .sum();
+            let cands: Vec<crate::rank::SampleCand> = per_module
                 .iter()
                 .filter(|(p, _)| crate::classify::anchor_eligible(class(p)))
-                .map(|(p, n)| (*p, crate::rank::bm25_x1024(*n, c.doc_len.get(p).copied().unwrap_or(0), c.avgdl_x1024)))
+                .map(|(p, (n, _))| crate::rank::SampleCand {
+                    path: p,
+                    score_x1024: crate::rank::bm25_x1024(*n, c.doc_len.get(p).copied().unwrap_or(0), c.avgdl_x1024),
+                    stratum: c.stratum.get(p).copied().unwrap_or(""),
+                    subtokens: c.path_tokens.get(p).unwrap_or(&no_tokens),
+                    neighbors: c.imports.get(p).unwrap_or(&no_imports),
+                })
                 .collect();
-            mods.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
-            let samples = mods.into_iter().take(MAX_TERM_SAMPLES).map(|(p, _)| p.to_string()).collect();
-            TermD { term: term.clone(), count, samples }
+            let samples = crate::rank::select_samples(&cands, MAX_TERM_SAMPLES);
+            (rank_key, TermD { term: term.clone(), count, samples })
         })
         .collect();
-    terms.sort_by(|a, b| b.count.cmp(&a.count).then(a.term.cmp(&b.term)));
-    terms
+    terms.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.count.cmp(&a.1.count)).then(a.1.term.cmp(&b.1.term)));
+    terms.into_iter().map(|(_, t)| t).collect()
 }
 
 /// Split an identifier into lowercased domain tokens on case boundaries and

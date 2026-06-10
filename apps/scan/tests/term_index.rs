@@ -36,6 +36,13 @@ fn module(path: &str, decls: &[&str]) -> serde_json::Value {
     serde_json::json!({ "path": path, "declarations": declarations })
 }
 
+/// One synthetic module with explicit (kind, name) declarations.
+fn kinded_module(path: &str, decls: &[(&str, &str)]) -> serde_json::Value {
+    let declarations: Vec<serde_json::Value> =
+        decls.iter().map(|(k, n)| serde_json::json!({ "kind": k, "name": n, "line": 1 })).collect();
+    serde_json::json!({ "path": path, "declarations": declarations })
+}
+
 /// Run `digest` over the model (`query` empty = full digest) into `out_name`
 /// inside the model's dir, and return the parsed JSON.
 fn run_digest(model: &Path, query: &str, out_name: &str) -> serde_json::Value {
@@ -158,6 +165,34 @@ fn term_index_samples_rank_by_bm25_not_walk_order() {
         vec!["apps/zeta/dense.rs", "apps/alpha/a.rs", "apps/alpha/b.rs"],
         "highest-BM25 module first, then path-asc ties"
     );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn term_index_kind_class_weight_keeps_types_above_the_member_flood() {
+    // "widget" occurs twice, but only under MEMBER declarations (methods);
+    // "ledger" occurs once, under a TYPE declaration (class). The published
+    // catalog ranks by kind-class weight (ranking.toml [catalog]: type 2.5 vs
+    // member 1), so the type term must lead — that is what protects the
+    // MAX_TERMS cap from member-name flooding — while `count` keeps
+    // publishing the raw demoted occurrence count.
+    let modules = serde_json::json!([
+        kinded_module("src/widgets.rs", &[("method", "WidgetSpin"), ("method", "WidgetFlip")]),
+        kinded_module("src/ledger.rs", &[("class", "LedgerBook")]),
+    ]);
+    let (dir, model) = write_model("kindweight", modules);
+    let digest = run_digest(&model, "", "digest.json");
+
+    let terms = term_names(&digest, "terms");
+    let pos = |name: &str| terms.iter().position(|t| t == name).unwrap_or_else(|| panic!("`{name}` indexed: {terms:?}"));
+    assert!(pos("ledger") < pos("widget"), "type vocabulary outranks the member flood: {terms:?}");
+
+    let count_of = |name: &str| {
+        digest["terms"].as_array().unwrap().iter().find(|t| t["term"] == name).unwrap()["count"].as_u64().unwrap()
+    };
+    assert_eq!(count_of("ledger"), 1, "count stays the occurrence count, never the weighted rank");
+    assert_eq!(count_of("widget"), 2, "count stays the occurrence count, never the weighted rank");
 
     let _ = std::fs::remove_dir_all(&dir);
 }

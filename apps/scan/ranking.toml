@@ -34,3 +34,32 @@ alpha = 0.03125
 # capability, so it leaves anchor eligibility. Repo-relative statistic; no
 # type or file names involved.
 hub_fanin_pct = 30
+
+[catalog]
+# Kind-class weights for the PUBLISHED catalog ranking only. A declaration
+# whose kind appears in `type_kinds` (the engine's generic capture vocabulary
+# — the `@definition.<kind>` suffixes the queries emit, listed here as DATA)
+# contributes `type_weight` per occurrence; every other kind (members:
+# methods, fields, …) contributes `member_weight`. This protects the
+# published MAX_TERMS cap from member-name flooding — type names are the
+# entity vocabulary a request maps onto first. Ranking only: the published
+# `count` stays the demoted occurrence count, and BM25 sample/anchor scoring
+# is untouched.
+type_weight = 2.5
+member_weight = 1.0
+type_kinds = ["class", "interface", "struct", "enum", "trait", "type", "record"]
+
+[samples]
+# Per-term sample-slot selection. Stratification is parameter-free: when at
+# least two strata (the model's projects[].dir) carry a candidate, each is
+# guaranteed one slot; a single-project repo degenerates to the global
+# ranking with no effect. The REMAINING slots are filled by greedy MMR:
+#   score = lambda * relevance - (1 - lambda) * max-similarity-to-picked
+# where similarity blends path-subtoken Jaccard, shared directory depth and
+# import-neighborhood Jaccard in equal parts. lambda in [0, 1]: 1.0 is pure
+# relevance, lower buys more diversity.
+mmr_lambda = 0.75
+# MMR cost/determinism bound: only the top (mmr_pool_per_slot x slots)
+# candidates by relevance compete for the remaining slots, so a term living
+# in thousands of modules stays cheap to sample.
+mmr_pool_per_slot = 8
