@@ -56,9 +56,17 @@ pub struct PlanMaterializeOpts {
     pub plan: String,
 }
 
+/// Stdout `scaffold.error` marker for a plan file that could not be read or
+/// parsed. [`run`] maps this failure to exit 2 — the single source for the
+/// string keeps the JSON field and the exit mapping in lockstep.
+const ERR_PLAN_UNREADABLE: &str = "plan unreadable";
+
 /// CLI entry — resolves the paths against the cwd and prints the composite
-/// report. Exit code is always 0 (every step is fail-open; failures are
-/// expressed in the JSON).
+/// report. Exit code: 0 on success and on advisory failures (validation is
+/// WARN-level; failures are expressed in the JSON), 2 when the plan file
+/// could not be read/parsed (`scaffold.error: "plan unreadable"`) — aligned
+/// with the standalone `wave-scaffold` contract (operator error → non-zero
+/// exit so the orchestrator notices).
 pub fn run(opts: PlanMaterializeOpts) {
     let project = PathBuf::from(crate::shared::context::project_dir());
     let spec_dir = absolutize(&project, &opts.spec_dir);
@@ -68,6 +76,9 @@ pub fn run(opts: PlanMaterializeOpts) {
         "{}",
         serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".to_string())
     );
+    if report["scaffold"]["error"].as_str() == Some(ERR_PLAN_UNREADABLE) {
+        std::process::exit(2);
+    }
 }
 
 /// Join a possibly-relative CLI path onto the project root.
@@ -110,7 +121,7 @@ pub(crate) fn materialize(project: &Path, spec_dir: &Path, plan_path: &Path) -> 
                 json!({
                     "created_files": [],
                     "skipped": [],
-                    "error": "plan unreadable",
+                    "error": ERR_PLAN_UNREADABLE,
                 }),
                 false,
             )

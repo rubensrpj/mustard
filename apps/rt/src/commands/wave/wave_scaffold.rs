@@ -445,11 +445,50 @@ pub fn run(spec_dir_arg: Option<&str>, plan_arg: Option<&str>) {
     match scaffold(&spec_dir, &plan_path) {
         ScaffoldOutcome::Unreadable(msg) => {
             eprintln!("{msg}");
+            // Same rationale as the EmptyPlan arm below: an unreadable /
+            // unparseable plan is operator error — express it on stdout too
+            // (the orchestrator parses the JSON, not stderr) and exit non-zero
+            // so it notices, instead of the old `created_files: []` + exit 0
+            // that looked like a clean no-op.
+            let summary = msg.strip_prefix("[wave-scaffold] ").unwrap_or(msg.as_str());
+            // A read failure embeds the absolutized (cwd-dependent) plan path
+            // plus the OS-specific io message — both volatile, and `run`
+            // stdout must stay byte-stable (crate guard). The full message
+            // already went to stderr above; stdout keeps the deterministic
+            // prefix only, mirroring plan-materialize's scrubbed
+            // `plan unreadable` constant (the EmptyPlan arm below likewise
+            // keeps the path on stderr).
+            let summary = if summary.starts_with("cannot read plan") {
+                "cannot read plan"
+            } else {
+                summary
+            };
+            // The failure measured in production (≥6× in 6 days on the sialia
+            // telemetry) is a hand-authored plan omitting the required
+            // `n`/`role` — serde reports it as `missing field`. Attach the
+            // actionable fix, not just the symptom.
+            let out = if msg.contains("missing field") {
+                json!({
+                    "created_files": [],
+                    "skipped": [],
+                    "error": summary,
+                    "hint": "every waves[] entry requires \"n\" (1-based wave number) and \
+                             \"role\"; generate the skeleton with `mustard-rt run \
+                             plan-from-spec` and prefer `mustard-rt run plan-materialize` \
+                             as the pipeline entry",
+                })
+            } else {
+                json!({
+                    "created_files": [],
+                    "skipped": [],
+                    "error": summary,
+                })
+            };
             println!(
                 "{}",
-                serde_json::to_string_pretty(&json!({ "created_files": [], "skipped": [] }))
-                    .unwrap_or_else(|_| "{}".to_string())
+                serde_json::to_string_pretty(&out).unwrap_or_else(|_| "{}".to_string())
             );
+            std::process::exit(2);
         }
         // W10.T10.3 — hard gate: an empty plan is operator error, not "scaffold
         // nothing". Print to stderr and exit non-zero so the orchestrator notices.

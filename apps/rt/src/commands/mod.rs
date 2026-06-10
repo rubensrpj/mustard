@@ -786,15 +786,18 @@ pub enum RunCmd {
         #[arg(long)]
         spec: String,
     },
+    // The folder name is spelled `wave-<n>-<role>` (angle brackets) throughout
+    // this doc comment: a literal brace-n sequence is a clap help-template
+    // token (forced line break) and would mangle the rendered --help.
     /// Materialise the canonical SDD wave layout from a declarative JSON plan.
     ///
-    /// Renders `wave-plan.md` + each `wave-{n}-{role}/spec.md` (+ `meta.json`
+    /// Renders `wave-plan.md` + each `wave-<n>-<role>/spec.md` (+ `meta.json`
     /// sidecars). Idempotent: existing files are never overwritten.
     ///
     /// Every entry in `waves` REQUIRES two fields (no serde default — omitting
     /// either is a parse error: stdout gains `error` + `hint`, exit 2):
     ///   - `n: u32`       — 1-based wave number, drives the folder name
-    ///                      `wave-{n}-{role}`.
+    ///                      `wave-<n>-<role>`.
     ///   - `role: String` — role label (`general`, `backend`, …), the other
     ///                      half of the folder name.
     ///
