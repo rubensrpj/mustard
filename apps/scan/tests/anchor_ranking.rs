@@ -2,16 +2,22 @@
 //! binary (`digest --query` over a synthetic `grain.model.json`):
 //!   * matched terms come back rarest first (count asc) — rarity is the
 //!     discriminative signal, so the per-query cap trims frequent matches;
-//!   * anchors are MATCH-FIRST, scored by BM25 summed over the matched terms
-//!     (fixed-point integer, data in ranking.toml): a file carrying >=2
-//!     queried concepts accumulates every term's contribution, so it rises;
+//!   * anchors are MATCH-FIRST and COVERAGE-FIRST: each matched term's best
+//!     file is seated first (terms walk tier asc then rarity asc), THEN the
+//!     remaining slots fill by the aggregate Σ tier-weight × IDF × BM25
+//!     (fixed-point integer, data in ranking.toml) — so a file carrying >=2
+//!     queried concepts still accumulates every term's contribution, but a
+//!     frequent-term neighbour can never crowd a rare domain's top file out;
 //!   * a hub anchors only when a matched term lives in its DECLARATIONS — a
 //!     path hit alone keeps it in `hubs`, never in `files`; fan-in is a small
 //!     additive tiebreak between matched candidates, never dominant;
 //!   * structural stop-file: fan-in above the ranking.toml percent of the
 //!     repo's module count removes a module from anchor eligibility — a
 //!     repo-relative statistic, no name knowledge;
+//!   * `files_detail` mirrors `files` with the selection score + carrying
+//!     terms, and `slices_omitted` mirrors `terms_omitted` (no silent loss);
 //!   * the whole ranking is deterministic across runs (stable tie-breaks).
+//!
 //! Plus the `QueryResult` stack contract over the committed php_laravel
 //! fixture: the per-query response carries the model's `detected_stacks`
 //! verbatim, hit or miss — and scan persists per-module `fan_in` such that
@@ -79,10 +85,13 @@ fn anchor_ranking_orders_matched_terms_by_rarity_then_term() {
 }
 
 #[test]
-fn anchor_ranking_cooccurring_sample_file_rises() {
-    // `m/shared.rs` carries BOTH queried terms; `m/aaa.rs` sorts before it
-    // alphabetically and belongs to the first matched term, but co-occurrence
-    // (samples of >=2 matched terms) must outrank both biases.
+fn anchor_coverage_seats_each_terms_best_file_then_fills_with_the_cooccurring() {
+    // CONTRACT CHANGE (anchor-coverage spec): selection is now COVERAGE-FIRST.
+    // The old expectation put the co-occurring `m/shared.rs` first — the very
+    // sum bias that let frequent terms double-dip and expel a rare domain.
+    // Now each matched term seats its best file first (per-term BM25 prefers
+    // the focused module over the longer shared one), and the co-occurring
+    // file still anchors right behind via the IDF-weighted fill.
     let modules = serde_json::json!([
         module("m/aaa.rs", &["AlphaFirst"]),
         module("m/shared.rs", &["AlphaSecond", "OmegaThing"]),
@@ -94,9 +103,120 @@ fn anchor_ranking_cooccurring_sample_file_rises() {
     let files: Vec<&str> = q["files"].as_array().unwrap().iter().map(|f| f.as_str().unwrap()).collect();
     assert_eq!(
         files,
-        vec!["m/shared.rs", "m/aaa.rs", "m/zzz.rs"],
-        "co-occurring file first, then rarest-term order, then path: {q}"
+        vec!["m/aaa.rs", "m/zzz.rs", "m/shared.rs"],
+        "each term's top file first (term order), co-occurring file fills next: {q}"
     );
+    // The audit trail says WHY: the fill row carries both query terms.
+    let detail = q["files_detail"].as_array().unwrap();
+    assert_eq!(detail.len(), files.len(), "one detail row per anchor: {q}");
+    let shared = detail.iter().find(|d| d["file"] == "m/shared.rs").unwrap();
+    let dterms: Vec<&str> = shared["terms"].as_array().unwrap().iter().map(|t| t.as_str().unwrap()).collect();
+    assert_eq!(dterms, vec!["alpha", "omega"], "carrying terms named per anchor: {q}");
+    assert!(shared["score_x1024"].as_u64().unwrap() > 0, "term-matched anchor scores above zero: {q}");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn anchor_coverage_rare_domain_survives_a_frequent_term_neighbour() {
+    // The sialia regression in neutral vocabulary: the neighbour's NAME is
+    // two frequent query terms ("garden", "market") that double-dip in every
+    // declaration of its 14 modules; the target domain is one rare term
+    // ("quince") in a single file. Under the old pure-sum selection the
+    // neighbour outranked the target on every slot and the 12-file cap
+    // expelled it; coverage must seat the rare term's top file FIRST (terms
+    // walk rarest-first) and keep it in `files` regardless of the
+    // neighbour's volume.
+    let mut modules = vec![module("m/quince/page.rs", &["QuinceEntry", "QuinceFlow"])];
+    for i in 0..14 {
+        modules.push(module(
+            &format!("m/gardenmarket/mod{i:02}.rs"),
+            &[&format!("GardenMarketList{i:02}"), &format!("GardenMarketCard{i:02}"), &format!("GardenMarketTotal{i:02}")],
+        ));
+    }
+    let (dir, model) = write_model("coverage", serde_json::json!(modules));
+    let (_, q) = run_query(&model, "quince,garden,market", "query.json");
+
+    let matched: Vec<&str> =
+        q["matched_terms"].as_array().unwrap().iter().map(|t| t["term"].as_str().unwrap()).collect();
+    assert_eq!(matched[0], "quince", "rarest term leads the matched walk: {q}");
+    let files: Vec<&str> = q["files"].as_array().unwrap().iter().map(|f| f.as_str().unwrap()).collect();
+    assert_eq!(files[0], "m/quince/page.rs", "the rare domain's top file is seated first: {q}");
+    assert_eq!(files.len(), 12, "anchor cap intact: {q}");
+
+    // files_detail mirrors files (same order) and explains the leader.
+    let detail = q["files_detail"].as_array().unwrap();
+    assert_eq!(detail.len(), files.len());
+    for (f, d) in files.iter().zip(detail) {
+        assert_eq!(d["file"].as_str().unwrap(), *f, "detail mirrors files order: {q}");
+    }
+    let dterms: Vec<&str> = detail[0]["terms"].as_array().unwrap().iter().map(|t| t.as_str().unwrap()).collect();
+    assert_eq!(dterms, vec!["quince"], "the anchor is carried by the rare term alone: {q}");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn anchor_fill_idf_keeps_a_rare_term_file_above_a_frequent_double_dipper() {
+    // FILL contract: leftover slots rank by Σ tier-weight × IDF × BM25.
+    // `m/gem/ruby_more.rs` carries the rare term ("ruby", 2 modules) once;
+    // `m/yard/dd_b.rs` double-dips two terms that 20 of the 22 modules carry.
+    // Under the old unweighted sum the double-dipper outranked the rare file
+    // roughly 2:1 and won the earlier slot; the document-frequency weight
+    // must invert that. (Coverage seats ruby_top and dd_a — the per-term
+    // tops — beforehand, so both contenders here are genuinely fill-ranked.)
+    let mut modules = vec![
+        module("m/gem/ruby_top.rs", &["RubyAlpha", "RubyBeta"]),
+        module("m/gem/ruby_more.rs", &["RubyGamma"]),
+        module("m/yard/dd_a.rs", &["StoneBrickOne", "StoneBrickTwo", "StoneBrickThree"]),
+        module("m/yard/dd_b.rs", &["StoneBrickFour", "StoneBrickFive", "StoneBrickSix"]),
+    ];
+    for i in 0..18 {
+        modules.push(module(&format!("m/yard/f{i:02}.rs"), &[&format!("StoneUse{i:02}"), &format!("BrickUse{i:02}")]));
+    }
+    let (dir, model) = write_model("idf-fill", serde_json::json!(modules));
+    let (_, q) = run_query(&model, "ruby,stone,brick", "query.json");
+
+    let files: Vec<&str> = q["files"].as_array().unwrap().iter().map(|f| f.as_str().unwrap()).collect();
+    let pos = |f: &str| files.iter().position(|x| *x == f).unwrap_or_else(|| panic!("{f} missing from {files:?}"));
+    assert_eq!(files[0], "m/gem/ruby_top.rs", "coverage: rarest term's top file leads: {q}");
+    assert!(
+        pos("m/gem/ruby_more.rs") < pos("m/yard/dd_b.rs"),
+        "IDF fill: the rare term's second file outranks the frequent double-dipper: {files:?}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn query_slices_omitted_mirrors_the_cap_and_terms_omitted_contract() {
+    // 15 slice conventions match the query term; the per-query cap keeps 12
+    // and `slices_omitted` names the 3 trimmed — the same no-silent-loss
+    // contract `terms_omitted` already carries.
+    let conventions: Vec<serde_json::Value> = (0..15)
+        .map(|i| {
+            serde_json::json!({
+                "name": format!("conv{i:02}"), "roles": ["Quince", format!("Widget{i:02}")],
+                "recurrence": 30 - i, "entities": [format!("Entity{i:02}")], "confidence": 0.9,
+                "is_slice": true, "steps": [], "examples": [], "exemplar": "", "summary": ""
+            })
+        })
+        .collect();
+    let dir = std::env::temp_dir().join(format!("scan-anchor-ranking-slicecap-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let model = dir.join("grain.model.json");
+    let v = serde_json::json!({
+        "root": dir.to_string_lossy(),
+        "modules": [module("m/quince.rs", &["QuinceEntry"])],
+        "conventions": conventions,
+    });
+    std::fs::write(&model, serde_json::to_string_pretty(&v).unwrap()).unwrap();
+    let (_, q) = run_query(&model, "quince", "query.json");
+
+    assert_eq!(q["slices"].as_array().unwrap().len(), 12, "per-query slice cap holds: {q}");
+    assert_eq!(q["slices_omitted"], 3, "the trimmed tail is counted, never silent: {q}");
+    assert_eq!(q["terms_omitted"], 0, "sibling field still present: {q}");
 
     let _ = std::fs::remove_dir_all(&dir);
 }

@@ -30,6 +30,8 @@ const Q_MAX_TERMS: usize = 25;
 const Q_MAX_SLICES: usize = 12;
 const Q_MAX_HUBS: usize = 8;
 const Q_MAX_TOUCHPOINTS: usize = 10;
+/// Anchor-file cap for a per-query response (`files` + its `files_detail`).
+const Q_MAX_FILES: usize = 12;
 
 #[derive(Serialize)]
 pub struct CapabilityDigest {
@@ -157,21 +159,32 @@ pub struct QueryResult {
     /// loss) — given the rarity ranking, these are the most frequent matches.
     pub terms_omitted: usize,
     pub slices: Vec<SliceD>,
+    /// Slices that matched but were trimmed by the per-query cap — mirrors
+    /// `terms_omitted` (additive; no silent loss).
+    pub slices_omitted: usize,
     pub contracts: Vec<ContractD>,
     /// High fan-in modules whose path carries a query term — surfaces *injected*
     /// cross-cutting contracts (e.g. a current-tenant accessor) for `--invariant`.
     pub hubs: Vec<HubD>,
     pub touchpoints: Vec<TouchD>,
-    /// Real files to read next (anchor candidates), MATCH-FIRST: modules
-    /// whose DECLARATIONS carry the matched terms, scored by BM25 summed over
-    /// those terms (a file where the queried concepts co-occur accumulates
-    /// every term's contribution) plus a small fan-in tiebreak. A hub anchors
-    /// only when the vocabulary lives in its declarations — a path hit alone
-    /// keeps it in `hubs` but never here. Structural stop-files (fan-in above
-    /// the ranking.toml percent of all modules) are excluded; path-matched
-    /// touchpoints are appended as a low-priority tail. The handful the
-    /// feature reads for ground truth instead of the repo.
+    /// Real files to read next (anchor candidates), MATCH-FIRST and
+    /// COVERAGE-FIRST: modules whose DECLARATIONS carry the matched terms. A
+    /// coverage pass seats each matched term's best file first (rarest, most
+    /// discriminative terms lead), then the remaining slots fill by the
+    /// IDF-weighted aggregate over the matched terms plus a small fan-in
+    /// tiebreak — so a frequent-term neighbour can never crowd a rare
+    /// domain's top file out. A hub anchors only when the vocabulary lives
+    /// in its declarations — a path hit alone keeps it in `hubs` but never
+    /// here. Structural stop-files (fan-in above the ranking.toml percent of
+    /// all modules) are excluded; path-matched touchpoints are appended as a
+    /// low-priority tail. The handful the feature reads for ground truth
+    /// instead of the repo.
     pub files: Vec<String>,
+    /// Audit trail for `files`, additive and same order: per anchor, the
+    /// fixed-point selection score and the matched terms that carry it. A
+    /// touchpoint-tail anchor (path hit only) honestly shows score 0 and no
+    /// terms.
+    pub files_detail: Vec<FileDetail>,
     /// Legacy flag: every view above came back empty. Kept additively for old
     /// readers; the `report` is the truth (a non-miss can still be `weak`).
     pub miss: bool,
@@ -210,6 +223,17 @@ pub struct TermReport {
     pub tier: String,
     pub lang: String,
     pub files: Vec<String>,
+}
+
+/// One anchor's audit row (parallel to `files`): the aggregate fixed-point
+/// score it ranked with and the matched index terms whose declarations carry
+/// it, in matched-term (tier, then rarity) order — why THIS file, verifiable
+/// without rerunning the query.
+#[derive(Serialize)]
+pub struct FileDetail {
+    pub file: String,
+    pub score_x1024: u64,
+    pub terms: Vec<String>,
 }
 
 /// Look up the digest by domain term(s) — OR across terms. Returns only the
@@ -286,6 +310,7 @@ pub fn query(model: &ProjectModel, terms: &[String], request_lang: &str) -> Quer
     let matched_terms: Vec<TermD> = matched.into_iter().map(|(_, t)| t).collect();
 
     let mut slices: Vec<SliceD> = dig.slices.into_iter().filter(|s| hit(&s.label) || s.entities.iter().any(|e| hit(e))).collect();
+    let slices_omitted = slices.len().saturating_sub(Q_MAX_SLICES);
     slices.truncate(Q_MAX_SLICES);
     let contracts: Vec<ContractD> = dig.shared_contracts.into_iter().filter(|c| hit(&c.name)).collect();
     let mut hubs: Vec<HubD> = dig.graph.top_fan_in.into_iter().filter(|h| hit(&h.module)).collect();
@@ -295,55 +320,109 @@ pub fn query(model: &ProjectModel, terms: &[String], request_lang: &str) -> Quer
 
     // Anchor candidates, MATCH-FIRST: a module enters on a term match in its
     // DECLARATIONS, never on its path alone — a hub that only path-hits stays
-    // listed in `hubs` but does not anchor. Score ×1024 = Σ tier-weight × BM25
-    // over the matched terms carrying the module (summing IS the co-occurrence
-    // signal: the file where the queried concepts meet accumulates every
-    // term's contribution; the ~10×-per-rung tier weight keeps an exact
-    // vocabulary hit above any derived one) + α·log2(1+fan_in), a small
-    // additive tiebreak that never outranks a term match. Structural
-    // stop-files (rank::anchor_stopfile — fan-in above the configured percent
-    // of the repo's module count) leave anchor eligibility entirely. Ties
-    // break on the first (best-tier, rarest) matched term that carries the
-    // module, then on the path — fully deterministic.
+    // listed in `hubs` but does not anchor. Selection is COVERAGE-FIRST, two
+    // passes over per-(term, module) scores computed once below:
+    //
+    //   (a) COVERAGE — walk `matched_terms` in their existing order (tier
+    //       asc, then rarity asc) and seat each term's best module: argmax
+    //       of tier-weight × BM25 (the ~10×-per-rung tier weight keeps an
+    //       exact vocabulary hit above any derived one) with the small
+    //       fan-in boost as tiebreak, path asc on full ties. A term whose
+    //       best module is already seated is covered — no second-best taken.
+    //       This is what a frequent-term neighbour can never crowd out:
+    //       every matched term keeps its top file among the anchors, rarest
+    //       (most discriminative) terms leading.
+    //   (b) FILL — remaining slots go to the leftover candidates by the
+    //       aggregate Σ tier-weight × IDF × BM25 over the matched terms
+    //       carrying the module (rank::idf_x1024, document-frequency
+    //       derived: a term half the repo carries cannot drown a three-file
+    //       term by double-dipping in every declaration; co-occurrence still
+    //       pays — a file where several queried concepts meet accumulates
+    //       every term's weighted contribution) + α·log2(1+fan_in), a small
+    //       additive tiebreak that never outranks a term match. Fill ties
+    //       break on the first (best-tier, rarest) matched term that carries
+    //       the module, then on the path.
+    //
+    // Structural stop-files (rank::anchor_stopfile — fan-in above the
+    // configured percent of the repo's module count) leave anchor
+    // eligibility entirely. Fully deterministic.
     let class = |p: &str| c.class_of.get(p).copied().unwrap_or("");
     let anchorable = |p: &str| {
         crate::classify::anchor_eligible(class(p))
             && !crate::rank::anchor_stopfile(c.fan_in.get(p).copied().unwrap_or(0), c.total_modules)
     };
-    let mut cand: BTreeMap<&str, (u64, usize)> = BTreeMap::new();
+    let boost = |p: &str| crate::rank::fanin_boost_x1024(c.fan_in.get(p).copied().unwrap_or(0));
+    // Candidate -> (IDF-weighted aggregate, first carrying term, every
+    // carrying term — the audit trail `files_detail` publishes).
+    let mut cand: BTreeMap<&str, (u64, usize, Vec<usize>)> = BTreeMap::new();
+    // Per matched term, its best anchorable module — the coverage argmax.
+    let mut top_of: Vec<Option<(u64, &str)>> = vec![None; matched_terms.len()];
+    let docs = c.doc_len.len();
     for (i, t) in matched_terms.iter().enumerate() {
         let Some(per_module) = c.postings.get(&t.term) else { continue };
+        let idf = crate::rank::idf_x1024(per_module.len(), docs);
         for (path, (tf, _)) in per_module {
             // Same anchor discipline as the term samples: hand-written
             // modules only, and never a structural stop-file.
             if !anchorable(path) {
                 continue;
             }
-            let score = crate::rank::bm25_x1024(*tf, c.doc_len.get(path).copied().unwrap_or(0), c.avgdl_x1024);
-            let e = cand.entry(path).or_insert((0, i));
-            e.0 += crate::matching::weight(tiers[i]) * score;
+            let bm25 = crate::rank::bm25_x1024(*tf, c.doc_len.get(path).copied().unwrap_or(0), c.avgdl_x1024);
+            let w = crate::matching::weight(tiers[i]);
+            let cover = w * bm25 + boost(path);
+            if top_of[i].is_none_or(|(bs, bp)| cover > bs || (cover == bs && *path < bp)) {
+                top_of[i] = Some((cover, *path));
+            }
+            let e = cand.entry(path).or_insert((0, i, Vec::new()));
+            e.0 += w * crate::rank::idf_term_score_x1024(idf, bm25);
+            e.2.push(i);
         }
     }
-    let mut ranked: Vec<(&str, u64, usize)> = cand
-        .into_iter()
-        .map(|(p, (s, i))| (p, s + crate::rank::fanin_boost_x1024(c.fan_in.get(p).copied().unwrap_or(0)), i))
-        .collect();
+    // Pass (a): the coverage walk, capped.
+    let mut files: Vec<String> = Vec::new();
+    let mut seated: BTreeSet<&str> = BTreeSet::new();
+    for (_, p) in top_of.iter().flatten() {
+        if files.len() == Q_MAX_FILES {
+            break;
+        }
+        if seated.insert(p) {
+            files.push(p.to_string());
+        }
+    }
+    // Pass (b): leftover candidates by aggregate desc.
+    let mut ranked: Vec<(&str, u64, usize)> =
+        cand.iter().filter(|(p, _)| !seated.contains(*p)).map(|(p, (s, i, _))| (*p, s + boost(p), *i)).collect();
     ranked.sort_by(|a, b| b.1.cmp(&a.1).then(a.2.cmp(&b.2)).then(a.0.cmp(b.0)));
 
     // Path-matched touchpoints stay a low-priority tail (registration points
     // are edited, not read for vocabulary), behind every term-matched
     // candidate. Order-preserving dedup; capped to ~a dozen.
-    let mut files: Vec<String> = Vec::new();
     let src = ranked
         .iter()
         .map(|(p, _, _)| (*p).to_string())
         .chain(touchpoints.iter().filter(|t| anchorable(&t.module)).map(|t| t.module.clone()));
     for m in src {
+        if files.len() == Q_MAX_FILES {
+            break;
+        }
         if !files.contains(&m) {
             files.push(m);
         }
     }
-    files.truncate(12);
+
+    // The audit trail: one row per anchor, same order as `files`, with the
+    // (fill-comparable) aggregate score and the matched terms carrying it.
+    let files_detail: Vec<FileDetail> = files
+        .iter()
+        .map(|f| match cand.get(f.as_str()) {
+            Some((s, _, idxs)) => FileDetail {
+                file: f.clone(),
+                score_x1024: s + boost(f),
+                terms: idxs.iter().map(|&i| matched_terms[i].term.clone()).collect(),
+            },
+            None => FileDetail { file: f.clone(), score_x1024: 0, terms: Vec::new() },
+        })
+        .collect();
 
     let miss = matched_terms.is_empty() && slices.is_empty() && contracts.is_empty() && hubs.is_empty() && touchpoints.is_empty();
     // A non-miss answer with NO anchorable surface: every matched term lives
@@ -403,10 +482,12 @@ pub fn query(model: &ProjectModel, terms: &[String], request_lang: &str) -> Quer
         matched_terms,
         terms_omitted,
         slices,
+        slices_omitted,
         contracts,
         hubs,
         touchpoints,
         files,
+        files_detail,
         miss,
         report,
         reason,

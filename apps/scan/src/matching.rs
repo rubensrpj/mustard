@@ -2,14 +2,15 @@
 //!
 //! Replaces the old bidirectional prefix(>=4) heuristic, which manufactured
 //! false cognates: a request token in one natural language matched an
-//! unrelated identifier token in another ("cores" ~ "core", "cancelado" ~
-//! "cancel"). Every tier below is an EXACT key equality — no prefix or
-//! substring test survives anywhere on the ladder:
+//! unrelated identifier token in another ("cancelado" ~ "cancel",
+//! "natureza" ~ "nature"). Every tier below is an EXACT key equality — no
+//! prefix or substring test survives anywhere on the ladder:
 //!
 //!   T1 `exact`   — raw lowercased token (or whole-identifier) equality;
 //!   T2 `fold`    — equality after folding Latin diacritics to ASCII;
 //!   T3 `stem`    — SAME-language stem equality (rust-stemmers), never
-//!                  across languages, guarded against truncation pairs;
+//!                  across languages; a truncation pair needs unanimous
+//!                  backing (see the guard note below);
 //!   T4 `lexicon` — curated bilingual domain glossary; translations act as
 //!                  OR-synonyms (Pirkola-style), never as a replacement.
 //!
@@ -23,15 +24,21 @@
 //! the tool; a missing or malformed overlay degrades silently to the seed.
 //!
 //! Anti-truncation guard (T3): a stemmer happily maps a word ONTO another
-//! that is merely its prefix (both vendored stemmers reduce "cores" and
-//! "core" to one key; the same happens to "cancelado" and "cancel"). That
-//! relation is the dead prefix heuristic wearing a stemmer hat — it carries
-//! zero evidence the prefix test didn't already carry — so stem equality is
-//! accepted ONLY between surfaces that are NOT prefix-related ("studies" ~
-//! "study", "faturar" ~ "faturamento"). A truncation pair without a lexicon
-//! entry is an honest miss; cross-language equivalence is the lexicon's job
-//! alone (the spec's documented trade: a missed true cognate over a false
-//! one).
+//! that is merely its prefix (pt reduces "cancelado" onto the en surface
+//! "cancel"), so for surfaces that ARE prefix-related ("payables" ~
+//! "payable") one language's lone stem collision is the dead prefix
+//! heuristic wearing a stemmer hat. A truncation pair is therefore accepted
+//! ONLY on UNANIMOUS morphological backing: every active stemmer must
+//! collapse both surfaces to one non-empty key ("payables" ~ "payable" —
+//! genuine plural, both vendored stemmers agree). A bare prefix without that
+//! backing stays dead ("pay" ~ "payables", stems distinct), and a pair the
+//! stemmers DISAGREE on stays an honest miss — that is the cross-language
+//! case ("natureza" ~ "nature", "cancelado" ~ "cancel": pt collapses each,
+//! en does not), where equivalence is the lexicon's job alone. The
+//! documented trade, both directions: a foreign word that IS the other
+//! language's inflection ("cores", pt noun, = the en plural of "core") now
+//! bridges — the price of plural/singular recall — while a true pair some
+//! active stemmer refuses to collapse is still missed.
 //!
 //! Languages are DECLARED, never detected: `dedup([request language,
 //! stemmers::FALLBACK_LANG])`
@@ -186,9 +193,20 @@ impl Ladder {
         if key.fold == q.fold {
             return Some(Hit { tier: 2, lang: String::new() });
         }
-        // T3 — same-language stem equality, never on a truncation pair (a
-        // bare prefix relation is the dead heuristic, not morphology).
-        if !truncation_related(&key.fold, &q.fold) {
+        // T3 — same-language stem equality, never across languages. A
+        // truncation pair needs UNANIMOUS backing (every active stemmer
+        // collapses both surfaces to one non-empty key — see the module
+        // note); one row's lone collision on such a pair is truncation, not
+        // morphology. Non-truncation surfaces keep the any-row rule.
+        if truncation_related(&key.fold, &q.fold) {
+            let unanimous = !self.stemmers.is_empty()
+                && key.stems.iter().zip(&q.stems).all(|(k, qs)| !k.is_empty() && k == qs);
+            if unanimous {
+                // Every row agrees, so the first (the request language) is
+                // honest evidence as any.
+                return Some(Hit { tier: 3, lang: self.stemmers[0].0.clone() });
+            }
+        } else {
             for (i, (lang, _)) in self.stemmers.iter().enumerate() {
                 if key.stems[i] == q.stems[i] {
                     return Some(Hit { tier: 3, lang: lang.clone() });
@@ -208,16 +226,16 @@ impl Ladder {
 impl Lexicon {
     /// Does this lexicon bridge request token `q` onto index token `key`?
     /// The request side may be inflected (same-language stem reaches the
-    /// entry: "cancelado" finds "cancelar") under the SAME anti-truncation
-    /// guard as tier 3 — otherwise a curated word would resurrect the dead
-    /// prefix relation through its own entry ("charges" must not reach
-    /// "charge" by stemming onto the synonym). The index side is exact-fold
-    /// equality against a key or a synonym, never stemmed.
+    /// entry: "cancelado" finds "cancelar") under the SAME morphological
+    /// criterion as tier 3: stem equality in the entry side's own language,
+    /// non-empty — on this path that single row is every stemmer with an
+    /// opinion, so a truncation pair backed by it is genuine inflection
+    /// ("charges" reaches the synonym "charge"), while an unbacked prefix
+    /// still fails the equality. The index side is exact-fold equality
+    /// against a key or a synonym, never stemmed.
     fn bridges(&self, key: &Sig, q: &Sig) -> bool {
         let q_eq = |word: &str, stem: Option<&String>, si: Option<usize>| -> bool {
-            q.fold == word
-                || (!truncation_related(&q.fold, word)
-                    && matches!((si, stem), (Some(i), Some(st)) if &q.stems[i] == st))
+            q.fold == word || matches!((si, stem), (Some(i), Some(st)) if !st.is_empty() && &q.stems[i] == st)
         };
         for e in &self.entries {
             // Request on the KEY side -> a translation must equal the index key.
@@ -339,16 +357,26 @@ mod tests {
     }
 
     #[test]
-    fn false_cognates_die_on_every_rung() {
-        // The motivating pairs: prefix-related surfaces whose stems collide
-        // in BOTH vendored stemmers — the guard must refuse them at T3, and
-        // without a lexicon entry they are honest misses.
+    fn truncation_pair_needs_unanimous_stem_backing() {
+        // CONTRACT CHANGE (anchor-coverage spec): the old guard refused EVERY
+        // truncation pair, killing genuine plural/singular morphology — a
+        // "payables" request could never reach the index token "payable", the
+        // motivating recall defect. A pair every active stemmer collapses to
+        // one key now matches at T3; a bare prefix with distinct stems stays
+        // dead in every language configuration.
         for lang in ["", "pt-BR", "en-US"] {
             let l = Ladder::new(lang, None);
-            assert!(hit(&l, "core", "cores").is_none(), "cores~core must miss (lang={lang:?})");
-            assert!(hit(&l, "charge", "charges").is_none(), "truncation pair is never stem evidence");
+            assert_eq!(hit(&l, "payable", "payables").map(|(t, _)| t), Some(3), "genuine plural (lang={lang:?})");
+            assert!(hit(&l, "payables", "pay").is_none(), "bare prefix, stems distinct (lang={lang:?})");
+            assert!(hit(&l, "pay", "payables").is_none(), "direction-independent (lang={lang:?})");
         }
-        // cancelado~cancel: dead without the pt-en lexicon...
+        // Cross-language pairs the stemmers DISAGREE on stay honest misses
+        // (pt collapses each pair, en does not): the lexicon is the only
+        // path. cores~core flips with the trade documented in the module
+        // note — both stemmers agree it is one lexeme (the en plural).
+        let pt = Ladder::new("pt-BR", None);
+        assert!(hit(&pt, "nature", "natureza").is_none(), "stemmers disagree -> lexicon's job");
+        assert!(hit(&pt, "cancel", "cancelado").is_none_or(|(t, _)| t == 4), "never T3, only the glossary");
         let en_only = Ladder::new("en-US", None);
         assert!(hit(&en_only, "cancel", "cancelado").is_none(), "no glossary, no bridge");
     }

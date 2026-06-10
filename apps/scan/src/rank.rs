@@ -31,6 +31,9 @@ struct Params {
     /// Stop-file cutoff: fan-in above this percent of the total module count
     /// leaves anchor eligibility.
     hub_fanin_pct: u64,
+    /// Minimum per-term IDF multiplier ×1024 in the anchor fill aggregate —
+    /// a frequent term keeps a small voice instead of zeroing out.
+    idf_floor_x1024: u64,
     /// Published-catalog weight ×1024 of one TYPE-kind occurrence.
     type_weight_x1024: u64,
     /// Published-catalog weight ×1024 of one member-kind occurrence.
@@ -71,6 +74,7 @@ fn parse_params(src: &str) -> Params {
             .and_then(|x| x.as_integer())
             .map(|n| n.max(0) as u64)
             .unwrap_or(30),
+        idf_floor_x1024: fx(v.get("anchors").and_then(|t| t.get("idf_floor")), 0.0625),
         type_weight_x1024: fx(v.get("catalog").and_then(|t| t.get("type_weight")), 2.5),
         member_weight_x1024: fx(v.get("catalog").and_then(|t| t.get("member_weight")), 1.0),
         type_kinds: v
@@ -102,11 +106,13 @@ pub fn avgdl_x1024(total_len: usize, docs: usize) -> u64 {
 
 /// BM25 score ×1024 for `tf` occurrences of a term in a document of length
 /// `dl`, against the corpus average `avgdl_x1024`. Classic Okapi shape
-/// WITHOUT the IDF factor: every comparison made with this score holds the
-/// term set fixed (modules competing FOR one term, or candidates summed over
-/// the same matched terms), so the per-term IDF constant cancels — rarity is
-/// already the explicit matched-term order in `digest::query`. Pure integer
-/// arithmetic; ties are broken by the caller (path asc) for byte-stable output.
+/// WITHOUT the IDF factor — a premise that holds PER TERM only: when modules
+/// compete FOR one term (sample slots, the per-term coverage pick) the
+/// term's IDF is a common constant and cancels. It does NOT cancel across
+/// terms: anchor candidates sum over each their OWN subset of matched terms,
+/// so the cross-term aggregate in `digest::query` weights every term's
+/// contribution by [`idf_x1024`] explicitly. Pure integer arithmetic; ties
+/// are broken by the caller (path asc) for byte-stable output.
 pub fn bm25_x1024(tf: usize, dl: usize, avgdl_x1024: u64) -> u64 {
     if tf == 0 {
         return 0;
@@ -122,6 +128,32 @@ pub fn bm25_x1024(tf: usize, dl: usize, avgdl_x1024: u64) -> u64 {
     let denom_x1024 = tf * SCALE + (p.k1_x1024 * norm_x1024) / SCALE;
     // tf * (k1 + 1) / denom, ×1024.
     (tf * (SCALE + p.k1_x1024) * SCALE) / denom_x1024.max(1)
+}
+
+/// Fixed-point IDF ×1024 of a term carried by `df` of `docs` indexed
+/// modules: log2((docs + 1) / (df + 1)), octave-interpolated, floored at the
+/// ranking.toml `idf_floor`. The cross-term rarity weight of the anchor FILL
+/// aggregate — document frequency over the corpus postings, never the raw
+/// occurrence count, so one verbose file cannot deflate its own term.
+pub fn idf_x1024(df: usize, docs: usize) -> u64 {
+    // df <= docs by construction (postings only index corpus documents);
+    // clamped defensively so the log argument never drops below 1.0.
+    let ratio_x1024 = (((docs as u64 + 1) * SCALE) / (df as u64 + 1)).max(SCALE);
+    (log2_x1024(ratio_x1024) - 10 * SCALE).max(params().idf_floor_x1024)
+}
+
+/// One matched term's contribution ×1024 to an anchor's fill aggregate:
+/// IDF × BM25, both fixed-point, rescaled once so the product stays ×1024.
+pub fn idf_term_score_x1024(idf_x1024: u64, bm25_x1024: u64) -> u64 {
+    idf_x1024 * bm25_x1024 / SCALE
+}
+
+/// log2 ×1024 of a positive integer: floor log2 plus the in-octave remainder
+/// (linear interpolation, max error ~0.086 bit — plenty for a ranking
+/// weight). Monotone, deterministic, integer-only.
+fn log2_x1024(v: u64) -> u64 {
+    let msb = v.ilog2() as u64;
+    msb * SCALE + ((v << 10) >> msb) - SCALE
 }
 
 /// Anchor fan-in tiebreak ×1024: α·log2(1 + fan_in), with integer (floor)
@@ -328,6 +360,29 @@ mod tests {
         // Scale-free: the same fan-in is fine in a bigger repo.
         assert!(!anchor_stopfile(4, 100));
         assert!(!anchor_stopfile(0, 0), "empty corpus never divides or trips");
+    }
+
+    #[test]
+    fn idf_weighs_rarity_logarithmically_and_floors_at_data() {
+        // Engine shape: rarer document frequency, higher weight — for any
+        // sane idf_floor strictly under log2 of the corpus ratios used here.
+        let rare = idf_x1024(2, 1000);
+        let mid = idf_x1024(100, 1000);
+        let common = idf_x1024(900, 1000);
+        assert!(rare > mid && mid > common, "idf orders by rarity: {rare} > {mid} > {common}");
+        // Exact at power-of-two ratios: (999+1)/(249+1) = 4 -> exactly 2 bits.
+        assert_eq!(idf_x1024(249, 999), 2 * SCALE, "octave interpolation is exact on the octave");
+        // A term in EVERY module reaches the data floor, never zero or panic.
+        assert_eq!(idf_x1024(1000, 1000), params().idf_floor_x1024);
+        assert_eq!(idf_x1024(0, 0), params().idf_floor_x1024, "empty corpus never divides or trips");
+        assert!(params().idf_floor_x1024 > 0, "frequent terms keep a voice (findability floor)");
+    }
+
+    #[test]
+    fn idf_term_score_rescales_the_fixed_point_product_once() {
+        assert_eq!(idf_term_score_x1024(SCALE, SCALE), SCALE, "1.0 x 1.0 stays 1.0");
+        assert_eq!(idf_term_score_x1024(2 * SCALE, 3 * SCALE), 6 * SCALE);
+        assert_eq!(idf_term_score_x1024(0, SCALE), 0);
     }
 
     // Sampling tests, engine-shape too: they hold for any sane data — a

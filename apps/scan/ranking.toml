@@ -35,6 +35,16 @@ alpha = 0.03125
 # type or file names involved.
 hub_fanin_pct = 30
 
+# IDF floor for the anchor FILL aggregation. Each matched term's contribution
+# to a candidate's aggregate is weighted by log2((indexed_modules + 1) /
+# (term_document_frequency + 1)) in fixed point — so a term half the repo
+# carries cannot drown a three-file term by double-dipping in every
+# declaration. The floor is the minimum per-term multiplier: frequent terms
+# keep a small voice (the same findability floor the rest of the crate
+# applies) instead of zeroing out, and a corpus where every matched term is
+# everywhere degenerates to plain tier x BM25 order.
+idf_floor = 0.0625
+
 [catalog]
 # Kind-class weights for the PUBLISHED catalog ranking only. A declaration
 # whose kind appears in `type_kinds` (the engine's generic capture vocabulary

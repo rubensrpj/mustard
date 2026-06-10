@@ -1,9 +1,13 @@
 //! Integration contract over the digest's tier-ladder matching, driven
 //! through the binary (`digest --query [--lang]` over a synthetic
 //! `grain.model.json`):
-//!   * the prefix>=4 false cognates are DEAD: a request token never matches
-//!     an index token it merely truncates onto ("cores" ~ "core",
-//!     "cancelado" ~ "cancel"), in any language configuration;
+//!   * the prefix>=4 heuristic stays DEAD: a request token never matches an
+//!     index token it merely truncates onto WITHOUT morphological backing
+//!     ("pay" ~ "payables"); a truncation pair every active stemmer
+//!     collapses to one key is genuine inflection and matches at tier `stem`
+//!     ("payables" ~ "payable"), while a pair the stemmers disagree on stays
+//!     blocked ("natureza" ~ "nature", "cancelado" ~ "cancel" — the
+//!     cross-language case, the lexicon's job alone);
 //!   * the whole identifier is indexed lowercased, so a same-case/concatenated
 //!     request term lands at tier `exact` ("parentid");
 //!   * same-language stems bridge real morphology only ("studies" ~ "study"),
@@ -61,21 +65,46 @@ fn sole_report_term(q: &serde_json::Value) -> &serde_json::Value {
 }
 
 #[test]
-fn false_cognate_cores_never_matches_core() {
-    // The motivating defect: the old prefix>=4 rule matched the pt word
-    // "cores" onto the en identifier token "core". Dead in EVERY language
-    // configuration — both stemmers reduce the pair to one key, but a bare
-    // truncation relation is never accepted as stem evidence.
-    let (dir, model) = write_model("cores", serde_json::json!([module("src/core/engine.rs", &["CoreEngine"])]));
+fn plural_singular_with_stem_backing_matches_and_bare_prefix_stays_dead() {
+    // CONTRACT CHANGE (anchor-coverage spec): the old guard refused every
+    // truncation pair, so the request "payables" could never reach the index
+    // token "payable" — the target pages themselves stayed invisible. A pair
+    // every active stemmer collapses to one key is genuine plural/singular
+    // morphology and lands at tier `stem`; a bare prefix whose stems differ
+    // ("pay" ~ "payables") stays an honest miss on every rung.
+    let (dir, model) = write_model("payables", serde_json::json!([module("src/finance/payable.rs", &["PayableInvoice"])]));
     for (lang, out) in [("", "q-en.json"), ("pt-BR", "q-pt.json")] {
-        let (_, q) = run_query(&model, "cores", lang, out);
-        assert!(q["matched_terms"].as_array().unwrap().is_empty(), "cores must not match core (lang={lang:?}): {q}");
+        let (_, q) = run_query(&model, "payables", lang, out);
+        let matched: Vec<&str> =
+            q["matched_terms"].as_array().unwrap().iter().map(|t| t["term"].as_str().unwrap()).collect();
+        assert!(matched.contains(&"payable"), "plural reaches the singular token (lang={lang:?}): {q}");
+        let t = sole_report_term(&q);
+        assert_eq!(t["tier"], "stem", "morphological evidence, honestly tiered (lang={lang:?}): {q}");
+        let files: Vec<&str> = q["files"].as_array().unwrap().iter().map(|f| f.as_str().unwrap()).collect();
+        assert_eq!(files, vec!["src/finance/payable.rs"], "the defining file anchors (lang={lang:?}): {q}");
+    }
+
+    let (_, q) = run_query(&model, "pay", "", "q-pay.json");
+    assert!(q["matched_terms"].as_array().unwrap().is_empty(), "bare prefix without stem backing: {q}");
+    assert_eq!(sole_report_term(&q)["tier"], "none", "named miss, not silence: {q}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn cross_language_truncation_pair_stays_blocked_without_the_lexicon() {
+    // natureza ~ nature: pt collapses both to one stem, en does not — the
+    // stemmers DISAGREE, so the pair never climbs T3 in any configuration
+    // (one language's lone opinion on a truncation pair is the dead prefix
+    // heuristic). Cross-language equivalence stays the lexicon's job alone;
+    // no vendored pair carries this entry, so it is an honest, named miss.
+    let (dir, model) = write_model("natureza", serde_json::json!([module("src/eco/nature.rs", &["NatureTrail"])]));
+    for (lang, out) in [("", "q-en.json"), ("pt-BR", "q-pt.json")] {
+        let (_, q) = run_query(&model, "natureza", lang, out);
+        assert!(q["matched_terms"].as_array().unwrap().is_empty(), "stemmers disagree -> miss (lang={lang:?}): {q}");
         assert_eq!(q["miss"], true);
         let t = sole_report_term(&q);
-        assert_eq!(t["term"], "cores");
+        assert_eq!(t["term"], "natureza");
         assert_eq!(t["tier"], "none", "named miss, not silence: {q}");
-        assert_eq!(q["report"]["matched"], 0);
-        assert_eq!(q["report"]["total"], 1);
         assert_eq!(q["report"]["reason"], "none");
     }
     let _ = std::fs::remove_dir_all(&dir);
