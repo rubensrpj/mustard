@@ -257,10 +257,13 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
         ("heading.spec.metric", Locale::EnUs) => "Success Metric",
         ("heading.spec.non_goals", Locale::PtBr) => "Não-Objetivos",
         ("heading.spec.non_goals", Locale::EnUs) => "Non-Goals",
+        // Single AC heading key. The legacy `heading.spec.ac_list` twin (byte-
+        // identical strings) was collapsed into this one (TF 2026-06-10-ac-
+        // heading-unico): two keys for the same heading let the scaffold emit
+        // the AC section twice, shadowing the real list for every
+        // `section_block` reader.
         ("heading.spec.ac", Locale::PtBr) => "Critérios de Aceitação",
         ("heading.spec.ac", Locale::EnUs) => "Acceptance Criteria",
-        ("heading.spec.ac_list", Locale::PtBr) => "Critérios de Aceitação",
-        ("heading.spec.ac_list", Locale::EnUs) => "Acceptance Criteria",
         ("heading.spec.tasks", Locale::PtBr) => "Tarefas",
         ("heading.spec.tasks", Locale::EnUs) => "Tasks",
         ("heading.spec.files", Locale::PtBr) => "Arquivos",
@@ -323,8 +326,10 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
         ("placeholder.fill_metric", Locale::EnUs) => "fill in the success metric.",
         ("placeholder.fill_excluded", Locale::PtBr) => "O que fica de fora.",
         ("placeholder.fill_excluded", Locale::EnUs) => "fill in what stays out.",
-        ("placeholder.see_below", Locale::PtBr) => "Ver abaixo.",
-        ("placeholder.see_below", Locale::EnUs) => "See below.",
+        // `placeholder.see_below` was retired with the single-AC-heading fix
+        // (TF 2026-06-10-ac-heading-unico): the AC PRD entry is no longer
+        // rendered (the list block is the only emitter), so its body needs no
+        // user-facing copy.
         ("placeholder.fill_files", Locale::PtBr) => "Listar arquivos afetados.",
         ("placeholder.fill_files", Locale::EnUs) => "fill in affected files.",
 
@@ -339,10 +344,30 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
         // Scan-digest enrichment block injected into the Context section by
         // `spec_draft::context_enrichment` — the anchors/precedent the digest
         // already found, so the drafted Context is not an empty placeholder.
+        // The `_weak` variant labels the anchor list when the digest's honest
+        // match report came back `weak`/`none`: the anchors are shown for
+        // transparency but flagged so nobody plans on top of noise.
         ("context.scan_anchors", Locale::PtBr) => "Âncoras (do scan)",
         ("context.scan_anchors", Locale::EnUs) => "Anchors (from scan)",
+        ("context.scan_anchors_weak", Locale::PtBr) => {
+            "Âncoras (do scan — BAIXA CONFIANÇA: casamento fraco, confirme lendo antes de usar)"
+        }
+        ("context.scan_anchors_weak", Locale::EnUs) => {
+            "Anchors (from scan — LOW CONFIDENCE: weak match, confirm by reading before relying)"
+        }
         ("context.scan_slices", Locale::PtBr) => "Fatias recorrentes (precedente a espelhar)",
         ("context.scan_slices", Locale::EnUs) => "Recurring slices (precedent to mirror)",
+
+        // File-operation markers accepted in a spec's `## Files` bullet lines
+        // (e.g. "- `src/Payable.cs` (create)"). Synonyms for one locale are
+        // `|`-separated DATA, merged across locales by
+        // [`file_marker_synonyms`] — the single origin both the emitting
+        // drafter prose and every validator share, so a pt-BR draft saying
+        // `(novo)` is recognised exactly like the EN canonical `(create)`.
+        ("marker.create", Locale::PtBr) => "(novo)|(criar)",
+        ("marker.create", Locale::EnUs) => "(create)|(new)",
+        ("marker.edit", Locale::PtBr) => "(editar)",
+        ("marker.edit", Locale::EnUs) => "(edit)",
 
         // Spec A v4 / W3 — wave _summary.md section headings.
         ("heading.summary.objective", Locale::PtBr) => "Objetivo",
@@ -726,6 +751,69 @@ pub fn wave_label(n: u32, lang: Locale) -> String {
     }
 }
 
+// ---------------------------------------------------------------------------
+// File-operation markers (`## Files` bullet annotations)
+// ---------------------------------------------------------------------------
+
+/// Every catalogue locale, EN canonical first — the iteration order of
+/// [`file_marker_synonyms`], so the EN spelling is always `synonyms[0]`.
+const CATALOGUE_LOCALES: &[Locale] = &[Locale::EnUs, Locale::PtBr];
+
+/// A file-operation marker recognised in a spec's `## Files` bullet lines —
+/// e.g. ``- `src/Payable.cs` (create)``. `Create` declares a net-new file
+/// (validators must not flag it as missing); `Edit` declares a change to an
+/// existing file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FileMarker {
+    /// Net-new file — `(create)` / `(new)` / `(novo)` / `(criar)`.
+    Create,
+    /// Existing file to change — `(edit)` / `(editar)`.
+    Edit,
+}
+
+impl FileMarker {
+    /// Catalogue key carrying this marker's per-locale synonyms.
+    fn catalogue_key(self) -> &'static str {
+        match self {
+            Self::Create => "marker.create",
+            Self::Edit => "marker.edit",
+        }
+    }
+}
+
+/// Every accepted spelling of `marker`, across ALL catalogue locales, deduped,
+/// EN canonical first (`(create)` for [`FileMarker::Create`]). The synonyms
+/// are data in the [`translate`] catalogue (`marker.*` keys, `|`-separated per
+/// locale) — the SINGLE origin shared by the drafter and every validator
+/// (`analyze-validation`, scope-classify), so a localized marker like the
+/// pt-BR `(novo)` can never drift out of recognition.
+///
+/// Spellings are lowercase literals including the surrounding parentheses;
+/// match with [`line_has_file_marker`] (case-insensitive `contains`).
+#[must_use]
+pub fn file_marker_synonyms(marker: FileMarker) -> Vec<&'static str> {
+    let mut out: Vec<&'static str> = Vec::new();
+    for lang in CATALOGUE_LOCALES {
+        for syn in translate(marker.catalogue_key(), *lang).split('|') {
+            let syn = syn.trim();
+            if !syn.is_empty() && !out.contains(&syn) {
+                out.push(syn);
+            }
+        }
+    }
+    out
+}
+
+/// Whether `line` carries `marker` in ANY of its accepted spellings
+/// (case-insensitive substring, like the historical `(create)` check).
+/// Fail-open helper for `## Files` bullet validation: a line such as
+/// ``- `src/Payable.cs` (novo)`` matches [`FileMarker::Create`].
+#[must_use]
+pub fn line_has_file_marker(line: &str, marker: FileMarker) -> bool {
+    let lower = line.to_lowercase();
+    file_marker_synonyms(marker).iter().any(|syn| lower.contains(syn))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -852,5 +940,49 @@ mod tests {
     fn wave_label_formats_per_locale() {
         assert_eq!(wave_label(3, Locale::PtBr), "Onda 3");
         assert_eq!(wave_label(3, Locale::EnUs), "W3");
+    }
+
+    /// TF 2026-06-10-ac-heading-unico: `heading.spec.ac` is the ONLY AC
+    /// heading key — the byte-identical `heading.spec.ac_list` twin is gone
+    /// (a second key for the same heading let the scaffold emit it twice).
+    #[test]
+    fn ac_heading_key_is_single() {
+        assert_eq!(translate("heading.spec.ac", Locale::PtBr), "Critérios de Aceitação");
+        assert_eq!(translate("heading.spec.ac", Locale::EnUs), "Acceptance Criteria");
+        assert_eq!(translate("heading.spec.ac_list", Locale::PtBr), "<missing-key>");
+        assert_eq!(translate("heading.spec.ac_list", Locale::EnUs), "<missing-key>");
+        // `placeholder.see_below` retired with the same fix (dead copy).
+        assert_eq!(translate("placeholder.see_below", Locale::PtBr), "<missing-key>");
+    }
+
+    #[test]
+    fn file_marker_synonyms_merge_locales_en_canonical_first() {
+        let create = file_marker_synonyms(FileMarker::Create);
+        assert_eq!(create[0], "(create)", "EN canonical leads: {create:?}");
+        for syn in ["(create)", "(new)", "(novo)", "(criar)"] {
+            assert!(create.contains(&syn), "{syn} accepted: {create:?}");
+        }
+        let edit = file_marker_synonyms(FileMarker::Edit);
+        assert_eq!(edit[0], "(edit)");
+        assert!(edit.contains(&"(editar)"));
+        // Deduped — no spelling twice.
+        let mut sorted = create.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted.len(), create.len(), "no duplicates: {create:?}");
+    }
+
+    #[test]
+    fn line_has_file_marker_matches_localized_and_case_insensitive() {
+        assert!(line_has_file_marker("- `a.rs` (create)", FileMarker::Create));
+        assert!(line_has_file_marker("- `a.rs` (novo)", FileMarker::Create));
+        assert!(line_has_file_marker("- `a.rs` (criar)", FileMarker::Create));
+        assert!(line_has_file_marker("- `a.rs` (NOVO)", FileMarker::Create));
+        assert!(line_has_file_marker("- `a.rs` (editar)", FileMarker::Edit));
+        // No marker / wrong marker → no match.
+        assert!(!line_has_file_marker("- `a.rs`", FileMarker::Create));
+        assert!(!line_has_file_marker("- `a.rs` (editar)", FileMarker::Create));
+        // A prose parenthetical is not a marker.
+        assert!(!line_has_file_marker("- `a.rs` (new format)", FileMarker::Create));
     }
 }

@@ -7,6 +7,7 @@
 
 use crate::commands::spec::spec_sections::is_heading;
 use mustard_core::io::fs;
+use mustard_core::platform::i18n;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
@@ -219,14 +220,20 @@ pub(crate) fn validate(abs_path: &Path, content: &str) -> Vec<Value> {
             .iter()
             .find(|l| l.contains(&format!("`{r}`")))
             .map_or("", String::as_str);
-        let is_create = line_with_ref.to_lowercase().contains("(create)");
+        // Localized marker recognition: the drafter writes the create marker
+        // in the spec's narrative locale (`(novo)`/`(criar)` in pt-BR), so the
+        // check goes through the core i18n catalogue — the single origin of
+        // the marker synonyms — instead of the historical EN-only literal
+        // (which flagged every pt-BR net-new file as `missing-file`).
+        let is_create = i18n::line_has_file_marker(line_with_ref, i18n::FileMarker::Create);
         let resolved = ref_resolves(&r, spec_dir, &project_roots);
         if !is_create && !resolved {
+            let accepted = i18n::file_marker_synonyms(i18n::FileMarker::Create).join(" / ");
             issues.push(json!({
                 "severity": "WARN",
                 "type": "missing-file",
                 "file": r,
-                "message": "File referenced but not found and not marked (create)",
+                "message": format!("File referenced but not found and not marked {accepted}"),
             }));
         }
     }
@@ -389,6 +396,62 @@ mod tests {
         let msg = issue["message"].as_str().unwrap_or_default();
         assert!(msg.contains("**AC-N**"), "hint must show the exact format: {msg}");
         assert!(msg.contains("Command:"), "hint must mention the Command: line: {msg}");
+    }
+
+    /// Roundtrip (TF marcador localizado): the pt-BR drafter marks net-new
+    /// files `(novo)`/`(criar)` — both must suppress `missing-file` exactly
+    /// like the EN canonical `(create)` (the run that motivated the fix
+    /// produced 7 false `missing-file` WARNs from `(novo)` lines).
+    #[test]
+    fn roundtrip_localized_create_marker_suppresses_missing_file() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("spec.md");
+        let body = "# Spec\n## Arquivos\n\
+                    - `ghost_a.rs` (novo)\n\
+                    - `ghost_b.rs` (criar)\n\
+                    - `ghost_c.rs` (create)\n\
+                    ### Backend Agent\n- [ ] t1\n- [ ] t2\n";
+        std::fs::write(&path, body).unwrap();
+        let issues = validate(&path, body);
+        assert!(
+            !issues.iter().any(|i| i["type"] == json!("missing-file")),
+            "localized markers recognised: {issues:?}"
+        );
+        // The localized set must NOT mask true misses: an unmarked absent
+        // file (and an `(editar)`-marked one, which claims to exist) still WARN.
+        let body2 = "# Spec\n## Arquivos\n- `ghost.rs`\n- `gone.rs` (editar)\n\
+                     ### Backend Agent\n- [ ] t1\n- [ ] t2\n";
+        std::fs::write(&path, body2).unwrap();
+        let issues2 = validate(&path, body2);
+        let missing: Vec<&Value> = issues2
+            .iter()
+            .filter(|i| i["type"] == json!("missing-file"))
+            .collect();
+        assert_eq!(missing.len(), 2, "true misses still flagged: {issues2:?}");
+        // The hint names the accepted markers from the shared i18n origin.
+        let msg = missing[0]["message"].as_str().unwrap_or_default();
+        assert!(msg.contains("(create)") && msg.contains("(novo)"), "hint lists synonyms: {msg}");
+    }
+
+    /// Roundtrip (leitor defensivo): a LEGACY spec already on disk with the
+    /// duplicated AC heading (placeholder first, real list second) still
+    /// validates clean — the defensive `section_block` returns the parseable
+    /// section instead of the placeholder that used to trigger
+    /// `unparseable-ac`.
+    #[test]
+    fn roundtrip_legacy_duplicated_ac_heading_still_validates() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("spec.md");
+        let body = "# Spec\n\n## Critérios de Aceitação\n\nVer abaixo.\n\n\
+                    ## Critérios de Aceitação\n\n\
+                    - **AC-1** — workspace builds green.\n  Command: `cargo build`\n";
+        std::fs::write(&path, body).unwrap();
+        let issues = validate(&path, body);
+        assert!(
+            !issues.iter().any(|i| i["type"] == json!("unparseable-ac")),
+            "legacy duplicated AC section parses: {issues:?}"
+        );
+        assert!(issues.is_empty(), "legacy spec validates ok:true: {issues:?}");
     }
 
     /// No AC section at all → behaviour unchanged (no `unparseable-ac`).

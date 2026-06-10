@@ -43,6 +43,7 @@ use crate::commands::spec::spec_scaffold;
 use mustard_core::io::claude_paths::ClaudePaths;
 use mustard_core::io::fs as mfs;
 use mustard_core::domain::meta::Meta;
+use mustard_core::domain::scan::DigestQuery;
 use mustard_core::domain::spec::contract::{
     AcceptanceCriterion, ChecklistItem, SectionBody, SpecInput, PLAN_SECTIONS, PRD_SECTIONS,
 };
@@ -142,12 +143,16 @@ pub fn run(opts: SpecDraftOpts) {
     // ---- Enrich the Context section with the scan digest (the same insumos
     // `feature::run` emits). Deterministic, token-free, fail-open: a missing
     // model or empty match degrades to the plain placeholder. The same digest
-    // also seeds the trackable `## Checklist` (one item per scan anchor). ----
+    // also seeds the trackable `## Checklist` (one item per scan anchor) —
+    // EXCEPT when the digest's honest match report flags the answer as
+    // low-confidence (`weak`/`none`): the anchors are then mostly noise, so
+    // the Context block shows them under a low-confidence label and the
+    // checklist falls back to its single hand-trackable item. ----
     let digest = scan_digest(&opts.intent);
     let context_block = digest
         .as_ref()
-        .and_then(|d| render_context_block(&d.0, &d.1, lang_locale));
-    let anchors: &[String] = digest.as_ref().map_or(&[], |d| d.0.as_slice());
+        .and_then(|q| render_context_block(q, lang_locale));
+    let anchors: &[String] = digest.as_ref().map_or(&[], checklist_anchors);
 
     // ---- Build the canonical input + validate before writing. ----
     let input = build_input(
@@ -340,7 +345,12 @@ fn prd_section_default(
         "users" => translate("placeholder.fill_beneficiary", lang).to_string(),
         "metric" => translate("placeholder.fill_metric", lang).to_string(),
         "non-goals" => translate("placeholder.fill_excluded", lang).to_string(),
-        "acceptance-criteria" => translate("placeholder.see_below", lang).to_string(),
+        // Contract ballast, NEVER rendered: `write_spec_md` skips this entry
+        // (single-emitter rule — the AC list block owns the heading) but
+        // `check_sections` still requires the entry present with a non-empty
+        // body. EN literal on purpose; the old localized `placeholder.see_below`
+        // copy was retired with the duplicate heading it captioned.
+        "acceptance-criteria" => "(rendered from the acceptance_criteria list)".to_string(),
         _ => translate("placeholder.fill", lang).to_string(),
     }
 }
@@ -364,48 +374,100 @@ fn plan_section_default(name: &str, lang: Locale) -> String {
 /// already returns ~12 anchors; cap so a wide query does not inflate the spec.
 const SCAN_ANCHOR_CAP: usize = 12;
 const SCAN_SLICE_CAP: usize = 6;
+/// Max matched terms annotated per anchor (from the digest's `files_detail`
+/// audit trail) — keeps the per-anchor note concise.
+const ANCHOR_TERM_CAP: usize = 4;
 
 /// Query the scan digest for the intent — the same deterministic insumos
 /// `feature::run` emits, recomputed here. It costs no tokens (a local query
-/// against `grain.model.json`, not an AI call). Returns `(anchors, slice
-/// labels)`: the anchors seed both the Context enrichment block and the
-/// trackable `## Checklist`; the slice labels feed only the Context block.
-/// Returns `None` when the model is absent or the query failed (fail-open: both
-/// consumers degrade to their placeholder).
-fn scan_digest(intent: &str) -> Option<(Vec<String>, Vec<String>)> {
+/// against `grain.model.json`, not an AI call). The answer feeds the Context
+/// enrichment block ([`render_context_block`]) and the trackable
+/// `## Checklist` seeding ([`checklist_anchors`]). Returns `None` when the
+/// model is absent or the query failed (fail-open: both consumers degrade to
+/// their placeholder).
+fn scan_digest(intent: &str) -> Option<DigestQuery> {
     let model = PathBuf::from(project_dir())
         .join(".claude")
         .join("grain.model.json");
     let terms = crate::commands::feature::domain_terms(intent);
-    let q = Scan::locate().digest_query(&model, &terms).ok()?;
-    let slice_labels: Vec<String> = q
-        .slices
-        .iter()
-        .map(|s| format!("{} (×{})", s.label, s.recurrence))
-        .collect();
-    Some((q.files, slice_labels))
+    Scan::locate().digest_query(&model, &terms).ok()
 }
 
-/// Render the Context enrichment markdown from already-extracted anchors +
-/// slice labels. Pure (no I/O) so it is unit-testable; the digest query lives
-/// in [`context_enrichment`]. Returns `None` when there is nothing to show.
-fn render_context_block(
-    anchors: &[String],
-    slice_labels: &[String],
-    lang: Locale,
-) -> Option<String> {
+/// Whether the digest's honest match report flags the answer as low-confidence:
+/// `weak` (under half the terms matched / derived tiers only) or `none`
+/// (nothing matched — the anchors, if any, are structural noise). An empty
+/// reason (payload from an older scan binary) keeps the legacy confident
+/// behaviour, and `strong`/`generated_only` are trusted.
+fn digest_low_confidence(q: &DigestQuery) -> bool {
+    matches!(q.report.reason.as_str(), "weak" | "none")
+}
+
+/// Anchors eligible to seed the trackable `## Checklist`: the digest's anchor
+/// files — EXCEPT on a low-confidence answer, where seeding would gate the
+/// pipeline on noise files (field case: 9/12 anchors were a neighbour
+/// domain's). The Context block still SHOWS those anchors, labelled
+/// low-confidence; only the checklist seeding is withheld (the checklist then
+/// falls back to its single hand-trackable item in [`build_checklist`]).
+fn checklist_anchors(q: &DigestQuery) -> &[String] {
+    if digest_low_confidence(q) {
+        &[]
+    } else {
+        q.files.as_slice()
+    }
+}
+
+/// The matched index terms that carried `file` into the anchor list, from the
+/// digest's `files_detail` audit trail (empty when the payload predates the
+/// field or the anchor is a touchpoint-tail path hit).
+fn anchor_terms<'a>(q: &'a DigestQuery, file: &str) -> &'a [String] {
+    q.files_detail
+        .iter()
+        .find(|d| d.file == file)
+        .map_or(&[], |d| d.terms.as_slice())
+}
+
+/// Render the Context enrichment markdown from a digest answer. Pure (no I/O)
+/// so it is unit-testable. Returns `None` when there is nothing to show.
+///
+/// Two confidence-aware behaviours (fase 2 of `robustez-ancoras-cobertura-idf`):
+/// - low-confidence answer (`weak`/`none` report) → the anchor list is
+///   labelled with the `context.scan_anchors_weak` heading so nobody plans on
+///   top of noise (and [`checklist_anchors`] withholds the same anchors from
+///   the checklist);
+/// - confident answer → each anchor is annotated with the matched terms that
+///   carried it (`files_detail`, capped at [`ANCHOR_TERM_CAP`]) — the concise
+///   audit of WHY each file anchors.
+fn render_context_block(q: &DigestQuery, lang: Locale) -> Option<String> {
+    let low_confidence = digest_low_confidence(q);
     let mut block = String::new();
-    if !anchors.is_empty() {
-        let _ = writeln!(block, "{}:", translate("context.scan_anchors", lang));
-        for f in anchors.iter().take(SCAN_ANCHOR_CAP) {
-            let _ = writeln!(block, "- {f}");
+    if !q.files.is_empty() {
+        let label_key = if low_confidence {
+            "context.scan_anchors_weak"
+        } else {
+            "context.scan_anchors"
+        };
+        let _ = writeln!(block, "{}:", translate(label_key, lang));
+        for f in q.files.iter().take(SCAN_ANCHOR_CAP) {
+            let terms = anchor_terms(q, f);
+            if low_confidence || terms.is_empty() {
+                let _ = writeln!(block, "- {f}");
+            } else {
+                let joined = terms
+                    .iter()
+                    .take(ANCHOR_TERM_CAP)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let _ = writeln!(block, "- {f} ({joined})");
+            }
         }
     }
-    if !slice_labels.is_empty() {
-        let joined = slice_labels
+    if !q.slices.is_empty() {
+        let joined = q
+            .slices
             .iter()
             .take(SCAN_SLICE_CAP)
-            .cloned()
+            .map(|s| format!("{} (×{})", s.label, s.recurrence))
             .collect::<Vec<_>>()
             .join(", ");
         let _ = write!(block, "\n{}: {}", translate("context.scan_slices", lang), joined);
@@ -519,11 +581,20 @@ mod tests {
         assert_eq!(s, "alpha-beta-gamma-delta-epsilon");
     }
 
+    /// Build a [`DigestQuery`] from the literal JSON the scan binary emits —
+    /// the same boundary `scan_digest` crosses in production.
+    fn digest(json: &str) -> DigestQuery {
+        serde_json::from_str(json).expect("digest payload json")
+    }
+
     #[test]
     fn render_context_block_lists_anchors_and_slices() {
-        let anchors = vec!["src/list.rs".to_string(), "src/view.rs".to_string()];
-        let slices = vec!["List (×3)".to_string()];
-        let s = render_context_block(&anchors, &slices, Locale::PtBr).unwrap();
+        let q = digest(
+            r#"{"query":["list"],"slices":[{"label":"List","recurrence":3}],
+                "files":["src/list.rs","src/view.rs"],"miss":false,
+                "report":{"matched":1,"total":1,"reason":"strong","terms":[]}}"#,
+        );
+        let s = render_context_block(&q, Locale::PtBr).unwrap();
         assert!(s.contains("Âncoras (do scan):"));
         assert!(s.contains("- src/list.rs"));
         assert!(s.contains("Fatias recorrentes"));
@@ -532,15 +603,90 @@ mod tests {
 
     #[test]
     fn render_context_block_none_when_empty() {
-        assert!(render_context_block(&[], &[], Locale::EnUs).is_none());
+        let q = digest(r#"{"miss":true}"#);
+        assert!(render_context_block(&q, Locale::EnUs).is_none());
     }
 
     #[test]
     fn render_context_block_caps_anchors_and_uses_en_heading() {
-        let anchors: Vec<String> = (0..20).map(|i| format!("f{i}.rs")).collect();
-        let s = render_context_block(&anchors, &[], Locale::EnUs).unwrap();
+        let files: Vec<String> = (0..20).map(|i| format!("f{i}.rs")).collect();
+        let q = digest(&format!(
+            r#"{{"files":{},"miss":false}}"#,
+            serde_json::to_string(&files).unwrap()
+        ));
+        let s = render_context_block(&q, Locale::EnUs).unwrap();
         assert!(s.contains("Anchors (from scan):"));
         assert_eq!(s.matches("- f").count(), SCAN_ANCHOR_CAP);
+    }
+
+    /// Roundtrip (robustez-ancoras fase 2) — a `weak` digest answer labels the
+    /// anchor block low-confidence (lang-aware) and withholds every anchor
+    /// from the checklist seeding (the draft falls back to the single
+    /// hand-trackable item). `none` behaves identically.
+    #[test]
+    fn roundtrip_weak_digest_labels_anchors_and_skips_checklist() {
+        let weak = digest(
+            r#"{"query":["payables"],
+                "files":["src/financial/accounts.rs","src/financial/codes.rs"],
+                "files_detail":[{"file":"src/financial/accounts.rs","score_x1024":512,"terms":["financial"]}],
+                "miss":false,
+                "report":{"matched":1,"total":3,"reason":"weak","terms":[]}}"#,
+        );
+        assert!(digest_low_confidence(&weak));
+        // Context: anchors visible but labelled, and NOT term-annotated (the
+        // annotation is a confidence signal the weak answer has not earned).
+        let pt = render_context_block(&weak, Locale::PtBr).unwrap();
+        assert!(pt.contains("BAIXA CONFIANÇA"), "pt weak label:\n{pt}");
+        assert!(pt.contains("- src/financial/accounts.rs"), "anchors still shown:\n{pt}");
+        assert!(!pt.contains("(financial)"), "weak: no term annotation:\n{pt}");
+        let en = render_context_block(&weak, Locale::EnUs).unwrap();
+        assert!(en.contains("LOW CONFIDENCE"), "en weak label:\n{en}");
+        // Checklist: weak anchors stay OUT → build_checklist falls back.
+        assert!(checklist_anchors(&weak).is_empty(), "weak anchors must not seed");
+        let items = build_checklist(Scope::Light, checklist_anchors(&weak), Locale::PtBr);
+        assert_eq!(items.len(), 1);
+        assert!(items[0].path.is_none(), "fallback item carries no anchor path");
+
+        let none = digest(r#"{"files":["src/x.rs"],"miss":true,"report":{"matched":0,"total":2,"reason":"none","terms":[]}}"#);
+        assert!(digest_low_confidence(&none));
+        assert!(checklist_anchors(&none).is_empty());
+    }
+
+    /// Roundtrip (robustez-ancoras fase 2) — a `strong` answer keeps the
+    /// plain anchor label, seeds the checklist, and annotates each anchor
+    /// with the matched terms from `files_detail` (lote 1's audit trail).
+    #[test]
+    fn roundtrip_strong_digest_annotates_anchor_terms_and_seeds_checklist() {
+        let strong = digest(
+            r#"{"query":["payable","nature"],
+                "files":["src/payables/page.rs","src/payables/list.rs","src/tail.rs"],
+                "files_detail":[
+                    {"file":"src/payables/page.rs","score_x1024":4096,"terms":["payable","nature","account","code","extra"]},
+                    {"file":"src/payables/list.rs","score_x1024":2048,"terms":["payable"]},
+                    {"file":"src/tail.rs","score_x1024":0,"terms":[]}],
+                "miss":false,
+                "report":{"matched":2,"total":2,"reason":"strong","terms":[]}}"#,
+        );
+        assert!(!digest_low_confidence(&strong));
+        let s = render_context_block(&strong, Locale::EnUs).unwrap();
+        assert!(s.contains("Anchors (from scan):"), "plain label on strong:\n{s}");
+        assert!(!s.contains("LOW CONFIDENCE"), "no weak label on strong:\n{s}");
+        // Term annotation, capped at ANCHOR_TERM_CAP (5th term dropped).
+        assert!(
+            s.contains("- src/payables/page.rs (payable, nature, account, code)"),
+            "terms annotated + capped:\n{s}"
+        );
+        assert!(!s.contains("extra"), "cap at {ANCHOR_TERM_CAP}:\n{s}");
+        assert!(s.contains("- src/payables/list.rs (payable)"), "single term:\n{s}");
+        // A touchpoint-tail anchor (no terms) renders bare — no `()` noise.
+        assert!(s.contains("- src/tail.rs\n") || s.ends_with("- src/tail.rs"), "bare tail anchor:\n{s}");
+        assert!(!s.contains("src/tail.rs ("), "no empty annotation:\n{s}");
+        // Checklist seeding keeps ALL anchors on a strong answer.
+        assert_eq!(checklist_anchors(&strong), strong.files.as_slice());
+        // An old-binary payload (empty reason) keeps the legacy behaviour.
+        let old = digest(r#"{"files":["src/a.rs"],"miss":false}"#);
+        assert!(!digest_low_confidence(&old));
+        assert_eq!(checklist_anchors(&old), old.files.as_slice());
     }
 
     #[test]
@@ -736,6 +882,51 @@ mod tests {
         assert_eq!(section_heading_for("context", Locale::PtBr), "Contexto");
         // Unknown section name passes through unchanged.
         assert_eq!(section_heading_for("extra", Locale::EnUs), "extra");
+    }
+
+    /// Roundtrip AC-1 (TF 2026-06-10-ac-heading-unico): a VIRGIN draft — every
+    /// scope × locale — carries exactly ONE AC heading in `spec.md` and passes
+    /// its own `analyze-validation` with `ok: true` (zero issues). This is the
+    /// regression the duplicated heading broke: `section_block` captured the
+    /// placeholder section, `parse_ac_items` came back empty, and every fresh
+    /// draft was born flagged `unparseable-ac`.
+    #[test]
+    fn roundtrip_virgin_draft_single_ac_heading_and_validation_ok() {
+        use crate::commands::spec::spec_sections::is_heading;
+        for (scope, lang, waves) in [
+            ("light", "pt-BR", 0),
+            ("light", "en-US", 0),
+            ("full", "pt-BR", 2),
+            ("full", "en-US", 2),
+        ] {
+            let dir = tempdir().unwrap();
+            let out = dir.path().join("specs").join("rt");
+            run(SpecDraftOpts {
+                intent: "Demo roundtrip intent".into(),
+                scope: scope.into(),
+                lang: lang.into(),
+                signals: None,
+                output: Some(out.clone()),
+                waves,
+                force: false,
+            });
+            let spec_md = out.join("spec.md");
+            let body = std::fs::read_to_string(&spec_md)
+                .unwrap_or_else(|e| panic!("{scope}/{lang}: draft not written: {e}"));
+            let ac_headings = body
+                .lines()
+                .filter(|l| is_heading(l, "acceptance-criteria"))
+                .count();
+            assert_eq!(
+                ac_headings, 1,
+                "{scope}/{lang}: exactly ONE AC heading expected:\n{body}"
+            );
+            let issues = crate::commands::review::analyze_validation::validate(&spec_md, &body);
+            assert!(
+                issues.is_empty(),
+                "{scope}/{lang}: virgin draft must validate ok:true — {issues:?}\n{body}"
+            );
+        }
     }
 
     #[test]

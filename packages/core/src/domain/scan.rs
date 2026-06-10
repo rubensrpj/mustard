@@ -78,6 +78,11 @@ pub struct DigestQuery {
     pub terms_omitted: usize,
     #[serde(default)]
     pub slices: Vec<SliceHit>,
+    /// Slices that matched but were trimmed by the per-query cap — scan's
+    /// additive mirror of `terms_omitted` (no silent loss). `0` from an older
+    /// scan binary without the field.
+    #[serde(default)]
+    pub slices_omitted: usize,
     #[serde(default)]
     pub contracts: Vec<ContractHit>,
     #[serde(default)]
@@ -87,6 +92,12 @@ pub struct DigestQuery {
     /// Real files to read next (anchor candidates), hubs first.
     #[serde(default)]
     pub files: Vec<String>,
+    /// Audit trail for [`Self::files`], additive and same order: per anchor,
+    /// the fixed-point selection score and the matched terms that carried it.
+    /// Defaulted so payloads from an older scan binary (without the field)
+    /// keep deserialising.
+    #[serde(default)]
+    pub files_detail: Vec<FileDetail>,
     /// Legacy flag: `true` when every view came back empty. Kept for payloads
     /// from older scan binaries; [`Self::report`] is the truth — a non-miss
     /// answer can still be `weak`.
@@ -132,6 +143,20 @@ pub struct TermReport {
     pub lang: String,
     #[serde(default)]
     pub files: Vec<String>,
+}
+
+/// One anchor's audit row (parallel to [`DigestQuery::files`]): the aggregate
+/// fixed-point selection score (`score_x1024`, scan's integer scale — never a
+/// float, so the value is byte-stable) and the matched index terms whose
+/// declarations carried the file. A touchpoint-tail anchor (path hit only)
+/// honestly shows score 0 and no terms.
+#[derive(Debug, Clone, Deserialize)]
+pub struct FileDetail {
+    pub file: String,
+    #[serde(default)]
+    pub score_x1024: u64,
+    #[serde(default)]
+    pub terms: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -482,5 +507,28 @@ mod tests {
         assert_eq!(q.report.reason, "");
         assert_eq!(q.report.total, 0);
         assert!(q.report.terms.is_empty());
+    }
+
+    #[test]
+    fn digest_query_files_detail_and_slices_omitted_serde_compat() {
+        // An OLD payload (scan binary predating lote 1) without
+        // `files_detail`/`slices_omitted` keeps deserialising — both default.
+        let old = r#"{"query":["payable"],"files":["src/a.rs"],"miss":false}"#;
+        let q: DigestQuery = serde_json::from_str(old).expect("old payload");
+        assert!(q.files_detail.is_empty());
+        assert_eq!(q.slices_omitted, 0);
+
+        // The NEW payload shape (per-anchor audit + capped-slices count)
+        // round-trips into the contract type, parallel to `files`.
+        let new = r#"{"query":["payable"],"slices":[{"label":"List","recurrence":3}],"slices_omitted":2,"files":["src/a.rs","src/b.rs"],"files_detail":[{"file":"src/a.rs","score_x1024":2048,"terms":["payable","nature"]},{"file":"src/b.rs","score_x1024":0,"terms":[]}],"miss":false,"report":{"matched":2,"total":2,"reason":"strong","terms":[]}}"#;
+        let q: DigestQuery = serde_json::from_str(new).expect("payload with files_detail");
+        assert_eq!(q.slices_omitted, 2);
+        assert_eq!(q.files_detail.len(), 2);
+        assert_eq!(q.files_detail[0].file, "src/a.rs");
+        assert_eq!(q.files_detail[0].score_x1024, 2048);
+        assert_eq!(q.files_detail[0].terms, vec!["payable", "nature"]);
+        // Touchpoint-tail anchor: honest score 0, no terms.
+        assert_eq!(q.files_detail[1].score_x1024, 0);
+        assert!(q.files_detail[1].terms.is_empty());
     }
 }

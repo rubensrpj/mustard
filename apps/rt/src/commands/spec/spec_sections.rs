@@ -99,18 +99,57 @@ pub fn is_heading(line: &str, key: &str) -> bool {
 /// preserves whatever heading text (EN or PT) the source used. Used to carry a
 /// section verbatim from one document into another (e.g. the parent spec's
 /// `## Acceptance Criteria` into a generated `wave-plan.md`).
+///
+/// Defensive pick among HOMONYMOUS sections: legacy drafts (binaries before
+/// TF 2026-06-10-ac-heading-unico) duplicated the AC heading — a placeholder
+/// body first ("Ver abaixo."), the real list second — so "first heading wins"
+/// returned the placeholder to every reader (qa-run, analyze-validation,
+/// wave-scaffold's AC carry). Among duplicates, the first block carrying a
+/// markdown list item (`- `) wins; with no such block, the first one (the
+/// historical behaviour, and the only case for well-formed specs).
 #[must_use]
 pub fn section_block(markdown: &str, key: &str) -> Option<String> {
-    let lines: Vec<&str> = markdown.split('\n').collect();
-    let start = lines.iter().position(|l| is_heading(l, key))?;
-    let mut end = lines.len();
-    for (i, l) in lines.iter().enumerate().skip(start + 1) {
-        if l.starts_with("## ") {
-            end = i;
-            break;
-        }
+    let blocks = section_blocks(markdown, key);
+    if let Some(listy) = blocks.iter().find(|b| has_list_item(b)) {
+        return Some(listy.clone());
     }
-    Some(lines[start..end].join("\n"))
+    blocks.into_iter().next()
+}
+
+/// Every `## <key>` section block in document order — the building block of
+/// [`section_block`]'s defensive pick. Each block spans its heading line
+/// (inclusive) through the line before the next `## ` heading.
+fn section_blocks(markdown: &str, key: &str) -> Vec<String> {
+    let lines: Vec<&str> = markdown.split('\n').collect();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < lines.len() {
+        if !is_heading(lines[i], key) {
+            i += 1;
+            continue;
+        }
+        let mut end = lines.len();
+        for (j, l) in lines.iter().enumerate().skip(i + 1) {
+            if l.starts_with("## ") {
+                end = j;
+                break;
+            }
+        }
+        out.push(lines[i..end].join("\n"));
+        i = end;
+    }
+    out
+}
+
+/// Whether a section block's BODY (heading line excluded) carries at least one
+/// markdown list item — the "has parseable content" signal of the defensive
+/// pick (every parsed section shape in mustard — AC items, file bullets,
+/// checklist boxes — is a `- ` list).
+fn has_list_item(block: &str) -> bool {
+    block
+        .lines()
+        .skip(1)
+        .any(|l| l.trim_start().starts_with("- "))
 }
 
 /// Extracts the parent spec slug from a `### Parent: <slug>` header line.
@@ -182,6 +221,35 @@ mod tests {
     #[test]
     fn unknown_key_never_matches() {
         assert!(!is_heading("## Files", "nonsense"));
+    }
+
+    /// Roundtrip (legacy corpus): a spec drafted by a pre-fix binary carries
+    /// the AC heading TWICE — placeholder body first, the real list second.
+    /// The defensive pick must return the block with parseable items so specs
+    /// already duplicated on disk keep validating.
+    #[test]
+    fn roundtrip_section_block_prefers_homonymous_section_with_list_items() {
+        let md = "# Spec\n\n## Critérios de Aceitação\n\nVer abaixo.\n\n\
+                  ## Critérios de Aceitação\n\n- **AC-1** — builds.\n  Command: `cargo build`\n\n\
+                  ## Arquivos\n\n- `a.rs`\n";
+        let block = section_block(md, "acceptanceCriteria").expect("AC section found");
+        assert!(block.contains("**AC-1**"), "real list wins over placeholder: {block}");
+        assert!(!block.contains("Ver abaixo"), "placeholder block skipped: {block}");
+        assert!(!block.contains("Arquivos"), "stops at the next `## `: {block}");
+    }
+
+    /// Single-section documents keep the historical behaviour exactly: the
+    /// first (only) block is returned even when it carries no list item.
+    #[test]
+    fn section_block_single_section_unchanged_even_without_list() {
+        let md = "# Spec\n\n## Context\n\nprose only\n\n## Files\n\n- `a.rs`\n";
+        let block = section_block(md, "context").expect("context found");
+        assert!(block.contains("prose only"));
+        // Duplicates with NO listy candidate also fall back to the first.
+        let dup = "## Context\n\nfirst\n\n## Context\n\nsecond\n";
+        let block = section_block(dup, "context").expect("context found");
+        assert!(block.contains("first"));
+        assert!(!block.contains("second"));
     }
 
     #[test]

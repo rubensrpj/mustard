@@ -57,10 +57,21 @@ pub fn write_spec_md(
     body.push_str(PRD_DIVIDER);
     body.push('\n');
     for s in &input.prd_sections {
+        // Single-emitter rule (TF 2026-06-10-ac-heading-unico): the AC list
+        // block below is the ONLY emitter of the AC heading. The PRD entry
+        // stays in `SpecInput` purely for the contract's presence+order check
+        // (`check_sections`) — rendering it too duplicated the heading
+        // (placeholder body first, real list second), and every
+        // `section_block` reader captured the placeholder: a virgin draft
+        // failed its own analyze-validation (`unparseable-ac`). Same skip
+        // pattern as the wave-plan `tasks` suppression below.
+        if s.name.trim().eq_ignore_ascii_case("acceptance-criteria") {
+            continue;
+        }
         let heading = section_heading_for(&s.name, lang);
         let _ = write!(body, "\n## {heading}\n\n{}\n", s.body);
     }
-    let _ = write!(body, "\n## {}\n\n", translate("heading.spec.ac_list", lang));
+    let _ = write!(body, "\n## {}\n\n", section_heading_for("acceptance-criteria", lang));
     for ac in &input.acceptance_criteria {
         let _ = write!(
             body,

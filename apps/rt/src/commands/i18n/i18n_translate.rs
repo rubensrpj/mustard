@@ -44,7 +44,6 @@ const HEADING_KEYS: &[&str] = &[
     "heading.spec.metric",
     "heading.spec.non_goals",
     "heading.spec.ac",
-    "heading.spec.ac_list",
     "heading.spec.tasks",
     "heading.spec.files",
     "heading.spec.limits",
