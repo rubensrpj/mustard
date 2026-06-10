@@ -1,0 +1,36 @@
+# Relevance-ranking parameters — the ONLY place a ranking constant is tuned.
+#
+# Like stopwords.toml and generated-markers.toml, this is DATA embedded at
+# compile time (include_str!): adjusting how the digest ranks term samples and
+# anchor files is a data change, never a logic change in src/. Nothing here
+# names a language, framework or architecture — these are corpus-relative
+# statistics only.
+#
+# All values are converted ONCE at load into fixed-point integers (x1024);
+# every score comparison afterwards is pure integer arithmetic, so rankings
+# stay byte-stable across runs and platforms.
+
+[bm25]
+# Okapi BM25 over the term index. tf = the term's occurrences in a module's
+# declarations; document length = the module's declaration count; avgdl = the
+# average declaration count over indexed modules.
+#   k1: term-frequency saturation — higher lets repetition keep paying off.
+#   b:  document-length normalization strength in [0, 1] — 1.0 fully punishes
+#       sprawling modules, 0.0 ignores length entirely.
+k1 = 1.2
+b = 0.75
+
+[anchors]
+# Fan-in tiebreak weight: an anchor candidate's score gains
+# alpha * log2(1 + fan_in). Kept SMALL by contract — fan-in breaks ties
+# between term-matched candidates, it must never outrank a term match
+# (one BM25 unit is worth ~1000 fixed-point points; this boost stays under
+# ~300 even for extreme fan-in).
+alpha = 0.03125
+
+# Structural stop-file: a module whose import-graph fan-in exceeds this
+# percent of the repo's total module count is glue the whole repo leans on
+# (a prelude, a shared-utility barrel) — never the file to read for one
+# capability, so it leaves anchor eligibility. Repo-relative statistic; no
+# type or file names involved.
+hub_fanin_pct = 30

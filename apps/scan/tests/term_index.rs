@@ -5,8 +5,11 @@
 //!     enter the index and never act as query tokens;
 //!   * the published full digest stays capped, but `query` searches the
 //!     UNCAPPED index, so a rare discriminative term beyond the cap is found;
-//!   * per-term samples rank modules by the term's count in the module
-//!     (density), not by walk order, killing the alphabetical-dir bias.
+//!   * per-term samples rank modules by BM25 (fixed-point integer, data in
+//!     ranking.toml), not by walk order: tf saturation still lets the
+//!     term-dense module win, and document-length normalization keeps a
+//!     sprawling module from outranking a focused one by sheer declaration
+//!     volume. Ties break by path asc — byte-stable output.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -128,10 +131,11 @@ fn term_index_rare_discriminative_term_enters_query_beyond_digest_cap() {
 }
 
 #[test]
-fn term_index_samples_rank_by_term_density_not_walk_order() {
+fn term_index_samples_rank_by_bm25_not_walk_order() {
     // Walk order lists the alphabetically-early `apps/alpha` modules first,
-    // but `apps/zeta/dense.rs` uses the term 3x — density must win sample
-    // slot 0, with the count-1 ties resolved by path asc.
+    // but `apps/zeta/dense.rs` uses the term 3x in 3 declarations — its BM25
+    // (saturated tf, length-normalized) must win sample slot 0, with the
+    // tf-1 ties resolved by path asc.
     let modules = serde_json::json!([
         module("apps/alpha/a.rs", &["InvoiceAaa"]),
         module("apps/alpha/b.rs", &["InvoiceBbb"]),
@@ -152,7 +156,39 @@ fn term_index_samples_rank_by_term_density_not_walk_order() {
     assert_eq!(
         samples,
         vec!["apps/zeta/dense.rs", "apps/alpha/a.rs", "apps/alpha/b.rs"],
-        "densest module first, then path-asc ties"
+        "highest-BM25 module first, then path-asc ties"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn term_index_samples_bm25_length_normalizes_against_sprawl() {
+    // Raw density would rank the sprawling module first: it mentions the term
+    // 2x vs 1x. But it buries those mentions among 100 declarations while the
+    // focused module is 50x shorter — BM25's length normalization must put
+    // the focused module in sample slot 0.
+    let mut sprawl: Vec<&str> = vec!["LedgerCore", "LedgerSync"];
+    let fillers: Vec<String> = (0..98).map(|i| format!("Widget{i:03}")).collect();
+    sprawl.extend(fillers.iter().map(|s| s.as_str()));
+    let modules = serde_json::json!([
+        module("apps/big/everything.rs", &sprawl),
+        module("apps/small/ledger.rs", &["LedgerReport", "ReportTotal"]),
+    ]);
+    let (dir, model) = write_model("lennorm", modules);
+    let digest = run_digest(&model, "", "digest.json");
+
+    let ledger = digest["terms"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["term"] == "ledger")
+        .expect("`ledger` indexed");
+    let samples: Vec<&str> = ledger["samples"].as_array().unwrap().iter().map(|s| s.as_str().unwrap()).collect();
+    assert_eq!(
+        samples,
+        vec!["apps/small/ledger.rs", "apps/big/everything.rs"],
+        "the focused module outranks the sprawling one despite a lower raw count"
     );
 
     let _ = std::fs::remove_dir_all(&dir);

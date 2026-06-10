@@ -144,6 +144,17 @@ pub struct Module {
     /// override attribute) — provenance, so a classification is explainable.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub marker: String,
+    /// Incoming dependency edges (fan-in) from the resolved import graph —
+    /// persisted on the module so projections (digest anchor ranking) read it
+    /// without recomputing the graph. Additive: older models default to 0;
+    /// leaf modules don't serialise it.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub fan_in: usize,
+}
+
+/// serde helper for additive numeric fields (mirrors `String::is_empty` above).
+fn is_zero(n: &usize) -> bool {
+    *n == 0
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]

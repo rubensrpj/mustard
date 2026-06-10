@@ -48,10 +48,11 @@ pub struct CapabilityDigest {
     /// Base types many entities inherit/implement (mined supertypes).
     pub shared_contracts: Vec<ContractD>,
     pub graph: GraphD,
-    /// Domain-term index: token -> frequency + sample files (density-ranked).
-    /// The search surface for mapping a free-text request onto where it lives
-    /// in the repo. Stopword-filtered (stopwords.toml) and capped at MAX_TERMS
-    /// in this published view — `query` searches the uncapped index.
+    /// Domain-term index: token -> frequency + sample files (BM25-ranked,
+    /// ranking.toml). The search surface for mapping a free-text request onto
+    /// where it lives in the repo. Stopword-filtered (stopwords.toml) and
+    /// capped at MAX_TERMS in this published view — `query` searches the
+    /// uncapped index.
     pub terms: Vec<TermD>,
 }
 
@@ -159,10 +160,15 @@ pub struct QueryResult {
     /// cross-cutting contracts (e.g. a current-tenant accessor) for `--invariant`.
     pub hubs: Vec<HubD>,
     pub touchpoints: Vec<TouchD>,
-    /// Real files to read next (anchor candidates): hubs (injected contracts)
-    /// first, then matched-term samples, then touchpoints — so this is never
-    /// empty when something matched. The handful the feature reads for ground
-    /// truth instead of the repo.
+    /// Real files to read next (anchor candidates), MATCH-FIRST: modules
+    /// whose DECLARATIONS carry the matched terms, scored by BM25 summed over
+    /// those terms (a file where the queried concepts co-occur accumulates
+    /// every term's contribution) plus a small fan-in tiebreak. A hub anchors
+    /// only when the vocabulary lives in its declarations — a path hit alone
+    /// keeps it in `hubs` but never here. Structural stop-files (fan-in above
+    /// the ranking.toml percent of all modules) are excluded; path-matched
+    /// touchpoints are appended as a low-priority tail. The handful the
+    /// feature reads for ground truth instead of the repo.
     pub files: Vec<String>,
     pub miss: bool,
     /// Why a non-miss answer still carries no anchorable surface.
@@ -186,7 +192,8 @@ fn token_match(tk: &str, q: &str) -> bool {
 /// interaction. Query terms shorter than 3 chars are ignored (mirrors the
 /// mined-token floor). Deterministic.
 pub fn query(model: &ProjectModel, terms: &[String]) -> QueryResult {
-    let dig = catalog(model);
+    let c = corpus(model);
+    let dig = catalog(model, &c);
     let stop = stopwords();
     // Query tokens: trimmed, lowercased, length-floored AND stopword-filtered —
     // a glue token like "and" must never act as a discriminator, neither
@@ -215,29 +222,49 @@ pub fn query(model: &ProjectModel, terms: &[String]) -> QueryResult {
     let mut touchpoints: Vec<TouchD> = dig.graph.touchpoints.into_iter().filter(|t| hit(&t.module)).collect();
     touchpoints.truncate(Q_MAX_TOUCHPOINTS);
 
-    // Anchor candidates in priority order (never empty when something matched):
-    // hubs (injected contracts) -> matched-term samples -> touchpoints. Sample
-    // files are ranked by CO-OCCURRENCE: a file present in the samples of >=2
-    // matched query terms is where the queried concepts meet, so it outranks
-    // single-term samples. Ties break on the first (rarest) matched term that
-    // carries the file, then on the path — fully deterministic. Order-
-    // preserving dedup keeps the priority; capped to ~a dozen.
-    let mut occ: BTreeMap<&String, (usize, usize)> = BTreeMap::new();
+    // Anchor candidates, MATCH-FIRST: a module enters on a term match in its
+    // DECLARATIONS, never on its path alone — a hub that only path-hits stays
+    // listed in `hubs` but does not anchor. Score ×1024 = Σ BM25 over the
+    // matched terms carrying the module (summing IS the co-occurrence signal:
+    // the file where the queried concepts meet accumulates every term's
+    // contribution) + α·log2(1+fan_in), a small additive tiebreak that never
+    // outranks a term match. Structural stop-files (rank::anchor_stopfile —
+    // fan-in above the configured percent of the repo's module count) leave
+    // anchor eligibility entirely. Ties break on the first (rarest) matched
+    // term that carries the module, then on the path — fully deterministic.
+    let class = |p: &str| c.class_of.get(p).copied().unwrap_or("");
+    let anchorable = |p: &str| {
+        crate::classify::anchor_eligible(class(p))
+            && !crate::rank::anchor_stopfile(c.fan_in.get(p).copied().unwrap_or(0), c.total_modules)
+    };
+    let mut cand: BTreeMap<&str, (u64, usize)> = BTreeMap::new();
     for (i, t) in matched_terms.iter().enumerate() {
-        for s in &t.samples {
-            let e = occ.entry(s).or_insert((0, i));
-            e.0 += 1;
+        let Some(per_module) = c.postings.get(&t.term) else { continue };
+        for (path, tf) in per_module {
+            // Same anchor discipline as the term samples: hand-written
+            // modules only, and never a structural stop-file.
+            if !anchorable(path) {
+                continue;
+            }
+            let score = crate::rank::bm25_x1024(*tf, c.doc_len.get(path).copied().unwrap_or(0), c.avgdl_x1024);
+            let e = cand.entry(path).or_insert((0, i));
+            e.0 += score;
         }
     }
-    let mut ranked: Vec<(&String, usize, usize)> = occ.into_iter().map(|(p, (n, i))| (p, n, i)).collect();
+    let mut ranked: Vec<(&str, u64, usize)> = cand
+        .into_iter()
+        .map(|(p, (s, i))| (p, s + crate::rank::fanin_boost_x1024(c.fan_in.get(p).copied().unwrap_or(0)), i))
+        .collect();
     ranked.sort_by(|a, b| b.1.cmp(&a.1).then(a.2.cmp(&b.2)).then(a.0.cmp(b.0)));
 
+    // Path-matched touchpoints stay a low-priority tail (registration points
+    // are edited, not read for vocabulary), behind every term-matched
+    // candidate. Order-preserving dedup; capped to ~a dozen.
     let mut files: Vec<String> = Vec::new();
-    let src = hubs
+    let src = ranked
         .iter()
-        .map(|h| h.module.clone())
-        .chain(ranked.iter().map(|(p, _, _)| (*p).clone()))
-        .chain(touchpoints.iter().map(|t| t.module.clone()));
+        .map(|(p, _, _)| (*p).to_string())
+        .chain(touchpoints.iter().filter(|t| anchorable(&t.module)).map(|t| t.module.clone()));
     for m in src {
         if !files.contains(&m) {
             files.push(m);
@@ -275,7 +302,8 @@ pub fn query(model: &ProjectModel, terms: &[String]) -> QueryResult {
 
 /// Project the full model down to the bounded capability digest.
 pub fn build(model: &ProjectModel) -> CapabilityDigest {
-    let mut dig = catalog(model);
+    let c = corpus(model);
+    let mut dig = catalog(model, &c);
     // The published catalog stays bounded: cap the (count-desc-sorted) term
     // index here ONLY. `query` searches the uncapped index from `catalog`, so
     // capping the answer (not the index) is what keeps rare domain terms
@@ -286,8 +314,9 @@ pub fn build(model: &ProjectModel) -> CapabilityDigest {
 
 /// The digest with the UNCAPPED term index — shared by [`build`] (which caps
 /// the terms for the published catalog) and [`query`] (which must search every
-/// term). Rebuilt per call; nothing here persists in the model.
-fn catalog(model: &ProjectModel) -> CapabilityDigest {
+/// term). Projects the model plus the prebuilt [`Corpus`]; rebuilt per call,
+/// nothing here persists in the model.
+fn catalog(model: &ProjectModel, c: &Corpus) -> CapabilityDigest {
     let languages = model.languages.iter().map(|l| LangD { language: l.language.clone(), files: l.files, loc: l.loc }).collect();
     let frameworks = model.frameworks.clone();
     let detected_stacks = model.detected_stacks.clone();
@@ -324,13 +353,7 @@ fn catalog(model: &ProjectModel) -> CapabilityDigest {
     // caller should read or edit: drop them from hubs and touchpoints — and
     // therefore from the anchor candidates `query` derives from these. Policy
     // is owned by `classify` (module-qualified call, no local wrapper).
-    let class_of: BTreeMap<&str, &str> = model
-        .modules
-        .iter()
-        .filter(|m| !m.file_class.is_empty())
-        .map(|m| (m.path.as_str(), m.file_class.as_str()))
-        .collect();
-    let eligible = |path: &str| crate::classify::anchor_eligible(class_of.get(path).copied().unwrap_or(""));
+    let eligible = |path: &str| crate::classify::anchor_eligible(c.class_of.get(path).copied().unwrap_or(""));
 
     let mut top_fan_in: Vec<HubD> =
         model.graph.top_fan_in.iter().filter(|n| eligible(&n.module)).map(|n| HubD { module: n.module.clone(), degree: n.degree }).collect();
@@ -356,7 +379,7 @@ fn catalog(model: &ProjectModel) -> CapabilityDigest {
         top_fan_in,
     };
 
-    let terms = build_terms(model);
+    let terms = build_terms(c);
 
     CapabilityDigest { root: model.root.clone(), languages, frameworks, detected_stacks, projects, roles, roles_omitted, slices, shared_contracts, graph, terms }
 }
@@ -380,52 +403,97 @@ fn stopwords() -> &'static BTreeSet<String> {
     })
 }
 
-/// Build the domain-term index from declaration names (the repo's own
-/// vocabulary). Stopwords are never indexed. The index is UNCAPPED here — see
-/// [`build`] vs [`query`] for who caps what. Samples are the top modules by
-/// the term's count IN that module (density), tie-broken by path asc, so a
-/// module that uses the term heavily outranks one that merely comes first in
-/// the walk order.
-fn build_terms(model: &ProjectModel) -> Vec<TermD> {
+/// The shared ranking corpus: per-term postings (occurrences by module),
+/// per-module document length (declaration count), fan-in and the corpus
+/// average length — built in ONE pass over the model and consumed by both the
+/// published term view ([`build_terms`]) and the per-query anchor scoring
+/// ([`query`]), so the two can never disagree. The scoring arithmetic itself
+/// lives in [`crate::rank`]. BTreeMaps throughout: deterministic iteration.
+struct Corpus<'a> {
+    /// term -> module path -> occurrences in that module's declarations.
+    postings: BTreeMap<String, BTreeMap<&'a str, usize>>,
+    /// Module path -> machine-written class (hand-written modules absent).
+    class_of: BTreeMap<&'a str, &'a str>,
+    /// Module path -> declaration count — the BM25 document length.
+    doc_len: BTreeMap<&'a str, usize>,
+    /// Module path -> import-graph fan-in, persisted on the model by scan.
+    fan_in: BTreeMap<&'a str, usize>,
+    /// Average document length ×1024 over the indexed modules.
+    avgdl_x1024: u64,
+    /// Total modules in the model — the base of the stop-file percent.
+    total_modules: usize,
+}
+
+/// Build the corpus from declaration names (the repo's own vocabulary).
+/// Stopwords are never indexed.
+fn corpus(model: &ProjectModel) -> Corpus<'_> {
     let stop = stopwords();
-    // Module path -> machine-written class (hand-written modules are absent).
     let class_of: BTreeMap<&str, &str> = model
         .modules
         .iter()
         .filter(|m| !m.file_class.is_empty())
         .map(|m| (m.path.as_str(), m.file_class.as_str()))
         .collect();
-    // term -> module path -> occurrences. BTreeMaps for deterministic iteration.
-    let mut index: BTreeMap<String, BTreeMap<&str, usize>> = BTreeMap::new();
+    let mut postings: BTreeMap<String, BTreeMap<&str, usize>> = BTreeMap::new();
+    let mut doc_len: BTreeMap<&str, usize> = BTreeMap::new();
+    let mut fan_in: BTreeMap<&str, usize> = BTreeMap::new();
+    let (mut len_sum, mut docs) = (0usize, 0usize);
     for m in &model.modules {
+        fan_in.insert(m.path.as_str(), m.fan_in);
         // Lockfiles and minified output never enter the index; generated and
-        // vendored modules stay (demoted below) so a query still lands.
+        // vendored modules stay (demoted in the published count) so a query
+        // still lands.
         if !crate::classify::index_eligible(&m.file_class) {
             continue;
         }
+        doc_len.insert(m.path.as_str(), m.declarations.len());
+        len_sum += m.declarations.len();
+        docs += 1;
         for d in &m.declarations {
             for tok in tokenize(&d.name) {
                 if stop.contains(&tok) {
                     continue;
                 }
-                *index.entry(tok).or_default().entry(m.path.as_str()).or_insert(0) += 1;
+                *postings.entry(tok).or_default().entry(m.path.as_str()).or_insert(0) += 1;
             }
         }
     }
-    let mut terms: Vec<TermD> = index
-        .into_iter()
+    Corpus {
+        postings,
+        class_of,
+        doc_len,
+        fan_in,
+        avgdl_x1024: crate::rank::avgdl_x1024(len_sum, docs),
+        total_modules: model.modules.len(),
+    }
+}
+
+/// Project the corpus into the domain-term index. The index is UNCAPPED here
+/// — see [`build`] vs [`query`] for who caps what. Samples are the top
+/// hand-written modules by BM25 (rank::bm25_x1024, fixed-point integer): tf
+/// saturation + document-length normalization replace the old raw per-module
+/// count, so a focused module outranks a sprawling one that merely repeats
+/// the term, and walk order never decides. Ties break by path asc —
+/// byte-stable output.
+fn build_terms(c: &Corpus) -> Vec<TermD> {
+    let class = |p: &str| c.class_of.get(p).copied().unwrap_or("");
+    let mut terms: Vec<TermD> = c
+        .postings
+        .iter()
         .map(|(term, per_module)| {
-            let class = |p: &str| class_of.get(p).copied().unwrap_or("");
             // Machine-written occurrences are demoted by the catalog
             // multiplier (classify::index_weight) — present, never dominant.
             let count = per_module.iter().map(|(p, n)| crate::classify::index_weight(*n, class(p))).sum();
             // Samples (the files a caller reads next) come ONLY from
             // hand-written modules: a generated file is never the anchor.
-            let mut mods: Vec<(&str, usize)> =
-                per_module.into_iter().filter(|(p, _)| crate::classify::anchor_eligible(class(p))).collect();
+            let mut mods: Vec<(&str, u64)> = per_module
+                .iter()
+                .filter(|(p, _)| crate::classify::anchor_eligible(class(p)))
+                .map(|(p, n)| (*p, crate::rank::bm25_x1024(*n, c.doc_len.get(p).copied().unwrap_or(0), c.avgdl_x1024)))
+                .collect();
             mods.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
             let samples = mods.into_iter().take(MAX_TERM_SAMPLES).map(|(p, _)| p.to_string()).collect();
-            TermD { term, count, samples }
+            TermD { term: term.clone(), count, samples }
         })
         .collect();
     terms.sort_by(|a, b| b.count.cmp(&a.count).then(a.term.cmp(&b.term)));

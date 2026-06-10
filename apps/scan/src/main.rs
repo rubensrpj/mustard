@@ -15,6 +15,7 @@ mod ingest;
 mod manifests;
 mod mine;
 mod model;
+mod rank;
 mod spec;
 
 use anyhow::Result;
@@ -245,10 +246,17 @@ fn analyze(root: &Path) -> Result<ProjectModel> {
             declarations: extracted.declarations,
             file_class,
             marker,
+            fan_in: 0, // filled below, once the import graph is resolved
         });
     }
 
     let (graph_stats, degrees, depth_by_path) = graph::build(&modules, &ing.go_module);
+    // Persist each module's fan-in (graph::build already computed the full
+    // degree map) — additive on the model, so digest projections rank anchors
+    // without re-deriving the graph.
+    for m in &mut modules {
+        m.fan_in = degrees.get(&m.path).map_or(0, |d| d.0);
+    }
     let mined = mine::mine(&modules, &degrees, &content);
     let skeleton = condense::build_skeleton(&modules, &depth_by_path);
 
