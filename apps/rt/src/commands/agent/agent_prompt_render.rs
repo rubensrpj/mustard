@@ -479,9 +479,11 @@ fn read_spec_lang(spec_path: &Path) -> String {
 /// Lean bugfix/Light specs carry no `## Tasks` checklist — their work lives in
 /// `## Causa raiz` / `## Plano`. When the structured section is missing or has
 /// no body, fall back to [`build_task_fallback`] so the dispatched agent still
-/// receives a non-empty TASK block (root cause + plan + a read-the-spec cue)
-/// instead of a blank one. Full specs are unaffected: a present, non-empty
-/// `## Tasks` section is always preferred.
+/// receives a non-empty TASK block (root cause + plan, or — when those are
+/// absent too — the spec's Context + Acceptance Criteria sections under an
+/// origin header, plus a read-the-spec cue) instead of a blank one. Full specs
+/// are unaffected: a present, non-empty `## Tasks` section is always preferred
+/// and returned byte-identical.
 pub(crate) fn read_task_steps(spec_path: &Path) -> String {
     let text = mfs::read_to_string(spec_path).unwrap_or_default();
     if text.is_empty() {
@@ -518,10 +520,15 @@ fn cut_tasks_section(text: &str) -> String {
 }
 
 /// Build a TASK block from the spec body when no structured `## Tasks` section
-/// exists. Includes the `## Causa raiz` / `## Root cause` section (when
-/// present), the `## Plano` / `## Plan` section, and an explicit instruction to
-/// read the full spec before editing. Empty only when neither narrative
-/// section is present (the renderer then degrades to a blank TASK as before).
+/// exists. Tier 1: the `## Causa raiz` / `## Root cause` section (when
+/// present) plus the `## Plano` / `## Plan` section. Tier 2 (when tier 1 finds
+/// nothing — the tactical-fix / drafted-spec shape): the spec's `## Context` /
+/// `## Contexto` + `## Acceptance Criteria` / `## Critérios de Aceitação`
+/// sections (canonical `is_heading` keys), prefixed with a header naming the
+/// origin so the agent knows it is reading narrative, not a checklist. Both
+/// tiers append an explicit instruction to read the full spec before editing.
+/// Empty only when no narrative section is present at all (the renderer then
+/// degrades to a blank TASK as before).
 fn build_task_fallback(text: &str, spec_path: &Path) -> String {
     let mut parts: Vec<String> = Vec::new();
     if let Some(body) = cut_section_by_display(text, &["Root cause", "Causa raiz"]) {
@@ -529,6 +536,23 @@ fn build_task_fallback(text: &str, spec_path: &Path) -> String {
     }
     if let Some(body) = cut_section_by_display(text, &["Plan", "Plano"]) {
         parts.push(body);
+    }
+    if parts.is_empty() {
+        let mut tier2: Vec<String> = Vec::new();
+        if let Some(body) = cut_section_by_key(text, "context") {
+            tier2.push(body);
+        }
+        if let Some(body) = cut_section_by_key(text, "acceptance-criteria") {
+            tier2.push(body);
+        }
+        if !tier2.is_empty() {
+            parts.push(
+                "> TASK fallback: the spec has no `## Tasks` section — the content below \
+                 is its Context + Acceptance Criteria sections, verbatim."
+                    .to_string(),
+            );
+            parts.append(&mut tier2);
+        }
     }
     if parts.is_empty() {
         return String::new();
@@ -557,6 +581,24 @@ fn cut_section_by_display(text: &str, names: &[&str]) -> Option<String> {
         }
         names.iter().any(|n| after.trim_end().eq_ignore_ascii_case(n))
     })?;
+    cut_section_at(&lines, start)
+}
+
+/// Cut a `## <key>` section body (heading included) by canonical section key
+/// via [`is_heading`] — i18n-aware, so `context` matches both `## Context` and
+/// `## Contexto`, and `acceptance-criteria` matches `## Acceptance Criteria`
+/// and `## Critérios de Aceitação`. Returns `None` when the heading is absent
+/// or carries no body content.
+fn cut_section_by_key(text: &str, key: &str) -> Option<String> {
+    let lines: Vec<&str> = text.lines().collect();
+    let start = lines.iter().position(|l| is_heading(l, key))?;
+    cut_section_at(&lines, start)
+}
+
+/// The section slice starting at `start` (the heading line, inclusive) through
+/// the line before the next `## ` heading or EOF. `None` when the body is
+/// entirely blank (an empty heading must not survive into the TASK block).
+fn cut_section_at(lines: &[&str], start: usize) -> Option<String> {
     let mut end = lines.len();
     for (i, l) in lines.iter().enumerate().skip(start + 1) {
         if l.starts_with("## ") {
@@ -1334,6 +1376,81 @@ mod tests {
             steps.contains("Read the full spec at"),
             "read-the-spec instruction missing: {steps}"
         );
+    }
+
+    #[test]
+    fn task_fallback_tf_without_tasks_yields_context_and_ac() {
+        // A tactical-fix / drafted spec: no `## Tasks`, no `## Causa raiz` /
+        // `## Plano` — only `## Contexto` + `## Critérios de Aceitação`. The
+        // TASK block must be non-empty, carry both sections and a header
+        // naming the origin, instead of degrading to a blank TASK.
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("spec.md");
+        std::fs::write(
+            &path,
+            "# TF\n## Contexto\nthe digest misses pt intents\n\
+             ## Critérios de Aceitação\n- **AC-1** — repro query returns hits\n",
+        )
+        .unwrap();
+        let steps = read_task_steps(&path);
+        assert!(!steps.is_empty(), "TASK must not be empty for a TF spec");
+        assert!(steps.contains("TASK fallback"), "origin header missing: {steps}");
+        assert!(steps.contains("the digest misses pt intents"), "context missing: {steps}");
+        assert!(steps.contains("AC-1"), "acceptance criteria missing: {steps}");
+        assert!(steps.contains("Read the full spec at"), "read-the-spec cue missing: {steps}");
+    }
+
+    #[test]
+    fn task_fallback_matches_en_headings_too() {
+        // The canonical-key cut is i18n-aware: an EN-authored spec with
+        // `## Context` + `## Acceptance Criteria` resolves the same tier.
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("spec.md");
+        std::fs::write(
+            &path,
+            "# TF\n## Context\nwidget cache is stale\n\
+             ## Acceptance Criteria\n- **AC-1** — cache invalidates on write\n",
+        )
+        .unwrap();
+        let steps = read_task_steps(&path);
+        assert!(steps.contains("widget cache is stale"), "context missing: {steps}");
+        assert!(steps.contains("cache invalidates on write"), "AC missing: {steps}");
+    }
+
+    #[test]
+    fn task_fallback_spec_with_tasks_stays_byte_identical() {
+        // A spec WITH `## Tasks` keeps the exact structured cut — no fallback
+        // header, no Context/AC leakage, byte-identical to the section slice.
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("spec.md");
+        std::fs::write(
+            &path,
+            "# T\n## Contexto\nctx prose\n## Tasks\n- [ ] do the thing\n\
+             ## Critérios de Aceitação\n- **AC-1** — gate passes\n",
+        )
+        .unwrap();
+        let steps = read_task_steps(&path);
+        assert_eq!(steps, "## Tasks\n- [ ] do the thing", "structured cut must be byte-identical");
+        assert!(!steps.contains("TASK fallback"), "fallback header leaked: {steps}");
+    }
+
+    #[test]
+    fn task_fallback_root_cause_tier_still_wins_over_context_tier() {
+        // Tier order is stable: when `## Causa raiz`/`## Plano` exist, the
+        // Context/AC tier (and its origin header) must NOT engage.
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("spec.md");
+        std::fs::write(
+            &path,
+            "# T\n## Contexto\nctx prose\n## Causa raiz\nrace on shutdown\n\
+             ## Plano\n- fix lock order\n## Critérios de Aceitação\n- repro exits 0\n",
+        )
+        .unwrap();
+        let steps = read_task_steps(&path);
+        assert!(steps.contains("race on shutdown"));
+        assert!(steps.contains("fix lock order"));
+        assert!(!steps.contains("TASK fallback"), "tier-2 header leaked: {steps}");
+        assert!(!steps.contains("ctx prose"), "tier-2 content leaked: {steps}");
     }
 
     #[test]

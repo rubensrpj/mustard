@@ -21,8 +21,26 @@
 //! returns the items of the FIRST dependency level (ascending) that still has
 //! a non-completed wave, filtered to its non-completed waves. Re-invoking
 //! after dispatch but before the waves complete returns the same level again;
-//! the caller owns not double-dispatching within a session. All waves
-//! completed (or no plan at all) → empty array.
+//! the caller owns not double-dispatching within a session. All impl waves
+//! completed → the review round (below); no plan at all → empty array.
+//!
+//! ## Review round (post-impl)
+//!
+//! Once EVERY impl wave carries a `pipeline.wave.complete`, the advance does
+//! not terminate at `[]` yet: it emits one `role: review` item (subagent
+//! `mustard-review`) per **distinct subproject touched by the plan's waves**,
+//! in alphabetical order, each with its prompt rendered inline (role `review`,
+//! root `spec.md` — wave-less, so `wave: 0`). The "already reviewed" signal is
+//! a `review.result` event of the spec whose payload names that subproject
+//! (recorded by `mustard-rt run review-result --subproject <sub>`); an
+//! absent/null payload `subproject` counts as `"."` — a whole-project review.
+//!
+//! Re-invocation semantics mirror the impl waves: calling `wave-advance` again
+//! after dispatching the review round but BEFORE the verdicts are recorded
+//! returns the same pending review items — the caller owns not
+//! double-dispatching within a session. Each recorded `review.result` removes
+//! its subproject from the round; once every touched subproject carries one,
+//! the advance returns `[]` (terminal).
 //!
 //! ## Output
 //!
@@ -33,7 +51,7 @@
 
 use crate::commands::agent::agent_prompt_render::{self, RenderMode};
 use crate::commands::pipeline::dispatch_plan;
-use mustard_core::domain::model::event::EVENT_PIPELINE_WAVE_COMPLETE;
+use mustard_core::domain::model::event::{HarnessEvent, EVENT_PIPELINE_WAVE_COMPLETE};
 use mustard_core::io::claude_paths::ClaudePaths;
 use mustard_core::view::projection::read_harness_events_from_ndjson_dir;
 use serde::Serialize;
@@ -78,15 +96,17 @@ pub(crate) fn advance(project: &Path, spec: &str) -> Vec<AdvanceItem> {
         return Vec::new();
     }
 
-    let completed = completed_waves(project, spec);
+    let events = spec_events(project, spec);
+    let completed = completed_waves(&events, spec);
     let pending_level = plan
         .iter()
         .filter(|it| !completed.contains(&it.wave))
         .map(|it| it.level)
         .min();
     let Some(level) = pending_level else {
-        // Every wave already carries a pipeline.wave.complete — nothing pending.
-        return Vec::new();
+        // Every impl wave already carries a pipeline.wave.complete — emit the
+        // review round before the terminal `[]` (see module docs).
+        return review_round(project, spec, &plan, &events);
     };
 
     plan.into_iter()
@@ -118,10 +138,11 @@ pub(crate) fn advance(project: &Path, spec: &str) -> Vec<AdvanceItem> {
         .collect()
 }
 
-/// The set of wave numbers carrying a `pipeline.wave.complete` event in the
-/// spec's per-spec NDJSON log. Fail-open: a missing/unreadable events dir
-/// yields the empty set (every wave pending — the conservative read).
-fn completed_waves(project: &Path, spec: &str) -> BTreeSet<u32> {
+/// Read the spec's per-spec NDJSON event log. Fail-open: a missing/unreadable
+/// events dir yields the empty vec (every wave pending, nothing reviewed —
+/// the conservative read). Single resolution shared by [`completed_waves`]
+/// and [`reviewed_subprojects`].
+fn spec_events(project: &Path, spec: &str) -> Vec<HarnessEvent> {
     let events_dir = ClaudePaths::for_project(project)
         .and_then(|p| p.for_spec(spec))
         .ok()
@@ -135,13 +156,84 @@ fn completed_waves(project: &Path, spec: &str) -> BTreeSet<u32> {
             |sp| sp.events_dir(),
         );
     read_harness_events_from_ndjson_dir(&events_dir)
-        .into_iter()
+}
+
+/// The set of wave numbers carrying a `pipeline.wave.complete` event in the
+/// spec's event log.
+fn completed_waves(events: &[HarnessEvent], spec: &str) -> BTreeSet<u32> {
+    events
+        .iter()
         .filter(|e| e.event == EVENT_PIPELINE_WAVE_COMPLETE && e.spec.as_deref() == Some(spec))
         .filter_map(|e| {
             e.payload
                 .get("wave")
                 .and_then(Value::as_u64)
                 .and_then(|w| u32::try_from(w).ok())
+        })
+        .collect()
+}
+
+/// Subprojects already covered by a `review.result` event of `spec`. The
+/// payload's `subproject` field is the key; an absent/null/empty subproject
+/// counts as `"."` (a whole-project review covers the root-level round item).
+fn reviewed_subprojects(events: &[HarnessEvent], spec: &str) -> BTreeSet<String> {
+    events
+        .iter()
+        .filter(|e| e.event == "review.result" && e.spec.as_deref() == Some(spec))
+        .map(|e| {
+            e.payload
+                .get("subproject")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .unwrap_or(".")
+                .to_string()
+        })
+        .collect()
+}
+
+/// The post-impl review round: one `role: review` item per distinct subproject
+/// touched by the plan's waves, alphabetical (`BTreeSet` order), minus the
+/// subprojects already carrying a `review.result` (see module docs for the
+/// re-invocation semantics). The prompt is rendered inline by the same
+/// `agent-prompt-render` miolo the impl waves use — role `review`, wave-less
+/// (the root `spec.md`), so the item carries `wave: 0` like the single-spec
+/// fallback. `subagent_type` resolves through [`recommended_subagent_type`]
+/// (`review` → `mustard-review`), never picked by hand.
+///
+/// [`recommended_subagent_type`]: agent_prompt_render::recommended_subagent_type
+fn review_round(
+    project: &Path,
+    spec: &str,
+    plan: &[dispatch_plan::DispatchItem],
+    events: &[HarnessEvent],
+) -> Vec<AdvanceItem> {
+    let reviewed = reviewed_subprojects(events, spec);
+    let touched: BTreeSet<String> = plan.iter().map(|it| it.subproject.clone()).collect();
+    touched
+        .into_iter()
+        .filter(|sub| !reviewed.contains(sub))
+        .map(|sub| {
+            let prompt = agent_prompt_render::render_prompt_at(
+                project,
+                Some(spec),
+                None,
+                "review",
+                Path::new(&sub),
+                RenderMode::First,
+                None,
+                None,
+                None,
+                None,
+            );
+            AdvanceItem {
+                wave: 0,
+                role: "review".to_string(),
+                subproject: sub,
+                subagent_type: agent_prompt_render::recommended_subagent_type("review")
+                    .to_string(),
+                prompt,
+            }
         })
         .collect()
 }
@@ -240,8 +332,35 @@ mod tests {
         }
     }
 
+    /// Emit a `review.result` for `spec` into the spec's events log, optionally
+    /// naming a subproject (mirrors `review-result --subproject`).
+    fn record_review(project: &Path, spec: &str, subproject: Option<&str>, ts_suffix: u32) {
+        use mustard_core::domain::model::event::{Actor, ActorKind, SCHEMA_VERSION};
+        let event = HarnessEvent {
+            v: SCHEMA_VERSION,
+            ts: format!("2026-06-09T01:00:0{ts_suffix}.000Z"),
+            session_id: "test-session".to_string(),
+            wave: 0,
+            actor: Actor {
+                kind: ActorKind::Cli,
+                id: Some("review-result".to_string()),
+                actor_type: None,
+            },
+            event: "review.result".to_string(),
+            payload: json!({
+                "spec": spec,
+                "verdict": "approved",
+                "criticalCount": 0,
+                "subproject": subproject,
+            }),
+            spec: Some(spec.to_string()),
+        };
+        crate::shared::events::route::emit(project.to_str().unwrap(), &event);
+    }
+
     /// Dependency progression: completing waves 1 and 2 advances the pending
-    /// level to wave 3; completing everything yields the empty array.
+    /// level to wave 3; completing everything yields the review round, and a
+    /// recorded `review.result` drains the advance to the terminal empty array.
     #[test]
     fn composite_wave_advance_progresses_levels_and_drains() {
         let dir = tempdir().unwrap();
@@ -262,10 +381,17 @@ mod tests {
         assert_eq!(items[0].wave, 3);
         assert_eq!(items[0].role, "core");
 
-        // Everything done → no pending level → empty.
+        // Everything done → the review round (one item: the seeded waves all
+        // converge on subproject ".").
         complete_wave(project, "adv2", 3);
         let items = advance(project, "adv2");
-        assert!(items.is_empty(), "no pending level returns the empty list");
+        assert_eq!(items.len(), 1, "review round expected after all impl waves");
+        assert_eq!(items[0].role, "review");
+
+        // A recorded review.result (no subproject → covers ".") drains it.
+        record_review(project, "adv2", None, 1);
+        let items = advance(project, "adv2");
+        assert!(items.is_empty(), "reviewed spec returns the empty list");
     }
 
     /// Degraded: an unknown spec (no dir, no spec.md) degrades to `[]`.
@@ -300,5 +426,123 @@ mod tests {
             "root spec.md tasks must reach the prompt: {}",
             items[0].prompt
         );
+    }
+
+    /// Seed a 3-wave spec whose waves declare `## Files` in DISTINCT
+    /// subprojects, deliberately out of alphabetical order (rt, core, cli) so
+    /// the review-round ordering assertion is meaningful.
+    fn seed_three_waves_with_subprojects(project: &Path, slug: &str) {
+        let spec_dir = project.join(".claude").join("spec").join(slug);
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        std::fs::write(
+            spec_dir.join("wave-plan.md"),
+            "\
+| Wave | Spec | Role | Depends on | Summary |
+|------|------|------|------------|---------|
+| 1 | [[wave-1-rt]] | rt | — | base |
+| 2 | [[wave-2-core]] | core | [[wave-1-rt]] | uses base |
+| 3 | [[wave-3-cli]] | cli | [[wave-2-core]] | wires cli |
+",
+        )
+        .unwrap();
+        for (n, role, file) in [
+            (1, "rt", "apps/rt/src/foo.rs"),
+            (2, "core", "packages/core/src/lib.rs"),
+            (3, "cli", "apps/cli/src/main.rs"),
+        ] {
+            let dir = spec_dir.join(format!("wave-{n}-{role}"));
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(
+                dir.join("spec.md"),
+                format!("# wave-{n}-{role}\n\n## Files\n- {file}\n\n## Tasks\n\n- [ ] task for {role}\n"),
+            )
+            .unwrap();
+        }
+    }
+
+    /// Post-impl review round: once every impl wave is complete, the advance
+    /// emits one `role: review` item per distinct subproject, alphabetically,
+    /// each locked to `mustard-review` with an inline-rendered review prompt.
+    #[test]
+    fn wave_advance_review_round_emitted_after_all_impl_complete() {
+        let dir = tempdir().unwrap();
+        anchor(dir.path());
+        let project = dir.path();
+        seed_three_waves_with_subprojects(project, "rev");
+        for w in 1..=3 {
+            complete_wave(project, "rev", w);
+        }
+
+        let items = advance(project, "rev");
+        assert_eq!(items.len(), 3, "one review item per distinct subproject");
+        // Alphabetical, regardless of the wave order that touched them.
+        let subs: Vec<&str> = items.iter().map(|i| i.subproject.as_str()).collect();
+        assert_eq!(subs, vec!["apps/cli", "apps/rt", "packages/core"]);
+        for item in &items {
+            assert_eq!(item.role, "review");
+            assert_eq!(item.subagent_type, "mustard-review");
+            assert_eq!(item.wave, 0, "review round is wave-less (root spec render)");
+            assert!(
+                item.prompt.contains("ROLE: review"),
+                "prompt must carry the review role contract: {}",
+                item.prompt
+            );
+        }
+    }
+
+    /// Re-invocation: a `review.result` naming a subproject removes it from
+    /// the round; once every touched subproject carries one, the advance is
+    /// terminal (`[]`). Until then, re-invoking returns the same pending items.
+    #[test]
+    fn wave_advance_review_round_not_reemitted_once_reviewed() {
+        let dir = tempdir().unwrap();
+        anchor(dir.path());
+        let project = dir.path();
+        seed_three_waves_with_subprojects(project, "rev2");
+        for w in 1..=3 {
+            complete_wave(project, "rev2", w);
+        }
+
+        // Partial coverage: apps/rt reviewed → only the other two remain.
+        record_review(project, "rev2", Some("apps/rt"), 1);
+        let items = advance(project, "rev2");
+        let subs: Vec<&str> = items.iter().map(|i| i.subproject.as_str()).collect();
+        assert_eq!(subs, vec!["apps/cli", "packages/core"]);
+
+        // Re-invoking without new verdicts returns the same pending round.
+        let again = advance(project, "rev2");
+        let subs_again: Vec<&str> = again.iter().map(|i| i.subproject.as_str()).collect();
+        assert_eq!(subs_again, subs, "pending review items must be stable");
+
+        // Full coverage → terminal empty array.
+        record_review(project, "rev2", Some("apps/cli"), 2);
+        record_review(project, "rev2", Some("packages/core"), 3);
+        assert!(advance(project, "rev2").is_empty());
+    }
+
+    /// The single-spec fallback (no wave plan, wave 0) also gets the review
+    /// round once its impl item completes — TF/Light specs are not exempt.
+    #[test]
+    fn wave_advance_review_round_covers_single_spec() {
+        let dir = tempdir().unwrap();
+        anchor(dir.path());
+        let project = dir.path();
+        let spec_dir = project.join(".claude").join("spec").join("rev3");
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        std::fs::write(
+            spec_dir.join("spec.md"),
+            "# Flat\n\n## Files\n- apps/rt/src/foo.rs\n\n## Tasks\n\n- [ ] the only task\n",
+        )
+        .unwrap();
+
+        complete_wave(project, "rev3", 0);
+        let items = advance(project, "rev3");
+        assert_eq!(items.len(), 1, "single spec gets exactly one review item");
+        assert_eq!(items[0].role, "review");
+        assert_eq!(items[0].subagent_type, "mustard-review");
+        assert_eq!(items[0].subproject, "apps/rt");
+
+        record_review(project, "rev3", Some("apps/rt"), 1);
+        assert!(advance(project, "rev3").is_empty());
     }
 }
