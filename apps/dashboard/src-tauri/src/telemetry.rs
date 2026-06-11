@@ -2131,49 +2131,72 @@ pub fn dashboard_prompt_economy(scope: EconomyScopeDto) -> Value {
     })
 }
 
+// The five `dashboard_economy_*` commands below are async + `spawn_blocking`
+// for the same reason as the heavy `lib.rs` commands: the core economy
+// readers walk NDJSON on disk per call (and may fan out across every project
+// under `EconomyScope::AllProjects`), and a synchronous Tauri command runs on
+// the main thread — blocking every queued `invoke` (observed as a frozen
+// route switch away from the Economia page). A join error degrades to the
+// same empty JSON shape the old sync body returned.
+
 #[tauri::command]
-#[must_use]
-pub fn dashboard_economy_summary(scope: EconomyScopeDto) -> Value {
-    let (root, core_scope) = scope.to_core();
-    let summary = mustard_core::domain::economy::economy_summary(&root, core_scope)
-        .unwrap_or_default();
-    serde_json::to_value(summary).unwrap_or_else(|_| serde_json::json!({}))
+pub async fn dashboard_economy_summary(scope: EconomyScopeDto) -> Value {
+    tauri::async_runtime::spawn_blocking(move || {
+        let (root, core_scope) = scope.to_core();
+        let summary = mustard_core::domain::economy::economy_summary(&root, core_scope)
+            .unwrap_or_default();
+        serde_json::to_value(summary).unwrap_or_else(|_| serde_json::json!({}))
+    })
+    .await
+    .unwrap_or_else(|_| serde_json::json!({}))
 }
 
 #[tauri::command]
-#[must_use]
-pub fn dashboard_economy_savings_breakdown(scope: EconomyScopeDto) -> Value {
-    let (root, core_scope) = scope.to_core();
-    let breakdown = mustard_core::domain::economy::savings_breakdown(&root, core_scope)
-        .unwrap_or_default();
-    serde_json::to_value(breakdown).unwrap_or_else(|_| serde_json::json!({}))
+pub async fn dashboard_economy_savings_breakdown(scope: EconomyScopeDto) -> Value {
+    tauri::async_runtime::spawn_blocking(move || {
+        let (root, core_scope) = scope.to_core();
+        let breakdown = mustard_core::domain::economy::savings_breakdown(&root, core_scope)
+            .unwrap_or_default();
+        serde_json::to_value(breakdown).unwrap_or_else(|_| serde_json::json!({}))
+    })
+    .await
+    .unwrap_or_else(|_| serde_json::json!({}))
 }
 
 #[tauri::command]
-#[must_use]
-pub fn dashboard_economy_context_routing(scope: EconomyScopeDto) -> Value {
-    let (root, core_scope) = scope.to_core();
-    let metrics = mustard_core::domain::economy::context_routing_quality(&root, core_scope)
-        .unwrap_or_default();
-    serde_json::to_value(metrics).unwrap_or_else(|_| serde_json::json!({}))
+pub async fn dashboard_economy_context_routing(scope: EconomyScopeDto) -> Value {
+    tauri::async_runtime::spawn_blocking(move || {
+        let (root, core_scope) = scope.to_core();
+        let metrics = mustard_core::domain::economy::context_routing_quality(&root, core_scope)
+            .unwrap_or_default();
+        serde_json::to_value(metrics).unwrap_or_else(|_| serde_json::json!({}))
+    })
+    .await
+    .unwrap_or_else(|_| serde_json::json!({}))
 }
 
 #[tauri::command]
-#[must_use]
-pub fn dashboard_economy_per_spec_costs(scope: EconomyScopeDto) -> Value {
-    let (root, core_scope) = scope.to_core();
-    let rows = mustard_core::domain::economy::per_spec_costs(&root, core_scope)
-        .unwrap_or_default();
-    serde_json::to_value(rows).unwrap_or_else(|_| serde_json::json!([]))
+pub async fn dashboard_economy_per_spec_costs(scope: EconomyScopeDto) -> Value {
+    tauri::async_runtime::spawn_blocking(move || {
+        let (root, core_scope) = scope.to_core();
+        let rows = mustard_core::domain::economy::per_spec_costs(&root, core_scope)
+            .unwrap_or_default();
+        serde_json::to_value(rows).unwrap_or_else(|_| serde_json::json!([]))
+    })
+    .await
+    .unwrap_or_else(|_| serde_json::json!([]))
 }
 
 #[tauri::command]
-#[must_use]
-pub fn dashboard_economy_per_wave_costs(scope: EconomyScopeDto) -> Value {
-    let (root, core_scope) = scope.to_core();
-    let rows = mustard_core::domain::economy::per_wave_costs(&root, core_scope)
-        .unwrap_or_default();
-    serde_json::to_value(rows).unwrap_or_else(|_| serde_json::json!([]))
+pub async fn dashboard_economy_per_wave_costs(scope: EconomyScopeDto) -> Value {
+    tauri::async_runtime::spawn_blocking(move || {
+        let (root, core_scope) = scope.to_core();
+        let rows = mustard_core::domain::economy::per_wave_costs(&root, core_scope)
+            .unwrap_or_default();
+        serde_json::to_value(rows).unwrap_or_else(|_| serde_json::json!([]))
+    })
+    .await
+    .unwrap_or_else(|_| serde_json::json!([]))
 }
 
 /// Pairs `tool.result` NDJSON events back onto their originating `tool.use`
