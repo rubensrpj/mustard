@@ -3,5 +3,5 @@
 - Spec: `performance-dashboard-rotas-lentas-cache`
 - Verdict: **APPROVED**
 - Critical findings: 0
-- Subproject: `.`
+- Subproject: `apps/dashboard`
 

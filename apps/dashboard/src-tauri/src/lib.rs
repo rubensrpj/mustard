@@ -802,6 +802,39 @@ pub(crate) fn invalidate_specs_cache(repo: &str) {
     }
 }
 
+/// Aggregated push payload for the `dashboard:specs-snapshot` event (spec
+/// `performance-dashboard-rotas-lentas-cache`, wave 2): the spec list plus the
+/// active-pipeline projections, rebuilt on a background thread by the watcher
+/// and shipped ready to render. The frontend applies it via `setQueryData`
+/// instead of refetching after a mass invalidation. `Clone` because
+/// `tauri::Emitter::emit` requires `Serialize + Clone`.
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "snake_case")]
+pub struct SpecsSnapshot {
+    pub repo_path: String,
+    pub specs: Vec<SpecRow>,
+    pub active_pipelines: Vec<ActivePipeline>,
+}
+
+/// Build the aggregated snapshot FROM THE INCREMENTAL CACHES: the spec list
+/// comes from the watcher-invalidated [`SPECS_CACHE`] and the active-pipeline
+/// projections fold the per-shard parsed-events cache
+/// (`telemetry::walk_ndjson_events_cached`) — with warm caches this is
+/// milliseconds, never a full workspace walk. Failure-tolerant like every
+/// dashboard command: an error degrades to empty sections, never a panic on
+/// the watcher's rebuild path.
+#[must_use]
+pub(crate) fn build_specs_snapshot(repo_path: &str) -> SpecsSnapshot {
+    let specs = dashboard_specs_impl(repo_path.to_string()).unwrap_or_default();
+    let active_pipelines =
+        dashboard_active_pipelines_impl(repo_path.to_string()).unwrap_or_default();
+    SpecsSnapshot {
+        repo_path: repo_path.to_string(),
+        specs,
+        active_pipelines,
+    }
+}
+
 // Walk .claude/spec/*/spec.md (and wave-plan.md) for spec existence and
 // frontmatter metadata (title, lang, scope). Flat layout: specs live directly
 // under .claude/spec/{name}/ for their entire lifecycle — no bucket
@@ -1792,7 +1825,9 @@ fn discover_projects(root: String) -> Result<Vec<discovery::Project>, String> {
     discovery::discover(std::path::Path::new(&root))
 }
 
-#[derive(Serialize)]
+// `Clone` because the watcher ships this inside the `dashboard:specs-snapshot`
+// push payload and `tauri::Emitter::emit` requires `Serialize + Clone`.
+#[derive(Serialize, Clone)]
 #[serde(rename_all = "snake_case")]
 pub struct ActivePipeline {
     pub spec_name: String,

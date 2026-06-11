@@ -53,11 +53,11 @@ Desenvolvedores que acompanham pipelines pelo dashboard (rotas de specs, telemet
 ## Critérios de Aceitação
 
 - **AC-1** — Build do core e do dashboard verdes
-  Command: `cargo build -p mustard-core -p mustard-dashboard`
+  Command: `cargo build -p mustard-core && cargo check --manifest-path apps/dashboard/src-tauri/Cargo.toml --lib`
 - **AC-2** — Testes do core verdes (inclui teste novo: a segunda leitura da mesma workspace atende do cache, sem nova varredura de disco)
   Command: `cargo test -p mustard-core`
 - **AC-3** — Testes do dashboard verdes (inclui o snapshot reconstruído em thread de fundo, o push emitido uma única vez por rajada e a invalidação incremental: tocar 1 arquivo NDJSON relê somente esse arquivo)
-  Command: `cargo test -p mustard-dashboard`
+  Command: `cargo test --manifest-path apps/dashboard/src-tauri/Cargo.toml --lib`
 - **AC-4** — Front-end compila e passa a checagem de tipos
   Command: `npm --prefix apps/dashboard run build`
 

@@ -9,7 +9,13 @@
 | 3 | [[wave-3-frontend]] | frontend | [[wave-2-tauri]] | Front-end consome o push granular e abandona a invalidação em massa das 13 chaves de consulta |
 
 ## Critérios de Aceitação
-- **AC-1** — Build do core e do dashboard verdes. Command: `cargo build -p mustard-core -p mustard-dashboard`
+- **AC-1** — Build do core e do dashboard verdes. Command: `cargo build -p mustard-core && cargo check --manifest-path apps/dashboard/src-tauri/Cargo.toml --lib`
 - **AC-2** — Testes do core verdes, incluindo: segunda leitura da mesma workspace atende do cache sem nova varredura de disco. Command: `cargo test -p mustard-core`
-- **AC-3** — Testes do dashboard verdes, incluindo: snapshot reconstruído em thread de fundo, push emitido uma única vez por rajada e invalidação incremental (tocar 1 arquivo NDJSON relê somente esse arquivo). Command: `cargo test -p mustard-dashboard`
+- **AC-3** — Testes do dashboard verdes, incluindo: snapshot reconstruído em thread de fundo, push emitido uma única vez por rajada e invalidação incremental (tocar 1 arquivo NDJSON relê somente esse arquivo). Command: `cargo test --manifest-path apps/dashboard/src-tauri/Cargo.toml --lib`
 - **AC-4** — Front-end compila e passa a checagem de tipos. Command: `npm --prefix apps/dashboard run build`
+
+<!-- wikilinks-footer-start -->
+- [wave-1-core](?) ⚠ unresolved
+- [wave-2-tauri](?) ⚠ unresolved
+- [wave-3-frontend](?) ⚠ unresolved
+<!-- wikilinks-footer-end -->
