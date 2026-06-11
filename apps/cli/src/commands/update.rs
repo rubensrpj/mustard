@@ -32,7 +32,8 @@ use mustard_core::io::fs as mfs;
 use mustard_core::ProjectConfig;
 
 use crate::commands::init::{
-    ensure_global_permissions, ensure_ripgrep, ensure_rtk, install_mcp_json, resolve_templates_dir,
+    ensure_global_permissions, ensure_ripgrep, ensure_rtk, install_mcp_json,
+    resolve_templates_dir, rewrite_hooks_to_absolute,
 };
 use crate::fs_ops::copy_dir;
 
@@ -119,6 +120,11 @@ pub fn update_with_templates(
     total += copy_core_folder(templates_dir, &claude_path, "refs")?;
     total += copy_settings(templates_dir, &claude_path)?;
     println!("  Updated {total} files");
+
+    // The settings.json we just re-copied carries the template's bare
+    // `rtk mustard-rt on <Event>` hooks again — re-assert the absolute,
+    // PATH-independent commands (same rewrite `init` applies).
+    rewrite_hooks_to_absolute(&claude_path);
 
     ensure_global_permissions().unwrap_or_else(|err| {
         eprintln!("[mustard] warning: could not update global permissions: {err}");

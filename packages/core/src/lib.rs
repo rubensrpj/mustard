@@ -45,6 +45,13 @@ pub mod domain;
 pub mod view;
 pub use platform::time;
 pub mod platform;
+// Harness hook-command resolution — rewrites a copied `.claude/settings.json` so
+// every hook invokes `mustard-rt` by absolute path (dropping the redundant `rtk`
+// prefix), making the harness PATH-independent. Shared by `mustard` init/update
+// and `mustard-rt run rehook`. See `platform/hook_resolve.rs`.
+pub use platform::hook_resolve::{
+    resolve_mustard_rt, rewrite_command, rewrite_hooks_value, rewrite_settings_hooks,
+};
 
 #[allow(deprecated)] // SpecStatus is re-exported during the W1→W7 migration window.
 pub use domain::model::view::SpecStatus;

@@ -98,6 +98,15 @@ fn restore_one(claude_dir: &Path, kind: ScopeKind) -> RestoredEntry {
         };
     }
 
+    // Re-assert PATH-independent hook commands on the restored snapshot. A
+    // snapshot taken before this fix (or hand-edited) still carries the bare
+    // `rtk mustard-rt on <Event>` tokens; rewrite them to the absolute path of
+    // *this* `mustard-rt` (the binary running rehook). Fail-open — a rewrite
+    // failure never downgrades the restore, which already succeeded.
+    if let Some(exe) = mustard_core::resolve_mustard_rt() {
+        let _ = mustard_core::rewrite_settings_hooks(claude_dir, &exe);
+    }
+
     RestoredEntry {
         settings_path,
         restored_from: Some(snapshot.display().to_string()),

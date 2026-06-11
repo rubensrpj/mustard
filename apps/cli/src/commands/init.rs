@@ -130,6 +130,13 @@ pub fn init_with_templates(
         report_copy(count, gh, true);
     }
 
+    // Make the copied hook commands PATH-independent: the template ships every
+    // hook as the bare `rtk mustard-rt on <Event>`, which fails silently when
+    // the launcher's PATH omits the install dir (background/headless sessions).
+    // We resolve the absolute `mustard-rt` path here, at install time — the only
+    // place that knows the machine — and never bake a path into the template.
+    rewrite_hooks_to_absolute(&claude_path);
+
     ensure_global_permissions().unwrap_or_else(|err| {
         eprintln!("[mustard] warning: could not update global permissions: {err}");
     });
@@ -276,6 +283,29 @@ fn install_github_templates(templates_dir: &Path, project_path: &Path) -> Result
         return Ok(0);
     }
     copy_dir(&src, &project_path.join(".github"), false, &[])
+}
+
+/// Rewrite the copied `.claude/settings.json` hook commands to invoke
+/// `mustard-rt` by absolute path (and drop the `rtk` prefix), so the harness
+/// hooks fire even when the launcher's `PATH` omits the install directory.
+///
+/// Best-effort and fail-open: it prints what it did on success and a warning on
+/// failure, but a rewrite error never aborts `init`/`update` — the worst case
+/// is the pre-fix behavior (a PATH-dependent bare `mustard-rt` token). Shared by
+/// `init` and `update`; `rehook` re-asserts it after restoring a snapshot.
+pub(crate) fn rewrite_hooks_to_absolute(claude_path: &Path) {
+    let Some(exe) = mustard_core::resolve_mustard_rt() else {
+        eprintln!("  warning: could not resolve mustard-rt path; hooks left PATH-dependent");
+        return;
+    };
+    match mustard_core::rewrite_settings_hooks(claude_path, &exe) {
+        Ok(0) => {}
+        Ok(n) => println!(
+            "  Hooks: resolved {n} command(s) to {} (PATH-independent)",
+            exe.display()
+        ),
+        Err(err) => eprintln!("  warning: could not absolutize hook commands: {err}"),
+    }
 }
 
 /// Whether `origin`'s URL points at github.com.
