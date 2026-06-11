@@ -830,16 +830,23 @@ fn run_rtk_rewrite_subprocess_with_bin(cmd: &str, binary: &str) -> Option<String
 }
 
 /// Read `MUSTARD_RTK_GATE_MODE` and resolve to a [`Mode`]. Default
-/// [`Mode::Strict`] — the spec (`2026-05-20-rtk-mandatory-everywhere`) makes
-/// `rtk` a mandatory dependency, so an unset/unknown value falls back to
-/// strict-blocking rather than silently degrading. Parse goes through
-/// [`Mode::parse`] (the same case-insensitive parser used by every other
-/// gate), and any unrecognised value also collapses to `Strict`.
+/// [`Mode::Warn`] — the `rtk`-on-everything mandate of
+/// `2026-05-20-rtk-mandatory-everywhere` is enforced by **auto-rewriting** the
+/// command (prepend `rtk`), not by rejecting it. Rewriting reaches the exact
+/// same end state (every command runs under `rtk`) with ZERO round-trip: the
+/// harness applies the [`Verdict::Rewrite`] through `updatedInput` (see
+/// `protocol.rs`), and the eligibility guard [`should_blanket_prefix`] already
+/// excludes the forms `rtk` cannot wrap (builtins, subshells), which pass
+/// untouched. Denying-to-teach (`Mode::Strict`) is retained as an explicit
+/// opt-in for a setup that wants a hard block, but it is no longer the default:
+/// for an agent it only adds a re-submit round-trip with no durable learning.
+/// Parse goes through [`Mode::parse`]; any unrecognised value collapses to
+/// `Warn`.
 fn rtk_gate_mode() -> Mode {
     std::env::var("MUSTARD_RTK_GATE_MODE")
         .ok()
         .and_then(|raw| Mode::parse(&raw))
-        .unwrap_or(Mode::Strict)
+        .unwrap_or(Mode::Warn)
 }
 
 /// Shells out to `rtk rewrite <cmd>` with a 2s timeout. On exit-0 with a
@@ -884,13 +891,14 @@ fn rtk_rewrite(cmd: &str) -> Option<(Verdict, &'static str)> {
 ///
 /// **`Mode::Off`** — gate disabled: returns `None` (no rewrite, no deny).
 ///
-/// **`Mode::Strict`** (default) — when the command is eligible for blanket
+/// **`Mode::Strict`** (opt-in) — when the command is eligible for blanket
 /// wrapping (not a builtin, no leading subshell/backtick) and the user did
 /// not pre-prefix `rtk`, returns `Verdict::Deny` so the UI surfaces both the
 /// original command and the required form. The agent then re-submits the
-/// command with the `rtk` prefix, learning the rule. Coverage tag `"deny"`.
+/// command with the `rtk` prefix. Coverage tag `"deny"`. NOT the default — a
+/// deny only buys a round-trip; the rewrite below reaches the same end state.
 ///
-/// **`Mode::Warn`** — historical behavior, preserved for opt-out:
+/// **`Mode::Warn`** (default) — auto-rewrite the command:
 /// - **Specific path**: delegates to `rewriter` for the actual rewrite attempt.
 ///   If the rewriter yields a non-empty, distinct string, returns
 ///   `Verdict::Rewrite` tagged `coverage = "specific"`.
@@ -1165,6 +1173,28 @@ fn is_git_commit(cmd: &str) -> bool {
     has_word_pair(&lower, "git", "commit")
 }
 
+/// `true` when a `git commit` stages its changes **as part of the commit** —
+/// `-a`/`-am`/`--all` (all tracked) or an explicit `-- <pathspec>` separator.
+///
+/// For these forms the index is legitimately empty at `PreToolUse` time (the
+/// staging happens inside the commit), so the "No staged changes detected"
+/// advisory is a false positive — the commit will, in fact, record changes.
+/// A plain `git commit` (relying on a pre-staged index) is NOT inline-staging,
+/// so it still warns. Detection is conservative: a short-flag cluster is only
+/// matched when it is all letters and contains `a` (so `-am` matches, `-m` and
+/// the long `--amend` do not), avoiding a false suppression on `git commit -m`.
+fn commit_stages_inline(cmd: &str) -> bool {
+    cmd.split_whitespace().any(|tok| {
+        tok == "--all"
+            || tok == "--" // explicit pathspec separator: `git commit -- <paths>`
+            || (tok.len() >= 2
+                && tok.starts_with('-')
+                && !tok.starts_with("--")
+                && tok[1..].bytes().all(|b| b.is_ascii_alphabetic())
+                && tok[1..].contains('a'))
+    })
+}
+
 /// The `MUSTARD_COMMIT_GATE_MODE` mode for the commit gate.
 ///
 /// Default is `warn` (retro-compat with `getCommitGateMode` in
@@ -1415,7 +1445,12 @@ fn review_gate(cmd: &str, ctx: &Ctx, mode: Mode) -> Option<Verdict> {
 
     // Check 1-4: staged changes — sensitive / generated / large.
     match staged_files(project_dir) {
-        Some(files) if files.is_empty() => {
+        // A `git commit -a/-am` (or `commit -- <paths>`) stages its changes as
+        // part of the commit, so an empty index here is expected — not a
+        // missing-changes problem. Only a plain `git commit` relying on a
+        // pre-staged index warns; an inline-staging commit falls through to the
+        // (empty) file-scan arm below, which is a harmless no-op.
+        Some(files) if files.is_empty() && !commit_stages_inline(cmd) => {
             warnings.push("No staged changes detected".to_string());
         }
         Some(files) => {
@@ -2204,6 +2239,24 @@ mod tests {
         assert!(is_git_commit("rtk git commit -m \"feat: x\""));
         assert!(!is_git_commit("git add ."));
         assert!(!is_git_commit("git push origin dev"));
+    }
+
+    /// Regression (#3): a commit that stages its own changes (`-a`/`-am`/`--all`,
+    /// or `commit -- <paths>`) must NOT trip the "No staged changes" advisory —
+    /// the index is legitimately empty at PreToolUse time. A plain `git commit`
+    /// (and `--amend`) still relies on a pre-staged index, so it is not inline.
+    #[test]
+    fn commit_stages_inline_detects_self_staging_forms() {
+        assert!(commit_stages_inline("git commit -am \"msg\""));
+        assert!(commit_stages_inline("rtk git commit -a -m \"msg\""));
+        assert!(commit_stages_inline("git commit --all -m x"));
+        assert!(commit_stages_inline("git commit -- src/a.ts"));
+        // Plain index-driven commits are NOT inline-staging.
+        assert!(!commit_stages_inline("git commit -m \"msg\""));
+        assert!(!commit_stages_inline("git commit"));
+        assert!(!commit_stages_inline("git commit --amend -m x"));
+        // `-m"attached"` is not an all-letters cluster → not misread as `-a`.
+        assert!(!commit_stages_inline("git commit -m\"add auth\""));
     }
 
     /// A non-commit Bash command never triggers the review gate — non-blocking.

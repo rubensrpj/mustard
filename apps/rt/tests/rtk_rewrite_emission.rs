@@ -76,9 +76,9 @@ fn run_hook_with_mode(tmp: &TempDir, command: &str, mode: &str) -> (std::path::P
 /// Drive `mustard-rt on PreToolUse` as a subprocess, feeding it a `Bash`
 /// hook-input JSON on stdin.  Returns the DB path where events should land.
 ///
-/// Thin wrapper around [`run_hook_with_mode`] pinned to `warn` so the existing
-/// AC-3 / AC-4 / AC-5 tests keep observing the rewrite path (the gate default
-/// is `strict`, which would otherwise deny instead of rewriting).
+/// Thin wrapper around [`run_hook_with_mode`] pinned to `warn` explicitly so
+/// the AC-3 / AC-4 / AC-5 rewrite-path tests are mode-independent. (`warn` is
+/// also the gate default now; pinning keeps them robust to env overrides.)
 fn run_hook(tmp: &TempDir, command: &str) -> std::path::PathBuf {
     let (db_path, _stdout) = run_hook_with_mode(tmp, command, "warn");
     db_path
@@ -90,6 +90,69 @@ fn run_hook(tmp: &TempDir, command: &str) -> std::path::PathBuf {
 /// Thin wrapper around [`run_hook_with_mode`] pinned to `warn`.
 fn run_hook_capture(tmp: &TempDir, command: &str) -> (std::path::PathBuf, String) {
     run_hook_with_mode(tmp, command, "warn")
+}
+
+/// Drive the hook with **no** `MUSTARD_RTK_GATE_MODE` set so the binary uses
+/// its built-in default. `env_remove` guarantees no inherited override leaks in
+/// from the test runner's environment. Returns the hook stdout.
+fn run_hook_default_mode(tmp: &TempDir, command: &str) -> String {
+    let hook_input = serde_json::json!({
+        "hook_event_name": "PreToolUse",
+        "tool_name": "Bash",
+        "cwd": tmp.path().to_str().expect("tempdir path utf-8"),
+        "session_id": "test-rtk-default",
+        "tool_input": { "command": command }
+    });
+    let payload = serde_json::to_string(&hook_input).expect("serialize hook input");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
+        .args(["on", "PreToolUse"])
+        .env_remove("MUSTARD_RTK_GATE_MODE")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn mustard-rt");
+    child
+        .stdin
+        .take()
+        .expect("stdin pipe")
+        .write_all(payload.as_bytes())
+        .expect("write stdin");
+    let output = child.wait_with_output().expect("wait mustard-rt");
+    assert!(
+        output.status.success(),
+        "mustard-rt exited {}: stderr={}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr),
+    );
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+/// Regression (default = rewrite, not reject): with NO mode override, an
+/// eligible unprefixed command must AUTO-REWRITE (prepend `rtk`), NEVER deny.
+/// This pins the default flip `Strict → Warn` — the field-reported friction
+/// "rtk rejects instead of rewriting" must not come back.
+#[test]
+fn rtk_default_mode_rewrites_not_denies() {
+    let tmp = TempDir::new().expect("create tempdir");
+    let stdout = run_hook_default_mode(&tmp, "git status");
+    // Must NOT be a strict deny.
+    assert!(
+        !stdout.contains("Reenvie como: rtk"),
+        "default mode must NOT deny an unprefixed command; got {stdout:?}"
+    );
+    // The blanket-prefix fallback works even without rtk on PATH, so the
+    // default must produce a rewrite to `rtk …`.
+    let parsed: Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("parse hook stdout JSON: {e}; raw={stdout:?}"));
+    let updated = parsed
+        .pointer("/hookSpecificOutput/updatedInput/command")
+        .and_then(Value::as_str)
+        .unwrap_or_else(|| panic!("default mode must rewrite via updatedInput; got {stdout}"));
+    assert!(
+        updated.starts_with("rtk "),
+        "default-mode rewrite must prepend rtk, got {updated:?}"
+    );
 }
 
 /// AC-3: a raw command without `rtk` prefix that has an RTK equivalent must
@@ -207,10 +270,10 @@ fn walk_ndjson(root: &std::path::Path, cb: &mut dyn FnMut(&str)) {
 // -----------------------------------------------------------------------------
 // Dual-coverage sibling tests (spec 2026-05-21-rtk-rewrite-dual-coverage)
 //
-// The default gate mode is `strict`: instead of rewriting the command via
-// `updatedInput`, the gate denies and surfaces the rewrite suggestion through
-// `permissionDecisionReason`.  These tests pin the strict path so a regression
-// in either mode is caught.
+// `strict` is an OPT-IN mode (no longer the default): instead of rewriting the
+// command via `updatedInput`, the gate denies and surfaces the rewrite
+// suggestion through `permissionDecisionReason`. These tests pin the strict
+// path explicitly so a regression in either mode is caught.
 // -----------------------------------------------------------------------------
 
 /// Strict mode must deny an unprefixed command and surface the rewrite rule in
