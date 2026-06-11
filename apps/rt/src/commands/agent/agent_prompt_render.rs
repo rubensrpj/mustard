@@ -138,6 +138,14 @@ pub(crate) fn render_prompt_at(
         return String::new();
     };
 
+    // Capture the placeholder tokens the TEMPLATE itself declares, BEFORE any
+    // substitution. The unfilled-scan at the end uses this set so a `{token}`
+    // that arrives via substituted spec content (e.g. a literal `{entity}` in
+    // the wave's `## Tasks`) is never mistaken for an unfilled template
+    // placeholder — author text survives verbatim instead of being stripped.
+    let template_tokens: std::collections::HashSet<String> =
+        scan_unfilled(&rendered).into_iter().collect();
+
     // ---- Collect placeholder values (fail-open per field). ----
 
     let subproject_str = subproject.to_string_lossy().to_string();
@@ -179,6 +187,9 @@ pub(crate) fn render_prompt_at(
         .filter(|&w| w > 1)
         .map(|w| read_prior_wave_diff(&project, spec_key, w - 1))
         .unwrap_or_default();
+    // The spec's mid-pipeline change-log (`## CHANGE REQUESTS`) — bullets only,
+    // empty (so the heading collapses) for spec-less renders or a spec with none.
+    let change_log = spec.map(|_| read_change_log(&spec_dir)).unwrap_or_default();
     let mut cross_wave_memory = cross_wave_pull_pointer(spec_key, wave);
     // Append per-spec memory principles filtered by relevance. T1.5 requires
     // irrelevant principles to NOT enter the prompt — the shared matcher runs
@@ -273,6 +284,7 @@ pub(crate) fn render_prompt_at(
         ("{task_steps}", &task_steps),
         ("{context_md}", &context_md),
         ("{prior_wave_diff}", &prior_wave_diff),
+        ("{change_log}", &change_log),
         ("{cross_wave_memory}", &cross_wave_memory),
         ("{reference_files}", &reference_files),
         ("{context_extras}", &context_extras),
@@ -288,10 +300,13 @@ pub(crate) fn render_prompt_at(
     // no-Files paths; a dangling empty heading is negative signal, so collapse it.
     rendered = collapse_empty_sections(&rendered);
 
-    // ---- Warn about any remaining `{placeholder}` tokens. ----
-    for token in scan_unfilled(&rendered) {
+    // ---- Blank only the TEMPLATE placeholders left unfilled (warn on each). ----
+    // A `{token}` that came in through substituted spec content is author text,
+    // not a render gap — `strip_unfilled_template_tokens` leaves it verbatim.
+    let (stripped, unfilled) = strip_unfilled_template_tokens(&rendered, &template_tokens);
+    rendered = stripped;
+    for token in unfilled {
         eprintln!("agent-prompt-render: WARN: unfilled placeholder {token}");
-        rendered = rendered.replace(&token, "");
     }
 
     rendered
@@ -377,7 +392,10 @@ fn build_role_block(role: &str, project: &Path, subproject: &str, spec_lang: &st
              You adversarially verify the implementer's work in {subproject}. You are NOT the \
              implementer. Read-only: report findings, never fix. Stay skeptical — the implementer \
              is not authoritative; if you cannot independently confirm a claim, reject it. Run \
-             tests with the feature enabled (code presence is not effectiveness). Deliver: your \
+             tests with the feature enabled (code presence is not effectiveness). If the prompt \
+             carries a `## CHANGE REQUESTS` section, confirm EACH mid-pipeline request was \
+             addressed in the code AND is covered by an Acceptance Criterion — flag any that was \
+             silently dropped. Deliver: your \
              final message is a ≤60-line verdict — pass/fail per claim, each backed by the command \
              you ran and its real output."
         ),
@@ -1047,6 +1065,31 @@ fn scan_unfilled(text: &str) -> Vec<String> {
     out
 }
 
+/// Blank every **template** placeholder left unfilled after substitution, and
+/// return the list that was blanked (for the WARN log).
+///
+/// `template_tokens` is the set of `{token}`s present in the *original* template
+/// block, captured before substitution. A `{token}` in `rendered` that is NOT in
+/// that set arrived through substituted spec content — e.g. a literal `{entity}`
+/// an author wrote in the wave's `## Tasks` line. That is the author's text, not
+/// a render gap: it is left verbatim, never warned-on and never stripped (the
+/// old behaviour stripped *any* `{token}`, silently corrupting the task body and
+/// emitting a spurious `unfilled placeholder {entity}` warning).
+fn strip_unfilled_template_tokens(
+    rendered: &str,
+    template_tokens: &std::collections::HashSet<String>,
+) -> (String, Vec<String>) {
+    let mut out = rendered.to_string();
+    let mut unfilled = Vec::new();
+    for token in scan_unfilled(rendered) {
+        if template_tokens.contains(&token) {
+            out = out.replace(&token, "");
+            unfilled.push(token);
+        }
+    }
+    (out, unfilled)
+}
+
 /// Map a pipeline role to the `subagent_type` the orchestrator should dispatch.
 ///
 /// Read-only roles resolve to **tool-restricted** agents so they physically
@@ -1075,6 +1118,19 @@ pub fn recommended_subagent_type(role: &str) -> &'static str {
 /// "". Only `## `-level headings are considered, so the `<!-- PREFIX-STABLE -->`
 /// marker and inline prose are never touched. The `## TASK` section always
 /// survives: its trailing "Guards carregados …" line is non-blank body.
+/// Read the spec's `change-log.md` (mid-pipeline requests) for the prompt's
+/// `## CHANGE REQUESTS` section. Keeps only the request bullets (drops the
+/// title + explanatory blurb). Fail-open: a missing/unreadable file, or one with
+/// no bullets, yields an empty string — which collapses the heading.
+fn read_change_log(spec_dir: &Path) -> String {
+    mfs::read_to_string(&spec_dir.join("change-log.md"))
+        .unwrap_or_default()
+        .lines()
+        .filter(|l| l.trim_start().starts_with("- "))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn collapse_empty_sections(text: &str) -> String {
     let lines: Vec<&str> = text.lines().collect();
     let mut out: Vec<&str> = Vec::new();
@@ -1132,6 +1188,42 @@ mod tests {
         // Code-fence-style `{ ... }` blocks (with whitespace) are not placeholders.
         let text = "fn f() { let x = 1; }";
         assert!(scan_unfilled(text).is_empty());
+    }
+
+    /// Regression (#4): only placeholders the TEMPLATE declared are stripped /
+    /// warned. A `{entity}` that arrived via substituted spec content (e.g. a
+    /// literal `{entity}` in the wave's `## Tasks`) must survive verbatim — the
+    /// old code stripped any `{token}`, corrupting the task body and emitting a
+    /// spurious `unfilled placeholder {entity}` warning.
+    #[test]
+    fn strip_unfilled_only_touches_template_tokens() {
+        let template_tokens: std::collections::HashSet<String> =
+            ["{foo}".to_string()].into_iter().collect();
+        // `{foo}` is a genuine unfilled template placeholder → stripped + warned.
+        // `{entity}` is author content from the task body → left verbatim.
+        let rendered = "task: implement {entity} now\nleftover {foo} here";
+        let (out, unfilled) = strip_unfilled_template_tokens(rendered, &template_tokens);
+        assert!(out.contains("{entity}"), "author token must survive: {out}");
+        assert!(!out.contains("{foo}"), "unfilled template token must be stripped: {out}");
+        assert_eq!(unfilled, vec!["{foo}".to_string()]);
+    }
+
+    /// `read_change_log` keeps only the request bullets (item #2 — review inject).
+    #[test]
+    fn read_change_log_keeps_only_bullets() {
+        let dir = tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("change-log.md"),
+            "# Change Log — feat\n\n_blurb explicativo_\n\n- **ts1** _(Execute)_ — muda X\n\
+             - **ts2** — muda Y\n",
+        )
+        .unwrap();
+        let out = read_change_log(dir.path());
+        assert!(out.contains("muda X") && out.contains("muda Y"), "bullets: {out}");
+        assert!(!out.contains("blurb"), "blurb dropped: {out}");
+        assert!(!out.contains("# Change Log"), "title dropped: {out}");
+        // No file → empty (the heading collapses).
+        assert!(read_change_log(&dir.path().join("nope")).is_empty());
     }
 
     #[test]
@@ -1593,6 +1685,7 @@ mod tests {
             ("{task_steps}", &task_steps),
             ("{context_md}", ""),
             ("{prior_wave_diff}", ""),
+            ("{change_log}", ""),
             ("{cross_wave_memory}", ""),
             ("{reference_files}", &reference_files),
             ("{context_extras}", &context_extras),

@@ -33,6 +33,9 @@ In doubt about API/version/pattern → search web for latest docs before impleme
 ## PRIOR WAVE DIFF
 {prior_wave_diff}
 
+## CHANGE REQUESTS
+{change_log}
+
 ## TASK
 {task_steps}
 
