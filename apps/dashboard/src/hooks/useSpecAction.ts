@@ -24,12 +24,14 @@ export function useSpecAction(repoPath: string | null) {
             : "removida";
       toast.success(`Spec ${spec} ${label}`);
 
-      // Invalidate affected query families
-      queryClient.invalidateQueries({ queryKey: ["spec-card"] });
-      queryClient.invalidateQueries({ queryKey: ["spec-cards"] });
-      queryClient.invalidateQueries({ queryKey: ["workspace-summary"] });
-      queryClient.invalidateQueries({ queryKey: ["specs-list"] });
+      // Pointwise invalidation, aligned with the batch list + push model
+      // (spec `sidebar-lento-lista-specs-dispara`): refresh only this spec's
+      // detail card and the keys this action can move — no global sweeps, and
+      // the dead `specs-list` key (no query registers it) is gone.
       if (repoPath) {
+        queryClient.invalidateQueries({ queryKey: ["spec-card", repoPath, spec] });
+        queryClient.invalidateQueries({ queryKey: ["spec-cards", repoPath] });
+        queryClient.invalidateQueries({ queryKey: ["workspace-summary", repoPath] });
         queryClient.invalidateQueries({ queryKey: ["specs", repoPath] });
         queryClient.invalidateQueries({ queryKey: ["active-pipelines", repoPath] });
       }

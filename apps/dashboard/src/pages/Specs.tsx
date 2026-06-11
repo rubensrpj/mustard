@@ -337,18 +337,23 @@ export function Specs() {
   }
 
   function onRefresh() {
+    const path = activeProject?.path;
     const active = tabs.find((t) => t.id === activeTabId);
     if (!active || active.kind === "list") {
-      queryClient.invalidateQueries({ queryKey: ["specs"] });
-      queryClient.invalidateQueries({ queryKey: ["spec-cards"] });
-      queryClient.invalidateQueries({ queryKey: ["spec-card"] });
+      // List view renders from the batch `spec-cards`; refresh that + its
+      // source + the health badges, not every detail card.
+      queryClient.invalidateQueries({ queryKey: ["spec-cards", path] });
+      queryClient.invalidateQueries({ queryKey: ["specs", path] });
+      queryClient.invalidateQueries({ queryKey: ["workspace-health", path] });
       queryClient.invalidateQueries({ queryKey: ["spec-children-tree"] });
       return;
     }
     const slug = active.specName;
-    queryClient.invalidateQueries({ queryKey: ["spec-card", undefined, slug] });
-    queryClient.invalidateQueries({ queryKey: ["spec-card"] });
-    queryClient.invalidateQueries({ queryKey: ["spec-cards"] });
+    // `["spec-card", path, slug]` — the leaf must carry the repo path, which
+    // is the key shape `useSpecCard` registers (the old `undefined` never
+    // matched).
+    queryClient.invalidateQueries({ queryKey: ["spec-card", path, slug] });
+    queryClient.invalidateQueries({ queryKey: ["spec-cards", path] });
     queryClient.invalidateQueries({ queryKey: ["spec-waves", slug] });
     queryClient.invalidateQueries({ queryKey: ["spec-quality", slug] });
     queryClient.invalidateQueries({ queryKey: ["spec-children", slug] });
@@ -366,9 +371,9 @@ export function Specs() {
   // `sidebar-lento-lista-specs-dispara`): `dashboard_spec_cards` resolves the
   // cached spec list backend-side and folds the workspace events ONCE for all
   // cards, instead of N parallel `dashboard_spec_card` calls each re-folding
-  // the whole slice. spec-cards has no dedicated watcher kind; mutations
-  // invalidate it (useSpecAction / onRefresh) — keep a 60s poll as the live
-  // fallback, like the per-card queries had.
+  // the whole slice. spec-cards is refreshed by the `dashboard:specs-snapshot`
+  // push (watcher) and by mutations (useSpecAction / onRefresh); the 60s poll
+  // is just the live fallback, like the per-card queries had.
   const cardsQuery = useQuery({
     queryKey: ["spec-cards", activeProject?.path],
     queryFn: (): Promise<SpecCard[]> => fetchSpecCards(activeProject!.path),
