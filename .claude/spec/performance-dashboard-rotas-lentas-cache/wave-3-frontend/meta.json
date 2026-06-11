@@ -1,0 +1,26 @@
+{
+  "stage": "Plan",
+  "outcome": "Active",
+  "phase": null,
+  "scope": null,
+  "lang": "pt-BR",
+  "checkpoint": null,
+  "parent": "performance-dashboard-rotas-lentas-cache",
+  "checklist": [
+    {
+      "label": "apps/dashboard/src/lib/watcher.ts",
+      "path": "apps/dashboard/src/lib/watcher.ts",
+      "done": false
+    },
+    {
+      "label": "apps/dashboard/src/lib/dashboard.ts",
+      "path": "apps/dashboard/src/lib/dashboard.ts",
+      "done": false
+    },
+    {
+      "label": "apps/dashboard/src/hooks/useSpecActions.ts",
+      "path": "apps/dashboard/src/hooks/useSpecActions.ts",
+      "done": false
+    }
+  ]
+}

@@ -1,0 +1,21 @@
+{
+  "stage": "Plan",
+  "outcome": "Active",
+  "phase": null,
+  "scope": null,
+  "lang": "pt-BR",
+  "checkpoint": null,
+  "parent": "performance-dashboard-rotas-lentas-cache",
+  "checklist": [
+    {
+      "label": "apps/dashboard/src-tauri/src/watcher.rs",
+      "path": "apps/dashboard/src-tauri/src/watcher.rs",
+      "done": false
+    },
+    {
+      "label": "apps/dashboard/src-tauri/src/lib.rs",
+      "path": "apps/dashboard/src-tauri/src/lib.rs",
+      "done": false
+    }
+  ]
+}
