@@ -36,6 +36,9 @@ import {
   ChevronDown,
   MoreHorizontal,
   Loader2,
+  PanelLeftClose,
+  PanelLeftOpen,
+  Box,
 } from "lucide-react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useQueryClient } from "@tanstack/react-query";
@@ -50,6 +53,12 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { useStore } from "@/lib/store";
 import {
@@ -467,6 +476,67 @@ function ProjectTreeNode({
 }
 
 // ---------------------------------------------------------------------------
+// Collapsed icon rail
+// ---------------------------------------------------------------------------
+
+/** A single 56px-rail entry: an icon-only button with a hover tooltip. Used for
+ *  both the tool nav and the per-project dots while the sidebar is collapsed. */
+function RailButton({
+  icon: Icon,
+  label,
+  active,
+  disabled,
+  spinning,
+  onClick,
+  dot,
+}: {
+  icon: typeof Home;
+  label: string;
+  active?: boolean;
+  disabled?: boolean;
+  spinning?: boolean;
+  onClick: () => void;
+  /** Optional status dot overlaid bottom-right (project install state). */
+  dot?: StatusKind;
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          onClick={onClick}
+          disabled={disabled}
+          aria-label={label}
+          className={cn(
+            "relative mx-auto inline-flex h-9 w-9 items-center justify-center rounded-md transition-colors duration-150",
+            active
+              ? "bg-primary/15 text-foreground"
+              : "text-sidebar-foreground/70 hover:bg-muted/40 hover:text-foreground",
+            disabled && "opacity-50 cursor-not-allowed",
+          )}
+        >
+          <Icon className={cn("h-4 w-4", spinning && "animate-spin")} />
+          {dot && dot !== "checking" && (
+            <span
+              aria-hidden
+              className={cn(
+                "absolute bottom-1 right-1 h-1.5 w-1.5 rounded-full ring-1 ring-background",
+                dot === "installed"
+                  ? "bg-[--intent-success]"
+                  : dot === "updateAvailable"
+                    ? "bg-[--primary]"
+                    : "bg-zinc-500",
+              )}
+            />
+          )}
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side="right">{label}</TooltipContent>
+    </Tooltip>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Sidebar
 // ---------------------------------------------------------------------------
 
@@ -477,9 +547,14 @@ export function Sidebar() {
   // `t` still drives project-detection toasts, empty states, and the
   // `projects.addDialogTitle` Tauri dialog title (keys not duplicated here).
   const tLib = useT();
+  const navigate = useNavigate();
+  const location = useLocation();
   const projects = useProjectsStore((s) => s.projects);
   const addProject = useProjectsStore((s) => s.addProject);
+  const activateProject = useProjectsStore((s) => s.activateProject);
   const activeProjectsRoot = useStore((s) => s.projectsRoot);
+  const collapsed = useStore((s) => s.sidebarCollapsed);
+  const toggleSidebar = useStore((s) => s.toggleSidebar);
   const detections = useProjectDetections();
   const driftByPath = useArtifactDrift();
   const [busyAdd, setBusyAdd] = useState(false);
@@ -517,27 +592,120 @@ export function Sidebar() {
     }
   }
 
+  // Tools group, shared between the rail and the full tree so the icon set
+  // stays in sync. `end` marks an exact-match active route.
+  const tools: { to: string; icon: typeof Home; label: string }[] = [
+    { to: "/commands", icon: Terminal, label: tLib("sidebar.commands") },
+    { to: "/prd", icon: FileText, label: tLib("sidebar.prd") },
+    { to: "/sessions", icon: History, label: tLib("sidebar.sessions") },
+  ];
+
+  // -------------------------------------------------------------------------
+  // Collapsed icon rail (~56px): add-project, project dots, tools, prefs.
+  // Projects collapse to a single status-dotted box icon that activates +
+  // jumps to that project's overview (the full tree needs width it lacks here).
+  // -------------------------------------------------------------------------
+  if (collapsed) {
+    return (
+      <aside className="row-span-2 col-start-1 bg-background text-sidebar-foreground border-r border-border flex flex-col items-stretch">
+        <TooltipProvider delayDuration={200}>
+          <div className="flex flex-col items-stretch gap-1 px-2 pt-3 flex-1 min-h-0">
+            <RailButton
+              icon={PanelLeftOpen}
+              label={tLib("sidebar.expand", "Expandir")}
+              onClick={toggleSidebar}
+            />
+            <RailButton
+              icon={busyAdd ? Loader2 : FolderPlus}
+              spinning={busyAdd}
+              disabled={!tauri || busyAdd}
+              label={tLib("sidebar.add_project")}
+              onClick={handleAddProject}
+            />
+
+            <Separator className="my-2" />
+
+            <div className="flex flex-col gap-1 overflow-y-auto">
+              {detections.map((row) => {
+                const isActive = activeProjectsRoot === row.project.path;
+                const kind = statusKind(row.isLoading, row.detection);
+                return (
+                  <RailButton
+                    key={row.project.path}
+                    icon={Box}
+                    label={row.project.name}
+                    active={isActive}
+                    dot={kind}
+                    onClick={async () => {
+                      if (!isActive) await activateProject(row.project.path);
+                      navigate("/workspace");
+                    }}
+                  />
+                );
+              })}
+            </div>
+
+            <Separator className="my-2" />
+
+            {tools.map(({ to, icon, label }) => (
+              <RailButton
+                key={to}
+                icon={icon}
+                label={label}
+                active={
+                  location.pathname === to ||
+                  location.pathname.startsWith(`${to}/`)
+                }
+                onClick={() => navigate(to)}
+              />
+            ))}
+
+            <div className="mt-auto" />
+            <Separator className="my-2" />
+            <RailButton
+              icon={Cog}
+              label={tLib("sidebar.preferences")}
+              active={location.pathname.startsWith("/preferences")}
+              onClick={() => navigate("/preferences")}
+            />
+          </div>
+        </TooltipProvider>
+      </aside>
+    );
+  }
+
   return (
-    <aside className="row-span-2 col-start-1 bg-sidebar text-sidebar-foreground border-r border-sidebar-border flex flex-col">
+    <aside className="row-span-2 col-start-1 bg-background text-sidebar-foreground border-r border-border flex flex-col">
       <div className="px-2 pt-3 flex flex-col flex-1 min-h-0">
-        <button
-          type="button"
-          onClick={handleAddProject}
-          disabled={!tauri || busyAdd}
-          title={tauri ? undefined : t("sidebar.addProjectDesktopOnly")}
-          className={cn(
-            "flex items-center gap-2 px-3 py-1.5 rounded-md text-sm transition-colors duration-150",
-            "text-sidebar-foreground/80 hover:bg-muted/40 hover:text-foreground",
-            (!tauri || busyAdd) && "opacity-50 cursor-not-allowed",
-          )}
-        >
-          {busyAdd ? (
-            <Loader2 className="h-3.5 w-3.5 animate-spin" />
-          ) : (
-            <FolderPlus className="h-3.5 w-3.5" />
-          )}
-          <span>{tLib("sidebar.add_project")}</span>
-        </button>
+        <div className="flex items-center gap-1">
+          <button
+            type="button"
+            onClick={handleAddProject}
+            disabled={!tauri || busyAdd}
+            title={tauri ? undefined : t("sidebar.addProjectDesktopOnly")}
+            className={cn(
+              "flex flex-1 items-center gap-2 px-3 py-1.5 rounded-md text-sm transition-colors duration-150",
+              "text-sidebar-foreground/80 hover:bg-muted/40 hover:text-foreground",
+              (!tauri || busyAdd) && "opacity-50 cursor-not-allowed",
+            )}
+          >
+            {busyAdd ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <FolderPlus className="h-3.5 w-3.5" />
+            )}
+            <span>{tLib("sidebar.add_project")}</span>
+          </button>
+          <button
+            type="button"
+            onClick={toggleSidebar}
+            aria-label={tLib("sidebar.collapse", "Recolher")}
+            title={tLib("sidebar.collapse", "Recolher")}
+            className="h-7 w-7 shrink-0 inline-flex items-center justify-center rounded-md text-muted-foreground hover:bg-muted/40 hover:text-foreground transition-colors"
+          >
+            <PanelLeftClose className="h-3.5 w-3.5" />
+          </button>
+        </div>
 
         <div className="mt-2 flex flex-col gap-0.5 overflow-y-auto">
           {projects.length === 0 ? (
@@ -577,15 +745,11 @@ export function Sidebar() {
         <Separator className="my-3" />
 
         <div className={groupHeaderClass}>{tLib("sidebar.tools")}</div>
-        <NavLink to="/commands" className={toolNavItemClass}>
-          <Terminal className="h-3.5 w-3.5" /> {tLib("sidebar.commands")}
-        </NavLink>
-        <NavLink to="/prd" className={toolNavItemClass}>
-          <FileText className="h-3.5 w-3.5" /> {tLib("sidebar.prd")}
-        </NavLink>
-        <NavLink to="/sessions" className={toolNavItemClass}>
-          <History className="h-3.5 w-3.5" /> {tLib("sidebar.sessions")}
-        </NavLink>
+        {tools.map(({ to, icon: Icon, label }) => (
+          <NavLink key={to} to={to} className={toolNavItemClass}>
+            <Icon className="h-3.5 w-3.5" /> {label}
+          </NavLink>
+        ))}
 
         <div className="mt-auto" />
         <Separator className="my-3" />

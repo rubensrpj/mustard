@@ -18,7 +18,7 @@ import {
   DropdownMenuItem,
 } from "@/components/ui/dropdown-menu";
 import { useGitInfo } from "@/hooks/useGitInfo";
-import { useFileViewer } from "@/hooks/useFileViewer";
+import { useCodeViewerStore } from "@/lib/code-viewer-store";
 import {
   fetchGitLog,
   type GitInfo,
@@ -392,8 +392,10 @@ function GitBody({ data, repoPath }: { data: GitInfo; repoPath: string }) {
   // its full body open/closed below the row.
   const [expandedHash, setExpandedHash] = useState<string | null>(null);
 
-  // Reusable CodeViewer launcher — changed files open their content on click.
-  const { openFile, viewer } = useFileViewer(repoPath);
+  // Changed files open their content in the global docked CodeViewerPanel.
+  // `git status` paths are repo-relative → fed straight to `read_file`.
+  const openStoreFile = useCodeViewerStore((s) => s.openFile);
+  const openFile = (path: string) => openStoreFile(repoPath, path);
 
   // Fetch the selected branch's log. Keyed on (repoPath, branch) so each branch
   // caches independently; disabled until both are known. While no branch is
@@ -524,7 +526,6 @@ function GitBody({ data, repoPath }: { data: GitInfo; repoPath: string }) {
           </ul>
         </div>
       )}
-      {viewer}
     </div>
   );
 }

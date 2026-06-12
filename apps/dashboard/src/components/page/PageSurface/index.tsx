@@ -16,7 +16,7 @@ export function PageSurface({ children, className, editorial = true }: PageSurfa
   return (
     <div
       className={cn(
-        "flex flex-col gap-8 w-full max-w-7xl mx-auto px-6",
+        "flex flex-col gap-8 w-full px-6",
         editorial && "pt-8 pb-16",
         className,
       )}

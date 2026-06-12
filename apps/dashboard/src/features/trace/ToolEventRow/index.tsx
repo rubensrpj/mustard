@@ -28,7 +28,7 @@ import { memo, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import { ChevronDown, ChevronRight, Copy, Check, FileSearch } from "lucide-react";
 import { DiffViewer, CodeBlock, type CodeLang } from "@/components/page";
-import { useFileViewer } from "@/hooks/useFileViewer";
+import { useCodeViewerStore } from "@/lib/code-viewer-store";
 import { toolPillColorClass } from "../tool-palette";
 import { cn } from "@/lib/utils";
 import { relativeTime } from "@/lib/time";
@@ -65,8 +65,9 @@ export const ToolEventRow = memo(function ToolEventRow({
   projectPath,
 }: ToolEventRowProps) {
   const t = useT();
-  // Reusable CodeViewer launcher — opens the real file behind a tool event.
-  const { openFile, viewer } = useFileViewer(projectPath ?? null);
+  // Opens the real file behind a tool event in the global docked
+  // CodeViewerPanel (one panel for the whole app).
+  const openFile = useCodeViewerStore((s) => s.openFile);
   // Cast to the real shape — legacy fields land in `payload` as extras
   // (we treat anything missing as `undefined`, never throw).
   const payload = (node.payload ?? {}) as ToolUsePayload & Record<string, unknown>;
@@ -104,16 +105,14 @@ export const ToolEventRow = memo(function ToolEventRow({
   const meta: PayloadMeta = { actor, ts, summary };
 
   // "abrir arquivo" affordance — only when we have both a repo root and a
-  // file path on the event. Bundled with `{viewer}` so a single render of the
-  // chosen branch wires both the header button and the modal.
+  // file path on the event. Opens into the global docked CodeViewerPanel.
   const canOpen = !!projectPath && !!filePath;
-  const onOpenFile = canOpen ? () => openFile(filePath as string) : undefined;
-  const withViewer = (card: React.ReactNode) => (
-    <>
-      {card}
-      {viewer}
-    </>
-  );
+  const onOpenFile = canOpen
+    ? () => openFile(projectPath as string, filePath as string)
+    : undefined;
+  // Identity passthrough kept so the per-branch render sites stay unchanged now
+  // that the viewer is global (no local modal to splice in).
+  const withViewer = (card: React.ReactNode) => card;
 
   if (toolName === "Edit" || toolName === "Write" || toolName === "MultiEdit") {
     if (result?.file_before != null && result?.file_after != null) {

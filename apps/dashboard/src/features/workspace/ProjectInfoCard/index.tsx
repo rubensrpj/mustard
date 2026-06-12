@@ -12,10 +12,10 @@ import {
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { cn } from "@/lib/utils";
-import { DataCard, SectionHeader, StatPill, EmptyState } from "@/components/page";
+import { DataCard, SectionHeader, EmptyState } from "@/components/page";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { useProjectOverview } from "@/hooks/useProjectOverview";
-import { useFileViewer } from "@/hooks/useFileViewer";
+import { useCodeViewerStore } from "@/lib/code-viewer-store";
 import {
   fetchDepsOutdated,
   type ProjectUnitSummary,
@@ -33,9 +33,6 @@ import { useT } from "@/lib/i18n";
 interface ProjectInfoCardProps {
   repoPath: string;
 }
-
-/** How many frameworks render per project before the rest collapse to "+N". */
-const MAX_FRAMEWORKS = 6;
 
 interface LangFacet {
   label: string;
@@ -128,7 +125,7 @@ function UnitNode({
 }: {
   unit: ProjectUnitSummary;
   repoPath: string;
-  openFile: (relPath: string, fileName?: string) => void;
+  openFile: (repoPath: string, relPath: string, fileName?: string) => void;
 }) {
   const t = useT();
   const facet = langFacet(unit.language);
@@ -156,7 +153,6 @@ function UnitNode({
     [unit.deps, byName],
   );
 
-  const extra = Math.max(0, unit.frameworks.length - MAX_FRAMEWORKS);
   // A check completed (not fetching) yet matched nothing — surface fail-open.
   const checkedEmpty = checked && !isFetching && (outdated?.length ?? 0) === 0;
 
@@ -227,7 +223,7 @@ function UnitNode({
               icon={BookOpen}
               label="README"
               title={t("overview.project.openReadme", "abrir README")}
-              onClick={() => openFile(unit.readme_path as string)}
+              onClick={() => openFile(repoPath, unit.readme_path as string)}
             />
           )}
           {unit.claude_md_path && (
@@ -235,7 +231,7 @@ function UnitNode({
               icon={FileText}
               label="CLAUDE.md"
               title={t("overview.project.openClaudeMd", "abrir CLAUDE.md")}
-              onClick={() => openFile(unit.claude_md_path as string)}
+              onClick={() => openFile(repoPath, unit.claude_md_path as string)}
             />
           )}
           <NodeAction
@@ -250,15 +246,6 @@ function UnitNode({
 
       {expanded && (
         <div className="border-t border-border/40 px-2.5 py-2">
-          {unit.frameworks.length > 0 && (
-            <div className="mb-2 flex flex-wrap gap-1">
-              {unit.frameworks.slice(0, MAX_FRAMEWORKS).map((fw) => (
-                <StatPill key={fw} value={fw} />
-              ))}
-              {extra > 0 && <StatPill value={`+${extra}`} />}
-            </div>
-          )}
-
           {isFetching && (
             <p className="mb-1.5 text-[11px] text-muted-foreground/80">
               {t("overview.project.checking", "checando atualizações…")}
@@ -379,7 +366,8 @@ interface LangGroup {
  * the fold. Inside each tab, each project is a collapsible treeview node
  * (default collapsed): the header shows name, directory, dep count, README /
  * CLAUDE.md links and a "check updates" action; expanding reveals the unit's
- * frameworks and its dependency list (name + installed version). The outdated
+ * dependency list (name + installed version) — the versioned deps already cover
+ * the stack, so the redundant framework badge row was dropped. The outdated
  * check is on-demand — clicking "check updates" fires `dashboard_deps_outdated`
  * and paints each stale dep by semver severity. The initial tab is the one with
  * the most projects. Empty-state tolerant — an unscanned workspace resolves to
@@ -388,7 +376,8 @@ interface LangGroup {
 export function ProjectInfoCard({ repoPath }: ProjectInfoCardProps) {
   const t = useT();
   const { data } = useProjectOverview(repoPath);
-  const { openFile, viewer } = useFileViewer(repoPath);
+  // Opens into the global docked CodeViewerPanel (one panel for the whole app).
+  const openFile = useCodeViewerStore((s) => s.openFile);
 
   const units = useMemo<ProjectUnitSummary[]>(() => data?.units ?? [], [data?.units]);
 
@@ -477,8 +466,6 @@ export function ProjectInfoCard({ repoPath }: ProjectInfoCardProps) {
           ))}
         </Tabs>
       )}
-
-      {viewer}
     </DataCard>
   );
 }

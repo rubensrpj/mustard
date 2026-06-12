@@ -1,6 +1,7 @@
 export * from "./AcBreakdown";
 export * from "./BaseRow";
 export * from "./CodeBlock";
+export * from "./CodeViewerPanel";
 export * from "./CollapsibleGroup";
 export * from "./CostBar";
 export * from "./DataCard";

@@ -4,7 +4,7 @@ import { cn } from "@/lib/utils";
 import { DataCard, SectionHeader, EmptyState } from "@/components/page";
 import { StatPill } from "@/components/page";
 import { useWorkspaceSummarySingle } from "@/hooks/useWorkspaceSummary";
-import { useFileViewer } from "@/hooks/useFileViewer";
+import { useCodeViewerStore } from "@/lib/code-viewer-store";
 import { useTranslate } from "@/lib/i18n";
 
 interface WorkspaceFilesRankingProps {
@@ -28,7 +28,8 @@ export function WorkspaceFilesRanking({ repoPath }: WorkspaceFilesRankingProps) 
   const { data, isLoading } = useWorkspaceSummarySingle(repoPath);
   // Top-files paths may arrive ABSOLUTE (e.g. `C:\Atiz\sialia\…`); pass them
   // through as-is — `dashboard_read_file` resolves absolutes inside the repo.
-  const { openFile, viewer } = useFileViewer(repoPath);
+  // Opens into the global docked CodeViewerPanel (one panel for the whole app).
+  const openFile = useCodeViewerStore((s) => s.openFile);
 
   const rows = useMemo(
     () => (data?.top_files_today ?? []).slice(0, TOP_N),
@@ -66,7 +67,7 @@ export function WorkspaceFilesRanking({ repoPath }: WorkspaceFilesRankingProps) 
             >
               <button
                 type="button"
-                onClick={() => openFile(row.path)}
+                onClick={() => openFile(repoPath, row.path)}
                 aria-label={`abrir ${row.path}`}
                 title={row.path}
                 className={cn(
@@ -94,7 +95,6 @@ export function WorkspaceFilesRanking({ repoPath }: WorkspaceFilesRankingProps) 
           ))}
         </ul>
       )}
-      {viewer}
     </DataCard>
   );
 }
