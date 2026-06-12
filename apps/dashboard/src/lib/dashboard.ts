@@ -1066,6 +1066,23 @@ export interface GitPending {
   untracked: number;
 }
 
+/**
+ * One changed file from `git status --porcelain` — mirrors the Rust
+ * `GitChangedFile` (`serde(rename_all = "snake_case")`). A single file can be
+ * both `staged` and `unstaged` (an index change plus a later work-tree edit),
+ * so the flags are independent booleans rather than a single enum.
+ */
+export interface GitChangedFile {
+  /** Path relative to the repo root (rename destination for `R` entries). */
+  path: string;
+  /** `true` when the index column holds a change (staged). */
+  staged: boolean;
+  /** `true` when the work-tree column holds a change (unstaged). */
+  unstaged: boolean;
+  /** `true` when the entry is untracked (`??`). */
+  untracked: boolean;
+}
+
 export interface GitInfo {
   is_repo: boolean;
   remote_url: string;
@@ -1079,6 +1096,12 @@ export interface GitInfo {
   last_commit_date: string;
   /** Working-tree pending counts (staged / unstaged / untracked). */
   pending: GitPending;
+  /**
+   * Per-file working-tree changes, capped at 100 by the backend (the `pending`
+   * counts stay exact even when this list is truncated). Stable order: staged,
+   * then unstaged, then untracked; within each group, by path.
+   */
+  changes: GitChangedFile[];
   /** Local branch names (the current branch is `branch`). */
   branches: string[];
   /** Most-recent commits, newest first (backend caps the count). */

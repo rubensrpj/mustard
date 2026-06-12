@@ -32,6 +32,23 @@ pub struct GitPending {
     pub untracked: u32,
 }
 
+/// One changed file from `git status --porcelain`, carrying its path and the
+/// columns it touches. A single file can be both `staged` and `unstaged` (an
+/// index change plus a later work-tree edit), so the flags are independent
+/// booleans rather than a single enum.
+#[derive(Serialize, Default, Clone)]
+#[serde(rename_all = "snake_case")]
+pub struct GitChangedFile {
+    /// Path relative to the repo root (rename destination for `R` entries).
+    pub path: String,
+    /// `true` when the index column (X) holds a change (staged).
+    pub staged: bool,
+    /// `true` when the work-tree column (Y) holds a change (unstaged).
+    pub unstaged: bool,
+    /// `true` when the entry is untracked (`??`).
+    pub untracked: bool,
+}
+
 /// One commit from the recent log, one field per `git log` format token so a
 /// subject containing any character never splits the parse.
 #[derive(Serialize, Default)]
@@ -72,6 +89,10 @@ pub struct GitInfo {
     pub last_commit_date: String,
     /// Working-tree change counts (staged / unstaged / untracked).
     pub pending: GitPending,
+    /// Per-file working-tree changes, capped at 100 (counts in `pending` stay
+    /// exact even when this list is truncated). Stable order: staged, then
+    /// unstaged, then untracked; within each group, by path.
+    pub changes: Vec<GitChangedFile>,
     /// Local branch names (`git branch`), capped at ~20.
     pub branches: Vec<String>,
     /// The last 10 commits, newest first.
@@ -104,6 +125,52 @@ pub async fn dashboard_git_info(repo_path: String) -> Result<GitInfo, String> {
         .await
         .unwrap_or_default();
     Ok(info)
+}
+
+/// Group rank for the stable change order: staged (0) before unstaged (1)
+/// before untracked (2). An entry that is both staged and unstaged sorts with
+/// the staged group.
+fn change_rank(c: &GitChangedFile) -> u8 {
+    if c.staged {
+        0
+    } else if c.unstaged {
+        1
+    } else {
+        2
+    }
+}
+
+/// Parse one `git status --porcelain` v1 line into a [`GitChangedFile`], or
+/// `None` for a blank line. The first two columns are the index (X) and
+/// work-tree (Y) status, followed by a space and the path:
+/// - `untracked` when the line begins with `??`.
+/// - `staged` when X is neither space nor `?`.
+/// - `unstaged` when Y is neither space nor `?`.
+/// - `path` is everything after the 3-column prefix; for a rename
+///   (`R  old -> new`) the destination after `-> ` is kept. Surrounding quotes
+///   git adds for paths with spaces/specials are trimmed.
+fn parse_porcelain_line(line: &str) -> Option<GitChangedFile> {
+    if line.len() < 3 {
+        return None;
+    }
+    let mut cols = line.chars();
+    let index = cols.next().unwrap_or(' ');
+    let worktree = cols.next().unwrap_or(' ');
+    let untracked = index == '?' && worktree == '?';
+    // Path is everything after the two status columns and the separating space.
+    let raw = line.get(3..).unwrap_or("").trim();
+    // Rename/copy entries render as `old -> new`; keep the destination.
+    let path_part = raw.rsplit(" -> ").next().unwrap_or(raw);
+    let path = path_part.trim().trim_matches('"').to_string();
+    if path.is_empty() {
+        return None;
+    }
+    Some(GitChangedFile {
+        path,
+        staged: index != ' ' && index != '?',
+        unstaged: worktree != ' ' && worktree != '?',
+        untracked,
+    })
 }
 
 /// Synchronous body of [`dashboard_git_info`], kept separate so unit tests call
@@ -166,26 +233,35 @@ fn git_info_impl(repo_path: &str) -> GitInfo {
         info.last_commit_date = date;
     }
 
-    // Pending changes from porcelain v1. Each line's first two columns are the
-    // index (staged) and work-tree (unstaged) status; `??` marks an untracked
-    // file. `git_capture` trims the trailing newline, so blank lines never
-    // appear except an all-empty (clean tree) output, which yields zero counts.
+    // Pending changes from porcelain v1, parsed in a single pass that derives
+    // both the `pending` counts and the per-file `changes` list. Each line's
+    // first two columns are the index (staged) and work-tree (unstaged) status;
+    // `??` marks an untracked file. `git_capture` trims the trailing newline, so
+    // blank lines never appear except an all-empty (clean tree) output, which
+    // yields zero counts and an empty list. The counts are tallied for every
+    // entry *before* the list is capped, so the totals stay exact even when the
+    // displayed list is truncated.
     if let Some(status) = git_capture(base, &["status", "--porcelain"]) {
         for line in status.lines() {
-            if line.starts_with("??") {
-                info.pending.untracked += 1;
+            let Some(change) = parse_porcelain_line(line) else {
                 continue;
+            };
+            if change.untracked {
+                info.pending.untracked += 1;
             }
-            let mut cols = line.chars();
-            let index = cols.next().unwrap_or(' ');
-            let worktree = cols.next().unwrap_or(' ');
-            if index != ' ' {
+            if change.staged {
                 info.pending.staged += 1;
             }
-            if worktree != ' ' {
+            if change.unstaged {
                 info.pending.unstaged += 1;
             }
+            info.changes.push(change);
         }
+        // Stable order: staged first, then unstaged, then untracked; within each
+        // group, by path. `sort_by_key` is stable so equal keys keep git's order.
+        info.changes
+            .sort_by(|a, b| change_rank(a).cmp(&change_rank(b)).then(a.path.cmp(&b.path)));
+        info.changes.truncate(100);
     }
 
     // Local branches only, one short name per line. Capped so a repo with many
@@ -369,6 +445,50 @@ mod tests {
         assert!(
             info.pending.untracked >= 1,
             "the untracked file is counted"
+        );
+
+        // Stage one new file and leave another untracked, then assert the
+        // per-file `changes` list carries the right flags and that the counts
+        // still match the list (no entry was dropped under the 100 cap).
+        std::fs::write(base.join("staged.txt"), b"staged").unwrap();
+        let _ = run(&["add", "staged.txt"]);
+        let info = git_info_impl(&base.to_string_lossy());
+
+        let staged = info
+            .changes
+            .iter()
+            .find(|c| c.path == "staged.txt")
+            .expect("staged.txt appears in the changes list");
+        assert!(staged.staged, "staged.txt is flagged staged");
+        assert!(!staged.untracked, "a staged file is not untracked");
+
+        let untracked = info
+            .changes
+            .iter()
+            .find(|c| c.path == "untracked.txt")
+            .expect("untracked.txt appears in the changes list");
+        assert!(untracked.untracked, "untracked.txt is flagged untracked");
+        assert!(!untracked.staged, "an untracked file is not staged");
+
+        assert!(
+            info.changes.iter().filter(|c| c.staged).count() >= 1,
+            "at least one staged entry"
+        );
+        assert!(
+            info.changes.iter().filter(|c| c.untracked).count() >= 1,
+            "at least one untracked entry"
+        );
+
+        // The list (uncapped here) and the counts derive from the same pass.
+        assert_eq!(
+            info.changes.iter().filter(|c| c.staged).count() as u32,
+            info.pending.staged,
+            "staged count matches the list"
+        );
+        assert_eq!(
+            info.changes.iter().filter(|c| c.untracked).count() as u32,
+            info.pending.untracked,
+            "untracked count matches the list"
         );
     }
 

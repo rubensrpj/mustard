@@ -11,7 +11,6 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { useProjectOverview } from "@/hooks/useProjectOverview";
 import type { ProjectUnitSummary } from "@/lib/dashboard";
 import { TonalIcon, TONE, type TonalColor } from "@/features/workspace/_shared/tonal";
-import { cn } from "@/lib/utils";
 import { useT } from "@/lib/i18n";
 
 interface ProjectInfoCardProps {
@@ -213,12 +212,7 @@ export function ProjectInfoCard({ repoPath }: ProjectInfoCardProps) {
           </TabsList>
           {groups.map((g) => (
             <TabsContent key={g.kind} value={g.kind}>
-              <ul
-                className={cn(
-                  "flex flex-col gap-1.5",
-                  g.units.length > 6 && "max-h-[360px] overflow-y-auto pr-1",
-                )}
-              >
+              <ul className="flex flex-col gap-1.5">
                 {g.units.map((unit) => (
                   <UnitRow key={`${unit.dir}:${unit.name}`} unit={unit} />
                 ))}
