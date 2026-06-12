@@ -10,9 +10,7 @@ import {
 import { Separator } from "@/components/ui/separator";
 import { SpecStatusCards } from "@/features/workspace/SpecStatusCards";
 import { SpecAlertsBand } from "@/features/workspace/SpecAlertsBand";
-import { ProjectInfoCard } from "@/features/workspace/ProjectInfoCard";
-import { GitInfoCard } from "@/features/workspace/GitInfoCard";
-import { WorkspaceFilesRanking } from "@/features/workspace/WorkspaceFilesRanking";
+import { ProjectsPanel } from "@/features/workspace/ProjectsPanel";
 
 /**
  * Visão Geral — redesign (spec `redesenho-rota-visao-geral-dashboard`). This is
@@ -76,12 +74,11 @@ export function Workspace() {
 
       <Separator />
 
-      {/* ── Projetos: identity, local git, most-touched files (1 coluna) ── */}
+      {/* ── Projetos: master-detail — sub-sidebar picks identity / git /
+            most-touched files; the right panel shows only the active one. ── */}
       <section className="flex flex-col gap-3">
         <SectionHeader title="Projetos" />
-        <ProjectInfoCard repoPath={repoPath} />
-        <GitInfoCard repoPath={repoPath} />
-        <WorkspaceFilesRanking repoPath={repoPath} />
+        <ProjectsPanel repoPath={repoPath} />
       </section>
     </PageSurface>
   );

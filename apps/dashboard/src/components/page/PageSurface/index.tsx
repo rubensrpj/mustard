@@ -5,7 +5,8 @@ export interface PageSurfaceProps {
   children: ReactNode;
   className?: string;
   /**
-   * Aplica o ritmo editorial Binance (80px vertical padding via --editorial-band-py).
+   * Aplica o ritmo editorial: respiro vertical confortável (topo enxuto para
+   * não abrir um vão grande sob o topbar, base mais folgada).
    * Default true. Use false apenas em sub-páginas embedadas (split-detail content).
    */
   editorial?: boolean;
@@ -16,7 +17,7 @@ export function PageSurface({ children, className, editorial = true }: PageSurfa
     <div
       className={cn(
         "flex flex-col gap-8 w-full max-w-7xl mx-auto px-6",
-        editorial && "py-20",
+        editorial && "pt-8 pb-16",
         className,
       )}
     >
