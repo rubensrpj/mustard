@@ -1,6 +1,15 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { GitBranch, Check, ChevronDown } from "lucide-react";
+import {
+  GitBranch,
+  Check,
+  ChevronDown,
+  ChevronRight,
+  FileEdit,
+  FilePlus,
+  FileQuestion,
+  type LucideIcon,
+} from "lucide-react";
 import { DataCard, SectionHeader, StatPill, EmptyState } from "@/components/page";
 import {
   DropdownMenu,
@@ -32,8 +41,6 @@ interface GitInfoCardProps {
 
 /** How many commits the selected-branch history requests. */
 const GIT_LOG_LIMIT = 30;
-/** How many change rows render before the rest collapse to "+N mais". */
-const MAX_CHANGE_ROWS = 12;
 
 /** Strip the `.git` suffix and protocol/host noise from a remote URL so the
  *  card shows a compact `owner/repo` style identifier when possible. */
@@ -109,6 +116,65 @@ function ChangeRow({ change }: { change: GitChangedFile }) {
         </span>
       </span>
     </li>
+  );
+}
+
+/** A collapsible group of changed files in the VS Code Source Control spirit: a
+ *  clickable header (tonal icon + label + count, chevron rotating on expand) and
+ *  the full file list below when open. Empty groups never render (the caller
+ *  guards on `files.length`). State is owned by the caller so each group keeps
+ *  its own default. */
+function ChangeGroup({
+  icon,
+  color,
+  label,
+  files,
+  open,
+  onToggle,
+}: {
+  icon: LucideIcon;
+  color: TonalColor;
+  label: string;
+  files: GitChangedFile[];
+  open: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <div className="flex flex-col gap-1.5">
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-expanded={open}
+        className={cn(
+          "flex items-center gap-2 rounded-md py-1 text-left text-[12.5px]",
+          "transition-colors hover:bg-muted/30",
+          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[--primary]",
+        )}
+      >
+        <ChevronRight
+          className={cn(
+            "h-3.5 w-3.5 shrink-0 text-muted-foreground/60 transition-transform duration-150",
+            open && "rotate-90",
+          )}
+          aria-hidden
+        />
+        <TonalIcon icon={icon} color={color} />
+        <span className="font-medium text-foreground/90">{label}</span>
+        <span
+          className="font-mono text-[11px] tabular-nums text-muted-foreground/70"
+          style={{ fontVariantNumeric: "tabular-nums" }}
+        >
+          {files.length}
+        </span>
+      </button>
+      {open && (
+        <ul className="flex flex-col gap-1.5 pl-[1.375rem]">
+          {files.map((c) => (
+            <ChangeRow key={c.path} change={c} />
+          ))}
+        </ul>
+      )}
+    </div>
   );
 }
 
@@ -249,7 +315,20 @@ function GitBody({ data, repoPath }: { data: GitInfo; repoPath: string }) {
   const changes = data.changes ?? [];
   const totalPending =
     data.pending.staged + data.pending.unstaged + data.pending.untracked;
-  const hiddenChanges = Math.max(0, totalPending - changes.length);
+
+  // Three VS Code Source Control groups over the same file list. A file can be
+  // both staged and unstaged (index change + later work-tree edit), so it shows
+  // in both Staged and Modificados — matching VS Code. Untracked never joins
+  // "Modificados".
+  const staged = changes.filter((c) => c.staged);
+  const modified = changes.filter((c) => c.unstaged && !c.untracked);
+  const untracked = changes.filter((c) => c.untracked);
+
+  // Collapse state per group — Staged + Modificados open by default; Untracked
+  // collapsed (it is the loud, high-cardinality one) but its count stays visible.
+  const [openStaged, setOpenStaged] = useState(true);
+  const [openModified, setOpenModified] = useState(true);
+  const [openUntracked, setOpenUntracked] = useState(false);
 
   // Selected branch drives the history; defaults to the current HEAD branch.
   const [selectedBranch, setSelectedBranch] = useState<string>(data.branch);
@@ -318,24 +397,38 @@ function GitBody({ data, repoPath }: { data: GitInfo; repoPath: string }) {
             {t("overview.git.clean", "working tree limpo")}
           </span>
         ) : (
-          <>
-            <ul className="flex flex-col gap-1.5">
-              {changes.slice(0, MAX_CHANGE_ROWS).map((c) => (
-                <ChangeRow key={c.path} change={c} />
-              ))}
-            </ul>
-            {(changes.length > MAX_CHANGE_ROWS || hiddenChanges > 0) && (
-              <span className="text-[11px] text-muted-foreground/70">
-                {t("overview.git.moreChanges", "+{n} mais").replace(
-                  "{n}",
-                  String(
-                    changes.length - Math.min(changes.length, MAX_CHANGE_ROWS) +
-                      hiddenChanges,
-                  ),
-                )}
-              </span>
+          <div className="flex flex-col gap-1.5">
+            {staged.length > 0 && (
+              <ChangeGroup
+                icon={FilePlus}
+                color={TONE.success}
+                label={t("overview.git.staged", "Staged")}
+                files={staged}
+                open={openStaged}
+                onToggle={() => setOpenStaged((o) => !o)}
+              />
             )}
-          </>
+            {modified.length > 0 && (
+              <ChangeGroup
+                icon={FileEdit}
+                color={TONE.warning}
+                label={t("overview.git.modified", "Modificados")}
+                files={modified}
+                open={openModified}
+                onToggle={() => setOpenModified((o) => !o)}
+              />
+            )}
+            {untracked.length > 0 && (
+              <ChangeGroup
+                icon={FileQuestion}
+                color={TONE.muted}
+                label={t("overview.git.untracked", "Não rastreados")}
+                files={untracked}
+                open={openUntracked}
+                onToggle={() => setOpenUntracked((o) => !o)}
+              />
+            )}
+          </div>
         )}
       </div>
 
