@@ -1,4 +1,3 @@
-export * from "./AggregateOverview";
 export * from "./GitInfoCard";
 export * from "./LivePipelineCard";
 export * from "./ProjectInfoCard";
@@ -6,7 +5,6 @@ export * from "./SpecAlertsBand";
 export * from "./SpecStatusCards";
 export * from "./SpecTrackRow";
 export * from "./SpecTracksList";
-export * from "./WorkspaceAlertsColumn";
 export * from "./WorkspaceDigest";
 export * from "./WorkspaceEffortFooter";
 export * from "./WorkspaceEventsFeed";
@@ -16,5 +14,4 @@ export * from "./WorkspaceHero";
 export * from "./WorkspaceMonthCalendar";
 export * from "./WorkspaceSpecsByStatus";
 export * from "./WorkspaceStatusBar";
-export * from "./WorkspaceStatusCounters";
 export * from "./WorkspaceTokenSummary";
