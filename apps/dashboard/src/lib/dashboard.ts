@@ -1118,6 +1118,14 @@ export interface StackSummary {
   confidence: number;
 }
 
+/** One dependency declared in a unit's manifest, with its installed/declared
+ *  version range — mirrors the Rust `DepVersion`. `version` is the raw manifest
+ *  string (`^4.0.1`, `~2.0.0`, `1.2.3`), empty when the manifest omits it. */
+export interface DepVersion {
+  name: string;
+  version: string;
+}
+
 /**
  * Per-unit identity of one project inside the workspace — mirrors the Rust
  * `ProjectUnitSummary` (`serde(rename_all = "snake_case")`). `language` is the
@@ -1130,6 +1138,28 @@ export interface ProjectUnitSummary {
   language: string;
   frameworks: string[];
   stacks: StackSummary[];
+  /** Dependencies WITH installed/declared version, read from the unit's
+   *  manifest. Sorted by name, deduped, capped by the backend. */
+  deps: DepVersion[];
+  /** Repo-relative path to the unit's `README.md`, or `null` when absent. */
+  readme_path: string | null;
+  /** Repo-relative path to the unit's `CLAUDE.md`, or `null` when absent. */
+  claude_md_path: string | null;
+}
+
+/** Semver-derived staleness of one dependency. */
+export type DepSeverity = "major" | "minor" | "patch" | "up-to-date";
+
+/**
+ * One stale dependency from `dashboard_deps_outdated` — mirrors the Rust
+ * `OutdatedDep` (`serde(rename_all = "snake_case")`). `current` is the installed
+ * version, `latest` the newest available, `severity` the semver gap.
+ */
+export interface OutdatedDep {
+  name: string;
+  current: string;
+  latest: string;
+  severity: DepSeverity;
 }
 
 /**
@@ -1187,6 +1217,26 @@ export function fetchGitLog(
 
 export function fetchProjectOverview(repoPath: string): Promise<ProjectOverview> {
   return invoke<ProjectOverview>("dashboard_project_overview", { repoPath });
+}
+
+/**
+ * On-demand outdated check for one unit — shells out to the ecosystem tool
+ * (npm/dotnet/cargo) inside `<repoPath>/<projectDir>`, so it is SLOW (network)
+ * and must only run after an explicit user action. Args go over in camelCase
+ * (`repoPath`, `projectDir`, `kind`) and the Rust serde maps them to snake_case
+ * — do not rename. STRONGLY fail-open: missing tool, no network, timeout, or
+ * unparseable output all resolve to an empty array, never a rejected Promise.
+ */
+export function fetchDepsOutdated(
+  repoPath: string,
+  projectDir: string,
+  kind: string,
+): Promise<OutdatedDep[]> {
+  return invoke<OutdatedDep[]>("dashboard_deps_outdated", {
+    repoPath,
+    projectDir,
+    kind,
+  });
 }
 
 // --- Code viewer file read (etapa 1: fundação do CodeViewer) ----------------

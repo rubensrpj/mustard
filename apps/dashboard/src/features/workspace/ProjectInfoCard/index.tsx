@@ -1,16 +1,33 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import {
   Boxes,
   Package,
   type LucideIcon,
   FileCode,
   Hexagon,
+  ChevronRight,
+  BookOpen,
+  FileText,
+  RefreshCw,
 } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
+import { cn } from "@/lib/utils";
 import { DataCard, SectionHeader, StatPill, EmptyState } from "@/components/page";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { useProjectOverview } from "@/hooks/useProjectOverview";
-import type { ProjectUnitSummary } from "@/lib/dashboard";
-import { TonalIcon, TONE, type TonalColor } from "@/features/workspace/_shared/tonal";
+import { useFileViewer } from "@/hooks/useFileViewer";
+import {
+  fetchDepsOutdated,
+  type ProjectUnitSummary,
+  type OutdatedDep,
+  type DepSeverity,
+} from "@/lib/dashboard";
+import {
+  TonalIcon,
+  TONE,
+  tonalStyle,
+  type TonalColor,
+} from "@/features/workspace/_shared/tonal";
 import { useT } from "@/lib/i18n";
 
 interface ProjectInfoCardProps {
@@ -65,55 +82,285 @@ function langFacet(kind: string): LangFacet {
   };
 }
 
-/** One project row inside a language tab. */
-function UnitRow({ unit }: { unit: ProjectUnitSummary }) {
+/** Severity → tonal color. `up-to-date` reads success (green), `patch` info
+ *  (blue), `minor` warning (amber), `major` error (red). The color is the
+ *  signal, so a colour-blind-safe glyph is unnecessary here — text carries the
+ *  `current → latest` detail beside it. */
+const SEVERITY_COLOR: Record<DepSeverity, TonalColor> = {
+  "up-to-date": TONE.success,
+  patch: TONE.info,
+  minor: TONE.warning,
+  major: TONE.error,
+};
+
+/**
+ * On-demand outdated check for one unit, gated behind an explicit click. The
+ * `checked` flag (lifted by the parent node) flips `enabled` so the query never
+ * fires on mount — the underlying Tauri command shells out to the registry and
+ * is slow. Keyed by `[repoPath, dir]` so each project caches independently.
+ * Fail-open: the command resolves to `[]` on any error, so `isError` is rare;
+ * an empty result after a check is surfaced as a discreet "could not check" note
+ * by the node, not an error toast.
+ */
+function useDepsOutdated(repoPath: string, unit: ProjectUnitSummary, checked: boolean) {
+  return useQuery<OutdatedDep[]>({
+    queryKey: ["deps-outdated", repoPath, unit.dir],
+    queryFn: () => fetchDepsOutdated(repoPath, unit.dir, unit.language),
+    enabled: checked && !!repoPath,
+    staleTime: 5 * 60_000,
+  });
+}
+
+/** A dep row with its merged outdated severity (when a check has run). */
+interface DepView {
+  name: string;
+  version: string;
+  outdated: OutdatedDep | null;
+}
+
+/** One project node: a collapsible treeview row. Header (name, dir, dep count,
+ *  README/CLAUDE links, "check updates") is always shown; the dep list renders
+ *  only when expanded. Default: collapsed. */
+function UnitNode({
+  unit,
+  repoPath,
+  openFile,
+}: {
+  unit: ProjectUnitSummary;
+  repoPath: string;
+  openFile: (relPath: string, fileName?: string) => void;
+}) {
+  const t = useT();
   const facet = langFacet(unit.language);
+  const [expanded, setExpanded] = useState(false);
+  const [checked, setChecked] = useState(false);
+
+  const { data: outdated, isFetching } = useDepsOutdated(repoPath, unit, checked);
+
+  // Merge the outdated result into the declared deps by name. A check that ran
+  // but returned nothing (fail-open: no tool / no network / timeout) is flagged
+  // so the node can show a discreet note instead of pretending all is current.
+  const byName = useMemo(() => {
+    const m = new Map<string, OutdatedDep>();
+    for (const o of outdated ?? []) m.set(o.name, o);
+    return m;
+  }, [outdated]);
+
+  const deps = useMemo<DepView[]>(
+    () =>
+      unit.deps.map((d) => ({
+        name: d.name,
+        version: d.version,
+        outdated: byName.get(d.name) ?? null,
+      })),
+    [unit.deps, byName],
+  );
+
   const extra = Math.max(0, unit.frameworks.length - MAX_FRAMEWORKS);
+  // A check completed (not fetching) yet matched nothing — surface fail-open.
+  const checkedEmpty = checked && !isFetching && (outdated?.length ?? 0) === 0;
+
+  const onCheck = () => {
+    setChecked(true);
+    setExpanded(true);
+  };
+
   return (
-    <li className="flex items-start gap-2.5 rounded-md border border-border bg-card/30 px-2.5 py-2">
-      <TonalIcon icon={facet.icon} color={facet.color} />
-      <div className="flex min-w-0 flex-1 flex-col gap-1">
-        <div className="flex items-baseline gap-2">
-          <span className="truncate text-[13px] font-medium text-foreground">
-            {unit.name}
-          </span>
-          <span
-            className="shrink-0 text-[11px] font-medium"
-            style={{ color: facet.color }}
-          >
-            {facet.label}
-          </span>
-        </div>
-        <span
-          className="truncate font-mono text-[11px] text-muted-foreground"
-          title={unit.dir}
+    <li className="rounded-md border border-border bg-card/30">
+      <div className="flex items-start gap-2.5 px-2.5 py-2">
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          aria-expanded={expanded}
+          aria-label={
+            expanded
+              ? t("overview.project.collapse", "colapsar projeto")
+              : t("overview.project.expand", "expandir projeto")
+          }
+          className={cn(
+            "mt-0.5 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded",
+            "text-muted-foreground transition-colors hover:bg-muted/40",
+            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[--primary]",
+          )}
         >
-          {unit.dir || "."}
-        </span>
-        {unit.frameworks.length > 0 && (
-          <div className="mt-0.5 flex flex-wrap gap-1">
-            {unit.frameworks.slice(0, MAX_FRAMEWORKS).map((fw) => (
-              <StatPill key={fw} value={fw} />
-            ))}
-            {extra > 0 && <StatPill value={`+${extra}`} />}
+          <ChevronRight
+            className={cn(
+              "h-3.5 w-3.5 transition-transform duration-150",
+              expanded && "rotate-90",
+            )}
+            aria-hidden
+          />
+        </button>
+        <TonalIcon icon={facet.icon} color={facet.color} />
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          className="flex min-w-0 flex-1 flex-col gap-1 text-left"
+        >
+          <div className="flex items-baseline gap-2">
+            <span className="truncate text-[13px] font-medium text-foreground">
+              {unit.name}
+            </span>
+            <span
+              className="shrink-0 text-[11px] font-medium"
+              style={{ color: facet.color }}
+            >
+              {facet.label}
+            </span>
           </div>
-        )}
-        {unit.stacks.length > 0 && (
-          <ul className="mt-0.5 flex flex-wrap gap-x-3 gap-y-0.5">
-            {unit.stacks.map((stack) => (
-              <li
-                key={stack.name}
-                className="flex items-center gap-1 text-[11.5px] text-foreground/70"
-              >
-                <span className="font-mono">{stack.name}</span>
-                <span className="text-[10.5px] text-muted-foreground tabular-nums">
-                  {Math.round(stack.confidence * 100)}%
-                </span>
-              </li>
-            ))}
-          </ul>
-        )}
+          <span
+            className="truncate font-mono text-[11px] text-muted-foreground"
+            title={unit.dir}
+          >
+            {unit.dir || "."}
+          </span>
+        </button>
+        <div className="flex shrink-0 items-center gap-1">
+          <span className="font-mono text-[11px] tabular-nums text-muted-foreground">
+            {t("overview.project.depsCount", "{n} libs").replace(
+              "{n}",
+              String(unit.deps.length),
+            )}
+          </span>
+          {unit.readme_path && (
+            <NodeAction
+              icon={BookOpen}
+              label="README"
+              title={t("overview.project.openReadme", "abrir README")}
+              onClick={() => openFile(unit.readme_path as string)}
+            />
+          )}
+          {unit.claude_md_path && (
+            <NodeAction
+              icon={FileText}
+              label="CLAUDE.md"
+              title={t("overview.project.openClaudeMd", "abrir CLAUDE.md")}
+              onClick={() => openFile(unit.claude_md_path as string)}
+            />
+          )}
+          <NodeAction
+            icon={RefreshCw}
+            title={t("overview.project.checkUpdates", "checar atualizações")}
+            onClick={onCheck}
+            spinning={isFetching}
+            disabled={isFetching}
+          />
+        </div>
       </div>
+
+      {expanded && (
+        <div className="border-t border-border/40 px-2.5 py-2">
+          {unit.frameworks.length > 0 && (
+            <div className="mb-2 flex flex-wrap gap-1">
+              {unit.frameworks.slice(0, MAX_FRAMEWORKS).map((fw) => (
+                <StatPill key={fw} value={fw} />
+              ))}
+              {extra > 0 && <StatPill value={`+${extra}`} />}
+            </div>
+          )}
+
+          {isFetching && (
+            <p className="mb-1.5 text-[11px] text-muted-foreground/80">
+              {t("overview.project.checking", "checando atualizações…")}
+            </p>
+          )}
+          {checkedEmpty && (
+            <p className="mb-1.5 text-[11px] text-muted-foreground/70">
+              {t(
+                "overview.project.checkUnavailable",
+                "não foi possível checar atualizações",
+              )}
+            </p>
+          )}
+
+          {deps.length === 0 ? (
+            <p className="text-[11.5px] text-muted-foreground/70">
+              {t("overview.project.noDeps", "sem dependências declaradas")}
+            </p>
+          ) : (
+            <ul className="flex flex-col gap-0.5">
+              {deps.map((dep) => (
+                <DepRow key={dep.name} dep={dep} />
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+    </li>
+  );
+}
+
+/** A discreet icon button for the node header (README / CLAUDE.md / check). */
+function NodeAction({
+  icon: Icon,
+  label,
+  title,
+  onClick,
+  spinning,
+  disabled,
+}: {
+  icon: LucideIcon;
+  label?: string;
+  title: string;
+  onClick: () => void;
+  spinning?: boolean;
+  disabled?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      title={title}
+      aria-label={title}
+      className={cn(
+        "inline-flex items-center gap-1 rounded px-1.5 py-1 text-[11px]",
+        "text-muted-foreground transition-colors hover:bg-muted/40 hover:text-foreground",
+        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[--primary]",
+        "disabled:opacity-50",
+      )}
+    >
+      <Icon className={cn("h-3.5 w-3.5", spinning && "animate-spin")} aria-hidden />
+      {label && <span className="hidden sm:inline">{label}</span>}
+    </button>
+  );
+}
+
+/** One dependency row: name + installed version (mono), plus a severity dot and
+ *  `current → latest` when a check ran and flagged it. Libs absent from the
+ *  outdated result (no check, or current) read neutral grey. */
+function DepRow({ dep }: { dep: DepView }) {
+  const o = dep.outdated;
+  const severity = o?.severity;
+  // Only render a coloured indicator for known severities; an absent or
+  // `up-to-date` dep stays neutral (no false "stale" signal).
+  const color =
+    severity && severity !== "up-to-date" ? SEVERITY_COLOR[severity] : null;
+
+  return (
+    <li className="flex items-center gap-2 py-0.5 text-[11.5px]">
+      <span
+        aria-hidden
+        className="h-1.5 w-1.5 shrink-0 rounded-full"
+        style={
+          color
+            ? tonalStyle(color)
+            : { backgroundColor: "var(--muted-foreground)", opacity: 0.4 }
+        }
+      />
+      <span className="truncate text-foreground/80">{dep.name}</span>
+      <span className="shrink-0 font-mono text-[10.5px] text-muted-foreground tabular-nums">
+        {dep.version || "—"}
+      </span>
+      {color && o && (
+        <span
+          className="shrink-0 font-mono text-[10.5px] tabular-nums"
+          style={{ color }}
+          title={`${o.severity}: ${o.current} → ${o.latest}`}
+        >
+          {o.current} → {o.latest}
+        </span>
+      )}
     </li>
   );
 }
@@ -129,15 +376,19 @@ interface LangGroup {
  * Project identity card for the workspace overview. Header: monorepo flag +
  * total project count. Body: language tabs (one per distinct `kind` — ".NET /
  * C#", "Node/TS", …) so a 12-unit monorepo never hides its .NET projects below
- * the fold. Each tab lists that language's projects — name, directory
- * (mono/muted), frameworks (badges, capped + "+N") and that project's stacks
- * with confidence. The initial tab is the one with the most projects.
- * Empty-state tolerant — an unscanned workspace resolves to an empty overview
- * (the Tauri command is fail-open).
+ * the fold. Inside each tab, each project is a collapsible treeview node
+ * (default collapsed): the header shows name, directory, dep count, README /
+ * CLAUDE.md links and a "check updates" action; expanding reveals the unit's
+ * frameworks and its dependency list (name + installed version). The outdated
+ * check is on-demand — clicking "check updates" fires `dashboard_deps_outdated`
+ * and paints each stale dep by semver severity. The initial tab is the one with
+ * the most projects. Empty-state tolerant — an unscanned workspace resolves to
+ * an empty overview (the Tauri command is fail-open).
  */
 export function ProjectInfoCard({ repoPath }: ProjectInfoCardProps) {
   const t = useT();
   const { data } = useProjectOverview(repoPath);
+  const { openFile, viewer } = useFileViewer(repoPath);
 
   const units = useMemo<ProjectUnitSummary[]>(() => data?.units ?? [], [data?.units]);
 
@@ -214,13 +465,20 @@ export function ProjectInfoCard({ repoPath }: ProjectInfoCardProps) {
             <TabsContent key={g.kind} value={g.kind}>
               <ul className="flex flex-col gap-1.5">
                 {g.units.map((unit) => (
-                  <UnitRow key={`${unit.dir}:${unit.name}`} unit={unit} />
+                  <UnitNode
+                    key={`${unit.dir}:${unit.name}`}
+                    unit={unit}
+                    repoPath={repoPath}
+                    openFile={openFile}
+                  />
                 ))}
               </ul>
             </TabsContent>
           ))}
         </Tabs>
       )}
+
+      {viewer}
     </DataCard>
   );
 }

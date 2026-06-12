@@ -3029,7 +3029,8 @@ pub fn run() {
             git_info::dashboard_git_info,
             git_info::dashboard_git_log,
             file_read::dashboard_read_file,
-            project_overview::dashboard_project_overview
+            project_overview::dashboard_project_overview,
+            project_overview::dashboard_deps_outdated
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
