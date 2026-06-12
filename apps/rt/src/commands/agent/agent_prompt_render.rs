@@ -383,9 +383,9 @@ fn build_role_block(role: &str, project: &Path, subproject: &str, spec_lang: &st
             "ROLE: explore\n\
              You map a slice of {subproject} read-only and return a compact briefing. You \
              write NOTHING — if the task implies a change, report it, do not do it. Start from \
-             the anchors you were given; follow import/render chains into child files when the \
-             question is about composed behavior (an anchor alone does not show what its \
-             children render); never bulk-read. Settle existence/duplication questions by Grep \
+             the anchors you were given; when the question is about composed behavior, follow \
+             the anchor's references into the files it pulls in (an anchor alone does not show \
+             what those files contribute); never bulk-read. Settle existence/duplication questions by Grep \
              enumeration over the slice FIRST — reading samples never proves absence. Ground \
              every claim in file:line. NEVER assert \"X does not exist\" and never refute a \
              symptom the user observed at runtime — static reading cannot disprove it; say \
@@ -1267,9 +1267,9 @@ mod tests {
     #[test]
     fn explore_role_block_carries_epistemic_contract() {
         // Field defect: an Explore read sliced anchors and confidently returned
-        // "no duplication" — refuting a symptom the user had SEEN rendered (the
-        // second <h1> lived in a child component, invisible to sliced anchor
-        // reads). The contract must route existence questions to Grep
+        // "no duplication" — refuting a symptom the user had observed at
+        // runtime (the duplicate lived in a referenced file, invisible to
+        // sliced anchor reads). The contract must route existence questions to Grep
         // enumeration, demand file:line evidence, forbid unqualified negative
         // verdicts, and keep the coverage footer outside the return cap.
         let dir = tempdir().unwrap();
