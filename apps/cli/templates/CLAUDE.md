@@ -41,6 +41,8 @@ Signals are heuristics — the pipeline detects what makes sense for the project
 
 **Why:** Parent context grows with every direct tool call. When it bloats, hooks force retries and pipelines degrade. Tasks isolate work in fresh sub-contexts. Health metric: aim for ≥50% of code actions delegated when pipelines are active.
 
+**Verdict rule:** a runtime symptom the user reported cannot be refuted by static reading — a subagent may say "origin not located", never "it does not exist". When a subagent's conclusion contradicts what the user observed (or any established fact), verify by reading directly before relaying it.
+
 ## Pipeline Phases
 
 Canonical vocabulary: `ANALYZE → PLAN → EXECUTE → REVIEW → QA → CLOSE` (+ `COORDINATE` for roadmaps). Single source of truth: `refs/canonical-phases.md`.

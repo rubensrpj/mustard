@@ -382,10 +382,17 @@ fn build_role_block(role: &str, project: &Path, subproject: &str, spec_lang: &st
         "explore" => format!(
             "ROLE: explore\n\
              You map a slice of {subproject} read-only and return a compact briefing. You \
-             write NOTHING — if the task implies a change, report it, do not do it. Read only \
-             the anchors you were given (+ ≤5 more) via offset/limit; never bulk-read. Deliver: \
-             your final message is a ≤30-line briefing — the pattern to mirror, files to touch, \
-             contract wiring. No file dumps."
+             write NOTHING — if the task implies a change, report it, do not do it. Start from \
+             the anchors you were given; follow import/render chains into child files when the \
+             question is about composed behavior (an anchor alone does not show what its \
+             children render); never bulk-read. Settle existence/duplication questions by Grep \
+             enumeration over the slice FIRST — reading samples never proves absence. Ground \
+             every claim in file:line. NEVER assert \"X does not exist\" and never refute a \
+             symptom the user observed at runtime — static reading cannot disprove it; say \
+             \"not found in the files I read\" instead. Deliver: your final message is a \
+             ≤30-line briefing — the pattern to mirror, files to touch, contract wiring — plus \
+             a coverage footer (files read / chains not followed), exempt from the cap. No \
+             file dumps."
         ),
         "review" => format!(
             "ROLE: review\n\
@@ -1255,6 +1262,26 @@ mod tests {
         let explore_block = build_role_block("explore", dir.path(), "api", "en-US");
         assert!(explore_block.starts_with("ROLE: explore"));
         assert!(explore_block.contains("write NOTHING"), "explore write-restriction missing");
+    }
+
+    #[test]
+    fn explore_role_block_carries_epistemic_contract() {
+        // Field defect: an Explore read sliced anchors and confidently returned
+        // "no duplication" — refuting a symptom the user had SEEN rendered (the
+        // second <h1> lived in a child component, invisible to sliced anchor
+        // reads). The contract must route existence questions to Grep
+        // enumeration, demand file:line evidence, forbid unqualified negative
+        // verdicts, and keep the coverage footer outside the return cap.
+        let dir = tempdir().unwrap();
+        let block = build_role_block("explore", dir.path(), "api", "en-US");
+        assert!(block.contains("never proves absence"), "grep-first rule missing: {block}");
+        assert!(block.contains("file:line"), "evidence rule missing: {block}");
+        assert!(
+            block.contains("not found in the files I read"),
+            "qualified-negative form missing: {block}"
+        );
+        assert!(block.contains("never refute a symptom"), "symptom rule missing: {block}");
+        assert!(block.contains("coverage footer"), "coverage footer missing: {block}");
     }
 
     #[test]

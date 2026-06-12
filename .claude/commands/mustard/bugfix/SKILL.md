@@ -12,7 +12,7 @@ source: manual
 
 ### 1. Hygiene + ANALYZE
 
-→ `../../../refs/feature/spec-hygiene.md`. (No stage emit here — there is no spec yet; `spec-draft` backfills the `ANALYZE` marker when the slug is born.) Ensure `mustard-rt run scan` has produced `.claude/grain.model.json`; research with `mustard-rt run feature --intent "<bug>"` (the scan digest — no source-reading) and read only its anchors.
+→ `../../../refs/feature/spec-hygiene.md`. (No stage emit here — there is no spec yet; `spec-draft` backfills the `ANALYZE` marker when the slug is born.) Ensure `mustard-rt run scan` has produced `.claude/grain.model.json`; research with `mustard-rt run feature --intent "<bug>"` (the scan digest — locate first, then read) and read only its anchors.
 
 **DIAGNOSE.** Dispatch Explore (`≤20 tool uses, ≤3 full file reads`) with the `diagnose` skill. Scoped Greps for the symptom; trace callers/callees; return root cause + 1-line explanation.
 
