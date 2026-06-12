@@ -12,6 +12,8 @@ Caso de campo (sialia, 2026-06-12, feature "Painel Todos os Títulos"): a consul
 
 **Restrição herdada (decisão registrada):** o grafo está abafado por contrato e o ranking NÃO deve ser recalibrado às cegas — qualquer mudança de peso/seleção precisa ser dirigida por fixture com aferição antes/depois nos benchs existentes (`anchor_ranking.rs`, `stratified_samples.rs`).
 
+**Pista de causa-raiz (verificada em campo, 2026-06-11):** no mesmo repositório sialia, `dig.graph.top_fan_in` (`hubs`) veio **vazio** para as consultas financeiras — sugerindo que o grafo de import do lado C# do monorepo (TypeScript + C#) não está sendo minerado/ligado, deixando o ranking léxico-puro sem o sinal de centralidade que pescaria tanto o service da lógica (caso payables) quanto a view central (este caso). Investigar a mineração do grafo C# ANTES de mexer em pesos: se o sinal de grafo nem chega, calibrá-lo é inútil.
+
 Âncoras (do scan):
 - apps/dashboard/src/features/workspace/WorkspaceFilesRanking/index.tsx (ranking)
 - packages/core/src/view/projection/card.rs (view)
