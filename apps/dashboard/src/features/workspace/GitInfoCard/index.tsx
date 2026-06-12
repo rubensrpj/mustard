@@ -18,6 +18,7 @@ import {
   DropdownMenuItem,
 } from "@/components/ui/dropdown-menu";
 import { useGitInfo } from "@/hooks/useGitInfo";
+import { useFileViewer } from "@/hooks/useFileViewer";
 import {
   fetchGitLog,
   type GitInfo,
@@ -81,40 +82,57 @@ function statusBadge(c: GitChangedFile): {
 }
 
 /** One changed-file row — basename in the foreground, directory mono/muted, and
- *  the colored status letter (with a staged dot) right-aligned. */
-function ChangeRow({ change }: { change: GitChangedFile }) {
+ *  the colored status letter (with a staged dot) right-aligned. The whole row is
+ *  a button: clicking opens the file in the CodeViewer (`git status` paths are
+ *  repo-relative → fed straight to `read_file`). */
+function ChangeRow({
+  change,
+  onOpen,
+}: {
+  change: GitChangedFile;
+  onOpen: (path: string) => void;
+}) {
   const { dir, name } = splitPath(change.path);
   const { letter, color, staged } = statusBadge(change);
   return (
-    <li
-      className="flex items-center gap-2 text-[12.5px]"
-      title={change.path}
-    >
-      <div className="flex min-w-0 flex-1 items-baseline gap-1.5">
-        <span className="shrink-0 truncate font-medium text-foreground/90">
-          {name}
-        </span>
-        {dir && (
-          <span className="truncate font-mono text-[11px] text-muted-foreground/70">
-            {dir}
+    <li className="text-[12.5px]">
+      <button
+        type="button"
+        onClick={() => onOpen(change.path)}
+        aria-label={`abrir ${change.path}`}
+        title={change.path}
+        className={cn(
+          "flex w-full items-center gap-2 rounded-md px-1 py-0.5 text-left",
+          "transition-colors hover:bg-muted/30",
+          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[--primary]",
+        )}
+      >
+        <div className="flex min-w-0 flex-1 items-baseline gap-1.5">
+          <span className="shrink-0 truncate font-medium text-foreground/90">
+            {name}
           </span>
-        )}
-      </div>
-      <span className="flex shrink-0 items-center gap-1">
-        {staged && (
+          {dir && (
+            <span className="truncate font-mono text-[11px] text-muted-foreground/70">
+              {dir}
+            </span>
+          )}
+        </div>
+        <span className="flex shrink-0 items-center gap-1">
+          {staged && (
+            <span
+              aria-hidden
+              className="h-1.5 w-1.5 rounded-full"
+              style={{ backgroundColor: TONE.success }}
+            />
+          )}
           <span
-            aria-hidden
-            className="h-1.5 w-1.5 rounded-full"
-            style={{ backgroundColor: TONE.success }}
-          />
-        )}
-        <span
-          className="font-mono text-[11px] font-semibold tabular-nums"
-          style={{ color }}
-        >
-          {letter}
+            className="font-mono text-[11px] font-semibold tabular-nums"
+            style={{ color }}
+          >
+            {letter}
+          </span>
         </span>
-      </span>
+      </button>
     </li>
   );
 }
@@ -131,6 +149,7 @@ function ChangeGroup({
   files,
   open,
   onToggle,
+  onOpenFile,
 }: {
   icon: LucideIcon;
   color: TonalColor;
@@ -138,6 +157,7 @@ function ChangeGroup({
   files: GitChangedFile[];
   open: boolean;
   onToggle: () => void;
+  onOpenFile: (path: string) => void;
 }) {
   return (
     <div className="flex flex-col gap-1.5">
@@ -168,9 +188,9 @@ function ChangeGroup({
         </span>
       </button>
       {open && (
-        <ul className="flex flex-col gap-1.5 pl-[1.375rem]">
+        <ul className="flex flex-col gap-0.5 pl-[1.375rem]">
           {files.map((c) => (
-            <ChangeRow key={c.path} change={c} />
+            <ChangeRow key={c.path} change={c} onOpen={onOpenFile} />
           ))}
         </ul>
       )}
@@ -180,17 +200,49 @@ function ChangeGroup({
 
 /** A single commit row in the git-graph history: a solid colored rail + node on
  *  the left connecting the commits, the conventional-type badge, hash, subject
- *  and author·date. The HEAD (topmost) commit gets a highlight ring. */
+ *  and author·date. The HEAD (topmost) commit gets a highlight ring. When the
+ *  commit carries a `body`, the subject/meta block is a button that toggles the
+ *  full message below it (mono, pre-wrap, muted). Body-less commits stay inert
+ *  (no affordance). */
 function CommitRow({
   commit,
   first,
   last,
+  expanded,
+  onToggle,
 }: {
   commit: CommitSummary;
   first: boolean;
   last: boolean;
+  expanded: boolean;
+  onToggle: () => void;
 }) {
   const { type, color } = commitType(commit.subject);
+  const hasBody = commit.body.trim().length > 0;
+
+  const meta = (
+    <>
+      <div className="flex items-center gap-1.5">
+        {type && (
+          <span
+            className="shrink-0 rounded px-1 py-px font-mono text-[10px] font-medium uppercase tracking-wide"
+            style={tonalStyle(color)}
+          >
+            {type}
+          </span>
+        )}
+        <span className="truncate text-foreground/85" title={commit.subject}>
+          <span className="font-mono text-[--accent]">{commit.hash}</span>{" "}
+          {commit.subject}
+        </span>
+      </div>
+      <span className="text-[11px] text-muted-foreground/70">
+        {commit.author}
+        {commit.date ? ` · ${relativeTime(commit.date)}` : ""}
+      </span>
+    </>
+  );
+
   return (
     <li className="flex items-stretch gap-2.5 text-[12.5px]">
       {/* Solid colored rail + node — the continuous "git graph" trail. */}
@@ -218,25 +270,28 @@ function CommitRow({
           }}
         />
       </span>
-      <div className="flex min-w-0 flex-col gap-0.5 pb-2.5">
-        <div className="flex items-center gap-1.5">
-          {type && (
-            <span
-              className="shrink-0 rounded px-1 py-px font-mono text-[10px] font-medium uppercase tracking-wide"
-              style={tonalStyle(color)}
-            >
-              {type}
-            </span>
-          )}
-          <span className="truncate text-foreground/85" title={commit.subject}>
-            <span className="font-mono text-[--accent]">{commit.hash}</span>{" "}
-            {commit.subject}
-          </span>
-        </div>
-        <span className="text-[11px] text-muted-foreground/70">
-          {commit.author}
-          {commit.date ? ` · ${relativeTime(commit.date)}` : ""}
-        </span>
+      <div className="flex min-w-0 flex-1 flex-col gap-0.5 pb-2.5">
+        {hasBody ? (
+          <button
+            type="button"
+            onClick={onToggle}
+            aria-expanded={expanded}
+            className={cn(
+              "flex min-w-0 flex-col gap-0.5 rounded-md px-1 py-0.5 text-left",
+              "transition-colors hover:bg-muted/30",
+              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[--primary]",
+            )}
+          >
+            {meta}
+          </button>
+        ) : (
+          <div className="flex min-w-0 flex-col gap-0.5 px-1 py-0.5">{meta}</div>
+        )}
+        {hasBody && expanded && (
+          <pre className="ml-1 mt-1 whitespace-pre-wrap break-words border-l-2 border-border/60 pl-2 font-mono text-[11px] leading-relaxed text-muted-foreground/80">
+            {commit.body.trim()}
+          </pre>
+        )}
       </div>
     </li>
   );
@@ -333,6 +388,13 @@ function GitBody({ data, repoPath }: { data: GitInfo; repoPath: string }) {
   // Selected branch drives the history; defaults to the current HEAD branch.
   const [selectedBranch, setSelectedBranch] = useState<string>(data.branch);
 
+  // A single expanded commit at a time (its hash) — clicking a commit toggles
+  // its full body open/closed below the row.
+  const [expandedHash, setExpandedHash] = useState<string | null>(null);
+
+  // Reusable CodeViewer launcher — changed files open their content on click.
+  const { openFile, viewer } = useFileViewer(repoPath);
+
   // Fetch the selected branch's log. Keyed on (repoPath, branch) so each branch
   // caches independently; disabled until both are known. While no branch is
   // selectable (detached HEAD), fall back to the HEAD recent_commits below.
@@ -406,6 +468,7 @@ function GitBody({ data, repoPath }: { data: GitInfo; repoPath: string }) {
                 files={staged}
                 open={openStaged}
                 onToggle={() => setOpenStaged((o) => !o)}
+                onOpenFile={openFile}
               />
             )}
             {modified.length > 0 && (
@@ -416,6 +479,7 @@ function GitBody({ data, repoPath }: { data: GitInfo; repoPath: string }) {
                 files={modified}
                 open={openModified}
                 onToggle={() => setOpenModified((o) => !o)}
+                onOpenFile={openFile}
               />
             )}
             {untracked.length > 0 && (
@@ -426,6 +490,7 @@ function GitBody({ data, repoPath }: { data: GitInfo; repoPath: string }) {
                 files={untracked}
                 open={openUntracked}
                 onToggle={() => setOpenUntracked((o) => !o)}
+                onOpenFile={openFile}
               />
             )}
           </div>
@@ -450,11 +515,16 @@ function GitBody({ data, repoPath }: { data: GitInfo; repoPath: string }) {
                 commit={c}
                 first={i === 0}
                 last={i === commits.length - 1}
+                expanded={expandedHash === c.hash}
+                onToggle={() =>
+                  setExpandedHash((h) => (h === c.hash ? null : c.hash))
+                }
               />
             ))}
           </ul>
         </div>
       )}
+      {viewer}
     </div>
   );
 }

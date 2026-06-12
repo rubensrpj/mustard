@@ -4,6 +4,7 @@ import { cn } from "@/lib/utils";
 import { DataCard, SectionHeader, EmptyState } from "@/components/page";
 import { StatPill } from "@/components/page";
 import { useWorkspaceSummarySingle } from "@/hooks/useWorkspaceSummary";
+import { useFileViewer } from "@/hooks/useFileViewer";
 import { useTranslate } from "@/lib/i18n";
 
 interface WorkspaceFilesRankingProps {
@@ -25,6 +26,9 @@ const TOP_N = 10;
 export function WorkspaceFilesRanking({ repoPath }: WorkspaceFilesRankingProps) {
   const t = useTranslate();
   const { data, isLoading } = useWorkspaceSummarySingle(repoPath);
+  // Top-files paths may arrive ABSOLUTE (e.g. `C:\Atiz\sialia\…`); pass them
+  // through as-is — `dashboard_read_file` resolves absolutes inside the repo.
+  const { openFile, viewer } = useFileViewer(repoPath);
 
   const rows = useMemo(
     () => (data?.top_files_today ?? []).slice(0, TOP_N),
@@ -58,30 +62,39 @@ export function WorkspaceFilesRanking({ repoPath }: WorkspaceFilesRankingProps) 
           {rows.map((row, idx) => (
             <li
               key={`${row.path}-${idx}`}
-              className={cn(
-                "flex items-center gap-3 px-2 py-1.5",
-                "border-b border-border/30 last:border-b-0",
-              )}
+              className="border-b border-border/30 last:border-b-0"
             >
-              <FileCode
-                className="h-3.5 w-3.5 shrink-0 text-[--ds-text-tertiary]"
-                aria-hidden
-              />
-              <span
-                // Truncate-left effect: render in RTL so the start is clipped,
-                // keeping the meaningful tail (filename) visible. The inner
-                // span re-asserts LTR so the text content reads naturally.
-                dir="rtl"
-                className="font-mono text-[12px] text-foreground/80 truncate min-w-0 flex-1 text-left"
+              <button
+                type="button"
+                onClick={() => openFile(row.path)}
+                aria-label={`abrir ${row.path}`}
                 title={row.path}
+                className={cn(
+                  "flex w-full items-center gap-3 rounded-md px-2 py-1.5 text-left",
+                  "transition-colors hover:bg-muted/30",
+                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[--primary]",
+                )}
               >
-                <span dir="ltr">{row.path}</span>
-              </span>
-              <StatPill value={row.count} unit="hit" />
+                <FileCode
+                  className="h-3.5 w-3.5 shrink-0 text-[--ds-text-tertiary]"
+                  aria-hidden
+                />
+                <span
+                  // Truncate-left effect: render in RTL so the start is clipped,
+                  // keeping the meaningful tail (filename) visible. The inner
+                  // span re-asserts LTR so the text content reads naturally.
+                  dir="rtl"
+                  className="font-mono text-[12px] text-foreground/80 truncate min-w-0 flex-1 text-left"
+                >
+                  <span dir="ltr">{row.path}</span>
+                </span>
+                <StatPill value={row.count} unit="hit" />
+              </button>
             </li>
           ))}
         </ul>
       )}
+      {viewer}
     </DataCard>
   );
 }

@@ -173,6 +173,7 @@ export function ExecutionTrace({
         isOpenById={isOpenById}
         toggleById={toggleById}
         setExpanded={setExpanded}
+        projectPath={projectPath}
       />
     </div>
   );
@@ -193,6 +194,9 @@ interface TraceNodeRowProps {
   toggleById: (id: string, defaultOpen: boolean) => void;
   /** Raw setter — used to swallow per-node state during bulk forced ops. */
   setExpanded: React.Dispatch<React.SetStateAction<Set<string>>>;
+  /** Repo root for the trace — threaded down so a tool node with a `file_path`
+   *  can open the real file in the CodeViewer. `null` until a project is set. */
+  projectPath: string | null;
 }
 
 const KIND_ICON: Record<TraceKind, typeof Square> = {
@@ -253,6 +257,7 @@ const TraceNodeRow = memo(function TraceNodeRow({
   isOpenById,
   toggleById,
   setExpanded,
+  projectPath,
 }: TraceNodeRowProps) {
   const t = useT();
   const Icon = KIND_ICON[node.kind];
@@ -388,13 +393,14 @@ const TraceNodeRow = memo(function TraceNodeRow({
                 isOpenById={isOpenById}
                 toggleById={toggleById}
                 setExpanded={setExpanded}
+                projectPath={projectPath}
               />
             );
           })
         : null}
       {node.kind === "tool" ? (
         <div className="rounded-[--ds-radius-md] overflow-hidden">
-          <ToolEventRow node={node} />
+          <ToolEventRow node={node} projectPath={projectPath} />
         </div>
       ) : null}
     </div>

@@ -26,8 +26,9 @@
 
 import { memo, useState } from "react";
 import ReactMarkdown from "react-markdown";
-import { ChevronDown, ChevronRight, Copy, Check } from "lucide-react";
+import { ChevronDown, ChevronRight, Copy, Check, FileSearch } from "lucide-react";
 import { DiffViewer, CodeBlock, type CodeLang } from "@/components/page";
+import { useFileViewer } from "@/hooks/useFileViewer";
 import { toolPillColorClass } from "../tool-palette";
 import { cn } from "@/lib/utils";
 import { relativeTime } from "@/lib/time";
@@ -53,10 +54,19 @@ interface TraceActor {
 
 interface ToolEventRowProps {
   node: TraceNode;
+  /** Repo root for this trace, threaded from `ExecutionTrace`. When set and the
+   *  event carries a `file_path`, the card header shows an "abrir" affordance
+   *  that opens the real file in the CodeViewer. `null` hides the affordance. */
+  projectPath?: string | null;
 }
 
-export const ToolEventRow = memo(function ToolEventRow({ node }: ToolEventRowProps) {
+export const ToolEventRow = memo(function ToolEventRow({
+  node,
+  projectPath,
+}: ToolEventRowProps) {
   const t = useT();
+  // Reusable CodeViewer launcher — opens the real file behind a tool event.
+  const { openFile, viewer } = useFileViewer(projectPath ?? null);
   // Cast to the real shape — legacy fields land in `payload` as extras
   // (we treat anything missing as `undefined`, never throw).
   const payload = (node.payload ?? {}) as ToolUsePayload & Record<string, unknown>;
@@ -93,25 +103,37 @@ export const ToolEventRow = memo(function ToolEventRow({ node }: ToolEventRowPro
 
   const meta: PayloadMeta = { actor, ts, summary };
 
+  // "abrir arquivo" affordance — only when we have both a repo root and a
+  // file path on the event. Bundled with `{viewer}` so a single render of the
+  // chosen branch wires both the header button and the modal.
+  const canOpen = !!projectPath && !!filePath;
+  const onOpenFile = canOpen ? () => openFile(filePath as string) : undefined;
+  const withViewer = (card: React.ReactNode) => (
+    <>
+      {card}
+      {viewer}
+    </>
+  );
+
   if (toolName === "Edit" || toolName === "Write" || toolName === "MultiEdit") {
     if (result?.file_before != null && result?.file_after != null) {
-      return (
-        <PayloadCard toolName={toolName} subheader={filePath} payload={payload} meta={meta}>
+      return withViewer(
+        <PayloadCard toolName={toolName} subheader={filePath} payload={payload} meta={meta} onOpenFile={onOpenFile}>
           <DiffViewer
             before={result.file_before}
             after={result.file_after}
             mode="split"
             maxLines={200}
           />
-        </PayloadCard>
+        </PayloadCard>,
       );
     }
     // Write/create captures `file_after` but has no "before" snapshot — there's
     // nothing to diff against, so show the written content as a code view
     // instead of the "diff não capturado" fallback.
     if (result?.file_after != null) {
-      return (
-        <PayloadCard toolName={toolName} subheader={filePath} payload={payload} meta={meta}>
+      return withViewer(
+        <PayloadCard toolName={toolName} subheader={filePath} payload={payload} meta={meta} onOpenFile={onOpenFile}>
           <p className="mb-1 text-[11px] text-[--ds-text-tertiary]">
             {t("trace.tool.writtenContent")}
           </p>
@@ -120,13 +142,13 @@ export const ToolEventRow = memo(function ToolEventRow({ node }: ToolEventRowPro
             lang={detectLang(filePath)}
             showLineNumbers
           />
-        </PayloadCard>
+        </PayloadCard>,
       );
     }
-    return (
-      <PayloadCard toolName={toolName} subheader={filePath} payload={payload} meta={meta}>
+    return withViewer(
+      <PayloadCard toolName={toolName} subheader={filePath} payload={payload} meta={meta} onOpenFile={onOpenFile}>
         <DiffPending description={target.description} />
-      </PayloadCard>
+      </PayloadCard>,
     );
   }
 
@@ -134,8 +156,8 @@ export const ToolEventRow = memo(function ToolEventRow({ node }: ToolEventRowPro
     const content = result?.content_excerpt ?? "";
     if (content) {
       const isMarkdown = (filePath ?? "").toLowerCase().endsWith(".md");
-      return (
-        <PayloadCard toolName="Read" subheader={filePath} payload={payload} meta={meta}>
+      return withViewer(
+        <PayloadCard toolName="Read" subheader={filePath} payload={payload} meta={meta} onOpenFile={onOpenFile}>
           {isMarkdown ? (
             <MarkdownBlock source={truncate(content, 200)} />
           ) : (
@@ -145,13 +167,13 @@ export const ToolEventRow = memo(function ToolEventRow({ node }: ToolEventRowPro
               showLineNumbers
             />
           )}
-        </PayloadCard>
+        </PayloadCard>,
       );
     }
-    return (
-      <PayloadCard toolName="Read" subheader={filePath} payload={payload} meta={meta}>
+    return withViewer(
+      <PayloadCard toolName="Read" subheader={filePath} payload={payload} meta={meta} onOpenFile={onOpenFile}>
         <EmptyHint text="Conteúdo não capturado (tool_result pendente)." />
-      </PayloadCard>
+      </PayloadCard>,
     );
   }
 
@@ -160,13 +182,14 @@ export const ToolEventRow = memo(function ToolEventRow({ node }: ToolEventRowPro
     const stdout = result?.stdout_excerpt ?? "";
     const stderr = result?.stderr_excerpt ?? "";
     const exitCode = result?.exit_code;
-    return (
+    return withViewer(
       <PayloadCard
         toolName="Bash"
         subheader={command ? `$ ${command}` : undefined}
         subheaderMono
         payload={payload}
         meta={meta}
+        onOpenFile={onOpenFile}
       >
         {stdout ? (
           <CodeBlock code={truncate(stdout, 200)} lang="plain" />
@@ -192,23 +215,24 @@ export const ToolEventRow = memo(function ToolEventRow({ node }: ToolEventRowPro
         ) : !stdout && !stderr ? (
           <EmptyHint text="Sem stdout/stderr capturado (tool_result pendente)." />
         ) : null}
-      </PayloadCard>
+      </PayloadCard>,
     );
   }
 
   // Fallback — pretty-print whatever payload arrived.
-  return (
+  return withViewer(
     <PayloadCard
       toolName={toolName || "tool.use"}
       subheader={filePath}
       payload={payload}
       meta={meta}
+      onOpenFile={onOpenFile}
     >
       <CodeBlock
         code={truncate(JSON.stringify(payload, null, 2), 200)}
         lang="json"
       />
-    </PayloadCard>
+    </PayloadCard>,
   );
 });
 
@@ -231,6 +255,9 @@ interface PayloadCardProps {
   /** Wave 3 (`2026-05-21-dashboard-spec-tabs`): meta-strip data —
    *  `actor.kind:actor.id · relativeTime(ts)` + optional summary line. */
   meta?: PayloadMeta;
+  /** When provided, a discrete "abrir" button appears in the header that opens
+   *  the event's real file in the CodeViewer. Absent → no affordance. */
+  onOpenFile?: () => void;
 }
 
 /** Shared card frame so every tool variant has the same visual rhythm:
@@ -243,6 +270,7 @@ function PayloadCard({
   children,
   payload,
   meta,
+  onOpenFile,
 }: PayloadCardProps) {
   const [showRaw, setShowRaw] = useState(false);
   return (
@@ -280,6 +308,22 @@ function PayloadCard({
         ) : (
           <span className="flex-1" />
         )}
+        {onOpenFile ? (
+          <button
+            type="button"
+            onClick={onOpenFile}
+            aria-label="abrir arquivo"
+            className={cn(
+              "shrink-0 inline-flex items-center gap-1",
+              "text-[10px] text-[--ds-text-tertiary] hover:text-[--ds-text-secondary]",
+              "px-1 py-0.5 rounded-[--ds-radius-sm]",
+              "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[--ds-accent-primary]/60",
+            )}
+          >
+            <FileSearch className="h-3 w-3" aria-hidden />
+            abrir
+          </button>
+        ) : null}
         {payload ? (
           <button
             type="button"

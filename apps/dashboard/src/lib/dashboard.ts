@@ -1057,6 +1057,9 @@ export interface GitCommit {
   author: string;
   /** Author date, ISO-8601 (or git's relative/short form), empty when absent. */
   date: string;
+  /** Full commit body (`%b`) — `recent_commits` is a `Vec<CommitSummary>` on
+   *  the Rust side, so this field rides along; empty for subject-only commits. */
+  body: string;
 }
 
 /** Working-tree pending counts — mirrors the Rust `GitPending`. */
@@ -1162,6 +1165,9 @@ export interface CommitSummary {
   author: string;
   /** Author/commit date, ISO-8601, empty when absent. */
   date: string;
+  /** Full commit body (`%b`) — everything after the subject. Empty for a
+   *  subject-only commit; the history view expands this on click. */
+  body: string;
 }
 
 /**
