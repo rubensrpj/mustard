@@ -115,7 +115,7 @@ fn build_managed_block(
     let _ = writeln!(block, "Tipo: {kind} · {code_files} arquivos");
     let _ = writeln!(
         block,
-        "Pesquise via `mustard-rt run feature` (digest) — não leia o repo direto."
+        "Pesquise via `mustard-rt run feature` (digest) para localizar; depois leia os arquivos apontados — o digest acha onde olhar, não substitui ler."
     );
     if !commands_block.is_empty() {
         block.push('\n');

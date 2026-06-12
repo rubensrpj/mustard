@@ -209,13 +209,13 @@ fn note(q: &DigestQuery) -> &'static str {
             "matches live only in machine-written modules — regenerate or extend the generator's input; never edit the matched files directly"
         }
         "strong" => {
-            "repo precedent found — mirror the matched slices/contracts; read the anchors before planning, then ask `scan spec` per unit"
+            "repo precedent found — read the anchors AND the hubs before planning: anchors are the lexical entry points (often the module NAMED after the entity), but the logic that COMPUTES a behavior frequently lives in a generically-named service listed under `hubs` (a central module that matched vocabulary), not the homonym — open both. Mirror the matched slices/contracts, then ask `scan spec` per unit"
         }
         _ if q.miss => {
             "no repo precedent matched — treat as net-new; the term index has no synonyms and false negatives, so confirm by reading anchors, do not conclude 'absent' blindly"
         }
         _ => {
-            "repo precedent found — mirror the matched slices/contracts; read the anchors before planning, then ask `scan spec` per unit"
+            "repo precedent found — read the anchors AND the hubs before planning: anchors are the lexical entry points (often the module NAMED after the entity), but the logic that COMPUTES a behavior frequently lives in a generically-named service listed under `hubs` (a central module that matched vocabulary), not the homonym — open both. Mirror the matched slices/contracts, then ask `scan spec` per unit"
         }
     }
 }

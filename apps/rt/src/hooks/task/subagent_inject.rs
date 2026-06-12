@@ -28,7 +28,6 @@
 
 use mustard_core::domain::model::event::ActorKind;
 use crate::shared::events::economy;
-use mustard_core::io::atomic_md::MarkdownStore;
 use mustard_core::platform::error::Error;
 use mustard_core::io::fs;
 use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
@@ -72,6 +71,20 @@ fn role_from_input(input: &HookInput) -> String {
         .map_or_else(|| "general-purpose".to_string(), str::to_string)
 }
 
+/// `true` for a read-only dispatch role — one that searches, audits or reviews
+/// but never authors a plan or diff the regression gate scores. Such children
+/// gain nothing from the regression-vocabulary pre-arm (it primes the AUTHOR of
+/// a plan/diff not to lean on the gate's terms), so injecting it is pure noise.
+/// `Plan` is deliberately NOT here: its plan text IS gate-checked. The list is
+/// the small, stable set of harness/mustard read-only agent types — a denylist,
+/// so an unknown (likely code-producing) role still gets the pre-arm.
+fn role_is_readonly(role: &str) -> bool {
+    matches!(
+        role.to_ascii_lowercase().as_str(),
+        "explore" | "mustard-guards" | "mustard-review" | "claude-code-guide" | "statusline-setup"
+    )
+}
+
 /// Read at most `INJECT_MAX_CHARS` of the project's top-level CONTEXT.md.
 /// Returns an empty string when the file is missing.
 fn read_context_md_slice(project: &Path) -> String {
@@ -102,42 +115,6 @@ fn spec_memory_block(project: &Path, spec: &str, prompt: &str, role: &str) -> St
     let intent = format!("{role} {prompt}");
     let matches = context_inject::match_spec_memory(&memory_dir, &intent, SPEC_MEMORY_MAX, false);
     context_inject::render_spec_memory_block(&matches)
-}
-
-/// Build a knowledge-inject block by scanning `.claude/knowledge/` via
-/// [`MarkdownStore::scan_dir`]. Returns a `## KNOWLEDGE` section listing the
-/// top-K knowledge doc titles (frontmatter `title` or filename stem), capped at
-/// [`SPEC_MEMORY_MAX`] entries. Fail-open: missing dir → empty string.
-fn knowledge_block(project: &Path) -> String {
-    let Ok(claude) = ClaudePaths::for_project(project) else {
-        return String::new();
-    };
-    let knowledge_dir = claude.claude_dir().join("knowledge");
-    let docs = MarkdownStore::scan_dir(&knowledge_dir);
-    if docs.is_empty() {
-        return String::new();
-    }
-    let mut out = String::from("## KNOWLEDGE\n");
-    for doc in docs.iter().take(SPEC_MEMORY_MAX) {
-        // Prefer frontmatter `title`; fall back to the filename stem.
-        let name = doc
-            .frontmatter
-            .as_ref()
-            .and_then(|fm| fm.get_str("title"))
-            .map(str::to_string)
-            .unwrap_or_else(|| {
-                doc.path
-                    .file_stem()
-                    .map(|s| s.to_string_lossy().to_string())
-                    .unwrap_or_default()
-            });
-        if !name.is_empty() {
-            out.push_str("- [[");
-            out.push_str(&name);
-            out.push_str("]]\n");
-        }
-    }
-    out
 }
 
 /// Resolve the active wave directory for the project. Reads the
@@ -326,11 +303,6 @@ impl Check for SubagentInject {
         if !ctx_md.is_empty() {
             sections.push(format!("## CONTEXT.md (slice)\n{ctx_md}"));
         }
-        // Inject relevant knowledge docs from .claude/knowledge/ via MarkdownStore.
-        let knowledge = knowledge_block(&project);
-        if !knowledge.is_empty() {
-            sections.push(knowledge);
-        }
         if let Some(spec) = crate::shared::context::current_spec(&cwd) {
             if !spec.is_empty() {
                 let mem = spec_memory_block(&project, &spec, &prompt, &role);
@@ -343,11 +315,15 @@ impl Check for SubagentInject {
         // gate will check. This is an INTERNAL subagent prompt, so the
         // vocabulary is rendered in EN/technical regardless of the project's
         // user-facing locale — agent/subagent prompts stay EN by policy; only
-        // user output, specs and waves honour the project locale.
-        let locale = mustard_core::SupportedLocale::EnUs;
-        let vocab = context_inject::vocabulary_inject_block(&project, locale);
-        if !vocab.is_empty() {
-            sections.push(vocab);
+        // user output, specs and waves honour the project locale. Skipped for
+        // read-only roles (Explore/guards/review): they author no plan or diff
+        // the gate scores, so the pre-arm would be noise in their window.
+        if !role_is_readonly(&role) {
+            let locale = mustard_core::SupportedLocale::EnUs;
+            let vocab = context_inject::vocabulary_inject_block(&project, locale);
+            if !vocab.is_empty() {
+                sections.push(vocab);
+            }
         }
 
         if sections.is_empty() {
@@ -583,5 +559,21 @@ mod tests {
             }
             other => panic!("expected Inject with vocab section, got {other:?}"),
         }
+    }
+
+    /// A read-only role (Explore) authors no plan/diff the gate scores, so the
+    /// regression vocabulary must NOT be injected. With no CONTEXT.md and no
+    /// active spec, the only candidate section was the vocab — so the decisive
+    /// verdict degrades to `Allow` (nothing in the child's window).
+    #[test]
+    fn readonly_role_skips_vocabulary_and_allows_when_nothing_else_resolves() {
+        let dir = tempdir().unwrap();
+        let claude = dir.path().join(".claude");
+        std::fs::create_dir_all(&claude).unwrap();
+        std::fs::write(claude.join("mustard.json"), "{\"lang\":\"en-US\"}").unwrap();
+
+        let input = task_input("grep the codebase for the user module", "Explore");
+        let v = SubagentInject.evaluate(&input, &ctx_for(dir.path())).unwrap();
+        assert_eq!(v, Verdict::Allow, "read-only role gets no regression-vocab noise");
     }
 }
