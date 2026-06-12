@@ -694,6 +694,25 @@ mod tests {
         assert_eq!(d["reason"], json!("single-layer"));
     }
 
+    /// Field regression: a census written `- M path` / `- A path` (git-style
+    /// status markers) must classify by the PATH. The marker once ate the
+    /// path — ten "files" all named "M" classified as one `lib` layer, so a
+    /// backend+core+app change came back `layerCount: 1` and steered
+    /// scope-decompose to a wrong `single-layer` verdict (contradicting the
+    /// wave-dependency graph, which reads the clean plan JSON).
+    #[test]
+    fn compute_signals_counts_layers_through_status_markers() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let spec = "# S\n\n## Files\n\
+            - M backend/App/Modules/FinancialTitles/GraphQL/Resolver.cs\n\
+            - M packages/core/src/shared/schemas/financial.zod.ts\n\
+            - A apps/web/app/financial/_components/titles-table.tsx\n";
+        let signals = compute_signals_from_spec(spec, dir.path());
+        assert_eq!(signals["fileCount"], json!(3), "paths, not markers: {signals}");
+        let layers = signals["layerCount"].as_i64().unwrap_or(0);
+        assert!(layers >= 2, "marker-prefixed census must span layers: {signals}");
+    }
+
     /// Invariant: a Full spec floors at 1 wave even when `decompose == false`.
     /// `false` for Full means "single wave", never "no wave".
     #[test]

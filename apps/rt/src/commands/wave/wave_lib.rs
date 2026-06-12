@@ -146,16 +146,36 @@ fn parse_bullet(trimmed: &str) -> Option<&str> {
         return None;
     }
     let rest = rest.trim_start_matches([' ', '\t']);
-    let rest = rest.strip_prefix('`').unwrap_or(rest);
-    // `[^\s`]+` — take chars up to whitespace or a backtick.
-    let token: &str = rest
-        .split(|c: char| c.is_whitespace() || c == '`')
-        .next()
-        .unwrap_or("");
+    let (token, after) = bullet_token(rest)?;
+    // Git-style status markers (`- M path`, `- A `path``): a 1-2 letter
+    // uppercase first token followed by a path-looking second token is the
+    // marker, not the file. No template teaches this form, but it is what
+    // orchestrators naturally write — and silently treating "M" as the path
+    // collapsed every downstream layer signal (field case: a 3-layer census
+    // classified as `layerCount: 1` because all ten "files" were the letter
+    // M). Tolerate the marker; never let it eat the path.
+    if token.len() <= 2 && token.chars().all(|c| c.is_ascii_uppercase()) {
+        if let Some((second, _)) = bullet_token(after.trim_start()) {
+            if second.contains(['/', '\\', '.']) {
+                return Some(second);
+            }
+        }
+    }
+    Some(token)
+}
+
+/// First whitespace/backtick-delimited token of `s` (after an optional
+/// leading backtick), plus the remainder after it. `None` on an empty token.
+fn bullet_token(s: &str) -> Option<(&str, &str)> {
+    let s = s.strip_prefix('`').unwrap_or(s);
+    let end = s
+        .find(|c: char| c.is_whitespace() || c == '`')
+        .unwrap_or(s.len());
+    let token = &s[..end];
     if token.is_empty() {
         None
     } else {
-        Some(token)
+        Some((token, &s[end..]))
     }
 }
 
@@ -219,6 +239,35 @@ mod tests {
         assert_eq!(detect_role_with("src/controladores/x.rb", &patterns), "api");
         // Unmatched by override → structural fallback still applies.
         assert_eq!(detect_role_with("src/vistas/y.rb", &patterns), "vistas");
+    }
+
+    #[test]
+    fn parse_files_skips_git_style_status_markers() {
+        // Field case: an orchestrator wrote the census as `- M path` /
+        // `- A path` (git-status convention — taught nowhere, written
+        // naturally). The parser must capture the PATH, not the marker:
+        // ten files named "M" all classified as role `lib`, collapsing a
+        // 3-layer census to `layerCount: 1` and steering scope-decompose to
+        // a wrong single-wave verdict.
+        let spec = "# S\n\n## Files\n\
+            - M backend/App/DTOs/FinancialTitle.cs\n\
+            - A apps/web/_components/x.tsx\n\
+            - M `packages/core/src/schemas/y.zod.ts`\n\
+            - D\n\
+            - io stuff\n\
+            - src/plain.ts\n";
+        let files = parse_files_section(spec).unwrap();
+        assert_eq!(
+            files,
+            vec![
+                "backend/App/DTOs/FinancialTitle.cs",
+                "apps/web/_components/x.tsx",
+                "packages/core/src/schemas/y.zod.ts",
+                "D",          // bare marker, no path to recover — historical token kept
+                "io",         // lowercase 2-letter word is NOT a marker (no false positive)
+                "src/plain.ts",
+            ]
+        );
     }
 
     #[test]

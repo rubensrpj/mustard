@@ -1171,6 +1171,13 @@ pub enum RunCmd {
         /// Overwrite an existing output directory.
         #[arg(long)]
         force: bool,
+        /// Comma-separated repo-vocabulary terms for the internal Context
+        /// enrichment query — pass the terms that produced a strong digest
+        /// report during ANALYZE. Omitted: the raw intent is tokenised (a
+        /// translated intent then repeats the weak query and the enrichment
+        /// withholds itself).
+        #[arg(long = "query-terms")]
+        query_terms: Option<String>,
     },
     /// Compile the deterministic spec draft for one entity via `grain spec` and
     /// print the resulting Markdown verbatim to stdout. Thin passthrough to
@@ -1974,6 +1981,7 @@ pub fn dispatch(cmd: RunCmd) {
             output,
             waves,
             force,
+            query_terms,
         } => {
             spec::spec_draft::run(spec::spec_draft::SpecDraftOpts {
                 intent,
@@ -1983,6 +1991,7 @@ pub fn dispatch(cmd: RunCmd) {
                 output,
                 waves,
                 force,
+                query_terms,
             });
         }
         RunCmd::ScanSpec { entity, like, ops, invariant, root } => {

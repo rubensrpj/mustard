@@ -94,6 +94,11 @@ pub struct SpecDraftOpts {
     pub waves: u32,
     /// Overwrite existing output directory.
     pub force: bool,
+    /// Optional comma-separated repo-vocabulary terms for the internal digest
+    /// query (the terms that produced a strong report during ANALYZE). When
+    /// absent, the raw intent is tokenised — which on a translated intent
+    /// (e.g. PT over an EN repo) predictably repeats the weak query.
+    pub query_terms: Option<String>,
 }
 
 /// Entry point.
@@ -146,9 +151,11 @@ pub fn run(opts: SpecDraftOpts) {
     // also seeds the trackable `## Checklist` (one item per scan anchor) —
     // EXCEPT when the digest's honest match report flags the answer as
     // low-confidence (`weak`/`none`): the anchors are then mostly noise, so
-    // the Context block shows them under a low-confidence label and the
-    // checklist falls back to its single hand-trackable item. ----
-    let digest = scan_digest(&opts.intent);
+    // NOTHING is materialised (no labelled noise in the artifact) and the
+    // checklist falls back to its single hand-trackable item. `--query-terms`
+    // lets the orchestrator pass the repo-vocabulary terms that produced a
+    // strong report (a PT intent re-tokenised raw repeats the weak query). ----
+    let digest = scan_digest(&opts.intent, opts.query_terms.as_deref());
     let context_block = digest
         .as_ref()
         .and_then(|q| render_context_block(q, lang_locale));
@@ -389,11 +396,27 @@ const ANCHOR_TERM_CAP: usize = 4;
 /// `## Checklist` seeding ([`checklist_anchors`]). Returns `None` when the
 /// model is absent or the query failed (fail-open: both consumers degrade to
 /// their placeholder).
-fn scan_digest(intent: &str) -> Option<DigestQuery> {
+fn scan_digest(intent: &str, query_terms: Option<&str>) -> Option<DigestQuery> {
     let model = PathBuf::from(project_dir())
         .join(".claude")
         .join("grain.model.json");
-    let terms = crate::commands::feature::domain_terms(intent);
+    // `--query-terms` (comma-separated) takes precedence over re-tokenising
+    // the raw intent: the orchestrator passes the repo-vocabulary terms that
+    // already produced a strong report, instead of this command silently
+    // repeating the user's-vocabulary query (predictably weak on a PT intent
+    // over an EN repo — the field case that seeded a scaffold with noise).
+    let terms: Vec<String> = match query_terms {
+        Some(csv) => csv
+            .split(',')
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+            .map(str::to_string)
+            .collect(),
+        None => crate::commands::feature::domain_terms(intent),
+    };
+    if terms.is_empty() {
+        return None;
+    }
     Scan::locate().digest_query(&model, &terms).ok()
 }
 
@@ -409,9 +432,9 @@ fn digest_low_confidence(q: &DigestQuery) -> bool {
 /// Anchors eligible to seed the trackable `## Checklist`: the digest's anchor
 /// files — EXCEPT on a low-confidence answer, where seeding would gate the
 /// pipeline on noise files (field case: 9/12 anchors were a neighbour
-/// domain's). The Context block still SHOWS those anchors, labelled
-/// low-confidence; only the checklist seeding is withheld (the checklist then
-/// falls back to its single hand-trackable item in [`build_checklist`]).
+/// domain's). [`render_context_block`] withholds the same answer entirely,
+/// so neither artifact surface carries noise; the checklist falls back to its
+/// single hand-trackable item in [`build_checklist`].
 fn checklist_anchors(q: &DigestQuery) -> &[String] {
     if digest_low_confidence(q) {
         &[]
@@ -433,27 +456,26 @@ fn anchor_terms<'a>(q: &'a DigestQuery, file: &str) -> &'a [String] {
 /// Render the Context enrichment markdown from a digest answer. Pure (no I/O)
 /// so it is unit-testable. Returns `None` when there is nothing to show.
 ///
-/// Two confidence-aware behaviours (fase 2 of `robustez-ancoras-cobertura-idf`):
-/// - low-confidence answer (`weak`/`none` report) → the anchor list is
-///   labelled with the `context.scan_anchors_weak` heading so nobody plans on
-///   top of noise (and [`checklist_anchors`] withholds the same anchors from
-///   the checklist);
-/// - confident answer → each anchor is annotated with the matched terms that
-///   carried it (`files_detail`, capped at [`ANCHOR_TERM_CAP`]) — the concise
-///   audit of WHY each file anchors.
+/// Confidence rule (tightened after the field case where a PT intent's
+/// internal re-query came back `weak` and seeded the scaffold with 12
+/// lexical-noise anchors the orchestrator then had to overwrite by hand): a
+/// low-confidence answer (`weak`/`none` report) materialises NOTHING — noise
+/// must never enter the artifact, labelled or not. This mirrors the
+/// `planningWithheld` contract of the `feature` stdout payload. The caller
+/// can re-enable the enrichment by passing `--query-terms` with the
+/// repo-vocabulary terms that produced a strong report. On a confident
+/// answer each anchor is annotated with the matched terms that carried it
+/// (`files_detail`, capped at [`ANCHOR_TERM_CAP`]).
 fn render_context_block(q: &DigestQuery, lang: Locale) -> Option<String> {
-    let low_confidence = digest_low_confidence(q);
+    if digest_low_confidence(q) {
+        return None;
+    }
     let mut block = String::new();
     if !q.files.is_empty() {
-        let label_key = if low_confidence {
-            "context.scan_anchors_weak"
-        } else {
-            "context.scan_anchors"
-        };
-        let _ = writeln!(block, "{}:", translate(label_key, lang));
+        let _ = writeln!(block, "{}:", translate("context.scan_anchors", lang));
         for f in q.files.iter().take(SCAN_ANCHOR_CAP) {
             let terms = anchor_terms(q, f);
-            if low_confidence || terms.is_empty() {
+            if terms.is_empty() {
                 let _ = writeln!(block, "- {f}");
             } else {
                 let joined = terms
@@ -692,28 +714,30 @@ mod tests {
         assert_eq!(s.matches("- f").count(), SCAN_ANCHOR_CAP);
     }
 
-    /// Roundtrip (robustez-ancoras fase 2) — a `weak` digest answer labels the
-    /// anchor block low-confidence (lang-aware) and withholds every anchor
-    /// from the checklist seeding (the draft falls back to the single
-    /// hand-trackable item). `none` behaves identically.
+    /// Roundtrip (tightened after the field case where labelled weak anchors
+    /// still had to be overwritten by hand) — a `weak` digest answer
+    /// materialises NO Context block at all (noise never enters the
+    /// artifact, labelled or not) and withholds every anchor from the
+    /// checklist seeding (the draft falls back to the single hand-trackable
+    /// item). `none` behaves identically.
     #[test]
-    fn roundtrip_weak_digest_labels_anchors_and_skips_checklist() {
+    fn roundtrip_weak_digest_materialises_nothing_and_skips_checklist() {
         let weak = digest(
             r#"{"query":["payables"],
                 "files":["src/financial/accounts.rs","src/financial/codes.rs"],
                 "files_detail":[{"file":"src/financial/accounts.rs","score_x1024":512,"terms":["financial"]}],
+                "slices":[{"label":"crud","recurrence":3,"entities":["X"]}],
                 "miss":false,
                 "report":{"matched":1,"total":3,"reason":"weak","terms":[]}}"#,
         );
         assert!(digest_low_confidence(&weak));
-        // Context: anchors visible but labelled, and NOT term-annotated (the
-        // annotation is a confidence signal the weak answer has not earned).
-        let pt = render_context_block(&weak, Locale::PtBr).unwrap();
-        assert!(pt.contains("BAIXA CONFIANÇA"), "pt weak label:\n{pt}");
-        assert!(pt.contains("- src/financial/accounts.rs"), "anchors still shown:\n{pt}");
-        assert!(!pt.contains("(financial)"), "weak: no term annotation:\n{pt}");
-        let en = render_context_block(&weak, Locale::EnUs).unwrap();
-        assert!(en.contains("LOW CONFIDENCE"), "en weak label:\n{en}");
+        // Context: NOTHING — anchors AND slices from a weak answer are noise
+        // the orchestrator would have to overwrite by hand (field case).
+        assert!(
+            render_context_block(&weak, Locale::PtBr).is_none(),
+            "weak answer must materialise no Context block"
+        );
+        assert!(render_context_block(&weak, Locale::EnUs).is_none());
         // Checklist: weak anchors stay OUT → build_checklist falls back.
         assert!(checklist_anchors(&weak).is_empty(), "weak anchors must not seed");
         let items = build_checklist(Scope::Light, checklist_anchors(&weak), Locale::PtBr);
@@ -722,6 +746,7 @@ mod tests {
 
         let none = digest(r#"{"files":["src/x.rs"],"miss":true,"report":{"matched":0,"total":2,"reason":"none","terms":[]}}"#);
         assert!(digest_low_confidence(&none));
+        assert!(render_context_block(&none, Locale::PtBr).is_none());
         assert!(checklist_anchors(&none).is_empty());
     }
 
@@ -892,6 +917,7 @@ mod tests {
             output: Some(out.clone()),
             waves: 0,
             force: false,
+            query_terms: None,
         });
         let body = std::fs::read_to_string(out.join("spec.md")).unwrap();
         let heading = format!("## {CHECKLIST_HEADING}");
@@ -929,6 +955,7 @@ mod tests {
             output: Some(out.clone()),
             waves: 3,
             force: false,
+            query_terms: None,
         });
         let body = std::fs::read_to_string(out.join("spec.md")).unwrap();
         let checklist_heading = format!("## {CHECKLIST_HEADING}");
@@ -982,6 +1009,7 @@ mod tests {
                 output: Some(out.clone()),
                 waves,
                 force: false,
+                query_terms: None,
             });
             let spec_md = out.join("spec.md");
             let body = std::fs::read_to_string(&spec_md)
@@ -1013,6 +1041,7 @@ mod tests {
             output: Some(dir.path().join("specs").join("demo")),
             waves: 2,
             force: false,
+            query_terms: None,
         };
         run(opts);
         let root = dir.path().join("specs").join("demo");
@@ -1037,6 +1066,7 @@ mod tests {
             output: Some(dir.path().join("out")),
             waves: 0,
             force: false,
+            query_terms: None,
         };
         run(opts);
         // Output dir should not have been populated.

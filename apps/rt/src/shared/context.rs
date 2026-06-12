@@ -222,6 +222,50 @@ pub fn spec_for_session(project_dir_path: &str, session_id: &str) -> Option<Stri
     }
 }
 
+/// Inverse lookup: the session currently bound to `spec` via its
+/// `active-spec` marker. Scans `.claude/.session/*/active-spec` and, when
+/// more than one session is bound to the same spec (rare — concurrent
+/// sessions on one spec), returns the binding with the newest marker mtime.
+///
+/// Exists for spec-scoped READERS (e.g. `digest-adherence-finalize`): the
+/// emitter and the reader run as separate processes minutes apart, and the
+/// env-less newest-session-by-mtime fallback of [`session_id`] races against
+/// any other session touching the project in between — the field symptom was
+/// `digestUsed: false` with two digest queries on record. The marker is the
+/// binding the researching session itself wrote, so resolving through it is
+/// stable. `None` when no session is bound to `spec` — never panics.
+#[must_use]
+pub fn session_for_spec(project_dir_path: &str, spec: &str) -> Option<String> {
+    if spec.is_empty() {
+        return None;
+    }
+    let base = ClaudePaths::for_project(Path::new(project_dir_path))
+        .ok()?
+        .claude_dir()
+        .join(".session");
+    let entries = fs::read_dir(&base).ok()?;
+    let mut best: Option<(std::time::SystemTime, String)> = None;
+    for entry in entries {
+        if !entry.path.is_dir() || entry.file_name == "unknown" {
+            continue;
+        }
+        let marker = entry.path.join("active-spec");
+        let Ok(content) = fs::read_to_string(&marker) else {
+            continue;
+        };
+        if content.trim() != spec {
+            continue;
+        }
+        let Ok(mtime) = fs::modified(&marker) else {
+            continue;
+        };
+        if best.as_ref().is_none_or(|(t, _)| mtime > *t) {
+            best = Some((mtime, entry.file_name.clone()));
+        }
+    }
+    best.map(|(_, name)| name)
+}
+
 /// Persist the session→spec binding as the `active-spec` marker, best-effort.
 ///
 /// Called from the event router whenever an event already carries both a
@@ -331,6 +375,37 @@ mod tests {
         let result = current_spec(dir.path().to_str().unwrap());
         // Either Some("my-feature-xyzzy") or Some(env-var) — never None here.
         assert!(result.is_some(), "expected Some(_) when a state file exists");
+    }
+
+    // -----------------------------------------------------------------------
+    // session_for_spec — marker-first inverse lookup
+    // -----------------------------------------------------------------------
+
+    /// The spec-scoped reader must resolve the session BOUND to the spec via
+    /// its `active-spec` marker — not the newest session dir by mtime, which
+    /// races against unrelated concurrent sessions (field symptom: a false
+    /// `digestUsed: false` in digest-adherence-finalize).
+    #[test]
+    fn session_for_spec_resolves_bound_session_not_newest() {
+        let dir = tempdir().unwrap();
+        let base = dir.path().join(".claude").join(".session");
+        // sess-a is bound to the spec under test.
+        std::fs::create_dir_all(base.join("sess-a")).unwrap();
+        std::fs::write(base.join("sess-a").join("active-spec"), "minha-spec\n").unwrap();
+        // sess-b is created LAST (newest mtime) and bound to another spec —
+        // the mtime-based fallback would wrongly pick it.
+        std::fs::create_dir_all(base.join("sess-b")).unwrap();
+        std::fs::write(base.join("sess-b").join("active-spec"), "outra-spec").unwrap();
+
+        let root = dir.path().to_str().unwrap();
+        assert_eq!(
+            session_for_spec(root, "minha-spec").as_deref(),
+            Some("sess-a"),
+            "the bound session wins regardless of mtime order"
+        );
+        assert_eq!(session_for_spec(root, "outra-spec").as_deref(), Some("sess-b"));
+        assert_eq!(session_for_spec(root, "spec-sem-binding"), None);
+        assert_eq!(session_for_spec(root, ""), None);
     }
 
     // -----------------------------------------------------------------------

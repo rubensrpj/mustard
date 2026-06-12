@@ -186,7 +186,15 @@ fn emit_summary(project_dir: &str, session: &str, spec: &str, payload: Value) {
 /// Emits the summary event and prints the same JSON. Always exits 0.
 pub fn run(spec: &str) {
     let project_dir = crate::shared::context::project_dir();
-    let session = crate::shared::context::session_id();
+    // Marker-first session resolution: the session bound to `--spec` via its
+    // `active-spec` marker is the one whose research this summary folds. The
+    // bare `session_id()` fallback resolves newest-`.session/`-by-mtime when
+    // no env var is set (none is, under the orchestrator's Bash), which
+    // races against any other session touching the project between the
+    // ANALYZE-time emitter and this PLAN-time reader — the field symptom was
+    // a false `digestUsed: false` despite two recorded digest queries.
+    let session = crate::shared::context::session_for_spec(&project_dir, spec)
+        .unwrap_or_else(crate::shared::context::session_id);
     let events = merged_events(&project_dir, spec, &session);
     let (digest_used, before, total) = summarize(&events);
     let payload = json!({
