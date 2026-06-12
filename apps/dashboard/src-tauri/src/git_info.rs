@@ -62,6 +62,10 @@ pub struct CommitSummary {
     pub author: String,
     /// Committer date, ISO-8601 (`%cI`).
     pub date: String,
+    /// Full commit body (`%b`) — everything after the subject. May span
+    /// multiple lines and be empty for a subject-only commit. The history view
+    /// expands this on click.
+    pub body: String,
 }
 
 /// Read-only snapshot of a repository's git state. Every field defaults to its
@@ -277,31 +281,57 @@ fn git_info_impl(repo_path: &str) -> GitInfo {
     }
 
     // Recent commits, last 10. Fields are separated by the US control char
-    // (0x1f), which cannot occur in a commit subject, so a subject containing
-    // `|`, tabs, or newlines never breaks the parse. (`%s` is single-line.)
+    // (0x1f) and commits by the RS control char (0x1e) — see `parse_commit_log`
+    // for why the body (`%b`, multi-line) forces a record separator instead of
+    // a per-line split.
     if let Some(out) = git_capture(
         base,
-        &["log", "-10", "--format=%h%x1f%s%x1f%an%x1f%cI"],
+        &["log", "-10", "--format=%h%x1f%s%x1f%an%x1f%cI%x1f%b%x1e"],
     ) {
-        for line in out.lines() {
-            let mut fields = line.split('\u{1f}');
-            let hash = fields.next().unwrap_or("").to_string();
-            let subject = fields.next().unwrap_or("").to_string();
-            let author = fields.next().unwrap_or("").to_string();
-            let date = fields.next().unwrap_or("").to_string();
-            if hash.is_empty() {
-                continue;
-            }
-            info.recent_commits.push(CommitSummary {
-                hash,
-                subject,
-                author,
-                date,
-            });
-        }
+        info.recent_commits = parse_commit_log(&out);
     }
 
     info
+}
+
+/// Parse `git log` output formatted as
+/// `%h%x1f%s%x1f%an%x1f%cI%x1f%b%x1e` into [`CommitSummary`] rows. Commits are
+/// separated by the RS control char (0x1e) and fields by the US control char
+/// (0x1f); neither can occur in a subject or body, so a body with embedded
+/// newlines (which `%b` carries) never splits the parse the way a per-line
+/// split did. git emits a `\n` between records, so the leading newline each
+/// record inherits is trimmed before reading the hash. Records with an empty
+/// hash (the trailing fragment after the last RS) are skipped.
+fn parse_commit_log(out: &str) -> Vec<CommitSummary> {
+    let mut commits = Vec::new();
+    for record in out.split('\u{1e}') {
+        // git puts a newline between records; strip it (and any stray
+        // whitespace) before the hash field.
+        let record = record.trim_start_matches(['\n', '\r']);
+        if record.is_empty() {
+            continue;
+        }
+        let mut fields = record.split('\u{1f}');
+        let hash = fields.next().unwrap_or("").to_string();
+        let subject = fields.next().unwrap_or("").to_string();
+        let author = fields.next().unwrap_or("").to_string();
+        let date = fields.next().unwrap_or("").to_string();
+        // The body is the remainder of the record (it may itself contain no
+        // 0x1f, so `next()` captures it whole); trim the trailing newline git
+        // appends after `%b`.
+        let body = fields.next().unwrap_or("").trim_end_matches(['\n', '\r']).to_string();
+        if hash.is_empty() {
+            continue;
+        }
+        commits.push(CommitSummary {
+            hash,
+            subject,
+            author,
+            date,
+            body,
+        });
+    }
+    commits
 }
 
 /// Inspect the commit log of an arbitrary ref so the overview card can switch
@@ -348,13 +378,13 @@ fn git_log_impl(repo_path: &str, git_ref: &str, limit: u32) -> Vec<CommitSummary
     // shell). `--end-of-options` forces everything after it to be parsed as a
     // revision, so a ref beginning with `-` can never be mistaken for a flag;
     // the trailing `--` then separates the revision from any path. Fields use
-    // the US control char (0x1f) separator, the same scheme as
-    // `recent_commits`, so a subject with `|`/tabs never splits.
+    // the US control char (0x1f) separator and commits the RS char (0x1e), the
+    // same scheme as `recent_commits`, so a multi-line body (`%b`) never splits.
     let Some(out) = git_capture(
         base,
         &[
             "log",
-            "--format=%h%x1f%s%x1f%an%x1f%cI",
+            "--format=%h%x1f%s%x1f%an%x1f%cI%x1f%b%x1e",
             &count,
             "--end-of-options",
             git_ref,
@@ -364,24 +394,7 @@ fn git_log_impl(repo_path: &str, git_ref: &str, limit: u32) -> Vec<CommitSummary
         return Vec::new();
     };
 
-    let mut commits = Vec::new();
-    for line in out.lines() {
-        let mut fields = line.split('\u{1f}');
-        let hash = fields.next().unwrap_or("").to_string();
-        let subject = fields.next().unwrap_or("").to_string();
-        let author = fields.next().unwrap_or("").to_string();
-        let date = fields.next().unwrap_or("").to_string();
-        if hash.is_empty() {
-            continue;
-        }
-        commits.push(CommitSummary {
-            hash,
-            subject,
-            author,
-            date,
-        });
-    }
-    commits
+    parse_commit_log(&out)
 }
 
 #[cfg(test)]
@@ -550,5 +563,64 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let commits = git_log_impl(&dir.path().to_string_lossy(), "HEAD", 10);
         assert!(commits.is_empty(), "a non-repo path yields an empty log");
+    }
+
+    #[test]
+    fn multiline_commit_body_is_captured_without_splitting_records() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path();
+        let run = |args: &[&str]| {
+            no_window_command("git")
+                .args(args)
+                .current_dir(base)
+                .output()
+        };
+        // Skip when git is unavailable on the host — fail-open contract.
+        if run(&["init", "-b", "trunk"]).is_err() {
+            return;
+        }
+        let _ = run(&["config", "user.email", "qa@example.com"]);
+        let _ = run(&["config", "user.name", "QA Bot"]);
+
+        // First commit: subject only (empty body).
+        std::fs::write(base.join("a.txt"), b"a").unwrap();
+        let _ = run(&["add", "."]);
+        let _ = run(&["commit", "-m", "first commit"]);
+
+        // Second commit: a subject plus a TWO-LINE body. The newline inside the
+        // body is exactly what broke the old per-line split — the RS separator
+        // must keep it as one record.
+        std::fs::write(base.join("b.txt"), b"b").unwrap();
+        let _ = run(&["add", "."]);
+        let _ = run(&["commit", "-m", "second commit", "-m", "linha1 do corpo\nlinha2"]);
+
+        let info = git_info_impl(&base.to_string_lossy());
+        // Exactly two commits — the RS did not split the body into extras.
+        assert_eq!(
+            info.recent_commits.len(),
+            2,
+            "the multi-line body did not split into spurious commits"
+        );
+        assert_eq!(info.recent_commits[0].subject, "second commit");
+        assert!(
+            info.recent_commits[0].body.contains("linha2"),
+            "the second line of the body is captured (body = {:?})",
+            info.recent_commits[0].body
+        );
+        assert!(
+            info.recent_commits[0].body.contains("linha1 do corpo"),
+            "the first line of the body is captured too"
+        );
+        // The subject-only commit has an empty body — no leading newline leaked.
+        assert!(
+            info.recent_commits[1].body.trim().is_empty(),
+            "a subject-only commit has an empty body (got {:?})",
+            info.recent_commits[1].body
+        );
+
+        // dashboard_git_log goes through the same parser.
+        let log = git_log_impl(&base.to_string_lossy(), "HEAD", 10);
+        assert_eq!(log.len(), 2, "git_log_impl also yields exactly two commits");
+        assert!(log[0].body.contains("linha2"));
     }
 }

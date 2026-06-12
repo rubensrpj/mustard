@@ -1182,3 +1182,37 @@ export function fetchGitLog(
 export function fetchProjectOverview(repoPath: string): Promise<ProjectOverview> {
   return invoke<ProjectOverview>("dashboard_project_overview", { repoPath });
 }
+
+// --- Code viewer file read (etapa 1: fundação do CodeViewer) ----------------
+//
+// Read-only projection of one repository file for the code viewer. Mirrors the
+// Rust `FileContent` struct (`serde(rename_all = "snake_case")`, file_read.rs).
+// The backend is fail-open: a missing file, a binary file, or a path that
+// escapes the repo never rejects — it resolves to `readable: false`, so the
+// viewer renders an empty / "não foi possível abrir" state, not an error toast.
+
+export interface FileContent {
+  /** The file's UTF-8 text, possibly truncated. Empty when binary/missing. */
+  content: string;
+  /** Lowercase extension with no leading dot (`rs`, `tsx`, `json`); empty when
+   *  the file has no extension. Feed straight into `<CodeBlock lang>`. */
+  language: string;
+  /** On-disk size in bytes (full size even when `content` is truncated). */
+  size_bytes: number;
+  /** `true` when the file exceeded the read cap and `content` is the prefix. */
+  truncated: boolean;
+  /** `true` when the file looked binary; `content` is empty in that case. */
+  is_binary: boolean;
+  /** `true` only when text was read successfully (in-repo, not binary, no IO
+   *  error). A traversal escape / missing / binary file yields `false`. */
+  readable: boolean;
+}
+
+/**
+ * Read `relPath` (relative to `repoPath`) as text for the code viewer. The
+ * args go over in camelCase (`repoPath`, `relPath`) and the Rust serde maps
+ * them to snake_case — do not rename. Always resolves (fail-open contract).
+ */
+export function fetchReadFile(repoPath: string, relPath: string): Promise<FileContent> {
+  return invoke<FileContent>("dashboard_read_file", { repoPath, relPath });
+}
