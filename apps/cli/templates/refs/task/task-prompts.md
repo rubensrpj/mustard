@@ -1,6 +1,6 @@
 # Task Dispatch — Render Invocations Reference
 
-> Detail for `/task`: the concrete `agent-prompt-render` (+ `context-slice`) invocations per action. Prompts are **never hand-assembled** — this is the same inviolable rule `/feature` and `/tactical-fix` follow. The orchestrator runs the render command, then passes its **stdout verbatim** as the Task `prompt`.
+> Detail for `/task`: the concrete `agent-prompt-render` (+ `context-slice`) invocations per action. Prompts are **never hand-assembled** — this is the same inviolable rule `/feature` and `/tactical-fix` follow. The orchestrator runs the render command, then passes its **stdout verbatim** as the Task `prompt`. With `--emit ref` that stdout is a 2-line stub (the full prompt goes to a `.dispatch/` file) — still verbatim; the PreToolUse hook expands it at dispatch, so the full text never transits the orchestrator's context.
 
 `/task` is spec-less: there is no `wave-plan.md` and no `dispatch-plan`. The render is driven directly by the action (`--role`) and the scope (`--spec` / `--subproject`). Every placeholder fail-opens, so a spec-less invocation is safe — empty slots simply render blank.
 
@@ -22,13 +22,13 @@ The slice is cached at `.claude/.pipeline-states/{scope}.context-md.md`; `agent-
 
 | Action | `--role` | `subagent_type` | Render invocation |
 |--------|----------|-----------------|-------------------|
-| `analyze` | `explore` | `Explore` | `mustard-rt run agent-prompt-render --spec {scope} --role explore --subproject {subproject} --mode first` |
-| `review` | `review` | `mustard-review` | `mustard-rt run agent-prompt-render --spec {scope} --role review --subproject {subproject} --mode first` |
-| `docs` | `docs` | `general-purpose` | `mustard-rt run agent-prompt-render --spec {scope} --role docs --subproject {subproject} --mode first` |
-| `audit` | `audit` | `general-purpose` | `mustard-rt run agent-prompt-render --spec {scope} --role audit --subproject {subproject} --mode first` |
-| `refactor` (plan) | `plan` | `Plan` | `mustard-rt run agent-prompt-render --spec {scope} --role plan --subproject {subproject} --mode first` |
-| `refactor` (execute) | `implement` | `general-purpose` | `mustard-rt run agent-prompt-render --spec {scope} --role implement --subproject {subproject} --mode first` |
-| `implement` | `implement` | `general-purpose` | `mustard-rt run agent-prompt-render --spec {scope} --role implement --subproject {subproject} --mode first --budget-tokens 4000` |
+| `analyze` | `explore` | `Explore` | `mustard-rt run agent-prompt-render --spec {scope} --role explore --subproject {subproject} --mode first --emit ref` |
+| `review` | `review` | `mustard-review` | `mustard-rt run agent-prompt-render --spec {scope} --role review --subproject {subproject} --mode first --emit ref` |
+| `docs` | `docs` | `general-purpose` | `mustard-rt run agent-prompt-render --spec {scope} --role docs --subproject {subproject} --mode first --emit ref` |
+| `audit` | `audit` | `general-purpose` | `mustard-rt run agent-prompt-render --spec {scope} --role audit --subproject {subproject} --mode first --emit ref` |
+| `refactor` (plan) | `plan` | `Plan` | `mustard-rt run agent-prompt-render --spec {scope} --role plan --subproject {subproject} --mode first --emit ref` |
+| `refactor` (execute) | `implement` | `general-purpose` | `mustard-rt run agent-prompt-render --spec {scope} --role implement --subproject {subproject} --mode first --emit ref` |
+| `implement` | `implement` | `general-purpose` | `mustard-rt run agent-prompt-render --spec {scope} --role implement --subproject {subproject} --mode first --budget-tokens 4000 --emit ref` |
 
 ### Dispatch shape
 

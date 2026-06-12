@@ -51,6 +51,43 @@ const SPEC_MEMORY_MAX: usize = 3;
 pub struct SubagentInject;
 
 
+/// Expand a `--emit ref` dispatch stub into the full rendered prompt.
+///
+/// `agent-prompt-render --emit ref` prints a 2-line stub whose first line is
+/// `MUSTARD-PROMPT-REF: <project-relative path>`; the orchestrator passes the
+/// stub verbatim as the Task prompt so the full text never transits its
+/// context. This hook is the other half of that contract: it reads the file
+/// and returns a [`Verdict::Rewrite`] with the prompt replaced.
+///
+/// Fail-open: no marker, an empty/absolute/`..`-escaping path, or an
+/// unreadable/empty file all yield `None` — the dispatch proceeds with the
+/// stub, whose own fallback line tells the subagent to Read the file.
+fn expand_prompt_ref(project: &Path, input: &HookInput) -> Option<Verdict> {
+    let prompt = dispatch_prompt(input);
+    let rel = prompt.lines().find_map(|line| {
+        line.trim().strip_prefix(crate::commands::agent::agent_prompt_render::PROMPT_REF_MARKER)
+    })?;
+    let rel = rel.trim();
+    // Project-relative only: reject absolute/rooted paths (has_root also
+    // catches Windows' drive-less `\foo`, which `is_absolute` does not) and
+    // any `..` segment — the stub may only name a file under the project.
+    if rel.is_empty()
+        || Path::new(rel).has_root()
+        || Path::new(rel).is_absolute()
+        || rel.contains(':')
+        || rel.split(['/', '\\']).any(|seg| seg == "..")
+    {
+        return None;
+    }
+    let body = fs::read_to_string(project.join(rel)).ok()?;
+    if body.trim().is_empty() {
+        return None;
+    }
+    let mut tool_input = input.tool_input.clone();
+    tool_input.as_object_mut()?.insert("prompt".to_string(), serde_json::Value::String(body));
+    Some(Verdict::Rewrite { tool_input })
+}
+
 /// `true` when the dispatch prompt already declares a SKILL block, in which
 /// case we trust the caller (typically `agent-prompt-render`) and stay out.
 fn prompt_declares_skill(prompt: &str) -> bool {
@@ -289,13 +326,23 @@ impl Check for SubagentInject {
         {
             return Ok(Verdict::Allow);
         }
+        let cwd = ctx.project_dir_or_cwd(input);
+        let project = PathBuf::from(&cwd);
+        // `--emit ref` stub → rewrite the dispatch with the full rendered
+        // prompt from disk. The rendered prompt is the complete
+        // agent-prompt-render product (skills, guards, contract), so no
+        // further injection is needed — and this module is the LAST
+        // PreToolUse(Task) check in the registry, so the Rewrite verdict
+        // survives the outcome fold.
+        if let Some(verdict) = expand_prompt_ref(&project, input) {
+            economy::emit(&cwd, ActorKind::Hook, "subagent_inject", "pipeline.economy.operation.invoked", None, serde_json::json!({"operation": "subagent_inject.prompt_ref_expand", "duration_ms": 0, "tokens_used": 0}));
+            return Ok(verdict);
+        }
         let prompt = dispatch_prompt(input);
         if prompt_declares_skill(&prompt) {
             // Trust agent-prompt-render — do nothing.
             return Ok(Verdict::Allow);
         }
-        let cwd = ctx.project_dir_or_cwd(input);
-        let project = PathBuf::from(&cwd);
         let role = role_from_input(input);
 
         let mut sections: Vec<String> = Vec::new();
@@ -389,6 +436,64 @@ mod tests {
             SubagentInject.evaluate(&input, &ctx_for(dir.path())).unwrap(),
             Verdict::Allow
         );
+    }
+
+    /// `--emit ref` round-trip: a Task prompt carrying the
+    /// `MUSTARD-PROMPT-REF` stub is rewritten with the file's full content;
+    /// the other tool_input fields survive untouched.
+    #[test]
+    fn prompt_ref_stub_is_expanded_into_full_prompt_rewrite() {
+        let dir = tempdir().unwrap();
+        let rel = ".claude/spec/demo/.dispatch/wave-1-rt.first.prompt.md";
+        let full = dir.path().join(rel);
+        std::fs::create_dir_all(full.parent().unwrap()).unwrap();
+        std::fs::write(&full, "ROLE: impl\nthe real rendered prompt body").unwrap();
+
+        let stub = format!("MUSTARD-PROMPT-REF: {rel}\nDispatch stub — fallback line.");
+        let input = task_input(&stub, "general-purpose");
+        let v = SubagentInject.evaluate(&input, &ctx_for(dir.path())).unwrap();
+        match v {
+            Verdict::Rewrite { tool_input } => {
+                let p = tool_input["prompt"].as_str().expect("prompt string");
+                assert!(p.contains("the real rendered prompt body"), "expanded: {p}");
+                assert!(!p.contains("MUSTARD-PROMPT-REF"), "stub replaced, not appended: {p}");
+                assert_eq!(
+                    tool_input["subagent_type"], "general-purpose",
+                    "sibling fields preserved"
+                );
+            }
+            other => panic!("expected Rewrite, got {other:?}"),
+        }
+    }
+
+    /// A stub naming a missing file must NOT rewrite — the dispatch proceeds
+    /// with the stub, whose fallback line tells the subagent to Read it.
+    #[test]
+    fn prompt_ref_missing_file_falls_through_fail_open() {
+        let dir = tempdir().unwrap();
+        let stub = "MUSTARD-PROMPT-REF: .claude/spec/demo/.dispatch/ghost.prompt.md\nfallback";
+        let input = task_input(stub, "general-purpose");
+        let v = SubagentInject.evaluate(&input, &ctx_for(dir.path())).unwrap();
+        assert!(!matches!(v, Verdict::Rewrite { .. }), "missing file must not rewrite: {v:?}");
+    }
+
+    /// Absolute, rooted, drive-qualified, or `..`-escaping paths are rejected
+    /// — the stub may only reference a file under the project root.
+    #[test]
+    fn prompt_ref_rejects_escaping_and_rooted_paths() {
+        let dir = tempdir().unwrap();
+        for evil in [
+            "../outside.md",
+            ".claude/../../leak.md",
+            "/etc/passwd",
+            "C:/Windows/x.md",
+            "\\\\server\\share\\x.md",
+        ] {
+            let stub = format!("MUSTARD-PROMPT-REF: {evil}\nfallback");
+            let input = task_input(&stub, "general-purpose");
+            let v = SubagentInject.evaluate(&input, &ctx_for(dir.path())).unwrap();
+            assert!(!matches!(v, Verdict::Rewrite { .. }), "path {evil} must not expand");
+        }
     }
 
     #[test]

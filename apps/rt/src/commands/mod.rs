@@ -1045,7 +1045,10 @@ pub enum RunCmd {
         #[arg(long)]
         role: String,
         /// Subproject path relative to the project root (e.g. `apps/dashboard`).
-        #[arg(long)]
+        /// Defaults to `.` (the project root) so a dispatch that is not scoped
+        /// to a subproject never costs the orchestrator a usage-error
+        /// round-trip — the render then reads the root `CLAUDE.md` Guards.
+        #[arg(long, default_value = ".")]
         subproject: PathBuf,
         /// Render mode: `first` (default), `granular`, `fix-loop`.
         #[arg(long, default_value = "first")]
@@ -1071,6 +1074,13 @@ pub enum RunCmd {
         /// 4-chars-per-token heuristic; trimming is head-preserving.
         #[arg(long = "budget-tokens")]
         budget_tokens: Option<usize>,
+        /// Emit mode: `inline` (default) prints the full rendered prompt;
+        /// `ref` writes it to a deterministic `.dispatch/` file and prints a
+        /// 2-line stub instead — pass the stub verbatim as the Task prompt
+        /// and the PreToolUse hook expands it, so the full text never
+        /// transits the orchestrator's context.
+        #[arg(long, default_value = "inline")]
+        emit: String,
     },
     /// Garbage-collect orphan Claude agent worktrees under
     /// `<repo>/.claude/worktrees/agent-*`.
@@ -1922,6 +1932,7 @@ pub fn dispatch(cmd: RunCmd) {
             task_filter,
             task_text,
             budget_tokens,
+            emit,
         } => agent::agent_prompt_render::run(
             spec.as_deref(),
             wave,
@@ -1932,6 +1943,7 @@ pub fn dispatch(cmd: RunCmd) {
             task_filter.as_deref(),
             task_text.as_deref(),
             budget_tokens,
+            agent::agent_prompt_render::EmitMode::parse(&emit),
         ),
         RunCmd::WorktreeGc {
             repo,

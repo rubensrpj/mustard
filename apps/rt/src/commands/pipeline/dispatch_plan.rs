@@ -185,9 +185,13 @@ pub(crate) fn build_plan(
 /// the dispatch (non-retry) render; the orchestrator swaps to
 /// `granular`/`fix-loop` itself on a retry.
 fn render_prompt_cmd(spec: &str, wave: u32, role: &str, subproject: &str) -> String {
+    // `--emit ref`: the command prints a 2-line stub (the full prompt goes to
+    // the spec's `.dispatch/` file) — the orchestrator passes the stub
+    // verbatim to `Task` and the PreToolUse hook expands it, so the full
+    // text never transits the orchestrator's context.
     format!(
         "mustard-rt run agent-prompt-render --spec {spec} --wave {wave} --role {role} \
-         --subproject {subproject} --mode first"
+         --subproject {subproject} --mode first --emit ref"
     )
 }
 
@@ -223,7 +227,7 @@ fn single_spec_plan(project: &Path, spec_dir: &Path, spec: &str) -> Vec<Dispatch
         level: 0,
         prompt_cmd: format!(
             "mustard-rt run agent-prompt-render --spec {spec} --role {role} \
-             --subproject {subproject} --mode first"
+             --subproject {subproject} --mode first --emit ref"
         ),
         subagent_type: crate::commands::agent::agent_prompt_render::recommended_subagent_type(
             role,
@@ -760,6 +764,9 @@ mod tests {
         assert!(cmd.contains("--role ui"));
         assert!(cmd.contains("--subproject apps/dashboard"));
         assert!(cmd.contains("--mode first"));
+        // Ref emit: the stub keeps the full prompt out of the orchestrator's
+        // context (paid once in the dispatch instead of twice).
+        assert!(cmd.contains("--emit ref"));
     }
 
     /// End-to-end: a multi-wave spec with a real `wave-plan.md` + wave dirs

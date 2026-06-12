@@ -36,10 +36,10 @@ mustard-rt run context-slice --spec {scope} \
 
 # 2. Render the dispatch prompt (one process call → Task-ready string on stdout).
 mustard-rt run agent-prompt-render --spec {scope} --role {action} \
-  --subproject {subproject} --task-text "<the action's task>" --mode first [--budget-tokens 4000]
+  --subproject {subproject} --task-text "<the action's task>" --mode first --emit ref [--budget-tokens 4000]
 ```
 
-Pass the `agent-prompt-render` **stdout verbatim** as the Task `prompt`. `{guards_summary}` (subproject `## Guards`), `{context_md}` (the `context-slice` output above) and `{reference_files}` are filled by the renderer — do not duplicate them in the prompt. Spec-less, so the action's work rides in via `--task-text`.
+Pass the `agent-prompt-render` **stdout verbatim** as the Task `prompt` — with `--emit ref` that stdout is a 2-line stub the PreToolUse hook expands to the full prompt at dispatch, so the full text never transits your context. `{guards_summary}` (subproject `## Guards`), `{context_md}` (the `context-slice` output above) and `{reference_files}` are filled by the renderer — do not duplicate them in the prompt. Spec-less, so the action's work rides in via `--task-text`.
 
 ## Flow
 

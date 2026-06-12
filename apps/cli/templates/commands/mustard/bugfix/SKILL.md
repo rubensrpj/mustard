@@ -14,7 +14,7 @@ source: manual
 
 → `../../../refs/feature/spec-hygiene.md`. (No stage emit here — there is no spec yet; `spec-draft` backfills the `ANALYZE` marker when the slug is born.) Ensure `mustard-rt run scan` has produced `.claude/grain.model.json`; research with `mustard-rt run feature --intent "<bug>"` (the scan digest — locate first, then read) and read only its anchors.
 
-**DIAGNOSE.** Dispatch Explore (`≤20 tool uses, ≤3 full file reads`) with the `diagnose` skill, prompt rendered via `agent-prompt-render --role explore --task-text` (spec-less — the compiled explore contract rides along). Scoped Greps for the symptom; trace callers/callees; return root cause + 1-line explanation.
+**DIAGNOSE.** Dispatch Explore (`≤20 tool uses, ≤3 full file reads`) with the `diagnose` skill, prompt rendered via `agent-prompt-render --role explore --task-text ... --emit ref` (spec-less — the compiled explore contract rides along; pass the 2-line stub stdout verbatim as the Task prompt, the PreToolUse hook expands it). Scoped Greps for the symptom; trace callers/callees; return root cause + 1-line explanation.
 
 **Root-cause cache** (in-memory): `rootCauseHash = sha256(bugDescription + '|' + affectedFiles)` + `affectedFilesHash = sha256(contents)`. Reused on Structural retry when hash matches + failure rationale stays inside `affectedFiles`.
 
@@ -34,7 +34,7 @@ Print spec verbatim, then *"Run `/mustard:spec` to approve and proceed to EXECUT
 
 ### 4. EXECUTE
 
-All agent prompts via `mustard-rt run agent-prompt-render` (NEVER hand-craft; the subagent's context is the spec section + anchors). Dispatch each with its role's `subagent_type` (`impl`→`general-purpose`, `review`→`mustard-review`); the DIAGNOSE Explore already runs read-only. `role=ui` → append `Read .claude/refs/stack-templates/browser-debug.md before instrumenting.` to `{context_extras}`.
+All agent prompts via `mustard-rt run agent-prompt-render --emit ref` (NEVER hand-craft; the 2-line stub stdout IS the Task prompt — the PreToolUse hook expands it; the subagent's context is the spec section + anchors). Dispatch each with its role's `subagent_type` (`impl`→`general-purpose`, `review`→`mustard-review`); the DIAGNOSE Explore already runs read-only. `role=ui` → append `Read .claude/refs/stack-templates/browser-debug.md before instrumenting.` to `{context_extras}`.
 
 Validate: build/type-check passes, no regression (max 3 iterations).
 

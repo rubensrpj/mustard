@@ -91,6 +91,10 @@ packages/cli/templates/.claude/.metrics/
 **/.claude/spec/*/.events/
 **/.claude/spec/*/.blobs/
 
+# Rendered dispatch prompts (`agent-prompt-render --emit ref`, regenerable)
+**/.claude/.dispatch/
+**/.claude/spec/*/.dispatch/
+
 # Per-spec QA reports (W2 path catalog: moved out of .claude/.qa-reports/)
 **/.claude/spec/*/qa-report.json
 **/.claude/spec/*/qa-report.html

@@ -6,10 +6,14 @@
 //! 1. `dispatch-plan` — [`crate::commands::pipeline::dispatch_plan::build_plan`]
 //!    (the wave DAG + ordering, including the single-spec one-item fallback).
 //! 2. `agent-prompt-render` — for each item of the next pending level, the
-//!    prompt is rendered inline via
-//!    [`crate::commands::agent::agent_prompt_render::render_prompt_at`] and
-//!    returned as text, so the orchestrator no longer shells the `prompt_cmd`
-//!    each dispatch item used to carry.
+//!    prompt is rendered via
+//!    [`crate::commands::agent::agent_prompt_render::render_prompt_ref_at`]:
+//!    the full text is written to the spec's `.dispatch/` file and the item
+//!    carries the 2-line `MUSTARD-PROMPT-REF` stub. The orchestrator passes
+//!    the stub verbatim to `Task`; the `subagent_inject` PreToolUse hook
+//!    expands it — the full prompt never transits the orchestrator's context
+//!    (it used to be paid twice: once in this command's JSON, once again in
+//!    the dispatch).
 //!
 //! ## "Next pending level" semantics
 //!
@@ -45,9 +49,11 @@
 //! ## Output
 //!
 //! A deterministic JSON array, one item per agent of the pending level:
-//! `[{wave, role, subproject, subagent_type, prompt}]` — `prompt` is the full
-//! rendered dispatch text, ready for the `Task` tool. Fail-open: an unknown
-//! spec degrades to `[]`; exit 0 always.
+//! `[{wave, role, subproject, subagent_type, prompt}]` — `prompt` is the
+//! dispatch stub (`MUSTARD-PROMPT-REF` + fallback line), ready for the `Task`
+//! tool verbatim; the full rendered text sits in the spec's `.dispatch/` file
+//! the stub names. Fail-open: an unknown spec degrades to `[]` and a failed
+//! stub write degrades to the full inline prompt; exit 0 always.
 
 use crate::commands::agent::agent_prompt_render::{self, RenderMode};
 use crate::commands::pipeline::dispatch_plan;
@@ -71,8 +77,10 @@ pub struct AdvanceItem {
     /// The `subagent_type` to pass to `Task` (picked by the tool, never by hand).
     #[serde(rename = "subagent_type")]
     pub subagent_type: String,
-    /// The rendered dispatch prompt (the stdout `agent-prompt-render` would
-    /// print), inline — the orchestrator relays it straight to `Task`.
+    /// The dispatch stub (`MUSTARD-PROMPT-REF` line + fallback) — the
+    /// orchestrator relays it straight to `Task`; the PreToolUse hook expands
+    /// it to the full rendered prompt. Falls back to the full inline text
+    /// when the stub file could not be written.
     pub prompt: String,
 }
 
@@ -115,17 +123,13 @@ pub(crate) fn advance(project: &Path, spec: &str) -> Vec<AdvanceItem> {
             // Wave 0 is the single-spec fallback: render the root spec.md
             // (no `--wave`), exactly like the prompt_cmd dispatch-plan emits.
             let wave_arg = (it.wave > 0).then_some(it.wave);
-            let prompt = agent_prompt_render::render_prompt_at(
+            let prompt = agent_prompt_render::render_prompt_ref_at(
                 project,
                 Some(spec),
                 wave_arg,
                 &it.role,
                 Path::new(&it.subproject),
                 RenderMode::First,
-                None,
-                None,
-                None,
-                None,
             );
             AdvanceItem {
                 wave: it.wave,
@@ -195,8 +199,8 @@ fn reviewed_subprojects(events: &[HarnessEvent], spec: &str) -> BTreeSet<String>
 /// The post-impl review round: one `role: review` item per distinct subproject
 /// touched by the plan's waves, alphabetical (`BTreeSet` order), minus the
 /// subprojects already carrying a `review.result` (see module docs for the
-/// re-invocation semantics). The prompt is rendered inline by the same
-/// `agent-prompt-render` miolo the impl waves use — role `review`, wave-less
+/// re-invocation semantics). The prompt stub is rendered by the same
+/// `agent-prompt-render` ref miolo the impl waves use — role `review`, wave-less
 /// (the root `spec.md`), so the item carries `wave: 0` like the single-spec
 /// fallback. `subagent_type` resolves through [`recommended_subagent_type`]
 /// (`review` → `mustard-review`), never picked by hand.
@@ -214,17 +218,13 @@ fn review_round(
         .into_iter()
         .filter(|sub| !reviewed.contains(sub))
         .map(|sub| {
-            let prompt = agent_prompt_render::render_prompt_at(
+            let prompt = agent_prompt_render::render_prompt_ref_at(
                 project,
                 Some(spec),
                 None,
                 "review",
                 Path::new(&sub),
                 RenderMode::First,
-                None,
-                None,
-                None,
-                None,
             );
             AdvanceItem {
                 wave: 0,
@@ -299,10 +299,23 @@ mod tests {
         crate::shared::events::route::emit(project.to_str().unwrap(), &event);
     }
 
+    /// Resolve a dispatch stub to the rendered body it references: extract
+    /// the `MUSTARD-PROMPT-REF` line and read the file under `project`.
+    fn stub_body(project: &Path, prompt: &str) -> String {
+        let rel = prompt
+            .lines()
+            .find_map(|l| l.trim().strip_prefix("MUSTARD-PROMPT-REF:"))
+            .unwrap_or_else(|| panic!("prompt is not a dispatch stub: {prompt}"))
+            .trim()
+            .to_string();
+        std::fs::read_to_string(project.join(rel)).expect("stub file readable")
+    }
+
     /// Happy path: with no wave completed, the first level (the two parallel
-    /// waves 1 and 2) comes back, each with its prompt rendered inline.
+    /// waves 1 and 2) comes back, each carrying a dispatch stub whose file
+    /// holds the full rendered prompt.
     #[test]
-    fn composite_wave_advance_returns_first_level_with_inline_prompts() {
+    fn composite_wave_advance_returns_first_level_with_prompt_stubs() {
         let dir = tempdir().unwrap();
         anchor(dir.path());
         let project = dir.path();
@@ -317,13 +330,14 @@ mod tests {
         for item in &items {
             assert_eq!(item.subagent_type, "general-purpose");
             assert!(
-                item.prompt.contains(&format!("task for {}", item.role)),
-                "prompt must inline the wave's task body: {}",
+                item.prompt.starts_with("MUSTARD-PROMPT-REF:"),
+                "prompt must be the dispatch stub: {}",
                 item.prompt
             );
+            let body = stub_body(project, &item.prompt);
             assert!(
-                !item.prompt.trim().is_empty(),
-                "prompt is the rendered text, not a command"
+                body.contains(&format!("task for {}", item.role)),
+                "stub file must hold the wave's task body: {body}"
             );
             assert!(
                 !item.prompt.contains("agent-prompt-render"),
@@ -421,10 +435,10 @@ mod tests {
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].wave, 0);
         assert_eq!(items[0].role, "impl");
+        let body = stub_body(project, &items[0].prompt);
         assert!(
-            items[0].prompt.contains("the only task"),
-            "root spec.md tasks must reach the prompt: {}",
-            items[0].prompt
+            body.contains("the only task"),
+            "root spec.md tasks must reach the rendered prompt: {body}"
         );
     }
 
@@ -462,7 +476,7 @@ mod tests {
 
     /// Post-impl review round: once every impl wave is complete, the advance
     /// emits one `role: review` item per distinct subproject, alphabetically,
-    /// each locked to `mustard-review` with an inline-rendered review prompt.
+    /// each locked to `mustard-review` with a stub-referenced review prompt.
     #[test]
     fn wave_advance_review_round_emitted_after_all_impl_complete() {
         let dir = tempdir().unwrap();
@@ -478,15 +492,20 @@ mod tests {
         // Alphabetical, regardless of the wave order that touched them.
         let subs: Vec<&str> = items.iter().map(|i| i.subproject.as_str()).collect();
         assert_eq!(subs, vec!["apps/cli", "apps/rt", "packages/core"]);
+        let mut stub_paths = std::collections::BTreeSet::new();
         for item in &items {
             assert_eq!(item.role, "review");
             assert_eq!(item.subagent_type, "mustard-review");
             assert_eq!(item.wave, 0, "review round is wave-less (root spec render)");
+            let body = stub_body(project, &item.prompt);
             assert!(
-                item.prompt.contains("ROLE: review"),
-                "prompt must carry the review role contract: {}",
-                item.prompt
+                body.contains("ROLE: review"),
+                "stub file must carry the review role contract: {body}"
             );
+            // Same spec/wave/role across subprojects — the subproject slug in
+            // the filename must keep the three stub files distinct.
+            let rel = item.prompt.lines().next().unwrap_or("").to_string();
+            assert!(stub_paths.insert(rel), "review stub files must not collide: {items:?}");
         }
     }
 

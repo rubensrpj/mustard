@@ -44,10 +44,31 @@ pub(crate) fn domain_terms(intent: &str) -> Vec<String> {
     out
 }
 
+/// `true` when the report's reason forbids planning on top of this payload.
+/// The `weak`/`none` notes steer the orchestrator to a re-query, so rendering
+/// the planning fields (anchors, anchorsDetail, slices, contracts, hubs,
+/// matchedTerms) would charge the orchestrator's context for content the
+/// contract tells it to discard. They are withheld from stdout (empty arrays
+/// plus `planningWithheld: true`); the honest counts (`sliceMatchCount`,
+/// `slicesOmitted`) still report what existed, and the successful re-query
+/// returns the fields. The recorded `feature.query` event keeps the full
+/// report either way — it goes to NDJSON, not to context.
+fn withhold_planning(reason: &str) -> bool {
+    matches!(reason, "weak" | "none")
+}
+
+/// Max evidence files rendered per report term on stdout. The per-term files
+/// are re-query evidence ("where does this vocabulary live"), not an
+/// exhaustive index — three are plenty, and a 32-term prose intent times an
+/// uncapped list is exactly the "gigantic weak JSON" the field run paid for.
+/// The `feature.query` event keeps the full list for `lexicon-suggest`.
+const REPORT_TERM_FILES_MAX: usize = 3;
+
 /// Build the insumos payload for a successful digest query. Pure (no spawn, no
 /// IO) so the payload shape — including the `stacks` passthrough — is
 /// unit-testable without the scan binary.
 fn payload(intent: &str, terms: &[String], q: &DigestQuery) -> serde_json::Value {
+    let withhold = withhold_planning(q.report.reason.as_str());
     json!({
         "intent": intent,
         "queryTerms": terms,
@@ -66,8 +87,12 @@ fn payload(intent: &str, terms: &[String], q: &DigestQuery) -> serde_json::Value
             "signals": s.signals,
         })).collect::<Vec<_>>(),
         "miss": q.miss,
-        "matchedTerms": q.matched_terms.iter().map(|t| json!({ "term": t.term, "count": t.count })).collect::<Vec<_>>(),
-        "slices": q.slices.iter().map(|s| json!({ "label": s.label, "recurrence": s.recurrence, "entities": s.entities })).collect::<Vec<_>>(),
+        // Planning fields below render empty under `withhold` (weak/none
+        // precedent) — see `withhold_planning`. `planningWithheld` is the
+        // honest marker; the counts keep reporting the true sizes.
+        "planningWithheld": withhold,
+        "matchedTerms": if withhold { Vec::new() } else { q.matched_terms.iter().map(|t| json!({ "term": t.term, "count": t.count })).collect::<Vec<_>>() },
+        "slices": if withhold { Vec::new() } else { q.slices.iter().map(|s| json!({ "label": s.label, "recurrence": s.recurrence, "entities": s.entities })).collect::<Vec<_>>() },
         // Count of matched recurring slices — the deterministic signal the
         // scope classifier consumes: 1 = "mirrors a matched slice"
         // (light/extended-light); >=2 = multi-slice vocabulary overlap, which
@@ -78,18 +103,18 @@ fn payload(intent: &str, terms: &[String], q: &DigestQuery) -> serde_json::Value
         // Slices the per-query cap trimmed (additive; 0 from an older scan
         // binary) — honest "there was more" signal next to the count above.
         "slicesOmitted": q.slices_omitted,
-        "contracts": q.contracts.iter().map(|c| json!({ "name": c.name, "implementors": c.implementors })).collect::<Vec<_>>(),
-        "hubs": q.hubs.iter().map(|h| json!({ "module": h.module, "degree": h.degree })).collect::<Vec<_>>(),
-        "anchors": q.files,
+        "contracts": if withhold { Vec::new() } else { q.contracts.iter().map(|c| json!({ "name": c.name, "implementors": c.implementors })).collect::<Vec<_>>() },
+        "hubs": if withhold { Vec::new() } else { q.hubs.iter().map(|h| json!({ "module": h.module, "degree": h.degree })).collect::<Vec<_>>() },
+        "anchors": if withhold { &[] as &[String] } else { &q.files[..] },
         // Audit trail per anchor (additive, same order as `anchors`): the
         // fixed-point selection score + the matched terms that carried the
         // file — the orchestrator sees WHY each anchor ranked (score/terms)
         // without ever opening the scan JSON. Scores stay on scan's integer
         // x1024 scale (byte-stable; no float formatting). Empty rows for
         // payloads from an older scan binary.
-        "anchorsDetail": q.files_detail.iter().map(|d| json!({
+        "anchorsDetail": if withhold { Vec::new() } else { q.files_detail.iter().map(|d| json!({
             "file": d.file, "scoreX1024": d.score_x1024, "terms": d.terms,
-        })).collect::<Vec<_>>(),
+        })).collect::<Vec<_>>() },
         // The honest per-term match report (scan's tier ladder) — the truth
         // about what matched. Per term: the tier that carried it (exact |
         // fold | stem | lexicon | none), the natural-language evidence and
@@ -99,7 +124,9 @@ fn payload(intent: &str, terms: &[String], q: &DigestQuery) -> serde_json::Value
             "total": q.report.total,
             "reason": q.report.reason,
             "terms": q.report.terms.iter().map(|t| json!({
-                "term": t.term, "tier": t.tier, "lang": t.lang, "files": t.files,
+                "term": t.term, "tier": t.tier, "lang": t.lang,
+                // Evidence cap — see `REPORT_TERM_FILES_MAX`.
+                "files": t.files.iter().take(REPORT_TERM_FILES_MAX).collect::<Vec<_>>(),
             })).collect::<Vec<_>>(),
         }),
         "note": note(q),
@@ -203,7 +230,7 @@ fn note(q: &DigestQuery) -> &'static str {
             "no repo precedent matched — treat as net-new; the report names each missed term, so re-query the digest in the code's own vocabulary or dispatch an Explore before concluding 'absent'"
         }
         "weak" => {
-            "weak precedent — under half the terms matched or only stem/lexicon-derived hits; re-query the digest in the code's own vocabulary (see report.terms[].files) and Explore before planning on top of this"
+            "weak precedent — under half the terms matched or only stem/lexicon-derived hits; re-query the digest in the code's own vocabulary (see report.terms[].files) and Explore before planning on top of this. Planning fields (anchors/slices/contracts/hubs) are withheld on weak precedent — the re-query returns them"
         }
         "generated_only" => {
             "matches live only in machine-written modules — regenerate or extend the generator's input; never edit the matched files directly"
@@ -244,6 +271,7 @@ pub fn run(intent: &str, root: &Path) {
                 "queryTerms": terms,
                 "stacks": [],
                 "miss": true,
+                "planningWithheld": true,
                 "matchedTerms": [],
                 "slices": [],
                 "sliceMatchCount": 0,
@@ -457,5 +485,54 @@ mod tests {
         let v = payload("anything", &[], &old);
         assert_eq!(v["report"]["reason"], "", "old payload exposes the defaulted report honestly: {v}");
         assert!(v["note"].as_str().expect("note").contains("net-new"), "miss fallback note: {v}");
+    }
+
+    #[test]
+    fn weak_report_withholds_planning_fields_and_caps_term_evidence() {
+        // On `weak` the note forbids planning on top of the payload, so the
+        // planning fields are withheld from stdout (the orchestrator would
+        // pay for them and then discard them by contract): empty arrays +
+        // `planningWithheld: true`. The honest counts keep the true sizes
+        // and the per-term evidence files cap at REPORT_TERM_FILES_MAX (the
+        // recorded `feature.query` event keeps the full report).
+        let weak: DigestQuery = serde_json::from_str(
+            r#"{"query":["cancelado"],
+                "matched_terms":[{"term":"cancel","count":3,"samples":["src/cancel.cs"]}],
+                "slices":[{"label":"crud","recurrence":4,"entities":["Title"]},{"label":"list","recurrence":2,"entities":["Title"]}],
+                "contracts":[{"name":"ITenant","implementors":2}],
+                "hubs":[{"module":"src/service.cs","degree":9}],
+                "files":["src/cancel.cs","src/other.cs"],
+                "files_detail":[{"file":"src/cancel.cs","score_x1024":2048,"terms":["cancel"]}],
+                "miss":false,
+                "report":{"matched":1,"total":2,"reason":"weak","terms":[
+                    {"term":"cancelado","tier":"lexicon","lang":"pt-en","files":["a.cs","b.cs","c.cs","d.cs","e.cs"]},
+                    {"term":"hierarquia","tier":"none","lang":"","files":[]}]}}"#,
+        )
+        .expect("weak digest payload");
+        let v = payload("cancelar titulo", &["cancelado".to_string()], &weak);
+        assert_eq!(v["planningWithheld"], json!(true));
+        for field in ["matchedTerms", "slices", "contracts", "hubs", "anchors", "anchorsDetail"] {
+            assert_eq!(v[field], json!([]), "{field} must be withheld on weak: {v}");
+        }
+        // Honest counts survive the withholding.
+        assert_eq!(v["sliceMatchCount"], 2, "true slice count stays visible: {v}");
+        // Re-query evidence stays, capped at REPORT_TERM_FILES_MAX.
+        let files = v["report"]["terms"][0]["files"].as_array().expect("files");
+        assert_eq!(files.len(), REPORT_TERM_FILES_MAX, "evidence cap: {v}");
+        assert!(
+            v["note"].as_str().expect("note").contains("withheld"),
+            "weak note must explain the withholding: {v}"
+        );
+
+        // `strong` keeps the planning fields — the withholding is keyed on
+        // the contract, not unconditional.
+        let strong: DigestQuery = serde_json::from_str(
+            r#"{"query":["cancel"],"files":["src/cancel.cs"],"miss":false,
+                "report":{"matched":1,"total":1,"reason":"strong","terms":[]}}"#,
+        )
+        .expect("strong digest payload");
+        let v = payload("cancel title", &["cancel".to_string()], &strong);
+        assert_eq!(v["planningWithheld"], json!(false));
+        assert_eq!(v["anchors"], json!(["src/cancel.cs"]), "strong keeps anchors: {v}");
     }
 }
