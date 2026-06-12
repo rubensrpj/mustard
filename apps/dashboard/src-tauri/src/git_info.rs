@@ -228,6 +228,86 @@ fn git_info_impl(repo_path: &str) -> GitInfo {
     info
 }
 
+/// Inspect the commit log of an arbitrary ref so the overview card can switch
+/// between branches. Always returns `Ok`; a non-repo, missing `git`, invalid
+/// ref, or a zero limit degrades to an empty `Vec`, never an `Err` toast —
+/// the same fail-open contract as [`dashboard_git_info`].
+///
+/// The ref arrives from the front as `gitRef` (camelCase); Tauri maps it to the
+/// `git_ref` argument automatically.
+#[tauri::command]
+pub async fn dashboard_git_log(
+    repo_path: String,
+    git_ref: String,
+    limit: u32,
+) -> Result<Vec<CommitSummary>, String> {
+    // A join error (panic in the closure) degrades to an empty log, never an
+    // Err toast — the failure-tolerant contract.
+    let commits =
+        tauri::async_runtime::spawn_blocking(move || git_log_impl(&repo_path, &git_ref, limit))
+            .await
+            .unwrap_or_default();
+    Ok(commits)
+}
+
+/// Synchronous body of [`dashboard_git_log`], kept separate so unit tests call
+/// it directly without a Tauri runtime.
+fn git_log_impl(repo_path: &str, git_ref: &str, limit: u32) -> Vec<CommitSummary> {
+    // A zero limit means "nothing to show"; short-circuit before spawning git.
+    if limit == 0 {
+        return Vec::new();
+    }
+    // An empty ref falls back to HEAD; cap the count so a huge limit never
+    // floods the card.
+    let git_ref = if git_ref.trim().is_empty() {
+        "HEAD"
+    } else {
+        git_ref
+    };
+    let capped = limit.min(200);
+    let count = format!("-n{capped}");
+
+    let base = Path::new(repo_path);
+    // The ref is passed as a positional argument (never interpolated into a
+    // shell). `--end-of-options` forces everything after it to be parsed as a
+    // revision, so a ref beginning with `-` can never be mistaken for a flag;
+    // the trailing `--` then separates the revision from any path. Fields use
+    // the US control char (0x1f) separator, the same scheme as
+    // `recent_commits`, so a subject with `|`/tabs never splits.
+    let Some(out) = git_capture(
+        base,
+        &[
+            "log",
+            "--format=%h%x1f%s%x1f%an%x1f%cI",
+            &count,
+            "--end-of-options",
+            git_ref,
+            "--",
+        ],
+    ) else {
+        return Vec::new();
+    };
+
+    let mut commits = Vec::new();
+    for line in out.lines() {
+        let mut fields = line.split('\u{1f}');
+        let hash = fields.next().unwrap_or("").to_string();
+        let subject = fields.next().unwrap_or("").to_string();
+        let author = fields.next().unwrap_or("").to_string();
+        let date = fields.next().unwrap_or("").to_string();
+        if hash.is_empty() {
+            continue;
+        }
+        commits.push(CommitSummary {
+            hash,
+            subject,
+            author,
+            date,
+        });
+    }
+    commits
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -290,5 +370,65 @@ mod tests {
             info.pending.untracked >= 1,
             "the untracked file is counted"
         );
+    }
+
+    #[test]
+    fn git_log_returns_commits_for_head_and_empty_for_missing_ref() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path();
+        let run = |args: &[&str]| {
+            no_window_command("git")
+                .args(args)
+                .current_dir(base)
+                .output()
+        };
+        // Skip when git is unavailable on the host — fail-open contract.
+        if run(&["init", "-b", "trunk"]).is_err() {
+            return;
+        }
+        let _ = run(&["config", "user.email", "qa@example.com"]);
+        let _ = run(&["config", "user.name", "QA Bot"]);
+        std::fs::write(base.join("a.txt"), b"hello").unwrap();
+        let _ = run(&["add", "."]);
+        let _ = run(&["commit", "-m", "initial commit"]);
+
+        let path = base.to_string_lossy();
+
+        // HEAD resolves to at least the initial commit.
+        let head = git_log_impl(&path, "HEAD", 10);
+        assert!(!head.is_empty(), "HEAD log has the initial commit");
+        assert_eq!(head[0].subject, "initial commit");
+        assert_eq!(head[0].author, "QA Bot");
+
+        // A nonexistent ref degrades to an empty Vec (fail-open).
+        assert!(
+            git_log_impl(&path, "no-such-branch", 10).is_empty(),
+            "an invalid ref yields an empty log, never an error"
+        );
+
+        // A zero limit short-circuits to empty.
+        assert!(
+            git_log_impl(&path, "HEAD", 0).is_empty(),
+            "a zero limit yields an empty log"
+        );
+
+        // An empty ref falls back to HEAD.
+        assert!(
+            !git_log_impl(&path, "", 10).is_empty(),
+            "an empty ref falls back to HEAD"
+        );
+
+        // A ref starting with `-` is never parsed as a flag (terminated by --).
+        assert!(
+            git_log_impl(&path, "--all", 10).is_empty(),
+            "a flag-like ref is treated as a ref, not an option"
+        );
+    }
+
+    #[test]
+    fn git_log_on_non_repo_returns_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let commits = git_log_impl(&dir.path().to_string_lossy(), "HEAD", 10);
+        assert!(commits.is_empty(), "a non-repo path yields an empty log");
     }
 }

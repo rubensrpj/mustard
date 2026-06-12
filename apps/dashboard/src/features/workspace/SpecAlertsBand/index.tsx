@@ -11,6 +11,7 @@ import {
   type SpecCard,
 } from "@/lib/dashboard";
 import { stateFromStatus } from "@/features/specs/_shared/stage-from-status";
+import { TonalIcon, TONE, type TonalColor } from "@/features/workspace/_shared/tonal";
 import { useT } from "@/lib/i18n";
 
 interface SpecAlertsBandProps {
@@ -23,18 +24,16 @@ interface SpecAlertsBandProps {
 const STALE_DAYS = 7;
 const STALE_CUTOFF_MS = STALE_DAYS * 24 * 60 * 60 * 1000;
 
-/** Severity hue an alert takes when it is "hot" (count > 0). Suspeitas are an
- *  error signal (vermelho), specs paradas a warning (âmbar). When cold the pill
- *  falls back to muted/structural grey — cor = significado, cinza = estrutura. */
-type AlertTone = "error" | "warning";
-
 interface AlertDef {
   /** `/specs?filter=` target. */
   filterKey: string;
   labelKey: string;
   labelFallback: string;
   icon: LucideIcon;
-  tone: AlertTone;
+  /** Severity hue when the alert is "hot" (count > 0): Suspeitas are an error
+   *  signal (vermelho), specs paradas a warning (âmbar). When cold the pill
+   *  falls back to muted/structural grey — cor = significado, cinza = estrutura. */
+  color: TonalColor;
 }
 
 const SUSPECTS: AlertDef = {
@@ -42,7 +41,7 @@ const SUSPECTS: AlertDef = {
   labelKey: "overview.alerts.suspects",
   labelFallback: "Suspeitas",
   icon: AlertTriangle,
-  tone: "error",
+  color: TONE.error,
 };
 
 const STALE: AlertDef = {
@@ -50,63 +49,51 @@ const STALE: AlertDef = {
   labelKey: "overview.alerts.stale",
   labelFallback: "Specs paradas",
   icon: PauseCircle,
-  tone: "warning",
-};
-
-const HOT_BORDER: Record<AlertTone, string> = {
-  error: "border-[--intent-error]/40 bg-[--intent-error]/5 hover:bg-[--intent-error]/10",
-  warning: "border-[--intent-warning]/40 bg-[--intent-warning]/5 hover:bg-[--intent-warning]/10",
-};
-const HOT_BOX: Record<AlertTone, string> = {
-  error: "bg-[--intent-error]/10",
-  warning: "bg-[--intent-warning]/10",
-};
-const HOT_TEXT: Record<AlertTone, string> = {
-  error: "text-[--intent-error]",
-  warning: "text-[--intent-warning]",
+  color: TONE.warning,
 };
 
 function AlertPill({
   label,
   count,
-  icon: Icon,
-  tone,
+  icon,
+  color,
   onClick,
 }: {
   label: string;
   count: number;
   icon: LucideIcon;
-  tone: AlertTone;
+  color: TonalColor;
   onClick: () => void;
 }) {
   const hot = count > 0;
+  // When hot, tint the whole pill from the alert color via color-mix (an 8%
+  // fill + 40%-mixed border); when cold, fall back to the structural surface.
+  const hotStyle: React.CSSProperties | undefined = hot
+    ? {
+        color,
+        borderColor: `color-mix(in srgb, ${color} 40%, transparent)`,
+        backgroundColor: `color-mix(in srgb, ${color} 8%, transparent)`,
+      }
+    : undefined;
   return (
     <button
       type="button"
       onClick={onClick}
       title={label}
+      style={hotStyle}
       className={cn(
         "flex items-center gap-2 px-3 py-2 rounded-lg border text-left transition-colors",
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[--primary]",
-        hot ? HOT_BORDER[tone] : "border-border bg-card/40 hover:bg-muted/40",
+        hot ? "hover:brightness-110" : "border-border bg-card/40 hover:bg-muted/40",
       )}
     >
-      <span
-        aria-hidden
-        className={cn(
-          "inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md",
-          hot ? HOT_BOX[tone] : "bg-muted/40",
-        )}
-      >
-        <Icon
-          className={cn("h-3.5 w-3.5", hot ? HOT_TEXT[tone] : "text-muted-foreground")}
-        />
-      </span>
+      <TonalIcon icon={icon} color={hot ? color : TONE.muted} />
       <span
         className={cn(
           "text-lg font-mono font-medium tabular-nums",
-          hot ? HOT_TEXT[tone] : "text-foreground/80",
+          !hot && "text-foreground/80",
         )}
+        style={hot ? { color } : undefined}
       >
         {count}
       </span>
@@ -166,14 +153,14 @@ export function SpecAlertsBand({ repoPath }: SpecAlertsBandProps) {
           label={t(SUSPECTS.labelKey, SUSPECTS.labelFallback)}
           count={suspectsCount}
           icon={SUSPECTS.icon}
-          tone={SUSPECTS.tone}
+          color={SUSPECTS.color}
           onClick={() => navigate(`/specs?filter=${SUSPECTS.filterKey}`)}
         />
         <AlertPill
           label={t(STALE.labelKey, STALE.labelFallback)}
           count={staleCount}
           icon={STALE.icon}
-          tone={STALE.tone}
+          color={STALE.color}
           onClick={() => navigate(`/specs?filter=${STALE.filterKey}`)}
         />
       </div>

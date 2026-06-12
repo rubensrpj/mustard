@@ -3026,6 +3026,7 @@ pub fn run() {
             workspace_health,
             economy::economy_summary,
             git_info::dashboard_git_info,
+            git_info::dashboard_git_log,
             project_overview::dashboard_project_overview
         ])
         .run(tauri::generate_context!())

@@ -1128,6 +1128,34 @@ export function fetchGitInfo(repoPath: string): Promise<GitInfo> {
   return invoke<GitInfo>("dashboard_git_info", { repoPath });
 }
 
+/**
+ * One commit returned by `dashboard_git_log` — mirrors the Rust
+ * `CommitSummary` (`serde(rename_all = "snake_case")`). Same shape as
+ * `GitCommit`, kept distinct so the log-binding contract is explicit.
+ */
+export interface CommitSummary {
+  hash: string;
+  subject: string;
+  author: string;
+  /** Author/commit date, ISO-8601, empty when absent. */
+  date: string;
+}
+
+/**
+ * Read the commit log of an arbitrary `gitRef` (branch name, tag, SHA) so the
+ * overview card can switch between branches. The ref goes over as `gitRef`
+ * (camelCase) and the Rust serde maps it to `git_ref` — do not rename. Fail-
+ * open: a non-repo, missing `git`, invalid ref, or zero `limit` resolves to an
+ * empty array, never a rejected Promise.
+ */
+export function fetchGitLog(
+  repoPath: string,
+  gitRef: string,
+  limit: number,
+): Promise<CommitSummary[]> {
+  return invoke<CommitSummary[]>("dashboard_git_log", { repoPath, gitRef, limit });
+}
+
 export function fetchProjectOverview(repoPath: string): Promise<ProjectOverview> {
   return invoke<ProjectOverview>("dashboard_project_overview", { repoPath });
 }

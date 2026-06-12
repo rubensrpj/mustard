@@ -7,6 +7,7 @@ import { cn } from "@/lib/utils";
 import { DataCard, SectionHeader } from "@/components/page";
 import { fetchSpecCards, type SpecCard } from "@/lib/dashboard";
 import { stateFromStatus } from "@/features/specs/_shared/stage-from-status";
+import { TonalIcon, TONE, type TonalColor } from "@/features/workspace/_shared/tonal";
 import { useT } from "@/lib/i18n";
 
 interface SpecStatusCardsProps {
@@ -17,31 +18,22 @@ interface SpecStatusCardsProps {
  *  `/specs?filter=` sub-filter param the Specs page reads. */
 type StageBucket = "planejando" | "executando" | "finalizadas";
 
-/** Semantic tone per stage — color carries meaning: Planejando→info (azul),
- *  Executando→warning (âmbar), Finalizadas→success (verde). Mapped onto the
- *  design-system intent variables, dessaturated `/10` tonal fill. */
-type StageTone = "info" | "warning" | "success";
-
-const TONE: Record<StageTone, { box: string; text: string }> = {
-  info: { box: "bg-[--intent-info]/10", text: "text-[--intent-info]" },
-  warning: { box: "bg-[--intent-warning]/10", text: "text-[--intent-warning]" },
-  success: { box: "bg-[--intent-success]/10", text: "text-[--intent-success]" },
-};
-
 interface StageDef {
   bucket: StageBucket;
   labelKey: string;
   labelFallback: string;
   icon: LucideIcon;
-  tone: StageTone;
+  /** Semantic tone — color carries meaning: Planejando→info (azul),
+   *  Executando→warning (âmbar), Finalizadas→success (verde). */
+  color: TonalColor;
   /** Whether the icon should pulse (Executando = work in flight). */
   pulse?: boolean;
 }
 
 const STAGES: StageDef[] = [
-  { bucket: "planejando", labelKey: "overview.specStage.planning", labelFallback: "Planejando", icon: Layers, tone: "info" },
-  { bucket: "executando", labelKey: "overview.specStage.executing", labelFallback: "Executando", icon: Play, tone: "warning", pulse: true },
-  { bucket: "finalizadas", labelKey: "overview.specStage.finished", labelFallback: "Finalizadas", icon: CheckCircle2, tone: "success" },
+  { bucket: "planejando", labelKey: "overview.specStage.planning", labelFallback: "Planejando", icon: Layers, color: TONE.info },
+  { bucket: "executando", labelKey: "overview.specStage.executing", labelFallback: "Executando", icon: Play, color: TONE.warning, pulse: true },
+  { bucket: "finalizadas", labelKey: "overview.specStage.finished", labelFallback: "Finalizadas", icon: CheckCircle2, color: TONE.success },
 ];
 
 /**
@@ -62,19 +54,18 @@ function bucketForCard(card: SpecCard): StageBucket {
 function StageCard({
   label,
   count,
-  icon: Icon,
-  tone,
+  icon,
+  color,
   pulse,
   onClick,
 }: {
   label: string;
   count: number;
   icon: LucideIcon;
-  tone: StageTone;
+  color: TonalColor;
   pulse?: boolean;
   onClick: () => void;
 }) {
-  const c = TONE[tone];
   return (
     <button
       type="button"
@@ -87,17 +78,7 @@ function StageCard({
       )}
     >
       <div className="flex items-center gap-2 text-muted-foreground">
-        <span
-          aria-hidden
-          className={cn(
-            "inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md",
-            c.box,
-          )}
-        >
-          <Icon
-            className={cn("h-3.5 w-3.5", c.text, pulse && "animate-pulse")}
-          />
-        </span>
+        <TonalIcon icon={icon} color={color} pulse={pulse} />
         <span className="text-[11px] uppercase tracking-wider">{label}</span>
       </div>
       <span className="text-2xl font-mono font-medium text-foreground tabular-nums">{count}</span>
@@ -137,7 +118,7 @@ export function SpecStatusCards({ repoPath }: SpecStatusCardsProps) {
             label={t(s.labelKey, s.labelFallback)}
             count={counts[s.bucket]}
             icon={s.icon}
-            tone={s.tone}
+            color={s.color}
             pulse={s.pulse}
             onClick={() => navigate(`/specs?filter=${s.bucket}`)}
           />
