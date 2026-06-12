@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "spec": "redesenho-rota-visao-geral-dashboard",
+  "title": "redesenho da rota visao geral do dashboard: cards de specs por estagio com navegacao filtrada, faixa de alertas (suspeitas e specs paradas), cards de projeto (monorepo linguagem), info git local e arquivos mais tocados, removendo ROI economia e timeline",
+  "timeline": {},
+  "waves": [
+    {
+      "n": 1,
+      "role": "backend",
+      "summary": "Comandos Tauri de git local e overview de projeto no backend do dashboard (camada de dados para a seção Projetos).",
+      "status": "in_progress"
+    },
+    {
+      "n": 2,
+      "role": "frontend",
+      "summary": "Redesenho da rota Visão Geral em duas seções (Specs + Projetos), consumindo os comandos da Onda 1 e reusando componentes existentes; remoção de ROI/Economia/Timeline.",
+      "status": "in_progress"
+    }
+  ],
+  "economy": {
+    "totalSavingsTokens": 0,
+    "bySource": {}
+  },
+  "telemetry": {
+    "totalTokens": 0,
+    "totalCostUsdMicros": 0,
+    "byModel": {},
+    "byAgent": {}
+  }
+}
