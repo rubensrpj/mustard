@@ -387,10 +387,76 @@ fn role_layered_fallback(
     }))
 }
 
-/// Dispatch `mustard-rt run wave-dependency`.
-pub fn run() {
-    let mut raw = String::new();
-    if std::io::stdin().read_to_string(&mut raw).is_err() || raw.trim().is_empty() {
+/// Extract the file list from a parsed input document.
+///
+/// Accepts BOTH input shapes — the prose⇄binary drift that made the documented
+/// `wave-dependency < plan.json` form answer `empty-input` (the refs said to
+/// feed the plan JSON while the binary only parsed `{files}`; first recorded as
+/// a follow-up in spec `redesenho-agnostico-indice-termos-digest`):
+///
+/// - **derivation shape**: top-level `files: [...]` (+ optional `projectRoot`);
+/// - **plan JSON** (the same document `plan-materialize --plan` consumes):
+///   `waves: [{files: [...]}]` — the per-wave censuses are unioned in wave
+///   order, first occurrence wins (dedup), so shared files create no phantom
+///   duplicate nodes in the DAG.
+fn files_from_value(parsed: &Value) -> Vec<String> {
+    if let Some(arr) = parsed.get("files").and_then(Value::as_array) {
+        return arr
+            .iter()
+            .filter_map(|v| v.as_str().map(String::from))
+            .collect();
+    }
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    let mut out: Vec<String> = Vec::new();
+    for wave in parsed
+        .get("waves")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default()
+    {
+        for f in wave
+            .get("files")
+            .and_then(Value::as_array)
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+            .iter()
+            .filter_map(Value::as_str)
+        {
+            if seen.insert(f.to_string()) {
+                out.push(f.to_string());
+            }
+        }
+    }
+    out
+}
+
+/// Dispatch `mustard-rt run wave-dependency [--plan <file>]`.
+///
+/// `--plan` reads the input JSON from a file — the reliable transport (stdin
+/// does not survive the `rtk` wrapper, and a sandboxed/background shell may
+/// hand the process a closed stdin; field report 2026-06-12: four wasted calls
+/// before the orchestrator gave up). Without the flag, the legacy stdin
+/// contract still applies. Both transports accept both input shapes — see
+/// [`files_from_value`].
+pub fn run(plan: Option<&str>) {
+    let raw = match plan {
+        Some(path) => match fs::read_to_string(Path::new(path)) {
+            Ok(s) => s,
+            Err(_) => {
+                println!("{}", json!({ "error": "plan-unreadable", "path": path }));
+                return;
+            }
+        },
+        None => {
+            let mut buf = String::new();
+            if std::io::stdin().read_to_string(&mut buf).is_err() {
+                println!("{}", json!({ "error": "empty-input" }));
+                return;
+            }
+            buf
+        }
+    };
+    if raw.trim().is_empty() {
         println!("{}", json!({ "error": "empty-input" }));
         return;
     }
@@ -401,11 +467,7 @@ pub fn run() {
             return;
         }
     };
-    let files: Vec<String> = parsed
-        .get("files")
-        .and_then(Value::as_array)
-        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
-        .unwrap_or_default();
+    let files = files_from_value(&parsed);
     if files.is_empty() {
         println!("{}", json!({ "error": "empty-input" }));
         return;
@@ -514,5 +576,37 @@ mod tests {
     fn empty_files_is_error() {
         let dir = tempdir().unwrap();
         assert_eq!(compute_waves(&[], dir.path())["error"], json!("empty-input"));
+    }
+
+    #[test]
+    fn files_from_value_accepts_derivation_shape() {
+        let v = json!({ "files": ["a.ts", "b.ts"], "projectRoot": "." });
+        assert_eq!(files_from_value(&v), vec!["a.ts", "b.ts"]);
+    }
+
+    /// The documented `< plan.json` form: a plan JSON (`{waves: [{files}]}`)
+    /// must yield the union of the per-wave censuses — this was the prose⇄binary
+    /// drift that answered `empty-input` to the exact input the refs prescribed
+    /// (field report 2026-06-12 + follow-up note in spec
+    /// `redesenho-agnostico-indice-termos-digest`).
+    #[test]
+    fn files_from_value_accepts_plan_json_shape_with_dedup() {
+        let v = json!({
+            "waves": [
+                { "role": "backend", "files": ["src/api/h.ts", "src/shared/t.ts"] },
+                { "role": "ui", "files": ["src/ui/p.tsx", "src/shared/t.ts"] },
+            ]
+        });
+        // Union in wave order; the shared file appears once (first occurrence).
+        assert_eq!(
+            files_from_value(&v),
+            vec!["src/api/h.ts", "src/shared/t.ts", "src/ui/p.tsx"],
+        );
+    }
+
+    #[test]
+    fn files_from_value_empty_for_unknown_shape() {
+        assert!(files_from_value(&json!({ "foo": 1 })).is_empty());
+        assert!(files_from_value(&json!({ "waves": [] })).is_empty());
     }
 }

@@ -30,9 +30,9 @@ Before building the wave plan in Full scope, check whether the work warrants mor
 
 5. **If `decompose: true`** → build a **multi-wave** plan:
    ```bash
-   echo '{"files":[...all paths from ANALYZE...],"projectRoot":"."}' | mustard-rt run wave-dependency
+   mustard-rt run wave-dependency --plan input.json
    ```
-   `wave-dependency` reads its JSON from **stdin** — stdin does not survive the `rtk` wrapper, so invoke it plain (as above) or via file-based shell redirection (`mustard-rt run wave-dependency < plan.json`), never through an `rtk`-wrapped pipe. The same `< plan.json` form validates/derives a plan's `depends_on` before materialising (step 6).
+   `--plan` reads the JSON from a file — the reliable transport (stdin does not survive the `rtk` wrapper). The file may carry **either shape**: the derivation form `{"files":[...all paths from ANALYZE...],"projectRoot":"."}` (derive waves from the import DAG) or the rich plan JSON of step 6 itself (`{waves:[...]}` — the per-wave `files` are unioned), so the SAME `plan.json` handed to `plan-materialize` validates/derives its `depends_on` here first. Legacy stdin (`echo '...' | mustard-rt run wave-dependency`, no flag) still works when invoked plain — never through an `rtk`-wrapped pipe.
 
    Output cases:
    - `{error: "cyclic-dependency", cycle: [...]}` → warn user about cyclic imports (pre-existing architecture issue), fall back to a single-wave plan with note in `## Concerns`.

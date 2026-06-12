@@ -194,6 +194,10 @@ pub fn run(opts: SpecDraftOpts) {
     }
     written.push(output.join("meta.json").display().to_string());
 
+    // Record the `ANALYZE` phase now that the slug exists (see
+    // [`backfill_analyze_phase`]).
+    backfill_analyze_phase(&project_root, &slug);
+
     // D6: the `memory/_index.md` is NOT born at draft time. A fresh spec used to
     // ship an empty stub (and, before the i18n keys existed, a `<missing-key>`
     // line). The index is now born on the FIRST knowledge capture via
@@ -544,6 +548,29 @@ fn emit_error(reason: &str, detail: &str) {
     println!("{}", serde_json::to_string_pretty(&body).unwrap_or_else(|_| "{}".into()));
 }
 
+/// Backfill the `ANALYZE` phase marker for a freshly-born spec slug.
+///
+/// ANALYZE runs in the parent context *before* any spec dir exists, so the
+/// orchestrator can never attribute a phase event to it: there is no slug yet,
+/// and every emitter (`emit-phase`, `emit-pipeline`) requires `--spec`. The old
+/// SKILL instruction to "Emit `pipeline.stage: Analyze`" at the top of ANALYZE
+/// was therefore unsatisfiable and failed silently. `spec-draft` is the first
+/// moment the slug exists, so we record ANALYZE here — via the same
+/// [`emit_phase`](crate::commands::event::emit_phase) primitive `plan-materialize`
+/// uses for PLAN, so the phase track reads `ANALYZE → PLAN`.
+///
+/// It writes a bare `pipeline.phase` event (no `meta.json` patch), leaving the
+/// sidecar `spec-draft` just wrote (`stage: Plan`) untouched. Guarded on a
+/// *fresh* slug only — when the spec already carries a phase (a `--force`
+/// re-draft of an already-advanced spec) it emits nothing, so the track is never
+/// regressed back to ANALYZE. Fail-open: telemetry never blocks the draft.
+fn backfill_analyze_phase(cwd: &std::path::Path, slug: &str) {
+    use crate::commands::event::emit_phase;
+    if emit_phase::last_phase_for_spec(cwd, slug).is_none() {
+        let _ = emit_phase::run_at(cwd, slug, "ANALYZE", None);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -569,6 +596,52 @@ mod tests {
         );
         assert_eq!(s, "espelhar-contas-pagar-visao-listagem");
         assert!(!s.ends_with('-'));
+    }
+
+    /// Count `pipeline.phase` events with a given `to` value under `cwd`'s spec.
+    fn phase_to_count(cwd: &std::path::Path, slug: &str, to: &str) -> usize {
+        let events_dir = cwd.join(".claude").join("spec").join(slug).join(".events");
+        mustard_core::view::projection::read_harness_events_from_ndjson_dir(&events_dir)
+            .iter()
+            .filter(|e| {
+                e.event == "pipeline.phase"
+                    && e.payload.get("to").and_then(serde_json::Value::as_str) == Some(to)
+            })
+            .count()
+    }
+
+    /// A fresh slug gets exactly one `ANALYZE` phase marker, and a repeat call
+    /// (e.g. a `--force` re-draft while still at ANALYZE) adds nothing — the
+    /// guard sees the track tip is already ANALYZE. This is the missing sibling
+    /// of `plan-materialize`'s PLAN emit: the phase track must read ANALYZE → PLAN.
+    #[test]
+    fn backfill_analyze_records_one_marker_idempotently() {
+        use crate::commands::event::emit_phase::last_phase_for_spec;
+        let dir = tempdir().unwrap();
+        backfill_analyze_phase(dir.path(), "demo-spec");
+        backfill_analyze_phase(dir.path(), "demo-spec");
+        assert_eq!(phase_to_count(dir.path(), "demo-spec", "ANALYZE"), 1);
+        assert_eq!(
+            last_phase_for_spec(dir.path(), "demo-spec").as_deref(),
+            Some("ANALYZE"),
+        );
+    }
+
+    /// A spec that already advanced past ANALYZE (e.g. `plan-materialize` ran the
+    /// PLAN emit) must NOT be regressed: a re-draft's backfill emits nothing, so
+    /// the track tip stays PLAN and no late ANALYZE marker appears.
+    #[test]
+    fn backfill_analyze_never_regresses_an_advanced_spec() {
+        use crate::commands::event::emit_phase::{last_phase_for_spec, run_at};
+        let dir = tempdir().unwrap();
+        let _ = run_at(dir.path(), "demo-spec", "PLAN", None);
+        backfill_analyze_phase(dir.path(), "demo-spec");
+        assert_eq!(
+            last_phase_for_spec(dir.path(), "demo-spec").as_deref(),
+            Some("PLAN"),
+            "backfill must not regress an advanced spec to ANALYZE",
+        );
+        assert_eq!(phase_to_count(dir.path(), "demo-spec", "ANALYZE"), 0);
     }
 
     #[test]

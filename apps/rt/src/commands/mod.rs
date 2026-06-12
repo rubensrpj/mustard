@@ -467,8 +467,18 @@ pub enum RunCmd {
         #[arg(long, default_value = "ascii")]
         format: String,
     },
-    /// Analyze file dependencies across waves (reads JSON from stdin).
-    WaveDependency,
+    /// Analyze file dependencies across waves (topological import DAG).
+    ///
+    /// Input via `--plan <file>` (preferred — survives the `rtk` wrapper) or
+    /// stdin (legacy). Both transports accept BOTH shapes: the derivation form
+    /// `{files, projectRoot}` and the rich plan JSON (`{waves: [{files}]}`,
+    /// per-wave censuses unioned) that `plan-materialize --plan` consumes.
+    WaveDependency {
+        /// Path to a JSON file: `{files, projectRoot}` or a `--plan`-style
+        /// `{waves: [...]}` document. Omit to read the same JSON from stdin.
+        #[arg(long)]
+        plan: Option<String>,
+    },
     /// Return the declared-files count and full markdown body of a wave's
     /// sub-spec (`.claude/spec/{spec}/wave-{wave}-*/spec.md`). Used by the
     /// dashboard "Ondas" tab to show the canon `## Arquivos` count and pop
@@ -1735,7 +1745,7 @@ pub fn dispatch(cmd: RunCmd) {
             cwd,
         } => checklist::mark_checklist_item::run(spec.as_deref(), item.as_deref(), line, cwd.as_deref()),
         RunCmd::WaveTree { spec_dir, format } => wave::wave_tree::run(&spec_dir, &format),
-        RunCmd::WaveDependency => wave::wave_dependency::run(),
+        RunCmd::WaveDependency { plan } => wave::wave_dependency::run(plan.as_deref()),
         RunCmd::WaveFiles { spec, wave } => wave::wave_files::run(spec.as_deref(), wave),
         RunCmd::ScopeDecompose { from_spec } => spec::scope_decompose::run(from_spec.as_deref()),
         RunCmd::ScopeClassify {

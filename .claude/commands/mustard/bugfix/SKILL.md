@@ -12,7 +12,7 @@ source: manual
 
 ### 1. Hygiene + ANALYZE
 
-→ `../../../refs/feature/spec-hygiene.md`. Emit `pipeline.stage: Analyze`. Ensure `mustard-rt run scan` has produced `.claude/grain.model.json`; research with `mustard-rt run feature --intent "<bug>"` (the scan digest — no source-reading) and read only its anchors.
+→ `../../../refs/feature/spec-hygiene.md`. (No stage emit here — there is no spec yet; `spec-draft` backfills the `ANALYZE` marker when the slug is born.) Ensure `mustard-rt run scan` has produced `.claude/grain.model.json`; research with `mustard-rt run feature --intent "<bug>"` (the scan digest — no source-reading) and read only its anchors.
 
 **DIAGNOSE.** Dispatch Explore (`≤20 tool uses, ≤3 full file reads`) with the `diagnose` skill. Scoped Greps for the symptom; trace callers/callees; return root cause + 1-line explanation.
 
@@ -21,6 +21,8 @@ source: manual
 ### 2. ASSESS
 
 1-2 files, clear root cause → **Fast Path** (skip PLAN). 3+ files, unclear impact, cross-layer → **Full Path** (brief spec).
+
+**PROMOTE to `/feature` (Full scope)** when the fix stops being a bug fix and becomes feature work: a wide cross-cutting rename, an API/contract change, a UX change, or a sweep across many files / multiple subprojects. The lean bugfix mould is the wrong shape for that — STOP and re-enter via `/mustard:feature` instead of forcing a refactor through a bugfix spec. This can fire mid-pipeline: if DIAGNOSE or EXECUTE reveals the true scope only then, hand off to `/feature` at that moment (the spec's `change-log.md` already records what surfaced).
 
 ### 3. Full Path Spec
 
