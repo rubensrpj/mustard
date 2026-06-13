@@ -4,7 +4,7 @@
     {
       "language": "rust",
       "files": 389,
-      "loc": 145074
+      "loc": 144866
     },
     {
       "language": "tsx",
@@ -47733,7 +47733,7 @@
     {
       "path": "apps/rt/src/commands/spec/scope_decompose.rs",
       "language": "rust",
-      "loc": 1007,
+      "loc": 1107,
       "imports": [
         "crate::commands::spec::prd_build::pascal_tokens",
         "crate::commands::spec::spec_sections::is_heading",
@@ -47810,265 +47810,301 @@
         {
           "kind": "function",
           "name": "compute_signals_from_spec",
-          "line": 269,
+          "line": 277,
           "supertypes": []
         },
         {
           "kind": "function",
-          "name": "spec_prose",
-          "line": 306,
+          "name": "project_span",
+          "line": 311,
           "supertypes": []
         },
         {
           "kind": "function",
-          "name": "new_entity_count_from_model",
+          "name": "longest_project_prefix",
+          "line": 321,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "path_has_prefix",
+          "line": 333,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "project_span_from_model",
           "line": 346,
           "supertypes": []
         },
         {
           "kind": "function",
+          "name": "spec_prose",
+          "line": 370,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "new_entity_count_from_model",
+          "line": 410,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
           "name": "count_new_entities",
-          "line": 374,
+          "line": 438,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "create_marked_paths",
-          "line": 391,
+          "line": 455,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "bullet_path",
-          "line": 420,
+          "line": 484,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "entity_keys",
-          "line": 451,
+          "line": 515,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "classify",
-          "line": 512,
+          "line": 576,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "classify_from_spec",
-          "line": 578,
+          "line": 642,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "run_classify",
-          "line": 622,
+          "line": 686,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "decide_from_spec",
-          "line": 636,
+          "line": 700,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "run",
-          "line": 651,
+          "line": 715,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "multi_layer_decomposes",
-          "line": 684,
+          "line": 748,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "single_layer_keeps",
-          "line": 691,
+          "line": 755,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "project_span_counts_distinct_projects_even_when_roles_collapse",
+          "line": 768,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "project_prefix_matches_on_segment_boundaries_only",
+          "line": 798,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "compute_signals_counts_layers_through_status_markers",
-          "line": 704,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "full_wave_floor_is_one_when_not_decomposed",
-          "line": 719,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "history_match_decomposes",
-          "line": 727,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "roadmap_signal_from_plans_ref",
-          "line": 736,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "plant_project",
-          "line": 745,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "from_spec_computes_multi_layer_signals",
-          "line": 751,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "from_spec_single_layer_keeps",
-          "line": 771,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "count_new_entities_diffs_known_set",
-          "line": 782,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "scope_new_entity_ignores_uncorroborated_prose_capitalization",
-          "line": 797,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "scope_new_entity_ignores_graphql_split_fragments",
           "line": 812,
           "supertypes": []
         },
         {
           "kind": "function",
-          "name": "scope_new_entity_counts_when_corroborated_by_create_marker",
-          "line": 830,
+          "name": "full_wave_floor_is_one_when_not_decomposed",
+          "line": 827,
           "supertypes": []
         },
         {
           "kind": "function",
-          "name": "from_spec_wide_and_new_entities_decomposes",
-          "line": 847,
+          "name": "history_match_decomposes",
+          "line": 835,
           "supertypes": []
         },
         {
           "kind": "function",
-          "name": "spec_prose_strips_headings_bullets_and_fences",
-          "line": 865,
+          "name": "roadmap_signal_from_plans_ref",
+          "line": 844,
           "supertypes": []
         },
         {
           "kind": "function",
-          "name": "decide_from_spec_unreadable_is_fail_open",
+          "name": "plant_project",
+          "line": 853,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "from_spec_computes_multi_layer_signals",
+          "line": 859,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "from_spec_single_layer_keeps",
           "line": 879,
           "supertypes": []
         },
         {
           "kind": "function",
+          "name": "count_new_entities_diffs_known_set",
+          "line": 890,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "scope_new_entity_ignores_uncorroborated_prose_capitalization",
+          "line": 905,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "scope_new_entity_ignores_graphql_split_fragments",
+          "line": 920,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "scope_new_entity_counts_when_corroborated_by_create_marker",
+          "line": 938,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "from_spec_wide_and_new_entities_decomposes",
+          "line": 955,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "spec_prose_strips_headings_bullets_and_fences",
+          "line": 973,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "decide_from_spec_unreadable_is_fail_open",
+          "line": 987,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
           "name": "sig",
-          "line": 889,
+          "line": 997,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "scope_classify_light_when_small_and_mirrors_slice",
-          "line": 898,
+          "line": 1006,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "scope_classify_extended_light_band",
-          "line": 907,
+          "line": 1015,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "scope_classify_extended_light_falls_back_to_light_without_slice",
-          "line": 916,
+          "line": 1024,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "scope_classify_full_on_layers",
-          "line": 923,
+          "line": 1031,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "scope_classify_full_on_net_new_entity",
-          "line": 929,
+          "line": 1037,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "scope_classify_full_on_spanning_multiple_slices",
-          "line": 935,
+          "line": 1043,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "scope_classify_slice_overlap_alone_does_not_force_full",
-          "line": 945,
+          "line": 1053,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "scope_classify_payables_run_is_extended_light",
-          "line": 960,
+          "line": 1068,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "scope_classify_full_on_wide_file_count",
-          "line": 986,
+          "line": 1094,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "scope_classify_file_count_boundaries",
-          "line": 994,
+          "line": 1102,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "scope_classify_layer_count_boundaries",
-          "line": 1003,
+          "line": 1111,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "scope_classify_slice_match_boundaries",
-          "line": 1010,
+          "line": 1118,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "classify_from_spec_flags_empty_files_section",
-          "line": 1023,
+          "line": 1131,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "classify_from_spec_unreadable_is_fail_open_to_full",
-          "line": 1060,
+          "line": 1168,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "classify_from_spec_reuses_compute_signals",
-          "line": 1067,
+          "line": 1175,
           "supertypes": []
         }
       ],
@@ -65034,7 +65070,7 @@
     {
       "path": "apps/scan/src/digest.rs",
       "language": "rust",
-      "loc": 808,
+      "loc": 682,
       "imports": [
         "crate::model::ProjectModel",
         "mustard_core::domain::vocabulary::stacks::StackDetection",
@@ -65605,97 +65641,85 @@
         {
           "kind": "function",
           "name": "build",
-          "line": 550,
+          "line": 430,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "catalog",
-          "line": 565,
+          "line": 445,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "stopwords",
-          "line": 639,
+          "line": 519,
           "supertypes": []
         },
         {
           "kind": "struct",
           "name": "Corpus",
-          "line": 658,
+          "line": 538,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "postings",
-          "line": 663,
+          "line": 543,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "class_of",
-          "line": 665,
+          "line": 545,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "doc_len",
-          "line": 667,
-          "supertypes": []
-        },
-        {
-          "kind": "field",
-          "name": "fan_in",
-          "line": 669,
+          "line": 547,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "stratum",
-          "line": 673,
+          "line": 551,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "path_tokens",
-          "line": 675,
+          "line": 553,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "imports",
-          "line": 677,
+          "line": 555,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "avgdl_x1024",
-          "line": 679,
-          "supertypes": []
-        },
-        {
-          "kind": "field",
-          "name": "total_modules",
-          "line": 681,
+          "line": 557,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "corpus",
-          "line": 686,
+          "line": 562,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "build_terms",
-          "line": 778,
+          "line": 650,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "tokenize",
-          "line": 820,
+          "line": 692,
           "supertypes": []
         }
       ]
@@ -66742,7 +66766,7 @@
     {
       "path": "apps/scan/src/matching.rs",
       "language": "rust",
-      "loc": 413,
+      "loc": 403,
       "imports": [
         "rust_stemmers::Stemmer",
         "std::collections::{BTreeMap, BTreeSet}",
@@ -66753,242 +66777,236 @@
       "declarations": [
         {
           "kind": "function",
-          "name": "weight",
-          "line": 58,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
           "name": "tier_name",
-          "line": 68,
+          "line": 57,
           "supertypes": []
         },
         {
           "kind": "struct",
           "name": "Hit",
-          "line": 81,
+          "line": 70,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "tier",
-          "line": 82,
+          "line": 71,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "lang",
-          "line": 83,
+          "line": 72,
           "supertypes": []
         },
         {
           "kind": "struct",
           "name": "Sig",
-          "line": 90,
+          "line": 79,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "raw",
-          "line": 91,
+          "line": 80,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "fold",
-          "line": 92,
+          "line": 81,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "stems",
-          "line": 93,
+          "line": 82,
           "supertypes": []
         },
         {
           "kind": "struct",
           "name": "Entry",
-          "line": 99,
+          "line": 88,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "key",
-          "line": 100,
+          "line": 89,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "key_stem",
-          "line": 101,
+          "line": 90,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "syns",
-          "line": 102,
+          "line": 91,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "syn_stems",
-          "line": 103,
+          "line": 92,
           "supertypes": []
         },
         {
           "kind": "struct",
           "name": "Lexicon",
-          "line": 111,
+          "line": 100,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "label",
-          "line": 112,
+          "line": 101,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "key_si",
-          "line": 115,
+          "line": 104,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "val_si",
-          "line": 116,
+          "line": 105,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "entries",
-          "line": 117,
+          "line": 106,
           "supertypes": []
         },
         {
           "kind": "struct",
           "name": "Ladder",
-          "line": 122,
+          "line": 111,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "stemmers",
-          "line": 125,
+          "line": 114,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "stop",
-          "line": 128,
+          "line": 117,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "lexicons",
-          "line": 129,
+          "line": 118,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "new",
-          "line": 140,
+          "line": 129,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "query_stopword",
-          "line": 176,
+          "line": 165,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "sig",
-          "line": 181,
+          "line": 170,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "tier",
-          "line": 189,
+          "line": 178,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "bridges",
-          "line": 236,
+          "line": 225,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "parse_lexicon",
-          "line": 261,
+          "line": 250,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "seed_terms",
-          "line": 284,
+          "line": 273,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "overlay_terms",
-          "line": 306,
+          "line": 295,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "fold",
-          "line": 322,
+          "line": 311,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "truncation_related",
-          "line": 340,
+          "line": 329,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "primary_subtag",
-          "line": 347,
+          "line": 336,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "hit",
-          "line": 355,
+          "line": 344,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "truncation_pair_needs_unanimous_stem_backing",
-          "line": 360,
+          "line": 349,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "ladder_tiers_report_honestly",
-          "line": 385,
+          "line": 374,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "query_stopwords_cover_both_languages_raw_and_folded",
-          "line": 400,
+          "line": 389,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "overlay_merges_with_project_precedence_and_degrades_when_malformed",
-          "line": 411,
+          "line": 400,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "unknown_language_degrades_to_fallback_rows",
-          "line": 433,
+          "line": 422,
           "supertypes": []
         }
       ]
@@ -67981,7 +67999,7 @@
     {
       "path": "apps/scan/src/rank.rs",
       "language": "rust",
-      "loc": 490,
+      "loc": 356,
       "imports": [
         "std::collections::{BTreeMap, BTreeSet}",
         "std::sync::OnceLock",
@@ -68009,314 +68027,206 @@
         },
         {
           "kind": "field",
-          "name": "alpha_x1024",
+          "name": "type_weight_x1024",
           "line": 30,
           "supertypes": []
         },
         {
           "kind": "field",
-          "name": "hub_fanin_pct",
-          "line": 33,
-          "supertypes": []
-        },
-        {
-          "kind": "field",
-          "name": "idf_floor_x1024",
-          "line": 36,
-          "supertypes": []
-        },
-        {
-          "kind": "field",
-          "name": "path_co_min_terms",
-          "line": 39,
-          "supertypes": []
-        },
-        {
-          "kind": "field",
-          "name": "path_co_bm25_x1024",
-          "line": 41,
-          "supertypes": []
-        },
-        {
-          "kind": "field",
-          "name": "fill_reserve_slots",
-          "line": 44,
-          "supertypes": []
-        },
-        {
-          "kind": "field",
-          "name": "type_weight_x1024",
-          "line": 46,
-          "supertypes": []
-        },
-        {
-          "kind": "field",
           "name": "member_weight_x1024",
-          "line": 48,
+          "line": 32,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "type_kinds",
-          "line": 51,
+          "line": 35,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "mmr_lambda_x1024",
-          "line": 53,
+          "line": 37,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "mmr_pool_per_slot",
-          "line": 55,
+          "line": 39,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "params",
-          "line": 61,
+          "line": 45,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "parse_params",
-          "line": 66,
+          "line": 50,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "avgdl_x1024",
-          "line": 121,
+          "line": 84,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "bm25_x1024",
-          "line": 137,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "idf_x1024",
-          "line": 159,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "idf_term_score_x1024",
-          "line": 168,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "log2_x1024",
-          "line": 175,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "fanin_boost_x1024",
-          "line": 185,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "anchor_stopfile",
-          "line": 195,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "path_co_min_terms",
-          "line": 203,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "path_co_bm25_x1024",
-          "line": 210,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "fill_reserve_slots",
-          "line": 217,
+          "line": 99,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "kind_weight_x1024",
-          "line": 226,
+          "line": 121,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "weighted_count",
-          "line": 238,
+          "line": 133,
           "supertypes": []
         },
         {
           "kind": "struct",
           "name": "SampleCand",
-          "line": 246,
+          "line": 141,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "path",
-          "line": 247,
+          "line": 142,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "score_x1024",
-          "line": 248,
+          "line": 143,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "stratum",
-          "line": 250,
+          "line": 145,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "subtokens",
-          "line": 252,
+          "line": 147,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "neighbors",
-          "line": 254,
+          "line": 149,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "select_samples",
-          "line": 270,
+          "line": 165,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "similarity_x1024",
-          "line": 327,
+          "line": 222,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "jaccard_x1024",
-          "line": 333,
+          "line": 228,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "shared_dir_x1024",
-          "line": 344,
+          "line": 239,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "dir",
-          "line": 345,
+          "line": 240,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "bm25_grows_with_tf_and_saturates",
-          "line": 366,
+          "line": 261,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "bm25_normalizes_by_document_length",
-          "line": 378,
+          "line": 273,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "bm25_zero_tf_scores_zero",
-          "line": 386,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "fanin_boost_is_zero_at_zero_and_stays_small",
-          "line": 391,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "stopfile_is_a_repo_relative_percent",
-          "line": 399,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "idf_weighs_rarity_logarithmically_and_floors_at_data",
-          "line": 409,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "idf_term_score_rescales_the_fixed_point_product_once",
-          "line": 425,
+          "line": 281,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "kind_weight_types_outweigh_the_member_baseline",
-          "line": 438,
+          "line": 292,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "weighted_count_rounds_half_up_and_floors_at_one",
-          "line": 447,
+          "line": 301,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "cand",
-          "line": 454,
+          "line": 308,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "toks",
-          "line": 458,
+          "line": 312,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "samples_guarantee_one_slot_per_matched_stratum",
-          "line": 463,
+          "line": 317,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "samples_single_stratum_degenerates_to_global_ranking",
-          "line": 479,
+          "line": 333,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "samples_mmr_prefers_the_diverse_candidate_on_equal_relevance",
-          "line": 493,
+          "line": 347,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "samples_import_neighborhood_penalizes_the_twin",
-          "line": 510,
+          "line": 364,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "samples_similarity_legs_are_bounded_and_empty_safe",
-          "line": 525,
+          "line": 379,
           "supertypes": []
         }
       ]
@@ -68638,7 +68548,7 @@
     {
       "path": "apps/scan/tests/anchor_ranking.rs",
       "language": "rust",
-      "loc": 377,
+      "loc": 339,
       "imports": [
         "std::path::{Path, PathBuf}",
         "std::process::Command"
@@ -68677,56 +68587,56 @@
         },
         {
           "kind": "function",
-          "name": "anchor_coverage_seats_each_terms_best_file_then_fills_with_the_cooccurring",
+          "name": "anchor_files_are_the_deduped_union_of_per_term_samples",
           "line": 88,
           "supertypes": []
         },
         {
           "kind": "function",
-          "name": "anchor_coverage_rare_domain_survives_a_frequent_term_neighbour",
-          "line": 121,
+          "name": "rare_domain_leads_the_union_ahead_of_a_frequent_neighbour",
+          "line": 119,
           "supertypes": []
         },
         {
           "kind": "function",
-          "name": "anchor_fill_idf_keeps_a_rare_term_file_above_a_frequent_double_dipper",
-          "line": 160,
+          "name": "rare_terms_samples_precede_frequent_terms_in_the_union",
+          "line": 151,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "query_slices_omitted_mirrors_the_cap_and_terms_omitted_contract",
-          "line": 192,
+          "line": 180,
           "supertypes": []
         },
         {
           "kind": "function",
-          "name": "anchor_hub_needs_declaration_match_not_just_path",
-          "line": 225,
+          "name": "path_only_hub_never_anchors_only_declaration_matches_do",
+          "line": 213,
           "supertypes": []
         },
         {
           "kind": "function",
-          "name": "anchor_structural_stopfile_excludes_repo_glue",
-          "line": 273,
+          "name": "high_fan_in_file_that_declares_the_term_now_anchors",
+          "line": 253,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "anchor_ranking_is_deterministic_across_runs",
-          "line": 299,
+          "line": 275,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "digest_query_stacks_copies_model_detected_stacks",
-          "line": 316,
+          "line": 292,
           "supertypes": []
         },
         {
           "kind": "function",
-          "name": "wide_query_keeps_the_cooccurring_target_via_fill_reserve_and_path_co",
-          "line": 369,
+          "name": "wide_query_target_survives_in_the_grouped_per_term_evidence",
+          "line": 345,
           "supertypes": []
         }
       ]
@@ -90390,6 +90300,23 @@
       ]
     },
     {
+      "affix": "prefix",
+      "kind": "suffix",
+      "count": 18,
+      "common_dir": "apps/rt/src/hooks/bash",
+      "decl_kind": "function",
+      "implements": null,
+      "also_implements": [],
+      "collaborators": [
+        "std::io::Read",
+        "mustard_core::ClaudePaths",
+        "mustard_core::time::now_iso8601",
+        "std::path::Path",
+        "serde_json::json",
+        "mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION}"
+      ]
+    },
+    {
       "affix": "tokens",
       "kind": "suffix",
       "count": 18,
@@ -90578,23 +90505,6 @@
       ]
     },
     {
-      "affix": "prefix",
-      "kind": "suffix",
-      "count": 16,
-      "common_dir": "apps/rt/src/hooks/bash",
-      "decl_kind": "function",
-      "implements": null,
-      "also_implements": [],
-      "collaborators": [
-        "mustard_core::ClaudePaths",
-        "mustard_core::time::now_iso8601",
-        "std::path::Path",
-        "serde_json::json",
-        "std::io::Read",
-        "mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION}"
-      ]
-    },
-    {
       "affix": "session",
       "kind": "suffix",
       "count": 16,
@@ -90710,6 +90620,19 @@
       ]
     },
     {
+      "affix": "only",
+      "kind": "suffix",
+      "count": 14,
+      "common_dir": "apps/rt/src/commands/spec",
+      "decl_kind": "function",
+      "implements": null,
+      "also_implements": [],
+      "collaborators": [
+        "mustard_core::io::fs",
+        "std::path::Path"
+      ]
+    },
+    {
       "affix": "override",
       "kind": "suffix",
       "count": 14,
@@ -90818,6 +90741,21 @@
       ]
     },
     {
+      "affix": "default",
+      "kind": "suffix",
+      "count": 13,
+      "common_dir": "apps/rt/src/commands/spec",
+      "decl_kind": "function",
+      "implements": null,
+      "also_implements": [],
+      "collaborators": [
+        "serde_json::json",
+        "std::fmt::Write as _",
+        "mustard_core::ClaudePaths",
+        "std::path::Path"
+      ]
+    },
+    {
       "affix": "fallback",
       "kind": "suffix",
       "count": 13,
@@ -90863,19 +90801,6 @@
       ]
     },
     {
-      "affix": "only",
-      "kind": "suffix",
-      "count": 13,
-      "common_dir": "packages/core/src/domain/ast",
-      "decl_kind": "function",
-      "implements": null,
-      "also_implements": [],
-      "collaborators": [
-        "mustard_core::io::fs",
-        "std::path::Path"
-      ]
-    },
-    {
       "affix": "parse",
       "kind": "suffix",
       "count": 13,
@@ -90886,6 +90811,18 @@
       "collaborators": [
         "mustard_core::io::fs",
         "serde::{Deserialize, Serialize}"
+      ]
+    },
+    {
+      "affix": "project",
+      "kind": "suffix",
+      "count": 13,
+      "common_dir": "apps/rt/src/commands/economy/otel",
+      "decl_kind": "function",
+      "implements": null,
+      "also_implements": [],
+      "collaborators": [
+        "mustard_core::io::fs"
       ]
     },
     {
@@ -90903,20 +90840,6 @@
         "serde_json::json",
         "serde_json::{json, Value}",
         "std::path::Path"
-      ]
-    },
-    {
-      "affix": "default",
-      "kind": "suffix",
-      "count": 12,
-      "common_dir": "apps/rt/src/commands/spec",
-      "decl_kind": "function",
-      "implements": null,
-      "also_implements": [],
-      "collaborators": [
-        "serde_json::json",
-        "mustard_core::ClaudePaths",
-        "std::fmt::Write as _"
       ]
     },
     {
@@ -91022,18 +90945,6 @@
       "collaborators": [
         "mustard_core::time::now_iso8601",
         "serde::Serialize"
-      ]
-    },
-    {
-      "affix": "project",
-      "kind": "suffix",
-      "count": 12,
-      "common_dir": "apps/rt/src/commands/economy/otel",
-      "decl_kind": "function",
-      "implements": null,
-      "also_implements": [],
-      "collaborators": [
-        "mustard_core::io::fs"
       ]
     },
     {
@@ -92605,6 +92516,19 @@
       ]
     },
     {
+      "affix": "model",
+      "kind": "suffix",
+      "count": 7,
+      "common_dir": "apps/rt/src/commands/spec",
+      "decl_kind": "function",
+      "implements": null,
+      "also_implements": [],
+      "collaborators": [
+        "crate::commands::spec::spec_sections::is_heading",
+        "serde_json::{json, Value}"
+      ]
+    },
+    {
       "affix": "op",
       "kind": "suffix",
       "count": 7,
@@ -93190,22 +93114,6 @@
         "super::store::MarkdownDoc",
         "mustard_core::io::atomic_md::find_outgoing_links",
         "mustard_core::io::fs as mfs"
-      ]
-    },
-    {
-      "affix": "model",
-      "kind": "suffix",
-      "count": 6,
-      "common_dir": "packages/core/src/domain/economy",
-      "decl_kind": "function",
-      "implements": null,
-      "also_implements": [],
-      "collaborators": [
-        "crate::commands::spec::spec_sections::is_heading",
-        "crate::platform::error::Result",
-        "serde_json::Value",
-        "serde_json::{json, Value}",
-        "std::path::Path"
       ]
     },
     {
@@ -95342,6 +95250,23 @@
       ]
     },
     {
+      "affix": "span",
+      "kind": "suffix",
+      "count": 4,
+      "common_dir": "packages/core/src/domain/economy/sources",
+      "decl_kind": "function",
+      "implements": null,
+      "also_implements": [],
+      "collaborators": [
+        "crate::domain::economy::estimator::model_pricing_usd_micros_per_million",
+        "crate::domain::economy::model::SpanRecord",
+        "crate::platform::error::{Error, Result}",
+        "crate::platform::time::{now_iso8601, unix_secs_to_ymdhms}",
+        "serde_json::Value",
+        "super::IngestContext"
+      ]
+    },
+    {
       "affix": "stable",
       "kind": "suffix",
       "count": 4,
@@ -97326,23 +97251,6 @@
         "mustard_core::platform::i18n::{line_has_file_marker, FileMarker}",
         "serde_json::{json, Value}",
         "std::collections::BTreeSet"
-      ]
-    },
-    {
-      "affix": "span",
-      "kind": "suffix",
-      "count": 3,
-      "common_dir": "packages/core/src/domain/economy/sources",
-      "decl_kind": "function",
-      "implements": null,
-      "also_implements": [],
-      "collaborators": [
-        "crate::domain::economy::estimator::model_pricing_usd_micros_per_million",
-        "crate::domain::economy::model::SpanRecord",
-        "crate::platform::error::{Error, Result}",
-        "crate::platform::time::{now_iso8601, unix_secs_to_ymdhms}",
-        "serde_json::Value",
-        "super::IngestContext"
       ]
     },
     {
@@ -99844,6 +99752,23 @@
       ]
     },
     {
+      "affix": "interpolate",
+      "kind": "prefix",
+      "count": 2,
+      "common_dir": "apps/rt/src/commands/review",
+      "decl_kind": "function",
+      "implements": null,
+      "also_implements": [],
+      "collaborators": [
+        "crate::commands::review::review_spans::{\r\n            append_verdict, check_consolidation, ConsolidationCheck, VerdictEntry,\r\n        }",
+        "mustard_core::domain::ast::stub_detect::DiffFile",
+        "mustard_core::domain::ast::{detect_stub_patterns, DetectionMode, GrammarLoader, StubPattern}",
+        "mustard_core::domain::regression_check::{\r\n    compare_snapshots, ChangeKind, FunctionDelta, Snapshot, TextSpan,\r\n}",
+        "mustard_core::domain::regression_check::{CaptureMode, FunctionCapture}",
+        "mustard_core::domain::vocabulary::VocabLayer"
+      ]
+    },
+    {
       "affix": "into",
       "kind": "suffix",
       "count": 2,
@@ -102285,26 +102210,6 @@
       "collaborators": []
     },
     {
-      "affix": "slots",
-      "kind": "suffix",
-      "count": 1,
-      "common_dir": "apps/rt/src/commands/review",
-      "decl_kind": "function",
-      "implements": null,
-      "also_implements": [],
-      "collaborators": []
-    },
-    {
-      "affix": "small",
-      "kind": "suffix",
-      "count": 1,
-      "common_dir": "apps/rt/src/commands",
-      "decl_kind": "function",
-      "implements": null,
-      "also_implements": [],
-      "collaborators": []
-    },
-    {
       "affix": "step",
       "kind": "suffix",
       "count": 1,
@@ -103717,7 +103622,7 @@
       {
         "dir": ".claude",
         "code_files": 10,
-        "other_files": 531
+        "other_files": 536
       },
       {
         "dir": "(root)",
@@ -103759,7 +103664,7 @@
     "unsupported_exts": [
       {
         "ext": ".md",
-        "count": 659
+        "count": 664
       },
       {
         "ext": ".ndjson",
