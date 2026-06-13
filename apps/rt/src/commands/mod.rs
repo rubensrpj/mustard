@@ -522,6 +522,20 @@ pub enum RunCmd {
         #[arg(long = "slice-match-count", default_value_t = 0)]
         slice_match_count: i64,
     },
+    /// Fused pre-PLAN decision: `scope-classify` + `scope-decompose` from ONE
+    /// signal computation (one spec read, one `scan facts` spawn, one turn).
+    /// Returns `{scope, decompose, reason, waves, signals, filesSectionEmpty?}`
+    /// — the union the `/feature` PLAN step needs to route, pick 1-vs-N, and
+    /// seed `spec-draft --waves`. Replaces calling the two commands in sequence.
+    PlanPrepare {
+        /// Compute the signals deterministically from this spec file.
+        #[arg(long = "from-spec")]
+        from_spec: String,
+        /// `sliceMatchCount` from the `feature` digest (same meaning as
+        /// `scope-classify`). Defaults to 0.
+        #[arg(long = "slice-match-count", default_value_t = 0)]
+        slice_match_count: i64,
+    },
     /// Check whether a spec should be decomposed at EXECUTE entry.
     ExecRewaveCheck {
         /// Path to the spec file.
@@ -1769,6 +1783,10 @@ pub fn dispatch(cmd: RunCmd) {
             from_spec,
             slice_match_count,
         } => spec::scope_decompose::run_classify(&from_spec, slice_match_count),
+        RunCmd::PlanPrepare {
+            from_spec,
+            slice_match_count,
+        } => spec::scope_decompose::run_prepare(&from_spec, slice_match_count),
         RunCmd::ExecRewaveCheck { spec } => wave::exec_rewave_check::run(spec.as_deref()),
         RunCmd::DependencyPrecheck { spec, subproject } => {
             review::dependency_precheck::run(spec.as_deref(), subproject.as_deref());

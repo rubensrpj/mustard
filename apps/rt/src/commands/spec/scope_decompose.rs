@@ -708,6 +708,83 @@ pub fn decide_from_spec(spec_file: &Path) -> Value {
     decide(&compute_signals_from_spec(&spec_text, &project_root))
 }
 
+/// Composite pre-PLAN decision: `scope` + `decompose` + `waves` floor from ONE
+/// signal computation. `scope-classify` and `scope-decompose` each read the
+/// spec and call [`compute_signals_from_spec`] — which now spawns `scan facts`
+/// for the project span — so invoking both costs two file reads + two facts
+/// spawns + two orchestrator turns. This fuses them: the spec is read once, the
+/// signals computed once, then [`classify`] and [`decide`] run over the SAME
+/// signals. The returned shape is the union the `/feature` PLAN step needs to
+/// route (scope), pick 1-vs-N (decompose), and seed `spec-draft --waves`
+/// (waves):
+///   - `scope`: light | extended-light | full
+///   - `decompose` / `reason`: the multi-vs-single-wave decision (from `decide`)
+///   - `waves`: the wave-count FLOOR — `wave_floor_for_full` for Full (1; a
+///     `decompose:true` tells the Plan agent to raise N), `0` for light
+///   - `signals` + `filesSectionEmpty`: identical to `scope-classify`
+///
+/// Fail-open: an unreadable spec yields the conservative `full` / single-wave
+/// `error-fallback`, mirroring the two commands it replaces.
+#[must_use]
+pub fn prepare_from_spec(spec_file: &Path, slice_match_count: i64) -> Value {
+    let Ok(spec_text) = mustard_core::io::fs::read_to_string(spec_file) else {
+        return json!({
+            "scope": "full",
+            "decompose": false,
+            "reason": "error-fallback",
+            "waves": wave_floor_for_full(false),
+            "sliceMatchCount": slice_match_count,
+            "signals": signals_obj(0, 0, 0, 0, 0),
+        });
+    };
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let spec_dir = spec_file.parent().map_or_else(|| cwd.clone(), Path::to_path_buf);
+    let project_root =
+        mustard_core::io::workspace::workspace_root(&spec_dir).unwrap_or_else(|_| cwd.clone());
+    // ONE signal computation shared by both verdicts (the whole point).
+    let signals = compute_signals_from_spec(&spec_text, &project_root);
+    let scope = classify(&signals, slice_match_count);
+    let decision = decide(&signals);
+    let decompose = decision.get("decompose").and_then(Value::as_bool).unwrap_or(false);
+    let reason = decision.get("reason").and_then(Value::as_str).unwrap_or("").to_string();
+    // Waves FLOOR: Full → the invariant floor (≥1); light/extended-light run
+    // inline with a checklist, no waves. `decompose:true` is the Plan agent's
+    // cue to raise N above the floor — scope_decompose never picks the exact N.
+    let waves = if scope == "full" { wave_floor_for_full(decompose) } else { 0 };
+    let mut out = json!({
+        "scope": scope,
+        "decompose": decompose,
+        "reason": reason,
+        "waves": waves,
+        "sliceMatchCount": slice_match_count,
+        "signals": {
+            "fileCount": signals.get("fileCount").cloned().unwrap_or(json!(0)),
+            "layerCount": signals.get("layerCount").cloned().unwrap_or(json!(0)),
+            "newEntityCount": signals.get("newEntityCount").cloned().unwrap_or(json!(0)),
+        },
+    });
+    // Same non-confident-`light` honesty flag `scope-classify` emits.
+    if signals.get("fileCount").and_then(Value::as_i64).unwrap_or(0) == 0 {
+        if let Some(obj) = out.as_object_mut() {
+            obj.insert("filesSectionEmpty".to_string(), json!(true));
+            obj.insert("warning".to_string(), json!(FILES_SECTION_EMPTY_WARNING));
+        }
+    }
+    out
+}
+
+/// Dispatch `mustard-rt run plan-prepare --from-spec <path>
+/// [--slice-match-count N]` — the fused `scope-classify` + `scope-decompose`.
+pub fn run_prepare(from_spec: &str, slice_match_count: i64) {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let spec_file = if Path::new(from_spec).is_absolute() {
+        PathBuf::from(from_spec)
+    } else {
+        cwd.join(from_spec)
+    };
+    println!("{}", prepare_from_spec(&spec_file, slice_match_count));
+}
+
 /// Dispatch `mustard-rt run scope-decompose`.
 ///
 /// With `--from-spec <path>`, computes the signals deterministically from the
@@ -749,6 +826,48 @@ mod tests {
         let d = decide(&json!({ "layerCount": 3, "fileCount": 8 }));
         assert_eq!(d["decompose"], json!(true));
         assert_eq!(d["reason"], json!("multi-layer"));
+    }
+
+    #[test]
+    fn plan_prepare_fuses_classify_and_decompose_over_one_signal_pass() {
+        // The fused command must agree, field-for-field, with calling
+        // classify_from_spec + decide_from_spec separately — same signals, one
+        // pass. A genuine multi-layer Full spec (3 role buckets) → scope full,
+        // decompose true, waves ≥ 1.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let spec = "# S\n\n## Files\n\
+            - backend/api/handler.rs\n\
+            - core/schema/model.rs\n\
+            - app/ui/view.tsx\n";
+        let spec_file = dir.path().join("spec.md");
+        std::fs::write(&spec_file, spec).unwrap();
+
+        let prep = prepare_from_spec(&spec_file, 0);
+        let classify = classify_from_spec(&spec_file, 0);
+        let decide = decide_from_spec(&spec_file);
+
+        // scope matches the standalone classify; decompose/reason match decide.
+        assert_eq!(prep["scope"], classify["scope"], "scope must match scope-classify: {prep}");
+        assert_eq!(prep["decompose"], decide["decompose"], "decompose must match scope-decompose: {prep}");
+        assert_eq!(prep["reason"], decide["reason"], "reason must match scope-decompose: {prep}");
+        assert_eq!(prep["signals"]["layerCount"], classify["signals"]["layerCount"], "signals shared: {prep}");
+        // Multi-layer ⇒ full + decompose + a wave floor ≥ 1.
+        assert_eq!(prep["scope"], json!("full"));
+        assert_eq!(prep["decompose"], json!(true));
+        assert!(prep["waves"].as_u64().unwrap_or(0) >= 1, "Full floors at >=1 wave: {prep}");
+
+        // A genuinely tiny spec (one file) → light, no waves.
+        let tiny = dir.path().join("tiny.md");
+        std::fs::write(&tiny, "# T\n\n## Files\n- app/ui/only.tsx\n").unwrap();
+        let p = prepare_from_spec(&tiny, 0);
+        assert_eq!(p["scope"], json!("light"), "single file ⇒ light: {p}");
+        assert_eq!(p["waves"], json!(0), "light runs inline, no waves: {p}");
+
+        // Empty census ⇒ the non-confident-light flag, same as scope-classify.
+        let empty = dir.path().join("empty.md");
+        std::fs::write(&empty, "# E\n\n## Files\n\n## Tasks\n- [ ] x\n").unwrap();
+        let pe = prepare_from_spec(&empty, 0);
+        assert_eq!(pe["filesSectionEmpty"], json!(true), "empty census flagged: {pe}");
     }
 
     #[test]
