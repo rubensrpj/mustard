@@ -35,8 +35,13 @@
 
 use crate::model::{GraphStats, LayerInfo, Module, NodeDegree, Touchpoint};
 use petgraph::graph::{DiGraph, NodeIndex};
-use petgraph::Direction;
 use std::collections::{BTreeMap, HashMap, HashSet};
+
+/// Catalog cap for `top_fan_in` / `top_fan_out`. The digest filters these BY
+/// QUERY VOCABULARY, so the catalog must be wide enough for a domain-specific
+/// hub to exist in it at all — 8 global slots starved every query on a large
+/// monorepo. Bounded: ~a few KB of model.
+const TOP_DEGREE_CAP: usize = 64;
 
 /// Longest dependency chain below an SCC = its emergent depth (L0 = innermost).
 fn scc_depth(c: usize, succ: &[HashSet<usize>], memo: &mut [Option<usize>]) -> usize {
@@ -76,22 +81,33 @@ pub fn build(modules: &[Module], go_module: &Option<String>) -> (GraphStats, Has
     let module_paths: HashSet<&str> = modules.iter().map(|m| m.path.as_str()).collect();
     let stem_index = build_stem_index(modules);
 
-    let mut edge_set: HashSet<(NodeIndex, NodeIndex)> = HashSet::new();
+    // Edge weight ×1024 by resolution SPECIFICITY: an import that lands on ONE
+    // module is full evidence (1024); a namespace/package bucket of N modules
+    // spreads the same single import across N files, so each target gets 1/N
+    // (floored at 1). One `using` of a 40-file namespace must not mint 40
+    // units of centrality — the field case had every file of the most-used
+    // C# namespace at a uniform fan-in 478, saturating `top_fan_in` with
+    // alphabetical enums and starving every query's `hubs` of real signal.
+    // The strongest evidence per (src, dst) pair wins; re-imports never inflate.
+    let mut edge_w: HashMap<(NodeIndex, NodeIndex), u64> = HashMap::new();
 
     for m in modules {
         let src = idx[&m.path];
         let root_aliases = crate::extract::root_aliases(&m.language);
         for imp in &m.imports {
             let targets = resolve(imp, &m.path, root_aliases, &ns_index, &stem_index, &dir_index, &module_paths, go_module);
+            let w = (1024 / targets.len().max(1) as u64).max(1);
             for t in targets {
                 if let Some(&dst) = idx.get(&t) {
                     if dst != src {
-                        edge_set.insert((src, dst));
+                        let e = edge_w.entry((src, dst)).or_insert(0);
+                        *e = (*e).max(w);
                     }
                 }
             }
         }
     }
+    let edge_set: HashSet<(NodeIndex, NodeIndex)> = edge_w.keys().copied().collect();
     for (a, b) in &edge_set {
         g.add_edge(*a, *b, ());
     }
@@ -107,25 +123,49 @@ pub fn build(modules: &[Module], go_module: &Option<String>) -> (GraphStats, Has
     let self_loop = edge_set.iter().any(|(a, b)| a == b);
     let cyclic = !cycles.is_empty() || self_loop;
 
-    // Fan-in / fan-out.
-    let mut fan_in: Vec<NodeDegree> = Vec::new();
-    let mut fan_out: Vec<NodeDegree> = Vec::new();
+    // Fan-in / fan-out — specificity-weighted (see `edge_w`): the published
+    // degree is the rounded sum of edge weights, i.e. "specific-import
+    // equivalents". A namespace-broadcast target keeps a small honest degree
+    // (478 importers / 40-file bucket ≈ 12) instead of a minted 478, so real
+    // hubs — modules imported by precise evidence — rank above diffuse glue.
+    let mut win: HashMap<NodeIndex, u64> = HashMap::new();
+    let mut wout: HashMap<NodeIndex, u64> = HashMap::new();
+    for ((a, b), w) in &edge_w {
+        *wout.entry(*a).or_insert(0) += w;
+        *win.entry(*b).or_insert(0) += w;
+    }
+    // Rounded units, floored at 1 for any node with at least one in/out edge
+    // — "has dependents" must survive the rounding of a tiny diffuse weight.
+    let units = |x: u64| (((x + 512) >> 10) as usize).max(1);
+    let mut fan_in: Vec<(u64, NodeDegree)> = Vec::new();
+    let mut fan_out: Vec<(u64, NodeDegree)> = Vec::new();
     let mut degree_map: HashMap<String, (usize, usize)> = HashMap::new();
     for n in g.node_indices() {
-        let fi = g.neighbors_directed(n, Direction::Incoming).count();
-        let fo = g.neighbors_directed(n, Direction::Outgoing).count();
-        degree_map.insert(g[n].clone(), (fi, fo));
-        if fi > 0 {
-            fan_in.push(NodeDegree { module: g[n].clone(), degree: fi });
+        let wi = win.get(&n).copied().unwrap_or(0);
+        let wo = wout.get(&n).copied().unwrap_or(0);
+        degree_map.insert(
+            g[n].clone(),
+            (if wi > 0 { units(wi) } else { 0 }, if wo > 0 { units(wo) } else { 0 }),
+        );
+        if wi > 0 {
+            fan_in.push((wi, NodeDegree { module: g[n].clone(), degree: units(wi) }));
         }
-        if fo > 0 {
-            fan_out.push(NodeDegree { module: g[n].clone(), degree: fo });
+        if wo > 0 {
+            fan_out.push((wo, NodeDegree { module: g[n].clone(), degree: units(wo) }));
         }
     }
-    fan_in.sort_by(|a, b| b.degree.cmp(&a.degree));
-    fan_out.sort_by(|a, b| b.degree.cmp(&a.degree));
-    fan_in.truncate(8);
-    fan_out.truncate(8);
+    // Order by the RAW weighted sum (full discrimination), path asc on ties —
+    // deterministic regardless of HashMap iteration order.
+    fan_in.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.module.cmp(&b.1.module)));
+    fan_out.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.module.cmp(&b.1.module)));
+    let mut fan_in: Vec<NodeDegree> = fan_in.into_iter().map(|(_, d)| d).collect();
+    let mut fan_out: Vec<NodeDegree> = fan_out.into_iter().map(|(_, d)| d).collect();
+    // 64, not 8: the digest filters this catalog BY QUERY VOCABULARY — with
+    // only 8 global slots a 4k-module monorepo never surfaces the hub of any
+    // specific domain (the field case answered every financial query with
+    // zero hubs). Still bounded; a few KB on the model.
+    fan_in.truncate(TOP_DEGREE_CAP);
+    fan_out.truncate(TOP_DEGREE_CAP);
 
     // Emergent layering: condense cycles into a DAG, then depth = longest
     // dependency chain. No layer names — just the order the imports define.

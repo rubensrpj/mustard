@@ -45,6 +45,29 @@ hub_fanin_pct = 30
 # everywhere degenerates to plain tier x BM25 order.
 idf_floor = 0.0625
 
+# Path co-occurrence (anchor FILL only — never a coverage seat). When at
+# least `path_co_min_terms` DISTINCT matched terms appear as exact lowercased
+# path subtokens of one module, each contributes `path_co_bm25` BM25 units ×
+# its IDF to the fill aggregate. A capability folder names itself in its
+# path, and its directory donates those tokens to every file inside — so a
+# composing view whose declarations carry little vocabulary still surfaces
+# when the query's terms CO-OCCUR in its path. A single path token stays
+# worthless: that is the anti-noise rule that keeps mere path hits listed in
+# `hubs`, never in anchors. 0.5 = half the weight of one declared occurrence.
+path_co_min_terms = 2
+path_co_bm25 = 0.5
+
+# Fill reserve. On a WIDE query (more matched terms than anchor slots) pure
+# coverage degenerates to one-file-per-rare-term: every slot goes to a
+# single-term seat and the capability cluster — the files where the queried
+# concepts CO-OCCUR — is crowded out entirely (field case: 12 single-term
+# seats, target folder 0/12). Coverage therefore stops `fill_reserve_slots`
+# short of the cap, leaving room for the aggregate (multi-term / path
+# co-occurrence) candidates. The reserve only binds when an unseated
+# multi-term candidate actually exists; narrow queries (terms <= remaining
+# slots) never feel it.
+fill_reserve_slots = 4
+
 [catalog]
 # Kind-class weights for the PUBLISHED catalog ranking only. A declaration
 # whose kind appears in `type_kinds` (the engine's generic capture vocabulary

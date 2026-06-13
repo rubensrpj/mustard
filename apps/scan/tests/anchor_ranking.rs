@@ -355,3 +355,60 @@ fn digest_query_stacks_copies_model_detected_stacks() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Field regression (sialia, 2026-06-12 — spec `ranking-digest-deixa-alvo-central`):
+/// on a WIDE query (more matched terms than anchor slots) pure coverage
+/// seated one single-term file per rare term and crowded the capability
+/// cluster out entirely (target folder 0/12), even though its files are
+/// where the queried concepts CO-OCCUR (declarations + path). The fix is the
+/// fill reserve + path co-occurrence: coverage stops short of the cap when a
+/// multi-term candidate exists, and >=2 matched terms appearing as path
+/// subtokens pay into the fill aggregate (one path token alone still pays
+/// nothing — the anti-noise rule).
+#[test]
+fn wide_query_keeps_the_cooccurring_target_via_fill_reserve_and_path_co() {
+    // The resolver wins the coverage seats for financial+titles (heavier
+    // declarations); 11 single-term domains each seat their own term. Before
+    // the fix that filled all 12 slots and the target — whose path carries
+    // financial+titles and whose declaration carries titles+table — was out.
+    let mut mods = vec![
+        module(
+            "backend/financialtitles/FinancialTitlesQueryResolver.cs",
+            &["FinancialTitlesQueryResolver", "FinancialTitlesFilterDto"],
+        ),
+        module("app/financial/all-titles/titles-table.tsx", &["TitlesTable"]),
+    ];
+    for i in 0..11 {
+        mods.push(module(
+            &format!("other/dom{i:02}/file{i:02}.ts"),
+            &[&format!("Term{i:02}Thing")],
+        ));
+    }
+    let modules = serde_json::Value::Array(mods);
+    let (dir, model) = write_model("widequery", modules);
+    let terms: Vec<String> = ["financial".to_string(), "titles".to_string()]
+        .into_iter()
+        .chain((0..11).map(|i| format!("term{i:02}")))
+        .collect();
+    let (_, q) = run_query(&model, &terms.join(","), "query.json");
+
+    let files: Vec<&str> = q["files"].as_array().unwrap().iter().map(|f| f.as_str().unwrap()).collect();
+    assert!(
+        files.contains(&"app/financial/all-titles/titles-table.tsx"),
+        "the co-occurring capability file must anchor on a wide query: {q}"
+    );
+    // The audit trail shows the path terms riding along with the declared one.
+    let detail = q["files_detail"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| d["file"] == "app/financial/all-titles/titles-table.tsx")
+        .expect("target row in files_detail");
+    let dterms: Vec<&str> = detail["terms"].as_array().unwrap().iter().map(|t| t.as_str().unwrap()).collect();
+    assert!(
+        dterms.contains(&"financial") && dterms.contains(&"titles"),
+        "path co-occurrence terms audited: {detail}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -34,6 +34,14 @@ struct Params {
     /// Minimum per-term IDF multiplier ×1024 in the anchor fill aggregate —
     /// a frequent term keeps a small voice instead of zeroing out.
     idf_floor_x1024: u64,
+    /// Path co-occurrence threshold: distinct matched terms that must appear
+    /// as path subtokens before the path contributes to the fill aggregate.
+    path_co_min_terms: usize,
+    /// BM25-equivalent ×1024 each co-occurring path term contributes.
+    path_co_bm25_x1024: u64,
+    /// Anchor slots the coverage walk leaves to the fill aggregate when an
+    /// unseated multi-term candidate exists (wide-query protection).
+    fill_reserve_slots: usize,
     /// Published-catalog weight ×1024 of one TYPE-kind occurrence.
     type_weight_x1024: u64,
     /// Published-catalog weight ×1024 of one member-kind occurrence.
@@ -75,6 +83,19 @@ fn parse_params(src: &str) -> Params {
             .map(|n| n.max(0) as u64)
             .unwrap_or(30),
         idf_floor_x1024: fx(v.get("anchors").and_then(|t| t.get("idf_floor")), 0.0625),
+        path_co_min_terms: v
+            .get("anchors")
+            .and_then(|t| t.get("path_co_min_terms"))
+            .and_then(|x| x.as_integer())
+            .map(|n| n.max(1) as usize)
+            .unwrap_or(2),
+        path_co_bm25_x1024: fx(v.get("anchors").and_then(|t| t.get("path_co_bm25")), 0.5),
+        fill_reserve_slots: v
+            .get("anchors")
+            .and_then(|t| t.get("fill_reserve_slots"))
+            .and_then(|x| x.as_integer())
+            .map(|n| n.max(0) as usize)
+            .unwrap_or(4),
         type_weight_x1024: fx(v.get("catalog").and_then(|t| t.get("type_weight")), 2.5),
         member_weight_x1024: fx(v.get("catalog").and_then(|t| t.get("member_weight")), 1.0),
         type_kinds: v
@@ -173,6 +194,28 @@ pub fn fanin_boost_x1024(fan_in: usize) -> u64 {
 /// exact percent test, no integer-division loss.
 pub fn anchor_stopfile(fan_in: usize, total_modules: usize) -> bool {
     (fan_in as u64) * 100 > (total_modules as u64) * params().hub_fanin_pct
+}
+
+/// Distinct matched terms that must co-occur as path subtokens before the
+/// path contributes to the anchor fill aggregate (ranking.toml
+/// `path_co_min_terms`). One token alone never pays — the anti-noise rule.
+#[must_use]
+pub fn path_co_min_terms() -> usize {
+    params().path_co_min_terms
+}
+
+/// BM25-equivalent ×1024 each co-occurring path term contributes to the
+/// anchor fill aggregate (ranking.toml `path_co_bm25`).
+#[must_use]
+pub fn path_co_bm25_x1024() -> u64 {
+    params().path_co_bm25_x1024
+}
+
+/// Anchor slots the coverage walk leaves to the fill aggregate when an
+/// unseated multi-term candidate exists (ranking.toml `fill_reserve_slots`).
+#[must_use]
+pub fn fill_reserve_slots() -> usize {
+    params().fill_reserve_slots
 }
 
 /// Published-catalog weight ×1024 of one occurrence under a declaration of

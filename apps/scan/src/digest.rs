@@ -378,11 +378,63 @@ pub fn query(model: &ProjectModel, terms: &[String], request_lang: &str) -> Quer
             e.2.push(i);
         }
     }
-    // Pass (a): the coverage walk, capped.
+    // PATH CO-OCCURRENCE — fill evidence for capability folders that name
+    // themselves. A composing view (the screen that wires the pieces) often
+    // declares little vocabulary, but its folder does — and the directory
+    // donates its subtokens to every file inside, so the whole cluster
+    // surfaces together. When at least `path_co_min_terms` DISTINCT matched
+    // terms appear as exact lowercased path subtokens of an anchorable
+    // module, each contributes `path_co_bm25` BM25 units × its IDF to the
+    // FILL aggregate — never a coverage seat. A single path token stays
+    // worthless: that is the anti-noise rule that keeps mere path hits in
+    // `hubs`, not here (field case: `financial/_components/all-titles/*`
+    // carries financial+titles, while `address.ts` and `auth-footer-link`
+    // stay single-token and gain nothing).
+    let path_co_bm25 = crate::rank::path_co_bm25_x1024();
+    if path_co_bm25 > 0 && !matched_terms.is_empty() {
+        let min_co = crate::rank::path_co_min_terms();
+        let lowered: Vec<String> = matched_terms.iter().map(|t| t.term.to_lowercase()).collect();
+        for (path, toks) in &c.path_tokens {
+            if !anchorable(path) {
+                continue;
+            }
+            let hit_idx: Vec<usize> =
+                (0..matched_terms.len()).filter(|&i| toks.contains(&lowered[i])).collect();
+            if hit_idx.len() < min_co {
+                continue;
+            }
+            let mut add = 0u64;
+            for &i in &hit_idx {
+                let df = c.postings.get(&matched_terms[i].term).map_or(1, BTreeMap::len);
+                let idf = crate::rank::idf_x1024(df, docs);
+                add += crate::matching::weight(tiers[i])
+                    * crate::rank::idf_term_score_x1024(idf, path_co_bm25);
+            }
+            let e = cand.entry(path).or_insert((0, hit_idx[0], Vec::new()));
+            e.0 += add;
+            for &i in &hit_idx {
+                if !e.2.contains(&i) {
+                    e.2.push(i);
+                }
+            }
+        }
+    }
+    // Pass (a): the coverage walk, capped — minus the fill reserve on a wide
+    // query. With more matched terms than slots, pure coverage degenerates to
+    // one-file-per-rare-term and the capability cluster (where the queried
+    // concepts CO-OCCUR) is crowded out entirely (field case: 12 single-term
+    // seats, target folder 0/12). The reserve binds only when a multi-term
+    // candidate exists to claim it; otherwise coverage keeps every slot.
+    let has_multi = cand.values().any(|(_, _, terms)| terms.len() >= 2);
+    let coverage_cap = if has_multi {
+        Q_MAX_FILES.saturating_sub(crate::rank::fill_reserve_slots()).max(1)
+    } else {
+        Q_MAX_FILES
+    };
     let mut files: Vec<String> = Vec::new();
     let mut seated: BTreeSet<&str> = BTreeSet::new();
     for (_, p) in top_of.iter().flatten() {
-        if files.len() == Q_MAX_FILES {
+        if files.len() == coverage_cap {
             break;
         }
         if seated.insert(p) {
