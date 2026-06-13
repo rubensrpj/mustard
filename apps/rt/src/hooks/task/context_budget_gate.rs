@@ -158,30 +158,6 @@ fn prompt_budget(role: Role) -> Option<usize> {
     }
 }
 
-/// Public, read-only accessor for the per-role prompt char budget — used by
-/// the Wave 4 `context-resolve` resolver to truncate a graph closure that
-/// would exceed the role's ceiling. Accepts the same role labels the
-/// `subagent_type` / description heuristic emits (case-insensitive, with
-/// `general-purpose(review)` recognised as the review tier). Returns `None`
-/// for advisory-only roles (`plan`, `unknown`, or any unmapped label) — the
-/// caller then leaves the closure unconstrained.
-///
-/// The mapping is identical to [`prompt_budget`]; this wrapper exists only
-/// so callers outside the `hooks::budget` module can read the table without
-/// either duplicating the constants or perturbing the gate's logic.
-#[must_use]
-pub fn role_prompt_budget(role_label: &str) -> Option<usize> {
-    let role = match role_label.to_ascii_lowercase().as_str() {
-        "explore" => Role::Explore,
-        "plan" => Role::Plan,
-        // Accept both the synthesised label and the raw subagent type.
-        "general-purpose(review)" | "review" => Role::GeneralReview,
-        "general-purpose" | "general" => Role::General,
-        _ => Role::Unknown,
-    };
-    prompt_budget(role)
-}
-
 /// The human role label `context-budget.js` uses in its messages/metrics.
 fn prompt_role_label(role: Role, subagent_type: &str) -> String {
     match role {

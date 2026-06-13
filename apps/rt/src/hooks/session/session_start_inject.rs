@@ -8,13 +8,14 @@
 //!
 //! - `harness-init.js` — bootstraps the harness event bus: ensures
 //!   `.claude/.harness/` exists, prunes legacy archived sessions older than
-//!   30 days, and emits a `session.start` event. The events now live in a
-//!   single WAL-mode `SQLite` store (`mustard.db`), so there is no NDJSON log
-//!   to rotate per session.
+//!   30 days, and emits a `session.start` event. Events live in per-spec /
+//!   per-session NDJSON logs under `.claude/` (the `mustard.db` SQLite store
+//!   was retired — see `session_stop_observer`).
 //! - `session-memory.js` — injects persistent memory (knowledge base,
 //!   cross-session timeline, decisions, lessons) as `additionalContext`.
 //! - `spec-hygiene.js` — auto-moves stale completed/cancelled specs from
-//!   `spec/{name}/` (flat layout — status lives in `SQLite`, no bucket moves).
+//!   `spec/{name}/` (flat layout — lifecycle status lives in each spec's
+//!   `meta.json` sidecar, no bucket moves).
 //!
 //! ## Contract shape
 //!

@@ -234,18 +234,6 @@ pub fn render_spec_memory_block(matches: &[MemoryMatch]) -> String {
     out
 }
 
-/// Map an agent `role` label to the skill-resolve phase both call sites use.
-#[must_use]
-pub fn role_to_phase(role: &str) -> &'static str {
-    match role.trim().to_ascii_lowercase().as_str() {
-        "review" => "REVIEW",
-        "explore" => "ANALYZE",
-        "plan" => "PLAN",
-        "qa" => "QA",
-        _ => "EXECUTE",
-    }
-}
-
 /// Resolve the (semantic, pattern) layer term lists for the project's
 /// regression vocabulary, with the gate's in-memory defaults as the fallback.
 ///
@@ -388,13 +376,6 @@ mod tests {
         }];
         assert!(render_spec_memory_block(&without).contains("- [[tabs-routing]]\n"));
         assert!(render_spec_memory_block(&[]).is_empty());
-    }
-
-    #[test]
-    fn role_to_phase_maps_known_roles() {
-        assert_eq!(role_to_phase("review"), "REVIEW");
-        assert_eq!(role_to_phase("Explore"), "ANALYZE");
-        assert_eq!(role_to_phase("impl"), "EXECUTE");
     }
 
     #[test]

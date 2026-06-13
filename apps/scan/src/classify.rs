@@ -28,6 +28,13 @@ use std::sync::OnceLock;
 /// The four file classes — engine vocabulary, not tool names. WHICH files
 /// fall in a class is catalog + override data, never logic here.
 pub const GENERATED: &str = "generated";
+// `vendored` is produced via catalog DATA (a `paths` glob in
+// generated-markers.toml sets `class = "vendored"`), never via this symbol —
+// production reads the class string from the catalog, so the const is a symbol
+// only the test matrix references. Kept as the canonical class name beside its
+// three siblings; `allow(dead_code)` silences the symbol-unused warning that
+// the data-driven path makes unavoidable.
+#[allow(dead_code)]
 pub const VENDORED: &str = "vendored";
 pub const LOCKFILE: &str = "lockfile";
 pub const MINIFIED: &str = "minified";
