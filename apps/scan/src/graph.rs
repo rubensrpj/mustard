@@ -82,13 +82,13 @@ pub fn build(modules: &[Module], go_module: &Option<String>) -> (GraphStats, Has
     let stem_index = build_stem_index(modules);
 
     // Edge weight ×1024 by resolution SPECIFICITY: an import that lands on ONE
-    // module is full evidence (1024); a namespace/package bucket of N modules
-    // spreads the same single import across N files, so each target gets 1/N
-    // (floored at 1). One `using` of a 40-file namespace must not mint 40
-    // units of centrality — the field case had every file of the most-used
-    // C# namespace at a uniform fan-in 478, saturating `top_fan_in` with
-    // alphabetical enums and starving every query's `hubs` of real signal.
-    // The strongest evidence per (src, dst) pair wins; re-imports never inflate.
+    // module is full evidence (1024); a namespace/package import that resolves
+    // to a bucket of N modules spreads that single import across N files, so
+    // each target gets 1/N (floored at 1). A bucket import must not mint N
+    // units of centrality — otherwise every file of the most-imported
+    // namespace ends up at the same high fan-in, saturating `top_fan_in` with
+    // uniform glue and starving every query's `hubs` of real signal. The
+    // strongest evidence per (src, dst) pair wins; re-imports never inflate.
     let mut edge_w: HashMap<(NodeIndex, NodeIndex), u64> = HashMap::new();
 
     for m in modules {
@@ -125,9 +125,9 @@ pub fn build(modules: &[Module], go_module: &Option<String>) -> (GraphStats, Has
 
     // Fan-in / fan-out — specificity-weighted (see `edge_w`): the published
     // degree is the rounded sum of edge weights, i.e. "specific-import
-    // equivalents". A namespace-broadcast target keeps a small honest degree
-    // (478 importers / 40-file bucket ≈ 12) instead of a minted 478, so real
-    // hubs — modules imported by precise evidence — rank above diffuse glue.
+    // equivalents". A bucket-broadcast target keeps a small honest degree (its
+    // 1/N share of each broadcast import) instead of a minted full count, so
+    // real hubs — modules imported by precise evidence — rank above diffuse glue.
     let mut win: HashMap<NodeIndex, u64> = HashMap::new();
     let mut wout: HashMap<NodeIndex, u64> = HashMap::new();
     for ((a, b), w) in &edge_w {
@@ -161,9 +161,9 @@ pub fn build(modules: &[Module], go_module: &Option<String>) -> (GraphStats, Has
     let mut fan_in: Vec<NodeDegree> = fan_in.into_iter().map(|(_, d)| d).collect();
     let mut fan_out: Vec<NodeDegree> = fan_out.into_iter().map(|(_, d)| d).collect();
     // 64, not 8: the digest filters this catalog BY QUERY VOCABULARY — with
-    // only 8 global slots a 4k-module monorepo never surfaces the hub of any
-    // specific domain (the field case answered every financial query with
-    // zero hubs). Still bounded; a few KB on the model.
+    // only 8 global slots a large monorepo never surfaces the hub of any
+    // specific domain (every domain-scoped query comes back with zero hubs).
+    // Still bounded; a few KB on the model.
     fan_in.truncate(TOP_DEGREE_CAP);
     fan_out.truncate(TOP_DEGREE_CAP);
 

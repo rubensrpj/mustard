@@ -387,9 +387,9 @@ pub fn query(model: &ProjectModel, terms: &[String], request_lang: &str) -> Quer
     // module, each contributes `path_co_bm25` BM25 units × its IDF to the
     // FILL aggregate — never a coverage seat. A single path token stays
     // worthless: that is the anti-noise rule that keeps mere path hits in
-    // `hubs`, not here (field case: `financial/_components/all-titles/*`
-    // carries financial+titles, while `address.ts` and `auth-footer-link`
-    // stay single-token and gain nothing).
+    // `hubs`, not here — a folder whose path carries several query terms
+    // donates them to every file inside, while a file whose path matches just
+    // one query term stays single-token and gains nothing.
     let path_co_bm25 = crate::rank::path_co_bm25_x1024();
     if path_co_bm25 > 0 && !matched_terms.is_empty() {
         let min_co = crate::rank::path_co_min_terms();
