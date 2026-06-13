@@ -46,7 +46,7 @@ use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Observer, Tri
 use mustard_core::domain::spec;
 use mustard_core::{ClaudePaths, Outcome as SpecOutcome, Stage as SpecStage};
 use serde_json::Value;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::SystemTime;
 
@@ -430,7 +430,7 @@ fn parse_module_using(line: &str) -> Option<(String, String)> {
 /// parseable header (legacy) fall through to the prior behaviour — they
 /// still emit the boundary check — to keep the safety net for old specs
 /// while suppressing the closed-followup false positives.
-fn check_boundaries(file_path: &str, cwd: &str) -> Option<String> {
+fn check_boundaries(file_path: &str, cwd: &str) -> Option<(String, String)> {
     let spec_root = ClaudePaths::for_project(cwd).ok()?.spec_dir();
     let entries = fs::read_dir(&spec_root).ok()?;
     let normalized_edit = file_path.replace('\\', "/");
@@ -507,11 +507,52 @@ fn check_boundaries(file_path: &str, cwd: &str) -> Option<String> {
         return None;
     }
     let rel_edited = file_path.replace('\\', "/");
-    Some(format!(
+    let message = format!(
         "\"{rel_edited}\" is outside the boundaries declared in spec \
          \"{dir_name}\". Declared: {}. Verify this edit is intentional.",
         lines.join(", ")
-    ))
+    );
+    Some((dir_name, message))
+}
+
+/// Session-scoped marker path for the boundary advisory dedup:
+/// `.claude/.session/<id>/boundary-warned`. `None` when the session is
+/// unresolved (then the advisory is never suppressed — fail-open).
+fn boundary_marker_path(cwd: &str) -> Option<PathBuf> {
+    let session = crate::shared::context::session_id();
+    if session.is_empty() || session == "unknown" {
+        return None;
+    }
+    Some(
+        ClaudePaths::for_project(Path::new(cwd))
+            .ok()?
+            .claude_dir()
+            .join(".session")
+            .join(session)
+            .join("boundary-warned"),
+    )
+}
+
+/// Surface the boundary advisory ONCE per (spec, session): the first
+/// out-of-scope edit for a spec alerts; later edits in the same session stay
+/// silent — re-emitting the same advisory on every edit is pure re-injected
+/// noise (it cost ~one token bill per edit before this gate). State lives in a
+/// session-scoped marker (newline-delimited spec names). Fail-open: an
+/// unresolved session or any IO error returns `true` (warn), so the safety net
+/// never goes silent on a broken FS. Only the non-blocking advisory is
+/// deduped; a CRITICAL boundary violation is a separate `Deny` path, untouched.
+fn boundary_warn_once(cwd: &str, spec: &str) -> bool {
+    let Some(marker) = boundary_marker_path(cwd) else {
+        return true;
+    };
+    let seen = fs::read_to_string(&marker).unwrap_or_default();
+    if seen.lines().any(|l| l.trim() == spec) {
+        return false;
+    }
+    // `write_atomic` creates the parent dir; a failed write degrades to
+    // re-warning next edit (never silent), which is the safe direction.
+    let _ = fs::write_atomic(&marker, format!("{seen}{spec}\n").as_bytes());
+    true
 }
 
 /// Resolve a spec's lifecycle [`SpecState`] from the filesystem,
@@ -710,11 +751,14 @@ fn guard_verify(input: &HookInput, cwd: &str) -> Verdict {
             ),
         };
     }
-    // Advisory: a boundary mismatch.
-    if let Some(warning) = check_boundaries(&file_path, cwd) {
-        return Verdict::Inject {
-            context: format!("[BOUNDARY WARNING] {warning}"),
-        };
+    // Advisory: a boundary mismatch — surfaced ONCE per (spec, session) so it
+    // does not re-inject the same warning on every subsequent out-of-scope edit.
+    if let Some((spec, warning)) = check_boundaries(&file_path, cwd) {
+        if boundary_warn_once(cwd, &spec) {
+            return Verdict::Inject {
+                context: format!("[BOUNDARY WARNING] {warning}"),
+            };
+        }
     }
     Verdict::Allow
 }
@@ -1638,7 +1682,8 @@ mod tests {
             .join("post_edit.rs");
         let cwd = root.path().to_str().unwrap();
         let result = check_boundaries(edit_path.to_str().unwrap(), cwd);
-        let warning = result.expect("expected a warning under newer spec boundaries");
+        let (spec, warning) = result.expect("expected a warning under newer spec boundaries");
+        assert_eq!(spec, "2026-05-28-new-active", "the resolved spec is the newer one");
         assert!(
             warning.contains("2026-05-28-new-active"),
             "warning should cite the newer spec, got: {warning}"
@@ -1647,5 +1692,22 @@ mod tests {
             !warning.contains("2026-05-26-old-active"),
             "older spec must not appear in the warning, got: {warning}"
         );
+    }
+
+    #[test]
+    fn boundary_warn_once_dedups_per_spec_in_a_session() {
+        // First call for a spec warns; the second (same spec, same session) is
+        // suppressed; a different spec warns again. The marker is keyed on the
+        // resolved session dir, so the dedup is session-scoped.
+        let root = tempdir().unwrap();
+        let cwd = root.path().to_str().unwrap();
+        // Seed a resolvable session dir so `session_id()` resolves (no env in test).
+        let session_dir = root.path().join(".claude").join(".session").join("sess-x");
+        std::fs::create_dir_all(&session_dir).unwrap();
+
+        assert!(boundary_warn_once(cwd, "spec-a"), "first warn for spec-a surfaces");
+        assert!(!boundary_warn_once(cwd, "spec-a"), "repeat for spec-a is suppressed");
+        assert!(boundary_warn_once(cwd, "spec-b"), "a different spec warns once");
+        assert!(!boundary_warn_once(cwd, "spec-b"), "and is then suppressed too");
     }
 }
