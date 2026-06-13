@@ -23,6 +23,11 @@ When asking the user to approve an artifact (spec, wave plan, PRD), the artifact
 
 Signals are heuristics — the pipeline detects what makes sense for the project that was scanned. Any change that touches production code → Pipeline Feature. Scope is auto-detected: Light (1-2 layers, ≤5 files, known pattern) vs Full (3+ layers, new entity).
 
+**Routing economy — the full pipeline is the EXCEPTION that must justify itself, not the default.** The pipeline's ceremony (spec → wave → QA → close) is a fixed token cost paid once per run, re-paid as harness context on every turn; it only amortizes on a genuine multi-layer / multi-subproject feature. So pick the CHEAPEST path that fits:
+- **Full pipeline** only when the change genuinely spans **≥2 layers/subprojects OR creates a new entity** (the `scope-classify` `layerCount` is now a deterministic FACT — distinct projects/roles the census spans — so trust it to gate this; a wrong "full" on a small task is the single most expensive routing error).
+- **`/mustard:task` or direct work** for everything single-layer, exploratory, or that you already know where to make — no spec, no gates, no wave ceremony. Most enhancements and nearly all bugfixes that touch 1-2 files land here.
+- The **guide** (subproject rules via `## Guards`, target files via the digest) is available WITHOUT the pipeline — you get the project's rules just by working in the subproject. Don't enter the pipeline merely to get guidance.
+
 ## When to delegate via Task (L0)
 
 **MUST delegate (always Task):**
@@ -61,6 +66,14 @@ After EXECUTE completes, run QA before CLOSE:
 2. QA agent reads spec, executes each AC, reports pass/fail
 3. close-gate blocks CLOSE unless `qa.result` with `overall=pass` exists in the events log
 4. Control: `MUSTARD_QA_GATE_MODE=strict (default) | warn | off`
+
+### Mid-pipeline change requests
+
+A user request to change something while a spec is Active is auto-recorded — hook `change_request_log` writes `.claude/spec/{id}/change-requests.ndjson` (machine) + a human-readable `change-log.md` (documented beside the spec) and emits a `pipeline.change.request` event. Nothing is lost; the frozen `spec.md` narrative is not touched. When a request changes intended behavior:
+
+1. **Document** — it is already in the spec's `change-log.md`; reference it.
+2. **Compose the test** — fold it into `## Acceptance Criteria` as a new/updated AC (free-text → runnable criterion; interpretive, your job — the hook only captures).
+3. **Re-verify** — editing `spec.md`/`wave-plan.md` after a QA pass marks that pass STALE; the close-gate (QA-stale) blocks CLOSE until `/mustard:qa` re-runs against the current criteria.
 
 ## Context Loading
 
