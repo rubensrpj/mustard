@@ -168,6 +168,53 @@ fn query_event_payload(intent: &str, terms: &[String], q: &DigestQuery) -> serde
     })
 }
 
+/// Build the `active-research.json` marker body the digest-outcome observer
+/// reads: `{terms, anchors:[{file, terms}], ts}`. The anchors invert the
+/// digest's per-term report (`report.terms[].files`) into file→terms, so the
+/// observer can mark a touched file `wasAnchor` and name the query terms that
+/// declared it WITHOUT re-deriving the mapping. Pure + deterministic (sorted
+/// files; each file's terms in report order, deduped) so the body is testable
+/// without IO; `ts` is the event channel's wall clock (stamped by the caller).
+fn active_research_marker(terms: &[String], q: &DigestQuery, ts: &str) -> serde_json::Value {
+    use std::collections::BTreeMap;
+    // file -> ordered, deduped list of terms that named it.
+    let mut by_file: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for t in &q.report.terms {
+        for f in &t.files {
+            let entry = by_file.entry(f.clone()).or_default();
+            if !entry.contains(&t.term) {
+                entry.push(t.term.clone());
+            }
+        }
+    }
+    let anchors: Vec<serde_json::Value> = by_file
+        .into_iter()
+        .map(|(file, terms)| json!({ "file": file, "terms": terms }))
+        .collect();
+    json!({ "terms": terms, "anchors": anchors, "ts": ts })
+}
+
+/// Drop the per-round `active-research.json` marker in the current session,
+/// overwriting any prior round. This opens the correlation window the
+/// `feature_outcome_observer` reads on each Read/Edit/Write. Fail-open: an
+/// unresolved session or a failed write is a silent no-op — the marker is a
+/// telemetry convenience, never a correctness dependency (a missing marker
+/// just yields no `feature.outcome` events).
+fn drop_research_marker(terms: &[String], q: &DigestQuery) {
+    let cwd = crate::shared::context::project_dir();
+    let Some(path) = crate::hooks::observe::feature_outcome_observer::marker_path_for(&cwd) else {
+        return;
+    };
+    let body = active_research_marker(terms, q, &mustard_core::time::now_iso8601());
+    let Ok(bytes) = serde_json::to_vec(&body) else {
+        return;
+    };
+    if let Some(parent) = path.parent() {
+        let _ = mustard_core::io::fs::create_dir_all(parent);
+    }
+    let _ = mustard_core::io::fs::write_atomic(&path, &bytes);
+}
+
 /// Record the research round as a `feature.query` harness event, attributed to
 /// the active session/spec by the router's resolution chain (the same channel
 /// `emit-event` uses). Fail-open: a failed write never blocks the research
@@ -281,6 +328,10 @@ pub fn run(intent: &str, root: &Path) {
             // contract stays byte-stable (telemetry never interleaves output).
             emit_query_event(query_event_payload(intent, &terms, &q));
             emit_digest_used_event(digest_used_payload(&terms, &q));
+            // Open the digest-outcome correlation window: a per-round marker
+            // the `feature_outcome_observer` reads to attribute each later
+            // Read/Edit/Write to this query's anchors. Fail-open side effect.
+            drop_research_marker(&terms, &q);
             payload(intent, &terms, &q)
         }
         Err(err) => {
@@ -366,6 +417,44 @@ mod tests {
         let bare: DigestQuery = serde_json::from_str(r#"{"miss":true}"#).expect("bare digest");
         let v = payload("anything", &[], &bare);
         assert_eq!(v["stacks"], json!([]), "empty stacks must stay an empty array: {v}");
+    }
+
+    #[test]
+    fn active_research_marker_inverts_report_terms_into_file_anchors() {
+        // The marker the digest-outcome observer reads inverts the per-term
+        // report (term→files) into file→terms anchors, byte-stably (files
+        // sorted by the BTreeMap; each file's terms in report order, deduped).
+        let q: DigestQuery = serde_json::from_str(
+            r#"{"query":["refund","order"],"miss":false,
+                "report":{"matched":2,"total":2,"reason":"strong","terms":[
+                    {"term":"refund","tier":"exact","lang":"","files":["src/refund.cs","src/shared.cs"]},
+                    {"term":"order","tier":"exact","lang":"","files":["src/shared.cs","src/order.cs"]}]}}"#,
+        )
+        .expect("digest payload with report");
+        let terms = vec!["refund".to_string(), "order".to_string()];
+        let m = active_research_marker(&terms, &q, "2026-06-16T00:00:00.000Z");
+        assert_eq!(m["terms"], json!(["refund", "order"]), "raw query terms carried");
+        assert_eq!(m["ts"], json!("2026-06-16T00:00:00.000Z"));
+        let anchors = m["anchors"].as_array().expect("anchors array");
+        // 3 distinct files, sorted: order.cs, refund.cs, shared.cs.
+        assert_eq!(anchors.len(), 3, "one row per distinct anchor file: {m}");
+        assert_eq!(anchors[0]["file"], json!("src/order.cs"));
+        assert_eq!(anchors[0]["terms"], json!(["order"]));
+        assert_eq!(anchors[1]["file"], json!("src/refund.cs"));
+        assert_eq!(anchors[1]["terms"], json!(["refund"]));
+        // shared.cs is named by BOTH terms (report order: refund then order).
+        assert_eq!(anchors[2]["file"], json!("src/shared.cs"));
+        assert_eq!(anchors[2]["terms"], json!(["refund", "order"]), "multi-term anchor: {m}");
+
+        // Byte-stable for the same inputs (the marker is correlation evidence).
+        let a = serde_json::to_string(&active_research_marker(&terms, &q, "t")).expect("ser");
+        let b = serde_json::to_string(&active_research_marker(&terms, &q, "t")).expect("ser");
+        assert_eq!(a, b);
+
+        // A miss with no report terms → empty anchors (the observer no-ops).
+        let bare: DigestQuery = serde_json::from_str(r#"{"miss":true}"#).expect("bare");
+        let m = active_research_marker(&[], &bare, "t");
+        assert_eq!(m["anchors"], json!([]), "no anchors on a bare miss: {m}");
     }
 
     #[test]

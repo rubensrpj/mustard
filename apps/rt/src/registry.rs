@@ -8,6 +8,7 @@
 
 use crate::hooks::observe::amend_window_inject::AmendWindowInject;
 use crate::hooks::observe::change_request_log::ChangeRequestLog;
+use crate::hooks::observe::feature_outcome_observer::FeatureOutcomeObserver;
 use crate::hooks::observe::agent_summary_observer::AgentSummaryObserver;
 use crate::hooks::bash::bash_command_gate::BashCommandGate;
 use crate::hooks::task::context_budget_gate::ContextBudgetGate;
@@ -324,6 +325,22 @@ impl Registry {
                 ],
                 check: Some(Box::new(ScopeGuard)),
                 observer: None,
+            },
+            // The digest-outcome SIGNAL — on PostToolUse(Read|Edit|Write), when
+            // a research window is open (`active-research.json` marker dropped
+            // by `feature::run`), correlate the touched file with the digest's
+            // anchors and emit `feature.outcome {file, wasAnchor, terms}`. Pure
+            // Observer — telemetry only, never a verdict (a Read always
+            // proceeds), fail-open. Folded by `run digest-precision`.
+            Module {
+                id: "feature_outcome_observer",
+                applies_to: &[
+                    (Trigger::PostToolUse, ToolMatch::Named("Read")),
+                    (Trigger::PostToolUse, ToolMatch::Named("Edit")),
+                    (Trigger::PostToolUse, ToolMatch::Named("Write")),
+                ],
+                check: None,
+                observer: Some(Box::new(FeatureOutcomeObserver)),
             },
             Module {
                 id: "delegation_advisory",
@@ -677,6 +694,7 @@ mod tests {
             "scope_guard",
             "active_spec_limit_gate",
             "delegation_advisory",
+            "feature_outcome_observer",
             "post_edit",
             "spec_hygiene_observer",
             "session_start_inject",
@@ -789,6 +807,18 @@ mod tests {
             .contains(&"delegation_advisory"));
         assert!(!applicable_ids(&registry, Trigger::PostToolUse, Some("Read"))
             .contains(&"delegation_advisory"));
+        // `feature_outcome_observer` (the digest-outcome SIGNAL) fires on
+        // PostToolUse(Read|Edit|Write) — including Read, unlike the edit-only
+        // observers — and never on the Pre side.
+        for tool in ["Read", "Edit", "Write"] {
+            assert!(
+                applicable_ids(&registry, Trigger::PostToolUse, Some(tool))
+                    .contains(&"feature_outcome_observer"),
+                "feature_outcome_observer missing for PostToolUse({tool})"
+            );
+        }
+        assert!(!applicable_ids(&registry, Trigger::PreToolUse, Some("Read"))
+            .contains(&"feature_outcome_observer"));
         // `scan_gate` + `active_spec_limit_gate` run on
         // PreToolUse(Skill) — the two pipeline-entry gates.
         for want in ["scan_gate", "active_spec_limit_gate"] {

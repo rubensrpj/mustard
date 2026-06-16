@@ -28,6 +28,7 @@ pub mod scan;
 pub mod scan_claude;
 pub mod scan_guards;
 pub mod feature;
+pub mod digest_precision;
 pub mod glossary_coverage;
 pub mod lexicon_suggest;
 pub mod lexicon_enrich;
@@ -96,6 +97,24 @@ pub enum RunCmd {
         #[arg(long)]
         context: Vec<String>,
         /// Workspace root (holds `.claude/grain.model.json`). Defaults to `.`.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
+    /// Fold the active session's `feature.query` (the digest's SUGGESTED
+    /// anchors) × `feature.outcome` (the OBSERVED Read/Edit/Write of those
+    /// anchors, emitted by the `feature_outcome_observer`) into a byte-stable
+    /// digest-precision report — the deterministic CRITERION OF STOP for the
+    /// locator redesign. Emits `{queries, recall_x1000, precision_x1000,
+    /// anchorsSuggested, anchorsRead, readsTotal, perTerm:[{term, reads,
+    /// queries, precision_x1000}]}`: recall = anchors read / anchors suggested,
+    /// precision = reads-that-were-anchors / reads-in-window, perTerm = how many
+    /// reads each query term led to. Fixed-point per-mille (no float), all lists
+    /// sorted — no timestamps/paths leak. Reads events only (never the repo);
+    /// fail-open, always exits 0.
+    #[command(name = "digest-precision")]
+    DigestPrecision {
+        /// Workspace root. Defaults to the current directory (resolved to the
+        /// workspace anchor like every run-face emitter).
         #[arg(long, default_value = ".")]
         root: PathBuf,
     },
@@ -1713,6 +1732,7 @@ pub fn dispatch(cmd: RunCmd) {
             context,
             root,
         } => glossary_coverage::run(&intent, &context, &root),
+        RunCmd::DigestPrecision { root } => digest_precision::run(&root),
         RunCmd::LexiconSuggest { accept, root } => lexicon_suggest::run(accept.as_deref(), &root),
         RunCmd::LexiconEnrich { check, apply, root } => lexicon_enrich::run(check, apply.as_deref(), &root),
         RunCmd::DiffContext {
