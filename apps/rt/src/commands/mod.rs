@@ -1287,6 +1287,12 @@ pub enum RunCmd {
         /// withholds itself).
         #[arg(long = "query-terms")]
         query_terms: Option<String>,
+        /// Honour the requested `--scope full` even when the deterministic
+        /// routing gate would auto-rebaixar it to light/extended-light. The
+        /// override is recorded (a `pipeline.scope.override` event) so it is
+        /// auditable, never silent.
+        #[arg(long = "force-scope")]
+        force_scope: bool,
     },
     /// Compile the deterministic spec draft for one entity via `grain spec` and
     /// print the resulting Markdown verbatim to stdout. Thin passthrough to
@@ -2119,6 +2125,7 @@ pub fn dispatch(cmd: RunCmd) {
             waves,
             force,
             query_terms,
+            force_scope,
         } => {
             spec::spec_draft::run(spec::spec_draft::SpecDraftOpts {
                 intent,
@@ -2129,6 +2136,7 @@ pub fn dispatch(cmd: RunCmd) {
                 waves,
                 force,
                 query_terms,
+                force_scope,
             });
         }
         RunCmd::ScanSpec { entity, like, ops, invariant, root } => {

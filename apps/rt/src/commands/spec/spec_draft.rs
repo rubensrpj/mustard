@@ -99,6 +99,11 @@ pub struct SpecDraftOpts {
     /// absent, the raw intent is tokenised — which on a translated intent
     /// (e.g. PT over an EN repo) predictably repeats the weak query.
     pub query_terms: Option<String>,
+    /// Honour `--scope full` even when the deterministic routing gate would
+    /// auto-rebaixar it. The override is still RECORDED (a
+    /// `pipeline.scope.override` event) so it stays auditable — see
+    /// [`apply_scope_gate`].
+    pub force_scope: bool,
 }
 
 /// Entry point.
@@ -201,6 +206,18 @@ pub fn run(opts: SpecDraftOpts) {
     }
     written.push(output.join("meta.json").display().to_string());
 
+    // ---- Deterministic ROUTING GATE — the most expensive routing error is the
+    // orchestrator asking for `--scope full` when the deterministic signals
+    // (single-layer, few files) do not justify it. The machine enforces the
+    // economy already written in the SKILL instead of the orchestrator having
+    // to "remember" it: re-classify the spec.md we just wrote and auto-rebaixar
+    // a non-justified full (rewriting meta.json — the source-of-truth the
+    // scope_guard / close-gate read). `--force-scope` honours the request but
+    // records the override. Fail-open: an unreadable spec leaves `full`
+    // untouched. ----
+    let scope_downgraded =
+        apply_scope_gate(&project_root, &output, &slug, scope, opts.force_scope, &meta, digest.as_ref());
+
     // Record the `ANALYZE` phase now that the slug exists (see
     // [`backfill_analyze_phase`]).
     backfill_analyze_phase(&project_root, &slug);
@@ -217,17 +234,184 @@ pub fn run(opts: SpecDraftOpts) {
     // records `scope=full` + `totalWaves` + `isWavePlan`, so consumers know a
     // wave plan is expected before `wave-scaffold` fills it in.
 
-    let report = json!({
+    // The effective scope is the downgraded one when the gate acted, so the
+    // report's `scope` matches the meta.json the gate rewrote (no contradiction
+    // between stdout and the persisted source-of-truth).
+    let effective_scope = scope_downgraded
+        .as_ref()
+        .and_then(|d| d.get("to").and_then(serde_json::Value::as_str))
+        .unwrap_or_else(|| scope_str(scope));
+    let mut report = json!({
         "ok": true,
         "spec": slug,
-        "scope": scope_str(scope),
+        "scope": effective_scope,
         "lang": opts.lang,
         "tone": tone.as_str(),
         "tone_instruction": tone_prompt_instruction(tone),
         "output": output.display().to_string(),
         "files": written,
     });
+    if let (Some(obj), Some(downgrade)) = (report.as_object_mut(), scope_downgraded) {
+        obj.insert("scopeDowngraded".to_string(), downgrade);
+    }
     println!("{}", serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".into()));
+}
+
+// ---------------------------------------------------------------------------
+// Routing gate (deterministic scope enforcement)
+// ---------------------------------------------------------------------------
+
+/// Deterministic routing gate. A `--scope full` that the structural signals do
+/// not justify (single-layer, few files, no net-new entity) is the single most
+/// expensive routing error — the full pipeline's ceremony is re-paid as harness
+/// context on every turn. This re-classifies the spec.md just written (via
+/// [`scope_decompose::classify_from_spec`] — the SAME deterministic thresholds
+/// `scope-classify` uses, never reimplemented) and:
+///
+/// - **AUTO-REBAIXA** when `requested == Full`, the classifier returns
+///   `light`/`extended-light`, the census is trustworthy (not an empty/
+///   placeholder `## Files` section), and `--force-scope` was NOT passed.
+///   The downgrade rewrites `meta.json` (the source-of-truth `scope_guard` /
+///   close-gate read) to the classified scope, emits a
+///   `pipeline.scope.downgrade` event, and returns the
+///   `{from,to,reason,signals}` object the caller folds into stdout's
+///   `scopeDowngraded`.
+/// - **OVERRIDE** (no meta change) when `requested == Full`, the classifier
+///   disagrees, but `--force-scope` was passed: the full is honoured, yet a
+///   `pipeline.scope.override` event records the divergence so the override is
+///   auditable, never silent. Returns `None` (no `scopeDowngraded`).
+/// - **NO-OP** otherwise: a light/extended-light request (the gate only acts on
+///   an unjustified full), a classifier that agrees the scope is `full`, or a
+///   non-confident classification (`filesSectionEmpty` — a freshly-drafted spec
+///   whose census is still a placeholder; downgrading off `fileCount=0` would
+///   wrongly rebaixar every Full before its census lands). Returns `None`.
+///
+/// `slice_match_count` is threaded from the digest the run already computed
+/// (`scan_digest` → `q.slices.len()`, mirroring `feature::run`'s
+/// `sliceMatchCount`) so the classifier sees the same vocabulary-overlap signal
+/// the `/feature` PLAN step does. Fail-open: an unreadable spec.md classifies to
+/// the conservative `full` (`classify_from_spec`'s own fallback), which never
+/// triggers a downgrade — the requested full stands.
+fn apply_scope_gate(
+    project_root: &std::path::Path,
+    output: &std::path::Path,
+    slug: &str,
+    requested: Scope,
+    force_scope: bool,
+    meta: &Meta,
+    digest: Option<&DigestQuery>,
+) -> Option<serde_json::Value> {
+    use crate::commands::spec::scope_decompose::classify_from_spec;
+
+    // The gate only ever acts on a `full` request — a light/extended-light
+    // request is already the economical path, nothing to rebaixar.
+    if !matches!(requested, Scope::Full) {
+        return None;
+    }
+
+    // Same vocabulary-overlap signal the digest feeds `/feature`'s scope-classify
+    // (`sliceMatchCount`). Absent digest ⇒ 0 (the conservative read for the
+    // slice conditions, matching `classify`'s default).
+    let slice_match_count = digest.map_or(0, |q| q.slices.len() as i64);
+
+    let verdict = classify_from_spec(&output.join("spec.md"), slice_match_count);
+    let classified = verdict.get("scope").and_then(serde_json::Value::as_str).unwrap_or("full");
+    let signals = verdict.get("signals").cloned().unwrap_or_else(|| json!({}));
+
+    // A non-confident `light` (the `## Files` census is still a placeholder, so
+    // `fileCount` parsed to 0) is NOT grounds to rebaixar: the same spec can flip
+    // to full once its census lands. Only a trustworthy classification gates.
+    // (`classify_from_spec` already flags this premature verdict.)
+    let confident = !verdict
+        .get("filesSectionEmpty")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+
+    // The classifier agrees `full` is justified (3+ layers / net-new / wide) —
+    // or the spec was unreadable and fell open to the conservative `full`.
+    // Nothing to do; the request stands.
+    if classified == "full" {
+        return None;
+    }
+
+    // requested == full, classifier disagrees (light / extended-light).
+    if force_scope {
+        // Override: honour the requested full, but RECORD the divergence so it
+        // is auditable. No meta change — the request is intentional.
+        emit_scope_event(
+            project_root,
+            slug,
+            "pipeline.scope.override",
+            json!({
+                "requested": scope_str(requested),
+                "classified": classified,
+                "signals": signals,
+            }),
+        );
+        return None;
+    }
+
+    // A non-confident verdict cannot justify a downgrade — leave the full alone.
+    if !confident {
+        return None;
+    }
+
+    // AUTO-REBAIXA: rewrite meta.json to the classified scope (the
+    // source-of-truth `scope_guard` / close-gate read). The downgraded scope is
+    // light/extended-light, neither of which carries waves — clear the wave-plan
+    // fields so the persisted meta is internally consistent (a Light/ext-light
+    // spec is never a wave plan). The spec.md narrative is left as-is (cosmetic:
+    // meta decides; a stale "full" plan section is harmless next to a light meta).
+    let downgraded_meta = Meta {
+        scope: Some(classified.to_string()),
+        is_wave_plan: None,
+        total_waves: None,
+        ..meta.clone()
+    };
+    if let Err(e) = spec_scaffold::write_meta_json(output, &downgraded_meta) {
+        // Fail-open: if we cannot rewrite the meta we must NOT claim a downgrade
+        // (the source-of-truth would still say full). Leave the request intact.
+        let _ = e;
+        return None;
+    }
+
+    let downgrade = json!({
+        "from": scope_str(requested),
+        "to": classified,
+        "reason": "deterministic-routing-gate",
+        "signals": signals,
+    });
+    emit_scope_event(
+        project_root,
+        slug,
+        "pipeline.scope.downgrade",
+        json!({
+            "requested": scope_str(requested),
+            "classified": classified,
+            "signals": signals,
+        }),
+    );
+    Some(downgrade)
+}
+
+/// Emit one `pipeline.scope.*` routing event through the shared economy/route
+/// channel (the same envelope builder the other `pipeline.*` emitters use),
+/// attributing it to this spec slug. Fail-open: telemetry never blocks the draft.
+fn emit_scope_event(
+    project_root: &std::path::Path,
+    slug: &str,
+    event_name: &str,
+    payload: serde_json::Value,
+) {
+    use mustard_core::domain::model::event::ActorKind;
+    crate::shared::events::economy::emit(
+        &project_root.to_string_lossy(),
+        ActorKind::Cli,
+        "spec-draft",
+        event_name,
+        Some(slug),
+        payload,
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -918,6 +1102,7 @@ mod tests {
             waves: 0,
             force: false,
             query_terms: None,
+            force_scope: false,
         });
         let body = std::fs::read_to_string(out.join("spec.md")).unwrap();
         let heading = format!("## {CHECKLIST_HEADING}");
@@ -956,6 +1141,7 @@ mod tests {
             waves: 3,
             force: false,
             query_terms: None,
+            force_scope: false,
         });
         let body = std::fs::read_to_string(out.join("spec.md")).unwrap();
         let checklist_heading = format!("## {CHECKLIST_HEADING}");
@@ -1010,6 +1196,7 @@ mod tests {
                 waves,
                 force: false,
                 query_terms: None,
+                force_scope: false,
             });
             let spec_md = out.join("spec.md");
             let body = std::fs::read_to_string(&spec_md)
@@ -1042,6 +1229,7 @@ mod tests {
             waves: 2,
             force: false,
             query_terms: None,
+            force_scope: false,
         };
         run(opts);
         let root = dir.path().join("specs").join("demo");
@@ -1067,9 +1255,204 @@ mod tests {
             waves: 0,
             force: false,
             query_terms: None,
+            force_scope: false,
         };
         run(opts);
         // Output dir should not have been populated.
         assert!(!dir.path().join("out").join("spec.md").exists());
+    }
+
+    // --- Deterministic routing gate (apply_scope_gate) --------------------
+
+    /// Plant a workspace anchor (`mustard.json` + `.claude/`) so
+    /// `workspace_root` accepts the project root and a `## Files` census parses
+    /// against a real (if model-less) project — mirrors scope_decompose's
+    /// `plant_project`.
+    fn plant_project(root: &std::path::Path) {
+        std::fs::create_dir_all(root.join(".claude")).unwrap();
+        std::fs::write(root.join("mustard.json"), b"{}").unwrap();
+    }
+
+    /// Write a synthetic `spec.md` + a Full `meta.json` under
+    /// `{root}/.claude/spec/{slug}/` and return that spec dir. The census in
+    /// `spec_body` drives `classify_from_spec`.
+    fn seed_full_spec(root: &std::path::Path, slug: &str, spec_body: &str) -> std::path::PathBuf {
+        let spec_dir = root.join(".claude").join("spec").join(slug);
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        std::fs::write(spec_dir.join("spec.md"), spec_body).unwrap();
+        let full_input = build_input(
+            slug, "Demo", Scope::Full, "en-US", 1, Locale::EnUs, "build", None, &[],
+        );
+        let meta = build_meta_from_input(&full_input);
+        spec_scaffold::write_meta_json(&spec_dir, &meta).unwrap();
+        spec_dir
+    }
+
+    /// Count `pipeline.scope.*` events of `name` under the spec's `.events`.
+    fn scope_event_count(spec_dir: &std::path::Path, name: &str) -> usize {
+        let events_dir = spec_dir.join(".events");
+        mustard_core::view::projection::read_harness_events_from_ndjson_dir(&events_dir)
+            .iter()
+            .filter(|e| e.event == name)
+            .count()
+    }
+
+    /// The scope token persisted in `meta.json`.
+    fn meta_scope(spec_dir: &std::path::Path) -> Option<String> {
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(spec_dir.join("meta.json")).unwrap())
+                .unwrap();
+        v.get("scope").and_then(|s| s.as_str()).map(str::to_string)
+    }
+
+    /// A genuinely multi-layer Full (3 distinct role buckets) is JUSTIFIED —
+    /// the gate keeps `full`, rewrites no meta, emits no downgrade.
+    #[test]
+    fn scope_gate_keeps_justified_full() {
+        let dir = tempdir().unwrap();
+        plant_project(dir.path());
+        let spec = "# S\n\n## Files\n\
+            - backend/api/handler.rs\n\
+            - core/schema/model.rs\n\
+            - app/ui/view.tsx\n";
+        let spec_dir = seed_full_spec(dir.path(), "justified", spec);
+        let meta = mustard_core::read_meta(&spec_dir.join("meta.json")).unwrap();
+
+        let out = apply_scope_gate(
+            dir.path(), &spec_dir, "justified", Scope::Full, false, &meta, None,
+        );
+        assert!(out.is_none(), "justified full must not downgrade: {out:?}");
+        assert_eq!(meta_scope(&spec_dir).as_deref(), Some("full"), "meta untouched");
+        assert_eq!(scope_event_count(&spec_dir, "pipeline.scope.downgrade"), 0);
+    }
+
+    /// A net-new entity (Create-marked bullet corroborated by a prose token) is
+    /// also a JUSTIFIED full even at a single layer — gate keeps full.
+    #[test]
+    fn scope_gate_keeps_full_on_net_new_entity() {
+        let dir = tempdir().unwrap();
+        plant_project(dir.path());
+        let spec = "# S\nAdd the Invoice entity.\n\n## Files\n\
+            - src/models/invoice.ts (create)\n";
+        let spec_dir = seed_full_spec(dir.path(), "newent", spec);
+        let meta = mustard_core::read_meta(&spec_dir.join("meta.json")).unwrap();
+
+        let out = apply_scope_gate(
+            dir.path(), &spec_dir, "newent", Scope::Full, false, &meta, None,
+        );
+        assert!(out.is_none(), "net-new entity ⇒ justified full: {out:?}");
+        assert_eq!(meta_scope(&spec_dir).as_deref(), Some("full"));
+    }
+
+    /// A NON-justified Full (1 layer, ≤5 files, no net-new) is AUTO-REBAIXADO to
+    /// light: returns `scopeDowngraded`, rewrites `meta.json#scope=light` (and
+    /// clears the wave-plan fields), and emits a `pipeline.scope.downgrade`.
+    #[test]
+    fn scope_gate_downgrades_unjustified_full() {
+        let dir = tempdir().unwrap();
+        plant_project(dir.path());
+        // Two files, ONE generic role bucket (`lib`) ⇒ layerCount 1, no net-new.
+        let spec = "# S\n\n## Files\n- src/util/a.ts\n- src/util/b.ts\n";
+        let spec_dir = seed_full_spec(dir.path(), "unjustified", spec);
+        let meta = mustard_core::read_meta(&spec_dir.join("meta.json")).unwrap();
+
+        let out = apply_scope_gate(
+            dir.path(), &spec_dir, "unjustified", Scope::Full, false, &meta, None,
+        );
+        let downgrade = out.expect("unjustified full must downgrade");
+        assert_eq!(downgrade["from"], json!("full"));
+        assert_eq!(downgrade["to"], json!("light"));
+        assert!(downgrade.get("reason").and_then(|r| r.as_str()).is_some());
+        // meta.json is the source-of-truth the gate rewrites.
+        assert_eq!(meta_scope(&spec_dir).as_deref(), Some("light"), "meta rewritten to light");
+        // Light is never a wave plan — the wave-plan fields are cleared.
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(spec_dir.join("meta.json")).unwrap())
+                .unwrap();
+        assert!(v.get("totalWaves").is_none() || v["totalWaves"].is_null(), "no totalWaves on light: {v}");
+        assert!(v.get("isWavePlan").is_none() || v["isWavePlan"].is_null(), "no isWavePlan on light: {v}");
+        // The downgrade event is recorded.
+        assert_eq!(scope_event_count(&spec_dir, "pipeline.scope.downgrade"), 1);
+        assert_eq!(scope_event_count(&spec_dir, "pipeline.scope.override"), 0);
+    }
+
+    /// `--force-scope` over a non-justified Full HONOURS the full but records a
+    /// `pipeline.scope.override` event — the override is auditable, not silent.
+    /// No `scopeDowngraded`; meta.json stays `full`.
+    #[test]
+    fn scope_gate_force_scope_overrides_and_records() {
+        let dir = tempdir().unwrap();
+        plant_project(dir.path());
+        let spec = "# S\n\n## Files\n- src/util/a.ts\n- src/util/b.ts\n";
+        let spec_dir = seed_full_spec(dir.path(), "forced", spec);
+        let meta = mustard_core::read_meta(&spec_dir.join("meta.json")).unwrap();
+
+        let out = apply_scope_gate(
+            dir.path(), &spec_dir, "forced", Scope::Full, /* force_scope */ true, &meta, None,
+        );
+        assert!(out.is_none(), "--force-scope ⇒ no downgrade: {out:?}");
+        assert_eq!(meta_scope(&spec_dir).as_deref(), Some("full"), "meta stays full under override");
+        assert_eq!(scope_event_count(&spec_dir, "pipeline.scope.override"), 1, "override recorded");
+        assert_eq!(scope_event_count(&spec_dir, "pipeline.scope.downgrade"), 0);
+    }
+
+    /// A `light`/`extended-light` REQUEST is left untouched — the gate only acts
+    /// on an unjustified full, never on an already-economical request.
+    #[test]
+    fn scope_gate_noop_on_light_request() {
+        let dir = tempdir().unwrap();
+        plant_project(dir.path());
+        let spec = "# S\n\n## Files\n- src/util/a.ts\n";
+        let spec_dir = seed_full_spec(dir.path(), "lightreq", spec);
+        let meta = mustard_core::read_meta(&spec_dir.join("meta.json")).unwrap();
+
+        let out = apply_scope_gate(
+            dir.path(), &spec_dir, "lightreq", Scope::Light, false, &meta, None,
+        );
+        assert!(out.is_none(), "light request ⇒ no-op: {out:?}");
+        assert_eq!(scope_event_count(&spec_dir, "pipeline.scope.downgrade"), 0);
+        assert_eq!(scope_event_count(&spec_dir, "pipeline.scope.override"), 0);
+    }
+
+    /// FAIL-OPEN: a non-confident classification (the `## Files` census is a
+    /// placeholder ⇒ `fileCount=0` ⇒ `filesSectionEmpty`) must NOT downgrade —
+    /// a freshly-drafted Full whose census has not landed keeps its full.
+    #[test]
+    fn scope_gate_does_not_downgrade_non_confident_empty_census() {
+        let dir = tempdir().unwrap();
+        plant_project(dir.path());
+        // `## Files` present but only a placeholder line ⇒ zero parsed paths.
+        let spec = "# S\n\n## Files\n_(a preencher após o censo)_\n";
+        let spec_dir = seed_full_spec(dir.path(), "premature", spec);
+        let meta = mustard_core::read_meta(&spec_dir.join("meta.json")).unwrap();
+
+        let out = apply_scope_gate(
+            dir.path(), &spec_dir, "premature", Scope::Full, false, &meta, None,
+        );
+        assert!(out.is_none(), "non-confident verdict must not downgrade: {out:?}");
+        assert_eq!(meta_scope(&spec_dir).as_deref(), Some("full"), "full preserved on placeholder census");
+        assert_eq!(scope_event_count(&spec_dir, "pipeline.scope.downgrade"), 0);
+    }
+
+    /// FAIL-OPEN: an unreadable spec.md classifies to the conservative `full`
+    /// (classify_from_spec's fallback), which never triggers a downgrade.
+    #[test]
+    fn scope_gate_fail_open_on_unreadable_spec() {
+        let dir = tempdir().unwrap();
+        plant_project(dir.path());
+        // Spec dir + meta but NO spec.md → classify_from_spec falls open to full.
+        let spec_dir = dir.path().join(".claude").join("spec").join("ghost");
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        let full_input = build_input(
+            "ghost", "Demo", Scope::Full, "en-US", 1, Locale::EnUs, "build", None, &[],
+        );
+        let meta = build_meta_from_input(&full_input);
+        spec_scaffold::write_meta_json(&spec_dir, &meta).unwrap();
+
+        let out = apply_scope_gate(
+            dir.path(), &spec_dir, "ghost", Scope::Full, false, &meta, None,
+        );
+        assert!(out.is_none(), "unreadable spec ⇒ conservative full, no downgrade: {out:?}");
+        assert_eq!(meta_scope(&spec_dir).as_deref(), Some("full"));
     }
 }
