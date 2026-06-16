@@ -21,13 +21,13 @@ k1 = 1.2
 b = 0.75
 
 # NOTE: the former [anchors] section (alpha / hub_fanin_pct / idf_floor /
-# path_co_* / fill_reserve_slots) is GONE. The digest no longer RANKS anchor
-# relevance — `files` is now the deduped UNION of the matched terms' per-term
-# declaration samples (a deterministic FACT, see digest.rs), and the grouped
-# `report.terms[].files` is the evidence the reader picks from. Cross-term
-# relevance scoring was a semantic JUDGMENT the miner faked as a fact and got
-# wrong in the field; it was removed, not retuned. Per-term sample selection
-# (BM25 + MMR diversity) lives in [bm25] and [samples] below.
+# path_co_* / fill_reserve_slots) stays GONE — those were TUNING KNOBS for a
+# faked cross-term relevance the miner got wrong in the field. `files` is now
+# ranked by a single PARAMETER-FREE signal: the Σ inverse document frequency
+# (`core::domain::ranking::idf_x1024`) of the terms that declare each file, so a
+# rare domain term outranks a ubiquitous framework collision with NO knob to
+# tune — a pure corpus statistic, nothing to configure here. Per-term sample
+# selection (BM25 + MMR diversity) lives in [bm25] and [samples] below.
 
 [catalog]
 # Kind-class weights for the PUBLISHED catalog ranking only. A declaration

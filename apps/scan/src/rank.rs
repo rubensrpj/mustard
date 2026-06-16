@@ -89,9 +89,11 @@ pub fn avgdl_x1024(total_len: usize, docs: usize) -> u64 {
 /// `dl`, against the corpus average `avgdl_x1024`. Binds this crate's
 /// `ranking.toml` tuning (`k1`/`b`) onto the shared, parameterized primitive in
 /// [`mustard_core::domain::ranking`] — the single owner of the arithmetic. The
-/// IDF factor is omitted by design (it cancels when modules compete FOR one
-/// term — the per-term sample slots), so the digest's `files` is the deduped
-/// UNION of these per-term samples, not a cross-term ranking.
+/// IDF factor is omitted HERE by design (it cancels when modules compete FOR
+/// one term — the per-term sample slots); the CROSS-term anchor ranking applies
+/// IDF separately via `mustard_core::domain::ranking::idf_x1024` (the same
+/// arithmetic owner), so the digest's `files` is a ranked anchor list, not a
+/// flat union.
 pub fn bm25_x1024(tf: usize, dl: usize, avgdl_x1024: u64) -> u64 {
     let p = params();
     mustard_core::domain::ranking::bm25_x1024(tf, dl, avgdl_x1024, p.k1_x1024, p.b_x1024)

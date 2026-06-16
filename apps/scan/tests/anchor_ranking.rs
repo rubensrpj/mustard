@@ -2,19 +2,17 @@
 //! binary (`digest --query` over a synthetic `grain.model.json`):
 //!   * matched terms come back rarest first (count asc) — rarity is the
 //!     discriminative signal, so the per-query cap trims frequent matches;
-//!   * anchors are MATCH-FIRST and COVERAGE-FIRST: each matched term's best
-//!     file is seated first (terms walk tier asc then rarity asc), THEN the
-//!     remaining slots fill by the aggregate Σ tier-weight × IDF × BM25
-//!     (fixed-point integer, data in ranking.toml) — so a file carrying >=2
-//!     queried concepts still accumulates every term's contribution, but a
-//!     frequent-term neighbour can never crowd a rare domain's top file out;
+//!   * anchors are RANKED by inverse document frequency: each file scores the
+//!     Σ IDF (`core::domain::ranking::idf_x1024`, fixed-point integer) of the
+//!     matched terms that DECLARE it, so a rare domain term outranks a
+//!     ubiquitous one that merely collides with framework vocabulary —
+//!     regardless of the tier each matched on (tier is a confidence tiebreak
+//!     only, never dominant). A file carrying >=2 queried concepts accumulates
+//!     every term's IDF, but a frequent-term neighbour can never crowd a rare
+//!     domain's file out;
 //!   * a hub anchors only when a matched term lives in its DECLARATIONS — a
-//!     path hit alone keeps it in `hubs`, never in `files`; fan-in is a small
-//!     additive tiebreak between matched candidates, never dominant;
-//!   * structural stop-file: fan-in above the ranking.toml percent of the
-//!     repo's module count removes a module from anchor eligibility — a
-//!     repo-relative statistic, no name knowledge;
-//!   * `files_detail` mirrors `files` with the selection score + carrying
+//!     path hit alone keeps it in `hubs`, never in `files`;
+//!   * `files_detail` mirrors `files` with the IDF selection score + carrying
 //!     terms, and `slices_omitted` mirrors `terms_omitted` (no silent loss);
 //!   * the whole ranking is deterministic across runs (stable tie-breaks).
 //!
@@ -86,11 +84,10 @@ fn anchor_ranking_orders_matched_terms_by_rarity_then_term() {
 
 #[test]
 fn anchor_files_are_the_deduped_union_of_per_term_samples() {
-    // NEW CONTRACT: `files` is NOT a ranked verdict — it is the deduped UNION
-    // of the matched terms' per-term declaration samples, walked rarest-term
-    // first. No cross-term score decides "the target"; the reader does, from
-    // this evidence. A co-occurring file appears once and lists every term
-    // that declares it; there is no relevance score (the FACT, not a ranking).
+    // `files` is the deduped, IDF-RANKED set of the matched terms' per-term
+    // declaration samples. A co-occurring file appears once, lists every term
+    // that declares it, and carries the aggregate IDF score (Σ of its terms) —
+    // so a file declared by BOTH queried concepts accumulates both and leads.
     let modules = serde_json::json!([
         module("m/aaa.rs", &["AlphaFirst"]),
         module("m/shared.rs", &["AlphaSecond", "OmegaThing"]),
@@ -110,7 +107,10 @@ fn anchor_files_are_the_deduped_union_of_per_term_samples() {
     let shared = detail.iter().find(|d| d["file"] == "m/shared.rs").unwrap();
     let dterms: Vec<&str> = shared["terms"].as_array().unwrap().iter().map(|t| t.as_str().unwrap()).collect();
     assert!(dterms.contains(&"alpha") && dterms.contains(&"omega"), "the file lists both declaring terms: {q}");
-    assert_eq!(shared["score_x1024"].as_u64().unwrap(), 0, "union is a fact, no relevance score: {q}");
+    // The co-occurring file accumulates BOTH terms' IDF, so it carries a real
+    // (non-zero) score and leads the ranking.
+    assert!(shared["score_x1024"].as_u64().unwrap() > 0, "co-occurring file carries an aggregate IDF score: {q}");
+    assert_eq!(files[0], "m/shared.rs", "the dual-concept file leads the IDF ranking: {q}");
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -149,10 +149,9 @@ fn rare_domain_leads_the_union_ahead_of_a_frequent_neighbour() {
 
 #[test]
 fn rare_terms_samples_precede_frequent_terms_in_the_union() {
-    // The union is walked in matched-term order (rarest first), so EVERY file
-    // of a rare term precedes a frequent term's files — the property the old
-    // IDF-fill ranking simulated, now a direct consequence of the ordering.
-    // "ruby" lives in 2 modules; "stone"/"brick" in 20 — ruby's samples lead.
+    // IDF ranks a rare term's files above a frequent term's: the rare term
+    // carries a far larger IDF, so EVERY file it declares outscores the
+    // frequent-term files. "ruby" lives in 2 modules; "stone"/"brick" in 20.
     let mut modules = vec![
         module("m/gem/ruby_top.rs", &["RubyAlpha", "RubyBeta"]),
         module("m/gem/ruby_more.rs", &["RubyGamma"]),
@@ -172,6 +171,34 @@ fn rare_terms_samples_precede_frequent_terms_in_the_union() {
         pos("m/gem/ruby_top.rs") < pos("m/yard/dd_b.rs") && pos("m/gem/ruby_more.rs") < pos("m/yard/dd_b.rs"),
         "rare term's samples lead the union ahead of frequent-term files: {files:?}"
     );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn rare_stem_domain_outranks_a_ubiquitous_exact_collision() {
+    // The field bug (sialia "Rota: contracts"): a generic word that collides
+    // with framework vocabulary matched at the EXACT tier (`principal` ~ .NET's
+    // `ClaimsPrincipal`, in dozens of auth files) and, under the old tier-first
+    // walk, BURIED the rare DOMAIN term that only reached STEM (`contract`).
+    // IDF fixes it: rarity decides, the match tier is a mere tiebreak. Here the
+    // rare term lives in one module and matches at stem; the ubiquitous one in
+    // twelve and matches at exact — the rare domain file must still lead.
+    let mut modules = vec![module("m/contracts/studies_form.rs", &["StudiesForm"])];
+    for i in 0..12 {
+        modules.push(module(&format!("m/auth/principal{i:02}.rs"), &[&format!("PrincipalClaim{i:02}")]));
+    }
+    let (dir, model) = write_model("rare-stem-vs-exact", serde_json::json!(modules));
+    // "study" reaches the rare index term "studies" at STEM (en plural); the
+    // ubiquitous "principal" matches its index term at EXACT.
+    let (_, q) = run_query(&model, "study,principal", "query.json");
+
+    let study = q["report"]["terms"].as_array().unwrap().iter().find(|t| t["term"] == "study").unwrap();
+    assert_eq!(study["tier"], "stem", "the rare domain term matched at stem, not exact: {q}");
+    let files: Vec<&str> = q["files"].as_array().unwrap().iter().map(|f| f.as_str().unwrap()).collect();
+    assert_eq!(files[0], "m/contracts/studies_form.rs", "rare stem domain leads the ubiquitous exact collision: {q}");
+    let lead = q["files_detail"].as_array().unwrap()[0]["score_x1024"].as_u64().unwrap();
+    assert!(lead > 0, "anchors carry a real IDF score: {q}");
 
     let _ = std::fs::remove_dir_all(&dir);
 }

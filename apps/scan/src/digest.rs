@@ -313,6 +313,45 @@ pub fn query(model: &ProjectModel, terms: &[String], request_lang: &str) -> Quer
     matched.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.count.cmp(&b.1.count)).then(a.1.term.cmp(&b.1.term)));
     let terms_omitted = matched.len().saturating_sub(Q_MAX_TERMS);
     matched.truncate(Q_MAX_TERMS);
+    // Anchor ranking — IDF-weighted. `files` ranks the matched terms' BM25-
+    // selected declaration samples by the RARITY (inverse document frequency,
+    // `core::domain::ranking::idf_x1024`) of the terms that point at each: a
+    // rare domain term outweighs a ubiquitous one that merely collides with
+    // framework vocabulary (e.g. a generic word hitting .NET's `ClaimsPrincipal`),
+    // regardless of the tier each matched on — the match TIER is only a
+    // confidence tiebreak now, no longer the dominant key (the field bug: a
+    // generic `exact` hit burying a rare `stem` domain hit). A file declared by
+    // SEVERAL queried concepts accumulates each term's IDF (co-occurrence
+    // bonus). Pure corpus statistic — no knob — fixed-point so the order is
+    // byte-stable. A module enters ONLY through a term's declaration samples
+    // (`catalog` filters machine-written out), so a path-only hub never anchors;
+    // the grouped per-term evidence still rides in `report.terms[].files`.
+    let n_docs = model.modules.len();
+    // path -> (Σ IDF ×1024 over the terms declaring it, best/lowest tier seen).
+    let mut scored: std::collections::BTreeMap<String, (u64, u8)> = std::collections::BTreeMap::new();
+    for (tier, t) in &matched {
+        let idf = mustard_core::domain::ranking::idf_x1024(t.count, n_docs);
+        for s in &t.samples {
+            let e = scored.entry(s.clone()).or_insert((0, u8::MAX));
+            e.0 = e.0.saturating_add(idf);
+            e.1 = e.1.min(*tier);
+        }
+    }
+    // Rank: score desc, then best (lowest) tier, then path asc — byte-stable.
+    let mut ranked: Vec<(String, u64, u8)> = scored.into_iter().map(|(p, (sc, ti))| (p, sc, ti)).collect();
+    ranked.sort_by(|a, b| b.1.cmp(&a.1).then(a.2.cmp(&b.2)).then(a.0.cmp(&b.0)));
+    ranked.truncate(Q_MAX_FILES);
+    let files: Vec<String> = ranked.iter().map(|(p, _, _)| p.clone()).collect();
+    // Audit row per file (same order): the IDF score and which matched terms
+    // declare it, in matched order (tier asc, rarity asc) — honest provenance.
+    let files_detail: Vec<FileDetail> = ranked
+        .iter()
+        .map(|(f, score, _)| FileDetail {
+            file: f.clone(),
+            score_x1024: *score,
+            terms: matched.iter().filter(|(_, t)| t.samples.contains(f)).map(|(_, t)| t.term.clone()).collect(),
+        })
+        .collect();
     let matched_terms: Vec<TermD> = matched.into_iter().map(|(_, t)| t).collect();
 
     let mut slices: Vec<SliceD> = dig.slices.into_iter().filter(|s| hit(&s.label) || s.entities.iter().any(|e| hit(e))).collect();
@@ -323,45 +362,6 @@ pub fn query(model: &ProjectModel, terms: &[String], request_lang: &str) -> Quer
     hubs.truncate(Q_MAX_HUBS);
     let mut touchpoints: Vec<TouchD> = dig.graph.touchpoints.into_iter().filter(|t| hit(&t.module)).collect();
     touchpoints.truncate(Q_MAX_TOUCHPOINTS);
-
-    // Anchor INSUMO — the deterministic FACT, not a ranked verdict. `files` is
-    // the deduped UNION of the matched terms' declaration samples, walked in
-    // the matched_terms order (tier asc, then rarity asc — rarest/most
-    // discriminative first). Each term contributes its own BM25-selected
-    // samples (the per-term fact); there is NO cross-term relevance scoring,
-    // fan-in boost, or path heuristic deciding "which file is THE target" —
-    // that judgment belongs to the reader, made from this evidence. The
-    // GROUPED-by-term view (the truth a wide query needs, since a flat cap
-    // crowds) rides in `report.terms[].files` below; `files` is its convenience
-    // union. A module enters ONLY through a term's declaration samples
-    // (hand-written by construction — `catalog` filters machine-written out),
-    // so a path-only hub never anchors. Deterministic: matched_terms order +
-    // order-preserving dedup.
-    let mut files: Vec<String> = Vec::new();
-    'outer: for t in &matched_terms {
-        for s in &t.samples {
-            if files.len() == Q_MAX_FILES {
-                break 'outer;
-            }
-            if !files.contains(s) {
-                files.push(s.clone());
-            }
-        }
-    }
-    // Audit row per file (same order): which matched terms declare it — honest
-    // provenance, no score (there is no ranking to report).
-    let files_detail: Vec<FileDetail> = files
-        .iter()
-        .map(|f| FileDetail {
-            file: f.clone(),
-            score_x1024: 0,
-            terms: matched_terms
-                .iter()
-                .filter(|t| t.samples.contains(f))
-                .map(|t| t.term.clone())
-                .collect(),
-        })
-        .collect();
 
     let miss = matched_terms.is_empty() && slices.is_empty() && contracts.is_empty() && hubs.is_empty() && touchpoints.is_empty();
     // A non-miss answer with NO anchorable surface: every matched term lives

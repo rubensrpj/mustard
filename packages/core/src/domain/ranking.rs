@@ -65,6 +65,36 @@ pub fn bm25_x1024_default(tf: usize, dl: usize, avgdl_x1024: u64) -> u64 {
     bm25_x1024(tf, dl, avgdl_x1024, DEFAULT_K1_X1024, DEFAULT_B_X1024)
 }
 
+/// Inverse document frequency ×1024 of a term seen in `df` of `n_docs`
+/// documents: `log2((n_docs + 1) / (df + 1))`, never negative. Rarer terms
+/// (small `df`) score higher; a term in (nearly) every document tends to 0.
+/// `df` is clamped to `[1, n_docs]` so an occurrence count that exceeds the
+/// document count never underflows. This is the cross-term factor BM25 omits
+/// (see [`bm25_x1024`]): summed per document over the matched terms, it ranks
+/// ACROSS terms so a rare term outweighs a ubiquitous one regardless of how
+/// each matched. A pure corpus statistic — NO tuning knob — float-free and
+/// byte-stable.
+#[must_use]
+pub fn idf_x1024(df: usize, n_docs: usize) -> u64 {
+    let n = n_docs.max(1);
+    let df = df.clamp(1, n);
+    log2_x1024(n as u64 + 1).saturating_sub(log2_x1024(df as u64 + 1))
+}
+
+/// Fixed-point (×1024) base-2 logarithm of `x`: `floor(log2 x)` from the integer
+/// `ilog2`, plus a 10-bit fractional part linearly interpolated above that power
+/// of two. Monotone non-decreasing and continuous across powers;
+/// `log2_x1024(0) == log2_x1024(1) == 0`. The float-free primitive under
+/// [`idf_x1024`].
+fn log2_x1024(x: u64) -> u64 {
+    if x <= 1 {
+        return 0;
+    }
+    let i = u64::from(x.ilog2()); // floor(log2 x); x >= 2 ⇒ i >= 1
+    let pow = 1u64 << i; // 2^i, with 2^i <= x < 2^(i+1)
+    i * SCALE + ((x - pow) * SCALE) / pow // i + fractional (x/2^i − 1), ×1024
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -104,5 +134,28 @@ mod tests {
     fn defaults_match_classic_constants() {
         assert_eq!(DEFAULT_K1_X1024, (1.2_f64 * SCALE as f64).round() as u64);
         assert_eq!(DEFAULT_B_X1024, (0.75_f64 * SCALE as f64).round() as u64);
+    }
+
+    #[test]
+    fn log2_x1024_is_exact_on_powers_and_interpolates_between() {
+        assert_eq!(log2_x1024(0), 0);
+        assert_eq!(log2_x1024(1), 0);
+        assert_eq!(log2_x1024(2), SCALE, "log2 2 = 1");
+        assert_eq!(log2_x1024(8), 3 * SCALE, "log2 8 = 3");
+        assert!(
+            log2_x1024(2) < log2_x1024(3) && log2_x1024(3) < log2_x1024(4),
+            "monotone, interpolating between powers of two",
+        );
+    }
+
+    #[test]
+    fn idf_falls_with_document_frequency() {
+        let n = 1000;
+        assert!(idf_x1024(2, n) > idf_x1024(200, n), "a rarer term scores higher");
+        assert!(idf_x1024(n, n) < idf_x1024(n / 50, n), "a term in (nearly) every doc tends to zero");
+        // `df` clamps to [1, n]: an occurrence count above the doc count neither
+        // panics nor underflows, it saturates at the ubiquitous floor.
+        assert_eq!(idf_x1024(5 * n, n), idf_x1024(n, n));
+        assert_eq!(idf_x1024(0, n), idf_x1024(1, n));
     }
 }
