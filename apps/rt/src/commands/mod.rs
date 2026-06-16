@@ -30,6 +30,7 @@ pub mod scan_guards;
 pub mod feature;
 pub mod glossary_coverage;
 pub mod lexicon_suggest;
+pub mod enrich;
 // W3 of `2026-05-26-claude-paths-single-source` — three typed doctor checks
 // (claude-paths, workspace-leaks, i1) that emit native JSON shapes. They are
 // dispatched by `doctor.rs` but live in dedicated modules so the legacy
@@ -116,6 +117,40 @@ pub enum RunCmd {
         /// project lexicon overlay. Omit to list candidates (read-only).
         #[arg(long)]
         accept: Option<String>,
+        /// Workspace root. Defaults to the current directory (resolved to the
+        /// workspace anchor like every run-face emitter).
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
+    /// PROACTIVE sibling of `lexicon-suggest`: populate the project lexicon
+    /// overlay with code→user-word bridges BEFORE the first query misses.
+    ///
+    /// The rt stays 100% deterministic — the AI never runs here; the
+    /// orchestrator (the harness model, outside this binary) proposes the
+    /// bridges between the two pure-data modes:
+    ///
+    /// `--check` (read-only): emit byte-stable JSON `{pair, language,
+    /// unbridged}` — the top mined CODE terms (digest term index, discriminative
+    /// rank) that are NOT a value of any lexicon entry (seed + project overlay),
+    /// i.e. nothing maps a user word onto them. Empty list = no-op. Nothing is
+    /// written.
+    ///
+    /// `--apply <proposals.json>` (gated, writes): read the orchestrator's
+    /// `[{userWord, codeTerms}]` proposals and, for each code term, validate it
+    /// EXISTS as a mined term in the model (deterministic anti-hallucination
+    /// gate). Valid targets are written to `<root>/.claude/lexicons/<pair>.toml`
+    /// via the shared `lexicon-suggest` writer (atomic, alphabetical, comments
+    /// preserved) — never the embedded seed. Rejected targets
+    /// (`target_not_in_model`) are reported, never written. Pair resolved like
+    /// the digest: root `specLang`/`lang` primary subtag + `en`.
+    Enrich {
+        /// Read-only mode (the default): list the unbridged mined vocabulary.
+        #[arg(long)]
+        check: bool,
+        /// Apply the bridges in this proposals JSON file (gated write). Takes
+        /// precedence over `--check`.
+        #[arg(long)]
+        apply: Option<PathBuf>,
         /// Workspace root. Defaults to the current directory (resolved to the
         /// workspace anchor like every run-face emitter).
         #[arg(long, default_value = ".")]
@@ -1679,6 +1714,7 @@ pub fn dispatch(cmd: RunCmd) {
             root,
         } => glossary_coverage::run(&intent, &context, &root),
         RunCmd::LexiconSuggest { accept, root } => lexicon_suggest::run(accept.as_deref(), &root),
+        RunCmd::Enrich { check, apply, root } => enrich::run(check, apply.as_deref(), &root),
         RunCmd::DiffContext {
             parent,
             subproject,

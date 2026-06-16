@@ -60,6 +60,32 @@ pub struct SpecRequest {
     pub invariants: Vec<String>,
 }
 
+/// The FULL capability digest — grain's `digest <model>` output with NO
+/// `--query` (the searchable catalog, not a per-query slice). Mustard owns its
+/// own view and only deserializes the fields it consumes: today the domain-term
+/// index ([`Self::terms`]), the proactive-lexicon `enrich` input. The published
+/// term list is already discriminative-rank ordered + capped by the scan tool.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct Digest {
+    /// Domain-term index (token + occurrence count + sample files), ordered by
+    /// the scan tool's discriminative rank. Defaulted so an older scan binary
+    /// (or a model that mined no vocabulary) degrades to an empty list.
+    #[serde(default)]
+    pub terms: Vec<DigestTerm>,
+}
+
+/// One row of the digest's domain-term index ([`Digest::terms`]): the mined
+/// code token, its (machine-class-demoted) occurrence count, and a few sample
+/// files where the vocabulary lives. Same shape grain's `TermD` serializes.
+#[derive(Debug, Clone, Deserialize)]
+pub struct DigestTerm {
+    pub term: String,
+    #[serde(default)]
+    pub count: usize,
+    #[serde(default)]
+    pub samples: Vec<String>,
+}
+
 /// The focused slice of the digest matching some domain terms — grain's
 /// `digest --query` output. Mirrors grain's schema; Mustard owns its own view.
 #[derive(Debug, Clone, Deserialize)]
@@ -297,6 +323,20 @@ impl Scan {
         self.run(&scan_args(root, out)).map(|_| ())
     }
 
+    /// Read the model's FULL capability digest (`grain digest <model>`, no
+    /// `--query`) — the whole catalog, including the discriminative-ranked
+    /// domain-term index. Used by the proactive `enrich` flow to learn the
+    /// code's vocabulary; the per-query [`Self::digest_query`] is the cheap
+    /// research lookup instead.
+    ///
+    /// # Errors
+    /// [`Error::Io`] / [`Error::CheckFailed`] on spawn/exit failure,
+    /// [`Error::Parse`] if the output is not the expected JSON.
+    pub fn digest(&self, model: &Path) -> Result<Digest> {
+        let out = self.run(&digest_args(model))?;
+        Ok(serde_json::from_str(&out)?)
+    }
+
     /// Look up the model's digest by domain term(s) (`grain digest --query`).
     ///
     /// # Errors
@@ -348,6 +388,10 @@ fn scan_args(root: &Path, out: &Path) -> Vec<String> {
         "--out".to_string(),
         out.to_string_lossy().into_owned(),
     ]
+}
+
+fn digest_args(model: &Path) -> Vec<String> {
+    vec!["digest".to_string(), model.to_string_lossy().into_owned()]
 }
 
 fn digest_query_args(model: &Path, terms: &[String]) -> Vec<String> {

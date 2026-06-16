@@ -85,10 +85,10 @@ const BRIDGE_TIERS: [&str; 3] = ["exact", "fold", "stem"];
 
 /// A vendored language pair: its label (the overlay file stem) plus the
 /// embedded seed and template texts.
-struct PairSeed {
-    label: &'static str,
-    seed: &'static str,
-    template: &'static str,
+pub(crate) struct PairSeed {
+    pub(crate) label: &'static str,
+    pub(crate) seed: &'static str,
+    pub(crate) template: &'static str,
 }
 
 /// One data row per vendored pair, mirroring scan's `stemmers::lexicon`
@@ -110,7 +110,7 @@ fn seed_pair(a: &str, b: &str) -> Option<PairSeed> {
 /// `specLang`, scan's `request_lang` precedence), primary subtag + the `en`
 /// fallback. An `en`/empty/unknown request language leaves no second
 /// language, hence no pair.
-fn pair_for_root(root: &Path) -> Option<PairSeed> {
+pub(crate) fn pair_for_root(root: &Path) -> Option<PairSeed> {
     let cfg = mustard_core::ProjectConfig::load(root);
     let lang = cfg.lang.or(cfg.spec_lang).unwrap_or_default();
     let primary = primary_subtag(&lang);
@@ -145,14 +145,14 @@ fn fold(s: &str) -> String {
 }
 
 /// Folded key for a raw term — the dedup identity everywhere in this module.
-fn folded(term: &str) -> String {
+pub(crate) fn folded(term: &str) -> String {
     fold(&term.to_lowercase())
 }
 
 /// The `[terms]` table of a lexicon TOML, folded lowercase. Tolerant like
 /// scan's `overlay_terms`: invalid TOML or a missing `[terms]` table yields
 /// nothing, malformed entries are skipped individually — never an error.
-fn terms_table(src: &str) -> BTreeMap<String, Vec<String>> {
+pub(crate) fn terms_table(src: &str) -> BTreeMap<String, Vec<String>> {
     let Ok(v) = toml::from_str::<toml::Value>(src) else {
         return BTreeMap::new();
     };
@@ -170,14 +170,17 @@ fn terms_table(src: &str) -> BTreeMap<String, Vec<String>> {
 }
 
 /// The overlay file path: `<root>/.claude/lexicons/<label>.toml`.
-fn overlay_path(root: &Path, label: &str) -> PathBuf {
+pub(crate) fn overlay_path(root: &Path, label: &str) -> PathBuf {
     root.join(".claude").join("lexicons").join(format!("{label}.toml"))
 }
 
 /// The lexicon in force for `root`: the embedded seed merged with the
 /// project overlay (project wins per key — the same merge `parse_lexicon`
 /// applies in scan). Empty when no pair is vendored.
-fn effective_lexicon(root: &Path, pair: Option<&PairSeed>) -> BTreeMap<String, Vec<String>> {
+pub(crate) fn effective_lexicon(
+    root: &Path,
+    pair: Option<&PairSeed>,
+) -> BTreeMap<String, Vec<String>> {
     let Some(p) = pair else {
         return BTreeMap::new();
     };
@@ -419,29 +422,44 @@ fn accept_report(root: &Path, arg: &str) -> Value {
             "missed": missed, "bridged": bridged, "pair": pair.label, "path": rel_path,
         });
     }
-    let path = overlay_path(root, pair.label);
-    let text = fs::read_to_string(&path).unwrap_or_else(|_| pair.template.to_string());
-    // Overlay entries REPLACE the seed's synonyms per key, so an entry being
-    // promoted for a seed key must carry the seed's synonyms forward too —
-    // otherwise accepting one bridge would silently drop the curated ones.
-    let mut syns: Vec<String> = terms_table(&text)
-        .remove(&missed)
-        .or_else(|| terms_table(pair.seed).remove(&missed))
-        .unwrap_or_default();
-    if !syns.contains(&bridged) {
-        syns.push(bridged.clone());
-    }
-    let new_text = upsert_term(&text, &missed, &syns);
-    if let Some(parent) = path.parent() {
-        let _ = fs::create_dir_all(parent);
-    }
-    if fs::write_atomic(&path, new_text.as_bytes()).is_err() {
+    if write_bridge(root, &pair, &missed, &bridged).is_err() {
         return json!({ "accepted": false, "reason": "overlay-write-failed", "path": rel_path });
     }
     json!({
         "accepted": true, "changed": true,
         "missed": missed, "bridged": bridged, "pair": pair.label, "path": rel_path,
     })
+}
+
+/// Write ONE `<user_word> = [… <code_term>]` bridge into the project overlay,
+/// the shared writer for [`accept_report`] (reactive `lexicon-suggest`) and the
+/// proactive `enrich --apply`. `user_word`/`code_term` must already be folded.
+/// Overlay entries REPLACE the seed's synonyms per key, so an entry promoted
+/// for a seed key carries the seed's synonyms forward (otherwise one accept
+/// would silently drop the curated ones); an already-present synonym is a
+/// no-op append. The file is created from the template when absent, never the
+/// embedded seed. Atomic; the `[terms]` table stays alphabetical with comments
+/// preserved (the `upsert_term` invariant).
+pub(crate) fn write_bridge(
+    root: &Path,
+    pair: &PairSeed,
+    user_word: &str,
+    code_term: &str,
+) -> Result<(), ()> {
+    let path = overlay_path(root, pair.label);
+    let text = fs::read_to_string(&path).unwrap_or_else(|_| pair.template.to_string());
+    let mut syns: Vec<String> = terms_table(&text)
+        .remove(user_word)
+        .or_else(|| terms_table(pair.seed).remove(user_word))
+        .unwrap_or_default();
+    if !syns.iter().any(|s| s == code_term) {
+        syns.push(code_term.to_string());
+    }
+    let new_text = upsert_term(&text, user_word, &syns);
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    fs::write_atomic(&path, new_text.as_bytes()).map_err(|_| ())
 }
 
 /// Bare TOML key of an entry line inside `[terms]`; `None` for comments,
@@ -462,7 +480,7 @@ fn entry_key(line: &str) -> Option<String> {
 /// lands at the alphabetically-correct position among the existing entry
 /// lines; with no entries yet it appends at the end of the section (after the
 /// template's commented examples). Output always ends with a newline.
-fn upsert_term(text: &str, key: &str, syns: &[String]) -> String {
+pub(crate) fn upsert_term(text: &str, key: &str, syns: &[String]) -> String {
     let rendered = format!(
         "{key} = [{}]",
         syns.iter().map(|s| format!("\"{s}\"")).collect::<Vec<_>>().join(", ")
