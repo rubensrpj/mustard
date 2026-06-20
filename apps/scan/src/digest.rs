@@ -288,7 +288,7 @@ pub fn query(model: &ProjectModel, terms: &[String], request_lang: &str) -> Quer
         let toks = tokenize(hay);
         toks.iter().any(|tk| {
             let ks = ladder.sig(tk);
-            qsigs.iter().any(|qs| ladder.tier(&ks, qs).is_some())
+            qsigs.iter().any(|qs| ladder.tier(&ks, qs, false).is_some())
         })
     };
 
@@ -306,11 +306,13 @@ pub fn query(model: &ProjectModel, terms: &[String], request_lang: &str) -> Quer
     // terms + fixed query order keep every outcome deterministic.
     let mut matched: Vec<(u8, TermD)> = Vec::new(); // (tier, term) for ranking
     let mut qhits: Vec<Vec<QHit>> = (0..ql.len()).map(|_| Vec::new()).collect();
+    // The sweep enables the T5 fuzzy RESCUE rung; whether its matches are KEPT is
+    // decided just below, gated on the strict (tiers 1-4) outcome.
     for t in dig.terms.into_iter() {
         let ks = ladder.sig(&t.term);
         let mut best: Option<u8> = None;
         for (qi, qs) in qsigs.iter().enumerate() {
-            if let Some(h) = ladder.tier(&ks, qs) {
+            if let Some(h) = ladder.tier(&ks, qs, true) {
                 qhits[qi].push(QHit { tier: h.tier, lang: h.lang, count: t.count, term: t.term.clone(), samples: t.samples.clone() });
                 best = Some(best.map_or(h.tier, |b: u8| b.min(h.tier)));
             }
@@ -318,6 +320,22 @@ pub fn query(model: &ProjectModel, terms: &[String], request_lang: &str) -> Quer
         if let Some(tier) = best {
             matched.push((tier, t));
         }
+    }
+    // Trigram RESCUE gating: keep the fuzzy T5 hits ONLY when the STRICT ladder
+    // (tiers 1-4) leaves the query weak/none — otherwise a strong query would
+    // inherit T5's false cognates (it matches FORM, not sense). Computed from the
+    // non-fuzzy hits already in `qhits`; if strict is solid, drop every T5 hit so
+    // anchors and the report stay strict. The cost of fuzzy lands only on queries
+    // that were already failing.
+    let n_q = ql.len();
+    let strict_k = (0..n_q).filter(|&qi| qhits[qi].iter().any(|h| h.tier <= 4)).count();
+    let strict_solid = qhits.iter().flatten().any(|h| h.tier == 1 || h.tier == 2);
+    let strict_strong = strict_k > 0 && strict_k * 2 >= n_q && strict_solid;
+    if strict_strong {
+        for qh in &mut qhits {
+            qh.retain(|h| h.tier <= 4);
+        }
+        matched.retain(|(tier, _)| *tier <= 4);
     }
     // Matched terms ranked by TIER then RARITY (count asc, stable tie-break on
     // the term): a real vocabulary hit outranks a derived one, and among equals
@@ -413,7 +431,7 @@ pub fn query(model: &ProjectModel, terms: &[String], request_lang: &str) -> Quer
             let (mut score, mut best_tier, mut terms) = (0u64, u8::MAX, Vec::new());
             for qc in &concepts {
                 let tf_decl = qc.tf.get(&m).copied().unwrap_or(0);
-                let in_path = psigs.iter().any(|ps| ladder.tier(ps, &qc.sig).is_some());
+                let in_path = psigs.iter().any(|ps| ladder.tier(ps, &qc.sig, false).is_some());
                 if tf_decl == 0 && !in_path {
                     continue;
                 }
@@ -498,6 +516,13 @@ pub fn query(model: &ProjectModel, terms: &[String], request_lang: &str) -> Quer
     // matched terms/files show it) or explore before trusting the answer.
     let has_solid = report_terms.iter().any(|t| t.tier == "exact" || t.tier == "fold");
     let has_curated_bridge = report_terms.iter().any(|t| t.tier == "lexicon");
+    // The T5 fuzzy RESCUE only survives the gating above on an otherwise
+    // weak/none query — so its presence here means the strict ladder was thin
+    // and trigram similarity (shared-root cross-language / morphology) carried
+    // the request. Treated like a curated bridge for `bridged`: real evidence,
+    // form-not-literal, so the planning fields ride along instead of forcing a
+    // re-query the fuzzy rung already answered.
+    let has_trigram_rescue = report_terms.iter().any(|t| t.tier == "trigram");
     let reason_word = if n == 0 || (k == 0 && !structural) {
         "none"
     } else if generated_only {
@@ -515,7 +540,7 @@ pub fn query(model: &ProjectModel, terms: &[String], request_lang: &str) -> Quer
     // code's: real evidence, just not literal. The consumer keeps the planning
     // fields (with a caveat) instead of forcing a re-query that would only
     // re-find what the supervised lexicon already bridged.
-    let bridged = reason_word == "weak" && k * 2 >= n && has_curated_bridge;
+    let bridged = reason_word == "weak" && k * 2 >= n && (has_curated_bridge || has_trigram_rescue);
     let report = MatchReport { matched: k, total: n, reason: reason_word.into(), bridged, terms: report_terms };
 
     QueryResult {

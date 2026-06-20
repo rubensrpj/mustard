@@ -91,39 +91,48 @@ fn plural_singular_with_stem_backing_matches_and_bare_prefix_stays_dead() {
 }
 
 #[test]
-fn cross_language_truncation_pair_stays_blocked_without_the_lexicon() {
-    // natureza ~ nature: pt collapses both to one stem, en does not — the
-    // stemmers DISAGREE, so the pair never climbs T3 in any configuration
-    // (one language's lone opinion on a truncation pair is the dead prefix
-    // heuristic). Cross-language equivalence stays the lexicon's job alone;
-    // no vendored pair carries this entry, so it is an honest, named miss.
+fn cross_language_cognate_bridges_via_the_trigram_rescue() {
+    // natureza ~ nature: a true cross-language cognate the STRICT ladder leaves
+    // unmatched (stemmers disagree on the truncation pair; no vendored lexicon
+    // entry carries it). Because the strict pass is weak/none, the T5 trigram
+    // RESCUE turns on and bridges the pair by shared-root form similarity — no
+    // glossary needed. The hit reports tier "trigram" and rides as `bridged`
+    // (real evidence, form-not-literal), so the consumer keeps planning. (The
+    // rescue's precision cost is confined here: it only fires because the strict
+    // ladder already failed.)
     let (dir, model) = write_model("natureza", serde_json::json!([module("src/eco/nature.rs", &["NatureTrail"])]));
     for (lang, out) in [("", "q-en.json"), ("pt-BR", "q-pt.json")] {
         let (_, q) = run_query(&model, "natureza", lang, out);
-        assert!(q["matched_terms"].as_array().unwrap().is_empty(), "stemmers disagree -> miss (lang={lang:?}): {q}");
-        assert_eq!(q["miss"], true);
+        let matched: Vec<&str> =
+            q["matched_terms"].as_array().unwrap().iter().map(|t| t["term"].as_str().unwrap()).collect();
+        assert!(matched.contains(&"nature"), "trigram rescue bridges the cognate (lang={lang:?}): {q}");
+        assert_eq!(q["miss"], false);
         let t = sole_report_term(&q);
         assert_eq!(t["term"], "natureza");
-        assert_eq!(t["tier"], "none", "named miss, not silence: {q}");
-        assert_eq!(q["report"]["reason"], "none");
+        assert_eq!(t["tier"], "trigram", "the fuzzy rescue rung is reported (lang={lang:?}): {q}");
+        assert_eq!(q["report"]["reason"], "weak", "fuzzy-only evidence is weak, never false confidence: {q}");
+        assert_eq!(q["report"]["bridged"], true, "the trigram rescue carries a non-thin query: {q}");
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
-fn cancelado_needs_the_glossary_and_reports_its_tier() {
-    // "cancelado" vs the identifier token "cancel": a truncation pair, so no
-    // tier bridges it by form alone. Without the pt-en pair active (request
-    // language en-only) it is an honest miss; with the request declared pt,
-    // the seed lexicon bridges it (cancelar -> cancel, the inflected request
-    // reaches the entry via the same-language stem) and the report names the
-    // tier and the pair.
+fn cancelado_bridges_via_trigram_or_the_glossary() {
+    // "cancelado" vs the identifier token "cancel": a truncation pair no STRICT
+    // tier bridges by form. Without the pt-en pair active (request en-only) the
+    // strict ladder is weak/none, so the T5 trigram RESCUE bridges it onto
+    // "cancel" by shared root (tier "trigram", `bridged`). With the request
+    // declared pt, the CURATED seed lexicon carries it instead (cancelar ->
+    // cancel via the same-language stem) — a cleaner, literal bridge reported at
+    // tier "lexicon" (T4 outranks the fuzzy T5).
     let (dir, model) = write_model("cancelado", serde_json::json!([module("src/billing/cancel.rs", &["CancelCharge"])]));
 
     let (_, without) = run_query(&model, "cancelado", "", "q-nolex.json");
-    assert!(without["matched_terms"].as_array().unwrap().is_empty(), "no glossary, no bridge: {without}");
-    assert_eq!(sole_report_term(&without)["tier"], "none");
-    assert_eq!(without["report"]["bridged"], false, "an unbridged miss is not flagged bridged: {without}");
+    let m_without: Vec<&str> =
+        without["matched_terms"].as_array().unwrap().iter().map(|t| t["term"].as_str().unwrap()).collect();
+    assert!(m_without.contains(&"cancel"), "trigram rescue bridges without a glossary: {without}");
+    assert_eq!(sole_report_term(&without)["tier"], "trigram", "the fuzzy rescue rung is reported: {without}");
+    assert_eq!(without["report"]["bridged"], true, "the trigram rescue is flagged bridged: {without}");
 
     let (_, with) = run_query(&model, "cancelado", "pt-BR", "q-lex.json");
     let matched: Vec<&str> =

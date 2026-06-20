@@ -60,9 +60,20 @@ pub fn tier_name(tier: u8) -> &'static str {
         2 => "fold",
         3 => "stem",
         4 => "lexicon",
+        5 => "trigram",
         _ => "none",
     }
 }
+
+/// Minimum trigram Jaccard similarity (×1000) for the T5 fuzzy RESCUE rung.
+/// pg_trgm's default is 0.3; we use a stricter 0.5 to curb the false cognates
+/// the exact ladder was built to avoid (`card`~`discard` ≈ 0.4 stays a miss),
+/// while shared-root cross-language + morphology bridge (`calculados`~
+/// `calculate` ≈ 0.5, `invalidadas`~`invalidate` ≈ 0.55). T5 fires ONLY when the
+/// caller opts in (`tier(.., allow_fuzzy=true)`) — the digest enables it only to
+/// RESCUE a query the strict ladder leaves weak/none, so the precision cost lands
+/// only on queries that were already failing; a strong query never sees it.
+const TRIGRAM_SIM_MIN_X1000: u64 = 500;
 
 /// A tier hit: which rung matched and the natural-language evidence behind it
 /// (the stemmer language for T3, the lexicon pair label for T4, empty for
@@ -80,6 +91,10 @@ pub struct Sig {
     raw: String,
     fold: String,
     stems: Vec<String>,
+    /// Overlapping 3-char windows of the folded form (the pg_trgm/Google-Code-
+    /// Search substrate) — compared by Jaccard on the opt-in T5 fuzzy rung.
+    /// Language-free: no tokenization, stemming or lexicon.
+    tri: BTreeSet<String>,
 }
 
 /// One parsed lexicon entry, pre-folded and pre-stemmed at load:
@@ -170,12 +185,15 @@ impl Ladder {
     pub fn sig(&self, token: &str) -> Sig {
         let fold = fold(token);
         let stems = self.stemmers.iter().map(|(_, st)| st.stem(&fold).into_owned()).collect();
-        Sig { raw: token.to_string(), fold, stems }
+        let tri = trigrams(&fold);
+        Sig { raw: token.to_string(), fold, stems, tri }
     }
 
     /// Climb the ladder: the index token `key` against the request token `q`.
-    /// First rung that holds wins; `None` is an honest miss.
-    pub fn tier(&self, key: &Sig, q: &Sig) -> Option<Hit> {
+    /// First rung that holds wins; `None` is an honest miss. `allow_fuzzy` opens
+    /// the T5 trigram RESCUE rung (off by default — the caller turns it on only
+    /// to rescue an otherwise weak/none query, never on the strict path).
+    pub fn tier(&self, key: &Sig, q: &Sig, allow_fuzzy: bool) -> Option<Hit> {
         if key.raw == q.raw {
             return Some(Hit { tier: 1, lang: String::new() });
         }
@@ -206,6 +224,18 @@ impl Ladder {
         for lx in &self.lexicons {
             if lx.bridges(key, q) {
                 return Some(Hit { tier: 4, lang: lx.label.clone() });
+            }
+        }
+        // T5 — trigram Jaccard RESCUE (pg_trgm-style), opt-in only. A language-
+        // free fuzzy rung BELOW the curated lexicon: bridges shared-root cross-
+        // language + morphology with no glossary, gated by a similarity floor.
+        if allow_fuzzy {
+            let inter = q.tri.intersection(&key.tri).count();
+            if inter > 0 {
+                let uni = (q.tri.len() + key.tri.len() - inter) as u64;
+                if uni > 0 && (inter as u64) * 1000 / uni >= TRIGRAM_SIM_MIN_X1000 {
+                    return Some(Hit { tier: 5, lang: "trigram".into() });
+                }
             }
         }
         None
@@ -330,6 +360,20 @@ fn truncation_related(a: &str, b: &str) -> bool {
     a.starts_with(b) || b.starts_with(a)
 }
 
+/// The set of overlapping 3-char windows of `s` (already folded). A surface
+/// shorter than 3 chars contributes itself as a single gram so a 3-letter token
+/// still compares. Pure char windows: no language knowledge.
+fn trigrams(s: &str) -> BTreeSet<String> {
+    let chars: Vec<char> = s.chars().collect();
+    if chars.is_empty() {
+        return BTreeSet::new();
+    }
+    if chars.len() < 3 {
+        return std::iter::once(s.to_string()).collect();
+    }
+    chars.windows(3).map(|w| w.iter().collect::<String>()).collect()
+}
+
 /// Primary BCP-47 subtag, lowercased: leading ASCII letters only, so
 /// region/script suffixes and malformed input degrade to a plain code (or to
 /// empty, which leaves only the fallback language active).
@@ -342,7 +386,26 @@ mod tests {
     use super::*;
 
     fn hit(ladder: &Ladder, key: &str, q: &str) -> Option<(u8, String)> {
-        ladder.tier(&ladder.sig(key), &ladder.sig(q)).map(|h| (h.tier, h.lang))
+        ladder.tier(&ladder.sig(key), &ladder.sig(q), false).map(|h| (h.tier, h.lang))
+    }
+
+    /// Same, but with the T5 fuzzy RESCUE rung enabled (the digest's weak/none path).
+    fn fuzzy(ladder: &Ladder, key: &str, q: &str) -> Option<(u8, String)> {
+        ladder.tier(&ladder.sig(key), &ladder.sig(q), true).map(|h| (h.tier, h.lang))
+    }
+
+    #[test]
+    fn trigram_rescue_bridges_shared_roots_only_when_enabled() {
+        let l = Ladder::new("pt-BR", None);
+        // OFF by default: the strict ladder never fuzzes (the existing contract).
+        assert!(hit(&l, "calculate", "calculados").is_none(), "strict path stays exact");
+        // ON (rescue): shared-root cross-language + morphology bridge at T5.
+        assert_eq!(fuzzy(&l, "calculate", "calculados").map(|(t, _)| t), Some(5), "calculados~calculate");
+        assert_eq!(fuzzy(&l, "invalidate", "invalidadas").map(|(t, _)| t), Some(5), "invalidadas~invalidate");
+        // The similarity floor still rejects a low-overlap pair, even fuzzy.
+        assert!(fuzzy(&l, "discard", "card").is_none(), "0.4 overlap stays below the 0.5 floor");
+        // A genuine exact match never downgrades to T5 just because fuzzy is on.
+        assert_eq!(fuzzy(&l, "payable", "payable").map(|(t, _)| t), Some(1), "exact still wins under fuzzy");
     }
 
     #[test]
