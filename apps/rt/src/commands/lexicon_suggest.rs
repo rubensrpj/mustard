@@ -68,6 +68,12 @@ const OVERLAY_TEMPLATE_PT_EN: &str = include_str!("../../../cli/templates/lexico
 /// The event `feature::run` records per answered digest query.
 const EVENT_FEATURE_QUERY: &str = "feature.query";
 
+/// The event the digest-outcome observer records per file the orchestrator
+/// opened inside a research window (`{file, wasAnchor, terms}`). A
+/// `wasAnchor=false` row is a file the digest did NOT point at — found by other
+/// means (Glob/Grep/exploration): the evidence the re-query correlation misses.
+const EVENT_FEATURE_OUTCOME: &str = "feature.outcome";
+
 /// Correlation window: only the most recent `QUERY_WINDOW` `feature.query`
 /// events of the whole workspace telemetry — ordered by `ts`, across every
 /// session and spec scope — are folded per run. The constant bounds cost and
@@ -229,6 +235,19 @@ pub(crate) struct Candidate {
     files: Vec<String>,
 }
 
+/// A LOCATION candidate: a query term that MISSED (tier `none`) in an origin,
+/// paired with the files the orchestrator opened in that SAME origin which the
+/// digest did NOT anchor (`feature.outcome` `wasAnchor=false` — found by other
+/// means). Unlike [`Candidate`], the code-side term is unknown (the digest never
+/// surfaced it), so it is left for the gated `--accept` to fill after reading
+/// the file. This captures exactly the case [`correlate`] cannot: the answer was
+/// found OUTSIDE the digest, so there is no q2 with a bridged term.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LocationCandidate {
+    missed: String,
+    files: Vec<String>,
+}
+
 /// Parse one `feature.query` payload into a [`QueryRecord`]. Tolerant: a
 /// payload without a `report.terms` array is skipped (`None`).
 fn query_record(payload: &Value) -> Option<QueryRecord> {
@@ -375,6 +394,80 @@ fn correlate_by_origin(rows: &[(String, QueryRecord)]) -> Vec<Candidate> {
     groups.values().flat_map(|qs| correlate(qs)).collect()
 }
 
+// --- feature.outcome fold (files found OUTSIDE the digest) --------------------
+
+/// The non-anchor files the orchestrator opened, grouped by the SAME origin key
+/// the query fold uses (emitting session, else the telemetry directory). A
+/// `feature.outcome` row with `wasAnchor=false` is a file the digest did not
+/// point at — found by other means — so it is the evidence for a term the digest
+/// missed. Sorted dir enumeration + BTree keep it byte-stable; fail-open.
+fn collect_outcomes(root: &Path) -> BTreeMap<String, BTreeSet<String>> {
+    let claude_dir = ClaudePaths::for_project(root)
+        .map(|p| p.claude_dir().clone())
+        .unwrap_or_else(|_| ClaudePaths::compose_unchecked(root).claude_dir().clone());
+    let mut by_origin: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for (dir_origin, dir) in telemetry_event_dirs(&claude_dir) {
+        for e in read_harness_events_from_ndjson_dir(&dir) {
+            if e.event != EVENT_FEATURE_OUTCOME {
+                continue;
+            }
+            // Anchor files were already pointed at by the digest — only the
+            // files found by OTHER means carry the missing-bridge signal.
+            if e.payload.get("wasAnchor").and_then(Value::as_bool).unwrap_or(false) {
+                continue;
+            }
+            let Some(file) = e.payload.get("file").and_then(Value::as_str) else {
+                continue;
+            };
+            let origin = if e.session_id.is_empty() || e.session_id == "unknown" {
+                dir_origin.clone()
+            } else {
+                format!("session:{}", e.session_id)
+            };
+            by_origin.entry(origin).or_default().insert(file.to_string());
+        }
+    }
+    by_origin
+}
+
+/// Missed terms (tier `none`) per origin from the windowed query rounds,
+/// dropping any the lexicon in force already KEYS (it already has a bridge).
+fn missed_by_origin(
+    rows: &[(String, QueryRecord)],
+    lexicon: &BTreeMap<String, Vec<String>>,
+) -> BTreeMap<String, BTreeSet<String>> {
+    let mut out: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for (origin, rec) in rows {
+        for t in rec.terms.iter().filter(|t| t.tier == "none") {
+            let m = folded(&t.term);
+            if !lexicon.contains_key(&m) {
+                out.entry(origin.clone()).or_default().insert(m);
+            }
+        }
+    }
+    out
+}
+
+/// Cross each origin's MISSED terms with the non-anchor files opened in that
+/// same origin → location candidates `{missed, files}`. Deterministic (BTree
+/// ordering throughout). The code-side term is resolved later by the gated
+/// `--accept` (the orchestrator reads the file and names the bridge).
+fn location_candidates(
+    missed: &BTreeMap<String, BTreeSet<String>>,
+    outcomes: &BTreeMap<String, BTreeSet<String>>,
+) -> Vec<LocationCandidate> {
+    let mut out = Vec::new();
+    for (origin, terms) in missed {
+        let Some(files) = outcomes.get(origin).filter(|f| !f.is_empty()) else {
+            continue;
+        };
+        for m in terms {
+            out.push(LocationCandidate { missed: m.clone(), files: files.iter().cloned().collect() });
+        }
+    }
+    out
+}
+
 // --- reports ------------------------------------------------------------------
 
 /// List mode: candidates only, NEVER a write — even with candidates pending
@@ -384,6 +477,11 @@ fn list_report(root: &Path) -> Value {
     let lexicon = effective_lexicon(root, pair.as_ref());
     let rows = collect_queries(root);
     let candidates = dedup(correlate_by_origin(&rows), &lexicon);
+    // Location candidates: terms the digest MISSED, paired with the files found
+    // OUTSIDE the digest in the same origin (Glob/Grep/exploration). The
+    // re-query correlation above cannot see these (no q2 bridged term); this is
+    // the "found by other means" half. The code-side term is filled at `--accept`.
+    let locations = location_candidates(&missed_by_origin(&rows, &lexicon), &collect_outcomes(root));
     json!({
         "pair": pair.as_ref().map(|p| p.label),
         // Rounds actually folded (workspace-wide, already windowed).
@@ -393,6 +491,11 @@ fn list_report(root: &Path) -> Value {
         "window": QUERY_WINDOW,
         "candidates": candidates.iter().map(|c| json!({
             "missed": c.missed, "bridged": c.bridged, "files": c.files,
+        })).collect::<Vec<_>>(),
+        // Terms missed by the digest whose answer was found by other means —
+        // the orchestrator reads the file(s) and `--accept <missed>=<codeterm>`.
+        "locationCandidates": locations.iter().map(|l| json!({
+            "missed": l.missed, "files": l.files,
         })).collect::<Vec<_>>(),
         // Explicit: listing applies nothing — acceptance is a separate,
         // user-confirmed `--accept` invocation.
@@ -909,6 +1012,73 @@ mod tests {
             json!([]),
             "the aged-out pair stops producing candidates: {after}"
         );
+    }
+
+    // -- location candidates (found OUTSIDE the digest) ----------------------------
+
+    #[test]
+    fn location_candidates_pair_missed_terms_with_non_anchor_files() {
+        let dir = tempdir().unwrap();
+        write_root_config(dir.path());
+        let spec = "loc-spec";
+        // "apolice" missed (digest found nothing)…
+        let q = query_payload(&["apolice"], &[("apolice", "none", &[])]);
+        let _ = write_event(
+            dir.path(), Some(spec), None, "sL", EVENT_FEATURE_QUERY, "other",
+            Some(0), Some("sL"), Some("feature"), None, &q,
+        );
+        // …and the orchestrator opened a file the digest did NOT anchor (found
+        // by other means): feature.outcome with wasAnchor=false.
+        let outcome = json!({ "file": "src/policy.cs", "wasAnchor": false, "terms": [] });
+        let _ = write_event(
+            dir.path(), Some(spec), None, "sL", EVENT_FEATURE_OUTCOME, "other",
+            Some(0), Some("sL"), Some("feature"), None, &outcome,
+        );
+        let report = list_report(dir.path());
+        let locs = report["locationCandidates"].as_array().expect("locationCandidates array");
+        assert_eq!(locs.len(), 1, "missed term pairs with the file found outside the digest: {report}");
+        assert_eq!(locs[0]["missed"], "apolice");
+        assert_eq!(locs[0]["files"], json!(["src/policy.cs"]));
+        // Byte-stable.
+        let a = serde_json::to_string(&report).unwrap();
+        let b = serde_json::to_string(&list_report(dir.path())).unwrap();
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn location_candidates_ignore_anchor_files_and_bridged_terms() {
+        let dir = tempdir().unwrap();
+        write_root_config(dir.path());
+        let spec = "loc-anchor";
+        // An ANCHOR file (digest already pointed at it) is NOT a location candidate.
+        let q = query_payload(&["apolice"], &[("apolice", "none", &[])]);
+        let _ = write_event(
+            dir.path(), Some(spec), None, "sM", EVENT_FEATURE_QUERY, "other",
+            Some(0), Some("sM"), Some("feature"), None, &q,
+        );
+        let anchor = json!({ "file": "src/x.cs", "wasAnchor": true, "terms": ["apolice"] });
+        let _ = write_event(
+            dir.path(), Some(spec), None, "sM", EVENT_FEATURE_OUTCOME, "other",
+            Some(0), Some("sM"), Some("feature"), None, &anchor,
+        );
+        assert_eq!(list_report(dir.path())["locationCandidates"], json!([]), "anchor files excluded");
+
+        // A term the lexicon already KEYS is not re-proposed even if it "missed".
+        let dir2 = tempdir().unwrap();
+        write_root_config(dir2.path());
+        let lexdir = dir2.path().join(".claude").join("lexicons");
+        std::fs::create_dir_all(&lexdir).unwrap();
+        std::fs::write(lexdir.join("pt-en.toml"), "[terms]\napolice = [\"policy\"]\n").unwrap();
+        let _ = write_event(
+            dir2.path(), Some(spec), None, "sN", EVENT_FEATURE_QUERY, "other",
+            Some(0), Some("sN"), Some("feature"), None, &q,
+        );
+        let out2 = json!({ "file": "src/policy.cs", "wasAnchor": false, "terms": [] });
+        let _ = write_event(
+            dir2.path(), Some(spec), None, "sN", EVENT_FEATURE_OUTCOME, "other",
+            Some(0), Some("sN"), Some("feature"), None, &out2,
+        );
+        assert_eq!(list_report(dir2.path())["locationCandidates"], json!([]), "already-keyed term excluded");
     }
 
     // -- upsert mechanics ----------------------------------------------------------
