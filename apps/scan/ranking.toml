@@ -20,14 +20,25 @@
 k1 = 1.2
 b = 0.75
 
-# NOTE: the former [anchors] section (alpha / hub_fanin_pct / idf_floor /
-# path_co_* / fill_reserve_slots) stays GONE — those were TUNING KNOBS for a
-# faked cross-term relevance the miner got wrong in the field. `files` is now
-# ranked by a single PARAMETER-FREE signal: the Σ inverse document frequency
-# (`core::domain::ranking::idf_x1024`) of the terms that declare each file, so a
-# rare domain term outranks a ubiquitous framework collision with NO knob to
-# tune — a pure corpus statistic, nothing to configure here. Per-term sample
-# selection (BM25 + MMR diversity) lives in [bm25] and [samples] below.
+[anchors]
+# Anchor ranking is BM25F — FIELDED retrieval over the matched terms. A
+# candidate file is a module that DECLARES at least one matched term (anchor-
+# eligible, non-test); a path hit ALONE never admits one, so a hub named after a
+# domain it does not implement stays in `hubs`, never here (its grouped evidence
+# still rides in `report.terms[].files`). Each candidate scores the Σ over the
+# matched terms of:
+#     idf(term) * BM25( path_boost * in-path + in-declarations , doc_len )
+# i.e. two fields — the module's DECLARATIONS and its PATH/filename. Fielding the
+# path lets a query that NAMES a path segment lift the files under that path,
+# while BM25's length-normalization + tf saturation stop a sprawling god/seed
+# file that merely mentions many common terms from compounding (the field bug the
+# old flat Σ-idf had: a seeder co-occurring with several common terms outscoring
+# the focused file). idf is the PARAMETER-FREE corpus
+# rarity (`core::domain::ranking::idf_x1024`); the lone knob below is:
+#   path_boost: how many declaration-occurrences one path/filename match is
+#       worth. Like the BM25 tuning, the ranking is not sensitive to the exact
+#       value (a small integer >= 2 is plenty); 0 disables the path field.
+path_boost = 5
 
 [catalog]
 # Kind-class weights for the PUBLISHED catalog ranking only. A declaration

@@ -179,11 +179,10 @@ pub struct TermReport {
     pub files: Vec<String>,
 }
 
-/// One anchor's audit row (parallel to [`DigestQuery::files`]): the aggregate
-/// fixed-point selection score (`score_x1024`, scan's integer scale — never a
-/// float, so the value is byte-stable) and the matched index terms whose
-/// declarations carried the file. A touchpoint-tail anchor (path hit only)
-/// honestly shows score 0 and no terms.
+/// One anchor's audit row (parallel to [`DigestQuery::files`]): the fixed-point
+/// BM25F relevance score (`score_x1024`, scan's integer scale — never a float,
+/// so the value is byte-stable) and the matched index terms that carried the
+/// file (by declaration or path/filename field).
 #[derive(Debug, Clone, Deserialize)]
 pub struct FileDetail {
     pub file: String,

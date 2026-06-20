@@ -172,23 +172,20 @@ pub struct QueryResult {
     /// cross-cutting contracts (e.g. a current-tenant accessor) for `--invariant`.
     pub hubs: Vec<HubD>,
     pub touchpoints: Vec<TouchD>,
-    /// Real files to read next (anchor candidates), MATCH-FIRST and
-    /// COVERAGE-FIRST: modules whose DECLARATIONS carry the matched terms. A
-    /// coverage pass seats each matched term's best file first (rarest, most
-    /// discriminative terms lead), then the remaining slots fill by the
-    /// IDF-weighted aggregate over the matched terms plus a small fan-in
-    /// tiebreak — so a frequent-term neighbour can never crowd a rare
-    /// domain's top file out. A hub anchors only when the vocabulary lives
-    /// in its declarations — a path hit alone keeps it in `hubs` but never
-    /// here. Structural stop-files (fan-in above the ranking.toml percent of
-    /// all modules) are excluded; path-matched touchpoints are appended as a
-    /// low-priority tail. The handful the feature reads for ground truth
-    /// instead of the repo.
+    /// Real files to read next, RANKED by BM25F (fielded retrieval): modules
+    /// that DECLARE the matched terms, scored over two fields — the module's
+    /// declarations and its path/filename. A query that names a path segment
+    /// lifts the files under that path (path is a boosted field), while BM25's length-
+    /// normalization stops a sprawling god/seed file that only mentions many
+    /// common terms from dominating. A hub anchors only when the vocabulary
+    /// lives in its declarations — a path hit ALONE keeps it in `hubs`, never
+    /// here (boost, not admission). Test/fixture and machine-written modules are
+    /// excluded (evidence, not anchors). The handful the feature reads for
+    /// ground truth instead of the repo.
     pub files: Vec<String>,
     /// Audit trail for `files`, additive and same order: per anchor, the
-    /// fixed-point selection score and the matched terms that carry it. A
-    /// touchpoint-tail anchor (path hit only) honestly shows score 0 and no
-    /// terms.
+    /// fixed-point BM25F score it ranked with and the matched terms that carry
+    /// it (by declaration or path).
     pub files_detail: Vec<FileDetail>,
     /// Legacy flag: every view above came back empty. Kept additively for old
     /// readers; the `report` is the truth (a non-miss can still be `weak`).
@@ -237,9 +234,9 @@ pub struct TermReport {
     pub files: Vec<String>,
 }
 
-/// One anchor's audit row (parallel to `files`): the aggregate fixed-point
-/// score it ranked with and the matched index terms whose declarations carry
-/// it, in matched-term (tier, then rarity) order — why THIS file, verifiable
+/// One anchor's audit row (parallel to `files`): the fixed-point BM25F score
+/// it ranked with and the matched index terms that carry it (by declaration or
+/// path), in matched-term (tier, then rarity) order — why THIS file, verifiable
 /// without rerunning the query.
 #[derive(Serialize)]
 pub struct FileDetail {
@@ -329,58 +326,125 @@ pub fn query(model: &ProjectModel, terms: &[String], request_lang: &str) -> Quer
     matched.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.count.cmp(&b.1.count)).then(a.1.term.cmp(&b.1.term)));
     let terms_omitted = matched.len().saturating_sub(Q_MAX_TERMS);
     matched.truncate(Q_MAX_TERMS);
-    // Anchor ranking — IDF-weighted. `files` ranks the matched terms' BM25-
-    // selected declaration samples by the RARITY (inverse document frequency,
-    // `core::domain::ranking::idf_x1024`) of the terms that point at each: a
-    // rare domain term outweighs a ubiquitous one that merely collides with
-    // framework vocabulary (e.g. a generic word hitting .NET's `ClaimsPrincipal`),
-    // regardless of the tier each matched on — the match TIER is only a
-    // confidence tiebreak now, no longer the dominant key (the field bug: a
-    // generic `exact` hit burying a rare `stem` domain hit). A file declared by
-    // SEVERAL queried concepts accumulates each term's IDF (co-occurrence
-    // bonus). Pure corpus statistic — no knob — fixed-point so the order is
-    // byte-stable. A module enters ONLY through a term's declaration samples
-    // (`catalog` filters machine-written out), so a path-only hub never anchors;
-    // the grouped per-term evidence still rides in `report.terms[].files`.
+    // Anchor ranking — BM25F (FIELDED retrieval), summed over the QUERY
+    // CONCEPTS. A candidate is a module that DECLARES at least one matched
+    // concept (anchor-eligible, non-test); a path hit ALONE never admits one —
+    // that keeps a hub named after a domain it does not implement in `hubs`,
+    // never here (its grouped evidence still rides in `report.terms[].files`).
+    // Each candidate scores the Σ over the query concepts of
+    // `idf(concept) * BM25(path_boost*in-path + in-declarations, doc_len)`: TWO
+    // fields — the module's DECLARATIONS and its PATH/filename.
+    //
+    // Two things make this robust where the flat Σ-idf field bug was not:
+    //   * Fielding the PATH: a query that NAMES a path segment lifts the files
+    //     under that path, and BM25's length-normalization stops a sprawling
+    //     god/seed file that merely mentions many common terms from dominating.
+    //   * Summing over CONCEPTS, not index variants: a concept the query asked
+    //     for folds ALL the index terms it matched (singular/plural, and the
+    //     cross-language lexicon bridges) into ONE tf with ONE idf — so a file
+    //     that spells one concept many ways no longer out-co-occurs a focused
+    //     file that matches two RARE concepts.
+    // idf is the parameter-free corpus rarity over the concept's true DOCUMENT
+    // frequency (`core::domain::ranking::idf_x1024`, NOT the occurrence count,
+    // which clamps to 0 once it exceeds the doc count and erases a valid anchor);
+    // the lone knob `path_boost` lives in ranking.toml. Fixed-point, byte-stable.
     //
     // A declaration in a test/fixture file is honest EVIDENCE (it stays in
     // `report.terms[].files`) but never an ANCHOR — you read and edit the
-    // production file, not its test, and a strong-by-coverage query whose rare
-    // terms only stem-collide inside tests/seeders (field case: sialia client
-    // tabs, `create`→`creates` in `*Tests.cs`) must not seat those as the files
-    // to touch. Skipped here via the canonical agnostic detector
-    // (`domain::ast::is_test_path` — dir-segment AND filename convention,
-    // polyglot), the same primitive the AST layer uses and the same stance the
-    // graph takes on its edges.
-    let n_docs = model.modules.len();
-    // path -> (Σ IDF ×1024 over the terms declaring it, best/lowest tier seen).
-    let mut scored: std::collections::BTreeMap<String, (u64, u8)> = std::collections::BTreeMap::new();
-    for (tier, t) in &matched {
-        let idf = mustard_core::domain::ranking::idf_x1024(t.count, n_docs);
-        for s in &t.samples {
-            if mustard_core::domain::ast::is_test_path(s) {
-                continue;
-            }
-            let e = scored.entry(s.clone()).or_insert((0, u8::MAX));
-            e.0 = e.0.saturating_add(idf);
-            e.1 = e.1.min(*tier);
-        }
+    // production file, not its test (a strong-by-coverage query whose rare terms
+    // only collide inside test/fixture declarations must not seat those as the
+    // files to touch). Skipped via the canonical agnostic
+    // detector (`domain::ast::is_test_path` — dir-segment AND filename
+    // convention, polyglot), the same primitive the AST layer uses.
+    let n_docs = c.doc_len.len();
+    let no_tokens: BTreeSet<String> = BTreeSet::new();
+    // One requested concept (a distinct query token, NOT each index variant):
+    // its anchor-eligible declaring modules with the folded concept tf, its
+    // corpus document frequency → idf, best tier and the path-field sig.
+    struct QConcept {
+        token: String,
+        idf: u64,
+        best_tier: u8,
+        sig: crate::matching::Sig,
+        tf: BTreeMap<String, usize>,
     }
-    // Rank: score desc, then best (lowest) tier, then path asc — byte-stable.
-    let mut ranked: Vec<(String, u64, u8)> = scored.into_iter().map(|(p, (sc, ti))| (p, sc, ti)).collect();
-    ranked.sort_by(|a, b| b.1.cmp(&a.1).then(a.2.cmp(&b.2)).then(a.0.cmp(&b.0)));
-    ranked.truncate(Q_MAX_FILES);
-    let files: Vec<String> = ranked.iter().map(|(p, _, _)| p.clone()).collect();
-    // Audit row per file (same order): the IDF score and which matched terms
-    // declare it, in matched order (tier asc, rarity asc) — honest provenance.
-    let files_detail: Vec<FileDetail> = ranked
+    let concepts: Vec<QConcept> = qhits
         .iter()
-        .map(|(f, score, _)| FileDetail {
-            file: f.clone(),
-            score_x1024: *score,
-            terms: matched.iter().filter(|(_, t)| t.samples.contains(f)).map(|(_, t)| t.term.clone()).collect(),
+        .enumerate()
+        .filter_map(|(qi, hits)| {
+            let mut tf: BTreeMap<String, usize> = BTreeMap::new();
+            let mut df: BTreeSet<&str> = BTreeSet::new();
+            let mut best_tier = u8::MAX;
+            for h in hits {
+                best_tier = best_tier.min(h.tier);
+                let Some(per_mod) = c.postings.get(&h.term) else { continue };
+                for (p, (n, _)) in per_mod {
+                    df.insert(p);
+                    if !mustard_core::domain::ast::is_test_path(p) && crate::classify::anchor_eligible(c.class_of.get(p).copied().unwrap_or("")) {
+                        *tf.entry((*p).to_string()).or_insert(0) += *n;
+                    }
+                }
+            }
+            if df.is_empty() {
+                return None;
+            }
+            Some(QConcept {
+                token: ql[qi].clone(),
+                idf: mustard_core::domain::ranking::idf_x1024(df.len(), n_docs),
+                best_tier,
+                sig: ladder.sig(&ql[qi]),
+                tf,
+            })
         })
         .collect();
+    // Candidate anchors: the anchor-eligible modules declaring any concept (a
+    // path hit ALONE never admits — boost only).
+    let mut cand: BTreeSet<String> = BTreeSet::new();
+    for qc in &concepts {
+        cand.extend(qc.tf.keys().cloned());
+    }
+    // Score each candidate via BM25F summed over the query concepts; keep the
+    // score, the best (lowest) tier and the carrying concepts for the audit.
+    let mut ranked: Vec<(String, u64, u8, Vec<String>)> = cand
+        .into_iter()
+        .map(|m| {
+            let dl = c.doc_len.get(m.as_str()).copied().unwrap_or(0);
+            let psigs: Vec<crate::matching::Sig> = c.path_tokens.get(m.as_str()).unwrap_or(&no_tokens).iter().map(|pt| ladder.sig(pt)).collect();
+            let (mut score, mut best_tier, mut terms) = (0u64, u8::MAX, Vec::new());
+            for qc in &concepts {
+                let tf_decl = qc.tf.get(&m).copied().unwrap_or(0);
+                let in_path = psigs.iter().any(|ps| ladder.tier(ps, &qc.sig).is_some());
+                if tf_decl == 0 && !in_path {
+                    continue;
+                }
+                score = score.saturating_add(crate::rank::bm25f_contribution_x1024(qc.idf, tf_decl, in_path, dl, c.avgdl_x1024));
+                best_tier = best_tier.min(qc.best_tier);
+                terms.push(qc.token.clone());
+            }
+            (m, score, best_tier, terms)
+        })
+        .collect();
+    // Rank: score desc, then best (lowest) tier, then path asc — byte-stable.
+    // A candidate scored only by all-zero-idf concepts (a concept in every
+    // indexed file) ranks last but is kept — the declaration is honest evidence;
+    // the per-query cap drops it when enough discriminative anchors exist.
+    ranked.sort_by(|a, b| b.1.cmp(&a.1).then(a.2.cmp(&b.2)).then(a.0.cmp(&b.0)));
+    // Per-stratum (project) diversity: guarantee each project that has a
+    // candidate its BEST anchor an early slot before the global ranking fills
+    // the rest — the same guarantee `rank::select_samples` gives per-term
+    // samples, applied here to the anchor list so one project cannot monopolize
+    // the top-N (a less-represented project's best file surfaces even when
+    // another project out-matches it on raw count). Agnostic: stratum =
+    // `projects[].dir`. A single project (or none) carrying candidates
+    // degenerates to pure relevance.
+    let strata: Vec<&str> = ranked.iter().map(|(p, _, _, _)| c.stratum.get(p.as_str()).copied().unwrap_or("")).collect();
+    let ranked: Vec<(String, u64, u8, Vec<String>)> =
+        crate::rank::stratified_order(&strata, Q_MAX_FILES).into_iter().map(|i| ranked[i].clone()).collect();
+    let files: Vec<String> = ranked.iter().map(|(p, _, _, _)| p.clone()).collect();
+    // Audit row per file (same order): the BM25F score and the query concepts
+    // that carry it (by declaration OR path), in query order.
+    let files_detail: Vec<FileDetail> =
+        ranked.iter().map(|(f, score, _, terms)| FileDetail { file: f.clone(), score_x1024: *score, terms: terms.clone() }).collect();
     let matched_terms: Vec<TermD> = matched.into_iter().map(|(_, t)| t).collect();
 
     let mut slices: Vec<SliceD> = dig.slices.into_iter().filter(|s| hit(&s.label) || s.entities.iter().any(|e| hit(e))).collect();

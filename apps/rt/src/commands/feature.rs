@@ -175,13 +175,14 @@ fn payload(intent: &str, q: &DigestQuery, index: &[DigestTerm]) -> serde_json::V
         "contracts": if withhold { Vec::new() } else { q.contracts.iter().map(|c| json!({ "name": c.name, "implementors": c.implementors })).collect::<Vec<_>>() },
         "hubs": if withhold { Vec::new() } else { q.hubs.iter().map(|h| json!({ "module": h.module, "degree": h.degree })).collect::<Vec<_>>() },
         "anchors": if withhold { &[] as &[String] } else { &q.files[..] },
-        // Per-anchor provenance (same order as `anchors`): which matched terms
-        // declare each file — the orchestrator sees WHY each anchor is in the
-        // set (file→terms) to pick what to read, without opening the scan JSON.
-        // The `scoreX1024` was dropped: since the ranking became an insumo
-        // union (no relevance scoring), it was always 0 — dead weight × N rows.
+        // Per-anchor provenance (same order as `anchors`): the BM25F relevance
+        // `scoreX1024` each anchor ranked with + the matched terms that carry it
+        // (file→terms), so the orchestrator sees the relevance ORDER and the
+        // drop-off — picking what to read without opening the scan JSON. The
+        // score is live again: the anchor ranking is BM25F (fielded, path-
+        // boosted), not the old score-less insumo union.
         "anchorsDetail": if withhold { Vec::new() } else { q.files_detail.iter().map(|d| json!({
-            "file": d.file, "terms": d.terms,
+            "file": d.file, "scoreX1024": d.score_x1024, "terms": d.terms,
         })).collect::<Vec<_>>() },
         // The honest per-term match report (scan's tier ladder) — the truth
         // about what matched. Per term: the tier that carried it (exact |
@@ -375,19 +376,19 @@ fn note(q: &DigestQuery) -> &'static str {
             "no repo precedent matched — treat as net-new; the report names each missed term, so re-query the digest in the code's own vocabulary or dispatch an Explore before concluding 'absent'"
         }
         "weak" => {
-            "weak precedent — under half the terms matched or only stem/lexicon-derived hits; re-query the digest in the code's own vocabulary (see report.terms[].files) and Explore before planning on top of this. Planning fields (anchors/slices/contracts/hubs) are withheld on weak precedent — the re-query returns them"
+            "weak precedent — under half the terms matched or only stem/lexicon-derived hits; re-query the digest in the code's own vocabulary (the report names each matched term and its tier) and Explore before planning on top of this. Planning fields (anchors/slices/contracts/hubs) are withheld on weak precedent — the re-query returns them"
         }
         "generated_only" => {
             "matches live only in machine-written modules — regenerate or extend the generator's input; never edit the matched files directly"
         }
         "strong" => {
-            "repo precedent found — `anchors` is EVIDENCE, not a ranked verdict: the deduped union of the files where your matched vocabulary is DECLARED (`report.terms[].files` is the same evidence grouped per term — on a wide query read THAT, the flat union is capped and may not list every term's file). Pick the files that fit the request and read them; also read the `hubs` — the logic that COMPUTES a behavior often lives in a generically-named central service, not the module named after the entity. Mirror the matched slices/contracts, then ask `scan spec` per unit"
+            "repo precedent found — `anchors` is RANKED by relevance (BM25F: rare domain terms, with a boost when your query names the file's path; `anchorsDetail` carries each anchor's `scoreX1024` + the terms that carry it, so the relevance order and the drop-off are visible). Read the top anchors that fit the request; also read the `hubs` — the logic that COMPUTES a behavior often lives in a generically-named central service, not the module named after the entity. Mirror the matched slices/contracts, then ask `scan spec` per unit"
         }
         _ if q.miss => {
             "no repo precedent matched — treat as net-new; the term index has no synonyms and false negatives, so confirm by reading the matched files, do not conclude 'absent' blindly"
         }
         _ => {
-            "repo precedent found — `anchors` is EVIDENCE, not a ranked verdict: the deduped union of the files where your matched vocabulary is DECLARED (`report.terms[].files` is the same evidence grouped per term — on a wide query read THAT). Pick the files that fit the request and read them; also read the `hubs` (the computing logic often lives in a generically-named central service). Mirror the matched slices/contracts, then ask `scan spec` per unit"
+            "repo precedent found — `anchors` is RANKED by relevance (BM25F; `anchorsDetail` carries each anchor's `scoreX1024` + the terms that carry it). Read the top anchors that fit the request; also read the `hubs` (the computing logic often lives in a generically-named central service). Mirror the matched slices/contracts, then ask `scan spec` per unit"
         }
     }
 }
@@ -619,10 +620,11 @@ mod tests {
     #[test]
     fn feature_payload_exposes_anchors_detail_audit() {
         // `files_detail` passes through as `anchorsDetail` — per anchor, the
-        // matched terms that declare it (file→terms provenance), so the
-        // orchestrator sees WHY each anchor is in the set and picks what to
-        // read without opening the scan JSON. NO score: the ranking became an
-        // insumo union, so the per-anchor score was always 0 and was dropped.
+        // BM25F relevance `scoreX1024` + the matched terms that carry it
+        // (file→terms provenance), so the orchestrator sees WHY each anchor is
+        // in the set AND its relevance order/drop-off, without opening the scan
+        // JSON. The score is live again (the ranking is BM25F, not the old
+        // score-less insumo union).
         let q: DigestQuery = serde_json::from_str(
             r#"{"query":["refund"],"files":["src/refund.cs","src/tail.cs"],"files_detail":[{"file":"src/refund.cs","score_x1024":2048,"terms":["refund"]},{"file":"src/tail.cs","score_x1024":0,"terms":[]}],"miss":false,"report":{"matched":1,"total":1,"reason":"strong","terms":[]}}"#,
         )
@@ -632,7 +634,8 @@ mod tests {
         assert_eq!(detail.len(), 2, "one provenance row per anchor: {v}");
         assert_eq!(detail[0]["file"], "src/refund.cs");
         assert_eq!(detail[0]["terms"], json!(["refund"]));
-        assert!(detail[0].get("scoreX1024").is_none(), "dead score field dropped: {v}");
+        assert_eq!(detail[0]["scoreX1024"], 2048, "the BM25F relevance score rides along: {v}");
+        assert_eq!(detail[1]["scoreX1024"], 0, "tail anchor's score is honest: {v}");
         assert_eq!(detail[1]["terms"], json!([]), "tail anchor shows no carrying terms: {v}");
         // The reason rides in the same payload.
         assert_eq!(v["report"]["reason"], "strong");

@@ -37,6 +37,9 @@ struct Params {
     mmr_lambda_x1024: u64,
     /// MMR pool bound: top (pool_per_slot × slots) candidates compete.
     mmr_pool_per_slot: usize,
+    /// BM25F path/filename field boost: how many declaration-occurrences one
+    /// path-field match is worth in the anchor TF (`[anchors] path_boost`).
+    path_boost: usize,
 }
 
 /// Parsed once per process. A malformed embedded file is a programmer error
@@ -76,6 +79,12 @@ fn parse_params(src: &str) -> Params {
             .and_then(|x| x.as_integer())
             .map(|n| n.max(1) as usize)
             .unwrap_or(8),
+        path_boost: v
+            .get("anchors")
+            .and_then(|t| t.get("path_boost"))
+            .and_then(|x| x.as_integer())
+            .map(|n| n.max(0) as usize)
+            .unwrap_or(5),
     }
 }
 
@@ -97,6 +106,21 @@ pub fn avgdl_x1024(total_len: usize, docs: usize) -> u64 {
 pub fn bm25_x1024(tf: usize, dl: usize, avgdl_x1024: u64) -> u64 {
     let p = params();
     mustard_core::domain::ranking::bm25_x1024(tf, dl, avgdl_x1024, p.k1_x1024, p.b_x1024)
+}
+
+/// BM25F anchor term-contribution ×1024 for ONE matched term in ONE module:
+/// the term's inverse document frequency times the BM25 saturation of its
+/// BOOSTED field term-frequency. The module is a two-field document
+/// (declarations + path/filename); a path/filename match is worth `path_boost`
+/// declaration-occurrences (`ranking.toml [anchors]`). Fielding the path lets a
+/// query that NAMES a path segment lift the files under it, while BM25's length-
+/// normalization keeps a sprawling god/seed file that only mentions many terms
+/// from compounding — the flat Σ-idf field bug. `idf_x1024` is the caller's
+/// `core::domain::ranking::idf_x1024`; the corpus stays owned by `digest`. Pure
+/// fixed-point: idf (×1024) · bm25 (×1024) / SCALE → contribution ×1024.
+pub fn bm25f_contribution_x1024(idf_x1024: u64, tf_decl: usize, in_path: bool, dl: usize, avgdl_x1024: u64) -> u64 {
+    let boosted_tf = tf_decl + if in_path { params().path_boost } else { 0 };
+    idf_x1024.saturating_mul(bm25_x1024(boosted_tf, dl, avgdl_x1024)) / SCALE
 }
 
 /// Published-catalog weight ×1024 of one occurrence under a declaration of
@@ -199,6 +223,63 @@ pub fn select_samples(cands: &[SampleCand], max: usize) -> Vec<String> {
         selected.push(pool.remove(pos));
     }
     selected.into_iter().map(|i| cands[i].path.to_string()).collect()
+}
+
+/// Reorder a relevance-sorted anchor list so each stratum (project) that has a
+/// candidate gets its BEST one in an early guaranteed slot before the global
+/// ranking fills the rest — the per-stratum guarantee [`select_samples`] gives
+/// per-term samples, applied here to the anchor top-N so one project cannot
+/// monopolize the list (a less-represented project's best file surfaces even
+/// when another project out-matches it on raw count). `strata[i]` is the
+/// stratum of the i-th candidate in RELEVANCE ORDER (best first; "" = no
+/// project). The global best
+/// (index 0) always leads; then each OTHER project's best gets a guaranteed
+/// slot; then the remaining candidates fill in relevance order. Returns up to
+/// `max` indices. With fewer than two projects carrying a candidate the input
+/// order is returned unchanged (degenerate, no effect). Deterministic: projects
+/// guaranteed in first-appearance (relevance) order, the fill preserves it.
+pub fn stratified_order(strata: &[&str], max: usize) -> Vec<usize> {
+    let n = strata.len();
+    if max == 0 || n == 0 {
+        return Vec::new();
+    }
+    // Best (first in relevance order) index of each non-empty stratum.
+    let mut firsts: Vec<usize> = Vec::new();
+    let mut seen: BTreeSet<&str> = BTreeSet::new();
+    for (i, s) in strata.iter().enumerate() {
+        if !s.is_empty() && seen.insert(*s) {
+            firsts.push(i);
+        }
+    }
+    // Fewer than two projects carry a candidate → nothing to diversify.
+    if firsts.len() < 2 {
+        return (0..n.min(max)).collect();
+    }
+    let mut taken = vec![false; n];
+    let mut out: Vec<usize> = Vec::with_capacity(max.min(n));
+    // The global best always leads, whatever its stratum.
+    out.push(0);
+    taken[0] = true;
+    // Each other project's best gets a guaranteed early slot.
+    for &i in &firsts {
+        if out.len() >= max {
+            break;
+        }
+        if !taken[i] {
+            taken[i] = true;
+            out.push(i);
+        }
+    }
+    // Fill the rest in relevance order.
+    for i in 0..n {
+        if out.len() >= max {
+            break;
+        }
+        if !taken[i] {
+            out.push(i);
+        }
+    }
+    out
 }
 
 /// Equal-parts similarity ×1024 between two candidates: path-subtoken
@@ -359,6 +440,22 @@ mod tests {
             cand("m/c.x", 50, "", &t, &lone),
         ];
         assert_eq!(select_samples(&cands, 2), vec!["m/a.x", "m/c.x"]);
+    }
+
+    #[test]
+    fn stratified_order_guarantees_each_stratum_an_early_slot() {
+        // Relevance order a,a,a,b — project `a` dominates, `b` trails. The
+        // guarantee keeps the global best (#0) first, then surfaces `b`'s best in
+        // the next slot before `a`'s runners-up.
+        let strata = ["a", "a", "a", "b"];
+        assert_eq!(stratified_order(&strata, 4), vec![0, 3, 1, 2]);
+        assert_eq!(stratified_order(&strata, 2), vec![0, 3], "cap honored, b's slot survives");
+        // Fewer than two non-empty strata → pure relevance order, unchanged.
+        assert_eq!(stratified_order(&["a", "a", "a"], 3), vec![0, 1, 2]);
+        assert_eq!(stratified_order(&["", "", ""], 3), vec![0, 1, 2]);
+        // Guards.
+        assert!(stratified_order(&[], 5).is_empty());
+        assert!(stratified_order(&strata, 0).is_empty());
     }
 
     #[test]

@@ -2,18 +2,19 @@
 //! binary (`digest --query` over a synthetic `grain.model.json`):
 //!   * matched terms come back rarest first (count asc) — rarity is the
 //!     discriminative signal, so the per-query cap trims frequent matches;
-//!   * anchors are RANKED by inverse document frequency: each file scores the
-//!     Σ IDF (`core::domain::ranking::idf_x1024`, fixed-point integer) of the
-//!     matched terms that DECLARE it, so a rare domain term outranks a
-//!     ubiquitous one that merely collides with framework vocabulary —
-//!     regardless of the tier each matched on (tier is a confidence tiebreak
-//!     only, never dominant). A file carrying >=2 queried concepts accumulates
-//!     every term's IDF, but a frequent-term neighbour can never crowd a rare
-//!     domain's file out;
+//!   * anchors are RANKED by BM25F (fielded retrieval): each candidate file (a
+//!     module DECLARING a matched term) scores the Σ over the matched terms of
+//!     idf(term) · BM25(path_boost·in-path + in-declarations, doc_len), so a
+//!     rare domain term outranks a ubiquitous framework collision, a query that
+//!     NAMES the file's path/route lifts it (path is a boosted field), and
+//!     BM25's length-normalization keeps a sprawling god/seed file that only
+//!     mentions many common terms from dominating — regardless of the tier each
+//!     matched on (tier is a confidence tiebreak only, never dominant);
 //!   * a hub anchors only when a matched term lives in its DECLARATIONS — a
-//!     path hit alone keeps it in `hubs`, never in `files`;
-//!   * `files_detail` mirrors `files` with the IDF selection score + carrying
-//!     terms, and `slices_omitted` mirrors `terms_omitted` (no silent loss);
+//!     path hit ALONE keeps it in `hubs`, never in `files` (path BOOSTS, never
+//!     admits);
+//!   * `files_detail` mirrors `files` with the BM25F score + carrying terms,
+//!     and `slices_omitted` mirrors `terms_omitted` (no silent loss);
 //!   * the whole ranking is deterministic across runs (stable tie-breaks).
 //!
 //! Plus the `QueryResult` stack contract over the committed php_laravel
@@ -84,10 +85,10 @@ fn anchor_ranking_orders_matched_terms_by_rarity_then_term() {
 
 #[test]
 fn anchor_files_are_the_deduped_union_of_per_term_samples() {
-    // `files` is the deduped, IDF-RANKED set of the matched terms' per-term
-    // declaration samples. A co-occurring file appears once, lists every term
-    // that declares it, and carries the aggregate IDF score (Σ of its terms) —
-    // so a file declared by BOTH queried concepts accumulates both and leads.
+    // `files` is the deduped, BM25F-RANKED set of the modules declaring the
+    // matched terms. A co-occurring file appears once, lists every term that
+    // declares it, and carries a BM25F score over those terms — so a file
+    // declared by BOTH queried concepts accumulates both and leads.
     let modules = serde_json::json!([
         module("m/aaa.rs", &["AlphaFirst"]),
         module("m/shared.rs", &["AlphaSecond", "OmegaThing"]),
@@ -107,10 +108,10 @@ fn anchor_files_are_the_deduped_union_of_per_term_samples() {
     let shared = detail.iter().find(|d| d["file"] == "m/shared.rs").unwrap();
     let dterms: Vec<&str> = shared["terms"].as_array().unwrap().iter().map(|t| t.as_str().unwrap()).collect();
     assert!(dterms.contains(&"alpha") && dterms.contains(&"omega"), "the file lists both declaring terms: {q}");
-    // The co-occurring file accumulates BOTH terms' IDF, so it carries a real
-    // (non-zero) score and leads the ranking.
-    assert!(shared["score_x1024"].as_u64().unwrap() > 0, "co-occurring file carries an aggregate IDF score: {q}");
-    assert_eq!(files[0], "m/shared.rs", "the dual-concept file leads the IDF ranking: {q}");
+    // The co-occurring file accumulates BOTH terms' BM25F contribution, so it
+    // carries a real (non-zero) score and leads the ranking.
+    assert!(shared["score_x1024"].as_u64().unwrap() > 0, "co-occurring file carries an aggregate BM25F score: {q}");
+    assert_eq!(files[0], "m/shared.rs", "the dual-concept file leads the BM25F ranking: {q}");
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -199,6 +200,88 @@ fn rare_stem_domain_outranks_a_ubiquitous_exact_collision() {
     assert_eq!(files[0], "m/contracts/studies_form.rs", "rare stem domain leads the ubiquitous exact collision: {q}");
     let lead = q["files_detail"].as_array().unwrap()[0]["score_x1024"].as_u64().unwrap();
     assert!(lead > 0, "anchors carry a real IDF score: {q}");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn path_field_boost_orders_the_file_whose_path_names_the_query_first() {
+    // BM25F treats the path/filename as a high-weight field: two modules declare
+    // the query concept IDENTICALLY (same term, same tf, same length), but one
+    // ALSO carries it in its PATH — the route the request named. That file must
+    // lead. This is the field regression behind the recurring "the digest buried
+    // the file under the named route" report (sialia /sales-plans): the keystone
+    // is declaration-matched AND path-matched, so the path boost lifts it over
+    // same-rarity collisions elsewhere. The path-only-never-anchors invariant is
+    // untouched — BOTH files DECLARE the term; the path only BOOSTS, never admits.
+    // Filler modules (no match) keep the term from being ubiquitous (idf > 0).
+    let mut mods = vec![
+        module("app/quince/calc.rs", &["QuinceCalc"]), // declares quince AND path names it
+        module("app/other/util.rs", &["QuinceUtil"]),  // declares quince, path does not name it
+    ];
+    for i in 0..8 {
+        mods.push(module(&format!("filler/mod{i:02}.rs"), &[&format!("Filler{i:02}Thing")]));
+    }
+    let (dir, model) = write_model("path-field-boost", serde_json::json!(mods));
+    let (_, q) = run_query(&model, "quince", "query.json");
+
+    let files: Vec<&str> = q["files"].as_array().unwrap().iter().map(|f| f.as_str().unwrap()).collect();
+    assert_eq!(
+        files,
+        vec!["app/quince/calc.rs", "app/other/util.rs"],
+        "the file whose path names the query leads via the BM25F path field: {q}"
+    );
+    // The leader carries the larger BM25F score (the path-field boost).
+    let detail = q["files_detail"].as_array().unwrap();
+    let score = |f: &str| detail.iter().find(|d| d["file"] == f).unwrap()["score_x1024"].as_u64().unwrap();
+    assert!(
+        score("app/quince/calc.rs") > score("app/other/util.rs"),
+        "the path-matched file scores higher: {q}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn anchor_ranking_guarantees_each_project_stratum_an_early_slot() {
+    // Per-stratum (project) diversity: one project cannot monopolize the top-N.
+    // `api` declares the concept in three files (strongest in `svc_a`, three
+    // occurrences → the global best); `app` declares it in one weaker file.
+    // Neutral filenames keep the concept OUT of the path, so this isolates the
+    // stratum guarantee from the path-field boost: by pure relevance the app
+    // file trails at #4 behind all three api files; the guarantee lifts it to #2
+    // (right after the global best), proving one project can't crowd the list.
+    // Agnostic: stratum = `projects[].dir`. Filler modules keep idf > 0.
+    let mut mods = vec![
+        module("api/svc_a.rs", &["OrderService", "OrderRepository", "OrderValidator"]),
+        module("api/svc_b.rs", &["OrderDto", "OrderResponse"]),
+        module("api/svc_c.rs", &["OrderQuery"]),
+        module("app/ui_page.rs", &["OrderPage"]),
+    ];
+    for i in 0..6 {
+        mods.push(module(&format!("lib/util{i:02}.rs"), &[&format!("Helper{i:02}Thing")]));
+    }
+    let dir = std::env::temp_dir().join(format!("scan-anchor-ranking-stratum-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let model = dir.join("grain.model.json");
+    let v = serde_json::json!({
+        "root": dir.to_string_lossy(),
+        "projects": [
+            { "name": "api", "dir": "api", "kind": "cargo", "code_files": 3 },
+            { "name": "app", "dir": "app", "kind": "npm", "code_files": 1 },
+        ],
+        "modules": mods,
+    });
+    std::fs::write(&model, serde_json::to_string_pretty(&v).unwrap()).unwrap();
+    let (_, q) = run_query(&model, "order", "query.json");
+
+    let files: Vec<&str> = q["files"].as_array().unwrap().iter().map(|f| f.as_str().unwrap()).collect();
+    assert_eq!(files[0], "api/svc_a.rs", "the global best still leads: {q}");
+    assert_eq!(files[1], "app/ui_page.rs", "the other project's best rides an early guaranteed slot: {q}");
+    // The app file would trail at #4 without the guarantee: all three api files
+    // out-score it by pure relevance, yet it must not be crowded past slot #2.
+    assert!(files.iter().take(3).filter(|f| f.starts_with("api/")).count() >= 1, "api still well represented: {q}");
 
     let _ = std::fs::remove_dir_all(&dir);
 }
