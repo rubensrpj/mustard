@@ -38,6 +38,19 @@ mustard-rt run close-orchestrate --spec {spec}
 7. Print: `pipeline-summary` → `wave-tree` → banner `PIPELINE COMPLETE — {spec}` with agents/files/registry + optional `rtk gain` token line. All fail-open.
 8. Epic auto-fold (Wave 8): `epic-fold --detect` (reads the NDJSON event stream — `spec.link` + `pipeline.phase`, not the legacy `.pipeline-states` sidecar) → if non-empty, `epic-fold --epic <name>` per entry.
 
+## Lexicon feedback — feed the self-learning dictionary (every close)
+
+Before finalizing, fold what THIS spec taught the cross-language dictionary, so the next query lands deterministically **without an LLM**. Pure data + gated; fail-open (no `pt-en` pair, or no candidates → skip silently).
+
+```bash
+mustard-rt run lexicon-suggest   # lists `candidates` (re-query bridges) + `locationCandidates` (found OUTSIDE the digest)
+```
+
+- **`candidates` `{missed, bridged}`** — a CONFIRMED bridge (a re-query in the code's own words landed). Accept each: `mustard-rt run lexicon-suggest --accept {missed}={bridged}` (gated: the code term must be a real mined term; idempotent if already covered).
+- **`locationCandidates` `{missed, files}`** — a term the digest MISSED whose answer you found by other means (Glob/Grep/exploration). Open the file(s), pick the code term that names the concept, and accept it: `--accept {missed}={codeTerm}`. Accept **only** when the mapping is clear — skip the unsure ones (a wrong bridge poisons future queries).
+
+This is what makes the dictionary self-feed: the exact cases where the digest failed and you solved it by hand become the bridges that make it succeed next time. Runs on every close (feature + bugfix). Fail-open: skip the whole step on any error.
+
 ## Cancellation
 
 Stage `Close`, Outcome `Cancelled`. Emit `pipeline.stage: Close` + `pipeline.outcome: Cancelled`. No filesystem move.
