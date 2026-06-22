@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "spec": "matar-prd-standalone-fazer-feature",
+  "title": "Matar o PRD standalone e fazer o /feature grelhar inline: glossary-coverage detecta termos de dominio fracos, um mini-grill focado grava os termos confirmados no CONTEXT.md por-subprojeto via CONTEXT-MAP, e a spec passa a ser o PRD; remover prd-build e o skill mustard:prd, e religar a rota PRD do dashboard como porta GUI para o fluxo feature",
+  "timeline": {},
+  "waves": [
+    {
+      "n": 1,
+      "role": "grill",
+      "summary": "/feature grelha inline: glossary-coverage expõe termos fracos, mini-grill focado, escritor map-aware grava no CONTEXT.md do subprojeto",
+      "status": "in_progress"
+    },
+    {
+      "n": 2,
+      "role": "purge-prd",
+      "summary": "Remover o PRD standalone: prd-build (rt), skill mustard:prd, e qualquer exposição em mcp; manter PRD_SECTIONS",
+      "status": "in_progress"
+    },
+    {
+      "n": 3,
+      "role": "dashboard",
+      "summary": "Tirar o PRD do dashboard como página de autoria/disparo (a rota /prd inteira sai) e, no lugar, adicionar um atalho de LEITURA: uma aba \"PRD\" no detalhe da spec que fatia e mostra só a camada PRD (entr",
+      "status": "in_progress"
+    }
+  ],
+  "economy": {
+    "totalSavingsTokens": 0,
+    "bySource": {}
+  },
+  "telemetry": {
+    "totalTokens": 0,
+    "totalCostUsdMicros": 0,
+    "byModel": {},
+    "byAgent": {}
+  }
+}

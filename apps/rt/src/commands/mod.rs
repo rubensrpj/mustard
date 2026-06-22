@@ -31,6 +31,7 @@ pub mod feature;
 pub mod capability;
 pub mod digest_precision;
 pub mod glossary_coverage;
+pub mod grill_capture;
 pub mod lexicon_suggest;
 pub mod lexicon_enrich;
 // W3 of `2026-05-26-claude-paths-single-source` — three typed doctor checks
@@ -88,10 +89,11 @@ pub enum RunCmd {
     /// Deterministic check of how well a `CONTEXT.md` domain glossary covers the
     /// repo-vocabulary terms a feature intent touches (the digest's matched
     /// terms). Emits byte-stable JSON `{verdict, present, termsTotal,
-    /// termsCovered, coveragePct, uncovered}` for the `/feature` ANALYZE nudge —
-    /// it never grills inline and never blocks. Reuses the exact term matcher
-    /// `context-slice` uses. Fail-open: a missing model / unreadable glossary
-    /// degrades to `verdict: "na"` (no nudge), exit 0.
+    /// termsCovered, coveragePct, uncovered, contextFile}` for the `/feature`
+    /// ANALYZE glossary loop — `uncovered` is the weak/missing terms to grill,
+    /// `contextFile` the resolved destination `grill-capture` writes them into.
+    /// Reuses the exact term matcher `context-slice` uses. Fail-open: a missing
+    /// model / unreadable glossary degrades to `verdict: "na"`, exit 0.
     #[command(name = "glossary-coverage")]
     GlossaryCoverage {
         /// The free-text feature request whose domain terms are scored.
@@ -101,6 +103,32 @@ pub enum RunCmd {
         #[arg(long)]
         context: Vec<String>,
         /// Workspace root (holds `.claude/grain.model.json`). Defaults to `.`.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
+    /// Persist ONE confirmed glossary term into a `CONTEXT.md` — the write half
+    /// of the `/feature` ANALYZE glossary loop. The orchestrator runs the
+    /// lightweight inline grill (asks the user for a definition of each
+    /// `uncovered` term from `glossary-coverage`) and records every confirmed
+    /// pair here, one call per term. Glossary-only; update-not-duplicate (a term
+    /// that already has a block is replaced in place, parsed the SAME way the
+    /// slicer parses blocks); the target is resolved CONTEXT-MAP-aware. Emits
+    /// byte-stable JSON `{ok, action, term, contextFile, reason?}`
+    /// (`action ∈ {appended, updated}`). Fail-open: no `--context` destination →
+    /// `{ok:false, reason:"no-context-target"}`, exit 0.
+    #[command(name = "grill-capture")]
+    GrillCapture {
+        /// The domain term being defined (becomes the block heading).
+        #[arg(long)]
+        term: String,
+        /// The confirmed one-line definition for the term.
+        #[arg(long)]
+        definition: String,
+        /// A `CONTEXT.md` / `CONTEXT-MAP.md` glossary path. Repeatable. The
+        /// first resolved (or first requested) path is the write target.
+        #[arg(long)]
+        context: Vec<String>,
+        /// Workspace root. Defaults to `.`.
         #[arg(long, default_value = ".")]
         root: PathBuf,
     },
@@ -1572,16 +1600,6 @@ pub enum RunCmd {
         #[arg(long)]
         spec: Option<String>,
     },
-    /// W5.T5.4 — Build a PRD JSON document from a free-text intent.
-    #[command(name = "prd-build")]
-    PrdBuild {
-        /// Free-text intent (verb + nouns).
-        #[arg(long)]
-        intent: String,
-        /// Output format: `json` (default) is the only supported value.
-        #[arg(long, default_value = "json")]
-        format: String,
-    },
     /// W5.T5.6 — Generate `.cursorrules` from the repo's `CLAUDE.md` tree.
     #[command(name = "adapt-cursor")]
     AdaptCursor {
@@ -1799,6 +1817,12 @@ pub fn dispatch(cmd: RunCmd) {
             context,
             root,
         } => glossary_coverage::run(&intent, &context, &root),
+        RunCmd::GrillCapture {
+            term,
+            definition,
+            context,
+            root,
+        } => grill_capture::run(&term, &definition, &context, &root),
         RunCmd::DigestPrecision { root } => digest_precision::run(&root),
         RunCmd::LexiconSuggest { accept, root } => lexicon_suggest::run(accept.as_deref(), &root),
         RunCmd::LexiconEnrich { check, apply, root } => lexicon_enrich::run(check, apply.as_deref(), &root),
@@ -2312,9 +2336,6 @@ pub fn dispatch(cmd: RunCmd) {
         }
         RunCmd::TacticalFixDetect { spec } => {
             spec::tactical_fix_detect::run(spec.as_deref());
-        }
-        RunCmd::PrdBuild { intent, format } => {
-            spec::prd_build::run(spec::prd_build::PrdBuildOpts { intent, format });
         }
         RunCmd::AdaptCursor { repo, dry_run } => {
             maint::adapt_cursor::run(maint::adapt_cursor::AdaptCursorOpts { repo, dry_run });

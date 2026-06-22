@@ -5,6 +5,7 @@ import { useSpecWaves } from "@/hooks/useSpecWaves";
 import { useSpecQuality } from "@/hooks/useSpecQuality";
 import { useSpecChildren } from "@/hooks/useSpecChildren";
 import { fetchSpecMarkdown } from "@/lib/dashboard";
+import { slicePrdSection } from "@/lib/text";
 import { Markdown } from "@/components/page";
 import { SpecWavesTab } from "../SpecWavesTab";
 import { SpecQualityTab } from "../SpecQualityTab";
@@ -49,10 +50,15 @@ interface SpecDrillDownProps {
 // REMOVED with its internal force-graph implementation. Cross-spec relations
 // are now navigated externally via Obsidian (wikilinks `[[X]]` resolve to
 // `obsidian://open?vault=…&file=…` inside the markdown renderer).
-// "Spec" leads — it is the narrative overview (spec.md) the other tabs drill
+// "PRD" leads — it is the *what & why* (the spec's PRD layer), the natural
+// entry point you read before drilling into the full narrative. It is a
+// READ-only slice of `spec.md` between the `<!-- PRD -->` / `<!-- PLAN -->`
+// markers (spec `matar-prd-standalone-fazer-feature`, wave 3), reusing the
+// same `markdownQ` fetch — no extra Tauri command, no AI, no trigger.
+// "Spec" follows — the full narrative overview (spec.md) the other tabs drill
 // into. Backed by the long-existing `dashboard_spec_markdown` command +
 // `fetchSpecMarkdown` client, rendered with the shared `Markdown` component.
-const TABS = ["Spec", "Ondas", "Trace", "Qualidade"] as const;
+const TABS = ["PRD", "Spec", "Ondas", "Trace", "Qualidade"] as const;
 type Tab = (typeof TABS)[number];
 
 function LoadingRows() {
@@ -83,7 +89,9 @@ export function SpecDrillDown({
   openWave,
   onCloseDrawer,
 }: SpecDrillDownProps) {
-  const [activeTab, setActiveTab] = useState<Tab>("Spec");
+  // `null` = no explicit user choice yet; the landing tab is then derived
+  // below from whether this spec has a PRD layer. A click pins `picked`.
+  const [picked, setPicked] = useState<Tab | null>(null);
 
   // All queries are always mounted so switching tabs is instant. The
   // sub-specs query also gets consumed by `SpecWavesTab` (same queryKey =
@@ -99,11 +107,20 @@ export function SpecDrillDown({
     enabled: !!repoPath && !!spec,
     staleTime: 10_000,
   });
+  // PRD layer sliced from the same spec.md (no extra fetch). Empty when the
+  // `<!-- PRD -->` / `<!-- PLAN -->` markers are absent.
+  const prdSection = markdownQ.data ? slicePrdSection(markdownQ.data) : "";
+  // Land on PRD when this spec has a PRD layer; once the fetch resolves and a
+  // spec has no markers (≈ half of older specs), fall back to the full Spec so
+  // nobody lands on the empty PRD state. During load we stay on PRD (it shows
+  // the loading rows, not an empty state). A user click always wins.
+  const activeTab: Tab =
+    picked ?? (markdownQ.isFetched && !prdSection ? "Spec" : "PRD");
 
   return (
     <Tabs
       value={activeTab}
-      onValueChange={(v) => setActiveTab(v as Tab)}
+      onValueChange={(v) => setPicked(v as Tab)}
       className={className}
     >
       <TabsList>
@@ -132,6 +149,27 @@ export function SpecDrillDown({
         ) : (
           <p className="text-[13px] text-muted-foreground py-4 text-center">
             spec.md ainda não foi gerado para esta spec.
+          </p>
+        )}
+      </TabsContent>
+
+      {/* PRD — read-only slice of the spec's PRD layer (between the
+          `<!-- PRD -->` / `<!-- PLAN -->` markers), reusing the same `markdownQ`
+          fetch. Empty state when markers are absent (older specs). */}
+      <TabsContent value="PRD" className="pt-3">
+        {markdownQ.isLoading ? (
+          <LoadingRows />
+        ) : markdownQ.error ? (
+          <p className="text-[13px] text-muted-foreground py-4 text-center">
+            spec.md indisponível para esta spec.
+          </p>
+        ) : prdSection ? (
+          <div className="max-h-[60vh] overflow-auto pr-1">
+            <Markdown content={prdSection} />
+          </div>
+        ) : (
+          <p className="text-[13px] text-muted-foreground py-4 text-center">
+            Esta spec não tem uma camada PRD demarcada.
           </p>
         )}
       </TabsContent>

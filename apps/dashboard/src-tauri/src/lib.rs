@@ -5,7 +5,6 @@ mod discovery;
 pub mod doctor;
 mod file_read;
 mod git_info;
-mod prd_lapidator;
 mod project_overview;
 pub mod process_util;
 mod projects;
@@ -2026,21 +2025,6 @@ fn dashboard_write_env(repo_path: String, env: HashMap<String, String>) -> Resul
 ///
 /// `anyhow::Error` is not `Serialize`, so the error is flattened to a string
 /// for the frontend (the Tauri-2 idiom for `Result`-returning commands).
-/// Reads the repo model's known entity names (declaration names) from
-/// `.claude/grain.model.json` **via the scan tool** — the dashboard never parses
-/// the model directly. Used by the PRD lapidator's EntityPicker.
-///
-/// Returns an empty list when the model is missing (project not scanned yet) or
-/// the scan tool is unavailable, so the UI never crashes. `read_entity_names`
-/// is fail-open by construction.
-#[tauri::command]
-fn read_model_entities(repo_path: String) -> Result<Vec<String>, String> {
-    let model = PathBuf::from(&repo_path)
-        .join(".claude")
-        .join("grain.model.json");
-    Ok(mustard_core::read_entity_names(&model))
-}
-
 #[tauri::command]
 fn mustard_install(path: String) -> Result<(), String> {
     let options = mustard_cli::InitOptions {
@@ -3023,9 +3007,6 @@ pub fn run() {
             spec_views::dashboard_token_summary,
             spec_views::dashboard_month_activity,
             spec_views::dashboard_events_feed,
-            prd_lapidator::lapidate_prd,
-            prd_lapidator::check_claude_available,
-            read_model_entities,
             workspace_health,
             git_info::dashboard_git_info,
             git_info::dashboard_git_log,

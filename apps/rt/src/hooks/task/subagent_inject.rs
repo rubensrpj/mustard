@@ -174,10 +174,29 @@ fn role_is_readonly(role: &str) -> bool {
     )
 }
 
-/// Read the project's top-level CONTEXT.md in full — no size cap. Relevance,
-/// not size, decides what is injected; empty string when the file is missing.
+/// Read the project's glossary in full — no size cap. Relevance, not size,
+/// decides what is injected. CONTEXT-MAP-aware: when the project carries a
+/// `CONTEXT-MAP.md`, it is resolved through the SAME map-expanding resolver the
+/// slicer/coverage use (`resolve_context_files`), so the hook sees every
+/// `*context.md` the map links — not just a single root `CONTEXT.md`. The
+/// resolved bodies are concatenated; a project with only a root `CONTEXT.md`
+/// behaves exactly as before. Empty string when nothing resolves.
 fn read_context_md(project: &Path) -> String {
-    fs::read_to_string(project.join("CONTEXT.md")).unwrap_or_default()
+    // Resolve the root CONTEXT.md plus a CONTEXT-MAP.md (when present) — the
+    // resolver dedups, expands the map, and silently skips missing files.
+    let mut requested: Vec<String> = Vec::new();
+    let map = project.join("CONTEXT-MAP.md");
+    if map.is_file() {
+        requested.push(map.to_string_lossy().into_owned());
+    }
+    requested.push(project.join("CONTEXT.md").to_string_lossy().into_owned());
+
+    let bodies: Vec<String> =
+        crate::commands::economy::context_slice::resolve_context_files(&requested)
+            .iter()
+            .filter_map(|p| fs::read_to_string(p).ok())
+            .collect();
+    bodies.join("\n\n")
 }
 
 /// Pull the spec-memory principle files for the dispatch, honouring the
@@ -656,6 +675,35 @@ mod tests {
                 assert!(!context.contains("Billing"), "off-topic block sliced out");
             }
             other => panic!("expected Inject, got {other:?}"),
+        }
+    }
+
+    /// CONTEXT-MAP awareness: a `CONTEXT-MAP.md` pointing at a sub-glossary
+    /// must make that sub-glossary's term blocks reachable to the inject — not
+    /// just a single root `CONTEXT.md`. The relevant block (sharing a term with
+    /// the prompt) rides in; an off-topic one in the same file is sliced out.
+    #[test]
+    fn context_map_pulls_in_referenced_glossary_files() {
+        let dir = tempdir().unwrap();
+        // The sub-glossary lives beside the map; the map links it by name.
+        std::fs::write(
+            dir.path().join("domain-context.md"),
+            "## Billing\nInvoice terms.\n## User\nThe user module domain.",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("CONTEXT-MAP.md"),
+            "# Map\n- see [domain](domain-context.md)\n",
+        )
+        .unwrap();
+        // No root CONTEXT.md at all — the map is the only source.
+        let input = task_input("refactor the user module", "general-purpose");
+        match SubagentInject.evaluate(&input, &ctx_for(dir.path())).unwrap() {
+            Verdict::Inject { context } => {
+                assert!(context.contains("User"), "map-referenced block must reach the inject");
+                assert!(!context.contains("Billing"), "off-topic block still sliced out");
+            }
+            other => panic!("expected Inject from a map-referenced glossary, got {other:?}"),
         }
     }
 

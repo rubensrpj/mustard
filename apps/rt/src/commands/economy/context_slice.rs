@@ -27,6 +27,15 @@ pub(crate) struct TermBlock {
     text: String,
 }
 
+impl TermBlock {
+    /// The block's heading/definition term — read by sibling modules
+    /// (`grill_capture`) that resolve a glossary the SAME way the slicer does
+    /// and need to know which terms already have a block (update-not-duplicate).
+    pub(crate) fn term(&self) -> &str {
+        &self.term
+    }
+}
+
 /// Result of slicing — mirrors the JS `sliceContext` return object.
 #[derive(Debug)]
 pub struct SliceResult {

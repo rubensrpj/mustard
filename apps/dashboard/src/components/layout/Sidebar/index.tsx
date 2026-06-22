@@ -543,7 +543,7 @@ function RailButton({
 export function Sidebar() {
   const { t } = useTranslation();
   // `tLib` powers W2-audit keys (`sidebar.add_project`, `sidebar.tools`,
-  // `sidebar.commands`, `sidebar.prd`, `sidebar.preferences`). The i18next
+  // `sidebar.commands`, `sidebar.preferences`). The i18next
   // `t` still drives project-detection toasts, empty states, and the
   // `projects.addDialogTitle` Tauri dialog title (keys not duplicated here).
   const tLib = useT();
@@ -596,7 +596,6 @@ export function Sidebar() {
   // stays in sync. `end` marks an exact-match active route.
   const tools: { to: string; icon: typeof Home; label: string }[] = [
     { to: "/commands", icon: Terminal, label: tLib("sidebar.commands") },
-    { to: "/prd", icon: FileText, label: tLib("sidebar.prd") },
     { to: "/sessions", icon: History, label: tLib("sidebar.sessions") },
   ];
 

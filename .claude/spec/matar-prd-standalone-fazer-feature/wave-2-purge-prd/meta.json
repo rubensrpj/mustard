@@ -1,0 +1,41 @@
+{
+  "stage": "Close",
+  "outcome": "Completed",
+  "phase": null,
+  "scope": null,
+  "lang": "pt-BR",
+  "checkpoint": "2026-06-22T18:19:50.290Z",
+  "parent": "matar-prd-standalone-fazer-feature",
+  "checklist": [
+    {
+      "label": "apps/rt/src/commands/spec/prd_build.rs",
+      "path": "apps/rt/src/commands/spec/prd_build.rs",
+      "done": false
+    },
+    {
+      "label": "apps/rt/src/commands/spec/mod.rs",
+      "path": "apps/rt/src/commands/spec/mod.rs",
+      "done": true
+    },
+    {
+      "label": "apps/rt/src/commands/mod.rs",
+      "path": "apps/rt/src/commands/mod.rs",
+      "done": true
+    },
+    {
+      "label": "apps/cli/templates/commands/mustard/prd/SKILL.md",
+      "path": "apps/cli/templates/commands/mustard/prd/SKILL.md",
+      "done": true
+    },
+    {
+      "label": "apps/mcp/src/lib.rs",
+      "path": "apps/mcp/src/lib.rs",
+      "done": true
+    },
+    {
+      "label": "packages/core/src/domain/spec/contract.rs",
+      "path": "packages/core/src/domain/spec/contract.rs",
+      "done": false
+    }
+  ]
+}
