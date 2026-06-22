@@ -1,0 +1,235 @@
+name: Release
+
+# Gera UM instalador completo por sistema (Windows, Linux, macOS) — cada um traz
+# o CLI E o Dashboard juntos — e publica um único GitHub Release. Dispara ao
+# subir uma tag de versão:
+#
+#   git tag v0.1.0 && git push origin v0.1.0
+#
+# Também roda manualmente (aba Actions -> Release -> Run workflow): nesse modo só
+# BUILDA e sobe os artefatos da run (sem publicar Release), servindo de ensaio
+# antes de cravar uma tag de verdade.
+#
+# Artefatos (1 instalador completo por SO):
+#   Windows : Mustard Dashboard_<versao>_x64-setup.exe  (NSIS: app + CLI + PATH)
+#   macOS   : Mustard-<versao>-universal.pkg            (app em /Applications + CLI no PATH)
+#   Linux   : mustard_<versao>_amd64.deb + install.sh   (apt: app + CLI + symlinks)
+#
+# Nota: existe um workflow legado `dashboard-release.yml` (tag `dashboard-v*`)
+# que publica SÓ o Dashboard. Este o engloba; pode ser removido quando não
+# precisar mais de releases isolados do Dashboard.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Versão sem o "v" (ex.: 0.1.0). Obrigatória só no disparo manual.'
+        required: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # --------------------------------------------------------------- versão ----
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - id: v
+        shell: bash
+        run: |
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            v="${GITHUB_REF_NAME#v}"
+          else
+            v="${{ github.event.inputs.version }}"
+          fi
+          if [ -z "$v" ]; then
+            echo "::error::Sem versão. Use uma tag vX.Y.Z, ou informe 'version' no disparo manual."
+            exit 1
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "Versão resolvida: $v"
+
+  # ------------------------------------------ Windows — instalador NSIS único ----
+  windows-installer:
+    needs: version
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.18.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            apps/dashboard/src-tauri
+
+      - name: Sincroniza a versão no tauri.conf.json
+        shell: bash
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          node -e "const fs=require('fs');const f='apps/dashboard/src-tauri/tauri.conf.json';const j=JSON.parse(fs.readFileSync(f,'utf8'));j.version=process.argv[1];fs.writeFileSync(f,JSON.stringify(j,null,2)+'\n')" "$VERSION"
+
+      - name: Compila os binários do CLI
+        run: cargo build --release --locked --bin scan --bin mustard-rt --bin mustard-mcp --bin mustard
+
+      - name: rtk (best-effort — embutido no instalador se compilar)
+        continue-on-error: true
+        run: cargo install --git https://github.com/rtk-ai/rtk --locked
+
+      - name: Monta o payload do CLI (entra via bundle.resources)
+        shell: bash
+        run: |
+          PAYLOAD=apps/dashboard/src-tauri/payload
+          rm -rf "$PAYLOAD"
+          mkdir -p "$PAYLOAD/bin"
+          for b in scan mustard-rt mustard-mcp mustard; do
+            cp "target/release/$b.exe" "$PAYLOAD/bin/$b.exe"
+          done
+          RTK="$(command -v rtk || true)"
+          if [ -n "$RTK" ]; then cp "$RTK" "$PAYLOAD/bin/rtk.exe"; else echo "rtk ausente — instalador sai sem rtk"; fi
+          cp -R apps/cli/templates "$PAYLOAD/templates"
+
+      - name: Install workspace dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build do instalador (Dashboard + CLI embutido)
+        run: pnpm --filter mustard-dashboard exec tauri build --bundles nsis --config ../../packaging/windows/tauri.windows.json
+
+      - name: Coleta o instalador
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          if-no-files-found: error
+          path: apps/dashboard/src-tauri/target/release/bundle/nsis/*-setup.exe
+
+  # ------------------------------------------------ macOS — instalador .pkg ----
+  macos-installer:
+    needs: version
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.18.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            apps/dashboard/src-tauri
+
+      - name: Sincroniza a versão no tauri.conf.json
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          node -e "const fs=require('fs');const f='apps/dashboard/src-tauri/tauri.conf.json';const j=JSON.parse(fs.readFileSync(f,'utf8'));j.version=process.argv[1];fs.writeFileSync(f,JSON.stringify(j,null,2)+'\n')" "$VERSION"
+
+      - name: rtk (best-effort — embutido no .pkg se disponível)
+        continue-on-error: true
+        run: curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/master/install.sh | sh
+
+      - name: Build do instalador .pkg (Dashboard + CLI)
+        run: bash packaging/macos/build-pkg.sh
+
+      - name: Coleta o instalador
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-installer
+          if-no-files-found: error
+          path: dist/Mustard-*-universal.pkg
+
+  # ------------------------------------------ Linux — .deb fundido (Docker) ----
+  linux-deb:
+    needs: version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Sincroniza a versão no tauri.conf.json
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          jq --arg v "$VERSION" '.version=$v' apps/dashboard/src-tauri/tauri.conf.json > /tmp/tauri.conf.json
+          mv /tmp/tauri.conf.json apps/dashboard/src-tauri/tauri.conf.json
+
+      - name: Empacota CLI + Dashboard num .deb (build-deb.sh via Docker)
+        shell: pwsh
+        run: ./packaging/build-packages.ps1 -Targets linux
+
+      - name: Coleta o .deb + instalador
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-deb
+          if-no-files-found: error
+          path: |
+            dist/mustard_*_amd64.deb
+            dist/install.sh
+            dist/TUTORIAL-LINUX.md
+
+  # ------------------------------------------------------------- publica ----
+  # Junta os instaladores num único GitHub Release. Só publica em tag; no
+  # disparo manual os artefatos ficam para download na própria run.
+  publish:
+    needs: [version, windows-installer, macos-installer, linux-deb]
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Baixa todos os artefatos
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Lista o que será publicado
+        run: find artifacts -type f | sort
+
+      - name: Publica o Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Mustard v${{ needs.version.outputs.version }}
+          generate_release_notes: true
+          fail_on_unmatched_files: false
+          files: |
+            artifacts/**/*-setup.exe
+            artifacts/**/*.pkg
+            artifacts/**/*.deb
+            artifacts/**/install.sh
+            artifacts/**/TUTORIAL-LINUX.md

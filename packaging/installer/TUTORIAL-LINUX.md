@@ -1,14 +1,18 @@
-# Mustard no Linux — tutorial de instalação
+# Mustard no Ubuntu — tutorial de instalação completa
 
-Este tutorial explica, passo a passo, como instalar o pacote de teste do
-Mustard num Linux. O pacote traz **binários já compilados** — você não precisa
-instalar Rust, Node ou qualquer ferramenta de desenvolvimento.
+Este tutorial explica, passo a passo, como instalar o Mustard **completo** num
+Ubuntu: os comandos de linha (`mustard`, `mustard-rt`, `mustard-mcp`, `scan`,
+`rtk`) **e** o **Mustard Dashboard** (aplicativo desktop). Tudo num único pacote
+`.deb`, instalado com `apt` — você não precisa instalar Rust, Node ou qualquer
+ferramenta de desenvolvimento.
 
-O que será instalado (tudo dentro de uma única pasta, fácil de remover):
+O que será instalado (gerenciado pelo apt):
 
 ```
-~/.mustard/bin/        mustard, mustard-rt, mustard-mcp, scan e rtk  (entra no PATH)
-~/.mustard/templates/  a carga que o `mustard init` copia para os projetos
+/usr/lib/mustard/bin/        binários reais (CLI + dashboard)
+/usr/lib/mustard/templates/  a carga que o `mustard init` copia para os projetos
+/usr/bin/mustard, …          atalhos no PATH (mustard, mustard-rt, …, mustard-dashboard)
+menu de aplicativos           atalho "Mustard Dashboard"
 ```
 
 ---
@@ -17,10 +21,12 @@ O que será instalado (tudo dentro de uma única pasta, fácil de remover):
 
 | Requisito | Como verificar |
 |---|---|
-| Linux x64 com glibc 2.31+ (Ubuntu 20.04+, Debian 11+, Fedora 33+) | `ldd --version` — a primeira linha mostra a versão |
+| Ubuntu 22.04 ou mais novo (glibc 2.35+) | `ldd --version` — a 1ª linha mostra a versão |
 | Claude Code instalado e logado (o Mustard trabalha dentro dele) | `claude --version` |
-| `curl` (só usado se o rtk precisar ser baixado) | `curl --version` |
-| `git` (opcional, recomendado) | `git --version` |
+| `sudo` (para o `apt install`) | `sudo -v` |
+
+> Por que Ubuntu 22.04+: o dashboard depende do `webkit2gtk-4.1`, que não existe
+> no Ubuntu 20.04. O `apt` instala essa dependência automaticamente.
 
 Se ainda não tiver o Claude Code, instale com:
 
@@ -34,51 +40,50 @@ e faça login uma vez com `claude` (guia completo em <https://docs.claude.com/cl
 
 ## 2. Baixar e descompactar o pacote
 
-Copie o arquivo `mustard-linux-x64.tar.gz` para qualquer pasta (por exemplo,
-`~/Downloads`) e descompacte:
+Copie o pacote para qualquer pasta (por exemplo, `~/Downloads`) e descompacte
+(se ele veio num `.tar.gz` ou `.zip`); ou simplesmente coloque o `install.sh` e o
+`mustard_*_amd64.deb` na mesma pasta:
 
 ```sh
 cd ~/Downloads
-tar -xzf mustard-linux-x64.tar.gz
-cd mustard-linux-x64
+# (se vier compactado) tar -xzf mustard-linux.tar.gz && cd mustard-linux
+ls
+# deve listar: install.sh   mustard_<versao>_amd64.deb   README.txt   TUTORIAL-LINUX.md
 ```
-
-Dentro da pasta você verá `bin/`, `templates/`, `install.sh` e `README.txt`.
 
 ---
 
-## 3. Instalar
+## 3. Instalar (tudo de uma vez)
 
-Há dois modos — escolha um:
-
-**a) Só instalar os binários** (e ajustar o PATH):
+**a) Instalar tudo:**
 
 ```sh
 ./install.sh
 ```
 
-**b) Instalar e já preparar um projeto seu para testar** (roda o
-`mustard init` no projeto indicado):
+**b) Instalar e já preparar um projeto seu para testar** (roda o `mustard init`
+no projeto indicado):
 
 ```sh
 ./install.sh /caminho/do/seu/projeto
 ```
 
-O instalador:
+O instalador chama o `apt`, que:
 
-1. copia os binários para `~/.mustard/bin` e os templates para `~/.mustard/templates`;
-2. adiciona `~/.mustard/bin` ao PATH em `~/.profile` e `~/.bashrc` (bloco marcado com `# >>> mustard bin >>>`);
-3. garante o `rtk` — o pacote já o traz; se faltar, baixa o instalador oficial;
-4. se você passou um projeto, roda `mustard init` nele (cria a pasta `.claude/` e o `mustard.json`).
+1. instala os binários do CLI em `/usr/lib/mustard/bin` e os templates em
+   `/usr/lib/mustard/templates`, criando os atalhos em `/usr/bin`;
+2. instala o **Mustard Dashboard** e **resolve sozinho** as dependências de
+   sistema dele (`webkit2gtk-4.1`, `gtk`, …);
+3. adiciona o atalho "Mustard Dashboard" ao menu de aplicativos;
+4. se você passou um projeto, roda `mustard init` nele (cria a pasta `.claude/`
+   e o `mustard.json`).
 
-> Quer instalar em outro lugar? Use `MUSTARD_PREFIX=/opt/mustard ./install.sh`.
+> Prefere o comando do apt direto? É só:
+> `sudo apt install ./mustard_<versao>_amd64.deb`
 
 ---
 
-## 4. Abrir um novo terminal e verificar
-
-O PATH só vale para terminais novos. Abra um **novo terminal** (ou rode
-`source ~/.profile`) e confira:
+## 4. Verificar
 
 ```sh
 mustard --version
@@ -86,8 +91,12 @@ mustard-rt --version
 rtk --version
 ```
 
-Os três devem responder com a versão. Se algum disser
-`command not found`, veja a seção de problemas abaixo.
+Os três devem responder com a versão. E o **dashboard**: procure
+**"Mustard Dashboard"** no menu de aplicativos, ou rode no terminal:
+
+```sh
+mustard-dashboard
+```
 
 ---
 
@@ -112,34 +121,34 @@ Comandos úteis dentro do Claude Code: `/scan` (mapeia o projeto),
 
 ## 6. Problemas comuns
 
-**`mustard: command not found`**
-O terminal ainda não recarregou o PATH. Abra um novo terminal ou rode
-`source ~/.profile`. Se persistir, confira se o bloco
-`# >>> mustard bin >>>` existe no `~/.profile` ou `~/.bashrc` — seu shell pode
-usar outro arquivo (zsh usa `~/.zshrc`; copie a linha `export PATH=...` para lá).
+**`mustard: command not found` logo após instalar**
+O `/usr/bin` já está no PATH de qualquer shell, então isso é raro. Se acontecer,
+abra um novo terminal. Confirme a instalação com `dpkg -l mustard`.
 
-**Erro tipo `GLIBC_2.31' not found`**
-Sua distribuição é mais antiga que o mínimo suportado (glibc 2.31).
-Atualize a distro ou rode numa máquina/container mais novo (Ubuntu 20.04+).
-
-**`rtk` não foi instalado**
-Instale manualmente e rode o `install.sh` de novo:
+**O dashboard não abre / erro de biblioteca `webkit`**
+O `apt` deveria ter resolvido. Force a correção de dependências:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/master/install.sh | sh
+sudo apt --fix-broken install
 ```
 
-**`Permission denied` ao rodar `./install.sh`**
-O bit de execução se perdeu no download. Rode `chmod +x install.sh` e tente de novo.
+**`apt` reclama que o pacote é de terceiro / não confiável**
+É um `.deb` local (não vem de um repositório assinado) — isso é esperado. O
+`apt install ./arquivo.deb` instala mesmo assim.
+
+**Versão antiga do Ubuntu (20.04 ou anterior)**
+O dashboard exige glibc 2.35+ (Ubuntu 22.04+). Atualize a distro para usar o
+pacote completo.
 
 ---
 
 ## 7. Desinstalar
 
+Como é um pacote do apt, remover é uma linha:
+
 ```sh
-rm -rf ~/.mustard
+sudo apt remove mustard
 ```
 
-e remova o bloco `# >>> mustard bin >>>` (duas linhas) do `~/.profile` e do
-`~/.bashrc`. Em projetos testados, a pasta `.claude/` e o `mustard.json`
-podem ser apagados à vontade.
+Em projetos testados, a pasta `.claude/` e o `mustard.json` podem ser apagados à
+vontade.

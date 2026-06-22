@@ -67,6 +67,16 @@ Each action picks `--role` + `subagent_type`, renders via `agent-prompt-render`,
 
 Persistent tracking is **N/A** — `/task` is spec-less by design. Promote to `/feature` Light or `/tactical-fix` if a tracked spec is needed.
 
+## Dispatch resilience
+
+A Task dispatch can fail with a **transient infra error** (`Tool result missing due to internal error`) — that is the Agent tool, NOT a located-files problem. When the digest came back `strong`, the anchors are ALREADY located, so a failed dispatch must **never strand the run**:
+
+1. **Retry the dispatch ONCE** (same rendered prompt).
+2. If it persists, **proceed from the located anchors** instead of re-routing from zero:
+   - read-only action (`analyze`/`review`/`audit`) → read the handful of anchor files directly and report (reading ≤ a few located files in the parent is allowed — L0 forbids *implementing* in the parent, not reading to answer);
+   - mutating action → dispatch `implement` straight away, folding the anchor paths into `--task-text` (the next dispatch is independent of the failed one).
+3. On a `strong` digest the `analyze`/Explore **mapping pass is often redundant** for concentrated work (a few files, known pattern) — skip it and go straight to `implement` with anchors in `--task-text`. Keep the Explore pass only when the action genuinely needs to MAP an unfamiliar region to graft from (e.g. a `compare`/reuse task where the source pattern must be understood before grafting).
+
 ## Domain Checklists (audit)
 
 `copy` (tone/grammar/placeholders/CTA), `design` (tokens/reuse/hierarchy/parity), `a11y` (ARIA/contrast/keyboard/focus), `i18n` (missing keys/hardcoded/plurals), `consistency` (naming/structure/adherence), `api-contract` (DTOs/status codes/errors/versioning). Default when ambiguous: `consistency`.

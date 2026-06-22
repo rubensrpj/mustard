@@ -1,0 +1,14 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "bundle": {
+    "resources": {
+      "payload/bin": "mustard-cli",
+      "payload/templates": "mustard-templates"
+    },
+    "windows": {
+      "nsis": {
+        "installerHooks": "../../../packaging/windows/hooks.nsh"
+      }
+    }
+  }
+}

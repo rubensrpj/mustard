@@ -9,6 +9,10 @@ dist-ssr/
 target/
 apps/dashboard/src-tauri/target/
 
+# CLI payload staged into the Windows installer at build time (CI-only,
+# fed to bundle.resources via packaging/windows/tauri.windows.json)
+apps/dashboard/src-tauri/payload/
+
 # OS files
 .DS_Store
 Thumbs.db

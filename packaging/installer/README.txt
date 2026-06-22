@@ -1,64 +1,71 @@
-Mustard — pacote de teste (sem dashboard)
-=========================================
+Mustard — instalador
+====================
 
-Este pacote contém os binários já compilados do Mustard. Você NÃO precisa
-instalar o Rust nem compilar nada — é só rodar o instalador.
+UM instalador por sistema, completo: traz o CLI E o Mustard Dashboard juntos.
+Você NÃO precisa instalar Rust nem compilar nada — já vem pronto.
 
-Conteúdo:
-  bin/         binários: mustard, mustard-rt, mustard-mcp, scan e rtk
-  templates/   a carga que o `mustard init` copia para .claude/
-  install.sh   instalador (Linux)
-  install.ps1  instalador (Windows)
+  LINUX (Ubuntu): mustard_<versao>_amd64.deb  (via apt, com install.sh)
+  WINDOWS:        Mustard Dashboard_<versao>_x64-setup.exe
+  macOS:          Mustard-<versao>-universal.pkg  (Intel + Apple Silicon)
 
 
 Requisitos
 ----------
-- Linux:   glibc 2.31 ou superior (Ubuntu 20.04+, Debian 11+, Fedora 33+).
-           `git` é opcional (recomendado).
-- Windows: Windows 10/11.
-- Em ambos: nenhum toolchain de desenvolvimento é necessário.
+- Ubuntu 22.04+ (glibc 2.35+). O Dashboard depende do webkit2gtk-4.1, que o apt
+  instala sozinho; ele não existe no Ubuntu 20.04.
+- Windows 10/11.
+- macOS 11+ (Big Sur ou mais novo).
+- Em todos: Claude Code instalado e logado; nenhum toolchain de dev é necessário.
 
 
 Como instalar
 -------------
 
-LINUX
-  1. Descompacte:   tar -xzf mustard-linux-x64.tar.gz && cd mustard-linux-x64
-  2a. Só instalar os binários (e ajustar o PATH):
-        ./install.sh
-  2b. Instalar E já preparar um projeto seu para testar:
-        ./install.sh /caminho/do/seu/projeto
-  3. Abra um NOVO terminal (ou: source ~/.profile).
+LINUX (Ubuntu)
+  1. Coloque o install.sh e o mustard_*.deb na mesma pasta e entre nela.
+  2a. Instalar tudo:                        ./install.sh
+  2b. Instalar E já preparar um projeto:    ./install.sh /caminho/do/projeto
+  (Equivale a:  sudo apt install ./mustard_<versao>_amd64.deb)
 
-WINDOWS (PowerShell)
-  1. Descompacte o .zip e entre na pasta.
-  2a. Só instalar os binários (e ajustar o PATH):
-        .\install.ps1
-  2b. Instalar E já preparar um projeto seu para testar:
-        .\install.ps1 -Target C:\caminho\do\projeto
-  3. Abra um NOVO terminal.
+WINDOWS
+  1. Dê duplo-clique no ...-setup.exe e siga o assistente.
+  2. Abra um NOVO terminal (o CLI entra no PATH na instalação).
+  Obs.: como o instalador não é assinado, o SmartScreen pode avisar — clique em
+  "Mais informações" > "Executar assim mesmo".
+
+macOS
+  1. Dê duplo-clique no Mustard-<versao>-universal.pkg e siga o assistente.
+  2. Abra um NOVO terminal (o CLI entra no PATH na instalação).
+  Obs.: como o pacote não é assinado/notarizado, o macOS pode recusar na 1ª vez —
+  clique-direito no .pkg > Abrir, ou autorize em Ajustes > Privacidade e Segurança.
 
 
-O que o instalador faz
-----------------------
-- Copia os binários para  ~/.mustard/bin  (Windows: %USERPROFILE%\.mustard\bin)
-  e os templates para     ~/.mustard/templates.
-- Adiciona essa pasta bin ao seu PATH (de forma persistente).
-- Garante o rtk (o pacote já traz o rtk; no Linux, se faltar, baixa o oficial).
-- Se você passar um projeto, roda `mustard init` nele (cria a pasta .claude/).
+O que cada instalador faz
+-------------------------
+- LINUX:   o apt instala o CLI em /usr/lib/mustard/bin (atalhos em /usr/bin) e o
+           Dashboard, resolvendo as dependências de sistema; adiciona o atalho
+           "Mustard Dashboard" ao menu de aplicativos.
+- WINDOWS: instala o Dashboard + os binários do CLI (com os templates) na pasta
+           do programa, adiciona o CLI ao PATH e cria o atalho no Menu Iniciar.
+- macOS:   instala o "Mustard Dashboard.app" em /Applications (com o CLI e os
+           templates embutidos) e cria os atalhos do CLI no PATH (/usr/local/bin).
+- Em todos: depois é só rodar `mustard init` num projeto para criar o .claude/.
 
 
 Como usar depois
 ----------------
-- Num projeto preparado:  rode o Claude Code normalmente — os hooks do Mustard
-  já estão ligados via .claude/settings.json.
-- Para preparar outro projeto:  cd <projeto> && mustard init
+- Prepare um projeto:  cd <projeto> && mustard init
+- Rode o Claude Code normalmente — os hooks do Mustard já ficam ligados via
+  .claude/settings.json.
 - Versão instalada:  mustard --version   /   mustard-rt --version
+- Dashboard: "Mustard Dashboard" no menu (Linux) / Launchpad (macOS) / Menu
+  Iniciar (Windows).
 
 
 Como remover
 ------------
-- Linux:   rm -rf ~/.mustard   e tire a linha "# >>> mustard bin >>>" do
-           ~/.profile e ~/.bashrc.
-- Windows: apague %USERPROFILE%\.mustard e remova a entrada do PATH de usuário.
+- LINUX:   sudo apt remove mustard
+- WINDOWS: desinstale "Mustard Dashboard" em Aplicativos (Painel de Controle).
+- macOS:   arraste o app para o Lixo e rode:  sudo rm /usr/local/bin/mustard*
+                                                     /usr/local/bin/scan /usr/local/bin/rtk
 - Em um projeto testado, a pasta .claude/ pode ser apagada à vontade.

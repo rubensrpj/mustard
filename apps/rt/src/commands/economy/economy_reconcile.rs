@@ -10,11 +10,10 @@
 use crate::shared::context;
 use crate::shared::events::economy;
 use crate::commands::economy::economy_capture_baseline::{load, save, BaselineEntry};
-use crate::shared::context::{current_spec, session_id};
-use crate::shared::events::route;
+use crate::shared::context::current_spec;
 use mustard_core::time::now_iso8601;
 use mustard_core::domain::economy::reader as economy_reader;
-use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
+use mustard_core::domain::model::event::ActorKind;
 use serde::Serialize;
 use serde_json::json;
 use std::path::{Path, PathBuf};
@@ -66,47 +65,6 @@ fn median_duration_ms(cwd: &Path, operation: &str, take: usize) -> (i64, usize) 
     (durations[mid], durations.len())
 }
 
-/// W7B (was W11.T11.3) — emit one `pipeline.economy.savings.wave` NDJSON
-/// event per reconciled `(wave_id, operation)` pair. The dashboard
-/// `apps/dashboard/src-tauri/src/economy.rs::per_wave_from_events` consumes
-/// exactly this event kind for the `/economia` Deep Refactor tab. The
-/// savings figure is the positive delta between the historical baseline and
-/// the new median (in ms, reinterpreted as token-equivalent friction).
-///
-/// Fail-open: each event is routed through `route::emit`; routing
-/// failures degrade silently per the router contract.
-fn record_savings(cwd: &Path, wave: u32, records: &[ReconcileRecord]) {
-    let cwd_str = cwd.to_string_lossy().into_owned();
-    let measured_at: i64 = (std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_millis())) as i64;
-    let wave_id = format!("W{wave}");
-    for r in records {
-        let savings: i64 = (r.old_duration_ms - r.new_duration_ms).max(0);
-        let payload = json!({
-            "wave_id": wave_id,
-            "operation": r.operation,
-            "savings_tokens": savings,
-            "measured_at": measured_at,
-        });
-        let event = HarnessEvent {
-            v: SCHEMA_VERSION,
-            ts: now_iso8601(),
-            session_id: session_id(),
-            wave: 0,
-            actor: Actor {
-                kind: ActorKind::Orchestrator,
-                id: Some("economy-reconcile".to_string()),
-                actor_type: None,
-            },
-            event: "pipeline.economy.savings.wave".to_string(),
-            payload,
-            spec: current_spec(&cwd_str),
-        };
-        let _ = route::emit(&cwd_str, &event);
-    }
-}
-
 /// CLI entry.
 pub fn run(opts: ReconcileOpts) {
     let started = std::time::Instant::now();
@@ -148,9 +106,6 @@ pub fn run(opts: ReconcileOpts) {
     if let Err(e) = save(&cwd, resolved_spec.as_deref(), &file) {
         eprintln!("[economy reconcile] WARN: write failed: {e}");
     }
-    // W11.T11.3 — persist per-wave savings into telemetry.db.
-    record_savings(&cwd, opts.wave, &records);
-
     let report = ReconcileReport {
         wave: opts.wave,
         records,

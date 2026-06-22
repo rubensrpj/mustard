@@ -1,28 +1,30 @@
 #!/usr/bin/env pwsh
 # ============================================================================
-# build-packages.ps1 — empacota o Mustard (SEM dashboard) para distribuição.
+# build-packages.ps1 — empacota o Mustard para distribuição.
 #
-# Gera pacotes auto-contidos de binários pré-compilados para um testador rodar
-# sem precisar do toolchain Rust:
+# Windows (SEM dashboard): pacote auto-contido de binários pré-compilados, sem
+# precisar do toolchain:
 #   dist/mustard-windows-x64.zip       (binários .exe MSVC, compilados aqui)
-#   dist/mustard-linux-x64.tar.gz      (binários glibc, compilados num Docker
-#                                        rust:1-bullseye -> glibc 2.31+)
 #
-# Cada pacote contém: bin/ (scan, mustard-rt, mustard-mcp, mustard, rtk),
-# templates/ (a carga do `mustard init`), o instalador (install.ps1/.sh) e o
-# README.txt (o pacote Linux leva também o TUTORIAL-LINUX.md). O dashboard
-# (apps/dashboard) NÃO é incluído de propósito.
+# Linux (COM dashboard — instalação completa): um único pacote Debian que traz
+# os binários do CLI E o Mustard Dashboard (app Tauri), compilados num Docker
+# Ubuntu 22.04 (glibc 2.35 -> roda em Ubuntu 22.04+; o webkit2gtk-4.1 do Tauri 2
+# não existe no 20.04):
+#   dist/mustard_<versao>_amd64.deb    + install.sh (apt) + TUTORIAL-LINUX.md
+#
+# O pacote Windows contém: bin/ (scan, mustard-rt, mustard-mcp, mustard, rtk),
+# templates/, install.ps1 e README.txt. O .deb Linux instala tudo via `apt`
+# (que resolve as dependências de sistema do dashboard sozinho) — ver
+# packaging/linux/Dockerfile + packaging/linux/build-deb.sh.
 #
 # Uso:
 #   .\packaging\build-packages.ps1                 # windows + linux
 #   .\packaging\build-packages.ps1 -Targets windows
 #   .\packaging\build-packages.ps1 -Targets linux
-#   .\packaging\build-packages.ps1 -Image rust:1-bookworm   # base Linux alt.
 # ============================================================================
 [CmdletBinding()]
 param(
-    [ValidateSet('windows', 'linux', 'both')][string]$Targets = 'both',
-    [string]$Image = 'rust:1-bullseye'
+    [ValidateSet('windows', 'linux', 'both')][string]$Targets = 'both'
 )
 $ErrorActionPreference = 'Stop'
 
@@ -82,58 +84,44 @@ if ($Targets -in 'linux', 'both') {
     if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
         throw "docker não encontrado — necessário para o build Linux."
     }
-    $tar = Join-Path $Dist 'mustard-linux-x64.tar.gz'
-    if (Test-Path $tar) { Remove-Item -Force $tar }
 
-    # Tudo roda DENTRO da imagem rust: compila, baixa o rtk, monta o pacote,
-    # aplica chmod +x e gera o tar.gz já no Linux — assim o bit de execução é
-    # preservado (o tar.exe do Windows não grava permissões Unix).
-    #   CARGO_TARGET_DIR=/tmp/t  -> não colide com o target/ do host em /work
-    #   --locked                 -> não mexe no Cargo.lock do host
-    # Volumes nomeados cacheiam o registry (CARGO_HOME) e o target entre execuções
-    # para re-empacotar rápido; remova-os com `docker volume rm mustard-pkg-cargo
-    # mustard-pkg-target` se quiser um build do zero.
-    $sh = @'
-set -e
-export CARGO_TARGET_DIR=/tmp/t
-PKG=/tmp/pkg/mustard-linux-x64
-rm -rf /tmp/pkg && mkdir -p "$PKG/bin"
-echo "[linux] cargo build --release --locked (4 binários)"
-cargo build --release --locked --bin scan --bin mustard-rt --bin mustard-mcp --bin mustard
-cp /tmp/t/release/scan /tmp/t/release/mustard-rt /tmp/t/release/mustard-mcp /tmp/t/release/mustard "$PKG/bin/"
-echo "[linux] obtendo rtk (binário pré-compilado oficial)"
-curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/master/install.sh | sh || true
-for p in "$HOME/.local/bin/rtk" "$HOME/.cargo/bin/rtk" /usr/local/bin/rtk /usr/bin/rtk; do
-  if [ -x "$p" ]; then cp "$p" "$PKG/bin/rtk"; echo "[linux] rtk empacotado de $p"; break; fi
-done
-echo "[linux] montando o pacote (templates + instalador)"
-cp -R /work/apps/cli/templates "$PKG/templates"
-cp /work/packaging/installer/install.sh /work/packaging/installer/README.txt /work/packaging/installer/TUTORIAL-LINUX.md "$PKG/"
-sed -i 's/\r$//' "$PKG/install.sh" 2>/dev/null || true
-chmod +x "$PKG"/bin/*
-echo "[linux] gerando tar.gz"
-cd /tmp/pkg && tar -czf /dist/mustard-linux-x64.tar.gz mustard-linux-x64
-echo "[linux] conteúdo do pacote:"; ls -la "$PKG" "$PKG/bin"
-'@
-    $sh = $sh -replace "`r`n", "`n"   # garante LF para o bash
+    # A imagem traz Rust + Node + as dependências de build do Tauri (webkit etc.)
+    # e o ferramental .deb. É cacheada por camadas do Docker — só a 1ª vez é
+    # demorada. O build em si (CLI + dashboard + fusão no .deb) roda no container
+    # via packaging/linux/build-deb.sh, lendo o repo montado em /work.
+    $img        = 'mustard-linux-builder'
+    $linuxCtx   = Join-Path $PkgDir 'linux'
+    Write-Host "==> [linux] docker build $img  (Ubuntu 22.04 + Rust + Node + Tauri/webkit)"
+    docker build -t $img $linuxCtx
+    if ($LASTEXITCODE -ne 0) { throw "docker build da imagem Linux falhou (exit $LASTEXITCODE)." }
 
-    Write-Host "==> [linux] docker run $Image  (build pode levar alguns minutos)"
+    # Volumes nomeados cacheiam registry/target/pnpm entre execuções (re-empacotar
+    # fica rápido). Limpe com:
+    #   docker volume rm mustard-deb-cargo-registry mustard-deb-cargo-git `
+    #     mustard-deb-cli-target mustard-deb-dash-target mustard-deb-pnpm
+    Write-Host "==> [linux] docker run — compila CLI + dashboard e funde no .deb (pode levar vários minutos)"
     docker run --rm `
-        -e CARGO_HOME=/cache/cargo `
-        -v "mustard-pkg-cargo:/cache/cargo" `
-        -v "mustard-pkg-target:/tmp/t" `
+        -v "mustard-deb-cargo-registry:/opt/cargo/registry" `
+        -v "mustard-deb-cargo-git:/opt/cargo/git" `
+        -v "mustard-deb-cli-target:/tmp/cli-target" `
+        -v "mustard-deb-dash-target:/tmp/dash-target" `
+        -v "mustard-deb-pnpm:/tmp/pnpm-store" `
         -v "${Root}:/work" `
         -v "${Dist}:/dist" `
         -w /work `
-        $Image `
-        bash -c $sh
+        $img `
+        bash /work/packaging/linux/build-deb.sh
     if ($LASTEXITCODE -ne 0) { throw "build Linux no Docker falhou (exit $LASTEXITCODE)." }
-    if (-not (Test-Path $tar)) { throw "build Linux não gerou $tar." }
-    Write-Host "==> gravado $tar"
+
+    $deb = Get-ChildItem $Dist -Filter 'mustard_*_amd64.deb' -File |
+        Sort-Object LastWriteTime | Select-Object -Last 1
+    if (-not $deb) { throw "build Linux não gerou o .deb em $Dist." }
+    Write-Host "==> gravado $($deb.FullName)"
 }
 
 Write-Host ""
 Write-Host "==> Pacotes em $Dist :"
-Get-ChildItem $Dist -Filter 'mustard-*' -File | ForEach-Object {
-    Write-Host ("    {0}  ({1:N1} MB)" -f $_.Name, ($_.Length / 1MB))
-}
+Get-ChildItem $Dist -Filter 'mustard*' -File |
+    Where-Object { $_.Extension -in '.zip', '.deb', '.gz' } | ForEach-Object {
+        Write-Host ("    {0}  ({1:N1} MB)" -f $_.Name, ($_.Length / 1MB))
+    }

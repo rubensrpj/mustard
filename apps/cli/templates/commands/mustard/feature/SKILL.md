@@ -66,7 +66,7 @@ Spec layout — **canonical section keys** (EN, language-agnostic); the rendered
 
 User chooses "Approve and implement now": emit `pipeline.stage: Execute` → `exec-rewave-check` (decomposed → use wave-1 spec) → `dependency-precheck` (block on missing externals) → dispatch agents via `agent-prompt-render --emit ref` (NEVER hand-craft; the 2-line stub stdout IS the Task prompt — pass it verbatim, the PreToolUse hook expands it so the full prompt never transits your context; all agents of a wave → one message; the subagent's context is the spec's project section + its anchors; dispatch each with its role's `subagent_type` — `review`→`mustard-review` (read-only), `impl`→`general-purpose`) → per-wave validate + `memory agent` → REVIEW per subproject (`review-result` emit, max 2 fix loops) → QA (`qa-run`; pass → CLOSE; fail → return failing AC; skip → warn + allow CLOSE; max 3 QA iterations).
 
-Escalations: `CONCERN` → `## Concerns`, continue. `BLOCKED` → STOP + AskUserQuestion. `PARTIAL` → granular retry (max 2). `DEFERRED` → note + confirm. → `../../../refs/feature/ac-cross-shell.md`.
+Escalations: `Internal error` (transient dispatch failure, e.g. "Tool result missing due to internal error") → re-dispatch once; still failing → STOP (the Light spec is tracked — resume via `/spec`, which retries per `../../../refs/spec/resume-flow.md`). `CONCERN` → `## Concerns`, continue. `BLOCKED` → STOP + AskUserQuestion. `PARTIAL` → granular retry (max 2). `DEFERRED` → note + confirm. → `../../../refs/feature/ac-cross-shell.md`.
 
 ## INVIOLABLE RULES
 

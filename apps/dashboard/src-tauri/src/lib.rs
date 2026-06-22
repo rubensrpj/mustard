@@ -3,7 +3,6 @@ pub mod amend_queries;
 pub mod commands;
 mod discovery;
 pub mod doctor;
-pub mod economy;
 mod file_read;
 mod git_info;
 mod prd_lapidator;
@@ -3028,7 +3027,6 @@ pub fn run() {
             prd_lapidator::check_claude_available,
             read_model_entities,
             workspace_health,
-            economy::economy_summary,
             git_info::dashboard_git_info,
             git_info::dashboard_git_log,
             file_read::dashboard_read_file,

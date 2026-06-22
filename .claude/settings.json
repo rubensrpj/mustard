@@ -3,10 +3,13 @@
   "respectGitignore": true,
   "plansDirectory": ".claude/plans",
   "cleanupPeriodDays": 30,
-  "attribution": { "commit": "assistant", "pr": "assistant" },
-
-  "worktree": { "bgIsolation": "none" },
-
+  "attribution": {
+    "commit": "assistant",
+    "pr": "assistant"
+  },
+  "worktree": {
+    "bgIsolation": "none"
+  },
   "env": {
     "MUSTARD_SPEC_SIZE_MODE": "warn",
     "MUSTARD_SKILL_SIZE_MODE": "warn",
@@ -22,15 +25,17 @@
     "OTEL_METRICS_INCLUDE_SESSION_ID": "true",
     "MUSTARD_HARNESS_DUAL_EMIT": "1"
   },
-
   "mcpServers": {
     "mustard-memory": {
       "command": "mustard-rt",
-      "args": ["mcp"],
-      "env": { "MUSTARD_DB_PATH": ".claude/.harness/mustard.db" }
+      "args": [
+        "mcp"
+      ],
+      "env": {
+        "MUSTARD_DB_PATH": ".claude/.harness/mustard.db"
+      }
     }
   },
-
   "permissions": {
     "allow": [
       "Read",
@@ -96,7 +101,6 @@
       "Grep(**/Migrations/**)"
     ]
   },
-
   "hooks": {
     "PreToolUse": [
       {
@@ -104,134 +108,124 @@
         "hooks": [
           {
             "type": "command",
-            "command": "rtk mustard-rt on PreToolUse",
+            "command": "C:/Users/ruben/.cargo/bin/mustard-rt.exe on PreToolUse",
             "timeout": 310
           }
         ]
       }
     ],
-
     "PostToolUse": [
       {
         "matcher": ".*",
         "hooks": [
           {
             "type": "command",
-            "command": "rtk mustard-rt on PostToolUse",
+            "command": "C:/Users/ruben/.cargo/bin/mustard-rt.exe on PostToolUse",
             "timeout": 30
           }
         ]
       }
     ],
-
     "SessionStart": [
       {
         "matcher": "startup",
         "hooks": [
           {
             "type": "command",
-            "command": "rtk mustard-rt on SessionStart",
+            "command": "C:/Users/ruben/.cargo/bin/mustard-rt.exe on SessionStart",
             "statusMessage": "Initializing harness, memory, and budgets...",
             "timeout": 15
           }
         ]
       }
     ],
-
     "PreCompact": [
       {
         "matcher": "auto|manual",
         "hooks": [
           {
             "type": "command",
-            "command": "rtk mustard-rt on PreCompact",
+            "command": "C:/Users/ruben/.cargo/bin/mustard-rt.exe on PreCompact",
             "timeout": 10
           }
         ]
       }
     ],
-
     "SessionEnd": [
       {
         "matcher": "prompt_input_exit|clear|other",
         "hooks": [
           {
             "type": "command",
-            "command": "rtk mustard-rt on SessionEnd",
+            "command": "C:/Users/ruben/.cargo/bin/mustard-rt.exe on SessionEnd",
             "statusMessage": "Extracting knowledge and cleaning state...",
             "timeout": 15
           }
         ]
       }
     ],
-
     "SubagentStart": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "rtk mustard-rt on SubagentStart",
+            "command": "C:/Users/ruben/.cargo/bin/mustard-rt.exe on SubagentStart",
             "statusMessage": "Registering agent...",
             "timeout": 5
           }
         ]
       }
     ],
-
     "SubagentStop": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "rtk mustard-rt on SubagentStop",
+            "command": "C:/Users/ruben/.cargo/bin/mustard-rt.exe on SubagentStop",
             "statusMessage": "Agent completed",
             "timeout": 5
           }
         ]
       }
     ],
-
     "UserPromptSubmit": [
       {
         "matcher": "*",
         "hooks": [
           {
             "type": "command",
-            "command": "rtk mustard-rt on UserPromptSubmit",
+            "command": "C:/Users/ruben/.cargo/bin/mustard-rt.exe on UserPromptSubmit",
             "timeout": 10
           }
         ]
       }
     ],
-
     "Stop": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "rtk mustard-rt on Stop",
+            "command": "C:/Users/ruben/.cargo/bin/mustard-rt.exe on Stop",
             "timeout": 5
           }
         ]
       }
     ],
-
     "Notification": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "rtk mustard-rt on Notification",
+            "command": "C:/Users/ruben/.cargo/bin/mustard-rt.exe on Notification",
             "timeout": 5
           }
         ]
       }
     ]
   },
-
   "statusLine": {
     "type": "command",
-    "command": "mustard-rt run statusline",
+    "command": "C:/Users/ruben/.cargo/bin/mustard-rt.exe run statusline",
     "padding": 1
   }
 }
