@@ -2310,6 +2310,20 @@ mod tests {
         {
             return;
         }
+        // `staged_files()` runs git THROUGH rtk (the Golden Rule). On a clean CI
+        // runner without rtk the staged-file probe fails open and the gate sees
+        // nothing — so skip when rtk is absent, mirroring the git-unavailable
+        // skip above, rather than asserting a verdict that cannot be produced.
+        if Command::new("rtk")
+            .arg("--version")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|s| !s.success())
+            .unwrap_or(true)
+        {
+            return;
+        }
         std::fs::write(repo.join(".env"), "SECRET=abc123").unwrap();
         let _ = Command::new("git")
             .args(["add", ".env"])

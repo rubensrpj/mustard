@@ -518,8 +518,7 @@ fn check_boundaries(file_path: &str, cwd: &str) -> Option<(String, String)> {
 /// Session-scoped marker path for the boundary advisory dedup:
 /// `.claude/.session/<id>/boundary-warned`. `None` when the session is
 /// unresolved (then the advisory is never suppressed — fail-open).
-fn boundary_marker_path(cwd: &str) -> Option<PathBuf> {
-    let session = crate::shared::context::session_id();
+fn boundary_marker_path(cwd: &str, session: &str) -> Option<PathBuf> {
     if session.is_empty() || session == "unknown" {
         return None;
     }
@@ -541,8 +540,8 @@ fn boundary_marker_path(cwd: &str) -> Option<PathBuf> {
 /// unresolved session or any IO error returns `true` (warn), so the safety net
 /// never goes silent on a broken FS. Only the non-blocking advisory is
 /// deduped; a CRITICAL boundary violation is a separate `Deny` path, untouched.
-fn boundary_warn_once(cwd: &str, spec: &str) -> bool {
-    let Some(marker) = boundary_marker_path(cwd) else {
+fn boundary_warn_once(cwd: &str, spec: &str, session: &str) -> bool {
+    let Some(marker) = boundary_marker_path(cwd, session) else {
         return true;
     };
     let seen = fs::read_to_string(&marker).unwrap_or_default();
@@ -754,7 +753,7 @@ fn guard_verify(input: &HookInput, cwd: &str) -> Verdict {
     // Advisory: a boundary mismatch — surfaced ONCE per (spec, session) so it
     // does not re-inject the same warning on every subsequent out-of-scope edit.
     if let Some((spec, warning)) = check_boundaries(&file_path, cwd) {
-        if boundary_warn_once(cwd, &spec) {
+        if boundary_warn_once(cwd, &spec, &crate::shared::context::session_id()) {
             return Verdict::Inject {
                 context: format!("[BOUNDARY WARNING] {warning}"),
             };
@@ -1697,17 +1696,18 @@ mod tests {
     #[test]
     fn boundary_warn_once_dedups_per_spec_in_a_session() {
         // First call for a spec warns; the second (same spec, same session) is
-        // suppressed; a different spec warns again. The marker is keyed on the
-        // resolved session dir, so the dedup is session-scoped.
+        // suppressed; a different spec warns again. The session id is injected
+        // so the dedup marker is deterministic regardless of the test's CWD.
+        // (Previously the function read `session_id()` from the process CWD,
+        // which only resolved when run inside a live Claude session — green
+        // locally, red on a clean CI checkout.)
         let root = tempdir().unwrap();
         let cwd = root.path().to_str().unwrap();
-        // Seed a resolvable session dir so `session_id()` resolves (no env in test).
-        let session_dir = root.path().join(".claude").join(".session").join("sess-x");
-        std::fs::create_dir_all(&session_dir).unwrap();
+        let session = "sess-x";
 
-        assert!(boundary_warn_once(cwd, "spec-a"), "first warn for spec-a surfaces");
-        assert!(!boundary_warn_once(cwd, "spec-a"), "repeat for spec-a is suppressed");
-        assert!(boundary_warn_once(cwd, "spec-b"), "a different spec warns once");
-        assert!(!boundary_warn_once(cwd, "spec-b"), "and is then suppressed too");
+        assert!(boundary_warn_once(cwd, "spec-a", session), "first warn for spec-a surfaces");
+        assert!(!boundary_warn_once(cwd, "spec-a", session), "repeat for spec-a is suppressed");
+        assert!(boundary_warn_once(cwd, "spec-b", session), "a different spec warns once");
+        assert!(!boundary_warn_once(cwd, "spec-b", session), "and is then suppressed too");
     }
 }
