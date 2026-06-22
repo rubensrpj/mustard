@@ -1714,10 +1714,17 @@ mod tests {
 
     #[test]
     fn drift_skips_when_templates_not_found() {
+        // Nest the project ≥5 levels deep inside the tempdir so that
+        // `find_templates_dir`'s 5-level upward walk stays WITHIN the
+        // (template-free) tempdir and never reaches ancestors of the system
+        // temp dir. On some CI runners (notably Windows) a `templates/` or
+        // `apps/cli/templates` exists a few levels above `$TMP`, which made the
+        // walk find one and return Ok instead of Skip — green locally, red on CI.
         let dir = tempdir().unwrap();
-        let claude_dir = dir.path().join(".claude");
+        let nested = dir.path().join("a").join("b").join("c").join("d").join("e").join("f");
+        let claude_dir = nested.join(".claude");
         std::fs::create_dir_all(&claude_dir).unwrap();
-        // No templates/ in the hierarchy.
+        // No templates/ anywhere in this subtree.
         let result = check_drift(&claude_dir);
         assert_eq!(result.status, Status::Skip);
     }
