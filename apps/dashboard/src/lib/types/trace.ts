@@ -3,7 +3,13 @@
 // = "snake_case")]`). Keep these aligned; a field rename on the Rust side
 // must land here in the same commit.
 
-export type TraceKind = "spec" | "wave" | "agent" | "tool";
+export type TraceKind =
+  | "spec"
+  | "wave"
+  | "agent"
+  | "tool"
+  | "session"
+  | "prompt";
 
 export interface TokenBreakdown {
   input: number;
@@ -56,6 +62,13 @@ export interface ToolUsePayload {
   /** Spliced in by `telemetry.rs::pair_tool_results` when a `tool.result`
    *  event was paired with this `tool.use`. */
   result?: ToolResultPayload;
+  /** The assistant narration that MOTIVATED this tool — the `text` block that
+   *  preceded the `tool_use` in the session transcript. Spliced onto the node
+   *  by `telemetry.rs::build_trace_tree` (matched by `tool_use_id`) for session
+   *  traces; absent for most tools (no narration) and for spec traces. The same
+   *  field is also spliced onto `kind:"agent"` nodes (keyed by the dispatch's
+   *  spawn `tool_use_id`) so the spawning "why" rides under the agent label. */
+  motivation?: string;
 }
 
 export interface TraceNode {

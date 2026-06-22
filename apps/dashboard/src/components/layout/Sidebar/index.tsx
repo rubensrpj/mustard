@@ -310,6 +310,7 @@ function ProjectTreeNode({
     { to: "/specs", icon: FileText, label: tLib("sidebar.specs") },
     { to: "/economy", icon: Gauge, label: tLib("sidebar.economy") },
     { to: "/knowledge", icon: BookOpen, label: tLib("sidebar.knowledge") },
+    { to: "/sessions", icon: History, label: tLib("sidebar.sessions") },
     { to: "/settings", icon: SettingsIcon, label: tLib("sidebar.settings") },
   ];
 
@@ -596,7 +597,6 @@ export function Sidebar() {
   // stays in sync. `end` marks an exact-match active route.
   const tools: { to: string; icon: typeof Home; label: string }[] = [
     { to: "/commands", icon: Terminal, label: tLib("sidebar.commands") },
-    { to: "/sessions", icon: History, label: tLib("sidebar.sessions") },
   ];
 
   // -------------------------------------------------------------------------

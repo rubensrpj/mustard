@@ -33,6 +33,11 @@ serde_json = "1"
 notify = "8"
 notify-debouncer-mini = "0.7"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+# Resolve the user's home dir to locate Claude Code session transcripts
+# (`<home>/.claude/projects/<encoded-cwd>/<session_id>.jsonl`) — the source of
+# the assistant narration that motivated each tool.use. Already in the lock
+# transitively; pinned here as a direct dep so the transcript reader compiles.
+dirs = "6"
 # Mustard CLI as a native library (B5 Wave 3): the dashboard installs/updates
 # Mustard into a selected folder by calling `mustard_cli::init`/`update`
 # directly — no sidecar process. This raises the dashboard's effective MSRV to

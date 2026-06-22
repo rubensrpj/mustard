@@ -115,11 +115,37 @@ export interface SessionRow {
    *  `session_id` couldn't be resolved at emit time). Surfaced honestly —
    *  labelled, not dropped — so the leak stays visible. */
   is_unknown_bucket: boolean;
+  /** Number of `tool.use` events — the "what was DONE" count. */
+  tools_used: number;
+  /** Number of DISTINCT files touched — the "what was ADJUSTED" count. */
+  files_touched: number;
+  /** Distinct file paths touched, sorted, capped at ~20. */
+  files: string[];
+  /** Per-tool counts (Read/Grep/Edit/…), sorted by `count` desc. */
+  tool_breakdown: SessionToolCount[];
+  /** Work GROUP — suffix of the earliest mustard `skill.invoked`
+   *  (e.g. `"feature"`, `"task"`, `"bugfix"`), `"outros"` when only non-mustard
+   *  skills ran, or `null` for a session with no command (rendered "Avulsas"). */
+  category: string | null;
+  /** The REQUEST text — `payload.args` of the earliest mustard skill (or a
+   *  fallback), normalised to a single ~160-char line. `null` when none found. */
+  title: string | null;
+}
+
+/** One `tool → count` entry in a session's `tool_breakdown`. */
+export interface SessionToolCount {
+  name: string;
+  count: number;
 }
 
 export function fetchSessions(repoPath: string, limit?: number): Promise<SessionRow[]> {
   return invoke<SessionRow[]>("dashboard_sessions", { repoPath, limit });
 }
+
+// The per-session drill-in is now the rich `<ExecutionTrace source={{ kind:
+// "session" }}>` (via the `useTrace` hook → `dashboard_session_trace`), so the
+// old flat `fetchSessionDetail` + `SessionDetail`/`SessionEvent` DTOs were
+// removed. `SessionRow` (the list fold) + `SessionToolCount` stay.
 
 export function fetchSpecs(repoPath: string): Promise<SpecRow[]> {
   return invoke<SpecRow[]>("dashboard_specs", { repoPath });
@@ -642,6 +668,27 @@ export function useProjects(): Project[] {
     staleTime: 60_000,
   });
   return (data as Project[] | undefined) ?? [];
+}
+
+/** Basename of a path — last non-empty segment, splitting on both `/` and `\`
+ *  so a Windows `projectsRoot` resolves too. `""` for an empty/blank input. */
+function _basename(path: string): string {
+  const segments = path.split(/[\\/]/).filter((s) => s.length > 0);
+  return segments.length > 0 ? segments[segments.length - 1] : "";
+}
+
+/**
+ * Human name of the active project (the one rooted at `projectsRoot`). Resolves
+ * the discovered `Project` whose `.path` matches `projectsRoot` and returns its
+ * `.name`; falls back to the basename of `projectsRoot` when discovery hasn't
+ * resolved (or nothing matches). `null` only when no project is selected yet.
+ */
+export function useActiveProjectName(): string | null {
+  const projectsRoot = _useStore((s) => s.projectsRoot);
+  const projects = useProjects();
+  if (!projectsRoot) return null;
+  const match = projects.find((p) => p.path === projectsRoot);
+  return match?.name || _basename(projectsRoot) || projectsRoot;
 }
 
 // --- Amend queries (Wave 4, spec 2026-05-20-session-bound-amendments) ---

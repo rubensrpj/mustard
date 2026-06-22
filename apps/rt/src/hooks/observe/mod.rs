@@ -7,6 +7,7 @@ pub mod change_request_log;
 pub mod feature_outcome_observer;
 pub mod memory_promote_observer;
 pub mod notification_observer;
+pub mod prompt_observer;
 pub mod rewave_observer;
 pub mod session_stop_observer;
 pub mod subagent_stop_observer;

@@ -24,8 +24,10 @@ import {
   ChevronsDownUp,
   ChevronsUpDown,
   AlertCircle,
+  History,
+  MessageSquare,
 } from "lucide-react";
-import { useSpecTrace } from "@/hooks/useSpecTrace";
+import { useTrace, type TraceSource } from "@/hooks/useTrace";
 import type {
   TraceKind,
   TraceNode,
@@ -39,9 +41,16 @@ import { ToolEventRow } from "../ToolEventRow";
 import { toolIconColorClass } from "../tool-palette";
 import { cn } from "@/lib/utils";
 
+// Re-exported so call sites can build a `source` without reaching into the
+// hook module directly.
+export type { TraceSource } from "@/hooks/useTrace";
+
 interface ExecutionTraceProps {
   projectPath: string | null;
-  specName: string | null;
+  /** What the trace is rooted at — a spec or a session. The container routes
+   *  to the matching backend command via `useTrace`; the rendered tree shape
+   *  is identical either way (one renderer, no parallel session view). */
+  source: TraceSource | null;
   className?: string;
 }
 
@@ -59,10 +68,10 @@ interface ExecutionTraceProps {
  */
 export function ExecutionTrace({
   projectPath,
-  specName,
+  source,
   className,
 }: ExecutionTraceProps) {
-  const { data, isLoading, error } = useSpecTrace(projectPath, specName);
+  const { data, isLoading, error } = useTrace(projectPath, source);
   // `forced` carries the latest bulk-expand/collapse intent. `null` means
   // "respect each node's default"; any number is an even/odd generation that
   // toggles every click so the same intent applied twice still re-renders.
@@ -97,10 +106,10 @@ export function ExecutionTrace({
     });
   }, []);
 
-  if (!projectPath || !specName) {
+  if (!projectPath || !source) {
     return (
       <div className={cn("text-[12px] text-[--ds-text-tertiary] px-2 py-3", className)}>
-        Sem spec ativa para rastrear.
+        Nada para rastrear.
       </div>
     );
   }
@@ -126,7 +135,7 @@ export function ExecutionTrace({
   if (!data) {
     return (
       <div className={cn("text-[12px] text-[--ds-text-tertiary] px-2 py-3", className)}>
-        Nenhum evento registrado para esta spec ainda.
+        Nenhum evento registrado ainda.
       </div>
     );
   }
@@ -204,15 +213,20 @@ const KIND_ICON: Record<TraceKind, typeof Square> = {
   wave: Layers,
   agent: Cpu,
   tool: Wrench,
+  session: History,
+  prompt: MessageSquare,
 };
 
 /** Icon colour per kind — see spec `2026-05-21-economia-moat-followup-fixes`
- *  (claude-devtools palette: indigo / blue / green / amber). */
+ *  (claude-devtools palette: indigo / blue / green / amber). The session root
+ *  reuses the spec accent — it's the same "this is the whole run" root tone. */
 const KIND_ICON_COLOR: Record<TraceKind, string> = {
   spec: "text-[--ds-accent-primary]",
   wave: "text-[--ds-intent-info]",
   agent: "text-[--ds-intent-success]",
   tool: "text-[--ds-status-draft]",
+  session: "text-[--ds-accent-primary]",
+  prompt: "text-[--ds-accent-primary]",
 };
 
 /** Pick the icon colour for a trace node: tool nodes colour by tool TYPE
@@ -247,6 +261,8 @@ const KIND_LABEL: Record<TraceKind, string> = {
   wave: "WAVE",
   agent: "AGENT",
   tool: "TOOL",
+  session: "SESSÃO",
+  prompt: "PROMPT",
 };
 
 const TraceNodeRow = memo(function TraceNodeRow({
@@ -267,9 +283,15 @@ const TraceNodeRow = memo(function TraceNodeRow({
   // Surface failed commands in the collapsed tree without expanding.
   const nodeHasError = hasError(node);
   const hasChildren = node.children.length > 0;
-  // Specs and waves stay open by default; agents/tools collapse so the
-  // initial view doesn't drown the reader.
-  const defaultOpen = node.kind === "spec" || node.kind === "wave";
+  // Spec/session roots, waves, and prompts stay open by default; agents/tools
+  // collapse so the initial view doesn't drown the reader. Prompts open so the
+  // request that motivated the run is visible AT the entry (PromptBody), with no
+  // expand needed — including OLD sessions surfaced via `skill.invoked`.
+  const defaultOpen =
+    node.kind === "spec" ||
+    node.kind === "session" ||
+    node.kind === "wave" ||
+    node.kind === "prompt";
 
   // Honour the top-level lookup. On bulk expand/collapse, an effect-free
   // generation guard rewrites the explicit override so this row reflects the
@@ -289,13 +311,27 @@ const TraceNodeRow = memo(function TraceNodeRow({
 
   // Indentation is owned by the parent's `children` container, so each row
   // only worries about its own card. Tool leaves get no expand chevron when
-  // they have no payload.
-  const expandable = hasChildren || node.kind === "tool";
+  // they have no payload. Prompt nodes are childless but expand to reveal the
+  // full (possibly multiline) prompt text.
+  const expandable =
+    hasChildren || node.kind === "tool" || node.kind === "prompt";
+
+  // The narration that motivated this node — spliced onto `payload.motivation`
+  // by the Rust trace builder (the spawn `text` for an agent, the preceding
+  // `text` for a tool). When present, a truncated preview rides under the label
+  // so the "why" is visible WITH the node collapsed; the full text still lives
+  // in the body (PromptBody / MotivationBlock) on expand.
+  const motivationPreview =
+    node.kind === "agent" || node.kind === "tool"
+      ? ((node.payload as Record<string, unknown> | null)?.["motivation"] as
+          | string
+          | undefined)
+      : undefined;
 
   const header: ReactNode = (
     <div
       className={cn(
-        "flex items-center gap-2.5 px-3 py-2 rounded-[--ds-radius-md]",
+        "flex items-start gap-2.5 px-3 py-2 rounded-[--ds-radius-md]",
         "cursor-pointer select-none transition-colors",
         open
           ? "bg-[--ds-surface-elevated] border border-[--ds-surface-hover]"
@@ -306,7 +342,7 @@ const TraceNodeRow = memo(function TraceNodeRow({
         <ChevronRight
           size={14}
           className={cn(
-            "text-[--ds-text-tertiary] shrink-0 transition-transform",
+            "text-[--ds-text-tertiary] shrink-0 transition-transform mt-0.5",
             open && "rotate-90",
           )}
           aria-hidden
@@ -314,10 +350,17 @@ const TraceNodeRow = memo(function TraceNodeRow({
       ) : (
         <span className="inline-block w-3.5 shrink-0" />
       )}
-      <Icon size={18} className={cn("shrink-0", iconColor)} aria-hidden />
-      <span className="font-medium text-[13px] text-[--ds-text-primary] truncate flex-1 min-w-0">
-        {node.label}
-      </span>
+      <Icon size={18} className={cn("shrink-0 mt-0.5", iconColor)} aria-hidden />
+      <div className="flex flex-col flex-1 min-w-0">
+        <span className="font-medium text-[13px] text-[--ds-text-primary] truncate">
+          {node.label}
+        </span>
+        {motivationPreview ? (
+          <span className="text-[11px] text-[--ds-text-tertiary] italic line-clamp-2 mt-0.5">
+            {motivationPreview}
+          </span>
+        ) : null}
+      </div>
       {node.kind === "agent" && node.subagent_type ? (
         <span
           className={cn(
@@ -403,6 +446,7 @@ const TraceNodeRow = memo(function TraceNodeRow({
           <ToolEventRow node={node} projectPath={projectPath} />
         </div>
       ) : null}
+      {node.kind === "prompt" ? <PromptBody node={node} /> : null}
     </div>
   );
 
@@ -427,6 +471,31 @@ const TraceNodeRow = memo(function TraceNodeRow({
     </div>
   );
 });
+
+// ── Prompt body ──────────────────────────────────────────────────────────────
+
+/** Expanded body for a `kind:"prompt"` node — the user's full request. The
+ *  header truncates `label` to one line; this block renders the verbatim text
+ *  (whitespace preserved, wrapped) so a multiline prompt is fully readable. */
+function PromptBody({ node }: { node: TraceNode }) {
+  const payload = node.payload as Record<string, unknown> | null;
+  const text =
+    (typeof payload?.["prompt"] === "string"
+      ? (payload["prompt"] as string)
+      : null) ?? node.label;
+  return (
+    <div
+      className={cn(
+        "rounded-[--ds-radius-md] px-3 py-2",
+        "bg-[--ds-surface-sunken] border border-[--ds-surface-hover]",
+        "font-sans text-[13px] leading-relaxed text-[--ds-text-secondary]",
+        "whitespace-pre-wrap break-words",
+      )}
+    >
+      {text}
+    </div>
+  );
+}
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 

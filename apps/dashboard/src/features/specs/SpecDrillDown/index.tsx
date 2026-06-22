@@ -199,7 +199,7 @@ export function SpecDrillDown({
 
       {/* Trace (hierarchical spec → wave → agent → tool) */}
       <TabsContent value="Trace" className="pt-3">
-        <ExecutionTrace projectPath={repoPath} specName={spec} />
+        <ExecutionTrace projectPath={repoPath} source={{ kind: "spec", specName: spec }} />
       </TabsContent>
 
       {/* Qualidade */}

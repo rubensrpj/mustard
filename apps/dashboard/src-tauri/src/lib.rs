@@ -2963,6 +2963,7 @@ pub fn run() {
             telemetry::dashboard_economy_per_spec_costs,
             telemetry::dashboard_economy_per_wave_costs,
             telemetry::dashboard_spec_trace,
+            telemetry::dashboard_session_trace,
             telemetry::dashboard_sessions,
             telemetry::collector_health,
             dashboard_consumption, dashboard_consumption_global,

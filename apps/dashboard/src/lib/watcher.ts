@@ -50,6 +50,11 @@ export function subscribeFsChange(): Promise<() => void> {
         // so the repo_path leaf scopes the refetch to the changed repo.
         queryClient.invalidateQueries({ queryKey: ["spec-timeline", repo_path] });
         queryClient.invalidateQueries({ queryKey: ["sessions", repo_path] });
+        // The session drill-in is the rich trace, keyed
+        // ["trace", "session", repoPath, sessionId] (via `useTrace`) — so a new
+        // `.session/{id}/.events/*.ndjson` line tails it live. The repo_path leaf
+        // (3rd element) scopes the prefix-match refetch to the changed repo.
+        queryClient.invalidateQueries({ queryKey: ["trace", "session", repo_path] });
         // Per-wave checklist progress folds `checklist.item.marked` events
         // (plus meta.json sidecars), so an event-log write refreshes it.
         queryClient.invalidateQueries({ queryKey: ["spec-checklist", repo_path] });

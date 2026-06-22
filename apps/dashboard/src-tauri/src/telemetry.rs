@@ -57,7 +57,7 @@
 use mustard_core::ClaudePaths;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
@@ -258,10 +258,44 @@ pub struct SessionRow {
     /// emit time). Surfaced honestly rather than hidden so the leak stays
     /// visible; the row is labelled, not dropped.
     pub is_unknown_bucket: bool,
+    /// Number of `tool.use` events in the session — the "what was DONE" count.
+    pub tools_used: u32,
+    /// Number of DISTINCT files touched across all `tool.use` events (extracted
+    /// from `payload.target.{file_path,file}`). The "what was ADJUSTED" count.
+    pub files_touched: u32,
+    /// The distinct file paths touched, sorted and capped at
+    /// [`SESSION_FILES_CAP`] so a long-running session can't inflate the row.
+    pub files: Vec<String>,
+    /// Per-tool counts (`Read`, `Grep`, `Edit`, …), sorted by `count` desc —
+    /// the "what was DONE" breakdown. Tool name read from `payload.tool`.
+    pub tool_breakdown: Vec<SessionToolCount>,
+    /// Work GROUP for the session — the suffix of the earliest `skill.invoked`
+    /// whose `payload.skill` starts with `"mustard:"` (e.g. `mustard:feature` →
+    /// `"feature"`). Falls back to `Some("outros")` when the only skills are
+    /// non-mustard, and `None` when no `skill.invoked` was seen at all (the
+    /// frontend treats `None` as "avulsa" — a session with no command).
+    pub category: Option<String>,
+    /// The REQUEST text — `payload.args` of the earliest mustard `skill.invoked`
+    /// (the same one that set `category`); falls back to any `skill.invoked`'s
+    /// `args`, then the earliest `user.prompt`'s `payload.prompt`. Normalised to
+    /// a single line and truncated to ~160 chars. `None` when nothing matched.
+    pub title: Option<String>,
+}
+
+/// One `tool → count` entry in a session's `tool_breakdown`.
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub struct SessionToolCount {
+    pub name: String,
+    pub count: u32,
 }
 
 /// A session counts as `open` when its last activity is no older than this.
 const SESSION_OPEN_WINDOW_MS: i64 = 15 * 60 * 1000;
+
+/// Cap on the `files` list surfaced per session row — a long session can touch
+/// hundreds of files; the row only needs a representative, sorted sample.
+const SESSION_FILES_CAP: usize = 20;
 
 /// Two-tier attribution lookup against the per-spec NDJSON `.events/*.ndjson`
 /// channels (W5#8).
@@ -608,6 +642,27 @@ fn event_name(record: &Value) -> &str {
         .unwrap_or("")
 }
 
+/// Collapse whitespace/newlines into a single line and truncate to ~160 chars
+/// (cutting on the first line break first, so a multiline request keeps only
+/// its opening line). Returns `None` for empty/whitespace-only input. Used to
+/// turn a raw `skill.invoked` `args` / `user.prompt` `prompt` into a one-line
+/// session title.
+fn one_line_title(raw: &str) -> Option<String> {
+    // Cut at the first line break — a multiline request keeps only line one.
+    let first_line = raw.split(['\n', '\r']).next().unwrap_or(raw);
+    // Collapse any remaining internal runs of whitespace into single spaces.
+    let collapsed = first_line.split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.is_empty() {
+        return None;
+    }
+    const MAX: usize = 160;
+    if collapsed.chars().count() <= MAX {
+        return Some(collapsed);
+    }
+    let truncated: String = collapsed.chars().take(MAX).collect();
+    Some(format!("{}…", truncated.trim_end()))
+}
+
 /// First non-empty string found by probing `record` along each JSON path in
 /// order. A path is a slice of keys; `["payload", "session_id"]` reads
 /// `record["payload"]["session_id"]`, `["session_id"]` reads the record-level
@@ -643,6 +698,139 @@ fn iso_to_ms(s: &str) -> Option<i64> {
     chrono::DateTime::parse_from_rfc3339(s)
         .ok()
         .map(|dt| dt.timestamp_millis())
+}
+
+// ── Transcript motivations (assistant narration → tool) ──────────────────────
+//
+// The assistant text that *motivated* each tool call does not live in the hook
+// NDJSON — it is only in the Claude Code session transcript JSONL at
+// `<home>/.claude/projects/<encoded-cwd>/<session_id>.jsonl`. We read that file
+// retroactively (old sessions already have a transcript), pair the narration
+// preceding each `tool_use` block with that block's `id`, and the trace builder
+// splices the text onto the matching `tool.use` node by `tool_use_id`
+// (transcript `tool_use.id` === event `payload.tool_use_id`, confirmed e.g.
+// `toolu_01MyHwwTRprDPzzZFwWsWfc4`). Every step is fail-open: a missing home,
+// absent transcript, or malformed line degrades to an empty map (today's
+// behaviour — no motivation rendered).
+
+/// Encode a session `cwd` into the directory name Claude Code uses under
+/// `~/.claude/projects/`: every `:` `\` `/` `.` becomes `-`. Hyphens already in
+/// the path are preserved (only those four characters are rewritten). E.g.
+/// `C:\Atiz\sialia` → `C--Atiz-sialia`;
+/// `C:\Atiz\mustard\.claude\worktrees\x` → `C--Atiz-mustard--claude-worktrees-x`.
+fn encode_cwd_for_projects(cwd: &str) -> String {
+    cwd.chars()
+        .map(|c| if matches!(c, ':' | '\\' | '/' | '.') { '-' } else { c })
+        .collect()
+}
+
+/// Filesystem path of the transcript JSONL for a session, given its absolute
+/// working directory and id:
+/// `<home>/.claude/projects/<encode(cwd)>/<session_id>.jsonl`. Returns `None`
+/// when the user's home directory can't be resolved.
+#[must_use]
+pub fn transcript_path_for(cwd: &str, session_id: &str) -> Option<PathBuf> {
+    let home = dirs::home_dir()
+        .or_else(|| std::env::var_os("USERPROFILE").map(PathBuf::from))
+        .or_else(|| std::env::var_os("HOME").map(PathBuf::from))?;
+    Some(
+        home.join(".claude")
+            .join("projects")
+            .join(encode_cwd_for_projects(cwd))
+            .join(format!("{session_id}.jsonl")),
+    )
+}
+
+/// Parse a Claude Code session transcript JSONL into a `tool_use_id → narration`
+/// map: the assistant `text` that immediately preceded each `tool_use` block.
+///
+/// Walks the file **in order** (an assistant turn can be split across several
+/// records, one block per line), tracking the current narration in `last_text`:
+/// - a non-empty `"text"` block becomes / appends to `last_text` (consecutive
+///   text blocks join with `\n`);
+/// - a `"tool_use"` block, when `last_text` is non-empty, maps its `id` →
+///   `last_text` (the motivation for that tool);
+/// - a real user record (`type == "user"`) clears `last_text` so motivation
+///   never leaks across the turn boundary;
+/// - `"thinking"` blocks are ignored (private, potentially huge/sensitive).
+///
+/// Fail-open: an unreadable file, or any malformed line, is skipped; an empty
+/// map is a valid result. Takes a `&Path` (not a session id) so it is testable
+/// against a fixture without resolving a home directory.
+#[must_use]
+pub fn transcript_motivations(path: &Path) -> HashMap<String, String> {
+    let mut map: HashMap<String, String> = HashMap::new();
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return map;
+    };
+    let mut last_text = String::new();
+    // `true` once `last_text` has been consumed by a `tool_use`. The next `text`
+    // block then begins a FRESH narration (replaces rather than appends), so two
+    // tools separated by new narration don't share concatenated text — yet two
+    // CONSECUTIVE tools with no text between them still share the same narration
+    // (the real transcript pattern: one rationale, several tool calls).
+    let mut consumed = false;
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Ok(record) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        // A real user message starts a fresh turn — drop any pending narration so
+        // a tool in the next assistant turn can't inherit a stale motivation.
+        if record.get("type").and_then(Value::as_str) == Some("user") {
+            last_text.clear();
+            consumed = false;
+        }
+        let Some(content) = record
+            .get("message")
+            .and_then(|m| m.get("content"))
+            .and_then(Value::as_array)
+        else {
+            continue;
+        };
+        for block in content {
+            match block.get("type").and_then(Value::as_str) {
+                Some("text") => {
+                    if let Some(txt) = block.get("text").and_then(Value::as_str) {
+                        if !txt.trim().is_empty() {
+                            // A text block after a tool consumed the narration
+                            // opens a new rationale — replace, don't append.
+                            if consumed {
+                                last_text.clear();
+                                consumed = false;
+                            }
+                            if last_text.is_empty() {
+                                last_text.push_str(txt);
+                            } else {
+                                last_text.push('\n');
+                                last_text.push_str(txt);
+                            }
+                        }
+                    }
+                }
+                Some("tool_use") => {
+                    if last_text.is_empty() {
+                        continue;
+                    }
+                    if let Some(id) = block.get("id").and_then(Value::as_str) {
+                        if !id.is_empty() {
+                            map.insert(id.to_string(), last_text.clone());
+                        }
+                    }
+                    // Keep `last_text` for an immediately-following tool (shared
+                    // rationale) but mark it consumed so new text starts fresh.
+                    consumed = true;
+                }
+                // `thinking` (private reasoning) and any other block kind are
+                // ignored — only `text` narration motivates a tool.
+                _ => {}
+            }
+        }
+    }
+    map
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -1366,9 +1554,99 @@ pub fn dashboard_sessions(repo_path: String, limit: Option<usize>) -> Vec<Sessio
         let mut last_spec: Option<(String, String)> = None; // (ts, spec)
         let mut cwd: Option<String> = None;
         let mut event_count: u64 = 0;
+        // The fold: per-session enrichment replicating the `tool.use` extraction
+        // from `attributed_spec_counts_from` (kept inline rather than calling it
+        // — that helper is keyed by spec and builds a timeline we don't need).
+        let mut tools_used: u32 = 0;
+        let mut files: BTreeSet<String> = BTreeSet::new();
+        let mut tool_counts: BTreeMap<String, u32> = BTreeMap::new();
+        // category/title derivation — track, by ascending `ts`, the earliest
+        // mustard `skill.invoked` (skill + args), the earliest non-mustard one
+        // (to fall back the GROUP to "outros"), the earliest skill args of any
+        // flavour (title fallback), and the earliest `user.prompt` text (last
+        // resort). All "earliest" = smallest `ts` seen so far.
+        let mut earliest_mustard_skill: Option<(String, String, String)> = None; // (ts, suffix, args)
+        let mut earliest_any_skill_ts: Option<String> = None;
+        let mut earliest_any_skill_args: Option<(String, String)> = None; // (ts, args)
+        let mut earliest_prompt: Option<(String, String)> = None; // (ts, prompt)
 
         for record in &records {
             event_count += 1;
+            if event_name(record) == "skill.invoked" {
+                let ts = record.get("ts").and_then(Value::as_str).unwrap_or("");
+                let skill = record
+                    .get("payload")
+                    .and_then(|p| p.get("skill"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                let args = record
+                    .get("payload")
+                    .and_then(|p| p.get("args"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                if !ts.is_empty() && !skill.is_empty() {
+                    // Any-skill bookkeeping (group fallback "outros" + title fallback).
+                    if earliest_any_skill_ts.as_deref().map_or(true, |p| ts < p) {
+                        earliest_any_skill_ts = Some(ts.to_string());
+                    }
+                    if !args.is_empty()
+                        && earliest_any_skill_args
+                            .as_ref()
+                            .map_or(true, |(p, _)| ts < p.as_str())
+                    {
+                        earliest_any_skill_args = Some((ts.to_string(), args.clone()));
+                    }
+                    // The mustard skill wins category + the primary title source.
+                    if let Some(suffix) = skill.strip_prefix("mustard:") {
+                        if !suffix.is_empty()
+                            && earliest_mustard_skill
+                                .as_ref()
+                                .map_or(true, |(p, _, _)| ts < p.as_str())
+                        {
+                            earliest_mustard_skill =
+                                Some((ts.to_string(), suffix.to_string(), args));
+                        }
+                    }
+                }
+            }
+            if event_name(record) == "user.prompt" {
+                let ts = record.get("ts").and_then(Value::as_str).unwrap_or("");
+                let prompt = record
+                    .get("payload")
+                    .and_then(|p| p.get("prompt"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                if !ts.is_empty()
+                    && !prompt.is_empty()
+                    && earliest_prompt.as_ref().map_or(true, |(p, _)| ts < p.as_str())
+                {
+                    earliest_prompt = Some((ts.to_string(), prompt.to_string()));
+                }
+            }
+            if event_name(record) == "tool.use" {
+                tools_used = tools_used.saturating_add(1);
+                // Tool name lives at `payload.tool` (e.g. "Read"); count it.
+                if let Some(tool) = record
+                    .get("payload")
+                    .and_then(|p| p.get("tool"))
+                    .and_then(Value::as_str)
+                    .filter(|s| !s.is_empty())
+                {
+                    *tool_counts.entry(tool.to_string()).or_insert(0) += 1;
+                }
+                // Touched file lives at `payload.target.{file_path,file}`.
+                if let Some(file) = record
+                    .get("payload")
+                    .and_then(|p| p.get("target"))
+                    .and_then(Value::as_object)
+                    .and_then(|o| o.get("file_path").or_else(|| o.get("file")))
+                    .and_then(Value::as_str)
+                    .filter(|s| !s.is_empty())
+                {
+                    files.insert(file.to_string());
+                }
+            }
             let ts = record.get("ts").and_then(Value::as_str).unwrap_or("");
             if !ts.is_empty() {
                 if earliest.as_deref().map_or(true, |e| ts < e) {
@@ -1412,6 +1690,39 @@ pub fn dashboard_sessions(repo_path: String, limit: Option<usize>) -> Vec<Sessio
         }
         .to_string();
 
+        let files_touched = u32::try_from(files.len()).unwrap_or(u32::MAX);
+        let files_list: Vec<String> = files.into_iter().take(SESSION_FILES_CAP).collect();
+        // Sort the breakdown by count desc, ties broken by name for stability.
+        let mut tool_breakdown: Vec<SessionToolCount> = tool_counts
+            .into_iter()
+            .map(|(name, count)| SessionToolCount { name, count })
+            .collect();
+        tool_breakdown.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.name.cmp(&b.name)));
+
+        // category: the earliest mustard skill's suffix wins; else "outros" when
+        // some non-mustard skill ran; else None (no skill at all → "avulsa").
+        let category = match &earliest_mustard_skill {
+            Some((_, suffix, _)) => Some(suffix.clone()),
+            None if earliest_any_skill_ts.is_some() => Some("outros".to_string()),
+            None => None,
+        };
+        // title: the mustard skill's args (same event as category) → any skill's
+        // args → the earliest user.prompt. Each is normalised to one ~160-char
+        // line; an empty/absent source falls through to the next.
+        let title = earliest_mustard_skill
+            .as_ref()
+            .and_then(|(_, _, args)| one_line_title(args))
+            .or_else(|| {
+                earliest_any_skill_args
+                    .as_ref()
+                    .and_then(|(_, args)| one_line_title(args))
+            })
+            .or_else(|| {
+                earliest_prompt
+                    .as_ref()
+                    .and_then(|(_, prompt)| one_line_title(prompt))
+            });
+
         rows.push(SessionRow {
             id: id.clone(),
             slug: String::new(),
@@ -1422,6 +1733,12 @@ pub fn dashboard_sessions(repo_path: String, limit: Option<usize>) -> Vec<Sessio
             status,
             event_count,
             is_unknown_bucket: id == "unknown",
+            tools_used,
+            files_touched,
+            files: files_list,
+            tool_breakdown,
+            category,
+            title,
         });
     }
 
@@ -2362,6 +2679,12 @@ struct AgentInterval {
     agent_id: String,
     /// Wave number parsed from the description (`Wave 1 …` / `Onda 2 …`), if any.
     wave: Option<u32>,
+    /// `agent.start.payload.tool_use_id` — the id of the *Task spawn* call that
+    /// dispatched this subagent. This is the key the transcript's narration is
+    /// keyed under (the assistant's `text` block that preceded the `Task` call),
+    /// so the trace can splice the spawning motivation onto the agent node. `None`
+    /// when the start carried no `tool_use_id` (session-less / legacy events).
+    spawn_tool_use_id: Option<String>,
 }
 
 /// Resolved attribution for one `tool.use`: the owning agent's display name,
@@ -2375,6 +2698,10 @@ struct ToolAttribution {
     agent_id: Option<String>,
     subagent_type: Option<String>,
     wave: Option<u32>,
+    /// The matched interval's `spawn_tool_use_id` (the `agent.start`'s Task-spawn
+    /// id). Propagated so the tree builder can key the spawning motivation onto
+    /// the agent node. `None` for the orchestrator (no interval).
+    spawn_tool_use_id: Option<String>,
 }
 
 /// The orchestrator label for tools that ran outside every subagent interval.
@@ -2585,6 +2912,7 @@ fn build_agent_intervals(all_events: &[Value], role_map: &[RoleWave]) -> Vec<Age
         subagent_type: String,
         agent_id: String,
         wave: Option<u32>,
+        spawn_tool_use_id: Option<String>,
     }
     let mut markers: Vec<Marker> = Vec::new();
     for ev in all_events {
@@ -2637,6 +2965,13 @@ fn build_agent_intervals(all_events: &[Value], role_map: &[RoleWave]) -> Vec<Age
         // "Review backend-ledger" lands on its wave even with no wave number.
         let wave = parse_wave(&description)
             .or_else(|| match_role_wave(&description, &subagent_type, role_map));
+        // The Task-spawn id of THIS dispatch (only meaningful on a start); the
+        // transcript narration that motivated the spawn is keyed under it.
+        let spawn_tool_use_id = payload
+            .and_then(|p| p.get("tool_use_id"))
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
         markers.push(Marker {
             ts_ms,
             is_start,
@@ -2645,6 +2980,7 @@ fn build_agent_intervals(all_events: &[Value], role_map: &[RoleWave]) -> Vec<Age
             subagent_type,
             agent_id,
             wave,
+            spawn_tool_use_id,
         });
     }
     // Stable sort by ts so a start and stop sharing a ms keep emit order (start
@@ -2658,6 +2994,7 @@ fn build_agent_intervals(all_events: &[Value], role_map: &[RoleWave]) -> Vec<Age
         subagent_type: String,
         agent_id: String,
         wave: Option<u32>,
+        spawn_tool_use_id: Option<String>,
     }
     let mut stacks: HashMap<String, Vec<Frame>> = HashMap::new();
     let mut intervals: Vec<AgentInterval> = Vec::new();
@@ -2670,6 +3007,7 @@ fn build_agent_intervals(all_events: &[Value], role_map: &[RoleWave]) -> Vec<Age
                 subagent_type: m.subagent_type,
                 agent_id: m.agent_id,
                 wave: m.wave,
+                spawn_tool_use_id: m.spawn_tool_use_id,
             });
         } else if let Some(frame) = stack.pop() {
             intervals.push(AgentInterval {
@@ -2680,6 +3018,7 @@ fn build_agent_intervals(all_events: &[Value], role_map: &[RoleWave]) -> Vec<Age
                 subagent_type: frame.subagent_type,
                 agent_id: frame.agent_id,
                 wave: frame.wave,
+                spawn_tool_use_id: frame.spawn_tool_use_id,
             });
         }
         // A stray `agent.stop` with an empty stack is dropped (no open frame).
@@ -2695,6 +3034,7 @@ fn build_agent_intervals(all_events: &[Value], role_map: &[RoleWave]) -> Vec<Age
                 subagent_type: frame.subagent_type,
                 agent_id: frame.agent_id,
                 wave: frame.wave,
+                spawn_tool_use_id: frame.spawn_tool_use_id,
             });
         }
     }
@@ -2730,12 +3070,14 @@ fn attribute_tool(ev: &Value, intervals: &[AgentInterval]) -> ToolAttribution {
             agent_id: Some(iv.agent_id.clone()),
             subagent_type: Some(iv.subagent_type.clone()),
             wave: iv.wave,
+            spawn_tool_use_id: iv.spawn_tool_use_id.clone(),
         },
         None => ToolAttribution {
             agent: ORCHESTRATOR.to_string(),
             agent_id: None,
             subagent_type: None,
             wave: None,
+            spawn_tool_use_id: None,
         },
     }
 }
@@ -2888,7 +3230,135 @@ pub fn dashboard_spec_trace_impl(project_path: String, spec_name: String) -> Val
     // `Review backend-ledger` review pass) still attribute to its wave. Empty for a
     // non-wave spec, in which case the resolution falls back to `parse_wave` only.
     let role_map = read_wave_role_map(&spec_dir);
-    let intervals = build_agent_intervals(&all_events, &role_map);
+
+    // The spec trace keeps today's behaviour exactly — no transcript narration
+    // (an empty map splices nothing), so the `spec_trace_*` tests stay green.
+    build_trace_tree(
+        &all_events,
+        &role_map,
+        &agent_tokens,
+        &agent_cost_micros,
+        "spec",
+        &spec_name,
+        &HashMap::new(),
+    )
+}
+
+/// Off-main-thread wrapper for [`dashboard_session_trace_impl`]. Mirrors
+/// [`dashboard_spec_trace`]: a join error degrades to an empty `{}` object —
+/// never an Err toast (the trace renderer tolerates an empty tree).
+#[tauri::command]
+pub async fn dashboard_session_trace(project_path: String, session_id: String) -> Value {
+    tauri::async_runtime::spawn_blocking(move || {
+        dashboard_session_trace_impl(project_path, session_id)
+    })
+    .await
+    .unwrap_or_else(|_| serde_json::json!({}))
+}
+
+/// The hierarchical trace for ONE session, built with the SAME
+/// [`build_trace_tree`] machinery the spec trace uses (SOLID — one tree
+/// builder, no parallel view).
+///
+/// A session's work events live under `.claude/.session/{id}/.events/` — there
+/// are no wave subdirs and no `wave-{N}-{role}` directories, so the role→wave
+/// map is empty and tool nodes hang off the orchestrator (or off whatever
+/// `agent.start`/`agent.stop` intervals the session recorded). Token/cost
+/// roll-up is absent: [`mustard_core::domain::economy::EconomyScope`] has no
+/// `Session` variant, so we pass empty maps rather than invent a scope (the
+/// agent nodes simply carry no token pill — fail-open, acceptable).
+///
+/// Fail-open: a missing/unreadable session directory yields the empty-children
+/// session root, never an error.
+#[must_use]
+pub fn dashboard_session_trace_impl(project_path: String, session_id: String) -> Value {
+    let base = PathBuf::from(&project_path);
+
+    // Sessions have no waves nor subdirs — a single `.events/` channel.
+    let mut all_events: Vec<Value> = Vec::new();
+    collect_one_dir(
+        &base
+            .join(".claude")
+            .join(".session")
+            .join(&session_id)
+            .join(".events"),
+        &mut all_events,
+    );
+
+    // No `wave-{N}-{role}` dirs for a session → empty role map (same type as
+    // `read_wave_role_map`'s return, so `build_agent_intervals` falls back to
+    // `parse_wave` only). No economy scope for a session → empty token maps.
+    let role_map: Vec<RoleWave> = Vec::new();
+    let agent_tokens: HashMap<String, i64> = HashMap::new();
+    let agent_cost_micros: HashMap<String, i64> = HashMap::new();
+
+    // Assistant narration that motivated each tool lives only in the session
+    // transcript JSONL, keyed under `<home>/.claude/projects/<encode(cwd)>/`. The
+    // session's `cwd` is on its `session.start` payload. Fail-open at every step:
+    // no cwd / no home / absent transcript → empty map → no motivation spliced
+    // (today's behaviour). Resolved here, not threaded from the frontend, so the
+    // trace command signature is unchanged.
+    let cwd = all_events.iter().find_map(|ev| {
+        if event_name(ev) != "session.start" {
+            return None;
+        }
+        ev.get("payload")
+            .and_then(|p| p.get("cwd"))
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    });
+    let motivations = cwd
+        .as_deref()
+        .and_then(|cwd| transcript_path_for(cwd, &session_id))
+        .map(|path| transcript_motivations(&path))
+        .unwrap_or_default();
+
+    build_trace_tree(
+        &all_events,
+        &role_map,
+        &agent_tokens,
+        &agent_cost_micros,
+        "session",
+        &session_id,
+        &motivations,
+    )
+}
+
+/// Shared tree builder for `{spec,session} → [wave] → agent → tool`.
+///
+/// Owns passes 1 (`build_agent_intervals`), 1.5 (`ResultPairing::build`) and 2
+/// (the `by_wave` attribution loop) plus the final tree assembly. The root node
+/// is parameterised (`root_kind` / `root_label`) so the spec trace passes
+/// `("spec", spec_name)` and the session trace passes `("session", session_id)`
+/// — every nested level is identical, which is the whole point (one renderer,
+/// one shape, no parallel view).
+fn build_trace_tree(
+    all_events: &[Value],
+    role_map: &[RoleWave],
+    agent_tokens: &HashMap<String, i64>,
+    agent_cost_micros: &HashMap<String, i64>,
+    root_kind: &str,
+    root_label: &str,
+    motivations: &HashMap<String, String>,
+) -> Value {
+    // Pass 1: build subagent intervals from `agent.start`/`agent.stop` events.
+    //
+    // A subagent's tools are NOT tagged with its identity on the wire — every
+    // `tool.use` carries `actor="metrics-tracker"`, an empty `wave`, and no
+    // `tool_use_id` that matches the inner tools (the `agent.start.tool_use_id`
+    // is the *Task spawn* id, not the inner tools' ids). The only honest signal
+    // is *time*: the `tool.use` events that fall between an `agent.start` and
+    // its matching `agent.stop` within the same `session_id` belong to that
+    // subagent; tools outside every interval belong to the orchestrator. See
+    // [`build_agent_intervals`].
+    //
+    // The `role → wave` map (read from this spec's `wave-{N}-{role}` dirs) lets a
+    // dispatch whose description carries a role name but no `wave N` token (e.g. a
+    // `Review backend-ledger` review pass) still attribute to its wave. Empty for a
+    // session (or a non-wave Light spec), in which case the resolution falls back
+    // to `parse_wave` only.
+    let intervals = build_agent_intervals(all_events, role_map);
 
     // Pass 1.5: pair every `tool.result` event with its originating `tool.use`.
     //
@@ -2900,7 +3370,7 @@ pub fn dashboard_spec_trace_impl(project_path: String, spec_name: String) -> Val
     // without it the renderer always shows "tool_result pendente". The pairing
     // is built once into a `ResultPairing` (a `tool_use_id → result` map plus a
     // chronologically-sorted fallback queue) to stay linear in the event count.
-    let mut pairing = ResultPairing::build(&all_events);
+    let mut pairing = ResultPairing::build(all_events);
 
     // Pass 2: attribute every `tool.use` to the subagent whose interval contains
     // it (the innermost when nested), else the orchestrator. The attribution
@@ -2920,10 +3390,14 @@ pub fn dashboard_spec_trace_impl(project_path: String, spec_name: String) -> Val
         /// Economy cost key for this agent (`agent_id`); `None` for the
         /// orchestrator. Token/cost roll-up is looked up by this, not the label.
         agent_id: Option<String>,
+        /// The dispatching `agent.start.tool_use_id` (Task-spawn id), captured
+        /// from the first attributed tool's interval. Used to splice the spawning
+        /// motivation onto the agent node. `None` for the orchestrator.
+        spawn_tool_use_id: Option<String>,
         tools: Vec<(Option<u64>, Value)>,
     }
     let mut by_wave: BTreeMap<String, BTreeMap<String, AgentBucket>> = BTreeMap::new();
-    for ev in &all_events {
+    for ev in all_events {
         let ev_name = ev.get("event").and_then(Value::as_str).unwrap_or("");
         if ev_name != "tool.use" {
             continue;
@@ -2961,6 +3435,24 @@ pub fn dashboard_spec_trace_impl(project_path: String, spec_name: String) -> Val
                 map.insert("result".to_string(), result);
             }
         }
+        // Splice the assistant narration that motivated this tool onto
+        // `payload.motivation` (sibling of `result`), matched by the event's
+        // `payload.tool_use_id` against the transcript's `tool_use.id`. Absent
+        // for tools with no preceding narration — most tools, which is fine.
+        if let Some(tool_use_id) = payload
+            .get("tool_use_id")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+        {
+            if let Some(motivation) = motivations.get(&tool_use_id) {
+                if let Value::Object(map) = &mut payload {
+                    map.insert(
+                        "motivation".to_string(),
+                        Value::String(motivation.clone()),
+                    );
+                }
+            }
+        }
         let label = if target_label.is_empty() {
             tool_name
         } else {
@@ -2981,6 +3473,8 @@ pub fn dashboard_spec_trace_impl(project_path: String, spec_name: String) -> Val
             .wave
             .map(|w| format!("wave-{w}"))
             .unwrap_or_else(|| NO_WAVE.to_string());
+        // Capture the spawn id before `attr.agent` is moved into `entry`.
+        let spawn_tool_use_id = attr.spawn_tool_use_id;
         let agent_bucket = by_wave
             .entry(wave_key)
             .or_default()
@@ -2992,14 +3486,95 @@ pub fn dashboard_spec_trace_impl(project_path: String, spec_name: String) -> Val
         if agent_bucket.agent_id.is_none() {
             agent_bucket.agent_id = attr.agent_id;
         }
+        // Record the dispatching Task-spawn id from the first attributed tool's
+        // interval (every tool of one dispatch shares it). The orchestrator has
+        // no interval, so its bucket keeps `None` — fail-open: no motivation.
+        if agent_bucket.spawn_tool_use_id.is_none() {
+            agent_bucket.spawn_tool_use_id = spawn_tool_use_id;
+        }
         agent_bucket.tools.push((ts_ms_of(ev), tool_node));
     }
+
+    // Pass 2.5: collect "what I asked" as root-level `kind:"prompt"` nodes,
+    // surfaced at the top of the trace before any agent/wave activity. Two event
+    // sources feed this:
+    //   - `user.prompt` — a free-text turn; the request lives on `payload.prompt`.
+    //   - `skill.invoked` — a slash command like `/feature`; the request text is
+    //     the skill's `payload.args` (e.g. `{"skill":"mustard:feature","args":…}`).
+    //     OLD sessions predate `user.prompt` entirely yet still recorded
+    //     `skill.invoked`, so collecting it is what makes a retroactive session
+    //     show the request at the top instead of bare collapsed agent nodes.
+    // Each carries the full text both as the (truncated-in-header) `label` and
+    // verbatim under `payload.prompt` so the frontend can expand to the multiline
+    // original. The combined set is ordered by `ts` ASC and spliced at the FRONT
+    // of `children`. When neither event exists the tree is byte-identical to
+    // before (no node injected) — the `spec_trace_*` / `trace_*` tests stay green.
+    let mut prompt_nodes: Vec<(Option<u64>, Value)> = Vec::new();
+    for ev in all_events {
+        match event_name(ev) {
+            "user.prompt" => {
+                let prompt = ev
+                    .get("payload")
+                    .and_then(|p| p.get("prompt"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                let ts = ev.get("ts").and_then(Value::as_str).map(str::to_string);
+                prompt_nodes.push((
+                    ts_ms_of(ev),
+                    serde_json::json!({
+                        "kind": "prompt",
+                        "label": prompt,
+                        "tokens": null,
+                        "duration_ms": null,
+                        "ts": ts,
+                        "payload": { "prompt": prompt },
+                        "children": [],
+                    }),
+                ));
+            }
+            "skill.invoked" => {
+                // The skill's `args` IS the request text. Skip empty-args
+                // invocations (a bare `/status` etc.) — they carry no request to
+                // surface and would render an empty prompt node.
+                let payload = ev.get("payload");
+                let args = payload
+                    .and_then(|p| p.get("args"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                if args.is_empty() {
+                    continue;
+                }
+                let skill = payload
+                    .and_then(|p| p.get("skill"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                let ts = ev.get("ts").and_then(Value::as_str).map(str::to_string);
+                prompt_nodes.push((
+                    ts_ms_of(ev),
+                    serde_json::json!({
+                        "kind": "prompt",
+                        "label": args,
+                        "tokens": null,
+                        "duration_ms": null,
+                        "ts": ts,
+                        "payload": { "prompt": args, "skill": skill },
+                        "children": [],
+                    }),
+                ));
+            }
+            _ => continue,
+        }
+    }
+    prompt_nodes.sort_by_key(|(ts, _)| *ts);
 
     // Build the tree. Tools with a wave nest spec → wave → agent → tool; the
     // synthetic `NO_WAVE` bucket's agents (orchestrator + unparsed subagents)
     // attach straight under the spec, so the frontend `<ExecutionTrace>` (which
     // recurses over `children` at any depth) never shows a spurious wave node.
-    let mut children: Vec<Value> = Vec::new();
+    // Prompt nodes (collected above) are prepended before the agent/wave nodes.
+    let mut children: Vec<Value> =
+        prompt_nodes.into_iter().map(|(_, node)| node).collect();
     for (wave_key, agents) in by_wave {
         let agent_nodes: Vec<Value> = agents
             .into_iter()
@@ -3015,11 +3590,29 @@ pub fn dashboard_spec_trace_impl(project_path: String, spec_name: String) -> Val
                     .as_deref()
                     .map(|id| {
                         (
-                            lookup_agent_metric(&agent_tokens, id),
-                            lookup_agent_metric(&agent_cost_micros, id),
+                            lookup_agent_metric(agent_tokens, id),
+                            lookup_agent_metric(agent_cost_micros, id),
                         )
                     })
                     .unwrap_or((None, None));
+                // Splice the narration that motivated the SPAWN onto the agent
+                // node: the assistant `text` block preceding the `Task(…)` call
+                // is keyed in the transcript under the spawn's `tool_use_id`
+                // (`agent.start.payload.tool_use_id`). When present, the node
+                // carries `{ motivation, tool_use_id }` so the renderer shows a
+                // preview under the label; else `payload: null` (today's shape) —
+                // fail-open at every step (no id / no narration → null).
+                let payload = bucket
+                    .spawn_tool_use_id
+                    .as_deref()
+                    .and_then(|id| motivations.get(id).map(|m| (id, m)))
+                    .map(|(id, motivation)| {
+                        serde_json::json!({
+                            "motivation": motivation,
+                            "tool_use_id": id,
+                        })
+                    })
+                    .unwrap_or(Value::Null);
                 serde_json::json!({
                     "kind": "agent",
                     "label": agent_name,
@@ -3028,7 +3621,7 @@ pub fn dashboard_spec_trace_impl(project_path: String, spec_name: String) -> Val
                     "cost_usd_micros": cost_micros,
                     "duration_ms": null,
                     "ts": null,
-                    "payload": null,
+                    "payload": payload,
                     "children": tool_nodes,
                 })
             })
@@ -3049,8 +3642,8 @@ pub fn dashboard_spec_trace_impl(project_path: String, spec_name: String) -> Val
     }
 
     serde_json::json!({
-        "kind": "spec",
-        "label": spec_name,
+        "kind": root_kind,
+        "label": root_label,
         "tokens": null,
         "duration_ms": null,
         "ts": null,
@@ -3266,10 +3859,14 @@ mod tests {
     #[test]
     fn sessions_aggregate_per_dir_with_unknown_bucket_labelled() {
         let tmp = TempDir::new().unwrap();
-        // A real session: session.start (carries cwd) + a later tool.use.
+        // A real session: session.start (carries cwd) + later tool.use events.
+        // Two Reads on the SAME file + one Edit on a second file exercise the
+        // fold: tools_used=3, files_touched=2 (distinct), breakdown Read>Edit.
         let sess_lines = concat!(
             r#"{"event":"session.start","kind":"session","ts":"2026-05-27T08:00:00.000Z","session_id":"sess-1","spec":null,"payload":{"cwd":"C:\\repo","source":"startup"}}"#, "\n",
-            r#"{"event":"tool.use","kind":"tool","ts":"2026-05-27T08:05:00.000Z","session_id":"sess-1","spec":"alpha","payload":{"tool":"Read"}}"#, "\n",
+            r#"{"event":"tool.use","kind":"tool","ts":"2026-05-27T08:05:00.000Z","session_id":"sess-1","spec":"alpha","payload":{"tool":"Read","target":{"file":"a.rs"}}}"#, "\n",
+            r#"{"event":"tool.use","kind":"tool","ts":"2026-05-27T08:06:00.000Z","session_id":"sess-1","spec":"alpha","payload":{"tool":"Read","target":{"file":"a.rs"}}}"#, "\n",
+            r#"{"event":"tool.use","kind":"tool","ts":"2026-05-27T08:07:00.000Z","session_id":"sess-1","spec":"alpha","payload":{"tool":"Edit","target":{"file_path":"b.rs"}}}"#, "\n",
         );
         write_session_event(tmp.path(), "sess-1", "events.ndjson", sess_lines);
         // The unknown attribution-leak bucket.
@@ -3283,12 +3880,21 @@ mod tests {
 
         let s1 = rows.iter().find(|r| r.id == "sess-1").expect("sess-1 row");
         assert_eq!(s1.started_at, "2026-05-27T08:00:00.000Z");
-        assert_eq!(s1.last_activity_at.as_deref(), Some("2026-05-27T08:05:00.000Z"));
+        assert_eq!(s1.last_activity_at.as_deref(), Some("2026-05-27T08:07:00.000Z"));
         assert_eq!(s1.last_spec.as_deref(), Some("alpha"));
         assert_eq!(s1.cwd.as_deref(), Some("C:\\repo"));
-        assert_eq!(s1.event_count, 2);
+        assert_eq!(s1.event_count, 4);
         assert_eq!(s1.status, "closed"); // 2026 timestamps are far in the past
         assert!(!s1.is_unknown_bucket);
+        // The fold: 3 tool.use events over 2 distinct files; Read (2) > Edit (1).
+        assert_eq!(s1.tools_used, 3, "three tool.use events");
+        assert_eq!(s1.files_touched, 2, "two distinct files (a.rs counted once)");
+        assert_eq!(s1.files, vec!["a.rs".to_string(), "b.rs".to_string()]);
+        assert_eq!(s1.tool_breakdown.len(), 2);
+        assert_eq!(s1.tool_breakdown[0].name, "Read");
+        assert_eq!(s1.tool_breakdown[0].count, 2);
+        assert_eq!(s1.tool_breakdown[1].name, "Edit");
+        assert_eq!(s1.tool_breakdown[1].count, 1);
 
         let unk = rows.iter().find(|r| r.id == "unknown").expect("unknown row");
         assert!(unk.is_unknown_bucket, "unknown bucket must be labelled, not hidden");
@@ -3304,6 +3910,136 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let rows = dashboard_sessions(tmp.path().to_string_lossy().into_owned(), None);
         assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn sessions_derive_category_and_title_from_skill_invoked() {
+        let tmp = TempDir::new().unwrap();
+        // A mustard:task skill carrying the request text → category "task",
+        // title from `payload.args`. A later mustard:bugfix must NOT win
+        // (earliest mustard skill decides). A non-mustard skill is ignored once
+        // a mustard one exists.
+        let lines = concat!(
+            r#"{"event":"skill.invoked","kind":"skill","ts":"2026-05-27T08:00:00.000Z","session_id":"sess-1","payload":{"skill":"mustard:task","args":"fazer X\nlinha dois ignorada"}}"#, "\n",
+            r#"{"event":"skill.invoked","kind":"skill","ts":"2026-05-27T08:10:00.000Z","session_id":"sess-1","payload":{"skill":"mustard:bugfix","args":"corrigir Y"}}"#, "\n",
+            r#"{"event":"tool.use","kind":"tool","ts":"2026-05-27T08:11:00.000Z","session_id":"sess-1","payload":{"tool":"Read","target":{"file":"a.rs"}}}"#, "\n",
+        );
+        write_session_event(tmp.path(), "sess-1", "events.ndjson", lines);
+
+        let rows = dashboard_sessions(tmp.path().to_string_lossy().into_owned(), None);
+        let s1 = rows.iter().find(|r| r.id == "sess-1").expect("sess-1 row");
+        assert_eq!(s1.category.as_deref(), Some("task"), "earliest mustard skill wins category");
+        let title = s1.title.as_deref().expect("title from skill args");
+        assert!(title.starts_with("fazer X"), "title from earliest mustard args, got {title:?}");
+        assert!(!title.contains('\n'), "title is a single line");
+    }
+
+    #[test]
+    fn sessions_category_outros_for_non_mustard_skill_and_prompt_title_fallback() {
+        let tmp = TempDir::new().unwrap();
+        // No mustard skill: a non-mustard skill (no args) → category "outros".
+        // No skill args anywhere → title falls back to the user.prompt text.
+        let lines = concat!(
+            r#"{"event":"user.prompt","kind":"prompt","ts":"2026-05-27T07:59:00.000Z","session_id":"sess-2","payload":{"prompt":"meu pedido livre"}}"#, "\n",
+            r#"{"event":"skill.invoked","kind":"skill","ts":"2026-05-27T08:00:00.000Z","session_id":"sess-2","payload":{"skill":"frontend-design:frontend-design","args":""}}"#, "\n",
+        );
+        write_session_event(tmp.path(), "sess-2", "events.ndjson", lines);
+
+        let rows = dashboard_sessions(tmp.path().to_string_lossy().into_owned(), None);
+        let s2 = rows.iter().find(|r| r.id == "sess-2").expect("sess-2 row");
+        assert_eq!(s2.category.as_deref(), Some("outros"), "non-mustard skill → outros");
+        assert_eq!(s2.title.as_deref(), Some("meu pedido livre"), "title from user.prompt fallback");
+    }
+
+    #[test]
+    fn sessions_category_none_when_no_skill_invoked() {
+        let tmp = TempDir::new().unwrap();
+        // Only tool.use — no skill.invoked at all → category None ("avulsa").
+        let lines = concat!(
+            r#"{"event":"tool.use","kind":"tool","ts":"2026-05-27T08:05:00.000Z","session_id":"sess-3","payload":{"tool":"Read","target":{"file":"a.rs"}}}"#, "\n",
+        );
+        write_session_event(tmp.path(), "sess-3", "events.ndjson", lines);
+
+        let rows = dashboard_sessions(tmp.path().to_string_lossy().into_owned(), None);
+        let s3 = rows.iter().find(|r| r.id == "sess-3").expect("sess-3 row");
+        assert_eq!(s3.category, None, "no skill.invoked → avulsa (None)");
+    }
+
+    #[test]
+    fn session_trace_groups_session_tool_events() {
+        let tmp = TempDir::new().unwrap();
+        // Two orchestrator-level tools in a session — no `agent.start`/`agent.stop`
+        // bracket, no waves — so the session trace must nest
+        // session → orchestrator agent → the two tools, exactly like the spec
+        // trace does for the no-wave case (one shared `build_trace_tree`).
+        let lines = concat!(
+            r#"{"event":"tool.use","kind":"tool","ts":"2026-05-27T08:05:00.000Z","session_id":"sess-1","payload":{"tool":"Read","target":{"file_path":"a.rs"}}}"#, "\n",
+            r#"{"event":"tool.use","kind":"tool","ts":"2026-05-27T08:06:00.000Z","session_id":"sess-1","payload":{"tool":"Edit","target":{"file_path":"b.rs"}}}"#, "\n",
+        );
+        write_session_event(tmp.path(), "sess-1", "events.ndjson", lines);
+
+        let trace = dashboard_session_trace_impl(
+            tmp.path().to_string_lossy().into_owned(),
+            "sess-1".to_string(),
+        );
+        assert_eq!(trace["kind"], "session");
+        assert_eq!(trace["label"], "sess-1");
+        let children = trace["children"].as_array().expect("children array");
+        assert_eq!(children.len(), 1, "single orchestrator agent under the session");
+        let orch = &children[0];
+        assert_eq!(orch["kind"], "agent");
+        let tools = orch["children"].as_array().expect("tool children");
+        assert!(tools.iter().any(|c| c["label"].as_str().unwrap_or("").contains("Read")));
+        assert!(tools.iter().any(|c| c["label"].as_str().unwrap_or("").contains("Edit")));
+    }
+
+    #[test]
+    fn session_trace_surfaces_user_prompt_node_before_agents() {
+        let tmp = TempDir::new().unwrap();
+        // A user prompt plus one orchestrator tool in the same session. The
+        // `user.prompt` event must surface as a root-level `kind:"prompt"` node
+        // carrying the full text, positioned BEFORE the agent node.
+        let lines = concat!(
+            r#"{"event":"user.prompt","kind":"prompt","ts":"2026-05-27T08:04:00.000Z","session_id":"sess-1","payload":{"prompt":"adicione um campo de status\nna tabela de pedidos"}}"#, "\n",
+            r#"{"event":"tool.use","kind":"tool","ts":"2026-05-27T08:05:00.000Z","session_id":"sess-1","payload":{"tool":"Read","target":{"file_path":"a.rs"}}}"#, "\n",
+        );
+        write_session_event(tmp.path(), "sess-1", "events.ndjson", lines);
+
+        let trace = dashboard_session_trace_impl(
+            tmp.path().to_string_lossy().into_owned(),
+            "sess-1".to_string(),
+        );
+        let children = trace["children"].as_array().expect("children array");
+        // Prompt node is FIRST (before the orchestrator agent node).
+        assert_eq!(children[0]["kind"], "prompt", "prompt node leads children");
+        assert_eq!(
+            children[0]["label"].as_str().unwrap_or(""),
+            "adicione um campo de status\nna tabela de pedidos",
+            "prompt label carries the full text"
+        );
+        assert_eq!(
+            children[0]["payload"]["prompt"].as_str().unwrap_or(""),
+            "adicione um campo de status\nna tabela de pedidos",
+            "prompt payload carries the full text"
+        );
+        // The agent node follows the prompt.
+        assert!(
+            children.iter().skip(1).any(|c| c["kind"] == "agent"),
+            "agent node appears after the prompt node"
+        );
+    }
+
+    #[test]
+    fn session_trace_fail_open_when_session_missing() {
+        let tmp = TempDir::new().unwrap();
+        let trace = dashboard_session_trace_impl(
+            tmp.path().to_string_lossy().into_owned(),
+            "nope".to_string(),
+        );
+        // Fail-open: missing session dir → empty-children session root, never Err.
+        assert_eq!(trace["kind"], "session");
+        assert_eq!(trace["label"], "nope");
+        assert_eq!(trace["children"].as_array().expect("children array").len(), 0);
     }
 
     // ── Read-time session→spec attribution ───────────────────────────────────
@@ -4037,6 +4773,128 @@ mod tests {
         );
     }
 
+    #[test]
+    fn encode_cwd_for_projects_rewrites_only_separators() {
+        // The four characters `:` `\` `/` `.` become `-`; existing hyphens and
+        // letters survive. Mirrors Claude Code's `~/.claude/projects/<dir>` name.
+        assert_eq!(encode_cwd_for_projects(r"C:\Atiz\sialia"), "C--Atiz-sialia");
+        assert_eq!(
+            encode_cwd_for_projects(r"C:\Atiz\mustard\.claude\worktrees\x"),
+            "C--Atiz-mustard--claude-worktrees-x"
+        );
+    }
+
+    #[test]
+    fn transcript_motivations_maps_narration_to_tool_and_resets_on_user() {
+        // A JSONL with: assistant text → tool_use (captures it) → another
+        // assistant text → tool_use (captures the NEW text), then a real user
+        // record clears narration so a following tool_use gets nothing.
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("session.jsonl");
+        let lines = [
+            // Turn 1: narration "first" motivates tu-A.
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"first reason"}]}}"#,
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tu-A","name":"Bash","input":{}}]}}"#,
+            // Still turn 1: narration "second" replaces, motivates tu-B.
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"second reason"}]}}"#,
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tu-B","name":"Read","input":{}}]}}"#,
+            // A real user turn resets the narration.
+            r#"{"type":"user","message":{"role":"user","content":"do more"}}"#,
+            // tu-C has no preceding assistant text → no motivation recorded.
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tu-C","name":"Grep","input":{}}]}}"#,
+        ];
+        std::fs::write(&path, lines.join("\n")).unwrap();
+
+        let map = transcript_motivations(&path);
+        assert_eq!(map.get("tu-A").map(String::as_str), Some("first reason"));
+        assert_eq!(map.get("tu-B").map(String::as_str), Some("second reason"));
+        assert!(
+            !map.contains_key("tu-C"),
+            "a user turn must reset narration; tu-C inherits nothing"
+        );
+    }
+
+    #[test]
+    fn transcript_motivations_concatenates_consecutive_text_blocks() {
+        // Two text blocks before a tool_use (a single assistant turn split into
+        // multiple records) join with a newline.
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("session.jsonl");
+        let lines = [
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"line one"}]}}"#,
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"thinking","thinking":"private"},{"type":"text","text":"line two"}]}}"#,
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tu-X","name":"Bash","input":{}}]}}"#,
+        ];
+        std::fs::write(&path, lines.join("\n")).unwrap();
+
+        let map = transcript_motivations(&path);
+        assert_eq!(
+            map.get("tu-X").map(String::as_str),
+            Some("line one\nline two"),
+            "consecutive text blocks join with newline; thinking is ignored"
+        );
+    }
+
+    #[test]
+    fn transcript_motivations_consecutive_tools_share_one_narration() {
+        // The real transcript pattern: one rationale text, then several tool_use
+        // blocks with no text between them — all share that narration.
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("session.jsonl");
+        let lines = [
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"shared why"}]}}"#,
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tu-1","name":"Bash","input":{}}]}}"#,
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tu-2","name":"Bash","input":{}}]}}"#,
+        ];
+        std::fs::write(&path, lines.join("\n")).unwrap();
+
+        let map = transcript_motivations(&path);
+        assert_eq!(map.get("tu-1").map(String::as_str), Some("shared why"));
+        assert_eq!(
+            map.get("tu-2").map(String::as_str),
+            Some("shared why"),
+            "a second tool with no intervening text shares the rationale"
+        );
+    }
+
+    #[test]
+    fn transcript_motivations_fail_open_on_missing_file() {
+        let tmp = TempDir::new().unwrap();
+        let map = transcript_motivations(&tmp.path().join("does-not-exist.jsonl"));
+        assert!(map.is_empty(), "a missing transcript yields an empty map");
+    }
+
+    #[test]
+    fn build_trace_tree_splices_motivation_onto_matching_tool_node() {
+        // A tool.use whose payload.tool_use_id is in the motivations map gets
+        // `payload.motivation`; a non-matching id stays bare.
+        let events = vec![ev_line(serde_json::json!({
+            "event": "tool.use", "ts": "2026-06-20T05:07:09.381Z", "ts_ms": 1000,
+            "session_id": "s",
+            "payload": { "tool": "Bash", "tool_use_id": "toolu_match", "target": { "command": "echo hi" } }
+        }))];
+        let mut motivations = HashMap::new();
+        motivations.insert("toolu_match".to_string(), "porque sim".to_string());
+
+        let tree = build_trace_tree(
+            &events,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            "session",
+            "s",
+            &motivations,
+        );
+        let node = find_tool_node(&tree).expect("a tool node exists");
+        assert_eq!(
+            node.get("payload")
+                .and_then(|p| p.get("motivation"))
+                .and_then(Value::as_str),
+            Some("porque sim"),
+            "the motivation is spliced onto the matching tool node's payload"
+        );
+    }
+
     /// Depth-first search for the first `kind == "tool"` node in a trace tree.
     fn find_tool_node(node: &Value) -> Option<Value> {
         if node.get("kind").and_then(Value::as_str) == Some("tool") {
@@ -4048,6 +4906,154 @@ mod tests {
             }
         }
         None
+    }
+
+    /// Depth-first search for the first `kind == "agent"` node in a trace tree.
+    fn find_agent_node(node: &Value) -> Option<Value> {
+        if node.get("kind").and_then(Value::as_str) == Some("agent") {
+            return Some(node.clone());
+        }
+        for child in node.get("children").and_then(Value::as_array)? {
+            if let Some(hit) = find_agent_node(child) {
+                return Some(hit);
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn build_trace_tree_injects_skill_invoked_as_leading_prompt_node() {
+        // A `skill.invoked` (e.g. `/feature`) carries the request as `payload.args`.
+        // It must surface as a leading `kind:"prompt"` node — the retroactive path
+        // for OLD sessions that predate `user.prompt`. The agent node follows it.
+        let events = vec![
+            ev_line(serde_json::json!({
+                "event": "skill.invoked", "ts": "2026-06-18T08:00:00.000Z", "ts_ms": 1000,
+                "session_id": "s",
+                "payload": { "skill": "mustard:feature", "args": "redesenhar o datatable de Contratos" }
+            })),
+            start_line("s", 2000, "Explore", "Mapeia estrutura"),
+            use_line("s", 2100, "Read"),
+            stop_line("s", 2200),
+        ];
+        let tree = build_trace_tree(
+            &events,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            "session",
+            "s",
+            &HashMap::new(),
+        );
+        let children = tree["children"].as_array().expect("children array");
+        // The prompt node leads, carrying the args as both label and payload.prompt.
+        assert_eq!(children[0]["kind"], "prompt", "skill.invoked → leading prompt node");
+        assert_eq!(
+            children[0]["label"].as_str().unwrap_or(""),
+            "redesenhar o datatable de Contratos",
+            "the skill args become the prompt label"
+        );
+        assert_eq!(
+            children[0]["payload"]["prompt"].as_str().unwrap_or(""),
+            "redesenhar o datatable de Contratos",
+        );
+        assert_eq!(
+            children[0]["payload"]["skill"].as_str().unwrap_or(""),
+            "mustard:feature",
+        );
+        // The agent node appears AFTER the prompt.
+        assert!(
+            children.iter().skip(1).any(|c| c["kind"] == "agent"),
+            "agent node follows the skill prompt node"
+        );
+    }
+
+    #[test]
+    fn build_trace_tree_skips_empty_args_skill_invoked() {
+        // A bare `/status` (empty args) carries no request — inject nothing.
+        let events = vec![ev_line(serde_json::json!({
+            "event": "skill.invoked", "ts": "2026-06-18T08:00:00.000Z", "ts_ms": 1000,
+            "session_id": "s",
+            "payload": { "skill": "mustard:status", "args": "" }
+        }))];
+        let tree = build_trace_tree(
+            &events,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            "session",
+            "s",
+            &HashMap::new(),
+        );
+        assert!(
+            tree["children"].as_array().expect("children array").is_empty(),
+            "empty-args skill.invoked injects no prompt node"
+        );
+    }
+
+    #[test]
+    fn build_trace_tree_splices_motivation_onto_agent_node_via_spawn_id() {
+        // An `agent.start` carrying a `tool_use_id` whose narration is in the
+        // motivations map → the AGENT node gets `payload.motivation` (+ tool_use_id),
+        // so the spawning "why" is visible on the collapsed agent header.
+        let events = vec![
+            serde_json::json!({
+                "event": "agent.start", "kind": "agent", "ts_ms": 1000u64,
+                "session_id": "s",
+                "payload": {
+                    "description": "Mapeia estrutura", "subagentType": "Explore",
+                    "tool_use_id": "toolu_spawn"
+                }
+            }),
+            use_line("s", 1100, "Read"),
+            stop_line("s", 1200),
+        ];
+        let mut motivations = HashMap::new();
+        motivations.insert(
+            "toolu_spawn".to_string(),
+            "preciso mapear antes de mexer".to_string(),
+        );
+        let tree = build_trace_tree(
+            &events,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            "session",
+            "s",
+            &motivations,
+        );
+        let agent = find_agent_node(&tree).expect("an agent node exists");
+        assert_eq!(
+            agent["payload"]["motivation"].as_str().unwrap_or(""),
+            "preciso mapear antes de mexer",
+            "the spawn motivation is spliced onto the agent node"
+        );
+        assert_eq!(
+            agent["payload"]["tool_use_id"].as_str().unwrap_or(""),
+            "toolu_spawn",
+        );
+    }
+
+    #[test]
+    fn build_trace_tree_agent_payload_null_without_motivation() {
+        // No matching narration → the agent node keeps `payload: null` (today's
+        // shape) — fail-open.
+        let events = vec![
+            start_line("s", 1000, "Explore", "Mapeia estrutura"),
+            use_line("s", 1100, "Read"),
+            stop_line("s", 1200),
+        ];
+        let tree = build_trace_tree(
+            &events,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            "session",
+            "s",
+            &HashMap::new(),
+        );
+        let agent = find_agent_node(&tree).expect("an agent node exists");
+        assert!(agent["payload"].is_null(), "no narration → payload stays null");
     }
 
     #[test]
