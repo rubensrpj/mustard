@@ -11,8 +11,8 @@ import { Commands } from "@/pages/Commands";
 import { Knowledge } from "@/pages/Knowledge";
 import { Settings } from "@/pages/Settings";
 import { Preferences } from "@/pages/Preferences";
-import { Prd } from "@/pages/Prd";
 import { Sessions } from "@/pages/Sessions";
+import { SessionDetail } from "@/pages/SessionDetail";
 import { CommandPalette } from "@/components/layout/CommandPalette";
 import { Toaster } from "sonner";
 import { useStore } from "@/lib/store";
@@ -65,8 +65,8 @@ function App() {
           <Route path="/project/:id/spec/:specName" element={<SpecDetail />} />
           <Route path="/knowledge" element={<Knowledge />} />
           <Route path="/commands" element={<Commands />} />
-          <Route path="/prd" element={<Prd />} />
           <Route path="/sessions" element={<Sessions />} />
+          <Route path="/sessions/:id" element={<SessionDetail />} />
           {/* /activity, /telemetry, /quality removed in Wave 6 — consolidated into Workspace/Specs/Economia */}
           <Route path="/prompt-economy" element={<Navigate to="/economy" replace />} />
           <Route path="/settings" element={<Settings />} />

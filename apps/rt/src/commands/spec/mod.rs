@@ -18,7 +18,6 @@ pub mod spec_validate;
 pub mod rebuild_specs;
 pub mod backup_specs;
 pub mod plan_from_spec;
-pub mod prd_build;
 pub mod scope_decompose;
 pub mod tactical_fix_create;
 pub mod tactical_fix_detect;

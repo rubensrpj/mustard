@@ -100,6 +100,32 @@ function bgFor(op: Op): string {
   return "text-[--muted-foreground]";
 }
 
+// ── Unified (GitHub PR) styling ─────────────────────────────────────────────
+// Single column, full-width line tint + a coloured `+`/`-` sigil — the way a
+// GitHub diff reads. Kept LOCAL to the unified branch so the `split` mode's
+// shared `bgFor`/`<Sigil>` (neutral sigil, per-pane tint) stay untouched.
+
+/** Full-width row tint for the unified view — slightly stronger than the split
+ *  pane tint (`/15` vs `/10`) so add/del lines pop like a PR; `equal` is
+ *  neutral with no background. */
+function unifiedBgFor(op: Op): string {
+  if (op === "add") return "bg-[--intent-success]/15 text-[--foreground]";
+  if (op === "del") return "bg-[--intent-error]/15 text-[--foreground]";
+  return "text-[--muted-foreground]";
+}
+
+/** Coloured sigil for the unified view: `+` green, `-` red, ` ` muted. */
+function UnifiedSigil({ op }: { op: Op }) {
+  const ch = op === "add" ? "+" : op === "del" ? "-" : " ";
+  const color =
+    op === "add"
+      ? "text-[--intent-success]"
+      : op === "del"
+        ? "text-[--intent-error]"
+        : "text-[--muted-foreground]";
+  return <span className={cn("select-none font-semibold", color)}>{ch}</span>;
+}
+
 export function DiffViewer({
   before,
   after,
@@ -164,10 +190,10 @@ export function DiffViewer({
       )}
     >
       {shown.map((l, idx) => (
-        <div key={idx} className={cn(ROW, bgFor(l.op))}>
+        <div key={idx} className={cn(ROW, unifiedBgFor(l.op))}>
           <span className={GUTTER}>{l.beforeNo ?? ""}</span>
           <span className={GUTTER}>{l.afterNo ?? ""}</span>
-          <Sigil op={l.op} />
+          <UnifiedSigil op={l.op} />
           <span className="whitespace-pre-wrap break-words">{l.text}</span>
         </div>
       ))}

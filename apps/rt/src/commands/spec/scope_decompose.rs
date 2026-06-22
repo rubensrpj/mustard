@@ -42,7 +42,6 @@
 //!
 //! Fail-open: any error emits `{ "decompose": false, "reason": "error-fallback" }`.
 
-use crate::commands::spec::prd_build::pascal_tokens;
 use crate::commands::spec::spec_sections::is_heading;
 use crate::commands::wave::wave_lib::{detect_role_with, load_role_patterns, parse_files_section};
 use mustard_core::platform::i18n::{line_has_file_marker, FileMarker};
@@ -409,8 +408,8 @@ pub(crate) fn spec_prose(spec_text: &str) -> String {
 /// Count PascalCase entity tokens referenced in `spec_text` that are **not yet**
 /// among the repo model's known declaration names under `project_root`.
 ///
-/// Reuses [`pascal_tokens`] (the same entity-reference heuristic `prd-build`
-/// uses) over the spec's narrative prose ([`spec_prose`]) and grain's mined
+/// Reuses [`pascal_tokens`] (the entity-reference heuristic) over the spec's
+/// narrative prose ([`spec_prose`]) and grain's mined
 /// declaration names (read via the scan tool's `facts`), so "new" means
 /// "referenced but not yet in the model" — a deterministic stand-in for the
 /// `newEntityCount` the LLM used to estimate. A missing model (no scan yet)
@@ -424,6 +423,58 @@ fn new_entity_count_from_model(spec_text: &str, project_root: &Path) -> i64 {
         .map(|n| n.to_ascii_lowercase())
         .collect();
     count_new_entities(spec_text, &known)
+}
+
+/// Extract PascalCase tokens — the entity-reference heuristic over free text.
+///
+/// A spec references entities the same way an intent does (a capitalized word
+/// is a candidate type name), so the same splitter feeds both the new-entity
+/// count ([`count_new_entities`]) and the per-file [`entity_keys`]. Compound
+/// names split at a lower→upper boundary (`GraphQL` → `Graph` + `QL`), which is
+/// why corroboration against a Create-marked file is required to count an
+/// entity — prose fragments alone never do.
+fn pascal_tokens(intent: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    let mut last_lower = false;
+    for ch in intent.chars() {
+        if ch.is_ascii_uppercase() {
+            if !cur.is_empty() && !last_lower {
+                // Still inside a token starting with capital — keep accumulating.
+            }
+            if !cur.is_empty() && last_lower {
+                // Word boundary: previous lowercase ends; capital starts a new token only
+                // if previous token also looks PascalCase.
+                if cur.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
+                    out.push(std::mem::take(&mut cur));
+                } else {
+                    cur.clear();
+                }
+            }
+            cur.push(ch);
+            last_lower = false;
+        } else if ch.is_ascii_alphanumeric() {
+            if cur.is_empty() {
+                // No leading capital — skip (not Pascal).
+                last_lower = true;
+                continue;
+            }
+            cur.push(ch);
+            last_lower = ch.is_ascii_lowercase();
+        } else {
+            if cur.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
+                out.push(std::mem::take(&mut cur));
+            }
+            cur.clear();
+            last_lower = false;
+        }
+    }
+    if cur.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
+        out.push(cur);
+    }
+    out.sort();
+    out.dedup();
+    out
 }
 
 /// Pure: count the net-new entities of a spec — the **Create-marked `## Files`
@@ -833,6 +884,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn pascal_tokens_extracts_capitalised_words() {
+        let toks = pascal_tokens("Add Report.export PDF for User dashboard");
+        assert!(toks.iter().any(|t| t == "Report"));
+        assert!(toks.iter().any(|t| t == "User"));
+        assert!(toks.iter().any(|t| t == "PDF"));
+    }
+
+    #[test]
+    fn pascal_tokens_ignores_lowercase_words() {
+        let toks = pascal_tokens("add refresh token to login");
+        assert!(toks.is_empty());
+    }
+
+    #[test]
     fn multi_layer_decomposes() {
         let d = decide(&json!({ "layerCount": 3, "fileCount": 8 }));
         assert_eq!(d["decompose"], json!(true));
@@ -1045,8 +1110,8 @@ mod tests {
 
     /// `GraphQL` splits into `Graph` + `QL` at [`pascal_tokens`]'s lower→upper
     /// boundary; neither fragment has a create-marked file, so neither counts.
-    /// (The split itself is intentionally untouched — prd-build consumes it
-    /// too; corroboration fixes the scope signal without changing it.)
+    /// (The split itself is intentionally untouched; corroboration fixes the
+    /// scope signal without changing the splitter.)
     #[test]
     fn scope_new_entity_ignores_graphql_split_fragments() {
         let spec = "# Spec\nExpose the GraphQL mutation for payables.\n\n\

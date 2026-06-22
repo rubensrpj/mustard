@@ -23,7 +23,6 @@ function pathLabel(pathname: string, t: (key: string, fallback?: string) => stri
   if (pathname === "/telemetry") return t("sidebar.telemetry");
   if (pathname === "/quality") return t("sidebar.quality");
   if (pathname === "/commands") return t("sidebar.commands");
-  if (pathname === "/prd") return t("sidebar.prd");
   if (pathname === "/sessions") return t("sidebar.sessions");
   if (pathname.startsWith("/project/")) return t("breadcrumb.workspace");
   return pathname.replace(/^\//, "").replace(/^./, (c) => c.toUpperCase());

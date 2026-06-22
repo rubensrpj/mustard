@@ -2637,6 +2637,7 @@ name = "mustard-dashboard"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "dirs",
  "mustard-cli",
  "mustard-core",
  "notify",

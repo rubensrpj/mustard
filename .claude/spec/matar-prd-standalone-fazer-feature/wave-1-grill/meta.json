@@ -1,0 +1,46 @@
+{
+  "stage": "Close",
+  "outcome": "Completed",
+  "phase": "EXECUTE",
+  "scope": null,
+  "lang": "pt-BR",
+  "checkpoint": "2026-06-22T18:19:49.339Z",
+  "parent": "matar-prd-standalone-fazer-feature",
+  "checklist": [
+    {
+      "label": "apps/rt/src/commands/glossary_coverage.rs",
+      "path": "apps/rt/src/commands/glossary_coverage.rs",
+      "done": true
+    },
+    {
+      "label": "apps/rt/src/commands/grill_capture.rs",
+      "path": "apps/rt/src/commands/grill_capture.rs",
+      "done": true
+    },
+    {
+      "label": "apps/rt/src/commands/mod.rs",
+      "path": "apps/rt/src/commands/mod.rs",
+      "done": true
+    },
+    {
+      "label": "apps/rt/src/commands/economy/context_slice.rs",
+      "path": "apps/rt/src/commands/economy/context_slice.rs",
+      "done": true
+    },
+    {
+      "label": "apps/rt/src/hooks/task/subagent_inject.rs",
+      "path": "apps/rt/src/hooks/task/subagent_inject.rs",
+      "done": true
+    },
+    {
+      "label": "apps/cli/templates/commands/mustard/feature/SKILL.md",
+      "path": "apps/cli/templates/commands/mustard/feature/SKILL.md",
+      "done": true
+    },
+    {
+      "label": "apps/cli/templates/refs/feature/glossary-nudge.md",
+      "path": "apps/cli/templates/refs/feature/glossary-nudge.md",
+      "done": true
+    }
+  ]
+}

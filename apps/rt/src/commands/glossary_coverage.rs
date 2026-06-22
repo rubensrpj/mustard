@@ -14,9 +14,15 @@
 //! `context-slice` uses (`parse_term_blocks` + `block_matches`), so the producer
 //! and consumer of the glossary cannot drift.
 //!
-//! Output (stdout, byte-stable pretty JSON): `{ coveragePct, present, termsCovered,
-//! termsTotal, uncovered, verdict }`. Fail-open: a missing model / unreadable
-//! glossary degrades to `verdict: "na"` (the SKILL then stays silent); exit 0.
+//! Output (stdout, byte-stable pretty JSON): `{ coveragePct, contextFile, present,
+//! termsCovered, termsTotal, uncovered, verdict }`. The `uncovered` list IS the
+//! actionable payload — the weak/missing domain terms the orchestrator hands to
+//! the inline grill (`grill-capture`) so each confirmed definition lands in the
+//! glossary; `contextFile` names the resolved target to write them into (the
+//! first existing CONTEXT.md, or the first requested path when none resolved yet,
+//! so a still-empty glossary still has a destination). Fail-open: a missing model
+//! / unreadable glossary degrades to `verdict: "na"` (the SKILL then stays
+//! silent); exit 0.
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -43,6 +49,11 @@ struct Coverage {
     covered: usize,
     uncovered: Vec<String>,
     verdict: &'static str,
+    /// The glossary file the orchestrator's inline grill should write confirmed
+    /// terms into — the resolved CONTEXT.md, or the first requested path when
+    /// none exists yet (so a `missing` verdict still has a destination). Empty
+    /// when no `--context` was given.
+    context_file: String,
 }
 
 impl Coverage {
@@ -76,6 +87,7 @@ fn score(matched: &[String], blocks: &[TermBlock], present: bool) -> Coverage {
         covered,
         uncovered,
         verdict: "ok",
+        context_file: String::new(),
     };
     c.verdict = if total == 0 {
         // No domain terms touched → nothing a glossary could cover; never nudge.
@@ -106,14 +118,34 @@ fn compute(intent: &str, context: &[String], root: &Path) -> Option<Coverage> {
 
     // Parse the glossary through the SAME resolver `context-slice` uses
     // (CONTEXT-MAP.md expansion + silent skip of missing files).
-    let blocks: Vec<TermBlock> = resolve_context_files(context)
+    let resolved = resolve_context_files(context);
+    let blocks: Vec<TermBlock> = resolved
         .iter()
         .filter_map(|p| std::fs::read_to_string(p).ok())
         .flat_map(|text| parse_term_blocks(&text))
         .collect();
     let present = !blocks.is_empty();
 
-    Some(score(&matched, &blocks, present))
+    let mut coverage = score(&matched, &blocks, present);
+    coverage.context_file = target_context_file(&resolved, context);
+    Some(coverage)
+}
+
+/// The glossary path the orchestrator's inline grill writes confirmed terms
+/// into. Prefer the first file that resolved on disk (an authored CONTEXT.md);
+/// when none resolved (the `missing` case, or only a CONTEXT-MAP pointing at
+/// absent files), fall back to the first non-empty requested `--context` path so
+/// a still-empty glossary still names a concrete destination. Empty when no
+/// `--context` was given at all.
+fn target_context_file(resolved: &[std::path::PathBuf], requested: &[String]) -> String {
+    if let Some(p) = resolved.first() {
+        return p.display().to_string();
+    }
+    requested
+        .iter()
+        .find(|p| !p.is_empty())
+        .cloned()
+        .unwrap_or_default()
 }
 
 /// Render the coverage verdict as byte-stable JSON (deterministic key order).
@@ -125,6 +157,7 @@ fn to_json(c: &Coverage) -> serde_json::Value {
         "termsCovered": c.covered,
         "coveragePct": c.pct(),
         "uncovered": c.uncovered,
+        "contextFile": c.context_file,
     })
 }
 
@@ -141,6 +174,7 @@ pub fn run(intent: &str, context: &[String], root: &Path) {
             "termsCovered": 0,
             "coveragePct": 0,
             "uncovered": [],
+            "contextFile": "",
         }),
     };
     println!(
@@ -210,5 +244,25 @@ mod tests {
         let c = score(&[], &[], false);
         assert_eq!(c.verdict, "ok");
         assert_eq!(c.pct(), 100);
+    }
+
+    #[test]
+    fn target_context_file_prefers_resolved_then_falls_back_to_requested() {
+        use std::path::PathBuf;
+        // A resolved (on-disk) file wins.
+        let resolved = vec![PathBuf::from("/repo/CONTEXT.md")];
+        let requested = vec!["./CONTEXT.md".to_string()];
+        assert_eq!(
+            target_context_file(&resolved, &requested),
+            "/repo/CONTEXT.md"
+        );
+        // Nothing resolved (the `missing` case) → first non-empty requested path.
+        let requested = vec![String::new(), "docs/CONTEXT.md".to_string()];
+        assert_eq!(
+            target_context_file(&[], &requested),
+            "docs/CONTEXT.md"
+        );
+        // No --context at all → empty (no destination to offer).
+        assert!(target_context_file(&[], &[]).is_empty());
     }
 }

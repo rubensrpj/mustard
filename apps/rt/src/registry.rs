@@ -19,6 +19,7 @@ use crate::hooks::write::scan_gate::ScanGate;
 use crate::hooks::write::scope_guard::ScopeGuard;
 use crate::hooks::session::session_knowledge_observer::SessionKnowledgeObserver;
 use crate::hooks::observe::notification_observer::NotificationObserver;
+use crate::hooks::observe::prompt_observer::PromptObserver;
 use crate::hooks::observe::rewave_observer::RewaveObserver;
 use crate::hooks::observe::wave_complete_observer::WaveCompleteObserver;
 use crate::hooks::observe::wave_start_observer::WaveStartObserver;
@@ -499,6 +500,18 @@ impl Registry {
                 check: None,
                 observer: Some(Box::new(NotificationObserver)),
             },
+            Module {
+                id: "user_prompt_observer",
+                // `UserPromptSubmit` lifecycle observer — appends a single
+                // `user.prompt {prompt}` event to the per-spec NDJSON log (or
+                // the per-session sink under `.claude/.session/{id}/.events/`
+                // when no spec is resolvable), so the dashboard can render
+                // "what I asked" in the trace. Observe-only, unconditional,
+                // never blocks the prompt.
+                applies_to: &[(Trigger::UserPromptSubmit, ToolMatch::Any)],
+                check: None,
+                observer: Some(Box::new(PromptObserver)),
+            },
             // ── W3E (no-sqlite git source of truth) — wikilink footer ────────
             Module {
                 id: "wikilink_footer_observer",
@@ -702,6 +715,7 @@ mod tests {
             "session_cleanup_observer",
             "pre_compact_inject",
             "prompt_submit_inject",
+            "user_prompt_observer",
             "amend_window_inject",
             "rewave_observer",
             "wave_start_observer",
@@ -762,6 +776,9 @@ mod tests {
         // `prompt_submit_inject` on UserPromptSubmit.
         assert!(applicable_ids(&registry, Trigger::UserPromptSubmit, None)
             .contains(&"prompt_submit_inject"));
+        // `user_prompt_observer` also rides UserPromptSubmit.
+        assert!(applicable_ids(&registry, Trigger::UserPromptSubmit, None)
+            .contains(&"user_prompt_observer"));
         // `session_knowledge_observer` also covers PostToolUse(Task).
         assert!(applicable_ids(&registry, Trigger::PostToolUse, Some("Task"))
             .contains(&"session_knowledge_observer"));

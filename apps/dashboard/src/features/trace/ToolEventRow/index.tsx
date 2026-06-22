@@ -13,7 +13,8 @@
 // Each variant gets a card with a dedicated header (tool name + file path
 // or command) and the matching DS primitive for the body:
 //
-//   Edit / Write / MultiEdit → <DiffViewer mode="split"> + file path subheader
+//   Edit / Write / MultiEdit → <DiffViewer mode="unified"> (GitHub PR style)
+//                              + file path subheader
 //                              (or "diff não capturado" hint when the result
 //                              event hasn't been recorded yet)
 //   Read                     → <ReactMarkdown> for .md, <CodeBlock> otherwise
@@ -26,7 +27,14 @@
 
 import { memo, useState } from "react";
 import ReactMarkdown from "react-markdown";
-import { ChevronDown, ChevronRight, Copy, Check, FileSearch } from "lucide-react";
+import {
+  ChevronDown,
+  ChevronRight,
+  Copy,
+  Check,
+  FileSearch,
+  MessageSquareQuote,
+} from "lucide-react";
 import { DiffViewer, CodeBlock, type CodeLang } from "@/components/page";
 import { useCodeViewerStore } from "@/lib/code-viewer-store";
 import { toolPillColorClass } from "../tool-palette";
@@ -121,7 +129,7 @@ export const ToolEventRow = memo(function ToolEventRow({
           <DiffViewer
             before={result.file_before}
             after={result.file_after}
-            mode="split"
+            mode="unified"
             maxLines={200}
           />
         </PayloadCard>,
@@ -272,6 +280,10 @@ function PayloadCard({
   onOpenFile,
 }: PayloadCardProps) {
   const [showRaw, setShowRaw] = useState(false);
+  // The assistant narration that motivated this tool, when the Rust trace
+  // builder spliced it onto the payload (session traces only; absent for most
+  // tools). Read here so every tool variant renders it uniformly.
+  const motivation = strField(payload ?? {}, "motivation");
   return (
     <div
       className={cn(
@@ -344,6 +356,7 @@ function PayloadCard({
         ) : null}
       </div>
       {meta ? <MetaStrip meta={meta} /> : null}
+      {motivation ? <MotivationBlock text={motivation} /> : null}
       <div className="p-2">{children}</div>
       {payload && showRaw ? (
         <div className="px-2 pb-2">
@@ -380,6 +393,26 @@ function MetaStrip({ meta }: { meta: PayloadMeta }) {
       {summary ? (
         <p className="mt-1 text-[--ds-text-secondary]">{summary}</p>
       ) : null}
+    </div>
+  );
+}
+
+/** The assistant narration that motivated this tool — the `text` the model
+ *  wrote just before calling it, surfaced as a subtle quote above the tool body
+ *  so the reader sees the "why" alongside the "what". Rendered only when the
+ *  Rust trace builder spliced `payload.motivation` (session traces). Long
+ *  narration is capped with `max-h` + scroll so a wall of text can't blow up
+ *  the row. */
+function MotivationBlock({ text }: { text: string }) {
+  return (
+    <div className="ml-3 mt-1 mr-3 flex gap-2 rounded-[--ds-radius-sm] bg-[--ds-surface-sunken]/40 p-2">
+      <MessageSquareQuote
+        className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[--ds-text-tertiary]"
+        aria-hidden
+      />
+      <p className="max-h-32 overflow-auto whitespace-pre-wrap text-[12px] italic leading-snug text-[--ds-text-secondary]">
+        {text}
+      </p>
     </div>
   );
 }

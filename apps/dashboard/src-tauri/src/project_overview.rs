@@ -437,26 +437,65 @@ fn outdated_impl(repo_path: &str, project_dir: &str, kind: &str) -> Vec<Outdated
         return Vec::new();
     }
     match kind {
-        "npm" => npm_outdated(&cwd),
+        "npm" => js_outdated(&cwd),
         "dotnet" => dotnet_outdated(&cwd),
         "cargo" => cargo_outdated(&cwd),
         _ => Vec::new(),
     }
 }
 
-/// Run `npm outdated --json` and parse its `{pkg: {current, latest, wanted}}`
-/// map. npm exits non-zero WHEN there are outdated packages — that is normal;
-/// we parse stdout regardless of exit code.
-fn npm_outdated(cwd: &Path) -> Vec<OutdatedDep> {
-    let stdout = match run_capture(cwd, "npm", &["outdated", "--json"]) {
-        Some(s) => s,
-        None => return Vec::new(),
+/// Detect the JS package manager for `cwd` by walking up to the filesystem root
+/// for a lockfile: `pnpm-lock.yaml` → pnpm, `yarn.lock` → yarn,
+/// `package-lock.json` → npm. Defaults to npm when none is found. A monorepo
+/// keeps the lock at its root, so the walk-up is what lets a nested workspace
+/// package (e.g. `apps/sialia-admin`) resolve to the repo's real PM instead of
+/// being probed with the wrong tool.
+fn detect_js_pm(cwd: &Path) -> &'static str {
+    let mut dir = Some(cwd);
+    while let Some(d) = dir {
+        if d.join("pnpm-lock.yaml").is_file() {
+            return "pnpm";
+        }
+        if d.join("yarn.lock").is_file() {
+            return "yarn";
+        }
+        if d.join("package-lock.json").is_file() {
+            return "npm";
+        }
+        dir = d.parent();
+    }
+    "npm"
+}
+
+/// Run the workspace's JS package manager `outdated` and parse its
+/// `{pkg: {current, latest, wanted}}` map. The PM is detected from the nearest
+/// lockfile ([`detect_js_pm`]) so a pnpm/yarn monorepo isn't probed with `npm`
+/// (which yields nothing there → the "couldn't check" note). `npm` and `pnpm`
+/// share the JSON shape; pnpm needs `--format json`. The tool exits non-zero
+/// when packages are stale — that is normal; we parse stdout regardless.
+fn js_outdated(cwd: &Path) -> Vec<OutdatedDep> {
+    let pm = detect_js_pm(cwd);
+    let args: &[&str] = match pm {
+        "pnpm" => &["outdated", "--format", "json"],
+        // npm and yarn-classic both accept `--json` and emit the documented
+        // `{pkg:{current,latest}}` map; yarn-berry differs and just yields
+        // nothing parseable (fail-open empty).
+        _ => &["outdated", "--json"],
     };
-    // Empty stdout (everything up to date) is a clean empty result.
+    match run_js_capture(cwd, pm, args) {
+        Some(stdout) => parse_outdated_json(&stdout),
+        None => Vec::new(),
+    }
+}
+
+/// Parse the `{pkg: {current, latest}}` JSON emitted by both `npm outdated
+/// --json` and `pnpm outdated --format json` into `OutdatedDep`s. Empty or
+/// malformed stdout → empty (fail-open).
+fn parse_outdated_json(stdout: &str) -> Vec<OutdatedDep> {
     if stdout.trim().is_empty() {
         return Vec::new();
     }
-    let value: serde_json::Value = match serde_json::from_str(&stdout) {
+    let value: serde_json::Value = match serde_json::from_str(stdout) {
         Ok(v) => v,
         Err(_) => return Vec::new(),
     };
@@ -600,12 +639,10 @@ fn cargo_outdated(cwd: &Path) -> Vec<OutdatedDep> {
 /// returning its stdout (lossily decoded) regardless of exit code, or `None` on
 /// spawn failure / timeout. The exit code is intentionally ignored: `npm
 /// outdated` exits non-zero precisely when it has results to report.
-fn run_capture(cwd: &Path, program: &str, args: &[&str]) -> Option<String> {
+fn capture_child(mut command: std::process::Command) -> Option<String> {
     use std::process::Stdio;
 
-    let mut child = no_window_command(program)
-        .args(args)
-        .current_dir(cwd)
+    let mut child = command
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -630,6 +667,32 @@ fn run_capture(cwd: &Path, program: &str, args: &[&str]) -> Option<String> {
     }
     let output = child.wait_with_output().ok()?;
     Some(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+fn run_capture(cwd: &Path, program: &str, args: &[&str]) -> Option<String> {
+    let mut cmd = no_window_command(program);
+    cmd.args(args).current_dir(cwd);
+    capture_child(cmd)
+}
+
+/// Spawn a JS package-manager command (`pnpm`/`npm`/`yarn`). On Windows these
+/// are `.cmd` shims that `Command::new(name)` cannot resolve — Rust does not
+/// search `PATHEXT` — so a bare `npm` spawn silently fails (returns an empty
+/// outdated list → the "couldn't check" note) while `dotnet`/`cargo` (real
+/// `.exe`s) work. We therefore invoke the PM through `cmd /C` on Windows; on
+/// Unix the binary is spawned directly.
+fn run_js_capture(cwd: &Path, pm: &str, args: &[&str]) -> Option<String> {
+    let mut cmd = if cfg!(windows) {
+        let mut c = no_window_command("cmd");
+        c.arg("/C").arg(pm).args(args);
+        c
+    } else {
+        let mut c = no_window_command(pm);
+        c.args(args);
+        c
+    };
+    cmd.current_dir(cwd);
+    capture_child(cmd)
 }
 
 /// Classify the jump from `current` to `latest` by semantic version. Returns
@@ -830,5 +893,45 @@ tempfile = "3"
         assert!(outdated_impl(&dir.path().to_string_lossy(), "", "weird").is_empty());
         // Missing project dir → empty.
         assert!(outdated_impl(&dir.path().to_string_lossy(), "nope", "npm").is_empty());
+    }
+
+    #[test]
+    fn detect_js_pm_walks_up_to_the_repo_lockfile() {
+        let dir = tempfile::tempdir().unwrap();
+        // pnpm-lock at the repo root; the unit lives two levels down.
+        std::fs::write(dir.path().join("pnpm-lock.yaml"), "").unwrap();
+        let nested = dir.path().join("apps").join("admin");
+        std::fs::create_dir_all(&nested).unwrap();
+        assert_eq!(detect_js_pm(&nested), "pnpm");
+    }
+
+    #[test]
+    fn detect_js_pm_prefers_pnpm_then_yarn_then_npm_and_defaults_npm() {
+        let none = tempfile::tempdir().unwrap();
+        assert_eq!(detect_js_pm(none.path()), "npm");
+
+        let yarn = tempfile::tempdir().unwrap();
+        std::fs::write(yarn.path().join("yarn.lock"), "").unwrap();
+        assert_eq!(detect_js_pm(yarn.path()), "yarn");
+
+        let npm = tempfile::tempdir().unwrap();
+        std::fs::write(npm.path().join("package-lock.json"), "{}").unwrap();
+        assert_eq!(detect_js_pm(npm.path()), "npm");
+    }
+
+    #[test]
+    fn parse_outdated_json_reads_the_shared_npm_pnpm_shape() {
+        // The exact shape `pnpm outdated --format json` and `npm outdated --json`
+        // both emit (verified against a real pnpm workspace).
+        let json = r#"{"@next/bundle-analyzer":{"current":"16.2.4","latest":"16.2.9","wanted":"16.2.4"}}"#;
+        let out = parse_outdated_json(json);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].name, "@next/bundle-analyzer");
+        assert_eq!(out[0].current, "16.2.4");
+        assert_eq!(out[0].latest, "16.2.9");
+        assert_eq!(out[0].severity, "patch"); // 16.2.4 → 16.2.9 bumps only patch
+        // Empty / malformed → empty, never a panic.
+        assert!(parse_outdated_json("").is_empty());
+        assert!(parse_outdated_json("not json").is_empty());
     }
 }

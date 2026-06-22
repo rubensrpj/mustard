@@ -1,0 +1,41 @@
+{
+  "stage": "Close",
+  "outcome": "Completed",
+  "phase": null,
+  "scope": null,
+  "lang": "pt-BR",
+  "checkpoint": "2026-06-22T18:32:59.860Z",
+  "parent": "matar-prd-standalone-fazer-feature",
+  "checklist": [
+    {
+      "label": "apps/dashboard/src-tauri/src/prd_lapidator.rs",
+      "path": "apps/dashboard/src-tauri/src/prd_lapidator.rs",
+      "done": true
+    },
+    {
+      "label": "apps/dashboard/src/pages/Prd.tsx",
+      "path": "apps/dashboard/src/pages/Prd.tsx",
+      "done": true
+    },
+    {
+      "label": "apps/dashboard/src/api/prd.ts",
+      "path": "apps/dashboard/src/api/prd.ts",
+      "done": true
+    },
+    {
+      "label": "apps/dashboard/src/hooks/useLapidator.ts",
+      "path": "apps/dashboard/src/hooks/useLapidator.ts",
+      "done": true
+    },
+    {
+      "label": "apps/dashboard/src/features/prd/IntentHero/index.tsx",
+      "path": "apps/dashboard/src/features/prd/IntentHero/index.tsx",
+      "done": true
+    },
+    {
+      "label": "apps/dashboard/src/lib/types/prd.ts",
+      "path": "apps/dashboard/src/lib/types/prd.ts",
+      "done": true
+    }
+  ]
+}
