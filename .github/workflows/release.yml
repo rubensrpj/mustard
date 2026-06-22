@@ -212,10 +212,23 @@ jobs:
     if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4   # para os TUTORIAL-*.md e o RELEASE-BODY.md
+
       - name: Baixa todos os artefatos
         uses: actions/download-artifact@v4
         with:
           path: artifacts
+
+      - name: Monta o corpo do release + tutoriais de cada SO
+        env:
+          V: ${{ needs.version.outputs.version }}
+        run: |
+          # tutoriais (o de Linux já vem do .deb; os de Win/Mac são estáticos)
+          cp packaging/installer/TUTORIAL-WINDOWS.md \
+             packaging/installer/TUTORIAL-MACOS.md \
+             packaging/installer/TUTORIAL-LINUX.md artifacts/ || true
+          # corpo do release: seção de instalação (com a versão) no topo
+          sed "s/{{VERSION}}/$V/g" packaging/installer/RELEASE-BODY.md > artifacts/_body.md
 
       - name: Lista o que será publicado
         run: find artifacts -type f | sort
@@ -225,6 +238,7 @@ jobs:
         with:
           tag_name: ${{ github.ref_name }}
           name: Mustard v${{ needs.version.outputs.version }}
+          body_path: artifacts/_body.md
           generate_release_notes: true
           fail_on_unmatched_files: false
           files: |
@@ -232,4 +246,6 @@ jobs:
             artifacts/**/*.pkg
             artifacts/**/*.deb
             artifacts/**/install.sh
+            artifacts/**/TUTORIAL-WINDOWS.md
+            artifacts/**/TUTORIAL-MACOS.md
             artifacts/**/TUTORIAL-LINUX.md
