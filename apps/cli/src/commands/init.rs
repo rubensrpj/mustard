@@ -518,6 +518,11 @@ fn home_dir() -> Option<PathBuf> {
 ///
 /// Shared with `update`, which re-runs the same RTK guarantee.
 pub(crate) fn ensure_rtk() {
+    // No external-tool side effects under unit tests: on a clean CI runner this
+    // would shell out to `cargo install --git …rtk` (slow / network-bound).
+    if cfg!(test) {
+        return;
+    }
     if rtk_on_path() {
         println!("  RTK detected (token economy active)");
         let _ = Command::new("rtk").args(["init", "-g", "--no-patch"]).output();
@@ -558,7 +563,12 @@ fn rtk_on_path() -> bool {
 /// during the install phase. The exit code is `1` so CI/Tauri callers can
 /// detect the failure and surface it to the user.
 fn probe_rtk() {
-    if rtk_on_path() {
+    // Skip the hard gate under unit tests: a clean CI runner has no `rtk`, and a
+    // `process::exit` here would kill the whole test process (no `rtk` ->
+    // exit 1 before any test could report). Production (the `mustard` bin and
+    // the Tauri backend) compiles with `cfg!(test) == false`, so the gate still
+    // exits 1 for real installs — the documented invariant is preserved.
+    if cfg!(test) || rtk_on_path() {
         return;
     }
     eprintln!(
@@ -647,6 +657,11 @@ fn install_rtk(pinned_rev: Option<&str>) -> bool {
 ///
 /// Shared with `update`, which re-runs the same ripgrep guarantee.
 pub fn ensure_ripgrep() {
+    // No external-tool side effects under unit tests (would `cargo install
+    // ripgrep` on a clean CI runner). Production keeps `cfg!(test) == false`.
+    if cfg!(test) {
+        return;
+    }
     if rg_on_path() {
         return;
     }
