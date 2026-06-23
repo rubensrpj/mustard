@@ -449,6 +449,14 @@ pub fn run() {
         }
     };
 
+    // Self-register the PID *after* a successful bind, so the file always names
+    // the process that actually owns the port. The `SessionStart` hook spawns us
+    // fully detached (`cmd /C start` — see `shared::proc::spawn_detached`) and so
+    // cannot observe our real PID; authoring it here keeps the hook's idempotence
+    // check working (it skips a respawn when this PID is alive). Best-effort.
+    let pid_path = harness_dir.join(super::PID_FILENAME);
+    let _ = fs::write_atomic(&pid_path, std::process::id().to_string().as_bytes());
+
     let shutdown = Arc::new(AtomicBool::new(false));
     canary(&harness_dir, &json!({
         "ts": mustard_core::time::now_iso8601(),

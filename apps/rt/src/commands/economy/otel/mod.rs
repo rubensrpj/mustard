@@ -72,6 +72,12 @@ pub struct SampleRow {
     pub updated_at: Option<i64>,
 }
 
+/// Filename, under `<project>/.claude/.harness/`, where the running OTEL
+/// collector records its own PID. Authored by the collector itself (after a
+/// successful port bind, so it always names the process that owns the port) and
+/// read by the `SessionStart` hook's idempotence check and `SessionEnd` cleanup.
+pub const PID_FILENAME: &str = ".otel-collector.pid";
+
 /// Resolve `<project>/.claude` for the OTEL ports.
 ///
 /// Routed through `ClaudePaths` so the I1 guard fires at the boundary; a

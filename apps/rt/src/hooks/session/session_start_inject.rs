@@ -29,14 +29,18 @@
 //!
 //! `harness-init.js` historically spawned an OTEL collector subprocess. With
 //! the b4 port complete (`mustard-rt run otel-collector`) the spawn is now
-//! handled in-binary here: [`spawn_otel_collector`] detaches a child via
-//! `Command::new(context::current_exe()?).args(["run","otel-collector"]).spawn()?`
-//! and writes the PID to `<project>/.claude/.harness/.otel-collector.pid`.
-//! Idempotence is enforced by [`is_process_alive`] — a second `SessionStart` in
-//! the same project finds the PID file, sees the process still up, and skips
-//! the spawn. Every failure path is fail-open: a missing exe, a spawn error,
-//! or an unwritable PID file is logged via `eprintln!` and the `SessionStart`
-//! payload continues unmodified.
+//! handled in-binary here: [`spawn_otel_collector`] detaches the child through
+//! [`crate::shared::proc::spawn_detached`], which on Windows routes via
+//! `cmd /C start "" /B` so the long-lived collector does NOT inherit this
+//! hook's stdout pipe — a plain `Command::spawn` would, leaving the pipe's
+//! write end open in the daemon so the harness never sees EOF and hangs the
+//! session. The collector authors its own
+//! `<project>/.claude/.harness/.otel-collector.pid` after binding the port, so
+//! the detached spawn (which cannot observe the real PID) still feeds the
+//! idempotence check: a second `SessionStart` finds the PID file, sees the
+//! process still up via [`is_process_alive`], and skips the spawn. Every
+//! failure path is fail-open: a missing exe or a spawn error is logged via
+//! `eprintln!` and the `SessionStart` payload continues unmodified.
 //!
 //! The opt-in transcript watcher (`mustard-rt run transcript-watcher`) is
 //! spawned the same way when `MUSTARD_TRANSCRIPT_WATCH=1` is set — see
@@ -58,7 +62,6 @@ use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_
 use mustard_core::ClaudePaths;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use std::time::UNIX_EPOCH;
 
 use mustard_core::time::now_iso8601;
@@ -179,9 +182,11 @@ fn prune_old_sessions(sessions_dir: &Path) {
 // OTEL collector / transcript watcher spawn (Wave 3 — economia-moat-unification)
 // ===========================================================================
 
-/// File where the spawned OTEL collector records its PID, under the project's
-/// harness directory. The same path `session_cleanup` removes on `SessionEnd`.
-const OTEL_PID_FILE: &str = ".otel-collector.pid";
+/// File where the OTEL collector records its PID, under the project's harness
+/// directory. The collector authors it on startup (after binding the port); this
+/// hook only reads it for the idempotence + rebuild checks, and `session_cleanup`
+/// removes it on `SessionEnd`. Single source of truth lives in the OTEL module.
+const OTEL_PID_FILE: &str = crate::commands::economy::otel::PID_FILENAME;
 
 /// Environment opt-in for the transcript watcher daemon. Set to `"1"` to have
 /// `SessionStart` also spawn `mustard-rt run transcript-watcher`. Default off
@@ -233,27 +238,12 @@ fn spawn_otel_collector(cwd: &str) {
         }
     };
 
-    let child = Command::new(&exe)
-        .args(["run", "otel-collector"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn();
-    match child {
-        Ok(c) => {
-            let pid = c.id();
-            // Best-effort PID write — collector keeps running even if we can't persist.
-            if let Err(e) = fs::create_dir_all(harness_dir(cwd)) {
-                eprintln!("session_start: create_dir_all for OTEL pid file failed ({e})");
-                return;
-            }
-            if let Err(e) = fs::write_atomic(&pid_path, pid.to_string().as_bytes()) {
-                eprintln!("session_start: write OTEL pid file failed ({e})");
-            }
-        }
-        Err(e) => {
-            eprintln!("session_start: spawn `mustard-rt run otel-collector` failed ({e})");
-        }
+    // Detached spawn (`cmd /C start` on Windows): a plain child would inherit
+    // this hook's stdout pipe and hang the whole session — see
+    // `shared::proc::spawn_detached`. The collector writes its own PID file
+    // after it binds the port, so there is no PID to capture or persist here.
+    if let Err(e) = crate::shared::proc::spawn_detached(&exe, &["run", "otel-collector"]) {
+        eprintln!("session_start: spawn `mustard-rt run otel-collector` failed ({e})");
     }
 }
 
@@ -274,13 +264,9 @@ fn spawn_transcript_watcher() {
             return;
         }
     };
-    let spawned = Command::new(&exe)
-        .args(["run", "transcript-watcher"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn();
-    if let Err(e) = spawned {
+    // Detached spawn, same rationale as the OTEL collector: a plain child
+    // inherits the hook's stdout pipe on Windows and hangs the session.
+    if let Err(e) = crate::shared::proc::spawn_detached(&exe, &["run", "transcript-watcher"]) {
         eprintln!("session_start: spawn `mustard-rt run transcript-watcher` failed ({e})");
     }
 }

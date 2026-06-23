@@ -13,7 +13,76 @@
 //! these use raw OS signal APIs — they shell out to `netstat`/`lsof`/`taskkill`/
 //! `kill`/`tasklist` instead.
 
+use std::path::Path;
 use std::process::{Command, Stdio};
+
+/// Spawn `exe args…` as a detached, long-lived background daemon whose open
+/// handles are NOT inherited from this process.
+///
+/// This matters specifically when the spawner is a harness hook. A hook's
+/// stdout is a pipe Claude Code reads until EOF; a plain `Command::spawn` on
+/// Windows passes `bInheritHandles = TRUE`, so a long-lived child inherits a
+/// duplicate of that stdout pipe handle. The hook process itself can exit, but
+/// the pipe's write end stays open inside the daemon, EOF never arrives, and
+/// the harness hangs the entire session waiting for the hook's output (observed
+/// as a new session that freezes at "Initializing harness…" and must be
+/// killed). Routing the spawn through `cmd /C start "" /B` launches the daemon
+/// with `bInheritHandles = FALSE`, which breaks the inheritance — the canonical
+/// safe-Rust detach, since the crate forbids `unsafe` (so `SetHandleInformation`
+/// on the std handles is out). On Unix the `Stdio::null` redirects already
+/// replace the inherited fds with `/dev/null`, so a direct spawn carries no such
+/// leak.
+///
+/// Best-effort: returns the spawn error (a missing `cmd`, an exec failure) for
+/// the caller to log and fail open — the daemon is telemetry, never load-bearing.
+pub fn spawn_detached(exe: &Path, args: &[&str]) -> std::io::Result<()> {
+    #[cfg(windows)]
+    {
+        // PowerShell `Start-Process` launches the daemon via `CreateProcess`
+        // with `bInheritHandles = FALSE`, so the child inherits NONE of this
+        // process's handles — including the harness stdout pipe. (`cmd /C start
+        // /B` does NOT achieve this: with `/B` the child stays in the same
+        // console and still inherits the pipe, so the session keeps hanging —
+        // verified empirically.) `-WindowStyle Hidden` suppresses the new
+        // console window the launch would otherwise flash for a console app.
+        // The transient `powershell` process inherits the pipe but exits within
+        // ~0.5 s of launching the daemon, so EOF arrives promptly.
+        //
+        // Single quotes are PowerShell's literal string; a literal `'` inside a
+        // value is escaped by doubling it.
+        let q = |s: &str| s.replace('\'', "''");
+        let arg_list = args
+            .iter()
+            .map(|a| format!("'{}'", q(a)))
+            .collect::<Vec<_>>()
+            .join(",");
+        let script = if arg_list.is_empty() {
+            format!("Start-Process -FilePath '{}' -WindowStyle Hidden", q(&exe.display().to_string()))
+        } else {
+            format!(
+                "Start-Process -FilePath '{}' -ArgumentList {arg_list} -WindowStyle Hidden",
+                q(&exe.display().to_string())
+            )
+        };
+        Command::new("powershell")
+            .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map(|_| ())
+    }
+    #[cfg(not(windows))]
+    {
+        Command::new(exe)
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map(|_| ())
+    }
+}
 
 /// Free the given OTLP port: find whatever process is listening on
 /// `127.0.0.1:<port>` and kill it. Best-effort and fail-open at every step.
