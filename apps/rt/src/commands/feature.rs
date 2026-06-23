@@ -333,6 +333,11 @@ fn active_research_marker(terms: &[String], q: &DigestQuery, ts: &str) -> serde_
         "ts": ts,
         "opened_at": ts,
         "expires_at": expires_at,
+        // `touched` gates the window close: it flips to `true` on the FIRST
+        // outcome emission (the orchestrator's first anchor read). Until then a
+        // non-research tool — including the Bash that ran `feature` itself, and
+        // the ANALYZE Bash steps that follow — does NOT close the window.
+        "touched": false,
     })
 }
 
@@ -631,6 +636,8 @@ mod tests {
         // Window fields: opened_at = ts, expires_at = ts + 30 min (the age backstop).
         assert_eq!(m["opened_at"], json!("2026-06-16T00:00:00.000Z"));
         assert_eq!(m["expires_at"], json!("2026-06-16T00:30:00.000Z"), "30-min age window: {m}");
+        // `touched` opens false — the window survives the Bash that ran `feature`.
+        assert_eq!(m["touched"], json!(false), "marker opens untouched: {m}");
         let anchors = m["anchors"].as_array().expect("anchors array");
         // 3 distinct files, sorted: order.cs, refund.cs, shared.cs.
         assert_eq!(anchors.len(), 3, "one row per distinct anchor file: {m}");

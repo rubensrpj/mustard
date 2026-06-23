@@ -29,9 +29,15 @@
 //!
 //! - A Read/Edit/Write while the window is OPEN (not age-expired) correlates
 //!   the touched file with the anchors and emits one `feature.outcome` event.
-//! - The FIRST tool that is NOT Read/Edit/Write CLOSES the window (the marker
-//!   is removed) — so the reads/edits of the implementation phase that follow
-//!   the research burst never leak in as outcomes.
+//!   The FIRST such emission flips the marker's `touched` flag to `true`.
+//! - A tool that is NOT Read/Edit/Write closes the window (the marker is
+//!   removed) ONLY once `touched == true` — i.e. only after the orchestrator
+//!   has read at least one anchor. The `feature` command itself runs via the
+//!   Bash tool, so its own `PostToolUse(Bash)` (and the ANALYZE Bash steps that
+//!   precede the first read) would otherwise wipe the window before any read;
+//!   gating on `touched` keeps the window alive until the research reads happen,
+//!   then the next non-research tool closes it so the implementation phase that
+//!   follows never leaks in as outcomes.
 //! - An age-expired window (`now > expires_at`) is a backstop: the marker is
 //!   removed and nothing is emitted.
 //!
@@ -155,6 +161,40 @@ fn is_age_expired(raw: &str, now_iso: &str) -> bool {
     now_ms > exp_ms
 }
 
+/// `true` when the marker's `touched` flag is set — i.e. at least one outcome
+/// has been emitted inside this window (the orchestrator has read an anchor).
+/// An absent / unparsable flag is treated as `false` (the window has not been
+/// touched yet, so a non-research tool must NOT close it): legacy markers
+/// written before this field existed stay open until age expiry or a touched
+/// read closes them, which is the safe default for the loop we are measuring.
+fn is_touched(raw: &str) -> bool {
+    serde_json::from_str::<Value>(raw)
+        .ok()
+        .and_then(|v| v.get("touched").and_then(Value::as_bool))
+        .unwrap_or(false)
+}
+
+/// Persist `touched: true` back into the marker at `marker`, preserving every
+/// other field. Best-effort: a missing / malformed marker or a failed write is
+/// a silent no-op (the flag is correlation discipline, never correctness). Only
+/// the FIRST emission needs to flip it; re-writing an already-true marker is
+/// harmless, so the caller may skip the read-back and just call this once.
+fn mark_touched(marker: &Path) {
+    let Ok(raw) = fs::read_to_string(marker) else {
+        return;
+    };
+    let Ok(mut v) = serde_json::from_str::<Value>(&raw) else {
+        return;
+    };
+    let Some(obj) = v.as_object_mut() else {
+        return;
+    };
+    obj.insert("touched".to_string(), Value::Bool(true));
+    if let Ok(bytes) = serde_json::to_vec(&v) {
+        let _ = fs::write_atomic(marker, &bytes);
+    }
+}
+
 /// Match a touched file against an anchor path. Both are normalised to
 /// forward-slash lowercase; an anchor matches when the touched path equals it,
 /// ends with it (anchors are repo-relative, touches may be absolute), contains
@@ -202,18 +242,26 @@ fn outcome_payload(touched: &str, anchors: &[Anchor]) -> Value {
     json!({ "file": norm, "wasAnchor": was_anchor, "terms": terms })
 }
 
-/// Remove the active-research marker at `marker` — the deterministic "window
-/// closed" signal. Best-effort: a missing file or a failed unlink is a silent
-/// no-op (the next read just finds no marker and no-ops anyway).
+/// Remove the active-research marker at `marker` unconditionally — the
+/// deterministic "window closed" signal. Best-effort: a missing file or a
+/// failed unlink is a silent no-op (the next read just finds no marker and
+/// no-ops anyway). Used by the age-expiry backstop, which closes regardless of
+/// `touched`.
 fn close_window_at(marker: &Path) {
     let _ = fs::remove_file(marker);
 }
 
-/// Resolve the session marker for `cwd` and close it. No-op when the session is
-/// unresolved (nothing to close).
-fn close_window(cwd: &str) {
-    if let Some(marker) = marker_path_for(cwd) {
-        close_window_at(&marker);
+/// Close the window at `marker` from a NON-research tool, but ONLY once it has
+/// been touched (an outcome was emitted). An untouched window survives: the
+/// Bash that ran `feature` and the ANALYZE Bash steps before the first read do
+/// not wipe the window. An unreadable marker degrades to "not touched" (no
+/// removal) — fail-open, the age backstop or a later touched close handles it.
+fn close_window_if_touched_at(marker: &Path) {
+    let Ok(raw) = fs::read_to_string(marker) else {
+        return;
+    };
+    if is_touched(&raw) {
+        let _ = fs::remove_file(marker);
     }
 }
 
@@ -237,23 +285,43 @@ fn correlate_and_emit_at(cwd: &str, marker: &Path, touched: &str) -> Option<Valu
     }
     let payload = outcome_payload(touched, &anchors);
     economy::emit(cwd, ActorKind::Hook, "feature-outcome", EVENT_FEATURE_OUTCOME, None, payload.clone());
+    // First read inside the window flips `touched` so the next non-research
+    // tool is allowed to close it (the Bash that opened the window does not).
+    mark_touched(marker);
     Some(payload)
 }
 
-/// Resolve the session marker for `cwd` and correlate `touched` against it.
-/// `None` when the session is unresolved (then there is nothing to correlate).
-fn correlate_and_emit(cwd: &str, touched: &str) -> Option<Value> {
-    let marker = marker_path_for(cwd)?;
-    correlate_and_emit_at(cwd, &marker, touched)
+/// The whole `PostToolUse` decision against an EXPLICIT marker path — the
+/// testable core of [`Observer::observe`], free of the process-global session
+/// resolution (`marker_path_for`). Drives the exact dispatch `observe()` runs:
+///
+/// - A NON-research tool closes the window only if it has been touched
+///   (`close_window_if_touched_at`) — the Bash that ran `feature` survives.
+/// - A research tool (`Read`/`Edit`/`Write`) with a `file_path` correlates and
+///   emits, flipping `touched` on the first emission.
+///
+/// Returns the emitted payload when a research read emitted one, else `None`
+/// (non-research tool, no path, or nothing to emit). Side-effect only.
+fn step_window_at(cwd: &str, marker: &Path, tool: Option<&str>, file_path: Option<&str>) -> Option<Value> {
+    if !is_research_tool(tool) {
+        // Research burst is over (once touched) — close so the implementation
+        // phase that follows is not counted as outcomes.
+        close_window_if_touched_at(marker);
+        return None;
+    }
+    let touched = file_path.filter(|s| !s.is_empty())?;
+    correlate_and_emit_at(cwd, marker, touched)
 }
 
 impl Observer for FeatureOutcomeObserver {
     /// Discipline the research window on every `PostToolUse`:
     ///
     /// - A Read/Edit/Write while the window is open (not age-expired) emits one
-    ///   `feature.outcome` for the touched file.
-    /// - The first NON-Read/Edit/Write tool closes the window (removes the
-    ///   marker) so the implementation phase that follows never leaks in.
+    ///   `feature.outcome` for the touched file (flipping `touched` on the
+    ///   first emission).
+    /// - A NON-Read/Edit/Write tool closes the window (removes the marker) ONLY
+    ///   once it has been touched — so the Bash that ran `feature` itself does
+    ///   not wipe the window before any anchor is read.
     ///
     /// Pure side effect — never a verdict (a tool always proceeds), fail-open
     /// throughout.
@@ -262,16 +330,11 @@ impl Observer for FeatureOutcomeObserver {
             return;
         }
         let cwd = ctx.project_dir_or_cwd(input);
-        if !is_research_tool(input.tool_name.as_deref()) {
-            // Research burst is over — close the window so later reads/edits of
-            // the implementation phase are not counted as outcomes.
-            close_window(&cwd);
-            return;
-        }
-        let Some(touched) = file_path_of(input) else {
+        let Some(marker) = marker_path_for(&cwd) else {
             return;
         };
-        let _ = correlate_and_emit(&cwd, &touched);
+        let file_path = file_path_of(input);
+        let _ = step_window_at(&cwd, &marker, input.tool_name.as_deref(), file_path.as_deref());
     }
 }
 
@@ -352,14 +415,22 @@ mod tests {
     }
 
     #[test]
-    fn correlate_no_marker_is_silent_noop() {
-        // AC-4 (signal half): with no marker on disk, nothing is emitted and
-        // the call returns None (the observe() caller then proceeds — a Read
-        // is never blocked). marker_path_for resolves the session via env/FS,
-        // and a fresh tempdir has neither a session dir nor a marker.
+    fn step_no_marker_is_silent_noop() {
+        // AC-4 (signal half): with no marker on disk, a research Read emits
+        // nothing and returns None (the observe() caller then proceeds — a Read
+        // is never blocked). Drives the explicit-marker core so it is free of
+        // the process-global session resolution (`marker_path_for`).
         let dir = tempfile::tempdir().unwrap();
         let cwd = dir.path().to_str().unwrap();
-        assert!(correlate_and_emit(cwd, "/proj/src/refund.cs").is_none());
+        let absent = dir.path().join(ACTIVE_RESEARCH_MARKER); // never created
+        assert!(
+            step_window_at(cwd, &absent, Some("Read"), Some("/proj/src/refund.cs")).is_none(),
+            "a Read against an absent marker emits nothing"
+        );
+        // A non-research tool against an absent marker is likewise a no-op
+        // (close_window_if_touched_at fails the read → no removal, no panic).
+        assert!(step_window_at(cwd, &absent, Some("Bash"), None).is_none());
+        assert!(!absent.exists(), "no marker was created");
     }
 
     #[test]
@@ -477,5 +548,84 @@ mod tests {
             "no outcome after age expiry"
         );
         assert!(!marker.exists(), "age-expired marker is removed by the backstop");
+    }
+
+    // --- touched-gated close (the Bash-of-feature defect) -------------------
+    //
+    // `feature` runs via the Bash tool, so the very `PostToolUse(Bash)` of the
+    // command that OPENED the window used to wipe it before any anchor read.
+    // The fix: a non-research tool only closes the window once `touched` is set
+    // (flipped on the first outcome emission). These drive the explicit-marker
+    // dispatch core `step_window_at` (no process-global session env var).
+
+    #[test]
+    fn window_not_closed_before_first_read() {
+        // AC-3: a non-research tool (Bash) with touched=false does NOT close the
+        // window — simulates the Bash that ran `feature` firing right after the
+        // marker was dropped, before the orchestrator read any anchor.
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = dir.path().to_str().unwrap();
+        let marker = dir.path().join(ACTIVE_RESEARCH_MARKER);
+        let (opened, expires) = open_window_bounds();
+        seed_marker(&marker, &opened, &expires); // seed_marker omits `touched` ⇒ false
+        assert!(!is_touched(&std::fs::read_to_string(&marker).unwrap()), "precondition: untouched");
+
+        // The Bash of `feature` itself: a non-research tool, marker untouched.
+        let out = step_window_at(cwd, &marker, Some("Bash"), None);
+        assert!(out.is_none(), "non-research tool emits nothing");
+        assert!(marker.exists(), "untouched window SURVIVES the Bash that opened it");
+    }
+
+    #[test]
+    fn window_closes_after_first_read_then_nonresearch() {
+        // AC-4: once a Read has emitted an outcome (touched flips true), the next
+        // non-research tool DOES close the window.
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = dir.path().to_str().unwrap();
+        let marker = dir.path().join(ACTIVE_RESEARCH_MARKER);
+        let (opened, expires) = open_window_bounds();
+        seed_marker(&marker, &opened, &expires);
+
+        // First Read: emits + flips touched.
+        let emitted = step_window_at(cwd, &marker, Some("Read"), Some("/proj/src/refund.cs"));
+        assert!(emitted.is_some(), "the anchor read emits an outcome");
+        assert!(marker.exists(), "window still open after the read");
+        assert!(is_touched(&std::fs::read_to_string(&marker).unwrap()), "touched flipped true");
+
+        // Now a non-research tool closes the touched window.
+        let out = step_window_at(cwd, &marker, Some("Bash"), None);
+        assert!(out.is_none(), "non-research tool emits nothing");
+        assert!(!marker.exists(), "touched window closes on the next non-research tool");
+    }
+
+    #[test]
+    fn outcome_window_lifecycle_open_read_close() {
+        // AC-5: full lifecycle at the observe() dispatch level (step_window_at),
+        // exercising the real Bash→Read ordering the parent's unit ACs missed:
+        //   open → Bash (survives) → Read (counts + touched) → Bash (closes) → Read (no count).
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = dir.path().to_str().unwrap();
+        let marker = dir.path().join(ACTIVE_RESEARCH_MARKER);
+        let (opened, expires) = open_window_bounds();
+        seed_marker(&marker, &opened, &expires);
+
+        // 1. Bash (the `feature` command itself) — untouched, must NOT close.
+        assert!(step_window_at(cwd, &marker, Some("Bash"), None).is_none());
+        assert!(marker.exists(), "step 1: Bash-of-feature does not close the window");
+
+        // 2. Read of an anchor — emits and flips touched.
+        let first = step_window_at(cwd, &marker, Some("Read"), Some("/proj/src/refund.cs"));
+        assert_eq!(first.unwrap()["wasAnchor"], json!(true), "step 2: the anchor was counted");
+        assert!(marker.exists() && is_touched(&std::fs::read_to_string(&marker).unwrap()), "step 2: touched");
+
+        // 3. Bash — touched now, so the window closes.
+        assert!(step_window_at(cwd, &marker, Some("Bash"), None).is_none());
+        assert!(!marker.exists(), "step 3: touched window closes on a non-research tool");
+
+        // 4. Read after close — no marker, nothing counted (implementation-phase read).
+        assert!(
+            step_window_at(cwd, &marker, Some("Read"), Some("/proj/src/order.cs")).is_none(),
+            "step 4: a read after the window closed is not counted"
+        );
     }
 }
