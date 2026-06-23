@@ -221,7 +221,47 @@ fn payload(intent: &str, q: &DigestQuery, index: &[DigestTerm]) -> serde_json::V
             obj.insert("candidates".to_string(), json!(candidates_from_index(index)));
         }
     }
+    // Multi-concern split: when scan partitioned the query's concepts into ≥2
+    // disconnected groups (no shared module, no import bridge), it returns one
+    // `ConcernHit` per group, each with its OWN ranked anchors restricted to
+    // that concern. Emit them as a labelled `concerns` array so the orchestrator
+    // sees a clean per-concern ranking instead of the blended top-level list (a
+    // dense concern would otherwise drown the others). Single-concern compat: an
+    // empty `q.concerns` (one group, or an older scan binary) emits NO `concerns`
+    // key — the flat `anchors`/`anchorsDetail` already IS that one concern, and
+    // the existing stdout shape is unchanged byte-for-byte for current consumers.
+    // The per-concern audit mirrors the top-level projection (`scoreX1024` +
+    // carrying terms) so a consumer reads concerns and flat anchors identically.
+    if !q.concerns.is_empty() {
+        if let Some(obj) = out.as_object_mut() {
+            obj.insert("concerns".to_string(), json!(concerns_payload(&q.concerns)));
+        }
+    }
     out
+}
+
+/// Project scan's per-concern split into the labelled `concerns` payload: one
+/// row per concern, each carrying its own `anchors` (the concern's ranked
+/// `files`), `anchorsDetail` (the parallel `score_x1024` + carrying terms,
+/// rendered as `scoreX1024` exactly like the top-level audit), `concepts` (the
+/// query concepts in this concern) and `reason` (the concern's own strength).
+/// Pure (no spawn, no IO) so the shape is unit-testable without the scan binary;
+/// byte-stable (the input order is preserved verbatim, never re-sorted here).
+fn concerns_payload(concerns: &[mustard_core::domain::scan::ConcernHit]) -> Vec<serde_json::Value> {
+    concerns
+        .iter()
+        .map(|c| {
+            json!({
+                "label": c.label,
+                "concepts": c.concepts,
+                "reason": c.reason,
+                "anchors": c.files,
+                "anchorsDetail": c.files_detail.iter().map(|d| json!({
+                    "file": d.file, "scoreX1024": d.score_x1024, "terms": d.terms,
+                })).collect::<Vec<_>>(),
+            })
+        })
+        .collect()
 }
 
 /// Compact `feature.query` event payload: the RAW `--intent` text + the
@@ -359,10 +399,33 @@ fn emit_digest_used_event(payload: serde_json::Value) {
     let _ = crate::shared::events::route::emit(&dir, &ev);
 }
 
+/// The contract line for a MULTI-CONCERN answer: scan split the query's
+/// concepts into ≥2 disconnected groups (concerns), each with its own ranked
+/// anchors in the `concerns` array. The AI must read ALL the splits before
+/// reasoning — otherwise it focuses on the first (densest) concern and silently
+/// drops the others, which is the exact bias this split exists to defeat.
+/// Prepended to the reason note (one space joins them) only when `concerns >= 2`.
+const ALL_BREAKS_FIRST_CONTRACT: &str = "this query split into MULTIPLE concerns — read EVERY entry in `concerns` (each is one independent sub-request with its OWN ranked anchors) and analyze them only AFTER all the splits returned; do NOT plan on concern #1 before reading the rest, or the densest concern silently drowns the others.";
+
 /// The guidance note for the AI consuming the payload, keyed on the report's
 /// reason (the truth); an empty reason means the payload came from an older
-/// scan binary, so it falls back to the legacy `miss` flag.
-fn note(q: &DigestQuery) -> &'static str {
+/// scan binary, so it falls back to the legacy `miss` flag. When scan split the
+/// query into ≥2 concerns, the [`ALL_BREAKS_FIRST_CONTRACT`] line is prepended
+/// so the AI reads every split before reasoning; a single-concern answer keeps
+/// the base reason note verbatim (byte-stable for existing consumers).
+fn note(q: &DigestQuery) -> String {
+    let base = reason_note(q);
+    if q.concerns.len() >= 2 {
+        format!("{ALL_BREAKS_FIRST_CONTRACT} {base}")
+    } else {
+        base.to_string()
+    }
+}
+
+/// The per-reason base note (the single-concern guidance), keyed on the report's
+/// reason. Split out from [`note`] so the multi-concern contract can prepend to
+/// it without duplicating the reason ladder.
+fn reason_note(q: &DigestQuery) -> &'static str {
     // A curated lexicon bridge carried this answer — translated, not literal.
     // The planning fields are RETURNED (not withheld): the supervised glossary
     // already mapped the request vocabulary onto the code's, so a re-query in
@@ -790,6 +853,79 @@ mod tests {
         // The bridged note must NOT steer a re-query (the plain-weak note does):
         // the supervised lexicon already bridged the vocabulary.
         assert!(!note.contains("re-query"), "bridged note does not steer a re-query: {v}");
+    }
+
+    #[test]
+    fn note_emits_all_breaks_first_contract() {
+        // A multi-concern answer (scan split the query into ≥2 disconnected
+        // groups) prepends the "analyze only after ALL breaks return" contract
+        // to the note, and emits the labelled `concerns` array — each concern
+        // with its OWN ranked anchors/anchorsDetail/reason. The contract steers
+        // the AI to read every split before reasoning (so the densest concern
+        // does not drown the others).
+        let split: DigestQuery = serde_json::from_str(
+            r#"{"query":["tenant","export"],"files":["t.cs","e.cs"],"miss":false,
+                "report":{"matched":2,"total":2,"reason":"strong","terms":[]},
+                "concerns":[
+                    {"label":"tenant","concepts":["tenant"],"files":["t.cs"],
+                     "files_detail":[{"file":"t.cs","score_x1024":2048,"terms":["tenant"]}],"reason":"strong"},
+                    {"label":"export","concepts":["export"],"files":["e.cs"],
+                     "files_detail":[{"file":"e.cs","score_x1024":1024,"terms":["export"]}],"reason":"weak"}]}"#,
+        )
+        .expect("multi-concern digest payload");
+        let v = payload("tenant export", &split, &[]);
+        let note = v["note"].as_str().expect("note");
+        // The contract instruction rides on a ≥2-concern answer.
+        assert!(note.contains("MULTIPLE concerns"), "multi-concern note carries the contract: {note}");
+        assert!(note.contains("AFTER all the splits returned"), "the all-breaks-first instruction is present: {note}");
+        // The base reason note (strong) is preserved after the contract prefix.
+        assert!(note.contains("anchors"), "base reason note still rides along: {note}");
+
+        // The labelled concerns array is emitted, each with its own anchors,
+        // per-anchor audit (scoreX1024 + terms) and reason.
+        let concerns = v["concerns"].as_array().expect("concerns array on a split");
+        assert_eq!(concerns.len(), 2, "one row per concern: {v}");
+        assert_eq!(concerns[0]["label"], "tenant");
+        assert_eq!(concerns[0]["concepts"], json!(["tenant"]));
+        assert_eq!(concerns[0]["reason"], "strong");
+        assert_eq!(concerns[0]["anchors"], json!(["t.cs"]));
+        assert_eq!(concerns[0]["anchorsDetail"][0]["scoreX1024"], 2048, "per-concern audit mirrors the top-level shape: {v}");
+        assert_eq!(concerns[0]["anchorsDetail"][0]["terms"], json!(["tenant"]));
+        assert_eq!(concerns[1]["label"], "export");
+        assert_eq!(concerns[1]["reason"], "weak");
+
+        // Single-concern compat: NO `concerns` key, and the note carries NO
+        // contract prefix — the flat anchors already ARE the one concern, and
+        // the existing stdout shape is unchanged.
+        let single: DigestQuery = serde_json::from_str(
+            r#"{"query":["tenant"],"files":["t.cs"],"miss":false,
+                "report":{"matched":1,"total":1,"reason":"strong","terms":[]}}"#,
+        )
+        .expect("single-concern digest payload");
+        let v = payload("tenant", &single, &[]);
+        assert!(v.get("concerns").is_none(), "single concern emits no concerns key: {v}");
+        let note = v["note"].as_str().expect("note");
+        assert!(!note.contains("MULTIPLE concerns"), "single concern carries no contract prefix: {note}");
+
+        // Exactly ONE concern returned by scan is still single-concern by
+        // contract (1 group = the flat list) — the prefix only rides on ≥2.
+        let one: DigestQuery = serde_json::from_str(
+            r#"{"query":["tenant"],"files":["t.cs"],"miss":false,
+                "report":{"matched":1,"total":1,"reason":"strong","terms":[]},
+                "concerns":[{"label":"tenant","concepts":["tenant"],"files":["t.cs"],
+                    "files_detail":[{"file":"t.cs","score_x1024":2048,"terms":["tenant"]}],"reason":"strong"}]}"#,
+        )
+        .expect("one-concern digest payload");
+        let v = payload("tenant", &one, &[]);
+        let note = v["note"].as_str().expect("note");
+        assert!(!note.contains("MULTIPLE concerns"), "a single returned concern is not multi: {note}");
+        // The concerns array is still emitted faithfully (scan returned it).
+        assert_eq!(v["concerns"].as_array().expect("concerns").len(), 1, "the one concern is emitted: {v}");
+
+        // Byte-stable: the same multi-concern input serializes identically.
+        let a = serde_json::to_string(&payload("tenant export", &split, &[])).expect("ser");
+        let b = serde_json::to_string(&payload("tenant export", &split, &[])).expect("ser");
+        assert_eq!(a, b, "multi-concern payload is byte-stable");
     }
 
     /// Build a published-index slice (`Scan::digest().terms`) for the candidate
