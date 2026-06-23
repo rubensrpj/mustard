@@ -288,13 +288,24 @@ fn query_event_payload(intent: &str, terms: &[String], q: &DigestQuery) -> serde
     })
 }
 
+/// How long a research window stays open before the age backstop closes it.
+/// The window's PRIMARY close is deterministic — the first non-Read/Edit/Write
+/// tool removes the marker (see `feature_outcome_observer`); this is only the
+/// backstop for a window that is never followed by a non-research tool (e.g. a
+/// session that ends mid-research). Generous enough to span a real research
+/// burst with reading pauses, short enough that a stale marker cannot poison a
+/// later, unrelated session-day.
+const RESEARCH_WINDOW_SECS: i64 = 30 * 60;
+
 /// Build the `active-research.json` marker body the digest-outcome observer
-/// reads: `{terms, anchors:[{file, terms}], ts}`. The anchors invert the
-/// digest's per-term report (`report.terms[].files`) into file→terms, so the
-/// observer can mark a touched file `wasAnchor` and name the query terms that
-/// declared it WITHOUT re-deriving the mapping. Pure + deterministic (sorted
-/// files; each file's terms in report order, deduped) so the body is testable
-/// without IO; `ts` is the event channel's wall clock (stamped by the caller).
+/// reads: `{terms, anchors:[{file, terms}], ts, opened_at, expires_at}`. The
+/// anchors invert the digest's per-term report (`report.terms[].files`) into
+/// file→terms, so the observer can mark a touched file `wasAnchor` and name the
+/// query terms that declared it WITHOUT re-deriving the mapping. `opened_at` /
+/// `expires_at` give the window an age backstop (mirroring the `WindowState`
+/// pattern of `amend_window_inject`). Pure + deterministic (sorted files; each
+/// file's terms in report order, deduped) so the body is testable without IO;
+/// `ts` / `opened_at` is the event channel's wall clock (stamped by the caller).
 fn active_research_marker(terms: &[String], q: &DigestQuery, ts: &str) -> serde_json::Value {
     use std::collections::BTreeMap;
     // file -> ordered, deduped list of terms that named it.
@@ -311,7 +322,18 @@ fn active_research_marker(terms: &[String], q: &DigestQuery, ts: &str) -> serde_
         .into_iter()
         .map(|(file, terms)| json!({ "file": file, "terms": terms }))
         .collect();
-    json!({ "terms": terms, "anchors": anchors, "ts": ts })
+    // expires_at = opened_at (ts) + RESEARCH_WINDOW_SECS, derived from the same
+    // wall clock so the marker carries a self-contained window.
+    let expires_at = mustard_core::time::parse_iso_millis(ts)
+        .map(|ms| mustard_core::time::millis_to_iso(ms + RESEARCH_WINDOW_SECS * 1000))
+        .unwrap_or_else(|| ts.to_string());
+    json!({
+        "terms": terms,
+        "anchors": anchors,
+        "ts": ts,
+        "opened_at": ts,
+        "expires_at": expires_at,
+    })
 }
 
 /// Drop the per-round `active-research.json` marker in the current session,
@@ -606,6 +628,9 @@ mod tests {
         let m = active_research_marker(&terms, &q, "2026-06-16T00:00:00.000Z");
         assert_eq!(m["terms"], json!(["refund", "order"]), "raw query terms carried");
         assert_eq!(m["ts"], json!("2026-06-16T00:00:00.000Z"));
+        // Window fields: opened_at = ts, expires_at = ts + 30 min (the age backstop).
+        assert_eq!(m["opened_at"], json!("2026-06-16T00:00:00.000Z"));
+        assert_eq!(m["expires_at"], json!("2026-06-16T00:30:00.000Z"), "30-min age window: {m}");
         let anchors = m["anchors"].as_array().expect("anchors array");
         // 3 distinct files, sorted: order.cs, refund.cs, shared.cs.
         assert_eq!(anchors.len(), 3, "one row per distinct anchor file: {m}");

@@ -19,16 +19,28 @@
 //! precision metric — the deterministic CRITERION OF STOP for the locator
 //! redesign.
 //!
-//! ## Window binding (inline, not time-windowed)
+//! ## Window binding (research-scoped, deterministically closed)
 //!
 //! `feature::run` drops a small `active-research.json` marker in the session
-//! (`.claude/.session/<id>/active-research.json`, overwritten per query). This
-//! observer reads it on every Read/Edit/Write. Binding the outcome to the
-//! marker (rather than correlating by a wall-clock window in the projection)
-//! keeps the emitted events scoped to the research that produced them: no
-//! marker on disk ⇒ no event. The marker carries the anchors + the per-anchor
-//! terms, so the correlation is a pure set membership test here — the
-//! projection never has to re-derive which file belonged to which query.
+//! (`.claude/.session/<id>/active-research.json`). The marker now carries a
+//! research WINDOW (`opened_at` / `expires_at`, mirroring the `WindowState`
+//! pattern of `amend_window_inject`) alongside the anchors + per-anchor terms.
+//! This observer fires on EVERY `PostToolUse` and disciplines the window:
+//!
+//! - A Read/Edit/Write while the window is OPEN (not age-expired) correlates
+//!   the touched file with the anchors and emits one `feature.outcome` event.
+//! - The FIRST tool that is NOT Read/Edit/Write CLOSES the window (the marker
+//!   is removed) — so the reads/edits of the implementation phase that follow
+//!   the research burst never leak in as outcomes.
+//! - An age-expired window (`now > expires_at`) is a backstop: the marker is
+//!   removed and nothing is emitted.
+//!
+//! Binding the outcome to the marker (rather than correlating by a wall-clock
+//! window in the projection) keeps the emitted events scoped to the research
+//! that produced them: no marker on disk ⇒ no event. The marker carries the
+//! anchors + the per-anchor terms, so the correlation is a pure set membership
+//! test here — the projection never has to re-derive which file belonged to
+//! which query.
 //!
 //! ## Observer contract (apps/rt/CLAUDE.md)
 //!
@@ -40,6 +52,7 @@
 use mustard_core::domain::model::contract::{Ctx, HookInput, Observer, Trigger};
 use mustard_core::domain::model::event::ActorKind;
 use mustard_core::io::fs;
+use mustard_core::time::{now_iso8601, parse_iso_millis};
 use mustard_core::ClaudePaths;
 use serde_json::{json, Value};
 use std::path::Path;
@@ -57,9 +70,11 @@ pub struct FeatureOutcomeObserver;
 
 /// `true` if this is a Read / Edit / Write tool invocation — the three tools
 /// that "open" a file (the orchestrator's reads of the digest's anchors). The
-/// SIGNAL counts opens, so a read counts exactly like an edit.
-fn is_open_tool(input: &HookInput) -> bool {
-    matches!(input.tool_name.as_deref(), Some("Read" | "Edit" | "Write"))
+/// SIGNAL counts opens, so a read counts exactly like an edit. Any OTHER tool
+/// is a research-phase boundary: it closes the window (the orchestrator has
+/// moved on from reading anchors to acting on them).
+fn is_research_tool(tool: Option<&str>) -> bool {
+    matches!(tool, Some("Read" | "Edit" | "Write"))
 }
 
 /// The `file_path` of a Read/Edit/Write invocation — `file_path` for all three,
@@ -100,7 +115,8 @@ struct Anchor {
 
 /// Parse the marker JSON into the anchor set. Tolerant: a missing / malformed
 /// `anchors` array yields an empty set (the caller then no-ops). The shape is
-/// `{ "anchors": [ { "file": "...", "terms": ["..."] }, ... ] }`.
+/// `{ "opened_at": iso, "expires_at": iso, "anchors": [ { "file": "...",
+/// "terms": ["..."] }, ... ] }`.
 fn parse_anchors(raw: &str) -> Vec<Anchor> {
     let Ok(v) = serde_json::from_str::<Value>(raw) else {
         return Vec::new();
@@ -119,6 +135,24 @@ fn parse_anchors(raw: &str) -> Vec<Anchor> {
             (!file.is_empty()).then_some(Anchor { file, terms })
         })
         .collect()
+}
+
+/// `true` when the marker's `expires_at` is in the past relative to `now_iso`.
+/// An absent / unparsable `expires_at` is treated as NOT expired (the window
+/// has no age backstop, so it stays open until a non-research tool closes it) —
+/// markers written before this field existed still behave as before.
+fn is_age_expired(raw: &str, now_iso: &str) -> bool {
+    let Ok(v) = serde_json::from_str::<Value>(raw) else {
+        return false;
+    };
+    let Some(expires_at) = v.get("expires_at").and_then(Value::as_str) else {
+        return false;
+    };
+    let (Some(exp_ms), Some(now_ms)) = (parse_iso_millis(expires_at), parse_iso_millis(now_iso))
+    else {
+        return false;
+    };
+    now_ms > exp_ms
 }
 
 /// Match a touched file against an anchor path. Both are normalised to
@@ -168,13 +202,35 @@ fn outcome_payload(touched: &str, anchors: &[Anchor]) -> Value {
     json!({ "file": norm, "wasAnchor": was_anchor, "terms": terms })
 }
 
-/// Correlate a single touched file against the marker on disk and emit one
+/// Remove the active-research marker at `marker` — the deterministic "window
+/// closed" signal. Best-effort: a missing file or a failed unlink is a silent
+/// no-op (the next read just finds no marker and no-ops anyway).
+fn close_window_at(marker: &Path) {
+    let _ = fs::remove_file(marker);
+}
+
+/// Resolve the session marker for `cwd` and close it. No-op when the session is
+/// unresolved (nothing to close).
+fn close_window(cwd: &str) {
+    if let Some(marker) = marker_path_for(cwd) {
+        close_window_at(&marker);
+    }
+}
+
+/// Correlate a touched file against an EXPLICIT marker path and emit one
 /// `feature.outcome` event. Returns the emitted payload (for tests); `None`
-/// when nothing was emitted (no marker / no session / no anchors). Fail-open:
-/// every IO step degrades to `None`.
-fn correlate_and_emit(cwd: &str, touched: &str) -> Option<Value> {
-    let marker = marker_path_for(cwd)?;
-    let raw = fs::read_to_string(&marker).ok()?;
+/// when nothing was emitted (no marker on disk / no anchors / window
+/// age-expired). An age-expired window is also CLOSED here (marker removed) so
+/// it cannot keep leaking outcomes. Fail-open: every IO step degrades to
+/// `None`. Splitting the path resolution out (`marker_path_for`) keeps this
+/// core testable without the process-global session env var.
+fn correlate_and_emit_at(cwd: &str, marker: &Path, touched: &str) -> Option<Value> {
+    let raw = fs::read_to_string(marker).ok()?;
+    // Backstop: an age-expired window emits nothing and removes the marker.
+    if is_age_expired(&raw, &now_iso8601()) {
+        close_window_at(marker);
+        return None;
+    }
     let anchors = parse_anchors(&raw);
     if anchors.is_empty() {
         return None;
@@ -184,20 +240,37 @@ fn correlate_and_emit(cwd: &str, touched: &str) -> Option<Value> {
     Some(payload)
 }
 
+/// Resolve the session marker for `cwd` and correlate `touched` against it.
+/// `None` when the session is unresolved (then there is nothing to correlate).
+fn correlate_and_emit(cwd: &str, touched: &str) -> Option<Value> {
+    let marker = marker_path_for(cwd)?;
+    correlate_and_emit_at(cwd, &marker, touched)
+}
+
 impl Observer for FeatureOutcomeObserver {
-    /// Emit `feature.outcome` for the touched file when a research window is
-    /// open. Pure side effect — never a verdict, fail-open throughout.
+    /// Discipline the research window on every `PostToolUse`:
+    ///
+    /// - A Read/Edit/Write while the window is open (not age-expired) emits one
+    ///   `feature.outcome` for the touched file.
+    /// - The first NON-Read/Edit/Write tool closes the window (removes the
+    ///   marker) so the implementation phase that follows never leaks in.
+    ///
+    /// Pure side effect — never a verdict (a tool always proceeds), fail-open
+    /// throughout.
     fn observe(&self, input: &HookInput, ctx: &Ctx) {
         if ctx.trigger != Some(Trigger::PostToolUse) {
             return;
         }
-        if !is_open_tool(input) {
+        let cwd = ctx.project_dir_or_cwd(input);
+        if !is_research_tool(input.tool_name.as_deref()) {
+            // Research burst is over — close the window so later reads/edits of
+            // the implementation phase are not counted as outcomes.
+            close_window(&cwd);
             return;
         }
         let Some(touched) = file_path_of(input) else {
             return;
         };
-        let cwd = ctx.project_dir_or_cwd(input);
         let _ = correlate_and_emit(&cwd, &touched);
     }
 }
@@ -298,5 +371,111 @@ mod tests {
         assert!(!touch_matches_anchor("/proj/src/other.cs", "other.cs", "src/refund.cs"));
         // empty anchor never matches.
         assert!(!touch_matches_anchor("src/refund.cs", "refund.cs", ""));
+    }
+
+    // --- window discipline (age expiry) — pure, no FS / session -------------
+
+    #[test]
+    fn is_age_expired_compares_expires_at_to_now() {
+        let raw = r#"{ "opened_at": "2026-06-20T00:00:00.000Z",
+                       "expires_at": "2026-06-20T00:30:00.000Z", "anchors": [] }"#;
+        // now AFTER expires_at → expired.
+        assert!(is_age_expired(raw, "2026-06-20T00:30:01.000Z"));
+        // now BEFORE expires_at → still open.
+        assert!(!is_age_expired(raw, "2026-06-20T00:29:59.000Z"));
+        // no expires_at field → not expired (legacy markers stay open).
+        assert!(!is_age_expired(r#"{ "anchors": [] }"#, "2026-06-20T00:30:01.000Z"));
+        // malformed JSON → not expired (fail-open, no panic).
+        assert!(!is_age_expired("not json", "2026-06-20T00:30:01.000Z"));
+    }
+
+    // --- window discipline (observe path, marker-explicit) -----------------
+    //
+    // These drive the window-discipline core through the `_at` variants with an
+    // explicit marker path, so they need NO process-global session env var
+    // (`std::env::set_var` is `unsafe` in edition 2024 — the crate convention is
+    // to inject the dependency instead). `marker_path_for` (the env-dependent
+    // resolution it wraps) is covered separately by `correlate_no_marker_is_silent_noop`.
+
+    /// Write an `active-research.json` marker at `marker` with the given
+    /// `opened_at`/`expires_at` window and a single anchor.
+    fn seed_marker(marker: &Path, opened_at: &str, expires_at: &str) {
+        if let Some(parent) = marker.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        let body = json!({
+            "terms": ["refund"],
+            "anchors": [ { "file": "src/refund.cs", "terms": ["refund"] } ],
+            "ts": opened_at,
+            "opened_at": opened_at,
+            "expires_at": expires_at,
+        });
+        std::fs::write(marker, serde_json::to_vec(&body).unwrap()).unwrap();
+    }
+
+    /// `opened_at` = now, `expires_at` = now + 30 min — a fresh, open window.
+    fn open_window_bounds() -> (String, String) {
+        let now = now_iso8601();
+        let future = mustard_core::time::millis_to_iso(
+            mustard_core::time::parse_iso_millis(&now).unwrap_or(0) + 30 * 60 * 1000,
+        );
+        (now, future)
+    }
+
+    #[test]
+    fn outcome_within_open_window_emits() {
+        // AC-3: a Read inside an OPEN, non-expired window emits feature.outcome.
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = dir.path().to_str().unwrap();
+        let marker = dir.path().join(ACTIVE_RESEARCH_MARKER);
+        let (opened, expires) = open_window_bounds();
+        seed_marker(&marker, &opened, &expires);
+
+        let emitted = correlate_and_emit_at(cwd, &marker, "/proj/src/refund.cs");
+        assert!(emitted.is_some(), "open window emits an outcome");
+        assert_eq!(emitted.unwrap()["wasAnchor"], json!(true), "the anchor was read");
+        // The window stays open after a research read.
+        assert!(marker.exists(), "marker still open after a Read");
+    }
+
+    #[test]
+    fn outcome_after_window_close_is_silent() {
+        // AC-4: the first NON-Read/Edit/Write tool closes the window (removes
+        // the marker); a Read after that emits nothing. The observer routes a
+        // non-research tool to `close_window`, modelled here by `close_window_at`.
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = dir.path().to_str().unwrap();
+        let marker = dir.path().join(ACTIVE_RESEARCH_MARKER);
+        let (opened, expires) = open_window_bounds();
+        seed_marker(&marker, &opened, &expires);
+        assert!(marker.exists(), "precondition: window open");
+
+        // A non-research tool closes the window.
+        close_window_at(&marker);
+        assert!(!marker.exists(), "non-research tool closes the window");
+
+        // A subsequent Read finds no marker → emits nothing (read fails → None).
+        assert!(
+            correlate_and_emit_at(cwd, &marker, "/proj/src/refund.cs").is_none(),
+            "no outcome after the window closed"
+        );
+    }
+
+    #[test]
+    fn outcome_after_age_expiry_is_silent() {
+        // AC-5: a Read against an AGE-EXPIRED window emits nothing (and the
+        // backstop removes the stale marker).
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = dir.path().to_str().unwrap();
+        let marker = dir.path().join(ACTIVE_RESEARCH_MARKER);
+        // Window opened and expired in the past.
+        seed_marker(&marker, "2020-01-01T00:00:00.000Z", "2020-01-01T00:30:00.000Z");
+        assert!(marker.exists(), "precondition: stale marker present");
+
+        assert!(
+            correlate_and_emit_at(cwd, &marker, "/proj/src/refund.cs").is_none(),
+            "no outcome after age expiry"
+        );
+        assert!(!marker.exists(), "age-expired marker is removed by the backstop");
     }
 }

@@ -327,19 +327,18 @@ impl Registry {
                 check: Some(Box::new(ScopeGuard)),
                 observer: None,
             },
-            // The digest-outcome SIGNAL — on PostToolUse(Read|Edit|Write), when
-            // a research window is open (`active-research.json` marker dropped
-            // by `feature::run`), correlate the touched file with the digest's
-            // anchors and emit `feature.outcome {file, wasAnchor, terms}`. Pure
-            // Observer — telemetry only, never a verdict (a Read always
-            // proceeds), fail-open. Folded by `run digest-precision`.
+            // The digest-outcome SIGNAL — fires on EVERY PostToolUse so it can
+            // discipline the research window: while the `active-research.json`
+            // marker (dropped by `feature::run`) is open, a Read/Edit/Write
+            // correlates the touched file with the digest's anchors and emits
+            // `feature.outcome {file, wasAnchor, terms}`; the FIRST tool that is
+            // NOT Read/Edit/Write CLOSES the window (removes the marker) so the
+            // implementation phase's reads/edits do not leak in. Pure Observer —
+            // telemetry only, never a verdict (a tool always proceeds),
+            // fail-open. Folded by `run digest-precision`.
             Module {
                 id: "feature_outcome_observer",
-                applies_to: &[
-                    (Trigger::PostToolUse, ToolMatch::Named("Read")),
-                    (Trigger::PostToolUse, ToolMatch::Named("Edit")),
-                    (Trigger::PostToolUse, ToolMatch::Named("Write")),
-                ],
+                applies_to: &[(Trigger::PostToolUse, ToolMatch::Any)],
                 check: None,
                 observer: Some(Box::new(FeatureOutcomeObserver)),
             },
@@ -824,10 +823,10 @@ mod tests {
             .contains(&"delegation_advisory"));
         assert!(!applicable_ids(&registry, Trigger::PostToolUse, Some("Read"))
             .contains(&"delegation_advisory"));
-        // `feature_outcome_observer` (the digest-outcome SIGNAL) fires on
-        // PostToolUse(Read|Edit|Write) — including Read, unlike the edit-only
-        // observers — and never on the Pre side.
-        for tool in ["Read", "Edit", "Write"] {
+        // `feature_outcome_observer` (the digest-outcome SIGNAL) now fires on
+        // EVERY PostToolUse tool — Read/Edit/Write emit outcomes, any OTHER
+        // tool closes the research window — and never on the Pre side.
+        for tool in ["Read", "Edit", "Write", "Bash", "Task", "Grep"] {
             assert!(
                 applicable_ids(&registry, Trigger::PostToolUse, Some(tool))
                     .contains(&"feature_outcome_observer"),
