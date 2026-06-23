@@ -9,6 +9,7 @@ import {
   BookOpen,
   FileText,
   RefreshCw,
+  Tag,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { cn } from "@/lib/utils";
@@ -418,6 +419,14 @@ export function ProjectInfoCard({ repoPath }: ProjectInfoCardProps) {
                 : t("overview.project.single", "projeto único")}
               {" · "}
               <span className="tabular-nums">{data.project_count}</span>
+              {data.version && (
+                <span
+                  className="inline-flex items-center gap-1 rounded border border-border px-1.5 font-mono text-[10px] leading-4 tabular-nums text-foreground/80"
+                  title={t("overview.project.version", "Versão do Mustard")}
+                >
+                  <Tag className="h-3 w-3" aria-hidden />v{data.version}
+                </span>
+              )}
             </span>
           ) : undefined
         }

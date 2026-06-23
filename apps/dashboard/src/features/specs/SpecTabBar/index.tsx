@@ -4,7 +4,19 @@ import { Button } from "@/components/ui/button";
 
 export type SpecTab =
   | { id: "list"; kind: "list" }
-  | { id: string; kind: "spec"; specName: string };
+  | {
+      id: string;
+      kind: "spec";
+      specName: string;
+      /** Wave to pre-select when the tab first mounts (set when the tab was
+       *  opened by clicking a wave-child in the list tree). Optional — opening
+       *  a spec normally leaves no wave selected. */
+      initialWave?: number;
+      /** Monotonic nonce bumped on each wave-bearing open, so re-clicking the
+       *  SAME wave-child still re-selects it (the detail effect keys on this,
+       *  not on the wave value, which would no-op on a same-wave re-click). */
+      initialWaveNonce?: number;
+    };
 
 interface SpecTabBarProps {
   tabs: SpecTab[];

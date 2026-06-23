@@ -18,19 +18,12 @@ interface SpecDrillDownProps {
   className?: string;
   /** Wave 2 (2026-05-21, spec `2026-05-21-dashboard-spec-tabs`) — when set,
    *  each wave row in the Ondas tab becomes clickable and invokes this with
-   *  the wave number so the parent can open the markdown drawer. */
+   *  the wave number so the parent can open the wave markdown panel. */
   onOpenWave?: (wave: number) => void;
-  /** Wave 2 (spec `2026-05-21-dashboard-spec-tabs-polish`): when set, the
-   *  Ondas tab renders the markdown drawer inline (pinned) instead of
-   *  overlaid. State is owned by `SpecDetailDashboard`. */
-  drawerPinned?: boolean;
-  /** Toggle for `drawerPinned`. Forwarded to the inline drawer's pin button. */
-  onDrawerPinChange?: (pinned: boolean) => void;
-  /** Wave 2 (spec polish): wave currently shown in the inline drawer (so
-   *  `SpecWavesTab` can render it side-by-side when `drawerPinned`). */
+  /** Wave currently selected in the Ondas tab — drives the always-open
+   *  resizable split panel inside `SpecWavesTab`. State is owned by
+   *  `SpecDetailDashboard`. */
   openWave?: number | null;
-  /** Closer used by the inline drawer's close button. */
-  onCloseDrawer?: () => void;
 }
 
 // Followup-fix (2026-05-21, spec `2026-05-21-economia-moat-followup-fixes`):
@@ -84,10 +77,7 @@ export function SpecDrillDown({
   spec,
   className,
   onOpenWave,
-  drawerPinned,
-  onDrawerPinChange,
   openWave,
-  onCloseDrawer,
 }: SpecDrillDownProps) {
   // `null` = no explicit user choice yet; the landing tab is then derived
   // below from whether this spec has a PRD layer. A click pins `picked`.
@@ -189,10 +179,7 @@ export function SpecDrillDown({
             repoPath={repoPath}
             spec={spec}
             subSpecs={childrenQ.data ?? []}
-            drawerPinned={drawerPinned}
-            onDrawerPinChange={onDrawerPinChange}
             openWave={openWave ?? null}
-            onCloseDrawer={onCloseDrawer}
           />
         )}
       </TabsContent>

@@ -1,15 +1,22 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { dashboardSpecCard } from "@/lib/dashboard";
 import type { SpecCard as SpecCardData } from "@/lib/types/specs";
 import { SpecCard } from "../SpecCard";
 import { SpecDrillDown } from "../SpecDrillDown";
-import { WaveMarkdownDrawer } from "../WaveMarkdownDrawer";
 import { useSpecWaves } from "@/hooks/useSpecWaves";
 
 interface SpecDetailDashboardProps {
   repoPath: string | null;
   spec: string;
+  /** Wave to pre-select in the Ondas split when the tab mounts (or when the
+   *  list re-opens this spec on a different wave). Set when the spec was opened
+   *  by clicking a wave-child in the list tree; omitted for a plain open. */
+  initialWave?: number;
+  /** Bumped by the list on every wave-bearing open. The re-select effect keys
+   *  on this (not on `initialWave`) so re-clicking the SAME wave-child after the
+   *  user closed the panel re-opens it instead of no-opping. */
+  initialWaveNonce?: number;
   className?: string;
 }
 
@@ -18,12 +25,14 @@ interface SpecDetailDashboardProps {
  * verbatim (tactical-fix `2026-05-21-tf-detail-uses-speccard`) so the
  * detail view stays bit-for-bit identical to the list. `onOpenSpec` is
  * intentionally omitted — the "Detalhes" button hides itself since we are
- * already inside the detail. Body keeps `<SpecDrillDown>` (Ondas / Trace /
- * Qualidade / Rede / Sub-specs).
+ * already inside the detail. Body keeps `<SpecDrillDown>` (PRD / Spec / Ondas
+ * / Trace / Qualidade).
  */
 export function SpecDetailDashboard({
   repoPath,
   spec,
+  initialWave,
+  initialWaveNonce,
   className,
 }: SpecDetailDashboardProps) {
   const cardQ = useQuery({
@@ -35,24 +44,25 @@ export function SpecDetailDashboard({
     refetchIntervalInBackground: false,
   });
 
-  // Wave 2 (2026-05-21, spec `2026-05-21-dashboard-spec-tabs`) — track the
-  // wave currently shown in the markdown drawer. `null` = drawer closed.
-  // We also pull the waves list here (deduped by React Query against the same
-  // key used inside `SpecDrillDown`) so the drawer can show the role label.
-  const [openWave, setOpenWave] = useState<number | null>(null);
-  // Wave 2 (spec `2026-05-21-dashboard-spec-tabs-polish`): pin toggle. When
-  // pinned, the drawer renders inline beside the waves list (no overlay).
-  // State lives here (not in `WaveMarkdownDrawer`) so the choice survives
-  // close/reopen cycles and so `SpecWavesTab` can switch its layout to a
-  // side-by-side flex when pinned.
-  const [drawerPinned, setDrawerPinned] = useState<boolean>(false);
+  // Selected wave shown in the Ondas split panel. `null` = no wave selected
+  // (panel hidden). Spec `melhorias-no-dashboard-destacar-projeto` (wave 2):
+  // the legacy overlay `<Sheet>` drawer + pin toggle were removed — the wave
+  // detail now lives in an always-open resizable split owned by
+  // `SpecWavesTab`. This component only tracks which wave is open.
+  const [openWave, setOpenWave] = useState<number | null>(
+    initialWave ?? null,
+  );
+  // Re-sync the selected wave when the list (re-)opens this tab on a wave.
+  // Keyed on `initialWaveNonce` (bumped on every wave-bearing open) so it fires
+  // even on a same-wave re-click after the user closed the panel — keying on
+  // `initialWave` alone would no-op then. A plain re-open carries no nonce, so
+  // the user's in-tab selection is left untouched.
+  useEffect(() => {
+    if (initialWave != null) setOpenWave(initialWave);
+  }, [initialWave, initialWaveNonce]);
+  // Waves list (deduped by React Query against the same key used inside
+  // `SpecDrillDown`) so the `<SpecCard>` footer can point at the live wave.
   const wavesQ = useSpecWaves(repoPath, spec);
-  const openWaveRole =
-    openWave != null
-      ? openWave === 0
-        ? "spec principal"
-        : (wavesQ.data?.find((w) => w.wave === openWave)?.role ?? null)
-      : null;
 
   return (
     <div className={className}>
@@ -67,35 +77,14 @@ export function SpecDetailDashboard({
         )}
       </div>
 
-      {/* Body: 4 sub-tabs. When the drawer is pinned the markdown panel is
-          rendered inline inside `SpecWavesTab` (next to the waves list), so
-          we only mount the overlay Sheet down here when `!drawerPinned`. */}
+      {/* Body: drill-down tabs. The Ondas tab opens the wave markdown panel
+          inline (resizable split) in response to `onOpenWave`. */}
       <SpecDrillDown
         repoPath={repoPath}
         spec={spec}
         onOpenWave={setOpenWave}
-        drawerPinned={drawerPinned}
-        onDrawerPinChange={setDrawerPinned}
         openWave={openWave}
-        onCloseDrawer={() => setOpenWave(null)}
       />
-
-      {/* Wave 2: overlay markdown drawer for the clicked wave row. When
-          `drawerPinned` is true the inline `<aside>` inside `SpecWavesTab`
-          is the rendering site instead — this overlay stays mounted but
-          `open={false}` so the Sheet stays collapsed. */}
-      {!drawerPinned && (
-        <WaveMarkdownDrawer
-          open={openWave != null}
-          onOpenChange={(o) => !o && setOpenWave(null)}
-          repoPath={repoPath}
-          spec={spec}
-          wave={openWave}
-          role={openWaveRole}
-          pinned={false}
-          onPinChange={setDrawerPinned}
-        />
-      )}
     </div>
   );
 }

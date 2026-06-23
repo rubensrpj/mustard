@@ -106,12 +106,23 @@ export interface MarkdownProps {
    * pass e.g. `"720px"`.
    */
   maxWidth?: string;
+  /**
+   * Force every GFM task-list checkbox to render CHECKED, regardless of the raw
+   * `[x]`/`[ ]` in the markdown. Set by callers that know the rendered
+   * wave/spec is CONCLUDED (status `completed`) — the on-disk `## Tarefas`
+   * checklist is often left as `[ ]` even after the work landed (the real
+   * progress lives in events/meta, not the markdown), so a completed wave would
+   * otherwise show empty boxes next to a "N/N itens" badge. Defaults to `false`
+   * → the raw markdown decides (the honest state for in-progress waves).
+   */
+  forceChecked?: boolean;
 }
 
 export function Markdown({
   content,
   obsidianVaultPath = DEFAULT_OBSIDIAN_VAULT_PATH,
   maxWidth = "none",
+  forceChecked = false,
 }: MarkdownProps) {
   const vaultName = vaultNameFromPath(obsidianVaultPath);
   return (
@@ -191,7 +202,10 @@ export function Markdown({
               <input
                 type="checkbox"
                 disabled
-                checked={Boolean(props.checked)}
+                // `forceChecked` wins for completed waves/specs whose on-disk
+                // `## Tarefas` markdown still reads `[ ]`; otherwise honour the
+                // raw markdown state.
+                checked={forceChecked || Boolean(props.checked)}
                 readOnly
                 className="translate-y-[1px] mr-1"
               />

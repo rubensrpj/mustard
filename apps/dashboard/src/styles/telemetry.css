@@ -13,6 +13,18 @@
   100% { box-shadow: 0 0 0 0 transparent; }
 }
 
+/* Active-phase station pulse (follow-up `dashboard-spec-list-tree-polish`).
+   The plain `animate-pulse` only oscillates opacity, which read as too subtle
+   on the colored phase ring. This pulses a halo built from the station's own
+   ring color (`currentColor`, which the station sets to the phase `text-*`
+   hue) so the executing phase reads as alive at a glance. `currentColor` keeps
+   it per-phase without hard-coding a hue here. */
+@keyframes phase-active-pulse {
+  0%   { box-shadow: 0 0 0 0 color-mix(in srgb, currentColor 55%, transparent); }
+  70%  { box-shadow: 0 0 0 7px color-mix(in srgb, currentColor 0%, transparent); }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+
 @keyframes once-on-mount-fade {
   from { opacity: 0; }
   to   { opacity: 1; }
@@ -21,12 +33,20 @@
 @media (prefers-reduced-motion: reduce) {
   .animate-number-tick,
   .animate-wave-glow,
+  .animate-phase-active-pulse,
   .animate-mount-fade,
   .animate-ping,
   .animate-pulse {
     animation: none !important;
     transition: none !important;
   }
+}
+
+/* Repeating halo on the executing phase station. Paired with the colored ring
+   so the active phase is unmistakable. Guarded by `motion-safe:` at the call
+   site and disabled above under prefers-reduced-motion. */
+.animate-phase-active-pulse {
+  animation: phase-active-pulse 1.5s ease-out infinite;
 }
 
 .animate-number-tick {

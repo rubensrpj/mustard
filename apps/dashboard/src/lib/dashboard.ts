@@ -1217,6 +1217,9 @@ export interface OutdatedDep {
  * missing/unscanned model resolves to an all-empty overview.
  */
 export interface ProjectOverview {
+  /** Mustard CLI version stamped into `<repo>/mustard.json`; `null` when the
+   *  config is missing/malformed or carries no `version` key. */
+  version: string | null;
   is_monorepo: boolean;
   project_count: number;
   languages: string[];

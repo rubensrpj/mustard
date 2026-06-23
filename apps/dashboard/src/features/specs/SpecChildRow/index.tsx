@@ -2,7 +2,7 @@ import { cn } from "@/lib/utils";
 import { StageBullet } from "../StageBullet";
 import { StatusPill } from "../_shared/spec-status";
 import { useT } from "@/lib/i18n";
-import type { Stage, SpecState } from "@/lib/types/specs";
+import type { Stage, Outcome, Flags, SpecState } from "@/lib/types/specs";
 
 export type ChildKind = "wave" | "ac" | "sub-spec";
 
@@ -35,6 +35,35 @@ const WAVE_STATUS_STAGE: Record<string, Stage> = {
 };
 
 /**
+ * Derive the StageBullet `outcome` + `flags` from a wave/AC `status` string when
+ * the row carries no explicit `state` (sub-specs pass their own `state`; waves
+ * and ACs only carry a flat status). Without this the bullet was hard-coded to
+ * `outcome="active"`, so a finished/passed child always read as an empty ring
+ * instead of the terminal "done" glyph.
+ *
+ * A terminal status (`completed`/`pass`) lifts to `outcome="completed"` so the
+ * bullet paints the full green ring + check. A failed status (`failed`/`fail`)
+ * stays `active` but raises the `wave_failed` flag so the alert adornment shows
+ * on top of the in-flight ring. Everything else (queued/in-progress/skip/
+ * pending/unknown) stays `active` and lets the staged ring read progress.
+ */
+function outcomeFromChildStatus(status: string): {
+  outcome: Outcome;
+  flags: Partial<Flags>;
+} {
+  switch (status) {
+    case "completed":
+    case "pass":
+      return { outcome: "completed", flags: {} };
+    case "failed":
+    case "fail":
+      return { outcome: "active", flags: { wave_failed: true } };
+    default:
+      return { outcome: "active", flags: {} };
+  }
+}
+
+/**
  * SpecChildRow — an indented child row under an expanded `SpecRow`. Renders a
  * 12px `StageBullet`, a fixed-width kind tag, the label and an optional detail.
  * Clicking drills into the parent spec (children carry no route of their own).
@@ -57,6 +86,14 @@ export function SpecChildRow({
     (kind === "wave" && status
       ? WAVE_STATUS_STAGE[status] ?? "execute"
       : "plan");
+
+  // Resolve the bullet outcome/flags. An explicit `state` (sub-specs) wins; for
+  // waves/ACs derive from the flat `status` so a completed wave or passed AC
+  // paints the terminal "done" glyph instead of an empty active ring.
+  const derived = status ? outcomeFromChildStatus(status) : null;
+  const resolvedOutcome: Outcome = state?.outcome ?? derived?.outcome ?? "active";
+  const resolvedFlags: Partial<Flags> | undefined =
+    state?.flags ?? derived?.flags;
 
   return (
     <div
@@ -82,8 +119,8 @@ export function SpecChildRow({
       <StageBullet
         size={12}
         stage={resolvedStage}
-        outcome={state?.outcome ?? "active"}
-        flags={state?.flags}
+        outcome={resolvedOutcome}
+        flags={resolvedFlags}
       />
       <span className="shrink-0 w-20 text-muted-foreground/60 uppercase tracking-wide">
         {kindLabel}

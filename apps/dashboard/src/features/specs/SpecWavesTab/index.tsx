@@ -1,5 +1,12 @@
 import { useMemo, useState } from "react";
-import { ChevronRight } from "lucide-react";
+import {
+  ChevronRight,
+  CheckCircle2,
+  XCircle,
+  Loader2,
+  Circle,
+} from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 import { useNavigate } from "react-router";
 import { cn } from "@/lib/utils";
 import { relativeTime } from "@/lib/time";
@@ -11,6 +18,7 @@ import { useSpecWavesPlanned } from "@/hooks/useSpecWavesPlanned";
 import { mergeWaves } from "../_shared/merge-waves";
 import { WaveMarkdownDrawer } from "../WaveMarkdownDrawer";
 import { StatusPill } from "../_shared/spec-status";
+import { SplitDetail } from "@/components/layout";
 import { useT } from "@/lib/i18n";
 
 interface SpecWavesTabProps {
@@ -31,14 +39,9 @@ interface SpecWavesTabProps {
    * correlacionada" bucket.
    */
   subSpecs?: SpecChild[];
-  /** Wave 2 polish — drawer pin state, threaded from SpecDetailDashboard.
-   *  When true the inline `<aside>` is rendered to the right of the list. */
-  drawerPinned?: boolean;
-  onDrawerPinChange?: (pinned: boolean) => void;
-  /** Currently-open wave (drives the inline drawer when pinned). */
+  /** Currently-selected wave — drives the always-open split panel and the
+   *  highlight on the matching row. `null` = no wave selected (no panel). */
   openWave?: number | null;
-  /** Close action for the inline drawer. */
-  onCloseDrawer?: () => void;
 }
 
 /**
@@ -60,6 +63,20 @@ const STATUS_LABEL_KEYS: Record<string, string> = {
   in_progress: "specWaves.status.in_progress",
   failed:      "specWaves.status.failed",
   queued:      "specWaves.status.queued",
+};
+
+/**
+ * Per-status marker icon for the wave row. The icon makes the wave's stage
+ * legible at a glance independent of the colour-coded pill: a completed wave
+ * shows a static check (never the in-progress spinner), the live wave spins,
+ * a failed wave shows an X, and a queued wave shows an empty ring. `spin`
+ * gates the only animated marker so a finished wave reads as settled.
+ */
+const STATUS_ICON: Record<string, { Icon: LucideIcon; cls: string; spin?: boolean }> = {
+  completed:   { Icon: CheckCircle2, cls: "text-[--intent-success]" },
+  in_progress: { Icon: Loader2,     cls: "text-[--primary]", spin: true },
+  failed:      { Icon: XCircle,     cls: "text-[--intent-error]" },
+  queued:      { Icon: Circle,      cls: "text-muted-foreground/50" },
 };
 
 /**
@@ -206,6 +223,10 @@ interface WaveLiProps {
    * checklist data — the row honestly renders nothing instead of `0/0`.
    */
   checklist?: WaveChecklistProgress | null;
+  /** Whether this row is the currently-selected wave (panel open for it).
+   *  Drives a persistent highlight so the user sees which wave the split
+   *  panel is showing. */
+  selected?: boolean;
 }
 
 /**
@@ -230,6 +251,7 @@ function WaveLi({
   borderOverride,
   labelOverride,
   checklist,
+  selected,
 }: WaveLiProps) {
   const t = useT();
   const filesQ = useSpecWaveFiles(repoPath ?? null, spec ?? "", wave.wave);
@@ -277,7 +299,9 @@ function WaveLi({
         borderClass,
         clickable &&
           "cursor-pointer hover:bg-card/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[--primary]",
+        selected && "bg-[--primary]/10 ring-1 ring-[--primary]/60",
       )}
+      aria-current={selected ? "true" : undefined}
       onClick={clickable ? handleOpen : undefined}
       onKeyDown={clickable ? handleKeyDown : undefined}
       role={clickable ? "button" : undefined}
@@ -314,6 +338,24 @@ function WaveLi({
           // Keep a fixed-width placeholder so wave numbers line up vertically
           <span className="shrink-0 mt-0.5 h-5 w-5" aria-hidden />
         )}
+
+        {/* Status marker — distinct icon per wave.status so a completed wave
+            never shows the in-progress spinner. */}
+        {(() => {
+          const marker = STATUS_ICON[wave.status];
+          if (!marker) return null;
+          const { Icon, cls, spin } = marker;
+          return (
+            <Icon
+              className={cn(
+                "h-3.5 w-3.5 shrink-0 mt-0.5",
+                cls,
+                spin && "animate-spin",
+              )}
+              aria-hidden
+            />
+          );
+        })()}
 
         {/* Wave number */}
         <span
@@ -452,10 +494,7 @@ export function SpecWavesTab({
   repoPath,
   spec,
   subSpecs,
-  drawerPinned,
-  onDrawerPinChange,
   openWave,
-  onCloseDrawer,
 }: SpecWavesTabProps) {
   const t = useT();
   // Bug 5 fix (spec `2026-05-21-dashboard-spec-tabs-polish` W1): during
@@ -523,6 +562,17 @@ export function SpecWavesTab({
         : (merged.find((w) => w.wave === openWave)?.role ?? null)
       : null;
 
+  // Whether the selected NUMBERED wave is completed — drives `forceChecked` in
+  // the markdown panel so a finished wave's `## Tarefas` renders as marked even
+  // when its on-disk spec.md still reads `[ ]`. Onda #0 (the synthetic parent /
+  // full spec narrative) is intentionally excluded: its hard-coded "completed"
+  // status doesn't reflect the spec's real lifecycle, so we leave the full
+  // narrative's checklists honest rather than risk marking an active spec.
+  const openWaveCompleted =
+    openWave != null && openWave !== 0
+      ? merged.find((w) => w.wave === openWave)?.status === "completed"
+      : false;
+
   const listEmpty = merged.length === 0;
 
   if (listEmpty && !ondaZero) {
@@ -547,10 +597,11 @@ export function SpecWavesTab({
     );
   }
 
-  // Layout: inline drawer pinned mode renders the markdown panel next to
-  // the list in a 2-column flex; legacy mode keeps the list full-width
-  // (the Sheet overlay lives in `SpecDetailDashboard`).
-  const showInlineDrawer = drawerPinned && openWave != null;
+  // Layout: when a wave is selected the markdown panel sits beside the list
+  // inside an always-open resizable split (spec
+  // `melhorias-no-dashboard-destacar-projeto`, wave 2). No wave selected →
+  // the list renders full-width.
+  const showPanel = openWave != null;
 
   const list = (
     <ul className="flex flex-col gap-2">
@@ -567,6 +618,7 @@ export function SpecWavesTab({
           borderOverride="border-[--primary]/40 bg-[--primary]/5"
           labelOverride={t("specWaves.row.mainSpecLabel")}
           checklist={checklistByWave.get(0) ?? null}
+          selected={openWave === 0}
         />
       )}
       {merged.map((wave) => (
@@ -578,6 +630,7 @@ export function SpecWavesTab({
           spec={spec}
           childrenOfWave={childrenByWave.get(wave.wave)}
           checklist={checklistByWave.get(wave.wave) ?? null}
+          selected={openWave === wave.wave}
         />
       ))}
       {orphans.length > 0 && (
@@ -604,29 +657,33 @@ export function SpecWavesTab({
     </ul>
   );
 
-  if (!showInlineDrawer) {
+  // No wave selected → the list owns the full width.
+  if (!showPanel) {
     return list;
   }
 
-  // Pinned drawer: side-by-side layout. The list shrinks to a sane min
-  // width; the markdown panel takes the remaining space. On smaller
-  // viewports the two columns stack via the `lg:` breakpoint so the row is
-  // still readable.
+  // A wave is selected → always-open resizable split: the waves list on the
+  // left, the wave markdown panel on the right, divided by a draggable handle.
+  // `min-h-[40vh]` gives the split a sensible height inside the Ondas tab; the
+  // panel border matches the legacy inline `<aside>` chrome.
   return (
-    <div className="flex flex-col lg:flex-row gap-3">
-      <div className="flex-1 min-w-0">{list}</div>
-      <div className="lg:w-[28rem] lg:max-w-[50%] shrink-0">
-        <WaveMarkdownDrawer
-          open
-          onOpenChange={(o) => !o && onCloseDrawer?.()}
-          repoPath={repoPath ?? null}
-          spec={spec ?? ""}
-          wave={openWave}
-          role={openWaveRole}
-          pinned
-          onPinChange={onDrawerPinChange}
-        />
-      </div>
-    </div>
+    <SplitDetail
+      open
+      variant="inline"
+      initialFraction={0.5}
+      panel={
+        <div className="h-full rounded-md border border-border bg-card/30 overflow-hidden">
+          <WaveMarkdownDrawer
+            repoPath={repoPath ?? null}
+            spec={spec ?? ""}
+            wave={openWave}
+            role={openWaveRole}
+            waveCompleted={openWaveCompleted}
+          />
+        </div>
+      }
+    >
+      <div className="min-h-[40vh]">{list}</div>
+    </SplitDetail>
   );
 }

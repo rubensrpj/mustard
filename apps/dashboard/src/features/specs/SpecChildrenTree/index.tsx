@@ -10,8 +10,10 @@ import { useT } from "@/lib/i18n";
 interface SpecChildrenTreeProps {
   spec: string;
   projectPath: string;
-  /** Open the parent drill-down — children rows defer to this. */
-  onOpenParent: (slug: string) => void;
+  /** Open the parent drill-down — children rows defer to this. A wave-child
+   *  passes its wave number so the spec tab opens with that wave pre-selected
+   *  in the Ondas split; AC / sub-spec children omit it (open the spec only). */
+  onOpenParent: (slug: string, wave?: number) => void;
 }
 
 /**
@@ -100,7 +102,8 @@ export function SpecChildrenTree({
           label={w.role ? `${w.wave} · ${w.role}` : String(w.wave)}
           detail={w.summary}
           status={w.status}
-          onClick={() => onOpenParent(spec)}
+          // Open the spec AND pre-select this wave in the Ondas split panel.
+          onClick={() => onOpenParent(spec, w.wave)}
         />
       ))}
       {acs.map((ac) => (

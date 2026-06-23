@@ -26,6 +26,7 @@
 //! IO/spawn failure ever becomes an `Err`.
 
 use mustard_core::read_projects;
+use mustard_core::ProjectConfig;
 use serde::Serialize;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -95,6 +96,10 @@ pub struct ProjectUnitSummary {
 #[derive(Serialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub struct ProjectOverview {
+    /// The Mustard CLI `version` stamped into `<repo>/mustard.json` (same source
+    /// `detect_project_mustard` surfaces). `None` when the file is missing,
+    /// malformed, or has no `version` key — the card then omits the version.
+    pub version: Option<String>,
     /// `true` when the model declares more than one compilation unit.
     pub is_monorepo: bool,
     /// Number of compilation units (subprojects) in the model.
@@ -121,6 +126,11 @@ pub fn dashboard_project_overview(repo_path: String) -> Result<ProjectOverview, 
     let base = PathBuf::from(&repo_path);
     let model = base.join(".claude").join("grain.model.json");
     let projects = read_projects(&model);
+
+    // Mustard CLI version, read from the project-root `mustard.json` — the same
+    // source `detect_project_mustard` surfaces for the sidebar. Best-effort: a
+    // missing/malformed config yields `None` (`load` is fail-open).
+    let version = ProjectConfig::load(&base).version;
 
     let project_count = projects.len();
     let mut languages: BTreeSet<String> = BTreeSet::new();
@@ -186,6 +196,7 @@ pub fn dashboard_project_overview(repo_path: String) -> Result<ProjectOverview, 
     units.sort_by(|a, b| a.dir.cmp(&b.dir).then_with(|| a.name.cmp(&b.name)));
 
     Ok(ProjectOverview {
+        version,
         is_monorepo: project_count > 1,
         project_count,
         languages: languages.into_iter().collect(),

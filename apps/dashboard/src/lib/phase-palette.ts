@@ -17,48 +17,51 @@ export const PHASE_COLORS: Record<
   string,
   { bg: string; text: string; border: string; ring: string }
 > = {
+  // Wave (follow-up `dashboard-spec-list-tree-polish`): the palette was bumped
+  // to more saturated tints + brighter text (-300 over -400) + stronger borders
+  // so the phase chips read as vivid/alive rather than washed-out. Same hue
+  // families as before (sky/violet/green/amber/emerald/slate) — only the
+  // intensity moved. `bg` → /20-/25, `text` → -300, `border` → /50, `ring`
+  // → /60 so the active station's ring is unmistakable.
   analyze: {
-    bg: "bg-sky-500/15",
-    text: "text-sky-400",
-    border: "border-sky-500/30",
-    ring: "ring-sky-500/40",
+    bg: "bg-sky-500/20",
+    text: "text-sky-300",
+    border: "border-sky-500/50",
+    ring: "ring-sky-400/60",
   },
   plan: {
-    bg: "bg-violet-500/15",
-    text: "text-violet-400",
-    border: "border-violet-500/30",
-    ring: "ring-violet-500/40",
+    bg: "bg-violet-500/20",
+    text: "text-violet-300",
+    border: "border-violet-500/50",
+    ring: "ring-violet-400/60",
   },
-  // Wave 1 (spec `2026-05-21-dashboard-i18n-and-phase-unify`): EXECUTE moves
-  // from mustard accent to a brighter green (`green-500`) for higher contrast
-  // against the active-pipeline pulse. Tint is bumped to /20 + ring /50 so the
-  // active station reads as the most energetic moment of the run.
+  // EXECUTE — the most energetic moment of the run. Brightest green tint so the
+  // active station pops the hardest.
   execute: {
-    bg: "bg-green-500/20",
-    text: "text-green-400",
-    border: "border-green-500/40",
-    ring: "ring-green-500/50",
+    bg: "bg-green-500/25",
+    text: "text-green-300",
+    border: "border-green-500/60",
+    ring: "ring-green-400/70",
   },
-  // Wave 1: REVIEW moves from teal to amber. Two adjacent greens (teal review
-  // + emerald qa) read as the same hue at a glance; amber separates the two
-  // verification phases visually.
+  // REVIEW stays amber — separates the two verification phases (review + qa)
+  // from each other and from the greens around them.
   review: {
-    bg: "bg-amber-500/15",
-    text: "text-amber-400",
-    border: "border-amber-500/30",
-    ring: "ring-amber-500/40",
+    bg: "bg-amber-500/20",
+    text: "text-amber-300",
+    border: "border-amber-500/50",
+    ring: "ring-amber-400/60",
   },
   qa: {
-    bg: "bg-emerald-500/15",
-    text: "text-emerald-400",
-    border: "border-emerald-500/30",
-    ring: "ring-emerald-500/40",
+    bg: "bg-emerald-500/20",
+    text: "text-emerald-300",
+    border: "border-emerald-500/50",
+    ring: "ring-emerald-400/60",
   },
   close: {
-    bg: "bg-slate-500/15",
-    text: "text-slate-400",
-    border: "border-slate-500/30",
-    ring: "ring-slate-500/40",
+    bg: "bg-slate-500/20",
+    text: "text-slate-300",
+    border: "border-slate-500/50",
+    ring: "ring-slate-400/60",
   },
 };
 

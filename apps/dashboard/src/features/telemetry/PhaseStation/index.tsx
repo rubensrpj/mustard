@@ -124,7 +124,11 @@ export function PhaseStation({
                     colors.bg,
                     activeRing,
                     colors.ring,
-                    "motion-safe:animate-pulse",
+                    // `animate-pulse` (subtle opacity) + a stronger repeating
+                    // halo built from the station's phase hue (`currentColor`,
+                    // set by `colors.text`) so the executing phase is
+                    // unmistakable, not just faintly breathing.
+                    "motion-safe:animate-pulse motion-safe:animate-phase-active-pulse",
                   ),
                 state === "completed" && cn("border-transparent text-foreground", colors.bg),
               )
@@ -132,7 +136,7 @@ export function PhaseStation({
                 state === "future" && "border-border text-muted-foreground/50 bg-transparent",
                 state === "active" &&
                   cn(
-                    "border-[--primary] text-[--primary] bg-[--primary]/10 motion-safe:animate-pulse",
+                    "border-[--primary] text-[--primary] bg-[--primary]/10 motion-safe:animate-pulse motion-safe:animate-phase-active-pulse",
                     activeRing,
                   ),
                 state === "completed" && "border-transparent text-foreground bg-muted",

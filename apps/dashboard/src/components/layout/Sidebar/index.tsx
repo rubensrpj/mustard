@@ -218,8 +218,9 @@ function ProjectTreeNode({
           : t("sidebar.status.notInstalled");
 
   // Discreet second line under the project name. Reuses the existing
-  // sidebar.status.* keys for suffixes; only the "version unknown" branch
-  // needs a dedicated phrase. Color is binary green/red per user directive
+  // sidebar.status.* keys. The version number is no longer shown here — it
+  // moved to the Overview page (ProjectInfoCard); this line now carries only
+  // the install state. Color is binary green/red per user directive
   // ("verde se ok e vermelho se não"); checking stays muted.
   let statusLine: string;
   let statusLineColor: string;
@@ -229,14 +230,10 @@ function ProjectTreeNode({
   } else if (!detection?.installed) {
     statusLine = t("sidebar.status.notInstalled");
     statusLineColor = "text-[--intent-error]";
-  } else if (!detection.version) {
-    statusLine = t("sidebar.status.versionUnknown");
-    statusLineColor = "text-[--intent-success]";
   } else {
-    const suffix = updateAvailable
+    statusLine = updateAvailable
       ? t("sidebar.status.updateAvailable")
       : t("sidebar.status.installed");
-    statusLine = `v${detection.version} · ${suffix}`;
     statusLineColor = updateAvailable ? "text-[--intent-error]" : "text-[--intent-success]";
   }
 
@@ -320,7 +317,7 @@ function ProjectTreeNode({
         className={cn(
           "group/row flex items-center gap-1 pl-1 pr-1 py-1 rounded-md transition-colors",
           isActive
-            ? "bg-muted/40"
+            ? "bg-primary/15 ring-1 ring-inset ring-primary/40 border-l-2 border-primary"
             : "hover:bg-muted/30",
         )}
       >

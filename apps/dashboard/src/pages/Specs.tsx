@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useLocation } from "react-router";
 import { Search } from "lucide-react";
 import { useStore } from "@/lib/store";
@@ -354,12 +354,43 @@ export function Specs() {
   const [tabs, setTabs] = useState<SpecTab[]>([{ id: "list", kind: "list" }]);
   const [activeTabId, setActiveTabId] = useState<string>("list");
   const [quickOpenOpen, setQuickOpenOpen] = useState(false);
+  // Monotonic nonce bumped on every wave-bearing `openSpec` call. It rides on
+  // the tab as `initialWaveNonce` so `SpecDetailDashboard` re-selects the wave
+  // even when it is the SAME wave the user clicked before (e.g. they closed the
+  // split panel and clicked the same wave-child again). Keying the detail's
+  // effect on the wave value alone would no-op on a same-wave re-click.
+  const waveNonceRef = useRef(0);
 
-  function openSpec(slug: string) {
+  // `wave` (optional) pre-selects a wave in the spec's Ondas tab — set when the
+  // user clicks a wave-child row in the list tree so the wave panel opens
+  // straight away. Re-opening an already-open spec tab with a fresh wave bumps
+  // both `initialWave` and `initialWaveNonce` so `SpecDetailDashboard` re-selects
+  // that wave (the nonce makes a same-wave re-click fire too).
+  function openSpec(slug: string, wave?: number) {
+    const nonce = wave != null ? (waveNonceRef.current += 1) : undefined;
     setTabs((prev) => {
-      const exists = prev.some((t) => t.kind === "spec" && t.specName === slug);
-      if (exists) return prev;
-      return [...prev, { id: slug, kind: "spec", specName: slug }];
+      const idx = prev.findIndex(
+        (t) => t.kind === "spec" && t.specName === slug,
+      );
+      if (idx === -1) {
+        return [
+          ...prev,
+          { id: slug, kind: "spec", specName: slug, initialWave: wave, initialWaveNonce: nonce },
+        ];
+      }
+      // Tab already open — refresh its initialWave only when a wave was given,
+      // so a plain re-open (no wave) never clobbers a wave the user has since
+      // navigated to inside the tab.
+      if (wave == null) return prev;
+      const next = [...prev];
+      next[idx] = {
+        ...next[idx],
+        kind: "spec",
+        specName: slug,
+        initialWave: wave,
+        initialWaveNonce: nonce,
+      };
+      return next;
     });
     setActiveTabId(slug);
   }
@@ -424,6 +455,10 @@ export function Specs() {
     staleTime: 10_000,
     refetchInterval: 60_000,
     refetchIntervalInBackground: false,
+    // Keep the previous project's cards on screen while a switch/refetch is in
+    // flight, so the list never blanks to a full-page skeleton after first
+    // paint (spec `melhorias-no-dashboard-destacar-projeto`, wave 1).
+    placeholderData: keepPreviousData,
   });
 
   const cards = useMemo<SpecCard[]>(
@@ -447,9 +482,12 @@ export function Specs() {
     [healthData],
   );
 
-  // Loading gate — the batch query covers both stages the old cascade
-  // tracked (list walk + per-card folds happen in one command now).
-  const specsLoading = cardsQuery.isLoading;
+  // Loading gate — only the genuine first paint (no cached cards yet) shows
+  // the skeleton. With `keepPreviousData`, refetches and project switches keep
+  // the prior list on screen (`isPlaceholderData`) instead of blanking the
+  // whole section, so the skeleton no longer "trava a tela inteira" on every
+  // refresh (spec `melhorias-no-dashboard-destacar-projeto`, wave 1).
+  const specsLoading = cardsQuery.isLoading && cards.length === 0;
 
   const dateCutoff = useMemo<number>(() => {
     const now = Date.now();
@@ -649,7 +687,12 @@ export function Specs() {
           </section>
         </div>
       ) : (
-        <SpecDetailDashboard repoPath={repoPath} spec={activeTab.specName} />
+        <SpecDetailDashboard
+          repoPath={repoPath}
+          spec={activeTab.specName}
+          initialWave={activeTab.initialWave}
+          initialWaveNonce={activeTab.initialWaveNonce}
+        />
       )}
     </PageSurface>
   );
