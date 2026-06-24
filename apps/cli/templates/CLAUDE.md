@@ -14,14 +14,14 @@ When asking the user to approve an artifact (spec, wave plan, PRD), the artifact
 
 | Intent | Signals | Action |
 |--------|---------|--------|
-| Feature | create, add, new entity, implement | Pipeline Feature (Full scope) |
-| Enhancement | improve, adjust, change, add field/column, change behavior, optimize, update | Pipeline Feature (auto-detects Light/Full scope) |
+| Feature (new entity / ≥2 layers) | create, add, new entity, implement spanning ≥2 layers | Pipeline Feature |
+| Enhancement (single-layer) | improve, adjust, change, add field/column, change behavior, optimize, update | `/mustard:task` or direct — Pipeline Feature ONLY if it grows to ≥2 layers or a new entity |
 | Bugfix | error, bug, not working, broken, fix, correct | Pipeline Bugfix |
 | Analyze | analyze, audit, evaluate, check, compare, inspect, assess | Direct Grep/Glob OR Task(Explore) if >3 places to search |
 | Vibe / Spike / Prototype | spike, prototype, sketch, throwaway | `/mustard:task` — no spec, no hygiene gates, direct dispatch |
 | Simple | config tweak, single-line edit, rename one file, version bump | Direct (no Task) |
 
-Signals are heuristics — the pipeline detects what makes sense for the project that was scanned. Any change that touches production code → Pipeline Feature. Scope is auto-detected: Light (1-2 layers, ≤5 files, known pattern) vs Full (3+ layers, new entity).
+Signals are heuristics — the pipeline detects what makes sense for the project that was scanned. A change that touches production code goes through a pipeline, but **pick the lightest that fits** (see Routing economy below): a single-layer enhancement is `/mustard:task` or direct work, NOT `/feature`. Reserve `/feature` for a genuine new entity or a change spanning ≥2 layers/subprojects; even then scope auto-detects Light (1-2 layers, ≤5 files, known pattern) vs Full (3+ layers, new entity).
 
 **Routing economy — the full pipeline is the EXCEPTION that must justify itself, not the default.** The pipeline's ceremony (spec → wave → QA → close) is a fixed token cost paid once per run, re-paid as harness context on every turn; it only amortizes on a genuine multi-layer / multi-subproject feature. So pick the CHEAPEST path that fits:
 - **Full pipeline** only when the change genuinely spans **≥2 layers/subprojects OR creates a new entity** (the `scope-classify` `layerCount` is now a deterministic FACT — distinct projects/roles the census spans — so trust it to gate this; a wrong "full" on a small task is the single most expensive routing error).
@@ -50,13 +50,12 @@ Signals are heuristics — the pipeline detects what makes sense for the project
 
 ## Efficiency — never pay twice for the same tokens
 
-The biggest cost in this pipeline is **re-fetching data you ALREADY HOLD**. Before any Read/Grep/Bash, ask "is this already in my context?" — if yes, USE it, never re-fetch.
+The biggest cost is **re-fetching data you ALREADY HOLD**. Before any Read/Grep/Bash: "is this in my context?" — if yes, USE it.
 
-- **Trust a subagent's briefing** — it IS the answer you act on (Anthropic's sub-agent contract: a condensed summary), not a hint to re-verify. NEVER re-Grep/re-Read to re-confirm a finding it gave with `file:line`. Re-read directly ONLY for the Verdict rule above (a conclusion that contradicts the user, or an absence claim) — that re-verification of already-answered findings is the single biggest waste here.
-- **Run a deterministic command ONCE** — a `mustard-rt run …` output is deterministic: capture it to a file once, then read/slice the FILE. NEVER re-run the same command to read a different part (each re-run re-computes it and re-floods your context).
-- **Never re-Read an unchanged file** already in context this turn, and never Read back a spec/scaffold/`meta.json` you just wrote (Write/Edit already confirmed it).
-- **One precise search, not many widening ones** — settle a question with a single targeted Grep/Glob, not 3-4 near-identical refinements.
-- **Standard shell commands go through `rtk`** (`rtk git`, `rtk grep`, `rtk ls`, `rtk cat`, `rtk head`/`tail`/`wc`, `rtk cargo`) — a token-filtering wrapper (60-90% off those outputs) and a hard mustard dependency. `mustard-rt run …` stays BARE (its JSON is byte-stable and rtk has no filter for it). Do not pipe a `mustard-rt run` digest through bare `head`/`grep` to slice it — capture to a file and read the file (see "run a deterministic command ONCE" above). Seeing `[rtk] No hook installed` printed before a command's output is NOT "rtk is off" — it means rtk DID run (the gate's wrap worked) and the savings are active; it is rtk nagging about its optional shell auto-hook, harmless, ignore it. Never conclude "the economy is not active" from that banner.
+- **Trust a subagent's briefing** — it IS the answer (Anthropic's sub-agent contract), not a hint to re-verify. NEVER re-Grep/re-Read a finding it gave with `file:line`; re-read ONLY for the Verdict rule above (contradicts the user / claims absence).
+- **Run a deterministic command ONCE** — `mustard-rt run …` is deterministic: capture to a file, slice the FILE; never re-run to read a different part (each re-run re-computes + re-floods context).
+- **Never re-Read** an unchanged in-context file, or a spec/scaffold/`meta.json` you just wrote. **One precise search**, not 3-4 widening ones.
+- **Standard shell → `rtk`** (`rtk git/grep/ls/cat/head/tail/wc/cargo`, 60-90% off); `mustard-rt run …` stays BARE. The `[rtk] No hook installed` banner means rtk DID run (savings active) — it nags about its optional auto-hook; ignore it, never read it as "economy off".
 
 ## Pipeline Phases
 

@@ -31,13 +31,13 @@ use crate::commands::feature::domain_terms;
 /// One concept the judge reasons over: a matched query term + the anchor files
 /// the digest's per-term report named for it. Pure data carried into the prompt.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct ConceptAnchors {
+pub(crate) struct ConceptAnchors {
     /// The matched request term (the concept).
-    term: String,
+    pub(crate) term: String,
     /// The match tier that carried it (`exact` | `fold` | `stem` | `lexicon`).
-    tier: String,
+    pub(crate) tier: String,
     /// The anchor files where this concept's vocabulary lives (sorted, deduped).
-    files: Vec<String>,
+    pub(crate) files: Vec<String>,
 }
 
 /// One concern the judge returns: a human label, the concepts it groups, and
@@ -85,7 +85,7 @@ impl std::fmt::Display for JudgeParseError {
 /// != `none`) — an unmatched term carries no anchors and is not a concept to
 /// partition. Files are deduped (first-occurrence) and sorted for byte-stability.
 /// Concepts are returned in the report's order (the digest's own ranking).
-fn matched_concepts(q: &DigestQuery) -> Vec<ConceptAnchors> {
+pub(crate) fn matched_concepts(q: &DigestQuery) -> Vec<ConceptAnchors> {
     q.report
         .terms
         .iter()
