@@ -6,7 +6,7 @@ source: manual
 <!-- mustard:generated -->
 # /scan — Codebase model
 
-`/scan`, `/scan --root <dir>`, `/scan --out <path>`, `/scan --full`, `/scan --enrich` (opt-in AI Guards).
+`/scan`, `/scan --root <dir>`, `/scan --out <path>`, `/scan --full`, `/scan --enrich` (opt-in AI: Guards + lexicon).
 
 ## Process
 
@@ -38,11 +38,19 @@ through `mustard-rt run feature` (the digest research step) and `mustard-rt run 
 Parse the JSON result (`{ ok, model, regenerated?, oversized? }`); report the model path
 and surface any `oversized` warnings or `regenerated` paths.
 
-### Enrich the pending Guards (opt-in, AI)
+Then run `mustard-rt run lexicon-enrich --check [--root <dir>]` (deterministic, AI-free, read-only)
+and, if its `unbridged` list is non-empty, surface a **one-line nudge** — e.g. *"N domain terms have
+no lexicon bridge — run `/scan --enrich` to fill them."* This only LISTS the gap; it never calls AI
+and never writes. Fail-open: an empty list, no model, or no vendored pair → say nothing.
+
+### Enrich (opt-in, AI): Guards + lexicon
 
 This is the **only** step where `/scan` uses AI, and it runs **only on explicit opt-in** —
-`/scan --enrich` (or the user confirming "fill the guards now"). Without that trigger, `/scan`
-stays purely deterministic and cheap; it never dispatches an agent. When opted in:
+`/scan --enrich` (or the user confirming "enrich now"). Without that trigger, `/scan` stays purely
+deterministic and cheap. `--enrich` fills **two** things: the subprojects' `## Guards` prose (**A**,
+below) and the project lexicon bridges (**B**, after). When opted in:
+
+#### A) Guards
 
 1. **Seed the placeholders.** Run `mustard-rt run scan` (or `scan --full` to regenerate the
    maps too) so subprojects carry a `pending` `## Guards` block. The root is excluded.
@@ -68,9 +76,42 @@ stays purely deterministic and cheap; it never dispatches an agent. When opted i
 5. **Root never enters** — `scan-guards-list` already excludes it, so no agent ever authors
    guards for the workspace root.
 
+#### B) Lexicon
+
+The lexicon overlay bridges the user's vocabulary onto the code's (e.g. `titulo→payable`), closing the
+digest's first-query gap **proactively** (its reactive sibling is `lexicon-suggest`). The split is
+deliberate (validated empirically — see memory `project-mustard-domain-vs-plumbing-ranking-ceiling`):
+the rt **narrows** the candidates deterministically (no statistic separates a domain term from generic
+plumbing INSIDE one project above ~94%), and a cheap **LLM scoring pass** makes the domain-vs-generic
+call (~99.7% — Haiku alone). Do NOT eyeball "is this domain?" yourself; that ad-hoc judgement is what
+mis-picked `tipo→type` before. The flow:
+
+1. **List the gap (deterministic).** `mustard-rt run lexicon-enrich --check [--root <dir>]` → `{pair,
+   language, unbridged: [{term, count, samples}]}` — the mined CODE terms nothing bridges yet,
+   **ranked by provenance** (recurring structural role affixes demoted so domain survives the cap).
+   Empty `unbridged` or no `pair` → nothing to do, skip.
+2. **Score the candidates (the judge — cheap LLM, in orchestration).** `mustard-rt run
+   lexicon-judge-render [--root <dir>]` prints a byte-stable prompt asking for a 0-100
+   domain-vs-generic score per candidate. Dispatch it to **Haiku** (`Task`, `model: haiku` — fast +
+   cheap, already >98%); it returns a single-line JSON `{term: score}`. Keep terms scoring **≥ 60**
+   (domain), drop **< 40** (generic plumbing). The **40-59 ambiguous band** is optional: skip it, or
+   re-score just that band with **Sonnet** if you want near-100%. Headless / no LLM → fall back to the
+   provenance order from step 1 (degraded, ~88%); never block. (The PT direction is symmetric:
+   `--check-pt` surfaces `userWord→codeTerm` pairs; score them with the SAME prompt/Haiku pass.)
+3. **Propose + apply, gated.** For each KEPT term give the user-side word(s) in `language`, write
+   `[{"userWord": "...", "codeTerms": ["..."]}]` to a temp file, and run `mustard-rt run lexicon-enrich
+   --apply <file> [--root <dir>]`. The rt validates each target EXISTS as a mined term (rejects
+   hallucinations deterministically — it no longer second-guesses domain, the judge already did) and
+   writes the valid ones to `.claude/lexicons/<pair>.toml`. Parse `{applied, rejected}` and surface a
+   one-line summary (e.g. "added 8 bridges, 1 rejected").
+
+Fail-open: no model, headless, or an empty proposal → skip silently; the digest keeps using the
+committed overlay. The lexicon write touches ONLY `.claude/lexicons/` — never the embedded seed,
+never source.
+
 ## INVIOLABLE RULES
 
-- Default `/scan` produces only `grain.model.json` and never writes into subprojects; it may *warn* about oversized subproject `CLAUDE.md` files.
+- Default `/scan` produces only `grain.model.json`, never writes into subprojects, and never calls AI; it may *warn* about oversized subproject `CLAUDE.md` files and *list* (never fill) unbridged lexicon terms via the deterministic `lexicon-enrich --check`.
 - `--full` only (re)writes a deterministic, lean `CLAUDE.md` map per subproject, preserves hand-written `## Guards`, and seeds a `pending` block where none exists. The deterministic model + render never invoke AI.
-- **AI is opt-in and Guards-only.** Only `/scan --enrich` (or explicit user confirmation) invokes AI, and only to author the `## Guards` prose of **subprojects** — never the workspace root, never system prompts. Each apply is capped (~6 lines) and non-destructive. `/scan` without `--enrich` never calls AI.
+- **AI is opt-in.** Only `/scan --enrich` (or explicit user confirmation) invokes AI, for exactly two things: authoring the `## Guards` prose of **subprojects** (never the workspace root, never system prompts; each apply capped ~6 lines, non-destructive) and proposing **lexicon bridges** (each validated against the mined model before any write, into `.claude/lexicons/` only — never the seed, never source). `/scan` without `--enrich` never proposes or writes; at most it runs the deterministic `lexicon-enrich --check` to LIST the gap.
 - No confirmation prompts for the deterministic pass — `/scan` is the approval. The enrich step is the lone exception (its opt-in trigger *is* the confirmation).

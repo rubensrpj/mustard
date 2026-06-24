@@ -79,22 +79,31 @@ below) and the project lexicon bridges (**B**, after). When opted in:
 #### B) Lexicon
 
 The lexicon overlay bridges the user's vocabulary onto the code's (e.g. `titulo→payable`), closing the
-digest's first-query gap **proactively** (its reactive sibling is `lexicon-suggest`). The rt prepares
-and applies deterministically; **you** (the orchestrator) propose the bridges — no sub-agent, it is
-cheap inline reasoning:
+digest's first-query gap **proactively** (its reactive sibling is `lexicon-suggest`). The split is
+deliberate (validated empirically — see memory `project-mustard-domain-vs-plumbing-ranking-ceiling`):
+the rt **narrows** the candidates deterministically (no statistic separates a domain term from generic
+plumbing INSIDE one project above ~94%), and a cheap **LLM scoring pass** makes the domain-vs-generic
+call (~99.7% — Haiku alone). Do NOT eyeball "is this domain?" yourself; that ad-hoc judgement is what
+mis-picked `tipo→type` before. The flow:
 
-1. **List the gap.** `mustard-rt run lexicon-enrich --check [--root <dir>]` → `{pair, language,
-   unbridged: [{term, count, samples}]}` (the top mined CODE terms nothing maps a user word onto).
+1. **List the gap (deterministic).** `mustard-rt run lexicon-enrich --check [--root <dir>]` → `{pair,
+   language, unbridged: [{term, count, samples}]}` — the mined CODE terms nothing bridges yet,
+   **ranked by provenance** (recurring structural role affixes demoted so domain survives the cap).
    Empty `unbridged` or no `pair` → nothing to do, skip.
-2. **Propose bridges.** For each unbridged CODE term that is a genuine DOMAIN concept (a thing a user
-   would name in `language`), give the user-side word(s). **SKIP technical noise** — framework/plumbing
-   tokens like `dto`, `response`, `request`, `base`, `service`, `handler`, generic suffixes. Be
-   conservative: propose only where confident; proposing nothing is a valid outcome.
-3. **Apply, gated.** Write the proposals to a temp file as
-   `[{"userWord": "...", "codeTerms": ["..."]}]` and run `mustard-rt run lexicon-enrich --apply <file>
-   [--root <dir>]`. The rt validates each target EXISTS as a mined term (rejects hallucinations
-   deterministically) and writes the valid ones to `.claude/lexicons/<pair>.toml`. Parse `{applied,
-   rejected}` and surface a one-line summary (e.g. "added 8 bridges, 1 rejected").
+2. **Score the candidates (the judge — cheap LLM, in orchestration).** `mustard-rt run
+   lexicon-judge-render [--root <dir>]` prints a byte-stable prompt asking for a 0-100
+   domain-vs-generic score per candidate. Dispatch it to **Haiku** (`Task`, `model: haiku` — fast +
+   cheap, already >98%); it returns a single-line JSON `{term: score}`. Keep terms scoring **≥ 60**
+   (domain), drop **< 40** (generic plumbing). The **40-59 ambiguous band** is optional: skip it, or
+   re-score just that band with **Sonnet** if you want near-100%. Headless / no LLM → fall back to the
+   provenance order from step 1 (degraded, ~88%); never block. (The PT direction is symmetric:
+   `--check-pt` surfaces `userWord→codeTerm` pairs; score them with the SAME prompt/Haiku pass.)
+3. **Propose + apply, gated.** For each KEPT term give the user-side word(s) in `language`, write
+   `[{"userWord": "...", "codeTerms": ["..."]}]` to a temp file, and run `mustard-rt run lexicon-enrich
+   --apply <file> [--root <dir>]`. The rt validates each target EXISTS as a mined term (rejects
+   hallucinations deterministically — it no longer second-guesses domain, the judge already did) and
+   writes the valid ones to `.claude/lexicons/<pair>.toml`. Parse `{applied, rejected}` and surface a
+   one-line summary (e.g. "added 8 bridges, 1 rejected").
 
 Fail-open: no model, headless, or an empty proposal → skip silently; the digest keeps using the
 committed overlay. The lexicon write touches ONLY `.claude/lexicons/` — never the embedded seed,
