@@ -198,8 +198,15 @@ pub enum RunCmd {
         /// Read-only mode (the default): list the unbridged mined vocabulary.
         #[arg(long)]
         check: bool,
+        /// Read-only mode: mine the project's PT (user-side) vocabulary from
+        /// specs + commit messages and align each candidate onto a code term by
+        /// co-occurrence, ranked by the target's domain specificity. Surfaces
+        /// PT->code pairs the unidirectional `--check` (code-side only) cannot.
+        /// Takes precedence over `--check`; never writes.
+        #[arg(long)]
+        check_pt: bool,
         /// Apply the bridges in this proposals JSON file (gated write). Takes
-        /// precedence over `--check`.
+        /// precedence over `--check` / `--check-pt`.
         #[arg(long)]
         apply: Option<PathBuf>,
         /// Workspace root. Defaults to the current directory (resolved to the
@@ -1863,7 +1870,7 @@ pub fn dispatch(cmd: RunCmd) {
         } => grill_capture::run(&term, &definition, &context, &root),
         RunCmd::DigestPrecision { root } => digest_precision::run(&root),
         RunCmd::LexiconSuggest { accept, root } => lexicon_suggest::run(accept.as_deref(), &root),
-        RunCmd::LexiconEnrich { check, apply, root } => lexicon_enrich::run(check, apply.as_deref(), &root),
+        RunCmd::LexiconEnrich { check, check_pt, apply, root } => lexicon_enrich::run(check, check_pt, apply.as_deref(), &root),
         RunCmd::DiffContext {
             parent,
             subproject,
