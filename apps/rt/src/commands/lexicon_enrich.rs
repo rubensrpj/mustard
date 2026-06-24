@@ -72,18 +72,24 @@ const PT_STOPLIST: &str = include_str!("../../../scan/stoplists/pt.txt");
 const EN_STOPLIST: &str = include_str!("../../../scan/stoplists/en.txt");
 
 /// Cap on the unbridged terms `--check` emits. The published digest orders its
-/// term index by kind-weighted rank, NOT by discriminative power, so we re-rank
-/// the unbridged candidates by `specificity_x1024` (TF·IDF) before the cut: the
-/// head is the domain vocabulary worth a bridge, the tail is plumbing. Bounds
-/// the payload (a repo can mine thousands of tokens) without dumping that tail.
+/// term index by kind-weighted rank, NOT by likely domain-ness, so we re-rank
+/// the unbridged candidates by PROVENANCE before the cut — demoting terms that
+/// are recurring STRUCTURAL role affixes (type glue like a `Handler`/`Service`
+/// suffix) so the genuine domain vocabulary survives the cut at the head. Bounds
+/// the payload (a repo can mine thousands of tokens) without dumping the domain
+/// head. (`count×idf` specificity was REFUTED as a domain-vs-plumbing classifier
+/// and is no longer the rank — see [`unbridged_terms`].)
 const MAX_UNBRIDGED: usize = 60;
 
-/// Floor on a bridge target's `specificity_x1024` at `--apply`. A target whose
-/// domain specificity (TF·IDF ×1024) sits below this is ubiquitous plumbing
-/// (high `df` → idf ≈ 0): bridging a user word onto it would match nearly every
-/// module, so the gate rejects it (`target_too_generic`). Tuned just above 0 to
-/// reject only the truly ubiquitous term while admitting any real mid-frequency
-/// domain word — a policy of this consumer, not of the pure ranking primitive.
+/// Floor on a PT->code alignment target's `specificity_x1024` in the PT mining
+/// (`pt_pairs`). A target whose domain specificity (TF·IDF ×1024, computed over
+/// the document corpus) sits below this is ubiquitous boilerplate (high `df` →
+/// idf ≈ 0): aligning a user word onto it would smear it across the repo, so the
+/// PT miner drops the pair. Tuned just above 0 to reject only the truly
+/// ubiquitous term. This is the ONLY surviving use of a specificity floor — the
+/// `--apply` `target_too_generic` gate was removed (refuted; the LLM judge is
+/// the domain arbiter now). PT-corpus boilerplate removal is a legitimate use of
+/// `count×idf` as a CORPUS STATISTIC, never as a domain-vs-plumbing classifier.
 const MIN_TARGET_SPECIFICITY_X1024: u64 = 256;
 
 /// One mined code term with no lexicon bridge — the `--check` output row.
@@ -102,15 +108,48 @@ fn bridged_code_terms(root: &Path, pair: Option<&PairSeed>) -> BTreeSet<String> 
     effective_lexicon(root, pair).into_values().flatten().collect()
 }
 
+/// Folded role affix -> its STRUCTURAL recurrence (the count of distinct
+/// entities the affix pairs with), built from the digest's role index. Only
+/// `suffix` | `prefix` | `nested` affixes are type GLUE (a recurring affix that
+/// names a role across entities — `Handler`, `Service`, an `I` prefix); a
+/// `folder` role is module ORGANISATION, not a type-name affix, so it carries
+/// recurrence 0 (it must not demote a domain term that merely shares the folder
+/// name). On a fold collision the higher recurrence wins (the more structural
+/// reading). The lookup key is folded so a candidate term matches case/accent-
+/// insensitively, the lexicon's identity.
+fn structural_recurrence(roles: &[mustard_core::domain::scan::DigestRole]) -> BTreeMap<String, usize> {
+    let mut map: BTreeMap<String, usize> = BTreeMap::new();
+    for r in roles {
+        let recurrence = match r.kind.as_str() {
+            "suffix" | "prefix" | "nested" => r.count,
+            _ => 0, // a `folder` role is organisation, not type glue → no demotion
+        };
+        let entry = map.entry(folded(&r.affix)).or_insert(0);
+        *entry = (*entry).max(recurrence);
+    }
+    map
+}
+
 /// The mined CODE terms (digest term index) that no lexicon entry bridges to,
-/// re-ranked by domain specificity (TF·IDF ×1024) descending and capped at
-/// [`MAX_UNBRIDGED`]. The digest publishes terms in kind-weighted order, not by
-/// discriminative power, so the cap would otherwise keep an arbitrary slice; the
-/// re-rank makes the head the domain vocabulary worth a bridge and the cut drop
-/// the plumbing tail. Ties break stably on the folded term (byte-stable output).
-/// A term is matched against the bridged set by its folded key (the lexicon's
-/// identity), so accent/case never leaks a false "unbridged".
-fn unbridged_terms(digest: &Digest, bridged: &BTreeSet<String>) -> Vec<Unbridged> {
+/// ranked by PROVENANCE and capped at [`MAX_UNBRIDGED`]. The digest publishes
+/// terms in kind-weighted order, not by likely domain-ness, so the cap would
+/// otherwise keep an arbitrary slice. The rank DEMOTES terms that are recurring
+/// structural role affixes (a `Handler`/`Service` suffix is type glue, not
+/// business vocabulary — `structural` from [`structural_recurrence`]) so the
+/// genuine domain vocabulary survives the cut at the head. NOT a specificity
+/// (`count×idf`) rank — that was refuted as a domain-vs-plumbing classifier; the
+/// `specificity_x1024` value still rides along on the row as a harmless corpus
+/// stat but never drives the order. Sort: structural penalty ASC (non-affixes &
+/// low-recurrence first = likely domain), then `count` DESC (prominent terms
+/// first), then folded term ASC (byte-stable tie-break). A term is matched
+/// against the bridged set by its folded key, so accent/case never leaks a false
+/// "unbridged".
+fn unbridged_terms(
+    digest: &Digest,
+    bridged: &BTreeSet<String>,
+    structural: &BTreeMap<String, usize>,
+) -> Vec<Unbridged> {
+    let penalty = |term: &str| -> usize { structural.get(&folded(term)).copied().unwrap_or(0) };
     let mut unbridged: Vec<Unbridged> = digest
         .terms
         .iter()
@@ -122,15 +161,43 @@ fn unbridged_terms(digest: &Digest, bridged: &BTreeSet<String>) -> Vec<Unbridged
             samples: t.samples.clone(),
         })
         .collect();
-    // Specificity desc, then folded term asc as a deterministic tie-break, so
-    // two terms with equal specificity always order the same way across runs.
+    // Provenance rank: structural penalty asc (likely-domain first), then count
+    // desc (prominent first), then folded term asc — a total order, so two runs
+    // over the same inputs order identically (byte-stable output).
     unbridged.sort_by(|a, b| {
-        b.specificity_x1024
-            .cmp(&a.specificity_x1024)
+        penalty(&a.term)
+            .cmp(&penalty(&b.term))
+            .then_with(|| b.count.cmp(&a.count))
             .then_with(|| folded(&a.term).cmp(&folded(&b.term)))
     });
     unbridged.truncate(MAX_UNBRIDGED);
     unbridged
+}
+
+/// Derive the ranked unbridged candidates for `root` — the single source the
+/// `--check` report AND the LLM judge (`lexicon-judge-render`) both consume, so
+/// the judge scores EXACTLY the candidates `--check` surfaces. Loads the model's
+/// full digest, resolves the lexicon in force, and runs the provenance rank.
+/// Fail-open: a missing model / no vendored pair degrades to an empty list.
+fn unbridged_for_root(root: &Path, pair: Option<&PairSeed>) -> Vec<Unbridged> {
+    let bridged = bridged_code_terms(root, pair);
+    let model = root.join(".claude").join("grain.model.json");
+    let digest = Scan::locate().digest(&model).unwrap_or_default();
+    let structural = structural_recurrence(&digest.roles);
+    unbridged_terms(&digest, &bridged, &structural)
+}
+
+/// The ranked unbridged candidate TERMS for `root` (just the term strings, in
+/// the provenance rank `--check` emits) — the input the `lexicon-judge-render`
+/// command renders into the judge prompt. Reuses [`unbridged_for_root`] verbatim
+/// so the judge scores the same candidates `--check` lists. Fail-open: an empty
+/// vec when the model / pair is unavailable (the judge then renders nothing).
+pub(crate) fn unbridged_candidate_terms(root: &Path) -> Vec<String> {
+    let pair = pair_for_root(root);
+    unbridged_for_root(root, pair.as_ref())
+        .into_iter()
+        .map(|u| u.term)
+        .collect()
 }
 
 /// `--check` report: the unbridged mined vocabulary the orchestrator should
@@ -143,10 +210,7 @@ fn check_report(root: &Path) -> Value {
     // which user-side natural language to propose words in.
     let cfg = mustard_core::ProjectConfig::load(root);
     let language = cfg.lang.or(cfg.spec_lang).unwrap_or_default();
-    let bridged = bridged_code_terms(root, pair.as_ref());
-    let model = root.join(".claude").join("grain.model.json");
-    let digest = Scan::locate().digest(&model).unwrap_or_default();
-    let unbridged = unbridged_terms(&digest, &bridged);
+    let unbridged = unbridged_for_root(root, pair.as_ref());
     json!({
         "pair": pair.as_ref().map(|p| p.label),
         "language": language,
@@ -188,12 +252,13 @@ impl Proposal {
 }
 
 /// The mined CODE vocabulary — folded term → its domain specificity (TF·IDF
-/// ×1024) — the gate's source of truth. Membership answers the
-/// anti-hallucination gate (a target not present is a hallucination); the
-/// specificity value answers the `target_too_generic` gate (a target below the
-/// floor is ubiquitous plumbing). On a collision (folding maps two raw terms to
-/// the same key) the higher specificity wins, so a generic alias never demotes a
-/// real domain term below the floor.
+/// ×1024). Two consumers: `apply_report` reads only MEMBERSHIP (the
+/// anti-hallucination gate — a target not present is a hallucination); the
+/// PT-mining (`pt_pairs` via `pt_report`) reads the specificity VALUE (the
+/// document-corpus alignment target + half its rank, the ONE surviving use of
+/// `count×idf` — corpus boilerplate removal, never a domain-vs-plumbing
+/// classifier). On a collision (folding maps two raw terms to the same key) the
+/// higher specificity wins, so a generic alias never demotes a real domain term.
 fn mined_term_map(digest: &Digest) -> BTreeMap<String, u64> {
     let mut map: BTreeMap<String, u64> = BTreeMap::new();
     for t in &digest.terms {
@@ -244,22 +309,17 @@ fn apply_report(root: &Path, proposals_path: &Path) -> Value {
             if code_term.is_empty() {
                 continue;
             }
-            // Gate 1 (anti-hallucination): the target MUST be a real mined term.
-            // This kills a hallucinated bridge deterministically, before any write.
-            let Some(&specificity) = mined.get(&code_term) else {
+            // Anti-hallucination gate: the target MUST be a real mined term.
+            // This kills a hallucinated bridge deterministically, before any
+            // write. The domain-vs-generic call is now the LLM judge's
+            // (`lexicon-judge-render`), run by the orchestrator UPSTREAM of
+            // `--apply` — `apply_report` only needs membership, not specificity
+            // magnitude (the refuted `target_too_generic` floor was removed: a
+            // fail-open inert gate, see memory).
+            if !mined.contains_key(&code_term) {
                 rejected.push(json!({
                     "userWord": user_word, "codeTerm": code_term,
                     "reason": "target_not_in_model",
-                }));
-                continue;
-            };
-            // Gate 2 (anti-plumbing): a real but ubiquitous target (specificity
-            // below the floor) matches nearly every module — bridging onto it
-            // would smear the user word across the repo. Reject deterministically.
-            if specificity < MIN_TARGET_SPECIFICITY_X1024 {
-                rejected.push(json!({
-                    "userWord": user_word, "codeTerm": code_term,
-                    "reason": "target_too_generic",
                 }));
                 continue;
             }
@@ -534,9 +594,9 @@ mod tests {
     }
 
     /// A digest with the given (term, count, samples) rows — the shape
-    /// `scan digest` serializes, deserialized into our view. Specificity is left
-    /// at its serde default (0); use [`digest_of_spec`] when a row's
-    /// `specificity_x1024` matters to the assertion.
+    /// `scan digest` serializes, deserialized into our view. No roles index; use
+    /// [`digest_with_roles`] when the PROVENANCE rank (structural role demotion)
+    /// matters to the assertion.
     fn digest_of(rows: &[(&str, usize, &[&str])]) -> Digest {
         let terms: Vec<Value> = rows
             .iter()
@@ -545,14 +605,22 @@ mod tests {
         serde_json::from_value(json!({ "terms": terms })).expect("digest view")
     }
 
-    /// A digest with explicit `(term, specificity_x1024)` rows — for tests that
-    /// exercise the specificity re-rank or the `target_too_generic` floor.
-    fn digest_of_spec(rows: &[(&str, u64)]) -> Digest {
-        let terms: Vec<Value> = rows
+    /// A digest with explicit `(term, count)` rows plus a role index — for tests
+    /// that exercise the PROVENANCE rank (structural role affixes demoted under
+    /// the cap). The roles are `(affix, kind, count)`.
+    fn digest_with_roles(
+        terms: &[(&str, usize)],
+        roles: &[(&str, &str, usize)],
+    ) -> Digest {
+        let terms: Vec<Value> = terms
             .iter()
-            .map(|(t, s)| json!({ "term": t, "count": 1, "specificity_x1024": s, "samples": [] }))
+            .map(|(t, c)| json!({ "term": t, "count": c, "samples": [] }))
             .collect();
-        serde_json::from_value(json!({ "terms": terms })).expect("digest view")
+        let roles: Vec<Value> = roles
+            .iter()
+            .map(|(a, k, c)| json!({ "affix": a, "kind": k, "count": c, "common_dir": "" }))
+            .collect();
+        serde_json::from_value(json!({ "terms": terms, "roles": roles })).expect("digest view")
     }
 
     // -- AC-1: --check lists unbridged, empty when fully bridged ---------------
@@ -570,7 +638,7 @@ mod tests {
             ("receivable", 40, &["src/recv.cs"]),
         ]);
         let bridged = bridged_code_terms(dir.path(), pair.as_ref());
-        let got = unbridged_terms(&digest, &bridged);
+        let got = unbridged_terms(&digest, &bridged, &BTreeMap::new());
         let terms: Vec<&str> = got.iter().map(|u| u.term.as_str()).collect();
         // `cancel` (seed) and `receivable` (seed: recebivel=["receivable"]) are
         // bridged; only `payable` survives, carrying its count + samples.
@@ -590,7 +658,7 @@ mod tests {
         std::fs::write(lexdir.join("pt-en.toml"), "[terms]\ntitulo = [\"payable\"]\n").unwrap();
         let digest = digest_of(&[("payable", 197, &[]), ("cancel", 12, &[]), ("customer", 9, &[])]);
         let bridged = bridged_code_terms(dir.path(), pair.as_ref());
-        let got = unbridged_terms(&digest, &bridged);
+        let got = unbridged_terms(&digest, &bridged, &BTreeMap::new());
         assert!(got.is_empty(), "fully bridged model → no unbridged terms: {:?}", got.len());
 
         // And the whole report's `unbridged` is the empty no-op list.
@@ -605,50 +673,81 @@ mod tests {
         let dir = tempdir().unwrap();
         write_root_config(dir.path());
         let pair = pair_for_root(dir.path());
-        // More unbridged terms than the cap. Equal specificity (default 0) → the
-        // stable tie-break orders by folded term asc, so the cap keeps the head.
+        // More unbridged terms than the cap. No roles → zero structural penalty
+        // for every term, so the provenance rank falls to `count` desc; with
+        // count `100 - i` the head is `term000` (count 100) and the cap keeps the
+        // count-ordered head.
         let rows: Vec<(String, usize, Vec<String>)> =
             (0..MAX_UNBRIDGED + 10).map(|i| (format!("term{i:03}"), 100 - i, vec![])).collect();
         let view: Vec<(&str, usize, &[&str])> =
             rows.iter().map(|(t, c, _)| (t.as_str(), *c, &[][..])).collect();
         let digest = digest_of(&view);
         let bridged = bridged_code_terms(dir.path(), pair.as_ref());
-        let got = unbridged_terms(&digest, &bridged);
+        let got = unbridged_terms(&digest, &bridged, &BTreeMap::new());
         assert_eq!(got.len(), MAX_UNBRIDGED, "capped at MAX_UNBRIDGED");
         assert_eq!(got[0].term, "term000");
         assert_eq!(got[MAX_UNBRIDGED - 1].term, format!("term{:03}", MAX_UNBRIDGED - 1));
     }
 
     #[test]
-    fn check_ranks_unbridged_by_specificity_before_cap() {
+    fn check_demotes_recurring_role_affix_below_domain_term() {
         let dir = tempdir().unwrap();
         write_root_config(dir.path());
         let bridged = BTreeSet::new(); // nothing bridged → every term survives the filter
-        // Deliberately out of specificity order in the digest (scan publishes
-        // kind-weighted order, not by discriminative power). The re-rank must
-        // surface the high-specificity domain word over the low-specificity
-        // plumbing, regardless of digest position.
-        let digest = digest_of_spec(&[
-            ("plumbing", 10),   // low specificity (ubiquitous), listed first
-            ("payable", 9000),  // the domain head
-            ("helper", 50),     // mid plumbing
-        ]);
-        let got = unbridged_terms(&digest, &bridged);
+        // `handler` is a recurring STRUCTURAL suffix role (type glue, high
+        // recurrence); `payable` is NOT a role affix (likely domain). Even though
+        // `handler` has the higher raw `count`, the provenance rank demotes the
+        // structural affix below the non-affix domain term — the refuted
+        // specificity rank could not do this.
+        let digest = digest_with_roles(
+            &[("handler", 200), ("payable", 40)],
+            &[("Handler", "suffix", 24)],
+        );
+        let structural = structural_recurrence(&digest.roles);
+        let got = unbridged_terms(&digest, &bridged, &structural);
         let terms: Vec<&str> = got.iter().map(|u| u.term.as_str()).collect();
-        assert_eq!(terms, vec!["payable", "helper", "plumbing"], "ranked by specificity desc: {terms:?}");
-        assert_eq!(got[0].specificity_x1024, 9000, "specificity carried onto the row");
+        assert_eq!(
+            terms,
+            vec!["payable", "handler"],
+            "non-affix domain term ranks above the high-recurrence suffix affix: {terms:?}",
+        );
     }
 
     #[test]
-    fn check_specificity_ties_break_stably_by_term() {
+    fn check_provenance_ties_break_stably_by_term() {
         let dir = tempdir().unwrap();
         write_root_config(dir.path());
         let bridged = BTreeSet::new();
-        // Equal specificity → folded term asc decides, deterministically.
-        let digest = digest_of_spec(&[("beta", 500), ("alpha", 500), ("gamma", 500)]);
-        let got = unbridged_terms(&digest, &bridged);
+        // No roles → zero structural penalty for all; equal count → folded term
+        // asc decides, deterministically (the byte-stable tie-break).
+        let digest = digest_with_roles(&[("beta", 7), ("alpha", 7), ("gamma", 7)], &[]);
+        let structural = structural_recurrence(&digest.roles);
+        let got = unbridged_terms(&digest, &bridged, &structural);
         let terms: Vec<&str> = got.iter().map(|u| u.term.as_str()).collect();
         assert_eq!(terms, vec!["alpha", "beta", "gamma"], "stable tie-break: {terms:?}");
+    }
+
+    #[test]
+    fn check_folder_role_does_not_demote_a_domain_term() {
+        let dir = tempdir().unwrap();
+        write_root_config(dir.path());
+        let bridged = BTreeSet::new();
+        // A `folder` role is module organisation, NOT type glue — it must carry
+        // recurrence 0 so a domain term sharing the folder name keeps its rank.
+        // `invoices` (a folder role) and `payable` both have zero penalty; the
+        // higher count heads, the folder term is NOT demoted below it.
+        let digest = digest_with_roles(
+            &[("invoices", 80), ("payable", 30)],
+            &[("invoices", "folder", 50)],
+        );
+        let structural = structural_recurrence(&digest.roles);
+        let got = unbridged_terms(&digest, &bridged, &structural);
+        let terms: Vec<&str> = got.iter().map(|u| u.term.as_str()).collect();
+        assert_eq!(
+            terms,
+            vec!["invoices", "payable"],
+            "folder role carries no penalty (count-ordered): {terms:?}",
+        );
     }
 
     // -- AC-2: --apply writes real targets, gate rejects hallucinations -------
@@ -703,39 +802,6 @@ mod tests {
 
         // Sanity: the proposals file was the real driver shape.
         let _ = proposals;
-    }
-
-    #[test]
-    fn apply_floor_rejects_generic_target_keeps_domain_one() {
-        // The model mines two real terms: `payable` (domain, high specificity)
-        // and `response` (ubiquitous plumbing, df ≈ n_docs → specificity ≈ 0).
-        // Both pass the anti-hallucination gate (both mined); the floor gate must
-        // reject only the generic one with `target_too_generic`, keep the other.
-        let domain_spec = MIN_TARGET_SPECIFICITY_X1024 + 1;
-        let generic_spec = MIN_TARGET_SPECIFICITY_X1024 - 1;
-        let digest = digest_of_spec(&[("payable", domain_spec), ("response", generic_spec)]);
-        let mined = mined_term_map(&digest);
-
-        // Mirror apply_report's two-gate sequence (scan digest is unavailable in
-        // unit tests, so drive the gate logic directly against the seeded map).
-        let mut applied = Vec::new();
-        let mut rejected: Vec<(&str, &str)> = Vec::new();
-        for code in ["payable", "response"] {
-            let code_term = folded(code);
-            match mined.get(&code_term) {
-                None => rejected.push((code, "target_not_in_model")),
-                Some(&s) if s < MIN_TARGET_SPECIFICITY_X1024 => {
-                    rejected.push((code, "target_too_generic"));
-                }
-                Some(_) => applied.push(code),
-            }
-        }
-        assert_eq!(applied, vec!["payable"], "domain target above floor accepted");
-        assert_eq!(
-            rejected,
-            vec![("response", "target_too_generic")],
-            "ubiquitous target below floor rejected with the right reason",
-        );
     }
 
     #[test]

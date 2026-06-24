@@ -34,6 +34,7 @@ pub mod glossary_coverage;
 pub mod grill_capture;
 pub mod lexicon_suggest;
 pub mod lexicon_enrich;
+pub mod lexicon_judge;
 // W3 of `2026-05-26-claude-paths-single-source` — three typed doctor checks
 // (claude-paths, workspace-leaks, i1) that emit native JSON shapes. They are
 // dispatched by `doctor.rs` but live in dedicated modules so the legacy
@@ -209,6 +210,25 @@ pub enum RunCmd {
         /// precedence over `--check` / `--check-pt`.
         #[arg(long)]
         apply: Option<PathBuf>,
+        /// Workspace root. Defaults to the current directory (resolved to the
+        /// workspace anchor like every run-face emitter).
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
+    /// Render a byte-stable JUDGE prompt that asks an LLM — ONE layer above the
+    /// deterministic enrich — to score each mined CODE candidate term as
+    /// BUSINESS-DOMAIN vs GENERIC programming/framework plumbing (0-100).
+    ///
+    /// Re-derives the SAME unbridged candidates `lexicon-enrich --check`
+    /// produces (the provenance rank that demotes recurring structural role
+    /// affixes), renders the validated scoring contract + the `Terms: ...` line,
+    /// and prints it raw to stdout (no JSON framing), like `concern-judge-render`.
+    /// The domain-vs-generic CALL is the LLM's — `count×idf` specificity was
+    /// refuted as a classifier; this judge is the arbiter, run by the
+    /// orchestrator OUTSIDE this binary. Fail-open: an unavailable model / no
+    /// vendored pair → empty candidates → prints nothing, exit 0.
+    #[command(name = "lexicon-judge-render")]
+    LexiconJudgeRender {
         /// Workspace root. Defaults to the current directory (resolved to the
         /// workspace anchor like every run-face emitter).
         #[arg(long, default_value = ".")]
@@ -1871,6 +1891,7 @@ pub fn dispatch(cmd: RunCmd) {
         RunCmd::DigestPrecision { root } => digest_precision::run(&root),
         RunCmd::LexiconSuggest { accept, root } => lexicon_suggest::run(accept.as_deref(), &root),
         RunCmd::LexiconEnrich { check, check_pt, apply, root } => lexicon_enrich::run(check, check_pt, apply.as_deref(), &root),
+        RunCmd::LexiconJudgeRender { root } => lexicon_judge::run(&root),
         RunCmd::DiffContext {
             parent,
             subproject,

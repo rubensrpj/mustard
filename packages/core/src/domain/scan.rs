@@ -72,6 +72,33 @@ pub struct Digest {
     /// (or a model that mined no vocabulary) degrades to an empty list.
     #[serde(default)]
     pub terms: Vec<DigestTerm>,
+    /// Recurring structural role affixes the scan tool mined (suffix/prefix/
+    /// folder/nested + the count of distinct entities each pairs with). Consumed
+    /// by the proactive lexicon `enrich` to DEMOTE structural type-glue affixes
+    /// so domain vocabulary survives the candidate cap. Defaulted so a model from
+    /// an older scan binary (no `roles` field) degrades to an empty list.
+    #[serde(default)]
+    pub roles: Vec<DigestRole>,
+}
+
+/// One row of the digest's role index ([`Digest::roles`]): a recurring affix,
+/// the convention it forms (`suffix` | `prefix` | `folder` | `nested`), the
+/// number of distinct entities it pairs with, and the directory it concentrates
+/// in. Same shape grain's `RoleD` serializes; Mustard owns its own (read-only)
+/// view and only deserializes the fields it consumes.
+#[derive(Debug, Clone, Deserialize)]
+pub struct DigestRole {
+    pub affix: String,
+    /// The convention the affix forms: `suffix` | `prefix` | `folder` | `nested`.
+    /// Defaulted so a partial / older payload still deserialises.
+    #[serde(default)]
+    pub kind: String,
+    /// Distinct entities the affix pairs with — its structural recurrence.
+    #[serde(default)]
+    pub count: usize,
+    /// The directory the affix concentrates in (module organisation hint).
+    #[serde(default)]
+    pub common_dir: String,
 }
 
 /// One row of the digest's domain-term index ([`Digest::terms`]): the mined
@@ -635,6 +662,30 @@ mod tests {
         assert_eq!(q.concerns[0].reason, "strong");
         assert_eq!(q.concerns[1].label, "export");
         assert_eq!(q.concerns[1].reason, "weak");
+    }
+
+    #[test]
+    fn digest_roles_serde_compat() {
+        // An OLD payload (scan binary predating the roles index in the FULL
+        // digest) without `roles` keeps deserialising — empty, never an error.
+        let old = r#"{"terms":[{"term":"payable","count":12}]}"#;
+        let d: Digest = serde_json::from_str(old).expect("old payload without roles");
+        assert!(d.roles.is_empty(), "old binary / no roles → empty list");
+        assert_eq!(d.terms.len(), 1);
+
+        // A NEW payload carrying the roles index round-trips: each role keeps its
+        // affix, kind and structural-recurrence count.
+        let new = r#"{"terms":[{"term":"payable","count":12}],"roles":[
+            {"affix":"Handler","kind":"suffix","count":24,"common_dir":"src/handlers"},
+            {"affix":"Repository","kind":"suffix","count":9,"common_dir":""}]}"#;
+        let d: Digest = serde_json::from_str(new).expect("payload with roles");
+        assert_eq!(d.roles.len(), 2);
+        assert_eq!(d.roles[0].affix, "Handler");
+        assert_eq!(d.roles[0].kind, "suffix");
+        assert_eq!(d.roles[0].count, 24);
+        assert_eq!(d.roles[0].common_dir, "src/handlers");
+        assert_eq!(d.roles[1].affix, "Repository");
+        assert_eq!(d.roles[1].count, 9);
     }
 
     #[test]
