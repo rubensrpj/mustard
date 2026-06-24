@@ -962,6 +962,26 @@ pub enum RunCmd {
         #[arg(long)]
         spec: String,
     },
+    /// Render a byte-stable JUDGE prompt that asks an LLM — ONE layer above the
+    /// deterministic scan — to partition a feature intent's matched concepts
+    /// into labelled concerns. Reuses the `feature` digest's retrieval
+    /// (`domain_terms` + `digest_query`) to obtain the matched concepts + the
+    /// per-concept anchor files (`report.terms[].files`); when scan already
+    /// split the query into ≥2 connected components, the split rides along as
+    /// the judge's deterministic starting point. Stdout = the raw prompt string
+    /// (no JSON framing), like `agent-prompt-render`; the JUDGEMENT is the LLM's.
+    /// Fail-open: an unavailable scan / model prints nothing, exit 0.
+    #[command(name = "concern-judge-render")]
+    ConcernJudgeRender {
+        /// The free-text feature/bugfix intent to partition. Same tokenisation
+        /// as `feature --intent` (the orchestrator folds any cross-lingual
+        /// translation INSIDE the text).
+        #[arg(long)]
+        intent: String,
+        /// Path to the `grain.model.json` the digest queries.
+        #[arg(long)]
+        model: PathBuf,
+    },
     // The folder name is spelled `wave-<n>-<role>` (angle brackets) throughout
     // this doc comment: a literal brace-n sequence is a clap help-template
     // token (forced line break) and would mangle the rendered --help.
@@ -2129,6 +2149,7 @@ pub fn dispatch(cmd: RunCmd) {
         } => maint::artifact_update::run(check, apply, manifest.as_deref()),
         RunCmd::AmendFinalize { session_id } => agent::amend_finalize::run_cli(&session_id),
         RunCmd::DigestAdherenceFinalize { spec } => agent::digest_adherence_finalize::run(&spec),
+        RunCmd::ConcernJudgeRender { intent, model } => agent::concern_judge::run(&intent, &model),
         RunCmd::WaveScaffold { spec_dir, plan } => {
             wave::wave_scaffold::run(spec_dir.as_deref(), plan.as_deref());
         }
