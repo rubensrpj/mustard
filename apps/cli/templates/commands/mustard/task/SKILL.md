@@ -51,6 +51,8 @@ mustard-rt run agent-prompt-render --spec {scope} --role {action} \
 
 Pass the `agent-prompt-render` **stdout verbatim** as the Task `prompt` — with `--emit ref` that stdout is a 2-line stub the PreToolUse hook expands to the full prompt at dispatch, so the full text never transits your context. `{guards_summary}` (subproject `## Guards`) and `{reference_files}` are filled by the renderer — do not duplicate them in the prompt. Spec-less, so the action's work + the located anchors ride in via `--task-text`.
 
+**Multi-concern request? Split it FIRST.** If the digest answer signals ≥2 unrelated units of work, run the shared concern-split judge (**`../../../refs/concern-judge.md`**) right after step 1 — then render + dispatch ONE action per concern, each scoped to its own anchors, instead of one mixed dispatch. Pass the user's actual request as the judge `--intent` (never a bare term list — see the INTENT-hygiene rule there). Single-concern → skip the judge and dispatch as above.
+
 ## Flow
 
 Each action picks `--role` + `subagent_type`, renders via `agent-prompt-render`, then dispatches (agents inherit the session model — no model selection):
