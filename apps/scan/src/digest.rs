@@ -612,7 +612,12 @@ pub fn query(model: &ProjectModel, terms: &[String], request_lang: &str) -> Quer
             let (best, lang) = (first.tier, first.lang.clone());
             let mut tfiles: Vec<String> = Vec::new();
             for sample in hits.iter().filter(|h| h.tier == best).flat_map(|h| h.samples.iter()) {
-                if !tfiles.contains(sample) {
+                // A test is never an actionable target — exclude it from the
+                // per-term evidence the same way anchors/hubs already do
+                // (`is_test_path`: polyglot dir-segment + filename convention,
+                // names no language). Closes the test leak the anchor path
+                // already blocked.
+                if !mustard_core::domain::ast::is_test_path(sample) && !tfiles.contains(sample) {
                     tfiles.push(sample.clone());
                 }
             }

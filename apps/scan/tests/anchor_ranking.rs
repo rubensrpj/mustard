@@ -487,12 +487,15 @@ fn wide_query_target_survives_in_the_grouped_per_term_evidence() {
 /// Field case (sialia, client tabs): a `strong`-by-coverage query whose rare
 /// terms only collide INSIDE tests (`create`→`creates` in `*Tests.cs`) surfaced
 /// those tests as anchors, which the scaffold then baked as "implement here"
-/// targets. A test/fixture declaration is honest EVIDENCE (it stays under its
-/// term in `report.terms[].files`) but never an ANCHOR — you read and edit the
-/// production file, not its test. Exercises BOTH detector modes: a
-/// filename-convention test (`*.test.ts`, no test dir) and a test-DIR file.
+/// targets. Policy (tightened from the field — a later run still surfaced a
+/// `*Tests.cs` under its term): a test/fixture declaration is never surfaced at
+/// all — neither as an ANCHOR nor in the per-term evidence (`report.terms[].files`).
+/// You read and edit the production file; a test listed even as "where the
+/// vocabulary lives" still nudges you toward a file you must not touch. Exercises
+/// BOTH detector modes: a filename-convention test (`*.test.ts`, no test dir)
+/// and a test-DIR file.
 #[test]
-fn test_tree_declarations_are_evidence_never_anchors() {
+fn test_tree_declarations_are_never_anchors_nor_evidence() {
     let modules = serde_json::json!([
         module("m/feat/ledger.rs", &["LedgerReport"]),                    // production
         module("m/feat/ledger.test.ts", &["LedgerReportSpec"]),           // filename convention
@@ -506,15 +509,16 @@ fn test_tree_declarations_are_evidence_never_anchors() {
     assert!(!files.contains(&"m/feat/ledger.test.ts"), "a filename-convention test never anchors: {q}");
     assert!(!files.contains(&"m/feat/__tests__/ledger_more.rs"), "a test-dir file never anchors: {q}");
 
-    // Honesty: the test declarations are EXCLUDED from anchors, not HIDDEN —
-    // they still ride under the term in the grouped per-term evidence.
+    // Policy: a test is never an actionable target, so it is excluded from BOTH
+    // the anchors AND the per-term evidence — surfacing it as "where the
+    // vocabulary lives" still nudges the reader toward a file they must not edit.
     let report_terms = q["report"]["terms"].as_array().unwrap();
     let ledger = report_terms.iter().find(|t| t["term"] == "ledger").expect("`ledger` in the grouped report");
     let tfiles: Vec<&str> = ledger["files"].as_array().unwrap().iter().map(|f| f.as_str().unwrap()).collect();
     assert!(tfiles.contains(&"m/feat/ledger.rs"), "evidence lists the production file: {q}");
     assert!(
-        tfiles.iter().any(|f| f.ends_with(".test.ts") || f.contains("__tests__")),
-        "evidence STILL carries the test declarations (excluded from anchors, not the report): {q}"
+        !tfiles.iter().any(|f| f.ends_with(".test.ts") || f.contains("__tests__")),
+        "evidence EXCLUDES the test declarations too — a test is never surfaced: {q}"
     );
 
     let _ = std::fs::remove_dir_all(&dir);
