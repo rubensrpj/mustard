@@ -132,9 +132,10 @@ const VALIDATE_CONTRACT: &str = "You are a digest validator for a code pipeline.
      SAME concept some KEPT anchor already IMPLEMENTS, just spelled differently (e.g. PT \"efetivar\" IS the \
      \"effectivate\" flow that already exists in the anchors). Return an EMPTY array when ANY of: (a) \
      centralFound is true; (b) the concept is NET-NEW — no kept anchor implements it, so it is a feature to \
-     BUILD, not a word to bridge (do NOT guess generic terms like import/upload/user); (c) the only code term \
-     that would match is the SAME word in a DIFFERENT sense (the programming keyword \"import\"; \"user\" \
-     meaning the auth/login user) — a false match, not a bridge. NEVER propose a term that already appears \
+     BUILD, not a word to bridge (do NOT guess generic terms like import/upload/user); (c) the matching code \
+     term names a DIFFERENT feature than the request (the same word, another flow — e.g. `import` matching an \
+     OFX bank-statement import when the user wants a contacts import; `user` the auth/login user, not a \
+     business person) — a false match, not a bridge. NEVER propose a term that already appears \
      under MISSED. A wrong bridge poisons EVERY future query, so when unsure, return empty.\n\
      - route: \"task\" when the real work is single-layer and small (one project, mirrors an existing \
      pattern, no new entity) — the lean path, no spec/wave ceremony. \"feature\" only when it genuinely \
