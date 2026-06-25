@@ -37,6 +37,8 @@ pub mod lexicon_enrich;
 pub mod lexicon_judge;
 pub mod enrich_purpose;
 pub mod purpose_search;
+pub mod purpose_judge;
+pub mod recall_bench;
 // W3 of `2026-05-26-claude-paths-single-source` — three typed doctor checks
 // (claude-paths, workspace-leaks, i1) that emit native JSON shapes. They are
 // dispatched by `doctor.rs` but live in dedicated modules so the legacy
@@ -279,6 +281,45 @@ pub enum RunCmd {
         intent: String,
         /// Path to the `grain.model.json` whose declaration purposes are searched.
         #[arg(long)]
+        model: PathBuf,
+    },
+    /// EXPLICIT judge step over the `purpose-search` candidates: render a byte-stable
+    /// prompt that hands the surfaced files (each with its purpose summaries) to an
+    /// LLM (Sonnet) and asks it to PICK the file(s) that IMPLEMENT the intent's
+    /// action — telling the backend service that performs it apart from the page
+    /// that merely displays it. `purpose-search` is RECALL (IDF-ranked, target
+    /// survives the cap); this is the PRECISION pick, formerly the orchestrator's
+    /// loose reading. PURE assembly — runs purpose-search, reads purposes from the
+    /// model, no model call (the JUDGEMENT is the dispatched LLM's). Fail-open: no
+    /// candidates → prints nothing, exit 0.
+    #[command(name = "purpose-judge-render")]
+    PurposeJudgeRender {
+        /// The free-text request whose candidates we want judged. Same tokenisation
+        /// as `feature --intent` / `purpose-search`.
+        #[arg(long)]
+        intent: String,
+        /// Path to the purpose-enriched `grain.model.json`.
+        #[arg(long)]
+        model: PathBuf,
+    },
+    /// Phase-0 NORTH-STAR metric: measure intent-retrieval recall over a labelled
+    /// set of recall-holes. For each `{query, files}` in `labels.ndjson`, runs the
+    /// two deterministic retrievals — name-match (`digest --query` anchor list)
+    /// and purpose-search (the uncapped purpose→file index) — and emits byte-stable
+    /// JSON `{n, summary:{nameRecall@1, nameRecall@5, purposeRecall@1,
+    /// purposeRecall@5}, cases:[{query, files, nameRank, purposeRank}]}`. Recall@k
+    /// = fraction of queries whose ground-truth file is in the top-k. NO LLM, no
+    /// network (the matching lives in the scan binary). Pre-requisite: the model is
+    /// purpose-enriched (`enrich-purpose --apply`), else purposeRecall reads 0.
+    /// Fail-open: unreadable labels / unavailable scan → an empty-or-zero report.
+    #[command(name = "recall-bench")]
+    RecallBench {
+        /// Path to the labelled set: one `{"query": "...", "files": ["..."]}`
+        /// JSON object per line (`#` / `//` comment lines and blanks skipped).
+        #[arg(long)]
+        labels: PathBuf,
+        /// Path to the purpose-enriched `grain.model.json` both retrievals query.
+        #[arg(long, default_value = ".claude/grain.model.json")]
         model: PathBuf,
     },
     /// Emit a compact git diff summary for agent context.
@@ -1944,6 +1985,12 @@ pub fn dispatch(cmd: RunCmd) {
         }
         RunCmd::PurposeSearch { intent, model } => {
             purpose_search::run(&intent, &model);
+        }
+        RunCmd::PurposeJudgeRender { intent, model } => {
+            purpose_judge::run(&intent, &model);
+        }
+        RunCmd::RecallBench { labels, model } => {
+            recall_bench::run(&labels, &model);
         }
         RunCmd::DiffContext {
             parent,

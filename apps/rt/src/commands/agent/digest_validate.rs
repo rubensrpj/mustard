@@ -77,6 +77,17 @@ pub struct DigestVerdict {
     /// persists as `{userWord, codeTerms}`, not a cartesian. Empty when found.
     #[serde(default, rename = "requeryBridges")]
     pub requery_bridges: Vec<RequeryBridge>,
+    /// SPECULATIVE re-query terms — when `central_found` is false, the likely
+    /// CODE-SIDE words (a translation or synonym of the missed USER word) to
+    /// RE-QUERY `purpose-search` with, so the implementer the NAME index missed
+    /// SURFACES as a candidate. Unlike [`Self::requery_bridges`] (a CONSERVATIVE
+    /// bridge that must be grounded before it persists), these are a THROWAWAY
+    /// search: a wrong term only wastes one deterministic lookup, never poisons the
+    /// lexicon — so the judge MAY guess here even without seeing the target. The
+    /// orchestrator re-queries with them, a second judge pass picks/confirms, and
+    /// only a CONFIRMED term graduates into a `requeryBridge`. Empty when found.
+    #[serde(default, rename = "requeryTerms")]
+    pub requery_terms: Vec<String>,
 }
 
 /// Default for [`DigestVerdict::central_found`]: an LLM reply (or an older one)
@@ -117,7 +128,7 @@ const VALIDATE_CONTRACT: &str = "You are a digest validator for a code pipeline.
      concepts below for a request and named the anchor files where each concept's vocabulary lives, \
      each tagged with the PROJECT (layer) it sits in. Your job, ONE layer above the scan, is to \
      validate this answer and decide HOW the request runs. Reply with ONLY a JSON object:\n\
-     {\"route\":\"task|feature\",\"scope\":\"light|full|\",\"dropped\":[\"<file>\"],\"concerns\":[{\"label\":\"<short>\",\"concepts\":[\"<concept>\"],\"anchors\":[\"<file>\"]}],\"centralFound\":true|false,\"requeryBridges\":[{\"userWord\":\"<missed user-side word>\",\"codeTerms\":[\"<real code identifier>\"]}]}\n\
+     {\"route\":\"task|feature\",\"scope\":\"light|full|\",\"dropped\":[\"<file>\"],\"concerns\":[{\"label\":\"<short>\",\"concepts\":[\"<concept>\"],\"anchors\":[\"<file>\"]}],\"centralFound\":true|false,\"requeryBridges\":[{\"userWord\":\"<missed user-side word>\",\"codeTerms\":[\"<real code identifier>\"]}],\"requeryTerms\":[\"<code-side word to re-query>\"]}\n\
      RULES:\n\
      - dropped: an anchor is INCIDENTAL when its concept is tangential to the INTENT or lives in a \
      layer the change will not touch (e.g. a UI request matching a backend credit-card file on the \
@@ -129,14 +140,25 @@ const VALIDATE_CONTRACT: &str = "You are a digest validator for a code pipeline.
      WEAK, meaning the kept anchors likely matched only common vocabulary and point at the WRONG flow. \
      true when the central concept was found at a real tier.\n\
      - requeryBridges: propose a bridge ONLY for a TRUE vocabulary gap — a missed user word that names the \
-     SAME concept some KEPT anchor already IMPLEMENTS, just spelled differently (e.g. PT \"efetivar\" IS the \
-     \"effectivate\" flow that already exists in the anchors). Return an EMPTY array when ANY of: (a) \
-     centralFound is true; (b) the concept is NET-NEW — no kept anchor implements it, so it is a feature to \
-     BUILD, not a word to bridge (do NOT guess generic terms like import/upload/user); (c) the matching code \
-     term names a DIFFERENT feature than the request (the same word, another flow — e.g. `import` matching an \
-     OFX bank-statement import when the user wants a contacts import; `user` the auth/login user, not a \
-     business person) — a false match, not a bridge. NEVER propose a term that already appears \
+     SAME concept some KEPT anchor OR PURPOSE-LAYER CANDIDATE already IMPLEMENTS, just worded differently \
+     (another language, or a synonym, for a flow that already exists). The PURPOSE-LAYER CANDIDATES section \
+     below (when present) lists files whose PURPOSE summary ANSWERS the request even though the NAME index \
+     missed it — these are valid grounding, NOT a guess: when one IMPLEMENTS the missed concept, propose the \
+     bridge with `codeTerms` set to the discriminative words that name the action in THAT file (its purpose's \
+     verb/noun, or its identifier tokens). Return an EMPTY array when ANY of: (a) centralFound is true; (b) \
+     the concept is NET-NEW — NEITHER a kept anchor NOR a purpose-layer candidate implements it, so it is a \
+     feature to BUILD, not a word to bridge; (c) the matching file names a DIFFERENT feature than the request \
+     (the same word, another flow) — a false match, not a bridge. NEVER propose a term that already appears \
      under MISSED. A wrong bridge poisons EVERY future query, so when unsure, return empty.\n\
+     - requeryTerms: when centralFound is false, propose the LIKELY CODE-SIDE words to RE-QUERY for the \
+     missed concept. LEAD WITH THE ACTION — the verb the code would use for the OPERATION the user asked \
+     for (its synonym/translation), not only the entity noun: the entity alone re-surfaces the whole \
+     feature AREA but not the specific method, while the action verb pins the implementer (so for a \
+     'hand-off commission to partner' request, lead with the pay/settle/mark-paid verb, then the entity). \
+     This is a THROWAWAY search to SURFACE the implementer the name index missed, NOT a persisted bridge: \
+     a wrong term only wastes one deterministic lookup, so GUESS here even when nothing shown implements \
+     the concept (that is exactly when re-querying helps). Give 2-5 terms, action verbs first. Empty ONLY \
+     when centralFound is true.\n\
      - route: \"task\" when the real work is single-layer and small (one project, mirrors an existing \
      pattern, no new entity) — the lean path, no spec/wave ceremony. \"feature\" only when it genuinely \
      needs the pipeline.\n\
@@ -164,7 +186,12 @@ fn project_of<'a>(file: &str, dirs: &'a [String]) -> &'a str {
 /// with its tier and per-anchor project, then the SIGNALS the validator weighs
 /// (reason, miss, slice matches, distinct anchor projects). Empty when no concept
 /// matched — there is nothing to validate.
-fn render_validate_prompt(intent: &str, q: &DigestQuery, project_dirs: &[String]) -> String {
+fn render_validate_prompt(
+    intent: &str,
+    q: &DigestQuery,
+    project_dirs: &[String],
+    purpose_candidates: &[(String, Vec<String>)],
+) -> String {
     let concepts = matched_concepts(q);
     if concepts.is_empty() {
         return String::new();
@@ -206,6 +233,24 @@ fn render_validate_prompt(intent: &str, q: &DigestQuery, project_dirs: &[String]
         for t in &missed {
             let tier = if t.tier.is_empty() { "none" } else { t.tier.as_str() };
             let _ = writeln!(out, "- {} [{}]", t.term, tier);
+        }
+    }
+    // PURPOSE-LAYER CANDIDATES: files whose PURPOSE summary answers the request
+    // even though the NAME index missed the central concept. Supplied by `run`
+    // ONLY when there is a missed/weak concept (so a clean strong query renders
+    // byte-identically). This is the grounding that lets the judge propose a
+    // bridge from the purpose layer instead of declining as net-new — the fix for
+    // the auto-heal being blind to everything but name-match. Both lists are
+    // already sorted (purpose-search files, model purposes) → byte-stable.
+    if !purpose_candidates.is_empty() {
+        out.push_str(
+            "\n## PURPOSE-LAYER CANDIDATES (files whose PURPOSE answers the request though the name index missed it — grounding for a bridge)\n",
+        );
+        for (file, purposes) in purpose_candidates {
+            let _ = writeln!(out, "- {file}");
+            for p in purposes {
+                let _ = writeln!(out, "    - {p}");
+            }
         }
     }
     let _ = write!(
@@ -276,7 +321,21 @@ pub fn run(intent: &str, model: &Path) {
                 .filter(|d| !d.is_empty())
                 .collect();
             dirs.sort_by(|a, b| b.len().cmp(&a.len()).then(a.cmp(b)));
-            render_validate_prompt(intent, &q, &dirs)
+            // When the NAME index missed/weakly-matched a concept, surface the
+            // PURPOSE-LAYER candidates so the judge can ground a bridge on them
+            // (the auto-heal fix). A clean strong query has no missed concept →
+            // no purpose lookup, prompt renders byte-identically to before.
+            let has_missed = q
+                .report
+                .terms
+                .iter()
+                .any(|t| t.tier.is_empty() || t.tier == "none" || t.tier == "trigram");
+            let purpose_candidates = if has_missed {
+                crate::commands::purpose_judge::candidate_purposes(model, &terms)
+            } else {
+                Vec::new()
+            };
+            render_validate_prompt(intent, &q, &dirs, &purpose_candidates)
         }
         Err(err) => {
             eprintln!("digest-validate-render: scan digest unavailable: {err}");
@@ -322,8 +381,8 @@ mod tests {
     #[test]
     fn render_is_byte_stable_and_tags_anchors_with_their_project() {
         let q = ui_query();
-        let a = render_validate_prompt("make the chevron clickable on the card", &q, &dirs());
-        let b = render_validate_prompt("make the chevron clickable on the card", &q, &dirs());
+        let a = render_validate_prompt("make the chevron clickable on the card", &q, &dirs(), &[]);
+        let b = render_validate_prompt("make the chevron clickable on the card", &q, &dirs(), &[]);
         assert_eq!(a, b, "render must be byte-stable for the same inputs");
 
         assert!(a.contains("digest validator"), "contract present: {a}");
@@ -345,7 +404,7 @@ mod tests {
                     {"term":"zzz","tier":"none","lang":"","files":[]}]}}"#,
         )
         .expect("none-reason digest");
-        assert_eq!(render_validate_prompt("zzz", &none, &dirs()), "");
+        assert_eq!(render_validate_prompt("zzz", &none, &dirs(), &[]), "");
     }
 
     /// The proven "efetivar previsão" failure: a CENTRAL concept (`effectivate`)
@@ -366,7 +425,7 @@ mod tests {
     #[test]
     fn render_surfaces_a_missed_central_concept() {
         let q = missed_central_query();
-        let p = render_validate_prompt("efetivar a previsão", &q, &dirs());
+        let p = render_validate_prompt("efetivar a previsão", &q, &dirs(), &[]);
         // The matched concept renders as before…
         assert!(p.contains("- payable [exact]"), "matched concept present: {p}");
         // …and the missed CENTRAL concept is surfaced under its own header.
@@ -375,11 +434,30 @@ mod tests {
     }
 
     #[test]
+    fn render_surfaces_purpose_layer_candidates_as_bridge_grounding() {
+        // The auto-heal fix: when the name index missed the central concept, the
+        // PURPOSE-LAYER candidates (files whose purpose answers the request) are
+        // rendered so the judge can ground a bridge on them instead of declining.
+        let q = missed_central_query();
+        let candidates = vec![(
+            "backend/Pay/PayableService.cs".to_string(),
+            vec!["Confirma um título previsto como efetivo no contas a pagar.".to_string()],
+        )];
+        let p = render_validate_prompt("efetivar a previsão", &q, &dirs(), &candidates);
+        assert!(p.contains("## PURPOSE-LAYER CANDIDATES"), "purpose section present: {p}");
+        assert!(p.contains("- backend/Pay/PayableService.cs"), "candidate file listed: {p}");
+        assert!(p.contains("Confirma um título previsto como efetivo"), "candidate purpose shown: {p}");
+        // Omitted entirely when there are none → clean render unchanged.
+        let none = render_validate_prompt("efetivar a previsão", &q, &dirs(), &[]);
+        assert!(!none.contains("## PURPOSE-LAYER CANDIDATES"), "section omitted when empty: {none}");
+    }
+
+    #[test]
     fn render_omits_missed_section_when_clean() {
         // The all-matched fixture has NO missed term → the section is omitted
         // entirely, so a clean strong query renders byte-identically to before.
         let q = ui_query();
-        let p = render_validate_prompt("make the chevron clickable on the card", &q, &dirs());
+        let p = render_validate_prompt("make the chevron clickable on the card", &q, &dirs(), &[]);
         assert!(!p.contains("## MISSED / WEAK CONCEPTS"), "no missed section when clean: {p}");
     }
 
@@ -410,6 +488,19 @@ mod tests {
             vec![RequeryBridge { user_word: "efetivar".to_string(), code_terms: vec!["effectivate".to_string()] }],
             "paired bridge parsed: userWord -> codeTerms"
         );
+        // A verdict with no requeryTerms defaults to empty (old replies unaffected).
+        assert!(v.requery_terms.is_empty(), "absent requeryTerms defaults to empty");
+    }
+
+    #[test]
+    fn parse_reads_speculative_requery_terms() {
+        // The auto-heal evolution: on a miss the judge proposes throwaway re-query
+        // terms (a guess at the code-side wording) even with no grounded bridge.
+        let resp = r#"{"route":"feature","scope":"full","centralFound":false,"requeryBridges":[],"requeryTerms":["pago","paga","comissao"]}"#;
+        let v = parse_digest_verdict(resp).expect("speculative-requery verdict parses");
+        assert!(!v.central_found);
+        assert!(v.requery_bridges.is_empty(), "no persisted bridge yet (unconfirmed)");
+        assert_eq!(v.requery_terms, vec!["pago".to_string(), "paga".to_string(), "comissao".to_string()]);
     }
 
     #[test]

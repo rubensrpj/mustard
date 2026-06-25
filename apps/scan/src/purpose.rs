@@ -14,7 +14,9 @@
 //! it builds an UNCAPPED index over EVERY declaration that carries a `purpose`,
 //! matches the intent's tokens against the purpose tokens through the SAME match
 //! ladder `digest --query` uses (so the bridging is identical), and returns the
-//! files ranked by how many distinct query tokens each answers.
+//! files ranked by the summed IDF (corpus rarity) of the query tokens each
+//! answers — so a file bridging one rare/discriminative term outranks one that
+//! merely shares a common word.
 //!
 //! ## Determinism — no LLM
 //!
@@ -84,8 +86,8 @@ fn query_tokens(terms: &[String], ladder: &Ladder) -> Vec<String> {
 ///
 /// Pure given its inputs and the embedded ladder data: a BTreeMap keyed by file
 /// path, query tokens compared through the ladder with the trigram rescue rung
-/// ON, files ranked by distinct-token count desc then path asc (a total order,
-/// so two runs over the same model are byte-identical).
+/// ON, files ranked by summed token IDF desc then path asc (a total order, so
+/// two runs over the same model are byte-identical).
 pub fn search(model: &ProjectModel, terms: &[String], request_lang: &str) -> PurposeResult {
     let ladder = Ladder::new(request_lang, Some(std::path::Path::new(&model.root)));
     let ql = query_tokens(terms, &ladder);
@@ -116,24 +118,48 @@ pub fn search(model: &ProjectModel, terms: &[String], request_lang: &str) -> Pur
         }
     }
 
-    // For each file, the DISTINCT query tokens any of its purpose sigs bridge
-    // (trigram RESCUE allowed — see the module note). The bridge direction
-    // mirrors the name ladder: the purpose sig is the index side (`key`), the
-    // query sig is the request side (`q`).
-    let mut hits: Vec<(usize, String, Vec<String>)> = Vec::new(); // (matched_count, file, terms)
+    // First pass: per file, the DISTINCT query-token INDICES its purpose sigs
+    // bridge (trigram RESCUE allowed — see the module note). The bridge direction
+    // mirrors the name ladder: the purpose sig is the index side, the query sig is
+    // the request side. Accumulate each token's DOCUMENT FREQUENCY (how many
+    // purposed files answer it) so the rank can weight a rare term over a common.
+    let n_docs = purpose_index.len();
+    let mut df: Vec<usize> = vec![0; ql.len()];
+    let mut per_file: Vec<(&str, Vec<usize>)> = Vec::new();
     for (file, psigs) in &purpose_index {
-        let mut matched: Vec<String> = Vec::new();
+        let mut idxs: Vec<usize> = Vec::new();
         for (qi, qs) in qsigs.iter().enumerate() {
             if psigs.iter().any(|ps| ladder.tier(ps, qs, true).is_some()) {
-                matched.push(ql[qi].clone());
+                idxs.push(qi);
             }
         }
-        if !matched.is_empty() {
-            matched.sort();
-            hits.push((matched.len(), (*file).to_string(), matched));
+        if !idxs.is_empty() {
+            for &qi in &idxs {
+                df[qi] += 1;
+            }
+            per_file.push((*file, idxs));
         }
     }
-    // Rank: distinct-token count desc, then path asc — a total order, byte-stable.
+
+    // Second pass: score each file by the SUM of its matched tokens' IDF — the
+    // SAME `ranking::idf_x1024` (corpus rarity) the digest's BM25F anchor ranking
+    // uses (DRY). A file that bridges ONE rare/discriminative term (e.g.
+    // "conciliar", df≈1 → high idf) thus outranks one that merely shares common
+    // words (e.g. "recebível"/"lançamento", high df → idf≈0) — fixing the bug
+    // where equal-weight token COUNT buried the real target. Rank by score desc,
+    // then path asc (total order, byte-stable).
+    let mut hits: Vec<(u64, String, Vec<String>)> = per_file
+        .into_iter()
+        .map(|(file, idxs)| {
+            let score: u64 = idxs
+                .iter()
+                .map(|&qi| mustard_core::domain::ranking::idf_x1024(df[qi], n_docs))
+                .sum();
+            let mut terms: Vec<String> = idxs.iter().map(|&qi| ql[qi].clone()).collect();
+            terms.sort();
+            (score, file.to_string(), terms)
+        })
+        .collect();
     hits.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
     hits.truncate(MAX_FILES);
 
@@ -248,5 +274,32 @@ mod tests {
         // Empty when nothing bridges — never an error.
         let none = search(&model, &["zzzznomatch".to_string()], "pt-BR");
         assert!(none.files.is_empty(), "no bridge → empty files");
+    }
+
+    /// (e) IDF RANKING: a file bridging ONE RARE/discriminative term outranks a
+    /// file bridging TWO COMMON terms — the bug the equal-weight token COUNT had
+    /// (a file sharing common words buried the real target). "conciliar" appears
+    /// in ONE purpose (df=1 → high idf); "recebivel"/"lancamento" flood the corpus
+    /// (df high → idf≈0), so the lone "conciliar" file must head the list above
+    /// the file that matches both common words.
+    #[test]
+    fn purpose_search_ranks_rare_term_over_common_pair() {
+        let mut modules: Vec<Module> = (0..20)
+            .map(|i| module(&format!("src/filler/f{i}.rs"), &format!("Filler{i}"), Some("recebivel lancamento")))
+            .collect();
+        modules.push(module("src/target.rs", "Tgt", Some("conciliar a linha do extrato")));
+        modules.push(module("src/common.rs", "Cmn", Some("recebivel e lancamento juntos")));
+        let model = ProjectModel { modules, ..Default::default() };
+        let result = search(
+            &model,
+            &["conciliar".to_string(), "recebivel".to_string(), "lancamento".to_string()],
+            "pt-BR",
+        );
+        assert_eq!(
+            result.files.first().map(|h| h.file.as_str()),
+            Some("src/target.rs"),
+            "rare-term file must head over common-pair files; got {:?}",
+            result.files.iter().map(|h| h.file.as_str()).collect::<Vec<_>>(),
+        );
     }
 }
