@@ -128,10 +128,14 @@ const VALIDATE_CONTRACT: &str = "You are a digest validator for a code pipeline.
      entity that defines the task — NOT generic filler like value/date/status) appears under MISSED / \
      WEAK, meaning the kept anchors likely matched only common vocabulary and point at the WRONG flow. \
      true when the central concept was found at a real tier.\n\
-     - requeryBridges: when centralFound is false, the bridge(s) from the missed USER-SIDE word(s) to the \
-     real ENGLISH code identifier(s) they map to in this codebase — e.g. \
-     {\"userWord\":\"efetivar\",\"codeTerms\":[\"effectivate\",\"settle\",\"confirm\"]}. The orchestrator re-queries \
-     the digest with the codeTerms; if that re-query confirms, it persists the bridge. Empty array when centralFound is true.\n\
+     - requeryBridges: propose a bridge ONLY for a TRUE vocabulary gap — a missed user word that names the \
+     SAME concept some KEPT anchor already IMPLEMENTS, just spelled differently (e.g. PT \"efetivar\" IS the \
+     \"effectivate\" flow that already exists in the anchors). Return an EMPTY array when ANY of: (a) \
+     centralFound is true; (b) the concept is NET-NEW — no kept anchor implements it, so it is a feature to \
+     BUILD, not a word to bridge (do NOT guess generic terms like import/upload/user); (c) the only code term \
+     that would match is the SAME word in a DIFFERENT sense (the programming keyword \"import\"; \"user\" \
+     meaning the auth/login user) — a false match, not a bridge. NEVER propose a term that already appears \
+     under MISSED. A wrong bridge poisons EVERY future query, so when unsure, return empty.\n\
      - route: \"task\" when the real work is single-layer and small (one project, mirrors an existing \
      pattern, no new entity) — the lean path, no spec/wave ceremony. \"feature\" only when it genuinely \
      needs the pipeline.\n\
