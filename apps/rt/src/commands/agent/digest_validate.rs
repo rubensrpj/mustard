@@ -153,8 +153,9 @@ const VALIDATE_CONTRACT: &str = "You are a digest validator for a code pipeline.
      - requeryTerms: when centralFound is false, propose the LIKELY CODE-SIDE words to RE-QUERY for the \
      missed concept. LEAD WITH THE ACTION — the verb the code would use for the OPERATION the user asked \
      for (its synonym/translation), not only the entity noun: the entity alone re-surfaces the whole \
-     feature AREA but not the specific method, while the action verb pins the implementer (so for a \
-     'hand-off commission to partner' request, lead with the pay/settle/mark-paid verb, then the entity). \
+     feature AREA but not the specific method, while the action verb pins the implementer (lead with the \
+     verb of the OPERATION the user described — plus its likely code-side synonyms/translations — then the \
+     entity noun). \
      This is a THROWAWAY search to SURFACE the implementer the name index missed, NOT a persisted bridge: \
      a wrong term only wastes one deterministic lookup, so GUESS here even when nothing shown implements \
      the concept (that is exactly when re-querying helps). Give 2-5 terms, action verbs first. Empty ONLY \
