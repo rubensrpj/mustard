@@ -1,9 +1,14 @@
 //! `mustard-rt run enrich-purpose` — T2 (render) + T3 (apply).
 //!
 //! **Render** (`--render`): reads the grain model, filters `method`/`function`
-//! declarations, slices their source bodies (~55 lines), and emits a byte-stable
-//! batch prompt to stdout asking an LLM to write a one-sentence business-action
-//! summary for each.
+//! declarations, and emits a byte-stable JSON WORKLIST of only the declarations
+//! that NEED enrichment — `purpose` absent OR the stored `body_hash` no longer
+//! matches the hash of the current sliced body (incremental: a re-scan only
+//! re-emits changed methods). Shape: `{"lang":"<ProjectConfig language>",
+//! "items":[{"id":"path#name#line","body":"<sliced body>"}]}`, items sorted by
+//! id. The orchestrator chunks `items` for parallel dispatch and builds the
+//! per-chunk summarization prompt itself (the language instruction lives in the
+//! SKILL); the binary only supplies the worklist + bodies + the resolved `lang`.
 //!
 //! **Apply** (`--apply <file>`): reads a JSON array
 //! `[{"id":"<module_path>#<name>#<line>","purpose":"..."}]` produced by the LLM,
@@ -58,15 +63,13 @@ fn slice_body(source: &str, start_line: usize, cap: usize) -> String {
     lines[start..=end].join("\n")
 }
 
-/// Human-readable locale name for the prompt.
-fn lang_display(lang: &str) -> &str {
-    if lang.starts_with("pt") {
-        "Portuguese (pt-BR)"
-    } else if lang.starts_with("en") {
-        "English"
-    } else {
-        lang
-    }
+/// SHA-256 hex digest of a sliced body — the incremental identity shared by
+/// render (decide stale) and apply (decide skip), so the two agree byte-for-byte
+/// on what "unchanged" means.
+fn body_hash(body: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(body.as_bytes());
+    hasher.hex_digest()
 }
 
 /// Detect the project language from `mustard.json` at `root`.
@@ -94,29 +97,87 @@ fn workspace_root_from_model(model: &serde_json::Value, model_path: &Path) -> st
     model_path.parent().unwrap_or_else(|| Path::new(".")).to_path_buf()
 }
 
-pub fn run_render(model_path: &Path, root: &Path) {
-    // Fail-open: a missing or unparseable model → empty output, exit 0.
-    let raw = match std::fs::read_to_string(model_path) {
-        Ok(s) => s,
-        Err(_) => return,
-    };
-    let model: serde_json::Value = match serde_json::from_str(&raw) {
-        Ok(m) => m,
-        Err(_) => return,
-    };
+/// Build/dependency directory segments that never hold first-party SOURCE — a
+/// declaration mined out of one is tooling/generated/vendored, not a business
+/// method to enrich. Structural and AGNOSTIC: these are universal directory
+/// conventions, not language/framework names (the scan's ethos). Matched as a
+/// whole path SEGMENT (between slashes), so `src/binder.rs` is never mistaken
+/// for the `bin` dir nor `rebuild/x.rs` for `build`.
+const NON_SOURCE_SEGMENTS: &[&str] = &[
+    "node_modules", "target", "dist", "build", "bin", "obj", "vendor", ".git",
+    "migrations",
+];
 
+/// `true` when `path` is NOT first-party source code — so the worklist skips it.
+/// Three agnostic, structural rules (no language/framework names):
+/// 1. a `.claude/` segment — mustard's own tooling living inside the scanned repo;
+/// 2. [`mustard_core::domain::ast::is_test_path`] — the canonical agnostic test
+///    detector (dir-segment + filename convention, polyglot), reused so the
+///    enrich set matches every other consumer (digest anchors, samples);
+/// 3. a build/dependency dir segment ([`NON_SOURCE_SEGMENTS`]), matched on whole
+///    path segments so a real source file is never caught by substring.
+///
+/// Backslashes are normalised to `/` first (Windows paths), and the `.claude`
+/// check accepts it as the leading segment too (`path.starts_with(".claude/")`).
+fn is_non_source_path(path: &str) -> bool {
+    let slashed = path.replace('\\', "/");
+    // 1. mustard's own tooling — a `.claude` segment anywhere (or leading).
+    if slashed == ".claude"
+        || slashed.starts_with(".claude/")
+        || slashed.contains("/.claude/")
+    {
+        return true;
+    }
+    // 2. canonical agnostic test detector (reused, never reinvented).
+    if mustard_core::domain::ast::is_test_path(&slashed) {
+        return true;
+    }
+    // 3. a build/dependency dir as a whole path segment.
+    slashed.split('/').any(|seg| {
+        NON_SOURCE_SEGMENTS.iter().any(|nss| seg.eq_ignore_ascii_case(nss))
+    })
+}
+
+/// One declaration the worklist might enrich: where its body lives + the stored
+/// incremental identity (`purpose` present? stored `body_hash`).
+struct Candidate {
+    module_path: String,
+    line: usize,
+    has_purpose: bool,
+    stored_hash: String,
+}
+
+pub fn run_render(model_path: &Path, root: &Path) {
+    println!("{}", worklist_json(model_path, root));
+}
+
+/// Build the byte-stable worklist JSON for `model_path` (lang from `root`'s
+/// config). Pure given the model file + config: same inputs → identical string.
+/// `run_render` prints this; tests assert on it directly.
+fn worklist_json(model_path: &Path, root: &Path) -> String {
     let lang = resolve_lang(root);
+
+    // Fail-open: a missing or unparseable model → empty worklist (NOT silence),
+    // so a standard /scan step always emits a well-formed `{lang, items:[]}`.
+    let raw = std::fs::read_to_string(model_path).unwrap_or_default();
+    let model: serde_json::Value = serde_json::from_str(&raw).unwrap_or(serde_json::Value::Null);
+
     // Source files are relative to the project root the scan recorded.
     let workspace_root = workspace_root_from_model(&model, model_path);
 
-    // Collect all method/function declarations across all modules.
-    // id = "<module_path>#<name>#<line>" — sorted via BTreeMap for byte-stability.
-    let mut entries: BTreeMap<String, (String, usize)> = BTreeMap::new(); // id -> (module_path, line)
-
+    // Collect every method/function declaration with its stored incremental
+    // identity. id = "<module_path>#<name>#<line>" — keyed in a BTreeMap so the
+    // worklist is sorted by id (byte-stable).
+    let mut candidates: BTreeMap<String, Candidate> = BTreeMap::new();
     if let Some(modules) = model.get("modules").and_then(|v| v.as_array()) {
         for module in modules {
             let module_path = module.get("path").and_then(|v| v.as_str()).unwrap_or("");
             if module_path.is_empty() {
+                continue;
+            }
+            // Only REAL source code is enriched: skip mustard's own `.claude/`
+            // tooling, tests, and build/dependency dirs (structural + agnostic).
+            if is_non_source_path(module_path) {
                 continue;
             }
             if let Some(decls) = module.get("declarations").and_then(|v| v.as_array()) {
@@ -131,42 +192,47 @@ pub fn run_render(model_path: &Path, root: &Path) {
                         continue;
                     }
                     let id = format!("{}#{}#{}", module_path, name, line);
-                    entries.insert(id, (module_path.to_string(), line));
+                    candidates.insert(
+                        id,
+                        Candidate {
+                            module_path: module_path.to_string(),
+                            line,
+                            has_purpose: decl.get("purpose").and_then(|v| v.as_str()).is_some_and(|s| !s.is_empty()),
+                            stored_hash: decl.get("body_hash").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                        },
+                    );
                 }
             }
         }
     }
 
-    if entries.is_empty() {
-        return;
-    }
-
-    // Build the prompt. BTreeMap iteration is sorted → byte-stable.
-    let header = format!(
-        "You are summarizing code functions. For each function below, write EXACTLY one sentence in {} describing the business action it performs. Output a JSON array: [{{\"id\": \"...\", \"purpose\": \"...\"}}].\n",
-        lang_display(&lang)
-    );
-
-    let mut body = String::new();
-    for (id, (module_path, line)) in &entries {
-        // Source file is relative to workspace root.
-        let src_path = workspace_root.join(module_path);
+    // Incremental filter: keep only declarations that NEED enrichment — no
+    // `purpose` yet, OR a body that changed since it was last enriched (its
+    // current sliced-body hash differs from the stored one). A declaration whose
+    // body is unreadable or empty is skipped (fail-open). Same slice + hash as
+    // `run_apply`, so render and apply agree on "unchanged".
+    let mut items: Vec<serde_json::Value> = Vec::new();
+    for (id, cand) in &candidates {
+        let src_path = workspace_root.join(&cand.module_path);
         let source = match std::fs::read_to_string(&src_path) {
             Ok(s) => s,
             Err(_) => continue, // fail-open: skip unreadable files
         };
-        let snippet = slice_body(&source, *line, 55);
+        let snippet = slice_body(&source, cand.line, 55);
         if snippet.is_empty() {
             continue;
         }
-        body.push_str(&format!("\n### {}\n```\n{}\n```\n", id, snippet));
+        // Stale = never enriched, or the body changed since the stored hash.
+        let stale = !cand.has_purpose || body_hash(&snippet) != cand.stored_hash;
+        if !stale {
+            continue;
+        }
+        items.push(serde_json::json!({ "id": id, "body": snippet }));
     }
 
-    if body.is_empty() {
-        return;
-    }
-
-    print!("{}{}", header, body);
+    // Byte-stable worklist: items are already in BTreeMap (id-sorted) order.
+    let worklist = serde_json::json!({ "lang": lang, "items": items });
+    serde_json::to_string_pretty(&worklist).unwrap_or_else(|_| "{}".into())
 }
 
 // ---------------------------------------------------------------------------
@@ -238,9 +304,7 @@ pub fn run_apply(apply_path: &Path, model_path: &Path) {
             Err(_) => continue, // fail-open
         };
         let body = slice_body(&source, line, 55);
-        let mut hasher = Sha256::new();
-        hasher.update(body.as_bytes());
-        let current_hash = hasher.hex_digest();
+        let current_hash = body_hash(&body);
 
         // Find and update the matching declaration in model.modules[].declarations[].
         let modules = match model.get_mut("modules").and_then(|v| v.as_array_mut()) {
@@ -353,20 +417,137 @@ mod tests {
         let model_path = dir.path().join("model.json");
         fs::write(&model_path, serde_json::to_string_pretty(&model).unwrap()).unwrap();
 
-        // Test slice_body determinism (byte-stability).
-        let src_content = fs::read_to_string(&src_path).unwrap();
-        let s1 = slice_body(&src_content, 1, 55);
-        let s2 = slice_body(&src_content, 1, 55);
-        assert_eq!(s1, s2, "slice_body must be deterministic");
-        assert!(s1.contains("process_payment"), "body must contain function name");
+        // (a) BYTE-STABLE: two renders are identical strings.
+        let json_a = worklist_json(&model_path, dir.path());
+        let json_b = worklist_json(&model_path, dir.path());
+        assert_eq!(json_a, json_b, "two renders must be byte-identical");
+        run(true, None, &model_path, dir.path()); // the run face must not panic
+        let parsed: serde_json::Value = serde_json::from_str(&json_a).expect("worklist is valid JSON");
 
-        // lang_display correctness.
-        assert_eq!(lang_display("pt-BR"), "Portuguese (pt-BR)");
-        assert_eq!(lang_display("en"), "English");
-        assert_eq!(lang_display("de"), "de");
+        // Worklist carries ONLY logic decls that need enrichment — the function
+        // (no purpose yet) is in; the struct is filtered (not method/function).
+        let items = parsed["items"].as_array().expect("items array");
+        assert_eq!(items.len(), 1, "only the un-enriched function is a worklist item: {parsed}");
+        assert_eq!(items[0]["id"], "src/payments.rs#process_payment#1");
+        assert!(
+            items[0]["body"].as_str().unwrap().contains("process_payment"),
+            "body is the sliced function body: {}",
+            items[0]["body"]
+        );
+        assert!(!parsed["items"].to_string().contains("PaymentRecord"), "struct is excluded");
+    }
 
-        // run render without panicking.
-        run(true, None, &model_path, dir.path());
+    #[test]
+    fn enrich_purpose_render_incremental_skips_unchanged() {
+        let dir = tempdir().unwrap();
+        let src_path = dir.path().join("lib.rs");
+        fs::write(
+            &src_path,
+            "fn enriched() {\n    // a\n}\n\nfn stale() {\n    // b\n}\n",
+        )
+        .unwrap();
+
+        // Compute the stored hash for the ALREADY-enriched decl exactly as render
+        // will (slice at its line, hash). `enriched` starts at line 1.
+        let src = fs::read_to_string(&src_path).unwrap();
+        let enriched_hash = body_hash(&slice_body(&src, 1, 55));
+
+        let model = serde_json::json!({
+            "root": dir.path().to_str().unwrap(),
+            "modules": [
+                {
+                    "path": "lib.rs",
+                    "language": "rust",
+                    "loc": 6,
+                    "imports": [],
+                    "namespaces": [],
+                    "declarations": [
+                        // Already enriched AND body_hash matches current body → SKIP.
+                        { "kind": "function", "name": "enriched", "line": 1,
+                          "purpose": "Does the enriched thing.", "body_hash": enriched_hash },
+                        // Never enriched (no purpose) → INCLUDE. `stale` is at line 5.
+                        { "kind": "function", "name": "stale", "line": 5 }
+                    ]
+                }
+            ]
+        });
+        let model_path = dir.path().join("model.json");
+        fs::write(&model_path, serde_json::to_string_pretty(&model).unwrap()).unwrap();
+
+        let json = worklist_json(&model_path, dir.path());
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let items = parsed["items"].as_array().expect("items");
+        let ids: Vec<&str> = items.iter().map(|i| i["id"].as_str().unwrap()).collect();
+        assert_eq!(ids, vec!["lib.rs#stale#5"], "only the stale decl is in the worklist: {ids:?}");
+        // The already-enriched-and-unchanged decl is excluded.
+        assert!(!json.contains("enriched"), "enriched+matching-hash decl is skipped: {json}");
+    }
+
+    #[test]
+    fn enrich_purpose_render_skips_non_source_paths() {
+        let dir = tempdir().unwrap();
+        let body = "fn f() {\n    // x\n}\n";
+        // One .claude/ tooling file, one test-path file, one node_modules file,
+        // and one REAL source file — all with a readable, sliceable body, so the
+        // PATH filter (not the unreadable-skip) is what decides.
+        for rel in [
+            ".claude/skills/x/gen.py",
+            "src/__tests__/payment_test.rs",
+            "node_modules/dep/index.js",
+            "src/payment.rs",
+        ] {
+            let p = dir.path().join(rel);
+            fs::create_dir_all(p.parent().unwrap()).unwrap();
+            fs::write(&p, body).unwrap();
+        }
+
+        let decl = |name: &str| serde_json::json!({ "kind": "function", "name": name, "line": 1 });
+        let module = |path: &str, name: &str| serde_json::json!({
+            "path": path, "language": "rust", "loc": 3, "imports": [], "namespaces": [],
+            "declarations": [decl(name)]
+        });
+        let model = serde_json::json!({
+            "root": dir.path().to_str().unwrap(),
+            "modules": [
+                module(".claude/skills/x/gen.py", "gen"),
+                module("src/__tests__/payment_test.rs", "test_pay"),
+                module("node_modules/dep/index.js", "dep_fn"),
+                module("src/payment.rs", "real_fn"),
+            ]
+        });
+        let model_path = dir.path().join("model.json");
+        fs::write(&model_path, serde_json::to_string_pretty(&model).unwrap()).unwrap();
+
+        let json = worklist_json(&model_path, dir.path());
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let ids: Vec<&str> = parsed["items"].as_array().unwrap().iter().map(|i| i["id"].as_str().unwrap()).collect();
+        assert_eq!(ids, vec!["src/payment.rs#real_fn#1"], "only REAL source is enriched: {ids:?}");
+        assert!(!json.contains(".claude/"), ".claude tooling excluded: {json}");
+        assert!(!json.contains("node_modules"), "build/dep dir excluded: {json}");
+        assert!(!json.contains("__tests__"), "test path excluded: {json}");
+    }
+
+    /// The path filter is structural + agnostic: whole-segment build/dep dirs,
+    /// `.claude/` tooling, and the canonical test detector — but a real source
+    /// file whose name merely CONTAINS a build word (`binder.rs`, `rebuild/`) is
+    /// never caught (substring would be wrong).
+    #[test]
+    fn is_non_source_path_is_structural() {
+        // Excluded.
+        assert!(is_non_source_path(".claude/skills/x/gen.py"));
+        assert!(is_non_source_path("apps/web/.claude/foo.ts"));
+        assert!(is_non_source_path("node_modules/dep/index.js"));
+        assert!(is_non_source_path("app/target/debug/build.rs"));
+        assert!(is_non_source_path("server/dist/main.js"));
+        assert!(is_non_source_path("pkg/vendor/lib.go"));
+        assert!(is_non_source_path("db/migrations/0001_init.sql"));
+        assert!(is_non_source_path("db/Migrations/Init.cs")); // case-insensitive
+        assert!(is_non_source_path("src/components/__tests__/Button.test.tsx"));
+        // Kept (real source whose NAME contains a build word as a substring).
+        assert!(!is_non_source_path("src/binder.rs"), "binder != bin segment");
+        assert!(!is_non_source_path("src/rebuild/engine.rs"), "rebuild != build segment");
+        assert!(!is_non_source_path("src/distance.rs"), "distance != dist segment");
+        assert!(!is_non_source_path("src/payment.rs"));
     }
 
     #[test]
@@ -428,37 +609,47 @@ mod tests {
         );
     }
 
+    /// The worklist's `lang` field is the resolved ProjectConfig language — EN by
+    /// default, pt-BR when the config says so. The binary supplies the language;
+    /// the SKILL builds the prompt instruction from it. Zero language hardcoded in
+    /// the worklist shape.
     #[test]
     fn enrich_purpose_language_agnostic() {
-        // Test lang_display with different inputs.
-        assert_eq!(lang_display("en"), "English");
-        assert_eq!(lang_display("en-US"), "English");
-        assert_eq!(lang_display("pt-BR"), "Portuguese (pt-BR)");
-        assert_eq!(lang_display("pt"), "Portuguese (pt-BR)");
-        assert_eq!(lang_display("es"), "es");
+        // A minimal model with one un-enriched function (so `items` is non-empty
+        // and `lang` is exercised on a real render).
+        let model = serde_json::json!({
+            "root": "",
+            "modules": [{
+                "path": "lib.rs", "language": "rust", "loc": 3,
+                "imports": [], "namespaces": [],
+                "declarations": [{ "kind": "function", "name": "act", "line": 1 }]
+            }]
+        });
 
-        // resolve_lang with no mustard.json → defaults to "en".
-        let dir = tempdir().unwrap();
-        let lang = resolve_lang(dir.path());
-        assert_eq!(lang, "en", "no mustard.json → default lang en");
+        // EN: no mustard.json → resolve_lang defaults to "en".
+        let en_dir = tempdir().unwrap();
+        fs::write(en_dir.path().join("lib.rs"), "fn act() {\n    // x\n}\n").unwrap();
+        let en_model = en_dir.path().join("model.json");
+        let mut m = model.clone();
+        m["root"] = serde_json::Value::String(en_dir.path().to_str().unwrap().to_string());
+        fs::write(&en_model, serde_json::to_string_pretty(&m).unwrap()).unwrap();
+        let en: serde_json::Value = serde_json::from_str(&worklist_json(&en_model, en_dir.path())).unwrap();
+        assert_eq!(en["lang"], "en", "default ProjectConfig language is en: {en}");
 
-        // With mustard.json specifying lang.
-        fs::write(
-            dir.path().join("mustard.json"),
-            r#"{"lang":"pt-BR"}"#,
-        )
-        .unwrap();
-        let lang2 = resolve_lang(dir.path());
-        assert_eq!(lang2, "pt-BR");
+        // pt-BR: a config that declares it.
+        let pt_dir = tempdir().unwrap();
+        fs::write(pt_dir.path().join("mustard.json"), r#"{"lang":"pt-BR"}"#).unwrap();
+        fs::write(pt_dir.path().join("lib.rs"), "fn act() {\n    // x\n}\n").unwrap();
+        let pt_model = pt_dir.path().join("model.json");
+        let mut m2 = model.clone();
+        m2["root"] = serde_json::Value::String(pt_dir.path().to_str().unwrap().to_string());
+        fs::write(&pt_model, serde_json::to_string_pretty(&m2).unwrap()).unwrap();
+        let pt: serde_json::Value = serde_json::from_str(&worklist_json(&pt_model, pt_dir.path())).unwrap();
+        assert_eq!(pt["lang"], "pt-BR", "lang reflects ProjectConfig.lang: {pt}");
 
-        // With specLang (and no lang).
-        let dir2 = tempdir().unwrap();
-        fs::write(
-            dir2.path().join("mustard.json"),
-            r#"{"specLang":"pt-BR"}"#,
-        )
-        .unwrap();
-        let lang3 = resolve_lang(dir2.path());
-        assert_eq!(lang3, "pt-BR");
+        // specLang (legacy alias, no `lang`) also resolves.
+        let sl_dir = tempdir().unwrap();
+        fs::write(sl_dir.path().join("mustard.json"), r#"{"specLang":"pt-BR"}"#).unwrap();
+        assert_eq!(resolve_lang(sl_dir.path()), "pt-BR");
     }
 }
