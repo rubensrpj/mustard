@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "spec": "consertar-loop-outcome-digest-janela",
+  "title": "consertar loop de outcome do digest: janela de pesquisa por-query com fechamento deterministico do marcador active-research",
+  "timeline": {},
+  "economy": {
+    "totalSavingsTokens": 0,
+    "bySource": {}
+  },
+  "telemetry": {
+    "totalTokens": 0,
+    "totalCostUsdMicros": 0,
+    "byModel": {},
+    "byAgent": {}
+  }
+}

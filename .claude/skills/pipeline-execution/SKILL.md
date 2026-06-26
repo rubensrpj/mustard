@@ -64,6 +64,16 @@ Create `.claude/.pipeline-states/{spec-name}.json`.
 Agents auto-load relevant skills from `{subproject}/.claude/skills/` based on task description.
 The subproject's curated Guards are injected inline by the renderer (`## GUARDS`); there is no `{recommended_skills}` hint block (generated skills were removed).
 
+**1b. Relevance gate for spec memory — run ONCE, before the first dispatch round (SKIP when `.claude/spec/{specName}/memory/` is empty — the common case):**
+
+Irrelevant memory principles measurably degrade a subagent's reasoning (distractors compound with reasoning depth), so the rendered `## SPEC MEMORY` block must carry only what pertains to THIS spec — filtered by **relevance, never trimmed to a count**. When the spec has `memory/*.md` principle files:
+
+1. Read each principle's frontmatter `name` + `description` (a handful of small files — read directly, it is cheap).
+2. Dispatch a throwaway precision judge — `Task(subagent_type: general-purpose, model: haiku)`, read-only — passing the spec goal (from `spec.md`) plus the candidate `name — description` list **inline**. Instruction: *"Return ONLY the names whose principle is relevant to this spec's work, one per line. When unsure, EXCLUDE."* (Haiku here is a deliberate exception to the inherit-session-model rule: a cheap relevance judge over a short list, not pipeline work — RT itself stays LLM-free and byte-stable, so the judge lives here in the orchestration layer.)
+3. Write the approved names to `.claude/spec/{specName}/.memory-approved`, one per line. **Write the file even when the judge approves nothing** (an empty file) — that means "none relevant → inject no memory", which is honoured, not a fallback.
+
+The renderer inside `wave-advance` reads `.memory-approved` and injects EXACTLY that set (`select_spec_memory_by_names`). **No file** → the deterministic recall matcher runs (relevance-ranked, uncapped) as the ungated fallback. The gate is per-spec and idempotent — re-run it only if the spec's `memory/` set changes.
+
 **2. Plan Waves — routed by Rust, the LLM relays:**
 
 Do NOT read `wave-plan.md` or decide the wave order by hand. Run:

@@ -33,7 +33,7 @@ use crate::commands::spec::scope_decompose::decide;
 use crate::commands::wave::wave_dependency::compute_waves;
 use crate::commands::wave::wave_lib::{detect_role_with, load_role_patterns, parse_files_section};
 use crate::commands::wave::wave_scaffold::{
-    Plan, WavePlanEntry, effective_locale, headings, render_wave_plan, render_wave_spec, wave_name,
+    Plan, WavePlanEntry, headings, render_wave_plan, render_wave_spec, wave_name,
 };
 use crate::util::json_io;
 use mustard_core::time::now_iso8601;
@@ -275,12 +275,10 @@ pub fn decompose_if_signaled(spec_file: &Path) -> Value {
         //    renderer here — the output is byte-identical in form.
         let lang = parent_lang(spec_file);
         let plan = dag_to_plan(&waves, &lang);
-        // Resolve the heading locale the same way the PLAN-time scaffold does:
-        // `mustard.json#specLang` wins, the parent spec's recorded `lang` is the
-        // fallback — so a decomposed-at-EXECUTE spec stays form-identical to a
-        // scaffolded-at-PLAN one.
-        let locale = effective_locale(&spec_dir, Some(&lang));
-        let hd = headings(locale);
+        // Wave headings are ENGLISH-FIXED machine artefacts, so a decomposed-at-
+        // EXECUTE spec stays form-identical to a scaffolded-at-PLAN one regardless
+        // of the parent spec's recorded `lang`.
+        let hd = headings();
 
         // Carry the parent spec's `## Acceptance Criteria` into the wave-plan so
         // the QA gate (which reads global ACs from `wave-plan.md` once `spec.md`
@@ -405,10 +403,9 @@ mod tests {
             json!({ "wave": 2, "files": ["src/b.ts"], "roles": ["frontend"], "dependsOn": [1] }),
         ];
         let lang = "pt-BR";
-        // Both paths render through the SAME locale-resolved heading set, so the
-        // byte-equality holds; the pt-BR plan yields PT headings (per the i18n
-        // rule — the artefact follows the configured language).
-        let hd = headings(mustard_core::SupportedLocale::PtBr);
+        // Both paths render through the SAME ENGLISH-FIXED heading set (machine
+        // artefact), so the byte-equality holds regardless of the plan's `lang`.
+        let hd = headings();
         // Path A: the re-wave converter + canonical renderer.
         let plan_a = dag_to_plan(&waves, lang);
         let rendered_a = render_wave_plan(&plan_a, &hd, None, "epic-x");
@@ -440,10 +437,10 @@ mod tests {
         };
         let rendered_b = render_wave_plan(&plan_b, &hd, None, "epic-x");
         assert_eq!(rendered_a, rendered_b, "re-wave must render the canonical wave-plan.md byte-for-byte");
-        // The wave-plan.md follows the spec's `lang` (pt-BR here) → PT heading,
-        // plus the wikilinks.
-        assert!(rendered_a.contains("# Plano de Waves"));
-        assert!(!rendered_a.contains("# Wave Plan"));
+        // The wave-plan.md is a MACHINE artefact → ENGLISH-FIXED heading even for
+        // a pt-BR plan, plus the wikilinks.
+        assert!(rendered_a.contains("# Wave Plan"));
+        assert!(!rendered_a.contains("# Plano de Waves"));
         assert!(rendered_a.contains("[[wave-1-general]]"));
         assert!(rendered_a.contains("[[wave-2-frontend]]"));
     }

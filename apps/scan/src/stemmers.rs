@@ -2,19 +2,17 @@
 //!
 //! CARVE-OUT (the single approved exception to the "no language names in
 //! src/" guard, recorded in the spec and in docs/REDESENHO-INDICE-DIGEST-
-//! AGNOSTICO.md): this module may name NATURAL languages — `pt`, `en` — to
-//! select a `rust_stemmers` algorithm, a vendored stoplist and a lexicon
-//! pair. Natural languages are the one registry `languages.toml` cannot
-//! carry (the stemmer algorithm is a crate enum, the stoplist an embedded
-//! file), so the mapping lives here as a pure mirror of data. PROGRAMMING
-//! languages, file extensions, grammar nodes and frameworks remain banned
-//! from this file like from every other module.
+//! AGNOSTICO.md): this module may name NATURAL languages to select a
+//! `rust_stemmers` algorithm and a vendored stoplist. Natural languages are the
+//! one registry `languages.toml` cannot carry (the stemmer algorithm is a crate
+//! enum, the stoplist an embedded file), so the mapping lives here as a pure
+//! mirror of data. PROGRAMMING languages, file extensions, grammar nodes and
+//! frameworks remain banned from this file like from every other module.
 //!
-//! Zero behavior per language beyond selection: every function is a lookup
-//! row. Adding a language = one stoplist file under `stoplists/` + one row
-//! in [`stemmer`] and [`stoplist`]; adding a language pair = one file under
-//! `lexicons/` + one row in [`lexicon`]. The matching engine (`matching.rs`)
-//! never branches on a code — it consumes whatever this mirror returns.
+//! The retrieval ladder is ENGLISH-only (intra-language); there is no
+//! cross-language lexicon bridge. Zero behavior per language beyond selection:
+//! every function is a lookup row. The matching engine (`matching.rs`) never
+//! branches on a code — it consumes whatever this mirror returns.
 
 use rust_stemmers::{Algorithm, Stemmer};
 
@@ -44,41 +42,6 @@ pub fn stoplist(code: &str) -> &'static str {
     }
 }
 
-/// A vendored bilingual domain lexicon: the embedded TOML plus which side of
-/// the file each language sits on (`key_lang` = the TOML keys, `val_lang` =
-/// the value arrays). The label names the pair in match reports.
-pub struct LexiconSeed {
-    pub label: &'static str,
-    pub key_lang: &'static str,
-    pub val_lang: &'static str,
-    pub toml: &'static str,
-}
-
-/// Lexicon for a language pair, order-insensitive (`pt`+`en` and `en`+`pt`
-/// resolve to the same file). `None` = no curated pair vendored: tier-4 has
-/// no bridge for those languages and a cross-language term is an honest miss.
-pub fn lexicon(a: &str, b: &str) -> Option<LexiconSeed> {
-    match (a, b) {
-        ("pt", "en") | ("en", "pt") => Some(LexiconSeed {
-            label: "pt-en",
-            key_lang: "pt",
-            val_lang: "en",
-            toml: include_str!("../lexicons/pt-en.toml"),
-        }),
-        _ => None,
-    }
-}
-
-/// The SCANNED project's own lexicon for a pair label —
-/// `<root>/.claude/lexicons/<label>.toml`, same `[terms]` shape as the seed.
-/// The seed carries only generic business equivalences; domain vocabulary
-/// lives with the project, never embedded in the tool ("we don't know where
-/// mustard will run"). The root comes from the loaded model, never the cwd.
-/// `None` (missing/unreadable file) degrades to seed-only — never an error.
-pub fn project_lexicon(root: &std::path::Path, label: &str) -> Option<String> {
-    std::fs::read_to_string(root.join(".claude").join("lexicons").join(format!("{label}.toml"))).ok()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -86,21 +49,8 @@ mod tests {
     #[test]
     fn mirror_rows_resolve_and_unknown_degrades() {
         assert!(stemmer("en").is_some());
-        assert!(stemmer("pt").is_some());
         assert!(stemmer("xx").is_none(), "unknown code has no row, no error");
         assert!(!stoplist("en").is_empty());
-        assert!(!stoplist("pt").is_empty());
         assert!(stoplist("xx").is_empty());
-    }
-
-    #[test]
-    fn lexicon_pair_is_order_insensitive() {
-        let ab = lexicon("pt", "en").expect("seed pair");
-        let ba = lexicon("en", "pt").expect("seed pair reversed");
-        assert_eq!(ab.label, ba.label);
-        assert_eq!(ab.key_lang, "pt");
-        assert_eq!(ab.val_lang, "en");
-        assert!(lexicon("pt", "xx").is_none());
-        assert!(toml::from_str::<toml::Value>(ab.toml).is_ok(), "seed lexicon parses");
     }
 }

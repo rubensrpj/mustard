@@ -208,9 +208,11 @@ struct GetRunSummaryArgs {
 /// Input for `find_by_intent`.
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct FindByIntentArgs {
-    /// Domain-language intent (possibly in a language other than the code).
-    /// Tokenised the same way as `mustard-rt run purpose-search --intent`:
-    /// lowercase, minimum 3 chars, deduplicated, capped at 32 terms.
+    /// English domain-term intent — matched INTRA-LANGUAGE against the code's
+    /// own English `purpose` summaries; this tool does not translate, so pass the
+    /// English domain words. Tokenised the same way as `mustard-rt run
+    /// purpose-search --intent`: lowercase, minimum 3 chars, deduplicated, capped
+    /// at 32 terms.
     intent: String,
     /// Optional project root to override the server's cwd-derived default.
     /// When absent, the server uses its resolved `project_dir` (same as every
@@ -552,9 +554,10 @@ impl MustardMemory {
     }
 
     /// Tool 6 — intent→file retrieval over the `purpose` summaries written by
-    /// `mustard-rt run scan` (enrich step). Searches the purpose index for
-    /// files whose method/type summaries answer a domain-language intent, even
-    /// when the caller's vocabulary differs from the source-code identifiers.
+    /// `mustard-rt run scan` (enrich step). Searches the purpose index for files
+    /// whose method/type summaries answer an ENGLISH domain-term intent. Matching
+    /// is intra-language (the summaries are English too); this tool does not
+    /// translate, so the caller passes the English domain words.
     ///
     /// Thin adapter over [`mustard_core::Scan::purpose_search`]. Tokenises
     /// `intent` identically to `purpose-search` (`mustard-rt run`) — lowercase,
@@ -568,7 +571,7 @@ impl MustardMemory {
     /// Fail-open: a missing model, an absent scan binary, or any read error
     /// degrades to `{ "intent": "…", "files": [] }` — never an MCP error.
     #[tool(
-        description = "Return files whose purpose summaries answer a domain-language intent (intent→file recall; finds methods invisible to the name index)"
+        description = "Return files whose purpose summaries answer an English domain-term intent (intent→file recall; finds methods invisible to the name index). Intra-language: pass English domain words — this tool does not translate"
     )]
     fn find_by_intent(
         &self,

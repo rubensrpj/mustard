@@ -29,11 +29,11 @@
 //! ## The trigram rung is REQUIRED here
 //!
 //! Unlike the strict name ladder, purpose matching enables the T5 trigram RESCUE
-//! rung (`ladder.tier(.., true)`). The PT Snowball stemmer has gaps on the verb
-//! forms the LLM summaries use — "efetiva"↔"efetivar" and "baixado"↔"baixa" both
-//! go strict=None / trigram=Some — so without it ~half the real recall-holes
-//! never bridge. Precision is not a concern: this command runs only when the
-//! name search already missed, and its hits are a re-query suggestion, not an
+//! rung (`ladder.tier(.., true)`). The English stemmer has gaps on the inflected
+//! forms the summaries use — "efetiva"↔"efetivar" and "baixado"↔"baixa" both go
+//! strict=None / trigram=Some — so without it ~half the real recall-holes never
+//! bridge. Precision is not a concern: this command runs only when the name
+//! search already missed, and its hits are a re-query suggestion, not an
 //! authoritative anchor.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -88,8 +88,8 @@ fn query_tokens(terms: &[String], ladder: &Ladder) -> Vec<String> {
 /// path, query tokens compared through the ladder with the trigram rescue rung
 /// ON, files ranked by summed token IDF desc then path asc (a total order, so
 /// two runs over the same model are byte-identical).
-pub fn search(model: &ProjectModel, terms: &[String], request_lang: &str) -> PurposeResult {
-    let ladder = Ladder::new(request_lang, Some(std::path::Path::new(&model.root)));
+pub fn search(model: &ProjectModel, terms: &[String]) -> PurposeResult {
+    let ladder = Ladder::new();
     let ql = query_tokens(terms, &ladder);
     let qsigs: Vec<Sig> = ql.iter().map(|q| ladder.sig(q)).collect();
 
@@ -214,7 +214,7 @@ mod tests {
             Some("aprovado o título a pagar"),
         ));
         let model = ProjectModel { modules, ..Default::default() };
-        let result = search(&model, &["aprovar".to_string()], "pt-BR");
+        let result = search(&model, &["aprovar".to_string()]);
         assert!(
             result.files.iter().any(|h| h.file == "src/payments/xqzkflow.rs"),
             "rare-named target's purpose must be found past the cap; got {:?}",
@@ -232,7 +232,7 @@ mod tests {
             modules: vec![module("src/payment.rs", "Xyz", Some("efetiva o título"))],
             ..Default::default()
         };
-        let result = search(&model, &["efetivar".to_string()], "pt-BR");
+        let result = search(&model, &["efetivar".to_string()]);
         assert!(
             result.files.iter().any(|h| h.file == "src/payment.rs"),
             "trigram rung must bridge the PT stemmer gap; got {:?}",
@@ -251,7 +251,7 @@ mod tests {
             ],
             ..Default::default()
         };
-        let result = search(&model, &["aprovar".to_string(), "baixa".to_string()], "pt-BR");
+        let result = search(&model, &["aprovar".to_string(), "baixa".to_string()]);
         assert_eq!(result.files.first().map(|h| h.file.as_str()), Some("src/two.rs"), "two-match file heads: {:?}", result.files.iter().map(|h| (h.file.as_str(), h.matched_terms.len())).collect::<Vec<_>>());
         // The two-match file names both tokens, sorted.
         let two = result.files.iter().find(|h| h.file == "src/two.rs").expect("two.rs present");
@@ -268,11 +268,11 @@ mod tests {
             ],
             ..Default::default()
         };
-        let a = serde_json::to_string(&search(&model, &["aprovar".to_string()], "pt-BR")).unwrap();
-        let b = serde_json::to_string(&search(&model, &["aprovar".to_string()], "pt-BR")).unwrap();
+        let a = serde_json::to_string(&search(&model, &["aprovar".to_string()])).unwrap();
+        let b = serde_json::to_string(&search(&model, &["aprovar".to_string()])).unwrap();
         assert_eq!(a, b, "two runs serialize identically");
         // Empty when nothing bridges — never an error.
-        let none = search(&model, &["zzzznomatch".to_string()], "pt-BR");
+        let none = search(&model, &["zzzznomatch".to_string()]);
         assert!(none.files.is_empty(), "no bridge → empty files");
     }
 
@@ -293,7 +293,6 @@ mod tests {
         let result = search(
             &model,
             &["conciliar".to_string(), "recebivel".to_string(), "lancamento".to_string()],
-            "pt-BR",
         );
         assert_eq!(
             result.files.first().map(|h| h.file.as_str()),

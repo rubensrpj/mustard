@@ -62,7 +62,7 @@
 
 use mustard_core::domain::spec::contract::ChecklistItem;
 use mustard_core::io::fs;
-use mustard_core::{Meta, MetaFlags, SupportedLocale, read_meta, write_meta};
+use mustard_core::{Meta, MetaFlags, read_meta, write_meta};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::fmt::Write as _;
@@ -129,16 +129,14 @@ pub(crate) struct Plan {
     pub(crate) lang: Option<String>,
 }
 
-/// Heading strings for the wave layout, resolved for one [`SupportedLocale`].
+/// Heading strings for the wave layout.
 ///
-/// These render generated artefacts — the operational `wave-plan.md` index and
-/// the per-wave `spec.md` skeletons (with their materialised `## Tasks` /
-/// `## Files` / `## Acceptance Criteria` bodies). Per the i18n rule (every file
-/// the tool generates follows the project's `language`), the heading set is
-/// **lang-aware**: it is built from the effective locale (`mustard.json`
-/// root-wins; the plan's `lang` as fallback). The struct is retained (rather
-/// than inlining the literals) so the re-wave path renders through the same
-/// canonical renderers (F4-d item 2).
+/// These render MACHINE artefacts — the operational `wave-plan.md` index and the
+/// per-wave `spec.md` skeletons (with their materialised `## Tasks` / `## Files`
+/// / `## Acceptance Criteria` bodies). They are ENGLISH-FIXED regardless of the
+/// project's configured language (only the user-facing spec narrative follows
+/// config-lang). The struct is retained (rather than inlining the literals) so
+/// the re-wave path renders through the same canonical renderers (F4-d item 2).
 ///
 /// `pub(crate)` so the re-wave path can render through the same canonical
 /// renderers (F4-d item 2).
@@ -164,65 +162,30 @@ pub(crate) struct Headings<'a> {
     acceptance: &'a str,
 }
 
-/// Build the heading set for `locale`. The display names reuse the EN/PT
-/// variants `spec_sections::is_heading` already recognises (`Tasks`/`Tarefas`,
-/// `Files`/`Arquivos`, `Summary`/`Resumo`, `Acceptance Criteria`/`Critérios de
-/// Aceitação`) so `agent-prompt-render` and the QA gate keep consuming the
-/// materialised body regardless of which language was rendered. `Network` /
-/// `Wave Plan` / `Wave Table` / `Depends on` are wave-navigation labels (no
-/// `spec_sections` key) and are localised in parallel so the whole file follows
-/// the configured language.
-pub(crate) fn headings(locale: SupportedLocale) -> Headings<'static> {
-    match locale {
-        SupportedLocale::PtBr => Headings {
-            wave_plan_title: "# Plano de Waves",
-            table_header: "| Wave | Spec | Papel | Depende de | Resumo |",
-            table_sep: "|------|------|-------|------------|--------|",
-            network: "## Rede",
-            parent: "Pai",
-            wave_table_caption: "## Tabela de Waves",
-            summary: "## Resumo",
-            summary_placeholder: "_(preencher)_",
-            depends_on: "Depende de",
-            tasks: "## Tarefas",
-            files: "## Arquivos",
-            acceptance: "## Critérios de Aceitação",
-        },
-        SupportedLocale::EnUs => Headings {
-            wave_plan_title: "# Wave Plan",
-            table_header: "| Wave | Spec | Role | Depends on | Summary |",
-            table_sep: "|------|------|------|------------|---------|",
-            network: "## Network",
-            parent: "Parent",
-            wave_table_caption: "## Wave Table",
-            summary: "## Summary",
-            summary_placeholder: "_(fill in)_",
-            depends_on: "Depends on",
-            tasks: "## Tasks",
-            files: "## Files",
-            acceptance: "## Acceptance Criteria",
-        },
+/// Build the heading set. These render MACHINE artefacts — the operational
+/// `wave-plan.md` index and the per-wave `spec.md` skeletons (with their
+/// materialised `## Tasks` / `## Files` / `## Acceptance Criteria` bodies) — so
+/// the headings are ENGLISH-FIXED regardless of the project's configured
+/// language (the reverted "generated artefacts follow config-lang" rule for
+/// machine artefacts; only the user-facing spec narrative still follows
+/// config-lang). The display names are the EN spellings
+/// `spec_sections::is_heading` recognises, so `agent-prompt-render` and the QA
+/// gate keep consuming the materialised body.
+pub(crate) fn headings() -> Headings<'static> {
+    Headings {
+        wave_plan_title: "# Wave Plan",
+        table_header: "| Wave | Spec | Role | Depends on | Summary |",
+        table_sep: "|------|------|------|------------|---------|",
+        network: "## Network",
+        parent: "Parent",
+        wave_table_caption: "## Wave Table",
+        summary: "## Summary",
+        summary_placeholder: "_(fill in)_",
+        depends_on: "Depends on",
+        tasks: "## Tasks",
+        files: "## Files",
+        acceptance: "## Acceptance Criteria",
     }
-}
-
-/// Resolve the effective heading locale: the project's `mustard.json#specLang`
-/// wins (root-wins per the i18n rule, via the canonical [`ProjectConfig`]
-/// accessor — no ad-hoc parse), falling back to the plan's own `lang` when the
-/// scaffold runs outside a workspace (standalone / tempdir). A plan `lang` that
-/// is absent or not in the catalogue degrades to [`SupportedLocale::default`].
-///
-/// `pub(crate)` so the EXECUTE-entry re-wave path resolves the heading locale
-/// the same way (root-wins, then the parent spec's recorded `lang`), keeping a
-/// single source of truth for the i18n resolution.
-///
-/// [`ProjectConfig`]: mustard_core::ProjectConfig
-pub(crate) fn effective_locale(spec_dir: &Path, plan_lang: Option<&str>) -> SupportedLocale {
-    if let Ok(root) = mustard_core::io::workspace::workspace_root(spec_dir) {
-        return mustard_core::ProjectConfig::load(&root).i18n().lang;
-    }
-    plan_lang
-        .and_then(|s| s.trim().parse::<SupportedLocale>().ok())
-        .unwrap_or_default()
 }
 
 /// Render the wave-plan markdown index. Lifecycle metadata (stage / scope /
@@ -591,13 +554,11 @@ pub(crate) fn scaffold(spec_dir: &Path, plan_path: &Path) -> ScaffoldOutcome {
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_default();
     // `lang` is recorded verbatim in meta.json (the spec-facing locale the plan
-    // declared). The headings, by contrast, render in the *effective* locale —
-    // `mustard.json#specLang` wins (root-wins per the i18n rule), with the
-    // plan's `lang` as the standalone fallback. Every generated artefact follows
-    // that effective language.
+    // declared — the user-facing narrative still follows config-lang). The
+    // headings, by contrast, render MACHINE artefacts, so they are ENGLISH-FIXED
+    // regardless of the configured language.
     let lang = plan.lang.as_deref().unwrap_or("pt-BR");
-    let locale = effective_locale(spec_dir, plan.lang.as_deref());
-    let hd = headings(locale);
+    let hd = headings();
 
     let _ = fs::create_dir_all(spec_dir);
 
@@ -801,7 +762,7 @@ mod tests {
         // EN locale for this AC-passthrough test — the AC heading is matched by
         // the i18n-aware `section_block`, so the carried section is found in
         // either language; EN keeps the literal block here readable.
-        let hd = headings(SupportedLocale::EnUs);
+        let hd = headings();
         let ac = "## Acceptance Criteria\n- **AC-1** — works.\n  Command: `true`";
         let md = render_wave_plan(&sample_plan(), &hd, Some(ac), "epic-x");
         // The QA gate reads global ACs back from `wave-plan.md` via the shared
@@ -820,10 +781,10 @@ mod tests {
 
     #[test]
     fn renders_wave_plan_table_with_wikilinks() {
-        // `sample_plan` declares `lang: "pt"`; the rendered artefact follows the
-        // effective language, so a PT locale yields PT headings (per the i18n
-        // rule — every generated file follows the configured language).
-        let hd = headings(SupportedLocale::PtBr);
+        // The wave-plan is a MACHINE artefact, so its headings are ENGLISH-FIXED
+        // regardless of the plan's declared `lang` (`sample_plan` declares
+        // `lang: "pt"`).
+        let hd = headings();
         let md = render_wave_plan(&sample_plan(), &hd, None, "epic-x");
         assert!(md.contains("[[wave-1-general]]"));
         assert!(md.contains("[[wave-2-frontend]]"));
@@ -832,43 +793,37 @@ mod tests {
         // The wave-plan carries its rename-proof identity handle as leading
         // `id:` frontmatter (parent slug + `.plan`).
         assert!(md.starts_with("---\nid: wave.epic-x.plan\n---\n\n"), "{md}");
-        // PT locale → PT headings.
-        assert!(md.contains("# Plano de Waves"));
-        assert!(md.contains("Depende de"));
-        assert!(!md.contains("# Wave Plan"));
-
-        // The EN locale renders the EN headings for the same plan.
-        let en = render_wave_plan(&sample_plan(), &headings(SupportedLocale::EnUs), None, "epic-x");
-        assert!(en.contains("# Wave Plan"));
-        assert!(en.contains("Depends on"));
-        assert!(!en.contains("Plano de Waves"));
+        // English-fixed headings even for a pt-declared plan.
+        assert!(md.contains("# Wave Plan"));
+        assert!(md.contains("Depends on"));
+        assert!(!md.contains("# Plano de Waves"));
     }
 
     #[test]
     fn renders_wave_spec_with_parent_link_and_no_header() {
-        // PT locale → PT headings (sample_plan declares `lang: "pt"`).
-        let hd = headings(SupportedLocale::PtBr);
+        // Machine artefact → ENGLISH-FIXED headings (sample_plan declares `lang: "pt"`).
+        let hd = headings();
         let plan = sample_plan();
         let s1 = render_wave_spec("epic-x", &plan.waves[0], &hd);
         // Identity (allowed) IS present as leading `id:` frontmatter, while
         // lifecycle metadata is NOT — no `### Stage:`/`### Parent:` header lines.
         // The two are distinct: `id:` is a rename-proof handle, lifecycle lives
-        // in `meta.json`. The parent is surfaced only as a body link in `## Rede`.
+        // in `meta.json`. The parent is surfaced only as a body link in `## Network`.
         assert!(s1.starts_with("---\nid: wave.epic-x.1-general\n---\n\n"), "{s1}");
         assert!(!s1.contains("### Stage:"));
         assert!(!s1.contains("### Outcome:"));
         assert!(!s1.contains("### Parent:"));
-        assert!(s1.contains("## Rede"));
+        assert!(s1.contains("## Network"));
         assert!(s1.contains("[[epic-x]]"));
-        // PT locale → PT summary heading, never the EN form.
-        assert!(s1.contains("## Resumo"));
-        assert!(!s1.contains("## Summary"));
+        // English-fixed summary heading, never the PT form.
+        assert!(s1.contains("## Summary"));
+        assert!(!s1.contains("## Resumo"));
         let s2 = render_wave_spec("epic-x", &plan.waves[1], &hd);
         assert!(s2.starts_with("---\nid: wave.epic-x.2-frontend\n---\n\n"), "{s2}");
         assert!(!s2.contains("### Stage:"));
         assert!(s2.contains("[[wave-1-general]]"));
-        assert!(s2.contains("## Rede"));
-        assert!(s2.contains("Depende de"));
+        assert!(s2.contains("## Network"));
+        assert!(s2.contains("Depends on"));
     }
 
     #[test]
@@ -906,15 +861,15 @@ mod tests {
         assert!(!spec_dir.join("qa").join("spec.md").exists(), "qa scaffold removed");
 
         // Validate wave-1 spec content has the expected headings & wikilinks,
-        // and that no lifecycle header leaked into the markdown. No workspace
-        // anchor here, so the effective locale falls back to the plan's
-        // `lang: "pt"` → PT headings.
+        // and that no lifecycle header leaked into the markdown. The wave spec is
+        // a MACHINE artefact, so its headings are ENGLISH-FIXED even though the
+        // plan declares `lang: "pt"`.
         let s1 =
             std::fs::read_to_string(spec_dir.join("wave-1-general").join("spec.md")).unwrap();
         assert!(!s1.contains("### Stage:"));
         assert!(!s1.contains("### Parent:"));
         assert!(s1.contains("[[epic-x]]"));
-        assert!(s1.contains("## Rede"));
+        assert!(s1.contains("## Network"));
         // meta.json carries the lifecycle metadata instead.
         assert!(spec_dir.join("wave-1-general").join("meta.json").exists());
         // Root + each wave carry a meta.json sidecar.
@@ -1134,7 +1089,7 @@ mod tests {
         assert!(plan.waves[0].tasks.is_empty());
         assert!(plan.waves[0].files.is_empty());
         assert!(plan.waves[0].acceptance.is_empty());
-        let hd = headings(SupportedLocale::EnUs);
+        let hd = headings();
         let spec = render_wave_spec("epic", &plan.waves[0], &hd);
         assert!(spec.contains("## Summary"));
         assert!(spec.contains("## Network"));
@@ -1159,7 +1114,7 @@ mod tests {
             files: vec!["src/api/handler.rs".to_string(), "src/api/mod.rs".to_string()],
             acceptance: vec![],
         };
-        let hd = headings(SupportedLocale::EnUs);
+        let hd = headings();
         let spec = render_wave_spec("epic", &w, &hd);
         assert!(spec.contains("## Tasks"), "{spec}");
         assert!(spec.contains("- [ ] wire the handler"), "{spec}");
@@ -1211,7 +1166,7 @@ mod tests {
             total_waves: Some(2),
             lang: Some("en-US".to_string()),
         };
-        let hd = headings(SupportedLocale::EnUs);
+        let hd = headings();
         let ac_block = build_ac_block(&plan, &hd);
         let md = render_wave_plan(&plan, &hd, ac_block.as_deref(), "epic-x");
         let block = spec_sections::section_block(&md, "acceptanceCriteria")
@@ -1230,12 +1185,11 @@ mod tests {
         assert!(spec_sections::section_block(&bare, "acceptanceCriteria").is_none());
     }
 
-    /// Validation 5: the effective language drives the headings. A pt-BR plan
-    /// renders `## Tarefas`; an en-US plan renders `## Tasks`. Exercised through
-    /// the pure renderer with the locale resolved from the plan's `lang` (no
-    /// workspace anchor → plan.lang is the fallback source).
+    /// Validation 5: the wave headings are ENGLISH-FIXED machine artefacts — a
+    /// plan's declared `lang` no longer changes them. A pt-declared wave still
+    /// renders `## Tasks`, never `## Tarefas`.
     #[test]
-    fn effective_language_drives_task_heading() {
+    fn wave_headings_are_english_fixed_regardless_of_lang() {
         let entry = |tasks: Vec<String>| WavePlanEntry {
             n: 1,
             role: "general".to_string(),
@@ -1245,21 +1199,13 @@ mod tests {
             files: vec![],
             acceptance: vec![],
         };
-        let pt = render_wave_spec(
+        let spec = render_wave_spec(
             "epic",
             &entry(vec!["fazer X".to_string()]),
-            &headings(SupportedLocale::PtBr),
+            &headings(),
         );
-        assert!(pt.contains("## Tarefas"), "pt-BR → ## Tarefas: {pt}");
-        assert!(!pt.contains("## Tasks"), "pt-BR must not emit EN heading: {pt}");
-
-        let en = render_wave_spec(
-            "epic",
-            &entry(vec!["do X".to_string()]),
-            &headings(SupportedLocale::EnUs),
-        );
-        assert!(en.contains("## Tasks"), "en-US → ## Tasks: {en}");
-        assert!(!en.contains("## Tarefas"), "en-US must not emit PT heading: {en}");
+        assert!(spec.contains("## Tasks"), "machine artefact → ## Tasks: {spec}");
+        assert!(!spec.contains("## Tarefas"), "no PT heading even for a pt plan: {spec}");
     }
 
     /// Onda-1 fio pendente: a plan whose `tasks` already carry the checkbox
@@ -1283,7 +1229,7 @@ mod tests {
             files: vec![],
             acceptance: vec![],
         };
-        let spec = render_wave_spec("epic", &w, &headings(SupportedLocale::EnUs));
+        let spec = render_wave_spec("epic", &w, &headings());
         assert!(!spec.contains("- [ ] - [ ]"), "doubled checkbox: {spec}");
         assert!(!spec.contains("- [ ] - [x]"), "doubled checkbox: {spec}");
         assert!(!spec.contains("- [ ] - plain"), "doubled bullet: {spec}");
@@ -1396,7 +1342,7 @@ mod tests {
             files: vec![],
             acceptance: vec![],
         };
-        let spec = render_wave_spec("epic", &w, &headings(SupportedLocale::EnUs));
+        let spec = render_wave_spec("epic", &w, &headings());
         assert!(!spec.contains("## Tasks"), "bare empty Tasks heading is noise: {spec}");
     }
 }

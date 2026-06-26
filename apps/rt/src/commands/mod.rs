@@ -32,9 +32,6 @@ pub mod capability;
 pub mod digest_precision;
 pub mod glossary_coverage;
 pub mod grill_capture;
-pub mod lexicon_suggest;
-pub mod lexicon_enrich;
-pub mod lexicon_judge;
 pub mod enrich_purpose;
 pub mod purpose_search;
 pub mod purpose_judge;
@@ -150,89 +147,6 @@ pub enum RunCmd {
     /// fail-open, always exits 0.
     #[command(name = "digest-precision")]
     DigestPrecision {
-        /// Workspace root. Defaults to the current directory (resolved to the
-        /// workspace anchor like every run-face emitter).
-        #[arg(long, default_value = ".")]
-        root: PathBuf,
-    },
-    /// Correlate consecutive `feature.query` events of the WHOLE workspace
-    /// telemetry (every session + spec scope, windowed to the most recent
-    /// rounds; correlation grouped per emitting origin so contexts never
-    /// cross-pair) — a `none`-tier term in one query followed by a NEW
-    /// exact/fold/stem term in the next is a confirmed vocabulary bridge —
-    /// into project-lexicon candidates `{missed, bridged, files}`, deduped
-    /// (folded keys) against the lexicon in force (seed + project overlay).
-    /// Without flags it only LISTS (byte-stable JSON; never writes).
-    /// `--accept <missed>=<bridged>` records ONE entry in the project overlay
-    /// `<root>/.claude/lexicons/<pair>.toml` (created from the template shape
-    /// when absent; `[terms]` kept alphabetical, comments preserved) — never
-    /// the embedded seed. Pair resolved like the digest: root `specLang` + `en`.
-    #[command(name = "lexicon-suggest")]
-    LexiconSuggest {
-        /// Accept one candidate as `<missed>=<bridged>` and write it to the
-        /// project lexicon overlay. Omit to list candidates (read-only).
-        #[arg(long)]
-        accept: Option<String>,
-        /// Workspace root. Defaults to the current directory (resolved to the
-        /// workspace anchor like every run-face emitter).
-        #[arg(long, default_value = ".")]
-        root: PathBuf,
-    },
-    /// PROACTIVE sibling of `lexicon-suggest`: populate the project lexicon
-    /// overlay with code→user-word bridges BEFORE the first query misses.
-    ///
-    /// The rt stays 100% deterministic — the AI never runs here; the
-    /// orchestrator (the harness model, outside this binary) proposes the
-    /// bridges between the two pure-data modes:
-    ///
-    /// `--check` (read-only): emit byte-stable JSON `{pair, language,
-    /// unbridged}` — the top mined CODE terms (digest term index, discriminative
-    /// rank) that are NOT a value of any lexicon entry (seed + project overlay),
-    /// i.e. nothing maps a user word onto them. Empty list = no-op. Nothing is
-    /// written.
-    ///
-    /// `--apply <proposals.json>` (gated, writes): read the orchestrator's
-    /// `[{userWord, codeTerms}]` proposals and, for each code term, validate it
-    /// EXISTS as a mined term in the model (deterministic anti-hallucination
-    /// gate). Valid targets are written to `<root>/.claude/lexicons/<pair>.toml`
-    /// via the shared `lexicon-suggest` writer (atomic, alphabetical, comments
-    /// preserved) — never the embedded seed. Rejected targets
-    /// (`target_not_in_model`) are reported, never written. Pair resolved like
-    /// the digest: root `specLang`/`lang` primary subtag + `en`.
-    LexiconEnrich {
-        /// Read-only mode (the default): list the unbridged mined vocabulary.
-        #[arg(long)]
-        check: bool,
-        /// Read-only mode: mine the project's PT (user-side) vocabulary from
-        /// specs + commit messages and align each candidate onto a code term by
-        /// co-occurrence, ranked by the target's domain specificity. Surfaces
-        /// PT->code pairs the unidirectional `--check` (code-side only) cannot.
-        /// Takes precedence over `--check`; never writes.
-        #[arg(long)]
-        check_pt: bool,
-        /// Apply the bridges in this proposals JSON file (gated write). Takes
-        /// precedence over `--check` / `--check-pt`.
-        #[arg(long)]
-        apply: Option<PathBuf>,
-        /// Workspace root. Defaults to the current directory (resolved to the
-        /// workspace anchor like every run-face emitter).
-        #[arg(long, default_value = ".")]
-        root: PathBuf,
-    },
-    /// Render a byte-stable JUDGE prompt that asks an LLM — ONE layer above the
-    /// deterministic enrich — to score each mined CODE candidate term as
-    /// BUSINESS-DOMAIN vs GENERIC programming/framework plumbing (0-100).
-    ///
-    /// Re-derives the SAME unbridged candidates `lexicon-enrich --check`
-    /// produces (the provenance rank that demotes recurring structural role
-    /// affixes), renders the validated scoring contract + the `Terms: ...` line,
-    /// and prints it raw to stdout (no JSON framing), like `concern-judge-render`.
-    /// The domain-vs-generic CALL is the LLM's — `count×idf` specificity was
-    /// refuted as a classifier; this judge is the arbiter, run by the
-    /// orchestrator OUTSIDE this binary. Fail-open: an unavailable model / no
-    /// vendored pair → empty candidates → prints nothing, exit 0.
-    #[command(name = "lexicon-judge-render")]
-    LexiconJudgeRender {
         /// Workspace root. Defaults to the current directory (resolved to the
         /// workspace anchor like every run-face emitter).
         #[arg(long, default_value = ".")]
@@ -1977,9 +1891,6 @@ pub fn dispatch(cmd: RunCmd) {
             root,
         } => grill_capture::run(&term, &definition, &context, &root),
         RunCmd::DigestPrecision { root } => digest_precision::run(&root),
-        RunCmd::LexiconSuggest { accept, root } => lexicon_suggest::run(accept.as_deref(), &root),
-        RunCmd::LexiconEnrich { check, check_pt, apply, root } => lexicon_enrich::run(check, check_pt, apply.as_deref(), &root),
-        RunCmd::LexiconJudgeRender { root } => lexicon_judge::run(&root),
         RunCmd::EnrichPurpose { render, apply, model, root } => {
             enrich_purpose::run(render, apply.as_deref(), &model, &root);
         }

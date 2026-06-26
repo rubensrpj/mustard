@@ -1,0 +1,16 @@
+{
+  "stage": "Close",
+  "outcome": "Completed",
+  "phase": null,
+  "scope": null,
+  "lang": "pt-BR",
+  "checkpoint": "2026-06-24T01:21:12.355Z",
+  "parent": "juiz-haiku-concerns-acima-shortlist",
+  "checklist": [
+    {
+      "label": "apps/cli/templates/commands/mustard/feature/SKILL.md",
+      "path": "apps/cli/templates/commands/mustard/feature/SKILL.md",
+      "done": true
+    }
+  ]
+}

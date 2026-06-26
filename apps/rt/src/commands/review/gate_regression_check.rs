@@ -752,8 +752,8 @@ mod tests {
             "Moment 1 must emit signals for 'fail-open'"
         );
         assert!(
-            signals.iter().any(|s| s.message.contains("Vocabulário casou")),
-            "pt-BR vocabulary template must surface: signals={signals:?}"
+            signals.iter().any(|s| s.message.contains("Vocabulary matched")),
+            "the (English, machine) vocabulary template must surface: signals={signals:?}"
         );
         assert!(
             signals.iter().any(|s| s.evidence.contains("fail-open")),
@@ -866,8 +866,8 @@ mod tests {
         for s in &signals {
             assert_eq!(s.source, Layer::Stub);
             assert!(
-                s.message.contains("Padrão de stub:"),
-                "pt-BR stub template must surface in signal {s:?}"
+                s.message.contains("Stub pattern:"),
+                "the (English, machine) stub template must surface in signal {s:?}"
             );
         }
     }
@@ -1013,8 +1013,8 @@ mod tests {
             "expected ≥1 snapshot signal on 30→1 line shrink"
         );
         assert!(
-            signals[0].message.contains("esvaziou"),
-            "pt-BR snapshot template must surface: msg={}",
+            signals[0].message.contains("emptied"),
+            "the (English, machine) snapshot template must surface: msg={}",
             signals[0].message
         );
         let _ = project;

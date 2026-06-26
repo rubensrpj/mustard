@@ -31,12 +31,11 @@ fn module(path: &str, decls: &[&str]) -> serde_json::Value {
     serde_json::json!({ "path": path, "declarations": declarations })
 }
 
-/// Run `digest --query` (empty `--lang` = no root config in the temp dir) and
-/// return the parsed JSON.
+/// Run `digest --query` over the model and return the parsed JSON.
 fn run_query(model: &Path, query: &str, out_name: &str) -> serde_json::Value {
     let out_file = model.parent().unwrap().join(out_name);
     let out = Command::new(env!("CARGO_BIN_EXE_scan"))
-        .args(["digest", model.to_str().unwrap(), "--query", query, "--lang", "", "--out", out_file.to_str().unwrap()])
+        .args(["digest", model.to_str().unwrap(), "--query", query, "--out", out_file.to_str().unwrap()])
         .output()
         .expect("run digest --query over model");
     assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));

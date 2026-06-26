@@ -264,19 +264,19 @@ pub struct MatchReport {
     pub total: usize,
     pub reason: String,
     /// `true` when `reason == "weak"` ONLY because no term reached exact/fold,
-    /// yet a CURATED lexicon bridge (seed or project overlay) carried a non-thin
-    /// query (`matched*2 >= total`) — the request vocabulary translated onto the
-    /// code's own. The consumer keeps the planning fields (with a caveat)
-    /// instead of forcing a re-query in the repo's words; speculative `stem`-
-    /// only weakness stays `false` (morphological guesses are not curated).
+    /// yet the trigram RESCUE rung carried a non-thin query (`matched*2 >=
+    /// total`) — shared-root / morphology bridged by form. The consumer keeps
+    /// the planning fields (with a caveat) instead of forcing a re-query the
+    /// fuzzy rung already answered; speculative `stem`-only weakness stays
+    /// `false`.
     pub bridged: bool,
     pub terms: Vec<TermReport>,
 }
 
 /// One request term's outcome: the ladder tier that carried it (`exact` |
-/// `fold` | `stem` | `lexicon` | `none`), the natural-language evidence
-/// (stemmer language for `stem`, pair label for `lexicon`, empty otherwise)
-/// and the top sample files where the matched vocabulary lives.
+/// `fold` | `stem` | `trigram` | `none`), the natural-language evidence
+/// (stemmer language for `stem`, the literal `trigram` for the fuzzy rescue,
+/// empty otherwise) and the top sample files where the matched vocabulary lives.
 #[derive(Serialize)]
 pub struct TermReport {
     pub term: String,
@@ -299,18 +299,14 @@ pub struct FileDetail {
 /// Look up the digest by domain term(s) — OR across terms. Returns only the
 /// matching slice (a few KB, capped) so the caller spends little per
 /// interaction. Query terms shorter than 3 chars are ignored (mirrors the
-/// mined-token floor). `request_lang` is the DECLARED language of the request
-/// (root config / CLI — never detected); matching runs on the tier ladder in
-/// `matching` (exact > fold > same-language stem > lexicon), and the answer
-/// carries a per-term [`MatchReport`]. Deterministic.
-pub fn query(model: &ProjectModel, terms: &[String], request_lang: &str) -> QueryResult {
+/// mined-token floor). Matching runs on the ENGLISH intra-language tier ladder
+/// in `matching` (exact > fold > stem, with an opt-in trigram rescue), and the
+/// answer carries a per-term [`MatchReport`]. Deterministic.
+pub fn query(model: &ProjectModel, terms: &[String]) -> QueryResult {
     let c = corpus(model);
     let dig = catalog(model, &c);
     let stop = stopwords();
-    // The ladder's project lexicon overlay resolves against the SCANNED
-    // project's root from the loaded model — never the cwd, since the tool
-    // can run from anywhere.
-    let ladder = crate::matching::Ladder::new(request_lang, Some(std::path::Path::new(&model.root)));
+    let ladder = crate::matching::Ladder::new();
     // Query tokens: trimmed, lowercased, length-floored AND stopword-filtered —
     // a glue token like "and" must never act as a discriminator, neither
     // against the term index nor against paths/labels via `hit`. Natural-
@@ -643,17 +639,16 @@ pub fn query(model: &ProjectModel, terms: &[String], request_lang: &str) -> Quer
     let k = report_terms.iter().filter(|t| t.tier != "none").count();
     let n = ql.len();
     // `weak` = thin evidence: under half the request vocabulary found a rung,
-    // or nothing landed on the exact/fold tiers (everything is stem/lexicon-
+    // or nothing landed on the exact/fold tiers (everything is stem/trigram-
     // derived) — the caller should re-query in the code's own vocabulary (the
     // matched terms/files show it) or explore before trusting the answer.
     let has_solid = report_terms.iter().any(|t| t.tier == "exact" || t.tier == "fold");
-    let has_curated_bridge = report_terms.iter().any(|t| t.tier == "lexicon");
     // The T5 fuzzy RESCUE only survives the gating above on an otherwise
     // weak/none query — so its presence here means the strict ladder was thin
-    // and trigram similarity (shared-root cross-language / morphology) carried
-    // the request. Treated like a curated bridge for `bridged`: real evidence,
-    // form-not-literal, so the planning fields ride along instead of forcing a
-    // re-query the fuzzy rung already answered.
+    // and trigram similarity (shared-root / morphology) carried the request.
+    // Flagged as `bridged`: real evidence, form-not-literal, so the planning
+    // fields ride along instead of forcing a re-query the fuzzy rung already
+    // answered.
     let has_trigram_rescue = report_terms.iter().any(|t| t.tier == "trigram");
     let reason_word = if n == 0 || (k == 0 && !structural) {
         "none"
@@ -666,13 +661,11 @@ pub fn query(model: &ProjectModel, terms: &[String], request_lang: &str) -> Quer
     };
     // A `weak` answer whose ONLY missing strength is the absence of an
     // exact/fold hit — not thinness (`k*2 >= n`, at least half the request
-    // vocabulary found a rung) — that a CURATED lexicon bridge carried (the
-    // supervised glossary: embedded seed OR the project's own overlay; never
-    // speculative `stem`). It is the user's vocabulary translated onto the
-    // code's: real evidence, just not literal. The consumer keeps the planning
-    // fields (with a caveat) instead of forcing a re-query that would only
-    // re-find what the supervised lexicon already bridged.
-    let bridged = reason_word == "weak" && k * 2 >= n && (has_curated_bridge || has_trigram_rescue);
+    // vocabulary found a rung) — that the trigram RESCUE carried (shared-root /
+    // morphology by form). Real evidence, just not literal, so the consumer
+    // keeps the planning fields (with a caveat) instead of forcing a re-query
+    // the fuzzy rung already answered.
+    let bridged = reason_word == "weak" && k * 2 >= n && has_trigram_rescue;
     let report = MatchReport { matched: k, total: n, reason: reason_word.into(), bridged, terms: report_terms };
 
     QueryResult {

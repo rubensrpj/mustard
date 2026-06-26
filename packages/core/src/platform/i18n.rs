@@ -397,28 +397,23 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
         ("heading.context.next_steps_suggestion", Locale::PtBr) => "Sugestão de próximos passos",
         ("heading.context.next_steps_suggestion", Locale::EnUs) => "Next-steps suggestion",
 
-        // Spec A v4 / W4 — regression gate verdict labels + messages.
-        ("gate.verdict.green.label", Locale::PtBr) => "Verde",
-        ("gate.verdict.green.label", Locale::EnUs) => "Green",
-        ("gate.verdict.amber.label", Locale::PtBr) => "Amarelo",
-        ("gate.verdict.amber.label", Locale::EnUs) => "Amber",
-        ("gate.verdict.red.label", Locale::PtBr) => "Vermelho",
-        ("gate.verdict.red.label", Locale::EnUs) => "Red",
-        ("gate.verdict.green.message", Locale::PtBr) => "Sem sinais de regressão.",
-        ("gate.verdict.green.message", Locale::EnUs) => "No regression signals.",
-        ("gate.verdict.amber.message", Locale::PtBr) => "Sinais ambíguos detectados. Confirmação necessária.",
-        ("gate.verdict.amber.message", Locale::EnUs) => "Ambiguous signals detected. Confirmation required.",
-        ("gate.verdict.red.message", Locale::PtBr) => "Regressão detectada. Consolidação bloqueada.",
-        ("gate.verdict.red.message", Locale::EnUs) => "Regression detected. Consolidation blocked.",
+        // Spec A v4 / W4 — regression gate verdict labels + messages. These are
+        // MACHINE / log strings (gate verdicts consumed by the orchestrator and
+        // written to telemetry), so they are ENGLISH regardless of the user's
+        // configured locale — only `gate.askuser.*` below stays config-lang.
+        ("gate.verdict.green.label", _) => "Green",
+        ("gate.verdict.amber.label", _) => "Amber",
+        ("gate.verdict.red.label", _) => "Red",
+        ("gate.verdict.green.message", _) => "No regression signals.",
+        ("gate.verdict.amber.message", _) => "Ambiguous signals detected. Confirmation required.",
+        ("gate.verdict.red.message", _) => "Regression detected. Consolidation blocked.",
 
-        // Spec A v4 / W4 — gate signal layer labels. Use the `{slot}` placeholders
-        // to let callers interpolate the matched term, function name, etc.
-        ("gate.signal.vocabulary", Locale::PtBr) => "Vocabulário casou: {term} (camada {layer})",
-        ("gate.signal.vocabulary", Locale::EnUs) => "Vocabulary matched: {term} (layer {layer})",
-        ("gate.signal.stub", Locale::PtBr) => "Padrão de stub: {pattern} em {function}",
-        ("gate.signal.stub", Locale::EnUs) => "Stub pattern: {pattern} in {function}",
-        ("gate.signal.snapshot", Locale::PtBr) => "Função {function} esvaziou ({before_lines} → {after_lines} linhas)",
-        ("gate.signal.snapshot", Locale::EnUs) => "Function {function} emptied ({before_lines} → {after_lines} lines)",
+        // Spec A v4 / W4 — gate signal layer labels (MACHINE / log, English
+        // regardless of locale). Use the `{slot}` placeholders to let callers
+        // interpolate the matched term, function name, etc.
+        ("gate.signal.vocabulary", _) => "Vocabulary matched: {term} (layer {layer})",
+        ("gate.signal.stub", _) => "Stub pattern: {pattern} in {function}",
+        ("gate.signal.snapshot", _) => "Function {function} emptied ({before_lines} → {after_lines} lines)",
 
         // Spec A v4 / W4 — Amber AskUserQuestion (printed as JSON, consumed by orchestrator).
         ("gate.askuser.amber.question", Locale::PtBr) => "O gate detectou sinais ambíguos. Autorizar a consolidação?",

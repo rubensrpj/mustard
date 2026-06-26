@@ -55,12 +55,6 @@ enum Command {
         /// <3 chars ignored), e.g. "tenant,receivable". Empty = full digest.
         #[arg(long, default_value = "")]
         query: String,
-        /// DECLARED natural language of the request (BCP-47-ish code; only the
-        /// primary subtag is used). Empty = read the root project config
-        /// (mustard.json) next to the model. The match ladder always keeps the
-        /// fallback language active on top — never any detection.
-        #[arg(long, default_value = "")]
-        lang: String,
         #[arg(long)]
         out: Option<PathBuf>,
     },
@@ -108,14 +102,9 @@ enum Command {
     PurposeSearch {
         path: PathBuf,
         /// Comma/space-separated intent terms to search the purpose index for
-        /// (OR across terms; terms <3 chars ignored), e.g. "efetivar,baixa".
+        /// (OR across terms; terms <3 chars ignored), e.g. "approve,settle".
         #[arg(long, default_value = "")]
         query: String,
-        /// DECLARED natural language of the request (BCP-47-ish; only the primary
-        /// subtag is used). Empty = read the root project config next to the
-        /// model. The match ladder always keeps the fallback language active.
-        #[arg(long, default_value = "")]
-        lang: String,
         #[arg(long)]
         out: Option<PathBuf>,
     },
@@ -146,19 +135,6 @@ fn count_entity_files(dir: &Path, entity_lower: &str, owned: bool) -> usize {
         .count()
 }
 
-/// The DECLARED natural language of a digest request: the explicit `--lang`
-/// wins; otherwise the root project config next to the model root (the same
-/// root-wins policy every generated artifact follows). Empty = none declared —
-/// the match ladder still keeps its fallback language active. Config is data
-/// read fail-open through its single owner (`ProjectConfig`); never detection.
-fn request_lang(explicit: &str, model_root: &str) -> String {
-    if !explicit.trim().is_empty() {
-        return explicit.trim().to_string();
-    }
-    let cfg = mustard_core::ProjectConfig::load(Path::new(model_root));
-    cfg.lang.or(cfg.spec_lang).unwrap_or_default()
-}
-
 /// Load a model: scan a project directory, or read a prebuilt grain.model.json.
 fn load_model(path: &Path) -> Result<ProjectModel> {
     if path.extension().and_then(|e| e.to_str()) == Some("json") {
@@ -177,13 +153,13 @@ fn main() -> Result<()> {
             std::fs::write(&out, serde_json::to_string_pretty(&model)?)?;
             println!("\nModel written to {}", out.display());
         }
-        Command::Digest { path, query, lang, out } => {
+        Command::Digest { path, query, out } => {
             let model = load_model(&path)?;
             let terms: Vec<String> = query.split([',', ' ']).map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
             let json = if terms.is_empty() {
                 serde_json::to_string_pretty(&digest::build(&model))?
             } else {
-                serde_json::to_string_pretty(&digest::query(&model, &terms, &request_lang(&lang, &model.root)))?
+                serde_json::to_string_pretty(&digest::query(&model, &terms))?
             };
             match out {
                 Some(p) => {
@@ -217,15 +193,14 @@ fn main() -> Result<()> {
                 None => println!("{spec_md}"),
             }
         }
-        Command::PurposeSearch { path, query, lang, out } => {
+        Command::PurposeSearch { path, query, out } => {
             let terms: Vec<String> = query.split([',', ' ']).map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
             // Fail-open: an unreadable / unparseable model yields an empty result
             // (the orchestrator calls this on a miss; a degraded model must never
-            // turn the recall attempt into a hard error). `request_lang` reads the
-            // root config from the model path's neighbourhood when the model loads,
-            // or the explicit `--lang`; on a load failure the empty intent stands.
+            // turn the recall attempt into a hard error). On a load failure the
+            // empty intent stands.
             let result = match load_model(&path) {
-                Ok(model) => purpose::search(&model, &terms, &request_lang(&lang, &model.root)),
+                Ok(model) => purpose::search(&model, &terms),
                 Err(_) => purpose::PurposeResult { intent: terms.join(" "), files: Vec::new() },
             };
             let json = serde_json::to_string_pretty(&result)?;

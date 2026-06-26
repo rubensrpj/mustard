@@ -66,11 +66,11 @@ pub(crate) fn domain_terms(intent: &str) -> Vec<String> {
 /// report either way — it goes to NDJSON, not to context.
 ///
 /// Exception: a `bridged` weak answer is NOT withheld. There the weakness is
-/// only "no literal hit", and a CURATED lexicon bridge already translated the
-/// user's vocabulary onto the code's — a re-query in the repo's own words would
-/// merely re-find what the supervised lexicon bridged. So the planning fields
-/// ride along (the note flags the translated hit and how to promote it), which
-/// is the whole point of teaching the bridge via `lexicon-suggest --accept`.
+/// only "no literal hit", and the trigram RESCUE already matched the user's
+/// vocabulary onto the code's by shared-root FORM — a re-query in the repo's own
+/// words would merely re-find what the fuzzy rung bridged. So the planning
+/// fields ride along (the note flags the approximate hit and to confirm by
+/// reading).
 fn withhold_planning(reason: &str, bridged: bool) -> bool {
     matches!(reason, "weak" | "none") && !bridged
 }
@@ -453,20 +453,20 @@ fn note(q: &DigestQuery) -> String {
 /// reason. Split out from [`note`] so the multi-concern contract can prepend to
 /// it without duplicating the reason ladder.
 fn reason_note(q: &DigestQuery) -> &'static str {
-    // A curated lexicon bridge carried this answer — translated, not literal.
-    // The planning fields are RETURNED (not withheld): the supervised glossary
-    // already mapped the request vocabulary onto the code's, so a re-query in
-    // the repo's words would only re-find the same files. Read the anchors as
-    // evidence; promote the bridge so future queries land on exact/fold.
+    // A fuzzy (shared-root / morphology) bridge carried this answer — matched by
+    // FORM, not literally. The planning fields are RETURNED (not withheld): the
+    // trigram rescue already mapped the request vocabulary onto the code's, so a
+    // re-query in the repo's words would only re-find the same files. Read the
+    // anchors as evidence; confirm by reading before planning on top.
     if q.report.bridged {
-        return "repo precedent found via a CURATED lexicon bridge — your request vocabulary translated onto the code's own (report.terms[].lang names the pair). `anchors` are EVIDENCE, returned not withheld: pick the files that fit and read them, and read the `hubs` (the computing logic often lives in a generically-named central service). The hit is translated, not literal — to make future queries land directly without this bridge, promote it with `mustard-rt run lexicon-suggest --accept`";
+        return "repo precedent found via a FUZZY shared-root bridge — your request vocabulary matched the code's by FORM, not literally (report.terms[].tier is `trigram`). `anchors` are EVIDENCE, returned not withheld: pick the files that fit and read them, and read the `hubs` (the computing logic often lives in a generically-named central service). The hit is approximate — confirm by reading before planning on top of it";
     }
     match q.report.reason.as_str() {
         "none" => {
             "no repo precedent matched — treat as net-new; the report names each missed term, so re-query the digest in the code's own vocabulary or dispatch an Explore before concluding 'absent'"
         }
         "weak" => {
-            "weak precedent — under half the terms matched or only stem/lexicon-derived hits; re-query the digest in the code's own vocabulary (the report names each matched term and its tier) and Explore before planning on top of this. Planning fields (anchors/slices/contracts/hubs) are withheld on weak precedent — the re-query returns them"
+            "weak precedent — under half the terms matched or only stem-derived hits; re-query the digest in the code's own vocabulary (the report names each matched term and its tier) and Explore before planning on top of this. Planning fields (anchors/slices/contracts/hubs) are withheld on weak precedent — the re-query returns them"
         }
         "generated_only" => {
             "matches live only in machine-written modules — regenerate or extend the generator's input; never edit the matched files directly"
@@ -853,14 +853,14 @@ mod tests {
     }
 
     #[test]
-    fn bridged_weak_returns_planning_with_a_promote_note() {
+    fn bridged_weak_returns_planning_with_a_caveat_note() {
         // A `weak` answer the scan flagged `bridged: true`: the only missing
-        // strength is the absence of an exact/fold hit, and a CURATED lexicon
-        // bridge carried a non-thin query (the user's vocabulary translated
-        // onto the code's). Unlike a plain weak, the planning fields are NOT
-        // withheld — re-querying in the repo's words would just re-find what
-        // the supervised lexicon already bridged. The note explains the
-        // translated hit and how to promote it (`lexicon-suggest --accept`).
+        // strength is the absence of an exact/fold hit, and the trigram RESCUE
+        // carried a non-thin query (the user's vocabulary matched the code's by
+        // shared-root FORM). Unlike a plain weak, the planning fields are NOT
+        // withheld — re-querying in the repo's words would just re-find what the
+        // fuzzy rung already bridged. The note flags the approximate hit and to
+        // confirm by reading.
         let bridged: DigestQuery = serde_json::from_str(
             r#"{"query":["cancelado"],
                 "matched_terms":[{"term":"cancel","count":3,"samples":["src/cancel.cs"]}],
@@ -871,19 +871,19 @@ mod tests {
                 "files_detail":[{"file":"src/cancel.cs","score_x1024":2048,"terms":["cancel"]}],
                 "miss":false,
                 "report":{"matched":1,"total":1,"reason":"weak","bridged":true,"terms":[
-                    {"term":"cancelado","tier":"lexicon","lang":"pt-en","files":["src/cancel.cs"]}]}}"#,
+                    {"term":"cancelado","tier":"trigram","lang":"trigram","files":["src/cancel.cs"]}]}}"#,
         )
         .expect("bridged digest payload");
         let v = payload("cancelar titulo", &bridged, &[]);
-        assert_eq!(v["planningWithheld"], json!(false), "a curated bridge is not withheld: {v}");
+        assert_eq!(v["planningWithheld"], json!(false), "a fuzzy bridge is not withheld: {v}");
         assert_eq!(v["anchors"], json!(["src/cancel.cs"]), "anchors returned for the bridged hit: {v}");
         assert_eq!(v["report"]["bridged"], json!(true), "the marker rides along: {v}");
         assert_eq!(v["sliceMatchCount"], 1, "honest counts stay: {v}");
         assert_ne!(v["slices"], json!([]), "planning fields survive the bridge: {v}");
         let note = v["note"].as_str().expect("note");
-        assert!(note.contains("lexicon-suggest --accept"), "note explains how to promote the bridge: {v}");
+        assert!(note.contains("FUZZY"), "note flags the fuzzy bridge: {v}");
         // The bridged note must NOT steer a re-query (the plain-weak note does):
-        // the supervised lexicon already bridged the vocabulary.
+        // the fuzzy rescue already bridged the vocabulary.
         assert!(!note.contains("re-query"), "bridged note does not steer a re-query: {v}");
     }
 

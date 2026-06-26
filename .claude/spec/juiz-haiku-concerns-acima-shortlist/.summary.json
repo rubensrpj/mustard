@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "spec": "juiz-haiku-concerns-acima-shortlist",
+  "title": "juiz Haiku de concerns acima do shortlist deterministico no feature ANALYZE",
+  "timeline": {},
+  "waves": [
+    {
+      "n": 1,
+      "role": "impl",
+      "summary": "Comando rt concern-judge-render: monta deterministicamente o prompt do juiz (conceitos + anchors por conceito do digest) + parser da resposta",
+      "status": "in_progress"
+    },
+    {
+      "n": 2,
+      "role": "surface",
+      "summary": "Passo do juiz Haiku no SKILL do /feature: gate multi-concern -> render -> dispatch haiku -> parse -> decompor por concern, com fallback deterministico",
+      "status": "in_progress"
+    }
+  ],
+  "economy": {
+    "totalSavingsTokens": 0,
+    "bySource": {}
+  },
+  "telemetry": {
+    "totalTokens": 0,
+    "totalCostUsdMicros": 0,
+    "byModel": {},
+    "byAgent": {}
+  }
+}

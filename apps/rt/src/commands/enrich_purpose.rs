@@ -4,11 +4,13 @@
 //! declarations, and emits a byte-stable JSON WORKLIST of only the declarations
 //! that NEED enrichment — `purpose` absent OR the stored `body_hash` no longer
 //! matches the hash of the current sliced body (incremental: a re-scan only
-//! re-emits changed methods). Shape: `{"lang":"<ProjectConfig language>",
+//! re-emits changed methods). Shape: `{"lang":"en",
 //! "items":[{"id":"path#name#line","body":"<sliced body>"}]}`, items sorted by
-//! id. The orchestrator chunks `items` for parallel dispatch and builds the
-//! per-chunk summarization prompt itself (the language instruction lives in the
-//! SKILL); the binary only supplies the worklist + bodies + the resolved `lang`.
+//! id. Purpose summaries are ALWAYS English (the machine artifact is
+//! English-only, regardless of the project's configured language). The
+//! orchestrator chunks `items` for parallel dispatch and builds the per-chunk
+//! summarization prompt itself (the English instruction lives in the SKILL); the
+//! binary only supplies the worklist + bodies.
 //!
 //! **Apply** (`--apply <file>`): reads a JSON array
 //! `[{"id":"<module_path>#<name>#<line>","purpose":"..."}]` produced by the LLM,
@@ -70,12 +72,6 @@ fn body_hash(body: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(body.as_bytes());
     hasher.hex_digest()
-}
-
-/// Detect the project language from `mustard.json` at `root`.
-fn resolve_lang(root: &Path) -> String {
-    let cfg = mustard_core::domain::config::ProjectConfig::load(root);
-    cfg.lang.or(cfg.spec_lang).unwrap_or_else(|| "en".to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -151,11 +147,13 @@ pub fn run_render(model_path: &Path, root: &Path) {
     println!("{}", worklist_json(model_path, root));
 }
 
-/// Build the byte-stable worklist JSON for `model_path` (lang from `root`'s
-/// config). Pure given the model file + config: same inputs → identical string.
-/// `run_render` prints this; tests assert on it directly.
-fn worklist_json(model_path: &Path, root: &Path) -> String {
-    let lang = resolve_lang(root);
+/// Build the byte-stable worklist JSON for `model_path`. The `lang` field is
+/// ALWAYS `"en"` — purpose summaries are English-only machine artifacts,
+/// independent of the project's configured language. Pure given the model file:
+/// same input → identical string. `run_render` prints this; tests assert on it
+/// directly. `_root` is retained for call-site stability (no longer read).
+fn worklist_json(model_path: &Path, _root: &Path) -> String {
+    let lang = "en";
 
     // Fail-open: a missing or unparseable model → empty worklist (NOT silence),
     // so a standard /scan step always emits a well-formed `{lang, items:[]}`.
@@ -609,12 +607,12 @@ mod tests {
         );
     }
 
-    /// The worklist's `lang` field is the resolved ProjectConfig language — EN by
-    /// default, pt-BR when the config says so. The binary supplies the language;
-    /// the SKILL builds the prompt instruction from it. Zero language hardcoded in
-    /// the worklist shape.
+    /// The worklist's `lang` field is ALWAYS `"en"` — purpose summaries are
+    /// English-only machine artifacts. A pt-BR config does NOT change it (the
+    /// reverted "generated artifacts follow config-lang" rule for machine
+    /// artifacts). The SKILL builds the English prompt instruction.
     #[test]
-    fn enrich_purpose_language_agnostic() {
+    fn enrich_purpose_lang_is_always_english() {
         // A minimal model with one un-enriched function (so `items` is non-empty
         // and `lang` is exercised on a real render).
         let model = serde_json::json!({
@@ -626,7 +624,7 @@ mod tests {
             }]
         });
 
-        // EN: no mustard.json → resolve_lang defaults to "en".
+        // EN: no mustard.json.
         let en_dir = tempdir().unwrap();
         fs::write(en_dir.path().join("lib.rs"), "fn act() {\n    // x\n}\n").unwrap();
         let en_model = en_dir.path().join("model.json");
@@ -634,9 +632,9 @@ mod tests {
         m["root"] = serde_json::Value::String(en_dir.path().to_str().unwrap().to_string());
         fs::write(&en_model, serde_json::to_string_pretty(&m).unwrap()).unwrap();
         let en: serde_json::Value = serde_json::from_str(&worklist_json(&en_model, en_dir.path())).unwrap();
-        assert_eq!(en["lang"], "en", "default ProjectConfig language is en: {en}");
+        assert_eq!(en["lang"], "en", "lang is en: {en}");
 
-        // pt-BR: a config that declares it.
+        // pt-BR config STILL yields "en" — the machine artifact is English-only.
         let pt_dir = tempdir().unwrap();
         fs::write(pt_dir.path().join("mustard.json"), r#"{"lang":"pt-BR"}"#).unwrap();
         fs::write(pt_dir.path().join("lib.rs"), "fn act() {\n    // x\n}\n").unwrap();
@@ -645,11 +643,6 @@ mod tests {
         m2["root"] = serde_json::Value::String(pt_dir.path().to_str().unwrap().to_string());
         fs::write(&pt_model, serde_json::to_string_pretty(&m2).unwrap()).unwrap();
         let pt: serde_json::Value = serde_json::from_str(&worklist_json(&pt_model, pt_dir.path())).unwrap();
-        assert_eq!(pt["lang"], "pt-BR", "lang reflects ProjectConfig.lang: {pt}");
-
-        // specLang (legacy alias, no `lang`) also resolves.
-        let sl_dir = tempdir().unwrap();
-        fs::write(sl_dir.path().join("mustard.json"), r#"{"specLang":"pt-BR"}"#).unwrap();
-        assert_eq!(resolve_lang(sl_dir.path()), "pt-BR");
+        assert_eq!(pt["lang"], "en", "pt-BR config still yields English: {pt}");
     }
 }

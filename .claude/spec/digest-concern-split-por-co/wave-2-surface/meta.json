@@ -1,0 +1,16 @@
+{
+  "stage": "Close",
+  "outcome": "Completed",
+  "phase": null,
+  "scope": null,
+  "lang": "pt-BR",
+  "checkpoint": "2026-06-23T19:19:58.199Z",
+  "parent": "digest-concern-split-por-co",
+  "checklist": [
+    {
+      "label": "apps/rt/src/commands/feature.rs",
+      "path": "apps/rt/src/commands/feature.rs",
+      "done": true
+    }
+  ]
+}
