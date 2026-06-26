@@ -31,6 +31,17 @@
 
 ---
 
+## POLÍTICA DE LÍNGUA (governante — decisão do usuário 2026-06-25)
+
+A língua do `mustard.json` (ex.: `pt-BR`) + tom **didático para leigo** aplicam-se a **SÓ DUAS coisas**: (1) a **spec apresentada** e (2) a **forma de apresentar** (toda comunicação user-facing — chat, banners, AskUserQuestion, explicação). **TODO o resto — absolutamente tudo — é em INGLÊS**, e isso inclui a **CAMADA DE RETRIEVAL**:
+- `grain.model.json` `purpose` gerado em **EN canônico** (NÃO `ProjectConfig.language`).
+- query **traduzida → EN** antes do retrieval (o `find_by_intent` do MCP e o digest ganham esse passo; no-op se já-EN, Haiku ~100ms cacheável).
+- **`pt-en.toml` e a tier-lexicon do ladder saem**; o resíduo de sinônimo (agora inglês-interno: payout/paid, forecast/projects) fecha com um **layer de sinônimo EN** (embedding/WordNet — o inglês tem a melhor ferramenta).
+
+**O retrieval é uma MÁQUINA: fala inglês.** VALIDADO (2026-06-25): EN-purpose + EN-query nos coinages difíceis da sialia = **8/10 central, 9/10 ≥2-palavras** (≥ PT 7/8). Refina [[feedback-mustard-i18n-agnostic]]: o `purpose` deixa de ser "artefato na língua do config" e vira **carve-out de máquina (EN)**, ao lado de código/logs/schema. Ganho: UM enrich EN serve TODAS as línguas de query (agnóstico de verdade); custo: 1 tradução/query.
+
+---
+
 ## Tese estratégica (leia antes de qualquer ponto)
 
 Duas verdades de mercado decidem a alocação de esforço:
