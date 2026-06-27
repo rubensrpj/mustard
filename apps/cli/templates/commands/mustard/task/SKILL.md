@@ -26,7 +26,7 @@ Parent NEVER reads source, NEVER implements. All work inside Task contexts. The 
 
 ## Research + Prompt rendering (mandatory)
 
-`/task` is spec-less, so there is no wave plan and no `dispatch-plan` — but spec-less is **not** context-less. LOCATE first via the scan digest (the same step `/feature` and `/bugfix` run), then render each action's prompt with `agent-prompt-render`. **Dispatching without the digest sends the agent in blind — the single most common reason a `/task` returns nothing useful.** Render fail-opens on every empty placeholder, so a spec-less invocation is safe.
+`/task` is spec-less, so there is no wave plan and no `dispatch-plan` — but spec-less is **not** context-less. LOCATE first — **triage by what the scope hands you (→ `../../../refs/locating-code.md`): a LITERAL token (exact symbol, error string, file glob) → `grep`/`glob` it directly and skip the digest (and its Sonnet validator); a CONCEPT whose vocabulary may diverge → the scan digest** (the same step `/feature` and `/bugfix` run). Then render each action's prompt with `agent-prompt-render`. **Dispatching without locating sends the agent in blind — the single most common reason a `/task` returns nothing useful.** Render fail-opens on every empty placeholder, so a spec-less invocation is safe.
 
 ```bash
 # 1. LOCATE via the scan digest — NEVER dispatch blind. Returns anchors (~12 real files),
@@ -51,7 +51,7 @@ mustard-rt run agent-prompt-render --spec {scope} --role {action} \
 
 Pass the `agent-prompt-render` **stdout verbatim** as the Task `prompt` — with `--emit ref` that stdout is a 2-line stub the PreToolUse hook expands to the full prompt at dispatch, so the full text never transits your context. `{guards_summary}` (subproject `## Guards`) and `{reference_files}` are filled by the renderer — do not duplicate them in the prompt. Spec-less, so the action's work + the located anchors ride in via `--task-text`.
 
-**Validate the digest FIRST (AI step).** Right after step 1, run the shared digest-validator (**`../../../refs/digest-validate.md`**): `mustard-rt run digest-validate-render --intent "<the user's request>"` → dispatch the prompt to `model: sonnet` → `{route, scope, dropped, concerns, centralFound, requeryBridges}`. This is the lean retrieval-quality guard (no route/scope ceremony on `/task` — you are already on the lean path); act on these only:
+**Validate the digest FIRST (AI step — digest path only; SKIP when you located a literal via `grep`).** Right after step 1, run the shared digest-validator (**`../../../refs/digest-validate.md`**): `mustard-rt run digest-validate-render --intent "<the user's request>" --emit ref` → with `--emit ref` it writes the full ~9.5 KB prompt to a `.dispatch/` file and prints a 2-line stub (`MUSTARD-PROMPT-REF: ...`); pass that stub stdout VERBATIM as the Task prompt to `model: sonnet` (the PreToolUse hook expands it at dispatch — NEVER read the `.dispatch/` file in the parent; same mechanism as the scan Guards step) → `{route, scope, dropped, concerns, centralFound, requeryBridges}`. This is the lean retrieval-quality guard (no route/scope ceremony on `/task` — you are already on the lean path); act on these only:
 - **`centralFound=false` → RE-QUERY FIRST, then PERSIST on confirmation**, before dispatching: the central concept missed, so the anchors point at the WRONG flow (a `strong` reason is not trustworthy). Re-run `mustard-rt run feature --intent "<all codeTerms across requeryBridges, joined>"` and dispatch on ITS anchors. **If that re-query's `report.reason` is `strong`, the bridge is confirmed** → write `requeryBridges` (`{userWord, codeTerms}` shape) to a temp file and `mustard-rt run lexicon-enrich --apply <file>` so the next identical query is deterministic — no LLM (one-line `auto-bridged: …` note). Do NOT persist when the re-query is not `strong`. (`centralFound=true` or absent → proceed.)
 - **`dropped`** → drop those anchors (incidental / far-layer lexical matches), never read them.
 - **`concerns` (≥2)** → render + dispatch ONE action per concern, each scoped to its OWN anchors, instead of one mixed dispatch.
@@ -95,10 +95,4 @@ After `audit`/`compare`: parse severity, map each CRITICAL/WARNING to `/task ref
 
 ## Lexicon feedback (end of run)
 
-`/task` has no close, so feed the self-learning dictionary HERE — especially when the digest came back `weak`/`none` and you located the files by **other means** (Glob/Grep). Pure data + gated; fail-open (no `pt-en` pair / no candidates → skip).
-
-```bash
-mustard-rt run lexicon-suggest   # `candidates` (re-query bridges) + `locationCandidates` (found OUTSIDE the digest)
-```
-
-For each `candidates` `{missed, bridged}` accept the confirmed bridge: `--accept {missed}={bridged}`. For each `locationCandidates` `{missed, files}` open the file, pick the code term, and `--accept {missed}={codeTerm}` — only when the mapping is clear (a wrong bridge poisons future queries). Gated (the code term must be a real mined term), idempotent. This makes the next `/task`, `/feature` or `/bugfix` find it deterministically, no LLM.
+`/task` has no close, so feed the self-learning dictionary HERE — especially when the digest came back `weak`/`none` and you located the files by other means (Glob/Grep). Fail-open. Full contract: `../../../refs/lexicon-feedback.md`.
