@@ -129,6 +129,12 @@ pub const EVENT_PIPELINE_RESUME_MODE: &str = "pipeline.resume_mode";
 /// Records that a pipeline run was fully closed: captures `closedAt` and the
 /// set of files that were affected during the run.
 pub const EVENT_PIPELINE_COMPLETE: &str = "pipeline.complete";
+/// Records the KIND of work a run was routed to (`feature` / `bugfix` /
+/// `task` / `tactical-fix`) together with its scope. Emitted as a deterministic
+/// side-effect even on the lean paths (`task`, `bugfix` fast-path) that skip the
+/// full pipeline ceremony, so the dashboard can separate work by type and keep
+/// the narrative of what was requested. See [`PipelineKindPayload`].
+pub const EVENT_PIPELINE_KIND: &str = "pipeline.kind";
 /// Records that an amendment window was opened for a closed pipeline.
 pub const EVENT_PIPELINE_AMEND_OPEN: &str = "pipeline.amend_open";
 /// Records a tool activity inside an open amendment window.
@@ -193,6 +199,23 @@ pub struct PipelineStatusPayload {
     pub from: Option<String>,
     /// New status value.
     pub to: String,
+}
+
+/// Payload for [`EVENT_PIPELINE_KIND`].
+///
+/// `kind` is the work type the router classified the request as
+/// (`"feature"` / `"bugfix"` / `"task"` / `"tactical-fix"`); `scope` is the
+/// detected ceremony (`"light"` / `"full"` / `"lean"`). Both are free-form
+/// strings — the consumer buckets them — and `scope` is optional so a lean
+/// emit that knows only the kind still deserialises (`#[serde(default)]`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PipelineKindPayload {
+    /// Work kind: `"feature"`, `"bugfix"`, `"task"`, or `"tactical-fix"`.
+    pub kind: String,
+    /// Detected scope/ceremony: `"light"`, `"full"`, or `"lean"`. Absent when
+    /// the emitter knows only the kind.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
 }
 
 /// Payload for [`EVENT_PIPELINE_TASK_DISPATCH`].
@@ -527,6 +550,29 @@ mod tests {
             serde_json::from_str(r#"{"spec":"s","item":"t"}"#).expect("parses");
         assert_eq!(sparse.wave, 0);
         assert!(sparse.path.is_none());
+    }
+
+    /// A `pipeline.kind` payload round-trips through the typed lens; the
+    /// optional `scope` is elided when absent (a lean emit that knows only the
+    /// kind), and a payload missing `scope` still deserialises.
+    #[test]
+    fn pipeline_kind_payload_round_trips() {
+        let p = PipelineKindPayload {
+            kind: "task".into(),
+            scope: Some("lean".into()),
+        };
+        let text = serde_json::to_string(&p).expect("serializes");
+        let back: PipelineKindPayload = serde_json::from_str(&text).expect("parses");
+        assert_eq!(back.kind, "task");
+        assert_eq!(back.scope.as_deref(), Some("lean"));
+        // No-scope form: the key is elided, and a payload missing `scope` still
+        // deserialises (kind-only).
+        let plain = PipelineKindPayload { scope: None, ..p };
+        assert!(!serde_json::to_string(&plain).expect("serializes").contains("\"scope\""));
+        let sparse: PipelineKindPayload =
+            serde_json::from_str(r#"{"kind":"bugfix"}"#).expect("parses");
+        assert_eq!(sparse.kind, "bugfix");
+        assert!(sparse.scope.is_none());
     }
 
     /// The full event envelope carries the new name + payload like any other

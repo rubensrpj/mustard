@@ -1,6 +1,6 @@
 ---
 name: mustard-task
-description: Use when the user runs /task or asks for a delegated code task (analyze, audit, compare, review, docs, refactor, implement). Delegates each action via separate Task contexts (L0 Universal Delegation).
+description: An internal flow — dispatched by the orchestrator router (CLAUDE.md § Intent Routing), not chosen directly by the user. Lean delegated code task (analyze, audit, compare, review, docs, refactor, implement) via separate Task contexts (L0 Universal Delegation). Weak fallback only: use when the router did not engage and the user asks for a delegated code task.
 source: manual
 ---
 <!-- mustard:generated -->

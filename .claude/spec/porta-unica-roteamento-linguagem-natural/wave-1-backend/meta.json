@@ -1,31 +1,31 @@
 {
-  "stage": "Plan",
-  "outcome": "Active",
-  "phase": null,
+  "stage": "Close",
+  "outcome": "Completed",
+  "phase": "EXECUTE",
   "scope": null,
   "lang": "pt-BR",
-  "checkpoint": null,
+  "checkpoint": "2026-06-27T09:42:53.890Z",
   "parent": "porta-unica-roteamento-linguagem-natural",
   "checklist": [
     {
       "label": "packages/core/src/domain/model/event.rs",
       "path": "packages/core/src/domain/model/event.rs",
-      "done": false
+      "done": true
     },
     {
       "label": "apps/rt/src/commands/event/emit_pipeline.rs",
       "path": "apps/rt/src/commands/event/emit_pipeline.rs",
-      "done": false
+      "done": true
     },
     {
       "label": "apps/rt/src/hooks/task/skill_usage_observer.rs",
       "path": "apps/rt/src/hooks/task/skill_usage_observer.rs",
-      "done": false
+      "done": true
     },
     {
       "label": "apps/rt/src/shared/events/route.rs",
       "path": "apps/rt/src/shared/events/route.rs",
-      "done": false
+      "done": true
     }
   ]
 }

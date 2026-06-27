@@ -1,6 +1,6 @@
 ---
 name: mustard-bugfix
-description: Use when the user runs /bugfix or reports an error, bug, broken behavior, or asks to fix something. Autonomous diagnose + fix pipeline — zero context-switch.
+description: An internal flow — dispatched by the orchestrator router (CLAUDE.md § Intent Routing), not chosen directly by the user. Autonomous diagnose + fix pipeline for an error, bug, or broken behavior — zero context-switch. Weak fallback only: use when the router did not engage and the user reports an error, bug, or broken behavior.
 source: manual
 ---
 <!-- mustard:generated -->

@@ -1,6 +1,6 @@
 ---
 name: mustard-feature
-description: Use when the user runs /feature or asks to add, create, implement, or enhance a new feature. Starts the feature pipeline (ANALYZE → scope → inline EXECUTE for Light, or PLAN via the full-plan ref for Full).
+description: An internal flow — dispatched by the orchestrator router (CLAUDE.md § Intent Routing), not chosen directly by the user. Feature pipeline for a new entity or a change spanning ≥2 layers (ANALYZE → scope → inline EXECUTE for Light, or PLAN via the full-plan ref for Full). Weak fallback only: use when the router did not engage and the user asks to add, create, or implement a new feature.
 source: manual
 ---
 <!-- mustard:generated -->

@@ -10,18 +10,36 @@ When talking to the user (chat, AskUserQuestion options, banners, errors), be di
 
 When asking the user to approve an artifact (spec, wave plan, PRD), the artifact must be visible AT the moment of the question: attach its content as the `preview` of the approval option(s) in AskUserQuestion. Text printed before a tool call is not guaranteed to render — NEVER ask the user to approve something they have not seen.
 
-## Intent Routing
+## Intent Routing — the single door (you are the router)
 
-| Intent | Signals | Action |
-|--------|---------|--------|
-| Feature (new entity / ≥2 layers) | create, add, new entity, implement spanning ≥2 layers | Pipeline Feature |
-| Enhancement (single-layer) | improve, adjust, change, add field/column, change behavior, optimize, update | `/mustard:task` or direct — Pipeline Feature ONLY if it grows to ≥2 layers or a new entity |
-| Bugfix | error, bug, not working, broken, fix, correct | Pipeline Bugfix |
-| Analyze | analyze, audit, evaluate, check, compare, inspect, assess | Direct Grep/Glob OR Task(Explore) if >3 places to search |
-| Vibe / Spike / Prototype | spike, prototype, sketch, throwaway | `/mustard:task` — no spec, no hygiene gates, direct dispatch |
+**The user does NOT pick a command.** They describe what they want in plain language; YOU classify it, narrate the reading, confirm only on genuine ambiguity, dispatch the internal flow, and emit the work type as a deterministic event. The `/mustard:*` commands still exist as a power-override (invocable directly) but are no longer advertised as a user choice — this section is the SINGLE SOURCE for intent → internal flow.
+
+The internal flows (`feature` / `bugfix` / `task` / `tactical-fix`) are dispatched BY you, not chosen by the user. Run the loop for every request that touches the codebase:
+
+**(a) Classify** intent + coarse scope — not an LLM guess: lean on what already exists. `mustard-rt run scope-classify` is the deterministic call (its `layerCount` is a FACT — distinct projects/roles the census spans); the semantic router inside `digest-validate` refines route+scope once a flow has opened.
+
+| Intent | Signals | Internal flow (`kind`) |
+|--------|---------|------------------------|
+| Feature (new entity / ≥2 layers) | create, add, new entity, implement spanning ≥2 layers | `feature` |
+| Enhancement (single-layer) | improve, adjust, change, add field/column, change behavior, optimize, update | `task` (or direct) — `feature` ONLY if it grows to ≥2 layers or a new entity |
+| Bugfix | error, bug, not working, broken, fix, correct | `bugfix` |
+| Analyze | analyze, audit, evaluate, check, compare, inspect, assess | `task` (Direct Grep/Glob OR Task(Explore) if >3 places to search) |
+| Vibe / Spike / Prototype | spike, prototype, sketch, throwaway | `task` — no spec, no hygiene gates, direct dispatch |
 | Simple | config tweak, single-line edit, rename one file, version bump | Direct (no Task) |
 
-Signals are heuristics — the pipeline detects what makes sense for the project that was scanned. A change that touches production code goes through a pipeline, but **pick the lightest that fits** (see Routing economy below): a single-layer enhancement is `/mustard:task` or direct work, NOT `/feature`. Reserve `/feature` for a genuine new entity or a change spanning ≥2 layers/subprojects; even then scope auto-detects Light (1-2 layers, ≤5 files, known pattern) vs Full (3+ layers, new entity).
+Signals are heuristics — the pipeline detects what makes sense for the project that was scanned. A change that touches production code goes through a flow, but **pick the lightest that fits** (see Routing economy below): a single-layer enhancement is `task` or direct work, NOT `feature`. Reserve `feature` for a genuine new entity or a change spanning ≥2 layers/subprojects; even then scope auto-detects Light (1-2 layers, ≤5 files, known pattern) vs Full (3+ layers, new entity).
+
+**(b) ALWAYS narrate the reading** before dispatching — one didactic line in plain words: *"Tratando como uma correção de bug."* / *"Entendi como uma mudança pequena (caminho leve)."* / *"Isto é uma funcionalidade nova que cruza duas camadas (pipeline completo)."* Transparency + the user can interrupt before anything runs. The narration is NOT optional — it is how "never act without the user seeing the classification" is honored.
+
+**(c) CONFIRM only on genuine ambiguity** — a real fork (bugfix-vs-feature, light-vs-full at the boundary, an under-specified request): ONE batched AskUserQuestion, offering the options you can already infer so the user picks rather than writes. An OBVIOUS case is NOT gated — narrate and proceed (the routing economy; over-confirming is the bureaucracy this door removes).
+
+**(d) Dispatch the internal flow + emit the `kind`.** Route to the flow the classification picked (the flow's SKILL owns the procedure — unchanged). Then emit the deterministic work-type signal so the dashboard sees the work by type and the request's narrative — this is a side-effect, NOT prose the AI may skip:
+
+```
+mustard-rt run emit-pipeline --kind pipeline.kind --spec {slug} --payload '{"kind":"<feature|bugfix|task|tactical-fix>","scope":"<light|full|lean>"}'
+```
+
+Full-scope `feature`/`bugfix` emit through their pipeline; the LEAN paths (`task`, the bugfix fast-path) emit it too — Wave 1 wired the deterministic emit into those flows so NO run is invisible. (Spec-less `task` has no `{slug}` — pass the session's active spec slug when one exists, else the emit's own fallback applies.)
 
 **Routing economy — the full pipeline is the EXCEPTION that must justify itself, not the default.** The pipeline's ceremony (spec → wave → QA → close) is a fixed token cost paid once per run, re-paid as harness context on every turn; it only amortizes on a genuine multi-layer / multi-subproject feature. So pick the CHEAPEST path that fits:
 - **Full pipeline** only when the change genuinely spans **≥2 layers/subprojects OR creates a new entity** (the `scope-classify` `layerCount` is now a deterministic FACT — distinct projects/roles the census spans — so trust it to gate this; a wrong "full" on a small task is the single most expensive routing error).

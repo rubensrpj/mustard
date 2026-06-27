@@ -22,8 +22,8 @@ use mustard_core::io::claude_paths::ClaudePaths;
 use mustard_core::io::fs;
 use mustard_core::domain::model::event::{
     Actor, ActorKind, HarnessEvent, SCHEMA_VERSION,
-    EVENT_PIPELINE_COMPLETE, EVENT_PIPELINE_DISPATCH_FAILURE, EVENT_PIPELINE_PAUSE,
-    EVENT_PIPELINE_RESUME_MODE, EVENT_PIPELINE_SCOPE, EVENT_PIPELINE_STATUS,
+    EVENT_PIPELINE_COMPLETE, EVENT_PIPELINE_DISPATCH_FAILURE, EVENT_PIPELINE_KIND,
+    EVENT_PIPELINE_PAUSE, EVENT_PIPELINE_RESUME_MODE, EVENT_PIPELINE_SCOPE, EVENT_PIPELINE_STATUS,
     EVENT_PIPELINE_TASK_COMPLETE, EVENT_PIPELINE_TASK_DISPATCH, EVENT_PIPELINE_WAVE_COMPLETE,
     EVENT_PIPELINE_WAVE_START,
 };
@@ -78,11 +78,12 @@ const EVENT_HYGIENE_SKIPPED: &str = "hygiene.skipped";
 /// key). Feeds the `/economia` dashboard (W12).
 const EVENT_ECONOMY_OPERATION_INVOKED: &str = "pipeline.economy.operation.invoked";
 
-/// The 19 valid pipeline event kind strings: the 9 legacy `pipeline.*` kinds,
+/// The 20 valid pipeline event kind strings: the 9 legacy `pipeline.*` kinds,
 /// plus the legacy `pipeline.phase` (alias-only), plus the `pipeline.wave.start`
 /// signal, plus the 4 new canonical state-model kinds, plus the 3 W5
-/// `hygiene.*` kinds, plus the 1 W2 `pipeline.economy.*` kind. A literal list —
-/// no magic alias resolution (cf. memory `project_emit_pipeline_kind_full_prefix`).
+/// `hygiene.*` kinds, plus the 1 W2 `pipeline.economy.*` kind, plus the
+/// `pipeline.kind` work-type signal (porta-unica). A literal list — no magic
+/// alias resolution (cf. memory `project_emit_pipeline_kind_full_prefix`).
 const KNOWN_KINDS: &[&str] = &[
     EVENT_PIPELINE_SCOPE,
     EVENT_PIPELINE_STATUS,
@@ -94,6 +95,7 @@ const KNOWN_KINDS: &[&str] = &[
     EVENT_PIPELINE_PAUSE,
     EVENT_PIPELINE_RESUME_MODE,
     EVENT_PIPELINE_COMPLETE,
+    EVENT_PIPELINE_KIND,
     EVENT_PIPELINE_PHASE,
     EVENT_PIPELINE_STAGE,
     EVENT_PIPELINE_OUTCOME,
@@ -856,8 +858,9 @@ mod tests {
     #[test]
     fn known_kinds_list_covers_legacy_and_new_kinds() {
         // 9 legacy + 1 legacy phase (alias-only) + 1 wave.start + 4 new
-        // canonical + 3 hygiene + 1 economy (W2 mustard-unification).
-        assert_eq!(KNOWN_KINDS.len(), 19);
+        // canonical + 3 hygiene + 1 economy (W2 mustard-unification) + 1
+        // pipeline.kind (porta-unica work-type signal).
+        assert_eq!(KNOWN_KINDS.len(), 20);
         // Legacy nine.
         assert!(KNOWN_KINDS.contains(&EVENT_PIPELINE_SCOPE));
         assert!(KNOWN_KINDS.contains(&EVENT_PIPELINE_STATUS));
@@ -869,6 +872,8 @@ mod tests {
         assert!(KNOWN_KINDS.contains(&EVENT_PIPELINE_PAUSE));
         assert!(KNOWN_KINDS.contains(&EVENT_PIPELINE_RESUME_MODE));
         assert!(KNOWN_KINDS.contains(&EVENT_PIPELINE_COMPLETE));
+        // Work-type signal (porta-unica).
+        assert!(KNOWN_KINDS.contains(&EVENT_PIPELINE_KIND));
         // Legacy phase (alias-only).
         assert!(KNOWN_KINDS.contains(&EVENT_PIPELINE_PHASE));
         // New canonical state-model kinds.
