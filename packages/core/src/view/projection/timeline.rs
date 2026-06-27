@@ -404,6 +404,16 @@ fn build_label(
     phase: Option<Phase>,
     wave: Option<u32>,
 ) -> String {
+    // `pipeline.kind` is the router's work-type signal (porta-unica). It
+    // classifies as `Other` (the enum shape is a public serde contract we keep
+    // stable), so surface its narrative here off the raw event name: the work
+    // kind the request was routed to (`feature`/`bugfix`/`task`/`tactical-fix`)
+    // plus the detected scope (`light`/`full`/`lean`). This is what lets the
+    // dashboard group every run by type — including the lean `task`/`bugfix`
+    // fast-paths that emit no other lifecycle event.
+    if raw_event == "pipeline.kind" {
+        return build_kind_label(payload);
+    }
     match kind {
         TimelineKind::Scope => "Pipeline scope opened".into(),
         TimelineKind::Phase => phase.map_or_else(
@@ -474,6 +484,28 @@ fn build_label(
             }
         }
         TimelineKind::Other => raw_event.into(),
+    }
+}
+
+/// Build the narrative label for a `pipeline.kind` event: the work type the
+/// router classified the request as, plus the detected scope when present
+/// (`"Work type: feature (full)"`, `"Work type: bugfix (lean)"`). Falls back to
+/// `"Work type recorded"` when the payload carries no `kind` (a malformed or
+/// empty emit). Kept minimal — the dashboard is free to map the raw `kind` /
+/// `scope` (still in `payload_summary`) to its own human labels.
+fn build_kind_label(payload: &serde_json::Value) -> String {
+    let kind = payload
+        .get("kind")
+        .and_then(serde_json::Value::as_str)
+        .filter(|s| !s.is_empty());
+    let scope = payload
+        .get("scope")
+        .and_then(serde_json::Value::as_str)
+        .filter(|s| !s.is_empty());
+    match (kind, scope) {
+        (Some(k), Some(s)) => format!("Work type: {k} ({s})"),
+        (Some(k), None) => format!("Work type: {k}"),
+        (None, _) => "Work type recorded".into(),
     }
 }
 
@@ -615,6 +647,50 @@ mod tests {
         assert_eq!(nodes[0].input.as_deref(), Some("ls"));
         assert_eq!(nodes[1].kind, TimelineKind::Phase);
         assert_eq!(nodes[1].phase, Some(Phase::Execute));
+    }
+
+    #[test]
+    fn pipeline_kind_event_surfaces_work_type_narrative() {
+        // The router's work-type signal must project a narrative label carrying
+        // the kind + scope, so the dashboard can group every run by type — even
+        // the lean `task`/`bugfix` paths that emit no other lifecycle event.
+        let events = vec![ev(
+            "porta-unica",
+            "2026-06-27T10:00:00Z",
+            "pipeline.kind",
+            json!({ "kind": "feature", "scope": "full" }),
+        )];
+        let t = project_timeline("porta-unica", &events, TimeWindow::All);
+        assert_eq!(t.len(), 1);
+        assert_eq!(t[0].raw_event, "pipeline.kind");
+        assert_eq!(t[0].label, "Work type: feature (full)");
+        // The raw kind + scope survive in the summary for the frontend's own map.
+        assert!(t[0].payload_summary.contains("feature"));
+        assert!(t[0].payload_summary.contains("full"));
+    }
+
+    #[test]
+    fn pipeline_kind_event_label_handles_missing_scope_and_kind() {
+        // A lean emit may know only the kind (scope omitted), and a malformed
+        // emit may carry neither — both must render a stable, non-empty label
+        // rather than the bare event name.
+        let scope_less = vec![ev(
+            "s",
+            "2026-06-27T10:00:00Z",
+            "pipeline.kind",
+            json!({ "kind": "task" }),
+        )];
+        let t = project_timeline("s", &scope_less, TimeWindow::All);
+        assert_eq!(t[0].label, "Work type: task");
+
+        let empty = vec![ev(
+            "s",
+            "2026-06-27T10:00:00Z",
+            "pipeline.kind",
+            json!({}),
+        )];
+        let t = project_timeline("s", &empty, TimeWindow::All);
+        assert_eq!(t[0].label, "Work type recorded");
     }
 
     #[test]

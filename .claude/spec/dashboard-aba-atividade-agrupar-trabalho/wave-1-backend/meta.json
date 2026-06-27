@@ -1,26 +1,26 @@
 {
-  "stage": "Plan",
-  "outcome": "Active",
-  "phase": null,
+  "stage": "Close",
+  "outcome": "Completed",
+  "phase": "EXECUTE",
   "scope": null,
   "lang": "pt-BR",
-  "checkpoint": null,
+  "checkpoint": "2026-06-27T11:26:16.391Z",
   "parent": "dashboard-aba-atividade-agrupar-trabalho",
   "checklist": [
     {
       "label": "apps/dashboard/src-tauri/src/telemetry.rs",
       "path": "apps/dashboard/src-tauri/src/telemetry.rs",
-      "done": false
+      "done": true
     },
     {
       "label": "apps/dashboard/src-tauri/src/watcher.rs",
       "path": "apps/dashboard/src-tauri/src/watcher.rs",
-      "done": false
+      "done": true
     },
     {
       "label": "packages/core/src/view/projection/timeline.rs",
       "path": "packages/core/src/view/projection/timeline.rs",
-      "done": false
+      "done": true
     }
   ]
 }

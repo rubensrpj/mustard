@@ -487,6 +487,44 @@ mod tests {
     }
 
     #[test]
+    fn pipeline_kind_session_shard_enters_the_events_fold() {
+        // The router's `pipeline.kind` work-type signal lands in a per-session
+        // (lean flows) or per-spec NDJSON `.events/` shard. A write there must
+        // classify as `events` so it invalidates the parsed-events cache and the
+        // session/spec fold re-reads the new kind — without this the dashboard's
+        // "group by type" surface would go stale on a lean run.
+        assert_eq!(
+            kind(r"C:\repo\.claude\.session\19a1f60b-edc3\.events\k.ndjson"),
+            Some("events"),
+        );
+        assert_eq!(
+            kind("/repo/.claude/spec/my-feature/.events/k.ndjson"),
+            Some("events"),
+        );
+    }
+
+    #[test]
+    fn pipeline_kind_session_burst_schedules_rebuild_and_reparses_only_touched_shard() {
+        // End-to-end through the batch path: writing a `pipeline.kind` shard
+        // invalidates exactly that shard and schedules one snapshot rebuild,
+        // so the new work-type signal reaches the fold on the next read.
+        let tmp = TempDir::new().unwrap();
+        let repo = tmp.path().to_string_lossy().into_owned();
+        let dir = tmp.path().join(".claude").join(".session").join("sess-k").join(".events");
+        std::fs::create_dir_all(&dir).unwrap();
+        let shard = dir.join("k.ndjson");
+        std::fs::write(
+            &shard,
+            "{\"event\":\"pipeline.kind\",\"kind\":\"pipeline\",\"ts\":\"2026-06-27T10:00:00.000Z\",\"session_id\":\"sess-k\",\"payload\":{\"kind\":\"task\",\"scope\":\"lean\"}}\n",
+        )
+        .unwrap();
+        let state = Mutex::new(WatcherState::default());
+        let out = process_batch(&state, &repo, std::slice::from_ref(&shard), Instant::now());
+        assert_eq!(out.fs_change_kinds, vec!["events"]);
+        assert!(out.rebuild_snapshot, "a pipeline.kind shard write must rebuild the snapshot");
+    }
+
+    #[test]
     fn spec_md_still_classifies_as_spec() {
         // A spec.md write (NOT under `.events/`) must remain a `spec` change.
         assert_eq!(

@@ -13,6 +13,7 @@ import { Settings } from "@/pages/Settings";
 import { Preferences } from "@/pages/Preferences";
 import { Sessions } from "@/pages/Sessions";
 import { SessionDetail } from "@/pages/SessionDetail";
+import { Activity } from "@/pages/Activity";
 import { CommandPalette } from "@/components/layout/CommandPalette";
 import { Toaster } from "sonner";
 import { useStore } from "@/lib/store";
@@ -59,6 +60,10 @@ function App() {
         <Routes>
           <Route path="/" element={<Navigate to="/workspace" replace />} />
           <Route path="/workspace" element={<Workspace />} />
+          {/* `/activity` is the new primary nav entry (spec
+              `dashboard-aba-atividade-agrupar-trabalho`); `/specs` stays
+              routed for the Workspace `?filter=` lifecycle deep-links. */}
+          <Route path="/activity" element={<Activity />} />
           <Route path="/specs" element={<Specs />} />
           <Route path="/economy" element={<Economia />} />
           <Route path="/project/:id" element={<ProjectDetail />} />

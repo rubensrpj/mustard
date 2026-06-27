@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "spec": "dashboard-aba-atividade-agrupar-trabalho",
+  "title": "dashboard aba atividade agrupar trabalho por tipo consumindo pipeline kind + narrativa do pedido",
+  "timeline": {},
+  "waves": [
+    {
+      "n": 1,
+      "role": "backend",
+      "summary": "Backend Tauri le pipeline.kind e expoe kind + narrativa do pedido por unidade de trabalho; deriva o agrupamento",
+      "status": "in_progress"
+    },
+    {
+      "n": 2,
+      "role": "frontend",
+      "summary": "Aba Atividade (substitui Specs): agrupa por rotulo humano mapeado do kind + cada item mostra pedido original + narrativa",
+      "status": "in_progress"
+    }
+  ],
+  "economy": {
+    "totalSavingsTokens": 0,
+    "bySource": {}
+  },
+  "telemetry": {
+    "totalTokens": 0,
+    "totalCostUsdMicros": 0,
+    "byModel": {},
+    "byAgent": {}
+  }
+}

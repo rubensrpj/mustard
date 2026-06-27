@@ -28,7 +28,7 @@ import {
   BookOpen,
   Gauge,
   Terminal,
-  FileText,
+  Activity as ActivityIcon,
   FolderPlus,
   History,
   Cog,
@@ -304,7 +304,7 @@ function ProjectTreeNode({
   // `tLib` above for why two `t` functions coexist in this component.
   const leaves: { to: string; icon: typeof Home; label: string; end?: boolean }[] = [
     { to: "/workspace", icon: Home, label: tLib("sidebar.overview") },
-    { to: "/specs", icon: FileText, label: tLib("sidebar.specs") },
+    { to: "/activity", icon: ActivityIcon, label: tLib("sidebar.activity") },
     { to: "/economy", icon: Gauge, label: tLib("sidebar.economy") },
     { to: "/knowledge", icon: BookOpen, label: tLib("sidebar.knowledge") },
     { to: "/sessions", icon: History, label: tLib("sidebar.sessions") },

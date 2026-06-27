@@ -1,36 +1,36 @@
 {
-  "stage": "Plan",
-  "outcome": "Active",
-  "phase": null,
+  "stage": "Close",
+  "outcome": "Completed",
+  "phase": "EXECUTE",
   "scope": null,
   "lang": "pt-BR",
-  "checkpoint": null,
+  "checkpoint": "2026-06-27T11:32:28.482Z",
   "parent": "dashboard-aba-atividade-agrupar-trabalho",
   "checklist": [
     {
       "label": "apps/dashboard/src/pages/Specs.tsx",
       "path": "apps/dashboard/src/pages/Specs.tsx",
-      "done": false
+      "done": true
     },
     {
       "label": "apps/dashboard/src/pages/Sessions.tsx",
       "path": "apps/dashboard/src/pages/Sessions.tsx",
-      "done": false
+      "done": true
     },
     {
       "label": "apps/dashboard/src/components/page/CollapsibleGroup/index.tsx",
       "path": "apps/dashboard/src/components/page/CollapsibleGroup/index.tsx",
-      "done": false
+      "done": true
     },
     {
       "label": "apps/dashboard/src/hooks/useAggregate.ts",
       "path": "apps/dashboard/src/hooks/useAggregate.ts",
-      "done": false
+      "done": true
     },
     {
       "label": "apps/dashboard/src/hooks/useTelemetryTimeline.ts",
       "path": "apps/dashboard/src/hooks/useTelemetryTimeline.ts",
-      "done": false
+      "done": true
     }
   ]
 }

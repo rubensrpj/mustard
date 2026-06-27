@@ -130,6 +130,15 @@ export interface SessionRow {
   /** The REQUEST text — `payload.args` of the earliest mustard skill (or a
    *  fallback), normalised to a single ~160-char line. `null` when none found. */
   title: string | null;
+  /** Work TYPE from the earliest `pipeline.kind` event
+   *  (`feature`/`bugfix`/`task`/`tactical-fix`) — the honest signal even for the
+   *  lean `task`/`bugfix` fast-paths that never become a spec, which `category`
+   *  (the skill suffix) misses. Serde `snake_case` → field name is `kind`.
+   *  `null` when no `pipeline.kind` event was seen (older / untagged sessions). */
+  kind: string | null;
+  /** Scope of the same earliest `pipeline.kind` event (`light`/`full`/`lean`).
+   *  `null` when absent. */
+  scope: string | null;
 }
 
 /** One `tool → count` entry in a session's `tool_breakdown`. */

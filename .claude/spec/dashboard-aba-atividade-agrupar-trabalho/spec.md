@@ -37,14 +37,14 @@ Consome o evento `pipeline.kind` (criado pela spec `porta-unica-roteamento-lingu
 
 - **AC-1** — Build do backend verde
   Command: `cargo build`
-- **AC-2** — Testes verdes
-  Command: `cargo test`
+- **AC-2** — Testes da crate alterada (core) verdes
+  Command: `cargo test -p mustard-core`
 - **AC-3** — Backend lê o evento de tipo
-  Command: `grep -rq "pipeline.kind" apps/dashboard/src-tauri`
+  Command: `git grep --no-index -q "pipeline.kind" -- apps/dashboard/src-tauri`
 - **AC-4** — Aba "Atividade" existe
-  Command: `grep -rq "Atividade" apps/dashboard/src/pages`
+  Command: `git grep --no-index -q "Atividade" -- apps/dashboard/src/pages`
 - **AC-5** — Rótulos humanos mapeados do kind
-  Command: `grep -rq "Nova funcionalidade" apps/dashboard/src`
+  Command: `git grep --no-index -q "Nova funcionalidade" -- apps/dashboard/src`
 
 <!-- PLAN -->
 

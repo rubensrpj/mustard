@@ -258,6 +258,39 @@ const DICTIONARY = new Map<string, TranslationRow>([
   ["specs.staleness.days", { pt: "dias", en: "days" }],
   ["specs.staleness.planDate", { pt: "Data do plano", en: "Plan date" }],
 
+  // ── Activity page ─────────────────────────────────────────────────────
+  // Replaces the Specs nav entry: groups every session by the human-readable
+  // work TYPE (mapped from `category`, the `pipeline.kind` work-type signal),
+  // titled by the original request, with the run narrative on drill-in.
+  ["activity.editorialTitle", { pt: "Atividade", en: "Activity" }],
+  ["activity.editorialSubtitle", { pt: "Trabalho deste projeto agrupado por tipo. Abra um item para ver a narrativa: o pedido, as fases, as mudanças e o desfecho.", en: "Work in this project grouped by type. Open an item to see its narrative: the request, the phases, the changes and the outcome." }],
+  ["activity.editorialSubtitle.named", { pt: "Trabalho de {name} agrupado por tipo — abra um item para ver a narrativa.", en: "Work in {name} grouped by type — open an item to see its narrative." }],
+  ["activity.empty.noProject.title", { pt: "Nenhum projeto ativo", en: "No active project" }],
+  ["activity.empty.noProject.description", { pt: "Selecione um projeto na barra lateral para ver sua atividade.", en: "Select a project in the sidebar to see its activity." }],
+  ["activity.empty.none.title", { pt: "Sem atividade registrada", en: "No activity recorded" }],
+  ["activity.empty.none.description", { pt: "Nenhum trabalho foi registrado neste projeto ainda. Descreva o que você quer fazer para começar.", en: "No work has been recorded in this project yet. Describe what you want to do to get started." }],
+  ["activity.untitled", { pt: "(pedido não capturado)", en: "(request not captured)" }],
+  ["activity.unattributed", { pt: "(sessão não atribuída)", en: "(unattributed session)" }],
+  ["activity.narrative.request", { pt: "Pedido", en: "Request" }],
+  ["activity.narrative.changes", { pt: "Mudanças", en: "Changes" }],
+  ["activity.narrative.outcome", { pt: "Desfecho", en: "Outcome" }],
+  ["activity.narrative.openTrace", { pt: "Ver narrativa completa (fases, ferramentas e diffs)", en: "Open full narrative (phases, tools and diffs)" }],
+  ["activity.outcome.open", { pt: "Em andamento", en: "In progress" }],
+  ["activity.outcome.closed", { pt: "Encerrado", en: "Closed" }],
+  // Human work-TYPE labels mapped from `category` (the kind). Unmapped
+  // categories fall back to their capitalised own value.
+  ["activity.kind.feature", { pt: "Nova funcionalidade", en: "New feature" }],
+  ["activity.kind.task", { pt: "Ajuste", en: "Adjustment" }],
+  ["activity.kind.bugfix", { pt: "Correção", en: "Bugfix" }],
+  ["activity.kind.tactical-fix", { pt: "Mudança rápida", en: "Quick fix" }],
+  ["activity.kind.followup", { pt: "Follow-up", en: "Follow-up" }],
+  ["activity.kind.analyze", { pt: "Investigação", en: "Investigation" }],
+  ["activity.kind.knowledge", { pt: "Conhecimento", en: "Knowledge" }],
+  ["activity.kind.scan", { pt: "Varredura", en: "Scan" }],
+  ["activity.kind.qa", { pt: "QA", en: "QA" }],
+  ["activity.kind.outros", { pt: "Outros", en: "Other" }],
+  ["activity.kind.__null__", { pt: "Avulsas (sem comando)", en: "Loose (no command)" }],
+
   // ── Knowledge page ────────────────────────────────────────────────────
   ["knowledge.editorialTitle", { pt: "Conhecimento e atrito", en: "Knowledge and friction" }],
   ["knowledge.editorialSubtitle", { pt: "Padrões, decisões e lições reutilizáveis extraídos das pipelines, separados dos sinais de fricção medidos durante as execuções.", en: "Reusable patterns, decisions and lessons extracted from pipelines, separated from friction signals measured during executions." }],

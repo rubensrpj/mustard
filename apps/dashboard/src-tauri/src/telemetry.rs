@@ -280,6 +280,17 @@ pub struct SessionRow {
     /// `args`, then the earliest `user.prompt`'s `payload.prompt`. Normalised to
     /// a single line and truncated to ~160 chars. `None` when nothing matched.
     pub title: Option<String>,
+    /// Work KIND the router classified this session's request as — the
+    /// `payload.kind` of the earliest `pipeline.kind` event in the session
+    /// (`"feature"` / `"bugfix"` / `"task"` / `"tactical-fix"`). This is the
+    /// honest "what type of work" signal even for the lean `task`/`bugfix`
+    /// fast-paths that never become a spec. `None` when no `pipeline.kind` event
+    /// was seen (older sessions, or work the router never tagged).
+    pub kind: Option<String>,
+    /// Detected scope/ceremony paired with [`kind`](Self::kind) — `payload.scope`
+    /// of the same earliest `pipeline.kind` event (`"light"` / `"full"` /
+    /// `"lean"`). `None` when absent or when no `pipeline.kind` event was seen.
+    pub scope: Option<String>,
 }
 
 /// One `tool → count` entry in a session's `tool_breakdown`.
@@ -1569,6 +1580,11 @@ pub fn dashboard_sessions(repo_path: String, limit: Option<usize>) -> Vec<Sessio
         let mut earliest_any_skill_ts: Option<String> = None;
         let mut earliest_any_skill_args: Option<(String, String)> = None; // (ts, args)
         let mut earliest_prompt: Option<(String, String)> = None; // (ts, prompt)
+        // Work-type signal (porta-unica): the EARLIEST `pipeline.kind` event in
+        // the session decides the session's kind/scope — it is emitted right
+        // when the router dispatches the flow, so the first one is the original
+        // classification of this session's request.
+        let mut earliest_kind: Option<(String, String, Option<String>)> = None; // (ts, kind, scope)
 
         for record in &records {
             event_count += 1;
@@ -1622,6 +1638,26 @@ pub fn dashboard_sessions(repo_path: String, limit: Option<usize>) -> Vec<Sessio
                     && earliest_prompt.as_ref().map_or(true, |(p, _)| ts < p.as_str())
                 {
                     earliest_prompt = Some((ts.to_string(), prompt.to_string()));
+                }
+            }
+            if event_name(record) == "pipeline.kind" {
+                let ts = record.get("ts").and_then(Value::as_str).unwrap_or("");
+                let kind = record
+                    .get("payload")
+                    .and_then(|p| p.get("kind"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                if !ts.is_empty()
+                    && !kind.is_empty()
+                    && earliest_kind.as_ref().map_or(true, |(p, _, _)| ts < p.as_str())
+                {
+                    let scope = record
+                        .get("payload")
+                        .and_then(|p| p.get("scope"))
+                        .and_then(Value::as_str)
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_string);
+                    earliest_kind = Some((ts.to_string(), kind.to_string(), scope));
                 }
             }
             if event_name(record) == "tool.use" {
@@ -1739,6 +1775,8 @@ pub fn dashboard_sessions(repo_path: String, limit: Option<usize>) -> Vec<Sessio
             tool_breakdown,
             category,
             title,
+            kind: earliest_kind.as_ref().map(|(_, k, _)| k.clone()),
+            scope: earliest_kind.and_then(|(_, _, s)| s),
         });
     }
 
@@ -3963,6 +4001,41 @@ mod tests {
         let rows = dashboard_sessions(tmp.path().to_string_lossy().into_owned(), None);
         let s3 = rows.iter().find(|r| r.id == "sess-3").expect("sess-3 row");
         assert_eq!(s3.category, None, "no skill.invoked → avulsa (None)");
+    }
+
+    #[test]
+    fn sessions_derive_kind_and_scope_from_earliest_pipeline_kind() {
+        let tmp = TempDir::new().unwrap();
+        // The earliest `pipeline.kind` decides — it is emitted when the router
+        // dispatches the flow, so a later one (a second request in the same
+        // session) must NOT override the original classification.
+        let lines = concat!(
+            r#"{"event":"pipeline.kind","kind":"pipeline","ts":"2026-05-27T08:00:00.000Z","session_id":"sess-k","payload":{"kind":"bugfix","scope":"lean"}}"#, "\n",
+            r#"{"event":"pipeline.kind","kind":"pipeline","ts":"2026-05-27T08:10:00.000Z","session_id":"sess-k","payload":{"kind":"feature","scope":"full"}}"#, "\n",
+            r#"{"event":"tool.use","kind":"tool","ts":"2026-05-27T08:11:00.000Z","session_id":"sess-k","payload":{"tool":"Read","target":{"file":"a.rs"}}}"#, "\n",
+        );
+        write_session_event(tmp.path(), "sess-k", "events.ndjson", lines);
+
+        let rows = dashboard_sessions(tmp.path().to_string_lossy().into_owned(), None);
+        let s = rows.iter().find(|r| r.id == "sess-k").expect("sess-k row");
+        assert_eq!(s.kind.as_deref(), Some("bugfix"), "earliest pipeline.kind wins");
+        assert_eq!(s.scope.as_deref(), Some("lean"));
+    }
+
+    #[test]
+    fn sessions_kind_none_when_no_pipeline_kind_event() {
+        let tmp = TempDir::new().unwrap();
+        // A session with work but no `pipeline.kind` (older session, or untagged
+        // work) reports no kind/scope rather than guessing one.
+        let lines = concat!(
+            r#"{"event":"tool.use","kind":"tool","ts":"2026-05-27T08:05:00.000Z","session_id":"sess-nk","payload":{"tool":"Read","target":{"file":"a.rs"}}}"#, "\n",
+        );
+        write_session_event(tmp.path(), "sess-nk", "events.ndjson", lines);
+
+        let rows = dashboard_sessions(tmp.path().to_string_lossy().into_owned(), None);
+        let s = rows.iter().find(|r| r.id == "sess-nk").expect("sess-nk row");
+        assert_eq!(s.kind, None);
+        assert_eq!(s.scope, None);
     }
 
     #[test]
