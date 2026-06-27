@@ -217,16 +217,25 @@ fn close_overall(gates: &[GateReport]) -> bool {
 
 /// Finalize the spec in-process and confirm the close landed.
 ///
-/// Calls [`crate::commands::spec::complete_spec::run_complete`] directly
+/// Calls [`crate::commands::spec::complete_spec::finalize`] directly
 /// (module-qualified — no subprocess) to mark the spec `completed` and emit
-/// `pipeline.complete` (coupled with the root `meta.json` sync), then reuses
+/// `pipeline.complete` (coupled with the root `meta.json` sync). It uses
+/// `finalize`, not `run_complete`, because the qa-run gate already ran every AC
+/// — re-running them in the finalize wastes minutes for no new signal. Then
+/// reuses
 /// [`crate::commands::event::verify_emit::verify_event_landed`] to confirm the
 /// `pipeline.complete` event landed in the per-spec NDJSON window. Both steps
 /// are deterministic; `complete_spec`'s emits are idempotent, so a re-run after
 /// an already-closed spec is a no-op flip. Returns `(chained, Some(verified))`.
 fn finalize_and_verify(spec: &str) -> (bool, Option<bool>) {
     let cwd = std::env::current_dir().unwrap_or_else(|_| Path::new(".").to_path_buf());
-    let _ = crate::commands::spec::complete_spec::run_complete(&cwd, spec);
+    // Use `finalize`, NOT `run_complete`: the qa-run gate above already ran every
+    // AC and gated `overall_pass`, and its `qa.result=pass` event satisfies the
+    // `emit_pipeline` QA safety net. `run_complete` would re-execute every AC a
+    // second time in-process — wasted minutes (a full `cargo test`) for zero new
+    // signal. `finalize` is the qa-less terminal path `close-pipeline` already
+    // uses for exactly this reason.
+    let _ = crate::commands::spec::complete_spec::finalize(&cwd, spec);
     let verified = crate::commands::event::verify_emit::verify_event_landed(
         &cwd,
         "pipeline.complete",

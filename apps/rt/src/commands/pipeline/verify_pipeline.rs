@@ -218,44 +218,120 @@ fn discover_defaults(cwd: &Path) -> Vec<VerifyTarget> {
     Vec::new()
 }
 
+/// The workspace crate that produces the orchestrator binary running this very
+/// gate. `--exclude`d from the gate's `cargo (build|test) --workspace`: its own
+/// shell-spawning tests deadlock when their process-tree root is the `cmd.exe`
+/// running the gate, and the running crate can't meaningfully self-test from
+/// the gate anyway. Its suite runs in CI / `cargo test -p mustard-rt`.
+const ORCHESTRATOR_CRATE: &str = "mustard-rt";
+
+/// Rewrite a whole-workspace `cargo (build|test)` so the in-process close gate
+/// tests every OTHER member (core, cli, mcp, scan) and returns in seconds
+/// instead of burning the 600 s timeout on the orchestrator crate's tests.
+///
+/// - A bare `cargo test` (this project's configured command) gets BOTH
+///   `--workspace` and `--exclude mustard-rt` — `--exclude` is only valid
+///   alongside `--workspace`, so it must be added too.
+/// - A `--workspace` command just gets `--exclude mustard-rt`.
+/// - A package-scoped command (`-p X` / `--package X`) already avoids the
+///   workspace and is left untouched; so is any non-cargo command.
+///
+/// Idempotent. Excludes ONLY a real workspace member — `mustard-dashboard` is
+/// not in the workspace, so excluding it would make cargo error. Tail-append is
+/// safe: the gate's commands carry no post-`--` test-binary args.
+fn exclude_orchestrator_crate(command: &str) -> String {
+    let lower = command.to_ascii_lowercase();
+    if !(lower.contains("cargo build") || lower.contains("cargo test")) {
+        return command.to_string();
+    }
+    if lower.contains("-p ") || lower.contains("-p=") || lower.contains("--package") {
+        return command.to_string();
+    }
+    if command.contains(&format!("--exclude {ORCHESTRATOR_CRATE}"))
+        || command.contains(&format!("--exclude={ORCHESTRATOR_CRATE}"))
+    {
+        return command.to_string();
+    }
+    let mut out = command.to_string();
+    if !lower.contains("--workspace") {
+        out.push_str(" --workspace");
+    }
+    out.push_str(" --exclude ");
+    out.push_str(ORCHESTRATOR_CRATE);
+    out
+}
+
 /// Run one shell command in `cwd` with a stack-aware timeout. Returns `Ok` on
 /// exit 0, `Err(excerpt)` otherwise. Timeout picked by [`effective_timeout`]
 /// (Rust 600 s, TS/Python 120-180 s; env-overridable).
 fn run_command(command: &str, cwd: &Path) -> std::result::Result<(), String> {
-    let mut cmd = platform::build_shell_command(command);
+    // On Windows the gate shell is `cmd.exe`; `mustard-rt`'s own shell-spawning
+    // tests deadlock when launched with that `cmd.exe` as their process-tree
+    // root, so a `cargo test --workspace` here burns the whole 600 s timeout on
+    // the orchestrator crate. Exclude it — the gate still tests every other
+    // member. On Unix (the gate shell is `sh`) the suite runs clean, so keep
+    // full workspace coverage.
+    let rewritten = if cfg!(windows) {
+        exclude_orchestrator_crate(command)
+    } else {
+        command.to_string()
+    };
+    let mut cmd = platform::build_shell_command(&rewritten);
     cmd.current_dir(cwd)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
     let mut child = cmd.spawn().map_err(|e| e.to_string())?;
-    let timeout_secs = effective_timeout(command);
+
+    // Drain stdout/stderr on dedicated threads. A `cargo test --workspace` can
+    // emit far more than the OS pipe buffer (~64 KB); reading only after the
+    // child exits would let a full pipe block the writer forever — the child
+    // never finishes, `try_wait` never returns `Some`, and the gate burns the
+    // whole timeout on a process that already did its work. Concurrent readers
+    // keep the pipes empty so the child always makes progress.
+    let out_pipe = child.stdout.take();
+    let err_pipe = child.stderr.take();
+    let out_reader = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(mut p) = out_pipe {
+            let _ = std::io::Read::read_to_end(&mut p, &mut buf);
+        }
+        buf
+    });
+    let err_reader = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(mut p) = err_pipe {
+            let _ = std::io::Read::read_to_end(&mut p, &mut buf);
+        }
+        buf
+    });
+
+    let timeout_secs = effective_timeout(&rewritten);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
     loop {
         match child.try_wait() {
             Ok(Some(status)) => {
-                let out = child.wait_with_output().ok();
+                let stdout = out_reader.join().unwrap_or_default();
+                let stderr = err_reader.join().unwrap_or_default();
                 if status.success() {
                     return Ok(());
                 }
-                let excerpt: String = out
-                    .map(|o| {
-                        let s = String::from_utf8_lossy(&o.stderr).to_string();
-                        if s.trim().is_empty() {
-                            String::from_utf8_lossy(&o.stdout).to_string()
-                        } else {
-                            s
-                        }
-                    })
-                    .unwrap_or_default()
-                    .chars()
-                    .take(500)
-                    .collect();
-                return Err(excerpt);
+                let s = String::from_utf8_lossy(&stderr).to_string();
+                let combined = if s.trim().is_empty() {
+                    String::from_utf8_lossy(&stdout).to_string()
+                } else {
+                    s
+                };
+                return Err(combined.chars().take(500).collect());
             }
             Ok(None) => {
                 if std::time::Instant::now() >= deadline {
                     let _ = child.kill();
                     let _ = child.wait();
+                    // Killing closes the pipes → the readers hit EOF and finish;
+                    // join so the threads don't outlive this call.
+                    let _ = out_reader.join();
+                    let _ = err_reader.join();
                     return Err(format!("timeout after {}ms", timeout_secs * 1000));
                 }
                 std::thread::sleep(std::time::Duration::from_millis(50));
@@ -595,6 +671,48 @@ pub fn run(format: &str) {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn exclude_orchestrator_crate_appends_exclude_to_workspace_cargo() {
+        assert_eq!(
+            exclude_orchestrator_crate("cargo test --workspace --quiet"),
+            "cargo test --workspace --quiet --exclude mustard-rt"
+        );
+        assert_eq!(
+            exclude_orchestrator_crate("cargo build --workspace --quiet"),
+            "cargo build --workspace --quiet --exclude mustard-rt"
+        );
+    }
+
+    #[test]
+    fn exclude_orchestrator_crate_adds_workspace_to_bare_cargo() {
+        // The bare form (this project's configured `cargo test`) needs BOTH
+        // `--workspace` (so `--exclude` is valid) and the exclude itself.
+        assert_eq!(
+            exclude_orchestrator_crate("cargo test"),
+            "cargo test --workspace --exclude mustard-rt"
+        );
+        assert_eq!(
+            exclude_orchestrator_crate("cargo build --quiet"),
+            "cargo build --quiet --workspace --exclude mustard-rt"
+        );
+    }
+
+    #[test]
+    fn exclude_orchestrator_crate_skips_non_cargo_and_package_scoped() {
+        // Not a cargo build/test → untouched.
+        assert_eq!(exclude_orchestrator_crate("npm test"), "npm test");
+        // Package-scoped → already avoids the workspace, leave it.
+        assert_eq!(exclude_orchestrator_crate("cargo test -p mustard-core"), "cargo test -p mustard-core");
+        assert_eq!(exclude_orchestrator_crate("cargo test --package mustard-core"), "cargo test --package mustard-core");
+    }
+
+    #[test]
+    fn exclude_orchestrator_crate_is_idempotent() {
+        let once = exclude_orchestrator_crate("cargo test");
+        assert_eq!(once, "cargo test --workspace --exclude mustard-rt");
+        assert_eq!(exclude_orchestrator_crate(&once), once);
+    }
 
     #[test]
     fn config_fallback_parses_build_column() {
