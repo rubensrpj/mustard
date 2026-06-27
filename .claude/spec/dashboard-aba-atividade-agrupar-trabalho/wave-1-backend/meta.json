@@ -1,0 +1,26 @@
+{
+  "stage": "Plan",
+  "outcome": "Active",
+  "phase": null,
+  "scope": null,
+  "lang": "pt-BR",
+  "checkpoint": null,
+  "parent": "dashboard-aba-atividade-agrupar-trabalho",
+  "checklist": [
+    {
+      "label": "apps/dashboard/src-tauri/src/telemetry.rs",
+      "path": "apps/dashboard/src-tauri/src/telemetry.rs",
+      "done": false
+    },
+    {
+      "label": "apps/dashboard/src-tauri/src/watcher.rs",
+      "path": "apps/dashboard/src-tauri/src/watcher.rs",
+      "done": false
+    },
+    {
+      "label": "packages/core/src/view/projection/timeline.rs",
+      "path": "packages/core/src/view/projection/timeline.rs",
+      "done": false
+    }
+  ]
+}
