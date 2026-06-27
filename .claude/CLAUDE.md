@@ -48,6 +48,10 @@ Signals are heuristics — the pipeline detects what makes sense for the project
 
 **Verdict rule:** a runtime symptom the user reported cannot be refuted by static reading — a subagent may say "origin not located", never "it does not exist". When a subagent's conclusion contradicts what the user observed (or any established fact), verify by reading directly before relaying it.
 
+## Locating code — semantic-first
+
+Find code by CONCEPT (name unknown / vocabulary diverges) with mustard's SEMANTIC search — the digest (`mustard-rt run feature`) or `mustard-embed search --intent "<concept IN ENGLISH>" --vectors .claude/grain.vectors`; use `grep`/`glob` ONLY for a known literal token (exact symbol, string, glob). Recall is strong but not perfect — verify by reading the candidates. Full rule: `refs/locating-code.md`.
+
 ## Pipeline Phases
 
 Canonical vocabulary: `ANALYZE → PLAN → EXECUTE → REVIEW → QA → CLOSE` (+ `COORDINATE` for roadmaps). Single source of truth: `refs/canonical-phases.md`.
@@ -60,28 +64,19 @@ Canonical vocabulary: `ANALYZE → PLAN → EXECUTE → REVIEW → QA → CLOSE`
 
 ### QA Phase (Wave 10)
 
-After EXECUTE completes, run QA before CLOSE:
-
-1. Spec PLAN must define `## Acceptance Criteria` (3-8 AC, each with a runnable command)
-2. QA agent reads spec, executes each AC, reports pass/fail
-3. close-gate blocks CLOSE unless `qa.result` with `overall=pass` exists in the events log
-4. Control: `MUSTARD_QA_GATE_MODE=strict (default) | warn | off`
+After EXECUTE, before CLOSE: spec PLAN must define `## Acceptance Criteria` (3-8 AC, each a runnable command); the QA agent runs each and reports pass/fail; `close-gate` blocks CLOSE unless `qa.result overall=pass` is in the events log. Control: `MUSTARD_QA_GATE_MODE=strict (default) | warn | off`. Full gate chain: `pipeline-config.md § Close`.
 
 ### Mid-pipeline change requests
 
-A user request to change something while a spec is Active is auto-recorded — hook `change_request_log` writes `.claude/spec/{id}/change-requests.ndjson` (machine) + a human-readable `change-log.md` (documented beside the spec) and emits a `pipeline.change.request` event. Nothing is lost; the frozen `spec.md` narrative is not touched. When a request changes intended behavior:
-
-1. **Document** — it is already in the spec's `change-log.md`; reference it.
-2. **Compose the test** — fold it into `## Acceptance Criteria` as a new/updated AC (free-text → runnable criterion; interpretive, your job — the hook only captures).
-3. **Re-verify** — editing `spec.md`/`wave-plan.md` after a QA pass marks that pass STALE; the close-gate (QA-stale) blocks CLOSE until `/mustard:qa` re-runs against the current criteria.
+A change request while a spec is Active is auto-recorded by the `change_request_log` hook (`change-requests.ndjson` + a human-readable `change-log.md`, emits `pipeline.change.request`; `spec.md` is untouched). When it changes intended behavior: (1) **Document** — reference the spec's `change-log.md`; (2) **Compose the test** — fold it into `## Acceptance Criteria` as a new/updated AC (your interpretation — the hook only captures); (3) **Re-verify** — editing `spec.md`/`wave-plan.md` after a QA pass marks it STALE; the close-gate blocks CLOSE until `/mustard:qa` re-runs.
 
 ## Context Loading
 
-Agents auto-load skills from `{subproject}/.claude/skills/` based on task description. Guards always loaded via `{subproject}/CLAUDE.md`. Skill catalog: `.claude/skills/`. Progressive-disclosure refs live in `.claude/refs/{command}/` and are pulled on demand.
+Agents auto-load skills from `{subproject}/.claude/skills/` by task; Guards always load via `{subproject}/CLAUDE.md`; refs in `.claude/refs/` pulled on demand. Full rule: `pipeline-config.md § Context Loading`.
 
 ## Spec Layout
 
-Specs live under a **flat** directory: `.claude/spec/{name}/`. There are no `active/`, `completed/`, or `superseded/` bucket subdirectories — lifecycle state (`stage` + `outcome` + `flags`) lives in the `meta.json` sidecar beside each `spec.md` (the single source of truth), and archival is semantic-only (recorded as a `pipeline.status` event, not a filesystem move). The `spec.md` is **pure narrative** — it carries no `### Stage:` / `### Outcome:` / `### Flags:` / `### Phase:` / `### Scope:` / `### Lang:` / `### Checkpoint:` / `### Parent:` / `### Total waves:` header lines; never read or write lifecycle metadata from the markdown. Wave plans add a `wave-plan.md` plus `wave-N-{role}/spec.md` subdirs (each with its own `meta.json`) inside the same `{name}/` directory.
+Flat `.claude/spec/{name}/` (no `active/`/`completed/`/`superseded/` buckets). Lifecycle state lives in the `meta.json` sidecar — `spec.md` is **pure narrative**: NEVER write `### Stage:`/`### Outcome:`/`### Phase:`/`### Scope:`/`### Lang:`/… header lines into it. Full rule: `pipeline-config.md § Spec Layout`.
 
 ## Full Reference
 
