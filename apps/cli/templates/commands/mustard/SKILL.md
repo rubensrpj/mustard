@@ -1,12 +1,16 @@
 ---
 name: mustard-help
-description: Use when the user runs /mustard with no subcommand, or asks how to use mustard, what to type, or which command to pick. The single door — describe what you want in plain words and the router classifies, narrates, and dispatches.
+description: Use this WHENEVER the user describes codebase work in plain language — add/create/implement something new; change/improve/adjust existing behavior; fix an error, bug, or broken behavior; or analyze/audit/investigate code — and when the user runs /mustard or asks how to use it. The single door: classifies the request (feature / change / bugfix / investigation + scope), narrates how it read it, asks only on genuine ambiguity, and dispatches the right internal flow.
 source: manual
 ---
 <!-- mustard:generated -->
 # /mustard — A porta única
 
 Você **não escolhe um comando**. Diga o que você quer em palavras suas — o mustard descobre se é uma **nova funcionalidade**, uma **mudança**, uma **correção** ou uma **investigação**, te mostra como ele leu o pedido, e só pergunta se estiver na dúvida.
+
+## Ao acionar — ROTEIE, não só explique
+
+**Se o usuário descreveu um trabalho** (adicionar/criar/implementar, mudar/melhorar/ajustar, corrigir erro/bug/quebrado, ou analisar/auditar/investigar): **não pare na ajuda abaixo — ROTEIE agora.** Siga `CLAUDE.md § Intent Routing`: classifique a intenção (+ escopo), **narre a leitura** (ex.: *"Tratando como uma correção de bug."*), **pergunte só na ambiguidade genuína**, e **despache o fluxo interno** — invoque `mustard:feature` / `mustard:bugfix` / `mustard:task` conforme a classificação (nunca implemente produção direto sem rotear). **Só mostre a ajuda abaixo** quando o usuário pediu ajuda OU digitou `/mustard` sem descrever um trabalho.
 
 ## Como usar
 
