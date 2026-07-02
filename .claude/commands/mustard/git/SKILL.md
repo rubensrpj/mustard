@@ -13,7 +13,7 @@ source: manual
 | `sync` | Rebase current branch onto `origin/<its base>` (base from its `{base}_` prefix) |
 | `commit` | Create commit (no push). Accepts `--scope=all\|staged\|<pattern>` |
 | `push` | Sync first, then commit + push ONLY the current branch |
-| `pr` | Commit + push, then open a PR into the branch's prefix base (idempotent) |
+| `pr [<target>]` | Open a PR (idempotent). Work branch → its prefix base; bare base `B` → `<target>` or `flow[B]` (promote `dev→main` / backport `main→dev`) |
 
 → `../../../refs/git/git-flow.md` (mustard.json, integration-base derivation, work-branch naming, scope policy, backport reminder).
 
@@ -28,12 +28,12 @@ source: manual
 
 ## Procedure
 
-Step 0: resolve `$BASE` from the current branch's `{base}_` prefix (bases derived from `mustard.json#git.flow`). Step 0b: branch protection (refuse any write op while ON a bare integration base). Step 0c: submodule HEAD check (monorepo only).
+Step 0: resolve `$BASE` from the current branch's `{base}_` prefix (bases derived from `mustard.json#git.flow`). Step 0b: branch protection (refuse write ops while ON a bare integration base — EXCEPT `pr`, which opens a base→base PR). Step 0c: submodule HEAD check (monorepo only).
 
 - **sync** — ensure-excluded → auto-stash → `git fetch && git rebase "origin/$BASE"` → safe stash pop. Abort on conflict. → `merge-protocol.md`.
 - **commit** — analyze → ensure-excluded + detect ephemerals → resolve scope → commit submodules (parallel) → commit parent → Final Status Report.
 - **push** — sync first (stop on conflict) → commit + push ONLY the current branch (set upstream) → Final Status Report. Never pushes an integration branch.
-- **pr** — `push` first → `gh pr create --base "$BASE" --head <current> --fill` (an existing PR → just push + print its URL) → if any base `X` has `flow[X] == $BASE`, remind the user to also backport the change down to `X` so it does not regress.
+- **pr** — **work branch** (`{base}_…`): `push` first → `gh pr create --base "$BASE" --head <current> --fill`. **Bare base** `B` (the sole op allowed on a base): NO push → `gh pr create --base <target|flow[B]> --head "$B" --fill` — promotion `dev → main`, or backport `main → dev` via `/git pr dev`. Existing PR → print its URL.
 
 ## Ephemeral Paths
 
@@ -44,4 +44,4 @@ Never tracked: `.claude/.agent-state/`, `.claude/.metrics/`, `.claude/.pipeline-
 - Aborts on ANY merge/rebase conflict — **NEVER** fall back to destructive ops.
 - NEVER `git add .` — use `git add -A` / `git add <pattern>` from the correct directory.
 - NEVER `git stash pop` without the sentinel index. NEVER touch `.git/info/exclude` directly.
-- NEVER commit/push/sync directly on a bare integration base (the `git.flow` set). Integration into a base branch is via `pr` only — reversible ops, never destructive, abort on conflict.
+- NEVER commit/push/sync directly on a bare integration base (the `git.flow` set). The ONLY op allowed on a base is `/git pr` (base→base promotion/backport) — it opens a PR without pushing. Integration is via `pr` only — reversible, never destructive.

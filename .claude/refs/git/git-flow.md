@@ -26,7 +26,7 @@ Match current branch against `flow` keys. Exact match first, then glob. `*` is t
 |---------------|----------------|-----------------|
 | `feature/login` | `*` | `dev` |
 | `fix/bug-123` | `*` | `dev` |
-| `dev` | `dev` | `main` (only via `/git merge main`) |
+| `dev` | `dev` | `main` (promotion via `/git pr` on `dev`) |
 | `main` | no match | **error**: terminal branch, no operations allowed |
 
 **Rule**: Exact keys (`dev`, `main`) are matched first. `*` catches everything else. `main` and `dev` are never matched by `*`.
@@ -46,13 +46,18 @@ Every work unit runs on its own `{base}_{slug}` branch (e.g. `dev_aba-atividade`
 | `sync` | Rebase the current branch onto `origin/<its base>` (base from its `{base}_` prefix). Abort on conflict. |
 | `commit` | Create commit (no push). Accepts `--scope=all\|staged\|<path-pattern>` |
 | `push` | Sync-first (onto its base), then commit + push ONLY the current branch (set upstream). Never touches an integration branch. |
-| `pr` | Commit (scope=all) + push the current branch, then open a PR into its prefix base (`gh pr create --base <prefix-base> --head <current> --fill`). Idempotent — an existing PR just gets the push + its URL. |
+| `pr [<target>]` | Open a PR (`gh`), idempotent. **Work branch** `{B}_…`: commit(scope=all)+push, then PR into its prefix base `B`. **Bare base** `B`: PR `B → <target>` (or `flow[B]` if omitted) — promotion `dev→main` / backport `main→dev`; no push to `B`. |
 
 **PRs are the integration path.** A work branch reaches its base branch through a PR, never a local push to the base. The base is the branch's own `{base}_` prefix, matched against the project's integration bases (`git.flow`).
 
-### Backport reminder (promotion chains)
+### Base-to-base PRs — promotion & backport (no local merge)
 
-After a `pr` into base `B`, check `git.flow` for any base `X` with `flow[X] == B` — those bases **promote into** `B` (e.g. with `{"dev":"main"}`, `dev` promotes into `main`). If the PR targets `B`, remind the user to also bring the change **down** to each such `X` (a follow-up PR `X_… → X`, or a cherry-pick) so `X` does not regress relative to `B`. Fully generic — derived from the flow, no hardcoded dev/main.
+Bases integrate into each other ONLY through a PR — never a local merge (there is no `merge` action). `/git pr` run while ON a bare base `B` opens a base→base PR: it is the sole write-op allowed on a base (it creates a PR, never pushes to `B`).
+
+- **Promotion** (up the flow): `/git pr` on `B` → PR `B → flow[B]` (e.g. `dev → main`, releasing dev's work to production).
+- **Backport** (down / against the flow): `/git pr <target>` on `B` → PR `B → <target>` (e.g. `main → dev`, after a hotfix on `main`, so `dev` does not regress).
+
+Generic — directions/targets come from `git.flow`, no hardcoded `dev`/`main`. A terminal base (no `flow[B]`) has no default promotion target; pass `<target>` explicitly.
 
 ## Step 0 — Resolve the base (all actions except commit)
 
@@ -65,12 +70,14 @@ If the branch has no `{base}_` prefix (or there is no `mustard.json`): `$BASE` =
 
 ## Step 0b — Branch Protection Check
 
-Before any write op (commit, push, pr, sync) check the current branch against the project's integration bases (`git.flow`):
+Before any write op (commit, push, sync) check the current branch against the project's integration bases (`git.flow`):
 
 - If the current branch **is** a bare integration base (an exact member of the derived set, e.g. `dev`, `main`, `master`, `develop`) → **REFUSE** with error: `Cannot operate directly on protected branch '<branch>'. Create a work branch first.`
 - Otherwise (a `{base}_*` work branch) → proceed.
 
 Integration into a base branch happens via `pr`, not by operating on the base directly.
+
+**Exception — `pr` on a base:** `/git pr` IS allowed while on a bare base — it opens a base→base PR (promotion `B → flow[B]`, or backport `B → <target>` like `main → dev`) and never pushes to the base. See **Base-to-base PRs** above.
 
 ## Step 0c — Submodule HEAD state check (monorepo only)
 
