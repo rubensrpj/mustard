@@ -849,8 +849,15 @@ pub fn run_prepare(from_spec: &str, slice_match_count: i64) {
 
 /// Dispatch `mustard-rt run scope-decompose`.
 ///
-/// With `--from-spec <path>`, computes the signals deterministically from the
-/// spec (Rust); otherwise reads the signals JSON from stdin (legacy/override).
+/// `--from-spec <path>` is the canonical path: it computes the signals
+/// deterministically from the spec (Rust-side, reliable). The legacy stdin
+/// transport is a TRAP on the `run` face — `run` is dispatched before the harness
+/// stdin is read (see `apps/rt/CLAUDE.md`), and `rtk`/sandboxed shells hand the
+/// process a closed stdin (the same defect `wave-dependency` hit, 2026-06-12). An
+/// empty read there is NOT a real "no signals" verdict, so we no longer silently
+/// `decide({})` (which yielded a phantom `decompose:false`): we emit an explicit
+/// error pointing at `--from-spec`. A NON-empty stdin (a manual `echo | …` in a
+/// real terminal) is still honoured.
 pub fn run(from_spec: Option<&str>) {
     if let Some(spec_arg) = from_spec {
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
@@ -865,15 +872,22 @@ pub fn run(from_spec: Option<&str>) {
 
     let mut raw = String::new();
     let _ = std::io::stdin().read_to_string(&mut raw);
-    let input: Value = if raw.trim().is_empty() {
-        json!({})
-    } else {
-        match serde_json::from_str(&raw) {
-            Ok(v) => v,
-            Err(_) => {
-                println!("{}", json!({ "decompose": false, "reason": "error-fallback" }));
-                return;
-            }
+    if raw.trim().is_empty() {
+        // Structural stdin trap — surface it instead of a phantom verdict.
+        println!(
+            "{}",
+            json!({
+                "error": "no-input",
+                "hint": "pass --from-spec <spec.md>; `run` faces do not receive harness stdin"
+            })
+        );
+        return;
+    }
+    let input: Value = match serde_json::from_str(&raw) {
+        Ok(v) => v,
+        Err(_) => {
+            println!("{}", json!({ "decompose": false, "reason": "error-fallback" }));
+            return;
         }
     };
     println!("{}", decide(&input));

@@ -210,6 +210,18 @@ impl StackRegistry {
         &self.stacks
     }
 
+    /// The declared host-language hint ([`StackDef::language`]) for the stack
+    /// named `name`, or `None` when no such stack is registered or it declares
+    /// no language. Case-sensitive on the registry's lowercase ids — detections
+    /// carry the registry name verbatim, so the lookup matches.
+    #[must_use]
+    pub fn language_of(&self, name: &str) -> Option<&str> {
+        self.stacks
+            .iter()
+            .find(|s| s.name == name)
+            .and_then(|s| s.language.as_deref())
+    }
+
     /// Run the inference engine against caller-supplied evidence.
     ///
     /// For every `[[stack]]` in this registry, three signal **classes** are

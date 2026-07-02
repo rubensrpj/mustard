@@ -30,7 +30,6 @@ import {
   Terminal,
   Activity as ActivityIcon,
   FolderPlus,
-  History,
   Cog,
   ChevronRight,
   ChevronDown,
@@ -307,7 +306,10 @@ function ProjectTreeNode({
     { to: "/activity", icon: ActivityIcon, label: tLib("sidebar.activity") },
     { to: "/economy", icon: Gauge, label: tLib("sidebar.economy") },
     { to: "/knowledge", icon: BookOpen, label: tLib("sidebar.knowledge") },
-    { to: "/sessions", icon: History, label: tLib("sidebar.sessions") },
+    // Specs (/specs) and Sessões (/sessions) dropped from the per-project nav
+    // (spec `dashboard-aba-atividade-redesenho`): both are drill-in destinations
+    // reached FROM Activity, not standalone nav leaves. Their routes stay
+    // registered in App.tsx.
     { to: "/settings", icon: SettingsIcon, label: tLib("sidebar.settings") },
   ];
 

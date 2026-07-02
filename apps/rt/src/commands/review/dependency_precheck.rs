@@ -1041,6 +1041,33 @@ pub(crate) fn check(spec_arg: &str, subproject_override: Option<&str>) -> Value 
         .map(|p| p.to_string_lossy().replace('\\', "/"))
         .map_or(Value::Null, Value::String);
 
+    // Stack-awareness (loosen on a non-JS/TS subproject): the JSX/import
+    // extractor and the `export`/`pub` grep only reason about JS/TS source, so a
+    // foreign-language spec (C#, Python, …) yields a false "missing" for every
+    // symbol — the walk never reads `.cs`/`.py` and `List<Payable>` lexes as a
+    // `<Payable>` JSX tag tagged `jsx`. Decline to judge what this gate cannot
+    // parse: emit a clean `ok:true` with an explicit `skipped` marker, honouring
+    // the same spirit as `MUSTARD_DEPENDENCY_PRECHECK_MODE=off` for every
+    // unsupported stack. The signal is the spec's `## Files` extensions plus the
+    // repo model's detected stacks — both fail-open, so an undetected/JS-less
+    // target keeps the gate's historical behaviour.
+    let model_path = repo_root.join(".claude").join("grain.model.json");
+    let target_langs = mustard_core::resolve_target_languages(&files, &model_path, &repo_root);
+    if !mustard_core::target_understood(&target_langs) {
+        return json!({
+            "languages": target_langs.into_iter().collect::<Vec<_>>(),
+            "missing": [],
+            "mode": mode,
+            "ok": true,
+            "promise_violations": [],
+            "skipped": "stack-unsupported",
+            "spec": spec_slug,
+            "subproject": subproject_field,
+            "suggested_tactical_fix_files": [],
+            "would_be_created_here": would_be_created_here.into_iter().collect::<Vec<_>>(),
+        });
+    }
+
     let mut missing: Vec<Value> = Vec::new();
     let mut suggested: BTreeSet<String> = BTreeSet::new();
     let mut grep_cache: BTreeMap<String, bool> = BTreeMap::new();
@@ -1490,5 +1517,52 @@ mod tests {
         );
         assert!(!promises.contains_key("NeverPromisedA"));
         assert!(!promises.contains_key("NeverPromisedB"));
+    }
+
+    #[test]
+    fn csharp_spec_skips_with_stack_unsupported() {
+        let tmp = std::env::temp_dir().join(format!(
+            "mustard-rt-precheck-cs-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(tmp.join(".claude")).unwrap();
+        // A C# spec that names its entity as a generic — the JSX extractor would
+        // mis-read `List<Payable>` as a `<Payable>` tag and report it "missing"
+        // (the grep never reads `.cs`). The gate must decline, cleanly.
+        let spec = "# Payable\n\nUse List<Payable> and IRepository<Payable>.\n\n\
+            ## Files\n- backend/App/DTOs/Payable.cs\n- backend/App/Services/Recurrence.cs\n";
+        std::fs::write(tmp.join("spec.md"), spec).unwrap();
+
+        let verdict = check(&tmp.join("spec.md").to_string_lossy(), None);
+        assert_eq!(verdict["ok"], json!(true), "unsupported stack is clean: {verdict}");
+        assert_eq!(verdict["skipped"], json!("stack-unsupported"), "{verdict}");
+        assert_eq!(verdict["missing"], json!([]), "no false missing: {verdict}");
+        assert_eq!(verdict["languages"], json!(["csharp"]), "{verdict}");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn ts_spec_still_runs_precheck() {
+        let tmp = std::env::temp_dir().join(format!(
+            "mustard-rt-precheck-ts-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(tmp.join(".claude")).unwrap();
+        // A TS spec importing a symbol nobody creates → the gate still runs and
+        // reports it missing (a JS/TS target is understood, never skipped).
+        let spec = "# Feature\n\nimport { MissingThing } from \"@/components/x\";\n\n\
+            ## Files\n- apps/web/src/pages/New.tsx\n";
+        std::fs::write(tmp.join("spec.md"), spec).unwrap();
+
+        let verdict = check(&tmp.join("spec.md").to_string_lossy(), None);
+        assert!(verdict.get("skipped").is_none(), "TS spec is not skipped: {verdict}");
+        let missing = verdict["missing"].as_array().expect("missing array");
+        assert!(
+            missing.iter().any(|m| m["symbol"] == json!("MissingThing")),
+            "TS import of an uncreated symbol is still flagged: {verdict}"
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

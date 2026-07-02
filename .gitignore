@@ -99,6 +99,9 @@ packages/cli/templates/.claude/.metrics/
 **/.claude/.dispatch/
 **/.claude/spec/*/.dispatch/
 
+# Full feature digest (`run feature` writes it; stdout is only a compact summary). Regenerable per query.
+**/.claude/feature-digest.json
+
 # Relevance-gate output: approved spec-memory names (regenerable per spec)
 **/.claude/spec/*/.memory-approved
 
@@ -124,3 +127,9 @@ packages/cli/templates/.claude/.metrics/
 **/.claude/spec/*/wave-*/diff.md
 **/.claude/spec/*/wave-*/prompt.md
 **/.claude/spec/*/wave-*/warnings.txt
+
+# Local embedding model cache (mustard-embed); model lives in %LOCALAPPDATA%, this is only a CWD-fallback
+.fastembed_cache/
+
+# Ad-hoc test-run captures dropped in the repo root (scratch, regenerable)
+/full_test_out.txt

@@ -22,9 +22,9 @@ Before building the wave plan in Full scope, check whether the work warrants mor
 
 3. **Run decomposition decision:**
    ```bash
-   echo '{"fileCount":{N},"layerCount":{L},"newEntityCount":{E},"knowledgeMatches":[...]}' | mustard-rt run scope-decompose
+   mustard-rt run scope-decompose --from-spec .claude/spec/{slug}/spec.md
    ```
-   Output JSON: `{decompose: bool, reason: string, signals: {...}}`
+   `--from-spec` is the deterministic Rust path: it derives the signals (`fileCount`/`layerCount`/`newEntityCount`) from the spec.md census itself, no hand-built JSON. Do NOT pipe signals via stdin (`echo '{...}' | mustard-rt run scope-decompose`) — the `run` face never receives harness stdin, so the piped form returns `{"error":"no-input",...}`. Output JSON: `{decompose: bool, reason: string, signals: {...}}`
 
 4. **If `decompose: false`** → build a **single-wave** plan (`totalWaves: 1`) — the parent spec stays the orchestration doc, wave-1 is the executing subagent. NEVER a non-wave Full spec (Full ⇒ ≥1 wave).
 
@@ -32,7 +32,7 @@ Before building the wave plan in Full scope, check whether the work warrants mor
    ```bash
    mustard-rt run wave-dependency --plan input.json
    ```
-   `--plan` reads the JSON from a file — the reliable transport (stdin does not survive the `rtk` wrapper). The file may carry **either shape**: the derivation form `{"files":[...all paths from ANALYZE...],"projectRoot":"."}` (derive waves from the import DAG) or the rich plan JSON of step 6 itself (`{waves:[...]}` — the per-wave `files` are unioned), so the SAME `plan.json` handed to `plan-materialize` validates/derives its `depends_on` here first. Legacy stdin (`echo '...' | mustard-rt run wave-dependency`, no flag) still works when invoked plain — never through an `rtk`-wrapped pipe.
+   `--plan` reads the JSON from a file — the only reliable transport (the `run` face does not receive harness stdin, and a pipe does not survive the `rtk` wrapper either). The file may carry **either shape**: the derivation form `{"files":[...all paths from ANALYZE...],"projectRoot":"."}` (derive waves from the import DAG) or the rich plan JSON of step 6 itself (`{waves:[...]}` — the per-wave `files` are unioned), so the SAME `plan.json` handed to `plan-materialize` validates/derives its `depends_on` here first. ALWAYS use `--plan <file>` — never an `echo '...' | mustard-rt run wave-dependency` stdin pipe.
 
    Output cases:
    - `{error: "cyclic-dependency", cycle: [...]}` → warn user about cyclic imports (pre-existing architecture issue), fall back to a single-wave plan with note in `## Concerns`.
@@ -101,7 +101,7 @@ Before building the wave plan in Full scope, check whether the work warrants mor
    - Then `AskUserQuestion` — Full scope STOPS at PLAN, so the only forward path is approval via `/spec` (`/feature` never executes a Full spec inline):
      - **"Approve wave plan for later"** → stop, user runs `/mustard:spec {letter}` to approve (new session) or `/mustard:spec {letter}r` to approve + resume inline.
      - **"Edit decomposition (hint PLAN)"** → user provides hint (e.g., "merge waves 2 and 3"), PLAN reexecutes with the hint appended to `estimatedTouchPoints`/manual grouping. Re-decompose once.
-     - **"Reject decomposition"** → collapse to a **single wave** via `mustard-rt run wave-collapse --spec {specName} --mode full` (the approve-flow's reject path — see `refs/spec/approve-only-flow.md`). NEVER a non-wave Full spec — Full ⇒ ≥1 wave.
+     - **"Reject decomposition"** → collapse to a **single wave** via `mustard-rt run wave-collapse --spec {specName} --mode full` (the approve-flow's reject path — see `refs/spec/resume-loop.md` §A). NEVER a non-wave Full spec — Full ⇒ ≥1 wave.
 
 9. The wave plan is the spec — there is no separate single-spec Full flow to skip. Approval (via `/mustard:spec`) makes wave-1 the first thing to execute.
 

@@ -1028,6 +1028,13 @@ pub enum RunCmd {
         /// Path to the `grain.model.json` the digest queries.
         #[arg(long)]
         model: PathBuf,
+        /// Emit mode: `inline` (default) prints the full validation prompt;
+        /// `ref` writes it to a deterministic `.dispatch/` file and prints a
+        /// 2-line stub instead — pass the stub verbatim as the Task prompt so
+        /// the PreToolUse hook expands it, keeping the prompt out of the
+        /// orchestrator's context.
+        #[arg(long, default_value = "inline")]
+        emit: String,
     },
     // The folder name is spelled `wave-<n>-<role>` (angle brackets) throughout
     // this doc comment: a literal brace-n sequence is a clap help-template
@@ -2207,7 +2214,9 @@ pub fn dispatch(cmd: RunCmd) {
         RunCmd::AmendFinalize { session_id } => agent::amend_finalize::run_cli(&session_id),
         RunCmd::DigestAdherenceFinalize { spec } => agent::digest_adherence_finalize::run(&spec),
         RunCmd::ConcernJudgeRender { intent, model } => agent::concern_judge::run(&intent, &model),
-        RunCmd::DigestValidateRender { intent, model } => agent::digest_validate::run(&intent, &model),
+        RunCmd::DigestValidateRender { intent, model, emit } => {
+            agent::digest_validate::run(&intent, &model, agent::agent_prompt_render::EmitMode::parse(&emit))
+        }
         RunCmd::WaveScaffold { spec_dir, plan } => {
             wave::wave_scaffold::run(spec_dir.as_deref(), plan.as_deref());
         }

@@ -53,7 +53,7 @@ User chooses "Approve and implement now": emit `pipeline.stage: Execute` → `ex
 
 Before EXECUTE, present the plan WITH the approval question — **NEVER ask about a plan the user has not seen.** Text emitted before a tool call may not render (background sessions), so print the spec in the final message AND attach it as the `preview` of the approval option in AskUserQuestion: **"Approve and implement?"** / **"Adjust (give feedback)"** / **"Save for later (stop)"**.
 
-Escalations: `Internal error` (transient dispatch failure, e.g. "Tool result missing due to internal error") → re-dispatch once; still failing → STOP (the Light spec is tracked — resume via `/spec`, which retries per `../../../refs/spec/resume-flow.md`). `CONCERN`/`BLOCKED`/`PARTIAL`/`DEFERRED` → `pipeline-config.md § Escalation Statuses`. AC cross-shell quirks → `../../../refs/feature/ac-cross-shell.md`.
+Escalations: `Internal error` (transient dispatch failure, e.g. "Tool result missing due to internal error") → re-dispatch once; still failing → STOP (the Light spec is tracked — resume via `/spec`, which retries per `../../../refs/spec/resume-loop.md`). `CONCERN`/`BLOCKED`/`PARTIAL`/`DEFERRED` → `../../../refs/spec/resume-loop.md § Escalation`. AC cross-shell quirks → `../../../refs/feature/ac-cross-shell.md`.
 
 ## INVIOLABLE RULES (all scopes)
 

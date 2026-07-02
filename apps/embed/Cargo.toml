@@ -1,0 +1,23 @@
+[package]
+name = "mustard-embed"
+version = "0.1.0"
+edition = "2024"
+description = "Local embedding recall for Mustard — build method-body vectors and search them by intent. Replaces the Sonnet purpose-enrich on the recall path with a free, local, deterministic-ish vector index (BGE-base via ONNX/fastembed)."
+
+# Intentionally OUTSIDE the workspace (see root Cargo.toml `exclude`): fastembed
+# pulls the ONNX Runtime (`ort`) — a heavy native dependency that must NOT bloat
+# the `mustard-rt` hook binary (runs on every tool call) nor the deterministic
+# `mustard-scan` (no-network, no-AI ethos). This crate is invoked only for the
+# `build` (scan-time) and `search` (miss-time) steps, like a sidecar tool.
+
+[dependencies]
+fastembed = "5.17"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+opt-level = 3

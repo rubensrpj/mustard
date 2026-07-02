@@ -19,7 +19,8 @@ pub mod theme;
 
 use segment::{
     context_segment, cost_segment, diff_segment, duration_segment, git_segment,
-    model_segment, module_segment, savings_segment, version_segment, Segment,
+    model_segment, module_segment, savings_segment, scan_progress_segment, version_segment,
+    Segment,
 };
 use serde_json::Value;
 use std::io::Read;
@@ -42,6 +43,11 @@ fn build_segments(data: &Value) -> Vec<Segment> {
         );
 
     let mut segs = vec![module_segment(&cwd)];
+    // Scan recall-index build progress — leftmost dynamic info, so a long
+    // `/scan` is impossible to miss. Absent sidecar → no segment.
+    if let Some(s) = scan_progress_segment(&cwd) {
+        segs.push(s);
+    }
     if let Some(s) = git_segment(&cwd) {
         segs.push(s);
     }

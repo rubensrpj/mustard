@@ -58,7 +58,9 @@
 use crate::commands::agent::agent_prompt_render::{self, RenderMode};
 use crate::commands::pipeline::dispatch_plan;
 use crate::commands::review::dependency_precheck;
-use mustard_core::domain::model::event::{HarnessEvent, EVENT_PIPELINE_WAVE_COMPLETE};
+use mustard_core::domain::model::event::{
+    HarnessEvent, EVENT_PIPELINE_WAVE_COMPLETE, EVENT_PIPELINE_WAVE_START,
+};
 use mustard_core::io::claude_paths::ClaudePaths;
 use mustard_core::view::projection::read_harness_events_from_ndjson_dir;
 use serde::Serialize;
@@ -128,7 +130,8 @@ pub(crate) fn advance(project: &Path, spec: &str) -> Vec<AdvanceItem> {
         return review_round(project, spec, &plan, &events);
     };
 
-    plan.into_iter()
+    let items: Vec<AdvanceItem> = plan
+        .into_iter()
         .filter(|it| it.level == level && !completed.contains(&it.wave))
         .map(|it| {
             // Wave 0 is the single-spec fallback: render the root spec.md
@@ -156,6 +159,39 @@ pub(crate) fn advance(project: &Path, spec: &str) -> Vec<AdvanceItem> {
                 prompt,
                 precheck,
             }
+        })
+        .collect();
+
+    // Signal that each dispatched impl wave is STARTING. The dashboard's wave
+    // projection flips a row to InProgress off `pipeline.wave.start` (or a
+    // `task.dispatch`); nothing else emits it reliably — the env-var
+    // `wave_start_observer` can't fire (nothing sets `MUSTARD_ACTIVE_WAVE`), and
+    // `task.dispatch` is orchestrator-authored. wave-advance is the deterministic
+    // point that KNOWS the dispatched wave, so emit it here (idempotent: a wave
+    // already carrying start/complete is skipped). The emit also advances the
+    // wave's own meta `Plan→Execute`. Wave 0 (single-spec fallback) is skipped —
+    // it has no `wave-N-*` sidecar.
+    let started = started_waves(&events, spec);
+    for it in &items {
+        if it.wave > 0 && !started.contains(&it.wave) {
+            crate::commands::event::emit_pipeline::emit_wave_start(project, spec, it.wave);
+        }
+    }
+    items
+}
+
+/// The set of wave numbers carrying a `pipeline.wave.start` event in the spec's
+/// event log — the idempotency guard so a re-invoked `wave-advance` does not
+/// re-emit a start for a wave already signalled.
+fn started_waves(events: &[HarnessEvent], spec: &str) -> BTreeSet<u32> {
+    events
+        .iter()
+        .filter(|e| e.event == EVENT_PIPELINE_WAVE_START && e.spec.as_deref() == Some(spec))
+        .filter_map(|e| {
+            e.payload
+                .get("wave")
+                .and_then(Value::as_u64)
+                .and_then(|w| u32::try_from(w).ok())
         })
         .collect()
 }
@@ -495,6 +531,59 @@ mod tests {
         record_review(project, "adv2", None, 1);
         let items = advance(project, "adv2");
         assert!(items.is_empty(), "reviewed spec returns the empty list");
+    }
+
+    /// Count `pipeline.wave.start` events for `spec` in its NDJSON log.
+    fn count_wave_start(project: &Path, spec: &str) -> usize {
+        spec_events(project, spec)
+            .iter()
+            .filter(|e| e.event == EVENT_PIPELINE_WAVE_START && e.spec.as_deref() == Some(spec))
+            .count()
+    }
+
+    /// Regression (2026-06-26): `advance` emits a `pipeline.wave.start` for each
+    /// dispatched impl wave (the dashboard's InProgress signal — the env-var
+    /// `wave_start_observer` can't fire) AND flips the wave's own meta
+    /// `Plan→Execute`. Re-invoking is idempotent — no duplicate start.
+    #[test]
+    fn advance_emits_wave_start_and_flips_wave_meta_to_execute() {
+        let dir = tempdir().unwrap();
+        anchor(dir.path());
+        let project = dir.path();
+        let spec_dir = seed_three_waves(project, "ws");
+        // Seed each wave meta at Plan (wave-scaffold's initial state).
+        for (n, role) in [(1u32, "rt"), (2, "cli"), (3, "core")] {
+            std::fs::write(
+                spec_dir.join(format!("wave-{n}-{role}")).join("meta.json"),
+                br#"{"stage":"Plan","outcome":"Active","parent":"ws"}"#,
+            )
+            .unwrap();
+        }
+
+        let items = advance(project, "ws");
+        assert_eq!(items.len(), 2, "level 0 = the two parallel waves");
+
+        // Both dispatched waves carry a start event; wave 3 (next level) does not.
+        let started = started_waves(&spec_events(project, "ws"), "ws");
+        assert!(started.contains(&1) && started.contains(&2), "waves 1+2 started: {started:?}");
+        assert!(!started.contains(&3), "wave 3 (next level) not started yet: {started:?}");
+        assert_eq!(count_wave_start(project, "ws"), 2);
+
+        // Each started wave's meta flipped Plan→Execute.
+        for (n, role) in [(1u32, "rt"), (2, "cli")] {
+            let v: serde_json::Value = serde_json::from_str(
+                &std::fs::read_to_string(spec_dir.join(format!("wave-{n}-{role}")).join("meta.json"))
+                    .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(v["stage"], json!("Execute"), "wave-{n} meta → Execute: {v}");
+        }
+
+        // Re-invoking before completion returns the same level and does NOT
+        // re-emit (idempotent on the started set).
+        let again = advance(project, "ws");
+        assert_eq!(again.len(), 2);
+        assert_eq!(count_wave_start(project, "ws"), 2, "no duplicate wave.start on re-invoke");
     }
 
     /// Degraded: an unknown spec (no dir, no spec.md) degrades to `[]`.

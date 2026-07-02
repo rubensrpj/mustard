@@ -92,6 +92,12 @@ pub use domain::command_detect::{detect_commands, detect_commands_for_unit};
 // `domain/scan.rs`.
 pub use domain::scan::{read_entity_names, read_projects, DigestQuery, ModelFacts, Project, Scan, SpecRequest};
 
+// Source-language resolution — the single owner of "what language is this target
+// (a set of file paths), and can the JS/TS-family gates reason about it?".
+// Consulted by `dependency-precheck` and `wave-size-check` so both loosen
+// consistently on a non-JS/TS subproject. See `domain/source_lang.rs`.
+pub use domain::source_lang::{resolve_target_languages, target_understood};
+
 // Meta sidecar — single canonical owner of `meta.json` schema + IO. See
 // `meta.rs`. Sidecar replaces the legacy `### Stage:` / `### Outcome:` /
 // `### Phase:` / `### Scope:` / `### Lang:` / `### Checkpoint:` / `### Parent:`

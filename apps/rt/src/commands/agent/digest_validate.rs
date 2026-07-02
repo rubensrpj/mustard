@@ -19,14 +19,16 @@
 
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use mustard_core::domain::scan::DigestQuery;
 use mustard_core::Scan;
 use serde::Deserialize;
 
+use crate::commands::agent::agent_prompt_render::{fnv1a64, write_prompt_ref, EmitMode};
 use crate::commands::agent::concern_judge::{matched_concepts, JudgedConcern};
 use crate::commands::feature::domain_terms;
+use crate::shared::context::project_dir;
 
 /// A confirmed-on-re-query bridge from a missed USER-SIDE word to the real
 /// ENGLISH code identifier(s) it maps to in this codebase. A PAIR (not a flat
@@ -303,14 +305,18 @@ pub fn parse_digest_verdict(text: &str) -> Result<DigestVerdict, VerdictParseErr
     Ok(verdict)
 }
 
-/// CLI face: `mustard-rt run digest-validate-render --intent <text> --model <path>`.
+/// CLI face: `mustard-rt run digest-validate-render --intent <text> --model <path> [--emit ref]`.
 ///
 /// PURE DETERMINISTIC — no `claude` subprocess (the JUDGEMENT is the LLM's, run by
 /// the orchestrator on this prompt). Reuses the feature digest's retrieval +
 /// `read_projects` to tag each anchor with its project, renders the byte-stable
-/// validation prompt, and prints it to stdout (raw, no JSON framing). Fail-open:
-/// an unavailable scan / model prints nothing and always exits 0.
-pub fn run(intent: &str, model: &Path) {
+/// validation prompt, and emits it to stdout. `--emit inline` (default) prints
+/// the raw prompt; `--emit ref` writes it to a deterministic `.dispatch/` file
+/// and prints a 2-line stub instead (the PreToolUse hook expands it at dispatch),
+/// so the ~9.5 KB prompt never transits the orchestrator's context twice
+/// (render + Task dispatch). Fail-open: an unavailable scan / model prints
+/// nothing and always exits 0.
+pub fn run(intent: &str, model: &Path, emit: EmitMode) {
     let terms = domain_terms(intent);
     let prompt = match Scan::locate().digest_query(model, &terms) {
         Ok(q) => {
@@ -343,7 +349,21 @@ pub fn run(intent: &str, model: &Path) {
             String::new()
         }
     };
-    print!("{prompt}");
+    match emit {
+        // Raw prompt to stdout — the orchestrator dispatches it verbatim.
+        EmitMode::Inline => print!("{prompt}"),
+        // Stub to stdout, full prompt to a deterministic `.dispatch/` file keyed
+        // on the intent (spec-less). `write_prompt_ref` returns "" for an empty
+        // prompt, so the fail-open print-nothing contract is preserved.
+        EmitMode::Ref => {
+            let project = PathBuf::from(project_dir());
+            let rel = format!(
+                ".claude/.dispatch/digest-validate-{:016x}.prompt.md",
+                fnv1a64(&[intent])
+            );
+            print!("{}", write_prompt_ref(&project, &rel, &prompt));
+        }
+    }
 }
 
 #[cfg(test)]

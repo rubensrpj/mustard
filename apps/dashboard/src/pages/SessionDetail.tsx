@@ -10,7 +10,7 @@
 // keys on `.session/{id}/.events/*.ndjson` writes via prefix match, so the
 // trace tails without polling.
 
-import { Link, useParams } from "react-router";
+import { Link, useParams, useNavigate } from "react-router";
 import { useStore } from "@/lib/store";
 import { PageSurface, EditorialBand, EmptyState } from "@/components/page";
 import { ExecutionTrace } from "@/features/trace/ExecutionTrace";
@@ -23,6 +23,7 @@ export function SessionDetail() {
   // Called unconditionally (Rules of Hooks) — it returns `null` when no project
   // is selected, which is exactly the early-return branch below.
   const activeProjectName = useActiveProjectName();
+  const navigate = useNavigate();
 
   if (!projectsRoot) {
     return (
@@ -37,27 +38,28 @@ export function SessionDetail() {
 
   return (
     <PageSurface>
-      <EditorialBand
-        eyebrow={
-          <Link to="/sessions" className="hover:underline">
-            Sessions
-          </Link>
-        }
-        title={sessionId}
-        subtitle={
-          activeProjectName
-            ? `Projeto ${activeProjectName} — agentes, ferramentas e diffs`
-            : "Trace da sessão — agentes, ferramentas e diffs"
-        }
-        actions={
-          <Link
-            to="/sessions"
-            className="text-[13px] text-muted-foreground hover:text-foreground border border-border rounded px-2 py-1 shrink-0"
-          >
-            ← Voltar para Sessions
-          </Link>
-        }
-      />
+      <div className="flex flex-col gap-2">
+        <button
+          type="button"
+          onClick={() => navigate(-1)}
+          className="self-start inline-flex items-center gap-1 text-[13px] text-muted-foreground hover:text-foreground -ml-1 px-1 py-0.5 rounded"
+        >
+          ← Voltar
+        </button>
+        <EditorialBand
+          eyebrow={
+            <Link to="/activity" className="hover:underline">
+              Atividade
+            </Link>
+          }
+          title={sessionId}
+          subtitle={
+            activeProjectName
+              ? `Projeto ${activeProjectName} — agentes, ferramentas e diffs`
+              : "Trace da sessão — agentes, ferramentas e diffs"
+          }
+        />
+      </div>
 
       <ExecutionTrace
         projectPath={projectsRoot}

@@ -4,9 +4,10 @@
 # literal. To support a new build system: add a [[manifest]] row here. Only a
 # brand-new file FORMAT (beyond json/xml/toml/yaml/lines) needs an engine change.
 #
-# Directories the scanner skips (build/dependency output) live here too.
+# Directories the scanner skips (build/dependency output, plus the harness's
+# own .claude state/tooling — scanning it is self-referential noise) live here too.
 
-skip_dirs = [".git", "node_modules", "target", "bin", "obj", "dist", "build", ".dart_tool", "vendor"]
+skip_dirs = [".git", ".claude", "node_modules", "target", "bin", "obj", "dist", "build", ".dart_tool", "vendor"]
 
 # Fields per manifest:
 #   kind            label stored on the project (free-form, from the repo's world)

@@ -360,6 +360,15 @@ fn role_layered_fallback(
             ordered.push(key.clone());
         }
     }
+    // Backstop: an architectural decomposition is a handful of layers, not a
+    // dozen. If role detection fragments the census into many buckets it is
+    // mislabeling (random path prefixes read as bespoke roles), not a real
+    // layering — keep the single import-DAG wave rather than emit one wave per
+    // noise role (field report: a flat net-new census fanned out to 11 waves).
+    const MAX_FALLBACK_LAYERS: usize = 6;
+    if ordered.len() > MAX_FALLBACK_LAYERS {
+        return None;
+    }
     let mut widest = 0usize;
     let mut total_files = 0usize;
     let waves: Vec<Value> = ordered
@@ -430,6 +439,72 @@ fn files_from_value(parsed: &Value) -> Vec<String> {
     out
 }
 
+/// Trust an explicit plan's wave boundaries (Option D). When the input is the
+/// rich PLAN shape (`waves: [{files:[...]}]`), emit the canonical
+/// `{waves, metadata}` from the planner's own boundaries — renumbered, with a
+/// linear `dependsOn` chain and per-wave roles — instead of flattening to a file
+/// union and re-deriving (which lets the flat-DAG role fallback fan a 2-wave plan
+/// out to one wave per role). Files are deduped across waves (first occurrence
+/// wins, matching the DAG's no-phantom-node rule); a wave whose files all
+/// appeared earlier is dropped. Returns `None` for the bare `{files}` derivation
+/// shape (no `waves` key) or an all-empty plan, so the import-DAG path runs.
+fn passthrough_plan_waves(parsed: &Value, role_patterns: &[RolePattern]) -> Option<Value> {
+    let waves_in = parsed.get("waves").and_then(Value::as_array)?;
+    if waves_in.is_empty() {
+        return None;
+    }
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    let mut out_waves: Vec<Value> = Vec::new();
+    let mut widest = 0usize;
+    let mut total_files = 0usize;
+    for wave in waves_in {
+        let mut rel: Vec<String> = Vec::new();
+        for f in wave
+            .get("files")
+            .and_then(Value::as_array)
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+            .iter()
+            .filter_map(Value::as_str)
+        {
+            if seen.insert(f.to_string()) {
+                rel.push(f.to_string());
+            }
+        }
+        if rel.is_empty() {
+            continue;
+        }
+        let mut roles: Vec<String> = Vec::new();
+        for r in rel.iter().map(|f| detect_role_with(f, role_patterns)) {
+            if !roles.contains(&r) {
+                roles.push(r);
+            }
+        }
+        widest = widest.max(rel.len());
+        total_files += rel.len();
+        let idx = out_waves.len();
+        out_waves.push(json!({
+            "wave": idx + 1,
+            "files": rel,
+            "roles": roles,
+            "dependsOn": if idx == 0 { json!([]) } else { json!([idx]) },
+        }));
+    }
+    if out_waves.is_empty() {
+        return None;
+    }
+    let total_waves = out_waves.len();
+    Some(json!({
+        "waves": out_waves,
+        "metadata": {
+            "totalWaves": total_waves,
+            "totalFiles": total_files,
+            "widestWave": widest,
+            "source": "input-plan",
+        },
+    }))
+}
+
 /// Dispatch `mustard-rt run wave-dependency [--plan <file>]`.
 ///
 /// `--plan` reads the input JSON from a file — the reliable transport (stdin
@@ -467,11 +542,6 @@ pub fn run(plan: Option<&str>) {
             return;
         }
     };
-    let files = files_from_value(&parsed);
-    if files.is_empty() {
-        println!("{}", json!({ "error": "empty-input" }));
-        return;
-    }
     let project_root = parsed
         .get("projectRoot")
         .and_then(Value::as_str)
@@ -486,7 +556,24 @@ pub fn run(plan: Option<&str>) {
             .unwrap_or_else(|_| PathBuf::from("."))
             .join(project_root)
     };
-    println!("{}", compute_waves(&files, &normalize(&root_abs)));
+    let root = normalize(&root_abs);
+
+    // Option D — trust an explicit plan's wave boundaries instead of flattening
+    // to a file union and re-deriving. The role-layered fallback below would
+    // otherwise shred a sensible 2-wave plan into one wave per detected role
+    // (field report: a 2-wave plan came back as 11). Bare `{files}` inputs carry
+    // no `waves` key and fall through to the import-DAG path.
+    if let Some(out) = passthrough_plan_waves(&parsed, &load_role_patterns(&root)) {
+        println!("{out}");
+        return;
+    }
+
+    let files = files_from_value(&parsed);
+    if files.is_empty() {
+        println!("{}", json!({ "error": "empty-input" }));
+        return;
+    }
+    println!("{}", compute_waves(&files, &root));
 }
 
 #[cfg(test)]
@@ -528,6 +615,38 @@ mod tests {
             Some(1),
             "lone-lib net-new must not split: {out}"
         );
+    }
+
+    #[test]
+    fn rich_plan_waves_are_trusted_not_reinflated() {
+        // Option D regression: a planner's explicit 2-wave plan must come back as
+        // 2 waves. Before the fix the union was flattened and the flat-DAG role
+        // fallback shredded it into one wave per role (field report: 2 → 11).
+        let parsed = json!({
+            "waves": [
+                { "files": ["src/api/x.ts", "src/api/y.ts"] },
+                { "files": ["src/ui/z.tsx"] },
+            ]
+        });
+        let out = passthrough_plan_waves(&parsed, &[]).expect("rich plan → Some");
+        assert_eq!(
+            out["waves"].as_array().map(Vec::len),
+            Some(2),
+            "explicit 2-wave plan must stay 2: {out}"
+        );
+        assert_eq!(out["metadata"]["source"].as_str(), Some("input-plan"));
+        assert_eq!(out["metadata"]["totalWaves"].as_u64(), Some(2));
+        // Linear dependency chain across the trusted boundaries.
+        assert_eq!(out["waves"][0]["dependsOn"].as_array().map(Vec::len), Some(0));
+        assert_eq!(out["waves"][1]["dependsOn"][0].as_u64(), Some(1));
+    }
+
+    #[test]
+    fn bare_files_input_is_not_treated_as_a_plan() {
+        // The derivation shape ({files} only) has no `waves` key → passthrough
+        // declines so the import-DAG path still runs.
+        let parsed = json!({ "files": ["a.ts", "b.ts"] });
+        assert!(passthrough_plan_waves(&parsed, &[]).is_none());
     }
 
     #[test]

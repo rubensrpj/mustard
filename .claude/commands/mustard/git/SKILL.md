@@ -20,7 +20,7 @@ source: manual
 
 ## Behavior
 
-- **ZERO confirmations** — except `commit` without `--scope` asks once per session and memoizes.
+- **ZERO confirmations** — `commit`/`push` default to `--scope=all` (**always `git add -A`, sweep the whole tree**). NEVER infer or memoize a partial scope. `--scope=staged|<pattern>` applies ONLY when the user explicitly passes it.
 - **Prefix `git` with `rtk`** — every invocation, including inside `&&`/`;` chains and `$(…)` substitutions.
 - Minimize Bash calls — chain with `&&`/`;`, one Bash per repo max.
 - Submodules BEFORE parent (always). Single repo: skip submodule steps. → `../../../refs/git/submodule-rules.md` (monorepo handling + ephemeral paths).

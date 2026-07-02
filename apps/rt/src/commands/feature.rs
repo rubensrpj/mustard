@@ -19,8 +19,9 @@
 use std::path::Path;
 
 use mustard_core::domain::scan::{DigestQuery, DigestTerm};
+use mustard_core::io::fs as mfs;
 use mustard_core::Scan;
-use serde_json::json;
+use serde_json::{json, Value};
 
 /// Extract domain terms from a free-text intent: lowercased alphanumeric runs
 /// >=3 chars, DEDUPED (first-occurrence order preserved), capped. The digest
@@ -545,7 +546,42 @@ pub fn run(intent: &str, root: &Path) {
             })
         }
     };
-    println!("{}", serde_json::to_string_pretty(&payload).unwrap_or_else(|_| "{}".into()));
+    // The FULL digest goes to a file (the single source of truth for the long
+    // tail); stdout carries only a COMPACT summary. Field report: the orchestrator
+    // paid the ~22 KB payload twice — once as full stdout, once re-reading a
+    // self-captured file — and used only ~6 anchors + the reason. Writing the file
+    // here removes the capture dance, and the compact stdout drops the
+    // reference-only bulk (`report.terms`, `candidates`) the common path never
+    // reads inline. Fail-open: a write failure just means the deep-tail detail is
+    // unavailable; stdout (the actionable summary) still prints.
+    let digest_path = root.join(".claude").join("feature-digest.json");
+    let full = serde_json::to_string_pretty(&payload).unwrap_or_else(|_| "{}".into());
+    let _ = mfs::write_atomic(&digest_path, full.as_bytes());
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&compact_digest(&payload)).unwrap_or_else(|_| "{}".into())
+    );
+}
+
+/// Trim the full digest payload to the COMPACT stdout summary: the actionable
+/// fields the orchestrator reads inline (anchors + per-anchor provenance,
+/// slices, contracts, hubs, stacks, `report.reason`, `note`) MINUS the
+/// reference-only bulk that belongs in the file — the 32-term `report.terms`
+/// tier list (debug; the validator re-runs its own digest) and the `candidates`
+/// vocabulary menu (only consulted on a weak/none re-translation, a file-read
+/// deep-dive). A `detail` pointer names the file with the complete payload.
+fn compact_digest(full: &Value) -> Value {
+    let mut c = full.clone();
+    if let Some(obj) = c.as_object_mut() {
+        obj.remove("candidates");
+        if let Some(rep) = obj.get_mut("report").and_then(Value::as_object_mut) {
+            if let Some(terms) = rep.remove("terms") {
+                rep.insert("termCount".to_string(), json!(terms.as_array().map_or(0, Vec::len)));
+            }
+        }
+        obj.insert("detail".to_string(), json!(".claude/feature-digest.json"));
+    }
+    c
 }
 
 #[cfg(test)]

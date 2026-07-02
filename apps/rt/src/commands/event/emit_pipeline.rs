@@ -309,12 +309,31 @@ pub fn run(opts: EmitPipelineOpts) {
                         "emit-pipeline: WARN: sync_status wave failed ({e}); wave headers may be stale"
                     );
                 }
+                // Backfill the wave's checklist by file existence: a completing
+                // wave whose planned files are on disk must not close with
+                // unchecked items. The PostToolUse auto-mark can miss a live edit
+                // (subagent context, a non-Write tool); this is the deterministic
+                // net at the wave boundary. Forward-only (never un-marks).
+                reconcile_wave_checklist(&cwd, &wave_path);
             } else {
                 eprintln!(
                     "emit-pipeline: WARN: no `wave-{wave}-*` directory under .claude/spec/{spec_name}; wave sync skipped"
                 );
             }
             bump_parent_progress(&cwd, &spec_name, wave, &ts);
+        }
+    }
+
+    // `pipeline.wave.start`: advance the STARTED wave's own meta.json Plan→Execute
+    // (forward-only). Symmetric to the wave.complete sync above — without it the
+    // active wave's sidecar stays "Plan" for its whole run (a reader of the
+    // per-wave stage rendered an executing wave as PLANEJANDO). The dashboard's
+    // wave-row projection flips InProgress off the EVENT itself. Fail-open.
+    if kind_str == EVENT_PIPELINE_WAVE_START {
+        if let Some(wave) = payload_for_header.get("wave").and_then(Value::as_u64) {
+            let cwd = std::env::current_dir()
+                .unwrap_or_else(|_| std::path::PathBuf::from(project_dir()));
+            sync_wave_started(&cwd, &spec_name, wave, &ts);
         }
     }
 
@@ -743,6 +762,104 @@ fn emit_completed_status_if_needed(cwd: &Path, spec: &str, ts: &str, session_id:
         spec: Some(spec.to_string()),
     };
     let _ = crate::shared::events::route::emit(&cwd.to_string_lossy(), &event);
+}
+
+/// On `pipeline.wave.start`: advance the STARTED wave's own `meta.json` from
+/// `Plan` to `Execute` — **forward-only** (a wave already at `Execute` or later,
+/// e.g. `Close` from a late/duplicate start, is never regressed). The per-wave
+/// sidecar otherwise stays `Plan` for the whole run (it only ever flips to
+/// `Close` on `wave.complete`), so any reader of the per-wave stage rendered an
+/// actively-running wave as PLANEJANDO. Fail-open: a missing wave dir /
+/// unparseable sidecar / write failure all warn and return.
+fn sync_wave_started(cwd: &Path, spec: &str, wave: u64, ts: &str) {
+    let Some(wave_dir) = wave_spec_path(cwd, spec, wave) else {
+        eprintln!(
+            "emit-pipeline: WARN: no `wave-{wave}-*` directory under .claude/spec/{spec}; wave-start sync skipped"
+        );
+        return;
+    };
+    let path = wave_dir.join("meta.json");
+    let mut meta = read_meta(&path).unwrap_or_default();
+    let advance = match meta.stage.as_deref().and_then(Stage::parse) {
+        None => true,
+        Some(stage) => stage_rank(stage) < stage_rank(Stage::Execute),
+    };
+    if !advance {
+        return;
+    }
+    meta.stage = Some(stage_label(Stage::Execute).to_string());
+    meta.phase = Some(phase_token_for_stage(Stage::Execute).to_string());
+    meta.checkpoint = Some(ts.to_string());
+    if let Err(e) = write_meta(&path, &meta) {
+        eprintln!(
+            "emit-pipeline: WARN: could not write {} ({e}); wave meta.json may be stale",
+            path.display()
+        );
+    }
+}
+
+/// Backfill a wave's checklist on completion: mark `done = true` for any item
+/// whose target `path` exists on disk (relative to `cwd`). A wave's checklist
+/// items are its planned files, so existence at completion == the work landed —
+/// this is the deterministic net for the PostToolUse auto-mark's live misses (a
+/// wave that closed with unchecked items whose files clearly exist). Forward-only
+/// (never un-marks). Fail-open: an empty/unreadable sidecar is a no-op.
+fn reconcile_wave_checklist(cwd: &Path, wave_dir: &Path) {
+    let path = wave_dir.join("meta.json");
+    let mut meta = read_meta(&path).unwrap_or_default();
+    if meta.checklist.is_empty() {
+        return;
+    }
+    let mut changed = false;
+    for item in &mut meta.checklist {
+        if item.done {
+            continue;
+        }
+        if let Some(p) = item.path.as_deref() {
+            if !p.trim().is_empty() && cwd.join(p).exists() {
+                item.done = true;
+                changed = true;
+            }
+        }
+    }
+    if changed {
+        if let Err(e) = write_meta(&path, &meta) {
+            eprintln!(
+                "emit-pipeline: WARN: could not write {} ({e}); checklist reconcile lost",
+                path.display()
+            );
+        }
+    }
+}
+
+/// Path-explicit `pipeline.wave.start` emit: routes the event under `project`
+/// and advances the started wave's meta `Plan→Execute` (via [`sync_wave_started`]).
+///
+/// `wave-advance` calls this for each wave it dispatches — the deterministic
+/// "wave is starting" signal the dashboard's wave projection needs to flip the
+/// row to `InProgress`. The env-var-based `wave_start_observer` cannot fire
+/// (nothing sets `MUSTARD_ACTIVE_WAVE` — `std::env::set_var` is forbidden under
+/// edition 2024), so the reliable emitter is the dispatch composite that already
+/// KNOWS the wave and the project root. Takes an explicit `project` (not the
+/// process cwd) so it is path-correct under test. Fail-open.
+pub(crate) fn emit_wave_start(project: &Path, spec: &str, wave: u32) {
+    let ts = now_iso8601();
+    let event = HarnessEvent {
+        v: SCHEMA_VERSION,
+        ts: ts.clone(),
+        session_id: session_id(),
+        wave: 0,
+        actor: Actor {
+            kind: ActorKind::Orchestrator,
+            id: Some("wave-advance".to_string()),
+            actor_type: None,
+        },
+        event: EVENT_PIPELINE_WAVE_START.to_string(),
+        payload: json!({ "wave": wave }),
+        spec: Some(spec.to_string()),
+    };
+    let _ = crate::shared::events::route::emit(&project.to_string_lossy(), &event);
+    sync_wave_started(project, spec, u64::from(wave), &ts);
 }
 
 /// Tactical-fix 2026-05-26: bump parent `meta.json` progress fields on a
@@ -1258,6 +1375,33 @@ mod tests {
         let v: Value =
             serde_json::from_str(&std::fs::read_to_string(&meta_path).unwrap()).unwrap();
         assert_eq!(v["completedWaves"], json!([1, 4]), "{v}");
+    }
+
+    /// Regression (2026-06-26): `reconcile_wave_checklist` marks `done` for items
+    /// whose target file exists on disk and leaves the rest — the deterministic
+    /// backfill for the auto-mark's live misses (a wave closing with unchecked
+    /// items whose files clearly exist).
+    #[test]
+    fn reconcile_wave_checklist_marks_existing_files_only() {
+        let dir = tempdir().unwrap();
+        let cwd = dir.path();
+        let wave_dir = cwd.join(".claude").join("spec").join("s").join("wave-1-rt");
+        std::fs::create_dir_all(&wave_dir).unwrap();
+        std::fs::create_dir_all(cwd.join("src")).unwrap();
+        std::fs::write(cwd.join("src").join("done.rs"), b"x").unwrap();
+        std::fs::write(
+            wave_dir.join("meta.json"),
+            br#"{"stage":"Execute","outcome":"Active","checklist":[{"label":"src/done.rs","path":"src/done.rs","done":false},{"label":"src/missing.rs","path":"src/missing.rs","done":false}]}"#,
+        )
+        .unwrap();
+
+        super::reconcile_wave_checklist(cwd, &wave_dir);
+
+        let v: Value =
+            serde_json::from_str(&std::fs::read_to_string(wave_dir.join("meta.json")).unwrap())
+                .unwrap();
+        assert_eq!(v["checklist"][0]["done"], json!(true), "existing file marked: {v}");
+        assert_eq!(v["checklist"][1]["done"], json!(false), "missing file untouched: {v}");
     }
 
     /// DEFECT 1 (2026-06-05): an EXECUTE-branch `bump_parent_progress` advances

@@ -1545,6 +1545,13 @@ pub fn dashboard_sessions(repo_path: String, limit: Option<usize>) -> Vec<Sessio
     };
 
     let now_ms = chrono::Utc::now().timestamp_millis();
+    // Session→spec attribution. A session's OWN events (`.session/{id}/.events/`)
+    // are typically spec-less — the spec binding lives in the per-spec pipeline
+    // stream (`pipeline.scope/stage/status`, which carry BOTH session_id and
+    // spec). Without this, `last_spec` stays null even for feature runs, and the
+    // dashboard can't link a work item to its spec (no waves/PRD/QA drill-in).
+    // Build the timeline once (cached walk) and fall back to it per row below.
+    let timeline = build_session_spec_timeline(&PathBuf::from(&repo_path));
     let mut rows: Vec<SessionRow> = Vec::new();
 
     for entry in entries.flatten() {
@@ -1764,7 +1771,12 @@ pub fn dashboard_sessions(repo_path: String, limit: Option<usize>) -> Vec<Sessio
             slug: String::new(),
             started_at: earliest.unwrap_or_default(),
             last_activity_at: latest,
-            last_spec: last_spec.map(|(_, spec)| spec),
+            // Own-events spec when present; otherwise the session's most-recent
+            // spec binding from the cross-stream timeline (the common case for
+            // feature runs whose session events are spec-less).
+            last_spec: last_spec
+                .map(|(_, spec)| spec)
+                .or_else(|| timeline.spec_at(&id, i64::MAX).map(str::to_string)),
             cwd,
             status,
             event_count,

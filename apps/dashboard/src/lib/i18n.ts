@@ -290,6 +290,36 @@ const DICTIONARY = new Map<string, TranslationRow>([
   ["activity.kind.qa", { pt: "QA", en: "QA" }],
   ["activity.kind.outros", { pt: "Outros", en: "Other" }],
   ["activity.kind.__null__", { pt: "Avulsas (sem comando)", en: "Loose (no command)" }],
+  // Depth-adaptive detail (spec `dashboard-aba-atividade-redesenho`): the
+  // pipeline journey for spec-backed (feature) items + the lean note for the
+  // single-layer task/bugfix/tactical-fix items.
+  ["activity.journey", { pt: "Jornada", en: "Journey" }],
+  ["activity.stage.analyze", { pt: "Analyze", en: "Analyze" }],
+  ["activity.stage.plan", { pt: "Plan", en: "Plan" }],
+  ["activity.stage.execute", { pt: "Execute", en: "Execute" }],
+  ["activity.stage.qa", { pt: "QA", en: "QA" }],
+  ["activity.stage.close", { pt: "Close", en: "Close" }],
+  ["activity.waves", { pt: "Ondas", en: "Waves" }],
+  ["activity.waves.empty", { pt: "Sem ondas registradas.", en: "No waves recorded." }],
+  ["activity.waveStatus.completed", { pt: "concluída", en: "completed" }],
+  ["activity.waveStatus.in_progress", { pt: "em curso", en: "in progress" }],
+  ["activity.waveStatus.failed", { pt: "falhou", en: "failed" }],
+  ["activity.waveStatus.queued", { pt: "aguardando", en: "queued" }],
+  ["activity.quality", { pt: "Qualidade — critérios de aceitação", en: "Quality — acceptance criteria" }],
+  ["activity.quality.empty", { pt: "QA ainda não rodou.", en: "QA has not run yet." }],
+  ["activity.openSpec", { pt: "Abrir spec (PRD · Spec · Ondas · Qualidade)", en: "Open spec (PRD · Spec · Waves · Quality)" }],
+  ["activity.leanNote", { pt: "— ajuste de uma camada: sem ondas, PRD ou QA.", en: "— single-layer change: no waves, PRD or QA." }],
+  // At-a-glance chips on a closed spec-backed row.
+  ["activity.chip.waves", { pt: "Ondas", en: "Waves" }],
+  ["activity.chip.closed", { pt: "Encerrada", en: "Closed" }],
+  // Explainer cards above the list.
+  ["activity.note.grouped.title", { pt: "Agrupado por tipo", en: "Grouped by type" }],
+  ["activity.note.grouped.body", { pt: "feature · ajuste · correção · mudança rápida — revela até o trabalho enxuto que nunca virou spec.", en: "feature · change · fix · quick fix — surfaces even the lean work that never became a spec." }],
+  ["activity.note.rail.title", { pt: "Trilho de estágios", en: "Stage rail" }],
+  ["activity.note.rail.body", { pt: "Só funcionalidades mostram o caminho Analyze→Close. A ausência dele já diz que o item é enxuto.", en: "Only features show the Analyze→Close path. Its absence signals a lean item." }],
+  ["activity.note.spec.title", { pt: "Spec a um toque", en: "Spec in one tap" }],
+  ["activity.note.spec.body", { pt: "Ondas, PRD, Spec e QA abrem o drill-in que já existe — nada foi perdido.", en: "Waves, PRD, Spec and QA open the existing drill-in — nothing was lost." }],
+  ["common.back", { pt: "Voltar", en: "Back" }],
 
   // ── Knowledge page ────────────────────────────────────────────────────
   ["knowledge.editorialTitle", { pt: "Conhecimento e atrito", en: "Knowledge and friction" }],

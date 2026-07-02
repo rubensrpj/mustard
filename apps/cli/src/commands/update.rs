@@ -8,16 +8,29 @@
 //!    the prompt, never the safety net;
 //! 4. delete the core, Mustard-owned folders (`commands/mustard`, `skills`,
 //!    `scripts`, `refs`);
-//! 5. re-copy those folders plus `settings.json` from `templates/`;
+//! 5. re-copy those folders plus `settings.json` and the root reference
+//!    `pipeline-config.md` from `templates/`, and overwrite the Mustard agent
+//!    definitions in the shared `agents/` folder (copied, never deleted, so a
+//!    user's own agents survive);
 //! 6. re-run the RTK and global-permissions guarantees;
 //! 7. re-stamp the `version` field in the project-root `mustard.json`.
 //!
 //! **What is preserved.** Only the Mustard-owned folders are deleted, so
 //! everything else under `.claude/` survives untouched: `CLAUDE.md`,
-//! `pipeline-config.md`, `grain.model.json`, `docs/`, `spec/`, `memory/`,
-//! and any user-authored command outside `commands/mustard/`. The project-root
-//! `mustard.json` is loaded and rewritten with only `version` bumped — git
-//! flow, commands, language/tone, `runtime` and any user keys are preserved.
+//! `grain.model.json`, `docs/`, `spec/`, `memory/`, and any user-authored
+//! command outside `commands/mustard/`. The project-root `mustard.json` is
+//! loaded and rewritten with only `version` bumped — git flow, commands,
+//! language/tone, `runtime` and any user keys are preserved.
+//!
+//! **Why `pipeline-config.md` is re-copied, not preserved.** It is a static,
+//! Mustard-owned orchestrator reference with no per-project customization
+//! (unlike `CLAUDE.md`, whose `## Guards` the scan personalizes). It lives at
+//! the template ROOT, not under a core folder, so the folder re-copy loop never
+//! touched it: a project `init`'d before the file shipped and only ever
+//! `update`d never received it — every agent following a `Read pipeline-config.md`
+//! instruction then hit a missing file — and edits to the reference never
+//! propagated to deployed projects. This is the same backfill gap the `agents/`
+//! copy closed. The unconditional backup preserves any local edit.
 //!
 //! **The `version` re-stamp** lets the dashboard (B6) see the freshly installed
 //! version; the rest of the config is left as `init`/the user set it.
@@ -79,9 +92,9 @@ pub fn update_with_templates(
         bail!("no .claude/ directory found - run `mustard init` first");
     }
 
-    println!("  Will recreate: commands/mustard/  skills/  scripts/  refs/  settings.json");
+    println!("  Will recreate: commands/mustard/  skills/  scripts/  refs/  settings.json  pipeline-config.md");
     println!(
-        "  Will preserve: CLAUDE.md  pipeline-config.md  grain.model.json  mustard.json  docs/  spec/  memory/"
+        "  Will preserve: CLAUDE.md  grain.model.json  mustard.json  docs/  spec/  memory/"
     );
 
     // Confirm — interactive only. `--force` skips the prompt; a non-TTY stdin
@@ -118,7 +131,18 @@ pub fn update_with_templates(
     total += copy_core_folder(templates_dir, &claude_path, "skills")?;
     total += copy_core_folder(templates_dir, &claude_path, "scripts")?;
     total += copy_core_folder(templates_dir, &claude_path, "refs")?;
-    total += copy_settings(templates_dir, &claude_path)?;
+    // `agents/` is a flat, SHARED namespace (a user may drop their own agent
+    // there), so — unlike the CORE_FOLDERS above — it is NOT deleted first: the
+    // copy overwrites Mustard's `mustard-review` / `mustard-guards` definitions
+    // and leaves any user agent untouched. Backfills a project that was `init`'d
+    // before the agents shipped and has only ever been `update`d — the gap that
+    // left `mustard-review` unregistered, forcing dispatch to fall back to
+    // `general-purpose` and lose the read-only tool restriction.
+    total += copy_core_folder(templates_dir, &claude_path, "agents")?;
+    total += copy_core_file(templates_dir, &claude_path, "settings.json")?;
+    // Backfill / refresh the root-level orchestrator reference (see module doc):
+    // absent in projects init'd before it shipped, stale in the rest.
+    total += copy_core_file(templates_dir, &claude_path, "pipeline-config.md")?;
     println!("  Updated {total} files");
 
     // The settings.json we just re-copied carries the template's bare
@@ -159,15 +183,18 @@ fn copy_core_folder(templates_dir: &Path, claude_path: &Path, rel: &str) -> Resu
     copy_dir(&src, &claude_path.join(rel), true, &[])
 }
 
-/// Re-copy `settings.json` from the payload. Returns `1` when copied, `0` when
-/// the payload has no `settings.json`.
-fn copy_settings(templates_dir: &Path, claude_path: &Path) -> Result<usize> {
-    let src = templates_dir.join("settings.json");
+/// Re-copy a single Mustard-owned file living at the template ROOT (not under a
+/// core folder) into `.claude/<rel>`. Returns `1` when copied, `0` when the
+/// payload lacks it (matching the JS `existsSync` guard). Used for
+/// `settings.json` and the `pipeline-config.md` reference — both backfilled when
+/// absent and refreshed when present, since neither is per-project customized.
+fn copy_core_file(templates_dir: &Path, claude_path: &Path, rel: &str) -> Result<usize> {
+    let src = templates_dir.join(rel);
     if !src.is_file() {
         return Ok(0);
     }
     let bytes = mfs::read(&src).with_context(|| format!("reading {}", src.display()))?;
-    mfs::write_atomic(claude_path.join("settings.json"), &bytes)
+    mfs::write_atomic(claude_path.join(rel), &bytes)
         .with_context(|| format!("copying {}", src.display()))?;
     Ok(1)
 }
@@ -197,9 +224,13 @@ mod tests {
         fs::create_dir_all(templates.join("skills")).unwrap();
         fs::create_dir_all(templates.join("scripts")).unwrap();
         fs::create_dir_all(templates.join("refs")).unwrap();
+        fs::create_dir_all(templates.join("agents")).unwrap();
         fs::write(templates.join("commands/mustard/feature.md"), "v2").unwrap();
         fs::write(templates.join("skills/guard.js"), "v2").unwrap();
+        fs::write(templates.join("agents/mustard-review.md"), "review-v2").unwrap();
         fs::write(templates.join("settings.json"), r#"{"v":2}"#).unwrap();
+        // Root-level reference doc — backfilled/refreshed by update.
+        fs::write(templates.join("pipeline-config.md"), "PIPELINE-CONFIG-V2").unwrap();
         templates
     }
 
@@ -213,6 +244,10 @@ mod tests {
         // Stale Mustard-owned files (should be replaced).
         fs::write(claude.join("commands/mustard/feature.md"), "v1-stale").unwrap();
         fs::write(claude.join("skills/guard.js"), "v1-stale").unwrap();
+        // A project that predates the shipped agents: only a user's own agent
+        // is present, and it must survive the backfill.
+        fs::create_dir_all(claude.join("agents")).unwrap();
+        fs::write(claude.join("agents/my-custom.md"), "USER AGENT").unwrap();
         // User files (must survive untouched).
         fs::write(claude.join("CLAUDE.md"), "USER RULES").unwrap();
         fs::write(claude.join("docs/notes.md"), "USER NOTES").unwrap();
@@ -261,6 +296,52 @@ mod tests {
             "v2"
         );
         assert_eq!(fs::read_to_string(claude.join("skills/guard.js")).unwrap(), "v2");
+        // The Mustard agent definitions are backfilled (a project that never had
+        // them now gets `mustard-review`, so the subagent type registers)...
+        assert_eq!(
+            fs::read_to_string(claude.join("agents/mustard-review.md")).unwrap(),
+            "review-v2"
+        );
+        // ...while a user's own agent in the shared `agents/` folder survives.
+        assert_eq!(
+            fs::read_to_string(claude.join("agents/my-custom.md")).unwrap(),
+            "USER AGENT"
+        );
+        // The root reference `pipeline-config.md` is backfilled: `existing_claude`
+        // never created it (the sialia gap — init'd before it shipped, only ever
+        // `update`d), yet after update the deployed copy exists and matches the
+        // template. Every `Read pipeline-config.md` instruction now resolves.
+        assert_eq!(
+            fs::read_to_string(claude.join("pipeline-config.md")).unwrap(),
+            "PIPELINE-CONFIG-V2",
+            "pipeline-config.md must be backfilled from the template"
+        );
+    }
+
+    /// A project that already has a *stale* `pipeline-config.md` gets it refreshed
+    /// to the template version — the reference doc is Mustard-owned, not a
+    /// user-editable file, so edits to it propagate to deployed projects.
+    #[test]
+    fn update_refreshes_stale_pipeline_config() {
+        let work = tempdir().unwrap();
+        let templates = fake_templates(work.path());
+        let project = work.path().join("project");
+        fs::create_dir_all(&project).unwrap();
+        existing_claude(&project);
+        // Simulate a deployed project stuck on an older reference doc.
+        fs::write(
+            project.join(".claude").join("pipeline-config.md"),
+            "PIPELINE-CONFIG-V1-STALE",
+        )
+        .unwrap();
+
+        update_with_templates(&project, &templates, &UpdateOptions { force: true }).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(project.join(".claude").join("pipeline-config.md")).unwrap(),
+            "PIPELINE-CONFIG-V2",
+            "stale pipeline-config.md must be refreshed to the template version"
+        );
     }
 
     #[test]

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useLocation } from "react-router";
+import { useLocation, useNavigate } from "react-router";
 import { Search } from "lucide-react";
 import { useStore } from "@/lib/store";
 import {
@@ -272,6 +272,7 @@ export function Specs() {
   const activeProject = projects.find((p) => p.id === activeWorkspaceId) ?? null;
   const queryClient = useQueryClient();
   const location = useLocation();
+  const navigate = useNavigate();
 
   // Sub-filter by lifecycle stage, layered on top of the `ativas` bucket. The
   // Visão Geral stage cards (spec `redesenho-rota-visao-geral-dashboard`) deep-
@@ -434,12 +435,9 @@ export function Specs() {
     queryClient.invalidateQueries({ queryKey: ["spec-events", slug] });
   }
 
-  // Hash deep-link: auto-open spec on mount only when the hash looks like a
-  // spec slug (date-prefixed).
-  useEffect(() => {
-    const hash = window.location.hash.replace(/^#/, "");
-    if (hash && /^\d{4}-\d{2}-\d{2}-/.test(hash)) openSpec(hash);
-  }, []);
+  // Hash deep-link (`/specs#{slug}`, from Atividade) is rendered below as a
+  // clean, list-free spec drill-in (see `deepLinkSpec`). No tab/effect needed:
+  // the router's `location.hash` drives it directly, so a hash change re-renders.
 
   // ONE batch query replaces the old list query + per-spec fan-out (spec
   // `sidebar-lento-lista-specs-dispara`): `dashboard_spec_cards` resolves the
@@ -594,13 +592,43 @@ export function Specs() {
   const activeTab = tabs.find((t) => t.id === activeTabId) ?? tabs[0];
   const repoPath = activeProject?.path ?? null;
 
+  // A `/specs#{slug}` deep-link (from Atividade) opens ONE spec as a clean,
+  // list-free drill-in: a back button + the spec detail, with NO "Specs" header
+  // and NO tab bar / "Lista" tab. Read the ROUTER hash — under HashRouter
+  // `window.location.hash` holds the whole route (`#/specs#slug`), so reading it
+  // raw yields a bogus slug. No hash → the normal list page below.
+  const deepLinkSpec = location.hash ? decodeURIComponent(location.hash.replace(/^#/, "")) : "";
+  if (deepLinkSpec) {
+    return (
+      <PageSurface>
+        <button
+          type="button"
+          onClick={() => navigate(-1)}
+          className="self-start inline-flex items-center gap-1 text-[13px] text-muted-foreground hover:text-foreground -ml-1 px-1 py-0.5 rounded"
+        >
+          ← {t("common.back", "Voltar")}
+        </button>
+        <SpecDetailDashboard repoPath={repoPath} spec={deepLinkSpec} />
+      </PageSurface>
+    );
+  }
+
   return (
     <PageSurface>
-      <EditorialBand
-        eyebrow="Specs"
-        title={t("specs.editorialTitle")}
-        subtitle={t("specs.editorialSubtitle")}
-      />
+      <div className="flex flex-col gap-2">
+        <button
+          type="button"
+          onClick={() => navigate(-1)}
+          className="self-start inline-flex items-center gap-1 text-[13px] text-muted-foreground hover:text-foreground -ml-1 px-1 py-0.5 rounded"
+        >
+          ← {t("common.back", "Voltar")}
+        </button>
+        <EditorialBand
+          eyebrow="Specs"
+          title={t("specs.editorialTitle")}
+          subtitle={t("specs.editorialSubtitle")}
+        />
+      </div>
       <SpecTabBar
         tabs={tabs}
         activeId={activeTabId}

@@ -74,21 +74,17 @@ If any submodule is in **detached HEAD** (`HEAD` as branch name), report clearly
 
 ## Commit Scope Policy
 
-The `commit` action accepts `--scope`:
+**Default: `all` — ALWAYS `rtk git add -A` in every dirty repo.** `commit`/`push` sweep the *entire* working tree unless the user *explicitly* passes a narrower `--scope`. NEVER infer a partial scope from the diff, NEVER memoize one — a silent partial commit that leaves files behind is the exact failure this policy exists to prevent.
 
 | `--scope` value | Behavior |
 |-----------------|----------|
-| `all` (default when unambiguous) | `rtk git add -A` in every dirty repo |
-| `staged` | Commit only what is already staged (`rtk git commit` with no add) |
-| `<path-pattern>` | `rtk git add <pattern>` then commit (glob or directory) |
+| _(omitted)_ or `all` | `rtk git add -A` in every dirty repo — **the default** |
+| `staged` | Commit only what is already staged (`rtk git commit` with no add) — **only when explicitly passed** |
+| `<path-pattern>` | `rtk git add <pattern>` then commit (glob or directory) — **only when explicitly passed** |
 
-### Decision flow when `--scope` is NOT passed
+### When `--scope` is NOT passed
 
-1. Run `rtk git status --short` in parent + every dirty submodule.
-2. Categorize output inline (see **Final Status Report** categorizer in merge-protocol.md).
-3. If output has a **single obvious category** (e.g., only ephemerals → skip; only code changes in one dir → infer that dir): propose the inferred scope in a 5-line preview.
-4. Use `AskUserQuestion` **EXACTLY ONCE** per session: _"Scope for this commit? [all / staged / <inferred path>]"_.
-5. **Memoize** the answer on `pipeline-state`-style session cache (e.g., env `MUSTARD_GIT_SCOPE_DEFAULT` or a file-local marker) so subsequent `commit`/`push` actions in the same session skip the prompt. Only re-prompt if the user passes `--scope=ask` explicitly.
+Use `all`. No prompt, no inference, no memoization. Run `rtk git add -A` in the parent and every dirty submodule, then commit. The only paths skipped are genuine ephemerals (see **Ephemeral Paths** in the skill) — everything else goes up, every time.
 
 ## Performance Budget
 

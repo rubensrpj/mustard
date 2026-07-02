@@ -17,6 +17,7 @@
     "MUSTARD_CHECKLIST_GATE_MODE": "strict",
     "MUSTARD_BOUNDARY_MODE": "warn",
     "MUSTARD_MAIN_BUDGET_MODE": "warn",
+    "MUSTARD_DELEGATION_WARN_MODE": "warn",
     "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
     "OTEL_METRICS_EXPORTER": "otlp",
     "OTEL_LOGS_EXPORTER": "otlp",
@@ -27,13 +28,8 @@
   },
   "mcpServers": {
     "mustard-memory": {
-      "command": "mustard-rt",
-      "args": [
-        "mcp"
-      ],
-      "env": {
-        "MUSTARD_DB_PATH": ".claude/.harness/mustard.db"
-      }
+      "command": "mustard-mcp",
+      "args": []
     }
   },
   "permissions": {

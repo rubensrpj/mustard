@@ -295,7 +295,7 @@ fn render_powerline(theme: &Theme, segs: &[Segment], glyph: char) -> String {
 // ---------------------------------------------------------------------------
 
 // Each themes block packs styles in the same order as `SegmentKind`:
-// Module, Git, Context, Duration, Savings, Diff, Cost, Model, Version.
+// Module, Git, Context, Duration, Savings, Diff, Cost, Model, Version, ScanProgress.
 
 /// `default` — pipes, ANSI 8 colors, no bg. Looks like a classic terminal
 /// prompt; safe on any terminal.
@@ -323,6 +323,8 @@ pub const DEFAULT: Theme = Theme {
         Style::fg(Color::Ansi(4)),
         // Version — dim white
         Style::fg(Color::Ansi(8)),
+        // ScanProgress — yellow (in-flight signal)
+        Style::fg(Color::Ansi(3)),
     ],
 };
 
@@ -362,6 +364,8 @@ pub const CATPPUCCIN: Theme = Theme {
         Style::pl_bold(Color::Rgb(0x1e, 0x1e, 0x2e), Color::Rgb(0x74, 0xc7, 0xec)),
         // Version — pink on crust (tail accent)
         Style::pl(Color::Rgb(0xf5, 0xc2, 0xe7), Color::Rgb(0x11, 0x11, 0x1b)),
+        // ScanProgress — base on peach, bold (active-work chip)
+        Style::pl_bold(Color::Rgb(0x1e, 0x1e, 0x2e), Color::Rgb(0xfa, 0xb3, 0x87)),
     ],
 };
 
@@ -392,6 +396,8 @@ pub const TOKYO_NIGHT: Theme = Theme {
         Style::pl_bold(Color::Rgb(0x1a, 0x1b, 0x26), Color::Rgb(0xbb, 0x9a, 0xf7)),
         // Version — fg dim on bg
         Style::pl(Color::Rgb(0x56, 0x5f, 0x89), Color::Rgb(0x1a, 0x1b, 0x26)),
+        // ScanProgress — bg on yellow, bold (active-work chip)
+        Style::pl_bold(Color::Rgb(0x1a, 0x1b, 0x26), Color::Rgb(0xe0, 0xaf, 0x68)),
     ],
 };
 
@@ -421,6 +427,8 @@ pub const PASTEL_POWERLINE: Theme = Theme {
         Style::pl_bold(Color::Rgb(0x11, 0x11, 0x1b), Color::Rgb(0xb4, 0xbe, 0xfe)),
         // Version — crust on muted pink
         Style::pl(Color::Rgb(0x11, 0x11, 0x1b), Color::Rgb(0xea, 0x9a, 0x97)),
+        // ScanProgress — crust on pastel yellow, bold (active-work chip)
+        Style::pl_bold(Color::Rgb(0x11, 0x11, 0x1b), Color::Rgb(0xf9, 0xe2, 0xaf)),
     ],
 };
 
@@ -451,6 +459,9 @@ pub const GRUVBOX_RAINBOW: Theme = Theme {
         Style::pl_bold(Color::Rgb(0x28, 0x28, 0x28), Color::Rgb(0xcc, 0x24, 0x1d)),
         // Version — fg dim on bg0_h
         Style::pl(Color::Rgb(0xa8, 0x99, 0x84), Color::Rgb(0x1d, 0x20, 0x21)),
+        // ScanProgress — bg on orange, bold (active-work chip; distinct from the
+        // yellow module head it sits next to)
+        Style::pl_bold(Color::Rgb(0x28, 0x28, 0x28), Color::Rgb(0xd6, 0x5d, 0x0e)),
     ],
 };
 

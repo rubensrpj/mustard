@@ -136,12 +136,24 @@ fn prompt_ref_stub(
     task_text: Option<&str>,
     rendered: &str,
 ) -> String {
+    let rel = prompt_ref_rel_path(spec, wave, role, subproject, mode, task_filter, task_text);
+    write_prompt_ref(project, &rel, rendered)
+}
+
+/// Write `rendered` to project-relative `rel` and return the 2-line dispatch
+/// stub that stands in for it. The shared primitive behind every `--emit ref`:
+/// `agent-prompt-render` and `digest-validate-render` both route through it, so
+/// the full prompt never transits the orchestrator's context. Fail-open both
+/// ways: an empty render returns the empty string (the historical
+/// print-nothing behaviour), and a write failure degrades to the full inline
+/// prompt — the dispatch must never be lost to a missing directory or a locked
+/// file.
+pub(crate) fn write_prompt_ref(project: &Path, rel: &str, rendered: &str) -> String {
     if rendered.is_empty() {
         return String::new();
     }
-    let rel = prompt_ref_rel_path(spec, wave, role, subproject, mode, task_filter, task_text);
-    if mfs::write_atomic(project.join(&rel), rendered.as_bytes()).is_err() {
-        eprintln!("agent-prompt-render: WARN: --emit ref could not write {rel} — falling back to inline");
+    if mfs::write_atomic(project.join(rel), rendered.as_bytes()).is_err() {
+        eprintln!("--emit ref: WARN: could not write {rel} — falling back to inline prompt");
         return rendered.to_string();
     }
     format!(
@@ -229,8 +241,9 @@ fn path_slug(path: &str) -> String {
 
 /// FNV-1a 64-bit over `parts` with a separator fold between them — pure and
 /// deterministic (no clock, no randomness), so the same render inputs always
-/// map to the same dispatch file.
-fn fnv1a64(parts: &[&str]) -> u64 {
+/// map to the same dispatch file. `pub(crate)` so `digest-validate-render` can
+/// key its own `.dispatch/` file off the intent.
+pub(crate) fn fnv1a64(parts: &[&str]) -> u64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     let mut eat = |b: u8| {
         h ^= u64::from(b);

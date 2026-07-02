@@ -175,7 +175,14 @@ fn is_table_row_for_wave(line: &str, wave_num: u32) -> bool {
 }
 
 /// Audit a single wave.
-fn audit_wave(wave: &WaveFolder, spec_dir: &Path, limit: usize, role_patterns: &[RolePattern]) -> Value {
+fn audit_wave(
+    wave: &WaveFolder,
+    spec_dir: &Path,
+    limit: usize,
+    role_patterns: &[RolePattern],
+    model_path: &Path,
+    project_root: &Path,
+) -> Value {
     let folder = &wave.folder;
     let wave_num = wave_number_of(folder);
 
@@ -219,17 +226,28 @@ fn audit_wave(wave: &WaveFolder, spec_dir: &Path, limit: usize, role_patterns: &
         roles.len()
     };
 
-    let decision = decide(&json!({
-        "fileCount": file_count,
-        "layerCount": layer_count,
-        "newEntityCount": 0,
-        "knowledgeMatches": [],
-    }));
+    // Stack-awareness: the role→layer `multi-layer` signal is only trustworthy
+    // where the gate was tuned (JS/TS). On a foreign-language wave (C#, Python,
+    // …) it fires on every intrinsically cross-layer backend feature — a
+    // guaranteed false alarm. Loosen there: keep only the language-agnostic
+    // file-count reason. Resolved from the wave's `## Files` extensions plus the
+    // repo model's detected stacks (both fail-open, so a JS/TS or undetected
+    // wave keeps the historical layer signal).
+    let langs = mustard_core::resolve_target_languages(&files, model_path, project_root);
+    let understood = mustard_core::target_understood(&langs);
 
     let mut reasons: Vec<String> = Vec::new();
-    if decision.get("decompose").and_then(Value::as_bool) == Some(true) {
-        if let Some(reason) = decision.get("reason").and_then(Value::as_str) {
-            reasons.push(reason.to_string());
+    if understood {
+        let decision = decide(&json!({
+            "fileCount": file_count,
+            "layerCount": layer_count,
+            "newEntityCount": 0,
+            "knowledgeMatches": [],
+        }));
+        if decision.get("decompose").and_then(Value::as_bool) == Some(true) {
+            if let Some(reason) = decision.get("reason").and_then(Value::as_str) {
+                reasons.push(reason.to_string());
+            }
         }
     }
     if file_count > limit {
@@ -242,6 +260,7 @@ fn audit_wave(wave: &WaveFolder, spec_dir: &Path, limit: usize, role_patterns: &
         "folder": folder,
         "fileCount": file_count,
         "layerCount": layer_count,
+        "languages": langs.into_iter().collect::<Vec<_>>(),
         "oversized": oversized,
         "reason": reasons.join("; "),
         "source": source,
@@ -280,9 +299,10 @@ pub fn run(spec_dir_arg: Option<&str>) {
     // classify correctly. Resolve from the workspace anchor, fail-open to cwd.
     let project_root = crate::shared::context::workspace_root_strict().unwrap_or_else(|_| cwd.clone());
     let role_patterns = load_role_patterns(&project_root);
+    let model_path = project_root.join(".claude").join("grain.model.json");
     let audited: Vec<Value> = waves
         .iter()
-        .map(|w| audit_wave(w, &spec_dir, limit, &role_patterns))
+        .map(|w| audit_wave(w, &spec_dir, limit, &role_patterns, &model_path, &project_root))
         .collect();
     let oversized_count = audited
         .iter()
@@ -328,14 +348,64 @@ mod tests {
         }
         std::fs::write(wave_dir.join("spec.md"), files).unwrap();
         let waves = enumerate_waves(spec_dir).unwrap();
-        let audited = audit_wave(&waves[0], spec_dir, 10, &[]);
+        // No grain model on disk → detected-stacks signal is empty; the `.ts`
+        // extensions carry the (understood) language, so the file-count reason
+        // still fires.
+        let no_model = spec_dir.join("no-model.json");
+        let audited = audit_wave(&waves[0], spec_dir, 10, &[], &no_model, spec_dir);
         assert_eq!(audited["oversized"], json!(true));
         assert_eq!(audited["fileCount"], json!(14));
+        assert_eq!(audited["languages"], json!(["typescript"]));
     }
 
     #[test]
     fn not_a_wave_plan_skips() {
         let dir = tempdir().unwrap();
         assert!(enumerate_waves(dir.path()).is_none());
+    }
+
+    #[test]
+    fn foreign_language_wave_suppresses_multi_layer_but_keeps_file_count() {
+        let dir = tempdir().unwrap();
+        let spec_dir = dir.path();
+        std::fs::write(spec_dir.join("wave-plan.md"), "# plan\n").unwrap();
+        let wave_dir = spec_dir.join("wave-1-backend");
+        std::fs::create_dir_all(&wave_dir).unwrap();
+        // A C# wave spanning DTOs + Services + Controllers — layerCount >= 2, but
+        // only three files (under the size limit). The `multi-layer` alarm must
+        // be suppressed for a foreign language; nothing flags it oversized.
+        let files = "## Files\n\
+            - backend/App/DTOs/Payable.cs\n\
+            - backend/App/Services/Recurrence.cs\n\
+            - backend/App/Controllers/PayableController.cs\n";
+        std::fs::write(wave_dir.join("spec.md"), files).unwrap();
+        let waves = enumerate_waves(spec_dir).unwrap();
+        let no_model = spec_dir.join("no-model.json");
+        let audited = audit_wave(&waves[0], spec_dir, 10, &[], &no_model, spec_dir);
+        assert!(audited["layerCount"].as_u64().unwrap() >= 2, "C# folders span layers: {audited}");
+        assert_eq!(audited["languages"], json!(["csharp"]));
+        assert_eq!(audited["oversized"], json!(false), "multi-layer suppressed for foreign lang: {audited}");
+        assert_eq!(audited["reason"], json!(""));
+    }
+
+    #[test]
+    fn js_ts_wave_still_flags_multi_layer() {
+        let dir = tempdir().unwrap();
+        let spec_dir = dir.path();
+        std::fs::write(spec_dir.join("wave-plan.md"), "# plan\n").unwrap();
+        let wave_dir = spec_dir.join("wave-1-app");
+        std::fs::create_dir_all(&wave_dir).unwrap();
+        // The layer signal is preserved for the language the gate was tuned for.
+        let files = "## Files\n\
+            - src/schema/user.ts\n\
+            - src/api/users.ts\n\
+            - src/components/UserCard.tsx\n";
+        std::fs::write(wave_dir.join("spec.md"), files).unwrap();
+        let waves = enumerate_waves(spec_dir).unwrap();
+        let no_model = spec_dir.join("no-model.json");
+        let audited = audit_wave(&waves[0], spec_dir, 10, &[], &no_model, spec_dir);
+        assert!(audited["layerCount"].as_u64().unwrap() >= 2);
+        assert_eq!(audited["oversized"], json!(true), "multi-layer preserved for JS/TS: {audited}");
+        assert!(audited["reason"].as_str().unwrap().contains("multi-layer"));
     }
 }
