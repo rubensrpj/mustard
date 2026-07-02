@@ -31,6 +31,10 @@ Match current branch against `flow` keys. Exact match first, then glob. `*` is t
 
 **Rule**: Exact keys (`dev`, `main`) are matched first. `*` catches everything else. `main` and `dev` are never matched by `*`.
 
+## Work branches
+
+Every work unit runs on its own `{kind}/{slug}` branch (e.g. `feature/aba-atividade`, `bugfix/close-gate-windows`). The branch is **auto-created off `dev` on the first file edit** of the request: the router pre-computes the name (`emit-pipeline --kind pipeline.kind`) and the harness's `work_branch_gate` checks it out on the first `Write`/`Edit`. Read-only requests never branch. `/git merge` then fuses the work branch back to `dev` (its `*` parent). If the checkout fails (dirty conflict, missing `dev`), the harness warns and stays on the current branch — the edit still proceeds.
+
 ## Actions Table
 
 | Action | Description |

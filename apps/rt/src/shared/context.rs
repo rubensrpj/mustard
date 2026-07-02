@@ -328,6 +328,92 @@ fn session_spec_marker(project_dir_path: &str, session_id: &str) -> Option<PathB
     )
 }
 
+/// Resolve the pending auto-branch a session's first file mutation must check
+/// out, fail-open `None`.
+///
+/// Sibling of [`spec_for_session`]: `emit-pipeline --kind pipeline.kind`
+/// pre-computes the `{work_kind}/{slug}` branch name and drops it here; the
+/// `work_branch_gate` PreToolUse(Write|Edit) hook reads it back on the FIRST
+/// edit, checks the branch out, and clears the marker. A read-only request
+/// never edits, so the marker is simply never consumed.
+///
+/// Marker location: `.claude/.session/<session_id>/pending-work-branch` — beside
+/// the session's `active-spec` marker. Returns `None` when the session has no
+/// recorded pending branch (no marker yet, an empty/`"unknown"` session id, or
+/// any IO error) — never panics.
+#[must_use]
+pub fn pending_branch_for(project_dir_path: &str, session_id: &str) -> Option<String> {
+    if session_id.is_empty() || session_id == "unknown" {
+        return None;
+    }
+    let marker = pending_branch_marker(project_dir_path, session_id)?;
+    let branch = fs::read_to_string(&marker).ok()?;
+    let branch = branch.trim();
+    if branch.is_empty() {
+        None
+    } else {
+        Some(branch.to_string())
+    }
+}
+
+/// Persist the pending auto-branch name as the `pending-work-branch` marker,
+/// best-effort.
+///
+/// Called from `emit-pipeline` when the work-type signal (`pipeline.kind`) is
+/// emitted: it computes the target branch once and stores it so the first
+/// Write/Edit can check it out without re-deriving the slug. Fail-open: any IO
+/// error is swallowed — telemetry must never block. Skips a redundant rewrite
+/// when the marker already names this branch (mirrors [`bind_session_spec`]).
+pub fn set_pending_branch(project_dir_path: &str, session_id: &str, branch: &str) {
+    if session_id.is_empty() || session_id == "unknown" || branch.is_empty() {
+        return;
+    }
+    let Some(marker) = pending_branch_marker(project_dir_path, session_id) else {
+        return;
+    };
+    if fs::read_to_string(&marker).ok().as_deref().map(str::trim) == Some(branch) {
+        return;
+    }
+    let Some(parent) = marker.parent() else {
+        return;
+    };
+    let _ = fs::create_dir_all(parent);
+    let _ = fs::write_atomic(&marker, branch.as_bytes());
+}
+
+/// Remove the pending auto-branch marker, best-effort.
+///
+/// Called by `work_branch_gate` once it has checked the branch out (or decided
+/// not to, on a git failure) so the gate does not re-fire on every subsequent
+/// edit of the same session. A missing marker is a no-op and any IO error is
+/// swallowed — this teardown must never block a write.
+pub fn clear_pending_branch(project_dir: &str, session_id: &str) {
+    if session_id.is_empty() || session_id == "unknown" {
+        return;
+    }
+    let Some(marker) = pending_branch_marker(project_dir, session_id) else {
+        return;
+    };
+    let _ = fs::remove_file(&marker);
+}
+
+/// Compose the `pending-work-branch` marker path:
+/// `<project>/.claude/.session/<session_id>/pending-work-branch`.
+///
+/// Composed from `claude_dir()` the same way [`session_spec_marker`] resolves
+/// the sibling `active-spec` marker. `None` on an I1 guard rejection of the
+/// project root.
+fn pending_branch_marker(project_dir_path: &str, session_id: &str) -> Option<PathBuf> {
+    Some(
+        ClaudePaths::for_project(Path::new(project_dir_path))
+            .ok()?
+            .claude_dir()
+            .join(".session")
+            .join(session_id)
+            .join("pending-work-branch"),
+    )
+}
+
 /// Resolve the active wave number from `MUSTARD_ACTIVE_WAVE` — the convention the
 /// harness sets on every wave dispatch and that `route` already stamps on each
 /// emitted event. Co-located with [`current_spec`] so a hook (e.g. the
@@ -455,5 +541,32 @@ mod tests {
         );
         // A second unbind on a missing marker is a no-op (must not panic).
         unbind_session_spec(project, "sess-X");
+    }
+
+    // -----------------------------------------------------------------------
+    // pending auto-branch lifecycle (set → resolve → clear)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn pending_branch_round_trips_then_clears() {
+        let dir = tempdir().unwrap();
+        let project = dir.path().to_str().unwrap();
+        set_pending_branch(project, "sess-B", "feature/my-thing");
+        assert_eq!(
+            pending_branch_for(project, "sess-B").as_deref(),
+            Some("feature/my-thing"),
+            "set then resolve should round-trip",
+        );
+        clear_pending_branch(project, "sess-B");
+        assert!(
+            pending_branch_for(project, "sess-B").is_none(),
+            "clear should remove the marker",
+        );
+        // A blank branch / unknown session never writes; a second clear is a no-op.
+        set_pending_branch(project, "sess-B", "");
+        assert!(pending_branch_for(project, "sess-B").is_none());
+        set_pending_branch(project, "unknown", "feature/x");
+        assert!(pending_branch_for(project, "unknown").is_none());
+        clear_pending_branch(project, "sess-B");
     }
 }

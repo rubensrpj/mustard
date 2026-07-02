@@ -43,6 +43,7 @@ pub fn run(spec: &str, wave: u64, duration_ms: Option<u64>) {
         spec: spec.to_string(),
         payload: Some(json!({ "wave": wave, "duration_ms": duration_ms.unwrap_or(0) }).to_string()),
         allow_no_qa: false,
+        intent: None,
     });
 
     // 2. Cache the wave diff for the next round's render — fail-open.

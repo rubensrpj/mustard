@@ -297,6 +297,10 @@ pub enum RunCmd {
         /// event exists for the spec.
         #[arg(long = "allow-no-qa")]
         allow_no_qa: bool,
+        /// Free-form natural-language request. On `--kind pipeline.kind` for a
+        /// spec-less run it seeds the auto-branch slug (`{work_kind}/{slug}`).
+        #[arg(long)]
+        intent: Option<String>,
     },
     /// Finalize a completed wave in ONE call (token-economy composite): emit
     /// `pipeline.wave.complete` (the completion event + the wave's
@@ -1924,12 +1928,13 @@ pub fn dispatch(cmd: RunCmd) {
         RunCmd::EmitPhase { spec, to, from } => {
             event::emit_phase::run(&spec, &to, from.as_deref());
         }
-        RunCmd::EmitPipeline { kind, spec, payload, allow_no_qa } => {
+        RunCmd::EmitPipeline { kind, spec, payload, allow_no_qa, intent } => {
             event::emit_pipeline::run(event::emit_pipeline::EmitPipelineOpts {
                 kind,
                 spec,
                 payload,
                 allow_no_qa,
+                intent,
             });
         }
         RunCmd::WaveDone { spec, wave, duration_ms } => {

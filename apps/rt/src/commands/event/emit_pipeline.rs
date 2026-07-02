@@ -119,6 +119,11 @@ pub struct EmitPipelineOpts {
     /// (notably `qa-run` itself when it needs to chain `pipeline.complete`
     /// inside its own flow, or an explicit user override).
     pub allow_no_qa: bool,
+    /// Free-form natural-language request. Only consulted on
+    /// `--kind pipeline.kind` for a spec-less run: it seeds the auto-branch
+    /// slug (`{work_kind}/{slug}`) when no `--spec` is present. Ignored
+    /// otherwise.
+    pub intent: Option<String>,
 }
 
 /// Parse the `--payload` JSON, tolerating a PowerShell quoting quirk.
@@ -335,6 +340,24 @@ pub fn run(opts: EmitPipelineOpts) {
                 .unwrap_or_else(|_| std::path::PathBuf::from(project_dir()));
             sync_wave_started(&cwd, &spec_name, wave, &ts);
         }
+    }
+
+    // `pipeline.kind` (porta-unica work-type signal): pre-compute the auto-branch
+    // name the FIRST file mutation of this work unit will check out, and persist
+    // it as the session's `pending-work-branch` marker. `work_branch_gate` reads
+    // it back on the first Write/Edit. A read-only request never edits, so the
+    // marker is simply never consumed. Fail-open — the emit already succeeded.
+    if kind_str == EVENT_PIPELINE_KIND {
+        let project = project_dir();
+        let branch = compute_work_branch(
+            &payload_for_header,
+            &spec_name,
+            opts.intent.as_deref(),
+            &sid,
+            &ts,
+            &project,
+        );
+        crate::shared::context::set_pending_branch(&project, &sid, &branch);
     }
 
     // `pipeline.stage` / `pipeline.outcome`: patch the spec's `meta.json` so the
@@ -960,6 +983,111 @@ fn bump_parent_progress(cwd: &Path, spec: &str, wave: u64, ts: &str) {
 }
 
 
+// --- Auto-branch name computation (porta-unica) ------------------------------
+
+/// The known work-kind tokens. Anything else in the `pipeline.kind` payload
+/// degrades to `task` (the lightest flow) rather than minting a novel prefix.
+const WORK_KINDS: &[&str] = &["feature", "bugfix", "task", "tactical-fix"];
+
+/// Resolve the work-kind branch prefix from a `pipeline.kind` payload's `kind`
+/// field, sanitised to `[a-z-]` and constrained to [`WORK_KINDS`]. Absent /
+/// unknown → `task`.
+fn work_kind_from_payload(payload: &Value) -> String {
+    let raw = payload.get("kind").and_then(Value::as_str).unwrap_or("task");
+    let cleaned: String = raw
+        .trim()
+        .to_ascii_lowercase()
+        .chars()
+        .filter(|c| c.is_ascii_lowercase() || *c == '-')
+        .collect();
+    if WORK_KINDS.contains(&cleaned.as_str()) {
+        cleaned
+    } else {
+        "task".to_string()
+    }
+}
+
+/// Resolve the slug lang for the auto-branch from `mustard.json` — `lang`
+/// (legacy) then `specLang`, defaulting to `pt-BR` (mirrors
+/// [`mustard_core::ProjectConfig::i18n`] precedence). A branch is not
+/// user-facing prose, but the slug helper still strips accents per-locale.
+fn branch_lang(project: &str) -> String {
+    let config = mustard_core::ProjectConfig::load(Path::new(project));
+    config
+        .lang
+        .clone()
+        .or(config.spec_lang.clone())
+        .unwrap_or_else(|| "pt-BR".to_string())
+}
+
+/// A short, ref-safe fallback token from the session id. `unknown`/empty →
+/// `work` so the branch always has a non-empty tail.
+fn short_sid(sid: &str) -> String {
+    let s = sid.trim();
+    if s.is_empty() || s == "unknown" {
+        return "work".to_string();
+    }
+    s.chars().take(8).collect()
+}
+
+/// Sanitise `{work_kind}/{slug}` into a valid git ref: keep `[A-Za-z0-9-_./]`,
+/// map everything else to `-`, collapse `..` runs (git forbids them), and trim
+/// leading `-`/`.`/`/` and trailing `/`/`.`. Never empty — floors to
+/// `task/work`.
+fn sanitize_git_ref(raw: &str) -> String {
+    let mut out: String = raw
+        .chars()
+        .map(|ch| match ch {
+            'a'..='z' | 'A'..='Z' | '0'..='9' | '-' | '_' | '.' | '/' => ch,
+            _ => '-',
+        })
+        .collect();
+    while out.contains("..") {
+        out = out.replace("..", "-");
+    }
+    let trimmed = out
+        .trim_start_matches(|c| c == '-' || c == '.' || c == '/')
+        .trim_end_matches(|c| c == '/' || c == '.');
+    if trimmed.is_empty() {
+        "task/work".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+/// Compute the auto-branch name for a `pipeline.kind` work-type signal:
+/// `{work_kind}/{slug}`, sanitised to a valid git ref. Slug precedence:
+/// 1. `--spec` when present (already a slug);
+/// 2. else `--intent` slugified for the project's lang;
+/// 3. else a date-based fallback (`YYYY-MM-DD` from the event `ts`) suffixed
+///    with a short session id for uniqueness.
+/// Never fails — every branch degrades to a valid ref.
+fn compute_work_branch(
+    payload: &Value,
+    spec: &str,
+    intent: Option<&str>,
+    sid: &str,
+    ts: &str,
+    project: &str,
+) -> String {
+    let work_kind = work_kind_from_payload(payload);
+    let slug = if !spec.trim().is_empty() {
+        spec.trim().to_string()
+    } else if let Some(intent) = intent.map(str::trim).filter(|s| !s.is_empty()) {
+        crate::commands::spec::spec_slug::for_lang(intent, &branch_lang(project))
+    } else {
+        // Date-based fallback from the shared event timestamp, plus a short
+        // session id so two spec-less/intent-less runs on the same day differ.
+        let date = ts.split('T').next().unwrap_or("").trim();
+        if date.is_empty() {
+            short_sid(sid)
+        } else {
+            format!("{date}-{}", short_sid(sid))
+        }
+    };
+    sanitize_git_ref(&format!("{work_kind}/{slug}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1082,6 +1210,44 @@ mod tests {
         let with_quote = r#"{"note":"she said \"hi\""}"#;
         let decoded = super::parse_payload_tolerant(with_quote).expect("valid escaped string");
         assert_eq!(decoded["note"], json!("she said \"hi\""));
+    }
+
+    // -----------------------------------------------------------------------
+    // Auto-branch name computation (porta-unica)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn compute_work_branch_prefers_spec_slug() {
+        let p = json!({ "kind": "feature", "scope": "full" });
+        let b = super::compute_work_branch(&p, "2026-07-02-my-spec", None, "sess-abcdef12", "2026-07-02T10:00:00.000Z", "/no/project");
+        assert_eq!(b, "feature/2026-07-02-my-spec");
+    }
+
+    #[test]
+    fn compute_work_branch_falls_back_to_intent_slug() {
+        // No spec → the intent is slugified (pt-BR strips accents by default).
+        let p = json!({ "kind": "bugfix" });
+        let b = super::compute_work_branch(&p, "", Some("Corrigir botão de login"), "sess-abcdef12", "2026-07-02T10:00:00.000Z", "/no/project");
+        assert_eq!(b, "bugfix/corrigir-botao-login");
+    }
+
+    #[test]
+    fn compute_work_branch_date_fallback_when_no_spec_or_intent() {
+        // No spec, no intent → date-from-ts + short session id.
+        let p = json!({ "kind": "task" });
+        let b = super::compute_work_branch(&p, "", None, "sess-abcdef1234", "2026-07-02T10:00:00.000Z", "/no/project");
+        assert_eq!(b, "task/2026-07-02-sess-abc");
+    }
+
+    #[test]
+    fn compute_work_branch_defaults_unknown_kind_to_task_and_sanitizes() {
+        // Unknown kind degrades to `task`; a spec with unsafe chars is sanitised.
+        let p = json!({ "kind": "wild card!" });
+        let b = super::compute_work_branch(&p, "weird ..slug/", None, "unknown", "2026-07-02T10:00:00.000Z", "/no/project");
+        // ".." collapsed, spaces mapped to '-', trailing '/' trimmed.
+        assert_eq!(b, "task/weird--slug");
+        assert!(!b.contains(".."), "no `..` runs in a git ref");
+        assert!(!b.starts_with('-'), "no leading dash");
     }
 
     // -----------------------------------------------------------------------

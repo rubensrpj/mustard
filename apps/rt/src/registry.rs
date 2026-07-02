@@ -27,6 +27,7 @@ use crate::hooks::write::path_gate::PathGate;
 use crate::hooks::write::post_edit::PostEdit;
 use crate::hooks::session::pre_compact_inject::PreCompactInject;
 use crate::hooks::write::pre_edit_intent_gate::PreEditIntentGate;
+use crate::hooks::write::work_branch_gate::WorkBranchGate;
 use crate::hooks::session::prompt_submit_inject::PromptSubmitInject;
 use crate::hooks::session::session_cleanup_observer::SessionCleanupObserver;
 use crate::hooks::session::session_start_inject::SessionStartInject;
@@ -294,6 +295,25 @@ impl Registry {
                 id: "active_spec_limit_gate",
                 applies_to: &[(Trigger::PreToolUse, ToolMatch::Named("Skill"))],
                 check: Some(Box::new(ActiveSpecLimitGate)),
+                observer: None,
+            },
+            // Auto-branch per work unit (porta-unica): on the FIRST file
+            // mutation of a work request, check out the `{work_kind}/{slug}`
+            // branch the router pre-computed (stored as the session's
+            // `pending-work-branch` marker by `emit-pipeline --kind
+            // pipeline.kind`). A `Check` that only ever Allows/Warns — the
+            // branch checkout is the point (precedent: `prompt_submit_inject`).
+            // MultiEdit joins Write|Edit so a first mutation via any editor tool
+            // triggers the branch. Fail-open: any git failure clears the marker
+            // and warns, never blocks. Read-only requests never consume it.
+            Module {
+                id: "work_branch_gate",
+                applies_to: &[
+                    (Trigger::PreToolUse, ToolMatch::Named("Write")),
+                    (Trigger::PreToolUse, ToolMatch::Named("Edit")),
+                    (Trigger::PreToolUse, ToolMatch::Named("MultiEdit")),
+                ],
+                check: Some(Box::new(WorkBranchGate)),
                 observer: None,
             },
             // Spec A v4 / W4 — opt-in pre-edit intent check (Moment 1 of the
@@ -704,6 +724,7 @@ mod tests {
             "close_gate",
             "scan_gate",
             "scope_guard",
+            "work_branch_gate",
             "active_spec_limit_gate",
             "delegation_advisory",
             "feature_outcome_observer",

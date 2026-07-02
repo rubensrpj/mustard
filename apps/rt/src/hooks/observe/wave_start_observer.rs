@@ -146,6 +146,7 @@ impl Observer for WaveStartObserver {
                 spec: spec.clone(),
                 payload: Some(json!({ "wave": wave }).to_string()),
                 allow_no_qa: false,
+                intent: None,
             },
         );
         economy::emit(

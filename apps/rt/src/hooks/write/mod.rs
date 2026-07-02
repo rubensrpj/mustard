@@ -6,3 +6,4 @@ pub mod close_gate;
 pub mod scan_gate;
 pub mod scope_guard;
 pub mod pre_edit_intent_gate;
+pub mod work_branch_gate;

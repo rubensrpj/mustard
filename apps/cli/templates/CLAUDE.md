@@ -36,8 +36,10 @@ Signals are heuristics — the pipeline detects what makes sense for the project
 **(d) Dispatch the internal flow + emit the `kind`.** Route to the flow the classification picked (the flow's SKILL owns the procedure — unchanged). Then emit the deterministic work-type signal so the dashboard sees the work by type and the request's narrative — this is a side-effect, NOT prose the AI may skip:
 
 ```
-mustard-rt run emit-pipeline --kind pipeline.kind --spec {slug} --payload '{"kind":"<feature|bugfix|task|tactical-fix>","scope":"<light|full|lean>"}'
+mustard-rt run emit-pipeline --kind pipeline.kind --spec {slug} --intent "<short natural-language request>" --payload '{"kind":"<feature|bugfix|task|tactical-fix>","scope":"<light|full|lean>"}'
 ```
+
+`--intent` seeds the auto-branch name for spec-less work: on the FIRST file edit of the request the harness creates+checks out `{kind}/{slug}` off `dev` (from `--spec` when present, else the intent slug). Pass the real request text so the branch is legible.
 
 Full-scope `feature`/`bugfix` emit through their pipeline; the LEAN paths (`task`, the bugfix fast-path) emit it too — Wave 1 wired the deterministic emit into those flows so NO run is invisible. (Spec-less `task` has no `{slug}` — pass the session's active spec slug when one exists, else the emit's own fallback applies.)
 
