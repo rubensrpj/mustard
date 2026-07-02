@@ -1,6 +1,6 @@
 ---
 name: mustard-git
-description: Use when the user runs /git or asks to commit, push, sync, or merge. Reads mustard.json for branch flow. Reversible operations only — never destructive filesystem or history rewrites.
+description: Use when the user runs /git or asks to commit, push, sync, or open a PR. Reads mustard.json for branch flow. Reversible operations only — never destructive filesystem or history rewrites.
 source: manual
 ---
 <!-- mustard:generated -->
@@ -10,13 +10,12 @@ source: manual
 
 | Action | Description |
 |--------|-------------|
-| `sync` | Pull parent branch into current branch |
+| `sync` | Rebase current branch onto `origin/<its base>` (base from its `{base}_` prefix) |
 | `commit` | Create commit (no push). Accepts `--scope=all\|staged\|<pattern>` |
-| `push` | Sync first, then commit + push |
-| `merge` | Sync + fast-forward merge to parent (single hop, always to dev) |
-| `merge main` | Cascade: branch → dev → main → back to branch |
+| `push` | Sync first, then commit + push ONLY the current branch |
+| `pr` | Commit + push, then open a PR into the branch's prefix base (idempotent) |
 
-→ `../../../refs/git/git-flow.md` (mustard.json, flow resolution, scope policy, performance budget).
+→ `../../../refs/git/git-flow.md` (mustard.json, integration-base derivation, work-branch naming, scope policy, backport reminder).
 
 ## Behavior
 
@@ -24,18 +23,17 @@ source: manual
 - **Prefix `git` with `rtk`** — every invocation, including inside `&&`/`;` chains and `$(…)` substitutions.
 - Minimize Bash calls — chain with `&&`/`;`, one Bash per repo max.
 - Submodules BEFORE parent (always). Single repo: skip submodule steps. → `../../../refs/git/submodule-rules.md` (monorepo handling + ephemeral paths).
-- **Local fast-forward merge** — no PRs, no merge commits, 100% linear history.
+- **PRs are the integration path** — a work branch reaches its base via `pr` (`gh pr create --base <prefix-base>`), NEVER a local push to the base. `commit`/`push`/`sync` only ever touch the current work branch.
 - **Only reversible operations** — see Forbidden Operations in `../../../refs/git/merge-protocol.md`.
 
 ## Procedure
 
-Step 0: resolve `$PARENT` from `mustard.json`. Step 0b: branch protection (refuse on `main`; refuse `commit`/`push`/`sync` on `dev`; allow `merge main` on `dev`). Step 0c: submodule HEAD check (monorepo only).
+Step 0: resolve `$BASE` from the current branch's `{base}_` prefix (bases derived from `mustard.json#git.flow`). Step 0b: branch protection (refuse any write op while ON a bare integration base). Step 0c: submodule HEAD check (monorepo only).
 
-- **sync** — ensure-excluded → auto-stash → `git fetch && git rebase "origin/$PARENT"` → safe stash pop. → `merge-protocol.md`.
+- **sync** — ensure-excluded → auto-stash → `git fetch && git rebase "origin/$BASE"` → safe stash pop. Abort on conflict. → `merge-protocol.md`.
 - **commit** — analyze → ensure-excluded + detect ephemerals → resolve scope → commit submodules (parallel) → commit parent → Final Status Report.
-- **push** — sync first (stop on conflict) → commit + push submodules (parallel) → push parent → Final Status Report.
-- **merge** — sync → ensure pushed → auto-stash checkout loop → `git merge --ff-only` → push → return to source.
-- **merge main** — if not on dev: run `merge` first. Then dev → main via same ff-only → return to `$ORIGIN`. Print summary table + Final Status Report.
+- **push** — sync first (stop on conflict) → commit + push ONLY the current branch (set upstream) → Final Status Report. Never pushes an integration branch.
+- **pr** — `push` first → `gh pr create --base "$BASE" --head <current> --fill` (an existing PR → just push + print its URL) → if any base `X` has `flow[X] == $BASE`, remind the user to also backport the change down to `X` so it does not regress.
 
 ## Ephemeral Paths
 
@@ -43,7 +41,7 @@ Never tracked: `.claude/.agent-state/`, `.claude/.metrics/`, `.claude/.pipeline-
 
 ## INVIOLABLE RULES
 
-- Aborts on ANY merge conflict. Aborts if `--ff-only` fails — **NEVER** fall back to destructive ops.
+- Aborts on ANY merge/rebase conflict — **NEVER** fall back to destructive ops.
 - NEVER `git add .` — use `git add -A` / `git add <pattern>` from the correct directory.
 - NEVER `git stash pop` without the sentinel index. NEVER touch `.git/info/exclude` directly.
-- After merge, return to the original branch. NEVER commit/push/sync directly on `main` or `dev`.
+- NEVER commit/push/sync directly on a bare integration base (the `git.flow` set). Integration into a base branch is via `pr` only — reversible ops, never destructive, abort on conflict.

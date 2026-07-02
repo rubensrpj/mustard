@@ -121,9 +121,14 @@ pub struct EmitPipelineOpts {
     pub allow_no_qa: bool,
     /// Free-form natural-language request. Only consulted on
     /// `--kind pipeline.kind` for a spec-less run: it seeds the auto-branch
-    /// slug (`{work_kind}/{slug}`) when no `--spec` is present. Ignored
-    /// otherwise.
+    /// slug (`{base}_{slug}`) when no `--spec` is present. Ignored otherwise.
     pub intent: Option<String>,
+    /// Integration base branch the work branch is cut from. On
+    /// `--kind pipeline.kind` the auto-branch becomes `{base}_{slug}` when this
+    /// names one of the project's `git.flow` integration bases; otherwise the
+    /// project's primary base is used. Agnostic — the base set is derived from
+    /// `git.flow`, never hardcoded. Ignored for other kinds.
+    pub base: Option<String>,
 }
 
 /// Parse the `--payload` JSON, tolerating a PowerShell quoting quirk.
@@ -349,14 +354,10 @@ pub fn run(opts: EmitPipelineOpts) {
     // marker is simply never consumed. Fail-open — the emit already succeeded.
     if kind_str == EVENT_PIPELINE_KIND {
         let project = project_dir();
-        let branch = compute_work_branch(
-            &payload_for_header,
-            &spec_name,
-            opts.intent.as_deref(),
-            &sid,
-            &ts,
-            &project,
-        );
+        let config = mustard_core::ProjectConfig::load(Path::new(&project));
+        let base = resolve_base(opts.base.as_deref(), &config);
+        let branch =
+            compute_work_branch(&base, &spec_name, opts.intent.as_deref(), &sid, &ts, &project);
         crate::shared::context::set_pending_branch(&project, &sid, &branch);
     }
 
@@ -985,26 +986,22 @@ fn bump_parent_progress(cwd: &Path, spec: &str, wave: u64, ts: &str) {
 
 // --- Auto-branch name computation (porta-unica) ------------------------------
 
-/// The known work-kind tokens. Anything else in the `pipeline.kind` payload
-/// degrades to `task` (the lightest flow) rather than minting a novel prefix.
-const WORK_KINDS: &[&str] = &["feature", "bugfix", "task", "tactical-fix"];
-
-/// Resolve the work-kind branch prefix from a `pipeline.kind` payload's `kind`
-/// field, sanitised to `[a-z-]` and constrained to [`WORK_KINDS`]. Absent /
-/// unknown → `task`.
-fn work_kind_from_payload(payload: &Value) -> String {
-    let raw = payload.get("kind").and_then(Value::as_str).unwrap_or("task");
-    let cleaned: String = raw
-        .trim()
-        .to_ascii_lowercase()
-        .chars()
-        .filter(|c| c.is_ascii_lowercase() || *c == '-')
-        .collect();
-    if WORK_KINDS.contains(&cleaned.as_str()) {
-        cleaned
-    } else {
-        "task".to_string()
+/// Resolve the effective integration base for the auto-branch prefix: the
+/// caller-supplied `--base` when it names one of the project's integration
+/// bases (`config.git.integration_bases()`), else the project's primary base
+/// (`config.git.primary_base()`).
+///
+/// Agnostic — both the accepted set and the fallback come from `git.flow`; no
+/// branch name is hardcoded here. Do NOT re-derive the base set ad hoc: the
+/// core owns that derivation so `work_branch_gate` and this emitter agree.
+fn resolve_base(requested: Option<&str>, config: &mustard_core::ProjectConfig) -> String {
+    let bases = config.git.integration_bases();
+    if let Some(b) = requested.map(str::trim).filter(|b| !b.is_empty()) {
+        if bases.contains(b) {
+            return b.to_string();
+        }
     }
+    config.git.primary_base()
 }
 
 /// Resolve the slug lang for the auto-branch from `mustard.json` — `lang`
@@ -1030,10 +1027,9 @@ fn short_sid(sid: &str) -> String {
     s.chars().take(8).collect()
 }
 
-/// Sanitise `{work_kind}/{slug}` into a valid git ref: keep `[A-Za-z0-9-_./]`,
+/// Sanitise `{base}_{slug}` into a valid git ref: keep `[A-Za-z0-9-_./]`,
 /// map everything else to `-`, collapse `..` runs (git forbids them), and trim
-/// leading `-`/`.`/`/` and trailing `/`/`.`. Never empty — floors to
-/// `task/work`.
+/// leading `-`/`.`/`/` and trailing `/`/`.`. Never empty — floors to `work`.
 fn sanitize_git_ref(raw: &str) -> String {
     let mut out: String = raw
         .chars()
@@ -1049,28 +1045,29 @@ fn sanitize_git_ref(raw: &str) -> String {
         .trim_start_matches(|c| c == '-' || c == '.' || c == '/')
         .trim_end_matches(|c| c == '/' || c == '.');
     if trimmed.is_empty() {
-        "task/work".to_string()
+        "work".to_string()
     } else {
         trimmed.to_string()
     }
 }
 
 /// Compute the auto-branch name for a `pipeline.kind` work-type signal:
-/// `{work_kind}/{slug}`, sanitised to a valid git ref. Slug precedence:
+/// `{base}_{slug}`, sanitised to a valid git ref. The `{base}_` prefix records
+/// the integration branch the work is cut from, so the gate (and `/git`) can
+/// recover the PR-target from the name alone. Slug precedence:
 /// 1. `--spec` when present (already a slug);
 /// 2. else `--intent` slugified for the project's lang;
 /// 3. else a date-based fallback (`YYYY-MM-DD` from the event `ts`) suffixed
 ///    with a short session id for uniqueness.
 /// Never fails — every branch degrades to a valid ref.
 fn compute_work_branch(
-    payload: &Value,
+    base: &str,
     spec: &str,
     intent: Option<&str>,
     sid: &str,
     ts: &str,
     project: &str,
 ) -> String {
-    let work_kind = work_kind_from_payload(payload);
     let slug = if !spec.trim().is_empty() {
         spec.trim().to_string()
     } else if let Some(intent) = intent.map(str::trim).filter(|s| !s.is_empty()) {
@@ -1085,7 +1082,7 @@ fn compute_work_branch(
             format!("{date}-{}", short_sid(sid))
         }
     };
-    sanitize_git_ref(&format!("{work_kind}/{slug}"))
+    sanitize_git_ref(&format!("{base}_{slug}"))
 }
 
 #[cfg(test)]
@@ -1217,37 +1214,66 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn compute_work_branch_prefers_spec_slug() {
-        let p = json!({ "kind": "feature", "scope": "full" });
-        let b = super::compute_work_branch(&p, "2026-07-02-my-spec", None, "sess-abcdef12", "2026-07-02T10:00:00.000Z", "/no/project");
-        assert_eq!(b, "feature/2026-07-02-my-spec");
+    fn compute_work_branch_prefers_spec_slug_off_primary_base() {
+        // base = the primary/`*` base → `{base}_{slug}`, kind dropped from name.
+        let b = super::compute_work_branch("dev", "2026-07-02-my-spec", None, "sess-abcdef12", "2026-07-02T10:00:00.000Z", "/no/project");
+        assert_eq!(b, "dev_2026-07-02-my-spec");
+        // Task example.
+        let b2 = super::compute_work_branch("dev", "parcelas-virtuais", None, "sess-abcdef12", "2026-07-02T10:00:00.000Z", "/no/project");
+        assert_eq!(b2, "dev_parcelas-virtuais");
+    }
+
+    #[test]
+    fn compute_work_branch_off_non_primary_base() {
+        // base = a non-primary integration base (e.g. `main`) → prefix records it.
+        let b = super::compute_work_branch("main", "close-gate-windows", None, "sess-abcdef12", "2026-07-02T10:00:00.000Z", "/no/project");
+        assert_eq!(b, "main_close-gate-windows");
     }
 
     #[test]
     fn compute_work_branch_falls_back_to_intent_slug() {
         // No spec → the intent is slugified (pt-BR strips accents by default).
-        let p = json!({ "kind": "bugfix" });
-        let b = super::compute_work_branch(&p, "", Some("Corrigir botão de login"), "sess-abcdef12", "2026-07-02T10:00:00.000Z", "/no/project");
-        assert_eq!(b, "bugfix/corrigir-botao-login");
+        let b = super::compute_work_branch("main", "", Some("Corrigir botão de login"), "sess-abcdef12", "2026-07-02T10:00:00.000Z", "/no/project");
+        assert_eq!(b, "main_corrigir-botao-login");
     }
 
     #[test]
     fn compute_work_branch_date_fallback_when_no_spec_or_intent() {
         // No spec, no intent → date-from-ts + short session id.
-        let p = json!({ "kind": "task" });
-        let b = super::compute_work_branch(&p, "", None, "sess-abcdef1234", "2026-07-02T10:00:00.000Z", "/no/project");
-        assert_eq!(b, "task/2026-07-02-sess-abc");
+        let b = super::compute_work_branch("dev", "", None, "sess-abcdef1234", "2026-07-02T10:00:00.000Z", "/no/project");
+        assert_eq!(b, "dev_2026-07-02-sess-abc");
     }
 
     #[test]
-    fn compute_work_branch_defaults_unknown_kind_to_task_and_sanitizes() {
-        // Unknown kind degrades to `task`; a spec with unsafe chars is sanitised.
-        let p = json!({ "kind": "wild card!" });
-        let b = super::compute_work_branch(&p, "weird ..slug/", None, "unknown", "2026-07-02T10:00:00.000Z", "/no/project");
+    fn compute_work_branch_sanitizes_unsafe_slug() {
+        // A spec with unsafe chars is sanitised into a valid ref.
+        let b = super::compute_work_branch("dev", "weird ..slug/", None, "unknown", "2026-07-02T10:00:00.000Z", "/no/project");
         // ".." collapsed, spaces mapped to '-', trailing '/' trimmed.
-        assert_eq!(b, "task/weird--slug");
+        assert_eq!(b, "dev_weird--slug");
         assert!(!b.contains(".."), "no `..` runs in a git ref");
         assert!(!b.starts_with('-'), "no leading dash");
+    }
+
+    #[test]
+    fn resolve_base_honours_requested_when_in_bases_else_primary() {
+        // Standard two-tier flow → integration bases {dev, main}, primary = dev.
+        let mut config = mustard_core::ProjectConfig::default();
+        config.git.flow.insert("*".to_string(), "dev".to_string());
+        config.git.flow.insert("dev".to_string(), "main".to_string());
+        // A requested base that IS an integration base is used verbatim.
+        assert_eq!(super::resolve_base(Some("main"), &config), "main");
+        assert_eq!(super::resolve_base(Some("dev"), &config), "dev");
+        // A requested base that is NOT an integration base → primary (flow["*"]).
+        assert_eq!(super::resolve_base(Some("feature/x"), &config), "dev");
+        // No request → primary.
+        assert_eq!(super::resolve_base(None, &config), "dev");
+
+        // Agnostic: a develop/master project resolves against ITS bases.
+        let mut dm = mustard_core::ProjectConfig::default();
+        dm.git.flow.insert("*".to_string(), "develop".to_string());
+        dm.git.flow.insert("develop".to_string(), "master".to_string());
+        assert_eq!(super::resolve_base(Some("master"), &dm), "master");
+        assert_eq!(super::resolve_base(Some("dev"), &dm), "develop", "unknown base → primary");
     }
 
     // -----------------------------------------------------------------------

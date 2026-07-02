@@ -147,6 +147,7 @@ impl Observer for WaveStartObserver {
                 payload: Some(json!({ "wave": wave }).to_string()),
                 allow_no_qa: false,
                 intent: None,
+                base: None,
             },
         );
         economy::emit(

@@ -35,11 +35,13 @@ Signals are heuristics — the pipeline detects what makes sense for the project
 
 **(d) Dispatch the internal flow + emit the `kind`.** Route to the flow the classification picked (the flow's SKILL owns the procedure — unchanged). Then emit the deterministic work-type signal so the dashboard sees the work by type and the request's narrative — this is a side-effect, NOT prose the AI may skip:
 
+**Choose the base first.** Before the emit, read `mustard.json#git.flow` and derive the project's integration bases — every non-`*` key ∪ every value (e.g. `{"*":"dev","dev":"main"}` → `dev`, `main`; `{"*":"main"}` → `main`). If there is MORE THAN ONE, ask ONE batched AskUserQuestion **"de qual base?"** offering exactly those branches (default = the primary/`*` base) so the user picks which integration branch this work is cut from; with a single base, do NOT ask. Pass the pick as `--base <chosen-branch>`.
+
 ```
-mustard-rt run emit-pipeline --kind pipeline.kind --spec {slug} --intent "<short natural-language request>" --payload '{"kind":"<feature|bugfix|task|tactical-fix>","scope":"<light|full|lean>"}'
+mustard-rt run emit-pipeline --kind pipeline.kind --spec {slug} --intent "<short natural-language request>" --base {chosen-base} --payload '{"kind":"<feature|bugfix|task|tactical-fix>","scope":"<light|full|lean>"}'
 ```
 
-`--intent` seeds the auto-branch name for spec-less work: on the FIRST file edit of the request the harness creates+checks out `{kind}/{slug}` off `dev` (from `--spec` when present, else the intent slug). Pass the real request text so the branch is legible.
+`--intent` + `--base` seed the auto-branch for spec-less work: on the FIRST file edit the harness creates+checks out `{base}_{slug}` off `<base>` (slug from `--spec` when present, else the intent slug). The `{base}_` prefix RECORDS which integration branch the work came from, so `/git` recovers its PR target from the name. Read-only requests never branch. Keep it agnostic — the options are the project's OWN bases (from `git.flow`), never a hardcoded "dev or main".
 
 Full-scope `feature`/`bugfix` emit through their pipeline; the LEAN paths (`task`, the bugfix fast-path) emit it too — Wave 1 wired the deterministic emit into those flows so NO run is invisible. (Spec-less `task` has no `{slug}` — pass the session's active spec slug when one exists, else the emit's own fallback applies.)
 

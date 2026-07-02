@@ -140,6 +140,7 @@ pub fn run(opts: ApproveSpecOpts) {
                 payload: Some(payload.to_string()),
                 allow_no_qa: false,
                 intent: None,
+                base: None,
             },
         );
     }

@@ -30,7 +30,7 @@
 //! exactly as the legacy `mustard_config` helpers did, so gate behaviour is
 //! preserved.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -61,6 +61,51 @@ pub struct GitConfig {
 impl Default for GitConfig {
     fn default() -> Self {
         Self { flow: BTreeMap::new(), provider: "github".to_string(), submodules: false }
+    }
+}
+
+impl GitConfig {
+    /// The set of **integration base branches** this project promotes through,
+    /// derived from [`flow`](GitConfig::flow): every non-`*` key ∪ every value.
+    ///
+    /// Examples: `{"*":"dev","dev":"main"}` → `{dev, main}`; `{"*":"main"}` →
+    /// `{main}`; `{"*":"develop","develop":"master"}` → `{develop, master}`.
+    /// An empty / absent flow falls back to `{main, master}` — the ONLY place a
+    /// branch name is hardcoded, and only as a last resort. The rest is fully
+    /// agnostic: the base set is whatever `git.flow` declares for the project.
+    #[must_use]
+    pub fn integration_bases(&self) -> BTreeSet<String> {
+        let mut bases: BTreeSet<String> = BTreeSet::new();
+        for (key, value) in &self.flow {
+            let key = key.trim();
+            if key != "*" && !key.is_empty() {
+                bases.insert(key.to_string());
+            }
+            let value = value.trim();
+            if !value.is_empty() {
+                bases.insert(value.to_string());
+            }
+        }
+        if bases.is_empty() {
+            bases.insert("main".to_string());
+            bases.insert("master".to_string());
+        }
+        bases
+    }
+
+    /// The **primary** integration base: `flow["*"]` when present, else any
+    /// single integration base (lexically-least, deterministic), else `main`.
+    /// Agnostic — the only literal is the last-resort `main` for a project with
+    /// no `git.flow`.
+    #[must_use]
+    pub fn primary_base(&self) -> String {
+        if let Some(star) = self.flow.get("*").map(|s| s.trim()).filter(|s| !s.is_empty()) {
+            return star.to_string();
+        }
+        self.integration_bases()
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| "main".to_string())
     }
 }
 
@@ -591,5 +636,59 @@ mod tests {
         cfg.subprojects.exclude = vec!["/apps\\web/".into()];
         let (excl, _) = cfg.subproject_overrides();
         assert_eq!(excl, vec!["apps/web".to_string()]);
+    }
+
+    #[test]
+    fn integration_bases_derives_from_flow_keys_and_values() {
+        // Standard two-tier flow → {dev, main}.
+        let mut cfg = ProjectConfig::default();
+        cfg.git.flow.insert("*".into(), "dev".into());
+        cfg.git.flow.insert("dev".into(), "main".into());
+        let bases = cfg.git.integration_bases();
+        assert!(bases.contains("dev") && bases.contains("main"));
+        assert_eq!(bases.len(), 2, "the `*` key is not itself a base: {bases:?}");
+
+        // GitHub-flow single main → {main}.
+        let mut single = ProjectConfig::default();
+        single.git.flow.insert("*".into(), "main".into());
+        assert_eq!(
+            single.git.integration_bases(),
+            BTreeSet::from(["main".to_string()]),
+        );
+
+        // develop/master flow (agnostic — no dev/main anywhere) → {develop, master}.
+        let mut dm = ProjectConfig::default();
+        dm.git.flow.insert("*".into(), "develop".into());
+        dm.git.flow.insert("develop".into(), "master".into());
+        assert_eq!(
+            dm.git.integration_bases(),
+            BTreeSet::from(["develop".to_string(), "master".to_string()]),
+        );
+    }
+
+    #[test]
+    fn integration_bases_empty_flow_falls_back_to_main_master() {
+        let cfg = ProjectConfig::default();
+        assert_eq!(
+            cfg.git.integration_bases(),
+            BTreeSet::from(["main".to_string(), "master".to_string()]),
+        );
+    }
+
+    #[test]
+    fn primary_base_prefers_star_then_first_then_main() {
+        // flow["*"] wins.
+        let mut cfg = ProjectConfig::default();
+        cfg.git.flow.insert("*".into(), "develop".into());
+        cfg.git.flow.insert("develop".into(), "master".into());
+        assert_eq!(cfg.git.primary_base(), "develop");
+
+        // No `*` → lexically-least integration base.
+        let mut no_star = ProjectConfig::default();
+        no_star.git.flow.insert("develop".into(), "master".into());
+        assert_eq!(no_star.git.primary_base(), "develop");
+
+        // Empty flow → last-resort `main`.
+        assert_eq!(ProjectConfig::default().git.primary_base(), "main");
     }
 }

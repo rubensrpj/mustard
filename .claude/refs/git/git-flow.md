@@ -33,38 +33,44 @@ Match current branch against `flow` keys. Exact match first, then glob. `*` is t
 
 ## Work branches
 
-Every work unit runs on its own `{kind}/{slug}` branch (e.g. `feature/aba-atividade`, `bugfix/close-gate-windows`). The branch is **auto-created off `dev` on the first file edit** of the request: the router pre-computes the name (`emit-pipeline --kind pipeline.kind`) and the harness's `work_branch_gate` checks it out on the first `Write`/`Edit`. Read-only requests never branch. `/git merge` then fuses the work branch back to `dev` (its `*` parent).
+Every work unit runs on its own `{base}_{slug}` branch (e.g. `dev_aba-atividade`, `main_close-gate-windows`) — the `{base}_` prefix **records the integration branch the work was cut from**. The branch is **auto-created off `<base>` on the first file edit** of the request: the router chooses the base (asking **"de qual base?"** when the project has more than one integration base), pre-computes the name (`emit-pipeline --kind pipeline.kind --base <base>`), and the harness's `work_branch_gate` checks it out on the first `Write`/`Edit`. A work branch's **base / PR-target is recovered from its prefix** — the leading `{base}_` segment, matched longest-first against the project's integration bases. Read-only requests never branch.
 
-**Direct edits on a protected branch are BLOCKED.** `dev` and `main`/`master` (the `git.flow` parents) are never developed on directly. If a `Write`/`Edit` fires while on a protected branch with no work branch to switch to, `work_branch_gate` returns **`Deny`** — describe the work so the router seeds a branch, or branch by hand first. If the auto-checkout itself fails while on a protected branch, the gate also **`Deny`s** (it never falls back to editing `dev`); on a normal work branch a failed checkout only warns and lets the edit proceed.
+**Integration bases** = every non-`*` key ∪ every value of `git.flow` (`{"*":"dev","dev":"main"}` → `dev`, `main`; `{"*":"develop","develop":"master"}` → `develop`, `master`). Agnostic — no fixed `dev`/`main`; the base set is whatever `git.flow` declares (an empty flow falls back to `main`/`master`).
+
+**Direct edits on a protected branch are BLOCKED.** The BARE integration branches (every base in `git.flow`) are never developed on directly; the `{base}_*` work branches are NOT protected. If a `Write`/`Edit` fires while on a bare integration branch with no work branch to switch to, `work_branch_gate` returns **`Deny`** — describe the work so the router seeds a branch, or branch by hand first. If the auto-checkout itself fails while on a protected branch, the gate also **`Deny`s** (it never falls back to editing the integration branch); on a work branch a failed checkout only warns and lets the edit proceed.
 
 ## Actions Table
 
 | Action | Description |
 |--------|-------------|
-| `sync` | Pull parent branch into current branch |
+| `sync` | Rebase the current branch onto `origin/<its base>` (base from its `{base}_` prefix). Abort on conflict. |
 | `commit` | Create commit (no push). Accepts `--scope=all\|staged\|<path-pattern>` |
-| `push` | Commit + push to remote |
-| `merge` | Sync + fast-forward merge to parent (single hop, always to dev) |
-| `merge main` | Fast-forward merge dev → main (explicit promotion, must be on dev) |
+| `push` | Sync-first (onto its base), then commit + push ONLY the current branch (set upstream). Never touches an integration branch. |
+| `pr` | Commit (scope=all) + push the current branch, then open a PR into its prefix base (`gh pr create --base <prefix-base> --head <current> --fill`). Idempotent — an existing PR just gets the push + its URL. |
 
-## Step 0 — Resolve Parent (all actions except commit)
+**PRs are the integration path.** A work branch reaches its base branch through a PR, never a local push to the base. The base is the branch's own `{base}_` prefix, matched against the project's integration bases (`git.flow`).
+
+### Backport reminder (promotion chains)
+
+After a `pr` into base `B`, check `git.flow` for any base `X` with `flow[X] == B` — those bases **promote into** `B` (e.g. with `{"dev":"main"}`, `dev` promotes into `main`). If the PR targets `B`, remind the user to also bring the change **down** to each such `X` (a follow-up PR `X_… → X`, or a cherry-pick) so `X` does not regress relative to `B`. Fully generic — derived from the flow, no hardcoded dev/main.
+
+## Step 0 — Resolve the base (all actions except commit)
 
 ```bash
 rtk git rev-parse --abbrev-ref HEAD
 ```
 
-Read `mustard.json` via the `Read` tool (do not `cat` it). Match the current branch against `git.flow` patterns. Store as `$PARENT`.
-If no match and no `mustard.json`: `$PARENT` = default branch (detect via `rtk git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null || echo main`).
+Read `mustard.json` via the `Read` tool (do not `cat` it). Derive the integration bases from `git.flow` (non-`*` keys ∪ values), then recover the current branch's base from its leading `{base}_` prefix (longest match). Store as `$BASE`.
+If the branch has no `{base}_` prefix (or there is no `mustard.json`): `$BASE` = the primary base (`git.flow["*"]`, else the repo default via `rtk git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null || echo main`).
 
 ## Step 0b — Branch Protection Check
 
-Before any operation (commit, push, merge, sync) check the current branch:
+Before any write op (commit, push, pr, sync) check the current branch against the project's integration bases (`git.flow`):
 
-- If current branch is `main` → **REFUSE** with error: `Cannot operate directly on protected branch 'main'. Create a feature branch first.`
-- If current branch is `dev` AND action is `commit`, `push`, or `sync` → **REFUSE** with error: `Cannot operate directly on protected branch 'dev'. Create a feature branch first.`
-- If current branch is `dev` AND action is `merge main` → **ALLOW** (this is the only permitted operation on dev).
+- If the current branch **is** a bare integration base (an exact member of the derived set, e.g. `dev`, `main`, `master`, `develop`) → **REFUSE** with error: `Cannot operate directly on protected branch '<branch>'. Create a work branch first.`
+- Otherwise (a `{base}_*` work branch) → proceed.
 
-**Exception**: `/git merge main` is the sole operation allowed on the dev branch — it is the explicit promotion path.
+Integration into a base branch happens via `pr`, not by operating on the base directly.
 
 ## Step 0c — Submodule HEAD state check (monorepo only)
 
