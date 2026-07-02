@@ -33,7 +33,9 @@ Match current branch against `flow` keys. Exact match first, then glob. `*` is t
 
 ## Work branches
 
-Every work unit runs on its own `{kind}/{slug}` branch (e.g. `feature/aba-atividade`, `bugfix/close-gate-windows`). The branch is **auto-created off `dev` on the first file edit** of the request: the router pre-computes the name (`emit-pipeline --kind pipeline.kind`) and the harness's `work_branch_gate` checks it out on the first `Write`/`Edit`. Read-only requests never branch. `/git merge` then fuses the work branch back to `dev` (its `*` parent). If the checkout fails (dirty conflict, missing `dev`), the harness warns and stays on the current branch — the edit still proceeds.
+Every work unit runs on its own `{kind}/{slug}` branch (e.g. `feature/aba-atividade`, `bugfix/close-gate-windows`). The branch is **auto-created off `dev` on the first file edit** of the request: the router pre-computes the name (`emit-pipeline --kind pipeline.kind`) and the harness's `work_branch_gate` checks it out on the first `Write`/`Edit`. Read-only requests never branch. `/git merge` then fuses the work branch back to `dev` (its `*` parent).
+
+**Direct edits on a protected branch are BLOCKED.** `dev` and `main`/`master` (the `git.flow` parents) are never developed on directly. If a `Write`/`Edit` fires while on a protected branch with no work branch to switch to, `work_branch_gate` returns **`Deny`** — describe the work so the router seeds a branch, or branch by hand first. If the auto-checkout itself fails while on a protected branch, the gate also **`Deny`s** (it never falls back to editing `dev`); on a normal work branch a failed checkout only warns and lets the edit proceed.
 
 ## Actions Table
 

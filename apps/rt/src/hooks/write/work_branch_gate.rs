@@ -13,10 +13,14 @@
 //! branch is ever created — branching is bound to an actual mutation, not to
 //! opening a pipeline.
 //!
-//! ## Flow (all fail-open — a git failure never blocks the edit)
+//! ## Flow
 //!
-//! 1. No pending-branch marker → `Allow` (the common case: no work signalled,
-//!    or already branched).
+//! 1. No pending-branch marker:
+//!    - on a PROTECTED branch (`main`/`master`, or a `git.flow` parent such as
+//!      `dev`) → `Deny`. Work is never developed directly on an integration
+//!      branch; describe the work (so the router seeds a branch) or branch by
+//!      hand first.
+//!    - otherwise (already on a work branch, or non-git tree) → `Allow`.
 //! 2. Current branch already IS the target → clear the marker, `Allow`.
 //! 3. Otherwise resolve the base branch (`mustard.json#git.flow["*"]`, default
 //!    `dev`) and the VCS binary (`mustard.json#vcs`, default `git`), then:
@@ -25,17 +29,16 @@
 //!      along); if `<base>` is absent locally, `git checkout -b <target>` off
 //!      the current HEAD.
 //! 4. On success → clear the marker, `Allow`.
-//! 5. On ANY git failure → clear the marker anyway (so it does not re-fire on
-//!    every subsequent edit) and return `Warn` so the edit still proceeds and
-//!    the user is told the branch was not created.
+//! 5. On git failure → clear the marker (so it does not re-fire on every edit);
+//!    if we are still on a PROTECTED branch → `Deny` (never edit it directly),
+//!    otherwise `Warn` and let the edit proceed on the current work branch.
 //!
 //! ## Contract (apps/rt/CLAUDE.md)
 //!
 //! Never panics — no `unwrap`/`expect` outside tests; every git call is
 //! `Command::…output()` matched into a `Result`, and an `Err` from the `Check`
-//! itself folds to `Allow` in the dispatcher. The only blocking verdict a
-//! `Check` can raise is `Deny`, which this gate never returns: it either
-//! `Allow`s or `Warn`s.
+//! itself folds to `Allow` in the dispatcher. It raises `Deny` ONLY to keep an
+//! edit off a protected integration branch; otherwise it `Allow`s or `Warn`s.
 
 use mustard_core::platform::error::Error;
 use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
@@ -132,6 +135,17 @@ fn checkout_work_branch(vcs: &str, root: &str, target: &str, base: &str) -> Resu
     run_git(vcs, root, &["checkout", "-b", target])
 }
 
+/// `true` when `branch` is a protected integration branch that must never be
+/// edited directly: `main`/`master`, or any parent target in `git.flow`
+/// (e.g. `dev`). Ordinary work branches (`feature/…`, `dev_rubens`, …) are not
+/// protected.
+fn is_protected(branch: &str, config: &ProjectConfig) -> bool {
+    if branch == "main" || branch == "master" {
+        return true;
+    }
+    config.git.flow.values().any(|parent| parent.as_str() == branch)
+}
+
 impl Check for WorkBranchGate {
     fn evaluate(&self, input: &HookInput, ctx: &Ctx) -> Result<Verdict, Error> {
         // Defensive: only PreToolUse(Write|Edit|MultiEdit) should reach us.
@@ -141,21 +155,39 @@ impl Check for WorkBranchGate {
         let project = ctx.project_dir_or_cwd(input);
         let sid = session_id_from(input);
 
-        // 1. No pending branch signalled for this session → no-op.
-        let Some(target) = context::pending_branch_for(&project, &sid) else {
-            return Ok(Verdict::Allow);
-        };
-
-        // VCS binary policy: default `git`; an explicit `""` opt-out means we
-        // cannot branch — drop the marker and allow.
+        // VCS binary policy: default `git`; an explicit `""` opt-out (or a
+        // non-git tree) means we cannot branch and there is nothing to guard.
         let config = ProjectConfig::load(Path::new(&project));
         let Some(vcs) = config.vcs() else {
             context::clear_pending_branch(&project, &sid);
             return Ok(Verdict::Allow);
         };
 
+        let current = current_branch(&vcs, &project);
+        let on_protected = current
+            .as_deref()
+            .map(|b| is_protected(b, &config))
+            .unwrap_or(false);
+
+        // 1. No pending branch signalled for this session.
+        let Some(target) = context::pending_branch_for(&project, &sid) else {
+            // Hard block: never develop directly on a protected integration
+            // branch. On a work branch (or non-git tree) there is nothing to do.
+            if on_protected {
+                return Ok(Verdict::Deny {
+                    reason: format!(
+                        "Você está na branch protegida '{}'. O Mustard não desenvolve \
+                         direto aqui — descreva o trabalho para eu criar a branch \
+                         {{kind}}/{{slug}}, ou crie uma branch manualmente antes de editar.",
+                        current.as_deref().unwrap_or("?")
+                    ),
+                });
+            }
+            return Ok(Verdict::Allow);
+        };
+
         // 2. Already on the target branch → clear and allow.
-        if current_branch(&vcs, &project).as_deref() == Some(target.as_str()) {
+        if current.as_deref() == Some(target.as_str()) {
             context::clear_pending_branch(&project, &sid);
             return Ok(Verdict::Allow);
         }
@@ -173,14 +205,27 @@ impl Check for WorkBranchGate {
                 Ok(Verdict::Allow)
             }
             Err(e) => {
-                // 6. Clear anyway so we do not re-fire on every edit; warn the
-                //    user and let the edit proceed on the current branch.
+                // Clear anyway so we do not re-fire on every edit.
                 context::clear_pending_branch(&project, &sid);
-                Ok(Verdict::Warn {
-                    message: format!(
-                        "não consegui criar a branch {target}: {e} — seguindo na branch atual"
-                    ),
-                })
+                if on_protected {
+                    // We could not leave the protected branch — refuse rather
+                    // than let the edit land directly on it.
+                    Ok(Verdict::Deny {
+                        reason: format!(
+                            "Não consegui sair da branch protegida '{}' para '{target}': {e}. \
+                             O Mustard não desenvolve direto na branch protegida — resolva o \
+                             git e tente de novo.",
+                            current.as_deref().unwrap_or("?")
+                        ),
+                    })
+                } else {
+                    // On a work branch already: warn and let the edit proceed.
+                    Ok(Verdict::Warn {
+                        message: format!(
+                            "não consegui criar a branch {target}: {e} — seguindo na branch atual"
+                        ),
+                    })
+                }
             }
         }
     }
@@ -268,5 +313,52 @@ mod tests {
         let (input, ctx) = pre_edit_input(root_s, "sess-none");
         let verdict = WorkBranchGate.evaluate(&input, &ctx).expect("no error");
         assert!(matches!(verdict, Verdict::Allow));
+    }
+
+    /// A repo on a protected branch (`main`) with NO pending-branch marker: a
+    /// direct edit must be BLOCKED — the harness never develops on an
+    /// integration branch. (`main` is protected regardless of `git.flow`.)
+    #[test]
+    fn blocks_direct_edit_on_protected_branch_without_marker() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let root_s = root.to_str().unwrap();
+        git(root, &["init"]);
+        git(root, &["config", "user.email", "t@example.com"]);
+        git(root, &["config", "user.name", "t"]);
+        git(root, &["checkout", "-b", "main"]);
+        std::fs::write(root.join("f.txt"), "hi").unwrap();
+        git(root, &["add", "."]);
+        git(root, &["commit", "-m", "init"]);
+
+        let (input, ctx) = pre_edit_input(root_s, "sess-protected");
+        let verdict = WorkBranchGate.evaluate(&input, &ctx).expect("no error");
+        assert!(
+            matches!(verdict, Verdict::Deny { .. }),
+            "direct edit on main is blocked: {verdict:?}",
+        );
+    }
+
+    /// A repo already on a work branch (`feature/x`) with NO marker: editing is
+    /// fine — the block only guards protected integration branches.
+    #[test]
+    fn allows_direct_edit_on_work_branch_without_marker() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let root_s = root.to_str().unwrap();
+        git(root, &["init"]);
+        git(root, &["config", "user.email", "t@example.com"]);
+        git(root, &["config", "user.name", "t"]);
+        git(root, &["checkout", "-b", "feature/x"]);
+        std::fs::write(root.join("f.txt"), "hi").unwrap();
+        git(root, &["add", "."]);
+        git(root, &["commit", "-m", "init"]);
+
+        let (input, ctx) = pre_edit_input(root_s, "sess-work");
+        let verdict = WorkBranchGate.evaluate(&input, &ctx).expect("no error");
+        assert!(
+            matches!(verdict, Verdict::Allow),
+            "editing on a work branch proceeds: {verdict:?}",
+        );
     }
 }
