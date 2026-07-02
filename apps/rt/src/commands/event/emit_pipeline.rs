@@ -981,6 +981,105 @@ fn bump_parent_progress(cwd: &Path, spec: &str, wave: u64, ts: &str) {
             path.display()
         );
     }
+
+    // Final-wave auto-settle: when the LAST wave completes (`phase → CLOSE`), the
+    // parent must not linger at `{stage:Execute, outcome:Active, phase:CLOSE}` —
+    // a state the dashboard reads (via `stage`) as "implementing" forever until
+    // an operator runs `/close`. Decide by the QA gate + acceptance criteria
+    // whether to finalize now or surface as "awaiting close". This is additive
+    // to the progress writes above (never regresses them). Fail-open.
+    if new_phase == "CLOSE" {
+        settle_final_wave(cwd, spec, ts);
+    }
+}
+
+/// On the FINAL `pipeline.wave.complete` (the wave that drives `phase → CLOSE`),
+/// settle the parent's lifecycle instead of leaving it at
+/// `{stage:Execute, outcome:Active, phase:CLOSE}` — the state the dashboard
+/// renders as "implementing" until someone runs `/close`.
+///
+/// `qa_required` = the QA close-gate is active (`MUSTARD_QA_GATE_MODE != off`,
+/// default `strict`, resolved by the SAME cascade the CLOSE gate uses) AND the
+/// spec actually carries executable acceptance criteria (its own `## Acceptance
+/// Criteria` items or a linked-capability AC — the exact union `qa-run` runs).
+/// When it is FALSE — precisely the case where `qa-run` would `skip` — the spec
+/// is auto-finalized exactly like `complete-spec`: [`patch_meta_complete`] →
+/// `Close/Completed/CLOSE`, plus a `pipeline.complete` event and the terminal
+/// `pipeline.status: completed` so the events log / dashboard / auto-verify all
+/// see the close (matching [`crate::commands::spec::complete_spec`]). When it is
+/// TRUE, the parent only advances `stage → QaReview` (outcome stays `Active`,
+/// phase stays `CLOSE`) so it surfaces as "awaiting close"; the real finalize
+/// stays with `/close` after QA passes.
+///
+/// Idempotent: a parent already at `Close/Completed` is left untouched, so a
+/// straggling / duplicate final `wave.complete` does not re-finalize or
+/// re-emit. Fail-open — every path degrades without panicking.
+fn settle_final_wave(cwd: &Path, spec: &str, ts: &str) {
+    let Some(path) = meta_path_for(cwd, spec, &Value::Null) else {
+        return;
+    };
+    let meta = read_meta(&path).unwrap_or_default();
+    let stage = meta.stage.as_deref().and_then(Stage::parse);
+    let outcome = meta.outcome.as_deref().and_then(Outcome::parse);
+    // Already finalized → nothing to do (idempotent).
+    if stage == Some(Stage::Close) && outcome == Some(Outcome::Completed) {
+        return;
+    }
+
+    let qa_required = crate::hooks::write::close_gate::qa_gate_active()
+        && crate::commands::review::qa_run::spec_has_executable_acs(cwd, spec);
+
+    if qa_required {
+        // Surface as "awaiting close": advance `stage → QaReview` (forward-only),
+        // keeping `outcome = Active` and `phase = CLOSE`. The real finalize is
+        // `/close` after QA passes.
+        let advance = match stage {
+            None => true,
+            Some(s) => stage_rank(s) < stage_rank(Stage::QaReview),
+        };
+        if !advance {
+            return;
+        }
+        let mut meta = meta;
+        meta.stage = Some(stage_label(Stage::QaReview).to_string());
+        meta.phase = Some("CLOSE".to_string());
+        meta.checkpoint = Some(ts.to_string());
+        if let Err(e) = write_meta(&path, &meta) {
+            eprintln!(
+                "emit-pipeline: WARN: could not write {} ({e}); parent awaiting-close stage may be stale",
+                path.display()
+            );
+        }
+    } else {
+        // No QA owed → finalize exactly like `complete-spec`.
+        patch_meta_complete(cwd, spec, ts);
+        emit_pipeline_complete(cwd, spec, ts);
+        emit_completed_status_if_needed(cwd, spec, ts, &session_id());
+    }
+}
+
+/// Route a `pipeline.complete` audit event for `spec`, matching
+/// [`crate::commands::spec::complete_spec`]'s emit: the payload carries
+/// `closedAt` + the affected-file set (union of harness `target.file` events and
+/// the VCS diff), so the events log / dashboard / `verify_emit` all see the
+/// close. Best-effort — the route write is fire-and-forget.
+fn emit_pipeline_complete(cwd: &Path, spec: &str, ts: &str) {
+    let affected = crate::commands::spec::complete_spec::collect_affected_files(cwd, spec);
+    let event = HarnessEvent {
+        v: SCHEMA_VERSION,
+        ts: ts.to_string(),
+        session_id: session_id(),
+        wave: 0,
+        actor: Actor {
+            kind: ActorKind::Orchestrator,
+            id: Some("emit-pipeline".to_string()),
+            actor_type: None,
+        },
+        event: EVENT_PIPELINE_COMPLETE.to_string(),
+        payload: json!({ "closedAt": ts, "affectedFiles": affected }),
+        spec: Some(spec.to_string()),
+    };
+    let _ = crate::shared::events::route::emit(&cwd.to_string_lossy(), &event);
 }
 
 
@@ -1645,6 +1744,87 @@ mod tests {
         // phase still tracks the interior wave (advisory), but stage stays QaReview.
         assert_eq!(v["phase"], json!("EXECUTE"), "{v}");
         assert_eq!(v["stage"], json!("QaReview"), "stage not regressed: {v}");
+    }
+
+    /// FINAL-WAVE AUTO-SETTLE — no acceptance criteria (the case `qa-run` would
+    /// `skip`): the last `wave.complete` auto-finalizes the parent exactly like
+    /// `complete-spec` (`stage=Close, outcome=Completed, phase=CLOSE`) and lands
+    /// a `pipeline.complete` event, while preserving the progress writes.
+    #[test]
+    fn final_wave_auto_finalizes_when_no_acceptance_criteria() {
+        let dir = tempdir().unwrap();
+        let spec_dir = dir.path().join(".claude").join("spec").join("no-ac");
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        // spec.md WITHOUT a `## Acceptance Criteria` section → qa-run would skip,
+        // so the spec owes no QA pass and can finalize on the final wave.
+        std::fs::write(spec_dir.join("spec.md"), b"# No AC\n\nNarrative only.\n").unwrap();
+        std::fs::write(
+            spec_dir.join("meta.json"),
+            br#"{"stage":"Execute","outcome":"Active","phase":"EXECUTE","scope":"full","lang":"pt-BR","isWavePlan":true,"totalWaves":2}"#,
+        )
+        .unwrap();
+
+        // Final wave (2 of 2) → phase CLOSE → auto-settle.
+        super::bump_parent_progress(dir.path(), "no-ac", 2, "2026-07-02T00:00:00Z");
+
+        let v: Value =
+            serde_json::from_str(&std::fs::read_to_string(spec_dir.join("meta.json")).unwrap())
+                .unwrap();
+        assert_eq!(v["stage"], json!("Close"), "auto-finalized to Close: {v}");
+        assert_eq!(v["outcome"], json!("Completed"), "outcome Completed: {v}");
+        assert_eq!(v["phase"], json!("CLOSE"), "{v}");
+        // Progress writes survive the finalize (patch_meta_complete preserves raw).
+        assert_eq!(v["currentWave"], json!(2), "{v}");
+        assert_eq!(v["completedWaves"], json!([2]), "{v}");
+
+        // The pipeline.complete audit event landed in the per-spec NDJSON sink.
+        let events_dir = spec_dir.join(".events");
+        let events =
+            mustard_core::view::projection::read_harness_events_from_ndjson_dir(&events_dir);
+        assert!(
+            events.iter().any(|e| e.event == EVENT_PIPELINE_COMPLETE),
+            "pipeline.complete must be emitted on auto-finalize",
+        );
+    }
+
+    /// FINAL-WAVE AUTO-SETTLE — acceptance criteria present + strict QA gate
+    /// (the default): the last `wave.complete` must NOT finalize. It advances the
+    /// parent to `stage=QaReview` (outcome `Active`, phase `CLOSE`) so it surfaces
+    /// as "awaiting close"; no `pipeline.complete` is emitted — `/close` owns the
+    /// real finalize after QA passes.
+    #[test]
+    fn final_wave_awaits_close_when_acceptance_criteria_present() {
+        let dir = tempdir().unwrap();
+        let spec_dir = dir.path().join(".claude").join("spec").join("with-ac");
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        std::fs::write(
+            spec_dir.join("spec.md"),
+            b"# With AC\n\n## Acceptance Criteria\n- [ ] AC-1: builds. Command: `true`\n",
+        )
+        .unwrap();
+        std::fs::write(
+            spec_dir.join("meta.json"),
+            br#"{"stage":"Execute","outcome":"Active","phase":"EXECUTE","scope":"full","lang":"pt-BR","isWavePlan":true,"totalWaves":2}"#,
+        )
+        .unwrap();
+
+        super::bump_parent_progress(dir.path(), "with-ac", 2, "2026-07-02T01:00:00Z");
+
+        let v: Value =
+            serde_json::from_str(&std::fs::read_to_string(spec_dir.join("meta.json")).unwrap())
+                .unwrap();
+        assert_eq!(v["stage"], json!("QaReview"), "awaits QA/close, not finalized: {v}");
+        assert_eq!(v["outcome"], json!("Active"), "stays Active until /close: {v}");
+        assert_eq!(v["phase"], json!("CLOSE"), "{v}");
+
+        // NOT finalized → no pipeline.complete audit event.
+        let events_dir = spec_dir.join(".events");
+        let events =
+            mustard_core::view::projection::read_harness_events_from_ndjson_dir(&events_dir);
+        assert!(
+            !events.iter().any(|e| e.event == EVENT_PIPELINE_COMPLETE),
+            "a QA-owing spec must not auto-emit pipeline.complete",
+        );
     }
 
     // -----------------------------------------------------------------------

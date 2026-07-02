@@ -118,6 +118,7 @@ const DICTIONARY = new Map<string, TranslationRow>([
   ["route.specs.groups.plan", { pt: "Planejando", en: "Planning" }],
   ["route.specs.groups.execute", { pt: "Executando", en: "Executing" }],
   ["route.specs.groups.qa_review", { pt: "Validando", en: "Reviewing" }],
+  ["route.specs.groups.awaiting_close", { pt: "Aguardando fechamento", en: "Awaiting close" }],
   ["route.specs.groups.close", { pt: "Fechadas", en: "Closed" }],
   ["route.specs.groups.cancelled", { pt: "Canceladas", en: "Cancelled" }],
   ["route.specs.groups.abandoned", { pt: "Abandonadas", en: "Abandoned" }],

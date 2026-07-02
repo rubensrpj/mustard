@@ -300,8 +300,12 @@ pub fn read_meta_beside(spec_file: &Path) -> Option<Meta> {
 /// 4. `outcome == ClosedFollowup` / `closed-followup` / `closed_followup` → `"closed-followup"`.
 /// 5. `outcome == Superseded` → `"completed"` (TF's are visually done).
 /// 6. `stage == Close && outcome == Completed` → `"completed"`.
-/// 7. `stage == Execute` → `"implementing"`.
-/// 8. anything else (incl. `Plan` / `Active`, empty fields) → `""` (queued).
+/// 7. `stage == QaReview` (`qa-review` / `qa_review` / `qareview`) with a
+///    **non-terminal** outcome → `"awaiting-close"`. The spec finished its
+///    waves but still owes the QA / close gate, so it reads as "awaiting close"
+///    rather than "implementing" (Execute) or the empty queued word.
+/// 8. `stage == Execute` → `"implementing"`.
+/// 9. anything else (incl. `Plan` / `Active`, empty fields) → `""` (queued).
 ///
 /// Match is case-insensitive on both sides.
 #[must_use]
@@ -324,6 +328,15 @@ pub fn status_word(meta: &Meta) -> &'static str {
         (_, "closedfollowup" | "closed-followup" | "closed_followup") => "closed-followup",
         (_, "superseded") => "completed",
         ("close", "completed") => "completed",
+        // QaReview + a non-terminal outcome → the spec finished executing but
+        // still owes the QA / close gate. Any terminal outcome that reached
+        // here (defensive; the arms above already claim the real terminals)
+        // falls through to the empty word rather than mislabelling as awaiting.
+        ("qa-review" | "qa_review" | "qareview", o)
+            if !matches!(o, "completed" | "cancelled" | "abandoned" | "absorbed") =>
+        {
+            "awaiting-close"
+        }
         ("execute", _) => "implementing",
         _ => "",
     }
@@ -447,6 +460,41 @@ mod tests {
             ..Meta::default()
         };
         assert_eq!(status_word(&fu), "closed-followup");
+    }
+
+    #[test]
+    fn status_word_awaiting_close_for_qareview_active() {
+        // QaReview + Active → the new "awaiting-close" word (spec finished its
+        // waves but still owes the QA / close gate).
+        let qa = Meta {
+            stage: Some("QaReview".into()),
+            outcome: Some("Active".into()),
+            ..Meta::default()
+        };
+        assert_eq!(status_word(&qa), "awaiting-close");
+        // Alternate stage spellings resolve identically.
+        for spelling in ["qa-review", "qa_review", "qareview", "QA-REVIEW"] {
+            let m = Meta {
+                stage: Some(spelling.into()),
+                outcome: Some("Active".into()),
+                ..Meta::default()
+            };
+            assert_eq!(status_word(&m), "awaiting-close", "stage={spelling}");
+        }
+        // Close + Completed still wins → "completed" (precedence preserved).
+        let done = Meta {
+            stage: Some("Close".into()),
+            outcome: Some("Completed".into()),
+            ..Meta::default()
+        };
+        assert_eq!(status_word(&done), "completed");
+        // Execute stays "implementing" — the awaiting-close arm does not bleed.
+        let exec = Meta {
+            stage: Some("Execute".into()),
+            outcome: Some("Active".into()),
+            ..Meta::default()
+        };
+        assert_eq!(status_word(&exec), "implementing");
     }
 
     #[test]

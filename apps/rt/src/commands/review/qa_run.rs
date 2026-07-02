@@ -866,6 +866,25 @@ fn gather_capability_acs(cwd: &Path, spec: &str) -> Vec<(String, String)> {
     out
 }
 
+/// `true` when `spec` carries at least one **executable** acceptance criterion
+/// — the exact union [`run_qa`] would run: the spec's own `## Acceptance
+/// Criteria` items PLUS any linked-capability ACs. This is the inverse of the
+/// "`qa-run` would `skip`" predicate (an empty union is precisely the
+/// `overall: skip` case), reusing the same `find_spec_file` +
+/// [`extract_ac_section`] + [`parse_ac_items`] + [`gather_capability_acs`] path
+/// so the two can never drift.
+///
+/// Consumed by the final-wave auto-settle in `emit-pipeline` to decide whether
+/// a finished spec still owes a QA pass. Fail-open: a missing / unreadable spec
+/// file with no linked-capability ACs reads as `false` (no criteria to verify).
+pub(crate) fn spec_has_executable_acs(cwd: &Path, spec: &str) -> bool {
+    let has_own_acs = find_spec_file(cwd, spec)
+        .and_then(|file| fs::read_to_string(&file).ok())
+        .and_then(|markdown| extract_ac_section(&markdown))
+        .is_some_and(|section| !parse_ac_items(&section).is_empty());
+    has_own_acs || !gather_capability_acs(cwd, spec).is_empty()
+}
+
 /// Run QA for `spec` under `cwd`. Always emits the event + metric.
 fn run_qa(cwd: &Path, spec: &str) -> QaResult {
     let Some(spec_file) = find_spec_file(cwd, spec) else {
