@@ -32,8 +32,13 @@
 //!      `{base}_*` work branches are NOT protected.
 //!    - otherwise (already on a work branch, or non-git tree) → `Allow`.
 //! 2. Current branch already IS the target → clear the marker, `Allow`.
-//! 3. Otherwise resolve the base from the target's prefix (see [`base_for`],
-//!    falling back to `config.git.primary_base()`) and the VCS binary
+//! 3. Otherwise FIRST refresh the integration bases from `origin` (see
+//!    [`refresh_integration_bases`]) — `git fetch origin` then fast-forward
+//!    each `git.flow` base to its remote — so the branch is cut from the
+//!    latest `dev`/`main`. This is fully fail-open: offline / no remote /
+//!    non-ff never blocks the edit and never panics. Then resolve the base
+//!    from the target's prefix (see [`base_for`], falling back to
+//!    `config.git.primary_base()`) and the VCS binary
 //!    (`mustard.json#vcs`, default `git`), then:
 //!    - target branch exists → `git checkout <target>`;
 //!    - else → `git checkout -b <target> <base>` (carries the working tree
@@ -143,6 +148,38 @@ fn checkout_work_branch(vcs: &str, root: &str, target: &str, base: &str) -> Resu
     run_git(vcs, root, &["checkout", "-b", target])
 }
 
+/// Refresh the project's integration bases (`git.flow`) to their `origin`
+/// remotes BEFORE a work branch is cut, so the branch is always based on the
+/// latest `dev`/`main`. Fire-and-forget: it returns nothing the caller must
+/// act on, and every git failure is swallowed. Fully FAIL-OPEN — offline, no
+/// remote, or a diverged base never blocks the edit and never panics.
+///
+/// 1. `git fetch origin` — on failure (offline / no remote) RETURN early and
+///    do nothing else; the branch is still cut from the local base.
+/// 2. For each integration base `B`:
+///    - when `B` is the checked-out branch (`Some(B) == current`) →
+///      `git merge --ff-only origin/B` fast-forwards it in place;
+///    - otherwise → `git fetch origin B:B`, a refspec fetch git refuses to
+///      make non-ff, so it safely fast-forwards the local ref without a
+///      checkout.
+///    Every per-base error (no matching origin ref, a diverged base, …) is
+///    ignored — best-effort, keep going.
+fn refresh_integration_bases(vcs: &str, root: &str, config: &ProjectConfig, current: Option<&str>) {
+    // Offline / no remote → nothing to refresh; the branch is cut from the
+    // local base as before. Do NOT propagate the error.
+    if run_git(vcs, root, &["fetch", "origin"]).is_err() {
+        return;
+    }
+    for base in config.git.integration_bases() {
+        // Best-effort per base — drop the result either way.
+        let _ = if current == Some(base.as_str()) {
+            run_git(vcs, root, &["merge", "--ff-only", &format!("origin/{base}")])
+        } else {
+            run_git(vcs, root, &["fetch", "origin", &format!("{base}:{base}")])
+        };
+    }
+}
+
 /// Recover the integration base a work branch was cut from, from its NAME:
 /// among the project's integration bases (`git.flow`), the LONGEST base `B`
 /// such that `target` starts with `"{B}_"`. When none match, the project's
@@ -215,6 +252,11 @@ impl Check for WorkBranchGate {
             context::clear_pending_branch(&project, &sid);
             return Ok(Verdict::Allow);
         }
+
+        // 3. Refresh the integration bases from origin FIRST so the branch is
+        //    cut from the latest dev/main. Fail-open: offline / no remote /
+        //    non-ff never blocks the edit (see refresh_integration_bases).
+        refresh_integration_bases(&vcs, &project, &config, current.as_deref());
 
         // 3-4. Recover the base from the target's `{base}_` prefix and check out.
         let base = base_for(&target, &config);
@@ -336,6 +378,116 @@ mod tests {
         assert!(
             context::pending_branch_for(root_s, sid).is_none(),
             "marker cleared after checkout",
+        );
+    }
+
+    /// FAIL-OPEN: with NO `origin` remote, the base refresh's `git fetch origin`
+    /// fails — that must NOT break branch creation. The gate still checks the
+    /// work branch out off the local base and Allows the edit.
+    #[test]
+    fn base_refresh_is_fail_open_without_origin_remote() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let root_s = root.to_str().unwrap();
+
+        seed_flow(root, r#"{"*":"dev","dev":"main"}"#);
+        init_repo_on(root, "dev");
+
+        // No `origin` remote is configured — `git fetch origin` will fail.
+        let has_origin = Command::new("git")
+            .args(["remote", "get-url", "origin"])
+            .current_dir(root)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        assert!(!has_origin, "precondition: repo has no origin remote");
+
+        let sid = "sess-offline";
+        context::set_pending_branch(root_s, sid, "dev_offline-thing");
+
+        let (input, ctx) = pre_edit_input(root_s, sid);
+        let verdict = WorkBranchGate.evaluate(&input, &ctx).expect("no error");
+        assert!(
+            matches!(verdict, Verdict::Allow),
+            "a failing `git fetch origin` must not block the edit: {verdict:?}",
+        );
+        assert_eq!(
+            current_branch("git", root_s).as_deref(),
+            Some("dev_offline-thing"),
+            "the work branch is still cut from the local base when offline",
+        );
+        assert!(
+            context::pending_branch_for(root_s, sid).is_none(),
+            "marker cleared after checkout",
+        );
+    }
+
+    /// A local bare-remote fixture whose `dev` is BEHIND origin: the base refresh
+    /// fast-forwards the local `dev` before the work branch is cut, so the branch
+    /// carries the newest commit. Proves the refresh actually advances the base.
+    #[test]
+    fn base_refresh_fast_forwards_base_behind_origin() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        // A bare "remote" repo whose HEAD points at `dev` (set explicitly so we
+        // do not depend on the git version's default-branch flag).
+        let remote = tmp.path().join("remote.git");
+        std::fs::create_dir_all(&remote).unwrap();
+        let remote_s = remote.to_str().unwrap();
+        git(&remote, &["init", "--bare"]);
+        git(&remote, &["symbolic-ref", "HEAD", "refs/heads/dev"]);
+
+        // A working clone that publishes the first `dev` commit.
+        let seed = tmp.path().join("seed");
+        std::fs::create_dir_all(&seed).unwrap();
+        git(&seed, &["init"]);
+        git(&seed, &["config", "user.email", "t@example.com"]);
+        git(&seed, &["config", "user.name", "t"]);
+        git(&seed, &["checkout", "-b", "dev"]);
+        std::fs::write(seed.join("f.txt"), "one").unwrap();
+        git(&seed, &["add", "."]);
+        git(&seed, &["commit", "-m", "one"]);
+        git(&seed, &["remote", "add", "origin", remote_s]);
+        git(&seed, &["push", "origin", "dev"]);
+
+        // The project clone — its local `dev` starts at the first commit.
+        let proj = tmp.path().join("proj");
+        std::fs::create_dir_all(&proj).unwrap();
+        let proj_s = proj.to_str().unwrap();
+        git(&proj, &["clone", remote_s, "."]);
+        git(&proj, &["config", "user.email", "t@example.com"]);
+        git(&proj, &["config", "user.name", "t"]);
+        seed_flow(&proj, r#"{"*":"dev","dev":"main"}"#);
+
+        // Now advance origin/dev with a SECOND commit the project has not seen.
+        std::fs::write(seed.join("f.txt"), "two").unwrap();
+        git(&seed, &["add", "."]);
+        git(&seed, &["commit", "-m", "two"]);
+        git(&seed, &["push", "origin", "dev"]);
+        let ahead = Command::new("git")
+            .args(["rev-parse", "dev"])
+            .current_dir(&seed)
+            .output()
+            .unwrap();
+        let ahead_sha = String::from_utf8(ahead.stdout).unwrap().trim().to_string();
+
+        // First edit of the work unit fires the gate; base refresh must ff `dev`.
+        let sid = "sess-behind";
+        context::set_pending_branch(proj_s, sid, "dev_new-thing");
+        let (input, ctx) = pre_edit_input(proj_s, sid);
+        let verdict = WorkBranchGate.evaluate(&input, &ctx).expect("no error");
+        assert!(matches!(verdict, Verdict::Allow), "edit proceeds: {verdict:?}");
+
+        // The work branch was cut from the fast-forwarded `dev` (second commit).
+        let head = Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(&proj)
+            .output()
+            .unwrap();
+        let head_sha = String::from_utf8(head.stdout).unwrap().trim().to_string();
+        assert_eq!(
+            head_sha, ahead_sha,
+            "the work branch is based on the fast-forwarded dev (latest origin commit)",
         );
     }
 
