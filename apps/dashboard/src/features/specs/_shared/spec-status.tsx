@@ -20,6 +20,7 @@ export const STATUS_LABELS: Record<string, string> = {
   implementing:      "ativa",
   reviewing:         "review",
   qa:                "QA",
+  "awaiting-close":  "aguard. fechar",
   "closed-followup": "follow-up",
   completed:         "concluída",
   cancelled:         "cancelada",
@@ -52,6 +53,9 @@ export const STATUS_CLASSES: Record<string, string> = {
   in_progress:       "bg-green-500/15 text-green-400",
   reviewing:         "bg-amber-500/15 text-amber-400",
   qa:                "bg-emerald-500/15 text-emerald-400",
+  // Waves done, QA/close pending — a distinct sky hue reads as "near the finish
+  // line" without colliding with qa (emerald) or completed (slate).
+  "awaiting-close":  "bg-sky-500/15 text-sky-400",
   "closed-followup": "bg-cyan-500/15 text-cyan-400",
   completed:         "bg-slate-500/15 text-slate-400",
   cancelled:         "bg-[--intent-error]/15/10 text-[--intent-error]/70",

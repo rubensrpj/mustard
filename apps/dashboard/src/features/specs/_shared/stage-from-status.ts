@@ -28,6 +28,13 @@ export function stateFromStatus(status: string): SpecState {
     case "qa":
       stage = "qa-review";
       break;
+    case "awaiting-close":
+      // Finished executing; the waves are done but the spec still owes the QA /
+      // close gate. Reuse the qa-review stage so StageBullet + the filter
+      // buckets treat it as a near-done ACTIVE spec (outcome stays "active"),
+      // never "implementing" (Execute) and never a terminal.
+      stage = "qa-review";
+      break;
     case "closed-followup":
       stage = "close";
       flags.followup_open = true;

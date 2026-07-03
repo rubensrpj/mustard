@@ -49,6 +49,7 @@ type GroupKey =
   | "plan"
   | "execute"
   | "qa_review"
+  | "awaiting_close"
   | "close"
   | "cancelled"
   | "abandoned"
@@ -56,11 +57,14 @@ type GroupKey =
   | "absorbed";
 
 // Render order — earliest active stage first, terminal buckets last.
+// `awaiting_close` (waves done, QA/close pending) sits after qa_review and
+// before the terminal `close` bucket — near-done but still active.
 const GROUP_ORDER: GroupKey[] = [
   "analyze",
   "plan",
   "execute",
   "qa_review",
+  "awaiting_close",
   "close",
   "cancelled",
   "abandoned",
@@ -78,6 +82,11 @@ const COLLAPSED_BY_DEFAULT = new Set<GroupKey>([
 ]);
 
 function groupKeyForCard(card: SpecCard): GroupKey {
+  // "awaiting-close" — waves done, QA/close gate pending — gets its own group
+  // (labelled "Aguardando fechamento"), distinct from the execute and completed
+  // buckets. Checked off the raw status word since `stateFromStatus` folds it
+  // onto the qa-review stage for the bullet/filters.
+  if (card.status === "awaiting-close") return "awaiting_close";
   const state = stateFromStatus(card.status);
   if (state.outcome === "completed") return "close";
   if (state.outcome === "cancelled") return "cancelled";

@@ -86,6 +86,15 @@ fn resolve_mode(env_var: &str, config_override: Option<&str>) -> GateMode {
     }
 }
 
+/// `true` when the QA close-gate is **active** — `MUSTARD_QA_GATE_MODE`
+/// resolves to a non-`off` mode (default `strict`). Reuses [`resolve_mode`],
+/// the exact cascade `run_close_gates`'s QA sub-gate uses, so the final-wave
+/// auto-settle in `emit-pipeline` and the CLOSE gate agree on whether a spec
+/// still owes a QA pass before it can be finalized.
+pub(crate) fn qa_gate_active() -> bool {
+    resolve_mode("MUSTARD_QA_GATE_MODE", None) != GateMode::Off
+}
+
 /// Resolve the QA-composition gate mode from `MUSTARD_QA_COMPOSITION_GATE_MODE`.
 ///
 /// Unlike the other close sub-gates this defaults to **warn**, not strict: a
