@@ -1,36 +1,49 @@
 //! `mustard update` — refresh Mustard core files, preserving user edits.
 //!
-//! Ported from `commands/update.ts`. The flow:
+//! `update` MIRRORS the entire bundled `templates/` payload into an existing
+//! `.claude/`, exactly the tree `init` lays down — so ANY new template file
+//! reaches an already-installed project automatically. It replaces the former
+//! hardcoded allowlist of folders (`commands/mustard`, `skills`, `scripts`,
+//! `refs`) plus a couple of named files, which silently went stale whenever a
+//! new template path shipped: `agents/`, `pipeline-config.md`, `context/` and
+//! `grammars-suggestions.json` were each missed and hand-backfilled. The mirror
+//! is driven by ITERATING the template's top-level entries — nothing is
+//! enumerated by name beyond the three routing sets below.
+//!
+//! The flow:
 //!
 //! 1. require an existing `.claude/` (error out otherwise);
 //! 2. confirm interactively (unless `--force`);
 //! 3. take a timestamped backup — **unconditionally**, `--force` only skips
 //!    the prompt, never the safety net;
-//! 4. delete the core, Mustard-owned folders (`commands/mustard`, `skills`,
-//!    `scripts`, `refs`);
-//! 5. re-copy those folders plus `settings.json` and the root reference
-//!    `pipeline-config.md` from `templates/`, and overwrite the Mustard agent
-//!    definitions in the shared `agents/` folder (copied, never deleted, so a
-//!    user's own agents survive);
-//! 6. re-run the RTK and global-permissions guarantees;
-//! 7. re-stamp the `version` field in the project-root `mustard.json`.
+//! 4. mirror each top-level `templates/` entry into `.claude/`, routed by:
+//!    - **PRESERVE** ([`PRESERVE`]) — never deleted, never overwritten: the
+//!      user/runtime files `CLAUDE.md`, `mustard.json`, `grain.model.json` and
+//!      the dirs `spec/`, `memory/`, `docs/`. `CLAUDE.md` ships in the payload
+//!      but its refresh is a separate, deliberate concern (the scan personalizes
+//!      its `## Guards`), so update leaves it alone; the rest are not in the
+//!      payload at all — listed so a future template could never clobber them;
+//!    - **EXCLUDE** ([`EXCLUDE`]) — never deployed: `.github` (installed at the
+//!      project root by `init`) and `.claude` (the `.claude/.claude/` nesting
+//!      guard). Matches `init`'s `copy_dir` exclude exactly, so init and update
+//!      produce the SAME `.claude/`;
+//!    - **MERGE** ([`MERGE_DIRS`]) — copied OVER without deleting first:
+//!      `agents/`, a flat SHARED namespace where a user may drop their own agent
+//!      alongside Mustard's `mustard-review` / `mustard-guards` definitions;
+//!    - **else** — a Mustard-owned FOLDER is deleted then recopied (pruning
+//!      files dropped from the template + refreshing the rest); a Mustard-owned
+//!      FILE (e.g. `settings.json`, `pipeline-config.md`, `grammars-suggestions.json`)
+//!      is overwrite-copied;
+//! 5. re-assert the absolute hook commands in the copied `settings.json`, then
+//!    re-run the RTK / ripgrep / global-permissions guarantees;
+//! 6. re-stamp the `version` field in the project-root `mustard.json`.
 //!
-//! **What is preserved.** Only the Mustard-owned folders are deleted, so
-//! everything else under `.claude/` survives untouched: `CLAUDE.md`,
-//! `grain.model.json`, `docs/`, `spec/`, `memory/`, and any user-authored
-//! command outside `commands/mustard/`. The project-root `mustard.json` is
-//! loaded and rewritten with only `version` bumped — git flow, commands,
-//! language/tone, `runtime` and any user keys are preserved.
-//!
-//! **Why `pipeline-config.md` is re-copied, not preserved.** It is a static,
-//! Mustard-owned orchestrator reference with no per-project customization
-//! (unlike `CLAUDE.md`, whose `## Guards` the scan personalizes). It lives at
-//! the template ROOT, not under a core folder, so the folder re-copy loop never
-//! touched it: a project `init`'d before the file shipped and only ever
-//! `update`d never received it — every agent following a `Read pipeline-config.md`
-//! instruction then hit a missing file — and edits to the reference never
-//! propagated to deployed projects. This is the same backfill gap the `agents/`
-//! copy closed. The unconditional backup preserves any local edit.
+//! **What is preserved.** The PRESERVE set above, plus every user-added file
+//! inside a MERGE dir (a user's own agent survives the `agents/` refresh). The
+//! project-root `mustard.json` is loaded and rewritten with only `version`
+//! bumped — git flow, commands, language/tone, `runtime` and any user keys
+//! survive. The unconditional backup preserves any local edit to a
+//! Mustard-owned file.
 //!
 //! **The `version` re-stamp** lets the dashboard (B6) see the freshly installed
 //! version; the rest of the config is left as `init`/the user set it.
@@ -57,10 +70,30 @@ pub struct UpdateOptions {
     pub force: bool,
 }
 
-/// The Mustard-owned folders `update` deletes and re-copies. Everything else
-/// under `.claude/` is left in place — that is how user customisations and
-/// pipeline state survive an update.
-const CORE_FOLDERS: &[&str] = &["commands/mustard", "skills", "scripts", "refs"];
+/// Top-level `.claude/` entries `update` must NEVER delete or overwrite — the
+/// user- and runtime-owned files. `mustard.json` and `grain.model.json` are not
+/// in the template payload at all (they are listed so a future template shipping
+/// one could still never clobber the deployed copy); `CLAUDE.md` IS in the
+/// payload but its refresh is a separate, deliberate concern — the scan
+/// personalizes its `## Guards`, so update leaves the user's orchestrator file
+/// untouched. `spec/`, `memory/`, `docs/` are the pipeline state and user notes.
+const PRESERVE: &[&str] =
+    &["CLAUDE.md", "mustard.json", "grain.model.json", "spec", "memory", "docs"];
+
+/// Top-level template entries never deployed into a client `.claude/`. Matches
+/// `init`'s `copy_dir` exclude EXACTLY so init and update produce the same tree:
+/// `.github` is installed at the project ROOT (by `init`), and `.claude` guards
+/// against the `.claude/.claude/` nesting bug (I1).
+const EXCLUDE: &[&str] = &[".github", ".claude"];
+
+/// Mustard-owned folders copied OVER the target without deleting it first, so a
+/// user's own file dropped alongside Mustard's survives. `agents/` is a flat,
+/// SHARED namespace: the copy overwrites Mustard's `mustard-review` /
+/// `mustard-guards` definitions and leaves any user agent in place. (Backfills a
+/// project `init`'d before the agents shipped — the gap that left
+/// `mustard-review` unregistered, forcing dispatch to fall back to
+/// `general-purpose` and lose the read-only tool restriction.)
+const MERGE_DIRS: &[&str] = &["agents"];
 
 /// Run `mustard update` against `project_path`.
 ///
@@ -92,9 +125,11 @@ pub fn update_with_templates(
         bail!("no .claude/ directory found - run `mustard init` first");
     }
 
-    println!("  Will recreate: commands/mustard/  skills/  scripts/  refs/  settings.json  pipeline-config.md");
     println!(
-        "  Will preserve: CLAUDE.md  grain.model.json  mustard.json  docs/  spec/  memory/"
+        "  Will mirror the entire templates payload into .claude/ (folders pruned + refreshed, files overwritten)"
+    );
+    println!(
+        "  Will preserve: CLAUDE.md  mustard.json  grain.model.json  spec/  memory/  docs/  (+ your own agents/)"
     );
 
     // Confirm — interactive only. `--force` skips the prompt; a non-TTY stdin
@@ -115,35 +150,47 @@ pub fn update_with_templates(
     let backup = backup_claude_dir(&claude_path)?;
     println!("  Backup: {}", backup.display());
 
-    // Delete the Mustard-owned core folders.
-    for folder in CORE_FOLDERS {
-        let target = claude_path.join(folder);
-        if target.exists() {
-            mfs::remove_dir_all(&target)
-                .with_context(|| format!("removing {}", target.display()))?;
+    // Mirror the whole templates payload into `.claude/`, driven by ITERATING
+    // the template's top-level entries — no hardcoded allowlist, so a new
+    // template path can never go stale. Each entry is routed by the
+    // PRESERVE / EXCLUDE / MERGE_DIRS sets; everything else is a Mustard-owned
+    // FOLDER (deleted then recopied, pruning files dropped from the template) or
+    // FILE (overwrite-copied). Names are sorted for deterministic output.
+    let mut names: Vec<String> = std::fs::read_dir(templates_dir)
+        .with_context(|| format!("reading templates {}", templates_dir.display()))?
+        .filter_map(std::result::Result::ok)
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+
+    let mut total = 0usize;
+    for name in &names {
+        let key = name.as_str();
+        if EXCLUDE.contains(&key) || PRESERVE.contains(&key) {
+            continue;
+        }
+        let src = templates_dir.join(name);
+        let dest = claude_path.join(name);
+        if MERGE_DIRS.contains(&key) {
+            // Copy OVER without deleting first — user-added entries survive.
+            total += copy_dir(&src, &dest, true, &[])?;
+        } else if src.is_dir() {
+            // Mustard-owned folder: delete then recopy so files removed from the
+            // template are pruned from the deployed tree.
+            if dest.exists() {
+                mfs::remove_dir_all(&dest)
+                    .with_context(|| format!("removing {}", dest.display()))?;
+            }
+            total += copy_dir(&src, &dest, true, &[])?;
+        } else {
+            // Mustard-owned file at the template root: overwrite-copy.
+            let bytes = mfs::read(&src).with_context(|| format!("reading {}", src.display()))?;
+            mfs::write_atomic(&dest, &bytes)
+                .with_context(|| format!("copying {}", src.display()))?;
+            total += 1;
         }
     }
-    println!("  Cleaned core folders");
-
-    // Re-copy the core folders + settings.json from templates/.
-    let mut total = 0usize;
-    total += copy_core_folder(templates_dir, &claude_path, "commands/mustard")?;
-    total += copy_core_folder(templates_dir, &claude_path, "skills")?;
-    total += copy_core_folder(templates_dir, &claude_path, "scripts")?;
-    total += copy_core_folder(templates_dir, &claude_path, "refs")?;
-    // `agents/` is a flat, SHARED namespace (a user may drop their own agent
-    // there), so — unlike the CORE_FOLDERS above — it is NOT deleted first: the
-    // copy overwrites Mustard's `mustard-review` / `mustard-guards` definitions
-    // and leaves any user agent untouched. Backfills a project that was `init`'d
-    // before the agents shipped and has only ever been `update`d — the gap that
-    // left `mustard-review` unregistered, forcing dispatch to fall back to
-    // `general-purpose` and lose the read-only tool restriction.
-    total += copy_core_folder(templates_dir, &claude_path, "agents")?;
-    total += copy_core_file(templates_dir, &claude_path, "settings.json")?;
-    // Backfill / refresh the root-level orchestrator reference (see module doc):
-    // absent in projects init'd before it shipped, stale in the rest.
-    total += copy_core_file(templates_dir, &claude_path, "pipeline-config.md")?;
-    println!("  Updated {total} files");
+    println!("  Mirrored {total} files from templates");
 
     // The settings.json we just re-copied carries the template's bare
     // `rtk mustard-rt on <Event>` hooks again — re-assert the absolute,
@@ -171,34 +218,6 @@ pub fn update_with_templates(
     Ok(())
 }
 
-/// Copy a single core folder from `templates/<rel>` into `.claude/<rel>`,
-/// overwriting (the folder was just deleted, so this is a clean re-copy).
-/// A folder absent from the payload (e.g. `refs/` in an older template set)
-/// is silently skipped, matching the JS `existsSync` guard.
-fn copy_core_folder(templates_dir: &Path, claude_path: &Path, rel: &str) -> Result<usize> {
-    let src = templates_dir.join(rel);
-    if !src.is_dir() {
-        return Ok(0);
-    }
-    copy_dir(&src, &claude_path.join(rel), true, &[])
-}
-
-/// Re-copy a single Mustard-owned file living at the template ROOT (not under a
-/// core folder) into `.claude/<rel>`. Returns `1` when copied, `0` when the
-/// payload lacks it (matching the JS `existsSync` guard). Used for
-/// `settings.json` and the `pipeline-config.md` reference — both backfilled when
-/// absent and refreshed when present, since neither is per-project customized.
-fn copy_core_file(templates_dir: &Path, claude_path: &Path, rel: &str) -> Result<usize> {
-    let src = templates_dir.join(rel);
-    if !src.is_file() {
-        return Ok(0);
-    }
-    let bytes = mfs::read(&src).with_context(|| format!("reading {}", src.display()))?;
-    mfs::write_atomic(claude_path.join(rel), &bytes)
-        .with_context(|| format!("copying {}", src.display()))?;
-    Ok(1)
-}
-
 /// Copy `.claude/` to a timestamped `.backup.` sibling and return its path.
 fn backup_claude_dir(claude_path: &Path) -> Result<std::path::PathBuf> {
     let stamp = mustard_core::time::filename_safe_now();
@@ -222,15 +241,20 @@ mod tests {
         let templates = root.join("templates");
         fs::create_dir_all(templates.join("commands/mustard")).unwrap();
         fs::create_dir_all(templates.join("skills")).unwrap();
-        fs::create_dir_all(templates.join("scripts")).unwrap();
         fs::create_dir_all(templates.join("refs")).unwrap();
         fs::create_dir_all(templates.join("agents")).unwrap();
+        // A nested folder OUTSIDE the old CORE_FOLDERS allowlist — the exact
+        // shape (`context/`) that silently went stale on every update.
+        fs::create_dir_all(templates.join("context/qa")).unwrap();
         fs::write(templates.join("commands/mustard/feature.md"), "v2").unwrap();
         fs::write(templates.join("skills/guard.js"), "v2").unwrap();
         fs::write(templates.join("agents/mustard-review.md"), "review-v2").unwrap();
+        fs::write(templates.join("context/qa/qa.core.md"), "QA-CORE-V2").unwrap();
         fs::write(templates.join("settings.json"), r#"{"v":2}"#).unwrap();
         // Root-level reference doc — backfilled/refreshed by update.
         fs::write(templates.join("pipeline-config.md"), "PIPELINE-CONFIG-V2").unwrap();
+        // A top-level file OUTSIDE the old allowlist — also went stale before.
+        fs::write(templates.join("grammars-suggestions.json"), "GRAMMARS-V2").unwrap();
         templates
     }
 
@@ -241,6 +265,7 @@ mod tests {
         fs::create_dir_all(claude.join("skills")).unwrap();
         fs::create_dir_all(claude.join("docs")).unwrap();
         fs::create_dir_all(claude.join("spec")).unwrap();
+        fs::create_dir_all(claude.join("memory")).unwrap();
         // Stale Mustard-owned files (should be replaced).
         fs::write(claude.join("commands/mustard/feature.md"), "v1-stale").unwrap();
         fs::write(claude.join("skills/guard.js"), "v1-stale").unwrap();
@@ -252,6 +277,7 @@ mod tests {
         fs::write(claude.join("CLAUDE.md"), "USER RULES").unwrap();
         fs::write(claude.join("docs/notes.md"), "USER NOTES").unwrap();
         fs::write(claude.join("spec/feat.md"), "USER SPEC").unwrap();
+        fs::write(claude.join("memory/note.md"), "USER MEMORY").unwrap();
         fs::write(
             project.join("mustard.json"),
             r#"{"version":"0.0.1","runtime":{"kind":"native"}}"#,
@@ -289,6 +315,10 @@ mod tests {
         assert_eq!(
             fs::read_to_string(claude.join("spec/feat.md")).unwrap(),
             "USER SPEC"
+        );
+        assert_eq!(
+            fs::read_to_string(claude.join("memory/note.md")).unwrap(),
+            "USER MEMORY"
         );
         // Mustard-owned files are refreshed from the payload.
         assert_eq!(
@@ -341,6 +371,60 @@ mod tests {
             fs::read_to_string(project.join(".claude").join("pipeline-config.md")).unwrap(),
             "PIPELINE-CONFIG-V2",
             "stale pipeline-config.md must be refreshed to the template version"
+        );
+    }
+
+    /// Regression for the hardcoded-allowlist bug: a template path that was NEVER
+    /// in the old `CORE_FOLDERS` list (`context/`) — and a top-level file outside
+    /// it (`grammars-suggestions.json`) — must now be mirrored into `.claude/` by
+    /// update. Before the generic mirror these silently went stale on every
+    /// update and had to be hand-backfilled.
+    #[test]
+    fn update_deploys_template_files_outside_the_old_allowlist() {
+        let work = tempdir().unwrap();
+        let templates = fake_templates(work.path());
+        let project = work.path().join("project");
+        fs::create_dir_all(&project).unwrap();
+        existing_claude(&project);
+
+        update_with_templates(&project, &templates, &UpdateOptions { force: true }).unwrap();
+
+        let claude = project.join(".claude");
+        // A nested folder never in the old allowlist is mirrored, content fresh.
+        assert_eq!(
+            fs::read_to_string(claude.join("context/qa/qa.core.md")).unwrap(),
+            "QA-CORE-V2",
+            "context/ must be deployed by the generic mirror"
+        );
+        // A top-level template file outside the allowlist is deployed too.
+        assert_eq!(
+            fs::read_to_string(claude.join("grammars-suggestions.json")).unwrap(),
+            "GRAMMARS-V2",
+            "a top-level file outside the old allowlist must be deployed"
+        );
+    }
+
+    /// A file removed from the template payload is pruned from a Mustard-owned
+    /// folder on update (the folder is deleted then recopied), so stale files
+    /// never accumulate in a deployed project.
+    #[test]
+    fn update_prunes_files_removed_from_templates() {
+        let work = tempdir().unwrap();
+        let templates = fake_templates(work.path());
+        let project = work.path().join("project");
+        fs::create_dir_all(&project).unwrap();
+        existing_claude(&project);
+        // A stale Mustard-owned file with no counterpart in the template payload
+        // (`templates/refs/` is empty), sitting in an owned (non-MERGE) folder.
+        let claude = project.join(".claude");
+        fs::create_dir_all(claude.join("refs")).unwrap();
+        fs::write(claude.join("refs/removed.md"), "OLD REF").unwrap();
+
+        update_with_templates(&project, &templates, &UpdateOptions { force: true }).unwrap();
+
+        assert!(
+            !claude.join("refs/removed.md").exists(),
+            "a file dropped from templates must be pruned from a Mustard-owned folder"
         );
     }
 
