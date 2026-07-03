@@ -50,6 +50,8 @@ Every work unit runs on its own `{base}_{slug}` branch (e.g. `dev_aba-atividade`
 
 **PRs are the integration path.** A work branch reaches its base branch through a PR, never a local push to the base. The base is the branch's own `{base}_` prefix, matched against the project's integration bases (`git.flow`).
 
+**A work branch stays refreshed onto its base.** Both `push` and `pr` sync-first — they rebase the current branch onto `origin/<its base>` before publishing (and `/git sync` does it on demand) — so the branch never drifts from the latest `dev`/`main`. (Complementary to the harness cutting the branch from a freshly-fetched base in the first place; see `work_branch_gate`.)
+
 ### Base-to-base PRs — promotion & backport (no local merge)
 
 Bases integrate into each other ONLY through a PR — never a local merge (there is no `merge` action). `/git pr` run while ON a bare base `B` opens a base→base PR: it is the sole write-op allowed on a base (it creates a PR, never pushes to `B`).
