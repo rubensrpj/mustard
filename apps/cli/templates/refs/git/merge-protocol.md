@@ -122,8 +122,9 @@ Submodules in parallel (one Bash call each). Parent runs after.
 
 **Phase 1 — Sync.** Execute `sync`. Conflicts → STOP. **Phase 2 — Commit & Push.** Run `commit` flow (Ensure-Excluded, Ephemeral Tracked sub-flow, scope resolution). Then push:
 
-- **Submodules** (parallel, monorepo only, one Bash each): `cd <SUB_ABS> && rtk git add $SCOPE_EXPR && rtk git commit -m "<msg>" && rtk git push origin <branch>`.
-- **Parent/Root** (one Bash): `rtk git add $SCOPE_EXPR && rtk git commit -m "<msg>" && rtk git push origin <branch>`.
+- **Submodules** (parallel, monorepo only, one Bash each): put the submodule on its `{base}_{slug}` work branch FIRST, then commit + push THAT branch — never its base. Resolve `$SUB_BASE`/`$SUB_WORK` per submodule-rules.md § *Work branch per repo*:
+  `rtk git -C <SUB_ABS> checkout "$SUB_WORK" 2>/dev/null || rtk git -C <SUB_ABS> checkout -b "$SUB_WORK"; rtk git -C <SUB_ABS> add $SCOPE_EXPR && rtk git -C <SUB_ABS> commit -m "<msg>" && rtk git -C <SUB_ABS> push -u origin "$SUB_WORK"`.
+- **Parent/Root** (one Bash): `rtk git add $SCOPE_EXPR && rtk git commit -m "<msg>" && rtk git push origin <parent-work-branch>`.
 
 ## Final Status Report
 
