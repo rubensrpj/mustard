@@ -81,7 +81,7 @@ The biggest cost is **re-fetching data you ALREADY HOLD**. Before any Read/Grep/
 
 ## Locating code — semantic-first
 
-Find code by CONCEPT (name unknown / vocabulary diverges) with mustard's SEMANTIC search — the digest (`mustard-rt run feature`) or `mustard-embed search --intent "<concept IN ENGLISH>" --vectors .claude/grain.vectors`; use `grep`/`glob` ONLY for a known literal token (exact symbol, string, glob). Recall is strong but not perfect — verify by reading the candidates. Full rule: `refs/locating-code.md`.
+The terrain is ALREADY in your window: the orientation census (`mustard-rt run orient`) is injected at session start (subprojects: name · kind · files · layer) and per request (the files your request's concept matches, ranked and grouped by subproject as `path:line`). Read those entry points first — don't grep to orient yourself. Then, to locate code by CONCEPT BEYOND the census (name unknown / vocabulary diverges), use mustard's SEMANTIC search — the digest (`mustard-rt run feature`) or `mustard-embed search --intent "<concept IN ENGLISH>" --vectors .claude/grain.vectors`; use `grep`/`glob` ONLY for a known literal token (exact symbol, string, glob). Recall is strong but not perfect — verify by reading the candidates. Full rule: `refs/locating-code.md`.
 
 ## Pipeline Phases
 
