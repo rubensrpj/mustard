@@ -13,7 +13,7 @@ source: manual
 | `sync` | Rebase current branch onto `origin/<its base>` (base from its `{base}_` prefix) |
 | `commit` | Create commit (no push). Accepts `--scope=all\|staged\|<pattern>` |
 | `push` | Sync first, then commit + push ONLY the current branch |
-| `pr [<target>]` | Open a PR (idempotent). Work branch → its prefix base; bare base `B` → `<target>` or `flow[B]` (promote `dev→main` / backport `main→dev`) |
+| `pr [<target>]` | Open a PR (idempotent), **one per repo, submodules before parent**, then return each repo to its base. Work branch → its prefix base; bare base `B` → `<target>` or `flow[B]` (promote `dev→main` / backport `main→dev`) |
 
 → `../../../refs/git/git-flow.md` (mustard.json, integration-base derivation, work-branch naming, scope policy, backport reminder).
 
@@ -22,7 +22,7 @@ source: manual
 - **ZERO confirmations** — `commit`/`push` default to `--scope=all` (**always `git add -A`, sweep the whole tree**). NEVER infer or memoize a partial scope. `--scope=staged|<pattern>` applies ONLY when the user explicitly passes it.
 - **Prefix `git` with `rtk`** — every invocation, including inside `&&`/`;` chains and `$(…)` substitutions.
 - Minimize Bash calls — chain with `&&`/`;`, one Bash per repo max.
-- Submodules BEFORE parent (always). Single repo: skip submodule steps. → `../../../refs/git/submodule-rules.md` (monorepo handling + ephemeral paths).
+- Submodules BEFORE parent (always). Single repo: skip submodule steps. Each touched repo (parent + every dirty submodule) carries the work unit on its OWN `{base}_{slug}` branch, cut from THAT repo's base — a submodule never commits straight onto its base, and each repo opens its own PR. → `../../../refs/git/submodule-rules.md` (work branch per repo, PR per repo, ephemeral paths).
 - **PRs are the integration path** — a work branch reaches its base via `pr` (`gh pr create --base <prefix-base>`), NEVER a local push to the base. `commit`/`push`/`sync` only ever touch the current work branch.
 - **Only reversible operations** — see Forbidden Operations in `../../../refs/git/merge-protocol.md`.
 
@@ -32,8 +32,8 @@ Step 0: resolve `$BASE` from the current branch's `{base}_` prefix (bases derive
 
 - **sync** — ensure-excluded → auto-stash → `git fetch && git rebase "origin/$BASE"` → safe stash pop. Abort on conflict. → `merge-protocol.md`.
 - **commit** — analyze → ensure-excluded + detect ephemerals → resolve scope → commit submodules (parallel) → commit parent → Final Status Report.
-- **push** — sync first (stop on conflict) → commit + push ONLY the current branch (set upstream) → Final Status Report. Never pushes an integration branch.
-- **pr** — **work branch** (`{base}_…`): `push` first → `gh pr create --base "$BASE" --head <current> --fill`. **Bare base** `B` (the sole op allowed on a base): NO push → `gh pr create --base <target|flow[B]> --head "$B" --fill` — promotion `dev → main`, or backport `main → dev` via `/git pr dev`. Existing PR → print its URL.
+- **push** — sync first (stop on conflict) → commit + push ONLY the current branch (set upstream), in each repo → Final Status Report. In a submodule sitting on its OWN base with changes, cut its `{base}_{slug}` work branch FIRST (checkout `-b` carries the edits over) and push THAT — never an integration branch, in any repo. → `../../../refs/git/submodule-rules.md`.
+- **pr** — **work branch** (`{base}_…`): `push` first (this creates each dirty submodule's own `{base}_{slug}` work branch and pushes it — a submodule never commits onto its base; see submodule-rules.md). Then open **one PR per repo, submodules before parent**: for each submodule whose work branch is ahead of its base, `gh pr create --base <sub-base> --head <sub-work-branch> --fill` run INSIDE the submodule; then the parent → `gh pr create --base "$BASE" --head <current> --fill`. Finally **return every repo to its base** — `git checkout <base>` in each submodule, then the parent — so the delivered unit stops accumulating and the tree is clean for the next one. **Bare base** `B` (the sole op allowed on a base): NO push, NO submodule/base-return steps → `gh pr create --base <target|flow[B]> --head "$B" --fill` — promotion `dev → main`, or backport `main → dev` via `/git pr dev`. Existing PR in any repo → print its URL instead of re-creating.
 
 ## Ephemeral Paths
 
