@@ -1373,6 +1373,7 @@ name = "mustard-rt"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "insta",
  "mustard-core",
  "mustard-mcp",
  "notify",

@@ -602,9 +602,22 @@ impl Check for SessionStartInject {
         // documented-directory set from `mustard_core::ClaudePaths::documented_dirs`,
         // the single canonical catalog. Fail-open — never blocks.
         crate::commands::maint::claude_dir_prune::check_orphans(Path::new(&cwd));
-        Ok(match build_memory_context(&cwd) {
-            Some(context) => Verdict::Inject { context },
-            None => Verdict::Allow,
+        // orient-census Level 1 (Terrain): project `grain.model.json` into a
+        // once-per-session terrain map so the AI opens the session already
+        // knowing the subprojects instead of grepping to orient. Composed with
+        // the persistent-memory payload — either, both, or neither may inject.
+        // Fail-open: a missing / unreadable model yields no terrain.
+        let terrain = crate::commands::orient::render_terrain(
+            &crate::commands::orient::compute_orientation(Path::new(&cwd), None),
+        );
+        let parts: Vec<String> = [build_memory_context(&cwd), terrain]
+            .into_iter()
+            .flatten()
+            .collect();
+        Ok(if parts.is_empty() {
+            Verdict::Allow
+        } else {
+            Verdict::Inject { context: parts.join("\n\n") }
         })
     }
 }

@@ -102,14 +102,30 @@ impl Check for PromptSubmitInject {
             }
         }
         // W8.T8.2 — for non-`/mustard:*` prompts, inject a single-line reminder
-        // when a spec is active. Fail-open: a None active spec yields `Allow`.
+        // when a spec is active. When NO spec is active (the pipeline is not
+        // owning the conversation) the complementary branch injects the
+        // orient-census Level 2 (Entrypoints): the exemplar files for the
+        // subproject(s) the prompt lexically matches, so the AI reads the entry
+        // points instead of grepping. Both gates skip `/mustard:*` (a slash
+        // command already knows its context). Fail-open throughout.
         if !is_mustard_command(prompt) {
-            if let Some(spec) = crate::shared::context::current_spec(&cwd) {
-                if !spec.is_empty() {
+            match crate::shared::context::current_spec(&cwd).filter(|s| !s.is_empty()) {
+                Some(spec) => {
                     let _ = economy::emit(&cwd, ActorKind::Hook, "prompt_gate", "pipeline.economy.operation.invoked", None, serde_json::json!({"operation": "prompt_gate.pipeline_in_flight_banner", "duration_ms": 0, "tokens_used": 0}));
                     return Ok(Verdict::Inject {
                         context: format!("{PIPELINE_IN_FLIGHT_BANNER}: {spec}"),
                     });
+                }
+                None => {
+                    let census = crate::commands::orient::render_entrypoints(
+                        &crate::commands::orient::compute_orientation(
+                            std::path::Path::new(&cwd),
+                            Some(prompt),
+                        ),
+                    );
+                    if let Some(context) = census {
+                        return Ok(Verdict::Inject { context });
+                    }
                 }
             }
         }
