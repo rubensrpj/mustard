@@ -103,8 +103,8 @@ pub struct Meta {
     ///
     /// Serialized as a deduplicated, declaration-ordered **array of tokens**
     /// (`["blocked", "wave_failed", "followup_open"]`), matching the token
-    /// vocabulary [`Flags::parse`] reads and the `after.flags` array
-    /// `migrate-spec-headers` already emits in its audit log. The array shape
+    /// vocabulary [`Flags::parse`] reads (the same `after.flags` array shape
+    /// the retired header migration emitted in its audit log). The array shape
     /// (rather than an object of bools) keeps the on-disk JSON compact for the
     /// common all-false case and stays byte-stable under serde declaration
     /// order. Elided entirely (`skip_serializing_if`) when no flag is set, so a

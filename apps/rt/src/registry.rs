@@ -355,7 +355,7 @@ impl Registry {
             // NOT Read/Edit/Write CLOSES the window (removes the marker) so the
             // implementation phase's reads/edits do not leak in. Pure Observer —
             // telemetry only, never a verdict (a tool always proceeds),
-            // fail-open. Folded by `run digest-precision`.
+            // fail-open.
             Module {
                 id: "feature_outcome_observer",
                 applies_to: &[(Trigger::PostToolUse, ToolMatch::Any)],

@@ -128,8 +128,5 @@ packages/cli/templates/.claude/.metrics/
 **/.claude/spec/*/wave-*/prompt.md
 **/.claude/spec/*/wave-*/warnings.txt
 
-# Local embedding model cache (mustard-embed); model lives in %LOCALAPPDATA%, this is only a CWD-fallback
-.fastembed_cache/
-
 # Ad-hoc test-run captures dropped in the repo root (scratch, regenerable)
 /full_test_out.txt

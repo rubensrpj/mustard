@@ -78,16 +78,10 @@ Wave order emerges from dependency analysis (the `Depends on` column of `wave-pl
 
 Dispatched agents inherit the main session's model **by default** — there is no routing table, no per-scope sonnet/opus split, and no model-routing gate. A handful of steps **pin** a model in their dispatch prose; this is the authoritative list (each is also documented at its own call site).
 
-**Pinned to Sonnet — output QUALITY drives downstream behaviour:**
-- `digest-validate` — one routing-critical call per pipeline entry; accuracy outweighs the negligible per-call delta (`apps/rt/src/commands/agent/digest_validate.rs`).
-
-**Recall recovery — NO pinned model (LOCAL embedding, no LLM):** a `centralFound=false` miss is recovered by the local vector index (`mustard-embed search --vectors .claude/grain.vectors`), built by `/scan` (`refs/recall-index.md`). It supersedes the legacy Sonnet `purpose` enrich + `purpose-search` lexical lookup + `purpose-judge` re-rank (`apps/rt/src/commands/agent/purpose_judge.rs` retained, no longer on the pinned path) — same cross-lingual recall at ~zero cost.
-
 **Pinned to Haiku — a bounded, mechanical judgement over a short list, where cost matters and quality is not the constraint:**
-- `concern-judge` — partitions a digest blob into concerns (`refs/concern-judge.md`).
 - spec-memory relevance gate — keeps only the principle files relevant to a spec (`skills/pipeline-execution/SKILL.md`).
 
-The principle: pin **Haiku** only for bounded mechanical partition/relevance work; pin **Sonnet** wherever the output's quality feeds the pipeline. Everything not listed inherits the session model — RT itself stays LLM-free and byte-stable, so every pin lives in the orchestration layer, never in the binary.
+The principle: pin **Haiku** only for bounded mechanical partition/relevance work. Everything not listed inherits the session model — retrieval (the digest) is pure deterministic with NO judge layer above it, and RT itself stays LLM-free and byte-stable, so every pin lives in the orchestration layer, never in the binary.
 
 ## Context Loading
 

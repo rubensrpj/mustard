@@ -29,9 +29,7 @@
 //!   slice from [`projection::read_workspace_events`] (NDJSON walker).
 //! - [`error`] — the crate's typed error plus fail-open helpers.
 //! - cross-cutting foundation — [`config`] (enforcement modes), [`env`] (the
-//!   `hook-env.js` port), [`metrics`] (the `metrics-emit.js` port), and
-//!   [`knowledge`] (knowledge extraction + the inter-agent context-selection
-//!   API).
+//!   `hook-env.js` port), and [`metrics`] (the `metrics-emit.js` port).
 
 // Snapshot-and-compare primitive consumed by the Wave 4 regression gate.
 // Reuses `ast::GrammarLoader` / `ast::TreeSitterParser` for the precise path

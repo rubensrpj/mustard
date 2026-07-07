@@ -6,6 +6,20 @@ source: manual
 <!-- mustard:generated -->
 # /close - Finalize Pipeline
 
+**Iron law: NO close without `qa.result=pass` — the close-gate refuses.**
+
+## Rationalizations that don't fly
+
+| Excuse | Answer |
+|--------|--------|
+| "QA is red but the work is clearly done" | fix the failing gate and re-run `close-orchestrate`; never hand-call `complete-spec` past a red gate |
+| "I'll tick the remaining `- [ ]` boxes myself" | never batch-mark checklist items on behalf of agents; unchecked items ABORT the close |
+| "the gate is a formality — `complete-spec` does the same" | the finalize is chained by `close-orchestrate` ONLY on `overall=pass`; the `emit-pipeline` QA-gate rejects a bypass anyway |
+| "I'll move the spec dir to a completed folder" | archival is event-only — the directory never moves |
+| "the leftover work can ride inside this closed spec" | follow-up work goes into a separate linked sub-spec (`/mustard:tactical-fix`), never a flag on a closed spec |
+
+**Red flags** — catch yourself thinking any of these and stop: *"Let me set the gate env to `off` to get past this."* · *"Hand-emitting `pipeline.stage: Close` to unblock."* · *"Stamping `meta.json` myself so the dashboard looks right."*
+
 ## Trigger
 
 `/close`

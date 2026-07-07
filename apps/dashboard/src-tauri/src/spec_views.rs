@@ -1593,47 +1593,6 @@ const fn workspace_alert_kind_string(k: mustard_core::WorkspaceAlertKind) -> &'s
 // can surface "mustard-rt not on PATH".
 // ===========================================================================
 
-/// Locate the spec directory for `spec_name` under the flat layout introduced
-/// by wave-3 of `2026-05-21-flatten-spec-layout-and-multi-collab`: every spec
-/// lives directly at `.claude/spec/{name}/` regardless of lifecycle state.
-/// Bucket subdirectories (`active/`, `completed/`, `cancelled/`) are gone.
-///
-/// Wave-plan children stay nested one level deep inside their parent
-/// (`.claude/spec/{parent}/{name}/`) — that nesting is intrinsic to the
-/// wave-plan layout and survives the flatten. We resolve children by scanning
-/// one level under `spec/` (each entry is a potential parent dir).
-fn resolve_spec_dir(repo_path: &str, spec_name: &str) -> Option<std::path::PathBuf> {
-    use std::path::PathBuf;
-    if spec_name.is_empty()
-        || spec_name.contains('/')
-        || spec_name.contains('\\')
-        || spec_name.contains("..")
-    {
-        return None;
-    }
-    let base = PathBuf::from(repo_path).join(".claude").join("spec");
-
-    // Direct hit: `.claude/spec/{spec_name}/`.
-    let direct = base.join(spec_name);
-    if direct.is_dir() {
-        return Some(direct);
-    }
-
-    // Wave child nested inside a wave-plan parent:
-    // `.claude/spec/{parent}/{spec_name}/`.
-    let Ok(rd) = fs::read_dir(&base) else { return None };
-    for entry in rd {
-        if !entry.is_dir {
-            continue;
-        }
-        let child = entry.path.join(spec_name);
-        if child.is_dir() {
-            return Some(child);
-        }
-    }
-    None
-}
-
 /// Build a `Command` that invokes `mustard-rt` with the given args. Uses
 /// `cmd /C` on Windows so the binary is resolved against PATH the same way
 /// `dashboard_metrics_wave_status_run` does it.
@@ -1663,29 +1622,16 @@ fn slice_json(stdout: &str) -> &str {
     }
 }
 
-/// Wave-3 — invoke `mustard-rt run wikilink-extract --spec-dir <dir>` for
-/// `spec_name`, parse the JSON, return the typed payload. Fail-open: spawn
-/// errors surface as `Err`; everything else (missing dir, unparseable JSON)
-/// returns an empty extract so the frontend renders the empty state.
+/// Wave-3 — the `wikilink-extract` verb never shipped in `mustard-rt` (audit
+/// 2026-07-07: no matching `RunCmd` variant ever existed), so every spawn here
+/// failed and degraded to the empty extract. Return the empty extract directly
+/// instead of paying a doomed subprocess per render — the frontend keeps
+/// rendering the exact same empty state it always did.
 pub fn dashboard_wikilink_extract_run(
-    repo_path: &str,
-    spec_name: &str,
+    _repo_path: &str,
+    _spec_name: &str,
 ) -> Result<WikilinkExtract, String> {
-    let Some(spec_dir) = resolve_spec_dir(repo_path, spec_name) else {
-        return Ok(WikilinkExtract::default());
-    };
-    let dir_str = spec_dir.to_string_lossy().to_string();
-    let mut cmd = mustard_rt_command(&["run", "wikilink-extract", "--spec-dir", &dir_str]);
-    cmd.current_dir(repo_path);
-    let output = match cmd.output() {
-        Ok(o) => o,
-        Err(e) => return Err(format!("spawn mustard-rt: {e}")),
-    };
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    match serde_json::from_str::<WikilinkExtract>(slice_json(&stdout)) {
-        Ok(parsed) => Ok(parsed),
-        Err(_) => Ok(WikilinkExtract::default()),
-    }
+    Ok(WikilinkExtract::default())
 }
 
 /// Cross-wave memory for a spec, sourced from the LIVE unified knowledge store

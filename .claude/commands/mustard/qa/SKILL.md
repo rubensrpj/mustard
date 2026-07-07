@@ -6,6 +6,20 @@ source: manual
 <!-- mustard:generated -->
 # /qa - QA Phase
 
+**Iron law: an AC not executed is an AC failed.**
+
+## Rationalizations that don't fly
+
+| Excuse | Answer |
+|--------|--------|
+| "the build passed, that's basically QA" | build is a separate close-gate; QA is running each AC's `Command:` and reading its exit code |
+| "I read the diff — it obviously satisfies the AC" | a pass is an OBSERVED exit code, never an inference; `qa-run` executes, you relay |
+| "this AC is slow, I'll assert it mentally" | an AC without execution has no pass — raise the timeout or split the AC, don't skip it |
+| "the spec changed only slightly after the pass" | any `spec.md`/`wave-plan.md` edit after a pass marks QA STALE; the close-gate blocks until re-run |
+| "I'll quickly fix the failing code while QA runs" | QA is read-only — fixing mid-QA invalidates the result; fail, fix, re-run |
+
+**Red flags** — catch yourself thinking any of these and return to the flow: *"I'm reporting pass from reading the code."* · *"Skipping the flaky AC just this once."* · *"Three failed iterations and I'm still patching instead of asking."* · *"I'll edit the AC to match what the code does."*
+
 ## Trigger
 
 `/mustard:qa [--spec <name>]`

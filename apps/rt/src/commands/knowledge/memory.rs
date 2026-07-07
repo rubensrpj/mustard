@@ -620,8 +620,8 @@ fn truncate_col(s: &str, max: usize) -> String {
 
 
 // The decay math (`effective_confidence`) is the ONE shared curve in the
-// knowledge module root (`super::effective_confidence`) — `search` here,
-// `recall`, and `prune` all consult it so the curve never diverges (SOLID).
+// knowledge module root (`super::effective_confidence`) — `search` consults
+// it so the curve never diverges (SOLID).
 use super::effective_confidence;
 
 #[derive(Debug, Default, Clone)]

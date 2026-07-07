@@ -141,9 +141,8 @@ fn prompt_ref_stub(
 }
 
 /// Write `rendered` to project-relative `rel` and return the 2-line dispatch
-/// stub that stands in for it. The shared primitive behind every `--emit ref`:
-/// `agent-prompt-render` and `digest-validate-render` both route through it, so
-/// the full prompt never transits the orchestrator's context. Fail-open both
+/// stub that stands in for it. The shared primitive behind every `--emit ref`,
+/// so the full prompt never transits the orchestrator's context. Fail-open both
 /// ways: an empty render returns the empty string (the historical
 /// print-nothing behaviour), and a write failure degrades to the full inline
 /// prompt — the dispatch must never be lost to a missing directory or a locked
@@ -241,8 +240,7 @@ fn path_slug(path: &str) -> String {
 
 /// FNV-1a 64-bit over `parts` with a separator fold between them — pure and
 /// deterministic (no clock, no randomness), so the same render inputs always
-/// map to the same dispatch file. `pub(crate)` so `digest-validate-render` can
-/// key its own `.dispatch/` file off the intent.
+/// map to the same dispatch file.
 pub(crate) fn fnv1a64(parts: &[&str]) -> u64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     let mut eat = |b: u8| {
@@ -355,25 +353,12 @@ pub(crate) fn render_prompt_at(
     // The spec's mid-pipeline change-log (`## CHANGE REQUESTS`) — bullets only,
     // empty (so the heading collapses) for spec-less renders or a spec with none.
     let change_log = spec.map(|_| read_change_log(&spec_dir)).unwrap_or_default();
-    // Active PUSH (was a passive pull pointer): the render now injects the
-    // RELEVANT prior-wave summaries and the relevant project-wide knowledge
-    // inline, ranked by the deterministic `recall` (BM25 + relevance floor over
-    // the unified store) against the agent's task. An empty result collapses the
-    // section (`collapse_empty_sections`). The query is the role + task text —
-    // the same intent the spec-memory gate already keys on.
+    // The `{cross_wave_memory}` body accumulates the relevance-gated blocks
+    // below (capabilities, spec memory, vocabulary). An empty result collapses
+    // the section (`collapse_empty_sections`). The query is the role + task
+    // text — the same intent the spec-memory gate already keys on.
     let recall_intent = format!("{role} {task_steps}");
-    let mut cross_wave_memory = cross_wave_recall_block(&project, spec_key, wave, &recall_intent);
-    // Spec→spec: project-wide (`Scope::Global`) knowledge relevant to the task —
-    // decisions/lessons/patterns earlier specs captured that cross-cut this one.
-    // Folded into the same block (it is the same "memory the agent did not write
-    // this run" idea); collapses when nothing clears the relevance floor.
-    let project_knowledge = project_knowledge_block(&project, &recall_intent);
-    if !project_knowledge.is_empty() {
-        if !cross_wave_memory.is_empty() {
-            cross_wave_memory.push_str("\n\n");
-        }
-        cross_wave_memory.push_str(&project_knowledge);
-    }
+    let mut cross_wave_memory = String::new();
     // Durable capabilities relevant to the task — the "what the system already
     // does" context at ANALYZE. Ranked by the SAME BM25 arithmetic the knowledge
     // recall uses, but through a SEPARATE injector: capabilities are durable and
@@ -966,100 +951,26 @@ fn read_prior_wave_diff(project: &Path, spec: &str, wave_num: u32) -> String {
     String::new()
 }
 
-/// Active PUSH of the RELEVANT prior-wave summaries — replaces the old passive
-/// pull pointer. For wave `w` (>1) of `spec`, recall the wave-scoped knowledge
-/// (`Kind::Summary` rows written by earlier waves) from waves `1..w` that ranks
-/// most relevant to `intent` (the agent's role + task), and inline the real
-/// content under a `## CROSS-WAVE MEMORY` heading. The relevance floor inside
-/// [`recall`] cuts the weak tail, so an unrelated prior summary never enters;
-/// when nothing clears the floor the block is empty and the heading collapses.
-///
-/// Empty for wave 1 / spec-less (no prior waves). Each prior wave is queried at
-/// its own [`Scope::Wave`] reach (the store filters by exact scope), so only
-/// genuinely earlier-wave memory is eligible — never the current wave's own.
-fn cross_wave_recall_block(project: &Path, spec: &str, wave: Option<u32>, intent: &str) -> String {
-    let Some(w) = wave else {
-        return String::new();
-    };
-    if spec.is_empty() || w <= 1 {
-        return String::new();
-    }
-    let Ok(claude_root) = ClaudePaths::for_project(project).map(|p| p.claude_dir()) else {
-        return String::new();
-    };
-    // Pool every prior wave's most-relevant records, then re-rank the pool so the
-    // final 1..N cut is by relevance across waves, not per-wave. A small per-wave
-    // ceiling keeps a single chatty wave from crowding out the others.
-    let mut pool: Vec<mustard_core::domain::model::knowledge::Knowledge> = Vec::new();
-    for prev in 1..w {
-        let scope = mustard_core::domain::model::knowledge::Scope::Wave {
-            spec: spec.to_string(),
-            wave: prev,
-        };
-        pool.extend(
-            crate::commands::knowledge::recall::recall(&claude_root, intent, Some(&scope), 2),
-        );
-    }
-    // Select the records that will actually be injected (top-3, byte-stable), then
-    // touch ONLY those (surfacing write-back: their decay clock resets). No
-    // heading: the template already carries `## CROSS-WAVE MEMORY` above the
-    // `{cross_wave_memory}` placeholder — this renders the bullet body only.
-    let injected = select_injected(&pool, 3);
-    touch_injected(&claude_root, &injected);
-    render_recall_bullets(&injected)
-}
-
-/// Active PUSH of the RELEVANT project-wide knowledge (`Scope::Global`) — the
-/// spec→spec channel. Recall the global decisions/lessons/patterns earlier specs
-/// captured that rank relevant to `intent`, and inline them under a
-/// `## PROJECT KNOWLEDGE` heading. Same relevance floor → an off-topic record
-/// never enters; an empty result collapses the heading. Spec-less safe (the
-/// store simply has whatever global records exist, ranked against the task).
-fn project_knowledge_block(project: &Path, intent: &str) -> String {
-    let Ok(claude_root) = ClaudePaths::for_project(project).map(|p| p.claude_dir()) else {
-        return String::new();
-    };
-    let scope = mustard_core::domain::model::knowledge::Scope::Global;
-    let hits =
-        crate::commands::knowledge::recall::recall(&claude_root, intent, Some(&scope), 3);
-    // Select-then-touch (surfacing write-back) the injected top-3, same as the
-    // cross-wave path — touch only what the agent actually sees.
-    let injected = select_injected(&hits, 3);
-    touch_injected(&claude_root, &injected);
-    let bullets = render_recall_bullets(&injected);
-    if bullets.is_empty() {
-        return String::new();
-    }
-    // This block is folded into the `{cross_wave_memory}` body, so it carries its
-    // OWN heading (a distinct sub-section under the template's CROSS-WAVE heading).
-    format!("## PROJECT KNOWLEDGE\n{bullets}")
-}
-
 // ---------------------------------------------------------------------------
 // Capabilities — durable "what the system already does" injection.
 //
-// A SEPARATE injector from the knowledge recall above: it REUSES only the BM25
-// ranking arithmetic (`domain::ranking`), the SAME a knowledge recall uses, so
-// there is no second ranker. It does NOT touch `recall.rs` / the `Knowledge`
-// store / the Haiku-judge path: capabilities are DURABLE — they must never
-// decay or be pruned — so they must never enter the recall/prune lifecycle
-// (no `last_used` write-back, no confidence decay, no mutation). This block
-// only ranks + cuts capability docs for relevance and renders them; it reads
-// the filesystem and writes nothing.
+// REUSES only the BM25 ranking arithmetic (`domain::ranking`), so there is no
+// second ranker. It does NOT touch the `Knowledge` store: capabilities are
+// DURABLE — they must never decay or be pruned (no `last_used` write-back, no
+// confidence decay, no mutation). This block only ranks + cuts capability docs
+// for relevance and renders them; it reads the filesystem and writes nothing.
 // ---------------------------------------------------------------------------
 
-/// Relevance floor as a fraction of the best score (×1024) — the SAME anti-bloat
-/// bound `recall::RELEVANCE_FLOOR_FRACTION` applies, mirrored here so capabilities
-/// get the identical relevance discipline as the knowledge blocks (an off-topic
-/// capability never enters). Kept as a local const so the durable-capability path
-/// stays decoupled from the recall module (no shared mutable lifecycle), while the
-/// arithmetic is literally the same.
+/// Relevance floor as a fraction of the best score (×1024) — the same anti-bloat
+/// bound `context_inject::MEMORY_RELEVANCE_FLOOR_FRACTION` expresses, mirrored
+/// here in fixed-point so capabilities get the identical relevance discipline as
+/// the memory blocks (an off-topic capability never enters).
 const CAPABILITY_RELEVANCE_FLOOR_FRACTION: u64 = 348; // 0.34 ×1024 (rounded)
 
 /// Top-K capabilities injected once the relevance floor has cut the weak tail.
 const CAPABILITY_TOP_K: usize = 3;
 
-/// Minimum content-token length, mirroring `recall::MIN_TERM_LEN`: shorter tokens
+/// Minimum content-token length: shorter tokens
 /// (`the`, `a`, `is`) match too broadly to discriminate, so both the intent query
 /// and a capability's searchable text are tokenised on ≥4-char lowercase
 /// alphanumeric runs.
@@ -1078,7 +989,7 @@ const CAPABILITY_MIN_TERM_LEN: usize = 4;
 /// heading collapses) when there are no capabilities or none clears the floor.
 ///
 /// DURABILITY: this never mutates anything — no `last_used` write-back, no decay,
-/// no prune. It does not touch `recall.rs` / the `Knowledge` store.
+/// no prune. It does not touch the `Knowledge` store.
 fn capability_block(project: &Path, intent: &str) -> String {
     let Ok(dir) = ClaudePaths::for_project(project).map(|p| p.capabilities_dir()) else {
         return String::new();
@@ -1130,8 +1041,8 @@ fn load_capabilities(dir: &Path) -> Vec<mustard_core::domain::capability::Capabi
 /// The rankable text of a capability is its searchable content — the title plus
 /// every requirement statement plus every scenario's when/then. The corpus stats
 /// (`avgdl`) and per-term `bm25_x1024_default` are the SAME `domain::ranking`
-/// arithmetic `recall::recall_scored_at` uses (no second ranker). The cut mirrors
-/// the knowledge recall exactly: score-desc with id-asc tiebreak (byte-stable),
+/// arithmetic (no second ranker). The cut is
+/// score-desc with id-asc tiebreak (byte-stable),
 /// then keep only documents within [`CAPABILITY_RELEVANCE_FLOOR_FRACTION`] of the
 /// top score, then truncate to `max`. NO decay weight — capabilities are durable,
 /// so unlike the knowledge recall there is no confidence/age attenuation. Pure +
@@ -1197,8 +1108,7 @@ fn rank_capabilities<'a>(
 }
 
 /// The distinct intent query terms: ≥[`CAPABILITY_MIN_TERM_LEN`]-char lowercase
-/// alphanumeric runs, deduplicated, order-preserving — the same tokenisation
-/// `recall::query_terms` performs.
+/// alphanumeric runs, deduplicated, order-preserving.
 fn capability_query_terms(intent: &str) -> Vec<String> {
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut out: Vec<String> = Vec::new();
@@ -1272,69 +1182,6 @@ fn render_capability_bullets(
         }
     }
     out.trim_end().to_string()
-}
-
-/// The records actually **injected** from a recalled `pool`, capped at `max`:
-/// the merge order is slug-asc (byte-stable across several scoped recalls),
-/// deduplicated by slug, then truncated. This is the single definition of "what
-/// the agent will see", so the surfacing write-back (`touch_last_used`) and the
-/// rendered bullets operate on the *same* set — touch only what is injected.
-fn select_injected(
-    pool: &[mustard_core::domain::model::knowledge::Knowledge],
-    max: usize,
-) -> Vec<mustard_core::domain::model::knowledge::Knowledge> {
-    // Pair each record with its slug once so the sort/dedup never recompute it.
-    let mut records: Vec<(String, &mustard_core::domain::model::knowledge::Knowledge)> =
-        pool.iter().map(|k| (k.slug(), k)).collect();
-    records.sort_by(|a, b| a.0.cmp(&b.0));
-    records.dedup_by(|a, b| a.0 == b.0);
-    records.truncate(max);
-    records.into_iter().map(|(_, k)| k.clone()).collect()
-}
-
-/// Render the already-selected (see [`select_injected`]) records as
-/// `- **{label}** — {first body line}` bullets. Empty (no heading, no bullets)
-/// when the slice is empty so the caller can collapse / skip. Carries NO
-/// heading — the caller supplies it (or the template does).
-fn render_recall_bullets(records: &[mustard_core::domain::model::knowledge::Knowledge]) -> String {
-    if records.is_empty() {
-        return String::new();
-    }
-    let mut out = String::new();
-    for k in records {
-        let summary = k
-            .content
-            .lines()
-            .map(str::trim)
-            .find(|l| !l.is_empty())
-            .unwrap_or("")
-            .chars()
-            .take(160)
-            .collect::<String>();
-        if summary.is_empty() {
-            let _ = writeln!(out, "- **{}**", k.label);
-        } else {
-            let _ = writeln!(out, "- **{}** — {summary}", k.label);
-        }
-    }
-    out.trim_end().to_string()
-}
-
-/// The surfacing write-back: stamp `last_used = now` on the records actually
-/// injected into this prompt, so their decay clock resets and `prune` sees them
-/// as alive. Bounded (only the passed `injected` slice — the top-K the render
-/// shows) and fail-open (a touch failure never breaks the render). One read of
-/// the wall clock per call keeps it cheap and the side-effect off the pure
-/// recall. No-op for an empty slice.
-fn touch_injected(
-    claude_root: &Path,
-    injected: &[mustard_core::domain::model::knowledge::Knowledge],
-) {
-    if injected.is_empty() {
-        return;
-    }
-    let store = mustard_core::io::knowledge_store::KnowledgeStore::new(claude_root);
-    let _ = store.touch_last_used(injected, &mustard_core::time::now_iso8601());
 }
 
 // ---------------------------------------------------------------------------
@@ -1868,110 +1715,6 @@ mod tests {
         assert!(out.contains("## B\nbody"), "filled heading B dropped: {out}");
         assert!(!out.contains("## C"), "whitespace-only heading C survived: {out}");
         assert!(out.contains("## D\nx"), "filled heading D dropped: {out}");
-    }
-
-    #[test]
-    fn cross_wave_memory_pushes_relevant_and_cuts_irrelevant() {
-        use mustard_core::domain::model::knowledge::{Kind, Knowledge, Origin, Scope, Status};
-        use mustard_core::io::knowledge_store::KnowledgeStore;
-
-        let dir = tempdir().unwrap();
-        anchor(dir.path());
-        let claude_root = ClaudePaths::for_project(dir.path()).unwrap().claude_dir();
-        let store = KnowledgeStore::new(&claude_root);
-        let summary = |scope: Scope, label: &str, content: &str| Knowledge {
-            kind: Kind::Summary,
-            origin: Origin {
-                spec: scope.spec().map(str::to_string),
-                wave: scope.wave(),
-                captured_at: "2026-06-15T00:00:00.000Z".into(),
-                ..Origin::default()
-            },
-            scope,
-            label: label.into(),
-            content: content.into(),
-            confidence: 0.7,
-            status: Status::Active,
-        };
-        // Wave 1 of `demo` left a summary that is RELEVANT to a caching task,
-        // and another that is irrelevant noise.
-        store
-            .write(&summary(
-                Scope::Wave { spec: "demo".into(), wave: 1 },
-                "wave1 caching",
-                "added the dashboard caching layer keyed on path length and mtime",
-            ))
-            .unwrap();
-        store
-            .write(&summary(
-                Scope::Wave { spec: "demo".into(), wave: 1 },
-                "wave1 noise",
-                "kubernetes ingress manifests and unrelated deployment chatter",
-            ))
-            .unwrap();
-
-        // Wave 1 / spec-less → no block (nothing prior to push).
-        assert!(cross_wave_recall_block(dir.path(), "", Some(1), "anything").is_empty());
-        assert!(cross_wave_recall_block(dir.path(), "demo", Some(1), "x").is_empty());
-        assert!(cross_wave_recall_block(dir.path(), "demo", None, "x").is_empty());
-
-        // Wave 2 with a caching task → the RELEVANT prior-wave summary is pushed
-        // inline (real content, not a pointer); the irrelevant one is cut. The
-        // block carries the bullet body only — the `## CROSS-WAVE MEMORY` heading
-        // is supplied by the template above the `{cross_wave_memory}` placeholder.
-        let block = cross_wave_recall_block(dir.path(), "demo", Some(2), "fix the caching layer");
-        assert!(block.contains("wave1 caching"), "relevant summary not pushed: {block}");
-        assert!(
-            block.contains("caching layer keyed on path length"),
-            "real content must be inlined, not a pointer: {block}"
-        );
-        assert!(!block.contains("wave1 noise"), "irrelevant summary survived: {block}");
-        assert!(!block.contains("cross-wave --spec"), "must not be a pull pointer: {block}");
-    }
-
-    #[test]
-    fn project_knowledge_pushes_relevant_global_records() {
-        use mustard_core::domain::model::knowledge::{Kind, Knowledge, Origin, Scope, Status};
-        use mustard_core::io::knowledge_store::KnowledgeStore;
-
-        let dir = tempdir().unwrap();
-        anchor(dir.path());
-        let claude_root = ClaudePaths::for_project(dir.path()).unwrap().claude_dir();
-        let store = KnowledgeStore::new(&claude_root);
-        let global = |label: &str, content: &str| Knowledge {
-            kind: Kind::Decision,
-            scope: Scope::Global,
-            label: label.into(),
-            content: content.into(),
-            origin: Origin {
-                captured_at: "2026-06-15T00:00:00.000Z".into(),
-                ..Origin::default()
-            },
-            confidence: 0.8,
-            status: Status::Active,
-        };
-        store
-            .write(&global(
-                "fail-open hooks",
-                "hooks never abort the user session — degrade to allow on any error",
-            ))
-            .unwrap();
-        store
-            .write(&global(
-                "frontend palette",
-                "dashboard colour tokens and spacing scale for the sidebar",
-            ))
-            .unwrap();
-
-        // A task about hooks surfaces the relevant global decision; the unrelated
-        // one stays out (below the relevance floor).
-        let block = project_knowledge_block(dir.path(), "make the hooks degrade safely");
-        assert!(block.contains("## PROJECT KNOWLEDGE"), "heading missing: {block}");
-        assert!(block.contains("fail-open hooks"), "relevant global not pushed: {block}");
-        assert!(!block.contains("frontend palette"), "irrelevant global survived: {block}");
-
-        // No matching knowledge → empty (the heading then collapses).
-        assert!(project_knowledge_block(dir.path(), "quantum chromodynamics lattice").is_empty());
     }
 
     #[test]

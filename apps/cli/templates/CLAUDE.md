@@ -16,7 +16,7 @@ When asking the user to approve an artifact (spec, wave plan, PRD), the artifact
 
 The internal flows (`feature` / `bugfix` / `task` / `tactical-fix`) are dispatched BY you, not chosen by the user. Run the loop for every request that touches the codebase:
 
-**(a) Classify** intent + coarse scope — not an LLM guess: lean on what already exists. `mustard-rt run scope-classify` is the deterministic call (its `layerCount` is a FACT — distinct projects/roles the census spans); the semantic router inside `digest-validate` refines route+scope once a flow has opened.
+**(a) Classify** intent + coarse scope — not an LLM guess: lean on what already exists. `mustard-rt run scope-classify` is the deterministic call (its `layerCount` is a FACT — distinct projects/roles the census spans); once a flow has opened, `plan-prepare`/`spec-draft` refine the scope deterministically.
 
 | Intent | Signals | Internal flow (`kind`) |
 |--------|---------|------------------------|
@@ -79,9 +79,9 @@ The biggest cost is **re-fetching data you ALREADY HOLD**. Before any Read/Grep/
 - **Never re-Read** an unchanged in-context file, or a spec/scaffold/`meta.json` you just wrote. **One precise search**, not 3-4 widening ones.
 - **Standard shell → `rtk`** (`rtk git/grep/ls/cat/head/tail/wc/cargo`, 60-90% off); `mustard-rt run …` stays BARE. The `[rtk] No hook installed` banner means rtk DID run (savings active) — it nags about its optional auto-hook; ignore it, never read it as "economy off".
 
-## Locating code — semantic-first
+## Locating code — literal → grep, concept → digest
 
-The terrain is ALREADY in your window: the orientation census (`mustard-rt run orient`) is injected at session start (subprojects: name · kind · files · layer) and per request (the files your request's concept matches, ranked and grouped by subproject as `path:line`). Read those entry points first — don't grep to orient yourself. Then, to locate code by CONCEPT BEYOND the census (name unknown / vocabulary diverges), use mustard's SEMANTIC search — the digest (`mustard-rt run feature`) or `mustard-embed search --intent "<concept IN ENGLISH>" --vectors .claude/grain.vectors`; use `grep`/`glob` ONLY for a known literal token (exact symbol, string, glob). Recall is strong but not perfect — verify by reading the candidates. Full rule: `refs/locating-code.md`.
+The terrain is ALREADY in your window: the orientation census (`mustard-rt run orient`) is injected at session start (subprojects: name · kind · files · layer) and per request (the files your request's concept matches, ranked and grouped by subproject as `path:line`). Read those entry points first — don't grep to orient yourself. Then: a known LITERAL token (exact symbol, string, glob) → `grep`/`glob`; a CONCEPT whose name you don't know → the deterministic digest (`mustard-rt run feature --intent "..."`) and READ the files it points to. Recall is strong but not perfect — verify by reading the candidates. Full rule: `refs/locating-code.md`.
 
 ## Pipeline Phases
 
