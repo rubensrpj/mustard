@@ -34,6 +34,7 @@
 //! path on stderr.
 
 use mustard_core::domain::model::event::ActorKind;
+use mustard_core::domain::vocabulary::stacks::StackDetection;
 use crate::shared::context;
 use crate::shared::events::economy;
 use crate::report::{table, Report};
@@ -91,7 +92,11 @@ struct VerifyTarget {
 /// Discover verification targets from grain's model
 /// (`.claude/grain.model.json` `projects[]`, via the scan tool) — the
 /// deterministic subproject list. Build/test commands come from `mustard.json`
-/// (the project's own commands), run in each subproject's directory.
+/// (the project's own commands), run in each subproject's directory —
+/// **stack-aware**: a subproject whose OWN detected stack differs from the
+/// global command's stack runs its stack default instead of the global command
+/// sprayed blindly over it (see [`stack_aware_commands`]). A monolingual repo is
+/// byte-for-byte unchanged.
 ///
 /// Under `cfg(test)` this is a no-op so unit tests drive verification with their
 /// own targets rather than the real model.
@@ -108,9 +113,88 @@ fn discover_via_grain(cwd: &Path) -> Vec<VerifyTarget> {
         .into_iter()
         .map(|p| {
             let target_cwd = if p.dir.is_empty() { cwd.to_path_buf() } else { cwd.join(&p.dir) };
-            VerifyTarget { name: p.name, cwd: target_cwd, build: cmds.build.clone(), test: cmds.test.clone() }
+            // Stack-aware command selection for poliglot repos: a single global
+            // `mustard.json` test command cannot cover, say, a C#/.NET backend
+            // AND a TypeScript dashboard. Let a subproject whose own stack
+            // differs from the global command's family run its stack default; a
+            // monolingual repo keeps the global command verbatim (see helper).
+            let (build, test) =
+                stack_aware_commands(&target_cwd, &p.detected_stacks, &cmds.build, &cmds.test);
+            VerifyTarget { name: p.name, cwd: target_cwd, build, test }
         })
         .collect()
+}
+
+/// Coarse stack family of a shell command, keyed on its leading tool token —
+/// the label used to decide whether a subproject's detected stack is the SAME
+/// stack the global command assumes. `None` for a blank command; an unknown
+/// tool keys on its own leading token so two unknown-but-identical tools still
+/// compare equal. Mirrors [`effective_timeout`]'s leading-token classification
+/// (different output, same signal source).
+fn command_family(command: &str) -> Option<&str> {
+    let head = command.split_whitespace().next()?;
+    Some(match head {
+        "cargo" | "rustc" => "rust",
+        "go" => "go",
+        "python" | "python3" | "pytest" | "poetry" | "uv" => "python",
+        "npm" | "pnpm" | "yarn" | "node" | "tsc" | "vitest" | "playwright" | "npx" => "js",
+        "dotnet" => "dotnet",
+        other => other,
+    })
+}
+
+/// The stack family of a `(build, test)` command pair — the test command's
+/// family when present, else the build command's. `None` when neither is set.
+fn family_of<'a>(build: &'a Option<String>, test: &'a Option<String>) -> Option<&'a str> {
+    test.as_deref().or(build.as_deref()).and_then(command_family)
+}
+
+/// Choose the build/test commands for ONE grain subproject, stack-aware.
+///
+/// The global `mustard.json` command set is a SINGLE test command; spraying it
+/// over every subproject breaks a poliglot repo (a C#/.NET backend and a
+/// TypeScript dashboard cannot both run `cargo test`). When this subproject's
+/// OWN stack resolves to a default command whose family DIFFERS from the global
+/// command's family, run the subproject's stack default; otherwise keep the
+/// global command verbatim.
+///
+/// Conservative fall-through to the global command (never invents behavior):
+/// - `detected_stacks` empty — the grain model inferred no stack for this
+///   subproject (older model, or nothing matched). Overriding on a bare
+///   directory guess could degrade a working monolingual repo, so we trust the
+///   global command. This is what makes "absence of detection ⇒ global" hold.
+/// - no default resolvable at `target_cwd` (no top-level manifest recognised by
+///   [`discover_defaults`]) — nothing concrete to switch to, keep the global.
+/// - same command family — a MONOLINGUAL repo stays BYTE-FOR-BYTE unchanged: we
+///   return the global commands as-is, never the stack default's decorated
+///   (`--workspace --quiet`) form.
+///
+/// Reuses [`discover_defaults`] as the single stack→command table rather than
+/// duplicating a stack-name→command mapping here.
+fn stack_aware_commands(
+    target_cwd: &Path,
+    detected_stacks: &[StackDetection],
+    global_build: &Option<String>,
+    global_test: &Option<String>,
+) -> (Option<String>, Option<String>) {
+    let global = || (global_build.clone(), global_test.clone());
+    // No positive stack detection → keep the global command (conservative).
+    if detected_stacks.is_empty() {
+        return global();
+    }
+    // The subproject's own stack default, from the shared stack→command table.
+    let Some(stack_default) = discover_defaults(target_cwd).into_iter().next() else {
+        return global();
+    };
+    let global_family = family_of(global_build, global_test);
+    let stack_family = family_of(&stack_default.build, &stack_default.test);
+    // A different, resolvable family ⇒ genuinely different stack ⇒ adopt its
+    // default. Same family (or indeterminate) ⇒ keep the global untouched.
+    if stack_family.is_some() && stack_family != global_family {
+        (stack_default.build, stack_default.test)
+    } else {
+        global()
+    }
 }
 
 /// Fallback: scan `pipeline-config.md` for a Build Command column.
@@ -874,6 +958,70 @@ mod tests {
         )
         .unwrap();
         let (b, t) = scripts_from_stack_md(dir.path()).unwrap();
+        assert_eq!(b.as_deref(), Some("cargo build"));
+        assert_eq!(t.as_deref(), Some("cargo test"));
+    }
+
+    fn stack(name: &str) -> StackDetection {
+        StackDetection { name: name.to_string(), confidence: 0.65, signals: Vec::new() }
+    }
+
+    #[test]
+    fn stack_aware_monolingual_keeps_global_verbatim() {
+        // INVARIANT: a monolingual repo is byte-for-byte unchanged. A subproject
+        // whose stack default shares the global command's family returns the
+        // GLOBAL command as-is — never the stack default's decorated
+        // (`--workspace --quiet`) form.
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("Cargo.toml"), "[workspace]\n").unwrap();
+        let (build, test) = stack_aware_commands(
+            dir.path(),
+            &[stack("rust")],
+            &Some("cargo build".to_string()),
+            &Some("cargo test".to_string()),
+        );
+        assert_eq!(build.as_deref(), Some("cargo build"));
+        assert_eq!(test.as_deref(), Some("cargo test"));
+    }
+
+    #[test]
+    fn stack_aware_poliglot_uses_each_subprojects_stack_command() {
+        // Two distinct stacks: a C#/.NET backend and a TypeScript dashboard
+        // cannot both run the global `cargo test`. Each subproject whose family
+        // differs from the global command gets ITS stack default.
+        let global_build = Some("cargo build".to_string());
+        let global_test = Some("cargo test".to_string());
+
+        // .NET subproject (a top-level `.csproj`) → dotnet, not cargo.
+        let dotnet_dir = tempdir().unwrap();
+        std::fs::write(dotnet_dir.path().join("Api.csproj"), "<Project/>").unwrap();
+        let (b, t) =
+            stack_aware_commands(dotnet_dir.path(), &[stack("aspnet")], &global_build, &global_test);
+        assert_eq!(b.as_deref(), Some("dotnet build"));
+        assert_eq!(t, None);
+
+        // TypeScript subproject (a `package.json`) → npm, not cargo.
+        let ts_dir = tempdir().unwrap();
+        std::fs::write(ts_dir.path().join("package.json"), "{}").unwrap();
+        let (b, t) =
+            stack_aware_commands(ts_dir.path(), &[stack("nextjs")], &global_build, &global_test);
+        assert_eq!(b.as_deref(), Some("npm test"));
+        assert_eq!(t, None);
+    }
+
+    #[test]
+    fn stack_aware_falls_back_to_global_without_detection() {
+        // Conservative gate: no detected stacks → keep the global command even
+        // when the directory alone would resolve a different stack default.
+        // Absence of detection must never silently switch a working repo.
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("package.json"), "{}").unwrap();
+        let (b, t) = stack_aware_commands(
+            dir.path(),
+            &[],
+            &Some("cargo build".to_string()),
+            &Some("cargo test".to_string()),
+        );
         assert_eq!(b.as_deref(), Some("cargo build"));
         assert_eq!(t.as_deref(), Some("cargo test"));
     }

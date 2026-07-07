@@ -18,11 +18,13 @@
 //!    the prompt, never the safety net;
 //! 4. mirror each top-level `templates/` entry into `.claude/`, routed by:
 //!    - **PRESERVE** ([`PRESERVE`]) — never deleted, never overwritten: the
-//!      user/runtime files `CLAUDE.md`, `mustard.json`, `grain.model.json` and
-//!      the dirs `spec/`, `memory/`, `docs/`. `CLAUDE.md` ships in the payload
-//!      but its refresh is a separate, deliberate concern (the scan personalizes
-//!      its `## Guards`), so update leaves it alone; the rest are not in the
-//!      payload at all — listed so a future template could never clobber them;
+//!      user/runtime files `mustard.json`, `grain.model.json` and the dirs
+//!      `spec/`, `memory/`, `docs/`. None are in the payload at all — listed so a
+//!      future template shipping one could never clobber the deployed copy. The
+//!      orchestrator `.claude/CLAUDE.md` is DELIBERATELY not here: it is a pure
+//!      template file (the scan personalizes the project-ROOT and per-subproject
+//!      `CLAUDE.md`, both OUTSIDE `.claude/`), so it is refreshed like any other
+//!      Mustard-owned file — see the overwrite-copy branch below;
 //!    - **EXCLUDE** ([`EXCLUDE`]) — never deployed: `.github` (installed at the
 //!      project root by `init`) and `.claude` (the `.claude/.claude/` nesting
 //!      guard). Matches `init`'s `copy_dir` exclude exactly, so init and update
@@ -32,8 +34,11 @@
 //!      alongside Mustard's `mustard-review` / `mustard-guards` definitions;
 //!    - **else** — a Mustard-owned FOLDER is deleted then recopied (pruning
 //!      files dropped from the template + refreshing the rest); a Mustard-owned
-//!      FILE (e.g. `settings.json`, `pipeline-config.md`, `grammars-suggestions.json`)
-//!      is overwrite-copied;
+//!      FILE (e.g. `CLAUDE.md`, `settings.json`, `pipeline-config.md`,
+//!      `grammars-suggestions.json`) is overwrite-copied — this backfills the
+//!      orchestrator into a project init'd before it shipped AND refreshes a stale
+//!      copy, so the routing rules reach every existing project, not just fresh
+//!      installs;
 //! 5. re-assert the absolute hook commands in the copied `settings.json`, then
 //!    re-run the RTK / ripgrep / global-permissions guarantees;
 //! 6. re-stamp the `version` field in the project-root `mustard.json`.
@@ -73,12 +78,19 @@ pub struct UpdateOptions {
 /// Top-level `.claude/` entries `update` must NEVER delete or overwrite — the
 /// user- and runtime-owned files. `mustard.json` and `grain.model.json` are not
 /// in the template payload at all (they are listed so a future template shipping
-/// one could still never clobber the deployed copy); `CLAUDE.md` IS in the
-/// payload but its refresh is a separate, deliberate concern — the scan
-/// personalizes its `## Guards`, so update leaves the user's orchestrator file
-/// untouched. `spec/`, `memory/`, `docs/` are the pipeline state and user notes.
+/// one could still never clobber the deployed copy); `spec/`, `memory/`, `docs/`
+/// are the pipeline state and user notes.
+///
+/// The orchestrator `.claude/CLAUDE.md` is DELIBERATELY absent from this set: it
+/// is a pure template file — the scan personalizes the project-ROOT and
+/// per-subproject `CLAUDE.md` (both OUTSIDE `.claude/`, so update never sees
+/// them), never the orchestrator. So it falls through to the overwrite-copy
+/// branch and is refreshed like any other Mustard-owned file. Preserving it froze
+/// the routing rules at install time: a project init'd before the orchestrator
+/// shipped never got it, and edits to the shipped rules never reached existing
+/// projects. The unconditional backup still snapshots any local edit first.
 const PRESERVE: &[&str] =
-    &["CLAUDE.md", "mustard.json", "grain.model.json", "spec", "memory", "docs"];
+    &["mustard.json", "grain.model.json", "spec", "memory", "docs"];
 
 /// Top-level template entries never deployed into a client `.claude/`. Matches
 /// `init`'s `copy_dir` exclude EXACTLY so init and update produce the same tree:
@@ -129,7 +141,10 @@ pub fn update_with_templates(
         "  Will mirror the entire templates payload into .claude/ (folders pruned + refreshed, files overwritten)"
     );
     println!(
-        "  Will preserve: CLAUDE.md  mustard.json  grain.model.json  spec/  memory/  docs/  (+ your own agents/)"
+        "  Will preserve: mustard.json  grain.model.json  spec/  memory/  docs/  (+ your own agents/)"
+    );
+    println!(
+        "  Will refresh the orchestrator .claude/CLAUDE.md from the template (backfilled if absent)"
     );
 
     // Confirm — interactive only. `--force` skips the prompt; a non-TTY stdin
@@ -251,6 +266,9 @@ mod tests {
         fs::write(templates.join("agents/mustard-review.md"), "review-v2").unwrap();
         fs::write(templates.join("context/qa/qa.core.md"), "QA-CORE-V2").unwrap();
         fs::write(templates.join("settings.json"), r#"{"v":2}"#).unwrap();
+        // The orchestrator ships in the payload — a Mustard-owned FILE, refreshed
+        // (and backfilled) by update, not preserved.
+        fs::write(templates.join("CLAUDE.md"), "ORCHESTRATOR-V2").unwrap();
         // Root-level reference doc — backfilled/refreshed by update.
         fs::write(templates.join("pipeline-config.md"), "PIPELINE-CONFIG-V2").unwrap();
         // A top-level file OUTSIDE the old allowlist — also went stale before.
@@ -273,8 +291,11 @@ mod tests {
         // is present, and it must survive the backfill.
         fs::create_dir_all(claude.join("agents")).unwrap();
         fs::write(claude.join("agents/my-custom.md"), "USER AGENT").unwrap();
+        // A STALE orchestrator from an older template — now a Mustard-owned file,
+        // so update must REFRESH it to the shipped `templates/CLAUDE.md`, never
+        // preserve it (the freeze bug this fix removes).
+        fs::write(claude.join("CLAUDE.md"), "ORCHESTRATOR-V1-STALE").unwrap();
         // User files (must survive untouched).
-        fs::write(claude.join("CLAUDE.md"), "USER RULES").unwrap();
         fs::write(claude.join("docs/notes.md"), "USER NOTES").unwrap();
         fs::write(claude.join("spec/feat.md"), "USER SPEC").unwrap();
         fs::write(claude.join("memory/note.md"), "USER MEMORY").unwrap();
@@ -310,7 +331,6 @@ mod tests {
 
         let claude = project.join(".claude");
         // User files survive untouched.
-        assert_eq!(fs::read_to_string(claude.join("CLAUDE.md")).unwrap(), "USER RULES");
         assert_eq!(fs::read_to_string(claude.join("docs/notes.md")).unwrap(), "USER NOTES");
         assert_eq!(
             fs::read_to_string(claude.join("spec/feat.md")).unwrap(),
@@ -326,6 +346,13 @@ mod tests {
             "v2"
         );
         assert_eq!(fs::read_to_string(claude.join("skills/guard.js")).unwrap(), "v2");
+        // The orchestrator .claude/CLAUDE.md is Mustard-owned: the stale copy is
+        // refreshed to the shipped template, not preserved.
+        assert_eq!(
+            fs::read_to_string(claude.join("CLAUDE.md")).unwrap(),
+            "ORCHESTRATOR-V2",
+            "a stale orchestrator must be refreshed from the template"
+        );
         // The Mustard agent definitions are backfilled (a project that never had
         // them now gets `mustard-review`, so the subagent type registers)...
         assert_eq!(
@@ -372,6 +399,62 @@ mod tests {
             "PIPELINE-CONFIG-V2",
             "stale pipeline-config.md must be refreshed to the template version"
         );
+    }
+
+    /// The orchestrator `.claude/CLAUDE.md` is Mustard-owned, not a user file: a
+    /// project init'd before it shipped (or one where update used to PRESERVE it)
+    /// has it BACKFILLED from the template — so the routing rules reach every
+    /// existing project, not just fresh installs. The overwrite-copy branch
+    /// creates the file when the target is absent.
+    #[test]
+    fn update_backfills_missing_orchestrator() {
+        let work = tempdir().unwrap();
+        let templates = fake_templates(work.path());
+        let project = work.path().join("project");
+        fs::create_dir_all(&project).unwrap();
+        existing_claude(&project);
+        // Simulate a project whose `.claude/` never carried the orchestrator file
+        // (init'd before it shipped, only ever `update`d — the sialia gap).
+        let claude = project.join(".claude");
+        fs::remove_file(claude.join("CLAUDE.md")).unwrap();
+        assert!(!claude.join("CLAUDE.md").exists(), "precondition: orchestrator absent");
+
+        update_with_templates(&project, &templates, &UpdateOptions { force: true }).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(claude.join("CLAUDE.md")).unwrap(),
+            "ORCHESTRATOR-V2",
+            "a missing orchestrator must be backfilled from the template"
+        );
+    }
+
+    /// A stale orchestrator is overwritten with the shipped template content,
+    /// while the genuinely preserved state beside it (spec/, the root
+    /// mustard.json's runtime) survives untouched — the fix refreshes only the
+    /// Mustard-owned orchestrator, never the user/runtime files.
+    #[test]
+    fn update_overwrites_stale_orchestrator_and_preserves_user_state() {
+        let work = tempdir().unwrap();
+        let templates = fake_templates(work.path());
+        let project = work.path().join("project");
+        fs::create_dir_all(&project).unwrap();
+        // existing_claude writes `.claude/CLAUDE.md` = "ORCHESTRATOR-V1-STALE".
+        existing_claude(&project);
+
+        update_with_templates(&project, &templates, &UpdateOptions { force: true }).unwrap();
+
+        let claude = project.join(".claude");
+        // The orchestrator is refreshed to the template…
+        assert_eq!(
+            fs::read_to_string(claude.join("CLAUDE.md")).unwrap(),
+            "ORCHESTRATOR-V2",
+            "a stale orchestrator must be overwritten by the template"
+        );
+        // …while truly preserved files survive: a user spec…
+        assert_eq!(fs::read_to_string(claude.join("spec/feat.md")).unwrap(), "USER SPEC");
+        // …and the root mustard.json's runtime block (only `version` is restamped).
+        let cfg = crate::fs_ops::read_json_object(&project.join("mustard.json"));
+        assert!(cfg.get("runtime").is_some(), "runtime block preserved across update");
     }
 
     /// Regression for the hardcoded-allowlist bug: a template path that was NEVER

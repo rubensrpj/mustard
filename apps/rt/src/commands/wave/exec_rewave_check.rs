@@ -312,8 +312,20 @@ pub fn decompose_if_signaled(spec_file: &Path) -> Value {
             }));
         }
 
-        // 9. Rename original spec to spec.original.md.
-        let _ = fs::rename(spec_file, spec_dir.join("spec.original.md"));
+        // 9. Rename original spec to spec.original.md. Surface a failure instead
+        //    of swallowing it: the global `## Acceptance Criteria` were already
+        //    migrated into `wave-plan.md` (step 8), so a rename that leaves a
+        //    stale `spec.md` behind is worth a visible diagnostic. Fail-open —
+        //    the error is logged, never propagated: the decomposition still stands.
+        let renamed = match fs::rename(spec_file, &spec_dir.join("spec.original.md")) {
+            Ok(()) => true,
+            Err(e) => {
+                eprintln!(
+                    "exec-rewave-check: WARN: could not archive spec.md as spec.original.md ({e}); leaving spec.md in place"
+                );
+                false
+            }
+        };
 
         // 10. Update pipeline-state.
         let mut updated = state.unwrap_or_else(|| json!({ "specName": spec_name }));
@@ -334,11 +346,20 @@ pub fn decompose_if_signaled(spec_file: &Path) -> Value {
             let _ = fs::write_atomic(&state_file, text.as_bytes());
         }
 
-        json!({
+        let mut decomposed = json!({
             "action": "decomposed",
             "totalWaves": waves.len(),
             "waves": waves_meta,
-        })
+        });
+        // Tell a direct caller (and the observer path, which reads this to warn
+        // the user) what happened to the original spec. Present only when the
+        // archive actually happened, so the field never lies about disk state.
+        if renamed {
+            if let Some(obj) = decomposed.as_object_mut() {
+                obj.insert("renamedTo".to_string(), json!("spec.original.md"));
+            }
+        }
+        decomposed
     })()
 }
 
