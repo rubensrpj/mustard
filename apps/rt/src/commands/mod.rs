@@ -82,22 +82,17 @@ pub enum RunCmd {
         #[arg(long, default_value = ".")]
         root: PathBuf,
     },
-    /// Project `.claude/grain.model.json` into the two-level orientation census
-    /// — the terrain map the AI reads instead of cold-starting with `grep`.
+    /// Project `.claude/grain.model.json` into the orientation census — the
+    /// terrain map the AI reads instead of cold-starting with `grep`.
     ///
-    /// Level 1 (Terrain): one line per architectural subproject
-    /// (`name · kind · Nf — role`), reusing the same `Project.kind` /
-    /// `Project.code_files` the subproject-`CLAUDE.md` footer renders, with the
-    /// architectural layer (`L0`/`L1`/`L2`) joined from grain's `skeleton[]`.
-    /// Level 2 (Entrypoints): with `--intent`, the subproject(s) matched by
-    /// lexical overlap, each with its exemplar files by role as `path:line`
-    /// (NEVER the snippet). Hard cap ≤2 subprojects × ≤4 roles. Fail-open: a
+    /// One line per architectural subproject (`name · kind · Nf — role`),
+    /// reusing the same `Project.kind` / `Project.code_files` the
+    /// subproject-`CLAUDE.md` footer renders, with the architectural layer
+    /// (`L0`/`L1`/`L2`) joined from grain's `skeleton[]`. Fail-open: a
     /// missing / unreadable model prints nothing, exit 0. Byte-stable output.
+    /// (The per-prompt Level-2 entrypoints were removed: lexical prompt×path
+    /// matching measured 1 useful hit in 17 across two field sessions.)
     Orient {
-        /// Free-text request. Without it only the terrain (Level 1) is emitted;
-        /// with it the matched subproject's entrypoints (Level 2) are added.
-        #[arg(long)]
-        intent: Option<String>,
         /// Workspace root (holds `.claude/grain.model.json`). Defaults to `.`.
         #[arg(long, default_value = ".")]
         root: PathBuf,
@@ -1637,7 +1632,7 @@ pub fn dispatch(cmd: RunCmd) {
     match cmd {
         RunCmd::Scan { root, out, full } => scan::run(&root, out.as_deref(), full),
         RunCmd::Feature { intent, root } => feature::run(&intent, &root),
-        RunCmd::Orient { intent, root } => orient::run(intent.as_deref(), &root),
+        RunCmd::Orient { root } => orient::run(&root),
         RunCmd::GlossaryCoverage {
             intent,
             context,

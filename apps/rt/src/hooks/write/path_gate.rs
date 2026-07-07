@@ -496,7 +496,9 @@ fn glob_match_at(text: &[u8], pat: &[u8]) -> bool {
 
 /// Resolve the `file_path` of a Write/Edit (or Read) invocation, accepting the
 /// legacy `path` key. Mirrors `tool_input.file_path || tool_input.path`.
-fn file_path_of(input: &HookInput) -> Option<String> {
+/// `pub(crate)`: `work_branch_gate` reuses it to scope branching to in-repo
+/// mutations.
+pub(crate) fn file_path_of(input: &HookInput) -> Option<String> {
     let ti = &input.tool_input;
     ti.get("file_path")
         .or_else(|| ti.get("path"))
@@ -509,7 +511,9 @@ fn file_path_of(input: &HookInput) -> Option<String> {
 /// normalised. Returns `None` when `file_path` escapes `cwd` (`../`) — the
 /// caller treats that the same as a meta path (skip). Mirrors the JS
 /// `path.relative(cwd, abs)` + `rel.startsWith('../')` check.
-fn relative_to_cwd(cwd: &str, file_path: &str) -> Option<String> {
+/// `pub(crate)`: `work_branch_gate` reuses it to scope branching to in-repo
+/// mutations.
+pub(crate) fn relative_to_cwd(cwd: &str, file_path: &str) -> Option<String> {
     let cwd_norm = cwd.replace('\\', "/");
     let fp_norm = file_path.replace('\\', "/");
     // Resolve `fp` to an absolute-ish path: if not absolute, join under cwd.
