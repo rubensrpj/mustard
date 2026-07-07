@@ -35,8 +35,8 @@ The user describes what they want; YOU classify, narrate, confirm only on genuin
 mustard-rt run emit-pipeline --kind pipeline.kind --spec {slug} --intent "<short request>" --base {base} --payload '{"kind":"<feature|bugfix|task|tactical-fix>","scope":"<light|full|lean>"}'
 ```
 
-- `--intent` + `--base` seed the auto-branch: the FIRST file edit cuts `{base}_{slug}` off a freshly fetched base (fail-open; records the `/git` PR target). Read-only requests never branch.
-- Lean paths (`task`, bugfix) emit too — no run is invisible; spec-less work passes the session's active spec slug if any.
+- `--intent` + `--base` seed the work unit's isolation: it runs in its OWN git worktree — Desktop auto-isolates; CLI foreground calls `EnterWorktree` name `{base}_{slug}` first (the `{base}_` prefix records the `/git` PR target). → `refs/git/worktree-isolation.md`.
+- Lean paths (`task`, bugfix) emit too — no run is invisible.
 - Keep it agnostic: the options are the project's OWN bases, never a hardcoded pair.
 
 Routing economy — the full pipeline is the exception: its ceremony only amortizes on genuine ≥2-layer/subproject work OR a new entity (trust `layerCount`). Everything single-layer or already-located → `task` or direct. Guards + digest are available WITHOUT the pipeline — never enter it just for guidance.

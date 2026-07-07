@@ -5,7 +5,7 @@
   "cleanupPeriodDays": 30,
   "attribution": { "commit": "assistant", "pr": "assistant" },
 
-  "worktree": { "bgIsolation": "none" },
+  "worktree": { "bgIsolation": "auto" },
 
   "env": {
     "MUSTARD_SPEC_SIZE_MODE": "warn",
