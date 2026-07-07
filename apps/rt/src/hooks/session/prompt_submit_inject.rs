@@ -102,31 +102,18 @@ impl Check for PromptSubmitInject {
             }
         }
         // W8.T8.2 — for non-`/mustard:*` prompts, inject a single-line reminder
-        // when a spec is active. When NO spec is active (the pipeline is not
-        // owning the conversation) the complementary branch injects the
-        // orient-census Level 2 (Entrypoints): the exemplar files for the
-        // subproject(s) the prompt lexically matches, so the AI reads the entry
-        // points instead of grepping. Both gates skip `/mustard:*` (a slash
-        // command already knows its context). Fail-open throughout.
+        // when a spec is active (a slash command already knows its context).
+        // The per-prompt entrypoints census that used to fill the no-spec
+        // branch was REMOVED: lexical prompt-token × path-token matching
+        // measured 1 useful hit in 17 across two field sessions — location is
+        // on-demand work (Grep for literals, the digest for concepts), not a
+        // per-prompt guess. Fail-open throughout.
         if !is_mustard_command(prompt) {
-            match crate::shared::context::current_spec(&cwd).filter(|s| !s.is_empty()) {
-                Some(spec) => {
-                    let _ = economy::emit(&cwd, ActorKind::Hook, "prompt_gate", "pipeline.economy.operation.invoked", None, serde_json::json!({"operation": "prompt_gate.pipeline_in_flight_banner", "duration_ms": 0, "tokens_used": 0}));
-                    return Ok(Verdict::Inject {
-                        context: format!("{PIPELINE_IN_FLIGHT_BANNER}: {spec}"),
-                    });
-                }
-                None => {
-                    let census = crate::commands::orient::render_entrypoints(
-                        &crate::commands::orient::compute_orientation(
-                            std::path::Path::new(&cwd),
-                            Some(prompt),
-                        ),
-                    );
-                    if let Some(context) = census {
-                        return Ok(Verdict::Inject { context });
-                    }
-                }
+            if let Some(spec) = crate::shared::context::current_spec(&cwd).filter(|s| !s.is_empty()) {
+                economy::emit(&cwd, ActorKind::Hook, "prompt_gate", "pipeline.economy.operation.invoked", None, serde_json::json!({"operation": "prompt_gate.pipeline_in_flight_banner", "duration_ms": 0, "tokens_used": 0}));
+                return Ok(Verdict::Inject {
+                    context: format!("{PIPELINE_IN_FLIGHT_BANNER}: {spec}"),
+                });
             }
         }
         Ok(Verdict::Allow)

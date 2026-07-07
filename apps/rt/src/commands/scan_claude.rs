@@ -115,7 +115,7 @@ fn build_managed_block(
     let _ = writeln!(block, "Tipo: {kind} · {code_files} arquivos");
     let _ = writeln!(
         block,
-        "O terreno já está na sua janela (o census de orientação): leia os pontos de entrada indicados. Use `mustard-rt run feature` (digest) só para localizar por conceito ALÉM do census; depois leia os arquivos apontados — o digest acha onde olhar, não substitui ler."
+        "O terreno já está na sua janela (o census de orientação injetado no início da sessão). Para localizar: `grep` para termo exato conhecido; `mustard-rt run feature` (digest) para conceito; depois leia os arquivos apontados — o digest acha onde olhar, não substitui ler."
     );
     if !commands_block.is_empty() {
         block.push('\n');
