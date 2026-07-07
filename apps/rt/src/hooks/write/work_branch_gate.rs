@@ -13,6 +13,11 @@
 //! branch is ever created — branching is bound to an actual mutation, not to
 //! opening a pipeline.
 //!
+//! A mutation whose target lives OUTSIDE the project root (`~/.claude` memory
+//! files, temp dirs, …) is not repo work: the gate self-allows without
+//! consuming the marker — protection and branching apply to the first IN-repo
+//! mutation only.
+//!
 //! ## Agnostic base model
 //!
 //! Everything derives from `mustard.json#git.flow` (via
@@ -216,6 +221,16 @@ impl Check for WorkBranchGate {
         let project = ctx.project_dir_or_cwd(input);
         let sid = session_id_from(input);
 
+        // Branch protection guards the REPO's tree only. A mutation whose
+        // target lives outside the project root (`~/.claude` memory files,
+        // temp dirs, …) is not repo work: never block it, never cut a branch
+        // for it, and keep the pending marker for the first IN-repo edit.
+        if let Some(fp) = super::path_gate::file_path_of(input) {
+            if super::path_gate::relative_to_cwd(&project, &fp).is_none() {
+                return Ok(Verdict::Allow);
+            }
+        }
+
         // VCS binary policy: default `git`; an explicit `""` opt-out (or a
         // non-git tree) means we cannot branch and there is nothing to guard.
         let config = ProjectConfig::load(Path::new(&project));
@@ -310,9 +325,14 @@ mod tests {
     }
 
     fn pre_edit_input(root: &str, sid: &str) -> (HookInput, Ctx) {
+        pre_edit_input_for(root, sid, "f.txt")
+    }
+
+    /// Like [`pre_edit_input`] but with an explicit mutation target path.
+    fn pre_edit_input_for(root: &str, sid: &str, file_path: &str) -> (HookInput, Ctx) {
         let input = HookInput {
             tool_name: Some("Write".to_string()),
-            tool_input: json!({ "file_path": "f.txt", "content": "x" }),
+            tool_input: json!({ "file_path": file_path, "content": "x" }),
             hook_event_name: Some("PreToolUse".to_string()),
             cwd: Some(root.to_string()),
             session_id: Some(sid.to_string()),
@@ -632,6 +652,58 @@ mod tests {
         assert!(
             matches!(verdict, Verdict::Allow),
             "editing on a `dev_*` work branch proceeds: {verdict:?}",
+        );
+    }
+
+    /// A Write targeting a path OUTSIDE the repo (e.g. `~/.claude` memory
+    /// files) on a bare protected branch with NO marker: Allow — branch
+    /// protection guards the repo's tree only.
+    #[test]
+    fn allows_out_of_repo_write_on_protected_branch() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let root_s = root.to_str().unwrap();
+        seed_flow(root, r#"{"*":"dev","dev":"main"}"#);
+        init_repo_on(root, "dev");
+
+        let outside = tempfile::tempdir().unwrap();
+        let outside_file = outside.path().join("memo.md");
+        let (input, ctx) =
+            pre_edit_input_for(root_s, "sess-outside", outside_file.to_str().unwrap());
+        let verdict = WorkBranchGate.evaluate(&input, &ctx).expect("no error");
+        assert!(
+            matches!(verdict, Verdict::Allow),
+            "an out-of-repo write is not repo work — never blocked: {verdict:?}",
+        );
+    }
+
+    /// A Write targeting a path OUTSIDE the repo with a PENDING marker: Allow,
+    /// no branch is cut, and the marker survives for the first in-repo edit.
+    #[test]
+    fn out_of_repo_write_keeps_marker_and_branch() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let root_s = root.to_str().unwrap();
+        seed_flow(root, r#"{"*":"dev","dev":"main"}"#);
+        init_repo_on(root, "dev");
+
+        let sid = "sess-outside-marker";
+        context::set_pending_branch(root_s, sid, "dev_pending-thing");
+
+        let outside = tempfile::tempdir().unwrap();
+        let outside_file = outside.path().join("memo.md");
+        let (input, ctx) = pre_edit_input_for(root_s, sid, outside_file.to_str().unwrap());
+        let verdict = WorkBranchGate.evaluate(&input, &ctx).expect("no error");
+        assert!(matches!(verdict, Verdict::Allow), "out-of-repo write proceeds: {verdict:?}");
+        assert_eq!(
+            current_branch("git", root_s).as_deref(),
+            Some("dev"),
+            "no branch is cut for an out-of-repo mutation",
+        );
+        assert_eq!(
+            context::pending_branch_for(root_s, sid).as_deref(),
+            Some("dev_pending-thing"),
+            "the marker survives for the first in-repo edit",
         );
     }
 

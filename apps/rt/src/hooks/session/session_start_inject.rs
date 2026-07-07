@@ -54,7 +54,7 @@
 //! these now run where the JS auto-skipped. They are all fail-open side
 //! effects with no verdict impact, so the change is observably inert.
 
-use mustard_core::io::atomic_md::MarkdownStore;
+use mustard_core::io::atomic_md::{MarkdownDoc, MarkdownStore};
 use mustard_core::platform::error::Error;
 use mustard_core::io::fs;
 use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
@@ -72,9 +72,9 @@ const RETENTION_MS: u128 = 30 * 24 * 60 * 60 * 1000;
 /// Number of knowledge entries injected from `.claude/knowledge/*.md`.
 const KB_MAX_ENTRIES: usize = 5;
 
-/// W3B injection caps — total budget per memory section.
+/// Injection caps — total budget per memory section.
 /// Top-3 entries from the active-spec context, plus top-2 global fallbacks.
-/// W4B will add frontmatter-based ranking; for now filesystem order is used.
+/// Entries are surfaced newest-first by their frontmatter timestamp.
 const SPEC_SCOPED_MAX: usize = 3;
 const GLOBAL_FALLBACK_MAX: usize = 2;
 
@@ -441,83 +441,105 @@ fn run_spec_hygiene(_cwd: &str) {
 // session-memory — persistent-memory injection (W3B: reads from MarkdownStore)
 // ===========================================================================
 
-/// Load knowledge entries from `.claude/knowledge/*.md` via `MarkdownStore::scan_dir`.
+/// A doc's chronological sort key: the frontmatter timestamp (`captured_at`
+/// for knowledge/decisions, `at` for agent memory), else the filename stem —
+/// every writer in this family stamps ISO-8601 in both, so either key sorts
+/// lexicographically = chronologically.
+fn recency_key(doc: &MarkdownDoc) -> String {
+    doc.frontmatter
+        .as_ref()
+        .and_then(|fm| fm.get_str("captured_at").or_else(|| fm.get_str("at")))
+        .map(str::to_string)
+        .unwrap_or_else(|| {
+            doc.path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or_default()
+                .to_string()
+        })
+}
+
+/// The newest `max` docs of `docs`, read IN FULL (frontmatter + body).
 ///
-/// W3B: replaces the `knowledge_patterns` SQLite table. Each `.md` file in the
-/// knowledge dir is treated as one pattern entry. The file body is not read
-/// (scan_dir is lazy); the frontmatter `name` and `description` fields (when
-/// present) are used as the pattern text. Files without frontmatter use the
-/// filename stem as a fallback label. Accepts an empty or missing directory —
-/// returns an empty vec (top-N can be empty until W4B populates the content).
-fn load_knowledge_md(knowledge_dir: &Path) -> Vec<String> {
-    let docs = MarkdownStore::scan_dir(knowledge_dir);
+/// `scan_dir` is header-only (lazy body); the full `read_one` happens only for
+/// the kept top-N, so the body read stays O(max). A doc whose re-read fails
+/// keeps its header-only form — fail-open.
+fn newest_full_docs(mut docs: Vec<MarkdownDoc>, max: usize) -> Vec<MarkdownDoc> {
+    docs.sort_by(|a, b| recency_key(b).cmp(&recency_key(a)).then_with(|| b.path.cmp(&a.path)));
+    docs.truncate(max);
     docs.into_iter()
-        .take(KB_MAX_ENTRIES)
+        .map(|doc| MarkdownStore::read_one(&doc.path).unwrap_or(doc))
+        .collect()
+}
+
+/// A doc's one-line label: frontmatter `name`/`description` when present, else
+/// the first non-empty body line, else the filename stem. The knowledge and
+/// decision writers put the payload in the BODY (frontmatter carries only
+/// provenance), so without the body fallback every entry rendered as an
+/// opaque timestamp-hash id.
+fn doc_label(doc: &MarkdownDoc) -> String {
+    if let Some(label) = doc
+        .frontmatter
+        .as_ref()
+        .and_then(|fm| fm.get_str("name").or_else(|| fm.get_str("description")))
+    {
+        return label.to_string();
+    }
+    if let Some(line) = doc.body.lines().map(str::trim).find(|l| !l.is_empty()) {
+        return line.to_string();
+    }
+    doc.path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("?")
+        .to_string()
+}
+
+/// Load knowledge entries from `.claude/knowledge/*.md` via `MarkdownStore`.
+///
+/// Each `.md` file is one pattern entry, surfaced newest-first (see
+/// [`newest_full_docs`]). The label is the frontmatter `name`/`description`
+/// when present, else the first body line — where the knowledge writer puts
+/// the pattern text. Accepts an empty or missing directory — returns an
+/// empty vec.
+fn load_knowledge_md(knowledge_dir: &Path) -> Vec<String> {
+    newest_full_docs(MarkdownStore::scan_dir(knowledge_dir), KB_MAX_ENTRIES)
+        .iter()
         .map(|doc| {
-            let label = doc
-                .frontmatter
-                .as_ref()
-                .and_then(|fm| fm.get_str("name").or_else(|| fm.get_str("description")))
-                .map(str::to_string)
-                .unwrap_or_else(|| {
-                    doc.path
-                        .file_stem()
-                        .and_then(|s| s.to_str())
-                        .unwrap_or("?")
-                        .to_string()
-                });
-            format!("- [pattern] (unverified — verify before recommending) {label}")
+            format!(
+                "- [pattern] (unverified — verify before recommending) {}",
+                doc_label(doc)
+            )
         })
         .collect()
 }
 
-/// Load memory entries from a `.claude/{knowledge|memory}/*.md` directory.
+/// Load memory entries from `.claude/memory/{decisions,lessons}/*.md`.
 ///
-/// W3B: replaces the `memory_decisions` / `memory_lessons` SQLite tables.
-/// Each `.md` file is one memory entry. The frontmatter `name` field (or
-/// filename stem) becomes the label; the frontmatter `description` is the
-/// content snippet. Accepts an empty or missing directory — returns an empty
-/// vec. Top-N ordering is filesystem-order (deterministic); W4B will add
-/// frontmatter-based ranking when the files carry score metadata.
+/// Scoped to the durable sub-stores: `memory/agent/` holds per-turn resume
+/// markers (empty body, no label) that would otherwise crowd every real
+/// decision out of the top-N. Surfaced newest-first; the label is the first
+/// body line — where the decision writers put the content. Accepts empty or
+/// missing directories — returns an empty vec.
 fn load_memory_md(memory_dir: &Path, max: usize) -> Vec<String> {
-    let docs = MarkdownStore::scan_dir(memory_dir);
-    docs.into_iter()
-        .take(max)
-        .map(|doc| {
-            let name = doc
-                .frontmatter
-                .as_ref()
-                .and_then(|fm| fm.get_str("name"))
-                .map(str::to_string)
-                .unwrap_or_else(|| {
-                    doc.path
-                        .file_stem()
-                        .and_then(|s| s.to_str())
-                        .unwrap_or("?")
-                        .to_string()
-                });
-            let description = doc
-                .frontmatter
-                .as_ref()
-                .and_then(|fm| fm.get_str("description"))
-                .unwrap_or(&name)
-                .to_string();
-            format!("- [memory] {description}")
-        })
+    let mut docs = MarkdownStore::scan_dir(&memory_dir.join("decisions"));
+    docs.extend(MarkdownStore::scan_dir(&memory_dir.join("lessons")));
+    newest_full_docs(docs, max)
+        .iter()
+        .map(|doc| format!("- [memory] {}", doc_label(doc)))
         .collect()
 }
 
 /// Build the persistent-memory `additionalContext` payload, or `None` when no
 /// source has any content.
 ///
-/// W3B: reads all memory sources from the filesystem via `MarkdownStore::scan_dir`
-/// instead of SQLite tables. Directories:
-/// - `.claude/knowledge/` → Project Knowledge (replaces `knowledge_patterns`)
-/// - `.claude/memory/` → Recent Decisions + Lessons Learned (replaces
-///   `memory_decisions` / `memory_lessons`)
+/// Reads the memory sources from the filesystem via `MarkdownStore`:
+/// - `.claude/knowledge/` → Project Knowledge
+/// - `.claude/memory/{decisions,lessons}/` → Recent Decisions (the `agent/`
+///   sub-store is per-turn resume state, never injected here)
 ///
 /// Empty or absent directories are treated as zero entries — fail-open throughout.
-/// Bounded by top-N recent entries per section ([`SPEC_SCOPED_MAX`] +
+/// Bounded by top-N newest entries per section ([`SPEC_SCOPED_MAX`] +
 /// [`GLOBAL_FALLBACK_MAX`]) — recency is the filter, no char cap.
 fn build_memory_context(cwd: &str) -> Option<String> {
     let Ok(paths) = ClaudePaths::for_project(cwd) else {
@@ -608,7 +630,7 @@ impl Check for SessionStartInject {
         // the persistent-memory payload — either, both, or neither may inject.
         // Fail-open: a missing / unreadable model yields no terrain.
         let terrain = crate::commands::orient::render_terrain(
-            &crate::commands::orient::compute_orientation(Path::new(&cwd), None),
+            &crate::commands::orient::compute_orientation(Path::new(&cwd)),
         );
         let parts: Vec<String> = [build_memory_context(&cwd), terrain]
             .into_iter()
@@ -831,6 +853,127 @@ mod tests {
             .unwrap();
         // No knowledge/memory dirs → build_memory_context returns None → Allow.
         assert_eq!(verdict, Verdict::Allow);
+    }
+
+    /// Write a knowledge file in the REAL writer's shape: provenance-only
+    /// frontmatter (`kind`/`captured_at`), payload in the BODY.
+    fn seed_knowledge_body(project: &std::path::Path, stem: &str, captured_at: &str, body: &str) {
+        let knowledge_dir = project.join(".claude").join("knowledge");
+        std::fs::create_dir_all(&knowledge_dir).unwrap();
+        let content = format!("---\nkind: decision\ncaptured_at: {captured_at}\n---\n{body}\n");
+        std::fs::write(knowledge_dir.join(format!("{stem}.md")), content).unwrap();
+    }
+
+    /// Write a decision file under `.claude/memory/decisions/` in the real
+    /// writer's shape (payload in the body).
+    fn seed_decision(project: &std::path::Path, stem: &str, captured_at: &str, body: &str) {
+        let dir = project.join(".claude").join("memory").join("decisions");
+        std::fs::create_dir_all(&dir).unwrap();
+        let content = format!("---\nkind: decision\ncaptured_at: {captured_at}\n---\n{body}\n");
+        std::fs::write(dir.join(format!("{stem}.md")), content).unwrap();
+    }
+
+    /// Write an agent turn marker under `.claude/memory/agent/` (empty body,
+    /// provenance-only frontmatter) — the real `agent_memory` shape.
+    fn seed_agent_marker(project: &std::path::Path, stem: &str, at: &str) {
+        let dir = project.join(".claude").join("memory").join("agent");
+        std::fs::create_dir_all(&dir).unwrap();
+        let content =
+            format!("---\nsession_id: s\nsummary: interrupted at wave ?\nat: {at}\n---\n");
+        std::fs::write(dir.join(format!("{stem}.md")), content).unwrap();
+    }
+
+    #[test]
+    fn knowledge_label_falls_back_to_body_line_not_stem() {
+        // The real knowledge writer puts the content in the BODY and no
+        // name/description in the frontmatter — the injected label must be
+        // that body line, never the opaque timestamp-hash filename stem.
+        let dir = tempdir().unwrap();
+        let project = dir.path().to_str().unwrap();
+        seed_knowledge_body(
+            dir.path(),
+            "20260602T115441987Z-dc82555e",
+            "2026-06-02T11:54:41.987Z",
+            "**D1** — actionable sections live at the executing level",
+        );
+        let verdict = SessionStartInject.evaluate(&session_input("s"), &ctx(project)).unwrap();
+        let context = match verdict {
+            Verdict::Inject { context } => context,
+            other => panic!("expected Inject, got {other:?}"),
+        };
+        assert!(
+            context.contains("**D1** — actionable sections live at the executing level"),
+            "the body line is the label; got: {context}"
+        );
+        assert!(
+            !context.contains("20260602T115441987Z-dc82555e"),
+            "the opaque filename stem must not surface; got: {context}"
+        );
+    }
+
+    #[test]
+    fn memory_injects_newest_decisions_first_and_drops_oldest() {
+        // Six decisions, cap is 5 (SPEC_SCOPED_MAX + GLOBAL_FALLBACK_MAX):
+        // the OLDEST is the one dropped, and the newest renders before the
+        // older ones — "Recent Decisions" means recent.
+        let dir = tempdir().unwrap();
+        let project = dir.path().to_str().unwrap();
+        for day in 1..=6 {
+            seed_decision(
+                dir.path(),
+                &format!("2026060{day}T000000000Z-aaaaaaaa"),
+                &format!("2026-06-0{day}T00:00:00.000Z"),
+                &format!("decision-of-day-{day}"),
+            );
+        }
+        let verdict = SessionStartInject.evaluate(&session_input("s"), &ctx(project)).unwrap();
+        let context = match verdict {
+            Verdict::Inject { context } => context,
+            other => panic!("expected Inject, got {other:?}"),
+        };
+        assert!(!context.contains("decision-of-day-1"), "oldest dropped; got: {context}");
+        for day in 2..=6 {
+            assert!(context.contains(&format!("decision-of-day-{day}")), "kept day {day}");
+        }
+        let newest = context.find("decision-of-day-6").unwrap();
+        let older = context.find("decision-of-day-2").unwrap();
+        assert!(newest < older, "newest renders first; got: {context}");
+    }
+
+    #[test]
+    fn memory_skips_agent_turn_markers() {
+        // memory/agent/ holds per-turn resume markers; under the old
+        // whole-dir scan they alphabetically crowded every real decision out
+        // of the top-N. Only the decision may surface.
+        let dir = tempdir().unwrap();
+        let project = dir.path().to_str().unwrap();
+        for i in 0..5 {
+            seed_agent_marker(
+                dir.path(),
+                &format!("2026060{}T00000{i}000Z-c5c446b9", 1),
+                &format!("2026-06-01T00:00:0{i}.000Z"),
+            );
+        }
+        seed_decision(
+            dir.path(),
+            "20260610T000000000Z-bbbbbbbb",
+            "2026-06-10T00:00:00.000Z",
+            "the-real-decision",
+        );
+        let verdict = SessionStartInject.evaluate(&session_input("s"), &ctx(project)).unwrap();
+        let context = match verdict {
+            Verdict::Inject { context } => context,
+            other => panic!("expected Inject, got {other:?}"),
+        };
+        assert!(context.contains("the-real-decision"), "the decision surfaces: {context}");
+        assert!(
+            !context.contains("interrupted at wave"),
+            "agent turn markers never surface: {context}"
+        );
+        assert!(
+            !context.contains("c5c446b9"),
+            "agent marker stems never surface: {context}"
+        );
     }
 
     #[test]

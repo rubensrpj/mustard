@@ -23,6 +23,11 @@
 //!   directories. WARN with install hint (`mustard install-nerd-font`) when
 //!   absent. Powerline statusline themes require this; without it the
 //!   transition glyphs render as tofu.
+//! - **git-flow** — `mustard.json#git.flow` is declared. WARN when empty:
+//!   every base-derived behavior (work-branch protection, the auto-branch
+//!   base, `/git` PR targets) then falls back to `{main, master}`, so a
+//!   project integrating on any other branch (`dev`, `develop`) gets NO
+//!   protection there and edits land on it silently.
 
 use mustard_core::domain::model::event::ActorKind;
 use crate::shared::context;
@@ -598,6 +603,42 @@ fn lsp_check(project_dir: &Path) -> CheckResult {
     } else {
         CheckResult::warn("lsp", missing)
     }
+}
+
+// ---------------------------------------------------------------------------
+// Check: git-flow
+// ---------------------------------------------------------------------------
+
+/// Warn when `mustard.json#git.flow` is empty. The flow is the single source
+/// every base-derived behavior reads: `work_branch_gate` protection, the
+/// auto-branch `{base}_{slug}` base, `/git` PR targets. An empty flow silently
+/// degrades all of them to the `{main, master}` fallback — a project whose
+/// integration branch is anything else (`dev`, `develop`) gets no protection
+/// there and no auto-branching. Skip when there is no `mustard.json` at the
+/// project root (not a mustard project).
+fn check_git_flow(cwd: &Path) -> CheckResult {
+    if !cwd.join("mustard.json").is_file() {
+        return CheckResult::skip("git-flow", "no mustard.json at project root");
+    }
+    let config = mustard_core::ProjectConfig::load(cwd);
+    if config.git.flow.is_empty() {
+        return CheckResult::warn(
+            "git-flow",
+            vec![
+                "git.flow is empty — only the fallback bases (main/master) are protected; \
+                 any other integration branch (e.g. dev) accepts direct edits and never \
+                 auto-branches"
+                    .to_string(),
+                "fix: declare the flow in mustard.json, e.g. \
+                 \"git\": {\"flow\": {\"*\": \"dev\", \"dev\": \"main\"}}"
+                    .to_string(),
+            ],
+        );
+    }
+    let mut r = CheckResult::ok("git-flow");
+    let bases: Vec<String> = config.git.integration_bases().into_iter().collect();
+    r.details.push(format!("bases: {}", bases.join(", ")));
+    r
 }
 
 // ---------------------------------------------------------------------------
@@ -1307,10 +1348,11 @@ pub fn run(opts: DoctorOpts) {
         let result = match check_name.as_str() {
             "wave-integrity" => check_wave_integrity(&claude_dir),
             "status-consistency" => check_status_consistency(&claude_dir),
+            "git-flow" => check_git_flow(&cwd),
             other => {
                 eprintln!(
                     "doctor: unknown check '{other}'. Known: \
-                     wave-integrity, claude-paths, workspace-leaks, i1, status-consistency, superseded, capability-drift"
+                     wave-integrity, claude-paths, workspace-leaks, i1, status-consistency, superseded, capability-drift, git-flow"
                 );
                 std::process::exit(1);
             }
@@ -1336,6 +1378,9 @@ pub fn run(opts: DoctorOpts) {
         check_wave_integrity(&claude_dir),
         // W2 spec-status-consistency — always in the full run.
         check_status_consistency(&claude_dir),
+        // Empty git.flow silently disables base protection — always in the
+        // full run (field case: sialia editing straight on `dev`).
+        check_git_flow(&cwd),
     ];
 
     if opts.residue {
@@ -1829,6 +1874,47 @@ mod tests {
     #[test]
     fn empty_timestamp_not_expired() {
         assert!(!is_timestamp_expired("", u128::MAX, 1));
+    }
+
+    // --- git-flow tests ---
+
+    #[test]
+    fn git_flow_empty_flow_warns() {
+        let dir = tempdir().unwrap();
+        write_file(
+            &dir.path().join("mustard.json"),
+            r#"{"git":{"flow":{},"provider":"github","submodules":false}}"#,
+        );
+        let result = check_git_flow(dir.path());
+        assert_eq!(result.status, Status::Warn, "{:?}", result.details);
+        assert!(
+            result.details.iter().any(|d| d.contains("git.flow is empty")),
+            "expected the empty-flow warning, got: {:?}",
+            result.details
+        );
+    }
+
+    #[test]
+    fn git_flow_declared_flow_is_ok_and_lists_bases() {
+        let dir = tempdir().unwrap();
+        write_file(
+            &dir.path().join("mustard.json"),
+            r#"{"git":{"flow":{"*":"dev","dev":"main"},"provider":"github","submodules":false}}"#,
+        );
+        let result = check_git_flow(dir.path());
+        assert_eq!(result.status, Status::Ok, "{:?}", result.details);
+        assert!(
+            result.details.iter().any(|d| d.contains("dev") && d.contains("main")),
+            "expected the derived bases in the detail, got: {:?}",
+            result.details
+        );
+    }
+
+    #[test]
+    fn git_flow_missing_mustard_json_skips() {
+        let dir = tempdir().unwrap();
+        let result = check_git_flow(dir.path());
+        assert_eq!(result.status, Status::Skip, "{:?}", result.details);
     }
 
     // --- lsp_check tests ---
