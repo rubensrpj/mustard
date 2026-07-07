@@ -1015,7 +1015,7 @@ fn render_report_json(results: &[CheckResult]) {
 /// markdown carries no lifecycle header any more, so its content is never a
 /// FAIL source — a *legacy* `### Stage:` / `### Outcome:` header that diverges
 /// from `meta.json` is surfaced as a non-fatal advisory (it means the spec
-/// predates the strip-headers migration; run `migrate-to-meta --strip-headers`).
+/// predates the header-strip clean-up; delete the header lines from `spec.md`).
 ///
 /// FAIL conditions (all driven by `meta.json`):
 /// - `meta.json` missing.
@@ -1092,12 +1092,12 @@ fn check_status_consistency(claude_dir: &Path) -> CheckResult {
                     out.warns.push(format!(
                         "{label}: legacy header drift: spec.md={stage_spec:?}/{outcome_spec:?}, \
                          meta.json={stage_meta:?}/{outcome_meta:?} \
-                         (run `migrate-to-meta --strip-headers`)"
+                         (meta.json is authoritative — delete the `### Stage:`/`### Outcome:` lines from spec.md)"
                     ));
                 } else {
                     out.warns.push(format!(
                         "{label}: legacy lifecycle header still present in spec.md \
-                         (run `migrate-to-meta --strip-headers`)"
+                         (delete the `### Stage:`/`### Outcome:` lines — meta.json is authoritative)"
                     ));
                 }
             }

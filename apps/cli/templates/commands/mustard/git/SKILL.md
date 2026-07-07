@@ -6,7 +6,21 @@ source: manual
 <!-- mustard:generated -->
 # /git - Git Operations
 
+**Iron law: everything goes up (`add -A`) — never a silent partial scope.**
+
 `/git <action> [--scope=all|staged|<path-pattern>]`
+
+## Rationalizations that don't fly
+
+| Excuse | Answer |
+|--------|--------|
+| "I'll commit just these two files for now" | scope=all is the default; a partial scope applies ONLY when the user explicitly passes `--scope` |
+| "pushing straight to the base is faster than a PR" | a work branch reaches its base via `pr` only — never a local push to an integration branch |
+| "the submodule change can ride the parent commit" | submodules first, always — each dirty repo gets its own `{base}_{slug}` branch and its own PR |
+| "conflict — a quick hard reset and I redo it" | abort on ANY conflict; only reversible operations, never destructive fallbacks |
+| "`git add .` from this subdir covers what matters" | never `git add .` — `add -A` (or the user's explicit pattern) from the correct directory |
+
+**Red flags** — catch yourself thinking any of these and stop: *"I'm cherry-picking files into the commit without being asked."* · *"I'm committing while sitting on a bare integration base."* · *"Stash pop without the sentinel index."* · *"I'll skip the submodule PR, it's tiny."*
 
 | Action | Description |
 |--------|-------------|

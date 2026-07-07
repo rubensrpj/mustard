@@ -2,6 +2,22 @@
 
 > Detail for monorepo / submodule handling in `/git`.
 
+## Work branch per repo — a submodule never commits onto its base
+
+The work unit `{slug}` materialises as a branch `{base}_{slug}` in EVERY repo it touches: the parent (cut by `work_branch_gate` on the first edit) AND each dirty submodule (cut by `/git` at commit time, below). Each repo's `{base}_` prefix records THAT repo's own base — the parent's base comes from `mustard.json#git.flow`; a submodule's base is its OWN default branch, since a submodule is an independent repo that need not share the parent's `dev`/`main` flow.
+
+**Resolve a submodule's base + work branch** (per submodule; `<SUB_ABS>` absolute, via `git -C`, never `cd`):
+
+```bash
+PARENT_BRANCH=$(rtk git rev-parse --abbrev-ref HEAD)   # run in the parent root; it is {base}_{slug}
+SLUG=${PARENT_BRANCH#*_}          # slug = everything after the first `_` (the parent's base prefix)
+SUB_BASE=$(rtk git -C "<SUB_ABS>" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##')
+[ -z "$SUB_BASE" ] && SUB_BASE=$(rtk git -C "<SUB_ABS>" rev-parse --abbrev-ref HEAD)   # fallback: current branch
+SUB_WORK="${SUB_BASE}_${SLUG}"    # the submodule's own work branch — same slug, its own base prefix
+```
+
+**Cut it at commit time — only when the submodule sits on its base with changes.** If `rtk git -C <SUB_ABS> rev-parse --abbrev-ref HEAD` equals `$SUB_BASE`, create the work branch before staging: `rtk git -C <SUB_ABS> checkout -b "$SUB_WORK"` carries the working-tree edits over. If the submodule is ALREADY on `$SUB_WORK` (a later edit of the same unit), skip the checkout. **Never add/commit/push while a submodule is on its bare base** — this is the parent's branch-protection rule extended to every repo.
+
 ## Ephemeral Paths (Claude/RTK runtime)
 
 Claude Code and RTK write continuously to these paths **during skill execution**. They are not code, must never be tracked, and must never block checkout.
@@ -90,19 +106,37 @@ Run in **one parallel batch**:
 
 ### Commit dirty submodules (monorepo only)
 
-Launch **ONE parallel Task agent per dirty submodule** (agents inherit the session model — no model selection). Each agent runs ONE chained Bash command:
+Launch **ONE parallel Task agent per dirty submodule** (agents inherit the session model — no model selection). Each agent FIRST puts the submodule on its `{base}_{slug}` work branch (resolve `$SUB_BASE`/`$SUB_WORK` per **Work branch per repo** above), THEN stages + commits — ONE chained Bash command:
 
 ```bash
-rtk git -C "<SUBMODULE_ABS_PATH>" add $SCOPE_EXPR && rtk git -C "<SUBMODULE_ABS_PATH>" diff --cached --stat && rtk git -C "<SUBMODULE_ABS_PATH>" commit -m "<message>"
+rtk git -C "<SUB_ABS>" checkout "$SUB_WORK" 2>/dev/null || rtk git -C "<SUB_ABS>" checkout -b "$SUB_WORK"; \
+rtk git -C "<SUB_ABS>" add $SCOPE_EXPR && rtk git -C "<SUB_ABS>" diff --cached --stat && rtk git -C "<SUB_ABS>" commit -m "<message>"
 ```
 
-For `staged` scope: skip the `rtk git add` step.
+The leading `checkout` switches to an existing `$SUB_WORK` (a later edit of the same unit) or, failing that, `checkout -b` cuts it off the current base — carrying the working-tree edits over. Either way the commit lands on the work branch, never on the base. For `staged` scope: skip the `rtk git add` step.
 
-`<SUBMODULE_ABS_PATH>` MUST be **absolute** and is passed via `git -C` (never `cd`), per the "Absolute paths, no cd" rule. `.gitmodules` / `rtk git submodule status` report paths **relative** to the superproject root, so resolve the absolute form first — `<superproject-root>/<relative-submodule-path>`, where `<superproject-root>` = `rtk git rev-parse --show-toplevel`. A bare relative path or `cd <relative>` fails whenever the shell cwd is not the superproject root.
+`<SUB_ABS>` MUST be **absolute** and is passed via `git -C` (never `cd`), per the "Absolute paths, no cd" rule. `.gitmodules` / `rtk git submodule status` report paths **relative** to the superproject root, so resolve the absolute form first — `<superproject-root>/<relative-submodule-path>`, where `<superproject-root>` = `rtk git rev-parse --show-toplevel`. A bare relative path or `cd <relative>` fails whenever the shell cwd is not the superproject root.
+
+## PR per repo — submodules before parent
+
+`/git pr` (on a work branch) opens ONE PR per repo, **submodules FIRST**. Order matters: the parent commit bumps each submodule's gitlink to a submodule work-branch commit; merging the submodule PR first lands that commit on the submodule's base, so the parent's pointer is never left dangling when the parent PR merges.
+
+After `push` (which committed + pushed each submodule's `$SUB_WORK` and the parent's work branch):
+
+1. **Each submodule ahead of its base** — a PR from inside the submodule. Skip a submodule whose work branch is not ahead (`rtk git -C <SUB_ABS> rev-parse "$SUB_BASE..$SUB_WORK"` empty → no commits → no PR):
+   ```bash
+   ( cd "<SUB_ABS>" && rtk gh pr create --base "$SUB_BASE" --head "$SUB_WORK" --fill )
+   ```
+   The subshell `cd` is fine here — this is `gh`, which reads the repo from its cwd, and a `( … )` subshell isolates the change so the outer cwd never moves. (The "no `cd`" rule targets `git`; there you still use `git -C`.) `gh` infers the submodule's repo from its own `origin`; or pass `-R <owner/repo>` explicitly. An existing PR → print its URL instead of re-creating.
+2. **Then the parent** — `rtk gh pr create --base "$BASE" --head <parent-work-branch> --fill`.
+3. **Return every repo to its base** — `rtk git -C <SUB_ABS> checkout "$SUB_BASE"` for each submodule, then `rtk git checkout "$BASE"` in the parent. The unit is delivered (PRs open, awaiting review); leaving each repo on its base stops the next unit from piling onto this one and keeps the tree clean. The push already published every work branch, so nothing is lost by checking out the base.
+
+Only for the **work-branch** `pr`. A **base→base** `pr` (promotion/backport) opens its single PR and does NOT push, cut submodule branches, or return anywhere.
 
 ## Rules Summary
 
-- Submodules BEFORE parent (in sync, push, commit, and merge)
+- Submodules BEFORE parent (in sync, push, commit, merge, **and pr**)
+- Every repo (parent + dirty submodule) carries the unit on its own `{base}_{slug}` work branch, cut from THAT repo's base — never commit/push onto a bare base, in any repo
 - NEVER use `rtk git add .` — use `rtk git add -A` / `rtk git add <pattern>` from the correct directory
 - Always prefix every git invocation with `rtk` (even inside `&&`/`;` chains and `$(...)` substitutions) — RTK passes through when no filter applies, so it is always safe
 - **Single repo**: skip all submodule steps — just operate on the root

@@ -16,15 +16,12 @@
 //!
 //! ## W6 — subcommand entry point
 //!
-//! `mustard-rt run i18n translate-heading` and `mustard-rt run spec-lang
-//! resolve` are listed in the W4 spec but explicitly deferred to W6. They
-//! will live next to this module; for now the rt run-face does not register
-//! a `SpecLang` variant.
+//! `mustard-rt run spec-lang resolve` is listed in the W4 spec but was
+//! explicitly deferred to W6. It lives next to this module.
 
-// W6: the public helpers below are the entry point that the deferred
-// `i18n translate-heading` / `spec-lang resolve` subcommands will call. They
-// stay `#[allow(dead_code)]` until W6 wires the dispatch — exposing them as
-// public API today keeps the surface stable across the wave gap.
+// W6: the public helpers below are the entry point the `spec-lang resolve`
+// subcommand calls. They stay `#[allow(dead_code)]` so the public surface
+// stays stable even when a helper is momentarily uncalled.
 #![allow(dead_code)]
 
 use mustard_core::{slugify, LocaleError, SupportedLocale as Locale};

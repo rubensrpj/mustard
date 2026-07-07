@@ -3,21 +3,17 @@
 //! A knowledge record's *worth* is not static: a high-confidence note captured
 //! months ago and never re-used is a weaker bet than a fresh one. The decay
 //! function below is the **single source of truth** for that arithmetic —
-//! `recall` (ranking), `prune` (garbage collection by age), and `memory search`
-//! all consult THIS one function so the curve never diverges (SOLID). It is pure
-//! and deterministic *given the clock*: the caller reads "now" once and passes it
-//! in, so a test can pin the timestamp and the result is byte-stable.
+//! `memory search` consults THIS one function so the curve never diverges
+//! (SOLID). It is pure and deterministic *given the clock*: the caller reads
+//! "now" once and passes it in, so a test can pin the timestamp and the result
+//! is byte-stable.
 
 pub mod memory;
-pub mod memory_ingest;
-pub mod prune;
-pub mod recall;
-pub mod recall_cli;
 
 /// Days over which a record's confidence linearly decays to zero, measured from
 /// its reference timestamp (`last_used` when the legacy agent store tracks it,
 /// else `captured_at`). The single decay window for the whole knowledge
-/// subsystem — `memory`, `recall`, and `prune` all derive from it.
+/// subsystem — `memory` derives from it.
 pub const DECAY_WINDOW_DAYS: f64 = 30.0;
 
 /// The *effective* confidence of a record: its stored `confidence` linearly
@@ -32,7 +28,7 @@ pub const DECAY_WINDOW_DAYS: f64 = 30.0;
 ///
 /// Pure + deterministic given `now`: identical inputs always yield identical
 /// output, so callers that read the wall clock once (and tests that pin it) get
-/// a stable ordering. THE one decay curve — `recall`/`prune`/`memory` reuse it.
+/// a stable ordering. THE one decay curve — `memory` reuses it.
 #[must_use]
 pub fn effective_confidence(confidence: f64, ts: Option<&str>, now_iso: &str) -> f64 {
     let clamped = confidence.clamp(0.0, 1.0);

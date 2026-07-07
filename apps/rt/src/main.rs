@@ -105,8 +105,6 @@ fn main() {
     // working unchanged. See wave-network spec AC-6.
     let argv: Vec<String> = rewrite_metrics_wave_status(std::env::args().collect());
     let argv = rewrite_scan_spec(argv);
-    let argv = rewrite_knowledge_recall(argv);
-    let argv = rewrite_knowledge_prune(argv);
     let cli = Cli::parse_from(argv);
 
     // The `Run` and `Mcp` faces are not enforcement faces: they never read
@@ -199,48 +197,6 @@ fn rewrite_scan_spec(mut argv: Vec<String>) -> Vec<String> {
         // Collapse the two tokens into one: `scan spec` → `scan-spec`.
         argv[scan_idx] = "scan-spec".to_string();
         argv.remove(spec_idx);
-    }
-    argv
-}
-
-/// Rewrite `mustard-rt run knowledge recall [args...]` to
-/// `mustard-rt run knowledge-recall [args...]` so clap routes to the top-level
-/// `RunCmd::KnowledgeRecall` variant. All other argv shapes pass through
-/// unchanged. Mirrors `rewrite_scan_spec` (the two tokens immediately follow
-/// `run`).
-fn rewrite_knowledge_recall(mut argv: Vec<String>) -> Vec<String> {
-    let Some(run_idx) = argv.iter().position(|a| a == "run") else {
-        return argv;
-    };
-    let knowledge_idx = run_idx + 1;
-    let recall_idx = run_idx + 2;
-    if argv.get(knowledge_idx).map(String::as_str) == Some("knowledge")
-        && argv.get(recall_idx).map(String::as_str) == Some("recall")
-    {
-        // Collapse the two tokens into one: `knowledge recall` → `knowledge-recall`.
-        argv[knowledge_idx] = "knowledge-recall".to_string();
-        argv.remove(recall_idx);
-    }
-    argv
-}
-
-/// Rewrite `mustard-rt run knowledge prune [args...]` to
-/// `mustard-rt run knowledge-prune [args...]` so clap routes to the top-level
-/// `RunCmd::KnowledgePrune` variant. All other argv shapes pass through
-/// unchanged. Mirrors `rewrite_knowledge_recall` (the two tokens immediately
-/// follow `run`).
-fn rewrite_knowledge_prune(mut argv: Vec<String>) -> Vec<String> {
-    let Some(run_idx) = argv.iter().position(|a| a == "run") else {
-        return argv;
-    };
-    let knowledge_idx = run_idx + 1;
-    let prune_idx = run_idx + 2;
-    if argv.get(knowledge_idx).map(String::as_str) == Some("knowledge")
-        && argv.get(prune_idx).map(String::as_str) == Some("prune")
-    {
-        // Collapse the two tokens into one: `knowledge prune` → `knowledge-prune`.
-        argv[knowledge_idx] = "knowledge-prune".to_string();
-        argv.remove(prune_idx);
     }
     argv
 }
@@ -423,28 +379,4 @@ mod tests {
         assert!(json.contains("additionalContext"));
     }
 
-    fn argv(parts: &[&str]) -> Vec<String> {
-        parts.iter().map(|s| (*s).to_string()).collect()
-    }
-
-    #[test]
-    fn knowledge_prune_two_tokens_collapse_to_one() {
-        let out = rewrite_knowledge_prune(argv(&[
-            "mustard-rt", "run", "knowledge", "prune", "--root", "/x", "--apply",
-        ]));
-        assert_eq!(
-            out,
-            argv(&["mustard-rt", "run", "knowledge-prune", "--root", "/x", "--apply"])
-        );
-    }
-
-    #[test]
-    fn knowledge_prune_rewrite_leaves_other_shapes_untouched() {
-        // `knowledge recall` must not be rewritten by the prune pass.
-        let recall = argv(&["mustard-rt", "run", "knowledge", "recall", "--query", "x"]);
-        assert_eq!(rewrite_knowledge_prune(recall.clone()), recall);
-        // No `run` at all → passthrough.
-        let other = argv(&["mustard-rt", "on", "knowledge", "prune"]);
-        assert_eq!(rewrite_knowledge_prune(other.clone()), other);
-    }
 }

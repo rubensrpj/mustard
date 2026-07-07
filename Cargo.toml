@@ -5,7 +5,7 @@ members = ["apps/cli", "apps/mcp", "apps/rt", "apps/scan", "packages/core"]
 # Cargo.lock and pinned deps. Keeping it out of the workspace means a normal
 # `cargo build --workspace` ignores it (the dashboard is built via
 # `pnpm dashboard:dev` / `pnpm dashboard:build`).
-exclude = ["apps/dashboard/src-tauri", "apps/embed"]
+exclude = ["apps/dashboard/src-tauri"]
 
 # Single source of dependency-version truth for every Mustard crate. A crate
 # opts in with `dep = { workspace = true }`; the dashboard crate keeps its own

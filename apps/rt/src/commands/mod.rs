@@ -11,8 +11,6 @@
 //! `sync-registry` scanner ports were since removed — subproject discovery now
 //! comes from grain's `grain.model.json` via the scan tool.)
 
-pub mod migrate;
-pub mod i18n;
 pub mod agent;
 pub mod checklist;
 pub mod doctor;
@@ -30,13 +28,8 @@ pub mod scan_guards;
 pub mod feature;
 pub mod orient;
 pub mod capability;
-pub mod digest_precision;
 pub mod glossary_coverage;
 pub mod grill_capture;
-pub mod enrich_purpose;
-pub mod purpose_search;
-pub mod purpose_judge;
-pub mod recall_bench;
 // W3 of `2026-05-26-claude-paths-single-source` — three typed doctor checks
 // (claude-paths, workspace-leaks, i1) that emit native JSON shapes. They are
 // dispatched by `doctor.rs` but live in dedicated modules so the legacy
@@ -47,7 +40,7 @@ pub use event::event_projections::{pipeline_state_from_events, PipelineStateView
 // Spec A v4 / W5 — span-level verdict ledger (`_review-spans.md`).
 mod statusline;
 // W4: lang-aware spec slug helper. Thin facade over `mustard_core::slugify`.
-// W6: subcommand entry point (`i18n translate-heading`, `spec-lang resolve`).
+// W6: subcommand entry point (`spec-lang resolve`).
 // Spec A v4 / W6 — token-budget primitive used by `resume_bootstrap`.
 
 use clap::Subcommand;
@@ -155,108 +148,6 @@ pub enum RunCmd {
         #[arg(long, default_value = ".")]
         root: PathBuf,
     },
-    /// Fold the active session's `feature.query` (the digest's SUGGESTED
-    /// anchors) × `feature.outcome` (the OBSERVED Read/Edit/Write of those
-    /// anchors, emitted by the `feature_outcome_observer`) into a byte-stable
-    /// digest-precision report — the deterministic CRITERION OF STOP for the
-    /// locator redesign. Emits `{queries, recall_x1000, precision_x1000,
-    /// anchorsSuggested, anchorsRead, readsTotal, perTerm:[{term, reads,
-    /// queries, precision_x1000}]}`: recall = anchors read / anchors suggested,
-    /// precision = reads-that-were-anchors / reads-in-window, perTerm = how many
-    /// reads each query term led to. Fixed-point per-mille (no float), all lists
-    /// sorted — no timestamps/paths leak. Reads events only (never the repo);
-    /// fail-open, always exits 0.
-    #[command(name = "digest-precision")]
-    DigestPrecision {
-        /// Workspace root. Defaults to the current directory (resolved to the
-        /// workspace anchor like every run-face emitter).
-        #[arg(long, default_value = ".")]
-        root: PathBuf,
-    },
-    /// Render a byte-stable batch prompt for purpose-enrichment of method/function
-    /// declarations (T2), or apply LLM-supplied summaries back to the grain model (T3).
-    ///
-    /// `--render`: read the grain model, emit a prompt with each method/function body.
-    /// `--apply <file>`: read `[{"id":"path#name#line","purpose":"..."}]` and write
-    /// purpose + body_hash back into the model (incremental: skip unchanged bodies).
-    /// Exactly one of `--render` / `--apply` must be supplied.
-    #[command(name = "enrich-purpose")]
-    EnrichPurpose {
-        /// Render mode: emit the batch summarize prompt to stdout.
-        #[arg(long)]
-        render: bool,
-        /// Apply mode: path to the JSON array of id+purpose entries.
-        #[arg(long)]
-        apply: Option<PathBuf>,
-        /// Path to the grain model JSON. Defaults to `.claude/grain.model.json`.
-        #[arg(long, default_value = ".claude/grain.model.json")]
-        model: PathBuf,
-        /// Workspace root. Defaults to the current directory.
-        #[arg(long, default_value = ".")]
-        root: PathBuf,
-    },
-    /// Search declaration `purpose` summaries for a request — the recall path the
-    /// orchestrator calls ON A MISS, when the name digest returned nothing.
-    ///
-    /// A method whose NAME diverges from the request vocabulary (PT "efetivar" vs
-    /// `EffectivateAsync`) is invisible to the name index; `enrich-purpose` wrote
-    /// a one-sentence summary onto each logic declaration, and this command
-    /// searches THOSE (an UNCAPPED purpose→file index in the scan binary, matched
-    /// through the same ladder the digest uses, trigram rescue ON). Tokenises the
-    /// intent exactly as `feature --intent` and relays the scan tool's byte-stable
-    /// JSON `{intent, files:[{file, matchedTerms}]}`. NO LLM (purposes are already
-    /// in the model). Fail-open: an unavailable scan / model prints an empty
-    /// result, exit 0.
-    #[command(name = "purpose-search")]
-    PurposeSearch {
-        /// The free-text request whose purpose matches we want. Same tokenisation
-        /// as `feature --intent` (the orchestrator folds any cross-lingual
-        /// translation INSIDE the text).
-        #[arg(long)]
-        intent: String,
-        /// Path to the `grain.model.json` whose declaration purposes are searched.
-        #[arg(long)]
-        model: PathBuf,
-    },
-    /// EXPLICIT judge step over the `purpose-search` candidates: render a byte-stable
-    /// prompt that hands the surfaced files (each with its purpose summaries) to an
-    /// LLM (Sonnet) and asks it to PICK the file(s) that IMPLEMENT the intent's
-    /// action — telling the backend service that performs it apart from the page
-    /// that merely displays it. `purpose-search` is RECALL (IDF-ranked, target
-    /// survives the cap); this is the PRECISION pick, formerly the orchestrator's
-    /// loose reading. PURE assembly — runs purpose-search, reads purposes from the
-    /// model, no model call (the JUDGEMENT is the dispatched LLM's). Fail-open: no
-    /// candidates → prints nothing, exit 0.
-    #[command(name = "purpose-judge-render")]
-    PurposeJudgeRender {
-        /// The free-text request whose candidates we want judged. Same tokenisation
-        /// as `feature --intent` / `purpose-search`.
-        #[arg(long)]
-        intent: String,
-        /// Path to the purpose-enriched `grain.model.json`.
-        #[arg(long)]
-        model: PathBuf,
-    },
-    /// Phase-0 NORTH-STAR metric: measure intent-retrieval recall over a labelled
-    /// set of recall-holes. For each `{query, files}` in `labels.ndjson`, runs the
-    /// two deterministic retrievals — name-match (`digest --query` anchor list)
-    /// and purpose-search (the uncapped purpose→file index) — and emits byte-stable
-    /// JSON `{n, summary:{nameRecall@1, nameRecall@5, purposeRecall@1,
-    /// purposeRecall@5}, cases:[{query, files, nameRank, purposeRank}]}`. Recall@k
-    /// = fraction of queries whose ground-truth file is in the top-k. NO LLM, no
-    /// network (the matching lives in the scan binary). Pre-requisite: the model is
-    /// purpose-enriched (`enrich-purpose --apply`), else purposeRecall reads 0.
-    /// Fail-open: unreadable labels / unavailable scan → an empty-or-zero report.
-    #[command(name = "recall-bench")]
-    RecallBench {
-        /// Path to the labelled set: one `{"query": "...", "files": ["..."]}`
-        /// JSON object per line (`#` / `//` comment lines and blanks skipped).
-        #[arg(long)]
-        labels: PathBuf,
-        /// Path to the purpose-enriched `grain.model.json` both retrievals query.
-        #[arg(long, default_value = ".claude/grain.model.json")]
-        model: PathBuf,
-    },
     /// Emit a compact git diff summary for agent context.
     DiffContext {
         /// Branch to compare against (auto-detects `main`/`master`).
@@ -349,49 +240,6 @@ pub enum RunCmd {
         #[arg(long = "duration-ms")]
         duration_ms: Option<u64>,
     },
-    /// Rewrite legacy spec headers (`### Status:` + `### Phase:`) into the
-    /// canonical `### Stage:` / `### Outcome:` / `### Flags:` triple
-    /// (spec-lifecycle-unification Wave 7). Dry-run by default; `--apply`
-    /// (mutually exclusive with `--dry-run`) writes atomically per file. The
-    /// audit log is written in both modes.
-    MigrateSpecHeaders {
-        /// Preview only — write the audit log, touch no spec files (default).
-        #[arg(long, default_value_t = true, conflicts_with = "apply")]
-        dry_run: bool,
-        /// Apply the rewrite (atomic per file). Required to mutate spec files.
-        #[arg(long)]
-        apply: bool,
-        /// Root directory to scan recursively. Defaults to `.claude/spec`.
-        #[arg(long, default_value = ".claude/spec")]
-        root: PathBuf,
-        /// Audit-log path. Defaults to
-        /// `.claude/.harness/migration-{date}.log.json`.
-        #[arg(long)]
-        log: Option<PathBuf>,
-        /// Case-insensitive substring filter on the file path (subset).
-        #[arg(long)]
-        filter: Option<String>,
-    },
-    /// Extract lifecycle headers from every `.md` under `<root>` into a
-    /// sidecar `meta.json` (Wave 3 of mustard-unification). Atomic per file,
-    /// idempotent (skips when sidecar already present unless `--force`).
-    ///
-    /// The headers stay in the `.md` for this step — the second-pass clean-up
-    /// removes them once every consumer reads from `meta.json`.
-    MigrateToMeta {
-        /// Root directory to walk recursively. Defaults to `.claude/spec`.
-        #[arg(long)]
-        root: Option<PathBuf>,
-        /// Force-rewrite existing `meta.json` sidecars.
-        #[arg(long)]
-        force: bool,
-        /// After writing each `meta.json`, also strip the legacy `### Stage:` /
-        /// `### Outcome:` / `### Phase:` / `### Scope:` / `### Lang:` /
-        /// `### Checkpoint:` / `### Parent:` / `### Flags:` /
-        /// `### Total waves:` / `### Status:` headers from the `.md`. Idempotent.
-        #[arg(long = "strip-headers")]
-        strip_headers: bool,
-    },
     /// Finalize a pipeline spec — single-stage close straight to `completed`.
     CompleteSpec {
         /// Spec name (required unless `--archive-stale`/`--archive-followups`).
@@ -425,57 +273,6 @@ pub enum RunCmd {
         /// terms. Optional; the CONTEXT.md path(s) remain primary.
         #[arg(long = "context-claude-md")]
         context_claude_md: Option<String>,
-    },
-    /// Recall the knowledge records most relevant to a query from the unified
-    /// store — the measurable CLI face of `knowledge::recall::recall_scored`
-    /// (BM25 + relevance threshold, the same function the agent-prompt render
-    /// calls in-process). Invoked as `mustard-rt run knowledge recall ...`
-    /// (argv pre-routing in `main.rs` collapses the two tokens).
-    ///
-    /// Output is one byte-stable pair of lines per hit, best-first:
-    /// `[{kind}] ({scope}) score={n} — {label}` + an indented ~120-char snippet
-    /// of the content. An empty recall prints `(no matches)`. Determinism +
-    /// fail-open mirror the underlying recall (never panics).
-    #[command(name = "knowledge-recall")]
-    KnowledgeRecall {
-        /// The relevance query (role + task text, free-form). Required.
-        #[arg(long)]
-        query: String,
-        /// Scope filter: `global` | `spec:NAME` | `wave:NAME:N`. Omit for all
-        /// scopes (the default — the whole store is eligible).
-        #[arg(long)]
-        scope: Option<String>,
-        /// `.claude/` directory to read the store from. Defaults to the
-        /// workspace-resolved `.claude/` of the current directory.
-        #[arg(long)]
-        root: Option<PathBuf>,
-        /// Result cap (default 5).
-        #[arg(long, default_value_t = 5)]
-        max: usize,
-    },
-    /// Garbage-collect non-substantive records from the unified knowledge store
-    /// — the physical-delete leg of the quality gate (write rejects, read hides,
-    /// `prune` removes). Invoked as `mustard-rt run knowledge prune ...` (argv
-    /// pre-routing in `main.rs` collapses the two tokens).
-    ///
-    /// Scans ONLY the four content-addressed store dirs under `--root`
-    /// (`memory/agent`, `memory/decisions`, `memory/lessons`, `knowledge`) —
-    /// never `spec/{spec}/memory` (the name-addressed per-spec store). A file is
-    /// a removal candidate iff it parses but is not
-    /// `Knowledge::is_substantive` (the SAME criterion the write/read gates use).
-    /// Dry-run by default (lists `would remove: <rel> (<reason>)`); `--apply`
-    /// deletes and prints `removed: <rel> (<reason>)`. A substantive record is
-    /// never deleted. Byte-stable output, fail-open, never panics.
-    #[command(name = "knowledge-prune")]
-    KnowledgePrune {
-        /// `.claude/` directory whose store to sweep. Taken verbatim, like
-        /// `knowledge recall --root`.
-        #[arg(long)]
-        root: PathBuf,
-        /// Delete the candidates. Without it, the command only lists them
-        /// (dry-run — nothing is mutated).
-        #[arg(long)]
-        apply: bool,
     },
     /// Persist agent memory, decisions/lessons, or knowledge entries.
     /// `list` emits all memory entries (knowledge_patterns + decisions + lessons).
@@ -558,27 +355,6 @@ pub enum RunCmd {
         /// `feedback` only — free-form note recorded alongside the signal.
         #[arg(long)]
         note: Option<String>,
-    },
-    /// One-shot ingest of legacy JSON files into the SQLite Wave 6a tables.
-    ///
-    /// Default: reads `.claude/knowledge.json`, `.claude/memory/decisions.json`,
-    /// and `.claude/memory/lessons.json` (if present) and inserts their
-    /// entries into `knowledge_patterns`, `memory_decisions`, `memory_lessons`.
-    ///
-    /// `--agent-memory` (W7 deep-refactor): walks `.claude/.agent-memory/`
-    /// (legacy rolling-cap-20 JSON sink) and forwards each entry into
-    /// `agent_memory`, then removes the directory on success. Fail-open per
-    /// entry.
-    ///
-    /// Prints a JSON summary. Fail-open per file.
-    MemoryIngest {
-        /// Remove the source JSON files after a successful ingest.
-        #[arg(long)]
-        delete: bool,
-        /// Migrate `.claude/.agent-memory/` to the `agent_memory` SQLite
-        /// table and remove the directory.
-        #[arg(long = "agent-memory")]
-        agent_memory: bool,
     },
     /// One-shot ingest of `.pipeline-states/*.json` files into the SQLite event stream.
     ///
@@ -1022,51 +798,6 @@ pub enum RunCmd {
         /// Spec slug the summary event attributes to.
         #[arg(long)]
         spec: String,
-    },
-    /// Render a byte-stable JUDGE prompt that asks an LLM — ONE layer above the
-    /// deterministic scan — to partition a feature intent's matched concepts
-    /// into labelled concerns. Reuses the `feature` digest's retrieval
-    /// (`domain_terms` + `digest_query`) to obtain the matched concepts + the
-    /// per-concept anchor files (`report.terms[].files`); when scan already
-    /// split the query into ≥2 connected components, the split rides along as
-    /// the judge's deterministic starting point. Stdout = the raw prompt string
-    /// (no JSON framing), like `agent-prompt-render`; the JUDGEMENT is the LLM's.
-    /// Fail-open: an unavailable scan / model prints nothing, exit 0.
-    #[command(name = "concern-judge-render")]
-    ConcernJudgeRender {
-        /// The free-text feature/bugfix intent to partition. Same tokenisation
-        /// as `feature --intent` (the orchestrator folds any cross-lingual
-        /// translation INSIDE the text).
-        #[arg(long)]
-        intent: String,
-        /// Path to the `grain.model.json` the digest queries.
-        #[arg(long)]
-        model: PathBuf,
-    },
-    /// Materialise a byte-stable VALIDATION prompt for a digest answer — route
-    /// (feature vs the lean /task), scope (light vs full, for feature), prune
-    /// incidental anchors, partition concerns. The AI step run ONE layer above
-    /// the deterministic scan for feature/task/bugfix; dispatched to Sonnet.
-    /// Reuses the feature digest retrieval + per-anchor project span. Stdout =
-    /// the raw prompt (no JSON framing). Fail-open: unavailable scan prints
-    /// nothing, exit 0.
-    #[command(name = "digest-validate-render")]
-    DigestValidateRender {
-        /// The free-text request to validate. Same tokenisation as
-        /// `feature --intent` (the orchestrator folds any cross-lingual
-        /// translation INSIDE the text).
-        #[arg(long)]
-        intent: String,
-        /// Path to the `grain.model.json` the digest queries.
-        #[arg(long)]
-        model: PathBuf,
-        /// Emit mode: `inline` (default) prints the full validation prompt;
-        /// `ref` writes it to a deterministic `.dispatch/` file and prints a
-        /// 2-line stub instead — pass the stub verbatim as the Task prompt so
-        /// the PreToolUse hook expands it, keeping the prompt out of the
-        /// orchestrator's context.
-        #[arg(long, default_value = "inline")]
-        emit: String,
     },
     // The folder name is spelled `wave-<n>-<role>` (angle brackets) throughout
     // this doc comment: a literal brace-n sequence is a clap help-template
@@ -1811,18 +1542,6 @@ pub enum RunCmd {
         #[arg(long)]
         no_manifest: bool,
     },
-    /// W5.T5.13 — Translate a markdown heading line into a target locale.
-    #[command(name = "i18n")]
-    I18n {
-        /// Subcommand: `translate-heading` is the only verb today.
-        subcommand: String,
-        /// Raw heading line, e.g. `## Tarefas`.
-        #[arg(long)]
-        from: Option<String>,
-        /// Target BCP-47 locale (`pt-BR` / `en-US`).
-        #[arg(long = "to-lang")]
-        to_lang: Option<String>,
-    },
     /// W5.T5.14 — Resolve the narrative locale for a spec.
     #[command(name = "spec-lang")]
     SpecLang {
@@ -1930,19 +1649,6 @@ pub fn dispatch(cmd: RunCmd) {
             context,
             root,
         } => grill_capture::run(&term, &definition, &context, &root),
-        RunCmd::DigestPrecision { root } => digest_precision::run(&root),
-        RunCmd::EnrichPurpose { render, apply, model, root } => {
-            enrich_purpose::run(render, apply.as_deref(), &model, &root);
-        }
-        RunCmd::PurposeSearch { intent, model } => {
-            purpose_search::run(&intent, &model);
-        }
-        RunCmd::PurposeJudgeRender { intent, model } => {
-            purpose_judge::run(&intent, &model);
-        }
-        RunCmd::RecallBench { labels, model } => {
-            recall_bench::run(&labels, &model);
-        }
         RunCmd::DiffContext {
             parent,
             subproject,
@@ -1970,30 +1676,6 @@ pub fn dispatch(cmd: RunCmd) {
         RunCmd::WaveDone { spec, wave, duration_ms } => {
             pipeline::wave_done::run(&spec, wave, duration_ms);
         }
-        RunCmd::MigrateSpecHeaders {
-            dry_run,
-            apply,
-            root,
-            log,
-            filter,
-        } => {
-            // `--apply` overrides the default `dry_run: true`; the clap
-            // `conflicts_with` prevents both being passed explicitly.
-            let _ = dry_run;
-            migrate::migrate_spec_headers::run(migrate::migrate_spec_headers::MigrateOpts {
-                apply,
-                root,
-                log,
-                filter,
-            });
-        }
-        RunCmd::MigrateToMeta { root, force, strip_headers } => {
-            migrate::migrate_to_meta::run(migrate::migrate_to_meta::MigrateToMetaOpts {
-                root,
-                force,
-                strip_headers,
-            });
-        }
         RunCmd::CompleteSpec {
             spec,
             archive,
@@ -2009,32 +1691,6 @@ pub fn dispatch(cmd: RunCmd) {
             spec.as_deref(),
             context_claude_md.as_deref(),
         ),
-        RunCmd::KnowledgeRecall {
-            query,
-            scope,
-            root,
-            max,
-        } => {
-            // Parse the optional scope string; a malformed value is a usage
-            // error (exit 2) rather than a silent widen to all-scopes.
-            let parsed_scope = match scope.as_deref().map(knowledge::recall_cli::parse_scope) {
-                None => None,
-                Some(Ok(s)) => Some(s),
-                Some(Err(msg)) => {
-                    eprintln!("error: {msg}");
-                    std::process::exit(2);
-                }
-            };
-            knowledge::recall_cli::run(knowledge::recall_cli::RecallOpts {
-                query,
-                scope: parsed_scope,
-                root,
-                max,
-            });
-        }
-        RunCmd::KnowledgePrune { root, apply } => {
-            knowledge::prune::run(knowledge::prune::PruneOpts { root, apply });
-        }
         RunCmd::Memory {
             subcommand,
             json,
@@ -2082,9 +1738,6 @@ pub fn dispatch(cmd: RunCmd) {
                 feedback_path: path,
             },
         ),
-        RunCmd::MemoryIngest { delete, agent_memory } => {
-            knowledge::memory_ingest::run_with(knowledge::memory_ingest::MemoryIngestOpts { delete, agent_memory });
-        }
         RunCmd::PipelineStateIngest { delete: _ } => {
             pipeline::pipeline_state_ingest::run(pipeline::pipeline_state_ingest::PipelineStateIngestOpts);
         }
@@ -2248,10 +1901,6 @@ pub fn dispatch(cmd: RunCmd) {
         } => maint::artifact_update::run(check, apply, manifest.as_deref()),
         RunCmd::AmendFinalize { session_id } => agent::amend_finalize::run_cli(&session_id),
         RunCmd::DigestAdherenceFinalize { spec } => agent::digest_adherence_finalize::run(&spec),
-        RunCmd::ConcernJudgeRender { intent, model } => agent::concern_judge::run(&intent, &model),
-        RunCmd::DigestValidateRender { intent, model, emit } => {
-            agent::digest_validate::run(&intent, &model, agent::agent_prompt_render::EmitMode::parse(&emit))
-        }
         RunCmd::WaveScaffold { spec_dir, plan } => {
             wave::wave_scaffold::run(spec_dir.as_deref(), plan.as_deref());
         }
@@ -2497,18 +2146,6 @@ pub fn dispatch(cmd: RunCmd) {
                 dry_run,
                 no_manifest,
             });
-        }
-        RunCmd::I18n { subcommand, from, to_lang } => {
-            match subcommand.as_str() {
-                "translate-heading" => i18n::i18n_translate::run(i18n::i18n_translate::TranslateHeadingOpts {
-                    from: from.unwrap_or_default(),
-                    to_lang: to_lang.unwrap_or_default(),
-                }),
-                other => {
-                    eprintln!("i18n: unknown subcommand {other:?}. Try: translate-heading");
-                    std::process::exit(1);
-                }
-            }
         }
         RunCmd::SpecLang { subcommand, spec } => {
             match subcommand.as_str() {

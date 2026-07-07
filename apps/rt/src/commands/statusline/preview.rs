@@ -25,9 +25,6 @@ fn synthetic_segments() -> Vec<Segment> {
 
     let mut segs = vec![Segment::new(SegmentKind::Module, "mustard")];
 
-    // Forge a scan-progress segment so the preview exercises the in-flight chip.
-    segs.push(Segment::new(SegmentKind::ScanProgress, "\u{27F3} scan 45%"));
-
     // Forge a git segment so preview doesn't depend on whether cwd is a repo.
     segs.push(Segment::new(SegmentKind::Git, "\u{2387} dev_rubens +1"));
 

@@ -6,6 +6,20 @@ source: manual
 <!-- mustard:generated -->
 # /task - Delegated Task Execution
 
+**Iron law: ONE layer only — the moment it grows to two, it becomes a feature.**
+
+## Rationalizations that don't fly
+
+| Excuse | Answer |
+|--------|--------|
+| "while I'm here, let me touch the other layer too" | two layers = `/feature`; stop and promote — the iron law has no "while I'm here" clause |
+| "dispatching without locating saves a step" | blind dispatch is the single most common reason a `/task` returns nothing useful; locate first (grep or digest) |
+| "it's small — the parent can just implement it" | L0: the parent NEVER implements; the work lives in a Task context |
+| "I'll hand-assemble the agent prompt, the renderer is ceremony" | `agent-prompt-render` always — Guards and context ride in via the renderer, a hand-built prompt loses them |
+| "this needs tracking — I'll bolt a spec onto it" | `/task` is spec-less by design; promote to `/feature` Light or `/tactical-fix` instead |
+
+**Red flags** — catch yourself thinking any of these and return to the flow: *"The scope keeps growing but I keep calling it a task."* · *"I skipped locating because I 'know' the codebase."* · *"The agent returned nothing useful and I'm re-dispatching the same prompt unchanged."* · *"I'm implementing in the parent, just this once."*
+
 ## Trigger
 
 `/task <action> <scope>`
@@ -26,7 +40,7 @@ Parent NEVER reads source, NEVER implements. All work inside Task contexts. The 
 
 ## Research + Prompt rendering (mandatory)
 
-`/task` is spec-less, so there is no wave plan and no `dispatch-plan` — but spec-less is **not** context-less. LOCATE first — **triage by what the scope hands you (→ `../../../refs/locating-code.md`): a LITERAL token (exact symbol, error string, file glob) → `grep`/`glob` it directly and skip the digest (and its Sonnet validator); a CONCEPT whose vocabulary may diverge → the scan digest** (the same step `/feature` and `/bugfix` run). Then render each action's prompt with `agent-prompt-render`. **Dispatching without locating sends the agent in blind — the single most common reason a `/task` returns nothing useful.** Render fail-opens on every empty placeholder, so a spec-less invocation is safe.
+`/task` is spec-less, so there is no wave plan and no `dispatch-plan` — but spec-less is **not** context-less. LOCATE first — **triage by what the scope hands you (→ `../../../refs/locating-code.md`): a LITERAL token (exact symbol, error string, file glob) → `grep`/`glob` it directly and skip the digest; a CONCEPT whose vocabulary may diverge → the scan digest** (the same step `/feature` and `/bugfix` run). Then render each action's prompt with `agent-prompt-render`. **Dispatching without locating sends the agent in blind — the single most common reason a `/task` returns nothing useful.** Render fail-opens on every empty placeholder, so a spec-less invocation is safe.
 
 ```bash
 # 1. LOCATE via the scan digest — NEVER dispatch blind. Returns anchors (~12 real files),
@@ -49,13 +63,7 @@ mustard-rt run agent-prompt-render --spec {scope} --role {action} \
   --mode first --emit ref
 ```
 
-Pass the `agent-prompt-render` **stdout verbatim** as the Task `prompt` — with `--emit ref` that stdout is a 2-line stub the PreToolUse hook expands to the full prompt at dispatch, so the full text never transits your context. `{guards_summary}` (subproject `## Guards`) and `{reference_files}` are filled by the renderer — do not duplicate them in the prompt. Spec-less, so the action's work + the located anchors ride in via `--task-text`.
-
-**Validate the digest FIRST (AI step — digest path only; SKIP when you located a literal via `grep`).** Right after step 1, run the shared digest-validator (**`../../../refs/digest-validate.md`**): `mustard-rt run digest-validate-render --intent "<the user's request>" --emit ref` → with `--emit ref` it writes the full ~9.5 KB prompt to a `.dispatch/` file and prints a 2-line stub (`MUSTARD-PROMPT-REF: ...`); pass that stub stdout VERBATIM as the Task prompt to `model: sonnet` (the PreToolUse hook expands it at dispatch — NEVER read the `.dispatch/` file in the parent; same mechanism as the scan Guards step) → `{route, scope, dropped, concerns, centralFound, requeryBridges}`. This is the lean retrieval-quality guard (no route/scope ceremony on `/task` — you are already on the lean path); act on these only:
-- **`centralFound=false` → RE-QUERY FIRST, then PERSIST on confirmation**, before dispatching: the central concept missed, so the anchors point at the WRONG flow (a `strong` reason is not trustworthy). Re-run `mustard-rt run feature --intent "<all codeTerms across requeryBridges, joined>"` and dispatch on ITS anchors. **If that re-query's `report.reason` is `strong`, the bridge is confirmed** → write `requeryBridges` (`{userWord, codeTerms}` shape) to a temp file and `mustard-rt run lexicon-enrich --apply <file>` so the next identical query is deterministic — no LLM (one-line `auto-bridged: …` note). Do NOT persist when the re-query is not `strong`. (`centralFound=true` or absent → proceed.)
-- **`dropped`** → drop those anchors (incidental / far-layer lexical matches), never read them.
-- **`concerns` (≥2)** → render + dispatch ONE action per concern, each scoped to its OWN anchors, instead of one mixed dispatch.
-Empty render / validator down → fall through to the flat pruned anchors. Pass the user's actual request as `--intent` (never a bare term list — see the INTENT-hygiene rule there).
+Pass the `agent-prompt-render` **stdout verbatim** as the Task `prompt` — with `--emit ref` that stdout is a 2-line stub the PreToolUse hook expands to the full prompt at dispatch, so the full text never transits your context. `{guards_summary}` (subproject `## Guards`) and `{reference_files}` are filled by the renderer — do not duplicate them in the prompt. Spec-less, so the action's work + the located anchors ride in via `--task-text`. The flow goes straight from the pruned digest anchors to the dispatch — no validation layer in between; when the digest's `concerns` show ≥2, render + dispatch ONE action per concern, each scoped to its OWN anchors, instead of one mixed dispatch.
 
 ## Flow
 
