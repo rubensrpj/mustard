@@ -54,7 +54,10 @@ A tactical fix discovered during REVIEW/QA CANNOT become a silent follow-up or a
 
 ## Diff Context Interpolation
 
-All Task dispatches inside an active pipeline are prefixed with current git state. Source: `mustard-rt run diff-context` — cached to `.claude/spec/{spec}/wave-N-{role}/diff.md` once per phase, read back via the wave's `diff.md`. The script emits `## Branch` / `## Staged Changes` / `## Unstaged Changes` / `## Untracked Files` / `## Commits since {parent}` / `### Changed files since divergence`; output capped at 3000 chars. Skip the prefix when the file is empty/missing.
+Task dispatches inside an active pipeline are prefixed with current git state. Two **distinct** artifacts produce it — do not conflate them (the per-wave cache is NOT `diff-context`):
+
+- **Per-wave `diff.md`** (`.claude/spec/{spec}/wave-N-{role}/diff.md`): the single writer is `mustard-rt run wave-done`, which caches the just-committed wave's `git diff HEAD~1 HEAD --stat` (an atomic LF write — no shell redirect). `agent-prompt-render` reads it back so the next round's agents see the prior wave's changes. Skip the prefix when the file is empty/missing.
+- **`mustard-rt run diff-context`**: a richer git-state summary on **stdout** (`## Branch` / `## Staged Changes` / `## Unstaged Changes` / `## Untracked Files` / `## Commits since {parent}` / `### Changed files since divergence`, capped at 3000 chars), consumed by the review dispatch. It does **not** write the per-wave `diff.md`.
 
 ## Diagnostic Failure Routing
 
@@ -75,16 +78,10 @@ Wave order emerges from dependency analysis (the `Depends on` column of `wave-pl
 
 Dispatched agents inherit the main session's model **by default** — there is no routing table, no per-scope sonnet/opus split, and no model-routing gate. A handful of steps **pin** a model in their dispatch prose; this is the authoritative list (each is also documented at its own call site).
 
-**Pinned to Sonnet — output QUALITY drives downstream behaviour:**
-- `digest-validate` — one routing-critical call per pipeline entry; accuracy outweighs the negligible per-call delta (`apps/rt/src/commands/agent/digest_validate.rs`).
-
-**Recall recovery — NO pinned model (LOCAL embedding, no LLM):** a `centralFound=false` miss is recovered by the local vector index (`mustard-embed search --vectors .claude/grain.vectors`), built by `/scan` (`refs/recall-index.md`). It supersedes the legacy Sonnet `purpose` enrich + `purpose-search` lexical lookup + `purpose-judge` re-rank (`apps/rt/src/commands/agent/purpose_judge.rs` retained, no longer on the pinned path) — same cross-lingual recall at ~zero cost.
-
 **Pinned to Haiku — a bounded, mechanical judgement over a short list, where cost matters and quality is not the constraint:**
-- `concern-judge` — partitions a digest blob into concerns (`refs/concern-judge.md`).
 - spec-memory relevance gate — keeps only the principle files relevant to a spec (`skills/pipeline-execution/SKILL.md`).
 
-The principle: pin **Haiku** only for bounded mechanical partition/relevance work; pin **Sonnet** wherever the output's quality feeds the pipeline. Everything not listed inherits the session model — RT itself stays LLM-free and byte-stable, so every pin lives in the orchestration layer, never in the binary.
+The principle: pin **Haiku** only for bounded mechanical partition/relevance work. Everything not listed inherits the session model — retrieval (the digest) is pure deterministic with NO judge layer above it, and RT itself stays LLM-free and byte-stable, so every pin lives in the orchestration layer, never in the binary.
 
 ## Context Loading
 
@@ -95,7 +92,7 @@ The principle: pin **Haiku** only for bounded mechanical partition/relevance wor
 | Anchors | files the `feature` insumos / `scan spec` point to | The ~12 real files the agent reads — never the repo |
 | Shared language | `CONTEXT.md` (built by `grill-with-docs`) | Relevance-sliced via `context-slice`, injected as `{context_md}` |
 
-`CONTEXT.md` is **never injected whole** — same anti-bloat rule as the `grain.model.json` (read only the anchors). Sliced by entities/file names/key-tokens of the active spec; snapshotted once per wave transition to `.claude/.pipeline-states/{specName}.context-md.md`. Capped at `MUSTARD_GLOSSARY_MAX_LINES` (default 250). No `CONTEXT.md` glossary authored (opt-in via `grill-with-docs`) → empty slice, `{context_md}` blank **by design** — dispatches never block. A `--context` path that is named but missing is reported on stderr (caller misconfiguration), distinct from this blank-by-design case.
+`CONTEXT.md` is **never injected whole** — same anti-bloat rule as the `grain.model.json` (read only the anchors). Sliced by entities/file names/key-tokens of the active spec; snapshotted once per wave transition to `.claude/.pipeline-states/{specName}.context-md.md`. Relevance is the only filter — no line cap. No `CONTEXT.md` glossary authored (opt-in via `grill-with-docs`) → empty slice, `{context_md}` blank **by design** — dispatches never block. A `--context` path that is named but missing is reported on stderr (caller misconfiguration), distinct from this blank-by-design case.
 
 ## Token Budget per Agent
 
@@ -137,9 +134,10 @@ Enforcement runs as the single Rust binary `mustard-rt` (modules `bash_command_g
 |--------|---------|----------|-----------|
 | `close_gate` | `emit-pipeline` phase=CLOSE | `MUSTARD_CLOSE_GATE_MODE` (default strict) | build/test fail |
 | `close_gate` (QA) | same | `MUSTARD_QA_GATE_MODE` (default strict) | no `qa.result` or `qa.result=fail` |
+| `close_gate` (QA stale) | same | `MUSTARD_QA_GATE_MODE` (default strict) | `spec.md`/`wave-plan.md` edited after the last `qa.result` → the pass was never re-verified, re-run /mustard:qa |
 | `close_gate` (checklist) | same | `MUSTARD_CHECKLIST_GATE_MODE` (default strict) | unchecked `- [ ]` items remain |
 | `close_gate` (debt) | same | `MUSTARD_DEBT_GATE_MODE` (default strict) | unresolved tracked debt |
-| `bash_command_gate` (rtk gate) | Bash | `MUSTARD_RTK_GATE_MODE` (default strict) | unprefixed command → deny `[bash_guard rtk]` |
+| `bash_command_gate` (rtk gate) | Bash | `MUSTARD_RTK_GATE_MODE` (default **warn**) | unprefixed command → auto-rewrite to `rtk <cmd>` (`updatedInput`, zero round-trip — `rtk` still applied, so the token savings hold); `strict` is opt-in and denies instead; builtins/subshells pass untouched |
 | `bash_command_gate` (commit gate) | Bash `git commit` | `MUSTARD_COMMIT_GATE_MODE` (default warn) | secrets staged / build broken |
 | `bash_command_gate` (native-redirect) | Bash | hardcoded always-on | `grep`/`ls`/`cat`/`head`/`tail`/`find` → suggests Grep/Glob/Read (+ `[bash-windows-redirect]` sub-gate) |
 | `scope_guard` | PreToolUse `Write`/`Edit`/`Task`/`Agent` | fail-open | production-file change outside an approved spec → deny `[scope-guard]` |

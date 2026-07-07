@@ -10,9 +10,9 @@
 //! ## Source modes
 //!
 //! - `--source spec` (default): read the legacy `### Stage:` / `### Outcome:`
-//!   header from `spec.md` and write it into `meta.json`. The preferred tool
-//!   for a bulk migration is `migrate-to-meta --strip-headers`; this remains
-//!   for single-spec rescues.
+//!   header from `spec.md` and write it into `meta.json`. This is the remaining
+//!   rescue path (the bulk `migrate-to-meta` one-shot was retired once every
+//!   consumer read from `meta.json`).
 //! - `--source meta`: **documented no-op.** `spec.md` no longer carries a
 //!   lifecycle header, so there is nothing to rewrite from `meta.json`. Each
 //!   spec is reported `Unchanged`.

@@ -14,6 +14,20 @@ source: manual
 
 > Phases, role rules, dispatch mechanics, validation, bugfix paths. Loaded on-demand.
 
+**Iron law: code lands in the layer's existing shape — the subproject's `## Guards` and its `{role}-pattern` molds are LAW for the diff, not context.** A diff that violates a Guard or sidesteps an applicable mold is WRONG even if it compiles, passes tests, and works — quality is judged on shape, not just behavior.
+
+## Rationalizations that don't fly
+
+| Excuse | Answer |
+|--------|--------|
+| "it works — I'll align it with the pattern later" | later never ships; the mold exists so code lands right the FIRST time |
+| "it's a small helper, no mold applies" | small helpers rot into parallel conventions — put it where the mold says it lives |
+| "the local pattern is outdated; I'll write it the modern way" | divergence is the OWNER's call — flag it in your report, never impose it in the diff |
+| "that Guard doesn't apply to my case" | if you can't justify WHY in one line of your report, it applies |
+| "tests pass, so quality is covered" | tests check behavior; Guards and molds keep the codebase ONE codebase |
+
+**Red flags** — stop if you catch yourself: *"I'm inventing a new folder/naming scheme mid-task."* · *"I'm copying a pattern from another project, not this layer."* · *"I'm justifying a Guard violation in a code comment instead of my report."*
+
 ## Pipeline Feature
 
 ### ANALYZE Phase (collapses old SYNC+UNDERSTAND+SCOPE+EXPLORE)
@@ -95,7 +109,7 @@ For each item, pass its `prompt` **verbatim** to the Task `prompt` (it was alrea
 **4. Validate:**
 
 - Build passes (backend: `dotnet build`, frontend: `pnpm build`, mobile: `fvm flutter analyze`)
-- Zero critical guard violations
+- Zero critical Guard/mold violations (the iron law above — shape, not just behavior)
 - Checklist marking is automatic: the `checklist-auto-mark` hook runs after every Edit/Write (incremental, silent). Wave specs are meta-first: the hook flips the matching item to `done: true` in the wave's `meta.json#checklist` (matched by the item's `path`/basename) and emits a `checklist.item.marked` NDJSON event — the checklist seeded from the wave's target files is auto-markable by construction. Markdown `## Checklist` sections (Light scope, or legacy specs without a meta checklist) are still marked in place — give each item a file hint: include the file basename in the item text (e.g. `- [ ] Validate UserService.cs`) or append a target arrow (e.g. `- [ ] Validate input → src/Services/UserService.cs`). Items without any hint won't auto-mark; close-gate will surface them at CLOSE.
 - Any failure → retry (max 2/agent), then STOP + replan
 
@@ -104,7 +118,7 @@ Review enters the same `wave-advance` loop: once every impl wave completes, `wav
 
 1. **SOLID** — SRP, OCP, LSP, ISP, DIP
 2. **Design System** — tokens, typography, spacing, components, icons, theme
-3. **Patterns** — project conventions from the subproject's `## Guards`
+3. **Patterns** — the subproject's `## Guards` AND its `{role}-pattern` molds; a violation of either is CRITICAL, never a style note
 4. **i18n** — all strings localized, all locale files updated
 5. **Integration** — types synced, no orphans, no circular deps
 6. **Build** — compiles/analyzes clean

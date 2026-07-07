@@ -27,11 +27,10 @@ pub enum SegmentKind {
     Cost = 6,
     Model = 7,
     Version = 8,
-    ScanProgress = 9,
 }
 
 /// Count of kinds — keep in sync with the last variant.
-pub const SEGMENT_KIND_COUNT: usize = 10;
+pub const SEGMENT_KIND_COUNT: usize = 9;
 
 /// A single line element with no theme coupling. Builders return
 /// `Option<Segment>` so a missing payload field omits the segment cleanly.
@@ -262,23 +261,6 @@ pub fn version_segment(data: &Value) -> Option<Segment> {
     Some(Segment::new(SegmentKind::Version, format!("v{v}")))
 }
 
-/// `⟳ scan NN%` — live progress of the `/scan` recall-index build
-/// (`mustard-embed build`). Reads the sidecar `.claude/grain.vectors.progress`
-/// that the build writes after each chunk and removes on completion
-/// (see `apps/embed/src/main.rs`). Returns `None` when the file is absent
-/// (no build in flight) or unparseable — same fail-open shape as the other
-/// builders, so the segment simply disappears when there is nothing to show.
-#[must_use]
-pub fn scan_progress_segment(cwd: &Path) -> Option<Segment> {
-    let raw = std::fs::read_to_string(cwd.join(".claude/grain.vectors.progress")).ok()?;
-    let v: Value = serde_json::from_str(&raw).ok()?;
-    let pct = v.get("pct").and_then(Value::as_i64)?.clamp(0, 100);
-    Some(Segment::new(
-        SegmentKind::ScanProgress,
-        format!("\u{27F3} scan {pct}%"),
-    ))
-}
-
 // ---------------------------------------------------------------------------
 // git helper — local to this module
 // ---------------------------------------------------------------------------
@@ -405,32 +387,4 @@ mod tests {
         assert!(version_segment(&json!({})).is_none());
     }
 
-    #[test]
-    fn scan_progress_segment_reads_sidecar_pct() {
-        // Isolated cwd so the test never collides with a real project's sidecar.
-        let dir = std::env::temp_dir().join("mustard-scan-progress-test");
-        let claude = dir.join(".claude");
-        std::fs::create_dir_all(&claude).unwrap();
-        let progress = claude.join("grain.vectors.progress");
-
-        // Absent → no segment.
-        let _ = std::fs::remove_file(&progress);
-        assert!(scan_progress_segment(&dir).is_none());
-
-        // Present with a valid pct → `⟳ scan 44%`.
-        std::fs::write(
-            &progress,
-            r#"{"phase":"embedding","done":12,"total":27,"pct":44}"#,
-        )
-        .unwrap();
-        let seg = scan_progress_segment(&dir).unwrap();
-        assert_eq!(seg.kind, SegmentKind::ScanProgress);
-        assert!(seg.text.contains("44%"), "got {:?}", seg.text);
-
-        // Unparseable → no segment (fail-open).
-        std::fs::write(&progress, "not json").unwrap();
-        assert!(scan_progress_segment(&dir).is_none());
-
-        let _ = std::fs::remove_file(&progress);
-    }
 }

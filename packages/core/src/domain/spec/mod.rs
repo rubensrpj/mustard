@@ -50,8 +50,8 @@
 //!   over the target, so a crash mid-write never leaves a half-written spec.
 //!
 //! The legacy detection logic (separate / combined / bullet header shapes,
-//! header-region scoping) was lifted verbatim from
-//! `mustard-rt::run::migrate_spec_headers`, which now depends on this module —
+//! header-region scoping) was lifted verbatim from the since-retired
+//! `migrate-spec-headers` run command, which then depended on this module —
 //! proving the single-source-of-truth property.
 
 #[allow(deprecated)] // SpecStatus is the legacy projection target `status_word` delegates to.

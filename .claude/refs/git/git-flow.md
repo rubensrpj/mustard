@@ -35,6 +35,8 @@ Match current branch against `flow` keys. Exact match first, then glob. `*` is t
 
 Every work unit runs on its own `{base}_{slug}` branch (e.g. `dev_aba-atividade`, `main_close-gate-windows`) — the `{base}_` prefix **records the integration branch the work was cut from**. The branch is **auto-created off `<base>` on the first file edit** of the request: the router chooses the base (asking **"de qual base?"** when the project has more than one integration base), pre-computes the name (`emit-pipeline --kind pipeline.kind --base <base>`), and the harness's `work_branch_gate` checks it out on the first `Write`/`Edit`. A work branch's **base / PR-target is recovered from its prefix** — the leading `{base}_` segment, matched longest-first against the project's integration bases. Read-only requests never branch.
 
+**Monorepo (submodules):** the `work_branch_gate` cuts the branch in the PARENT only. Each dirty **submodule** gets its OWN `{base}_{slug}` branch cut by `/git` at commit time — same slug, but prefixed with THAT submodule's base (its own default branch, which need not be the parent's `dev`/`main`). So the unit spans one branch per repo, each opening its own PR. Detail: `submodule-rules.md`.
+
 **Integration bases** = every non-`*` key ∪ every value of `git.flow` (`{"*":"dev","dev":"main"}` → `dev`, `main`; `{"*":"develop","develop":"master"}` → `develop`, `master`). Agnostic — no fixed `dev`/`main`; the base set is whatever `git.flow` declares (an empty flow falls back to `main`/`master`).
 
 **Direct edits on a protected branch are BLOCKED.** The BARE integration branches (every base in `git.flow`) are never developed on directly; the `{base}_*` work branches are NOT protected. If a `Write`/`Edit` fires while on a bare integration branch with no work branch to switch to, `work_branch_gate` returns **`Deny`** — describe the work so the router seeds a branch, or branch by hand first. If the auto-checkout itself fails while on a protected branch, the gate also **`Deny`s** (it never falls back to editing the integration branch); on a work branch a failed checkout only warns and lets the edit proceed.
@@ -46,7 +48,7 @@ Every work unit runs on its own `{base}_{slug}` branch (e.g. `dev_aba-atividade`
 | `sync` | Rebase the current branch onto `origin/<its base>` (base from its `{base}_` prefix). Abort on conflict. |
 | `commit` | Create commit (no push). Accepts `--scope=all\|staged\|<path-pattern>` |
 | `push` | Sync-first (onto its base), then commit + push ONLY the current branch (set upstream). Never touches an integration branch. |
-| `pr [<target>]` | Open a PR (`gh`), idempotent. **Work branch** `{B}_…`: commit(scope=all)+push, then PR into its prefix base `B`. **Bare base** `B`: PR `B → <target>` (or `flow[B]` if omitted) — promotion `dev→main` / backport `main→dev`; no push to `B`. |
+| `pr [<target>]` | Open a PR (`gh`), idempotent, **one per repo, submodules before parent**, then return each repo to its base. **Work branch** `{B}_…`: commit(scope=all)+push (each dirty submodule on its OWN `{base}_{slug}`), then a PR per repo into each prefix base — submodules first, parent last. **Bare base** `B`: PR `B → <target>` (or `flow[B]` if omitted) — promotion `dev→main` / backport `main→dev`; no push, no submodule/return steps. |
 
 **PRs are the integration path.** A work branch reaches its base branch through a PR, never a local push to the base. The base is the branch's own `{base}_` prefix, matched against the project's integration bases (`git.flow`).
 

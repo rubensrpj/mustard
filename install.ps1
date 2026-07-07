@@ -2,7 +2,7 @@
 # install.ps1 — Build + install Mustard and scaffold .claude/ into a project.
 #
 # Dogfooding installer: it builds the binaries (scan, mustard-rt, mustard-mcp,
-# mustard, and the out-of-workspace mustard-embed recall tool)
+# and mustard)
 # in release, installs them to ~/.cargo/bin (so the hooks in .claude/settings.json
 # — which invoke `mustard-rt` from PATH — resolve at runtime, and `mustard-rt`
 # finds the `scan` miner as its ~/.cargo/bin sibling), then runs `mustard init`
@@ -35,7 +35,6 @@ $MustardExe   = Join-Path $CargoBin 'mustard.exe'
 $RtExe        = Join-Path $CargoBin 'mustard-rt.exe'
 $McpExe       = Join-Path $CargoBin 'mustard-mcp.exe'
 $ScanExe      = Join-Path $CargoBin 'scan.exe'
-$EmbedExe     = Join-Path $CargoBin 'mustard-embed.exe'
 $TemplatesDir = Join-Path $Root 'apps\cli\templates'
 $BuildNumFile = Join-Path $Root '.mustard-build-number'
 
@@ -127,7 +126,7 @@ if (-not $SkipBuild) {
     $buildNumber       = Step-BuildNumber $BuildNumFile
     $prevBuildNumber   = $env:MUSTARD_BUILD_NUMBER
     $env:MUSTARD_BUILD_NUMBER = $buildNumber
-    Write-Host "==> Installing scan + mustard-rt + mustard-mcp + mustard + mustard-embed (release) to ~/.cargo/bin ...  (build #$buildNumber)"
+    Write-Host "==> Installing scan + mustard-rt + mustard-mcp + mustard (release) to ~/.cargo/bin ...  (build #$buildNumber)"
     try {
         # scan first: mustard-rt resolves it as a ~/.cargo/bin sibling at runtime
         # (Scan::locate), and the feature/spec/digest/facts flow depends on it.
@@ -135,18 +134,6 @@ if (-not $SkipBuild) {
         Install-Bin $RtExe      (Join-Path $Root 'apps\rt')  'mustard-rt'
         Install-Bin $McpExe     (Join-Path $Root 'apps\mcp') 'mustard-mcp'
         Install-Bin $MustardExe (Join-Path $Root 'apps\cli') 'mustard'
-        # mustard-embed: the local recall index (build + search). Lives OUTSIDE
-        # the cargo workspace (own Cargo.lock) and pulls the ONNX Runtime via
-        # fastembed — a heavy native build. The recall path is fail-open, so a
-        # failure here WARNS but never aborts the core install (the digest just
-        # degrades to name-only until mustard-embed is present). The local models
-        # (~2 GB: jina-code embedder + multilingual reranker) are fetched into a
-        # machine-level cache on first build/search, NOT at install.
-        try {
-            Install-Bin $EmbedExe (Join-Path $Root 'apps\embed') 'mustard-embed'
-        } catch {
-            Write-Warning "mustard-embed install failed — recall-by-meaning is unavailable until it is built; the name digest still works. ($($_.Exception.Message))"
-        }
     } finally {
         $env:MUSTARD_BUILD_NUMBER = $prevBuildNumber
     }
@@ -227,14 +214,6 @@ if (-not $SkipBuild) {
             # Fail-open: teardown is advisory; an install must not hinge on it.
         }
     }
-
-    # Stop the mustard-embed recall daemon (if running) so the NEXT session spawns
-    # a fresh one on the just-installed binary — otherwise the long-lived daemon
-    # keeps serving the OLD code until its 30-min idle exit. It auto-respawns on
-    # first search. Fail-open: never abort the install over this.
-    try {
-        Get-Process -Name mustard-embed -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction Stop
-    } catch {}
 
     $stillRunning = @(Get-Process -Name mustard-rt -ErrorAction SilentlyContinue)
     if ($stillRunning.Count -gt 0) {
