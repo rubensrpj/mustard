@@ -189,6 +189,26 @@ pub struct RankConfig {
     /// a leaf/service (fan-in 0–2) is barely touched, a global sink (fan-in in
     /// the tens–hundreds) is pushed down. Model-derived; `0` = off.
     pub fanin_penalty_x1024: u64,
+    /// UNGATE the seeding (Wave-2b fix): when true (default), each glue-filtered
+    /// query token ALSO seeds — directly and WITHOUT the dictionary-membership
+    /// gate — the eligible modules whose declaration/path identifiers contain it
+    /// (prefix-or-equal on the folded token, min side ≥4). This is the English-
+    /// gloss baseline's move: a domain word carried in by query expansion
+    /// (`channel`, `bank`, `configuration`, `receivable`) reaches the file whose
+    /// identifier declares it even when that word is NOT distinctive-dictionary
+    /// vocabulary. The stopword/glue filter on the raw query tokens still applies,
+    /// so only domain words seed — glue is never reintroduced.
+    pub direct_seed: bool,
+    /// Multiplier ×1024 on the ABSOLUTE direct identifier-match score (summed
+    /// inverse-df of the matched query tokens, BM25 length-normalized). The floor
+    /// `direct_base_x1024/1024 · match_score` is added AFTER and EXEMPT FROM the
+    /// fan-in penalty, so a low-centrality target the query literally names (an EF
+    /// configuration class, an enum) ranks on its match, not on graph propagation.
+    /// Absolute (not per-query normalized): a weak single-broad-word match floors
+    /// low and leaves the dict route intact; a multi-rare-word match floors high.
+    /// Calibrated so a strong match competes with the top propagated mass; `0` =
+    /// no floor (rank on the walk alone).
+    pub direct_base_x1024: u64,
 }
 
 impl Default for RankConfig {
@@ -209,6 +229,8 @@ impl Default for RankConfig {
             propagate: true,
             hub_penalty_x1024: 0,
             fanin_penalty_x1024: 1024,
+            direct_seed: true,
+            direct_base_x1024: 100_000,
         }
     }
 }
@@ -315,23 +337,33 @@ pub fn rank(model: &ProjectModel, dict: &Dictionary, query_terms: &[String], cfg
     // declarations here; a PT comment-term ("contrato") resolves to nothing and
     // falls to its dictionary anchors below.
     let mut token_seeds: BTreeMap<String, BTreeSet<usize>> = BTreeMap::new();
+    // Distinct identifier-token count per eligible module — the "document length"
+    // for the direct-match BM25 length normalization below (a short, focused file
+    // that matches the query's rare words must beat a huge file that declares
+    // everything and so matches many words incidentally).
+    let mut tok_count: Vec<u128> = vec![0; n];
     for (i, m) in model.modules.iter().enumerate() {
         if !eligible[i] {
             continue;
         }
-        let mut add = |tok: &str| {
-            let f = fold(tok);
-            if f.len() >= 3 {
-                token_seeds.entry(f).or_default().insert(i);
-            }
-        };
+        let mut folds: BTreeSet<String> = BTreeSet::new();
         for tok in crate::digest::tokenize(&m.path) {
-            add(&tok);
+            let f = fold(&tok);
+            if f.len() >= 3 {
+                folds.insert(f);
+            }
         }
         for d in &m.declarations {
             for tok in crate::digest::tokenize(&d.name) {
-                add(&tok);
+                let f = fold(&tok);
+                if f.len() >= 3 {
+                    folds.insert(f);
+                }
             }
+        }
+        tok_count[i] = folds.len() as u128;
+        for f in folds {
+            token_seeds.entry(f).or_default().insert(i);
         }
     }
 
@@ -378,10 +410,6 @@ pub fn rank(model: &ProjectModel, dict: &Dictionary, query_terms: &[String], cfg
         .max(1);
         matched.push(Matched { term: e.term.clone(), idf_x1024, specificity_x1024: e.specificity_x1024, weight, seeds });
     }
-    if matched.is_empty() {
-        return empty(ql);
-    }
-
     // Personalization vector: each matched term contributes its weight SPLIT
     // across its seeds — so a rare term (few seeds) concentrates mass on the
     // files that carry it, while a ubiquitous term spreads thin. Accumulated at
@@ -393,24 +421,85 @@ pub fn rank(model: &ProjectModel, dict: &Dictionary, query_terms: &[String], cfg
             acc[i] += per_seed;
         }
     }
+
+    // UNGATED direct-identifier MATCH SCORE (the Wave-2b fix). For every
+    // glue-filtered query token, find the eligible modules whose declaration/path
+    // identifiers contain it (prefix-or-equal fold, the SAME `term_matches` rung),
+    // with NO dictionary-membership gate, and add that token's inverse-df weight
+    // (idf — a rare identifier token counts far more than a ubiquitous one) to
+    // each such module. Summing across tokens gives a BM25-lite match QUALITY: a
+    // file that matches MANY RARE query words scores high, the exact
+    // discrimination the English-gloss baseline uses to win the English-identifier
+    // targets (id7 `channel`+`sales`+`hook`, id8 `bank`+`approval`, id14
+    // `receivable`+`configuration`). It never touches the dict route's
+    // propagation `acc`, so the graph walk is unchanged — this is a pure,
+    // fan-in-EXEMPT base floor. Deterministic: sorted `qfolds` × sorted `token_seeds`.
+    let mut direct_score: Vec<u128> = vec![0; n];
+    if cfg.direct_seed {
+        let n_elig = (eligible.iter().filter(|&&e| e).count() as u128).max(1);
+        for qf in &qfolds {
+            if qf.len() < 3 {
+                continue;
+            }
+            let mut seeds_q: BTreeSet<usize> = BTreeSet::new();
+            for (tk, mods) in &token_seeds {
+                if term_matches(qf, tk) {
+                    seeds_q.extend(mods.iter().copied());
+                }
+            }
+            if seeds_q.is_empty() {
+                continue;
+            }
+            let idf = ((n_elig * SCALE) / seeds_q.len() as u128).max(1);
+            for &i in &seeds_q {
+                direct_score[i] += idf;
+            }
+        }
+        // BM25 length normalization (b ≈ 0.75): divide each file's summed idf by
+        // `(1−b) + b·len/avglen`, so a short focused match outranks a long file
+        // that matched many words only by declaring everything. Integer, ×SCALE.
+        let sum_len: u128 = tok_count.iter().sum();
+        let avg_len = (sum_len / n_elig).max(1);
+        const B: u128 = 768; // 0.75 × SCALE
+        for i in 0..n {
+            if direct_score[i] > 0 {
+                let denom = (SCALE - B) + B * tok_count[i] / avg_len;
+                direct_score[i] = direct_score[i] * SCALE / denom.max(1);
+            }
+        }
+    }
+
     let total: u128 = acc.iter().sum();
-    if total == 0 {
+    let max_ds = direct_score.iter().copied().max().unwrap_or(0);
+    if total == 0 && max_ds == 0 {
         return empty(ql);
     }
-    let p: Vec<u128> = acc.iter().map(|&a| a * PR_SCALE / total).collect();
-    let seed_files = acc.iter().filter(|&&a| a > 0).count();
+    // Dict-route personalization on the PR scale (UNCHANGED — the walk seeds it).
+    let p: Vec<u128> = if total > 0 { acc.iter().map(|&a| a * PR_SCALE / total).collect() } else { vec![0; n] };
+    // The direct-match floor is the ABSOLUTE length-normed match score (NOT
+    // max-normalized per query): a query whose best identifier match is a single
+    // broad word yields a SMALL floor that leaves the dict-route ranking intact,
+    // while a query with several RARE identifier matches (id7 sales+channel+hook,
+    // id8 bank+approval+status) yields a LARGE floor that surfaces its target.
+    // (`max_ds`, above, only gates the all-empty case.)
+    let seed_files = acc.iter().zip(&direct_score).filter(|(&a, &d)| a > 0 || d > 0).count();
 
     // Rank the personalization directly (ablation) or after the random walk.
-    let r = if cfg.propagate {
+    let r = if cfg.propagate && total > 0 {
         let (out, outw) = adjacency(&model.modules, cfg.direction, &eligible);
         power_iterate(&p, &out, &outw, cfg.damping_x1024 as u128, cfg.iterations)
     } else {
         p
     };
 
-    // Order eligible files by (hub-penalized) mass DESC, path ASC (byte-stable),
-    // cap at `top`.
-    let mut ranked: Vec<(usize, u128)> = (0..n).filter(|&i| eligible[i] && r[i] > 0).map(|i| (i, demote(r[i], i))).collect();
+    // Order eligible files by score DESC, path ASC (byte-stable), cap at `top`.
+    // Score = fan-in-penalized propagated mass  +  the direct-match base floor.
+    // The fan-in penalty stays on PROPAGATION only; a file the query literally
+    // names keeps its own match floor (`base_k · floor`) so a low-centrality
+    // target (EF config, enum) ranks on its match, not on graph centrality.
+    let base_k = cfg.direct_base_x1024 as u128;
+    let mut ranked: Vec<(usize, u128)> =
+        (0..n).filter(|&i| eligible[i] && (r[i] > 0 || direct_score[i] > 0)).map(|i| (i, demote(r[i], i) + direct_score[i] * base_k / SCALE)).collect();
     ranked.sort_by(|a, b| b.1.cmp(&a.1).then(model.modules[a.0].path.cmp(&model.modules[b.0].path)));
     ranked.truncate(cfg.top);
     let files = ranked
@@ -745,5 +834,29 @@ mod tests {
         assert_eq!(r.files.first().map(|f| f.file.as_str()), Some("src/rare/desdobramento.ts"), "rare-term file leads under idf weighting: {:?}", ranked_files(&r));
         // And the matched-term audit is rarest-first.
         assert_eq!(r.matched_terms.first().map(|m| m.term.as_str()), Some("desdobramento"));
+    }
+
+    /// UNGATED DIRECT SEEDING (Wave-2b fix) — an English query token that is NOT
+    /// a dictionary term still seeds the file whose IDENTIFIER contains it, and
+    /// the direct-match base floor lifts that file above a high-fan-in hub the
+    /// walk would otherwise flood. With the gate restored (`direct_seed=false`)
+    /// the same word seeds nothing, reproducing the pre-fix miss.
+    #[test]
+    fn ungated_query_token_seeds_by_identifier_and_floors_low_centrality() {
+        let mut hub = module("src/aaa_hub.ts", &["Hub"], &[]);
+        hub.fan_in = 30; // a central hub that would dominate propagation + tiebreak
+        let target = module("src/features/sales-channel-list.ts", &["useSalesChannelList"], &["src/aaa_hub.ts"]);
+        let model = ProjectModel { modules: vec![hub, target], ..Default::default() };
+        // The dictionary bridges ONLY an unrelated term; `channel` is absent.
+        let dict = Dictionary { version: 1, terms: vec![entry("hub", 100, 50, 2048, &["src/aaa_hub.ts"], "comment")] };
+
+        // Gate ON (default): the English identifier token seeds its file directly
+        // and its base floor surfaces it despite the hub's fan-in-30 centrality.
+        let on = rank(&model, &dict, &["listar os canais channel".to_string()], &RankConfig::default());
+        assert!(ranked_files(&on).contains(&"src/features/sales-channel-list.ts"), "ungated: the identifier match seeds and ranks: {:?}", ranked_files(&on));
+
+        // Gate OFF: `channel` matches no dictionary term → the file is never seeded.
+        let off = rank(&model, &dict, &["listar os canais channel".to_string()], &RankConfig { direct_seed: false, ..Default::default() });
+        assert!(!ranked_files(&off).contains(&"src/features/sales-channel-list.ts"), "gated: no dict term for 'channel' -> not seeded: {:?}", ranked_files(&off));
     }
 }

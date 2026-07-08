@@ -150,6 +150,15 @@ enum Command {
         /// shared sinks a walk piles onto); default 1.0 → 1024, `0` = off.
         #[arg(long, default_value_t = 1024)]
         fanin_penalty: u64,
+        /// Disable the ungated direct-identifier seeding (Wave-2b fix): when set,
+        /// only dictionary-matched terms seed (the pre-fix, dict-gated behavior).
+        #[arg(long)]
+        no_direct_seed: bool,
+        /// Multiplier ×1024 on the absolute direct identifier-match score (the
+        /// fan-in-exempt floor); calibrated so a strong match competes with the
+        /// top propagated mass. `0` = no floor (walk only).
+        #[arg(long, default_value_t = 100_000)]
+        direct_base: u64,
         /// How many ranked files to emit.
         #[arg(long, default_value_t = 10)]
         top: usize,
@@ -268,7 +277,7 @@ fn main() -> Result<()> {
                 None => println!("{json}"),
             }
         }
-        Command::Rank { path, dict, query, direction, damping, iters, seed_weight, no_propagate, hub_penalty, fanin_penalty, top, out } => {
+        Command::Rank { path, dict, query, direction, damping, iters, seed_weight, no_propagate, hub_penalty, fanin_penalty, no_direct_seed, direct_base, top, out } => {
             let terms: Vec<String> = query.split([',', ' ']).map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
             let cfg = pagerank::RankConfig {
                 direction: pagerank::Direction::parse(&direction),
@@ -279,6 +288,8 @@ fn main() -> Result<()> {
                 propagate: !no_propagate,
                 hub_penalty_x1024: hub_penalty,
                 fanin_penalty_x1024: fanin_penalty,
+                direct_seed: !no_direct_seed,
+                direct_base_x1024: direct_base,
             };
             // Fail-open like purpose-search: a degraded/unreadable model or
             // dictionary yields an empty ranked list, never a hard error.
