@@ -130,3 +130,6 @@ packages/cli/templates/.claude/.metrics/
 
 # Ad-hoc test-run captures dropped in the repo root (scratch, regenerable)
 /full_test_out.txt
+
+# Benchmark corpus snapshots (grain model + dict regenerated via `scan.exe scan <corpus>` — heavy, regenerable)
+benchmarks/*/model/

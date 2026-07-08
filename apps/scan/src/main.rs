@@ -17,6 +17,7 @@ mod manifests;
 mod matching;
 mod mine;
 mod model;
+mod pagerank;
 mod purpose;
 mod rank;
 mod spec;
@@ -106,6 +107,52 @@ enum Command {
         /// (OR across terms; terms <3 chars ignored), e.g. "approve,settle".
         #[arg(long, default_value = "")]
         query: String,
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+    /// Rank the model's files for a raw (e.g. Portuguese) request via personalized
+    /// PageRank over the dependency graph, SEEDED by the distinctive-vocabulary
+    /// dictionary — the localization layer over the dictionary's PT→term bridge.
+    /// `path` is a project dir to scan, or a grain.model.json; `--dict` is the
+    /// `grain.dictionary.json` sidecar. Emits byte-stable JSON `{query,
+    /// matched_terms, files:[{file, score_x1024}]}`; an empty `files` means
+    /// nothing bridged. Deterministic, no LLM.
+    Rank {
+        path: PathBuf,
+        /// The `grain.dictionary.json` sidecar (the seed vocabulary).
+        #[arg(long)]
+        dict: PathBuf,
+        /// Comma/space-separated request terms (the raw intent), e.g. a PT prompt.
+        #[arg(long, default_value = "")]
+        query: String,
+        /// Edge orientation: `forward` | `reverse` | `undirected` (default —
+        /// the graph splits by language, so domain-locality is undirected).
+        #[arg(long, default_value = "undirected")]
+        direction: String,
+        /// Damping ×1024 (default ≈ 0.60 → 614: a strong topic bias keeps mass
+        /// near the seeds; classic PageRank ≈ 0.85 → 870).
+        #[arg(long, default_value_t = 614)]
+        damping: u64,
+        /// Fixed power-iteration count (byte-stable — never a float convergence test).
+        #[arg(long, default_value_t = 50)]
+        iters: usize,
+        /// Seed weighting: `specificity` (default) | `idf` | `balanced` | `uniform`.
+        #[arg(long, default_value = "specificity")]
+        seed_weight: String,
+        /// Rank the personalization vector alone (ablation: no graph walk).
+        #[arg(long)]
+        no_propagate: bool,
+        /// Hub penalty ×1024 against a file's dictionary-anchor promiscuity
+        /// (cross-cutting comment-dense files); 0 = off (default).
+        #[arg(long, default_value_t = 0)]
+        hub_penalty: u64,
+        /// Fan-in penalty ×1024 against a file's global import fan-in (deep
+        /// shared sinks a walk piles onto); default 1.0 → 1024, `0` = off.
+        #[arg(long, default_value_t = 1024)]
+        fanin_penalty: u64,
+        /// How many ranked files to emit.
+        #[arg(long, default_value_t = 10)]
+        top: usize,
         #[arg(long)]
         out: Option<PathBuf>,
     },
@@ -217,6 +264,35 @@ fn main() -> Result<()> {
                 Some(p) => {
                     std::fs::write(&p, &json)?;
                     println!("purpose-search written to {} ({} bytes)", p.display(), json.len());
+                }
+                None => println!("{json}"),
+            }
+        }
+        Command::Rank { path, dict, query, direction, damping, iters, seed_weight, no_propagate, hub_penalty, fanin_penalty, top, out } => {
+            let terms: Vec<String> = query.split([',', ' ']).map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+            let cfg = pagerank::RankConfig {
+                direction: pagerank::Direction::parse(&direction),
+                damping_x1024: damping,
+                iterations: iters,
+                top,
+                seed_weight: pagerank::SeedWeight::parse(&seed_weight),
+                propagate: !no_propagate,
+                hub_penalty_x1024: hub_penalty,
+                fanin_penalty_x1024: fanin_penalty,
+            };
+            // Fail-open like purpose-search: a degraded/unreadable model or
+            // dictionary yields an empty ranked list, never a hard error.
+            let dictionary: dictionary::Dictionary =
+                std::fs::read_to_string(&dict).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+            let result = match load_model(&path) {
+                Ok(model) => pagerank::rank(&model, &dictionary, &terms, &cfg),
+                Err(_) => pagerank::rank(&ProjectModel::default(), &dictionary, &terms, &cfg),
+            };
+            let json = serde_json::to_string_pretty(&result)?;
+            match out {
+                Some(p) => {
+                    std::fs::write(&p, &json)?;
+                    println!("rank written to {} ({} bytes)", p.display(), json.len());
                 }
                 None => println!("{json}"),
             }

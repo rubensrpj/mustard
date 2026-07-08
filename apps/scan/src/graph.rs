@@ -58,12 +58,27 @@ fn scc_depth(c: usize, succ: &[HashSet<usize>], memo: &mut [Option<usize>]) -> u
 }
 
 
-pub fn build(modules: &[Module], go_module: &Option<String>) -> (GraphStats, HashMap<String, (usize, usize)>, HashMap<String, usize>) {
-    let mut g: DiGraph<String, ()> = DiGraph::new();
-    let mut idx: HashMap<String, NodeIndex> = HashMap::new();
-    for m in modules {
-        let n = g.add_node(m.path.clone());
-        idx.insert(m.path.clone(), n);
+/// Resolve the raw import edges to internal module-to-module dependency edges,
+/// as `(src_pos, dst_pos, weight_x1024)` triples deduped to the STRONGEST
+/// evidence per `(src, dst)` pair. `*_pos` is the module's position in
+/// `modules`, which — because [`build`] adds nodes in the same order — equals
+/// its `NodeIndex`. Self-edges are excluded (`dst != src`).
+///
+/// Edge weight ×1024 is resolution SPECIFICITY: an import that lands on ONE
+/// module is full evidence (1024); a namespace/package import that resolves to
+/// a bucket of N modules spreads that single import across N files, so each
+/// target gets 1/N (floored at 1). A bucket import must not mint N units of
+/// centrality — otherwise every file of the most-imported namespace ends up at
+/// the same high fan-in, saturating `top_fan_in` with uniform glue.
+///
+/// The SINGLE resolver both the model graph ([`build`]) and the
+/// personalized-PageRank ranker (`pagerank`) consume, so the two can never see
+/// a different graph. Output sorted → byte-stable. Nothing switches on a
+/// language name.
+pub fn resolve_edges(modules: &[Module], go_module: &Option<String>) -> Vec<(usize, usize, u64)> {
+    let mut pos: HashMap<&str, usize> = HashMap::with_capacity(modules.len());
+    for (i, m) in modules.iter().enumerate() {
+        pos.insert(m.path.as_str(), i);
     }
 
     // Indexes for resolution.
@@ -81,24 +96,15 @@ pub fn build(modules: &[Module], go_module: &Option<String>) -> (GraphStats, Has
     let module_paths: HashSet<&str> = modules.iter().map(|m| m.path.as_str()).collect();
     let stem_index = build_stem_index(modules);
 
-    // Edge weight ×1024 by resolution SPECIFICITY: an import that lands on ONE
-    // module is full evidence (1024); a namespace/package import that resolves
-    // to a bucket of N modules spreads that single import across N files, so
-    // each target gets 1/N (floored at 1). A bucket import must not mint N
-    // units of centrality — otherwise every file of the most-imported
-    // namespace ends up at the same high fan-in, saturating `top_fan_in` with
-    // uniform glue and starving every query's `hubs` of real signal. The
-    // strongest evidence per (src, dst) pair wins; re-imports never inflate.
-    let mut edge_w: HashMap<(NodeIndex, NodeIndex), u64> = HashMap::new();
-
-    for m in modules {
-        let src = idx[&m.path];
+    // The strongest evidence per (src, dst) pair wins; re-imports never inflate.
+    let mut edge_w: HashMap<(usize, usize), u64> = HashMap::new();
+    for (src, m) in modules.iter().enumerate() {
         let root_aliases = crate::extract::root_aliases(&m.language);
         for imp in &m.imports {
             let targets = resolve(imp, &m.path, root_aliases, &ns_index, &stem_index, &dir_index, &module_paths, go_module);
             let w = (1024 / targets.len().max(1) as u64).max(1);
             for t in targets {
-                if let Some(&dst) = idx.get(&t) {
+                if let Some(&dst) = pos.get(t.as_str()) {
                     if dst != src {
                         let e = edge_w.entry((src, dst)).or_insert(0);
                         *e = (*e).max(w);
@@ -106,6 +112,27 @@ pub fn build(modules: &[Module], go_module: &Option<String>) -> (GraphStats, Has
                 }
             }
         }
+    }
+    let mut edges: Vec<(usize, usize, u64)> = edge_w.into_iter().map(|((a, b), w)| (a, b, w)).collect();
+    edges.sort_unstable();
+    edges
+}
+
+pub fn build(modules: &[Module], go_module: &Option<String>) -> (GraphStats, HashMap<String, (usize, usize)>, HashMap<String, usize>) {
+    let mut g: DiGraph<String, ()> = DiGraph::new();
+    for m in modules {
+        g.add_node(m.path.clone());
+    }
+
+    // Fan-in / fan-out and centrality read the SAME resolved edges the PageRank
+    // ranker does (`resolve_edges`): position i == the i-th added node ==
+    // `NodeIndex::new(i)`. The published degree is specificity-weighted (see the
+    // resolver): a bucket-broadcast target keeps its 1/N share instead of a
+    // minted full count, so real hubs rank above diffuse glue.
+    let resolved = resolve_edges(modules, go_module);
+    let mut edge_w: HashMap<(NodeIndex, NodeIndex), u64> = HashMap::new();
+    for &(a, b, w) in &resolved {
+        edge_w.insert((NodeIndex::new(a), NodeIndex::new(b)), w);
     }
     let edge_set: HashSet<(NodeIndex, NodeIndex)> = edge_w.keys().copied().collect();
     for (a, b) in &edge_set {

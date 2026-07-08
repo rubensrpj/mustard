@@ -42,7 +42,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::matching::{fold, Ladder};
 use crate::model::{Module, RoleStat};
@@ -52,9 +52,14 @@ use crate::model::{Module, RoleStat};
 /// "≥2 witnesses" bar for a real convention.
 const MIN_COUNT: usize = 2;
 
-/// Sample files per term: a small, readable set of where the term is most
-/// central — the handful a consumer opens to confirm the term's meaning.
-const MAX_ANCHORS: usize = 3;
+/// Sample files per term: the modules where the term is most central. Kept
+/// wider than a human "confirm the meaning" handful because these anchors are
+/// also the SEED set the personalized-PageRank ranker (`pagerank`) resolves a
+/// PT comment-term to — a term whose identifiers are English never resolves to
+/// a model declaration, so its comment anchors are the only seeds it has, and a
+/// sparse seed set gives the graph nothing to propagate. Still bounded (a few
+/// hundred bytes/term on the sidecar).
+const MAX_ANCHORS: usize = 15;
 
 /// Upper bound on the dictionary size: the most distinctive terms are kept, the
 /// long tail dropped, so the sidecar stays AI-sized on a large repo. The top of
@@ -64,22 +69,38 @@ const MAX_TERMS: usize = 500;
 /// Sidecar schema version — bumped when the shape changes.
 const VERSION: u32 = 1;
 
-/// The byte-stable dictionary sidecar (`grain.dictionary.json`).
-#[derive(Serialize)]
+/// The byte-stable dictionary sidecar (`grain.dictionary.json`). `Deserialize`
+/// too, so a consumer (the `pagerank` ranker) reads the sidecar back without a
+/// second schema.
+#[derive(Serialize, Deserialize)]
+#[serde(default)]
 pub struct Dictionary {
     pub version: u32,
     /// Distinctive domain terms, ordered by `term` ascending (byte-stable).
     pub terms: Vec<DictEntry>,
 }
 
-/// One distinctive term: its TF·IDF specificity, total occurrences, up to
-/// [`MAX_ANCHORS`] sample files where it is most central, and which source(s)
-/// witnessed it.
-#[derive(Serialize)]
+impl Default for Dictionary {
+    fn default() -> Self {
+        Dictionary { version: VERSION, terms: Vec::new() }
+    }
+}
+
+/// One distinctive term: its TF·IDF specificity, total occurrences, document
+/// frequency, up to [`MAX_ANCHORS`] sample files where it is most central, and
+/// which source(s) witnessed it.
+#[derive(Serialize, Deserialize, Default)]
+#[serde(default)]
 pub struct DictEntry {
     pub term: String,
     pub specificity_x1024: u64,
     pub count: usize,
+    /// Document frequency — distinct modules the term occurs in. `idf` is
+    /// recoverable as `specificity_x1024 / count`, but `df` is published
+    /// directly so a consumer weights a seed by rarity without re-deriving it.
+    /// Additive (serde default = 0 for an older sidecar).
+    #[serde(default)]
+    pub df: usize,
     pub anchors: Vec<String>,
     /// "ident" | "comment" | "both".
     pub source: String,
@@ -161,7 +182,7 @@ pub fn build(modules: &[Module], content: &HashMap<String, String>, roles: &[Rol
             _ => "ident",
         }
         .to_string();
-        entries.push(DictEntry { term, specificity_x1024, count: a.count, anchors: top_anchors(&a.tf), source });
+        entries.push(DictEntry { term, specificity_x1024, count: a.count, df, anchors: top_anchors(&a.tf), source });
     }
 
     // Keep the MOST DISTINCTIVE up to the cap (specificity desc, term asc), then
@@ -199,7 +220,7 @@ fn top_anchors(tf: &BTreeMap<String, usize>) -> Vec<String> {
 /// from the vendored Snowball stoplists, stored raw AND accent-folded — the same
 /// parse [`Ladder::new`] applies to the en list, extended to pt so a PT comment's
 /// glue ("de", "para", "não") never becomes a dictionary term. Data, not logic.
-fn natural_language_glue() -> BTreeSet<String> {
+pub(crate) fn natural_language_glue() -> BTreeSet<String> {
     let mut set = BTreeSet::new();
     for code in ["en", "pt"] {
         for line in crate::stemmers::stoplist(code).lines() {
