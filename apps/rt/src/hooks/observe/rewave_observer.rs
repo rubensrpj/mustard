@@ -114,6 +114,20 @@ impl Observer for RewaveObserver {
         // Decompose in-process (idempotency layer 2 lives inside the call).
         let result = crate::commands::wave::exec_rewave_check::decompose_if_signaled(&spec_md);
         let action = result.get("action").and_then(Value::as_str).unwrap_or("skip");
+        // Surface the structural restructuring to the user via the observer's
+        // stderr channel (same mechanism `delegation_advisory` uses). Re-wave
+        // rewrites spec.md silently otherwise — in a tool that sells itself as
+        // deterministic, an unannounced archive of the user's spec reads as data
+        // loss. Advisory only: `eprintln!` is a pure side-effect, it can never
+        // abort the write (the observer stays fail-safe).
+        if action == "decomposed" {
+            let total = result.get("totalWaves").and_then(Value::as_i64).unwrap_or(0);
+            eprintln!(
+                "[rewave] Re-wave automático: spec.md foi arquivado como spec.original.md \
+                 e os critérios globais migraram para wave-plan.md (decomposição em {total} \
+                 waves na entrada do EXECUTE)."
+            );
+        }
         economy::emit(
             &cwd,
             ActorKind::Hook,
