@@ -25,6 +25,7 @@ pub mod maint;
 pub mod scan;
 pub mod scan_claude;
 pub mod scan_guards;
+pub mod scan_patterns;
 pub mod feature;
 pub mod orient;
 pub mod capability;
@@ -1227,6 +1228,34 @@ pub enum RunCmd {
         #[arg(long, default_value = "-", allow_hyphen_values = true)]
         guards: String,
     },
+    /// Derive the missing pattern-skill *mold* worklist from `grain.model.json`:
+    /// for each mined role cluster (≥3 members, not under a test/fixture path)
+    /// attributed to its subproject, propose a `{subproject}-{role}-pattern` mold
+    /// with real hand-written exemplars — skipping any cluster whose mold already
+    /// exists, capped at 4 per subproject. Emits a JSON array
+    /// `[{subproject, label, slug, moldPath, affix, exemplars, ...}]`. The mold
+    /// twin of `scan-guards-list`. Fail-open: a missing/unparseable model → `[]`.
+    #[command(name = "scan-patterns-list")]
+    ScanPatternsList {
+        /// Workspace root (must contain `.claude/grain.model.json`). Defaults to `.`.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
+    /// Write one enrich-agent-authored pattern mold to its
+    /// `{subproject}/.claude/skills/{slug}-pattern/SKILL.md`, CREATE-ONLY (an
+    /// existing mold is left untouched) and path-shape-guarded. The mold twin of
+    /// `scan-guards-apply`; being a `run` command it sidesteps the
+    /// background-isolation gate that blocks the orchestrator's own Write.
+    #[command(name = "scan-patterns-apply")]
+    ScanPatternsApply {
+        /// Path to the mold `SKILL.md` to create.
+        #[arg(long)]
+        path: PathBuf,
+        /// Authored SKILL.md body, or `-` to read it from stdin. `allow_hyphen_values`
+        /// so a body starting with `-`/`---` frontmatter is not mistaken for a flag.
+        #[arg(long, default_value = "-", allow_hyphen_values = true)]
+        content: String,
+    },
     /// Validate a spec directory against the Wave 1 layout contract. Reads
     /// `meta.json` + `spec.md` and runs `mustard_core::domain::spec::contract::validate`.
     /// Exit code 0 ⇒ ok, 2 ⇒ violations, 1 ⇒ IO failure.
@@ -2006,6 +2035,10 @@ pub fn dispatch(cmd: RunCmd) {
         RunCmd::ScanGuardsList { root } => scan_guards::list::run(&root),
         RunCmd::ScanGuardsApply { path, root, guards } => {
             scan_guards::apply::run(&path, &root, &guards)
+        }
+        RunCmd::ScanPatternsList { root } => scan_patterns::list::run(&root),
+        RunCmd::ScanPatternsApply { path, content } => {
+            scan_patterns::apply::run(&path, &content)
         }
         RunCmd::SpecValidate { spec, json } => {
             let _ = json; // currently always emits JSON
