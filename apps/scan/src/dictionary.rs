@@ -21,8 +21,9 @@
 //! - Identifiers: every declaration `name`, split by [`crate::digest::tokenize`]
 //!   (case boundaries + acronyms, lowercased, <3-char glue dropped).
 //! - Comments/docstrings: harvested agnostically from the source by the common
-//!   markers (`//`, `#`, `/* */`, `<!-- -->`, `""" """`, `''' '''`), then split
-//!   on non-alphanumerics with the same 3-char floor.
+//!   markers (`//`, `#`, `/* */`, `<!-- -->`, `""" """`, `''' '''`), one
+//!   SEGMENT per comment, then NORMALIZED TO ENGLISH (below) and split on
+//!   non-alphanumerics with the same 3-char floor.
 //!
 //! The corpus is the modules (hand-written, non-test — the same eligibility
 //! [`crate::purpose`] uses). Per candidate term: total `count`, document
@@ -32,13 +33,38 @@
 //! plumbing (dropped); identifier glue, natural-language glue (en + the request
 //! language pt) and the mined role affixes are dropped as glue.
 //!
-//! ## Determinism — no LLM, byte-stable, fail-open
+//! ## Comments are normalized to ENGLISH (the EN→EN retrieval contract)
+//!
+//! Identifiers are English-canonical; a dictionary whose comment terms stay in
+//! the author's language forces every consumer to bridge languages at QUERY
+//! time (measured loser on the sialia benchmark). So the scan normalizes at
+//! MINE time: each harvested comment segment is language-checked by a light
+//! deterministic heuristic (vendored en/pt stoplist hits + Latin-accent
+//! evidence — mirroring the sidecar's {en,pt,es,fr} scope; es/fr ride on the
+//! shared function words and accents), and the non-English segments go — as
+//! WHOLE sentences, never word by word, deduped and sorted — in ONE batch to
+//! the local `mustard-translate batch` sidecar (spawned once; found via PATH,
+//! then `target/release`, then `target/debug`). The sidecar's own lingua
+//! verdict wins: a line it calls English passes through untranslated. The
+//! TRANSLATION is what gets tokenized into the vocabulary.
+//!
+//! Fail-open: sidecar absent/failed → the raw segment is tokenized exactly as
+//! before, and `non_english_comments` on the sidecar JSON counts the comment
+//! occurrences that entered the dictionary untranslated — the "fix this later"
+//! signal (0 when normalization fully applied).
+//!
+//! ## Determinism — no cloud/LLM, byte-stable PER MACHINE, fail-open
 //!
 //! `BTreeMap`/`BTreeSet` throughout (stable iteration), fixed-point specificity
 //! (no float ever enters a comparison), a total-order sort, and NO `unwrap`/
-//! `expect` outside tests. Two runs over the same inputs serialize to identical
-//! bytes. Fail-open: empty/absent `content` or no modules yields an empty
-//! dictionary, never a panic.
+//! `expect` outside tests. Two runs over the same inputs ON THE SAME MACHINE
+//! serialize to identical bytes: the sidecar decodes greedily (deterministic)
+//! and the batch input is sorted. Cross-platform caveat: the sidecar's MT
+//! inference is floating-point, so a DIFFERENT machine/BLAS may translate a
+//! sentence differently (each still self-deterministic) — unlike the rest of
+//! the scan, which is integer-only, cross-machine byte-equality of the
+//! dictionary is not guaranteed when translation runs. Fail-open: empty/absent
+//! `content` or no modules yields an empty dictionary, never a panic.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -76,13 +102,18 @@ const VERSION: u32 = 1;
 #[serde(default)]
 pub struct Dictionary {
     pub version: u32,
+    /// Comment occurrences detected as non-English that entered the vocabulary
+    /// UNTRANSLATED (sidecar absent/failed) — the "normalize me later" signal;
+    /// 0 when the EN normalization fully applied. Additive (serde default).
+    #[serde(default)]
+    pub non_english_comments: usize,
     /// Distinctive domain terms, ordered by `term` ascending (byte-stable).
     pub terms: Vec<DictEntry>,
 }
 
 impl Default for Dictionary {
     fn default() -> Self {
-        Dictionary { version: VERSION, terms: Vec::new() }
+        Dictionary { version: VERSION, non_english_comments: 0, terms: Vec::new() }
     }
 }
 
@@ -117,34 +148,126 @@ struct TermAgg {
     tf: BTreeMap<String, usize>,
 }
 
-/// Build the distinctive-vocabulary dictionary from the mined `modules`, their
-/// in-memory `content` (the only place comments survive), and the mined role
-/// affixes (structural glue to demote). Pure given its inputs; see the module
-/// note for the determinism + fail-open contract.
+/// One translated line of the sidecar's batch protocol
+/// (`{"en":"...","detected":"pt"}` — same order as the input lines).
+#[derive(Deserialize)]
+struct SidecarLine {
+    en: String,
+    #[serde(default)]
+    detected: String,
+}
+
+/// A batch translator: all unique non-English segments in, one translated line
+/// per segment out (same order), or `None` when the whole batch failed —
+/// injectable so tests never spawn a process.
+type BatchTranslate<'a> = &'a mut dyn FnMut(&[String]) -> Option<Vec<SidecarLine>>;
+
+/// Build the dictionary WITHOUT translation (the fail-open shape): non-English
+/// comment segments are tokenized raw, exactly as before, and counted into
+/// `non_english_comments`. Pure given its inputs — the hermetic path tests use.
 pub fn build(modules: &[Module], content: &HashMap<String, String>, roles: &[RoleStat]) -> Dictionary {
+    build_with(modules, content, roles, None)
+}
+
+/// Build the dictionary WITH the EN normalization: non-English comment
+/// segments go in one batch to the local `mustard-translate` sidecar (PATH →
+/// `target/release` → `target/debug`; spawned once). Sidecar absent/failed →
+/// identical to [`build`]. Deterministic per machine; see the module note.
+pub fn build_normalized(modules: &[Module], content: &HashMap<String, String>, roles: &[RoleStat]) -> Dictionary {
+    let mut sidecar = |lines: &[String]| sidecar_translate_batch(lines);
+    build_with(modules, content, roles, Some(&mut sidecar))
+}
+
+/// The shared core: harvest comment segments per eligible module, detect the
+/// non-English ones, translate them (when a translator is given) in ONE
+/// deduped+sorted batch, then accumulate identifiers + (normalized) comment
+/// tokens into the ranked dictionary.
+fn build_with(
+    modules: &[Module],
+    content: &HashMap<String, String>,
+    roles: &[RoleStat],
+    translate: Option<BatchTranslate>,
+) -> Dictionary {
     let ident_glue = crate::digest::stopwords(); // identifier glue (stopwords.toml)
     let ladder = Ladder::new(); // en natural-language glue via query_stopword
     let nl_glue = natural_language_glue(); // en + pt stoplists, accent-folded
     let role_glue = role_glue(roles); // mined structural affixes (Repository, …)
+    let en_stop = stoplist_words("en");
+    let pt_stop = stoplist_words("pt");
 
-    // One pass over the eligible corpus: accumulate per-term signals and count
-    // the documents (for IDF). BTreeMap → deterministic term iteration.
-    let mut agg: BTreeMap<String, TermAgg> = BTreeMap::new();
-    let mut n_docs = 0usize;
+    // Pass 1 — per eligible module (the same gate as the purpose index: a
+    // machine-written or test module is never domain vocabulary you would
+    // anchor a query on), harvest the comment segments and flag the
+    // non-English ones; collect the unique foreign segments for ONE batch.
+    let mut per_module: Vec<(&Module, Vec<(String, bool)>)> = Vec::new();
+    let mut unique_foreign: BTreeSet<String> = BTreeSet::new();
     for m in modules {
-        // Same gate as the purpose index: a machine-written or test module is
-        // never domain vocabulary you would anchor a query on.
         if mustard_core::domain::ast::is_test_path(&m.path) || !crate::classify::anchor_eligible(&m.file_class) {
             continue;
         }
-        n_docs += 1;
+        let flagged: Vec<(String, bool)> = content
+            .get(&m.path)
+            .map(|src| comment_segments(src))
+            .unwrap_or_default()
+            .into_iter()
+            .map(|seg| {
+                let foreign = is_non_english(&seg, &en_stop, &pt_stop);
+                if foreign {
+                    unique_foreign.insert(seg.clone());
+                }
+                (seg, foreign)
+            })
+            .collect();
+        per_module.push((m, flagged));
+    }
+
+    // Pass 2 — one sidecar batch over the sorted unique foreign segments
+    // (BTreeSet order → the batch input is byte-stable across runs), mapped
+    // back segment → translated line. `None` = no translator / batch failed.
+    let foreign: Vec<String> = unique_foreign.into_iter().collect();
+    let translated: Option<BTreeMap<&str, SidecarLine>> = match translate {
+        Some(t) if !foreign.is_empty() => t(&foreign)
+            .filter(|out| out.len() == foreign.len())
+            .map(|out| foreign.iter().map(String::as_str).zip(out).collect()),
+        _ => None,
+    };
+
+    // Pass 3 — accumulate per-term signals and count the documents (for IDF).
+    // BTreeMap → deterministic term iteration. Foreign segments tokenize their
+    // TRANSLATION; without one they tokenize raw and are counted.
+    let mut agg: BTreeMap<String, TermAgg> = BTreeMap::new();
+    let mut non_english_comments = 0usize;
+    let n_docs = per_module.len();
+    for (m, segments) in &per_module {
         for d in &m.declarations {
             for tok in crate::digest::tokenize(&d.name) {
                 bump(&mut agg, tok, &m.path, true);
             }
         }
-        if let Some(src) = content.get(&m.path) {
-            for tok in comment_tokens(src) {
+        for (seg, foreign) in segments {
+            let text: &str = if *foreign {
+                match translated.as_ref().and_then(|map| map.get(seg.as_str())) {
+                    // The sidecar's lingua verdict wins: a line it calls
+                    // English (or undetectable) passed through — not foreign.
+                    Some(line) if line.detected == "en" || line.detected == "unknown" => &line.en,
+                    // Genuinely translated: tokenize the English sentence.
+                    Some(line) if line.en != *seg => &line.en,
+                    // Sidecar passed a non-English line through (its own
+                    // fail-open) — raw, and counted as untranslated.
+                    Some(_) => {
+                        non_english_comments += 1;
+                        seg
+                    }
+                    // No sidecar / whole batch failed — raw + counted.
+                    None => {
+                        non_english_comments += 1;
+                        seg
+                    }
+                }
+            } else {
+                seg
+            };
+            for tok in segment_tokens(text) {
                 bump(&mut agg, tok, &m.path, false);
             }
         }
@@ -192,7 +315,109 @@ pub fn build(modules: &[Module], content: &HashMap<String, String>, roles: &[Rol
     entries.truncate(MAX_TERMS);
     entries.sort_by(|a, b| a.term.cmp(&b.term));
 
-    Dictionary { version: VERSION, terms: entries }
+    Dictionary { version: VERSION, non_english_comments, terms: entries }
+}
+
+// ---------------------------------------------------------------------------
+// Language heuristic — deterministic, dependency-free. The sidecar's lingua
+// makes the FINAL call; this only routes segments, so it is biased to send
+// (a falsely-sent English line passes through the sidecar unchanged, while a
+// falsely-kept foreign line merely keeps today's raw behavior).
+// ---------------------------------------------------------------------------
+
+/// The vendored Snowball stoplist for `code` as a raw lowercase word set —
+/// kept SEPARATE per language (unlike [`natural_language_glue`], which merges
+/// them) because detection needs the two sides to vote against each other.
+fn stoplist_words(code: &str) -> BTreeSet<String> {
+    crate::stemmers::stoplist(code)
+        .lines()
+        .map(|l| l.trim().to_lowercase())
+        .filter(|w| !w.is_empty() && !w.starts_with('#'))
+        .collect()
+}
+
+/// True when a comment segment reads as NON-English: its pt-stoplist function
+/// words outvote the English ones, or the vote ties with Latin-accent evidence
+/// present (ã/ç/é… — covers es/fr too, which share the accents and much of the
+/// pt function-word inventory; the vendored romance stoplist today is pt).
+fn is_non_english(seg: &str, en_stop: &BTreeSet<String>, pt_stop: &BTreeSet<String>) -> bool {
+    let mut en_hits = 0usize;
+    let mut pt_hits = 0usize;
+    for word in seg.split(|c: char| !c.is_alphanumeric()) {
+        if word.is_empty() {
+            continue;
+        }
+        let w = word.to_lowercase();
+        if en_stop.contains(&w) {
+            en_hits += 1;
+        }
+        if pt_stop.contains(&w) {
+            pt_hits += 1;
+        }
+    }
+    let lower = seg.to_lowercase();
+    let has_accent = fold(&lower) != lower;
+    pt_hits > en_hits || (has_accent && pt_hits >= en_hits)
+}
+
+// ---------------------------------------------------------------------------
+// The sidecar client — locate `mustard-translate`, spawn ONCE, stream the
+// batch through stdin/stdout. Never panics; every failure returns None (the
+// caller falls back to raw tokenization + counting).
+// ---------------------------------------------------------------------------
+
+/// Sidecar candidates, tried in order: bare name (the OS resolves it on PATH),
+/// then the conventional cargo output dirs relative to the working directory.
+fn sidecar_candidates() -> Vec<std::path::PathBuf> {
+    let exe = format!("mustard-translate{}", std::env::consts::EXE_SUFFIX);
+    vec![
+        std::path::PathBuf::from(&exe),
+        std::path::Path::new("target").join("release").join(&exe),
+        std::path::Path::new("target").join("debug").join(&exe),
+    ]
+}
+
+/// Translate `lines` in one `mustard-translate batch` run — first candidate
+/// that spawns AND honours the 1-JSON-line-per-input-line contract wins.
+fn sidecar_translate_batch(lines: &[String]) -> Option<Vec<SidecarLine>> {
+    sidecar_candidates().iter().find_map(|cand| run_sidecar(cand, lines))
+}
+
+/// One spawn attempt: pipe every line to the child's stdin (from a writer
+/// thread, so a full stdout pipe can never deadlock the exchange), read one
+/// JSON line back per input line. Any mismatch/failure → None.
+fn run_sidecar(program: &std::path::Path, lines: &[String]) -> Option<Vec<SidecarLine>> {
+    use std::io::{BufRead, BufReader, Write};
+    use std::process::{Command, Stdio};
+    let mut child = Command::new(program)
+        .arg("batch")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let mut stdin = child.stdin.take()?;
+    let mut payload = String::new();
+    for l in lines {
+        payload.push_str(l);
+        payload.push('\n');
+    }
+    let writer = std::thread::spawn(move || {
+        let _ = stdin.write_all(payload.as_bytes());
+        // stdin drops here — EOF tells the sidecar the batch is complete.
+    });
+    let stdout = child.stdout.take()?;
+    let mut out: Vec<SidecarLine> = Vec::new();
+    for line in BufReader::new(stdout).lines() {
+        let Ok(l) = line else { break };
+        match serde_json::from_str::<SidecarLine>(&l) {
+            Ok(v) => out.push(v),
+            Err(_) => break, // off-contract output → let the length check fail
+        }
+    }
+    let _ = writer.join();
+    let ok = child.wait().map(|s| s.success()).unwrap_or(false);
+    (ok && out.len() == lines.len()).then_some(out)
 }
 
 /// Record one occurrence of `term` in module `path` from identifiers (`ident`)
@@ -248,22 +473,32 @@ fn role_glue(roles: &[RoleStat]) -> BTreeSet<String> {
     set
 }
 
-/// Split harvested comment text into lowercased domain tokens: non-alphanumeric
-/// boundaries, a 3-char floor, and at least one alphabetic char (drops pure
-/// numbers) — the same shape [`crate::digest::tokenize`] lands identifiers in.
-fn comment_tokens(src: &str) -> Vec<String> {
-    harvest_comments(src)
-        .split(|c: char| !c.is_alphanumeric())
+/// Split ONE (already whitespace-normalized) comment segment into lowercased
+/// domain tokens: non-alphanumeric boundaries, a 3-char floor, and at least one
+/// alphabetic char (drops pure numbers) — the same shape
+/// [`crate::digest::tokenize`] lands identifiers in.
+fn segment_tokens(seg: &str) -> Vec<String> {
+    seg.split(|c: char| !c.is_alphanumeric())
         .map(str::to_lowercase)
         .filter(|w| w.len() >= 3 && w.chars().any(char::is_alphabetic))
         .collect()
 }
 
-/// Extract the text of every comment/docstring from `src`, agnostic of language,
-/// by the common markers. A linear byte scan (all markers are ASCII, so every
-/// cut is on a char boundary — the sliced text may hold any UTF-8). Unclosed
-/// blocks run to end-of-input; nothing panics.
-fn harvest_comments(src: &str) -> String {
+/// Tokenize every comment of `src` in one flat list — a test convenience over
+/// [`comment_segments`] + [`segment_tokens`].
+#[cfg(test)]
+fn comment_tokens(src: &str) -> Vec<String> {
+    comment_segments(src).iter().flat_map(|s| segment_tokens(s)).collect()
+}
+
+/// Extract every comment/docstring of `src` as ONE SEGMENT PER COMMENT,
+/// whitespace-normalized (inner newline/space runs collapse to single spaces —
+/// the sidecar batch protocol is line-based, and MT wants the sentence whole),
+/// empty segments dropped. Agnostic of language, by the common markers. A
+/// linear byte scan (all markers are ASCII, so every cut is on a char
+/// boundary — the sliced text may hold any UTF-8). Unclosed blocks run to
+/// end-of-input; nothing panics.
+fn comment_segments(src: &str) -> Vec<String> {
     const LINE2: &[u8] = b"//";
     const BLOCK_OPEN: &[u8] = b"/*";
     const BLOCK_CLOSE: &[u8] = b"*/";
@@ -274,7 +509,7 @@ fn harvest_comments(src: &str) -> String {
 
     let bytes = src.as_bytes();
     let n = bytes.len();
-    let mut out = String::new();
+    let mut out: Vec<String> = Vec::new();
     let mut i = 0;
     while i < n {
         // Line comments (`//`, `#`): to end of line.
@@ -284,7 +519,7 @@ fn harvest_comments(src: &str) -> String {
             while j < n && bytes[j] != b'\n' {
                 j += 1;
             }
-            push_slice(&mut out, src, start, j);
+            push_segment(&mut out, src, start, j);
             i = j;
             continue;
         }
@@ -296,7 +531,7 @@ fn harvest_comments(src: &str) -> String {
             while j < n && !marker_at(bytes, j, close) {
                 j += 1;
             }
-            push_slice(&mut out, src, start, j.min(n));
+            push_segment(&mut out, src, start, j.min(n));
             i = if j < n { j + close.len() } else { n };
             continue;
         }
@@ -336,12 +571,15 @@ fn marker_at(bytes: &[u8], i: usize, m: &[u8]) -> bool {
     bytes.len() >= i + m.len() && &bytes[i..i + m.len()] == m
 }
 
-/// Append `src[start..end]` and a space separator (both offsets are on char
-/// boundaries — they sit at ASCII markers/newline/end).
-fn push_slice(out: &mut String, src: &str, start: usize, end: usize) {
+/// Append `src[start..end]` as one whitespace-normalized segment (both offsets
+/// are on char boundaries — they sit at ASCII markers/newline/end); a
+/// blank-only comment contributes nothing.
+fn push_segment(out: &mut Vec<String>, src: &str, start: usize, end: usize) {
     if let Some(slice) = src.get(start..end) {
-        out.push_str(slice);
-        out.push(' ');
+        let norm = slice.split_whitespace().collect::<Vec<_>>().join(" ");
+        if !norm.is_empty() {
+            out.push(norm);
+        }
     }
 }
 
@@ -489,6 +727,105 @@ mod tests {
         let dict = build(&modules, &HashMap::new(), &[]);
         assert!(find(&dict, "reconcile").is_some(), "identifiers mine without any content");
         assert!(dict.terms.iter().all(|e| e.source == "ident"), "no comment source when content is absent");
+    }
+
+    /// A deterministic stand-in for the sidecar: the PT fixtures translate to
+    /// fixed English; anything else passes through (like `detected:"en"` would).
+    fn fake_tr(lines: &[String]) -> Option<Vec<SidecarLine>> {
+        Some(
+            lines
+                .iter()
+                .map(|l| SidecarLine {
+                    en: match l.as_str() {
+                        "valida o contrato do parceiro" => "validates the partner contract".to_string(),
+                        "atualiza o contrato existente" => "updates the existing contract".to_string(),
+                        other => other.to_string(),
+                    },
+                    detected: "pt".to_string(),
+                })
+                .collect(),
+        )
+    }
+
+    /// (f) EN NORMALIZATION — the non-English comment segments go to the batch
+    /// translator ONCE, deduped + sorted; the TRANSLATION is what enters the
+    /// vocabulary (the PT surface never does); nothing is counted untranslated.
+    #[test]
+    fn normalizes_non_english_comments_via_batch_translation() {
+        let mut modules = vec![module("src/contracts/create.rs", &[]), module("src/contracts/update.rs", &[])];
+        modules.extend(fillers(6));
+        let mut content = HashMap::new();
+        content.insert("src/contracts/create.rs".to_string(), "// valida o contrato do parceiro".to_string());
+        content
+            .insert("src/contracts/update.rs".to_string(), "// atualiza o contrato existente\n// keeps the audit note in english".to_string());
+
+        let mut batches: Vec<Vec<String>> = Vec::new();
+        let mut fake = |lines: &[String]| -> Option<Vec<SidecarLine>> {
+            batches.push(lines.to_vec());
+            fake_tr(lines)
+        };
+        let dict = build_with(&modules, &content, &[], Some(&mut fake));
+        drop(fake);
+
+        assert_eq!(batches.len(), 1, "the sidecar is spawned exactly once");
+        assert_eq!(
+            batches[0],
+            vec!["atualiza o contrato existente".to_string(), "valida o contrato do parceiro".to_string()],
+            "only the non-English segments, deduped and sorted (the English note stays home)"
+        );
+        let contract = find(&dict, "contract").expect("translated token mined");
+        assert_eq!(contract.source, "comment");
+        assert_eq!(contract.count, 2, "one occurrence per translated segment");
+        assert!(find(&dict, "contrato").is_none(), "the raw PT token never enters: {:?}", terms(&dict));
+        assert_eq!(dict.non_english_comments, 0, "fully normalized -> nothing left raw");
+    }
+
+    /// (g) FAIL-OPEN — no sidecar (`build`) and a failing batch behave
+    /// IDENTICALLY: raw tokenization exactly as before, every non-English
+    /// occurrence counted into `non_english_comments`.
+    #[test]
+    fn counts_untranslated_non_english_comments_when_sidecar_unavailable() {
+        let mut modules = vec![module("src/a.rs", &[]), module("src/b.rs", &[])];
+        modules.extend(fillers(6));
+        let mut content = HashMap::new();
+        content.insert("src/a.rs".to_string(), "// valida o contrato do parceiro".to_string());
+        content.insert("src/b.rs".to_string(), "// atualiza o contrato existente\n// plain english comment of the module".to_string());
+
+        let dict = build(&modules, &content, &[]);
+        assert_eq!(dict.non_english_comments, 2, "both PT occurrences counted, the English one not");
+        assert!(find(&dict, "contrato").is_some(), "raw fallback keeps today's vocabulary: {:?}", terms(&dict));
+
+        let mut failing = |_lines: &[String]| -> Option<Vec<SidecarLine>> { None };
+        let failed = build_with(&modules, &content, &[], Some(&mut failing));
+        let (a, b) = (serde_json::to_string(&dict).expect("serialize"), serde_json::to_string(&failed).expect("serialize"));
+        assert_eq!(a, b, "failed batch == no sidecar, byte for byte");
+    }
+
+    /// (h) BYTE-STABILITY under translation — two runs with the same
+    /// (deterministic) translator serialize identically.
+    #[test]
+    fn normalized_build_is_byte_stable() {
+        let mut modules = vec![module("src/contracts/create.rs", &[]), module("src/contracts/update.rs", &[])];
+        modules.extend(fillers(6));
+        let mut content = HashMap::new();
+        content.insert("src/contracts/create.rs".to_string(), "// valida o contrato do parceiro".to_string());
+        content.insert("src/contracts/update.rs".to_string(), "// atualiza o contrato existente".to_string());
+        let (mut t1, mut t2) = (fake_tr, fake_tr);
+        let one = serde_json::to_string(&build_with(&modules, &content, &[], Some(&mut t1))).expect("serialize");
+        let two = serde_json::to_string(&build_with(&modules, &content, &[], Some(&mut t2))).expect("serialize");
+        assert_eq!(one, two, "two normalized runs are byte-identical");
+    }
+
+    /// The routing heuristic: pt function words / accent evidence send a
+    /// segment to translation; English stays home, even with a quoted accent.
+    #[test]
+    fn non_english_detection_votes_stoplists_and_accents() {
+        let en = stoplist_words("en");
+        let pt = stoplist_words("pt");
+        assert!(is_non_english("valida o cadastro do parceiro antes de salvar", &en, &pt), "pt function words outvote");
+        assert!(is_non_english("conciliação bancária", &en, &pt), "accent evidence breaks the 0-0 tie");
+        assert!(!is_non_english("validates the partner registration before saving", &en, &pt));
+        assert!(!is_non_english("maps the naïve café names into the user profile", &en, &pt), "English wins its vote despite an accented word");
     }
 
     /// The comment harvester pulls text out of every supported marker and leaves

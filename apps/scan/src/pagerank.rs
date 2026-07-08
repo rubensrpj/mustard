@@ -676,7 +676,7 @@ mod tests {
             ..Default::default()
         };
         // "aging" is an identifier token of aging-bar.tsx → model seed.
-        let dict = Dictionary { version: 1, terms: vec![entry("aging", 4, 2, 2048, &[], "both")] };
+        let dict = Dictionary { version: 1, non_english_comments: 0, terms: vec![entry("aging", 4, 2, 2048, &[], "both")] };
         let cfg = RankConfig { propagate: false, ..Default::default() };
         let r = rank(&model, &dict, &["ajustar o aging".to_string()], &cfg);
         assert_eq!(ranked_files(&r), vec!["src/payables/aging-bar.tsx"], "the declaring file seeds and ranks; the widget does not");
@@ -696,7 +696,7 @@ mod tests {
             ..Default::default()
         };
         // "contrato" appears in NO identifier; its anchor is the contract file.
-        let dict = Dictionary { version: 1, terms: vec![entry("contrato", 10, 3, 3072, &["src/contracts/form-context.tsx"], "comment")] };
+        let dict = Dictionary { version: 1, non_english_comments: 0, terms: vec![entry("contrato", 10, 3, 3072, &["src/contracts/form-context.tsx"], "comment")] };
         let cfg = RankConfig { propagate: false, ..Default::default() };
         let r = rank(&model, &dict, &["campo no contrato".to_string()], &cfg);
         assert_eq!(ranked_files(&r), vec!["src/contracts/form-context.tsx"], "PT term localizes through its anchor");
@@ -712,7 +712,7 @@ mod tests {
             modules: vec![gen, module("src/contracts/service.ts", &["ContractService"], &["src/generated/contracts.g.ts"])],
             ..Default::default()
         };
-        let dict = Dictionary { version: 1, terms: vec![entry("contract", 6, 2, 2048, &["src/generated/contracts.g.ts"], "both")] };
+        let dict = Dictionary { version: 1, non_english_comments: 0, terms: vec![entry("contract", 6, 2, 2048, &["src/generated/contracts.g.ts"], "both")] };
         let cfg = RankConfig { propagate: true, ..Default::default() };
         let r = rank(&model, &dict, &["contract".to_string()], &cfg);
         assert!(!ranked_files(&r).iter().any(|f| f.contains("generated")), "generated file demoted from ranking: {:?}", ranked_files(&r));
@@ -733,7 +733,7 @@ mod tests {
         };
         // Only the form is seeded; the schema it imports is never named. Fan-in
         // penalty off to isolate propagation from the demotion.
-        let dict = Dictionary { version: 1, terms: vec![entry("form", 4, 1, 4096, &["src/ui/form.tsx"], "both")] };
+        let dict = Dictionary { version: 1, non_english_comments: 0, terms: vec![entry("form", 4, 1, 4096, &["src/ui/form.tsx"], "both")] };
         let seeded = rank(&model, &dict, &["form".to_string()], &RankConfig { propagate: false, fanin_penalty_x1024: 0, ..Default::default() });
         assert_eq!(ranked_files(&seeded), vec!["src/ui/form.tsx"], "seed-only ranks only the seed");
         let walked =
@@ -752,7 +752,7 @@ mod tests {
             ],
             ..Default::default()
         };
-        let dict = Dictionary { version: 1, terms: vec![entry("alpha", 3, 1, 3072, &["src/a/one.ts"], "both"), entry("gamma", 2, 1, 2048, &["src/b/three.ts"], "both")] };
+        let dict = Dictionary { version: 1, non_english_comments: 0, terms: vec![entry("alpha", 3, 1, 3072, &["src/a/one.ts"], "both"), entry("gamma", 2, 1, 2048, &["src/b/three.ts"], "both")] };
         let cfg = RankConfig::default();
         let a = serde_json::to_string(&rank(&model, &dict, &["alpha gamma".to_string()], &cfg)).expect("serialize");
         let b = serde_json::to_string(&rank(&model, &dict, &["alpha gamma".to_string()], &cfg)).expect("serialize");
@@ -764,7 +764,7 @@ mod tests {
     #[test]
     fn fails_open() {
         let model = ProjectModel { modules: vec![module("src/a.ts", &["Alpha"], &[])], ..Default::default() };
-        let dict = Dictionary { version: 1, terms: vec![entry("alpha", 2, 1, 2048, &["src/a.ts"], "both")] };
+        let dict = Dictionary { version: 1, non_english_comments: 0, terms: vec![entry("alpha", 2, 1, 2048, &["src/a.ts"], "both")] };
         let cfg = RankConfig::default();
         // Nothing in the dictionary matches.
         assert!(rank(&model, &dict, &["zzzznomatch".to_string()], &cfg).files.is_empty(), "no bridge → empty");
@@ -786,7 +786,7 @@ mod tests {
         let service = module("src/zzz_service.ts", &["Service"], &[]); // leaf, fan_in 0
         let model = ProjectModel { modules: vec![sink, service], ..Default::default() };
         // "alpha" anchors both equally; neither declares it (seeded via anchors).
-        let dict = Dictionary { version: 1, terms: vec![entry("alpha", 4, 2, 2048, &["src/aaa_sink.ts", "src/zzz_service.ts"], "comment")] };
+        let dict = Dictionary { version: 1, non_english_comments: 0, terms: vec![entry("alpha", 4, 2, 2048, &["src/aaa_sink.ts", "src/zzz_service.ts"], "comment")] };
         let off = rank(&model, &dict, &["alpha".to_string()], &RankConfig { propagate: false, fanin_penalty_x1024: 0, ..Default::default() });
         assert_eq!(off.files.first().map(|f| f.file.as_str()), Some("src/aaa_sink.ts"), "no penalty: equal mass, path-asc → sink leads: {:?}", ranked_files(&off));
         let on = rank(&model, &dict, &["alpha".to_string()], &RankConfig { propagate: false, fanin_penalty_x1024: 1024, ..Default::default() });
@@ -824,6 +824,7 @@ mod tests {
         // "desdobramento": low count, df 1 → high idf.
         let dict = Dictionary {
             version: 1,
+            non_english_comments: 0,
             terms: vec![
                 entry("conta", 200, 40, 200_000, &["src/common/conta.ts"], "comment"),
                 entry("desdobramento", 3, 1, 30_000, &["src/rare/desdobramento.ts"], "comment"),
@@ -848,7 +849,7 @@ mod tests {
         let target = module("src/features/sales-channel-list.ts", &["useSalesChannelList"], &["src/aaa_hub.ts"]);
         let model = ProjectModel { modules: vec![hub, target], ..Default::default() };
         // The dictionary bridges ONLY an unrelated term; `channel` is absent.
-        let dict = Dictionary { version: 1, terms: vec![entry("hub", 100, 50, 2048, &["src/aaa_hub.ts"], "comment")] };
+        let dict = Dictionary { version: 1, non_english_comments: 0, terms: vec![entry("hub", 100, 50, 2048, &["src/aaa_hub.ts"], "comment")] };
 
         // Gate ON (default): the English identifier token seeds its file directly
         // and its base floor surfaces it despite the hub's fan-in-30 centrality.

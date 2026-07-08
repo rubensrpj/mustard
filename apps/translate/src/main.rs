@@ -7,8 +7,11 @@
 //! - `text --input "<sentence>"` → one JSON line on stdout:
 //!   `{"en": "<english>", "detected": "pt"}`. Input already in English (or
 //!   undetectable) passes through unchanged with `detected: "en" | "unknown"`.
-//! - `batch` → same contract, one stdin line in / one JSON line out (loads the
-//!   model once — the cheap path when a caller has several sentences).
+//! - `batch` → same contract, one stdin line in / one JSON line out, IN THE
+//!   SAME ORDER, one output line PER input line — an empty/blank line yields
+//!   `{"en":"","detected":"unknown"}` so a caller can zip inputs to outputs
+//!   positionally. Loads the model once — the cheap path when a caller (e.g.
+//!   the scan's dictionary stage) has many sentences.
 //!
 //! Engine: OPUS-MT Marian (`Helsinki-NLP/opus-mt-ROMANCE-en`, CC-BY-4.0 —
 //! commercial use OK; NLLB/Tower are CC-BY-NC and banned) executed with candle
@@ -95,10 +98,16 @@ struct Out<'a> {
     detected: &'a str,
 }
 
-fn emit(en: &str, detected: &str) {
+fn emit(out: &mut impl std::io::Write, en: &str, detected: &str) {
     // Struct serialization keeps field order: {"en": ..., "detected": ...}.
     match serde_json::to_string(&Out { en, detected }) {
-        Ok(line) => println!("{line}"),
+        // A failed stdout write (closed pipe) cannot be reported on stdout;
+        // stderr + carrying on is the whole fail-open contract.
+        Ok(line) => {
+            if let Err(e) = writeln!(out, "{line}") {
+                eprintln!("mustard-translate: stdout write failed ({e})");
+            }
+        }
         // Unreachable for plain strings; still honour the fail-open contract.
         Err(e) => eprintln!("mustard-translate: emit failed ({e})"),
     }
@@ -106,18 +115,21 @@ fn emit(en: &str, detected: &str) {
 
 fn main() {
     let cli = Cli::parse();
+    let mut stdout = std::io::stdout().lock();
     match cli.cmd {
-        Cmd::Text { input, max_tokens } => run_text(&input, max_tokens),
-        Cmd::Batch { max_tokens } => run_batch(max_tokens),
+        Cmd::Text { input, max_tokens } => run_text(&mut stdout, &input, max_tokens),
+        Cmd::Batch { max_tokens } => {
+            run_batch_io(std::io::stdin().lock(), &mut stdout, max_tokens);
+        }
     }
 }
 
 /// One sentence. NEVER fails the process: worst case is pass-through + stderr.
-fn run_text(input: &str, max_tokens: usize) {
+fn run_text(out: &mut impl std::io::Write, input: &str, max_tokens: usize) {
     let detector = build_detector();
     let detected = detect(&detector, input);
     if !needs_translation(detected) {
-        emit(input, detected);
+        emit(out, input, detected);
         return;
     }
     match load_guarded() {
@@ -125,25 +137,29 @@ fn run_text(input: &str, max_tokens: usize) {
             eprintln!(
                 "mustard-translate: model unavailable ({e:#}); passing the original text through"
             );
-            emit(input, detected);
+            emit(out, input, detected);
         }
-        Ok(mut t) => emit_translated(&mut t, input, detected, max_tokens),
+        Ok(mut t) => emit_translated(out, &mut t, input, detected, max_tokens),
     }
 }
 
-fn run_batch(max_tokens: usize) {
+/// The batch loop, parameterized over reader/writer so the 1:1 order contract
+/// is unit-testable. EVERY input line produces exactly one output line in the
+/// same order — an empty/blank line passes through as
+/// `{"en":"","detected":"unknown"}` (never skipped: a positional caller must be
+/// able to zip inputs to outputs). The model loads lazily, ONCE, on the first
+/// line that needs translation; a failed load flips to pass-through for the
+/// rest of the stream instead of retrying per line.
+fn run_batch_io(input: impl BufRead, out: &mut impl std::io::Write, max_tokens: usize) {
     let detector = build_detector();
     let mut translator: Option<Translator> = None;
     let mut translator_failed = false;
-    for line in std::io::stdin().lock().lines() {
+    for line in input.lines() {
         let Ok(line) = line else { break };
-        let input = line.trim();
-        if input.is_empty() {
-            continue;
-        }
-        let detected = detect(&detector, input);
+        let text = line.trim();
+        let detected = if text.is_empty() { "unknown" } else { detect(&detector, text) };
         if !needs_translation(detected) {
-            emit(input, detected);
+            emit(out, text, detected);
             continue;
         }
         if translator.is_none() && !translator_failed {
@@ -158,8 +174,8 @@ fn run_batch(max_tokens: usize) {
             }
         }
         match translator.as_mut() {
-            Some(t) => emit_translated(t, input, detected, max_tokens),
-            None => emit(input, detected),
+            Some(t) => emit_translated(out, t, text, detected, max_tokens),
+            None => emit(out, text, detected),
         }
     }
 }
@@ -197,18 +213,24 @@ fn translate_guarded(t: &mut Translator, input: &str, max_tokens: usize) -> Resu
     }
 }
 
-fn emit_translated(t: &mut Translator, input: &str, detected: &str, max_tokens: usize) {
+fn emit_translated(
+    out: &mut impl std::io::Write,
+    t: &mut Translator,
+    input: &str,
+    detected: &str,
+    max_tokens: usize,
+) {
     match translate_guarded(t, input, max_tokens) {
-        Ok(en) if !en.trim().is_empty() => emit(en.trim(), detected),
+        Ok(en) if !en.trim().is_empty() => emit(out, en.trim(), detected),
         Ok(_) => {
             eprintln!("mustard-translate: empty translation; passing the original text through");
-            emit(input, detected);
+            emit(out, input, detected);
         }
         Err(e) => {
             eprintln!(
                 "mustard-translate: translation failed ({e:#}); passing the original text through"
             );
-            emit(input, detected);
+            emit(out, input, detected);
         }
     }
 }
@@ -476,6 +498,46 @@ mod tests {
         assert!(needs_translation("pt"));
         assert!(needs_translation("es"));
         assert!(needs_translation("fr"));
+    }
+
+    /// The batch 1:1 contract, hermetically (English + blank lines never load
+    /// the model): one output line PER input line, SAME order, empty line →
+    /// `{"en":"","detected":"unknown"}`, English → pass-through.
+    #[test]
+    fn batch_emits_one_line_per_input_line_in_order() {
+        let input = "add a notes field to the contract form\n\n   \nwhere is the bank statement reconciliation done\n";
+        let mut out = Vec::new();
+        run_batch_io(std::io::Cursor::new(input), &mut out, 192);
+        let lines: Vec<&str> = std::str::from_utf8(&out).unwrap().lines().collect();
+        assert_eq!(lines.len(), 4, "one JSON line per input line, blanks included: {lines:?}");
+        assert_eq!(lines[0], r#"{"en":"add a notes field to the contract form","detected":"en"}"#);
+        assert_eq!(lines[1], r#"{"en":"","detected":"unknown"}"#, "empty line passes through in place");
+        assert_eq!(lines[2], r#"{"en":"","detected":"unknown"}"#, "whitespace-only line is empty after trim");
+        assert_eq!(lines[3], r#"{"en":"where is the bank statement reconciliation done","detected":"en"}"#);
+    }
+
+    /// Batch with a non-English line mid-stream: order still holds and the pt
+    /// line comes back translated (needs the model — SKIPs when absent, same
+    /// policy as `determinism_two_fresh_loads`).
+    #[test]
+    fn batch_translates_non_english_lines_in_place() {
+        if ensure_model().is_err() {
+            eprintln!("SKIP batch_translates_non_english_lines_in_place: model cache absent and download failed");
+            return;
+        }
+        let input = "add a notes field to the contract form\nonde é feita a conciliação do extrato bancário\n";
+        let mut out = Vec::new();
+        run_batch_io(std::io::Cursor::new(input), &mut out, 192);
+        let lines: Vec<serde_json::Value> = std::str::from_utf8(&out)
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0]["detected"], "en");
+        assert_eq!(lines[1]["detected"], "pt");
+        let en = lines[1]["en"].as_str().unwrap().to_lowercase();
+        assert!(en.contains("bank"), "pt line translated in place, got: {en}");
     }
 
     /// GREEDY determinism across two FRESH model loads: same input ⇒ byte-equal
