@@ -163,11 +163,13 @@ if (-not $DryRun -and -not (Get-Command rtk -ErrorAction SilentlyContinue)) {
 # Choose init vs update by whether .claude/ already exists. `init` MERGES and
 # SKIPS existing files, so re-running it on an installed project leaves stale
 # SKILLs/refs (the silent trap: new files land, existing ones never refresh).
-# For an existing .claude/ (and no -Force) use `update --force`: it deletes +
-# recopies the Mustard-owned folders (commands/mustard, skills, scripts, refs)
-# from the templates while PRESERVING user files (CLAUDE.md, mustard.json, spec/,
-# memory/, grain.model.json). -Force still does a full init overwrite; -DryRun
-# stays on init (update has no dry-run).
+# For an existing .claude/ (and no -Force) use `update --force`: it MIRRORS the
+# entire templates payload (every top-level entry — no allowlist), pruning +
+# recopying Mustard-owned folders and overwriting Mustard-owned files (INCLUDING
+# the orchestrator .claude/CLAUDE.md), while PRESERVING only the user/runtime
+# files (mustard.json, grain.model.json, spec/, memory/, docs/) and merging
+# agents/. -Force still does a full init overwrite; -DryRun stays on init
+# (update has no dry-run).
 $claudeExists = Test-Path (Join-Path $Target '.claude')
 if ($claudeExists -and -not $Force -and -not $DryRun) {
     $cmdArgs  = @('update', '--force')
