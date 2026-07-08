@@ -1,0 +1,1834 @@
+{
+  "equivalences": {
+    "10b981": [
+      "const",
+      "titles",
+      "label",
+      "status"
+    ],
+    "3b82f6": [
+      "const",
+      "tab",
+      "label",
+      "badge"
+    ],
+    "6b7280": [
+      "const",
+      "notification",
+      "column",
+      "ghql"
+    ],
+    "aba": [
+      "partner",
+      "company",
+      "tab",
+      "ghql"
+    ],
+    "abaixo": [
+      "row",
+      "column",
+      "filters",
+      "scaffold"
+    ],
+    "aberto": [
+      "payable",
+      "async",
+      "receivable",
+      "count"
+    ],
+    "acesso": [
+      "not",
+      "found",
+      "async",
+      "invalid"
+    ],
+    "acima": [
+      "async",
+      "column",
+      "filters",
+      "scaffold"
+    ],
+    "adiciona": [
+      "async",
+      "partner",
+      "get",
+      "tracked"
+    ],
+    "adicionais": [
+      "contract",
+      "plan",
+      "build",
+      "async"
+    ],
+    "agrupamento": [
+      "payable",
+      "receivable",
+      "split",
+      "group"
+    ],
+    "ainda": [
+      "not",
+      "found",
+      "async",
+      "invalid"
+    ],
+    "alvo": [
+      "rule",
+      "sales",
+      "evaluation",
+      "rate"
+    ],
+    "antes": [
+      "async",
+      "filters",
+      "password",
+      "scaffold"
+    ],
+    "antigo": [
+      "payable",
+      "ghql",
+      "dashboard",
+      "projection"
+    ],
+    "apenas": [
+      "async",
+      "payable",
+      "password",
+      "use"
+    ],
+    "aplica": [
+      "async",
+      "get",
+      "titles",
+      "from"
+    ],
+    "aplicado": [
+      "filter",
+      "async",
+      "projection",
+      "build"
+    ],
+    "aprovacao": [
+      "not",
+      "found",
+      "contract",
+      "invalid"
+    ],
+    "apos": [
+      "use",
+      "filters",
+      "data",
+      "email"
+    ],
+    "aqui": [
+      "build",
+      "period",
+      "async",
+      "column"
+    ],
+    "ativo": [
+      "not",
+      "found",
+      "async",
+      "invalid"
+    ],
+    "ativos": [
+      "async",
+      "get",
+      "forecast",
+      "tracked"
+    ],
+    "atraso": [
+      "async",
+      "get",
+      "rate",
+      "payable"
+    ],
+    "atual": [
+      "not",
+      "found",
+      "invalid",
+      "async"
+    ],
+    "atualiza": [
+      "async",
+      "get",
+      "email",
+      "scaffold"
+    ],
+    "ausente": [
+      "not",
+      "found",
+      "invalid",
+      "row"
+    ],
+    "autenticado": [
+      "auth",
+      "route",
+      "password",
+      "navigation"
+    ],
+    "automaticamente": [
+      "async",
+      "put",
+      "delete",
+      "charges"
+    ],
+    "acoes": [
+      "row",
+      "column",
+      "filters",
+      "scaffold"
+    ],
+    "baixa": [
+      "async",
+      "receivable",
+      "payable",
+      "settle"
+    ],
+    "banco": [
+      "not",
+      "found",
+      "invalid",
+      "async"
+    ],
+    "bff": [
+      "use",
+      "password",
+      "login",
+      "token"
+    ],
+    "busca": [
+      "async",
+      "tracked",
+      "get",
+      "ignoring"
+    ],
+    "buscar": [
+      "use",
+      "async",
+      "contract",
+      "build"
+    ],
+    "cada": [
+      "payable",
+      "async",
+      "row",
+      "rate"
+    ],
+    "cadastro": [
+      "picker",
+      "config",
+      "email",
+      "partner"
+    ],
+    "campo": [
+      "payable",
+      "rate",
+      "dashboard",
+      "state"
+    ],
+    "campos": [
+      "async",
+      "payable",
+      "get",
+      "ghql"
+    ],
+    "canal": [
+      "not",
+      "found",
+      "invalid",
+      "sales"
+    ],
+    "cancelado": [
+      "receivable",
+      "status",
+      "payable",
+      "state"
+    ],
+    "cancelamento": [
+      "import",
+      "async",
+      "partner",
+      "cancel"
+    ],
+    "cancelar": [
+      "not",
+      "found",
+      "use",
+      "invalid"
+    ],
+    "carrega": [
+      "async",
+      "payable",
+      "get",
+      "partner"
+    ],
+    "cartao": [
+      "not",
+      "found",
+      "async",
+      "charge"
+    ],
+    "caso": [
+      "async",
+      "password",
+      "email",
+      "use"
+    ],
+    "chave": [
+      "filter",
+      "filters",
+      "key",
+      "scaffold"
+    ],
+    "ciclo": [
+      "cycle",
+      "async",
+      "use",
+      "period"
+    ],
+    "cliente": [
+      "total",
+      "open",
+      "client",
+      "paid"
+    ],
+    "clientes": [
+      "clients",
+      "dashboard",
+      "evolution",
+      "delinquent"
+    ],
+    "cobranca": [
+      "not",
+      "found",
+      "async",
+      "invalid"
+    ],
+    "cobrancas": [
+      "async",
+      "charge",
+      "get",
+      "pending"
+    ],
+    "coluna": [
+      "column",
+      "create",
+      "meta",
+      "row"
+    ],
+    "colunas": [
+      "column",
+      "row",
+      "create",
+      "filters"
+    ],
+    "completa": [
+      "receivable",
+      "state",
+      "payable",
+      "meta"
+    ],
+    "componente": [
+      "form",
+      "row",
+      "render",
+      "root"
+    ],
+    "condicoes": [
+      "rule",
+      "sales",
+      "condition",
+      "evaluation"
+    ],
+    "configuracao": [
+      "gateway",
+      "async",
+      "config",
+      "process"
+    ],
+    "confirmar": [
+      "payable",
+      "open",
+      "rate",
+      "dialog"
+    ],
+    "consolidado": [
+      "payable",
+      "receivable",
+      "async",
+      "split"
+    ],
+    "constroi": [
+      "build",
+      "query",
+      "async",
+      "login"
+    ],
+    "conta": [
+      "not",
+      "async",
+      "found",
+      "invalid"
+    ],
+    "contagem": [
+      "async",
+      "receivable",
+      "scaffold",
+      "filters"
+    ],
+    "contas": [
+      "not",
+      "found",
+      "invalid",
+      "amount"
+    ],
+    "contexto": [
+      "async",
+      "partner",
+      "get",
+      "tracked"
+    ],
+    "contractplan": [
+      "not",
+      "found",
+      "plan",
+      "contract"
+    ],
+    "contrato": [
+      "not",
+      "async",
+      "contract",
+      "found"
+    ],
+    "contratos": [
+      "not",
+      "found",
+      "invalid",
+      "contract"
+    ],
+    "cor": [
+      "payable",
+      "label",
+      "state",
+      "receivable"
+    ],
+    "corrente": [
+      "period",
+      "value",
+      "tone",
+      "change"
+    ],
+    "cref": [
+      "async",
+      "amount",
+      "projection",
+      "name"
+    ],
+    "cria": [
+      "async",
+      "column",
+      "create",
+      "token"
+    ],
+    "criar": [
+      "not",
+      "found",
+      "invalid",
+      "already"
+    ],
+    "criacao": [
+      "contract",
+      "plan",
+      "async",
+      "error"
+    ],
+    "credito": [
+      "not",
+      "found",
+      "invalid",
+      "async"
+    ],
+    "codigo": [
+      "not",
+      "found",
+      "invalid",
+      "already"
+    ],
+    "dados": [
+      "async",
+      "use",
+      "charge",
+      "success"
+    ],
+    "dark": [
+      "payable",
+      "label",
+      "group",
+      "tone"
+    ],
+    "datas": [
+      "payable",
+      "receivable",
+      "ghql",
+      "contract"
+    ],
+    "dedicated": [
+      "async",
+      "get",
+      "log",
+      "service"
+    ],
+    "demais": [
+      "filter",
+      "row",
+      "column",
+      "filters"
+    ],
+    "dentro": [
+      "async",
+      "tracked",
+      "get",
+      "build"
+    ],
+    "derivado": [
+      "status",
+      "meta",
+      "state",
+      "payable"
+    ],
+    "desconto": [
+      "payable",
+      "async",
+      "receivable",
+      "rate"
+    ],
+    "descricao": [
+      "payable",
+      "receivable",
+      "rate",
+      "ghql"
+    ],
+    "desdobramento": [
+      "payable",
+      "receivable",
+      "split",
+      "filter"
+    ],
+    "deve": [
+      "not",
+      "found",
+      "async",
+      "invalid"
+    ],
+    "devem": [
+      "not",
+      "found",
+      "invalid",
+      "async"
+    ],
+    "dia": [
+      "state",
+      "payable",
+      "receivable",
+      "due"
+    ],
+    "direto": [
+      "email",
+      "password",
+      "async",
+      "use"
+    ],
+    "dialogo": [
+      "payable",
+      "async",
+      "rate",
+      "group"
+    ],
+    "documento": [
+      "not",
+      "found",
+      "invalid",
+      "async"
+    ],
+    "dois": [
+      "use",
+      "rate",
+      "discount",
+      "tone"
+    ],
+    "duedate": [
+      "payable",
+      "async",
+      "receivable",
+      "group"
+    ],
+    "digitos": [
+      "document",
+      "cnpj",
+      "cpf",
+      "user"
+    ],
+    "editar": [
+      "amount",
+      "rate",
+      "value",
+      "build"
+    ],
+    "edicao": [
+      "async",
+      "tracked",
+      "get",
+      "ignoring"
+    ],
+    "efetivado": [
+      "payable",
+      "async",
+      "receivable",
+      "payables"
+    ],
+    "empresa": [
+      "not",
+      "payable",
+      "found",
+      "async"
+    ],
+    "encontrado": [
+      "not",
+      "found",
+      "invalid",
+      "partner"
+    ],
+    "endregion": [
+      "async",
+      "not",
+      "get",
+      "found"
+    ],
+    "entidade": [
+      "rule",
+      "sales",
+      "contract",
+      "evaluation"
+    ],
+    "entao": [
+      "tree",
+      "row",
+      "filters",
+      "scaffold"
+    ],
+    "erro": [
+      "not",
+      "found",
+      "error",
+      "invalid"
+    ],
+    "erros": [
+      "error",
+      "message",
+      "use",
+      "server"
+    ],
+    "escopo": [
+      "scope",
+      "async",
+      "token",
+      "column"
+    ],
+    "eslint": [
+      "form",
+      "adapter",
+      "page",
+      "data"
+    ],
+    "especifico": [
+      "async",
+      "tracked",
+      "get",
+      "ignoring"
+    ],
+    "espelha": [
+      "payable",
+      "receivable",
+      "ghql",
+      "response"
+    ],
+    "etc": [
+      "graphql",
+      "filter",
+      "period",
+      "code"
+    ],
+    "every": [
+      "async",
+      "tree",
+      "build",
+      "node"
+    ],
+    "evita": [
+      "async",
+      "row",
+      "build",
+      "amount"
+    ],
+    "evitar": [
+      "node",
+      "nav",
+      "icon",
+      "validate"
+    ],
+    "example": [
+      "error",
+      "seed",
+      "api",
+      "message"
+    ],
+    "exibicao": [
+      "create",
+      "status",
+      "column",
+      "update"
+    ],
+    "existe": [
+      "not",
+      "found",
+      "async",
+      "invalid"
+    ],
+    "existente": [
+      "not",
+      "found",
+      "partner",
+      "async"
+    ],
+    "expect": [
+      "update",
+      "delete",
+      "auth",
+      "server"
+    ],
+    "extrato": [
+      "statement",
+      "titles",
+      "line",
+      "bank"
+    ],
+    "f59e0b": [
+      "const",
+      "aging",
+      "bar",
+      "payload"
+    ],
+    "falha": [
+      "not",
+      "found",
+      "async",
+      "invalid"
+    ],
+    "fato": [
+      "rule",
+      "sales",
+      "fact",
+      "condition"
+    ],
+    "fatos": [
+      "fact",
+      "sales",
+      "rule",
+      "select"
+    ],
+    "fica": [
+      "state",
+      "row",
+      "column",
+      "payable"
+    ],
+    "filtra": [
+      "async",
+      "get",
+      "payable",
+      "tracked"
+    ],
+    "filtro": [
+      "payable",
+      "receivable",
+      "build",
+      "projected"
+    ],
+    "filtros": [
+      "filters",
+      "filter",
+      "column",
+      "scaffold"
+    ],
+    "fim": [
+      "async",
+      "dashboard",
+      "column",
+      "filters"
+    ],
+    "financeiro": [
+      "titles",
+      "total",
+      "tone",
+      "statement"
+    ],
+    "fluxo": [
+      "not",
+      "found",
+      "invalid",
+      "async"
+    ],
+    "fonte": [
+      "receivable",
+      "payable",
+      "async",
+      "state"
+    ],
+    "forma": [
+      "rule",
+      "sales",
+      "contract",
+      "evaluation"
+    ],
+    "formpage": [
+      "form",
+      "page",
+      "mode",
+      "use"
+    ],
+    "formulario": [
+      "sales",
+      "plan",
+      "form",
+      "mutate"
+    ],
+    "fornecedor": [
+      "supplier",
+      "row",
+      "column",
+      "statement"
+    ],
+    "funcao": [
+      "config",
+      "use",
+      "fields",
+      "extract"
+    ],
+    "gera": [
+      "receivable",
+      "async",
+      "rate",
+      "ahead"
+    ],
+    "grade": [
+      "column",
+      "meta",
+      "payable",
+      "row"
+    ],
+    "grupo": [
+      "payable",
+      "filter",
+      "group",
+      "split"
+    ],
+    "helpers": [
+      "update",
+      "picker",
+      "delete",
+      "row"
+    ],
+    "hierarquia": [
+      "not",
+      "found",
+      "invalid",
+      "receivable"
+    ],
+    "hoje": [
+      "payable",
+      "async",
+      "receivable",
+      "state"
+    ],
+    "ignora": [
+      "async",
+      "tracked",
+      "get",
+      "partner"
+    ],
+    "importacao": [
+      "partner",
+      "import",
+      "async",
+      "tracked"
+    ],
+    "inclui": [
+      "async",
+      "tracked",
+      "get",
+      "ignoring"
+    ],
+    "informado": [
+      "not",
+      "found",
+      "invalid",
+      "receivable"
+    ],
+    "inheritdoc": [
+      "async",
+      "get",
+      "tracked",
+      "tenant"
+    ],
+    "interface": [
+      "async",
+      "get",
+      "service",
+      "tracked"
+    ],
+    "isp": [
+      "async",
+      "get",
+      "service",
+      "populate"
+    ],
+    "isprojected": [
+      "payable",
+      "receivable",
+      "projected",
+      "amount"
+    ],
+    "itens": [
+      "contract",
+      "async",
+      "plan",
+      "item"
+    ],
+    "janela": [
+      "payable",
+      "period",
+      "build",
+      "projected"
+    ],
+    "lancamento": [
+      "payable",
+      "receivable",
+      "ghql",
+      "transaction"
+    ],
+    "leitura": [
+      "receivable",
+      "titles",
+      "use",
+      "financial"
+    ],
+    "limpa": [
+      "filter",
+      "error",
+      "async",
+      "password"
+    ],
+    "linha": [
+      "row",
+      "column",
+      "filters",
+      "scaffold"
+    ],
+    "linhas": [
+      "column",
+      "row",
+      "filters",
+      "scaffold"
+    ],
+    "lista": [
+      "payable",
+      "titles",
+      "receivable",
+      "ghql"
+    ],
+    "listagem": [
+      "payable",
+      "payables",
+      "receivable",
+      "use"
+    ],
+    "lote": [
+      "partner",
+      "async",
+      "import",
+      "tracked"
+    ],
+    "le": [
+      "filter",
+      "filters",
+      "scaffold",
+      "read"
+    ],
+    "liquido": [
+      "get",
+      "async",
+      "column",
+      "rate"
+    ],
+    "mantem": [
+      "use",
+      "async",
+      "get",
+      "rate"
+    ],
+    "mensagem": [
+      "error",
+      "message",
+      "seed",
+      "api"
+    ],
+    "mensal": [
+      "plan",
+      "period",
+      "price",
+      "row"
+    ],
+    "mes": [
+      "payable",
+      "async",
+      "period",
+      "ghql"
+    ],
+    "meses": [
+      "projected",
+      "projection",
+      "period",
+      "months"
+    ],
+    "mesma": [
+      "async",
+      "apply",
+      "period",
+      "get"
+    ],
+    "modo": [
+      "column",
+      "use",
+      "payable",
+      "payables"
+    ],
+    "mostra": [
+      "payable",
+      "row",
+      "filters",
+      "column"
+    ],
+    "multa": [
+      "payable",
+      "async",
+      "receivable",
+      "rate"
+    ],
+    "metodo": [
+      "not",
+      "found",
+      "async",
+      "invalid"
+    ],
+    "metodos": [
+      "async",
+      "get",
+      "with",
+      "pending"
+    ],
+    "minimo": [
+      "payable",
+      "receivable",
+      "ghql",
+      "response"
+    ],
+    "modulo": [
+      "product",
+      "module",
+      "contract",
+      "plan"
+    ],
+    "natureza": [
+      "payable",
+      "recurrence",
+      "group",
+      "async"
+    ],
+    "navegacao": [
+      "period",
+      "build",
+      "filters",
+      "icon"
+    ],
+    "nenhum": [
+      "not",
+      "found",
+      "invalid",
+      "receivable"
+    ],
+    "never": [
+      "payable",
+      "async",
+      "recurrence",
+      "projected"
+    ],
+    "nota": [
+      "graphql",
+      "validate",
+      "async",
+      "route"
+    ],
+    "nova": [
+      "async",
+      "rate",
+      "amount",
+      "get"
+    ],
+    "novo": [
+      "async",
+      "get",
+      "rate",
+      "group"
+    ],
+    "novos": [
+      "not",
+      "found",
+      "invalid",
+      "clients"
+    ],
+    "nullable": [
+      "payable",
+      "receivable",
+      "ghql",
+      "build"
+    ],
+    "nulo": [
+      "filter",
+      "read",
+      "build",
+      "key"
+    ],
+    "nunca": [
+      "payable",
+      "receivable",
+      "async",
+      "column"
+    ],
+    "numero": [
+      "tree",
+      "async",
+      "column",
+      "node"
+    ],
+    "objeto": [
+      "safe2",
+      "pay",
+      "build",
+      "url"
+    ],
+    "obrigatorio": [
+      "not",
+      "found",
+      "invalid",
+      "product"
+    ],
+    "obtem": [
+      "async",
+      "get",
+      "tracked",
+      "partner"
+    ],
+    "opcional": [
+      "payable",
+      "receivable",
+      "projected",
+      "ghql"
+    ],
+    "operacao": [
+      "not",
+      "payable",
+      "found",
+      "receivable"
+    ],
+    "operacoes": [
+      "filter",
+      "async",
+      "column",
+      "read"
+    ],
+    "ordem": [
+      "plan",
+      "tree",
+      "contract",
+      "column"
+    ],
+    "origem": [
+      "payable",
+      "receivable",
+      "split",
+      "tree"
+    ],
+    "origens": [
+      "payable",
+      "async",
+      "receivable",
+      "group"
+    ],
+    "padrao": [
+      "payable",
+      "async",
+      "receivable",
+      "rate"
+    ],
+    "pagamento": [
+      "payable",
+      "not",
+      "async",
+      "found"
+    ],
+    "pago": [
+      "payable",
+      "async",
+      "get",
+      "status"
+    ],
+    "pai": [
+      "not",
+      "found",
+      "invalid",
+      "contract"
+    ],
+    "paramref": [
+      "async",
+      "get",
+      "partner",
+      "tracked"
+    ],
+    "parceiro": [
+      "partner",
+      "not",
+      "found",
+      "invalid"
+    ],
+    "parceiros": [
+      "partner",
+      "import",
+      "async",
+      "tracked"
+    ],
+    "parcela": [
+      "payable",
+      "receivable",
+      "async",
+      "tree"
+    ],
+    "parcelas": [
+      "payable",
+      "async",
+      "receivable",
+      "group"
+    ],
+    "parcial": [
+      "payable",
+      "receivable",
+      "meta",
+      "settle"
+    ],
+    "partir": [
+      "async",
+      "receivable",
+      "payable",
+      "state"
+    ],
+    "partnerid": [
+      "async",
+      "partner",
+      "get",
+      "column"
+    ],
+    "pendentes": [
+      "async",
+      "contract",
+      "get",
+      "charge"
+    ],
+    "periodo": [
+      "not",
+      "found",
+      "invalid",
+      "period"
+    ],
+    "plano": [
+      "plan",
+      "not",
+      "contract",
+      "found"
+    ],
+    "pode": [
+      "not",
+      "async",
+      "found",
+      "get"
+    ],
+    "possui": [
+      "not",
+      "found",
+      "async",
+      "invalid"
+    ],
+    "precisa": [
+      "payable",
+      "async",
+      "meta",
+      "row"
+    ],
+    "previsao": [
+      "payable",
+      "state",
+      "status",
+      "receivable"
+    ],
+    "preco": [
+      "not",
+      "found",
+      "invalid",
+      "plan"
+    ],
+    "primeiro": [
+      "not",
+      "found",
+      "invalid",
+      "async"
+    ],
+    "produto": [
+      "not",
+      "found",
+      "invalid",
+      "plan"
+    ],
+    "projetada": [
+      "payable",
+      "receivable",
+      "payables",
+      "use"
+    ],
+    "projetado": [
+      "payable",
+      "projection",
+      "projected",
+      "payables"
+    ],
+    "projecao": [
+      "payable",
+      "ghql",
+      "projection",
+      "column"
+    ],
+    "propria": [
+      "column",
+      "row",
+      "receivable",
+      "filters"
+    ],
+    "proprio": [
+      "async",
+      "group",
+      "payable",
+      "rate"
+    ],
+    "pagina": [
+      "use",
+      "filters",
+      "grid",
+      "page"
+    ],
+    "qualquer": [
+      "async",
+      "get",
+      "partner",
+      "row"
+    ],
+    "quantidade": [
+      "plan",
+      "contract",
+      "item",
+      "quantity"
+    ],
+    "queries": [
+      "async",
+      "partner",
+      "get",
+      "tracked"
+    ],
+    "react": [
+      "use",
+      "success",
+      "filters",
+      "password"
+    ],
+    "reais": [
+      "payable",
+      "use",
+      "payables",
+      "projected"
+    ],
+    "real": [
+      "payable",
+      "receivable",
+      "split",
+      "amount"
+    ],
+    "recebiveis": [
+      "not",
+      "async",
+      "found",
+      "invalid"
+    ],
+    "recorrente": [
+      "recurrence",
+      "total",
+      "cycle",
+      "launch"
+    ],
+    "recorrencia": [
+      "payable",
+      "recurrence",
+      "contract",
+      "use"
+    ],
+    "recorte": [
+      "payable",
+      "receivable",
+      "split",
+      "filter"
+    ],
+    "referencia": [
+      "not",
+      "found",
+      "invalid",
+      "contract"
+    ],
+    "registro": [
+      "not",
+      "found",
+      "invalid",
+      "row"
+    ],
+    "regra": [
+      "rule",
+      "async",
+      "sales",
+      "evaluation"
+    ],
+    "regras": [
+      "rule",
+      "validate",
+      "sales",
+      "async"
+    ],
+    "resposta": [
+      "not",
+      "found",
+      "invalid",
+      "error"
+    ],
+    "resultado": [
+      "import",
+      "async",
+      "partner",
+      "result"
+    ],
+    "retorna": [
+      "async",
+      "receivable",
+      "password",
+      "email"
+    ],
+    "returns": [
+      "async",
+      "partner",
+      "get",
+      "tracked"
+    ],
+    "rota": [
+      "node",
+      "navigation",
+      "nav",
+      "contract"
+    ],
+    "rotulo": [
+      "label",
+      "receivable",
+      "payable",
+      "state"
+    ],
+    "safe2pay": [
+      "safe2",
+      "pay",
+      "async",
+      "charge"
+    ],
+    "salesplan": [
+      "plan",
+      "async",
+      "contract",
+      "get"
+    ],
+    "salesplanid": [
+      "async",
+      "get",
+      "plan",
+      "sales"
+    ],
+    "see": [
+      "async",
+      "amount",
+      "projection",
+      "name"
+    ],
+    "segue": [
+      "payable",
+      "period",
+      "apply",
+      "plan"
+    ],
+    "selecao": [
+      "partner",
+      "value",
+      "row",
+      "column"
+    ],
+    "sempre": [
+      "async",
+      "filters",
+      "row",
+      "name"
+    ],
+    "senha": [
+      "not",
+      "found",
+      "password",
+      "invalid"
+    ],
+    "ser": [
+      "not",
+      "found",
+      "async",
+      "invalid"
+    ],
+    "sessao": [
+      "async",
+      "password",
+      "login",
+      "email"
+    ],
+    "sistema": [
+      "not",
+      "found",
+      "invalid",
+      "contract"
+    ],
+    "sob": [
+      "use",
+      "row",
+      "column",
+      "data"
+    ],
+    "sobre": [
+      "rate",
+      "async",
+      "discount",
+      "amount"
+    ],
+    "soma": [
+      "async",
+      "get",
+      "total",
+      "count"
+    ],
+    "somente": [
+      "payable",
+      "ghql",
+      "financial",
+      "titles"
+    ],
+    "sucesso": [
+      "error",
+      "token",
+      "password",
+      "use"
+    ],
+    "serie": [
+      "recurrence",
+      "financial",
+      "titles",
+      "title"
+    ],
+    "tabela": [
+      "column",
+      "create",
+      "row",
+      "payable"
+    ],
+    "taxa": [
+      "rate",
+      "discount",
+      "default",
+      "penalty"
+    ],
+    "tenantid": [
+      "async",
+      "get",
+      "partner",
+      "token"
+    ],
+    "texto": [
+      "column",
+      "create",
+      "value",
+      "projected"
+    ],
+    "tipo": [
+      "not",
+      "found",
+      "invalid",
+      "partner"
+    ],
+    "tipos": [
+      "partner",
+      "async",
+      "contract",
+      "get"
+    ],
+    "titulos": [
+      "payable",
+      "receivable",
+      "group",
+      "async"
+    ],
+    "tokenizacao": [
+      "async",
+      "tokenization",
+      "webhook",
+      "process"
+    ],
+    "transacao": [
+      "async",
+      "get",
+      "log",
+      "transaction"
+    ],
+    "troca": [
+      "plan",
+      "change",
+      "token",
+      "filter"
+    ],
+    "tsx": [
+      "payable",
+      "filter",
+      "recurrence",
+      "state"
+    ],
+    "typescript": [
+      "form",
+      "adapter",
+      "data",
+      "page"
+    ],
+    "titulo": [
+      "payable",
+      "receivable",
+      "async",
+      "group"
+    ],
+    "unificada": [
+      "title",
+      "financial",
+      "titles",
+      "row"
+    ],
+    "usa": [
+      "async",
+      "get",
+      "build",
+      "error"
+    ],
+    "usado": [
+      "async",
+      "get",
+      "tracked",
+      "tenant"
+    ],
+    "usar": [
+      "not",
+      "found",
+      "invalid",
+      "async"
+    ],
+    "usertenant": [
+      "async",
+      "tracked",
+      "get",
+      "partner"
+    ],
+    "usertenants": [
+      "async",
+      "tracked",
+      "get",
+      "tenant"
+    ],
+    "uso": [
+      "not",
+      "found",
+      "invalid",
+      "already"
+    ],
+    "valida": [
+      "validate",
+      "async",
+      "password",
+      "put"
+    ],
+    "validar": [
+      "async",
+      "login",
+      "token",
+      "result"
+    ],
+    "validacao": [
+      "not",
+      "found",
+      "invalid",
+      "already"
+    ],
+    "valor": [
+      "not",
+      "found",
+      "invalid",
+      "rate"
+    ],
+    "valores": [
+      "async",
+      "rate",
+      "discount",
+      "amount"
+    ],
+    "vazio": [
+      "async",
+      "column",
+      "projected",
+      "build"
+    ],
+    "vem": [
+      "receivable",
+      "projected",
+      "forecast",
+      "build"
+    ],
+    "vencido": [
+      "payable",
+      "receivable",
+      "get",
+      "state"
+    ],
+    "vencimento": [
+      "payable",
+      "rate",
+      "receivable",
+      "state"
+    ],
+    "ver": [
+      "financial",
+      "title",
+      "amount",
+      "projected"
+    ],
+    "verifica": [
+      "async",
+      "tracked",
+      "get",
+      "email"
+    ],
+    "verificar": [
+      "use",
+      "error",
+      "async",
+      "email"
+    ],
+    "vez": [
+      "filters",
+      "scaffold",
+      "contact",
+      "column"
+    ],
+    "vira": [
+      "row",
+      "receivable",
+      "column",
+      "filters"
+    ],
+    "virtuais": [
+      "titles",
+      "build",
+      "projected",
+      "filter"
+    ],
+    "vive": [
+      "get",
+      "filter",
+      "async",
+      "payable"
+    ],
+    "vinculo": [
+      "not",
+      "found",
+      "invalid",
+      "async"
+    ],
+    "wave": [
+      "async",
+      "get",
+      "contract",
+      "receivable"
+    ],
+    "yyyy": [
+      "payable",
+      "receivable",
+      "due",
+      "state"
+    ],
+    "arvore": [
+      "tree",
+      "payable",
+      "meta",
+      "receivable"
+    ],
+    "ancora": [
+      "payable",
+      "period",
+      "async",
+      "date"
+    ],
+    "icone": [
+      "column",
+      "create",
+      "icon",
+      "payable"
+    ],
+    "unica": [
+      "payable",
+      "receivable",
+      "meta",
+      "state"
+    ],
+    "unico": [
+      "async",
+      "get",
+      "can",
+      "column"
+    ]
+  }
+}

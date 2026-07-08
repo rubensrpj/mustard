@@ -200,7 +200,7 @@ fn load_model(path: &Path) -> Result<ProjectModel> {
         // Projections (digest/facts/spec/purpose) want only the model; the
         // dictionary sidecar is a scan-write concern, discarded here — so the
         // EN normalization (a sidecar spawn) is skipped too.
-        Ok(analyze(path, false)?.0)
+        Ok(analyze(path)?.0)
     }
 }
 
@@ -208,7 +208,7 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Command::Scan { path, out } => {
-            let (model, dictionary) = analyze(&path, true)?;
+            let (model, dictionary) = analyze(&path)?;
             print_summary(&model);
             std::fs::write(&out, serde_json::to_string_pretty(&model)?)?;
             println!("\nModel written to {}", out.display());
@@ -220,7 +220,7 @@ fn main() -> Result<()> {
             println!("Dictionary written to {} ({} terms)", dict_out.display(), dictionary.terms.len());
             if dictionary.non_english_comments > 0 {
                 println!(
-                    "  {} non-English comment(s) entered untranslated (mustard-translate sidecar unavailable)",
+                    "  {} non-English comment(s) detected — code smell to fix; raw tokens kept (they are the query-bridge keys)",
                     dictionary.non_english_comments
                 );
             }
@@ -361,13 +361,10 @@ fn main() -> Result<()> {
 }
 
 /// Deterministic stages: produce the project model AND the distinctive-
-/// vocabulary dictionary sidecar (no synthesis, no cloud LLM). The dictionary
-/// is returned alongside the model because it is mined from the in-memory
+/// vocabulary dictionary sidecar (no synthesis, no AI). The dictionary is
+/// returned alongside the model because it is mined from the in-memory
 /// `content` (comments), which only exists during the scan — see [`dictionary`].
-/// `normalize_comments` turns on the dictionary's EN normalization (local
-/// `mustard-translate` sidecar; deterministic per machine, fail-open) — the
-/// `scan` command wants it, a projection re-analyzing a dir does not.
-fn analyze(root: &Path, normalize_comments: bool) -> Result<(ProjectModel, dictionary::Dictionary)> {
+fn analyze(root: &Path) -> Result<(ProjectModel, dictionary::Dictionary)> {
     let ing = ingest::ingest(root)?;
     let analyzers = extract::registry();
     // Repo classification overrides (.gitattributes / .editorconfig) — loaded
@@ -408,13 +405,8 @@ fn analyze(root: &Path, normalize_comments: bool) -> Result<(ProjectModel, dicti
     let mined = mine::mine(&modules, &degrees, &content);
     // Distinctive-vocabulary dictionary: a stage right after mining, over the
     // same `modules` + in-memory `content` (the only place comments survive),
-    // reusing the mined role affixes to demote structural glue. Normalized
-    // (comments translated to English via the local sidecar) only when asked.
-    let dictionary = if normalize_comments {
-        dictionary::build_normalized(&modules, &content, &mined.roles)
-    } else {
-        dictionary::build(&modules, &content, &mined.roles)
-    };
+    // reusing the mined role affixes to demote structural glue.
+    let dictionary = dictionary::build(&modules, &content, &mined.roles);
     let skeleton = condense::build_skeleton(&modules, &depth_by_path);
 
     let mut projects = build_projects(&ing.manifests, &modules);
