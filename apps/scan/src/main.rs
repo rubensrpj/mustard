@@ -7,6 +7,7 @@
 
 mod classify;
 mod condense;
+mod dictionary;
 mod digest;
 mod facts;
 mod extract;
@@ -140,7 +141,9 @@ fn load_model(path: &Path) -> Result<ProjectModel> {
     if path.extension().and_then(|e| e.to_str()) == Some("json") {
         Ok(serde_json::from_str(&std::fs::read_to_string(path)?)?)
     } else {
-        analyze(path)
+        // Projections (digest/facts/spec/purpose) want only the model; the
+        // dictionary sidecar is a scan-write concern, discarded here.
+        Ok(analyze(path)?.0)
     }
 }
 
@@ -148,10 +151,16 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Command::Scan { path, out } => {
-            let model = analyze(&path)?;
+            let (model, dictionary) = analyze(&path)?;
             print_summary(&model);
             std::fs::write(&out, serde_json::to_string_pretty(&model)?)?;
             println!("\nModel written to {}", out.display());
+            // The distinctive-vocabulary sidecar lands NEXT TO the model
+            // (`grain.dictionary.json` beside `grain.model.json`), so `/scan`
+            // (rt → grain --out .claude/grain.model.json) produces both.
+            let dict_out = out.with_file_name("grain.dictionary.json");
+            std::fs::write(&dict_out, serde_json::to_string_pretty(&dictionary)?)?;
+            println!("Dictionary written to {} ({} terms)", dict_out.display(), dictionary.terms.len());
         }
         Command::Digest { path, query, out } => {
             let model = load_model(&path)?;
@@ -257,8 +266,11 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-/// Deterministic stages: produce the project model (no synthesis).
-fn analyze(root: &Path) -> Result<ProjectModel> {
+/// Deterministic stages: produce the project model AND the distinctive-
+/// vocabulary dictionary sidecar (no synthesis, no LLM). The dictionary is
+/// returned alongside the model because it is mined from the in-memory `content`
+/// (comments), which only exists during the scan — see [`dictionary`].
+fn analyze(root: &Path) -> Result<(ProjectModel, dictionary::Dictionary)> {
     let ing = ingest::ingest(root)?;
     let analyzers = extract::registry();
     // Repo classification overrides (.gitattributes / .editorconfig) — loaded
@@ -297,26 +309,33 @@ fn analyze(root: &Path) -> Result<ProjectModel> {
         m.fan_in = degrees.get(&m.path).map_or(0, |d| d.0);
     }
     let mined = mine::mine(&modules, &degrees, &content);
+    // Distinctive-vocabulary dictionary: a stage right after mining, over the
+    // same `modules` + in-memory `content` (the only place comments survive),
+    // reusing the mined role affixes to demote structural glue.
+    let dictionary = dictionary::build(&modules, &content, &mined.roles);
     let skeleton = condense::build_skeleton(&modules, &depth_by_path);
 
     let mut projects = build_projects(&ing.manifests, &modules);
     infer_unit_stacks(&mut projects, &ing.manifests, &ing.walk_paths, &ing.source_files);
 
-    Ok(ProjectModel {
-        root: ing.root.to_string_lossy().to_string(),
-        languages: ing.languages,
-        manifests: ing.manifests,
-        frameworks: ing.frameworks,
-        detected_stacks: ing.detected_stacks,
-        skeleton,
-        modules,
-        graph: graph_stats,
-        roles: mined.roles,
-        conventions: mined.conventions,
-        coverage: ing.coverage,
-        projects,
-        shared_contracts: mined.shared_contracts,
-    })
+    Ok((
+        ProjectModel {
+            root: ing.root.to_string_lossy().to_string(),
+            languages: ing.languages,
+            manifests: ing.manifests,
+            frameworks: ing.frameworks,
+            detected_stacks: ing.detected_stacks,
+            skeleton,
+            modules,
+            graph: graph_stats,
+            roles: mined.roles,
+            conventions: mined.conventions,
+            coverage: ing.coverage,
+            projects,
+            shared_contracts: mined.shared_contracts,
+        },
+        dictionary,
+    ))
 }
 
 /// Map each project (one per manifest) to its directory and count the source
