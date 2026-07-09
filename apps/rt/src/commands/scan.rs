@@ -115,6 +115,15 @@ pub fn run(root: &Path, out: Option<&Path>, full: bool) {
             }).collect();
             result["oversized"] = json!(oversized_json);
         }
+
+        // Equivalences artifact (additive): project the dictionary the scan
+        // tool wrote NEXT TO the model through the local MT sidecar into
+        // `grain.equivalences.json` — the PT→EN query-expansion table the
+        // `feature` retrieval feeds to `scan rank`. Fail-open by contract: a
+        // missing dictionary/translator degrades to `{ok:false, reason}` in
+        // the summary and never fails the scan.
+        let dict_path = model_path.with_file_name("grain.dictionary.json");
+        result["equivalences"] = super::scan_equivalences::generate_at(&dict_path);
     }
 
     println!("{}", serde_json::to_string_pretty(&result).unwrap_or_else(|_| "{}".into()));

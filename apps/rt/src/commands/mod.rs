@@ -24,6 +24,7 @@ pub mod spec;
 pub mod maint;
 pub mod scan;
 pub mod scan_claude;
+pub mod scan_equivalences;
 pub mod scan_guards;
 pub mod scan_patterns;
 pub mod feature;
@@ -68,6 +69,20 @@ pub enum RunCmd {
         /// exceed the size threshold.
         #[arg(long)]
         full: bool,
+    },
+    /// Project the scan dictionary's non-English terms through the local
+    /// `mustard-translate` sidecar into `.claude/grain.equivalences.json` —
+    /// the PT→EN query-expansion table `run feature` feeds to `scan rank`.
+    /// ONE batch spawn over the whole dictionary; byte-stable output (keys
+    /// accent-folded + sorted). Runs automatically at the end of `run scan`;
+    /// this is the standalone (re)generation face. Fail-open: a missing
+    /// dictionary or absent translator prints `{ok:false, reason}`, exit 0.
+    #[command(name = "scan-equivalences")]
+    ScanEquivalences {
+        /// Workspace root (holds `.claude/grain.dictionary.json`). Defaults
+        /// to the current directory.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
     },
     /// Research a feature request against the repo via the `scan` digest (no
     /// source reading) and emit the structured insumos for decomposition +
@@ -1660,6 +1675,7 @@ pub enum RunCmd {
 pub fn dispatch(cmd: RunCmd) {
     match cmd {
         RunCmd::Scan { root, out, full } => scan::run(&root, out.as_deref(), full),
+        RunCmd::ScanEquivalences { root } => scan_equivalences::run(&root),
         RunCmd::Feature { intent, root } => feature::run(&intent, &root),
         RunCmd::Orient { root } => orient::run(&root),
         RunCmd::GlossaryCoverage {

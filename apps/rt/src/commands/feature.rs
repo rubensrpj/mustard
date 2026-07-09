@@ -18,7 +18,7 @@
 
 use std::path::Path;
 
-use mustard_core::domain::scan::{DigestQuery, DigestTerm};
+use mustard_core::domain::scan::{DigestQuery, DigestTerm, FileDetail};
 use mustard_core::io::fs as mfs;
 use mustard_core::Scan;
 use serde_json::{json, Value};
@@ -484,17 +484,228 @@ fn reason_note(q: &DigestQuery) -> &'static str {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Retrieval fusion — the pagerank short-list (`scan rank`, C2 query shape)
+// RRF-fused with the digest anchors into the additive `insumos` field, plus
+// the automatic gloss for a non-English intent. Every rung is FAIL-OPEN: a
+// missing translator / dictionary / scan binary degrades to the digest list
+// alone — the field always renders, existing fields never change.
+// ---------------------------------------------------------------------------
+
+/// Fused short-list length (top 10 — the measured Acc@10 operating point).
+const INSUMOS_MAX: usize = 10;
+
+/// The RRF constant (`k = 60`, the measured winner in the fusion benchmark).
+const RRF_K: f64 = 60.0;
+
+/// `scan rank`'s direct identifier-match floor (the tool default, pinned
+/// explicitly — the calibrated product contract).
+const RANK_DIRECT_BASE: u64 = 100_000;
+
+/// English function words for the language vote — the EN side of the scan
+/// dictionary's `is_non_english` heuristic, embedded compactly (a router,
+/// not a classifier).
+const EN_STOP: &[&str] = &[
+    "a", "an", "the", "and", "or", "but", "if", "of", "at", "by", "for", "with", "about", "into",
+    "through", "before", "after", "to", "from", "in", "out", "on", "off", "over", "under", "again",
+    "then", "once", "here", "there", "when", "where", "why", "how", "all", "any", "both", "each",
+    "few", "more", "most", "some", "such", "no", "not", "only", "same", "than", "too", "very",
+    "is", "are", "was", "were", "been", "being", "be", "have", "has", "had", "does", "did", "this",
+    "that", "these", "those", "will", "would", "can", "could", "should", "must", "it", "its",
+    "his", "her", "our", "their", "your", "you", "they", "she", "what", "which", "who", "as",
+];
+
+/// Portuguese function words — the accent-bearing romance side of the vote.
+const PT_STOP: &[&str] = &[
+    "o", "a", "os", "as", "um", "uma", "uns", "umas", "de", "do", "da", "dos", "das", "no", "na",
+    "nos", "nas", "ao", "aos", "à", "às", "pelo", "pela", "pelos", "pelas", "em", "por", "para",
+    "com", "sem", "sob", "sobre", "entre", "até", "e", "ou", "mas", "que", "se", "não", "sim",
+    "é", "são", "foi", "foram", "ser", "sendo", "era", "eram", "está", "estão", "estava", "tem",
+    "têm", "tinha", "há", "já", "mais", "menos", "muito", "muitos", "como", "quando", "onde",
+    "qual", "quais", "quem", "isso", "isto", "esse", "essa", "esses", "essas", "este", "esta",
+    "estes", "estas", "ele", "ela", "eles", "elas", "você", "nós", "eu", "seu", "sua", "seus",
+    "suas", "meu", "minha", "nosso", "nossa", "também", "depois", "antes", "agora", "aqui",
+    "cada", "todo", "toda", "todos", "todas", "outro", "outra", "outros", "outras", "mesmo",
+    "mesma", "ainda", "então", "pois", "porque",
+];
+
+/// `true` when the intent reads as NON-English: the PT function words outvote
+/// the English ones, or the vote ties WITH Latin-accent evidence present —
+/// the exact rule of the scan dictionary's `is_non_english`. Biased to send:
+/// a falsely-English verdict merely skips the gloss; a falsely-foreign one
+/// costs a single no-op MT call (the sidecar passes English through).
+fn looks_non_english(intent: &str) -> bool {
+    let mut en_hits = 0usize;
+    let mut pt_hits = 0usize;
+    for word in intent.split(|c: char| !c.is_alphanumeric()) {
+        if word.is_empty() {
+            continue;
+        }
+        let w = word.to_lowercase();
+        if EN_STOP.contains(&w.as_str()) {
+            en_hits += 1;
+        }
+        if PT_STOP.contains(&w.as_str()) {
+            pt_hits += 1;
+        }
+    }
+    let lower = intent.to_lowercase();
+    let has_accent = super::scan_equivalences::fold_tok(&lower) != lower;
+    pt_hits > en_hits || (has_accent && pt_hits >= en_hits)
+}
+
+/// Auto-gloss: translate a non-English-looking intent through the OPTIONAL
+/// local `mustard-translate` sidecar, returning the English text to ride
+/// inside the effective intent. `None` (no gloss, original behavior) when the
+/// intent votes English, the translator is absent or fails, the sidecar
+/// detected English anyway, or the translation adds nothing — fail-open.
+fn auto_gloss(intent: &str) -> Option<String> {
+    if !looks_non_english(intent) {
+        return None;
+    }
+    let translation = crate::shared::translate::Translate::locate()?.text(intent)?;
+    if translation.detected == "en" {
+        return None;
+    }
+    let en = translation.en.trim().to_string();
+    if en.is_empty() || en.eq_ignore_ascii_case(intent.trim()) {
+        return None;
+    }
+    Some(en)
+}
+
+/// Expand the raw intent with the scan-time equivalence tokens (the measured
+/// C2 query shape: raw PT + added EN tokens): each intent token ≥3 chars is
+/// accent-folded and looked up EXACTLY in the `grain.equivalences.json` map;
+/// hits append their tokens, deduped across the whole intent in
+/// first-occurrence order. No hit → the intent passes through verbatim.
+fn expand_query(intent: &str, equiv: &std::collections::BTreeMap<String, Vec<String>>) -> String {
+    let mut added: Vec<String> = Vec::new();
+    for tok in intent.split(|c: char| !c.is_alphanumeric()) {
+        if tok.chars().count() < 3 {
+            continue;
+        }
+        let key = super::scan_equivalences::fold_tok(tok);
+        if let Some(toks) = equiv.get(&key) {
+            for t in toks {
+                if !added.contains(t) {
+                    added.push(t.clone());
+                }
+            }
+        }
+    }
+    if added.is_empty() {
+        intent.to_string()
+    } else {
+        format!("{intent} {}", added.join(" "))
+    }
+}
+
+/// Order the digest's anchor audit into ONE ranked file list for the fusion:
+/// max `score_x1024` per file, score desc, tie → path asc; separators
+/// normalised to `/` so the rank and digest keys join. Pure + byte-stable.
+fn digest_ranked_files(detail: &[FileDetail]) -> Vec<String> {
+    use std::collections::BTreeMap;
+    let mut best: BTreeMap<String, u64> = BTreeMap::new();
+    for d in detail {
+        let file = d.file.replace('\\', "/");
+        let e = best.entry(file).or_insert(0);
+        *e = (*e).max(d.score_x1024);
+    }
+    let mut rows: Vec<(String, u64)> = best.into_iter().collect();
+    rows.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    rows.into_iter().map(|(f, _)| f).collect()
+}
+
+/// Reciprocal Rank Fusion of the two retrieval lists:
+/// `score(f) = Σ_lists 1/(k + rank_f)` with 1-based ranks and `k` =
+/// [`RRF_K`]; sorted score desc, tie → path asc; capped at [`INSUMOS_MAX`].
+/// Fully deterministic: fixed accumulation order, no NaN possible,
+/// `total_cmp` keeps the sort total. Each row carries its provenance —
+/// `rank`, `digest`, or `both`. Pure (no spawn, no IO), unit-tested.
+fn fuse_rrf(rank_list: &[String], digest_list: &[String]) -> Vec<(String, &'static str)> {
+    use std::collections::BTreeMap;
+    let mut acc: BTreeMap<String, (f64, bool, bool)> = BTreeMap::new();
+    for (i, f) in rank_list.iter().enumerate() {
+        let e = acc.entry(f.clone()).or_insert((0.0, false, false));
+        e.0 += 1.0 / (RRF_K + (i + 1) as f64);
+        e.1 = true;
+    }
+    for (i, f) in digest_list.iter().enumerate() {
+        let e = acc.entry(f.clone()).or_insert((0.0, false, false));
+        e.0 += 1.0 / (RRF_K + (i + 1) as f64);
+        e.2 = true;
+    }
+    let mut rows: Vec<(String, f64, bool, bool)> =
+        acc.into_iter().map(|(f, (s, r, d))| (f, s, r, d)).collect();
+    rows.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    rows.truncate(INSUMOS_MAX);
+    rows.into_iter()
+        .map(|(f, _, r, d)| {
+            let source = match (r, d) {
+                (true, true) => "both",
+                (true, false) => "rank",
+                _ => "digest",
+            };
+            (f, source)
+        })
+        .collect()
+}
+
+/// Build the fused `insumos` rows: the pagerank short-list (`scan rank` over
+/// the expanded query) RRF-fused with the digest's anchor audit. Gated on the
+/// dictionary sidecar existing; a missing scan binary or a rank error
+/// degrades to the digest list alone (fail-open) — the field ALWAYS renders.
+fn insumos_rows(root: &Path, intent: &str, detail: &[FileDetail]) -> Vec<Value> {
+    let digest_list = digest_ranked_files(detail);
+    let dict = root.join(".claude").join("grain.dictionary.json");
+    let rank_list: Vec<String> = if dict.is_file() {
+        let equiv = super::scan_equivalences::load_equivalences(root);
+        let model = root.join(".claude").join("grain.model.json");
+        let query = expand_query(intent, &equiv);
+        Scan::locate()
+            .rank(&model, &dict, &query, INSUMOS_MAX, RANK_DIRECT_BASE)
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    fuse_rrf(&rank_list, &digest_list)
+        .into_iter()
+        .map(|(file, source)| json!({ "file": file, "source": source }))
+        .collect()
+}
+
+/// Attach the ADDITIVE retrieval fields to the insumos payload: `insumos`
+/// (the RRF-fused short-list — ALWAYS present, possibly empty) and `gloss`
+/// (only when the auto-gloss fired). No existing field is touched — the run
+/// output is byte-compared in gates, and both keys are new + deterministic.
+fn attach_retrieval(v: &mut Value, root: &Path, intent: &str, gloss: Option<&str>, detail: &[FileDetail]) {
+    let rows = insumos_rows(root, intent, detail);
+    if let Some(obj) = v.as_object_mut() {
+        obj.insert("insumos".to_string(), json!(rows));
+        if let Some(en) = gloss {
+            obj.insert("gloss".to_string(), json!(en));
+        }
+    }
+}
+
 /// Run the research step: print the feature insumos JSON for `intent`.
 ///
-/// PURE DETERMINISTIC — no `claude` subprocess. Cross-lingual translation now
-/// lives in the ORCHESTRATION layer: the caller passes the english translation
-/// INSIDE `--intent` (`--intent "<user prompt PT> <english translation>"`), so
-/// this command only tokenizes the DISTINCT union of the terms it receives
-/// (`domain_terms` dedups), queries the digest once, and prints the insumos. On
-/// a NON-strong result the `candidates` menu still rides along — a deterministic
-/// fallback the orchestration layer can re-query against.
+/// PURE DETERMINISTIC — no `claude` subprocess. Cross-lingual translation
+/// arrives two fail-open ways: the ORCHESTRATION layer may pass the english
+/// translation INSIDE `--intent` (`--intent "<user prompt PT> <english>"`),
+/// and a non-English-looking intent is ALSO auto-glossed through the optional
+/// local `mustard-translate` sidecar (`"<original> -- <en>"` feeds the digest
+/// tokenization; `domain_terms` dedups the union). The digest is queried
+/// once; the pagerank short-list is RRF-fused into the additive `insumos`
+/// field. On a NON-strong result the `candidates` menu still rides along — a
+/// deterministic fallback the orchestration layer can re-query against.
 pub fn run(intent: &str, root: &Path) {
-    let terms = domain_terms(intent);
+    let gloss = auto_gloss(intent);
+    let effective = gloss
+        .as_ref()
+        .map_or_else(|| intent.to_string(), |en| format!("{intent} -- {en}"));
+    let terms = domain_terms(&effective);
     let model = root.join(".claude").join("grain.model.json");
 
     let payload = match Scan::locate().digest_query(&model, &terms) {
@@ -522,11 +733,16 @@ pub fn run(intent: &str, root: &Path) {
             } else {
                 Vec::new()
             };
-            payload(intent, &q, &index)
+            let mut v = payload(intent, &q, &index);
+            // Additive retrieval fields: the RRF-fused `insumos` short-list
+            // (+ `gloss` when the auto-gloss fired). Attached AFTER the
+            // payload so no existing field moves; fail-open inside.
+            attach_retrieval(&mut v, root, intent, gloss.as_deref(), &q.files_detail);
+            v
         }
         Err(err) => {
             eprintln!("feature: scan digest unavailable: {err}");
-            json!({
+            let mut v = json!({
                 "intent": intent,
                 "stacks": [],
                 "miss": true,
@@ -543,7 +759,12 @@ pub fn run(intent: &str, root: &Path) {
                 // so there is no published vocabulary to offer the translator.
                 "candidates": [],
                 "note": "scan model unavailable — run `mustard-rt run scan` first; treat as net-new until then",
-            })
+            });
+            // `insumos` is part of the stable shape — attached on the fallback
+            // too (an unavailable digest usually means an unavailable ranker,
+            // so this degrades to an empty list, honestly).
+            attach_retrieval(&mut v, root, intent, gloss.as_deref(), &[]);
+            v
         }
     };
     // The FULL digest goes to a file (the single source of truth for the long
@@ -1138,5 +1359,115 @@ mod tests {
         let v = payload("supplier", &strong, &index);
         assert!(v.get("candidates").is_none(), "strong omits the candidates menu: {v}");
         assert_eq!(v["anchors"], json!(["src/supplier.cs"]), "strong keeps anchors: {v}");
+    }
+
+    #[test]
+    fn rrf_fusion_scores_ties_and_caps_deterministically() {
+        // b rides in BOTH lists (1/62 + 1/62) and beats a (rank #1 alone,
+        // 1/61) and c (digest #2 alone, 1/62); provenance is tagged per row.
+        let fused = fuse_rrf(
+            &["a".to_string(), "b".to_string()],
+            &["b".to_string(), "c".to_string()],
+        );
+        assert_eq!(
+            fused,
+            vec![
+                ("b".to_string(), "both"),
+                ("a".to_string(), "rank"),
+                ("c".to_string(), "digest"),
+            ]
+        );
+        // An exact score tie (same rank, different lists) breaks by path asc.
+        let tie = fuse_rrf(&["y".to_string()], &["x".to_string()]);
+        assert_eq!(tie, vec![("x".to_string(), "digest"), ("y".to_string(), "rank")]);
+        // Deterministic: the same inputs fuse to the same output, twice.
+        let a = fuse_rrf(&["a".into(), "b".into()], &["b".into(), "c".into()]);
+        let b = fuse_rrf(&["a".into(), "b".into()], &["b".into(), "c".into()]);
+        assert_eq!(a, b);
+        // Capped at INSUMOS_MAX; empty ∪ empty → empty (the field still
+        // renders as an empty array upstream).
+        let many: Vec<String> = (0..15).map(|i| format!("f{i:02}")).collect();
+        assert_eq!(fuse_rrf(&many, &[]).len(), INSUMOS_MAX);
+        assert!(fuse_rrf(&[], &[]).is_empty());
+    }
+
+    #[test]
+    fn expand_query_folds_keys_exactly_and_dedups_added_tokens() {
+        let mut eq = std::collections::BTreeMap::new();
+        eq.insert("conciliacao".to_string(), vec!["reconciliation".to_string(), "bank".to_string()]);
+        eq.insert("extrato".to_string(), vec!["statement".to_string(), "bank".to_string()]);
+        // Accent-folded lookup hits; `bank` (shared by both terms) appends once.
+        let q = expand_query("onde é feita a conciliação do extrato bancário", &eq);
+        assert_eq!(q, "onde é feita a conciliação do extrato bancário reconciliation bank statement");
+        // No key hit (incl. sub-3-char tokens) → the intent passes verbatim.
+        assert_eq!(expand_query("do it", &eq), "do it");
+        assert_eq!(expand_query("payment handler", &std::collections::BTreeMap::new()), "payment handler");
+    }
+
+    #[test]
+    fn digest_ranked_files_takes_max_per_file_desc_with_path_tiebreak() {
+        // Duplicate file (backslash variant): max score wins; the 90-tie
+        // between a.cs and dup.cs breaks by path asc; separators normalise.
+        let detail: Vec<FileDetail> = serde_json::from_str(
+            r#"[{"file":"src\\dup.cs","score_x1024":10,"terms":[]},
+                {"file":"src/dup.cs","score_x1024":90,"terms":[]},
+                {"file":"src/a.cs","score_x1024":90,"terms":[]},
+                {"file":"src/z.cs","score_x1024":200,"terms":[]}]"#,
+        )
+        .expect("detail rows");
+        assert_eq!(digest_ranked_files(&detail), vec!["src/z.cs", "src/a.cs", "src/dup.cs"]);
+        assert!(digest_ranked_files(&[]).is_empty());
+    }
+
+    #[test]
+    fn looks_non_english_votes_stoplists_and_accents() {
+        // Mirrors the scan dictionary's is_non_english contract.
+        assert!(
+            looks_non_english("onde é feita a conciliação do extrato bancário"),
+            "pt function words outvote + accent evidence"
+        );
+        assert!(
+            looks_non_english("adicionar validação no handler de criação de contrato"),
+            "pt vote wins despite EN loanwords"
+        );
+        assert!(
+            !looks_non_english("add validation to the contract creation handler"),
+            "english stays english"
+        );
+        assert!(
+            !looks_non_english("maps the naïve café names into the user profile"),
+            "english wins its vote despite an accented word"
+        );
+    }
+
+    #[test]
+    fn insumos_field_always_attaches_and_fails_open_without_sidecars() {
+        // A root with NO dictionary sidecar → the ranker is never spawned and
+        // the digest audit alone carries the field (source: digest).
+        let root = std::env::temp_dir().join("mustard-feature-insumos-none");
+        let detail: Vec<FileDetail> = serde_json::from_str(
+            r#"[{"file":"src/a.cs","score_x1024":90,"terms":["x"]},
+                {"file":"src/b.cs","score_x1024":10,"terms":[]}]"#,
+        )
+        .expect("detail rows");
+        let mut v = json!({ "intent": "x" });
+        attach_retrieval(&mut v, &root, "x", None, &detail);
+        assert_eq!(
+            v["insumos"],
+            json!([
+                { "file": "src/a.cs", "source": "digest" },
+                { "file": "src/b.cs", "source": "digest" }
+            ]),
+            "ranker unavailable → digest top-10 alone: {v}"
+        );
+        assert!(v.get("gloss").is_none(), "no gloss key when the gloss did not fire: {v}");
+        assert_eq!(v["intent"], json!("x"), "existing fields untouched: {v}");
+
+        // Empty digest too → the field STILL renders, as an empty array; a
+        // fired gloss rides along as the additive `gloss` key.
+        let mut v = json!({});
+        attach_retrieval(&mut v, &root, "x", Some("where is it done"), &[]);
+        assert_eq!(v["insumos"], json!([]), "insumos always present: {v}");
+        assert_eq!(v["gloss"], json!("where is it done"));
     }
 }
